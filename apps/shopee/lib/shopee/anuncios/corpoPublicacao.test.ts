@@ -11,8 +11,12 @@ import {
   CODIGO_SELECAO_EXCEDE_LIMITE,
   CODIGO_SELECAO_INVALIDA,
   MSG_CATEGORY_ID_INVALIDO,
+  MSG_CONVERTER_INVALIDO,
   MSG_LINK_EXIGE_UM_PRODUTO,
+  MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
+  MSG_RECRIAR_INVALIDO,
+  MSG_RECRIAR_SEM_LINK,
   MSG_SELECAO_INVALIDA,
   MSG_STATUS_PUBLICACAO,
   corpoDeErroAnuncioStatus,
@@ -55,7 +59,7 @@ describe('naoDocId', () => {
 });
 
 describe('lerCorpoPublicar', () => {
-  it('lê os três campos e aplica os dois padrões', () => {
+  it('lê os três campos e aplica os padrões (os três de kit do passo 19 incluídos)', () => {
     const lido = lerCorpoPublicar({ integracaoId: INT_A, produtoId: PRODUTO });
 
     expect(lido.ok).toBe(true);
@@ -66,6 +70,9 @@ describe('lerCorpoPublicar', () => {
       linkDocId: null,
       status: SHOPEE_ITEM_STATUS_WRITABLE.normal,
       categoryId: null,
+      principal: null,
+      recriar: false,
+      converterEmKit: false,
     });
   });
 
@@ -176,6 +183,73 @@ describe('lerCorpoPublicar', () => {
       if (lido.ok) continue;
       expect(lido.erro).toBe(MSG_CATEGORY_ID_INVALIDO);
     }
+  });
+});
+
+describe('lerCorpoPublicar — os campos de kit nativo (passo 19, R-a)', () => {
+  const base = { integracaoId: INT_A, produtoId: PRODUTO };
+
+  function recusa(body: Record<string, unknown>): string {
+    const lido = lerCorpoPublicar(body);
+    if (lido.ok) throw new Error(`esperava 400, leu ${JSON.stringify(lido.valor)}`);
+    return lido.erro;
+  }
+
+  it('principal segue a regra de id de documento: ausente/null ⇒ null, um id passa, um separador é recusado', () => {
+    expect(lerCorpoPublicar({ ...base, principal: null })).toMatchObject({
+      valor: { principal: null },
+    });
+    expect(lerCorpoPublicar({ ...base, principal: 'comp-a' })).toMatchObject({
+      valor: { principal: 'comp-a' },
+    });
+    for (const v of IDS_RECUSADOS.filter((x) => x !== null)) {
+      expect(recusa({ ...base, principal: v }), JSON.stringify(v)).toContain('principal');
+    }
+  });
+
+  it('recriar e converterEmKit: ausente e null ⇒ false; true e false passam', () => {
+    for (const nome of ['recriar', 'converterEmKit'] as const) {
+      expect(lerCorpoPublicar({ ...base, [nome]: null }), nome).toMatchObject({
+        valor: { [nome]: false },
+      });
+      expect(lerCorpoPublicar({ ...base, [nome]: false }), nome).toMatchObject({
+        valor: { [nome]: false },
+      });
+    }
+    expect(lerCorpoPublicar({ ...base, converterEmKit: true })).toMatchObject({
+      valor: { converterEmKit: true, recriar: false },
+    });
+    expect(lerCorpoPublicar({ ...base, recriar: true, linkDocId: LINK })).toMatchObject({
+      valor: { recriar: true, converterEmKit: false, linkDocId: LINK },
+    });
+  });
+
+  it("(M138) ⛔ um `'true'` em TEXTO (e 1, 'false', {}) é RECUSADO, nunca coagido", () => {
+    for (const v of ['true', 'false', 1, 0, {}, []]) {
+      expect(recusa({ ...base, recriar: v, linkDocId: LINK }), JSON.stringify(v)).toBe(
+        MSG_RECRIAR_INVALIDO,
+      );
+      expect(recusa({ ...base, converterEmKit: v }), JSON.stringify(v)).toBe(
+        MSG_CONVERTER_INVALIDO,
+      );
+    }
+  });
+
+  it('(M139) recriar E converterEmKit juntos ⇒ 400 MSG_OPCOES_DE_KIT_EXCLUSIVAS — uma ação por pedido', () => {
+    expect(recusa({ ...base, recriar: true, converterEmKit: true, linkDocId: LINK })).toBe(
+      MSG_OPCOES_DE_KIT_EXCLUSIVAS,
+    );
+    // ⛔ quase-par: um dos dois FALSE explícito não é "juntos".
+    expect(
+      lerCorpoPublicar({ ...base, recriar: true, converterEmKit: false, linkDocId: LINK }).ok,
+    ).toBe(true);
+  });
+
+  it('(M175) recriar SEM linkDocId ⇒ 400 MSG_RECRIAR_SEM_LINK — a recriação sempre nomeia o kit', () => {
+    expect(recusa({ ...base, recriar: true })).toBe(MSG_RECRIAR_SEM_LINK);
+    expect(recusa({ ...base, recriar: true, linkDocId: null })).toBe(MSG_RECRIAR_SEM_LINK);
+    // ⛔ quase-par: o converter NÃO exige o link (o despacho escolhe o comum).
+    expect(lerCorpoPublicar({ ...base, converterEmKit: true }).ok).toBe(true);
   });
 });
 

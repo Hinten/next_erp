@@ -14,12 +14,18 @@ import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
 
 import {
   ETAPA_PUBLICACAO,
+  MOTIVO_PROBLEMA_PUBLICACAO,
   MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishRejectedError,
 } from '@/lib/shopee/anuncios/errosPublicacao';
-import { MSG_PRODUTO_ID_INVALIDO } from '@/lib/shopee/anuncios/corpoPublicacao';
+import {
+  MSG_OPCOES_DE_KIT_EXCLUSIVAS,
+  MSG_PRODUTO_ID_INVALIDO,
+  MSG_RECRIAR_SEM_LINK,
+} from '@/lib/shopee/anuncios/corpoPublicacao';
 import type { ResultadoPublicacao } from '@/lib/shopee/anuncios/publicarAnuncio';
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
+import { MENSAGEM_KIT_INCERTO, type ResultadoPublicacaoKit } from '@/lib/shopee/kits/resultadoKit';
 import {
   __setShopeeTaxonomiaClockForTests,
   limparTaxonomiaShopee,
@@ -27,16 +33,19 @@ import {
 import { FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
 
 type ModuloPublicar = typeof import('@/lib/shopee/anuncios/publicarAnuncio');
+type ModuloKit = typeof import('@/lib/shopee/kits/publicarKit');
 
 const h = vi.hoisted(() => ({
   verifyIdToken: vi.fn(),
   loadCtx: vi.fn(),
   publicar: vi.fn(),
+  publicarKit: vi.fn(),
   getCategory: vi.fn(),
   getItemLimit: vi.fn(),
   getAttributeTree: vi.fn(),
   getChannelList: vi.fn(),
   real: { fn: null as ModuloPublicar['publicarAnuncioShopee'] | null },
+  realKit: { fn: null as ModuloKit['publicarKitShopee'] | null },
   db: { atual: null as unknown },
 }));
 
@@ -60,6 +69,14 @@ vi.mock('@/lib/shopee/anuncios/publicarAnuncio', async (importActual) => {
   const actual = await importActual<ModuloPublicar>();
   h.real.fn = actual.publicarAnuncioShopee;
   return { ...actual, publicarAnuncioShopee: h.publicar };
+});
+
+// Step 19: the native-kit entry, same discipline — the REAL one by default, a
+// value only where a real `add_kit_item` would be needed.
+vi.mock('@/lib/shopee/kits/publicarKit', async (importActual) => {
+  const actual = await importActual<ModuloKit>();
+  h.realKit.fn = actual.publicarKitShopee;
+  return { ...actual, publicarKitShopee: h.publicarKit };
 });
 
 const { POST, CODIGO_ANUNCIO_NAO_ENCONTRADO } = await import('./route');
@@ -261,6 +278,10 @@ beforeEach(() => {
     if (h.real.fn === null) throw new Error('fixture: o módulo real não foi capturado');
     return h.real.fn(...args);
   });
+  h.publicarKit.mockImplementation((...args: Parameters<ModuloKit['publicarKitShopee']>) => {
+    if (h.realKit.fn === null) throw new Error('fixture: o módulo real do kit não foi capturado');
+    return h.realKit.fn(...args);
+  });
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -330,6 +351,7 @@ describe('a conta e o 404', () => {
   });
 
   it('deixa um erro alheio subir (regra 6)', async () => {
+    semearProduto(db);
     h.publicar.mockRejectedValue(new TypeError('bug nosso'));
 
     await expect(POST(req(corpoValido(), AUTORIZADO))).rejects.toBeInstanceOf(TypeError);
@@ -377,6 +399,7 @@ describe('as duas recusas por produto', () => {
   });
 
   it('uma recusa da própria Shopee vira o REJECTED, com etapa e shopeeCode VERBATIM', async () => {
+    semearProduto(db);
     h.publicar.mockRejectedValue(
       new ShopeePublishRejectedError({
         etapa: ETAPA_PUBLICACAO.addItem,
@@ -412,6 +435,7 @@ describe('as duas recusas por produto', () => {
   });
 
   it('um limite de rajada da Shopee continua sendo o que o respond diz — não um 422', async () => {
+    semearProduto(db);
     h.publicar.mockRejectedValue(
       new ShopeeRateLimitError('rajada', {
         code: 'error_limit',
@@ -429,6 +453,9 @@ describe('as duas recusas por produto', () => {
 });
 
 describe('o 200', () => {
+  // The dispatcher reads the produto first (step 19): an absent one is the 404.
+  beforeEach(() => semearProduto(db));
+
   it('⛔ o corpo é montado por NOME — um campo novo no resultado não vaza', async () => {
     h.publicar.mockResolvedValue(resultadoDouble());
 
@@ -501,6 +528,8 @@ describe('o 200', () => {
 });
 
 describe('o relógio e a passagem de parâmetros', () => {
+  beforeEach(() => semearProduto(db));
+
   it('⛔ o `Date.now()` é lido UMA vez por requisição', async () => {
     h.publicar.mockResolvedValue(resultadoDouble());
     const spy = vi.spyOn(Date, 'now');
@@ -591,10 +620,270 @@ describe('o categoryId opcional (C36)', () => {
   });
 
   it('o corpo entrega o categoryId VERBATIM ao publicador — nem descartado nem reescrito', async () => {
+    semearProduto(db);
     h.publicar.mockResolvedValue(resultadoDouble());
 
     await POST(req(corpoValido({ categoryId: CATEGORIA_DO_CORPO }), AUTORIZADO));
 
     expect(h.publicar.mock.calls[0]?.[1]).toMatchObject({ categoryId: CATEGORIA_DO_CORPO });
+  });
+});
+
+/* ========================================================================== */
+/*  Step 19 (PR 7): the kit arms through the route                             */
+/* ========================================================================== */
+
+const KIT = 'kit-k';
+const KIT_ITEM = 2500139870;
+const VINCULO_KIT = 'vinculo-kit';
+
+/** A kit the ERP says the MARKETPLACE resolves (`ehKitVirtualEfetivo`), no link yet ⇒ `kit-criar`. */
+function semearKit(): void {
+  db.seed(`produtos/${KIT}`, {
+    nome: 'Kit camiseta e boné',
+    sku: 'KIT-1',
+    paiId: null,
+    ehKit: true,
+    ehKitVirtual: true,
+  });
+}
+
+/** A `ResultadoPublicacaoKit` with EXTRA fields — the body must not leak them. */
+function resultadoKitDouble(over: Partial<ResultadoPublicacaoKit> = {}): ResultadoPublicacaoKit {
+  return {
+    arma: 'kit-criar',
+    desfecho: 'criado',
+    produtoId: KIT,
+    itemId: KIT_ITEM,
+    linkDocId: VINCULO_KIT,
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    itemStatus: 'NORMAL',
+    kitNativo: true,
+    modelos: { vinculados: 2, anexados: 0, semFilho: 0, inventadoPelaOndaSeguinte: 1 },
+    antecessor: null,
+    avisos: [
+      {
+        codigo: 'componente-nao-limita-estoque',
+        produtoId: 'comp-a',
+        mensagem: 'frase em português que fica no CLI e no log',
+      },
+    ],
+    avisosResolvidos: 1,
+    chamadasShopee: 9,
+    recusa: null,
+    comando: null,
+    inventadoPelaOndaSeguinte: 'NÃO PODE VAZAR',
+    ...over,
+  } as unknown as ResultadoPublicacaoKit;
+}
+
+const CHAVES_DO_KIT = [
+  'antecessor',
+  'arma',
+  'avisos',
+  'avisosResolvidos',
+  'comando',
+  'desfecho',
+  'estadoAnuncio',
+  'itemId',
+  'itemStatus',
+  'kitNativo',
+  'linkDocId',
+  'modelos',
+  'recusa',
+];
+
+describe('passo 19 — os braços de kit pela rota', () => {
+  it('kit-criar: o 200 é o resumo do kit por NOME — os avisos viram {codigo, produtoId}, nada mais vaza', async () => {
+    semearKit();
+    h.publicarKit.mockResolvedValue(resultadoKitDouble());
+
+    const res = await POST(req(corpoValido({ produtoId: KIT, principal: 'comp-a' }), AUTORIZADO));
+
+    expect(res.status).toBe(200);
+    const texto = await res.text();
+    const corpo = JSON.parse(texto) as Record<string, unknown>;
+    expect(Object.keys(corpo).sort()).toEqual(CHAVES_DO_KIT);
+    expect(corpo).toMatchObject({
+      arma: 'kit-criar',
+      desfecho: 'criado',
+      itemId: KIT_ITEM,
+      linkDocId: VINCULO_KIT,
+      kitNativo: true,
+      modelos: { vinculados: 2, anexados: 0, semFilho: 0 },
+      avisos: [{ codigo: 'componente-nao-limita-estoque', produtoId: 'comp-a' }],
+      avisosResolvidos: 1,
+      recusa: null,
+      comando: null,
+    });
+    expect(Object.keys(corpo.modelos as object).sort()).toEqual([
+      'anexados',
+      'semFilho',
+      'vinculados',
+    ]);
+    expect(texto).not.toContain('NÃO PODE VAZAR');
+    expect(texto).not.toContain('inventadoPelaOndaSeguinte');
+    expect(texto).not.toContain('frase em português');
+    expect(h.publicar).not.toHaveBeenCalled();
+  });
+
+  it('o despacho escolhe kit-criar e a rota repassa principal, o increment e a entrada por NOME', async () => {
+    semearKit();
+    h.publicarKit.mockResolvedValue(resultadoKitDouble());
+
+    await POST(req(corpoValido({ produtoId: KIT, principal: 'comp-a' }), AUTORIZADO));
+
+    const [deps, entrada, arma] = h.publicarKit.mock.calls[0] ?? [];
+    expect(arma).toEqual({ arma: 'kit-criar' });
+    expect(entrada).toEqual({
+      produtoId: KIT,
+      linkDocId: null,
+      categoryId: null,
+      statusPedido: SHOPEE_ITEM_STATUS_WRITABLE.normal,
+      principal: 'comp-a',
+    });
+    // The aviso counter (L4) is wired HERE, never built under `kits/`.
+    expect(typeof (deps as { increment: unknown }).increment).toBe('function');
+    expect((deps as { increment: (n: number) => unknown }).increment(1)).toBeDefined();
+  });
+
+  it('(M147) um kit-criar `incerto` ⇒ 202 com `recusa`, MENSAGEM_KIT_INCERTO e o `comando` exato', async () => {
+    semearKit();
+    const comando = `publicar:anuncio --integracao ${INT_A} --produto ${KIT} --principal comp-a`;
+    h.publicarKit.mockResolvedValue(
+      resultadoKitDouble({
+        desfecho: 'incerto',
+        itemId: null,
+        linkDocId: null,
+        estadoAnuncio: null,
+        itemStatus: null,
+        kitNativo: null,
+        modelos: { vinculados: 0, anexados: 0, semFilho: 0 },
+        avisos: [],
+        avisosResolvidos: 0,
+        recusa: {
+          codigo: 'product.error_busi',
+          fraseShopee: 'Too many connections',
+          motivo: MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee,
+        },
+        comando,
+      }),
+    );
+
+    const res = await POST(req(corpoValido({ produtoId: KIT, principal: 'comp-a' }), AUTORIZADO));
+
+    expect(res.status).toBe(202);
+    const corpo = (await res.json()) as Record<string, unknown>;
+    expect(Object.keys(corpo).sort()).toEqual([...CHAVES_DO_KIT, 'mensagem'].sort());
+    expect(corpo).toMatchObject({
+      desfecho: 'incerto',
+      itemId: null,
+      linkDocId: null,
+      recusa: {
+        codigo: 'product.error_busi',
+        fraseShopee: 'Too many connections',
+        motivo: MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee,
+      },
+      mensagem: MENSAGEM_KIT_INCERTO,
+      comando,
+    });
+  });
+
+  it('(M147, quase-par) um kit CRIADO é 200 sem `mensagem` — o 202 é só do incerto', async () => {
+    semearKit();
+    h.publicarKit.mockResolvedValue(resultadoKitDouble());
+
+    const res = await POST(req(corpoValido({ produtoId: KIT }), AUTORIZADO));
+
+    expect(res.status).toBe(200);
+    expect('mensagem' in ((await res.json()) as object)).toBe(false);
+  });
+
+  it('(cut-note #12) um add_kit_item RECUSADO (nao-criado) ⇒ o REJECTED do respond, etapa add_kit_item, shopeeCode VERBATIM', async () => {
+    semearKit();
+    h.publicarKit.mockRejectedValue(
+      new ShopeePublishRejectedError({
+        etapa: ETAPA_PUBLICACAO.addKitItem,
+        shopeeCode: 'product.error_busi_cannot_edit_vsku',
+        produtoId: KIT,
+        itemId: null,
+        problemas: [
+          {
+            campo: null,
+            motivo: MOTIVO_PROBLEMA_PUBLICACAO.kitBloqueadoPelaShopee,
+            mensagem: 'esta loja não pode criar kits pela API',
+          },
+        ],
+      }),
+    );
+
+    const res = await POST(req(corpoValido({ produtoId: KIT, principal: 'comp-a' }), AUTORIZADO));
+
+    expect(res.status).toBe(422);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'SHOPEE_PUBLISH_REJECTED',
+      etapa: ETAPA_PUBLICACAO.addKitItem,
+      shopeeCode: 'product.error_busi_cannot_edit_vsku',
+      produtoId: KIT,
+      problemas: [{ motivo: MOTIVO_PROBLEMA_PUBLICACAO.kitBloqueadoPelaShopee }],
+    });
+  });
+
+  it('uma recusa do DESPACHO é o 422 BLOCKED, sem uma chamada à Shopee e sem publicador nenhum', async () => {
+    semearProduto(db);
+
+    const res = await POST(req(corpoValido({ principal: 'comp-a' }), AUTORIZADO));
+
+    expect(res.status).toBe(422);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'SHOPEE_PUBLISH_BLOCKED',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcaoDeKitEmAnuncioComum,
+      problemas: [{ campo: 'principal' }],
+    });
+    expect(h.publicar).not.toHaveBeenCalled();
+    expect(h.publicarKit).not.toHaveBeenCalled();
+    expect(h.getCategory).not.toHaveBeenCalled();
+    expect(h.getChannelList).not.toHaveBeenCalled();
+    expect(db.writes).toHaveLength(0);
+  });
+
+  it('um vínculo NATIVO vivo ⇒ kit-atualizar nele; --recriar com o --link ⇒ kit-recriar', async () => {
+    semearKit();
+    db.seed(`produtos/${KIT}/prodshopee/${VINCULO_KIT}`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: KIT_ITEM,
+      kitNativo: true,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+    h.publicarKit.mockResolvedValue(resultadoKitDouble({ arma: 'kit-atualizar' }));
+
+    await POST(req(corpoValido({ produtoId: KIT }), AUTORIZADO));
+    await POST(
+      req(corpoValido({ produtoId: KIT, linkDocId: VINCULO_KIT, recriar: true }), AUTORIZADO),
+    );
+
+    expect(h.publicarKit.mock.calls.map((c) => c[2])).toEqual([
+      { arma: 'kit-atualizar', linkDocId: VINCULO_KIT },
+      { arma: 'kit-recriar', linkDocId: VINCULO_KIT },
+    ]);
+  });
+
+  it('(M175 / M139) os 400 do corpo: --recriar sem linkDocId e as duas ações juntas — antes de qualquer leitura', async () => {
+    semearKit();
+
+    const semLink = await POST(req(corpoValido({ produtoId: KIT, recriar: true }), AUTORIZADO));
+    expect(semLink.status).toBe(400);
+    await expect(semLink.json()).resolves.toEqual({ error: MSG_RECRIAR_SEM_LINK });
+
+    const juntas = await POST(
+      req(
+        corpoValido({ produtoId: KIT, linkDocId: 'x', recriar: true, converterEmKit: true }),
+        AUTORIZADO,
+      ),
+    );
+    expect(juntas.status).toBe(400);
+    await expect(juntas.json()).resolves.toEqual({ error: MSG_OPCOES_DE_KIT_EXCLUSIVAS });
+    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.publicarKit).not.toHaveBeenCalled();
   });
 });

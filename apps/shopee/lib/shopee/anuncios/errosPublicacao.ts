@@ -42,11 +42,13 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 42 members: step 11's 22, the nineteen native-kit
- *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5) and the recriar's
- *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6).
+ *   before writing. 47 members: step 11's 22, the nineteen native-kit
+ *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
+ *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6) and the
+ *   five refusals only the publish dispatcher produces
+ *   (`kits/armaDePublicacao.ts`, PR 7).
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 42 plus the twelve only a WIRE rejection can produce (step 18 added the
+ *   those 47 plus the twelve only a WIRE rejection can produce (step 18 added the
  *   two size-chart refusals on `size_chart_info`; step 19 the seven native-kit
  *   refusals, whose ONE producer is `kits/recusaKit.ts`). A problema is a
  *   field-level observation, and after the first Shopee call there are causes no
@@ -152,10 +154,15 @@ export type MotivoPublicacaoBloqueada =
    */
   | 'produto-e-filho'
   /**
-   * The listing is a **NATIVE Shopee kit** — `kitNativo` on the stored link
-   * (what Shopee reported about the live listing), or `ehKitVirtual` on a first
-   * publish. Kit publishing is its own step (`add_kit_item`), so it is refused
-   * here rather than published as if it were a plain produto.
+   * A **NATIVE Shopee kit** reached step 11's ITEM planner — `kitNativo` on the
+   * stored link (what Shopee reported about the live listing), or
+   * `ehKitVirtual` on a first publish.
+   *
+   * ⚠️ Since step 19 (#1527, PR 7) this is a DEFENSIVE assertion, not an
+   * operator-facing refusal: the publish dispatcher (`kits/armaDePublicacao.ts`)
+   * routes every native kit to its own arms (`add_kit_item` /
+   * `update_kit_item`), so reaching the item planner with one is a bug in the
+   * routing, and the sentence says so.
    *
    * ⚠️ **NOT the ERP's `ehKit`**, which publishes as an ordinary listing whose
    * quantity merely derives from its components. Step 11 keyed this member on
@@ -218,7 +225,23 @@ export type MotivoPublicacaoBloqueada =
    * (and whose main is the one named, if any): there is nothing to recreate, so
    * nothing is deleted for nothing. Zero Shopee writes.
    */
-  | 'recriacao-sem-diferenca';
+  | 'recriacao-sem-diferenca'
+  /*
+   * ---- Step 19 (#1527), PR 7: the publish DISPATCHER's own refusals. ----
+   * Produced ONLY by `kits/armaDePublicacao.ts`, spelled there through this
+   * constant. Each is decided from the produto and the conta's link documents
+   * alone, before any Shopee call.
+   */
+  /** `ehKitVirtual` is on while `ehKit` is off — the server refuses the mismatch (O-8). */
+  | 'kit-virtual-sem-kit'
+  /** `--converter-em-kit` found no live ORDINARY listing of the produto in this conta. */
+  | 'converter-sem-anuncio-comum'
+  /** `--converter-em-kit` on a produto whose `ehKit` is off: only a kit can become a native kit. */
+  | 'converter-sem-kit'
+  /** `--converter-em-kit` re-run after the conversion finished: exactly ONE live native kit, no ordinary listing. */
+  | 'ja-e-kit-nativo'
+  /** `--principal`, `--recriar` or `--converter-em-kit` on a publish the dispatcher routed to step 11's item arm. */
+  | 'opcao-de-kit-em-anuncio-comum';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -268,6 +291,11 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   vinculosAmbiguos: 'vinculos-ambiguos',
   vinculoSubstituido: 'vinculo-substituido',
   recriacaoSemDiferenca: 'recriacao-sem-diferenca',
+  kitVirtualSemKit: 'kit-virtual-sem-kit',
+  converterSemAnuncioComum: 'converter-sem-anuncio-comum',
+  converterSemKit: 'converter-sem-kit',
+  jaEKitNativo: 'ja-e-kit-nativo',
+  opcaoDeKitEmAnuncioComum: 'opcao-de-kit-em-anuncio-comum',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**

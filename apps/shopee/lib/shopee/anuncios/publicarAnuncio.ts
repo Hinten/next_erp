@@ -670,6 +670,23 @@ export async function prepararPublicacao(
 }
 
 /**
+ * `produto-e-filho` — a variation child is never published on its own: its
+ * listing is its PARENT's. Exported for step 19's publish dispatcher
+ * (`kits/armaDePublicacao.ts`, rule (−1)), which refuses a child BEFORE any arm
+ * is chosen — one sentence for both refusals, never two copies of it.
+ */
+export function problemaProdutoEFilho(produtoId: string, paiId: string): ProblemaDeBloqueio {
+  return {
+    campo: 'paiId',
+    motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEFilho,
+    mensagem: limitarMensagemProblema(
+      `o produto ${produtoId} é uma variação de ${paiId} — publique o produto PAI, ` +
+        'que leva as variações como modelos',
+    ),
+  };
+}
+
+/**
  * The two refusals that are about the PRODUTO (and, for the kit one, about the
  * listing it already has) rather than about a field of the payload.
  *
@@ -678,6 +695,12 @@ export async function prepararPublicacao(
  * of them; only a NATIVE Shopee kit is refused, and {@link kitNativoDoAnuncio}
  * is the ONE predicate that decides it, shared with `montarAnuncio` so the two
  * producers of `produto-e-kit` cannot drift apart.
+ *
+ * ⚠️ Since step 19 (#1527, PR 7) the kit refusal is a DEFENSIVE assertion: the
+ * publish dispatcher (`kits/armaDePublicacao.ts`) routes every native kit to the
+ * kit arms before this module is reached, so a native kit arriving here is a
+ * routing bug — and the sentence says that rather than giving the operator an
+ * instruction to follow.
  *
  * `campo` names the field the operator must look at, and it therefore follows
  * the arm the predicate took: the link's `kitNativo` on a republish, the
@@ -690,21 +713,17 @@ function recusarProdutoNaoPublicavel(
 ): void {
   const problemas: ProblemaDeBloqueio[] = [];
   if (produto.paiId !== null) {
-    problemas.push({
-      campo: 'paiId',
-      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEFilho,
-      mensagem:
-        `o produto ${produto.id} é uma variação de ${produto.paiId} — publique o produto PAI, ` +
-        'que leva as variações como modelos',
-    });
+    problemas.push(problemaProdutoEFilho(produto.id, produto.paiId));
   }
   if (kitNativoDoAnuncio(link, produto)) {
     problemas.push({
       campo: link !== null ? 'kitNativo' : 'ehKitVirtual',
       motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
       mensagem:
-        `o anúncio do produto ${produto.id} é um kit NATIVO da Shopee — ` +
-        'a Shopee cria kits por add_kit_item, não por add_item',
+        `o anúncio do produto ${produto.id} é um kit NATIVO da Shopee e chegou ao publicador de ` +
+        'anúncio comum — kit nativo é publicado pelo caminho de kit (add_kit_item / ' +
+        'update_kit_item), para onde o ERP o encaminha antes; chegar aqui é defeito do ERP, nada ' +
+        'foi enviado',
     });
   }
   if (temProblemaDeBloqueio(problemas)) {

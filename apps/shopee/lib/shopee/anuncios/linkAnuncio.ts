@@ -48,12 +48,18 @@
  * one SUPERSEDED, L8), or the new kit of a recriar beside the old one (REMOVED, or
  * superseded when its delete did not take).
  *
- *  - {@link resolverLinkPorProduto} — **lexical, unchanged since step 11**:
+ *  - {@link resolverLinkPorProduto} — **lexical, in step 11's ORDER**:
  *    `escolherLink` over every link of the conta. It is the PUBLISH path's
  *    resolver (`prepararPublicacao`), and Lucas's L10(3) is that publishing a
  *    non-kit produto must not change: a produto whose REMOVED link sorts first
  *    still answers `listagem-removida` there, exactly as before. Reordering it
- *    would silently re-aim a publish at another listing (M185).
+ *    would silently re-aim a publish at another listing (M185). ⚠️ Its candidate
+ *    SET did change in step 19, deliberately (OP-27): "every link of the conta"
+ *    is now {@link lerVinculosDaConta}, which folds both stored conta
+ *    encodings, so a link in the legacy bare encoding — invisible to publish on
+ *    main, which then CREATED a second listing — is now a candidate. That bug
+ *    fix is the one exception to L10(3)'s "must not change": for such a
+ *    produto the publish now differs from step 11's.
  *  - {@link resolverLinkVivoPorProduto} — **tiered**, for the paths that ADDRESS a
  *    listing that exists on Shopee rather than decide which one to publish:
  *    re-verify (and so the `reverificar:anuncio` CLI), `anuncio-status` and
@@ -222,13 +228,50 @@ export async function resolverLinkPorItemId(
   );
 }
 
+/** One `prodshopee` document of the produto, conta already filtered — UNVALIDATED. */
+export interface VinculoLidoDaConta {
+  readonly id: string;
+  readonly raw: Record<string, unknown>;
+}
+
 /**
- * This conta's `prodshopee` rows under ONE produto, narrowed to `linkDocId` when
- * one is named — the ONE read both produto resolvers share, so the two can differ
- * only in how they ORDER the same candidates.
+ * EVERY `prodshopee` document of ONE produto that belongs to THIS conta — the
+ * ONE read the publish dispatcher (step 19, #1527 — `anuncios/publicarShopee.ts`
+ * hands it to `kits/armaDePublicacao.ts`) and both produto resolvers below
+ * share, so the dispatcher and the resolver the item arm then runs can never
+ * disagree about which links exist.
  *
- * **No `where`** (see the header). ⚠️ The conta filter runs FIRST, so a
- * `linkDocId` naming another conta's document narrows to nothing.
+ * **No `where`** (see the header): the whole subcollection, the conta compared
+ * in memory.
+ *
+ * ⚠️ The conta comparison is the shared fold (1) of `core/vinculosShopee.ts`
+ * (`idDoRef`, the LAST path segment), the same one `kits/prepararKit.ts` and the
+ * stock and price planners attribute links with. EQUAL: the two stored
+ * encodings of one integração (`documents/integracao/<id>` and the legacy bare
+ * `integracao/<id>` the migrated corpus carries). DISTINCT: any other id. Before
+ * step 19 this read compared the canonical ref EXACTLY, so a link stored in the
+ * bare legacy encoding was invisible to publish (a publish then CREATED a second
+ * listing) while steps 12/13 sent it stock and price; the fold makes the
+ * publish path see the same links every other Shopee path sees.
+ */
+export async function lerVinculosDaConta(
+  db: Firestore,
+  integracaoId: string,
+  produtoId: string,
+): Promise<readonly VinculoLidoDaConta[]> {
+  const snap = await produtoShopeeLinkCollection.ref(db, { produtoId }).get();
+  return snap.docs
+    .map((d) => ({ id: d.id, raw: (d.data() ?? {}) as Record<string, unknown> }))
+    .filter((l) => idDoRef(l.raw[INDICE_LISTAGEM.campos[1]]) === integracaoId);
+}
+
+/**
+ * This conta's `prodshopee` rows under ONE produto ({@link lerVinculosDaConta}),
+ * narrowed to `linkDocId` when one is named — so both produto resolvers can
+ * differ only in how they ORDER the same candidates.
+ *
+ * ⚠️ The conta filter runs FIRST, so a `linkDocId` naming another conta's
+ * document narrows to nothing.
  */
 async function linksDaContaNoProduto(
   db: Firestore,
@@ -236,11 +279,9 @@ async function linksDaContaNoProduto(
   produtoId: string,
   linkDocId: string | null | undefined,
 ): Promise<LinhaDeLinkLida[]> {
-  const conta = contaRefDe(integracaoId);
-  const snap = await produtoShopeeLinkCollection.ref(db, { produtoId }).get();
-  const daConta: LinhaDeLinkLida[] = snap.docs
-    .map((d) => ({ id: d.id, raw: (d.data() ?? {}) as Record<string, unknown>, produtoId }))
-    .filter((l) => l.raw[INDICE_LISTAGEM.campos[1]] === conta);
+  const daConta: LinhaDeLinkLida[] = (await lerVinculosDaConta(db, integracaoId, produtoId)).map(
+    (l) => ({ id: l.id, raw: l.raw, produtoId }),
+  );
 
   return linkDocId == null || linkDocId === ''
     ? daConta
@@ -251,13 +292,26 @@ async function linksDaContaNoProduto(
  * produto → the listing link for THIS conta, with **no `where`** (see the
  * header). For the PUBLISH path (`prepararPublicacao`) — the route and the CLI.
  *
- * ⚠️ **Lexical, on purpose, and unchanged by step 19.** With no `linkDocId` it is
- * `escolherLink` over EVERY link of the conta — a removed or superseded one
- * included. That is what keeps publishing a non-kit produto byte-identical to
- * step 11 (L10(3)): a produto whose removed listing sorts first is answered
- * `listagem-removida`, never quietly re-aimed at another listing. The tiered
- * order belongs to {@link resolverLinkVivoPorProduto}, whose callers address a
- * listing rather than choose one to publish.
+ * ⚠️ **Lexical, on purpose: the ORDER is step 11's, unchanged by step 19.** With
+ * no `linkDocId` it is `escolherLink` over EVERY link of the conta — a removed or
+ * superseded one included — so a produto whose removed listing sorts first is
+ * answered `listagem-removida`, never quietly re-aimed at another listing
+ * (L10(3), M185). The tiered order belongs to {@link resolverLinkVivoPorProduto},
+ * whose callers address a listing rather than choose one to publish.
+ *
+ * ⚠️ **What step 19 DID change is the candidate set** (OP-27). "Every link of
+ * the conta" is {@link lerVinculosDaConta}, which folds both stored conta
+ * encodings where main compared the canonical ref exactly. So a link stored in
+ * the legacy bare encoding is now published TO (main ignored it and created a
+ * second listing), and beside a canonical link it competes in the same lexical
+ * order. Publishing a non-kit produto is therefore unchanged only while every
+ * link carries the canonical ref — which every link this app writes does; the
+ * migrated corpus is where the two differ. The `item_id`-keyed lookups still
+ * compare EXACTLY, on the server: {@link resolverLinkPorItemId} (the listing
+ * pushes), step 5's `pedidos/produtoResolve.ts` rungs and step 9's
+ * `produtos/resolveProduto.ts` ride the declared composite's `==`, so a
+ * bare-encoded link stays invisible to them, while steps 12/13 attribute links
+ * per produto through the same fold this read uses.
  *
  * `linkDocId` narrows to one document when the caller already knows it. ⚠️ A
  * `linkDocId` naming a document that belongs to ANOTHER conta resolves `null`,

@@ -1,10 +1,36 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ESTADO_ANUNCIO_SHOPEE, type EstadoAnuncioShopee } from '@delfrance/schemas';
+import {
+  SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
+  SHOPEE_GET_VARIATIONS_PATH,
+  SHOPEE_LOGISTICS_FEE_TYPE,
+  SHOPEE_SURFACE,
+  shopeeErrorFromEnvelope,
+  shopeeItemBaseInfoPayloadSchema,
+  shopeeItemListPayloadSchema,
+  shopeeKitItemInfoPayloadSchema,
+  shopeeLogisticsChannelSchema,
+  shopeeModelListPayloadSchema,
+  type ShopeeAddKitItemRequest,
+  type ShopeeClient,
+} from '@delfrance/integrations-shopee';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  toOuterRef,
+  varianteFakePath,
+  type EstadoAnuncioShopee,
+} from '@delfrance/schemas';
+import { integracaoCollection } from '@delfrance/data/admin/collections';
 
+import type { ResolvedorDeImagensShopee } from '../anuncios/fotosPublicacao';
+import { publicarShopee } from '../anuncios/publicarShopee';
+import { idDoVinculoDeKit } from '../kits/idsKit';
+import type { KitDeps } from '../kits/resultadoKit';
+import { limparTaxonomiaShopee } from '../taxonomia/cache';
+import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { MOTIVO_ESTOQUE_SHOPEE } from './errosEstoque';
 import {
   podeEnviarEstoqueShopee,
@@ -550,5 +576,403 @@ describe('a disciplina do módulo', () => {
     const codigo = fonte.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     expect(codigo).toMatch(/ehKitVirtual/);
     expect(codigo).not.toMatch(/\behKit\b/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   (8) T5 — passo 19, PR 7: o vínculo que a ROTA grava ao criar um kit nativo  */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * RT3's PR 7 half (reconcile §2.5.3 "T5", §4.2): until PR 7 nothing reached the
+ * kit create, and "no native Shopee kit exists in this catalogue" was TRUE. From
+ * PR 7 on the publish ENTRY POINT (`publicarShopee` — the route's and the CLI's
+ * one function) creates one, so the link IT writes must be the one rung 3
+ * skips. Every document here is written by the REAL writers, through the REAL
+ * dispatcher: no link is hand-built.
+ */
+
+type Json = Record<string, unknown>;
+
+const T5_INTEGRACAO = 'int-1';
+const T5_REF_CONTA = toOuterRef(integracaoCollection.docPath({}, T5_INTEGRACAO));
+const T5_AGORA = 1_757_000_000_000;
+const T5_KIT = 2500139870;
+const T5_MODELOS_DO_KIT = [2000458820, 2000458823] as const;
+const T5_COMP_A = 2500139871;
+const T5_COMP_A_MODELO = 2000458821;
+const T5_COMP_B = 2500139872;
+const T5_COMP_B_OCULTO = 2000458829;
+const T5_CATEGORIA = 107290;
+const T5_K = 'kit-k';
+const T5_GRUPO = 'grupo-cor';
+const T5_VINCULO = idDoVinculoDeKit(T5_INTEGRACAO, T5_KIT);
+
+/** Components A (a 2-tier listing; the ERP component is its child) and plain B (a família de um). */
+function t5SemearComponentes(db: FakeDb): void {
+  db.seed('produtos/comp-a', { nome: 'Camiseta', sku: 'CAM', paiId: null });
+  db.seed('produtos/comp-a/prodshopee/link-comp-a', {
+    item_id: T5_COMP_A,
+    contaProdutoShopeeOuterRef: T5_REF_CONTA,
+    category_id: T5_CATEGORIA,
+  });
+  db.seed('produtos/comp-a-filho', { nome: 'Camiseta P', sku: 'CAM-P', paiId: 'comp-a' });
+  db.seed('produtos/comp-a-filho/variashopee/var-comp-a', {
+    model_id: T5_COMP_A_MODELO,
+    contaVariacaoShopeeOuterRef: T5_REF_CONTA,
+    produtoShopeeOuterRef: 'documents/produtos/comp-a/prodshopee/link-comp-a',
+  });
+  db.seed('produtos/comp-b', {
+    nome: 'Boné',
+    sku: 'BONE',
+    paiId: null,
+    filhoUnicoId: 'comp-b-membro',
+  });
+  db.seed('produtos/comp-b/prodshopee/link-comp-b', {
+    item_id: T5_COMP_B,
+    contaProdutoShopeeOuterRef: T5_REF_CONTA,
+    category_id: T5_CATEGORIA,
+  });
+  db.seed('produtos/comp-b-membro', { nome: 'Boné', sku: 'BONE-UN', paiId: 'comp-b' });
+}
+
+/** K — «É kit» + «É kit virtual», NO listing yet: the dispatcher's `kit-criar` (rule 5). */
+function t5SemearKit(db: FakeDb): void {
+  db.seed(`produtos/${T5_K}`, {
+    nome: 'Kit camiseta e boné',
+    sku: 'KIT-1',
+    paiId: null,
+    ehKit: true,
+    ehKitVirtual: true,
+    pesoBrutoKg: 0.8,
+    alturaCm: 10,
+    larguraCm: 20,
+    profundidadeCm: 30,
+    precos: { 'tab-normal': { valor: 99.9 } },
+    fotos: [{ arquivoOuterRef: 'arquivos/arq-1' }],
+  });
+  db.seed(`produtos/${T5_K}/extraData/singleton`, { descricao: 'Kit para presente.' });
+  db.seed(`grupoDeVariacoes/${T5_GRUPO}`, {
+    nome: 'Cor',
+    ordem: 1,
+    variacoes: [
+      { id: 'var-azul', nome: 'Azul' },
+      { id: 'var-verde', nome: 'Verde' },
+    ],
+  });
+  const filho = (id: string, variante: string, ordem: number, componentesKit: Json): void => {
+    db.seed(`produtos/${id}`, {
+      nome: `Kit ${variante}`,
+      sku: `KIT-1-${String(ordem)}`,
+      paiId: T5_K,
+      ordem,
+      ehKit: true,
+      grupoDeVariacoesUid: [T5_GRUPO],
+      variacoesUid: [varianteFakePath(T5_GRUPO, variante)],
+      componentesKit,
+    });
+  };
+  filho('kit-k-azul', 'var-azul', 1, {
+    'comp-a-filho': { quantidade: 1, limitarEstoque: true },
+    'comp-b-membro': { quantidade: 1, limitarEstoque: true },
+  });
+  filho('kit-k-verde', 'var-verde', 2, { 'comp-a-filho': { quantidade: 2, limitarEstoque: true } });
+}
+
+interface T5Loja {
+  readonly client: ShopeeClient;
+  readonly ops: string[];
+  /** A crash right after the link write: the read-back's `get_kit_item_info` throws this. */
+  falhaNaLeituraDoKit: Error | null;
+}
+
+/**
+ * A shop that CREATES what `add_kit_item` is sent and serves it back the way
+ * the SG probe measured (`tag.kit: true`, the plain component's HIDDEN model
+ * id), plus the reads a create arm runs. Anything not arranged throws.
+ */
+function t5Loja(): T5Loja {
+  const ops: string[] = [];
+  const bases = new Map<number, Json>([
+    [
+      T5_COMP_A,
+      { item_id: T5_COMP_A, item_status: 'NORMAL', has_model: true, tag: { kit: false } },
+    ],
+    [
+      T5_COMP_B,
+      { item_id: T5_COMP_B, item_status: 'NORMAL', has_model: false, tag: { kit: false } },
+    ],
+  ]);
+  let kit: Json | null = null;
+  let modelos: Json[] = [];
+  const loja: T5Loja = { client: {} as ShopeeClient, ops, falhaNaLeituraDoKit: null };
+  const conhecidas: Record<string, (p: never) => Promise<unknown>> = {
+    getItemBaseInfo: (p: { itemIds: readonly number[] }) => {
+      ops.push('get_item_base_info');
+      return Promise.resolve(
+        shopeeItemBaseInfoPayloadSchema.parse({
+          item_list: p.itemIds.flatMap((id) => {
+            const b = bases.get(id);
+            return b === undefined ? [] : [b];
+          }),
+        }),
+      );
+    },
+    getItemList: () => {
+      ops.push('get_item_list');
+      const item = [...bases.values()].map((b) => ({
+        item_id: b.item_id,
+        item_status: b.item_status,
+        tag: b.tag,
+      }));
+      return Promise.resolve(
+        shopeeItemListPayloadSchema.parse({
+          item,
+          total_count: item.length,
+          has_next_page: false,
+          next_offset: null,
+          next: '',
+        }),
+      );
+    },
+    getKitItemInfo: () => {
+      ops.push('get_kit_item_info');
+      if (loja.falhaNaLeituraDoKit !== null) return Promise.reject(loja.falhaNaLeituraDoKit);
+      return Promise.resolve(
+        shopeeKitItemInfoPayloadSchema.parse({
+          product_info: kit === null ? null : { ...kit, model_list: modelos },
+        }),
+      );
+    },
+    getModelList: (p: { itemId: number }) => {
+      ops.push('get_model_list');
+      return Promise.resolve(
+        shopeeModelListPayloadSchema.parse(
+          p.itemId === T5_KIT && kit !== null
+            ? {
+                tier_variation: kit.tier_variation_list,
+                model: modelos.map((m) => ({
+                  model_id: m.model_id,
+                  tier_index: m.tier_index,
+                  model_status: 'MODEL_NORMAL',
+                })),
+              }
+            : { model: [] },
+        ),
+      );
+    },
+    getKitItemLimit: () => {
+      ops.push('get_kit_item_limit');
+      return Promise.reject(
+        shopeeErrorFromEnvelope(
+          { error: 'error_not_found', message: null, request_id: null, warning: null },
+          {
+            path: SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
+            httpStatus: 404,
+            surface: SHOPEE_SURFACE.business,
+          },
+        ),
+      );
+    },
+    getChannelList: () => {
+      ops.push('get_channel_list');
+      return Promise.resolve({
+        logistics_channel_list: [
+          shopeeLogisticsChannelSchema.parse({
+            logistics_channel_id: 90_003,
+            enabled: true,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeInput,
+          }),
+        ],
+      });
+    },
+    addKitItem: (corpo: ShopeeAddKitItemRequest) => {
+      ops.push('add_kit_item');
+      const s = corpo.item_setting;
+      modelos = s.model_list.map((m, i) => ({
+        model_id: T5_MODELOS_DO_KIT[i] ?? T5_KIT + i,
+        model_sku: m.model_sku ?? null,
+        original_price: m.original_price,
+        tier_index: [...m.tier_index],
+        component_list: m.component_list.map((c) => ({
+          component_item_id: c.component_item_id,
+          component_model_id:
+            c.component_model_id ?? (c.component_item_id === T5_COMP_B ? T5_COMP_B_OCULTO : null),
+          quantity: c.quantity,
+          main_component: c.main_component === true,
+        })),
+      }));
+      const tiers = s.tier_variation_list.map((t) => ({
+        name: t.name,
+        option_list: t.option_list.map((o) => ({ option: o.option })),
+      }));
+      kit = {
+        item_id: T5_KIT,
+        item_name: s.item_name,
+        item_sku: s.item_sku ?? null,
+        item_status: 'NORMAL',
+        category_id: T5_CATEGORIA,
+        weight: String(s.weight),
+        tier_variation_list: tiers,
+      };
+      bases.set(T5_KIT, {
+        item_id: T5_KIT,
+        item_name: s.item_name,
+        item_sku: s.item_sku ?? null,
+        item_status: 'NORMAL',
+        has_model: true,
+        tag: { kit: true },
+        category_id: T5_CATEGORIA,
+      });
+      return Promise.resolve({
+        request_id: 'req-1',
+        error: '',
+        message: '',
+        warning: '',
+        response: { item_id: T5_KIT },
+      });
+    },
+  };
+  const client = new Proxy({} as Record<string, unknown>, {
+    get(_alvo, prop) {
+      if (typeof prop !== 'string' || prop === 'then') return undefined;
+      const fn = conhecidas[prop];
+      if (fn !== undefined) return fn;
+      return () => {
+        ops.push(`?${prop}`);
+        throw new Error(`fixture: a loja não serve ${prop}`);
+      };
+    },
+  }) as unknown as ShopeeClient;
+  return Object.assign(loja, { client });
+}
+
+function t5Resolvedor(): ResolvedorDeImagensShopee {
+  return {
+    resolver: (fotos) =>
+      Promise.resolve({
+        imageIds: ['img-kit-1'],
+        reutilizadas: 0,
+        enviadas: 1,
+        falhas: [],
+        consideradas: fotos.length,
+        descartadasPeloLimite: 0,
+      }),
+    resumo: () => ({
+      consideradas: 1,
+      reutilizadas: 0,
+      enviadas: 1,
+      falhas: 0,
+      descartadasPeloLimite: 0,
+    }),
+  };
+}
+
+function t5Deps(db: FakeDb, loja: T5Loja): KitDeps {
+  return {
+    db: asDb(db),
+    client: loja.client,
+    partnerClient: () => {
+      throw new Error('fixture: o partner client só é usado pelo resolvedor de imagens');
+    },
+    integracaoId: T5_INTEGRACAO,
+    tabelaNormalOuterRef: 'documents/listaDePrecos/tab-normal',
+    depositoOuterRef: 'documents/depositos/dep-1',
+    operacaoOuterRef: null,
+    nowMs: T5_AGORA,
+    esperar: () => Promise.resolve(),
+    taxonomia: {
+      integracaoId: T5_INTEGRACAO,
+      client: loja.client,
+      variationsPath: SHOPEE_GET_VARIATIONS_PATH,
+    },
+    categorias: {
+      carregar: () => {
+        throw new Error('fixture: o kit não lê a árvore de categorias');
+      },
+    },
+    resolvedorDeImagens: t5Resolvedor(),
+    increment,
+  };
+}
+
+/** The route's call, exactly: no `--link`, no kit option but the principal. */
+function t5Publicar(db: FakeDb, loja: T5Loja) {
+  return publicarShopee(t5Deps(db, loja), {
+    produtoId: T5_K,
+    linkDocId: null,
+    categoryId: null,
+    statusPedido: 'NORMAL',
+    principal: 'comp-a-filho',
+    recriar: false,
+    converterEmKit: false,
+  });
+}
+
+function t5Vinculo(db: FakeDb): LinkParaEstoque {
+  const doc = db.store[`produtos/${T5_K}/prodshopee/${T5_VINCULO}`]?.data;
+  expect(doc).toBeDefined();
+  return doc as LinkParaEstoque;
+}
+
+describe('T5 (passo 19, PR 7) — o vínculo que a criação pela ROTA grava é PULADO pelo passo 12', () => {
+  beforeEach(() => {
+    limparTaxonomiaShopee();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    limparTaxonomiaShopee();
+    vi.restoreAllMocks();
+  });
+
+  it('⚠️ PAR: o despachante escolhe `kit-criar`, o kit nasce, e o vínculo ESCRITO responde `kit-derivado` — o vínculo do componente, no MESMO banco, ENVIA', async () => {
+    const db = new FakeDb();
+    t5SemearComponentes(db);
+    t5SemearKit(db);
+    const loja = t5Loja();
+
+    const res = await t5Publicar(db, loja);
+
+    expect(res).toMatchObject({
+      tipo: 'kit',
+      resultado: { arma: 'kit-criar', desfecho: 'criado', itemId: T5_KIT, linkDocId: T5_VINCULO },
+    });
+    expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(1);
+    const vinculo = t5Vinculo(db);
+    expect(vinculo).toMatchObject({ item_id: T5_KIT, kitNativo: true });
+    // The produto K is ehKit + ehKitVirtual; the verdict comes from the LINK alone.
+    const produtoK = db.store[`produtos/${T5_K}`]?.data ?? {};
+    expect(podeEnviarEstoqueShopee(vinculo, produtoK, { nowMs: T5_AGORA })).toEqual({
+      enviar: false,
+      motivo: MOTIVO_ESTOQUE_SHOPEE.kitDerivado,
+    });
+    // ⛔ QUASE-PAR: the component's ORDINARY listing, in the same database, sends.
+    const componente = db.store['produtos/comp-a/prodshopee/link-comp-a']?.data ?? {};
+    expect(podeEnviarEstoqueShopee(componente, {}, { nowMs: T5_AGORA })).toEqual({ enviar: true });
+  });
+
+  it('⚠️ uma QUEDA logo depois da escrita do vínculo (a releitura nunca terminou) já deixa o literal `kitNativo: true` — o passo 12 pula mesmo assim (R-1)', async () => {
+    const db = new FakeDb();
+    t5SemearComponentes(db);
+    t5SemearKit(db);
+    const loja = t5Loja();
+    // `get_kit_item_info` runs only in the read-back, AFTER `add_kit_item` and
+    // the link write: a non-Shopee throw there is the crash.
+    const queda = new TypeError('fixture: o processo caiu na releitura do kit');
+    loja.falhaNaLeituraDoKit = queda;
+
+    await expect(t5Publicar(db, loja)).rejects.toBe(queda);
+
+    expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(1);
+    const vinculo = t5Vinculo(db);
+    // The literal the link write stamps — no read-back ever ran.
+    expect(vinculo.kitNativo).toBe(true);
+    expect(vinculo.item_status ?? null).toBeNull();
+    expect(podeEnviarEstoqueShopee(vinculo, {}, { nowMs: T5_AGORA })).toEqual({
+      enviar: false,
+      motivo: MOTIVO_ESTOQUE_SHOPEE.kitDerivado,
+    });
   });
 });
