@@ -366,7 +366,8 @@ The per-surface notes below stay the authority on behaviour.
 
 ## Testing
 
-Two suites, deliberately separated by filename:
+Four suites, deliberately separated by filename (each config includes only its
+own suffix, and `vitest.config.ts` excludes the other three):
 
 - **Offline** — `pnpm --filter @delfrance/mercado-livre-app test` (`*.test.ts`). Run by
   `ci-mercado-livre.yml` in `ML offline (unit)`, **not** by `ci.yml`: that workflow
@@ -410,6 +411,38 @@ Two suites, deliberately separated by filename:
   token and no real secret, and executes only classic queries (the Pipelines API does not
   run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
 
+- **Staging, Enterprise** — `test:staging` (`*.staging.test.ts`, `vitest.staging.config.ts`),
+  run by the same workflow's `ML staging Enterprise queries` job with the
+  `FIREBASE_*_STAGING` secrets (`optional:not_fork`: a fork PR cannot read them, and the gate
+  names that skip); locally it reads `FIREBASE_PROJECT_ID` + `FIREBASE_SERVICE_ACCOUNT[_PATH]`
+  from the repo-root `.env.local` and skips without them — in CI `ML_STAGING_REQUIRED=1`
+  turns a missing credential into a failure, never a silent green. It exists because every
+  other suite runs Firestore as a fake or as the STANDARD-edition emulator, and the staging
+  database is ENTERPRISE: an unindexed query there full-scans and bills instead of failing, and
+  classic `explain()` is refused. `auditoriaNaoEnumerados.staging.test.ts` (#1200) drains the
+  link audit's collection-group walk over real `DocumentReference` cursors (every link read
+  exactly once), checks the pre-resolve re-read agrees with it, runs the tier-1
+  `adicionarContaSeViva` heal on a real transaction, reads the avisos key range on real ids,
+  and judges the plan of both queries' SDK pipeline translation
+  (`db.pipeline().createFrom(<the production query object>)`, never a hand-built copy) with
+  `lib/firebase/explainPlan.mjs` — the one copy of those verdicts, shared with
+  `scripts/check-stock-indexes.mjs` and unit-tested in `explainPlan.test.ts`. ⚠️ A
+  `contaOuterRef` push-down over `(-∞..+∞)` ranges, a cursor tested per entry and a half-open
+  key range print the same lines as the walks they must rule out, so none passes on its shape:
+  only on read counters under a ceiling the suite's seeded neighbours provably exceed (it
+  asserts that, too). ⚠️ A proxy PASS proves the COLLECTION_GROUP
+  `produtoMercadoLivre(contaOuterRef, __name__)` index is READY and serves the predicate, not
+  the classic query's own plan. ⚠️ It **never runs the full audit** (`runAuditoriaNaoEnumerados`
+  enumerates every real staging conta and resolves tipo-wide) and **never creates an
+  `integracao`** — the conta is a bare per-run string, so no real sweep can pick it up. Every
+  id carries a per-run `e2e-ml1200-<8 hex>` prefix, its avisos are seeded already RESOLVED (the
+  bell lists `resolvidoEm == null`), `afterAll` deletes every produto subtree and aviso it
+  wrote and FAILS if anything is left, and `beforeAll` reclaims this suite's own leftovers older
+  than 2h. The deployed `onProdutoMercadoLivreLinkChanged` trigger heals the seeded class-2
+  drift as soon as its link lands, so the seed waits for that heal (≤30s) and undoes it before
+  any case reads the drift — a case whose precondition was rewritten says so instead of
+  passing vacuously.
+
 ⚠️ **Not covered, so do not read a green lane as more than it is:**
 `scheduleDelaySeconds` — the emulator's dispatch loop is pure FIFO with no `scheduleTime`
 predicate (`firebase-tools#8254`, open, triaged upstream as a feature request), so the
@@ -417,7 +450,8 @@ receiver's 10s order-family refetch delay cannot be observed; `mlTasks.test.ts` 
 statically and the round trip uses a no-delay topic. Also uncovered: the nested
 `functions/` **Firestore triggers** (the lane loads them but drives none), composite
 **index declaration** (the emulator
-auto-creates them; that is guard C/D in `notificationGuardrails.test.ts`), Firestore
+auto-creates them; that is guard C/D in `notificationGuardrails.test.ts` — the staging suite
+observes READINESS for the #1200 audit's two queries only), Firestore
 rules (the Admin SDK bypasses them — `ci-rules.yml` owns those), the Enterprise Pipelines
 API (the emulator is Standard edition and still exposes `db.pipeline()`), and the ML API
 itself. ML has **no sandbox** and its `refresh_token` is single-use and rotating, so no

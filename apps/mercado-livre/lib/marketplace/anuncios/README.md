@@ -95,6 +95,9 @@ its status and moderation state current. The inverse direction (ML → ERP) is
   `ENOENT` if it moves. Rides the COLLECTION_GROUP index
   `produtoMercadoLivre(contaOuterRef, __name__)`; every query is classic, so it
   all runs in the emulator. `pageLimit` is required and must be an integer ≥ 1
-  — a 0 would read as a drained, COMPLETE walk.
+  — a 0 would read as a drained, COMPLETE walk. `consultaDaVarredura` is one
+  page as an UNEXECUTED query, exported so the staging suite
+  (`estoque/auditoriaNaoEnumerados.staging.test.ts`) explains the very object
+  the walk runs against the real Enterprise database.
 - `listaDePrecosCache.ts` — despite the name, **not** pricing: its only importer
   is `publish.ts`, which reads it to name the list in a blocked-price message.

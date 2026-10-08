@@ -79,8 +79,13 @@ the store does not have. See ADR 0014 §7.
   nothing to `estoqueMercadoLivreSync` (that strict schema throws on an unknown
   key and would kill the whole tick). The emulator suite
   (`auditoriaNaoEnumerados.firestore.test.ts`) runs the real collection-group
-  paging, heal and aviso writes; ops detail is `functions/DEPLOY.md`, "The
-  monthly link audit".
+  paging, heal and aviso writes; the staging suite
+  (`auditoriaNaoEnumerados.staging.test.ts`, `test:staging`) runs the walk, the
+  heal and the key range on the real ENTERPRISE database and judges both
+  queries' plans — never the full run, never an `integracao`. That suite
+  `explain()`s the exact query objects `consultaDaVarredura` and
+  `consultaDaFaixaDeChaves` build, which is why those are exported. Ops detail
+  is `functions/DEPLOY.md`, "The monthly link audit".
 - `estoqueManual.ts` — "enviar estoque agora" for a hand-picked produto set.
 - `mlStockTasks.ts` — the task-queue scheduler for the stock send queue.
 - `stockSendMaxAttempts.test.ts` — no source sibling. Pins

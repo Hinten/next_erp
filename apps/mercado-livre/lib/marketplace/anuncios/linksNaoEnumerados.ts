@@ -53,7 +53,7 @@
  *    no index.
  * Every query here is CLASSIC — no pipeline — so all of it runs in the emulator.
  */
-import { FieldPath, type Firestore } from 'firebase-admin/firestore';
+import { FieldPath, type Firestore, type Query } from 'firebase-admin/firestore';
 import { linkHasLiveListing } from '@delfrance/schemas';
 import {
   produtoCollection,
@@ -171,11 +171,20 @@ export type FetchLinksNaoEnumeradosPage = (
   args: FetchLinksNaoEnumeradosArgs,
 ) => Promise<LinksNaoEnumeradosPage>;
 
-export const fetchLinksNaoEnumeradosPage: FetchLinksNaoEnumeradosPage = async (db, args) => {
+/**
+ * ONE page of the walk as an unexecuted query — what
+ * {@link fetchLinksNaoEnumeradosPage} runs. Exported for the staging suite
+ * (`estoque/auditoriaNaoEnumerados.staging.test.ts`), which `explain()`s this
+ * very object against the real Enterprise database instead of a hand-copied
+ * chain that could drift from it. (Enterprise refuses classic explain today, so
+ * that suite also judges the pipeline translation; the day it stops refusing,
+ * this is the plan it reads.)
+ */
+export function consultaDaVarredura(db: Firestore, args: FetchLinksNaoEnumeradosArgs): Query {
   const { pageLimit } = args;
-  // ⚠️ Refused, never floored. `full` below is `docs.length === pageLimit`, so a
-  // 0 reads nothing, calls that page FULL, finds no last path and returns a null
-  // cursor — "drained" after inspecting nothing. For the audit that is a
+  // ⚠️ Refused, never floored. `full` in the walk is `docs.length === pageLimit`,
+  // so a 0 reads nothing, calls that page FULL, finds no last path and returns a
+  // null cursor — "drained" after inspecting nothing. For the audit that is a
   // COMPLETE walk, which resolves every open aviso of the conta. The price
   // binding floors its env value at 1 before it gets here, so this never fires
   // on that path; it exists for the next caller that passes a raw number.
@@ -186,14 +195,20 @@ export const fetchLinksNaoEnumeradosPage: FetchLinksNaoEnumeradosPage = async (d
   }
   const afterLinkPath = args.afterLinkPath ?? null;
 
-  let linksQuery = produtoMercadoLivreLinkCollection
+  const linksQuery = produtoMercadoLivreLinkCollection
     .groupQuery(db)
     .where('contaOuterRef', 'in', contaRefForms(args.integracaoId))
     .select(...CAMPOS_LINK)
     .orderBy(FieldPath.documentId())
     .limit(pageLimit);
-  if (afterLinkPath != null) linksQuery = linksQuery.startAfter(linkRefDoCursor(db, afterLinkPath));
-  const linksSnap = await linksQuery.get();
+  return afterLinkPath == null
+    ? linksQuery
+    : linksQuery.startAfter(linkRefDoCursor(db, afterLinkPath));
+}
+
+export const fetchLinksNaoEnumeradosPage: FetchLinksNaoEnumeradosPage = async (db, args) => {
+  const { pageLimit } = args;
+  const linksSnap = await consultaDaVarredura(db, args).get();
 
   // Only the links that name something still sellable. A produto can carry
   // several listings on one conta, so this is a list, not a map.

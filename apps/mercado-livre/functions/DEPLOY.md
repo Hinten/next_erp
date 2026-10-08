@@ -701,6 +701,17 @@ gcloud firestore indexes composite list --project <project-id> --database defaul
 # must read READY
 ```
 
+On STAGING that check is automated: `ML staging Enterprise queries` (ci-mercado-livre.yml,
+`test:staging`) explains the SDK's pipeline translation of the walk's own query on every
+in-scope PR, and fails — "the CG index is not READY on this project" — when no access node
+rides that index. It also fails when the plan does not PROVE the walk stays inside one conta
+and seeks its cursor: either by its range lines (a closed `contaOuterRef` value range and a
+key lower bound on every node on the index), or else by read counters under a ceiling the
+suite's seeded neighbours provably exceed. A `contaOuterRef` push-down over `(-∞..+∞)`
+ranges is the shape of a walk of every conta, so it never passes on its shape alone. It
+proves READINESS on staging only; the production project still needs the `gcloud` check
+above in its own window.
+
 The re-read before a resolve rides the declared COLLECTION-scope
 `produtoMercadoLivre(contaOuterRef)`, and the avisos are listed by document-key range,
 which needs no declared index.

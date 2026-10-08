@@ -15,8 +15,11 @@ name: CI — Mercado Livre (Firestore emulator)
 # deployed staging backend holds. The ML HTTP surface is injected/stubbed, and
 # vitest.firestore.setup.ts installs a fetch kill-switch that throws on any
 # non-localhost host so "offline" is a property of the lane, not of the author.
+# The ONE job that leaves the runner (`ML staging Enterprise queries`, #1200)
+# holds Firebase STAGING credentials only, and its own setup
+# (vitest.staging.setup.ts) blocks every non-Google host the same way.
 #
-# THIS LANE OWNS EVERY MERCADO LIVRE TEST, in three parallel jobs:
+# THIS LANE OWNS EVERY MERCADO LIVRE TEST, in four parallel jobs:
 #   - `ML offline (unit)`      — the ~111 `*.test.ts` files across both ML
 #                                workspaces, via `turbo run test`.
 #   - `ML backend on the …`    — the `*.firestore.test.ts` files, via
@@ -26,6 +29,10 @@ name: CI — Mercado Livre (Firestore emulator)
 #                                emulators and serves the real ML functions
 #                                artifact. It pays a bundle build and a slower
 #                                start, which is why it is its own job.
+#   - `ML staging Enterprise …` — the `*.staging.test.ts` files, via
+#                                `test:staging` against the REAL staging Firestore
+#                                (Enterprise edition). `optional:not_fork`: a fork
+#                                PR cannot read the staging secrets.
 # `ci.yml` excludes both workspaces from its `turbo run test`, so when this lane
 # does not run, NONE of them run. Scope is therefore derived from the
 # `workspace:*` dependency graph in `changes`, never from a hand-written list,
@@ -38,12 +45,12 @@ name: CI — Mercado Livre (Firestore emulator)
 # deliberate insurance against a stale `paths:` list. Graph-derived scope retired
 # that argument, so the tests moved here where the domain owns them.
 #
-# ⚠️ Splitting these jobs is not cosmetic. The three suites are disjoint BY
-# GLOB: `vitest.config.ts` EXCLUDES both `**/*.firestore.test.ts` and
-# `**/*.tasks.test.ts` from the unit run, and each dedicated config includes only
-# its own suffix — so a file matching NO glob runs in NO job at all. All three
-# configs carry a mirror-image root-level entry for exactly that reason; read
-# their comments before touching any `include`.
+# ⚠️ Splitting these jobs is not cosmetic. The four suites are disjoint BY
+# GLOB: `vitest.config.ts` EXCLUDES `**/*.firestore.test.ts`,
+# `**/*.tasks.test.ts` and `**/*.staging.test.ts` from the unit run, and each
+# dedicated config includes only its own suffix — so a file matching NO glob
+# runs in NO job at all. All four configs carry a mirror-image root-level entry
+# for exactly that reason; read their comments before touching any `include`.
 #
 # ⚠️ An earlier revision of this header claimed Cloud Tasks could not be emulated
 # at all, then that the emulator rejected our region-qualified queue name
@@ -57,7 +64,11 @@ name: CI — Mercado Livre (Firestore emulator)
 #   - Composite INDEX DECLARATION. The emulator auto-creates every composite, and
 #     on Enterprise a missing index does not throw — it silently full-scans and
 #     bills the scan. That is guard C/D in
-#     packages/data/src/admin/notifications/notificationGuardrails.test.ts.
+#     packages/data/src/admin/notifications/notificationGuardrails.test.ts. The
+#     staging job observes READINESS for exactly two queries — the #1200 audit's
+#     collection-group walk and avisos key range — and through a PIPELINE proxy
+#     (Enterprise refuses classic explain): a proxy PASS proves the index is
+#     READY and serves the predicate, not the classic query's own plan.
 #   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
 #     emulator — dispatch is pure FIFO with no `scheduleTime` predicate
 #     (firebase-tools#8254, open, triaged upstream as a feature request and
@@ -70,6 +81,8 @@ name: CI — Mercado Livre (Firestore emulator)
 #   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
 #     exposes db.pipeline(), so feature-probing answers yes then fails at execution.
+#     (The staging job EXECUTES two pipelines, but only as explain proxies — no
+#     production pipeline, e.g. bulkEstoquePlan.ts's, runs anywhere in this lane.)
 #   - The Mercado Livre API itself. By design; there is no sandbox to point at.
 
 on:
@@ -129,6 +142,9 @@ on:
       - 'packages/schemas/src/notificacaoMercadoLivre.ts'
       - 'packages/schemas/src/shared/notificationResilience.ts'
       - 'firestore.indexes.json'
+      # The staging suite's vitest config loads `.env`/`.env.local` through this
+      # package (#1200) — it became a devDependency of the app with that suite.
+      - 'packages/config-vitest/**'
       - 'firebase.mercado-livre.json'
       - 'firebase.mercado-livre.tasks.json'
       - 'pnpm-lock.yaml'
@@ -552,11 +568,133 @@ jobs:
             --only firestore,functions,tasks \
             "pnpm --filter @delfrance/mercado-livre-app test:tasks"
 
+  # The fourth suite, and the only one that leaves the runner: the
+  # `*.staging.test.ts` files (`test:staging`) against the REAL staging Firestore,
+  # which is ENTERPRISE edition (#1200). Every other job here runs Firestore as a
+  # fake or as the STANDARD-edition emulator, and neither can show what
+  # Enterprise does with a query — an unindexed one does not fail there, it
+  # full-scans and bills the scan, and Enterprise refuses classic `explain()`, so
+  # the #1200 audit's two classic queries had never been observed on it. This job
+  # drains the audit's collection-group walk over real cursors, runs the tier-1
+  # heal on a real transaction, reads the avisos key range, and judges the plan
+  # of the SDK's pipeline translation of both production query objects
+  # (`createFrom`, lib/firebase/explainPlan.mjs).
+  #
+  # Firebase STAGING credentials only — still no Mercado Livre credential, ever
+  # (see the header); vitest.staging.setup.ts blocks every non-Google host. The
+  # suite never creates an integração, never runs the full audit, seeds its
+  # avisos already resolved, and deletes + verifies everything it wrote under a
+  # per-run `e2e-ml1200-<hex>` prefix — so a push run and a PR run on the same
+  # SHA, which run concurrently by design, never see each other's rows.
+  #
+  # `optional:not_fork`, unlike the three jobs above: a fork PR cannot read the
+  # staging secrets, and the gate says so out loud instead of going red on
+  # something the contributor cannot fix. On a non-fork run a MISSING secret is
+  # a hard failure (the preflight below), never a skip.
+  ml-staging-enterprise:
+    name: ML staging Enterprise queries
+    needs: [changes]
+    # Two conditions, each one the gate can account for and name:
+    #   - the lane is in scope           -> otherwise the gate reds an unexplained skip
+    #   - not a fork PR (no secrets)     -> gate guard `not_fork`
+    # Pushes and manual dispatch are always same-repo, so they always run it.
+    if: >-
+      ${{ needs.changes.outputs.run_e2e == 'true' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.fork == false) }}
+    runs-on: ubuntu-latest
+    # ⚠️ No run of this job has been observed yet, so this is not an observed
+    # maximum — it is DERIVED from the suite's own worst case, which is a hard
+    # ceiling rather than a guess: vitest.staging.config.ts bounds every case at
+    # 60s and each hook at 120s, so 6 cases + beforeAll + afterAll can never
+    # exceed 10 minutes before vitest itself fails them. Add checkout, setup and
+    # install (~35s observed on the sibling jobs) and 15 leaves ~4 minutes over
+    # that sum. The ORDER is the point: a hung staging call must hit the VITEST
+    # timeout first, so `afterAll` still deletes the run's rows; a runner kill
+    # skips it, leaves documents on staging until a later run's 2h stale sweep,
+    # and turns the gate red as `cancelled`. Once a few runs exist, lower this to
+    # the observed maximum plus margin — never below that vitest sum. Adding a
+    # case or raising either vitest bound means re-checking this number.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Arms the fail-loud gate in vitest.staging.setup.ts. Without it, missing
+      # credentials would skip every suite and still exit 0, because vitest's
+      # success check counts COLLECTED files, not run tests.
+      ML_STAGING_REQUIRED: '1'
+      # The database is literally named `default`, not `(default)` (Enterprise).
+      FIREBASE_DATABASE_ID: default
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from `packageManager`
+          # in package.json — the single source of truth — and overrides any
+          # `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify the staging secrets are configured
+        # Fail loud + early when a secret is missing instead of relying on the
+        # suite to notice: same preflight as ci-nfe.yml's live job. The fork case
+        # never reaches this step — the job-level `if:` skips it, and the gate
+        # names that skip.
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          missing=()
+          [[ -z "${FIREBASE_PROJECT_ID:-}" ]]      && missing+=("FIREBASE_PROJECT_ID_STAGING")
+          [[ -z "${FIREBASE_SERVICE_ACCOUNT:-}" ]] && missing+=("FIREBASE_SERVICE_ACCOUNT_STAGING")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required GitHub Action secrets for ML staging Enterprise queries: ${missing[*]}"
+            echo "Configure them at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          echo "Both staging secrets are configured."
+
+      - name: Run the staging Enterprise suite
+        # ⚠️ `--fail-if-no-match` is load-bearing. Measured on pnpm 11.2.2 (the
+        # `packageManager` pin): `pnpm --filter <name-that-matches-nothing> …`
+        # prints "No projects matched the filters" and exits 0 — a typo in the
+        # package name would be a green job that ran nothing — while with the flag
+        # it exits 1. A MISSING `test:staging` script already exits 1 either way
+        # (`ERR_PNPM_RECURSIVE_RUN_NO_SCRIPT`; only the bare `test` script is
+        # special-cased to exit 0), so one flag closes both holes. Keep this a
+        # SINGLE command: piping it would swap vitest's exit code for the pipe's.
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: pnpm --fail-if-no-match --filter @delfrance/mercado-livre-app test:staging
+
   report-failure:
     # Renamed off `Post failure note on PR`: a check-run name carries no workflow
     # prefix, so that string was one indistinguishable check across several lanes.
     name: Mercado Livre failure note
-    needs: [changes, ml-offline, ml-firestore-emulator, ml-tasks-roundtrip]
+    needs: [changes, ml-offline, ml-firestore-emulator, ml-tasks-roundtrip, ml-staging-enterprise]
     # Fork guard: this job holds `pull-requests: write`, which a fork run's
     # read-only token cannot exercise — it would 403 and mask the real failure.
     if: >-
@@ -595,7 +733,7 @@ jobs:
   # every green run, so needing them would make this gate permanently red.
   gate:
     name: CI gate (mercado-livre)
-    needs: [changes, ml-offline, ml-firestore-emulator, ml-tasks-roundtrip]
+    needs: [changes, ml-offline, ml-firestore-emulator, ml-tasks-roundtrip, ml-staging-enterprise]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -624,15 +762,20 @@ jobs:
           RESULT_OFFLINE: ${{ needs.ml-offline.result }}
           RESULT_EMULATOR: ${{ needs.ml-firestore-emulator.result }}
           RESULT_TASKS: ${{ needs.ml-tasks-roundtrip.result }}
+          RESULT_STAGING: ${{ needs.ml-staging-enterprise.result }}
 
           # --- the manifest. One row per certified job:
           #       <result env var>|required|optional:<guard>[+<guard>]|<published check-run name>
           #     The check-run name must match the job's `name:` byte for byte — it
           #     is how the anti-vacuity lock finds the job in the jobs API.
+          #     The staging row is `optional:not_fork`: a fork PR cannot read the
+          #     staging secrets, so its skip is excused BY NAME (a warning on the
+          #     gate), and on every other event a skip is an unexplained RED.
           JOBS: |
             RESULT_OFFLINE|required|ML offline (unit)
             RESULT_EMULATOR|required|ML backend on the Firestore emulator
             RESULT_TASKS|required|ML Cloud Tasks round trip
+            RESULT_STAGING|optional:not_fork|ML staging Enterprise queries
         run: |
           set -uo pipefail
           ROWS="$RUNNER_TEMP/gate-rows.md";        : > "$ROWS"

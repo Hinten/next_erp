@@ -3,6 +3,25 @@ import { initializeApp } from 'firebase-admin/app';
 import { FieldPath, getFirestore } from 'firebase-admin/firestore';
 import * as pipelines from '@google-cloud/firestore/pipelines';
 
+// The plan-text readers and the #1200 verdicts live in ONE module, shared with
+// the automated staging suite (lib/marketplace/estoque/auditoriaNaoEnumerados.staging.test.ts)
+// and unit-tested offline (lib/firebase/explainPlan.test.ts). Never copy a
+// regex back into this file: two copies of a verdict drift apart while both
+// read correct (#1369).
+import {
+  NUMERIC_BOUND_RE,
+  RECUSA_EXPLAIN_ENTERPRISE_RE,
+  classicoServeFaixa,
+  classicoServeVarredura,
+  julgarPlanoDaFaixaDeAvisos,
+  julgarPlanoDaVarredura,
+  nomesDeNos,
+  parseAccessNodes,
+  predicateInResidualFilters,
+  scansSemIdentificador,
+  uniqueNodes,
+} from '../lib/firebase/explainPlan.mjs';
+
 // ⚠️ BLOCKING pre-merge gate for Step 10 PR C — run MANUALLY against staging
 // (agents never run firebase; index deploy is a coordinated human step).
 //
@@ -171,7 +190,10 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //         `startAfter(<DocumentReference>)` keyset, because a group's
 //         `__name__` is the full path. It must ride the COLLECTION_GROUP entry
 //         `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)` (#1191),
-//         BOUNDED on `contaOuterRef`, with no residual Filter (the cursor read
+//         BOUNDED on `contaOuterRef` (a closed value range — an `equal_any`
+//         push-down over `(-∞..+∞)` ranges is the shape of a walk of every
+//         conta, so it does not pass here), SEEKING its cursor (a key lower
+//         bound, not a per-entry test), with no residual Filter (the cursor read
 //         residually re-reads every earlier page: the walk turns quadratic) and
 //         no Sort node (the index did not deliver key order, so every page sorts
 //         the conta's whole link set). Page 2's cursor is page 1's FIRST link
@@ -180,8 +202,9 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     (b) The avisos key range (`listarFaixaDeChaves`,
 //         lib/marketplace/estoque/auditoriaNaoEnumerados.ts):
 //         `orderBy(documentId).startAt('anuncioForaDaSincronizacao:<conta>:')
-//         .endBefore('…;')`, `select('resolvidoEm','params','canal')` — a BOUNDED key
-//         scan, never a walk of the collection.
+//         .endBefore('…;')`, `select('resolvidoEm','params','canal')` — a key
+//         scan CLOSED at both ends, never a walk of the collection (a half-open
+//         range reads every other conta's avisos on its open side).
 //     Each is also EXECUTED plainly first, as a correctness probe the emulator
 //     lane cannot give against Enterprise: page 2 must resume exactly after its
 //     cursor, and every aviso id returned must carry the conta's prefix.
@@ -190,9 +213,15 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     same wall `apps/functions/scripts/check-delete-cost.mjs` and
 //     `check-text-search-index.mjs` record). So each query's classic
 //     `explain({ analyze: true })` is tried first and judged on
-//     `indexesUsed` when a database accepts it; on the refusal, the PIPELINE
-//     TRANSLATION of the same predicate is explained instead, labeled PROXY and
-//     judged with the access-node heuristics below. Read what that proves
+//     `indexesUsed` when a database accepts it; on the refusal, the SDK's own
+//     PIPELINE TRANSLATION of that same query object
+//     (`db.pipeline().createFrom(query)`) is explained instead, labeled PROXY
+//     and judged with the access-node heuristics below — never a hand-built
+//     pipeline that could drift from the query it stands for. Only the plan
+//     SHAPE can pass here (no read ceiling is passed: see `relatarVeredicto`);
+//     the automated `test:staging` suite, which seeds the neighbours a read
+//     ceiling needs, also accepts a plan its read counters prove bounded.
+//     Read what that proves
 //     precisely: a proxy that rides no node on the CG entry means the index is
 //     not READY in this project — index readiness does not depend on the API —
 //     so it FAILS; a proxy PASS proves the index is READY and serves the
@@ -205,7 +234,10 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //
 // ---- ACCESS-NODE heuristics (calibrated on the REAL staging plan text of
 // gate run 2, 2026-07-28 — the explain format is not machine-stable, so the
-// printed plans remain the actual gate: READ them before merging PR C). The
+// printed plans remain the actual gate: READ them before merging PR C). Since
+// #1200 they live in lib/firebase/explainPlan.mjs (unit-tested offline, and the
+// same module the automated `test:staging` suite judges with) — edit them THERE,
+// and recalibrate against a printed plan when the dialect moves. The
 // plan is parsed into access-node blocks: a SequentialScan / SeekingScan /
 // IndexSeek / TableScan / EntityScan / CollectionScan bullet — in fact ANY
 // `• <Name>Scan` — plus its body up to the next `•` node bullet. Recognizing
@@ -933,102 +965,10 @@ try {
 
   /* ---------------- access-node heuristics (see header) ----------------------- */
 
-  // The completely-unbounded range line — `(-∞..+∞)` — never counts as a bound;
-  // a half-bounded range (`[1,234L..+∞)`, a timestamp cutoff) DOES.
-  const UNBOUNDED_RE = /\(-(?:∞|inf)\s*\.\.\s*\+?(?:∞|inf)\)/i;
-
-  // A NUMERIC constraint bound: `[1,782,652,331,060,000L..+∞)`, `[1234L]`,
-  // `(-1..500L]`. Anchored at the `|----` marker and shape-matched, never
-  // digit-matched: `["depositos/checkstock-1785244325954-dep"]` is full of
-  // digits, and the keyset bound `(EntityRef[…]..oid(000…))` ends in a
-  // parenthesised number — neither may read as a timestamp range.
-  const NUMERIC_BOUND_RE = /^\|-+\s*[[(]\s*-?[\d,]+L?\s*(?:\.\.|[\])])/;
-
-  /**
-   * Parse the plan into access-node blocks: a SequentialScan / SeekingScan /
-   * IndexSeek / TableScan / EntityScan / CollectionScan bullet — plus ANY
-   * other `• <Name>Scan`, so a node type this dialect has not shown us yet is
-   * still SEEN rather than silently skipped — with every body line up to the
-   * next `•` node bullet. The identifier-less names are the point: a
-   * `TableScan` carries no `index:` line at all (staging run 2 emits one for
-   * the varLinks probe), and a parser blind to it cannot report a raw scan.
-   * Extracted per node: the `index:`/`identifier:` line carrying `@[id = …]`
-   * (SequentialScan/SeekingScan spell it `index:`, IndexSeek `identifier:`),
-   * the `partition:` value, the `filter:` push-down line, and the constraint
-   * VALUE lines (`|----…`) under the `ranges:`/`constraints:` header —
-   * `boundedLines` keeps only the ones that are not `(-∞..+∞)`.
-   */
-  function parseAccessNodes(plan) {
-    const lines = plan.split('\n');
-    const nodes = [];
-    for (let i = 0; i < lines.length; i += 1) {
-      const m = lines[i].match(
-        /•\s+(SequentialScan|SeekingScan|IndexSeek|TableScan|EntityScan|CollectionScan|\w*Scan)\b/,
-      );
-      if (m == null) continue;
-      let end = lines.length;
-      for (let j = i + 1; j < lines.length; j += 1) {
-        if (/•\s+\w/.test(lines[j])) {
-          end = j;
-          break;
-        }
-      }
-      const block = lines.slice(i + 1, end);
-      const idLine = block.find((l) => /\b(?:index|identifier):\s*\S.*@\[id\s*=/.test(l)) ?? null;
-      const identifier =
-        idLine == null ? null : idLine.replace(/^.*?\b(?:index|identifier):\s*/, '').trim();
-      const partitionLine = block.find((l) => /\bpartition:\s*\S/.test(l)) ?? null;
-      const partition =
-        partitionLine == null ? null : partitionLine.replace(/^.*?\bpartition:\s*/, '').trim();
-      // TableScan names its target with `kind:` instead of an index — printed
-      // so an identifier-less node still says WHAT it scanned.
-      const kindLine = block.find((l) => /\bkind:\s*\S/.test(l)) ?? null;
-      const kind = kindLine == null ? null : kindLine.replace(/^.*?\bkind:\s*/, '').trim();
-      const filterLine = block.find((l) => /\bfilter:\s*\(/.test(l)) ?? null;
-      const filter = filterLine == null ? null : filterLine.replace(/^.*?\bfilter:\s*/, '').trim();
-      const boundLines = [];
-      let inConstraints = false;
-      for (const l of block) {
-        if (/\b(?:ranges|constraints):/.test(l)) {
-          inConstraints = true;
-          continue;
-        }
-        if (!inConstraints) continue;
-        if (/Execution:/.test(l) || l.replace(/[|\s]/g, '') === '') {
-          inConstraints = false;
-          continue;
-        }
-        if (l.includes('|----')) boundLines.push(l.slice(l.indexOf('|----')));
-      }
-      // Per-node `Execution:` stats. The A/B spike (header 5.) turns on these:
-      // whether the `links.length() > 0` post-filter prunes BEFORE the estoque
-      // rollups is not decidable from the printed TREE (it is a shape, not an
-      // order) — but the estoque nodes' own execution counts say it outright.
-      const execIdx = block.findIndex((l) => /\bExecution:/.test(l));
-      const execution =
-        execIdx === -1
-          ? []
-          : block
-              .slice(execIdx)
-              .map((l) => l.replace(/^[|\s]+/, '').trim())
-              .filter((l) => l !== '');
-      nodes.push({
-        type: m[1],
-        // Bullet position in the printed plan — 1-BASED, because that is how a
-        // human counts lines in the plan text dumped above. `i` is a 0-based
-        // array index; printing it raw is off by one (review catch on #890).
-        line: i + 1,
-        identifier,
-        kind,
-        partition,
-        filter,
-        boundLines,
-        boundedLines: boundLines.filter((l) => !UNBOUNDED_RE.test(l)),
-        execution,
-      });
-    }
-    return nodes;
-  }
+  // `parseAccessNodes`, `uniqueNodes`, `predicateInResidualFilters`, the bound
+  // regexes and the identifier-less split are imported from
+  // lib/firebase/explainPlan.mjs (top of file) — the ONE copy the staging suite
+  // judges with too. Only the PRINTING and `fail()` plumbing stays here.
 
   /** Printed-plan honesty: show exactly what each judged node carries. */
   function printNode(n) {
@@ -1041,55 +981,23 @@ try {
     if (n.filter != null) console.log(`      filter: ${n.filter}`);
   }
 
-  /** Dedupe identically-shaped nodes for printing (plans repeat subquery nodes). */
-  function uniqueNodes(list) {
-    const seen = new Set();
-    const out = [];
-    for (const n of list) {
-      const key = `${n.type}|${n.identifier}|${n.kind}|${n.filter}|${n.boundLines.join(';')}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(n);
-    }
-    return out;
-  }
-
-  /**
-   * Does the target predicate show up in a RESIDUAL `Filter` NODE — rows read
-   * and then thrown away? Only `• Filter` blocks count, and only their
-   * `expression:` bodies. A node-local `filter:` line is the OPPOSITE finding:
-   * it is a push-down INTO an access node (that is how `equal_any($parentId,
-   * …)` rides the CG index), so counting it as residual would condemn the
-   * healthy plan. Blocks run from the `• Filter` bullet to the next `•` bullet
-   * or the node's `Execution:` stats, whichever comes first.
-   */
-  function predicateInResidualFilters(plan, predicateRe) {
-    const lines = plan.split('\n');
-    for (let i = 0; i < lines.length; i += 1) {
-      if (!/•\s+Filter\b/.test(lines[i])) continue;
-      for (let j = i + 1; j < lines.length; j += 1) {
-        if (/•\s+\w/.test(lines[j]) || /\bExecution:/.test(lines[j])) break;
-        if (/\bexpression:\s/.test(lines[j]) && predicateRe.test(lines[j])) return true;
-      }
-    }
-    return false;
-  }
-
   // Negative-first: an identifier-less access node ANYWHERE is a raw full
   // scan — UNLESS it is partition-bounded. A `subcollection()` probe with no
   // `where` (the varLinks join) compiles to a `TableScan` with a non-root
   // `partition:`: it reads one parent's subcollection and there is no
-  // predicate an index could serve, so it is reported, not failed.
+  // predicate an index could serve, so it is reported, not failed. The split
+  // itself is `scansSemIdentificador` (explainPlan.mjs).
   function failIdentifierlessScans(label, nodes) {
-    for (const n of uniqueNodes(nodes.filter((x) => x.identifier == null))) {
+    const { cheios, porParticao } = scansSemIdentificador(nodes);
+    for (const n of porParticao) {
       printNode(n);
-      if (n.partition != null && n.partition !== '/') {
-        console.log(
-          `NOTE  ${label}: identifier-less ${n.type} is partition-bounded (${n.partition}) — ` +
-            `a subcollection probe with no predicate to index; not a full scan`,
-        );
-        continue;
-      }
+      console.log(
+        `NOTE  ${label}: identifier-less ${n.type} is partition-bounded (${n.partition}) — ` +
+          `a subcollection probe with no predicate to index; not a full scan`,
+      );
+    }
+    for (const n of cheios) {
+      printNode(n);
       fail(`${label}: identifier-less ${n.type} in the plan — a raw full scan`);
     }
   }
@@ -1683,25 +1591,6 @@ try {
       .orderBy(FieldPath.documentId())
       .limit(pageLimit);
 
-  /**
-   * The walk's PIPELINE translation — what Enterprise will explain (header 6.).
-   * `equalAny` is the classic `in`; the keyset is `__name__ > <ref>`, which is
-   * what `startAfter(<ref>)` means under `orderBy(documentId)`.
-   */
-  const walkPipeline = (cursorRef) =>
-    db
-      .pipeline()
-      .collectionGroup('produtoMercadoLivre')
-      .where(
-        pipelines.and(
-          pipelines.field('contaOuterRef').equalAny(contaRefForms),
-          pipelines.greaterThan(pipelines.field('__name__'), pipelines.constant(cursorRef)),
-        ),
-      )
-      .sort(pipelines.ascending(pipelines.field('__name__')))
-      .limit(pageLimit)
-      .select('id', 'estado');
-
   // Mirrors `chaveDeAviso`'s per-segment fold (packages/schemas/src/aviso.ts): the
   // identity for a Firestore auto-id, but a conta id carrying `/` `.` `:` … would
   // otherwise be probed under a prefix the producer never writes.
@@ -1724,33 +1613,22 @@ try {
       .endBefore(fim)
       .limit(pageLimit);
 
-  /** Its pipeline translation — the same half-open key range. */
-  const avisosPipeline = (inicio, fim) =>
-    db
-      .pipeline()
-      .collection('avisos')
-      .where(
-        pipelines.and(
-          pipelines
-            .field('__name__')
-            .greaterThanOrEqual(pipelines.constant(db.collection('avisos').doc(inicio))),
-          pipelines
-            .field('__name__')
-            .lessThan(pipelines.constant(db.collection('avisos').doc(fim))),
-        ),
-      )
-      .sort(pipelines.ascending(pipelines.field('__name__')))
-      .limit(pageLimit)
-      .select('resolvidoEm', 'params', 'canal');
-
-  const ENTERPRISE_EXPLAIN_RE = /not supported in RunQuery API for Enterprise/i;
+  /**
+   * The PROXY of a classic query — what Enterprise will explain (header 6.):
+   * the SDK's own pipeline translation of THAT query object (`createFrom`), the
+   * same call the staging suite makes. Never a hand-built pipeline beside the
+   * query it stands for: two copies of one query drift apart while both read
+   * correct (#1369) — the hand-built proxies this replaced, here and in the
+   * staging suite, already disagreed on the avisos page size.
+   */
+  const proxyDe = (query) => () => db.pipeline().createFrom(query);
 
   /**
    * Classic explain-analyze, or why it could not run. Enterprise's refusal
-   * (header 6.) is `{ recusado }` and NOT a failure — it says something about the
-   * API, nothing about the index. Any other gRPC error IS one: on a Standard
-   * database a missing composite is `9 FAILED_PRECONDITION`, the classic
-   * "requires an index".
+   * (header 6., `RECUSA_EXPLAIN_ENTERPRISE_RE`) is `{ recusado }` and NOT a
+   * failure — it says something about the API, nothing about the index. Any
+   * other gRPC error IS one: on a Standard database a missing composite is
+   * `9 FAILED_PRECONDITION`, the classic "requires an index".
    */
   async function explainClassico(label, query) {
     try {
@@ -1758,7 +1636,7 @@ try {
       return { metrics, recusado: null };
     } catch (err) {
       if (!isGrpcCodedError(err)) throw err;
-      if (err.code === 3 && ENTERPRISE_EXPLAIN_RE.test(err.message)) {
+      if (err.code === 3 && RECUSA_EXPLAIN_ENTERPRISE_RE.test(err.message)) {
         console.log(`NOTE  ${label}: classic explain refused by Enterprise — explaining the PROXY`);
         return { metrics: null, recusado: err.message };
       }
@@ -1767,7 +1645,11 @@ try {
     }
   }
 
-  /** The classic verdict, when a database accepts classic explain at all. */
+  /**
+   * The classic verdict, when a database accepts classic explain at all. `aceita`
+   * is one of explainPlan.mjs's `classicoServe*` predicates — each already
+   * refuses an empty `indexesUsed`.
+   */
   function julgarClassico(label, metrics, aceita) {
     const usados = metrics.planSummary?.indexesUsed ?? [];
     const stats = metrics.executionStats ?? {};
@@ -1776,25 +1658,12 @@ try {
       `  resultsReturned: ${stats.resultsReturned}  readOperations: ${stats.readOperations}`,
     );
     console.log(`  debugStats: ${JSON.stringify(stats.debugStats ?? {})}`);
-    if (usados.length > 0 && aceita(usados)) {
+    if (aceita(usados)) {
       console.log(`PASS  ${label} (classic plan)`);
       return;
     }
     fail(`${label}: the classic plan does not ride the expected index — read indexesUsed above`);
   }
-
-  /** Every distinct `• <Node>` name in a plan — what the reader should scan for. */
-  const nomesDeNos = (planText) => [
-    ...new Set([...planText.matchAll(/•\s+(\w+)/g)].map((m) => m[1])),
-  ];
-
-  /**
-   * A `Sort` NODE — the access path did not deliver key order, so the stage sorts
-   * everything the scan produced before `limit` can cut it. Matched on the bare
-   * name (`• Sort`), so a streaming merge of sorted ranges (`• SortedMerge`-style,
-   * which an `in` over two values may legitimately need) does not count.
-   */
-  const temSortResidual = (planText) => /•\s+(?:Sort|TopN|TopK)\b/.test(planText);
 
   /** One proxy explain-analyze; `null` when it returned no plan (0 rows carry none). */
   async function explainProxy(label, build) {
@@ -1806,6 +1675,33 @@ try {
     console.log(`\n----- FULL PLAN (PROXY — pipeline translation, ${label}) -----\n`);
     console.log(proxyPlan);
     return proxyPlan.trim() === '' ? null : proxyPlan;
+  }
+
+  /**
+   * Print a #1200 verdict (`julgarPlanoDa*` in explainPlan.mjs — the SAME
+   * verdict the staging suite asserts) and fail each motivo. The judged node and
+   * the read counters summed over the judged nodes, when the dialect prints
+   * them, are shown either way.
+   *
+   * ⚠️ No `leituraMaxima` is passed from here, so only the plan SHAPE can pass:
+   * a push-down or a cursor tested per entry fails even when it seeks. A read
+   * ceiling proves something only where every failure mode provably reads past
+   * it, and that takes seeded neighbours on every side of the range — which
+   * `test:staging` (auditoriaNaoEnumerados.staging.test.ts) has and a real conta
+   * here does not. On such a FAIL, read the counters below and that suite's run.
+   */
+  function relatarVeredicto(label, veredicto) {
+    if (veredicto.alvo != null) printNode(veredicto.alvo);
+    const { leitura } = veredicto;
+    console.log(
+      `  read counters: ${
+        leitura == null
+          ? '(none printed on at least one judged node)'
+          : `${leitura.rotulo} = ${leitura.valor} over ${leitura.nos} node(s)`
+      }`,
+    );
+    for (const m of veredicto.motivos) fail(`${label}: [${m.codigo}] ${m.mensagem}`);
+    if (veredicto.motivos.length === 0) console.log(`PASS  ${label}: ${veredicto.detalhe}`);
   }
 
   if (!runAuditoria) {
@@ -1868,61 +1764,22 @@ try {
       console.log(`\n--- ${labelWalk}: classic explain ---`);
       const classico = await explainClassico(labelWalk, walkQuery().startAfter(cursorRef));
       if (classico.metrics != null) {
-        julgarClassico(labelWalk, classico.metrics, (usados) =>
-          usados.some(
-            (u) =>
-              /group/i.test(String(u.query_scope ?? '')) &&
-              /^\(contaOuterRef ASC, __name__ ASC\)$/.test(String(u.properties ?? '')),
-          ),
-        );
+        julgarClassico(labelWalk, classico.metrics, classicoServeVarredura);
       } else if (classico.recusado != null) {
-        const proxyPlan = await explainProxy(labelWalk, () => walkPipeline(cursorRef));
+        const proxyPlan = await explainProxy(labelWalk, proxyDe(walkQuery().startAfter(cursorRef)));
         if (proxyPlan == null) {
           fail(`${labelWalk}: the PROXY returned no plan (0 rows) — nothing proven`);
         } else {
-          const nodes = parseAccessNodes(proxyPlan);
           console.log(`  plan nodes: ${nomesDeNos(proxyPlan).join(', ')}`);
-          // A COLLECTION GROUP scan has no parent partition to excuse it: an
-          // identifier-less node here is the whole group, every conta's links.
-          failIdentifierlessScans(`${labelWalk} PROXY`, nodes);
-          checkTarget({
-            label: `${labelWalk} PROXY: COLLECTION_GROUP produtoMercadoLivre(contaOuterRef, __name__)`,
-            nodes,
-            plan: proxyPlan,
-            // `__name__` prints as `__key__` in this dialect (header 5.'s RESULT).
-            indexRe: /^\*\*\/produtoMercadoLivre \(contaOuterRef ASC, __(?:name|key)__ ASC\)/,
-            fallbackRe: /produtoMercadoLivre \(/,
-            predicateRe: /\$contaOuterRef/,
-            pendingDeploy:
-              'no access node rides the COLLECTION_GROUP produtoMercadoLivre(contaOuterRef ' +
-              'ASC, __name__ ASC) entry. It is declared since #1191; if it is not READY in ' +
-              'this project, deploy firestore.indexes.json BEFORE the master flag goes on — ' +
-              'until then every page of the audit (and of the price report) full-scans the group',
-            boundOf: (n) => {
-              if (n.boundedLines.some((l) => l.includes('integracao/'))) {
-                return `contaOuterRef value bound on ${n.identifier}`;
-              }
-              if (n.filter != null && /contaOuterRef/.test(n.filter)) {
-                return `contaOuterRef push-down on ${n.identifier}`;
-              }
-              return null;
-            },
-          });
-          if (predicateInResidualFilters(proxyPlan, /\$contaOuterRef/)) {
-            fail(`${labelWalk} PROXY: contaOuterRef ALSO served by a residual Filter node`);
-          }
-          if (predicateInResidualFilters(proxyPlan, /\$__(?:name|key)__/)) {
-            fail(
-              `${labelWalk} PROXY: the keyset cursor is a RESIDUAL Filter — page N re-reads ` +
-                'every earlier page of the conta, and the walk turns quadratic',
-            );
-          }
-          if (temSortResidual(proxyPlan)) {
-            fail(
-              `${labelWalk} PROXY: a Sort node — the index did not deliver __name__ order, so ` +
-                "every page sorts the conta's whole link set before the limit",
-            );
-          }
+          // `julgarPlanoDaVarredura` covers what this block used to check inline:
+          // no identifier-less root scan (a collection group has no parent
+          // partition to excuse one), the CG entry ridden AND bounded on
+          // contaOuterRef, the page-2 cursor a SEEK (`comCursor`), neither
+          // predicate residual, no Sort node.
+          relatarVeredicto(
+            `${labelWalk} PROXY`,
+            julgarPlanoDaVarredura(proxyPlan, { comCursor: true }),
+          );
           console.log(
             'NOTE  PROXY verdicts prove the CG entry is READY and serves this predicate — ' +
               "NOT the classic query's own plan. Confirm that one in Query Insights after the " +
@@ -1962,14 +1819,12 @@ try {
     const classicoAvisos = await explainClassico(labelAvisos, avisosQuery(inicioFaixa, fimFaixa));
     if (classicoAvisos.metrics != null) {
       // A pure key-order read rides the primary key and no declared composite.
-      julgarClassico(labelAvisos, classicoAvisos.metrics, (usados) =>
-        usados.every((u) => /^\(__name__ ASC\)$/.test(String(u.properties ?? ''))),
-      );
+      julgarClassico(labelAvisos, classicoAvisos.metrics, classicoServeFaixa);
     } else if (classicoAvisos.recusado != null) {
       // Zero rows carry no plan, and before the audit's first run this conta has
       // no `anuncioForaDaSincronizacao` row at all. Widened retry, labeled: the
       // same half-open shape over a range known to hold one real aviso id.
-      let proxyPlan = await explainProxy(labelAvisos, () => avisosPipeline(inicioFaixa, fimFaixa));
+      let proxyPlan = await explainProxy(labelAvisos, proxyDe(avisosQuery(inicioFaixa, fimFaixa)));
       let inicioJulgado = inicioFaixa;
       if (proxyPlan == null) {
         const algum = await db
@@ -1985,7 +1840,7 @@ try {
               'shape, so the plan proof is unaffected',
           );
           inicioJulgado = id;
-          proxyPlan = await explainProxy('widened range', () => avisosPipeline(id, `${id};`));
+          proxyPlan = await explainProxy('widened range', proxyDe(avisosQuery(id, `${id};`)));
         }
       }
       if (proxyPlan == null) {
@@ -1994,37 +1849,18 @@ try {
             'nothing proven',
         );
       } else {
-        const nodes = parseAccessNodes(proxyPlan);
         console.log(`  plan nodes: ${nomesDeNos(proxyPlan).join(', ')}`);
-        // ⚠️ NOT `failIdentifierlessScans`: the primary key is no declared index,
-        // so a key-range access node may legitimately carry no `index:` line.
-        // What must hold is a BOUND on the key — the range, not the collection.
-        const doAvisos = nodes.filter((n) =>
-          /avisos/.test(`${n.identifier ?? ''} ${n.kind ?? ''}`),
-        );
-        for (const n of uniqueNodes(doAvisos)) printNode(n);
-        const limitado = doAvisos.find((n) => n.boundedLines.length > 0) ?? null;
-        if (doAvisos.length === 0) {
-          fail(`${labelAvisos} PROXY: no access node on avisos — read the plan above`);
-        } else if (limitado == null) {
-          fail(
-            `${labelAvisos} PROXY: the avisos scan carries NO key bound — the range is read ` +
-              'as a walk of the whole collection',
-          );
-        } else {
-          const contemInicio = limitado.boundedLines.some((l) => l.includes(inicioJulgado));
-          console.log(
-            `PASS  ${labelAvisos} PROXY: bounded key scan on ` +
-              `${limitado.identifier ?? `(no identifier${limitado.kind ? `, kind ${limitado.kind}` : ''})`}` +
-              (contemInicio ? ' — the range start is printed in its bound' : ''),
-          );
+        // ⚠️ `julgarPlanoDaFaixaDeAvisos`, NOT `failIdentifierlessScans`: the
+        // primary key is no declared index, so a key-range access node may
+        // legitimately carry no `index:` line. What must hold is a BOUND on the
+        // key at BOTH ends — the range, not the collection.
+        const veredicto = julgarPlanoDaFaixaDeAvisos(proxyPlan, { inicio: inicioJulgado });
+        for (const n of uniqueNodes(
+          veredicto.nos.filter((n) => /avisos/.test(`${n.identifier ?? ''} ${n.kind ?? ''}`)),
+        )) {
+          if (n !== veredicto.alvo) printNode(n);
         }
-        if (predicateInResidualFilters(proxyPlan, /\$__(?:name|key)__/)) {
-          fail(`${labelAvisos} PROXY: the key range is a RESIDUAL Filter — rows read, then cut`);
-        }
-        if (temSortResidual(proxyPlan)) {
-          fail(`${labelAvisos} PROXY: a Sort node on a key-ordered read`);
-        }
+        relatarVeredicto(`${labelAvisos} PROXY`, veredicto);
         console.log(
           'NOTE  PROXY verdict — the classic read itself is confirmed in Query Insights (header 6.)',
         );

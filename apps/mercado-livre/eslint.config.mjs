@@ -87,6 +87,13 @@ const config = [
     // read back was written by a DIFFERENT process (the function running inside
     // the emulator), which is exactly when you want the raw bytes. Scoped to the
     // two suffixes, so production code and the offline unit tests stay covered.
+    //
+    // ⚠️ The STAGING suite (`*.staging.test.ts`) is deliberately NOT here: it
+    // writes to the shared, real staging database, which is exactly where an
+    // unvalidated raw write must stay lint-blocked. It needs no exemption — it
+    // seeds through the handles (`.set()`, or `docRef()` for the legacy shapes
+    // a schema rejects) and explains `db.pipeline().createFrom(<the production
+    // query>)`, so it never names a raw `.collection()`/`.collectionGroup()`.
     files: ['**/*.firestore.test.ts', '**/*.tasks.test.ts'],
     rules: {
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],

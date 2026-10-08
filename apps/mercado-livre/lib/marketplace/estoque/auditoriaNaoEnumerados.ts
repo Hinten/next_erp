@@ -769,41 +769,74 @@ export function avisosAuditoriaPadrao(agora: () => number): AvisosAuditoria {
   };
 }
 
+/** A half-open document-key range: ids `>= inicio` and `< fim`. */
+export interface FaixaDeChaves {
+  inicio: string;
+  fim: string;
+}
+
+/**
+ * The key range holding exactly this producer's rows for ONE conta —
+ * `[<tipo>:<conta>:, <tipo>:<conta>;)`. Exported so the staging suite
+ * (`auditoriaNaoEnumerados.staging.test.ts`) explains the very bounds this file
+ * reads, rather than a hand-copied pair that could drift from them.
+ */
+export function faixaDeChavesDaConta(integracaoId: string): FaixaDeChaves {
+  return faixaDoPrefixo(prefixoDaConta(integracaoId));
+}
+
+/** `[<prefixo>:, <prefixo>;)` — `;` is the code point after the `:` separator. */
+function faixaDoPrefixo(prefixo: string): FaixaDeChaves {
+  return { inicio: `${prefixo}:`, fim: `${prefixo};` };
+}
+
 /** Every row of this tipo for one conta — `[<tipo>:<conta>:, <tipo>:<conta>;)`. */
 export function listarAvisosDaConta(
   db: Firestore,
   integracaoId: string,
 ): Promise<AvisoExistente[]> {
-  return listarFaixaDeChaves(db, prefixoDaConta(integracaoId));
+  return listarFaixaDeChaves(db, faixaDeChavesDaConta(integracaoId));
 }
 
 /** Every row of this tipo, all contas — `[<tipo>:, <tipo>;)`. */
 export function listarAvisosDoTipo(db: Firestore): Promise<AvisoExistente[]> {
-  return listarFaixaDeChaves(db, chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao }));
+  return listarFaixaDeChaves(
+    db,
+    faixaDoPrefixo(chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao })),
+  );
 }
 
 /**
- * The key-range read itself: ids in `[<prefixo>:, <prefixo>;)`, projected to the
- * three fields the audit decides on (open?, current params?, whose row?), paged
- * by id.
+ * ONE page of the key-range read as an unexecuted query: ids in `[inicio, fim)`
+ * — or after `ultimo`, for every page but the first — projected to the three
+ * fields the audit decides on (open?, current params?, whose row?). Exported for
+ * the staging suite, which `explain()`s this very object (the
+ * `consultaDaVarredura` precedent in `anuncios/linksNaoEnumerados.ts`).
  *
  * ⚠️ `endBefore`, never `endAt`: the range end `<prefixo>;` is a perfectly legal
  * document id that is NOT one of this prefix's rows, and an inclusive end would
  * hand it to the resolver. Each later page REPLACES the start cursor with
  * `startAfter(<last id>)` (a query holds one start cursor) and keeps the end.
  */
-async function listarFaixaDeChaves(db: Firestore, prefixo: string): Promise<AvisoExistente[]> {
-  const inicio = `${prefixo}:`;
-  const fim = `${prefixo};`;
+export function consultaDaFaixaDeChaves(
+  db: Firestore,
+  { inicio, fim }: FaixaDeChaves,
+  ultimo: string | null = null,
+): Query {
+  const base = avisoCollection
+    .ref(db, {})
+    .select('resolvidoEm', 'params', 'canal')
+    .orderBy(FieldPath.documentId());
+  const comInicio: Query = ultimo == null ? base.startAt(inicio) : base.startAfter(ultimo);
+  return comInicio.endBefore(fim).limit(PAGINA_AVISOS);
+}
+
+/** The key-range read itself — every page of {@link consultaDaFaixaDeChaves}, by id. */
+async function listarFaixaDeChaves(db: Firestore, faixa: FaixaDeChaves): Promise<AvisoExistente[]> {
   const linhas: AvisoExistente[] = [];
   let ultimo: string | null = null;
   for (;;) {
-    const base = avisoCollection
-      .ref(db, {})
-      .select('resolvidoEm', 'params', 'canal')
-      .orderBy(FieldPath.documentId());
-    const comInicio: Query = ultimo == null ? base.startAt(inicio) : base.startAfter(ultimo);
-    const snap: QuerySnapshot = await comInicio.endBefore(fim).limit(PAGINA_AVISOS).get();
+    const snap: QuerySnapshot = await consultaDaFaixaDeChaves(db, faixa, ultimo).get();
     for (const doc of snap.docs) {
       const raw = doc.data() as Record<string, unknown>;
       const params = raw.params;
