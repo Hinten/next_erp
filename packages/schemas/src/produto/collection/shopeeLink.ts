@@ -23,28 +23,43 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  * ## The writer inventory, whole
  *
  * Five groups of fields have a named writer set, and none of the five overlap:
- *  - **`item_status` + `estadoAnuncio`** — FOUR writers, enumerated on
+ *  - **`item_status` + `estadoAnuncio`** — FIVE writers, enumerated on
  *    {@link shopeeItemStatusSchema} below;
  *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
  *    sender. Nothing clears them but the sender's own clean-send path;
- *  - **`kitNativo`** (step 12) — **ONE** writer, step 9's product import. Since
- *    step 19 (#1527) that import writes a NEW native-kit listing link (its
- *    cascade found none) at a DERIVED doc id — `idDoVinculoDeKit(integracaoId,
- *    item_id)`, `apps/shopee`'s `kits/idsKit.ts` — instead of an auto id, the id
- *    the kit create writes too, so the two land on ONE document; a link the
- *    cascade finds keeps its id, and an ordinary listing still gets an auto id;
+ *  - **`kitNativo`** (step 12) — **THREE** writer sites since step 19 (#1527),
+ *    ONE rule: each writes `ehKitDe()` of the `get_item_base_info` row it just
+ *    READ, with ONE exception. (1) Step 9's product import. Since step 19 that
+ *    import writes a NEW native-kit listing link (its cascade found none) at a
+ *    DERIVED doc id — `idDoVinculoDeKit(integracaoId, item_id)`, `apps/shopee`'s
+ *    `kits/idsKit.ts` — instead of an auto id, the id the kit create writes
+ *    too, so the two land on ONE document; a link the cascade finds keeps its
+ *    id, and an ordinary listing still gets an auto id. (2) Step 11's
+ *    write-back #2 (`anuncios/publicarAnuncio.ts`), from its read-back — so an
+ *    ordinary listing step 11 created stops reading `null` for ever. (3) The
+ *    native-kit arms (`kits/vinculosKit.ts`): the ONE link write right after a
+ *    successful `add_kit_item` writes the LITERAL `true` — the exception, which
+ *    that call's own 200 proves, so a crash before the read-back still leaves
+ *    steps 12/13 treating the listing as a kit — and their #2 overwrites it
+ *    with `ehKitDe` of the read-back;
  *  - **`receitaKitConferida`** (step 19, on a KIT-MODEL `variashopee`) — ONE
  *    rule for every writer site: each writes `chaveReceitaKitErp` of the ERP
- *    recipe a READ-BACK of Shopee's live kit just folded EQUAL to. ONE writer
- *    site: step 9's kit import (the recipe it writes IS the read-back, so the
- *    stamp is fold-equal by construction). Re-stamps are flat `mergeIfExists`,
+ *    recipe a READ-BACK of Shopee's live kit just folded EQUAL to. THREE writer
+ *    sites: step 9's kit import (the recipe it writes IS the read-back, so the
+ *    stamp is fold-equal by construction); the kit completion after a create
+ *    — criar, recriar, converter — (`kits/aplicarKit.ts`'s `completarKit`,
+ *    through `kits/vinculosKit.ts`), which stamps a child only when ITS
+ *    read-back model folds equal and writes `null` on a new row otherwise; and
+ *    a fold-EQUAL republish (`kits/republicarKit.ts`), bound and appended
+ *    children alike. Never on a write's 200: Shopee answers 200 to a kit
+ *    quantity change it silently ignores. Re-stamps are flat `mergeIfExists`,
  *    never a full `set`. Nothing reads it to decide a Shopee write — only the
  *    L4 aviso decision (`reavaliarAvisoDeReceitaKit`) reads it;
  *  - **the ten `preco*` scalars** (step 13) — **ONE** writer, the price
  *    sender; nothing clears them but its clean send; none is ever read to
  *    decide a send. Six sit on the item doc, four on each model doc.
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
- * fingerprint and never writes either, so it can never race the four above.
+ * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
  *
  * Wire notes (from the parity audit, #289 + #363, corrected by #1519):
@@ -77,7 +92,7 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  * `get_item_violation_info`, `get_kit_item_info`). Widened from
  * `NORMAL`/`UNLIST` by step 9 (#1517).
  *
- * ⚠️ FOUR writers now, and no ordering guard beyond "last read wins":
+ * ⚠️ FIVE writers now, and no ordering guard beyond "last read wins":
  *  - the product IMPORT writes whatever `get_item_base_info` just reported —
  *    step 9 (#1517);
  *  - the publish READ-BACK writes what `get_item_base_info` reports once the
@@ -86,8 +101,14 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    read-back of the same call, never the REQUESTED flag: `success_list[].unlist`
  *    is an echo of what we asked for, not a status — step 11;
  *  - the push handlers (push_code 16 and 27) RE-READ `get_item_base_info` and
- *    write that, never a status taken from the push body — step 11.
- * All four write only what they just READ from the one authoritative call, so a
+ *    write that, never a status taken from the push body — step 11;
+ *  - the native-kit arms' #2 (`apps/shopee`'s `kits/vinculosKit.ts`) write the
+ *    read-back `get_item_base_info` of a kit they just created, completed or
+ *    republished — step 19 (#1527). The same writer folds a linked kit a
+ *    create-arm run reads GONE (a batched status outside the live set, or no
+ *    row at all) to `estadoAnuncio: 'removido'` alone, leaving `item_status`
+ *    untouched — the reverify's not-found shape.
+ * All five write only what they just READ from the one authoritative call, so a
  * replay in any order converges. An earlier revision of this docblock called the
  * field push-only (true before step 9), then said TWO writers (true before step
  * 11). ⚠️ STILL FOUR after step 12 (#1520): the stock sender READS this field
@@ -307,7 +328,7 @@ export const produtoShopeeLinkSchema = z
      * The folded state of this listing — {@link estadoAnuncioShopeeSchema}.
      * `null` means NEVER FOLDED (a step-9 link), which is not evidence of
      * anything and is deliberately treated as movable/live, never as dead.
-     * Written by all four `item_status` writers, from the same read.
+     * Written by all five `item_status` writers, from the same read.
      */
     estadoAnuncio: estadoAnuncioShopeeSchema.nullable().default(null),
     /**
@@ -523,7 +544,7 @@ export const produtoShopeeLinkSchema = z
      *
      * ⚠️ `||` between the two mechanisms, **`&&` between the two fingerprint
      * halves — either one moving LIFTS the skip.** That is the whole design:
-     * **nobody writes a clear to lift it.** The four `item_status` writers
+     * **nobody writes a clear to lift it.** The five `item_status` writers
      * enumerated on {@link shopeeItemStatusSchema} lift it by doing their job, so
      * the refusal expires against the reading that caused it instead of against a
      * clock or a second writer that could disagree. The stock sender's clean-send

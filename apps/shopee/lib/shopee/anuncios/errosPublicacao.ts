@@ -42,9 +42,10 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 22 members.
+ *   before writing. 41 members: step 11's 22 plus the nineteen native-kit
+ *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5).
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 22 plus the twelve only a WIRE rejection can produce (step 18 added the
+ *   those 41 plus the twelve only a WIRE rejection can produce (step 18 added the
  *   two size-chart refusals on `size_chart_info`; step 19 the seven native-kit
  *   refusals, whose ONE producer is `kits/recusaKit.ts`). A problema is a
  *   field-level observation, and after the first Shopee call there are causes no
@@ -162,7 +163,51 @@ export type MotivoPublicacaoBloqueada =
    * persisted in `falhaPublicacao.problemas[]`, so renaming it would orphan
    * every stored refusal.
    */
-  | 'produto-e-kit';
+  | 'produto-e-kit'
+  /*
+   * ---- Step 19 (#1527): the native-kit refusals of the kit core (PR 5). ----
+   * Each one is decided by READING (the produto, its children, the links, the
+   * component resolution, the duplicate scan) before any Shopee WRITE, and each
+   * is produced in `kits/` — spelled there through this constant only.
+   */
+  /** The kit produto has NO sellable unit (no child at all): nothing to make a kit model of. */
+  | 'kit-sem-unidade-vendavel'
+  /** A sellable unit (a family child, or a família de um's member) whose `componentesKit` is empty. */
+  | 'kit-sem-componentes'
+  /** More children than a kit takes models (`SHOPEE_KIT_MAX_MODELOS`, 9 — L2). */
+  | 'kit-variacoes-demais'
+  /** The children vary on more than ONE grupo; a kit has exactly one tier (L2). */
+  | 'kit-dois-eixos'
+  /** A kit model with ONE component row needs `quantity >= 2` (announcement 1262; R-5). */
+  | 'kit-componente-unico-quantidade'
+  /** K has no SKU: the duplicate scan and step 9's import key on it. Create arms only. */
+  | 'kit-sem-sku'
+  /** K's SKU has leading/trailing whitespace, which the scan and the import trim. Create arms only. */
+  | 'kit-sku-com-espacos'
+  /** Another ROOT produto shares K's SKU, so step 9's parent rung could not land on K (R-14). */
+  | 'kit-sku-repetido'
+  /** A component has no listing in this conta (no `prodshopee`/`variashopee` reaches it). */
+  | 'componente-nao-publicado'
+  /** A component whose listing HAS variations, with no model the ERP can name. */
+  | 'componente-sem-modelo'
+  /** A component that is itself a native Shopee kit — kit of kits is not supported. */
+  | 'componente-e-kit-nativo'
+  /** A component whose listing is neither `NORMAL` nor `UNLIST` (or unreadable). */
+  | 'componente-anuncio-inativo'
+  /** A kit model outside the served `component_count_limit_of_single_model` band (R-f). */
+  | 'componentes-fora-da-faixa'
+  /** The kit spans 2+ Shopee items and no `--principal` was named (L1). */
+  | 'principal-obrigatorio'
+  /** The named `--principal` is not part of the kit's composition. */
+  | 'principal-invalido'
+  /** The L6 scan found a Shopee kit with K's SKU that is not this produto's ("importe-o"). */
+  | 'kit-ja-existe-na-shopee'
+  /** The L6 scan stopped at its page ceiling: nothing was created. */
+  | 'busca-de-kit-incompleta'
+  /** Two or more LIVE native-kit links of the produto in this conta (native links only, L10(3)). */
+  | 'vinculos-ambiguos'
+  /** The link was superseded by a native kit (L8): publish no longer targets it. */
+  | 'vinculo-substituido';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -192,6 +237,25 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   listagemRemovida: 'listagem-removida',
   produtoEFilho: 'produto-e-filho',
   produtoEKit: 'produto-e-kit',
+  kitSemUnidadeVendavel: 'kit-sem-unidade-vendavel',
+  kitSemComponentes: 'kit-sem-componentes',
+  kitVariacoesDemais: 'kit-variacoes-demais',
+  kitDoisEixos: 'kit-dois-eixos',
+  kitComponenteUnicoQuantidade: 'kit-componente-unico-quantidade',
+  kitSemSku: 'kit-sem-sku',
+  kitSkuComEspacos: 'kit-sku-com-espacos',
+  kitSkuRepetido: 'kit-sku-repetido',
+  componenteNaoPublicado: 'componente-nao-publicado',
+  componenteSemModelo: 'componente-sem-modelo',
+  componenteEKitNativo: 'componente-e-kit-nativo',
+  componenteAnuncioInativo: 'componente-anuncio-inativo',
+  componentesForaDaFaixa: 'componentes-fora-da-faixa',
+  principalObrigatorio: 'principal-obrigatorio',
+  principalInvalido: 'principal-invalido',
+  kitJaExisteNaShopee: 'kit-ja-existe-na-shopee',
+  buscaDeKitIncompleta: 'busca-de-kit-incompleta',
+  vinculosAmbiguos: 'vinculos-ambiguos',
+  vinculoSubstituido: 'vinculo-substituido',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**
@@ -424,7 +488,13 @@ export type EtapaPublicacao =
   | 'update_model'
   | 'get_model_list'
   | 'relistagem'
-  | 'leitura-de-volta';
+  | 'leitura-de-volta'
+  /** Step 19 — the native-kit create (PR 5). A rejection here leaves nothing on the channel. */
+  | 'add_kit_item'
+  /** Step 19 — the native-kit republish (PR 5). */
+  | 'update_kit_item'
+  /** Step 19 — the recriar's delete of the OLD kit (its producer lands with PR 6). */
+  | 'delete_item';
 
 /**
  * The closed set of etapas.
@@ -433,7 +503,8 @@ export type EtapaPublicacao =
  * enums, and this is a hand-written union), and declared anyway for the two
  * reasons the repo's own convention names: the value is PERSISTED, so one
  * spelling is worth having, and a type-only union cannot be enumerated by the
- * test that asserts these ten and no more.
+ * test that asserts these thirteen and no more (step 19 appended the three
+ * native-kit operations after step 11's ten).
  */
 export const ETAPA_PUBLICACAO = {
   fotos: 'fotos',
@@ -446,6 +517,9 @@ export const ETAPA_PUBLICACAO = {
   getModelList: 'get_model_list',
   relistagem: 'relistagem',
   leituraDeVolta: 'leitura-de-volta',
+  addKitItem: 'add_kit_item',
+  updateKitItem: 'update_kit_item',
+  deleteItem: 'delete_item',
 } as const satisfies Record<string, EtapaPublicacao>;
 
 /**

@@ -1176,8 +1176,11 @@ export function mapearFilho(args: ArgsMapearFilho): MapaProdutoShopee {
  * {@link ehKitDe} on the base read — `true` for a native Shopee kit, `false`
  * for an ordinary listing, on the create AND the merge branch alike. It is the
  * link-side flag steps 11, 12 and 13 read through `kitNativoDoAnuncio` /
- * `podeEnviarEstoqueShopee`, and this builder is its ONLY writer
- * (`shopeeLink.ts`). Both arms reach it: the listing importer refuses a
+ * `podeEnviarEstoqueShopee`, and this builder is ONE of its THREE writer sites
+ * since step 19 (`shopeeLink.ts`'s inventory: this import, step 11's
+ * write-back #2 and the native-kit arms in `kits/vinculosKit.ts`), all on ONE
+ * rule — `ehKitDe` of the base row just read, save the kit link write's literal
+ * `true`. Both arms reach this one: the listing importer refuses a
  * `tag.kit` record before planning, so every link it writes is `false`, and
  * the kit arm's `anuncioDerivadoDoKit` pins `tag.kit: true`, so every link it
  * writes is `true`. ⚠️ Never `produto.ehKit` — thousands of ERP kits are

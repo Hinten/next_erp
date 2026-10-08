@@ -855,13 +855,16 @@ describe('shopeeLink.ts — o texto do arquivo', () => {
     // e um comentário que afirma o que OUTRO módulo faz é exatamente o cheiro
     // do #1369 — por isso está presa aqui.
     expect(FONTE).toContain('## The writer inventory, whole');
-    // Os quatro escritores de `item_status` continuam QUATRO: o remetente de
-    // estoque lê o campo para a impressão digital e nunca o escreve.
-    expect(FONTE).toContain('⚠️ FOUR writers now');
+    // `item_status` tem CINCO escritores desde o passo 19 (a leitura de volta do
+    // kit nativo é o quinto); o remetente de estoque lê o campo para a impressão
+    // digital e nunca o escreve — continuava QUATRO depois do passo 12.
+    expect(FONTE).toContain('⚠️ FIVE writers now');
     expect(FONTE).toContain('STILL FOUR after step 12');
-    // Os dez escalares de estoque têm UM escritor, e `kitNativo` tem UM.
+    // Os dez escalares de estoque têm UM escritor; `kitNativo` tem TRÊS pontos de
+    // escrita desde o passo 19 (a importação, a leitura de volta do passo 11 e o
+    // vínculo do kit criado com a sua leitura de volta).
     expect(FONTE).toContain('**the ten `estoque*` scalars** (step 12) — **ONE** writer');
-    expect(FONTE).toContain('**`kitNativo`** (step 12) — **ONE** writer');
+    expect(FONTE).toContain('**`kitNativo`** (step 12) — **THREE** writer sites since step 19');
     // E a regra do conjunto de pulo é documentada aqui mas calculada no app.
     expect(FONTE).toMatch(/is READ by the app[\s*]+\(`podeEnviarEstoqueShopee`\)/);
     expect(FONTE).toMatch(/never[\s*]+computed in this schema/);

@@ -331,6 +331,15 @@ export const TIPO_AVISO_LABELS = {
  *    than the current fingerprint (an edit this aviso tracks) is KEPT
  *    (L10(2)): no recipe and no stamp is written for it, so the aviso stays
  *    open and the import reports `receita-divergente`.
+ *  - **Writer — the native-kit create and republish** (`apps/shopee`,
+ *    `kits/aplicarKit.ts`'s `criarKit` and `kits/republicarKit.ts`): each calls
+ *    `reavaliarAvisoDeReceitaKit` ONCE for (conta, kit) AFTER its own stamps —
+ *    motivo `kit-recriado` once a create's completion has stamped every child
+ *    whose READ-BACK folded equal, `republicado-igual` once a republish has
+ *    re-stamped the children its read-back found equal — never a blind
+ *    resolve. A child whose read-back folds DISTINCT keeps a `null` (or its
+ *    old) stamp, so that same decision OPENS the aviso naming it. An uncertain
+ *    create (`incerto`) writes nothing at all, this decision included.
  */
 export const tipoAvisoSchema = z
   .enum([
