@@ -16,10 +16,11 @@ import { StatusCanalBadge } from './StatusCanalBadge';
  * `MARKETPLACE_TIPO_CAPS` row (#1430).
  *
  * It replaces `PlaceholderPage`'s generic "Em construção" alert on the unbuilt
- * channel screens (five when it landed; three now: Amazon, Facebook and Magalu,
- * since Shopee and Loja Integrada got TableView screens of their own). The alert
- * said the same nothing for every one of them; the row says which questions have been answered, which answers are
- * `'nao'`, and — the point of the tri-state — which nobody has asked yet.
+ * channel screens (five when it landed; three now: Amazon, Facebook and
+ * Magalu, since Shopee and Loja Integrada got TableView screens of their own).
+ * The alert said the same nothing for every one of them; the row says which
+ * questions have been answered, which answers are `'nao'`, and — the point of
+ * the tri-state — which nobody has asked yet.
  *
  * ⚠️ `PlaceholderPage` itself is untouched: five pages across `/relatorios` and
  * `/etiquetas` still share it. None of them is under `/canais` any more —
