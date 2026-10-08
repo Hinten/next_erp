@@ -421,10 +421,10 @@ erDiagram
 `chat` conversations reference the user, channel, pedido and produto they concern,
 with messages in a subcollection. `integracao` (a sales channel) references the
 branch, price lists, operations and warehouse it maps to. Its **credential**
-subcollections `credenciais` and `credenciaisWhatsapp` are deliberately **not
-registered** in `ALL_DOMAINS`, so the rules generator emits no match block and
-Firestore default-denies them — they are Admin-SDK-only. Its `brandshopee`
-subcollection (Shopee brand-cache docs) IS registered, gated by the same
+subcollections `credenciais`, `credenciaisWhatsapp` and `credenciaisLojaIntegrada`
+are deliberately **not registered** in `ALL_DOMAINS`, so the rules generator emits
+no match block and Firestore default-denies them — they are Admin-SDK-only. Its
+`brandshopee` subcollection (Shopee brand-cache docs) IS registered, gated by the same
 `integracao` permissions. Each `produtos` doc also carries the seven
 marketplace-link subcollections (loose pass-through, written by Flutter).
 
@@ -557,10 +557,10 @@ subcollection, and its key outgoing references. Subcollection paths use
 
 Collections intentionally **absent** from `ALL_DOMAINS` so the rules generator
 default-denies them (Admin-SDK-only): `integracao/{}/credenciais`,
-`integracao/{}/credenciaisWhatsapp`, `metodo_pgto/{}/credenciais`,
-`filiais/{}/certificadoSecreto`, and the Mercado Pago / WhatsApp notification
-logs. The full picture of what the generated ruleset does and does not grant,
-measured against the legacy Flutter ruleset, is in
+`integracao/{}/credenciaisWhatsapp`, `integracao/{}/credenciaisLojaIntegrada`,
+`metodo_pgto/{}/credenciais`, `filiais/{}/certificadoSecreto`, and the Mercado
+Pago / WhatsApp notification logs. The full picture of what the generated
+ruleset does and does not grant, measured against the legacy Flutter ruleset, is in
 [Legacy ruleset coverage](/architecture/legacy-rules-coverage/).
 
 ## See also

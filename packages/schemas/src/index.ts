@@ -413,6 +413,19 @@ export {
   type UsuarioTesteRole,
 } from './integracao';
 
+// `credenciaisLojaIntegrada` mirrors `credenciaisWhatsapp`: the admin-only,
+// default-deny Loja Integrada Personal Token store — not a DomainSchema, not in
+// ALL_DOMAINS; only its schema/meta/type and the fixed doc id are public.
+// ⚠️ Never export a combined `{ schema, meta }` object for it: `registry.test.ts`
+// fails any such export missing from ALL_DOMAINS, and registering it would make
+// the rules generator grant clients access to a live token.
+export {
+  credenciaisLojaIntegradaSchema,
+  credenciaisLojaIntegradaMeta,
+  CREDENCIAL_LOJA_INTEGRADA_DOC_ID,
+  type CredenciaisLojaIntegrada,
+} from './credenciaisLojaIntegrada';
+
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
 // Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
 // `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the

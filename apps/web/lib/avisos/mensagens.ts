@@ -60,6 +60,45 @@ function frasePendencia(valor: Aviso['params'][string] | undefined): string {
     : 'confira a situação da devolução';
 }
 
+/**
+ * `YYYY-MM-DD` (a civil date, as the Loja Integrada producers store
+ * `params.expiraEm`) → `DD/MM/AAAA`, by splitting the string. ⚠️ No `Date`
+ * parsing on purpose: `new Date('2026-11-02')` is UTC midnight, which the
+ * browser renders as the PREVIOUS day in São Paulo. Anything else — absent, a
+ * number, a malformed string — returns `null` and the sentence omits the date.
+ */
+function dataCivilBr(valor: Aviso['params'][string] | undefined): string | null {
+  if (typeof valor !== 'string') return null;
+  const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(valor);
+  if (partes === null) return null;
+  const [, ano = '', mes = '', dia = ''] = partes;
+  return `${dia}/${mes}/${ano}`;
+}
+
+/**
+ * The expiry sentence's tense. `dias` is written as a NUMBER (`0` on the last
+ * day, negative once the date has passed); anything else falls back to the
+ * future-tense sentence with the placeholder, never "undefined".
+ */
+function corpoExpiracaoLojaIntegrada(params: Aviso['params']): string {
+  const loja = p(params, 'loja');
+  const data = dataCivilBr(params.expiraEm);
+  const quando = data === null ? '' : ` (${data})`;
+  const dias = params.dias;
+  if (typeof dias === 'number' && dias < 0) {
+    return (
+      `A validade informada para o token da Loja Integrada da loja ${loja} já passou${quando}. ` +
+      'Se o token não foi renovado no painel, ele foi revogado — gere um novo e salve-o no ERP. ' +
+      'Se foi renovado, atualize a validade no ERP.'
+    );
+  }
+  const prazo = dias === 0 ? 'vence hoje' : `vence em ${p(params, 'dias')} dia(s)`;
+  return (
+    `O token da Loja Integrada da loja ${loja} ${prazo}${quando}. ` +
+    'Renove no painel e atualize a validade no ERP.'
+  );
+}
+
 export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   [TIPO_AVISO.shopeeAutorizacaoExpirando]: {
     titulo: 'Autorização Shopee expirando',
@@ -170,6 +209,25 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       `A devolução ${p(params, 'devolucao')} do pedido ${p(params, 'pedido')} aguarda você: ` +
       `${frasePendencia(params.pendencia)}. Sem resposta até o prazo, o canal decide sozinho — ` +
       'em geral a favor do comprador. Abra a aba Incidentes do pedido.',
+  },
+  // Sem `runbook`: o conserto está no app — o painel da conta (o link do aviso)
+  // atualiza a validade depois que o proprietário renova no painel da Loja Integrada.
+  [TIPO_AVISO.lojaIntegradaTokenExpirando]: {
+    titulo: 'Token da Loja Integrada expirando',
+    // ⚠️ `dias` 0 e negativo têm frases próprias: "vence em 0 dia(s)" e "vence em -3
+    // dia(s)" seriam lidos como erro do sistema, não como um token vencido.
+    corpo: corpoExpiracaoLojaIntegrada,
+  },
+  [TIPO_AVISO.lojaIntegradaReconexaoPendente]: {
+    titulo: 'Token da Loja Integrada recusado',
+    corpo: (params) =>
+      `A Loja Integrada recusou o token da loja ${p(params, 'loja')}${
+        params.status === undefined ? '' : ` (HTTP ${p(params, 'status')})`
+      }. A importação fica parada até salvar um token válido.`,
+    // O remédio está FORA do app: só o proprietário da loja gera ou renova o token.
+    runbook:
+      'Peça ao proprietário da loja que gere um novo token ou renove o atual no painel da Loja ' +
+      'Integrada (Configurações > Chave para API) e salve-o na conta, no ERP.',
   },
 };
 
