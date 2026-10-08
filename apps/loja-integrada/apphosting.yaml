@@ -1,7 +1,9 @@
 # Firebase App Hosting backend config for apps/loja-integrada.
 # API-only service for the Loja Integrada marketplace channel. Step 1 of the
-# master plan ships only the bare scaffold (`GET /api/health`); the connect
-# route, the Firestore access and the poller arrive in later steps.
+# master plan shipped the bare scaffold (`GET /api/health`); step 2 adds the
+# Firebase Admin init, the CORS proxy and the credential routes (token save,
+# validity renewal, removal and status). The poller and the webhook arrive in
+# later steps.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -18,6 +20,24 @@ runConfig:
 # No `runConfig.vpcAccess` — this channel needs no static egress IP (master plan
 # D3).
 #
-# No `env:` block and no variables listed: nothing here reads the environment
-# yet. The step that adds the first route documents and declares every variable
-# it reads, here, in the same change.
+# Environment this backend reads (step 2). None of it gets an `env:` row below,
+# on purpose, and the list is kept here so the next step that reads a variable
+# declares it in the same change:
+#
+#   FIREBASE_PROJECT_ID     OPTIONAL. `lib/firebase/admin.ts` resolves the project
+#                           from this, then GOOGLE_CLOUD_PROJECT, then
+#                           FIREBASE_CONFIG.projectId (the one App Hosting actually
+#                           injects), then the service account. Leave it unset on a
+#                           deployed backend.
+#   FIREBASE_DATABASE_ID    OPTIONAL. Unset means the database named `default`
+#                           (Enterprise names it `default`, never `(default)`).
+#                           Never add a blank `env:` row for it: an empty string is
+#                           a value, not an absence, and would be passed through.
+#   ALLOWED_ADMIN_ORIGINS   CSV of apps/web origins for CORS, read by `proxy.ts`
+#                           only. REQUIRED in production: localhost is allowed
+#                           outside production only (#821/T5), so an unset value
+#                           allows NO origin at all and every browser call fails
+#                           CORS. It is a console variable like the other
+#                           backends', not a secret.
+#
+# No `env:` block: nothing here needs a value baked into the manifest.
