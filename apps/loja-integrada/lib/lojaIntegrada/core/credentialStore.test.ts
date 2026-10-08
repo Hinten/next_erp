@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { relogioDoDocumentoUs } from '../avisos/avisos';
-import { FakeDb, asDb } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import {
   AGORA_MS,
   DIA_MS,
@@ -199,6 +199,37 @@ describe('salvarCredencial — update path (versioned)', () => {
     ).rejects.toBeInstanceOf(LiCredencialAlteradaError);
     expect(db.ler(CAMINHO)).toBeUndefined();
   });
+
+  it('a removal the server answers with NOT_FOUND (5) is the same 409; any other failure propagates as itself', async () => {
+    const db = new FakeDb();
+    seedCredencial(db, ID);
+    const lida = await lerCredencial(asDb(db), ID);
+    const entrada = {
+      personalToken: TOKEN_A,
+      tokenExpiraEmMs: EXPIRA_MS,
+      agoraMs: AGORA_MS,
+      versaoEsperada: lida!.updateTime,
+    };
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      await removerCredencial(asDb(db), ID);
+      throw grpc(5, 'NOT_FOUND');
+    });
+    await expect(salvarCredencial(asDb(db), ID, entrada)).rejects.toBeInstanceOf(
+      LiCredencialAlteradaError,
+    );
+    expect(db.ler(CAMINHO)).toBeUndefined();
+
+    // Near-miss: a transient failure is not a lost race.
+    seedCredencial(db, ID);
+    const falha = grpc(14, 'UNAVAILABLE');
+    db.falharEscrita(CAMINHO, falha);
+    await expect(
+      salvarCredencial(asDb(db), ID, {
+        ...entrada,
+        versaoEsperada: (await lerCredencial(asDb(db), ID))!.updateTime,
+      }),
+    ).rejects.toBe(falha);
+  });
 });
 
 describe('atualizarValidade (versioned)', () => {
@@ -255,6 +286,36 @@ describe('atualizarValidade (versioned)', () => {
       }),
     ).rejects.toBeInstanceOf(LiCredencialAusenteError);
     expect(db.ler(CAMINHO)).toBeUndefined();
+  });
+
+  it('a removal the server answers with NOT_FOUND (5) is AUSENTE; any other failure propagates as itself', async () => {
+    const db = new FakeDb();
+    seedCredencial(db, ID);
+    const lida = await lerCredencial(asDb(db), ID);
+    const entrada = {
+      tokenExpiraEmMs: EXPIRA_MS,
+      agoraMs: AGORA_MS,
+      versaoEsperada: lida!.updateTime,
+    };
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      await removerCredencial(asDb(db), ID);
+      throw grpc(5, 'NOT_FOUND');
+    });
+    await expect(atualizarValidade(asDb(db), ID, entrada)).rejects.toBeInstanceOf(
+      LiCredencialAusenteError,
+    );
+    expect(db.ler(CAMINHO)).toBeUndefined();
+
+    // Near-miss: a transient failure is neither ALTERADA nor AUSENTE.
+    seedCredencial(db, ID);
+    const falha = grpc(14, 'UNAVAILABLE');
+    db.falharEscrita(CAMINHO, falha);
+    await expect(
+      atualizarValidade(asDb(db), ID, {
+        ...entrada,
+        versaoEsperada: (await lerCredencial(asDb(db), ID))!.updateTime,
+      }),
+    ).rejects.toBe(falha);
   });
 });
 

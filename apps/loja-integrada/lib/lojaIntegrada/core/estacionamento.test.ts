@@ -13,7 +13,7 @@ import {
   relogioDoDocumentoUs,
   resolverReconexaoPendente,
 } from '../avisos/avisos';
-import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   AGORA_MS,
   DIA_MS,
@@ -202,6 +202,44 @@ describe('estacionarConta (tier 1)', () => {
     expect(r).toEqual({ tipo: 'sem-credencial' });
     expect(db.escritasEm(CAMINHO).map((e) => e.verbo)).toEqual(['delete']);
     expect(db.ler(CAMINHO)).toBeUndefined();
+  });
+
+  it('a removal the server answers with NOT_FOUND (5) is re-read too: sem-credencial, nothing written', async () => {
+    const db = new FakeDb();
+    seedCredencial(db, ID);
+    // The fake answers a removal with 9 (what the SDK sends); this pins the
+    // other code too, so the outcome never hinges on which one the server picks.
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      await removerCredencial(asDb(db), ID);
+      throw grpc(5, 'NOT_FOUND');
+    });
+    const r = await estacionarConta(asDb(db), ID, { refCredencial: REF_ATUAL, status: 401 }, deps);
+    expect(r).toEqual({ tipo: 'sem-credencial' });
+    expect(db.escritasEm(CAMINHO).map((e) => e.verbo)).toEqual(['delete']);
+    expect(db.ler(CAMINHO)).toBeUndefined();
+  });
+
+  it('near-miss: any OTHER write failure propagates on the first attempt, never retried', async () => {
+    const db = new FakeDb();
+    seedCredencial(db, ID);
+    const falha = grpc(7, 'PERMISSION_DENIED');
+    db.falharEscrita(CAMINHO, falha);
+    let leituras = 0;
+    await expect(
+      estacionarConta(
+        asDb(db),
+        ID,
+        { refCredencial: REF_ATUAL, status: 401 },
+        {
+          agoraMs: () => {
+            leituras += 1;
+            return AGORA_MS;
+          },
+        },
+      ),
+    ).rejects.toBe(falha);
+    expect(leituras).toBe(1);
+    expect(db.ler(CAMINHO)?.reconexaoPendente).toBeNull();
   });
 
   it(`${String(MAX_TENTATIVAS_ESTACIONAMENTO)} lost preconditions in a row throw, re-deciding every time`, async () => {

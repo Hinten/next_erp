@@ -293,6 +293,20 @@ describe('PUT …/credencial/validade — verdicts other than aceito', () => {
     expect(await res.text()).toBe('');
     expect(db.escritas).toEqual([]);
   });
+
+  it('near-miss: a DIFFERENT error thrown after the abort is rethrown (500), never a 499', async () => {
+    const controller = new AbortController();
+    const outro = new RangeError('outra falha');
+    stubFetch(() => {
+      controller.abort(new Error('o navegador desistiu'));
+      return Promise.reject(outro);
+    });
+    const versao = relogioDoDocumentoUs(seedCredencial(db, ID));
+    await expect(
+      renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao }, { sinal: controller.signal }),
+    ).rejects.toBe(outro);
+    expect(db.escritas).toEqual([]);
+  });
 });
 
 describe('hygiene and structure', () => {
