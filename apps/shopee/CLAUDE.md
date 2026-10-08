@@ -185,14 +185,14 @@ a page of the 3-day queue irreversibly.
   (step 8)** below.
 - `lib/shopee/produtos/` — step 9's product import, the FIRST thing this app
   writes into the catálogo (`produtos`, `grupoDeVariacoes`, `categorias`,
-  `arquivos`, `prodshopee` / `variashopee`). Twenty-one modules in five
+  `arquivos`, `prodshopee` / `variashopee`). Twenty-two modules in five
   families: the seam (`itemLido`, `eixos`, `produtoIds`, `errosImportacao`),
   the pure half (`mapeamento`, `taxonomiaShopeeCore`, `planoImportacao`), the
   IO half (`resolveProduto`, `links`, `taxonomiaShopee`, `categoriaShopee`,
   `fotosShopee`, `estoquePrecos`, `variacoesShopee`, `importarAnuncio`), the
-  kit arm (`kitShopee`) and the job with its surfaces (`importacaoMassa`,
-  `shopeeMassImportTasks`, `corpoImportacao`, `lerAnuncio`,
-  `importarAnuncioCli`). The design is `lib/shopee/produtos/README.md`; the
+  kit arm (`kitShopee`, `temModelosDosComponentes`) and the job with its
+  surfaces (`importacaoMassa`, `shopeeMassImportTasks`, `corpoImportacao`,
+  `lerAnuncio`, `importarAnuncioCli`). The design is `lib/shopee/produtos/README.md`; the
   rules are under **Product import (step 9)** below.
 - `app/api/marketplace/shopee/importar/route.ts` and
   `app/api/marketplace/shopee/importar-todos/{route,status/route,cancelar/route}.ts`
@@ -374,7 +374,7 @@ a page of the 3-day queue irreversibly.
   `liquidarPagamentosCli.ts`, `fretePushShopee.ts`, `freteShopeeMapping.ts`,
   `rastrearPedidoSimulacao.ts`, `rastrearPedidoCli.ts`,
   `avisos/reservaTravada.ts`, `varrerReservasCli.ts`,
-  `scripts/varrer-reservas.ts`, **any of the twenty-one modules under
+  `scripts/varrer-reservas.ts`, **any of the twenty-two modules under
   `produtos/`** or any `nfe/` module but the stamp is the drift this list
   exists to prevent.
   ⚠️ `pagamentoMapping.ts` holds no converter of its own — it CALLS site (3) for
@@ -439,11 +439,11 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **95** suites in this app name (93 drive it), and since step 8 it has a
+  **108** suites in this app name (106 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
-  `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
-  step 8, 34 after step 9, 57 after step 12, 73 after step 13, 81 after step 14,
-  84 after step 15, 87 after step 15b, 93 after step 17, 95 after step 18 — the two `*.tasks.test.ts` suites it counts name the double in a
+  `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
+  step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
+  19: 108 — the two `*.tasks.test.ts` suites it counts name the double in a
   docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -474,7 +474,7 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — **twelve** dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — **thirteen** dev-only CLIs, **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
   order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
@@ -489,14 +489,15 @@ a page of the 3-day queue irreversibly.
   (step 14) the approved NF-e of up to 50 named pedidos, in process, and
   `etiqueta.ts` (step 15) the label of ONE pedido and `importar-devolucao.ts`
   (step 17) ONE return; the ten before it **dry-run by default**, `--live` to
-  write, and it is read-only. Their pure halves (arg parsing,
+  write, and it is read-only. `reverificar-anuncio.ts` (step 19) re-reads ONE
+  listing and writes the reading — NO dry run. Their pure halves (arg parsing,
   the redacted summary, the renderer, the error describer) live in
   `lib/shopee/pedidos/importarPedidoCli.ts`,
   `lib/shopee/pedidos/liquidarPagamentosCli.ts`,
   `lib/shopee/pedidos/{rastrearPedidoCli,rastrearPedidoSimulacao}.ts` and
   `lib/shopee/pedidos/varrerReservasCli.ts`,
   `lib/shopee/produtos/importarAnuncioCli.ts`,
-  `lib/shopee/anuncios/publicarAnuncioCli.ts`,
+  `lib/shopee/anuncios/{publicarAnuncioCli,reverificarAnuncioCli}.ts`,
   `lib/shopee/estoque/enviarEstoqueCli.ts`,
   `lib/shopee/precos/enviarPrecoCli.ts`,
   `lib/shopee/nfe/enviarNfeCli.ts`,
@@ -1027,9 +1028,9 @@ why: `apps/nfe` runs on `America/Sao_Paulo` while every other backend is UTC).
 `ship_by_date` reaches `freteInicial` verbatim.
 
 **Produto resolution, in rungs**: `variashopee.model_id` (skipped when `model_id`
-is null or `0`) → `prodshopee.item_id` — the rung that also answers a KIT line,
-since the ERP kit produto owns its components and `kit_items` is NEVER exploded —
-→ the shared SKU cascade in `@delfrance/data/admin/produtos` → the `'NONE'`
+is null or `0`; a KIT line binds here, on the child's kit-model row, and
+`kit_items` is NEVER exploded) → `prodshopee.item_id` (binds only a `model_id 0`
+line) → the shared SKU cascade in `@delfrance/data/admin/produtos` → the `'NONE'`
 bucket. An unbound line is kept, never dropped, and raises one non-blocking
 `incidentes` doc at a deterministic id. ⚠️ Both group queries need the composite
 indexes `variashopee (model_id, contaVariacaoShopeeOuterRef)` and
@@ -1608,6 +1609,40 @@ the pick (see **Publish**). Depth and register rows 248–269:
 - `size_chart_limit` is advice, never a gate — but an explicit
   `support_image_size_chart: false` withholds publish's photo fallback.
 
+## Native kits (`lib/shopee/kits/`, step 19)
+
+- Same `publicar` route/CLI; `escolherArmaDePublicacao` picks item vs kit from
+  the conta's links. A first publish is a kit only when `ehKitVirtualEfetivo`;
+  `ehKitVirtual` without `ehKit` is REFUSED. Once linked, the LINK decides.
+- ONE recipe module: `receitaKitShopee.ts` in `@delfrance/schemas` (the
+  default-model rule, the fold, the fingerprint). Never a second copy here, in
+  `apps/functions` or in `apps/web`.
+- A plain component reads back a HIDDEN non-zero `component_model_id`: the
+  item's `has_model` (`lerTemModelosDosComponentes`) decides; `0`/absent never
+  means "no model".
+- `add_kit_item` is NOT idempotent and NOTHING stores create progress: every kit
+  command is an ENSURE re-derived from Shopee reads + the links. Same-SKU kit
+  scan first, create arms only (any hit refuses: import it); ONE call;
+  `incerto` ⇒ 202, nothing written. The kit link id derives from (conta,
+  `item_id`) and step 9's import uses the same id.
+- One main per KIT (`--principal`); 1 tier, ≤ 9 models (a family = one model per
+  child). Every component is sent (`limitarEstoque` is deprecated).
+- The composition is frozen and a quantity change is a SILENT 200: never read an
+  `update_kit_item` ack as "applied" — read back. A republish never blocks
+  (`receita-divergente`); `--recriar` ensures the new kit, then deletes the old
+  only once the new kit is live, matches the ERP (composition and principal)
+  and is newer; `--converter-em-kit` supersedes an ordinary listing, which
+  keeps stock and price until deleted in Seller Centre and re-verified
+  (`reverificar:anuncio`).
+- A produto can hold TWO listings' `variashopee` rows (converter, recriar): the
+  model sync and every binding filter rows by
+  `idDoRef(produtoShopeeOuterRef) === linkDocId`, never by produto.
+- Kit refusals are read by SENTENCE in `recusaKit.ts`, never by `KIND_BY_CODE`.
+- Stock: never (step 12 `kit-derivado`). Price: step 13 sends
+  `update_kit_item`. A recipe edit opens `shopeeKitReceitaDivergente` (the
+  `apps/functions` trigger vs `receitaKitConferida`). Depth + register rows
+  270–305: `kits/README.md`.
+
 ## Rules specific to this app
 
 1. **No UI code** beyond the placeholder root page. Thin route handlers.
@@ -1866,9 +1901,10 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
 
-The other eleven CLIs are **dry-run by default** and, like `oauth:url`, are
-**never run by an agent** (root CLAUDE.md rule 8) — the flags, the expected
-output and the runbook for each live in `scripts/README.md`:
+The other twelve CLIs are, like `oauth:url`, **never run by an agent** (root
+CLAUDE.md rule 8); eleven are **dry-run by default**, `reverificar:anuncio` has
+none — the flags, the expected output and the runbook for each live in
+`scripts/README.md`:
 
 ```bash
 pnpm --filter @delfrance/shopee-app importar:pedido --integracao <integracaoId> --order-sn <orderSn>
@@ -1882,6 +1918,7 @@ pnpm --filter @delfrance/shopee-app enviar:precos --integracao <integracaoId> --
 pnpm --filter @delfrance/shopee-app enviar:nfe --pedido <pedidoId>
 pnpm --filter @delfrance/shopee-app baixar:etiqueta --pedido <pedidoId>
 pnpm --filter @delfrance/shopee-app importar:devolucao --integracao <integracaoId> --return-sn <returnSn>
+pnpm --filter @delfrance/shopee-app reverificar:anuncio --integracao <integracaoId> --produto <produtoId> --link <linkDocId>
 ```
 
 The first imports ONE named order through the real step-5 path; the second
@@ -1899,8 +1936,9 @@ up to 50 named produtos, `--produto` repeated, one flag per anchor; the eighth
 the ninth (step 14) uploads the approved NF-e of up to 50 pedidos in process,
 enqueuing nothing — each pedido proves its own conta; the tenth (step 15)
 arranges and downloads ONE pedido's label, never writing the file; the
-eleventh (step 17) prints what ONE return's import would write — no `--live`.
-All eleven still CALL Shopee in dry-run — what they do not do is write, with ONE
+eleventh (step 17) prints what ONE return's import would write — no `--live`;
+the twelfth (step 19) re-reads ONE listing and writes the reading.
+The eleven dry runs all CALL Shopee — what they do not do is write, with ONE
 documented exception: `publicar:anuncio` UPLOADS the pictures in both modes,
 because `montarAnuncio` needs real `image_id`s to build a body at all.
 `enviar:estoque`'s dry run calls `get_item_promotion` and nothing else.
