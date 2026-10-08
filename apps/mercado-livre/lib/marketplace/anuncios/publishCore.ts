@@ -488,11 +488,17 @@ export function classificarMembroUnico(args: {
  * sync binds too — so it is `roundReais`'d, and positivity is checked AFTER
  * rounding: a stored `7.891` publishes as `7.89`, and a stored `0.004` is "no
  * price" (this issue), never a `0.004` listing.
+ *
+ * `exigePreco: false` reads the price without making its absence an issue —
+ * see {@link precoDoPaiExigido} for the one arm that passes it. A missing price
+ * LIST still is one either way: {@link resolveMemberPrice} stays silent on it
+ * and relies on this one issue, so it must never depend on the flag.
  */
 export function resolvePrice(
   produto: PublishProduto,
   priceList: { id: string | null; nome: string | null },
   issues: string[],
+  { exigePreco = true }: { exigePreco?: boolean } = {},
 ): number | null {
   if (!priceList.id) {
     issues.push('integração sem tabela de preços (tabelaNormalOuterRef)');
@@ -500,10 +506,43 @@ export function resolvePrice(
   }
   const valor = precoDaTabela(produto.precos, priceList.id);
   if (valor == null) {
-    issues.push(semPrecoIssue(produto, { id: priceList.id, nome: priceList.nome }));
+    if (exigePreco) issues.push(semPrecoIssue(produto, { id: priceList.id, nome: priceList.nome }));
     return null;
   }
   return valor;
+}
+
+/**
+ * Whether the ANCHOR's own price gates the publish (#1698).
+ *
+ * It does everywhere a body we send carries it: a legacy family (ML takes ONE
+ * price for every variation, the anchor's), a propagating User-Products family
+ * (every member carries the anchor's price), and a childless listing.
+ *
+ * It does NOT on a User-Products family whose parent stores a literal `false`:
+ * each member is POSTed by `buildUserProductItemPayload` with its OWN price
+ * ({@link resolveMemberPrice}, which never reads the anchor on that arm), and a
+ * family stamps no `precoPublicado`. Requiring it there refused a family the
+ * price sync prices — `buildPrecoDrafts` never asked for it — and it was a port
+ * artefact, not a rule: the Flutter User-Products export priced each member from
+ * its own entry and never read the parent's; Shopee's publish takes the price
+ * from the children; and Shopee's importer WRITES this exact shape (an unpriced
+ * parent + `false`) whenever a listing's models are priced differently.
+ *
+ * A member with no price still refuses, naming the MEMBER — including the sole
+ * member of a family of one, which `garantirMembroUnico` gives a copy of the
+ * parent's `precos`.
+ */
+export function precoDoPaiExigido(args: {
+  isUserProductSeller: boolean;
+  membros: number;
+  propagatePriceToChildren: boolean | null | undefined;
+}): boolean {
+  return (
+    !args.isUserProductSeller ||
+    args.membros === 0 ||
+    propagaPrecoAosFilhos(args.propagatePriceToChildren)
+  );
 }
 
 /**
@@ -1147,6 +1186,13 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     args.produto,
     { id: args.priceListId, nome: args.priceListNome },
     issues,
+    {
+      exigePreco: precoDoPaiExigido({
+        isUserProductSeller: args.isUserProductSeller,
+        membros: args.variations.length,
+        propagatePriceToChildren: args.produto.propagatePriceToChildren,
+      }),
+    },
   );
   const isUpdate = args.link?.id != null;
   // ⚠️ A User-Products FAMILY needs both unconditionally, however published the
