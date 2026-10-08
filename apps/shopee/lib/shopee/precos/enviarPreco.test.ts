@@ -4,18 +4,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SHOPEE_ERROR_KIND,
   SHOPEE_SURFACE,
+  SHOPEE_UPDATE_KIT_ITEM_PATH,
   ShopeeApiPartialError,
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
   shopeeErrorFromEnvelope,
+  shopeeItemBaseInfoPayloadSchema,
   shopeeItemBaseInfoRowSchema,
+  shopeeKitItemInfoPayloadSchema,
   shopeeModelListPayloadSchema,
   shopeeUpdatePriceSchema,
   type ShopeeApiError,
   type ShopeeClient,
   type ShopeeErrorKind,
   type ShopeeItemBaseInfoRow,
+  type ShopeeKitItemInfo,
   type ShopeeModelList,
   type ShopeeUpdatePriceResponse,
 } from '@delfrance/integrations-shopee';
@@ -29,6 +33,7 @@ import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 // look-alike with the same `name` would not be them.
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeRefreshEmAndamentoError, ShopeeSemCredencialError } from '../core/tokenStore';
+import { FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS, lerFixture } from '../fixtures/wireCorpus';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { SHOPEE_PRECO_MODEL_ID_SEM_MODELO } from './constantesPreco';
 import { MOTIVO_PRECO_SHOPEE } from './errosPreco';
@@ -1505,6 +1510,436 @@ describe('S1 — uma linha por alvo, na mesma ordem', () => {
       expect(c.updatePrice).not.toHaveBeenCalled();
       expect(c.db.writes).toEqual([]);
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  (7b) the NATIVE-KIT transport (step 19, L5 — reconcile §2.8)               */
+/* -------------------------------------------------------------------------- */
+
+/** Kit roles (s19-ctx): component A (2-tier) and plain B with its HIDDEN model id. */
+const COMP_A_ITEM = 2_500_139_871;
+const COMP_A_MODELO = 2_000_458_821;
+const COMP_B_ITEM = 2_500_139_872;
+const COMP_B_OCULTO = 2_000_458_829;
+/** A live kit model the plan does not address (the kit role's own model id). */
+const MODELO_FORA_DO_PLANO = 2_000_458_820;
+
+/** The kit's LIVE recipe rows per model — what `get_kit_item_info` answers. */
+const COMPONENTES_VIVOS = [
+  {
+    component_item_id: COMP_A_ITEM,
+    component_model_id: COMP_A_MODELO,
+    quantity: 2,
+    main_component: true,
+    component_item_name: 'Camiseta',
+    component_item_or_model_sku: 'CAM-P',
+  },
+  {
+    component_item_id: COMP_B_ITEM,
+    component_model_id: COMP_B_OCULTO,
+    quantity: 1,
+    main_component: false,
+    component_item_name: 'Boné',
+    component_item_or_model_sku: '',
+  },
+] as const;
+
+/** `get_kit_item_info` of the kit, with the given live models (`[model_id, tier]`). */
+function kitVivo(
+  modelosVivos: readonly (readonly [number, number])[] = [
+    [MODELO_A, 0],
+    [MODELO_B, 1],
+  ],
+): ShopeeKitItemInfo {
+  return shopeeKitItemInfoPayloadSchema.parse({
+    product_info: {
+      item_id: ITEM_ID,
+      item_name: 'Kit camiseta e boné',
+      item_status: 'NORMAL',
+      model_list: modelosVivos.map(([model_id, tier]) => ({
+        model_id,
+        original_price: 10,
+        tier_index: [tier],
+        component_list: COMPONENTES_VIVOS,
+      })),
+    },
+  });
+}
+
+/** The kit's base row: `tag.kit: true`, `has_model: true`, a name and two images. */
+function baseDoKit(over: Record<string, unknown> = {}): ShopeeItemBaseInfoRow {
+  return base({
+    has_model: true,
+    tag: { kit: true },
+    item_name: 'Kit camiseta e boné',
+    image: { image_id_list: ['img-kit-1', 'img-kit-2'] },
+    ...over,
+  });
+}
+
+interface PlanoDeKit {
+  /** G1's base row (the injected batched reader). */
+  readonly base?: ShopeeItemBaseInfoRow;
+  /** `get_model_list` answers IN ORDER: G1's, then the read-back's. */
+  readonly listas?: readonly ShopeeModelList[];
+  readonly kit?: ShopeeKitItemInfo | Error;
+  readonly updateKitItem?: Error;
+  /** The read-back's base row (the fresh one-id reader → `get_item_base_info`). */
+  readonly baseRelida?: ShopeeItemBaseInfoRow;
+}
+
+interface CenarioDeKit {
+  readonly db: FakeDb;
+  readonly deps: DepsEnvioPreco;
+  readonly ordem: string[];
+  readonly corposDoKit: unknown[];
+  readonly updatePrice: ReturnType<typeof vi.fn>;
+  readonly updateKitItem: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * The kit's world: the same link docs as {@link cenario}, a client that serves
+ * the kit page, the partial write, and a FRESH base read for the read-back.
+ * `update_price` THROWS: a kit must never reach it.
+ */
+function cenarioDeKit(p: PlanoDeKit = {}): CenarioDeKit {
+  const db = new FakeDb();
+  db.seed(CAMINHO_LINK, { item_id: ITEM_ID, item_status: 'NORMAL', ...RECUSA_ANTERIOR });
+  db.seed(CAMINHO_VAR_A, { model_id: MODELO_A });
+  db.seed(CAMINHO_VAR_B, { model_id: MODELO_B });
+
+  const ordem: string[] = [];
+  const corposDoKit: unknown[] = [];
+  const baseLida = p.base ?? baseDoKit();
+  const listas = [
+    ...(p.listas ?? [
+      LISTA_PADRAO(),
+      modelos([
+        [MODELO_A, 12],
+        [MODELO_B, 22],
+      ]),
+    ]),
+  ];
+
+  const lerBase = vi.fn(async () => {
+    ordem.push('lerBase');
+    return baseLida;
+  });
+  const getModelList = vi.fn(async () => {
+    ordem.push('getModelList');
+    const lista = listas.shift();
+    if (lista === undefined) throw new Error('cenarioDeKit: getModelList sem resposta planejada');
+    return lista;
+  });
+  const getItemBaseInfo = vi.fn(async () => {
+    ordem.push('getItemBaseInfo');
+    return shopeeItemBaseInfoPayloadSchema.parse({ item_list: [p.baseRelida ?? baseLida] });
+  });
+  const getKitItemInfo = vi.fn(async () => {
+    ordem.push('getKitItemInfo');
+    const kit = p.kit ?? kitVivo();
+    if (kit instanceof Error) throw kit;
+    return kit;
+  });
+  const updateKitItem = vi.fn(async (corpo: unknown) => {
+    ordem.push('updateKitItem');
+    corposDoKit.push(corpo);
+    if (p.updateKitItem !== undefined) throw p.updateKitItem;
+    return { request_id: 'req-1', error: '', message: '', warning: '' };
+  });
+  const updatePrice = vi.fn(async () => {
+    ordem.push('updatePrice');
+    throw new Error('cenarioDeKit: um kit NUNCA chega ao update_price');
+  });
+
+  const client = {
+    getModelList,
+    getItemBaseInfo,
+    getKitItemInfo,
+    updateKitItem,
+    updatePrice,
+  } as unknown as ShopeeClient;
+  const conta = {
+    integracaoId: INTEGRACAO,
+    client,
+    regiao: 'BR',
+    moeda: 'BRL',
+    multiplo: 4,
+    tabelaNormalId: 'tabela-normal',
+  } as ContextoContaPreco;
+
+  return {
+    db,
+    deps: {
+      db: asDb(db),
+      conta,
+      nowMs: AGORA_MS,
+      baixarPreco: false,
+      lerBase: lerBase as unknown as DepsEnvioPreco['lerBase'],
+    },
+    ordem,
+    corposDoKit,
+    updatePrice,
+    updateKitItem,
+  };
+}
+
+/** A kit refusal built by the package's OWN factory, on the kit write's path. */
+function erroDoKit(code: string, message: string): ShopeeApiError {
+  return shopeeErrorFromEnvelope(
+    { error: code, message, request_id: 'req-1', warning: null },
+    { path: SHOPEE_UPDATE_KIT_ITEM_PATH, httpStatus: 200, surface: SHOPEE_SURFACE.business },
+  );
+}
+
+/** The measured transient (`add_kit_item`'s "Too many connections"), from the COMMITTED capture. */
+function muitasConexoes(): ShopeeApiError {
+  const corpo = lerFixture(FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS) as {
+    error: string;
+    message: string;
+  };
+  return erroDoKit(corpo.error, corpo.message);
+}
+
+describe('enviarPrecoDoItem — o kit NATIVO: G9 por `update_kit_item`, G11 pela RELEITURA', () => {
+  it('K1 — ⚠️ PAR (M148/M149, RT4 em miniatura): só o modelo que muda vai, com o tier e os componentes VIVOS verbatim; nada de `update_price`, nada de tier list', async () => {
+    const c = cenarioDeKit();
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(c.corposDoKit).toEqual([
+      {
+        item_id: ITEM_ID,
+        item_setting: {
+          model_list: [
+            {
+              model_id: MODELO_A,
+              tier_index: [0],
+              original_price: 12,
+              component_list: [
+                {
+                  component_item_id: COMP_A_ITEM,
+                  component_model_id: COMP_A_MODELO,
+                  quantity: 2,
+                  main_component: true,
+                },
+                // The plain component's HIDDEN id goes back as read (probe #1).
+                { component_item_id: COMP_B_ITEM, component_model_id: COMP_B_OCULTO, quantity: 1 },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    expect(c.updatePrice).not.toHaveBeenCalled();
+    expect(r.tipo).toBe('enviado');
+    expect(linhaDe(r, MODELO_A)).toMatchObject({ resultado: 'enviado', precoAlvo: 12 });
+    expect(linhaDe(r, MODELO_B)).toMatchObject({ resultado: 'pulado', motivo: 'preco-igual' });
+    // G1 (base + models), G9 (kit page + write), G11 (a FRESH base + models).
+    expect(c.ordem).toEqual([
+      'lerBase',
+      'getModelList',
+      'getKitItemInfo',
+      'updateKitItem',
+      'getItemBaseInfo',
+      'getModelList',
+    ]);
+    expect(r.chamadasShopee).toBe(5);
+    expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_LINK]);
+    expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual(patchLimpo(null));
+  });
+
+  it('K2 — ⛔ QUASE-IGUAL (M148): a MESMA leitura sem `tag.kit` ⇒ `update_price`, nunca o kit — e o eco basta (zero releitura)', async () => {
+    const c = cenarioComModelos({ updatePrice: [envelope({ sucesso: [[MODELO_A, 12]] })] });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r.tipo).toBe('enviado');
+    expect(c.ordem).toEqual(['lerBase', 'getModelList', 'updatePrice']);
+    expect(r.chamadasShopee).toBe(2);
+  });
+
+  it('K3 — ⚠️ (M150): a releitura mostra o preço ANTIGO ⇒ `falha preco-nao-atualizado`, NADA escrito — embora a resposta sintetizada "confirme" o modelo', async () => {
+    // P2-c: an `update_kit_item` 200 that changed nothing. The echo would pass.
+    const c = cenarioDeKit({ listas: [LISTA_PADRAO(), LISTA_PADRAO()] });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(c.updateKitItem).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ tipo: 'falha', motivo: 'preco-nao-atualizado', carimbado: false });
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'preco-nao-atualizado',
+    });
+    expect(c.db.writes).toEqual([]);
+  });
+
+  it('K4 — ⚠️ PAR (M152): "Too many connections" em `product.error_busi` é RELANÇADO (a fila tenta de novo) — a MESMA instância, nada escrito', async () => {
+    const erro = muitasConexoes();
+    const c = cenarioDeKit({ updateKitItem: erro });
+
+    await expect(enviarPrecoDoItem(itemComModelos(12, 22), c.deps)).rejects.toBe(erro);
+    expect(c.db.writes).toEqual([]);
+  });
+
+  it('K5 — ⛔ QUASE-IGUAL (M152): o MESMO código com "Invalid product setting" é PERMANENTE ⇒ `falha recusa-desconhecida`, carimbada com o código VERBATIM', async () => {
+    const erro = erroDoKit('product.error_busi', 'Invalid product setting');
+    const c = cenarioDeKit({ updateKitItem: erro });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r).toMatchObject({
+      tipo: 'falha',
+      motivo: 'recusa-desconhecida',
+      codigo: 'product.error_busi',
+      carimbado: true,
+    });
+    expect(unicoPatch(c.db, CAMINHO_VAR_A)).toMatchObject({
+      precoRecusaCodigo: 'product.error_busi',
+    });
+  });
+
+  it('K6 — ⛔ QUASE-IGUAL (M152): "Too many connections" num anúncio COMUM segue a tabela de preço de hoje (o classificador de kit é SÓ do kit)', async () => {
+    const erro = shopeeErrorFromEnvelope(
+      {
+        error: 'product.error_busi',
+        message: 'Too many connections',
+        request_id: 'req-1',
+        warning: null,
+      },
+      { path: CAMINHO, httpStatus: 200, surface: SHOPEE_SURFACE.business },
+    );
+    const c = cenarioComModelos({ updatePrice: [erro] });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r).toMatchObject({ tipo: 'falha', motivo: 'recusa-desconhecida' });
+  });
+
+  it('K7 — a recusa de VSKU num kit ⇒ `falha loja-vsku`, carimbada', async () => {
+    const erro = erroDoKit(
+      'error_busi_cannot_edit_vsku',
+      'Can not use OpenAPI to edit/create VSKU',
+    );
+    const c = cenarioDeKit({ updateKitItem: erro });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r).toMatchObject({ tipo: 'falha', motivo: 'loja-vsku', carimbado: true });
+  });
+
+  it('K8 — um limite de taxa na escrita do kit ainda é PAUSA (o classificador de kit cede à escada), nada escrito', async () => {
+    const c = cenarioDeKit({ updateKitItem: burst(7) });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r).toMatchObject({ tipo: 'pausa', pausa: 'burst', retryAfterSeconds: 7 });
+    expect(c.db.writes).toEqual([]);
+  });
+
+  it('K9 — o modelo planejado que o kit VIVO não tem não vai: `falha forma-de-modelo-divergente` carimbada `erp:`; o outro é enviado ⇒ `envio-parcial`', async () => {
+    // A and B both change; the live kit carries only A.
+    const c = cenarioDeKit({
+      kit: kitVivo([[MODELO_A, 0]]),
+      listas: [
+        LISTA_PADRAO(),
+        modelos([
+          [MODELO_A, 12],
+          [MODELO_B, 22],
+        ]),
+      ],
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 25), c.deps);
+
+    const enviados = (c.corposDoKit[0] as { item_setting: { model_list: { model_id: number }[] } })
+      .item_setting.model_list;
+    expect(enviados.map((m) => m.model_id)).toEqual([MODELO_A]);
+    expect(r).toMatchObject({ tipo: 'falha', motivo: 'envio-parcial' });
+    expect(linhaDe(r, MODELO_B)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'forma-de-modelo-divergente',
+      codigo: null,
+    });
+    expect(unicoPatch(c.db, CAMINHO_VAR_B)).toEqual({
+      precoRecusaEm: AGORA_MS,
+      precoRecusaCodigo: 'erp:forma-de-modelo-divergente',
+      ultimaModificacao: AGORA_MS,
+    });
+    expect(linhaDe(r, MODELO_A)).toMatchObject({ resultado: 'enviado' });
+  });
+
+  it('K10 — QUASE-IGUAL: NENHUM modelo planejado está vivo ⇒ ZERO `update_kit_item` e ZERO releitura', async () => {
+    const c = cenarioDeKit({ kit: kitVivo([[MODELO_FORA_DO_PLANO, 0]]) });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(c.updateKitItem).not.toHaveBeenCalled();
+    expect(c.ordem).toEqual(['lerBase', 'getModelList', 'getKitItemInfo']);
+    expect(r).toMatchObject({ tipo: 'falha', motivo: 'forma-de-modelo-divergente' });
+    expect(r.chamadasShopee).toBe(2);
+  });
+
+  it('K11 — o kit que lê `product_info: null` é recusado como a leitura recusaria (`"."`), sem `update_kit_item`', async () => {
+    const c = cenarioDeKit({ kit: shopeeKitItemInfoPayloadSchema.parse({ product_info: null }) });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(c.updateKitItem).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ tipo: 'falha', motivo: 'recusa-desconhecida', codigo: '.' });
+  });
+});
+
+describe('enviarPrecoDoItem — o kit: o arame do registro 301 (campos do item depois da escrita parcial)', () => {
+  const erros: unknown[][] = [];
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      erros.push(args);
+    });
+  });
+  afterEach(() => {
+    erros.length = 0;
+  });
+
+  it('K12 — ⚠️ o NOME mudou na releitura ⇒ UM `console.error` só com ids, contagens e a flag — e o veredito NÃO muda', async () => {
+    const c = cenarioDeKit({ baseRelida: baseDoKit({ item_name: 'Outro nome qualquer' }) });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r.tipo).toBe('enviado');
+    expect(erros).toEqual([
+      [
+        '[shopee/precos] envio de preço',
+        {
+          evento: 'kit-campos-alterados-pelo-preco',
+          itemId: ITEM_ID,
+          nomeMudou: true,
+          imagensAntes: 2,
+          imagensDepois: 2,
+        },
+      ],
+    ]);
+    expect(JSON.stringify(erros)).not.toContain('Outro nome');
+  });
+
+  it('K13 — as IMAGENS sumiram (2 ⇒ 0) ⇒ o mesmo aviso, `nomeMudou: false`', async () => {
+    const c = cenarioDeKit({ baseRelida: baseDoKit({ image: null }) });
+
+    await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(erros).toHaveLength(1);
+    expect(erros[0]?.[1]).toMatchObject({ nomeMudou: false, imagensAntes: 2, imagensDepois: 0 });
+  });
+
+  it('K14 — ⛔ QUASE-IGUAL: nome e imagens IGUAIS ⇒ silêncio; e um anúncio comum nunca é conferido', async () => {
+    const c = cenarioDeKit();
+    await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+    expect(erros).toEqual([]);
+
+    const comum = cenarioComModelos({ updatePrice: [envelope({ sucesso: [[MODELO_A, 12]] })] });
+    await enviarPrecoDoItem(itemComModelos(12, 22), comum.deps);
+    expect(erros).toEqual([]);
   });
 });
 

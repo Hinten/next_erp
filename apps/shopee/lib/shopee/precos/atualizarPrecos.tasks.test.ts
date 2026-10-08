@@ -408,7 +408,11 @@ describe.skipIf(!EMULATED || !TASKS)(
       // header describes. The walk only needs the `tipo` and the partner env.
       await semearConta(CONTA_SHOPEE, INTEGRACAO_TIPO.shopee, 'Conta Shopee de teste');
 
-      // (A) a NATIVE Shopee kit ⇒ `kit-derivado` (rung 3 reads the LINK).
+      // (A) a NATIVE Shopee kit with NO model link ⇒ `sem-modelos` (rung 3
+      // reads the LINK: a kit is always `has_model`, so it is never the
+      // no-model item). Since step 19 a kit WITH model links is planned and
+      // sent through `update_kit_item` — which would reach the drain, so it
+      // has no place in this all-plan-skips case.
       await semearAncora(ancora.a);
       await semearVinculo(ancora.a, 'link-a', CONTA_SHOPEE, ITEM_ID, { kitNativo: true });
 
@@ -512,7 +516,7 @@ describe.skipIf(!EMULATED || !TASKS)(
       // The sample: ONE entry per skipped listing, each naming its motivo.
       expect((job.skips as { code: string }[]).map((s) => s.code).sort()).toEqual(
         [
-          MOTIVO_PRECO_SHOPEE.kitDerivado,
+          MOTIVO_PRECO_SHOPEE.semModelos,
           MOTIVO_PRECO_SHOPEE.anuncioRemovido,
           MOTIVO_PRECO_SHOPEE.semLink,
           MOTIVO_PRECO_SHOPEE.formaDeModeloDivergente,
@@ -529,7 +533,7 @@ describe.skipIf(!EMULATED || !TASKS)(
           linkDocId: 'link-a',
           anuncioId: String(ITEM_ID),
           fase: ENVIO_PRECO_FASE.plano,
-        })]: { motivo: MOTIVO_PRECO_SHOPEE.kitDerivado, produtoId: ancora.a },
+        })]: { motivo: MOTIVO_PRECO_SHOPEE.semModelos, produtoId: ancora.a },
         [relatorioEnvioPrecoRowKey({
           produtoId: ancora.b,
           linkDocId: 'link-b',

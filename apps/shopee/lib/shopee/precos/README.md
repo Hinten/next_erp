@@ -13,7 +13,8 @@ modules, the manual push and the CLI — is what sections 1–12 below describe.
 The second adds the account-wide job (`atualizarPrecos.ts`, its scheduler and
 queue, its routes; the folder's sixteen modules in all) and sections 13–17: the
 job, push 22, the folder discipline, what is out of scope on purpose, and what
-is UNVERIFIED.
+is UNVERIFIED. Step 19 (#1527) added a seventeenth, the native-kit price
+transport, and §18.
 
 Everything here was **offline-verified**, and the wire was measured ONCE, by
 the probe of 2026-09-24: the SHIPPED `updatePrice` plus raw signed calls
@@ -23,7 +24,7 @@ reais or on production, and no staging rehearsal of the manual push or of the
 job has run yet. Every "measured" below means that probe, on an SGD shop; a
 fact that only a BR shop can settle says so where it appears.
 
-## 1. The sixteen modules, in six families
+## 1. The seventeen modules, in six families
 
 The families are the seam, not a filing convention.
 
@@ -32,7 +33,7 @@ The families are the seam, not a filing convention.
   ceilings, and four lazy `envInt` knobs — the manual push's two and the job's
   two; the folder's ONE `process.env` reader family, and NOT path-bound to the
   deploy preflight, because no price queue rate is env-driven) and
-  `errosPreco.ts` (the 46-member `MotivoPrecoShopee` union with its TOTAL pt-BR
+  `errosPreco.ts` (the 45-member `MotivoPrecoShopee` union with its TOTAL pt-BR
   table rendered at READ time, `MOTIVOS_QUE_CARIMBAM`, the manual push's
   `ShopeeEnvioPrecoGuardError` with its three codes, and the job's two start
   refusals — `ShopeeEnvioPrecoEmAndamentoError`, 409, and
@@ -67,8 +68,10 @@ The families are the seam, not a filing convention.
   matcher from an echo row back to a model). No clock, no network, no
   Firestore in any of the three.
 - **The sender, its write-backs and the surfaces** — `enviarPreco.ts` (the IO
-  ladder around the decision: at most ONE `update_price` per listing),
-  `linkPreco.ts` (the four write-backs and the ONE clearer),
+  ladder around the decision: at most ONE `update_price` per listing — or, for
+  a native kit, ONE `update_kit_item`, §18), `enviarPrecoKit.ts` (step 19: that
+  kit transport, and nothing else — the verdict on its errors stays in the
+  sender), `linkPreco.ts` (the four write-backs and the ONE clearer),
   `enviarPrecoManual.ts` (the in-process manual run and its envelope) and
   `enviarPrecoCli.ts` (the pure half of the `enviar:precos` rehearsal). Their
   I/O halves live outside this folder:
@@ -523,6 +526,13 @@ echo. What the echo cannot prove — that the STORED value equals the echoed one
 on a shop where the two would differ — is why the read-back seam exists; the
 flip is that one literal.
 
+⚠️ **A native kit is ALWAYS read back** (step 19, §18), whatever the literal
+says: `update_kit_item` answers a bare envelope, so the kit transport hands
+G10 a synthesised success list with no prices — an "echo" that would confirm
+anything — and probe #2 measured an `update_kit_item` 200 that changed
+nothing (P2-c). The global constant stays `'eco'`: it is the ordinary item's
+choice, and `constantesPreco.test.ts` pins it.
+
 ⚠️ **A no-model echo carries NO `model_id`** (probe **P4c**, with `model_id: 0`
 sent and with it omitted). The package reads it as `null`, and `modeloDoEco`
 matches the one no-model entry by that ABSENCE (a `0` is accepted too — the
@@ -970,7 +980,7 @@ git grep -nE "toFixed\(|Math\.round\(" -- "$P" "$X" "$Y"
 Every line but the first must print NOTHING. ⚠️ `git grep` prints nothing for
 an UNTRACKED file either, so a new module is checked only after `git add -N`.
 
-Two backstops hold the vocabulary. `motivosProduzidos.test.ts` walks all 46
+Two backstops hold the vocabulary. `motivosProduzidos.test.ts` walks all 45
 motivos and fails on any without a producer outside `errosPreco.ts` — over
 this folder plus BOTH route folders, `enviar-precos` and `atualizar-precos`,
 with an EMPTY allow-list. `filaPreco.types.test.ts` pins the stored `fila`
@@ -987,9 +997,9 @@ alone.
   `wholesale` — a wholesale listing's refusals are only classified (§6) — and
   the editor MOVED to whichever step first sends it (decision of 2026-09-24);
   the web override keeps the field hidden meanwhile.
-- **Native kits.** A `kitNativo` listing is `kit-derivado`; whether
-  `update_price` even accepts a kit `item_id` is step 19's probe (E1 U15). An
-  ERP `ehKit` produto is an ordinary listing, and it IS priced.
+- **Native kits — no longer out of scope.** Step 19 gave them a price arm
+  (§18), and the plan's `kit-derivado` skip is retired. An ERP `ehKit` produto
+  with an ORDINARY listing was never affected: it is priced like any listing.
 - **Cross-border and `local_price`.** `is_cb` is refused before the region
   (§5); a CB listing's price is in the seller's own currency.
 - **A pre-read of anything the refusal already answers**: no
@@ -1072,3 +1082,75 @@ gate. In short:
 - **Settled in the second PR's review**: 183 (the conta ladder the two routes
   duplicated is now ONE helper, `exigirContaParaPreco` in `regiaoPreco.ts`,
   §13).
+- **Step 19's two kit rows** live in the kit register (`kits/README.md` §8):
+  271 (`update_price` on a kit model — measured OK on SG, BR open; the
+  measured alternative to the transport below, unused) and 301 (whether a
+  partial `update_kit_item` keeps the omitted ITEM fields — §18's tripwire;
+  settled by one sandbox partial update read back field by field, before the
+  first `--live` kit price push).
+
+## 18. Native kits (step 19, #1527 — reconcile §2.8)
+
+Lucas's L5: a native Shopee kit gets a price arm NOW, through
+`update_kit_item`. Until step 19 the plan skipped every `kitNativo` listing as
+`kit-derivado`; that skip is gone, and with it the price slug (R-13 — the
+STOCK sync keeps its own, because Shopee derives a kit's stock and the ERP
+never sends one).
+
+- **The plan does not change shape.** Rung 3 now CONTINUES: a native kit is
+  addressed by its model links like any has-model listing, rung 4 and the
+  model binding apply unchanged, and `ItemPlanejadoPreco`, the job's persisted
+  queue entry and `ItemDePreco` are byte-for-byte what they were. The rung
+  keeps ONE consequence: a `kitNativo` link with ZERO attributed rows is
+  `sem-modelos`, never rung 8's no-model item — a kit is always `has_model`, so
+  the anchor's price at model `0` could never land.
+- **The transport is chosen at G9, from G1's fresh base row.**
+  `LeituraDePreco` gained an OPTIONAL `kit` (`ehKitDe(base)`, step 9's one
+  reading of `tag.kit`), present only on a kit. `enviarPreco.ts` sends a kit
+  through `enviarPrecoKit.ts` and everything else through `update_price` —
+  so a listing that became (or stopped being) a kit since the plan goes out on
+  the transport its fresh read names.
+- **The body is PARTIAL** (probe #2): ONE `get_kit_item_info`, then ONE
+  `update_kit_item` carrying only the models whose price changes (the
+  decision's diff), each as `{ model_id, tier_index: [live], original_price,
+component_list: linhasDeReenvioDoKit(live) }` — the live option and the live
+  recipe resent VERBATIM, hidden default model id included — with no tier list
+  and no other key. A planned model the live kit lacks is not sent and its
+  row is `falha forma-de-modelo-divergente`, stamped `erp:`; when none is live,
+  `update_kit_item` is not called at all.
+- **The answer is synthesised, so the check RE-READS.** `update_kit_item`
+  answers a bare envelope, so the transport hands G10 every sent model in a
+  `success_list` with no price. G11 therefore runs `'releitura'` for a kit
+  whatever `FONTE_DE_VERIFICACAO_PRECO` says (§9): an `update_kit_item` 200 is
+  never "applied" (P2-c), and a read-back still at the old price is
+  `falha preco-nao-atualizado`, never stamped.
+- **Kit errors are read by SENTENCE first.** `product.error_busi` carries both
+  a transient ("Too many connections", measured on `add_kit_item`) and
+  permanent refusals ("Invalid product setting"). The sender's private
+  `veredictoDoErroDeKit` consults `classificarRecusaKit` (`kits/recusaKit.ts`)
+  before the code table: the transient is rethrown for the queue to retry,
+  exactly like a `kind: 'transient'` error, instead of being stamped a
+  permanent `recusa-desconhecida`; the VSKU refusal is `loja-vsku`; every other
+  kit motivo, a rate limit and a dead grant fall through to the ordinary
+  ladder unchanged.
+- **Register 301's tripwire.** Whether a partial update keeps the omitted ITEM
+  fields (`item_name`, the images, the description, the logistics) is unsettled.
+  The kit read-back compares the name and the image count with G1's base row
+  and `console.error`s a mismatch — ids, a flag and two counts, never the name
+  — without changing the verdict. If it ever fires, the transport must resend
+  the live item fields from the same `get_kit_item_info`.
+- **A superseded listing keeps its price (L8, R-12(c)).** The plan never reads
+  "superseded": after a conversion, the OLD ordinary listing still sells, so it
+  keeps getting `update_price` beside the new kit's `update_kit_item`, until
+  Lucas deletes it in Seller Centre and a reverify marks it `removido`. Step 13
+  ignores the pointer because discovery never loads it:
+  `substituidoPorLinkDocId` is not in the `prodshopee` projection
+  (`descobertaPreco.ts`'s `CAMPOS_DO_VINCULO`), so no rung can see it — and
+  adding it there is a behaviour change, not a refactor.
+- **Two live native kits are two items (register 303).** The accepted double
+  create leaves one produto with two linked kits of one SKU; the plan prices
+  BOTH, each through its own `update_kit_item` and its own rows, until Lucas
+  deletes one and a reverify marks it `removido`. Refusing the ambiguity is
+  PUBLISH's rule (`vinculos-ambiguos`), never this one's: a twin left unpriced
+  would keep selling at a stale price. RT15's price half in
+  `enviarPrecoKit.test.ts` pins both halves over the REAL creates.

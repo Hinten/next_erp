@@ -18,12 +18,16 @@
  * altitude would gain a second slug.
  *
  * ⚠️ Where a condition is the one the stock sync already names, the slug is
- * the stock SPELLING (`kit-derivado`, `produto-nao-encontrado`,
+ * the stock SPELLING (`sem-modelos`, `produto-nao-encontrado`,
  * `bloqueado-por-promocao`, `forma-de-modelo-divergente`, …) — one word for one
  * condition, so an operator reading a stock refusal beside a price refusal of
  * the same listing sees the same word. The spellings are shared; the TYPE is
  * not: this module never imports the stock union, because each folder owns its
- * vocabulary and a member added to one must not silently widen the other.
+ * vocabulary and a member added to one must not silently widen the other. A
+ * member RETIRED from one leaves the other alone, too: step 19 retired the
+ * price `kit-derivado` (a native kit is now priced, through `update_kit_item`,
+ * R-13), and the stock sync keeps its own, because Shopee derives a kit's
+ * stock and the ERP never sends one.
  *
  * ## ⚠️ The vocabulary is PERSISTED and is not free to rename
  *
@@ -58,14 +62,14 @@ import { ShopeeError } from '@delfrance/integrations-shopee';
  * Why a produto, an item, a model or a whole conta did not send a price.
  *
  * Each member is a MECHANISM; the sentence is
- * {@link MENSAGEM_POR_MOTIVO_PRECO}'s. Forty-six members: forty-four from the
- * first PR, and the account-wide job's two terminal rows.
+ * {@link MENSAGEM_POR_MOTIVO_PRECO}'s. Forty-five members: forty-four from the
+ * first PR, plus the account-wide job's two terminal rows, minus the plan's
+ * native-kit skip that step 19 retired when it gave kits a price transport.
  */
 export type MotivoPrecoShopee =
-  // ---- the plan, per family / listing (7) ----
+  // ---- the plan, per family / listing (6) ----
   | 'sem-link'
   | 'sem-item-id'
-  | 'kit-derivado'
   | 'anuncio-removido'
   | 'forma-de-modelo-divergente'
   | 'sem-modelos'
@@ -122,10 +126,9 @@ export type MotivoPrecoShopee =
  * a slug. Keys are the slugs in camelCase — a test pins the pairing.
  */
 export const MOTIVO_PRECO_SHOPEE = {
-  // ---- the plan, per family / listing (7) ----
+  // ---- the plan, per family / listing (6) ----
   semLink: 'sem-link',
   semItemId: 'sem-item-id',
-  kitDerivado: 'kit-derivado',
   anuncioRemovido: 'anuncio-removido',
   formaDeModeloDivergente: 'forma-de-modelo-divergente',
   semModelos: 'sem-modelos',
@@ -200,8 +203,6 @@ export const MENSAGEM_POR_MOTIVO_PRECO: Record<MotivoPrecoShopee, string> = {
   'sem-link': 'Este produto não tem anúncio vinculado nesta conta Shopee.',
   'sem-item-id':
     'O vínculo com a Shopee não tem o número do anúncio (item_id); reimporte o anúncio.',
-  'kit-derivado':
-    'O anúncio é um kit nativo da Shopee (kitNativo); o ERP não envia preço para ele.',
   'anuncio-removido': 'O anúncio foi excluído na Shopee; não há preço a enviar.',
   'forma-de-modelo-divergente':
     'As variações do anúncio na Shopee não batem com as do ERP; reimporte o anúncio.',

@@ -14,6 +14,13 @@ import {
   type ShopeeModelList,
 } from '@delfrance/integrations-shopee';
 
+import {
+  FIXTURE_ITEM_BASE_INFO_SG_KIT,
+  FIXTURE_MODEL_LIST_SG_KIT,
+  IDS_DO_KIT_NO_CORPUS,
+  lerBaseDosItens,
+  lerListaDeModelos,
+} from '../fixtures/wireCorpus';
 import { SHOPEE_PRECO_MODEL_ID_SEM_MODELO } from './constantesPreco';
 import { criarLeitorDeBaseEmLote, type LeitorDeBase } from './leitorDeBase';
 import { lerItemParaPreco, projetarLeitura } from './leituraPreco';
@@ -211,6 +218,55 @@ describe('projetarLeitura — o anúncio COM modelos', () => {
     const leitura = projetarLeitura(base({ has_model: true }), null);
     expect(leitura.temModelos).toBe(true);
     expect(leitura.modelos).toEqual([]);
+  });
+});
+
+describe('projetarLeitura — o kit NATIVO (passo 19, L5): `kit` vem da MESMA linha base', () => {
+  it('K1 — PAR: as capturas do SG (`get_item_base_info` + `get_model_list` do kit) ⇒ `kit: true`, com modelos e preço por modelo', () => {
+    const [linha] = lerBaseDosItens(FIXTURE_ITEM_BASE_INFO_SG_KIT).item_list;
+    expect(linha).toBeDefined();
+    const leitura = projetarLeitura(linha!, lerListaDeModelos(FIXTURE_MODEL_LIST_SG_KIT));
+    expect(leitura).toEqual({
+      itemStatus: 'NORMAL',
+      temModelos: true,
+      kit: true,
+      modelos: [
+        {
+          modelId: IDS_DO_KIT_NO_CORPUS.modeloDoKit,
+          precoAnterior: 45,
+          moeda: 'SGD',
+          status: 'MODEL_NORMAL',
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ['`tag.kit: false`', { tag: { kit: false } }],
+    ['`tag.kit: null`', { tag: { kit: null } }],
+    ['`tag: null`', { tag: null }],
+    ['sem `tag`', {}],
+  ])(
+    'K2 — ⛔ QUASE-IGUAL: %s ⇒ SEM a chave `kit` (ausente ⇒ item comum), o resto idêntico',
+    (_rotulo, over) => {
+      const leitura = projetarLeitura(base({ has_model: true, ...over }), lista([]));
+      expect('kit' in leitura).toBe(false);
+      expect(leitura).toEqual(projetarLeitura(base({ has_model: true }), lista([])));
+    },
+  );
+
+  it('K3 — o `kit` não depende de `has_model`: lido da base, mesmo sem modelos', () => {
+    // A kit is always has-model on Shopee; the flag is still the base row's, read
+    // once — the structure gate, not this projection, judges the shape.
+    expect(projetarLeitura(base({ has_model: false, tag: { kit: true } }), null).kit).toBe(true);
+  });
+
+  it('K4 — `lerItemParaPreco` sobre o kit: UMA `get_model_list`, e a leitura carrega `kit: true`', async () => {
+    const [linha] = lerBaseDosItens(FIXTURE_ITEM_BASE_INFO_SG_KIT).item_list;
+    const c = cliente({ modelos: lerListaDeModelos(FIXTURE_MODEL_LIST_SG_KIT) });
+    const r = await lerItemParaPreco(c.client, IDS_DO_KIT_NO_CORPUS.kit, leitorFixo(linha!));
+    expect(r).toMatchObject({ ausente: false, chamadas: 1, leitura: { kit: true } });
+    expect(c.getModelList).toHaveBeenCalledWith({ itemId: IDS_DO_KIT_NO_CORPUS.kit });
   });
 });
 

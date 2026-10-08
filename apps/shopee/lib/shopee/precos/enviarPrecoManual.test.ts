@@ -640,7 +640,7 @@ describe('enviarPrecoManualShopee — resolução do filho para a âncora', () =
     expect(kit).toHaveLength(1);
     expect(kit[0]).toMatchObject({
       outcome: 'pulado',
-      motivo: 'kit-derivado',
+      motivo: 'sem-modelos',
       variacaoProdutoId: null,
       anuncioId: String(ITEM),
     });

@@ -17,10 +17,35 @@
  * | G0 | no alvo has a target price | 0 | `pulado preco-nao-encontrado`, nothing read |
  * | G1 | the fresh read (batched base row; `get_model_list` only for a has-model listing) | 0–1 | absent from the batch ⇒ `falha anuncio-inexistente`, stamped with our `erp:` code |
  * | G2–G8 | {@link decidirEnvioDePreco} | 0 | `pular` ⇒ no write; `falhar` ⇒ stamped with the decision's `erp:` code |
- * | G9 | ONE `update_price` | 1 | the error ladder below |
+ * | G9 | ONE `update_price` — or, for a native kit, `get_kit_item_info` + ONE `update_kit_item` | 1 (kit: 1–2) | the error ladder below (kit: {@link veredictoDoErroDeKit} first) |
  * | G10 | attribution by `model_id` | 0 | per model: accepted, refused (the code table), or unanswered |
- * | G11 | verification of what was accepted | 0 (echo) | a mismatch ⇒ `falha preco-nao-atualizado`, NEVER stamped |
+ * | G11 | verification of what was accepted | 0 (echo; kit: 1–2, the re-read) | a mismatch ⇒ `falha preco-nao-atualizado`, NEVER stamped |
  * | G12 | the write-backs (`./linkPreco`) | 0 | sequential, BEFORE this function returns |
+ *
+ * ## The native-kit transport (step 19, L5 — reconcile §2.8)
+ *
+ * The plan addresses a native kit like any has-model listing; the TRANSPORT is
+ * decided HERE, at G9, from G1's fresh base row (`LeituraDePreco.kit`, i.e.
+ * `tag.kit === true`), so nothing persisted — not the plan, not the job's queue
+ * entry — carries a kit flag. For a kit:
+ *
+ * - **G9** is `./enviarPrecoKit`: ONE `get_kit_item_info`, then ONE PARTIAL
+ *   `update_kit_item` carrying only the CHANGED models with their LIVE
+ *   `component_list` resent verbatim. Its answer is a bare envelope, so the
+ *   transport hands G10 a SYNTHESISED success list (every sent model, no
+ *   price). A planned model the live kit lacks is never sent, and its row is
+ *   `falha forma-de-modelo-divergente`, stamped with our `erp:` code.
+ * - **Its errors** go through {@link veredictoDoErroDeKit} FIRST: the kit
+ *   refusal classifier (`kits/recusaKit.ts`) reads Shopee's SENTENCE, because
+ *   `product.error_busi` carries both a transient ("Too many connections",
+ *   rethrown so the queue retries) and permanent refusals, and the code table
+ *   alone would stamp the transient as a permanent `recusa-desconhecida`.
+ * - **G11 RE-READS** (`'releitura'`), whatever `FONTE_DE_VERIFICACAO_PRECO`
+ *   says: the synthesised echo would confirm anything, and P2-c measured an
+ *   `update_kit_item` 200 that changed nothing. The re-read also compares the
+ *   kit's name and image count with G1's base row and `console.error`s a
+ *   mismatch, ids only — register 301's tripwire (does a partial update keep
+ *   the omitted item fields?). It never changes the verdict.
  *
  * ## The error ladder — one narrowing order for every call
  *
@@ -144,13 +169,16 @@ import {
   shopeeUpdatePriceSchema,
   type ShopeeClient,
   type ShopeeErrorKind,
+  type ShopeeItemBaseInfoRow,
   type ShopeeUpdatePrice,
 } from '@delfrance/integrations-shopee';
 import { ENVIO_PRECO_RESULTADO } from '@delfrance/schemas';
 
+import { MOTIVO_PROBLEMA_PUBLICACAO } from '../anuncios/errosPublicacao';
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import { validationPaths } from '../core/validationIssues';
 import { MOTIVOS_DE_PAUSA } from '../estoque/constantesEstoque';
+import { classificarRecusaKit } from '../kits/recusaKit';
 import { classificarCodigoDePreco, type ClassePreco } from './classificarPreco';
 import { FONTE_DE_VERIFICACAO_PRECO } from './constantesPreco';
 import {
@@ -159,6 +187,7 @@ import {
   type LinhaModeloPreco,
   type ResultadoModeloPreco,
 } from './decisaoPreco';
+import { enviarPrecoDeKit } from './enviarPrecoKit';
 import { MOTIVOS_QUE_CARIMBAM, MOTIVO_PRECO_SHOPEE, type MotivoPrecoShopee } from './errosPreco';
 import { criarLeitorDeBaseEmLote, type LeitorDeBase } from './leitorDeBase';
 import { lerItemParaPreco, projetarLeitura, type LeituraDePreco } from './leituraPreco';
@@ -514,6 +543,44 @@ function veredictoDoErro(err: unknown, nowMs: number, comListas: boolean): Vered
   return null;
 }
 
+/**
+ * The verdict on a NATIVE-KIT error (G9's kit transport — `./enviarPrecoKit`):
+ * the kit refusal classifier FIRST, by Shopee's SENTENCE, then the ordinary
+ * ladder above.
+ *
+ * - `instabilidade-shopee` ("Too many connections", measured under
+ *   `product.error_busi`) ⇒ `null`, the SAME unstamped transient verdict
+ *   {@link veredictoDoErro} yields for a `kind: 'transient'` error: the caller
+ *   rethrows and the queue (or the manual push's second attempt) retries.
+ *   Through the code table alone it would be `error_busi` of kind `other`, a
+ *   T14 `recusa-desconhecida` STAMPED as permanent.
+ * - `kit-bloqueado-pela-shopee` (the VSKU refusal) ⇒ `loja-vsku`, the price
+ *   vocabulary's word for "this listing's price cannot be changed by API".
+ * - any other kit motivo, or none (a rate limit, a dead grant, our own
+ *   errors, anything the kit table does not know) ⇒ {@link veredictoDoErro}
+ *   with `comListas: false` — the kit write's answer carries no price lists to
+ *   re-parse.
+ *
+ * Not exported: the ladder it falls through to is this module's own (S3F-11).
+ */
+function veredictoDoErroDeKit(err: unknown, nowMs: number): ReturnType<typeof veredictoDoErro> {
+  if (err instanceof ShopeeApiError) {
+    const motivoDoKit = classificarRecusaKit(err);
+    if (motivoDoKit === MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee) return null;
+    if (motivoDoKit === MOTIVO_PROBLEMA_PUBLICACAO.kitBloqueadoPelaShopee) {
+      const motivo = MOTIVO_PRECO_SHOPEE.lojaVsku;
+      return {
+        tipo: 'recusa',
+        classe: { classe: 'falhar', motivo, carimbar: MOTIVOS_QUE_CARIMBAM.has(motivo) },
+        codigo: err.code,
+        mensagem: err.message,
+        resposta: null,
+      };
+    }
+  }
+  return veredictoDoErro(err, nowMs, false);
+}
+
 /** A `pausa` or a `fatal` — no rows, no write (S3). */
 function interromper(
   ctx: Contexto,
@@ -544,7 +611,9 @@ function interromper(
  * `projetarLeitura`, the read module's own `has_model` rule, never a second
  * copy of it. `cobrarBase` counts the base call itself: `false` for the
  * surface's batched reader (the surface's cost), `true` for the fresh one-id
- * reader a read-back builds (this item's cost).
+ * reader a read-back builds (this item's cost). `aoLerBase` receives the base
+ * row as read (`null` when absent) — the kit read-back's tripwire compares two
+ * of them.
  */
 async function lerContando(
   client: ShopeeClient,
@@ -552,11 +621,13 @@ async function lerContando(
   lerBase: LeitorDeBase,
   contador: Contador,
   cobrarBase: boolean,
+  aoLerBase: (linha: ShopeeItemBaseInfoRow | null) => void = () => undefined,
 ): ReturnType<typeof lerItemParaPreco> {
   let listaDeModelosPedida = false;
   const lerBaseObservado: LeitorDeBase = async (id) => {
     if (cobrarBase) contador.n += 1;
     const linha = await lerBase(id);
+    aoLerBase(linha);
     listaDeModelosPedida = linha !== null && projetarLeitura(linha, null).temModelos;
     return linha;
   };
@@ -602,9 +673,64 @@ function recusaNaLeitura(ctx: Contexto, v: Topo): Promise<ResultadoEnvioPreco> {
   });
 }
 
+/** How many images a base row names — `0` when it names none. */
+function numeroDeImagens(linha: ShopeeItemBaseInfoRow): number {
+  return (linha.image?.image_id_list ?? linha.image?.image_url_list ?? []).length;
+}
+
+/**
+ * Register 301's TRIPWIRE, on a native kit's read-back: did the partial
+ * `update_kit_item` (`item_setting: { model_list }` only) leave the item fields
+ * it did not send alone? The name and the image count of G1's base row against
+ * the re-read's. A mismatch is ONE `console.error` carrying ids, a flag and
+ * two counts — never the name itself — and it never changes the verdict: the
+ * price was confirmed (or not) by the re-read, and a wipe is a fact about the
+ * endpoint that a human must see, not a reason to refuse this row.
+ *
+ * Silent when either row is missing: there is nothing to compare.
+ */
+function conferirCamposDoKit(
+  itemId: number,
+  antes: ShopeeItemBaseInfoRow | null,
+  depois: ShopeeItemBaseInfoRow | null,
+): void {
+  if (antes === null || depois === null) return;
+  const nomeMudou = antes.item_name !== depois.item_name;
+  const imagensAntes = numeroDeImagens(antes);
+  const imagensDepois = numeroDeImagens(depois);
+  if (!nomeMudou && imagensAntes === imagensDepois) return;
+  console.error(TAG_LOG, {
+    evento: 'kit-campos-alterados-pelo-preco',
+    itemId,
+    nomeMudou,
+    imagensAntes,
+    imagensDepois,
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /*                               THE ATTRIBUTION                               */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * A kit model the plan addressed and the LIVE kit no longer carries
+ * (`./enviarPrecoKit`'s `semModeloVivo`). It was never sent, so it is not an
+ * unanswered model: the listing's structure drifted from the ERP's binding,
+ * and the row is `falha forma-de-modelo-divergente`, its child stamped with our
+ * `erp:` code (the remedy is a re-import). Every other row passes untouched.
+ */
+function semModeloNoKitVivo(
+  atribuida: LinhaAtribuida,
+  ausentes: ReadonlySet<number>,
+): LinhaAtribuida {
+  if (!atribuida.enviada || !ausentes.has(atribuida.linha.modelId)) return atribuida;
+  const motivo = MOTIVO_PRECO_SHOPEE.formaDeModeloDivergente;
+  return {
+    linha: reescrever(atribuida.linha, ENVIO_PRECO_RESULTADO.falha, motivo, null),
+    enviada: false,
+    carimbo: carimboSe(motivo, { codigo: codigoDoErpDePreco(motivo), mensagem: null }),
+  };
+}
 
 /** T14 — the table's answer to a text nobody taught it (`classificarPreco.ts`). */
 function ehRecusaDesconhecida(classe: ClassePreco): boolean {
@@ -913,9 +1039,13 @@ export async function enviarPrecoDoItem(
   }
 
   // ---- G1: the fresh read. ----
+  // The base row as read is kept for ONE use: a kit read-back's tripwire (G11).
+  const g1: { base: ShopeeItemBaseInfoRow | null } = { base: null };
   let lida: Awaited<ReturnType<typeof lerItemParaPreco>>;
   try {
-    lida = await lerContando(client, item.itemId, deps.lerBase, ctx.contador, false);
+    lida = await lerContando(client, item.itemId, deps.lerBase, ctx.contador, false, (linha) => {
+      g1.base = linha;
+    });
   } catch (err) {
     const v = veredictoDoErro(err, deps.nowMs, false);
     if (v === null) throw err;
@@ -978,18 +1108,32 @@ export async function enviarPrecoDoItem(
     });
   }
 
-  // ---- G9: the ONE write. ----
+  // ---- G9: the ONE write, on the transport G1's fresh read names. ----
+  // A native kit (`tag.kit === true`) ⇒ `update_kit_item` (step 19, L5); every
+  // other listing ⇒ `update_price`. Nothing persisted chose this.
+  const ehKit = lida.leitura.kit === true;
   let resposta: ShopeeUpdatePrice;
   let topo: Topo | null = null;
-  ctx.contador.n += 1;
+  let semModeloVivo: ReadonlySet<number> = new Set<number>();
   try {
-    const envelope = await client.updatePrice({
-      item_id: item.itemId,
-      price_list: decisao.priceList,
-    });
-    resposta = envelope.response;
+    if (ehKit) {
+      const doKit = await enviarPrecoDeKit(client, item.itemId, decisao.priceList, () => {
+        ctx.contador.n += 1;
+      });
+      resposta = doKit.resposta;
+      semModeloVivo = new Set(doKit.semModeloVivo);
+    } else {
+      ctx.contador.n += 1;
+      const envelope = await client.updatePrice({
+        item_id: item.itemId,
+        price_list: decisao.priceList,
+      });
+      resposta = envelope.response;
+    }
   } catch (err) {
-    const v = veredictoDoErro(err, deps.nowMs, true);
+    const v = ehKit
+      ? veredictoDoErroDeKit(err, deps.nowMs)
+      : veredictoDoErro(err, deps.nowMs, true);
     if (v === null) throw err;
     if (v.tipo !== 'recusa') return interromper(ctx, v);
     resposta = v.resposta ?? SEM_LISTAS;
@@ -998,12 +1142,16 @@ export async function enviarPrecoDoItem(
 
   // ---- G10: who answered what. ----
   let atribuidas = atribuir(item, decisao.linhas, resposta, topo);
+  if (semModeloVivo.size > 0) {
+    atribuidas = atribuidas.map((a) => semModeloNoKitVivo(a, semModeloVivo));
+  }
 
   // ---- G11: does Shopee show what it accepted? ----
   const enviados = atribuidas
     .filter((a) => a.linha.resultado === ENVIO_PRECO_RESULTADO.enviado)
     .map((a) => ({ modelId: a.linha.modelId, precoAlvo: precoEnviadoDe(a.linha) }));
   if (enviados.length > 0) {
+    const releitura: { base: ShopeeItemBaseInfoRow | null } = { base: null };
     const reler = async (): Promise<LeituraDePreco> => {
       // A FRESH one-id reader: the request's batched one is memoised, and a
       // read-back through it would compare against the pre-write row.
@@ -1013,19 +1161,23 @@ export async function enviarPrecoDoItem(
         criarLeitorDeBaseEmLote(client, [item.itemId]),
         ctx.contador,
         true,
+        (linha) => {
+          releitura.base = linha;
+        },
       );
       return fresca.ausente
         ? { itemStatus: null, temModelos: !item.semModelos, modelos: [] }
         : fresca.leitura;
     };
+    // ⚠️ A kit is ALWAYS re-read: its answer is synthesised (no price to echo)
+    // and an `update_kit_item` 200 may have changed nothing (P2-c). The global
+    // constant stays the ordinary item's choice.
+    const fonte: typeof FONTE_DE_VERIFICACAO_PRECO = ehKit
+      ? 'releitura'
+      : FONTE_DE_VERIFICACAO_PRECO;
     let veredito: Awaited<ReturnType<typeof verificarPrecosEnviados>>;
     try {
-      veredito = await verificarPrecosEnviados(
-        enviados,
-        resposta,
-        FONTE_DE_VERIFICACAO_PRECO,
-        reler,
-      );
+      veredito = await verificarPrecosEnviados(enviados, resposta, fonte, reler);
     } catch (err) {
       const v = veredictoDoErro(err, deps.nowMs, false);
       if (v === null) throw err;
@@ -1033,6 +1185,7 @@ export async function enviarPrecoDoItem(
       // A read-back Shopee refused cannot confirm anything.
       veredito = { ok: false, divergentes: enviados.map((e) => e.modelId) };
     }
+    if (ehKit) conferirCamposDoKit(item.itemId, g1.base, releitura.base);
     if (veredito.ok) {
       if (veredito.ecosNulos > 0) {
         console.warn(TAG_LOG, {

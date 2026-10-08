@@ -30,7 +30,7 @@ const FONTE = readFileSync(fileURLToPath(new URL('./errosPreco.ts', import.meta.
 type Igual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 
 describe('MotivoPrecoShopee', () => {
-  it('1 — o vocabulário é EXATAMENTE estes quarenta e seis slugs (44 do PR 1 + os 2 do job)', () => {
+  it('1 — o vocabulário é EXATAMENTE estes quarenta e cinco slugs (44 do PR 1 + os 2 do job − `kit-derivado`, aposentado no passo 19)', () => {
     // PERSISTIDO (`precoRecusaMotivo`, as linhas do relatório, o corpo do envio
     // manual). O `as const satisfies` garante o TIPO dos valores, mas não impede
     // um renome feito nos DOIS lugares de uma vez — o refactor silencioso que
@@ -51,7 +51,6 @@ describe('MotivoPrecoShopee', () => {
       'forma-de-modelo-divergente',
       'job-cancelado',
       'job-interrompido',
-      'kit-derivado',
       'loja-banida-ou-congelada',
       'loja-com-penalidade',
       'loja-cross-border',
@@ -84,8 +83,8 @@ describe('MotivoPrecoShopee', () => {
       'sem-tabela-normal',
       'tempo-esgotado',
     ]);
-    expect(TODOS).toHaveLength(46);
-    expect(new Set(TODOS).size).toBe(46);
+    expect(TODOS).toHaveLength(45);
+    expect(new Set(TODOS).size).toBe(45);
   });
 
   it('2 — o const cobre a união INTEIRA, nos dois sentidos, em tempo de compilação', () => {
@@ -100,7 +99,6 @@ describe('MotivoPrecoShopee', () => {
   it('3 — PAR: `preco-recusado` é o 44º membro, e os sobreviventes das fusões estão aqui', () => {
     const valores: readonly string[] = TODOS;
     expect(valores).toContain('preco-recusado'); // Apêndice C, C-2
-    expect(valores).toContain('kit-derivado'); // venceu `kit-nativo`
     expect(valores).toContain('produto-nao-encontrado'); // absorveu `familia-nao-encontrada`
     expect(valores).toContain('modelos-excedem-limite'); // o `modelos-demais` do plano
     expect(valores).toContain('bloqueado-por-promocao'); // a grafia do estoque
@@ -112,8 +110,12 @@ describe('MotivoPrecoShopee', () => {
     // com o produtor; `cota-diaria`/`burst` são valores de PAUSA da conta, não
     // recusas de linha; um status desconhecido ENVIA; e as grafias UPPER_SNAKE
     // e as alternativas do desenho D1/D2 perderam para a do estoque.
+    // `kit-derivado` foi APOSENTADO no passo 19 (R-13): o kit nativo agora é
+    // planejado e enviado por `update_kit_item`, e nada mais o produz — a
+    // grafia do ESTOQUE continua (o teste 7 prova que ela não voltou para cá).
     const valores: readonly string[] = TODOS;
     for (const fantasma of [
+      'kit-derivado',
       'kit-nativo',
       'familia-nao-encontrada',
       'status-desconhecido',
@@ -139,7 +141,7 @@ describe('MotivoPrecoShopee', () => {
       const emCamel = slug.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
       expect(chave, slug).toBe(emCamel);
     }
-    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(46);
+    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(45);
   });
 
   it('7 — PAR: a condição que o ESTOQUE já nomeia usa a MESMA grafia (uma palavra por condição)', () => {
@@ -149,7 +151,6 @@ describe('MotivoPrecoShopee', () => {
     for (const compartilhado of [
       'sem-link',
       'sem-item-id',
-      'kit-derivado',
       'anuncio-removido',
       'forma-de-modelo-divergente',
       'sem-modelos',
@@ -176,6 +177,12 @@ describe('MotivoPrecoShopee', () => {
     ] as const satisfies readonly MotivoPrecoShopee[]) {
       expect(doEstoque, compartilhado).toContain(compartilhado);
     }
+    // ⛔ QUASE-MISS (R-13, passo 19): `kit-derivado` ficou SÓ no estoque — a
+    // Shopee deriva o estoque de um kit nativo, mas o PREÇO dele agora é enviado
+    // (`update_kit_item`), então a palavra não tem mais condição no preço.
+    const doPreco: readonly string[] = TODOS;
+    expect(doEstoque).toContain('kit-derivado');
+    expect(doPreco).not.toContain('kit-derivado');
   });
 
   it('8 — ⛔ NEAR-MISS: a grafia é compartilhada, o TIPO não — este módulo não importa o do estoque', () => {
@@ -244,7 +251,6 @@ describe('MENSAGEM_POR_MOTIVO_PRECO', () => {
   });
 
   it('14 — as frases que o passo fixou chegam VERBATIM (âncoras de §2.8)', () => {
-    expect(MENSAGEM_POR_MOTIVO_PRECO['kit-derivado']).toContain('(kitNativo)');
     expect(MENSAGEM_POR_MOTIVO_PRECO['modelos-excedem-limite']).toContain('(50)');
     expect(MENSAGEM_POR_MOTIVO_PRECO['preco-atual-ilegivel']).toContain(
       'Envie autorizando a redução para forçar.',
@@ -254,7 +260,7 @@ describe('MENSAGEM_POR_MOTIVO_PRECO', () => {
 });
 
 describe('mensagemDoMotivoDePreco', () => {
-  it('15 — PAR: um membro rende a SUA frase — todos os quarenta e seis', () => {
+  it('15 — PAR: um membro rende a SUA frase — todos os quarenta e cinco', () => {
     expect(mensagemDoMotivoDePreco('preco-igual')).toBe('O preço na Shopee já é igual ao do ERP.');
     for (const motivo of TODOS) {
       expect(mensagemDoMotivoDePreco(motivo), motivo).toBe(MENSAGEM_POR_MOTIVO_PRECO[motivo]);
