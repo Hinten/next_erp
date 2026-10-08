@@ -8,12 +8,15 @@
  * holds): read the credential, decide, then `update(patch, { lastUpdateTime })`.
  *
  *  - `FAILED_PRECONDITION` (9): something wrote the credential after our read —
- *    a save, a renewal, another park. RE-READ and RE-DECIDE; the patch that
- *    lost is never re-applied, because every value in the next patch is
- *    derived from the next read.
- *  - `NOT_FOUND` (5): the credential was removed after our read. Re-read too:
- *    the next attempt sees no document and answers `sem-credencial` with no
- *    write — an `update` can never resurrect the document.
+ *    a save, a renewal, another park — OR removed it: the SDK sends only the
+ *    update-time precondition (it replaces its own `exists` check), so a
+ *    document that is gone fails the stamp. RE-READ and RE-DECIDE; the patch
+ *    that lost is never re-applied, because every value in the next patch is
+ *    derived from the next read. After a removal the next attempt sees no
+ *    document and answers `sem-credencial` with no write — an `update` can
+ *    never resurrect the document.
+ *  - `NOT_FOUND` (5): handled exactly the same, so the outcome does not hinge
+ *    on which code the server picks for a removal.
  *  - At most {@link MAX_TENTATIVAS_ESTACIONAMENTO} attempts, then
  *    {@link LiEstacionamentoEmConflitoError}: persistent contention on one
  *    document is a problem to surface, and the step-3 task retries.
@@ -175,8 +178,8 @@ export async function estacionarConta(
         relogioUs: relogioDoDocumentoUs(wr.writeTime),
       };
     } catch (err) {
-      // Lost the race (9) or the document was removed (5): loop, re-read,
-      // re-decide. Never re-apply this patch.
+      // Lost the race or the document was removed (9, or 5 — header): loop,
+      // re-read, re-decide. Never re-apply this patch.
       if (!isFailedPrecondition(err) && !isNotFound(err)) throw err;
     }
   }

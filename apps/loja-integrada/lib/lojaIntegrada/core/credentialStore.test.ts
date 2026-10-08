@@ -184,7 +184,7 @@ describe('salvarCredencial — update path (versioned)', () => {
     expect(db.ler(CAMINHO)?.personalToken).toBe(TOKEN_B);
   });
 
-  it('a credential removed after the read is a 409 too (NOT_FOUND), and is not resurrected', async () => {
+  it('a credential removed after the read is a 409 too (its stamp fails), and is not resurrected', async () => {
     const db = new FakeDb();
     seedCredencial(db, ID);
     const lida = await lerCredencial(asDb(db), ID);
@@ -230,7 +230,7 @@ describe('atualizarValidade (versioned)', () => {
     expect(wr.versaoUs).toBe(relogioDoDocumentoUs(db.carimboDe(CAMINHO)!));
   });
 
-  it('a precondition loss is LI_CREDENCIAL_ALTERADA; a removal is LI_CREDENCIAL_AUSENTE', async () => {
+  it('a precondition loss is ALTERADA; a removal — which fails the stamp too (9) — is AUSENTE, by a re-read', async () => {
     const db = new FakeDb();
     seedCredencial(db, ID);
     const lida = await lerCredencial(asDb(db), ID);

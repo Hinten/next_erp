@@ -109,6 +109,47 @@ describe('pass (a): the expiry threshold', () => {
     }
     expect(r.expiracao.resolvidos).toBe(1);
     expect(r.reconexao.resolvidos).toBe(1);
+    // The reconexão resolve is clocked by the credential read's readTime.
+    expect(aviso(db, chaveReconexao('sem'))?.relogioEvento).toBeGreaterThan(1);
+    expect(aviso(db, chaveExpiracao('sem'))?.relogioEvento).toBeNull();
+  });
+
+  it('⚠️ no credential at the read, then a token saved AND parked before the resolve: its row stays open', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'x', { nome: 'Loja X' });
+    // An open expiry row from an earlier token. Its clockless resolve is the
+    // write the concurrent save + park lands right before — after the sweep
+    // read "no credential", before it resolves the reconexão row.
+    await avisarExpiracaoToken(
+      asDb(db),
+      { integracaoId: 'x', lojaNome: 'Loja X', tokenExpiraEmMs: expiraEm(5) },
+      { increment, nowMs: AGORA_MS - DIA_MS },
+    );
+    let relogioDoPark = 0;
+    db.antesDaProximaEscrita(caminhoAviso(chaveExpiracao('x')), async () => {
+      const carimbo = seedCredencial(db, 'x', {
+        reconexaoPendente: { desdeMs: AGORA_MS - 10, status: 401, refCredencial: 'a.1' },
+      });
+      relogioDoPark = relogioDoDocumentoUs(carimbo);
+      await avisarReconexaoPendente(
+        asDb(db),
+        { integracaoId: 'x', lojaNome: 'Loja X', status: 401, relogioUs: relogioDoPark },
+        { increment, nowMs: AGORA_MS },
+      );
+    });
+
+    const r1 = await sweep(db);
+    expect(r1.semCredencial).toBe(1);
+    expect(r1.reconexao.resolvidos).toBe(0);
+    expect(aviso(db, chaveReconexao('x'))).toMatchObject({
+      resolvidoEm: null,
+      relogioEvento: relogioDoPark,
+    });
+
+    // The next tick sees the park: the row is still the open one it raised.
+    const r2 = await sweep(db);
+    expect(r2.estacionadas).toBe(1);
+    expect(aviso(db, chaveReconexao('x'))?.resolvidoEm).toBeNull();
   });
 });
 
@@ -244,6 +285,64 @@ describe('pass (b): open rows of contas that no longer exist', () => {
       apos: null,
     });
     expect(db.leituras).not.toContain(caminhoConta('apagada'));
+  });
+
+  it('⚠️ a conta created and parked AFTER the list was read keeps its open reconexão row', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(20) });
+    // Pass (a)'s raise on `viva` is the write the new conta lands right before:
+    // after the list was read, before pass (b) pages the open rows.
+    let relogioDoPark = 0;
+    db.antesDaProximaEscrita(caminhoAviso(chaveExpiracao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Loja Nova' });
+      const carimbo = seedCredencial(db, 'nova', {
+        reconexaoPendente: { desdeMs: AGORA_MS - 10, status: 401, refCredencial: 'a.1' },
+      });
+      relogioDoPark = relogioDoDocumentoUs(carimbo);
+      await avisarReconexaoPendente(
+        asDb(db),
+        { integracaoId: 'nova', lojaNome: 'Loja Nova', status: 401, relogioUs: relogioDoPark },
+        { increment, nowMs: AGORA_MS },
+      );
+    });
+
+    const r1 = await sweep(db);
+    expect(r1.contas).toBe(1);
+    expect(r1.orfaos.resolvidos).toBe(0);
+    expect(aviso(db, chaveReconexao('nova'))).toMatchObject({
+      resolvidoEm: null,
+      relogioEvento: relogioDoPark,
+    });
+
+    // The next tick lists it; the row is still open.
+    const r2 = await sweep(db);
+    expect(r2.contas).toBe(2);
+    expect(r2.estacionadas).toBe(1);
+    expect(aviso(db, chaveReconexao('nova'))?.resolvidoEm).toBeNull();
+  });
+
+  it('a page boundary on an orphan it just RESOLVED: paging continues past it', async () => {
+    const db = new FakeDb();
+    const n = PAGINA_AVISOS_ABERTOS + 1;
+    for (let i = 0; i < n; i += 1) {
+      const chave = chaveExpiracao(`apagada-${String(i).padStart(5, '0')}`);
+      db.seed(caminhoAviso(chave), {
+        tipo: 'lojaIntegradaTokenExpirando',
+        severidade: 'atencao',
+        canal: 'lojaIntegrada',
+        params: {},
+        criadoEm: 1_000_000 + i,
+        atualizadoEm: 1_000_000 + i,
+        ocorrencias: 1,
+        resolvidoEm: null,
+        resolucaoMotivo: null,
+        relogioEvento: null,
+      });
+    }
+    const r = await sweep(db);
+    expect(r.erros).toEqual([]);
+    expect(r.orfaos).toEqual({ lidos: n, paginas: 2, truncado: false, resolvidos: n });
   });
 
   function seedAvisosDeOutroCanal(db: FakeDb, n: number): void {

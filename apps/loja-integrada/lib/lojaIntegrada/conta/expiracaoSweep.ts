@@ -17,8 +17,16 @@
  * turn a reversible ERP choice into a token only the owner can regenerate.
  * Removing the token is the way to silence it. Per conta:
  *
- *  - **no credential** → resolve BOTH rows (clockless, `credencial-removida`).
- *    This also closes a sweep raise that landed after a removal's resolve.
+ *  - **no credential** → resolve BOTH rows as `credencial-removida`: the
+ *    expiry row clockless, the reconexão row CLOCKED by the credential read's
+ *    `readTime` (`lerCredencialComLeitura`). A token saved and parked after
+ *    that read raised at a later commit time, so this resolve is the stale one
+ *    and leaves its row open — a clockless one would close it for good, since
+ *    every later raise of that park carries the same clock. The price: the
+ *    clock moves every tick, so a conta with no token costs one aviso write
+ *    per tick (the resolved row's watermark advancing) plus a seed whenever
+ *    retention has swept the row. The clockless expiry resolve also closes a
+ *    sweep raise that landed after a removal's resolve.
  *  - **expiry**: `dias <= LIMIAR_AVISO_TOKEN_LI_DIAS` raises, else resolves —
  *    the one decision in `sincronizarAvisoDeExpiracao`, shared with the routes.
  *  - **parked** → raise the reconexão aviso at the credential document's commit
@@ -42,8 +50,16 @@
  * composite, no new index — at {@link PAGINA_AVISOS_ABERTOS} rows a page and at
  * most {@link MAX_PAGINAS_AVISOS_ABERTOS} pages, with a `truncado` flag. The
  * canal and the two tipos are filtered in CODE (no index can express them), and
- * a row whose id is not one of pass (a)'s chaves is resolved clockless as
- * `conta-removida`. Rows of existing contas are pass (a)'s, never touched here.
+ * a row whose id is not one of pass (a)'s chaves is resolved as
+ * `conta-removida` — an expiry row clockless, a reconexão row CLOCKED by the
+ * conta enumeration's `readTime` (`resolverAvisoDeContaRemovida`): a conta
+ * created and parked after that list was read raised at a later clock and is
+ * left open for the next tick, which lists it. Rows of existing contas are pass
+ * (a)'s, never touched here.
+ *
+ * The cursor is the last row's snapshot, and the server seeks past its VALUES:
+ * a row this pass resolved is no longer in the result, and paging continues
+ * after it all the same.
  *
  * ⚠️ **Known limit.** `criadoEm DESC` reaches the NEWEST open rows, while the
  * rows this pass exists to close are the OLDEST: beyond
@@ -75,7 +91,7 @@ import {
   sincronizarAvisoDeExpiracao,
 } from '../avisos/avisos';
 import { type ContaLojaIntegradaResumo, listarContasLojaIntegrada } from '../core/contas';
-import { lerCredencial } from '../core/credentialStore';
+import { lerCredencialComLeitura } from '../core/credentialStore';
 import { LiCredencialInvalidaError } from '../core/erros';
 
 /** Open avisos read per page in pass (b). */
@@ -173,12 +189,13 @@ export async function sweepLojaIntegradaTokenExpiry(
   let recResolvidos = 0;
 
   /* ---- pass (a): every Loja Integrada conta, active or not ---------------- */
-  const contas = await listarContasLojaIntegrada(db);
+  const { contas, leituraUs: listaLidaEmUs } = await listarContasLojaIntegrada(db);
 
   for (const conta of contas) {
     const { integracaoId } = conta;
     try {
-      const lida = await lerCredencial(db, integracaoId);
+      const { lida, leituraUs } = await lerCredencialComLeitura(db, integracaoId);
+      const lojaNome = nomeDaLoja(conta);
       if (lida === null) {
         semCredencial += 1;
         if (
@@ -191,12 +208,14 @@ export async function sweepLojaIntegradaTokenExpiry(
         ) {
           expResolvidos += 1;
         }
+        // Clocked by WHEN the absence was read, never clockless (header).
         if (
           await resolverReconexaoPendente(
             db,
             integracaoId,
             MOTIVO_AVISO_LI.credencialRemovida,
             avisoDeps,
+            { relogioUs: leituraUs, lojaNome },
           )
         ) {
           recResolvidos += 1;
@@ -204,7 +223,6 @@ export async function sweepLojaIntegradaTokenExpiry(
         continue;
       }
 
-      const lojaNome = nomeDaLoja(conta);
       const { credencial, versaoUs } = lida;
 
       const exp = await sincronizarAvisoDeExpiracao(
@@ -262,7 +280,9 @@ export async function sweepLojaIntegradaTokenExpiry(
   let truncado = false;
   let orfaosResolvidos = 0;
   // The cursor is the real document SNAPSHOT: the SDK's `startAfter` treats any
-  // other object as a field VALUE, which would page from the wrong place.
+  // other object as a field VALUE, which would page from the wrong place. The
+  // server seeks past the snapshot's values, so a cursor row this pass just
+  // resolved still marks the page boundary.
   let cursor: QueryDocumentSnapshot | null = null;
 
   while (paginas < MAX_PAGINAS_AVISOS_ABERTOS) {
@@ -292,7 +312,9 @@ export async function sweepLojaIntegradaTokenExpiry(
       if (typeof row.tipo !== 'string' || !TIPOS_AVISO_LI.has(row.tipo)) continue;
       if (chavesExistentes.has(doc.id)) continue;
       try {
-        if (await resolverAvisoDeContaRemovida(db, doc.id, avisoDeps)) orfaosResolvidos += 1;
+        if (await resolverAvisoDeContaRemovida(db, doc.id, listaLidaEmUs, avisoDeps)) {
+          orfaosResolvidos += 1;
+        }
       } catch (err) {
         if (!isGrpcStatusError(err)) throw err;
         erros.push({ etapa: 'orfaos', id: doc.id, erro: err.message });

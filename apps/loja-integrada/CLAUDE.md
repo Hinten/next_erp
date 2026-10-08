@@ -51,7 +51,9 @@ still be fixed. Only the context loader refuses those.
 - ⚠️ **Never write the Firestore transaction API's call name in any file of this app**
   (source, test or fake). `firestore-transaction-inventory.test.js` greps every
   non-test source file for it and would demand a class for a site that does not exist.
-  The test fake models `lastUpdateTime` preconditions only.
+  The test fake models `lastUpdateTime` preconditions only — and as the server applies
+  them: the stamp replaces the SDK's `exists` check, so a removed document fails it with
+  `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5).
 
 ## Layout rules
 
@@ -59,8 +61,10 @@ still be fixed. Only the context loader refuses those.
   functions bundle imports it. The one exception is `core/respond.ts`.
 - `lib/lojaIntegrada/avisos/avisos.ts` is the ONLY module that converts to µs:
   `agoraUsDe`, `prazoUsDe` and the Timestamp-to-µs function. Everything else stays in ms.
-  A document commit time is the aviso clock for the park. Any civil-date computation
-  passes `FUSO_FISCAL` (`no-ambient-timezone`).
+  A document commit time is the aviso clock for the park. An observation of ABSENCE (no
+  credential, a conta gone) is clocked by the snapshot's `readTime`: the reconexão aviso
+  is never resolved clockless, or a park committed after the read loses its open row for
+  good. Any civil-date computation passes `FUSO_FISCAL` (`no-ambient-timezone`).
 - Tests run the real `escreverAviso`/`resolverAviso` against `lib/lojaIntegrada/testing/fakeDb.ts`.
   Apps have no dependency edges, so Shopee's fake cannot be imported.
 

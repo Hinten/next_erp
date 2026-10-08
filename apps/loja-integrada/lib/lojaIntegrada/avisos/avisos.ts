@@ -15,7 +15,8 @@
  *  - {@link prazoUsDe} — the stored expiry, ms → µs, for the aviso's `prazo`;
  *  - {@link relogioDoDocumentoUs} — a Firestore commit `Timestamp` → µs, the
  *    app's only Timestamp conversion. The credential store imports it for the
- *    version it hands the panel, and the park for its aviso clock.
+ *    version it hands the panel and for a read's `readTime`, the conta
+ *    enumeration for its `readTime`, and the park for its aviso clock.
  *
  * `avisos.test.ts` counts the first two as raw source text (two calls of the
  * ms → µs converter, both here) and the third as the only nanosecond read in
@@ -31,6 +32,15 @@
  * exists). A late raise from a park that lost to a newer save therefore cannot
  * reopen the row the save closed — with no wall clock, and no skew, involved.
  *
+ * ⚠️ **The reconexão aviso is NEVER resolved clockless.** A clockless resolve
+ * can close a row a park opened AFTER the observation it acts on, and nothing
+ * reopens it: every later raise for that park carries the same commit time,
+ * which is `<=` the stored one, so the conta stays halted with no open aviso.
+ * An observation of ABSENCE has no document stamp, so it is clocked by the
+ * snapshot's `readTime` instead — the credential read's when the conta holds no
+ * token, the conta enumeration's when the conta is gone. Any park committed
+ * after that read is stamped later, so the stale resolve is the one dropped.
+ *
  * ⚠️ µs and not ms: reading the stamp in milliseconds would make two commits
  * inside the same millisecond look equal, and an equal clock is dropped.
  *
@@ -43,7 +53,12 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { dataCivilNoFuso, millisToMicros } from '@delfrance/core/datetime';
-import { type ResultadoAviso, escreverAviso, resolverAviso } from '@delfrance/data/admin/avisos';
+import {
+  type ResolverAvisoOpts,
+  type ResultadoAviso,
+  escreverAviso,
+  resolverAviso,
+} from '@delfrance/data/admin/avisos';
 import { isTransientGrpcError } from '@delfrance/data/admin/grpcErrors';
 import {
   CANAL_AVISO,
@@ -181,17 +196,49 @@ export const TIPOS_AVISO_LI: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Close an open row of either tipo BY ITS DOCUMENT ID, clockless, as
- * `conta-removida` — the sweep's orphan pass, for a conta that no longer exists
- * as a Loja Integrada conta. The id IS the chave both producers above computed
- * (`chaveDeAviso` is the document id), so no key is re-derived here.
+ * The conta a reconexão chave was computed for, or `null` when `chave` is not
+ * one {@link chaveReconexao} could have produced. Checked by recomputing the
+ * key, never by trusting the split: a fold in `chaveDeAviso` would otherwise
+ * hand back a conta whose key is a DIFFERENT document.
+ */
+function contaDaChaveReconexao(chave: string): string | null {
+  const prefixo = `${TIPO_AVISO.lojaIntegradaReconexaoPendente}:`;
+  if (!chave.startsWith(prefixo)) return null;
+  const conta = chave.slice(prefixo.length);
+  return conta !== '' && chaveReconexao(conta) === chave ? conta : null;
+}
+
+/**
+ * Close an open row of either tipo BY ITS DOCUMENT ID as `conta-removida` — the
+ * sweep's orphan pass, for a conta that no longer exists as a Loja Integrada
+ * conta. The id IS the chave both producers above computed (`chaveDeAviso` is
+ * the document id).
+ *
+ *  - A **reconexão** row is resolved CLOCKED by `relogioListaUs`, the read time
+ *    of the conta enumeration that did not contain the conta (module header):
+ *    a conta created and parked after that read raised at a later clock, and
+ *    its row stays open. The seed carries no store name — the conta is gone.
+ *  - An **expiry** row stays clockless, like every resolve of that tipo: the
+ *    next sweep re-raises it if the conta turns out to exist.
+ *  - A reconexão-tipo id no producer here could have computed has no park to
+ *    race, so it is resolved clockless too.
  */
 export function resolverAvisoDeContaRemovida(
   db: Firestore,
   chave: string,
+  relogioListaUs: number,
   deps: { nowMs: number },
 ): Promise<boolean> {
-  return resolverAviso(db, chave, MOTIVO_AVISO_LI.contaRemovida, { agoraUs: agoraUsDe(deps) });
+  const agora = { agoraUs: agoraUsDe(deps) };
+  const conta = contaDaChaveReconexao(chave);
+  if (conta === null) return resolverAviso(db, chave, MOTIVO_AVISO_LI.contaRemovida, agora);
+  return resolverAviso(
+    db,
+    chave,
+    MOTIVO_AVISO_LI.contaRemovida,
+    agora,
+    sementeReconexao(conta, relogioListaUs, null),
+  );
 }
 
 /** What {@link sincronizarAvisoDeExpiracao} did. */
@@ -257,15 +304,38 @@ export function avisarReconexaoPendente(
 }
 
 /**
- * Close the reconexão aviso.
+ * The complete seed of a RESOLVED reconexão row, for a clocked resolve that
+ * finds none — the same metadata a raise writes, minus the HTTP status this
+ * observation does not know (and minus the store name when the conta is gone).
+ */
+function sementeReconexao(
+  integracaoId: string,
+  relogioUs: number,
+  lojaNome: string | null,
+): ResolverAvisoOpts {
+  return {
+    tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente,
+    conta: integracaoId,
+    severidade: SEVERIDADE_AVISO.critico,
+    canal: CANAL_AVISO.lojaIntegrada,
+    ...(lojaNome === null ? {} : { params: { loja: lojaNome } }),
+    urlInterna: urlInterna(integracaoId),
+    relogioEvento: relogioUs,
+  };
+}
+
+/**
+ * Close the reconexão aviso — ALWAYS clocked (module header). `relogioUs` is
+ * when the observation was true:
  *
- * - **Clocked** (`relogio` given): the observation is a credential write whose
- *   commit time is `relogio.relogioUs` — a save, a renewal, a removal, or the
- *   sweep seeing an unparked document. The resolve stamps that clock, and when
- *   the row is absent it seeds a RESOLVED row carrying it, so a late raise from
- *   an older park is dropped by `escreverAviso`'s own guard.
- * - **Clockless** (`relogio` omitted): the sweep found NO credential, or the
- *   conta is gone — there is no document whose commit time could be the clock.
+ *  - a credential write's commit time — a save, a renewal, a removal, or the
+ *    sweep seeing an unparked document at that version;
+ *  - the credential read's `readTime` when the sweep found NO credential.
+ *
+ * The resolve stamps that clock, and when the row is absent it seeds a
+ * RESOLVED row carrying it, so a late raise from an older park is dropped by
+ * `escreverAviso`'s own guard — while a park committed AFTER the observation
+ * keeps its row open: the resolve is the stale one.
  *
  * `true` only on a real open → resolved transition.
  */
@@ -274,22 +344,15 @@ export function resolverReconexaoPendente(
   integracaoId: string,
   motivo: MotivoAvisoLi,
   deps: { nowMs: number },
-  relogio?: { readonly relogioUs: number; readonly lojaNome: string },
+  relogio: { readonly relogioUs: number; readonly lojaNome: string },
 ): Promise<boolean> {
-  const chave = chaveReconexao(integracaoId);
-  const agora = { agoraUs: agoraUsDe(deps) };
-  if (relogio === undefined) return resolverAviso(db, chave, motivo, agora);
-  return resolverAviso(db, chave, motivo, agora, {
-    // The complete seed for an absent row — the same metadata a raise writes,
-    // minus the HTTP status this observation does not know.
-    tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente,
-    conta: integracaoId,
-    severidade: SEVERIDADE_AVISO.critico,
-    canal: CANAL_AVISO.lojaIntegrada,
-    params: { loja: relogio.lojaNome },
-    urlInterna: urlInterna(integracaoId),
-    relogioEvento: relogio.relogioUs,
-  });
+  return resolverAviso(
+    db,
+    chaveReconexao(integracaoId),
+    motivo,
+    { agoraUs: agoraUsDe(deps) },
+    sementeReconexao(integracaoId, relogio.relogioUs, relogio.lojaNome),
+  );
 }
 
 /* -------------------------------------------------------------------------- */

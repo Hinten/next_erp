@@ -9,6 +9,7 @@ import {
   seedConta,
   seedCredencial,
 } from '../testing/fixtures';
+import { relogioDoDocumentoUs } from '../avisos/avisos';
 import { fingerprintDoToken } from './credencial';
 import {
   contaComOMesmoToken,
@@ -61,7 +62,7 @@ describe('listarContasLojaIntegrada', () => {
     seedConta(db, 'b', { nome: 'Beta', ativo: false });
     seedConta(db, 'a', { nome: 'Alfa' });
     seedConta(db, 's', { nome: 'Shopee', tipo: 5 });
-    expect(await listarContasLojaIntegrada(asDb(db))).toEqual([
+    expect((await listarContasLojaIntegrada(asDb(db))).contas).toEqual([
       { integracaoId: 'a', nome: 'Alfa', ativo: true },
       { integracaoId: 'b', nome: 'Beta', ativo: false },
     ]);
@@ -73,6 +74,26 @@ describe('listarContasLojaIntegrada', () => {
         limite: null,
         apos: null,
       },
+    ]);
+  });
+
+  it('reports the query read time: a conta seeded after it carries a later stamp', async () => {
+    const db = new FakeDb();
+    const antes = db.seed(caminhoConta('a'), { tipo: 3, nome: 'Alfa', ativo: true });
+    const { leituraUs } = await listarContasLojaIntegrada(asDb(db));
+    expect(leituraUs).toBe(relogioDoDocumentoUs(antes));
+    const depois = db.seed(caminhoConta('b'), { tipo: 3, nome: 'Beta', ativo: true });
+    expect(relogioDoDocumentoUs(depois)).toBeGreaterThan(leituraUs);
+  });
+
+  it('⚠️ a tipo-3 conta LACKING nome is not enumerated (orderBy filters for existence); a null nome is, as ""', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'a', { nome: 'Alfa' });
+    db.seed(caminhoConta('sem-nome'), { tipo: 3, ativo: true });
+    db.seed(caminhoConta('nome-nulo'), { tipo: 3, nome: null, ativo: true });
+    expect((await listarContasLojaIntegrada(asDb(db))).contas).toEqual([
+      { integracaoId: 'nome-nulo', nome: '', ativo: true },
+      { integracaoId: 'a', nome: 'Alfa', ativo: true },
     ]);
   });
 });

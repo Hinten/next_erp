@@ -13,11 +13,23 @@
  * commit. And it is deliberately NOT filtered on `ativo`: an inactive conta's
  * token keeps its three-month clock, and a browser can reactivate the conta
  * without passing through any route.
+ *
+ * ⚠️ **A tipo-3 conta with NO `nome` field is outside the enumeration.** A
+ * classic `orderBy` also filters for the field's existence, so such a document
+ * never comes back — not to the expiry sweep (no warning; pass (b) would close
+ * its open rows as `conta-removida`), not to the wrong-store guard. Accepted:
+ * `integracaoSchema.nome` is required (`min(1)`), so every conta this ERP writes
+ * has one, and the SAME `(tipo, nome)` query is the list screen's
+ * `defaultQuery` — a nome-less conta is already invisible there, so the list
+ * never leads an operator to its panel to save a token. A legacy row lacking
+ * it would need a backfill at the cutover (root rule 8), not a second query
+ * here. `contas.test.ts` pins the exclusion.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 
+import { relogioDoDocumentoUs } from '../avisos/avisos';
 import { fingerprintDoToken } from './credencial';
 import { lerCredencial } from './credentialStore';
 import { LiCredencialInvalidaError } from './erros';
@@ -60,27 +72,41 @@ export async function lerContaLojaIntegrada(
 /** One Loja Integrada conta, reduced to what a sweep or a guard needs. */
 export interface ContaLojaIntegradaResumo {
   readonly integracaoId: string;
-  /** The operator-facing store name; `''` only on a malformed legacy row. */
+  /**
+   * The operator-facing store name; `''` only when a malformed legacy row holds
+   * a non-string `nome` (a `null`, say). A row LACKING the field is not listed.
+   */
   readonly nome: string;
   /** `false` only when the document says so explicitly (the schema default is `true`). */
   readonly ativo: boolean;
 }
 
+/** The enumeration, and WHEN it was read. */
+export interface ContasLojaIntegrada {
+  readonly contas: readonly ContaLojaIntegradaResumo[];
+  /**
+   * µs of the query's `readTime`: a conta created — or a credential parked —
+   * after it is stamped later. Pass (b) of the expiry sweep resolves an orphan
+   * reconexão aviso with it, so a park on a conta this list could not see
+   * cannot be closed by it.
+   */
+  readonly leituraUs: number;
+}
+
 /**
- * EVERY Loja Integrada conta, active or not, ordered by `nome`.
+ * EVERY Loja Integrada conta, active or not, ordered by `nome` — except one
+ * lacking the field (module header).
  *
  * Fields are read RAW off each row: two are needed, and a soft parse of every
  * conta would warn-spam each tick on a legacy partial document.
  */
-export async function listarContasLojaIntegrada(
-  db: Firestore,
-): Promise<readonly ContaLojaIntegradaResumo[]> {
+export async function listarContasLojaIntegrada(db: Firestore): Promise<ContasLojaIntegrada> {
   const snap = await integracaoCollection
     .ref(db, {})
     .where('tipo', '==', INTEGRACAO_TIPO.lojaIntegrada)
     .orderBy('nome')
     .get();
-  return snap.docs.map((doc) => {
+  const contas = snap.docs.map((doc) => {
     const data = doc.data() as Record<string, unknown>;
     return {
       integracaoId: doc.id,
@@ -88,6 +114,7 @@ export async function listarContasLojaIntegrada(
       ativo: data.ativo !== false,
     };
   });
+  return { contas, leituraUs: relogioDoDocumentoUs(snap.readTime) };
 }
 
 export interface GuardaDeLojaDeps {
@@ -118,7 +145,8 @@ export async function contaComOMesmoToken(
   deps: GuardaDeLojaDeps = {},
 ): Promise<string | null> {
   const alvo = fingerprintDoToken(tokenCandidato);
-  for (const conta of await listarContasLojaIntegrada(db)) {
+  const { contas } = await listarContasLojaIntegrada(db);
+  for (const conta of contas) {
     if (conta.integracaoId === integracaoId) continue;
     try {
       const lida = await lerCredencial(db, conta.integracaoId);

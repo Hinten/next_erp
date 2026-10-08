@@ -195,19 +195,91 @@ describe('the reconexão aviso clock (commit time, µs)', () => {
     expect(r.resultado).toBe('ignorado');
   });
 
-  it('a clockless resolve of an absent row writes nothing', async () => {
+  it('a resolve observed BEFORE a newer park leaves its row open — the resolve is the stale one', async () => {
     const db = new FakeDb();
+    await avisarReconexaoPendente(asDb(db), { ...alvo, status: 401, relogioUs: 5_000 }, deps);
     expect(
-      await resolverReconexaoPendente(asDb(db), ID, MOTIVO_AVISO_LI.credencialRemovida, deps),
+      await resolverReconexaoPendente(asDb(db), ID, MOTIVO_AVISO_LI.credencialRemovida, deps, {
+        relogioUs: 4_999,
+        lojaNome: 'Loja',
+      }),
     ).toBe(false);
-    expect(db.escritas).toEqual([]);
+    expect(db.ler(caminhoAviso(chaveReconexao(ID)))).toMatchObject({
+      resolvidoEm: null,
+      relogioEvento: 5_000,
+    });
+  });
+});
+
+describe('resolverAvisoDeContaRemovida (the orphan pass)', () => {
+  const alvo = { integracaoId: ID, lojaNome: 'Loja' };
+
+  it('a reconexão row is closed CLOCKED by the list read time, and stamped with it', async () => {
+    const db = new FakeDb();
+    await avisarReconexaoPendente(asDb(db), { ...alvo, status: 401, relogioUs: 1_000 }, deps);
+    expect(await resolverAvisoDeContaRemovida(asDb(db), chaveReconexao(ID), 2_000, deps)).toBe(
+      true,
+    );
+    expect(db.ler(caminhoAviso(chaveReconexao(ID)))).toMatchObject({
+      resolucaoMotivo: 'conta-removida',
+      relogioEvento: 2_000,
+    });
   });
 
-  it('resolverAvisoDeContaRemovida closes a row by its id, as conta-removida', async () => {
+  it('near-miss: a reconexão row raised AFTER the list was read stays open', async () => {
     const db = new FakeDb();
-    await avisarReconexaoPendente(asDb(db), { ...alvo, status: 401, relogioUs: 1 }, deps);
-    expect(await resolverAvisoDeContaRemovida(asDb(db), chaveReconexao(ID), deps)).toBe(true);
-    expect(db.ler(caminhoAviso(chaveReconexao(ID)))?.resolucaoMotivo).toBe('conta-removida');
+    await avisarReconexaoPendente(asDb(db), { ...alvo, status: 401, relogioUs: 3_000 }, deps);
+    expect(await resolverAvisoDeContaRemovida(asDb(db), chaveReconexao(ID), 2_000, deps)).toBe(
+      false,
+    );
+    expect(db.ler(caminhoAviso(chaveReconexao(ID)))).toMatchObject({
+      resolvidoEm: null,
+      relogioEvento: 3_000,
+    });
+  });
+
+  it('an expiry row is closed clockless — no relogioEvento is stamped on it', async () => {
+    const db = new FakeDb();
+    await avisarExpiracaoToken(
+      asDb(db),
+      { integracaoId: ID, lojaNome: 'Loja', tokenExpiraEmMs: EXPIRA_20_DIAS },
+      deps,
+    );
+    expect(await resolverAvisoDeContaRemovida(asDb(db), chaveExpiracao(ID), 2_000, deps)).toBe(
+      true,
+    );
+    expect(db.ler(caminhoAviso(chaveExpiracao(ID)))).toMatchObject({
+      resolucaoMotivo: 'conta-removida',
+      relogioEvento: null,
+    });
+  });
+
+  it('a reconexão-tipo id no producer here computes is closed clockless (nothing races it)', async () => {
+    const db = new FakeDb();
+    const chave = chaveDeAviso({
+      tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente,
+      conta: ID,
+      entidade: 'x',
+    });
+    // Not `chaveReconexao(anything)`: recomputing the key from the split fails.
+    expect(chave.startsWith(`${chaveReconexao(ID)}:`)).toBe(true);
+    db.seed(caminhoAviso(chave), {
+      tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente,
+      severidade: 'critico',
+      canal: 'lojaIntegrada',
+      params: {},
+      criadoEm: 1,
+      atualizadoEm: 1,
+      ocorrencias: 1,
+      resolvidoEm: null,
+      resolucaoMotivo: null,
+      relogioEvento: 9_000,
+    });
+    expect(await resolverAvisoDeContaRemovida(asDb(db), chave, 2_000, deps)).toBe(true);
+    expect(db.ler(caminhoAviso(chave))).toMatchObject({
+      resolucaoMotivo: 'conta-removida',
+      relogioEvento: 9_000,
+    });
   });
 });
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { type ChamadaLi, LiError } from '@delfrance/integrations-loja-integrada';
+import type { ChamadaLi } from '@delfrance/integrations-loja-integrada';
 import { z } from 'zod';
 
 import { FakeDb, asDb } from '../testing/fakeDb';
@@ -17,7 +17,6 @@ import { __setRelogioDoCacheParaTestes } from './contaCache';
 import { fingerprintDoToken, refDaCredencial } from './credencial';
 import { lerCredencial, salvarCredencial } from './credentialStore';
 import {
-  LiAppError,
   LiContaInativaError,
   LiContaNaoEncontradaError,
   LiContaParadaError,
@@ -134,19 +133,6 @@ describe('loadLojaIntegradaContext — the refusals, in order', () => {
     expect(ctx.integracaoId).toBe(ID);
     expect(ctx.conta).toMatchObject({ nome: 'Loja Teste', tipo: 3, ativo: true });
     expect(typeof ctx.cliente.get).toBe('function');
-  });
-
-  it('the app errors are NOT LiError — a step-3 catch on the package class cannot swallow them', () => {
-    for (const err of [
-      new LiContaNaoEncontradaError(ID),
-      new LiContaInativaError(ID),
-      new LiCredencialAusenteError(ID),
-      new LiCredencialInvalidaError(ID, ['x']),
-      new LiContaParadaError(ID, 401, 1),
-    ]) {
-      expect(err).toBeInstanceOf(LiAppError);
-      expect(err).not.toBeInstanceOf(LiError);
-    }
   });
 });
 

@@ -5,7 +5,8 @@
  * ⚠️ **None of them extends the package's `LiError`, on purpose.** Every class
  * here roots at {@link LiAppError}, so a step-3 `catch (err instanceof LiError)`
  * — written to handle a Loja Integrada answer — can never swallow "this conta is
- * parked" or "the stored credential is corrupt". `erros.test.ts` pins it.
+ * parked" or "the stored credential is corrupt". `erros.test.ts` pins it for
+ * every exported subclass.
  *
  * ⚠️ **No message carries a token, a fingerprint, a ref or a body.** Messages
  * are built HERE from structured, non-secret fields (the conta id, field PATHS),

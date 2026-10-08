@@ -89,18 +89,33 @@ function escrita(writeTime: Timestamp): EscritaCredencial {
   return { writeTime, versaoUs: relogioDoDocumentoUs(writeTime) };
 }
 
+/** A credential read, together with WHEN it was read. */
+export interface LeituraDeCredencial {
+  /** The credential, or `null` when none was stored at {@link leituraUs}. */
+  readonly lida: CredencialLida | null;
+  /**
+   * µs of the snapshot's `readTime`. The read saw every write stamped `<=` it,
+   * and any write it did not see is stamped `>` it — so it orders an ABSENCE
+   * against a later commit, which no document stamp can (there is no document).
+   * The sweep resolves the reconexão aviso with it when no credential exists.
+   */
+  readonly leituraUs: number;
+}
+
 /**
- * The conta's credential, strictly parsed, or `null` when none is stored.
+ * {@link lerCredencial}, plus the read time — for a caller that must order "no
+ * credential" against a park committed after it.
  *
  * @throws {LiCredencialInvalidaError} when the document does not parse (paths
  *   only). Firestore failures propagate as themselves.
  */
-export async function lerCredencial(
+export async function lerCredencialComLeitura(
   db: Firestore,
   integracaoId: string,
-): Promise<CredencialLida | null> {
+): Promise<LeituraDeCredencial> {
   const snap = await docCredencial(db, integracaoId).get();
-  if (!snap.exists) return null;
+  const leituraUs = relogioDoDocumentoUs(snap.readTime);
+  if (!snap.exists) return { lida: null, leituraUs };
   const parsed = credenciaisLojaIntegradaSchema.safeParse(snap.data());
   if (!parsed.success) {
     throw new LiCredencialInvalidaError(integracaoId, camposInvalidos(parsed.error.issues));
@@ -111,7 +126,23 @@ export async function lerCredencial(
     // write on no stamp at all.
     throw new Error(`lerCredencial(${integracaoId}): documento existente sem updateTime`);
   }
-  return { credencial: parsed.data, updateTime, versaoUs: relogioDoDocumentoUs(updateTime) };
+  return {
+    lida: { credencial: parsed.data, updateTime, versaoUs: relogioDoDocumentoUs(updateTime) },
+    leituraUs,
+  };
+}
+
+/**
+ * The conta's credential, strictly parsed, or `null` when none is stored.
+ *
+ * @throws {LiCredencialInvalidaError} when the document does not parse (paths
+ *   only). Firestore failures propagate as themselves.
+ */
+export async function lerCredencial(
+  db: Firestore,
+  integracaoId: string,
+): Promise<CredencialLida | null> {
+  return (await lerCredencialComLeitura(db, integracaoId)).lida;
 }
 
 export interface SalvarCredencialEntrada {
@@ -137,10 +168,12 @@ export interface SalvarCredencialEntrada {
  *   there first: 409.
  * - **Update**: ONE patch of exactly the four token fields plus
  *   `reconexaoPendente: null`, under `lastUpdateTime`. `FAILED_PRECONDITION`
- *   (someone wrote after our read) and `NOT_FOUND` (someone removed it) are
- *   both 409. ⚠️ The patch never mentions `webhookPedido` — a later step's
- *   registration survives a token save — and every value is a leaf or `null`,
- *   so `update` replaces nothing a set-merge would have kept.
+ *   — someone wrote OR removed it after our read: the SDK sends only the stamp,
+ *   so a removal fails it too — is 409; so is `NOT_FOUND`, in case the server
+ *   ever answers a removal that way. ⚠️ The patch never mentions
+ *   `webhookPedido` — a later step's registration survives a token save — and
+ *   every value is a leaf or `null`, so `update` replaces nothing a set-merge
+ *   would have kept.
  *
  * @throws {LiCredencialAlteradaError} on a lost race.
  */
@@ -197,7 +230,8 @@ export interface AtualizarValidadeEntrada {
  * validated just now, and the new `tokenAtualizadoEmMs` gives it a new ref.
  *
  * @throws {LiCredencialAlteradaError} when the document changed after the read.
- * @throws {LiCredencialAusenteError} when it was removed after the read.
+ * @throws {LiCredencialAusenteError} when it was removed after the read — told
+ *   apart by a re-read, because the server reports both as `FAILED_PRECONDITION`.
  */
 export async function atualizarValidade(
   db: Firestore,
@@ -209,13 +243,22 @@ export async function atualizarValidade(
     tokenAtualizadoEmMs: entrada.agoraMs,
     reconexaoPendente: null,
   });
+  const ref = docCredencial(db, integracaoId);
   try {
-    const wr = await docCredencial(db, integracaoId).update(patch, {
-      lastUpdateTime: entrada.versaoEsperada,
-    });
+    const wr = await ref.update(patch, { lastUpdateTime: entrada.versaoEsperada });
     return escrita(wr.writeTime);
   } catch (err) {
-    if (isFailedPrecondition(err)) throw new LiCredencialAlteradaError(integracaoId);
+    if (isFailedPrecondition(err)) {
+      // The SDK sends ONLY the update-time precondition (it replaces its own
+      // `exists` check), so a removal after our read fails it too — 9, never 5.
+      // A fresh read tells "removed" from "altered". It picks the error code and
+      // nothing else: no write is decided on it.
+      const atual = await ref.get();
+      if (!atual.exists) throw new LiCredencialAusenteError(integracaoId);
+      throw new LiCredencialAlteradaError(integracaoId);
+    }
+    // What an update WITHOUT the stamp answers on a missing document; mapped
+    // too, so the code does not hinge on which of the two the server picks.
     if (isNotFound(err)) throw new LiCredencialAusenteError(integracaoId);
     throw err;
   }

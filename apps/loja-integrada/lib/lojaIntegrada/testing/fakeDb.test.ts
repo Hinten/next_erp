@@ -4,7 +4,7 @@
  * stale precondition would make every race test vacuous.
  */
 import { describe, expect, it } from 'vitest';
-import { integracaoCollection } from '@delfrance/data/admin/collections';
+import { avisoCollection, integracaoCollection } from '@delfrance/data/admin/collections';
 import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin/grpcErrors';
 
 import { FakeDb, asDb, increment } from './fakeDb';
@@ -20,6 +20,20 @@ describe('FakeDb', () => {
     await ref.create({ x: 1 });
     await expect(ref.create({ x: 2 })).rejects.toMatchObject({ code: 6 });
     await expect(refDe(db, 'b').update({ x: 1 })).rejects.toSatisfy(isNotFound);
+  });
+
+  it('update under lastUpdateTime on a REMOVED doc is 9, not 5 — the stamp replaces the SDK’s exists check', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ x: 1 });
+    const lido = await ref.get();
+    await ref.delete();
+    const err: unknown = await ref
+      .update({ x: 2 }, { lastUpdateTime: lido.updateTime })
+      .catch((e: unknown) => e);
+    expect(isFailedPrecondition(err)).toBe(true);
+    expect(isNotFound(err)).toBe(false);
+    expect(db.ler('integracao/a')).toBeUndefined();
   });
 
   it('update under lastUpdateTime: a stale stamp is gRPC 9, the current one lands', async () => {
@@ -111,5 +125,91 @@ describe('FakeDb', () => {
       limite: 2,
       apos: 'b',
     });
+  });
+
+  it('every snapshot carries readTime: the latest stamp, below every later write', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const w = await ref.create({ tipo: 3, nome: 'A' });
+    const ausente = await refDe(db, 'b').get();
+    expect(ausente.exists).toBe(false);
+    expect(ausente.readTime.isEqual(w.writeTime)).toBe(true);
+    const lista = await integracaoCollection.ref(asDb(db), {}).where('tipo', '==', 3).get();
+    expect(lista.readTime.isEqual(w.writeTime)).toBe(true);
+    const depois = await refDe(db, 'b').create({ x: 1 });
+    expect(depois.writeTime.seconds * 1e6 + depois.writeTime.nanoseconds / 1000).toBeGreaterThan(
+      ausente.readTime.seconds * 1e6 + ausente.readTime.nanoseconds / 1000,
+    );
+  });
+
+  it('a query is IMMUTABLE: limit() on a base query leaves the base unchanged', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { tipo: 3, nome: 'A' });
+    db.seed('integracao/b', { tipo: 3, nome: 'B' });
+    const base = integracaoCollection.ref(asDb(db), {}).where('tipo', '==', 3);
+    expect((await base.limit(1).get()).size).toBe(1);
+    expect((await base.get()).size).toBe(2);
+    expect((await base.orderBy('nome').get()).docs.map((d) => d.id)).toEqual(['a', 'b']);
+    expect((await base.get()).size).toBe(2);
+  });
+
+  it('orderBy drops a document LACKING the field, keeps a null one, and puts null FIRST ascending', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/com', { tipo: 3, nome: 'A' });
+    db.seed('integracao/nulo', { tipo: 3, nome: null });
+    db.seed('integracao/sem', { tipo: 3 });
+    const q = integracaoCollection.ref(asDb(db), {}).where('tipo', '==', 3);
+    expect((await q.orderBy('nome').get()).docs.map((d) => d.id)).toEqual(['nulo', 'com']);
+    expect((await q.orderBy('nome', 'desc').get()).docs.map((d) => d.id)).toEqual(['com', 'nulo']);
+    // Near-miss: with no orderBy the field-less document is there.
+    expect((await q.get()).docs.map((d) => d.id).sort()).toEqual(['com', 'nulo', 'sem']);
+  });
+
+  it('ties break on the document id, in the direction of the last orderBy', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/b', { tipo: 3, n: 1 });
+    db.seed('integracao/a', { tipo: 3, n: 1 });
+    db.seed('integracao/c', { tipo: 3, n: 1 });
+    const q = integracaoCollection.ref(asDb(db), {}).where('tipo', '==', 3);
+    expect((await q.orderBy('n').get()).docs.map((d) => d.id)).toEqual(['a', 'b', 'c']);
+    expect((await q.orderBy('n', 'desc').get()).docs.map((d) => d.id)).toEqual(['c', 'b', 'a']);
+    expect((await q.get()).docs.map((d) => d.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('startAfter seeks by the snapshot’s VALUES: a cursor doc that stopped matching pages on', async () => {
+    const db = new FakeDb();
+    for (const [id, criadoEm] of [
+      ['r1', 30],
+      ['r2', 20],
+      ['r3', 10],
+    ] as const) {
+      db.seed(`avisos/${id}`, { criadoEm, resolvidoEm: null });
+    }
+    const q = avisoCollection
+      .ref(asDb(db), {})
+      .where('resolvidoEm', '==', null)
+      .orderBy('criadoEm', 'desc')
+      .limit(2);
+    const p1 = await q.get();
+    expect(p1.docs.map((d) => d.id)).toEqual(['r1', 'r2']);
+    const cursor = p1.docs[1];
+    if (cursor === undefined) throw new Error('page 1 is short');
+    // The cursor document leaves the result (resolved) before the next page.
+    db.seed('avisos/r2', { criadoEm: 20, resolvidoEm: 99 });
+    const p2 = await q.startAfter(cursor).get();
+    expect(p2.docs.map((d) => d.id)).toEqual(['r3']);
+    expect(db.consultas.at(-1)?.apos).toBe('r2');
+  });
+
+  it('startAfter refuses a snapshot missing an orderBy field, and an orderBy after a cursor', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { tipo: 3, nome: 'A' });
+    db.seed('integracao/b', { tipo: 3 });
+    const col = integracaoCollection.ref(asDb(db), {});
+    const [semNome] = (await col.where('tipo', '==', 3).get()).docs.filter((d) => d.id === 'b');
+    const [comNome] = (await col.orderBy('nome').get()).docs;
+    if (semNome === undefined || comNome === undefined) throw new Error('fixture');
+    expect(() => col.orderBy('nome').startAfter(semNome)).toThrow(/não tem o campo 'nome'/);
+    expect(() => col.startAfter(comNome).orderBy('nome')).toThrow(/orderBy\(\) depois/);
   });
 });

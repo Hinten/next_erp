@@ -1,9 +1,10 @@
 /**
- * The tier-1 park, against the fake that models `lastUpdateTime` and NOT_FOUND,
+ * The tier-1 park, against the fake that models `lastUpdateTime` as the server
+ * applies it (a removed document fails the stamp too: 9, not 5),
  * with the REAL `escreverAviso` / `resolverAviso` behind the aviso.
  */
 import { describe, expect, it } from 'vitest';
-import { LiAuthError, LiError } from '@delfrance/integrations-loja-integrada';
+import { LiAuthError } from '@delfrance/integrations-loja-integrada';
 import type { CredenciaisLojaIntegrada } from '@delfrance/schemas';
 
 import {
@@ -191,7 +192,7 @@ describe('estacionarConta (tier 1)', () => {
     expect(db.ler(CAMINHO)?.personalToken).toBe(TOKEN_B);
   });
 
-  it('a DELETE landing there: NOT_FOUND, the re-read says sem-credencial, and the doc stays absent', async () => {
+  it('a DELETE landing there: the stamp fails, the re-read says sem-credencial, and the doc stays absent', async () => {
     const db = new FakeDb();
     seedCredencial(db, ID);
     db.antesDaProximaEscrita(CAMINHO, async () => {
@@ -355,9 +356,5 @@ describe('tratarFalhaDeAutenticacao (park, then the aviso)', () => {
     expect(resultado).toBe('ignorado');
     expect(db.ler(CAMINHO)?.reconexaoPendente).toBeNull();
     expect(db.ler(caminhoAviso(chaveReconexao(ID)))?.resolvidoEm).not.toBeNull();
-  });
-
-  it('the package errors and the app errors are disjoint families', () => {
-    expect(new LiEstacionamentoEmConflitoError(ID, 3)).not.toBeInstanceOf(LiError);
   });
 });

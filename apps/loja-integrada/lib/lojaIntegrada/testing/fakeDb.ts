@@ -13,23 +13,52 @@
  *
  * ## Exactly what it supports — and it THROWS on anything else
  *
- *  - `doc.get()` → `{ exists, id, updateTime, data() }`;
+ *  - `doc.get()` → `{ exists, id, updateTime, readTime, data() }`;
  *  - `doc.create(data)` — rejects gRPC 6 (ALREADY_EXISTS) on an existing doc;
- *  - `doc.update(patch, { lastUpdateTime }?)` — rejects gRPC 5 (NOT_FOUND) on a
- *    missing doc and gRPC 9 (FAILED_PRECONDITION) on a stale stamp;
+ *  - `doc.update(patch)` — rejects gRPC 5 (NOT_FOUND) on a missing doc;
+ *  - `doc.update(patch, { lastUpdateTime })` — rejects gRPC 9
+ *    (FAILED_PRECONDITION) on a stale stamp AND on a missing doc. ⚠️ Not 5: the
+ *    real SDK REPLACES its default `{ exists: true }` precondition with the
+ *    stamp (`WriteBatch.update` in `@google-cloud/firestore`), so the server
+ *    only ever sees an update-time precondition, and a document that is gone
+ *    fails it;
  *  - `doc.delete()` — idempotent, like the real one;
  *  - every write resolves `{ writeTime }`;
  *  - the `{ __increment: n }` sentinel ({@link increment}), APPLIED on write,
  *    because `escreverAviso` writes `deps.increment(1)`;
  *  - `collection().where(campo, '==', valor)`, `orderBy`, `limit`,
- *    `startAfter(doc)` and `get()`.
+ *    `startAfter(doc)` and `get()` → `{ docs, empty, size, readTime }` — see
+ *    "Queries" below.
  *
  * Everything else — `set`, any other operator, a dotted update key, an
- * `undefined` value, a precondition that is not a stamp — throws. That is the
- * Shopee step-8 lesson: a double that silently answers "matches nothing" or
- * "wrote it" for a call it does not model lets every suite read green. Atomic
+ * `undefined` value, a precondition that is not a stamp, an `orderBy` over a
+ * value that is not null/boolean/number/string — throws. That is the Shopee
+ * step-8 lesson: a double that silently answers "matches nothing" or "wrote it"
+ * for a call it does not model lets every suite read green. Atomic
  * multi-document writes are NOT modelled at all: nothing in this app runs one,
  * and the park is a single-document precondition write.
+ *
+ * ## Queries — the server's semantics, not a convenient approximation
+ *
+ *  - **Immutable**: every builder method returns a NEW query; the one it was
+ *    called on is unchanged, like a real `Query`.
+ *  - **`orderBy` filters for existence**: a document LACKING the field is
+ *    dropped (a `null` value is kept). Values order by type first — null,
+ *    boolean, number, string — then by value; ties break on the document id in
+ *    the direction of the LAST `orderBy` (ascending with none).
+ *  - **`startAfter(snapshot)` seeks by the snapshot's VALUES** (its `orderBy`
+ *    fields, then its id), captured when it is called — never by looking the id
+ *    up in the new result. So a cursor document that has since stopped matching
+ *    (a resolved aviso, a deleted row) pages on exactly as it does in
+ *    production. A snapshot missing an `orderBy` field, and an `orderBy` after
+ *    a cursor, throw, as the SDK does.
+ *
+ * ## Read times
+ *
+ * Every snapshot carries `readTime` = the latest stamp issued so far. A read at
+ * that time sees every write stamped `<=` it, and any later write takes a
+ * strictly greater stamp — the server's guarantee, and what lets an ABSENCE be
+ * ordered against a later commit.
  *
  * ## The stamps
  *
@@ -148,30 +177,57 @@ export interface ConsultaFake {
   readonly apos: string | null;
 }
 
-function comparar(a: unknown, b: unknown): number | null {
-  if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0;
-  if (typeof a === 'string' && typeof b === 'string') return a < b ? -1 : a > b ? 1 : 0;
-  return null;
+/**
+ * Firestore's cross-type order, for the types this fake models: null, then
+ * booleans, then numbers, then strings. Anything else throws.
+ */
+function rankDoTipo(v: unknown, campo: string): number {
+  if (v === null) return 0;
+  if (typeof v === 'boolean') return 1;
+  if (typeof v === 'number') return 2;
+  if (typeof v === 'string') return 3;
+  throw new Error(`FakeDb: orderBy('${campo}') sobre um valor ${typeof v} não é modelado`);
 }
 
-/** Multi-key, stable sort; absent and `null` last whatever the direction. */
-function ordenar<T extends { stored: Stored }>(linhas: T[], ordens: readonly Ordem[]): T[] {
-  return [...linhas].sort((a, b) => {
-    for (const { campo, direcao } of ordens) {
-      const va = a.stored.data[campo];
-      const vb = b.stored.data[campo];
-      const aAusente = va === undefined || va === null;
-      const bAusente = vb === undefined || vb === null;
-      if (aAusente || bAusente) {
-        if (aAusente && bAusente) continue;
-        return aAusente ? 1 : -1;
-      }
-      const c = comparar(va, vb);
-      if (c === null || c === 0) continue;
-      return direcao === 'desc' ? -c : c;
-    }
-    return 0;
-  });
+function compararValores(a: unknown, b: unknown, campo: string): number {
+  const ra = rankDoTipo(a, campo);
+  const rb = rankDoTipo(b, campo);
+  if (ra !== rb) return ra < rb ? -1 : 1;
+  if (a === b) return 0;
+  return (a as boolean | number | string) < (b as boolean | number | string) ? -1 : 1;
+}
+
+/** A row as the ordering sees it: an id and the values of its fields. */
+interface Posicao {
+  readonly id: string;
+  readonly data: DocData;
+}
+
+/**
+ * The server's total order: each `orderBy` field, then the document id in the
+ * direction of the LAST `orderBy` (ascending when there is none).
+ */
+function compararPosicoes(a: Posicao, b: Posicao, ordens: readonly Ordem[]): number {
+  for (const { campo, direcao } of ordens) {
+    const c = compararValores(a.data[campo], b.data[campo], campo);
+    if (c !== 0) return direcao === 'desc' ? -c : c;
+  }
+  const c = a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  return (ordens.at(-1)?.direcao ?? 'asc') === 'desc' ? -c : c;
+}
+
+/** A `startAfter` cursor: the snapshot's id and values, frozen when it was given. */
+interface Cursor {
+  readonly id: string;
+  readonly data: DocData;
+}
+
+/** Everything a query carries. Never mutated: each builder call copies it. */
+interface EstadoConsulta {
+  readonly filtros: readonly Filtro[];
+  readonly ordens: readonly Ordem[];
+  readonly limite: number | null;
+  readonly apos: Cursor | null;
 }
 
 export class FakeDb {
@@ -253,6 +309,11 @@ export class FakeDb {
     return carimbo(this.relogioUs);
   }
 
+  /** A snapshot's `readTime`: the latest stamp issued; every later write is greater. */
+  private carimboDeLeitura(): CarimboFake {
+    return carimbo(this.relogioUs);
+  }
+
   private async antesDeEscrever(caminho: string): Promise<void> {
     const falha = this.falhasDeEscrita.get(caminho);
     if (falha) throw falha;
@@ -304,6 +365,7 @@ export class FakeDb {
           id,
           exists: atual !== undefined,
           updateTime: atual?.updateTime,
+          readTime: this.carimboDeLeitura(),
           data: () => dados,
         });
       },
@@ -337,13 +399,14 @@ export class FakeDb {
         }
         await this.antesDeEscrever(caminho);
         const atual = this.store.get(caminho);
-        if (atual === undefined) throw grpc(5, 'NOT_FOUND');
-        if (
-          precondicao?.lastUpdateTime !== undefined &&
-          !atual.updateTime.isEqual(precondicao.lastUpdateTime)
-        ) {
-          throw grpc(9, 'FAILED_PRECONDITION');
+        if (precondicao?.lastUpdateTime !== undefined) {
+          // The stamp REPLACES the SDK's `exists` precondition, so a missing
+          // document fails the stamp: 9, never 5 (module header).
+          if (atual === undefined || !atual.updateTime.isEqual(precondicao.lastUpdateTime)) {
+            throw grpc(9, 'FAILED_PRECONDITION');
+          }
         }
+        if (atual === undefined) throw grpc(5, 'NOT_FOUND');
         const writeTime = this.registrar('update', caminho, patch);
         this.store.set(caminho, { data: this.aplicar(atual.data, patch), updateTime: writeTime });
         return { writeTime };
@@ -366,71 +429,9 @@ export class FakeDb {
   }
 
   collection(colecao: string) {
-    const filtros: Filtro[] = [];
-    const ordens: Ordem[] = [];
-    let limite: number | null = null;
-    let apos: string | null = null;
-
-    const buscar = () => {
-      const falha = this.falhasDeConsulta.get(colecao);
-      if (falha) return Promise.reject(falha);
-      this.consultas.push({
-        colecao,
-        filtros: filtros.map((f) => [f.campo, '==', f.valor] as [string, '==', unknown]),
-        ordens: ordens.map((o) => [o.campo, o.direcao] as [string, 'asc' | 'desc']),
-        limite,
-        apos,
-      });
-      const prefixo = `${colecao}/`;
-      const encontrados = [...this.store.entries()]
-        .filter(([p]) => p.startsWith(prefixo) && !p.slice(prefixo.length).includes('/'))
-        // Strict equality on the stored value: a document LACKING the field never
-        // matches, like real Firestore.
-        .filter(([, s]) => filtros.every((f) => s.data[f.campo] === f.valor))
-        .map(([p, stored]) => ({ id: p.slice(prefixo.length), stored }));
-      // Order, THEN cursor, THEN cap — the order the server applies them in.
-      const ordenados = ordens.length > 0 ? ordenar(encontrados, ordens) : encontrados;
-      let aPartirDe = ordenados;
-      if (apos !== null) {
-        const cursor = apos;
-        const i = ordenados.findIndex((l) => l.id === cursor);
-        if (i < 0) {
-          throw new Error(`FakeDb: startAfter('${cursor}') não está no resultado desta consulta`);
-        }
-        aPartirDe = ordenados.slice(i + 1);
-      }
-      const limitados = limite === null ? aPartirDe : aPartirDe.slice(0, limite);
-      const docs = limitados.map(({ id, stored }) => {
-        const dados = structuredClone(stored.data);
-        return { id, exists: true, updateTime: stored.updateTime, data: () => dados };
-      });
-      return Promise.resolve({ docs, empty: docs.length === 0, size: docs.length });
-    };
-
-    const consulta = {
-      where: (campo: string, op: string, valor: unknown) => {
-        if (op !== '==') {
-          throw new Error(`FakeDb: operador '${op}' em where('${campo}') não é modelado`);
-        }
-        filtros.push({ campo, valor });
-        return consulta;
-      },
-      orderBy: (campo: string, direcao: 'asc' | 'desc' = 'asc') => {
-        ordens.push({ campo, direcao });
-        return consulta;
-      },
-      limit: (n: number) => {
-        limite = n;
-        return consulta;
-      },
-      startAfter: (doc: { id: string }) => {
-        if (typeof doc !== 'object' || doc === null || typeof doc.id !== 'string') {
-          throw new Error('FakeDb: startAfter só aceita um documento (cursor por id)');
-        }
-        apos = doc.id;
-        return consulta;
-      },
-      get: buscar,
+    const raiz = this.consulta(colecao, { filtros: [], ordens: [], limite: null, apos: null });
+    return {
+      ...raiz,
       doc: (id?: string) => {
         if (typeof id !== 'string' || id === '') {
           throw new Error('FakeDb: doc() sem id não é modelado');
@@ -438,7 +439,91 @@ export class FakeDb {
         return this.docRef(`${colecao}/${id}`, id);
       },
     };
-    return consulta;
+  }
+
+  /** One immutable query: every builder method returns a NEW one (module header). */
+  private consulta(colecao: string, estado: EstadoConsulta) {
+    const derivar = (mudanca: Partial<EstadoConsulta>) =>
+      this.consulta(colecao, { ...estado, ...mudanca });
+    return {
+      where: (campo: string, op: string, valor: unknown) => {
+        if (op !== '==') {
+          throw new Error(`FakeDb: operador '${op}' em where('${campo}') não é modelado`);
+        }
+        return derivar({ filtros: [...estado.filtros, { campo, valor }] });
+      },
+      orderBy: (campo: string, direcao: 'asc' | 'desc' = 'asc') => {
+        if (estado.apos !== null) {
+          // The SDK freezes a cursor's values against the orderBy known when it
+          // was set, and refuses a later one.
+          throw new Error('FakeDb: orderBy() depois de startAfter() — o SDK recusa');
+        }
+        return derivar({ ordens: [...estado.ordens, { campo, direcao }] });
+      },
+      limit: (n: number) => derivar({ limite: n }),
+      startAfter: (doc: { id: string; data: () => DocData | undefined }) => {
+        if (
+          typeof doc !== 'object' ||
+          doc === null ||
+          typeof doc.id !== 'string' ||
+          typeof doc.data !== 'function'
+        ) {
+          throw new Error('FakeDb: startAfter só aceita um snapshot de documento');
+        }
+        const data = doc.data();
+        for (const { campo } of estado.ordens) {
+          if (data?.[campo] === undefined) {
+            throw new Error(
+              `FakeDb: startAfter — o snapshot '${doc.id}' não tem o campo '${campo}' do orderBy`,
+            );
+          }
+        }
+        return derivar({ apos: { id: doc.id, data: structuredClone(data ?? {}) } });
+      },
+      get: () => this.buscar(colecao, estado),
+    };
+  }
+
+  private buscar(colecao: string, estado: EstadoConsulta) {
+    const { filtros, ordens, limite, apos } = estado;
+    const falha = this.falhasDeConsulta.get(colecao);
+    if (falha) return Promise.reject(falha);
+    this.consultas.push({
+      colecao,
+      filtros: filtros.map((f) => [f.campo, '==', f.valor] as [string, '==', unknown]),
+      ordens: ordens.map((o) => [o.campo, o.direcao] as [string, 'asc' | 'desc']),
+      limite,
+      apos: apos === null ? null : apos.id,
+    });
+    const prefixo = `${colecao}/`;
+    const encontrados = [...this.store.entries()]
+      .filter(([p]) => p.startsWith(prefixo) && !p.slice(prefixo.length).includes('/'))
+      // Strict equality on the stored value: a document LACKING the field never
+      // matches, like real Firestore.
+      .filter(([, s]) => filtros.every((f) => s.data[f.campo] === f.valor))
+      // `orderBy` filters for existence: a document lacking the field is
+      // dropped, while a stored `null` is kept.
+      .filter(([, s]) => ordens.every((o) => s.data[o.campo] !== undefined))
+      .map(([p, stored]) => ({ id: p.slice(prefixo.length), data: stored.data, stored }));
+    // Order, THEN cursor, THEN cap — the order the server applies them in.
+    const ordenados = [...encontrados].sort((a, b) => compararPosicoes(a, b, ordens));
+    // Seek past the cursor's VALUES — the cursor document itself need not
+    // still match (module header).
+    const aPartirDe =
+      apos === null
+        ? ordenados
+        : ordenados.filter((linha) => compararPosicoes(linha, apos, ordens) > 0);
+    const limitados = limite === null ? aPartirDe : aPartirDe.slice(0, limite);
+    const docs = limitados.map(({ id, stored }) => {
+      const dados = structuredClone(stored.data);
+      return { id, exists: true, updateTime: stored.updateTime, data: () => dados };
+    });
+    return Promise.resolve({
+      docs,
+      empty: docs.length === 0,
+      size: docs.length,
+      readTime: this.carimboDeLeitura(),
+    });
   }
 }
 
