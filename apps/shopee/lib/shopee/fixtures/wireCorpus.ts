@@ -2,8 +2,8 @@
  * Reader for the committed `__wire__/` corpus — Shopee response bodies, redacted
  * by `redact.ts` before they were written.
  *
- * ⚠️ **Two provenances, and they are not equally strong.** SIX of these bodies
- * are what SHOPEE SENT — the SG sandbox order in `READY_TO_SHIP` (pasted
+ * ⚠️ **Two provenances, and they are not equally strong.** Before step 19, SIX
+ * of these bodies were what SHOPEE SENT — the SG sandbox order in `READY_TO_SHIP` (pasted
  * 2026-09-09), its `get_escrow_detail` twin and the same order re-read after
  * arrange-shipment (both pasted 2026-09-10), and step 15b's three
  * `search_package_list` answers (a read-only probe, 2026-10-01); the other
@@ -16,6 +16,11 @@
  * demonstrably are (see `__wire__/README.md`: the kit ids, and the package
  * search's `sort` echo). The file names say which is which.
  *
+ * Step 19 (#1527) added the NATIVE-KIT set, and every body in it is one Shopee
+ * SENT: the SG sandbox answering the two kit probes. Their ids were flattened by
+ * the probes' own masking and are reassigned BY ROLE ({@link IDS_DO_KIT_NO_CORPUS});
+ * see the kit section below and `__wire__/README.md`.
+ *
  * ⚠️ **Read them, never rewrite them.** A test that edits a body to make an
  * assertion pass has converted the only evidence in the suite back into a
  * hand-written fixture. If a body looks wrong, the finding is about our code or
@@ -26,6 +31,10 @@ import { join } from 'node:path';
 
 import {
   type ShopeeEscrowDetailResponse,
+  type ShopeeItemBaseInfo,
+  type ShopeeItemList,
+  type ShopeeKitItemInfo,
+  type ShopeeModelList,
   type ShopeeOrderDetailResponse,
   type ShopeeReturnDetailEnvelope,
   type ShopeeReturnListEnvelope,
@@ -33,6 +42,10 @@ import {
   type ShopeeSizeChartDetail,
   type ShopeeSizeChartList,
   shopeeEscrowDetailSchema,
+  shopeeItemBaseInfoSchema,
+  shopeeItemListSchema,
+  shopeeKitItemInfoSchema,
+  shopeeModelListSchema,
   shopeeOrderDetailSchema,
   shopeeReturnDetailSchema,
   shopeeReturnListSchema,
@@ -202,6 +215,114 @@ export const FIXTURE_SIZE_CHART_DETAIL_DOC = 'get_size_chart_detail.doc.json';
 export const FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE =
   'get_size_chart_detail.doc-id-inexistente.json';
 
+/*
+ * The NATIVE KITS (step 19, #1527) — every body SENT by the SG sandbox to the two
+ * kit probes: probe #1 (2026-10-06, `SONDA-KIT`, one model) and probe #2
+ * (2026-10-07, the family kit `SONDA-KIT2`). ⚠️ The shop is SG: nothing here says
+ * a BR shop serves kits (register 272).
+ *
+ * ⚠️ **Their ids are FIXTURE ids, reassigned BY ROLE.** The probes' masking
+ * flattened every run of seven or more digits to `1000001`, which is unjoinable,
+ * so the promotion wrote one id per role ({@link IDS_DO_KIT_NO_CORPUS}), Shopee's
+ * doc-sample image id and category, and one fixture clock per probe day
+ * ({@link RELOGIO_SONDA_KIT_1_S}). Joins hold WITHIN one probe only: the two
+ * probes' kits are two different kits that both carry the kit role. Never join
+ * a kit body with the order, returns or size-chart sets.
+ *
+ * ⚠️ **No synthetic body lives here.** The fail-closed `tag: null` list row is
+ * derived INSIDE `kits/localizarKitPorSku.test.ts` from
+ * {@link FIXTURE_ITEM_LIST_SG_COM_KIT} by a named transform.
+ */
+
+/**
+ * The fixture ids of the kit set, one per ROLE — what every kit body carries in
+ * place of the probes' flattened `1000001`. The README's role table is the same
+ * list in prose, and `wireCorpus.test.ts` pins that the two agree.
+ */
+export const IDS_DO_KIT_NO_CORPUS = {
+  /** The kit `item_id` — BOTH probes' kit (two different kits; never join across them). */
+  kit: 2500139870,
+  /** The kit's first model, `tier_index: [0]`. */
+  modeloDoKit: 2000458820,
+  /** Component A, the 2-tier item. */
+  componenteA: 2500139871,
+  /** Component A's model `White,02` — the one on the kit's first model. */
+  modeloDoComponenteA: 2000458821,
+  /** Component B, the plain item with no variations. */
+  componenteB: 2500139872,
+  /**
+   * ⚠️ B's HIDDEN default model id: sent as nothing, read back non-zero, and in
+   * NO `get_model_list` body ({@link FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO}).
+   */
+  modeloOcultoDoComponenteB: 2000458829,
+} as const;
+
+/**
+ * Six unrelated listings the sandbox shop had deleted in earlier probes — the
+ * rows of {@link FIXTURE_ITEM_LIST_SG_SELLER_DELETE} after the kit. Ids minted
+ * for this corpus, with NO role: never join on them.
+ */
+export const IDS_APAGADOS_SEM_PAPEL = [
+  2500139881, 2500139882, 2500139883, 2500139884, 2500139885, 2500139886,
+] as const;
+
+/**
+ * Probe #1's fixture clock, SECONDS (2026-10-06T00:00:00Z), on every
+ * `create_time` / `update_time` of its bodies. ⚠️ The real stamps were masked
+ * away: no test may read an order or an age from it.
+ */
+export const RELOGIO_SONDA_KIT_1_S = 1_791_244_800;
+
+/** Shopee's published doc-sample image id — the ONE image every kit body names. */
+export const IMAGEM_DOC_DO_KIT = 'br-11134207-7r98o-lzri4neb5vcv18';
+
+/** Shopee's doc-sample category, in place of the sandbox's SG category. */
+export const CATEGORIA_DOC_DO_KIT = 107290;
+
+/** `get_item_list` right after the create: kit, A, B — `tag.kit` true, false, false. */
+export const FIXTURE_ITEM_LIST_SG_COM_KIT = 'get_item_list.sg-com-kit.json';
+/**
+ * `get_item_list` over the deleted statuses: SEVEN `SELLER_DELETE` rows, the
+ * deleted kit first (`tag.kit: true`), then {@link IDS_APAGADOS_SEM_PAPEL}.
+ */
+export const FIXTURE_ITEM_LIST_SG_SELLER_DELETE = 'get_item_list.sg-seller-delete.json';
+/** `get_item_base_info` of the kit — `has_model: true`, `tag.kit: true`, NO `stock_info_v2`. */
+export const FIXTURE_ITEM_BASE_INFO_SG_KIT = 'get_item_base_info.sg-kit.json';
+/**
+ * `get_kit_item_info` right after the create — `image` + the SINGULAR
+ * `long_image`, one model, ONE main, and B's HIDDEN model id with `''` name and
+ * SKU.
+ */
+export const FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO = 'get_kit_item_info.sg-pos-criacao.json';
+/** The same kit after `delete_item` — it still reads, `SELLER_DELETE`, channels disabled. */
+export const FIXTURE_KIT_ITEM_INFO_SG_APAGADO = 'get_kit_item_info.sg-apagado.json';
+/** `get_kit_item_info` of a NON-kit item — `"error": "."` + "product is not found". */
+export const FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT = 'get_kit_item_info.sg-nao-kit.json';
+/** `get_model_list` of the kit — `stock_info_v2` on a kit model, the only place it is readable. */
+export const FIXTURE_MODEL_LIST_SG_KIT = 'get_model_list.sg-kit.json';
+/** `get_model_list` of component B — `model: []`: the hidden id exists only inside the kit. */
+export const FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO = 'get_model_list.sg-item-sem-variacao.json';
+/**
+ * `get_kit_item_limit` on the sandbox host — the bare `{"error": "error_not_found"}`.
+ *
+ * ⚠️ It arrived with HTTP **404**, which a capture cannot record: serve it with
+ * 404 (the file name says so). At 200 the same body is a different error class.
+ */
+export const FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404 = 'get_kit_item_limit.sg-http404.json';
+
+/** The kit READ set (step 19, PR 3), sorted. */
+export const CORPOS_KIT_LEITURA = [
+  FIXTURE_ITEM_BASE_INFO_SG_KIT,
+  FIXTURE_ITEM_LIST_SG_COM_KIT,
+  FIXTURE_ITEM_LIST_SG_SELLER_DELETE,
+  FIXTURE_KIT_ITEM_INFO_SG_APAGADO,
+  FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT,
+  FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO,
+  FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404,
+  FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO,
+  FIXTURE_MODEL_LIST_SG_KIT,
+] as const;
+
 /** Every committed body, sorted. Excludes the README and any dotfile. */
 export function listarFixtures(): string[] {
   if (!existsSync(WIRE_DIR)) return [];
@@ -282,4 +403,36 @@ export function lerListaDeTabelasDeMedidas(file: string): ShopeeSizeChartList {
  */
 export function lerDetalheDeTabelaDeMedidas(file: string): ShopeeSizeChartDetail {
   return shopeeSizeChartDetailSchema.parse(lerFixture(file)).response;
+}
+
+/*
+ * The kit loaders (step 19). Each answers the PAYLOAD — exactly what the
+ * client's op resolves with (`res.response`), so a fake client can hand it on
+ * unchanged — and THROWS on a schema failure, same reason as above. A row that
+ * went `null` PARSES on the two list-shaped pages, so a test must look at the
+ * rows it got.
+ */
+
+/** One `get_item_list` page — what `client.getItemList` resolves with. */
+export function lerListaDeItens(file: string): ShopeeItemList {
+  return shopeeItemListSchema.parse(lerFixture(file)).response;
+}
+
+/** One `get_item_base_info` page — what `client.getItemBaseInfo` resolves with. */
+export function lerBaseDosItens(file: string): ShopeeItemBaseInfo {
+  return shopeeItemBaseInfoSchema.parse(lerFixture(file)).response;
+}
+
+/** One `get_model_list` page — what `client.getModelList` resolves with. */
+export function lerListaDeModelos(file: string): ShopeeModelList {
+  return shopeeModelListSchema.parse(lerFixture(file)).response;
+}
+
+/**
+ * One `get_kit_item_info` page — what `client.getKitItemInfo` resolves with.
+ * ⚠️ An error body ({@link FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT}) has no `response`
+ * and THROWS here: read it with {@link lerFixture}.
+ */
+export function lerKitDoCorpus(file: string): ShopeeKitItemInfo {
+  return shopeeKitItemInfoSchema.parse(lerFixture(file)).response;
 }

@@ -58,6 +58,7 @@ import {
   variacaoShopeeLinkCollection,
 } from '@delfrance/data/admin/collections';
 
+import { idDoRef } from '../core/vinculosShopee';
 import { INDICES_COMPOSTOS_SHOPEE } from '../pedidos/produtoResolve';
 import type { ItemLido } from './itemLido';
 import type { DocumentoLido } from './planoImportacao';
@@ -201,13 +202,30 @@ export async function produtoJaTemFilhos(db: Firestore, produtoId: string): Prom
 }
 
 /**
+ * The SKU a Shopee listing is identified by in the ERP: `(item_sku ?? '').trim()`.
+ *
+ * ⚠️ THE parent-SKU rung's fold, exported so step 19 keys on the SAME string
+ * (#1527, R-14): the native-kit create's duplicate scan (`localizarKitsPorSku`)
+ * and its `kit-sku-repetido` refusal must ask exactly what this import's rung 2
+ * asks, or an unlinked created kit would be re-imported onto a DIFFERENT
+ * produto than the one that created it. Equal: leading/trailing whitespace
+ * (`' KIT-1 '` ≡ `'KIT-1'`), and `null`/absent ≡ `''` (no SKU — the rung is
+ * skipped). Distinct: case (`'kit-1'` ≠ `'KIT-1'` — the rung's `where('sku',
+ * '==', …)` is case-sensitive), and inner whitespace (`'KIT 1'` ≠ `'KIT1'`).
+ */
+export function skuDoItemShopee(base: { readonly item_sku?: string | null }): string {
+  return (base.item_sku ?? '').trim();
+}
+
+/**
  * The PARENT cascade.
  *
  *  1. `prodshopee (item_id == N, conta == …)` — the listing link. A hit under a
  *     produto whose `paiId` is not null sets {@link ResolucaoPaiShopee.linkSobFilho}
  *     and resolves NOTHING, so even a mis-ordered caller cannot bind that child.
  *  2. `produtos (sku == item_sku, paiId == null)`, `limit(2)`, accepted on
- *     EXACTLY one. Two hits are the ambiguity signal, not a tie to break.
+ *     EXACTLY one — `item_sku` folded by {@link skuDoItemShopee}. Two hits are
+ *     the ambiguity signal, not a tie to break.
  *  3. create — the caller mints {@link idProdutoPaiShopee}.
  *
  * ⚠️ A produto reached through rung 2 still reuses its existing link for THIS
@@ -262,7 +280,7 @@ export async function resolverPaiDaListagem(
     // SKU rung, and the link document is re-pointed by the merge below.
   }
 
-  const sku = (entrada.base.item_sku ?? '').trim();
+  const sku = skuDoItemShopee(entrada.base);
   if (sku.length > 0) {
     const porSku = await produtoCollection
       .ref(db, {})
@@ -359,6 +377,32 @@ async function vinculosDoFilho(
 }
 
 /**
+ * A child's `variashopee` rows of the conta, narrowed to ONE listing when the
+ * caller names it (step 19, #1527, S2C-01).
+ *
+ * `null` ⇒ every row of the conta, unchanged — the ordinary listing import's
+ * behaviour. A link id ⇒ only the rows whose `produtoShopeeOuterRef` names that
+ * `prodshopee` doc, through `idDoRef` (BOTH stored encodings — canonical
+ * `documents/…` and the bare legacy path — never a raw `===` on the path).
+ *
+ * ⚠️ Why a kit needs it: a native kit's children routinely carry ANOTHER
+ * listing's rows of the same conta — the old kit a recriar replaced, the
+ * ordinary listing a converter superseded, a removed listing, a double-create
+ * twin. Unscoped, each such row "claims" the child for a model this listing
+ * does not have, so every child is declined and MINTED again (a duplicate
+ * produto per model, and a família de um loses its member); and the link reuse
+ * would MERGE this listing's model onto the other listing's row, rewriting its
+ * `model_id` and orphaning its orders and its step-12/13 binding.
+ */
+function daListagem(
+  vinculos: readonly LinhaDeLink[],
+  linkDocIdDaListagem: string | null,
+): LinhaDeLink[] {
+  if (linkDocIdDaListagem === null) return [...vinculos];
+  return vinculos.filter((v) => idDoRef(v.raw.produtoShopeeOuterRef) === linkDocIdDaListagem);
+}
+
+/**
  * The CHILD cascade, per model.
  *
  *  1. `variashopee (model_id == N, conta == …)` — **skipped entirely** when the
@@ -376,6 +420,15 @@ async function vinculosDoFilho(
  *     model actually has a resolved combination to compare. A sibling whose own
  *     `variashopee` for this conta names a DIFFERENT model is skipped.
  *  4. create — the caller mints {@link idProdutoFilhoShopee}.
+ *
+ * `linkDocIdDaListagem` (step 19, S2C-01) scopes BOTH the rung-2/3 claim check
+ * and their link reuse to ONE listing's rows — see {@link daListagem}. The kit
+ * arm passes its listing's link id (the parent rung-1 hit's, else the
+ * deterministic new kit link id); the ordinary listing import passes `null`,
+ * which is exactly the behaviour before step 19. Rung 1 is not scoped: it asks
+ * for THIS listing's own `model_id`. ⚠️ REQUIRED, with no default (OP-2): a
+ * caller that forgot it would silently disable the listing-scoped claim check
+ * (mutant X1 / S2C-01) and still compile; the type checker now says so.
  */
 export async function resolverFilhosDaListagem(
   db: Firestore,
@@ -384,6 +437,7 @@ export async function resolverFilhosDaListagem(
   paiExiste: boolean,
   modelos: readonly ShopeeModel[],
   combos: readonly ComboDoFilho[],
+  linkDocIdDaListagem: string | null,
 ): Promise<ResolucaoFilhoShopee[]> {
   const conta = contaRefDe(integracaoId);
   const saida: ResolucaoFilhoShopee[] = [];
@@ -450,7 +504,9 @@ export async function resolverFilhosDaListagem(
         // import BOTH models win rung 1 onto the same child. Mercado Livre's
         // equivalent applies the guard at this rung too.
         const jaTomado = tomados.has(doc.id);
-        const vinculos = jaTomado ? [] : await vinculosDoFilho(db, doc.id, conta);
+        const vinculos = jaTomado
+          ? []
+          : daListagem(await vinculosDoFilho(db, doc.id, conta), linkDocIdDaListagem);
         if (!jaTomado && !vinculos.some((v) => vinculoNomeiaOutroModelo(v.raw, modelId))) {
           existente = produtoLido(doc);
           tomados.add(existente.id);
@@ -483,8 +539,12 @@ export async function resolverFilhosDaListagem(
         if (!sameCombo(irmao.variacoesUid, [...combo])) continue;
         // ⚠️ A sibling already claimed by ANOTHER model of this listing is not a
         // candidate. An absent `model_id` answers false — see
-        // {@link vinculoNomeiaOutroModelo}.
-        const vinculos = await vinculosDoFilho(db, irmao.id, conta);
+        // {@link vinculoNomeiaOutroModelo}. Scoped to this listing when the
+        // caller names one ({@link daListagem}).
+        const vinculos = daListagem(
+          await vinculosDoFilho(db, irmao.id, conta),
+          linkDocIdDaListagem,
+        );
         if (vinculos.some((v) => vinculoNomeiaOutroModelo(v.raw, modelId))) continue;
         const produto = await lerProduto(db, irmao.id);
         if (produto === null) continue;

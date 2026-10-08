@@ -1,3 +1,4 @@
+import { FieldValue } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 
@@ -131,6 +132,10 @@ export const processShopeeMassImport = onTaskDispatched(
         scheduler: createShopeeMassImportScheduler(),
         importarAnuncio: importarAnuncioShopee,
         importarKit: importarKitShopee,
+        // The kit arm's recipe-aviso write can RAISE, and `ocorrencias` is a
+        // tier-0 counter. Wrapped rather than passed by reference, like every
+        // other `increment` this codebase wires (step 19, #1527).
+        increment: (by: number) => FieldValue.increment(by),
       },
       parsed.data,
       req.retryCount ?? 0,

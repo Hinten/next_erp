@@ -1,0 +1,67 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "item": [
+      {
+        "item_id": 2500139870,
+        "item_status": "SELLER_DELETE",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": true
+        }
+      },
+      {
+        "item_id": 2500139881,
+        "item_status": "SELLER_DELETE",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": false
+        }
+      },
+      {
+        "item_id": 2500139882,
+        "item_status": "SELLER_DELETE",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": false
+        }
+      },
+      {
+        "item_id": 2500139883,
+        "item_status": "SELLER_DELETE",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": false
+        }
+      },
+      {
+        "item_id": 2500139884,
+        "item_status": "SELLER_DELETE",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": false
+        }
+      },
+      {
+        "item_id": 2500139885,
+        "item_status": "SELLER_DELETE",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": false
+        }
+      },
+      {
+        "item_id": 2500139886,
+        "item_status": "SELLER_DELETE",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": false
+        }
+      }
+    ],
+    "total_count": 7,
+    "has_next_page": false,
+    "next": ""
+  }
+}

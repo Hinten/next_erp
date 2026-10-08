@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FieldValue } from 'firebase-admin/firestore';
 import { PERM } from '@delfrance/auth';
 import {
   shopeeCategoriaSchema,
@@ -273,5 +274,63 @@ describe('um kit vai para o importador de kit', () => {
     expect(h.importarKit).toHaveBeenCalledTimes(1);
     // ⛔ O kit NUNCA passa pelo get_model_list.
     expect(h.getModelList).not.toHaveBeenCalled();
+  });
+
+  it('(passo 19) o kit recebe o increment REAL e o has_model dos componentes', async () => {
+    const COMPONENTE_A = 2500139871;
+    const COMPONENTE_B = 2500139872;
+    h.getItemBaseInfo.mockImplementation(async (p: { itemIds: number[] }) =>
+      p.itemIds.includes(ITEM_ID)
+        ? payload({ ...LINHA_SIMPLES, tag: { kit: true } })
+        : payload(
+            { item_id: COMPONENTE_A, has_model: true },
+            { item_id: COMPONENTE_B, has_model: false },
+          ),
+    );
+    h.getKitItemInfo.mockResolvedValue(
+      shopeeKitItemInfoPayloadSchema.parse({
+        product_info: {
+          item_id: ITEM_ID,
+          item_name: 'Kit de Camisetas',
+          model_list: [
+            {
+              model_id: 2000458820,
+              component_list: [
+                { component_item_id: COMPONENTE_A, component_model_id: 2000458821, quantity: 2 },
+                { component_item_id: COMPONENTE_B, component_model_id: 2000458829, quantity: 1 },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    h.importarKit.mockResolvedValue({
+      produtoId: 'p-kit',
+      criado: false,
+      nome: 'Kit de Camisetas',
+      variacoes: { total: 1, criadas: 0, semLink: 0 },
+      fotos: { importadas: 0, ignoradas: 0, falhas: 0 },
+      kit: { componentes: 2, criado: false },
+    });
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+
+    expect(res.status).toBe(200);
+    const [deps, entrada] = h.importarKit.mock.calls[0] as [
+      { increment: (by: number) => unknown },
+      { temModelosDosComponentes?: ReadonlyMap<number, boolean> },
+    ];
+    const sentinela = deps.increment(2);
+    expect(sentinela).toBeInstanceOf(FieldValue);
+    expect((sentinela as FieldValue).isEqual(FieldValue.increment(2))).toBe(true);
+    expect([...(entrada.temModelosDosComponentes ?? new Map()).entries()]).toEqual([
+      [COMPONENTE_A, true],
+      [COMPONENTE_B, false],
+    ]);
+    // ONE base-info call for the kit, ONE batched call for its components.
+    expect(h.getItemBaseInfo).toHaveBeenCalledTimes(2);
+    expect(h.getItemBaseInfo).toHaveBeenLastCalledWith({
+      itemIds: [COMPONENTE_A, COMPONENTE_B],
+    });
   });
 });

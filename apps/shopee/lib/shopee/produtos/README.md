@@ -7,7 +7,7 @@ here for the reasoning; this file is where the detail lives, in the root
 and the wave reports that produced this folder are in the step-9 review
 directory named by the PR that closed #1517.
 
-## The twenty-one modules, in five families
+## The twenty-two modules, in five families
 
 The families are the seam, not a filing convention.
 
@@ -32,7 +32,11 @@ The families are the seam, not a filing convention.
   `filhoUnicoId`) and `importarAnuncio.ts` — the orchestrator, `preparar`
   (write-free) → `planejar` (pure) → `aplicar`.
 - **The kit arm** — `kitShopee.ts`: `get_kit_item_info` read as a listing, every
-  component resolved first, an ERP kit produto or a refusal.
+  component resolved first, an ERP kit produto or a refusal; and
+  `temModelosDosComponentes.ts` (step 19), the ONE batched `has_model` read of
+  a kit's component items that decides which model id each component is asked
+  for. The two deterministic kit-link ids it writes at come from
+  `../kits/idsKit.ts`, shared with the step-19 kit create.
 - **The job and its surfaces** — `importacaoMassa.ts` (the resumable
   `importacoesShopee` job: `iniciar` / `processar` / `finalizar` / `cancelar`,
   the scan, the two queues, the dispositions) and `shopeeMassImportTasks.ts`
@@ -58,7 +62,14 @@ per dispatch, reconciled **by `item_id`**, never by position), or by
 though the single-item read pays for one `get_item_base_info` first, because
 `tag.kit` is read off that row; only the job's `filaKits` drain skips it.
 Otherwise `has_model === true` asks for `get_model_list`. What `get_model_list`
-answers for a kit is UNVERIFIED, so nobody spends the call to find out.
+answers for a kit is now MEASURED (step 19 probe #1, SG sandbox): the kit's own
+models with Shopee's DERIVED stock — and no component, which is why the import
+still reads `get_kit_item_info`. Since step 19 a kit read adds ONE batched
+`get_item_base_info` over its component items (`temModelosDosComponentes.ts`,
+≤ 50 ids per call, no cache) for their `has_model`: a component item with no
+variations reads back a NON-ZERO hidden default `component_model_id` that its
+own `get_model_list` never shows, and only `has_model === false` says it is
+that hidden id rather than a variation.
 
 **`preparar` → `planejar` → `aplicar`, and the split is structural.**
 `prepararImportacaoShopee` is write-free — no bucket, no fetch, no writer
@@ -98,7 +109,19 @@ we did not write may be the only binding a legacy row has. Two inconsistencies
 refuse the item BEFORE any write: a `prodshopee` found under a CHILD, and a
 `variashopee` pointing at another family. `model_id: 0` still creates the child
 and just skips the link (counted in `semLink`); a listing with no models writes
-no `variashopee` at all.
+no `variashopee` at all. ⚠️ **A native KIT is the one place a link id is
+DERIVED** (step 19, #1527): a kit has a second writer the resolve cannot see —
+the kit create writes its link right after `add_kit_item` answers, with no
+document before it — so a NEW kit listing link (rung 1 missed) is written at
+`idDoVinculoDeKit(integracaoId, item_id)` and every NEW kit-model row at
+`idDaVariacaoDeKit(linkDocId, model_id)` (`../kits/idsKit.ts`), both through
+the existing merge-at-id applier. The create computes the same ids, so an
+import that runs before, during or after the create's link write lands on the
+SAME documents. A hit keeps the id it was found at, and an ordinary listing
+keeps `add`. And the kit's CHILD cascade is scoped to its own listing: the
+claim check and the link reuse ignore the rows of ANOTHER listing the children
+carry (the old kit of a recriar, a superseded ordinary listing, a removed one),
+which would otherwise decline every child and mint duplicates.
 
 **`kitNativo` is stamped on every listing link, on both branches.**
 `dadosLinkListagem` writes `ehKitDe(base)` — `true` for a native Shopee kit,
@@ -234,7 +257,11 @@ documents' `conta*OuterRef`, and the `arquivos.externalIds[].integracaoPath`. A
 second integração over the same shop therefore forks consistently instead of
 converging one thing while everything around it stays forked. The legacy Flutter
 id was `sha256(now µs + 20 random chars)`, non-deterministic, so there is no
-preimage to inherit and no reason to try.
+preimage to inherit and no reason to try. The two kit LINK ids are the same
+idea one collection down (`../kits/idsKit.ts`): `sha256("shopee-kit|<integracaoId>|<item_id>")`
+for a native kit's listing link — the `shopee-kit` prefix keeps it from ever
+equalling the parent produto id of the same listing — and
+`sha256("<linkDocId>|<model_id>")` for each kit-model row.
 
 **Kits (K1).** A `tag.kit` listing reaches `kitShopee.ts` and never
 `importarAnuncioShopee`, which refuses it outright rather than minting a simple
@@ -257,6 +284,50 @@ retry loop. Kits are drained LAST by the job (`filaKits`), which is what makes
 "twice" usually unnecessary in a full catalogue walk. Creating a kit ON Shopee
 is step 19's, and the free availability probe for it is the shipped
 `taxonomia/limites/kit` route.
+
+**Kits, step 19 (#1527).** Five more rules, all in `kitShopee.ts`.
+_Components:_ a component is asked for by the schemas' ONE default-model rule
+(`modeloDoComponenteKit` over the batched `has_model`): a plain item's hidden id
+becomes `0` and binds on its listing link, which the import then HOPS to its
+sellable unit (`unidadeVendavelDaRaiz`, the SKU rungs' own rule) — a plain
+listing's owner is a família-de-um wrapper, and a map keyed on the wrapper
+breaks #1450. _The recipe never silently reverts a pending edit (R-t, Lucas
+L10(2)):_ per child the import compares Shopee's resolved recipe with the
+child's STORED one through the ERP fingerprint `chaveReceitaKitErp` — equal ⇒
+proceed; different while ANY of the child's rows on an ACTIVE native kit of the
+produto (this listing's or another live one's) carries a stamp that is not the
+current fingerprint ⇒ that child's map is KEPT, nothing is stamped, the aviso
+stays open and the result reports `receita-divergente`; otherwise Shopee's
+recipe wins, as before. A família de um whose member is kept gets no mirror on
+the parent either. ⚠️ A família de um ALSO checks K's own stored fingerprint
+(`chaveDoPaiDaFamiliaDeUm`, R1-RT7-01): K differing from its member means K
+holds an edit the sole-member mirror has not delivered yet, so Shopee counts as
+equal only when it folds to K's recipe — the import then completes the mirror
+and stamps K's — and otherwise the member is KEPT and `receita-divergente`
+reported, whatever the stamps say. A listing whose link is superseded or
+removed writes no recipe at all. _Where `receita-divergente` surfaces (OP-1):_
+the `importar` route's JSON (`kit.avisos`), the `importar:anuncio` CLI (one
+`aviso do kit` line per warning in text mode, the same array under `--json`)
+and, in the `importar-todos` job, one `console.warn` per kit with ids only. The
+job REPORT carries no counter for it: that warn line and the aviso itself are
+the only signals of a kit the job imported while keeping the ERP recipe.
+_The stamp (R-4):_ every kit-model row it writes carries
+`receitaKitConferida` = the fingerprint of the recipe written (fold-equal by
+construction: that recipe IS the read-back) — except an ADDRESS-UNFAITHFUL
+recipe (R2-F2): when two different Shopee addresses (another item, or another
+model of the same item) resolve to ONE produto (`receitaFielAosEnderecos` says
+no), the produto-level fingerprint is coarser than what Shopee holds, so the
+map is still written but the row is NOT stamped and an earlier stamp on it is
+CLEARED — the aviso opens. An EXISTING row is stamped
+FIRST — a flat `mergeIfExists`, before any produto write — so the recipe
+trigger those writes fire already reads it. After the writes,
+`reavaliarAvisoDeReceitaKit` re-decides the (conta, kit) aviso once, motivo
+`importado`. _Família de um (R-u):_ a one-model kit imported onto a parent that
+is a família de um binds its model to `filhoUnicoId`, never a new child. _The
+single-model tier:_ the create publishes a família de um under tier `Kit` /
+option `Padrão`; the import reads that exact pair as NO tier, so it plans no
+taxonomy and leaves the member's variation fields alone. Step 9 never writes
+`ehKitVirtual` — publishing as a native kit is the operator's decision.
 
 **The job's dispositions, in one paragraph.** A `running` job scans one page
 when both queues are empty, drains up to ten items per dispatch (forty with

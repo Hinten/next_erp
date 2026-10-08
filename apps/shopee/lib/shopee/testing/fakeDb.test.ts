@@ -7,7 +7,9 @@
  * those suites all read GREEN. That is why this file exists, and it pins ONLY
  * what step 8 added: the operators, the ordering, the cursor, the chainable
  * `limit` and the second query log. The pre-existing behaviour stays pinned
- * where it always was — by the nineteen suites that drive it.
+ * where it always was — by the nineteen suites that drive it. Step 19 (#1527)
+ * adds the last describe: the stamp's `seconds`/`nanoseconds` and the
+ * transaction options, read-log and read-only refusal.
  *
  * The queries go through `pedidoCollection.ref()` like every caller does (raw
  * `.collection()` is lint-banned in this app), but nothing here is about the
@@ -19,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 
 import { avisoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
 import { isFailedPrecondition } from '@delfrance/data/admin';
+import { microsDeUpdateTime } from '@delfrance/data/admin/avisos';
 
 import { FakeDb, arrayUnion, asDb, grpc } from './fakeDb';
 
@@ -393,5 +396,89 @@ describe('FakeDb — os dois registros de consulta', () => {
     expect(db.consultas).toEqual([
       { fonte: 'pedidos', clausulas: [['timestamp', 150]], limite: 2 },
     ]);
+  });
+});
+
+describe('FakeDb — passo 19: o carimbo em segundos e a transação readOnly', () => {
+  it('o carimbo expõe `seconds` (= seq) e `nanoseconds` (= 0), e o µs dele é FINITO e cresce a cada escrita', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+
+    const antes = (await ref.get()).updateTime!;
+    await ref.update({ n: 2 } as never);
+    const depois = (await ref.get()).updateTime!;
+
+    expect(antes.seconds).toBe((antes as unknown as { seq: number }).seq);
+    expect(antes.nanoseconds).toBe(0);
+    expect(depois.seconds).toBeGreaterThan(antes.seconds);
+    // A mesma regra que o aviso de receita de kit aplica: nunca `NaN`.
+    expect(Number.isFinite(microsDeUpdateTime(antes))).toBe(true);
+    expect(microsDeUpdateTime(depois)).toBe(depois.seconds * 1_000_000);
+    expect(microsDeUpdateTime(depois)).toBeGreaterThan(microsDeUpdateTime(antes));
+    // `seq`, `isEqual` e `toMillis` continuam como eram.
+    expect(db.store['pedidos/a']!.updateTime.seq).toBe(depois.seconds);
+    expect(depois.isEqual(antes)).toBe(false);
+  });
+
+  it('runTransaction registra as opções (ou `undefined`) e toda leitura feita PELA transação', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    db.seed('pedidos/b', { n: 2 });
+    const fs = asDb(db);
+
+    await fs.runTransaction(
+      async (tx) => {
+        await tx.get(pedidoCollection.docRef(fs, {}, 'a'));
+        await tx.get(pedidoCollection.ref(fs, {}).where('n', '==', 2));
+      },
+      { readOnly: true },
+    );
+    // Uma leitura FORA da transação fica no opLog, e não aqui.
+    await pedidoCollection.docRef(fs, {}, 'b').get();
+    await fs.runTransaction(async (tx) => {
+      await tx.get(pedidoCollection.docRef(fs, {}, 'b'));
+    });
+
+    expect(db.opcoesDeTransacao).toEqual([{ readOnly: true }, undefined]);
+    expect(db.leiturasEmTransacao).toEqual(['pedidos/a', 'pedidos', 'pedidos/b']);
+    expect(db.opLog.filter((o) => o.op === 'get')).toHaveLength(4);
+  });
+
+  it('uma escrita dentro de uma transação readOnly LANÇA e não grava nada', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const fs = asDb(db);
+
+    const erro = await fs
+      .runTransaction(
+        async (tx) => {
+          await tx.get(pedidoCollection.docRef(fs, {}, 'a'));
+          tx.update(pedidoCollection.docRef(fs, {}, 'a'), { n: 2 });
+        },
+        { readOnly: true },
+      )
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+    expect(erro).toBeInstanceOf(Error);
+    expect(db.store['pedidos/a']!.data.n).toBe(1);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ NEAR-MISS: a MESMA escrita numa transação comum grava', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const fs = asDb(db);
+
+    await fs.runTransaction(async (tx) => {
+      await tx.get(pedidoCollection.docRef(fs, {}, 'a'));
+      tx.update(pedidoCollection.docRef(fs, {}, 'a'), { n: 2 });
+    });
+
+    expect(db.store['pedidos/a']!.data.n).toBe(2);
+    expect(db.writes.map((w) => w.path)).toEqual(['pedidos/a']);
   });
 });

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FieldValue } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 
 import {
@@ -271,5 +272,19 @@ describe('o handler do processShopeeMassImport', () => {
     // mesma assinatura — então uma asserção de forma aceitaria a troca.
     expect(deps.importarKit).toBe(importarKitShopee);
     expect(deps.importarKit).not.toBe(deps.importarAnuncio);
+  });
+
+  it('(passo 19) o increment injetado é o FieldValue.increment de verdade', async () => {
+    // O importador de kit reavalia o aviso de receita, que pode LEVANTAR o
+    // aviso — e `ocorrencias` é um contador tier-0. Sem o increment nas deps o
+    // job lança ao drenar o primeiro kit; com um stub, o contador viraria lixo.
+    await run({ data: { jobId: 'job-1', integracaoId: 'int-1' }, retryCount: 0 });
+
+    const [deps] = chamadaDoJob();
+    expect(deps.increment).toBeTypeOf('function');
+    const sentinela = (deps.increment as (by: number) => unknown)(3);
+    expect(sentinela).toBeInstanceOf(FieldValue);
+    expect((sentinela as FieldValue).isEqual(FieldValue.increment(3))).toBe(true);
+    expect((sentinela as FieldValue).isEqual(FieldValue.increment(2))).toBe(false);
   });
 });

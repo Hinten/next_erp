@@ -1,0 +1,84 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "tier_variation": [
+      {
+        "name": "Kit",
+        "option_list": [
+          {
+            "option": "Kit um"
+          }
+        ]
+      }
+    ],
+    "model": [
+      {
+        "model_id": 2000458820,
+        "model_name": "Kit um",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [0],
+        "price_info": [
+          {
+            "current_price": 45,
+            "original_price": 45,
+            "inflated_price_of_current_price": 45,
+            "inflated_price_of_original_price": 45,
+            "currency": "SGD"
+          }
+        ],
+        "model_sku": "SONDA-KIT-M1",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 3
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 1
+          },
+          "seller_stock": [
+            {
+              "location_id": "SGZ",
+              "stock": 1,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "model_status": "MODEL_NORMAL",
+        "weight": "1",
+        "dimension": {
+          "package_length": 0,
+          "package_width": 0,
+          "package_height": 0
+        },
+        "is_fulfillment_by_shopee": false
+      }
+    ],
+    "standardise_tier_variation": [
+      {
+        "variation_id": 0,
+        "variation_name": "Kit",
+        "variation_option_list": [
+          {
+            "variation_option_id": 0,
+            "variation_option_name": "Kit um"
+          }
+        ]
+      }
+    ]
+  },
+  "debug_message": ""
+}

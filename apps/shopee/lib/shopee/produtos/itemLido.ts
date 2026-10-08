@@ -93,6 +93,19 @@ export interface ItemLido {
   readonly taxInfo: ShopeeTaxInfo | null;
   /** `get_kit_item_info.response.product_info`. `null` for a non-kit. */
   readonly kit: ShopeeKitItem | null;
+  /**
+   * For a KIT: `component_item_id → has_model`, read by
+   * `lerTemModelosDosComponentes` right after `get_kit_item_info` (step 19,
+   * #1527). It decides whether a component's `component_model_id` is a real
+   * variation or Shopee's HIDDEN default model id of a plain item (non-zero,
+   * absent from its own `get_model_list`).
+   *
+   * ⚠️ OPTIONAL on purpose, and ABSENT means unknown — the component keeps the
+   * wire id verbatim, today's path. A required field would break every typed
+   * `ItemLido` literal for a field only a kit carries; an id missing from the
+   * map is likewise unknown, never `false`.
+   */
+  readonly temModelosDosComponentes?: ReadonlyMap<number, boolean>;
   /** The id ASKED for — the reconciliation key. */
   readonly itemId: number;
 }
@@ -163,6 +176,8 @@ export interface ArgsMontarItemLido {
   readonly modelos?: ShopeeModelList | null;
   /** `get_kit_item_info.response.product_info`, for a `tag.kit` item. */
   readonly kit?: ShopeeKitItem | null;
+  /** The kit components' `has_model` — see {@link ItemLido.temModelosDosComponentes}. */
+  readonly temModelosDosComponentes?: ReadonlyMap<number, boolean>;
 }
 
 /**
@@ -207,6 +222,11 @@ export function montarItemLido(args: ArgsMontarItemLido): ItemLido {
     models: args.modelos ?? null,
     taxInfo: taxInfoDe(args.payload, bruta),
     kit: args.kit ?? null,
+    // Spread-or-nothing: an absent map stays ABSENT (unknown), so a record
+    // built without one is byte-identical to the pre-step-19 shape.
+    ...(args.temModelosDosComponentes !== undefined
+      ? { temModelosDosComponentes: args.temModelosDosComponentes }
+      : {}),
     itemId: args.itemId,
   };
 }
@@ -344,7 +364,31 @@ export interface ResultadoImportacaoShopee {
     readonly falhas: number;
   };
   /** Present only when the item was a kit AND the kit arm ran. */
-  readonly kit?: { readonly componentes: number; readonly criado: boolean };
+  readonly kit?: {
+    readonly componentes: number;
+    readonly criado: boolean;
+    /**
+     * Step 19 (#1527, OP-1): the kit arm's warnings — today `receita-divergente`,
+     * a pending ERP recipe edit the import KEPT (L10(2)). On the seam so every
+     * surface reports it: the route's JSON, the CLI (text and `--json`) and the
+     * mass-import job's log. ⚠️ Optional, and an ABSENT list reads as `[]`: the
+     * real kit arm always sets it, but the job's injected importer is typed by
+     * this seam and its doubles predate the field.
+     */
+    readonly avisos?: readonly AvisoImportacaoKit[];
+  };
+}
+
+/**
+ * One warning of a kit import (step 19). Today only `receita-divergente`: the
+ * import KEPT a pending ERP recipe edit for that child (R-t (ii)). Ids only in
+ * the sentence — never a name, a SKU or Shopee's prose.
+ */
+export interface AvisoImportacaoKit {
+  readonly codigo: 'receita-divergente';
+  /** The kit CHILD whose recipe was kept. */
+  readonly produtoId: string;
+  readonly mensagem: string;
 }
 
 /** One stored document, unparsed — the shape every memo below carries. */
@@ -522,9 +566,24 @@ export type PrepararImportacaoShopeeFn = (
   entrada: ItemLido,
 ) => Promise<PlanoImportacaoShopee>;
 
-/** The kit arm's importer (K1). Same deps; the result carries the `kit` block. */
+/**
+ * The kit arm's deps: the listing importer's, plus the `FieldValue.increment`
+ * sentinel factory (step 19, #1527).
+ *
+ * ⚠️ Why a kit needs it: after its writes the kit import re-evaluates the
+ * (conta, kit) recipe aviso, and that decision can RAISE through
+ * `escreverAviso`, which bumps `ocorrencias` with an increment. It is INJECTED,
+ * never imported here, because this module stays free of the Admin SDK's value
+ * graph — every caller (the `importar` route, the mass-import job through its
+ * own deps, the `importar:anuncio` CLI) wires `(by) => FieldValue.increment(by)`.
+ */
+export type ImportarKitShopeeDeps = ImportarAnuncioDeps & {
+  readonly increment: (by: number) => unknown;
+};
+
+/** The kit arm's importer (K1). Its deps add `increment`; the result carries the `kit` block. */
 export type ImportarKitShopeeFn = (
-  deps: ImportarAnuncioDeps,
+  deps: ImportarKitShopeeDeps,
   entrada: ItemLido,
 ) => Promise<ResultadoImportacaoShopee>;
 
@@ -585,6 +644,13 @@ export interface ImportacaoShopeeDeps {
   ) => Promise<ContextoImportacaoShopee>;
   readonly importarAnuncio?: ImportarAnuncioShopeeFn;
   readonly importarKit?: ImportarKitShopeeFn;
+  /**
+   * `(by) => FieldValue.increment(by)`, handed to {@link importarKit} through
+   * {@link ImportarKitShopeeDeps}. Same rule as `importarKit`: REQUIRED
+   * whenever the kit queue has work, and a missing one THROWS a plain `Error`
+   * naming it — never a listing's failure row.
+   */
+  readonly increment?: (by: number) => unknown;
   readonly scheduler?: AgendadorImportacaoShopee;
   /** Milliseconds. The job reads it ONCE per dispatch and hands the value down. */
   readonly now?: () => number;

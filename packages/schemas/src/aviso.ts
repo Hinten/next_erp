@@ -321,6 +321,16 @@ export const TIPO_AVISO_LABELS = {
  *  - **`relogioEvento`** = the latest commit time, in µs, of every document the
  *    decision read, so a decision computed from an older snapshot that lands
  *    late is dropped as stale instead of reopening or closing a newer row.
+ *  - **Writer — step 9's kit import** (`apps/shopee`, `produtos/kitShopee.ts`):
+ *    after writing a native kit it calls `reavaliarAvisoDeReceitaKit`
+ *    (`@delfrance/data/admin/avisos`) ONCE for (conta, kit) with motivo
+ *    `importado`. Before its writes it stamps the fingerprint on the kit-model
+ *    rows it is about to merge, so the trigger its own produto writes fire
+ *    already reads the new stamp. A child whose ERP recipe differs from the
+ *    kit's while one of its rows on an active native kit carries a stamp other
+ *    than the current fingerprint (an edit this aviso tracks) is KEPT
+ *    (L10(2)): no recipe and no stamp is written for it, so the aviso stays
+ *    open and the import reports `receita-divergente`.
  */
 export const tipoAvisoSchema = z
   .enum([

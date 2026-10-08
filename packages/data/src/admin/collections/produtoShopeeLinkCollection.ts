@@ -9,7 +9,15 @@ import { defineAdminCollection } from '../defineAdminCollection';
  * pass-through subcollection domains (`subcollections.ts`, leaf names
  * `prodshopee` / `variashopee`); these typed handles exist so server reads and
  * writes cannot drift from that wire format. Doc ids are Firestore auto-ids
- * (the Shopee ids live in the `item_id` / `model_id` FIELDS).
+ * (the Shopee ids live in the `item_id` / `model_id` FIELDS) — with ONE
+ * exception since step 19 (#1527): a Shopee NATIVE KIT's link is written at a
+ * DERIVED id, `idDoVinculoDeKit(integracaoId, item_id)`, and each of its kit
+ * models' rows at `idDaVariacaoDeKit(linkDocId, model_id)` (`apps/shopee`'s
+ * `kits/idsKit.ts`). The kit create and step 9's import both write a kit's link
+ * and there is no document before the create's `add_kit_item` answers, so a
+ * derived id is what makes the two writers land on ONE document. Never assume
+ * an id here is an auto-id, and never parse one: the Shopee ids are still read
+ * from the FIELDS.
  *
  * Same file/export shape as `produtoMercadoLivreLinkCollection.ts`, and for the
  * same reason root `CLAUDE.md` rule 3 gives: `groupQuery(db)` is what lets the

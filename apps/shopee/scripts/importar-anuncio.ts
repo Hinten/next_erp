@@ -22,7 +22,8 @@
  * ## The two modes
  *
  * **`--dry-run` (the DEFAULT)** reads the listing (`get_item_base_info`, then
- * `get_model_list` OR `get_kit_item_info`), resolves the cascade and PLANS —
+ * `get_model_list` OR `get_kit_item_info` plus one batched `get_item_base_info`
+ * for a kit's component items), resolves the cascade and PLANS —
  * then prints the plan. It writes nothing, and that is structural rather than a
  * promise: it calls `prepararImportacaoShopee` (or, for a kit,
  * `prepararImportacaoKitShopee`), whose bodies contain no writer at all.
@@ -119,6 +120,7 @@ async function main(): Promise<void> {
   const { criarMemoDeGrupos } = await import('../lib/shopee/produtos/taxonomiaShopee');
   const { produtoCollection } = await import('@delfrance/data/admin/collections');
   const { importacaoShopeeOptionsSchema } = await import('@delfrance/schemas');
+  const { FieldValue } = await import('firebase-admin/firestore');
 
   /* ------------------------------ the preamble ----------------------------- */
 
@@ -200,6 +202,9 @@ async function main(): Promise<void> {
     nowMs,
     grupos: criarMemoDeGrupos(db),
     categorias: criarMemoDeCategorias(client, ctx.integracaoId),
+    // The kit arm's recipe-aviso write (step 19) can RAISE through an increment;
+    // the listing importer ignores the key. Same wiring as the route and the job.
+    increment: (by: number) => FieldValue.increment(by),
   };
 
   /* --------------------------------- dry-run -------------------------------- */
@@ -259,9 +264,19 @@ async function main(): Promise<void> {
       // `kit-componente-nao-vinculado`, and the component table is the whole
       // point of printing it — `resolverComponentesDoKit` reads only and never
       // throws, so the table of a refused kit is still printable.
+      //
+      // ⚠️ With the SAME `has_model` map the import read (`lerAnuncioShopee`
+      // fills it): without it a plain component's hidden model id would be
+      // resolved literally here, and the printed table would disagree with the
+      // refusal it explains (step 19).
       const componentes =
         ehKit && entrada.kit !== null
-          ? await resolverComponentesDoKit(db, ctx.integracaoId, entrada.kit)
+          ? await resolverComponentesDoKit(
+              db,
+              ctx.integracaoId,
+              entrada.kit,
+              entrada.temModelosDosComponentes ?? new Map<number, boolean>(),
+            )
           : [];
       const tabela = resumoDosComponentesKit(componentes);
       if (json) {

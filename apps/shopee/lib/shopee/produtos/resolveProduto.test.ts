@@ -13,6 +13,7 @@ import {
   idDoPaiPlanejado,
   resolverFilhosDaListagem,
   resolverPaiDaListagem,
+  skuDoItemShopee,
   vinculoNomeiaOutroModelo,
   type ComboDoFilho,
 } from './resolveProduto';
@@ -266,6 +267,7 @@ describe('as duas recusas de vínculo inconsistente', () => {
       true,
       [modelo({ model_sku: 'SKU-M' })],
       [combo()],
+      null,
     );
 
     expect(r!.vinculoDeOutraFamilia).toBe(true);
@@ -295,6 +297,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo()],
       [combo()],
+      null,
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
@@ -323,6 +326,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo({ model_id: 0, model_sku: 'SKU-M' })],
       [combo()],
+      null,
     );
 
     expect(consultasDeGrupo(db, 'variashopee')).toHaveLength(0);
@@ -342,6 +346,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo({ model_sku: '  SKU-M ' })],
       [combo()],
+      null,
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
@@ -366,6 +371,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo({ model_sku: 'SKU-M' })],
       [combo()],
+      null,
     );
     expect(r!.existente).toBeNull();
   });
@@ -382,6 +388,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo({ model_id: MODEL_ID })],
       [combo('a', 'b')],
+      null,
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
@@ -400,6 +407,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo()],
       [combo('a', 'c')],
+      null,
     );
     expect(r!.existente).toBeNull();
   });
@@ -413,6 +421,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       false,
       [modelo()],
       [combo('a')],
+      null,
     );
 
     expect(r).toEqual({
@@ -433,6 +442,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       false,
       [modelo({ model_id: 11 }), modelo({ model_id: 22 }), modelo({ model_id: 33 })],
       [combo(), combo(), combo()],
+      null,
     );
     expect(rs.map((r) => r.modelo.model_id)).toEqual([11, 22, 33]);
   });
@@ -448,6 +458,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo({ model_id: 11 }), modelo({ model_id: 22 })],
       [combo('a'), combo('a')],
+      null,
     );
 
     expect(rs[0]!.existente?.id).toBe('prod-filho');
@@ -475,6 +486,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
         modelo({ model_id: 22, model_sku: 'SKU-COMPARTILHADO' }),
       ],
       [combo(), combo()],
+      null,
     );
 
     expect(rs[0]!.existente?.id).toBe('prod-filho');
@@ -496,6 +508,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo({ model_id: MODEL_ID, model_sku: 'SKU-ANTIGO' })],
       [combo()],
+      null,
     );
 
     expect(r!.existente).toBeNull();
@@ -521,6 +534,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
       true,
       [modelo({ model_id: MODEL_ID, model_sku: 'SKU-A' })],
       [combo()],
+      null,
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
@@ -547,6 +561,7 @@ describe('os irmãos são lidos uma única vez, e só quando servem', () => {
       false,
       [modelo({ model_id: 11 }), modelo({ model_id: 22 })],
       [combo('a'), combo('b')],
+      null,
     );
     expect(consultasDeIrmaos(db)).toHaveLength(0);
   });
@@ -555,7 +570,7 @@ describe('os irmãos são lidos uma única vez, e só quando servem', () => {
     const db = new FakeDb();
     semearProduto(db, 'prod-filho', { paiId: PAI, sku: null, variacoesUid: ['a'] });
 
-    await resolverFilhosDaListagem(asDb(db), INTEGRACAO, PAI, true, [modelo()], [combo()]);
+    await resolverFilhosDaListagem(asDb(db), INTEGRACAO, PAI, true, [modelo()], [combo()], null);
     expect(consultasDeIrmaos(db)).toHaveLength(0);
   });
 
@@ -571,6 +586,7 @@ describe('os irmãos são lidos uma única vez, e só quando servem', () => {
       true,
       [modelo({ model_id: 11 }), modelo({ model_id: 22 })],
       [combo('a'), combo('b')],
+      null,
     );
 
     expect(rs.map((r) => r.existente?.id)).toEqual(['f-a', 'f-b']);
@@ -641,6 +657,7 @@ describe('vínculos duplicados: o primeiro id vence, e NADA é apagado', () => {
       true,
       [modelo()],
       [combo()],
+      null,
     );
 
     expect(r!.link?.id).toBe('var-a');
@@ -679,6 +696,7 @@ describe('vínculos duplicados: o primeiro id vence, e NADA é apagado', () => {
       true,
       [modelo({ model_id: MODEL_ID })],
       [combo('a')],
+      null,
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
@@ -742,6 +760,7 @@ describe('vinculoNomeiaOutroModelo', () => {
       true,
       [modelo({ model_id: MODEL_ID })],
       [combo('a')],
+      null,
     );
 
     expect(r!.existente).toBeNull();
@@ -763,9 +782,187 @@ describe('vinculoNomeiaOutroModelo', () => {
       true,
       [modelo({ model_id: MODEL_ID })],
       [combo('a')],
+      null,
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  6b. Passo 19 — o SKU da listagem e a cascata de filhos ESCOPADA            */
+/* -------------------------------------------------------------------------- */
+
+describe('skuDoItemShopee — a dobra do degrau 2 do pai, exportada (R-14)', () => {
+  it('PAR IGUAL: espaços nas pontas caem; null/ausente ≡ vazio', () => {
+    expect(skuDoItemShopee({ item_sku: '  KIT-1 ' })).toBe('KIT-1');
+    expect(skuDoItemShopee({ item_sku: 'KIT-1' })).toBe(skuDoItemShopee({ item_sku: 'KIT-1 ' }));
+    expect(skuDoItemShopee({ item_sku: null })).toBe('');
+    expect(skuDoItemShopee({})).toBe('');
+  });
+
+  it('⛔ NEAR-MISS: caixa e espaço INTERNO continuam distintos (o `where` é sensível)', () => {
+    expect(skuDoItemShopee({ item_sku: 'kit-1' })).not.toBe(skuDoItemShopee({ item_sku: 'KIT-1' }));
+    expect(skuDoItemShopee({ item_sku: 'KIT 1' })).not.toBe(skuDoItemShopee({ item_sku: 'KIT1' }));
+  });
+
+  it('é a MESMA dobra que o degrau 2 do pai consulta', async () => {
+    const db = new FakeDb();
+    semearProduto(db, 'prod-kit', { sku: 'KIT-1' });
+
+    const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, item({ item_sku: ' KIT-1 ' }));
+
+    expect(r.existente?.id).toBe('prod-kit');
+    expect(consultasDeProdutos(db)[0]!.clausulas).toEqual([
+      ['sku', skuDoItemShopee({ item_sku: ' KIT-1 ' })],
+      ['paiId', null],
+    ]);
+  });
+});
+
+describe('resolverFilhosDaListagem — escopada à LISTAGEM (passo 19, S2C-01, M162)', () => {
+  const L_NOVO = 'link-kit-novo';
+  const L_VELHO = 'link-kit-velho';
+  const refDoLink = (linkId: string) => `documents/produtos/${PAI}/prodshopee/${linkId}`;
+
+  /** A linha de OUTRA listagem da mesma conta — a do kit velho, nomeando outro modelo. */
+  function semearLinhaDoKitVelho(db: FakeDb, produtoId: string): Record<string, unknown> {
+    const dados = {
+      model_id: OUTRO_MODEL_ID,
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+      produtoShopeeOuterRef: refDoLink(L_VELHO),
+    };
+    db.seed(`produtos/${produtoId}/variashopee/var-velho`, dados);
+    return dados;
+  }
+
+  it('(OP-2) o escopo da listagem é OBRIGATÓRIO: omiti-lo não compila (o mutante X1 não volta calado)', () => {
+    // Pinned by the TYPE CHECKER, not by vitest: with a `= null` default the
+    // directive below is unused and `tsc --noEmit` fails (TS2578). The call is
+    // never made — only its type is asserted.
+    const semEscopo = (db: FakeDb) =>
+      // @ts-expect-error — `linkDocIdDaListagem` has no default: pass `null` explicitly.
+      resolverFilhosDaListagem(asDb(db), INTEGRACAO, PAI, true, [modelo()], [combo()]);
+    // ÂNCORA: a forma com `null` explícito compila e é a mesma função.
+    const comNull = (db: FakeDb) =>
+      resolverFilhosDaListagem(asDb(db), INTEGRACAO, PAI, true, [modelo()], [combo()], null);
+    expect([typeof semEscopo, typeof comNull]).toEqual(['function', 'function']);
+  });
+
+  it('degrau 2 (SKU): a linha da OUTRA listagem não reivindica o filho, nem vira o vínculo', async () => {
+    const db = new FakeDb();
+    semearProduto(db, 'filho-a', { paiId: PAI, sku: 'KIT-1-A' });
+    const antes = structuredClone(semearLinhaDoKitVelho(db, 'filho-a'));
+
+    const [r] = await resolverFilhosDaListagem(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      true,
+      [modelo({ model_id: MODEL_ID, model_sku: 'KIT-1-A' })],
+      [combo()],
+      L_NOVO,
+    );
+
+    expect(r!.existente?.id).toBe('filho-a');
+    // ⛔ NUNCA o `var-velho`: um merge nele reescreveria o `model_id` e o
+    // `produtoShopeeOuterRef` do kit velho e órfão os pedidos dele.
+    expect(r!.link).toBeNull();
+    expect(db.store['produtos/filho-a/variashopee/var-velho']?.data).toEqual(antes);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('degrau 3 (combinação): um filho SEM sku com a linha do kit velho é casado pela variante', async () => {
+    const db = new FakeDb();
+    semearProduto(db, 'filho-b', { paiId: PAI, sku: null, variacoesUid: ['azul'] });
+    semearLinhaDoKitVelho(db, 'filho-b');
+
+    const [r] = await resolverFilhosDaListagem(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      true,
+      [modelo({ model_id: MODEL_ID })],
+      [combo('azul')],
+      L_NOVO,
+    );
+
+    expect(r!.existente?.id).toBe('filho-b');
+    expect(r!.link).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS: com `null` (o import de anúncio comum) a MESMA linha recusa o filho, como hoje', async () => {
+    for (const via of ['sku', 'combinacao'] as const) {
+      const db = new FakeDb();
+      semearProduto(db, 'filho', {
+        paiId: PAI,
+        sku: via === 'sku' ? 'KIT-1-A' : null,
+        variacoesUid: ['azul'],
+      });
+      semearLinhaDoKitVelho(db, 'filho');
+
+      const [r] = await resolverFilhosDaListagem(
+        asDb(db),
+        INTEGRACAO,
+        PAI,
+        true,
+        [modelo({ model_id: MODEL_ID, model_sku: via === 'sku' ? 'KIT-1-A' : null })],
+        [combo('azul')],
+        null,
+      );
+
+      expect(r!.existente).toBeNull();
+      expect(r!.link).toBeNull();
+    }
+  });
+
+  it('⛔ NEAR-MISS: uma linha DESTA listagem que nomeia outro modelo AINDA reivindica', async () => {
+    // O escopo tira as linhas das OUTRAS listagens, nunca a guarda: dois modelos
+    // da MESMA listagem continuam sem poder dividir um filho.
+    const db = new FakeDb();
+    semearProduto(db, 'filho-a', { paiId: PAI, sku: 'KIT-1-A' });
+    db.seed('produtos/filho-a/variashopee/var-novo-outro', {
+      model_id: OUTRO_MODEL_ID,
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+      produtoShopeeOuterRef: refDoLink(L_NOVO),
+    });
+
+    const [r] = await resolverFilhosDaListagem(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      true,
+      [modelo({ model_id: MODEL_ID, model_sku: 'KIT-1-A' })],
+      [combo()],
+      L_NOVO,
+    );
+
+    expect(r!.existente).toBeNull();
+  });
+
+  it('a linha DESTA listagem é reaproveitada nas DUAS grafias do ref (canônica e legada)', async () => {
+    for (const ref of [refDoLink(L_NOVO), `produtos/${PAI}/prodshopee/${L_NOVO}`]) {
+      const db = new FakeDb();
+      semearProduto(db, 'filho-a', { paiId: PAI, sku: 'KIT-1-A' });
+      semearLinhaDoKitVelho(db, 'filho-a');
+      db.seed('produtos/filho-a/variashopee/var-novo', {
+        contaVariacaoShopeeOuterRef: REF_CONTA,
+        produtoShopeeOuterRef: ref,
+      });
+
+      const [r] = await resolverFilhosDaListagem(
+        asDb(db),
+        INTEGRACAO,
+        PAI,
+        true,
+        [modelo({ model_id: MODEL_ID, model_sku: 'KIT-1-A' })],
+        [combo()],
+        L_NOVO,
+      );
+
+      expect(r!.existente?.id).toBe('filho-a');
+      expect(r!.link?.id).toBe('var-novo');
+    }
   });
 });
 
@@ -806,7 +1003,7 @@ describe('as consultas do import usam os compostos declarados', () => {
   it('as cláusulas emitidas são EXATAMENTE os campos do índice, na ordem', async () => {
     const db = new FakeDb();
     await resolverPaiDaListagem(asDb(db), INTEGRACAO, item());
-    await resolverFilhosDaListagem(asDb(db), INTEGRACAO, PAI, false, [modelo()], [combo()]);
+    await resolverFilhosDaListagem(asDb(db), INTEGRACAO, PAI, false, [modelo()], [combo()], null);
 
     const [variacao, listagem] = INDICES_COMPOSTOS_SHOPEE;
     expect(consultasDeGrupo(db, 'prodshopee')[0]!.clausulas.map(([campo]) => campo)).toEqual([

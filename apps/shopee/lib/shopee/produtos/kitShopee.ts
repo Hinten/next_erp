@@ -14,9 +14,9 @@
  *    the CLI's dry run prints exactly what a live run would write. It THROWS the
  *    same refusals a live run would, exactly like the listing importer's own
  *    write-free half.
- *  - `resolverComponentesDoKit(db, integracaoId, kit)` — write-free and it never
- *    throws, so a dry run can print the table of a kit that is REFUSED. This is
- *    what the CLI prints for a blocked kit.
+ *  - `resolverComponentesDoKit(db, integracaoId, kit, temModelos)` — write-free
+ *    and it never throws, so a dry run can print the table of a kit that is
+ *    REFUSED. This is what the CLI prints for a blocked kit.
  *  - `anuncioDerivadoDoKit(entrada)` — the kit page read as a listing (below).
  *
  * ## ⚠️ The kit page is a DIFFERENT page, and every difference is silent
@@ -49,11 +49,19 @@
  *
  * Every `model_list[].component_list[]` row goes through the order path's
  * `resolverProdutoDaLinhaShopee`. This is the one place where the family hop is
- * CORRECT: what a kit consumes is the SELLABLE UNIT, which is exactly what that
- * cascade answers — while the LISTING direction must bind the parent, which is
- * why the import cascade of `resolveProduto.ts` exists separately. Nothing is
- * ever created for a component, and the verdict is READ and never persisted (its
- * miss kinds are an order incidente's vocabulary, not this import's).
+ * CORRECT: what a kit consumes is the SELLABLE UNIT — while the LISTING
+ * direction must bind the parent, which is why the import cascade of
+ * `resolveProduto.ts` exists separately. Nothing is ever created for a
+ * component, and the verdict is READ and never persisted (its miss kinds are an
+ * order incidente's vocabulary, not this import's).
+ *
+ * Two step-19 facts (#1527) shape what the cascade is ASKED and what its answer
+ * MEANS — see {@link resolverComponentesDoKit}: a plain component's
+ * `component_model_id` is Shopee's HIDDEN default model id (folded to `0` by the
+ * schemas' `modeloDoComponenteKit` when the component item's `has_model` is
+ * `false`), and the cascade's LISTING rung answers the link's OWNER with no hop,
+ * so a `prodshopee` hit is hopped to its sellable unit here
+ * (`unidadeVendavelDaRaiz`, the SKU rungs' own rule).
  *
  * If ANY component of ANY model does not resolve, the kit is refused with
  * `kit-componente-nao-vinculado` **before any write**, and the job contains it
@@ -71,7 +79,9 @@
  *
  * Not on the parent, not on a child, whatever `importarEstoque` says. There is
  * no stock field anywhere on the kit page — not on the read, not on either write
- * op — and the derivation rule is undocumented, so a kit's availability is
+ * op — and Shopee DERIVES it (measured on the SG sandbox, step 19 probe #1:
+ * min ⌊component stock / quantity⌋, readable only through the kit's own
+ * `get_model_list`; `update_stock` on a kit is refused), so a kit's availability is
  * DERIVED from its components (`componentesKit` + the kit stock pure logic) and
  * a stored row would be a second, stale answer competing with it. The plan is
  * stripped of both estoque legs structurally, not left to the absence of a
@@ -100,7 +110,30 @@ import {
   type ShopeeKitModel,
   type ShopeePriceInfo,
 } from '@delfrance/integrations-shopee';
+import {
+  MOTIVO_RESOLUCAO_RECEITA_KIT,
+  NOME_TIER_KIT_UNICO,
+  OPCAO_TIER_KIT_UNICO,
+  chaveReceitaKitErp,
+  componentesKitDaReceitaShopee,
+  ehKitNativoAtivo,
+  mesmoEnderecoDeComponente,
+  modeloDoComponenteKit,
+  toOuterRef,
+  toOuterRefOrNull,
+  type EnderecoShopeeDoComponente,
+} from '@delfrance/schemas';
+import {
+  produtoCollection,
+  produtoShopeeLinkCollection,
+  variacaoShopeeLinkCollection,
+} from '@delfrance/data/admin/collections';
+import { reavaliarAvisoDeReceitaKit } from '@delfrance/data/admin/avisos';
+import { unidadeVendavelDaRaiz } from '@delfrance/data/admin/produtos';
 
+import { agoraUsDe } from '../avisos/autorizacao';
+import { idDoRef } from '../core/vinculosShopee';
+import { idDaVariacaoDeKit, idDoVinculoDeKit } from '../kits/idsKit';
 import {
   resolverProdutoDaLinhaShopee,
   type ResolvedShopeeLineProduto,
@@ -110,15 +143,19 @@ import { MOTIVO_IMPORT_BLOQUEADO, ShopeeImportBlockedError } from './errosImport
 import { idsDeImagemJaImportados } from './fotosShopee';
 import { aplicarImportacaoShopee } from './importarAnuncio';
 import type {
+  AvisoImportacaoKit,
   GrupoMemo,
-  ImportarAnuncioDeps,
+  ImportarKitShopeeDeps,
   ImportarKitShopeeFn,
   ItemLido,
   PrepararImportacaoShopeeDeps,
   ResultadoImportacaoShopee,
 } from './itemLido';
+import { caminhoDoLinkDaListagem } from './mapeamento';
 import {
   planejarImportacaoShopee,
+  type DocumentoLido,
+  type EscritaDeLink,
   type EscritaDeProduto,
   type PlanoFilhoShopee,
   type PlanoImportacaoShopee,
@@ -129,6 +166,7 @@ import {
   idDoPaiPlanejado,
   resolverFilhosDaListagem,
   resolverPaiDaListagem,
+  type ResolucaoFilhoShopee,
 } from './resolveProduto';
 import { criarMemoDeGrupos } from './taxonomiaShopee';
 import { planejarTaxonomia, tiersDoItem } from './taxonomiaShopeeCore';
@@ -155,7 +193,19 @@ export interface ComponenteDoKitShopee {
   readonly modelId: number;
   /** `component_item_id`. */
   readonly itemId: number;
-  /** `component_model_id`, `0` when the component is not a variation. */
+  /**
+   * The model id the cascade was ASKED for: the wire `component_model_id`
+   * folded by the schemas' `modeloDoComponenteKit` with the component item's
+   * `has_model`, then `?? 0`.
+   *
+   * - `has_model === false` ⇒ `0`: a plain component's wire id is Shopee's
+   *   HIDDEN default model id (non-zero, not the `item_id`, absent from that
+   *   item's own `get_model_list` — measured, step 19 probe #1), never a
+   *   variation, so the line binds on the listing rung.
+   * - `has_model === true` ⇒ the wire id when it is a positive int, else `0`.
+   * - unknown (no base-info row) ⇒ the wire id VERBATIM (`null` ⇒ `0`) — the
+   *   pre-step-19 path, never a guess.
+   */
   readonly modelIdDoComponente: number;
   /** `component_item_or_model_sku`, verbatim. */
   readonly sku: string | null;
@@ -169,7 +219,7 @@ export interface ComponenteDoKitShopee {
 /** What {@link prepararImportacaoKitShopee} read and decided, before any write. */
 export interface PreparoKitShopee {
   /** The ordered write plan, kit fields already folded in. */
-  readonly plano: PlanoImportacaoShopee;
+  readonly plano: PlanoKitShopee;
   /** Every component of every model, in payload order. */
   readonly componentes: readonly ComponenteDoKitShopee[];
   /** The kit page read as a listing — what the mapper actually saw. */
@@ -295,17 +345,46 @@ export function anuncioDerivadoDoKit(entrada: ItemLido, kit: ShopeeKitItem): Ite
     modelos.length > 0
       ? shopeeModelListPayloadSchema.parse({
           model: modelos.map(modeloDerivadoDoKit),
-          tier_variation: (kit.tier_variation_list ?? []).map((tier) => ({
-            name: tier.name,
-            option_list: (tier.option_list ?? []).map((opcao) => ({
-              option: opcao.option,
-              image: null,
-            })),
-          })),
+          // ⚠️ The single-model SENTINEL tier is read as NO tier (R-8, below).
+          tier_variation: ehTierDeKitUnico(kit)
+            ? []
+            : (kit.tier_variation_list ?? []).map((tier) => ({
+                name: tier.name,
+                option_list: (tier.option_list ?? []).map((opcao) => ({
+                  option: opcao.option,
+                  image: null,
+                })),
+              })),
         })
       : null;
 
   return { base, models, taxInfo: entrada.taxInfo, kit, itemId: entrada.itemId };
+}
+
+/**
+ * Is this a ONE-model kit whose one tier is exactly the single-model sentinel
+ * pair — tier `NOME_TIER_KIT_UNICO` (`'Kit'`), one option `OPCAO_TIER_KIT_UNICO`
+ * (`'Padrão'`) — the tier step 19's create publishes for a família de um
+ * (#1527, R-8; Lucas L10(1))?
+ *
+ * ⚠️ The fixed point of create → import. That tier is a SHAPE Shopee demands of
+ * a kit model, not a variation the ERP owns: planned as a taxonomy it would mint
+ * a `Kit` grupo and write `Padrão` into the member's variation fields on the
+ * first re-import of every família-de-um kit. So the derived listing carries NO
+ * tier for it, the planner plans zero grupo writes, and the member's own
+ * variation fields stay as they are.
+ *
+ * Exact strings, no fold: `'kit'`, `'Padrao'`, a second option, a second model
+ * or a second tier are a seller's real tier and are planned as one.
+ */
+export function ehTierDeKitUnico(kit: ShopeeKitItem): boolean {
+  if (kit.model_list.length !== 1) return false;
+  const tiers = kit.tier_variation_list ?? [];
+  if (tiers.length !== 1) return false;
+  const tier = tiers[0];
+  if (tier === undefined || tier.name !== NOME_TIER_KIT_UNICO) return false;
+  const opcoes = tier.option_list ?? [];
+  return opcoes.length === 1 && opcoes[0]?.option === OPCAO_TIER_KIT_UNICO;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -321,6 +400,39 @@ function quantidadeDoComponente(bruta: number | null | undefined): number {
 }
 
 /**
+ * The SELLABLE UNIT a `prodshopee` hit stands for (step 19, #1527).
+ *
+ * The cascade's listing rung returns the link's OWNER with no hop
+ * (`produtoResolve.ts`), and a plain listing's owner is a família-de-um
+ * WRAPPER whose stock lives on its sole member (#1398). Keyed on the wrapper,
+ * the kit's map would break #1450 (`kitUnidadeVendavel.ts`): its ERP
+ * availability would score 0, a sale would move the wrapper's stock, and
+ * nothing repairs it afterwards (the repoint fires only on a `filhoUnicoId`
+ * move). So the owner is read ONCE and hopped by `unidadeVendavelDaRaiz` — the
+ * SKU rungs' own rule, shared and never copied: a KIT stays on itself, a
+ * wrapper answers its member, anything else answers itself.
+ *
+ * ⚠️ `paiId` IS projected (the rule's drift guard), because this read is by id,
+ * not through a `paiId == null` query: an owner that is a child answers itself
+ * whatever stale `filhoUnicoId` it carries. An owner that no longer exists keeps
+ * the owner id, exactly as the cascade answered it.
+ */
+async function unidadeVendavelDoDono(db: Firestore, donoId: string): Promise<string> {
+  const snap = await produtoCollection.docRef(db, {}, donoId).get();
+  if (!snap.exists) return donoId;
+  const raw = (snap.data() ?? {}) as Record<string, unknown>;
+  return unidadeVendavelDaRaiz({
+    ehKit: raw.ehKit === true,
+    produtoId: donoId,
+    familia: {
+      id: donoId,
+      paiId: raw.paiId as string | null | undefined,
+      filhoUnicoId: raw.filhoUnicoId as string | null | undefined,
+    },
+  });
+}
+
+/**
  * Resolve every component of every model. **Reads only, and never throws** — a
  * dry run has to be able to PRINT the table of a kit that will be refused.
  *
@@ -329,31 +441,66 @@ function quantidadeDoComponente(bruta: number | null | undefined): number {
  * be wrong for the listing itself is exactly right here. Its diagnostics log
  * order-shaped warnings; that is the price of having one tested cascade instead
  * of two.
+ *
+ * ⚠️ `temModelos` (`component_item_id → has_model`, from
+ * `lerTemModelosDosComponentes`) decides which model id the cascade is asked
+ * for, through the schemas' ONE default-model rule `modeloDoComponenteKit`
+ * (#1369 — the create and the republish fold with the same function):
+ *  - `false` ⇒ `0`. A plain component carries Shopee's HIDDEN default model id —
+ *    non-zero, not the `item_id`, absent from its own empty `get_model_list`
+ *    (measured, step 19 probe #1). Asked literally it misses the variation
+ *    rung, and the listing rung refuses to bind a line that names a model, so
+ *    the component fell to the SKU rungs and, with no SKU, refused the kit.
+ *    `0` skips the variation rung and binds on the listing link — then hopped
+ *    to its sellable unit ({@link unidadeVendavelDoDono}).
+ *  - `true` ⇒ the wire id (a real variation), bound on its `variashopee`.
+ *  - absent ⇒ unknown ⇒ the wire id VERBATIM, today's path: never read as
+ *    `false`, which would bind the listing on no evidence.
+ * `0`/absent skips the variation rung, as it must: `0` is Shopee's "no
+ * variation" sentinel and a link written for it binds anything.
  */
 export async function resolverComponentesDoKit(
   db: Firestore,
   integracaoId: string,
   kit: ShopeeKitItem,
+  temModelos: ReadonlyMap<number, boolean>,
 ): Promise<readonly ComponenteDoKitShopee[]> {
   const saida: ComponenteDoKitShopee[] = [];
+  // One owner read per distinct `prodshopee` owner, whatever the number of
+  // models that name it.
+  const unidadesPorDono = new Map<string, string>();
   for (const modelo of kit.model_list) {
     for (const componente of modelo.component_list) {
-      const modelIdDoComponente = componente.component_model_id ?? 0;
+      const itemId = componente.component_item_id;
+      const modelIdDoComponente =
+        modeloDoComponenteKit({
+          modelId: componente.component_model_id,
+          itemTemModelos: temModelos.get(itemId) ?? null,
+        }) ?? 0;
       const veredicto = await resolverProdutoDaLinhaShopee(db, {
         integracaoId,
-        itemId: componente.component_item_id,
-        // `0`/absent skips the variation rung, as it must: `0` is Shopee's "no
-        // variation" sentinel and a link written for it binds anything.
+        itemId,
         modelId: modelIdDoComponente,
         sku: componente.component_item_or_model_sku ?? null,
       });
+      let produtoId = veredicto.produtoId;
+      if (produtoId !== null && veredicto.via === 'prodshopee') {
+        let unidade = unidadesPorDono.get(produtoId);
+        if (unidade === undefined) {
+          unidade = await unidadeVendavelDoDono(db, produtoId);
+          unidadesPorDono.set(produtoId, unidade);
+        }
+        produtoId = unidade;
+      }
       saida.push({
         modelId: modelo.model_id,
-        itemId: componente.component_item_id,
+        itemId,
         modelIdDoComponente,
         sku: componente.component_item_or_model_sku ?? null,
         quantidade: quantidadeDoComponente(componente.quantity),
-        produtoId: veredicto.produtoId,
+        produtoId,
+        // The RUNG's verdict, unchanged by the hop: `prodshopee` still names
+        // the link that answered, and the produto is its sellable unit.
         via: veredicto.via,
       });
     }
@@ -423,6 +570,12 @@ interface ComposicaoDoKit {
  * constrains what the kit can sell, which is the whole point of deriving a kit's
  * availability instead of stocking it.
  *
+ * ⚠️ The SUM and the forced `limitarEstoque` are NOT done here: they are the
+ * schemas' `componentesKitDaReceitaShopee` (`receitaKitShopee.ts`), the ONE
+ * Shopee → ERP inverse the step-19 create, republish and recipe trigger read
+ * too (#1369). What stays here is only what needs the stored document: the
+ * stamp carry-forward below.
+ *
  * ⚠️ The STAMP of an unchanged entry is carried FORWARD from what is stored, and
  * `nowMs` is written only where the composition actually moved. A stamp records
  * when an entry was EDITED; it is not part of what the kit is — the schemas
@@ -437,21 +590,25 @@ function composicaoDoModelo(
   nowMs: number,
   armazenada: Record<string, unknown> | null,
 ): ComposicaoDoKit {
-  const mapa: ComposicaoDoKit['mapa'] = {};
-  for (const componente of componentes) {
-    const produtoId = componente.produtoId;
-    if (produtoId === null) continue;
-    const anterior = mapa[produtoId]?.quantidade ?? 0;
-    mapa[produtoId] = {
-      quantidade: anterior + componente.quantidade,
-      limitarEstoque: true,
-      timestamp: nowMs,
-    };
-  }
-  for (const [produtoId, entrada] of Object.entries(mapa)) {
-    const guardado = carimboArmazenadoDoComponente(armazenada, produtoId, entrada.quantidade);
-    if (guardado !== null) mapa[produtoId] = { ...entrada, timestamp: guardado.carimbo };
-  }
+  const receita = componentesKitDaReceitaShopee(
+    componentes.map((c) => ({ produtoId: c.produtoId, quantidade: c.quantidade })),
+  );
+  // `fromEntries`, never a bracket assignment: a component id is a document id
+  // and must land as an OWN key whatever it spells.
+  const mapa: ComposicaoDoKit['mapa'] = Object.fromEntries(
+    receita.chaves.map((produtoId) => {
+      const quantidade = receita.mapa[produtoId]?.quantidade ?? 0;
+      const guardado = carimboArmazenadoDoComponente(armazenada, produtoId, quantidade);
+      return [
+        produtoId,
+        {
+          quantidade,
+          limitarEstoque: true,
+          timestamp: guardado !== null ? guardado.carimbo : nowMs,
+        },
+      ];
+    }),
+  );
   return { mapa, chaves: Object.keys(mapa) };
 }
 
@@ -499,12 +656,31 @@ function produtosDosComponentes(componentes: readonly ComponenteDoKitShopee[]): 
 /*  4. The plan, with the kit's three extra decisions folded in                */
 /* -------------------------------------------------------------------------- */
 
-/** The three kit fields, as a patch fragment. `null` clears a stale mirror. */
-function camposDeKit(composicao: ComposicaoDoKit | null): Record<string, unknown> {
+/**
+ * What a kit write does to ONE document's recipe.
+ *
+ *  - a {@link ComposicaoDoKit} ⇒ write it (the map and its keys);
+ *  - `null` ⇒ write `null` — a 2..9-model parent has no single composition, and
+ *    the `null` clears a stale mirror;
+ *  - `'manter'` ⇒ write NEITHER key (step 19, R-t): a pending ERP edit the
+ *    aviso is tracking is KEPT, and a superseded or removed listing writes no
+ *    recipe at all. `ehKit` is still written — the document is a kit either way.
+ */
+type ReceitaAEscrever = ComposicaoDoKit | null | 'manter';
+
+/**
+ * The kit fields, as a patch fragment. `null` clears a stale mirror.
+ *
+ * ⚠️ Never `ehKitVirtual` (O-7): that flag says "publish this produto as a
+ * native Shopee kit", and it is the operator's — an import that set it would
+ * turn every ordinary-listing kit Lucas sells today into a create candidate.
+ */
+function camposDeKit(receita: ReceitaAEscrever): Record<string, unknown> {
+  if (receita === 'manter') return { ehKit: true };
   return {
     ehKit: true,
-    componentesKit: composicao === null ? null : composicao.mapa,
-    componentesKitKeys: composicao === null ? null : [...composicao.chaves],
+    componentesKit: receita === null ? null : receita.mapa,
+    componentesKitKeys: receita === null ? null : [...receita.chaves],
   };
 }
 
@@ -520,9 +696,12 @@ function camposDeKit(composicao: ComposicaoDoKit | null): Record<string, unknown
  */
 function camposDeKitJaArmazenados(
   armazenado: Record<string, unknown>,
-  composicao: ComposicaoDoKit | null,
+  receita: ReceitaAEscrever,
 ): boolean {
   if (armazenado.ehKit !== true) return false;
+  // Nothing of the recipe is written, so nothing of it can differ.
+  if (receita === 'manter') return true;
+  const composicao = receita;
 
   const chavesGuardadas = armazenado.componentesKitKeys;
   const chaves = composicao === null ? null : composicao.chaves;
@@ -570,19 +749,19 @@ function camposDeKitJaArmazenados(
 function comCamposDeKitNoProduto(
   escrita: EscritaDeProduto | null,
   produtoId: string,
-  composicao: ComposicaoDoKit | null,
+  receita: ReceitaAEscrever,
   nowMs: number,
   armazenado: Record<string, unknown> | null,
 ): EscritaDeProduto | null {
   if (escrita === null) {
-    if (armazenado !== null && camposDeKitJaArmazenados(armazenado, composicao)) return null;
+    if (armazenado !== null && camposDeKitJaArmazenados(armazenado, receita)) return null;
     return {
       produtoId,
       criar: false,
-      data: { ultimaModificacao: nowMs, ...camposDeKit(composicao) },
+      data: { ultimaModificacao: nowMs, ...camposDeKit(receita) },
     };
   }
-  return { ...escrita, data: { ...escrita.data, ...camposDeKit(composicao) } };
+  return { ...escrita, data: { ...escrita.data, ...camposDeKit(receita) } };
 }
 
 /** The `componentesKit` map a produto document already holds, or `null`. */
@@ -600,6 +779,206 @@ export interface ArmazenadosDoKit {
   readonly pai: Record<string, unknown> | null;
   /** Index-aligned with `plano.filhos`, i.e. with `get_model_list` order. */
   readonly filhos: readonly (Record<string, unknown> | null)[];
+  /**
+   * Step 19, R-t — index-aligned with `plano.filhos`: the `receitaKitConferida`
+   * of each child's rows on EVERY active native-kit link of the kit produto for
+   * this conta (`ehKitNativoAtivo`), the imported listing's own included and
+   * judged as it will read AFTER this import's merge. A non-string stamp is
+   * `null`. `[]` for a child with no such row (a new child, or no active kit).
+   * Read by {@link lerCarimbosContados}.
+   */
+  readonly carimbosContados: readonly (readonly (string | null)[])[];
+}
+
+/**
+ * One kit-model row the import is about to MERGE onto, stamped FIRST with a
+ * flat `mergeIfExists` (step 19, R-4) — see {@link preCarimbarLinhasDoKit}.
+ */
+export interface PreCarimboDeLinhaKit {
+  /** The CHILD produto the row sits under. */
+  readonly produtoId: string;
+  /** The `variashopee` doc id the plan merges onto. */
+  readonly docId: string;
+  /** `chaveReceitaKitErp` of the recipe this import writes on that child. */
+  readonly receitaKitConferida: string;
+}
+
+/** The kit plan: the listing plan rewritten for a kit, plus R-t's two outputs. */
+export interface PlanoKitShopee extends PlanoImportacaoShopee {
+  /** Rows to stamp BEFORE any produto write — the parent's included. */
+  readonly preCarimbos: readonly PreCarimboDeLinhaKit[];
+  /** Children whose pending ERP recipe edit this import KEPT (R-t (ii)), sorted. */
+  readonly receitaDivergente: readonly string[];
+}
+
+/**
+ * What a re-import does with ONE child's recipe (step 19, R-t; Lucas L10(2)).
+ *
+ *  - `igual` — Shopee's resolved recipe folds to the child's CURRENT
+ *    fingerprint: the import proceeds and stamps, so the child's entry in the
+ *    recipe aviso resolves as `importado` (how a #1450 repoint closes on a
+ *    re-import). Decided on CONTENT first, never on the stamps.
+ *  - `mantida` — different, AND some counted row's stamp is not the current
+ *    fingerprint: the aviso is tracking an ERP edit Shopee does not hold, so the
+ *    import KEEPS the ERP map, stamps nothing and reports `receita-divergente`.
+ *    Silently reverting an interactive edit is the lost update rule 7 tier 3
+ *    forbids.
+ *  - `shopee` — different, and every counted row is stamped with the current
+ *    fingerprint (or there is none): nothing is pending, so Shopee's recipe wins
+ *    exactly as before step 19.
+ *
+ * The comparisons are `chaveReceitaKitErp` strings — the schemas' ERP-side
+ * fingerprint, equal over key order, `limitarEstoque` and the entry stamp,
+ * distinct on any `quantidade`, on a component added, removed or renamed. A
+ * `null` stamp is never the current fingerprint (it never verified anything).
+ *
+ * ⚠️ A família de um decides on the WRAPPER too (R1-RT7-01). The operator edits
+ * K, and the edit reaches the member only later, through `onProdutoChanged`'s
+ * sole-member mirror — which reads K as it is THEN and never retries. While K
+ * and its member disagree, the member's map is not the ERP's current recipe:
+ * K's is. So when `chaveDoPai` is given and differs from `chaveAtual`, Shopee's
+ * recipe is `igual` only when it folds to K's — the import then completes the
+ * mirror itself — and `mantida` otherwise, whatever the stamps say: the member's
+ * rows cannot be tracking an edit that has not reached the member yet, so the
+ * stamp test would read "nothing pending" and revert K through the mirror.
+ */
+export type DecisaoReceitaDoFilho = 'igual' | 'mantida' | 'shopee';
+
+export function decidirReceitaDoFilho(a: {
+  /** `chaveReceitaKitErp` of Shopee's resolved recipe for this model. */
+  readonly chaveShopee: string;
+  /** `chaveReceitaKitErp` of the child's STORED `componentesKit`. */
+  readonly chaveAtual: string;
+  readonly carimbosContados: readonly (string | null)[];
+  /**
+   * `chaveReceitaKitErp` of the wrapper K's STORED `componentesKit` — given only
+   * when this child is the sole member of a família de um K that holds a
+   * recipe map ({@link chaveDoPaiDaFamiliaDeUm}); absent/`null` otherwise.
+   */
+  readonly chaveDoPai?: string | null;
+}): DecisaoReceitaDoFilho {
+  if (a.chaveDoPai != null && a.chaveDoPai !== a.chaveAtual) {
+    return a.chaveShopee === a.chaveDoPai ? 'igual' : 'mantida';
+  }
+  if (a.chaveShopee === a.chaveAtual) return 'igual';
+  if (a.carimbosContados.some((carimbo) => carimbo !== a.chaveAtual)) return 'mantida';
+  return 'shopee';
+}
+
+/**
+ * The wrapper's fingerprint for {@link decidirReceitaDoFilho}'s `chaveDoPai`
+ * (R1-RT7-01): `chaveReceitaKitErp` of K's stored `componentesKit` when the kit
+ * has exactly ONE model, K names `filhoId` as its `filhoUnicoId`, and K holds a
+ * recipe MAP — else `null`.
+ *
+ * ⚠️ A K with no map at all (a legacy wrapper that was never mirrored) answers
+ * `null`, so the member's own decision stands: there is no operator edit on K to
+ * protect, and reading the missing map as "a pending edit to the empty recipe"
+ * would keep every such kit from ever taking Shopee's recipe.
+ */
+export function chaveDoPaiDaFamiliaDeUm(
+  pai: Record<string, unknown> | null,
+  filhoId: string,
+  modelos: number,
+): string | null {
+  if (modelos !== 1 || pai === null) return null;
+  if (typeof pai.filhoUnicoId !== 'string' || pai.filhoUnicoId !== filhoId) return null;
+  const mapa = mapaDeComponentesArmazenado(pai);
+  return mapa === null
+    ? null
+    : chaveReceitaKitErp(mapa as Parameters<typeof chaveReceitaKitErp>[0]);
+}
+
+/**
+ * Is Shopee's recipe for ONE kit model faithful to a produto-level map
+ * (R2-F2)? `false` when two DISTINCT component addresses — `(item_id, the model
+ * the cascade asked for)`, compared through the schemas' literal
+ * `mesmoEnderecoDeComponente` — resolve to the SAME ERP produto.
+ *
+ * ⚠️ Why it matters: R-t's fingerprint is produto-level, so `{X1: 2, X2: 3}`
+ * with both listings bound to C folds to `{C: 5}` — EQUAL to an ERP `{C: 5}` —
+ * while THE recipe fold (`mesmaReceitaKitShopee`, per address) calls it
+ * DISTINCT, and Shopee derives the kit's stock as `min(S/2, S/3)` instead of
+ * `S/5`. Such a kit was never verified, so it must never be stamped as if it
+ * were. The SAME address on two rows is faithful (the address fold sums them,
+ * 2 + 3 ≡ 5).
+ */
+export function receitaFielAosEnderecos(componentes: readonly ComponenteDoKitShopee[]): boolean {
+  const porProduto = new Map<string, EnderecoShopeeDoComponente>();
+  for (const componente of componentes) {
+    if (componente.produtoId === null) continue;
+    const endereco: EnderecoShopeeDoComponente = {
+      itemId: componente.itemId,
+      modelId: componente.modelIdDoComponente,
+    };
+    const visto = porProduto.get(componente.produtoId);
+    if (visto === undefined) porProduto.set(componente.produtoId, endereco);
+    else if (!mesmoEnderecoDeComponente(visto, endereco)) return false;
+  }
+  return true;
+}
+
+/**
+ * The listing link doc id a kit import writes (step 19, R-u): the parent
+ * cascade's rung-1 hit, whatever its id (every pre-step-19 kit link keeps its
+ * auto id), else the DETERMINISTIC new kit link id `idDoVinculoDeKit` — the
+ * very id the kit create writes right after `add_kit_item`, so the create and
+ * an import of the same kit converge on ONE `prodshopee`.
+ */
+export function idDoVinculoDaListagemDeKit(
+  integracaoId: string,
+  itemId: number,
+  linkResolvido: string | null,
+): string {
+  return linkResolvido ?? idDoVinculoDeKit(integracaoId, itemId);
+}
+
+/**
+ * Will the imported listing's link be an ACTIVE native kit once this import
+ * merges it (`ehKitNativoAtivo` over the planned data, which spreads the stored
+ * doc)? Only the produto's ACTIVE native kit writes a recipe (R-t): a
+ * superseded one — the old kit a failed-delete recriar left live — or a removed
+ * one still gets its status fields and its rows, but no recipe and no stamp.
+ */
+export function vinculoDaListagemAtivo(plano: PlanoImportacaoShopee): boolean {
+  return ehKitNativoAtivo(plano.linkPai.dados);
+}
+
+/**
+ * One kit-model row escrita, for a kit: the stamp decided, and an `add` turned
+ * into an upsert at the deterministic row id (step 19, S3F-02).
+ *
+ * ⚠️ The stored stamp rides the planner's spread of the row, so it is always
+ * REPLACED or DELETED here, never re-written as read: a merge that re-wrote the
+ * stamp it read would put a stale value back over a pre-stamp (or over a
+ * concurrent writer's). `null` = no stamp to write: the key leaves a merge
+ * untouched and a NEW row gets an explicit `null` — unless `limpar`, which
+ * writes the explicit `null` on an existing row too (R2-F2: a recipe that is not
+ * address-faithful un-verifies whatever an earlier pass stamped).
+ */
+function linhaDoKit(
+  link: EscritaDeLink | null,
+  modelId: number,
+  linkDocId: string,
+  caminhoDoVinculo: string,
+  carimbo: string | null,
+  limpar: boolean,
+): EscritaDeLink | null {
+  if (link === null) return null;
+  const semCarimbo = Object.fromEntries(
+    Object.entries(link.dados).filter(([chave]) => chave !== 'receitaKitConferida'),
+  );
+  const nova = link.acao === 'add';
+  const dados: Record<string, unknown> = {
+    ...semCarimbo,
+    // The id is known now (it is derived), so the plan states the ref instead
+    // of leaving it to the writer's stamp — the writer stamps the same path.
+    produtoShopeeOuterRef: toOuterRef(caminhoDoVinculo),
+    ...(carimbo !== null ? { receitaKitConferida: carimbo } : {}),
+    ...(carimbo === null && (nova || limpar) ? { receitaKitConferida: null } : {}),
+  };
+  if (nova) return { acao: 'merge', docId: idDaVariacaoDeKit(linkDocId, modelId), dados };
+  return { ...link, dados };
 }
 
 /**
@@ -619,14 +998,26 @@ export interface ArmazenadosDoKit {
  * composition the child does, exactly like the sole-member mirror the schemas
  * package builds for a family of one. With 2..9 models the parent carries
  * `componentesKit: null`, because there is no single composition to mirror and a
- * merged one would be a fourth answer nobody wrote.
+ * merged one would be a fourth answer nobody wrote. ⚠️ When the one child's
+ * recipe is KEPT (R-t (ii)), the parent's recipe is left UNWRITTEN too: a
+ * mirror of Shopee's recipe on the parent would reach the kept member through
+ * the produto trigger's sole-member mirror and revert the very edit kept here.
+ *
+ * ⚠️ Step 19 (#1527) rewrites the link escritas, never the planner (R-u,
+ * S3F-02): a NEW listing link (the cascade's rung 1 missed) is a merge at
+ * `idDoVinculoDeKit(integracaoId, item_id)` instead of an `add`, and every NEW
+ * kit-model row is a merge at `idDaVariacaoDeKit(linkDocId, model_id)` — the
+ * existing merge-at-docId applier, an upsert at a deterministic id (tier 0), so
+ * the create and the import land on ONE link and ONE row per (link, model).
+ * Every kit-model row carries the decided `receitaKitConferida` (R-4).
  */
 export function comCamposDeKit(
   plano: PlanoImportacaoShopee,
   componentes: readonly ComponenteDoKitShopee[],
   nowMs: number,
+  integracaoId: string,
   armazenados: ArmazenadosDoKit,
-): PlanoImportacaoShopee {
+): PlanoKitShopee {
   const porModelo = new Map<number, ComposicaoDoKit>();
   for (const [i, filho] of plano.filhos.entries()) {
     porModelo.set(
@@ -639,24 +1030,95 @@ export function comCamposDeKit(
     );
   }
 
-  const umModeloSo = plano.filhos.length === 1 ? plano.filhos[0] : undefined;
-  const espelho = umModeloSo !== undefined ? (porModelo.get(umModeloSo.modelId) ?? null) : null;
+  const linkDocId = idDoVinculoDaListagemDeKit(integracaoId, plano.itemId, plano.linkPai.docId);
+  const caminhoDoVinculo = caminhoDoLinkDaListagem(plano.produtoId, linkDocId);
+  const ativo = vinculoDaListagemAtivo(plano);
 
-  const filhos: PlanoFilhoShopee[] = plano.filhos.map((filho, i) => ({
-    ...filho,
-    produto: comCamposDeKitNoProduto(
-      filho.produto,
-      // ⚠️ The id the WRITER will use — index-aligned with `filhos` by
-      // construction — never `filho.produto?.produtoId`, which is absent on a
-      // byte-identical re-import.
-      plano.filhoUnico.idsPlanejados[i] ?? filho.produto?.produtoId ?? plano.produtoId,
-      porModelo.get(filho.modelId) ?? null,
-      nowMs,
-      armazenados.filhos[i] ?? null,
-    ),
-    // A kit child is assembled, never stocked. Structural, not incidental.
-    estoque: null,
-  }));
+  const preCarimbos: PreCarimboDeLinhaKit[] = [];
+  const receitaDivergente: string[] = [];
+  const receitas: ReceitaAEscrever[] = [];
+
+  const filhos: PlanoFilhoShopee[] = plano.filhos.map((filho, i) => {
+    // ⚠️ The id the WRITER will use — index-aligned with `filhos` by
+    // construction — never `filho.produto?.produtoId`, which is absent on a
+    // byte-identical re-import.
+    const filhoId =
+      plano.filhoUnico.idsPlanejados[i] ?? filho.produto?.produtoId ?? plano.produtoId;
+    const composicao = porModelo.get(filho.modelId) ?? null;
+
+    let receita: ReceitaAEscrever = composicao;
+    let carimbo: string | null = null;
+    let limparCarimbo = false;
+    if (!ativo) {
+      receita = 'manter';
+    } else if (composicao !== null) {
+      const decisao = decidirReceitaDoFilho({
+        chaveShopee: chaveReceitaKitErp(composicao.mapa),
+        chaveAtual: chaveReceitaKitErp(
+          mapaDeComponentesArmazenado(armazenados.filhos[i] ?? null) as Parameters<
+            typeof chaveReceitaKitErp
+          >[0],
+        ),
+        carimbosContados: armazenados.carimbosContados[i] ?? [],
+        // R1-RT7-01: a família de um's wrapper may hold an edit its member has
+        // not received yet (the mirror is a later, unretried trigger).
+        chaveDoPai: chaveDoPaiDaFamiliaDeUm(armazenados.pai, filhoId, plano.filhos.length),
+      });
+      if (decisao === 'mantida') {
+        receita = 'manter';
+        receitaDivergente.push(filhoId);
+      } else if (receitaFielAosEnderecos(componentes.filter((c) => c.modelId === filho.modelId))) {
+        // The written map IS the read-back, so this stamp is fold-equal by
+        // construction (R-4) — at the PRODUTO level, which is the address level
+        // only because the recipe is address-faithful (R2-F2).
+        carimbo = chaveReceitaKitErp(composicao.mapa);
+      } else {
+        // R2-F2: two Shopee addresses fold onto one produto, so THE recipe fold
+        // calls this kit DISTINCT from anything the ERP can project. The map
+        // is still written (it is the produto-level truth), but the stamp is
+        // CLEARED — never left at a value an earlier pass wrote — so the aviso
+        // opens and stays open until the kit is recreated.
+        limparCarimbo = true;
+      }
+    }
+    receitas.push(receita);
+
+    const link = linhaDoKit(
+      filho.link,
+      filho.modelId,
+      linkDocId,
+      caminhoDoVinculo,
+      carimbo,
+      limparCarimbo,
+    );
+    if (carimbo !== null && filho.link?.acao === 'merge' && filho.link.docId !== null) {
+      preCarimbos.push({
+        produtoId: filhoId,
+        docId: filho.link.docId,
+        receitaKitConferida: carimbo,
+      });
+    }
+
+    return {
+      ...filho,
+      produto: comCamposDeKitNoProduto(
+        filho.produto,
+        filhoId,
+        receita,
+        nowMs,
+        armazenados.filhos[i] ?? null,
+      ),
+      // A kit child is assembled, never stocked. Structural, not incidental.
+      estoque: null,
+      link,
+    };
+  });
+
+  const espelho: ReceitaAEscrever = !ativo
+    ? 'manter'
+    : plano.filhos.length === 1
+      ? (receitas[0] ?? null)
+      : null;
 
   return {
     ...plano,
@@ -668,13 +1130,118 @@ export function comCamposDeKit(
       armazenados.pai,
     ),
     estoquePai: null,
+    linkPai:
+      plano.linkPai.acao === 'add'
+        ? { acao: 'merge', docId: linkDocId, dados: plano.linkPai.dados }
+        : plano.linkPai,
+    linkPaiRefPendente: false,
     filhos,
+    preCarimbos,
+    receitaDivergente: [...receitaDivergente].sort(compararTexto),
   };
+}
+
+/** UTF-16 code-unit order — a stable, locale-free sort for doc ids. */
+function compararTexto(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
 }
 
 /* -------------------------------------------------------------------------- */
 /*  5. The write-free half                                                     */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * R-u: a ONE-model kit imported onto a kit produto that is a família de um
+ * binds its model to the parent's `filhoUnicoId` — never a freshly minted
+ * child.
+ *
+ * ⚠️ Why the cascade alone is not enough: a kit created from the sole member
+ * names the member's sku as `model_sku`, but a kit authored in Seller Centre may
+ * carry none, and the single-model tier is planned as NO tier
+ * ({@link ehTierDeKitUnico}), so neither the sku rung nor the combination rung
+ * can find the member and rung 4 would MINT a second child — a família de um
+ * that silently stops being one (`filhoUnicoId` re-derives to `null`). The
+ * member is read by id and bound only when it still names THIS parent: a stale
+ * pointer never binds another family's produto. Rung 1's own answer, and a
+ * `variashopee` of another family, always win.
+ */
+async function comMembroDaFamiliaDeUm(
+  db: Firestore,
+  pai: DocumentoLido | null,
+  resolucoes: readonly ResolucaoFilhoShopee[],
+): Promise<readonly ResolucaoFilhoShopee[]> {
+  if (pai === null || resolucoes.length !== 1) return resolucoes;
+  const unica = resolucoes[0];
+  if (unica === undefined || unica.existente !== null || unica.vinculoDeOutraFamilia) {
+    return resolucoes;
+  }
+  const membroId = pai.raw.filhoUnicoId;
+  if (typeof membroId !== 'string' || membroId === '') return resolucoes;
+  const snap = await produtoCollection.docRef(db, {}, membroId).get();
+  if (!snap.exists) return resolucoes;
+  const raw = (snap.data() ?? {}) as Record<string, unknown>;
+  if (raw.paiId !== pai.id) return resolucoes;
+  return [{ ...unica, existente: { id: membroId, raw, updateTime: snap.updateTime } }];
+}
+
+/**
+ * R-t's counted stamps (step 19, #1527) — index-aligned with `plano.filhos`.
+ *
+ * For each EXISTING child: the `receitaKitConferida` of its `variashopee` rows
+ * of this conta that sit on an ACTIVE native-kit link of the kit produto
+ * (`ehKitNativoAtivo`) — the imported listing's own (judged as it will read
+ * after this import's merge) AND any other live kit's. The other kit matters: a
+ * Seller-Centre duplicate, or the new kit of an interrupted recriar, has no rows
+ * yet while the edit the aviso tracks sits on the OTHER kit's rows.
+ *
+ * Both stored ref encodings bind (the conta through `toOuterRefOrNull`, the
+ * link through `idDoRef`), the same reach the aviso decision has, so the two
+ * never disagree about which rows count.
+ *
+ * ⚠️ Reads NOTHING when the listing will not be active: such a listing writes no
+ * recipe, so there is nothing to decide. Otherwise one read of the kit's
+ * `prodshopee` and one per existing child (≤ 9) — no query, no index.
+ */
+export async function lerCarimbosContados(
+  db: Firestore,
+  integracaoId: string,
+  kitProdutoId: string | null,
+  plano: PlanoImportacaoShopee,
+  filhosExistentes: readonly (DocumentoLido | null)[],
+): Promise<(string | null)[][]> {
+  const saida: (string | null)[][] = plano.filhos.map(() => []);
+  if (!vinculoDaListagemAtivo(plano)) return saida;
+
+  const conta = toOuterRef(`integracao/${integracaoId}`);
+  const proprio = idDoVinculoDaListagemDeKit(integracaoId, plano.itemId, plano.linkPai.docId);
+  const ativos = new Set<string>([proprio]);
+  if (kitProdutoId !== null) {
+    const links = await produtoShopeeLinkCollection.ref(db, { produtoId: kitProdutoId }).get();
+    for (const doc of links.docs) {
+      // The imported listing is judged by its PLANNED data, above — never by
+      // the stored doc, which may predate the `kitNativo` stamp.
+      if (doc.id === proprio) continue;
+      const raw = (doc.data() ?? {}) as Record<string, unknown>;
+      if (toOuterRefOrNull(raw.contaProdutoShopeeOuterRef) !== conta) continue;
+      if (ehKitNativoAtivo(raw)) ativos.add(doc.id);
+    }
+  }
+
+  for (const [i, existente] of filhosExistentes.entries()) {
+    if (existente === null || i >= saida.length) continue;
+    const linhas = await variacaoShopeeLinkCollection.ref(db, { produtoId: existente.id }).get();
+    for (const doc of linhas.docs) {
+      const raw = (doc.data() ?? {}) as Record<string, unknown>;
+      if (toOuterRefOrNull(raw.contaVariacaoShopeeOuterRef) !== conta) continue;
+      const linkId = idDoRef(raw.produtoShopeeOuterRef);
+      if (linkId === null || !ativos.has(linkId)) continue;
+      const carimbo = raw.receitaKitConferida;
+      saida[i]?.push(typeof carimbo === 'string' ? carimbo : null);
+    }
+  }
+  return saida;
+}
 
 /**
  * Everything the kit's plan needs, READ.
@@ -725,13 +1292,21 @@ async function lerPreparoDoKit(
         }).combos
       : [];
 
-  const resolucoes = await resolverFilhosDaListagem(
+  // R-u (S2C-01): the child claim check and link reuse see only THIS listing's
+  // rows — a kit's children routinely carry another listing's rows (the old kit
+  // of a recriar, the ordinary listing a converter superseded, a removed one).
+  const resolucoes = await comMembroDaFamiliaDeUm(
     db,
-    deps.integracaoId,
-    paiId,
-    pai.existente !== null,
-    modelos,
-    combos.map((c) => ({ variacoesUid: c.variacoesUid })),
+    pai.existente,
+    await resolverFilhosDaListagem(
+      db,
+      deps.integracaoId,
+      paiId,
+      pai.existente !== null,
+      modelos,
+      combos.map((c) => ({ variacoesUid: c.variacoesUid })),
+      idDoVinculoDaListagemDeKit(deps.integracaoId, anuncio.itemId, pai.link?.id ?? null),
+    ),
   );
 
   const filhos: PreparoFilhoShopee[] = resolucoes.map((resolucao) => ({
@@ -780,17 +1355,70 @@ export async function prepararImportacaoKitShopee(
   entrada: ItemLido,
 ): Promise<PreparoKitShopee> {
   const kit = exigirDetalheDoKit(entrada);
-  const componentes = await resolverComponentesDoKit(deps.db, deps.integracaoId, kit);
+  const componentes = await resolverComponentesDoKit(
+    deps.db,
+    deps.integracaoId,
+    kit,
+    // Absent ⇒ every component unknown ⇒ the wire ids verbatim (today's path).
+    entrada.temModelosDosComponentes ?? new Map<number, boolean>(),
+  );
   exigirComponentesVinculados(componentes, entrada.itemId);
 
   const anuncio = anuncioDerivadoDoKit(entrada, kit);
   const lido = await lerPreparoDoKit(deps, anuncio);
-  const plano = comCamposDeKit(planejarImportacaoShopee(lido), componentes, deps.nowMs, {
+  const planoDaListagem = planejarImportacaoShopee(lido);
+  const filhosExistentes = lido.filhos.map((filho) => filho.existente);
+  const carimbosContados = await lerCarimbosContados(
+    deps.db,
+    deps.integracaoId,
+    lido.pai.existente?.id ?? null,
+    planoDaListagem,
+    filhosExistentes,
+  );
+  const plano = comCamposDeKit(planoDaListagem, componentes, deps.nowMs, deps.integracaoId, {
     pai: lido.pai.existente?.raw ?? null,
-    filhos: lido.filhos.map((filho) => filho.existente?.raw ?? null),
+    filhos: filhosExistentes.map((existente) => existente?.raw ?? null),
+    carimbosContados,
   });
 
   return { plano, componentes, anuncio, produtosComponentes: produtosDosComponentes(componentes) };
+}
+
+/**
+ * The PRE-STAMP (step 19, R-4): every kit-model row the import is about to merge
+ * onto gets its `receitaKitConferida` FIRST — before the child produto is
+ * written, and before the PARENT, which reaches a família de um's member first
+ * through the produto trigger's sole-member mirror.
+ *
+ * ⚠️ Why first: the produto write fires the recipe trigger, which re-decides
+ * the aviso from the rows as they are THEN. A row stamped after the produto
+ * would lose that race and open an aviso for a recipe this very import just
+ * verified. Stamped first, the trigger already reads the new stamp.
+ *
+ * ⚠️ A flat `mergeIfExists`, never `merge` and never `set`: a `set` would erase
+ * step 13's `preco*` and the sync's `modeloAusenteEm`/`model_status`, and an
+ * upserting `merge` would RESURRECT a row deleted since the preparo as a ghost
+ * carrying only the stamp, with no `model_id`. A row that is gone is skipped;
+ * the plan's own merge writes it whole afterwards.
+ *
+ * Nothing guards two concurrent imports of one kit beyond "the same value": both
+ * stamp the fingerprint of the recipe they read from Shopee, which a kit cannot
+ * change (P2-c).
+ */
+export async function preCarimbarLinhasDoKit(
+  db: Firestore,
+  preCarimbos: readonly PreCarimboDeLinhaKit[],
+): Promise<void> {
+  for (const linha of preCarimbos) {
+    await variacaoShopeeLinkCollection.mergeIfExists(
+      db,
+      { produtoId: linha.produtoId },
+      linha.docId,
+      {
+        receitaKitConferida: linha.receitaKitConferida,
+      },
+    );
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -812,13 +1440,27 @@ export async function prepararImportacaoKitShopee(
  * predicate, and two copies of that decision would drift toward plausible while
  * both read correct — for a listing shape whose tier tree is a single tier and
  * whose races are correspondingly rare.
+ *
+ * Step 19 (#1527) brackets the writer with the recipe aviso's two halves: the
+ * PRE-STAMP before it ({@link preCarimbarLinhasDoKit}), and ONE
+ * `reavaliarAvisoDeReceitaKit` for (conta, kit) after it, motivo `importado` —
+ * the shared decision that re-reads the current recipes in one snapshot, never
+ * a blind resolve. Its µs clock comes from `avisos/autorizacao.ts`'s
+ * `agoraUsDe`, so `produtos/` still converts nothing itself.
  */
-export const importarKitShopee: ImportarKitShopeeFn = async (
-  deps: ImportarAnuncioDeps,
+export const importarKitShopee = (async (
+  deps: ImportarKitShopeeDeps,
   entrada: ItemLido,
-): Promise<ResultadoImportacaoShopee> => {
+): Promise<ResultadoImportacaoKitShopee> => {
   const preparo = await prepararImportacaoKitShopee(deps, entrada);
+  await preCarimbarLinhasDoKit(deps.db, preparo.plano.preCarimbos);
   const resultado = await aplicarImportacaoShopee(deps, preparo.plano);
+  await reavaliarAvisoDeReceitaKit(
+    deps.db,
+    { integracaoId: deps.integracaoId, kitProdutoId: resultado.produtoId },
+    MOTIVO_RESOLUCAO_RECEITA_KIT.importado,
+    { agoraUs: agoraUsDe({ nowMs: deps.nowMs }), increment: deps.increment },
+  );
   return {
     ...resultado,
     kit: {
@@ -826,6 +1468,37 @@ export const importarKitShopee: ImportarKitShopeeFn = async (
       // The kit produto IS the parent, so the two cannot disagree — a separate
       // boolean here would only ever be a second way to say the same thing.
       criado: resultado.criado,
+      avisos: preparo.plano.receitaDivergente.map((filhoId) => ({
+        codigo: 'receita-divergente' as const,
+        produtoId: filhoId,
+        mensagem:
+          `a composição da variação ${filhoId} mudou no ERP e o kit ${String(entrada.itemId)} ` +
+          // ⚠️ No claim about the aviso's state: for a família de um whose
+          // member has not received K's edit yet (R1-RT7-01) the aviso opens
+          // only when the mirror lands — and never, if that mirror was lost.
+          'na Shopee ainda tem a anterior; a importação manteve a do ERP (recrie o kit para ' +
+          'aplicá-la na Shopee)',
+      })),
     },
   };
-};
+}) satisfies ImportarKitShopeeFn;
+
+/**
+ * One warning of a kit import — declared on the seam (`itemLido.ts`) since
+ * OP-1, so the route, the CLI and the job read it off
+ * `ResultadoImportacaoShopee`; re-exported here for the importer's callers.
+ */
+export type { AvisoImportacaoKit } from './itemLido';
+
+/**
+ * What {@link importarKitShopee} answers: the listing result plus the kit block,
+ * whose `avisos` is REQUIRED here: the kit arm always reports it, `[]` included.
+ * The seam's is optional (absent reads as `[]`) — see `ResultadoImportacaoShopee`.
+ */
+export interface ResultadoImportacaoKitShopee extends ResultadoImportacaoShopee {
+  readonly kit: {
+    readonly componentes: number;
+    readonly criado: boolean;
+    readonly avisos: readonly AvisoImportacaoKit[];
+  };
+}
