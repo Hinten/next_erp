@@ -77,7 +77,11 @@ describe('buildPatch', () => {
   it('touches token_id and nothing else, as a delete sentinel', () => {
     const patch = buildPatch();
     expect(Object.keys(patch)).toEqual([TOKEN_FIELD]);
-    expect(patch[TOKEN_FIELD]).toEqual(FieldValue.delete());
+    // Identity, not toEqual: the sentinels carry no own keys, so toEqual reads
+    // serverTimestamp() as equal to delete() — a patch that overwrites the
+    // credential instead of removing the key would pass.
+    expect(patch[TOKEN_FIELD]).toBe(FieldValue.delete());
+    expect(patch[TOKEN_FIELD]).not.toBe(FieldValue.serverTimestamp());
   });
 
   it('carries no credential text', () => {
