@@ -17,6 +17,7 @@ import {
   type Video,
   buildFotoRefs,
   deriveFotosArquivosIds,
+  ehKitVirtualEfetivo,
   normalizeVariacoesUid,
   parseFakePath,
   produtoPageIssues,
@@ -36,6 +37,7 @@ import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { useKitNativoShopee } from '@/lib/shopee/kitNativo';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
@@ -197,6 +199,16 @@ export default function EditarProdutoPage() {
   const paiSnap = useDocSnapshot(paiDocRef);
   const parentIsKit = paiSnap.data?.data.ehKit === true;
 
+  // Shopee native kit (step 19, #1527, L4(1)): whether the kit ROOT (`paiId ??
+  // id` — a family child's recipe is one model of its parent's listing) has an
+  // ACTIVE native-kit link. Drives the NON-BLOCKING notice in the «É kit»
+  // field. `null` until this produto's doc has loaded, so a child never reads
+  // its own (empty) links first.
+  const kitNativoShopee = useKitNativoShopee(
+    db,
+    produtoSnap.data ? (paiId ?? params.id) : null,
+  ).temKitNativo;
+
   // Kits that use THIS produto as a component (#246). Promoting this produto into
   // a kit while it's still a component creates a kit-of-kit (can corrupt stock),
   // so the "É kit" toggle warns + confirms when this list is non-empty. Same
@@ -280,8 +292,9 @@ export default function EditarProdutoPage() {
           />
         ),
       },
-      // "É kit" with the kit-of-kit promotion warning (#246) — editar-only, since
-      // it needs the referenced-by snapshot (a new produto can't be referenced).
+      // "É kit" with the kit-of-kit promotion warning (#246) and the Shopee
+      // native-kit notice (step 19) — editar-only, since both need a SAVED
+      // produto (a new one can be neither referenced nor linked).
       ehKit: {
         ...produtoFieldOverrides.ehKit,
         renderInput: (p) => (
@@ -293,6 +306,7 @@ export default function EditarProdutoPage() {
             referencedByKits={referencedByKits}
             hasMore={referencedByMore}
             loading={referencedBySnap.loading}
+            kitNativoShopee={kitNativoShopee}
           />
         ),
       },
@@ -525,6 +539,7 @@ export default function EditarProdutoPage() {
       referencedByKits,
       referencedByMore,
       referencedBySnap.loading,
+      kitNativoShopee,
       handleMlDirtyChange,
     ],
   );
@@ -614,6 +629,14 @@ export default function EditarProdutoPage() {
           // `array-contains` query (order-insensitive), and Firestore arrays
           // are order-sensitive, so an unsorted list churns dirty detection.
           componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
+          // «É kit virtual» means nothing without «É kit» (`ehKitVirtualEfetivo`,
+          // the shared predicate): turning the kit off switches it off too, so
+          // the produto never stores the mismatch the Shopee publisher refuses
+          // (`kit-virtual-sem-kit`). A stored legacy mismatch heals on the next save.
+          ehKitVirtual: ehKitVirtualEfetivo({
+            ehKit: values.ehKit,
+            ehKitVirtual: values.ehKitVirtual,
+          }),
           fotosArquivosIds: fotoIds.length > 0 ? fotoIds : null,
         };
       }}
@@ -658,8 +681,12 @@ export default function EditarProdutoPage() {
         // a child of a non-kit can't stay a kit, so its `componentesKit` is
         // cleared. "Old" value = the ref pinned at the first emit, else the
         // live snapshot (so a save beating that emit still propagates).
+        // `ehKitVirtual` is the value `deriveOnSave` wrote — never the raw switch.
         const newEhKit = values.ehKit === true;
-        const newEhKitVirtual = values.ehKitVirtual === true;
+        const newEhKitVirtual = ehKitVirtualEfetivo({
+          ehKit: values.ehKit,
+          ehKitVirtual: values.ehKitVirtual,
+        });
         const oldKit = lastSavedKitStatus.current.ready
           ? lastSavedKitStatus.current
           : {

@@ -61,6 +61,11 @@ vi.mock('@delfrance/data/hooks', async (importActual) => ({
 vi.mock('@/lib/clientes/useDefaultFilialId', () => ({
   useDefaultFilialId: () => undefined,
 }));
+// The produto editor asks whether the kit has an active Shopee native-kit link (step 19), through `useQuery`; this
+// suite renders the editor without a QueryClientProvider, so the hook is stubbed like `useDefaultFilialId` above.
+vi.mock('@/lib/shopee/kitNativo', () => ({
+  useKitNativoShopee: () => ({ temKitNativo: false, carregando: false }),
+}));
 vi.mock('@/lib/categorias/cascadeNomeCompleto', async (importActual) => ({
   ...(await importActual<typeof import('@/lib/categorias/cascadeNomeCompleto')>()),
   listDescendantIdsForPicker: () => Promise.resolve([]),
