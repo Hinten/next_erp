@@ -981,6 +981,12 @@ export const mlShipmentOrdersSchema = z
   .nullish()
   .transform((v) => v ?? []);
 
+/** `GET /shipments/{shipmentId}/carrier` — a null/empty URL is unavailable. */
+export const mlShipmentCarrierSchema = z
+  .object({ name: z.string().nullable(), url: z.string().nullable() })
+  .passthrough();
+export type MlShipmentCarrier = z.infer<typeof mlShipmentCarrierSchema>;
+
 /** `GET /shipments/{shipmentId}/sla` (legacy `get_shipment_sla`, api.dart:1671-1677) — only `expected_date` is consumed (legacy `_getPrazoDespacho`, tasks.dart:38-43). */
 export const mlShipmentSlaSchema = z
   .object({
