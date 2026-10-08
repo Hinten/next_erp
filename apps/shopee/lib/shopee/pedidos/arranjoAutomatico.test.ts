@@ -971,6 +971,16 @@ const CATALOGO: readonly Classe[] = [
     esperado: igual('recusado'),
   },
   {
+    // The unserved-route 404 (step 19): a ShopeeApiError subclass with the same `kind: 'other'`.
+    nome: 'ShopeeOperacaoNaoServidaError',
+    fabricar: () =>
+      shopeeErrorFromEnvelope(
+        { error: 'error_not_found', message: null, request_id: null, warning: null },
+        { path: '/api/v2/logistics/ship_order', httpStatus: 404, surface: SHOPEE_SURFACE.business },
+      ),
+    esperado: igual('recusado'),
+  },
+  {
     nome: 'ShopeeRateLimitError (burst)',
     fabricar: () => envelope('error_rate_limit'),
     esperado: igual('aguardando'),

@@ -25,10 +25,12 @@
  * tolerated ONLY on those three operations, through
  * `ShopeeCallParams.emptyErrorAliases` in `call.ts`. Step 17 met the same
  * contradiction with a NEW value: the six `v2.returns.*` pages print `" "` (one
- * SPACE, four pages) or `"-"` (two) — so NINE call sites over THREE constants:
- * the lost-push pair sharing one, `get_package_detail` carrying its own, and the
+ * SPACE, four pages) or `"-"` (two) — and step 19 met it once more on
+ * `get_kit_item_limit`'s success sample. So TEN call sites over FOUR constants:
+ * the lost-push pair sharing one, `get_package_detail` carrying its own, the
  * six returns operations sharing `SHOPEE_RETURNS_ERROR_ALIASES`
- * (`devolucoes.ts`), the only constant that names `' '`. The second is the KEY: `get_item_violation_info`'s success body omits
+ * (`devolucoes.ts`), the only constant that names `' '`, and
+ * `get_kit_item_limit` carrying `SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES` (`kits.ts`). The second is the KEY: `get_item_violation_info`'s success body omits
  * `error` entirely (MEASURED 2026-09-17 — see
  * {@link shopeeItemViolationInfoPayloadSchema}), and
  * `ShopeeCallParams.erroAusenteEhSucesso` reads an absent key as `''` for that
@@ -2569,6 +2571,17 @@ export const shopeeKitComponentSchema = z
   .object({
     component_item_id: wireInt(),
     component_item_name: z.string().nullable().default(null),
+    /**
+     * ⚠️ For a component item WITH variations, the model's id. For a plain
+     * component (no variations) the read answers the HIDDEN default model id
+     * (MEASURED, SG sandbox, step 19 probe): NON-ZERO, not the `item_id`,
+     * absent from that item's `get_model_list` (`model: []`), and its
+     * `component_model_name` / `component_item_or_model_sku` come back `''`.
+     * So a non-zero id here does NOT mean "a variation", and `0`/`null` is not
+     * how "no model" reads. Whether to bind it or ignore it is the app's ONE
+     * resolver's decision (it needs the component item's `has_model`); this
+     * schema only states the wire fact. A kit write resends it verbatim.
+     */
     component_model_id: wireInt().nullable().default(null),
     component_model_name: z.string().nullable().default(null),
     quantity: wireInt().nullable().default(null),
@@ -2613,8 +2626,18 @@ export type ShopeeKitModel = z.infer<typeof shopeeKitModelSchema>;
  * the app normalises.
  *
  * ⚠️ **There is NO stock field anywhere on this page** — not here, not on
- * `add_kit_item`, not on `update_kit_item` — and the derivation rule is
- * undocumented. Nothing in this repo may infer one.
+ * `add_kit_item`, not on `update_kit_item`. The rule is MEASURED (SG sandbox,
+ * 2026-10-06, step 19 probe), not documented: each kit MODEL's stock is the
+ * minimum over its components of ⌊component stock / `quantity`⌋, recomputed
+ * synchronously when a component's stock moves, and readable ONLY through
+ * `get_model_list` of the KIT (`model[].stock_info_v2`). `update_stock` on a kit
+ * is refused ("Invalid product setting"). Shopee derives it, so the ERP never
+ * writes it — step 12 skips a kit listing.
+ *
+ * ⚠️ A DELETED kit still reads here: `delete_item` leaves a full
+ * `product_info` with `item_status: 'SELLER_DELETE'`, so a readable kit is not a
+ * live one — the caller checks `item_status`. A non-kit `item_id` answers the
+ * bare `"."` code ("product is not found") instead.
  */
 export const shopeeKitItemSchema = z
   .object({
@@ -2630,7 +2653,15 @@ export const shopeeKitItemSchema = z
     images: shopeeItemImageSchema.nullable().default(null),
     /** The page's own SAMPLE spelling. Both are read; neither is invented. */
     image: shopeeItemImageSchema.nullable().default(null),
+    /** The page's TABLE spelling. */
     long_images: shopeeItemImageSchema.nullable().default(null),
+    /**
+     * ⚠️ The SINGULAR spelling the wire actually sends (MEASURED, SG sandbox,
+     * step 19 probe: `long_image: {image_ratio: '3:4'}`, with NO
+     * `image_id_list`). Both spellings are read, exactly as `image`/`images`;
+     * whether BR sends the singular too is register row 275.
+     */
+    long_image: shopeeItemImageSchema.nullable().default(null),
     description: z.string().nullable().default(null),
     description_type: z.string().nullable().default(null),
     description_info: shopeeDescriptionInfoSchema.nullable().default(null),
@@ -2708,6 +2739,16 @@ export const shopeeKitItemSchema = z
     create_time: wireInt().nullable().default(null),
     update_time: wireInt().nullable().default(null),
     logistic_info: z.array(shopeeLogisticInfoSchema).nullable().default(null),
+    /**
+     * On the page's sample AND on the wire (MEASURED, SG sandbox, step 19
+     * probe: `{auto_sync_dts: true}`). Read so a republish can resend what the
+     * kit holds; unknown inner keys ride passthrough.
+     */
+    sync_setting: z
+      .object({ auto_sync_dts: z.boolean().nullable().default(null) })
+      .passthrough()
+      .nullable()
+      .default(null),
   })
   .passthrough();
 export type ShopeeKitItem = z.infer<typeof shopeeKitItemSchema>;
@@ -2821,6 +2862,12 @@ export const SHOPEE_MODEL_SKU_MAX_LENGTH = 100;
  * ⚠️ The HARD ceiling, not the band: the real bound is per SHOP and per CATEGORY
  * and comes from `get_item_limit`. A body that fits this one can still be
  * refused by the band.
+ *
+ * ⚠️ NOT a kit's ceiling — `SHOPEE_KIT_IMAGE_MAX` (10, `kits.ts`) is the kit
+ * pages' own wire bound. The two are stated by different pages and are never
+ * merged: the app sends a kit at most this many images (it reuses step 11's
+ * photo resolver), which fits under the kit bound, and a probe that moves one
+ * must not move the other.
  */
 export const SHOPEE_ITEM_IMAGE_MAX = 9;
 
@@ -2976,15 +3023,25 @@ export type ShopeePromotionStaging =
 /**
  * `update_tier_variation`, `update_model`, `delete_model` and `delete_item` —
  * all four answer the BARE envelope, with no `response` object at all (verified
- * on all four Response-params tables and all four samples, 2026-09-17).
+ * on all four Response-params tables and all four samples, 2026-09-17). A FIFTH
+ * product write since step 19: `update_kit_item` — its page says "There is no
+ * `response` object", and every SG sandbox call of the step 19 probe answered
+ * the bare `{error: '', message: '', warning: ''}`.
  *
  * ⚠️ `flatOp({})` rather than reusing {@link shopeeEnvelopeSchema}: that one is
  * the TRANSPORT's stage-1 schema and must not become an operation's — the
  * {@link shopeeConfirmLostPushSchema} rule.
  *
- * ⚠️ ONE constant over FOUR operations, and that is the edit hazard: if ONE of
+ * ⚠️ ONE constant over FIVE operations, and that is the edit hazard: if ONE of
  * them ever grows a `response`, it gets its OWN schema. Splitting is the edit;
- * widening this one is not.
+ * widening this one is not. (A `delete_item` ack measured with an EMPTY
+ * `response: {}` and a `debug_message` already parses — passthrough carries
+ * both, and nothing reads them.)
+ *
+ * ⚠️ For `update_kit_item` this ack proves the CALL landed, never that the
+ * recipe did: the step 19 probe changed a model's component `quantity` and got
+ * this same 200, while the read-back kept the OLD quantity. A kit write is
+ * verified by reading the kit back.
  */
 export const shopeeWriteAckSchema = flatOp({});
 export type ShopeeWriteAck = z.infer<typeof shopeeWriteAckSchema>;
@@ -3656,8 +3713,8 @@ export const SHOPEE_UPLOAD_INVOICE_DOC_FILENAME = 'procNFe.xml';
  *
  * ⚠️ `flatOp({})` rather than reusing {@link shopeeEnvelopeSchema} — the
  * {@link shopeeConfirmLostPushSchema} rule — and deliberately NOT
- * {@link shopeeWriteAckSchema} either: that one constant covers four product
- * writes, and a fifth operation from another module sharing it would make
+ * {@link shopeeWriteAckSchema} either: that one constant covers five product
+ * writes, and a sixth operation from another module sharing it would make
  * splitting it the edit the day ONE of them grows a `response`.
  *
  * ⚠️ `error` is REQUIRED like on every other operation. A success body that
@@ -5088,3 +5145,53 @@ export const shopeeSizeChartListPayloadSchema = z
 /** `GET /api/v2/product/get_size_chart_list` — WRAPPED under `response`. */
 export const shopeeSizeChartListSchema = wrappedOp(shopeeSizeChartListPayloadSchema);
 export type ShopeeSizeChartList = z.infer<typeof shopeeSizeChartListPayloadSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                         Kits — escrita (step 19)                           */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The response schemas of the kit WRITES (#1527). The paths, the request
+ * shapes, the wire bounds and the guards live in `kits.ts`; the members live in
+ * `api.ts`. The kit READ (`get_kit_item_info`) stays in the step 9 block, and
+ * `update_kit_item` answers the bare envelope, so it shares
+ * {@link shopeeWriteAckSchema} with the other envelope-only product writes.
+ */
+
+/**
+ * `POST /api/v2/product/add_kit_item` — WRAPPED under `response`, which holds
+ * `item_id` alone (the page's sample, and the SG sandbox capture of the step 19
+ * probe).
+ *
+ * ⚠️ Its OWN schema, not {@link shopeeItemWriteSchema}: that one's sharing rests
+ * on a passing sample PER PAGE (`add_item` AND `update_item`), and this page
+ * echoes nothing but the id.
+ *
+ * ⚠️ `item_id` is REQUIRED. A 2xx without a readable one is a
+ * `ShopeeSchemaError`, and that means "created, id unknown" — `add_kit_item` is
+ * NOT idempotent, so the caller re-reads Shopee (a SKU scan) before any resend,
+ * never re-sends in-call. The client returns the WHOLE envelope: a success can
+ * carry a `warning`, and the `request_id` is what an operator quotes to Shopee
+ * support.
+ */
+export const shopeeKitItemWriteSchema = wrappedOp(z.object({ item_id: wireInt() }).passthrough());
+export type ShopeeKitItemWrite = z.infer<typeof shopeeKitItemWriteSchema>;
+
+/**
+ * `POST /api/v2/product/generate_kit_image` — WRAPPED under `response`, which
+ * holds `kit_image`.
+ *
+ * ⚠️ UNVERIFIED: whether `kit_image` is an image id or a URL. There is no
+ * success capture — the SG sandbox answered every well-formed call
+ * `product.error_server` "…generate kit image toggle closed." (a permanent
+ * feature toggle, read by sentence; `KIND_BY_CODE` calls that code transient).
+ * So nothing may put `kit_image` into `images.image_id_list` until a live
+ * success settles it.
+ *
+ * ⚠️ Declared with NO caller in step 19: a kit's cover goes through step 11's
+ * `upload_image`. The client returns the WHOLE envelope.
+ */
+export const shopeeGenerateKitImageSchema = wrappedOp(
+  z.object({ kit_image: z.string() }).passthrough(),
+);
+export type ShopeeGenerateKitImage = z.infer<typeof shopeeGenerateKitImageSchema>;

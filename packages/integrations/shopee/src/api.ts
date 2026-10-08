@@ -111,8 +111,11 @@
  * `get_item_extra_info` (sales/views/likes have no sink in this ERP),
  * `search_item` (it cannot enumerate a catalogue — its own `error_param` demands
  * a name or an attribute filter — and carries neither `update_time` nor
- * `tag.kit`) and `upload_image` (step 9 only DOWNLOADS `image_url`; step 11
- * builds it on the PARTNER client).
+ * `tag.kit`; step 19 evaluated it AGAIN as the duplicate-kit lookup before a
+ * kit create and refused it again, for the same reasons: that lookup is a
+ * `get_item_list` scan, whose rows already carry `tag.kit`, plus
+ * `get_item_base_info` — no new op, nothing unverified) and `upload_image`
+ * (step 9 only DOWNLOADS `image_url`; step 11 builds it on the PARTNER client).
  *
  * ⚠️ **`get_item_promotion` was the fourth refusal here and step 12 BUILT it**,
  * because both halves of the refusal turned out to be wrong about the page.
@@ -298,6 +301,31 @@
  * `size_chart_id: 0` is the add/update DETACH sentinel. `cursor` is ABSENT on
  * page 1 and otherwise travels VERBATIM; `''` is refused.
  *
+ * ## The kits (step 19)
+ *
+ * Three Shop-signed POST writes on the `product` module, placed beside the kit
+ * read `getKitItemInfo`: `addKitItem` (create a native kit — ONE tier, 1…9
+ * models, each model its own component list), `updateKitItem` (PARTIAL:
+ * omitted models are kept; it appends models and edits price / image /
+ * `model_sku`, never an existing model's components) and `generateKitImage`
+ * (declared with NO caller — a kit's cover goes through `upload_image`). Their
+ * paths, request shapes, guards and wire constants live in `kits.ts`, beside
+ * `linhasDeReenvioDoKit`, the one copy of a live model's components back onto
+ * the wire; their response schemas in `types.ts`' section "Kits — escrita
+ * (step 19)".
+ *
+ * ⚠️ All three return the WHOLE parsed envelope (the step-11 write rule), and
+ * none is retried here: `add_kit_item` is NOT idempotent, and a 2xx without a
+ * readable `item_id` (`ShopeeSchemaError`) means "created, id unknown" — the
+ * caller re-reads Shopee before anything is sent again. An `update_kit_item`
+ * 200 never means "recipe applied": the SG probe measured a quantity change on
+ * an existing model answering 200 and being SILENTLY IGNORED, so every kit
+ * write is verified by a read-back.
+ *
+ * ⚠️ `getKitItemLimit` carries the TENTH `emptyErrorAliases` call site, over a
+ * FOURTH constant ({@link SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES}): the page's ONLY
+ * success sample prints `"error": "-"`.
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
@@ -331,6 +359,18 @@ import {
   shopeeCodigoCanonico,
 } from './errors';
 import type { ShopeeHosts } from './hosts';
+import {
+  type GenerateKitImageParams,
+  SHOPEE_ADD_KIT_ITEM_PATH,
+  SHOPEE_GENERATE_KIT_IMAGE_PATH,
+  SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES,
+  SHOPEE_UPDATE_KIT_ITEM_PATH,
+  type ShopeeAddKitItemRequest,
+  type ShopeeUpdateKitItemRequest,
+  assertAddKitItemRequest,
+  assertGenerateKitImageParams,
+  assertUpdateKitItemRequest,
+} from './kits';
 import {
   type BaixarDocumentoParams,
   type CriarDocumentoParams,
@@ -405,6 +445,7 @@ import {
   type ShopeeConfirmLostPush,
   type ShopeeEscrowDetail,
   type ShopeeEscrowList,
+  type ShopeeGenerateKitImage,
   type ShopeeGtinLimit,
   type ShopeeItemBaseInfo,
   type ShopeeItemLimit,
@@ -415,6 +456,7 @@ import {
   type ShopeeItemWriteResponse,
   type ShopeeKitItemInfo,
   type ShopeeKitItemLimit,
+  type ShopeeKitItemWrite,
   type ShopeeLinhaDeLote,
   type ShopeeLostPushResponse,
   type ShopeeModelList,
@@ -458,6 +500,7 @@ import {
   shopeeConfirmLostPushSchema,
   shopeeEscrowDetailSchema,
   shopeeEscrowListSchema,
+  shopeeGenerateKitImageSchema,
   shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
   shopeeItemListSchema,
@@ -466,6 +509,7 @@ import {
   shopeeItemWriteSchema,
   shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
+  shopeeKitItemWriteSchema,
   shopeeLinhaDeLotePaginaSchema,
   shopeeLostPushSchema,
   shopeeModelListSchema,
@@ -873,10 +917,11 @@ export const SHOPEE_LOST_PUSH_ERROR_ALIASES = ['-'] as const;
  * its own parameter table says "Empty if no error happened" — the same
  * doc-authoring placeholder the two lost-push pages carry, on a third page.
  *
- * ⚠️ The SECOND constant — of the nine call sites that carry an alias since
- * step 17 (two lost-push, this one, six returns), this is the only one whose
- * constant is not shared — rather than a reuse of
- * {@link SHOPEE_LOST_PUSH_ERROR_ALIASES}: the tolerance is opt-in per CALL SITE
+ * ⚠️ The SECOND constant — of the ten call sites that carry an alias since
+ * step 19 (two lost-push, this one, six returns, `get_kit_item_limit`), this
+ * and the kit-limit one ({@link SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES},
+ * `kits.ts`) are the only two whose constant is not shared — rather than a
+ * reuse of {@link SHOPEE_LOST_PUSH_ERROR_ALIASES}: the tolerance is opt-in per CALL SITE
  * because the contradiction is per PAGE (`get_app_push_config` samples `""` and
  * carries no alias, one method over), and a lost-push-named constant on an order
  * op would read as a copy rather than as a second observation. If Shopee ever
@@ -1826,7 +1871,16 @@ export interface ShopeeClient {
   getBrandList(p: GetBrandListParams): Promise<ShopeeBrandList>;
   /** The item bands, plus the `gtin_limit` sibling. See {@link ShopeeItemLimitRead}. */
   getItemLimit(p?: GetItemLimitParams): Promise<ShopeeItemLimitRead>;
-  /** The KIT bands — never derived from {@link ShopeeClient.getItemLimit}'s. */
+  /**
+   * The KIT bands — never derived from {@link ShopeeClient.getItemLimit}'s.
+   *
+   * ⚠️ `error: "-"` is SUCCESS on this operation — the page's ONLY success
+   * sample prints it — through {@link SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES}
+   * (step 19). `' '` stays a failure. A host that does not route the path at
+   * all (the SG sandbox: a bare HTTP 404 `{"error":"error_not_found"}`) throws
+   * `ShopeeOperacaoNaoServidaError` (`errors.ts`), which the app reads as "kit
+   * limits unavailable", never as a band.
+   */
   getKitItemLimit(p?: GetKitItemLimitParams): Promise<ShopeeKitItemLimit>;
   /** The standardised variation tree. Payload under `data`, not `response`. */
   getVariations(p: GetVariationsParams): Promise<ShopeeVariations>;
@@ -1939,13 +1993,85 @@ export interface ShopeeClient {
    * ⚠️ `item_id` is a SCALAR that carries a batch bound (`limits [0,50]`) on its
    * own page; every sample and the response itself handle exactly one kit.
    *
-   * ⚠️ The kit pages carry NO stock field anywhere and the derivation rule is
-   * undocumented. Nothing in this repo may infer one.
+   * ⚠️ The kit pages carry NO stock field anywhere. MEASURED (SG sandbox,
+   * 2026-10-06): a kit model's stock = min over its components of
+   * ⌊component stock / quantity⌋, recomputed synchronously by Shopee and
+   * readable ONLY through `get_model_list(kit)`; `update_stock` on a kit is
+   * refused. The ERP never writes it (step 12 skips a kit as `kit-derivado`).
+   *
+   * ⚠️ A plain component (an item with no variations) reads back a NON-ZERO
+   * `component_model_id` — the HIDDEN default model id, absent from
+   * `get_model_list` — so `0` / `null` never means "no model" here.
+   *
+   * ⚠️ A DELETED kit stays readable: the probe read a full `product_info` with
+   * `item_status: SELLER_DELETE` after `delete_item`. A non-kit id answers
+   * `error: "."` ("product is not found").
    *
    * ⚠️ Four field names differ from the item read on purpose — see
    * `shopeeKitItemSchema` in `types.ts`, which lists every one.
    */
   getKitItemInfo(p: GetKitItemInfoParams): Promise<ShopeeKitItemInfo>;
+
+  /**
+   * Create a NATIVE kit (step 19) — ONE tier, 1…9 models, each model its own
+   * `component_list`; category, attributes and brand SYNC from the main
+   * component, so the body carries none.
+   *
+   * ⚠️ **NOT idempotent, and never retried here** (the package never retries).
+   * A transient failure is NOT "nothing was created", and a 2xx without a
+   * readable `item_id` (`ShopeeSchemaError`) means "created, id unknown": the
+   * caller re-reads Shopee (the duplicate-kit SKU scan) before anything is sent
+   * again.
+   *
+   * ⚠️ Returns the WHOLE envelope (the step-11 write rule): a success can carry
+   * a `warning`; the id is `response.item_id`.
+   *
+   * ⚠️ Every bound — exactly ONE `main_component: true` across the whole kit
+   * (MEASURED: a second is refused "mupltiple main sku"), `component_model_id`
+   * positive or omitted, a one-row model with `quantity >= 2`, 1…10 images, the
+   * tier ↔ model bijection — is checked by `assertAddKitItemRequest`
+   * (`kits.ts`) BEFORE the access token is asked for.
+   */
+  addKitItem(body: ShopeeAddKitItemRequest): Promise<ShopeeKitItemWrite>;
+
+  /**
+   * Update a native kit — PARTIAL (probe #2): omitted models are KEPT, so a
+   * price change sends only the changed models, each with its LIVE
+   * `component_list` resent verbatim (`linhasDeReenvioDoKit`, `kits.ts`) and no
+   * tier list. An APPENDED model is `model_id: 0` plus the WHOLE tier list.
+   *
+   * ⚠️ **A 200 never means "recipe applied".** The items, the main component
+   * and the per-kit quantities of an existing model are frozen, and a changed
+   * quantity answered 200 and was SILENTLY IGNORED on the SG sandbox. Verify
+   * every kit write by a read-back (`get_kit_item_info`).
+   *
+   * ⚠️ The answer is the BARE envelope (`shopeeWriteAckSchema`): the page has
+   * no `response` object.
+   */
+  updateKitItem(body: ShopeeUpdateKitItemRequest): Promise<ShopeeWriteAck>;
+
+  /**
+   * Ask Shopee to compose a kit cover from 2…9 components.
+   *
+   * ⚠️ **No caller in step 19** — the `deleteModel` / `deleteItem` precedent:
+   * it exists for the BR rehearsal. A kit's cover goes through step 11's
+   * `upload_image` instead, because this op cannot serve a NEW kit with a plain
+   * component: its `model_id` is REQUIRED, and for an item with no variations
+   * the only id Shopee takes is the hidden default model id, which exists only
+   * on an EXISTING kit (`get_kit_item_info`; `get_model_list` answers none).
+   *
+   * ⚠️ **The body is built HERE**, from camelCase params, as
+   * `{component_list: [{item_id, model_id}]}`: the page documents
+   * `component_item_id` / `component_model_id`, and the server's own validator
+   * (PROBE) demands `item_id` / `model_id`. One literal, one place.
+   *
+   * ⚠️ UNVERIFIED: whether `kit_image` is an image id or a URL (the sandbox
+   * toggle is closed — `product.error_server` "…generate kit image toggle
+   * closed.", a PERMANENT answer the app reads by sentence). Nothing may put it
+   * into `images.image_id_list` until a live success settles it. Returns the
+   * WHOLE envelope.
+   */
+  generateKitImage(p: GenerateKitImageParams): Promise<ShopeeGenerateKitImage>;
 
   /**
    * ONE page of this shop's orders in a ≤ 15-day window.
@@ -3976,6 +4102,10 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         schema: shopeeKitItemLimitSchema,
         surface: SHOPEE_SURFACE.business,
         query: { category_id: p.categoryId },
+        // ⚠️ The page's ONLY success sample prints `"error": "-"` — its own
+        // constant (the per-PAGE rule, `call.ts`). A `-` that meant failure
+        // carries no `response` and still dies at the schema.
+        emptyErrorAliases: SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES,
       });
       return res.response;
     },
@@ -4119,6 +4249,52 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         query: { item_id: p.itemId },
       });
       return res.response;
+    },
+
+    /* --------------------------- kit writes (step 19) ------------------------ */
+
+    addKitItem: async (body) => {
+      assertAddKitItemRequest(body);
+      // ⚠️ ONE call, never retried: `add_kit_item` is NOT idempotent. The WHOLE
+      // envelope goes back — its `warning` and `request_id` included.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_ADD_KIT_ITEM_PATH,
+        call: await signedCall(),
+        schema: shopeeKitItemWriteSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    updateKitItem: async (body) => {
+      assertUpdateKitItemRequest(body);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPDATE_KIT_ITEM_PATH,
+        call: await signedCall(),
+        // The BARE envelope: this page answers no `response` object at all.
+        schema: shopeeWriteAckSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    generateKitImage: async (p) => {
+      assertGenerateKitImageParams(p);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_GENERATE_KIT_IMAGE_PATH,
+        call: await signedCall(),
+        schema: shopeeGenerateKitImageSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ The PROBE's keys, never the page's: the server validator demands
+        // `item_id` / `model_id` ("ItemId is required", "ModelId is required");
+        // the page documents `component_item_id` / `component_model_id`.
+        body: {
+          component_list: p.componentes.map((c) => ({ item_id: c.itemId, model_id: c.modelId })),
+        },
+      });
     },
 
     /* ------------------------------- orders -------------------------------- */

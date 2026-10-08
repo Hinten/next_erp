@@ -33,6 +33,8 @@ import {
   SHOPEE_UPLOAD_IMAGE_SIGNING,
   SHOPEE_WAREHOUSE_SEM_ACESSO,
   SHOPEE_WAREHOUSE_TYPE,
+  type ShopeeGenerateKitImage,
+  type ShopeeKitItemWrite,
   type ShopeeLinhaDeLote,
   type ShopeeNestingAmbiguousKey,
   type ShopeeParametroDeDocumento,
@@ -64,6 +66,7 @@ import {
   shopeeEscrowDetailSchema,
   shopeeEscrowListSchema,
   shopeeFaixaSchema,
+  shopeeGenerateKitImageSchema,
   shopeeInfoNeededSchema,
   shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
@@ -73,6 +76,7 @@ import {
   shopeeItemWriteSchema,
   shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
+  shopeeKitItemWriteSchema,
   shopeeLinhaDeLotePaginaSchema,
   shopeeLinhaDeLoteSchema,
   shopeeLostPushSchema,
@@ -6357,5 +6361,256 @@ describe('as tabelas de medidas — o detalhe (get_size_chart_detail, passo 18)'
     for (const t of ['Single Dropdown', 'Input Multi Number', '', 'single dropdown']) {
       expect(shopeeSizeChartMeasurementSchema.parse({ input_type: t }).input_type).toBe(t);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                  Os kits nativos — leitura e escrita (passo 19)             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠️ Ids de FIXTURE, reatribuídos POR PAPEL (a captura da sonda os achatou em
+ * `1000001`): o kit e o modelo do kit; o componente A (com variações) e o seu
+ * modelo; o componente B (SEM variações) e o id de modelo OCULTO que a leitura
+ * do kit devolve para ele. Nenhum é id de loja real.
+ */
+const KIT_ITEM_ID = 2500139870;
+const KIT_MODEL_ID = 2000458820;
+const COMPONENTE_A_ITEM_ID = 2500139871;
+const COMPONENTE_A_MODEL_ID = 2000458821;
+const COMPONENTE_B_ITEM_ID = 2500139872;
+const COMPONENTE_B_MODELO_OCULTO = 2000458829;
+
+/**
+ * A forma de `get_kit_item_info` que o sandbox SG devolveu logo depois de criar
+ * um kit (sonda do passo 19), recortada nos campos que o passo 19 lê, com os
+ * ids trocados pelos de papel e a URL da imagem redigida.
+ */
+function corpoKitCriado(produto: Record<string, unknown> = {}) {
+  return {
+    error: '',
+    message: '',
+    warning: '',
+    response: {
+      product_info: {
+        item_id: KIT_ITEM_ID,
+        item_status: 'NORMAL',
+        item_sku: 'SONDA-KIT',
+        image: {
+          image_id_list: ['sg-11134201-kit-capa'],
+          image_url_list: ['https://example.invalid/file/redacted'],
+          image_ratio: '1:1',
+        },
+        long_image: { image_ratio: '3:4' },
+        model_list: [
+          {
+            model_id: KIT_MODEL_ID,
+            model_sku: 'SONDA-KIT-M1',
+            original_price: 45,
+            tier_index: [0],
+            component_list: [
+              {
+                component_item_id: COMPONENTE_A_ITEM_ID,
+                component_model_id: COMPONENTE_A_MODEL_ID,
+                quantity: 2,
+                main_component: true,
+                component_model_name: 'White,02',
+                component_item_or_model_sku: 'A-SKU',
+              },
+              {
+                component_item_id: COMPONENTE_B_ITEM_ID,
+                component_model_id: COMPONENTE_B_MODELO_OCULTO,
+                quantity: 1,
+                main_component: false,
+                component_model_name: '',
+                component_item_or_model_sku: '',
+              },
+            ],
+          },
+        ],
+        tier_variation_list: [{ name: 'Kit', option_list: [{ option: 'Kit um' }] }],
+        description_type: 'normal',
+        sync_setting: { auto_sync_dts: true },
+        ...produto,
+      },
+    },
+  };
+}
+
+function lerKitCriado(produto: Record<string, unknown> = {}) {
+  const lido = shopeeKitItemInfoSchema.parse(corpoKitCriado(produto)).response.product_info;
+  expect(lido).not.toBeNull();
+  return lido!;
+}
+
+describe('o kit nativo — leitura (get_kit_item_info, passo 19)', () => {
+  it('M40 — `long_image` (SINGULAR, como o fio manda) é DECLARADO: `image_ratio` lido, os campos ausentes viram `null`', () => {
+    const lido = lerKitCriado();
+    expect(lido.long_image?.image_ratio).toBe('3:4');
+    // ⚠️ Só uma chave DECLARADA ganha os defaults do schema da imagem: pelo
+    // passthrough a chave crua chegaria, mas sem `image_id_list: null`.
+    expect(lido.long_image?.image_id_list).toBeNull();
+    expect(lido.long_image?.image_url_list).toBeNull();
+  });
+
+  it('M40 — ⛔ QUASE-MISS: um corpo SEM `long_image` lê `null` (nunca `undefined`), e a grafia da tabela (`long_images`) é OUTRO campo', () => {
+    // A chave AUSENTE de verdade, como num corpo JSON que não a traz.
+    const semLongImage: Record<string, unknown> = { ...corpoKitCriado().response.product_info };
+    delete semLongImage.long_image;
+    expect('long_image' in semLongImage).toBe(false);
+    const lido = shopeeKitItemInfoSchema.parse({
+      error: '',
+      response: { product_info: semLongImage },
+    }).response.product_info!;
+    expect(lido.long_image).toBeNull();
+    expect(lido.long_images).toBeNull();
+
+    // As duas grafias são lidas cada uma no SEU campo — nenhuma é copiada para
+    // a outra.
+    const soTabela = lerKitCriado({ long_image: undefined, long_images: { image_ratio: '3:4' } });
+    expect(soTabela.long_images?.image_ratio).toBe('3:4');
+    expect(soTabela.long_image).toBeNull();
+  });
+
+  it('`sync_setting` — `{auto_sync_dts: true}` lido; ausente ⇒ `null`; `false` continua `false`; chave nova atravessa', () => {
+    expect(lerKitCriado().sync_setting).toEqual({ auto_sync_dts: true });
+    expect(lerKitCriado({ sync_setting: undefined }).sync_setting).toBeNull();
+    expect(lerKitCriado({ sync_setting: null }).sync_setting).toBeNull();
+    // ⛔ QUASE-MISS: `false` é um VALOR, não uma ausência.
+    expect(lerKitCriado({ sync_setting: { auto_sync_dts: false } }).sync_setting).toEqual({
+      auto_sync_dts: false,
+    });
+    expect(lerKitCriado({ sync_setting: {} }).sync_setting).toEqual({ auto_sync_dts: null });
+    const comChaveNova = lerKitCriado({
+      sync_setting: { auto_sync_dts: true, campo_novo: 1 },
+    }).sync_setting as unknown as Record<string, unknown>;
+    expect(comChaveNova.campo_novo).toBe(1);
+  });
+
+  it('o id de modelo OCULTO de um componente sem variações é lido VERBATIM — não-zero, com nome e sku `""`', () => {
+    // ⚠️ O fato de fio que o passo 19 mediu: o componente B não tem variações e
+    // mesmo assim a leitura do kit devolve um `component_model_id` NÃO-ZERO. O
+    // schema não o zera nem o anula — quem decide ligá-lo ou ignorá-lo é o
+    // resolvedor do app.
+    const [a, b] = lerKitCriado().model_list[0]!.component_list;
+    expect(b!.component_item_id).toBe(COMPONENTE_B_ITEM_ID);
+    expect(b!.component_model_id).toBe(COMPONENTE_B_MODELO_OCULTO);
+    expect(b!.component_model_id).not.toBe(0);
+    expect(b!.component_model_name).toBe('');
+    expect(b!.component_item_or_model_sku).toBe('');
+    // ⛔ QUASE-MISS: o componente A (com variações) lê o SEU modelo, e os dois
+    // ids nunca se confundem.
+    expect(a!.component_model_id).toBe(COMPONENTE_A_MODEL_ID);
+    expect(a!.component_model_id).not.toBe(b!.component_model_id);
+    expect(a!.main_component).toBe(true);
+    expect(b!.main_component).toBe(false);
+  });
+
+  it('FONTE — a regra de estoque de kit MEDIDA substituiu o "Nothing in this repo may infer one"', () => {
+    expect(FONTE_TYPES).not.toContain('Nothing in this repo may infer one');
+    const doc = FONTE_TYPES.slice(
+      FONTE_TYPES.indexOf('`get_kit_item_info.response.product_info` — ONE kit item.'),
+      FONTE_TYPES.indexOf('export const shopeeKitItemSchema'),
+    );
+    // ÂNCORA: o recorte é o docblock do schema do kit.
+    expect(doc.length).toBeGreaterThan(200);
+    expect(doc).toContain('get_model_list');
+    expect(doc).toContain('SELLER_DELETE');
+  });
+});
+
+describe('o kit nativo — escrita (passo 19)', () => {
+  it('add_kit_item: a resposta medida (`response` com `item_id` SÓ) parseia, com o envelope inteiro', () => {
+    const lido: ShopeeKitItemWrite = shopeeKitItemWriteSchema.parse({
+      error: '',
+      message: '',
+      warning: '',
+      request_id: 'req-add-kit',
+      response: { item_id: KIT_ITEM_ID },
+    });
+    expect(lido.response.item_id).toBe(KIT_ITEM_ID);
+    expect(lido.request_id).toBe('req-add-kit');
+    // Um `item_id` entre aspas é o mesmo número (o fio de inteiros tolerante).
+    expect(
+      shopeeKitItemWriteSchema.parse({ error: '', response: { item_id: String(KIT_ITEM_ID) } })
+        .response.item_id,
+    ).toBe(KIT_ITEM_ID);
+    // Um aviso num SUCESSO fica no envelope devolvido.
+    expect(
+      shopeeKitItemWriteSchema.parse({
+        error: '',
+        warning: 'aviso',
+        response: { item_id: KIT_ITEM_ID },
+      }).warning,
+    ).toBe('aviso');
+  });
+
+  it('add_kit_item: ⛔ QUASE-MISS — sem `item_id` legível NÃO parseia ("criado, id desconhecido" é falha de schema, nunca um link com id nulo)', () => {
+    for (const corpo of [
+      { error: '', response: {} },
+      { error: '', response: { item_id: null } },
+      { error: '', response: { item_id: '0x1F' } },
+      { error: '', message: '', warning: '' },
+    ]) {
+      expect(shopeeKitItemWriteSchema.safeParse(corpo).success, JSON.stringify(corpo)).toBe(false);
+    }
+  });
+
+  it('add_kit_item: um schema PRÓPRIO — não é o eco de `add_item`/`update_item`, e não inventa os campos dele', () => {
+    expect(shopeeKitItemWriteSchema).not.toBe(shopeeItemWriteSchema);
+    const resposta = shopeeKitItemWriteSchema.parse({
+      error: '',
+      response: { item_id: KIT_ITEM_ID },
+    }).response as unknown as Record<string, unknown>;
+    expect(Object.keys(resposta)).toEqual(['item_id']);
+    // ⛔ QUASE-IGUAL: o eco do item, para o MESMO corpo, preenche os defaults dele.
+    const eco = shopeeItemWriteSchema.parse({ error: '', response: { item_id: KIT_ITEM_ID } })
+      .response as unknown as Record<string, unknown>;
+    expect(eco.item_status).toBeNull();
+    expect('item_status' in resposta).toBe(false);
+  });
+
+  it('generate_kit_image: `response.kit_image` lido; sem ele, nulo ou número ⇒ NÃO parseia', () => {
+    const lido: ShopeeGenerateKitImage = shopeeGenerateKitImageSchema.parse({
+      error: '',
+      response: { kit_image: 'sg-11134201-kit-imagem' },
+    });
+    expect(lido.response.kit_image).toBe('sg-11134201-kit-imagem');
+    expect(lido.warning).toBeNull();
+    for (const resposta of [{}, { kit_image: null }, { kit_image: 123 }]) {
+      expect(
+        shopeeGenerateKitImageSchema.safeParse({ error: '', response: resposta }).success,
+        JSON.stringify(resposta),
+      ).toBe(false);
+    }
+    expect(shopeeGenerateKitImageSchema.safeParse({ error: '' }).success).toBe(false);
+  });
+
+  it('update_kit_item: o ack medido (envelope PURO) parseia pelo `shopeeWriteAckSchema` — e um `response: {}` com `debug_message` também', () => {
+    // As quatro chamadas da sonda (preço, só um modelo, anexar, quantidade)
+    // responderam este mesmo corpo — inclusive a de QUANTIDADE, que a Shopee
+    // ignorou em silêncio. O ack prova que a chamada chegou, nunca a receita.
+    const ack = shopeeWriteAckSchema.parse({ error: '', message: '', warning: '' });
+    expect(ack.error).toBe('');
+    expect(ack.request_id).toBeNull();
+    const comResponseVazio = shopeeWriteAckSchema.parse({
+      error: '',
+      message: '',
+      warning: '',
+      response: {},
+      debug_message: '',
+    }) as unknown as Record<string, unknown>;
+    expect(comResponseVazio.response).toEqual({});
+    expect(comResponseVazio.debug_message).toBe('');
+  });
+
+  it('FONTE — `SHOPEE_ITEM_IMAGE_MAX` (9) diz que NÃO é o teto de um kit e nomeia `SHOPEE_KIT_IMAGE_MAX`', () => {
+    expect(SHOPEE_ITEM_IMAGE_MAX).toBe(9);
+    const doc = FONTE_TYPES.slice(
+      FONTE_TYPES.indexOf('`upload_image`: "image number should be less than 9"'),
+      FONTE_TYPES.indexOf('export const SHOPEE_ITEM_IMAGE_MAX'),
+    );
+    expect(doc.length).toBeGreaterThan(100);
+    expect(doc).toContain('SHOPEE_KIT_IMAGE_MAX');
   });
 });

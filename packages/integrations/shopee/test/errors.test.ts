@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { type ShopeeTransport, shopeeCall } from '../src/call';
 import {
   SHOPEE_AMBIGUOUS_AUTH_CODE,
   SHOPEE_ERROR_KIND,
@@ -14,14 +15,17 @@ import {
   type ShopeeErrorKind,
   ShopeeHttpError,
   ShopeeNetworkError,
+  ShopeeOperacaoNaoServidaError,
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
+  type ShopeeSurface,
   classifyShopeeError,
   shopeeCodeSemPrefixoDeModulo,
   shopeeCodigoCanonico,
   shopeeErrorFromEnvelope,
 } from '../src/errors';
+import { shopeeEnvelopeSchema, shopeeKitItemLimitSchema } from '../src/types';
 
 const envelope = (error: string, extra: Partial<{ message: string | null }> = {}) => ({
   error,
@@ -747,6 +751,10 @@ describe('shopeeCodigoCanonico — a ÚNICA dobra de código', () => {
     ['sem módulo nenhum, aparado', ' batch_api_all_failed\t', 'batch_api_all_failed'],
     ['o código seguido de branco', 'logistics.error_param\t', 'error_param'],
     ['um branco LOGO DEPOIS do módulo (o 2º trim)', 'logistics.\terror_param', 'error_param'],
+    // Passo 19: as páginas de kit respondem o código `"."` ("product is not
+    // found"). Um ponto sozinho não tem módulo para tirar — só é aparado.
+    ['o ponto sozinho das páginas de kit', '.', '.'],
+    ['o ponto sozinho, com brancos em volta', ' . ', '.'],
   ])('PAR — %s', (_rotulo, bruto, canonico) => {
     expect(shopeeCodigoCanonico(bruto)).toBe(canonico);
   });
@@ -757,6 +765,8 @@ describe('shopeeCodigoCanonico — a ÚNICA dobra de código', () => {
     ['a CAIXA fica', 'logistics.Error_Param', 'Error_Param'],
     ['um módulo com maiúscula não é módulo', 'Logistics.error_param', 'Logistics.error_param'],
     ['o prefixo sozinho é o código inteiro', 'product.', 'product.'],
+    ['`x.` não vira o ponto sozinho (nada depois do ponto, nada sai)', 'x.', 'x.'],
+    ['`..` não vira o ponto sozinho (não há nome de módulo)', '..', '..'],
   ])('QUASE-MISS — %s', (_rotulo, bruto, canonico) => {
     expect(shopeeCodigoCanonico(bruto)).toBe(canonico);
   });
@@ -766,5 +776,195 @@ describe('shopeeCodigoCanonico — a ÚNICA dobra de código', () => {
     expect(shopeeCodigoCanonico('logistics.common.batch_api_all_failed')).not.toBe(alvo);
     expect(shopeeCodigoCanonico('common.batch_api_all_failed_x')).not.toBe(alvo);
     expect(shopeeCodigoCanonico('Common.batch_api_all_failed')).not.toBe(alvo);
+  });
+
+  it('PAR + QUASE-MISS por valor — `"."` ≡ `" . "`; `"x."` e `".."` continuam distintos do ponto', () => {
+    // ⚠️ O classificador de recusa de kit (app) casa a linha `"."` por esta
+    // dobra. Se `x.` ou `..` dobrassem para `.`, um código que só TERMINA em
+    // ponto seria lido como "kit inexistente".
+    const ponto = shopeeCodigoCanonico('.');
+    expect(shopeeCodigoCanonico(' . ')).toBe(ponto);
+    expect(shopeeCodigoCanonico('x.')).not.toBe(ponto);
+    expect(shopeeCodigoCanonico('..')).not.toBe(ponto);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   `ShopeeOperacaoNaoServidaError` — o 404 do GATEWAY (passo 19, M32)        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * O corpo VERBATIM que o sandbox SG devolveu em HTTP 404 para
+ * `get_kit_item_limit` (sonda do passo 19): sem `message`, sem `request_id`. Uma
+ * rota inventada responde igual — é o GATEWAY dizendo que não serve o caminho.
+ */
+const CORPO_GATEWAY_404 = '{"error":"error_not_found"}';
+
+const KIT_LIMIT_PATH = '/api/v2/product/get_kit_item_limit';
+
+/** O envelope EXATO que o estágio 1 do transporte lê desse corpo. */
+const envelopeDoGateway = () => shopeeEnvelopeSchema.parse(JSON.parse(CORPO_GATEWAY_404));
+
+interface EnvelopeDeErro {
+  readonly error: string;
+  readonly message: string | null;
+  readonly request_id: string | null;
+  readonly warning: string | null;
+}
+
+const ctxGateway = (httpStatus = 404, surface: ShopeeSurface = SHOPEE_SURFACE.business) => ({
+  path: KIT_LIMIT_PATH,
+  httpStatus,
+  surface,
+});
+
+describe('ShopeeOperacaoNaoServidaError — o 404 do GATEWAY (passo 19)', () => {
+  it('PAR — o corpo medido (404, `error_not_found`, sem message, sem request_id) vira a subclasse', () => {
+    const env = envelopeDoGateway();
+    // ÂNCORA: as chaves AUSENTES chegam `null` pelos defaults do estágio 1 — é
+    // assim que o corpo real alcança as quatro condições.
+    expect(env.message).toBeNull();
+    expect(env.request_id).toBeNull();
+
+    const err = shopeeErrorFromEnvelope(env, ctxGateway());
+    expect(err).toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+    expect(err).toBeInstanceOf(ShopeeApiError);
+    expect(err).toBeInstanceOf(ShopeeError);
+    expect(err.name).toBe('ShopeeOperacaoNaoServidaError');
+    // `kind` `other` e código VERBATIM — exatamente o que a base carregaria.
+    expect(err.code).toBe('error_not_found');
+    expect(err.kind).toBe(SHOPEE_ERROR_KIND.other);
+    expect(err.kind).toBe(classifyShopeeError('error_not_found', SHOPEE_SURFACE.business));
+    expect(err.httpStatus).toBe(404);
+    expect(err.path).toBe(KIT_LIMIT_PATH);
+    expect(err.providerMessage).toBeNull();
+    expect(err.requestId).toBeNull();
+    expect(err.message).toBe(`Shopee ${KIT_LIMIT_PATH} respondeu error_not_found (HTTP 404)`);
+    expect(err).not.toBeInstanceOf(ShopeeReauthRequiredError);
+    expect(err).not.toBeInstanceOf(ShopeeRateLimitError);
+    expect(err).not.toBeInstanceOf(ShopeeApiPartialError);
+  });
+
+  it('PAR — a propriedade é do HOST, não da superfície: o mesmo corpo no `auth` também é a subclasse', () => {
+    const err = shopeeErrorFromEnvelope(envelopeDoGateway(), ctxGateway(404, SHOPEE_SURFACE.auth));
+    expect(err).toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+    expect(err.kind).toBe(SHOPEE_ERROR_KIND.other);
+  });
+
+  it.each<[string, Partial<EnvelopeDeErro>, number]>([
+    // M32 — cada uma das QUATRO condições, sozinha, desfaz a subclasse.
+    ['com `message` (a resposta de NEGÓCIO das páginas de logística)', { message: 'x' }, 404],
+    ['com `message: ""` — vazio não é ausente', { message: '' }, 404],
+    ['com `request_id` (toda resposta de negócio traz um)', { request_id: 'req-abc' }, 404],
+    ['em HTTP 200 (o `error_not_found` de negócio, "pedido inexistente")', {}, 200],
+    ['em HTTP 400', {}, 400],
+    // O código é comparado EXATO — nem aparado, nem sem prefixo.
+    ['com o código prefixado por módulo', { error: 'logistics.error_not_found' }, 404],
+    ['com um branco à esquerda do código', { error: ' error_not_found' }, 404],
+    ['com um branco à direita do código', { error: 'error_not_found ' }, 404],
+    ['com outro código de "não achado"', { error: 'not_found' }, 404],
+  ])(
+    '⛔ QUASE-MISS — %s continua a BASE, com o mesmo código e o mesmo kind',
+    (_r, troca, status) => {
+      const env: EnvelopeDeErro = { ...envelopeDoGateway(), ...troca };
+      const err = shopeeErrorFromEnvelope(env, ctxGateway(status));
+      expect(err).toBeInstanceOf(ShopeeApiError);
+      expect(err).not.toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+      expect(err.name).toBe('ShopeeApiError');
+      expect(err.code).toBe(env.error);
+      expect(err.kind).toBe(SHOPEE_ERROR_KIND.other);
+    },
+  );
+
+  it('toda escada EXISTENTE a lê como antes: ela cai no braço da BASE', () => {
+    const err = shopeeErrorFromEnvelope(envelopeDoGateway(), ctxGateway());
+    expect(primeiroBraco(ESCADA_CORRETA, err)).toBe('base');
+  });
+
+  it('⛔ QUASE-IGUAL — só um braço testado ANTES da base a distingue, e ele não pega o `error_not_found` de negócio', () => {
+    const naoServida: BracoDeEscada = [
+      'nao-servida',
+      (e) => e instanceof ShopeeOperacaoNaoServidaError,
+    ];
+    const comBracoAntes: readonly BracoDeEscada[] = [
+      ...ESCADA_CORRETA.slice(0, -1),
+      naoServida,
+      ...ESCADA_CORRETA.slice(-1),
+    ];
+    const comBracoDepois: readonly BracoDeEscada[] = [...ESCADA_CORRETA, naoServida];
+    const gateway = shopeeErrorFromEnvelope(envelopeDoGateway(), ctxGateway());
+    const negocio = shopeeErrorFromEnvelope(
+      { ...envelopeDoGateway(), message: 'x', request_id: 'req-abc' },
+      ctxGateway(200),
+    );
+
+    expect(primeiroBraco(comBracoAntes, gateway)).toBe('nao-servida');
+    expect(primeiroBraco(comBracoDepois, gateway)).toBe('base');
+    expect(primeiroBraco(comBracoAntes, negocio)).toBe('base');
+  });
+
+  describe('pelo transporte (`shopeeCall`)', () => {
+    function transporte(fetchImpl: typeof globalThis.fetch): ShopeeTransport {
+      return {
+        partnerId: 1000001,
+        partnerKey: 'chave-de-teste-nao-e-credencial',
+        apiHost: 'https://partner.test-stable.shopeemobile.com',
+        fetch: fetchImpl,
+        now: () => 1_767_000_000_000,
+      };
+    }
+
+    function chamarLimitesDeKit(status: number): Promise<unknown> {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(CORPO_GATEWAY_404, {
+            status,
+            headers: { 'content-type': 'application/json' },
+          }),
+      );
+      return shopeeCall(transporte(fetchMock), {
+        method: 'GET',
+        path: KIT_LIMIT_PATH,
+        call: { class: 'shop', accessToken: 'token-inventado', shopId: 987654 },
+        schema: shopeeKitItemLimitSchema,
+        surface: SHOPEE_SURFACE.business,
+      }).catch((e: unknown) => e);
+    }
+
+    it('PAR — o 404 com o corpo medido atravessa o estágio 1 e chega como a subclasse', async () => {
+      const erro = await chamarLimitesDeKit(404);
+      expect(erro).toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+      expect((erro as ShopeeApiError).code).toBe('error_not_found');
+      expect((erro as ShopeeApiError).httpStatus).toBe(404);
+    });
+
+    it('⛔ QUASE-MISS — o MESMO corpo em HTTP 200 chega como a base', async () => {
+      const erro = await chamarLimitesDeKit(200);
+      expect(erro).toBeInstanceOf(ShopeeApiError);
+      expect(erro).not.toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+      expect(erro).not.toBeInstanceOf(ShopeeHttpError);
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   `error_server` do `generate_kit_image` — o pacote NÃO reclassifica (19)    */
+/* -------------------------------------------------------------------------- */
+
+describe('`error_server` com a recusa PERMANENTE medida do `generate_kit_image` (passo 19)', () => {
+  it('continua `transient` aqui, código e frase VERBATIM — quem a lê por frase é o classificador de kit do app', () => {
+    // ⚠️ `KIND_BY_CODE` fica intocado: tirar `error_server` de `transient`
+    // tiraria todo soluço real da Shopee das cinco escadas de retentativa que
+    // leem `kind`. A frase vai inteira em `providerMessage` para o app decidir.
+    const frase =
+      'Internal error, please try again later or contact openapi team. generate kit image toggle closed.';
+    const err = shopeeErrorFromEnvelope(
+      { error: 'product.error_server', message: frase, request_id: null, warning: null },
+      { path: '/api/v2/product/generate_kit_image', httpStatus: 200, surface: 'business' },
+    );
+    expect(err.kind).toBe(SHOPEE_ERROR_KIND.transient);
+    expect(err.code).toBe('product.error_server');
+    expect(err.providerMessage).toBe(frase);
+    expect(err).not.toBeInstanceOf(ShopeeOperacaoNaoServidaError);
   });
 });
