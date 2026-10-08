@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import Link from 'next/link';
 import type { Firestore } from 'firebase/firestore';
 import { Alert, Anchor, Badge, Card, Group, Loader, Stack, Text } from '@mantine/core';
@@ -17,6 +17,7 @@ import {
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
+import { AfterSaveBlockedError, useSectionActive } from '@delfrance/ui';
 
 import { buildMedidasFatos } from '@/lib/mercado-livre/medidasFatos';
 
@@ -29,8 +30,12 @@ import {
   SizeChartConflictError,
   SizeChartSyncUnconfirmedError,
 } from '@/lib/mercado-livre/chartConflict';
-import { sameChart } from '@/lib/mercado-livre/chartRows';
-import { saveChartTransaction, type SavedChart } from '@/lib/mercado-livre/chartPersistence';
+import {
+  removeChartDraftsTransaction,
+  saveChartTransaction,
+  type ChartDraftRemoval,
+  type SavedChart,
+} from '@/lib/mercado-livre/chartPersistence';
 import {
   SIZE_CHART_MOTIVOS,
   type SizeChartGateInput,
@@ -48,6 +53,26 @@ import { SizeChartEditorModal, type SizeGroupOption } from './SizeChartEditorMod
 
 const MAX_CONTAS = 50;
 const MAX_GRUPOS = 200;
+
+interface MedidasMercadoLivreManagerProps {
+  tabMediId: string;
+  db: Firestore;
+  disabled?: boolean;
+  flushRef?: RefObject<(() => Promise<void>) | null>;
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+/** Open lazily, then keep listeners and the flush registration across tab switches. */
+export function MedidasMercadoLivreManager(props: MedidasMercadoLivreManagerProps) {
+  const active = useSectionActive();
+  const [visited, setVisited] = useState(active !== false);
+  useEffect(() => {
+    // The one-way activation latch avoids reading an unvisited persistent section.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (active !== false) setVisited(true);
+  }, [active]);
+  return visited ? <MedidasMercadoLivreManagerContents {...props} /> : null;
+}
 
 /** Which guia the editor is open on. `chartIndex: null` ⇒ a brand-new one. */
 interface EditorTarget {
@@ -83,15 +108,13 @@ interface EditorTarget {
  * and a draft is inert everywhere else: `resolveSizeChart` only ever considers
  * charts that carry an ML id.
  */
-export function MedidasMercadoLivreManager({
+function MedidasMercadoLivreManagerContents({
   tabMediId,
   db,
   disabled,
-}: {
-  tabMediId: string;
-  db: Firestore;
-  disabled?: boolean;
-}) {
+  flushRef,
+  onDirtyChange,
+}: MedidasMercadoLivreManagerProps) {
   const client = useMercadoLivreClient();
   // Backend gates: read for domains/specs, write for sync.
   const { allowed: canRead, loading: permsLoading } = usePermission(PERM.integracao.read);
@@ -169,11 +192,84 @@ export function MedidasMercadoLivreManager({
    *
    * The controls serialize operations in this tab. This is a UI lock only;
    * chart saves separately use a transaction to guard against other writers.
-   * Draft deletion needs its own staged, guarded flow (follow-up to #1778).
+   * Staged draft removals use a separate transaction on the parent Save action.
    */
   const [busyChart, setBusyChart] = useState<string | null>(null);
   const { confirm, element: confirmElement } = useConfirmDialog();
   const sessionRef = useRef(0);
+  const [removals, setRemovals] = useState<ChartDraftRemoval[]>([]);
+  const removalsRef = useRef<ChartDraftRemoval[]>([]);
+  const [removalSaving, setRemovalSaving] = useState(false);
+  const removalSavingRef = useRef(false);
+  const [removalError, setRemovalError] = useState<string | null>(null);
+  const [committedLists, setCommittedLists] = useState<{
+    snapshot: typeof chartsMap;
+    lists: Record<string, MlSizeChart[]>;
+  } | null>(null);
+  const listSaving = removalSaving || form.formState.isSubmitting;
+
+  const replaceRemovals = useCallback((next: ChartDraftRemoval[]) => {
+    removalsRef.current = next;
+    setRemovals(next);
+  }, []);
+
+  useEffect(() => {
+    onDirtyChange?.(removals.length > 0);
+  }, [onDirtyChange, removals.length]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
+  const flushRemovals = useCallback(async () => {
+    const pending = removalsRef.current;
+    if (pending.length === 0) return;
+    const gate = sizeChartGate('excluir', {
+      readOnly: Boolean(disabled),
+      hasClient: client != null,
+      canWrite,
+      hasGrupos: true,
+      busy: busyChart !== null || removalSavingRef.current ? 'outraGuia' : 'none',
+      enviada: false,
+    });
+    if (gate.disabled) throw new AfterSaveBlockedError(gate.motivo!);
+    removalSavingRef.current = true;
+    setRemovalSaving(true);
+    setRemovalError(null);
+    try {
+      const lists = await removeChartDraftsTransaction({ db, tabMediId, removals: pending });
+      setCommittedLists({ snapshot: chartsMap, lists });
+      replaceRemovals([]);
+    } catch (err) {
+      if (!(err instanceof SizeChartConflictError)) throw err;
+      const message =
+        'Os rascunhos não foram excluídos porque a lista de guias mudou. ' +
+        'Desfaça as exclusões pendentes, revise as guias atuais e marque novamente. ' +
+        'Alterações já salvas na tabela foram mantidas.';
+      setRemovalError(message);
+      throw new AfterSaveBlockedError(message);
+    } finally {
+      removalSavingRef.current = false;
+      setRemovalSaving(false);
+    }
+  }, [busyChart, canWrite, chartsMap, client, db, disabled, replaceRemovals, tabMediId]);
+
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = flushRemovals;
+    return () => {
+      if (flushRef.current === flushRemovals) flushRef.current = null;
+    };
+  }, [flushRef, flushRemovals]);
+
+  function undoRemoval(removal: ChartDraftRemoval): void {
+    if (listSaving) return;
+    const next = removalsRef.current.filter((pending) => pending !== removal);
+    replaceRemovals(next);
+    if (next.length === 0) setRemovalError(null);
+  }
+
+  function listGate(action: Parameters<typeof sizeChartGate>[0], input: SizeChartGateInput) {
+    if (listSaving) return { disabled: true, motivo: 'Salvando as alterações da tabela…' };
+    return sizeChartGate(action, input);
+  }
 
   function openEditor(next: Omit<EditorTarget, 'session' | 'syncUnconfirmed'>): void {
     setRecoveryChartId('');
@@ -361,7 +457,7 @@ export function MedidasMercadoLivreManager({
   /**
    * Remove one guia.
    *
-   * A draft (no ML id) is dropped locally — there is nothing on ML to remove.
+   * A draft (no ML id) is staged until the parent Save — nothing on ML is removed.
    *
    * A sent guia goes through `DELETE /catalog/charts/{id}`, which is a REQUEST:
    * ML acks it and only then checks, over as much as 24h, that no listing still
@@ -380,33 +476,16 @@ export function MedidasMercadoLivreManager({
     const nome = chart.nome ?? 'esta guia';
 
     if (chartId === '') {
-      const ok = await confirm({
-        title: 'Excluir rascunho',
-        message: `O rascunho "${nome}" nunca foi enviado ao Mercado Livre e será removido desta tabela.`,
-        confirmLabel: 'Excluir',
-      });
-      if (!ok) return;
-      setBusyChart(`${integracaoId}#${String(index)}`);
-      try {
-        const stored = mlSizeChartsForConta(chartsMap, integracaoId);
-        // An index is not an identity: another operator's save or a completed
-        // sync may have inserted or reordered guias since this list rendered,
-        // and deleting position N blindly would remove somebody else's guia.
-        if (!sameChart(stored[index], chart)) throw new SizeChartConflictError();
-        await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
-          tabelasDeMedidasMercadoLivre: {
-            [integracaoId]: { tabelas: stored.filter((_, i) => i !== index) },
-          },
-          ultimaModificacao: Date.now(),
-        });
-        notifications.show({ color: 'green', message: 'Rascunho excluído.' });
-      } catch (err) {
-        const shown = describeChartError(err);
-        if (shown == null) throw err;
-        notifications.show(shown);
-      } finally {
-        setBusyChart(null);
-      }
+      if (listSaving) return;
+      // A conflicted preview must be undone before the slot can be reviewed again.
+      if (
+        removalsRef.current.some((r) => r.integracaoId === integracaoId && r.chartIndex === index)
+      )
+        return;
+      replaceRemovals([
+        ...removalsRef.current,
+        { integracaoId, chartIndex: index, original: structuredClone(chart) },
+      ]);
       return;
     }
 
@@ -530,8 +609,20 @@ export function MedidasMercadoLivreManager({
         do produto). Aqui você cria, edita e envia as guias por conta.
       </Text>
 
+      {removalError && <Alert color="red">{removalError}</Alert>}
+      {removals.length > 0 && (
+        <Text size="sm" c="dimmed">
+          As exclusões de rascunhos serão aplicadas ao salvar a tabela. Você pode desfazê-las antes.
+        </Text>
+      )}
+
       {contas.map((conta) => {
-        const stored = mlSizeChartsForConta(chartsMap, conta.id);
+        const committed =
+          committedLists?.snapshot === chartsMap ? committedLists.lists[conta.id] : undefined;
+        const stored = committed
+          ? mlSizeChartsForConta({ [conta.id]: { tabelas: committed } }, conta.id)
+          : mlSizeChartsForConta(chartsMap, conta.id);
+        const accountRemovals = removals.filter((r) => r.integracaoId === conta.id);
         // ⚠️ ONE place decides both whether a control is disabled and what its
         // tooltip says, so the two can never disagree — the bug class here is a
         // tooltip that drifts from the boolean beside it and starts explaining a
@@ -571,6 +662,20 @@ export function MedidasMercadoLivreManager({
                   busy: rowBusy ? 'estaGuia' : busyChart !== null ? 'outraGuia' : 'none',
                   enviada: chartSent,
                 };
+                const staged = accountRemovals.find(
+                  (r) => r.chartIndex === index && valuesEqual(r.original, chart),
+                );
+                if (staged) {
+                  return (
+                    <StagedDraftRemoval
+                      key={`rascunho-${String(index)}`}
+                      removal={staged}
+                      testId={`ml-guia-${conta.id}-${String(index)}`}
+                      gate={listGate('excluir', rowInput)}
+                      onUndo={() => undoRemoval(staged)}
+                    />
+                  );
+                }
                 return (
                   <Group
                     key={chart.id ?? `rascunho-${String(index)}`}
@@ -603,7 +708,7 @@ export function MedidasMercadoLivreManager({
                           size="compact-xs"
                           variant="light"
                           loading={rowBusy}
-                          gate={sizeChartGate('verificar', rowInput)}
+                          gate={listGate('verificar', rowInput)}
                           onClick={() => void verifyDeletion(conta.id, index, chart)}
                         >
                           Verificar
@@ -615,7 +720,7 @@ export function MedidasMercadoLivreManager({
                       <SizeChartActionButton
                         size="compact-xs"
                         variant="light"
-                        gate={sizeChartGate('editar', rowInput)}
+                        gate={listGate('editar', rowInput)}
                         onClick={() => {
                           openEditor({ integracaoId: conta.id, chart, chartIndex: index });
                         }}
@@ -627,7 +732,14 @@ export function MedidasMercadoLivreManager({
                         variant="subtle"
                         color="red"
                         loading={rowBusy}
-                        gate={sizeChartGate('excluir', rowInput)}
+                        gate={
+                          accountRemovals.some((r) => r.chartIndex === index) && !chartSent
+                            ? {
+                                disabled: true,
+                                motivo: 'Desfaça a exclusão pendente antes de marcar esta guia.',
+                              }
+                            : listGate('excluir', rowInput)
+                        }
                         onClick={() => void removeChart(conta.id, index, chart)}
                       >
                         Excluir
@@ -636,6 +748,23 @@ export function MedidasMercadoLivreManager({
                   </Group>
                 );
               })}
+
+              {accountRemovals
+                .filter((r) => !valuesEqual(stored[r.chartIndex], r.original))
+                .map((removal) => (
+                  <StagedDraftRemoval
+                    key={`pendente-${String(removal.chartIndex)}`}
+                    removal={removal}
+                    detached
+                    testId={`ml-guia-pendente-${conta.id}-${String(removal.chartIndex)}`}
+                    gate={listGate('excluir', {
+                      ...gateBase,
+                      busy: busyChart !== null ? 'outraGuia' : 'none',
+                      enviada: false,
+                    })}
+                    onUndo={() => undoRemoval(removal)}
+                  />
+                ))}
 
               <Group>
                 {/* Belongs to no row, so the lock can only ever be held elsewhere —
@@ -648,7 +777,7 @@ export function MedidasMercadoLivreManager({
                   onClick={() => {
                     openEditor({ integracaoId: conta.id, chart: null, chartIndex: null });
                   }}
-                  gate={sizeChartGate('novaGuia', {
+                  gate={listGate('novaGuia', {
                     ...gateBase,
                     busy: busyChart !== null ? 'outraGuia' : 'none',
                     enviada: false,
@@ -712,6 +841,51 @@ export function MedidasMercadoLivreManager({
 
       {confirmElement}
     </Stack>
+  );
+}
+
+function StagedDraftRemoval({
+  removal,
+  testId,
+  gate,
+  onUndo,
+  detached = false,
+}: {
+  removal: ChartDraftRemoval;
+  testId: string;
+  gate: ReturnType<typeof sizeChartGate>;
+  onUndo: () => void;
+  detached?: boolean;
+}) {
+  return (
+    <Group justify="space-between" wrap="nowrap" data-testid={testId} data-pending-delete>
+      <div style={{ opacity: 0.6 }}>
+        <Text size="sm">{removal.original.nome ?? '(sem nome)'}</Text>
+        <Text size="xs" c="dimmed">
+          {removal.original.domain_id ?? '—'} · {(removal.original.rows ?? []).length} tamanhos
+        </Text>
+        {detached && (
+          <Text size="xs" c="orange">
+            A guia mudou de posição, foi alterada ou removida.
+          </Text>
+        )}
+      </div>
+      <Group gap="xs" wrap="nowrap">
+        <Badge color="orange" variant="light">
+          Será excluída ao salvar
+        </Badge>
+        <SizeChartActionButton
+          size="compact-xs"
+          variant="light"
+          gate={{ disabled: true, motivo: 'Desfaça a exclusão para editar este rascunho.' }}
+        >
+          Editar
+        </SizeChartActionButton>
+        <SizeChartActionButton size="compact-xs" variant="light" gate={gate} onClick={onUndo}>
+          Desfazer
+        </SizeChartActionButton>
+      </Group>
+    </Group>
   );
 }
 

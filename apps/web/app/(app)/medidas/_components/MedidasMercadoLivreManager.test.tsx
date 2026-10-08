@@ -11,7 +11,12 @@ import {
   MercadoLivreClientHttpError,
   type MercadoLivreClient,
 } from '@/lib/mercado-livre/client';
-import type { SaveChartInput, SavedChart } from '@/lib/mercado-livre/chartPersistence';
+import type {
+  SaveChartInput,
+  SavedChart,
+  RemoveChartDraftsInput,
+} from '@/lib/mercado-livre/chartPersistence';
+import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
   SizeChartConflictError,
   SizeChartSyncUnconfirmedError,
@@ -26,10 +31,7 @@ import { SIZE_CHART_MOTIVOS } from '@/lib/mercado-livre/sizeChartDisabled';
  * one proves the wiring, and that each message is REACHABLE on the control it
  * belongs to rather than merely somewhere on the page.
  *
- * ⚠️ Deliberately silent about `busyChart`. There is no prop for it — driving it
- * means holding a `merge()` or a `sizeChartExcluir()` promise open — and the
- * pure test sweeps every busy state for free. Component tests earn their keep on
- * wiring, not on state the module already covers.
+ * Staged-removal tests also pin the flush/dirty integration and snapshot-independent previews.
  */
 
 type EditorProps = ComponentProps<typeof import('./SizeChartEditorModal').SizeChartEditorModal>;
@@ -44,6 +46,10 @@ const h = vi.hoisted(() => ({
   charts: {} as Record<string, unknown>,
   editor: null as EditorProps | null,
   save: vi.fn<(input: SaveChartInput) => Promise<SavedChart>>(),
+  remove: vi.fn<(input: RemoveChartDraftsInput) => Promise<Record<string, MlSizeChart[]>>>(),
+  merge: vi.fn(),
+  exclude: vi.fn<MercadoLivreClient['sizeChartExcluir']>(),
+  verify: vi.fn<MercadoLivreClient['sizeChartVerificarExclusao']>(),
   sync: vi.fn<MercadoLivreClient['sizeChartSync']>(),
   syncStatus: vi.fn<MercadoLivreClient['sizeChartSyncStatus']>(),
   recover: vi.fn<MercadoLivreClient['sizeChartRecover']>(),
@@ -68,11 +74,12 @@ vi.mock('@/lib/data/grupoDeVariacoesCollection', () => ({
   grupoDeVariacoesCollection: { ref: () => ({ __col: 'grupoDeVariacoes' }) },
 }));
 vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
-  tabelaDeMedidasCollection: { docRef: () => ({ __doc: 'tabMedi' }), merge: vi.fn() },
+  tabelaDeMedidasCollection: { docRef: () => ({ __doc: 'tabMedi' }), merge: h.merge },
 }));
 
 vi.mock('@/lib/mercado-livre/chartPersistence', () => ({
   saveChartTransaction: (input: SaveChartInput) => h.save(input),
+  removeChartDraftsTransaction: (input: RemoveChartDraftsInput) => h.remove(input),
 }));
 
 // Pass the tagged ref straight through — the constraints are inert here.
@@ -116,7 +123,13 @@ vi.mock('@/lib/mercado-livre/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/mercado-livre/client')>()),
   useMercadoLivreClient: () =>
     h.hasClient
-      ? { sizeChartSync: h.sync, sizeChartSyncStatus: h.syncStatus, sizeChartRecover: h.recover }
+      ? {
+          sizeChartSync: h.sync,
+          sizeChartSyncStatus: h.syncStatus,
+          sizeChartRecover: h.recover,
+          sizeChartExcluir: h.exclude,
+          sizeChartVerificarExclusao: h.verify,
+        }
       : null,
 }));
 
@@ -139,6 +152,8 @@ const GUIA_ENVIADA = {
 const GUIA_EM_EXCLUSAO = { ...GUIA_ENVIADA, exclusaoSolicitadaEm: 1_700_000_000_000 };
 
 function show(disabled = false) {
+  const flushRef: { current: (() => Promise<void>) | null } = { current: null };
+  const onDirtyChange = vi.fn();
   function Host() {
     // The manager reads `useFormContext` — `ObjectView` wraps every custom
     // `renderInput` in a `FormProvider`, so the test does too rather than
@@ -146,7 +161,13 @@ function show(disabled = false) {
     const form = useForm({ defaultValues: {} });
     return (
       <FormProvider {...form}>
-        <MedidasMercadoLivreManager tabMediId="tab-1" db={{} as Firestore} disabled={disabled} />
+        <MedidasMercadoLivreManager
+          tabMediId="tab-1"
+          db={{} as Firestore}
+          disabled={disabled}
+          flushRef={flushRef}
+          onDirtyChange={onDirtyChange}
+        />
       </FormProvider>
     );
   }
@@ -156,7 +177,12 @@ function show(disabled = false) {
     </MantineTestProvider>
   );
   const rendered = render(tree());
-  return { refresh: () => rendered.rerender(tree()) };
+  return {
+    refresh: () => rendered.rerender(tree()),
+    flushRef,
+    onDirtyChange,
+    unmount: rendered.unmount,
+  };
 }
 
 const guia = (index = 0) => screen.getByTestId(`ml-guia-conta-1-${String(index)}`);
@@ -197,6 +223,21 @@ beforeEach(() => {
   h.charts = { 'conta-1': { tabelas: [GUIA_EM_EXCLUSAO] } };
   h.editor = null;
   h.save.mockReset();
+  h.merge.mockReset();
+  h.exclude.mockReset();
+  h.verify.mockReset();
+  h.remove.mockReset();
+  h.remove.mockImplementation((input) => {
+    const lists: Record<string, MlSizeChart[]> = {};
+    for (const { integracaoId } of input.removals) {
+      const entry = h.charts[integracaoId] as { tabelas: MlSizeChart[] };
+      lists[integracaoId] = entry.tabelas.filter(
+        (_, index) =>
+          !input.removals.some((r) => r.integracaoId === integracaoId && r.chartIndex === index),
+      );
+    }
+    return Promise.resolve(lists);
+  });
   h.sync.mockReset();
   h.syncStatus.mockReset();
   h.recover.mockReset();
@@ -320,6 +361,139 @@ describe('MedidasMercadoLivreManager — why a control is off', () => {
     show();
 
     expect(screen.getByText(/Requer permissão de leitura/)).not.toBeNull();
+  });
+});
+
+describe('MedidasMercadoLivreManager — staged draft removal', () => {
+  const draft = { ...GUIA_ENVIADA, id: null };
+  beforeEach(() => {
+    h.charts = { 'conta-1': { tabelas: [draft] } };
+  });
+
+  it('stages visibly without a write or confirmation, and undo restores a clean page', () => {
+    const view = show();
+    fireEvent.click(botao('Excluir', guia()));
+    expect(within(guia()).getByText('Será excluída ao salvar')).toBeTruthy();
+    expect(botao('Editar', guia()).hasAttribute('disabled')).toBe(true);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(view.onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(h.remove).not.toHaveBeenCalled();
+    expect(h.merge).not.toHaveBeenCalled();
+    expect(h.exclude).not.toHaveBeenCalled();
+    fireEvent.click(botao('Desfazer', guia()));
+    expect(within(guia()).getByText('Rascunho')).toBeTruthy();
+    expect(view.onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('captures independent baselines for several accounts and clears them only after a successful flush', async () => {
+    const other = { ...CONTA, id: 'conta-2' };
+    h.contas = [CONTA, other];
+    h.charts[other.id] = { tabelas: [draft] };
+    const view = show();
+    fireEvent.click(botao('Excluir', guia()));
+    fireEvent.click(botao('Excluir', screen.getByTestId('ml-guia-conta-2-0')));
+    await act(async () => {
+      await view.flushRef.current!();
+    });
+    expect(h.remove).toHaveBeenCalledTimes(1);
+    expect(h.remove.mock.calls[0]![0]).toMatchObject({
+      tabMediId: 'tab-1',
+      removals: [
+        { integracaoId: 'conta-1', chartIndex: 0, original: draft },
+        { integracaoId: 'conta-2', chartIndex: 0, original: draft },
+      ],
+    });
+    expect(view.onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(screen.queryByText('Será excluída ao salvar')).toBeNull();
+    expect(screen.queryByTestId('ml-guia-conta-1-0')).toBeNull();
+    expect(h.exclude).not.toHaveBeenCalled();
+    await act(async () => {
+      await view.flushRef.current!();
+    });
+    expect(h.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['edited', 'moved', 'missing'])(
+    'retains the original preview when the target becomes %s',
+    async (change) => {
+      const view = show();
+      fireEvent.click(botao('Excluir', guia()));
+      const changed = { ...draft, nome: 'Remota', rows: [] };
+      h.charts = {
+        'conta-1': {
+          tabelas: change === 'edited' ? [changed] : change === 'moved' ? [changed, draft] : [],
+        },
+      };
+      view.refresh();
+      const preview = screen.getByTestId('ml-guia-pendente-conta-1-0');
+      expect(within(preview).getByText(draft.nome)).toBeTruthy();
+      if (change !== 'missing')
+        expect(within(guia()).queryByText('Será excluída ao salvar')).toBeNull();
+      h.remove.mockRejectedValueOnce(new SizeChartConflictError());
+      await act(async () => {
+        await expect(view.flushRef.current!()).rejects.toBeInstanceOf(AfterSaveBlockedError);
+      });
+      expect(h.remove.mock.calls[0]![0].removals[0]!.original).toEqual(draft);
+      expect(screen.getByRole('alert').textContent).toContain('Desfaça as exclusões pendentes');
+      expect(screen.getByRole('alert').textContent).toContain('Alterações já salvas');
+      view.refresh();
+      expect(screen.getByRole('alert')).toBeTruthy();
+      expect(view.onDirtyChange).toHaveBeenLastCalledWith(true);
+      fireEvent.click(botao('Desfazer', preview));
+      expect(screen.queryByRole('alert')).toBeNull();
+    },
+  );
+
+  it('locks undo and competing list controls for the entire flush', async () => {
+    h.charts = { 'conta-1': { tabelas: [draft, GUIA_EM_EXCLUSAO] } };
+    const view = show();
+    fireEvent.click(botao('Excluir', guia()));
+    const pending = deferred<Record<string, MlSizeChart[]>>();
+    h.remove.mockReturnValueOnce(pending.promise);
+    let saving: Promise<void>;
+    act(() => {
+      saving = view.flushRef.current!();
+    });
+    for (const button of ['Desfazer', 'Editar'])
+      expect(botao(button, guia()).hasAttribute('disabled')).toBe(true);
+    for (const button of ['Verificar', 'Excluir', 'Editar'])
+      expect(botao(button, guia(1)).hasAttribute('disabled')).toBe(true);
+    expect(botao('Nova guia').hasAttribute('disabled')).toBe(true);
+    await act(async () => {
+      pending.resolve({ 'conta-1': [GUIA_EM_EXCLUSAO] });
+      await saving!;
+    });
+    expect(botao('Nova guia').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('keeps conflict feedback while the failed batch still has pending removals', async () => {
+    h.charts = { 'conta-1': { tabelas: [draft, { ...draft, nome: 'Segunda' }] } };
+    const view = show();
+    fireEvent.click(botao('Excluir', guia()));
+    h.remove.mockRejectedValueOnce(new SizeChartConflictError());
+    await act(async () => {
+      await expect(view.flushRef.current!()).rejects.toBeInstanceOf(AfterSaveBlockedError);
+    });
+    fireEvent.click(botao('Excluir', guia(1)));
+    expect(screen.getByRole('alert')).toBeTruthy();
+    fireEvent.click(botao('Desfazer', guia(1)));
+    expect(screen.getByRole('alert')).toBeTruthy();
+    fireEvent.click(botao('Desfazer', guia()));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('propagates unexpected failures and retains pending work; unmount unregisters the flush', async () => {
+    const view = show();
+    fireEvent.click(botao('Excluir', guia()));
+    const failure = new TypeError('Unexpected failure');
+    h.remove.mockRejectedValueOnce(failure);
+    await act(async () => {
+      await expect(view.flushRef.current!()).rejects.toBe(failure);
+    });
+    expect(within(guia()).getByText('Será excluída ao salvar')).toBeTruthy();
+    view.unmount();
+    expect(view.flushRef.current).toBeNull();
+    expect(view.onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 });
 
