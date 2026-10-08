@@ -41,6 +41,11 @@ disk), and the two path-keyed inventories
 The per-surface notes below stay the authority on behaviour.
 
 - `app/api/health` — uptime check (no auth).
+- `app/api/marketplace/mercado-livre/rastreio` — **#759**: `PERM.frete.read`-gated
+  carrier tracking link for a persisted pedido. Resolves the current ML shipment
+  and account, then calls `GET /shipments/{id}/carrier`; no freight writes.
+  The Frete tab and order-row action share the browser control. Unavailable
+  tracking is `409 ML_RASTREIO_INDISPONIVEL`; unsafe URLs are `502 ML_BAD_RESPONSE`.
 - `app/api/marketplace/mercado-livre/oauth/start` — **#291**: `PERM.integracao.write`-gated;
   mints a signed `state` and returns the ML consent URL (`channel.oauthFlow.start`).
   **#821**: it also RECORDS the attempt (`putOauthState`) before handing out the URL —

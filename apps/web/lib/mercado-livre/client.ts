@@ -17,6 +17,10 @@ import { useMemo } from 'react';
 import type { z } from 'zod';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
+import {
+  mercadoLivreRastreioResultSchema,
+  type MercadoLivreRastreioResult,
+} from '@delfrance/schemas';
 
 import { useAuth } from '@/lib/auth/useAuth';
 import { filenameFromDisposition } from '@/lib/http/filenameFromDisposition';
@@ -859,6 +863,8 @@ export interface MercadoLivreClient {
    * `ML_INVOICE_PENDING` while the shipment hasn't received the NF-e yet).
    */
   etiqueta(pedidoId: string, formato: 'pdf' | 'zpl2'): Promise<MercadoLivreEtiquetaArtifact>;
+  /** Carrier tracking link for the persisted pedido (PERM.frete.read). */
+  rastrear(pedidoId: string): Promise<MercadoLivreRastreioResult>;
   /**
    * Manually (re)send the pedido's approved NF-e to its ML shipment
    * (PERM.pedido.write). 202 `{ enqueued: true }` means ENQUEUED, not uploaded —
@@ -1314,6 +1320,11 @@ export function createMercadoLivreClient(config: {
         formato === 'pdf'
           ? { filename: `etiqueta-${pedidoId}.pdf`, contentType: 'application/pdf' }
           : { filename: `etiqueta-${pedidoId}.zip`, contentType: 'application/zip' },
+      ),
+    rastrear: (pedidoId) =>
+      call(
+        `/api/marketplace/mercado-livre/rastreio?pedidoId=${encodeURIComponent(pedidoId)}`,
+        mercadoLivreRastreioResultSchema,
       ),
     enviarNfe: (input) =>
       call('/api/marketplace/mercado-livre/enviar-nfe', wire.enqueuedSchema, input),
