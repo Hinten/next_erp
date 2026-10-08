@@ -16,9 +16,13 @@
  * ## The token is write-only
  *
  * Never prefilled, never read back, never rendered as text, never in a URL, a
- * log line or the mutation's `variables` (the save reads it from the render
- * closure). The field is cleared after every submit except where sending the
- * SAME token again is the point (`lib/loja-integrada/erros.ts` decides which).
+ * log line or the mutation's `variables`. The field is UNCONTROLLED: the token
+ * lives only in the input element's `value` property, read through a ref when
+ * the save runs. React state holds the field's verdict (`bloqueioDoTokenLi`),
+ * never the token — a controlled input would also mirror it into the `value`
+ * ATTRIBUTE, where anything that serialises the DOM reads it. The field is
+ * cleared after every submit except where sending the SAME token again is the
+ * point (`lib/loja-integrada/erros.ts` decides which).
  *
  * ## Every write carries the version the operator saw
  *
@@ -28,11 +32,16 @@
  * answer (after cancelling any read in flight, which would otherwise land the
  * older version on top), so the next write carries the version just written.
  *
+ * So the status is re-read only on mount (the form is empty then) and where the
+ * code asks for it — never in the background (reconnect, focus), where it would
+ * swap the version under a form the operator has already filled, and the save
+ * would overwrite another operator's token without the 409.
+ *
  * ⚠️ A `Card` titled with `<Text fw={600}>`, never a heading — the e2e specs find
  * the page title by role. Labels avoid `Nome`, `Ativo`, `Filial` and `Depósito`,
  * which the ObjectView below owns.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Alert,
   Badge,
@@ -65,9 +74,12 @@ import {
   useBackendLojaIntegrada,
 } from '@/lib/loja-integrada/client';
 import {
+  type BloqueioDoTokenLi,
   MENSAGEM_REMOVIDO,
+  MENSAGEM_TOKEN_LONGO,
   bloqueioAoRenovar,
   bloqueioAoSalvar,
+  bloqueioDoTokenLi,
   mensagemRenovado,
   mensagemSalvo,
   montarCorpoRenovar,
@@ -220,13 +232,20 @@ export function ContaLojaIntegradaPanel({ integracaoId }: { integracaoId: string
     // A save is a validation against Loja Integrada and the read is ours; a
     // failed read is shown with a "Tentar novamente", never silently repeated.
     retry: false,
-    // The version every write echoes must be the freshest one: never serve a
-    // 30-second-old status (the app default) to a write.
+    // The version every write echoes must be the freshest one: a remount never
+    // serves a 30-second-old status (the app default) to a write.
     staleTime: 0,
+    // …but never refreshed in the BACKGROUND: under a filled form that would
+    // adopt another operator's version silently, and defeat the 409. The only
+    // re-reads are on mount and the ones this panel asks for. (Focus refetch is
+    // off app-wide in `QUERY_DEFAULT_OPTIONS`; the panel test trips if that flips.)
+    refetchOnReconnect: false,
   });
   const dados = status.data;
 
-  const [token, setToken] = useState('');
+  // Uncontrolled: the token stays in the element, never in React state.
+  const campoToken = useRef<HTMLInputElement>(null);
+  const [bloqueioDoToken, setBloqueioDoToken] = useState<BloqueioDoTokenLi | null>('sem-token');
   const [expiraEm, setExpiraEm] = useState<string | null>(null);
   const [resultado, setResultado] = useState<Resultado | null>(null);
   const [confirmarRemocao, modalRemocao] = useDisclosure(false);
@@ -240,6 +259,12 @@ export function ContaLojaIntegradaPanel({ integracaoId }: { integracaoId: string
     queryClient.setQueryData(queryKey, statusDaResposta(resposta));
   }
 
+  /** Empty the token field (and its verdict, which no `onChange` reports). */
+  function limparToken(): void {
+    if (campoToken.current !== null) campoToken.current.value = '';
+    setBloqueioDoToken('sem-token');
+  }
+
   /**
    * One failure → copy, the token field policy and maybe a re-read. An error no
    * module knows is rethrown (root `CLAUDE.md` rule 6) — after the field is
@@ -248,24 +273,25 @@ export function ContaLojaIntegradaPanel({ integracaoId }: { integracaoId: string
   function tratarFalha(err: unknown): void {
     const f = descreverFalhaCredencialLi(err);
     if (f === null) {
-      setToken('');
+      limparToken();
       throw err;
     }
-    if (!f.manterToken) setToken('');
+    if (!f.manterToken) limparToken();
     setResultado({ tipo: 'falha', falha: f });
     if (f.recarregarStatus) void queryClient.invalidateQueries({ queryKey });
   }
 
   const salvar = useMutation({
     gcTime: 0,
-    // No `variables`: the token is read from this render's closure, so it never
-    // sits in the mutation's state (or in the query devtools).
+    // No `variables`: the token is read from the field itself, so it never sits
+    // in the mutation's state (or in the query devtools).
     mutationFn: async (): Promise<RespostaCredencialLojaIntegrada | null> => {
+      const token = campoToken.current?.value ?? '';
       if (client === null || dados === undefined || expiraEm === null) return null;
       return client.salvarCredencial(integracaoId, montarCorpoSalvar(token, expiraEm, dados));
     },
     onSuccess: async (resposta) => {
-      setToken('');
+      limparToken();
       if (resposta === null) return;
       setExpiraEm(null);
       await aplicarResposta(resposta);
@@ -310,7 +336,7 @@ export function ContaLojaIntegradaPanel({ integracaoId }: { integracaoId: string
 
   const ocupado = salvar.isPending || renovar.isPending || remover.isPending;
   const desabilitado = !podeEscrever || client === null;
-  const entrada = { token, expiraEm, janela, status: dados };
+  const entrada = { bloqueioDoToken, expiraEm, janela, status: dados };
   const podeSalvar = !desabilitado && !ocupado && bloqueioAoSalvar(entrada) === null;
   const podeRenovar = !desabilitado && !ocupado && bloqueioAoRenovar(entrada) === null;
   // A corrupt stored credential fails the status read itself; removing it is
@@ -364,8 +390,10 @@ export function ContaLojaIntegradaPanel({ integracaoId }: { integracaoId: string
             label="Personal Token"
             description={DICA_TOKEN}
             autoComplete="off"
-            value={token}
-            onChange={(e) => setToken(e.currentTarget.value)}
+            // Uncontrolled on purpose — no `value` (see the header).
+            ref={campoToken}
+            onChange={(e) => setBloqueioDoToken(bloqueioDoTokenLi(e.currentTarget.value))}
+            error={bloqueioDoToken === 'token-longo' ? MENSAGEM_TOKEN_LONGO : null}
             disabled={desabilitado}
           />
           <DatePickerInput

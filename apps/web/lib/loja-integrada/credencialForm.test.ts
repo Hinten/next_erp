@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_TOKEN_LI,
   SITUACAO_VALIDADE_TOKEN_LI,
   type RespostaCredencialLojaIntegrada,
   type StatusContaLojaIntegrada,
@@ -12,6 +13,7 @@ import {
   MENSAGEM_REMOVIDO,
   bloqueioAoRenovar,
   bloqueioAoSalvar,
+  bloqueioDoTokenLi,
   dataNaJanela,
   mensagemRenovado,
   mensagemSalvo,
@@ -111,8 +113,41 @@ describe('montarCorpoRenovar — the body the renewal route receives', () => {
   });
 });
 
+describe('bloqueioDoTokenLi — what the token field says before anything is sent', () => {
+  it('accepts a token', () => {
+    expect(bloqueioDoTokenLi('abc')).toBeNull();
+  });
+
+  it('refuses a whitespace-only token', () => {
+    expect(bloqueioDoTokenLi('')).toBe('sem-token');
+    expect(bloqueioDoTokenLi('  \n ')).toBe('sem-token');
+  });
+
+  it('⭐ refuses a paste past MAX_TOKEN_LI — the route would answer a 400 "malformed request"', () => {
+    expect(bloqueioDoTokenLi('x'.repeat(MAX_TOKEN_LI + 1))).toBe('token-longo');
+    // The near misses: exactly the bound, and the bound padded at the ends —
+    // the route measures AFTER trimming, and so must this.
+    expect(bloqueioDoTokenLi('x'.repeat(MAX_TOKEN_LI))).toBeNull();
+    expect(bloqueioDoTokenLi(`  ${'x'.repeat(MAX_TOKEN_LI)}\r\n`)).toBeNull();
+  });
+
+  it('agrees with the route schema on both sides of the bound', () => {
+    for (const token of ['x'.repeat(MAX_TOKEN_LI), 'x'.repeat(MAX_TOKEN_LI + 1), ' x ', ' ']) {
+      const aceita = corpoSalvarCredencialLiSchema.safeParse(
+        montarCorpoSalvar(token, '2026-12-31', COM_TOKEN),
+      ).success;
+      expect(bloqueioDoTokenLi(token) === null).toBe(aceita);
+    }
+  });
+});
+
 describe('bloqueioAoSalvar — when "Validar e salvar" may be sent', () => {
-  const base = { token: 'abc', expiraEm: '2026-12-31', janela: JANELA, status: COM_TOKEN };
+  const base = {
+    bloqueioDoToken: null,
+    expiraEm: '2026-12-31',
+    janela: JANELA,
+    status: COM_TOKEN,
+  };
 
   it('is sendable with a token, a date in the window and a loaded status', () => {
     expect(bloqueioAoSalvar(base)).toBeNull();
@@ -123,8 +158,9 @@ describe('bloqueioAoSalvar — when "Validar e salvar" may be sent', () => {
     expect(bloqueioAoSalvar({ ...base, status: undefined })).toBe('sem-status');
   });
 
-  it('refuses a whitespace-only token', () => {
-    expect(bloqueioAoSalvar({ ...base, token: '  \n ' })).toBe('sem-token');
+  it('refuses whatever the token field refuses', () => {
+    expect(bloqueioAoSalvar({ ...base, bloqueioDoToken: 'sem-token' })).toBe('sem-token');
+    expect(bloqueioAoSalvar({ ...base, bloqueioDoToken: 'token-longo' })).toBe('token-longo');
   });
 
   it('refuses no date, and a date outside the window', () => {

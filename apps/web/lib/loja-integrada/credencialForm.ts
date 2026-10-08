@@ -20,13 +20,20 @@
  * (`LI_TOKEN_INVALIDO`), and the backend is the authority on what a Personal
  * Token looks like. The route's schema trims the same way, so the two can never
  * disagree about where the token ends.
+ *
+ * ⚠️ One shape check DOES live here: the length bound. The route's strict body
+ * schema caps the trimmed token at `MAX_TOKEN_LI` and refuses anything longer
+ * BEFORE its own token check runs, as a 400 `LI_CORPO_INVALIDO` — whose copy
+ * says "reload the page, call support", which is wrong for a bad paste. So the
+ * field refuses it first ({@link bloqueioDoTokenLi}), with the same bound.
  */
-import type {
-  CorpoRenovarValidadeLi,
-  CorpoSalvarCredencialLi,
-  JanelaDeValidadeTokenLi,
-  RespostaCredencialLojaIntegrada,
-  StatusContaLojaIntegrada,
+import {
+  type CorpoRenovarValidadeLi,
+  type CorpoSalvarCredencialLi,
+  type JanelaDeValidadeTokenLi,
+  MAX_TOKEN_LI,
+  type RespostaCredencialLojaIntegrada,
+  type StatusContaLojaIntegrada,
 } from '@delfrance/schemas';
 
 import { dataCivilParaExibicao } from './expiracao';
@@ -43,12 +50,18 @@ export function dataNaJanela(expiraEm: string, janela: JanelaDeValidadeTokenLi):
   return DATA_CIVIL.test(expiraEm) && expiraEm >= janela.desde && expiraEm <= janela.ate;
 }
 
+/** What is wrong with the text in the token field, before anything is sent. */
+export type BloqueioDoTokenLi =
+  /** Nothing but whitespace in the token field. */
+  | 'sem-token'
+  /** Longer than `MAX_TOKEN_LI` once trimmed — the route refuses the whole body. */
+  | 'token-longo';
+
 /** Why a write cannot be sent yet — each one keeps its button disabled. */
 export type BloqueioDoFormularioLi =
   /** The status has not loaded: there is no version to send. */
   | 'sem-status'
-  /** Nothing but whitespace in the token field. */
-  | 'sem-token'
+  | BloqueioDoTokenLi
   /** No expiry date picked. */
   | 'sem-data'
   /** A date outside today..today + 120 days (São Paulo). */
@@ -56,8 +69,26 @@ export type BloqueioDoFormularioLi =
   /** A renewal with no stored token to renew. */
   | 'sem-credencial';
 
+/**
+ * The token field's verdict, measured the way the route measures it (trimmed at
+ * both ends, then `1..MAX_TOKEN_LI`). The panel calls this on every keystroke and
+ * keeps ONLY the verdict: the token itself never enters React state.
+ */
+export function bloqueioDoTokenLi(token: string): BloqueioDoTokenLi | null {
+  const aparado = token.trim();
+  if (aparado === '') return 'sem-token';
+  if (aparado.length > MAX_TOKEN_LI) return 'token-longo';
+  return null;
+}
+
+/** What the token field says under a `token-longo` verdict. */
+export const MENSAGEM_TOKEN_LONGO =
+  `O texto colado tem mais de ${String(MAX_TOKEN_LI)} caracteres: longo demais para um ` +
+  'Personal Token. Copie de novo só o token no painel da Loja Integrada.';
+
 export interface EntradaDoFormularioLi {
-  readonly token: string;
+  /** {@link bloqueioDoTokenLi} of the field — never the token itself. */
+  readonly bloqueioDoToken: BloqueioDoTokenLi | null;
   readonly expiraEm: string | null;
   readonly janela: JanelaDeValidadeTokenLi;
   /** The last status the panel holds; `undefined` while it loads or after it failed. */
@@ -67,7 +98,7 @@ export interface EntradaDoFormularioLi {
 /** Why "Validar e salvar" is disabled, or `null` when it may be sent. */
 export function bloqueioAoSalvar(e: EntradaDoFormularioLi): BloqueioDoFormularioLi | null {
   if (e.status === undefined) return 'sem-status';
-  if (e.token.trim() === '') return 'sem-token';
+  if (e.bloqueioDoToken !== null) return e.bloqueioDoToken;
   if (e.expiraEm === null) return 'sem-data';
   if (!dataNaJanela(e.expiraEm, e.janela)) return 'data-fora-da-janela';
   return null;
@@ -79,7 +110,7 @@ export function bloqueioAoSalvar(e: EntradaDoFormularioLi): BloqueioDoFormulario
  * again (Loja Integrada shows it once).
  */
 export function bloqueioAoRenovar(
-  e: Omit<EntradaDoFormularioLi, 'token'>,
+  e: Omit<EntradaDoFormularioLi, 'bloqueioDoToken'>,
 ): BloqueioDoFormularioLi | null {
   if (e.status === undefined) return 'sem-status';
   if (!e.status.configurado || e.status.versaoCredencialUs === null) return 'sem-credencial';

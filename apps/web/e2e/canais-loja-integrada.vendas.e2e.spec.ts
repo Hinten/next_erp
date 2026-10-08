@@ -307,6 +307,9 @@ test.describe.serial('Canais Loja Integrada e2e — TableView / ObjectView', () 
     // Padded the way a paste often is: the body must carry it trimmed.
     await painel.getByLabel('Personal Token').fill(`  ${TOKEN_E2E}  `);
     await escolherData(page, painel, janela.desde);
+    // While the field HOLDS the token: `page.content()` serialises attributes,
+    // so a token mirrored into the input's `value` attribute shows up here.
+    expect(await page.content()).not.toContain(TOKEN_E2E);
     await painel.getByRole('button', { name: 'Validar e salvar' }).click();
 
     await expect(painel.getByText(/^Token validado e salvo\./)).toBeVisible({ timeout: 15_000 });
@@ -320,12 +323,10 @@ test.describe.serial('Canais Loja Integrada e2e — TableView / ObjectView', () 
       expiraEm: janela.desde,
       versaoEsperada: VERSAO_STUB,
     });
-    expect(janela.desde).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(put?.authorization).toMatch(/^Bearer \S+$/);
     // The token travelled in that body and nowhere else.
     expect(stubs.urls.filter((u) => u.includes(TOKEN_E2E))).toEqual([]);
     await expect(painel.getByLabel('Personal Token')).toHaveValue('');
-    await expect(page.getByText(TOKEN_E2E)).toHaveCount(0);
     expect(stubs.inesperadas).toEqual([]);
   });
 
@@ -385,6 +386,9 @@ test.describe.serial('Canais Loja Integrada e2e — TableView / ObjectView', () 
 
       await expect(painel.getByText(v.copia)).toBeVisible({ timeout: 15_000 });
       await expect(painel.getByLabel('Personal Token')).toHaveValue(v.mantemToken ? TOKEN_E2E : '');
+      // With the verdict on screen — and, where it is kept, the token still in
+      // the field — the serialised page (attributes included) never holds it.
+      expect(await page.content()).not.toContain(TOKEN_E2E);
       expect(stubs.salvar).toHaveLength(1);
       // Only a changed credential re-reads the status; a verdict that wrote
       // nothing must not quietly adopt another operator's version.

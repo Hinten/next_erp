@@ -12,7 +12,11 @@
  *  - the status states, the most urgent winning (park > vencido > expirando > ok);
  *  - every write sends `versaoEsperada` = the version of the status on screen,
  *    and after a success the NEXT write carries the version just written;
- *  - the token field policy per failure code (cleared vs kept);
+ *  - the token field policy per failure code (cleared vs kept), and a kept
+ *    token never reaching the serialised DOM (the field is uncontrolled);
+ *  - the length bound the route's schema enforces, refused on the field;
+ *  - the status re-read only on mount and when the panel asks — never on a
+ *    reconnect or a focus — against the APP's query defaults;
  *  - a 409 `LI_CREDENCIAL_ALTERADA` re-reads the status and says so; a refused
  *    token does not;
  *  - fail closed: no backend / no permission / no status ⇒ nothing can be sent.
@@ -20,14 +24,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  QueryClient,
+  QueryClientProvider,
+  focusManager,
+  onlineManager,
+} from '@tanstack/react-query';
 import {
   CODIGO_ERRO_LI,
+  MAX_TOKEN_LI,
   SITUACAO_VALIDADE_TOKEN_LI,
   type RespostaCredencialLojaIntegrada,
   type StatusContaLojaIntegrada,
 } from '@delfrance/schemas';
 
+import { QUERY_DEFAULT_OPTIONS } from '@/lib/query/QueryProvider';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
 const h = vi.hoisted(() => ({
@@ -153,14 +164,30 @@ function http(status: number, code: string | null, extras = {}) {
   return new LojaIntegradaClientHttpError(`backend ${String(status)}`, status, code, extras);
 }
 
-function renderPanel(): void {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
+/**
+ * The APP's TanStack defaults (`retry: 1`, `staleTime: 30_000`), not test-only
+ * ones: the panel's own `retry: false` / `staleTime: 0` / `refetchOnReconnect:
+ * false` are only proved load-bearing against the defaults they override.
+ * `retryDelay: 0` only shortens a retry that, if the panel let it happen, would
+ * still happen.
+ */
+function novoQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      ...QUERY_DEFAULT_OPTIONS,
+      queries: { ...QUERY_DEFAULT_OPTIONS.queries, retryDelay: 0 },
+    },
+  });
+}
+
+function renderPanel(qc: QueryClient = novoQueryClient()): { readonly desmontar: () => void } {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MantineTestProvider>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
     </MantineTestProvider>
   );
-  render(<ContaLojaIntegradaPanel integracaoId="conta-1" />, { wrapper });
+  const { unmount } = render(<ContaLojaIntegradaPanel integracaoId="conta-1" />, { wrapper });
+  return { desmontar: unmount };
 }
 
 const campoToken = () => screen.getByLabelText('Personal Token') as HTMLInputElement;
@@ -275,7 +302,7 @@ describe('ContaLojaIntegradaPanel — what is stored', () => {
     expect(screen.getByText('Validade informada: 31/12/2026')).toBeTruthy();
   });
 
-  it('never renders anything about the token itself — the status has no such field', async () => {
+  it('the token field is never prefilled — the status has no token to prefill it with', async () => {
     h.conta.mockResolvedValue(COM_TOKEN);
     renderPanel();
 
@@ -328,8 +355,10 @@ describe('ContaLojaIntegradaPanel — save', () => {
     });
     expect(campoToken().value).toBe('');
     expect(campoData().value).toBe('');
-    // The token is never echoed into the page.
-    expect(document.body.textContent).not.toContain(TOKEN);
+    // The token is never echoed into the page — text or attribute.
+    expect(document.body.innerHTML).not.toContain(TOKEN);
+    // Cleared means the button follows: nothing left to send.
+    expect(botaoSalvar()).toHaveProperty('disabled', true);
   });
 
   it('⭐ the NEXT write carries the version just written — no refetch needed, none made', async () => {
@@ -413,6 +442,10 @@ describe('ContaLojaIntegradaPanel — save', () => {
 
       expect(await screen.findByText(copia)).toBeTruthy();
       expect(campoToken().value).toBe('');
+      // The date is kept but the field is empty: the button must follow the
+      // field, not the verdict of the token that was just cleared.
+      expect(campoData().value).toBe('2027-01-15');
+      expect(botaoSalvar()).toHaveProperty('disabled', true);
       // Nothing was written, so the status on screen still stands: re-reading
       // it could only adopt ANOTHER operator's version without a 409.
       expect(h.conta).toHaveBeenCalledTimes(1);
@@ -431,6 +464,44 @@ describe('ContaLojaIntegradaPanel — save', () => {
     expect(await screen.findByText(/Não foi possível validar o token agora/)).toBeTruthy();
     expect(campoToken().value).toBe(TOKEN);
     expect(campoData().value).toBe('2027-01-15');
+  });
+
+  it('⭐ a KEPT token lives only in the field: never in an attribute, never in the markup', async () => {
+    // A controlled input syncs React's `value` into the `value` ATTRIBUTE, where
+    // anything that serialises the DOM (outerHTML, a snapshot, a replay tool)
+    // reads it. `textContent` cannot see attributes; `innerHTML` can.
+    h.conta.mockResolvedValue(COM_TOKEN);
+    h.salvarCredencial.mockRejectedValue(http(502, CODIGO_ERRO_LI.validacaoInconclusiva));
+    renderPanel();
+    await screen.findByText('vence em 84 dias');
+
+    preencher(TOKEN, '2027-01-15');
+    expect(document.body.innerHTML).not.toContain(TOKEN);
+    fireEvent.click(botaoSalvar());
+
+    expect(await screen.findByText(/Não foi possível validar o token agora/)).toBeTruthy();
+    // The near miss: the token IS still in the field, ready to resend…
+    expect(campoToken().value).toBe(TOKEN);
+    // …and nowhere in the serialised page.
+    expect(campoToken().hasAttribute('value')).toBe(false);
+    expect(document.body.innerHTML).not.toContain(TOKEN);
+  });
+
+  it('⭐ a paste longer than MAX_TOKEN_LI is refused ON the field, before anything is sent', async () => {
+    h.conta.mockResolvedValue(SEM_TOKEN);
+    renderPanel();
+    await screen.findByText('Sem token');
+
+    fireEvent.change(campoData(), { target: { value: '2027-01-15' } });
+    fireEvent.change(campoToken(), { target: { value: 'x'.repeat(MAX_TOKEN_LI + 1) } });
+    expect(botaoSalvar()).toHaveProperty('disabled', true);
+    expect(screen.getByText(/longo demais para um Personal Token/)).toBeTruthy();
+
+    // The near miss: exactly the bound, padded the way a paste is, is sendable.
+    fireEvent.change(campoToken(), { target: { value: ` ${'x'.repeat(MAX_TOKEN_LI)}\n` } });
+    expect(botaoSalvar()).toHaveProperty('disabled', false);
+    expect(screen.queryByText(/longo demais para um Personal Token/)).toBeNull();
+    expect(h.salvarCredencial).not.toHaveBeenCalled();
   });
 
   it('a network failure keeps the token too', async () => {
@@ -586,6 +657,71 @@ describe('ContaLojaIntegradaPanel — removal', () => {
     expect(await screen.findByText(/Token removido/)).toBeTruthy();
     expect(h.removerCredencial).toHaveBeenCalledWith('conta-1');
     expect(await screen.findByText('Sem token')).toBeTruthy();
+  });
+});
+
+describe('ContaLojaIntegradaPanel — when the status is re-read', () => {
+  it('⭐ a reconnect does NOT re-read: a dirty form never silently adopts another version', async () => {
+    h.conta.mockResolvedValueOnce(COM_TOKEN).mockResolvedValue({
+      ...COM_TOKEN,
+      versaoCredencialUs: VERSAO_NOVA,
+    });
+    h.salvarCredencial.mockResolvedValue(resposta());
+    renderPanel();
+    await screen.findByText('vence em 84 dias');
+
+    preencher(TOKEN, '2027-01-15');
+    try {
+      onlineManager.setOnline(false);
+      onlineManager.setOnline(true);
+      fireEvent.click(botaoSalvar());
+      await waitFor(() => expect(h.salvarCredencial).toHaveBeenCalledTimes(1));
+    } finally {
+      onlineManager.setOnline(true);
+    }
+
+    expect(h.conta).toHaveBeenCalledTimes(1);
+    // The version the operator was SHOWN — so a changed credential is a 409.
+    expect(h.salvarCredencial.mock.calls[0]![1]).toMatchObject({ versaoEsperada: VERSAO });
+  });
+
+  it('a window focus does NOT re-read either (the app default; this trips if it flips)', async () => {
+    h.conta.mockResolvedValueOnce(COM_TOKEN).mockResolvedValue({
+      ...COM_TOKEN,
+      versaoCredencialUs: VERSAO_NOVA,
+    });
+    h.salvarCredencial.mockResolvedValue(resposta());
+    renderPanel();
+    await screen.findByText('vence em 84 dias');
+
+    preencher(TOKEN, '2027-01-15');
+    try {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      fireEvent.click(botaoSalvar());
+      await waitFor(() => expect(h.salvarCredencial).toHaveBeenCalledTimes(1));
+    } finally {
+      focusManager.setFocused(undefined);
+    }
+
+    expect(h.conta).toHaveBeenCalledTimes(1);
+    expect(h.salvarCredencial.mock.calls[0]![1]).toMatchObject({ versaoEsperada: VERSAO });
+  });
+
+  it('a remount inside the app’s 30-second staleTime still re-reads (the form starts empty)', async () => {
+    h.conta.mockResolvedValueOnce(COM_TOKEN).mockResolvedValue({
+      ...COM_TOKEN,
+      diasParaExpirar: 50,
+      versaoCredencialUs: VERSAO_NOVA,
+    });
+    const qc = novoQueryClient();
+    const primeira = renderPanel(qc);
+    await screen.findByText('vence em 84 dias');
+    primeira.desmontar();
+
+    renderPanel(qc);
+    expect(await screen.findByText('vence em 50 dias')).toBeTruthy();
+    expect(h.conta).toHaveBeenCalledTimes(2);
   });
 });
 
