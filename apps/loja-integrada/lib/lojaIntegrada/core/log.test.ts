@@ -231,6 +231,16 @@ describe('severidadeDaChamada', () => {
     },
   );
 
+  it('an unknown resultado (a newer package) is never INFO, DEBUG or WARNING', () => {
+    // The exhaustive switch is the compile-time guard; at run time an arm the
+    // switch does not know yields no severity (Cloud Logging's DEFAULT), which
+    // is louder than INFO. Mapping it to INFO would hide it among the ok lines.
+    const desconhecido = 'resultado-novo' as unknown as ChamadaLi['resultado'];
+    for (const status of [null, 200, 404, 500]) {
+      expect(['ERROR', undefined]).toContain(severidadeDaChamada(desconhecido, status));
+    }
+  });
+
   it('near-miss: http 3xx/4xx is an ERROR, http 5xx a WARNING', () => {
     expect(severidadeDaChamada('http', 302)).toBe('ERROR');
     expect(severidadeDaChamada('http', 499)).toBe('ERROR');

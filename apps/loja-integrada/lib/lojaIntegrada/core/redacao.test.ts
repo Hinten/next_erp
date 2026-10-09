@@ -1862,3 +1862,124 @@ describe('totality — never throws', () => {
     expect(n).toBe(corpos.length * caminhos.length * statuses.length);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*          Near-miss pairs added by the 2b-a mutation run (survivors)         */
+/* -------------------------------------------------------------------------- */
+
+describe('near-miss pairs the mutation run found missing', () => {
+  it('configuracao keep-list (log): a value that passes its predicate is kept, one that fails it is redacted', () => {
+    const corpo = {
+      objects: [
+        { id: 7, codigo: 'sedex_1', configuracoes: { ativo: true } },
+        { id: 'sete', codigo: 'sedex 1', configuracoes: { ativo: 'sim' } },
+      ],
+    };
+    expect(logJson('/v1/envio/', 200, corpo)).toEqual({
+      objects: [
+        { id: 7, codigo: 'sedex_1', configuracoes: { ativo: true } },
+        { id: REDIGIDO, codigo: REDIGIDO, configuracoes: { ativo: REDIGIDO } },
+      ],
+    });
+  });
+
+  it('configuracao keep-list (fixture): the same pair, the failing values faked', () => {
+    const corpo = {
+      objects: [
+        { id: 7, codigo: 'pix_1', configuracoes: { disponivel: false } },
+        { id: 'sete', codigo: 'pix 1', configuracoes: { disponivel: 'nao' } },
+      ],
+    };
+    expect(fixtureJson('/v1/pagamento/', 200, corpo)).toEqual({
+      objects: [
+        { id: 7, codigo: 'pix_1', configuracoes: { disponivel: false } },
+        {
+          id: FALSO_LI.texto,
+          codigo: FALSO_LI.texto,
+          configuracoes: { disponivel: FALSO_LI.texto },
+        },
+      ],
+    });
+  });
+
+  it('catalogue keep-list (fixture): an 8-digit ncm, a spaceless sku and an integer stock kept; the near-misses faked', () => {
+    expect(
+      fixtureJson('/v1/produto/1', 200, { ncm: '61091000', sku: 'abc-1', estoque_quantidade: 5 }),
+    ).toEqual({ ncm: '61091000', sku: 'abc-1', estoque_quantidade: 5 });
+    expect(
+      fixtureJson('/v1/produto/1', 200, { ncm: '6109', sku: 'abc 1', estoque_quantidade: '5x' }),
+    ).toEqual({ ncm: FALSO_LI.texto, sku: FALSO_LI.texto, estoque_quantidade: FALSO_LI.texto });
+  });
+
+  it('every configuration label is faked in a fixture (situacao, envio, pagamento; list and detail) and kept in the log', () => {
+    for (const caminho of ['/v1/situacao/', '/v1/envio/', '/v1/pagamento/']) {
+      const corpo = { objects: [{ codigo: 'x_1', nome: 'Rotulo Exemplo' }] };
+      expect(fixtureJson(caminho, 200, corpo), caminho).toEqual({
+        objects: [{ codigo: 'x_1', nome: FALSO_LI.texto }],
+      });
+      expect(logJson(caminho, 200, corpo), caminho).toEqual(corpo);
+    }
+    for (const caminho of ['/v1/envio/3', '/v1/pagamento/3']) {
+      expect(fixtureJson(caminho, 200, { nome: 'Rotulo Exemplo' }), caminho).toEqual({
+        nome: FALSO_LI.texto,
+      });
+    }
+  });
+
+  it('the depth cap holds inside a denied subtree too, in a 2xx walk and in an error walk', () => {
+    let fundo: unknown = 'x';
+    for (let i = 0; i < 40; i++) fundo = { a: fundo };
+    for (const saida of [
+      logJson('/v1/pedido/165', 200, { cliente: fundo }),
+      fixtureJson('/v1/pedido/165', 200, { cliente: fundo }),
+      logJson('/v1/pedido/165', 400, { cliente: fundo }),
+      fixtureJson('/v1/pedido/165', 400, { cliente: fundo }),
+    ]) {
+      // The root plus levels 1..32 of the denied subtree; level 33 is one refused leaf.
+      expect(profundidadeJson(JSON.stringify(saida))).toBe(33);
+    }
+  });
+
+  it('digit-layer exemptions: a valid-check 11-digit run is KEPT under token, decimal and uriRecurso, masked under sku', () => {
+    const uri = `/api/v1/pedido/${CPF}`;
+    expect(
+      logJson('/v1/pedido/165', 200, {
+        id_externo: CPF,
+        valor_total: CPF,
+        resource_uri: uri,
+        itens: [{ sku: CPF }],
+      }),
+    ).toEqual({
+      id_externo: CPF,
+      valor_total: CPF,
+      resource_uri: uri,
+      itens: [{ sku: '<redacted:cpf>' }],
+    });
+  });
+
+  it('error walk: a NEGATIVE number with 8 or more integer digits is dropped like a positive one', () => {
+    const corpo = { a: -12_345_678, b: -1_234_567 };
+    expect(logJson('/v1/pedido/1', 400, corpo)).toEqual({ a: REDIGIDO, b: -1_234_567 });
+    expect(fixtureJson('/v1/pedido/1', 400, corpo)).toEqual({ a: 0, b: -1_234_567 });
+  });
+
+  it('error walk: a denied credential key drops even a code-shaped value; the same value under codigo stays', () => {
+    const valor = 'abc123';
+    const corpo = {
+      token: valor,
+      Token: valor,
+      access_key: valor,
+      authorization_code: valor,
+      transacao_id: valor,
+      codigo: valor,
+    };
+    expect(logJson('/v1/pedido/1', 400, corpo)).toEqual({
+      token: REDIGIDO,
+      Token: REDIGIDO,
+      access_key: REDIGIDO,
+      authorization_code: REDIGIDO,
+      transacao_id: REDIGIDO,
+      codigo: valor,
+    });
+  });
+});

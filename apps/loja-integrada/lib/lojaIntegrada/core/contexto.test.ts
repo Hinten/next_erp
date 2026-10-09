@@ -264,6 +264,28 @@ describe('the client re-reads the credential on EVERY request', () => {
     expect(gravador.linhas.map((l) => l.campos.conta)).toEqual([ID]);
   });
 
+  it('near-miss: an observer smuggled into deps or registro is never called — only the logger sees the event', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const gravador = gravadorDeLog();
+    const vistos: unknown[] = [];
+    const onChamada = (e: unknown) => {
+      vistos.push(e);
+    };
+    // A variable, not a literal: the type system allows the extra keys, so only
+    // the loader's own wiring keeps them out.
+    const deps = {
+      fetch: fetchEspiao().fetch,
+      registro: { escrever: gravador.escrever, onChamada },
+      onChamada,
+    };
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, deps);
+    await chamar(ctx.cliente);
+    expect(vistos).toEqual([]);
+    expect(gravador.linhas.map((l) => l.campos.conta)).toEqual([ID]);
+  });
+
   it('with no registro, one call writes exactly ONE JSON line through the default sink', async () => {
     const db = new FakeDb();
     seedConta(db, ID);
