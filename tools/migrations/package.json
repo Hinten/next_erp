@@ -15,6 +15,7 @@
     "migrate:conversa-cliente-outer-ref": "dotenv -e ../../.env.local -- tsx src/2026-08-conversa-cliente-outer-ref/migrate.ts",
     "migrate:deposito-outer-ref": "dotenv -e ../../.env.local -- tsx src/2026-08-deposito-outer-ref/migrate.ts",
     "migrate:historico-estoque-v2": "dotenv -e ../../.env.local -- tsx src/2026-08-historico-estoque-v2/migrate.ts",
+    "migrate:li-token-legado": "dotenv -e ../../.env.local -- tsx src/2026-10-li-token-legado/migrate.ts",
     "migrate:ml-integracoes-com-produto": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-integracoes-com-produto/migrate.ts",
     "migrate:ml-lastmarketplaceupdate": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-lastmarketplaceupdate/backfill.ts",
     "migrate:ml-precos-ghost-keys": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-precos-ghost-keys/migrate.ts",
