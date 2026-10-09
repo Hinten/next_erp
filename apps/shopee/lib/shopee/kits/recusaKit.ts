@@ -75,30 +75,40 @@ interface LinhaRecusaKit {
 }
 
 /**
- * D1 §3.2's table, in its order, plus one row measured by probe #2 (P2-a).
+ * D1 §3.2's table plus one row measured by probe #2 (P2-a), in D1's order
+ * except that the TRANSIENT #2 sits first (review of PR #1866).
  *
- * ⚠️ The needles are written in Shopee's own casing and folded ONCE through the
+ * ⚠️ The FIRST row that matches decides ({@link classificarRecusaKit}), so the
+ * order matters whenever one sentence carries two needles of the same code;
+ * across codes the codes already partition the rows. Every transient row
+ * therefore sits BEFORE every permanent row of its code: a sentence carrying
+ * both "Invalid product setting" and "Too many connections" reads transient,
+ * the safe direction for a create (`incerto`, re-read before any resend) — read
+ * the other way, a write that may have happened would be reported `nao-criado`.
+ * A test walks every transient × permanent pair of one code.
+ *
+ * The needles are written in Shopee's own casing and folded ONCE through the
  * same fold as the haystack, so a needle can never be compared in a form the
- * haystack is not. No needle contains another (a test pins it), so within one
- * code the order decides nothing; across codes the codes already partition the
- * rows. The P2-a row sits LAST: a sentence carrying both the transient needle
- * and its own would still read transient, which is the safe direction for a
- * create (`incerto`, re-read before any resend).
+ * haystack is not. No needle contains another (a test pins it), so no needle row
+ * hides another; and each code-alone row (#5, #7) is the only row of its code,
+ * so none hides a needle row either. Together that makes every row reachable by
+ * its own needle (or code) alone, which the per-row walk in the tests pins.
  */
 export const TABELA_RECUSA_KIT = [
+  {
+    // #2 — PROBE (`add_kit_item`): the database's "Too many connections".
+    // TRANSIENT, so FIRST: no permanent `error_busi` needle may shadow it.
+    rotulo: 'banco-da-shopee',
+    codigo: 'error_busi',
+    agulha: fraseCanonicaShopee('Too many connections'),
+    motivo: MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee,
+  },
   {
     // #1 — PROBE q2 (`update_stock` on a kit; the same text in failure_list).
     rotulo: 'operacao-em-kit',
     codigo: 'error_busi',
     agulha: fraseCanonicaShopee('Invalid product setting'),
     motivo: MOTIVO_PROBLEMA_PUBLICACAO.operacaoInvalidaParaKit,
-  },
-  {
-    // #2 — PROBE (`add_kit_item`): the database's "Too many connections". TRANSIENT.
-    rotulo: 'banco-da-shopee',
-    codigo: 'error_busi',
-    agulha: fraseCanonicaShopee('Too many connections'),
-    motivo: MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee,
   },
   {
     // #3 — PROBE q5 (`generate_kit_image`): a feature switched off, never a retry.
@@ -145,7 +155,8 @@ export const TABELA_RECUSA_KIT = [
   {
     // P2-a — PROBE #2: a second main component anywhere in the kit. Shopee's
     // spelling, byte for byte. The package guards make it unreachable; without
-    // the row a guard drift would answer "o kit pode ter sido criado".
+    // the row a guard drift would answer "o kit pode ter sido criado". Appended
+    // after D1's rows; being permanent, it sits after the transient #2.
     rotulo: 'dois-principais',
     codigo: 'error_busi',
     agulha: fraseCanonicaShopee('mupltiple main sku'),
@@ -205,7 +216,9 @@ const CAMPO_DA_RECUSA_KIT = {
 } as const satisfies Record<MotivoRecusaKit, string | null>;
 
 /**
- * Which kit refusal `err` is, or `null` — "not one this table knows".
+ * Which kit refusal `err` is, or `null` — "not one this table knows". The
+ * first row of {@link TABELA_RECUSA_KIT} that matches wins, which is why its
+ * transient rows sit first.
  *
  * ⚠️ No `kind` gate: the toggle refusal is `kind: 'transient'` and must still be
  * read. A rate limit or a dead grant is a `ShopeeApiError` too, but its codes are

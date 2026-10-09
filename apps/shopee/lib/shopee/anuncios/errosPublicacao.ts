@@ -184,7 +184,10 @@ export type MotivoPublicacaoBloqueada =
   | 'kit-sem-componentes'
   /** More children than a kit takes models (`SHOPEE_KIT_MAX_MODELOS`, 9 — L2). */
   | 'kit-variacoes-demais'
-  /** The children vary on more than ONE grupo; a kit has exactly one tier (L2). */
+  /**
+   * 2+ children that do not vary on exactly ONE grupo — on two or more, or on
+   * none at all (its own sentence); a kit has exactly one tier (L2).
+   */
   | 'kit-dois-eixos'
   /** A kit model with ONE component row needs `quantity >= 2` (announcement 1262; R-5). */
   | 'kit-componente-unico-quantidade'

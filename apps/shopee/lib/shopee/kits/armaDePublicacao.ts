@@ -29,16 +29,17 @@
  *   família-de-um MEMBER and a family child carry the mirrored `ehKitVirtual`, so
  *   without this rule they would reach rule (5).
  * - **(1) `converterEmKit`** (L8): `ehKit !== true` ⇒ `converter-sem-kit`. A named
- *   link: in O ⇒ `kit-converter` on it; in SO ⇒ `vinculo-substituido`; anything
- *   else ⇒ `converter-sem-anuncio-comum`. Unnamed: O non-empty ⇒ `kit-converter`
+ *   link: absent from the conta ⇒ `null` (the 404, below); in O ⇒ `kit-converter`
+ *   on it; in SO ⇒ `vinculo-substituido`; N, X or RO ⇒
+ *   `converter-sem-anuncio-comum`. Unnamed: O non-empty ⇒ `kit-converter`
  *   on step 11's lexically-first pick over O (two live ordinary listings are NOT
  *   refused, L10(3)); else exactly one N ⇒ `ja-e-kit-nativo` (the re-run of a
  *   finished conversion); 2+ N ⇒ `vinculos-ambiguos`; else
  *   `converter-sem-anuncio-comum`. A live native kit BESIDE the ordinary listing
  *   is not refused: it is the resume of an interrupted conversion, and the
  *   applier's ensure step decides.
- * - **(2) a named `linkDocId`**: absent from the conta ⇒ the item arm on that id
- *   (its 404, as on main). A native link in N ⇒ `kit-recriar` with `recriar`,
+ * - **(2) a named `linkDocId`**: absent from the conta ⇒ `null` (the 404, below).
+ *   A native link in N ⇒ `kit-recriar` with `recriar`,
  *   else `kit-atualizar`; in X ⇒ `kit-recriar` with `recriar` (on a superseded
  *   kit that is the retry of a delete that did not take), else
  *   `vinculo-substituido` (superseded) or the kit `listagem-removida`. An
@@ -67,6 +68,19 @@
  * After the arm: `--principal`, `--recriar` or `--converter-em-kit` sent to the
  * ITEM arm ⇒ `opcao-de-kit-em-anuncio-comum` (`principal` on `kit-atualizar` is
  * allowed — compared, never applied, L1).
+ *
+ * ## `null`: the named link is not this conta's (the route's 404)
+ *
+ * A named `linkDocId` absent from the conta's links answers `null` — nothing to
+ * publish onto, `prepararPublicacao`'s own `null` — and the entry point returns
+ * it as the 404, whatever kit option came with it (PR #1869 review). It is
+ * decided HERE, never by handing the id to the item arm: that arm's produto
+ * refusal runs before its 404, so a kit-virtual produto would hear `produto-e-kit`
+ * ("defeito do ERP") about a typo, and the after-the-arm check above would
+ * answer `opcao-de-kit-em-anuncio-comum` ("só valem para kit nativo") about a
+ * produto that IS one. Only the PRODUTO's own refusals precede it, as on main —
+ * (−1) `produto-e-filho` and (1) `converter-sem-kit` stay true whichever link is
+ * named.
  *
  * ⚠️ The item arm ALWAYS carries the link id explicitly while the conta has a
  * link: step 11's own resolver stays lexical over EVERY link of the conta (a
@@ -297,11 +311,12 @@ function xMaisNovo(x: readonly VinculoDaConta[]): ProblemaDeBloqueio {
 /*                                The dispatcher                               */
 /* -------------------------------------------------------------------------- */
 
+/** `null` = the named link is not this conta's: the 404 (see the module header). */
 function escolherArma(
   produto: ProdutoDoDespacho,
   vinculos: readonly VinculoDaConta[],
   corpo: CorpoDoDespacho,
-): ResultadoDoDespacho {
+): ResultadoDoDespacho | null {
   const p = particionar(vinculos);
 
   /* ---- (1) converterEmKit ------------------------------------------------- */
@@ -309,7 +324,7 @@ function escolherArma(
     if (produto.ehKit !== true) return aRecusa(problemaConverterSemKit(produto.id));
     if (corpo.linkDocId !== null) {
       const v = vinculos.find((l) => l.id === corpo.linkDocId);
-      if (v === undefined) return aRecusa(problemaConverterSemAnuncioComum());
+      if (v === undefined) return null;
       switch (classeDe(v)) {
         case 'o':
           return aArma({ arma: 'kit-converter', antecessorLinkDocId: v.id });
@@ -336,8 +351,8 @@ function escolherArma(
   /* ---- (2) a named link --------------------------------------------------- */
   if (corpo.linkDocId !== null) {
     const v = vinculos.find((l) => l.id === corpo.linkDocId);
-    // Not this conta's (or no such link): the item arm answers its 404, as on main.
-    if (v === undefined) return aArma({ arma: 'item', linkDocId: corpo.linkDocId });
+    // Not this conta's (or no such link): the 404, whatever kit option came with it.
+    if (v === undefined) return null;
     switch (classeDe(v)) {
       case 'n':
         return aArma(
@@ -390,6 +405,8 @@ function escolherArma(
  * @param a.vinculos the conta's `prodshopee` documents of THIS produto, read once
  *   by the entry point (`lerVinculosDaConta`), both stored conta encodings
  *   folded.
+ * @returns `null` when the named `linkDocId` is not among `a.vinculos` (the
+ *   route's 404) — after the produto's own refusals, before any arm.
  * @throws Error when the body reader's own contract is broken (`recriar` with
  *   no `linkDocId`, or both kit actions at once — the route answers both 400
  *   before an arm is chosen): a caller defect, never an operator's refusal.
@@ -398,7 +415,7 @@ export function escolherArmaDePublicacao(a: {
   readonly produto: ProdutoDoDespacho;
   readonly vinculos: readonly VinculoDaConta[];
   readonly corpo: CorpoDoDespacho;
-}): ResultadoDoDespacho {
+}): ResultadoDoDespacho | null {
   const { produto, vinculos, corpo } = a;
   if (corpo.recriar && corpo.converterEmKit) {
     throw new Error(
@@ -413,7 +430,7 @@ export function escolherArmaDePublicacao(a: {
   if (produto.paiId !== null) return aRecusa(problemaProdutoEFilho(produto.id, produto.paiId));
 
   const resultado = escolherArma(produto, vinculos, corpo);
-  if (!resultado.ok || resultado.arma.arma !== 'item') return resultado;
+  if (resultado === null || !resultado.ok || resultado.arma.arma !== 'item') return resultado;
 
   // A kit option on step 11's arm: refused rather than silently ignored. The
   // field named is the first one sent, in the sentence's own order.

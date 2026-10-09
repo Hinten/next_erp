@@ -88,8 +88,10 @@ function textoOuNull(bruto: unknown): string | null {
  * `prodshopee` links ONCE, then {@link escolherArmaDePublicacao}. Zero Shopee
  * calls.
  *
- * @returns `null` when the produto does not exist (the route's 404); otherwise
- *   the dispatcher's answer — an arm, or the refusal problems.
+ * @returns `null` when the produto does not exist, or when the dispatcher
+ *   answers `null` because the named `linkDocId` is not this conta's — both the
+ *   route's 404; otherwise the dispatcher's answer — an arm, or the refusal
+ *   problems.
  */
 export async function escolherArmaShopee(
   deps: Pick<PrepararPublicacaoDeps, 'db' | 'integracaoId'>,
@@ -165,10 +167,12 @@ function entradaDoKit(entrada: EntradaDePublicacaoShopee): EntradaDeKit {
  * Publish ONE produto on ONE conta, on the arm the dispatcher chose.
  *
  * @returns `null` when there is nothing to publish onto — the produto does not
- *   exist, or (item arm) a named `linkDocId` is not this conta's — the route's
- *   **404**. Every refusal is a throw: `ShopeePublishBlockedError` before any
- *   Shopee write (the dispatcher's own included), `ShopeePublishRejectedError`
- *   for a wire refusal. A kit create whose outcome is uncertain is NOT a throw:
+ *   exist, or a named `linkDocId` is not this conta's (decided by the
+ *   dispatcher, whatever kit option came with it, before any arm runs) — the
+ *   route's **404**. Every refusal is a throw: `ShopeePublishBlockedError`
+ *   before any Shopee write (the dispatcher's own included),
+ *   `ShopeePublishRejectedError` for a wire refusal. A kit create whose outcome
+ *   is uncertain is NOT a throw:
  *   it is a `ResultadoPublicacaoKit` with `desfecho: 'incerto'` (the route's
  *   202), because nothing was written and the operator must re-run.
  */

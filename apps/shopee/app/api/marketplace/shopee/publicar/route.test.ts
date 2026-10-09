@@ -554,6 +554,8 @@ describe('o relógio e a passagem de parâmetros', () => {
       statusPedido: SHOPEE_ITEM_STATUS_WRITABLE.normal,
     });
 
+    // The named link must BE this conta's: an unknown one is the dispatcher's 404.
+    semearLink(db);
     await POST(
       req(corpoValido({ status: SHOPEE_ITEM_STATUS_WRITABLE.unlist, linkDocId: LINK }), AUTORIZADO),
     );
@@ -866,6 +868,47 @@ describe('passo 19 — os braços de kit pela rota', () => {
       { arma: 'kit-atualizar', linkDocId: VINCULO_KIT },
       { arma: 'kit-recriar', linkDocId: VINCULO_KIT },
     ]);
+  });
+
+  it('(PR #1869 review) --recriar com um linkDocId que NÃO é desta conta, num kit nativo VIVO ⇒ 404 nomeando o vínculo — nenhum publicador, nenhuma escrita', async () => {
+    semearKit();
+    db.seed(`produtos/${KIT}/prodshopee/${VINCULO_KIT}`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: KIT_ITEM,
+      kitNativo: true,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+    const digitadoErrado = `${VINCULO_KIT}-x`;
+
+    const res = await POST(
+      req(corpoValido({ produtoId: KIT, linkDocId: digitadoErrado, recriar: true }), AUTORIZADO),
+    );
+
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({
+      error: `Nenhum anúncio desta conta para o produto ${KIT} sob o vínculo ${digitadoErrado}.`,
+      code: CODIGO_ANUNCIO_NAO_ENCONTRADO,
+    });
+    expect(h.publicar).not.toHaveBeenCalled();
+    expect(h.publicarKit).not.toHaveBeenCalled();
+    expect(h.getCategory).not.toHaveBeenCalled();
+    expect(db.writes).toHaveLength(0);
+  });
+
+  it('⛔ quase-par: --recriar com o linkDocId de um anúncio COMUM desta conta ⇒ o 422 opcao-de-kit-em-anuncio-comum no campo recriar', async () => {
+    semearProduto(db);
+    semearLink(db, { kitNativo: false });
+
+    const res = await POST(req(corpoValido({ linkDocId: LINK, recriar: true }), AUTORIZADO));
+
+    expect(res.status).toBe(422);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'SHOPEE_PUBLISH_BLOCKED',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcaoDeKitEmAnuncioComum,
+      problemas: [{ campo: 'recriar' }],
+    });
+    expect(h.publicar).not.toHaveBeenCalled();
+    expect(db.writes).toHaveLength(0);
   });
 
   it('(M175 / M139) os 400 do corpo: --recriar sem linkDocId e as duas ações juntas — antes de qualquer leitura', async () => {
