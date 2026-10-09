@@ -806,7 +806,7 @@ describe('importarKitShopee — `kitNativo` no vínculo da listagem', () => {
     }
   });
 
-  it('IDA E VOLTA: o vínculo gravado faz o passo 12 pular com `kit-derivado` e o predicado dos passos 11/13 recusar', async () => {
+  it('IDA E VOLTA: o vínculo gravado faz o passo 12 pular com `kit-derivado` e o predicado do passo 11 dizer kit nativo', async () => {
     const db = new FakeDb();
     semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
     await importarKitShopee(deps(db), entradaDeKit(kit()));
@@ -819,9 +819,10 @@ describe('importarKitShopee — `kitNativo` no vínculo da listagem', () => {
       enviar: false,
       motivo: MOTIVO_ESTOQUE_SHOPEE.kitDerivado,
     });
-    // Passos 11 (recusa de publicação) e 13 (degrau 3 do plano de preço) leem
-    // o MESMO predicado. Com vínculo, só `kitNativo` decide — nem `ehKitVirtual`
-    // falso no produto o desliga.
+    // O passo 11 (recusa de publicação) lê este predicado. Com vínculo, só
+    // `kitNativo` decide — nem `ehKitVirtual` falso no produto o desliga. (O
+    // passo 13 não pula mais um kit nativo desde o passo 19: ele o planeja e
+    // envia o preço por `update_kit_item` — `precos/kitNativoImportado.test.ts`.)
     expect(kitNativoDoAnuncio(vinculo, { ehKitVirtual: false })).toBe(true);
   });
 });

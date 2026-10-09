@@ -39,12 +39,12 @@
  * | 0b | the family has no link of this conta | ONE `sem-link` |
  * | 1 | no `linkDocId` (projection drift, defensive) | `sem-link` for that link |
  * | 2 | `item_id` not a positive integer | `sem-item-id` |
- * | 3 | the link says native Shopee kit (`kitNativo === true`) | `kit-derivado` |
+ * | 3 | the link says native Shopee kit (`kitNativo === true`) | native kit ⇒ planned; transport `update_kit_item` chosen at G9 |
  * | 4 | stored lifecycle says DELETED | `anuncio-removido` |
  * | 5 | a child carries > 1 usable model of THIS listing | `forma-de-modelo-divergente` |
  * | 6 | model links name this listing, none usable | `sem-modelos` |
  * | 7 | more usable models than one `update_price` takes | `modelos-excedem-limite` |
- * | 8 | otherwise | ONE planned item |
+ * | 8 | otherwise | ONE planned item (a native kit with NO model link ⇒ `sem-modelos`) |
  *
  * Rungs 1–4 cost nothing and happen BEFORE the models are folded, so their
  * lines carry no model list; rung 7's line carries every model it refused.
@@ -52,14 +52,25 @@
  * gone since the last sync, a changed variation structure — is the sender's,
  * never guessed here from a stored field.
  *
- * ⚠️ **Rung 3 reads the LINK, never the produto.** An ERP kit (`ehKit`, a
- * produto assembled from `componentesKit`) publishes as an ORDINARY Shopee
- * listing and its price is sent like any other; only a listing Shopee itself
- * reported as a native kit is skipped. The family shape carries no KIT flag —
- * its one produto flag is the anchor's `propagatePriceToChildren` (D-9), which
- * decides where a model's price comes from and nothing else — which makes "an
- * ERP kit is skipped" structurally unwritable here. Same slug as the stock
- * sync, same condition, same word.
+ * ⚠️ **Rung 3 no longer skips anything (step 19, L5).** A NATIVE Shopee kit is
+ * priced like any has-model listing: rung 4 and the model binding apply to it
+ * unchanged, and the plan, `ItemPlanejadoPreco` and the job's persisted queue
+ * entry carry no kit flag at all. The transport is the SENDER's choice, made
+ * at G9 from the fresh base row's `tag.kit` (`LeituraDePreco.kit`), so a kit
+ * price goes out through `update_kit_item` (`./enviarPrecoKit`) and an ordinary
+ * one through `update_price`. The price slug `kit-derivado` is RETIRED with
+ * this rung (R-13); the STOCK sync keeps its own, because Shopee derives a
+ * kit's stock and the ERP never sends one.
+ *
+ * The rung keeps ONE consequence, and it reads the LINK: a `kitNativo` link
+ * whose listing no model link names is `sem-modelos`, never rung 8's no-model
+ * item. A kit is always `has_model` on Shopee, so the anchor's price sent at
+ * model `0` could never land — the binding is what is missing, and the slug's
+ * remedy (a re-import) is the one that fixes it. Only the literal `true`
+ * counts, exactly as the stored flag is read everywhere else. An ERP kit
+ * (`ehKit`, a produto assembled from `componentesKit`) with an ORDINARY
+ * listing is untouched by any of this: the family shape carries no produto
+ * kit flag, so "an ERP kit is skipped" stays structurally unwritable here.
  *
  * ⚠️ **Rung 4 has TWO stored spellings of one fact, and both refuse.** The
  * frozen rung reads the raw `item_status` (`SELLER_DELETE` / `SHOPEE_DELETE`,
@@ -107,7 +118,6 @@ import {
   propagaPrecoAosFilhos,
 } from '@delfrance/schemas';
 
-import { kitNativoDoAnuncio } from '../anuncios/montagemAnuncio';
 import {
   type VarLinkShopeeCru,
   idDoRef,
@@ -134,7 +144,10 @@ export interface LinkPrecoCru {
   item_status?: unknown;
   /** The ERP's FOLDED lifecycle state (step 11/12's `estadoAnuncio`). Rung 4 reads `removido`. */
   estadoAnuncio?: unknown;
-  /** Shopee's native-kit flag (`tag.kit`), three-valued. Rung 3 reads `=== true`. */
+  /**
+   * Shopee's native-kit flag (`tag.kit`), three-valued. Rung 3 reads `=== true`,
+   * and only to refuse a kit no model link names (`sem-modelos`).
+   */
   kitNativo?: unknown;
   /** The `prodshopee` document's own id, projected by the discovery. */
   linkDocId?: unknown;
@@ -397,13 +410,11 @@ export function montarItensDePreco(f: FamiliaDePreco, integracaoId: string): Pla
       continue;
     }
 
-    // Rung 3 — the LINK is the authority. The produto argument is the helper's
-    // first-publish arm, unreachable here (a link always exists at this rung),
-    // so no produto flag is handed over and none can leak into the decision.
-    if (kitNativoDoAnuncio(link, {})) {
-      pular(MOTIVO_PRECO_SHOPEE.kitDerivado, { linkDocId, itemId });
-      continue;
-    }
+    // Rung 3 — a native kit CONTINUES (step 19, L5): it is planned like any
+    // has-model listing, and the sender picks `update_kit_item` at G9 from the
+    // fresh read. The LINK is still the authority for what follows: no produto
+    // flag reaches this function, so none can leak into the decision.
+    const kitNativo = link.kitNativo === true;
 
     // Rung 4.
     if (removidoNoVinculo(link)) {
@@ -414,6 +425,12 @@ export function montarItensDePreco(f: FamiliaDePreco, integracaoId: string): Pla
     // Rungs 5–7 — the models of THIS listing (fold 2), never of the produto.
     const atribuidos = varLinksDoAnuncio(f.children, linkDocId);
     if (atribuidos.length === 0) {
+      // ⚠️ A native kit is ALWAYS `has_model`: with no model link it is an
+      // unbound kit, never a no-model listing priced at model `0`.
+      if (kitNativo) {
+        pular(MOTIVO_PRECO_SHOPEE.semModelos, { linkDocId, itemId });
+        continue;
+      }
       // Rung 8, no-model: one write carrying the ANCHOR's price.
       itens.push({ produtoId: f.anchorId, linkDocId, itemId, modelos: [] });
       continue;
