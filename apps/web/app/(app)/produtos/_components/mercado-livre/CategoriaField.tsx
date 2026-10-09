@@ -20,6 +20,18 @@ export interface CategoriaFieldProps {
   produtoNome: string;
   disabled?: boolean;
   error?: string;
+  /**
+   * The listing already exists on Mercado Livre (#847). Its category is then
+   * shown, never offered for change.
+   *
+   * ⚠️ Not a convenience. `category_id` is CREATE-ONLY on our wire — publish
+   * sends it only on the `POST /items` that creates a listing — so an edit here
+   * reached ML nowhere and was overwritten by ML's echo on the next publish.
+   * Worse since #847: Mercado Livre recategorizes listings on its own, the
+   * `items` sync writes ML's value onto the link, and a local edit would be
+   * indistinguishable from a recategorization by ML.
+   */
+  publicado?: boolean;
 }
 
 /**
@@ -41,6 +53,7 @@ export function CategoriaField({
   produtoNome,
   disabled,
   error,
+  publicado = false,
 }: CategoriaFieldProps) {
   const client = useMercadoLivreClient();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -87,23 +100,31 @@ export function CategoriaField({
             )}
           </Stack>
         )}
-        <Button
-          type="button"
-          variant="light"
-          size="compact-sm"
-          onClick={() => setPickerOpen(true)}
-          disabled={disabled || client == null}
-        >
-          {value == null ? 'Escolher categoria' : 'Alterar'}
-        </Button>
+        {!publicado && (
+          <Button
+            type="button"
+            variant="light"
+            size="compact-sm"
+            onClick={() => setPickerOpen(true)}
+            disabled={disabled || client == null}
+          >
+            {value == null ? 'Escolher categoria' : 'Alterar'}
+          </Button>
+        )}
       </Group>
+      {publicado && (
+        <Text size="xs" c="dimmed" data-testid="ml-categoria-publicada">
+          Definida na criação do anúncio. O Mercado Livre pode alterá-la por conta própria, e a
+          alteração chega pela sincronização.
+        </Text>
+      )}
       {error != null && (
         <Text size="xs" c="red">
           {error}
         </Text>
       )}
 
-      {pickerOpen && (
+      {pickerOpen && !publicado && (
         <CategoriaPickerModal
           opened={pickerOpen}
           onClose={() => setPickerOpen(false)}

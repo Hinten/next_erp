@@ -56,11 +56,10 @@ export function reduzirTotais(linhas: Array<{ produtoId: unknown; total: unknown
  * and ran one `sum()` per produto — 2 round trips each, and the review screen
  * re-did the whole walk on every open.
  *
- * ⚠️ The fallback is not dead code, and the gate is NOT `isPipelineSupported`
- * alone. Against the emulator the SDK still exposes `db.pipeline()`, so that
- * probe answers yes and the aggregate then fails at execution — which is
- * exactly where the balanço e2e lane runs. `isUsingFirebaseEmulator()` is a
- * build-time fact and cannot be wrong.
+ * The emulator fallback remains until this exact aggregate shape has integration
+ * coverage. Firestore emulator 1.22.0 supports some Enterprise pipelines, but the
+ * SDK's `db.pipeline()` probe alone does not establish backend support. The
+ * existing emulator e2e still exercises the paged-read branch below.
  */
 export async function carregarTotaisLancados(
   db: Firestore,

@@ -216,12 +216,31 @@ describe('definirStatusAnuncio — User-Products family', () => {
     const [, , , observados] = h.applyFamilyStatusAndFold.mock.calls[0]!;
     expect(observados).toHaveLength(1);
     expect(observados[0]).toMatchObject({ memberDocId: 'v-childA', status: 'paused' });
+    // #847: the PUT answers with ML's whole item; with no category in it, the
+    // member reports `null` ("not learned") — never a guess.
+    expect(observados[0]).toMatchObject({ categoryId: null });
 
     expect(res.aplicados).toBe(1);
     expect(res.total).toBe(2);
     const falho = res.membros!.find((m) => m.itemId === 'MLB-B')!;
     expect(falho).toMatchObject({ aplicado: false, status: null });
     expect(falho.erro).toContain('nope');
+  });
+
+  it("#847: the PUT response's category is a fresh ML reading and reaches the fold", async () => {
+    const api = apiFake(
+      vi
+        .fn()
+        .mockImplementation((id: string) =>
+          Promise.resolve(item({ id, status: 'paused', category_id: 'MLB2' })),
+        ),
+    );
+    await definirStatusAnuncio(fakeDb(MEMBROS), CONTA, alvo(FAMILY_ID), 'pausar', api, NOW);
+    const [, , , observados] = h.applyFamilyStatusAndFold.mock.calls[0]!;
+    expect(observados).toEqual([
+      expect.objectContaining({ categoryId: 'MLB2' }),
+      expect.objectContaining({ categoryId: 'MLB2' }),
+    ]);
   });
 
   it('forces the errors clear on the parent — our write landed (#781 inverted)', async () => {

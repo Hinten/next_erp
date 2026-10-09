@@ -105,6 +105,15 @@ export const mlSizeChartWriteSchema = mlSizeChartSchema.extend({
   tipo: z.enum(['BODY_MEASURE', 'CLOTHING_MEASURE']).nullable().optional(),
 });
 
+/** One immediately saved chart/version, never an instruction to send sibling drafts. */
+export const mlSizeChartSyncRequestSchema = z.object({
+  operationId: z.uuid(),
+  chartIndex: z.number().int().nonnegative(),
+  chart: mlSizeChartWriteSchema,
+  recoveryChartId: z.string().min(1).nullable().optional(),
+});
+export type MlSizeChartSyncRequest = z.infer<typeof mlSizeChartSyncRequestSchema>;
+
 /**
  * Soft-read the conta's chart list off `tabMedi.tabelasDeMedidasMercadoLivre`.
  * Any shape mismatch (or a missing conta key) yields `[]` — a malformed legacy
