@@ -1,0 +1,72 @@
+Execution:
+ results returned: 7
+ query id: d682a48a67aeb81d
+ request peak memory usage: 778.48 KiB (797,162 B)
+ data bytes read: 4.59 KiB (4,703 B)
+ entity row scanned: 7
+ index row scanned: 7
+
+Billing:
+ read units: 8
+
+Tree:
+• Compute
+|  $out_1: map_set($record_1, "__name__", $__name___1, "__key__", unset)
+|  is query result: true
+|
+|  Execution:
+|   records returned: 7
+|   latency: 27.75 ms (local <1 ms)
+|
+└── • MajorSort
+    |  fields: [$__name___1 ASC]
+    |  output: [$__name___1, $record_1]
+    |  limit: 5,001
+    |
+    |  Execution:
+    |   records returned: 7
+    |   latency: 27.67 ms (local <1 ms)
+    |   peak memory usage: 778.48 KiB (797,162 B)
+    |
+    └── • Compute
+        |  $__name___1: $__key___2
+        |
+        |  Execution:
+        |   records returned: 7
+        |   latency: 27.00 ms (local <1 ms)
+        |
+        └── • Fetch
+            |  order: UNDEFINED
+            |  source: /avisos
+            |  input record id: $rid_3
+            |  output bindings: {$__key___2=get_field(row(), "__key__"), $record_1=row()}
+            |  output: [$__key___2, $record_1]
+            |
+            |  Execution:
+            |   records returned: 7
+            |   latency: 26.98 ms (local 1.37 ms)
+            |   data bytes read: 3.64 KiB (3,723 B)
+            |
+            └── • Filter
+                |  expression: (exists($resolvidoEm_4) AND ($resolvidoEm_4 == null) AND exists($key_7))
+                |
+                |  Execution:
+                |   records returned: 7
+                |   latency: 25.61 ms (local <1 ms)
+                |   post-filtered rows: 0
+                |
+                └── • SequentialScan
+                       properties: Selection {  }
+                       fields: [$resolvidoEm_4, $rid_3]
+                       key: $key_7
+                       index: /avisos (resolvidoEm ASC)@[id = CICAgJjUgIcJ]
+                       partition: /
+                       key ordering length: 2
+                       ranges: /
+                               |----[null]
+
+                       Execution:
+                        records returned: 7
+                        latency: 25.51 ms
+                        records scanned: 7
+                        data bytes read: 980 B

@@ -1,0 +1,72 @@
+Execution:
+ results returned: 2
+ query id: d107119a5b3c51b4
+ request peak memory usage: 8.00 KiB (8,192 B)
+ data bytes read: 1.98 KiB (2,030 B)
+ entity row scanned: 2
+ index row scanned: 8
+
+Billing:
+ read units: 3
+
+Tree:
+• Compute
+|  $out_1: map_set($record_1, "__name__", $__name___1, "__key__", unset)
+|  is query result: true
+|
+|  Execution:
+|   records returned: 2
+|   latency: 4.91 ms (local <1 ms)
+|
+└── • Compute
+    |  $__name___1: $__key___6
+    |
+    |  Execution:
+    |   records returned: 2
+    |   latency: 4.88 ms (local <1 ms)
+    |
+    └── • Fetch
+        |  order: PRESERVE_INPUT_ORDER
+        |  source: **/produtoMercadoLivre
+        |  input record id: $rid_2
+        |  output bindings: {$__key___6=get_field(row(), "__key__"), $record_1=row()}
+        |  output: [$__key___6, $record_1]
+        |
+        |  Execution:
+        |   records returned: 2
+        |   latency: 4.87 ms (local 2.36 ms)
+        |   peak memory usage: 4.00 KiB (4,096 B)
+        |   data bytes read: 350 B
+        |
+        └── • MajorSort
+            |  fields: [$__key___4 ASC]
+            |  output: [$rid_2]
+            |  limit: 2
+            |
+            |  Execution:
+            |   records returned: 2
+            |   latency: 2.51 ms (local <1 ms)
+            |   peak memory usage: 4.00 KiB (4,096 B)
+            |
+            └── • Filter
+                |  expression: (exists($contaOuterRef_3) AND exists($__key___4))
+                |
+                |  Execution:
+                |   records returned: 8
+                |   latency: 2.46 ms (local <1 ms)
+                |   post-filtered rows: 0
+                |
+                └── • SequentialScan
+                       properties: Selection {  }
+                       fields: [$contaOuterRef_3, $__key___4, $rid_2]
+                       index: **/produtoMercadoLivre (contaOuterRef ASC, __key__ ASC)@[id = CICAgJil0IYK]
+                       key ordering length: 3
+                       ranges: /
+                               |----["documents/integracao/e2e-ml1200-<RUN>-x"]
+                               |----["integracao/e2e-ml1200-<RUN>-x"]
+
+                       Execution:
+                        records returned: 8
+                        latency: 2.41 ms
+                        records scanned: 8
+                        data bytes read: 1.64 KiB (1,680 B)

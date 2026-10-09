@@ -96,6 +96,7 @@ export const TIPO_AVISO_LABELS = {
   etiquetaComPrazo: 'Etiqueta com prazo de impressão',
   reclamacaoAguardandoVendedor: 'Reclamação aguardando o vendedor',
   anuncioCategoriaAlterada: 'Categoria do anúncio alterada',
+  anuncioForaDaSincronizacao: 'Anúncio fora da sincronização',
 } as const;
 
 /**
@@ -331,6 +332,77 @@ export const TIPO_AVISO_LABELS = {
  *    converge without one. Only the `mesma-comissao` record passes one — our
  *    own observation time, in ms — because the shared resolver seeds a
  *    missing row only with a clock; a clockless raise is never blocked by it.
+ *
+ * ---
+ *
+ * **`anuncioForaDaSincronizacao`** (#1200 — first producer
+ * `apps/mercado-livre/lib/marketplace/estoque/auditoriaNaoEnumerados.ts`, the
+ * monthly link audit) — a LIVE anúncio that no automatic stock or price sync can
+ * reach. Both senders' anchor queries enumerate family PARENTS carrying the conta
+ * (`paiId == null` plus `integracoesComProduto` containing it), so a link on a
+ * variation child, a produto whose `paiId` is neither null nor a usable id, or a
+ * link whose produto no longer exists is never enumerated — and leaves no trace:
+ * the sweep reports `completed` while that listing keeps selling at whatever stock
+ * it last had.
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the `estoqueAcimaDoDisponivel` reason
+ *    above: the gap belongs to the parent-anchored query shape, not to Mercado
+ *    Livre, and `canal` already carries which channel raised it.
+ *  - ⚠️ **The audit's FOURTH finding never raises this tipo.** A produto that
+ *    merely lost the conta from `integracoesComProduto` (class 2: a lost trigger
+ *    event, or the cutover import, which fires none) is HEALED in place — the
+ *    conta re-added under a guard that re-reads the links — and only logged. No
+ *    human is needed for it, and an aviso nobody has to act on teaches the team
+ *    to ignore the bell. {@link situacaoAnuncioForaDaSincronizacaoSchema} has no
+ *    member for it, on purpose.
+ *  - **Machine resolvers** (this docblock's own rule, above), both seen by the
+ *    producer: (1) a COMPLETED monthly walk of that conta's links that no longer
+ *    finds the produto, re-confirmed by a fresh read of that produto's links and
+ *    of the produto itself before it resolves
+ *    (`resolucaoMotivo: 'nao-encontrado-na-auditoria'`). ⚠️ A TRUNCATED walk
+ *    (page cap, time budget, a cursor that stopped advancing) resolves NOTHING:
+ *    there "not found" only means "not reached", and resolving on it would close
+ *    a real row this month and re-raise it the next — and neither does a run
+ *    whose listing of the open avisos came back past its cap. (2) The conta is no longer
+ *    an active Mercado Livre integração (`resolucaoMotivo: 'conta-inativa'`):
+ *    nothing walks its links any more, so resolver (1) can never fire for it,
+ *    and without this its rows would stand until retention. ⚠️ Both judge
+ *    MERCADO LIVRE state, so both act only on rows stamped
+ *    `canal: 'mercadoLivre'`: the next channel to produce this tipo brings its
+ *    own resolvers, and resolver (2) would otherwise close that channel's rows
+ *    every month — its conta is never an ML integração.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
+ *    — ONE row per PRODUTO, no `janela`. Every monthly walk recomputes the same
+ *    id, so a finding that persists refreshes its row instead of opening a new
+ *    one. ⚠️ The SHAPE is load-bearing: an aviso stores its conta and entidade
+ *    only in its id, so the producer reads the open avisos once per run (the
+ *    bell's own `resolvidoEm == null`) and finds its rows by PARSING the id —
+ *    exactly `<tipo>:<conta>:<produto>`, the conta segment compared whole — so
+ *    `conta` must stay the second segment, and the fold must keep every `:` out
+ *    of a segment. `entidade` is the produtoId, never the ML item id: the
+ *    route is built from it, and a produto relisted under a new item id keeps the
+ *    row the operator already knows about. The `estoqueAcimaDoDisponivel` fold
+ *    caveat applies (a dot and an underscore in a produtoId are one key).
+ *  - **Severity `atencao`**: the rest of the catalogue syncs normally, the
+ *    finding is a standing data defect seen once a month rather than an
+ *    incident, and `critico` escalates out of the app.
+ *  - **`params` are exactly `situacao`** — a
+ *    {@link SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO} CODE, never a fragment, so a
+ *    wording fix in `mensagens.ts` is retroactive — **`anuncio`** (the
+ *    lexicographically SMALLEST live ML item id the walk saw for that produto —
+ *    not the first seen, so a walk that meets the same listings in another order
+ *    recomputes the same params and writes nothing; `''` when no link names one)
+ *    **and `anuncios`** (how many live anúncios of that produto are in the
+ *    situação, a NUMBER). `motivo` = `situacao`. A repeat replaces `params`
+ *    wholesale, which is safe here: every walk recomputes all three.
+ *  - **No `relogioEvento`, ever**: this is a periodic observation by a single
+ *    scheduled writer, not an out-of-order provider event — there is no provider
+ *    clock to compare, and the dedup id alone is the race guard (tier 0). No
+ *    `prazo` either: nobody set a deadline.
+ *  - **Route**: the produto page (`ROTAS_AVISO.produto`), where the link is
+ *    re-pointed or the cadastro fixed — EXCEPT `produto-ausente`, which goes to
+ *    the conta's channel page (`ROTAS_AVISO.canalMercadoLivre`): a produto that
+ *    no longer exists has no page to open.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -348,6 +420,7 @@ export const tipoAvisoSchema = z
     'etiquetaComPrazo',
     'reclamacaoAguardandoVendedor',
     'anuncioCategoriaAlterada',
+    'anuncioForaDaSincronizacao',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -368,6 +441,7 @@ export const TIPO_AVISO = {
   etiquetaComPrazo: 'etiquetaComPrazo',
   reclamacaoAguardandoVendedor: 'reclamacaoAguardandoVendedor',
   anuncioCategoriaAlterada: 'anuncioCategoriaAlterada',
+  anuncioForaDaSincronizacao: 'anuncioForaDaSincronizacao',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -399,6 +473,42 @@ export const PENDENCIA_RECLAMACAO = {
   responderProposta: 'responder-proposta',
   enviarEvidencias: 'enviar-evidencias',
 } as const satisfies Record<string, PendenciaReclamacao>;
+
+/**
+ * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's
+ * `params.situacao` (and its `motivo`), a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders, so a wording fix is retroactive.
+ *
+ * One member per finding a HUMAN must fix, each with its own remedy: a link on a
+ * variation child (re-point it at the family parent), a cadastro whose `paiId`
+ * is neither null nor a usable id (fix the cadastro), and a link that outlived
+ * its produto (end the anúncio, or remove the orphan link).
+ *
+ * ⚠️ Its own closed set, NOT the walk's `NAO_ENUMERADO_*` codes. Those are an
+ * `apps/mercado-livre` constant this browser-safe package cannot import, and they
+ * carry a fourth member — the produto missing the conta — that the audit HEALS
+ * and never raises, so there is deliberately no `conta-fora-do-produto` here.
+ *
+ * Stored as an aviso PARAM (`z.record(string, string | number)`), so the aviso
+ * schema itself does not validate it: a code newer than the web build reaches
+ * the reader as a plain string, and `mensagens.ts` falls back rather than
+ * printing `undefined`.
+ */
+export const situacaoAnuncioForaDaSincronizacaoSchema = z.enum([
+  'link-em-variacao',
+  'pai-id-invalido',
+  'produto-ausente',
+]);
+export type SituacaoAnuncioForaDaSincronizacao = z.infer<
+  typeof situacaoAnuncioForaDaSincronizacaoSchema
+>;
+
+/** Named members of {@link situacaoAnuncioForaDaSincronizacaoSchema} — see `delfrance/prefer-schema-enum`. */
+export const SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO = {
+  linkEmVariacao: 'link-em-variacao',
+  paiIdInvalido: 'pai-id-invalido',
+  produtoAusente: 'produto-ausente',
+} as const satisfies Record<string, SituacaoAnuncioForaDaSincronizacao>;
 
 /* -------------------------------------------------------------------------- */
 /*                              Route builders                                */

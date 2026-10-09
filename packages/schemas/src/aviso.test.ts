@@ -3,6 +3,7 @@ import {
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   TIPO_AVISO_LABELS,
   avisoNaoLido,
@@ -13,6 +14,7 @@ import {
   marcarTodosComoLidos,
   pendenciaReclamacaoSchema,
   rotaInternaSegura,
+  situacaoAnuncioForaDaSincronizacaoSchema,
   tipoAvisoSchema,
   urlExternaSegura,
   type Aviso,
@@ -88,6 +90,11 @@ describe('TIPO_AVISO_LABELS', () => {
     expect(TIPO_AVISO.reclamacaoAguardandoVendedor).toBe('reclamacaoAguardandoVendedor');
     expect(TIPO_AVISO_LABELS.reclamacaoAguardandoVendedor).toBe('Reclamação aguardando o vendedor');
   });
+
+  it('labels the link-audit tipo without a provider name — it is channel-neutral', () => {
+    expect(TIPO_AVISO.anuncioForaDaSincronizacao).toBe('anuncioForaDaSincronizacao');
+    expect(TIPO_AVISO_LABELS.anuncioForaDaSincronizacao).toBe('Anúncio fora da sincronização');
+  });
 });
 
 describe('PENDENCIA_RECLAMACAO', () => {
@@ -108,6 +115,41 @@ describe('PENDENCIA_RECLAMACAO', () => {
     expect(pendenciaReclamacaoSchema.options).toHaveLength(3);
     expect(pendenciaReclamacaoSchema.safeParse('organizar-coleta').success).toBe(false);
     expect(pendenciaReclamacaoSchema.safeParse('responder_solicitacao').success).toBe(false);
+  });
+});
+
+describe('SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO', () => {
+  it('is exactly the three findings a human must fix, mirrored member for member', () => {
+    expect(situacaoAnuncioForaDaSincronizacaoSchema.options).toEqual([
+      'link-em-variacao',
+      'pai-id-invalido',
+      'produto-ausente',
+    ]);
+    expect(SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO).toEqual({
+      linkEmVariacao: 'link-em-variacao',
+      paiIdInvalido: 'pai-id-invalido',
+      produtoAusente: 'produto-ausente',
+    });
+    expect(Object.values(SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO).sort()).toEqual(
+      [...situacaoAnuncioForaDaSincronizacaoSchema.options].sort(),
+    );
+  });
+
+  it('has NO member for the healed class, nor for the walk codes', () => {
+    // `conta-fora-do-produto` is the near-miss: the audit re-adds the conta and
+    // logs it, so an aviso for it would be one nobody has to act on. The walk's
+    // `NAO_ENUMERADO_*` codes are a different set the producer maps FROM — a
+    // stored one would mean the mapping was skipped.
+    for (const naoMembro of [
+      'conta-fora-do-produto',
+      'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO',
+      'NAO_ENUMERADO_LINK_EM_VARIACAO',
+      'link_em_variacao',
+    ]) {
+      expect(situacaoAnuncioForaDaSincronizacaoSchema.safeParse(naoMembro).success, naoMembro).toBe(
+        false,
+      );
+    }
   });
 });
 
@@ -329,6 +371,50 @@ describe('chaveDeAviso — the return tipo (Shopee step 17)', () => {
         entidade: '2609100000000001',
       }),
     );
+  });
+});
+
+describe('chaveDeAviso — the link-audit tipo (#1200)', () => {
+  // ONE row per PRODUTO per conta. The monthly audit stores conta and produto only
+  // in the id, reads the open avisos once per run and keeps ONE conta's rows by
+  // PARSING the id — exactly three `:` segments, the tipo first, the conta second
+  // compared whole — so the shape below is what its resolver reads back.
+  const foraDaSincronizacao = (conta: string, produtoId: string) =>
+    chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta, entidade: produtoId });
+  /** The producer's parse of an id against one conta: `<tipo>:<conta>:<produto>`. */
+  const daConta = (conta: string, chave: string) => {
+    const segmentos = chave.split(':');
+    return (
+      segmentos.length === 3 &&
+      segmentos[0] === chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao }) &&
+      `${segmentos[0]}:${segmentos[1]}` ===
+        chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta }) &&
+      segmentos[2] !== ''
+    );
+  };
+
+  it('keeps the conta as the SECOND segment and the produto last, with no janela', () => {
+    expect(foraDaSincronizacao('int-1', 'prod-1')).toBe('anuncioForaDaSincronizacao:int-1:prod-1');
+    expect(daConta('int-1', foraDaSincronizacao('int-1', 'prod-1'))).toBe(true);
+  });
+
+  it('keeps a prefix-sharing conta, another tipo and the bare prefix OUT of the conta’s rows', () => {
+    // `c10` shares `c1` as a string prefix; the WHOLE segment tells them apart,
+    // and only because the fold never lets a `:` into a segment.
+    expect(daConta('c1', foraDaSincronizacao('c10', 'p'))).toBe(false);
+    expect(daConta('c1', foraDaSincronizacao('c1:0', 'p'))).toBe(false);
+    expect(
+      daConta(
+        'c1',
+        chaveDeAviso({ tipo: TIPO_AVISO.estoqueAcimaDoDisponivel, conta: 'c1', entidade: 'p' }),
+      ),
+    ).toBe(false);
+    expect(
+      daConta('c1', chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta: 'c1' })),
+    ).toBe(false);
+    // …while a produtoId carrying a `:` is folded, so its row still parses as the conta's.
+    expect(foraDaSincronizacao('c1', 'a:b')).toBe('anuncioForaDaSincronizacao:c1:a_b');
+    expect(daConta('c1', foraDaSincronizacao('c1', 'a:b'))).toBe(true);
   });
 });
 

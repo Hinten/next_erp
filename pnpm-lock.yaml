@@ -452,6 +452,9 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
+      '@delfrance/config-vitest':
+        specifier: workspace:*
+        version: link:../../packages/config-vitest
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4

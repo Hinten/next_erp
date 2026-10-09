@@ -3,6 +3,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 
 import {
   adicionarConta,
+  adicionarContaSeViva,
   contaIdFromRef,
   contaRefForms,
   planLinkChange,
@@ -27,6 +28,15 @@ import {
  * `tx.update` on a produto the cascade already removed fails at COMMIT the way
  * the real SDK does. `opLog` is real, so the zero-write assertions mean
  * something.
+ *
+ * Two knobs exist for the tier-1 writers. Every patch records whether it was
+ * COMMITTED by a transaction or written directly, because the read-derived add
+ * is only guarded when the write rides the same transaction its verdict was
+ * read in — an implementation that asked `sobrevivem` inside and then called
+ * the tier-0 `adicionarConta` after the transaction would write the identical
+ * patch. And `abortarTentativas` discards that many attempts' buffered writes
+ * and re-runs the callback with a fresh handle, the OCC retry the real SDK
+ * performs on contention.
  */
 type DocData = Record<string, unknown>;
 
@@ -42,7 +52,9 @@ class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly opLog: Array<{ op: 'get' | 'update'; path: string }> = [];
   /** Patches handed to `update`, in call order — the assertion surface. */
-  readonly patches: Array<{ path: string; patch: DocData }> = [];
+  readonly patches: Array<{ path: string; patch: DocData; viaTransacao: boolean }> = [];
+  /** How many transaction attempts lose to contention before one commits. */
+  abortarTentativas = 0;
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -72,7 +84,7 @@ class FakeDb {
             self.opLog.push({ op: 'update', path: docPath });
             const col = self.col(path);
             if (!col.has(id)) throw new NotFoundError(docPath);
-            self.patches.push({ path: docPath, patch });
+            self.patches.push({ path: docPath, patch, viaTransacao: false });
           },
         };
       },
@@ -80,23 +92,30 @@ class FakeDb {
   }
 
   async runTransaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
-    const buffered: Array<{ path: string; patch: DocData }> = [];
-    const tx = {
-      get: async (alvo: { get: () => Promise<unknown> }) => alvo.get(),
-      update: (ref: { path: string }, patch: DocData) => {
-        buffered.push({ path: ref.path, patch });
-      },
-    };
-    const saida = await fn(tx);
-    for (const w of buffered) {
-      const corte = w.path.lastIndexOf('/');
-      const col = this.col(w.path.slice(0, corte));
-      const id = w.path.slice(corte + 1);
-      this.opLog.push({ op: 'update', path: w.path });
-      if (!col.has(id)) throw new NotFoundError(w.path);
-      this.patches.push(w);
+    for (;;) {
+      const buffered: Array<{ path: string; patch: DocData }> = [];
+      const tx = {
+        get: async (alvo: { get: () => Promise<unknown> }) => alvo.get(),
+        update: (ref: { path: string }, patch: DocData) => {
+          buffered.push({ path: ref.path, patch });
+        },
+      };
+      const saida = await fn(tx);
+      if (this.abortarTentativas > 0) {
+        // Lost to contention: nothing this attempt buffered reaches the store.
+        this.abortarTentativas -= 1;
+        continue;
+      }
+      for (const w of buffered) {
+        const corte = w.path.lastIndexOf('/');
+        const col = this.col(w.path.slice(0, corte));
+        const id = w.path.slice(corte + 1);
+        this.opLog.push({ op: 'update', path: w.path });
+        if (!col.has(id)) throw new NotFoundError(w.path);
+        this.patches.push({ ...w, viaTransacao: true });
+      }
+      return saida;
     }
-    return saida;
   }
 }
 
@@ -250,12 +269,13 @@ describe('planLinkChange', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('adicionarConta', () => {
-  it('⚠️ as sentinelas são OBRIGATÓRIAS nos dois escritores — um padrão baixaria a aridade', () => {
+  it('⚠️ as sentinelas são OBRIGATÓRIAS nos três escritores — um padrão baixaria a aridade', () => {
     // Same device, same reason: `packages/data/src/admin/**` cannot import
     // `FieldValue`, so a default here could only be a no-op stand-in, and the
     // write would silently store a plain value over the whole array.
     expect(adicionarConta.length).toBe(4);
     expect(removerContaSeOrfa.length).toBe(5);
+    expect(adicionarContaSeViva.length).toBe(5);
   });
 
   it('escreve SÓ a chave do array, com a sentinela de UNIÃO — sem carimbos, ou todo publish agita os monitores da TableView', async () => {
@@ -329,5 +349,103 @@ describe('removerContaSeOrfa', () => {
       removerContaSeOrfa(db(f), 'p1', CONTA, async () => false, SENTINELAS),
     ).resolves.toBe(false);
     expect(f.patches).toHaveLength(0);
+  });
+});
+
+describe('adicionarContaSeViva (#1200 — a adição DERIVADA DE LEITURA, tier 1)', () => {
+  const produtoSemConta = () =>
+    new FakeDb().seed('produtos', 'p1', { integracoesComProduto: ['outra'] });
+
+  it('adiciona com a sentinela de UNIÃO, dentro da transação, quando um link vivo sobrevive', async () => {
+    const f = produtoSemConta();
+    await expect(
+      adicionarContaSeViva(db(f), 'p1', CONTA, async () => true, SENTINELAS),
+    ).resolves.toBe(true);
+    expect(f.patches).toHaveLength(1);
+    // Only the array key, like every writer here — no stamps to churn the
+    // TableView monitors.
+    expect(Object.keys(f.patches[0]!.patch)).toEqual(['integracoesComProduto']);
+    // ⛔ The swap guard: `arrayRemove` on the HEAL path would delete the conta
+    // the audit just proved live — the silent stock + price outage.
+    expect(f.patches[0]!.patch.integracoesComProduto).toEqual({
+      __sentinela: 'arrayUnion',
+      id: CONTA,
+    });
+    // ⛔ The write must COMMIT in the transaction whose read set holds the
+    // survivor query. Asking `sobrevivem` inside and then calling the tier-0
+    // `adicionarConta` afterwards writes this identical patch with no guard.
+    expect(f.patches[0]!.viaTransacao).toBe(true);
+    // The produto itself is never read — the union is a transform.
+    expect(f.opLog.filter((o) => o.op === 'get')).toHaveLength(0);
+  });
+
+  it('NÃO escreve nada quando nenhum link sobrevive — o fechamento concorrente venceu a auditoria', async () => {
+    // The race this writer exists for: the walk saw a live link, it closed
+    // before the heal ran, and a plain `arrayUnion` would leave a false
+    // positive no later event ever revisits.
+    const f = produtoSemConta();
+    await expect(
+      adicionarContaSeViva(db(f), 'p1', CONTA, async () => false, SENTINELAS),
+    ).resolves.toBe(false);
+    expect(f.patches).toHaveLength(0);
+    expect(f.opLog).toHaveLength(0);
+  });
+
+  it('re-deriva o veredito a CADA tentativa — um retry de OCC não reaplica o "vivo" capturado', async () => {
+    // Attempt 1 reads the link live and loses to contention (the close is the
+    // competing writer); attempt 2 re-reads it closed. Re-applying the first
+    // attempt's verdict is exactly the stale-closure shape rule 7 forbids.
+    const f = produtoSemConta();
+    f.abortarTentativas = 1;
+    const vistos: unknown[] = [];
+    const sobrevivem = vi.fn(async (tx: unknown) => {
+      vistos.push(tx);
+      return vistos.length === 1;
+    });
+    await expect(adicionarContaSeViva(db(f), 'p1', CONTA, sobrevivem, SENTINELAS)).resolves.toBe(
+      false,
+    );
+    expect(sobrevivem).toHaveBeenCalledTimes(2);
+    // Each attempt hands the reader ITS transaction, never a captured one.
+    expect(vistos[0]).not.toBe(vistos[1]);
+    expect(f.patches).toHaveLength(0);
+  });
+
+  it('devolve false em vez de ressuscitar um produto que o cascade apagou (NOT_FOUND no commit)', async () => {
+    const f = new FakeDb(); // produto absent; the link reader still says live
+    await expect(
+      adicionarContaSeViva(db(f), 'p1', CONTA, async () => true, SENTINELAS),
+    ).resolves.toBe(false);
+    expect(f.patches).toHaveLength(0);
+  });
+
+  it('⛔ só NOT_FOUND é engolido — qualquer outra falha é relançada (regra 6)', async () => {
+    // UNAVAILABLE (14) is a gRPC status too, the nearest near-miss to the one
+    // code this writer narrows; a bug in the reader is not a status at all.
+    const indisponivel = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
+    await expect(
+      adicionarContaSeViva(
+        db(produtoSemConta()),
+        'p1',
+        CONTA,
+        async () => {
+          throw indisponivel;
+        },
+        SENTINELAS,
+      ),
+    ).rejects.toBe(indisponivel);
+
+    const bug = new TypeError('leitor quebrado');
+    await expect(
+      adicionarContaSeViva(
+        db(produtoSemConta()),
+        'p1',
+        CONTA,
+        async () => {
+          throw bug;
+        },
+        SENTINELAS,
+      ),
+    ).rejects.toBe(bug);
   });
 });

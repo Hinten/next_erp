@@ -209,11 +209,25 @@ export { onProdutoCategoriaAlterada } from './onProdutoCategoriaAlterada';
  * rename-safety assertion is needed (the queue they feed is covered by the
  * `MERCADO_LIVRE_STOCK_SEND_QUEUE` assertion above). No-ops until
  * `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` (the coordinated cutover).
+ *
+ * The fourth, `sweepMercadoLivreAnunciosNaoEnumerados` (#1200), is NOT a tier and
+ * feeds no queue: at 02:30 on the 1st it walks each conta's LINKS rather than its
+ * produtos, re-adds the conta to a produto whose `integracoesComProduto` lost it
+ * (so the 03:00 force-all can enumerate it again) and raises ONE
+ * `anuncioForaDaSincronizacao` aviso per PRODUTO — new ones capped per conta per
+ * run — for what no sweep can reach and a human must fix. It is Firestore-only
+ * — no ML call, so it binds NO secrets (see `src/options.ts`) — and it answers
+ * to the master flag alone, never to the reconciliation's own valve: that valve
+ * rations ML quota, and the audit spends none. ⚠️ It needs the COLLECTION_GROUP index
+ * `produtoMercadoLivre(contaOuterRef, __name__)` READY wherever the master flag
+ * is on; without it every page of the walk silently full-scans the collection
+ * group. Schedule, rationale and the D4 send semantics: `./sweepStock`.
  */
 export {
   sweepMercadoLivreStock,
   sweepMercadoLivreStockDaily,
   sweepMercadoLivreStockReconciliacao,
+  sweepMercadoLivreAnunciosNaoEnumerados,
 } from './sweepStock';
 
 /**

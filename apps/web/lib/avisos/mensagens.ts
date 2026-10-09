@@ -1,9 +1,12 @@
 import {
   PENDENCIA_RECLAMACAO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   pendenciaReclamacaoSchema,
+  situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
   type PendenciaReclamacao,
+  type SituacaoAnuncioForaDaSincronizacao,
   type TipoAviso,
 } from '@delfrance/schemas';
 
@@ -85,6 +88,42 @@ function frasePendencia(valor: Aviso['params'][string] | undefined): string {
   return codigo.success
     ? FRASE_PENDENCIA_RECLAMACAO[codigo.data]
     : 'confira a situação da devolução';
+}
+
+/**
+ * pt-BR do porquê o anúncio está fora da sincronização, com o conserto — TOTAL
+ * sobre o código (`params.situacao`, um {@link SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO}).
+ * Mesma razão de {@link FRASE_PENDENCIA_RECLAMACAO}: o produtor grava o CÓDIGO.
+ */
+const FRASE_SITUACAO_ANUNCIO: Record<SituacaoAnuncioForaDaSincronizacao, string> = {
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao]:
+    'ele está vinculado a uma variação, e não ao produto pai — refaça o vínculo no produto pai',
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.paiIdInvalido]:
+    'o cadastro do produto tem um vínculo de produto pai inválido — corrija o cadastro do produto',
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente]:
+    'ele aponta para um produto que não existe mais — encerre o anúncio no canal ou peça a ' +
+    'remoção do vínculo órfão',
+};
+
+/**
+ * A frase da situação, ou um texto neutro — o mesmo contrato de
+ * {@link frasePendencia}: código mais novo que esta tela, param ausente ou uma
+ * chave herdada (`'toString'`) caem no fallback, nunca em "undefined".
+ */
+function fraseSituacaoAnuncio(valor: Aviso['params'][string] | undefined): string {
+  const codigo = situacaoAnuncioForaDaSincronizacaoSchema.safeParse(valor);
+  return codigo.success ? FRASE_SITUACAO_ANUNCIO[codigo.data] : 'confira o vínculo do anúncio';
+}
+
+/**
+ * A frase extra quando o produto tem mais de um anúncio na mesma situação.
+ * ⚠️ Só para um NÚMERO maior que 1 — o produtor grava a contagem como número; um
+ * valor de outro tipo omite a frase em vez de adivinhar uma contagem.
+ */
+function fraseOutrosAnuncios(valor: Aviso['params'][string] | undefined): string {
+  return typeof valor === 'number' && valor > 1
+    ? ` Este produto tem ${String(valor)} anúncios nessa situação.`
+    : '';
 }
 
 export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
@@ -213,6 +252,17 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'configurados (sem fórmulas, valem as padrão da lista), troque a categoria do produto ' +
       'e das variações, e recalcule o preço. O aviso se encerra quando a categoria do ' +
       'produto for alterada.',
+  },
+  // Sem `runbook`: o conserto está no app — o cadastro do produto (para onde o aviso
+  // aponta) ou, para o produto que não existe mais, a página da conta no canal.
+  [TIPO_AVISO.anuncioForaDaSincronizacao]: {
+    titulo: 'Anúncio fora da sincronização',
+    // ⚠️ "no canal", nunca "no Mercado Livre": o tipo é neutro quanto ao canal (o
+    // `canal` do aviso já diz qual), e a frase vale para o próximo que o produzir.
+    corpo: (params) =>
+      `O anúncio ${p(params, 'anuncio')} está ativo no canal, mas não recebe estoque nem ` +
+      `preço automaticamente: ${fraseSituacaoAnuncio(params.situacao)}.` +
+      fraseOutrosAnuncios(params.anuncios),
   },
 };
 

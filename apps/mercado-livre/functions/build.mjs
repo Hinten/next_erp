@@ -31,8 +31,9 @@ export async function bundle(outfile) {
   const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
   // ⚠️ SEPARATE from FUNCTIONS_REGION on purpose. Cloud Tasks and Cloud Scheduler
   // do not exist in every region — where they are absent, `firebase deploy` fails
-  // all eleven onTaskDispatched/onSchedule functions while the four Firestore
-  // triggers succeed (#1108, measured 2026-08-19). The two variables collapse to
+  // every onTaskDispatched/onSchedule function (thirteen today — count them in
+  // src/index.ts, see options.ts) while the Firestore triggers succeed
+  // (#1108, measured 2026-08-19). The two variables collapse to
   // one value once the project sits in a region offering both; until then this
   // names the queue/schedule region and FUNCTIONS_REGION names the data region.
   // Inlined for the same reason as FUNCTIONS_REGION: their `region:` option is

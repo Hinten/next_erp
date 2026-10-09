@@ -4,6 +4,7 @@ import { linkHasLiveListing, variacaoLinkHasListing } from '@delfrance/schemas';
 
 import {
   adicionarConta,
+  adicionarContaSeViva,
   contaIdFromRef,
   contaRefForms,
   lerLinkPai,
@@ -127,6 +128,21 @@ const CONTA = 'conta1';
 const REF_CANONICO = `documents/integracao/${CONTA}`;
 const PML = 'produtos/p1/produtoMercadoLivre';
 const VML = 'produtos/c1/variacaoMercadoLivre';
+
+/**
+ * Assert a patch value IS the given `FieldValue` sentinel — by the SDK's own
+ * `isEqual`, never by `toEqual`.
+ *
+ * ⚠️ `toEqual` cannot tell the two array transforms apart: `ArrayUnionTransform`
+ * and `ArrayRemoveTransform` each carry ONE own property (`elements`) and
+ * `toEqual` checks no type, so `expect(arrayRemove(x)).toEqual(arrayUnion(x))`
+ * PASSES — exactly the swap of `SENTINELAS` these assertions exist to catch.
+ * `isEqual` compares the transform's kind as well as its elements.
+ */
+function expectSentinela(valor: unknown, esperado: FieldValue): void {
+  expect(valor).toBeInstanceOf(FieldValue);
+  expect((valor as FieldValue).isEqual(esperado)).toBe(true);
+}
 
 /* ------------------------------- pure helpers ----------------------------- */
 
@@ -301,7 +317,7 @@ describe('adicionarConta', () => {
     await expect(adicionarConta(db(f), 'p1', CONTA)).resolves.toBe(true);
     expect(f.patches).toHaveLength(1);
     expect(Object.keys(f.patches[0]!.patch)).toEqual(['integracoesComProduto']);
-    expect(f.patches[0]!.patch.integracoesComProduto).toEqual(FieldValue.arrayUnion(CONTA));
+    expectSentinela(f.patches[0]!.patch.integracoesComProduto, FieldValue.arrayUnion(CONTA));
   });
 
   it('reports the produto is gone instead of resurrecting it as a husk', async () => {
@@ -367,7 +383,7 @@ describe('removerContaSeOrfa', () => {
     await expect(
       removerContaSeOrfa(db(f), 'p1', CONTA, sobrevivemLinksDoProduto(db(f), 'p1', CONTA)),
     ).resolves.toBe(true);
-    expect(f.patches[0]!.patch.integracoesComProduto).toEqual(FieldValue.arrayRemove(CONTA));
+    expectSentinela(f.patches[0]!.patch.integracoesComProduto, FieldValue.arrayRemove(CONTA));
   });
 
   it('writes NOTHING while a listing survives — a wrong removal is the silent-outage direction', async () => {
@@ -397,6 +413,81 @@ describe('removerContaSeOrfa', () => {
     const sobrevivem = sobrevivemLinksDoProduto(db(f), 'p1', CONTA);
     f.seed(PML, 'l2', { contaOuterRef: REF_CANONICO, id: 'MLB2', estado: 'p' });
     await expect(removerContaSeOrfa(db(f), 'p1', CONTA, sobrevivem)).resolves.toBe(false);
+    expect(f.patches).toHaveLength(0);
+  });
+});
+
+describe('adicionarContaSeViva (#1200 — the audit’s read-derived heal)', () => {
+  const VML_P1 = 'produtos/p1/variacaoMercadoLivre';
+  const anchorSemConta = () =>
+    new FakeDb().seed('produtos', 'p1', { paiId: null, integracoesComProduto: ['outra'] });
+
+  it('heals the conta while a live PARENT listing still holds it — with the real `arrayUnion`', async () => {
+    const f = anchorSemConta().seed(PML, 'l1', {
+      contaOuterRef: REF_CANONICO,
+      id: 'MLB1',
+      estado: 'p',
+    });
+    await expect(adicionarContaSeViva(db(f), 'p1', CONTA)).resolves.toBe(true);
+    expect(f.patches).toHaveLength(1);
+    expect(Object.keys(f.patches[0]!.patch)).toEqual(['integracoesComProduto']);
+    // The swap guard against the real sentinels: `arrayRemove` here would drop
+    // the conta the audit just proved live (identity, not shape — see
+    // `expectSentinela`).
+    expectSentinela(f.patches[0]!.patch.integracoesComProduto, FieldValue.arrayUnion(CONTA));
+    // The survivor scan ran once, as the transaction's read — and the produto
+    // itself was never read.
+    expect(f.opLog.filter((o) => o.op === 'query')).toEqual([{ op: 'query', path: PML }]);
+    expect(f.opLog.filter((o) => o.op === 'get')).toHaveLength(0);
+  });
+
+  it('heals through the bare ref form too — both stored spellings are the same conta', async () => {
+    const f = anchorSemConta().seed(PML, 'l1', {
+      contaOuterRef: `integracao/${CONTA}`,
+      id: 'MLB1',
+      estado: 'p',
+    });
+    await expect(adicionarContaSeViva(db(f), 'p1', CONTA)).resolves.toBe(true);
+  });
+
+  it('writes NOTHING once the listing the walk saw has CLOSED — a stale add would be a permanent false positive', async () => {
+    // The race the tier-1 binding exists for: closed after the walk page, before
+    // the heal. The link's later writes take `planLinkChange`'s fast path and
+    // the audit never removes, so nothing would ever take this entry back out.
+    const f = anchorSemConta().seed(PML, 'l1', {
+      contaOuterRef: REF_CANONICO,
+      id: 'MLB1',
+      estado: 'c',
+    });
+    await expect(adicionarContaSeViva(db(f), 'p1', CONTA)).resolves.toBe(false);
+    expect(f.patches).toHaveLength(0);
+  });
+
+  it('does not heal on ANOTHER conta’s live listing', async () => {
+    const f = anchorSemConta().seed(PML, 'l1', {
+      contaOuterRef: 'documents/integracao/outra',
+      id: 'MLB1',
+      estado: 'p',
+    });
+    await expect(adicionarContaSeViva(db(f), 'p1', CONTA)).resolves.toBe(false);
+    expect(f.patches).toHaveLength(0);
+  });
+
+  it('⛔ is bound to the PARENT reader — a live variação link is no evidence the anchor belongs in the sweep', async () => {
+    // Pins WHICH survivor query is bound: `sobrevivemVariacoesDoProduto` would
+    // answer true here and add the conta on evidence S1 never reads.
+    const f = anchorSemConta().seed(VML_P1, 'v1', { contaOuterRef: REF_CANONICO, id: 7 });
+    await expect(adicionarContaSeViva(db(f), 'p1', CONTA)).resolves.toBe(false);
+    expect(f.patches).toHaveLength(0);
+  });
+
+  it('never resurrects a produto the cascade deleted — NOT_FOUND at commit reads as false', async () => {
+    const f = new FakeDb().seed(PML, 'l1', {
+      contaOuterRef: REF_CANONICO,
+      id: 'MLB1',
+      estado: 'p',
+    });
+    await expect(adicionarContaSeViva(db(f), 'p1', CONTA)).resolves.toBe(false);
     expect(f.patches).toHaveLength(0);
   });
 });
