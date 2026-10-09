@@ -50,6 +50,7 @@ import { printJob } from '@/lib/print-agent/printJob';
 import { useShopeeClient } from '@/lib/shopee/client';
 import { etiquetaMismatch, etiquetaRowState } from './etiquetaActions';
 import { EtiquetaComprarModal } from './EtiquetaComprarModal';
+import { MercadoLivreRastrearAction } from './MercadoLivreRastrearAction';
 import { useEtiquetaAcao, useEtiquetaAcaoValor, type EtiquetaAcaoChave } from './EtiquetaAcaoHost';
 
 export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedidoId: string }) {
@@ -291,6 +292,14 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
         >
           Imprimir Etiqueta Transporte (PDF)
         </Button>
+        {blocoTipo === INTEGRACAO_FRETE.mercadoLivre && (
+          <MercadoLivreRastrearAction
+            pedidoId={pedidoId}
+            shipmentId={frete?.externalId}
+            acoes={acao}
+            size="xs"
+          />
+        )}
       </Stack>
     );
   }
