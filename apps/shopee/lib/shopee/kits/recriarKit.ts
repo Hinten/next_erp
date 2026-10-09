@@ -112,8 +112,8 @@ export function problemaRecriacaoSemDiferenca(itemId: number): ProblemaDeBloquei
 }
 
 /**
- * `kit-novo-inativo` — the new kit is not live yet, so the old one waits. Both
- * sentences name the new kit's LINK, not only its `item_id`.
+ * `kit-novo-inativo` — the new kit is not live yet, so the old one waits. Every
+ * sentence names the new kit's LINK, not only its `item_id`.
  *
  * ⚠️ `UNLIST` gets its own sentence (PR #1868 review): it reaches gate (a) only
  * beside an old kit on sale (H1), and NOTHING on a re-run relists — `--status`
@@ -121,9 +121,15 @@ export function problemaRecriacaoSemDiferenca(itemId: number): ProblemaDeBloquei
  * "publish again" by itself would answer this same warning forever. The
  * operator relists the NEW link first, BY ITS DOC ID: until step 3 runs both
  * kits are active native links, and `anuncio-status` without a `linkDocId`
- * takes the lexically-first one, which may be the old kit. Any other status
- * (`REVIEWING`, `BANNED`, unreadable) is Shopee's to change, and Shopee refuses
- * to relist a kit under review or banned anyway.
+ * takes the lexically-first one, which may be the old kit — and the route
+ * accepts a `linkDocId` only beside exactly ONE produtoId, the kit's.
+ *
+ * ⚠️ `BANNED` gets its own sentence too: waiting never lifts a ban, so "publish
+ * again later" would be the same loop. The operator corrects the violation in
+ * Seller Centre and waits for the new review (`pausarAnuncio.ts`'s
+ * `anuncio-banido` remedy) — never a relist, which Shopee refuses on a banned
+ * kit. Every other status (`REVIEWING`, an unreadable one) is Shopee's to
+ * change, so it keeps "the same command, later".
  */
 export function avisoKitNovoInativo(a: {
   readonly produtoId: string;
@@ -137,14 +143,19 @@ export function avisoKitNovoInativo(a: {
     `o kit novo ${String(a.itemId)} (vínculo ${a.novoLinkDocId}) está ` +
     `${a.itemStatus ?? '—'} na Shopee; o kit antigo ${String(a.antecessorItemId)} só é ` +
     'excluído quando o novo estiver ';
-  const mensagem =
-    a.itemStatus === SHOPEE_ITEM_STATUS_WIRE.unlist
-      ? cabeca +
-        'à venda, e publicar de novo NÃO reativa o novo — reative-o primeiro (anuncio-status ' +
-        `com acao reativar e linkDocId ${a.novoLinkDocId}, ou no Seller Centre) e só então ` +
-        `publique de novo com --link ${a.antigoLinkDocId} --recriar`
-      : cabeca + `ativo — publique de novo com --link ${a.antigoLinkDocId} --recriar depois`;
-  return { codigo: 'kit-novo-inativo', produtoId: a.produtoId, mensagem };
+  const repetir = `publique de novo com --link ${a.antigoLinkDocId} --recriar`;
+  let fim = `ativo — ${repetir} depois`;
+  if (a.itemStatus === SHOPEE_ITEM_STATUS_WIRE.unlist) {
+    fim =
+      'à venda, e publicar de novo NÃO reativa o novo — reative-o primeiro (anuncio-status ' +
+      `com acao reativar, produtoIds [${a.produtoId}] e linkDocId ${a.novoLinkDocId}, ou no ` +
+      `Seller Centre) e só então ${repetir}`;
+  } else if (a.itemStatus === SHOPEE_ITEM_STATUS_WIRE.banned) {
+    fim =
+      'ativo, e um kit banido não volta sozinho — corrija a violação do novo no Seller ' +
+      `Centre, aguarde a nova revisão e só então ${repetir}`;
+  }
+  return { codigo: 'kit-novo-inativo', produtoId: a.produtoId, mensagem: cabeca + fim };
 }
 
 /** `kit-novo-divergente` (S2C-05) — the completed kit does not carry the ERP composition. */
