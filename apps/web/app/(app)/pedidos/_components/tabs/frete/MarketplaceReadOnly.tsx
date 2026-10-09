@@ -1,10 +1,11 @@
 'use client';
 
 import { Accordion, Alert, Badge, Code, Group, Stack, Text, TextInput } from '@mantine/core';
-import { ESTADO_FRETE_LABELS, INTEGRACAO_FRETE_LABELS } from '@delfrance/schemas';
+import { ESTADO_FRETE_LABELS, INTEGRACAO_FRETE, INTEGRACAO_FRETE_LABELS } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
 import { epochToPickerString } from '@delfrance/ui';
 import type { FreteInicialFormState } from '../../types';
+import { MercadoLivreRastrearAction } from '../../MercadoLivreRastrearAction';
 
 function labelOf(map: Record<string, string>, key: string | null | undefined): string {
   return key ? (map[key] ?? key) : '—';
@@ -20,9 +21,11 @@ function labelOf(map: Record<string, string>, key: string | null | undefined): s
 export function MarketplaceReadOnly({
   frete,
   tipo,
+  pedidoId,
 }: {
   frete: FreteInicialFormState;
   tipo: string;
+  pedidoId?: string;
 }) {
   const ro = (label: string, value: string | null | undefined) => (
     <TextInput label={label} value={value ?? '—'} readOnly disabled style={{ flex: 1 }} />
@@ -61,6 +64,9 @@ export function MarketplaceReadOnly({
 
       <Group gap="xs" grow align="end">
         {ro('Código de rastreio', frete.codRastreio)}
+        {frete.externalOptionIntegracao === INTEGRACAO_FRETE.mercadoLivre && (
+          <MercadoLivreRastrearAction pedidoId={pedidoId} shipmentId={frete.externalId} />
+        )}
         {ro('Valor cobrado', frete.valorCobrado != null ? formatReais(frete.valorCobrado) : null)}
         {ro('Previsão de entrega', epochToPickerString(frete.dataPrevisaoEntrega, 'us'))}
         {ro('Data de entrega', epochToPickerString(frete.dataEntrega, 'us'))}

@@ -38,6 +38,11 @@ export { historicoEstoqueCollection } from './historicoEstoqueCollection';
 export { historicoModificacaoCollection } from './historicoModificacaoCollection';
 export { historicoModificacaoPedidoCollection } from './historicoModificacaoPedidoCollection';
 export { tabelaDeMedidasCollection } from './tabelaDeMedidasCollection';
+export {
+  mlChartSyncCollection,
+  mlChartOperationCollection,
+  type MlChartOperation,
+} from './mlChartSyncCollection';
 export { listaDePrecosCollection } from './listaDePrecosCollection';
 export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';

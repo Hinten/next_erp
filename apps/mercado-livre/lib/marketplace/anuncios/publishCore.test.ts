@@ -16,6 +16,7 @@ import {
   combinationsFromVariacoes,
   linkAttributesAfterPublish,
   mergeStoredCombinations,
+  precoDoPaiExigido,
   publishModeIssues,
   resolveCondition,
   resolveListingModel,
@@ -263,6 +264,64 @@ describe('resolvePrice', () => {
       preco: null,
       issues: ['produto "Camiseta Básica" sem preço na tabela lista-1'],
     });
+  });
+
+  describe('exigePreco: false (#1698) — the price is read, its absence is not an issue', () => {
+    const opcional = { exigePreco: false };
+
+    it('still reads and rounds a price that exists', () => {
+      const issues: string[] = [];
+      const comPreco = { ...produto, precos: { 'lista-1': { valor: 7.891 } } };
+      expect(resolvePrice(comPreco, { id: 'lista-1', nome: null }, issues, opcional)).toBe(7.89);
+      expect(issues).toEqual([]);
+    });
+
+    it('an absent (or sub-centavo) price is null with NO issue', () => {
+      for (const precos of [null, { 'lista-1': { valor: 0.004 } }]) {
+        const issues: string[] = [];
+        expect(
+          resolvePrice({ ...produto, precos }, { id: 'lista-1', nome: null }, issues, opcional),
+        ).toBeNull();
+        expect(issues).toEqual([]);
+      }
+    });
+
+    it('NEAR-MISS: a missing price LIST is still an issue — the members rely on this one', () => {
+      const issues: string[] = [];
+      expect(resolvePrice(produto, { id: null, nome: null }, issues, opcional)).toBeNull();
+      expect(issues).toEqual(['integração sem tabela de preços (tabelaNormalOuterRef)']);
+    });
+  });
+});
+
+describe('precoDoPaiExigido (#1698)', () => {
+  const exigido = (
+    isUserProductSeller: boolean,
+    membros: number,
+    propagatePriceToChildren: boolean | null | undefined,
+  ) => precoDoPaiExigido({ isUserProductSeller, membros, propagatePriceToChildren });
+
+  it('NOT required on exactly one arm: a User-Products family whose parent stores a literal false', () => {
+    expect(exigido(true, 1, false)).toBe(false);
+    expect(exigido(true, 3, false)).toBe(false);
+  });
+
+  it.each([undefined, null, true])(
+    'NEAR-MISS: a User-Products family that propagates (flag %s) — the members carry the anchor price',
+    (flag) => {
+      expect(exigido(true, 2, flag)).toBe(true);
+    },
+  );
+
+  it('NEAR-MISS: a childless User-Products listing — the anchor IS the item', () => {
+    expect(exigido(true, 0, false)).toBe(true);
+  });
+
+  it('NEAR-MISS: a legacy family — ML takes ONE price, the anchor’s, whatever the flag', () => {
+    for (const flag of [undefined, null, true, false]) {
+      expect(exigido(false, 2, flag)).toBe(true);
+      expect(exigido(false, 0, flag)).toBe(true);
+    }
   });
 });
 
@@ -1215,6 +1274,56 @@ describe('assemblePublishInput', () => {
       // nome + preço + categoria + listing type + fotos
       expect(err.issues).toHaveLength(5);
     }
+  });
+
+  describe('a User-Products family whose parent does NOT propagate (#1698)', () => {
+    const familia = {
+      ...baseArgs,
+      isUserProductSeller: true,
+      produto: { ...produto, precos: null, propagatePriceToChildren: false },
+      variations: [
+        {
+          produto: {
+            ...produto,
+            id: 'child-m',
+            nome: 'Camiseta M',
+            precos: { 'lista-1': { valor: 60 } },
+          },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+        {
+          produto: {
+            ...produto,
+            id: 'child-g',
+            nome: 'Camiseta G',
+            precos: { 'lista-1': { valor: 70 } },
+          },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+          availableQuantity: 2,
+          mlVariationId: null,
+        },
+      ],
+    };
+
+    it('publishes with an UNPRICED parent — each member at its own price', () => {
+      const input = assemblePublishInput(familia);
+      expect(input.price).toBeNull();
+      expect(input.variations?.map((v) => v.price)).toEqual([60, 70]);
+    });
+
+    it('a missing price LIST still refuses — ONE issue, not one per member, and never none', () => {
+      expect(() => assemblePublishInput({ ...familia, priceListId: null })).toThrowError(
+        MercadoLivrePublishError,
+      );
+      try {
+        assemblePublishInput({ ...familia, priceListId: null });
+      } catch (err) {
+        if (!(err instanceof MercadoLivrePublishError)) throw err;
+        expect(err.issues).toEqual(['integração sem tabela de preços (tabelaNormalOuterRef)']);
+      }
+    });
   });
 
   it('a variation with no resolvable combination blocks the publish', () => {

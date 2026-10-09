@@ -55,7 +55,7 @@ const ROUPAS: MercadoLivreCategorias = {
   },
 };
 
-function renderField(value: string | null, onChange = vi.fn()) {
+function renderField(value: string | null, onChange = vi.fn(), publicado?: boolean) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MantineTestProvider>
@@ -68,6 +68,7 @@ function renderField(value: string | null, onChange = vi.fn()) {
       value={value}
       onChange={onChange}
       produtoNome="Camiseta Básica"
+      publicado={publicado}
     />,
     { wrapper },
   );
@@ -86,6 +87,27 @@ describe('CategoriaField', () => {
     renderField(null);
     expect(screen.getByText('Não definida')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Escolher categoria' })).toBeDefined();
+  });
+
+  it('#847: a PUBLISHED listing shows its category and offers no way to change it', async () => {
+    // Create-only at ML: an edit here reached ML nowhere, and since #847 the
+    // `items` sync writes ML's own recategorizations onto the link.
+    h.categorias.mockResolvedValue(CAMISETAS);
+    renderField('MLB31447', vi.fn(), true);
+    await waitFor(() => {
+      expect(screen.getByText('Roupas › Camisetas')).toBeDefined();
+    });
+    expect(screen.queryByRole('button', { name: 'Alterar' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Escolher categoria' })).toBeNull();
+    expect(screen.getByTestId('ml-categoria-publicada').textContent).toContain(
+      'O Mercado Livre pode alterá-la',
+    );
+  });
+
+  it('#847: an unpublished listing keeps the picker, and says nothing about ML', () => {
+    renderField('MLB31447', vi.fn(), false);
+    expect(screen.getByRole('button', { name: 'Alterar' })).toBeDefined();
+    expect(screen.queryByTestId('ml-categoria-publicada')).toBeNull();
   });
 
   it('resolves the id into a path a human can verify', async () => {
