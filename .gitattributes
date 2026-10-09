@@ -54,6 +54,11 @@ apps/mercado-livre/lib/marketplace/fixtures/__wire__/** text eol=lf
 # `li-doc.mjs folhas` with LF, and a regeneration must diff only what changed.
 apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json text eol=lf
 
+# And the sanitized Loja Integrada fixtures: `sanitizar` compares an existing
+# fixture's bytes with the new ones, so a CRLF checkout would read every
+# unchanged fixture as different.
+apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/** text eol=lf
+
 # Fifth instance: the docs reader committed beside the Shopee master plan starts
 # with a shebang. Same vite/Windows hazard as the .mjs rules above; kept total
 # by `shebang-files-lf.test.js`.
