@@ -1641,7 +1641,7 @@ the pick (see **Publish**). Depth and register rows 248–269:
 - Stock: never (step 12 `kit-derivado`). Price: step 13 sends
   `update_kit_item`. A recipe edit opens `shopeeKitReceitaDivergente` (the
   `apps/functions` trigger vs `receitaKitConferida`). Depth + register rows
-  270–305: `kits/README.md`.
+  270–306: `kits/README.md`.
 
 ## Rules specific to this app
 
