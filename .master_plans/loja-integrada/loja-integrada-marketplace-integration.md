@@ -35,7 +35,7 @@ Citation conventions:
   - The ERP stores an expiry date the operator types in, raises one aviso 30 days ahead, and parks the conta ("reconexão pendente") on a 401/403.
   - The token lives in an admin-only credential store.
 - **Testing without a demo store (D4):** there is no sandbox, and a demo store costs money ⇒ **no live write before the cutover.**
-  - **Probes:** live probes are READ-ONLY GETs run by Lucas with the owner's token. They are PII-redacted, record which credential type they ran under, and are never committed.
+  - **Captures (D17):** no code in this repository calls LI before the cutover. When a step needs real responses, the owner captures read-only production responses himself, by his own means, and keeps them outside every repository checkout. Each capture records which credential type it ran under. An offline sanitizer (step 2b) turns them into committed fixtures with personal and store-identifying values faked; a raw capture is never committed.
   - **Fixtures:** tests use wire fixtures built from the official OpenAPI examples (redacted) plus redacted read-only captures.
   - **Valves:** every write flow ships behind an OFF valve with a DRY-RUN mode. The dry-run logs the exact payload and diffs it, read-only, against LI's current GET.
   - **Canary allow-list:** the valves carry one, so that each write kind's first real write goes to one canary produto or pedido (§4.26).
@@ -184,18 +184,18 @@ The row lands with a whole-row assertion in `marketplace.test.ts`, following the
 ### 1.2 Contradictions and unknowns only a live call settles
 
 Under D4 the items fall into three kinds:
-- **READ-ONLY-PROBE-ABLE:** settled by a redacted GET with the owner's token, run by Lucas, before the code that depends on it is merged.
+- **READ-ONLY-CAPTURABLE:** settled by a read-only production response that the owner captures himself and the step-2b sanitizer turns into a fixture, before the code that depends on it is merged. No code in this repository makes the call (D17).
 - **WRITE-ONLY:** settled *defensively* in code now, then *confirmed* in the window. The first real write of each kind goes to a canary (§4.26), its read-back is reviewed, and only then is the flow widened.
 - **GATE:** stops the plan if the answer is unfavourable.
 
-A few facts are already **live-proven by the working legacy, under the `chave_api` + `aplicacao` combination** (§1.3): order search with `since_atualizado` + `meta.next` paging, and order detail by numero. They are still re-confirmed under the Personal Token by the Step-0 and probe-round-1 GETs. **Every probe records which credential type it ran under**, and a fact proven under one credential is never assumed under the other.
+A few facts are already **live-proven by the working legacy, under the `chave_api` + `aplicacao` combination** (§1.3): order search with `since_atualizado` + `meta.next` paging, and order detail by numero. They are still re-confirmed under the Personal Token by the owner's captures (D17). **Every capture records which credential type it ran under**, and a fact proven under one credential is never assumed under the other.
 
 1. **Partial vs full PUT on `/v1/produto`, `/v1/produto_estoque`, `/v1/produto_preco`.** WRITE-ONLY. Defence: always send a FULL body built from a fresh GET. For produto, that is the PUT request-schema field set (step 11). For estoque, the four fields per D9. For preço, `cheio`/`custo`/`promocional`/`sob_consulta` merged over the GET. The pre-write GET is logged as the restore point.
 2. **Does `PUT /v1/produto` persist `descricao_completa` and `variacoes`?** WRITE-ONLY. Both are missing from the PUT request schema and from both PUT request examples (`alterar_produto`, `alterar_produto_com_id_externo`). They appear only in POST examples and in GET/PUT responses. `grades` appears in the `alterar_produto_com_id_externo` request example, and `pai` appears in both. PUT also declares a `descricao_completa` **query parameter** (spec PUT /v1/produto/{produto_id}). Defence: send them, and let the step-11 plan decide whether to use the query parameter. The read-back compares all three.
 3. **Reservation math.**
    - **Sources:** the formula `quantidade_disponivel = quantidade − quantidade_reservada` and the "gross on-hand" meaning of `quantidade` come from LI's older official Apiary document. Every current-spec stock example has `quantidade_reservada = 0`, and neither help article states the formula.
    - **What the help articles disagree on:** help 924633 reserves on Pedido Efetuado, Aguardando Pagamento and Pagamento em Análise. Help 912137 limits reservation to the "neutral" statuses Aguardando Pagamento and Pagamento em Análise.
-   - **Kinds:** the arithmetic, and whether Pedido Efetuado reserves, are READ-ONLY-PROBE-ABLE: GET a SKU with a pending LI order (ideally one in Pedido Efetuado). What LI does when `quantidade` is rewritten while reservations are pending is WRITE-ONLY.
+   - **Kinds:** the arithmetic, and whether Pedido Efetuado reserves, are READ-ONLY-CAPTURABLE: a captured GET of a SKU with a pending LI order (ideally one in Pedido Efetuado). What LI does when `quantidade` is rewritten while reservations are pending is WRITE-ONLY.
    - Decided in the step-12 plan (§7 q5); drift is logged by the read-back.
 4. **Webhook registration with a Personal Token.** WRITE-ONLY, because registration is a write. Settled at the window (§5). A refusal costs latency only, because the poll is the guaranteed path.
 5. *(Withdrawn: product-hook triggers are moot, because the product webhook is not used.)*
@@ -204,11 +204,11 @@ A few facts are already **live-proven by the working legacy, under the `chave_ap
 8. **Personal Token wire format: settled live on 2026-10-07.** The token goes raw after `Basic `, with no base64 and no user:pass, exactly as help 931152 documents. Both stores' legacy integrations run this way **[live-proven, Personal Token]**.
 9. **401 vs 403, and the body of a bad or expired token.** READ-ONLY. One GET with a deliberately wrong token (Step 0).
 10. **Max `limit`** on `/v1/produto`, `/v1/produto_estoque`, `/v1/{produto_preco}`, `/v1/categoria` and `/v1/grades`, plus the max number of ids per `GET /v1/produto_preco/set/{produto_id}` (semicolon-separated). Also `GET /v1/pedido/search`: its documented max of 50 is **documentation-only** until `meta.limit` is read back, because the legacy has only ever used 20 live. READ-ONLY: request 50/100/500/1000 and read `meta.limit` back. The client never assumes the requested limit was honoured.
-11. **Timezone of naive REST dates**, `since_atualizado` inclusivity at second resolution, and whether `offset` is honoured. READ-ONLY. The timezone is inferred as America/Sao_Paulo, because webhook `21:09Z` matches nested `18:09-03:00`. The poller sends `since_atualizado` in the documented `AAAA-MM-DDTHH:MM:SS` form only: seconds, no fraction, no offset. The probe uses that exact form.
+11. **Timezone of naive REST dates**, `since_atualizado` inclusivity at second resolution, and whether `offset` is honoured. READ-ONLY. The timezone is inferred as America/Sao_Paulo, because webhook `21:09Z` matches nested `18:09-03:00`. The poller sends `since_atualizado` in the documented `AAAA-MM-DDTHH:MM:SS` form only: seconds, no fraction, no offset. The capture uses that exact form.
 12. **`GET /v1/pedido/{numero}` vs the webhook's internal `id`.** **Moot.** The design never feeds the webhook `id` to REST, and there is no internal id of our own stores to probe with before the window. Nothing depends on the answer.
 13. **`meta.next` form and the trailing slash.**
     - **Known from the working legacy:** `meta.next` is an `/api/v1/...` URI, while spec paths are `/v1/...`. Design: rebuild each next request from `meta.next`'s query string against the operation's own `/v1` path (e.g. `/v1/pedido/search`); never follow the URI verbatim.
-    - **READ-ONLY:** whether the trailing slash matters. The legacy sends `/pedido/search/`; the spec path has none. Step 1 sends the slash form (the spec's own curl example and the legacy's live calls) and never follows a redirect, so a wrong form shows as a visible 3xx instead of doubling the calls. The probe tries both forms and records the status codes.
+    - **READ-ONLY:** whether the trailing slash matters. The legacy sends `/pedido/search/`; the spec path has none. Step 1 sends the slash form (the spec's own curl example and the legacy's live calls) and never follows a redirect, so a wrong form shows as a visible 3xx instead of doubling the calls. Only the slash form is captured: no decision depends on the other one.
 14. **Situação 1020 (`pagamento_devolvido_sem_retorno`).**
     - **Sources:** its id and flags come only from the legacy enum. The spec's `GET /v1/situacao` example has 15 rows and omits it, and the tag lists the codigo without an id.
     - **What LI says:** help 924633 treats it as cancelled, with the item not returned to stock, and e-mails the buyer. Step 5 maps it as refunded, per the help center.
@@ -217,14 +217,14 @@ A few facts are already **live-proven by the working legacy, under the `chave_ap
     - The PUT body is only `{codigo}`, so the caller has no notify switch, and the spec never defines `notificar_comprador`.
     - Help 924633 says LI e-mails the buyer on every status change, with one template per status. It does not say whether an API PUT fires the same mailer as the painel.
     - WRITE-ONLY. Defence: **assume every write to 11, 13 or 14 may e-mail the buyer**; `notificar_comprador` is a hint, not a guarantee. ⇒ D7's never-write-onto set, skip when LI already shows the target, serialised writes (step 7).
-16. **How LI represents "no promotion", and how to clear `promocional`.** The spec shows both `null` and `"0.00"` as no-promotion states: the `GET /v1/{produto_preco}` list example has a row with `promocional: "0.00"` next to `cheio: "259.90"`, and many rows with `promocional: null`. The PUT request schema types `promocional` as integer and never documents `null`. The reading part is **READ-ONLY-PROBE-ABLE, before the step-13 merge**: GET the preço of products with no promotion on each store and record which representation LI uses. The wire value for clearing is picked from that result. Whether the PUT accepts it stays WRITE-ONLY. On read-back, both `null` and `0.00` count as cleared. A failed clear raises an aviso and is retried with the other representation only on the canary, by a human decision. That fallback is chosen in the window, not automated.
+16. **How LI represents "no promotion", and how to clear `promocional`.** The spec shows both `null` and `"0.00"` as no-promotion states: the `GET /v1/{produto_preco}` list example has a row with `promocional: "0.00"` next to `cheio: "259.90"`, and many rows with `promocional: null`. The PUT request schema types `promocional` as integer and never documents `null`. The reading part is **READ-ONLY-CAPTURABLE, before the step-13 merge**: a captured GET of the preço of products with no promotion on each store and record which representation LI uses. The wire value for clearing is picked from that result. Whether the PUT accepts it stays WRITE-ONLY. On read-back, both `null` and `0.00` count as cleared. A failed clear raises an aviso and is retried with the other representation only on the canary, by a human decision. That fallback is chosen in the window, not automated.
 17. **Parent `ativo` cascading to children.** Undocumented. The panel has a per-variation "Variação ativa?" toggle, so children carry their own `ativo`. WRITE-ONLY. Defence: pause/resume writes every family member, so a family pause may cost 1 + N GET-merge-PUTs.
 18. **`valor_pago` filling, and `boleto_url`/`pix_code` on GET.** READ-ONLY. The spec GET example has `valor_pago: "32.48"`, and only the webhook example shows `null` on an approved order. `boleto_url`/`pix_code` appear only on the `PUT /v1/pedido` echo. The schema treats all three as optional.
-19. **Family discovery on import.** `filhos` on parents is documented **in examples only** (spec GET /v1/produto, spec GET /v1/produto/{produto_id}); it is not in the list-item schema. `GET /v1/produto` has no `tipo` or `pai` filter. Whether children appear as rows in `GET /v1/produto` pages, and whether list rows carry `pai`, is a **READ-ONLY probe**: the spec list example has 20 rows, none with `pai`, and `pai` is not among the list-item keys. The importer discovers children through `filhos` plus per-child GETs and never depends on children appearing in the list.
+19. **Family discovery on import.** `filhos` on parents is documented **in examples only** (spec GET /v1/produto, spec GET /v1/produto/{produto_id}); it is not in the list-item schema. `GET /v1/produto` has no `tipo` or `pai` filter. Whether children appear as rows in `GET /v1/produto` pages, and whether list rows carry `pai`, is **READ-ONLY-CAPTURABLE**: the spec list example has 20 rows, none with `pai`, and `pai` is not among the list-item keys. The importer discovers children through `filhos` plus per-child GETs and never depends on children appearing in the list.
 20. **The `/v1/produto_estoque/{produto_id}` path id is the produto id, not the estoque row id** (the example `id` ≠ path). READ-ONLY with a child id.
 21. **Duplicate-SKU error shape.** The legacy-observed response is a `400` with an "integridade" message **[legacy-observed, unverified]**. WRITE-ONLY. Defence: a tolerant match (400 + "integridade"), then `GET /v1/produto?sku=` and adopt.
 22. **Payment method codes for pix and card on our stores.** READ-ONLY. Run `GET /v1/pagamento` on each store, plus one real pix order `GET /v1/pedido/{numero}` (redacted), before step 6 merges. The spec catalogue has no pix gateway, and `pagamento_tipo` appears only as `creditCard`.
-23. **Does `/v1` accept an unknown `x-correlation-id` request header?** (It is documented only for Enviali.) READ-ONLY, in the first probe. If any rejection is seen, the header is dropped on `/v1`. Until then the step-1 validating GET sends no such header: a gateway that refused it with a 403 would make a valid new token read as refused.
+23. **Does `/v1` accept an unknown `x-correlation-id` request header?** (It is documented only for Enviali.) READ-ONLY, from an optional capture the owner makes with the header (D17). If any rejection is seen, the header is dropped on `/v1`; without that capture it stays off. Until then the step-1 validating GET sends no such header: a gateway that refused it with a 403 would make a valid new token read as refused.
 24. **`GET /v1/produto` filters and `removido`.**
     - **Declared vs prose:** the declared parameters are only `sku`, `ativo`, `data_modificacao__gte` and `data_modificacao__lte`. `removido`, `data_criacao` and the `__lt`/`__gt` operators appear only in prose. There is no `tipo` or `pai` filter.
     - **Default listing:** the unfiltered list examples include `removido: true` rows, so the default listing may include trashed products ⇒ **always pass `removido` explicitly**.
@@ -254,7 +254,7 @@ A completeness critic then reconciled the verdicts. Each contradiction was settl
 - **Documentation provenance** was confirmed (§1.0).
 - **Live-proven, under the `chave_api` + `aplicacao` combination:** `GET /v1/pedido/search` with `since_atualizado` and `meta.next` paging, and `GET /v1/pedido/{numero}`, i.e. numero keying and the detail field set the import reads. These are labelled **[live-proven, legacy credential]**.
 - **Spec/code evidence only, at the time of that re-verification:** everything else. That covered every write (situação, `pedido_envio`, stock, price, produto, images), webhooks, and all Personal Token behaviour. Part of it is superseded by the Personal Token record below.
-- **Probes record their credential type** (step 2b), so live evidence under one credential is never mistaken for the other.
+- **Captures record their credential type** (step 2b's sanitizer refuses one that does not), so live evidence under one credential is never mistaken for the other.
 - **Corrections it produced, applied in this revision:**
   - the legacy-credential risk note (§0);
   - documentation provenance (§1.0);
@@ -281,7 +281,7 @@ What this does **not** settle: the legacy's writes use its own payloads, so part
 
 | # | Prerequisite (human) | What it unblocks | Why it is load-bearing |
 |---|---|---|---|
-| P1 | **A Personal Token per store for the NEW integration, generated by the store OWNER** (Configurações > Chave para API > Personal token; paid plan; at most 5 active; shown once; help 931152). These are separate from the tokens the live legacy has used since 2026-10-07 (D16). Recommended: one token for read-only probes now and a separate one for production at the window, so each can be revoked independently. | The Step-0 gate, read-only probes (§1.2), the connect route's validating GET, production. | Only the owner can generate it; Administrador/Membro cannot. |
+| P1 | **A Personal Token per store for the NEW integration, generated by the store OWNER** (Configurações > Chave para API > Personal token; paid plan; at most 5 active; shown once; help 931152). These are separate from the tokens the live legacy has used since 2026-10-07 (D16). Generated for production at the window; none is needed before it (D17). | The connect route's validating GET, production. | Only the owner can generate it; Administrador/Membro cannot. |
 | P2 | **The token's expiry date entered in the ERP together with the token.** The token expires every 3 months (help 931152). The operator copies the expiry date shown in the painel; the ERP never computes it. | The expiry aviso (step 2). | No API exposes the expiry, so the ERP otherwise learns of an expired token only from a 401. Renewal keeps the SAME token and restarts 3 months from the click. A token that is not renewed is revoked and cannot be recovered. |
 | P3 | **Legacy credential: resolved on 2026-10-07** (§0). The live legacy runs on its own Personal Tokens. The remaining duty, outside this repo, is for the owner to renew those tokens before they expire (early January 2027) if the legacy is still running then. | Keeps the live system up until the cutover. | A token that is not renewed is revoked and cannot be recovered. This repo never touches the live system or reuses the legacy's tokens (D16). |
 | P4 | **No demo store** ⇒ no live write before the cutover (D4). | The valve/dry-run/canary/read-back design. | Every write flow's first real write happens in the window. |
@@ -301,13 +301,14 @@ What this does **not** settle: the legacy's writes use its own payloads, so part
 | D7 | **Status write-back:** tracking code (`PUT /v1/pedido_envio/{envios[i].id}`) plus situação `pedido_enviado` / `pedido_entregue` / `pronto_para_retirada`. `pedido_enviado` is set on posting whether or not a tracking code exists. Never write a situação onto an order whose current LI situação is refunded/cancelled/chargeback/dispute (7, 8, 16, 6, 1020): the API enforces no transitions, and any write to 11/13/14 may e-mail the buyer (§1.2 item 15). | Step 7. The orchestrator adds `cancelamento_solicitado` (1019) to the guard, giving the never-write-onto set {6, 7, 8, 16, 1019, 1020} (vetoable; see the orchestrator calls below). |
 | D8 | **NF-e upload to LI: NO.** `enviarNfe` stays `'sim'` as a provider fact. | Step 14 dropped. |
 | D9 | **Stock flags:** keep sending `gerenciado=true`, `situacao_em_estoque=0`, `situacao_sem_estoque=-1` (parity; the products are configured that way). Reviewer's caution: this overwrites per-product lead-time settings in LI by design. | Step 12 sends the full 4-field body. |
-| D10 | **Promotional price:** if the conta has no promotional list, or no positive promo value ⇒ **clear** the promotion on LI. | Step 13; the clear wire value comes from the §1.2 item 16 probe. |
+| D10 | **Promotional price:** if the conta has no promotional list, or no positive promo value ⇒ **clear** the promotion on LI. | Step 13; the clear wire value comes from the §1.2 item 16 capture. |
 | D11 | **Stores:** both legacy LI stores work at cutover ⇒ multi-conta from day one (one credential and one 100 req/min budget per store). | Every step is keyed by `integracaoId`. |
 | D12 | **Volume:** small, ≤ ~500 SKUs (variations counted) and ~20 LI orders/day per store ⇒ **no sweep tiering**; event-driven stock/price deltas plus one daily full reconcile per conta. | Steps 12–13; §4.23. |
 | D13 | **Intake:** webhook + poll. The 5-minute poll (durable per-conta cursor) is the guaranteed path; the order webhook is an accelerator registered at the cutover. Both feed ONE notification pipeline, and the task ALWAYS re-fetches `GET /v1/pedido/{numero}`. Never drop a hook on `situacao_alterada=false`. The receiver fails CLOSED (per-conta secret in the credential store; constant-time Bearer compare; unset ⇒ 503; mismatch ⇒ 401), and the conta is identified by the URL path, never the body. | Steps 3–4. |
 | D14 | **Issues:** one tracker + one issue per step, opened when this plan's PR is approved. Migration-window issues (§5) need a **separate** yes. | — |
 | D15 | **Execution:** ask before each build. Every step gets a Phase-3 step plan that Lucas approves before code is written; stacked draft PRs. | §4.25. |
 | D16 | **Separate tokens** (decided 2026-10-07, after the legacy moved to Personal Tokens). The new integration uses its own Personal Token per store, generated for it, and never the legacy's. The legacy's tokens are revoked after the legacy app is switched off. | P1; step 1's connect route; §5 items 1 and 10. |
+| D17 | **Mock only** (decided 2026-10-09). No live call from this repository's code before the cutover. No probe CLI, and no token handled by step 2b. No token, real or invented, is saved or renewed through the step-2 credential routes before the window, because every save makes a live validating GET. When a step needs real responses, the owner captures read-only production responses himself and keeps them outside the repository, and an offline sanitizer turns them into committed fixtures. Widening a canary list needs `*`. Fixtures keep SKUs, order numbers, dates, quantities and prices, and fake everything else that identifies a person or a store. The write engine moves to step 7. | Step 2b (logger and redaction, capture sanitizer, valves); §1.2 "READ-ONLY-CAPTURABLE"; Step 0; §4.25 "Captures, per step"; §7 q4 closed. |
 
 **Orchestrator calls (vetoable, one line each):**
 - **Size-chart parity:** the chart's text is appended to `descricao_completa` between stable markers, so a re-publish is idempotent, and the chart's first photo is sent as the last image (step 11).
@@ -380,7 +381,7 @@ A missing payment id is an error in the new code. **Never** normalise the pagame
   - `deposito` → depósito **[spec]**.
   - `creditCard` → cartão **[spec]**.
   - `PAGAMENTOEXTERNO` → hub guard **[spec]**.
-  - Pix (`instantPayment`, `pagali-pix`) and the old `pagamento_banco` key beside `banco` **[legacy-observed, unverified]**: pinned by the §1.2 item 22 probe before step 6 merges.
+  - Pix (`instantPayment`, `pagali-pix`) and the old `pagamento_banco` key beside `banco` **[legacy-observed, unverified]**: pinned by the §1.2 item 22 captures before step 6 merges.
   - Anything else → `outros`, keeping the raw codigo/nome.
   - Parcelas come from `parcelamento.numero_parcelas`, defaulting to 1 only when absent **[spec]**.
 - **Unit discount spreading** **[ERP rule]**: `descontoUnitario = (quantidade × preco_venda − preco_subtotal) / quantidade` when positive. When `preco_subtotal` exceeds `quantidade × preco_venda`, the unit price becomes `preco_subtotal / quantidade`.
@@ -418,7 +419,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 | Template step | LI step(s) | Note |
 |---|---|---|
 | 1 Scaffold + OAuth connect | 1a (caps row) + 1 | Connect = credential capture (no OAuth). |
-| 2 Context + credential store + cache | 2 + 2b | 2b = logger, valves, canary list, probe CLI (D4). |
+| 2 Context + credential store + cache | 2 + 2b | 2b = logger, valves, canary list, capture sanitizer (D4, D17). |
 | 3 Receiver + queue, or poller | 3 (poller, primary) + 4 (receiver, accelerator) | LI step **4 is the receiver**, not the template's backstop. |
 | 4 Delivery backstop | folded into 3 | LI has no replay feed. The durable cursor with a 120 s overlap is the backstop; a parked conta's cursor does not advance, so the gap is re-read on reconnect. |
 | 5 Order → pedido | 5 | Also does inbound tracking (template 7's inbound half). |
@@ -440,7 +441,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Money via `roundReais`.** Provider responses are read via `lerRespostaJson`, and numbers are read string-or-number tolerant (`integration-response-numbers-tolerant`).
 - **Watermark units are written beside every field** (µs vs ms). Comparisons go through `coerceToMicros`.
 - **Task payloads and failure docs carry ids only, no PII.**
-- **Live end-to-end verification of any LI read or write happens first at the window**, or in a Lucas-approved read-only staging rehearsal (§7 q4). Every step's Verification says what is fixture-only. A behaviour live-proven by the legacy (§1.3) is still re-confirmed under the Personal Token.
+- **Live end-to-end verification of any LI read or write happens first at the window.** There is no staging rehearsal (§7 q4, closed by D17). Every step's Verification says what is fixture-only. A behaviour live-proven by the legacy (§1.3) is still re-confirmed under the Personal Token.
 
 ### 4.iii Definition of done, per step
 
@@ -455,13 +456,13 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 ### Step 0: Prerequisites (P1–P6). Human, not code
 
 - **Outcome:**
-  - A probe Personal Token per store **for the new integration** (D16), separate from the legacy's, held by Lucas. It is never committed and never pasted into chat.
+  - **No probe token** (D17): no code in this repository calls LI before the cutover. The new integration's own tokens (D16) are generated for production at the window. A token is never committed and never pasted into chat.
   - The legacy credential is resolved: since 2026-10-07 the live legacy runs on its own Personal Tokens (§0).
   - This plan approved.
-  - **The IP-binding gate and the token format were answered live** on 2026-10-07 (§1.2 items 7–8): not bound, and raw after `Basic `. An optional quick re-check under the new probe token is one read-only call:
+  - **The IP-binding gate and the token format were answered live** on 2026-10-07 (§1.2 items 7–8): not bound, and raw after `Basic `. An optional quick re-check stays the owner's own read-only curl, by his own means and outside this repository:
     `read -s LI_TOKEN; curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Basic $LI_TOKEN" 'https://api.awsli.com.br/v1/categoria?limit=1'`
     The same call with a deliberately wrong token shows the 401/403 shape (§1.2 item 9). Only status codes are recorded.
-  - The read-only `GET /v1/situacao` probe (§1.2 item 14) before step 5's estado table is frozen.
+  - The `GET /v1/situacao` read (§1.2 item 14) becomes capture C3 on both stores, made by the owner (D17), before step 5's estado table is frozen.
 - **Timing:** P6 is answered. If a later check under the new tokens ever shows an IP binding, the plan stops and is replanned.
 
 ### Step 1a: Caps row
@@ -492,7 +493,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     - The token is passed as a **function**, called on every request, and never stored. It must be visible ASCII; anything else throws `LiConfigError` before a request is made.
     - The credential also carries an opaque, non-secret `ref` label. The package echoes it on every result and error so step 2's parking guard can tell which credential got a 401.
     - There is **no write method and no body parameter**: every request is a GET by construction (D4).
-    - `x-correlation-id: <uuid>` is sent on every call by default, and returned to the caller for logging. Whether `/v1` accepts it is an **assumption checked by the first probe** (§1.2 item 23). **The validating GET sends no such header until that is settled**, and the header is dropped on `/v1` if it is rejected.
+    - `x-correlation-id: <uuid>` is sent on every call by default, and returned to the caller for logging. Whether `/v1` accepts it is an **assumption checked by an optional owner capture** (§1.2 item 23, D17). **The validating GET sends no such header until that is settled**, and the header is dropped on `/v1` if it is rejected.
     - **Redirects are never followed.** A 3xx is an error, so the token cannot be carried to another host.
     - **One per-call deadline, `PRAZO_LI_MS`, in the package** (`prazos.ts`), in the Melhor Envio shape. There is **no row** in `http-client-timeout-ceiling.test.js`: that table is for clients with a `{ curto, longo }` pair, and a GET-only client has no `longo`. The test that "the calls in one request fit under the ceiling" arrives with the first route in step 2.
     - An `onChamada` observer hook, so the app logs without the package reading env.
@@ -510,7 +511,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     - It throws at the page cap instead of silently truncating, and throws if the offset does not advance.
   - **`types.ts`:** only the paging envelope and `categoria` (`liMetaSchema`, `liEnvelopeSchema`, `liCategoriaSchema`), written from the spec examples with `.passthrough()`. Numbers use `wireInt()` / `wireNumber()` from `@delfrance/core/wire`; there is no per-channel copy.
   - **`api.ts`:** `validarPersonalToken`, the validating GET (see Connect below).
-  - **Deferred to the first consumer.** Probe round 1 runs after step 2b and before step 3, so schemas written now from spec examples would be rewritten against the captures.
+  - **Deferred to the first consumer.** Captures arrive per step, from step 3 on (D17), so schemas written now from spec examples would be rewritten against them.
     - Resource schemas: pedido search row and detail, including **both `itens[].produto` shapes** (steps 3 and 5); situação and histórico (5); pagamento (6); produto list/detail (9); marca and grades (10); imagem (11); estoque (12); preço (13); envio (5, 7 and 20).
     - **Naive São Paulo dates** → µs epoch (`dataLiParaMicros`, tz-aware, not a fixed −03:00) and the cursor formatter, which emits exactly the documented `AAAA-MM-DDTHH:MM:SS` (seconds-truncated, no fraction, no offset). They land in step 3 as two generic helpers in `@delfrance/core/datetime`, not in this package.
     - Webhook `Z`/offset dates are parsed by their own offset (step 4).
@@ -538,7 +539,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - that a redirect is not followed;
   - each validator verdict.
 
-  The live validating GET is first exercised by Lucas with the probe token, after step 2 ships the credential form.
+  The live validating GET is first exercised at the window, §5 item 1 (D17).
 - **Timing:** after Step 0's gate. The package is the only place LI is called from.
 - **Does NOT:** OAuth, refresh, oauth-state or PKCE; the `chave_api + aplicacao` mode; query-string credentials; reuse the legacy client's key; the connect route, proxy, credential schema or store (step 2); any LI write method; retry, backoff or pacing; a CI lane (step 3).
 
@@ -603,7 +604,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - The sweep warns at 29 days and stays silent at 31.
   - A 401 from a stale ref parks nothing, while one from the current ref does; a save or a delete landing between the park's read and write ends in no write.
   - Moved out: a parked conta's step-7 task is deferred and re-driven after a save (step 7), and its intake task returns without retry (step 3).
-- **Timing:** before any LI-calling flow, which all read the context and can trigger a park. It lands with step 21's conta CRUD and credential form so Lucas can enter the probe token; the connect route and its only caller therefore land together.
+- **Timing:** before any LI-calling flow, which all read the context and can trigger a park. It lands with step 21's conta CRUD and credential form, so the connect route and its only caller land together. No token is saved before the window (D17).
 - **Does NOT:** renew the token (no API exists; the renewal route only re-validates it and records the new expiry date); cache the credential; store the expiry on the `integracao` doc; edit `integracao.ts`; create the daily trigger, a queue, a pipeline or a CI lane (step 3).
 
 ### Step 2b: Structured logger + write valves + canary allow-list + dry-run diff + read-only probe CLI
@@ -621,6 +622,16 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **Catalogue bodies** (produto, preço, estoque, categoria, marca, grades) carry no personal data and are logged whole. They serve as the pre-write restore snapshot.
   - As a second layer, CPF/CNPJ/e-mail/phone/CEP regexes run over everything that survives.
   - The `Authorization` header is never logged.
+- **Re-cut at implementation (PR 2b-a, logger and redaction; the step plan holds the detail):**
+  - Step 2b ships as three stacked PRs: 2b-a logger and redaction, 2b-b capture sanitizer, 2b-c valves (§4.25, D17).
+  - The logger adds `conta`, `fluxo`, `tentativa`, `idTarefa` and `idNotificacao` itself, because the package event has none of them. `correlationId` is logged together with `enviouCorrelationId`: today no call sends the header.
+  - The credential is labelled `versaoCredencial`, the version suffix of its ref (one owner of the format: `core/refCredencial.ts`), never the ref and never its fingerprint.
+  - The observer cannot be bypassed inside the app. The context loader always builds it itself (callers pass only `registro`), both credential routes pass it to the validating GET (`validarPersonalToken` gained an optional `onChamada`), and two `estrutura.test.ts` guards stop any other code from receiving the raw event and keep the logger's import closure away from the Admin SDK, the admin data layer and Next.
+  - Four body classes, chosen from the path segment by segment: `estrutural` (spelled-out allow-list with a predicate per leaf; also the default for an unknown path), `configuracao` (`/v1/situacao`, `/v1/pagamento[/{id}]`, `/v1/envio[/{id}]`, keep-lists), `catalogo` (logged whole behind the regex layer) and `webhook` (never excerpted). Non-2xx bodies get an error walk that keeps only short, code-shaped values; mask first, cut to 2 KB second.
+  - Two profiles: `log`, and `fixture` for anything that reaches disk or git, which turns every refused value into a fake of the same JSON type and also fakes tracking codes, the pedido's external ids, configuration labels and cost (D17).
+  - Bare 11- and 14-digit runs are masked only when their check digits are valid, and never on a value that passed an id, date or price predicate, because LI ids look the same.
+  - The sink writes the JSON line itself (`process.stdout.write`): no new dependency, no lockfile change.
+  - Spec coverage runs against a committed leaf inventory (paths and JSON types only, never values), generated by `li-doc.mjs folhas` from the public document's schemas and examples.
 - **Valves:**
   - There is one env valve per write flow: `LOJA_INTEGRADA_MODO_ESTOQUE`, `_PRECO`, `_ANUNCIO` (publish/edit/pause/alias/images), `_RASTREIO` (tracking + situação) and `_WEBHOOK_REGISTRO`. Each is `off | dry-run | on`.
   - **Only the exact string `on` writes and `dry-run` diffs; anything else (unset, typo) is `off`.** That is the polarity that fails safe.
@@ -656,7 +667,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Wire:** `GET /v1/pedido/search?since_atualizado=<cursor − 120 s>&limit=50` (+ `offset` via `meta.next`). The search-then-detail pattern is **[live-proven, legacy credential]**; the details below are what the legacy does not prove:
   - `since_atualizado` is sent in the documented `AAAA-MM-DDTHH:MM:SS` form: seconds, no fraction, no offset.
   - `limit=50` is requested, but the page size actually used is the `meta.limit` read back. 50 is documentation-only until then; the legacy has only ever used 20 live (§1.2 item 10).
-  - Next pages are rebuilt from `meta.next`'s query string against `/v1/pedido/search`, never followed verbatim. The trailing-slash form comes from the §1.2 item 13 probe.
+  - Next pages are rebuilt from `meta.next`'s query string against `/v1/pedido/search`, never followed verbatim. The trailing-slash form is the one the step-1 client already sends; `meta.next`'s form comes from capture C1 (§1.2 item 13, D17).
   - The overlap absorbs same-second ties and inclusive bounds.
   - Ordering is undocumented and never assumed, so the cursor advances only to `max(data_modificacao)` of a **fully drained** window.
   - **One drain loop with a time budget and no persisted continuation.** The poller only enqueues, so a 2-week backlog (~300 orders, ~6 pages at 50, ~15 at 20) drains in one run. If the budget or page cap (40 pages) is hit, the cursor does not advance, the next tick re-drains (idempotent), and an aviso is raised.
@@ -692,8 +703,8 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Queues and rates:** §4.23. **Dry-run/valve:** none (read-only).
 - **Verification:**
   - Fixture-driven sweep tests: empty page, one page, page cap hit ⇒ cursor unchanged, a boundary order re-seen, cursor never moved backwards by a stale run, lease held ⇒ second run exits, rows out of `data_modificacao` order, a `meta.limit` smaller than requested, an `/api/v1` `meta.next` rebuilt against `/v1`.
-  - §1.2 items 10, 11 and 13 are settled by a read-only probe (under the Personal Token) before merge.
-  - **Live end-to-end (poll → task → import → pedido) is deferred to the window** (§5 smoke), or to the Lucas-approved read-only staging rehearsal (§7 q4).
+  - §1.2 items 10, 11 and 13 are settled by the owner's capture C1 (under the Personal Token, D17) before merge.
+  - **Live end-to-end (poll → task → import → pedido) is deferred to the window** (§5 smoke). There is no staging rehearsal (§7 q4, closed by D17).
 - **Timing:** after P6 and step 2, since it reads the context and can park. It comes before step 5, which consumes its notifications.
 - **Does NOT:** map anything (the task re-fetches); filter by situação (every changed order is imported); persist a continuation; follow `meta.next` verbatim.
 
@@ -755,7 +766,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   | `pagamento_devolvido_sem_retorno` (1020) | `estornadoIntegralmente`, i.e. refunded per the help center: LI treats it as cancelled, the item does NOT return to LI stock, and the buyer is e-mailed (help 924633). Its id and flags come only from the legacy enum (§1.2 item 14) |
   | **any other codigo** | **`error` + aviso `lojaIntegradaSituacaoDesconhecida`** |
 
-  The Phase-3 plan confirms the exact ERP estado names and the reservation release per row. **The table is frozen only after the read-only `GET /v1/situacao` probe** (§1.2 item 14) has confirmed 1020's id and flags on both stores. This table is also where a stale order that LI auto-cancels releases its reservation (§4.i, template 8).
+  The Phase-3 plan confirms the exact ERP estado names and the reservation release per row. **The table is frozen only after the `GET /v1/situacao` capture C3** (§1.2 item 14, D17) has confirmed 1020's id and flags on both stores. This table is also where a stale order that LI auto-cancels releases its reservation (§4.i, template 8).
 - **Hub guard (D5):** if `id_anymarket` is non-null, any `pagamentos[].forma_pagamento.codigo === 'PAGAMENTOEXTERNO'`, or the receiver set `hubHint` ⇒ do not create a pedido; ack + aviso `lojaIntegradaPedidoHub`.
 - **Cliente/endereço:**
   - documento = `endereco_entrega.cnpj ?? endereco_entrega.cpf ?? cliente.cnpj ?? cliente.cpf` (digits only, check-digit validated).
@@ -799,7 +810,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - Freight near-misses: a full `'<id>---<code>'` match with `integracaoUid` set routes to the target; the same id with a different code is not matched at import; a matched entry with `integracaoUid` unset is treated as unmapped; an unsupported target raises an aviso and does not fail.
   - Watermark near-misses: equal stamp ignored; one µs newer wins; null stored ⇒ proceeds; ms-unit stored value compared correctly.
   - The `orderIds.test.ts` vectors.
-  - §1.2 item 14 is settled by a probe before merge.
+  - §1.2 item 14 is settled by capture C3 before merge (D17).
   - **Live import is first seen at the window.**
 - **Timing:** after step 3 (its producer) and step 20 (the mapa helper and the int_frete doc it reads).
 - **Does NOT:** map the webhook body; write any order-level field back to LI; consolidate orders; keep a status echo on the pedido (D2).
@@ -874,7 +885,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
   - `GET /v1/produto` pages give the parents (with `filhos`, which is documented in examples only).
     - **`removido` is always passed explicitly**, because the default listing may include trashed products (§1.2 item 24). The step plan decides whether trashed products are also listed, to flag them.
     - The declared filters are only `sku`, `ativo`, `data_modificacao__gte` and `data_modificacao__lte`. `removido`, `data_criacao` and `__lt`/`__gt` are prose-only. There is no `tipo` or `pai` filter, so parents are told from children by the rows' `tipo`.
-  - `GET /v1/produto/{id}?descricao_completa=1` is called per parent **and per child listed in `filhos`**. The importer never relies on children appearing as list rows (§1.2 item 19); if the probe shows they do, the per-child GETs are skipped for rows already seen.
+  - `GET /v1/produto/{id}?descricao_completa=1` is called per parent **and per child listed in `filhos`**. The importer never relies on children appearing as list rows (§1.2 item 19); if a capture shows they do, the per-child GETs are skipped for rows already seen.
   - Prices and stock come in bulk from `GET /v1/{produto_preco}` and `GET /v1/produto_estoque` pages, not per child.
   - `GET /v1/marca/{id}` / `/v1/categoria/{id}` (or the `/set/` GETs) are cached per job.
 - **Modes** (parity subset; the final list is §7 q2):
@@ -899,8 +910,8 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
   - Fixtures with a family, a simple product, a removed product, and a child with `nome: null`.
   - Near-miss: the same SKU on two contas links separately.
   - A link-lookup test over a corpus with both doc-id kinds (an import-created `String(id)` doc and an export-created auto-id doc) finds both by field query.
-  - §1.2 items 10, 19 and 24 are settled by probe before merge.
-  - Live import is first run at or after the window. It is read-only toward LI, so a Lucas-approved staging rehearsal (§7 q4) may run it earlier.
+  - §1.2 items 10, 19 and 24 are settled by the owner's captures before merge (D17).
+  - Live import is first run at or after the window. There is no staging rehearsal (§7 q4, closed by D17).
 - **Timing:** after step 10 (the category and grade reads it maps against). It comes before 12/13/11, which need link docs and the anchor.
 - **Does NOT:** create ERP categories automatically unless the mode asks; import `bloqueado` products as publishable; compute a link doc id.
 
@@ -1040,7 +1051,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
   2. Skip `removido`/`bloqueado`.
   3. `PUT /v1/produto_preco/{child id} {cheio, custo, promocional, sob_consulta}`, a full body:
      - `cheio` = the normal list.
-     - `promocional` = the promotional list value when > 0; **else the "cleared" wire value chosen from the §1.2 item 16 probe** (D10).
+     - `promocional` = the promotional list value when > 0; **else the "cleared" wire value chosen from the §1.2 item 16 capture** (D10).
      - `custo` = the ERP cost (parity, orchestrator call, §7 q1).
      - `sob_consulta` echoed from LI, never set.
   4. The PUT echo AND a read-back GET are compared with normalised decimals. **Both `null` and `0.00` count as a cleared promotion.**
@@ -1244,17 +1255,17 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 ### 4.25 Execution order to reach cutover parity (stacked draft PRs; each step's Phase-3 plan approved first, D15)
 
 1. **PR 0:** this master plan + evidence (#1811), opened together with the tracker #1812 and the step issues (D14).
-2. **Step 0:** P1–P6. The IP-binding gate and the token format were settled live on 2026-10-07, when the legacy moved to Personal Tokens. What remains is a probe token for the new integration (D16) and the `GET /v1/situacao` probe.
+2. **Step 0:** P1–P6. The IP-binding gate and the token format were settled live on 2026-10-07, when the legacy moved to Personal Tokens. No probe token is needed (D17); what remains is the owner's `GET /v1/situacao` capture C3.
 3. **Step 1a** (#1813): caps row + registry test flips.
 4. **Step 1** (#1814): package + guard change + package docs (PR a); bare app scaffold + rosters and counts (PR b).
 5. **Steps 2 + 2b** (#1829, #1815):
    - Five stacked PRs (re-cut item 9): W1 the step-21 conta CRUD; a the schemas, enums and admin handle; b the backend (`proxy.ts`, `verifyCaller` and Admin init moved from step 1, the credential routes, store, context, park, avisos and the sweep body); c the credential panel; d the migration script, as a sibling. The CI lane is **not** in step 2 (it is step 3's).
-   - PR b: logger/valves/canary/probe CLI.
+   - Step 2b (#1815) is three stacked PRs on step 2's PR b: **2b-a** logger and redaction, **2b-b** capture sanitizer, **2b-c** valves and canary lists (D17).
 
-   ⇒ **Probe round 1** (Lucas, read-only, under the Personal Token, each capture recording its credential type): §1.2 items 3 (read part, if a pending order exists), 10, 11, 13, 14, 16 (read part), 18, 19, 20, 22, 23 and 24 are settled, and redacted captures are committed as fixtures.
+   ⇒ **Captures, per step** (D17): the owner captures the listed read-only production responses himself, under the Personal Token, each recording its credential type, and keeps them outside the repository; the step-2b sanitizer converts them into committed fixtures. They settle §1.2 items 3 (read part, if a pending order exists), 10, 11, 13, 14, 16 (read part), 18, 19, 20, 22, 23 and 24, each before the step that depends on it.
 6. **Step 3** (#1830): poller + pipeline + queues (+ tasks emulator config).
 7. **Step 20** (#1826): int_frete sync + mapa helper (step 5's freight mapping depends on it).
-8. **Steps 5 + 6** (#1817, #1818): order/payment import (PR a: ids, mappers, fixtures; PR b: wiring). The estado table is frozen only after the §1.2 item 14 probe.
+8. **Steps 5 + 6** (#1817, #1818): order/payment import (PR a: ids, mappers, fixtures; PR b: wiring). The estado table is frozen only after the §1.2 item 14 capture (C3).
 9. **Step 15** (#1825): label routing + checkout re-check + `FREIGHT_TIPO_CAPS`.
 10. **Step 7** (#1819): status write-back (valve OFF).
 11. **Step 10** (#1821): categories/brands/grades reads + typed linker data (+ the web linker), typing `arakene_variation_id` on the `shopeeLinkVariacoes.ts` precedent.
@@ -1373,9 +1384,9 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 - [ ] This plan approved by Lucas (PR review).
 - [x] Tracker #1812 + per-step issues #1813–#1830 opened together with this plan's PR #1811 (D14).
 - [x] The §0 legacy credential is resolved: the live legacy has run on Personal Tokens on both stores since 2026-10-07.
-- [ ] A probe Personal Token per store for the NEW integration, separate from the legacy's (P1, D16).
+- [x] A probe Personal Token per store for the NEW integration: not needed before the window (D17). The production tokens (P1, D16) are generated at the window.
 - [x] The IP-binding gate answered "not bound" (P6): settled live on 2026-10-07 (§1.2 item 7).
-- [ ] The read-only `GET /v1/situacao` probe (1020's id and flags, §1.2 item 14) done before step 5's estado table is frozen.
+- [ ] The owner's `GET /v1/situacao` capture C3 (1020's id and flags, §1.2 item 14, D17) done before step 5's estado table is frozen.
 
 ---
 
@@ -1384,7 +1395,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 1. **`custo` on price PUTs:** keep sending the ERP cost to LI (parity; anyone with store-admin access can see it), or omit it? Default: keep; confirmed in the step-13 plan.
 2. **Product-import modes needed after the cutover:** the legacy screen offered targets × actions × SKU/category/variation/photo/price/stock options. Proposal: link-only + completar, with optional photo and price/stock import. Drop "sobrescrever" unless you use it.
 3. **Expiry reminder delivery:** in-app aviso only (one, at 30 days, with the 401 park as backstop), or also e-mail/WhatsApp to the store owner? Who should receive it?
-4. **Read-only staging rehearsal (a verification gap and a PII decision).**
+4. **Read-only staging rehearsal (a verification gap and a PII decision).** **Closed by D17 (2026-10-09): no.** No token is saved in staging before the window, so nothing below runs; the text stays as the record of what was declined.
    - Without a rehearsal, the live read path (poll → task → import → pedido, plus the import job) is first exercised at the window.
    - A rehearsal against ONE real store before the cutover would copy real buyer data into staging Firestore. If you allow it, the proposed rule is:
      - only the poller and the import run (valves stay off);
