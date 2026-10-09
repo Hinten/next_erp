@@ -2135,6 +2135,67 @@ describe('passo 19 — R-t: um re-import nunca reverte em silêncio uma edição
     expect(avisoDoKit(db)?.resolvidoEm).not.toBeNull();
   });
 
+  it('(R-4) kit de DOIS modelos `igual`: cada linha existente é pré-carimbada ANTES de qualquer escrita de produto, a do seu filho incluída', async () => {
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    await importarKitShopee(deps(db), entrada19(kit19(FAMILIA)));
+    const fa = idDoFilhoPlanejado(PAI_19, KIT_MODELO);
+    const fb = idDoFilhoPlanejado(PAI_19, MODEL_A);
+    // A queda entre a escrita do filho e o merge da linha: A já guarda 3, a
+    // linha de A ainda diz 1, e o trigger daquela escrita abriu o aviso.
+    editarReceita(db, [fa], 3);
+    expect(await reavaliar(db)).toBe('aberto');
+    // A Shopee está em 3 em A e em 2 em B ⇒ as DUAS receitas são `igual`.
+    const emTres: readonly ModeloKit19[] = [
+      { modelId: KIT_MODELO, sku: 'K19-A', quantidade: 3, opcao: 'Azul' },
+      { modelId: MODEL_A, sku: 'K19-B', quantidade: 2, opcao: 'Verde' },
+    ];
+    const linhas = [
+      { filho: fa, modelId: KIT_MODELO, carimbo: digital(3) },
+      { filho: fb, modelId: MODEL_A, carimbo: digital(2) },
+    ];
+
+    const preparo = await prepararImportacaoKitShopee(
+      deps(db, { nowMs: AGORA + 1 }),
+      entrada19(kit19(emTres)),
+    );
+    expect(preparo.plano.receitaDivergente).toEqual([]);
+    expect(preparo.plano.preCarimbos).toEqual(
+      linhas.map((l) => ({
+        produtoId: l.filho,
+        docId: idDaVariacaoDeKit(VINCULO_19, l.modelId),
+        receitaKitConferida: l.carimbo,
+      })),
+    );
+
+    const antes = db.writes.length;
+    const res = await importarKitShopee(deps(db, { nowMs: AGORA + 1 }), entrada19(kit19(emTres)));
+
+    const novas = db.writes.slice(antes);
+    // Cada escrita de um documento de PRODUTO dispara o trigger da receita.
+    const produtos = novas.flatMap((w, i) => (/^produtos\/[^/]+$/.test(w.path) ? [i] : []));
+    for (const l of linhas) {
+      const caminho = `produtos/${l.filho}/variashopee/${idDaVariacaoDeKit(VINCULO_19, l.modelId)}`;
+      const pre = novas.findIndex(
+        (w) => w.path === caminho && Object.keys(w.patch).join() === 'receitaKitConferida',
+      );
+      const doFilho = novas.findIndex((w) => w.path === `produtos/${l.filho}`);
+      // ÂNCORA: o import de fato escreveu o produto deste filho.
+      expect(doFilho, l.filho).toBeGreaterThanOrEqual(0);
+      expect(pre, l.filho).toBeGreaterThanOrEqual(0);
+      expect(novas[pre]?.patch, l.filho).toEqual({ receitaKitConferida: l.carimbo });
+      expect(doFilho, l.filho).toBeGreaterThan(pre);
+      expect(Math.min(...produtos), l.filho).toBeGreaterThan(pre);
+    }
+    expect(res.kit.avisos).toEqual([]);
+    expect(linhaDoKit(db, fa)?.receitaKitConferida).toBe(digital(3));
+    expect(linhaDoKit(db, fb, VINCULO_19, MODEL_A)?.receitaKitConferida).toBe(digital(2));
+    expect(avisoDoKit(db)).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.importado,
+    });
+    expect(avisoDoKit(db)?.resolvidoEm).not.toBeNull();
+  });
+
   it('(M59) decide pelo CONTEÚDO: um repoint #1450 abriu o aviso, e o re-import que já lê o membro pré-carimba e fecha `importado`', async () => {
     const db = new FakeDb();
     semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
