@@ -702,7 +702,14 @@ function recusarProdutoNaoPublicavel(
   }
 }
 
-async function lerDescricao(db: Firestore, produtoId: string): Promise<string | null> {
+/**
+ * The produto's description (`extraData/singleton.descricao`), or `null`.
+ *
+ * Exported for step 19's kit arm (`kits/prepararKit.ts`), which reads the SAME
+ * graph for an `add_kit_item` body: a second copy of any of the six readers
+ * exported here would be the #1369 drift.
+ */
+export async function lerDescricao(db: Firestore, produtoId: string): Promise<string | null> {
   const snap = await produtoExtraDataCollection.docRef(db, { produtoId }, 'singleton').get();
   if (!snap.exists) return null;
   return textoOuNull((snap.data() ?? {}).descricao);
@@ -718,8 +725,9 @@ interface FilhoCru {
  *
  * The same `produtos (paiId == …)` query `resolveProduto.ts`'s `jaTemFilhos`
  * already runs, so its index cost is paid and no new composite is needed.
+ * Exported for step 19's kit arm (a kit FAMILY's children are its kit models).
  */
-async function lerFilhos(db: Firestore, produtoPaiId: string): Promise<readonly FilhoCru[]> {
+export async function lerFilhos(db: Firestore, produtoPaiId: string): Promise<readonly FilhoCru[]> {
   const snap = await produtoCollection.ref(db, {}).where('paiId', '==', produtoPaiId).get();
   return snap.docs.map((d) => ({
     id: d.id,
@@ -767,8 +775,11 @@ interface PrecoDoPai {
  * clamps one above `stockLimit.max`, and a second clamp here would hide the
  * refusal. It IS floored at zero, because a negative `seller_stock` is not a
  * body Shopee accepts and `0 < min` still refuses.
+ *
+ * Exported for step 19's kit arm: a kit model's price is this function's
+ * `preco` (the shared child-price rule), never a second derivation.
  */
-async function filhoParaPublicar(
+export async function filhoParaPublicar(
   db: Firestore,
   deps: PrepararPublicacaoDeps,
   filho: FilhoCru,
@@ -831,8 +842,10 @@ async function filhoParaPublicar(
  * wire rule (`models.dart:2034-2057`: groups by `ordem`, variants by their
  * position in the array). The array order IS the operator's order; a stored
  * per-variante `ordem` field does not exist.
+ *
+ * Exported for step 19's kit arm, whose ONE tier is the family's grupo.
  */
-async function lerGrupos(
+export async function lerGrupos(
   db: Firestore,
   filhos: readonly FilhoCru[],
 ): Promise<readonly GrupoParaTier[]> {
@@ -884,8 +897,13 @@ async function lerGrupos(
  * the shop turned off minutes ago, and the failure is a listing the seller
  * cannot ship. The per-element `null` sentinel is filtered here — one unreadable
  * channel must not cost the whole build.
+ *
+ * Exported for step 19's kit arm, which reads the channels UNCACHED for the same
+ * reason.
  */
-async function lerCanaisDaLoja(client: ShopeeClient): Promise<readonly ShopeeLogisticsChannel[]> {
+export async function lerCanaisDaLoja(
+  client: ShopeeClient,
+): Promise<readonly ShopeeLogisticsChannel[]> {
   const lista = await client.getChannelList();
   return lista.logistics_channel_list.filter((c): c is ShopeeLogisticsChannel => c !== null);
 }
@@ -1018,8 +1036,11 @@ async function resolverFotoDaTabelaDeMedidas(
   return { imageId, falha: imageId === null ? (resultado.falhas[0] ?? null) : null };
 }
 
-/** Which variante of `grupoId` one child occupies, from its fake paths. */
-function varianteDoFilhoNoGrupo(filho: FilhoParaPublicar, grupoId: string): string | null {
+/**
+ * Which variante of `grupoId` one child occupies, from its fake paths.
+ * Exported for step 19's kit arm (each kit model's tier option).
+ */
+export function varianteDoFilhoNoGrupo(filho: FilhoParaPublicar, grupoId: string): string | null {
   for (const caminho of filho.variacoesUid) {
     const parsed = parseFakePath(caminho);
     if (parsed !== null && parsed.grupoId === grupoId) return parsed.varianteId;
@@ -1212,6 +1233,12 @@ async function escreverWriteBack1(
  * ⚠️ Every value here was READ from `get_item_base_info` (O5). `item_status` in
  * particular is never the request's and never the echo's: the probe measured
  * `update_item` echoing a stale status while the read-back answered the live one.
+ *
+ * Step 19 (R-1): `kitNativo` is written here too, as `ehKitDe` of the very row
+ * just read — the rule every `kitNativo` writer follows (step 9's import, this
+ * write-back, the kit arm's read-back), so a step-11 link no longer stays
+ * `null` for ever. An ordinary listing stores `false`, which is DATA: steps 12
+ * and 13 read it as "not a native kit" exactly as they read an absent one.
  */
 async function escreverWriteBack2(
   deps: PublicarAnuncioDeps,
@@ -1233,6 +1260,7 @@ async function escreverWriteBack2(
       deboost: args.deboost,
       original_brand_name: base.brand?.original_brand_name ?? null,
       logistic_info: base.logistic_info,
+      kitNativo: ehKitDe(base),
       // A publish that got this far SUCCEEDED; leaving the last failure standing
       // would make the operator's panel lie about the current state.
       falhaPublicacao: null,

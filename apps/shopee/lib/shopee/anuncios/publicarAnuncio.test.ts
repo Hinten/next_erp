@@ -1173,6 +1173,51 @@ describe('aplicarPublicacao — o item_status vem da LEITURA DE VOLTA', () => {
 });
 
 /* ========================================================================== */
+/*  (5b) step 19 R-1 — write-back #2 stamps kitNativo = ehKitDe(read-back)      */
+/* ========================================================================== */
+
+describe('aplicarPublicacao — kitNativo no write-back #2 (passo 19, R-1)', () => {
+  /** The ONE patch write-back #2 wrote (the second write on the link). */
+  async function kitNativoGravado(tag: Record<string, unknown> | null): Promise<unknown> {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    const fake = clienteFake({
+      addItem: () => ecoDeItem(),
+      getItemBaseInfo: () =>
+        baseInfo([linhaDeLeitura({ has_model: false, ...(tag === null ? {} : { tag }) })]),
+    });
+    // A row reading `tag.kit: true` sends `lerAnuncioShopee` to the kit page; a
+    // component-less one costs no further read.
+    Object.assign(fake.client, {
+      getKitItemInfo: () => {
+        fake.ops.push('get_kit_item_info');
+        return Promise.resolve({ product_info: { item_id: ITEM_ID, model_list: [] } });
+      },
+    });
+    const { plano } = await planejar(db, fake);
+    await aplicarPublicacao(deps(db, fake), plano);
+    const patches = patchesDoLink(db);
+    expect(patches).toHaveLength(2);
+    // Write-back #1 claims nothing (the create's `add` carries only the schema
+    // default): the request is not a reading of Shopee.
+    expect(patches[0]?.kitNativo ?? null).toBeNull();
+    return patches[1]?.kitNativo;
+  }
+
+  it('(M100) um publish ORDINÁRIO grava kitNativo: false — a leitura diz tag.kit false', async () => {
+    expect(await kitNativoGravado({ kit: false })).toBe(false);
+  });
+
+  it('PAR: uma leitura SEM tag (anterior a 2024-10-18) também grava false — nunca null', async () => {
+    expect(await kitNativoGravado(null)).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: a MESMA leitura com tag.kit true grava true — o valor vem da leitura, não de uma constante', async () => {
+    expect(await kitNativoGravado({ kit: true })).toBe(true);
+  });
+});
+
+/* ========================================================================== */
 /*  (6) the update body                                                        */
 /* ========================================================================== */
 
