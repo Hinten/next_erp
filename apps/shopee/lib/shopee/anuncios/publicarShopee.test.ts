@@ -789,6 +789,60 @@ describe('publicarShopee — a entrada', () => {
     expect(db.writes).toEqual([]);
   });
 
+  describe('(PR #1869 review) um --link que NÃO é desta conta é o 404 — qualquer opção, num kit nativo VIVO', () => {
+    /** K with its live native kit, created by a REAL kit-criar; the step-11 seam cleared after. */
+    async function kitVivo() {
+      const db = new FakeDb();
+      semearComponentes(db);
+      semearFamilia(db);
+      const loja = novaLoja();
+      const criado = await kit(publicar(db, loja));
+      expect(criado).toMatchObject({ arma: 'kit-criar', desfecho: 'criado', linkDocId: VINCULO_1 });
+      vi.mocked(prepararPublicacao).mockClear();
+      vi.mocked(publicarAnuncioShopee).mockClear();
+      return { db, loja, desde: loja.ops.length, escritas: db.writes.length };
+    }
+
+    const DIGITADO_ERRADO = `${VINCULO_1}-x`;
+
+    it('--recriar, --principal e --converter-em-kit ⇒ null em publicarShopee E no dry run — zero chamadas, zero escritas, nenhum braço', async () => {
+      const { db, loja, desde, escritas } = await kitVivo();
+
+      for (const opcao of [
+        { recriar: true },
+        { recriar: true, principal: null },
+        { principal: 'comp-a-filho' },
+        { converterEmKit: true, principal: null },
+      ]) {
+        const pedido = { linkDocId: DIGITADO_ERRADO, ...opcao };
+        expect(await publicar(db, loja, pedido), JSON.stringify(opcao)).toBeNull();
+        expect(
+          await ensaiarPublicacaoShopee(deps(db, loja), entrada(pedido), resolvedorFake(loja)),
+          JSON.stringify(opcao),
+        ).toBeNull();
+      }
+      expect(loja.ops.slice(desde)).toEqual([]);
+      expect(db.writes.length).toBe(escritas);
+      expect(prepararPublicacao).not.toHaveBeenCalled();
+      expect(publicarAnuncioShopee).not.toHaveBeenCalled();
+    });
+
+    it('sem opção nenhuma também: null, nunca o produto-e-kit ("defeito do ERP") que o braço de item diria antes do SEU 404', async () => {
+      const { db, loja } = await kitVivo();
+
+      expect(await publicar(db, loja, { linkDocId: DIGITADO_ERRADO, principal: null })).toBeNull();
+      expect(prepararPublicacao).not.toHaveBeenCalled();
+    });
+
+    it('⛔ quase-par: o --link CERTO com --recriar é o kit-recriar NELE', async () => {
+      const { db, loja } = await kitVivo();
+
+      expect(
+        await escolherArmaShopee(deps(db, loja), entrada({ linkDocId: VINCULO_1, recriar: true })),
+      ).toEqual({ ok: true, arma: { arma: 'kit-recriar', linkDocId: VINCULO_1 } });
+    });
+  });
+
   it('o dry run (ensaiarPublicacaoShopee) de um kit-criar lê e planeja — nunca add_kit_item, nenhuma escrita', async () => {
     const db = new FakeDb();
     semearComponentes(db);

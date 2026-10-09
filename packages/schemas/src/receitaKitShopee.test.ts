@@ -632,6 +632,30 @@ describe('chaveReceitaKitErp — the ERP-side fingerprint (L4)', () => {
     );
   });
 
+  it('EQUAL pair (legacy-only fold): 0 ≡ -1 and 1.5 ≡ 2.5 — every malformed quantidade reads null', () => {
+    // `kitSchema` is `int().min(1)`, so only a malformed LEGACY row reaches this
+    // fold; an edit between two such values is deliberately NOT a recipe change.
+    expect(chaveReceitaKitErp({ a: { quantidade: 0 } })).toBe(
+      chaveReceitaKitErp({ a: { quantidade: -1 } }),
+    );
+    expect(chaveReceitaKitErp({ a: { quantidade: 1.5 } })).toBe(
+      chaveReceitaKitErp({ a: { quantidade: 2.5 } }),
+    );
+    expect(chaveReceitaKitErp({ a: { quantidade: 0 } })).toBe(chaveReceitaKitErp({ a: {} }));
+  });
+
+  it('NEAR-MISS of the legacy-only fold: a VALID quantidade never folds with a malformed one', () => {
+    expect(chaveReceitaKitErp({ a: { quantidade: 1 } })).not.toBe(
+      chaveReceitaKitErp({ a: { quantidade: 0 } }),
+    );
+    expect(chaveReceitaKitErp({ a: { quantidade: 2 } })).not.toBe(
+      chaveReceitaKitErp({ a: { quantidade: 2.5 } }),
+    );
+    expect(chaveReceitaKitErp({ a: { quantidade: 1 } })).not.toBe(
+      chaveReceitaKitErp({ a: { quantidade: -1 } }),
+    );
+  });
+
   it('sorts by UTF-16 code unit, never by locale ("B" before "a")', () => {
     expect(chaveReceitaKitErp({ a: { quantidade: 1 }, B: { quantidade: 1 } })).toBe(
       '[["B",1],["a",1]]',

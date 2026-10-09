@@ -25,7 +25,7 @@ import { CANAL_AVISO, ROTAS_AVISO, SEVERIDADE_AVISO, TIPO_AVISO, chaveDeAviso } 
  * | {@link mesmaReceitaKitShopee} | a plain item's absent ERP model vs Shopee's hidden id (has_model `false`); row order; duplicate keys SUMMED (2 + 3 ≡ 5); `main_component` | quantity; a component added/removed; model A vs B (has_model `true`); `null` vs a model on a has_model item; an UNKNOWN has_model compares ids literally |
  * | {@link principalDoKitShopee} | the same main flagged on several models | two different mains (⇒ `null`, unreadable) |
  * | {@link mesmoEnderecoDeComponente} | identical `(itemId, modelId)` | any other item, model, or `null` vs a model — literal, no fold |
- * | {@link chaveReceitaKitErp} | key order; `limitarEstoque`; `timestamp`; passthrough extras | any `quantidade` change; a key added, removed or renamed; `{p1:12}` vs `{p11:2}` |
+ * | {@link chaveReceitaKitErp} | key order; `limitarEstoque`; `timestamp`; passthrough extras; every `quantidade` that is not a positive safe int (`0` ≡ `-1`, `1.5` ≡ `2.5` — legacy rows only, `kitSchema` is `int().min(1)`) | any change of a valid `quantidade`, and valid vs malformed (`1` vs `0`); a key added, removed or renamed; `{p1:12}` vs `{p11:2}` |
  *
  * PROBE facts this encodes (SG sandbox, 2026-10-06/07): a component item WITHOUT
  * variations reads back a NON-ZERO hidden `component_model_id` that
@@ -403,7 +403,11 @@ export function mesmoEnderecoDeComponente(
 /**
  * The L4 change detector (R-4) — an ERP-SIDE fingerprint, NOT a recipe. JSON.stringify of the entries sorted by id,
  * each [produtoId, quantidade] (quantidade kept only when a positive safe int, else null). `null`/`{}` ⇒ '[]'.
- * EQUAL: key order; limitarEstoque; timestamp; passthrough extras. DISTINCT: any quantidade change; a key added,
+ * EQUAL: key order; limitarEstoque; timestamp; passthrough extras; and every quantidade that is NOT a positive
+ * safe int — all read null, so `0` ≡ `-1` ≡ an absent one and `1.5` ≡ `2.5` (the string `'2'` reads null too). Only
+ * a malformed LEGACY row reaches that fold: `kitSchema` enforces `int().min(1)`, so no writer of this app stores
+ * one, and an edit between two such values is accepted as "no change" (neither is a quantity a kit can carry).
+ * DISTINCT: any change of a valid quantidade, and a valid one vs a malformed one (`1` vs `0`); a key added,
  * removed or renamed (incl. the #1450 repoint — accepted: a plain republish folds EQUAL on Shopee's side, re-stamps
  * and resolves, and so does a re-import, which decides on content (R-t (i)); the aviso text tells the operator to
  * republish FIRST, §2.1.5).
