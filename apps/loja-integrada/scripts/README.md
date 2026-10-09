@@ -12,14 +12,17 @@ this script turns them into committed fixtures under
   `nomes-proibidos.txt`. With `--verificar`, it reads the text files it is given.
 - It writes `lib/lojaIntegrada/fixtures/__wire__/<nome>.json`, one per pair, and
   nothing else, and only when every pair is clean: **any finding refuses the whole
-  run and writes nothing**.
+  run and writes nothing**. Every fixture goes to a temporary file first and is
+  renamed into place only once all of them are written, so a failed write replaces
+  none; a rename that fails part-way is reported, naming the fixtures written.
 - It never calls the network, never reads a token or an environment variable, and
   never starts a process. `lib/lojaIntegrada/estrutura.test.ts` walks its import
   closure to prove it. All the logic lives in `lib/lojaIntegrada/sanitizacao/`; the
   script only binds the file system to it.
-- It never prints a value from a capture: only request lines after redaction, leaf
-  paths with their JSON types and treatments, and findings as
-  `<nome> <where> :: <kind>`.
+- It never prints a value from a capture: only request lines after redaction (and
+  only when they trip no personal-data pattern and no listed name; otherwise
+  `<omitted: it trips <kind>>`), leaf paths with their JSON types and treatments,
+  and findings as `<nome> <where> :: <kind>`.
 
 ## Commands
 
@@ -40,7 +43,8 @@ pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-captur
 - `--sobrescrever` replaces an existing fixture whose bytes differ; identical bytes are
   always a no-op.
 - Exit codes: 0 done (or a clean dry run or check), 1 refused (nothing written),
-  2 usage error, 70 unexpected error (only the error's class and code are printed).
+  2 usage error, 70 unexpected error (only the error's class and code are printed,
+  plus which fixtures were written when it struck while writing).
 
 ## Who runs it
 
@@ -69,6 +73,8 @@ public, so a pushed branch is published.
 `<nome>` is lowercase letters, digits and `-`, at most 40 characters, and describes
 the request (`c1-pedido-busca`), never a store or a person.
 
+- Both are regular files in the folder: a link or a folder named like a capture
+  refuses the run. Both are UTF-8: UTF-16, with or without a BOM, is refused.
 - `<nome>.json`: the response body exactly as received (even when it is HTML or empty).
 - `<nome>.txt`: the sidecar, UTF-8, these lines only:
 
@@ -117,8 +123,8 @@ Read-only requests only (`GET`). A capture made with an invalid token gets its
 
 - **Browser devtools:** save the response body as `<nome>.json` and write
   `<nome>.txt` by hand. **Never "Save all as HAR" and never "Copy as cURL"**: both
-  carry the `Authorization` header and cookies. A `*.har` file in the folder refuses
-  the whole run.
+  carry the `Authorization` header and cookies. A `*.har` entry in the folder (a
+  file, a link or a folder) refuses the whole run.
 - **Legacy logs:** copy the body into `<nome>.json`, write the request line, and set
   `credencial: chave-api-aplicacao` and `data:` to the log's date. A write echo (`PUT`)
   is accepted as metadata; nothing is ever sent.

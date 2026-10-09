@@ -178,6 +178,21 @@ describe('encoding', () => {
     expect(decodificarUtf8(le).ok).toBe(false);
   });
 
+  it('refuses UTF-16 with no BOM, in either byte order: any NUL byte', () => {
+    const linha = 'GET /v1/x/ 200\ncredencial: personal-token\n';
+    const le = new Uint8Array(Buffer.from(linha, 'utf16le'));
+    const be = new Uint8Array(le.length);
+    for (let i = 0; i < le.length; i += 2) {
+      be[i] = le[i + 1] ?? 0;
+      be[i + 1] = le[i] ?? 0;
+    }
+    expect(recusas(le)).toEqual(['null:utf16']);
+    expect(recusas(be)).toEqual(['null:utf16']);
+    // One NUL anywhere is enough: no UTF-8 text a capture holds carries a raw NUL.
+    expect(decodificarUtf8(new Uint8Array([0x7b, 0x7d, 0x00])).ok).toBe(false);
+    expect(decodificarUtf8(b('{"a":"\\u0000"}')).ok).toBe(true);
+  });
+
   it('decodificarUtf8 strips a UTF-8 BOM and nothing else', () => {
     expect(decodificarUtf8(b('\uFEFFabc'))).toEqual({ ok: true, texto: 'abc' });
     expect(decodificarUtf8(b('abc'))).toEqual({ ok: true, texto: 'abc' });

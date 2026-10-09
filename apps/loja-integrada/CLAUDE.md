@@ -130,7 +130,9 @@ still be fixed. Only the context loader refuses those.
   there); its floor is 0 until the first fixture PR raises it.
 - `estrutura.test.ts` proves the sanitizer's import closure reaches no network or process
   module, no package client, no `firebase-admin`/`@delfrance/data`, no credential module,
-  and no `fetch(`; its external imports are an allow-list.
+  no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;
+  its external imports are an allow-list, and the allow-listed `@delfrance/core/*`
+  subpaths are walked too, not trusted.
 
 ## Config
 

@@ -21,6 +21,8 @@ const b = (t: string) => new TextEncoder().encode(t);
 
 interface Disco {
   readonly arquivos?: Readonly<Record<string, string | Uint8Array>>;
+  /** Entries that are not regular files (a link, a folder): listed, never readable. */
+  readonly naoArquivos?: readonly string[];
   readonly git?: readonly string[];
   readonly fixtures?: Readonly<Record<string, string>>;
   readonly outros?: Readonly<Record<string, string>>;
@@ -36,7 +38,13 @@ function disco(d: Disco = {}): SistemaDeArquivosDaSanitizacao & { readonly lidos
     lidos,
     pastaReal: (caminho) => (caminho === PASTA || caminho === 'li-capturas' ? PASTA : null),
     existe: (caminho) => (d.git ?? []).includes(caminho),
-    listar: (pasta) => (pasta === PASTA ? Object.keys(arquivos) : []),
+    listar: (pasta) =>
+      pasta === PASTA
+        ? [
+            ...Object.keys(arquivos).map((nome) => ({ nome, arquivo: true })),
+            ...(d.naoArquivos ?? []).map((nome) => ({ nome, arquivo: false })),
+          ]
+        : [],
     ler: (pasta, nome) => {
       lidos.push(nome);
       const v = arquivos[nome];
@@ -118,6 +126,28 @@ describe('executarSanitizacao — all or nothing', () => {
     expect(r).toMatchObject({ codigo: 1, escritas: [] });
   });
 
+  it('a dry run never prints a request line that trips a pattern, only the kind', () => {
+    // `numero` passes its predicate, so the redactor keeps the digits; the scanner refuses them.
+    const r = rodar(
+      ['--entrada', PASTA, '--dry-run'],
+      disco({
+        arquivos: pares({
+          a: par(`GET /v1/pedido/search/?numero=${CPF} 200`, { objects: [] }),
+          b: par(`GET /v1/cliente/${CPF} 200`, {}),
+          c: par('GET /v1/produto/?sku=LOJA%2FEXEMPLO-01 200', { objects: [] }),
+        }),
+      }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).not.toContain(CPF);
+    expect(r.saida.toLowerCase()).not.toContain('exemplo');
+    expect(r.saida).toContain('[a]\n  request: <omitted: it trips cpf>\n');
+    expect(r.saida).toContain('[b]\n  request: <omitted: it trips cpf>\n');
+    expect(r.saida).toContain('[c]\n  request: <omitted: it trips nome-de-loja>\n');
+    expect(r.saida).toContain('  a requisicao.query.*.* :: cpf\n');
+    expect(r.saida).toContain('  b requisicao.caminho :: cpf\n');
+  });
+
   it('`--so` converts only the named pair', () => {
     const r = rodar(
       ['--entrada', PASTA, '--so', 'a'],
@@ -165,6 +195,36 @@ describe('executarSanitizacao — the folder', () => {
     expect(r.saida).toContain('pasta :: har');
     expect(r.saida).toContain('Authorization header and cookies');
     expect(d.lidos).toEqual([]);
+  });
+
+  it('a HAR that is not a regular file (a link, a folder) refuses the run too', () => {
+    const d = disco({ arquivos: pares({ a: LIMPO }), naoArquivos: ['sessao.har'] });
+    const r = rodar(['--entrada', PASTA, '--dry-run'], d);
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('pasta :: har');
+    expect(d.lidos).toEqual([]);
+  });
+
+  it('a capture that is not a regular file is refused by name, never read; other entries are counted', () => {
+    const d = disco({
+      arquivos: { ...pares({ a: LIMPO }), 'b.txt': LIMPO.txt },
+      naoArquivos: ['b.json', 'antigas'],
+    });
+    const r = rodar(['--entrada', PASTA], d);
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  b .json :: nao-e-arquivo\n');
+    expect(r.saida).toContain('regular file');
+    expect(r.saida).not.toContain('sem-corpo');
+    expect(d.lidos).not.toContain('b.json');
+    const seco = rodar(
+      ['--entrada', PASTA, '--dry-run'],
+      disco({
+        arquivos: pares({ a: LIMPO }),
+        naoArquivos: ['antigas'],
+      }),
+    );
+    expect(seco.codigo).toBe(0);
+    expect(seco.saida).toContain('1 pair(s), 1 other file(s) ignored');
   });
 
   it('an unpaired capture refuses the run, by name', () => {
@@ -244,7 +304,7 @@ describe('executarSanitizacao — usage errors (exit 2), never echoing an argume
     expect(
       uso(['--entrada', PASTA], {
         ...semLista,
-        listar: (p) => listar(p).filter((n) => n !== 'nomes-proibidos.txt'),
+        listar: (p) => listar(p).filter((e) => e.nome !== 'nomes-proibidos.txt'),
       }),
     ).toThrow(/no nomes-proibidos\.txt/);
     expect(

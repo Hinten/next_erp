@@ -23,17 +23,21 @@
  *    and only the logger redacts them;
  *  - the capture sanitizer (`sanitizacao/**`, `fixtures/**`, `scripts/sanitizar.ts`)
  *    cannot reach a network, a process, a token or Firestore: its transitive
- *    import closure holds no network or process module, no package client, no
+ *    import closure — the allow-listed `@delfrance/core/*` subpaths walked too,
+ *    not trusted — holds no network or process module, no package client, no
  *    Admin SDK or admin data layer, none of the credential modules, and no text
- *    that calls `fetch` or loads code dynamically — and every external module it
- *    does import is on a short allow-list;
+ *    that calls `fetch`, loads code dynamically, fetches a builtin at run time or
+ *    reaches a global by a computed name — and every external module it does
+ *    import is on a short allow-list;
  *  - the committed fixture corpus keeps its `.prettierignore` and `.gitattributes`
  *    lines, so a re-run over an unchanged capture writes identical bytes.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 const RAIZ_LIB = fileURLToPath(new URL('.', import.meta.url));
 const RAIZ_APP = fileURLToPath(new URL('../..', import.meta.url));
@@ -77,14 +81,20 @@ const lerDoApp: LeitorDeFonte = (caminho) => {
   return existsSync(absoluto) ? readFileSync(absoluto, 'utf8') : null;
 };
 
+/** A non-relative specifier as a source path the walk enters too, or `null` to leave it external. */
+type ResolvedorDePacote = (espec: string) => string | null;
+
 /**
  * The transitive closure of RELATIVE imports from `entradas`: every file
  * reached, and every non-relative specifier any of them imports. A relative
- * import that resolves to no file is reported as `?<path>` — fail closed.
+ * import that resolves to no file is reported as `?<path>` — fail closed. With
+ * `resolver`, a non-relative specifier it maps to a source file is ALSO walked
+ * (it stays in `externos`, so it still has to be allow-listed).
  */
 function fechoDeImportacoes(
   entradas: readonly string[],
   ler: LeitorDeFonte,
+  resolver: ResolvedorDePacote = () => null,
 ): { arquivos: string[]; externos: string[] } {
   const arquivos: string[] = [];
   const externos = new Set<string>();
@@ -101,6 +111,8 @@ function fechoDeImportacoes(
     for (const espec of especificadores(texto)) {
       if (!espec.startsWith('.')) {
         externos.add(espec);
+        const pacote = resolver(espec);
+        if (pacote !== null) pendentes.push(pacote);
         continue;
       }
       const base = posix.normalize(posix.join(posix.dirname(arquivo), espec));
@@ -175,7 +187,12 @@ const MODULOS_DE_CREDENCIAL = [
   'core/credencial',
 ].map((m) => `lib/lojaIntegrada/${m}.ts`);
 
-/** Text that calls the network or loads code the import scan cannot see. */
+/**
+ * Text that calls the network or loads code the import scan cannot see: a
+ * builtin fetched at run time (`process.getBuiltinModule`, `process.binding`),
+ * and a global or `process` member reached by a computed name
+ * (`globalThis['fe' + 'tch']`), which no name-based pattern could follow.
+ */
 const CHAMADAS_PROIBIDAS = [
   /\bfetch\s*\(/,
   /\brequire\s*\(/,
@@ -183,14 +200,58 @@ const CHAMADAS_PROIBIDAS = [
   /\bimport\s*\(\s*[^'"\s)]/,
   /\bXMLHttpRequest\b/,
   /\bWebSocket\b/,
+  /\bgetBuiltinModule\b/,
+  /\bprocess\s*\.\s*_?(?:linked)?[bB]inding\b/,
+  /\b(?:globalThis|global|self|window|process)\s*(?:\?\.\s*)?\[/,
 ];
+
+/** The workspace package the sanitizer's closure may import subpaths of (all allow-listed above). */
+const PREFIXO_CORE = '@delfrance/core/';
+/** Its `exports` map, read from its manifest: `./wire` → `./src/wire/index.ts`. */
+const EXPORTACOES_DO_CORE = z
+  .object({ exports: z.record(z.string(), z.string()) })
+  .parse(
+    JSON.parse(readFileSync(join(RAIZ_REPO, 'packages', 'core', 'package.json'), 'utf8')),
+  ).exports;
+
+/**
+ * `@delfrance/core/<sub>` → its source file, relative to the APP root, so the
+ * walk enters the package instead of trusting it: a `fetch` added there would
+ * otherwise reach the sanitizer unseen.
+ */
+const resolverPacoteDoSanitizador: ResolvedorDePacote = (espec) => {
+  if (!espec.startsWith(PREFIXO_CORE)) return null;
+  const alvo = EXPORTACOES_DO_CORE[`./${espec.slice(PREFIXO_CORE.length)}`];
+  return alvo === undefined ? null : posix.join('../../packages/core', alvo);
+};
+
+/** A file outside the app (a walked package): its doc comments discuss `fetch()` legitimately. */
+const ehDePacote = (arquivo: string) => arquivo.startsWith('../');
+
+/**
+ * `texto` with every comment removed, by the TypeScript printer — so a quoted
+ * `//` or a regex literal cannot fool it the way a hand-rolled stripper could.
+ */
+function semComentarios(texto: string): string {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  return ts.createPrinter({ removeComments: true }).printFile(fonte);
+}
 
 /**
  * Why the closure from `entradas` (app-relative paths) breaks the sanitizer's
- * isolation; empty when it does not.
+ * isolation; empty when it does not. The app's own files are scanned raw (a
+ * comment that spells a call fails too); a walked package's, without comments.
  */
-function violacoesDoSanitizador(entradas: readonly string[], ler: LeitorDeFonte): string[] {
-  const fecho = fechoDeImportacoes(entradas, ler);
+function violacoesDoSanitizador(
+  entradas: readonly string[],
+  lerBruto: LeitorDeFonte,
+  resolver: ResolvedorDePacote = resolverPacoteDoSanitizador,
+): string[] {
+  const ler: LeitorDeFonte = (caminho) => {
+    const texto = lerBruto(caminho);
+    return texto !== null && ehDePacote(caminho) ? semComentarios(texto) : texto;
+  };
+  const fecho = fechoDeImportacoes(entradas, ler, resolver);
   const violacoes: string[] = [];
   for (const espec of fecho.externos) {
     if (proibidoNoSanitizador(espec)) violacoes.push(`imports ${espec}`);
@@ -336,6 +397,7 @@ describe('lib/lojaIntegrada layout', () => {
         'sanitizacao/capturaParaFixture.ts',
         'sanitizacao/folhas.ts',
         'sanitizacao/executar.ts',
+        'sanitizacao/escrita.ts',
         'fixtures/piiScan.ts',
         'fixtures/wireCorpus.ts',
       ]),
@@ -413,13 +475,18 @@ describe('lib/lojaIntegrada layout', () => {
     ];
     expect(violacoesDoSanitizador(entradas, lerDoApp)).toEqual([]);
     // Anti-vacuity: the walk reached the script, the run and the redactor, and saw real imports.
-    const fecho = fechoDeImportacoes(entradas, lerDoApp);
+    const fecho = fechoDeImportacoes(entradas, lerDoApp, resolverPacoteDoSanitizador);
     expect(fecho.arquivos).toEqual(
       expect.arrayContaining([
         'scripts/sanitizar.ts',
         'lib/lojaIntegrada/sanitizacao/executar.ts',
+        'lib/lojaIntegrada/sanitizacao/escrita.ts',
         'lib/lojaIntegrada/fixtures/piiScan.ts',
         'lib/lojaIntegrada/core/redacao.ts',
+        // The allow-listed workspace packages are walked too, not trusted.
+        '../../packages/core/src/wire/index.ts',
+        '../../packages/core/src/wire/prazo.ts',
+        '../../packages/core/src/documents/index.ts',
       ]),
     );
     expect(fecho.externos).toEqual(expect.arrayContaining(['node:fs', 'zod']));
@@ -571,8 +638,45 @@ describe('the guards, on synthetic source', () => {
     ['a module off the allow-list', "import pad from 'left-pad';"],
     ['a dynamic import of a computed name', 'const m = await import(nome);'],
     ['a require call', "const m = require('x');"],
+    ['process.getBuiltinModule', "export const h = process.getBuiltinModule('node:https');"],
+    ['process.binding', "export const t = process.binding('tcp_wrap');"],
+    [
+      'a global reached by a computed name',
+      "export const f = (globalThis['fe' + 'tch'] as (u: string) => unknown)('https://x.invalid');",
+    ],
   ])('sanitizer closure flags %s', (_caso, fonte) => {
     expect(violacoesDoSanitizador([SANITIZADOR], comRedator(fonte)).length).toBeGreaterThan(0);
+  });
+
+  /** An allow-listed workspace package, walked like the app's own files. */
+  const PACOTE = '../../packages/core/src/wire/index.ts';
+  const comPacote = (fontePacote: string, extras: Readonly<Record<string, string>> = {}) =>
+    leitor({
+      [SANITIZADOR]: "import { lerRespostaJson } from '@delfrance/core/wire';",
+      [PACOTE]: fontePacote,
+      ...extras,
+    });
+  const resolver = (espec: string) => (espec === '@delfrance/core/wire' ? PACOTE : null);
+
+  it('sanitizer closure: an allow-listed package is walked, and its comments are not code', () => {
+    const fonte = "import { z } from 'zod';\n/** `fetch()` has no timeout. */\nexport const x = 1;";
+    expect(violacoesDoSanitizador([SANITIZADOR], comPacote(fonte), resolver)).toEqual([]);
+    expect(fechoDeImportacoes([SANITIZADOR], comPacote(fonte), resolver).arquivos).toEqual([
+      PACOTE,
+      SANITIZADOR,
+    ]);
+  });
+
+  it.each([
+    ['a fetch call', "export const f = () => fetch('https://x.invalid');"],
+    ['a network module', "import { request } from 'node:https';"],
+    ['a module off the allow-list', "import pad from 'left-pad';"],
+    ['the same, one relative import deeper', "export { y } from './prazo';"],
+  ])('sanitizer closure flags, inside an allow-listed package, %s', (_caso, fonte) => {
+    const extras = { '../../packages/core/src/wire/prazo.ts': "export const y = fetch('x');" };
+    expect(
+      violacoesDoSanitizador([SANITIZADOR], comPacote(fonte, extras), resolver).length,
+    ).toBeGreaterThan(0);
   });
 
   it('seam accepts criarObservadorLi(…) imported from the logger, and exempts the logger itself', () => {

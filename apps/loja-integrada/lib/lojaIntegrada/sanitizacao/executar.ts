@@ -14,8 +14,10 @@
  * not a per-file skip that leaves the rest written.
  *
  * **Nothing raw reaches the output.** It prints request lines after the
- * redactor, classes, statuses, forms, byte counts, leaf paths with types and
- * treatments, and findings as `<nome> <onde> :: <tipo>`. A pair whose NAME trips
+ * redactor, and only when the scanner's patterns and the store-name list find
+ * nothing in them (otherwise `<omitted: it trips <tipo>>`), classes, statuses,
+ * forms, byte counts, leaf paths with types and treatments, and findings as
+ * `<nome> <onde> :: <tipo>`. A pair whose NAME trips
  * a pattern or a listed store name is printed as `par-<n>`; a `--verificar` file
  * likewise as `arquivo-<n>`. A usage error is an {@link ErroDeUsoSanitizacao}
  * whose message holds a position or a line number, never an argument.
@@ -150,14 +152,21 @@ export function lerArgumentos(argv: readonly string[]): OpcoesDaSanitizacao {
 /*                                The run                                     */
 /* -------------------------------------------------------------------------- */
 
+/** One entry directly inside the capture folder. */
+export interface EntradaDaPastaLi {
+  readonly nome: string;
+  /** A regular file. A link, a folder or anything else is `false`, and is never read. */
+  readonly arquivo: boolean;
+}
+
 /** Everything the run reads, injected by the script (`node:fs`) or a test. */
 export interface SistemaDeArquivosDaSanitizacao {
   /** `--entrada` as an absolute, link-resolved folder; `null` when it is not an existing folder. */
   readonly pastaReal: (caminho: string) => string | null;
   /** Whether a file or a folder exists at this absolute path. */
   readonly existe: (caminho: string) => boolean;
-  /** The FILE names directly inside `pasta`. */
-  readonly listar: (pasta: string) => readonly string[];
+  /** EVERY entry directly inside `pasta`, of any type (the HAR check sees them all). */
+  readonly listar: (pasta: string) => readonly EntradaDaPastaLi[];
   readonly ler: (pasta: string, nome: string) => Uint8Array;
   readonly modificadoEmMs: (pasta: string, nome: string) => number;
   /** The text of `__wire__/<nome>.json` when it exists, else `null`. */
@@ -198,7 +207,10 @@ const DICAS: Readonly<Record<string, string>> = {
   har: 'a HAR file carries the Authorization header and cookies: delete it',
   'credencial-na-url':
     'a credential sits in the URL: delete BOTH files, and capture again without it',
-  utf16: 're-save the file as UTF-8',
+  utf16:
+    'the file is UTF-16 (a BOM, or NUL bytes: UTF-16 without a BOM, or a binary file): re-save it as UTF-8 text',
+  'nao-e-arquivo':
+    'a capture must be a regular file in the folder, not a link or a folder: copy the file itself in',
   'linha-nao-reconhecida':
     'a sidecar holds only the request line, credencial: and data: (never a header); fix that line',
   'sem-credencial': 'add the credencial: line naming the credential the capture really ran under',
@@ -257,8 +269,8 @@ export function executarSanitizacao(
     );
   }
 
-  const arquivos = fs.listar(pasta);
-  if (temHar(arquivos)) {
+  const entradas = fs.listar(pasta);
+  if (temHar(entradas.map((e) => e.nome))) {
     return {
       saida: fim([
         'sanitizar: REFUSED, nothing was written.',
@@ -269,6 +281,7 @@ export function executarSanitizacao(
       codigo: 1,
     };
   }
+  const arquivos = entradas.filter((e) => e.arquivo).map((e) => e.nome);
   const lista = criarListaDeNomes(
     lerNomesProibidos(
       arquivos.includes(ARQUIVO_NOMES_PROIBIDOS) ? fs.ler(pasta, ARQUIVO_NOMES_PROIBIDOS) : null,
@@ -277,7 +290,11 @@ export function executarSanitizacao(
 
   if (opcoes.verificar !== null) return verificar(opcoes.verificar, fs, lista);
 
-  const lote = montarLote(arquivos, opcoes.so);
+  const lote = montarLote(
+    arquivos,
+    opcoes.so,
+    entradas.filter((e) => !e.arquivo).map((e) => e.nome),
+  );
   const rotulos = new Map(
     lote.pares.map((nome, i) => [nome, imprimivel(nome, lista) ? nome : `par-${String(i + 1)}`]),
   );
@@ -292,10 +309,14 @@ export function executarSanitizacao(
     if (par !== undefined) porPar.set(par, (porPar.get(par) ?? 0) + itens.length);
   };
 
-  // Unpaired captures and names outside the grammar refuse the run too.
+  // Unpaired captures, links and names outside the grammar refuse the run too.
   lote.problemas.forEach((p, i) => {
     if (p.tipo === 'nome-fora-da-gramatica') {
       registrar('pasta', [{ onde: `${String(p.quantidade)} file(s)`, tipo: p.tipo }]);
+    } else if (p.tipo === 'nao-e-arquivo') {
+      registrar(imprimivel(p.nome, lista) ? p.nome : `entrada-${String(i + 1)}`, [
+        { onde: `.${p.extensao}`, tipo: p.tipo },
+      ]);
     } else {
       registrar(imprimivel(p.nome, lista) ? p.nome : `arquivo-sem-par-${String(i + 1)}`, [
         { onde: p.tipo === 'sem-sidecar' ? '.txt' : '.json', tipo: p.tipo },
@@ -362,7 +383,7 @@ export function executarSanitizacao(
         continue;
       }
       linhas.push(
-        `  request: ${resumo.linhaRequisicao ?? '<omitted: it holds a listed store name>'}`,
+        `  request: ${resumo.linhaRequisicao ?? `<omitted: it trips ${resumo.linhaOmitidaPor.join(', ')}>`}`,
         `  class ${resumo.politica}, status ${String(resumo.status)}, form ${resumo.forma ?? '-'}, ${String(resumo.bytes)} byte(s)`,
       );
       if (resumo.folhas.length > 0) {

@@ -18,12 +18,16 @@
  *    - the check-digit test on a value or key that is EXACTLY 11 or 14 digits, or
  *      has the letter-bearing CNPJ shape — with no exemption, so a real SKU or
  *      GTIN that collides refuses the run and is surfaced (an exemption is a
- *      reviewed change for one exact path);
+ *      reviewed change for one exact path); in a URL-shaped text (one holding a
+ *      `/`: the request path, `meta.next`), on every bare 11/14-digit run, since
+ *      the redactor keeps every all-digit path segment;
  *    - a street-address pattern, and a Correios-shaped tracking code other than
  *      the placeholder;
  *    - the store-name list (`nomes-proibidos.txt`, which never enters the
  *      repository), folded for case, accents and separators. The sanitizer and
  *      `--verificar` pass it; CI has none.
+ *    Every text is checked as written AND percent-decoded: a kept query value
+ *    stays as written (`LOJA%2FEXEMPLO`) while the redactor tested it decoded.
  *    The redactor's own placeholders are skipped.
  *
  * ⚠️ **A finding never carries a value.** It carries a path and a kind, and a key
@@ -92,20 +96,64 @@ export function criarListaDeNomes(termos: readonly string[]): ListaDeNomesLi {
   };
 }
 
+/* -------------------------------------------------------------------------- */
+/*                            Percent-encoded text                            */
+/* -------------------------------------------------------------------------- */
+
+const ESCAPES = /(?:%[0-9A-Fa-f]{2})+/g;
+/** Not fatal: an invalid sequence becomes U+FFFD, so decoding never throws. */
+const UTF8 = new TextDecoder('utf-8');
+/** Rounds of decoding: a value encoded twice (`%252F`) is still read. */
+const RODADAS_DE_DECODIFICACAO = 3;
+
+/** Every run of `%XX` escapes decoded as UTF-8; a malformed `%` is left as written. */
+function decodificarEscapes(t: string): string {
+  return t.replace(ESCAPES, (run) => {
+    const bytes = new Uint8Array(run.length / 3);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Number.parseInt(run.slice(i * 3 + 1, i * 3 + 3), 16);
+    }
+    return UTF8.decode(bytes);
+  });
+}
+
+/**
+ * `t` as written and as a server reads it. The redactor tests a query value
+ * DECODED but keeps it as WRITTEN (`sku=LOJA%2FEXEMPLO`, in the request line and
+ * in `meta.next`), so a check on the written text alone misses what the decoded
+ * one says. Text without a `%` is returned as is.
+ */
+function formasDecodificadas(t: string): string[] {
+  const formas = [t];
+  let atual = t;
+  for (let i = 0; i < RODADAS_DE_DECODIFICACAO && atual.includes('%'); i++) {
+    const seguinte = decodificarEscapes(atual);
+    if (seguinte === atual) break;
+    formas.push(seguinte);
+    atual = seguinte;
+  }
+  return formas;
+}
+
 /**
  * Whether `texto` holds any listed name: a substring match under the fold, so a
  * term never matches a DIFFERENT word (`exemplo` vs `exemplar`), and folding more
- * is the safe direction.
+ * is the safe direction. The text is tried as written, percent-decoded, and with
+ * every `%XX` escape dropped (`LOJA%C3%A9EXEMPLO` → `LOJAEXEMPLO`).
  */
 export function contemNomeDeLoja(texto: string, lista: ListaDeNomesLi): boolean {
   if (lista.termos.length === 0) return false;
-  const dobrado = dobrarNomeDeLoja(texto);
-  let juntos: string | null = null;
-  return lista.termos.some((t) => {
-    if (t.comEspacos !== '' && dobrado.includes(t.comEspacos)) return true;
-    if (t.juntos === null) return false;
-    juntos ??= dobrado.replaceAll(' ', '');
-    return juntos.includes(t.juntos);
+  const formas = formasDecodificadas(texto);
+  if (texto.includes('%')) formas.push(texto.replace(ESCAPES, ''));
+  return formas.some((forma) => {
+    const dobrado = dobrarNomeDeLoja(forma);
+    let juntos: string | null = null;
+    return lista.termos.some((t) => {
+      if (t.comEspacos !== '' && dobrado.includes(t.comEspacos)) return true;
+      if (t.juntos === null) return false;
+      juntos ??= dobrado.replaceAll(' ', '');
+      return juntos.includes(t.juntos);
+    });
   });
 }
 
@@ -146,13 +194,24 @@ const ENDERECO =
 /** A Correios-shaped tracking code (`AA000000000BR` is the placeholder, skipped as such). */
 const RASTREIO_CORREIOS = /(?<![A-Za-z0-9])[A-Z]{2}\d{9}[A-Z]{2}(?![A-Za-z0-9])/;
 
-/** Every kind a text trips (a key, a string leaf, a doc line). */
-function tiposDoTexto(s: string, lista: ListaDeNomesLi | null): TipoAchadoLi[] {
-  const tipos = new Set<TipoAchadoLi>(tiposMascaradosLi(s, { digitos: false }));
-  const digitos = digitosVerificados(s);
-  if (digitos !== null) tipos.add(digitos);
-  if (ENDERECO.test(s)) tipos.add('endereco');
-  if (RASTREIO_CORREIOS.test(s)) tipos.add('rastreio');
+/**
+ * Every kind a text trips: a key, a string leaf, the request line. Each form of
+ * the text (as written, percent-decoded) is checked.
+ *
+ * A text holding a `/` is URL-shaped (the request path, `meta.next`, a resource
+ * URI): the redactor keeps EVERY all-digit path segment as an id, so the check
+ * digits run on each bare 11/14-digit run in it (`/v1/cliente/<cpf>`,
+ * `1;<cpf>`), not only on a value that is exactly a document.
+ */
+export function tiposDoTextoLi(s: string, lista: ListaDeNomesLi | null): TipoAchadoLi[] {
+  const tipos = new Set<TipoAchadoLi>();
+  for (const forma of formasDecodificadas(s)) {
+    for (const t of tiposMascaradosLi(forma, { digitos: forma.includes('/') })) tipos.add(t);
+    const digitos = digitosVerificados(forma);
+    if (digitos !== null) tipos.add(digitos);
+    if (ENDERECO.test(forma)) tipos.add('endereco');
+    if (RASTREIO_CORREIOS.test(forma)) tipos.add('rastreio');
+  }
   if (lista !== null && contemNomeDeLoja(s, lista)) tipos.add('nome-de-loja');
   return [...tipos];
 }
@@ -300,13 +359,13 @@ export function achadosDePadroes(
     if (ehObjetoSimples(v)) {
       for (const [k, filho] of Object.entries(v)) {
         const aqui = [...caminho, rotuloDeChave(k, lista)];
-        marcar(aqui, tiposDoTexto(k, lista));
+        marcar(aqui, tiposDoTextoLi(k, lista));
         percorrer(filho, aqui);
       }
       return;
     }
     if (typeof v === 'string') {
-      if (!PLACEHOLDERS_FIXTURE_LI.has(v)) marcar(caminho, tiposDoTexto(v, lista));
+      if (!PLACEHOLDERS_FIXTURE_LI.has(v)) marcar(caminho, tiposDoTextoLi(v, lista));
       return;
     }
     if (typeof v === 'number' && Number.isInteger(v)) {
@@ -365,12 +424,16 @@ export function semFalsosConhecidosLi(t: string): string {
 /**
  * The kinds one line of a doc, a fixture or a PR-body draft trips: the store
  * names, and every redactor pattern (bare 11/14 digits only with valid check
- * digits). The repository's mandated fakes are skipped.
+ * digits), on the line as written and percent-decoded. The repository's
+ * mandated fakes are skipped.
  */
 export function tiposNaLinhaLi(linha: string, lista: ListaDeNomesLi): TipoAchadoLi[] {
-  const tipos = new Set<TipoAchadoLi>(
-    tiposMascaradosLi(semFalsosConhecidosLi(linha), { digitos: true }),
-  );
+  const tipos = new Set<TipoAchadoLi>();
+  for (const forma of formasDecodificadas(linha)) {
+    for (const t of tiposMascaradosLi(semFalsosConhecidosLi(forma), { digitos: true })) {
+      tipos.add(t);
+    }
+  }
   if (contemNomeDeLoja(linha, lista)) tipos.add('nome-de-loja');
   return [...tipos];
 }

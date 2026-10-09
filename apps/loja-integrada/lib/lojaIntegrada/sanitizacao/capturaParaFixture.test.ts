@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { FALSO_LI, LIMITE_ANALISE_BYTES, redigirCorpo } from '../core/redacao';
 import { criarListaDeNomes } from '../fixtures/piiScan';
 import { type EnvelopeFixtureLi, lerFixtureLi } from '../fixtures/wireCorpus';
-import { PII_FALSA, exemplosDaEspecificacao, gerarCpf } from '../testing/especificacaoPii';
+import {
+  PII_FALSA,
+  exemplosDaEspecificacao,
+  gerarCnpj,
+  gerarCpf,
+} from '../testing/especificacaoPii';
 import {
   type ResultadoDaCapturaLi,
   capturaParaFixture,
@@ -12,6 +17,7 @@ import {
 
 /* Synthetic captures only: PII inline, CPFs generated at run time. */
 const CPF = gerarCpf('529982247');
+const CNPJ = gerarCnpj('112223330001');
 const LISTA = criarListaDeNomes(['Loja Exemplo']);
 const b = (t: string) => new TextEncoder().encode(t);
 const MTIME = Date.UTC(2026, 9, 7, 23, 30); // 2026-10-07 23:30 UTC
@@ -323,6 +329,68 @@ describe('capturaParaFixture — refusals', () => {
     const r = captura('GET /v1/produto/?sku=LOJAEXEMPLO-1 200', { objects: [] });
     expect(achados(r)).toEqual(['requisicao.query.*.* :: nome-de-loja']);
     expect(r.resumo?.linhaRequisicao).toBeNull();
+    expect(r.resumo?.linhaOmitidaPor).toEqual(['nome-de-loja']);
+  });
+
+  it('a request line that trips a personal-data pattern is omitted from the summary too', () => {
+    // `numero` passes its predicate (up to 12 digits), so the redactor keeps the value.
+    const r = captura(`GET /v1/pedido/search/?numero=${CPF} 200`, { objects: [] });
+    expect(achados(r)).toEqual(['requisicao.query.*.* :: cpf']);
+    expect(r.resumo?.linhaRequisicao).toBeNull();
+    expect(r.resumo?.linhaOmitidaPor).toEqual(['cpf']);
+    expect(JSON.stringify(r.resumo)).not.toContain(CPF);
+    // Near-miss: an ordinary numero is printed.
+    const limpo = captura('GET /v1/pedido/search/?numero=1234 200', { objects: [] });
+    expect(limpo.resumo?.linhaRequisicao).toBe('GET /v1/pedido/search/?numero=1234');
+    expect(limpo.resumo?.linhaOmitidaPor).toEqual([]);
+  });
+
+  it('a CPF or a CNPJ as a path segment is refused, and the line is omitted', () => {
+    for (const [segmento, tipo] of [
+      [CPF, 'cpf'],
+      [CNPJ, 'cnpj'],
+    ] as const) {
+      const r = captura(`GET /v1/cliente/${segmento} 200`, {});
+      expect(achados(r), tipo).toEqual([`requisicao.caminho :: ${tipo}`]);
+      expect(r.resumo?.linhaRequisicao, tipo).toBeNull();
+      expect(JSON.stringify(r), tipo).not.toContain(segmento);
+    }
+  });
+
+  it('a CPF in `meta.next` is refused', () => {
+    const r = captura('GET /v1/pedido/search/ 200', {
+      meta: { next: `/api/v1/pedido/${CPF}/?limit=20` },
+      objects: [],
+    });
+    expect(achados(r)).toEqual(['resposta.corpo.meta.next :: cpf']);
+  });
+
+  it('a percent-encoded listed name in a kept query value or in `meta.next` is refused', () => {
+    const r = captura('GET /v1/produto/?sku=LOJA%2FEXEMPLO-01 200', {
+      meta: { next: '/api/v1/produto/?sku=LOJA%2FEXEMPLO-01&offset=20' },
+      objects: [],
+    });
+    expect(achados(r)).toEqual([
+      'requisicao.query.*.* :: nome-de-loja',
+      'resposta.corpo.meta.next :: nome-de-loja',
+    ]);
+    expect(r.resumo?.linhaRequisicao).toBeNull();
+    // Control: the same SKU without a listed name is kept and printed.
+    const limpo = captura('GET /v1/produto/?sku=CAM%2F001-01 200', { objects: [] });
+    expect(achados(limpo)).toEqual([]);
+    expect(limpo.resumo?.linhaRequisicao).toBe('GET /v1/produto/?sku=CAM%2F001-01');
+  });
+
+  it('a UTF-16 body with no BOM (NUL bytes) is refused as utf16, not read as text', () => {
+    const r = capturaParaFixture(
+      {
+        sidecar: b('GET /v1/situacao/ 200\ncredencial: personal-token\n'),
+        corpo: new Uint8Array(Buffer.from('{"objects":[{"codigo":"x"}]}', 'utf16le')),
+        corpoModificadoEmMs: MTIME,
+      },
+      LISTA,
+    );
+    expect(achados(r)).toEqual(['.json :: utf16']);
   });
 });
 

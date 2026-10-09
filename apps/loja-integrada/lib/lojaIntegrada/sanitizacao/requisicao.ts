@@ -77,14 +77,18 @@ export type LeituraDoSidecar =
 /* -------------------------------------------------------------------------- */
 
 /**
- * A capture file as text: UTF-8, its BOM stripped. A UTF-16 BOM (either order)
- * is refused: the file must be re-saved as UTF-8.
+ * A capture file as text: UTF-8, its BOM stripped. UTF-16 is refused, so the file
+ * is re-saved as UTF-8: a UTF-16 BOM (either order), or any NUL byte — UTF-16
+ * text without a BOM is full of them, while no UTF-8 JSON, HTML, sidecar or doc
+ * carries a raw one (JSON escapes it as `\u0000`). Without the NUL check such a
+ * body decodes to garbage and is filed as `texto`, describing JSON as text.
  */
 export function decodificarUtf8(
   bytes: Uint8Array,
 ): { readonly ok: true; readonly texto: string } | { readonly ok: false } {
   const [a, b, c] = bytes;
   if ((a === 0xfe && b === 0xff) || (a === 0xff && b === 0xfe)) return { ok: false };
+  if (bytes.includes(0)) return { ok: false };
   const inicio = a === 0xef && b === 0xbb && c === 0xbf ? 3 : 0;
   return {
     ok: true,

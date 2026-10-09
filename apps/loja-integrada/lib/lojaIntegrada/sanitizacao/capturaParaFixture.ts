@@ -36,8 +36,9 @@ import {
 } from '../core/redacao';
 import {
   type ListaDeNomesLi,
-  contemNomeDeLoja,
+  type TipoAchadoLi,
   piiScan,
+  tiposDoTextoLi,
   tiposMascaradosLi,
 } from '../fixtures/piiScan';
 import { type EnvelopeFixtureLi, serializarFixtureLi } from '../fixtures/wireCorpus';
@@ -60,8 +61,15 @@ export interface AchadoDaCapturaLi {
 
 /** What `--dry-run` prints about a pair; it holds no body value. */
 export interface ResumoDaCapturaLi {
-  /** `METODO caminho?query` after the redactor; `null` when it holds a listed name. */
+  /**
+   * `METODO caminho?query` after the redactor; `null` when it trips any pattern
+   * of the scanner or a listed name. The redactor keeps some values the scanner
+   * refuses (an 11-digit `numero`, an id segment), so the line is checked again
+   * here: a refused value is never printed, not even in a refused pair.
+   */
   readonly linhaRequisicao: string | null;
+  /** Why `linhaRequisicao` is `null`: the kinds it trips (empty when it is printed). */
+  readonly linhaOmitidaPor: readonly TipoAchadoLi[];
   readonly politica: PoliticaCorpoLi;
   readonly status: number;
   readonly forma: 'json' | 'texto' | 'vazio' | null;
@@ -194,8 +202,10 @@ export function capturaParaFixture(c: CapturaLi, lista: ListaDeNomesLi): Resulta
     'fixture',
   );
   const linha = `${req.metodo} ${textoDoCaminho(pedido)}`;
+  const omitidaPor = tiposDoTextoLi(linha, lista);
   const base: ResumoDaCapturaLi = {
-    linhaRequisicao: contemNomeDeLoja(linha, lista) ? null : linha,
+    linhaRequisicao: omitidaPor.length === 0 ? linha : null,
+    linhaOmitidaPor: omitidaPor,
     politica,
     status: req.status,
     forma: null,

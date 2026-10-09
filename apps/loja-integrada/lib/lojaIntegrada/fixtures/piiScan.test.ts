@@ -199,6 +199,50 @@ describe('piiScan — near-misses of the pattern layer', () => {
   });
 });
 
+describe('piiScan — a document inside a URL-shaped value', () => {
+  // The redactor keeps every all-digit path segment (an LI id), so the check
+  // digits are this layer's job: segment by segment, not only a WHOLE value.
+  it('a CPF or a CNPJ as a path segment of the request is flagged', () => {
+    expect(achadosDePadroes(envelope(`/v1/cliente/${CPF}`, 200, null))).toEqual([
+      { caminho: 'requisicao.caminho', tipo: 'cpf' },
+    ]);
+    expect(achadosDePadroes(envelope(`/v1/cliente/${CNPJ}/`, 200, null))).toEqual([
+      { caminho: 'requisicao.caminho', tipo: 'cnpj' },
+    ]);
+    expect(achadosDePadroes(envelope(`/v1/pedido/1;${CPF}`, 200, null))).toEqual([
+      { caminho: 'requisicao.caminho', tipo: 'cpf' },
+    ]);
+  });
+
+  it('a CPF in `meta.next` is flagged', () => {
+    const env = envelope('/v1/pedido/search/', 200, {
+      meta: { next: `/api/v1/pedido/${CPF}/?limit=20`, previous: `/v1/x/?numero=${CPF}` },
+      objects: [],
+    });
+    expect(achadosDePadroes(env)).toEqual([
+      { caminho: 'resposta.corpo.meta.next', tipo: 'cpf' },
+      { caminho: 'resposta.corpo.meta.previous', tipo: 'cpf' },
+    ]);
+  });
+
+  it('near-miss: an id, invalid check digits, or a longer digit run is not a document', () => {
+    for (const caminho of [
+      '/v1/pedido/1234/',
+      `/v1/cliente/${CPF_INVALIDO}`,
+      `/v1/cliente/1${CPF}`,
+      `/v1/cliente/${CNPJ_LETRA_INVALIDO}`,
+    ]) {
+      expect(achadosDePadroes(envelope(caminho, 200, null)), caminho).toEqual([]);
+    }
+  });
+
+  it('a percent-encoded digit does not hide a CPF in a kept query value', () => {
+    const codificado = `%3${CPF.slice(0, 1)}${CPF.slice(1)}`;
+    const env = envelope('/v1/pedido/search/', 200, null, [['numero', codificado]]);
+    expect(achadosDePadroes(env)).toEqual([{ caminho: 'requisicao.query.*.*', tipo: 'cpf' }]);
+  });
+});
+
 describe('the store-name list', () => {
   it('a term matches its case and accent variants, and the same words with other separators', () => {
     expect(contemNomeDeLoja('LOJA EXÊMPLO', LISTA)).toBe(true);
@@ -215,6 +259,38 @@ describe('the store-name list', () => {
     const umaPalavra = criarListaDeNomes(['mega']);
     expect(contemNomeDeLoja('time gap', umaPalavra)).toBe(false);
     expect(contemNomeDeLoja('Megaloja', umaPalavra)).toBe(true);
+  });
+
+  it('a term matches through percent-encoding (a kept query value stays as written)', () => {
+    expect(contemNomeDeLoja('LOJA%2FEXEMPLO-01', LISTA)).toBe(true);
+    expect(contemNomeDeLoja('loja%20exemplo', LISTA)).toBe(true);
+    expect(contemNomeDeLoja('LOJA%20EX%C3%8AMPLO', LISTA)).toBe(true);
+    expect(contemNomeDeLoja('%4C%4F%4A%41%45%58%45%4D%50%4C%4F', LISTA)).toBe(true);
+    // Encoded twice still matches.
+    expect(contemNomeDeLoja('LOJA%252FEXEMPLO', LISTA)).toBe(true);
+    // An escape wedged between the words is dropped too: decoded, `é` would glue them into another word.
+    expect(contemNomeDeLoja('LOJA%C3%A9EXEMPLO', LISTA)).toBe(true);
+  });
+
+  it('near-miss: percent-encoding never makes a different word match', () => {
+    expect(contemNomeDeLoja('LOJA%2FEXEMPLAR-01', LISTA)).toBe(false);
+    expect(contemNomeDeLoja('%4C%4F%4A%41', LISTA)).toBe(false);
+    // A malformed escape is left as written and never throws.
+    expect(contemNomeDeLoja('LOJA%ZZEXEMPLAR%', LISTA)).toBe(false);
+  });
+
+  it('an encoded listed name in a kept query value or in `meta.next` is `nome-de-loja`', () => {
+    const env = envelope(
+      '/v1/produto/',
+      200,
+      { meta: { next: '/api/v1/produto/?sku=LOJA%2FEXEMPLO-01&offset=20' }, objects: [] },
+      [['sku', 'LOJA%2FEXEMPLO-01']],
+    );
+    expect(achadosDePadroes(env, LISTA)).toEqual([
+      { caminho: 'requisicao.query.*.*', tipo: 'nome-de-loja' },
+      { caminho: 'resposta.corpo.meta.next', tipo: 'nome-de-loja' },
+    ]);
+    expect(tiposNaLinhaLi('      "LOJA%2FEXEMPLO-01"', LISTA)).toEqual(['nome-de-loja']);
   });
 
   it('the fold: accents, case and separators only', () => {
@@ -277,6 +353,7 @@ describe('free text (`--verificar`)', () => {
     expect(tiposNaLinhaLi(`mande para ${EMAIL_FORA_DO_RESERVADO}`, LISTA)).toEqual(['email']);
     expect(tiposNaLinhaLi(`o documento ${CPF} aparece aqui`, LISTA)).toEqual(['cpf']);
     expect(tiposNaLinhaLi('a Loja Exemplo vendeu', LISTA)).toEqual(['nome-de-loja']);
+    expect(tiposNaLinhaLi(`"numero=%3${CPF.slice(0, 1)}${CPF.slice(1)}"`, LISTA)).toEqual(['cpf']);
   });
 
   it('blanking keeps the line length (so nothing shifts)', () => {

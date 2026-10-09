@@ -55,6 +55,25 @@ describe('montarLote', () => {
     expect(() => montarLote(['a.json', 'a.txt', 'b.json'], ['b'])).toThrow(ErroDeUsoSanitizacao);
   });
 
+  it('an entry that is not a regular file: a capture name is refused by name, never as unpaired', () => {
+    const lote = montarLote(
+      ['a.json', 'a.txt', 'b.txt'],
+      [],
+      ['c.txt', 'b.json', 'antigas', 'X Y.json', ARQUIVO_NOMES_PROIBIDOS],
+    );
+    expect(lote).toEqual({
+      pares: ['a'],
+      ignorados: 1,
+      problemas: [
+        { tipo: 'nao-e-arquivo', nome: 'b', extensao: 'json' },
+        { tipo: 'nao-e-arquivo', nome: 'c', extensao: 'txt' },
+        { tipo: 'nome-fora-da-gramatica', quantidade: 1 },
+      ],
+    });
+    // A link is never a pair, even beside its other half.
+    expect(montarLote(['a.json', 'a.txt', 'b.txt'], [], ['b.json']).pares).toEqual(['a']);
+  });
+
   it('zero pairs is a usage error', () => {
     expect(() => montarLote([], [])).toThrow(ErroDeUsoSanitizacao);
     expect(() => montarLote(['a.json', ARQUIVO_NOMES_PROIBIDOS], [])).toThrow(ErroDeUsoSanitizacao);
@@ -93,7 +112,9 @@ describe('lerNomesProibidos', () => {
     ).toEqual(['Loja Exemplo', 'lojaexemplo.com.br']);
   });
 
-  it('refuses UTF-16', () => {
+  it('refuses UTF-16, with or without its BOM (a NUL byte)', () => {
     expect(() => lerNomesProibidos(new Uint8Array([0xff, 0xfe, 0x4c, 0x00]))).toThrow(/UTF-16/);
+    const semBom = new Uint8Array(Buffer.from('Loja Exemplo\n', 'utf16le'));
+    expect(() => lerNomesProibidos(semBom)).toThrow(/UTF-16/);
   });
 });
