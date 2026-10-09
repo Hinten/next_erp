@@ -79,9 +79,11 @@ still be fixed. Only the context loader refuses those.
 
 ## Config
 
-- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts` (emulator
-  suites run on their own lane, which lands in step 3); `eslint.config.mjs` still lints
-  them. Both already cover the nested `functions/` codebase.
+- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`: emulator
+  suites need their own lane — **none exists yet** (planned for step 3), so the change
+  that adds the first such suite must add its lane too, or it runs nowhere while every
+  check stays green. `eslint.config.mjs` still lints them. Both already cover the nested
+  `functions/` codebase.
 - The Firestore database id is `default`: `lib/firebase/admin.ts` passes it explicitly.
   `ALLOWED_ADMIN_ORIGINS` is REQUIRED in production (see `apphosting.yaml`).
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.
