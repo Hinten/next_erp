@@ -53,6 +53,33 @@ const FRASE_PENDENCIA_RECLAMACAO: Record<PendenciaReclamacao, string> = {
  * (ou um param ausente) cai no fallback — nunca em "undefined". O `safeParse` é
  * o que impede um `'toString'` gravado de achar uma chave herdada do objeto.
  */
+/**
+ * "Nome (MLB123)" when the producer resolved a name, the bare id otherwise. The
+ * id always rides along: two ML categories can share a leaf name, and the id is
+ * what the operator matches against the produto's category field.
+ */
+function rotuloCategoria(params: Aviso['params'], nome: string, id: string): string {
+  const idCategoria = p(params, id);
+  const nomeCategoria = params[nome];
+  return typeof nomeCategoria === 'string' && nomeCategoria !== ''
+    ? `${nomeCategoria} (${idCategoria})`
+    : idCategoria;
+}
+
+/**
+ * "Comissão estimada pelo Mercado Livre: 16% → 11,5%." — only when the producer
+ * stored BOTH numbers. One alone compares nothing, and a string (a producer bug
+ * or a future shape) must not render as a percentage.
+ */
+function fraseComissao(params: Aviso['params']): string {
+  const erp = params.comissaoCategoriaErpPct;
+  const ml = params.comissaoCategoriaMlPct;
+  if (typeof erp !== 'number' || typeof ml !== 'number') return '';
+  if (!Number.isFinite(erp) || !Number.isFinite(ml)) return '';
+  const pct = (v: number) => `${v.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%`;
+  return ` Comissão estimada pelo Mercado Livre: ${pct(erp)} → ${pct(ml)}.`;
+}
+
 function frasePendencia(valor: Aviso['params'][string] | undefined): string {
   const codigo = pendenciaReclamacaoSchema.safeParse(valor);
   return codigo.success
@@ -170,6 +197,22 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       `A devolução ${p(params, 'devolucao')} do pedido ${p(params, 'pedido')} aguarda você: ` +
       `${frasePendencia(params.pendencia)}. Sem resposta até o prazo, o canal decide sozinho — ` +
       'em geral a favor do comprador. Abra a aba Incidentes do pedido.',
+  },
+  // Sem `runbook`: o conserto está no app — a categoria do produto. ⚠️ A frase diz
+  // que o aviso se encerra ao TROCAR a categoria do produto, porque é exatamente o
+  // resolvedor (`onProdutoCategoriaAlterada`): quem decidir manter a categoria
+  // antiga precisa saber que o aviso não some sozinho.
+  [TIPO_AVISO.anuncioCategoriaAlterada]: {
+    titulo: 'Categoria do anúncio alterada',
+    corpo: (params) =>
+      `O Mercado Livre moveu o anúncio ${p(params, 'anuncio')} para a categoria ` +
+      `${rotuloCategoria(params, 'categoriaMlNome', 'categoriaMlId')}, mas o produto continua ` +
+      `na categoria ${rotuloCategoria(params, 'categoriaErpNome', 'categoriaErpId')} — é ela ` +
+      'que escolhe as fórmulas de preço (comissão, frete) e as regras de imposto da NF-e.' +
+      `${fraseComissao(params)} Confira se a nova categoria tem fórmulas e impostos ` +
+      'configurados (sem fórmulas, valem as padrão da lista), troque a categoria do produto ' +
+      'e das variações, e recalcule o preço. O aviso se encerra quando a categoria do ' +
+      'produto for alterada.',
   },
   // Sem `runbook`: o conserto é a rota/CLI de publicação hoje (um botão no passo
   // 21). ⚠️ "Republique PRIMEIRO" é a ação segura: um reapontamento do mapa (#1450)

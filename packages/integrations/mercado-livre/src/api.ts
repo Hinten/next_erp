@@ -49,6 +49,7 @@ import {
   type MlSellerItemsScan,
   type MlSellerShippingSchedule,
   type MlShipment,
+  type MlShipmentCarrier,
   type MlShipmentCosts,
   type MlShipmentInvoice,
   type MlShipmentOrder,
@@ -97,6 +98,7 @@ import {
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
   mlShipmentCostsSchema,
+  mlShipmentCarrierSchema,
   mlShipmentInvoiceSchema,
   mlShipmentOrdersSchema,
   mlShipmentPaymentsSchema,
@@ -248,6 +250,8 @@ export interface MercadoLivreApi {
   getPayment(paymentId: number | string): Promise<MlPayment>;
   /** `GET /shipments/{shipmentId}` — a shipment tied to an ML order (order import, Step 9). */
   getShipment(shipmentId: number | string): Promise<MlShipment>;
+  /** Resolve the carrier's public tracking page for one shipment. */
+  getShipmentCarrier(shipmentId: number | string): Promise<MlShipmentCarrier>;
   /**
    * `GET /shipments/{shipmentId}/payments` — the shipping-cost payments for a
    * shipment. **The endpoint returns a bare JSON array**, not a `results`
@@ -1162,6 +1166,10 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       registrarFormatoDoEnvio(shipment);
       return shipment;
     },
+    getShipmentCarrier: (shipmentId) =>
+      request('GET', `/shipments/${shipmentId}/carrier`, mlShipmentCarrierSchema, {
+        headers: { 'x-format-new': 'true' },
+      }),
     getShipmentPayments: (shipmentId) =>
       request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema, {
         // Same mandate; this resource's body is unchanged by it (ML's own curl

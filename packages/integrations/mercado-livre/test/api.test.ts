@@ -810,6 +810,44 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     });
   });
 
+  it('getShipmentCarrier fetches and validates the carrier with the existing auth headers', async () => {
+    const carrier = { name: 'Total Express', url: 'http://carrier.example/track?pedido=01' };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(carrier));
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    expect(await api.getShipmentCarrier('555')).toEqual(carrier);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/shipments/555/carrier');
+    expect(init).toMatchObject({
+      method: 'GET',
+      headers: { Authorization: 'Bearer live-token', 'x-format-new': 'true' },
+    });
+  });
+
+  it.each([null, ''])('getShipmentCarrier preserves an unavailable URL (%s)', async (url) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ name: null, url }));
+    expect(await createMercadoLivreApi(cfg(fetchMock)).getShipmentCarrier(555)).toEqual({
+      name: null,
+      url,
+    });
+  });
+
+  it.each([{}, { name: 'Carrier', url: 3 }, null])(
+    'getShipmentCarrier rejects malformed bodies: %j',
+    async (body) => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(body));
+      await expect(
+        createMercadoLivreApi(cfg(fetchMock)).getShipmentCarrier(555),
+      ).rejects.toBeInstanceOf(MercadoLivreValidationError);
+    },
+  );
+
+  it.each([404, 500])('getShipmentCarrier preserves upstream HTTP %s errors', async (status) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: 'Unavailable' }, status));
+    await expect(
+      createMercadoLivreApi(cfg(fetchMock)).getShipmentCarrier(555),
+    ).rejects.toMatchObject({ status });
+  });
+
   it('getShipmentSla hits /shipments/{id}/sla and parses expected_date', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ expected_date: '2022-08-22T00:00:00.000-03:00' }),

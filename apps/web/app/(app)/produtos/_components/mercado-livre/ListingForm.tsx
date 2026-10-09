@@ -970,6 +970,12 @@ export function ListingForm({
                 value={field.value === '' ? null : field.value}
                 onChange={field.onChange}
                 disabled={readOnly}
+                // #847: create-only on ML's side, so a published listing's
+                // category is shown, never offered — the same reason the
+                // listing type below turns read-only. It becomes editable
+                // again exactly when the next publish is a CREATE: discarding
+                // a removed listing nulls `id` and keeps the category.
+                publicado={isPublished}
                 error={fieldState.error?.message ?? erroServidor('category_id')}
               />
             )}
