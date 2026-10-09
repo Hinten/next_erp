@@ -69,12 +69,17 @@ import {
  * - **A delete is never a recipe change** (`after === undefined` ⇒ `false`): the
  *   produto's rows go with it — the delete cascade owns them. So deleting the
  *   child that held the ONLY divergent row of an open (conta, kit) aviso leaves
- *   that aviso open: this trigger never asks the shared decision. What can close
- *   it later is a Shopee-side re-evaluation of the kit — a re-import, a republish
- *   or a recriar/converter, which re-stamp rows or write links — once its
- *   snapshot reads a child, link or row of that conta written after the aviso
- *   opened (the decision's clock). A sibling's recipe edit re-evaluates the kit
- *   too, but with every sibling in step it keeps the aviso open, now for that
+ *   that aviso open: this trigger never asks the shared decision. Writes that
+ *   can close it later include a Shopee-side re-evaluation of the kit — a
+ *   re-import, a republish or a recriar/converter, which re-stamp rows or write
+ *   links — the reverify/push gate (`reavaliarAvisoDeKitRemovido`: a kit deleted
+ *   in Seller Centre, or any touch of a superseded old kit), and a sibling's
+ *   recipe edited back to Shopee's (an ERP-side fold-back). Each closes it only
+ *   when its snapshot's clock — the newest commit time over K's children, the
+ *   conta's K links and the rows bound to a link that still sells — is newer
+ *   than the clock the open row stores (the one its last accepted raise read);
+ *   otherwise the resolve is dropped as stale. A sibling's recipe edit that
+ *   leaves the sibling out of step re-raises the aviso instead, now for that
  *   sibling's row. Intended: L4 asks the aviso to resolve itself only on a
  *   recreate or a fold-back, and an aviso left open is the safe direction.
  */
