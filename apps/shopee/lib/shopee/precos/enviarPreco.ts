@@ -38,8 +38,11 @@
  *   `tier_index`, a component `quantity` that did not read, …), or the read
  *   answered another item — is never sent, and its row is
  *   `falha forma-de-modelo-divergente`, stamped with our `erp:` code, even
- *   when Shopee then refuses the call the other models went in: one
- *   listing's wire is a ROW, never a thrown class that would end the run.
+ *   when Shopee then refuses the call the other models went in (when that
+ *   refusal FAILS the models it carried, the ITEM records Shopee's refusal,
+ *   never this row's; a promotion lock only skips them, and then this row is
+ *   the item's one failure): one listing's wire is a ROW, never a thrown
+ *   class that would end the run.
  * - **Its errors** go through {@link veredictoDoErroDeKit} FIRST: the kit
  *   refusal classifier (`kits/recusaKit.ts`) reads Shopee's SENTENCE, because
  *   `product.error_busi` carries both a transient ("Too many connections",
@@ -122,6 +125,15 @@
  * `pulado`, with the first sent model's skip motivo (a promotion lock on every
  * sent model). Otherwise ⇒ `enviado`.
  *
+ * ⚠️ When Shopee refused the WRITE itself, "first" counts only the rows the
+ * call carried: a kit model set aside before the write is not Shopee's answer,
+ * and speaks for the item only when no carried row failed. So an
+ * `update_kit_item` refused as a FAILURE of the models it carried gives the
+ * item Shopee's motivo, code and sentence whatever the alvo order — the
+ * set-aside model's own row stays `erp:`. Refused by a promotion LOCK (every
+ * carried row `pulado`, which records nothing), it leaves the set-aside row
+ * the item's one failure, in either order.
+ *
  * ## The write-backs (G12, reconcile C-n)
  *
  * - An ACCEPTED and verified model ⇒ its own success pair on its `variashopee`
@@ -140,7 +152,9 @@
  *     without a target price (see {@link MOTIVOS_EM_SINCRONIA});
  *   - a stamping refusal ⇒ `registrarRecusaDePreco` with the item-level
  *     refusal (a decision's or a read's), else with the FIRST stamping row's
- *     motivo and code (a partial send);
+ *     motivo, code and sentence (a partial send, or a refused write — where
+ *     only a row the call carried counts while one of them failed: see the
+ *     item's outcome);
  *   - anything else writes nothing on the item.
  * - Written by NOTHING: `preco-igual` (S4 — an equal reading may be a Seller
  *   Centre edit, and stamping it would attribute it to us), a promotion or
@@ -252,7 +266,12 @@ export type ResultadoEnvioPreco =
       readonly motivo: MotivoPrecoShopee;
       /** The code the refusal is known by: Shopee's VERBATIM, our `erp:<motivo>`, or `null` (unanswered / unconfirmed). */
       readonly codigo: string | null;
-      /** Shopee's sentence when Shopee refused the whole call; `null` otherwise. */
+      /**
+       * Shopee's sentence when the refusal recorded is Shopee's top-level one —
+       * a refused read, or a write refused as a whole (never displaced by a kit
+       * model set aside before it); `null` when it is a model's own
+       * `failed_reason`, ours (`erp:`), or an unconfirmed send.
+       */
       readonly mensagem: string | null;
       /** Whether a refusal was written onto the ITEM link (a vanished link answers `false`). */
       readonly carimbado: boolean;
@@ -725,7 +744,9 @@ function conferirCamposDoKit(
  * and the row is `falha forma-de-modelo-divergente`, its child stamped with our
  * `erp:` code (the remedy is a re-import) — also when Shopee REFUSED the write
  * the other models went in, whose top-level reading must not land on a model
- * that was not in the call. Every other row passes untouched.
+ * that was not in the call (nor this row displace that reading on the item
+ * while a model the call carried failed: {@link desfechoDoEnvio}). Every
+ * other row passes untouched.
  */
 function semModeloNoKitVivo(
   atribuida: LinhaAtribuida,
@@ -957,10 +978,27 @@ async function concluir(ctx: Contexto, d: Desfecho): Promise<ResultadoEnvioPreco
   }
 }
 
-/** The item's outcome from its attributed rows (see the module docblock). */
-function desfechoDoEnvio(item: ItemDePreco, atribuidas: readonly LinhaAtribuida[]): Desfecho {
-  const falhas = atribuidas.filter((a) => a.linha.resultado === ENVIO_PRECO_RESULTADO.falha);
+/**
+ * The item's outcome from its attributed rows (see the module docblock).
+ *
+ * `chamadaRecusada` ⇔ Shopee refused the write itself (G9 produced a `Topo`).
+ * Then the refusal that speaks for the item is the first among the rows the
+ * call CARRIED (`enviada`): after an `enviar` decision the only `falha` row it
+ * did not carry is a kit model set aside before the write, which is not
+ * Shopee's answer, and it speaks only when no carried row failed (a call-level
+ * lock leaves the carried rows `pulado`). So where a set-aside model sits in
+ * the alvo order never changes what the item reads; among the carried rows the
+ * first still speaks, as on a partial send.
+ */
+function desfechoDoEnvio(
+  item: ItemDePreco,
+  atribuidas: readonly LinhaAtribuida[],
+  chamadaRecusada: boolean,
+): Desfecho {
+  const todasAsFalhas = atribuidas.filter((a) => a.linha.resultado === ENVIO_PRECO_RESULTADO.falha);
   const aceitas = atribuidas.filter((a) => a.linha.resultado === ENVIO_PRECO_RESULTADO.enviado);
+  const falhasDaChamada = chamadaRecusada ? todasAsFalhas.filter((a) => a.enviada) : [];
+  const falhas = falhasDaChamada.length > 0 ? falhasDaChamada : todasAsFalhas;
 
   const [primeiraFalha] = falhas;
   if (primeiraFalha !== undefined) {
@@ -1233,5 +1271,5 @@ export async function enviarPrecoDoItem(
   }
 
   // ---- the item's outcome, then G12. ----
-  return concluir(ctx, desfechoDoEnvio(item, atribuidas));
+  return concluir(ctx, desfechoDoEnvio(item, atribuidas, topo !== null));
 }
