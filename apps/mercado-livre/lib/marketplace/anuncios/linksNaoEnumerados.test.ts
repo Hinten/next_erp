@@ -7,7 +7,8 @@
  * path-shaped cursor, the projections — still runs, through the price binding,
  * against this code. So this file covers only what the move newly adds: the two
  * cost counters, the `limpos` list the audit folds pages with, the page size
- * taken as given (no env), the wire strings of the
+ * taken as given (no env), the audit's ONE-form walk (`contaRef`, an `==` where
+ * the price phase keeps its `in`), the wire strings of the
  * codes, the price module re-exporting rather than copying, and the
  * re-confirmation the stock audit runs before it resolves an aviso.
  */
@@ -103,6 +104,7 @@ class FakeDb {
           ([path, d]) =>
             inScope(path) &&
             log.clauses.every(({ field, op, value }) => {
+              if (op === '==') return d[field] === value;
               if (op !== 'in') throw new Error(`FakeDb: unsupported operator ${op}`);
               return Array.isArray(value) && value.includes(d[field]);
             }),
@@ -347,6 +349,111 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
         pageLimit: 10,
       }),
     ).rejects.toThrow(/cursor de reconciliação de anúncios inválido/);
+  });
+});
+
+describe('fetchLinksNaoEnumeradosPage — ONE ref form (`contaRef`, the stock audit’s walk)', () => {
+  /** P1 and P3 on the canonical form, P2 and P4 on the bare one — interleaved in key order. */
+  function seedDuasFormas(db: FakeDb): void {
+    seedLink(db, 'P1', 'a');
+    seedLink(db, 'P2', 'a', { contaOuterRef: REF_BARE });
+    seedLink(db, 'P3', 'a');
+    seedLink(db, 'P4', 'a', { contaOuterRef: REF_BARE });
+    for (const p of ['P1', 'P2', 'P3', 'P4']) db.seedProduto(p, LIMPO);
+  }
+
+  it('reads `contaOuterRef == contaRef` — ONE equality, never the `in` — and only that form’s links', async () => {
+    // The `in` over both forms is what the staging proxy sorts with a
+    // `MajorSort` that reads the conta's whole remainder on every page; one `==`
+    // is a single key-ordered stream (anuncios/linksNaoEnumerados.ts, module doc).
+    for (const [contaRef, esperado] of [
+      [REF_CANONICO, ['P1', 'P3']],
+      [REF_BARE, ['P2', 'P4']],
+    ] as const) {
+      const db = new FakeDb();
+      seedDuasFormas(db);
+
+      const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
+        integracaoId: CONTA,
+        contaRef,
+        pageLimit: 10,
+      });
+
+      expect(db.queries).toHaveLength(1);
+      expect(db.queries[0]).toEqual({
+        source: 'group:produtoMercadoLivre',
+        clauses: [{ field: 'contaOuterRef', op: '==', value: contaRef }],
+        select: ['id', 'estado'],
+        limit: 10,
+      });
+      expect(page.limpos).toEqual(esperado);
+      expect(page.lidos).toBe(2);
+      expect(page.nextAfterLinkPath).toBeNull();
+    }
+  });
+
+  it('without `contaRef` it is the price phase’s walk, unchanged: ONE `in` over both forms', async () => {
+    const db = new FakeDb();
+    seedDuasFormas(db);
+
+    const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
+      integracaoId: CONTA,
+      pageLimit: 10,
+    });
+
+    expect(db.queries[0]!.clauses).toEqual([
+      { field: 'contaOuterRef', op: 'in', value: [REF_CANONICO, REF_BARE] },
+    ]);
+    expect(page.limpos).toEqual(['P1', 'P2', 'P3', 'P4']);
+    // `null` is "no form": the same `in`.
+    const db2 = new FakeDb();
+    seedDuasFormas(db2);
+    await fetchLinksNaoEnumeradosPage(asDb(db2), {
+      integracaoId: CONTA,
+      contaRef: null,
+      pageLimit: 10,
+    });
+    expect(db2.queries[0]!.clauses[0]!.op).toBe('in');
+  });
+
+  it('pages one form by its own cursor — a full page keeps it, the drained page nulls it', async () => {
+    const db = new FakeDb();
+    seedDuasFormas(db);
+
+    const pagina1 = await fetchLinksNaoEnumeradosPage(asDb(db), {
+      integracaoId: CONTA,
+      contaRef: REF_BARE,
+      pageLimit: 1,
+    });
+    expect(pagina1.limpos).toEqual(['P2']);
+    expect(pagina1.nextAfterLinkPath).toBe(linkPath('P2', 'a'));
+    const pagina2 = await fetchLinksNaoEnumeradosPage(asDb(db), {
+      integracaoId: CONTA,
+      contaRef: REF_BARE,
+      afterLinkPath: pagina1.nextAfterLinkPath,
+      pageLimit: 1,
+    });
+    // P3 (canonical) sorts between P2 and P4 and is NOT this form's.
+    expect(pagina2.limpos).toEqual(['P4']);
+  });
+
+  it.each([
+    ['another conta’s canonical ref', 'documents/integracao/outra-conta'],
+    ['another conta’s bare ref', 'integracao/outra-conta'],
+    ['a prefix-sharing conta', `${REF_BARE}2`],
+    ['the bare id', CONTA],
+    ['an empty string', ''],
+  ])('refuses %s as `contaRef` before reading anything', async (_n, contaRef) => {
+    // The classifier judges every link against `integracaoId`: another conta's
+    // links would all read as "conta fora do produto" and be healed onto the
+    // wrong produtos.
+    const db = new FakeDb();
+    seedDuasFormas(db);
+
+    await expect(
+      fetchLinksNaoEnumeradosPage(asDb(db), { integracaoId: CONTA, contaRef, pageLimit: 10 }),
+    ).rejects.toThrow(RangeError);
+    expect(db.queries).toEqual([]);
   });
 });
 

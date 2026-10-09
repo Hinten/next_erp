@@ -420,28 +420,54 @@ own suffix, and `vitest.config.ts` excludes the other three):
   other suite runs Firestore as a fake or as the STANDARD-edition emulator, and the staging
   database is ENTERPRISE: an unindexed query there full-scans and bills instead of failing, and
   classic `explain()` is refused. `auditoriaNaoEnumerados.staging.test.ts` (#1200) drains the
-  link audit's collection-group walk over real `DocumentReference` cursors (every link read
-  exactly once), checks the pre-resolve re-read agrees with it, runs the tier-1
-  `adicionarContaSeViva` heal on a real transaction, reads the avisos key range on real ids,
-  and judges the plan of both queries' SDK pipeline translation
-  (`db.pipeline().createFrom(<the production query object>)`, never a hand-built copy) with
-  `lib/firebase/explainPlan.mjs` — the one copy of those verdicts, shared with
-  `scripts/check-stock-indexes.mjs` and unit-tested in `explainPlan.test.ts`. ⚠️ A
-  `contaOuterRef` push-down over `(-∞..+∞)` ranges, a cursor tested per entry and a half-open
-  key range print the same lines as the walks they must rule out, so none passes on its shape:
-  only on read counters under a ceiling the suite's seeded neighbours provably exceed (it
-  asserts that, too). ⚠️ A proxy PASS proves the COLLECTION_GROUP
-  `produtoMercadoLivre(contaOuterRef, __name__)` index is READY and serves the predicate, not
-  the classic query's own plan. ⚠️ It **never runs the full audit** (`runAuditoriaNaoEnumerados`
-  enumerates every real staging conta and resolves tipo-wide) and **never creates an
-  `integracao`** — the conta is a bare per-run string, so no real sweep can pick it up. Every
-  id carries a per-run `e2e-ml1200-<8 hex>` prefix, its avisos are seeded already RESOLVED (the
-  bell lists `resolvidoEm == null`), `afterAll` deletes every produto subtree and aviso it
-  wrote and FAILS if anything is left, and `beforeAll` reclaims this suite's own leftovers older
-  than 2h. The deployed `onProdutoMercadoLivreLinkChanged` trigger heals the seeded class-2
-  drift as soon as its link lands, so the seed waits for that heal (≤30s) and undoes it before
-  any case reads the drift — a case whose precondition was rewritten says so instead of
-  passing vacuously.
+  link audit's collection-group walk — one stored ref form at a time, as the audit runs it —
+  over real `DocumentReference` cursors (every link read exactly once), checks the pre-resolve
+  re-read agrees with it, runs the tier-1 `adicionarContaSeViva` heal on a real transaction,
+  runs the run's ONE open-avisos read on real docs (open rows only, and the in-memory filter
+  keeps exactly one conta's), and judges the plan of both queries' SDK pipeline translation
+  (`db.pipeline().createFrom(…)` of the production builder's PROJECTION-LESS half —
+  `consultaDaVarreduraSemProjecao` / `consultaDosAvisosAbertosSemProjecao` — never a hand-built
+  copy) with `lib/firebase/explainPlan.mjs` — the one copy of those verdicts, shared with
+  `scripts/check-stock-indexes.mjs` and unit-tested in `explainPlan.test.ts` against REAL plans
+  captured on staging (`lib/firebase/__planos__/`). ⚠️ Never explain the projected query:
+  `createFrom` emits its `select` BEFORE the `exists(__name__)`/`sort(__name__)` stages it
+  derives, the key is dropped, and the proxy returns zero rows and no plan (measured
+  2026-10-08). ⚠️ A `contaOuterRef` push-down over an unbounded range (a bare `ranges: /`) and a
+  cursor tested per entry print the same lines as the walks they must rule out, so neither
+  passes on its shape: only on read counters under a ceiling the suite's seeded neighbours
+  provably exceed (it asserts that, too). ⚠️ "Neighbours" includes one BELOW the range: an
+  unbounded scan that stops at its Limit reads only what sorts before the ref form plus the
+  page, so page 1 of a walk of every conta's links reads inside any ceiling unless something
+  is seeded just below — the suite's conta `…-w`, three closed links per ref form. ⚠️ **Every
+  plan case asserts a PASS, and it was not always going to**: on 2026-10-08 the walk proxy's
+  `contaOuterRef in [both ref forms]` was sorted by a `MajorSort` (page 1 of an 8-link conta
+  read all 8 index rows to return 2 — every page read the conta's whole remainder), and the
+  avisos KEY RANGE the audit then read had no seekable access path (no avisos index leads with
+  `__key__`: it scanned the whole collection). Those two proxy-plan findings are why the audit
+  walks one ref form at a time (`==`, a `• Limit` that reads exactly the page) and reads the
+  open avisos once per run (`avisos(resolvidoEm)` as the closed `[null]` point, scanning exactly
+  the rows it returns — a range that ran on into the resolved history would scan the suite's
+  seeded RESOLVED row too). A red there is a regression of one of those decisions — never a
+  verdict to relax. ⚠️ A proxy PASS proves the index is READY and serves the predicate, not
+  the classic query's own plan (Query Insights confirms that after a real run). ⚠️ It **never
+  runs the full audit** (`runAuditoriaNaoEnumerados` enumerates every real staging conta and
+  resolves tipo-wide) and **never creates an `integracao`** — the conta is a bare per-run
+  string, so no real sweep can pick it up. Every id carries a per-run `e2e-ml1200-<8 hex>`
+  prefix. ⚠️ The open-avisos cases need OPEN avisos, and an open row is what the staging bell
+  reads: the suite's are addressed to a per-run `destinatarioUid` no operator has, and THAT
+  is what hides them — the bell drops a row addressed to somebody else, and on a bell holding
+  fewer than 50 open rows (staging's) they sit inside its window. Their early `criadoEm` only
+  keeps them from displacing a real row from a newest-first page (the bell's 50, Shopee pass
+  (b)'s 200). They live only for the suite's own run: `afterAll` deletes every produto
+  subtree and aviso it wrote and FAILS if anything is left — or if the stale sweep's reads
+  could not reach it — and `beforeAll` reclaims this suite's own leftovers older than 2h
+  through the CG `contaOuterRef` prefix and two `avisos(resolvidoEm)` points (`[null]`, and
+  the resolved witness's fixed sentinel), never a document-key range: neither `produtos` nor
+  `avisos` has an index LEADING with `__key__`, so on the plan proxy a key range scanned the
+  whole collection (2026-10-09). The deployed
+  `onProdutoMercadoLivreLinkChanged` trigger heals the seeded class-2 drift as soon as its
+  link lands, so the seed waits for that heal (≤30s) and undoes it before any case reads the
+  drift — a case whose precondition was rewritten says so instead of passing vacuously.
 
 ⚠️ **Not covered, so do not read a green lane as more than it is:**
 `scheduleDelaySeconds` — the emulator's dispatch loop is pure FIFO with no `scheduleTime`
@@ -485,10 +511,13 @@ fires no triggers at all), or the link sits on a variation child (class 3).
 `sweepMercadoLivreAnunciosNaoEnumerados` (02:30 on the 1st,
 `estoque/auditoriaNaoEnumerados.ts`) walks each active conta's LINKS through
 `anuncios/linksNaoEnumerados.ts` — the walk the price job's reconciliation already
-ran, now shared — HEALS class 2 with the tier-1 `adicionarContaSeViva` so the
+ran, now shared, here one stored ref form at a time (`contaOuterRef ==`; the price
+phase keeps its `in`) — HEALS class 2 with the tier-1 `adicionarContaSeViva` so the
 03:00 force-all enumerates the family again, and raises one
 `anuncioForaDaSincronizacao` aviso per produto for what needs a human, resolved
-only by a later COMPLETE walk plus a fresh re-read. Firestore-only: no ML call, no
+only by a later COMPLETE walk plus a fresh re-read. Its avisos come from ONE read
+per run of every open aviso (`resolvidoEm == null`, capped; a listing past the cap
+resolves nothing), filtered in memory by tipo, canal and id. Firestore-only: no ML call, no
 ML secret, gated by the master flag alone — never by `..._RECONCILIACAO_ENABLED`,
 which is an ML-quota valve. ⚠️ The force-all is a force-all for ENUMERATION only:
 `deveEnviarFamiliaCore` still skips a family with no net ERP movement since
@@ -505,7 +534,9 @@ walk rides it, and on Enterprise a missing index does not fail — it full-scans
 collection group and bills the bytes, every month. It needs no new deploy: #1191
 declared it (`de225899e`, merged 2026-08-20) in the same commit as the
 `produtos(paiId, integracoesComProduto, __name__)` anchor composite, so any index
-deploy from a later tree carries both — but verify READY rather than assume it.
+deploy from a later tree carries both — but verify READY rather than assume it. The
+audit's open-avisos read rides the declared single-field `avisos(resolvidoEm ASC)`
+entry the same way (READY on staging, 2026-10-09).
 
 ⚠️ **`buildSendTasks`' `'conta-fora-do-produto'` rung is BY-IDS-ONLY.** S1
 filters that same field server-side, in the execution that projects it, so no

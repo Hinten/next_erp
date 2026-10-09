@@ -376,37 +376,45 @@ describe('chaveDeAviso — the return tipo (Shopee step 17)', () => {
 
 describe('chaveDeAviso — the link-audit tipo (#1200)', () => {
   // ONE row per PRODUTO per conta. The monthly audit stores conta and produto only
-  // in the id, and lists ONE conta's rows by a document-key range over the
-  // `(tipo, conta)` prefix — so the shape below is what its resolver reads back.
+  // in the id, reads the open avisos once per run and keeps ONE conta's rows by
+  // PARSING the id — exactly three `:` segments, the tipo first, the conta second
+  // compared whole — so the shape below is what its resolver reads back.
   const foraDaSincronizacao = (conta: string, produtoId: string) =>
     chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta, entidade: produtoId });
-  /** The producer's range over one conta: `[<prefixo>:, <prefixo>;)`. */
-  const naFaixaDa = (conta: string, chave: string) => {
-    const prefixo = chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta });
-    return chave >= `${prefixo}:` && chave < `${prefixo};`;
+  /** The producer's parse of an id against one conta: `<tipo>:<conta>:<produto>`. */
+  const daConta = (conta: string, chave: string) => {
+    const segmentos = chave.split(':');
+    return (
+      segmentos.length === 3 &&
+      segmentos[0] === chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao }) &&
+      `${segmentos[0]}:${segmentos[1]}` ===
+        chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta }) &&
+      segmentos[2] !== ''
+    );
   };
 
   it('keeps the conta as the SECOND segment and the produto last, with no janela', () => {
     expect(foraDaSincronizacao('int-1', 'prod-1')).toBe('anuncioForaDaSincronizacao:int-1:prod-1');
-    expect(naFaixaDa('int-1', foraDaSincronizacao('int-1', 'prod-1'))).toBe(true);
+    expect(daConta('int-1', foraDaSincronizacao('int-1', 'prod-1'))).toBe(true);
   });
 
-  it('keeps a prefix-sharing conta, another tipo and the bare prefix OUT of the range', () => {
-    // `c10` shares `c1` as a string prefix; the `:` after the conta is what
-    // separates them, and only because the fold never lets a `:` into a segment.
-    expect(naFaixaDa('c1', foraDaSincronizacao('c10', 'p'))).toBe(false);
-    expect(naFaixaDa('c1', foraDaSincronizacao('c1:0', 'p'))).toBe(false);
+  it('keeps a prefix-sharing conta, another tipo and the bare prefix OUT of the conta’s rows', () => {
+    // `c10` shares `c1` as a string prefix; the WHOLE segment tells them apart,
+    // and only because the fold never lets a `:` into a segment.
+    expect(daConta('c1', foraDaSincronizacao('c10', 'p'))).toBe(false);
+    expect(daConta('c1', foraDaSincronizacao('c1:0', 'p'))).toBe(false);
     expect(
-      naFaixaDa(
+      daConta(
         'c1',
         chaveDeAviso({ tipo: TIPO_AVISO.estoqueAcimaDoDisponivel, conta: 'c1', entidade: 'p' }),
       ),
     ).toBe(false);
     expect(
-      naFaixaDa('c1', chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta: 'c1' })),
+      daConta('c1', chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta: 'c1' })),
     ).toBe(false);
-    // …while a produtoId carrying the range's END character still falls inside.
-    expect(naFaixaDa('c1', foraDaSincronizacao('c1', 'a;b'))).toBe(true);
+    // …while a produtoId carrying a `:` is folded, so its row still parses as the conta's.
+    expect(foraDaSincronizacao('c1', 'a:b')).toBe('anuncioForaDaSincronizacao:c1:a_b');
+    expect(daConta('c1', foraDaSincronizacao('c1', 'a:b'))).toBe(true);
   });
 });
 

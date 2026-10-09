@@ -93,7 +93,8 @@ const config = [
     // unvalidated raw write must stay lint-blocked. It needs no exemption — it
     // seeds through the handles (`.set()`, or `docRef()` for the legacy shapes
     // a schema rejects) and explains `db.pipeline().createFrom(<the production
-    // query>)`, so it never names a raw `.collection()`/`.collectionGroup()`.
+    // builder's projection-less half>)`, so it never names a raw
+    // `.collection()`/`.collectionGroup()`.
     files: ['**/*.firestore.test.ts', '**/*.tasks.test.ts'],
     rules: {
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],

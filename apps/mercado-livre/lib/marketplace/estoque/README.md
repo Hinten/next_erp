@@ -67,25 +67,37 @@ the store does not have. See ADR 0014 §7.
   (a link on a variation child, an invalid `paiId`, an orphan link). Gated by
   the master `MERCADO_LIVRE_STOCK_SYNC_ENABLED` alone — the reconciliação flag
   is an ML-quota valve and this spends none.
+  ⚠️ It walks ONE stored ref form at a time (`contaOuterRef ==`, the walk's
+  `contaRef`), never the price phase's `in` over both: on the staging proxy the
+  `in` sorts the conta's whole remainder on every page, while one `==` reads
+  exactly the page. A cut in either form leaves the walk incomplete.
   ⚠️ "Not found" resolves an aviso only after a COMPLETE walk AND a fresh
   re-read (`reclassificarProdutoNaoEnumerado`); a walk cut short by its page cap,
   its time budget or a stalled cursor heals and raises what it saw and resolves
-  nothing. ⚠️ It lists a conta's avisos by DOCUMENT-KEY range
-  (`[<tipo>:<conta>:, <tipo>:<conta>;)`, end EXCLUSIVE) — the `:` in the start is
-  what keeps conta `c1` from resolving conta `c10`'s rows.
+  nothing. ⚠️ It reads the avisos ONCE per run — every OPEN row
+  (`resolvidoEm == null`, the bell's predicate, no `orderBy`, capped at
+  `AVISOS_ABERTOS_MAX` + 1) — and keeps its own rows in memory: stored `tipo`
+  and `canal`, and an id of exactly `<tipo>:<conta>:<produto>` whose conta
+  segment is compared WHOLE, so conta `c1` never resolves conta `c10`'s rows. A
+  listing past the cap is truncated: that run resolves nothing.
   ⚠️ Its source must never name the transaction API: the heal's transaction
   runs in `@delfrance/data/admin/produtos`, and
   `firestore-transaction-inventory.test.js` greps raw source text. Writes
   nothing to `estoqueMercadoLivreSync` (that strict schema throws on an unknown
   key and would kill the whole tick). The emulator suite
   (`auditoriaNaoEnumerados.firestore.test.ts`) runs the real collection-group
-  paging, heal and aviso writes; the staging suite
+  paging, heal, open-avisos read and aviso writes; the staging suite
   (`auditoriaNaoEnumerados.staging.test.ts`, `test:staging`) runs the walk, the
-  heal and the key range on the real ENTERPRISE database and judges both
-  queries' plans — never the full run, never an `integracao`. That suite
-  `explain()`s the exact query objects `consultaDaVarredura` and
-  `consultaDaFaixaDeChaves` build, which is why those are exported. Ops detail
-  is `functions/DEPLOY.md`, "The monthly link audit".
+  heal and the open-avisos read on the real ENTERPRISE database and judges both
+  queries' plans — never the full run, never an `integracao`. That suite runs
+  the exact query objects `consultaDaVarredura` and `consultaDosAvisosAbertos`
+  build (and tries their classic `explain()`, which Enterprise refuses), and
+  explains the PROXY — `createFrom` of their projection-less halves,
+  `consultaDaVarreduraSemProjecao` / `consultaDosAvisosAbertosSemProjecao`,
+  because `createFrom` of a query with `select` returns no rows and no plan —
+  which is why all four are exported. A proxy PASS proves the index is READY
+  and serves the predicate, not the classic query's own plan. Ops detail is
+  `functions/DEPLOY.md`, "The monthly link audit".
 - `estoqueManual.ts` — "enviar estoque agora" for a hand-picked produto set.
 - `mlStockTasks.ts` — the task-queue scheduler for the stock send queue.
 - `stockSendMaxAttempts.test.ts` — no source sibling. Pins

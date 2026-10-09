@@ -66,7 +66,7 @@ name: CI — Mercado Livre (Firestore emulator)
 #     bills the scan. That is guard C/D in
 #     packages/data/src/admin/notifications/notificationGuardrails.test.ts. The
 #     staging job observes READINESS for exactly two queries — the #1200 audit's
-#     collection-group walk and avisos key range — and through a PIPELINE proxy
+#     collection-group walk and open-avisos read — and through a PIPELINE proxy
 #     (Enterprise refuses classic explain): a proxy PASS proves the index is
 #     READY and serves the predicate, not the classic query's own plan.
 #   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
@@ -575,17 +575,23 @@ jobs:
   # Enterprise does with a query — an unindexed one does not fail there, it
   # full-scans and bills the scan, and Enterprise refuses classic `explain()`, so
   # the #1200 audit's two classic queries had never been observed on it. This job
-  # drains the audit's collection-group walk over real cursors, runs the tier-1
-  # heal on a real transaction, reads the avisos key range, and judges the plan
-  # of the SDK's pipeline translation of both production query objects
-  # (`createFrom`, lib/firebase/explainPlan.mjs).
+  # drains the audit's collection-group walk (one ref form at a time) over real
+  # cursors, runs the tier-1 heal on a real transaction, runs the run's one
+  # open-avisos read, and judges the plan of the SDK's pipeline translation
+  # (`createFrom`, lib/firebase/explainPlan.mjs) of both production queries'
+  # PROJECTION-LESS halves (`…SemProjecao`) — a PROXY, since Enterprise refuses
+  # classic explain. Every plan must PASS: the walk's index READY, each page a
+  # bounded, seeking, unsorted stream reading exactly its page, and the avisos
+  # read the closed [null] point on avisos(resolvidoEm), scanning exactly the
+  # rows it returns.
   #
   # Firebase STAGING credentials only — still no Mercado Livre credential, ever
   # (see the header); vitest.staging.setup.ts blocks every non-Google host. The
-  # suite never creates an integração, never runs the full audit, seeds its
-  # avisos already resolved, and deletes + verifies everything it wrote under a
-  # per-run `e2e-ml1200-<hex>` prefix — so a push run and a PR run on the same
-  # SHA, which run concurrently by design, never see each other's rows.
+  # suite never creates an integração, never runs the full audit, keeps the
+  # open avisos it seeds out of every operator's bell, and deletes + verifies
+  # everything it wrote under a per-run `e2e-ml1200-<hex>` prefix — so a push run
+  # and a PR run on the same SHA, which run concurrently by design, never see
+  # each other's rows.
   #
   # `optional:not_fork`, unlike the three jobs above: a fork PR cannot read the
   # staging secrets, and the gate says so out loud instead of going red on

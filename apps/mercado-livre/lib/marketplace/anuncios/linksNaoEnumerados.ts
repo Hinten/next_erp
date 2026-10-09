@@ -42,8 +42,21 @@
  * {@link classificarLinkNaoEnumerado} reds there. (`precoReconciliacao.test.ts`
  * pins the classifier's own cases, which cannot notice a QUERY moving.)
  *
+ * ---- Two walk SHAPES, one module. The price phase walks a conta's links in
+ * ONE stream, `contaOuterRef in [both stored ref forms]`; the stock audit walks
+ * them one ref form at a time, `contaOuterRef == <form>` (`contaRef`), draining
+ * the first form before it opens the second. The audit's shape is the cheaper
+ * one, measured on the staging proxy (2026-10-08, `lib/firebase/explainPlan.mjs`):
+ * one `==` is a single key-ordered stream on the index, so a page is a `Limit`
+ * over a cursor seek and reads exactly the page, while the `in` merges its two
+ * streams with a sort that reads the conta's WHOLE remainder on every page —
+ * page 1 of an 8-link conta read 8 index rows to return 2. The price phase
+ * keeps the `in` unchanged here: it is that job's own query, and
+ * `preco/precoReconciliacao.test.ts` is the extraction's byte-unchanged
+ * regression proof.
+ *
  * ---- Index ledger:
- *  - the walk: `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)`,
+ *  - the walk, both shapes: `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)`,
  *    **COLLECTION_GROUP** — declared in the same commit as S1's own entry
  *    (#1191). The COLLECTION-scope twin cannot serve a group query;
  *  - the re-confirmation ({@link reclassificarProdutoNaoEnumerado}): the
@@ -155,6 +168,20 @@ export interface LinksNaoEnumeradosPage {
 export interface FetchLinksNaoEnumeradosArgs {
   /** Conta whose anúncios are walked. */
   integracaoId: string;
+  /**
+   * ONE stored ref form of the conta — one of `contaRefForms(integracaoId)` —
+   * to walk ALONE (`contaOuterRef == contaRef`). Absent, the page reads both
+   * forms at once with the `in` the price phase has always run. The audit
+   * passes it (module doc); a value that is not one of this conta's two forms
+   * is refused before anything is read, because the classifier judges every
+   * link it is handed against `integracaoId`.
+   *
+   * ⚠️ The cursor belongs to its form. `afterLinkPath` is the last path of THIS
+   * form's previous page, so the second form starts from no cursor at all —
+   * resuming it after the first form's last path would skip every one of its
+   * links that sorts before that path.
+   */
+  contaRef?: string | null;
   /** Resume after this FULL document path (keyset); the first page omits it. */
   afterLinkPath?: string | null;
   /**
@@ -173,14 +200,57 @@ export type FetchLinksNaoEnumeradosPage = (
 
 /**
  * ONE page of the walk as an unexecuted query — what
- * {@link fetchLinksNaoEnumeradosPage} runs. Exported for the staging suite
- * (`estoque/auditoriaNaoEnumerados.staging.test.ts`), which `explain()`s this
- * very object against the real Enterprise database instead of a hand-copied
- * chain that could drift from it. (Enterprise refuses classic explain today, so
- * that suite also judges the pipeline translation; the day it stops refusing,
- * this is the plan it reads.)
+ * {@link fetchLinksNaoEnumeradosPage} runs: {@link consultaDaVarreduraSemProjecao}
+ * plus the `select` of {@link CAMPOS_LINK}, and nothing else. Exported for the
+ * staging suite (`estoque/auditoriaNaoEnumerados.staging.test.ts`), which tries
+ * a classic `explain()` on this very object (Enterprise refuses it today; the
+ * day it stops refusing, this is the plan that suite reads).
+ *
+ * `select` may sit LAST: a classic query's projection is one field of the
+ * request, independent of the call order, so this is the identical
+ * `StructuredQuery` the chain with `select` before `orderBy` built — the
+ * offline suite pins the mask, the emulator and staging suites run it.
  */
 export function consultaDaVarredura(db: Firestore, args: FetchLinksNaoEnumeradosArgs): Query {
+  return consultaDaVarreduraSemProjecao(db, args).select(...CAMPOS_LINK);
+}
+
+/**
+ * The walk's page WITHOUT its projection — the same collection group, conta
+ * predicate (`== contaRef`, or the price phase's `in [both ref forms]`),
+ * `orderBy(__name__)`, `limit` and `startAfter(<DocumentReference>)` cursor as
+ * {@link consultaDaVarredura}, which is exactly this plus a `select`.
+ * Production never runs it on its own; it exists so the plan PROXY can be
+ * explained at all.
+ *
+ * ⚠️ Do not fold it back into one builder. Enterprise refuses classic explain,
+ * so both the staging suite and `scripts/check-stock-indexes.mjs` explain the
+ * SDK's pipeline translation of the query (`db.pipeline().createFrom(query)`)
+ * instead — and `Query._pipeline()` (`@google-cloud/firestore` 8.6.0) emits the
+ * projection as a `select` stage straight after the filters, BEFORE the
+ * `where(exists(__name__))`, the `sort(__name__)` and the cursor `where` it
+ * derives from the order: `collection_group → where(<the conta predicate>) →
+ * select(id, estado) → where(exists(__name__)) → sort(__name__) →
+ * where(greater_than(__name__, <cursor>)) → limit`. A pipeline `select` keeps
+ * ONLY the named fields, so the document key is gone by the time those stages
+ * test it: every row fails `exists(__name__)`, and the proxy returns ZERO rows
+ * and NO `explainStats` at all — measured on the staging Enterprise database on
+ * 2026-10-08, while the same query without the `select` returned its rows and a
+ * full plan. The classic query the walk runs is unaffected (staging drains it
+ * over real cursors); only the proxy breaks. So the proxy explains THIS query: a
+ * projection changes what each matched document returns, not which range is
+ * scanned, how the cursor is applied or in what order — so the proxy of this
+ * query is the proxy of the production one. ⚠️ A proxy all the same: it is the
+ * PIPELINE the SDK builds (an explicit `sort` stage, the cursor as `where`
+ * stages), so it proves index readiness, and what else its plan shows is a
+ * PROXY-PLAN finding rather than the classic query's own plan
+ * (`lib/firebase/explainPlan.mjs`'s header) — the one-form `==` page prints a
+ * `• Limit` over a cursor seek, the `in` page a `• MajorSort`.
+ */
+export function consultaDaVarreduraSemProjecao(
+  db: Firestore,
+  args: FetchLinksNaoEnumeradosArgs,
+): Query {
   const { pageLimit } = args;
   // ⚠️ Refused, never floored. `full` in the walk is `docs.length === pageLimit`,
   // so a 0 reads nothing, calls that page FULL, finds no last path and returns a
@@ -193,12 +263,25 @@ export function consultaDaVarredura(db: Firestore, args: FetchLinksNaoEnumerados
       `[mercado-livre] pageLimit da varredura de anúncios inválido: ${String(pageLimit)}`,
     );
   }
+  const formas = contaRefForms(args.integracaoId);
+  const contaRef = args.contaRef ?? null;
+  // Refused for the same reason as a bad page size: a ref of ANOTHER conta would
+  // walk that conta's links and classify them against this one — every live
+  // link a "conta fora do produto", healed onto the wrong produtos.
+  if (contaRef != null && !formas.includes(contaRef)) {
+    throw new RangeError(
+      `[mercado-livre] contaRef da varredura de anúncios não é uma forma da conta ` +
+        `${JSON.stringify(args.integracaoId)}: ${JSON.stringify(contaRef)}`,
+    );
+  }
   const afterLinkPath = args.afterLinkPath ?? null;
 
-  const linksQuery = produtoMercadoLivreLinkCollection
-    .groupQuery(db)
-    .where('contaOuterRef', 'in', contaRefForms(args.integracaoId))
-    .select(...CAMPOS_LINK)
+  const grupo = produtoMercadoLivreLinkCollection.groupQuery(db);
+  const linksQuery = (
+    contaRef == null
+      ? grupo.where('contaOuterRef', 'in', formas)
+      : grupo.where('contaOuterRef', '==', contaRef)
+  )
     .orderBy(FieldPath.documentId())
     .limit(pageLimit);
   return afterLinkPath == null

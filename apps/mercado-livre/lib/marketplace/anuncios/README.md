@@ -94,10 +94,23 @@ its status and moderation state current. The inverse direction (ML → ERP) is
   PATH: `preco/precoMotivos.test.ts` scans this file for those codes and throws
   `ENOENT` if it moves. Rides the COLLECTION_GROUP index
   `produtoMercadoLivre(contaOuterRef, __name__)`; every query is classic, so it
-  all runs in the emulator. `pageLimit` is required and must be an integer ≥ 1
-  — a 0 would read as a drained, COMPLETE walk. `consultaDaVarredura` is one
+  all runs in the emulator. Two walk SHAPES: without `contaRef` a page reads
+  both stored ref forms at once (`contaOuterRef in [...]`, the price phase's —
+  `preco/precoReconciliacao.test.ts` is its byte-unchanged regression proof);
+  with `contaRef` — one of the conta's two forms, anything else refused before
+  a read — it reads that form alone (`==`), which the audit drains form by
+  form because one `==` is a single key-ordered stream (a `Limit` over a
+  cursor seek on the staging proxy) where the `in` sorts the conta's whole
+  remainder on every page. A cursor belongs to its form. `pageLimit` is
+  required and must be an integer ≥ 1 — a 0 would read as a drained, COMPLETE
+  walk. `consultaDaVarredura` is one
   page as an UNEXECUTED query, exported so the staging suite
-  (`estoque/auditoriaNaoEnumerados.staging.test.ts`) explains the very object
-  the walk runs against the real Enterprise database.
+  (`estoque/auditoriaNaoEnumerados.staging.test.ts`) runs the very object the
+  walk runs against the real Enterprise database; it is
+  `consultaDaVarreduraSemProjecao` plus a `select`, and that projection-less
+  half is what the suite EXPLAINS — the pipeline proxy (`createFrom`), because
+  Enterprise refuses classic explain and `createFrom` of a query with `select`
+  returns no rows and no plan. A proxy PASS proves the index is READY and
+  serves the predicate, not the classic query's own plan.
 - `listaDePrecosCache.ts` — despite the name, **not** pricing: its only importer
   is `publish.ts`, which reads it to name the list in a blocked-price message.

@@ -11,10 +11,10 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 import {
   NUMERIC_BOUND_RE,
   RECUSA_EXPLAIN_ENTERPRISE_RE,
-  classicoServeFaixa,
+  classicoServeAvisosAbertos,
   classicoServeVarredura,
-  julgarPlanoDaFaixaDeAvisos,
   julgarPlanoDaVarredura,
+  julgarPlanoDosAvisosAbertos,
   nomesDeNos,
   parseAccessNodes,
   predicateInResidualFilters,
@@ -184,60 +184,79 @@ import {
 //     on the 1st). Both are read-only here; nothing is seeded for them.
 //     (a) The walk (`fetchLinksNaoEnumeradosPage`,
 //         lib/marketplace/anuncios/linksNaoEnumerados.ts — shared with the price
-//         job's report since #1191): a `produtoMercadoLivre` COLLECTION GROUP
-//         query, `contaOuterRef in [both ref forms]`, `select('id','estado')`,
-//         `orderBy(documentId)`, `limit`, and — the page that matters — a
-//         `startAfter(<DocumentReference>)` keyset, because a group's
-//         `__name__` is the full path. It must ride the COLLECTION_GROUP entry
+//         job's report since #1191) as the AUDIT runs it: a `produtoMercadoLivre`
+//         COLLECTION GROUP query, ONE stored ref form at a time —
+//         `contaOuterRef == <form>` (`contaRef`), never the price phase's `in`
+//         over both — `select('id','estado')`, `orderBy(documentId)`, `limit`,
+//         and — the page that matters — a `startAfter(<DocumentReference>)`
+//         keyset, because a group's `__name__` is the full path. Probed once
+//         PER ref form. It must ride the COLLECTION_GROUP entry
 //         `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)` (#1191),
-//         BOUNDED on `contaOuterRef` (a closed value range — an `equal_any`
-//         push-down over `(-∞..+∞)` ranges is the shape of a walk of every
-//         conta, so it does not pass here), SEEKING its cursor (a key lower
-//         bound, not a per-entry test), with no residual Filter (the cursor read
-//         residually re-reads every earlier page: the walk turns quadratic) and
-//         no Sort node (the index did not deliver key order, so every page sorts
-//         the conta's whole link set). Page 2's cursor is page 1's FIRST link
-//         when page 1 holds two — the SHAPE is what this proves, and that choice
-//         guarantees page 2 a row — else a reference just below it.
-//     (b) The avisos key range (`listarFaixaDeChaves`,
-//         lib/marketplace/estoque/auditoriaNaoEnumerados.ts):
-//         `orderBy(documentId).startAt('anuncioForaDaSincronizacao:<conta>:')
-//         .endBefore('…;')`, `select('resolvidoEm','params','canal')` — a key
-//         scan CLOSED at both ends, never a walk of the collection (a half-open
-//         range reads every other conta's avisos on its open side).
+//         BOUNDED on `contaOuterRef` (a closed value range — a push-down over an
+//         unbounded range, a bare `ranges: /` (older dialect: `(-∞..+∞)`), is
+//         the shape of a walk of every conta, so it does not pass here), SEEKING
+//         its cursor (a key lower bound, not a per-entry test), with no residual
+//         Filter (the cursor read residually re-reads every earlier page: the
+//         walk turns quadratic) and no Sort node (the index did not deliver key
+//         order, so every page sorts the form's whole remainder). Page 2's
+//         cursor is page 1's FIRST link when page 1 holds two — the SHAPE is what
+//         this proves, and that choice guarantees page 2 a row — else a
+//         reference just below it.
+//     (b) The run's ONE open-avisos read (`listarAvisosAbertos`,
+//         lib/marketplace/estoque/auditoriaNaoEnumerados.ts): `avisos where
+//         resolvidoEm == null`, NO `orderBy`, `limit(AVISOS_ABERTOS_MAX + 1)`,
+//         `select('tipo','canal','params')` — the bell's predicate, which the
+//         declared `avisos(resolvidoEm ASC)` entry must serve as the closed
+//         `[null]` point: exactly the open rows, never the resolved history.
 //     Each is also EXECUTED plainly first, as a correctness probe the emulator
 //     lane cannot give against Enterprise: page 2 must resume exactly after its
-//     cursor, and every aviso id returned must carry the conta's prefix.
+//     cursor, and every aviso the read returns must be open.
 //     ⚠️ ENTERPRISE REFUSES CLASSIC EXPLAIN — `3 INVALID_ARGUMENT: Explain
 //     options are not supported in RunQuery API for Enterprise edition` (the
 //     same wall `apps/functions/scripts/check-delete-cost.mjs` and
 //     `check-text-search-index.mjs` record). So each query's classic
 //     `explain({ analyze: true })` is tried first and judged on
 //     `indexesUsed` when a database accepts it; on the refusal, the SDK's own
-//     PIPELINE TRANSLATION of that same query object
-//     (`db.pipeline().createFrom(query)`) is explained instead, labeled PROXY
-//     and judged with the access-node heuristics below — never a hand-built
-//     pipeline that could drift from the query it stands for. Only the plan
-//     SHAPE can pass here (no read ceiling is passed: see `relatarVeredicto`);
-//     the automated `test:staging` suite, which seeds the neighbours a read
-//     ceiling needs, also accepts a plan its read counters prove bounded.
-//     Read what that proves
-//     precisely: a proxy that rides no node on the CG entry means the index is
-//     not READY in this project — index readiness does not depend on the API —
-//     so it FAILS; a proxy PASS proves the index is READY and serves the
-//     predicate, NOT the classic query's own plan. Confirm that one in Query
-//     Insights (the `produtoMercadoLivre` collection-group row after the first
-//     audit run) or `firestore.googleapis.com/api/billable_read_units`.
-//     ⚠️ Cost: before the CG entry is READY, every execution here full-scans
-//     the `produtoMercadoLivre` group until its `limit`-th match — billed, like
-//     everything in this script. CHECK_AUDITORIA=0 skips the whole section.
+//     PIPELINE TRANSLATION of that same query MINUS ITS `select`
+//     (`db.pipeline().createFrom(<…SemProjecao>)`) is explained instead,
+//     labeled PROXY and judged with the access-node heuristics below — never a
+//     hand-built pipeline that could drift from the query it stands for.
+//     ⚠️ Not the projected query itself: `createFrom` puts its `select` before
+//     the `exists(__name__)`/`sort(__name__)` stages it derives, the key is
+//     gone, and the proxy returns zero rows and no plan (staging, 2026-10-08).
+//     ⚠️ Both shapes are the answer to two PROXY-PLAN findings measured on
+//     staging (2026-10-08, lib/firebase/explainPlan.mjs's header): the walk's
+//     old `in` over both ref forms was sorted by a `MajorSort` (every page read
+//     the conta's whole remainder), and the avisos KEY RANGE the audit used to
+//     read had no seekable access path (it scanned the whole collection). Both
+//     PASS on staging since 2026-10-09. The walk is judged on its SHAPE only (no
+//     read ceiling is passed: see `relatarVeredicto`); the open-avisos read is
+//     judged on its shape AND against the rows it returned, which a bounded
+//     read scans exactly. The automated `test:staging` suite, which seeds the
+//     neighbours a walk ceiling needs, runs the same verdicts with ceilings.
+//     Read what that proves precisely: a proxy that rides no node on the
+//     expected entry means the index is not READY in this project — index
+//     readiness does not depend on the API — so it FAILS; a proxy PASS proves
+//     the index is READY and serves the predicate, NOT the classic query's own
+//     plan. Confirm that one in Query Insights (the `produtoMercadoLivre`
+//     collection-group row and the `avisos` row after the first audit run) or
+//     `firestore.googleapis.com/api/billable_read_units`.
+//     ⚠️ Cost: before the CG entry is READY, every walk execution here
+//     full-scans the `produtoMercadoLivre` group until its `limit`-th match;
+//     the open-avisos read returns EVERY open aviso of the project (it mirrors
+//     production's cap verbatim — see `avisosAbertosQuerySemProjecao`) — billed,
+//     like everything in this script. CHECK_AUDITORIA=0 skips the whole section.
 //
 // ---- ACCESS-NODE heuristics (calibrated on the REAL staging plan text of
 // gate run 2, 2026-07-28 — the explain format is not machine-stable, so the
 // printed plans remain the actual gate: READ them before merging PR C). Since
 // #1200 they live in lib/firebase/explainPlan.mjs (unit-tested offline, and the
 // same module the automated `test:staging` suite judges with) — edit them THERE,
-// and recalibrate against a printed plan when the dialect moves. The
+// and recalibrate against a printed plan when the dialect moves. They WERE
+// recalibrated on 2026-10-08 (the bounds print as a TREE under `ranges: /`, an
+// unbounded scan as a bare `ranges: /`, the sort node as `MajorSort`, and every
+// page carries an exists-only residual Filter) — that module's header has the
+// dialect, and `lib/firebase/__planos__/` the captured plans. The
 // plan is parsed into access-node blocks: a SequentialScan / SeekingScan /
 // IndexSeek / TableScan / EntityScan / CollectionScan bullet — in fact ANY
 // `• <Name>Scan` — plus its body up to the next `•` node bullet. Recognizing
@@ -325,9 +344,9 @@ import {
 // apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts — this script mirrors
 // both in plain JS (the TS module is not importable from a .mjs script); a
 // shape change there must be reflected here or the proof goes stale. Section 6
-// mirrors two more the same way: `fetchLinksNaoEnumeradosPage`
-// (anuncios/linksNaoEnumerados.ts) and `listarFaixaDeChaves` + `chaveDeAviso`'s
-// segment fold (estoque/auditoriaNaoEnumerados.ts, packages/schemas/src/aviso.ts).
+// mirrors two more the same way: `fetchLinksNaoEnumeradosPage`'s one-form page
+// (anuncios/linksNaoEnumerados.ts) and `listarAvisosAbertos`
+// (estoque/auditoriaNaoEnumerados.ts).
 // ⚠️ The window filter deliberately has NO component arm (ADR 0014): a kit sale
 // stamps the kit's own estoque doc, so `maxComp` was removed rather than being
 // forgotten here. The sales signal is likewise gone — the `pedidos` sold-ids
@@ -345,8 +364,9 @@ const pageLimit = Number.isInteger(pageLimitRaw) && pageLimitRaw > 0 ? pageLimit
 // record. `CHECK_ANCHOR_AB=1` still runs it; re-declare an index first.
 const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '0') !== '0';
 // The #1200 link-audit section (header 6.) — ON by default: it is the master
-// flag's precondition. Its executions return at most CHECK_PAGE_LIMIT rows each;
-// what that does NOT bound (the scan, before the CG entry is READY) is in 6.
+// flag's precondition. Its walk executions return at most CHECK_PAGE_LIMIT rows
+// each and its open-avisos read every open aviso; what that does NOT bound (the
+// scan, before the CG entry is READY) is in 6.
 const runAuditoria = (process.env.CHECK_AUDITORIA ?? '1') !== '0';
 
 // Mirrors the shipped daily window: `dailyWindowHours()` (24) minus
@@ -1576,50 +1596,65 @@ try {
     await explainDailyPage2('worst case: force-all, every anchor survives S4', -1);
   }
 
-  /* ---------- #1200 link audit: CG walk page 2 + avisos key range (6.) --------- */
+  /* ------- #1200 link audit: CG walk page 2 per ref form + open avisos (6.) ------- */
 
   // Mirrors `contaRefForms` (packages/data/src/admin/produtos/integracoesComProduto.ts):
-  // the walk's `in` carries BOTH stored forms of the conta ref.
+  // the two stored forms of the conta ref, which the audit walks one at a time.
   const contaRefForms = [`documents/integracao/${integracaoId}`, `integracao/${integracaoId}`];
 
-  /** THE walk, verbatim from `fetchLinksNaoEnumeradosPage` (keep-in-sync note in the header). */
-  const walkQuery = () =>
+  /**
+   * ONE ref form's walk page WITHOUT its projection, verbatim from
+   * `consultaDaVarreduraSemProjecao` with a `contaRef`
+   * (lib/marketplace/anuncios/linksNaoEnumerados.ts; keep-in-sync note in the
+   * header) — what the PROXY explains. ⚠️ Never feed `createFrom` the projected
+   * query: the SDK (`@google-cloud/firestore` 8.6.0) emits its `select` stage
+   * BEFORE the `exists(__name__)` / `sort(__name__)` / cursor stages it derives
+   * from the order, the projection drops the document key, and the pipeline
+   * returns zero rows and no `explainStats` (measured on staging, 2026-10-08).
+   * The projection changes what each row returns, never the range or the order.
+   */
+  const walkQuerySemProjecao = (contaRef) =>
     db
       .collectionGroup('produtoMercadoLivre')
-      .where('contaOuterRef', 'in', contaRefForms)
-      .select('id', 'estado')
+      .where('contaOuterRef', '==', contaRef)
       .orderBy(FieldPath.documentId())
       .limit(pageLimit);
+  /**
+   * THE walk page as the audit runs it (`consultaDaVarredura`): the base plus its
+   * `select`, applied LAST — a classic query's projection is one field of the
+   * request, so this is the same `StructuredQuery` whatever the call order.
+   */
+  const walkQuery = (contaRef) => walkQuerySemProjecao(contaRef).select('id', 'estado');
 
-  // Mirrors `chaveDeAviso`'s per-segment fold (packages/schemas/src/aviso.ts): the
-  // identity for a Firestore auto-id, but a conta id carrying `/` `.` `:` … would
-  // otherwise be probed under a prefix the producer never writes.
-  const segmentoChave = (valor) =>
-    String(valor)
-      .replace(/[/\\.#[\]:]/g, '_')
-      .replace(/\s+/g, '_')
-      .trim();
-  // Mirrors TIPO_AVISO.anuncioForaDaSincronizacao (packages/schemas).
-  const TIPO_AVISO_AUDITORIA = 'anuncioForaDaSincronizacao';
-  const prefixoAvisos = `${TIPO_AVISO_AUDITORIA}:${segmentoChave(integracaoId)}`;
-
-  /** THE avisos read, verbatim from `listarFaixaDeChaves` — `[inicio, fim)` by key. */
-  const avisosQuery = (inicio, fim) =>
+  // Mirrors AVISOS_ABERTOS_MAX (estoque/auditoriaNaoEnumerados.ts).
+  const AVISOS_ABERTOS_MAX = 5_000;
+  /**
+   * THE open-avisos read WITHOUT its projection, verbatim from
+   * `consultaDosAvisosAbertosSemProjecao` — what the PROXY explains, for the
+   * reason `walkQuerySemProjecao` gives. ⚠️ Verbatim INCLUDING the cap, unlike
+   * the walk's page size: the proxy's `sort(__name__)` (the SDK's translation of
+   * a query with no order) sits above an unordered fetch, so it sorts the whole
+   * `[null]` run before its limit — a smaller limit here would make it CUT
+   * (`sortsQueCortam`), a plan production never runs. So this returns every
+   * open aviso of the project, as production does.
+   */
+  const avisosAbertosQuerySemProjecao = () =>
     db
       .collection('avisos')
-      .select('resolvidoEm', 'params', 'canal')
-      .orderBy(FieldPath.documentId())
-      .startAt(inicio)
-      .endBefore(fim)
-      .limit(pageLimit);
+      .where('resolvidoEm', '==', null)
+      .limit(AVISOS_ABERTOS_MAX + 1);
+  /** THE open-avisos read as `listarAvisosAbertos` runs it: the base plus its `select`. */
+  const avisosAbertosQuery = () =>
+    avisosAbertosQuerySemProjecao().select('tipo', 'canal', 'params');
 
   /**
    * The PROXY of a classic query — what Enterprise will explain (header 6.):
-   * the SDK's own pipeline translation of THAT query object (`createFrom`), the
-   * same call the staging suite makes. Never a hand-built pipeline beside the
-   * query it stands for: two copies of one query drift apart while both read
-   * correct (#1369) — the hand-built proxies this replaced, here and in the
-   * staging suite, already disagreed on the avisos page size.
+   * the SDK's own pipeline translation (`createFrom`) of the query's
+   * PROJECTION-LESS half (`walkQuerySemProjecao` / `avisosAbertosQuerySemProjecao`),
+   * the same call the staging suite makes. Never a hand-built pipeline beside
+   * the query it stands for: two copies of one query drift apart while both
+   * read correct (#1369) — the hand-built proxies this replaced, here and in
+   * the staging suite, already disagreed with each other on a page size.
    */
   const proxyDe = (query) => () => db.pipeline().createFrom(query);
 
@@ -1665,7 +1700,10 @@ try {
     fail(`${label}: the classic plan does not ride the expected index — read indexesUsed above`);
   }
 
-  /** One proxy explain-analyze; `null` when it returned no plan (0 rows carry none). */
+  /**
+   * One proxy explain-analyze: its plan (`null` when it returned none — 0 rows
+   * carry none) and the rows it returned.
+   */
   async function explainProxy(label, build) {
     const snap = await build().execute({
       explainOptions: { mode: 'analyze', outputFormat: 'text' },
@@ -1674,7 +1712,7 @@ try {
     console.log(`rows returned: ${snap.results.length} (${label})`);
     console.log(`\n----- FULL PLAN (PROXY — pipeline translation, ${label}) -----\n`);
     console.log(proxyPlan);
-    return proxyPlan.trim() === '' ? null : proxyPlan;
+    return { plano: proxyPlan.trim() === '' ? null : proxyPlan, linhas: snap.results };
   }
 
   /**
@@ -1683,12 +1721,13 @@ try {
    * the read counters summed over the judged nodes, when the dialect prints
    * them, are shown either way.
    *
-   * ⚠️ No `leituraMaxima` is passed from here, so only the plan SHAPE can pass:
-   * a push-down or a cursor tested per entry fails even when it seeks. A read
-   * ceiling proves something only where every failure mode provably reads past
-   * it, and that takes seeded neighbours on every side of the range — which
+   * ⚠️ The WALK is judged with no `leituraMaxima`, so only its plan SHAPE can
+   * pass: a push-down or a cursor tested per entry fails even when it seeks. A
+   * walk ceiling proves something only where every failure mode provably reads
+   * past it, and that takes seeded neighbours on every side of the range — which
    * `test:staging` (auditoriaNaoEnumerados.staging.test.ts) has and a real conta
-   * here does not. On such a FAIL, read the counters below and that suite's run.
+   * here does not. The open-avisos read is different: its shape check stands on
+   * its own, and its ceiling — the rows it returned — can only fail it more.
    */
   function relatarVeredicto(label, veredicto) {
     if (veredicto.alvo != null) printNode(veredicto.alvo);
@@ -1707,66 +1746,78 @@ try {
   if (!runAuditoria) {
     console.log('\n=== #1200 link audit queries — SKIPPED (CHECK_AUDITORIA=0) ===');
   } else {
-    /* ---- (a) the walk: page 1 for a real cursor, then page 2 ---- */
+    /* ---- (a) the walk, per ref form: page 1 for a real cursor, then page 2 ---- */
 
-    console.log('\n=== #1200 link audit (a): produtoMercadoLivre CG walk, page 2 ===');
-    const pagina1 = await walkQuery().get();
-    console.log(
-      `page 1 (classic, executed): ${pagina1.docs.length} link(s) of conta ${integracaoId}`,
-    );
-    const primeiro = pagina1.docs[0] ?? null;
-    let cursorRef = null;
-    let esperadoNaPagina2 = null;
-    if (pagina1.docs.length >= 2) {
-      // A REAL page-1 reference — its FIRST, not its last: the keyset SHAPE is
-      // what this proves, and resuming after the first guarantees page 2 a row
-      // (zero rows carry no explainStats). Page 2 must open on page 1's second.
-      cursorRef = primeiro.ref;
-      esperadoNaPagina2 = pagina1.docs[1].ref.path;
-    } else if (primeiro != null) {
-      // One link only (the seeded probe family, typically). A cursor just BELOW
-      // it: the owning produto id minus its last character is a strict prefix,
-      // and a prefix sorts first segment by segment — so every link of that
-      // produto, the first one included, lies after it. Same keyset shape.
-      const produtoId = primeiro.ref.parent.parent?.id ?? '';
-      if (produtoId.length > 1) {
-        cursorRef = db
-          .collection('produtos')
-          .doc(produtoId.slice(0, -1))
-          .collection('produtoMercadoLivre')
-          .doc(primeiro.id);
-        esperadoNaPagina2 = primeiro.ref.path;
-      }
-    }
-
-    if (cursorRef == null) {
-      fail(
-        `audit walk: conta ${integracaoId} has no usable produtoMercadoLivre link — page 2 ` +
-          'cannot return a row, so nothing is proven. Point CHECK_INTEGRACAO_ID at a conta ' +
-          'with anúncios, or run with CHECK_SEED=1',
+    let formasProvadas = 0;
+    for (const contaRef of contaRefForms) {
+      console.log(
+        `\n=== #1200 link audit (a): produtoMercadoLivre CG walk, page 2 — ${contaRef} ===`,
       );
-    } else {
+      const pagina1 = await walkQuery(contaRef).get();
+      console.log(
+        `page 1 (classic, executed): ${pagina1.docs.length} link(s) of conta ${integracaoId} ` +
+          `stored as ${contaRef}`,
+      );
+      const primeiro = pagina1.docs[0] ?? null;
+      let cursorRef = null;
+      let esperadoNaPagina2 = null;
+      if (pagina1.docs.length >= 2) {
+        // A REAL page-1 reference — its FIRST, not its last: the keyset SHAPE is
+        // what this proves, and resuming after the first guarantees page 2 a row
+        // (zero rows carry no explainStats). Page 2 must open on page 1's second.
+        cursorRef = primeiro.ref;
+        esperadoNaPagina2 = pagina1.docs[1].ref.path;
+      } else if (primeiro != null) {
+        // One link only (the seeded probe family, typically). A cursor just BELOW
+        // it: the owning produto id minus its last character is a strict prefix,
+        // and a prefix sorts first segment by segment — so every link of that
+        // produto, the first one included, lies after it. Same keyset shape.
+        const produtoId = primeiro.ref.parent.parent?.id ?? '';
+        if (produtoId.length > 1) {
+          cursorRef = db
+            .collection('produtos')
+            .doc(produtoId.slice(0, -1))
+            .collection('produtoMercadoLivre')
+            .doc(primeiro.id);
+          esperadoNaPagina2 = primeiro.ref.path;
+        }
+      }
+
+      if (cursorRef == null) {
+        // Not a FAIL by itself: a conta's links may all sit in ONE form. That at
+        // least one form proves the shape is checked after the loop.
+        console.log(
+          `NOTE  audit walk: no usable link stored as ${contaRef} — this form's page 2 ` +
+            'cannot return a row, so it proves nothing',
+        );
+        continue;
+      }
+      formasProvadas += 1;
       console.log(`page 2 cursor: ${cursorRef.path}`);
       // Correctness probe — the CLASSIC query, executed: `startAfter(<DocumentReference>)`
       // on a group must resume exactly after the cursor, not from the top.
-      const pagina2 = await walkQuery().startAfter(cursorRef).get();
+      const pagina2 = await walkQuery(contaRef).startAfter(cursorRef).get();
       const abriuEm = pagina2.docs[0]?.ref.path ?? null;
       if (abriuEm === esperadoNaPagina2) {
         console.log(`PASS  audit walk: classic page 2 resumes right after the cursor (${abriuEm})`);
       } else {
         fail(
-          `audit walk: classic page 2 opened on ${JSON.stringify(abriuEm)}, expected ` +
-            `${esperadoNaPagina2} — startAfter(<DocumentReference>) did not resume after the cursor`,
+          `audit walk (${contaRef}): classic page 2 opened on ${JSON.stringify(abriuEm)}, ` +
+            `expected ${esperadoNaPagina2} — startAfter(<DocumentReference>) did not resume ` +
+            'after the cursor',
         );
       }
 
-      const labelWalk = 'audit walk page 2 (CG contaOuterRef in + keyset)';
+      const labelWalk = `audit walk page 2 (CG contaOuterRef == ${contaRef} + keyset)`;
       console.log(`\n--- ${labelWalk}: classic explain ---`);
-      const classico = await explainClassico(labelWalk, walkQuery().startAfter(cursorRef));
+      const classico = await explainClassico(labelWalk, walkQuery(contaRef).startAfter(cursorRef));
       if (classico.metrics != null) {
         julgarClassico(labelWalk, classico.metrics, classicoServeVarredura);
       } else if (classico.recusado != null) {
-        const proxyPlan = await explainProxy(labelWalk, proxyDe(walkQuery().startAfter(cursorRef)));
+        const { plano: proxyPlan } = await explainProxy(
+          labelWalk,
+          proxyDe(walkQuerySemProjecao(contaRef).startAfter(cursorRef)),
+        );
         if (proxyPlan == null) {
           fail(`${labelWalk}: the PROXY returned no plan (0 rows) — nothing proven`);
         } else {
@@ -1780,89 +1831,74 @@ try {
             `${labelWalk} PROXY`,
             julgarPlanoDaVarredura(proxyPlan, { comCursor: true }),
           );
-          console.log(
-            'NOTE  PROXY verdicts prove the CG entry is READY and serves this predicate — ' +
-              "NOT the classic query's own plan. Confirm that one in Query Insights after the " +
-              'first audit run (header 6.)',
-          );
         }
       }
     }
-
-    /* ---- (b) the avisos key range ---- */
-
-    console.log('\n=== #1200 link audit (b): avisos key range ===');
-    const inicioFaixa = `${prefixoAvisos}:`;
-    const fimFaixa = `${prefixoAvisos};`;
-    console.log(`range: [${inicioFaixa}, ${fimFaixa})`);
-    // Correctness probe — the CLASSIC read, executed: the half-open range must
-    // hold this conta's rows and nothing else (not `c10`'s, not the `…;` id).
-    const faixa = await avisosQuery(inicioFaixa, fimFaixa).get();
-    const vazadas = faixa.docs.map((d) => d.id).filter((id) => !id.startsWith(inicioFaixa));
-    if (vazadas.length > 0) {
-      fail(`avisos key range leaked ${vazadas.length} foreign id(s): ${JSON.stringify(vazadas)}`);
-    } else if (faixa.docs.length === 0) {
-      // Not a PASS: an empty range cannot leak, so it proves nothing about the
-      // bounds. Expected before the audit's first run on this conta.
-      console.log(
-        `NOTE  avisos key range: 0 rows — conta ${integracaoId} has no ${TIPO_AVISO_AUDITORIA} ` +
-          'row yet, so the leak probe proves nothing until one exists',
+    if (formasProvadas === 0) {
+      fail(
+        `audit walk: conta ${integracaoId} has no usable produtoMercadoLivre link in either ref ` +
+          'form — no page 2 can return a row, so nothing is proven. Point CHECK_INTEGRACAO_ID at ' +
+          'a conta with anúncios, or run with CHECK_SEED=1',
       );
     } else {
       console.log(
-        `PASS  avisos key range: ${faixa.docs.length} row(s), every id under ${inicioFaixa}`,
+        'NOTE  PROXY verdicts prove the CG entry is READY and serves this predicate — ' +
+          "NOT the classic query's own plan, so any other FAIL above (a sort, an over-read) " +
+          'is a PROXY-PLAN finding. Confirm the classic plan in Query Insights after the ' +
+          'first audit run (header 6.)',
       );
     }
 
-    const labelAvisos = 'avisos key range (orderBy documentId, startAt/endBefore)';
+    /* ---- (b) the open-avisos read ---- */
+
+    console.log('\n=== #1200 link audit (b): the open-avisos read (resolvidoEm == null) ===');
+    // Correctness probe — the CLASSIC read, executed: how many open avisos the
+    // audit's run would list, and whether that listing is whole.
+    const abertos = await avisosAbertosQuery().get();
+    console.log(`open avisos (classic, executed): ${abertos.docs.length}`);
+    if (abertos.docs.length > AVISOS_ABERTOS_MAX) {
+      console.log(
+        `NOTE  more than ${AVISOS_ABERTOS_MAX} open avisos: the audit would call this listing ` +
+          'TRUNCATED and resolve nothing this run',
+      );
+    }
+
+    const labelAvisos = 'open-avisos read (resolvidoEm == null, no orderBy)';
     console.log(`\n--- ${labelAvisos}: classic explain ---`);
-    const classicoAvisos = await explainClassico(labelAvisos, avisosQuery(inicioFaixa, fimFaixa));
+    const classicoAvisos = await explainClassico(labelAvisos, avisosAbertosQuery());
     if (classicoAvisos.metrics != null) {
-      // A pure key-order read rides the primary key and no declared composite.
-      julgarClassico(labelAvisos, classicoAvisos.metrics, classicoServeFaixa);
+      julgarClassico(labelAvisos, classicoAvisos.metrics, classicoServeAvisosAbertos);
     } else if (classicoAvisos.recusado != null) {
-      // Zero rows carry no plan, and before the audit's first run this conta has
-      // no `anuncioForaDaSincronizacao` row at all. Widened retry, labeled: the
-      // same half-open shape over a range known to hold one real aviso id.
-      let proxyPlan = await explainProxy(labelAvisos, proxyDe(avisosQuery(inicioFaixa, fimFaixa)));
-      let inicioJulgado = inicioFaixa;
-      if (proxyPlan == null) {
-        const algum = await db
-          .collection('avisos')
-          .orderBy(FieldPath.documentId())
-          .select()
-          .limit(1)
-          .get();
-        const id = algum.docs[0]?.id ?? null;
-        if (id != null) {
-          console.log(
-            `0 rows in the producer's range → widened range [${id}, ${id};) — same stage ` +
-              'shape, so the plan proof is unaffected',
-          );
-          inicioJulgado = id;
-          proxyPlan = await explainProxy('widened range', proxyDe(avisosQuery(id, `${id};`)));
-        }
+      const { plano: proxyPlan, linhas } = await explainProxy(
+        labelAvisos,
+        proxyDe(avisosAbertosQuerySemProjecao()),
+      );
+      // The proxy reads full documents (no projection): every one must be OPEN.
+      const fechados = linhas.filter((r) => r.data()?.resolvidoEm !== null);
+      if (fechados.length > 0) {
+        fail(
+          `${labelAvisos}: the read returned ${fechados.length} aviso(s) that are not open — ` +
+            JSON.stringify(fechados.slice(0, 5).map((r) => r.ref?.path ?? '(no ref)')),
+        );
       }
       if (proxyPlan == null) {
         fail(
-          `${labelAvisos}: the PROXY returned no plan (no aviso to range over at all) — ` +
-            'nothing proven',
+          `${labelAvisos}: the PROXY returned no plan — this project has no open aviso, so ` +
+            'nothing is proven. `test:staging` (auditoriaNaoEnumerados.staging.test.ts) seeds ' +
+            'its own and runs the same verdict',
         );
       } else {
         console.log(`  plan nodes: ${nomesDeNos(proxyPlan).join(', ')}`);
-        // ⚠️ `julgarPlanoDaFaixaDeAvisos`, NOT `failIdentifierlessScans`: the
-        // primary key is no declared index, so a key-range access node may
-        // legitimately carry no `index:` line. What must hold is a BOUND on the
-        // key at BOTH ends — the range, not the collection.
-        const veredicto = julgarPlanoDaFaixaDeAvisos(proxyPlan, { inicio: inicioJulgado });
-        for (const n of uniqueNodes(
-          veredicto.nos.filter((n) => /avisos/.test(`${n.identifier ?? ''} ${n.kind ?? ''}`)),
-        )) {
-          if (n !== veredicto.alvo) printNode(n);
-        }
-        relatarVeredicto(`${labelAvisos} PROXY`, veredicto);
+        // The [null] point on `avisos(resolvidoEm)`, no residual selection, no
+        // sort that cuts — and no more index rows than the rows it returned.
+        relatarVeredicto(
+          `${labelAvisos} PROXY`,
+          julgarPlanoDosAvisosAbertos(proxyPlan, { leituraMaxima: linhas.length }),
+        );
         console.log(
-          'NOTE  PROXY verdict — the classic read itself is confirmed in Query Insights (header 6.)',
+          'NOTE  PROXY verdict — a FAIL above is a PROXY-PLAN finding unless it is ' +
+            '`indice-ausente` (the entry is not READY); the classic read itself is confirmed ' +
+            'in Query Insights (header 6.)',
         );
       }
     }

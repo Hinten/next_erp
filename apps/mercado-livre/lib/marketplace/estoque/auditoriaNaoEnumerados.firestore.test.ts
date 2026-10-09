@@ -7,25 +7,30 @@
  * those decisions assume:
  *
  *  - the shared walk pages a real COLLECTION GROUP across real keyset cursors
- *    (`pageLimit: 2`, so every test crosses several pages) and drains;
+ *    (`pageLimit: 2`, so every test crosses several pages) and drains — one
+ *    stored ref form at a time, each `contaOuterRef ==` from its own cursor;
  *  - the tier-1 heal really adds the conta inside a real transaction, KEEPING the
  *    array's other entries — and really refuses when the only link closed after
  *    the walk read it;
  *  - `escreverAviso` really creates the row and `resolverAviso` really resolves it;
- *  - the avisos KEY RANGE is half-open on real document ids: a row whose id is
- *    exactly the range end (`<tipo>:<conta>;`) is not this conta's, and a conta
- *    whose id merely STARTS with this one's (`X` vs `X2`) is never touched;
+ *  - the run's ONE open-avisos read (`resolvidoEm == null`) lists real OPEN rows
+ *    only — a row `resolverAviso` closed is gone from it, and so is a row with no
+ *    `resolvidoEm` at all (an equality matches no absent field) — and the
+ *    in-memory filter keeps exactly one conta's rows of this tipo and canal: a
+ *    malformed id and a conta whose id merely STARTS with this one's (`X` vs
+ *    `X2`) are never touched;
  *  - the pre-resolve re-read sees a link created after the walk drained;
- *  - the key range really projects `canal`, so the inactive-conta pass closes an
- *    ML row and leaves another channel's row of the same tipo open.
+ *  - the read really projects `canal`, so the inactive-conta pass closes an ML
+ *    row and leaves another channel's row of the same tipo open.
  *
- * Every query on this path is CLASSIC (the walk, the re-read, the key range), so
- * all of it runs in the emulator — no pipeline anywhere.
+ * Every query on this path is CLASSIC (the walk, the re-read, the open-avisos
+ * read), so all of it runs in the emulator — no pipeline anywhere.
  *
  * ⚠️ The conta enumeration is COLLECTION-WIDE (`tipo` + `ativo`), so a fresh
  * random id buys no isolation there: `beforeEach` purges `integracao` (the
  * `notificacao.firestore.test.ts` precedent) and this tipo's avisos (the
- * inactive-conta pass reads the whole tipo). ⚠️ `db` comes from the production
+ * inactive-conta pass judges every open row of the tipo). The open-avisos read
+ * spans EVERY tipo, so its assertions are scoped to this test's own random ids. ⚠️ `db` comes from the production
  * accessor, and every test carries a POSITIVE existence assertion — in the
  * emulator a mis-targeted database silently auto-creates, so "not found"
  * assertions alone would pass against the wrong one.
@@ -34,7 +39,7 @@ import { randomUUID } from 'node:crypto';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions/logger';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { escreverAviso } from '@delfrance/data/admin/avisos';
+import { escreverAviso, resolverAviso } from '@delfrance/data/admin/avisos';
 import {
   avisoCollection,
   integracaoCollection,
@@ -60,8 +65,10 @@ import {
 import { STOCK_SYNC_FLAG_ENV } from './bulkEstoquePlan';
 import {
   RESOLUCAO_AUDITORIA,
+  avisosDaConta,
   chaveDoAviso,
-  listarAvisosDaConta,
+  classificarAvisosAbertos,
+  listarAvisosAbertos,
   planoDoAviso,
   runAuditoriaNaoEnumerados,
 } from './auditoriaNaoEnumerados';
@@ -133,12 +140,21 @@ async function lerContas(produtoId: string): Promise<unknown> {
   return (snap.data() as Record<string, unknown> | undefined)?.integracoesComProduto;
 }
 
-/** The real walk, plus a hook that runs once, right after conta `alvo` drains. */
+/**
+ * The real walk, plus a hook that runs once, right after conta `alvo`'s walk
+ * drains — its LAST ref form, since the walk drains them one after the other.
+ */
 function walkComGancho(alvo: string, gancho: () => Promise<void>): FetchLinksNaoEnumeradosPage {
   let disparado = false;
+  const ultimaForma = contaRefForms(alvo).at(-1);
   return async (firestore, args) => {
     const page = await fetchLinksNaoEnumeradosPage(firestore, args);
-    if (args.integracaoId === alvo && page.nextAfterLinkPath == null && !disparado) {
+    if (
+      args.integracaoId === alvo &&
+      args.contaRef === ultimaForma &&
+      page.nextAfterLinkPath == null &&
+      !disparado
+    ) {
       disparado = true;
       await gancho();
     }
@@ -160,11 +176,11 @@ afterEach(() => {
 });
 
 describe.skipIf(!EMULATED)('the monthly link audit (Firestore emulator)', () => {
-  it('⭐ walks real pages, heals class 2 keeping the array, raises, resolves — and touches nothing outside the range', async () => {
+  it('⭐ walks real pages, heals class 2 keeping the array, raises, resolves — and touches no row but its own', async () => {
     const u = randomUUID().replace(/-/g, '');
     const X = `aud${u}`;
-    // Shares X's whole id as a PREFIX: `<tipo>:X2:…` sorts inside `[<tipo>:X, <tipo>:X;)`
-    // and only the `:` in the range START keeps it out of X's rows.
+    // Shares X's whole id as a PREFIX: only comparing the id's conta segment
+    // WHOLE keeps `<tipo>:X2:…` out of X's rows.
     const X2 = `${X}2`;
     await conta(X);
     await conta(X2);
@@ -186,12 +202,14 @@ describe.skipIf(!EMULATED)('the monthly link audit (Firestore emulator)', () => 
     // the re-read sees it, so it must stay open.
     await produto(p('E'), { paiId: `pai${u}`, contas: [] });
     await avisoAberto(X, p('E'), ['MLB-E']);
-    // A row whose id is EXACTLY X's range end — not one of X's rows.
-    const fimDaFaixa = `${chaveDeAviso({ tipo: TIPO, conta: X })};`;
-    await avisoCollection.docRef(db(), {}, fimDaFaixa).set(
+    // An OPEN row of this tipo and canal whose id this producer never writes
+    // (`<tipo>:X;` — two segments): listed, and still never X's.
+    const foraDoFormato = `${chaveDeAviso({ tipo: TIPO, conta: X })};`;
+    await avisoCollection.docRef(db(), {}, foraDoFormato).set(
       avisoCollection.parse({
         tipo: TIPO,
         severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.mercadoLivre,
         criadoEm: 1_000_000,
         atualizadoEm: 1_000_000,
       }),
@@ -212,11 +230,12 @@ describe.skipIf(!EMULATED)('the monthly link audit (Firestore emulator)', () => 
 
     expect(result.enabled).toBe(true);
     const rx = result.contas.find((c) => c.integracaoId === X)!;
-    // 4 links of X at pageLimit 2: two FULL pages, then an empty one that drains.
+    // 4 links of X, two per ref form, at pageLimit 2: per form one FULL page,
+    // then an empty one that drains.
     expect(rx).toMatchObject({
       truncada: null,
       error: null,
-      paginas: 3,
+      paginas: 4,
       linksLidos: 4,
       curados: 1,
       curasSemEfeito: 0,
@@ -252,40 +271,107 @@ describe.skipIf(!EMULATED)('the monthly link audit (Firestore emulator)', () => 
     expect(typeof d.data!.resolvidoEm).toBe('number');
     // Re-read found the late link: still open.
     expect((await lerAviso(chaveDoAviso(X, p('E')))).data).toMatchObject({ resolvidoEm: null });
-    // The range end and the prefix-sharing conta: byte-for-byte untouched.
-    expect((await lerAviso(fimDaFaixa)).data).toMatchObject({ resolvidoEm: null, ocorrencias: 1 });
+    // The malformed id and the prefix-sharing conta: byte-for-byte untouched.
+    expect((await lerAviso(foraDoFormato)).data).toMatchObject({
+      resolvidoEm: null,
+      ocorrencias: 1,
+    });
     expect(await lerAviso(chaveDoAviso(X2, p('G')))).toEqual(x2Antes);
     expect(result.inativasResolvidas).toBe(0);
   });
 
-  it('the key range on real ids: one conta’s rows, never the range end, the bare key or `X2`', async () => {
+  it('the open-avisos read on real docs: OPEN rows only, of every tipo — and the in-memory filter keeps exactly one conta’s', async () => {
     const u = randomUUID().replace(/-/g, '');
     const X = `aud${u}`;
     await avisoAberto(X, 'p1', ['MLB1']);
     await avisoAberto(X, 'p2', ['MLB2']);
-    await avisoAberto(`${X}2`, 'p3', ['MLB3']);
-    await avisoAberto(`${X}0`, 'p4', ['MLB4']);
+    // Resolved for real: `resolverAviso` stamps a number, so the read drops it.
+    await avisoAberto(X, 'p3', ['MLB3']);
+    expect(await resolverAviso(db(), chaveDoAviso(X, 'p3'), 'teste', { agoraUs: 2_000_000 })).toBe(
+      true,
+    );
+    // Prefix-sharing contas.
+    await avisoAberto(`${X}2`, 'p4', ['MLB4']);
+    await avisoAberto(`${X}0`, 'p5', ['MLB5']);
+    // This tipo and canal, ids this producer never writes.
     const prefixo = chaveDeAviso({ tipo: TIPO, conta: X });
-    for (const id of [prefixo, `${prefixo};`]) {
+    const malformados = [prefixo, `${prefixo};`, `${chaveDoAviso(X, 'p6')}:x`];
+    for (const id of malformados) {
       await avisoCollection.docRef(db(), {}, id).set(
         avisoCollection.parse({
           tipo: TIPO,
           severidade: SEVERIDADE_AVISO.atencao,
+          canal: CANAL_AVISO.mercadoLivre,
           criadoEm: 1,
           atualizadoEm: 1,
         }),
       );
     }
-
-    const linhas = await listarAvisosDaConta(db(), X);
-
-    expect(linhas.map((l) => l.chave)).toEqual([chaveDoAviso(X, 'p1'), chaveDoAviso(X, 'p2')]);
-    expect(linhas.every((l) => l.aberto)).toBe(true);
-    expect(linhas[0]!.params).toEqual({
-      situacao: 'link-em-variacao',
-      anuncio: 'MLB1',
-      anuncios: 1,
+    // ANOTHER tipo, open, under X's id shape.
+    const outroTipo = chaveDeAviso({
+      tipo: TIPO_AVISO.estoqueAcimaDoDisponivel,
+      conta: X,
+      entidade: 'p7',
     });
+    await escreverAviso(
+      db(),
+      {
+        tipo: TIPO_AVISO.estoqueAcimaDoDisponivel,
+        conta: X,
+        entidade: 'p7',
+        severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.mercadoLivre,
+      },
+      { increment: (by) => FieldValue.increment(by), agoraUs: 1_000_000 },
+    );
+    // No `resolvidoEm` at all — a shape no writer produces (every create and
+    // reopen stamps `null` explicitly): an equality matches no ABSENT field.
+    const semCampo = chaveDoAviso(X, 'p8');
+    await avisoCollection
+      .docRef(db(), {}, semCampo)
+      .set({ tipo: TIPO, severidade: SEVERIDADE_AVISO.atencao, canal: CANAL_AVISO.mercadoLivre });
+
+    const { linhas, truncada } = await listarAvisosAbertos(db());
+    const meus = linhas.filter((l) => l.chave.includes(u));
+
+    expect(truncada).toBe(false);
+    expect(meus.map((l) => l.chave).sort()).toEqual(
+      [
+        chaveDoAviso(X, 'p1'),
+        chaveDoAviso(X, 'p2'),
+        chaveDoAviso(`${X}2`, 'p4'),
+        chaveDoAviso(`${X}0`, 'p5'),
+        ...malformados,
+        outroTipo,
+      ].sort(),
+    );
+    expect(meus.find((l) => l.chave === outroTipo)).toMatchObject({
+      tipo: TIPO_AVISO.estoqueAcimaDoDisponivel,
+      canal: CANAL_AVISO.mercadoLivre,
+    });
+
+    const { doProdutor, foraDoFormato } = classificarAvisosAbertos(meus);
+    // Sorted: with no `orderBy` the read promises no order (Enterprise gives none).
+    expect([...avisosDaConta(doProdutor, X)].sort((a, b) => (a.chave < b.chave ? -1 : 1))).toEqual([
+      {
+        chave: chaveDoAviso(X, 'p1'),
+        prefixo,
+        produtoId: 'p1',
+        params: { situacao: 'link-em-variacao', anuncio: 'MLB1', anuncios: 1 },
+      },
+      {
+        chave: chaveDoAviso(X, 'p2'),
+        prefixo,
+        produtoId: 'p2',
+        params: { situacao: 'link-em-variacao', anuncio: 'MLB2', anuncios: 1 },
+      },
+    ]);
+    expect(foraDoFormato.sort()).toEqual([...malformados].sort());
+    // The rows the read leaves out EXIST — otherwise their absence proves nothing.
+    expect((await lerAviso(chaveDoAviso(X, 'p3'))).data).toMatchObject({
+      resolucaoMotivo: 'teste',
+    });
+    expect((await lerAviso(semCampo)).exists).toBe(true);
   });
 
   it('the tier-1 guard on a real transaction: a link closed after the walk read it is NOT healed', async () => {
@@ -321,8 +407,8 @@ describe.skipIf(!EMULATED)('the monthly link audit (Firestore emulator)', () => 
       .set({ tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: false, nome: inativa });
     await avisoAberto(inativa, 'p1', ['MLB1']);
     // The same channel-neutral tipo raised by ANOTHER channel: its conta is never
-    // an ML integração, and only the stored `canal` — projected by the real key
-    // range — keeps this pass off it.
+    // an ML integração, and only the stored `canal` — projected by the real
+    // open-avisos read — keeps this pass off it.
     await escreverAviso(
       db(),
       {

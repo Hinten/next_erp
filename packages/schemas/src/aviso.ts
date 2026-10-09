@@ -308,7 +308,8 @@ export const TIPO_AVISO_LABELS = {
  *    (`resolucaoMotivo: 'nao-encontrado-na-auditoria'`). ⚠️ A TRUNCATED walk
  *    (page cap, time budget, a cursor that stopped advancing) resolves NOTHING:
  *    there "not found" only means "not reached", and resolving on it would close
- *    a real row this month and re-raise it the next. (2) The conta is no longer
+ *    a real row this month and re-raise it the next — and neither does a run
+ *    whose listing of the open avisos came back past its cap. (2) The conta is no longer
  *    an active Mercado Livre integração (`resolucaoMotivo: 'conta-inativa'`):
  *    nothing walks its links any more, so resolver (1) can never fire for it,
  *    and without this its rows would stand until retention. ⚠️ Both judge
@@ -320,9 +321,11 @@ export const TIPO_AVISO_LABELS = {
  *    — ONE row per PRODUTO, no `janela`. Every monthly walk recomputes the same
  *    id, so a finding that persists refreshes its row instead of opening a new
  *    one. ⚠️ The SHAPE is load-bearing: an aviso stores its conta and entidade
- *    only in its id, so the producer lists one conta's rows by a document-key
- *    range over the `chaveDeAviso({ tipo, conta })` prefix — `conta` must stay
- *    the second segment. `entidade` is the produtoId, never the ML item id: the
+ *    only in its id, so the producer reads the open avisos once per run (the
+ *    bell's own `resolvidoEm == null`) and finds its rows by PARSING the id —
+ *    exactly `<tipo>:<conta>:<produto>`, the conta segment compared whole — so
+ *    `conta` must stay the second segment, and the fold must keep every `:` out
+ *    of a segment. `entidade` is the produtoId, never the ML item id: the
  *    route is built from it, and a produto relisted under a new item id keeps the
  *    row the operator already knows about. The `estoqueAcimaDoDisponivel` fold
  *    caveat applies (a dot and an underscore in a produtoId are one key).

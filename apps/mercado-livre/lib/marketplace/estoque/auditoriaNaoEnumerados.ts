@@ -10,8 +10,9 @@
  * a live anúncio whose produto falls outside the two terms is never enumerated and
  * leaves no trace — the sweep reports `completed` while that listing keeps selling
  * at whatever stock it last had. So once a month this walks each active conta's
- * LINKS instead (the shared `anuncios/linksNaoEnumerados.ts` walk, the same one
- * the price job reports from) and acts on every finding:
+ * LINKS instead (the shared `anuncios/linksNaoEnumerados.ts` walk the price job
+ * reports from — here one stored ref form at a time, below) and acts on every
+ * finding:
  *
  *  - **class 2** (`NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO` — the produto's
  *    `integracoesComProduto` lost the conta: a lost trigger event, or the cutover
@@ -29,6 +30,19 @@
  * (`isStockSyncEnabled()`), never by the reconciliação valve: that one is an
  * ML-quota valve, and this spends none. Off ⇒ nothing is read.
  *
+ * ---- One ref form at a time. A link stores its conta in either of two ref
+ * forms (`contaRefForms`), and the walk drains them one after the other —
+ * `contaOuterRef == <form>`, each with its own cursor — rather than both at once
+ * through an `in`. On the staging proxy (2026-10-08, `lib/firebase/explainPlan.mjs`)
+ * one `==` is a single key-ordered stream on the CG index, so every page is a
+ * `Limit` over a cursor seek and reads exactly the page; the `in` merged its two
+ * streams with a sort that read the conta's whole remainder on every page (the
+ * walk quadratic in the conta's link count). The page cap and the time budget are
+ * the conta's, across both forms, and a cut in EITHER form leaves the walk
+ * incomplete. Findings from both forms fold into one per-produto map — the same
+ * "latest read wins" rule as across pages, because a produto with a link in each
+ * form is read once per form.
+ *
  * ---- ⚠️ "Not found" means "clean" ONLY on a complete walk. A walk truncated by
  * the page cap, its time budget or a cursor that stopped advancing has simply not
  * READ the rows behind the cut, so it resolves NOTHING (and says so in a warn).
@@ -39,22 +53,46 @@
  * this month and re-open it the next — a monthly flap the operator learns to
  * ignore.
  *
- * ---- The avisos are listed by DOCUMENT KEY, not by field. An aviso stores its
- * conta and entidade only in its id (`chaveDeAviso`), so this producer's rows for
- * one conta are exactly the ids in `[<tipo>:<conta>:, <tipo>:<conta>;)` — `;` is
- * the code point after the `:` separator, so the half-open range holds every id
- * starting with `<tipo>:<conta>:` and nothing else. ⚠️ The END is EXCLUSIVE, and
- * the `:` in the START is load-bearing: without it conta `c1` would also list
- * conta `c10`'s rows and resolve them as "not found by c1's walk". A key-order
- * range needs no declared index (it is the primary key).
+ * ---- The avisos: ONE read per run, of the OPEN rows only. An aviso stores its
+ * conta and entidade only in its id (`chaveDeAviso`), and every decision here
+ * needs open rows alone: a refresh is skipped only for an open row whose params
+ * are current, only an open row is a resolve candidate, and a RESOLVED row is
+ * worth exactly what an ABSENT one is — writing either creates or reopens a bell
+ * row and counts against the new-row cap. So the run reads
+ * `avisos where resolvidoEm == null` once ({@link listarAvisosAbertos} — the
+ * bell's own predicate, on the declared `avisos(resolvidoEm)` index, no
+ * `orderBy`) and keeps this producer's rows IN MEMORY: stored `tipo` and `canal`
+ * match, and an id of exactly `<tipo>:<conta>:<produto>` with no empty segment —
+ * the conta is the id's second segment, compared WHOLE, so conta `c1` never
+ * claims conta `c10`'s rows. Open ⇔ `resolvidoEm == null` holds because the one
+ * writer stamps it every time: a create, a repeat and a reopen write `null`
+ * explicitly, a resolve a number (`@delfrance/data/admin/avisos`,
+ * `escreverAviso.ts`), and the schema defaults it to `null` for any other
+ * handle write — which matters, because an equality matches no ABSENT field.
+ * It is the bell's own query too (`avisoMeta.defaultQuery`), so a row this read
+ * cannot see is one no operator sees either. It replaced a document-KEY range
+ * per conta (plus one tipo-wide): no avisos index leads with `__key__`, so on the
+ * staging proxy (2026-10-08, `lib/firebase/explainPlan.mjs`) every key-range
+ * shape scanned the WHOLE collection, once per conta — while this read rides
+ * `avisos(resolvidoEm)` as the closed `[null]` point and scans exactly the open
+ * rows (2026-10-09). ⚠️ Capped at {@link AVISOS_ABERTOS_MAX}: a listing past it
+ * is PARTIAL, so that run resolves nothing anywhere and says so — the writes
+ * still go out (the dedup id makes a write over an unlisted open row a refresh,
+ * never a duplicate).
  *
  * ---- Cost discipline (the plan's L + P + R): the walk reads every link of the
- * conta (closed history included — the cost driver) projected to two fields, plus
- * one masked key read per distinct produto with a live link; the avisos read is
- * R rows projected to three small fields. Open rows are refreshed only when their params
- * changed (no monthly `ocorrencias` churn, no write), NEW rows are capped per
- * conta, and nothing here writes to `estoqueMercadoLivreSync` — its strict schema
- * throws on an unknown key and would kill the whole stock tick.
+ * conta (closed history included — the cost driver) projected to two fields, each
+ * page exactly its page, plus one masked key read per produto per PAGE holding a
+ * live link of it (`produtosLidos`). So a produto with live links in BOTH ref
+ * forms is key-read twice, once per form, where the audit's old `in` walk mostly
+ * read it once (its links sat side by side in the merged key order) — kept: the
+ * second read is the fresher one, which the "latest read wins" fold takes, and
+ * such a produto is rare; the avisos read is ONE per run — the open rows of every tipo,
+ * R of them, projected to three small fields — however many contas there are.
+ * Open rows are refreshed only when their params changed (no monthly
+ * `ocorrencias` churn, no write), NEW rows are capped per conta, and nothing here
+ * writes to `estoqueMercadoLivreSync` — its strict schema throws on an unknown
+ * key and would kill the whole stock tick.
  *
  * ---- Time: one budget for the whole run ({@link AUDITORIA_ORCAMENTO_MS} of the
  * function's 540 s), handed out as a FAIR SHARE to each conta's walk and checked
@@ -73,13 +111,7 @@
  * `packages/config-eslint/rules/firestore-transaction-inventory.test.js` greps
  * raw source text for the call.
  */
-import {
-  FieldPath,
-  FieldValue,
-  type Firestore,
-  type Query,
-  type QuerySnapshot,
-} from 'firebase-admin/firestore';
+import { FieldValue, type Firestore, type Query } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions/logger';
 import { millisToMicros } from '@delfrance/core/datetime';
 import {
@@ -101,7 +133,7 @@ import {
   chaveDeAviso,
 } from '@delfrance/schemas';
 
-import { adicionarContaSeViva } from '../anuncios/integracoesComProduto';
+import { adicionarContaSeViva, contaRefForms } from '../anuncios/integracoesComProduto';
 import {
   CODIGO_NAO_ENUMERADO,
   type CodigoNaoEnumerado,
@@ -127,7 +159,11 @@ export const AUDITORIA_ORCAMENTO_MS = 400_000;
 /** Links read per walk page (the shared walk's `pageLimit`; `deps.pageLimit` overrides it in tests). */
 export const AUDITORIA_PAGE_LIMIT = 500;
 
-/** Pages per conta per run — 100 000 links, far above any conta this ERP serves. */
+/**
+ * Pages per conta per run, across BOTH ref forms — 100 000 links, far above any
+ * conta this ERP serves. One cap for the conta, not one per form: the forms are
+ * two halves of one conta's links, and a per-form cap would double the bound.
+ */
 export const AUDITORIA_MAX_PAGINAS_POR_CONTA = 200;
 
 /**
@@ -143,8 +179,17 @@ export const MAX_AVISOS_NOVOS_POR_CONTA = 20;
 /** Ids kept per log sample (healed anchors, suppressed avisos). */
 export const AMOSTRA_MAX = 20;
 
-/** Rows per page of the avisos key-range read. */
-const PAGINA_AVISOS = 500;
+/**
+ * The most OPEN avisos the run's one listing accepts ({@link listarAvisosAbertos}
+ * — every tipo and every canal, the bell's whole population) before it calls
+ * itself TRUNCATED. It reads `limit(AVISOS_ABERTOS_MAX + 1)`: the extra row is
+ * how it knows it was cut. Far above what a working bell holds — the audit's
+ * own new rows are capped at {@link MAX_AVISOS_NOVOS_POR_CONTA} a conta a month
+ * — so being past it means something is flooding the bell; the run then
+ * resolves nothing and says so, rather than acting on a partial, arbitrarily
+ * ordered view. Each row is three small projected fields.
+ */
+export const AVISOS_ABERTOS_MAX = 5_000;
 
 /**
  * Why a row was closed — persisted in `resolucaoMotivo`, so not free to rename.
@@ -174,29 +219,58 @@ const SITUACAO_DO_CODIGO: Record<
 
 /* ---------------------------------- types ---------------------------------- */
 
-/** Why a conta's walk stopped short — `null` on the result means it drained. */
-export type TruncamentoAuditoria = 'paginas' | 'orcamento' | 'cursor-parado';
+/**
+ * Why a conta stopped short — `null` on the result means it did not: the walk
+ * drained, every loop fit the budget, and the run's open-avisos listing was
+ * whole. `'listagem-de-avisos'` is that listing passing {@link AVISOS_ABERTOS_MAX}:
+ * the walk may have drained, but nothing of the conta is resolved.
+ */
+export type TruncamentoAuditoria = 'paginas' | 'orcamento' | 'cursor-parado' | 'listagem-de-avisos';
 
-/** One stored `anuncioForaDaSincronizacao` row, as the key-range read returns it. */
+/** One OPEN aviso as the run's listing returns it — any tipo, any canal, any id. */
+export interface AvisoAberto {
+  /** The document id — which IS the dedup key. */
+  chave: string;
+  /** The stored `tipo` (`null` when absent or not a string). */
+  tipo: string | null;
+  /** The stored `canal` (`null` when absent or not a string). */
+  canal: string | null;
+  /** The stored `params` (`{}` when absent or not a plain object). */
+  params: Record<string, unknown>;
+}
+
+/** The run's ONE open-avisos read ({@link listarAvisosAbertos}). */
+export interface ListagemDeAvisosAbertos {
+  linhas: AvisoAberto[];
+  /**
+   * More open rows than {@link AVISOS_ABERTOS_MAX}: the listing is PARTIAL, so
+   * this run resolves nothing — neither per conta nor in the inactive-conta pass.
+   */
+  truncada: boolean;
+}
+
+/**
+ * One OPEN row of THIS producer ({@link classificarAvisosAbertos}): stored
+ * `tipo` `anuncioForaDaSincronizacao`, stored `canal` `mercadoLivre`, and an id
+ * of exactly `<tipo>:<conta>:<produto>` — conta and produto exist nowhere else.
+ */
 export interface AvisoExistente {
   /** The document id — which IS the dedup key. */
   chave: string;
-  /** `resolvidoEm == null` (absent counts as open, the schema default). */
-  aberto: boolean;
   /**
-   * The stored `canal` (`null` when absent or not a string). Only a
-   * `mercadoLivre` row is this producer's to RESOLVE — see {@link ehDesteProdutor}.
+   * `<tipo>:<conta>` off the id — `chaveDeAviso({ tipo, conta })`, the conta
+   * folded the way the writer folded it — which is how a row finds its conta.
    */
-  canal: string | null;
+  prefixo: string;
+  /** The id's last segment: the produto, as `chaveDeAviso` folded it. */
+  produtoId: string;
   params: Record<string, unknown>;
 }
 
 /** The avisos seam — injectable so the offline suite needs no aviso writer. */
 export interface AvisosAuditoria {
-  /** Every row of this tipo for ONE conta (open and resolved), by key range. */
-  listarDaConta(db: Firestore, integracaoId: string): Promise<AvisoExistente[]>;
-  /** Every row of this tipo, all contas. */
-  listarDoTipo(db: Firestore): Promise<AvisoExistente[]>;
+  /** Every OPEN aviso, all tipos and canais — read ONCE per run. */
+  listarAbertos(db: Firestore): Promise<ListagemDeAvisosAbertos>;
   escrever(db: Firestore, plano: PlanoAviso): Promise<ResultadoAviso>;
   resolver(db: Firestore, chave: string, motivo: string): Promise<boolean>;
 }
@@ -228,21 +302,27 @@ export interface AuditoriaDeps {
 export interface AuditoriaContaResult {
   integracaoId: string;
   /**
-   * Why this conta stopped short — `null` ⇔ the walk DRAINED and no heal, write
-   * or resolve loop ran out of budget.
+   * Why this conta stopped short — `null` ⇔ the walk DRAINED (both ref forms),
+   * no heal, write or resolve loop ran out of budget, and the run's open-avisos
+   * listing was whole.
    *
    * ⚠️ Non-null does NOT mean "nothing was resolved". Resolving starts only
-   * after a drained walk whose heals and aviso writes all fit the budget, so a
-   * walk-side cut (`'paginas'`, `'cursor-parado'`, or `'orcamento'` before the
-   * resolve phase) resolves nothing; but the resolve loop checks the run budget
-   * per row too, and an `'orcamento'` set THERE follows the resolutions already
-   * counted in `resolvidos` — the rest wait for next month's walk.
+   * after a drained walk whose heals and aviso writes all fit the budget, over a
+   * whole listing, so a walk-side cut (`'paginas'`, `'cursor-parado'`, or
+   * `'orcamento'` before the resolve phase) or `'listagem-de-avisos'` resolves
+   * nothing; but the resolve loop checks the run budget per row too, and an
+   * `'orcamento'` set THERE follows the resolutions already counted in
+   * `resolvidos` — the rest wait for next month's walk.
    */
   truncada: TruncamentoAuditoria | null;
+  /** Walk pages read, both ref forms together. */
   paginas: number;
   /** Every link document read, closed history included — the cost driver. */
   linksLidos: number;
-  /** Distinct produtos key-read across the pages (a produto on two pages counts twice). */
+  /**
+   * Produto key reads — distinct per page, summed across pages: a produto on two
+   * pages, of one ref form or one in each, counts twice.
+   */
   produtosLidos: number;
   /** LIVE links inspected. */
   inspecionados: number;
@@ -314,6 +394,7 @@ export async function runAuditoriaNaoEnumerados(
     avisos: deps.avisos ?? avisosAuditoriaPadrao(agora),
     reconfirmar: deps.reconfirmar ?? reclassificarProdutoNaoEnumerado,
     pageLimit: deps.pageLimit ?? AUDITORIA_PAGE_LIMIT,
+    listagemDoRun: null,
   };
 
   const snap = await integracaoCollection
@@ -384,6 +465,50 @@ interface Execucao {
     integracaoId: string,
   ) => Promise<CodigoNaoEnumerado | null>;
   pageLimit: number;
+  /** The run's open-avisos listing, once read — see {@link avisosDoRun}. */
+  listagemDoRun: AvisosDoRun | null;
+}
+
+/** The run's open-avisos listing, reduced to this producer's rows. */
+interface AvisosDoRun {
+  truncada: boolean;
+  doProdutor: AvisoExistente[];
+}
+
+/**
+ * The run's ONE open-avisos read, made on first need and shared by every conta
+ * after it and by the inactive-conta pass — never re-read per conta.
+ *
+ * ⚠️ Read LAZILY, at the first conta that reaches its aviso phase, not before
+ * the conta loop: a failed read must not cost the heals, which need no aviso
+ * and run first. A gRPC failure here is that conta's, contained like any other
+ * (`runAuditoriaNaoEnumerados`), and it is NOT cached — the next conta reads
+ * again, so one transient error does not silence every conta's avisos. (In the
+ * inactive-conta pass, which no conta boundary wraps, a failed read fails the
+ * run, as every read in that pass always has.) A
+ * snapshot taken at the first conta still serves the later ones: a conta's rows
+ * carry its own id prefix, and nothing this run writes for one conta is another
+ * conta's row.
+ */
+async function avisosDoRun(exec: Execucao): Promise<AvisosDoRun> {
+  if (exec.listagemDoRun != null) return exec.listagemDoRun;
+  const listagem = await exec.avisos.listarAbertos(exec.db);
+  const { doProdutor, foraDoFormato } = classificarAvisosAbertos(listagem.linhas);
+  if (listagem.truncada) {
+    logger.warn(
+      `${AUDITORIA_LOG_PREFIX}: mais de ${String(AVISOS_ABERTOS_MAX)} avisos abertos — ` +
+        'listagem TRUNCADA, nenhum aviso será resolvido nesta execução',
+      { lidos: listagem.linhas.length, limite: AVISOS_ABERTOS_MAX },
+    );
+  }
+  if (foraDoFormato.length > 0) {
+    logger.warn(`${AUDITORIA_LOG_PREFIX}: avisos com chave fora do formato — ignorados`, {
+      quantidade: foraDoFormato.length,
+      amostra: foraDoFormato.slice(0, AMOSTRA_MAX),
+    });
+  }
+  exec.listagemDoRun = { truncada: listagem.truncada, doProdutor };
+  return exec.listagemDoRun;
 }
 
 /**
@@ -419,56 +544,67 @@ async function auditarConta(
     r.truncada ??= motivo;
   };
 
-  // ---- 1. The walk.
+  // ---- 1. The walk — one stored ref form at a time (module doc), the first
+  // drained before the second opens. Page cap and budget are the conta's.
   const achados = new Map<string, Achado>();
-  let cursor: string | null = null;
-  for (;;) {
-    if (r.paginas >= AUDITORIA_MAX_PAGINAS_POR_CONTA) {
-      truncar('paginas');
-      break;
+  for (const contaRef of contaRefForms(integracaoId)) {
+    // Each form from ITS start: a cursor belongs to the form that produced it.
+    let cursor: string | null = null;
+    for (;;) {
+      if (r.paginas >= AUDITORIA_MAX_PAGINAS_POR_CONTA) {
+        truncar('paginas');
+        break;
+      }
+      if (agora() >= prazoLeitura) {
+        truncar('orcamento');
+        break;
+      }
+      const page = await exec.fetchPage(db, {
+        integracaoId,
+        contaRef,
+        afterLinkPath: cursor,
+        pageLimit: exec.pageLimit,
+      });
+      r.paginas += 1;
+      r.linksLidos += page.lidos;
+      r.produtosLidos += page.produtosLidos;
+      r.inspecionados += page.inspecionados;
+      // ⚠️ The LATEST read wins — and a CLEAN read is a read too. Each page's
+      // produto read is its own instant, so a produto seen on two pages — of one
+      // form, or one in each — is classified by the later, fresher one: a later
+      // finding replaces the code, and a later CLEAN read drops the finding
+      // outright. Folding `naoEnumerados` alone would keep page k's stale code for
+      // a produto fixed before page k+1 read it — a heal on nothing, or a NEW
+      // aviso for a clean produto that stands until next month. Within one page
+      // every link of a produto shares a single read, hence a single verdict
+      // (`limpos` and `naoEnumerados` are disjoint).
+      for (const produtoId of page.limpos) achados.delete(produtoId);
+      for (const f of page.naoEnumerados) {
+        // Item ids accumulate across the finding's pages — they are all that
+        // produto's listings — and leave with it when a clean read drops it: a
+        // produto that turns dirty AGAIN reports what the later reads saw.
+        const anterior = achados.get(f.produtoId);
+        const itemIds = anterior?.itemIds ?? new Set<string>();
+        if (f.itemId != null) itemIds.add(f.itemId);
+        achados.set(f.produtoId, { code: f.code, itemIds });
+      }
+      if (page.nextAfterLinkPath == null) break; // this form drained
+      // ⚠️ EQUALITY, never an ordering test. A collection-group cursor is a full
+      // path ordered segment by segment, which plain string comparison does not
+      // reproduce (`a-b` sorts before `a/` as a string, after it as a segment), so
+      // a `<=` here would call a healthy walk stuck. Equality is the one thing a
+      // non-advancing walk always shows — and would otherwise loop to the page cap.
+      if (page.nextAfterLinkPath === cursor) {
+        truncar('cursor-parado');
+        break;
+      }
+      cursor = page.nextAfterLinkPath;
     }
-    if (agora() >= prazoLeitura) {
-      truncar('orcamento');
-      break;
-    }
-    const page = await exec.fetchPage(db, {
-      integracaoId,
-      afterLinkPath: cursor,
-      pageLimit: exec.pageLimit,
-    });
-    r.paginas += 1;
-    r.linksLidos += page.lidos;
-    r.produtosLidos += page.produtosLidos;
-    r.inspecionados += page.inspecionados;
-    // ⚠️ The LATEST read wins — and a CLEAN read is a read too. Each page's
-    // produto read is its own instant, so a produto seen on two pages is
-    // classified by the later, fresher one: a later finding replaces the code,
-    // and a later CLEAN read drops the finding outright. Folding `naoEnumerados`
-    // alone would keep page k's stale code for a produto fixed before page k+1
-    // read it — a heal on nothing, or a NEW aviso for a clean produto that stands
-    // until next month. Within one page every link of a produto shares a single
-    // read, hence a single verdict (`limpos` and `naoEnumerados` are disjoint).
-    for (const produtoId of page.limpos) achados.delete(produtoId);
-    for (const f of page.naoEnumerados) {
-      // Item ids accumulate across the finding's pages — they are all that
-      // produto's listings — and leave with it when a clean read drops it: a
-      // produto that turns dirty AGAIN reports what the later reads saw.
-      const anterior = achados.get(f.produtoId);
-      const itemIds = anterior?.itemIds ?? new Set<string>();
-      if (f.itemId != null) itemIds.add(f.itemId);
-      achados.set(f.produtoId, { code: f.code, itemIds });
-    }
-    if (page.nextAfterLinkPath == null) break; // drained — the only complete exit
-    // ⚠️ EQUALITY, never an ordering test. A collection-group cursor is a full
-    // path ordered segment by segment, which plain string comparison does not
-    // reproduce (`a-b` sorts before `a/` as a string, after it as a segment), so a
-    // `<=` here would call a healthy walk stuck. Equality is the one thing a
-    // non-advancing walk always shows — and would otherwise loop to the page cap.
-    if (page.nextAfterLinkPath === cursor) {
-      truncar('cursor-parado');
-      break;
-    }
-    cursor = page.nextAfterLinkPath;
+    // A cut in EITHER form leaves the conta's walk incomplete — the only complete
+    // exit is every form drained — and the walk stops there: the page cap and a
+    // spent share leave nothing for the next form, and a stalled cursor is a
+    // fault to stop on, not to route around.
+    if (r.truncada != null) break;
   }
 
   const produtos = [...achados.keys()].sort();
@@ -506,9 +642,12 @@ async function auditarConta(
     );
     return;
   }
-  const prefixo = prefixoDaConta(integracaoId);
+  // The run's ONE open-avisos read (made here by the first conta to get this
+  // far), reduced in memory to this conta's rows.
+  const listagem = await avisosDoRun(exec);
+  if (listagem.truncada) truncar('listagem-de-avisos');
   const existentes = new Map(
-    (await exec.avisos.listarDaConta(db, integracaoId)).map((a) => [a.chave, a]),
+    avisosDaConta(listagem.doProdutor, integracaoId).map((a) => [a.chave, a]),
   );
 
   // `vistos` holds EVERY aviso-class finding — capped, suppressed or unchanged
@@ -535,14 +674,18 @@ async function auditarConta(
 
   let novos = 0;
   for (const { chave, produtoId, plano } of planos) {
+    // Every listed row is OPEN — the read asked for nothing else.
     const existente = existentes.get(chave);
-    if (existente?.aberto === true && mesmosParams(existente.params, plano.params ?? {})) {
+    if (existente != null && mesmosParams(existente.params, plano.params ?? {})) {
       r.inalterados += 1;
       continue;
     }
-    // A RESOLVED row counts as new: writing it REOPENS the row with a fresh
-    // `criadoEm`, which re-alerts exactly like a create does.
-    const ehNovo = existente?.aberto !== true;
+    // Not listed ⇒ new: ABSENT, or RESOLVED — and writing a resolved row REOPENS
+    // it with a fresh `criadoEm`, which re-alerts exactly like a create does, so
+    // the two are one case and neither needs reading. (On a TRUNCATED listing an
+    // unlisted row may be open: the write is then a refresh, and it spent a slot
+    // of the cap — the conservative side.)
+    const ehNovo = existente == null;
     if (ehNovo && novos >= MAX_AVISOS_NOVOS_POR_CONTA) {
       r.suprimidos += 1;
       if (r.amostraSuprimidos.length < AMOSTRA_MAX) r.amostraSuprimidos.push(produtoId);
@@ -563,7 +706,7 @@ async function auditarConta(
     );
   }
 
-  // ---- 4. Resolve — ONLY on a complete walk (module doc).
+  // ---- 4. Resolve — ONLY on a complete walk over a whole listing (module doc).
   if (r.truncada != null) {
     logger.warn(
       `${AUDITORIA_LOG_PREFIX}: auditoria TRUNCADA (${r.truncada}) — nenhum aviso resolvido nesta conta`,
@@ -571,21 +714,13 @@ async function auditarConta(
     );
     return;
   }
+  // Every candidate is open, this producer's, and of the exact id shape —
+  // `classificarAvisosAbertos` dropped the rest before any conta saw them.
   const candidatos = [...existentes.values()]
-    .filter((a) => a.aberto && ehDesteProdutor(a) && !vistos.has(a.chave))
+    .filter((a) => !vistos.has(a.chave))
     .sort((a, b) => (a.chave < b.chave ? -1 : a.chave > b.chave ? 1 : 0));
   for (const aviso of candidatos) {
-    // The key range guarantees the `<prefixo>:` start; an EMPTY or colon-bearing
-    // remainder is a row this producer never writes (`chaveDeAviso` strips a
-    // trailing separator and folds every inner one), so it is left alone.
-    const produtoId = aviso.chave.slice(prefixo.length + 1);
-    if (produtoId === '' || produtoId.includes(':')) {
-      logger.warn(`${AUDITORIA_LOG_PREFIX}: aviso com chave fora do formato — ignorado`, {
-        integracaoId,
-        chave: aviso.chave,
-      });
-      continue;
-    }
+    const { produtoId } = aviso;
     if (semOrcamento()) {
       truncar('orcamento');
       logger.warn(`${AUDITORIA_LOG_PREFIX}: orçamento esgotado durante as resoluções`, {
@@ -621,10 +756,12 @@ async function auditarConta(
  *
  * ⚠️ "Inactive" means NOT ENUMERATED, never "not audited": a conta skipped for
  * budget or contained by an error is still active, and its rows are untouched.
- * A row whose id does not have the producer's exact three-segment shape is not
- * this producer's row and is left alone — and neither is a row of ANOTHER
- * channel ({@link ehDesteProdutor}): its conta is never an ML integração, so
- * this pass is precisely the resolver that would close it every month.
+ * It reads the run's SAME open-avisos listing the contas used ({@link avisosDoRun}
+ * — the first read, when no conta reached its aviso phase), so it only ever sees
+ * this producer's rows ({@link classificarAvisosAbertos}) — and a row of ANOTHER
+ * channel must stay out: its conta is never an ML integração, so this pass is
+ * precisely the resolver that would close it every month. A TRUNCATED listing
+ * resolves nothing here either.
  */
 async function resolverContasInativas(exec: Execucao, ativas: readonly string[]): Promise<number> {
   const { db, agora } = exec;
@@ -632,14 +769,17 @@ async function resolverContasInativas(exec: Execucao, ativas: readonly string[])
     logger.warn(`${AUDITORIA_LOG_PREFIX}: orçamento esgotado — contas inativas não varridas`);
     return 0;
   }
+  const listagem = await avisosDoRun(exec);
+  if (listagem.truncada) {
+    logger.warn(
+      `${AUDITORIA_LOG_PREFIX}: listagem de avisos abertos TRUNCADA — contas inativas não resolvidas`,
+    );
+    return 0;
+  }
   const prefixosAtivos = new Set(ativas.map(prefixoDaConta));
-  const linhas = await exec.avisos.listarDoTipo(db);
   let resolvidas = 0;
-  for (const aviso of linhas) {
-    if (!aviso.aberto || !ehDesteProdutor(aviso)) continue;
-    const partes = aviso.chave.split(':');
-    if (partes.length !== 3 || partes.some((p) => p === '')) continue;
-    if (prefixosAtivos.has(`${partes[0]!}:${partes[1]!}`)) continue;
+  for (const aviso of listagem.doProdutor) {
+    if (prefixosAtivos.has(aviso.prefixo)) continue;
     if (agora() >= exec.prazoGlobal) {
       logger.warn(`${AUDITORIA_LOG_PREFIX}: orçamento esgotado durante as contas inativas`);
       break;
@@ -652,20 +792,71 @@ async function resolverContasInativas(exec: Execucao, ativas: readonly string[])
 }
 
 /**
- * Is this a row THIS producer may resolve — one stamped `canal: mercadoLivre`?
- *
- * ⚠️ The tipo is CHANNEL-NEUTRAL (`aviso.ts`): another channel's twin of this
- * audit raises the same `anuncioForaDaSincronizacao`, in the same key space,
- * under its own `canal`. Both resolvers here judge a row against MERCADO LIVRE
- * state only — a walk of ML links, the set of ACTIVE ML integrações — so without
- * this test the inactive-conta pass would close every other channel's open row
- * as `conta-inativa` (its conta is never an ML integração) and that channel's
- * producer would re-open it: a monthly flap on both sides. A row with no
- * `canal` is no row of this producer's either — {@link planoDoAviso} always
- * stamps one.
+ * The run's open-avisos listing reduced to THIS producer's rows — pure, so the
+ * staging suite runs the same filter over the real read. A row is the
+ * producer's when ALL hold:
+ *  - stored `tipo` is `anuncioForaDaSincronizacao` — the listing spans every
+ *    tipo (it is the bell's whole population);
+ *  - stored `canal` is `mercadoLivre`. ⚠️ The tipo is CHANNEL-NEUTRAL
+ *    (`aviso.ts`): another channel's twin of this audit raises the same tipo, in
+ *    the same key space, under its own `canal`. Both resolvers here judge a row
+ *    against MERCADO LIVRE state only — a walk of ML links, the set of ACTIVE ML
+ *    integrações — so without this test the inactive-conta pass would close
+ *    every other channel's open row as `conta-inativa` (its conta is never an ML
+ *    integração) and that channel's producer would re-open it: a monthly flap on
+ *    both sides. A row with no `canal` is no row of this producer's either —
+ *    {@link planoDoAviso} always stamps one;
+ *  - the id is EXACTLY `<tipo>:<conta>:<produto>` — three segments, none empty,
+ *    the first the tipo. `chaveDeAviso` folds every `:` inside a segment and
+ *    strips a trailing one, so any other shape is a row this producer never
+ *    wrote; it is reported in `foraDoFormato` (logged once per run) and left
+ *    alone — never handed to the re-read or a resolver.
  */
-function ehDesteProdutor(aviso: AvisoExistente): boolean {
-  return aviso.canal === CANAL_AVISO.mercadoLivre;
+export function classificarAvisosAbertos(linhas: readonly AvisoAberto[]): {
+  doProdutor: AvisoExistente[];
+  foraDoFormato: string[];
+} {
+  const segmentoDoTipo = chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao });
+  const doProdutor: AvisoExistente[] = [];
+  const foraDoFormato: string[] = [];
+  for (const linha of linhas) {
+    if (linha.tipo !== TIPO_AVISO.anuncioForaDaSincronizacao) continue;
+    if (linha.canal !== CANAL_AVISO.mercadoLivre) continue;
+    const partes = linha.chave.split(':');
+    const [tipo, conta, produtoId] = partes;
+    if (
+      partes.length !== 3 ||
+      tipo !== segmentoDoTipo ||
+      conta == null ||
+      conta === '' ||
+      produtoId == null ||
+      produtoId === ''
+    ) {
+      foraDoFormato.push(linha.chave);
+      continue;
+    }
+    doProdutor.push({
+      chave: linha.chave,
+      prefixo: `${tipo}:${conta}`,
+      produtoId,
+      params: linha.params,
+    });
+  }
+  return { doProdutor, foraDoFormato };
+}
+
+/**
+ * This producer's open rows that belong to ONE conta — the id's conta segment
+ * compared WHOLE against `chaveDeAviso({ tipo, conta })`, so conta `c1` never
+ * claims conta `c10`'s rows (a string-prefix test would). Pure, for the same
+ * reason as {@link classificarAvisosAbertos}.
+ */
+export function avisosDaConta(
+  doProdutor: readonly AvisoExistente[],
+  integracaoId: string,
+): AvisoExistente[] {
+  const prefixo = prefixoDaConta(integracaoId);
+  return doProdutor.filter((a) => a.prefixo === prefixo);
 }
 
 /* ------------------------------ the aviso shape ---------------------------- */
@@ -680,9 +871,10 @@ export function chaveDoAviso(integracaoId: string, produtoId: string): string {
 }
 
 /**
- * `chaveDeAviso({ tipo, conta })` — every row of the conta starts with this plus
- * `:`. ⚠️ Refuses an empty conta: `chaveDeAviso` drops an empty segment, so the
- * "prefix" would be the bare tipo and the range every conta's rows.
+ * `chaveDeAviso({ tipo, conta })` — the first two segments of every row of the
+ * conta ({@link AvisoExistente.prefixo}). ⚠️ Refuses an empty conta:
+ * `chaveDeAviso` drops an empty segment, so the "prefix" would be the bare tipo
+ * — a caller bug that would otherwise just match nothing, silently.
  */
 function prefixoDaConta(integracaoId: string): string {
   const prefixo = chaveDeAviso({
@@ -751,11 +943,10 @@ export function mesmosParams(
 
 /* ------------------------------ the avisos port ---------------------------- */
 
-/** The production avisos seam: key-range reads + the shared writer and resolver. */
+/** The production avisos seam: the open-avisos read + the shared writer and resolver. */
 export function avisosAuditoriaPadrao(agora: () => number): AvisosAuditoria {
   return {
-    listarDaConta: listarAvisosDaConta,
-    listarDoTipo: listarAvisosDoTipo,
+    listarAbertos: listarAvisosAbertos,
     escrever: async (db, plano) => {
       const { resultado } = await escreverAviso(db, plano, {
         increment: (by) => FieldValue.increment(by),
@@ -769,90 +960,77 @@ export function avisosAuditoriaPadrao(agora: () => number): AvisosAuditoria {
   };
 }
 
-/** A half-open document-key range: ids `>= inicio` and `< fim`. */
-export interface FaixaDeChaves {
-  inicio: string;
-  fim: string;
-}
-
 /**
- * The key range holding exactly this producer's rows for ONE conta —
- * `[<tipo>:<conta>:, <tipo>:<conta>;)`. Exported so the staging suite
- * (`auditoriaNaoEnumerados.staging.test.ts`) explains the very bounds this file
- * reads, rather than a hand-copied pair that could drift from them.
+ * The fields the audit decides on, and nothing else: whose row (`tipo`,
+ * `canal` — conta and produto are in the id) and whether its params are current.
+ * Openness is the query's own predicate, so `resolvidoEm` is not projected.
  */
-export function faixaDeChavesDaConta(integracaoId: string): FaixaDeChaves {
-  return faixaDoPrefixo(prefixoDaConta(integracaoId));
-}
+const CAMPOS_AVISO = ['tipo', 'canal', 'params'] as const;
 
-/** `[<prefixo>:, <prefixo>;)` — `;` is the code point after the `:` separator. */
-function faixaDoPrefixo(prefixo: string): FaixaDeChaves {
-  return { inicio: `${prefixo}:`, fim: `${prefixo};` };
-}
-
-/** Every row of this tipo for one conta — `[<tipo>:<conta>:, <tipo>:<conta>;)`. */
-export function listarAvisosDaConta(
-  db: Firestore,
-  integracaoId: string,
-): Promise<AvisoExistente[]> {
-  return listarFaixaDeChaves(db, faixaDeChavesDaConta(integracaoId));
-}
-
-/** Every row of this tipo, all contas — `[<tipo>:, <tipo>;)`. */
-export function listarAvisosDoTipo(db: Firestore): Promise<AvisoExistente[]> {
-  return listarFaixaDeChaves(
-    db,
-    faixaDoPrefixo(chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao })),
-  );
+/**
+ * The run's open-avisos read as an unexecuted query — what
+ * {@link listarAvisosAbertos} runs: {@link consultaDosAvisosAbertosSemProjecao}
+ * plus the `select` of {@link CAMPOS_AVISO}, and nothing else (a classic query's
+ * projection is one field of the request, independent of the call order).
+ * Exported for the staging suite (`auditoriaNaoEnumerados.staging.test.ts`),
+ * which runs this very object against the real Enterprise database and tries its
+ * classic `explain()` (Enterprise refuses it today).
+ */
+export function consultaDosAvisosAbertos(db: Firestore): Query {
+  return consultaDosAvisosAbertosSemProjecao(db).select(...CAMPOS_AVISO);
 }
 
 /**
- * ONE page of the key-range read as an unexecuted query: ids in `[inicio, fim)`
- * — or after `ultimo`, for every page but the first — projected to the three
- * fields the audit decides on (open?, current params?, whose row?). Exported for
- * the staging suite, which `explain()`s this very object (the
- * `consultaDaVarredura` precedent in `anuncios/linksNaoEnumerados.ts`).
+ * The open-avisos read WITHOUT its projection: `avisos where resolvidoEm == null`,
+ * `limit(AVISOS_ABERTOS_MAX + 1)` — the bell's predicate (`avisoMeta.defaultQuery`),
+ * served by the declared `avisos(resolvidoEm ASC)` entry as an equality on its
+ * one field. Production never runs it on its own; it exists so the plan PROXY
+ * can be explained — `createFrom` of a query with `select` emits the projection
+ * before the `exists(__name__)` / `sort(__name__)` stages it derives, drops the
+ * key and returns zero rows and no plan (the stage list is
+ * `consultaDaVarreduraSemProjecao`'s, `anuncios/linksNaoEnumerados.ts`).
  *
- * ⚠️ `endBefore`, never `endAt`: the range end `<prefixo>;` is a perfectly legal
- * document id that is NOT one of this prefix's rows, and an inclusive end would
- * hand it to the resolver. Each later page REPLACES the start cursor with
- * `startAfter(<last id>)` (a query holds one start cursor) and keeps the end.
+ * ⚠️ NO `orderBy`, deliberately. Nothing here needs an order — the audit filters
+ * and groups in memory — and on Enterprise an `orderBy` the serving index does
+ * not deliver is a SORT stage over everything the scan reads. (The proxy still
+ * prints one: `createFrom` derives a `sort(__name__)` for a query with no order,
+ * and it sorts exactly the rows the read returns — cutting nothing, which is
+ * what `julgarPlanoDosAvisosAbertos` checks.) Nor is the cap a
+ * page: a listing past {@link AVISOS_ABERTOS_MAX} is not continued, it is
+ * TRUNCATED, and the run resolves nothing (module doc) — so no cursor is needed
+ * either.
  */
-export function consultaDaFaixaDeChaves(
-  db: Firestore,
-  { inicio, fim }: FaixaDeChaves,
-  ultimo: string | null = null,
-): Query {
-  const base = avisoCollection
+export function consultaDosAvisosAbertosSemProjecao(db: Firestore): Query {
+  return avisoCollection
     .ref(db, {})
-    .select('resolvidoEm', 'params', 'canal')
-    .orderBy(FieldPath.documentId());
-  const comInicio: Query = ultimo == null ? base.startAt(inicio) : base.startAfter(ultimo);
-  return comInicio.endBefore(fim).limit(PAGINA_AVISOS);
+    .where('resolvidoEm', '==', null)
+    .limit(AVISOS_ABERTOS_MAX + 1);
 }
 
-/** The key-range read itself — every page of {@link consultaDaFaixaDeChaves}, by id. */
-async function listarFaixaDeChaves(db: Firestore, faixa: FaixaDeChaves): Promise<AvisoExistente[]> {
-  const linhas: AvisoExistente[] = [];
-  let ultimo: string | null = null;
-  for (;;) {
-    const snap: QuerySnapshot = await consultaDaFaixaDeChaves(db, faixa, ultimo).get();
-    for (const doc of snap.docs) {
-      const raw = doc.data() as Record<string, unknown>;
-      const params = raw.params;
-      linhas.push({
-        chave: doc.id,
-        aberto: raw.resolvidoEm == null,
-        canal: typeof raw.canal === 'string' ? raw.canal : null,
-        params:
-          params != null && typeof params === 'object' && !Array.isArray(params)
-            ? (params as Record<string, unknown>)
-            : {},
-      });
-    }
-    if (snap.docs.length < PAGINA_AVISOS) return linhas;
-    ultimo = snap.docs[snap.docs.length - 1]!.id;
-  }
+/**
+ * Every OPEN aviso — all tipos, all canais — in ONE read: the run's listing
+ * (module doc), in NO particular order: with no `orderBy`, Enterprise promises
+ * none and gives none (the staging suite saw two rows come back out of key
+ * order, 2026-10-09), and nothing here needs one. `truncada` when the read came
+ * back past {@link AVISOS_ABERTOS_MAX}; the rows it did read are still returned,
+ * every one of them a real open row.
+ */
+export async function listarAvisosAbertos(db: Firestore): Promise<ListagemDeAvisosAbertos> {
+  const snap = await consultaDosAvisosAbertos(db).get();
+  const linhas = snap.docs.map((doc): AvisoAberto => {
+    const raw = doc.data() as Record<string, unknown>;
+    const params = raw.params;
+    return {
+      chave: doc.id,
+      tipo: typeof raw.tipo === 'string' ? raw.tipo : null,
+      canal: typeof raw.canal === 'string' ? raw.canal : null,
+      params:
+        params != null && typeof params === 'object' && !Array.isArray(params)
+          ? (params as Record<string, unknown>)
+          : {},
+    };
+  });
+  return { linhas, truncada: snap.docs.length > AVISOS_ABERTOS_MAX };
 }
 
 /* --------------------------------- helpers --------------------------------- */

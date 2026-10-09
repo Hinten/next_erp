@@ -685,15 +685,15 @@ names the healed anchors (below). A conta's FIRST full pass, at the cutover, has
 baseline and force-sends every listing regardless.
 
 **Precondition — the index must be READY wherever the master flag is on.** The walk is
-a collection-group query on `contaOuterRef` (both stored ref forms, `in`) ordered by
-`__name__`, and it rides the COLLECTION_GROUP index
-`produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)`. On Enterprise a missing index
+a collection-group query on `contaOuterRef`, ONE stored ref form at a time (`==`, the
+first form drained before the second opens), ordered by `__name__`, and it rides the
+COLLECTION_GROUP index `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)`. On Enterprise a missing index
 does not fail the query: it full-scans the collection group and bills the bytes, per
 conta, every month. It needs no new deploy — #1191 declared it (commit `de225899e`,
 merged 2026-08-20) in the same commit as the anchor composite
 `produtos(paiId, integracoesComProduto, __name__)`, so an index deploy from any later
-tree carries both. The price job's reconciliation phase rides the same index. Verify
-READY rather than assume it:
+tree carries both. The price job's reconciliation phase rides the same index (with its
+own `in` over both forms). Verify READY rather than assume it:
 
 ```bash
 gcloud firestore indexes composite list --project <project-id> --database default
@@ -702,31 +702,53 @@ gcloud firestore indexes composite list --project <project-id> --database defaul
 ```
 
 On STAGING that check is automated: `ML staging Enterprise queries` (ci-mercado-livre.yml,
-`test:staging`) explains the SDK's pipeline translation of the walk's own query on every
+`test:staging`) explains the SDK's pipeline translation (`createFrom`) of the walk's own
+query, minus its projection — the first and the last page of EACH ref form — on every
 in-scope PR, and fails — "the CG index is not READY on this project" — when no access node
-rides that index. It also fails when the plan does not PROVE the walk stays inside one conta
-and seeks its cursor: either by its range lines (a closed `contaOuterRef` value range and a
-key lower bound on every node on the index), or else by read counters under a ceiling the
-suite's seeded neighbours provably exceed. A `contaOuterRef` push-down over `(-∞..+∞)`
-ranges is the shape of a walk of every conta, so it never passes on its shape alone. It
-proves READINESS on staging only; the production project still needs the `gcloud` check
-above in its own window.
+rides that index. It also fails when the plan does not PROVE the walk stays inside one conta,
+seeks its cursor and reads only its page: either by its range lines (a closed
+`contaOuterRef` value range and a key lower bound on every node on the index) and no sort,
+or else by read counters under a ceiling the suite's seeded neighbours — one conta just
+below the walked one included — provably exceed. A `contaOuterRef` push-down over an
+unbounded range (a bare `ranges: /`) is the shape of a walk of every conta, so it never
+passes on its shape alone. It proves READINESS on staging only; the production project
+still needs the `gcloud` check above in its own window.
+
+⚠️ That plan is a PROXY (Enterprise refuses classic explain). On 2026-10-08 it showed two
+findings, and the audit's two queries were reshaped for them: the walk's old `in` over both
+ref forms was sorted by a `MajorSort` (every page read the conta's whole remainder before
+its limit — one `==` per ref form reads exactly the page), and the avisos KEY RANGE the
+audit then read scanned the whole `avisos` collection (no avisos index leads with
+`__key__`). Both shapes now pass on staging (2026-10-09). The classic queries themselves are
+confirmed in Query Insights after the first real audit run — the `produtoMercadoLivre`
+collection-group row and the `avisos` row (or their `billable_read_units`).
 
 The re-read before a resolve rides the declared COLLECTION-scope
-`produtoMercadoLivre(contaOuterRef)`, and the avisos are listed by document-key range,
-which needs no declared index.
+`produtoMercadoLivre(contaOuterRef)`. The avisos come from ONE read per run of every OPEN
+aviso — `resolvidoEm == null`, the bell's own predicate, no `orderBy`, capped at 5 000
+(`AVISOS_ABERTOS_MAX`) — which rides the declared single-field `avisos(resolvidoEm ASC)`
+entry as the closed `[null]` point (READY on staging; the suite asserts the scan reads
+exactly the rows it returns). The audit keeps its own rows in memory — stored `tipo` and
+`canal`, and an id of exactly `<tipo>:<conta>:<produto>`, the conta segment compared whole.
 
 **Caps and truncation.** Per conta the walk reads pages of 500 links
 (`AUDITORIA_PAGE_LIMIT`), at most 200 pages (`AUDITORIA_MAX_PAGINAS_POR_CONTA`, 100 000
 links). The run's 400 s are handed out as a FAIR SHARE — what is left, split over the
 contas still to go — and the starting conta shifts by one each calendar month
 (America/Sao_Paulo), so the contas left at the end of the budget change from month to
-month. A walk stops short (`truncada`) on the page cap (`paginas`), its share of the
-budget (`orcamento`) or a cursor that stopped advancing (`cursor-parado`). Then:
+month. The two ref forms share the conta's page cap and budget share, and a cut in
+EITHER leaves the walk incomplete. A walk stops short (`truncada`) on the page cap
+(`paginas`), its share of the budget (`orcamento`) or a cursor that stopped advancing
+(`cursor-parado`). Then:
 
 - a truncated walk still heals and raises what it saw, but **resolves nothing** —
   there "not found" means "not reached" — and warns
   `auditoria TRUNCADA (…) — nenhum aviso resolvido nesta conta`;
+- an open-avisos listing past its 5 000-row cap is PARTIAL: every conta reaching its
+  aviso phase lands `truncada: 'listagem-de-avisos'`, and the run resolves NOTHING —
+  neither per conta nor `conta-inativa` — and warns
+  `mais de 5000 avisos abertos — listagem TRUNCADA …`. Heals and aviso writes still go
+  out (a write over an open row the listing missed is a refresh, never a duplicate);
 - a conta reached with no budget left is not walked at all: it lands in
   `naoAuditadas`, with a warn, and nothing of it is healed, raised or resolved that
   month;
@@ -756,8 +778,9 @@ ONE summary line whose message is exactly
   `completas` equal to `contas` with an empty `naoAuditadas` means some rows could not
   be resolved this month;
 - `paginas`, `linksLidos` (every link read, closed history included — the cost
-  driver), `produtosLidos` (the masked produto key reads; a produto on two pages counts
-  twice), `inspecionados` (live links) — what the #948 step attributes to the audit
+  driver), `produtosLidos` (the masked produto key reads; a produto on two pages — of one
+  ref form, or one in each — counts twice), `inspecionados` (live links) — what the #948
+  step attributes to the audit
   separately from the sweeps;
 - `porSituacao` — produtos per final `NAO_ENUMERADO_*` code, class 2 included;
 - `curados`, `curasSemEfeito`, `curasPendentes`, `amostraCurados` (up to 20,
@@ -766,10 +789,12 @@ ONE summary line whose message is exactly
   `amostraSuprimidos`, `resolvidos`, `mantidos`, `inativasResolvidas`;
 - `errorCount`, `duracaoMs`.
 
-Cost per conta per month ≈ `linksLidos` projected link reads + `produtosLidos` masked
-key reads + this tipo's aviso rows for the conta + a few operations per heal, aviso and
-resolve, with zero ML calls. Whether Enterprise bills the projected or the full link
-bytes is still to be measured. With the flag off the run logs
+Cost per month ≈ the sum over contas of `linksLidos` projected link reads (each page a
+one-form `==` stream that reads exactly its page) + `produtosLidos` masked key reads + a
+few operations per heal, aviso and resolve — plus ONE read of every open aviso in the
+project, of every tipo (the bell's whole population, projected to three fields), however
+many contas there are — with zero ML calls. Whether Enterprise bills the projected or the
+full link bytes is still to be measured. With the flag off the run logs
 `…: desabilitada (MERCADO_LIVRE_STOCK_SYNC_ENABLED != '1') — no-op` and reads nothing.
 
 **Deploy order.** `apps/web` first — an older bell does not know the

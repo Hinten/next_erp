@@ -2,12 +2,14 @@
  * The monthly link audit (#1200), offline.
  *
  * Every Firestore surface the audit OWNS runs against a small FakeDb — the
- * integração enumeration and the avisos key-range read, the two queries written
- * in this module — and every surface it BORROWS is an injected seam: the shared
+ * integração enumeration and the open-avisos read, the two queries written in
+ * this module — and every surface it BORROWS is an injected seam: the shared
  * walk (`fetchPage`), the tier-1 heal (`curar`), the aviso writer/resolver and the
  * pre-resolve re-read (`reconfirmar`). Those have their own suites; what is pinned
  * here is the audit's DECISIONS: what heals, what alerts, what is capped, what is
- * resolved and only when, and how one conta's failure stays one conta's.
+ * resolved and only when, how one conta's failure stays one conta's — and the two
+ * query SHAPES the cost rests on: one `contaOuterRef ==` walk per stored ref form
+ * (never the `in`), and ONE read of the open avisos per run (never a key range).
  *
  * The real queries, the real heal and the real aviso writes against a real
  * Firestore are `auditoriaNaoEnumerados.firestore.test.ts` (the emulator lane).
@@ -25,6 +27,7 @@ import {
 } from '@delfrance/schemas';
 import { avisoCollection, integracaoCollection } from '@delfrance/data/admin/collections';
 
+import { contaRefForms } from '../anuncios/integracoesComProduto';
 import {
   CODIGO_NAO_ENUMERADO,
   type CodigoNaoEnumerado,
@@ -39,14 +42,16 @@ import {
   AUDITORIA_MAX_PAGINAS_POR_CONTA,
   AUDITORIA_ORCAMENTO_MS,
   AUDITORIA_PAGE_LIMIT,
+  AVISOS_ABERTOS_MAX,
   type AuditoriaDeps,
   type AuditoriaResult,
-  type AvisoExistente,
+  type AvisoAberto,
   type AvisosAuditoria,
   MAX_AVISOS_NOVOS_POR_CONTA,
   RESOLUCAO_AUDITORIA,
-  listarAvisosDaConta,
-  listarAvisosDoTipo,
+  avisosDaConta,
+  classificarAvisosAbertos,
+  listarAvisosAbertos,
   mesmosParams,
   planoDoAviso,
   resumirAuditoria,
@@ -54,23 +59,21 @@ import {
 } from './auditoriaNaoEnumerados';
 
 /* ------------------------------ fake Firestore ----------------------------- */
-// The two query shapes the audit itself issues: `where('==')` chains (the conta
-// enumeration) and the KEY-RANGE read (`select` + `orderBy(documentId)` +
-// `startAt`/`startAfter` + `endBefore` + `limit`). Queries are IMMUTABLE, like
-// the real SDK — each builder call returns a new query, and a later
-// `startAfter` replaces an earlier `startAt` (a query holds one start cursor).
-// Range bounds compare document ids as JS strings, which agrees with Firestore's
-// key order for the ASCII ids used here.
+// The query shapes the audit issues, and nothing more: `where` chains (the conta
+// enumeration; the open-avisos read), `select`, `orderBy`, `limit`. The operator,
+// the ordering and the limit are RECORDED, so a spec can hold the exact query —
+// and a query that grows a cursor finds no `startAt`/`startAfter` here and
+// throws. Queries are IMMUTABLE, like the real SDK. `==` matches a STORED value
+// only, as Firestore does: an ABSENT field satisfies no equality, `null`
+// included. `collectionGroup` answers EMPTY — enough for the real shared walk to
+// record its query and drain.
 
 type DocData = Record<string, unknown>;
 
 interface EstadoQuery {
-  where: Array<[string, unknown]>;
+  where: Array<[string, string, unknown]>;
   select: string[] | null;
-  orderBy: unknown;
-  startAt: string | null;
-  startAfter: string | null;
-  endBefore: string | null;
+  orderBy: unknown[];
   limit: number | null;
 }
 
@@ -93,45 +96,35 @@ class FakeDb {
   }
 
   collection(path: string) {
-    return this.query(path, {
-      where: [],
-      select: null,
-      orderBy: null,
-      startAt: null,
-      startAfter: null,
-      endBefore: null,
-      limit: null,
-    });
+    return this.query(path, { where: [], select: null, orderBy: [], limit: null });
+  }
+
+  collectionGroup(id: string) {
+    return this.query(`group:${id}`, { where: [], select: null, orderBy: [], limit: null });
   }
 
   private query(path: string, st: EstadoQuery) {
     const next = (patch: Partial<EstadoQuery>) => this.query(path, { ...st, ...patch });
     return {
       where: (field: string, op: string, value: unknown) => {
-        if (op !== '==') throw new Error(`FakeDb: unsupported operator ${op}`);
-        return next({ where: [...st.where, [field, value]] });
+        if (op !== '==' && op !== 'in') throw new Error(`FakeDb: unsupported operator ${op}`);
+        return next({ where: [...st.where, [field, op, value]] });
       },
       select: (...fields: string[]) => next({ select: fields }),
-      orderBy: (fp: unknown) => next({ orderBy: fp }),
-      startAt: (id: string) => next({ startAt: id, startAfter: null }),
-      startAfter: (id: string) => next({ startAfter: id, startAt: null }),
-      endBefore: (id: string) => next({ endBefore: id }),
+      orderBy: (fp: unknown) => next({ orderBy: [...st.orderBy, fp] }),
       limit: (n: number) => next({ limit: n }),
       get: async () => {
         this.queries.push({ ...st, path });
-        const comCursor = st.startAt != null || st.startAfter != null || st.endBefore != null;
-        if (
-          comCursor &&
-          !(st.orderBy instanceof FieldPath && st.orderBy.isEqual(FieldPath.documentId()))
-        ) {
-          throw new Error('FakeDb: a key cursor needs orderBy(FieldPath.documentId())');
-        }
+        if (path.startsWith('group:')) return { docs: [] };
         let rows = [...this.col(path).entries()]
-          .filter(([, d]) => st.where.every(([f, v]) => d[f] === v))
+          .filter(([, d]) =>
+            st.where.every(([f, op, v]) =>
+              op === '=='
+                ? Object.hasOwn(d, f) && d[f] === v
+                : Array.isArray(v) && v.includes(d[f]),
+            ),
+          )
           .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-        if (st.startAt != null) rows = rows.filter(([id]) => id >= st.startAt!);
-        if (st.startAfter != null) rows = rows.filter(([id]) => id > st.startAfter!);
-        if (st.endBefore != null) rows = rows.filter(([id]) => id < st.endBefore!);
         if (st.limit != null) rows = rows.slice(0, st.limit);
         return {
           docs: rows.map(([id, d]) => ({
@@ -168,6 +161,11 @@ function seedContas(db: FakeDb, ids: string[], over: DocData = {}): void {
  */
 const T0 = Date.parse('2027-01-01T05:30:00.000Z');
 
+/** The conta's FIRST stored ref form — the one the walk drains first. */
+const F0 = (conta: string): string => contaRefForms(conta)[0]!;
+/** The conta's SECOND stored ref form — opened only once the first drained. */
+const F1 = (conta: string): string => contaRefForms(conta)[1]!;
+
 const chave = (conta: string, produtoId: string) =>
   chaveDeAviso({ tipo: TIPO, conta, entidade: produtoId });
 
@@ -195,49 +193,60 @@ function pagina(
   };
 }
 
+/** A ref form with no link at all: one empty page that drains. */
+const FORMA_VAZIA = (): LinksNaoEnumeradosPage => pagina([], null, { lidos: 0 });
+
 type Roteiro = LinksNaoEnumeradosPage[] | ((n: number) => LinksNaoEnumeradosPage);
 
-/** An open (or resolved) row as the key-range read would return it. */
-function linha(
-  conta: string,
-  produtoId: string,
-  over: Partial<AvisoExistente> = {},
-): AvisoExistente {
+/** An aviso as the in-memory port stores it: what the read projects, plus open/resolved. */
+interface LinhaFake extends AvisoAberto {
+  aberto: boolean;
+}
+
+/** One of THIS producer's rows (open unless told otherwise). */
+function linha(conta: string, produtoId: string, over: Partial<LinhaFake> = {}): LinhaFake {
   return {
     chave: chave(conta, produtoId),
-    aberto: true,
+    tipo: TIPO,
     canal: CANAL_AVISO.mercadoLivre,
     params: {
       situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao,
       anuncio: `MLB-${produtoId}`,
       anuncios: 1,
     },
+    aberto: true,
     ...over,
   };
 }
 
 /**
  * An in-memory avisos port with the writer's three outcomes and the resolver's
- * transition semantics (an already-resolved row answers false).
+ * transition semantics (an already-resolved row answers false). Its listing is
+ * the real read's contract: OPEN rows only, any tipo and canal.
  */
-function fakeAvisos(seed: AvisoExistente[] = []) {
+function fakeAvisos(seed: LinhaFake[] = [], opcoes: { truncada?: boolean } = {}) {
   const rows = new Map(seed.map((a) => [a.chave, { ...a }]));
   const escritos: PlanoAviso[] = [];
   const resolvidos: Array<{ chave: string; motivo: string }> = [];
   const port: AvisosAuditoria = {
-    listarDaConta: vi.fn(async (_db: Firestore, conta: string) =>
-      [...rows.values()].filter((a) => a.chave.startsWith(`${TIPO}:${conta}:`)),
-    ),
-    listarDoTipo: vi.fn(async () => [...rows.values()]),
+    listarAbertos: vi.fn(async () => ({
+      linhas: [...rows.values()]
+        .filter((a) => a.aberto)
+        .map(
+          ({ chave: c, tipo, canal, params }): AvisoAberto => ({ chave: c, tipo, canal, params }),
+        ),
+      truncada: opcoes.truncada ?? false,
+    })),
     escrever: vi.fn(async (_db: Firestore, plano: PlanoAviso): Promise<ResultadoAviso> => {
       escritos.push(plano);
       const k = chaveDeAviso(plano);
       const ex = rows.get(k);
       rows.set(k, {
         chave: k,
-        aberto: true,
+        tipo: plano.tipo,
         canal: plano.canal ?? null,
         params: { ...plano.params },
+        aberto: true,
       });
       return ex == null ? 'criado' : ex.aberto ? 'repetido' : 'reaberto';
     }),
@@ -254,8 +263,10 @@ function fakeAvisos(seed: AvisoExistente[] = []) {
 
 interface Montagem {
   contas?: string[];
+  /** Keyed by the REF FORM walked (`F0(conta)`, `F1(conta)`); absent ⇒ {@link FORMA_VAZIA}. */
   roteiros?: Record<string, Roteiro>;
-  avisos?: AvisoExistente[];
+  avisos?: LinhaFake[];
+  avisosTruncados?: boolean;
   curar?: AuditoriaDeps['curar'];
   reconfirmar?: AuditoriaDeps['reconfirmar'];
   /** ms the clock advances on every walk page (per conta). */
@@ -264,6 +275,8 @@ interface Montagem {
   falhas?: Record<string, unknown>;
   t0?: number;
   pageLimit?: number;
+  /** The real shared walk instead of the scripted one. */
+  walkReal?: boolean;
 }
 
 function montar(m: Montagem = {}) {
@@ -279,23 +292,24 @@ function montar(m: Montagem = {}) {
     eventos.push(`page:${conta}`);
     chamadas.push({ ...args, conta });
     if (m.falhas?.[conta] !== undefined) throw m.falhas[conta];
-    const n = contagem.get(conta) ?? 0;
-    contagem.set(conta, n + 1);
+    const forma = args.contaRef ?? '(in)';
+    const n = contagem.get(forma) ?? 0;
+    contagem.set(forma, n + 1);
     relogio.t += m.msPorPagina?.[conta] ?? 0;
-    const roteiro = m.roteiros?.[conta] ?? [pagina([], null)];
+    const roteiro = m.roteiros?.[forma] ?? [FORMA_VAZIA()];
     if (typeof roteiro === 'function') return roteiro(n);
     const page = roteiro[n];
-    if (page == null) throw new Error(`roteiro de ${conta} sem página ${String(n)}`);
+    if (page == null) throw new Error(`roteiro de ${forma} sem página ${String(n)}`);
     return page;
   });
-  const avisos = fakeAvisos(m.avisos);
+  const avisos = fakeAvisos(m.avisos, { truncada: m.avisosTruncados });
   const curar = vi.fn<NonNullable<AuditoriaDeps['curar']>>(m.curar ?? (async () => true));
   const reconfirmar = vi.fn<NonNullable<AuditoriaDeps['reconfirmar']>>(
     m.reconfirmar ?? (async () => null),
   );
   const deps: AuditoriaDeps = {
     agora,
-    fetchPage,
+    ...(m.walkReal === true ? {} : { fetchPage }),
     curar,
     avisos: avisos.port,
     reconfirmar,
@@ -342,7 +356,7 @@ describe('runAuditoriaNaoEnumerados — the master flag', () => {
   it('off → { enabled: false } before ANY read, clock or seam', async () => {
     delete process.env[STOCK_SYNC_FLAG_ENV];
     const t = montar({
-      roteiros: { c1: [pagina([achado('p1', 'NAO_ENUMERADO_PRODUTO_AUSENTE')], null)] },
+      roteiros: { [F0('c1')]: [pagina([achado('p1', 'NAO_ENUMERADO_PRODUTO_AUSENTE')], null)] },
     });
 
     const result = await t.run();
@@ -353,8 +367,7 @@ describe('runAuditoriaNaoEnumerados — the master flag', () => {
     expect(t.fetchPage).not.toHaveBeenCalled();
     expect(t.curar).not.toHaveBeenCalled();
     expect(t.reconfirmar).not.toHaveBeenCalled();
-    expect(t.avisos.port.listarDaConta).not.toHaveBeenCalled();
-    expect(t.avisos.port.listarDoTipo).not.toHaveBeenCalled();
+    expect(t.avisos.port.listarAbertos).not.toHaveBeenCalled();
   });
 
   it('a value other than "1" stays off', async () => {
@@ -379,8 +392,8 @@ describe('runAuditoriaNaoEnumerados — which contas, in which order', () => {
     expect(t.db.queries[0]).toMatchObject({
       path: INTEGRACAO_PATH,
       where: [
-        ['tipo', INTEGRACAO_TIPO.mercadoLivre],
-        ['ativo', true],
+        ['tipo', '==', INTEGRACAO_TIPO.mercadoLivre],
+        ['ativo', '==', true],
       ],
     });
   });
@@ -398,24 +411,124 @@ describe('runAuditoriaNaoEnumerados — which contas, in which order', () => {
     // October's, never the host's UTC November.
     expect(await ordem(Date.parse('2026-11-01T01:30:00Z'))).toEqual(['c1', 'c2', 'c3']);
   });
+});
 
-  it('walks with AUDITORIA_PAGE_LIMIT unless overridden, threading the cursor', async () => {
-    const roteiro = [pagina([], 'produtos/a/produtoMercadoLivre/1'), pagina([], null)];
-    const t = montar({ roteiros: { c1: roteiro } });
-    await t.run();
-    expect(t.chamadas).toEqual([
-      { conta: 'c1', integracaoId: 'c1', afterLinkPath: null, pageLimit: AUDITORIA_PAGE_LIMIT },
-      {
-        conta: 'c1',
-        integracaoId: 'c1',
-        afterLinkPath: 'produtos/a/produtoMercadoLivre/1',
-        pageLimit: AUDITORIA_PAGE_LIMIT,
+/* ------------------------------ the walk shape ------------------------------ */
+
+describe('the walk — ONE stored ref form at a time, each `==` with its own cursor', () => {
+  it('drains the first form, then opens the second from NO cursor, each at AUDITORIA_PAGE_LIMIT', async () => {
+    const t = montar({
+      roteiros: {
+        [F0('c1')]: [pagina([], 'produtos/a/produtoMercadoLivre/1'), pagina([], null)],
+        [F1('c1')]: [pagina([], 'produtos/b/produtoMercadoLivre/1'), pagina([], null)],
       },
+    });
+
+    const [conta] = (await t.run()).contas;
+
+    const base = { conta: 'c1', integracaoId: 'c1', pageLimit: AUDITORIA_PAGE_LIMIT };
+    expect(t.chamadas).toEqual([
+      { ...base, contaRef: F0('c1'), afterLinkPath: null },
+      { ...base, contaRef: F0('c1'), afterLinkPath: 'produtos/a/produtoMercadoLivre/1' },
+      // ⚠️ From NO cursor: the first form's last path would skip every link of
+      // this form that sorts before it.
+      { ...base, contaRef: F1('c1'), afterLinkPath: null },
+      { ...base, contaRef: F1('c1'), afterLinkPath: 'produtos/b/produtoMercadoLivre/1' },
     ]);
+    expect(conta).toMatchObject({ truncada: null, paginas: 4 });
 
     const t2 = montar({ pageLimit: 2 });
     await t2.run();
-    expect(t2.chamadas[0]!.pageLimit).toBe(2);
+    expect(t2.chamadas.map((c) => c.pageLimit)).toEqual([2, 2]);
+  });
+
+  it('⛔ every page names ONE form — the price phase’s `in` (no `contaRef`) is never asked for', async () => {
+    const t = montar({ contas: ['c1', 'c2'] });
+    await t.run();
+    expect(t.chamadas.map((c) => [c.conta, c.contaRef])).toEqual([
+      ['c1', F0('c1')],
+      ['c1', F1('c1')],
+      ['c2', F0('c2')],
+      ['c2', F1('c2')],
+    ]);
+  });
+
+  it('⛔ the REAL shared walk: one `contaOuterRef ==` group query per ref form, never an `in`', async () => {
+    // No injected walk: the queries recorded are the ones production builds.
+    const t = montar({ walkReal: true, pageLimit: 7 });
+
+    const [conta] = (await t.run()).contas;
+
+    const grupo = t.db.queries.filter((q) => q.path === 'group:produtoMercadoLivre');
+    expect(grupo.map((q) => q.where)).toEqual([
+      [['contaOuterRef', '==', F0('c1')]],
+      [['contaOuterRef', '==', F1('c1')]],
+    ]);
+    for (const q of grupo) {
+      expect(q.orderBy).toEqual([FieldPath.documentId()]);
+      expect(q.limit).toBe(7);
+      expect(q.select).toEqual(['id', 'estado']);
+    }
+    expect(conta).toMatchObject({ truncada: null, paginas: 2, linksLidos: 0 });
+  });
+
+  it('a cut in the FIRST form never opens the second', async () => {
+    const t = montar({ roteiros: { [F0('c1')]: () => pagina([], 'cursor-x') } });
+
+    const [conta] = (await t.run()).contas;
+
+    expect(conta!.truncada).toBe('cursor-parado');
+    expect(t.chamadas.map((c) => c.contaRef)).toEqual([F0('c1'), F0('c1')]);
+  });
+
+  it('the page cap is the CONTA’s, across both forms', async () => {
+    // The first form drains on its 150th page; the second never drains, and is
+    // cut 50 pages in — not given a fresh 200.
+    const t = montar({
+      roteiros: {
+        [F0('c1')]: (n) => pagina([], n < 149 ? `a-${String(n)}` : null),
+        [F1('c1')]: (n) => pagina([], `b-${String(n)}`),
+      },
+    });
+
+    const [conta] = (await t.run()).contas;
+
+    expect(conta).toMatchObject({ truncada: 'paginas', paginas: AUDITORIA_MAX_PAGINAS_POR_CONTA });
+    expect(t.chamadas.filter((c) => c.contaRef === F1('c1'))).toHaveLength(
+      AUDITORIA_MAX_PAGINAS_POR_CONTA - 150,
+    );
+  });
+
+  it('a produto seen in BOTH forms: the later form’s read wins, and its item ids accumulate', async () => {
+    const t = montar({
+      roteiros: {
+        [F0('c1')]: [
+          pagina(
+            [
+              achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao, 'MLB1'),
+              achado('p2', CODIGO_NAO_ENUMERADO.linkEmVariacao, 'MLB2'),
+            ],
+            null,
+          ),
+        ],
+        // p1 deleted before the second form's read; p2 fixed by then.
+        [F1('c1')]: [
+          pagina([achado('p1', CODIGO_NAO_ENUMERADO.produtoAusente, 'MLB3')], null, {
+            limpos: ['p2'],
+          }),
+        ],
+      },
+    });
+
+    const [conta] = (await t.run()).contas;
+
+    expect(t.avisos.escritos.map((p) => [p.entidade, p.params])).toEqual([
+      ['p1', { situacao: 'produto-ausente', anuncio: 'MLB1', anuncios: 2 }],
+    ]);
+    expect(conta!.porSituacao).toMatchObject({
+      [CODIGO_NAO_ENUMERADO.produtoAusente]: 1,
+      [CODIGO_NAO_ENUMERADO.linkEmVariacao]: 0,
+    });
   });
 });
 
@@ -425,7 +538,7 @@ describe('class 2 — healed, never an aviso', () => {
   it('heals CONTA_FORA_DO_PRODUTO once per produto and raises no aviso for it', async () => {
     const t = montar({
       roteiros: {
-        c1: [
+        [F0('c1')]: [
           pagina(
             [
               achado('p1', CODIGO_NAO_ENUMERADO.contaForaDoProduto, 'MLB1'),
@@ -460,7 +573,7 @@ describe('class 2 — healed, never an aviso', () => {
     const ids = Array.from({ length: AMOSTRA_MAX + 5 }, (_, i) => `p${String(i).padStart(2, '0')}`);
     const t = montar({
       roteiros: {
-        c1: [
+        [F1('c1')]: [
           pagina(
             ids.map((id) => achado(id, CODIGO_NAO_ENUMERADO.contaForaDoProduto)),
             null,
@@ -495,7 +608,7 @@ describe('class 2 — healed, never an aviso', () => {
         pagina(n === 0 ? [achado('p1', CODIGO_NAO_ENUMERADO.contaForaDoProduto)] : [], 'cursor-x'),
     ],
   ] as const)('still heals what a walk truncated by %s saw', async (_n, motivo, roteiro) => {
-    const t = montar({ roteiros: { c1: roteiro } });
+    const t = montar({ roteiros: { [F0('c1')]: roteiro } });
 
     const [conta] = (await t.run()).contas;
 
@@ -513,7 +626,7 @@ describe('class 2 — healed, never an aviso', () => {
     const t = montar({
       contas: ['c1', 'c2'],
       roteiros: {
-        c1: (n) =>
+        [F0('c1')]: (n) =>
           pagina(
             n === 0 ? [achado('p1', CODIGO_NAO_ENUMERADO.contaForaDoProduto)] : [],
             `cursor-${String(n)}`,
@@ -537,7 +650,7 @@ describe('the aviso — one per produto, per situação', () => {
   it('builds the documented plano for every code, with no relogioEvento and no prazo', async () => {
     const t = montar({
       roteiros: {
-        c1: [
+        [F0('c1')]: [
           pagina(
             [
               achado('pA', CODIGO_NAO_ENUMERADO.produtoAusente, 'MLB7'),
@@ -610,7 +723,7 @@ describe('the aviso — one per produto, per situação', () => {
   it('the LATEST page classifies a produto seen on two pages', async () => {
     const t = montar({
       roteiros: {
-        c1: [
+        [F0('c1')]: [
           pagina(
             [
               achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao, 'MLB1'),
@@ -659,7 +772,7 @@ describe('the aviso — one per produto, per situação', () => {
     // refresh of p1's open row that keeps it standing for another month.
     const t = montar({
       roteiros: {
-        c1: [
+        [F0('c1')]: [
           pagina(
             [
               achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao, 'MLB1'),
@@ -703,7 +816,7 @@ describe('the aviso — one per produto, per situação', () => {
 describe('open rows are refreshed only on change; NEW rows are capped', () => {
   it('an open row whose params are already current is not written', async () => {
     const t = montar({
-      roteiros: { c1: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)] },
+      roteiros: { [F0('c1')]: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)] },
       avisos: [linha('c1', 'p1')],
     });
 
@@ -719,7 +832,7 @@ describe('open rows are refreshed only on change; NEW rows are capped', () => {
   it('an open row whose params changed is refreshed (repetido)', async () => {
     const t = montar({
       roteiros: {
-        c1: [
+        [F0('c1')]: [
           pagina(
             [
               achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao, 'MLB-p1'),
@@ -749,7 +862,7 @@ describe('open rows are refreshed only on change; NEW rows are capped', () => {
     );
     const t = montar({
       roteiros: {
-        c1: [pagina([...novos, achado('z99', CODIGO_NAO_ENUMERADO.produtoAusente)], null)],
+        [F0('c1')]: [pagina([...novos, achado('z99', CODIGO_NAO_ENUMERADO.produtoAusente)], null)],
       },
       // Open, and its situação changed: it needs a refresh, and sorts LAST.
       avisos: [linha('c1', 'z99')],
@@ -784,7 +897,7 @@ describe('open rows are refreshed only on change; NEW rows are capped', () => {
     );
     const t = montar({
       roteiros: {
-        c1: [
+        [F0('c1')]: [
           pagina(
             [
               achado('a00', CODIGO_NAO_ENUMERADO.produtoAusente),
@@ -816,13 +929,13 @@ describe('open rows are refreshed only on change; NEW rows are capped', () => {
     expect(conta!.amostraSuprimidos).toEqual([]);
   });
 
-  it('a RESOLVED row counts as new: reopening it re-alerts, so it is capped too', async () => {
+  it('a RESOLVED row is not listed — it counts as new: reopening it re-alerts, so it is capped too', async () => {
     const novos = Array.from({ length: MAX_AVISOS_NOVOS_POR_CONTA }, (_, i) =>
       achado(`a${String(i).padStart(2, '0')}`, CODIGO_NAO_ENUMERADO.linkEmVariacao),
     );
     const t = montar({
       roteiros: {
-        c1: [pagina([...novos, achado('z99', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)],
+        [F0('c1')]: [pagina([...novos, achado('z99', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)],
       },
       avisos: [linha('c1', 'z99', { aberto: false })],
     });
@@ -836,7 +949,7 @@ describe('open rows are refreshed only on change; NEW rows are capped', () => {
 
   it('under the cap, a resolved row is REOPENED', async () => {
     const t = montar({
-      roteiros: { c1: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)] },
+      roteiros: { [F0('c1')]: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)] },
       avisos: [linha('c1', 'p1', { aberto: false })],
     });
     const [conta] = (await t.run()).contas;
@@ -878,15 +991,8 @@ describe('resolving — complete walks only, re-confirmed', () => {
   it('a complete walk resolves EXACTLY the re-confirmed open rows it no longer saw', async () => {
     const t = montar({
       roteiros: {
-        c1: [
-          pagina(
-            [
-              achado('p-ainda', CODIGO_NAO_ENUMERADO.linkEmVariacao),
-              achado('p-curado', CODIGO_NAO_ENUMERADO.contaForaDoProduto),
-            ],
-            null,
-          ),
-        ],
+        [F0('c1')]: [pagina([achado('p-ainda', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)],
+        [F1('c1')]: [pagina([achado('p-curado', CODIGO_NAO_ENUMERADO.contaForaDoProduto)], null)],
       },
       avisos: [
         linha('c1', 'p-ainda'),
@@ -894,6 +1000,7 @@ describe('resolving — complete walks only, re-confirmed', () => {
         linha('c1', 'p-curado'),
         linha('c1', 'p-sumiu'),
         linha('c1', 'p-sujo'),
+        // Resolved: not listed, so never a candidate.
         linha('c1', 'p-velho', { aberto: false }),
         // Another conta's row: never c1's to resolve.
         linha('c2', 'p-sumiu'),
@@ -942,18 +1049,41 @@ describe('resolving — complete walks only, re-confirmed', () => {
 
   it.each([
     [
-      'the page cap',
+      'the page cap, in the first form',
       'paginas',
-      { roteiros: { c1: (n: number) => pagina([], `cursor-${String(n)}`) } },
+      { roteiros: { [F0('c1')]: (n: number) => pagina([], `cursor-${String(n)}`) } },
     ],
-    ['a stuck cursor', 'cursor-parado', { roteiros: { c1: () => pagina([], 'cursor-x') } }],
+    [
+      'a stuck cursor, in the first form',
+      'cursor-parado',
+      { roteiros: { [F0('c1')]: () => pagina([], 'cursor-x') } },
+    ],
+    [
+      'the page cap, in the SECOND form',
+      'paginas',
+      { roteiros: { [F1('c1')]: (n: number) => pagina([], `cursor-${String(n)}`) } },
+    ],
+    [
+      'a stuck cursor, in the SECOND form',
+      'cursor-parado',
+      { roteiros: { [F1('c1')]: () => pagina([], 'cursor-x') } },
+    ],
     [
       'its fair share of the budget',
       'orcamento',
       {
         contas: ['c1', 'c2'],
-        roteiros: { c1: (n: number) => pagina([], `cursor-${String(n)}`) },
+        roteiros: { [F0('c1')]: (n: number) => pagina([], `cursor-${String(n)}`) },
         msPorPagina: { c1: 150_000 },
+      },
+    ],
+    [
+      'its fair share of the budget, spent in the SECOND form',
+      'orcamento',
+      {
+        contas: ['c1', 'c2'],
+        roteiros: { [F1('c1')]: (n: number) => pagina([], `cursor-${String(n)}`) },
+        msPorPagina: { c1: 50_000 },
       },
     ],
   ] as const)('a walk truncated by %s resolves NOTHING, and says so', async (_n, motivo, m) => {
@@ -971,7 +1101,7 @@ describe('resolving — complete walks only, re-confirmed', () => {
     expect(avisosDeLog().some((msg) => msg.includes('TRUNCADA'))).toBe(true);
   });
 
-  it('⛔ never re-reads or resolves ANOTHER channel’s row, even inside this conta’s key range', async () => {
+  it('⛔ never re-reads or resolves ANOTHER channel’s row, even under this conta’s id', async () => {
     // The tipo is channel-neutral: "not found by an ML walk" says nothing about a
     // row another channel's producer raised and owns.
     const t = montar({
@@ -985,13 +1115,287 @@ describe('resolving — complete walks only, re-confirmed', () => {
     expect(conta!.resolvidos).toBe(1);
   });
 
+  it('⛔ another TIPO’s open row is never this producer’s — whatever its id says', async () => {
+    // The read spans every tipo (the bell's whole population): the stored tipo
+    // is the first filter, and the id's first segment the second.
+    const outroTipo = chaveDeAviso({
+      tipo: TIPO_AVISO.estoqueAcimaDoDisponivel,
+      conta: 'c1',
+      entidade: 'p1',
+    });
+    const t = montar({
+      avisos: [
+        linha('c1', 'x', { chave: outroTipo, tipo: TIPO_AVISO.estoqueAcimaDoDisponivel }),
+        // This tipo's id shape, another tipo stored on it.
+        linha('c1', 'p2', { tipo: TIPO_AVISO.estoqueAcimaDoDisponivel }),
+        // This tipo stored, another tipo's id.
+        linha('c1', 'x', { chave: outroTipo.replace('p1', 'p3') }),
+      ],
+    });
+
+    await t.run();
+
+    expect(t.reconfirmar).not.toHaveBeenCalled();
+    expect(t.avisos.port.resolver).not.toHaveBeenCalled();
+  });
+
   it('a row id outside the producer shape is never handed to the re-read', async () => {
     const t = montar({
-      avisos: [{ chave: `${TIPO}:c1:`, aberto: true, canal: CANAL_AVISO.mercadoLivre, params: {} }],
+      avisos: [
+        linha('c1', 'x', { chave: `${TIPO}:c1:` }),
+        linha('c1', 'x', { chave: `${TIPO}:c1:p1:x` }),
+      ],
     });
     await t.run();
     expect(t.reconfirmar).not.toHaveBeenCalled();
     expect(t.avisos.port.resolver).not.toHaveBeenCalled();
+    expect(avisosDeLog().some((m) => m.includes('fora do formato'))).toBe(true);
+  });
+
+  it('⛔ conta `c1` never claims conta `c10`’s rows — the conta segment is compared WHOLE', async () => {
+    const t = montar({ contas: ['c1', 'c10'], avisos: [linha('c10', 'p1')] });
+
+    const result = await t.run();
+
+    // Re-confirmed and resolved by ITS conta's walk, never by c1's.
+    expect(t.reconfirmar.mock.calls.map((c) => [c[1], c[2]])).toEqual([['p1', 'c10']]);
+    expect(result.contas.map((c) => [c.integracaoId, c.resolvidos])).toEqual([
+      ['c1', 0],
+      ['c10', 1],
+    ]);
+  });
+});
+
+/* ------------------------- the open-avisos listing ------------------------- */
+
+describe('the open avisos — ONE read per run, filtered in memory', () => {
+  it('ONE read, shared by every conta AND the inactive-conta pass', async () => {
+    const t = montar({
+      contas: ['c1', 'c2', 'c3'],
+      avisos: [linha('c1', 'p1'), linha('c2', 'p2'), linha('c3', 'p3'), linha('c-off', 'p4')],
+    });
+
+    const result = await t.run();
+
+    expect(t.avisos.port.listarAbertos).toHaveBeenCalledTimes(1);
+    expect(t.avisos.resolvidos).toEqual([
+      { chave: chave('c1', 'p1'), motivo: RESOLUCAO_AUDITORIA.naoEncontrado },
+      { chave: chave('c2', 'p2'), motivo: RESOLUCAO_AUDITORIA.naoEncontrado },
+      { chave: chave('c3', 'p3'), motivo: RESOLUCAO_AUDITORIA.naoEncontrado },
+      { chave: chave('c-off', 'p4'), motivo: RESOLUCAO_AUDITORIA.contaInativa },
+    ]);
+    expect(result.inativasResolvidas).toBe(1);
+  });
+
+  it('⛔ the read itself: `resolvidoEm == null`, NO orderBy, NO cursor, the cap + 1 — once per run', async () => {
+    // The production read on the FakeDb, through an otherwise faked port.
+    const t = montar({ contas: ['c1', 'c2'] });
+    const lida = vi.fn(listarAvisosAbertos);
+    t.deps.avisos = { ...t.avisos.port, listarAbertos: lida };
+
+    await t.run();
+
+    expect(lida).toHaveBeenCalledTimes(1);
+    const avisos = t.db.queries.filter((q) => q.path === AVISOS_PATH);
+    expect(avisos).toEqual([
+      {
+        path: AVISOS_PATH,
+        where: [['resolvidoEm', '==', null]],
+        select: ['tipo', 'canal', 'params'],
+        // ⚠️ An orderBy the index does not deliver is a SORT over the whole read.
+        orderBy: [],
+        limit: AVISOS_ABERTOS_MAX + 1,
+      },
+    ]);
+  });
+
+  it('is read LAZILY: a run with no conta reaching its aviso phase and no budget left reads nothing', async () => {
+    const t = montar({
+      roteiros: {
+        [F0('c1')]: [
+          pagina(
+            ['p1', 'p2', 'p3'].map((id) => achado(id, CODIGO_NAO_ENUMERADO.contaForaDoProduto)),
+            null,
+          ),
+        ],
+      },
+      avisos: [linha('c1', 'p-sumiu')],
+    });
+    t.curar.mockImplementation(async () => {
+      t.relogio.t += AUDITORIA_ORCAMENTO_MS;
+      return true;
+    });
+
+    const [conta] = (await t.run()).contas;
+
+    expect(conta).toMatchObject({ truncada: 'orcamento', curados: 1, curasPendentes: 2 });
+    expect(t.avisos.port.listarAbertos).not.toHaveBeenCalled();
+    expect(t.avisos.resolvidos).toEqual([]);
+  });
+
+  it('a gRPC failure of the read is THAT conta’s, contained — and the next conta reads again', async () => {
+    const grpc = Object.assign(new Error('14 UNAVAILABLE'), { code: 14 });
+    const t = montar({
+      contas: ['c1', 'c2'],
+      roteiros: {
+        [F0('c1')]: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)],
+        [F0('c2')]: [pagina([achado('p2', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)],
+      },
+    });
+    vi.mocked(t.avisos.port.listarAbertos).mockRejectedValueOnce(grpc);
+
+    const result = await t.run();
+
+    expect(result.contas.map((c) => [c.integracaoId, c.error])).toEqual([
+      ['c1', '14 UNAVAILABLE'],
+      ['c2', null],
+    ]);
+    // Not cached: one transient error does not silence every later conta's avisos.
+    expect(t.avisos.port.listarAbertos).toHaveBeenCalledTimes(2);
+    expect(t.avisos.escritos.map((p) => p.entidade)).toEqual(['p2']);
+  });
+
+  it('⛔ a TRUNCATED listing resolves NOTHING anywhere — per conta or inactive — and says so; the writes still go out', async () => {
+    const t = montar({
+      roteiros: {
+        [F0('c1')]: [pagina([achado('p-novo', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)],
+      },
+      avisos: [linha('c1', 'p-sumiu'), linha('c-off', 'p2')],
+      avisosTruncados: true,
+    });
+
+    const result = await t.run();
+
+    expect(result.contas[0]).toMatchObject({ truncada: 'listagem-de-avisos', resolvidos: 0 });
+    expect(result.inativasResolvidas).toBe(0);
+    expect(t.reconfirmar).not.toHaveBeenCalled();
+    expect(t.avisos.resolvidos).toEqual([]);
+    expect(t.avisos.escritos.map((p) => p.entidade)).toEqual(['p-novo']);
+    expect(avisosDeLog().filter((m) => m.includes('TRUNCADA'))).toHaveLength(3);
+    expect(t.avisos.port.listarAbertos).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('listarAvisosAbertos — the read, on the FakeDb', () => {
+  function seedAviso(db: FakeDb, id: string, data: DocData = {}): void {
+    db.seed(AVISOS_PATH, id, {
+      tipo: TIPO,
+      resolvidoEm: null,
+      canal: CANAL_AVISO.mercadoLivre,
+      params: { situacao: 'link-em-variacao', anuncio: 'MLB1', anuncios: 1 },
+      criadoEm: 1,
+      ...data,
+    });
+  }
+
+  it('lists every OPEN row of every tipo and canal, projected — never a resolved one', async () => {
+    const db = new FakeDb();
+    seedAviso(db, `${TIPO}:c1:p1`);
+    seedAviso(db, `${TIPO}:c1:p2`, { resolvidoEm: 5 });
+    seedAviso(db, `${TIPO_AVISO.estoqueAcimaDoDisponivel}:c1:p3`, {
+      tipo: TIPO_AVISO.estoqueAcimaDoDisponivel,
+      canal: CANAL_AVISO.shopee,
+    });
+
+    const { linhas, truncada } = await listarAvisosAbertos(asDb(db));
+
+    expect(truncada).toBe(false);
+    expect(linhas).toEqual([
+      {
+        chave: `${TIPO}:c1:p1`,
+        tipo: TIPO,
+        canal: 'mercadoLivre',
+        params: { situacao: 'link-em-variacao', anuncio: 'MLB1', anuncios: 1 },
+      },
+      {
+        chave: `${TIPO_AVISO.estoqueAcimaDoDisponivel}:c1:p3`,
+        tipo: TIPO_AVISO.estoqueAcimaDoDisponivel,
+        canal: 'shopee',
+        params: { situacao: 'link-em-variacao', anuncio: 'MLB1', anuncios: 1 },
+      },
+    ]);
+  });
+
+  it('an ABSENT resolvidoEm is not listed — an equality matches no absent field (every writer stamps it)', async () => {
+    const db = new FakeDb();
+    db.seed(AVISOS_PATH, `${TIPO}:c1:p1`, { tipo: TIPO, canal: CANAL_AVISO.mercadoLivre });
+    expect((await listarAvisosAbertos(asDb(db))).linhas).toEqual([]);
+  });
+
+  it('a malformed stored params reads as {}, a non-string tipo or canal as null', async () => {
+    const db = new FakeDb();
+    seedAviso(db, `${TIPO}:c1:p1`, { params: ['x'], tipo: 3 });
+    seedAviso(db, `${TIPO}:c1:p2`, { params: {}, canal: 7 });
+    expect((await listarAvisosAbertos(asDb(db))).linhas).toEqual([
+      { chave: `${TIPO}:c1:p1`, tipo: null, canal: 'mercadoLivre', params: {} },
+      { chave: `${TIPO}:c1:p2`, tipo: TIPO, canal: null, params: {} },
+    ]);
+  });
+
+  it('past AVISOS_ABERTOS_MAX it is TRUNCATED — at exactly the cap it is whole', async () => {
+    const db = new FakeDb();
+    for (let i = 0; i < AVISOS_ABERTOS_MAX; i += 1) seedAviso(db, `a${String(i).padStart(5, '0')}`);
+
+    const inteira = await listarAvisosAbertos(asDb(db));
+    expect(inteira.truncada).toBe(false);
+    expect(inteira.linhas).toHaveLength(AVISOS_ABERTOS_MAX);
+
+    seedAviso(db, 'z-mais-uma');
+    const cortada = await listarAvisosAbertos(asDb(db));
+    expect(cortada.truncada).toBe(true);
+    // Every row it read is still a real open row.
+    expect(cortada.linhas).toHaveLength(AVISOS_ABERTOS_MAX + 1);
+  });
+});
+
+describe('classificarAvisosAbertos / avisosDaConta — the in-memory filter', () => {
+  const aberto = (over: Partial<AvisoAberto> & { chave: string }): AvisoAberto => ({
+    tipo: TIPO,
+    canal: CANAL_AVISO.mercadoLivre,
+    params: {},
+    ...over,
+  });
+
+  it('keeps exactly this tipo + this canal + `<tipo>:<conta>:<produto>`; reports the bad shapes', () => {
+    const { doProdutor, foraDoFormato } = classificarAvisosAbertos([
+      aberto({ chave: `${TIPO}:c1:p1`, params: { a: 1 } }),
+      // Another tipo, another canal, no canal — neither list.
+      aberto({ chave: `${TIPO}:c1:p2`, tipo: TIPO_AVISO.estoqueAcimaDoDisponivel }),
+      aberto({ chave: `${TIPO}:c1:p3`, tipo: null }),
+      aberto({ chave: `${TIPO}:c1:p4`, canal: CANAL_AVISO.shopee }),
+      aberto({ chave: `${TIPO}:c1:p5`, canal: null }),
+      // This producer's tipo and canal, an id it never writes.
+      aberto({ chave: `${TIPO}:c1` }),
+      aberto({ chave: `${TIPO}:c1:` }),
+      aberto({ chave: `${TIPO}::p6` }),
+      aberto({ chave: `${TIPO}:c1:p7:x` }),
+      aberto({ chave: `${TIPO_AVISO.estoqueAcimaDoDisponivel}:c1:p8` }),
+    ]);
+
+    expect(doProdutor).toEqual([
+      { chave: `${TIPO}:c1:p1`, prefixo: `${TIPO}:c1`, produtoId: 'p1', params: { a: 1 } },
+    ]);
+    expect(foraDoFormato).toEqual([
+      `${TIPO}:c1`,
+      `${TIPO}:c1:`,
+      `${TIPO}::p6`,
+      `${TIPO}:c1:p7:x`,
+      `${TIPO_AVISO.estoqueAcimaDoDisponivel}:c1:p8`,
+    ]);
+  });
+
+  it('avisosDaConta compares the conta segment WHOLE: `c1` is not `c10`, nor `c1` a prefix of it', () => {
+    const { doProdutor } = classificarAvisosAbertos([
+      aberto({ chave: `${TIPO}:c1:p1` }),
+      aberto({ chave: `${TIPO}:c10:p2` }),
+      aberto({ chave: `${TIPO}:c:p3` }),
+    ]);
+    expect(avisosDaConta(doProdutor, 'c1').map((a) => a.chave)).toEqual([`${TIPO}:c1:p1`]);
+    expect(avisosDaConta(doProdutor, 'c10').map((a) => a.chave)).toEqual([`${TIPO}:c10:p2`]);
+  });
+
+  it('refuses an empty conta — its "prefix" would be the bare tipo', () => {
+    expect(() => avisosDaConta([], '')).toThrow(RangeError);
   });
 });
 
@@ -1001,7 +1405,7 @@ describe('rows of contas that are no longer active', () => {
   it('resolves every OPEN row whose conta was not enumerated — and nothing else', async () => {
     const t = montar({
       contas: ['c1'],
-      roteiros: { c1: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)] },
+      roteiros: { [F0('c1')]: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)] },
       avisos: [
         linha('c1', 'p1'),
         linha('c-off', 'p2'),
@@ -1024,7 +1428,7 @@ describe('rows of contas that are no longer active', () => {
     ]);
   });
 
-  it('⛔ leaves ANOTHER channel’s rows of this channel-neutral tipo alone — and rows with no canal', async () => {
+  it('⛔ leaves ANOTHER channel’s rows of this channel-neutral tipo alone — and rows with no canal, and other tipos', async () => {
     // The tipo is shared by design (`aviso.ts`). A Shopee twin's conta is never an
     // ACTIVE ML integração, so without the canal test this pass would close its
     // open rows every month and the Shopee producer would re-open them.
@@ -1034,6 +1438,7 @@ describe('rows of contas that are no longer active', () => {
         linha('shp1', 'p1', { canal: CANAL_AVISO.shopee }),
         linha('c-apagada', 'p2', { canal: null }),
         linha('c-apagada', 'p3'),
+        linha('c-apagada', 'p4', { tipo: TIPO_AVISO.estoqueAcimaDoDisponivel }),
       ],
     });
 
@@ -1056,8 +1461,9 @@ describe('rows of contas that are no longer active', () => {
     const result = await t.run();
 
     expect(result.contas.find((c) => c.integracaoId === 'c1')!.error).toBe('14 UNAVAILABLE');
-    // The inactive pass DID run (c2 left budget) — it just has nothing to close.
-    expect(t.avisos.port.listarDoTipo).toHaveBeenCalledTimes(1);
+    // The inactive pass DID run (c2 left budget), over c2's listing — it just has
+    // nothing to close.
+    expect(t.avisos.port.listarAbertos).toHaveBeenCalledTimes(1);
     expect(result.inativasResolvidas).toBe(0);
     expect(t.avisos.resolvidos).toEqual([]);
   });
@@ -1066,6 +1472,8 @@ describe('rows of contas that are no longer active', () => {
     const t = montar({ contas: [], avisos: [linha('c1', 'p1')] });
     const result = await t.run();
     expect(result.contas).toEqual([]);
+    // No conta reached its aviso phase: the inactive pass made the run's one read.
+    expect(t.avisos.port.listarAbertos).toHaveBeenCalledTimes(1);
     expect(result.inativasResolvidas).toBe(1);
   });
 });
@@ -1076,7 +1484,7 @@ describe('the time budget', () => {
   it('a conta reached with no budget left is NOT audited, loudly — and its rows stay', async () => {
     const t = montar({
       contas: ['c1', 'c2'],
-      // c1 drains in one page that costs the whole run budget.
+      // c1's first form costs the whole run budget.
       msPorPagina: { c1: AUDITORIA_ORCAMENTO_MS },
       avisos: [linha('c2', 'p1'), linha('c-apagada', 'p2')],
     });
@@ -1097,7 +1505,7 @@ describe('the time budget', () => {
     // three 150 s pages fit before its 400 s deadline (0 → 150 → 300 → 450).
     const t = montar({
       contas: ['c1', 'c2'],
-      roteiros: { c2: (n: number) => pagina([], `cursor-${String(n)}`) },
+      roteiros: { [F0('c2')]: (n: number) => pagina([], `cursor-${String(n)}`) },
       msPorPagina: { c2: 150_000 },
     });
     const result = await t.run();
@@ -1107,7 +1515,7 @@ describe('the time budget', () => {
   it('a heal loop that outruns the RUN budget stops, counts what is left and resolves nothing', async () => {
     const t = montar({
       roteiros: {
-        c1: [
+        [F0('c1')]: [
           pagina(
             ['p1', 'p2', 'p3'].map((id) => achado(id, CODIGO_NAO_ENUMERADO.contaForaDoProduto)),
             null,
@@ -1124,7 +1532,6 @@ describe('the time budget', () => {
     const [conta] = (await t.run()).contas;
 
     expect(conta).toMatchObject({ truncada: 'orcamento', curados: 1, curasPendentes: 2 });
-    expect(t.avisos.port.listarDaConta).not.toHaveBeenCalled();
     expect(t.avisos.resolvidos).toEqual([]);
   });
 });
@@ -1136,7 +1543,9 @@ describe('per-conta containment', () => {
     const t = montar({
       contas: ['c1', 'c2'],
       falhas: { c1: Object.assign(new Error('4 DEADLINE_EXCEEDED'), { code: 4 }) },
-      roteiros: { c2: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)] },
+      roteiros: {
+        [F0('c2')]: [pagina([achado('p1', CODIGO_NAO_ENUMERADO.linkEmVariacao)], null)],
+      },
     });
 
     const result = await t.run();
@@ -1164,102 +1573,12 @@ describe('per-conta containment', () => {
     await t.run();
     expect(t.eventos).toEqual([
       'page:c1',
+      'page:c1',
       `info:${AUDITORIA_LOG_PREFIX}: conta concluída`,
+      'page:c2',
       'page:c2',
       `info:${AUDITORIA_LOG_PREFIX}: conta concluída`,
     ]);
-  });
-});
-
-/* ------------------------------ the key range ------------------------------- */
-
-describe('the avisos key-range read', () => {
-  function seedAviso(db: FakeDb, id: string, data: DocData = {}): void {
-    db.seed(AVISOS_PATH, id, {
-      tipo: TIPO,
-      resolvidoEm: null,
-      canal: CANAL_AVISO.mercadoLivre,
-      params: { situacao: 'link-em-variacao', anuncio: 'MLB1', anuncios: 1 },
-      criadoEm: 1,
-      ...data,
-    });
-  }
-
-  it('lists exactly one conta’s rows — `c10`, the bare conta key, the range end and other tipos stay out', async () => {
-    const db = new FakeDb();
-    seedAviso(db, `${TIPO}:c1:p1`);
-    seedAviso(db, `${TIPO}:c1:p2`, { resolvidoEm: 5, canal: CANAL_AVISO.shopee });
-    seedAviso(db, `${TIPO}:c10:p3`);
-    seedAviso(db, `${TIPO}:c1`);
-    seedAviso(db, `${TIPO}:c1;`);
-    seedAviso(db, `${TIPO_AVISO.estoqueAcimaDoDisponivel}:c1:p4`);
-    seedAviso(db, `${TIPO}Z:c1:p5`);
-
-    const linhas = await listarAvisosDaConta(asDb(db), 'c1');
-
-    expect(linhas).toEqual([
-      {
-        chave: `${TIPO}:c1:p1`,
-        aberto: true,
-        canal: 'mercadoLivre',
-        params: { situacao: 'link-em-variacao', anuncio: 'MLB1', anuncios: 1 },
-      },
-      {
-        chave: `${TIPO}:c1:p2`,
-        aberto: false,
-        // The stored canal, projected — what keeps the resolvers off another
-        // channel's rows of this shared tipo.
-        canal: 'shopee',
-        params: { situacao: 'link-em-variacao', anuncio: 'MLB1', anuncios: 1 },
-      },
-    ]);
-    expect(db.queries[0]).toMatchObject({
-      path: AVISOS_PATH,
-      select: ['resolvidoEm', 'params', 'canal'],
-      startAt: `${TIPO}:c1:`,
-      endBefore: `${TIPO}:c1;`,
-    });
-  });
-
-  it('the tipo-wide read spans every conta of this tipo and nothing else', async () => {
-    const db = new FakeDb();
-    seedAviso(db, `${TIPO}:c1:p1`);
-    seedAviso(db, `${TIPO}:c2:p2`);
-    seedAviso(db, TIPO);
-    seedAviso(db, `${TIPO};`);
-    seedAviso(db, `${TIPO_AVISO.estoqueAcimaDoDisponivel}:c1:p4`);
-
-    const linhas = await listarAvisosDoTipo(asDb(db));
-
-    expect(linhas.map((l) => l.chave)).toEqual([`${TIPO}:c1:p1`, `${TIPO}:c2:p2`]);
-  });
-
-  it('pages by id and returns every row exactly once', async () => {
-    const db = new FakeDb();
-    const ids = Array.from({ length: 1001 }, (_, i) => `${TIPO}:c1:p${String(i).padStart(4, '0')}`);
-    for (const id of ids) seedAviso(db, id);
-    seedAviso(db, `${TIPO}:c2:depois`);
-
-    const linhas = await listarAvisosDaConta(asDb(db), 'c1');
-
-    expect(linhas.map((l) => l.chave)).toEqual(ids);
-    expect(db.queries).toHaveLength(3);
-    expect(db.queries[1]).toMatchObject({ startAt: null, startAfter: ids[499] });
-    expect(db.queries.every((q) => q.endBefore === `${TIPO}:c1;` && q.limit === 500)).toBe(true);
-  });
-
-  it('a malformed stored params reads as {}, an absent resolvidoEm as open, a non-string canal as null', async () => {
-    const db = new FakeDb();
-    db.seed(AVISOS_PATH, `${TIPO}:c1:p1`, { tipo: TIPO, params: ['x'] });
-    db.seed(AVISOS_PATH, `${TIPO}:c1:p2`, { tipo: TIPO, params: {}, canal: 7 });
-    expect(await listarAvisosDaConta(asDb(db), 'c1')).toEqual([
-      { chave: `${TIPO}:c1:p1`, aberto: true, canal: null, params: {} },
-      { chave: `${TIPO}:c1:p2`, aberto: true, canal: null, params: {} },
-    ]);
-  });
-
-  it('refuses an empty conta — its "prefix" would be every conta’s rows', () => {
-    expect(() => listarAvisosDaConta(asDb(new FakeDb()), '')).toThrow(RangeError);
   });
 });
 
@@ -1270,7 +1589,7 @@ describe('resumirAuditoria — the run summary line', () => {
     const t = montar({
       contas: ['c1', 'c2'],
       roteiros: {
-        c1: [
+        [F0('c1')]: [
           pagina(
             [
               achado('p1', CODIGO_NAO_ENUMERADO.contaForaDoProduto),
@@ -1280,7 +1599,7 @@ describe('resumirAuditoria — the run summary line', () => {
             { lidos: 10, inspecionados: 4, produtosLidos: 3 },
           ),
         ],
-        c2: (n: number) => pagina([], `cursor-${String(n)}`, { lidos: 1 }),
+        [F0('c2')]: (n: number) => pagina([], `cursor-${String(n)}`, { lidos: 1 }),
       },
       falhas: {},
       avisos: [linha('c-apagada', 'p9')],
@@ -1295,7 +1614,8 @@ describe('resumirAuditoria — the run summary line', () => {
       completas: 1,
       truncadas: 1,
       naoAuditadas: [],
-      paginas: 1 + AUDITORIA_MAX_PAGINAS_POR_CONTA,
+      // c1: its two forms (the second one empty); c2: cut at the cap in its first.
+      paginas: 2 + AUDITORIA_MAX_PAGINAS_POR_CONTA,
       linksLidos: 10 + AUDITORIA_MAX_PAGINAS_POR_CONTA,
       produtosLidos: 3,
       inspecionados: 4,
