@@ -1,7 +1,11 @@
 /**
  * The pure half of `scripts/publicar-anuncio.ts` (#1519, step 11) — argument
  * parsing, the **allow-list** summary of a publish PLAN, its renderers, the
- * `--live` result summary and the usage text.
+ * `--live` result summary and the usage text. Since step 19 (#1527, PR 7) also
+ * the three kit flags (`--principal`, `--recriar`, `--converter-em-kit`) and the
+ * NATIVE-KIT summaries — the dry run's ({@link resumoDoEnsaioDeKit}) and the
+ * live result's ({@link resumoDoResultadoKit}), whose `incerto` block prints the
+ * exact command to re-run.
  *
  * ⚠️ **It lives here rather than in the script because `scripts/` is outside
  * this app's vitest `include`** (`{app,lib,functions}/**\/*.test.ts`), so logic
@@ -12,10 +16,12 @@
  * ⚠️ **Script-only, imported by no route, no job and no bundle.** Nothing here
  * reads `process.env`, opens a client, touches Firestore or reads a clock:
  * every instant and every count it renders arrives inside the plan it was
- * handed. Its only value imports are four pure modules of this app (the item
+ * handed. Its only value imports are five pure modules of this app (the item
  * mapper's attribute helper, the two publish error classes, the shared CLI
- * error describer and the three routes' own doc-id predicate); everything from
- * the IO modules is `import type`, which is erased.
+ * error describer, the three routes' own doc-id predicate and — step 19 — the
+ * kit result module's `incerto` sentence, `../kits/resultadoKit.ts`, which holds
+ * types, one constant and one pure renderer); everything from the IO modules is
+ * `import type`, which is erased.
  *
  * ## The redaction is an ALLOW-LIST, and that is the whole design
  *
@@ -92,11 +98,20 @@ import {
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
 
+import type { EnsaioDeKit } from '../kits/publicarKit';
+import {
+  MENSAGEM_KIT_INCERTO,
+  type ArmaKit,
+  type CodigoAvisoKit,
+  type DesfechoKit,
+  type ResultadoPublicacaoKit,
+} from '../kits/resultadoKit';
 import { ArgumentoInvalidoError, descreverErro } from '../pedidos/importarPedidoCli';
 import type { VerdictoFolha } from '../taxonomia/categorias';
 import type { AtributosProjetados } from '../taxonomia/dto';
 import { naoDocId } from './corpoPublicacao';
 import {
+  ETAPA_PUBLICACAO,
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
   cabecalhoDaRecusa,
@@ -128,7 +143,8 @@ export { ArgumentoInvalidoError };
  * that carries one — including inside this string.
  */
 export const USO_PUBLICAR_ANUNCIO = `
-Publica UM produto do ERP como anúncio na Shopee, pelo caminho real do step 11.
+Publica UM produto do ERP como anúncio na Shopee, pelo caminho real do step 11 —
+ou, para um kit virtual, como KIT NATIVO da Shopee (step 19).
 
   pnpm --filter @delfrance/shopee-app publicar:anuncio \\
     --integracao <integracaoId> --produto <produtoId> [opções]
@@ -140,8 +156,11 @@ Obrigatórios
 Opções
   --link <docId>      o vínculo prodshopee a usar, quando o produto tem mais de um
   --categoria <id>    category_id folha, só dígitos. Só é usado quando o vínculo
-                      NÃO tem categoria; nunca sobrescreve a armazenada.
-  --status UNLIST     publica pausado. O padrão é NORMAL (à venda).
+                      NÃO tem categoria; nunca sobrescreve a armazenada. Num kit
+                      nativo é ignorado: a categoria vem do componente principal.
+  --status UNLIST     publica pausado. O padrão é NORMAL (à venda). Num kit
+                      nativo vale na CRIAÇÃO (add_kit_item com «unlisted»)
+                      e é ignorado numa republicação.
   --dry-run           lê, resolve as fotos e PLANEJA, sem escrever. É o PADRÃO.
   --live              PUBLICA DE VERDADE na Shopee e grava os vínculos.
   --project <id>      sobrescreve FIREBASE_PROJECT_ID antes de abrir o admin.
@@ -150,18 +169,45 @@ Opções
   --help, -h          mostra esta ajuda e sai com 0, sem abrir o Firestore
                       nem chamar a Shopee.
 
+Kit nativo da Shopee (step 19)
+  --principal <id>    o componente PRINCIPAL do kit (o id do produto componente
+                      no ERP). Obrigatório ao CRIAR um kit cujos componentes vêm
+                      de mais de um anúncio da Shopee: ela copia dele categoria,
+                      atributos e marca, e não deixa trocar depois. Num kit que
+                      já existe ele só é COMPARADO com o principal lido da Shopee.
+  --recriar           cria um kit NOVO com a composição do ERP e só então exclui
+                      o kit antigo. Exige --link <o vínculo do kit antigo>.
+  --converter-em-kit  troca o anúncio COMUM deste produto por um kit nativo novo.
+                      O anúncio comum fica INTOCADO na Shopee e continua recebendo
+                      estoque e preço até ser excluído no Seller Centre (depois,
+                      rode reverificar:anuncio com o --link dele).
+  --recriar e --converter-em-kit não andam juntos.
+  Sem nenhuma das duas, o ERP escolhe sozinho: cria o kit quando o produto é
+  «É kit» + «É kit virtual» e não tem anúncio vivo nesta conta, e atualiza o kit
+  nativo que já existe.
+  ⚠️ NUNCA rode um comando de kit enquanto outra execução dele ainda estiver
+  viva: o add_kit_item não é idempotente, e duas execuções ao mesmo tempo podem
+  criar dois kits com o mesmo SKU. Se a resposta for INCERTO, espere e rode o
+  comando exatamente como ele foi impresso.
+
 O dry-run continua CHAMANDO a Shopee (get_item_limit, a árvore de categorias,
 get_channel_list e o upload das fotos) e lendo o Firestore — ele não ESCREVE no
 Firestore nem cria anúncio, e isso é estrutural: prepararPublicacao e
 planejarPublicacao não têm escritor nenhum no corpo. As fotos, essas SOBEM: o
 corpo do add_item precisa de image_id de verdade, e cada id fica no cache
 arquivos.externalIds, então o custo é pago UMA vez.
+Num kit nativo o dry-run lê o kit e os componentes, faz a busca de SKU
+duplicado (só ao criar, recriar ou converter) e sobe as fotos só quando o kit
+seria enviado; nunca chama add_kit_item, update_kit_item nem delete_item.
 Um plano BLOQUEADO (sem peso, sem foto, atributo obrigatório vazio) é uma
 RESPOSTA no DRY-RUN: ele é impresso na seção "problemas" e o comando sai com 0.
 Em --live a mesma recusa não é capturada — ela sai com 1, como qualquer outro
 erro.
-⚠️ Produto que é FILHO ou KIT é recusado ANTES de existir plano, dentro do
-prepararPublicacao: essa recusa LANÇA nos dois modos e sai com 1.
+⚠️ Antes de qualquer plano o ERP escolhe o caminho: anúncio comum ou kit nativo
+(criar, atualizar, recriar, converter). Um produto FILHO, ou uma opção de kit
+que não vale para este produto, é recusado ali, sem chamar a Shopee: essa
+recusa LANÇA nos dois modos e sai com 1. Um kit INCERTO no --live também sai
+com 1: nada foi gravado, e o comando a repetir é impresso.
 Ver apps/shopee/scripts/README.md.
 `.trim();
 
@@ -179,6 +225,16 @@ export interface ArgsPublicarAnuncio {
   readonly json: boolean;
   /** `null` keeps whatever the environment resolves. */
   readonly projectId: string | null;
+  /**
+   * `--principal <produtoId>` (step 19, L1): the kit's main component as an ERP
+   * component produto id. The kit arms resolve it to ONE Shopee address; the
+   * item arm refuses it (`opcao-de-kit-em-anuncio-comum`). `null` = not sent.
+   */
+  readonly principal: string | null;
+  /** `--recriar` (L4(4)): ALWAYS with `--link` — the parser refuses it alone. */
+  readonly recriar: boolean;
+  /** `--converter-em-kit` (L8). Never together with `--recriar`. */
+  readonly converterEmKit: boolean;
 }
 
 export type ComandoPublicarAnuncio =
@@ -200,6 +256,22 @@ export const MSG_CATEGORIA_NAO_NUMERICA =
 export const MSG_STATUS_INVALIDO = `--status aceita apenas ${Object.values(
   SHOPEE_ITEM_STATUS_WRITABLE,
 ).join(' e ')}.`;
+
+/**
+ * `--recriar` and `--converter-em-kit` together — ONE kit action per run (R-a),
+ * the CLI twin of the route's 400.
+ */
+export const MSG_CLI_RECRIAR_E_CONVERTER =
+  '--recriar e --converter-em-kit não andam juntos: escolha UMA ação de kit por execução.';
+
+/**
+ * `--recriar` without `--link` (S1F-02). A recriar always NAMES the kit it
+ * replaces, so re-running it is literally the same command — and a resume after
+ * a crash can never be aimed at whichever kit the dispatcher would pick.
+ */
+export const MSG_CLI_RECRIAR_SEM_LINK =
+  '--recriar exige --link <vínculo do kit antigo>: a recriação sempre nomeia o kit que ela ' +
+  'substitui, para que repetir o comando seja repetir exatamente o mesmo comando.';
 
 function valorDe(nome: string, inline: string | undefined, proximo: string | undefined): string {
   const bruto = (inline ?? proximo)?.trim();
@@ -304,9 +376,12 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
   let categoriaBruta: string | undefined;
   let statusBruto: string | undefined;
   let projectId: string | undefined;
+  let principal: string | undefined;
   let live = false;
   let dryRunExplicito = false;
   let json = false;
+  let recriar = false;
+  let converterEmKit = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? '';
@@ -344,6 +419,18 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
         projectId = valorDe('project', inline, argv[i + 1]);
         if (inline === undefined) i += 1;
         break;
+      case '--principal':
+        // A produto doc id, by the SAME rule as `--produto`: the kit arms read
+        // `produtos/{principal}` to resolve it.
+        principal = docIdDe('principal', inline, argv[i + 1]);
+        if (inline === undefined) i += 1;
+        break;
+      case '--recriar':
+        recriar = true;
+        break;
+      case '--converter-em-kit':
+        converterEmKit = true;
+        break;
       case '--live':
         live = true;
         break;
@@ -360,6 +447,15 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
 
   if (live && dryRunExplicito) {
     throw new ArgumentoInvalidoError('--live e --dry-run são contraditórios; escolha um.');
+  }
+  // ⚠️ Both kit actions are refused HERE, before any read — the route's 400s
+  // (`MSG_OPCOES_DE_KIT_EXCLUSIVAS` / `MSG_RECRIAR_SEM_LINK` in
+  // `corpoPublicacao.ts`), spelled with this command's flags. A recriar that
+  // reached the dispatcher without `--link` would target whichever kit it
+  // picks, and re-running it would no longer be the same command (S1F-02).
+  if (recriar && converterEmKit) throw new ArgumentoInvalidoError(MSG_CLI_RECRIAR_E_CONVERTER);
+  if (recriar && linkDocId === undefined) {
+    throw new ArgumentoInvalidoError(MSG_CLI_RECRIAR_SEM_LINK);
   }
   if (integracaoId == null) {
     throw new ArgumentoInvalidoError('--integracao <integracaoId> é obrigatório.');
@@ -378,6 +474,9 @@ export function lerArgsPublicar(argv: readonly string[]): ComandoPublicarAnuncio
       live,
       json,
       projectId: projectId ?? null,
+      principal: principal ?? null,
+      recriar,
+      converterEmKit,
     },
   };
 }
@@ -1352,22 +1451,709 @@ export function renderizarResultado(res: ResultadoPublicacao): string[] {
 }
 
 /* -------------------------------------------------------------------------- */
+/*                     the native kit (step 19, #1527, PR 7)                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the kit summaries need beyond the run's own data.
+ *
+ * ⚠️ Only the OPERATOR's inputs — the `--integracao` id and the `--project`
+ * override — plus the RESOLVED Shopee environment. No shop id, partner id or
+ * token is an input of this module, so none can reach a printed command.
+ */
+export interface OpcoesDoKitCli {
+  readonly integracaoId: string;
+  /** `--project`, repeated in every command the summary prints; `null` when not passed. */
+  readonly projectId: string | null;
+  /**
+   * `ctx.config.sandbox`: the SG sandbox prices in SGD inside a field this ERP
+   * fills in BRL (R-g), and both kit summaries say so.
+   */
+  readonly sandbox: boolean;
+}
+
+/** The sandbox line — ONE spelling for both kit summaries. */
+export const NOTA_SANDBOX_SG_KIT = 'sandbox SG: preço em SGD num campo BRL';
+
+/** The invocation every printed command carries — the one the usage text documents. */
+const PREFIXO_PNPM = 'pnpm --filter @delfrance/shopee-app';
+
+/** `--project` rides every printed command, so a re-run targets the SAME project. */
+function comProjeto(comando: string, projectId: string | null): string {
+  return projectId === null ? comando : `${comando} --project ${projectId}`;
+}
+
+/** One component row, planned or sent: Shopee ids and a quantity — never a name. */
+export interface ResumoComponenteKit {
+  readonly itemId: number;
+  /** `null` = a plain component: the wire omits it and Shopee reads back a hidden id. */
+  readonly modelId: number | null;
+  readonly quantidade: number;
+  readonly principal: boolean;
+}
+
+/** One planned kit model: the ERP child it carries and that child's projection. */
+export interface ResumoModeloKitPlanejado {
+  readonly filhoId: string;
+  readonly tierIndex: number;
+  readonly componentes: readonly ResumoComponenteKit[];
+  /** `false` ⇔ some component did not resolve — a refusal or a warning says which. */
+  readonly projecaoCompleta: boolean;
+}
+
+/** One model of the `add_kit_item` body, rebuilt by NAME. */
+export interface ResumoModeloKitEnviado {
+  readonly tierIndex: number;
+  readonly modelSku: string | null;
+  readonly originalPrice: number;
+  readonly componentes: readonly ResumoComponenteKit[];
+}
+
+/**
+ * The `add_kit_item` body a create would send, by NAME — the same allow-list as
+ * step 11's: the title printed, the description COUNTED, the pictures COUNTED.
+ */
+export interface ResumoCorpoKit {
+  readonly itemName: string;
+  readonly itemNameChars: number;
+  readonly descricaoChars: number;
+  readonly imagens: number;
+  readonly itemSku: string | null;
+  readonly weight: number;
+  readonly dimension: {
+    readonly alturaCm: number;
+    readonly larguraCm: number;
+    readonly comprimentoCm: number;
+  } | null;
+  /** The `logistic_id`s sent. */
+  readonly canais: readonly number[];
+  readonly tier: { readonly nome: string | null; readonly opcoes: readonly string[] };
+  readonly modelos: readonly ResumoModeloKitEnviado[];
+}
+
+/** One kit warning. `mensagem` is a MECHANISM sentence with ids only (`AvisoKit`'s contract). */
+export interface ResumoAvisoKit {
+  readonly codigo: CodigoAvisoKit;
+  readonly produtoId: string | null;
+  readonly mensagem: string;
+}
+
+/** What a kit DRY RUN read and decided — nothing authored is carried, nothing was sent. */
+export interface ResumoEnsaioDeKit {
+  readonly arma: ArmaKit;
+  readonly produtoId: string;
+  /** atualizar/recriar: the target kit link; converter: the ordinary antecessor; criar: `null`. */
+  readonly alvoLinkDocId: string | null;
+  /** The target's LIVE `item_status`; `null` = not read (criar, converter, a removed target). */
+  readonly statusDoAlvo: string | null;
+  /** K's SKU as `item_sku` would carry it; `null` = empty or padded (phase A says why). */
+  readonly sku: string | null;
+  readonly familiaDeUm: boolean;
+  readonly variacoes: number;
+  /** The ONE variation axis' name (n ≥ 2); `null` for a família de um. */
+  readonly eixo: string | null;
+  readonly principal: { readonly itemId: number; readonly modelId: number | null } | null;
+  readonly principalPedido: { readonly itemId: number; readonly modelId: number | null } | null;
+  /** `get_kit_item_limit`: `null` = not read (no principal category known). */
+  readonly limitesKit: 'servido' | 'indisponivel' | null;
+  /** The L6 duplicate-SKU scan — create arms ONLY; `null` on `kit-atualizar` (L10(4)). */
+  readonly busca: {
+    readonly completo: boolean;
+    readonly paginas: number;
+    readonly chamadas: number;
+    readonly achados: readonly {
+      readonly itemId: number;
+      readonly produtoId: string | null;
+      readonly linkDocId: string | null;
+    }[];
+  } | null;
+  readonly kitNovo:
+    | { readonly acao: 'criar' }
+    | { readonly acao: 'completar'; readonly linkDocId: string; readonly itemId: number }
+    | { readonly acao: 'recusar' }
+    | null;
+  /** Non-null ONLY when a create would really call `add_kit_item`. */
+  readonly corpo: ResumoCorpoKit | null;
+  readonly modelos: readonly ResumoModeloKitPlanejado[];
+  /** `kit-atualizar` only: the item-level content the `update_kit_item` would resend. */
+  readonly conteudo: {
+    readonly itemName: string | null;
+    readonly descricaoChars: number | null;
+    /** `null` = the photo pass was skipped — never "no picture". */
+    readonly imagens: number | null;
+    readonly weight: number | null;
+    readonly canais: number;
+  } | null;
+  /** `null` = the photo pass did not run: a refused or a completing run uploads nothing. */
+  readonly fotos: {
+    readonly consideradas: number;
+    readonly reutilizadas: number;
+    readonly enviadas: number;
+    readonly descartadasPeloLimite: number;
+    readonly falhas: readonly ResumoFalhaDeFotoShopee[];
+  } | null;
+  readonly avisos: readonly ResumoAvisoKit[];
+  /** NON-EMPTY = nothing would be sent; the dry run still exits 0. */
+  readonly problemas: readonly ProblemaPublicacao[];
+  readonly sandbox: boolean;
+}
+
+function componenteDoResumo(c: {
+  readonly component_item_id: number;
+  readonly component_model_id?: number;
+  readonly quantity: number;
+  readonly main_component?: boolean;
+}): ResumoComponenteKit {
+  return {
+    itemId: c.component_item_id,
+    modelId: c.component_model_id ?? null,
+    quantidade: c.quantity,
+    principal: c.main_component === true,
+  };
+}
+
+function enderecoDoResumo(
+  e: { readonly itemId: number; readonly modelId: number | null } | null,
+): { readonly itemId: number; readonly modelId: number | null } | null {
+  return e === null ? null : { itemId: e.itemId, modelId: e.modelId };
+}
+
+function avisoDoResumo(a: ResumoAvisoKit): ResumoAvisoKit {
+  return { codigo: a.codigo, produtoId: a.produtoId, mensagem: a.mensagem };
+}
+
+/**
+ * A kit dry run, reduced to the allow-list — the kit twin of
+ * {@link resumoDaPublicacao}. Every field is named; nothing is spread, so the
+ * description, the `image_id`s and the option images (none are sent, but a
+ * future body might carry them) have no field to travel in.
+ */
+export function resumoDoEnsaioDeKit(
+  ensaio: EnsaioDeKit,
+  opcoes: Pick<OpcoesDoKitCli, 'sandbox'>,
+): ResumoEnsaioDeKit {
+  const { contexto, plano } = ensaio;
+  const corpo = plano.corpo;
+  const fotos = contexto.fotos;
+  const conteudo = plano.conteudo;
+  let kitNovo: ResumoEnsaioDeKit['kitNovo'] = null;
+  if (plano.kitNovo !== null) {
+    kitNovo =
+      plano.kitNovo.acao === 'completar'
+        ? { acao: 'completar', linkDocId: plano.kitNovo.linkDocId, itemId: plano.kitNovo.itemId }
+        : { acao: plano.kitNovo.acao };
+  }
+  let corpoResumido: ResumoCorpoKit | null = null;
+  if (corpo !== null) {
+    const s = corpo.item_setting;
+    const [tier] = s.tier_variation_list;
+    corpoResumido = {
+      itemName: s.item_name,
+      itemNameChars: s.item_name.length,
+      // ⚠️ The LENGTH and nothing else — the text is right there in `s.description`.
+      descricaoChars: s.description.length,
+      imagens: s.images.image_id_list.length,
+      itemSku: s.item_sku ?? null,
+      weight: s.weight,
+      dimension:
+        s.dimension === undefined
+          ? null
+          : {
+              alturaCm: s.dimension.package_height,
+              larguraCm: s.dimension.package_width,
+              comprimentoCm: s.dimension.package_length,
+            },
+      canais: s.logistic_info.map((l) => l.logistic_id),
+      // The option TEXTS (the ERP's own variante names, as step 11 prints its
+      // tier options) — never an option image id.
+      tier: { nome: tier.name ?? null, opcoes: tier.option_list.map((o) => o.option) },
+      modelos: s.model_list.map((m) => ({
+        tierIndex: m.tier_index[0],
+        modelSku: m.model_sku ?? null,
+        originalPrice: m.original_price,
+        componentes: m.component_list.map(componenteDoResumo),
+      })),
+    };
+  }
+  return {
+    arma: contexto.arma.arma,
+    produtoId: contexto.produto.id,
+    alvoLinkDocId: contexto.alvo?.linkDocId ?? null,
+    statusDoAlvo: contexto.vivo?.status ?? null,
+    sku: plano.sku,
+    familiaDeUm: contexto.familiaDeUm,
+    variacoes: contexto.filhos.length,
+    eixo: contexto.grupo?.nome ?? null,
+    principal: enderecoDoResumo(plano.principal),
+    principalPedido: enderecoDoResumo(contexto.principalPedido),
+    limitesKit: contexto.limites?.estado ?? null,
+    busca:
+      contexto.busca === null
+        ? null
+        : {
+            completo: contexto.busca.completo,
+            paginas: contexto.busca.paginas,
+            chamadas: contexto.busca.chamadas,
+            achados: contexto.busca.achados.map((a) => ({
+              itemId: a.itemId,
+              produtoId: a.vinculo?.produtoId ?? null,
+              linkDocId: a.vinculo?.linkDocId ?? null,
+            })),
+          },
+    kitNovo,
+    corpo: corpoResumido,
+    modelos: plano.modelos.map((m) => ({
+      filhoId: m.filhoId,
+      tierIndex: m.tierIndex,
+      componentes: m.linhas.map(componenteDoResumo),
+      projecaoCompleta: m.projecaoCompleta,
+    })),
+    conteudo:
+      conteudo === undefined
+        ? null
+        : {
+            itemName: conteudo.itemName,
+            descricaoChars: conteudo.description === null ? null : conteudo.description.length,
+            imagens: conteudo.imageIds === null ? null : conteudo.imageIds.length,
+            weight: conteudo.weight,
+            canais: conteudo.logisticInfo.length,
+          },
+    fotos:
+      fotos === null
+        ? null
+        : {
+            consideradas: fotos.resumo.consideradas,
+            reutilizadas: fotos.resumo.reutilizadas,
+            enviadas: fotos.resumo.enviadas,
+            descartadasPeloLimite: fotos.resumo.descartadasPeloLimite,
+            // `arquivoId` + the closed `motivo` — NEVER the failure's `mensagem`.
+            falhas: fotos.item.falhas.map((f) => ({ arquivoId: f.arquivoId, motivo: f.motivo })),
+          },
+    avisos: plano.avisos.map(avisoDoResumo),
+    problemas: plano.problemas,
+    sandbox: opcoes.sandbox,
+  };
+}
+
+function endereco(e: { readonly itemId: number; readonly modelId: number | null } | null): string {
+  if (e === null) return '—';
+  return e.modelId === null
+    ? `item ${String(e.itemId)}`
+    : `item ${String(e.itemId)} modelo ${String(e.modelId)}`;
+}
+
+function linhaDeComponentes(componentes: readonly ResumoComponenteKit[]): string {
+  return componentes
+    .map(
+      (c) =>
+        `${String(c.itemId)}${c.modelId === null ? '' : `/${String(c.modelId)}`} ×${String(c.quantidade)}${
+          c.principal ? ' (principal)' : ''
+        }`,
+    )
+    .join(', ');
+}
+
+function renderAvisosKit(avisos: readonly ResumoAvisoKit[]): string[] {
+  const linhas = [`### avisos (${String(avisos.length)})`];
+  if (avisos.length === 0) {
+    linhas.push('  (nenhum)');
+    return linhas;
+  }
+  for (const a of avisos) {
+    linhas.push(`  ${a.codigo.padEnd(30)} ${txt(a.produtoId).padEnd(16)} ${a.mensagem}`);
+  }
+  return linhas;
+}
+
+/** A kit dry run, as terminal lines — what `--live` would do, and why it would not. */
+export function renderResumoEnsaioDeKit(r: ResumoEnsaioDeKit): string[] {
+  const linhas: string[] = [];
+  linhas.push(`## O que um kit nativo faria (produto ${r.produtoId}, arma ${r.arma})`);
+  linhas.push(
+    `  vínculo alvo ............ ${txt(r.alvoLinkDocId)}${
+      r.statusDoAlvo === null ? '' : `   item_status vivo=${r.statusDoAlvo}`
+    }`,
+  );
+  linhas.push(`  item_sku ................ ${r.sku ?? '— (vazio ou com espaços nas pontas)'}`);
+  linhas.push(
+    `  variações ............... ${String(r.variacoes)}${
+      r.familiaDeUm ? ' (família de um)' : r.eixo === null ? '' : ` no eixo "${r.eixo}"`
+    }`,
+  );
+  linhas.push(
+    `  componente principal .... ${endereco(r.principal)}${
+      r.principalPedido === null ? '' : `   (--principal resolvido: ${endereco(r.principalPedido)})`
+    }`,
+  );
+  linhas.push(
+    `  limites de kit .......... ${
+      r.limitesKit === null
+        ? '— (nenhuma categoria de principal conhecida)'
+        : r.limitesKit === 'servido'
+          ? 'servidos pela Shopee'
+          : 'indisponíveis neste host (sem faixa local)'
+    }`,
+  );
+  if (r.busca === null) {
+    linhas.push(
+      '  busca de SKU duplicado .. não roda (só ao criar, recriar ou converter — L10(4))',
+    );
+  } else {
+    const achados =
+      r.busca.achados.length === 0
+        ? 'nenhum kit com este SKU'
+        : r.busca.achados
+            .map(
+              (a) =>
+                `${String(a.itemId)}${
+                  a.produtoId === null
+                    ? ' (sem vínculo)'
+                    : ` (vinculado ao produto ${a.produtoId}, vínculo ${txt(a.linkDocId)})`
+                }`,
+            )
+            .join(', ');
+    linhas.push(
+      `  busca de SKU duplicado .. ${r.busca.completo ? 'completa' : 'INCOMPLETA'} — ${String(r.busca.paginas)} página(s), ${String(r.busca.chamadas)} chamada(s) — ${achados}`,
+    );
+  }
+  if (r.kitNovo !== null) {
+    linhas.push(
+      `  kit novo ................ ${
+        r.kitNovo.acao === 'criar'
+          ? 'CRIAR (add_kit_item)'
+          : r.kitNovo.acao === 'completar'
+            ? `COMPLETAR o kit ${String(r.kitNovo.itemId)} já vinculado (vínculo ${r.kitNovo.linkDocId}) — nada é criado`
+            : 'RECUSADO (veja os problemas)'
+      }`,
+    );
+  }
+  if (r.sandbox) linhas.push(`  ⚠️ ${NOTA_SANDBOX_SG_KIT}`);
+
+  if (r.corpo !== null) {
+    const c = r.corpo;
+    linhas.push('');
+    linhas.push('### add_kit_item (o que o --live enviaria)');
+    linhas.push(`  item_name ............... "${c.itemName}" (${String(c.itemNameChars)} ch)`);
+    linhas.push(
+      `  descrição ............... «REDIGIDA — ${String(c.descricaoChars)} caractere(s)»`,
+    );
+    linhas.push(
+      `  imagens ................. ${String(c.imagens)} image_id no corpo (os ids são omitidos de propósito)`,
+    );
+    linhas.push(`  item_sku ................ ${txt(c.itemSku)}`);
+    linhas.push(`  weight .................. ${String(c.weight)} kg`);
+    linhas.push(
+      `  dimension ............... ${
+        c.dimension === null
+          ? '—'
+          : `${String(c.dimension.alturaCm)}×${String(c.dimension.larguraCm)}×${String(c.dimension.comprimentoCm)} cm (A×L×C)`
+      }`,
+    );
+    linhas.push(`  logistic_info ........... ${lista(c.canais.map(String))}`);
+    linhas.push(
+      `  tier .................... ${c.tier.nome === null ? '—' : `"${c.tier.nome}"`}: ${c.tier.opcoes.map((o) => `"${o}"`).join(', ')}`,
+    );
+    linhas.push('  tier_index  model_sku            preço      componentes (item/modelo ×qtd)');
+    for (const m of c.modelos) {
+      linhas.push(
+        `  ${`[${String(m.tierIndex)}]`.padEnd(11)} ${txt(m.modelSku).padEnd(20)} ${String(m.originalPrice).padEnd(10)} ${linhaDeComponentes(m.componentes)}`,
+      );
+    }
+  } else {
+    linhas.push('');
+    linhas.push(`### modelos planejados (${String(r.modelos.length)}) — filho → componentes`);
+    for (const m of r.modelos) {
+      linhas.push(
+        `  [${String(m.tierIndex)}] ${m.filhoId.padEnd(20)} ${linhaDeComponentes(m.componentes)}${
+          m.projecaoCompleta ? '' : '  (composição INCOMPLETA)'
+        }`,
+      );
+    }
+  }
+
+  if (r.conteudo !== null) {
+    const c = r.conteudo;
+    linhas.push('');
+    linhas.push('### update_kit_item (o conteúdo que o --live reenviaria)');
+    linhas.push(`  item_name ............... ${c.itemName === null ? '—' : `"${c.itemName}"`}`);
+    linhas.push(
+      `  descrição ............... ${c.descricaoChars === null ? '—' : `«REDIGIDA — ${String(c.descricaoChars)} caractere(s)»`}`,
+    );
+    linhas.push(
+      `  imagens ................. ${c.imagens === null ? '— (fotos não resolvidas)' : `${String(c.imagens)} image_id`}`,
+    );
+    linhas.push(
+      `  weight .................. ${c.weight === null ? '—' : `${String(c.weight)} kg`}`,
+    );
+    linhas.push(`  logistic_info ........... ${String(c.canais)} canal(is)`);
+    linhas.push('  (os modelos vão com a composição VIVA da Shopee — a do ERP nunca é reenviada)');
+  }
+
+  linhas.push('');
+  linhas.push('### fotos');
+  if (r.fotos === null) {
+    linhas.push('  não resolvidas — nada seria enviado, então nenhuma foto subiu');
+  } else {
+    linhas.push(
+      `  ${String(r.fotos.consideradas)} consideradas · ${String(r.fotos.reutilizadas)} reaproveitadas · ${String(r.fotos.enviadas)} enviadas · ${String(r.fotos.descartadasPeloLimite)} fora do limite`,
+    );
+    for (const f of r.fotos.falhas) linhas.push(`  falha: arquivo ${f.arquivoId} — ${f.motivo}`);
+  }
+
+  linhas.push('');
+  for (const linha of renderAvisosKit(r.avisos)) linhas.push(linha);
+
+  linhas.push('');
+  if (r.problemas.length === 0) {
+    linhas.push('### problemas: NENHUM — este kit é publicável');
+  } else {
+    linhas.push(`### problemas (${String(r.problemas.length)}) — NADA seria enviado`);
+    for (const p of r.problemas) {
+      linhas.push(`  ${txt(p.campo).padEnd(18)} ${p.motivo.padEnd(28)} ${p.mensagem}`);
+    }
+  }
+  return linhas;
+}
+
+/** `renderizarEnsaioDeKit` — a kit dry run, straight to the lines a terminal shows. */
+export function renderizarEnsaioDeKit(
+  ensaio: EnsaioDeKit,
+  opcoes: Pick<OpcoesDoKitCli, 'sandbox'>,
+): string[] {
+  return renderResumoEnsaioDeKit(resumoDoEnsaioDeKit(ensaio, opcoes));
+}
+
+/**
+ * What a kit `--live` run reported, by NAME — {@link ResultadoPublicacaoKit}
+ * plus the three things only THIS surface can add: the `incerto` sentence, the
+ * EXACT command to re-run (the result's `comando` + this CLI's own flags), and
+ * the `reverificar:anuncio` command for an old listing that is still live.
+ */
+export interface ResumoResultadoKit {
+  readonly arma: ArmaKit;
+  readonly desfecho: DesfechoKit;
+  readonly produtoId: string;
+  readonly itemId: number | null;
+  readonly linkDocId: string | null;
+  readonly estadoAnuncio: string | null;
+  readonly itemStatus: string | null;
+  readonly kitNativo: boolean | null;
+  readonly modelos: {
+    readonly vinculados: number;
+    readonly anexados: number;
+    readonly semFilho: number;
+  };
+  readonly antecessor: {
+    readonly itemId: number;
+    readonly linkDocId: string;
+    readonly excluido: boolean;
+    readonly substituido: boolean;
+  } | null;
+  readonly avisos: readonly ResumoAvisoKit[];
+  readonly avisosResolvidos: number;
+  readonly chamadasShopee: number;
+  /**
+   * Shopee's refusal on an `incerto` create. ⚠️ `fraseShopee` is provider prose,
+   * carried for the same reason step 11's `avisoShopee` is: the operator's only
+   * channel for it — the publisher's log line carries ids only.
+   */
+  readonly recusa: {
+    readonly codigo: string;
+    readonly fraseShopee: string | null;
+    readonly motivo: string | null;
+  } | null;
+  /** `MENSAGEM_KIT_INCERTO` on `incerto`, else `null`. */
+  readonly mensagemIncerto: string | null;
+  /**
+   * The EXACT command to re-run on `incerto` (S1F-03): the result's
+   * `comandoDeRetomada` — which already names the arm's flags, the `--link` and
+   * the `--principal` — prefixed with the pnpm invocation and followed by
+   * `--project` (when passed) and `--live`. `null` otherwise.
+   */
+  readonly comandoDeRetomada: string | null;
+  /**
+   * After a converter, or a recriar whose `delete_item` did not take, the OLD
+   * listing is still live on Shopee: delete it in Seller Centre, then this
+   * command is how the ERP learns it is gone (L8). `null` otherwise.
+   */
+  readonly comandoReverificar: string | null;
+  readonly sandbox: boolean;
+}
+
+/** `--json --live` for a kit: the SAME allow-list, as an object. One builder, no second copy. */
+export function resumoDoResultadoKit(
+  res: ResultadoPublicacaoKit,
+  opcoes: OpcoesDoKitCli,
+): ResumoResultadoKit {
+  const incerto = res.desfecho === 'incerto';
+  const antecessorVivo =
+    res.antecessor !== null && res.antecessor.substituido && !res.antecessor.excluido;
+  return {
+    arma: res.arma,
+    desfecho: res.desfecho,
+    produtoId: res.produtoId,
+    itemId: res.itemId,
+    linkDocId: res.linkDocId,
+    estadoAnuncio: res.estadoAnuncio,
+    itemStatus: res.itemStatus,
+    kitNativo: res.kitNativo,
+    modelos: {
+      vinculados: res.modelos.vinculados,
+      anexados: res.modelos.anexados,
+      semFilho: res.modelos.semFilho,
+    },
+    antecessor:
+      res.antecessor === null
+        ? null
+        : {
+            itemId: res.antecessor.itemId,
+            linkDocId: res.antecessor.linkDocId,
+            excluido: res.antecessor.excluido,
+            substituido: res.antecessor.substituido,
+          },
+    avisos: res.avisos.map(avisoDoResumo),
+    avisosResolvidos: res.avisosResolvidos,
+    chamadasShopee: res.chamadasShopee,
+    recusa:
+      res.recusa === null
+        ? null
+        : {
+            codigo: res.recusa.codigo,
+            fraseShopee: res.recusa.fraseShopee,
+            motivo: res.recusa.motivo,
+          },
+    mensagemIncerto: incerto ? MENSAGEM_KIT_INCERTO : null,
+    comandoDeRetomada:
+      incerto && res.comando !== null
+        ? `${PREFIXO_PNPM} ${comProjeto(res.comando, opcoes.projectId)} --live`
+        : null,
+    comandoReverificar:
+      antecessorVivo && res.antecessor !== null
+        ? comProjeto(
+            `${PREFIXO_PNPM} reverificar:anuncio --integracao ${opcoes.integracaoId} --produto ${res.produtoId} --link ${res.antecessor.linkDocId}`,
+            opcoes.projectId,
+          )
+        : null,
+    sandbox: opcoes.sandbox,
+  };
+}
+
+/** The kit `--live` summary as terminal lines. */
+export function renderResumoResultadoKit(r: ResumoResultadoKit): string[] {
+  const linhas: string[] = [
+    `## O que o kit nativo fez na Shopee e no ERP (arma ${r.arma}, desfecho ${r.desfecho})`,
+  ];
+  linhas.push(`  produtoId ............... ${r.produtoId}`);
+  linhas.push(
+    `  item_id ................. ${r.itemId === null ? '— (incerto)' : String(r.itemId)}   vínculo=${txt(r.linkDocId)}`,
+  );
+  linhas.push(
+    `  leitura de volta ........ estadoAnuncio=${txt(r.estadoAnuncio)}  item_status=${txt(r.itemStatus)}  kitNativo=${
+      r.kitNativo === null ? '—' : sim(r.kitNativo)
+    }`,
+  );
+  linhas.push(
+    `  modelos ................. ${String(r.modelos.vinculados)} vinculados · ${String(r.modelos.anexados)} anexados · ${String(r.modelos.semFilho)} sem filho`,
+  );
+  if (r.antecessor !== null) {
+    const destino = r.antecessor.excluido
+      ? 'EXCLUÍDO na Shopee'
+      : r.antecessor.substituido
+        ? 'SUBSTITUÍDO — continua vivo na Shopee'
+        : 'INTOCADO';
+    linhas.push(
+      `  anúncio antigo .......... item ${String(r.antecessor.itemId)} (vínculo ${r.antecessor.linkDocId}): ${destino}`,
+    );
+  }
+  linhas.push(`  aviso de composição ..... ${String(r.avisosResolvidos)} resolvido(s)`);
+  linhas.push(`  chamadas à Shopee ....... ${String(r.chamadasShopee)}`);
+  if (r.sandbox) linhas.push(`  ⚠️ ${NOTA_SANDBOX_SG_KIT}`);
+
+  linhas.push('');
+  for (const linha of renderAvisosKit(r.avisos)) linhas.push(linha);
+
+  if (r.mensagemIncerto !== null) {
+    linhas.push('');
+    linhas.push('### ⚠️ INCERTO — nada foi gravado no ERP');
+    if (r.recusa !== null) {
+      linhas.push(
+        `  resposta da Shopee ...... ${r.recusa.codigo}${r.recusa.motivo === null ? '' : ` (${r.recusa.motivo})`}${
+          r.recusa.fraseShopee === null ? '' : ` — "${r.recusa.fraseShopee}"`
+        }`,
+      );
+    }
+    linhas.push(`  ${r.mensagemIncerto}`);
+    if (r.comandoDeRetomada !== null) {
+      linhas.push('  o comando, exatamente:');
+      linhas.push(`    ${r.comandoDeRetomada}`);
+    }
+  }
+  if (r.comandoReverificar !== null) {
+    linhas.push('');
+    linhas.push('### o anúncio antigo continua vivo na Shopee');
+    linhas.push(
+      '  ele continua vendendo e recebendo estoque e preço; exclua-o no Seller Centre e depois rode:',
+    );
+    linhas.push(`    ${r.comandoReverificar}`);
+  }
+  return linhas;
+}
+
+/** A kit `--live` run, straight to the terminal lines. */
+export function renderizarResultadoKit(
+  res: ResultadoPublicacaoKit,
+  opcoes: OpcoesDoKitCli,
+): string[] {
+  return renderResumoResultadoKit(resumoDoResultadoKit(res, opcoes));
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                   errors                                    */
 /* -------------------------------------------------------------------------- */
 
-/** The line a pre-write refusal gets: it precedes EVERY write, on both surfaces. */
-const LINHA_NADA_ENVIADO =
-  '  Nada foi enviado à Shopee e nenhum vínculo foi gravado: a recusa é anterior ' +
-  'à primeira escrita.';
+/**
+ * The closing a {@link ShopeePublishBlockedError} gets — ONE line per mode,
+ * because the error cannot say which side of a write it was thrown from (R3-02).
+ *
+ * - **The dry run never writes before it refuses.** Its refusals are the
+ *   dispatcher's, a kit create arm's phase A and `prepararPublicacao`'s, all
+ *   thrown before the first Shopee write and before the pictures go up.
+ * - **`--live` can refuse AFTER writes.** A kit arm first writes into the ERP
+ *   what it read from Shopee: `republicarKit` the deleted target's `removido`,
+ *   and an interrupted create's write-back #2 plus its `variashopee` rows;
+ *   `garantirKitNovo` the `removido` of a deleted kit link of ours; `recriarKit`'s
+ *   "nothing to recreate" refusal the aviso re-evaluation. Step 11's model leg
+ *   (`modelosPublicacao.ts`) refuses on the UPDATE path after `update_item` and
+ *   write-back #1 have landed.
+ *
+ * The class carries no "earlier writes" flag, and its `motivo` does not tell the
+ * sites apart (a carried content miss such as `sem-peso` reaches a pre-write and
+ * a post-write throw alike). So the describer states what each MODE guarantees
+ * and leaves the mode to the operator who ran it. It used to close every refusal
+ * with "Nada foi enviado à Shopee e nenhum vínculo foi gravado", which a `--live`
+ * kit refusal made false.
+ */
+const LINHAS_DO_BLOQUEIO = [
+  '  No --dry-run a recusa é anterior a qualquer escrita: nada foi enviado à Shopee e nenhum ' +
+    'vínculo foi gravado.',
+  '  ⚠️ No --live ela pode vir DEPOIS de escritas: um kit nativo grava antes no ERP o que leu ' +
+    'da Shopee (o vínculo, as variações do kit, o aviso de composição), e a atualização de um ' +
+    'anúncio comum pode já ter enviado o update_item. Releia com --dry-run antes de repetir.',
+] as const;
 
 /**
  * A produto the publisher REFUSES — an answer, never a failure.
  *
  * ⚠️ **This describer is only ever reached through the ERROR path, so it exits
- * 1 — in BOTH modes.** The refusals it renders are the ones
- * `prepararPublicacao` THROWS before a plan exists (`produto-e-filho`,
- * `produto-e-kit`) and, under `--live`, the applier's own pre-write throw. The
- * exit-0 answer is a different object: a blocked PLAN, whose refusals ride
+ * 1 — in BOTH modes.** The refusals it renders are the ones THROWN before a
+ * plan exists — since step 19 above all the dispatcher's
+ * (`escolherArmaDePublicacao`: `produto-e-filho`, `vinculos-ambiguos`,
+ * `vinculo-substituido`, `kit-virtual-sem-kit`, the converter refusals,
+ * `opcao-de-kit-em-anuncio-comum`, all with ZERO Shopee calls), a kit create
+ * arm's phase-A refusal (Firestore-only, before the first Shopee read) and
+ * `prepararPublicacao`'s defensive `produto-e-kit` — and, under `--live`, the
+ * appliers' own throws, which can FOLLOW writes ({@link LINHAS_DO_BLOQUEIO}).
+ * The exit-0 answer is a different object: a blocked PLAN, whose refusals ride
  * {@link ResumoPublicacaoShopee.problemas} and are printed by
  * {@link renderResumoPublicacao}. Same vocabulary, two surfaces, two exit codes
  * — and the difference is whether a plan was reached, not how bad the refusal
@@ -1387,13 +2173,13 @@ export function descreverBloqueioPublicacao(err: ShopeePublishBlockedError): str
   for (const p of err.problemas) {
     linhas.push(`    ${txt(p.campo).padEnd(18)} ${p.motivo.padEnd(28)} ${p.mensagem}`);
   }
-  linhas.push(LINHA_NADA_ENVIADO);
+  linhas.push(...LINHAS_DO_BLOQUEIO);
   return linhas;
 }
 
 /**
  * A Shopee refusal AFTER the first write — the other half of the pair, and the
- * reason its closing line is not {@link LINHA_NADA_ENVIADO}.
+ * reason its closing line is not {@link LINHAS_DO_BLOQUEIO}.
  *
  * `etapa` is not a reason: it is the answer to "what exists on the channel now".
  * A rejection at `init_tier_variation` leaves an `UNLIST` item with no models;
@@ -1404,10 +2190,17 @@ export function descreverBloqueioPublicacao(err: ShopeePublishBlockedError): str
  * photo that never reached Shopee.
  */
 export function descreverRecusaPublicacao(err: ShopeePublishRejectedError): string[] {
+  // Step 19: a kit create Shopee refused for good (`nao-criado`) is THIS class
+  // at etapa `add_kit_item` — the kit was not created, so the line names that
+  // call rather than step 11's `add_item`.
+  const semItem =
+    err.etapa === ETAPA_PUBLICACAO.addKitItem
+      ? 'nenhum (o add_kit_item foi recusado: a Shopee não criou o kit)'
+      : 'nenhum (o add_item foi recusado)';
   const linhas = [
     cabecalhoDaRecusa(err.etapa, err.shopeeCode, err.recusadaPelaShopee),
     `  produto ................. ${err.produtoId}`,
-    `  item_id ................. ${err.itemId === null ? 'nenhum (o add_item foi recusado)' : String(err.itemId)}`,
+    `  item_id ................. ${err.itemId === null ? semItem : String(err.itemId)}`,
     `  problemas (${String(err.problemas.length)}):`,
   ];
   for (const p of err.problemas) {
