@@ -537,6 +537,18 @@ export const listingPricesSchema = z
     /** Up-front listing fee (0 for the free/classic types). */
     listing_fee_amount: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
+    /**
+     * The breakdown of `sale_fee_amount` (#847). `percentage_fee` is the part
+     * ML's docs tie to the CATEGORY (plus listing type and, on MLB, other
+     * "objective parameters" such as price bands), as a percentage — `16`, not
+     * `0.16`. The fixed part varies with logistics since 02/03/2026 and is not
+     * modelled here.
+     */
+    sale_fee_details: z
+      .object({ percentage_fee: wireNumber().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 export type MlListingPrices = z.infer<typeof listingPricesSchema>;
@@ -980,6 +992,12 @@ export const mlShipmentOrdersSchema = z
   .array(mlShipmentOrderSchema)
   .nullish()
   .transform((v) => v ?? []);
+
+/** `GET /shipments/{shipmentId}/carrier` — a null/empty URL is unavailable. */
+export const mlShipmentCarrierSchema = z
+  .object({ name: z.string().nullable(), url: z.string().nullable() })
+  .passthrough();
+export type MlShipmentCarrier = z.infer<typeof mlShipmentCarrierSchema>;
 
 /** `GET /shipments/{shipmentId}/sla` (legacy `get_shipment_sla`, api.dart:1671-1677) — only `expected_date` is consumed (legacy `_getPrazoDespacho`, tasks.dart:38-43). */
 export const mlShipmentSlaSchema = z

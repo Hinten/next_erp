@@ -778,6 +778,10 @@ export {
   type SizeChartMiss,
   type SizeChartResolution,
 } from './tabelaDeMedidasMercadoLivre';
+export {
+  mlSizeChartSyncRequestSchema,
+  type MlSizeChartSyncRequest,
+} from './tabelaDeMedidasMercadoLivre';
 
 // Shopee size charts (step 18, #1526): the stored entry, its read slice and THE
 // selection rule publish and `/medidas` both call (#1369 — one copy).
@@ -1392,6 +1396,10 @@ export {
   type PendenciaReclamacao,
 } from './aviso';
 export * from './shared/inicio';
+export {
+  mercadoLivreRastreioResultSchema,
+  type MercadoLivreRastreioResult,
+} from './rastreioMercadoLivre';
 
 // The ONE copy of the Shopee `return_sn` shape (step 17, #1525) — the push
 // parser, the reclamação routes and the web mount all read it. Not a collection,
