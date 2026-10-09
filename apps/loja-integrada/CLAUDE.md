@@ -13,7 +13,9 @@ API-only App Hosting backend for the Loja Integrada marketplace channel, port 30
 - The tokens belong to this integration alone, separate from the legacy app's
   (D16). Never put a token in a URL, a log or a response.
 - `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`
-  (emulator suites run on their own lane); `eslint.config.mjs` still lints them
+  (emulator suites need their own lane — **none exists yet**, so the step that
+  adds the first such suite must add its lane in the same change, or it runs
+  nowhere while every check stays green); `eslint.config.mjs` still lints them
   and only lets them build raw Firestore refs. Both already cover the nested
   `functions/` codebase, so adding those later needs no edit to either.
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.
