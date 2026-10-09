@@ -1,8 +1,9 @@
-import type {
-  DocumentData,
-  DocumentReference,
-  Firestore,
-  Timestamp,
+import {
+  FieldValue,
+  type DocumentData,
+  type DocumentReference,
+  type Firestore,
+  type Timestamp,
 } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
@@ -23,6 +24,7 @@ import { getDb } from '../lib/admin';
 import { resolveUsuarioOuterRef } from '../lib/authContext';
 import { PRODUTO_HISTORY_ROOT } from '../lib/historyRoots';
 import { buildModificationEntry, recordModification } from '../lib/modificationHistory';
+import { avisarReceitaKitShopee } from './avisoReceitaKitShopee';
 import { CAMPOS_ROLLUP_KIT, planejarRollupKit, type KitRollupPayload } from './kitRollupPayload';
 import {
   createKitRollupScheduler,
@@ -621,6 +623,30 @@ export async function recordProdutoModificationAndPropagate(
         `para o membro único`,
     );
   }
+
+  // ⚠️ LAST of all (Shopee step 19, #1527, L4(2)): a kit recipe edit opens — or a
+  // recipe edited back resolves — the Shopee native-kit aviso of every (conta,
+  // kit) this produto's `variashopee` rows name. Last for the reason the two
+  // above are: it RETHROWS (rule 6), so placed higher a transient error from its
+  // reads would cost the mirror and the repoint, which this handler never retries.
+  // And below the mirror on purpose: a família-de-um parent's recipe reaches the
+  // member through the mirror, whose own write re-fires this trigger for the
+  // member — the produto that actually holds the kit-model rows.
+  //
+  // Zero reads unless the recipe fingerprint moved (a pure gate). The aviso write
+  // is rule 7 tier 2, inside the shared decision: it is clocked by the newest
+  // commit time of every document that decision read, so a stale delivery lands
+  // as a no-op. `agoraUs` is the event time, stable across redeliveries.
+  const avisosDeKit = await avisarReceitaKitShopee(db, produtoId, before, after, {
+    agoraUs: eventTimeMicros,
+    increment: (n) => FieldValue.increment(n),
+  });
+  if (avisosDeKit !== null && avisosDeKit.reavaliados > 0) {
+    logger.info(
+      `onProdutoChanged: ${produtoId} → aviso de receita de kit Shopee reavaliado para ` +
+        `${avisosDeKit.reavaliados} par(es) conta/kit`,
+    );
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -633,7 +659,10 @@ export async function recordProdutoModificationAndPropagate(
  * write that changes nothing outside the ignore list a zero-write no-op —
  * only a real change writes the entry. A parent precos change reads the
  * children to propagate; re-enabling propagation first re-reads the current
- * parent and then reads the children. A custo-only change does neither.
+ * parent and then reads the children. A custo-only change does neither. A kit
+ * RECIPE change (`componentesKit`, as the Shopee kit fingerprint measures it)
+ * re-reads the produto and its `variashopee` rows, then re-decides the Shopee
+ * native-kit aviso per (conta, kit) — see `avisoReceitaKitShopee.ts`.
  * Targets the NAMED `default` database (gotcha #8).
  */
 export const onProdutoChanged = onDocumentWrittenWithAuthContext(

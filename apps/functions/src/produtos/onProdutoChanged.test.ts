@@ -1,12 +1,27 @@
-import { describe, expect, it } from 'vitest';
+import { FieldValue } from 'firebase-admin/firestore';
+import { linhaVariacaoDeKit, toOuterRef } from '@delfrance/schemas';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CAMPOS_ROLLUP_KIT } from './kitRollupPayload';
 import {
   PRODUTO_HISTORY_IGNORE_FIELDS,
   produtoExtraIgnores,
   reapontarKitsQueReferenciam,
+  recordProdutoModificationAndPropagate,
   sincronizarMembroUnico,
 } from './onProdutoChanged';
+
+/**
+ * The Shopee native-kit recipe aviso's shared decision (step 19, #1527) is a
+ * RECORDER in this file: what is pinned here is the trigger's WIRING — where the
+ * call sits, what it is handed, and what it costs. The decision over a real
+ * Firestore is `onProdutoChanged.storage.test.ts`.
+ */
+const avisos = vi.hoisted(() => ({ reavaliar: vi.fn() }));
+vi.mock('@delfrance/data/admin/avisos', async (original) => ({
+  ...(await original<typeof import('@delfrance/data/admin/avisos')>()),
+  reavaliarAvisoDeReceitaKit: avisos.reavaliar,
+}));
 
 describe('PRODUTO_HISTORY_IGNORE_FIELDS', () => {
   it('is exactly the noisy/denorm-churn field set', () => {
@@ -550,5 +565,245 @@ describe('reapontarKitsQueReferenciam', () => {
 
     expect(escritas).toEqual([]);
     expect(r).toEqual({ reapontados: 0, conflitos: 0 });
+  });
+});
+
+/**
+ * The Shopee native-kit recipe aviso (step 19, #1527, L4(2)) — the WIRING.
+ *
+ * Three properties, each with the mutant it kills:
+ *  - it runs LAST, below the mirror and the repoint, because it rethrows: a
+ *    transient error from its reads must not cost the member mirror, which this
+ *    handler never retries;
+ *  - it is handed the event clock as `agoraUs` and the real increment sentinel;
+ *  - an import-shaped write of a família-de-um KIT that leaves the recipe as
+ *    stored moves neither the in-sync member nor the aviso (M158).
+ */
+describe('recordProdutoModificationAndPropagate — the Shopee kit recipe aviso, wired last', () => {
+  const EVENT_US = Date.parse('2026-10-07T12:00:00.000Z') * 1000;
+  const K = 'kit-k';
+  const M = 'membro-m';
+  const comp = (quantidade: number, timestamp = 1) => ({
+    quantidade,
+    limitarEstoque: true,
+    timestamp,
+  });
+  const RECEITA_A = { 'comp-a': comp(2), 'comp-b': comp(1) };
+  const RECEITA_B = { 'comp-a': comp(3), 'comp-b': comp(1) };
+  const linhaDoKit = () =>
+    linhaVariacaoDeKit({
+      contaRef: toOuterRef('integracao/int-1'),
+      linkPath: toOuterRef(`produtos/${K}/prodshopee/link-kit`),
+      modelId: 2000458820,
+      tierIndex: [0],
+      modelStatus: 'NORMAL',
+      receitaKitConferida: null,
+    });
+
+  /**
+   * A `db` that logs EVERY access, in order, on one timeline the decision recorder
+   * also writes to — ordering is the property under test. Any query throws: none
+   * of these paths may run one (no precos change, no pointer move).
+   */
+  function stubFluxo(
+    produtos: Record<string, Record<string, unknown>>,
+    variashopee: Record<string, Record<string, Record<string, unknown>>> = {},
+  ) {
+    const linhaDoTempo: string[] = [];
+    const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
+    const colecao = (path: string) => ({
+      doc: (id: string) => ({
+        get: async () => {
+          linhaDoTempo.push(`get ${path}/${id}`);
+          const dados = path === 'produtos' ? produtos[id] : undefined;
+          return { id, exists: dados !== undefined, updateTime: 'ut-1', data: () => dados };
+        },
+        update: async (patch: Record<string, unknown>) => {
+          linhaDoTempo.push(`update ${path}/${id}`);
+          patches.push({ id, patch });
+        },
+        set: async () => {
+          linhaDoTempo.push(`set ${path}/${id}`);
+        },
+      }),
+      get: async () => {
+        linhaDoTempo.push(`get ${path}`);
+        const dono = /^produtos\/([^/]+)\/variashopee$/.exec(path)?.[1];
+        const linhas = dono === undefined ? {} : (variashopee[dono] ?? {});
+        return { docs: Object.entries(linhas).map(([id, data]) => ({ id, data: () => data })) };
+      },
+      where: () => {
+        throw new Error(`consulta não esperada em ${path}`);
+      },
+    });
+    avisos.reavaliar.mockImplementation(
+      async (_db: unknown, par: { integracaoId: string; kitProdutoId: string }) => {
+        linhaDoTempo.push(`reavaliar ${par.integracaoId}/${par.kitProdutoId}`);
+        return 'aberto';
+      },
+    );
+    return { db: { collection: colecao } as never, linhaDoTempo, patches };
+  }
+
+  const agendador = { enqueue: vi.fn(async () => undefined) };
+  const correr = (
+    db: never,
+    id: string,
+    before: Record<string, unknown>,
+    after: Record<string, unknown>,
+  ) =>
+    recordProdutoModificationAndPropagate(
+      db,
+      id,
+      before,
+      after,
+      'evt-1',
+      EVENT_US,
+      null,
+      agendador,
+    );
+
+  beforeEach(() => {
+    avisos.reavaliar.mockReset();
+    agendador.enqueue.mockClear();
+  });
+
+  // A família de um: K holds the recipe the operator edits, M (the sole member,
+  // the sellable unit) mirrors it and holds the kit-model rows.
+  const kitAntes = {
+    paiId: null,
+    filhoUnicoId: M,
+    ehKit: true,
+    componentesKit: RECEITA_A,
+    integracoesComProduto: [],
+  };
+  const membroEmDia = { paiId: K, ehKit: true, componentesKit: RECEITA_A };
+
+  /**
+   * ⛔ M158. Step 9's re-import of a kit leaves K's `componentesKit` as stored (R-t:
+   * a família de um's kept child never has its recipe written through K), and
+   * writes other fields. Nothing moved the recipe, so the in-sync member gets no
+   * patch and the aviso — open on a pending edit — is not touched: no read of the
+   * member, of any row, and no decision.
+   */
+  it('an import-shaped write of a família-de-um KIT that leaves the recipe as stored moves neither the member nor the aviso (M158)', async () => {
+    const kitDepois = { ...kitAntes, integracoesComProduto: ['shopee'] };
+    const { db, linhaDoTempo, patches } = stubFluxo(
+      { [K]: kitDepois, [M]: membroEmDia },
+      { [M]: { r1: linhaDoKit() } },
+    );
+
+    await correr(db, K, kitAntes, kitDepois);
+
+    expect(patches).toEqual([]);
+    expect(linhaDoTempo).toEqual([]);
+    expect(avisos.reavaliar).not.toHaveBeenCalled();
+  });
+
+  // The same, with the recipe RE-WRITTEN rather than left alone: fresh entry stamps
+  // and the map re-ordered. Same components, same quantities — still not a recipe
+  // change for the aviso (only the history records the write).
+  it('re-stamping the same recipe on the kit still decides nothing', async () => {
+    const reescrita = { 'comp-b': comp(1, 77), 'comp-a': comp(2, 77) };
+    const kitDepois = { ...kitAntes, componentesKit: reescrita };
+    const { db, linhaDoTempo } = stubFluxo({ [K]: kitDepois, [M]: membroEmDia });
+
+    await correr(db, K, kitAntes, kitDepois);
+
+    expect(linhaDoTempo.filter((l) => !l.startsWith(`set produtos/${K}/historico`))).toEqual([]);
+    expect(avisos.reavaliar).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ...and the near-miss: a REAL recipe edit on K. The mirror carries it to the
+   * member FIRST; then the gate opens for K, which holds no row of its own (the
+   * rows sit on the member), so nothing is decided on THIS delivery — the
+   * member's own delivery, fired by the mirror write, is the one that decides.
+   */
+  it('a real recipe edit on the kit mirrors the member first, then gates open on the kit itself', async () => {
+    const kitDepois = { ...kitAntes, componentesKit: RECEITA_B };
+    const { db, linhaDoTempo, patches } = stubFluxo(
+      { [K]: kitDepois, [M]: membroEmDia },
+      { [M]: { r1: linhaDoKit() } },
+    );
+
+    await correr(db, K, kitAntes, kitDepois);
+
+    expect(patches.map((p) => p.id)).toEqual([M]);
+    expect(patches[0]!.patch.componentesKit).toEqual(RECEITA_B);
+    const membro = linhaDoTempo.indexOf(`update produtos/${M}`);
+    const releitura = linhaDoTempo.lastIndexOf(`get produtos/${K}`);
+    expect(membro).toBeGreaterThan(-1);
+    expect(releitura).toBeGreaterThan(membro);
+    expect(linhaDoTempo.at(-1)).toBe(`get produtos/${K}/variashopee`);
+    expect(avisos.reavaliar).not.toHaveBeenCalled();
+
+    // The member's own delivery — the write the mirror just made.
+    const membroDepois = { ...membroEmDia, componentesKit: RECEITA_B };
+    const segundo = stubFluxo({ [K]: kitDepois, [M]: membroDepois }, { [M]: { r1: linhaDoKit() } });
+    await correr(segundo.db, M, membroEmDia, membroDepois);
+    expect(segundo.linhaDoTempo.at(-1)).toBe(`reavaliar int-1/${K}`);
+  });
+
+  // ⛔ LAST. The decision rethrows (rule 6); placed above the mirror, its failure
+  // would cost the member the edit — and this handler never retries.
+  it('runs after the mirror, so its failure rethrows without costing the member edit', async () => {
+    const kitDepois = { ...kitAntes, componentesKit: RECEITA_B };
+    const { db, linhaDoTempo } = stubFluxo(
+      { [K]: kitDepois, [M]: membroEmDia },
+      // A row under K itself, so the kit's own delivery reaches the decision.
+      { [K]: { r1: linhaDoKit() } },
+    );
+    const falha = Object.assign(new Error('unavailable'), { code: 14 });
+    avisos.reavaliar.mockImplementation(async () => {
+      linhaDoTempo.push('reavaliar');
+      throw falha;
+    });
+
+    await expect(correr(db, K, kitAntes, kitDepois)).rejects.toBe(falha);
+
+    const membro = linhaDoTempo.indexOf(`update produtos/${M}`);
+    const historico = linhaDoTempo.findIndex((l) => l.startsWith(`set produtos/${K}/historico`));
+    expect(historico).toBeGreaterThan(-1);
+    expect(membro).toBeGreaterThan(historico);
+    expect(linhaDoTempo.indexOf('reavaliar')).toBeGreaterThan(membro);
+  });
+
+  it('is handed the EVENT clock as agoraUs and the real increment sentinel', async () => {
+    const filho = { paiId: K, ehKit: true, componentesKit: RECEITA_A };
+    const filhoDepois = { ...filho, componentesKit: RECEITA_B };
+    const { db } = stubFluxo({ c1: filhoDepois }, { c1: { r1: linhaDoKit() } });
+
+    await correr(db, 'c1', filho, filhoDepois);
+
+    expect(avisos.reavaliar).toHaveBeenCalledTimes(1);
+    const [, par, motivo, deps] = avisos.reavaliar.mock.calls[0]! as [
+      unknown,
+      unknown,
+      unknown,
+      { agoraUs: number; increment: (n: number) => unknown },
+    ];
+    expect(par).toEqual({ integracaoId: 'int-1', kitProdutoId: K });
+    expect(motivo).toBe('receita-igual-a-shopee');
+    expect(deps.agoraUs).toBe(EVENT_US);
+    expect((deps.increment(3) as FieldValue).isEqual(FieldValue.increment(3))).toBe(true);
+    expect((deps.increment(3) as FieldValue).isEqual(FieldValue.increment(1))).toBe(false);
+  });
+
+  // A produto delete is not a recipe change, and the core returns before anything.
+  it('a delete decides nothing', async () => {
+    const { db, linhaDoTempo } = stubFluxo({});
+    await recordProdutoModificationAndPropagate(
+      db,
+      'c1',
+      { paiId: K, componentesKit: RECEITA_A },
+      undefined,
+      'evt-1',
+      EVENT_US,
+      null,
+      agendador,
+    );
+    expect(linhaDoTempo).toEqual([]);
+    expect(avisos.reavaliar).not.toHaveBeenCalled();
   });
 });
