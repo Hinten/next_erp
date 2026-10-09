@@ -36,17 +36,20 @@ import {
 
 /*
  * Ids de FIXTURE por papel (D1) — nunca de uma loja real:
- *   kit 2500139870 / modelo 2000458820 (+ o anexado 2000458822, e um 3º 2000458823);
- *   componente A (com variações) 2500139871 / modelo 2000458821;
+ *   kit 2500139870 / modelo 2000458820 (+ o 2º criado 2000458823 e o anexado 2000458822);
+ *   componente A (com variações) 2500139871 / modelo 2000458821 (e, um por modelo do kit,
+ *   2000458824 e 2000458825);
  *   componente B (SEM variações) 2500139872 / modelo OCULTO 2000458829.
  * A imagem e o canal logístico são amostras da própria doc da Shopee.
  */
 const KIT = 2500139870;
 const MODELO_KIT = 2000458820;
 const MODELO_KIT_2 = 2000458822;
-const MODELO_KIT_3 = 2000458823;
+const MODELO_KIT_CRIADO_2 = 2000458823;
 const ITEM_A = 2500139871;
 const MODELO_A = 2000458821;
+const MODELO_A_2 = 2000458824;
+const MODELO_A_3 = 2000458825;
 const ITEM_B = 2500139872;
 const MODELO_OCULTO_B = 2000458829;
 const IMAGEM = 'br-11134207-7r98o-lzri4neb5vcv18';
@@ -1056,18 +1059,36 @@ describe('linhasDeReenvioDoKit — a ÚNICA cópia fio→fio de um modelo vivo',
   /*
    * A LEITURA de um kit de VÁRIOS modelos, na forma MEDIDA (sonda SG,
    * 2026-10-07: `familia/09`, 2 modelos, e `familia/18`, 3 após um anexo): o
-   * item principal está em TODO modelo, e a leitura marca `main_component: true`
-   * numa linha SÓ, em `model_list[0]` (onde a criação o pôs); toda outra linha,
-   * de todo modelo, lê `false`. E a Shopee RECUSA o principal em dois modelos
-   * (`familia/05`, "mupltiple main sku"). Os ids são os de fixture, por papel.
+   * item principal A está em TODO modelo, mas sob um modelo de A DIFERENTE em
+   * cada um (White,02 / White,04 / White,08 na captura), com quantidade 1 em
+   * toda linha; a leitura marca `main_component: true` numa linha SÓ — a que a
+   * criação marcou, em `model_list[0]` — e toda outra linha, de todo modelo, lê
+   * `false`. B (sem variações) repete a MESMA chave oculta nos três e nunca é o
+   * principal. E a Shopee RECUSA o principal em dois modelos (`familia/05`,
+   * "mupltiple main sku"). Os ids são os de fixture, por papel: o 2º modelo
+   * criado no tier [1], o anexado no tier [2].
+   *
+   * ⚠️ NÃO MEDIDO: uma família cujos modelos repetem a chave EXATA (item,
+   * modelo) do principal — um "Kit 2un / Kit 3un" de uma variante só, forma que
+   * o ERP produz (R-7 marca o principal no PRIMEIRO modelo que o contém). Se a
+   * leitura marcar toda linha com essa chave, o reenvio leva mais de um main e o
+   * guarda recusa — falha FECHADA, nunca encaminhada (register 306).
    */
-  function leituraDeTresModelos(principalTambemNoModelo1 = false): readonly ShopeeKitModel[] {
-    const linhas = (quantidadeA: number, principal: boolean) => [
+  type FormaDoPrincipal = 'um-modelo-cada' | 'chave-repetida';
+  function leituraDeTresModelos(
+    marcados: readonly boolean[] = [true, false, false],
+    forma: FormaDoPrincipal = 'um-modelo-cada',
+  ): readonly ShopeeKitModel[] {
+    const modeloDeA =
+      forma === 'um-modelo-cada'
+        ? [MODELO_A, MODELO_A_2, MODELO_A_3]
+        : [MODELO_A, MODELO_A, MODELO_A];
+    const linhas = (i: number) => [
       {
         component_item_id: ITEM_A,
-        component_model_id: MODELO_A,
-        quantity: quantidadeA,
-        main_component: principal,
+        component_model_id: modeloDeA[i]!,
+        quantity: 1,
+        main_component: marcados[i]!,
       },
       {
         component_item_id: ITEM_B,
@@ -1084,13 +1105,9 @@ describe('linhasDeReenvioDoKit — a ÚNICA cópia fio→fio de um modelo vivo',
         product_info: {
           item_id: KIT,
           model_list: [
-            { model_id: MODELO_KIT, tier_index: [0], component_list: linhas(1, true) },
-            {
-              model_id: MODELO_KIT_2,
-              tier_index: [1],
-              component_list: linhas(2, principalTambemNoModelo1),
-            },
-            { model_id: MODELO_KIT_3, tier_index: [2], component_list: linhas(3, false) },
+            { model_id: MODELO_KIT, tier_index: [0], component_list: linhas(0) },
+            { model_id: MODELO_KIT_CRIADO_2, tier_index: [1], component_list: linhas(1) },
+            { model_id: MODELO_KIT_2, tier_index: [2], component_list: linhas(2) },
           ],
         },
       },
@@ -1125,10 +1142,12 @@ describe('linhasDeReenvioDoKit — a ÚNICA cópia fio→fio de um modelo vivo',
       [false, false],
       [false, false],
     ]);
-    // O item principal está em todo modelo — o caso que a pergunta temia.
-    expect(modelos.every((m) => m.component_list.some((l) => l.component_item_id === ITEM_A))).toBe(
-      true,
-    );
+    // A está em todo modelo, sob um modelo de A diferente em cada um — a forma medida.
+    expect(
+      modelos.map(
+        (m) => m.component_list.find((l) => l.component_item_id === ITEM_A)?.component_model_id,
+      ),
+    ).toStrictEqual([MODELO_A, MODELO_A_2, MODELO_A_3]);
 
     const corpo = reenvioDeTodos(modelos);
     const mains = corpo
@@ -1146,7 +1165,7 @@ describe('linhasDeReenvioDoKit — a ÚNICA cópia fio→fio de um modelo vivo',
   });
 
   it('QUASE-IGUAL — a mesma leitura com o principal em DOIS modelos é RECUSADA pelo guarda, nunca encaminhada', () => {
-    const modelos = leituraDeTresModelos(true);
+    const modelos = leituraDeTresModelos([true, true, false]);
     expect(principaisLidos(modelos)).toStrictEqual([
       [true, false],
       [true, false],
@@ -1155,5 +1174,16 @@ describe('linhasDeReenvioDoKit — a ÚNICA cópia fio→fio de um modelo vivo',
     const erro = recusa(() => assertUpdateKitItemRequest(reenvioDeTodos(modelos)));
     expect(erro.message).toContain('2 main_component: true');
     expect(erro.message).toContain('mupltiple main sku');
+  });
+
+  it('NÃO MEDIDO (register 306) — chave do principal REPETIDA em todo modelo: marcada uma vez passa; marcada em toda linha, o guarda RECUSA (falha fechada)', () => {
+    // Marcada só onde a criação a pôs: o reenvio leva UM main, como na forma medida.
+    const umaVez = leituraDeTresModelos([true, false, false], 'chave-repetida');
+    expect(aceita(() => assertUpdateKitItemRequest(reenvioDeTodos(umaVez)))).toBe(true);
+    // Se a Shopee marcar TODA linha com a chave do principal, o preço do kit para no
+    // guarda — recusado aqui, nunca mandado ao fio. É isso que o register 306 decide.
+    const todas = leituraDeTresModelos([true, true, true], 'chave-repetida');
+    const erro = recusa(() => assertUpdateKitItemRequest(reenvioDeTodos(todas)));
+    expect(erro.message).toContain('3 main_component: true');
   });
 });
