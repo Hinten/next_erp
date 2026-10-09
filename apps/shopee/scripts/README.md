@@ -1060,7 +1060,10 @@ rehearsal shape for a first real publish, and re-listing it later is one
 the SG sandbox first; the summary's `item_status` says whether Shopee obeyed)
 and is ignored by a republish. A `--recriar --status UNLIST` over a kit that is
 on sale creates the new kit paused and then STOPS at `kit-novo-inativo`: the
-old kit is deleted only once the new one is re-listed.
+old kit is deleted only once the new one is re-listed, and re-running `--recriar`
+never re-lists it. Re-list the NEW kit first (`anuncio-status` with `acao`
+`reativar`, `produtoIds [<produto>]` and the new kit's `linkDocId`, which the
+warning names), then re-run the same `--recriar` (PR #1868 review).
 
 The live printout is shorter and different on purpose: `item_id` / `vínculo` /
 `sequência`, then the **read-back** (`estadoAnuncio`, `item_status`, `deboost`)
