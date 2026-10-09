@@ -86,6 +86,7 @@ export const cssVariablesResolver: CSSVariablesResolver = (t) => {
       '--mantine-color-dimmed': t.colors.dark[0],
       '--mantine-color-placeholder': t.colors.dark[0],
       '--erp-focus-ring': t.colors.blue[3],
+      '--mantine-color-anchor': t.colors.blue[0],
       '--mantine-color-error': t.colors.red[4],
     },
   };

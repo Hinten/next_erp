@@ -112,6 +112,24 @@ describe('theme readability', () => {
       }
     }
   });
+
+  it('keeps dark links readable inside status alerts and tinted hover surfaces', () => {
+    const backgrounds = [
+      merged.colors.dark[7],
+      merged.colors.dark[6],
+      merged.colors.dark[5],
+      variables.dark['--erp-entrada-surface']!,
+      ...Object.values(merged.colors).flatMap((colors) => [
+        darken(colors[9], 0.5),
+        darken(colors[9], 0.3),
+      ]),
+    ];
+    for (const background of backgrounds) {
+      expect(
+        contrast(variables.dark['--mantine-color-anchor']!, background),
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
 });
 
 describe('cssVariablesResolver', () => {

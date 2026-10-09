@@ -32,6 +32,21 @@ function targets(page: Page) {
   };
 }
 
+async function shortTextLineBox(page: Page, overflow: 'visible' | 'hidden') {
+  return page.locator('#copy').evaluate((element, clipping) => {
+    element.style.cssText = `font:12px/normal Arial;overflow:${clipping}`;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    // Font metric boxes differ across OS/font fallbacks. Derive the deliberately
+    // shorter line box from the browser's actual glyph geometry on this host.
+    element.style.lineHeight = `${range.getBoundingClientRect().height / 2}px`;
+    return {
+      box: element.getBoundingClientRect().height,
+      ink: range.getBoundingClientRect().height,
+    };
+  }, overflow);
+}
+
 async function opaquePopupFixture(page: Page): Promise<void> {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
@@ -65,6 +80,32 @@ function shadowTargets(page: Page) {
     scheme: 'light' as const,
     scope: '#popup',
     required: [page.locator('shadow-fixture').locator('#message')],
+  };
+}
+
+async function chartFixture(page: Page): Promise<void> {
+  await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
+    body {margin:24px;background:white;color:black;font:16px Arial}
+    #chart {position:relative;width:480px;height:240px;background:white}
+    svg {display:block} text {font:12px Arial;fill:currentColor;color:#495057}
+    #center-layer {position:absolute;left:260px;top:0}
+    </style><body><h1>Populated chart fixture</h1><div id="chart">
+    <svg width="480" height="240" role="application" viewBox="0 0 480 240">
+      <defs><clipPath id="unused-clip"><rect width="480" height="240"/></clipPath>
+        <linearGradient id="gradient"><stop stop-color="white"/><stop offset="1" stop-color="black"/></linearGradient></defs>
+      <rect id="bar" x="80" y="20" width="100" height="90" fill="#1971c2"/>
+      <path id="ring" fill="#1971c2" fill-rule="evenodd" d="M280 90a70 70 0 1 0 140 0a70 70 0 1 0-140 0M300 90a50 50 0 1 0 100 0a50 50 0 1 0-100 0"/>
+      <text x="20" y="170"><tspan id="axis" x="20">Produto CI</tspan></text>
+      <text x="20" y="210"><tspan id="count" x="20">2</tspan></text>
+    </svg><svg id="center-layer" width="180" height="180">
+      <text id="center" x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" style="font-size:14px">500 pedidos</text>
+    </svg></div></body></html>`);
+}
+
+function chartTargets(page: Page) {
+  return {
+    scheme: 'light' as const,
+    required: [page.locator('#axis'), page.locator('#count'), page.locator('#center')],
   };
 }
 
@@ -551,6 +592,179 @@ test.describe('Theme readability checker rejects rendering defects', () => {
     ).toBe(true);
   });
 
+  test('measures SVG chart labels and a donut center against verified solid paint', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    const report = await auditThemeReadability(page, chartTargets(page));
+    expect(report.issues).toEqual([]);
+    expect(report.resolvedSvgTextTargets.length).toBeGreaterThan(0);
+    expect(report.resolvedSvgTextTargets.some(({ target }) => target.includes('#count'))).toBe(
+      true,
+    );
+  });
+
+  test('rejects low-contrast SVG text fill even when CSS text color is readable', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    await page.addStyleTag({ content: '#count {fill:#dddddd}' });
+    const report = await auditThemeReadability(page, chartTargets(page));
+    expect(report.issues.some((issue) => issue.code === 'svg-text-contrast')).toBe(true);
+  });
+
+  test('rejects SVG text genuinely covered by a foreground overlay', async ({ page }) => {
+    await chartFixture(page);
+    await page.locator('#axis').evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const overlay = document.createElement('div');
+      overlay.style.cssText = `position:fixed;z-index:10;left:${rect.left + 4}px;top:${rect.top}px;width:20px;height:${rect.height}px;background:white`;
+      document.body.append(overlay);
+    });
+    const report = await auditThemeReadability(page, chartTargets(page));
+    expect(report.issues.some((issue) => issue.code === 'unreachable-glyph')).toBe(true);
+  });
+
+  test('rejects unsupported SVG text gradient fill', async ({ page }) => {
+    await chartFixture(page);
+    await page.addStyleTag({ content: '#count {fill:url(#gradient)}' });
+    const report = await auditThemeReadability(page, chartTargets(page));
+    expect(report.issues.some((issue) => issue.code === 'unsupported-paint')).toBe(true);
+  });
+
+  test('rejects SVG background paint with pointer events disabled and restores its rule', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    await page.locator('#bar').evaluate((element) => {
+      element.setAttribute('x', '15');
+      element.setAttribute('y', '190');
+      element.setAttribute('height', '35');
+      element.setAttribute('style', 'pointer-events:none !important');
+    });
+    const report = await auditThemeReadability(page, chartTargets(page));
+    expect(report.issues.some((issue) => issue.code === 'unsupported-svg-background')).toBe(true);
+    expect(await page.locator('#bar').getAttribute('style')).toBe(
+      'pointer-events: none !important;',
+    );
+  });
+
+  test('does not mistake an adjacent SVG label guide for paint under the glyph cells', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    await page.locator('#axis').evaluate((element) => {
+      if (!(element instanceof SVGTextContentElement))
+        throw new Error('Expected an SVG text label');
+      const cell = element.getExtentOfChar(0);
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', String(cell.x - 12));
+      line.setAttribute('x2', String(cell.x - 1));
+      line.setAttribute('y1', String(cell.y + cell.height / 2));
+      line.setAttribute('y2', String(cell.y + cell.height / 2));
+      line.setAttribute('stroke', 'black');
+      line.setAttribute('stroke-width', '1');
+      element.closest('svg')?.append(line);
+    });
+    expect((await auditThemeReadability(page, chartTargets(page))).issues).toEqual([]);
+  });
+
+  test('rejects SVG text clipped by its viewport', async ({ page }) => {
+    await chartFixture(page);
+    await page
+      .locator('#chart > svg')
+      .first()
+      .evaluate((element) => {
+        element.removeAttribute('viewBox');
+        element.setAttribute('width', '35');
+        element.style.overflow = 'hidden';
+        element.style.width = '35px';
+      });
+    const clipping = await page.locator('#axis').evaluate((element) => ({
+      inkRight: element.getBoundingClientRect().right,
+      viewportRight: element.closest('svg')!.getBoundingClientRect().right,
+    }));
+    expect(clipping.inkRight).toBeGreaterThan(clipping.viewportRight);
+    const report = await auditThemeReadability(page, chartTargets(page));
+    expect(
+      report.issues.some((issue) =>
+        ['clipped', 'clipped-text', 'unreachable-glyph'].includes(issue.code),
+      ),
+    ).toBe(true);
+  });
+
+  test('rejects an unsupported SVG image beneath chart text with pointer events disabled', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    await page.locator('#count').evaluate((element) => {
+      const image = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+      image.setAttribute('x', '15');
+      image.setAttribute('y', '190');
+      image.setAttribute('width', '40');
+      image.setAttribute('height', '35');
+      image.setAttribute('style', 'pointer-events:none');
+      image.setAttribute(
+        'href',
+        `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="35"><rect width="40" height="35" fill="white"/></svg>')}`,
+      );
+      element.closest('svg')?.insertBefore(image, element.parentElement);
+    });
+    const report = await auditThemeReadability(page, chartTargets(page));
+    expect(report.issues.some((issue) => issue.code === 'unsupported-svg-background')).toBe(true);
+  });
+
+  for (const zeroLength of [false, true]) {
+    test(`does not infer empty SVG background from ${zeroLength ? 'zero-length' : 'nonzero'} geometry with marker paint`, async ({
+      page,
+    }) => {
+      await chartFixture(page);
+      await page.locator('#count').evaluate((element, emptyGeometry) => {
+        const svg = element.closest('svg')!;
+        const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+        marker.id = 'marker';
+        marker.setAttribute('viewBox', '0 0 20 20');
+        marker.setAttribute('refX', '0');
+        marker.setAttribute('refY', '10');
+        marker.setAttribute('markerWidth', '20');
+        marker.setAttribute('markerHeight', '20');
+        marker.setAttribute('markerUnits', 'userSpaceOnUse');
+        marker.innerHTML = '<path d="M0 0L20 10L0 20Z" fill="blue"/>';
+        svg.querySelector('defs')!.append(marker);
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', emptyGeometry ? '18' : '0');
+        line.setAttribute('x2', '18');
+        line.setAttribute('y1', '205');
+        line.setAttribute('y2', '205');
+        line.setAttribute('stroke', 'blue');
+        line.setAttribute('marker-end', 'url(#marker)');
+        svg.insertBefore(line, element.parentElement);
+      }, zeroLength);
+      const report = await auditThemeReadability(page, chartTargets(page));
+      expect(report.issues.some((issue) => issue.code === 'unsupported-svg-background')).toBe(true);
+    });
+  }
+
+  test('rejects zero-length SVG stroke caps painting behind text with pointer events disabled', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    await page.locator('#count').evaluate((element) => {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', '23');
+      line.setAttribute('x2', '23');
+      line.setAttribute('y1', '203');
+      line.setAttribute('y2', '203');
+      line.setAttribute('stroke', 'blue');
+      line.setAttribute('stroke-width', '20');
+      line.setAttribute('stroke-linecap', 'round');
+      line.setAttribute('style', 'pointer-events:none');
+      element.closest('svg')?.insertBefore(line, element.parentElement);
+    });
+    const report = await auditThemeReadability(page, chartTargets(page));
+    expect(report.issues.some((issue) => issue.code === 'unsupported-svg-background')).toBe(true);
+  });
+
   test('waits for a JS-delayed incidental tooltip exit before measuring', async ({ page }) => {
     await page.addStyleTag({
       content:
@@ -655,22 +869,14 @@ test.describe('Theme readability checker rejects rendering defects', () => {
   }
 
   test('accepts visible font ink extending beyond a short line box', async ({ page }) => {
-    await page.locator('#copy').evaluate((el) => {
-      el.style.cssText = 'font: 12px/1.2 "Segoe UI", Arial; overflow: visible';
-    });
-    const metrics = await page.locator('#copy').evaluate((el) => {
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      return { box: el.getBoundingClientRect().height, ink: range.getBoundingClientRect().height };
-    });
+    const metrics = await shortTextLineBox(page, 'visible');
     expect(metrics.ink).toBeGreaterThan(metrics.box);
     expect((await auditThemeReadability(page, targets(page))).issues).toEqual([]);
   });
 
   test('rejects font ink clipped by the element own overflow boundary', async ({ page }) => {
-    await page.locator('#copy').evaluate((el) => {
-      el.style.cssText = 'font: 12px/1.2 "Segoe UI", Arial; overflow: hidden';
-    });
+    const metrics = await shortTextLineBox(page, 'hidden');
+    expect(metrics.ink).toBeGreaterThan(metrics.box);
     const report = await auditThemeReadability(page, targets(page));
     expect(report.issues.some((issue) => issue.code === 'clipped-text')).toBe(true);
   });

@@ -31,6 +31,10 @@ export interface ThemeReadabilityReport {
   /** Monochrome status glyphs/counts that axe deferred and solid paint measured. */
   resolvedGlyphTargets: string[];
   resolvedTextTargets: Array<{ target: string; reason: 'elmPartiallyObscuring' }>;
+  resolvedSvgTextTargets: Array<{
+    target: string;
+    reason: 'imgNode' | 'bgOverlap' | 'shortTextContent' | 'elmPartiallyObscuring';
+  }>;
 }
 
 async function resolveAxeTarget(
@@ -302,7 +306,14 @@ async function inspectTarget(target: Locator): Promise<ThemeReadabilityIssue[]> 
  */
 async function inspectPaint(
   target: Locator,
-  mode: 'icon' | 'focus' | 'glyph' | 'short-text' | 'plain-text' | 'plain-text-visibility',
+  mode:
+    | 'icon'
+    | 'focus'
+    | 'glyph'
+    | 'short-text'
+    | 'plain-text'
+    | 'plain-text-visibility'
+    | 'svg-text',
 ): Promise<ThemeReadabilityIssue[]> {
   const issues = await target.evaluate((element, paintMode) => {
     type Rgba = [number, number, number, number];
@@ -407,9 +418,11 @@ async function inspectPaint(
       paintMode === 'glyph' ||
       paintMode === 'short-text' ||
       paintMode === 'plain-text' ||
-      paintMode === 'plain-text-visibility'
+      paintMode === 'plain-text-visibility' ||
+      paintMode === 'svg-text'
     ) {
-      const plain = paintMode === 'plain-text' || paintMode === 'plain-text-visibility';
+      const svgText = paintMode === 'svg-text';
+      const plain = svgText || paintMode === 'plain-text' || paintMode === 'plain-text-visibility';
       const visibilityOnly = paintMode === 'plain-text-visibility';
       // Native colour emoji do not inherit text colour. Only existing plain
       // status glyphs with direct text can be measured from computed CSS paint.
@@ -422,7 +435,13 @@ async function inspectPaint(
             : text.length > 0 &&
               (visibilityOnly ||
                 !/[\p{Extended_Pictographic}\p{Regional_Indicator}\u20e3]/u.test(text));
-      if (!(element instanceof HTMLElement) || element.children.length > 0 || !supportedText) {
+      if (
+        !(svgText
+          ? element instanceof SVGTextContentElement && element.matches('text, tspan')
+          : element instanceof HTMLElement) ||
+        element.children.length > 0 ||
+        !supportedText
+      ) {
         return [
           {
             code: 'unsupported-glyph',
@@ -431,11 +450,68 @@ async function inspectPaint(
           },
         ];
       }
+      if (!(element instanceof HTMLElement || element instanceof SVGTextContentElement))
+        return [{ code: 'unsupported-glyph', detail: 'Text is not a supported painted leaf' }];
+      const svgMatrix = element instanceof SVGTextContentElement ? element.getScreenCTM() : null;
+      const svgCells: Array<{ rect: DOMRect; character: string | null }> = [];
+      if (svgText && element instanceof SVGTextContentElement) {
+        const style = getComputedStyle(element);
+        if (
+          !svgMatrix ||
+          svgMatrix.is2D === false ||
+          ![svgMatrix.a, svgMatrix.b, svgMatrix.c, svgMatrix.d, svgMatrix.e, svgMatrix.f].every(
+            Number.isFinite,
+          ) ||
+          svgMatrix.a <= 0 ||
+          svgMatrix.d <= 0 ||
+          svgMatrix.b !== 0 ||
+          svgMatrix.c !== 0 ||
+          style.writingMode !== 'horizontal-tb' ||
+          style.stroke !== 'none' ||
+          style.textShadow !== 'none'
+        )
+          return [{ code: 'unsupported-paint', detail: 'SVG text requires unrotated solid fill' }];
+        for (let ancestor: Element | null = element; ancestor; ancestor = parent(ancestor)) {
+          const paint = getComputedStyle(ancestor);
+          if (
+            paint.clipPath !== 'none' ||
+            paint.maskImage !== 'none' ||
+            paint.perspective !== 'none' ||
+            paint.transform.startsWith('matrix3d(') ||
+            (ancestor instanceof SVGElement && paint.boxShadow !== 'none')
+          )
+            return [
+              {
+                code: 'unsupported-paint',
+                detail: 'SVG text uses clipping, masking, 3D transform, or a box shadow',
+              },
+            ];
+        }
+        // SVG DOM indexes address UTF-16 units. getExtentOfChar supplies each
+        // rendered glyph cell; CTM converts its coordinates into viewport space.
+        for (let index = 0; index < element.getNumberOfChars(); index++) {
+          if (element.getRotationOfChar(index) !== 0)
+            return [{ code: 'unsupported-paint', detail: 'SVG glyph rotation is unsupported' }];
+          const cell = element.getExtentOfChar(index);
+          const start = new DOMPoint(cell.x, cell.y).matrixTransform(svgMatrix);
+          const end = new DOMPoint(cell.x + cell.width, cell.y + cell.height).matrixTransform(
+            svgMatrix,
+          );
+          svgCells.push({
+            rect: new DOMRect(start.x, start.y, end.x - start.x, end.y - start.y),
+            character: element.textContent?.[index] ?? null,
+          });
+        }
+      }
       const surface = visibilityOnly ? null : background(element, plain);
       if (!visibilityOnly && !surface) return problems;
       const range = document.createRange();
       range.selectNodeContents(element);
-      const rects = plain ? Array.from(range.getClientRects()) : [range.getBoundingClientRect()];
+      const rects = svgText
+        ? svgCells.map(({ rect }) => rect)
+        : plain
+          ? Array.from(range.getClientRects())
+          : [range.getBoundingClientRect()];
       if (rects.length === 0)
         return [{ code: 'unreachable-glyph', detail: 'Text has no rendered line rectangles' }];
       const tolerance = 0.5;
@@ -518,11 +594,10 @@ async function inspectPaint(
         visit(document);
         return stack;
       };
-      const hitRects: Array<{ rect: DOMRect; character: string | null }> = rects.map((rect) => ({
-        rect,
-        character: null,
-      }));
-      if (plain) {
+      const hitRects: Array<{ rect: DOMRect; character: string | null }> = svgText
+        ? svgCells
+        : rects.map((rect) => ({ rect, character: null }));
+      if (plain && !svgText) {
         // Line edges/centre alone can miss an occluder between those points.
         // Include each rendered character rectangle, keeping surrogate pairs
         // together, so a covered word cannot slip between coarse probes.
@@ -545,8 +620,124 @@ async function inspectPaint(
           }
         }
       }
+      const svgPaint = new Map<
+        SVGGraphicsElement,
+        {
+          at: (x: number, y: number) => boolean;
+          pointerEvents: string;
+          priority: string;
+          hadStyle: boolean;
+        }
+      >();
+      if (svgText) {
+        // A chart path can paint behind text while opting out of pointer events.
+        // Probe actual fill/stroke geometry, including donut holes, rather than
+        // assuming every point in a path's rectangular bbox is painted.
+        for (const root of [document, ...shadowRoots]) {
+          for (const node of root.querySelectorAll(
+            'svg path, svg rect, svg circle, svg ellipse, svg line, svg polyline, svg polygon, svg image, svg use, svg foreignObject, svg text',
+          )) {
+            if (
+              !(node instanceof SVGGraphicsElement) ||
+              ancestors.has(node) ||
+              node.closest('defs, clipPath, mask, pattern, symbol, marker')
+            )
+              continue;
+            const style = getComputedStyle(node);
+            const box = node.getBoundingClientRect();
+            if (style.display === 'none' || style.visibility !== 'visible') continue;
+            let opacity = 1;
+            let displayed = true;
+            let unboundedPaint = node instanceof SVGForeignObjectElement;
+            for (let ancestor: Element | null = node; ancestor; ancestor = parent(ancestor)) {
+              const paint = getComputedStyle(ancestor);
+              opacity *= Number(paint.opacity);
+              displayed &&= paint.display !== 'none';
+              unboundedPaint ||=
+                paint.filter !== 'none' ||
+                paint.backdropFilter !== 'none' ||
+                paint.textShadow !== 'none' ||
+                paint.perspective !== 'none' ||
+                paint.transform.startsWith('matrix3d(') ||
+                (ancestor instanceof SVGElement && paint.boxShadow !== 'none') ||
+                ['marker-start', 'marker-mid', 'marker-end'].some((property) => {
+                  const marker = paint.getPropertyValue(property);
+                  return marker !== '' && marker !== 'none';
+                });
+            }
+            if (!displayed || opacity === 0) continue;
+            if (
+              unboundedPaint &&
+              ((element instanceof SVGTextContentElement &&
+                node.ownerSVGElement === element.ownerSVGElement) ||
+                (box.left <= hitBox.right &&
+                  box.right >= hitBox.left &&
+                  box.top <= hitBox.bottom &&
+                  box.bottom >= hitBox.top))
+            )
+              return [
+                {
+                  code: 'unsupported-svg-background',
+                  detail: 'SVG filter, shadow, marker, or foreign content has unbounded paint',
+                },
+              ];
+            const matrix = node.getScreenCTM();
+            if (!matrix || matrix.a * matrix.d - matrix.b * matrix.c === 0) continue;
+            const inverse = matrix.inverse();
+            const visiblePaint = (paint: string, alpha: string) =>
+              paint !== 'none' &&
+              Number(alpha) > 0 &&
+              (!CSS.supports('color', paint) || color(paint)[3] > 0);
+            const fill = visiblePaint(style.fill, style.fillOpacity);
+            const stroke =
+              Number.parseFloat(style.strokeWidth) > 0 &&
+              visiblePaint(style.stroke, style.strokeOpacity);
+            // A zero-length path can still paint round/square stroke caps.
+            // Markers/foreign paint were classified before this geometry prune.
+            if (box.width === 0 && box.height === 0 && !stroke) continue;
+            const at = (x: number, y: number) => {
+              const point = new DOMPoint(x, y).matrixTransform(inverse);
+              return node instanceof SVGGeometryElement
+                ? (fill && node.isPointInFill(point)) || (stroke && node.isPointInStroke(point))
+                : x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+            };
+            svgPaint.set(node, {
+              at,
+              pointerEvents: node.style.getPropertyValue('pointer-events'),
+              priority: node.style.getPropertyPriority('pointer-events'),
+              hadStyle: node.hasAttribute('style'),
+            });
+          }
+        }
+      }
+      const transparentSvgViewports = new Map<Element, boolean>();
+      const neutralSvgViewport = (node: Element) => {
+        if (!svgText || !(node instanceof SVGSVGElement)) return false;
+        const cached = transparentSvgViewports.get(node);
+        if (cached !== undefined) return cached;
+        const style = getComputedStyle(node);
+        const neutral =
+          color(style.backgroundColor)[3] === 0 &&
+          style.backgroundImage === 'none' &&
+          style.filter === 'none' &&
+          style.backdropFilter === 'none' &&
+          style.mixBlendMode === 'normal' &&
+          style.boxShadow === 'none' &&
+          Number(style.opacity) === 1 &&
+          [
+            style.borderTopWidth,
+            style.borderRightWidth,
+            style.borderBottomWidth,
+            style.borderLeftWidth,
+          ].every((width) => Number.parseFloat(width) === 0) &&
+          (style.outlineStyle === 'none' || Number.parseFloat(style.outlineWidth) === 0);
+        transparentSvgViewports.set(node, neutral);
+        return neutral;
+      };
       try {
         element.style.setProperty('pointer-events', 'auto', 'important');
+        for (const node of svgPaint.keys())
+          node.style.setProperty('pointer-events', 'all', 'important');
         for (const { rect, character } of hitRects) {
           const dx = Math.min(0.5, rect.width / 4);
           const dy = Math.min(0.5, rect.height / 4);
@@ -558,7 +749,25 @@ async function inspectPaint(
             : [rect.top + rect.height / 2];
           for (const x of xs)
             for (const y of ys) {
-              const stack = hitStack(x, y);
+              const stack = hitStack(x, y).filter(
+                (node) =>
+                  !(node instanceof SVGGraphicsElement) ||
+                  !svgPaint.has(node) ||
+                  svgPaint.get(node)!.at(x, y),
+              );
+              const opaqueIndex = opaqueSurface ? stack.indexOf(opaqueSurface) : -1;
+              if (
+                svgText &&
+                stack
+                  .slice(0, opaqueIndex < 0 ? stack.length : opaqueIndex)
+                  .some((node) => node instanceof SVGGraphicsElement && svgPaint.has(node))
+              )
+                return [
+                  {
+                    code: 'unsupported-svg-background',
+                    detail: 'SVG paint intersects a text glyph cell above its solid background',
+                  },
+                ];
               const top = stack[0];
               const outsideLineBox =
                 x < hitBox.left || x > hitBox.right || y < hitBox.top || y > hitBox.bottom;
@@ -596,16 +805,24 @@ async function inspectPaint(
                 }
               }
               if (!visibilityOnly && plain) {
-                const opaqueIndex = opaqueSurface ? stack.indexOf(opaqueSurface) : -1;
                 if (
                   opaqueIndex < 0 ||
-                  stack.slice(0, opaqueIndex + 1).some((node) => !ancestors.has(node))
+                  stack
+                    .slice(0, opaqueIndex + 1)
+                    .some((node) => !ancestors.has(node) && !neutralSvgViewport(node))
                 )
                   unobscured = false;
               }
             }
         }
       } finally {
+        for (const [node, original] of svgPaint) {
+          if (original.pointerEvents)
+            node.style.setProperty('pointer-events', original.pointerEvents, original.priority);
+          else node.style.removeProperty('pointer-events');
+          if (!original.hadStyle && node.getAttribute('style') === '')
+            node.removeAttribute('style');
+        }
         if (previousPointerEvents)
           element.style.setProperty('pointer-events', previousPointerEvents, previousPriority);
         else element.style.removeProperty('pointer-events');
@@ -623,14 +840,20 @@ async function inspectPaint(
       if (visibilityOnly) return problems;
       if (!surface) return problems;
       const style = getComputedStyle(element);
-      const size = Number.parseFloat(style.fontSize);
+      const size = Number.parseFloat(style.fontSize) * (svgText ? (svgMatrix?.d ?? 1) : 1);
       const large = size >= 24 || (size >= 56 / 3 && Number(style.fontWeight) >= 700);
       const requiredRatio = large ? 3 : 4.5;
-      const ratio = contrast(color(style.color), surface);
+      if (svgText && style.fill === 'none')
+        return [{ code: 'unpainted-text', detail: 'SVG text has no foreground fill' }];
+      const foreground = color(
+        svgText ? (style.fill === 'currentcolor' ? style.color : style.fill) : style.color,
+      );
+      if (svgText) foreground[3] *= Number(style.fillOpacity);
+      const ratio = contrast(foreground, surface);
       if (ratio < requiredRatio)
         problems.push({
-          code: 'glyph-contrast',
-          detail: `Status glyph contrast is ${ratio}:1; expected at least ${requiredRatio}:1`,
+          code: svgText ? 'svg-text-contrast' : 'glyph-contrast',
+          detail: `Text contrast is ${ratio}:1; expected at least ${requiredRatio}:1`,
         });
       return problems;
     }
@@ -741,18 +964,22 @@ export async function auditThemeReadability(
     const targetIssues = await inspectTarget(target);
     issues.push(...targetIssues);
     if (targetIssues.length === 0) {
-      const directText = await target.evaluate(
-        (element) =>
+      const directText = await target.evaluate((element) => {
+        if (element.children.length > 0 || (element.textContent?.trim() ?? '') === '') return null;
+        if (element instanceof SVGTextContentElement && element.matches('text, tspan'))
+          return 'svg-text' as const;
+        if (
           element instanceof HTMLElement &&
-          element.children.length === 0 &&
-          (element.textContent?.trim() ?? '') !== '' &&
           !element.matches(
             'button, input, select, textarea, a[href], [role="button"], [role="link"], [role="checkbox"], [role="switch"]',
-          ),
-      );
+          )
+        )
+          return 'plain-text-visibility' as const;
+        return null;
+      });
       // Axe can omit genuinely covered/clipped text entirely. Required text
       // must satisfy line visibility independently of whether axe tests it.
-      if (directText) issues.push(...(await inspectPaint(target, 'plain-text-visibility')));
+      if (directText) issues.push(...(await inspectPaint(target, directText)));
     }
   }
   for (const target of options.icons ?? []) {
@@ -783,6 +1010,7 @@ export async function auditThemeReadability(
     .analyze();
   const resolvedGlyphTargets: string[] = [];
   const resolvedTextTargets: ThemeReadabilityReport['resolvedTextTargets'] = [];
+  const resolvedSvgTextTargets: ThemeReadabilityReport['resolvedSvgTextTargets'] = [];
   for (const [code, results] of [
     ['text-contrast', axe.violations],
     ['text-contrast-incomplete', axe.incomplete],
@@ -804,7 +1032,9 @@ export async function auditThemeReadability(
           'messageKey' in checkData &&
           (checkData.messageKey === 'nonBmp' ||
             checkData.messageKey === 'shortTextContent' ||
-            checkData.messageKey === 'elmPartiallyObscuring') &&
+            checkData.messageKey === 'elmPartiallyObscuring' ||
+            checkData.messageKey === 'imgNode' ||
+            checkData.messageKey === 'bgOverlap') &&
           node.target.length === 1
         ) {
           const glyph = await resolveAxeTarget(page, options.scope, selector);
@@ -816,20 +1046,47 @@ export async function auditThemeReadability(
             });
             continue;
           }
+          const svgText =
+            checkData.messageKey !== 'nonBmp' &&
+            (await glyph.count()) === 1 &&
+            (await glyph.evaluate(
+              (element) =>
+                element instanceof SVGTextContentElement && element.matches('text, tspan'),
+            ));
+          // Image-node and background-overlap reviews are resolved only for
+          // SVG text with independently verified glyph/background geometry.
+          if (
+            !svgText &&
+            (checkData.messageKey === 'imgNode' || checkData.messageKey === 'bgOverlap')
+          ) {
+            issues.push({
+              code,
+              target: JSON.stringify(node.target),
+              detail: node.failureSummary ?? rule.help,
+            });
+            continue;
+          }
           const targetIssues = await inspectTarget(glyph);
           const glyphIssues =
             targetIssues.length > 0
               ? targetIssues
               : await inspectPaint(
                   glyph,
-                  checkData.messageKey === 'nonBmp'
-                    ? 'glyph'
-                    : checkData.messageKey === 'shortTextContent'
-                      ? 'short-text'
-                      : 'plain-text',
+                  svgText
+                    ? 'svg-text'
+                    : checkData.messageKey === 'nonBmp'
+                      ? 'glyph'
+                      : checkData.messageKey === 'shortTextContent'
+                        ? 'short-text'
+                        : 'plain-text',
                 );
           if (glyphIssues.length === 0) {
-            if (checkData.messageKey === 'elmPartiallyObscuring')
+            if (svgText && checkData.messageKey !== 'nonBmp')
+              resolvedSvgTextTargets.push({
+                target: typeof selector === 'string' ? selector : JSON.stringify(selector),
+                reason: checkData.messageKey,
+              });
+            else if (checkData.messageKey === 'elmPartiallyObscuring')
               resolvedTextTargets.push({
                 target: typeof selector === 'string' ? selector : JSON.stringify(selector),
                 reason: 'elmPartiallyObscuring',
@@ -859,7 +1116,14 @@ export async function auditThemeReadability(
       target: options.scope ?? 'body',
       detail: 'No text node was tested for color contrast',
     });
-  return { scheme: options.scheme, issues, axe, resolvedGlyphTargets, resolvedTextTargets };
+  return {
+    scheme: options.scheme,
+    issues,
+    axe,
+    resolvedGlyphTargets,
+    resolvedTextTargets,
+    resolvedSvgTextTargets,
+  };
 }
 
 export async function expectThemeReadable(
