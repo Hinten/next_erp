@@ -28,7 +28,9 @@
  * 5. **`webhook`** (`/webhooks/…`): no excerpt, ever — its body carries the
  *    receiver's secret.
  * 6. **Non-2xx bodies** get an error walk that keeps only short, code-shaped
- *    values; see `redigirCorpo`.
+ *    values; see `redigirCorpo`. A 401/403 is never excerpted in the `log`
+ *    profile, whatever the class: it is the answer that may echo the token, and
+ *    the package scrubs only the token as sent.
  *
  * ## Two profiles
  *
@@ -424,6 +426,12 @@ const PREDICADO_DA_QUERY: ReadonlyMap<string, (v: string) => boolean> = new Map(
   ['sku', skuQ],
 ]);
 
+/**
+ * Query keys whose value a `log` line keeps but a FIXTURE refuses (Q3): the
+ * pedido's external id is faked in the body, so `meta.next` may not carry it.
+ */
+const QUERY_SO_LOG: ReadonlySet<string> = new Set(['id_externo']);
+
 export interface CaminhoRedigidoLi {
   /** The path, each unsafe segment replaced by `<redacted>`. */
   readonly caminho: string;
@@ -456,10 +464,14 @@ function redigirPar(
   chave: string,
   bruto: string,
   decodificado: string,
+  perfil: PerfilRedacaoLi,
 ): { par: readonly [string, string]; mascarou: boolean } {
   if (!CHAVE_CONFORME.test(chave)) return { par: ['<chave>', REDIGIDO], mascarou: false };
   const predicado = PREDICADO_DA_QUERY.get(chave);
   if (predicado === undefined) return { par: [chave, REDIGIDO], mascarou: false };
+  if (perfil === 'fixture' && QUERY_SO_LOG.has(chave)) {
+    return { par: [chave, REDIGIDO], mascarou: false };
+  }
   if (predicado(decodificado)) return { par: [chave, bruto], mascarou: false };
   return { par: [chave, REDIGIDO], mascarou: chave === 'sku' && SKU_TEXTO.test(decodificado) };
 }
@@ -477,8 +489,15 @@ const ORIGEM_REDIGIDA = '<origem>';
  * `^[A-Za-z_][A-Za-z0-9_]{0,63}$` (tested on the raw key) becomes `<chave>`. An
  * origin other than {@link ORIGEM_LI} becomes `<origem>`; a fragment is dropped
  * (it never reaches a server).
+ *
+ * `perfil` (default `log`): a `fixture` also refuses the values the body walk
+ * fakes for it (`id_externo`), so a committed `meta.next` never carries what
+ * the body beside it hides.
  */
-export function redigirCaminhoEQuery(entrada: string | RequisicaoParaRedigirLi): CaminhoRedigidoLi {
+export function redigirCaminhoEQuery(
+  entrada: string | RequisicaoParaRedigirLi,
+  perfil: PerfilRedacaoLi = 'log',
+): CaminhoRedigidoLi {
   let mascarados = 0;
   const pares: (readonly [string, string])[] = [];
   const somar = (r: { par: readonly [string, string]; mascarou: boolean }) => {
@@ -487,7 +506,7 @@ export function redigirCaminhoEQuery(entrada: string | RequisicaoParaRedigirLi):
   };
 
   if (typeof entrada !== 'string') {
-    for (const [chave, valor] of entrada.query) somar(redigirPar(chave, valor, valor));
+    for (const [chave, valor] of entrada.query) somar(redigirPar(chave, valor, valor, perfil));
     return { caminho: redigirSegmentos(entrada.caminho), query: pares, mascarados };
   }
 
@@ -512,7 +531,7 @@ export function redigirCaminhoEQuery(entrada: string | RequisicaoParaRedigirLi):
       const igual = parBruto.indexOf('=');
       const chave = igual === -1 ? parBruto : parBruto.slice(0, igual);
       const valor = igual === -1 ? '' : parBruto.slice(igual + 1);
-      somar(redigirPar(chave, valor, decodificar(valor)));
+      somar(redigirPar(chave, valor, decodificar(valor), perfil));
     }
   }
   return { caminho: `${origem}${redigirSegmentos(caminho)}`, query: pares, mascarados };
@@ -958,7 +977,12 @@ export const SUBARVORES_NEGADAS_LI: ReadonlySet<string> = new Set([
   'enderecos',
 ]);
 
-/** Denied anywhere in an `estrutural` body and in every error body. */
+/**
+ * Denied anywhere in an `estrutural` body and in every error body. Matched
+ * case-insensitively (`chaveNegada`): an error body's keys are not the
+ * documented ones, and its walk keeps a code-shaped value under any key it does
+ * not deny.
+ */
 export const CHAVES_NEGADAS_LI: ReadonlySet<string> = new Set([
   'cpf',
   'cnpj',
@@ -969,7 +993,6 @@ export const CHAVES_NEGADAS_LI: ReadonlySet<string> = new Set([
   'razao_social',
   'data_nascimento',
   'sexo',
-  'cep',
   'bairro',
   'cidade',
   'complemento',
@@ -992,9 +1015,14 @@ export const CHAVES_NEGADAS_LI: ReadonlySet<string> = new Set([
   'notifyUrl',
 ]);
 
-/** Denied by prefix: `telefone*`, `endereco*`, `alterado_por*`, `url*`. */
+/**
+ * Denied by prefix, case-insensitively: `telefone*`, `celular*`, `cep*`
+ * (`cep_destino`), `endereco*`, `alterado_por*`, `url*`.
+ */
 export const PREFIXOS_NEGADOS_LI: readonly string[] = [
   'telefone',
+  'celular',
+  'cep',
   'endereco',
   'alterado_por',
   'url',
@@ -1023,10 +1051,20 @@ export const CHAVES_FALSAS_CATALOGO_LI: ReadonlySet<string> = new Set([
 ]);
 export const PREFIXOS_FALSOS_CATALOGO_LI: readonly string[] = ['descricao', 'seo', 'url'];
 
-const chaveNegada = (k: string) =>
-  SUBARVORES_NEGADAS_LI.has(k) ||
-  CHAVES_NEGADAS_LI.has(k) ||
-  PREFIXOS_NEGADOS_LI.some((p) => k.startsWith(p));
+const minusculas = (conjunto: ReadonlySet<string>): ReadonlySet<string> =>
+  new Set([...conjunto].map((k) => k.toLowerCase()));
+const SUBARVORES_NEGADAS_MINUSCULAS = minusculas(SUBARVORES_NEGADAS_LI);
+const CHAVES_NEGADAS_MINUSCULAS = minusculas(CHAVES_NEGADAS_LI);
+
+/** Case-insensitive: `CEP`, `Nome` and `notifyurl` are denied too. */
+const chaveNegada = (k: string) => {
+  const c = k.toLowerCase();
+  return (
+    SUBARVORES_NEGADAS_MINUSCULAS.has(c) ||
+    CHAVES_NEGADAS_MINUSCULAS.has(c) ||
+    PREFIXOS_NEGADOS_LI.some((p) => c.startsWith(p))
+  );
+};
 
 const chaveFalsaDoCatalogo = (k: string) =>
   CHAVES_FALSAS_CATALOGO_LI.has(k) || PREFIXOS_FALSOS_CATALOGO_LI.some((p) => k.startsWith(p));
@@ -1130,14 +1168,20 @@ function percorrerNegado(
   return fundoDemais(ctx);
 }
 
-/** A kept value in the `log` profile still passes the regex layer. */
+/**
+ * A kept string still passes the regex layer, in BOTH profiles: `log` masks the
+ * hit in place; `fixture` fakes the whole value (a committed fixture is never
+ * laxer than a log line).
+ */
 function manter(
   v: string | number | boolean,
   predicado: NomePredicadoLi,
+  chave: string | null,
   ctx: Percurso,
 ): ValorJsonLi {
-  if (ctx.perfil === 'fixture' || typeof v !== 'string') return v;
+  if (typeof v !== 'string') return v;
   const m = mascararTexto(v, { digitos: !ISENTOS_DE_DIGITOS.has(predicado) });
+  if (ctx.perfil === 'fixture') return m.mascarados === 0 ? v : falso(chave, v);
   ctx.mascarados += m.mascarados;
   return m.texto;
 }
@@ -1155,12 +1199,12 @@ function folha2xx(
   if (predicado !== undefined && !soNoLog) {
     if (predicado === 'urlLi') {
       if (typeof v === 'string') {
-        const r = redigirCaminhoEQuery(v);
+        const r = redigirCaminhoEQuery(v, ctx.perfil);
         ctx.mascarados += r.mascarados;
         return textoDoCaminho(r);
       }
     } else if (PREDICADOS[predicado](v)) {
-      return manter(v, predicado, ctx);
+      return manter(v, predicado, chave, ctx);
     }
   }
   return substituto(v, chave, ctx);
@@ -1195,11 +1239,20 @@ function percorrer2xx(
 
 /**
  * The error walk (any non-2xx JSON body), both profiles. Keys and booleans and
- * `null` survive; a number survives only with at most 9 integer digits. A
- * string survives — `log`: only when code-shaped (`token`), with no run of 10
+ * `null` survive; a number survives only with at most 7 integer digits. A
+ * string survives — `log`: only when code-shaped (`token`), with no run of 8
  * or more digits, and untouched by the regex layer; `fixture`: only when it is 1
- * to 9 digits. Denied subtrees and keys apply. No message text survives either.
+ * to 7 digits. Denied subtrees and keys apply. No message text survives either.
+ *
+ * Why 7 and 8: a bare CEP is 8 digits, a mobile without its area code 9, a CPF
+ * that starts with zeros 9 or fewer once written as a number — and an error
+ * body's keys are not the documented ones, so the denied keys cannot be relied
+ * on to catch them.
  */
+const NUMERO_MAXIMO_NO_ERRO = 1e7;
+const DIGITOS_CURTOS = /^\d{1,7}$/;
+const SEQUENCIA_LONGA_DE_DIGITOS = /\d{8}/;
+
 function percorrerErro(v: unknown, chave: string | null, prof: number, ctx: Percurso): ValorJsonLi {
   if (prof > PROFUNDIDADE_MAXIMA_PERCURSO) return fundoDemais(ctx);
   if (Array.isArray(v)) return v.map((item) => percorrerErro(item, chave, prof + 1, ctx));
@@ -1212,14 +1265,14 @@ function percorrerErro(v: unknown, chave: string | null, prof: number, ctx: Perc
   }
   if (v === null || typeof v === 'boolean') return v;
   if (typeof v === 'number') {
-    if (Math.abs(v) < 1e9) return v;
+    if (Math.abs(v) < NUMERO_MAXIMO_NO_ERRO) return v;
     return ctx.perfil === 'log' ? REDIGIDO : 0;
   }
   if (typeof v !== 'string') return fundoDemais(ctx);
-  if (ctx.perfil === 'fixture') return /^\d{1,9}$/.test(v) ? v : FALSO_LI.texto;
+  if (ctx.perfil === 'fixture') return DIGITOS_CURTOS.test(v) ? v : FALSO_LI.texto;
   const seguro =
     TOKEN_TEXTO.test(v) &&
-    !/\d{10}/.test(v) &&
+    !SEQUENCIA_LONGA_DE_DIGITOS.test(v) &&
     mascararTexto(v, { digitos: true }).mascarados === 0;
   return seguro ? v : REDIGIDO;
 }
@@ -1323,6 +1376,11 @@ function corpoParaLog(e: EntradaCorpoLi): CorpoParaLogLi {
   const analise = analisar(e.corpo, bytes, LIMITE_ANALISE_BYTES.log);
   if (analise.forma === 'nao-analisado' || analise.forma === 'vazio') return nada(analise.forma);
 
+  // A credential outcome is never excerpted, on any path: the package scrubs
+  // only the token AS SENT, and a 401/403 is exactly the answer that may echo
+  // it back escaped (JSON, HTML entities) or in part.
+  if (e.status === 401 || e.status === 403) return nada(analise.forma);
+
   const textoMascarado = (): CorpoParaLogLi => {
     const m = mascararTexto(e.corpo ?? '', { digitos: true });
     return { politica, forma: analise.forma, bytes, trecho: m.texto, mascarados: m.mascarados };
@@ -1331,8 +1389,10 @@ function corpoParaLog(e: EntradaCorpoLi): CorpoParaLogLi {
   if (politica !== 'estrutural' && (!ehSucesso(e.status) || politica === 'catalogo')) {
     return textoMascarado();
   }
-  if (politica === 'configuracao' && analise.forma === 'texto') return textoMascarado();
-  // estrutural (any status) or a configuracao 2xx: never the raw text.
+  // estrutural (any status) or a configuracao 2xx: never the raw text. A
+  // configuracao 2xx that is not JSON (a BOM, a cut list) is no exception: its
+  // keep-list exists because the body (gateway `configuracoes`) is not trusted
+  // whole.
   if (analise.forma !== 'json') return nada(analise.forma);
   const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica);
   const saida = ehSucesso(e.status)
@@ -1375,13 +1435,18 @@ function corpoParaFixture(e: EntradaCorpoLi): CorpoParaFixtureLi {
  * | no status, or no body | nothing | refused (`sem-resposta`) |
  * | `webhook`, any status | byte count only | refused |
  * | over the cap, or nested deeper than 256 | byte count only | refused |
- * | non-2xx `catalogo`/`configuracao` | regex layer on the text | error walk (JSON) or `null` |
+ * | 401 or 403, any class | byte count and form only | error walk (JSON) or `null` |
+ * | other non-2xx `catalogo`/`configuracao` | regex layer on the text | error walk (JSON) or `null` |
  * | non-2xx `estrutural` | error walk (JSON); nothing otherwise | error walk (JSON) or `null` |
  * | 2xx `estrutural` JSON | allow-list walk | allow-list walk, fakes |
  * | 2xx `estrutural` not JSON | nothing (could be a cut pedido) | refused |
  * | 2xx `configuracao` JSON | keep-list walk | keep-list walk, fakes |
+ * | 2xx `configuracao` not JSON | nothing (its keep-list exists for a reason) | `null` |
  * | 2xx `catalogo` JSON | regex layer on the text | keep-list walk, fakes |
- * | 2xx other, not JSON | regex layer on the text | `null` |
+ * | 2xx `catalogo` not JSON | regex layer on the text | `null` |
+ *
+ * The `log` line of a call made with a candidate credential (no stored
+ * version) drops the excerpt whatever this returns (`linhaDaChamada`).
  */
 export function redigirCorpo(e: EntradaCorpoLi, perfil: 'log'): CorpoParaLogLi;
 export function redigirCorpo(e: EntradaCorpoLi, perfil: 'fixture'): CorpoParaFixtureLi;

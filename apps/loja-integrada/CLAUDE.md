@@ -103,9 +103,10 @@ still be fixed. Only the context loader refuses those.
   apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pairs: the
   file's own operations; pass `<METHOD> <path>…` pairs, all of them, to change the list).
   `redacao.test.ts` demands every inventory leaf be classified exactly once.
-- Known residual: a catalogue error body (the validating GET's 401) keeps its text behind
-  the regex layer. The package scrubs the exact token sent; a body echoing only PART of it
-  would reach the log.
+- The excerpt fails closed where the token may echo back: a 401/403 is never excerpted on
+  any path, and neither is any answer to the validating GET (a candidate credential,
+  `versaoCredencial: null`). The package scrubs only the exact token sent, so a partial or
+  escaped echo would otherwise reach the log. Never relax either rule to "see the error".
 
 ## Config
 

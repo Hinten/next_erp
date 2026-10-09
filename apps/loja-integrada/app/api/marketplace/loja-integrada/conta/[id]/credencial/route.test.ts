@@ -757,12 +757,12 @@ describe('the token and its fingerprint appear in no answer and no log line', ()
     // refused and inconclusive, each echoing the token in ITS body. The candidate
     // is a NEW token that still contains the sentinel (TOKEN_A itself is stored
     // on ID now, so the wrong-store guard would answer before any call). The
-    // echo is the token SENT, which the package scrubs before the observer sees
-    // the text: `/v1/categoria/` is a catalogue path, whose error text the log
-    // keeps behind the regex layer.
+    // echo is only PART of the token sent, so the package's exact-token scrub
+    // misses it: only the logger's own rule (a candidate credential's line has
+    // no body excerpt) keeps it out of stdout.
     proibidos.push(fingerprintDoToken(`${TOKEN_A}x`));
     for (const status of [401, 500]) {
-      stubFetch(() => respostaJson(status, { detalhe: `token ${TOKEN_A}x recusado` }));
+      stubFetch(() => respostaJson(status, { detalhe: `token ${TOKEN_A} recusado` }));
       seedConta(db, `conta-${String(status)}`);
       await registrar(
         PUT(

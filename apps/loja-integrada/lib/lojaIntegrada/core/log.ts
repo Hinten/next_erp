@@ -20,6 +20,11 @@
  * suffix of its ref only (`versaoCredencial`, `refCredencial.ts`), and by its
  * type (`credencial: 'personal-token'`).
  *
+ * The package scrubs only the token AS SENT from the body text, so the body
+ * excerpt fails closed where an echo is plausible: a 401/403 is never excerpted
+ * (`redacao.ts`), and neither is any answer to a call made with a candidate
+ * credential (the validating GET, `versaoCredencial: null`).
+ *
  * `conta`, `fluxo`, `tentativa`, `idTarefa` and `idNotificacao` are added here,
  * from the observer's options: the package's event has none of them.
  * `correlationId` is logged with `enviouCorrelationId`, because today no call
@@ -189,7 +194,13 @@ export function linhaDaChamada(
   e: ChamadaLi,
   o: OpcoesObservadorLi,
 ): { severidade: SeveridadeLi; linha: LinhaChamadaLi } {
-  const corpo = redigirCorpo({ caminho: e.caminho, status: e.status, corpo: e.corpo }, 'log');
+  const versaoCredencial = versaoDaRef(e.refCredencial);
+  const redigido = redigirCorpo({ caminho: e.caminho, status: e.status, corpo: e.corpo }, 'log');
+  // A candidate credential (the validating GET: no stored version) gets NO
+  // excerpt, whatever the status: how Loja Integrada answers a bad token beyond
+  // 401/403 is unobserved, and the package scrubs only the token AS SENT, so a
+  // partial or escaped echo would survive.
+  const corpo = versaoCredencial === null ? { ...redigido, trecho: null, mascarados: 0 } : redigido;
   const corte =
     corpo.trecho === null
       ? { texto: null, truncado: false }
@@ -208,7 +219,7 @@ export function linhaDaChamada(
     resultado: e.resultado,
     tentativa: o.tentativa ?? null,
     credencial: CREDENCIAL_LI,
-    versaoCredencial: versaoDaRef(e.refCredencial),
+    versaoCredencial,
     codigoLimite: e.codigoLimite,
     retryAfterS: e.retryAfterS,
     latenciaMs: e.latenciaMs,

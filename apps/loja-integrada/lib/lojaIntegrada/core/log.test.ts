@@ -146,7 +146,7 @@ describe('linhaDaChamada — the line is a projection', () => {
     const corpo = `${'x'.repeat(2037)} ${EMAIL} ${'y'.repeat(100)}`;
     expect(corpo.slice(0, MAX_TRECHO_CORPO_BYTES).endsWith('fulano@exe')).toBe(true);
     const { linha } = linhaDaChamada(
-      evento({ caminho: '/v1/categoria/', status: 401, resultado: 'auth', corpo }),
+      evento({ caminho: '/v1/categoria/', status: 400, resultado: 'http', corpo }),
       OPCOES,
     );
     expect(linha.corpoTruncado).toBe(true);
@@ -154,6 +154,42 @@ describe('linhaDaChamada — the line is a projection', () => {
     expect(linha.trechoCorpo).not.toContain('fulano');
     expect(linha.trechoCorpo).not.toContain('@');
     expect(linha.mascarados).toBe(1);
+  });
+
+  it('a candidate credential (the validating GET) logs NO body excerpt, whatever the status', () => {
+    // How Loja Integrada answers a bad token beyond 401/403 is unobserved, and
+    // the package scrubs only the token AS SENT: a partial or escaped echo
+    // survives the scrub.
+    const parcial = 'li-token-sentinela-AAAA';
+    const corpo = JSON.stringify({ detalhe: `token ${parcial} recusado`, codigo: 'x1' });
+    for (const [status, resultado] of [
+      [200, 'schema'],
+      [400, 'http'],
+      [401, 'auth'],
+      [422, 'http'],
+      [500, 'http'],
+    ] as const) {
+      const { linha } = linhaDaChamada(
+        evento({ refCredencial: 'candidato', caminho: '/v1/categoria/', status, resultado, corpo }),
+        OPCOES,
+      );
+      expect(linha, String(status)).toMatchObject({
+        versaoCredencial: null,
+        trechoCorpo: null,
+        corpoBytes: bytesUtf8(corpo),
+        corpoForma: 'json',
+        corpoTruncado: false,
+        mascarados: 0,
+      });
+      expect(JSON.stringify(linha)).not.toContain(parcial);
+    }
+    // Near-miss: the same 400 under a stored credential keeps its masked text.
+    const guardada = linhaDaChamada(
+      evento({ caminho: '/v1/categoria/', status: 400, resultado: 'http', corpo }),
+      OPCOES,
+    ).linha;
+    expect(guardada.versaoCredencial).toBe(String(VERSAO_MS));
+    expect(guardada.trechoCorpo).toBe(corpo);
   });
 
   it('a call with no response logs no body', () => {

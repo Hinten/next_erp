@@ -352,8 +352,16 @@ describe('the validating GET is ONE log line', () => {
 describe('hygiene and structure', () => {
   it('the stored token and its fingerprint appear in no answer and no log line', async () => {
     const respostas: string[] = [];
+    // A PARTIAL echo survives the package's exact-token scrub; only the logger's
+    // own rule (a candidate credential's line has no body excerpt) stops it.
+    const parcial = TOKEN_A.slice(0, -4);
     for (const status of [200, 401, 500]) {
-      stubFetch(() => respostaJson(status, status === 200 ? ENVELOPE_VAZIO : { eco: TOKEN_A }));
+      stubFetch(() =>
+        respostaJson(
+          status,
+          status === 200 ? ENVELOPE_VAZIO : { eco: TOKEN_A, detalhe: `token ${parcial} recusado` },
+        ),
+      );
       const versao = relogioDoDocumentoUs(db.carimboDe(CAMINHO) ?? seedCredencial(db, ID));
       respostas.push(
         await (await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao })).text(),
@@ -362,7 +370,7 @@ describe('hygiene and structure', () => {
     // Anti-vacuity: each of the three PUTs wrote its line, and it is searched below.
     expect(linhasDeLog()).toHaveLength(3);
     const tudo = [...respostas, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
-    expect(tudo).not.toContain(TOKEN_A);
+    expect(tudo).not.toContain(parcial);
     expect(tudo).not.toContain(fingerprintDoToken(TOKEN_A));
   });
 

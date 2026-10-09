@@ -170,7 +170,10 @@ describe('spec coverage — against the committed leaf inventory', () => {
     expect(problemas).toEqual([]);
   });
 
-  it('every keep-list entry has a predicate and resolves to a primitive leaf (schema or example)', () => {
+  // "Has a predicate" is the compiler's half: every table row is typed
+  // `[path, NomePredicadoLi]`, and the predicate map is a total `Record` over
+  // that union. What only a test can check is that the PATH exists.
+  it('every keep-list entry resolves to a primitive leaf (schema or example)', () => {
     const manutencao: readonly TabelaRedacaoLi[] = [
       TABELAS_LI.situacao,
       TABELAS_LI.envio,
@@ -191,8 +194,7 @@ describe('spec coverage — against the committed leaf inventory', () => {
         .filter(([, tipos]) => tipos.some((tipo) => PRIMITIVOS.has(tipo)))
         .map(([c]) => c);
       expect(folhas.length, t.nome).toBeGreaterThan(0);
-      for (const [entrada, predicado] of t.permitidas) {
-        expect(predicado, `${t.nome} ${entrada}`).toBeTruthy();
+      for (const entrada of t.permitidas.keys()) {
         const relativa = entrada.startsWith('objects.*.') ? entrada.slice(10) : entrada;
         if (!folhas.includes(relativa) && !folhas.includes(`objects.*.${relativa}`)) {
           naoResolvidas.push(`${t.nome} ${entrada}`);
@@ -200,6 +202,59 @@ describe('spec coverage — against the committed leaf inventory', () => {
       }
     }
     expect(naoResolvidas).toEqual([]);
+  });
+
+  /**
+   * Allow-listed on purpose although the public document does not show them.
+   * Each one needs its reason here; anything else that resolves to no leaf is a
+   * stale or mistyped entry.
+   */
+  const FORA_DA_ESPECIFICACAO: Readonly<Record<string, string>> = {
+    // The document shows `forma_envio.code`; `codigo` is the key the /v1/envio
+    // resource itself uses (plan §3.5 lists both).
+    'envios.*.forma_envio.codigo': 'the /v1/envio key, kept beside the documented `code`',
+  };
+
+  it('every estrutural allow-list entry resolves to a primitive leaf of its operation, or is named as off-spec', () => {
+    /** The table, its own operation, and the operations whose leaves it reads (with a prefix). */
+    const casos: readonly [TabelaRedacaoLi, readonly (readonly [string, string])[]][] = [
+      [TABELAS_LI.pedido, [['/v1/pedido/{pedido_id}', '']]],
+      // Plan §3.5: a search page's objects are read with the detail's paths.
+      [
+        TABELAS_LI.pedidoBusca,
+        [
+          ['/v1/pedido/search', ''],
+          ['/v1/pedido/{pedido_id}', 'objects.*.'],
+        ],
+      ],
+      [TABELAS_LI.historico, [['/v1/situacao_historico/search', '']]],
+      [TABELAS_LI.situacaoPedido, [['/v1/situacao/pedido/{pedido_id}', '']]],
+    ];
+    const naoResolvidas: string[] = [];
+    const usadas = new Set<string>();
+    for (const [t, fontes] of casos) {
+      const folhas = new Set<string>();
+      for (const [caminhoDoc, prefixo] of fontes) {
+        const op = ops.find((o) => o.caminho === caminhoDoc);
+        expect(op, caminhoDoc).toBeDefined();
+        for (const [c, tipos] of op?.folhas ?? []) {
+          if (tipos.some((tipo) => PRIMITIVOS.has(tipo))) folhas.add(`${prefixo}${c}`);
+        }
+      }
+      expect(tabelaDoCaminho(concreto(fontes[0]?.[0] ?? '')), t.nome).toBe(t);
+      for (const entrada of t.permitidas.keys()) {
+        if (folhas.has(entrada)) continue;
+        const relativa = entrada.startsWith('objects.*.') ? entrada.slice(10) : entrada;
+        if (Object.hasOwn(FORA_DA_ESPECIFICACAO, relativa)) {
+          usadas.add(relativa);
+          continue;
+        }
+        naoResolvidas.push(`${t.nome} ${entrada}`);
+      }
+    }
+    expect(naoResolvidas).toEqual([]);
+    // A named exception no table uses any more is stale too.
+    expect([...usadas].sort()).toEqual(Object.keys(FORA_DA_ESPECIFICACAO).sort());
   });
 
   it('every valor*, preco* and quantidade* leaf of an estrutural operation is allow-listed', () => {
@@ -272,7 +327,6 @@ describe('spec coverage — against the committed leaf inventory', () => {
         'bairro',
         'banco',
         'bandeira',
-        'cep',
         'cidade',
         'cliente_obs',
         'cnpj',
@@ -301,6 +355,8 @@ describe('spec coverage — against the committed leaf inventory', () => {
     );
     expect([...PREFIXOS_NEGADOS_LI].sort()).toEqual([
       'alterado_por',
+      'celular',
+      'cep',
       'endereco',
       'telefone',
       'url',
@@ -1034,8 +1090,8 @@ describe('error bodies', () => {
       JSON.stringify({
         a: 'ref_1234567890',
         b: `${CPF.slice(0, 3)}.${CPF.slice(3, 6)}.${CPF.slice(6, 9)}-${CPF.slice(9)}`,
-        c: 1e9,
-        d: 999_999_999,
+        c: 1e7,
+        d: 9_999_999,
         e: true,
         f: null,
       }),
@@ -1044,10 +1100,61 @@ describe('error bodies', () => {
       a: REDIGIDO,
       b: REDIGIDO,
       c: REDIGIDO,
-      d: 999_999_999,
+      d: 9_999_999,
       e: true,
       f: null,
     });
+  });
+
+  it('near-miss: an 8- or 9-digit run (a bare CEP, a mobile without its area code, a CPF with leading zeros) is dropped; a short code is kept', () => {
+    // A valid-check CPF whose first two digits are zeros, written as a NUMBER: 9 digits.
+    const cpfComZeros = Number(gerarCpf('001000000'));
+    expect(String(cpfComZeros)).toHaveLength(9);
+    const corpo = {
+      codigo: 'E123',
+      pedido: 1_234_567,
+      valor: '12345678',
+      contato: '987654321',
+      doc: cpfComZeros,
+      ref: 'cep_12345678',
+    };
+    expect(logJson('/v1/pedido/1', 400, corpo)).toEqual({
+      codigo: 'E123',
+      pedido: 1_234_567,
+      valor: REDIGIDO,
+      contato: REDIGIDO,
+      doc: REDIGIDO,
+      ref: REDIGIDO,
+    });
+    expect(fixtureJson('/v1/pedido/1', 400, { ...corpo, n: '1234567' })).toEqual({
+      codigo: FALSO_LI.texto,
+      pedido: 1_234_567,
+      valor: FALSO_LI.texto,
+      contato: FALSO_LI.texto,
+      doc: 0,
+      ref: FALSO_LI.texto,
+      n: '1234567',
+    });
+  });
+
+  it('in an error body a denied key is denied in any case, and celular* and cep* by prefix', () => {
+    // An error walk keeps a code-shaped value under any key it does not deny, so
+    // the deny list is what stands between a single-word value and the log.
+    const corpo = { CEP: 'abc', Nome: 'Fulano', cep_destino: 'abc', celular_2: 'x', Email: 'y' };
+    expect(logJson('/v1/pedido/1', 400, corpo)).toEqual({
+      CEP: REDIGIDO,
+      Nome: REDIGIDO,
+      cep_destino: REDIGIDO,
+      celular_2: REDIGIDO,
+      Email: REDIGIDO,
+    });
+    // Near-miss: a code-shaped value under an ordinary key survives the same walk.
+    expect(logJson('/v1/pedido/1', 400, { Codigo: 'abc' })).toEqual({ Codigo: 'abc' });
+    expect(fixtureJson('/v1/pedido/1', 400, { CPF: '12', Celular: 3 })).toEqual({
+      CPF: FALSO_LI.texto,
+      Celular: 0,
+    });
+    expect(fixtureJson('/v1/pedido/1', 400, { n: '12' })).toEqual({ n: '12' });
   });
 
   it('a 2xx estrutural body that is not JSON (it could be a cut pedido): no excerpt', () => {
@@ -1058,6 +1165,30 @@ describe('error bodies', () => {
       const r = log('/v1/pedido/1', 200, corpo);
       expect(r).toMatchObject({ politica: 'estrutural', forma: 'texto', trecho: null });
     }
+  });
+
+  it('a 2xx configuracao body that is not JSON (a BOM, a cut list): no excerpt — its keep-list exists because the body is not trusted whole', () => {
+    for (const corpo of [
+      '﻿{"objects":[{"configuracoes":{"token":"SEGREDO-gateway"}}]}',
+      '{"objects":[{"configuracoes":{"chave":"SEGREDO-gateway"',
+      '<html>SEGREDO-gateway</html>',
+    ]) {
+      for (const caminho of ['/v1/pagamento/', '/v1/envio/3', '/v1/situacao']) {
+        const r = log(caminho, 200, corpo);
+        expect(r, caminho).toMatchObject({
+          politica: 'configuracao',
+          forma: 'texto',
+          trecho: null,
+        });
+        expect(r.bytes).toBe(bytesUtf8(corpo));
+      }
+    }
+    // Near-miss: a 2xx catalogue body that is not JSON keeps its masked text.
+    expect(log('/v1/produto/1', 200, `<html>${PII_FALSA.email}</html>`)).toMatchObject({
+      politica: 'catalogo',
+      forma: 'texto',
+      trecho: '<html><redacted:email></html>',
+    });
   });
 
   it('an estrutural non-JSON error body: byte count and form only', () => {
@@ -1075,14 +1206,41 @@ describe('error bodies', () => {
     }
   });
 
-  it('a 401 on /v1/categoria/ keeps its text in the log, masked', () => {
+  it('a 401 or 403 keeps NO excerpt on any path: a token echoed in another form never reaches the log', () => {
+    // The package scrubs only the token AS SENT. A token may be any visible
+    // ASCII, so an echo can be JSON-escaped, HTML-escaped, or partial.
+    const token = 'abc"DEF\\ghi&jkl<mno>pqrstu1234567890XYZ';
+    const html = token
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+    const ecos = [
+      JSON.stringify({ detalhe: `chave ${token} invalida` }),
+      `<html><body>chave ${html} invalida</body></html>`,
+      JSON.stringify({ detail: `token ${token.slice(0, 22)} invalido` }),
+      JSON.stringify({ chave: 'pqrstu1234567890XYZ' }),
+    ];
+    for (const caminho of ['/v1/categoria/', '/v1/situacao/', '/v1/pedido/1']) {
+      for (const status of [401, 403]) {
+        for (const corpo of ecos) {
+          const r = log(caminho, status, corpo);
+          expect(r, `${caminho} ${String(status)}`).toMatchObject({ trecho: null, mascarados: 0 });
+          expect(r.bytes).toBe(bytesUtf8(corpo));
+          expect(['json', 'texto']).toContain(r.forma);
+        }
+      }
+    }
+  });
+
+  it('near-miss: a catalogue 400 keeps its text in the log, masked', () => {
     const r = log(
       '/v1/categoria/',
-      401,
-      JSON.stringify({ detail: `Token inválido para ${PII_FALSA.email}` }),
+      400,
+      JSON.stringify({ detail: `Filtro inválido para ${PII_FALSA.email}` }),
     );
     expect(r.politica).toBe('catalogo');
-    expect(r.trecho).toBe('{"detail":"Token inválido para <redacted:email>"}');
+    expect(r.trecho).toBe('{"detail":"Filtro inválido para <redacted:email>"}');
     expect(r.mascarados).toBe(1);
   });
 
@@ -1511,6 +1669,60 @@ describe('the fixture profile', () => {
     });
   });
 
+  it('never laxer than the log: a kept string the regex layer would mask is faked', () => {
+    const corpo = {
+      itens: [
+        { sku: PII_FALSA.email },
+        { sku: `${CPF.slice(0, 3)}.${CPF.slice(3, 6)}.${CPF.slice(6, 9)}-${CPF.slice(9)}` },
+        { sku: CPF },
+        { sku: 'ABC-123' },
+      ],
+    };
+    expect(fixtureJson('/v1/pedido/165', 200, corpo)).toEqual({
+      itens: [
+        { sku: FALSO_LI.texto },
+        { sku: FALSO_LI.texto },
+        { sku: FALSO_LI.texto },
+        { sku: 'ABC-123' },
+      ],
+    });
+    expect(fixtureJson('/v1/produto/1', 200, { sku: PII_FALSA.email, ncm: '61091000' })).toEqual({
+      sku: FALSO_LI.texto,
+      ncm: '61091000',
+    });
+    // Near-miss: an exempt predicate keeps bare digits, as the log does.
+    expect(fixtureJson('/v1/pedido/165', 200, { numero: CPF })).toEqual({ numero: CPF });
+  });
+
+  it("meta.next never shows a value the body itself fakes (the pedido's external id)", () => {
+    const externo = 'MLB-2000001234567';
+    const corpo = {
+      meta: {
+        next: `/api/v1/pedido/search/?id_externo=${externo}&limit=20`,
+        previous: `/api/v1/pedido/search/?id_externo=${externo}&limit=20&offset=0`,
+      },
+      objects: [{ numero: 165, id_externo: externo }],
+    };
+    const saida = fixtureJson('/v1/pedido/search/', 200, corpo);
+    expect(JSON.stringify(saida)).not.toContain(externo);
+    expect(saida).toEqual({
+      meta: {
+        next: '/api/v1/pedido/search/?id_externo=<redacted>&limit=20',
+        previous: '/api/v1/pedido/search/?id_externo=<redacted>&limit=20&offset=0',
+      },
+      objects: [{ numero: 165, id_externo: FALSO_LI.texto }],
+    });
+    expect(fixtureJson('/v1/pedido/search/', 200, saida)).toEqual(saida);
+    // Near-miss: the log keeps the external id, in the body and in meta.next.
+    expect(logJson('/v1/pedido/search/', 200, corpo)).toEqual(corpo);
+    // And a fixture keeps the query values it may keep.
+    expect(
+      fixtureJson('/v1/produto/', 200, {
+        meta: { next: '/api/v1/produto/?sku=abc-1&limit=20&offset=20' },
+      }),
+    ).toEqual({ meta: { next: '/api/v1/produto/?sku=abc-1&limit=20&offset=20' } });
+  });
+
   it('keep-list: a string sku kept, an object in sku faked leaf by leaf', () => {
     expect(fixtureJson('/v1/produto/1', 200, { sku: 'abc-1' })).toEqual({ sku: 'abc-1' });
     expect(fixtureJson('/v1/produto/1', 200, { sku: { a: 'x', b: 2 } })).toEqual({
@@ -1634,7 +1846,9 @@ describe('totality — never throws', () => {
   const caminhos = ['/v1/pedido/1', '/v1/situacao/', '/v1/produto/1', '/webhooks/v1/pedido'];
   const statuses = [200, 401, 429, 503, null];
 
-  it('over every body × class × status, in both profiles', () => {
+  // About 3 s alone, on 2 MB bodies; under a parallel run it passed 5 s once, so
+  // the default timeout would turn load into a red test.
+  it('over every body × class × status, in both profiles', { timeout: 30_000 }, () => {
     let n = 0;
     for (const corpo of corpos) {
       for (const caminho of caminhos) {

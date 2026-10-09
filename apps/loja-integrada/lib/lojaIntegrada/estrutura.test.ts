@@ -17,9 +17,10 @@
  *    transitive import closure of the logger never reaches the Admin SDK, the
  *    admin data layer, Next or the app alias;
  *  - the observer seam: outside `core/log.ts`, every observer handed to the
- *    package is `criarObservadorLi(…)`, and no file names the raw event type —
- *    it carries the raw query and the full response text, and only the logger
- *    redacts them.
+ *    package is exactly `criarObservadorLi(…)` as imported from the logger —
+ *    the whole value, under its own name, never shadowed — and no file names
+ *    the raw event type: it carries the raw query and the full response text,
+ *    and only the logger redacts them.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -108,16 +109,99 @@ const ENTRADAS_DO_FECHO = ['core/log.ts', 'core/redacao.ts', 'core/refCredencial
 
 /** The one file allowed to see the raw call event and build an observer. */
 const ARQUIVO_DO_LOGGER = 'lib/lojaIntegrada/core/log.ts';
-const SEAM_OK = 'onChamada: criarObservadorLi(';
+/** The logger as a module, relative to the app root (`@/` resolves there). */
+const MODULO_DO_LOGGER = 'lib/lojaIntegrada/core/log';
+const PROPRIEDADE = 'onChamada: ';
+const SEAM_OK = `${PROPRIEDADE}criarObservadorLi(`;
 
-/** Why a source text breaks the observer seam; empty when it does not. */
+/**
+ * The index of the `)` that closes the `(` at `abre`, skipping quoted text, or
+ * -1 when it never closes.
+ */
+function fimDaChamada(texto: string, abre: number): number {
+  let nivel = 0;
+  let aspas: string | null = null;
+  for (let i = abre; i < texto.length; i++) {
+    const c = texto[i];
+    if (aspas !== null) {
+      if (c === '\\') i++;
+      else if (c === aspas) aspas = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') aspas = c;
+    else if (c === '(') nivel += 1;
+    else if (c === ')') {
+      nivel -= 1;
+      if (nivel === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** A specifier as an app-relative module path (`@/x` → `x`, `./x` against the file). */
+function moduloDe(arquivo: string, espec: string): string {
+  if (espec.startsWith('@/')) return espec.slice(2);
+  if (espec.startsWith('.')) return posix.normalize(posix.join(posix.dirname(arquivo), espec));
+  return espec;
+}
+
+/**
+ * Why a source text (`arquivo` relative to the app root) breaks the observer
+ * seam; empty when it does not.
+ *
+ * 1. Every `onChamada` is `onChamada: criarObservadorLi(…)`, and that call is
+ *    the WHOLE value: the next token after its closing `)` is `,` or `}` — so
+ *    `criarObservadorLi(…) && ((e) => …)` cannot slip an inline observer in.
+ * 2. A file that has the seam imports `criarObservadorLi` under its own name
+ *    from the logger module, and every other mention of the name is one of its
+ *    seam calls — so a local function, a parameter or a renamed import of the
+ *    same name cannot stand in for it.
+ * 3. No file names the raw event type.
+ */
 function violacoesDoSeam(arquivo: string, texto: string): string[] {
   if (arquivo === ARQUIVO_DO_LOGGER) return [];
   const violacoes: string[] = [];
+  const chamadas = new Set<number>();
   let i = texto.indexOf('onChamada');
   while (i !== -1) {
-    if (!texto.startsWith(SEAM_OK, i)) violacoes.push(`${arquivo}: onChamada at ${String(i)}`);
+    if (!texto.startsWith(SEAM_OK, i)) {
+      violacoes.push(`${arquivo}: onChamada at ${String(i)} is not ${SEAM_OK}…)`);
+    } else {
+      const nome = i + PROPRIEDADE.length;
+      chamadas.add(nome);
+      const fim = fimDaChamada(texto, i + SEAM_OK.length - 1);
+      const depois =
+        fim === -1
+          ? ''
+          : texto
+              .slice(fim + 1)
+              .trimStart()
+              .charAt(0);
+      if (depois !== ',' && depois !== '}') {
+        violacoes.push(`${arquivo}: the observer at ${String(nome)} is not the whole value`);
+      }
+    }
     i = texto.indexOf('onChamada', i + 1);
+  }
+  if (chamadas.size > 0) {
+    const importacoes: (readonly [number, number])[] = [];
+    for (const m of texto.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+      const nomes = (m[1] ?? '').split(',').map((n) => n.trim());
+      if (
+        nomes.includes('criarObservadorLi') &&
+        moduloDe(arquivo, m[2] ?? '') === MODULO_DO_LOGGER
+      ) {
+        importacoes.push([m.index, m.index + m[0].length]);
+      }
+    }
+    const fora = [...texto.matchAll(/\bcriarObservadorLi\b/g)]
+      .map((m) => m.index)
+      .filter((j) => !chamadas.has(j) && !importacoes.some(([a, b]) => j >= a && j < b));
+    if (importacoes.length === 0 || fora.length > 0) {
+      violacoes.push(
+        `${arquivo}: criarObservadorLi is not the logger's (imported from it: ${String(importacoes.length > 0)}; other mentions at ${fora.join(', ') || 'none'})`,
+      );
+    }
   }
   if (/\bChamadaLi\b/.test(texto)) violacoes.push(`${arquivo}: names ChamadaLi`);
   return violacoes;
@@ -257,6 +341,8 @@ describe('the guards, on synthetic source', () => {
     expect(fecho.externos.filter(proibidoNoFecho)).toEqual([esperado]);
   });
 
+  const IMPORTA_DO_LOGGER = "import { criarObservadorLi } from './log';\n";
+
   it.each([
     ['an inline observer', 'cliente({ onChamada: (e) => console.warn(e) })'],
     ['a forwarded one', 'cliente({ onChamada: deps.x })'],
@@ -266,17 +352,64 @@ describe('the guards, on synthetic source', () => {
       'the raw event type',
       "import type { ChamadaLi } from '@delfrance/integrations-loja-integrada';",
     ],
+    [
+      'the call combined with an inline observer',
+      `${IMPORTA_DO_LOGGER}cliente({ onChamada: criarObservadorLi({ conta }) && ((e) => console.warn(e.corpo)) })`,
+    ],
+    [
+      'the call combined with a forwarded one',
+      `${IMPORTA_DO_LOGGER}cliente({ onChamada: criarObservadorLi({ conta }) || deps.x, x: 1 })`,
+    ],
+    [
+      'an unbalanced call',
+      `${IMPORTA_DO_LOGGER}cliente({ onChamada: criarObservadorLi({ conta: f(") })`,
+    ],
+    [
+      'a local function of the same name',
+      'const criarObservadorLi = (o) => (e) => console.log(e.corpo);\n' +
+        'cliente({ onChamada: criarObservadorLi({ conta }) });',
+    ],
+    [
+      'the name imported from elsewhere',
+      "import { criarObservadorLi } from './outro/log';\n" +
+        'cliente({ onChamada: criarObservadorLi({ conta }) });',
+    ],
+    [
+      'another export renamed to the name',
+      "import { escritorPadrao as criarObservadorLi } from './log';\n" +
+        'cliente({ onChamada: criarObservadorLi({ conta }) });',
+    ],
+    [
+      'a parameter that shadows the import',
+      `${IMPORTA_DO_LOGGER}function f(criarObservadorLi) { return cliente({ onChamada: criarObservadorLi({ conta }) }); }`,
+    ],
   ])('seam flags %s', (_caso, fonte) => {
     expect(violacoesDoSeam('lib/lojaIntegrada/core/contexto.ts', fonte)).toHaveLength(1);
   });
 
-  it('seam accepts criarObservadorLi(…), and exempts the logger itself', () => {
+  it('seam accepts criarObservadorLi(…) imported from the logger, and exempts the logger itself', () => {
+    expect(
+      violacoesDoSeam(
+        'lib/lojaIntegrada/core/contexto.ts',
+        "import { type OpcoesObservadorLi, criarObservadorLi } from './log';\n" +
+          'cliente({\n  onChamada: criarObservadorLi({ ...deps.registro, conta: id }),\n  x: 1,\n});',
+      ),
+    ).toEqual([]);
     expect(
       violacoesDoSeam(
         'app/x/route.ts',
-        'validarPersonalToken({ token, onChamada: criarObservadorLi({ conta: id }) })',
+        "import { criarObservadorLi } from '@/lib/lojaIntegrada/core/log';\n" +
+          'validarPersonalToken({ token, onChamada: criarObservadorLi({ conta: f(")") }) })',
       ),
     ).toEqual([]);
+    // Near-miss: the same call, but the import path is relative to ANOTHER directory.
+    expect(
+      violacoesDoSeam(
+        'app/x/route.ts',
+        "import { criarObservadorLi } from './log';\n" +
+          'validarPersonalToken({ token, onChamada: criarObservadorLi({ conta: id }) })',
+      ),
+    ).toHaveLength(1);
     expect(
       violacoesDoSeam(ARQUIVO_DO_LOGGER, 'export function f(e: ChamadaLi) { onChamada(e); }'),
     ).toEqual([]);

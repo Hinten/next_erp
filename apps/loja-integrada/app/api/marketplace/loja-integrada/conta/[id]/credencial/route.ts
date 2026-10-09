@@ -50,7 +50,9 @@
  * answered with a fixed sentence (`lerCorpoLi`). Logs carry the conta id, the
  * verdict, Loja Integrada's status and the correlation id — never the token
  * nor its fingerprint. The validating GET's own line labels the credential
- * `versaoCredencial: null` (a candidate has no stored version yet).
+ * `versaoCredencial: null` (a candidate has no stored version yet) and carries
+ * no body excerpt: the package scrubs only the exact token sent, and a refusal
+ * may echo it in part or escaped.
  *
  * ## The caller going away
  *
