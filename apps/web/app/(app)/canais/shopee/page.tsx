@@ -22,8 +22,8 @@ import { ShopeeCallbackToast } from './_components/ShopeeCallbackToast';
  *
  * This screen replaced the static `CanalCapsPanel` placeholder the moment the
  * channel gained a real backend (`apps/shopee`, master-plan step 1). The panel
- * component itself stays: it is what the four channels with no backend yet
- * (Amazon, Facebook, Loja Integrada, Magalu) still render.
+ * component itself stays: every channel with no backend yet still renders it —
+ * its own docblock keeps the current list, so it is not repeated here.
  */
 export default function CanalShopeePage() {
   const db = getFirebaseFirestore();
