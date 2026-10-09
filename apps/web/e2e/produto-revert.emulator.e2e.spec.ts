@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { errors, expect, test, type Page } from '@playwright/test';
 import {
   cleanupByNamePrefix,
   cleanupProdutoSubcollection,
@@ -116,30 +116,65 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
   }
 
   /**
-   * Expand history rows newest-first until one offers `Restaurar <field>`, and
-   * return that row plus its button — scoped, so every subsequent query (the
-   * precos warning, the button itself) only ever matches within THAT row.
+   * Wait for the exact recorded transition, not merely a restorable field.
+   * The first live snapshot can still contain an older entry for that field.
+   * Returning a value-filtered locator also keeps a later insertion from moving
+   * the captured Restore action onto another row.
    *
-   * ⚠️ Taking the topmost row and assuming it carries the field is a race: the
-   * produto's own triggers can land a NEWER entry with different `campos`
-   * between the poll that waited for our edit and this navigation, and then the
-   * first row has no such button at all. Selecting by the affordance the test
-   * needs is deterministic whatever else was recorded in between.
+   * The search keeps the existing five-row window and five-second control
+   * ceiling, sharing their 25-second budget across every rescan.
    */
-  async function expandEntryOferecendoRestaurar(page: Page, field: string) {
+  async function expandEntryOferecendoRestaurar(
+    page: Page,
+    field: string,
+    expectedTransition: string,
+  ) {
     const rows = page.getByTestId('modificacao-entry');
-    const total = Math.min(await rows.count(), 5);
-    for (let i = 0; i < total; i++) {
-      const entry = rows.nth(i);
-      await entry.getByRole('button', { name: 'Detalhes da modificação' }).click();
-      const restaurar = entry.getByRole('button', { name: `Restaurar ${field}`, exact: true });
-      const found = await restaurar
-        .waitFor({ state: 'visible', timeout: 5_000 })
-        .then(() => true)
-        .catch(() => false);
-      if (found) return { entry, restaurar };
+    const restoreName = `Restaurar ${field}`;
+    const entry = rows
+      .filter({ has: page.getByText(expectedTransition, { exact: true }) })
+      .filter({ has: page.getByRole('button', { name: restoreName, exact: true }) });
+    const restaurar = entry.getByRole('button', { name: restoreName, exact: true });
+    const deadline = Date.now() + 5 * 5_000;
+
+    async function foundTarget(): Promise<boolean> {
+      const count = await entry.count();
+      expect(
+        count,
+        `Ambiguous ${field} history transition: ${expectedTransition}`,
+      ).toBeLessThanOrEqual(1);
+      return count === 1 && (await restaurar.isVisible());
     }
-    throw new Error(`Nenhuma das ${total} entradas mais recentes oferece "Restaurar ${field}"`);
+
+    while (Date.now() < deadline) {
+      if (await foundTarget()) return { entry, restaurar };
+      const total = Math.min(await rows.count(), 5);
+      for (let i = 0; i < total; i++) {
+        // The toggle has no aria-expanded. Its existing collapsed chevron lets
+        // rescans open details without closing a row that is already expanded.
+        const collapsedControl = rows
+          .nth(i)
+          .getByRole('button', { name: 'Detalhes da modificação', exact: true })
+          .filter({ has: page.locator('svg.tabler-icon-chevron-right') });
+        if ((await collapsedControl.count()) === 0) continue;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        try {
+          await collapsedControl.click({ timeout: Math.min(5_000, remaining) });
+        } catch (err) {
+          if (!(err instanceof errors.TimeoutError) || (await collapsedControl.count()) > 0) {
+            throw err;
+          }
+          // A live insertion removed or expanded this collapsed control.
+        }
+        if (await foundTarget()) return { entry, restaurar };
+      }
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await page.waitForTimeout(Math.min(100, remaining));
+    }
+    throw new Error(
+      `No visible ${restoreName} for the exact transition "${expectedTransition}" in the first five history rows within 25 seconds`,
+    );
   }
 
   /** Edit `Nome` through the UI and wait for the trigger to record the change. */
@@ -167,7 +202,11 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await editNomeAndSave(page, edited);
 
     await openModificacoesTab(page, produtoAId);
-    const { restaurar } = await expandEntryOferecendoRestaurar(page, 'nome');
+    const { restaurar } = await expandEntryOferecendoRestaurar(
+      page,
+      'nome',
+      `${nomeOriginal} → ${edited}`,
+    );
     await restaurar.click();
 
     // The click moved the operator to the field's own tab and put the old value
@@ -205,16 +244,39 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await editNomeAndSave(page, edited);
 
     await openModificacoesTab(page, produtoAId);
-    const { restaurar } = await expandEntryOferecendoRestaurar(page, 'nome');
+    const expectedTransition = `${nomeOriginal} → ${edited}`;
+    const { entry, restaurar } = await expandEntryOferecendoRestaurar(
+      page,
+      'nome',
+      expectedTransition,
+    );
+    const rowsBeforeChange = await page.getByTestId('modificacao-entry').count();
 
     // Someone else (an Admin-seeded write, standing in for a second user)
     // changes the field AFTER this row's target was loaded but BEFORE
     // Restaurar is clicked — the entry's captured target (old: nomeOriginal,
     // new: edited) is now stale against the live doc (now: thirdValue).
     await setProdutoFields(produtoAId, { nome: thirdValue });
+    const historyDeadline = Date.now() + 30_000;
     await expect
       .poll(async () => (await getProdutoData(produtoAId))?.nome, { timeout: 30_000 })
       .toBe(thirdValue);
+    let remaining = historyDeadline - Date.now();
+    expect(
+      remaining,
+      'The third-party history update exceeded its existing 30-second budget',
+    ).toBeGreaterThan(0);
+    await expect
+      .poll(() => page.getByTestId('modificacao-entry').count(), { timeout: remaining })
+      .toBeGreaterThan(rowsBeforeChange);
+    remaining = historyDeadline - Date.now();
+    expect(
+      remaining,
+      'The intended history entry disappeared after the live insertion',
+    ).toBeGreaterThan(0);
+    await expect(entry.getByText(expectedTransition, { exact: true })).toBeVisible({
+      timeout: remaining,
+    });
 
     await restaurar.click();
 
@@ -250,7 +312,11 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await editNomeAndSave(page, edited);
 
     await openModificacoesTab(page, produtoAId);
-    const { restaurar } = await expandEntryOferecendoRestaurar(page, 'nome');
+    const { restaurar } = await expandEntryOferecendoRestaurar(
+      page,
+      'nome',
+      `${nomeOriginal} → ${edited}`,
+    );
     await restaurar.click();
     await expectFieldValue(page, 'Nome', nomeOriginal);
 
@@ -294,7 +360,11 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
       .toEqual({ [varejoId]: { valor: 30 } });
 
     await openModificacoesTab(page, parentCId);
-    const { entry, restaurar } = await expandEntryOferecendoRestaurar(page, 'precos');
+    const { entry, restaurar } = await expandEntryOferecendoRestaurar(
+      page,
+      'precos',
+      `— → ${JSON.stringify({ [varejoId]: { valor: 30 } })}`,
+    );
     // Restoring `precos` on a parent will re-fire the trigger and flow to every
     // variation child when saved — surfaced as a warning, not silently done.
     await expect(entry.getByText(/variações/i)).toBeVisible({ timeout: 15_000 });
