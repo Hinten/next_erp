@@ -99,6 +99,44 @@ export type ResolvedProdutoPorSku =
   | { produtoId: string; via: SkuMatchKind }
   | { produtoId: null; via: SkuMissKind };
 
+/**
+ * What {@link unidadeVendavelDaRaiz} reads off a ROOT produto that some rung
+ * matched: whether it is a kit, its id, and its family fields.
+ */
+export interface RaizResolvida {
+  /** `produto.ehKit === true` — a kit is never hopped (see below). */
+  readonly ehKit: boolean;
+  /** The id of the produto the rung matched. */
+  readonly produtoId: string;
+  /**
+   * The family fields `unidadeVendavel` reads. A caller that reads the root by
+   * id (rather than through a `paiId == null` query) SHOULD project `paiId`: it
+   * is the drift guard that keeps a child carrying a stale `filhoUnicoId` on
+   * itself.
+   */
+  readonly familia: ProdutoDeFamilia;
+}
+
+/**
+ * The kit guard + the family hop: which produto a matched ROOT means when the
+ * question is "what does a sale (or a kit) CONSUME?".
+ *
+ * A family-of-one PARENT is a wrapper whose stock lives on its sole member
+ * (#1398), so it answers the member — **unless it is a KIT**, whose sole member
+ * is a mirror of the parent while the parent owns the composition an operator
+ * edits (see {@link resolverProdutoPorSku}'s root rung for the whole reasoning).
+ *
+ * ⚠️ ONE rule, shared and never copied (#1369). The SKU rungs below call it,
+ * and so does Shopee's native-kit COMPONENT resolution, whose `prodshopee`
+ * listing rung returns the link's OWNER — for a plain listing, exactly such a
+ * wrapper — and must reach the same sellable unit (step 19, #1527). It returns
+ * the id only: the `via` belongs to the rung, and each caller proved something
+ * different to get here.
+ */
+export function unidadeVendavelDaRaiz(raiz: RaizResolvida): string {
+  return raiz.ehKit ? raiz.produtoId : unidadeVendavel(raiz.familia);
+}
+
 export interface ResolverProdutoPorSkuArgs {
   /** The marketplace-supplied seller SKU. Falsy ⇒ the whole stage is skipped. */
   readonly sku: string | null | undefined;
@@ -166,7 +204,8 @@ export async function resolverProdutoPorSku(
   }
 
   /**
-   * The kit guard + the family hop: which produto a matched ROOT means.
+   * The kit guard + the family hop: which produto a matched ROOT means —
+   * {@link unidadeVendavelDaRaiz}, the ONE exported rule.
    *
    * ⚠️ It is only ever handed the result of a `paiId == null` query, which is
    * what lets `probeSkuUnico` leave `paiId` out of the projected `familia`.
@@ -176,7 +215,7 @@ export async function resolverProdutoPorSku(
    * below reach here having proved different things.
    */
   const alvoDaRaiz = (raiz: Extract<SkuProbe, { kind: 'one' }>): string =>
-    raiz.ehKit ? raiz.produtoId : unidadeVendavel(raiz.familia);
+    unidadeVendavelDaRaiz(raiz);
 
   // Root-only — kept ahead of the unscoped rung so a simple listing's SKU
   // fallback still resolves to the same produto it always did.

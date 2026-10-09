@@ -1,0 +1,166 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "item_list": [
+      {
+        "item_id": 2500139870,
+        "category_id": 107290,
+        "item_name": "Sonda kit virtual teste",
+        "description": "Kit de teste do sandbox criado pela sonda de kits virtuais. Nao comprar.",
+        "item_sku": "SONDA-KIT",
+        "create_time": 1791244800,
+        "update_time": 1791244800,
+        "attribute_list": [
+          {
+            "attribute_id": 200168,
+            "original_attribute_name": "[S]Sleeve Length",
+            "attribute_value_list": [
+              {
+                "value_id": 101491,
+                "original_value_name": "[S]Others",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 200162,
+            "original_attribute_name": "[S]Pattern",
+            "attribute_value_list": [
+              {
+                "value_id": 101463,
+                "original_value_name": "[S]Plain",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 200134,
+            "original_attribute_name": "[S]Material",
+            "attribute_value_list": [
+              {
+                "value_id": 101149,
+                "original_value_name": "[S]Cotton",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 200037,
+            "original_attribute_name": "[S]Region of Origin",
+            "attribute_value_list": [
+              {
+                "value_id": 106737,
+                "original_value_name": "[S]Brasil",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 200240,
+            "original_attribute_name": "[S]Tall Fit",
+            "attribute_value_list": [
+              {
+                "value_id": 101540,
+                "original_value_name": "[S]No",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 201004,
+            "original_attribute_name": "[S]Plus Size",
+            "attribute_value_list": [
+              {
+                "value_id": 105488,
+                "original_value_name": "[S]No",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          },
+          {
+            "attribute_id": 200169,
+            "original_attribute_name": "[S]Style",
+            "attribute_value_list": [
+              {
+                "value_id": 101497,
+                "original_value_name": "[S]Athletic",
+                "value_unit": ""
+              }
+            ],
+            "is_mandatory": false
+          }
+        ],
+        "image": {
+          "image_id_list": ["br-11134207-7r98o-lzri4neb5vcv18"],
+          "image_url_list": ["https://example.invalid/file/redacted"],
+          "image_ratio": "1:1"
+        },
+        "weight": "1",
+        "dimension": {
+          "package_length": 0,
+          "package_width": 0,
+          "package_height": 0
+        },
+        "logistic_info": [
+          {
+            "logistic_id": 11006,
+            "logistic_name": "Sandbox -Standard Express LPS (Don't modify)",
+            "enabled": true,
+            "size_id": 0,
+            "is_free": false,
+            "estimated_shipping_fee": 1.99,
+            "include_pickup": false
+          },
+          {
+            "logistic_id": 11007,
+            "logistic_name": "Sandbox -SPX Express (Don't modify)",
+            "enabled": true,
+            "size_id": 0,
+            "is_free": false,
+            "estimated_shipping_fee": 1.99,
+            "include_pickup": false
+          }
+        ],
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 3
+        },
+        "condition": "NEW",
+        "size_chart": "",
+        "item_status": "NORMAL",
+        "has_model": true,
+        "has_promotion": false,
+        "brand": {
+          "brand_id": 0,
+          "original_brand_name": "NoBrand"
+        },
+        "item_dangerous": 0,
+        "description_type": "normal",
+        "size_chart_id": 0,
+        "promotion_image": {
+          "image_id_list": ["br-11134207-7r98o-lzri4neb5vcv18"],
+          "image_url_list": ["https://example.invalid/file/redacted"]
+        },
+        "deboost": "FALSE",
+        "compatibility_info": {},
+        "authorised_brand_id": 0,
+        "is_fulfillment_by_shopee": false,
+        "tag": {
+          "kit": true
+        },
+        "purchase_limit_info": {
+          "min_purchase_limit": 1
+        }
+      }
+    ]
+  },
+  "debug_message": ""
+}

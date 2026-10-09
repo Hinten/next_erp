@@ -1,9 +1,9 @@
 # `__wire__` — Shopee response bodies, redacted
 
-Nineteen bodies today: five for the step-5 order import (#1513), four for step
-15b's package search (#1744), six for step 17's returns (#1525) and four for
-step 18's size charts (#1526). Two provenances, and they are **not equally
-strong**:
+Twenty-eight bodies today: five for the step-5 order import (#1513), four for
+step 15b's package search (#1744), six for step 17's returns (#1525), four for
+step 18's size charts (#1526) and nine for step 19's native kits (#1527). Two
+provenances, and they are **not equally strong**:
 
 | file                                               | endpoint                  | provenance                                                                                   | verified against the live API?                                                   |
 | -------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -13,6 +13,15 @@ strong**:
 | `search_package_list.sg-canais-da-loja.json`       | `search_package_list`     | the SG shop's own two channels, `invoice_pending: false` — one row (2026-10-01)              | ✅ Shopee sent this — ⚠️ ids are fixture ids, see below                          |
 | `search_package_list.sg-invoice-pending-true.json` | `search_package_list`     | the same call with `invoice_pending: true` — zero rows (2026-10-01)                          | ✅ Shopee sent this                                                              |
 | `search_package_list.sg-canais-turbo.json`         | `search_package_list`     | `[90011, 90012, 90026]`, channels the SG shop lacks — zero rows (2026-10-01)                 | ✅ Shopee sent this                                                              |
+| `get_item_list.sg-com-kit.json`                    | `get_item_list`           | kit probe #1 (SG sandbox, 2026-10-06): the kit and its two components, `tag.kit` per row     | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `get_item_list.sg-seller-delete.json`              | `get_item_list`           | kit probe #1: the shop's deleted listings, the deleted kit first, all `SELLER_DELETE`        | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `get_item_base_info.sg-kit.json`                   | `get_item_base_info`      | kit probe #1: the kit right after `add_kit_item` — `has_model`, `tag.kit`, no stock          | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `get_kit_item_info.sg-pos-criacao.json`            | `get_kit_item_info`       | kit probe #1: the kit right after `add_kit_item` — one model, B's HIDDEN model id            | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `get_model_list.sg-kit.json`                       | `get_model_list`          | kit probe #1: the kit's one model — the only place a kit's stock can be read                 | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `get_model_list.sg-item-sem-variacao.json`         | `get_model_list`          | kit probe #1: component B (no variations) — `model: []`, the hidden id absent                | ✅ Shopee sent this                                                              |
+| `get_kit_item_info.sg-apagado.json`                | `get_kit_item_info`       | kit probe #1: the same kit after `delete_item` — it still reads, `SELLER_DELETE`             | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `get_kit_item_info.sg-nao-kit.json`                | `get_kit_item_info`       | kit probe #1: a NON-kit `item_id` — `"error": "."`, "product is not found"                   | ✅ Shopee sent this                                                              |
+| `get_kit_item_limit.sg-http404.json`               | `get_kit_item_limit`      | kit probe #1: a path the sandbox host does not route — HTTP 404, the bare body               | ✅ Shopee sent this — ⚠️ the 404 STATUS is not in the file                       |
 | `get_order_detail.doc-masked-vn.json`              | `get_order_detail`        | the sample printed on the `v2.order.get_order_detail` reference page (a **VN** order)        | ❌ doc only — ⚠️ **unverified for BR**                                           |
 | `get_escrow_detail.doc-kit.json`                   | `get_escrow_detail`       | the sample printed on the `v2.payment.get_escrow_detail` reference page                      | ❌ doc only — and one field is demonstrably a doc artefact, see “kit ids” below  |
 | `search_package_list.doc.json`                     | `search_package_list`     | the sample printed on the `v2.order.search_package_list` reference page (a **VN** channel)   | ❌ doc only — a VN channel id, unverified for BR; its `sort` echo is wrong       |
@@ -34,7 +43,10 @@ pages, and `api v2.product.get_size_chart_list` /
 `api v2.product.get_size_chart_detail` for the four size-chart bodies); the first
 three sandbox bodies were pasted
 from the Shopee console's own test tool, and the three `search_package_list` ones
-were written by a read-only probe script (see below). All nineteen went through
+were written by a read-only probe script (see below). The nine kit
+bodies are the two step-19 kit probes' own captures, promoted with their ids
+reassigned by role (see **The native-kit bodies**). The nineteen bodies before
+step 19 all went through
 `redactWireBody` (`../redact.ts`) before being committed — for the four
 `search_package_list` bodies, the four one-id returns bodies and the four
 size-chart bodies it changed nothing, since no key on those pages is denylisted
@@ -327,3 +339,102 @@ What they carry, each asserted in `wireCorpus.test.ts`:
   and `Category id is invalid` (a category the list refuses). Only the sentence
   tells them apart, which is why the classifier reads `providerMessage` and never
   the code alone (register 258).
+
+## The native-kit bodies (step 19, #1527)
+
+Every one of the nine was SENT by Shopee — the SG sandbox shop, answering
+the two kit probes of #1527: probe #1 (2026-10-06, one kit `SONDA-KIT` with one
+model) and probe #2 (2026-10-07, the family kit `SONDA-KIT2`, two models and then
+a third appended). ⚠️ **The sandbox shop is SG**: none of this says a BR shop
+serves kits at all (register 272).
+
+### What was done to them, and only this
+
+The probes' own masking flattened every run of seven or more digits to `1000001`
+(ids, timestamps, the digits inside an image id, Shopee's internal error codes)
+and replaced every image URL with `https://example.invalid/file/redacted` before
+anything was written. A flattened id is unjoinable and ambiguous, so the
+promotion put back, and only this:
+
+- **Ids, BY ROLE** — the table below. The capture FILE names carry the roles
+  (`item1` = component A, the 2-tier item; `c2` = component B, the plain item);
+  the values are this corpus's own fixture ids, never Shopee's.
+- **The image id** → Shopee's published doc sample
+  `br-11134207-7r98o-lzri4neb5vcv18`, on every row: it was ONE image everywhere
+  (component A's photo, which the probes reused for component B and both kits).
+- **The category** → Shopee's doc sample `107290`, replacing the sandbox's SG
+  category.
+- **`create_time` / `update_time`** → ONE fixture clock per probe day:
+  `1791244800` (2026-10-06T00:00:00Z) for probe #1, `1791331200`
+  (2026-10-07T00:00:00Z) for probe #2. The real stamps are lost, so no test may
+  read an order or an age from them.
+- **Component A's `component_item_or_model_sku`** (a numeric SKU the masking
+  flattened) → `KIT-COMP-A-M1` / `-M2` / `-M3`, one per model of A. The
+  `SONDA-*` SKUs are the probes' own markers and stay verbatim.
+- **Shopee's internal error codes inside a `message`** (`code: …`,
+  `Spex error code …`) → `REDACTED`: they identify nothing this ERP models and
+  no role fits them. `Error 1040` (MySQL's own code) was never masked.
+- `update_stock.sg-kit`'s sandbox-only `debug_message` names the kit by its role
+  id. ⚠️ `add_kit_item.sg-dois-principais` names ONE `itemId:ModelId` pair;
+  the probe flagged component A as main on both kit models, and which of A's two
+  models Shopee named is NOT recoverable — the corpus writes A with its model on
+  the SECOND kit model. Nothing may assert on that pair.
+- **Row order** of `get_item_list.sg-com-kit` (kit, A, B) is the order the probe's
+  paired `get_item_base_info` read of those same ids answered.
+
+No body carried a `request_id`; `debug_message` stays wherever Shopee sent it. All
+nine are Prettier-formatted, and `redactWireBody` changes nothing on them
+(no denylisted key on these pages). ⚠️ **`image.image_url_list` is NOT on that
+denylist**: here the probes' own URL replacement kept the real URLs out, and a
+real BR kit capture needs the path added to `../redact.ts` before it is promoted.
+
+| role                                                                 | fixture id                  |
+| -------------------------------------------------------------------- | --------------------------- |
+| the kit `item_id` — BOTH probes' kit (two different kits, see below) | `2500139870`                |
+| the kit's first model (`tier_index: [0]`)                            | `2000458820`                |
+| component A — the 2-tier item / its model `White,02`                 | `2500139871` / `2000458821` |
+| component B — the plain item, no variations                          | `2500139872`                |
+| **B's hidden default model id** — in NO `get_model_list` body        | `2000458829`                |
+| six unrelated listings the sandbox shop deleted in earlier probes    | `2500139881`–`2500139886`   |
+
+⚠️ **Joins hold WITHIN ONE probe only.** Probe #1's kit and probe #2's kit are
+two different kits that both carry the kit role `2500139870` (every body here
+is probe #1's). And never join a kit body with the order, returns or size-chart
+sets. The six unrelated ids have no role.
+
+**Not committed:** probe #1's stock sequence (`estoque/*`: no ERP code reads kit
+stock, and the measurement lives in #1527 as prose), the `add_item` capture whose
+`warning` belongs to step 18's register, and the duplicate reads. ⚠️ **No
+synthetic body enters this directory:** the fail-closed `tag: null` list row is
+derived INSIDE `kits/localizarKitPorSku.test.ts` from `get_item_list.sg-com-kit`
+by a named transform, labelled synthetic there.
+
+### What the reads settle
+
+Each one is asserted in `wireCorpus.test.ts`:
+
+- `get_kit_item_info` answers under `response.product_info`, with `image` (not the
+  table's `images`) and a SINGULAR `long_image` that carries only
+  `image_ratio: "3:4"`; `description_type: "normal"` with `description`;
+  `sync_setting.auto_sync_dts`; a scalar `category_id`; and exactly ONE
+  `main_component: true` in the kit.
+- **The hidden model id.** Component B has no variations and was sent with no
+  `component_model_id`, yet it reads back a NON-ZERO one, with `''` name and SKU —
+  while B's own `get_model_list` answers `model: []`. The id exists only inside
+  the kit.
+- A kit's stock is readable ONLY on `get_model_list(kit)`: `stock_info_v2` with
+  `total_available_stock: 1` (A had 2 at quantity 2, B had 6 at quantity 1). Its
+  `get_item_base_info` carries `has_model: true`, `tag.kit: true` and no
+  `stock_info_v2`.
+- `tag.kit` rides the `get_item_list` ROW — `true` on the kit, `false` on both
+  components — which is the duplicate-SKU scan's filter.
+- A DELETED kit still reads: `get_kit_item_info` answers 200 with
+  `item_status: "SELLER_DELETE"` (its channels `enabled: false`), and a list of
+  the deleted statuses carries it with `tag.kit: true`.
+- A NON-kit `item_id` answers `"error": "."` (literally a dot) with "product is
+  not found".
+- `get_kit_item_limit` is not routed by the sandbox host: HTTP **404** and the
+  bare `{"error": "error_not_found"}` — no `message`, no `request_id`. ⚠️ The 404
+  is NOT in the file (a capture is the body); the test serves it with 404, the
+  file name says so, and the same body at 200 must stay the base `ShopeeApiError`,
+  never `ShopeeOperacaoNaoServidaError`.

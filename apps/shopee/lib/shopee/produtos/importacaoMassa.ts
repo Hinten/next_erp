@@ -134,6 +134,7 @@ import {
   type ItemLido,
 } from './itemLido';
 import { criarMemoDeGrupos } from './taxonomiaShopee';
+import { itensDosComponentesDoKit, lerTemModelosDosComponentes } from './temModelosDosComponentes';
 
 /* -------------------------------------------------------------------------- */
 /*  Constants                                                                  */
@@ -162,7 +163,10 @@ export const MAX_TENTATIVAS = 3;
  * probes, the produto, estoque, precos, the links and up to 50 children) ≤ 4.0 s,
  * the photo unit (up to 9 images × download + `putArquivoAdmin`) ≤ 14.0 s and the
  * checkpoint ≤ 0.2 s — ≈ 20 s worst case. `10 × 20 + 2.3` ≈ **205 s of 300**,
- * about 30 % headroom.
+ * about 30 % headroom. A KIT spends two reads where an item spends one
+ * `get_model_list` — `get_kit_item_info`, then one batched `get_item_base_info`
+ * for its component items (step 19) — so a page of ten kits is ≈ `10 × 21.5 +
+ * 2.3` ≈ 217 s, still about 28 % headroom.
  *
  * ⚠️ The quota consequence, stated rather than discovered: a shop of N simple
  * items costs `ceil(N/10)` `get_item_base_info` calls, not `ceil(N/50)` — five
@@ -946,6 +950,16 @@ export async function processarImportacaoShopee(
             'deps — o job nunca carrega o grafo do importador por conta própria.',
         );
       }
+      // The kit arm re-evaluates the recipe aviso, which can RAISE through an
+      // increment — so the same missing-dependency rule as `importarKit`.
+      const increment = deps.increment;
+      if (!increment) {
+        throw new Error(
+          'processarImportacaoShopee: há kits na fila mas nenhum increment foi injetado nas ' +
+            'deps — o importador de kit precisa dele para o aviso de receita (passo 19).',
+        );
+      }
+      const depsDoKit = { ...depsDoImportador, increment };
       while (filaKits.length > 0 && drenados < cap) {
         const itemId = filaKits[0]!;
         filaKits = filaKits.slice(1);
@@ -964,6 +978,17 @@ export async function processarImportacaoShopee(
               MSG_KIT_SEM_DETALHE,
             );
           }
+          // ⚠️ The components' `has_model`, read right after the kit page (step
+          // 19, #1527): a plain component's `component_model_id` is Shopee's
+          // HIDDEN default model id, and only `has_model === false` lets the
+          // kit importer bind it on its listing. ONE batched `get_item_base_info`
+          // for the COMPONENT ids (≤ 50 per call; none for a kit without
+          // components) — never for the kit's own id, whose item read stays
+          // unverified (register item 57).
+          const temModelosDosComponentes = await lerTemModelosDosComponentes(
+            ctx.client,
+            itensDosComponentesDoKit(produto),
+          );
           // The kit importer reads `entrada.kit`; `base` carries the id and the
           // `tag` that says what this is, built through the package's OWN row
           // schema so the shape is never this module's invention.
@@ -972,15 +997,32 @@ export async function processarImportacaoShopee(
             models: null,
             taxInfo: null,
             kit: produto,
+            temModelosDosComponentes,
             itemId,
           };
-          const res = await importarKit(depsDoImportador, item);
+          const res = await importarKit(depsDoKit, item);
           imported += 1;
           if (res.criado) created += 1;
           // `kits` counts kit listings the importer COMPLETED (create or
           // update); `created` already separates the two, and `res.kit.criado`
           // is the importer's own finer-grained answer for the route body.
           kits += 1;
+          // OP-1 (step 19): a kit whose pending ERP recipe edit the import KEPT
+          // (`receita-divergente`, L10(2)) is a COMPLETED kit, not a failure,
+          // so it adds no failure row — but it must not vanish into the
+          // counter either. One line per kit, ids only (the job report has no
+          // field for it; the open `shopeeKitReceitaDivergente` aviso is the
+          // durable signal once the trigger runs).
+          const avisosDoKit = res.kit?.avisos ?? [];
+          if (avisosDoKit.length > 0) {
+            console.warn('[shopee/importacao] kit importado mantendo a receita do ERP', {
+              jobId,
+              integracaoId,
+              itemId,
+              produtoId: res.produtoId,
+              receitaDivergente: avisosDoKit.map((a) => a.produtoId),
+            });
+          }
         } catch (err) {
           const falha = classificarFalhaDeItem(err);
           if (falha === null) throw err; // infra, a rate limit, a reauth — not this kit

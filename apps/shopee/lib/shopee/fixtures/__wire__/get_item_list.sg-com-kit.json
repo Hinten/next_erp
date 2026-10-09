@@ -1,0 +1,35 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "item": [
+      {
+        "item_id": 2500139870,
+        "item_status": "NORMAL",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": true
+        }
+      },
+      {
+        "item_id": 2500139871,
+        "item_status": "NORMAL",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": false
+        }
+      },
+      {
+        "item_id": 2500139872,
+        "item_status": "NORMAL",
+        "update_time": 1791244800,
+        "tag": {
+          "kit": false
+        }
+      }
+    ],
+    "total_count": 3,
+    "has_next_page": false,
+    "next": ""
+  }
+}

@@ -568,6 +568,37 @@ describe('kit, resultado e produto relido', () => {
     expect(texto).toContain('prod-1');
     expect(texto).toContain('2 no total · 1 criadas · 1 sem vínculo');
     expect(texto).toContain('3 componentes');
+    // ÂNCORA do OP-1: sem aviso, nenhuma linha de aviso.
+    expect(texto).not.toContain('aviso do kit');
+  });
+
+  it('(OP-1) o modo TEXTO diz cada `receita-divergente` do kit — uma linha por aviso, com a frase do importador', () => {
+    const kit = {
+      componentes: 1,
+      criado: false,
+      avisos: [
+        { codigo: 'receita-divergente', produtoId: 'filho-a', mensagem: 'frase de filho-a' },
+        { codigo: 'receita-divergente', produtoId: 'filho-b', mensagem: 'frase de filho-b' },
+      ],
+    } as const;
+    const res: ResultadoImportacaoShopee = {
+      produtoId: 'kit-1',
+      criado: false,
+      nome: 'Kit',
+      variacoes: { total: 2, criadas: 0, semLink: 0 },
+      fotos: { importadas: 0, ignoradas: 0, falhas: 0 },
+      kit,
+    };
+    const linhas = resumirResultado(res);
+    const avisos = linhas.filter((l) => l.includes('aviso do kit'));
+    expect(avisos).toEqual([
+      '  aviso do kit ............ receita-divergente — frase de filho-a',
+      '  aviso do kit ............ receita-divergente — frase de filho-b',
+    ]);
+    // ⛔ NEAR-MISS: a lista VAZIA não imprime nada (o kit segue impresso).
+    const semAviso = resumirResultado({ ...res, kit: { ...kit, avisos: [] } });
+    expect(semAviso.some((l) => l.includes('aviso do kit'))).toBe(false);
+    expect(semAviso.join('\n')).toContain('1 componentes');
   });
 
   it('o produto relido é lido DEFENSIVAMENTE — um documento vazio ainda renderiza', () => {

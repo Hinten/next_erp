@@ -10,14 +10,20 @@
  * ## The three call patterns, and why a kit never asks for models
  *
  * 1. always ONE `get_item_base_info` for the single id;
- * 2. `tag.kit` ⇒ `get_kit_item_info`, and **nothing else**;
+ * 2. `tag.kit` ⇒ `get_kit_item_info`, then ONE batched `get_item_base_info`
+ *    for its COMPONENT items (`lerTemModelosDosComponentes`, ≤ 50 ids per
+ *    call, none when the kit has no component) — and **never**
+ *    `get_model_list`;
  * 3. otherwise `has_model === true` ⇒ `get_model_list`.
  *
- * A kit is routed through its own read because what `get_model_list` answers
- * for a kit listing is UNVERIFIED (the job's drain records the same reasoning
- * for `get_item_base_info`): asking anyway would spend a call on an unknown and
- * then plan variations out of whatever came back. A kit's components are the
- * kit page's answer, not the model page's.
+ * What `get_model_list` answers for a kit listing is now MEASURED (step 19's SG
+ * sandbox probe: it lists the kit's own models, with their derived stock), and
+ * the import still reads `get_kit_item_info` instead, because the COMPONENTS —
+ * the whole point of a kit — live only on the kit page. The components' own
+ * `has_model` is the one more thing the kit page cannot say: a plain
+ * component's `component_model_id` is Shopee's HIDDEN default model id
+ * (non-zero, absent from that item's own `get_model_list`), and only
+ * `has_model === false` tells it apart from a real variation.
  *
  * ## ⚠️ Reconciled by id, never by position
  *
@@ -36,6 +42,7 @@ import {
 
 import { MOTIVO_IMPORT_BLOQUEADO, ShopeeImportBlockedError } from './errosImportacao';
 import { ehKitDe, montarItemLido, temModelosDe, type ItemLido } from './itemLido';
+import { itensDosComponentesDoKit, lerTemModelosDosComponentes } from './temModelosDosComponentes';
 
 /** Shopee's own code for "no such item", on the batch envelope. */
 const CODIGO_ITEM_NAO_ENCONTRADO = 'error_item_not_found';
@@ -144,7 +151,20 @@ export async function lerAnuncioShopee(client: ShopeeClient, itemId: number): Pr
         MSG_KIT_SEM_DETALHE,
       );
     }
-    return montarItemLido({ itemId, payload, linha: null, kit: detalhe.product_info });
+    // ⚠️ Right after the kit page and before anything is resolved: the step-9
+    // resolver binds a plain component on its LISTING only when this says
+    // `has_model === false`; an id absent from the map keeps the wire id.
+    const temModelosDosComponentes = await lerTemModelosDosComponentes(
+      client,
+      itensDosComponentesDoKit(detalhe.product_info),
+    );
+    return montarItemLido({
+      itemId,
+      payload,
+      linha: null,
+      kit: detalhe.product_info,
+      temModelosDosComponentes,
+    });
   }
 
   if (!temModelosDe(semDetalhe)) return semDetalhe;
