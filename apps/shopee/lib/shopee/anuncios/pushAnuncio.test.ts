@@ -8,7 +8,16 @@ import {
   shopeeItemViolationInfoPayloadSchema,
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
-import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  MOTIVO_RESOLUCAO_RECEITA_KIT,
+  chaveAvisoReceitaKitShopee,
+  chaveReceitaKitErp,
+  linhaVariacaoDeKit,
+  toOuterRef,
+} from '@delfrance/schemas';
+import { avisoCollection } from '@delfrance/data/admin/collections';
+import { reavaliarAvisoDeReceitaKit } from '@delfrance/data/admin/avisos';
 
 import { INDICES_COMPOSTOS_SHOPEE } from '../pedidos/produtoResolve';
 // ⚠️ The REAL FakeDb and the REAL `escreverAviso`/`resolverAviso` underneath
@@ -1203,5 +1212,128 @@ describe('a listagem que a Shopee não tem mais', () => {
     expect(r.produtoId).toBe(PAI);
     expect(db.store[LINK_PATH]).toBeUndefined();
     expect(avisos.some((a) => JSON.stringify(a).includes('desapareceu'))).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     step 19 (#1527, S3F-05) — a native kit written `removido` re-evaluates  */
+/*     its recipe aviso (M124's push half)                                     */
+/* -------------------------------------------------------------------------- */
+
+describe('tratarPushDeAnuncio — o aviso de receita do kit nativo (M124)', () => {
+  /* D1 roles: the native kit and one of its models; `PAI` plays the kit produto K. */
+  const ITEM_KIT = 2500139870;
+  const MODELO_KIT = 2000458820;
+  const FILHO = 'prod-filho-a';
+  const CAMINHO_AVISO_KIT = avisoCollection.docPath({}, chaveAvisoReceitaKitShopee(CONTA, PAI));
+  const R1 = { 'comp-1': { quantidade: 2, limitarEstoque: true } };
+  const R2 = { 'comp-1': { quantidade: 3, limitarEstoque: true } };
+
+  /** One native kit whose child was edited to R2 after Shopee got R1, and its OPEN aviso. */
+  async function kitComAvisoAberto(db: FakeDb): Promise<void> {
+    semearLink(db, {
+      item_id: ITEM_KIT,
+      kitNativo: true,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      item_status: 'NORMAL',
+    });
+    db.seed(`produtos/${FILHO}`, { paiId: PAI, ehKit: true, componentesKit: R2 });
+    db.seed(
+      `produtos/${FILHO}/variashopee/va-kit`,
+      linhaVariacaoDeKit({
+        contaRef: REF_CONTA,
+        linkPath: toOuterRef(LINK_PATH),
+        modelId: MODELO_KIT,
+        tierIndex: [0],
+        modelStatus: 'MODEL_NORMAL',
+        receitaKitConferida: chaveReceitaKitErp(R1),
+      }),
+    );
+    const aberto = await reavaliarAvisoDeReceitaKit(
+      asDb(db),
+      { integracaoId: CONTA, kitProdutoId: PAI },
+      MOTIVO_RESOLUCAO_RECEITA_KIT.receitaIgualAShopee,
+      { agoraUs: (AGORA_MS - 60_000) * 1000, increment },
+    );
+    expect(aberto).toBe('aberto');
+  }
+
+  function dep(cli: ClienteFake) {
+    return { clientFor: () => Promise.resolve(cli.client), increment };
+  }
+
+  it('o braço not-found (SHOPEE_DELETE / item que a Shopee não tem) RESOLVE o aviso sem-kit-ativo', async () => {
+    const db = new FakeDb();
+    await kitComAvisoAberto(db);
+    const cli = clienteQueResponde({ base: erroApi('error_item_not_found') });
+
+    const r = await tratarPushDeAnuncio(asDb(db), alvo({ itemId: ITEM_KIT }), dep(cli));
+
+    expect(r.acao).toBe(ACAO_PUSH_ANUNCIO.ignoradoRemovido);
+    expect(db.store[LINK_PATH]?.data.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+    expect(db.store[CAMINHO_AVISO_KIT]?.data).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.semKitAtivo,
+      resolvidoEm: AGORA_MS * 1000,
+    });
+    expect(linhasDoBraco()[0]?.avisoReceitaKit).toBe('nada');
+  });
+
+  it('um code 16 cuja LEITURA dobra para removido (SHOPEE_DELETE legível) também resolve', async () => {
+    const db = new FakeDb();
+    await kitComAvisoAberto(db);
+    const cli = clienteQueResponde({
+      base: [linhaBase({ item_id: ITEM_KIT, item_status: 'SHOPEE_DELETE' })],
+    });
+
+    await tratarPushDeAnuncio(asDb(db), alvo({ itemId: ITEM_KIT }), dep(cli));
+
+    expect(db.store[LINK_PATH]?.data).toMatchObject({
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      item_status: 'SHOPEE_DELETE',
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.semKitAtivo,
+    });
+  });
+
+  it('um code 27 cuja leitura dobra para removido resolve pelo MESMO gancho', async () => {
+    const db = new FakeDb();
+    await kitComAvisoAberto(db);
+    const cli = clienteQueResponde({
+      base: [linhaBase({ item_id: ITEM_KIT, item_status: 'SELLER_DELETE' })],
+    });
+
+    await tratarPushDeAnuncio(asDb(db), alvo({ itemId: ITEM_KIT, code: 27 }), dep(cli));
+
+    expect(db.store[LINK_PATH]?.data.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+    expect(db.store[CAMINHO_AVISO_KIT]?.data).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.semKitAtivo,
+    });
+  });
+
+  it('⚠️ NEAR-MISS: o MESMO kit lido VIVO não toca o aviso — ele continua aberto', async () => {
+    const db = new FakeDb();
+    await kitComAvisoAberto(db);
+    const transacoes = db.opcoesDeTransacao.length;
+    const cli = clienteQueResponde({ base: [linhaBase({ item_id: ITEM_KIT })] });
+
+    await tratarPushDeAnuncio(asDb(db), alvo({ itemId: ITEM_KIT }), dep(cli));
+
+    expect(db.opcoesDeTransacao).toHaveLength(transacoes);
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).toBeNull();
+    expect(linhasDoBraco()[0]?.avisoReceitaKit).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: um anúncio COMUM removido não lê aviso de receita nenhum', async () => {
+    const db = new FakeDb();
+    semearLink(db, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo, kitNativo: false });
+    const cli = clienteQueResponde({ base: erroApi('error_item_not_found') });
+
+    const r = await tratarPushDeAnuncio(asDb(db), alvo(), dep(cli));
+
+    expect(r.acao).toBe(ACAO_PUSH_ANUNCIO.ignoradoRemovido);
+    expect(db.opcoesDeTransacao).toEqual([]);
+    expect(db.opLog.some((o) => o.path === CAMINHO_AVISO_KIT)).toBe(false);
+    expect(linhasDoBraco()[0]?.avisoReceitaKit).toBeNull();
   });
 });

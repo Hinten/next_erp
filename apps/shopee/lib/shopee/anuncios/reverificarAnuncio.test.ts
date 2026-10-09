@@ -12,11 +12,18 @@ import {
 } from '@delfrance/integrations-shopee';
 import {
   ESTADO_ANUNCIO_SHOPEE,
+  MOTIVO_RESOLUCAO_RECEITA_KIT,
   SHOPEE_ITEM_STATUS,
   SHOPEE_MODEL_STATUS,
+  chaveAvisoReceitaKitShopee,
+  chaveReceitaKitErp,
+  linhaVariacaoDeKit,
   shopeeViolacaoSchema,
+  toOuterRef,
   type ShopeeViolacao,
 } from '@delfrance/schemas';
+import { avisoCollection } from '@delfrance/data/admin/collections';
+import { reavaliarAvisoDeReceitaKit } from '@delfrance/data/admin/avisos';
 
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import {
@@ -1036,5 +1043,552 @@ describe('reverificarAnuncioShopee — a escrita', () => {
     expect(db.store[CAMINHO_LINK]).toBeUndefined();
     expect(avisos.some((args) => String(args[0]).includes('desapareceu'))).toBe(true);
     expect(res?.acao).toBe(ACAO_REVERIFICACAO.atualizado);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  step 19 (#1527) — native kits: which listing, per-listing sync, the aviso  */
+/* -------------------------------------------------------------------------- */
+
+/* D1 roles: the native kit, its model, and the second kit of a recriar. */
+const ITEM_KIT = 2500139870;
+const ITEM_KIT_NOVO = 2500139873;
+const MODELO_KIT_A = 2000458820;
+const MODELO_KIT_B = 2000458822;
+
+/** `PAI` plays the kit produto K; these are its links. */
+const LINK_KIT = 'link-2';
+const CAMINHO_LINK_KIT = `produtos/${PAI}/prodshopee/${LINK_KIT}`;
+const CHAVE_AVISO_KIT = chaveAvisoReceitaKitShopee(INTEGRACAO, PAI);
+const CAMINHO_AVISO_KIT = avisoCollection.docPath({}, CHAVE_AVISO_KIT);
+
+/** Two ERP recipes: what Shopee holds (R1) and the edit made after it (R2). */
+const R1 = { 'comp-1': { quantidade: 2, limitarEstoque: true } };
+const R2 = { 'comp-1': { quantidade: 3, limitarEstoque: true } };
+
+function semearLinkDeKit(db: FakeDb, linkId: string, extra: Record<string, unknown> = {}): void {
+  db.seed(`produtos/${PAI}/prodshopee/${linkId}`, {
+    contaProdutoShopeeOuterRef: REF_CONTA,
+    item_name: 'Kit Camiseta',
+    item_id: ITEM_KIT,
+    kitNativo: true,
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    item_status: SHOPEE_ITEM_STATUS.normal,
+    substituidoPorLinkDocId: null,
+    substituidoEm: null,
+    ...extra,
+  });
+}
+
+/** A kit CHILD: its own `componentesKit` is its recipe (L2). */
+function semearFilhoDeKit(db: FakeDb, filhoId: string, receita: Record<string, unknown>): void {
+  db.seed(`produtos/${filhoId}`, {
+    nome: 'Kit P',
+    paiId: PAI,
+    ehKit: true,
+    componentesKit: receita,
+  });
+}
+
+/** A kit-model row through the SAME builder the kit arms write with. */
+function semearLinhaDeKit(
+  db: FakeDb,
+  filhoId: string,
+  linhaId: string,
+  a: { readonly linkId: string; readonly modelo: number; readonly carimbo: string | null },
+): void {
+  db.seed(
+    `produtos/${filhoId}/variashopee/${linhaId}`,
+    linhaVariacaoDeKit({
+      contaRef: REF_CONTA,
+      linkPath: toOuterRef(`produtos/${PAI}/prodshopee/${a.linkId}`),
+      modelId: a.modelo,
+      tierIndex: [0],
+      modelStatus: SHOPEE_MODEL_STATUS.normal,
+      receitaKitConferida: a.carimbo,
+    }),
+  );
+}
+
+/** Open the (conta, K) aviso through the REAL shared decision — never a hand-built row. */
+async function abrirAvisoDeReceita(db: FakeDb): Promise<void> {
+  const r = await reavaliarAvisoDeReceitaKit(
+    asDb(db),
+    { integracaoId: INTEGRACAO, kitProdutoId: PAI },
+    MOTIVO_RESOLUCAO_RECEITA_KIT.receitaIgualAShopee,
+    { agoraUs: (AGORA - 60_000) * 1000, increment },
+  );
+  expect(r).toBe('aberto');
+  expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).toBeNull();
+}
+
+/** One native kit, its two children edited to R2 after Shopee got R1 — the aviso's case. */
+function kitDivergente(db: FakeDb): void {
+  semearLinkDeKit(db, LINK_KIT);
+  semearFilhoDeKit(db, FILHO_A, R2);
+  semearFilhoDeKit(db, FILHO_B, R2);
+  semearLinhaDeKit(db, FILHO_A, 'va-kit', {
+    linkId: LINK_KIT,
+    modelo: MODELO_KIT_A,
+    carimbo: chaveReceitaKitErp(R1),
+  });
+  semearLinhaDeKit(db, FILHO_B, 'vb-kit', {
+    linkId: LINK_KIT,
+    modelo: MODELO_KIT_B,
+    carimbo: chaveReceitaKitErp(R1),
+  });
+}
+
+/** Shopee's answer for a kit deleted in Seller Centre: still READABLE, `SELLER_DELETE`. */
+function clienteDeKitApagado(itemId: number = ITEM_KIT): ClienteFake {
+  return clienteFake({
+    base: () =>
+      baseInfo([linhaBase({ item_id: itemId, item_status: SHOPEE_ITEM_STATUS.sellerDelete })]),
+    violacoes: () =>
+      ({
+        item_list: [
+          {
+            item_id: itemId,
+            item_status: SHOPEE_ITEM_STATUS.sellerDelete,
+            deboost: false,
+            item_status_details: null,
+            deboost_details: null,
+            deboosted_details: null,
+            fail_error: null,
+            fail_message: null,
+          },
+        ],
+      }) as unknown as ShopeeItemViolationInfo,
+  });
+}
+
+describe('reverificarAnuncioShopee — qual anúncio (passo 19, R-12(b))', () => {
+  it('sem linkDocId, o KIT NATIVO ativo vence o anúncio comum SUBSTITUÍDO que ordena primeiro', async () => {
+    // L8: o produto convertido tem DOIS vínculos; o comum (`link-1`) ordena
+    // primeiro e continua vivo na Shopee, mas o anúncio do produto é o kit.
+    const db = new FakeDb();
+    semearLink(db, {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      item_status: SHOPEE_ITEM_STATUS.normal,
+      kitNativo: false,
+      substituidoPorLinkDocId: LINK_KIT,
+      substituidoEm: AGORA - 1,
+    });
+    semearLinkDeKit(db, LINK_KIT);
+    const pedidos: number[] = [];
+    const fake = clienteFake({
+      base: (p) => {
+        pedidos.push(...p.itemIds);
+        return baseInfo([linhaBase({ item_id: p.itemIds[0] })]);
+      },
+      violacoes: () => violationInfoVazio(),
+    });
+
+    const res = await reverificarAnuncioShopee(asDb(db), alvo(), deps(fake.client));
+
+    expect(res?.linkDocId).toBe(LINK_KIT);
+    expect(pedidos).toEqual([ITEM_KIT]);
+  });
+
+  it('⚠️ NEAR-MISS: com --link nomeando o anúncio comum, é ELE que é reverificado', async () => {
+    const db = new FakeDb();
+    semearLink(db, {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      kitNativo: false,
+      substituidoPorLinkDocId: LINK_KIT,
+    });
+    semearLinkDeKit(db, LINK_KIT);
+    const pedidos: number[] = [];
+    const fake = clienteFake({
+      base: (p) => {
+        pedidos.push(...p.itemIds);
+        return baseInfo([linhaBase({ item_id: p.itemIds[0] })]);
+      },
+      violacoes: () => violationInfoVazio(),
+    });
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo({ linkDocId: LINK_PAI }),
+      deps(fake.client),
+    );
+
+    expect(res?.linkDocId).toBe(LINK_PAI);
+    expect(pedidos).toEqual([ITEM_ID]);
+  });
+
+  it('a perna de modelos é POR LISTAGEM: reverificar o kit não marca as linhas do anúncio comum', async () => {
+    // RT6's re-verify leg (R-12(e)): the kit's model list knows nothing of the
+    // ordinary listing's models, and a per-PRODUTO sync would stamp them absent —
+    // and steps 12/13 would then stop serving a listing that is still selling.
+    const db = new FakeDb();
+    semearLink(db, {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      kitNativo: false,
+      substituidoPorLinkDocId: LINK_KIT,
+    });
+    semearLinkDeKit(db, LINK_KIT);
+    semearFilho(db, FILHO_A);
+    semearLinkFilho(db, FILHO_A); // `v-1`: the ORDINARY listing's row, MODEL_A
+    semearLinhaDeKit(db, FILHO_A, 'va-kit', {
+      linkId: LINK_KIT,
+      modelo: MODELO_KIT_A,
+      carimbo: null,
+    });
+    const antes = { ...db.store[`produtos/${FILHO_A}/variashopee/v-1`]?.data };
+    const fake = clienteFake({
+      base: () => baseInfo([linhaBase({ item_id: ITEM_KIT, has_model: true })]),
+      modelos: () => modelList([modelo({ model_id: MODELO_KIT_A })]),
+      violacoes: () => violationInfoVazio(),
+    });
+
+    const res = await reverificarAnuncioShopee(asDb(db), alvo(), deps(fake.client));
+
+    expect(res?.linkDocId).toBe(LINK_KIT);
+    expect(res?.modelos).toEqual({ total: 1, atualizados: 0, ausentes: 0 });
+    expect(db.store[`produtos/${FILHO_A}/variashopee/v-1`]?.data).toEqual(antes);
+    expect(db.patches.some((p) => p.path === `produtos/${FILHO_A}/variashopee/v-1`)).toBe(false);
+  });
+});
+
+describe('reverificarAnuncioShopee — o aviso de receita do kit (passo 19, M124/M120)', () => {
+  it('M124: kit apagado no Seller Centre (SELLER_DELETE LEGÍVEL) ⇒ vínculo removido E aviso resolvido sem-kit-ativo', async () => {
+    const db = new FakeDb();
+    kitDivergente(db);
+    await abrirAvisoDeReceita(db);
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo(),
+      deps(clienteDeKitApagado().client),
+    );
+
+    expect(res).toMatchObject({
+      linkDocId: LINK_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      itemStatus: SHOPEE_ITEM_STATUS.sellerDelete,
+      avisoReceitaKit: 'nada',
+    });
+    expect(db.store[CAMINHO_LINK_KIT]?.data).toMatchObject({
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      item_status: SHOPEE_ITEM_STATUS.sellerDelete,
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.semKitAtivo,
+      resolvidoEm: AGORA * 1000,
+    });
+  });
+
+  it('M124: o MESMO pelo braço not-found (error_item_not_found ⇒ arquivarRemovido)', async () => {
+    const db = new FakeDb();
+    kitDivergente(db);
+    await abrirAvisoDeReceita(db);
+    const fake = clienteFake({
+      base: () => {
+        throw erroApi('error_item_not_found');
+      },
+    });
+
+    const res = await reverificarAnuncioShopee(asDb(db), alvo(), deps(fake.client));
+
+    expect(res).toMatchObject({
+      acao: ACAO_REVERIFICACAO.removido,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      avisoReceitaKit: 'nada',
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.semKitAtivo,
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).not.toBeNull();
+  });
+
+  it('M120 (metade do reverify, estado R5 SEMEADO): o kit ANTIGO substituído apagado ⇒ resolvido kit-recriado, NUNCA sem-kit-ativo', async () => {
+    // R5: a recriar whose `delete_item` did not take left the OLD kit superseded
+    // and still selling the old composition (its rows keep the aviso open). Lucas
+    // deletes it in Seller Centre and reverifies it by name: the new kit folds
+    // EQUAL, so the deletion FINISHED a recreation (V2R1-09) — `sem-kit-ativo`
+    // would claim no kit sells while the new one does.
+    const db = new FakeDb();
+    semearLinkDeKit(db, LINK_PAI, {
+      item_id: ITEM_KIT,
+      substituidoPorLinkDocId: LINK_KIT,
+      substituidoEm: AGORA - 10,
+    });
+    semearLinkDeKit(db, LINK_KIT, { item_id: ITEM_KIT_NOVO });
+    semearFilhoDeKit(db, FILHO_A, R2);
+    semearLinhaDeKit(db, FILHO_A, 'va-velho', {
+      linkId: LINK_PAI,
+      modelo: MODELO_KIT_A,
+      carimbo: chaveReceitaKitErp(R1),
+    });
+    semearLinhaDeKit(db, FILHO_A, 'va-novo', {
+      linkId: LINK_KIT,
+      modelo: MODELO_KIT_B,
+      carimbo: chaveReceitaKitErp(R2),
+    });
+    await abrirAvisoDeReceita(db);
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo({ linkDocId: LINK_PAI }),
+      deps(clienteDeKitApagado(ITEM_KIT).client),
+    );
+
+    expect(res).toMatchObject({
+      linkDocId: LINK_PAI,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      avisoReceitaKit: 'resolvido',
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.kitRecriado,
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolucaoMotivo).not.toBe(
+      MOTIVO_RESOLUCAO_RECEITA_KIT.semKitAtivo,
+    );
+
+    // A re-run over the UNCHANGED reading converges: the decision runs again and
+    // the row stays resolved with the same motivo.
+    const deNovo = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo({ linkDocId: LINK_PAI }),
+      deps(clienteDeKitApagado(ITEM_KIT).client),
+    );
+    expect(deNovo?.acao).toBe(ACAO_REVERIFICACAO.ignoradoSemMudanca);
+    expect(deNovo?.avisoReceitaKit).toBe('resolvido');
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolucaoMotivo).toBe(
+      MOTIVO_RESOLUCAO_RECEITA_KIT.kitRecriado,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: um anúncio COMUM apagado não lê aviso de receita nenhum', async () => {
+    for (const kitNativo of [false, null, undefined]) {
+      const db = new FakeDb();
+      semearLink(db, {
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+        ...(kitNativo === undefined ? {} : { kitNativo }),
+      });
+
+      const res = await reverificarAnuncioShopee(
+        asDb(db),
+        alvo(),
+        deps(clienteDeKitApagado(ITEM_ID).client),
+      );
+
+      expect(res?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+      expect(res?.avisoReceitaKit).toBeNull();
+      // No snapshot was opened and no aviso row was even READ.
+      expect(db.opcoesDeTransacao).toEqual([]);
+      expect(db.opLog.some((o) => o.path === CAMINHO_AVISO_KIT)).toBe(false);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: um kit nativo ATIVO lido VIVO não reavalia o aviso — só remoção, "ainda vende" virado ou substituído reavaliam', async () => {
+    const db = new FakeDb();
+    kitDivergente(db);
+    await abrirAvisoDeReceita(db);
+    const transacoesAntes = db.opcoesDeTransacao.length;
+    const fake = clienteFake({
+      base: () => baseInfo([linhaBase({ item_id: ITEM_KIT })]),
+      violacoes: () => violationInfoVazio(),
+    });
+
+    const res = await reverificarAnuncioShopee(asDb(db), alvo(), deps(fake.client));
+
+    expect(res?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.ativo);
+    expect(res?.avisoReceitaKit).toBeNull();
+    expect(db.opcoesDeTransacao).toHaveLength(transacoesAntes);
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).toBeNull();
+  });
+});
+
+describe('reverificarAnuncioShopee — o aviso de receita quando "ainda vende" muda (passo 19, R1-RT7-04)', () => {
+  const CAMINHO_LINK_ANTIGO = `produtos/${PAI}/prodshopee/${LINK_PAI}`;
+
+  /**
+   * R5 of a recriar: the OLD kit (`link-1`, R1) superseded by the new one
+   * (`link-2`, R2 — equal to the ERP), its rows still under the child. The aviso
+   * is OPENED by the real decision while the old kit still sells.
+   */
+  async function antigoSubstituidoComAvisoAberto(db: FakeDb): Promise<void> {
+    semearLinkDeKit(db, LINK_PAI, {
+      item_id: ITEM_KIT,
+      substituidoPorLinkDocId: LINK_KIT,
+      substituidoEm: AGORA - 10,
+    });
+    semearLinkDeKit(db, LINK_KIT, { item_id: ITEM_KIT_NOVO });
+    semearFilhoDeKit(db, FILHO_A, R2);
+    semearLinhaDeKit(db, FILHO_A, 'va-velho', {
+      linkId: LINK_PAI,
+      modelo: MODELO_KIT_A,
+      carimbo: chaveReceitaKitErp(R1),
+    });
+    semearLinhaDeKit(db, FILHO_A, 'va-novo', {
+      linkId: LINK_KIT,
+      modelo: MODELO_KIT_B,
+      carimbo: chaveReceitaKitErp(R2),
+    });
+    await abrirAvisoDeReceita(db);
+  }
+
+  /** The old link as a writer that ran NO decision left it (a push, or a crash before the decision). */
+  function gravarEstadoDoAntigo(db: FakeDb, estado: string, itemStatus: string): void {
+    db.seed(CAMINHO_LINK_ANTIGO, {
+      ...db.store[CAMINHO_LINK_ANTIGO]?.data,
+      estadoAnuncio: estado,
+      item_status: itemStatus,
+      // What a reading of `clienteDoAntigo` stores beside them.
+      deboost: false,
+      condition: 'NEW',
+    });
+  }
+
+  /** The recipe decision as the recriar's step 4 runs it. */
+  async function decidir(db: FakeDb, agoraMs: number): Promise<string> {
+    return await reavaliarAvisoDeReceitaKit(
+      asDb(db),
+      { integracaoId: INTEGRACAO, kitProdutoId: PAI },
+      MOTIVO_RESOLUCAO_RECEITA_KIT.kitRecriado,
+      { agoraUs: agoraMs * 1000, increment },
+    );
+  }
+
+  function clienteDoAntigo(itemStatus: string): ClienteFake {
+    return clienteFake({
+      base: () => baseInfo([linhaBase({ item_id: ITEM_KIT, item_status: itemStatus })]),
+      violacoes: () => violationInfoVazio(),
+    });
+  }
+
+  it('⚠️ o antigo substituído BANIDO volta a NORMAL (a Shopee levantou o ban) ⇒ a decisão roda e REABRE o aviso: ele vende a composição ANTIGA de novo', async () => {
+    const db = new FakeDb();
+    await antigoSubstituidoComAvisoAberto(db);
+    // The ban (a push wrote it), and the recriar's decision that excluded it.
+    gravarEstadoDoAntigo(db, ESTADO_ANUNCIO_SHOPEE.banido, SHOPEE_ITEM_STATUS.banned);
+    expect(await decidir(db, AGORA - 30_000)).toBe('resolvido');
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).not.toBeNull();
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo({ linkDocId: LINK_PAI }),
+      deps(clienteDoAntigo(SHOPEE_ITEM_STATUS.normal).client),
+    );
+
+    expect(res).toMatchObject({
+      linkDocId: LINK_PAI,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      avisoReceitaKit: 'aberto',
+    });
+    expect(db.store[CAMINHO_LINK_ANTIGO]?.data.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.ativo);
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).toBeNull();
+  });
+
+  it('o antigo substituído VIVO lido BANIDO ⇒ a decisão roda e RESOLVE `kit-recriado` (ele parou de vender; o novo dobra igual)', async () => {
+    const db = new FakeDb();
+    await antigoSubstituidoComAvisoAberto(db);
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo({ linkDocId: LINK_PAI }),
+      deps(clienteDoAntigo(SHOPEE_ITEM_STATUS.banned).client),
+    );
+
+    expect(res).toMatchObject({
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.banido,
+      avisoReceitaKit: 'resolvido',
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.kitRecriado,
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).not.toBeNull();
+  });
+
+  it('converge: o vínculo já diz `ativo` (a escrita do des-ban caiu ANTES da decisão) ⇒ a leitura IGUAL ainda decide e reabre — o vínculo é substituído', async () => {
+    const db = new FakeDb();
+    await antigoSubstituidoComAvisoAberto(db);
+    gravarEstadoDoAntigo(db, ESTADO_ANUNCIO_SHOPEE.banido, SHOPEE_ITEM_STATUS.banned);
+    expect(await decidir(db, AGORA - 30_000)).toBe('resolvido');
+    // The un-ban's link write landed; the process died before its decision.
+    gravarEstadoDoAntigo(db, ESTADO_ANUNCIO_SHOPEE.ativo, SHOPEE_ITEM_STATUS.normal);
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo({ linkDocId: LINK_PAI }),
+      deps(clienteDoAntigo(SHOPEE_ITEM_STATUS.normal).client),
+    );
+
+    expect(res?.acao).toBe(ACAO_REVERIFICACAO.ignoradoSemMudanca);
+    expect(res?.avisoReceitaKit).toBe('aberto');
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).toBeNull();
+  });
+
+  it('um kit nativo (não substituído) gravado `removido` e lido VIVO de novo ⇒ volta a contar: a decisão roda e REABRE', async () => {
+    const db = new FakeDb();
+    kitDivergente(db);
+    await abrirAvisoDeReceita(db);
+    // A `removido` reading (no decision after it), then the aviso closed by one.
+    db.seed(CAMINHO_LINK_KIT, {
+      ...db.store[CAMINHO_LINK_KIT]?.data,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+    });
+    expect(await decidir(db, AGORA - 30_000)).toBe('nada');
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).not.toBeNull();
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo(),
+      deps(clienteDoAntigo(SHOPEE_ITEM_STATUS.normal).client),
+    );
+
+    expect(res).toMatchObject({
+      linkDocId: LINK_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      avisoReceitaKit: 'aberto',
+    });
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).toBeNull();
+  });
+
+  it('converge: um kit nativo (não substituído) JÁ `removido`, reverificado de novo sem mudança ⇒ a decisão ainda roda', async () => {
+    const db = new FakeDb();
+    kitDivergente(db);
+    await abrirAvisoDeReceita(db);
+    db.seed(CAMINHO_LINK_KIT, {
+      ...db.store[CAMINHO_LINK_KIT]?.data,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      item_status: SHOPEE_ITEM_STATUS.sellerDelete,
+      deboost: false,
+      condition: 'NEW',
+    });
+    const transacoesAntes = db.opcoesDeTransacao.length;
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo({ linkDocId: LINK_KIT }),
+      deps(clienteDeKitApagado().client),
+    );
+
+    expect(res?.acao).toBe(ACAO_REVERIFICACAO.ignoradoSemMudanca);
+    expect(res?.avisoReceitaKit).toBe('nada');
+    expect(db.opcoesDeTransacao.length).toBeGreaterThan(transacoesAntes);
+    expect(db.store[CAMINHO_AVISO_KIT]?.data).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.semKitAtivo,
+    });
+  });
+
+  it('⚠️ NEAR-MISS: um kit nativo ATIVO (não substituído) lido BANIDO não reavalia — ele conta do mesmo jeito', async () => {
+    const db = new FakeDb();
+    kitDivergente(db);
+    await abrirAvisoDeReceita(db);
+    const transacoesAntes = db.opcoesDeTransacao.length;
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo(),
+      deps(clienteDoAntigo(SHOPEE_ITEM_STATUS.banned).client),
+    );
+
+    expect(res?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.banido);
+    expect(res?.avisoReceitaKit).toBeNull();
+    expect(db.opcoesDeTransacao).toHaveLength(transacoesAntes);
+    expect(db.store[CAMINHO_AVISO_KIT]?.data.resolvidoEm).toBeNull();
   });
 });

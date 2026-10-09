@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import {
   SHOPEE_ERROR_KIND,
+  ShopeeApiError,
   ShopeeRateLimitError,
   ShopeeSchemaError,
 } from '@delfrance/integrations-shopee';
@@ -89,7 +90,7 @@ function semearLink(over: Record<string, unknown> = {}): void {
   });
 }
 
-/** Um resultado com campos EXTRA — o corpo 200 carrega só as nove chaves. */
+/** Um resultado com campos EXTRA — o corpo 200 carrega só as dez chaves. */
 function resultadoDouble(over: Partial<ResultadoReverificacao> = {}): ResultadoReverificacao {
   return {
     acao: ACAO_REVERIFICACAO.atualizado,
@@ -103,6 +104,7 @@ function resultadoDouble(over: Partial<ResultadoReverificacao> = {}): ResultadoR
     violacoesLidas: true,
     modelos: { total: 2, atualizados: 1, ausentes: 0, inventadoNaContagem: 9 },
     avisoResolvido: true,
+    avisoReceitaKit: null,
     chamadasShopee: 3,
     inventadoPelaOndaSeguinte: 'NÃO PODE VAZAR',
     ...over,
@@ -209,7 +211,7 @@ describe('(4) o 409 do que nunca foi publicado', () => {
 });
 
 describe('(5) o 200', () => {
-  it('⛔ carrega exatamente as NOVE chaves, e um campo novo no resultado não vaza', async () => {
+  it('⛔ carrega exatamente as DEZ chaves, e um campo novo no resultado não vaza', async () => {
     h.reverificar.mockResolvedValue(resultadoDouble());
 
     const res = await POST(req(corpoValido(), AUTORIZADO));
@@ -220,6 +222,7 @@ describe('(5) o 200', () => {
     };
     expect(Object.keys(corpo).sort()).toEqual([
       'acao',
+      'avisoReceitaKit',
       'avisoResolvido',
       'chamadasShopee',
       'deboost',
@@ -231,6 +234,44 @@ describe('(5) o 200', () => {
     ]);
     // ⚠️ Nem a contagem de modelos é espalhada.
     expect(Object.keys(corpo.modelos).sort()).toEqual(['atualizados', 'ausentes', 'total']);
+  });
+
+  it('(OP-18) `avisoReceitaKit` ecoa a DECISÃO do aviso de receita do kit, cada uma das três e o `null`', async () => {
+    for (const decisao of ['aberto', 'resolvido', 'nada', null] as const) {
+      h.reverificar.mockResolvedValue(resultadoDouble({ avisoReceitaKit: decisao }));
+
+      const corpo = (await (await POST(req(corpoValido(), AUTORIZADO))).json()) as {
+        avisoReceitaKit: unknown;
+      };
+
+      expect(corpo.avisoReceitaKit).toBe(decisao);
+    }
+  });
+
+  it('(OP-18) ponta a ponta: um kit NATIVO que a Shopee não tem mais ⇒ 200 `removido` com a decisão do reverificador REAL; ⛔ quase-par: um anúncio comum ⇒ `null`', async () => {
+    const naoEncontrado = new ShopeeApiError('Shopee respondeu error_item_not_found (HTTP 200)', {
+      code: 'error_item_not_found',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/api/v2/product/get_item_base_info',
+    });
+    h.getItemBaseInfo.mockRejectedValue(naoEncontrado);
+
+    semearLink({ kitNativo: true });
+    const kit = (await (await POST(req(corpoValido(), AUTORIZADO))).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(kit).toMatchObject({ acao: ACAO_REVERIFICACAO.removido, avisoReceitaKit: 'nada' });
+
+    db = new FakeDb();
+    h.db.atual = asDb(db);
+    semearLink({ kitNativo: false });
+    const comum = (await (await POST(req(corpoValido(), AUTORIZADO))).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(comum).toMatchObject({ acao: ACAO_REVERIFICACAO.removido, avisoReceitaKit: null });
   });
 
   it('um anúncio sem modelos carrega `modelos: null`, não um objeto de zeros', async () => {

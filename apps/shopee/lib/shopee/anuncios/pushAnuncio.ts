@@ -44,6 +44,17 @@
  * `error_item_not_found` on the base-info read (which IS this listing's verdict)
  * and the best-effort violation pull.
  *
+ * ## ⚠️ A native kit written `removido` re-evaluates its recipe aviso (step 19)
+ *
+ * Every write whose resulting `estadoAnuncio` is `removido` — the not-found arm
+ * (`SHOPEE_DELETE` and a listing Shopee no longer has) and a code 16/27 whose
+ * READ folds to `removido` — is followed, on a link whose stored `kitNativo` is
+ * `true`, by `reavaliarAvisoDeKitRemovido` (`reverificarAnuncio.ts`): the SAME
+ * gate and the SAME shared decision the re-verify runs, so a kit Shopee deleted
+ * closes its "old recipe" aviso whichever path saw it first. An ordinary link
+ * never reaches it (no aviso read at all). ⚠️ No Shopee push reports a SELLER
+ * delete — the operator's `reverificar:anuncio` is how that one is learned.
+ *
  * ## ⚠️ Neither handler enqueues anything
  *
  * There is no synthetic-push machinery for an item push and none is needed:
@@ -84,8 +95,14 @@ import {
 import { resolverLinkPorItemId, type LinkDeAnuncio } from './linkAnuncio';
 // ⚠️ ONE reader and ONE comparison for `violations`, shared with the re-verify —
 // ruling O10 gives the stamp a single meaning, and two private copies agreeing by
-// comment is exactly the drift the root CLAUDE.md names.
-import { mesmasViolacoes, violacoesArmazenadas } from './reverificarAnuncio';
+// comment is exactly the drift the root CLAUDE.md names. The same holds for the
+// step-19 native-kit hook: ONE gate and ONE call, imported from the re-verify.
+import {
+  mesmasViolacoes,
+  reavaliarAvisoDeKitRemovido,
+  violacoesArmazenadas,
+  type DecisaoAvisoReceitaKit,
+} from './reverificarAnuncio';
 import { agendadoParaMsDe, estadoDoAnuncio, type LeituraDeAnuncio } from './statusAnuncio';
 import {
   detalhesDeDeboost,
@@ -546,6 +563,28 @@ async function escreverLink(
   }
 }
 
+/**
+ * Step 19: the native-kit recipe aviso after a write — `reverificarAnuncio.ts`'s
+ * {@link reavaliarAvisoDeKitRemovido}, with this handler's clock and increment.
+ * `null` unless the written state is `removido` on a `kitNativo: true` link.
+ */
+async function reavaliarKitSeRemovido(
+  db: Firestore,
+  alvo: AlvoDePushDeAnuncioShopee,
+  link: LinkDeAnuncio,
+  estadoAnuncio: EstadoAnuncioShopee,
+  deps: TratarPushDeAnuncioDeps,
+): Promise<DecisaoAvisoReceitaKit | null> {
+  return reavaliarAvisoDeKitRemovido(
+    db,
+    { integracaoId: alvo.integracaoId, link, estadoAnuncio },
+    {
+      increment: deps.increment ?? ((by: number) => FieldValue.increment(by)),
+      nowMs: alvo.nowMs,
+    },
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                 the handler                                */
 /* -------------------------------------------------------------------------- */
@@ -646,6 +685,7 @@ export async function tratarPushDeAnuncio(
       violacoesLidas: false,
       avisoResultado: null,
       avisoResolvido: false,
+      avisoReceitaKit: null,
       detail: `${ACAO_PUSH_ANUNCIO.ignoradoSemVinculo}:item ${String(itemId)} sem vínculo nesta conta`,
     });
   }
@@ -675,6 +715,14 @@ export async function tratarPushDeAnuncio(
       ...(mudouNoRemovido ? { violacoesLidasEm: nowMs } : {}),
       ultimaModificacao: nowMs,
     });
+    // Step 19: a native kit Shopee no longer has re-evaluates its recipe aviso.
+    const avisoReceitaKit = await reavaliarKitSeRemovido(
+      db,
+      alvo,
+      link,
+      ESTADO_ANUNCIO_SHOPEE.removido,
+      deps,
+    );
     const resolvido = await resolverAvisoDeAnuncio(
       db,
       { integracaoId, produtoId: link.produtoId },
@@ -691,6 +739,7 @@ export async function tratarPushDeAnuncio(
       violacoesLidas: false,
       avisoResultado: null,
       avisoResolvido: resolvido,
+      avisoReceitaKit,
       detail: `${ACAO_PUSH_ANUNCIO.ignoradoRemovido}:a Shopee não tem mais o item ${String(itemId)}`,
     });
   }
@@ -719,6 +768,9 @@ export async function tratarPushDeAnuncio(
       agendamentoFalhouEm: nowMs,
       ultimaModificacao: nowMs,
     });
+    // Step 19: a READ that folds to `removido` (a kit Shopee deleted, still
+    // readable) re-evaluates the recipe aviso too. `null` on any other estado.
+    const avisoReceitaKit = await reavaliarKitSeRemovido(db, alvo, link, estado, deps);
     const efeito = await levantar(db, alvo, link, {
       motivo: MOTIVO_AVISO_ANUNCIO.agendamentoFalhou,
       acao: ACAO_PUSH_ANUNCIO.agendamentoRegistrado,
@@ -738,6 +790,7 @@ export async function tratarPushDeAnuncio(
       // Code 27 makes no violation call at all — there is nothing to report and
       // the page would answer about a different question.
       violacoesLidas: false,
+      avisoReceitaKit,
       detail: `${ACAO_PUSH_ANUNCIO.agendamentoRegistrado}:${estado}`,
     });
   }
@@ -769,6 +822,10 @@ export async function tratarPushDeAnuncio(
     ultimaModificacao: nowMs,
   });
 
+  // Step 19: the same hook as the code-27 arm — `null` unless the READ folded
+  // to `removido` on a native-kit link.
+  const avisoReceitaKit = await reavaliarKitSeRemovido(db, alvo, link, estado, deps);
+
   const efeito = await efeitoDaViolacao(db, alvo, link, {
     estado,
     deboost,
@@ -784,6 +841,7 @@ export async function tratarPushDeAnuncio(
     violacoes: violacoes.length,
     descartadas,
     violacoesLidas: leituraViolacoes.lidas,
+    avisoReceitaKit,
     detail: `${efeito.acao}:${estado}`,
   });
 }
@@ -914,6 +972,8 @@ interface LinhaDeResultado extends EfeitoDeAviso {
   readonly violacoes: number;
   readonly descartadas: number;
   readonly violacoesLidas: boolean;
+  /** Step 19: the native-kit recipe decision, `null` when it did not run. LOGGED only. */
+  readonly avisoReceitaKit: DecisaoAvisoReceitaKit | null;
   readonly detail: string;
 }
 
@@ -959,6 +1019,7 @@ function registrar(alvo: AlvoDePushDeAnuncioShopee, r: LinhaDeResultado): Result
     temCarimbo: alvo.carimboMs !== null,
     avisoResultado: r.avisoResultado,
     avisoResolvido: r.avisoResolvido,
+    avisoReceitaKit: r.avisoReceitaKit,
   });
 
   return {

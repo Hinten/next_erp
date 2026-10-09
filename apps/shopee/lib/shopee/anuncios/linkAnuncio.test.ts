@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { shopeeModelSchema, type ShopeeModel } from '@delfrance/integrations-shopee';
 import { ESTADO_ANUNCIO_SHOPEE, SHOPEE_MODEL_STATUS } from '@delfrance/schemas';
 
+import { idDoVinculoDeKit } from '../kits/idsKit';
 import { INDICES_COMPOSTOS_SHOPEE } from '../pedidos/produtoResolve';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import {
   lerLinksDeVariacao,
   resolverLinkPorItemId,
   resolverLinkPorProduto,
+  resolverLinkVivoPorProduto,
   sincronizarLinksDeVariacao,
 } from './linkAnuncio';
 
@@ -26,7 +28,15 @@ const REF_OUTRA_CONTA = `documents/integracao/${OUTRA}`;
 const PAI = 'prod-pai';
 const FILHO_A = 'prod-filho-a';
 const FILHO_B = 'prod-filho-b';
+/** The listing every {@link semearLinkFilho} row points at by default. */
+const LINK = 'link-1';
 const AGORA = 1_757_000_000_000;
+
+/* Step 19 roles (D1): the native kit, and the second kit of a recriar. */
+const ITEM_KIT = 2500139870;
+const ITEM_KIT_NOVO = 2500139873;
+const MODELO_KIT_A = 2000458820;
+const MODELO_KIT_B = 2000458822;
 
 function semearLinkPai(
   db: FakeDb,
@@ -231,6 +241,201 @@ describe('resolverLinkPorProduto', () => {
       'link-1',
     );
   });
+
+  it('⚠️ continua LÉXICO no passo 19: um vínculo removido que ordena primeiro ainda é o escolhido', async () => {
+    // L10(3)/L10-R1: este é o resolvedor da PUBLICAÇÃO, e publicar um produto
+    // que não é kit não pode mudar. O tiered é o irmão `resolverLinkVivoPorProduto`.
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido });
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo, item_id: 1 });
+    semearLinkPai(db, 'link-c', {
+      kitNativo: true,
+      item_id: ITEM_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+
+    expect((await resolverLinkPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-a');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          (2b) resolverLinkVivoPorProduto — the tiered sibling (step 19)      */
+/* -------------------------------------------------------------------------- */
+
+describe('resolverLinkVivoPorProduto', () => {
+  it('M118: um vínculo SUBSTITUÍDO que ordena primeiro perde para o kit nativo ativo', async () => {
+    // L8: o anúncio comum convertido continua VIVO na Shopee, mas quem vende o
+    // produto agora é o kit. "Reverificar/pausar este produto" é o kit.
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      kitNativo: false,
+      substituidoPorLinkDocId: 'link-b',
+      substituidoEm: AGORA,
+    });
+    semearLinkPai(db, 'link-b', {
+      kitNativo: true,
+      item_id: ITEM_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+    // ⚠️ NEAR-MISS: o resolvedor da PUBLICAÇÃO, sobre os MESMOS documentos,
+    // continua léxico — é por isso que ele não é o chamado aqui.
+    expect((await resolverLinkPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-a');
+  });
+
+  it('M118 (variante): um kit nativo ANTIGO substituído (o delete do recriar não pegou) perde para o novo', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', {
+      kitNativo: true,
+      item_id: ITEM_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      substituidoPorLinkDocId: 'link-b',
+      substituidoEm: AGORA,
+    });
+    semearLinkPai(db, 'link-b', {
+      kitNativo: true,
+      item_id: ITEM_KIT_NOVO,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+  });
+
+  it('M122: depois de um recriar, o kit REMOVIDO perde para o novo — nas DUAS ordens sha256', async () => {
+    // Os ids reais dos vínculos de kit (`idDoVinculoDeKit`): trocar os PAPÉIS dos
+    // dois item_ids garante que, numa das rodadas, o removido ordena primeiro.
+    const idA = idDoVinculoDeKit(INTEGRACAO, ITEM_KIT);
+    const idB = idDoVinculoDeKit(INTEGRACAO, ITEM_KIT_NOVO);
+    expect(idA).not.toBe(idB);
+    for (const [antigo, novo] of [
+      [idA, idB],
+      [idB, idA],
+    ] as const) {
+      const db = new FakeDb();
+      semearLinkPai(db, antigo, {
+        kitNativo: true,
+        item_id: antigo === idA ? ITEM_KIT : ITEM_KIT_NOVO,
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      });
+      semearLinkPai(db, novo, {
+        kitNativo: true,
+        item_id: novo === idA ? ITEM_KIT : ITEM_KIT_NOVO,
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      });
+
+      const link = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI);
+      expect(link?.linkDocId).toBe(novo);
+    }
+  });
+
+  it('o kit nativo ativo vence até um anúncio comum VIVO não substituído que ordena primeiro (conversão interrompida)', async () => {
+    // RT14 V2: a converter crashed after the new kit's link write and BEFORE the
+    // supersede, so both links are live. Re-verify/pause address the kit — the
+    // dispatcher's native-first rule, so the operator's view matches publish's.
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo, kitNativo: false });
+    semearLinkPai(db, 'link-b', {
+      kitNativo: true,
+      item_id: ITEM_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+  });
+
+  it('sem kit nativo: um anúncio comum SUBSTITUÍDO que ordena primeiro perde para o comum vivo', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      substituidoPorLinkDocId: 'link-x',
+    });
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+    // ⚠️ NEAR-MISS: an EMPTY `substituidoPorLinkDocId` is "not superseded" — the
+    // shared predicate's rule, so a stray '' never hides a live link.
+    const vazio = new FakeDb();
+    semearLinkPai(vazio, 'link-a', {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      substituidoPorLinkDocId: '',
+    });
+    semearLinkPai(vazio, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+    expect((await resolverLinkVivoPorProduto(asDb(vazio), INTEGRACAO, PAI))?.linkDocId).toBe(
+      'link-a',
+    );
+  });
+
+  it('sem kit nativo: um anúncio comum VIVO vence o removido que ordena primeiro', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido });
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+  });
+
+  it('⚠️ NEAR-MISS: um estadoAnuncio que ninguém reconhece NÃO é remoção — o vínculo continua vivo', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido });
+    semearLinkPai(db, 'link-b', { estadoAnuncio: 'ESTADO_QUE_NAO_EXISTE' });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+  });
+
+  it('⚠️ NEAR-MISS: um kitNativo sem item_id endereçável não é "ativo" — fica no segundo degrau', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo, item_id: 1 });
+    semearLinkPai(db, 'link-b', {
+      kitNativo: true,
+      item_id: null,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+
+    // Nenhum dos dois é kit nativo ATIVO; ambos estão vivos ⇒ o léxico decide.
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-a');
+  });
+
+  it('todos removidos: ainda resolve (o léxico) — o chamador relata o estado, não um 404', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido });
+    semearLinkPai(db, 'link-a', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-a');
+  });
+
+  it('um linkDocId NOMEADO vence qualquer degrau — é como o operador confirma o anúncio antigo', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      substituidoPorLinkDocId: 'link-b',
+    });
+    semearLinkPai(db, 'link-b', {
+      kitNativo: true,
+      item_id: ITEM_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+
+    const link = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI, 'link-a');
+    expect(link?.linkDocId).toBe('link-a');
+  });
+
+  it('a conta filtra PRIMEIRO: o kit nativo ativo de OUTRA conta é invisível, e sem where', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-a', {
+      contaProdutoShopeeOuterRef: REF_OUTRA_CONTA,
+      kitNativo: true,
+      item_id: ITEM_KIT,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+    semearLinkPai(db, 'link-b', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-b');
+    expect(await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, PAI, 'link-a')).toBeNull();
+    const consulta = ultimaConsulta(db);
+    expect(consulta.fonte).toBe(`produtos/${PAI}/prodshopee`);
+    expect(consulta.clausulas).toEqual([]);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -255,7 +460,7 @@ describe('lerLinksDeVariacao', () => {
       model_id: 999,
     });
 
-    const links = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI);
+    const links = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK);
 
     expect(links.map((l) => [l.produtoId, l.linkDocId, l.modelId])).toEqual([
       [FILHO_A, 'va-1', MODEL_A],
@@ -283,7 +488,7 @@ describe('lerLinksDeVariacao', () => {
     semearFilho(db, FILHO_A);
     semearLinkFilho(db, FILHO_A, 'va-1', { model_id: 0 });
 
-    const links = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI);
+    const links = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK);
     expect(links).toHaveLength(1);
     expect(links[0]?.modelId).toBeNull();
   });
@@ -293,7 +498,7 @@ describe('lerLinksDeVariacao', () => {
     semearFilho(db, FILHO_A);
     semearLinkFilho(db, FILHO_A, 'va-1', { model_status: 'MODEL_INVENTADO' });
 
-    const links = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI);
+    const links = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK);
     expect(links[0]?.modelStatus).toBeNull();
   });
 });
@@ -323,7 +528,7 @@ describe('sincronizarLinksDeVariacao', () => {
 
     const naOrdem = new FakeDb();
     semear(naOrdem);
-    const a = await sincronizarLinksDeVariacao(asDb(naOrdem), INTEGRACAO, PAI, lidos, AGORA);
+    const a = await sincronizarLinksDeVariacao(asDb(naOrdem), INTEGRACAO, PAI, LINK, lidos, AGORA);
 
     const trocado = new FakeDb();
     semear(trocado);
@@ -331,6 +536,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(trocado),
       INTEGRACAO,
       PAI,
+      LINK,
       [...lidos].reverse(),
       AGORA,
     );
@@ -357,6 +563,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(db),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A })],
       AGORA,
     );
@@ -388,6 +595,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(db),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A, model_status: SHOPEE_MODEL_STATUS.normal })],
       AGORA,
     );
@@ -414,6 +622,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(db),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A, tier_index: [0], model_status: SHOPEE_MODEL_STATUS.normal })],
       AGORA,
     );
@@ -432,7 +641,7 @@ describe('sincronizarLinksDeVariacao', () => {
       modeloAusenteEm: AGORA - 604_800_000,
     });
 
-    const r = await sincronizarLinksDeVariacao(asDb(db), INTEGRACAO, PAI, [], AGORA);
+    const r = await sincronizarLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK, [], AGORA);
 
     expect(r).toEqual({ atualizados: 0, marcados: 0, modelosSemFilho: [] });
     expect(db.writes).toEqual([]);
@@ -449,6 +658,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(igual),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A, tier_index: [0, 1] })],
       AGORA,
     );
@@ -464,6 +674,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(trocado),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A, tier_index: [1, 0] })],
       AGORA,
     );
@@ -477,6 +688,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(prefixo),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A, tier_index: [0, 0] })],
       AGORA,
     );
@@ -494,6 +706,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(db),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A, tier_index: [0] })],
       AGORA,
     );
@@ -522,6 +735,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(db),
       INTEGRACAO,
       PAI,
+      LINK,
       [
         modelo({ model_id: MODEL_A }),
         modelo({ model_id: MODEL_B, tier_index: [1], model_sku: 'CAM-M' }),
@@ -545,6 +759,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(db),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A }), modelo({ model_id: 0 })],
       AGORA,
     );
@@ -564,6 +779,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(db),
       INTEGRACAO,
       PAI,
+      LINK,
       [
         modelo({ model_id: MODEL_A, tier_index: [0] }),
         modelo({ model_id: MODEL_A, tier_index: [1] }),
@@ -587,6 +803,7 @@ describe('sincronizarLinksDeVariacao', () => {
       asDb(db),
       INTEGRACAO,
       PAI,
+      LINK,
       [modelo({ model_id: MODEL_A, tier_index: [0] })],
       AGORA,
     );
@@ -603,7 +820,7 @@ describe('sincronizarLinksDeVariacao', () => {
     semearFilho(db, FILHO_A);
     semearLinkFilho(db, FILHO_A, 'va-1', { model_id: 0 });
 
-    const r = await sincronizarLinksDeVariacao(asDb(db), INTEGRACAO, PAI, [], AGORA);
+    const r = await sincronizarLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK, [], AGORA);
 
     expect(r).toEqual({ atualizados: 0, marcados: 0, modelosSemFilho: [] });
     expect(db.writes).toEqual([]);
@@ -617,11 +834,187 @@ describe('sincronizarLinksDeVariacao', () => {
       contaVariacaoShopeeOuterRef: REF_OUTRA_CONTA,
     });
 
-    const r = await sincronizarLinksDeVariacao(asDb(db), INTEGRACAO, PAI, [], AGORA);
+    const r = await sincronizarLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK, [], AGORA);
 
     expect(r).toEqual({ atualizados: 0, marcados: 0, modelosSemFilho: [] });
     expect(db.writes).toEqual([]);
     // The conta field the filter reads is the one the declared composite names.
     expect(INDICE_VARIACAO.campos[1]).toBe('contaVariacaoShopeeOuterRef');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              (5) PER LISTING — step 19 (#1527, L8, R-12(e))                 */
+/* -------------------------------------------------------------------------- */
+
+/** The canonical ref a writer stores for a `prodshopee` doc of {@link PAI}. */
+function refDaListagem(linkId: string): string {
+  return `documents/produtos/${PAI}/prodshopee/${linkId}`;
+}
+
+/** The LEGACY bare encoding of the same ref — the migrated corpus carries both. */
+function refNuaDaListagem(linkId: string): string {
+  return `produtos/${PAI}/prodshopee/${linkId}`;
+}
+
+/**
+ * A family whose two children carry the rows of TWO listings: the ordinary
+ * listing `L_ORD` (models A/B) and the native kit `L_KIT` that replaced it
+ * (models kit-A/kit-B) — the L8 converter's state, and a recriar's too.
+ */
+const L_ORD = 'link-ordinario';
+const L_KIT = idDoVinculoDeKit(INTEGRACAO, ITEM_KIT);
+
+function semearDuasListagens(db: FakeDb): void {
+  semearFilho(db, FILHO_A);
+  semearFilho(db, FILHO_B);
+  semearLinkFilho(db, FILHO_A, 'va-ord', {
+    produtoShopeeOuterRef: refDaListagem(L_ORD),
+    model_id: MODEL_A,
+    tier_index: [0],
+  });
+  semearLinkFilho(db, FILHO_B, 'vb-ord', {
+    produtoShopeeOuterRef: refDaListagem(L_ORD),
+    model_id: MODEL_B,
+    tier_index: [1],
+  });
+  semearLinkFilho(db, FILHO_A, 'va-kit', {
+    produtoShopeeOuterRef: refDaListagem(L_KIT),
+    model_id: MODELO_KIT_A,
+    tier_index: [0],
+  });
+  semearLinkFilho(db, FILHO_B, 'vb-kit', {
+    produtoShopeeOuterRef: refDaListagem(L_KIT),
+    model_id: MODELO_KIT_B,
+    tier_index: [1],
+  });
+}
+
+describe('lerLinksDeVariacao — por LISTAGEM', () => {
+  it('⚠️ PAR: as duas grafias do ref (documents/… e a nua) são a MESMA listagem', async () => {
+    const db = new FakeDb();
+    semearFilho(db, FILHO_A);
+    semearFilho(db, FILHO_B);
+    semearLinkFilho(db, FILHO_A, 'va-1', { produtoShopeeOuterRef: refDaListagem(LINK) });
+    semearLinkFilho(db, FILHO_B, 'vb-1', {
+      produtoShopeeOuterRef: refNuaDaListagem(LINK),
+      model_id: MODEL_B,
+    });
+
+    const links = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK);
+    expect(links.map((l) => l.linkDocId)).toEqual(['va-1', 'vb-1']);
+  });
+
+  it('⚠️ NEAR-MISS: a linha de OUTRA listagem do mesmo filho fica de fora', async () => {
+    const db = new FakeDb();
+    semearDuasListagens(db);
+
+    const doKit = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, L_KIT);
+    expect(doKit.map((l) => [l.produtoId, l.linkDocId, l.modelId])).toEqual([
+      [FILHO_A, 'va-kit', MODELO_KIT_A],
+      [FILHO_B, 'vb-kit', MODELO_KIT_B],
+    ]);
+    const doOrdinario = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, L_ORD);
+    expect(doOrdinario.map((l) => l.linkDocId)).toEqual(['va-ord', 'vb-ord']);
+  });
+
+  it('null = SEM filtro — o primeiro publish, que ainda não tem vínculo, lê todas as linhas da conta', async () => {
+    const db = new FakeDb();
+    semearDuasListagens(db);
+
+    const todas = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, null);
+    expect(todas.map((l) => l.linkDocId).sort()).toEqual(['va-kit', 'va-ord', 'vb-kit', 'vb-ord']);
+  });
+
+  it('uma linha com ref ILEGÍVEL é pulada com UMA linha de log — nunca entra numa listagem', async () => {
+    const db = new FakeDb();
+    semearFilho(db, FILHO_A);
+    semearLinkFilho(db, FILHO_A, 'va-1');
+    semearLinkFilho(db, FILHO_A, 'va-sem-ref', { produtoShopeeOuterRef: null, model_id: MODEL_B });
+    semearLinkFilho(db, FILHO_A, 'va-ref-vazio', { produtoShopeeOuterRef: '', model_id: 7 });
+
+    const links = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK);
+    expect(links.map((l) => l.linkDocId)).toEqual(['va-1']);
+    expect(avisos).toHaveBeenCalledTimes(2);
+    // …and the unfiltered read still returns them: the skip is the FILTER's.
+    avisos.mockClear();
+    const todas = await lerLinksDeVariacao(asDb(db), INTEGRACAO, PAI, null);
+    expect(todas).toHaveLength(3);
+    expect(avisos).not.toHaveBeenCalled();
+  });
+});
+
+describe('sincronizarLinksDeVariacao — por LISTAGEM (M121)', () => {
+  it('M121: reverificar o KIT não marca as linhas do anúncio comum — e vice-versa', async () => {
+    // Before step 19 the sync read every row of the produto, so the kit's
+    // reading (which knows nothing of models A/B) stamped the OLD listing's rows
+    // `modeloAusenteEm` — and steps 12/13 then stop serving a listing that is
+    // still selling (L8). One listing's reading may only touch its own rows.
+    const db = new FakeDb();
+    semearDuasListagens(db);
+    const antesOrd = {
+      a: { ...db.store[`produtos/${FILHO_A}/variashopee/va-ord`]?.data },
+      b: { ...db.store[`produtos/${FILHO_B}/variashopee/vb-ord`]?.data },
+    };
+
+    const doKit = await sincronizarLinksDeVariacao(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      L_KIT,
+      [modelo({ model_id: MODELO_KIT_A, tier_index: [0] })],
+      AGORA,
+    );
+
+    // Only the kit's vanished model B is marked; the ordinary rows are untouched.
+    expect(doKit).toEqual({ atualizados: 0, marcados: 1, modelosSemFilho: [] });
+    expect(db.writes.map((w) => w.path)).toEqual([`produtos/${FILHO_B}/variashopee/vb-kit`]);
+    expect(db.store[`produtos/${FILHO_A}/variashopee/va-ord`]?.data).toEqual(antesOrd.a);
+    expect(db.store[`produtos/${FILHO_B}/variashopee/vb-ord`]?.data).toEqual(antesOrd.b);
+
+    // …and the other way round: the ORDINARY listing's reading never marks the kit.
+    const db2 = new FakeDb();
+    semearDuasListagens(db2);
+    const doOrdinario = await sincronizarLinksDeVariacao(
+      asDb(db2),
+      INTEGRACAO,
+      PAI,
+      L_ORD,
+      [modelo({ model_id: MODEL_A }), modelo({ model_id: MODEL_B, tier_index: [1] })],
+      AGORA,
+    );
+    expect(doOrdinario).toEqual({ atualizados: 0, marcados: 0, modelosSemFilho: [] });
+    expect(db2.writes).toEqual([]);
+  });
+
+  it('um modelo VIVO da listagem sem linha DESTA listagem é reportado — a linha da outra não o "cobre"', async () => {
+    const db = new FakeDb();
+    semearDuasListagens(db);
+
+    const r = await sincronizarLinksDeVariacao(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      L_KIT,
+      [
+        modelo({ model_id: MODELO_KIT_A, tier_index: [0] }),
+        modelo({ model_id: MODELO_KIT_B, tier_index: [1] }),
+        // A model id the ORDINARY listing's row carries — not this listing's row.
+        modelo({ model_id: MODEL_A, tier_index: [2] }),
+      ],
+      AGORA,
+    );
+    expect(r.modelosSemFilho).toEqual([{ modelId: MODEL_A, tierIndex: [2], modelSku: null }]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('uma linha com ref ilegível NUNCA é marcada, mesmo com o modelo ausente da leitura', async () => {
+    const db = new FakeDb();
+    semearFilho(db, FILHO_A);
+    semearLinkFilho(db, FILHO_A, 'va-sem-ref', { produtoShopeeOuterRef: null, model_id: MODEL_B });
+
+    const r = await sincronizarLinksDeVariacao(asDb(db), INTEGRACAO, PAI, LINK, [], AGORA);
+    expect(r).toEqual({ atualizados: 0, marcados: 0, modelosSemFilho: [] });
+    expect(db.writes).toEqual([]);
   });
 });

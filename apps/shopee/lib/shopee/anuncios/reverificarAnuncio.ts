@@ -49,6 +49,37 @@
  * grep). An empty patch answers `ignorado-sem-mudanca` and issues no write at
  * all.
  *
+ * ## ⚠️ Which listing: the LIVE one, unless the caller names another
+ *
+ * The link is resolved through `resolverLinkVivoPorProduto` (step 19, R-12(b)),
+ * never the publish path's lexical resolver: with no `linkDocId`, a produto's
+ * ACTIVE native kit wins over the ordinary listing it superseded (L8), and a live
+ * listing over a removed one. A named `linkDocId` still addresses exactly that
+ * document — which is how an operator confirms that an OLD listing was deleted in
+ * Seller Centre (`reverificar:anuncio --link <old>`): no Shopee push reports a
+ * seller delete, so this read is the only way the ERP ever learns it.
+ *
+ * The model leg is PER LISTING too: `sincronizarLinksDeVariacao` reconciles only
+ * the rows that point at THIS link, so re-verifying the new kit never marks the
+ * old listing's rows absent, and vice versa.
+ *
+ * ## ⚠️ A native kit whose "still sells" moved re-evaluates its recipe aviso (step 19)
+ *
+ * After any run on a link whose stored `kitNativo` is `true` that reads it
+ * `removido` — the READ path (a Seller-Centre-deleted kit stays readable as
+ * `SELLER_DELETE` and folds to `removido`) and the not-found arm alike — or
+ * that flips whether it still SELLS (a superseded old kit banned or un-banned),
+ * or that touches a SUPERSEDED kit at all, {@link reavaliarAvisoDeKitRemovido}
+ * hands the (conta, kit produto) pair to `reavaliarAvisoDeReceitaKit`
+ * (`@delfrance/data/admin/avisos`), the ONE shared open/resolve decision. It
+ * never resolves blindly: the decision re-reads every still-selling kit of the
+ * produto. No kit left ⇒ it resolves `sem-kit-ativo` itself; the deleted (or
+ * banned) kit was a superseded OLD kit and the new one folds equal ⇒
+ * `kit-recriado`; the new kit still diverges, or the old kit sells again with
+ * the OLD composition ⇒ the aviso stays (or re-opens) open. An ordinary link
+ * never reaches it. The push handlers (`pushAnuncio.ts`) call the SAME function
+ * on their link writes.
+ *
  * ## ⚠️ It enqueues nothing, republishes nothing, and CANNOT un-ban
  *
  * `unlist_item` is refused in both directions on a BANNED item, and the only
@@ -61,7 +92,9 @@
  * multi-document atomic write.
  *
  * **Cost**: 2 Shopee calls (3 with models), 1 + 1 + N Firestore reads, ≤ 1 + N
- * writes.
+ * writes — plus, ONLY for a native kit read `removido`, flipping "still sells"
+ * or superseded, the recipe decision's one read-only snapshot (K's links, its
+ * children, their rows) and at most one aviso write.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -73,19 +106,24 @@ import {
 } from '@delfrance/integrations-shopee';
 import {
   ESTADO_ANUNCIO_SHOPEE,
+  MOTIVO_RESOLUCAO_RECEITA_KIT,
   SHOPEE_ITEM_STATUS,
+  ehKitNativoQueAindaVende,
+  ehVinculoSubstituido,
   shopeeViolacaoSchema,
   type EstadoAnuncioShopee,
   type ShopeeViolacao,
 } from '@delfrance/schemas';
 import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
+import { reavaliarAvisoDeReceitaKit } from '@delfrance/data/admin/avisos';
 
+import { depsDeEscrita } from '../avisos/autorizacao';
 import { loadShopeeContext } from '../core/shopee';
 import { itemStatusDe, montarItemLido, temModelosDe, type ItemLido } from '../produtos/itemLido';
 import { itemStatusDeLink } from '../produtos/mapeamento';
 import { MOTIVO_RESOLUCAO_ANUNCIO, resolverAvisoDeAnuncio } from './avisoAnuncio';
 import {
-  resolverLinkPorProduto,
+  resolverLinkVivoPorProduto,
   sincronizarLinksDeVariacao,
   type LinkDeAnuncio,
 } from './linkAnuncio';
@@ -140,17 +178,29 @@ export interface ResultadoReverificacao {
   readonly modelos: ContagemDeModelos | null;
   /** A TRANSITION: `true` only when a row was OPEN and this call closed it. */
   readonly avisoResolvido: boolean;
+  /**
+   * Step 19: what the native-kit recipe aviso decision reached when this run
+   * could move its input ({@link reavaliarAvisoDeKitRemovido}: a native kit read
+   * `removido`, one whose "still sells" flipped, or a superseded one) — `null`
+   * when it did not run (an ordinary link, or an active kit read live). The
+   * DECISION, not whether a write landed.
+   */
+  readonly avisoReceitaKit: DecisaoAvisoReceitaKit | null;
   /** The budget signal — the ML `chamadasMl` precedent. */
   readonly chamadasShopee: number;
 }
+
+/** What `reavaliarAvisoDeReceitaKit` decided — its own three answers. */
+export type DecisaoAvisoReceitaKit = Awaited<ReturnType<typeof reavaliarAvisoDeReceitaKit>>;
 
 export interface ReverificarAnuncioDeps {
   /** The client seam. Default: `loadShopeeContext(db, id).createShopClient()`. */
   readonly clientFor?: (db: Firestore, integracaoId: string) => Promise<ShopeeClient>;
   /**
-   * The avisos counter seam. ⚠️ Unused today and deliberately required: the aviso
-   * RESOLVER takes only a clock, and the day this path raises one the dep is
-   * already on every call site.
+   * The avisos counter seam. The violation aviso RESOLVER takes only a clock; since
+   * step 19 the native-kit recipe decision ({@link reavaliarAvisoDeKitRemovido})
+   * can OPEN a row, so this is the dep it raises with — required, which is why it
+   * was already on every call site.
    */
   readonly increment: (by: number) => unknown;
   /** The ONE clock read of this request, in MILLISECONDS. */
@@ -332,6 +382,80 @@ function linhaDeViolacao(
 }
 
 /* -------------------------------------------------------------------------- */
+/*                    the native-kit recipe aviso (step 19)                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * After a write on a link whose stored `kitNativo` is `true`, re-evaluate the
+ * (conta, kit produto) recipe aviso through the ONE shared decision — never a
+ * blind resolve (#1527, S3F-05, R-4) — whenever this write can have moved the
+ * decision's INPUT. The decision counts the rows of every native kit that
+ * still SELLS (`ehKitNativoQueAindaVende`), so it runs when:
+ *
+ *  1. the resulting state is `removido` — also on an UNCHANGED reading, so a
+ *     re-run converges after a crash between the link write and the decision;
+ *  2. "still sells" FLIPPED between the stored link and the written state — a
+ *     superseded old kit BANNED (it stops counting) or UN-banned (it counts
+ *     again and sells the OLD composition: the unsafe direction, R1-RT7-04),
+ *     or a `removido` link read live again;
+ *  3. the link is SUPERSEDED — the one transitional state whose selling status
+ *     the decision turns on (an old kit a recriar could not delete), re-decided
+ *     on every write so a crash after a flip's link write still converges.
+ *
+ * An ACTIVE kit read live, `BANNED` or paused moves nothing (it counts whatever
+ * its status, short of `removido`) and reads nothing here.
+ *
+ * Shared by this module's two exits and by `pushAnuncio.ts`'s three link
+ * writes: ONE gate and ONE call, so the re-verify and the push cannot disagree
+ * about which writes re-decide the aviso.
+ *
+ *  - `null` ⇒ nothing ran: none of the three holds, or the link is not a native
+ *    kit (`kitNativo` strictly `true`; an ordinary listing, or one nobody has
+ *    stamped, reads NOTHING here — no aviso read at all).
+ *  - otherwise the decision `reavaliarAvisoDeReceitaKit` reached, with motivo
+ *    `kit-recriado` for its `resolver` arm: a deleted (or banned) old kit whose
+ *    produto still has a native kit folding EQUAL is a recriar that is now
+ *    finished (the old, superseded kit was the last divergent one). Its `nada`
+ *    arm (no native kit of the produto still sells) resolves `sem-kit-ativo` by
+ *    itself, whatever motivo is passed — so a plain Seller-Centre deletion never
+ *    claims a recreation.
+ *
+ * ⚠️ `link.raw` is the document read BEFORE this run's write; that is the right
+ * `kitNativo` to gate on, because no re-verify or push writes that field, and
+ * the right "before" for (2) — the "after" is that document with the written
+ * `estadoAnuncio`, the only decision input these writers change.
+ *
+ * The µs "now" comes through `avisos/autorizacao.ts`'s `depsDeEscrita` — this
+ * folder converts nothing. The STALENESS clock is the decision's own (the newest
+ * `updateTime` it read), so a run that lands late cannot reopen or close a newer
+ * row.
+ */
+export async function reavaliarAvisoDeKitRemovido(
+  db: Firestore,
+  alvo: {
+    readonly integracaoId: string;
+    readonly link: LinkDeAnuncio;
+    readonly estadoAnuncio: EstadoAnuncioShopee;
+  },
+  deps: { readonly increment: (by: number) => unknown; readonly nowMs: number },
+): Promise<DecisaoAvisoReceitaKit | null> {
+  const antes = alvo.link.raw;
+  if (antes.kitNativo !== true) return null;
+  const depois = { ...antes, estadoAnuncio: alvo.estadoAnuncio };
+  const reavaliar =
+    alvo.estadoAnuncio === ESTADO_ANUNCIO_SHOPEE.removido ||
+    ehKitNativoQueAindaVende(antes) !== ehKitNativoQueAindaVende(depois) ||
+    ehVinculoSubstituido(antes);
+  if (!reavaliar) return null;
+  return reavaliarAvisoDeReceitaKit(
+    db,
+    { integracaoId: alvo.integracaoId, kitProdutoId: alvo.link.produtoId },
+    MOTIVO_RESOLUCAO_RECEITA_KIT.kitRecriado,
+    depsDeEscrita({ increment: deps.increment, nowMs: deps.nowMs }),
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                the handler                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -348,7 +472,9 @@ export async function reverificarAnuncioShopee(
   alvo: AlvoDeReverificacao,
   deps: ReverificarAnuncioDeps,
 ): Promise<ResultadoReverificacao | null> {
-  const link = await resolverLinkPorProduto(
+  // The LIVE listing first (step 19, R-12(b)) — see the header. A named
+  // `linkDocId` still addresses exactly that document.
+  const link = await resolverLinkVivoPorProduto(
     db,
     alvo.integracaoId,
     alvo.produtoId,
@@ -374,6 +500,7 @@ export async function reverificarAnuncioShopee(
       violacoesLidas: false,
       modelos: null,
       avisoResolvido: false,
+      avisoReceitaKit: null,
       chamadasShopee: 0,
     };
   }
@@ -406,11 +533,14 @@ export async function reverificarAnuncioShopee(
     // C10: ONE implementation of the child-link refresh, shared with the
     // publisher's model leg. A vanished model is MARKED, never deleted — a delete
     // would throw away the member's sku and attributes a republish would have to
-    // rebuild from nothing.
+    // rebuild from nothing. ⚠️ PER LISTING (step 19): only THIS link's rows are
+    // reconciled against THIS listing's model list, so another listing's rows
+    // under the same children are never stamped absent by it.
     const sincronia = await sincronizarLinksDeVariacao(
       db,
       alvo.integracaoId,
       link.produtoId,
+      link.linkDocId,
       lista.model,
       deps.nowMs,
     );
@@ -497,6 +627,17 @@ export async function reverificarAnuncioShopee(
     await escreverLink(db, link, patch, itemId);
   }
 
+  /* ---- (5b) step 19: the native-kit recipe aviso, when its input may have moved. */
+  // ⚠️ Also on an UNCHANGED reading (the link already said `removido`, or it is
+  // superseded): the decision is idempotent under its own clock, and running it
+  // again is what lets a re-run converge after a crash between the link write
+  // and here.
+  const avisoReceitaKit = await reavaliarAvisoDeKitRemovido(
+    db,
+    { integracaoId: alvo.integracaoId, link, estadoAnuncio: estado },
+    deps,
+  );
+
   /* ---- (6) the aviso resolver. */
   const normalizado = bruto === SHOPEE_ITEM_STATUS.normal && !deboost && violacoes.length === 0;
   const avisoResolvido = normalizado
@@ -524,6 +665,7 @@ export async function reverificarAnuncioShopee(
     descartadas,
     modelos,
     avisoResolvido,
+    avisoReceitaKit,
     chamadasShopee,
     campos: Object.keys(patch),
   });
@@ -540,6 +682,7 @@ export async function reverificarAnuncioShopee(
     violacoesLidas,
     modelos,
     avisoResolvido,
+    avisoReceitaKit,
     chamadasShopee,
   };
 }
@@ -572,6 +715,13 @@ async function arquivarRemovido(
     },
     link.itemId,
   );
+  // Step 19: a native kit Shopee no longer has re-evaluates its recipe aviso —
+  // the same gate and the same decision as the read path's `removido`.
+  const avisoReceitaKit = await reavaliarAvisoDeKitRemovido(
+    db,
+    { integracaoId: alvo.integracaoId, link, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido },
+    deps,
+  );
   const avisoResolvido = await resolverAvisoDeAnuncio(
     db,
     { integracaoId: alvo.integracaoId, produtoId: link.produtoId },
@@ -587,6 +737,7 @@ async function arquivarRemovido(
     acao: ACAO_REVERIFICACAO.removido,
     estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
     avisoResolvido,
+    avisoReceitaKit,
     chamadasShopee,
   });
 
@@ -603,6 +754,7 @@ async function arquivarRemovido(
     violacoesLidas: false,
     modelos: null,
     avisoResolvido,
+    avisoReceitaKit,
     chamadasShopee,
   };
 }

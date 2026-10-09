@@ -1,9 +1,12 @@
 /**
  * **The native-kit entry point** (step 19, #1527 — reconcile §2.5.3):
  * `publicarKitShopee` = `prepararKit` (reads) → `planejarKit` (pure) → the
- * arm's applier: `criarKit` (`aplicarKit.ts`) for `kit-criar` and `republicarKit`
- * (`republicarKit.ts`, §2.6) for `kit-atualizar`. It is the kit twin of step 11's
- * `publicarAnuncioShopee`, and like it it owns no decision of its own: the dispatcher (PR 7,
+ * arm's applier: `criarKit` (`aplicarKit.ts`) for `kit-criar`, `republicarKit`
+ * (`republicarKit.ts`, §2.6) for `kit-atualizar`, and PR 6's `recriarKit` /
+ * `converterEmKit` (`recriarKit.ts`, §2.7) for `kit-recriar` /
+ * `kit-converter`. It is the kit twin of step
+ * 11's `publicarAnuncioShopee`, and like it it owns no decision of its own: the
+ * dispatcher (PR 7,
  * `escolherArmaDePublicacao`) picks the arm, `prepararKit` reads, the plan
  * decides, and each applier is an ENSURE sequence (L9) that re-derives what is
  * missing from Shopee reads plus the link docs.
@@ -29,6 +32,7 @@ import {
   type ContextoKitPreparado,
   type EntradaDeKit,
 } from './prepararKit';
+import { converterEmKit, recriarKit } from './recriarKit';
 import { republicarKit } from './republicarKit';
 import type { KitDeps, ResultadoPublicacaoKit } from './resultadoKit';
 
@@ -55,6 +59,10 @@ export async function publicarKitShopee(
       // The republish plans for itself (`planejarKit` is pure): its refusal set
       // and its per-bound-child rows depend on the LIVE binding (§2.6).
       return await republicarKit(deps, contexto, contexto.fotos);
+    case 'kit-recriar':
+      return await recriarKit(deps, contexto, plano);
+    case 'kit-converter':
+      return await converterEmKit(deps, contexto, plano);
   }
 }
 
