@@ -724,6 +724,12 @@ export function assertGenerateKitImageParams(p: GenerateKitImageParams): void {
  * model" on the wire); `main_component: true` only when it read `true` (a
  * `false`/`null` omits the key).
  *
+ * ⚠️ Copying every `true` yields ONE main because the read flags it on one
+ * model only — MEASURED (SG sandbox probe, 2026-10-07, 2- and 3-model kits):
+ * one row of `model_list[0]` reads `true`, every other row of every model reads
+ * `false`, so resending all models stays within
+ * {@link assertUpdateKitItemRequest}'s at-most-one bound.
+ *
  * ⚠️ A row whose `quantity` did not read is refused rather than guessed: there
  * is nothing verbatim to resend, and a made-up quantity is exactly the silent
  * no-op P2-c measured.
