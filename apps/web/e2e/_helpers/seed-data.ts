@@ -26,6 +26,7 @@ import {
   STATUS_LINK_PAGAMENTO,
   STATUS_PAGAMENTO,
   TIPO_AVISO,
+  type MlSizeChart,
   TIPO_INTEGRACAO_PGTO,
   whatsappIdentidadeSchema,
 } from '@delfrance/schemas';
@@ -531,6 +532,36 @@ export async function seedMedidaMlChart(
       ultimaModificacao: null,
     });
   return { id, nome, chartNome, excluindoNome };
+}
+
+/** Isolated draft-deletion fixture; no chart in it is sent to Mercado Livre. */
+export async function seedMedidaMlDraft(prefix: string, integracaoId: string) {
+  const id = `${prefix}-draft`;
+  const chart: MlSizeChart = {
+    id: null,
+    nome: `${prefix}-rascunho`,
+    domain_id: 'MLB-T_SHIRTS',
+    rows: [{ attributes: [{ id: 'SIZE', value_name: '01' }] }],
+    legacy: { keep: true },
+  };
+  await db()
+    .collection('tabMedi')
+    .doc(id)
+    .set({
+      nome: id,
+      codigo: null,
+      descricao: 'Original',
+      fotosArquivosIds: null,
+      fotos: null,
+      tabelasDeMedidasMercadoLivre: {
+        [integracaoId]: { tabelas: [chart], metadata: 'keep' },
+        outra: { tabelas: [], metadata: 'sibling' },
+      },
+      tabelasMedidasShopee: { loja: [{ size_chart_id: 42, categoryId: 10, name: 'Legada' }] },
+      dataCadastro: Date.now(),
+      ultimaModificacao: null,
+    });
+  return { id, chart };
 }
 
 /**

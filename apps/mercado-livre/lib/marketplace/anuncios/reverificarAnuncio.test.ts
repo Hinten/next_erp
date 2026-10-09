@@ -164,6 +164,7 @@ describe('reverificarAnuncio — a User-Products FAMILY (#1142)', () => {
         subStatus: [],
         moderacoes: [],
         userProductId: null,
+        categoryId: null,
       },
       {
         memberProdutoId: 'childB',
@@ -172,7 +173,35 @@ describe('reverificarAnuncio — a User-Products FAMILY (#1142)', () => {
         subStatus: ['out_of_stock'],
         moderacoes: [],
         userProductId: null,
+        categoryId: null,
       },
+    ]);
+  });
+
+  it("#847: asks ML for each member's category and hands it to the fold", async () => {
+    // ML recategorizes on its own; the family's category is FOLDED from its
+    // members, so the button has to read them — and the multiget makes it free.
+    const db = fakeDb([
+      { itemId: 'MLB-A', child: 'childA' },
+      { itemId: 'MLB-B', child: 'childB' },
+    ]);
+    const api = apiFake({
+      getItemsByIds: vi
+        .fn()
+        .mockResolvedValue([
+          entrada(200, { id: 'MLB-A', status: 'active', sub_status: [], category_id: 'MLB2' }),
+          entrada(404, null),
+        ]),
+    });
+
+    await reverificarAnuncio(db, CONTA, target, api, 1_000);
+
+    expect(api.getItemsByIds.mock.calls[0]![1]).toContain('category_id');
+    const [, , , observados] = h.applyFamilyStatusAndFold.mock.calls[0]!;
+    expect(observados).toEqual([
+      expect.objectContaining({ memberDocId: 'v-childA', categoryId: 'MLB2' }),
+      // A member that is GONE has no category to report — never a guess.
+      expect.objectContaining({ memberDocId: 'v-childB', status: 'closed', categoryId: null }),
     ]);
   });
 
@@ -336,5 +365,42 @@ describe('reverificarAnuncio — a User-Products FAMILY (#1142)', () => {
     expect(api.getItem).not.toHaveBeenCalled();
     expect(api.getItemsByIds).not.toHaveBeenCalled();
     expect(h.applyItemStatusToLink).not.toHaveBeenCalled();
+  });
+});
+
+describe('reverificarAnuncio — a single listing carries ML’s category (#847)', () => {
+  const simples = { produtoId: PRODUTO, linkDocId: LINK, itemId: 'MLB123' };
+  const extraDaEscrita = () => h.applyItemStatusToLink.mock.calls[0]![4].extra as object;
+
+  it('writes the category ML reports — the button pulls the truth NOW', async () => {
+    const api = apiFake({
+      getItem: vi
+        .fn()
+        .mockResolvedValue({ id: 'MLB123', status: 'active', sub_status: [], category_id: 'MLB2' }),
+    });
+
+    await reverificarAnuncio(fakeDb([]), CONTA, simples, api, 1_000);
+
+    expect(extraDaEscrita()).toMatchObject({ category_id: 'MLB2' });
+  });
+
+  it('fill-only: a response without a category writes no `category_id` key at all', async () => {
+    const api = apiFake({
+      getItem: vi.fn().mockResolvedValue({ id: 'MLB123', status: 'active', sub_status: [] }),
+    });
+
+    await reverificarAnuncio(fakeDb([]), CONTA, simples, api, 1_000);
+
+    expect(extraDaEscrita()).not.toHaveProperty('category_id');
+  });
+
+  it('a GONE listing (404) leaves the stored category alone', async () => {
+    const api = apiFake({
+      getItem: vi.fn().mockRejectedValue(new MercadoLivreHttpError('ML 404', 404, null)),
+    });
+
+    await reverificarAnuncio(fakeDb([]), CONTA, simples, api, 1_000);
+
+    expect(extraDaEscrita()).not.toHaveProperty('category_id');
   });
 });

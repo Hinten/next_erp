@@ -307,6 +307,24 @@ describe('ListingForm', () => {
     expect(screen.getByRole('combobox', { name: 'Tipo de anúncio' })).toBeDefined();
   });
 
+  it('#847: a PUBLISHED listing offers no way to change its category', () => {
+    // Create-only at ML, and Mercado Livre recategorizes listings on its own —
+    // the `items` sync writes ML's value onto the link. An edit here would reach
+    // ML nowhere and look exactly like a recategorization.
+    renderForm({ id: 'MLB777', category_id: 'MLB31447' });
+    expect(screen.queryByRole('button', { name: 'Alterar' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Escolher categoria' })).toBeNull();
+    expect(screen.getByTestId('ml-categoria-publicada')).toBeDefined();
+  });
+
+  it('#847: a draft — or a listing discarded after ML removed it — keeps the picker', () => {
+    // `descartarAnuncioRemovido` nulls `id` and KEEPS `category_id`, which is
+    // exactly when the next publish is a create and the category is sent again.
+    renderForm({ id: null, category_id: 'MLB31447' });
+    expect(screen.getByRole('button', { name: 'Alterar' })).toBeDefined();
+    expect(screen.queryByTestId('ml-categoria-publicada')).toBeNull();
+  });
+
   it('disables the title once the listing has sales', () => {
     renderForm({ soldQuantity: 2 } as never);
     expect(screen.getByLabelText('Título do anúncio')).toHaveProperty('disabled', true);
