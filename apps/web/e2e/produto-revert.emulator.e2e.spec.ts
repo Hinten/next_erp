@@ -122,12 +122,14 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
    * the captured Restore action onto another row.
    *
    * The search keeps the existing five-row window and five-second control
-   * ceiling, sharing their 25-second budget across every rescan.
+   * ceiling, sharing their 25-second budget across every rescan. A caller can
+   * further cap that search with its existing outer deadline.
    */
   async function expandEntryOferecendoRestaurar(
     page: Page,
     field: string,
     expectedTransition: string,
+    outerDeadline = Number.POSITIVE_INFINITY,
   ) {
     const rows = page.getByTestId('modificacao-entry');
     const restoreName = `Restaurar ${field}`;
@@ -135,7 +137,7 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
       .filter({ has: page.getByText(expectedTransition, { exact: true }) })
       .filter({ has: page.getByRole('button', { name: restoreName, exact: true }) });
     const restaurar = entry.getByRole('button', { name: restoreName, exact: true });
-    const deadline = Date.now() + 5 * 5_000;
+    const deadline = Math.min(Date.now() + 5 * 5_000, outerDeadline);
 
     async function foundTarget(): Promise<boolean> {
       const count = await entry.count();
@@ -250,7 +252,6 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
       'nome',
       expectedTransition,
     );
-    const rowsBeforeChange = await page.getByTestId('modificacao-entry').count();
 
     // Someone else (an Admin-seeded write, standing in for a second user)
     // changes the field AFTER this row's target was loaded but BEFORE
@@ -266,9 +267,16 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
       remaining,
       'The third-party history update exceeded its existing 30-second budget',
     ).toBeGreaterThan(0);
-    await expect
-      .poll(() => page.getByTestId('modificacao-entry').count(), { timeout: remaining })
-      .toBeGreaterThan(rowsBeforeChange);
+    // New entries arrive collapsed, and the feed expands only one row at a
+    // time. Observe this exact third-party change without clicking its Restore
+    // button, then reopen the original entry so the captured locator is usable.
+    await expandEntryOferecendoRestaurar(
+      page,
+      'nome',
+      `${edited} → ${thirdValue}`,
+      historyDeadline,
+    );
+    await expandEntryOferecendoRestaurar(page, 'nome', expectedTransition, historyDeadline);
     remaining = historyDeadline - Date.now();
     expect(
       remaining,
