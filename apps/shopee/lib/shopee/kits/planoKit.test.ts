@@ -344,6 +344,34 @@ describe('problemasDaFaseA — as recusas que só leem o Firestore', () => {
     expect(problemasDaFaseA(faseA({ gruposDistintos: 0 }))).toEqual([]);
   });
 
+  it('M93b — dois filhos SEM grupo algum ⇒ kit-dois-eixos dizendo que FALTA o eixo; dois grupos mantêm a frase de eixos demais', () => {
+    // Numa criação, a fase A lança antes do `planejarTier`: esta é a ÚNICA frase
+    // que o operador lê — "varia em 0 grupos" diria eixos DEMAIS a quem não tem eixo.
+    const semGrupo = [filho(F_AZUL), filho(F_PRETO)];
+    expect(
+      problemasDaFaseA(faseA({ filhos: semGrupo, familiaDeUm: false, gruposDistintos: 0 })),
+    ).toEqual([
+      {
+        campo: 'grupoDeVariacoesUid',
+        motivo: M.kitDoisEixos,
+        mensagem:
+          'as 2 variações do kit não estão em nenhum grupo de variação — a Shopee aceita kit ' +
+          'com UM eixo de variação; coloque-as num mesmo grupo de variação no ERP antes de publicar',
+      },
+    ]);
+    // ⛔ QUASE-PAR: dois grupos seguem com a frase de eixos DEMAIS, intacta.
+    const dois = [filho(F_AZUL, { variante: 'Azul' }), filho(F_PRETO, { variante: 'P' })];
+    expect(
+      problemasDaFaseA(faseA({ filhos: dois, familiaDeUm: false, gruposDistintos: 2 })),
+    ).toEqual([
+      {
+        campo: 'grupoDeVariacoesUid',
+        motivo: M.kitDoisEixos,
+        mensagem: 'a Shopee aceita kit com UM eixo de variação; este varia em 2 grupos',
+      },
+    ]);
+  });
+
   it('kit-variacoes-demais: 10 filhos recusa (nomeando 10); 9 passa', () => {
     const n = (k: number) =>
       Array.from({ length: k }, (_, i) =>

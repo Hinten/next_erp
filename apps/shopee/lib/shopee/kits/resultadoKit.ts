@@ -208,7 +208,7 @@ export interface ContextoKit {
   readonly familiaDeUm: boolean;
   /** The ONE variation axis (n ≥ 2). */
   readonly grupo: { readonly id: string; readonly nome: string } | null;
-  /** > 1 ⇒ `kit-dois-eixos`. */
+  /** ≠ 1 with 2+ children ⇒ `kit-dois-eixos` on a create arm (0 = no axis at all). */
   readonly gruposDistintos: number;
   readonly descricao: string | null;
   /** Component produtoId → its Shopee address in this conta, or why it has none. */
