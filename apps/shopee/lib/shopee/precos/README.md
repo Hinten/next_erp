@@ -1115,9 +1115,15 @@ never sends one).
   decision's diff), each as `{ model_id, tier_index: [live], original_price,
 component_list: linhasDeReenvioDoKit(live) }` — the live option and the live
   recipe resent VERBATIM, hidden default model id included — with no tier list
-  and no other key. A planned model the live kit lacks is not sent and its
-  row is `falha forma-de-modelo-divergente`, stamped `erp:`; when none is live,
-  `update_kit_item` is not called at all.
+  and no other key. A planned model with no USABLE live model — the live kit
+  lacks it, carries it without a `tier_index` or with a component the
+  package's own resend refuses (a `quantity` that did not read, no component
+  row), or the read answered another item — is not sent and its row is
+  `falha forma-de-modelo-divergente`, stamped `erp:`, with ONE `console.warn`
+  (ids and the package's sentence); when none is usable, `update_kit_item` is
+  not called at all. ⚠️ Never a `ShopeeConfigError`: that class is "our own
+  misconfiguration", which the job stamps `failed` on attempt 0 and the
+  manual push aborts its siblings on — one listing's wire must stay one row.
 - **The answer is synthesised, so the check RE-READS.** `update_kit_item`
   answers a bare envelope, so the transport hands G10 every sent model in a
   `success_list` with no price. G11 therefore runs `'releitura'` for a kit

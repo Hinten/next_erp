@@ -1891,6 +1891,130 @@ describe('enviarPrecoDoItem — o kit NATIVO: G9 por `update_kit_item`, G11 pela
   });
 });
 
+/**
+ * {@link kitVivo} with ONE live model rewritten into a shape the read
+ * TOLERATES (`tier_index` and `component_list` default to `[]`, a component's
+ * `quantity` is nullable) — and, optionally, answering for another item.
+ */
+function kitComModeloCru(
+  modelId: number,
+  reescrever: (modelo: Record<string, unknown>) => Record<string, unknown>,
+  itemIdLido: number = ITEM_ID,
+): ShopeeKitItemInfo {
+  const kit = kitVivo();
+  return shopeeKitItemInfoPayloadSchema.parse({
+    product_info: {
+      ...kit.product_info,
+      item_id: itemIdLido,
+      model_list: kit.product_info?.model_list.map((m) =>
+        m.model_id === modelId ? reescrever({ ...m }) : m,
+      ),
+    },
+  });
+}
+
+describe('enviarPrecoDoItem — o kit: um modelo VIVO inutilizável é uma LINHA, nunca um erro da execução', () => {
+  it('K15 — ⚠️ (o caso da revisão): o modelo vivo SEM `tier_index` ⇒ RESOLVE `falha forma-de-modelo-divergente`, carimbada `erp:` no filho e no item — nada lançado, ZERO `update_kit_item`', async () => {
+    const c = cenarioDeKit({ kit: kitComModeloCru(MODELO_A, (m) => ({ ...m, tier_index: [] })) });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(c.updateKitItem).not.toHaveBeenCalled();
+    expect(c.ordem).toEqual(['lerBase', 'getModelList', 'getKitItemInfo']);
+    expect(r).toMatchObject({
+      tipo: 'falha',
+      motivo: 'forma-de-modelo-divergente',
+      codigo: 'erp:forma-de-modelo-divergente',
+      carimbado: true,
+    });
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'forma-de-modelo-divergente',
+      codigo: null,
+    });
+    expect(linhaDe(r, MODELO_B)).toMatchObject({ resultado: 'pulado', motivo: 'preco-igual' });
+    expect(unicoPatch(c.db, CAMINHO_VAR_A)).toEqual({
+      precoRecusaEm: AGORA_MS,
+      precoRecusaCodigo: 'erp:forma-de-modelo-divergente',
+      ultimaModificacao: AGORA_MS,
+    });
+    expect(unicoPatch(c.db, CAMINHO_LINK)).toMatchObject({
+      precoRecusaCodigo: 'erp:forma-de-modelo-divergente',
+      precoRecusaMotivo: 'forma-de-modelo-divergente',
+    });
+    expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_LINK]);
+  });
+
+  it('K16 — PAR: A sem `tier_index` e B BEM-FORMADO, os dois mudando ⇒ SÓ B vai (com o seu tier e a sua receita), A é a linha divergente ⇒ `envio-parcial`', async () => {
+    const c = cenarioDeKit({
+      kit: kitComModeloCru(MODELO_A, (m) => ({ ...m, tier_index: [] })),
+      listas: [
+        LISTA_PADRAO(),
+        modelos([
+          [MODELO_A, 10],
+          [MODELO_B, 25],
+        ]),
+      ],
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 25), c.deps);
+
+    const enviados = (
+      c.corposDoKit[0] as {
+        item_setting: { model_list: { model_id: number; tier_index: number[] }[] };
+      }
+    ).item_setting.model_list;
+    expect(enviados.map((m) => [m.model_id, m.tier_index])).toEqual([[MODELO_B, [1]]]);
+    expect(r).toMatchObject({ tipo: 'falha', motivo: 'envio-parcial' });
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'forma-de-modelo-divergente',
+    });
+    expect(linhaDe(r, MODELO_B)).toMatchObject({ resultado: 'enviado', precoAlvo: 25 });
+  });
+
+  it('K17 — um componente vivo com `quantity` NULA (a recusa de `linhasDeReenvioDoKit`) ⇒ a MESMA linha divergente, nada lançado, ZERO `update_kit_item`', async () => {
+    const c = cenarioDeKit({
+      kit: kitComModeloCru(MODELO_A, (m) => ({
+        ...m,
+        component_list: COMPONENTES_VIVOS.map((linha, i) =>
+          i === 1 ? { ...linha, quantity: null } : linha,
+        ),
+      })),
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(c.updateKitItem).not.toHaveBeenCalled();
+    expect(r).toMatchObject({
+      tipo: 'falha',
+      motivo: 'forma-de-modelo-divergente',
+      carimbado: true,
+    });
+    expect(unicoPatch(c.db, CAMINHO_VAR_A)).toMatchObject({
+      precoRecusaCodigo: 'erp:forma-de-modelo-divergente',
+    });
+  });
+
+  it('K18 — a leitura do kit devolve OUTRO item ⇒ cada modelo a enviar é a linha divergente, carimbada; ZERO `update_kit_item`, nada lançado', async () => {
+    const c = cenarioDeKit({ kit: kitComModeloCru(MODELO_A, (m) => m, ITEM_ID + 1) });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 25), c.deps);
+
+    expect(c.updateKitItem).not.toHaveBeenCalled();
+    expect(r).toMatchObject({
+      tipo: 'falha',
+      motivo: 'forma-de-modelo-divergente',
+      carimbado: true,
+    });
+    expect(comLinhas(r).map((l) => [l.modelId, l.resultado, l.motivo])).toEqual([
+      [MODELO_A, 'falha', 'forma-de-modelo-divergente'],
+      [MODELO_B, 'falha', 'forma-de-modelo-divergente'],
+    ]);
+    expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_VAR_B, CAMINHO_LINK]);
+  });
+});
+
 describe('enviarPrecoDoItem — o kit: o arame do registro 301 (campos do item depois da escrita parcial)', () => {
   const erros: unknown[][] = [];
   beforeEach(() => {

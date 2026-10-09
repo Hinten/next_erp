@@ -33,8 +33,12 @@
  *   `update_kit_item` carrying only the CHANGED models with their LIVE
  *   `component_list` resent verbatim. Its answer is a bare envelope, so the
  *   transport hands G10 a SYNTHESISED success list (every sent model, no
- *   price). A planned model the live kit lacks is never sent, and its row is
- *   `falha forma-de-modelo-divergente`, stamped with our `erp:` code.
+ *   price). A planned model with no USABLE live model — the live kit lacks
+ *   it, carries it in a shape that cannot be resent verbatim (no
+ *   `tier_index`, a component `quantity` that did not read, …), or the read
+ *   answered another item — is never sent, and its row is
+ *   `falha forma-de-modelo-divergente`, stamped with our `erp:` code: one
+ *   listing's wire is a ROW, never a thrown class that would end the run.
  * - **Its errors** go through {@link veredictoDoErroDeKit} FIRST: the kit
  *   refusal classifier (`kits/recusaKit.ts`) reads Shopee's SENTENCE, because
  *   `product.error_busi` carries both a transient ("Too many connections",
@@ -713,8 +717,9 @@ function conferirCamposDoKit(
 /* -------------------------------------------------------------------------- */
 
 /**
- * A kit model the plan addressed and the LIVE kit no longer carries
- * (`./enviarPrecoKit`'s `semModeloVivo`). It was never sent, so it is not an
+ * A kit model the plan addressed and the LIVE kit no longer carries in a
+ * usable shape (`./enviarPrecoKit`'s `semModeloVivo`: absent, not resendable
+ * verbatim, or read under another item). It was never sent, so it is not an
  * unanswered model: the listing's structure drifted from the ERP's binding,
  * and the row is `falha forma-de-modelo-divergente`, its child stamped with our
  * `erp:` code (the remedy is a re-import). Every other row passes untouched.

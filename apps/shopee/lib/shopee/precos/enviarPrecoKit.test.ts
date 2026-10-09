@@ -280,34 +280,6 @@ describe('enviarPrecoDeKit — erros', () => {
     expect(c.ordem).toEqual(['get_kit_item_info']);
   });
 
-  it('a leitura do kit de OUTRO item ⇒ `ShopeeConfigError`, nada enviado', async () => {
-    const outro = lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO);
-    const c = clienteDoKit(outro);
-
-    await expect(
-      enviarPrecoDeKit(c.client, KIT + 1, [{ model_id: MODELO_1, original_price: 46 }]),
-    ).rejects.toBeInstanceOf(ShopeeConfigError);
-    expect(c.corpos).toEqual([]);
-  });
-
-  it('um modelo vivo SEM `tier_index` lido ⇒ `ShopeeConfigError` (nunca um índice inventado), nada enviado', async () => {
-    const kit = FAMILIA_VIVA();
-    const semTier = shopeeKitItemInfoPayloadSchema.parse({
-      product_info: {
-        ...kit.product_info,
-        model_list: kit.product_info?.model_list.map((m) =>
-          m.model_id === MODELO_2 ? { ...m, tier_index: [] } : m,
-        ),
-      },
-    });
-    const c = clienteDoKit(semTier);
-
-    await expect(
-      enviarPrecoDeKit(c.client, KIT, [{ model_id: MODELO_2, original_price: 33 }]),
-    ).rejects.toBeInstanceOf(ShopeeConfigError);
-    expect(c.corpos).toEqual([]);
-  });
-
   it('o erro de cada chamada chega VERBATIM (a MESMA instância) — nada é capturado aqui', async () => {
     const naLeitura = shopeeErrorFromEnvelope(
       { error: 'error_auth', message: 'no', request_id: null, warning: null },
@@ -318,6 +290,136 @@ describe('enviarPrecoDeKit — erros', () => {
         { model_id: MODELO_1, original_price: 46 },
       ]),
     ).rejects.toBe(naLeitura);
+  });
+
+  it('⛔ QUASE-IGUAL: um `ShopeeConfigError` LANÇADO pela chamada (a guarda do corpo montado — um bug NOSSO) continua subindo, a MESMA instância', async () => {
+    const bug = new ShopeeConfigError('item_setting.model_list[0].original_price inválido');
+    const c = clienteDoKit(FAMILIA_VIVA(), bug);
+
+    await expect(
+      enviarPrecoDeKit(c.client, KIT, [{ model_id: MODELO_2, original_price: 33 }]),
+    ).rejects.toBe(bug);
+    expect(c.ordem).toEqual(['get_kit_item_info', 'update_kit_item']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  2b. a live model that cannot be resent — a ROW, never a thrown error       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * {@link FAMILIA_VIVA} with ONE live model rewritten into a shape the read
+ * TOLERATES (`tier_index` / `component_list` default to `[]`, a component's
+ * `quantity` is nullable) — and, optionally, answering for another item.
+ */
+function familiaComModeloCru(
+  modelId: number,
+  reescrever: (modelo: Record<string, unknown>) => Record<string, unknown>,
+  itemIdLido: number = KIT,
+): ShopeeKitItemInfo {
+  const kit = FAMILIA_VIVA();
+  return shopeeKitItemInfoPayloadSchema.parse({
+    product_info: {
+      ...kit.product_info,
+      item_id: itemIdLido,
+      model_list: kit.product_info?.model_list.map((m) =>
+        m.model_id === modelId ? reescrever({ ...m }) : m,
+      ),
+    },
+  });
+}
+
+/** The two changed models every case below plans: MODELO_2 (the one rewritten) and MODELO_3. */
+const DOIS_MUDARAM = [
+  { model_id: MODELO_2, original_price: 33 },
+  { model_id: MODELO_3, original_price: 34 },
+] as const;
+
+/** The `console.warn` calls this transport made — the spy the top-level `beforeEach` installs. */
+function avisos(): unknown[][] {
+  return vi.mocked(console.warn).mock.calls;
+}
+
+describe('enviarPrecoDeKit — um modelo VIVO que não se reenvia verbatim volta em `semModeloVivo`, nunca é lançado', () => {
+  it.each([
+    [
+      'SEM `tier_index` (nunca um índice inventado)',
+      (m: Record<string, unknown>) => ({ ...m, tier_index: [] }),
+      /tier_index/,
+    ],
+    [
+      'com um componente de `quantity` NULA (a recusa de `linhasDeReenvioDoKit`)',
+      (m: Record<string, unknown>) => ({
+        ...m,
+        component_list: (m.component_list as Record<string, unknown>[]).map((linha, i) =>
+          i === 0 ? { ...linha, quantity: null } : linha,
+        ),
+      }),
+      /quantity/,
+    ],
+    [
+      'SEM `component_list` (o `.default([])` da leitura — a guarda do PRÓPRIO pacote decide)',
+      (m: Record<string, unknown>) => ({ ...m, component_list: [] }),
+      /component_list/,
+    ],
+  ])(
+    '⚠️ PAR: o modelo vivo %s ⇒ volta em `semModeloVivo` e NÃO vai; o outro, bem-formado, vai SOZINHO — nada lançado',
+    async (_caso, reescrever, causa) => {
+      const c = clienteDoKit(familiaComModeloCru(MODELO_2, reescrever));
+
+      const r = await enviarPrecoDeKit(c.client, KIT, DOIS_MUDARAM);
+
+      expect(r.semModeloVivo).toEqual([MODELO_2]);
+      expect(
+        c.corpos.map((corpo) => corpo.item_setting?.model_list?.map((m) => m.model_id)),
+      ).toEqual([[MODELO_3]]);
+      expect(r.resposta.success_list.map((s) => s.model_id)).toEqual([MODELO_3]);
+      // ONE warning: the ids and the package's sentence — field paths, never a value.
+      expect(avisos()).toEqual([
+        [
+          expect.stringContaining('[shopee/precos] envio de preço de kit'),
+          { itemId: KIT, modelos: [{ modelId: MODELO_2, causa: expect.stringMatching(causa) }] },
+        ],
+      ]);
+    },
+  );
+
+  it('⛔ QUASE-IGUAL: o MESMO kit bem-formado ⇒ os DOIS vão, `semModeloVivo` vazio, nenhum aviso', async () => {
+    const c = clienteDoKit(familiaComModeloCru(MODELO_2, (m) => m));
+
+    const r = await enviarPrecoDeKit(c.client, KIT, DOIS_MUDARAM);
+
+    expect(r.semModeloVivo).toEqual([]);
+    expect(c.corpos[0]?.item_setting?.model_list?.map((m) => [m.model_id, m.tier_index])).toEqual([
+      [MODELO_2, [1]],
+      [MODELO_3, [2]],
+    ]);
+    expect(avisos()).toEqual([]);
+  });
+
+  it('NENHUM modelo planejado é utilizável ⇒ ZERO `update_kit_item`, a resposta vazia', async () => {
+    const c = clienteDoKit(familiaComModeloCru(MODELO_2, (m) => ({ ...m, tier_index: [] })));
+
+    const r = await enviarPrecoDeKit(c.client, KIT, [{ model_id: MODELO_2, original_price: 33 }]);
+
+    expect(c.ordem).toEqual(['get_kit_item_info']);
+    expect(r).toEqual({
+      resposta: { success_list: [], failure_list: [] },
+      semModeloVivo: [MODELO_2],
+    });
+  });
+
+  it('a leitura do kit de OUTRO item ⇒ CADA modelo planejado volta em `semModeloVivo`, ZERO `update_kit_item`, um aviso com os dois ids — nada lançado', async () => {
+    const c = clienteDoKit(familiaComModeloCru(MODELO_2, (m) => m, KIT + 1));
+
+    const r = await enviarPrecoDeKit(c.client, KIT, DOIS_MUDARAM);
+
+    expect(c.ordem).toEqual(['get_kit_item_info']);
+    expect(r.semModeloVivo).toEqual([MODELO_2, MODELO_3]);
+    expect(r.resposta.success_list).toEqual([]);
+    expect(avisos()).toEqual([
+      [expect.stringContaining('outro item'), { itemId: KIT, itemIdLido: KIT + 1 }],
+    ]);
   });
 });
 
