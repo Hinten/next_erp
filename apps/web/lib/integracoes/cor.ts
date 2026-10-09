@@ -7,10 +7,9 @@
  * the presentation half is here, because it depends on the chat module's
  * contrast rule.
  *
- * ⚠️ Do NOT decode `cor` with `argbToRgba` / `etiquetaTint` from
- * `lib/chat/etiquetaCores`. Those read the alpha channel, which is `0` on a
- * 24-bit value — a badge painted with them is fully transparent. The luminance
- * helpers in that module are alpha-blind and ARE reused below.
+ * An opaque badge must decode `cor` with the shared codec: `argbToRgba` sees
+ * zero alpha on a 24-bit value, while `etiquetaTint` applies the chat tile's
+ * translucency. Its contrast selector is reused against the opaque RGB here.
  */
 
 import { corToRgb } from '@delfrance/core';
@@ -20,9 +19,8 @@ import { contrastingTextColor } from '@/lib/chat/etiquetaCores';
  * Inline styles for a badge painted in an integração's registered colour, or
  * `null` when it has none (the caller falls back to a neutral badge).
  *
- * The foreground is the WCAG-luminance choice `contrastingTextColor` makes for
- * chat etiquetas — the same rule the legacy app used — so a pale channel colour
- * gets black text instead of unreadable white.
+ * The foreground uses the same contrast selector as chat etiquetas, with the
+ * badge's opaque background rather than the chat tile's translucent one.
  */
 export function integracaoBadgeStyle(
   cor: number | null | undefined,

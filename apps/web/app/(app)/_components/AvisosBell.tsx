@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
-import { ActionIcon, Indicator, Popover, ScrollArea, Stack } from '@mantine/core';
+import { useEffect, useId } from 'react';
+import { ActionIcon, Indicator, Popover, ScrollArea, Stack, VisuallyHidden } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { IconBell } from '@tabler/icons-react';
 import { useAuth } from '@/lib/auth';
@@ -23,6 +23,7 @@ import { AvisosPanel } from './AvisosPanel';
  * buy for an operator who is already in the app.
  */
 export function AvisosBell() {
+  const titleId = useId();
   const { user } = useAuth();
   const [opened, { toggle, close }] = useDisclosure(false);
   const { rows, naoLidos, loading, marcarComoLido, marcarTodosLidos } = useAvisos();
@@ -44,7 +45,7 @@ export function AvisosBell() {
       opened={opened}
       onChange={close}
       position="bottom-end"
-      width={380}
+      width="min(380px, calc(100vw - 24px))"
       shadow="md"
       trapFocus
     >
@@ -61,7 +62,8 @@ export function AvisosBell() {
           </ActionIcon>
         </Indicator>
       </Popover.Target>
-      <Popover.Dropdown p={0}>
+      <Popover.Dropdown p={0} aria-labelledby={titleId}>
+        <VisuallyHidden id={titleId}>Avisos</VisuallyHidden>
         <ScrollArea.Autosize mah={420}>
           <Stack gap={0} p="xs">
             <AvisosPanel

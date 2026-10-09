@@ -161,14 +161,14 @@ function EnvioRow({
       </Text>
 
       {envio.naoEnumerados > 0 && (
-        <Text size="xs" c="yellow.8">
+        <Text size="xs" c="yellow">
           {envio.naoEnumerados} anúncio{envio.naoEnumerados === 1 ? '' : 's'} não enumerado
           {envio.naoEnumerados === 1 ? '' : 's'} — o produto vinculado não entrou na busca.
         </Text>
       )}
 
       {envio.status === 'failed' && (
-        <Text size="xs" c="red.7">
+        <Text size="xs" c="red">
           {envio.erro ? `Erro: ${envio.erro}` : 'O envio terminou em falha.'}
         </Text>
       )}

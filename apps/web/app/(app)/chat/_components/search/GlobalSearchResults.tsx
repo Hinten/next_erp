@@ -163,7 +163,7 @@ function MatchRow({ match, regex, term }: { match: GlobalMatchRow; regex: RegExp
         borderRadius: 6,
         textDecoration: 'none',
         color: 'inherit',
-        border: '1px solid var(--mantine-color-gray-2)',
+        border: '1px solid var(--mantine-color-default-border)',
       }}
     >
       <Text size="sm" lineClamp={2}>

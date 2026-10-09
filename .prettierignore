@@ -8,6 +8,7 @@
 **/*.tsbuildinfo
 **/playwright-report/
 **/test-results/
+**/e2e/.auth/
 
 # Dependencies & lockfile
 **/node_modules/

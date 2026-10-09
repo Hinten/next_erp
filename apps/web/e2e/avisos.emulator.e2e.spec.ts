@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { getAuth } from 'firebase-admin/auth';
 import { getApp } from '@delfrance/test-fixtures';
 import { e2eUserEmail } from './_helpers/run-id';
@@ -27,6 +27,13 @@ test.describe.serial('Avisos — a caixa de avisos do operador', () => {
   let ids: string[] = [];
   let e2eUid = '';
 
+  // Other suites can deliver legitimate avisos to this same run-scoped
+  // operator. Every fixture has prefix-bearing visible copy, so read-state
+  // assertions describe our notices rather than an unstable inbox total.
+  const ownRows = (page: Page) => page.getByTestId('aviso-row').filter({ hasText: prefix });
+  const ownUnreadRows = (page: Page) =>
+    page.locator('[data-testid="aviso-row"][data-nao-lido="true"]').filter({ hasText: prefix });
+
   test.beforeAll(async () => {
     // The signed-in identity here is the EPHEMERAL test user minted per run by
     // `global-setup.ts`, not the SU: `E2E_SU_EMAIL` is only set for the
@@ -54,15 +61,15 @@ test.describe.serial('Avisos — a caixa de avisos do operador', () => {
     await page.goto('/inicio');
 
     await expect(page.getByText(`${prefix}-loja`)).toBeVisible();
-    await expect(page.getByText('Canal sem credencial válida')).toBeVisible();
+    await expect(ownRows(page).getByText('Canal sem credencial válida')).toBeVisible();
     // Addressed to another operator: present in the collection, absent here.
-    await expect(page.getByText('cancelamento solicitado')).toHaveCount(0);
+    await expect(ownRows(page).filter({ hasText: `${prefix}-ped` })).toHaveCount(0);
   });
 
   test('marcar UMA como lida não afeta as outras, e sobrevive ao reload', async ({ page }) => {
     await page.goto('/inicio');
 
-    const naoLidas = page.locator('[data-testid="aviso-row"][data-nao-lido="true"]');
+    const naoLidas = ownUnreadRows(page);
     await expect(naoLidas).toHaveCount(2);
 
     await page
@@ -72,20 +79,47 @@ test.describe.serial('Avisos — a caixa de avisos do operador', () => {
       .click();
 
     await expect(naoLidas).toHaveCount(1);
+    await expect(ownRows(page).filter({ hasText: `${prefix}-loja` })).toHaveAttribute(
+      'data-nao-lido',
+      'false',
+    );
+    await expect(ownRows(page).filter({ hasText: `${prefix}-Shopee` })).toHaveAttribute(
+      'data-nao-lido',
+      'true',
+    );
 
     await page.reload();
-    await expect(page.locator('[data-testid="aviso-row"][data-nao-lido="true"]')).toHaveCount(1);
+    await expect(ownUnreadRows(page)).toHaveCount(1);
+    await expect(ownRows(page).filter({ hasText: `${prefix}-loja` })).toHaveAttribute(
+      'data-nao-lido',
+      'false',
+    );
+    await expect(ownRows(page).filter({ hasText: `${prefix}-Shopee` })).toHaveAttribute(
+      'data-nao-lido',
+      'true',
+    );
   });
 
-  test('marcar todas como lidas limpa a contagem e sobrevive ao reload', async ({ page }) => {
+  test('marcar todas como lidas persiste a leitura de cada aviso após reload', async ({ page }) => {
     await page.goto('/inicio');
 
     await page.getByRole('button', { name: 'Marcar todas como lidas' }).click();
-    await expect(page.getByText('Tudo lido')).toBeVisible();
+    await expect(ownUnreadRows(page)).toHaveCount(0);
+    await expect(ownRows(page)).toHaveCount(2);
 
     await page.reload();
-    await expect(page.locator('[data-testid="aviso-row"][data-nao-lido="true"]')).toHaveCount(0);
-    await expect(page.getByText('Tudo lido')).toBeVisible();
+    await expect(ownUnreadRows(page)).toHaveCount(0);
+    await expect(ownRows(page)).toHaveCount(2);
+    // Read notices stay visible; concurrent newly raised notices may correctly
+    // keep the global header count positive after this action.
+    await expect(ownRows(page).filter({ hasText: `${prefix}-loja` })).toHaveAttribute(
+      'data-nao-lido',
+      'false',
+    );
+    await expect(ownRows(page).filter({ hasText: `${prefix}-Shopee` })).toHaveAttribute(
+      'data-nao-lido',
+      'false',
+    );
   });
 
   test('um aviso levantado DEPOIS de marcar todas volta a contar como não lido', async ({
@@ -101,7 +135,14 @@ test.describe.serial('Avisos — a caixa de avisos do operador', () => {
 
     await page.goto('/inicio');
     await expect(page.getByText(`${prefix}-nova-loja`)).toBeVisible();
-    await expect(page.locator('[data-testid="aviso-row"][data-nao-lido="true"]')).toHaveCount(1);
+    await expect(ownUnreadRows(page)).toHaveCount(1);
+    await expect(ownRows(page).filter({ hasText: `${prefix}-nova-loja` })).toHaveAttribute(
+      'data-nao-lido',
+      'true',
+    );
+    await expect(
+      page.getByRole('button', { name: /^Avisos \([1-9]\d* não lidos\)$/ }),
+    ).toBeVisible();
   });
 
   test('um aviso lido individualmente volta a contar como não lido quando REABRE, e não quando repete', async ({

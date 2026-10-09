@@ -21,7 +21,7 @@ export function ReferralCard({ referral }: { referral: NonNullable<Mensagem['ref
   if (!hasContent) return null;
 
   return (
-    <Card withBorder radius="sm" p="xs" bg="var(--mantine-color-gray-0)" mb={4}>
+    <Card withBorder radius="sm" p="xs" bg="var(--mantine-color-default-hover)" mb={4}>
       <Stack gap={2}>
         <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
           Anúncio

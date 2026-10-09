@@ -1,8 +1,8 @@
 'use client';
 
 import { Group, Tooltip, UnstyledButton } from '@mantine/core';
-import { IconX } from '@tabler/icons-react';
-import { ETIQUETA_CORES, argbToRgba } from '@/lib/chat/etiquetaCores';
+import { IconCheck, IconX } from '@tabler/icons-react';
+import { ETIQUETA_CORES, argbToRgba, contrastingTextColor } from '@/lib/chat/etiquetaCores';
 
 /**
  * The seven-colour etiqueta picker (legacy `_coresEtiqueta` row,
@@ -33,17 +33,15 @@ export function EtiquetaPicker({
           aria-label="Sem etiqueta"
           aria-pressed={value == null}
           onClick={() => onChange(null)}
-          style={(theme) => ({
+          style={{
             width: size,
             height: size,
             borderRadius: '50%',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            border: `${value == null ? 2.5 : 1}px solid ${
-              value == null ? theme.colors.blue[6] : theme.colors.gray[4]
-            }`,
-          })}
+            border: `${value == null ? 2.5 : 1}px solid var(--mantine-color-dimmed)`,
+          }}
         >
           <IconX size={size * 0.6} />
         </UnstyledButton>
@@ -57,15 +55,21 @@ export function EtiquetaPicker({
               aria-label={`Etiqueta ${cor}`}
               aria-pressed={selected}
               onClick={() => onChange(cor)}
-              style={(theme) => ({
+              style={{
                 width: size,
                 height: size,
                 borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 background: argbToRgba(cor),
-                border: selected ? `2.5px solid ${theme.colors.blue[6]}` : '1px solid transparent',
-                boxShadow: selected ? `0 0 0 2px ${argbToRgba(cor)}` : undefined,
-              })}
-            />
+                border: '1px solid var(--mantine-color-dimmed)',
+              }}
+            >
+              {selected && (
+                <IconCheck size={size * 0.65} color={contrastingTextColor(cor)} aria-hidden />
+              )}
+            </UnstyledButton>
           </Tooltip>
         );
       })}

@@ -28,7 +28,6 @@ export default function InicioPage() {
           {/* Same component as the bell popover, so the two views cannot drift
               about what an aviso says or which actions it offers. */}
           <AvisosPanel
-            completo
             rows={rows}
             loading={loading}
             naoLidos={naoLidos}

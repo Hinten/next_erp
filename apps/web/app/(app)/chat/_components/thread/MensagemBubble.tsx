@@ -11,7 +11,7 @@ import {
   Tooltip,
   type MantineTheme,
 } from '@mantine/core';
-import { useHover } from '@mantine/hooks';
+import { useFocusWithin, useHover, useMergedRef } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconArrowForward, IconCopy, IconDots, IconFileText } from '@tabler/icons-react';
 import type { Mensagem, OrigemConversa } from '@delfrance/schemas';
@@ -143,16 +143,18 @@ type Variant = 'mine' | 'customer' | 'agent';
 
 function bubbleColors(variant: Variant) {
   return (theme: MantineTheme) => {
-    const [bg, border] =
+    const bg =
       variant === 'mine'
-        ? [theme.colors.blue[0], theme.colors.blue[2]]
+        ? 'var(--mantine-color-blue-light)'
         : variant === 'agent'
-          ? [theme.colors.violet[0], theme.colors.violet[2]]
-          : [theme.colors.gray[1], theme.colors.gray[3]];
+          ? 'var(--mantine-color-violet-light)'
+          : 'var(--mantine-color-default-hover)';
     return {
-      maxWidth: 480,
+      maxWidth: 'min(480px, 100%)',
+      minWidth: 0,
+      overflowWrap: 'anywhere' as const,
       background: bg,
-      border: `1px solid ${border}`,
+      border: '1px solid var(--mantine-color-default-border)',
       borderRadius: theme.radius.md,
     };
   };
@@ -180,13 +182,16 @@ function BubbleBody({
   showStatus: boolean;
 }) {
   const { hovered, ref } = useHover<HTMLDivElement>();
+  const { focused, ref: focusRef } = useFocusWithin<HTMLDivElement>();
+  const bubbleRef = useMergedRef(ref, focusRef);
+  const optionsVisible = hovered || focused;
   const autor = useAutorNome(showAuthor ? mensagem.user_id : null);
   const forwarded = mensagem.context?.forwarded || mensagem.context?.frequently_forwarded;
   const media = hasMedia(mensagem);
   const hasText = typeof mensagem.conteudo === 'string' && mensagem.conteudo.trim() !== '';
 
   return (
-    <Box ref={ref} p="xs" style={bubbleColors(variant)} pos="relative">
+    <Box ref={bubbleRef} p="xs" style={bubbleColors(variant)} pos="relative">
       {searchActive && (
         <Box
           pos="absolute"
@@ -194,6 +199,7 @@ function BubbleBody({
             inset: -2,
             borderRadius: 10,
             outline: '2px solid var(--mantine-color-orange-5)',
+            pointerEvents: 'none',
           }}
         />
       )}
@@ -265,7 +271,15 @@ function BubbleBody({
       </Stack>
 
       {hasText && (
-        <Box pos="absolute" style={{ top: 2, right: 2, opacity: hovered ? 1 : 0 }}>
+        <Box
+          pos="absolute"
+          style={{
+            top: 2,
+            right: 2,
+            opacity: optionsVisible ? 1 : 0,
+            pointerEvents: optionsVisible ? 'auto' : 'none',
+          }}
+        >
           <Menu withinPortal position="bottom-end" shadow="sm">
             <Menu.Target>
               <ActionIcon variant="subtle" size="xs" color="gray" aria-label="Opções da mensagem">
