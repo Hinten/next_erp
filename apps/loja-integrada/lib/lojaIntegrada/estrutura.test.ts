@@ -648,6 +648,29 @@ describe('the guards, on synthetic source', () => {
     expect(violacoesDoSanitizador([SANITIZADOR], comRedator(fonte)).length).toBeGreaterThan(0);
   });
 
+  // A network module is FORBIDDEN, not merely off the allow-list: allow-listing it
+  // in review must still fail. Both spellings; the modules spelled out here, not
+  // read from the set under test, so dropping one from the set fails.
+  it.each(
+    [
+      'http',
+      'https',
+      'http2',
+      'net',
+      'tls',
+      'dns',
+      'dgram',
+      'child_process',
+      'worker_threads',
+      'cluster',
+    ].flatMap((m) => [`node:${m}`, m, `node:${m}/promises`]),
+  )('sanitizer closure forbids %s even if it were allow-listed', (espec) => {
+    expect(proibidoNoSanitizador(espec)).toBe(true);
+    expect(
+      violacoesDoSanitizador([SANITIZADOR], comRedator(`import x from '${espec}';`)),
+    ).toContain(`imports ${espec}`);
+  });
+
   /** An allow-listed workspace package, walked like the app's own files. */
   const PACOTE = '../../packages/core/src/wire/index.ts';
   const comPacote = (fontePacote: string, extras: Readonly<Record<string, string>> = {}) =>

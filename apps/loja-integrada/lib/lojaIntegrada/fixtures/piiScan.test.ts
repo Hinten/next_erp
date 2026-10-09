@@ -120,6 +120,14 @@ describe('piiScan — each layer fails on its own', () => {
     expect(achadosDePadroes(env)).toEqual([]);
   });
 
+  it('a residue finding prints a key the redactor kept only through its label: a listed name reads `<chave>`', () => {
+    // The redactor keeps an identifier key it does not know; only the store-name list knows this one.
+    const env = envelope('/v1/pedido/1', 200, { Loja_Exemplo: { campo_novo: 'abc' } });
+    const achados = residuoDeRedacao(env, LISTA);
+    expect(achados).toEqual([{ caminho: 'resposta.corpo.<chave>.campo_novo', tipo: 'residuo' }]);
+    expect(JSON.stringify(achados).toLowerCase()).not.toContain('exemplo');
+  });
+
   it('layer 2 alone: an 11-digit numero with valid CPF check digits survives the redactor, the pattern layer flags it', () => {
     const corpo = sanitizado('/v1/pedido/1', 200, { numero: Number(CPF) });
     expect(corpo).toEqual({ numero: Number(CPF) });

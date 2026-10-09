@@ -148,6 +148,25 @@ describe('executarSanitizacao — all or nothing', () => {
     expect(r.saida).toContain('  b requisicao.caminho :: cpf\n');
   });
 
+  it('a dry run never prints a refused sidecar, only its line numbers and kinds', () => {
+    const r = rodar(
+      ['--entrada', PASTA, '--dry-run'],
+      disco({
+        arquivos: pares({
+          a: {
+            txt: `GET /v1/situacao/ 200\ncredencial: personal-token\nAuthorization: Basic ${SENTINELA}\n`,
+            json: LIMPO.json,
+          },
+        }),
+      }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('[a]\n  the sidecar was refused; see the findings\n');
+    expect(r.saida).toContain('  a .txt:3 :: linha-nao-reconhecida\n');
+    expect(r.saida).not.toContain(SENTINELA);
+    expect(r.saida).not.toContain('Authorization');
+  });
+
   it('`--so` converts only the named pair', () => {
     const r = rodar(
       ['--entrada', PASTA, '--so', 'a'],
