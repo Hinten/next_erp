@@ -4,6 +4,7 @@ import { MAX_REF_CREDENCIAL } from '@delfrance/integrations-loja-integrada';
 import { credenciaisLojaIntegradaSchema } from '@delfrance/schemas';
 
 import { fingerprintDoToken, refDaCredencial, tokenCabeNaRef } from './credencial';
+import { versaoDaRef } from './refCredencial';
 
 const TOKEN = 'token-de-teste-nao-real';
 const ATUALIZADO_MS = 1_790_000_000_000;
@@ -35,6 +36,10 @@ describe('refDaCredencial', () => {
 
   it('is <fingerprint>.<tokenAtualizadoEmMs>', () => {
     expect(refDaCredencial(credencial)).toBe(`356650d83857e2ca.${String(ATUALIZADO_MS)}`);
+  });
+
+  it('round trip: the logger reads back exactly the stamp — one format, one owner', () => {
+    expect(versaoDaRef(refDaCredencial(credencial))).toBe(String(credencial.tokenAtualizadoEmMs));
   });
 
   it('same token and same tokenAtualizadoEmMs → the same ref', () => {

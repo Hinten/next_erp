@@ -77,11 +77,44 @@ still be fixed. Only the context loader refuses those.
   out of responses and logs.
 - The tokens belong to this integration alone, separate from the legacy app's (D16).
 
+## Logging and redaction (step 2b)
+
+- ONE JSON line per Loja Integrada call, with a Cloud Logging `severity`, written by
+  `core/log.ts` through `process.stdout.write` (never `console.*`, no new dependency).
+- The observer is always `criarObservadorLi(…)`: the context loader builds it itself
+  (callers pass only `registro`: flow, attempt, task/notification ids, a test sink; `conta`
+  is always the context's id), and both credential routes pass it to the validating GET.
+  Only `core/log.ts` names `ChamadaLi`, the raw event (raw query, full body). The
+  `estrutura.test.ts` guards fail on any other observer, on that type named elsewhere, and
+  on a logger import closure reaching `firebase-admin`, `@delfrance/data`, `next` or `@/`.
+- The credential is labelled by `credencial: 'personal-token'` and `versaoCredencial` (the
+  ref's version suffix, read through `core/refCredencial.ts`, the format's one owner) —
+  never the ref, never the fingerprint.
+- `core/redacao.ts` is pure and total (no clock, I/O, env or `catch`; imports only `zod`
+  and `@delfrance/core/*`). Allow-lists fail closed: the path picks the policy
+  (`estrutural` by default, `configuracao`, `catalogo`, `webhook` never excerpted), then
+  spelled-out leaves with predicates. Profile `log`: `<redacted>` plus the regex layer,
+  then a 2 KB cut (mask first, cut second). Profile `fixture` (fixtures are public): fakes
+  of the same type, `chave_redigida_<n>` keys, error bodies keep shape and short digits.
+- A new field or path stays redacted until a table lists it. Listing one means adding the
+  leaf with its predicate AND regenerating the committed leaf inventory, which reads the
+  gitignored spec cache only: `MSYS_NO_PATHCONV=1 node
+  .master_plans/loja-integrada/evidence/li-doc.mjs folhas --saida
+  apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pairs: the
+  file's own operations; pass `<METHOD> <path>…` pairs, all of them, to change the list).
+  `redacao.test.ts` demands every inventory leaf be classified exactly once.
+- The excerpt fails closed where the token may echo back: a 401/403 is never excerpted on
+  any path, and neither is any answer to the validating GET (a candidate credential,
+  `versaoCredencial: null`). The package scrubs only the exact token sent, so a partial or
+  escaped echo would otherwise reach the log. Never relax either rule to "see the error".
+
 ## Config
 
-- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts` (emulator
-  suites run on their own lane, which lands in step 3); `eslint.config.mjs` still lints
-  them. Both already cover the nested `functions/` codebase.
+- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`: emulator
+  suites need their own lane — **none exists yet** (planned for step 3), so the change
+  that adds the first such suite must add its lane too, or it runs nowhere while every
+  check stays green. `eslint.config.mjs` still lints them. Both already cover the nested
+  `functions/` codebase.
 - The Firestore database id is `default`: `lib/firebase/admin.ts` passes it explicitly.
   `ALLOWED_ADMIN_ORIGINS` is REQUIRED in production (see `apphosting.yaml`).
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.

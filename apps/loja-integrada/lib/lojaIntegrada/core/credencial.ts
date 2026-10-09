@@ -14,6 +14,8 @@
 import { sha256Hex } from '@delfrance/data/admin';
 import type { CredenciaisLojaIntegrada } from '@delfrance/schemas';
 
+import { montarRef } from './refCredencial';
+
 /**
  * The domain prefix. It makes our fingerprint uncorrelatable with a plain
  * sha256 of the same token computed anywhere else.
@@ -37,12 +39,14 @@ export function fingerprintDoToken(token: string): string {
  * operator who re-saves the SAME token after a park they think is wrong gets a
  * NEW ref, so a 401 already in flight with the old one parks nothing.
  *
- * About 30 characters — within the package's `MAX_REF_CREDENCIAL` (64).
+ * About 30 characters — within the package's `MAX_REF_CREDENCIAL` (64). The
+ * format has one owner, `refCredencial.ts`, which is also what the logger reads
+ * the version suffix back with.
  */
 export function refDaCredencial(
   c: Pick<CredenciaisLojaIntegrada, 'personalToken' | 'tokenAtualizadoEmMs'>,
 ): string {
-  return `${fingerprintDoToken(c.personalToken)}.${String(c.tokenAtualizadoEmMs)}`;
+  return montarRef(fingerprintDoToken(c.personalToken), c.tokenAtualizadoEmMs);
 }
 
 /**
