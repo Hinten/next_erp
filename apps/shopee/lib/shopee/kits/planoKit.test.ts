@@ -65,6 +65,7 @@ const K = 'prod-kit';
 const MEMBRO = 'prod-kit-membro';
 const F_AZUL = 'prod-kit-azul';
 const F_PRETO = 'prod-kit-preto';
+const F_VERDE = 'prod-kit-verde';
 const A = 'prod-comp-a';
 const B = 'prod-comp-b';
 const X = 'prod-comp-x';
@@ -344,10 +345,12 @@ describe('problemasDaFaseA — as recusas que só leem o Firestore', () => {
     expect(problemasDaFaseA(faseA({ gruposDistintos: 0 }))).toEqual([]);
   });
 
-  it('M93b — dois filhos SEM grupo algum ⇒ kit-dois-eixos dizendo que FALTA o eixo; dois grupos mantêm a frase de eixos demais', () => {
+  it('M93b — três filhos SEM grupo algum ⇒ kit-dois-eixos dizendo que FALTA o eixo; dois grupos mantêm a frase de eixos demais', () => {
     // Numa criação, a fase A lança antes do `planejarTier`: esta é a ÚNICA frase
     // que o operador lê — "varia em 0 grupos" diria eixos DEMAIS a quem não tem eixo.
-    const semGrupo = [filho(F_AZUL), filho(F_PRETO)];
+    // TRÊS filhos, nunca dois: com 2 filhos em 2 grupos a contagem de filhos e a de
+    // grupos coincidem, e uma frase que trocasse uma pela outra passaria.
+    const semGrupo = [filho(F_AZUL), filho(F_PRETO), filho(F_VERDE)];
     expect(
       problemasDaFaseA(faseA({ filhos: semGrupo, familiaDeUm: false, gruposDistintos: 0 })),
     ).toEqual([
@@ -355,14 +358,19 @@ describe('problemasDaFaseA — as recusas que só leem o Firestore', () => {
         campo: 'grupoDeVariacoesUid',
         motivo: M.kitDoisEixos,
         mensagem:
-          'as 2 variações do kit não estão em nenhum grupo de variação — a Shopee aceita kit ' +
+          'as 3 variações do kit não estão em nenhum grupo de variação — a Shopee aceita kit ' +
           'com UM eixo de variação; coloque-as num mesmo grupo de variação no ERP antes de publicar',
       },
     ]);
-    // ⛔ QUASE-PAR: dois grupos seguem com a frase de eixos DEMAIS, intacta.
-    const dois = [filho(F_AZUL, { variante: 'Azul' }), filho(F_PRETO, { variante: 'P' })];
+    // ⛔ QUASE-PAR: três filhos em dois grupos seguem com a frase de eixos DEMAIS,
+    // intacta — e ela nomeia os 2 GRUPOS, nunca os 3 filhos.
+    const emDoisGrupos = [
+      filho(F_AZUL, { variante: 'Azul' }),
+      filho(F_PRETO, { variante: 'Preto' }),
+      filho(F_VERDE, { variante: 'P' }),
+    ];
     expect(
-      problemasDaFaseA(faseA({ filhos: dois, familiaDeUm: false, gruposDistintos: 2 })),
+      problemasDaFaseA(faseA({ filhos: emDoisGrupos, familiaDeUm: false, gruposDistintos: 2 })),
     ).toEqual([
       {
         campo: 'grupoDeVariacoesUid',
