@@ -429,6 +429,13 @@ describe('ContaLojaIntegradaPanel — save', () => {
       CODIGO_ERRO_LI.tokenDeOutraConta,
       /já está salvo em outra conta/,
     ],
+    // The backend's read switch is off until the cutover (D17).
+    [
+      'LI_CHAMADAS_DESLIGADAS',
+      503,
+      CODIGO_ERRO_LI.chamadasDesligadas,
+      /integração com a Loja Integrada está desligada até a migração/,
+    ],
   ])(
     '%s: its copy, and the token is CLEARED — with no re-read',
     async (_n, status, code, copia) => {
@@ -620,6 +627,22 @@ describe('ContaLojaIntegradaPanel — renewal', () => {
       versaoEsperada: VERSAO,
     });
     expect(h.salvarCredencial).not.toHaveBeenCalled();
+  });
+
+  it('LI_CHAMADAS_DESLIGADAS on a renewal: says the integration is off until the cutover, no re-read', async () => {
+    h.conta.mockResolvedValue(COM_TOKEN);
+    h.renovarValidade.mockRejectedValue(http(503, CODIGO_ERRO_LI.chamadasDesligadas));
+    renderPanel();
+    await screen.findByText('vence em 84 dias');
+
+    fireEvent.change(campoData(), { target: { value: '2027-01-15' } });
+    fireEvent.click(botaoRenovar());
+
+    expect(await screen.findByText(/está desligada até a migração/)).toBeTruthy();
+    expect(screen.queryByText(/pode ou não ter sido salvo/)).toBeNull();
+    // Nothing was written: the status on screen still stands.
+    expect(h.conta).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('vence em 84 dias')).toBeTruthy();
   });
 
   it('LI_CREDENCIAL_AUSENTE (removed meanwhile): asks for a save and re-reads', async () => {

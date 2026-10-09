@@ -18,6 +18,7 @@ import {
 } from '@/lib/lojaIntegrada/avisos/avisos';
 import { fingerprintDoToken, refDaCredencial } from '@/lib/lojaIntegrada/core/credencial';
 import { removerCredencial } from '@/lib/lojaIntegrada/core/credentialStore';
+import { CHAMADAS_ENV_LI } from '@/lib/lojaIntegrada/core/valvulas';
 import { FakeDb, asDb, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
 import {
   AGORA_MS,
@@ -113,6 +114,8 @@ beforeEach(() => {
   seedConta(db, ID, { nome: 'Loja Um' });
   console$ = espiarConsole();
   stdout = espiarStdout();
+  // Every case below but the read-switch ones runs with calls allowed.
+  vi.stubEnv(CHAMADAS_ENV_LI, 'on');
 });
 
 afterEach(() => {
@@ -120,6 +123,55 @@ afterEach(() => {
   stdout.restaurar();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+describe('PUT …/credencial/validade — the read switch: only the exact `on` calls Loja Integrada', () => {
+  it.each([
+    ['unset', undefined, 'INFO'],
+    ['blank', '', 'INFO'],
+    ['ON', 'ON', 'WARNING'],
+    ['" on"', ' on', 'WARNING'],
+    ['true', 'true', 'WARNING'],
+  ])(
+    '%s: a fixed 503 LI_CHAMADAS_DESLIGADAS — the stored token never sent, nothing read or written',
+    async (_caso, valor, severidade) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, valor);
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const versao = seedParada();
+
+      const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+      expect(res.status).toBe(503);
+      const texto = await res.text();
+      expect(JSON.parse(texto)).toMatchObject({ code: CODIGO_ERRO_LI.chamadasDesligadas });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(chamadas).toHaveLength(0);
+      expect(db.leituras).toEqual([]);
+      expect(db.escritas).toEqual([]);
+      expect(linhasDeLog()).toEqual([
+        expect.objectContaining({
+          severity: severidade,
+          evento: 'chamada-bloqueada',
+          conta: ID,
+          operacao: 'validarPersonalToken',
+          valorReconhecido: severidade === 'INFO',
+        }),
+      ]);
+      const tudo = [texto, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+      expect(tudo).not.toContain(TOKEN_A);
+    },
+  );
+
+  it('near-miss: the exact `on` re-validates with exactly one fetch', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+    expect(res.status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(chamadas).toHaveLength(1);
+  });
 });
 
 describe('PUT …/credencial/validade — aceito', () => {

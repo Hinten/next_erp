@@ -25,6 +25,7 @@ import {
 } from '@/lib/lojaIntegrada/avisos/avisos';
 import { fingerprintDoToken, refDaCredencial } from '@/lib/lojaIntegrada/core/credencial';
 import { MENSAGEM_CORPO_NAO_JSON } from '@/lib/lojaIntegrada/core/respond';
+import { CHAMADAS_ENV_LI } from '@/lib/lojaIntegrada/core/valvulas';
 import { FakeDb, asDb, grpc, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
 import {
   AGORA_MS,
@@ -129,6 +130,8 @@ beforeEach(() => {
   seedConta(db, ID, { nome: 'Loja Um' });
   console$ = espiarConsole();
   stdout = espiarStdout();
+  // Every case below but the read-switch ones runs with calls allowed.
+  vi.stubEnv(CHAMADAS_ENV_LI, 'on');
 });
 
 afterEach(() => {
@@ -137,6 +140,93 @@ afterEach(() => {
   stdout.restaurar();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+/* -------------------------------------------------------------------------- */
+/*                        PUT — the read switch (D17)                          */
+/* -------------------------------------------------------------------------- */
+
+describe('PUT …/credencial — the read switch: only the exact `on` calls Loja Integrada', () => {
+  /** A value that must never reach a log line or an answer. */
+  const VALOR_SENTINELA = 'on-SENTINELA-valor-da-chave';
+
+  it.each([
+    ['unset', undefined, 'INFO'],
+    ['blank', '', 'INFO'],
+    ['off', 'off', 'INFO'],
+    ['ON', 'ON', 'WARNING'],
+    ['" on"', ' on', 'WARNING'],
+    ['"on "', 'on ', 'WARNING'],
+    ['true', 'true', 'WARNING'],
+    ['1', '1', 'WARNING'],
+    ['a sentinel', VALOR_SENTINELA, 'WARNING'],
+  ])(
+    '%s: a fixed 503 LI_CHAMADAS_DESLIGADAS — the fetch mock never called, nothing read or written',
+    async (_caso, valor, severidade) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, valor);
+      const chamadas = aceitarTudo();
+
+      const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+      expect(res.status).toBe(503);
+      const texto = await res.text();
+      expect(JSON.parse(texto)).toEqual({
+        error:
+          'As chamadas à Loja Integrada estão desligadas neste backend até a migração. ' +
+          'Nada foi enviado à Loja Integrada nem salvo.',
+        code: CODIGO_ERRO_LI.chamadasDesligadas,
+      });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(chamadas).toHaveLength(0);
+      // Before the body and before any Firestore read.
+      expect(db.leituras).toEqual([]);
+      expect(db.escritas).toEqual([]);
+      // One line, by operation and conta — never the value, never the token.
+      expect(linhasDeLog()).toEqual([
+        expect.objectContaining({
+          severity: severidade,
+          evento: 'chamada-bloqueada',
+          conta: ID,
+          operacao: 'validarPersonalToken',
+          chave: CHAMADAS_ENV_LI,
+          valorReconhecido: severidade === 'INFO',
+        }),
+      ]);
+      const tudo = [texto, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+      expect(tudo).not.toContain(TOKEN_A);
+      expect(tudo).not.toContain(VALOR_SENTINELA);
+    },
+  );
+
+  it('near-miss: the exact `on` validates with exactly one fetch and saves', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const chamadas = aceitarTudo();
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(res.status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(chamadas).toHaveLength(1);
+    expect(linhasDeLog().map((l) => l.evento)).toEqual(['chamada']);
+  });
+
+  it('the caller and the id are still checked first: 403 and 400 with the switch off', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    aceitarTudo();
+    expect((await salvar({}, { id: '..' })).status).toBe(400);
+    h.verifyIdToken.mockResolvedValue(LEITOR);
+    expect((await salvar({})).status).toBe(403);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(linhasDeLog()).toEqual([]);
+  });
+
+  it('near-miss: DELETE makes no Loja Integrada call, so the switch does not gate it', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    aceitarTudo();
+    seedCredencial(db, ID);
+    expect((await remover()).status).toBe(200);
+    expect(db.ler(CAMINHO)).toBeUndefined();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });
 
 /* -------------------------------------------------------------------------- */

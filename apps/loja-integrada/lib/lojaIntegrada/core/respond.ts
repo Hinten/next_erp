@@ -10,8 +10,8 @@
  *    `CLAUDE.md` rule 6);
  *  - the request-level refusals the three routes share: a malformed id, a
  *    malformed body ({@link lerCorpoLi}), a refused expiry date, a validation
- *    verdict other than `aceito`, a token already stored on another conta, and
- *    a caller that went away (499).
+ *    verdict other than `aceito`, a token already stored on another conta, the
+ *    read switch off (503), and a caller that went away (499).
  *
  * ⚠️ The ONE module under `lib/lojaIntegrada/` that imports `next/server`, and
  * therefore the one module step 3's functions bundle must never reach. Nothing
@@ -222,6 +222,21 @@ export function respostaTokenNaRef(): NextResponse {
     422,
     CODIGO_ERRO_LI.tokenInvalido,
     'O token é curto demais para ser um Personal Token. Nada foi enviado à Loja Integrada.',
+  );
+}
+
+/**
+ * 503 `LI_CHAMADAS_DESLIGADAS` — the read switch (`LOJA_INTEGRADA_CHAMADAS`,
+ * `core/valvulas.ts`) is not exactly `on`. Answered before the body is read, so
+ * nothing was sent to Loja Integrada and nothing was stored (D17: mock only
+ * until the cutover, when the window sets the switch on both surfaces).
+ */
+export function respostaChamadasDesligadas(): NextResponse {
+  return respostaLi(
+    503,
+    CODIGO_ERRO_LI.chamadasDesligadas,
+    'As chamadas à Loja Integrada estão desligadas neste backend até a migração. ' +
+      'Nada foi enviado à Loja Integrada nem salvo.',
   );
 }
 

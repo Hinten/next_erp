@@ -43,6 +43,7 @@ describe('descreverFalhaCredencialLi — the token field policy (plan section 7)
     ['LI_TOKEN_RECUSADO', 422, CODIGO_ERRO_LI.tokenRecusado],
     ['LI_TOKEN_INVALIDO', 422, CODIGO_ERRO_LI.tokenInvalido],
     ['LI_TOKEN_DE_OUTRA_CONTA', 409, CODIGO_ERRO_LI.tokenDeOutraConta],
+    ['LI_CHAMADAS_DESLIGADAS', 503, CODIGO_ERRO_LI.chamadasDesligadas],
   ])('%s CLEARS the token', (_nome, status, code) => {
     expect(descrever(http(status, code)).manterToken).toBe(false);
   });
@@ -74,6 +75,20 @@ describe('descreverFalhaCredencialLi — the token field policy (plan section 7)
   it('⭐ near miss on 409: another conta clears, a changed credential keeps', () => {
     expect(descrever(http(409, CODIGO_ERRO_LI.tokenDeOutraConta)).manterToken).toBe(false);
     expect(descrever(http(409, CODIGO_ERRO_LI.credencialAlterada)).manterToken).toBe(true);
+  });
+
+  it('⭐ near miss on 503: the read switch off clears and stays put; a park conflict keeps and re-reads', () => {
+    const desligadas = descrever(http(503, CODIGO_ERRO_LI.chamadasDesligadas));
+    expect(desligadas).toMatchObject({
+      manterToken: false,
+      recarregarStatus: false,
+      cor: 'orange',
+    });
+    const conflito = descrever(http(503, CODIGO_ERRO_LI.estacionamentoEmConflito));
+    expect(conflito).toMatchObject({ manterToken: true, recarregarStatus: true, cor: 'yellow' });
+    // And neither is the uncoded 5xx, which cannot know whether the write landed.
+    expect(descrever(http(503, null)).mensagem).toContain('pode ou não ter sido salvo');
+    expect(desligadas.mensagem).not.toContain('pode ou não ter sido salvo');
   });
 
   it('a 499 (the request was interrupted) keeps the token — nothing was saved', () => {
@@ -163,6 +178,14 @@ describe('descreverFalhaCredencialLi — the words', () => {
     expect(f.mensagem).toContain('Remova o token');
   });
 
+  it('the read switch off says the integration is off until the cutover, and nothing was sent', () => {
+    const f = descrever(http(503, CODIGO_ERRO_LI.chamadasDesligadas));
+    expect(f.mensagem).toContain('está desligada até a migração');
+    expect(f.mensagem).toContain('Nada foi enviado à Loja Integrada nem salvo');
+    expect(f.mensagem).not.toContain('Tente de novo');
+    expect(f.campo).toBeNull();
+  });
+
   it('a missing credential on a renewal asks for a save', () => {
     expect(descrever(http(409, CODIGO_ERRO_LI.credencialAusente)).mensagem).toContain(
       'Salve um Personal Token',
@@ -181,6 +204,32 @@ describe('descreverFalhaCredencialLi — the words', () => {
   it('a FirebaseError (the ID token could not be read) is described, not rethrown', () => {
     const f = descrever(new FirebaseError('auth/network-request-failed', 'x'));
     expect(f.mensagem).toContain('sessão');
+  });
+});
+
+describe('descreverFalhaCredencialLi — every code the credential routes answer has its own copy', () => {
+  /**
+   * The two codes only the step-3 flows answer (the context loader refuses an
+   * inactive or parked conta; the credential routes deliberately do not). A
+   * NEW code fails this test until it gets copy here or a line in this set.
+   */
+  const SO_DOS_FLUXOS = new Set<string>([
+    CODIGO_ERRO_LI.contaInativa,
+    CODIGO_ERRO_LI.reconexaoPendente,
+  ]);
+
+  it.each(Object.values(CODIGO_ERRO_LI).filter((c) => !SO_DOS_FLUXOS.has(c)))(
+    '%s is described by its code, never by the backend sentence',
+    (code) => {
+      // The status is one no branch keys on, so only the code can pick the copy.
+      expect(descrever(http(418, code)).mensagem).not.toBe('mensagem do backend 418');
+    },
+  );
+
+  it('near-miss: a code without copy falls back to the backend sentence', () => {
+    expect(descrever(http(418, CODIGO_ERRO_LI.contaInativa)).mensagem).toBe(
+      'mensagem do backend 418',
+    );
   });
 });
 

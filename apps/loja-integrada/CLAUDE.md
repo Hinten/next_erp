@@ -28,7 +28,8 @@ still be fixed. Only the context loader refuses those.
   the web panel. Never redefine a shape here.
 - Each `PUT` makes exactly ONE `validarPersonalToken(` call (`prazos.test.ts` counts it
   and pins `PRAZO_LI_MS` under the App Hosting ceiling). Every refusal that needs no call
-  (id, body, date, conta, version, wrong-store, token-inside-ref) comes before it.
+  (id, read switch, body, date, conta, version, wrong-store, token-inside-ref) comes
+  before it.
 - Only that call sits in the abort `try`, narrowed by identity: `err === req.signal.reason`
   → 499. A save re-reads the conta after writing and undoes the write on a 404.
 - The aviso step runs after the write landed: a TRANSIENT gRPC failure there is logged and
@@ -133,6 +134,27 @@ still be fixed. Only the context loader refuses those.
   no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;
   its external imports are an allow-list, and the allow-listed `@delfrance/core/*`
   subpaths are walked too, not trusted.
+
+## Valves and the read switch (step 2b)
+
+- `core/valvulas.ts`: one valve per write flow, `LOJA_INTEGRADA_MODO_<FLUXO>` =
+  `off | dry-run | on`. Only the EXACT `on` writes and the exact `dry-run` diffs; anything
+  else (`ON`, ` on`, `true`, blank, unset) is `off`. Never trim or case-fold a value.
+- Four canary lists, `LOJA_INTEGRADA_CANARIO_<FLUXO>` (none for the webhook registration,
+  whose conta a person picks). Unset or blank = NO target; exactly `*` is the ONLY widening;
+  anything else is `<contaId>:<n>,…` and a malformed entry is simply not listed (logged by
+  position, never by text). Never make unset mean "every target".
+- `lerValvula(fluxo, ambiente)` is THE first statement of a write flow and
+  `registrarValvulaLi` the second. The environment is a PARAMETER: nothing under
+  `lib/lojaIntegrada` names the process environment (`estrutura.test.ts`); the entry point
+  (a route, a step-3 function) passes it. No write flow exists before step 7.
+- The read switch `LOJA_INTEGRADA_CHAMADAS` (D17): only the exact `on` lets this code call
+  Loja Integrada. Both credential `PUT`s check it right after the id, before the body is
+  read: otherwise 503 `LI_CHAMADAS_DESLIGADAS` and one `chamada-bloqueada` line, with zero
+  fetches. The `DELETE` makes no call and is not gated. Step 3's context loader checks it
+  too. It stays unset everywhere (locally and in staging too) until the window sets it.
+- The names live in the root `.env.example` (blank) and as comment rows in
+  `apphosting.yaml`, never `env:` rows; `valvulas.test.ts` pins both.
 
 ## Config
 

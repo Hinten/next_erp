@@ -40,4 +40,25 @@ runConfig:
 #                           CORS. It is a console variable like the other
 #                           backends', not a secret.
 #
+# The read switch and the write valves (step 2b, `lib/lojaIntegrada/core/valvulas.ts`).
+# Comment rows ONLY: an `off` baked into an `env:` row might override a console
+# flip during the window (App Hosting's precedence between the two is unverified).
+# Every one stays UNSET until the migration window (master plan §5 items 1, 3 and
+# 8; mock only before it, D17), and is then set alike in this backend's App Hosting
+# console and in step 3's functions env:
+#
+#   LOJA_INTEGRADA_CHAMADAS                The read switch, read by the credential routes:
+#                                          only the exact `on` lets them call Loja
+#                                          Integrada; anything else answers 503
+#                                          LI_CHAMADAS_DESLIGADAS before any call.
+#   LOJA_INTEGRADA_MODO_ESTOQUE            Write valves, `off | dry-run | on`; only the
+#   LOJA_INTEGRADA_MODO_PRECO              exact `on` writes and the exact `dry-run`
+#   LOJA_INTEGRADA_MODO_ANUNCIO            diffs. Read from step 7 onward.
+#   LOJA_INTEGRADA_MODO_RASTREIO
+#   LOJA_INTEGRADA_MODO_WEBHOOK_REGISTRO
+#   LOJA_INTEGRADA_CANARIO_ESTOQUE         Canary lists, read from step 7 onward:
+#   LOJA_INTEGRADA_CANARIO_PRECO           unset = no target, exactly `*` = every
+#   LOJA_INTEGRADA_CANARIO_ANUNCIO         target, else `<contaId>:<n>,…` (see the
+#   LOJA_INTEGRADA_CANARIO_RASTREIO        root `.env.example`).
+#
 # No `env:` block: nothing here needs a value baked into the manifest.

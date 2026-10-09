@@ -7,8 +7,10 @@
  * ⚠️ Keyed on the backend's `code` (`CODIGO_ERRO_LI`, the shared contract),
  * NEVER on the status alone. A 422 is "Loja Integrada refused the token"
  * (`LI_TOKEN_RECUSADO`), "malformed, nothing was sent" (`LI_TOKEN_INVALIDO`) or
- * a refused date (`LI_VALIDADE_*`), and a 409 is four different things — each
- * asks the operator for something else.
+ * a refused date (`LI_VALIDADE_*`), a 409 is four different things, and a 503 is
+ * either a transient park conflict (try again) or the backend's read switch
+ * being off until the cutover (`LI_CHAMADAS_DESLIGADAS`: trying again cannot
+ * help) — each asks the operator for something else.
  *
  * ## The token field after a failure
  *
@@ -149,6 +151,17 @@ function falhaPorCodigo(err: LojaIntegradaClientHttpError): FalhaCredencialLi | 
       return falha(
         'A conta está sendo atualizada por outra operação neste momento. Tente de novo em instantes.',
         { manterToken: true, recarregarStatus: true, cor: 'yellow' },
+      );
+    case CODIGO_ERRO_LI.chamadasDesligadas:
+      // The backend's read switch is off: the state of every environment until
+      // the cutover. Nothing was sent or written, so the token goes (hygiene
+      // default — resending it cannot help before the switch is turned on) and
+      // the status on screen still stands.
+      return falha(
+        'A integração com a Loja Integrada está desligada até a migração para este sistema: ' +
+          'nenhum token é validado nem salvo antes disso. Nada foi enviado à Loja Integrada nem ' +
+          'salvo.',
+        { cor: 'orange' },
       );
     case CODIGO_ERRO_LI.corpoInvalido:
       return falha(

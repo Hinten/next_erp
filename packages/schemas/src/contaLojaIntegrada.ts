@@ -152,6 +152,13 @@ export const CODIGO_ERRO_LI = {
   validacaoInconclusiva: 'LI_VALIDACAO_INCONCLUSIVA',
   /** 503 — the park lost its precondition three times in a row; retry. */
   estacionamentoEmConflito: 'LI_ESTACIONAMENTO_EM_CONFLITO',
+  /**
+   * 503 — the backend's read switch (`LOJA_INTEGRADA_CHAMADAS`) is not `on`, so
+   * it calls Loja Integrada for nothing: nothing was sent and nothing was saved.
+   * The state of every environment until the cutover (mock only); retrying does
+   * not help.
+   */
+  chamadasDesligadas: 'LI_CHAMADAS_DESLIGADAS',
 } as const;
 export type CodigoErroLi = (typeof CODIGO_ERRO_LI)[keyof typeof CODIGO_ERRO_LI];
 
