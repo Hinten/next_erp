@@ -46,5 +46,10 @@ apps/mercado-livre/lib/marketplace/fixtures/__wire__/
 # leaf instead of fighting the formatter.
 apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json
 
+# Sanitized Loja Integrada fixtures: `sanitizar` writes them with
+# `JSON.stringify(v, null, 2)`, and a re-run over an unchanged capture must write
+# identical bytes (the Mercado Livre corpus above, same reason).
+apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/
+
 # Master plans and their evidence surveys are prose with wide tables — same reason as CLAUDE.md.
 .master_plans/

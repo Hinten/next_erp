@@ -108,6 +108,32 @@ still be fixed. Only the context loader refuses those.
   `versaoCredencial: null`). The package scrubs only the exact token sent, so a partial or
   escaped echo would otherwise reach the log. Never relax either rule to "see the error".
 
+## Captures and fixtures (step 2b)
+
+- **Mock only (D17, Q1).** No code here calls Loja Integrada before the cutover: no probe,
+  no token. Real responses are the owner's own read-only captures, converted offline by
+  `scripts/sanitizar.ts` (`pnpm --filter @delfrance/loja-integrada-app sanitizar`; how to
+  capture and run it: `scripts/README.md`). All its logic is in `lib/lojaIntegrada/sanitizacao/`.
+- Captures live in `~/li-capturas`, OUTSIDE every checkout: the sanitizer refuses a folder
+  with a `.git` entry in it or above it, and refuses to run without the owner's local
+  `nomes-proibidos.txt` (store names; never in the repo, never printed).
+- ⚠️ **Agents never open a raw capture** (no `cat`, editor or file tool): run the sanitizer
+  and read only its output (`--dry-run` prints paths, types and treatments, never values)
+  and the sanitized fixtures.
+- Each fixture is a self-describing envelope in `lib/lojaIntegrada/fixtures/__wire__/` (no
+  manifest), made by the `fixture` profile, then `piiScan.ts` (residue fixpoint + patterns +
+  store names). An allow-listed value the profile had to fake (a SKU that is a valid CPF)
+  is a finding too. **Refusal is total**: any finding in any pair writes nothing.
+- A fixture is pushed only after Lucas has seen it (the repo is public), and only after
+  `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
+  and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
+  there); its floor is 0 until the first fixture PR raises it.
+- `estrutura.test.ts` proves the sanitizer's import closure reaches no network or process
+  module, no package client, no `firebase-admin`/`@delfrance/data`, no credential module,
+  no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;
+  its external imports are an allow-list, and the allow-listed `@delfrance/core/*`
+  subpaths are walked too, not trusted.
+
 ## Config
 
 - `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`: emulator

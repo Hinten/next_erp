@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "sanitizar": "tsx scripts/sanitizar.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {
