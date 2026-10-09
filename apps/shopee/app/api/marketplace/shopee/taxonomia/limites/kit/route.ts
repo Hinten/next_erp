@@ -15,10 +15,18 @@
  * "should use leaf category". With no `categoryId` the read is shop-wide, there
  * is nothing to gate on, and `leaf` is `null` — the same three-valued honesty
  * the rest of the layer keeps. A mid-tree id therefore answers
- * `{ leaf: false, limites: null }` at 200 without calling `get_kit_item_limit`.
- * ⚠️ That is the layer's ONLY `limites: null`, and it always carries
- * `leaf: false`: a limits FAILURE surfaces as an error, it never degrades to a
- * null band that step 11 could read as "no limit".
+ * `{ leaf: false, indisponivel: null, limites: null }` at 200 without calling
+ * `get_kit_item_limit` — `indisponivel` is `null` there for the same reason
+ * `leaf` is with no category: nothing was asked.
+ *
+ * ⚠️ **`limites: null` has exactly TWO causes, and each carries its own flag.**
+ * The non-leaf short-circuit above (`leaf: false`), and a host that does not
+ * serve `get_kit_item_limit` at all — the gateway's measured 404
+ * (`ShopeeOperacaoNaoServidaError`, step 19), cached as a VALUE — which answers
+ * 200 `{ leaf, indisponivel: true, limites: null }`. Every served answer says
+ * `indisponivel: false`. Any OTHER limits failure still surfaces as an error
+ * (502 / 503 through `shopeeErrorResponse`), never as a null band that a
+ * publisher could read as "no limit".
  *
  * Requires `PERM.integracao.read`.
  */
@@ -66,17 +74,21 @@ export async function GET(req: Request): Promise<NextResponse> {
           leaf: false,
           scope: 'category',
           categoryId: id,
+          // `null`, not `false`: the kit read was never made.
+          indisponivel: null,
           limites: null,
         });
       }
     }
 
+    const lidos = await lerLimitesDeKit(ctx, id);
     return NextResponse.json({
       // `null`, not `false`: with no category there was nothing to ask about.
       leaf: id === null ? null : true,
       scope: id === null ? 'shop' : 'category',
       categoryId: id,
-      limites: await lerLimitesDeKit(ctx, id),
+      indisponivel: lidos.estado === 'indisponivel',
+      limites: lidos.estado === 'indisponivel' ? null : lidos.limites,
     });
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);

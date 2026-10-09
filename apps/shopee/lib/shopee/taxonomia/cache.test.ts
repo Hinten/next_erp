@@ -6,10 +6,15 @@ import {
   readCacheStatsSnapshot,
 } from '@delfrance/data/admin/cache';
 import {
+  SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
   SHOPEE_GET_VARIATION_TREE_PATH_ALT,
+  SHOPEE_SURFACE,
+  ShopeeApiError,
   ShopeeConfigError,
+  ShopeeOperacaoNaoServidaError,
   type ShopeeClient,
+  shopeeErrorFromEnvelope,
 } from '@delfrance/integrations-shopee';
 
 import type { ShopeeContext } from '../core/shopee';
@@ -385,6 +390,126 @@ describe('a recomendação não guarda o vazio', () => {
     await lerRecomendacaoCached(ctx, 'camiseta', null);
     await lerRecomendacaoCached(ctx, 'camiseta', 'img-1');
     expect(chamadas.categoryRecommend).toBe(2);
+  });
+});
+
+describe('os limites de kit — o 404 do GATEWAY é um VALOR cacheado (passo 19)', () => {
+  /**
+   * The error the transport really builds for the probe's bare body — the
+   * package's own envelope builder, so the class the loader narrows on is the
+   * one production sees (HTTP 404, `{"error":"error_not_found"}`, no message, no
+   * request id: the SG sandbox's `get_kit_item_limit`, and any unrouted path).
+   */
+  function doEnvelope(
+    corpo: { error: string; message: string | null; request_id: string | null },
+    httpStatus: number,
+  ): ShopeeApiError {
+    return shopeeErrorFromEnvelope(
+      { ...corpo, warning: null },
+      { path: SHOPEE_GET_KIT_ITEM_LIMIT_PATH, httpStatus, surface: SHOPEE_SURFACE.business },
+    );
+  }
+
+  const GATEWAY = { error: 'error_not_found', message: null, request_id: null };
+
+  function ctxDoKit(falha: () => unknown) {
+    let chamadas = 0;
+    const client = {
+      getKitItemLimit: async () => {
+        chamadas += 1;
+        throw falha();
+      },
+    } as unknown as ShopeeClient;
+    const ctx: ShopeeTaxonomiaCtx = {
+      integracaoId: 'int-1',
+      client,
+      variationsPath: SHOPEE_GET_VARIATIONS_PATH,
+    };
+    return { ctx, chamadas: () => chamadas };
+  }
+
+  it('o envelope do gateway É a subclasse que o carregador estreita (âncora)', () => {
+    const err = doEnvelope(GATEWAY, 404);
+    expect(err).toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+    // ⛔ QUASE-PAR: o mesmo corpo em HTTP 200 é a base — o 404 é parte da chave.
+    expect(doEnvelope(GATEWAY, 200)).not.toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+  });
+
+  it('M70 — `indisponivel` fica no cache: duas leituras, UMA chamada a get_kit_item_limit', async () => {
+    const { ctx, chamadas } = ctxDoKit(() => doEnvelope(GATEWAY, 404));
+
+    await expect(lerLimitesKitCached(ctx, 100182)).resolves.toEqual({ estado: 'indisponivel' });
+    await expect(lerLimitesKitCached(ctx, 100182)).resolves.toEqual({ estado: 'indisponivel' });
+
+    expect(chamadas()).toBe(1);
+    // Um VALOR, não uma falha: o cache contou um acerto e nenhuma rejeição.
+    expect(estatisticas('shopee:taxonomia-limites-kit')).toMatchObject({
+      hits: 1,
+      misses: 1,
+      failures: 0,
+    });
+  });
+
+  it('…pelo TTL INTEIRO, nunca pelo TTL negativo de 5 s (o valor é um objeto, não um null)', async () => {
+    const { ctx, chamadas } = ctxDoKit(() => doEnvelope(GATEWAY, 404));
+
+    await lerLimitesKitCached(ctx, 100182);
+    clock.avancar(READ_CACHE_TTL.negative + 1);
+    await lerLimitesKitCached(ctx, 100182);
+    clock.avancar(READ_CACHE_TTL.config - READ_CACHE_TTL.negative - 2);
+    await lerLimitesKitCached(ctx, 100182);
+    expect(chamadas()).toBe(1);
+
+    // O PAR: no TTL exato ele relê — o host pode ter passado a servir a rota.
+    clock.avancar(1);
+    await lerLimitesKitCached(ctx, 100182);
+    expect(chamadas()).toBe(2);
+  });
+
+  it.each([
+    [
+      'um transitório (error_server)',
+      () =>
+        doEnvelope(
+          { error: 'product.error_server', message: 'Something wrong.', request_id: 'r-1' },
+          500,
+        ),
+    ],
+    [
+      'o error_not_found de NEGÓCIO (com mensagem e request_id)',
+      () => doEnvelope({ error: 'error_not_found', message: 'not found', request_id: 'r-1' }, 404),
+    ],
+    ['o gateway em HTTP 200 (a base, não a subclasse)', () => doEnvelope(GATEWAY, 200)],
+  ])(
+    'M71 — ⛔ QUASE-PAR: %s SOBE, e não fica no cache (relido a cada chamada)',
+    async (_caso, falha) => {
+      const { ctx, chamadas } = ctxDoKit(falha);
+
+      const primeiro = falha();
+      expect(primeiro).toBeInstanceOf(ShopeeApiError);
+      expect(primeiro).not.toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+      await expect(lerLimitesKitCached(ctx, 100182)).rejects.toBeInstanceOf(ShopeeApiError);
+      await expect(lerLimitesKitCached(ctx, 100182)).rejects.toBeInstanceOf(ShopeeApiError);
+
+      expect(chamadas()).toBe(2);
+      expect(estatisticas('shopee:taxonomia-limites-kit')).toMatchObject({ failures: 2, hits: 0 });
+    },
+  );
+
+  it('um erro que nem é da Shopee sobe intacto (regra 6)', async () => {
+    const bug = new TypeError('bug nosso');
+    const { ctx } = ctxDoKit(() => bug);
+    await expect(lerLimitesKitCached(ctx, 100182)).rejects.toBe(bug);
+  });
+
+  it('o caminho servido embrulha a banda VERBATIM em `servido`', async () => {
+    const { chamadas, ctx } = ctxDuplo();
+
+    await expect(lerLimitesKitCached(ctx, 100182)).resolves.toEqual({
+      estado: 'servido',
+      limites: { price_limit: { min_limit: 100182, max_limit: null } },
+    });
+    expect(chamadas.getKitItemLimit).toBe(1);
   });
 });
 

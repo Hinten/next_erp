@@ -2,7 +2,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  SHOPEE_ADD_KIT_ITEM_PATH,
+  SHOPEE_DELETE_ITEM_PATH,
   SHOPEE_ERROR_KIND,
+  SHOPEE_GENERATE_KIT_IMAGE_PATH,
   SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
   SHOPEE_GET_ITEM_BASE_INFO_PATH,
   SHOPEE_GET_ITEM_LIST_PATH,
@@ -18,41 +21,73 @@ import {
   SHOPEE_RETURN_CONFIRM_PATH,
   SHOPEE_RETURN_OFFER_PATH,
   SHOPEE_RETURN_SOLUTION,
+  SHOPEE_UNLIST_ITEM_PATH,
+  SHOPEE_UPDATE_KIT_ITEM_PATH,
+  SHOPEE_UPDATE_PRICE_PATH,
+  SHOPEE_UPDATE_STOCK_PATH,
+  type ShopeeAddKitItemRequest,
   ShopeeApiError,
+  ShopeeApiPartialError,
   type ShopeeClient,
   ShopeeOperacaoNaoServidaError,
   createShopeeClient,
   lerPaginaDeTabelasDeMedidas,
   resolveShopeeHosts,
   shopeeEscrowDetailSchema,
+  shopeeKitItemWriteSchema,
   shopeeOrderDetailSchema,
   shopeeReturnAvailableSolutionsSchema,
   shopeeReturnWriteSchema,
   shopeeSearchPackageListSchema,
   shopeeSizeChartDetailSchema,
   shopeeSizeChartListSchema,
+  shopeeUnlistItemSchema,
+  shopeeUpdatePriceSchema,
+  shopeeUpdateStockSchema,
+  shopeeWriteAckSchema,
 } from '@delfrance/integrations-shopee';
 import { SHOPEE_SIZE_CHART_INPUT_TYPE, ehReturnSnShopee } from '@delfrance/schemas';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   CATEGORIA_DOC_DO_KIT,
+  CORPOS_KIT_ESCRITA,
   CORPOS_KIT_LEITURA,
+  FIXTURE_ADD_KIT_ITEM_SG,
+  FIXTURE_ADD_KIT_ITEM_SG_CORPO_VAZIO,
+  FIXTURE_ADD_KIT_ITEM_SG_DOIS_PRINCIPAIS,
+  FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS,
+  FIXTURE_DELETE_ITEM_SG_KIT,
   FIXTURE_ESCROW_DETAIL_DOC_KIT,
   FIXTURE_ESCROW_DETAIL_QTY2_SG,
+  FIXTURE_GENERATE_KIT_IMAGE_SG_CHAVES_DO_DOC,
+  FIXTURE_GENERATE_KIT_IMAGE_SG_SEM_MODEL_ID,
+  FIXTURE_GENERATE_KIT_IMAGE_SG_TOGGLE_FECHADO,
+  FIXTURE_GENERATE_KIT_IMAGE_SG_UM_COMPONENTE,
   FIXTURE_ITEM_BASE_INFO_SG_KIT,
+  FIXTURE_ITEM_BASE_INFO_SG_KIT_APAGADO,
   FIXTURE_ITEM_LIST_SG_COM_KIT,
   FIXTURE_ITEM_LIST_SG_SELLER_DELETE,
   FIXTURE_KIT_ITEM_INFO_SG_APAGADO,
   FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT,
   FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO,
+  FIXTURE_KIT_ITEM_INFO_SG_QUANTIDADE_IGNORADA,
   FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404,
   FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO,
   FIXTURE_MODEL_LIST_SG_KIT,
+  FIXTURE_UNLIST_ITEM_SG_KIT,
+  FIXTURE_UPDATE_KIT_ITEM_SG_ANEXAR,
+  FIXTURE_UPDATE_KIT_ITEM_SG_PARCIAL,
+  FIXTURE_UPDATE_KIT_ITEM_SG_QUANTIDADE_IGNORADA,
+  FIXTURE_UPDATE_KIT_ITEM_SG_SEM_ITEM_ID,
+  FIXTURE_UPDATE_PRICE_SG_KIT,
+  FIXTURE_UPDATE_STOCK_SG_KIT,
   IDS_APAGADOS_SEM_PAPEL,
+  IDS_DA_FAMILIA_NO_CORPUS,
   IDS_DO_KIT_NO_CORPUS,
   IMAGEM_DOC_DO_KIT,
   RELOGIO_SONDA_KIT_1_S,
+  RELOGIO_SONDA_KIT_2_S,
   FIXTURE_ORDER_DETAIL_DOC_MASKED_VN,
   FIXTURE_ORDER_DETAIL_QTY2_SG,
   FIXTURE_ORDER_DETAIL_QTY2_SG_PROCESSED,
@@ -127,8 +162,8 @@ const CORPOS_ANTES_DO_PASSO_19 = [
   FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
 ] as const;
 
-/** Os corpos dos kits nativos (passo 19): o conjunto de leitura (PR 3). */
-const CORPOS_KIT = [...CORPOS_KIT_LEITURA] as const;
+/** Os corpos dos kits nativos (passo 19): leitura (PR 3) e escrita (PR 4). */
+const CORPOS_KIT = [...CORPOS_KIT_LEITURA, ...CORPOS_KIT_ESCRITA] as const;
 
 describe('o inventário do corpus', () => {
   it('é exatamente o conjunto de corpos que este passo promoveu', () => {
@@ -138,7 +173,7 @@ describe('o inventário do corpus', () => {
     // MESMO commit — que é a revisão que uma fixture nova precisa ter. O passo
     // 15b fez o mesmo com os quatro corpos de `search_package_list`, o 17 com
     // os seis das devoluções, o 18 com os quatro das tabelas de medidas e o 19
-    // com os nove de leitura dos kits nativos.
+    // com os vinte e sete dos kits nativos.
     // ⚠️ `get_size_chart_detail.doc-id-inexistente` ordena ANTES de
     // `get_size_chart_detail.doc`: `-` (0x2D) < `.` (0x2E).
     expect(listarFixtures().filter((f) => !CORPOS_KIT.includes(f as never))).toEqual([
@@ -147,11 +182,14 @@ describe('o inventário do corpus', () => {
     expect(listarFixtures()).toEqual([...CORPOS_ANTES_DO_PASSO_19, ...CORPOS_KIT].sort());
   });
 
-  it('a lista de leitura do kit está ORDENADA', () => {
-    // A constante diz "sorted" no docblock; um arquivo novo enfiado
+  it('as listas do kit estão ORDENADAS e não se cruzam — a de leitura e a de escrita', () => {
+    // As duas constantes dizem "sorted" no docblock; um arquivo novo enfiado
     // fora de ordem passaria no inventário acima (que ordena) e mentiria aqui.
     expect([...CORPOS_KIT_LEITURA]).toEqual([...CORPOS_KIT_LEITURA].sort());
+    expect([...CORPOS_KIT_ESCRITA]).toEqual([...CORPOS_KIT_ESCRITA].sort());
+    expect(CORPOS_KIT_LEITURA.filter((f) => CORPOS_KIT_ESCRITA.includes(f as never))).toEqual([]);
     expect(CORPOS_KIT_LEITURA).toHaveLength(9);
+    expect(CORPOS_KIT_ESCRITA).toHaveLength(18);
   });
 
   it('traz um README que separa o que a Shopee MANDOU do que a doc IMPRIME', () => {
@@ -171,8 +209,8 @@ describe('o inventário do corpus', () => {
     expect(readme).toContain('unverified for BR');
     // A contagem da prosa anda com o inventário: um corpo novo sem a frase
     // corrigida deixaria o README mentindo sobre o próprio diretório.
-    expect(listarFixtures()).toHaveLength(28);
-    expect(readme).toContain('Twenty-eight bodies today');
+    expect(listarFixtures()).toHaveLength(46);
+    expect(readme).toContain('Forty-six bodies today');
     // ⚠️ E a âncora do sentido inverso: o slot vazio ACABOU, então a frase que o
     // anunciava não pode sobreviver ao corpo que o preencheu.
     expect(readme).not.toContain('pending from Lucas');
@@ -1279,9 +1317,15 @@ function todasAsStrings(v: unknown, acc: string[] = []): string[] {
  * um relógio de sonda — ou os dígitos da imagem da doc, que não são um número.
  */
 const NUMEROS_COM_PAPEL: ReadonlySet<string> = new Set(
-  [...Object.values(IDS_DO_KIT_NO_CORPUS), ...IDS_APAGADOS_SEM_PAPEL, RELOGIO_SONDA_KIT_1_S].map(
-    String,
-  ),
+  [
+    ...Object.values(IDS_DO_KIT_NO_CORPUS),
+    ...IDS_APAGADOS_SEM_PAPEL,
+    RELOGIO_SONDA_KIT_1_S,
+    IDS_DA_FAMILIA_NO_CORPUS.segundoModeloDoKit,
+    IDS_DA_FAMILIA_NO_CORPUS.modeloAnexado,
+    ...Object.values(IDS_DA_FAMILIA_NO_CORPUS.modelosDoComponenteA),
+    RELOGIO_SONDA_KIT_2_S,
+  ].map(String),
 );
 
 describe('os kits nativos — ids por PAPEL, nunca o `1000001` achatado das sondas (M47)', () => {
@@ -1320,6 +1364,14 @@ describe('os kits nativos — ids por PAPEL, nunca o `1000001` achatado das sond
       `\`${String(IDS_APAGADOS_SEM_PAPEL[0])}\`–\`${String(IDS_APAGADOS_SEM_PAPEL[5])}\``,
     );
     expect(IDS_APAGADOS_SEM_PAPEL[5] - IDS_APAGADOS_SEM_PAPEL[0]).toBe(5);
+    for (const id of [
+      IDS_DA_FAMILIA_NO_CORPUS.segundoModeloDoKit,
+      IDS_DA_FAMILIA_NO_CORPUS.modeloAnexado,
+      ...Object.values(IDS_DA_FAMILIA_NO_CORPUS.modelosDoComponenteA),
+      RELOGIO_SONDA_KIT_2_S,
+    ]) {
+      expect(readme, String(id)).toContain(`\`${String(id)}\``);
+    }
     expect(readme).toContain(IMAGEM_DOC_DO_KIT);
     expect(readme).toContain(`\`${String(CATEGORIA_DOC_DO_KIT)}\``);
   });
@@ -1337,8 +1389,17 @@ describe('os kits nativos — ids por PAPEL, nunca o `1000001` achatado das sond
   );
 
   it('PAPÉIS DISTINTOS — nenhum id faz dois papéis', () => {
-    const ids = [...Object.values(IDS_DO_KIT_NO_CORPUS), ...IDS_APAGADOS_SEM_PAPEL];
+    const ids = [
+      ...Object.values(IDS_DO_KIT_NO_CORPUS),
+      ...IDS_APAGADOS_SEM_PAPEL,
+      IDS_DA_FAMILIA_NO_CORPUS.segundoModeloDoKit,
+      IDS_DA_FAMILIA_NO_CORPUS.modeloAnexado,
+      IDS_DA_FAMILIA_NO_CORPUS.modelosDoComponenteA['White,04'],
+      IDS_DA_FAMILIA_NO_CORPUS.modelosDoComponenteA['White,08'],
+    ];
     expect(new Set(ids).size).toBe(ids.length);
+    // O `White,02` da família É o modelo de A da sonda 1 — o mesmo modelo, o mesmo papel.
+    expect(IDS_DA_FAMILIA_NO_CORPUS.modelosDoComponenteA['White,02']).toBe(A_W02);
   });
 });
 
@@ -1618,5 +1679,388 @@ describe('os kits nativos — as LEITURAS pelo CLIENTE do pacote, com o corpo co
     const { client, chamadas } = clienteDoKit(FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404, 404);
     await expect(client.getKitItemLimit({ categoryId: CATEGORIA_DOC_DO_KIT })).rejects.toThrow();
     expect(chamadas).toEqual([{ metodo: 'GET', caminho: SHOPEE_GET_KIT_ITEM_LIMIT_PATH }]);
+  });
+});
+
+/* ------------------------- o conjunto de ESCRITA (PR 4) ------------------------- */
+
+const {
+  segundoModeloDoKit: KIT_M2,
+  modeloAnexado: KIT_M_ANEXO,
+  modelosDoComponenteA: MODELOS_DE_A,
+} = IDS_DA_FAMILIA_NO_CORPUS;
+
+/** As recusas do conjunto de escrita: [arquivo, código do envelope, trecho da frase VERBATIM]. */
+const RECUSAS_DO_KIT = [
+  [
+    FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS,
+    'product.error_busi',
+    'Error 1040: Too many connections',
+  ],
+  [
+    FIXTURE_ADD_KIT_ITEM_SG_CORPO_VAZIO,
+    'product.error_param',
+    'parameter invalid : virtual sku setting is empty',
+  ],
+  [
+    FIXTURE_ADD_KIT_ITEM_SG_DOIS_PRINCIPAIS,
+    'product.error_busi',
+    'external error: mupltiple main sku itemId:ModelId',
+  ],
+  [
+    FIXTURE_UPDATE_KIT_ITEM_SG_SEM_ITEM_ID,
+    '.',
+    'product is not found : invalid GetVirtualSKUInfoRequest.VskuId: value must be greater than 0',
+  ],
+  [
+    FIXTURE_GENERATE_KIT_IMAGE_SG_TOGGLE_FECHADO,
+    'product.error_server',
+    'generate kit image toggle closed.',
+  ],
+  [
+    FIXTURE_GENERATE_KIT_IMAGE_SG_CHAVES_DO_DOC,
+    'product.error_unknown',
+    'invalid KitComponent.ItemId: ItemId is required',
+  ],
+  [
+    FIXTURE_GENERATE_KIT_IMAGE_SG_SEM_MODEL_ID,
+    'product.error_unknown',
+    'invalid KitComponent.ModelId: ModelId is required',
+  ],
+  [
+    FIXTURE_GENERATE_KIT_IMAGE_SG_UM_COMPONENTE,
+    'product.error_unknown',
+    'value must contain between 2 and 9 items, inclusive',
+  ],
+  [FIXTURE_UPDATE_STOCK_SG_KIT, 'product.error_busi', 'Invalid product setting. Please verify.'],
+] as const;
+
+describe('os kits nativos — o conjunto de ESCRITA (passo 19, sondas 1 e 2)', () => {
+  it.each(RECUSAS_DO_KIT)(
+    '%s: o código %s e a frase da Shopee, VERBATIM',
+    (file, codigo, trecho) => {
+      const cru = lerFixture(file) as Record<string, unknown>;
+      expect(cru.error).toBe(codigo);
+      expect(String(cru.message)).toContain(trecho);
+    },
+  );
+
+  it('IGUAL no código, DISTINTO na frase: o transitório do add e a recusa do estoque são os dois `product.error_busi`', () => {
+    // ⚠️ Só a frase separa "rode de novo" de "nunca vai pegar" — o classificador
+    // de kit lê `providerMessage`, nunca só o código.
+    const transitorio = lerFixture(FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS) as Record<
+      string,
+      unknown
+    >;
+    const permanente = lerFixture(FIXTURE_UPDATE_STOCK_SG_KIT) as Record<string, unknown>;
+    expect(transitorio.error).toBe(permanente.error);
+    expect(String(transitorio.message)).not.toContain('Invalid product setting');
+    expect(String(permanente.message)).not.toContain('Too many connections');
+  });
+
+  it('`mupltiple main sku` na grafia da SHOPEE, byte a byte — a "corrigida" não está lá', () => {
+    const frase = String(
+      (lerFixture(FIXTURE_ADD_KIT_ITEM_SG_DOIS_PRINCIPAIS) as Record<string, unknown>).message,
+    );
+    expect(frase).toContain('mupltiple main sku');
+    expect(frase).not.toContain('multiple main sku');
+  });
+
+  it('⚠️ os três `update_kit_item` de sucesso são o MESMO envelope nu, byte a byte — o 200 não diz o que foi aplicado', () => {
+    const textos = [
+      FIXTURE_UPDATE_KIT_ITEM_SG_PARCIAL,
+      FIXTURE_UPDATE_KIT_ITEM_SG_ANEXAR,
+      FIXTURE_UPDATE_KIT_ITEM_SG_QUANTIDADE_IGNORADA,
+    ].map(textoDoCorpo);
+    expect(new Set(textos).size).toBe(1);
+    expect(lerFixture(FIXTURE_UPDATE_KIT_ITEM_SG_PARCIAL)).toEqual({
+      error: '',
+      message: '',
+      warning: '',
+    });
+    expect(shopeeWriteAckSchema.parse(lerFixture(FIXTURE_UPDATE_KIT_ITEM_SG_PARCIAL)).error).toBe(
+      '',
+    );
+  });
+
+  it('a RELEITURA diz o que o 200 não diz: o modelo ANEXADO pegou, a quantidade foi IGNORADA', () => {
+    const familia = lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_QUANTIDADE_IGNORADA).product_info!;
+    expect(familia.item_id).toBe(KIT);
+    expect(familia.item_sku).toBe('SONDA-KIT2');
+    expect(familia.create_time).toBe(RELOGIO_SONDA_KIT_2_S);
+    expect(
+      familia.tier_variation_list?.map((t) => [t.name, t.option_list.map((o) => o.option)]),
+    ).toEqual([['Kit', ['Kit A', 'Kit B', 'Kit C']]]);
+    expect(familia.model_list.map((m) => [m.model_id, m.tier_index])).toEqual([
+      [KIT_M1, [0]],
+      [KIT_M2, [1]],
+      [KIT_M_ANEXO, [2]],
+    ]);
+    // ⚠️ P2-c: a mudança de quantidade voltou 200 e NÃO pegou — toda linha segue 1.
+    expect(familia.model_list.flatMap((m) => m.component_list.map((c) => c.quantity))).toEqual([
+      1, 1, 1, 1, 1, 1,
+    ]);
+    // UM principal no kit INTEIRO (P2-a), no modelo 0.
+    expect(
+      familia.model_list.map(
+        (m) => m.component_list.filter((c) => c.main_component === true).length,
+      ),
+    ).toEqual([1, 0, 0]);
+    // Cada modelo do kit tem o SEU modelo de A; o oculto de B se repete nos três.
+    expect(
+      familia.model_list.map((m) => [
+        m.component_list[0]!.component_model_name,
+        m.component_list[0]!.component_model_id,
+        m.component_list[0]!.component_item_or_model_sku,
+      ]),
+    ).toEqual([
+      ['White,02', MODELOS_DE_A['White,02'], 'KIT-COMP-A-M1'],
+      ['White,04', MODELOS_DE_A['White,04'], 'KIT-COMP-A-M2'],
+      ['White,08', MODELOS_DE_A['White,08'], 'KIT-COMP-A-M3'],
+    ]);
+    expect(familia.model_list.map((m) => m.component_list[1]!.component_model_id)).toEqual([
+      B_OCULTO,
+      B_OCULTO,
+      B_OCULTO,
+    ]);
+  });
+
+  it('QUASE-IGUAL: as duas sondas dão o MESMO papel de kit a dois kits DIFERENTES — junção só dentro de uma', () => {
+    const um = lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO).product_info!;
+    const dois = lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_QUANTIDADE_IGNORADA).product_info!;
+    expect(dois.item_id).toBe(um.item_id);
+    expect(dois.item_sku).not.toBe(um.item_sku);
+    expect([um.model_list.length, dois.model_list.length]).toEqual([1, 3]);
+    expect(dois.create_time).not.toBe(um.create_time);
+  });
+
+  it('o add que pegou devolve o `item_id` do kit sob `response` — o mesmo da lista da sonda 1', () => {
+    const env = shopeeKitItemWriteSchema.parse(lerFixture(FIXTURE_ADD_KIT_ITEM_SG));
+    expect(env.response.item_id).toBe(KIT);
+    expect(env.warning).toBe('');
+    expect(lerListaDeItens(FIXTURE_ITEM_LIST_SG_COM_KIT).item[0]!.item_id).toBe(
+      env.response.item_id,
+    );
+  });
+
+  it('o kit APAGADO: `delete_item` responde `response: {}`, e a releitura é SELLER_DELETE com `tag.kit` ainda true', () => {
+    expect(lerFixture(FIXTURE_DELETE_ITEM_SG_KIT)).toEqual({
+      error: '',
+      message: '',
+      warning: '',
+      response: {},
+      debug_message: '',
+    });
+    const depois = lerBaseDosItens(FIXTURE_ITEM_BASE_INFO_SG_KIT_APAGADO).item_list[0]!;
+    const antes = lerBaseDosItens(FIXTURE_ITEM_BASE_INFO_SG_KIT).item_list[0]!;
+    expect(depois.item_id).toBe(KIT);
+    expect(depois.item_status).toBe('SELLER_DELETE');
+    expect(depois.tag?.kit).toBe(true);
+    expect(depois.has_model).toBe(true);
+    // QUASE-IGUAL: o MESMO kit antes do delete.
+    expect(antes.item_id).toBe(depois.item_id);
+    expect(antes.item_status).toBe('NORMAL');
+  });
+
+  it('update_stock num kit: a recusa traz a `failure_list` do modelo do kit — e o `debug_message` só de sandbox', () => {
+    const env = shopeeUpdateStockSchema.parse(lerFixture(FIXTURE_UPDATE_STOCK_SG_KIT));
+    expect(env.response.failure_list).toEqual([
+      { model_id: KIT_M1, failed_reason: 'Invalid product setting. Please verify.' },
+    ]);
+    expect(env.response.success_list).toEqual([]);
+    expect((lerFixture(FIXTURE_UPDATE_STOCK_SG_KIT) as Record<string, unknown>).debug_message).toBe(
+      `Failed to update product : lock: {itemID: ${String(KIT)}, }`,
+    );
+  });
+
+  it('update_price num modelo de kit é ACEITO (P2-d) — e unlist_item num kit também (P2-e)', () => {
+    const preco = shopeeUpdatePriceSchema.parse(lerFixture(FIXTURE_UPDATE_PRICE_SG_KIT)).response;
+    expect(preco.failure_list).toEqual([]);
+    expect(preco.success_list).toEqual([{ model_id: KIT_M2, original_price: 33 }]);
+    const tirada = shopeeUnlistItemSchema.parse(lerFixture(FIXTURE_UNLIST_ITEM_SG_KIT)).response;
+    expect(tirada).toEqual({ failure_list: [], success_list: [{ item_id: KIT, unlist: true }] });
+  });
+});
+
+/** Um `add_kit_item` que passa no guard do pacote — o kit da sonda 1, por papel. */
+function pedidoDeCriacaoDoKit(): ShopeeAddKitItemRequest {
+  return {
+    item_setting: {
+      item_name: 'Sonda kit virtual teste',
+      images: { image_id_list: [IMAGEM_DOC_DO_KIT] },
+      description_type: 'normal',
+      description: 'Kit de teste do sandbox criado pela sonda de kits virtuais. Nao comprar.',
+      logistic_info: [{ logistic_id: 11006, enabled: true }],
+      weight: 1,
+      item_sku: 'SONDA-KIT',
+      tier_variation_list: [{ name: 'Kit', option_list: [{ option: 'Kit um' }] }],
+      model_list: [
+        {
+          tier_index: [0],
+          original_price: 45,
+          model_sku: 'SONDA-KIT-M1',
+          component_list: [
+            { component_item_id: A, component_model_id: A_W02, quantity: 2, main_component: true },
+            { component_item_id: B, quantity: 1 },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/** O `update_kit_item` PARCIAL que o guard aceita: um modelo, sem lista de tier (P2-c). */
+const ATUALIZACAO_PARCIAL = {
+  item_id: KIT,
+  item_setting: { model_list: [{ model_id: KIT_M1, tier_index: [0], original_price: 32 }] },
+} as const;
+
+/** Os dois componentes da sonda 1, com o id OCULTO de B — o que `generate_kit_image` exige. */
+const COMPONENTES_DA_IMAGEM = {
+  componentes: [
+    { itemId: A, modelId: A_W02 },
+    { itemId: B, modelId: B_OCULTO },
+  ],
+} as const;
+
+/** [arquivo, caminho, chamada] — cada recusa servida pela operação que a recebeu. */
+const RECUSAS_PELO_CLIENTE: readonly (readonly [
+  (typeof RECUSAS_DO_KIT)[number][0],
+  string,
+  (c: ShopeeClient) => Promise<unknown>,
+])[] = [
+  [
+    FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS,
+    SHOPEE_ADD_KIT_ITEM_PATH,
+    (c) => c.addKitItem(pedidoDeCriacaoDoKit()),
+  ],
+  [
+    FIXTURE_ADD_KIT_ITEM_SG_CORPO_VAZIO,
+    SHOPEE_ADD_KIT_ITEM_PATH,
+    (c) => c.addKitItem(pedidoDeCriacaoDoKit()),
+  ],
+  [
+    FIXTURE_ADD_KIT_ITEM_SG_DOIS_PRINCIPAIS,
+    SHOPEE_ADD_KIT_ITEM_PATH,
+    (c) => c.addKitItem(pedidoDeCriacaoDoKit()),
+  ],
+  [
+    FIXTURE_UPDATE_KIT_ITEM_SG_SEM_ITEM_ID,
+    SHOPEE_UPDATE_KIT_ITEM_PATH,
+    (c) => c.updateKitItem(ATUALIZACAO_PARCIAL),
+  ],
+  [
+    FIXTURE_GENERATE_KIT_IMAGE_SG_TOGGLE_FECHADO,
+    SHOPEE_GENERATE_KIT_IMAGE_PATH,
+    (c) => c.generateKitImage(COMPONENTES_DA_IMAGEM),
+  ],
+  [
+    FIXTURE_GENERATE_KIT_IMAGE_SG_CHAVES_DO_DOC,
+    SHOPEE_GENERATE_KIT_IMAGE_PATH,
+    (c) => c.generateKitImage(COMPONENTES_DA_IMAGEM),
+  ],
+  [
+    FIXTURE_GENERATE_KIT_IMAGE_SG_SEM_MODEL_ID,
+    SHOPEE_GENERATE_KIT_IMAGE_PATH,
+    (c) => c.generateKitImage(COMPONENTES_DA_IMAGEM),
+  ],
+  [
+    FIXTURE_GENERATE_KIT_IMAGE_SG_UM_COMPONENTE,
+    SHOPEE_GENERATE_KIT_IMAGE_PATH,
+    (c) => c.generateKitImage(COMPONENTES_DA_IMAGEM),
+  ],
+];
+
+describe('os kits nativos — as ESCRITAS pelo CLIENTE do pacote, com o corpo commitado no fio', () => {
+  it('o add que pegou RESOLVE com o envelope INTEIRO — o `item_id` do kit sob `response`', async () => {
+    const { client, chamadas } = clienteDoKit(FIXTURE_ADD_KIT_ITEM_SG);
+    const env = await client.addKitItem(pedidoDeCriacaoDoKit());
+    expect(env).toEqual(shopeeKitItemWriteSchema.parse(lerFixture(FIXTURE_ADD_KIT_ITEM_SG)));
+    expect(env.response.item_id).toBe(KIT);
+    expect(chamadas).toEqual([{ metodo: 'POST', caminho: SHOPEE_ADD_KIT_ITEM_PATH }]);
+  });
+
+  it('cobre toda recusa do conjunto menos a do estoque, uma vez cada', () => {
+    // Âncora anti-vacuidade do `it.each` abaixo; a do estoque é parcial, logo depois.
+    expect(RECUSAS_PELO_CLIENTE.map(([file]) => file).sort()).toEqual(
+      RECUSAS_DO_KIT.map(([file]) => file)
+        .filter((file) => file !== FIXTURE_UPDATE_STOCK_SG_KIT)
+        .sort(),
+    );
+  });
+
+  it.each(RECUSAS_PELO_CLIENTE)(
+    '%s REJEITA com o `ShopeeApiError` que o classificador lê: o código e a frase VERBATIM',
+    async (file, caminho, chamar) => {
+      const { client, chamadas } = clienteDoKit(file);
+      const promessa = chamar(client);
+      const cru = lerFixture(file) as { error: string; message: string };
+      await expect(promessa).rejects.toBeInstanceOf(ShopeeApiError);
+      await expect(promessa).rejects.toMatchObject({
+        code: cru.error,
+        providerMessage: cru.message,
+      });
+      expect(chamadas).toEqual([{ metodo: 'POST', caminho }]);
+    },
+  );
+
+  it.each([
+    FIXTURE_UPDATE_KIT_ITEM_SG_PARCIAL,
+    FIXTURE_UPDATE_KIT_ITEM_SG_ANEXAR,
+    FIXTURE_UPDATE_KIT_ITEM_SG_QUANTIDADE_IGNORADA,
+  ])(
+    '%s RESOLVE com o envelope nu — o mesmo para a mudança que pegou e para a ignorada',
+    async (file) => {
+      const { client, chamadas } = clienteDoKit(file);
+      await expect(client.updateKitItem(ATUALIZACAO_PARCIAL)).resolves.toEqual(
+        shopeeWriteAckSchema.parse(lerFixture(file)),
+      );
+      expect(chamadas).toEqual([{ metodo: 'POST', caminho: SHOPEE_UPDATE_KIT_ITEM_PATH }]);
+    },
+  );
+
+  it('a releitura da família RESOLVE pelo `getKitItemInfo` — é o que o loader devolve', async () => {
+    const { client, chamadas } = clienteDoKit(FIXTURE_KIT_ITEM_INFO_SG_QUANTIDADE_IGNORADA);
+    await expect(client.getKitItemInfo({ itemId: KIT })).resolves.toEqual(
+      lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_QUANTIDADE_IGNORADA),
+    );
+    expect(chamadas).toEqual([{ metodo: 'GET', caminho: SHOPEE_GET_KIT_ITEM_INFO_PATH }]);
+  });
+
+  it('update_stock num kit REJEITA com `ShopeeApiPartialError` carregando a `failure_list`', async () => {
+    const { client, chamadas } = clienteDoKit(FIXTURE_UPDATE_STOCK_SG_KIT);
+    const promessa = client.updateStock({
+      item_id: KIT,
+      stock_list: [{ model_id: KIT_M1, seller_stock: [{ location_id: 'SGZ', stock: 1 }] }],
+    });
+    await expect(promessa).rejects.toBeInstanceOf(ShopeeApiPartialError);
+    await expect(promessa).rejects.toMatchObject({
+      code: 'product.error_busi',
+      parsed: shopeeUpdateStockSchema.parse(lerFixture(FIXTURE_UPDATE_STOCK_SG_KIT)),
+    });
+    expect(chamadas).toEqual([{ metodo: 'POST', caminho: SHOPEE_UPDATE_STOCK_PATH }]);
+  });
+
+  it('delete_item, update_price e unlist_item num kit RESOLVEM, cada um com o seu corpo', async () => {
+    const apagar = clienteDoKit(FIXTURE_DELETE_ITEM_SG_KIT);
+    await expect(apagar.client.deleteItem({ item_id: KIT })).resolves.toEqual(
+      shopeeWriteAckSchema.parse(lerFixture(FIXTURE_DELETE_ITEM_SG_KIT)),
+    );
+    expect(apagar.chamadas).toEqual([{ metodo: 'POST', caminho: SHOPEE_DELETE_ITEM_PATH }]);
+
+    const preco = clienteDoKit(FIXTURE_UPDATE_PRICE_SG_KIT);
+    await expect(
+      preco.client.updatePrice({
+        item_id: KIT,
+        price_list: [{ model_id: KIT_M2, original_price: 33 }],
+      }),
+    ).resolves.toEqual(shopeeUpdatePriceSchema.parse(lerFixture(FIXTURE_UPDATE_PRICE_SG_KIT)));
+    expect(preco.chamadas).toEqual([{ metodo: 'POST', caminho: SHOPEE_UPDATE_PRICE_PATH }]);
+
+    const tirar = clienteDoKit(FIXTURE_UNLIST_ITEM_SG_KIT);
+    await expect(
+      tirar.client.unlistItem({ item_list: [{ item_id: KIT, unlist: true }] }),
+    ).resolves.toEqual(shopeeUnlistItemSchema.parse(lerFixture(FIXTURE_UNLIST_ITEM_SG_KIT)));
+    expect(tirar.chamadas).toEqual([{ metodo: 'POST', caminho: SHOPEE_UNLIST_ITEM_PATH }]);
   });
 });
