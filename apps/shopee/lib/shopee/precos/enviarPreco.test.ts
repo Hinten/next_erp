@@ -2149,11 +2149,11 @@ describe('enviarPrecoDoItem — o kit: um modelo VIVO inutilizável é uma LINHA
   );
 
   it.each([
-    ['PRIMEIRO', (item: ItemDePreco) => item],
-    ['ÚLTIMO', alvosInvertidos],
+    ['PRIMEIRO', (item: ItemDePreco) => item, 'forma-de-modelo-divergente'],
+    ['ÚLTIMO', alvosInvertidos, 'preco-nao-atualizado'],
   ])(
     'K23 — ⛔ QUASE-IGUAL: a escrita ACEITA (nenhuma recusa da Shopee) e o enviado NÃO confirmado ⇒ a regra do envio parcial fica: o modelo separado (%s nos alvos) é a única falha que carimba, e o item a registra',
-    async (_posicao, ordenar) => {
+    async (_posicao, ordenar, motivoDoItem) => {
       // The read-back still shows B at 22: B is `preco-nao-atualizado`, unstamped.
       const c = cenarioDeKit({
         kit: kitVivo([[MODELO_B, 1]]),
@@ -2168,8 +2168,21 @@ describe('enviarPrecoDoItem — o kit: um modelo VIVO inutilizável é uma LINHA
         motivo: 'preco-nao-atualizado',
       });
       // The item's MOTIVO follows the first refusal in alvo order (the partial
-      // rule, unchanged); what it RECORDS is the one stamping row's.
-      expect(r).toMatchObject({ tipo: 'falha', carimbado: true });
+      // rule, unchanged): A's divergence when A comes first, B's unconfirmed
+      // send when B does. What it RECORDS — the link, and the result's
+      // `codigo` — is the one stamping row's, A's `erp:`, in both orders.
+      // ⚠️ So with B first the result pairs B's motivo with A's code: the
+      // sender's standing split (motivo = the first falha, codigo = the first
+      // STAMPING falha — any partial whose first falha does not stamp reads
+      // so), pinned knowingly: changing it is a decision for every path, not
+      // for this kit case.
+      expect(r).toMatchObject({
+        tipo: 'falha',
+        motivo: motivoDoItem,
+        codigo: 'erp:forma-de-modelo-divergente',
+        mensagem: null,
+        carimbado: true,
+      });
       expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_LINK]);
       expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual({
         precoRecusaEm: AGORA_MS,

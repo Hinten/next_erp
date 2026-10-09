@@ -38,9 +38,11 @@
  *   `tier_index`, a component `quantity` that did not read, …), or the read
  *   answered another item — is never sent, and its row is
  *   `falha forma-de-modelo-divergente`, stamped with our `erp:` code, even
- *   when Shopee then refuses the call the other models went in (the ITEM
- *   then records Shopee's refusal, never this row's): one listing's wire is
- *   a ROW, never a thrown class that would end the run.
+ *   when Shopee then refuses the call the other models went in (when that
+ *   refusal FAILS the models it carried, the ITEM records Shopee's refusal,
+ *   never this row's; a promotion lock only skips them, and then this row is
+ *   the item's one failure): one listing's wire is a ROW, never a thrown
+ *   class that would end the run.
  * - **Its errors** go through {@link veredictoDoErroDeKit} FIRST: the kit
  *   refusal classifier (`kits/recusaKit.ts`) reads Shopee's SENTENCE, because
  *   `product.error_busi` carries both a transient ("Too many connections",
@@ -125,9 +127,12 @@
  *
  * ⚠️ When Shopee refused the WRITE itself, "first" counts only the rows the
  * call carried: a kit model set aside before the write is not Shopee's answer,
- * and speaks for the item only when no carried row failed. So a refused
- * `update_kit_item` gives the item Shopee's motivo, code and sentence whatever
- * the alvo order — the set-aside model's own row stays `erp:`.
+ * and speaks for the item only when no carried row failed. So an
+ * `update_kit_item` refused as a FAILURE of the models it carried gives the
+ * item Shopee's motivo, code and sentence whatever the alvo order — the
+ * set-aside model's own row stays `erp:`. Refused by a promotion LOCK (every
+ * carried row `pulado`, which records nothing), it leaves the set-aside row
+ * the item's one failure, in either order.
  *
  * ## The write-backs (G12, reconcile C-n)
  *
@@ -739,8 +744,9 @@ function conferirCamposDoKit(
  * and the row is `falha forma-de-modelo-divergente`, its child stamped with our
  * `erp:` code (the remedy is a re-import) — also when Shopee REFUSED the write
  * the other models went in, whose top-level reading must not land on a model
- * that was not in the call (nor this row displace that reading on the item:
- * {@link desfechoDoEnvio}). Every other row passes untouched.
+ * that was not in the call (nor this row displace that reading on the item
+ * while a model the call carried failed: {@link desfechoDoEnvio}). Every
+ * other row passes untouched.
  */
 function semModeloNoKitVivo(
   atribuida: LinhaAtribuida,
