@@ -8,7 +8,7 @@
  */
 import { z } from 'zod';
 
-import { criarClienteLeituraLi } from './client';
+import { type ChamadaLi, criarClienteLeituraLi } from './client';
 import { LiAuthError, LiConfigError, LiHttpError, LiNetworkError, LiSchemaError } from './errors';
 import { liEnvelopeSchema } from './types';
 
@@ -57,6 +57,16 @@ export interface OpcoesValidacaoLi {
   readonly fetch?: typeof globalThis.fetch;
   readonly sinal?: AbortSignal;
   readonly gerarCorrelationId?: () => string;
+  /**
+   * The client's observer, forwarded as-is: called once if the GET was SENT
+   * (never for `invalido`, which sends nothing), with `refCredencial:
+   * 'candidato'` and the token scrubbed from the body text. It is how the app
+   * logs the validating GET.
+   *
+   * ⚠️ An observer must never throw: the client rethrows its error in place of
+   * the call's outcome, which here would replace the verdict.
+   */
+  readonly onChamada?: (e: ChamadaLi) => void;
 }
 
 /**
@@ -72,6 +82,9 @@ export interface OpcoesValidacaoLi {
  * | `LiConfigError` `'token'`, `'ref'` or `'token-na-url'` (see the catch) | `invalido`; no request was made |
  * | any other `LiHttpError`, `LiSchemaError`, `LiNetworkError` (timeout included) | `inconclusivo` |
  * | a caller abort, any other `LiConfigError`, or any other error | rethrown as-is |
+ *
+ * `opts.onChamada`, when given, observes the one GET exactly as the client's
+ * observer does — the app logs it. ⚠️ An observer must never throw (`client.ts`).
  *
  * ⚠️ **400 is never `recusado`.** How Loja Integrada answers a bad token beyond
  * 401/403 is not yet observed, so any other status reads as "could not tell",
@@ -90,6 +103,7 @@ export async function validarPersonalToken(opts: OpcoesValidacaoLi): Promise<Val
     fetch: opts.fetch,
     gerarCorrelationId: () => correlationId,
     enviarCorrelationId: false,
+    onChamada: opts.onChamada,
   });
 
   try {
