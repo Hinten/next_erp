@@ -1431,10 +1431,21 @@ export async function prepararImportacaoKitShopee(
  * `reavaliarAvisoDeReceitaKit` reads the merged row, so its clock is strictly
  * newer than any snapshot that saw the old stamp, and it resolves `importado`.
  * An import that dies between the child write and the row merge leaves child S
- * and rows R, which the next import decides `igual` and pre-stamps — at worst a
- * false OPEN until then, the safe direction. `mantida` and an address-unfaithful
- * recipe (R2-F2) pre-stamp nothing either: the first stamps nothing, the second
- * clears through the same row merge.
+ * and rows R — for a família de um the window opens at the PARENT K write and
+ * also spans the member's guarded price patch — which the next import decides
+ * `igual` and pre-stamps WHILE Shopee still holds S: at worst a false OPEN until
+ * then, the safe direction. ⚠️ ACCEPTED RESIDUAL (a double fault): if Seller
+ * Centre changes the recipe AGAIN before a re-import succeeds, that child S /
+ * rows R pair reads exactly like a pending ERP edit, the import keeps S
+ * (`mantida`, `receita-divergente`) and the aviso is the human channel: the
+ * operator decides which recipe is right — edit the ERP kit to Shopee's (the
+ * next import then reads `igual`) or recreate to push the ERP's. No write order
+ * that is not atomic avoids every intermediate state; this one closes the
+ * SINGLE-fault window the review found, at the price of a narrower double-fault
+ * one (before this fix a família-de-um import that died there still
+ * converged). `mantida` and an address-unfaithful recipe (R2-F2) pre-stamp
+ * nothing either: the first stamps nothing, the second clears through the same
+ * row merge.
  *
  * ⚠️ A flat `mergeIfExists`, never `merge` and never `set`: a `set` would erase
  * step 13's `preco*` and the sync's `modeloAusenteEm`/`model_status`, and an
