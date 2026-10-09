@@ -19,9 +19,11 @@ export const CREDENCIAL_LOJA_INTEGRADA_DOC_ID = 'current';
  * package's `client.ts`), which refuses a longer `ref` on every request.
  * ⚠️ This is a COPY, and nothing in this package compares the two: there is no
  * dependency edge between them, so `credenciaisLojaIntegrada.test.ts` pins only
- * the literal 64 here. The cross-check belongs in `apps/loja-integrada`, the
- * first workspace that depends on both packages (step 2, PR b). Until it lands,
- * changing either value means changing the other by hand.
+ * the literal 64 here. The cross-check lives in `apps/loja-integrada`, the
+ * first workspace that depends on both packages:
+ * `lib/lojaIntegrada/core/credencial.test.ts` parses a ref of exactly the
+ * package's `MAX_REF_CREDENCIAL` characters through this schema (accepted) and
+ * one character longer (refused), so changing either value alone reds it.
  */
 const MAX_REF_CREDENCIAL = 64;
 

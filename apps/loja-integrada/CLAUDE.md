@@ -1,21 +1,89 @@
 # apps/loja-integrada
 
 API-only App Hosting backend for the Loja Integrada marketplace channel, port 3010.
+Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integration.md`.
 
-- Step 1 of the master plan is only the scaffold: `GET /api/health`. No route
-  under `/api/marketplace` yet (its CORS `proxy.ts` arrives with the first one),
-  no Firestore access, no environment variable.
+## What is here
+
+- Step 1: the scaffold, `GET /api/health`.
+- Step 2 (the credential store, in stacked PRs): `proxy.ts` (CORS for
+  `/api/marketplace/*` only), `lib/auth/verifyCaller.ts`, `lib/firebase/admin.ts`,
+  then the routes and `lib/lojaIntegrada/`. The inbound order webhook
+  (`/api/webhooks/loja-integrada/…`, step 4) stays OUTSIDE the proxy matcher.
 - The platform is called only through `@delfrance/integrations-loja-integrada`,
-  never with a raw `fetch` here. The package is not a dependency yet; the step
-  that first imports it adds it, with `transpilePackages`.
-- No write to the platform before the cutover (D4): reads only, with valves and
-  a dry-run before anything else.
-- The tokens belong to this integration alone, separate from the legacy app's
-  (D16). Never put a token in a URL, a log or a response.
-- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`
-  (emulator suites run on their own lane); `eslint.config.mjs` still lints them
-  and only lets them build raw Firestore refs. Both already cover the nested
-  `functions/` codebase, so adding those later needs no edit to either.
-- `next` is an exact literal in `package.json`, never `catalog:` or a range.
+  never with a raw `fetch` here. No write to the platform before the cutover (D4).
 
-See `.master_plans/loja-integrada/loja-integrada-marketplace-integration.md` (master plan, step 1 = #1814).
+## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
+
+`GET` status (`PERM.integracao.read`); `PUT …/credencial` save, `PUT …/credencial/validade`
+renew the expiry date, `DELETE …/credencial` remove (all `PERM.integracao.write`).
+Every route exports its verb as `export async function GET|PUT|DELETE` (never a
+re-export: `cors-proxy-covers-routes.test.js` cannot read one), and every verb must
+be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The routes read
+the conta uncached and require only `tipo === 3`, so a parked or inactive conta can
+still be fixed. Only the context loader refuses those.
+
+- The wire contract (bodies, answers, error codes, the accepted date window
+  `janelaDeValidadeTokenLi`) is `packages/schemas/src/contaLojaIntegrada.ts`, shared with
+  the web panel. Never redefine a shape here.
+- Each `PUT` makes exactly ONE `validarPersonalToken(` call (`prazos.test.ts` counts it
+  and pins `PRAZO_LI_MS` under the App Hosting ceiling). Every refusal that needs no call
+  (id, body, date, conta, version, wrong-store, token-inside-ref) comes before it.
+- Only that call sits in the abort `try`, narrowed by identity: `err === req.signal.reason`
+  → 499. A save re-reads the conta after writing and undoes the write on a 404.
+- The aviso step runs after the write landed: a TRANSIENT gRPC failure there is logged and
+  the answer stays 200 (`semDerrubarAEscrita` in `avisos/avisos.ts`); anything else throws.
+
+## Store and writes
+
+- The token lives in `integracao/{id}/credenciaisLojaIntegrada/current`: strict schema,
+  admin-only, outside `ALL_DOMAINS`, reclaimed by the conta delete's discovery walk.
+- Read it with `credenciaisLojaIntegradaSchema.safeParse` (strict), never the handle's
+  `parseRead`, which logs and returns the raw document on a mismatch.
+- Panel writes carry the version the operator saw (`versaoEsperada`, the credential
+  document's `updateTime` in µs). `create` when absent, otherwise `update(patch,
+  { lastUpdateTime })`; a lost race is a 409, never a silent overwrite (root rule 7,
+  tier 3). The save never mentions `webhookPedido`.
+- The 401/403 park is a tier-1 precondition write: read, decide, `update(patch,
+  { lastUpdateTime })`, re-read on `FAILED_PRECONDITION` (9) and on `NOT_FOUND` (5),
+  at most 3 attempts. It compares a versioned ref derived from the stored
+  `personalToken` (`fingerprint.tokenAtualizadoEmMs`), never the stored fingerprint field.
+- ⚠️ **Never write the Firestore transaction API's call name in any file of this app**
+  (source, test or fake). `firestore-transaction-inventory.test.js` greps every
+  non-test source file for it and would demand a class for a site that does not exist.
+  The test fake models `lastUpdateTime` preconditions only — and as the server applies
+  them: the stamp replaces the SDK's `exists` check, so a removed document fails it with
+  `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5).
+
+## Layout rules
+
+- `lib/lojaIntegrada/**` is Next-free and takes `db` as a parameter, because step 3's
+  functions bundle imports it. The one exception is `core/respond.ts`.
+- `lib/lojaIntegrada/avisos/avisos.ts` is the ONLY module that converts to µs:
+  `agoraUsDe`, `prazoUsDe` and the Timestamp-to-µs function. Everything else stays in ms.
+  A document commit time is the aviso clock for the park. An observation of ABSENCE (no
+  credential, a conta gone) is clocked by the snapshot's `readTime`: the reconexão aviso
+  is never resolved clockless, or a park committed after the read loses its open row for
+  good. Any civil-date computation passes `FUSO_FISCAL` (`no-ambient-timezone`).
+- Tests run the real `escreverAviso`/`resolverAviso` against `lib/lojaIntegrada/testing/fakeDb.ts`.
+  Apps have no dependency edges, so Shopee's fake cannot be imported.
+
+## Token hygiene
+
+- The token appears in no response, log line, error message, URL or observer event.
+  It travels only in the PUT JSON body. A malformed-JSON `SyntaxError` message quotes
+  the body: return a fixed 400 and never log or return `err.message`.
+- Zod failures return field paths only. The fingerprint is diagnostic and also stays
+  out of responses and logs.
+- The tokens belong to this integration alone, separate from the legacy app's (D16).
+
+## Config
+
+- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`: emulator
+  suites need their own lane — **none exists yet** (planned for step 3), so the change
+  that adds the first such suite must add its lane too, or it runs nowhere while every
+  check stays green. `eslint.config.mjs` still lints them. Both already cover the nested
+  `functions/` codebase.
+- The Firestore database id is `default`: `lib/firebase/admin.ts` passes it explicitly.
+  `ALLOWED_ADMIN_ORIGINS` is REQUIRED in production (see `apphosting.yaml`).
+- `next` is an exact literal in `package.json`, never `catalog:` or a range.

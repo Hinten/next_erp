@@ -426,6 +426,36 @@ export {
   type CredenciaisLojaIntegrada,
 } from './credenciaisLojaIntegrada';
 
+// The Loja Integrada conta wire contract — the status projection, the error
+// codes and the expiry arithmetic that `apps/loja-integrada` and `apps/web`
+// must agree on. Not a collection: no meta, nothing to register.
+export {
+  CODIGO_ERRO_LI,
+  LIMIAR_AVISO_TOKEN_LI_DIAS,
+  MAX_TOKEN_LI,
+  SITUACAO_VALIDADE_TOKEN_LI,
+  VALIDADE_TOKEN_LI_MAX_DIAS,
+  corpoRenovarValidadeLiSchema,
+  corpoSalvarCredencialLiSchema,
+  diasParaExpirarLi,
+  erroContaLojaIntegradaSchema,
+  janelaDeValidadeTokenLi,
+  respostaCredencialLojaIntegradaSchema,
+  respostaRemocaoCredencialLiSchema,
+  situacaoValidadeTokenLi,
+  situacaoValidadeTokenLiSchema,
+  statusContaLojaIntegradaSchema,
+  type CodigoErroLi,
+  type CorpoRenovarValidadeLi,
+  type CorpoSalvarCredencialLi,
+  type ErroContaLojaIntegrada,
+  type JanelaDeValidadeTokenLi,
+  type RespostaCredencialLojaIntegrada,
+  type RespostaRemocaoCredencialLi,
+  type SituacaoValidadeTokenLi,
+  type StatusContaLojaIntegrada,
+} from './contaLojaIntegrada';
+
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
 // Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
 // `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the
