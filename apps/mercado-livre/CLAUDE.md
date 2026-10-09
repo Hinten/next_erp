@@ -41,6 +41,11 @@ disk), and the two path-keyed inventories
 The per-surface notes below stay the authority on behaviour.
 
 - `app/api/health` — uptime check (no auth).
+- `app/api/marketplace/mercado-livre/rastreio` — **#759**: `PERM.frete.read`-gated
+  carrier tracking link for a persisted pedido. Resolves the current ML shipment
+  and account, then calls `GET /shipments/{id}/carrier`; no freight writes.
+  The Frete tab and order-row action share the browser control. Unavailable
+  tracking is `409 ML_RASTREIO_INDISPONIVEL`; unsafe URLs are `502 ML_BAD_RESPONSE`.
 - `app/api/marketplace/mercado-livre/oauth/start` — **#291**: `PERM.integracao.write`-gated;
   mints a signed `state` and returns the ML consent URL (`channel.oauthFlow.start`).
   **#821**: it also RECORDS the attempt (`putOauthState`) before handing out the URL —
@@ -407,7 +412,7 @@ own suffix, and `vitest.config.ts` excludes the other three):
   the bundle), which is deliberately NOT `FUNCTIONS_REGION`: Cloud Tasks and Cloud
   Scheduler do not exist in every region, so where they are absent the thirteen queue/schedule
   functions (5 `onTaskDispatched` + 8 `onSchedule`, counted from `functions/src/index.ts`)
-  live one region away from the four Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
+  live one region away from the six Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
   token and no real secret, and executes only classic queries (the Pipelines API does not
   run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
 
@@ -561,7 +566,7 @@ matters:
 
 | Topic | Disposition | Handler |
 |---|---|---|
-| `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) |
+| `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) + ML's category (#847) |
 | `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
 | `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9); since #1087 it also BOOTSTRAPS a missing pedido |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
@@ -581,6 +586,25 @@ a `user_product_seller` publishes, it silently skipped the entire future catalog
 (#1087). ML's own migration **tags** are now the only reason to defer, and each
 deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
 a sync. Do not reintroduce a link-only guard here.
+
+⚠️ **A recategorization is NOT its own topic either — it arrives on `items` (#847).**
+Mercado Livre moves listings between categories on its own ("recategorização
+automática" for items published via API, since 29/10/2025, plus splits of its category
+tree) and says so only through an ordinary `items` delivery with no field naming what
+changed. `category_id` is **create-only** on our wire (`itemPayload.ts`), so a stale
+stored value never reverts ML's change — it misleads every READER instead: the
+size-chart binding on publish (which can block it), a new UP member's `POST /items`,
+the editor's attribute grid. So `itemsStatusSync` and `reverificarAnuncio` write ML's
+`category_id` onto the link, fill-only (an omitted field never nulls a stored one). On
+a User-Products FAMILY each member's category is recorded on its own link and the
+parent takes `foldFamilyCategoria` — **unanimity, never "latest member wins"**, inside
+the same transaction as the status fold: members are delivered concurrently, and a
+last-writer rule would flip the parent on every delivery while they disagree. The
+category moves on its own evidence, even when the status fold cannot conclude.
+⚠️ **Only LIVE members vote** (the status ladder's terminal rung — `closed` or removed
+by moderation — is excluded, falling back to all when every member ended): ML need not
+recategorize an item that no longer sells, so an ended member's last-known category
+would otherwise veto every later move and freeze the parent on a stale value.
 
 ⚠️ **A moderation is NOT its own topic — it arrives on `items`.** ML publishes no
 `moderations` notification topic (checked against its topic list); a policy pause
@@ -1198,6 +1222,34 @@ Reasoning: `lib/marketplace/anuncios/README.md`. The rules a change must keep:
 - Simples only (`csosn`); Regime Normal's `tax_rule_id` waits for the NF-e to
   support CRT 3. A kit is ONE `single` SKU. `origin_type` is derived from the
   resolved CFOP, never guessed. No operação on the conta ⇒ zero calls.
+
+### ML recategorized a listing: the `anuncioCategoriaAlterada` aviso (#847)
+
+Mercado Livre moves listings between categories on its own, and the produto's ERP
+category — named after ML's by the importer (`categorias/<MLB id>`) — is what picks
+the price list's formulas (`formulasPorCategoria`: commission, frete) and the NF-e
+taxes. It is **never moved automatically**; an aviso asks a human instead.
+Logic: `lib/marketplace/anuncios/categoriaAnuncio.ts`; producer:
+`avisoCategoria.ts`; triggers: `functions/src/on{Anuncio,Produto}CategoriaAlterada.ts`.
+
+- ⚠️ **Decided on the committed LINK write, not inside the `items` sync.** Four
+  writers store ML's category on the link (the `items` sync, "Reverificar anúncio",
+  publish's echo, a re-import) and whichever runs first absorbs the change — a check
+  inside one of them misses every change another stored.
+- ⚠️ **Raised NARROWLY**: only when the produto's ERP category is still the one ML
+  just LEFT, and not when ML's `percentage_fee` is identical for both categories. A
+  curated ERP category raises nothing — there is no dismiss button, so a broad raise
+  would leave rows nothing could close. ⚠️ "Not raised" is not "forgotten": a
+  same-commission move is RECORDED as a row closed `mesma-comissao`, and a row closed
+  without review (`mesma-comissao`, `anuncio-encerrado`) keeps tracking its ERP
+  category — otherwise `A → B` (same fee) then `B → D` (different fee) raised
+  nothing, since `anterior` no longer names `A`.
+- **Closes itself** when the operator changes the produto's ERP category (the produto
+  trigger), when ML moves the listing back, or when the listing stops being live.
+  The producer re-reads the produto after writing, so it and the produto trigger
+  converge without a transaction. Enrichment (names, the new category's chain
+  created in `categorias`, the fee preview) is best-effort: an ML failure degrades
+  to ids, never loses the aviso.
 
 ## Env
 

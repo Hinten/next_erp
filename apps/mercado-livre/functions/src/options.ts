@@ -20,7 +20,7 @@ if (!region) {
  * service lists it (Cloud Tasks locations / Cloud Scheduler locations both stop
  * at `us-east4` in the eastern US), so deploying the codebase wholesale into the
  * ML backend's region fails all thirteen queue/schedule functions at once while
- * the four Firestore triggers deploy cleanly — the exact signature seen on the
+ * the six Firestore triggers deploy cleanly — the exact signature seen on the
  * first ML functions deploy. They are pinned to `us-east1`, which offers both.
  * (Thirteen = five `onTaskDispatched` queues + eight `onSchedule`s, counted from
  * `index.ts`'s exports — re-derive it there rather than incrementing this; the
@@ -78,14 +78,19 @@ setGlobalOptions({
   //     it is also the `app_id` query param `GET /missed_feeds` requires, so
   //     unbinding it here leaves the backstop inert rather than merely slower.
   //   - `sweepMercadoLivrePedidosTravados` (the weekly stuck-pedido release) — index.ts
+  //   - `onAnuncioCategoriaAlterada` (#847) — the ONE Firestore trigger that binds
+  //     them: its aviso raise reads the new ML category and ML's fee preview with
+  //     the conta's token. Its sibling `onProdutoCategoriaAlterada` binds none.
   // Each declares `secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET']`
   // on its own options rather than here, so a function with no ML API call never
-  // gets the secrets bound. These are exactly that case and deliberately bind NONE:
+  // gets the secrets bound. These are exactly that case and deliberately bind NONE
+  // (five Firestore triggers and one schedule):
   //   - `onNfeAprovada` (Step 12 / #739) — only decides + enqueues.
   //   - `onIntegracaoMercadoLivreChanged` (#782) — pure Firestore: mirrors the ML
   //     conta onto its Mercado Envios `int_frete` doc, never calls the ML API.
   //   - `onProdutoMercadoLivreLinkChanged` / `onVariacaoMercadoLivreLinkChanged`
   //     (#920) — pure Firestore: derive `integracoesComProduto` from the links.
+  //   - `onProdutoCategoriaAlterada` (#847) — pure Firestore.
   //   - `sweepMercadoLivreAnunciosNaoEnumerados` (#1200) — the monthly link audit,
   //     sweepStock.ts. ⚠️ The one SCHEDULE here, and the one that sits beside
   //     three sweeps that DO bind the secrets through `sweepScheduleOptions`: it

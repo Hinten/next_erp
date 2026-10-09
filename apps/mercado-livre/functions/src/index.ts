@@ -180,6 +180,20 @@ export { onProdutoMercadoLivreLinkChanged } from './onProdutoMercadoLivreLinkCha
 export { onVariacaoMercadoLivreLinkChanged } from './onVariacaoMercadoLivreLinkChanged';
 
 /**
+ * The two triggers behind the `anuncioCategoriaAlterada` aviso (#847): Mercado
+ * Livre recategorizes listings on its own, and the produto's ERP category — which
+ * picks the price formulas' commission and the NF-e taxes — is never moved
+ * automatically. The LINK trigger raises (or closes) the aviso when a listing's
+ * ML category changes; the PRODUTO trigger closes it the moment an operator
+ * changes the ERP category. Both decide from the event payload before touching
+ * Firestore. Only the link trigger binds the ML secrets: its raise path reads
+ * the new category and ML's fee preview. Same "no rename-safety assertion"
+ * reasoning as the triggers above.
+ */
+export { onAnuncioCategoriaAlterada } from './onAnuncioCategoriaAlterada';
+export { onProdutoCategoriaAlterada } from './onProdutoCategoriaAlterada';
+
+/**
  * The flag-gated stock sweeps: the 15-minute incremental tier, the 02:00 daily
  * tier and the MONTHLY full reconciliation (03:00 on the 1st), all feeding the
  * `sendMercadoLivreStock` queue. The three differ in window AND in send policy —

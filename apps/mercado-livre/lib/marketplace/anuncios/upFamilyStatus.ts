@@ -159,6 +159,71 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
 }
 
 /**
+ * The ML category the family's PARENT link should carry (#847), or `null` for
+ * "leave the stored one alone".
+ *
+ * Mercado Livre recategorizes listings on its own (automatic recategorization,
+ * and splits of its category tree), and under User Products each member is its
+ * own item with its own `category_id`. The parent link carries ONE category —
+ * the value the size-chart binding and every new member's `POST /items` read —
+ * so the family's answer has to be folded, exactly like its status.
+ *
+ * ⚠️ UNANIMITY, never "the latest member wins". The members of one family are
+ * delivered concurrently and in no particular order, so a last-writer rule would
+ * flip the parent between two categories on every delivery while the members
+ * disagree — and the #847 aviso trigger reads every flip as a recategorization.
+ * Members that disagree therefore leave the stored value standing.
+ *
+ * `null` entries are members whose category was never learned (every member
+ * link written before #847 carries none). They do not block, so the FIRST
+ * observed member settles a family nobody has observed yet — the same "member 0
+ * stands for the family" convention publish already uses for the parent's
+ * category.
+ *
+ * ⚠️ Only LIVE members vote, the way the status ladder ranks them: a member that
+ * ENDED (`closed`, or removed by moderation — rank 0 in {@link rank}) keeps the
+ * last category it was observed in, and nothing may ever re-observe it, because
+ * ML need not recategorize an item that no longer sells. Letting it vote under
+ * unanimity would veto every later move of the live siblings and freeze the
+ * parent on the stale category for good (#1842 review). A never-observed member
+ * (`status` null) is unknown, not dead, and still votes. Only when EVERY voter
+ * has ended does the fold fall back to all of them — there is then nothing
+ * fresher to prefer.
+ *
+ * Exact string comparison, on purpose: ML category ids are case-sensitive
+ * opaque keys (`MLB1` and `MLB12` are unrelated; `mlb1` is not an ML id).
+ */
+export function foldFamilyCategoria(votos: readonly VotoCategoria[]): string | null {
+  const comCategoria = votos.filter((v) => v.categoria != null);
+  const vivos = comCategoria.filter((v) => !encerrado(v));
+  return unanime(vivos.length > 0 ? vivos : comCategoria);
+}
+
+/** One member's say in {@link foldFamilyCategoria}: its category and its liveness. */
+export interface VotoCategoria {
+  /** `null` = never learned — not a vote at all. */
+  categoria: string | null;
+  /** `null` = never observed — unknown, so it still votes. */
+  status: string | null;
+  subStatus: string[] | null;
+}
+
+/** The SAME terminal rung the status ladder floors at — never a second definition. */
+function encerrado(v: VotoCategoria): boolean {
+  return v.status != null && rank(v.status, v.subStatus) === 0;
+}
+
+function unanime(votos: readonly VotoCategoria[]): string | null {
+  let escolhida: string | null = null;
+  for (const { categoria } of votos) {
+    if (categoria == null) continue;
+    if (escolhida == null) escolhida = categoria;
+    else if (categoria !== escolhida) return null;
+  }
+  return escolhida;
+}
+
+/**
  * Whether `desafiante` should displace `atual` among members of the SAME rank.
  * Two rungs, tried in order; the first is the one that can cost money.
  *

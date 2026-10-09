@@ -1399,6 +1399,10 @@ export {
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
+export {
+  mercadoLivreRastreioResultSchema,
+  type MercadoLivreRastreioResult,
+} from './rastreioMercadoLivre';
 
 // The ONE copy of the Shopee `return_sn` shape (step 17, #1525) — the push
 // parser, the reclamação routes and the web mount all read it. Not a collection,
