@@ -142,6 +142,21 @@ export const produtoSchema = z.object({
    *
    * That was a per-channel limitation, **not** a property of virtual kits, and
    * it must not be generalized into one.
+   *
+   * **Shopee is the channel that DOES have the upload shape** — its native kit
+   * (`add_kit_item`, step 19, #1527). There this flag is the operator's INTENT
+   * for a FIRST publish only: it asks the publisher to create a native kit
+   * instead of an ordinary listing. Once a listing is linked, the truth is the
+   * link's `kitNativo` (what Shopee reports), never this flag — an imported
+   * native kit may carry `ehKitVirtual: false`, and an old-model kit listing
+   * stays ordinary whatever the flag says. Shopee derives a native kit's stock
+   * itself (min ⌊component stock / qty⌋ over ALL components, measured on the SG
+   * sandbox) and refuses a stock write to the kit, so the ERP sends none.
+   *
+   * ⚠️ The flag only means anything on a kit: read it through
+   * `ehKitVirtualEfetivo` (`ehKit && ehKitVirtual`, `pureLogic/familia.ts`).
+   * `ehKitVirtual` without `ehKit` is refused by the Shopee publisher and
+   * switched off by the web editor on save.
    */
   ehKitVirtual: z.boolean().default(false),
   /**
