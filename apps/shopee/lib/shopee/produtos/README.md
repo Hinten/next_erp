@@ -320,14 +320,18 @@ no), the produto-level fingerprint is coarser than what Shopee holds, so the
 map is still written but the row is NOT stamped and an earlier stamp on it is
 CLEARED — the aviso opens. An EXISTING row whose recipe is already EQUAL is
 stamped FIRST — a flat `mergeIfExists`, before any produto write — so the
-recipe trigger those writes fire already reads it. ⚠️ Only then: when Shopee's
-recipe WINS, the stamp rides the row's own merge AFTER the child write, because
-a stamp is never written ahead of the produto it describes — an import that
-died in between would leave rows that read exactly like a pending ERP edit, and
-every later import would keep the stale recipe (PR #1865 review). After the
-writes,
+recipe trigger those writes fire already reads it. ⚠️ Never when Shopee's
+recipe WINS: there the stamp rides the row's own merge AFTER the child write,
+because a stamp is never written ahead of the produto it describes — an import
+that died in between would leave rows that read exactly like a pending ERP
+edit, and every later import would keep the stale recipe (PR #1865 review). The
+trigger the child write fires may open the aviso for a moment; after the writes
 `reavaliarAvisoDeReceitaKit` re-decides the (conta, kit) aviso once, motivo
-`importado`. _Família de um (R-u):_ a one-model kit imported onto a parent that
+`importado`, and its newer clock resolves it. An import that dies between the
+child write and the row merge converges on the next import while Shopee still
+holds the same recipe; a second Seller Centre change before then is the
+accepted double fault the `kitShopee.ts` docblock names: the aviso asks the
+operator which recipe is right (edit the ERP kit to Shopee's, or recreate). _Família de um (R-u):_ a one-model kit imported onto a parent that
 is a família de um binds its model to `filhoUnicoId`, never a new child. _The
 single-model tier:_ the create publishes a família de um under tier `Kit` /
 option `Padrão`; the import reads that exact pair as NO tier, so it plans no
