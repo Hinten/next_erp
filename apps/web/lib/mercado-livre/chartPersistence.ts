@@ -3,7 +3,7 @@
 import { FieldPath, runTransaction, type Firestore } from 'firebase/firestore';
 import { valuesEqual } from '@delfrance/core';
 import { mlSizeChartsForContaSchema, type MlSizeChart } from '@delfrance/schemas';
-import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
+import { tabelaDeMedidasCollection } from '../data/tabelaDeMedidasCollection';
 import { SizeChartConflictError } from './chartConflict';
 
 export interface SaveChartInput {
@@ -19,6 +19,18 @@ export interface SavedChart {
   tabelas: MlSizeChart[];
   index: number;
   chart: MlSizeChart;
+}
+
+export interface ChartDraftRemoval {
+  integracaoId: string;
+  chartIndex: number;
+  original: MlSizeChart;
+}
+
+export interface RemoveChartDraftsInput {
+  db: Firestore;
+  tabMediId: string;
+  removals: readonly ChartDraftRemoval[];
 }
 
 /** The baseline is the chart the operator reviewed, never a later live snapshot. */
@@ -70,5 +82,60 @@ export async function saveChartTransaction(input: SaveChartInput): Promise<Saved
       Date.now(),
     );
     return { tabelas, index, chart };
+  });
+}
+
+/** All staged removals share one commit; every retry repeats the baseline guard. */
+export async function removeChartDraftsTransaction(
+  input: RemoveChartDraftsInput,
+): Promise<Record<string, MlSizeChart[]>> {
+  const { db, tabMediId, removals } = input;
+  if (removals.length === 0) return {};
+  const ref = tabelaDeMedidasCollection.docRef(db, {}, tabMediId);
+
+  return runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) {
+      throw new SizeChartConflictError('Esta tabela foi excluída enquanto você editava.');
+    }
+    const map = snap.data().tabelasDeMedidasMercadoLivre;
+    const accounts = new Map<string, { stored: MlSizeChart[]; indexes: Set<number> }>();
+    for (const removal of removals) {
+      let account = accounts.get(removal.integracaoId);
+      const entry = map?.[removal.integracaoId];
+      const parsed = mlSizeChartsForContaSchema.safeParse(entry);
+      if (!parsed.success || !Array.isArray(parsed.data.tabelas)) {
+        throw new SizeChartConflictError(
+          'Não foi possível ler as guias desta conta. Recarregue a tabela antes de salvar.',
+        );
+      }
+      assertChartUnchanged(parsed.data.tabelas, removal.chartIndex, removal.original);
+      if (removal.original.id != null && removal.original.id !== '') {
+        throw new SizeChartConflictError(
+          'Somente rascunhos não enviados podem ser excluídos aqui.',
+        );
+      }
+      if (!account) {
+        // Validate with the read schema, but retain the actual wire values of
+        // survivors (including tolerant dates and unknown legacy chart fields).
+        const raw = entry as { tabelas: MlSizeChart[] };
+        account = { stored: raw.tabelas, indexes: new Set() };
+        accounts.set(removal.integracaoId, account);
+      }
+      account.indexes.add(removal.chartIndex);
+    }
+
+    const lists: Record<string, MlSizeChart[]> = {};
+    for (const [integracaoId, account] of accounts) {
+      const tabelas = account.stored.filter((_, index) => !account.indexes.has(index));
+      lists[integracaoId] = tabelas;
+      tx.update(
+        ref,
+        new FieldPath('tabelasDeMedidasMercadoLivre', integracaoId, 'tabelas'),
+        tabelas,
+      );
+    }
+    tx.update(ref, 'ultimaModificacao', Date.now());
+    return lists;
   });
 }

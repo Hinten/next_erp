@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { useForm } from 'react-hook-form';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -35,6 +35,12 @@ interface IntFreteDocFixture {
 
 /** The resolved `int_frete` document, or `null` for "resolves to nothing". */
 const mockIntFrete: { doc: IntFreteDocFixture | null } = { doc: null };
+
+const tracking = vi.hoisted(() => ({ rastrear: vi.fn() }));
+vi.mock('@/lib/mercado-livre/client', () => ({ useMercadoLivreClient: () => tracking }));
+vi.mock('@/lib/auth/usePermission', () => ({
+  usePermission: () => ({ allowed: true, loading: false }),
+}));
 
 vi.mock('@/components/pickers/ClientePicker', () => ({ ClientePicker: () => null }));
 vi.mock('@/components/pickers/EnderecoPicker', () => ({
@@ -111,9 +117,34 @@ beforeEach(() => {
   // Mantine portals into `document.body`, which RTL's cleanup does not clear.
   document.body.innerHTML = '';
   mockIntFrete.doc = null;
+  tracking.rastrear.mockReset();
 });
+afterEach(() => vi.restoreAllMocks());
 
 describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)', () => {
+  it('passes the saved pedido ID to tracking while freight fields remain read-only', async () => {
+    const replace = vi.fn();
+    vi.spyOn(window, 'open').mockReturnValue({
+      opener: null,
+      closed: false,
+      location: { replace },
+    } as unknown as Window);
+    tracking.rastrear.mockResolvedValue({ name: 'Carrier', url: 'https://carrier.example/track' });
+    renderTab(
+      freteWith({
+        externalOptionIntegracao: INTEGRACAO_FRETE.mercadoLivre,
+        externalId: '555',
+        codRastreio: null,
+      }),
+    );
+    expect(inputRastreio().disabled).toBe(true);
+    const action = screen.getByRole('button', { name: 'Rastrear' }) as HTMLButtonElement;
+    expect(action.disabled).toBe(false);
+    fireEvent.click(action);
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('https://carrier.example/track'));
+    expect(tracking.rastrear).toHaveBeenCalledExactlyOnceWith('ped-1');
+  });
+
   it('1: a Shopee block with no integração doc renders the read-only panel', () => {
     renderTab(
       freteWith({

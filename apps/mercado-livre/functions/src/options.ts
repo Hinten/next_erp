@@ -73,13 +73,18 @@ setGlobalOptions({
   //     ⚠️ The ONLY function where CLIENT_ID is not just for the token refresh:
   //     it is also the `app_id` query param `GET /missed_feeds` requires, so
   //     unbinding it here leaves the backstop inert rather than merely slower.
+  //   - `onAnuncioCategoriaAlterada` (#847) — the ONE Firestore trigger that binds
+  //     them: its aviso raise reads the new ML category and ML's fee preview with
+  //     the conta's token. Its sibling `onProdutoCategoriaAlterada` binds none.
   // Each declares `secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET']`
   // on its own options rather than here, so a function with no ML API call never
-  // gets the secrets bound. The two Firestore triggers are exactly that case and
+  // gets the secrets bound. These Firestore triggers are exactly that case and
   // deliberately bind NONE:
   //   - `onNfeAprovada` (Step 12 / #739) — only decides + enqueues.
   //   - `onIntegracaoMercadoLivreChanged` (#782) — pure Firestore: mirrors the ML
   //     conta onto its Mercado Envios `int_frete` doc, never calls the ML API.
+  //   - `onProdutoMercadoLivreLinkChanged` / `onVariacaoMercadoLivreLinkChanged`
+  //     (#920) and `onProdutoCategoriaAlterada` (#847) — pure Firestore.
   // They are why this stays per-function despite the duplication: a codebase-wide
   // bind here would hand the ML app credentials to a function that must not carry
   // them.
