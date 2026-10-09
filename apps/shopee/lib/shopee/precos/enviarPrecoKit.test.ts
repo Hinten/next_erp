@@ -25,6 +25,7 @@ import {
   SHOPEE_SURFACE,
   ShopeeApiError,
   ShopeeConfigError,
+  assertUpdateKitItemRequest,
   shopeeErrorFromEnvelope,
   shopeeItemBaseInfoPayloadSchema,
   shopeeItemListPayloadSchema,
@@ -250,6 +251,57 @@ describe('enviarPrecoDeKit — o corpo PARCIAL de `update_kit_item`', () => {
     ).rejects.toBe(erro);
     expect(chamadas).toBe(2);
   });
+
+  it.each([
+    ['ACEITA', null],
+    ['RECUSADA', new Error('queda de rede')],
+  ])(
+    '⚠️ `aoSepararModelos` recebe `semModeloVivo` UMA vez, depois da leitura e ANTES da escrita — escrita %s',
+    async (_caso, falhaDaEscrita) => {
+      // MODELO_2 is absent from the post-create kit; MODELO_1 is live and goes.
+      const c = clienteDoKit(lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO), falhaDaEscrita);
+      const recebidos: number[][] = [];
+
+      const envio = enviarPrecoDeKit(
+        c.client,
+        KIT,
+        [
+          { model_id: MODELO_2, original_price: 33 },
+          { model_id: MODELO_1, original_price: 46 },
+        ],
+        undefined,
+        (separados) => {
+          c.ordem.push('aoSepararModelos');
+          recebidos.push([...separados]);
+        },
+      );
+
+      if (falhaDaEscrita === null) {
+        expect((await envio).semModeloVivo).toEqual([MODELO_2]);
+      } else {
+        await expect(envio).rejects.toBe(falhaDaEscrita);
+      }
+      expect(c.ordem).toEqual(['get_kit_item_info', 'aoSepararModelos', 'update_kit_item']);
+      expect(recebidos).toEqual([[MODELO_2]]);
+    },
+  );
+
+  it('⛔ QUASE-IGUAL: a LEITURA lança ⇒ `aoSepararModelos` NUNCA é chamado — não há o que separar', async () => {
+    const naLeitura = new Error('queda de rede');
+    const c = clienteDoKit(naLeitura);
+    const separar = vi.fn();
+
+    await expect(
+      enviarPrecoDeKit(
+        c.client,
+        KIT,
+        [{ model_id: MODELO_1, original_price: 46 }],
+        undefined,
+        separar,
+      ),
+    ).rejects.toBe(naLeitura);
+    expect(separar).not.toHaveBeenCalled();
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -395,6 +447,26 @@ describe('enviarPrecoDeKit — um modelo VIVO que não se reenvia verbatim volta
       [MODELO_3, [2]],
     ]);
     expect(avisos()).toEqual([]);
+  });
+
+  it('⛔ QUASE-IGUAL: o PREÇO da decisão nunca é julgado como arame — um preço que o pacote recusa (três casas) VAI no corpo, `semModeloVivo` vazio, nenhum aviso; quem o recusa é a guarda do corpo montado, como bug NOSSO', async () => {
+    const c = clienteDoKit(FAMILIA_VIVA());
+
+    const r = await enviarPrecoDeKit(c.client, KIT, [
+      { model_id: MODELO_2, original_price: 33.333 },
+    ]);
+
+    expect(r.semModeloVivo).toEqual([]);
+    expect(avisos()).toEqual([]);
+    const [corpo] = c.corpos;
+    if (corpo === undefined) throw new Error('o update_kit_item não foi chamado');
+    expect(corpo.item_setting?.model_list?.map((m) => [m.model_id, m.original_price])).toEqual([
+      [MODELO_2, 33.333],
+    ]);
+    // The guard the REAL `updateKitItem` runs on that body: our bug, THROWN — never a row.
+    expect(() => {
+      assertUpdateKitItemRequest(corpo);
+    }).toThrow(ShopeeConfigError);
   });
 
   it('NENHUM modelo planejado é utilizável ⇒ ZERO `update_kit_item`, a resposta vazia', async () => {

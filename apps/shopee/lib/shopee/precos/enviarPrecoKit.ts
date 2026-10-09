@@ -55,7 +55,15 @@
  * cannot resend verbatim (see Errors), and EVERY planned model when the read
  * answered another item. When none is usable, `update_kit_item` is not called
  * — the package refuses an empty `model_list`, and a call that changes nothing
- * spends quota.
+ * spends quota. The same list reaches `aoSepararModelos` BEFORE the write, so
+ * a caller whose `update_kit_item` is then REFUSED still knows which models
+ * never went (the sender's row for them stays `forma-de-modelo-divergente`,
+ * never Shopee's refusal of a call they were not in).
+ *
+ * ⚠️ The decision's PRICE is never judged here: the set-aside check runs with
+ * the price left out, so a price the package refuses (more than two decimals,
+ * …) is OUR bug, and it is thrown by the guard of the assembled body inside
+ * `updateKitItem`, never turned into a row.
  *
  * ## Errors
  *
@@ -178,11 +186,17 @@ function reenvioDoModeloVivo(
  * @param aoChamarShopee called once BEFORE each Shopee call this function
  *   issues, so the sender counts a call that then throws (its `chamadasShopee`
  *   rule for the `update_price` it replaces). Optional; a no-op by default.
+ * @param aoSepararModelos called ONCE, after the read and BEFORE the write
+ *   (or in its place, when nothing is usable), with `semModeloVivo` — so a
+ *   caller whose `update_kit_item` then throws still knows which planned
+ *   models never went. Not called when the read itself throws. Optional; a
+ *   no-op by default.
  * @returns `resposta` — the SYNTHESISED answer for G10 (every model actually
  *   sent in `success_list` with `original_price: null`; `failure_list` empty) —
  *   and `semModeloVivo`, the planned model ids with no USABLE live model (the
  *   live kit lacks it, cannot resend it verbatim, or the read answered another
- *   item), in `priceList` order, none of which was sent.
+ *   item), in `priceList` order, none of which was sent — the SAME list
+ *   `aoSepararModelos` received.
  * @throws the SAME instance for every error of the two calls; a
  *   `ShopeeApiError` (code `"."`) when the kit reads `product_info: null`.
  */
@@ -191,6 +205,7 @@ export async function enviarPrecoDeKit(
   itemId: number,
   priceList: readonly { model_id: number; original_price: number }[],
   aoChamarShopee: () => void = () => undefined,
+  aoSepararModelos: (semModeloVivo: readonly number[]) => void = () => undefined,
 ): Promise<{ resposta: ShopeeUpdatePrice; semModeloVivo: readonly number[] }> {
   aoChamarShopee();
   const info = await client.getKitItemInfo({ itemId });
@@ -242,6 +257,7 @@ export async function enviarPrecoDeKit(
       modelos: inutilizaveis,
     });
   }
+  aoSepararModelos(semModeloVivo);
 
   if (modelList.length > 0) {
     aoChamarShopee();

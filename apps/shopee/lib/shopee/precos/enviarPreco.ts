@@ -37,7 +37,8 @@
  *   it, carries it in a shape that cannot be resent verbatim (no
  *   `tier_index`, a component `quantity` that did not read, …), or the read
  *   answered another item — is never sent, and its row is
- *   `falha forma-de-modelo-divergente`, stamped with our `erp:` code: one
+ *   `falha forma-de-modelo-divergente`, stamped with our `erp:` code, even
+ *   when Shopee then refuses the call the other models went in: one
  *   listing's wire is a ROW, never a thrown class that would end the run.
  * - **Its errors** go through {@link veredictoDoErroDeKit} FIRST: the kit
  *   refusal classifier (`kits/recusaKit.ts`) reads Shopee's SENTENCE, because
@@ -722,7 +723,9 @@ function conferirCamposDoKit(
  * verbatim, or read under another item). It was never sent, so it is not an
  * unanswered model: the listing's structure drifted from the ERP's binding,
  * and the row is `falha forma-de-modelo-divergente`, its child stamped with our
- * `erp:` code (the remedy is a re-import). Every other row passes untouched.
+ * `erp:` code (the remedy is a re-import) — also when Shopee REFUSED the write
+ * the other models went in, whose top-level reading must not land on a model
+ * that was not in the call. Every other row passes untouched.
  */
 function semModeloNoKitVivo(
   atribuida: LinhaAtribuida,
@@ -1119,14 +1122,24 @@ export async function enviarPrecoDoItem(
   const ehKit = lida.leitura.kit === true;
   let resposta: ShopeeUpdatePrice;
   let topo: Topo | null = null;
+  // A kit's set-aside models arrive BEFORE its write, so a REFUSED write still
+  // leaves them `forma-de-modelo-divergente` — never the refusal of a call
+  // they were not in.
   let semModeloVivo: ReadonlySet<number> = new Set<number>();
   try {
     if (ehKit) {
-      const doKit = await enviarPrecoDeKit(client, item.itemId, decisao.priceList, () => {
-        ctx.contador.n += 1;
-      });
+      const doKit = await enviarPrecoDeKit(
+        client,
+        item.itemId,
+        decisao.priceList,
+        () => {
+          ctx.contador.n += 1;
+        },
+        (separados) => {
+          semModeloVivo = new Set(separados);
+        },
+      );
       resposta = doKit.resposta;
-      semModeloVivo = new Set(doKit.semModeloVivo);
     } else {
       ctx.contador.n += 1;
       const envelope = await client.updatePrice({

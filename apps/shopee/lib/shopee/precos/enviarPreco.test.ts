@@ -2013,6 +2013,44 @@ describe('enviarPrecoDoItem — o kit: um modelo VIVO inutilizável é uma LINHA
     ]);
     expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_VAR_B, CAMINHO_LINK]);
   });
+
+  it.each([
+    ['que o kit vivo NÃO tem', kitVivo([[MODELO_B, 1]])],
+    ['SEM `tier_index`', kitComModeloCru(MODELO_A, (m) => ({ ...m, tier_index: [] }))],
+  ])(
+    'K19 — ⚠️ A %s fica de fora e o `update_kit_item` de B é RECUSADO ⇒ A continua a linha divergente `erp:` (nunca a recusa de uma chamada em que não estava); B leva a recusa da Shopee',
+    async (_caso, kit) => {
+      const c = cenarioDeKit({
+        kit,
+        updateKitItem: erroDoKit('product.error_busi', 'Invalid product setting'),
+      });
+
+      const r = await enviarPrecoDoItem(itemComModelos(12, 25), c.deps);
+
+      const enviados = (
+        c.corposDoKit[0] as { item_setting: { model_list: { model_id: number }[] } }
+      ).item_setting.model_list;
+      expect(enviados.map((m) => m.model_id)).toEqual([MODELO_B]);
+      expect(r).toMatchObject({ tipo: 'falha', carimbado: true });
+      expect(linhaDe(r, MODELO_A)).toMatchObject({
+        resultado: 'falha',
+        motivo: 'forma-de-modelo-divergente',
+        codigo: null,
+      });
+      expect(unicoPatch(c.db, CAMINHO_VAR_A)).toMatchObject({
+        precoRecusaCodigo: 'erp:forma-de-modelo-divergente',
+      });
+      // ⛔ QUASE-IGUAL: the model that WAS in the refused call keeps Shopee's reading.
+      expect(linhaDe(r, MODELO_B)).toMatchObject({
+        resultado: 'falha',
+        motivo: 'recusa-desconhecida',
+        codigo: 'product.error_busi',
+      });
+      expect(unicoPatch(c.db, CAMINHO_VAR_B)).toMatchObject({
+        precoRecusaCodigo: 'product.error_busi',
+      });
+    },
+  );
 });
 
 describe('enviarPrecoDoItem — o kit: o arame do registro 301 (campos do item depois da escrita parcial)', () => {
