@@ -10,6 +10,7 @@ import globalSetup from './global-setup';
 describe('global-setup — auth env is mandatory', () => {
   const ENV_KEYS = [
     'FIREBASE_PROJECT_ID',
+    'FIREBASE_DATABASE_ID',
     'FIREBASE_SERVICE_ACCOUNT',
     'FIREBASE_SERVICE_ACCOUNT_PATH',
     'FIREBASE_AUTH_EMULATOR_HOST',
@@ -38,5 +39,19 @@ describe('global-setup — auth env is mandatory', () => {
   it('throws when only FIREBASE_SERVICE_ACCOUNT is missing (non-emulator mode)', async () => {
     process.env.FIREBASE_PROJECT_ID = 'demo-erp';
     await expect(globalSetup({} as FullConfig)).rejects.toThrow(/FIREBASE_SERVICE_ACCOUNT/);
+  });
+
+  it('rejects a Firestore-only emulator target before Auth fixtures can run', async () => {
+    process.env.FIREBASE_PROJECT_ID = 'demo-erp';
+    process.env.FIREBASE_DATABASE_ID = 'default';
+    process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8080';
+    await expect(globalSetup({} as FullConfig)).rejects.toThrow(/FIREBASE_AUTH_EMULATOR_HOST/);
+  });
+
+  it('rejects an Auth-only emulator target before Firestore fixtures can run', async () => {
+    process.env.FIREBASE_PROJECT_ID = 'demo-erp';
+    process.env.FIREBASE_DATABASE_ID = 'default';
+    process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9099';
+    await expect(globalSetup({} as FullConfig)).rejects.toThrow(/FIRESTORE_EMULATOR_HOST/);
   });
 });

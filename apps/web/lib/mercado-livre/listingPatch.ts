@@ -39,6 +39,13 @@ import { valuesEqual } from '@delfrance/core/equality';
  *
  * Their stored values are left untouched; they are simply no longer written from
  * this screen.
+ *
+ * ⚠️ `category_id` and `listing_type_id` are operator-owned on a DRAFT only.
+ * Both are create-only at ML, and since #847 the `items` sync also writes
+ * `category_id` — Mercado Livre recategorizes listings on its own. So once a
+ * listing is published, `ListingForm` renders both read-only: they can never be
+ * dirty, so they never ride a patch, and field disjointness holds by STATE
+ * (draft vs published) rather than by key.
  */
 export const OPERATOR_OWNED_KEYS = [
   'title',
