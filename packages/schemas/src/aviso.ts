@@ -416,7 +416,10 @@ export const TIPO_AVISO_LABELS = {
  *    name, it hands the pair to `reavaliarAvisoDeReceitaKit` with motivo
  *    `receita-igual-a-shopee` and the event time as `agoraUs` (the staleness
  *    clock stays the decision's own) — it decides nothing itself and writes
- *    this tipo only through that shared decision.
+ *    this tipo only through that shared decision. A produto DELETE is never a
+ *    recipe change, so deleting the child that held the only divergent row
+ *    leaves the aviso open until a later write re-evaluates the kit (a
+ *    sibling's recipe edit, a re-import, a republish or a recriar).
  */
 export const tipoAvisoSchema = z
   .enum([

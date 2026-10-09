@@ -67,7 +67,12 @@ import {
  *   removed or renamed (a #1450 repoint included — the shared decision then
  *   answers it).
  * - **A delete is never a recipe change** (`after === undefined` ⇒ `false`): the
- *   produto's rows go with it.
+ *   produto's rows go with it. So deleting the child that held the ONLY divergent
+ *   row of an open (conta, kit) aviso leaves that aviso open until a later write
+ *   re-evaluates the kit — a sibling's recipe edit, a re-import, a republish or a
+ *   recriar — the residual the shared decision already accepts for deletions
+ *   (R-16: a deletion advances no commit time, so a resolve it alone caused would
+ *   not be newer than the open row and would be dropped as stale anyway).
  */
 export function receitaKitMudou(
   before: DocumentData | undefined,
