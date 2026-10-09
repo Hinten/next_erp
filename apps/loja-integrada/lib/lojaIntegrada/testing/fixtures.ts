@@ -5,9 +5,11 @@
  * Every token here is an obviously fake sentinel. A suite asserting token
  * hygiene searches responses, errors and log arguments for these strings.
  */
+import { vi } from 'vitest';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 
 import { fingerprintDoToken } from '../core/credencial';
+import type { CampoLogLi, EscritorLogLi, SeveridadeLi } from '../core/log';
 import type { DocData, FakeDb } from './fakeDb';
 
 /** A sentinel token: long, visible ASCII, impossible to mistake for a real one. */
@@ -60,6 +62,34 @@ export function credencialDoc(over: Partial<DocData> = {}): DocData {
 
 export function seedCredencial(db: FakeDb, integracaoId: string, over: Partial<DocData> = {}) {
   return db.seed(caminhoCredencial(integracaoId), credencialDoc(over));
+}
+
+/** One line the logger wrote through an injected sink. */
+export interface LinhaGravada {
+  readonly severidade: SeveridadeLi;
+  readonly mensagem: string;
+  readonly campos: Readonly<Record<string, CampoLogLi>>;
+}
+
+/** A sink for `registro.escrever` that keeps every line in memory, in order. */
+export function gravadorDeLog(): { escrever: EscritorLogLi; linhas: LinhaGravada[] } {
+  const linhas: LinhaGravada[] = [];
+  return {
+    escrever: (severidade, mensagem, campos) => linhas.push({ severidade, mensagem, campos }),
+    linhas,
+  };
+}
+
+/**
+ * Spy on `process.stdout.write` — the logger's DEFAULT sink — silencing it, and
+ * expose every chunk written, as text.
+ */
+export function espiarStdout(): { escritas: () => string[]; restaurar: () => void } {
+  const espiao = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  return {
+    escritas: () => espiao.mock.calls.map(([chunk]) => String(chunk)),
+    restaurar: () => espiao.mockRestore(),
+  };
 }
 
 /** Capture `logger.warn` calls, to assert what a log line may carry. */
