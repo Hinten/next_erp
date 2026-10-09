@@ -763,7 +763,20 @@ export function problemasDaFaseA(e: EntradaDaFaseA): readonly ProblemaDeBloqueio
         ),
       );
     }
-    if (n >= 2 && e.gruposDistintos !== 1) {
+    // Not exactly ONE axis: too many, or none at all. Both keep the persisted
+    // `kit-dois-eixos` slug, but each gets its own sentence — on a create arm
+    // this throw is all the operator reads (`planejarTier` never runs).
+    if (n >= 2 && e.gruposDistintos === 0) {
+      problemas.push(
+        bloqueio(
+          'grupoDeVariacoesUid',
+          MOTIVO_PUBLICACAO_BLOQUEADA.kitDoisEixos,
+          `as ${String(n)} variações do kit não estão em nenhum grupo de variação — a Shopee ` +
+            'aceita kit com UM eixo de variação; coloque-as num mesmo grupo de variação no ERP ' +
+            'antes de publicar',
+        ),
+      );
+    } else if (n >= 2 && e.gruposDistintos !== 1) {
       problemas.push(
         bloqueio(
           'grupoDeVariacoesUid',
