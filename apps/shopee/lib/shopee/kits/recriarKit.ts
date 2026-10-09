@@ -111,22 +111,40 @@ export function problemaRecriacaoSemDiferenca(itemId: number): ProblemaDeBloquei
   };
 }
 
-/** `kit-novo-inativo` — the new kit is not live yet, so the old one waits. */
+/**
+ * `kit-novo-inativo` — the new kit is not live yet, so the old one waits. Both
+ * sentences name the new kit's LINK, not only its `item_id`.
+ *
+ * ⚠️ `UNLIST` gets its own sentence (PR #1868 review): it reaches gate (a) only
+ * beside an old kit on sale (H1), and NOTHING on a re-run relists — `--status`
+ * is read by a create alone and the completion sends no status write — so
+ * "publish again" by itself would answer this same warning forever. The
+ * operator relists the NEW link first, BY ITS DOC ID: until step 3 runs both
+ * kits are active native links, and `anuncio-status` without a `linkDocId`
+ * takes the lexically-first one, which may be the old kit. Any other status
+ * (`REVIEWING`, `BANNED`, unreadable) is Shopee's to change, and Shopee refuses
+ * to relist a kit under review or banned anyway.
+ */
 export function avisoKitNovoInativo(a: {
   readonly produtoId: string;
   readonly itemId: number;
   readonly itemStatus: string | null;
+  readonly novoLinkDocId: string;
   readonly antecessorItemId: number;
   readonly antigoLinkDocId: string;
 }): AvisoKit {
-  return {
-    codigo: 'kit-novo-inativo',
-    produtoId: a.produtoId,
-    mensagem:
-      `o kit novo ${String(a.itemId)} está ${a.itemStatus ?? '—'} na Shopee; o kit antigo ` +
-      `${String(a.antecessorItemId)} só é excluído quando o novo estiver ativo — publique de ` +
-      `novo com --link ${a.antigoLinkDocId} --recriar depois`,
-  };
+  const cabeca =
+    `o kit novo ${String(a.itemId)} (vínculo ${a.novoLinkDocId}) está ` +
+    `${a.itemStatus ?? '—'} na Shopee; o kit antigo ${String(a.antecessorItemId)} só é ` +
+    'excluído quando o novo estiver ';
+  const mensagem =
+    a.itemStatus === SHOPEE_ITEM_STATUS_WIRE.unlist
+      ? cabeca +
+        'à venda, e publicar de novo NÃO reativa o novo — reative-o primeiro (anuncio-status ' +
+        `com acao reativar e linkDocId ${a.novoLinkDocId}, ou no Seller Centre) e só então ` +
+        `publique de novo com --link ${a.antigoLinkDocId} --recriar`
+      : cabeca + `ativo — publique de novo com --link ${a.antigoLinkDocId} --recriar depois`;
+  return { codigo: 'kit-novo-inativo', produtoId: a.produtoId, mensagem };
 }
 
 /** `kit-novo-divergente` (S2C-05) — the completed kit does not carry the ERP composition. */
@@ -408,6 +426,7 @@ function portaoDeExclusao(
         produtoId: kitId,
         itemId,
         itemStatus: status,
+        novoLinkDocId: linkDocId,
         antecessorItemId: alvo.itemId,
         antigoLinkDocId: alvo.linkDocId,
       }),
