@@ -72,6 +72,9 @@ vi.mock('@/app/(app)/clientes/[id]/_components/EnderecosSection', () => ({
 vi.mock('@/app/(app)/canais/_components/RecalcularPrecosCanalAction', () => ({
   RecalcularPrecosCanalAction: () => null,
 }));
+vi.mock('@/app/(app)/canais/loja-integrada/_components/ContaLojaIntegradaPanel', () => ({
+  ContaLojaIntegradaPanel: () => null,
+}));
 vi.mock('@/app/(app)/canais/mercado-livre/_components/ContaMercadoLivrePanel', () => ({
   ContaMercadoLivrePanel: () => null,
 }));
