@@ -318,9 +318,14 @@ recipe (R2-F2): when two different Shopee addresses (another item, or another
 model of the same item) resolve to ONE produto (`receitaFielAosEnderecos` says
 no), the produto-level fingerprint is coarser than what Shopee holds, so the
 map is still written but the row is NOT stamped and an earlier stamp on it is
-CLEARED — the aviso opens. An EXISTING row is stamped
-FIRST — a flat `mergeIfExists`, before any produto write — so the recipe
-trigger those writes fire already reads it. After the writes,
+CLEARED — the aviso opens. An EXISTING row whose recipe is already EQUAL is
+stamped FIRST — a flat `mergeIfExists`, before any produto write — so the
+recipe trigger those writes fire already reads it. ⚠️ Only then: when Shopee's
+recipe WINS, the stamp rides the row's own merge AFTER the child write, because
+a stamp is never written ahead of the produto it describes — an import that
+died in between would leave rows that read exactly like a pending ERP edit, and
+every later import would keep the stale recipe (PR #1865 review). After the
+writes,
 `reavaliarAvisoDeReceitaKit` re-decides the (conta, kit) aviso once, motivo
 `importado`. _Família de um (R-u):_ a one-model kit imported onto a parent that
 is a família de um binds its model to `filhoUnicoId`, never a new child. _The

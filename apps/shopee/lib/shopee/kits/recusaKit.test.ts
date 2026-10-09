@@ -160,11 +160,11 @@ const M = MOTIVO_PROBLEMA_PUBLICACAO;
 
 /* -------------------------------- the table -------------------------------- */
 
-describe('TABELA_RECUSA_KIT — D1 §3.2 verbatim, mais a linha P2-a', () => {
-  it('os códigos e as agulhas, NA ORDEM de D1, com "mupltiple main sku" por último', () => {
+describe('TABELA_RECUSA_KIT — D1 §3.2 (códigos e agulhas verbatim; a #2 transitória na frente), mais a linha P2-a', () => {
+  it('os códigos e as agulhas na ordem de D1, salvo a #2 TRANSITÓRIA na frente, e "mupltiple main sku" por último', () => {
     expect(TABELA_RECUSA_KIT.map((l) => [l.codigo, l.agulha, l.motivo])).toEqual([
-      ['error_busi', 'invalid product setting', 'operacao-invalida-para-kit'],
       ['error_busi', 'too many connections', 'instabilidade-shopee'],
+      ['error_busi', 'invalid product setting', 'operacao-invalida-para-kit'],
       ['error_server', 'generate kit image toggle closed', 'imagem-de-kit-desligada'],
       ['.', 'product is not found', 'kit-inexistente'],
       ['error_busi_cannot_edit_vsku', null, 'kit-bloqueado-pela-shopee'],
@@ -181,7 +181,7 @@ describe('TABELA_RECUSA_KIT — D1 §3.2 verbatim, mais a linha P2-a', () => {
     expect(agulhas).not.toContain('multiple main sku');
   });
 
-  it('nenhuma agulha contém outra, e cada uma é ponto fixo da dobra (a ordem não decide nada)', () => {
+  it('nenhuma agulha contém outra (nenhuma esconde outra do mesmo código), e cada uma é ponto fixo da dobra', () => {
     const agulhas = TABELA_RECUSA_KIT.flatMap((l) => (l.agulha === null ? [] : [l.agulha]));
     expect(agulhas).toHaveLength(7);
     for (const a of agulhas) {
@@ -482,6 +482,77 @@ describe('classificarRecusaKit — PARES e QUASE-ACERTOS (escopo das duas dobras
       providerMessage: 'Too many connections',
     });
     expect(classificarRecusaKit(par)).toBe('instabilidade-shopee');
+  });
+});
+
+/* ------------- DUAS agulhas do MESMO código: o transitório vence ------------ */
+
+describe('uma frase com DUAS agulhas do mesmo código — o TRANSITÓRIO vence (review do PR #1866)', () => {
+  // A primeira linha que casa decide. Nenhuma captura junta as duas frases; o
+  // risco é o SENTIDO do erro: ler como recusa permanente um create que pode ter
+  // acontecido dá `nao-criado`, e um write não idempotente seria reenviado às cegas.
+  const MISTA =
+    'Failed to create product : external error: Invalid product setting. database error|Error 1040: Too many connections>';
+
+  it.each<[string, string, MotivoRecusaKit, 'nao-criado' | 'incerto']>([
+    ['#1 + #2, a permanente PRIMEIRO na frase', MISTA, 'instabilidade-shopee', 'incerto'],
+    [
+      '#2 + #1, a transitória primeiro na frase',
+      'Error 1040: Too many connections; Invalid product setting.',
+      'instabilidade-shopee',
+      'incerto',
+    ],
+    // QUASE-ACERTOS: sem a agulha transitória INTEIRA, a #1 continua permanente.
+    [
+      '#1 sozinha',
+      'Invalid product setting. Please verify.',
+      'operacao-invalida-para-kit',
+      'nao-criado',
+    ],
+    [
+      '#1 + um "too many" que não é a agulha',
+      'Invalid product setting: too many components',
+      'operacao-invalida-para-kit',
+      'nao-criado',
+    ],
+  ])('%s', (_caso, frase, motivo, desfecho) => {
+    const err = doEnvelope('product.error_busi', frase);
+    expect(classificarRecusaKit(err)).toBe(motivo);
+    expect(desfechoDeCriacaoDeKit(err)).toBe(desfecho);
+  });
+
+  it('pela operação REAL: um `add_kit_item` com as duas frases ⇒ incerto (re-ler antes de reenviar)', async () => {
+    // Corpo SINTÉTICO (fica dentro deste teste): a forma da captura M68 com a
+    // frase da #1 antes da do banco.
+    const { client, caminhos } = clienteServindo({
+      error: 'product.error_busi',
+      message: MISTA,
+      warning: '',
+    });
+    const err = await erroDe(client.addKitItem(CRIAR_KIT));
+    expect(caminhos).toEqual([SHOPEE_ADD_KIT_ITEM_PATH]);
+    expect(err).toBeInstanceOf(ShopeeApiError);
+    expect(classificarRecusaKit(err as ShopeeApiError)).toBe(M.instabilidadeShopee);
+    expect(desfechoDeCriacaoDeKit(err)).toBe('incerto');
+    expect(problemasDaRecusaKit(err)).toEqual([
+      expect.objectContaining({ motivo: M.instabilidadeShopee }),
+    ]);
+  });
+
+  it('a TABELA inteira: todo par transitória × permanente do MESMO código lê a transitória', () => {
+    let pares = 0;
+    for (const t of TABELA_RECUSA_KIT) {
+      if (!MOTIVO_RECUSA_KIT_TRANSITORIO.has(t.motivo)) continue;
+      for (const p of TABELA_RECUSA_KIT) {
+        if (p.codigo !== t.codigo || MOTIVO_RECUSA_KIT_TRANSITORIO.has(p.motivo)) continue;
+        const err = doEnvelope(`product.${t.codigo}`, `${p.agulha ?? ''} ${t.agulha ?? ''}`);
+        expect(classificarRecusaKit(err), `${p.rotulo} + ${t.rotulo}`).toBe(t.motivo);
+        expect(desfechoDeCriacaoDeKit(err), `${p.rotulo} + ${t.rotulo}`).toBe('incerto');
+        pares += 1;
+      }
+    }
+    // #1, #6 e P2-a contra a #2 — nunca um laço vazio.
+    expect(pares).toBe(3);
   });
 });
 

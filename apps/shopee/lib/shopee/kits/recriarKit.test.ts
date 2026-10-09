@@ -37,12 +37,14 @@ import {
 } from '@delfrance/integrations-shopee';
 import { reavaliarAvisoDeReceitaKit } from '@delfrance/data/admin/avisos';
 import {
+  ACAO_STATUS_ANUNCIO,
   ESTADO_ANUNCIO_SHOPEE,
   MOTIVO_RESOLUCAO_RECEITA_KIT,
   chaveAvisoReceitaKitShopee,
   chaveReceitaKitErp,
   ehKitNativoAtivo,
   importacaoShopeeOptionsSchema,
+  podeMoverAnuncioShopee,
   toOuterRef,
   varianteFakePath,
 } from '@delfrance/schemas';
@@ -54,6 +56,7 @@ import {
   ShopeePublishRejectedError,
 } from '../anuncios/errosPublicacao';
 import type { ResolvedorDeImagensShopee } from '../anuncios/fotosPublicacao';
+import { resolverLinkVivoPorProduto } from '../anuncios/linkAnuncio';
 import { reverificarAnuncioShopee } from '../anuncios/reverificarAnuncio';
 import { agoraUsDe } from '../avisos/autorizacao';
 import { MOTIVO_ESTOQUE_SHOPEE } from '../estoque/errosEstoque';
@@ -73,7 +76,15 @@ import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
 import type { ArmaDeKit, EntradaDeKit } from './prepararKit';
 import { ensaiarKitShopee, publicarKitShopee } from './publicarKit';
-import { divergenciaDoKitNovo, nadaARecriar, recriarKit } from './recriarKit';
+import {
+  avisoKitAlvoMaisNovo,
+  avisoKitAntigoNaoExcluido,
+  avisoKitNovoDivergente,
+  avisoKitNovoInativo,
+  divergenciaDoKitNovo,
+  nadaARecriar,
+  recriarKit,
+} from './recriarKit';
 import type { AvisoKit, KitDeps, ResultadoPublicacaoKit } from './resultadoKit';
 
 /* -------------------------------------------------------------------------- */
@@ -2369,6 +2380,207 @@ describe('(H1) passo 2 — um kit PAUSADO nunca substitui um kit À VENDA', () =
 
     expect(codigos(r)).not.toContain('kit-novo-inativo');
     expect(quantas(loja, 'delete_item', desde)).toBe(1);
+  });
+});
+
+/** A kit `itemId` reads `status` on Shopee (base + kit page alike) — e.g. relisted by hand. */
+function kitLe(loja: Loja, itemId: number, status: string): void {
+  const item = loja.itens.get(itemId)!;
+  item.base = { ...item.base, item_status: status };
+  item.kit = { ...item.kit, item_status: status };
+}
+
+function mensagemDe(r: ResultadoPublicacaoKit, codigo: AvisoKit['codigo']): string {
+  const aviso = r.avisos.find((a) => a.codigo === codigo);
+  expect(aviso).toBeDefined();
+  return aviso!.mensagem;
+}
+
+describe('(PR #1868 review) `kit-novo-inativo` nunca manda só esperar o que não muda sozinho: UNLIST ⇒ REATIVAR o vínculo NOVO, BANNED ⇒ corrigir a violação, antes de publicar de novo', () => {
+  it('o antigo à venda + `--recriar --status UNLIST` ⇒ a frase nomeia o vínculo NOVO e a reativação ANTES do mesmo comando; publicar de novo sozinho (UNLIST ou NORMAL) PARA de novo; o anuncio-status sem linkDocId miraria o ANTIGO; reativado o novo, o mesmo comando exclui o antigo', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+
+    const r = await recriar(db, loja, VINCULO_1, { statusPedido: 'UNLIST' });
+    expect(r).toMatchObject({ itemId: KIT_2, linkDocId: VINCULO_2, itemStatus: 'UNLIST' });
+    const frase = mensagemDe(r, 'kit-novo-inativo');
+    expect(frase).toContain(`vínculo ${VINCULO_2}`);
+    // The route takes a `linkDocId` only beside exactly ONE produtoId: the
+    // sentence names it, and it is the aviso's own produto (the kit).
+    expect(r.avisos.find((a) => a.codigo === 'kit-novo-inativo')?.produtoId).toBe(K);
+    const reativar = frase.indexOf(
+      `anuncio-status com acao reativar, produtoIds [${K}] e linkDocId ${VINCULO_2}`,
+    );
+    const repetir = frase.indexOf(`--link ${VINCULO_1} --recriar`);
+    expect(reativar).toBeGreaterThan(-1);
+    expect(repetir).toBeGreaterThan(reativar);
+
+    // Why the LINK must be named: until step 3 both kits are active native
+    // links, and the status route's resolver with no `linkDocId` takes the
+    // lexically-first — here the OLD kit, so a relist would be a no-op on it.
+    expect(VINCULO_1 < VINCULO_2).toBe(true);
+    expect(ehKitNativoAtivo(vinculo(db, VINCULO_1)!)).toBe(true);
+    expect(ehKitNativoAtivo(vinculo(db, VINCULO_2)!)).toBe(true);
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, K))?.linkDocId).toBe(VINCULO_1);
+    expect((await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, K, VINCULO_2))?.linkDocId).toBe(
+      VINCULO_2,
+    );
+
+    // …and the named surface DOES relist the new kit: the route's own steps 1
+    // and 2 (this resolver, then the pre-check from the STORED reading) pass
+    // the new link, which the UNLIST create left `pausado`, while the old one
+    // would be skipped as `ja-ativo` without a Shopee call.
+    expect(vinculo(db, VINCULO_2)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.pausado);
+    for (const [linkDocId, esperado] of [
+      [VINCULO_2, { pode: true }],
+      [VINCULO_1, { pode: false, motivo: 'ja-ativo' }],
+    ] as const) {
+      const link = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, K, linkDocId);
+      expect(link?.linkDocId).toBe(linkDocId);
+      expect(
+        podeMoverAnuncioShopee(
+          { item_id: link!.itemId, estadoAnuncio: link!.estadoAnuncio },
+          ACAO_STATUS_ANUNCIO.reativar,
+        ),
+      ).toEqual(esperado);
+    }
+
+    // The loop the old sentence sent the operator into: nothing on a re-run
+    // relists — not the same flags, not even `--status NORMAL`.
+    for (const statusPedido of ['UNLIST', 'NORMAL'] as const) {
+      const desde = loja.ops.length;
+      const deNovo = await recriar(db, loja, VINCULO_1, { statusPedido });
+      expect(codigos(deNovo)).toContain('kit-novo-inativo');
+      expect(quantas(loja, 'add_kit_item', desde)).toBe(0);
+      expect(quantas(loja, 'delete_item', desde)).toBe(0);
+      expect(loja.itens.get(KIT_2)?.base.item_status).toBe('UNLIST');
+    }
+
+    // Following the sentence: the NEW kit relisted, THEN the same command.
+    kitLe(loja, KIT_2, 'NORMAL');
+    const desde = loja.ops.length;
+    const fim = await recriar(db, loja, VINCULO_1, { statusPedido: 'UNLIST' });
+    expect(codigos(fim)).not.toContain('kit-novo-inativo');
+    expect(fim.antecessor).toMatchObject({ itemId: KIT_1, excluido: true, substituido: false });
+    expect(quantas(loja, 'delete_item', desde)).toBe(1);
+    expect(vinculo(db, VINCULO_1)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+  });
+
+  it('o kit novo BANIDO ⇒ esperar NÃO basta: a frase manda corrigir a violação no Seller Centre ANTES do mesmo comando, nunca reativar; publicar de novo sozinho PARA de novo; corrigido (ativo), o mesmo comando exclui o antigo', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    loja.statusDoProximo = 'BANNED';
+
+    const r = await recriar(db, loja, VINCULO_1);
+    const frase = mensagemDe(r, 'kit-novo-inativo');
+    expect(frase).toBe(
+      `o kit novo ${String(KIT_2)} (vínculo ${VINCULO_2}) está BANNED na Shopee; o kit antigo ` +
+        `${String(KIT_1)} só é excluído quando o novo estiver ativo, e um kit banido não volta ` +
+        'sozinho — corrija a violação do novo no Seller Centre, aguarde a nova revisão e só ' +
+        `então publique de novo com --link ${VINCULO_1} --recriar`,
+    );
+    // Shopee refuses to relist a banned kit, and the route's pre-check skips it.
+    expect(frase).not.toContain('reativ');
+    expect(frase).not.toContain('anuncio-status');
+    const novo = await resolverLinkVivoPorProduto(asDb(db), INTEGRACAO, K, VINCULO_2);
+    expect(
+      podeMoverAnuncioShopee(
+        { item_id: novo!.itemId, estadoAnuncio: novo!.estadoAnuncio },
+        ACAO_STATUS_ANUNCIO.reativar,
+      ),
+    ).toEqual({ pode: false, motivo: 'anuncio-banido' });
+
+    // Waiting is the loop: a re-run of the same command stops at the gate again.
+    for (let i = 0; i < 2; i += 1) {
+      const desde = loja.ops.length;
+      const deNovo = await recriar(db, loja, VINCULO_1);
+      expect(mensagemDe(deNovo, 'kit-novo-inativo')).toBe(frase);
+      expect(quantas(loja, 'add_kit_item', desde)).toBe(0);
+      expect(quantas(loja, 'delete_item', desde)).toBe(0);
+    }
+
+    // Following the sentence: the violation corrected, the review passed.
+    kitLe(loja, KIT_2, 'NORMAL');
+    const desde = loja.ops.length;
+    const fim = await recriar(db, loja, VINCULO_1);
+    expect(codigos(fim)).not.toContain('kit-novo-inativo');
+    expect(fim.antecessor).toMatchObject({ itemId: KIT_1, excluido: true, substituido: false });
+    expect(quantas(loja, 'delete_item', desde)).toBe(1);
+  });
+
+  it('⛔ quase-par — REVIEWING / ilegível nomeiam o vínculo novo mas NUNCA mandam reativar nem corrigir (cabe à Shopee mudar): o mesmo comando, depois', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    loja.statusDoProximo = 'REVIEWING';
+    const r = await recriar(db, loja, VINCULO_1);
+    const frase = mensagemDe(r, 'kit-novo-inativo');
+    expect(frase).toBe(
+      `o kit novo ${String(KIT_2)} (vínculo ${VINCULO_2}) está REVIEWING na Shopee; o kit ` +
+        `antigo ${String(KIT_1)} só é excluído quando o novo estiver ativo — publique de novo ` +
+        `com --link ${VINCULO_1} --recriar depois`,
+    );
+
+    const base = {
+      produtoId: K,
+      itemId: KIT_2,
+      novoLinkDocId: VINCULO_2,
+      antecessorItemId: KIT_1,
+      antigoLinkDocId: VINCULO_1,
+    };
+    expect(avisoKitNovoInativo({ ...base, itemStatus: null }).mensagem).toBe(
+      `o kit novo ${String(KIT_2)} (vínculo ${VINCULO_2}) está — na Shopee; o kit antigo ` +
+        `${String(KIT_1)} só é excluído quando o novo estiver ativo — publique de novo com ` +
+        `--link ${VINCULO_1} --recriar depois`,
+    );
+    for (const itemStatus of ['REVIEWING', null]) {
+      const { mensagem } = avisoKitNovoInativo({ ...base, itemStatus });
+      expect(mensagem).not.toContain('reativ');
+      expect(mensagem).not.toContain('violação');
+    }
+    // The three endings stay three: UNLIST relists, BANNED corrects, neither waits.
+    expect(avisoKitNovoInativo({ ...base, itemStatus: 'UNLIST' }).mensagem).toContain(
+      `linkDocId ${VINCULO_2}`,
+    );
+    for (const itemStatus of ['UNLIST', 'BANNED']) {
+      expect(avisoKitNovoInativo({ ...base, itemStatus }).mensagem).not.toContain('depois');
+    }
+  });
+
+  it('⛔ quase-par — as OUTRAS recusas do portão seguem com a frase de antes, sem reativação', () => {
+    expect(
+      avisoKitNovoDivergente({
+        produtoId: K,
+        itemId: KIT_2,
+        motivo: 'receita-divergente kit-k-verde',
+        antecessorItemId: KIT_1,
+        novoLinkDocId: VINCULO_2,
+      }).mensagem,
+    ).toBe(
+      `o kit ${String(KIT_2)} não está igual à composição do ERP (receita-divergente ` +
+        `kit-k-verde); o kit ${String(KIT_1)} não foi excluído — se faltar variação, publique ` +
+        `com --link ${VINCULO_2} para anexá-la e rode de novo; se a composição mudou depois, ` +
+        'exclua um dos dois no Seller Centre e rode reverificar:anuncio',
+    );
+    expect(
+      avisoKitAlvoMaisNovo({
+        produtoId: K,
+        alvoItemId: KIT_2,
+        alvoLinkDocId: VINCULO_2,
+        itemId: KIT_1,
+        linkDocId: VINCULO_1,
+        comparacao: 'mais-antigo',
+      }).mensagem,
+    ).toBe(
+      `o kit ${String(KIT_2)} (--link ${VINCULO_2}) não é mais antigo que o kit ` +
+        `${String(KIT_1)} que o substituiria — nada foi excluído; o kit antigo é o ` +
+        `${String(KIT_1)}: rode com --link ${VINCULO_1} --recriar`,
+    );
+    expect(
+      avisoKitAntigoNaoExcluido({ produtoId: K, itemId: KIT_1, linkDocId: VINCULO_1 }).mensagem,
+    ).not.toContain('reativ');
   });
 });
 

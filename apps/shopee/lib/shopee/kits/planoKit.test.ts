@@ -65,6 +65,7 @@ const K = 'prod-kit';
 const MEMBRO = 'prod-kit-membro';
 const F_AZUL = 'prod-kit-azul';
 const F_PRETO = 'prod-kit-preto';
+const F_VERDE = 'prod-kit-verde';
 const A = 'prod-comp-a';
 const B = 'prod-comp-b';
 const X = 'prod-comp-x';
@@ -342,6 +343,41 @@ describe('problemasDaFaseA — as recusas que só leem o Firestore', () => {
       problemasDaFaseA(faseA({ filhos: dois, familiaDeUm: false, gruposDistintos: 1 })),
     ).toEqual([]);
     expect(problemasDaFaseA(faseA({ gruposDistintos: 0 }))).toEqual([]);
+  });
+
+  it('M93b — três filhos SEM grupo algum ⇒ kit-dois-eixos dizendo que FALTA o eixo; dois grupos mantêm a frase de eixos demais', () => {
+    // Numa criação, a fase A lança antes do `planejarTier`: esta é a ÚNICA frase
+    // que o operador lê — "varia em 0 grupos" diria eixos DEMAIS a quem não tem eixo.
+    // TRÊS filhos, nunca dois: com 2 filhos em 2 grupos a contagem de filhos e a de
+    // grupos coincidem, e uma frase que trocasse uma pela outra passaria.
+    const semGrupo = [filho(F_AZUL), filho(F_PRETO), filho(F_VERDE)];
+    expect(
+      problemasDaFaseA(faseA({ filhos: semGrupo, familiaDeUm: false, gruposDistintos: 0 })),
+    ).toEqual([
+      {
+        campo: 'grupoDeVariacoesUid',
+        motivo: M.kitDoisEixos,
+        mensagem:
+          'as 3 variações do kit não estão em nenhum grupo de variação — a Shopee aceita kit ' +
+          'com UM eixo de variação; coloque-as num mesmo grupo de variação no ERP antes de publicar',
+      },
+    ]);
+    // ⛔ QUASE-PAR: três filhos em dois grupos seguem com a frase de eixos DEMAIS,
+    // intacta — e ela nomeia os 2 GRUPOS, nunca os 3 filhos.
+    const emDoisGrupos = [
+      filho(F_AZUL, { variante: 'Azul' }),
+      filho(F_PRETO, { variante: 'Preto' }),
+      filho(F_VERDE, { variante: 'P' }),
+    ];
+    expect(
+      problemasDaFaseA(faseA({ filhos: emDoisGrupos, familiaDeUm: false, gruposDistintos: 2 })),
+    ).toEqual([
+      {
+        campo: 'grupoDeVariacoesUid',
+        motivo: M.kitDoisEixos,
+        mensagem: 'a Shopee aceita kit com UM eixo de variação; este varia em 2 grupos',
+      },
+    ]);
   });
 
   it('kit-variacoes-demais: 10 filhos recusa (nomeando 10); 9 passa', () => {
