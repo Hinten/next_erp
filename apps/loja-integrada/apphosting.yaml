@@ -1,0 +1,23 @@
+# Firebase App Hosting backend config for apps/loja-integrada.
+# API-only service for the Loja Integrada marketplace channel. Step 1 of the
+# master plan ships only the bare scaffold (`GET /api/health`); the connect
+# route, the Firestore access and the poller arrive in later steps.
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 20
+  # Deliberately 0 (master plan D13). The 5-minute poll is the guaranteed path
+  # for new orders; the webhook only makes it faster, so a cold start that
+  # misses a push costs latency, never correctness. Do not copy the push-ack
+  # reasoning of the other channel backends: it does not apply here.
+  minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
+  concurrency: 80
+# No `timeoutSeconds` — the platform default is what the later timeout-ceiling
+# test compares against.
+#
+# No `runConfig.vpcAccess` — this channel needs no static egress IP (master plan
+# D3).
+#
+# No `env:` block and no variables listed: nothing here reads the environment
+# yet. The step that adds the first route documents and declares every variable
+# it reads, here, in the same change.
