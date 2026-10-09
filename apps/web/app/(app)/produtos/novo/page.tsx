@@ -14,6 +14,7 @@ import {
   type ProdutoExtraData,
   type Video,
   deriveFotosArquivosIds,
+  ehKitVirtualEfetivo,
   produtoPageIssues,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -274,6 +275,15 @@ export default function NovoProdutoPage() {
             // `array-contains` query (order-insensitive), and Firestore arrays
             // are order-sensitive, so an unsorted list churns dirty detection.
             componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
+            // «É kit virtual» means nothing without «É kit» (`ehKitVirtualEfetivo`,
+            // the shared predicate): a produto created with the kit off is
+            // created with the flag off, never with the mismatch the Shopee
+            // publisher refuses (`kit-virtual-sem-kit`). The sole member minted
+            // in this transaction mirrors this derived value.
+            ehKitVirtual: ehKitVirtualEfetivo({
+              ehKit: values.ehKit,
+              ehKitVirtual: values.ehKitVirtual,
+            }),
             fotosArquivosIds: fotoIds.length > 0 ? fotoIds : null,
           };
         }}

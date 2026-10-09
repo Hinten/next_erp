@@ -146,10 +146,26 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
       })
       .toBe(true);
 
+    // Precondition for the «É kit virtual» step below (step 19, #1527): save the
+    // parent with «É kit virtual» ON first, and see it stored — otherwise the
+    // final `ehKitVirtual: false` would hold vacuously (the seed stores false).
+    // A real variation child takes only the flags from this save, never a map
+    // change, so the child's map the un-kit must clear is still there.
+    await page.goto(`/produtos/${seed.kitId}/editar`);
+    await page.getByRole('tab', { name: 'Kit' }).click();
+    await page.getByRole('switch', { name: 'É kit virtual', exact: true }).click();
+    await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
+    await expect
+      .poll(async () => (await getProdutoData(seed.kitId))?.ehKitVirtual ?? null, {
+        timeout: 30_000,
+      })
+      .toBe(true);
+
     await page.goto(`/produtos/${seed.kitId}/editar`);
     await page.getByRole('tab', { name: 'Kit' }).click();
 
-    // Toggle "É kit" OFF and save — the parent stops being a kit.
+    // Toggle "É kit" OFF and save — the parent stops being a kit. «É kit
+    // virtual» is left ON in the form on purpose: the save must switch it off.
     await page.getByRole('switch', { name: 'É kit', exact: true }).click();
     await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
 
@@ -165,6 +181,20 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
         { timeout: 30_000 },
       )
       .toEqual({ kit: null, ehKit: false });
+
+    await test.step('desmarcar É kit desmarca também É kit virtual', async () => {
+      // The editor's `deriveOnSave` stores «É kit virtual» only together with
+      // «É kit» (`ehKitVirtualEfetivo`), so the parent never keeps the mismatch.
+      await expect
+        .poll(
+          async () => {
+            const p = await getProdutoData(seed.kitId);
+            return { ehKit: p?.ehKit ?? null, ehKitVirtual: p?.ehKitVirtual ?? null };
+          },
+          { timeout: 30_000 },
+        )
+        .toEqual({ ehKit: false, ehKitVirtual: false });
+    });
   });
 });
 
