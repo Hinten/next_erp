@@ -255,7 +255,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
     // BEFORE the `!integracaoRef` branch: ownership does not depend on the
     // integração doc existing.
     if (marketplaceOwned && tipoDono) {
-      return <MarketplaceReadOnly frete={freteInicial!} tipo={tipoDono} />;
+      return <MarketplaceReadOnly frete={freteInicial!} tipo={tipoDono} pedidoId={pedidoId} />;
     }
     if (!integracaoRef) return <GenericFreteFields form={form} db={db} disabled={disabled} />;
     if (loadingIntegracao) return <Skeleton height={120} />;
