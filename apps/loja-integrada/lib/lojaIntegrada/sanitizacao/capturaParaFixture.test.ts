@@ -64,11 +64,11 @@ const PEDIDO_BUSCA = {
       situacao: { id: 4, codigo: 'pedido_pago', nome: 'Pedido Pago', aprovado: true },
       cliente: {
         nome: 'Fulano Real',
-        email: 'fulano.real@provedor.com.br',
+        email: 'cliente.real@exemplo.invalid',
         cpf: CPF,
-        telefone_celular: '(21) 98765-4321',
+        telefone_celular: '(00) 91234-5678',
       },
-      endereco_entrega: { endereco: 'Rua das Flores', numero: '10', cep: '20000-000' },
+      endereco_entrega: { endereco: 'Rua Exemplo', numero: '10', cep: '00000-001' },
       itens: [
         { sku: 'CAM-001-P', quantidade: '2.000', preco_venda: '59.90', preco_custo: 20, nome: 'X' },
         { sku: 'CAM-001-M', quantidade: '1.000', preco_venda: '59.90', preco_custo: '20.00' },
@@ -111,7 +111,7 @@ describe('capturaParaFixture — a 2xx pedido search', () => {
       cep: FALSO_LI.cep,
     });
     const texto = JSON.stringify(env);
-    for (const valor of [CPF, 'Fulano Real', 'fulano.real', '98765-4321', 'Rua das Flores']) {
+    for (const valor of [CPF, 'Fulano Real', 'cliente.real', '91234-5678', 'Rua Exemplo']) {
       expect(texto).not.toContain(valor);
     }
   });

@@ -23,6 +23,12 @@ const CNPJ = gerarCnpj('112223330001');
 const CNPJ_LETRA = gerarCnpj('12ABC34501DE');
 const CNPJ_LETRA_INVALIDO = `${CNPJ_LETRA.slice(0, 13)}${String((Number(CNPJ_LETRA[13]) + 1) % 10)}`;
 const SENTINELA = 'SENTINELA-7f3a9c';
+/**
+ * `--verificar` skips addresses under a reserved domain, so proving it flags one
+ * needs a domain that is not reserved. Assembled at run time: the committed text
+ * holds no such address.
+ */
+const EMAIL_FORA_DO_RESERVADO = ['cliente.real', 'exemplo.com.br'].join('@');
 const LISTA = criarListaDeNomes(['Loja Exemplo', 'lojaexemplo.com.br']);
 
 function envelope(
@@ -61,11 +67,11 @@ const PEDIDO_CRU = {
       numero: 1234,
       cliente: {
         nome: PII_FALSA.nome,
-        email: 'fulano.real@provedor.com.br',
+        email: 'cliente.real@exemplo.invalid',
         cpf: CPF,
-        telefone_celular: '(21) 98765-4321',
+        telefone_celular: '(00) 91234-5678',
       },
-      endereco_entrega: { endereco: 'Rua das Flores, 10', cep: '20000-000', numero: '10' },
+      endereco_entrega: { endereco: 'Rua Exemplo, 10', cep: '00000-001', numero: '10' },
       itens: [{ sku: 'CAM-001-P', quantidade: '2.000', preco_venda: '59.90' }],
       obs: SENTINELA,
     },
@@ -98,7 +104,7 @@ describe('piiScan — the two controls', () => {
   it('a finding carries a path and a kind, never the value', () => {
     const achados = piiScan(envelope('/v1/pedido/search/', 200, PEDIDO_CRU as ValorJsonLi), LISTA);
     const texto = JSON.stringify(achados) + formatarAchadosLi('x', achados).join('\n');
-    for (const valor of [SENTINELA, CPF, 'fulano.real', '98765-4321', 'Rua das Flores']) {
+    for (const valor of [SENTINELA, CPF, 'cliente.real', '91234-5678', 'Rua Exemplo']) {
       expect(texto).not.toContain(valor);
     }
     expect(Object.keys(achados[0] ?? {}).sort()).toEqual(['caminho', 'tipo']);
@@ -172,7 +178,7 @@ describe('piiScan — near-misses of the pattern layer', () => {
   });
 
   it('a street address is flagged; a code that merely contains the letters is not', () => {
-    expect(tipos({ x: 'Avenida Central 100' })).toEqual(['endereco']);
+    expect(tipos({ x: 'Avenida Exemplo 0' })).toEqual(['endereco']);
     expect(tipos({ x: 'ruadasflores' })).toEqual([]);
   });
 
@@ -183,7 +189,7 @@ describe('piiScan — near-misses of the pattern layer', () => {
     // Near-miss: not EXACTLY 11 digits.
     expect(achadosDePadroes(envelope('/v1/produto/1', 200, { [`${CPF}x`]: 1 }))).toEqual([]);
     const comEmail = achadosDePadroes(
-      envelope('/v1/produto/1', 200, { 'fulano.real@provedor.com.br': 1 }),
+      envelope('/v1/produto/1', 200, { 'cliente.real@exemplo.invalid': 1 }),
     );
     expect(comEmail).toEqual([{ caminho: 'resposta.corpo.<redacted:email>', tipo: 'email' }]);
   });
@@ -242,7 +248,7 @@ describe('rotuloDeChave', () => {
   it.each([
     ['nome_cliente', 'nome_cliente'],
     ['João Silva', '<chave>'],
-    ['fulano.real@provedor.com.br', '<redacted:email>'],
+    ['cliente.real@exemplo.invalid', '<redacted:email>'],
     [`_${CPF}`, '<redacted:cpf>'],
     ['loja_exemplo', '<chave>'],
   ])('%s → %s', (chave, rotulo) => {
@@ -250,7 +256,9 @@ describe('rotuloDeChave', () => {
   });
 
   it('a mask hit prints the tag only, never the rest of the key', () => {
-    expect(rotuloDeChave('Fulano Real fulano.real@provedor.com.br', null)).toBe('<redacted:email>');
+    expect(rotuloDeChave('Fulano Real cliente.real@exemplo.invalid', null)).toBe(
+      '<redacted:email>',
+    );
   });
 });
 
@@ -266,7 +274,7 @@ describe('free text (`--verificar`)', () => {
   });
 
   it('a real-looking value on a line is flagged by kind', () => {
-    expect(tiposNaLinhaLi('mande para fulano.real@provedor.com.br', LISTA)).toEqual(['email']);
+    expect(tiposNaLinhaLi(`mande para ${EMAIL_FORA_DO_RESERVADO}`, LISTA)).toEqual(['email']);
     expect(tiposNaLinhaLi(`o documento ${CPF} aparece aqui`, LISTA)).toEqual(['cpf']);
     expect(tiposNaLinhaLi('a Loja Exemplo vendeu', LISTA)).toEqual(['nome-de-loja']);
   });

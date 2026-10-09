@@ -57,7 +57,7 @@ describe('tabelaDeFolhas', () => {
 
   it('an e-mail used as a key prints its tag, an odd key prints `<chave>`, a listed name prints `<chave>`', () => {
     const linhas = tabela('/v1/pedido/1', {
-      'fulano.real@provedor.com.br': 1,
+      'cliente.real@exemplo.invalid': 1,
       'João Silva': 2,
       loja_exemplo: 3,
     });
@@ -73,14 +73,14 @@ describe('tabelaDeFolhas', () => {
         {
           numero: 987654321,
           id_externo: 'SENTINELA-id-externo',
-          cliente: { nome: 'SENTINELA-nome', email: 'sentinela@provedor.com.br' },
+          cliente: { nome: 'SENTINELA-nome', email: 'sentinela@exemplo.invalid' },
           itens: [{ sku: 'SENTINELA-SKU', preco_venda: '123.45' }],
-          obs: 'SENTINELA-obs 31999998888',
+          obs: 'SENTINELA-obs 00987650000',
         },
       ],
     };
     const texto = tabela('/v1/pedido/search', corpo).join('\n');
-    for (const valor of ['987654321', 'SENTINELA', 'sentinela@', '123.45', '31999998888']) {
+    for (const valor of ['987654321', 'SENTINELA', 'sentinela@', '123.45', '00987650000']) {
       expect(texto).not.toContain(valor);
     }
     // Anti-vacuity: the kept values WERE kept — the table just never prints them.
