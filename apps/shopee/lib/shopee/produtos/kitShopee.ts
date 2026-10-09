@@ -791,8 +791,9 @@ export interface ArmazenadosDoKit {
 }
 
 /**
- * One kit-model row the import is about to MERGE onto, stamped FIRST with a
- * flat `mergeIfExists` (step 19, R-4) — see {@link preCarimbarLinhasDoKit}.
+ * One kit-model row the import is about to MERGE onto whose recipe is `igual`,
+ * stamped FIRST with a flat `mergeIfExists` (step 19, R-4) — see
+ * {@link preCarimbarLinhasDoKit}, which says why a `shopee` row never is.
  */
 export interface PreCarimboDeLinhaKit {
   /** The CHILD produto the row sits under. */
@@ -805,7 +806,10 @@ export interface PreCarimboDeLinhaKit {
 
 /** The kit plan: the listing plan rewritten for a kit, plus R-t's two outputs. */
 export interface PlanoKitShopee extends PlanoImportacaoShopee {
-  /** Rows to stamp BEFORE any produto write — the parent's included. */
+  /**
+   * The `igual` rows to stamp BEFORE any produto write — the parent's included.
+   * A `shopee` row is never here: its stamp rides its own merge, after the child.
+   */
   readonly preCarimbos: readonly PreCarimboDeLinhaKit[];
   /** Children whose pending ERP recipe edit this import KEPT (R-t (ii)), sorted. */
   readonly receitaDivergente: readonly string[];
@@ -815,9 +819,10 @@ export interface PlanoKitShopee extends PlanoImportacaoShopee {
  * What a re-import does with ONE child's recipe (step 19, R-t; Lucas L10(2)).
  *
  *  - `igual` — Shopee's resolved recipe folds to the child's CURRENT
- *    fingerprint: the import proceeds and stamps, so the child's entry in the
- *    recipe aviso resolves as `importado` (how a #1450 repoint closes on a
- *    re-import). Decided on CONTENT first, never on the stamps.
+ *    fingerprint: the import proceeds and PRE-stamps (the stamp already agrees
+ *    with the stored recipe), so the child's entry in the recipe aviso resolves
+ *    as `importado` (how a #1450 repoint closes on a re-import). Decided on
+ *    CONTENT first, never on the stamps.
  *  - `mantida` — different, AND some counted row's stamp is not the current
  *    fingerprint: the aviso is tracking an ERP edit Shopee does not hold, so the
  *    import KEEPS the ERP map, stamps nothing and reports `receita-divergente`.
@@ -825,7 +830,8 @@ export interface PlanoKitShopee extends PlanoImportacaoShopee {
  *    forbids.
  *  - `shopee` — different, and every counted row is stamped with the current
  *    fingerprint (or there is none): nothing is pending, so Shopee's recipe wins
- *    exactly as before step 19.
+ *    exactly as before step 19. Its stamp lands with the row's own merge, AFTER
+ *    the child write — never pre-stamped ({@link preCarimbarLinhasDoKit}).
  *
  * The comparisons are `chaveReceitaKitErp` strings — the schemas' ERP-side
  * fingerprint, equal over key order, `limitarEstoque` and the entry stamp,
@@ -1009,7 +1015,8 @@ function linhaDoKit(
  * kit-model row is a merge at `idDaVariacaoDeKit(linkDocId, model_id)` — the
  * existing merge-at-docId applier, an upsert at a deterministic id (tier 0), so
  * the create and the import land on ONE link and ONE row per (link, model).
- * Every kit-model row carries the decided `receitaKitConferida` (R-4).
+ * Every kit-model row carries the decided `receitaKitConferida` (R-4); only an
+ * EXISTING row whose recipe is `igual` is also listed in `preCarimbos`.
  */
 export function comCamposDeKit(
   plano: PlanoImportacaoShopee,
@@ -1049,6 +1056,7 @@ export function comCamposDeKit(
     let receita: ReceitaAEscrever = composicao;
     let carimbo: string | null = null;
     let limparCarimbo = false;
+    let preCarimbar = false;
     if (!ativo) {
       receita = 'manter';
     } else if (composicao !== null) {
@@ -1072,6 +1080,11 @@ export function comCamposDeKit(
         // construction (R-4) — at the PRODUTO level, which is the address level
         // only because the recipe is address-faithful (R2-F2).
         carimbo = chaveReceitaKitErp(composicao.mapa);
+        // ⚠️ Only an `igual` stamp may land AHEAD of the produto write: it
+        // already describes the recipe the ERP holds. A `shopee` stamp describes
+        // the recipe this import is ABOUT to write, so it rides the row's own
+        // merge, after the child — see `preCarimbarLinhasDoKit`.
+        preCarimbar = decisao === 'igual';
       } else {
         // R2-F2: two Shopee addresses fold onto one produto, so THE recipe fold
         // calls this kit DISTINCT from anything the ERP can project. The map
@@ -1091,7 +1104,12 @@ export function comCamposDeKit(
       carimbo,
       limparCarimbo,
     );
-    if (carimbo !== null && filho.link?.acao === 'merge' && filho.link.docId !== null) {
+    if (
+      preCarimbar &&
+      carimbo !== null &&
+      filho.link?.acao === 'merge' &&
+      filho.link.docId !== null
+    ) {
       preCarimbos.push({
         produtoId: filhoId,
         docId: filho.link.docId,
@@ -1386,14 +1404,37 @@ export async function prepararImportacaoKitShopee(
 
 /**
  * The PRE-STAMP (step 19, R-4): every kit-model row the import is about to merge
- * onto gets its `receitaKitConferida` FIRST — before the child produto is
- * written, and before the PARENT, which reaches a família de um's member first
- * through the produto trigger's sole-member mirror.
+ * onto whose recipe decision is `igual` gets its `receitaKitConferida` FIRST —
+ * before the child produto is written, and before the PARENT, which reaches a
+ * família de um's member first through the produto trigger's sole-member mirror.
  *
  * ⚠️ Why first: the produto write fires the recipe trigger, which re-decides
  * the aviso from the rows as they are THEN. A row stamped after the produto
  * would lose that race and open an aviso for a recipe this very import just
  * verified. Stamped first, the trigger already reads the new stamp.
+ *
+ * ⚠️ Why ONLY `igual`: a stamp is never written AHEAD of the produto it
+ * describes. An `igual` stamp already agrees with the recipe the ERP stores —
+ * the child's, or, for a família de um whose mirror is pending, the wrapper's,
+ * the one {@link decidirReceitaDoFilho} compares — so an import that dies right
+ * after it leaves a state the next import decides `igual` again. A `shopee`
+ * stamp describes the recipe this import is about to WRITE: had it landed first
+ * and `aplicarImportacaoShopee` thrown before the child (taxonomia, categorias,
+ * a guarded price patch, the parent merge, extraData, the parent link), the
+ * rows would hold Shopee's S while the child still held R — exactly an ERP edit
+ * S → R the aviso is tracking — and every later import would answer `mantida`,
+ * report `receita-divergente`, and leave the aviso asking the operator to
+ * recreate the kit, which pushes R back over the Seller Centre change (PR #1865
+ * review). So a `shopee` row's stamp rides the plan's own row merge, AFTER its
+ * child's produto write. The trigger that write fires may still read the old
+ * stamp and open the aviso for a moment; the closing
+ * `reavaliarAvisoDeReceitaKit` reads the merged row, so its clock is strictly
+ * newer than any snapshot that saw the old stamp, and it resolves `importado`.
+ * An import that dies between the child write and the row merge leaves child S
+ * and rows R, which the next import decides `igual` and pre-stamps — at worst a
+ * false OPEN until then, the safe direction. `mantida` and an address-unfaithful
+ * recipe (R2-F2) pre-stamp nothing either: the first stamps nothing, the second
+ * clears through the same row merge.
  *
  * ⚠️ A flat `mergeIfExists`, never `merge` and never `set`: a `set` would erase
  * step 13's `preco*` and the sync's `modeloAusenteEm`/`model_status`, and an
@@ -1442,7 +1483,7 @@ export async function preCarimbarLinhasDoKit(
  * whose races are correspondingly rare.
  *
  * Step 19 (#1527) brackets the writer with the recipe aviso's two halves: the
- * PRE-STAMP before it ({@link preCarimbarLinhasDoKit}), and ONE
+ * PRE-STAMP of the `igual` rows before it ({@link preCarimbarLinhasDoKit}), and ONE
  * `reavaliarAvisoDeReceitaKit` for (conta, kit) after it, motivo `importado` —
  * the shared decision that re-reads the current recipes in one snapshot, never
  * a blind resolve. Its µs clock comes from `avisos/autorizacao.ts`'s

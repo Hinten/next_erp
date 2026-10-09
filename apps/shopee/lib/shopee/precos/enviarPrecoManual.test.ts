@@ -6,6 +6,8 @@ import {
   SHOPEE_ERROR_KIND,
   shopeeErrorFromEnvelope,
   shopeeItemBaseInfoRowSchema,
+  shopeeKitItemInfoPayloadSchema,
+  shopeeModelListPayloadSchema,
   shopeeUpdatePriceSchema,
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
@@ -761,6 +763,88 @@ describe('enviarPrecoManualShopee — UM leitor de base por pedido', () => {
       price_list: [{ model_id: SHOPEE_PRECO_MODEL_ID_SEM_MODELO, original_price: 15 }],
     });
     expect(m.db.writes.map((w) => w.path)).toContain(`produtos/${ANCORA}/prodshopee/${LINK}`);
+  });
+
+  it('⚠️ o REMETENTE REAL, num lote com um KIT cujos modelos vivos vieram SEM `tier_index`: o kit é a linha `falha forma-de-modelo-divergente` e o IRMÃO do lote É precificado — nada lança, a requisição não aborta', async () => {
+    const m = mundo();
+    semearProduto(m, ANCORA, 'Kit');
+    semearProduto(m, ANCORA_2, 'Irmão');
+    m.db.seed(`produtos/${ANCORA}/prodshopee/${LINK}`, { item_id: ITEM, item_status: 'NORMAL' });
+    m.db.seed(`produtos/${FILHO_A}/variashopee/var-a`, { model_id: MODELO_A });
+    m.db.seed(`produtos/${FILHO_B}/variashopee/var-b`, { model_id: MODELO_B });
+    m.db.seed(`produtos/${ANCORA_2}/prodshopee/${LINK}`, {
+      item_id: ITEM + 1,
+      item_status: 'NORMAL',
+    });
+    m.familias.set(ANCORA, familiaComModelos());
+    m.familias.set(ANCORA_2, familiaSemModelo(ANCORA_2, ITEM + 1));
+    // ITEM is a NATIVE kit (two models at 10); ITEM + 1 an ordinary no-model listing at 10.
+    const baseInfo = m.getItemBaseInfo as Mock<
+      (a: { itemIds: readonly number[] }) => Promise<unknown>
+    >;
+    baseInfo.mockImplementation(({ itemIds }) =>
+      Promise.resolve({
+        item_list: itemIds.map((item_id) =>
+          shopeeItemBaseInfoRowSchema.parse(
+            item_id === ITEM
+              ? { item_id, item_status: 'NORMAL', has_model: true, tag: { kit: true } }
+              : {
+                  item_id,
+                  item_status: 'NORMAL',
+                  has_model: false,
+                  price_info: [{ currency: 'BRL', original_price: 10, current_price: 10 }],
+                },
+          ),
+        ),
+      }),
+    );
+    const getModelList = vi.fn(() =>
+      Promise.resolve(
+        shopeeModelListPayloadSchema.parse({
+          model: [MODELO_A, MODELO_B].map((model_id) => ({
+            model_id,
+            model_status: 'MODEL_NORMAL',
+            price_info: [{ currency: 'BRL', original_price: 10, current_price: 10 }],
+          })),
+        }),
+      ),
+    );
+    // The kit page answers both models WITHOUT `tier_index` — a shape the read tolerates.
+    const getKitItemInfo = vi.fn(() =>
+      Promise.resolve(
+        shopeeKitItemInfoPayloadSchema.parse({
+          product_info: {
+            item_id: ITEM,
+            item_status: 'NORMAL',
+            model_list: [MODELO_A, MODELO_B].map((model_id) => ({
+              model_id,
+              original_price: 10,
+              component_list: [
+                { component_item_id: ITEM + 9, quantity: 2, main_component: model_id === MODELO_A },
+              ],
+            })),
+          },
+        }),
+      ),
+    );
+    const updateKitItem = vi.fn();
+    Object.assign(m.contexto.client, { getModelList, getKitItemInfo, updateKitItem });
+
+    const r = await rodar(m, [ANCORA, ANCORA_2], { enviar: undefined });
+
+    expect(getKitItemInfo).toHaveBeenCalledTimes(1);
+    expect(updateKitItem).not.toHaveBeenCalled();
+    // The sibling IS priced, after the kit, in the same request.
+    expect(m.updatePrice).toHaveBeenCalledWith({
+      item_id: ITEM + 1,
+      price_list: [{ model_id: SHOPEE_PRECO_MODEL_ID_SEM_MODELO, original_price: 15 }],
+    });
+    expect(r.listings.map((l) => [l.produtoId, l.variacaoProdutoId, l.outcome, l.motivo])).toEqual([
+      [ANCORA, FILHO_A, 'falha', MOTIVO_PRECO_SHOPEE.formaDeModeloDivergente],
+      [ANCORA, FILHO_B, 'falha', MOTIVO_PRECO_SHOPEE.formaDeModeloDivergente],
+      [ANCORA_2, null, 'enviado', null],
+    ]);
+    expect(m.db.writes.map((w) => w.path)).toContain(`produtos/${ANCORA_2}/prodshopee/${LINK}`);
   });
 });
 

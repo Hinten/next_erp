@@ -79,18 +79,20 @@ function despachar(
   produto: ProdutoDoDespacho,
   vinculos: readonly VinculoDaConta[],
   over: Partial<CorpoDoDespacho> = {},
-): ResultadoDoDespacho {
+): ResultadoDoDespacho | null {
   return escolherArmaDePublicacao({ produto, vinculos, corpo: corpo(over) });
 }
 
 /** The refusal, asserting there IS one (and only one problem, the dispatcher's way). */
-function recusa(r: ResultadoDoDespacho) {
+function recusa(r: ResultadoDoDespacho | null) {
+  if (r === null) throw new Error('esperava recusa, veio null (o 404 do vínculo alheio)');
   if (r.ok) throw new Error(`esperava recusa, veio a arma ${JSON.stringify(r.arma)}`);
   expect(r.problemas).toHaveLength(1);
   return r.problemas[0]!;
 }
 
-function arma(r: ResultadoDoDespacho) {
+function arma(r: ResultadoDoDespacho | null) {
+  if (r === null) throw new Error('esperava arma, veio null (o 404 do vínculo alheio)');
   if (!r.ok) throw new Error(`esperava arma, veio ${r.problemas.map((p) => p.motivo).join()}`);
   return r.arma;
 }
@@ -122,6 +124,13 @@ describe('(−1) um filho de variação nunca publica — `produto-e-filho`', ()
 
   it('⛔ quase-par: o PAI (paiId null) com a MESMA flag ⇒ kit-criar', () => {
     expect(arma(despachar(KIT_EFETIVO, []))).toEqual({ arma: 'kit-criar' });
+  });
+
+  it('produto-e-filho PRECEDE o 404 de um --link alheio (a precedência da main): o filho é dito, qualquer que seja o vínculo', () => {
+    const membro: ProdutoDoDespacho = { id: 'kit-k-un', paiId: K, ehKit: true, ehKitVirtual: true };
+    expect(
+      recusa(despachar(membro, [], { linkDocId: 'de-outra-conta', recriar: true })).motivo,
+    ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.produtoEFilho);
   });
 });
 
@@ -207,7 +216,7 @@ describe('(1) --converter-em-kit (L8)', () => {
     ).toEqual({ arma: 'kit-converter', antecessorLinkDocId: 'z-comum' });
   });
 
-  it('`--link` num comum SUBSTITUÍDO ⇒ vinculo-substituido; num nativo, removido ou ausente ⇒ converter-sem-anuncio-comum', () => {
+  it('`--link` num comum SUBSTITUÍDO ⇒ vinculo-substituido; num nativo ou removido DESTA conta ⇒ converter-sem-anuncio-comum', () => {
     const vinculos = [
       nativo('a-kit', KIT_1),
       comum('b-velho', COMUM_1, substituidoPor('a-kit')),
@@ -216,7 +225,7 @@ describe('(1) --converter-em-kit (L8)', () => {
     expect(
       recusa(despachar(KIT_ANTIGO, vinculos, { converterEmKit: true, linkDocId: 'b-velho' })),
     ).toMatchObject({ motivo: MOTIVO_PUBLICACAO_BLOQUEADA.vinculoSubstituido });
-    for (const linkDocId of ['a-kit', 'c-removido', 'nao-existe']) {
+    for (const linkDocId of ['a-kit', 'c-removido']) {
       const p = recusa(despachar(KIT_ANTIGO, vinculos, { converterEmKit: true, linkDocId }));
       expect(p, linkDocId).toMatchObject({
         campo: 'linkDocId',
@@ -225,6 +234,27 @@ describe('(1) --converter-em-kit (L8)', () => {
           'não há anúncio comum ativo deste produto nesta conta para converter em kit nativo',
       });
     }
+  });
+
+  it('(PR #1869 review) `--link` que NÃO é desta conta ⇒ null (o 404 da rota), nunca converter-sem-anuncio-comum — com ou sem comum vivo', () => {
+    for (const vinculos of [
+      [comum('b-comum', COMUM_1)],
+      [nativo('a-kit', KIT_1)],
+      [] as VinculoDaConta[],
+    ]) {
+      expect(
+        despachar(KIT_ANTIGO, vinculos, {
+          converterEmKit: true,
+          linkDocId: 'b-comum-digitado-errado',
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it('⛔ quase-par: converter-sem-kit PRECEDE o 404 — a recusa é do PRODUTO e continua verdadeira com qualquer --link', () => {
+    expect(
+      recusa(despachar(NAO_KIT, [], { converterEmKit: true, linkDocId: 'nao-existe' })).motivo,
+    ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.converterSemKit);
   });
 
   it('nenhum vínculo vivo de tipo algum ⇒ converter-sem-anuncio-comum (um REMOVIDO comum não conta)', () => {
@@ -240,11 +270,47 @@ describe('(1) --converter-em-kit (L8)', () => {
 /* ========================================================================== */
 
 describe('(2) um --link nomeado', () => {
-  it('um vínculo que NÃO é desta conta ⇒ o braço de item com esse id (o 404 de sempre)', () => {
-    expect(arma(despachar(NAO_KIT, [], { linkDocId: 'de-outra-conta' }))).toEqual({
-      arma: 'item',
-      linkDocId: 'de-outra-conta',
-    });
+  it('um vínculo que NÃO é desta conta ⇒ null (o 404 da rota) — nem arma, nem recusa', () => {
+    expect(despachar(NAO_KIT, [], { linkDocId: 'de-outra-conta' })).toBeNull();
+    expect(
+      despachar(NAO_KIT, [comum('a-vivo', COMUM_1)], { linkDocId: 'de-outra-conta' }),
+    ).toBeNull();
+    // A kit produto too: the item arm would have refused it `produto-e-kit` BEFORE its 404.
+    expect(despachar(KIT_EFETIVO, [nativo('a-kit', KIT_1)], { linkDocId: 'a-kit-x' })).toBeNull();
+  });
+
+  it('(PR #1869 review) um --link que NÃO é desta conta com --recriar / --principal ⇒ null (o 404), nunca opcao-de-kit-em-anuncio-comum', () => {
+    // A LIVE native kit — the produto every kit option is for — and a typo in the link.
+    const vinculos = [nativo('a-kit', KIT_1), comum('b-comum', COMUM_1)];
+    const opcoes: readonly Partial<CorpoDoDespacho>[] = [
+      { recriar: true },
+      { principal: 'comp-a' },
+      { recriar: true, principal: 'comp-a' },
+    ];
+    for (const produto of [KIT_EFETIVO, KIT_ANTIGO, NAO_KIT]) {
+      for (const opcao of opcoes) {
+        expect(
+          despachar(produto, vinculos, { linkDocId: 'a-kit-digitado-errado', ...opcao }),
+          `${String(produto.ehKitVirtual)} ${JSON.stringify(opcao)}`,
+        ).toBeNull();
+      }
+    }
+  });
+
+  it('⛔ quase-par: o --link CONHECIDO num anúncio comum, com --recriar / --principal ⇒ a recusa própria de cada opção, nunca o 404', () => {
+    const vinculos = [nativo('a-kit', KIT_1), comum('b-comum', COMUM_1)];
+    for (const [opcao, campo] of [
+      [{ recriar: true }, 'recriar'],
+      [{ principal: 'comp-a' }, 'principal'],
+    ] as const) {
+      expect(
+        recusa(despachar(KIT_ANTIGO, vinculos, { linkDocId: 'b-comum', ...opcao })),
+      ).toMatchObject({ campo, motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcaoDeKitEmAnuncioComum });
+    }
+    // …and --converter-em-kit on that KNOWN ordinary listing is the conversion itself.
+    expect(
+      arma(despachar(KIT_ANTIGO, vinculos, { linkDocId: 'b-comum', converterEmKit: true })),
+    ).toEqual({ arma: 'kit-converter', antecessorLinkDocId: 'b-comum' });
   });
 
   it('um kit nativo VIVO ⇒ kit-atualizar; com --recriar ⇒ kit-recriar nele', () => {

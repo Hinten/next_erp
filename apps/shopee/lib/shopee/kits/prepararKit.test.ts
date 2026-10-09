@@ -568,6 +568,28 @@ describe('prepararKit — a fase A (Firestore apenas)', () => {
     }
   });
 
+  it('(M93) dois filhos sem grupo algum ⇒ a recusa diz que FALTA o eixo (nunca "varia em 0 grupos"), zero chamadas', async () => {
+    const db = new FakeDb();
+    semearTudo(db);
+    db.seed(`produtos/${K_AZUL}`, { ...db.store[`produtos/${K_AZUL}`]!.data, variacoesUid: [] });
+    db.seed(`produtos/${K_VERDE}`, { ...db.store[`produtos/${K_VERDE}`]!.data, variacoesUid: [] });
+    const loja = lojaFake();
+
+    const erro = await recusaDe(preparar(db, loja));
+
+    // The phase-A throw is all the operator gets: `planejarTier` never runs.
+    expect(erro.problemas).toEqual([
+      {
+        campo: 'grupoDeVariacoesUid',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.kitDoisEixos,
+        mensagem:
+          'as 2 variações do kit não estão em nenhum grupo de variação — a Shopee aceita kit ' +
+          'com UM eixo de variação; coloque-as num mesmo grupo de variação no ERP antes de publicar',
+      },
+    ]);
+    expect(loja.ops).toEqual([]);
+  });
+
   it('(M97) outro produto RAIZ com o SKU de K ⇒ kit-sku-repetido nomeando-o, zero chamadas; a consulta é o degrau 2 do passo 9', async () => {
     const db = new FakeDb();
     semearTudo(db);
