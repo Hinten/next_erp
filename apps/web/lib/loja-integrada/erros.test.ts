@@ -178,9 +178,15 @@ describe('descreverFalhaCredencialLi — the words', () => {
     expect(f.mensagem).toContain('Remova o token');
   });
 
-  it('the read switch off says the integration is off until the cutover, and nothing was sent', () => {
+  it('the read switch off: copy true before AND after the cutover, and nothing was sent', () => {
     const f = descrever(http(503, CODIGO_ERRO_LI.chamadasDesligadas));
-    expect(f.mensagem).toContain('está desligada até a migração');
+    // After the window the same code answers a mis-set switch (`ON`, ` on`,
+    // `true`), so the copy may not name the migration as the only reason.
+    expect(f.mensagem).toContain(
+      'estão desligadas neste backend: até a migração para este sistema, ou por configuração',
+    );
+    expect(f.mensagem).toContain('Se a migração já ocorreu, avise o suporte');
+    expect(f.mensagem).not.toMatch(/desligadas? até a migração/);
     expect(f.mensagem).toContain('Nada foi enviado à Loja Integrada nem salvo');
     expect(f.mensagem).not.toContain('Tente de novo');
     expect(f.campo).toBeNull();

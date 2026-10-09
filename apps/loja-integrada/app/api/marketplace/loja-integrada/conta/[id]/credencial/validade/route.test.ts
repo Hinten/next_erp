@@ -172,6 +172,69 @@ describe('PUT …/credencial/validade — the read switch: only the exact `on` c
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(chamadas).toHaveLength(1);
   });
+
+  /**
+   * Bodies the route refuses on their own (400, 400, 422) once the switch is on.
+   * With it off, the 503 must win over each: the switch comes BEFORE the body is
+   * read, which `bodyUsed` pins directly.
+   */
+  const CORPOS_RECUSAVEIS: [string, unknown, number][] = [
+    ['an empty object', {}, 400],
+    [
+      'a body carrying a token',
+      { expiraEm: NOVA_VALIDADE, versaoEsperada: 1, token: 'outro' },
+      400,
+    ],
+    ['a refused date', { expiraEm: '2027-01-14', versaoEsperada: 1 }, 422],
+  ];
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'off + %s: still the 503 — the body is never read',
+    async (_caso, corpo) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const req = requisicao('PUT', `${ID}/credencial/validade`, { corpo });
+
+      const res = await PUT(req, contexto(ID));
+
+      expect(res.status).toBe(503);
+      expect(await corpoDe(res)).toMatchObject({ code: CODIGO_ERRO_LI.chamadasDesligadas });
+      expect(req.bodyUsed).toBe(false);
+      expect(chamadas).toHaveLength(0);
+      expect(db.leituras).toEqual([]);
+      expect(linhasDeLog().map((l) => l.evento)).toEqual(['chamada-bloqueada']);
+    },
+  );
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'near-miss: on + %s is refused by the body check itself (%i), with no call',
+    async (_caso, corpo, status) => {
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const req = requisicao('PUT', `${ID}/credencial/validade`, { corpo });
+      const res = await PUT(req, contexto(ID));
+      expect(res.status).toBe(status);
+      expect(req.bodyUsed).toBe(true);
+      expect(chamadas).toHaveLength(0);
+    },
+  );
+
+  it('the caller and the id are still checked first: 401, 403 and 400 with the switch off', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const corpo = { expiraEm: NOVA_VALIDADE, versaoEsperada: seedParada() };
+    const semAuth = await PUT(
+      requisicao('PUT', `${ID}/credencial/validade`, { semAuth: true, corpo }),
+      contexto(ID),
+    );
+    expect(semAuth.status).toBe(401);
+    const idRuim = await renovar(corpo, { id: '..' });
+    expect(idRuim.status).toBe(400);
+    expect(await corpoDe(idRuim)).toMatchObject({ code: CODIGO_ERRO_LI.idInvalido });
+    h.verifyIdToken.mockResolvedValue(LEITOR);
+    expect((await renovar(corpo)).status).toBe(403);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(linhasDeLog()).toEqual([]);
+  });
 });
 
 describe('PUT …/credencial/validade — aceito', () => {

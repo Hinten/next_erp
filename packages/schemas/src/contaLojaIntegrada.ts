@@ -155,8 +155,8 @@ export const CODIGO_ERRO_LI = {
   /**
    * 503 — the backend's read switch (`LOJA_INTEGRADA_CHAMADAS`) is not `on`, so
    * it calls Loja Integrada for nothing: nothing was sent and nothing was saved.
-   * The state of every environment until the cutover (mock only); retrying does
-   * not help.
+   * The state of every environment until the cutover (mock only), and after it
+   * the answer to a mis-set value (`ON`, ` on`, `true`); retrying does not help.
    */
   chamadasDesligadas: 'LI_CHAMADAS_DESLIGADAS',
 } as const;

@@ -429,12 +429,12 @@ describe('ContaLojaIntegradaPanel — save', () => {
       CODIGO_ERRO_LI.tokenDeOutraConta,
       /já está salvo em outra conta/,
     ],
-    // The backend's read switch is off until the cutover (D17).
+    // The backend's read switch is off: until the cutover, or mis-set after it (D17).
     [
       'LI_CHAMADAS_DESLIGADAS',
       503,
       CODIGO_ERRO_LI.chamadasDesligadas,
-      /integração com a Loja Integrada está desligada até a migração/,
+      /estão desligadas neste backend: até a migração para este sistema, ou por configuração/,
     ],
   ])(
     '%s: its copy, and the token is CLEARED — with no re-read',
@@ -629,7 +629,7 @@ describe('ContaLojaIntegradaPanel — renewal', () => {
     expect(h.salvarCredencial).not.toHaveBeenCalled();
   });
 
-  it('LI_CHAMADAS_DESLIGADAS on a renewal: says the integration is off until the cutover, no re-read', async () => {
+  it('LI_CHAMADAS_DESLIGADAS on a renewal: says the calls are off (migration or configuration), no re-read', async () => {
     h.conta.mockResolvedValue(COM_TOKEN);
     h.renovarValidade.mockRejectedValue(http(503, CODIGO_ERRO_LI.chamadasDesligadas));
     renderPanel();
@@ -638,7 +638,9 @@ describe('ContaLojaIntegradaPanel — renewal', () => {
     fireEvent.change(campoData(), { target: { value: '2027-01-15' } });
     fireEvent.click(botaoRenovar());
 
-    expect(await screen.findByText(/está desligada até a migração/)).toBeTruthy();
+    expect(
+      await screen.findByText(/até a migração para este sistema, ou por configuração/),
+    ).toBeTruthy();
     expect(screen.queryByText(/pode ou não ter sido salvo/)).toBeNull();
     // Nothing was written: the status on screen still stands.
     expect(h.conta).toHaveBeenCalledTimes(1);

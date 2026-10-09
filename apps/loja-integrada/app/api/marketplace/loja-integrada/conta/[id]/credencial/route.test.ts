@@ -172,9 +172,10 @@ describe('PUT …/credencial — the read switch: only the exact `on` calls Loja
       expect(res.status).toBe(503);
       const texto = await res.text();
       expect(JSON.parse(texto)).toEqual({
+        // True after the window too, when the same code answers a mis-set value.
         error:
-          'As chamadas à Loja Integrada estão desligadas neste backend até a migração. ' +
-          'Nada foi enviado à Loja Integrada nem salvo.',
+          'As chamadas à Loja Integrada estão desligadas neste backend (até a migração, ou ' +
+          'por configuração). Nada foi enviado à Loja Integrada nem salvo.',
         code: CODIGO_ERRO_LI.chamadasDesligadas,
       });
       expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -209,9 +210,62 @@ describe('PUT …/credencial — the read switch: only the exact `on` calls Loja
     expect(linhasDeLog().map((l) => l.evento)).toEqual(['chamada']);
   });
 
-  it('the caller and the id are still checked first: 403 and 400 with the switch off', async () => {
+  /**
+   * Bodies the route refuses on their own (400, 400, 422) once the switch is on.
+   * With it off, the 503 must win over each: the switch comes BEFORE the body
+   * (and the token in it) is read, which `bodyUsed` pins directly.
+   */
+  const CORPOS_RECUSAVEIS: [string, { corpo?: unknown; corpoBruto?: string }, number][] = [
+    ['an empty object', { corpo: {} }, 400],
+    ['malformed JSON carrying the token', { corpoBruto: `{"token":"${TOKEN_A}","expiraEm":` }, 400],
+    [
+      'a refused date',
+      { corpo: { token: TOKEN_A, expiraEm: '2027-01-14', versaoEsperada: null } },
+      422,
+    ],
+  ];
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'off + %s: still the 503 — the body is never read',
+    async (_caso, corpo) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+      const chamadas = aceitarTudo();
+      const req = requisicao('PUT', `${ID}/credencial`, corpo);
+
+      const res = await PUT(req, contexto(ID));
+
+      expect(res.status).toBe(503);
+      const texto = await res.text();
+      expect(JSON.parse(texto)).toMatchObject({ code: CODIGO_ERRO_LI.chamadasDesligadas });
+      expect(req.bodyUsed).toBe(false);
+      expect(chamadas).toHaveLength(0);
+      expect(db.leituras).toEqual([]);
+      expect(linhasDeLog().map((l) => l.evento)).toEqual(['chamada-bloqueada']);
+      const tudo = [texto, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+      expect(tudo).not.toContain(TOKEN_A);
+    },
+  );
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'near-miss: on + %s is refused by the body check itself (%i), with no call',
+    async (_caso, corpo, status) => {
+      const chamadas = aceitarTudo();
+      const req = requisicao('PUT', `${ID}/credencial`, corpo);
+      const res = await PUT(req, contexto(ID));
+      expect(res.status).toBe(status);
+      expect(req.bodyUsed).toBe(true);
+      expect(chamadas).toHaveLength(0);
+    },
+  );
+
+  it('the caller and the id are still checked first: 401, 403 and 400 with the switch off', async () => {
     vi.stubEnv(CHAMADAS_ENV_LI, undefined);
     aceitarTudo();
+    const semAuth = await PUT(
+      requisicao('PUT', `${ID}/credencial`, { semAuth: true, corpo: {} }),
+      contexto(ID),
+    );
+    expect(semAuth.status).toBe(401);
     expect((await salvar({}, { id: '..' })).status).toBe(400);
     h.verifyIdToken.mockResolvedValue(LEITOR);
     expect((await salvar({})).status).toBe(403);

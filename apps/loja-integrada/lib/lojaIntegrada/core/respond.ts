@@ -229,14 +229,17 @@ export function respostaTokenNaRef(): NextResponse {
  * 503 `LI_CHAMADAS_DESLIGADAS` — the read switch (`LOJA_INTEGRADA_CHAMADAS`,
  * `core/valvulas.ts`) is not exactly `on`. Answered before the body is read, so
  * nothing was sent to Loja Integrada and nothing was stored (D17: mock only
- * until the cutover, when the window sets the switch on both surfaces).
+ * until the cutover, when the window sets the switch on both surfaces). The
+ * sentence names both causes: after the window the same answer means a mis-set
+ * value (`ON`, ` on`, `true`), which the `chamada-bloqueada` line flags as a
+ * WARNING.
  */
 export function respostaChamadasDesligadas(): NextResponse {
   return respostaLi(
     503,
     CODIGO_ERRO_LI.chamadasDesligadas,
-    'As chamadas à Loja Integrada estão desligadas neste backend até a migração. ' +
-      'Nada foi enviado à Loja Integrada nem salvo.',
+    'As chamadas à Loja Integrada estão desligadas neste backend (até a migração, ou ' +
+      'por configuração). Nada foi enviado à Loja Integrada nem salvo.',
   );
 }
 
