@@ -31,9 +31,10 @@ import { podeEnviarEstoqueShopee } from '../estoque/podeEnviarEstoque';
 import { lerFixture } from '../fixtures/wireCorpus';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { FakeBucket, asBucket } from '../testing/fakeBucket';
-import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { criarMemoDeCategorias } from './categoriaShopee';
 import { ShopeeImportBlockedError } from './errosImportacao';
+import { ShopeePrecoDesatualizadoError } from './estoquePrecos';
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from '../kits/idsKit';
 import {
   anuncioDerivadoDoKit,
@@ -1963,35 +1964,174 @@ describe('passo 19 — R-t: um re-import nunca reverte em silêncio uma edição
     });
   });
 
-  it('(M45, M49) sem edição pendente e a Shopee DIFERENTE: o pré-carimbo vem ANTES do filho e do PAI', async () => {
+  /** Um kit de UM modelo (tier sentinela) que consome `q` × A. */
+  const umDe = (q: number): ShopeeKitItem =>
+    kit19([{ modelId: KIT_MODELO, sku: 'K19-UN', quantidade: q }], { tiers: TIER_SENTINELA });
+  /** A linha do membro no kit importado — a que o pré-carimbo alcança. */
+  const linhaDoMembro = (membro: string): string =>
+    `produtos/${membro}/variashopee/${idDaVariacaoDeKit(VINCULO_19, KIT_MODELO)}`;
+  /** O pré-carimbo é a ÚNICA escrita da linha cujo patch é só o carimbo. */
+  const ehPreCarimbo = (w: { path: string; patch: Record<string, unknown> }, membro: string) =>
+    w.path === linhaDoMembro(membro) && Object.keys(w.patch).join() === 'receitaKitConferida';
+
+  it('(M45, M49) `igual`: o pré-carimbo vem ANTES do filho e do PAI', async () => {
+    // A família de um conferida em 2; o operador edita K para 3, o espelho ainda
+    // não chegou ao membro, e a Shopee JÁ está em 3 ⇒ `igual` (R1-RT7-01): o
+    // carimbo 3 já descreve a receita que o ERP guarda (a de K).
     const db = new FakeDb();
     semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
-    const umDe = (q: number): ShopeeKitItem =>
-      kit19([{ modelId: KIT_MODELO, sku: 'K19-UN', quantidade: q }], { tiers: TIER_SENTINELA });
-    await importarKitShopee(deps(db), entrada19(umDe(1)));
+    await importarKitShopee(deps(db), entrada19(umDe(2)));
     const membro = idDoFilhoPlanejado(PAI_19, KIT_MODELO);
-    const caminhoDaLinha = `produtos/${membro}/variashopee/${idDaVariacaoDeKit(VINCULO_19, KIT_MODELO)}`;
+    editarReceita(db, [PAI_19], 3);
     const antes = db.writes.length;
 
-    const res = await importarKitShopee(deps(db, { nowMs: AGORA + 1 }), entrada19(umDe(4)));
+    const res = await importarKitShopee(deps(db, { nowMs: AGORA + 1 }), entrada19(umDe(3)));
 
     const novas = db.writes.slice(antes);
-    const preCarimbo = novas.findIndex(
-      (w) => w.path === caminhoDaLinha && Object.keys(w.patch).join() === 'receitaKitConferida',
-    );
+    const preCarimbo = novas.findIndex((w) => ehPreCarimbo(w, membro));
     const pai = novas.findIndex((w) => w.path === `produtos/${PAI_19}`);
     const filho = novas.findIndex((w) => w.path === `produtos/${membro}`);
     expect(preCarimbo).toBeGreaterThanOrEqual(0);
     expect(pai).toBeGreaterThan(preCarimbo);
     expect(filho).toBeGreaterThan(preCarimbo);
-    expect(novas[preCarimbo]?.patch).toEqual({ receitaKitConferida: digital(4) });
-    // A Shopee venceu (nada pendente) e o aviso fecha como `importado`.
+    expect(novas[preCarimbo]?.patch).toEqual({ receitaKitConferida: digital(3) });
+    expect(docDoProduto(db, membro).componentesKit).toMatchObject({ 'comp-a': { quantidade: 3 } });
+    expect(linhaDoKit(db, membro)?.receitaKitConferida).toBe(digital(3));
+    expect(res.kit.avisos).toEqual([]);
+    expect(avisoDoKit(db)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('⛔ NEAR-MISS (M45) `shopee`: sem edição pendente e a Shopee DIFERENTE ⇒ NENHUM pré-carimbo — o carimbo novo chega pelo merge da linha, DEPOIS do filho e do PAI', async () => {
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    await importarKitShopee(deps(db), entrada19(umDe(1)));
+    const membro = idDoFilhoPlanejado(PAI_19, KIT_MODELO);
+    const antes = db.writes.length;
+
+    const res = await importarKitShopee(deps(db, { nowMs: AGORA + 1 }), entrada19(umDe(4)));
+
+    const novas = db.writes.slice(antes);
+    expect(novas.filter((w) => ehPreCarimbo(w, membro))).toEqual([]);
+    const carimbos = novas.flatMap((w, i) =>
+      w.path === linhaDoMembro(membro) && 'receitaKitConferida' in w.patch ? [i] : [],
+    );
+    const pai = novas.findIndex((w) => w.path === `produtos/${PAI_19}`);
+    const filho = novas.findIndex((w) => w.path === `produtos/${membro}`);
+    expect(pai).toBeGreaterThanOrEqual(0);
+    expect(filho).toBeGreaterThanOrEqual(0);
+    expect(carimbos).toHaveLength(1);
+    expect(carimbos[0]).toBeGreaterThan(filho);
+    expect(carimbos[0]).toBeGreaterThan(pai);
+    expect(novas[carimbos[0] ?? -1]?.patch.receitaKitConferida).toBe(digital(4));
+    // A Shopee venceu (nada pendente): o filho e a linha terminam na MESMA
+    // receita, e o aviso fecha como `importado`.
     expect(docDoProduto(db, membro).componentesKit).toMatchObject({ 'comp-a': { quantidade: 4 } });
     expect(linhaDoKit(db, membro)?.receitaKitConferida).toBe(digital(4));
     expect(res.kit.avisos).toEqual([]);
     expect(avisoDoKit(db)).toMatchObject({
       resolucaoMotivo: MOTIVO_RESOLUCAO_RECEITA_KIT.importado,
     });
+    expect(avisoDoKit(db)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('(R-4) PAR: o plano pré-carimba a linha só quando a receita é `igual` — nunca quando a da Shopee vai sobrescrever a do ERP', async () => {
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    await importarKitShopee(deps(db), entrada19(umDe(1)));
+    const membro = idDoFilhoPlanejado(PAI_19, KIT_MODELO);
+    const depois = deps(db, { nowMs: AGORA + 1 });
+
+    // `shopee`: o filho guarda 1, a Shopee traz 2 — o carimbo 2 descreveria uma
+    // receita que o filho AINDA não tem.
+    const shopee = await prepararImportacaoKitShopee(depois, entrada19(umDe(2)));
+    expect(shopee.plano.receitaDivergente).toEqual([]);
+    expect(shopee.plano.preCarimbos).toEqual([]);
+    expect(shopee.plano.filhos[0]?.link?.dados.receitaKitConferida).toBe(digital(2));
+
+    // `igual`: o filho JÁ guarda 2 (a queda entre a escrita do filho e o merge
+    // da linha deixa exatamente isto) — o carimbo 2 já concorda com ele.
+    editarReceita(db, [PAI_19, membro], 2);
+    const igual = await prepararImportacaoKitShopee(depois, entrada19(umDe(2)));
+    expect(igual.plano.receitaDivergente).toEqual([]);
+    expect(igual.plano.preCarimbos).toEqual([
+      {
+        produtoId: membro,
+        docId: idDaVariacaoDeKit(VINCULO_19, KIT_MODELO),
+        receitaKitConferida: digital(2),
+      },
+    ]);
+  });
+
+  it('(R-4) a importação `shopee` que CAI depois do pré-carimbo não deixa carimbo à frente do filho — o re-preparo ainda aplica a receita da Shopee', async () => {
+    // O experimento do revisor (PR #1865): import 1 → preparo 2 → SÓ o
+    // pré-carimbo (a queda) → re-preparo 2.
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    const primeiro = await importarKitShopee(deps(db), entrada19(umDe(1)));
+    expect(primeiro.kit.avisos).toEqual([]);
+    const membro = idDoFilhoPlanejado(PAI_19, KIT_MODELO);
+
+    const preparo = await prepararImportacaoKitShopee(
+      deps(db, { nowMs: AGORA + 1 }),
+      entrada19(umDe(2)),
+    );
+    expect(preparo.plano.receitaDivergente).toEqual([]);
+    await preCarimbarLinhasDoKit(asDb(db), preparo.plano.preCarimbos);
+    // A linha segue descrevendo o filho como ele está guardado.
+    expect(linhaDoKit(db, membro)?.receitaKitConferida).toBe(digital(1));
+    expect(docDoProduto(db, membro).componentesKit).toMatchObject({ 'comp-a': { quantidade: 1 } });
+
+    const repreparo = await prepararImportacaoKitShopee(
+      deps(db, { nowMs: AGORA + 2 }),
+      entrada19(umDe(2)),
+    );
+
+    expect(repreparo.plano.receitaDivergente).toEqual([]);
+    const [filho] = repreparo.plano.filhos;
+    expect(filho?.produto?.data.componentesKit).toMatchObject({ 'comp-a': { quantidade: 2 } });
+    expect(filho?.link?.dados.receitaKitConferida).toBe(digital(2));
+  });
+
+  it('(R-4) o patch de preço guardado do filho perde a corrida ANTES da escrita do filho ⇒ nenhum carimbo se move, e a nova tentativa aplica a receita da Shopee sem `receita-divergente`', async () => {
+    // Um kit de DOIS modelos: o pai não espelha receita (`componentesKit: null`),
+    // então nada além das linhas e do filho fala da receita de A.
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    await importarKitShopee(
+      deps(db, { options: opcoes({ importarFotos: false, importarPreco: false }) }),
+      entrada19(kit19(FAMILIA)),
+    );
+    const fa = idDoFilhoPlanejado(PAI_19, KIT_MODELO);
+    const fb = idDoFilhoPlanejado(PAI_19, MODEL_A);
+    expect(linhaDoKit(db, fa)?.receitaKitConferida).toBe(digital(1));
+    // A Shopee muda A de 1 para 2 no Seller Centre.
+    const mudado: readonly ModeloKit19[] = [
+      { modelId: KIT_MODELO, sku: 'K19-A', quantidade: 2, opcao: 'Azul' },
+      { modelId: MODEL_A, sku: 'K19-B', quantidade: 2, opcao: 'Verde' },
+    ];
+    // Um salvamento do operador em A durante o preparo: o patch de preço
+    // guardado (tier 1) falha com FAILED_PRECONDITION, antes do merge de A.
+    db.falhasDeUpdate.set(`produtos/${fa}`, grpc(9, 'FAILED_PRECONDITION'));
+    const antes = db.writes.length;
+
+    const erro = await importarKitShopee(
+      deps(db, { nowMs: AGORA + 1 }),
+      entrada19(kit19(mudado)),
+    ).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeePrecoDesatualizadoError);
+    expect(db.writes.slice(antes).filter((w) => w.path === `produtos/${fa}`)).toEqual([]);
+    expect(docDoProduto(db, fa).componentesKit).toMatchObject({ 'comp-a': { quantidade: 1 } });
+    // A linha segue descrevendo o filho como ele está guardado.
+    expect(linhaDoKit(db, fa)?.receitaKitConferida).toBe(digital(1));
+
+    db.falhasDeUpdate.delete(`produtos/${fa}`);
+    const res = await importarKitShopee(deps(db, { nowMs: AGORA + 2 }), entrada19(kit19(mudado)));
+
+    expect(res.kit.avisos).toEqual([]);
+    expect(docDoProduto(db, fa).componentesKit).toMatchObject({ 'comp-a': { quantidade: 2 } });
+    expect(linhaDoKit(db, fa)?.receitaKitConferida).toBe(digital(2));
+    expect(linhaDoKit(db, fb, VINCULO_19, MODEL_A)?.receitaKitConferida).toBe(digital(2));
     expect(avisoDoKit(db)?.resolvidoEm).not.toBeNull();
   });
 
