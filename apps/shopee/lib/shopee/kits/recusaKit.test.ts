@@ -490,7 +490,10 @@ describe('classificarRecusaKit — PARES e QUASE-ACERTOS (escopo das duas dobras
 describe('uma frase com DUAS agulhas do mesmo código — o TRANSITÓRIO vence (review do PR #1866)', () => {
   // A primeira linha que casa decide. Nenhuma captura junta as duas frases; o
   // risco é o SENTIDO do erro: ler como recusa permanente um create que pode ter
-  // acontecido dá `nao-criado`, e um write não idempotente seria reenviado às cegas.
+  // acontecido dá `nao-criado` — um 422 dizendo que nada foi criado, sem o convite
+  // a rodar de novo (que varre por SKU), e um kit sem vínculo pode ficar na Shopee;
+  // no braço de preço, um `recusa-desconhecida` carimbado em vez de a fila tentar
+  // de novo.
   const MISTA =
     'Failed to create product : external error: Invalid product setting. database error|Error 1040: Too many connections>';
 
