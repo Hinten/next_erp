@@ -770,8 +770,10 @@ EITHER leaves the walk incomplete. A walk stops short (`truncada`) on the page c
   `curasPendentes`. ⚠️ So a truncated conta is not always one that resolved nothing:
   out of budget INSIDE the resolve loop, the rows already resolved stay resolved
   (`resolvidos`) and the rest wait for next month's walk;
-- a gRPC-coded Firestore failure is contained to its conta (`errorCount`); anything
-  else fails the run.
+- a gRPC-coded Firestore failure is contained to its conta (`errorCount`), and one in
+  the closing inactive-conta pass is contained to that pass (`errorInativas`, with the
+  rows it had already closed still in `inativasResolvidas`) — so the summary line
+  below is always written; anything else fails the run.
 
 **What to read.** One `logger.info` per conta as it finishes —
 `[mercado-livre] auditoria de anúncios não enumerados: conta concluída`, carrying that

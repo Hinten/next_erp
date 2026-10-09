@@ -296,5 +296,11 @@ export const sweepMercadoLivreAnunciosNaoEnumerados = onSchedule(
         errors: errors.slice(0, 10).map((c) => ({ integracaoId: c.integracaoId, error: c.error })),
       });
     }
+    if (result.errorInativas != null) {
+      logger.warn(`${AUDITORIA_LOG_PREFIX} inactive-conta pass contained a Firestore failure`, {
+        error: result.errorInativas,
+        inativasResolvidas: result.inativasResolvidas,
+      });
+    }
   },
 );

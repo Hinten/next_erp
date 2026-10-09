@@ -103,8 +103,10 @@
  *
  * ---- Per-conta containment: a gRPC-coded Firestore failure
  * (`isGrpcStatusError`) is recorded on that conta's result and the loop moves on;
- * anything else — a corrupt cursor, an invalid page size, a bug — rethrows and
- * fails the run loudly (root `CLAUDE.md` rule 6).
+ * the closing inactive-conta pass has the same boundary (`errorInativas`), so a
+ * refusal there cannot cost the run its summary line. Anything else — a corrupt
+ * cursor, an invalid page size, a bug — rethrows and fails the run loudly (root
+ * `CLAUDE.md` rule 6).
  *
  * ⚠️ This file must not name the transaction API itself: the tier-1 heal runs
  * inside the promoted core writer, and
@@ -361,8 +363,19 @@ export interface AuditoriaResult {
   contas: AuditoriaContaResult[];
   /** Contas reached with no budget left — not walked at all this run. */
   naoAuditadas: string[];
-  /** Open rows closed as `conta-inativa`. */
+  /**
+   * Open rows closed as `conta-inativa` — including the ones closed before a
+   * contained failure of that pass ({@link errorInativas}).
+   */
   inativasResolvidas: number;
+  /**
+   * A gRPC failure contained in the inactive-conta pass, or `null`. ⚠️ Contained,
+   * not rethrown: that pass runs AFTER every conta's heals and writes have
+   * landed, so rejecting the run there lost nothing on the data side and only
+   * cost the wrapper its ONE summary line — the line the #948 cost step greps
+   * for. Recorded here instead, it rides that summary and the wrapper warns.
+   */
+  errorInativas: string | null;
 }
 
 /* --------------------------------- the run --------------------------------- */
@@ -379,7 +392,13 @@ export async function runAuditoriaNaoEnumerados(
 ): Promise<AuditoriaResult> {
   if (!isStockSyncEnabled()) {
     logger.info(`${AUDITORIA_LOG_PREFIX}: desabilitada (${STOCK_SYNC_FLAG_ENV} != '1') — no-op`);
-    return { enabled: false, contas: [], naoAuditadas: [], inativasResolvidas: 0 };
+    return {
+      enabled: false,
+      contas: [],
+      naoAuditadas: [],
+      inativasResolvidas: 0,
+      errorInativas: null,
+    };
   }
 
   const agora = deps.agora;
@@ -445,8 +464,31 @@ export async function runAuditoriaNaoEnumerados(
     contas.push(r);
   }
 
-  const inativasResolvidas = await resolverContasInativas(exec, ativas);
-  return { enabled: true, contas, naoAuditadas, inativasResolvidas };
+  // The same boundary as each conta's, one level up: a Firestore refusal in the
+  // inactive-conta pass (its open-avisos read, when no conta reached its aviso
+  // phase, or a `resolverAviso`) is recorded, never allowed to reject a run whose
+  // every heal and write already landed. The count is an accumulator so the rows
+  // closed before the failure stay counted. Anything else still rethrows (rule 6).
+  const inativas = { resolvidas: 0 };
+  let errorInativas: string | null = null;
+  try {
+    await resolverContasInativas(exec, ativas, inativas);
+  } catch (err) {
+    if (!isGrpcStatusError(err)) throw err;
+    errorInativas = err.message;
+    logger.error(`${AUDITORIA_LOG_PREFIX}: contas inativas — contido por erro do Firestore`, {
+      code: err.code,
+      error: err.message,
+      inativasResolvidas: inativas.resolvidas,
+    });
+  }
+  return {
+    enabled: true,
+    contas,
+    naoAuditadas,
+    inativasResolvidas: inativas.resolvidas,
+    errorInativas,
+  };
 }
 
 /* ------------------------------- one conta -------------------------------- */
@@ -483,9 +525,10 @@ interface AvisosDoRun {
  * the conta loop: a failed read must not cost the heals, which need no aviso
  * and run first. A gRPC failure here is that conta's, contained like any other
  * (`runAuditoriaNaoEnumerados`), and it is NOT cached — the next conta reads
- * again, so one transient error does not silence every conta's avisos. (In the
- * inactive-conta pass, which no conta boundary wraps, a failed read fails the
- * run, as every read in that pass always has.) A
+ * again, so one transient error does not silence every conta's avisos. (When the
+ * inactive-conta pass makes the read — no conta reached its aviso phase — its own
+ * boundary in `runAuditoriaNaoEnumerados` contains it the same way, as
+ * `errorInativas`: the run still returns, and the summary line still prints.) A
  * snapshot taken at the first conta still serves the later ones: a conta's rows
  * carry its own id prefix, and nothing this run writes for one conta is another
  * conta's row.
@@ -763,21 +806,26 @@ async function auditarConta(
  * precisely the resolver that would close it every month. A TRUNCATED listing
  * resolves nothing here either.
  */
-async function resolverContasInativas(exec: Execucao, ativas: readonly string[]): Promise<number> {
+async function resolverContasInativas(
+  exec: Execucao,
+  ativas: readonly string[],
+  // An ACCUMULATOR, not a return value: the caller contains a gRPC failure of
+  // this pass, and the rows already closed before it must stay counted.
+  contagem: { resolvidas: number },
+): Promise<void> {
   const { db, agora } = exec;
   if (agora() >= exec.prazoGlobal) {
     logger.warn(`${AUDITORIA_LOG_PREFIX}: orçamento esgotado — contas inativas não varridas`);
-    return 0;
+    return;
   }
   const listagem = await avisosDoRun(exec);
   if (listagem.truncada) {
     logger.warn(
       `${AUDITORIA_LOG_PREFIX}: listagem de avisos abertos TRUNCADA — contas inativas não resolvidas`,
     );
-    return 0;
+    return;
   }
   const prefixosAtivos = new Set(ativas.map(prefixoDaConta));
-  let resolvidas = 0;
   for (const aviso of listagem.doProdutor) {
     if (prefixosAtivos.has(aviso.prefixo)) continue;
     if (agora() >= exec.prazoGlobal) {
@@ -785,10 +833,9 @@ async function resolverContasInativas(exec: Execucao, ativas: readonly string[])
       break;
     }
     if (await exec.avisos.resolver(db, aviso.chave, RESOLUCAO_AUDITORIA.contaInativa)) {
-      resolvidas += 1;
+      contagem.resolvidas += 1;
     }
   }
-  return resolvidas;
 }
 
 /**
@@ -1139,6 +1186,7 @@ export function resumirAuditoria(
     resolvidos: soma((c) => c.resolvidos),
     mantidos: soma((c) => c.mantidos),
     inativasResolvidas: result.inativasResolvidas,
+    errorInativas: result.errorInativas,
     errorCount: result.contas.filter((c) => c.error != null).length,
     duracaoMs,
   };

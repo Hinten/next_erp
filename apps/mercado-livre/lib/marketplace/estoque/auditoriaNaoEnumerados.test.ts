@@ -361,7 +361,13 @@ describe('runAuditoriaNaoEnumerados — the master flag', () => {
 
     const result = await t.run();
 
-    expect(result).toEqual({ enabled: false, contas: [], naoAuditadas: [], inativasResolvidas: 0 });
+    expect(result).toEqual({
+      enabled: false,
+      contas: [],
+      naoAuditadas: [],
+      inativasResolvidas: 0,
+      errorInativas: null,
+    });
     expect(t.db.queries).toHaveLength(0);
     expect(t.agora).not.toHaveBeenCalled();
     expect(t.fetchPage).not.toHaveBeenCalled();
@@ -1475,6 +1481,45 @@ describe('rows of contas that are no longer active', () => {
     // No conta reached its aviso phase: the inactive pass made the run's one read.
     expect(t.avisos.port.listarAbertos).toHaveBeenCalledTimes(1);
     expect(result.inativasResolvidas).toBe(1);
+    expect(result.errorInativas).toBeNull();
+  });
+
+  // The pass runs AFTER every conta's heals and writes have landed. A Firestore
+  // refusal there used to reject the whole run — losing nothing on the data side,
+  // but costing the wrapper its ONE summary line, the line the #948 cost step reads.
+  it('⛔ a gRPC failure of a resolve in this pass is CONTAINED — the run returns, and the rows already closed stay counted', async () => {
+    const grpc = Object.assign(new Error('14 UNAVAILABLE'), { code: 14 });
+    const t = montar({ contas: ['c1'], avisos: [linha('c-off', 'p1'), linha('c-off', 'p2')] });
+    const real = vi.mocked(t.avisos.port.resolver).getMockImplementation()!;
+    vi.mocked(t.avisos.port.resolver).mockImplementationOnce(real).mockRejectedValueOnce(grpc);
+
+    const result = await t.run();
+
+    expect(result.errorInativas).toBe('14 UNAVAILABLE');
+    expect(result.inativasResolvidas).toBe(1);
+    expect(t.avisos.resolvidos).toHaveLength(1);
+    expect(resumirAuditoria(result, 0)).toMatchObject({
+      inativasResolvidas: 1,
+      errorInativas: '14 UNAVAILABLE',
+    });
+  });
+
+  it('⛔ a gRPC failure of the open-avisos read made BY this pass (no conta reached its aviso phase) is contained too', async () => {
+    const grpc = Object.assign(new Error('4 DEADLINE_EXCEEDED'), { code: 4 });
+    const t = montar({ contas: [], avisos: [linha('c-off', 'p1')] });
+    vi.mocked(t.avisos.port.listarAbertos).mockRejectedValueOnce(grpc);
+
+    const result = await t.run();
+
+    expect(result).toMatchObject({ inativasResolvidas: 0, errorInativas: '4 DEADLINE_EXCEEDED' });
+    expect(t.avisos.resolvidos).toEqual([]);
+  });
+
+  it('anything that is NOT a gRPC status error in this pass still fails the run (rule 6)', async () => {
+    const t = montar({ contas: [], avisos: [linha('c-off', 'p1')] });
+    vi.mocked(t.avisos.port.listarAbertos).mockRejectedValueOnce(new TypeError('boom'));
+
+    await expect(t.run()).rejects.toThrow(TypeError);
   });
 });
 
@@ -1636,6 +1681,7 @@ describe('resumirAuditoria — the run summary line', () => {
       resolvidos: 0,
       mantidos: 0,
       inativasResolvidas: 1,
+      errorInativas: null,
       errorCount: 0,
       duracaoMs: 1234,
     });
@@ -1643,7 +1689,16 @@ describe('resumirAuditoria — the run summary line', () => {
 
   it('the disabled run summarises as such', () => {
     expect(
-      resumirAuditoria({ enabled: false, contas: [], naoAuditadas: [], inativasResolvidas: 0 }, 0),
+      resumirAuditoria(
+        {
+          enabled: false,
+          contas: [],
+          naoAuditadas: [],
+          inativasResolvidas: 0,
+          errorInativas: null,
+        },
+        0,
+      ),
     ).toMatchObject({ enabled: false, contas: 0, completas: 0, errorCount: 0 });
   });
 });
