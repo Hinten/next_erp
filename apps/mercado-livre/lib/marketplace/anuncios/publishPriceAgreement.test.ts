@@ -319,22 +319,53 @@ describe('publish and the price sync price the SAME family the same way', () => 
       expect(publicar(f)).toEqual({ recusa: [SEM_PRECO('Camiseta')] });
     });
 
-    it('⚠️ STILL DIFFERENT (open follow-up, NOT the intended end state) — a GATE, not a price: own prices under an UNPRICED anchor', () => {
-      // Every member's price agrees (the anchor is never read on this arm), but
-      // publish still requires the anchor's own `resolvePrice` — a price no
-      // User-Products member body carries — while the sync prices the members.
-      // ⚠️ This pins TODAY's behaviour, not a decision that it is right: it was
-      // left out of scope only because relaxing it changes a live publish gate.
-      // Whoever decides the gate flips this expectation on purpose — to a
-      // `concordam(f, { M: 60, G: 70 })` if publish stops requiring the anchor.
+    it('PAIR (#1698): own prices under an UNPRICED anchor — the anchor is never sent, so it gates nothing', () => {
+      // No User-Products member body carries the anchor's price on this arm, and
+      // a family stamps no `precoPublicado`. Publish used to require it anyway and
+      // refuse a family the sync prices; the line above is this case's near-miss —
+      // the same unpriced anchor under propagation still refuses on both sides.
+      concordam(
+        { userProducts: true, precosPai: null, propagate: false, filhos: FILHOS_PROPRIOS },
+        { M: 60, G: 70 },
+      );
+    });
+
+    it('PAIR: a family of ONE, own price under an UNPRICED anchor — published like any family', () => {
+      concordam(
+        {
+          userProducts: true,
+          precosPai: null,
+          propagate: false,
+          filhos: [{ id: 'M', precos: valor(60) }],
+        },
+        { M: 60 },
+      );
+    });
+
+    it('a family of ONE with NO price anywhere still refuses — naming the MEMBER, never the parent', () => {
+      // The `adotar` shape: `garantirMembroUnico` gives the sole member a COPY of
+      // the parent's `precos`, so an unpriced parent means an unpriced member. The
+      // relaxed anchor must not let it through with nothing on the wire.
       const f: Familia = {
         userProducts: true,
         precosPai: null,
         propagate: false,
-        filhos: FILHOS_PROPRIOS,
+        filhos: [{ id: 'M', precos: null }],
       };
-      expect(sincronizar(f)).toEqual({ M: 60, G: 70 });
-      expect(publicar(f)).toEqual({ recusa: [SEM_PRECO('Camiseta')] });
+      expect(sincronizar(f)).toEqual({ M: null });
+      expect(publicar(f)).toEqual({ recusa: [SEM_PRECO('Camiseta M')] });
     });
+
+    it.each(FORMATOS.filter((fmt) => fmt.nome !== 'a User-Products family'))(
+      'NEAR-MISS: $nome under a stored false — an UNPRICED anchor still refuses on both sides, naming the parent',
+      (fmt) => {
+        // Only a User-Products family with members prices off the children. A
+        // legacy family sends ONE price, the anchor's, and a childless listing IS
+        // the anchor — the flag changes nothing for either.
+        const f: Familia = { ...fmt, precosPai: null, propagate: false };
+        expect(sincronizar(f)).toEqual(fmt.itens(null));
+        expect(publicar(f)).toEqual({ recusa: [SEM_PRECO('Camiseta')] });
+      },
+    );
   });
 });

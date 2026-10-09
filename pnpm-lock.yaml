@@ -1616,6 +1616,9 @@ importers:
       eslint:
         specifier: 'catalog:'
         version: 9.39.4
+      firebase:
+        specifier: 'catalog:'
+        version: 12.13.0
       tsx:
         specifier: 'catalog:'
         version: 4.21.0

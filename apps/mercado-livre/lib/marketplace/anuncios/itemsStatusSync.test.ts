@@ -361,6 +361,10 @@ function seedFamily(
     status?: string | null;
     sub?: string[] | null;
     moderacoes?: DocData[];
+    /** #847 — absent unless asked for, like every member link written before it. */
+    categoria?: string;
+    /** Seed the member WITHOUT an `itemId` (a legacy `variations[]` row). */
+    semItemId?: boolean;
   }>,
   link: DocData = {},
   produto: DocData = {},
@@ -382,7 +386,7 @@ function seedFamily(
   });
   for (const m of members) {
     db.seed(`produtos/${m.child}/variacaoMercadoLivre`, `v-${m.child}`, {
-      itemId: m.itemId,
+      itemId: m.semItemId ? null : m.itemId,
       produtoMercadoLivreOuterRef: FAMILY_PML_REF,
       produtoVariacaoOuterRef: `documents/produtos/${m.child}`,
       // Deliberately absent unless asked for: `contaOuterRef` is null on every
@@ -392,6 +396,7 @@ function seedFamily(
       // Absent unless asked for: a member link written before #1087 has no such
       // key, and the fold must read that as "no moderation" rather than throw.
       ...(m.moderacoes ? { moderacoes: m.moderacoes } : {}),
+      ...(m.categoria ? { category_id: m.categoria } : {}),
     });
   }
 }
@@ -1751,6 +1756,7 @@ describe('applyFamilyStatusAndFold — limparFalhaSempre (#1142)', () => {
     subStatus,
     moderacoes: null,
     userProductId: null,
+    categoryId: null,
   });
 
   const alvo = { produtoId: PRODUTO, linkDocId: 'link1', pmlOuterRef: FAMILY_PML_REF };
@@ -1809,5 +1815,353 @@ describe('applyFamilyStatusAndFold — limparFalhaSempre (#1142)', () => {
     await applyFamilyStatusAndFold(asDb(db), CONTA, alvo, [membroObservado('paused')]);
 
     expect(db.docData(LINK_PATH, 'link1')?.errors).toEqual(['ML 400: invalid quantity']);
+  });
+});
+
+/**
+ * #847. Mercado Livre recategorizes listings on its own and says so only through
+ * an ordinary `items` delivery. `category_id` is create-only on our wire, so a
+ * stale stored value never reverts ML — it misleads every READER instead (the
+ * size-chart binding, a new UP member's POST, the editor's attribute grid).
+ */
+describe('syncItemStatus — ML recategorized the listing (#847)', () => {
+  it('a category-only change is a change in its own right: written, reported `synced`', async () => {
+    // Nothing else moved, so without counting the category this short-circuits on
+    // `unchanged` and the stored value stays stale forever.
+    const db = new FakeDb();
+    seedLink(db, { status: 'active', sub_status: null, category_id: 'MLB1' });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', sub_status: null, category_id: 'MLB2' }),
+    );
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ category_id: 'MLB2', estado: 'p' });
+  });
+
+  it('the same category → `unchanged`, no write', async () => {
+    const db = new FakeDb();
+    seedLink(db, { status: 'active', sub_status: null, category_id: 'MLB1' });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', sub_status: null, category_id: 'MLB1' }),
+    );
+
+    expect(out).toBe('unchanged');
+    expect(db.updates).toEqual([]);
+  });
+
+  it('fill-only: a response that omits the category never nulls the stored one', async () => {
+    const db = new FakeDb();
+    seedLink(db, { status: 'active', sub_status: null, category_id: 'MLB1' });
+
+    // A status change forces a write, so the test can see what that write carries.
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'paused', sub_status: ['out_of_stock'] }),
+    );
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ category_id: 'MLB1', status: 'paused' });
+    expect(db.updates.some((u) => 'category_id' in u.patch)).toBe(false);
+  });
+
+  it('a link that never had a category gains ML’s on the first delivery', async () => {
+    const db = new FakeDb();
+    seedLink(db, { status: 'active', sub_status: null });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', sub_status: null, category_id: 'MLB7' }),
+    );
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ category_id: 'MLB7' });
+  });
+
+  it.each([
+    ['a prefix', 'MLB1', 'MLB12'],
+    ['a case fold', 'MLB1', 'mlb1'],
+  ])('must stay DISTINCT — %s is a different ML category', async (_caso, armazenada, doMl) => {
+    const db = new FakeDb();
+    seedLink(db, { status: 'active', sub_status: null, category_id: armazenada });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', sub_status: null, category_id: doMl }),
+    );
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ category_id: doMl });
+  });
+
+  it('a migration-tagged listing defers WITHOUT writing the category', async () => {
+    // The deferral branches write only `estado: 'am'`; they sync nothing else, and
+    // a category riding along would be a status-less write the outcome hides.
+    const db = new FakeDb();
+    seedLink(db, { category_id: 'MLB1' });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', tags: ['variations_migration_uptin'], category_id: 'MLB2' }),
+    );
+
+    expect(out).toBe('deferred-migration-uptin');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ category_id: 'MLB1', estado: 'am' });
+  });
+});
+
+describe('syncItemStatus — the category of a User-Products family (#847)', () => {
+  const categoriaDoPai = (db: FakeDb) => db.docData(LINK_PATH, 'link1')?.category_id;
+  const escritasDeCategoriaNoPai = (db: FakeDb) =>
+    db.updates.filter((u) => u.path === `${LINK_PATH}/link1` && 'category_id' in u.patch);
+
+  it("records the member's category on ITS OWN link", async () => {
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }], { category_id: 'MLB1' });
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({ category_id: 'MLB2' });
+  });
+
+  it('every known member agrees → the parent moves, and the delivery reports the family moved', async () => {
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' },
+        { itemId: MEMBER_B, child: 'childB', categoria: 'MLB2' },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(out).toBe('synced-family');
+    expect(categoriaDoPai(db)).toBe('MLB2');
+  });
+
+  it('members that DISAGREE leave the parent alone — no flip-flop on every delivery', async () => {
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' },
+        // B was already observed in the OLD category.
+        { itemId: MEMBER_B, child: 'childB', categoria: 'MLB1' },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(out).toBe('synced-member');
+    expect(categoriaDoPai(db)).toBe('MLB1');
+    // A's own reading is still recorded truthfully.
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({ category_id: 'MLB2' });
+  });
+
+  it('a sibling whose category was never learned does NOT block the first observation', async () => {
+    // Every member link written before #847 carries no category.
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA' },
+        { itemId: MEMBER_B, child: 'childB' },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(categoriaDoPai(db)).toBe('MLB2');
+  });
+
+  it('a row with no `itemId` is not a listing — its stored category cannot block', async () => {
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' },
+        { itemId: 'nunca-publicado', child: 'childX', categoria: 'MLB1', semItemId: true },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(categoriaDoPai(db)).toBe('MLB2');
+  });
+
+  it('#1842 review — a CLOSED sibling stuck on the old category does not freeze the parent', async () => {
+    // The closed member was learned in MLB1 (e.g. by "Reverificar anúncio") and
+    // ML need not recategorize an item that no longer sells, so it may never be
+    // re-observed. Under unanimity its vote would veto every later move.
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' },
+        { itemId: MEMBER_B, child: 'childB', status: 'closed', categoria: 'MLB1' },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(out).toBe('synced-family');
+    expect(categoriaDoPai(db)).toBe('MLB2');
+    // The ended member's own record is left as it was last observed.
+    expect(db.docData(memberVarPath('childB'), 'v-childB')).toMatchObject({ category_id: 'MLB1' });
+  });
+
+  it('…while a PAUSED sibling on the old category is still live, and still vetoes', async () => {
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' },
+        { itemId: MEMBER_B, child: 'childB', status: 'paused', categoria: 'MLB1' },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(categoriaDoPai(db)).toBe('MLB1');
+  });
+
+  it('the category moves even when the STATUS fold cannot conclude', async () => {
+    // One member closed, the sibling never observed: the status fold declines to
+    // conclude. That says nothing about the category, which must not be held
+    // hostage by it — and the stored status is what is reported.
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA' },
+        { itemId: MEMBER_B, child: 'childB', status: null },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'closed', category_id: 'MLB2' }),
+    );
+
+    expect(out).toBe('synced-family');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      category_id: 'MLB2',
+      estado: 'p',
+      status: 'active',
+    });
+  });
+
+  it('fill-only on the family path: a member reading without a category erases nothing', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' }], {
+      category_id: 'MLB1',
+    });
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'paused', sub_status: ['out_of_stock'] }),
+    );
+
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
+      category_id: 'MLB1',
+      status: 'paused',
+    });
+    expect(categoriaDoPai(db)).toBe('MLB1');
+  });
+
+  it('rule 7: two members recategorized concurrently move the parent exactly ONCE', async () => {
+    // Both members were observed in MLB1; ML moved both to MLB2 and fans out one
+    // delivery per member. Each delivery alone sees a disagreement and must not
+    // move the parent; only the transaction that re-runs against the WINNER's
+    // commit sees both in MLB2.
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' },
+        { itemId: MEMBER_B, child: 'childB', categoria: 'MLB1' },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    db.onBeforeCommit = async () => {
+      await syncItemStatus(
+        asDb(db),
+        CONTA,
+        MEMBER_B,
+        resolverFor({ status: 'active', category_id: 'MLB2' }),
+      );
+    };
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(categoriaDoPai(db)).toBe('MLB2');
+    expect(escritasDeCategoriaNoPai(db)).toHaveLength(1);
   });
 });
