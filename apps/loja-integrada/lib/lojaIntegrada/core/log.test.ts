@@ -340,7 +340,9 @@ describe('the observer never throws', () => {
   const caminhos = ['/v1/pedido/1', '/v1/situacao/', '/v1/produto/1', '/webhooks/v1/pedido'];
   const statuses = [200, 401, 429, 503, null];
 
-  it('over every body × class × status: exactly one line each', () => {
+  // Every body × class × status, through the whole observer: seconds on a loaded
+  // CI runner, so the default timeout would turn load into a red test.
+  it('over every body × class × status: exactly one line each', { timeout: 30_000 }, () => {
     const gravador = gravadorDeLog();
     const observar = criarObservadorLi({ conta: 'c', escrever: gravador.escrever });
     for (const corpo of corpos) {

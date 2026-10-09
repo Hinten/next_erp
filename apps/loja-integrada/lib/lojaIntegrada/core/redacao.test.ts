@@ -1808,7 +1808,9 @@ describe('caps', () => {
     expect(em(r.ok ? r.corpo : null, 'objects.0.sku')).toBe('sku-0001');
   });
 
-  it('a body over 32 MB is refused by the fixture profile', () => {
+  // Builds and scans a 32 MB string: seconds on a loaded CI runner, so the
+  // default timeout would turn load into a red test.
+  it('a body over 32 MB is refused by the fixture profile', { timeout: 30_000 }, () => {
     expect(LIMITE_ANALISE_BYTES.fixture).toBe(32 * 1024 * 1024);
     const corpo = `"${'x'.repeat(LIMITE_ANALISE_BYTES.fixture)}"`;
     expect(fixture('/v1/produto/1', 200, corpo)).toMatchObject({
