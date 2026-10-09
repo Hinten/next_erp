@@ -81,8 +81,10 @@
  * `component_list` default to `[]`, `quantity` is nullable), and a
  * `ShopeeConfigError` — "our own misconfiguration" — would end the whole run in
  * the sender's callers: the job stamps it failed on attempt 0, the manual push
- * aborts its siblings. Each case is ONE `console.warn` carrying ids — and, for
- * a model, the package's own sentence (field paths, never a value).
+ * aborts its siblings. The unusable live models share ONE `console.warn`,
+ * listing every such model with its cause — the package's sentence, or this
+ * module's own for a missing `tier_index` (field paths, never a value); a read
+ * of another item is ONE `console.warn` with both item ids.
  *
  * What no single model shows — two live models claiming one option, or a second
  * `main_component` — is still the package guard's refusal of the ASSEMBLED body
