@@ -89,8 +89,10 @@ interface LinhaRecusaKit {
  *
  * The needles are written in Shopee's own casing and folded ONCE through the
  * same fold as the haystack, so a needle can never be compared in a form the
- * haystack is not. No needle contains another (a test pins it), so every row is
- * reachable by its own needle alone.
+ * haystack is not. No needle contains another (a test pins it), so no needle row
+ * hides another; and each code-alone row (#5, #7) is the only row of its code,
+ * so none hides a needle row either. Together that makes every row reachable by
+ * its own needle (or code) alone, which the per-row walk in the tests pins.
  */
 export const TABELA_RECUSA_KIT = [
   {

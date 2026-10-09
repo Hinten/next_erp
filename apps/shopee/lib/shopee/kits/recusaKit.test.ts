@@ -160,7 +160,7 @@ const M = MOTIVO_PROBLEMA_PUBLICACAO;
 
 /* -------------------------------- the table -------------------------------- */
 
-describe('TABELA_RECUSA_KIT — D1 §3.2 verbatim, mais a linha P2-a', () => {
+describe('TABELA_RECUSA_KIT — D1 §3.2 (códigos e agulhas verbatim; a #2 transitória na frente), mais a linha P2-a', () => {
   it('os códigos e as agulhas na ordem de D1, salvo a #2 TRANSITÓRIA na frente, e "mupltiple main sku" por último', () => {
     expect(TABELA_RECUSA_KIT.map((l) => [l.codigo, l.agulha, l.motivo])).toEqual([
       ['error_busi', 'too many connections', 'instabilidade-shopee'],
@@ -181,7 +181,7 @@ describe('TABELA_RECUSA_KIT — D1 §3.2 verbatim, mais a linha P2-a', () => {
     expect(agulhas).not.toContain('multiple main sku');
   });
 
-  it('nenhuma agulha contém outra (toda linha casa pela própria agulha), e cada uma é ponto fixo da dobra', () => {
+  it('nenhuma agulha contém outra (nenhuma esconde outra do mesmo código), e cada uma é ponto fixo da dobra', () => {
     const agulhas = TABELA_RECUSA_KIT.flatMap((l) => (l.agulha === null ? [] : [l.agulha]));
     expect(agulhas).toHaveLength(7);
     for (const a of agulhas) {
