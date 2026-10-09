@@ -1121,9 +1121,14 @@ component_list: linhasDeReenvioDoKit(live) }` — the live option and the live
   row), or the read answered another item — is not sent and its row is
   `falha forma-de-modelo-divergente`, stamped `erp:`, even when Shopee then
   refuses the call the other models went in (the transport hands the sender
-  that list BEFORE the write). A live model that cannot be resent logs ONE
-  `console.warn` with ids and the package's sentence, a read of another item
-  ONE with both item ids; a model the kit simply lacks logs nothing. When none
+  that list BEFORE the write) — while the ITEM records Shopee's refusal (motivo,
+  code and sentence) whatever the alvo order: a set-aside model speaks for the
+  item only when no model the call carried failed (a promotion lock only skips
+  them, so there the set-aside row is the item's one failure). The live models
+  that cannot be resent share ONE `console.warn`, listing every such model
+  with its cause (the package's sentence, or `enviarPrecoKit.ts`'s own for a
+  missing `tier_index`); a read of another item logs ONE with both item ids; a
+  model the kit simply lacks logs nothing. When none
   is usable, `update_kit_item` is not called at all. ⚠️ Never a
   `ShopeeConfigError` for ONE model's wire: that class is "our own
   misconfiguration", which the job stamps `failed` on attempt 0 and the

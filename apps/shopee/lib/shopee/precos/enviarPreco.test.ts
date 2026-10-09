@@ -98,6 +98,11 @@ function itemComModelos(alvoA: number | null = 12, alvoB: number | null = 22): I
   };
 }
 
+/** The SAME item with its alvos in reverse order — same facts, the other order. */
+function alvosInvertidos(item: ItemDePreco): ItemDePreco {
+  return { ...item, alvos: [...item.alvos].reverse() };
+}
+
 /** A no-model item: ONE alvo at the no-model id, priced from the anchor, no child. */
 function itemSemModelo(alvo: number | null = 15): ItemDePreco {
   return {
@@ -2018,12 +2023,10 @@ describe('enviarPrecoDoItem — o kit: um modelo VIVO inutilizável é uma LINHA
     ['que o kit vivo NÃO tem', kitVivo([[MODELO_B, 1]])],
     ['SEM `tier_index`', kitComModeloCru(MODELO_A, (m) => ({ ...m, tier_index: [] }))],
   ])(
-    'K19 — ⚠️ A %s fica de fora e o `update_kit_item` de B é RECUSADO ⇒ A continua a linha divergente `erp:` (nunca a recusa de uma chamada em que não estava); B leva a recusa da Shopee',
+    'K19 — ⚠️ A %s fica de fora e o `update_kit_item` de B é RECUSADO ⇒ A continua a linha divergente `erp:` (nunca a recusa de uma chamada em que não estava); B — e o ITEM — levam a recusa da Shopee',
     async (_caso, kit) => {
-      const c = cenarioDeKit({
-        kit,
-        updateKitItem: erroDoKit('product.error_busi', 'Invalid product setting'),
-      });
+      const erro = erroDoKit('product.error_busi', 'Invalid product setting');
+      const c = cenarioDeKit({ kit, updateKitItem: erro });
 
       const r = await enviarPrecoDoItem(itemComModelos(12, 25), c.deps);
 
@@ -2031,7 +2034,22 @@ describe('enviarPrecoDoItem — o kit: um modelo VIVO inutilizável é uma LINHA
         c.corposDoKit[0] as { item_setting: { model_list: { model_id: number }[] } }
       ).item_setting.model_list;
       expect(enviados.map((m) => m.model_id)).toEqual([MODELO_B]);
-      expect(r).toMatchObject({ tipo: 'falha', carimbado: true });
+      // The item speaks with Shopee's reading of the call — never with A's
+      // `erp:` row, which came FIRST in alvo order but was not in the call.
+      expect(r).toMatchObject({
+        tipo: 'falha',
+        motivo: 'recusa-desconhecida',
+        codigo: 'product.error_busi',
+        mensagem: erro.message,
+        carimbado: true,
+      });
+      expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual({
+        precoRecusaEm: AGORA_MS,
+        precoRecusaCodigo: 'product.error_busi',
+        precoRecusaMotivo: 'recusa-desconhecida',
+        precoRecusaMensagem: erro.message,
+        ultimaModificacao: AGORA_MS,
+      });
       expect(linhaDe(r, MODELO_A)).toMatchObject({
         resultado: 'falha',
         motivo: 'forma-de-modelo-divergente',
@@ -2048,6 +2066,173 @@ describe('enviarPrecoDoItem — o kit: um modelo VIVO inutilizável é uma LINHA
       });
       expect(unicoPatch(c.db, CAMINHO_VAR_B)).toMatchObject({
         precoRecusaCodigo: 'product.error_busi',
+      });
+    },
+  );
+
+  it.each([
+    ['PRIMEIRO', (item: ItemDePreco) => item, [CAMINHO_VAR_A, CAMINHO_VAR_B, CAMINHO_LINK]],
+    ['ÚLTIMO', alvosInvertidos, [CAMINHO_VAR_B, CAMINHO_VAR_A, CAMINHO_LINK]],
+  ])(
+    'K20 — ⚠️ PAR: o modelo SEPARADO vem %s nos alvos e o `update_kit_item` é RECUSADO (T14) ⇒ o MESMO desfecho: o item leva a leitura da Shopee — motivo, código VERBATIM e a FRASE — no resultado e no vínculo',
+    async (_posicao, ordenar, escritos) => {
+      // The live kit lacks A: A is set aside, B alone goes and is refused.
+      const erro = erroDoKit('product.error_busi', 'Invalid product setting');
+      const c = cenarioDeKit({ kit: kitVivo([[MODELO_B, 1]]), updateKitItem: erro });
+
+      const r = await enviarPrecoDoItem(ordenar(itemComModelos(12, 25)), c.deps);
+
+      expect(r).toMatchObject({
+        tipo: 'falha',
+        motivo: 'recusa-desconhecida',
+        codigo: 'product.error_busi',
+        mensagem: erro.message,
+        carimbado: true,
+      });
+      expect(linhaDe(r, MODELO_A)).toMatchObject({
+        resultado: 'falha',
+        motivo: 'forma-de-modelo-divergente',
+        codigo: null,
+      });
+      expect(linhaDe(r, MODELO_B)).toMatchObject({
+        resultado: 'falha',
+        motivo: 'recusa-desconhecida',
+        codigo: 'product.error_busi',
+      });
+      expect(caminhosEscritos(c.db)).toEqual(escritos);
+      expect(unicoPatch(c.db, CAMINHO_VAR_A)).toMatchObject({
+        precoRecusaCodigo: 'erp:forma-de-modelo-divergente',
+      });
+      expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual({
+        precoRecusaEm: AGORA_MS,
+        precoRecusaCodigo: 'product.error_busi',
+        precoRecusaMotivo: 'recusa-desconhecida',
+        precoRecusaMensagem: erro.message,
+        ultimaModificacao: AGORA_MS,
+      });
+    },
+  );
+
+  it.each([
+    ['PRIMEIRO', (item: ItemDePreco) => item],
+    ['ÚLTIMO', alvosInvertidos],
+  ])(
+    'K21 — ⛔ QUASE-IGUAL: a chamada recusada por uma TRAVA de promoção (o enviado é um PULO, nenhuma falha) ⇒ o modelo separado (%s nos alvos) é a única falha e fala pelo item: `forma-de-modelo-divergente`, `erp:`',
+    async (_posicao, ordenar) => {
+      const c = cenarioDeKit({
+        kit: kitVivo([[MODELO_B, 1]]),
+        updateKitItem: erroDoKit('product.error_cannot_update_price_in_promotion', 'locked'),
+      });
+
+      const r = await enviarPrecoDoItem(ordenar(itemComModelos(12, 25)), c.deps);
+
+      expect(r).toMatchObject({
+        tipo: 'falha',
+        motivo: 'forma-de-modelo-divergente',
+        codigo: 'erp:forma-de-modelo-divergente',
+        mensagem: null,
+        carimbado: true,
+      });
+      expect(linhaDe(r, MODELO_B)).toMatchObject({
+        resultado: 'pulado',
+        motivo: 'bloqueado-por-promocao',
+      });
+      expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_LINK]);
+      expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual({
+        precoRecusaEm: AGORA_MS,
+        precoRecusaCodigo: 'erp:forma-de-modelo-divergente',
+        precoRecusaMotivo: 'forma-de-modelo-divergente',
+        precoRecusaMensagem: null,
+        ultimaModificacao: AGORA_MS,
+      });
+    },
+  );
+
+  it.each([
+    ['PRIMEIRO', (item: ItemDePreco) => item, 'forma-de-modelo-divergente'],
+    ['ÚLTIMO', alvosInvertidos, 'preco-nao-atualizado'],
+  ])(
+    'K23 — ⛔ QUASE-IGUAL: a escrita ACEITA (nenhuma recusa da Shopee) e o enviado NÃO confirmado ⇒ a regra do envio parcial fica: o modelo separado (%s nos alvos) é a única falha que carimba, e o item a registra',
+    async (_posicao, ordenar, motivoDoItem) => {
+      // The read-back still shows B at 22: B is `preco-nao-atualizado`, unstamped.
+      const c = cenarioDeKit({
+        kit: kitVivo([[MODELO_B, 1]]),
+        listas: [LISTA_PADRAO(), LISTA_PADRAO()],
+      });
+
+      const r = await enviarPrecoDoItem(ordenar(itemComModelos(12, 25)), c.deps);
+
+      expect(c.updateKitItem).toHaveBeenCalledTimes(1);
+      expect(linhaDe(r, MODELO_B)).toMatchObject({
+        resultado: 'falha',
+        motivo: 'preco-nao-atualizado',
+      });
+      // The item's MOTIVO follows the first refusal in alvo order (the partial
+      // rule, unchanged): A's divergence when A comes first, B's unconfirmed
+      // send when B does. What it RECORDS — the link, and the result's
+      // `codigo` — is the one stamping row's, A's `erp:`, in both orders.
+      // ⚠️ So with B first the result pairs B's motivo with A's code: the
+      // sender's standing split (motivo = the first falha, codigo = the first
+      // STAMPING falha — any partial whose first falha does not stamp reads
+      // so), pinned knowingly: changing it is a decision for every path, not
+      // for this kit case.
+      expect(r).toMatchObject({
+        tipo: 'falha',
+        motivo: motivoDoItem,
+        codigo: 'erp:forma-de-modelo-divergente',
+        mensagem: null,
+        carimbado: true,
+      });
+      expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_LINK]);
+      expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual({
+        precoRecusaEm: AGORA_MS,
+        precoRecusaCodigo: 'erp:forma-de-modelo-divergente',
+        precoRecusaMotivo: 'forma-de-modelo-divergente',
+        precoRecusaMensagem: null,
+        ultimaModificacao: AGORA_MS,
+      });
+    },
+  );
+
+  it.each([
+    [
+      'A (sem nome na lista ⇒ a leitura do TOPO) PRIMEIRO',
+      (item: ItemDePreco) => item,
+      { motivo: 'preco-recusado', codigo: CODIGO_RECUSADO, comFrase: true },
+    ],
+    [
+      'B (a razão CONHECIDA do modelo) PRIMEIRO',
+      alvosInvertidos,
+      { motivo: 'modelo-invalido', codigo: RAZAO_MODELO_INEXISTENTE, comFrase: false },
+    ],
+  ])(
+    'K22 — ⛔ QUASE-IGUAL (anúncio COMUM, chamada recusada): toda falha FOI enviada, então a ordem dos alvos continua decidindo — %s fala pelo item',
+    async (_caso, ordenar, esperado) => {
+      const erro = parcial(CODIGO_RECUSADO, { falhas: [[MODELO_B, RAZAO_MODELO_INEXISTENTE]] });
+      const c = cenarioComModelos({
+        modelos: modelos([
+          [MODELO_A, 10],
+          [MODELO_B, 20],
+        ]),
+        updatePrice: [erro],
+      });
+
+      const r = await enviarPrecoDoItem(ordenar(itemComModelos(12, 22)), c.deps);
+
+      const mensagem = esperado.comFrase ? erro.message : null;
+      expect(r).toMatchObject({
+        tipo: 'falha',
+        motivo: esperado.motivo,
+        codigo: esperado.codigo,
+        mensagem,
+        carimbado: true,
+      });
+      expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual({
+        precoRecusaEm: AGORA_MS,
+        precoRecusaCodigo: esperado.codigo,
+        precoRecusaMotivo: esperado.motivo,
+        precoRecusaMensagem: mensagem,
+        ultimaModificacao: AGORA_MS,
       });
     },
   );
