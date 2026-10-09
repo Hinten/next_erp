@@ -418,8 +418,9 @@ export const TIPO_AVISO_LABELS = {
  *    clock stays the decision's own) — it decides nothing itself and writes
  *    this tipo only through that shared decision. A produto DELETE is never a
  *    recipe change, so deleting the child that held the only divergent row
- *    leaves the aviso open until a later write re-evaluates the kit (a
- *    sibling's recipe edit, a re-import, a republish or a recriar).
+ *    leaves the aviso open; a later re-import, republish or recriar/converter
+ *    can close it (a sibling's recipe edit re-evaluates the kit too, but with
+ *    every sibling in step it keeps the aviso open for that sibling).
  */
 export const tipoAvisoSchema = z
   .enum([

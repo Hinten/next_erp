@@ -245,16 +245,25 @@ describe('avisarReceitaKitShopee — the gate costs nothing (M154)', () => {
     expect(leituras).toEqual([]);
   });
 
-  it('a delete reads nothing, even from a kit that had a recipe', async () => {
+  // With recipe B, C1 is the child holding the ONLY divergent row of an open
+  // (int-1, K) aviso (its row still carries Shopee's A): its delete hands nothing
+  // over either, so that aviso stays open — intended, see `receitaKitMudou`. The
+  // rows stay seeded: the delete cascade (`onProdutoDeleted`) runs beside this
+  // delivery, not before it.
+  it('a delete reads nothing and hands nothing over — even of the child holding the only divergent row', async () => {
     const { db, leituras } = stubDb(banco);
-    await expect(
-      avisarReceitaKitShopee(db, C1, { paiId: K, componentesKit: RECEITA_A }, undefined, DEPS),
-    ).resolves.toBeNull();
+    for (const receita of [RECEITA_A, RECEITA_B]) {
+      await expect(
+        avisarReceitaKitShopee(db, C1, { paiId: K, componentesKit: receita }, undefined, DEPS),
+      ).resolves.toBeNull();
+    }
     expect(leituras).toEqual([]);
+    expect(m.reavaliar).not.toHaveBeenCalled();
   });
 
-  // ...and the near-miss: a real edit pays exactly the produto re-read and ONE
-  // unfiltered read of its own rows — never a link doc, never another produto.
+  // ...and the near-miss: a real edit of that same child hands (int-1, K) over,
+  // paying exactly the produto re-read and ONE unfiltered read of its own rows —
+  // never a link doc, never another produto.
   it('a recipe edit reads the produto and its own rows, nothing else', async () => {
     const { db, leituras } = stubDb(banco);
     await expect(
@@ -267,6 +276,7 @@ describe('avisarReceitaKitShopee — the gate costs nothing (M154)', () => {
       ),
     ).resolves.toEqual({ reavaliados: 1 });
     expect(leituras).toEqual([`produtos/${C1}`, `produtos/${C1}/variashopee`]);
+    expect(pares()).toEqual([{ integracaoId: 'int-1', kitProdutoId: K }]);
   });
 });
 
@@ -347,84 +357,6 @@ describe('avisarReceitaKitShopee — the CURRENT state decides, never the event 
     expect(deps).toBe(DEPS);
     expect(deps.agoraUs).toBe(DEPS.agoraUs);
     expect((deps.increment(2) as FieldValue).isEqual(FieldValue.increment(2))).toBe(true);
-  });
-});
-
-/* -------------------------------------------------------------------------- */
-/*                    a child DELETE leaves the aviso open                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The aviso of (int-1, K) is OPEN on C1 alone: C1's recipe was edited to B while
- * its row still carries Shopee's A, and sibling C2 is in step. Deleting C1 takes
- * away the only divergent row, yet its delivery decides NOTHING, so the aviso
- * stays open until a later write re-evaluates K. Intended (PR #1871 review): the
- * delete cascade owns C1's rows, and a resolve caused by a deletion alone carries
- * no newer clock than the open row (the shared decision's R-16 residual).
- *
- * C1's rows are still seeded after its delete on purpose: the cascade
- * (`onProdutoDeleted`) runs beside this delivery, not before it.
- */
-describe('avisarReceitaKitShopee — deleting the only divergent child decides nothing', () => {
-  const linhasDeK = {
-    [C1]: { r1: linha() },
-    [C2]: { r2: linha({ modelId: 2000458821 }) },
-  };
-
-  it('the delete of C1 reads nothing and hands (conta, K) to no decision', async () => {
-    const { db, leituras } = stubDb({
-      produtos: { [C2]: { paiId: K, componentesKit: RECEITA_A } },
-      variashopee: linhasDeK,
-    });
-    await expect(
-      avisarReceitaKitShopee(db, C1, { paiId: K, componentesKit: RECEITA_B }, undefined, DEPS),
-    ).resolves.toBeNull();
-    expect(leituras).toEqual([]);
-    expect(m.reavaliar).not.toHaveBeenCalled();
-  });
-
-  // The near-miss on the same child and the same rows: EDITED back to A instead of
-  // deleted, its delivery hands the pair over — the decision can resolve it.
-  it('the same C1 edited back to A hands (int-1, K) to the decision', async () => {
-    const { db } = stubDb({
-      produtos: {
-        [C1]: { paiId: K, componentesKit: RECEITA_A },
-        [C2]: { paiId: K, componentesKit: RECEITA_A },
-      },
-      variashopee: linhasDeK,
-    });
-    await expect(
-      avisarReceitaKitShopee(
-        db,
-        C1,
-        { paiId: K, componentesKit: RECEITA_B },
-        { paiId: K, componentesKit: RECEITA_A },
-        DEPS,
-      ),
-    ).resolves.toEqual({ reavaliados: 1 });
-    expect(m.reavaliar).toHaveBeenCalledWith(
-      db,
-      { integracaoId: 'int-1', kitProdutoId: K },
-      MOTIVO_RESOLUCAO_RECEITA_KIT.receitaIgualAShopee,
-      DEPS,
-    );
-  });
-
-  // ...and what does re-evaluate K once C1 and its rows are gone: a later write,
-  // here the sibling's own recipe edit, which names the SAME (conta, K) pair.
-  it('after the delete, a sibling’s recipe edit hands the same (int-1, K) pair over', async () => {
-    const { db } = stubDb({
-      produtos: { [C2]: { paiId: K, componentesKit: RECEITA_B } },
-      variashopee: { [C2]: linhasDeK[C2] },
-    });
-    await avisarReceitaKitShopee(
-      db,
-      C2,
-      { paiId: K, componentesKit: RECEITA_A },
-      { paiId: K, componentesKit: RECEITA_B },
-      DEPS,
-    );
-    expect(pares()).toEqual([{ integracaoId: 'int-1', kitProdutoId: K }]);
   });
 });
 
