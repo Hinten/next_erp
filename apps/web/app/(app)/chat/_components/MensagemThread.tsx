@@ -224,7 +224,7 @@ export function MensagemThread({
         justify="flex-end"
         px="sm"
         py={4}
-        style={{ borderBottom: '1px solid var(--mantine-color-gray-1)' }}
+        style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
       >
         <Tooltip label={searchMode ? 'Fechar busca' : 'Buscar na conversa'}>
           <ActionIcon

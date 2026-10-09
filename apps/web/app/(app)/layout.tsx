@@ -6,6 +6,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useRequireAuth } from '@/lib/auth';
 import { SidebarNav } from './_components/SidebarNav';
 import { TenantBadge } from './_components/TenantBadge';
+import { ColorSchemeToggle } from './_components/ColorSchemeToggle';
 import { AvisosBell } from './_components/AvisosBell';
 import { UserMenu } from './_components/UserMenu';
 
@@ -30,11 +31,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group>
-            <Burger opened={opened} onClick={toggle} size="sm" />
+            <Burger opened={opened} onClick={toggle} size="sm" aria-label="Alternar menu" />
             <Title order={4}>Delfrance</Title>
             <TenantBadge />
           </Group>
           <Group gap="xs">
+            <ColorSchemeToggle />
             <AvisosBell />
             <UserMenu />
           </Group>

@@ -68,7 +68,7 @@ export default function VendasPorEstadoPage() {
                   justify="space-between"
                   py={4}
                   px="xs"
-                  style={{ borderBottom: '1px solid var(--mantine-color-gray-2)' }}
+                  style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
                 >
                   <Text size="sm">{ESTADO_BUCKET_LABELS[b.bucket]}</Text>
                   <Group gap="md">

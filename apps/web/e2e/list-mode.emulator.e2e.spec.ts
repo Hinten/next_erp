@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
 import { cleanupByNamePrefix, e2ePrefix, seedDepositos } from './_helpers/seed-data';
+import { readEmulatorAccessConfig } from './_helpers/verify-emulator-access';
 import {
   applySelectFilter,
   applyTextFilter,
@@ -25,10 +26,11 @@ test.describe.serial('TableView list mode e2e — depósitos', () => {
   const uppercase = { id: `${prefix}-002`, nome: `${prefix}-ACAI-002` };
   const nearMiss = { id: `${prefix}-003`, nome: `${prefix}-Açúcar-003` };
   let fixturesCreated = false;
+  let firestoreHost: string;
 
   test.beforeAll(async () => {
     expect(process.env.FIREBASE_PROJECT_ID).toBe('demo-erp');
-    expect(['127.0.0.1:8080', 'localhost:8080']).toContain(process.env.FIRESTORE_EMULATOR_HOST);
+    firestoreHost = readEmulatorAccessConfig().firestoreHost;
     await seedDepositos(prefix, 3);
     fixturesCreated = true;
     const batch = db().batch();
@@ -56,7 +58,7 @@ test.describe.serial('TableView list mode e2e — depósitos', () => {
     await gesture();
     const response = await responsePromise;
     const url = new URL(response.url());
-    expect(['127.0.0.1', 'localhost']).toContain(url.hostname);
+    expect(url.hostname).toBe(firestoreHost);
     expect(url.port).toBe('8080');
     expect(url.pathname).toBe('/v1/projects/demo-erp/databases/default/documents:executePipeline');
     expect(response.status()).toBe(200);

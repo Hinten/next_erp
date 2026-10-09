@@ -225,7 +225,7 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
             <Paper withBorder p="md" radius="md" bg="var(--mantine-color-teal-light)">
               <Group gap="xs" mb="xs">
                 <IconCircleCheck size={20} color="var(--mantine-color-teal-7)" />
-                <Text fw={600} c="teal.8">
+                <Text fw={600} c="teal">
                   Inutilização homologada (cStat {result.cStat})
                 </Text>
               </Group>

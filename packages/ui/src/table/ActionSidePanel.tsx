@@ -79,7 +79,7 @@ export function ActionSidePanel<T>({
         aria-label="Ações"
         withBorder
         p={4}
-        style={{ flexShrink: 0, alignSelf: 'stretch' }}
+        style={{ flexShrink: 0, alignSelf: 'stretch', position: 'relative', zIndex: 1 }}
       >
         <Stack gap={4} align="center">
           <Tooltip label="Expandir ações" withinPortal>
@@ -105,7 +105,9 @@ export function ActionSidePanel<T>({
       withBorder
       p="sm"
       w={width}
-      style={{ flexShrink: 0, alignSelf: 'stretch' }}
+      // Table content can overflow its flex column on narrow screens. Give the
+      // docked panel its own layer above table controls, below portal overlays.
+      style={{ flexShrink: 0, alignSelf: 'stretch', position: 'relative', zIndex: 1 }}
     >
       <Stack gap="xs">
         <Group justify="space-between" wrap="nowrap">

@@ -27,6 +27,9 @@ export default function ConversaDetailPage() {
     <ChatInboxShell
       activeId={params.id}
       rightPane={!loading && data ? <ConversaSidePanel conversa={data.data} /> : undefined}
+      mobileRightPane={
+        !loading && data ? <ConversaSidePanel conversa={data.data} variant="drawer" /> : undefined
+      }
     >
       <Stack style={{ flex: 1, minHeight: 0 }} gap={0}>
         {error && <Alert color="red">{error.message}</Alert>}
@@ -44,12 +47,14 @@ export default function ConversaDetailPage() {
             <Box
               p="md"
               style={{
-                borderBottom: '1px solid var(--mantine-color-gray-2)',
+                borderBottom: '1px solid var(--mantine-color-default-border)',
               }}
             >
               <Group justify="space-between" wrap="nowrap">
-                <Stack gap={2}>
-                  <Title order={4}>{data.data.nome}</Title>
+                <Stack gap={2} style={{ minWidth: 0 }}>
+                  <Title order={4} style={{ overflowWrap: 'anywhere' }}>
+                    {data.data.nome}
+                  </Title>
                   <Group gap="xs">
                     <Badge variant="light">{ORIGEM_LABELS[data.data.origem]}</Badge>
                     {/* The estado now surfaces read-only here — every change goes
