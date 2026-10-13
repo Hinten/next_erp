@@ -42,21 +42,21 @@
  * {@link classificarLinkNaoEnumerado} reds there. (`precoReconciliacao.test.ts`
  * pins the classifier's own cases, which cannot notice a QUERY moving.)
  *
- * ---- Two walk SHAPES, one module. The price phase walks a conta's links in
- * ONE stream, `contaOuterRef in [both stored ref forms]`; the stock audit walks
- * them one ref form at a time, `contaOuterRef == <form>` (`contaRef`), draining
- * the first form before it opens the second. The audit's shape is the cheaper
- * one, measured on the staging proxy (2026-10-08, `lib/firebase/explainPlan.mjs`):
- * one `==` is a single key-ordered stream on the index, so a page is a `Limit`
- * over a cursor seek and reads exactly the page, while the `in` merges its two
- * streams with a sort that reads the conta's WHOLE remainder on every page —
- * page 1 of an 8-link conta read 8 index rows to return 2. The price phase
- * keeps the `in` unchanged here: it is that job's own query, and
- * `preco/precoReconciliacao.test.ts` is the extraction's byte-unchanged
- * regression proof.
+ * ---- ONE walk shape: a page reads ONE stored ref form, `contaOuterRef ==
+ * <form>` (`contaRef`, required), and each consumer drains the first form
+ * before it opens the second. Measured on the staging proxy (2026-10-08,
+ * `lib/firebase/explainPlan.mjs`): one `==` is a single key-ordered stream on
+ * the index, so a page is a `Limit` over a cursor seek and reads exactly the
+ * page, while an `in` over both forms merges its two streams with a sort that
+ * reads the conta's WHOLE remainder on every page — page 1 of an 8-link conta
+ * read 8 index rows to return 2, so a full walk cost ~N²/(2·pageLimit) index
+ * rows instead of N. The price phase ran that `in` until #1862; there is no
+ * longer a way to ask the walk for it. (The re-confirmation below still reads
+ * both forms with one `in`, but over ONE produto's own links — a handful, so
+ * its merge sort is free.)
  *
  * ---- Index ledger:
- *  - the walk, both shapes: `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)`,
+ *  - the walk: `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)`,
  *    **COLLECTION_GROUP** — declared in the same commit as S1's own entry
  *    (#1191). The COLLECTION-scope twin cannot serve a group query;
  *  - the re-confirmation ({@link reclassificarProdutoNaoEnumerado}): the
@@ -170,18 +170,17 @@ export interface FetchLinksNaoEnumeradosArgs {
   integracaoId: string;
   /**
    * ONE stored ref form of the conta — one of `contaRefForms(integracaoId)` —
-   * to walk ALONE (`contaOuterRef == contaRef`). Absent, the page reads both
-   * forms at once with the `in` the price phase has always run. The audit
-   * passes it (module doc); a value that is not one of this conta's two forms
-   * is refused before anything is read, because the classifier judges every
-   * link it is handed against `integracaoId`.
+   * to walk ALONE (`contaOuterRef == contaRef`). Required: both forms at once
+   * would need the `in` the module doc rules out. A value that is not one of
+   * this conta's two forms is refused before anything is read, because the
+   * classifier judges every link it is handed against `integracaoId`.
    *
    * ⚠️ The cursor belongs to its form. `afterLinkPath` is the last path of THIS
    * form's previous page, so the second form starts from no cursor at all —
    * resuming it after the first form's last path would skip every one of its
    * links that sorts before that path.
    */
-  contaRef?: string | null;
+  contaRef: string;
   /** Resume after this FULL document path (keyset); the first page omits it. */
   afterLinkPath?: string | null;
   /**
@@ -217,8 +216,8 @@ export function consultaDaVarredura(db: Firestore, args: FetchLinksNaoEnumerados
 
 /**
  * The walk's page WITHOUT its projection — the same collection group, conta
- * predicate (`== contaRef`, or the price phase's `in [both ref forms]`),
- * `orderBy(__name__)`, `limit` and `startAfter(<DocumentReference>)` cursor as
+ * predicate (`== contaRef`), `orderBy(__name__)`, `limit` and
+ * `startAfter(<DocumentReference>)` cursor as
  * {@link consultaDaVarredura}, which is exactly this plus a `select`.
  * Production never runs it on its own; it exists so the plan PROXY can be
  * explained at all.
@@ -245,7 +244,8 @@ export function consultaDaVarredura(db: Firestore, args: FetchLinksNaoEnumerados
  * stages), so it proves index readiness, and what else its plan shows is a
  * PROXY-PLAN finding rather than the classic query's own plan
  * (`lib/firebase/explainPlan.mjs`'s header) — the one-form `==` page prints a
- * `• Limit` over a cursor seek, the `in` page a `• MajorSort`.
+ * `• Limit` over a cursor seek, where the retired `in` page printed a
+ * `• MajorSort`.
  */
 export function consultaDaVarreduraSemProjecao(
   db: Firestore,
@@ -263,12 +263,11 @@ export function consultaDaVarreduraSemProjecao(
       `[mercado-livre] pageLimit da varredura de anúncios inválido: ${String(pageLimit)}`,
     );
   }
-  const formas = contaRefForms(args.integracaoId);
-  const contaRef = args.contaRef ?? null;
+  const { contaRef } = args;
   // Refused for the same reason as a bad page size: a ref of ANOTHER conta would
   // walk that conta's links and classify them against this one — every live
   // link a "conta fora do produto", healed onto the wrong produtos.
-  if (contaRef != null && !formas.includes(contaRef)) {
+  if (!contaRefForms(args.integracaoId).includes(contaRef)) {
     throw new RangeError(
       `[mercado-livre] contaRef da varredura de anúncios não é uma forma da conta ` +
         `${JSON.stringify(args.integracaoId)}: ${JSON.stringify(contaRef)}`,
@@ -276,12 +275,9 @@ export function consultaDaVarreduraSemProjecao(
   }
   const afterLinkPath = args.afterLinkPath ?? null;
 
-  const grupo = produtoMercadoLivreLinkCollection.groupQuery(db);
-  const linksQuery = (
-    contaRef == null
-      ? grupo.where('contaOuterRef', 'in', formas)
-      : grupo.where('contaOuterRef', '==', contaRef)
-  )
+  const linksQuery = produtoMercadoLivreLinkCollection
+    .groupQuery(db)
+    .where('contaOuterRef', '==', contaRef)
     .orderBy(FieldPath.documentId())
     .limit(pageLimit);
   return afterLinkPath == null

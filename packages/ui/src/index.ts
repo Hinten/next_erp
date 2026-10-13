@@ -63,6 +63,7 @@ export { renderCell } from './table/cell-renderers';
 // Object primitives
 export {
   ObjectView,
+  type CommittedSave,
   type ObjectViewProps,
   type TransactionWrite,
   type ValidationIssue,
