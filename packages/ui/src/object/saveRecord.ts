@@ -141,6 +141,15 @@ export interface SaveRecordResult<T> {
   /** What actually went to Firestore — full doc on create, patch on update. */
   patch: Partial<T> | T;
   documents: CommittedTransactionDocument[];
+  /**
+   * The main document as the COMMITTING attempt read it (`tx.get`), i.e. what
+   * this save replaced — `null` on a create, or when the transaction read
+   * nothing (an update with no baseline, no changed sibling and no
+   * `deriveTransactionPatch`). Together with `patch` it is the transaction's own
+   * before/after, which a caller diffs instead of the form: a form painted from
+   * a stale cache copy is not what was stored.
+   */
+  before?: Record<string, unknown> | null;
 }
 
 export class MissingTransactionBaselineError extends Error {
@@ -444,8 +453,15 @@ export async function saveRecord<
       }
       if (w.guard) committedDocuments.push({ path: w.ref.path, data, guard: w.guard });
     }
-    return { documents: committedDocuments, patch: effectivePatch };
+    // `current` is THIS attempt's read: an OCC retry re-runs the callback, so
+    // the value returned is the one the commit was checked against.
+    return { documents: committedDocuments, patch: effectivePatch, before: current };
   });
 
-  return { id: ref.id, patch: result.patch as Partial<T> | T, documents: result.documents };
+  return {
+    id: ref.id,
+    patch: result.patch as Partial<T> | T,
+    documents: result.documents,
+    before: result.before,
+  };
 }

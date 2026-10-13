@@ -26,7 +26,7 @@
  *    SDK's key order) that cut nothing.
  * Captured on 2026-10-08, the evidence that decided those two shapes:
  *  - `varredura-ultima-pagina` — the walk the audit USED to run (and the price
- *    phase still does), last page: `in` over both ref forms + a cursor. Bounded
+ *    phase until #1862), last page: `in` over both ref forms + a cursor. Bounded
  *    and seeking — and sorted (`MajorSort`);
  *  - `varredura-primeira-pagina` — the same `in` walk, page 1: the sort read all
  *    8 of the conta's links to return 2;
@@ -579,7 +579,7 @@ describe('julgarPlanoDaVarredura — the #1200 walk, on real plans', () => {
     expect(codigos(UMA_FORMA, { leituraMaxima: TETO_DA_VARREDURA })).toEqual([]);
   });
 
-  it('REAL FAIL: the `in` walk’s last page (the price phase’s; the audit’s until 2026-10-09) is bounded and seeks — and SORTS, its one finding', () => {
+  it('REAL FAIL: the retired `in` walk’s last page (the audit’s until 2026-10-09, the price phase’s until #1862) is bounded and seeks — and SORTS, its one finding', () => {
     const v = julgarPlanoDaVarredura(ULTIMA_PAGINA, comCursor);
     expect(v.motivos.map((m) => m.codigo)).toEqual(['sort-residual']);
     expect(v.motivos[0]?.mensagem).toMatch(/MajorSort/);
