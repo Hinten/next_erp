@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -408,13 +409,32 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
   it('percorre EXATAMENTE os dezoito membros que este módulo produz', () => {
     const cobertos = new Set(RECUSAS.map((c) => c.motivo));
     expect(cobertos.size).toBe(18);
+    // The native-kit arm (step 19) produces its own members under `kits/`, always through
+    // the constant — never a quoted slug. Read that from the source, so this pin stays
+    // EXACT for step 11's vocabulary while the kit PRs add members.
+    const pastaKits = fileURLToPath(new URL('../kits/', import.meta.url));
+    const doKit = new Set<string>();
+    for (const nome of readdirSync(pastaKits)) {
+      if (!nome.endsWith('.ts') || nome.endsWith('.test.ts')) continue;
+      const fonte = readFileSync(join(pastaKits, nome), { encoding: 'utf8' });
+      for (const [, chave] of fonte.matchAll(/MOTIVO_PUBLICACAO_BLOQUEADA\.(\w+)/g)) {
+        const membro = (MOTIVO_PUBLICACAO_BLOQUEADA as Record<string, string>)[chave ?? ''];
+        if (membro !== undefined) doKit.add(membro);
+      }
+    }
+    expect(doKit.size).toBeGreaterThan(0);
     const outros = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA).filter((m) => !cobertos.has(m));
-    expect([...outros].sort()).toEqual([
+    // The four step-11 members other step-11 files produce (the docblock test below names
+    // them) — the kit arm reuses two of them, so they are NOT subtracted as "kit" here.
+    const doPasso11Fora = [
       'combinacao-duplicada',
       'logistica-sem-canal',
       'opcoes-demais',
       'variacao-sem-vinculo',
-    ]);
+    ];
+    expect(outros).toEqual(expect.arrayContaining(doPasso11Fora));
+    // Every OTHER member this module does not produce must come from the kit arm.
+    expect(outros.filter((m) => !doPasso11Fora.includes(m) && !doKit.has(m))).toEqual([]);
   });
 
   it('o docblock nomeia os quatro membros que este módulo NÃO produz, com o arquivo produtor', () => {
