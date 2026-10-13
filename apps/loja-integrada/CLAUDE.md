@@ -226,6 +226,8 @@ still be fixed. Only the context loader refuses those.
   (`create`, or `update` once expired), the refusal record (never while the lease is held,
   never a cursor), and the final write on the lease's `writeTime`, re-derived from ONE
   re-read when it loses. The cursor is the platform's naive text; arithmetic is zone-free.
+  `pedidos/pollPedidos.firestore.test.ts` proves the fake's precondition model on the
+  emulator (two lease takers → one wins; a deleted document fails the stamp with 9).
 - The aviso `lojaIntegradaImportacaoParada` is clocked by the run's FIRST write to that
   document, and resolved only when the stored `falhasSeguidas` was above 0. So the
   re-bootstrap runbook NULLS the cursor and never deletes the document
@@ -253,12 +255,14 @@ still be fixed. Only the context loader refuses those.
   `FUNCTIONS_REGION` = `LOJA_INTEGRADA_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
   `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `LOJA_INTEGRADA_CHAMADAS=off`.
   A region mismatch is the silent drop of #1108: the poll times out instead of failing.
+  On Windows the Firestore JVM can outlive `emulators:exec` and keep 8085: stop it after.
 - D17 holds in the lane through TWO layers. The job env sets `LOJA_INTEGRADA_CHAMADAS: 'off'`
   (the functions emulator inherits it; the setup's fetch kill-switch reaches only the vitest
   process), and `vitest.tasks.setup.ts` refuses to start when the shell has it `on` or an
-  artifact `.env*` file (selected by an anchored name, never a prefix) names it. A suite
-  must stop at the switch: this lane never turns it on, and a context past the switch is
-  not testable here.
+  artifact `.env*` file (selected by an anchored name, never a prefix) names it. A
+  DISPATCHED function must stop at the switch: this lane never turns it on in the
+  environment. Only code running in the vitest process may pass a context, and only with
+  `ambiente` `on` as a PARAMETER and a scripted `deps.fetch` (`pedidos/pollPedidos.tasks.test.ts`).
 - A new `*.tasks.test.ts` / `*.firestore.test.ts` joins the same job and check name. Its
   `beforeEach` wipes what it reads (one shared emulator, files run serially), and a drop
   is proved by a LATER sentinel row, never by polling for an absence.
