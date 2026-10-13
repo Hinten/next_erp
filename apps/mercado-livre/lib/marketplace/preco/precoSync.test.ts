@@ -326,7 +326,7 @@ function runDeps(
     fetchReconPage: vi.fn(async () => ({
       naoEnumerados: [],
       inspecionados: 0,
-      nextAfterLinkPath: null,
+      next: null,
     })),
     now: () => CLOCK_NOW,
     ...over,
@@ -1355,7 +1355,7 @@ describe('reconciliation phase (#1072)', () => {
   const reconPage = (over: Partial<PrecoReconPage> = {}): PrecoReconPage => ({
     naoEnumerados: [],
     inspecionados: 0,
-    nextAfterLinkPath: null,
+    next: null,
     ...over,
   });
 
@@ -1419,7 +1419,7 @@ describe('reconciliation phase (#1072)', () => {
           { produtoId: 'C1', itemId: 'MLB2', code: 'NAO_ENUMERADO_LINK_EM_VARIACAO' },
         ],
         inspecionados: 7,
-        nextAfterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+        next: { forma: 0, afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1' },
       }),
     );
     const deps = runDeps(db, makeApi(), { fetchReconPage });
@@ -1427,10 +1427,16 @@ describe('reconciliation phase (#1072)', () => {
     const outcome = await processPriceSyncJob(deps, { jobId: 'r4', integracaoId: CONTA }, 0);
 
     expect(outcome).toBe('continued'); // a cursor came back → another page to walk
+    // The first page of a fresh job reads the FIRST ref form, from its start.
+    expect(fetchReconPage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forma: 0, afterLinkPath: null }),
+    );
     // Assert the PERSISTED doc, never the locals: a field missing from the
     // checkpoint merge — or from the zod schema, which strips unknown keys —
     // leaves the phase re-reading its default and re-enqueueing forever.
     const job = db.docs(JOBS_PATH).get('r4')!;
+    expect(job.reconciliacaoForma).toBe(0);
     expect(job.afterLinkPath).toBe('produtos/P1/produtoMercadoLivre/link1');
     expect(job.reconciliacaoConcluida).toBe(false);
     expect(job.reconciliacaoPaginas).toBe(1);
@@ -1444,11 +1450,40 @@ describe('reconciliation phase (#1072)', () => {
     ]);
   });
 
-  it('resumes from the persisted cursor and completes when the walk drains', async () => {
+  it('a form handover persists the NEXT form with a null path — and does not conclude', async () => {
+    // #1862: the walk drains one stored ref form, then opens the next from its
+    // start. The handover is the one checkpoint whose cursor is `null` while the
+    // walk is NOT done, so it is exactly where a `reconciliacaoForma` missing
+    // from the schema or the patch would show: it would read back as 0 and the
+    // job would re-walk the first form until the page cap.
+    process.env[FLAG] = '1';
+    const db = new FakeDb();
+    seedJob(db, 'r4b', {
+      planejamentoConcluido: true,
+      afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+      reconciliacaoPaginas: 3,
+    });
+    const fetchReconPage = vi.fn(async () =>
+      reconPage({ inspecionados: 2, next: { forma: 1, afterLinkPath: null } }),
+    );
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r4b', integracaoId: CONTA }, 0);
+
+    expect(outcome).toBe('continued');
+    const job = db.docs(JOBS_PATH).get('r4b')!;
+    expect(job.reconciliacaoForma).toBe(1);
+    expect(job.afterLinkPath).toBeNull();
+    expect(job.reconciliacaoConcluida).toBe(false);
+    expect(job.reconciliacaoPaginas).toBe(4);
+  });
+
+  it('resumes from the persisted cursor PAIR and completes when the walk drains', async () => {
     process.env[FLAG] = '1';
     const db = new FakeDb();
     seedJob(db, 'r5', {
       planejamentoConcluido: true,
+      reconciliacaoForma: 1,
       afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
       reconciliacaoPaginas: 1,
       naoEnumerados: 2,
@@ -1460,7 +1495,10 @@ describe('reconciliation phase (#1072)', () => {
 
     expect(fetchReconPage).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1' }),
+      expect.objectContaining({
+        forma: 1,
+        afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+      }),
     );
     expect(outcome).toBe('done');
     const job = db.docs(JOBS_PATH).get('r5')!;
@@ -1474,7 +1512,7 @@ describe('reconciliation phase (#1072)', () => {
     const db = new FakeDb();
     seedJob(db, 'r6', { planejamentoConcluido: true });
     const fetchReconPage = vi.fn(async () =>
-      reconPage({ nextAfterLinkPath: 'produtos/P/produtoMercadoLivre/l' }),
+      reconPage({ next: { forma: 0, afterLinkPath: 'produtos/P/produtoMercadoLivre/l' } }),
     );
     const deps = runDeps(db, makeApi(), { fetchReconPage });
 
@@ -1494,7 +1532,7 @@ describe('reconciliation phase (#1072)', () => {
       reconciliacaoPaginas: PRECO_RECON_MAX_PAGES,
     });
     const fetchReconPage = vi.fn(async () =>
-      reconPage({ nextAfterLinkPath: 'produtos/P/produtoMercadoLivre/l' }),
+      reconPage({ next: { forma: 0, afterLinkPath: 'produtos/P/produtoMercadoLivre/l' } }),
     );
     const deps = runDeps(db, makeApi(), { fetchReconPage });
 
@@ -1521,6 +1559,11 @@ describe('reconciliation phase (#1072)', () => {
     const outcome = await processPriceSyncJob(deps, { jobId: 'r8', integracaoId: CONTA }, 0);
 
     expect(fetchReconPage).toHaveBeenCalledTimes(1);
+    // …and `reconciliacaoForma` (#1862) defaults to the first ref form.
+    expect(fetchReconPage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forma: 0, afterLinkPath: null }),
+    );
     expect(outcome).toBe('done');
   });
 });

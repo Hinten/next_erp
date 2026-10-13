@@ -2,15 +2,15 @@
  * The shared link walk's OWN specs (#1200).
  *
  * The walk's behaviour moved here verbatim from `preco/precoReconciliacao.ts`,
- * and that module's suite is kept BYTE-UNCHANGED as the regression proof: every
- * case it had — the classifier, the noise guard, both ref forms, the
- * path-shaped cursor, the projections — still runs, through the price binding,
- * against this code. So this file covers only what the move newly adds: the two
- * cost counters, the `limpos` list the audit folds pages with, the page size
- * taken as given (no env), the audit's ONE-form walk (`contaRef`, an `==` where
- * the price phase keeps its `in`), the wire strings of the
- * codes, the price module re-exporting rather than copying, and the
- * re-confirmation the stock audit runs before it resolves an aviso.
+ * and that module's suite still runs every case it had — the classifier, the
+ * noise guard, both ref forms, the path-shaped cursor, the projections —
+ * through the price binding, against this code (#1862 changed only how it
+ * steps between the forms). So this file covers only what the move newly adds:
+ * the two cost counters, the `limpos` list the audit folds pages with, the page
+ * size taken as given (no env), the ONE-form walk (`contaRef`, a required `==` —
+ * no caller can ask for the `in` any more), the wire strings of the codes, the
+ * price module re-exporting rather than copying, and the re-confirmation the
+ * stock audit runs before it resolves an aviso.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
@@ -220,6 +220,7 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
 
     const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
       integracaoId: CONTA,
+      contaRef: REF_CANONICO,
       pageLimit: 10,
     });
 
@@ -232,12 +233,13 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
     const db = new FakeDb();
     seedLink(db, 'P1', 'a');
     seedLink(db, 'P1', 'b');
-    seedLink(db, 'P2', 'a', { contaOuterRef: REF_BARE });
+    seedLink(db, 'P2', 'a');
     db.seedProduto('P1', DERIVADO);
     db.seedProduto('P2', LIMPO);
 
     const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
       integracaoId: CONTA,
+      contaRef: REF_CANONICO,
       pageLimit: 10,
     });
 
@@ -257,6 +259,7 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
 
     const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
       integracaoId: CONTA,
+      contaRef: REF_CANONICO,
       pageLimit: 10,
     });
 
@@ -273,7 +276,7 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
     const db = new FakeDb();
     seedLink(db, 'P2', 'a');
     seedLink(db, 'P2', 'b');
-    seedLink(db, 'P1', 'a', { contaOuterRef: REF_BARE });
+    seedLink(db, 'P1', 'a');
     seedLink(db, 'P3', 'a');
     // Only a CLOSED listing: never read, so neither clean nor a finding.
     seedLink(db, 'P4', 'fechado', { estado: 'c' });
@@ -284,6 +287,7 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
 
     const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
       integracaoId: CONTA,
+      contaRef: REF_CANONICO,
       pageLimit: 10,
     });
 
@@ -302,6 +306,7 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
 
     const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
       integracaoId: CONTA,
+      contaRef: REF_CANONICO,
       pageLimit: 3,
     });
 
@@ -333,7 +338,11 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
       seedLink(db, 'P1', 'a');
 
       await expect(
-        fetchLinksNaoEnumeradosPage(asDb(db), { integracaoId: CONTA, pageLimit }),
+        fetchLinksNaoEnumeradosPage(asDb(db), {
+          integracaoId: CONTA,
+          contaRef: REF_CANONICO,
+          pageLimit,
+        }),
       ).rejects.toThrow(RangeError);
       expect(db.queries).toEqual([]);
     },
@@ -345,6 +354,7 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
     await expect(
       fetchLinksNaoEnumeradosPage(asDb(db), {
         integracaoId: CONTA,
+        contaRef: REF_CANONICO,
         afterLinkPath: 'produtos/P1',
         pageLimit: 10,
       }),
@@ -352,7 +362,7 @@ describe('fetchLinksNaoEnumeradosPage — what the move adds', () => {
   });
 });
 
-describe('fetchLinksNaoEnumeradosPage — ONE ref form (`contaRef`, the stock audit’s walk)', () => {
+describe('fetchLinksNaoEnumeradosPage — ONE ref form (`contaRef`, both consumers’ walk)', () => {
   /** P1 and P3 on the canonical form, P2 and P4 on the bare one — interleaved in key order. */
   function seedDuasFormas(db: FakeDb): void {
     seedLink(db, 'P1', 'a');
@@ -392,29 +402,30 @@ describe('fetchLinksNaoEnumeradosPage — ONE ref form (`contaRef`, the stock au
     }
   });
 
-  it('without `contaRef` it is the price phase’s walk, unchanged: ONE `in` over both forms', async () => {
-    const db = new FakeDb();
-    seedDuasFormas(db);
+  it.each([
+    ['absent', undefined],
+    ['null', null],
+  ])(
+    '⛔ a `contaRef` that is %s is REFUSED — never read as “both forms at once”',
+    async (_n, contaRef) => {
+      // Until #1862 an absent `contaRef` meant the price phase's `in` over both
+      // forms, which the staging proxy sorted with a `MajorSort` reading the
+      // conta's whole remainder on every page. The type now requires the form;
+      // this pins the RUNTIME side for a caller that slips past it (a JS script,
+      // an `as` cast): it must not quietly fall back to that shape.
+      const db = new FakeDb();
+      seedDuasFormas(db);
 
-    const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
-      integracaoId: CONTA,
-      pageLimit: 10,
-    });
-
-    expect(db.queries[0]!.clauses).toEqual([
-      { field: 'contaOuterRef', op: 'in', value: [REF_CANONICO, REF_BARE] },
-    ]);
-    expect(page.limpos).toEqual(['P1', 'P2', 'P3', 'P4']);
-    // `null` is "no form": the same `in`.
-    const db2 = new FakeDb();
-    seedDuasFormas(db2);
-    await fetchLinksNaoEnumeradosPage(asDb(db2), {
-      integracaoId: CONTA,
-      contaRef: null,
-      pageLimit: 10,
-    });
-    expect(db2.queries[0]!.clauses[0]!.op).toBe('in');
-  });
+      await expect(
+        fetchLinksNaoEnumeradosPage(asDb(db), {
+          integracaoId: CONTA,
+          contaRef: contaRef as unknown as string,
+          pageLimit: 10,
+        }),
+      ).rejects.toThrow(RangeError);
+      expect(db.queries).toEqual([]);
+    },
+  );
 
   it('pages one form by its own cursor — a full page keeps it, the drained page nulls it', async () => {
     const db = new FakeDb();
@@ -569,6 +580,7 @@ describe('reclassificarProdutoNaoEnumerado — the check before a resolve', () =
 
     const page = await fetchLinksNaoEnumeradosPage(asDb(db), {
       integracaoId: CONTA,
+      contaRef: REF_CANONICO,
       pageLimit: 10,
     });
     const pelaVarredura = Object.fromEntries(
