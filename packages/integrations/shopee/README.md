@@ -18,6 +18,7 @@ What ships here:
 | `arquivo.ts`          | The downloaded-file shape and the byte sniff of a shipping label (step 15)                 |
 | `devolucoes.ts`       | The returns ops' paths, request shapes, guards, wire constants, solution reader (17)       |
 | `tabelasDeMedidas.ts` | Size-chart reads: paths, shapes, guards, constants, page reader; attach union + guard (18) |
+| `kits.ts`             | Native-kit writes: paths, wire bodies, guards, constants, the live-row resend copy (19)    |
 
 ## Label operations (step 15)
 
@@ -177,6 +178,63 @@ in the same module (last bullet).
   non-blank string — and `assertAddItemParams` / `assertUpdateItemParams` call it
   before the token. It refuses both DETACH sentinels (`0`, `''`): nothing in this
   package ever sends a detach, so a caller with no match OMITS the key.
+
+## Kits (step 19)
+
+Three `v2.product.*` WRITES on the SHOP client create and maintain a NATIVE
+Shopee kit — a listing whose stock Shopee derives from its components:
+`addKitItem` (`add_kit_item`), `updateKitItem` (`update_kit_item`) and
+`generateKitImage` (`generate_kit_image`, declared with NO caller — a kit's
+cover goes through `upload_image`). Their paths, wire-shaped request types,
+guards and wire constants live in `kits.ts`, beside `linhasDeReenvioDoKit`; their
+response schemas in `types.ts` (`shopeeKitItemWriteSchema`,
+`shopeeGenerateKitImageSchema`; the update answers the bare
+`shopeeWriteAckSchema`). The kit READ stays `getKitItemInfo`.
+
+- **All three return the WHOLE envelope and none is retried.** `add_kit_item`
+  is NOT idempotent: a transient failure is not "nothing was created", and a
+  2xx without a readable `item_id` (`ShopeeSchemaError`) means "created, id
+  unknown" — the caller re-reads Shopee before sending anything again.
+- **ONE tier, 1…9 models, each model its own `component_list`.** Category,
+  attributes and brand SYNC from the main component, so the create body has no
+  `category_id`, `attribute_list`, `brand`, `seller_stock` or `tax_info`
+  (`@ts-expect-error` pins two of them out). Every option of the tier has
+  exactly one model.
+- **Exactly ONE `main_component: true` per KIT, never per model** — measured on
+  the SG sandbox: a second main anywhere in the kit is refused ("mupltiple main
+  sku"). An update may carry at most one, and none on an appended model.
+- **`component_model_id` is positive or OMITTED — `0` is refused.** For a
+  component with no variations Shopee mints a HIDDEN default model id
+  (non-zero, `''` name and sku, absent from `get_model_list`): a create omits
+  the key, and a resend copies the hidden id verbatim through
+  `linhasDeReenvioDoKit` — the ONE wire→wire copy of a live model's rows
+  (`main_component` only when it read `true`; a row with no readable quantity
+  is refused, never guessed).
+- **A one-row model needs `quantity >= 2`** (announcement 1262). There is
+  deliberately NO component-count constant: three doc statements disagree, so
+  the band (`get_kit_item_limit`, when served) is the app's.
+- **Images 1…10** (`SHOPEE_KIT_IMAGE_MAX`), which is NOT the item's 9
+  (`SHOPEE_ITEM_IMAGE_MAX`); the two are never merged.
+- **`update_kit_item` is PARTIAL and its 200 proves nothing.** Omitted models
+  are kept, so a price change sends only the changed models with their LIVE
+  rows and no tier list; an appended model is `model_id: 0` with
+  `original_price`, `component_list` and the WHOLE tier list. A changed
+  quantity on an existing model answered 200 and was SILENTLY IGNORED on the
+  sandbox, so every kit write is verified by a read-back. A body that changes
+  nothing (`{item_id}` alone) is refused.
+- **`generateKitImage` takes camelCase params and builds the body itself** as
+  `{component_list: [{item_id, model_id}]}` — the server's validator demands
+  those keys, while the page documents `component_item_id` /
+  `component_model_id`. 2…9 components, `modelId` REQUIRED. Whether
+  `kit_image` is an id or a URL is unverified (the sandbox toggle is closed).
+- **`get_kit_item_limit` reads `error: "-"` as success** through its own
+  constant, `SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES` — the tenth alias call site and
+  the fourth constant, on the page's only success sample. `' '` stays a
+  failure. The sandbox does not route the path at all (a bare HTTP 404), which
+  arrives as `ShopeeOperacaoNaoServidaError`.
+- Every guard runs BEFORE the access token is asked for, throws
+  `ShopeeConfigError`, and names the field, a position, a count or a type —
+  never a value.
 
 ## What it deliberately is not
 

@@ -19,7 +19,7 @@ cross-theme edges this layout exists to expose. Same convention as
 | [`importacao/`](importacao/)     | Product import, ML → ERP.                                                                                  |
 | [`mass-import/`](mass-import/)   | The resumable "importar todos os anúncios" job.                                                            |
 | [`anuncios/`](anuncios/)         | Publishing and listing lifecycle, ERP → ML.                                                                |
-| [`estoque/`](estoque/)           | Stock sync — sweeps, per-listing sends, the plan core.                                                     |
+| [`estoque/`](estoque/)           | Stock sync — sweeps, per-listing sends, the plan core, the monthly link audit.                             |
 | [`preco/`](preco/)               | Price sync — the bulk job and the manual push.                                                             |
 | [`size-charts/`](size-charts/)   | Grades de tamanho: selection at publish, CRUD sync.                                                        |
 | [`categorias/`](categorias/)     | Category tree and catalog metadata reads.                                                                  |
@@ -62,6 +62,24 @@ cross-theme edges this layout exists to expose. Same convention as
 - **`anuncios/ ⇄ estoque/ ⇄ preco/`** all meet at `estoque/bulkEstoquePlan.ts`
   and `core/publishFalhas.ts`. If those edges start to chafe, hoisting
   `bulkEstoquePlan.ts` into `core/` is the obvious next move.
+- **`preco/precoReconciliacao.ts` → `anuncios/linksNaoEnumerados.ts` ←
+  `estoque/auditoriaNaoEnumerados.ts`** (#1200). ONE link-side walk and ONE
+  classifier for what both sweeps' identical anchor terms cannot enumerate —
+  the price job reports it, the monthly stock audit heals or raises it. It
+  lives in `anuncios/` because its subject is the link; its only dependency
+  inside `anuncios/` is `integracoesComProduto.ts`'s `contaRefForms`. Two more
+  edges ride with it:
+  - **`estoque/auditoriaNaoEnumerados.ts` → `anuncios/integracoesComProduto.ts`**
+    is a WRITE edge: the audit heals through `adicionarContaSeViva`, the tier-1
+    binding of the shared `@delfrance/data/admin/produtos` writer, so the stock
+    theme now writes the denorm the link triggers own. It goes through that
+    guarded writer and nothing else.
+  - **Test-only:** `estoque/bulkEstoquePlan.test.ts` and
+    `preco/precoPlan.test.ts` each import `classificarLinkNaoEnumerado` — the
+    two binding describes that pin the classifier to each sweep's own query —
+    and `anuncios/linksNaoEnumerados.test.ts` imports
+    `preco/precoReconciliacao.ts` back, to prove the price module re-exports
+    the walk rather than keeping a copy.
 - **`importacao/ → anuncios/moderacoes.ts`** (#1087). One-directional. The
   importer is the third writer of the link doc's `moderacoes`, beside the `items`
   sync and `reverificarAnuncio`, and it deliberately shares their module rather
@@ -78,6 +96,11 @@ Moving or renaming a file here is never only a rename — these bind by path:
 
 - `tools/deploy-env/preflight.mjs` reads `estoque/bulkEstoquePlan.ts` **from
   disk** (`preflight.test.js`); a stale path fails with ENOENT.
+- `preco/precoMotivos.test.ts` reads `anuncios/linksNaoEnumerados.ts` **from
+  disk** — a named FILE root of its "every emitted code has a message" scan,
+  since that is where the four `NAO_ENUMERADO_*` price codes are emitted. A
+  stale path throws ENOENT, deliberately: a root that scanned nothing would
+  drop the four codes while the suite stayed green.
 - `packages/config-eslint/rules/firestore-transaction-inventory.test.js` and
   `reserva-arithmetic-inventory.test.js` key their inventories on
   repo-relative paths and red CI on an unlisted or stale entry.

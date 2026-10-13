@@ -330,6 +330,29 @@ export function montarMembroUnico(
 }
 
 /**
+ * Whether a produto really is a VIRTUAL kit: `ehKit === true && ehKitVirtual === true`,
+ * both strictly.
+ *
+ * ⚠️ `ehKitVirtual` alone is not the answer. The flag only means anything on a
+ * kit, and nothing in the schema stops a stored doc from carrying
+ * `ehKitVirtual: true` beside `ehKit: false` — `onProdutoDeleted` clears the pair
+ * only when a kit's LAST component is deleted. Reading such a doc as "virtual"
+ * would ask a channel to build a kit (Shopee's `add_kit_item`, step 19) for a
+ * produto with no recipe. So this is the ONE predicate for "virtual kit": the
+ * member mirror below calls it, and any other surface asks it rather than
+ * re-deriving the conjunction.
+ *
+ * Strict `=== true` on both: a legacy `null`, an absent key or a stray string is
+ * "not virtual".
+ */
+export function ehKitVirtualEfetivo(p: {
+  readonly ehKit?: unknown;
+  readonly ehKitVirtual?: unknown;
+}): boolean {
+  return p.ehKit === true && p.ehKitVirtual === true;
+}
+
+/**
  * The fields a sole member MIRRORS from its parent — the create-time copy and
  * the ongoing sync are the same list, deliberately, so the two cannot drift into
  * disagreeing about what "a mirror" contains.
@@ -353,7 +376,7 @@ export function camposDeKitDoMembroUnico(
 
   return {
     ehKit,
-    ehKitVirtual: ehKit && parent.ehKitVirtual === true,
+    ehKitVirtual: ehKitVirtualEfetivo(parent),
     componentesKit: temComponentes ? componentesKit : null,
     // Sorted, order-stable: the keys feed an `array-contains` query and
     // Firestore arrays are order-sensitive.

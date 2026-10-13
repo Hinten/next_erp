@@ -1130,7 +1130,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
           >
             <Stack>
               {(title || description) && (
-                <Stack gap={2}>
+                <Stack gap={2} style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
                   {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
                   {description && (
                     <Text c="dimmed" size="sm">

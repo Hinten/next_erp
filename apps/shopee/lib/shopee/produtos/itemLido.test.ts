@@ -132,6 +132,26 @@ describe('montarItemLido — reconciliação', () => {
     expect(() => montarItemLido({ itemId: ITEM_ID, payload: p })).toThrow(String(ITEM_ID));
     expect(() => montarItemLido({ itemId: ITEM_ID, payload: p })).toThrow(Error);
   });
+
+  it('8. (passo 19) o has_model dos componentes do kit viaja no registro, intacto', () => {
+    const mapa = new Map([
+      [2_500_139_871, true],
+      [2_500_139_872, false],
+    ]);
+    const item = montarItemLido({
+      itemId: ITEM_ID,
+      payload: comUmItem({ tag: { kit: true } }),
+      temModelosDosComponentes: mapa,
+    });
+    expect(item.temModelosDosComponentes).toBe(mapa);
+  });
+
+  it('9. ⛔ sem mapa a chave fica AUSENTE (desconhecido) — nunca um mapa vazio inventado', () => {
+    // Ausente e vazio dizem o mesmo ao resolvedor, mas um mapa inventado faria
+    // todo registro pré-passo-19 deixar de ser byte-idêntico ao que era.
+    const item = montarItemLido({ itemId: ITEM_ID, payload: comUmItem({}) });
+    expect('temModelosDosComponentes' in item).toBe(false);
+  });
 });
 
 /* -------------------------------------------------------------------------- */

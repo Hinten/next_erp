@@ -32,13 +32,13 @@ function BrokenImage({ size }: { size: number }) {
     <Center
       w={size}
       h={size}
-      bg="var(--mantine-color-gray-1)"
+      bg="var(--mantine-color-default-hover)"
       role="img"
       aria-label={BROKEN_LABEL}
       data-testid="produto-thumbnail-broken"
       style={{ borderRadius: 'var(--mantine-radius-sm)' }}
     >
-      <IconPhotoOff size={Math.round(size * 0.5)} color="var(--mantine-color-gray-5)" aria-hidden />
+      <IconPhotoOff size={Math.round(size * 0.5)} color="var(--mantine-color-dimmed)" aria-hidden />
     </Center>
   );
 }

@@ -85,6 +85,23 @@ export const MSG_LINK_EXIGE_UM_PRODUTO = 'linkDocId exige exatamente 1 produto.'
 /** The sentence an unknown `acao` gets. */
 export const MSG_ACAO_INVALIDA = `acao deve ser "${ACAO_STATUS_ANUNCIO.pausar}" ou "${ACAO_STATUS_ANUNCIO.reativar}".`;
 
+/** The sentence a `recriar` that is not a JSON boolean gets (step 19, R-a). */
+export const MSG_RECRIAR_INVALIDO = 'recriar deve ser true ou false.';
+
+/** The sentence a `converterEmKit` that is not a JSON boolean gets (step 19, R-a). */
+export const MSG_CONVERTER_INVALIDO = 'converterEmKit deve ser true ou false.';
+
+/** Both kit actions in one request (step 19, R-a): one action per publish. */
+export const MSG_OPCOES_DE_KIT_EXCLUSIVAS =
+  'recriar e converterEmKit não podem ir juntos — uma ação de kit por pedido.';
+
+/**
+ * `recriar` with no `linkDocId` (step 19, S1F-02): a recriar always NAMES the kit
+ * it replaces, so re-running it is literally the same request.
+ */
+export const MSG_RECRIAR_SEM_LINK =
+  'recriar exige linkDocId — informe o vínculo do kit nativo que será recriado.';
+
 /* -------------------------------------------------------------------------- */
 /*  Primitive readers                                                          */
 /* -------------------------------------------------------------------------- */
@@ -152,7 +169,10 @@ function lerIdOpcional(src: Record<string, unknown>, nome: string): LeituraCorpo
 /*  `POST /publicar`                                                           */
 /* -------------------------------------------------------------------------- */
 
-/** `{ integracaoId, produtoId, linkDocId?, status?, categoryId? }`. */
+/**
+ * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
+ * recriar?, converterEmKit? }`.
+ */
 export interface CorpoPublicar {
   readonly integracaoId: string;
   readonly produtoId: string;
@@ -165,6 +185,15 @@ export interface CorpoPublicar {
    * resolved link has no `category_id` — it never overrides a stored value.
    */
   readonly categoryId: number | null;
+  /**
+   * Step 19 (L1): the native kit's MAIN component — an ERP component produto
+   * id, under the document-id rules. Absent or `null` ⇒ `null`.
+   */
+  readonly principal: string | null;
+  /** Step 19 (L4(4)): recreate the native kit `linkDocId` names. Absent/`null` ⇒ `false`. */
+  readonly recriar: boolean;
+  /** Step 19 (L8): convert the ordinary listing into a native kit. Absent/`null` ⇒ `false`. */
+  readonly converterEmKit: boolean;
 }
 
 /**
@@ -204,6 +233,20 @@ function lerCategoryId(src: Record<string, unknown>): LeituraCorpo<number | null
   return ok(bruto);
 }
 
+/**
+ * An OPTIONAL flag (step 19): absent or `null` ⇒ `false`, else a JSON boolean.
+ *
+ * ⚠️ The STRING `'true'` is refused, never coerced — the `categoryId` rule: a
+ * form that serialises its checkbox as text is a client defect, and coercion
+ * would also accept `'false'` as truthy in the one place a `Boolean(…)` slips in.
+ */
+function lerFlag(src: Record<string, unknown>, nome: string, msg: string): LeituraCorpo<boolean> {
+  const bruto = src[nome];
+  if (bruto === undefined || bruto === null) return ok(false);
+  if (typeof bruto !== 'boolean') return erro(msg);
+  return ok(bruto);
+}
+
 export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   const src = objeto(body);
   if (!src.ok) return src;
@@ -218,6 +261,16 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   if (!status.ok) return status;
   const categoryId = lerCategoryId(src.valor);
   if (!categoryId.ok) return categoryId;
+  const principal = lerIdOpcional(src.valor, 'principal');
+  if (!principal.ok) return principal;
+  const recriar = lerFlag(src.valor, 'recriar', MSG_RECRIAR_INVALIDO);
+  if (!recriar.ok) return recriar;
+  const converterEmKit = lerFlag(src.valor, 'converterEmKit', MSG_CONVERTER_INVALIDO);
+  if (!converterEmKit.ok) return converterEmKit;
+  // ONE kit action per request (R-a): the dispatcher cannot pick between them.
+  if (recriar.valor && converterEmKit.valor) return erro(MSG_OPCOES_DE_KIT_EXCLUSIVAS);
+  // A recriar always NAMES its target (S1F-02): every re-run is the same request.
+  if (recriar.valor && linkDocId.valor === null) return erro(MSG_RECRIAR_SEM_LINK);
 
   return ok({
     integracaoId: integracaoId.valor,
@@ -225,6 +278,9 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
     linkDocId: linkDocId.valor,
     status: status.valor,
     categoryId: categoryId.valor,
+    principal: principal.valor,
+    recriar: recriar.valor,
+    converterEmKit: converterEmKit.valor,
   });
 }
 

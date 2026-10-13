@@ -7,6 +7,7 @@ import {
   INTEGRACAO_TIPO,
   tabelaDeMedidasSchema,
   type EntradaTabelaShopee,
+  type MlSizeChart,
 } from '@delfrance/schemas';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
@@ -41,6 +42,14 @@ const h = vi.hoisted(() => ({
   escolha: null as unknown,
   toasts: [] as string[],
   permissions: 0n,
+  replace: vi.fn(),
+  mlRequest: vi.fn(),
+  FieldPath: class {
+    readonly segments: string[];
+    constructor(...segments: string[]) {
+      this.segments = segments;
+    }
+  },
 }));
 
 /** The converter's read: the parsed doc, or the raw one when the parse fails (`parseSoftRead`). */
@@ -51,8 +60,33 @@ function lerComoOConversor(raw: unknown): Doc {
 
 vi.mock('firebase/firestore', async (importActual) => ({
   ...(await importActual<typeof import('firebase/firestore')>()),
+  FieldPath: h.FieldPath,
   runTransaction: (_db: unknown, fn: (tx: OccTransaction) => Promise<unknown>) =>
-    h.occ.runTransaction(fn),
+    h.occ.runTransaction((tx) =>
+      fn({
+        ...tx,
+        get: (ref) => tx.get(ref),
+        update: (ref, first: unknown, ...rest: unknown[]) => {
+          if (first instanceof h.FieldPath || typeof first === 'string') {
+            const fields = [first, ...rest];
+            const patch: Doc = {};
+            for (let i = 0; i < fields.length; i += 2) {
+              const key = fields[i];
+              patch[JSON.stringify(key instanceof h.FieldPath ? key.segments : [String(key)])] =
+                fields[i + 1];
+            }
+            tx.update(ref, patch);
+          } else tx.update(ref, first as Doc);
+        },
+      }),
+    ),
+}));
+
+// SectionTabs normally bypasses Activity in Mantine's test environment. Exercise
+// its production lifecycle so losing a hidden tab's flush registration fails here.
+vi.mock('@mantine/core', async (importActual) => ({
+  ...(await importActual<typeof import('@mantine/core')>()),
+  useMantineEnv: () => 'default',
 }));
 
 vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
@@ -75,6 +109,9 @@ vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
 vi.mock('@/lib/data/integracaoCollection', () => ({
   integracaoCollection: { ref: () => ({ __col: 'integracao' }) },
 }));
+vi.mock('@/lib/data/grupoDeVariacoesCollection', () => ({
+  grupoDeVariacoesCollection: { ref: () => ({ __col: 'grupoDeVariacoes' }) },
+}));
 
 vi.mock('@delfrance/data', async (importActual) => ({
   ...(await importActual<typeof import('@delfrance/data')>()),
@@ -87,10 +124,21 @@ vi.mock('@delfrance/data/hooks', async (importActual) => ({
   ...(await importActual<typeof import('@delfrance/data/hooks')>()),
   useDocSnapshot: (ref: unknown) =>
     ref == null ? { data: null, loading: false, error: undefined } : h.snap,
-  useSnapshot: (q: unknown) =>
+  useSnapshot: (q: { __col?: string; cs?: { campo: string; valor: unknown }[] } | null) =>
     q == null
       ? { data: undefined, loading: false, error: undefined }
-      : { data: h.contas, loading: false, error: undefined },
+      : {
+          data:
+            q.__col === 'grupoDeVariacoes'
+              ? []
+              : h.contas.filter(
+                  (c) =>
+                    (c as { data: { tipo: unknown } }).data.tipo ===
+                    q.cs?.find((cs) => cs.campo === 'tipo')?.valor,
+                ),
+          loading: false,
+          error: undefined,
+        },
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -136,7 +184,7 @@ vi.mock('@mantine/notifications', async (importActual) => {
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'tab-1' }),
-  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({ replace: h.replace, push: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
 }));
 vi.mock('@/lib/firebase/client', () => ({
@@ -145,8 +193,12 @@ vi.mock('@/lib/firebase/client', () => ({
 }));
 vi.mock('@delfrance/storage', () => ({ uploadTabMediImage: vi.fn() }));
 vi.mock('@/components/photo-manager/PhotoManager', () => ({ PhotoManager: () => null }));
-vi.mock('../_components/MedidasMercadoLivreManager', () => ({
-  MedidasMercadoLivreManager: () => null,
+vi.mock('@/lib/mercado-livre/client', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/mercado-livre/client')>()),
+  useMercadoLivreClient: () => ({
+    sizeChartExcluir: h.mlRequest,
+    sizeChartVerificarExclusao: h.mlRequest,
+  }),
 }));
 
 const { default: TabelaDeMedidasPage } = await import('./page');
@@ -273,16 +325,123 @@ beforeEach(() => {
   h.patches.length = 0;
   h.toasts.length = 0;
   h.escolha = null;
+  h.replace.mockReset();
+  h.mlRequest.mockReset();
   h.contas = [conta(CONTA), conta(IRMA)];
   h.occ = new OccEngine({
     applyWrite: (kind, path, data) => {
       const prev = h.docs.get(path) ?? {};
       h.patches.push(structuredClone(data));
-      h.docs.set(
-        path,
-        kind === 'update' ? { ...prev, ...structuredClone(data) } : structuredClone(data),
-      );
+      const next = kind === 'update' ? structuredClone(prev) : {};
+      for (const [key, value] of Object.entries(data)) {
+        const segments = key.startsWith('[') ? (JSON.parse(key) as string[]) : [key];
+        let target = next;
+        for (const segment of segments.slice(0, -1)) {
+          const child = target[segment];
+          target[segment] = child != null && typeof child === 'object' ? { ...child } : {};
+          target = target[segment] as Doc;
+        }
+        target[segments.at(-1)!] = structuredClone(value);
+      }
+      h.docs.set(path, next);
     },
+  });
+});
+
+describe('/medidas/[id] — draft deletions flush after the table save', () => {
+  const ML_CONTA = 'ml-1';
+  const DRAFT: MlSizeChart = {
+    id: null,
+    nome: 'Rascunho',
+    domain_id: 'MLB-T_SHIRTS',
+    rows: [{ attributes: [{ id: 'SIZE', value_name: '01' }] }],
+  };
+  beforeEach(() => {
+    h.permissions |= PERM.integracao.write;
+    h.contas.push({ id: ML_CONTA, data: { nome: 'Conta ML', tipo: INTEGRACAO_TIPO.mercadoLivre } });
+    semear({
+      ...corpus(),
+      tabelasDeMedidasMercadoLivre: { [ML_CONTA]: { tabelas: [DRAFT], metadata: 'keep' } },
+    });
+  });
+  async function stage() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Mercado Livre' }));
+    });
+    const row = await screen.findByTestId(`ml-guia-${ML_CONTA}-0`);
+    fireEvent.click(within(row).getByRole('button', { name: 'Excluir' }));
+    return screen.getByTestId(`ml-guia-${ML_CONTA}-0`);
+  }
+  const stored = () =>
+    (h.docs.get(PATH)!.tabelasDeMedidasMercadoLivre as Record<string, { tabelas: MlSizeChart[] }>)[
+      ML_CONTA
+    ]!.tabelas;
+
+  it.each(['Salvar alterações', 'Salvar e continuar'])(
+    'flushes a deletion-only %s after switching tabs',
+    async (label) => {
+      renderPage();
+      await stage();
+      expect(h.patches).toHaveLength(0);
+      await act(async () => {
+        fireEvent.click(screen.getByRole('tab', { name: 'Dados gerais' }));
+      });
+      await salvar(label);
+      expect(stored()).toEqual([]);
+      expect(h.mlRequest).not.toHaveBeenCalled();
+      expect(h.replace).toHaveBeenCalledTimes(label === 'Salvar alterações' ? 1 : 0);
+      expect(h.toasts).toEqual(label === 'Salvar e continuar' ? ['Salvo.'] : []);
+    },
+  );
+
+  it('keeps ordinary saved edits when deletion conflicts and blocks navigation and success feedback', async () => {
+    renderPage();
+    await stage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Dados gerais' }));
+    });
+    await editarDescricao('Edição salva');
+    escritaConcorrente((doc) => {
+      (doc.tabelasDeMedidasMercadoLivre as Record<string, { tabelas: MlSizeChart[] }>)[
+        ML_CONTA
+      ]!.tabelas[0] = { ...DRAFT, rows: [] };
+    });
+    await salvar();
+    expect(h.docs.get(PATH)!.descricao).toBe('Edição salva');
+    expect(stored()).toEqual([{ ...DRAFT, rows: [] }]);
+    expect(screen.getAllByText(/Os rascunhos não foram excluídos/).length).toBeGreaterThan(0);
+    expect(h.replace).not.toHaveBeenCalled();
+    expect(h.toasts).toEqual([]);
+    expect(h.mlRequest).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Mercado Livre' }));
+    });
+    expect(
+      within(screen.getByTestId(`ml-guia-${ML_CONTA}-0`)).getByRole('button', { name: 'Desfazer' }),
+    ).toBeTruthy();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.click(linkParaALista());
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it('undo cancels the flush and disarms the page leave guard', async () => {
+    renderPage();
+    const row = await stage();
+    fireEvent.click(within(row).getByRole('button', { name: 'Desfazer' }));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.click(linkParaALista());
+      expect(confirm).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+    }
+    await salvar();
+    expect(h.patches).toHaveLength(0);
+    expect(stored()).toEqual([DRAFT]);
   });
 });
 

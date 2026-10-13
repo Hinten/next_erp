@@ -1,0 +1,69 @@
+Execution:
+ results returned: 2
+ query id: 2a14059c4feb1f94
+ request peak memory usage: 4.00 KiB (4,096 B)
+ data bytes read: 784 B
+ entity row scanned: 2
+ index row scanned: 2
+
+Billing:
+ read units: 3
+
+Tree:
+• Compute
+|  $out_1: map_set($record_1, "__name__", $__name___1, "__key__", unset)
+|  is query result: true
+|
+|  Execution:
+|   records returned: 2
+|   latency: 25.23 ms (local <1 ms)
+|
+└── • Compute
+    |  $__name___1: $__key___6
+    |
+    |  Execution:
+    |   records returned: 2
+    |   latency: 25.18 ms (local <1 ms)
+    |
+    └── • Fetch
+        |  order: PRESERVE_INPUT_ORDER
+        |  source: **/produtoMercadoLivre
+        |  input record id: $rid_2
+        |  output bindings: {$__key___6=get_field(row(), "__key__"), $record_1=row()}
+        |  output: [$__key___6, $record_1]
+        |
+        |  Execution:
+        |   records returned: 2
+        |   latency: 25.17 ms (local 2.25 ms)
+        |   peak memory usage: 4.00 KiB (4,096 B)
+        |   data bytes read: 354 B
+        |
+        └── • Limit
+            |  limit: 2
+            |
+            |  Execution:
+            |   records returned: 2
+            |   latency: 22.92 ms (local <1 ms)
+            |
+            └── • Filter
+                |  expression: (exists($contaOuterRef_3) AND exists($__key___4))
+                |
+                |  Execution:
+                |   records returned: 2
+                |   latency: 22.91 ms (local <1 ms)
+                |   post-filtered rows: 0
+                |
+                └── • SequentialScan
+                       properties: Selection {  }
+                       fields: [$contaOuterRef_3, $__key___4, $rid_2]
+                       index: **/produtoMercadoLivre (contaOuterRef ASC, __key__ ASC)@[id = CICAgJil0IYK]
+                       key ordering length: 3
+                       ranges: /
+                               |----["documents/integracao/e2e-ml1200-<RUN>-x"]
+                                    |----(EntityRef[partitionRef=<PROJECT>#default, path=/produtos/e2e-ml1200-<RUN>-a/produtoMercadoLivre/l1]..oid(000000000000000000000000))
+
+                       Execution:
+                        records returned: 2
+                        latency: 22.87 ms
+                        records scanned: 2
+                        data bytes read: 430 B

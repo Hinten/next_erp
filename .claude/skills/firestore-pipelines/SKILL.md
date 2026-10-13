@@ -5,7 +5,7 @@ description: >-
   buildPipeline/PipelineSpec, usePipelineSnapshot, admin
   @google-cloud/firestore/pipelines, pipeline vs classic query, Enterprise
   indexing (no auto indexes, silent full-scan billing), and testing code that
-  touches pipelines (emulator can't run them). Also covers server-side joins:
+  touches pipelines (partial Enterprise emulator support). Also covers server-side joins:
   perform-joins-with-sub-pipelines, correlated subquery, define/variable,
   toScalarExpression/toArrayExpression, the subcollection stage, pipeline
   aggregate/distinct/unnest/union/sample/replaceWith, findNearest, and the
@@ -16,8 +16,8 @@ description: >-
 
 How and when to use the Firestore **Pipelines API** in this repo — the client
 wrapper in `packages/data`, the admin surface (joins, aggregations, DML),
-Enterprise indexing, and how to test code that depends on either without an
-emulator. **Full stage/function catalog: `references/api.md`.**
+Enterprise indexing, and how to test exact query shapes on the emulator or a
+real project. **Full stage/function catalog: `references/api.md`.**
 
 ## 1. When to use a pipeline vs a classic query
 
@@ -49,9 +49,10 @@ you need:
 - **Cursors / pagination** — pipelines have no `startAfter`/`startAt`/`endAt`;
   use `offset`+`limit` or a keyset predicate (§5), or bridge a cursored `Query`
   via `PipelineSource.createFrom(query)`.
-- **The emulator lane** — `ci-storage.yml`, `ci-rules.yml`, `e2e-emulator.yml`
-  cannot run pipelines at all (§7). Emulator-tested code needs a classic-query
-  path even if a pipeline path also exists for staging/prod.
+- **An unsupported emulator query shape** — stable Firestore emulator 1.22.0
+  supports some pipelines when configured for Enterprise edition (§7). Keep
+  existing seams/fallbacks for shapes not yet verified; do not substitute a
+  classic query merely to make a migrated pipeline test pass.
 
 `TableView` (`packages/ui/src/table/TableView.tsx`) is the reference for "try
 pipeline, fall back to classic": it builds a pipeline, and only when
@@ -326,14 +327,39 @@ explains all three `arquivos` sweep queries and exits non-zero on any missing
 index). A **pipeline has no `.explain()` method** — its explain rides on
 `execute({ explainOptions: { mode: 'analyze' } })`, read via
 `snapshot.explainStats.text` (only `'text'` output is typed in v8.6.0). The
-emulator can't run explain either form — live project only.
+emulator does not establish production index selection or scan costs; keep
+explain/index-usage verification on a real project.
 
-## 7. Testing seams
+## 7. Emulator coverage and testing seams
 
-Pipelines **never run in the emulator** — no client pipeline, no admin pipeline,
-no `explain`. Anything the emulator-only suites (`ci-storage.yml`, `ci-rules.yml`,
-`e2e-emulator.yml` — every `*.emulator.e2e.spec.ts` / `*.storage.test.ts`) need
-to exercise must either avoid pipelines or take a seam:
+CI pins stable `firebase-tools@15.25.0`, which bundles Firestore emulator
+**1.22.0**; Java **21** is already installed in the emulator jobs. The emulator
+defaults to **Standard** edition. `firebase.e2e.json` explicitly sets
+`emulators.firestore.edition: "enterprise"` and names database `default` to match
+the app. No beta version or CLI upgrade is needed for this support.
+
+The 1.22.0 runtime supports basic `collection` → `where` → `sort` → `select` →
+`limit` pipelines, including accent-expanded case-insensitive `regexContains`,
+field aliases and `documentId(field('__name__'))` for projected row identity.
+Grouped `sum`/`count` also execute in a runtime probe, but that does not establish
+every aggregate used by the app. Verify each full query through the installed
+SDK and its real consumer before migrating the corresponding test.
+
+**Boundaries that remain live:** the emulator documentation excludes `search`;
+production index selection/scan costs and transaction concurrency are not
+established by an emulator pass. Keep explain/index-usage checks and the fiscal
+numbering concurrency contract on a real project. A successful SDK feature
+probe does not establish backend support for joins, document sources, DML or
+other unverified shapes.
+
+Move eligible Playwright specs into the existing emulator lane using the
+`.emulator.e2e.spec.ts` suffix. Preserve their fixtures, assertions and query
+behavior. Prove both authenticated success and unauthenticated denial on the
+literal `default` database for classic and pipeline reads; Admin SDK success
+alone cannot validate Security Rules. Do not add skipped assertions, mocked
+query results or a fallback solely to get a green migration.
+
+Existing seams remain useful for unsupported or unverified shapes:
 
 - **Client unit tests** — mock the whole subpath and assert the stages
   `buildPipeline` produces, not real Firestore behavior:
@@ -342,16 +368,15 @@ to exercise must either avoid pipelines or take a seam:
   (`{ kind: 'equal', l, r }`, …) so assertions read as
   `expect(stage.where).toHaveBeenCalledWith(expect.objectContaining({ kind:
   'and', ... }))`. Full pattern in `packages/data/src/pipeline-queries.test.ts`.
-- **Admin code** — default-parameter dependency injection. Functions that read
+- **Admin code with an unverified query shape** — default-parameter dependency injection. Functions that read
   from a pipeline should take the fetch as an overridable parameter defaulting to
   the real implementation, e.g. `someSweep(db, fetchCandidates =
   fetchCandidatesViaPipeline, resolveReferenced = ...)` — the emulator suite calls
   it with a stub `fetchCandidates` that returns fixture rows, exercising the
-  surrounding delete/keep/error-isolation logic without ever calling
-  `.pipeline()`. Gate anything that truly needs a live pipeline behind
-  `describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)` style guards only where
-  the *rest* of the suite is emulator-only — don't let one pipeline-dependent
-  assertion silently skip a whole file.
+  surrounding delete/keep/error-isolation logic without calling `.pipeline()`.
+  That proves the surrounding logic only. Once the exact query is supported,
+  add real-query coverage before removing its seam; never silently skip a
+  pipeline-dependent assertion or a whole file.
 - **Live verification** stands in for what the emulator can't cover:
   `check-sweep-indexes.mjs` (§6) is the "does this actually work against a real
   project" backstop for the seam you stubbed in the emulator suite.
@@ -383,8 +408,8 @@ to exercise must either avoid pipelines or take a seam:
 - **A correlated-join sweep** (pattern, not yet in-repo) — for "parents with an
   aggregate over their children" in one round trip, prefer a
   `define`+`toScalarExpression` subquery (§4) over N+1 classic reads; keep each
-  subquery indexed and bounded (`limit`/`select`), and wrap it in the DI seam
-  since it is staging/prod-only (no emulator, §7).
+  subquery indexed and bounded (`limit`/`select`), and retain the DI seam until
+  this exact correlated shape has verified emulator coverage (§7).
 
 ## 9. Gotchas
 

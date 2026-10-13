@@ -42,6 +42,42 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('shipment tracking client', () => {
+  it('GETs with the Firebase token and only the encoded pedido ID', async () => {
+    const body = { name: 'Carrier', url: 'http://carrier.example/track?pedido=01' };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        response(JSON.stringify(body), { status: 200, contentType: 'application/json' }),
+      );
+    expect(await client(fetchImpl).rastrear('p 1&x')).toEqual(body);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://localhost:3006/api/marketplace/mercado-livre/rastreio?pedidoId=p%201%26x',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', Accept: 'application/json' },
+      }),
+    );
+  });
+
+  it.each([{}, { name: null, url: null }, { name: 'Carrier', url: 'javascript:alert(1)' }])(
+    'rejects an invalid tracking success body: %j',
+    async (body) => {
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      await expect(
+        client(async () => response(JSON.stringify(body), { status: 200 })).rastrear('p1'),
+      ).rejects.toBeInstanceOf(MercadoLivreClientRespostaInvalidaError);
+    },
+  );
+
+  it('preserves the tracking-unavailable code for the informational UI', async () => {
+    const body = { error: 'Rastreamento ainda indisponível.', code: 'ML_RASTREIO_INDISPONIVEL' };
+    await expect(
+      client(async () => response(JSON.stringify(body), { status: 409 })).rastrear('p1'),
+    ).rejects.toMatchObject({ code: body.code, status: 409 });
+  });
+});
+
 describe('non-JSON error bodies', () => {
   it('never leaks an HTML 404 page into the error message', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
