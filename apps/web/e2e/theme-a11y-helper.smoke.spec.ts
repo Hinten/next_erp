@@ -116,6 +116,43 @@ test.describe('Theme readability checker rejects rendering defects', () => {
     expect((await auditThemeReadability(page, targets(page))).issues).toEqual([]);
   });
 
+  test('centers reachable content clear of a fixed application header', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
+      body {margin:0;background:white;color:black;font:16px Arial}
+      header {position:fixed;inset:0 0 auto;height:64px;background:white;z-index:100}
+      main {padding:200px 16px 1200px} h1 {margin:0;font-size:28px;line-height:35px}
+      </style><body><header>Application header</header><main><h1 id="heading">Reachable heading</h1></main></body></html>`);
+    await page.evaluate(() => window.scrollTo(0, 192));
+    const heading = page.locator('#heading');
+    expect(await heading.evaluate((element) => element.getBoundingClientRect().top)).toBe(8);
+    expect(
+      (
+        await auditThemeReadability(page, {
+          scheme: 'light',
+          scope: 'main',
+          required: [heading],
+        })
+      ).issues,
+    ).toEqual([]);
+    expect(
+      await heading.evaluate((element) => element.getBoundingClientRect().top),
+    ).toBeGreaterThan(64);
+  });
+
+  test('rejects content fixed behind a fixed application header', async ({ page }) => {
+    await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
+      body {margin:0;background:white;color:black;font:16px Arial}
+      header {position:fixed;inset:0 0 auto;height:64px;background:white;z-index:100}
+      main {min-height:1600px} h1 {position:fixed;top:8px;left:16px;margin:0;font-size:28px;line-height:35px}
+      </style><body><header>Application header</header><main><h1 id="heading">Occluded heading</h1></main></body></html>`);
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      scope: 'main',
+      required: [page.locator('#heading')],
+    });
+    expect(report.issues.some((issue) => issue.code === 'unreachable-glyph')).toBe(true);
+  });
   test('rejects low-contrast text', async ({ page }) => {
     await page.locator('#copy').evaluate((el) => {
       el.style.color = '#dddddd';

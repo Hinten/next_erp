@@ -260,6 +260,12 @@ async function inspectTarget(target: Locator): Promise<ThemeReadabilityIssue[]> 
   }
   try {
     await target.scrollIntoViewIfNeeded({ timeout: 5_000 });
+    // Nearest scrolling can leave otherwise reachable text beneath a fixed
+    // application header. Center through the real scroll containers before
+    // checking viewport clipping and the actual foreground hit stack.
+    await target.evaluate((element) =>
+      element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }),
+    );
     const inViewport = await target.evaluate(
       (element) =>
         new Promise<boolean>((resolve) => {

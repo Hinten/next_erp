@@ -15,6 +15,11 @@ import { expectFieldError } from './helpers/object-view';
 import { applyTextFilter, expectListMode, searchTableView } from './helpers/table-view';
 import { expectThemeReadable } from './helpers/theme-a11y';
 import { warmRoutes } from './helpers/warmup';
+import {
+  cleanupThemeReportFixtures,
+  expectThemeReportFixturesInRecentWindow,
+  seedThemeReportFixtures,
+} from './helpers/theme-fixtures';
 
 const prefix = e2ePrefix('theme-readability');
 
@@ -54,6 +59,7 @@ const test = base.extend<object, { themeOperator: ThemeOperator }>({
         try {
           await Promise.all([
             cleanupThemeReadabilityFixtures(prefix),
+            cleanupThemeReportFixtures(prefix),
             resetAvisosLeitura(user.uid),
           ]);
         } finally {
@@ -81,10 +87,12 @@ const test = base.extend<object, { themeOperator: ThemeOperator }>({
 // Theme operator's notification state during axe's DOM measurement.
 test.describe('Theme readability — populated component states', () => {
   let fixtures: Awaited<ReturnType<typeof seedThemeReadabilityFixtures>>;
+  let reportFixtures: Awaited<ReturnType<typeof seedThemeReportFixtures>>;
 
   test.beforeAll(async ({ browser, themeOperator }) => {
     test.setTimeout(240_000);
     fixtures = await seedThemeReadabilityFixtures(prefix, themeOperator.uid);
+    reportFixtures = await seedThemeReportFixtures(prefix);
     await warmRoutes(browser, [
       '/categorias',
       '/categorias/novo',
@@ -92,6 +100,7 @@ test.describe('Theme readability — populated component states', () => {
       `/produtos/${fixtures.kit.kitId}/editar`,
       `/produtos/${fixtures.stock.parentId}/editar`,
       '/chat',
+      '/relatorios/vendas',
       `/chat/${fixtures.untagged.id}`,
     ]);
   });
@@ -234,6 +243,72 @@ test.describe('Theme readability — populated component states', () => {
           // Zod message, whose wording is allowed to change independently.
           const error = page.locator('[id$="-error"]').filter({ visible: true });
           await audit([name, error]);
+        });
+
+        await test.step('populated sales-report total, bucket legend and state detail', async () => {
+          // Other suites also write pedidos. Prove our eight orders remain in
+          // the real latest-500 query, then check lower bounds rather than
+          // assuming the report contains only this worker's fixture namespace.
+          await expectThemeReportFixturesInRecentWindow(reportFixtures);
+          await page.goto('/relatorios/vendas');
+          const heading = page.getByRole('heading', { name: 'Vendas por estado', exact: true });
+          const legend = page.getByRole('list', { name: 'Resumo por estado', exact: true });
+          const table = page.getByRole('table');
+          const total = page.locator('.mantine-DonutChart-label');
+          const back = page.getByRole('link', { name: '← Voltar a Relatórios', exact: true });
+          const required = [heading, legend, total, back];
+          for (const header of ['Estado', 'Bucket', 'Pedidos', 'Receita']) {
+            required.push(table.getByRole('columnheader', { name: header, exact: true }));
+          }
+          for (const state of reportFixtures.states) {
+            const label = legend.getByText(state.bucketLabel, { exact: true });
+            const bucket = legend.getByRole('listitem').filter({
+              has: page.getByText(state.bucketLabel, { exact: true }),
+            });
+            const count = bucket.getByText(/^\d+ pedido\(s\)$/);
+            const revenue = bucket.getByText(/^R\$/);
+            const swatch = bucket.locator('[aria-hidden="true"]');
+            const detail = table.getByRole('row').filter({
+              has: page.getByRole('cell', { name: state.label, exact: true }),
+            });
+            await expect(count).toBeVisible({ timeout: 20_000 });
+            await expect(detail).toBeVisible({ timeout: 20_000 });
+            expect(Number.parseInt(await count.innerText(), 10)).toBeGreaterThanOrEqual(
+              state.count,
+            );
+            expect(
+              Number(await detail.getByRole('cell').nth(2).innerText()),
+            ).toBeGreaterThanOrEqual(state.count);
+            const displayedRevenue = Number(
+              (await detail.getByRole('cell').nth(3).innerText())
+                .replace(/[^\d,-]/g, '')
+                .replace(',', '.'),
+            );
+            expect(displayedRevenue).toBeGreaterThanOrEqual(state.revenue);
+            required.push(label, count, revenue, swatch, ...(await detail.getByRole('cell').all()));
+          }
+          await expect(total).toHaveText(/^\d+ pedidos$/);
+          const renderedCounts = await page.evaluate(() => {
+            const central = document.querySelector('.mantine-DonutChart-label')?.textContent ?? '';
+            const buckets = [
+              ...document.querySelectorAll('ul[aria-label="Resumo por estado"] li'),
+            ].map((item) => Number(item.textContent?.match(/(\d+) pedido\(s\)/)?.[1] ?? NaN));
+            const states = [...document.querySelectorAll('table tbody tr')].map((row) =>
+              Number(row.querySelectorAll('td')[2]?.textContent ?? NaN),
+            );
+            return {
+              total: Number.parseInt(central, 10),
+              bucketTotal: buckets.reduce((sum, value) => sum + value, 0),
+              stateTotal: states.reduce((sum, value) => sum + value, 0),
+            };
+          });
+          expect(renderedCounts.total).toBeGreaterThanOrEqual(reportFixtures.orderIds.length);
+          expect(renderedCounts.bucketTotal).toBe(renderedCounts.total);
+          expect(renderedCounts.stateTotal).toBe(renderedCounts.total);
+          // Counts already live in the central total and readable HTML legend;
+          // outer SVG labels would duplicate them and collide with leader lines.
+          await expect(page.locator('.recharts-pie-label-text')).toHaveCount(0);
+          await audit(required, [], { focus: [back] });
         });
 
         await test.step('missing product thumbnail and populated product table', async () => {
