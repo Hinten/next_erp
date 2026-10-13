@@ -44,6 +44,21 @@ describe('classifyEnvFile', () => {
     // Legal project-id characters, reserved artifact meanings.
     { name: '.env.deploy.example', action: 'reject' },
     { name: '.env.deploy.local', action: 'reject' },
+
+    // The rename can PRODUCE the secrets name, so the destination is checked with
+    // the same prefix rule as the source. Each of these used to be copied into the
+    // artifact as `.env.secrets`, `.env.secrets-x` and `.env.secretsmanager`.
+    { name: '.env.deploy.secrets', action: 'reject' },
+    { name: '.env.deploy.secrets-x', action: 'reject' },
+    // Refused on purpose, not by accident of the prefix: its source-side twin
+    // `.env.secretsmanager` is already refused, and the two rules must agree.
+    { name: '.env.deploy.secretsmanager', action: 'reject' },
+    { name: '.env.secretsmanager', action: 'reject' },
+
+    // Near misses that must STAY copies — where the destination rule stops. Not
+    // the prefix (`secret`, singular), and not anchored at the start (`my-secrets`).
+    { name: '.env.deploy.secret', action: 'copy', dest: '.env.secret' },
+    { name: '.env.deploy.my-secrets', action: 'copy', dest: '.env.my-secrets' },
   ];
 
   for (const { name, action, dest } of cases) {
@@ -68,6 +83,25 @@ describe('classifyEnvFile', () => {
     // A prefix check is correct HERE (and only here): every `.env.secrets*` variant
     // an operator invents — .bak, .old, .1 — is credential material.
     expect(classifyEnvFile('.env.secrets.whatever-comes-next').action).toBe('reject');
+  });
+
+  it('never returns a copy verdict whose dest starts with .env.secrets', () => {
+    // The invariant the module exists for, stated on the OUTPUT side: whatever the
+    // source name, nothing it copies lands in the artifact under the secrets name.
+    for (const { name } of cases) {
+      const verdict = classifyEnvFile(name);
+      if (verdict.action === 'copy') expect(verdict.dest, name).not.toMatch(/^\.env\.secrets/);
+    }
+  });
+
+  it('names the credential problem, not a reserved meaning, for a .env.deploy.secrets*', () => {
+    // `secrets` is NOT in RESERVED_SUFFIXES, so the operator is told what the file
+    // would have become — and that it must never ship — rather than that
+    // firebase-tools happens to reserve the name.
+    const { reason } = classifyEnvFile('.env.deploy.secrets');
+    expect(reason).toContain('".env.secrets"');
+    expect(reason).toMatch(/never reach a deploy artifact/);
+    expect(reason).not.toMatch(/reserves for a different purpose/);
   });
 });
 
@@ -119,6 +153,16 @@ describe('copyDeployEnv', () => {
     // `.env.deploy` sorts before `.env.secrets`, so this also pins that the throw
     // aborts the whole artifact rather than leaving a half-populated one behind.
     expect(() => copyDeployEnv(pkgDir, deployDir)).toThrow(/\.env\.secrets/);
+  });
+
+  it('throws on a .env.deploy.secrets file and leaves the artifact empty', () => {
+    // The end-to-end shape of the bug: before the destination check this file was
+    // copied, and the artifact gained a `.env.secrets`.
+    write('.env.deploy.secrets', 'MERCADO_LIVRE_CLIENT_SECRET=hunter2\n');
+    expect(() => copyDeployEnv(pkgDir, deployDir)).toThrow(
+      /refusing to build the artifact — "\.env\.deploy\.secrets" would land in the artifact as "\.env\.secrets"/,
+    );
+    expect(readdirSync(deployDir)).toEqual([]);
   });
 
   it('throws on a secrets DIRECTORY, not just a file', () => {
