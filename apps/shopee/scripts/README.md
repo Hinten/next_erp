@@ -1528,7 +1528,7 @@ only, never a raw payload — so it is safe to paste into an issue.
 | `preco-menor-bloqueado` / `preco-atual-ilegivel` | the decrease guard: rerun with `--baixar-preco` if the reduction is intended.                                                                                                                                                             |
 | `razao-de-precos-excedida`                       | the listing would end with a max/min ratio above the region's multiple — judged against the models NOT sent too, at their current prices. Shopee's own answer to this is a generic refusal, so this line is the only place you learn why. |
 | `moeda-divergente` / `modelo-ausente`            | the listing is not in the conta's currency, or a linked variation no longer exists on Shopee — reimport the listing.                                                                                                                      |
-| `### pulos do plano`                             | listings refused before any read: `kit-derivado` (a native Shopee kit), `sem-item-id`, `anuncio-removido`, `sem-modelos`, `forma-de-modelo-divergente`, `modelos-excedem-limite` (`modelos=` says how many).                              |
+| `### pulos do plano`                             | listings refused before any read: `sem-item-id`, `anuncio-removido`, `sem-modelos` (also a native Shopee kit with no model row yet), `forma-de-modelo-divergente`, `modelos-excedem-limite` (`modelos=` says how many).                   |
 | `### produtos sem envio`                         | a requested produto that reaches no listing: `produto-nao-encontrado`, or `sem-link` (no listing of THIS conta).                                                                                                                          |
 
 ⚠️ **A dry run is not a cheaper `--live`.** A promotion lock, the category's
@@ -1592,6 +1592,14 @@ was sent — and do not look at `update_time` to confirm it: a price write does
   one before the wire.
 - **A variação requested alone** prints its ANCHOR's listing: the price is per
   model, so the whole listing is read and decided together.
+- **A native Shopee kit is priced too** (step 19, L5) — planned like any listing
+  with models, and sent through `update_kit_item` (only the changed models, each
+  with its LIVE components resent verbatim) instead of `update_price`; the
+  transport is chosen from the fresh base read. Its 200 never proves anything
+  (Shopee answers 200 to kit writes it silently ignores), so a kit is ALWAYS
+  re-read: `preco-nao-atualizado` on a kit means the re-read still shows the old
+  price. After a "converter em kit nativo" both listings are priced — the old
+  ordinary one keeps selling until it is deleted in Seller Centre (§12.6).
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it writes
   prices on a real marketplace, and even a dry run calls Shopee.
 
