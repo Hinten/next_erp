@@ -378,6 +378,137 @@ describe('--verificar', () => {
   });
 });
 
+describe('--verificar — a name split by a line wrap', () => {
+  /** A list holding only a three-word name, so two of its words alone match nothing. */
+  const TRES_PALAVRAS = 'Loja Exemplo Moda\n';
+
+  /** `doc.md` checked against the store-name list `nomes`. */
+  const verificarDoc = (texto: string, nomes = NOMES) =>
+    rodar(
+      ['--entrada', PASTA, '--verificar', 'doc.md'],
+      disco({ arquivos: { 'nomes-proibidos.txt': nomes }, outros: { 'doc.md': texto } }),
+    );
+
+  /** The finding lines, in order, without their indent. */
+  const achadosDe = (saida: string) =>
+    saida
+      .split('\n')
+      .filter((l) => l.startsWith('  '))
+      .map((l) => l.trim());
+
+  /** Refused with exactly these findings, and never a word of the name in the output. */
+  function esperarAchados(texto: string, esperados: readonly string[], nomes = NOMES) {
+    const r = verificarDoc(texto, nomes);
+    expect(achadosDe(r.saida)).toEqual(esperados);
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida.toLowerCase()).not.toContain('exemplo');
+    expect(r.saida.toLowerCase()).not.toContain('moda');
+  }
+
+  function esperarLimpo(texto: string, nomes = NOMES) {
+    const r = verificarDoc(texto, nomes);
+    expect(achadosDe(r.saida)).toEqual([]);
+    expect(r).toMatchObject({ codigo: 0, escritas: [] });
+    expect(r.saida).toContain('clean.');
+  }
+
+  it('a two-word name split across two lines is `<file>:<n>-<m>`', () => {
+    esperarAchados('o pedido da Loja\nExemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    // After an unrelated line: the 3-line window 1-3 does not repeat the 2-line one.
+    esperarAchados('linha limpa\no pedido da Loja\nExemplo chegou\n', [
+      'doc.md:2-3 :: nome-de-loja',
+    ]);
+  });
+
+  it('a three-word name split across two lines, at either space', () => {
+    esperarAchados(
+      'chegou o pedido da Loja Exemplo\nModa ontem\n',
+      ['doc.md:1-2 :: nome-de-loja'],
+      TRES_PALAVRAS,
+    );
+    esperarAchados(
+      'chegou o pedido da Loja\nExemplo Moda ontem\n',
+      ['doc.md:1-2 :: nome-de-loja'],
+      TRES_PALAVRAS,
+    );
+  });
+
+  it('a three-word name split across three lines is reported once, as the 3-line window', () => {
+    esperarAchados(
+      'chegou o pedido da Loja\nExemplo\nModa ontem\n',
+      ['doc.md:1-3 :: nome-de-loja'],
+      TRES_PALAVRAS,
+    );
+  });
+
+  it("a continuation line's quote markers, indentation and list marker are dropped before the join", () => {
+    esperarAchados('> o pedido da Loja\n> Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('> > o pedido da Loja\n> > Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('- o pedido da Loja\n  Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    // Unstripped, the `2.` would sit between the words (`loja 2 exemplo`) and hide the name.
+    esperarAchados('1. o pedido da Loja\n2. Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('- o pedido da Loja\n  1) Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    // A marker needs a space after it: the `2.0` after `1. ` belongs to the name.
+    esperarAchados(
+      'o pedido da Loja\n1. 2.0 Exemplo chegou\n',
+      ['doc.md:1-2 :: nome-de-loja'],
+      'Loja 2.0 Exemplo\n',
+    );
+  });
+
+  it('the window is read as written too: a number opening a line may end a name', () => {
+    // Read only with the `2000. ` dropped as a list marker, the name would lose its last word.
+    esperarAchados(
+      'o pedido da Loja Exemplo\n2000. Depois chegou outro\n',
+      ['doc.md:1-2 :: nome-de-loja'],
+      'Loja Exemplo 2000\n',
+    );
+  });
+
+  it('CRLF endings: the same label, and the header counts the same lines', () => {
+    const r = verificarDoc('o pedido da Loja\r\nExemplo chegou\r\n');
+    expect(achadosDe(r.saida)).toEqual(['doc.md:1-2 :: nome-de-loja']);
+    expect(r.saida).toContain('sanitizar --verificar: 1 file(s), 3 line(s).\n');
+    expect(r.codigo).toBe(1);
+  });
+
+  it('a blank line between the parts is fail-closed: the window spans it', () => {
+    esperarAchados('o pedido da Loja\n\nExemplo chegou\n', ['doc.md:1-3 :: nome-de-loja']);
+    esperarAchados('> o pedido da Loja\n>\n> Exemplo chegou\n', ['doc.md:1-3 :: nome-de-loja']);
+  });
+
+  it('a kind one of its lines already reports is not repeated by the window; another occurrence is', () => {
+    esperarAchados('a Loja Exemplo vendeu, e a Loja\nExemplo também\n', [
+      'doc.md:1 :: nome-de-loja',
+    ]);
+    esperarAchados('a Loja Exemplo vendeu\nde novo a Loja\nExemplo também\n', [
+      'doc.md:1 :: nome-de-loja',
+      'doc.md:2-3 :: nome-de-loja',
+    ]);
+  });
+
+  it('a phone wrapped at its space is reported once, on the line holding the number', () => {
+    // No redactor pattern needs the joining space: the number alone already matches.
+    const r = verificarDoc('ligue +55 (00)\n91234-5678 hoje\n');
+    expect(achadosDe(r.saida)).toEqual(['doc.md:2 :: telefone']);
+    expect(r.codigo).toBe(1);
+    expect(r.saida).not.toContain('91234');
+  });
+
+  it('near-misses stay clean', () => {
+    // The words on lines separated by an unrelated non-blank line.
+    esperarLimpo('o pedido da Loja\nfoi entregue ontem\nExemplo de texto\n');
+    // A different word order.
+    esperarLimpo('o Exemplo\nLoja chegou\n');
+    // Two of the three words.
+    esperarLimpo('o pedido da Loja\nExemplo chegou\n', TRES_PALAVRAS);
+    esperarLimpo('o pedido da Loja Exemplo\nchegou ontem\n', TRES_PALAVRAS);
+    // The same words, never adjacent: farther apart than a window, or with a word between.
+    esperarLimpo('a Loja\nalfa\nbeta\nExemplo\n');
+    esperarLimpo('a Loja nova\nExemplo antigo\n');
+  });
+});
+
 describe('lerArgumentos', () => {
   it('parses every flag', () => {
     expect(

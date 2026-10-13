@@ -424,9 +424,38 @@ export function executarSanitizacao(
 
 /**
  * Every listed store name and every redactor pattern in the named UTF-8 text
- * files (a doc, a fixture, a PR-body draft), reported as `<arquivo>:<linha> ::
- * <tipo>` — never the term, never the value. The repository's mandated fakes
- * (`000.000.000-00`, `…@….invalid`) are skipped. Reads no capture.
+ * files (a doc, a fixture, a PR-body draft) — never the term, never the value.
+ * The repository's mandated fakes (`000.000.000-00`, `…@….invalid`) are
+ * skipped. Reads no capture. Each file gets two passes (`achadosDasLinhas`):
+ *
+ * 1. **Each line**, reported as `<arquivo>:<linha> :: <tipo>`.
+ * 2. **Each window of 2 and of 3 consecutive lines**, reported as
+ *    `<arquivo>:<primeira>-<ultima> :: <tipo>`. A hard wrap can split a
+ *    multi-word store name (`…the Loja Exemplo` / `Moda store`) so that no
+ *    single line holds it, and a line-only check then prints `clean.` and
+ *    exits 0: the gate before a public push would fail OPEN. The window's lines
+ *    are joined by one space, every whitespace run collapsed, and the joined
+ *    text gets the same detectors as a line (`tiposNaLinhaLi`) twice: once with
+ *    each continuation line's leading whitespace, `>` quote markers and list
+ *    marker dropped (`1. … Loja` / `2. Exemplo …`), and once as written (a
+ *    `2000.` opening a line may be the end of a name, not a list number).
+ *
+ * A window reports a kind only as the SMALLEST span that finds it: never when
+ * one of its own lines already reports that kind, and a 3-line window never
+ * when one of its two 2-line windows finds it. A second occurrence hidden that
+ * way still leaves the file refused (exit 1), and surfaces on the re-run once
+ * the reported one is fixed.
+ *
+ * A blank line is a line like any other and joins as nothing, so a name split
+ * by one blank line is still reported (`<arquivo>:1-3`): fail-closed, because
+ * the check cannot tell a paragraph break from a wrap (a bare `>` inside a
+ * quote, loose list items), and a false alarm costs a re-run where a miss
+ * publishes the name.
+ *
+ * Out of reach: a name spread over four or more lines, and a token cut inside
+ * itself (a wrapper breaks only at whitespace, which the one-space join puts
+ * back). No redactor pattern needs the joining space to match: a phone wrapped
+ * after its `(DD)` is reported on the line holding the number.
  */
 function verificar(
   caminhos: readonly string[],
@@ -446,22 +475,71 @@ function verificar(
       achados.push(`${rotulo} :: utf16`);
       return;
     }
-    texto.texto.split(/\r?\n/).forEach((linha, n) => {
-      linhasLidas += 1;
-      for (const tipo of tiposNaLinhaLi(linha, lista)) {
-        achados.push(`${rotulo}:${String(n + 1)} :: ${tipo}`);
-      }
-    });
+    const linhas = texto.texto.split(/\r?\n/);
+    linhasLidas += linhas.length;
+    achados.push(...achadosDasLinhas(rotulo, linhas, lista));
   });
   const cabecalho = `sanitizar --verificar: ${String(caminhos.length)} file(s), ${String(linhasLidas)} line(s).`;
   if (achados.length === 0) return { saida: fim([cabecalho, 'clean.']), escritas: [], codigo: 0 };
   return {
     saida: fim([
       cabecalho,
-      `FOUND ${String(achados.length)}: each line is <file>:<line> :: <kind>; a value is never printed.`,
+      `FOUND ${String(achados.length)}: each line is <file>:<line> :: <kind>, or <file>:<first>-<last> :: <kind> for a span of wrapped lines; a value is never printed.`,
       ...achados.map((a) => `  ${a}`),
     ]),
     escritas: [],
     codigo: 1,
   };
+}
+
+/**
+ * What a continuation line loses in the first reading of a window: leading
+ * whitespace, `>` quote markers (nested ones too) and list markers (`-`, `*`,
+ * `+`, `1.`, `1)`), a marker only when a space or the end of the line follows it.
+ */
+const PREFIXO_DE_CONTINUACAO = /^(?:\s*(?:>|(?:[-*+]|\d{1,9}[.)])(?=\s|$)))*\s*/;
+
+/** Consecutive lines joined by one space, whitespace runs collapsed: prefixes dropped, then as written. */
+function leiturasDaJanela(linhas: readonly string[]): readonly string[] {
+  const juntar = (partes: readonly string[]) => partes.join(' ').replace(/\s+/g, ' ');
+  return [
+    juntar(linhas.map((l, i) => (i === 0 ? l : l.replace(PREFIXO_DE_CONTINUACAO, '')))),
+    juntar(linhas),
+  ];
+}
+
+/** One file's findings, in line order: each line, then each window it opens (see {@link verificar}). */
+function achadosDasLinhas(
+  rotulo: string,
+  linhas: readonly string[],
+  lista: ListaDeNomesLi,
+): string[] {
+  const nenhum: ReadonlySet<string> = new Set();
+  const tiposDaJanela = (inicio: number, quantas: number): ReadonlySet<string> =>
+    inicio + quantas > linhas.length
+      ? nenhum
+      : new Set(
+          leiturasDaJanela(linhas.slice(inicio, inicio + quantas)).flatMap((t) =>
+            tiposNaLinhaLi(t, lista),
+          ),
+        );
+  const porLinha = linhas.map((linha) => new Set<string>(tiposNaLinhaLi(linha, lista)));
+  const porPar = linhas.map((_, n) => tiposDaJanela(n, 2));
+  const algumaLinhaTem = (inicio: number, quantas: number, tipo: string) =>
+    porLinha.slice(inicio, inicio + quantas).some((tipos) => tipos.has(tipo));
+  const daJanela = (inicio: number, quantas: number, tipo: string) =>
+    `${rotulo}:${String(inicio + 1)}-${String(inicio + quantas)} :: ${tipo}`;
+
+  const achados: string[] = [];
+  porLinha.forEach((tipos, n) => {
+    for (const tipo of tipos) achados.push(`${rotulo}:${String(n + 1)} :: ${tipo}`);
+    for (const tipo of porPar[n] ?? nenhum) {
+      if (!algumaLinhaTem(n, 2, tipo)) achados.push(daJanela(n, 2, tipo));
+    }
+    for (const tipo of tiposDaJanela(n, 3)) {
+      const numPar = porPar.slice(n, n + 2).some((par) => par.has(tipo));
+      if (!numPar && !algumaLinhaTem(n, 3, tipo)) achados.push(daJanela(n, 3, tipo));
+    }
+  });
+  return achados;
 }
