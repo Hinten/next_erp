@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:tasks": "vitest run --config vitest.tasks.config.ts",
     "sanitizar": "tsx scripts/sanitizar.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },

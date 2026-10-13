@@ -28,6 +28,7 @@ on:
     workflows:
       - 'CI'
       - 'CI — Freight'
+      - 'CI — Loja Integrada'
       - 'CI — Mercado Livre (Firestore emulator)'
       - 'CI — NFe'
       - 'CI — Rules'
