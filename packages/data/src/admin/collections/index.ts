@@ -86,6 +86,7 @@ export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollecti
 export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollection';
 export { notificacaoMelhorEnvioCollection } from './notificacaoMelhorEnvioCollection';
 export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
+export { notificacaoLojaIntegradaCollection } from './notificacaoLojaIntegradaCollection';
 export { clienteCollection } from './clienteCollection';
 export { clienteIdentidadeCollection } from './clienteIdentidadeCollection';
 export { conversaCollection } from './conversaCollection';

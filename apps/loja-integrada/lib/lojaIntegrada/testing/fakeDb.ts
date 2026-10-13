@@ -23,14 +23,18 @@
  *    only ever sees an update-time precondition, and a document that is gone
  *    fails it;
  *  - `doc.delete()` — idempotent, like the real one;
+ *  - `doc.set(data, { merge: true })` — an upsert of FLAT fields (step 3: the
+ *    shared notification store's `mark` is a merge-set). Exactly that option:
+ *    a plain `set` still throws, and so does a nested map in the patch, whose
+ *    field-by-field deep merge this fake does not model;
  *  - every write resolves `{ writeTime }`;
  *  - the `{ __increment: n }` sentinel ({@link increment}), APPLIED on write,
  *    because `escreverAviso` writes `deps.increment(1)`;
- *  - `collection().where(campo, '==', valor)`, `orderBy`, `limit`,
- *    `startAfter(doc)` and `get()` → `{ docs, empty, size, readTime }` — see
- *    "Queries" below.
+ *  - `collection().where(campo, '==', valor)`, `where(campo, '<', valor)` (step
+ *    3: the shared sweep's lane query), `orderBy`, `limit`, `startAfter(doc)`
+ *    and `get()` → `{ docs, empty, size, readTime }` — see "Queries" below.
  *
- * Everything else — `set`, any other operator, a dotted update key, an
+ * Everything else — a plain `set`, any other operator, a dotted update key, an
  * `undefined` value, a precondition that is not a stamp, an `orderBy` over a
  * value that is not null/boolean/number/string — throws. That is the Shopee
  * step-8 lesson: a double that silently answers "matches nothing" or "wrote it"
@@ -42,6 +46,10 @@
  *
  *  - **Immutable**: every builder method returns a NEW query; the one it was
  *    called on is unchanged, like a real `Query`.
+ *  - **`<` compares within ONE type**: a number bound matches only stored
+ *    numbers below it, a string bound only stored strings — a `null` or a
+ *    missing field never matches, as on the server. A bound of any other type
+ *    throws.
  *  - **`orderBy` filters for existence**: a document LACKING the field is
  *    dropped (a `null` value is kept). Values order by type first — null,
  *    boolean, number, string — then by value; ties break on the document id in
@@ -149,9 +157,21 @@ interface Stored {
   updateTime: CarimboFake;
 }
 
+/** The operators this fake models (module header). */
+type OperadorFake = '==' | '<';
+
 interface Filtro {
   campo: string;
+  op: OperadorFake;
   valor: unknown;
+}
+
+/** Whether a stored value satisfies one filter, with the server's semantics (module header). */
+function satisfaz(armazenado: unknown, f: Filtro): boolean {
+  if (f.op === '==') return armazenado === f.valor;
+  // `<`: same type only — a null, a missing field or another type never matches.
+  if (typeof f.valor === 'number') return typeof armazenado === 'number' && armazenado < f.valor;
+  return typeof armazenado === 'string' && armazenado < (f.valor as string);
 }
 
 interface Ordem {
@@ -161,7 +181,8 @@ interface Ordem {
 
 /** One write, as {@link FakeDb.escritas} records it. */
 export interface EscritaFake {
-  readonly verbo: 'create' | 'update' | 'delete';
+  /** `set` is only ever the merge form (`set(data, { merge: true })`). */
+  readonly verbo: 'create' | 'update' | 'delete' | 'set';
   readonly caminho: string;
   /** The payload as handed over (`null` for a delete). */
   readonly dados: DocData | null;
@@ -171,7 +192,7 @@ export interface EscritaFake {
 /** One query, as {@link FakeDb.consultas} records it. */
 export interface ConsultaFake {
   readonly colecao: string;
-  readonly filtros: readonly [string, '==', unknown][];
+  readonly filtros: readonly [string, OperadorFake, unknown][];
   readonly ordens: readonly [string, 'asc' | 'desc'][];
   readonly limite: number | null;
   readonly apos: string | null;
@@ -420,10 +441,44 @@ export class FakeDb {
         this.store.delete(caminho);
         return { writeTime };
       },
-      set: () => {
-        throw new Error(
-          'FakeDb: set() não é modelado — nada neste app sobrescreve um documento inteiro',
-        );
+      // NOT async on purpose: an unmodelled call throws synchronously, before
+      // anything could be mistaken for a write that landed.
+      set: (data: DocData, opcoes?: unknown) => {
+        const chaves =
+          typeof opcoes === 'object' && opcoes !== null ? Object.keys(opcoes as object) : [];
+        const ehMerge =
+          chaves.length === 1 &&
+          chaves[0] === 'merge' &&
+          (opcoes as { merge: unknown }).merge === true;
+        if (!ehMerge) {
+          throw new Error(
+            'FakeDb: set() não é modelado — nada neste app sobrescreve um documento inteiro ' +
+              '(só set(…, { merge: true }), o mark do pipeline compartilhado)',
+          );
+        }
+        recusarIndefinido(data, caminho);
+        for (const [chave, valor] of Object.entries(data)) {
+          if (chave.includes('.')) {
+            throw new Error(`FakeDb: chave com ponto em set merge ('${chave}') não é modelada`);
+          }
+          // A merge-set deep-merges maps field by field; `aplicar` replaces the
+          // top-level key. Refuse rather than diverge.
+          if (
+            typeof valor === 'object' &&
+            valor !== null &&
+            !Array.isArray(valor) &&
+            !ehIncremento(valor)
+          ) {
+            throw new Error(`FakeDb: mapa aninhado em set merge ('${chave}') não é modelado`);
+          }
+        }
+        return (async () => {
+          await this.antesDeEscrever(caminho);
+          const atual = this.store.get(caminho);
+          const writeTime = this.registrar('set', caminho, data);
+          this.store.set(caminho, { data: this.aplicar(atual?.data, data), updateTime: writeTime });
+          return { writeTime };
+        })();
       },
     };
   }
@@ -447,10 +502,13 @@ export class FakeDb {
       this.consulta(colecao, { ...estado, ...mudanca });
     return {
       where: (campo: string, op: string, valor: unknown) => {
-        if (op !== '==') {
+        if (op !== '==' && op !== '<') {
           throw new Error(`FakeDb: operador '${op}' em where('${campo}') não é modelado`);
         }
-        return derivar({ filtros: [...estado.filtros, { campo, valor }] });
+        if (op === '<' && typeof valor !== 'number' && typeof valor !== 'string') {
+          throw new Error(`FakeDb: '<' em where('${campo}') só é modelado para número ou texto`);
+        }
+        return derivar({ filtros: [...estado.filtros, { campo, op, valor }] });
       },
       orderBy: (campo: string, direcao: 'asc' | 'desc' = 'asc') => {
         if (estado.apos !== null) {
@@ -490,7 +548,7 @@ export class FakeDb {
     if (falha) return Promise.reject(falha);
     this.consultas.push({
       colecao,
-      filtros: filtros.map((f) => [f.campo, '==', f.valor] as [string, '==', unknown]),
+      filtros: filtros.map((f) => [f.campo, f.op, f.valor] as [string, OperadorFake, unknown]),
       ordens: ordens.map((o) => [o.campo, o.direcao] as [string, 'asc' | 'desc']),
       limite,
       apos: apos === null ? null : apos.id,
@@ -498,9 +556,9 @@ export class FakeDb {
     const prefixo = `${colecao}/`;
     const encontrados = [...this.store.entries()]
       .filter(([p]) => p.startsWith(prefixo) && !p.slice(prefixo.length).includes('/'))
-      // Strict equality on the stored value: a document LACKING the field never
-      // matches, like real Firestore.
-      .filter(([, s]) => filtros.every((f) => s.data[f.campo] === f.valor))
+      // Strict equality, or a same-type `<`, on the stored value: a document
+      // LACKING the field never matches, like real Firestore.
+      .filter(([, s]) => filtros.every((f) => satisfaz(s.data[f.campo], f)))
       // `orderBy` filters for existence: a document lacking the field is
       // dropped, while a stored `null` is kept.
       .filter(([, s]) => ordens.every((o) => s.data[o.campo] !== undefined))
