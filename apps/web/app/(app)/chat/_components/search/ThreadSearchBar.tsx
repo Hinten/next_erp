@@ -31,7 +31,7 @@ export function ThreadSearchBar({
   const counter = search.total === 0 ? '0/0' : `${search.currentIndex + 1}/${search.total}`;
 
   return (
-    <Box p="sm" style={{ borderTop: '1px solid var(--mantine-color-gray-2)' }}>
+    <Box p="sm" style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
       <Group gap="xs" wrap="nowrap">
         <TextInput
           value={term}
