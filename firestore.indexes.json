@@ -1344,6 +1344,16 @@
       ]
     },
     {
+      "collectionGroup": "arquivos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "checkout",
       "queryScope": "COLLECTION_GROUP",
       "apiScope": "ANY_API",

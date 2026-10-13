@@ -68,9 +68,10 @@ the store does not have. See ADR 0014 §7.
   the master `MERCADO_LIVRE_STOCK_SYNC_ENABLED` alone — the reconciliação flag
   is an ML-quota valve and this spends none.
   ⚠️ It walks ONE stored ref form at a time (`contaOuterRef ==`, the walk's
-  `contaRef`), never the price phase's `in` over both: on the staging proxy the
-  `in` sorts the conta's whole remainder on every page, while one `==` reads
-  exactly the page. A cut in either form leaves the walk incomplete.
+  `contaRef`), never an `in` over both: on the staging proxy the `in` sorts the
+  conta's whole remainder on every page, while one `==` reads exactly the page
+  (the price phase walks the same way since #1862). A cut in either form leaves
+  the walk incomplete.
   ⚠️ "Not found" resolves an aviso only after a COMPLETE walk AND a fresh
   re-read (`reclassificarProdutoNaoEnumerado`); a walk cut short by its page cap,
   its time budget or a stalled cursor heals and raises what it saw and resolves
