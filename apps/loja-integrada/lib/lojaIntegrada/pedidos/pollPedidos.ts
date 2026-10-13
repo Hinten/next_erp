@@ -21,10 +21,14 @@
  *     skipped in code, and a tipo-3 conta with no `nome` never comes back
  *     (`core/contas.ts`, a pre-cutover check of the window).
  *  4. **Per conta, sequentially**, each with min(100 s, what the tick's 220 s
- *     have left); one that would start with less than one page's planned cost
- *     is `sem-tempo` (nothing written; the next tick reaches it). Containment
- *     is per conta and covers a gRPC status error ONLY (`isGrpcStatusError`):
- *     anything else fails the tick loudly.
+ *     have left), in the listed order ROTATED by the tick's 5-minute slot
+ *     (`ordemDoTickLi`). One the tick can no longer give one page's planned
+ *     cost plus the run's slack is `sem-tempo` (nothing written); the rotation
+ *     makes it first on a later tick, so no conta is starved by the ones before
+ *     it. Containment is per conta and covers a gRPC status error and
+ *     {@link LiPollDocumentoInvalidoError} (a hand-edited poll document that no
+ *     longer parses: `documento-invalido`, a WARNING) ONLY: anything else fails
+ *     the tick loudly.
  *
  * ## One conta's run ({@link executarContaPollLi})
  *
@@ -44,19 +48,28 @@
  *     The lease's commit time is this run's aviso clock.
  *  5. The DRAIN: `paginarLi` over `GET /v1/pedido/search/`, at most
  *     `MAX_PAGINAS_POLL` pages, under a budget signal that aborts with
- *     {@link LiOrcamentoPollEsgotadoError} — caught by CLASS.
+ *     {@link LiOrcamentoPollEsgotadoError} — caught by CLASS. Each page is
+ *     checked WHOLE for an ignored filter first; page 1 then for the window
+ *     size (an ignored filter announces the whole history as `total_count`).
  *  6. Per row: enqueued when its stamp is newer than `vistos` (`janelaPoll.ts`).
  *     A transient or switched-off enqueue (`LiTarefasTransitoriasError`,
  *     `LiTarefasDesligadasError`) is persisted `failed` for the sweep (a
  *     deterministic doc id, so a re-poll never forks); any other enqueue
  *     failure is a broken deploy and fails the tick; a failed persist aborts
  *     the run (nothing more written, the lease expires).
- *  7. The aviso step, still holding the lease, clocked by its commit time.
+ *  7. The RESOLVE (a success over a stored count above 0), still holding the
+ *     lease, clocked by its commit time.
  *  8. The FINAL write, `update(…, { lastUpdateTime: <the lease's write time> })`:
  *     the lease released, the cursor (forward only), `vistos`, the counters.
  *     On FAILED_PRECONDITION it re-reads ONCE: another run's lease ⇒ nothing
  *     written (a WARNING); still ours ⇒ re-derived from the re-read
- *     (`max(cursor)`, merged `vistos`) and retried once.
+ *     (`max(cursor)`, merged `vistos`, a count reset only if it is still the
+ *     one the lease read) and retried once.
+ *  9. The RAISE (a counted failure at its threshold), only once step 8 LANDED,
+ *     against the count it stored, still clocked by the lease's commit time.
+ *     So an open aviso always has a stored count above 0, and the next clean
+ *     run resolves it; a raise over a final write that never landed would
+ *     stand over a count no clean run ever reads above 0.
  *
  * ## What each outcome writes
  *
@@ -67,7 +80,7 @@
  * | `orcamento-esgotado` with ≥ 1 new row | kept | merged | unchanged | none |
  * | any other counted failure | kept | merged | +1 | at {@link LIMIAR_AVISO_IMPORTACAO_PARADA_LI} |
  * | refusal record | — | — | +1 | at the threshold |
- * | inactive, switch off, lease busy, conta gone, parked at start, `sem-tempo` | nothing written | | | none |
+ * | inactive, switch off, lease busy, conta gone, parked at start, `sem-tempo`, `documento-invalido` | nothing written | | | none |
  *
  * `conta-parada` mid-drain covers the getter finding the conta unusable — parked
  * by another task, its token removed or unreadable — as well as a 401/403 this
@@ -189,6 +202,7 @@ import {
   MAX_PAGINAS_POLL,
   ORCAMENTO_MINIMO_CONTA_MS,
   orcamentoDaContaMs,
+  ordemDoTickLi,
 } from './orcamentoPoll';
 
 /** The flow the poller's lines and calls are logged under (`jsonPayload.fluxo`). */
@@ -237,6 +251,29 @@ export class LiOrcamentoPollEsgotadoError extends Error {
   }
 }
 
+/**
+ * A stored poll document no longer parses — only a hand edit can make one
+ * (every write here goes through the schema). The tick contains it PER CONTA
+ * (`documento-invalido`, a WARNING naming the broken top-level fields, never a
+ * value) and moves on: one bad document must not stop every conta after it.
+ * Nothing is written for that conta until a person fixes the document.
+ */
+export class LiPollDocumentoInvalidoError extends Error {
+  readonly integracaoId: string;
+  /** The top-level field names Zod blamed: `cursor`, `vistos`, … — never a value, never a key inside a map. */
+  readonly campos: readonly string[];
+
+  constructor(integracaoId: string, campos: readonly string[]) {
+    super(
+      `O documento pollPedidosLojaIntegrada/${integracaoId} não é válido ` +
+        `(campos: ${campos.join(', ')}).`,
+    );
+    this.name = 'LiPollDocumentoInvalidoError';
+    this.integracaoId = integracaoId;
+    this.campos = campos;
+  }
+}
+
 export interface DepsPollLi {
   /** The process environment, from the root — read for the read switch only. */
   readonly ambiente: AmbienteLi;
@@ -280,7 +317,8 @@ export type DesfechoPollLi =
   | 'chamadas-desligadas'
   | 'conta-inexistente'
   | 'sem-tempo'
-  | 'erro-firestore';
+  | 'erro-firestore'
+  | 'documento-invalido';
 
 export interface ResultadoContaPollLi {
   readonly integracaoId: string;
@@ -335,6 +373,7 @@ const DESFECHOS_DE_ALERTA: ReadonlySet<DesfechoPollLi> = new Set<DesfechoPollLi>
   'lease-perdido',
   'sem-tempo',
   'erro-firestore',
+  'documento-invalido',
 ]);
 
 /** The ONE line per conta run (an inactive conta, skipped every tick, writes none). */
@@ -430,8 +469,8 @@ interface PollLido {
 
 /**
  * The poll document, strictly parsed, or `null` when absent. A document that
- * no longer parses (only a hand edit can make one: every write here goes
- * through the schema) throws its `ZodError` — the tick fails loudly.
+ * no longer parses throws {@link LiPollDocumentoInvalidoError}, which the tick
+ * contains per conta.
  */
 function lerPoll(snap: DocumentSnapshot): PollLido | null {
   if (!snap.exists) return null;
@@ -439,7 +478,13 @@ function lerPoll(snap: DocumentSnapshot): PollLido | null {
   if (updateTime === undefined) {
     throw new TypeError('pollPedidosLojaIntegrada: documento existente sem updateTime');
   }
-  return { estado: pollPedidosLojaIntegradaSchema.parse(snap.data()), updateTime };
+  const lido = pollPedidosLojaIntegradaSchema.safeParse(snap.data());
+  if (!lido.success) {
+    // The FIRST path segment only: a `vistos` key is an order numero.
+    const campos = new Set(lido.error.issues.map((i) => String(i.path[0] ?? '(raiz)')));
+    throw new LiPollDocumentoInvalidoError(snap.id, [...campos]);
+  }
+  return { estado: lido.data, updateTime };
 }
 
 /** A lease is HELD while its expiry is still ahead; at the very instant it expires, it is free. */
@@ -447,19 +492,20 @@ function leaseOcupado(estado: PollPedidosLojaIntegrada, agoraMs: number): boolea
   return estado.emExecucaoAteMs > agoraMs;
 }
 
-/** What raising the aviso needs, from the run's first poll-document write. */
+/** What raising the aviso needs: the count as STORED, and the run's first poll-document write's clock. */
 interface ContagemDeFalha {
   readonly alvo: AlvoPollLi;
   readonly motivo: MotivoImportacaoParadaLi;
+  /** The count the write that recorded this failure stored — never one it might not have stored. */
   readonly falhasSeguidas: number;
   readonly relogioUs: number;
 }
 
 /**
- * The aviso step's writes may fail on Firestore; a gRPC status error there is
- * logged and swallowed, so the final write still lands. The raise is repeated
- * by the next failing run; a resolve that failed leaves `falhasSeguidas` set, so
- * the next clean run retries it.
+ * The aviso writes may fail on Firestore; a gRPC status error there is logged
+ * and swallowed, so the run still ends (and a resolve's final write still
+ * lands). A raise that failed is repeated by the next failing run; a resolve
+ * that failed leaves `falhasSeguidas` set, so the next clean run retries it.
  */
 async function semDerrubarORun<T>(
   deps: DepsPollLi,
@@ -786,7 +832,6 @@ async function drenar(
 ): Promise<Dreno> {
   const since = sinceDaJanelaLi(lease.cursor);
   const limiteTolerancia = limiteDeToleranciaLi(since);
-  const agoraMs = deps.agoraMs();
   const novos: Record<string, string> = {};
   const distintos = new Set<string>();
   const totais: (number | null | undefined)[] = [];
@@ -821,16 +866,22 @@ async function drenar(
       sinal: orcamento.sinal,
     })) {
       paginas = pagina.numero;
+      // The zone flag's clock: when THIS page arrived (an order changed during
+      // the drain is later than the drain's start).
+      const chegadaMs = deps.agoraMs();
+      const linhas = pagina.objetos.map(lerLinha);
+      // The WHOLE page first: a filter the platform ignored enqueues nothing
+      // more. On page 1 this comes BEFORE the window size: an ignored filter
+      // announces the store's whole history as `total_count`, and the size
+      // check would misname it.
+      if (linhas.some((l) => l.carimbo !== null && filtroIgnoradoLi(l.carimbo, limiteTolerancia))) {
+        return dreno({ tipo: 'contada', motivo: MOTIVO_IMPORTACAO_PARADA_LI.filtroIgnorado });
+      }
       // Refused before draining: more rows than the cap can ever read.
       if (pagina.numero === 1 && janelaGrandeDemaisLi(pagina.meta)) {
         return dreno({ tipo: 'contada', motivo: MOTIVO_IMPORTACAO_PARADA_LI.janelaGrandeDemais });
       }
       totais.push(pagina.meta.total_count);
-      const linhas = pagina.objetos.map(lerLinha);
-      // The WHOLE page first: a filter the platform ignored enqueues nothing more.
-      if (linhas.some((l) => l.carimbo !== null && filtroIgnoradoLi(l.carimbo, limiteTolerancia))) {
-        return dreno({ tipo: 'contada', motivo: MOTIVO_IMPORTACAO_PARADA_LI.filtroIgnorado });
-      }
       for (const linha of linhas) {
         distintos.add(linha.chave);
         const { numero, carimbo } = linha;
@@ -838,7 +889,7 @@ async function drenar(
           ilegivel = true;
         } else {
           if (maiorCarimbo === null || carimbo > maiorCarimbo) maiorCarimbo = carimbo;
-          if (!zonaRegistrada && zonaSuspeitaLi(carimbo, agoraMs)) {
+          if (!zonaRegistrada && zonaSuspeitaLi(carimbo, chegadaMs)) {
             zonaRegistrada = true;
             registrarPoll(deps, alvo.integracaoId, 'WARNING', { alerta: 'zona-suspeita' });
           }
@@ -920,11 +971,15 @@ interface PlanoDaEscritaFinal {
   readonly cursor: string;
   readonly novos: Readonly<Record<string, string>>;
   readonly limiteTolerancia: string;
+  /** `falhasSeguidas` as the lease read it: what the resolve (or its absence) was decided against. */
+  readonly falhasNoLease: number;
   /**
    * The import-stopped aviso was resolved by THIS run (the resolve returned).
-   * Only then may a success reset a stored count above 0: a count this run did
-   * not resolve — its resolve failed, or a failure was recorded after the
-   * lease read 0 — is left for the next clean run.
+   * A success resets the count only when the stored one is STILL
+   * {@link falhasNoLease}, and that was 0 or this run resolved it. A count this
+   * run did not resolve — its resolve failed, or a failure recorded after the
+   * lease raised it (and maybe reopened the aviso at a later clock) — is left
+   * for the next clean run, which reads it above 0 and resolves.
    */
   readonly avisoResolvido: boolean;
   readonly agoraMs: number;
@@ -948,7 +1003,9 @@ function patchFinal(
   switch (p.conclusao.tipo) {
     case 'sucesso':
       patch.cursor = maiorCursorLi(base.cursor, p.cursor);
-      if (base.falhasSeguidas === 0 || p.avisoResolvido) {
+      // Re-derived from `base`, never re-applied: on the retry the decision
+      // taken against the lease's count holds only while the count is unchanged.
+      if (base.falhasSeguidas === p.falhasNoLease && (p.falhasNoLease === 0 || p.avisoResolvido)) {
         patch.falhasSeguidas = 0;
         patch.ultimoErro = null;
       }
@@ -970,9 +1027,26 @@ function patchFinal(
   return pollPedidosLojaIntegradaCollection.parseMerge(patch);
 }
 
+/** What a final write that LANDED stored: the count the aviso threshold reads. */
+interface EscritaFinal {
+  readonly falhasSeguidas: number;
+}
+
+/** One attempt of the final write, derived from `base` under `lastUpdateTime`. */
+async function aplicarFinal(
+  ref: DocumentReference,
+  base: PollPedidosLojaIntegrada,
+  lastUpdateTime: Timestamp,
+  plano: PlanoDaEscritaFinal,
+): Promise<EscritaFinal> {
+  const patch = patchFinal(base, plano);
+  await ref.update(patch, { lastUpdateTime });
+  return { falhasSeguidas: patch.falhasSeguidas ?? base.falhasSeguidas };
+}
+
 /**
  * The final write under the lease's precondition, with ONE re-read and ONE
- * retry (module header, step 8). `false` when another run took the lease (or
+ * retry (module header, step 8). `null` when another run took the lease (or
  * the document is gone, the re-bootstrap runbook): nothing written.
  */
 async function escreverFinal(
@@ -981,25 +1055,23 @@ async function escreverFinal(
   plano: PlanoDaEscritaFinal,
   alvo: AlvoPollLi,
   deps: DepsPollLi,
-): Promise<boolean> {
+): Promise<EscritaFinal | null> {
   try {
-    await ref.update(patchFinal(lease.estado, plano), { lastUpdateTime: lease.writeTime });
-    return true;
+    return await aplicarFinal(ref, lease.estado, lease.writeTime, plano);
   } catch (err) {
     if (!isFailedPrecondition(err)) throw err;
   }
   const atual = lerPoll(await ref.get());
   if (atual === null || atual.estado.execucaoId !== lease.execucaoId) {
     registrarPoll(deps, alvo.integracaoId, 'WARNING', { alerta: 'lease-perdido' });
-    return false;
+    return null;
   }
   try {
-    await ref.update(patchFinal(atual.estado, plano), { lastUpdateTime: atual.updateTime });
-    return true;
+    return await aplicarFinal(ref, atual.estado, atual.updateTime, plano);
   } catch (err) {
     if (!isFailedPrecondition(err)) throw err;
     registrarPoll(deps, alvo.integracaoId, 'WARNING', { alerta: 'lease-perdido' });
-    return false;
+    return null;
   }
 }
 
@@ -1087,22 +1159,12 @@ export async function executarContaPollLi(
   const dreno = await drenar(db, contexto, alvo, lease, orcamento, deps);
   const conclusao = concluir(dreno, alvo, deps);
 
-  // 7. The aviso step, under the lease, clocked by the lease's commit time.
-  const falhasArmazenadas = lease.estado.falhasSeguidas;
+  // 7. The RESOLVE, under the lease, clocked by the lease's commit time —
+  //    before the final write, which may reset the count only once it returned.
+  const falhasNoLease = lease.estado.falhasSeguidas;
   let avisoResolvido = false;
   let cursor = lease.cursor;
-  if (conclusao.tipo === 'contada') {
-    await avisarSeNoLimiar(
-      db,
-      {
-        alvo,
-        motivo: conclusao.motivo,
-        falhasSeguidas: falhasArmazenadas + 1,
-        relogioUs: lease.relogioUs,
-      },
-      deps,
-    );
-  } else if (conclusao.tipo === 'sucesso') {
+  if (conclusao.tipo === 'sucesso') {
     const agoraMs = deps.agoraMs();
     const proximo = proximoCursorLi({
       armazenado: lease.cursor,
@@ -1113,7 +1175,7 @@ export async function executarContaPollLi(
       registrarPoll(deps, integracaoId, 'WARNING', { alerta: 'carimbo-no-futuro' });
     }
     cursor = proximo.cursor;
-    if (falhasArmazenadas > 0) {
+    if (falhasNoLease > 0) {
       const r = await semDerrubarORun(deps, alvo, 'resolver', () =>
         resolverImportacaoParada(
           db,
@@ -1135,6 +1197,7 @@ export async function executarContaPollLi(
       cursor,
       novos: dreno.novos,
       limiteTolerancia: limiteDeToleranciaLi(sinceDaJanelaLi(lease.cursor)),
+      falhasNoLease,
       avisoResolvido,
       agoraMs: deps.agoraMs(),
     },
@@ -1142,12 +1205,30 @@ export async function executarContaPollLi(
     deps,
   );
 
+  // 9. The RAISE — only once the count it stands for is STORED, still clocked
+  //    by the lease's commit time. An open aviso then always has a stored count
+  //    above 0, which is what makes the next clean run resolve it: a raise
+  //    before a final write that never landed (a gRPC failure, a lease taken
+  //    over) would stand over a count of 0 that no clean run ever resolves.
+  if (escrito !== null && conclusao.tipo === 'contada') {
+    await avisarSeNoLimiar(
+      db,
+      {
+        alvo,
+        motivo: conclusao.motivo,
+        falhasSeguidas: escrito.falhasSeguidas,
+        relogioUs: lease.relogioUs,
+      },
+      deps,
+    );
+  }
+
   const contagem = {
     enfileiradas: dreno.enfileiradas,
     persistidas: dreno.persistidas,
     paginas: dreno.paginas,
   };
-  if (!escrito) return resultado(integracaoId, 'lease-perdido', contagem);
+  if (escrito === null) return resultado(integracaoId, 'lease-perdido', contagem);
   switch (conclusao.tipo) {
     case 'contada':
       return resultado(integracaoId, 'falha', { ...contagem, motivo: conclusao.motivo });
@@ -1178,6 +1259,13 @@ async function contaNoTick(
   try {
     return await executarContaPollLi(db, conta, orcamentoMs, deps);
   } catch (err) {
+    if (err instanceof LiPollDocumentoInvalidoError) {
+      registrarPoll(deps, conta.integracaoId, 'WARNING', {
+        alerta: 'documento-invalido',
+        campos: err.campos.join(','),
+      });
+      return resultado(conta.integracaoId, 'documento-invalido');
+    }
     if (!isGrpcStatusError(err)) throw err;
     return resultado(conta.integracaoId, 'erro-firestore', { codigoGrpc: err.code });
   }
@@ -1210,7 +1298,8 @@ export async function executarPollPedidosLi(
   const inicioDoTickMs = deps.agoraMs();
   const { contas } = await listarContasLojaIntegrada(db);
   const resultados: ResultadoContaPollLi[] = [];
-  for (const conta of contas) {
+  // Rotated, so a conta a full tick skipped (`sem-tempo`) runs first later.
+  for (const conta of ordemDoTickLi(contas, inicioDoTickMs)) {
     const r = await contaNoTick(db, conta, inicioDoTickMs, deps);
     resultados.push(r);
     if (r.desfecho !== 'inativa') registrarConta(deps, r);

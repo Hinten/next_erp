@@ -25,11 +25,27 @@
  * Enqueue time is deliberately NOT in the formula: a budget-exhausted run
  * persists `vistos`, so the next tick re-reads the pages it already saw and
  * enqueues only what remains.
+ *
+ * ## Every conta is reached
+ *
+ * A conta the tick can no longer give {@link ORCAMENTO_MINIMO_CONTA_MS} is not
+ * started (`sem-tempo`, nothing written). With a FIXED order, two contas that
+ * spend their whole budget on every tick would starve the third forever, with
+ * no counter moving and so no aviso. So the tick ROTATES where it starts
+ * ({@link ordemDoTickLi}): within any run of as many ticks as there are contas,
+ * every conta runs first once, and the first conta always gets a full budget.
  */
 import { RITMO_LEITURA_LI_MS } from '../core/ritmo';
 
 /** The most pages one conta's run may read; the window refused on page 1 is sized from it. */
 export const MAX_PAGINAS_POLL = 20;
+
+/**
+ * The schedule's interval, in ms: `every 5 minutes` (the cron string itself is
+ * pinned by `functions/src/pollPedidos.test.ts`). It numbers the ticks for
+ * {@link ordemDoTickLi}.
+ */
+export const INTERVALO_DO_AGENDAMENTO_POLL_MS = 300_000;
 
 /** One tick's deadline, in ms: inside the 5-minute schedule, with room for the last conta's final write. */
 export const ORCAMENTO_TICK_MS = 220_000;
@@ -61,20 +77,38 @@ export function custoPlanejadoDoDrenoMs(paginas: number): number {
 }
 
 /**
- * The least budget a conta is STARTED with, in ms: one page's planned cost. A
- * conta the tick can give less is `sem-tempo` (nothing written) and the next
- * tick reaches it — rather than starting a run that cannot read one page and
- * would end in a COUNTED `orcamento-esgotado` through no fault of its own.
+ * The least budget a conta is STARTED with, in ms: one page's planned cost PLUS
+ * {@link FOLGA_CONTA_MS}. The page alone is not enough: the run first reads its
+ * conta, credential and poll document and takes the lease, and after the page
+ * each new row is enqueued behind a budget checkpoint — so a conta started with
+ * one page's cost reaches that checkpoint past its deadline and ends in a
+ * COUNTED `orcamento-esgotado` through no fault of its own. A conta the tick can
+ * give less is `sem-tempo` (nothing written); the rotation
+ * ({@link ordemDoTickLi}) makes it first on a later tick.
  */
-export const ORCAMENTO_MINIMO_CONTA_MS = custoPlanejadoDoDrenoMs(1);
+export const ORCAMENTO_MINIMO_CONTA_MS = custoPlanejadoDoDrenoMs(1) + FOLGA_CONTA_MS;
 
 /**
  * The budget of the conta about to run, in ms: min({@link ORCAMENTO_CONTA_MS},
  * what is left of the tick that started at `inicioDoTickMs`). Below
  * {@link ORCAMENTO_MINIMO_CONTA_MS} (`0` included) the conta is not started
- * (`sem-tempo`, nothing written), and the next tick reaches it.
+ * (`sem-tempo`, nothing written); {@link ordemDoTickLi} makes it first on a
+ * later tick.
  */
 export function orcamentoDaContaMs(inicioDoTickMs: number, agoraMs: number): number {
   const restante = ORCAMENTO_TICK_MS - (agoraMs - inicioDoTickMs);
   return Math.max(0, Math.min(ORCAMENTO_CONTA_MS, restante));
+}
+
+/**
+ * The order one tick walks `contas` in: the same order, ROTATED to start at the
+ * tick's number — its 5-minute slot ({@link INTERVALO_DO_AGENDAMENTO_POLL_MS})
+ * — modulo the count. Stateless: the slot comes from the tick's own start, so
+ * no document records where the last tick stopped. A tick that fires late
+ * inside its slot keeps that slot. Returns a new array.
+ */
+export function ordemDoTickLi<T>(contas: readonly T[], inicioDoTickMs: number): T[] {
+  if (contas.length === 0) return [];
+  const inicio = Math.floor(inicioDoTickMs / INTERVALO_DO_AGENDAMENTO_POLL_MS) % contas.length;
+  return [...contas.slice(inicio), ...contas.slice(0, inicio)];
 }

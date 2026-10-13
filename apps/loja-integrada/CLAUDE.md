@@ -221,7 +221,11 @@ still be fixed. Only the context loader refuses those.
   `functions/src/pollPedidos.ts` (`pollLojaIntegradaPedidos`, `*/5`, 300 s) binds every
   dependency: `importadorPresente = importadorPedidoLi() !== null`, the parsed look-back.
 - Two gates, each with ZERO reads: the empty importer seam (until step 5), then the read
-  switch. Contas run one after another; containment per conta is a gRPC error ONLY.
+  switch. Contas run one after another, the list ROTATED by the tick's 5-minute slot
+  (`ordemDoTickLi`), so a `sem-tempo` conta runs first on a later tick instead of
+  starving behind the same ones forever. Containment per conta is a gRPC error, or a
+  hand-edited poll document that no longer parses (`documento-invalido`, a WARNING,
+  nothing written), ONLY.
 - `pollPedidosLojaIntegrada/{id}` is written only under preconditions: the lease
   (`create`, or `update` once expired), the refusal record (never while the lease is held,
   never a cursor), and the final write on the lease's `writeTime`, re-derived from ONE
@@ -229,9 +233,12 @@ still be fixed. Only the context loader refuses those.
   `pedidos/pollPedidos.firestore.test.ts` proves the fake's precondition model on the
   emulator (two lease takers → one wins; a deleted document fails the stamp with 9).
 - The aviso `lojaIntegradaImportacaoParada` is clocked by the run's FIRST write to that
-  document, and resolved only when the stored `falhasSeguidas` was above 0. So the
-  re-bootstrap runbook NULLS the cursor and never deletes the document
-  (`functions/DEPLOY.md`): a fresh document would never resolve an open aviso.
+  document, and resolved only when the stored `falhasSeguidas` was above 0. So it is
+  RAISED only after the write that stored its count landed (an open aviso always has a
+  count above 0 behind it), and a retried final write resets a count only while it is
+  still the one the lease read. The re-bootstrap runbook DELETES the `cursor` field and
+  never the document (`functions/DEPLOY.md`): a fresh document would never resolve an
+  open aviso.
 - A conta parked mid-drain keeps its stored `vistos` (the run's additions are dropped, so
   they are re-enqueued once the token is back).
 - The row schema is written from the public document's two examples: PR 3-e stays a

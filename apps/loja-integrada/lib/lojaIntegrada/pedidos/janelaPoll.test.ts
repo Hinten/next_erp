@@ -194,9 +194,11 @@ describe('the cursor', () => {
     ).toEqual({ cursor: '2026-10-13T13:00:00', noFuturo: true });
   });
 
-  it('zona-suspeita: a stamp later than now in São Paulo time', () => {
-    expect(zonaSuspeitaLi(c('2026-10-13T09:00:00.5'), AGORA_MS)).toBe(false);
-    expect(zonaSuspeitaLi(c('2026-10-13T09:00:00.500001'), AGORA_MS)).toBe(true);
+  it('zona-suspeita: a stamp later than now + the clock slack (10 min) in São Paulo time', () => {
+    // An order changed after the clock was read is NOT a zone error.
+    expect(zonaSuspeitaLi(c('2026-10-13T09:00:01'), AGORA_MS)).toBe(false);
+    expect(zonaSuspeitaLi(c('2026-10-13T09:10:00.5'), AGORA_MS)).toBe(false);
+    expect(zonaSuspeitaLi(c('2026-10-13T09:10:00.500001'), AGORA_MS)).toBe(true);
     // A stamp written in UTC a minute ago reads as 3 h in São Paulo's future.
     expect(zonaSuspeitaLi(c('2026-10-13T11:59:00'), AGORA_MS)).toBe(true);
     expect(zonaSuspeitaLi(c('2026-10-13T08:59:59.999999'), AGORA_MS)).toBe(false);

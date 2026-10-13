@@ -54,7 +54,12 @@ export const SOBREPOSICAO_S = 14_520;
 /** Below the window's start by more than this (4 h + 10 min, in s), a row means the filter was ignored. */
 export const TOLERANCIA_FILTRO_S = 15_000;
 
-/** How far past now the cursor may go, in s, before it is clamped (`carimbo-no-futuro`). */
+/**
+ * The clock slack, in s: how far past now the cursor may go before it is
+ * clamped (`carimbo-no-futuro`), and how far past now a stamp may be before it
+ * is `zona-suspeita`. An order changed after the clock was read, or a platform
+ * clock a little ahead of ours, is not a zone error; a real one shows as hours.
+ */
 export const FOLGA_RELOGIO_S = 600;
 
 /** The bootstrap look-back when `LOJA_INTEGRADA_POLL_LOOKBACK_H` is unset or blank, in hours. */
@@ -159,13 +164,15 @@ export function proximoCursorLi(args: {
 }
 
 /**
- * Whether `carimbo` is later than now in São Paulo time: the platform's stamps
- * may not be in that zone. The poller logs `zona-suspeita` (WARNING) once per
- * run and still advances.
+ * Whether `carimbo` is later than now + {@link FOLGA_RELOGIO_S} in São Paulo
+ * time: the platform's stamps may not be in that zone. The poller passes the
+ * clock read when the row's PAGE arrived (an order changed during the drain is
+ * later than the drain's start), logs `zona-suspeita` (WARNING) once per run
+ * and still advances. A UTC stamp reads 3 h ahead, far past the slack.
  */
 export function zonaSuspeitaLi(carimbo: string, agoraMs: number): boolean {
-  const agoraSp = `${formatIsoNoFuso(agoraMs, FUSO_FISCAL).slice(0, 23)}000`;
-  return carimbo > agoraSp;
+  const limiteSp = `${formatIsoNoFuso(agoraMs + FOLGA_RELOGIO_S * 1000, FUSO_FISCAL).slice(0, 23)}000`;
+  return carimbo > limiteSp;
 }
 
 /**

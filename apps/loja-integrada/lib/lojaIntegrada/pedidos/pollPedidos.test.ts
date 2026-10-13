@@ -14,6 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { LiConfigError } from '@delfrance/integrations-loja-integrada';
 import {
   CANAL_AVISO,
@@ -33,6 +34,7 @@ import {
   resolverImportacaoParada,
 } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
+import { docCredencial } from '../core/credentialStore';
 import { CHAMADAS_ENV_LI } from '../core/valvulas';
 import { LiTarefasDesligadasError } from '../notificacoes/agendador';
 import { type PayloadNotificacaoLi, docIdNotificacaoLi } from '../notificacoes/notificacao';
@@ -54,7 +56,12 @@ import {
   seedConta,
   seedCredencial,
 } from '../testing/fixtures';
-import { MAX_PAGINAS_POLL, ORCAMENTO_CONTA_MS, ORCAMENTO_MINIMO_CONTA_MS } from './orcamentoPoll';
+import {
+  LATENCIA_LI_ESTIMADA_MS,
+  MAX_PAGINAS_POLL,
+  ORCAMENTO_CONTA_MS,
+  ORCAMENTO_MINIMO_CONTA_MS,
+} from './orcamentoPoll';
 import {
   AVISO_APOS_FALHAS_SEGUIDAS_LI,
   type DepsPollLi,
@@ -410,41 +417,50 @@ describe('the wire, from the public example', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('the cursor', () => {
-  it('the re-bootstrap runbook (DEPLOY.md): a nulled cursor is re-anchored by the lease, and the stored count resolves the aviso', async () => {
-    const h = montar();
-    contaPronta(h);
-    // The open row the refusals left, and the document with its cursor nulled by hand.
-    await avisarImportacaoParada(
-      asDb(h.fake),
-      {
-        integracaoId: ID,
-        lojaNome: 'Loja',
-        motivo: MOTIVO_IMPORTACAO_PARADA_LI.janelaGrandeDemais,
-        relogioUs: 1,
-      },
-      { increment, nowMs: AGORA_MS },
-    );
-    seedPoll(h, {
-      cursor: null,
-      falhasSeguidas: 4,
-      ultimoErro: 'janela-grande-demais',
-      vistos: { '1': '2026-11-01T10:00:00.000000' },
-    });
+  it.each([
+    ['DELETED (what the runbook prescribes)', 'apagado'],
+    ['set to the null type', 'nulo'],
+  ] as const)(
+    'the re-bootstrap runbook (DEPLOY.md): a cursor field %s is re-anchored by the lease, and the stored count resolves the aviso',
+    async (_nome, como) => {
+      const h = montar();
+      contaPronta(h);
+      // The open row the refusals left, and the document with its cursor removed by hand.
+      await avisarImportacaoParada(
+        asDb(h.fake),
+        {
+          integracaoId: ID,
+          lojaNome: 'Loja',
+          motivo: MOTIVO_IMPORTACAO_PARADA_LI.janelaGrandeDemais,
+          relogioUs: 1,
+        },
+        { increment, nowMs: AGORA_MS },
+      );
+      const editado: DocData = {
+        emExecucaoAteMs: 0,
+        execucaoId: null,
+        ultimaVarreduraEmMs: null,
+        falhasSeguidas: 4,
+        ultimoErro: 'janela-grande-demais',
+        vistos: { '1': '2026-11-01T10:00:00.000000' },
+      };
+      h.fake.seed(CAMINHO_POLL, como === 'apagado' ? editado : { ...editado, cursor: null });
 
-    const r = await h.umTick();
+      const r = await h.umTick();
 
-    expect(r.desfecho).toBe('janela-vazia');
-    expect(h.poll()).toMatchObject({
-      cursor: BOOTSTRAP_72H,
-      falhasSeguidas: 0,
-      ultimoErro: null,
-      // The old entry is far below the new window: pruned.
-      vistos: {},
-    });
-    expect(h.poll()?.vistos).toEqual({});
-    expect(avisoImportacao(h)).toMatchObject({ resolucaoMotivo: 'importacao-retomada' });
-    expect(avisoImportacao(h)?.resolvidoEm).not.toBeNull();
-  });
+      expect(r.desfecho).toBe('janela-vazia');
+      expect(h.poll()).toMatchObject({
+        cursor: BOOTSTRAP_72H,
+        falhasSeguidas: 0,
+        ultimoErro: null,
+        // The old entry is far below the new window: pruned.
+        vistos: {},
+      });
+      expect(h.poll()?.vistos).toEqual({});
+      expect(avisoImportacao(h)).toMatchObject({ resolucaoMotivo: 'importacao-retomada' });
+      expect(avisoImportacao(h)?.resolvidoEm).not.toBeNull();
+    },
+  );
 
   it('the bootstrap is rendered in São Paulo time and ANCHORED by the first lease: a failing run never slides it', async () => {
     const h = montar();
@@ -564,13 +580,44 @@ describe('the cursor', () => {
     expect(h.poll()?.cursor).toBe('2027-01-15T13:00:00');
   });
 
-  it('near-miss: a stamp at exactly now in São Paulo is not suspect', async () => {
+  // The page arrives one pacer wait after AGORA_MS: 12:00:02 in São Paulo, so
+  // the bound is 12:10:02 (FOLGA_RELOGIO_S, the ceiling's own slack).
+  it('a change made AFTER the drain started is not suspect: up to the page’s arrival + 10 min (São Paulo) is not flagged', async () => {
     const h = montar();
     contaPronta(h);
-    h.responder = paginado([[linha(1001, '2027-01-15T12:00:00.000000')]]);
+    h.responder = paginado([
+      [linha(1001, '2027-01-15T12:00:01.000000'), linha(1002, '2027-01-15T12:10:02.000000')],
+    ]);
 
     await h.umTick();
 
+    expect(h.linhasDoPoll().some((l) => l.campos.alerta === 'zona-suspeita')).toBe(false);
+  });
+
+  it('near-miss: 1 µs past the page’s arrival + 10 min is suspect', async () => {
+    const h = montar();
+    contaPronta(h);
+    h.responder = paginado([[linha(1001, '2027-01-15T12:10:02.000001')]]);
+
+    await h.umTick();
+
+    expect(h.linhasDoPoll().filter((l) => l.campos.alerta === 'zona-suspeita')).toHaveLength(1);
+  });
+
+  it('the zone flag reads the clock when EACH page arrives, never once before the drain', async () => {
+    const h = montar();
+    contaPronta(h);
+    h.latenciaMs = 30_000;
+    // Page 2 arrives at AGORA_MS + 2 × (2 s + 30 s) = 12:01:04 in São Paulo: its
+    // row is past the drain's START + 10 min (12:10:00), not past ITS page's.
+    h.responder = paginado(
+      [[linha(1001, '2027-01-15T10:30:00')], [linha(1002, '2027-01-15T12:10:30')]],
+      { limit: 1 },
+    );
+
+    const r = await h.umTick();
+
+    expect(r.desfecho).toBe('sucesso');
     expect(h.linhasDoPoll().some((l) => l.campos.alerta === 'zona-suspeita')).toBe(false);
   });
 });
@@ -757,6 +804,23 @@ describe('the fail-safes', () => {
     expect(h.enfileirados).toEqual([]);
     expect(r).toMatchObject({ desfecho: 'falha', motivo: 'janela-grande-demais', paginas: 1 });
     expect(avisoImportacao(h)).toMatchObject({ params: { motivo: 'janela-grande-demais' } });
+  });
+
+  it('an IGNORED filter is filtro-ignorado even when page 1’s total_count (then the whole history) is past the cap', async () => {
+    const h = montar();
+    contaPronta(h);
+    h.responder = paginado(
+      [[linha(1001, '2027-01-15T10:30:00'), linha(1002, '2026-03-01T08:00:00')]],
+      { limit: 2, total: 5_000 },
+    );
+
+    const r = await h.umTick();
+
+    expect(h.urls).toHaveLength(1);
+    expect(h.enfileirados).toEqual([]);
+    expect(r).toMatchObject({ desfecho: 'falha', motivo: 'filtro-ignorado', paginas: 1 });
+    expect(h.poll()).toMatchObject({ cursor: CURSOR, ultimoErro: 'filtro-ignorado' });
+    expect(avisoImportacao(h)).toMatchObject({ params: { motivo: 'filtro-ignorado' } });
   });
 
   it('near-miss: total == meta.limit (AS READ BACK) × 20 drains whole and advances', async () => {
@@ -957,6 +1021,163 @@ describe('the fail-safes', () => {
     expect(h.poll()?.vistos).toEqual({});
   });
 
+  it('a NETWORK failure (the fetch rejects with a TypeError → LiNetworkError) counts falha-transitoria, and the next conta still runs', async () => {
+    const h = montar();
+    contaPronta(h);
+    seedConta(h.fake, 'conta-z', { nome: 'Z' });
+    seedCredencial(h.fake, 'conta-z');
+    h.responder = (url) => {
+      // The first request is this conta's; conta-z's comes after it.
+      if (h.urls.length === 1) throw new TypeError('fetch failed');
+      return vazio(url);
+    };
+
+    const r = await h.tick();
+
+    expect(r.contas.map((c) => [c.integracaoId, c.desfecho, c.motivo])).toEqual([
+      [ID, 'falha', 'falha-transitoria'],
+      ['conta-z', 'janela-vazia', null],
+    ]);
+    expect(h.poll()).toMatchObject({
+      cursor: CURSOR,
+      falhasSeguidas: 1,
+      ultimoErro: 'falha-transitoria',
+      emExecucaoAteMs: 0,
+      execucaoId: null,
+    });
+  });
+
+  it.each([
+    [
+      'removed (LiCredencialAusenteError)',
+      async (h: Harness): Promise<void> => {
+        await docCredencial(asDb(h.fake), ID).delete();
+      },
+    ],
+    [
+      'corrupted (LiCredencialInvalidaError)',
+      (h: Harness): Promise<void> => {
+        h.fake.seed(caminhoCredencial(ID), { personalToken: 42 });
+        return Promise.resolve();
+      },
+    ],
+  ])(
+    'a credential %s mid-drain (the getter re-reads it) is conta-parada: stored vistos kept, counter untouched',
+    async (_nome, estragar) => {
+      const h = montar();
+      contaPronta(h);
+      seedPoll(h, {
+        vistos: { '900': '2027-01-15T09:00:00.000000' },
+        falhasSeguidas: 1,
+        ultimoErro: 'falha-transitoria',
+      });
+      const paginas = paginado(
+        [[linha(1001, '2027-01-15T10:30:00')], [linha(1002, '2027-01-15T10:31:00')]],
+        { limit: 1 },
+      );
+      h.responder = async (url) => {
+        // After page 1 is answered, the credential goes; the getter of page 2 finds it.
+        await estragar(h);
+        return paginas(url);
+      };
+
+      const r = await h.umTick();
+
+      expect(r).toMatchObject({ desfecho: 'conta-parada', enfileiradas: 1 });
+      expect(h.urls).toHaveLength(1);
+      expect(h.poll()).toMatchObject({
+        cursor: CURSOR,
+        falhasSeguidas: 1,
+        ultimoErro: 'falha-transitoria',
+        execucaoId: null,
+      });
+      expect(h.poll()?.vistos).toEqual({ '900': '2027-01-15T09:00:00.000000' });
+      expect(avisoImportacao(h)).toBeUndefined();
+    },
+  );
+
+  it('a 401 whose PARK finds the credential corrupt (LiCredencialInvalidaError) is conta-parada, nothing counted', async () => {
+    const h = montar();
+    contaPronta(h);
+    seedPoll(h, { vistos: { '900': '2027-01-15T09:00:00.000000' } });
+    h.responder = () => {
+      // Between the getter's read and the park's: the credential is corrupted.
+      h.fake.seed(caminhoCredencial(ID), { personalToken: 42 });
+      return { status: 401, corpo: '{"error":"Unauthorized"}' };
+    };
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho: 'conta-parada' });
+    expect(h.poll()).toMatchObject({ falhasSeguidas: 0, ultimoErro: null, execucaoId: null });
+    expect(h.poll()?.vistos).toEqual({ '900': '2027-01-15T09:00:00.000000' });
+    expect(avisoImportacao(h)).toBeUndefined();
+  });
+
+  it('a conta DELETED after the list was read (while an earlier conta drained) is conta-inexistente: nothing written', async () => {
+    const h = montar();
+    seedConta(h.fake, 'conta-a', { nome: 'A' });
+    seedCredencial(h.fake, 'conta-a');
+    seedPoll(h, {}, 'pollPedidosLojaIntegrada/conta-a');
+    seedConta(h.fake, 'conta-b', { nome: 'B' });
+    seedCredencial(h.fake, 'conta-b');
+    seedPoll(h, { falhasSeguidas: 2 }, 'pollPedidosLojaIntegrada/conta-b');
+    h.responder = async (url) => {
+      await integracaoCollection.docRef(asDb(h.fake), {}, 'conta-b').delete();
+      return vazio(url);
+    };
+
+    const r = await h.tick();
+
+    expect(r.contas.map((c) => [c.integracaoId, c.desfecho])).toEqual([
+      ['conta-a', 'janela-vazia'],
+      ['conta-b', 'conta-inexistente'],
+    ]);
+    expect(h.urls).toHaveLength(1);
+    expect(h.fake.escritasEm('pollPedidosLojaIntegrada/conta-b')).toEqual([]);
+    expect(h.fake.ler('pollPedidosLojaIntegrada/conta-b')).toMatchObject({ falhasSeguidas: 2 });
+  });
+
+  it('a poll document a hand edit broke (the TEXT "null" as cursor) costs only its own conta: documento-invalido, nothing written, the next conta runs', async () => {
+    const h = montar();
+    contaPronta(h);
+    seedPoll(h, { cursor: 'null', falhasSeguidas: 1 });
+    seedConta(h.fake, 'conta-z', { nome: 'Z' });
+    seedCredencial(h.fake, 'conta-z');
+
+    const r = await h.tick();
+
+    expect(r.contas.map((c) => [c.integracaoId, c.desfecho])).toEqual([
+      [ID, 'documento-invalido'],
+      ['conta-z', 'janela-vazia'],
+    ]);
+    expect(h.fake.escritasEm(CAMINHO_POLL)).toEqual([]);
+    expect(h.urls).toHaveLength(1);
+    // The field NAME only, never its value.
+    expect(h.linhasDoPoll().find((l) => l.campos.alerta === 'documento-invalido')).toMatchObject({
+      severidade: 'WARNING',
+      campos: { conta: ID, campos: 'cursor' },
+    });
+    expect(h.linhasDoPoll().find((l) => l.campos.desfecho === 'documento-invalido')).toMatchObject({
+      severidade: 'WARNING',
+      campos: { conta: ID },
+    });
+  });
+
+  it('the refusal record reads the same document: a malformed one is documento-invalido there too, never a failed tick', async () => {
+    const h = montar();
+    seedConta(h.fake, ID);
+    seedPoll(h, { vistos: { '1': 'ontem' } });
+
+    const r = await h.umTick();
+
+    expect(r.desfecho).toBe('documento-invalido');
+    expect(h.fake.escritasEm(CAMINHO_POLL)).toEqual([]);
+    expect(
+      h.linhasDoPoll().find((l) => l.campos.alerta === 'documento-invalido')?.campos.campos,
+    ).toBe('vistos');
+  });
+
   it('a park that keeps losing its precondition (LiEstacionamentoEmConflitoError) counts falha-transitoria', async () => {
     const h = montar();
     contaPronta(h);
@@ -1101,18 +1322,55 @@ describe('the budget', () => {
     });
   });
 
-  it('near-miss: with exactly the minimum left, the conta runs', async () => {
+  it('near-miss: with exactly the minimum left, the conta runs — and reads AND enqueues a page at the planned latency', async () => {
     const h = montar();
     seedConta(h.fake, 'conta-a', { nome: 'A' });
     seedCredencial(h.fake, 'conta-a');
     seedPoll(h, {}, 'pollPedidosLojaIntegrada/conta-a');
     seedConta(h.fake, 'conta-b', { nome: 'B' });
     seedCredencial(h.fake, 'conta-b');
-    h.latenciaMs = 220_000 - 2_000 - ORCAMENTO_MINIMO_CONTA_MS;
+    seedPoll(h, {}, 'pollPedidosLojaIntegrada/conta-b');
+    // A's one answer leaves B exactly the minimum; B's own answer takes the
+    // planned latency, and its page holds a NEW row: no counted budget failure.
+    const comUmaLinha = paginado([[linha(1001, '2027-01-15T10:30:00')]]);
+    h.responder = (url) => {
+      const primeira = h.urls.length === 1;
+      h.avancar(primeira ? 220_000 - 2_000 - ORCAMENTO_MINIMO_CONTA_MS : LATENCIA_LI_ESTIMADA_MS);
+      return primeira ? vazio(url) : comUmaLinha(url);
+    };
 
     const r = await h.tick();
 
-    expect(r.contas.map((c) => c.desfecho)).toEqual(['janela-vazia', 'janela-vazia']);
+    expect(r.contas.map((c) => [c.integracaoId, c.desfecho])).toEqual([
+      ['conta-a', 'janela-vazia'],
+      ['conta-b', 'sucesso'],
+    ]);
+    expect(h.enfileirados.map((p) => [p.contaId, p.numero])).toEqual([['conta-b', '1001']]);
+  });
+
+  it('the tick ROTATES its first conta: the one a full tick skipped (sem-tempo) runs FIRST on the next tick', async () => {
+    const h = montar();
+    seedConta(h.fake, 'conta-a', { nome: 'A' });
+    seedCredencial(h.fake, 'conta-a');
+    seedConta(h.fake, 'conta-b', { nome: 'B' });
+    seedCredencial(h.fake, 'conta-b');
+    // Whichever conta runs first eats its whole tick, every tick.
+    h.latenciaMs = 220_000 - 2_000 - ORCAMENTO_MINIMO_CONTA_MS + 1;
+    const desfechos = (r: ResultadoTickPollLi) => r.contas.map((c) => [c.integracaoId, c.desfecho]);
+
+    // AGORA_MS sits on a 5-minute slot boundary; the next tick starts on the next slot.
+    const primeiro = await h.tick();
+    h.avancar(AGORA_MS + 300_000 - h.agora());
+    const segundo = await h.tick();
+
+    expect(desfechos(primeiro)).toEqual([
+      ['conta-a', 'janela-vazia'],
+      ['conta-b', 'sem-tempo'],
+    ]);
+    expect(desfechos(segundo)).toEqual([
+      ['conta-b', 'janela-vazia'],
+      ['conta-a', 'sem-tempo'],
+    ]);
   });
 });
 
@@ -1249,6 +1507,53 @@ describe('the lease', () => {
     await h.umTick();
 
     expect(h.poll()).toMatchObject({ falhasSeguidas: 2, ultimoErro: 'credencial-ausente' });
+  });
+
+  it('near-miss: a count that GREW after the lease (2 → 3) survives the retry although THIS run resolved — and the next clean run closes the aviso it reopened', async () => {
+    const h = montar();
+    contaPronta(h);
+    seedPoll(h, { falhasSeguidas: 2, ultimoErro: 'credencial-ausente' });
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => undefined);
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, async () => {
+      // After this run's resolve, a refusal record (this run outlived its
+      // lease) counts 3 and raises at its own, LATER commit time.
+      const registro = h.fake.seed(CAMINHO_POLL, {
+        cursor: CURSOR,
+        emExecucaoAteMs: AGORA_MS + 300_000,
+        execucaoId: 'exec-1',
+        ultimaVarreduraEmMs: AGORA_MS,
+        ultimoErro: 'credencial-ausente',
+        falhasSeguidas: 3,
+        vistos: {},
+      });
+      await avisarImportacaoParada(
+        asDb(h.fake),
+        {
+          integracaoId: ID,
+          lojaNome: `Loja ${ID}`,
+          motivo: MOTIVO_IMPORTACAO_PARADA_LI.credencialAusente,
+          relogioUs: relogioDoDocumentoUs(registro),
+        },
+        { increment, nowMs: AGORA_MS },
+      );
+    });
+
+    const r = await h.umTick();
+
+    expect(r.desfecho).toBe('janela-vazia');
+    expect(h.poll()).toMatchObject({
+      falhasSeguidas: 3,
+      ultimoErro: 'credencial-ausente',
+      execucaoId: null,
+    });
+    expect(avisoImportacao(h)).toMatchObject({ resolvidoEm: null });
+
+    // The stored count is above 0, so the next clean run resolves it.
+    h.avancar(300_000);
+    await h.umTick();
+    expect(h.poll()).toMatchObject({ falhasSeguidas: 0, ultimoErro: null });
+    expect(avisoImportacao(h)).toMatchObject({ resolucaoMotivo: 'importacao-retomada' });
+    expect(avisoImportacao(h)?.resolvidoEm).not.toBeNull();
   });
 });
 
@@ -1523,6 +1828,90 @@ describe('the import-stopped aviso', () => {
     h.avancar(300_000);
     await h.umTick();
     expect(avisoImportacao(h)).toMatchObject({ ocorrencias: 2, criadoEm: primeiro?.criadoEm });
+  });
+
+  // The invariant: an OPEN aviso always has a stored count above 0, so a later
+  // clean run resolves it. A raise lands only once its count is stored.
+  it('a threshold-1 failure whose FINAL write fails (gRPC 14) raises NOTHING, and the next clean run leaves nothing open', async () => {
+    const h = montar();
+    contaPronta(h);
+    // A row below the tolerance floor: filtro-ignorado, raised at once.
+    h.responder = paginado([[linha(1001, '2027-01-15T01:47:59.999999')]]);
+    // Write 1 is the lease; write 2, the final write, fails UNAVAILABLE.
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => undefined);
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => {
+      throw grpc(14, 'UNAVAILABLE');
+    });
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho: 'erro-firestore', codigoGrpc: 14 });
+    expect(h.poll()).toMatchObject({ falhasSeguidas: 0, ultimoErro: null });
+    expect(avisoImportacao(h)).toBeUndefined();
+
+    // The lease expires; a clean window.
+    h.avancar(300_000);
+    h.responder = vazio;
+    expect((await h.umTick()).desfecho).toBe('janela-vazia');
+    expect(avisoImportacao(h)).toBeUndefined();
+  });
+
+  it('near-miss: the same failure whose final write LANDS opens the aviso, clocked by the lease', async () => {
+    const h = montar();
+    contaPronta(h);
+    h.responder = paginado([[linha(1001, '2027-01-15T01:47:59.999999')]]);
+
+    const r = await h.umTick();
+
+    const [lease] = h.fake.escritasEm(CAMINHO_POLL);
+    expect(r).toMatchObject({ desfecho: 'falha', motivo: 'filtro-ignorado' });
+    expect(h.poll()).toMatchObject({ falhasSeguidas: 1, ultimoErro: 'filtro-ignorado' });
+    expect(avisoImportacao(h)).toMatchObject({
+      resolvidoEm: null,
+      params: { motivo: 'filtro-ignorado' },
+      relogioEvento: relogioDoDocumentoUs(lease?.writeTime ?? { seconds: 0, nanoseconds: 0 }),
+    });
+  });
+
+  it('a run whose lease was taken over raises NOTHING, even at threshold 1 with no newer clock on the row', async () => {
+    const h = montar();
+    contaPronta(h);
+    h.responder = paginado([[linha(1001, '2027-01-15T01:47:59.999999')]]);
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => undefined);
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => {
+      // Another run took the lease over and runs clean from a count of 0: it writes no aviso.
+      seedPoll(h, { emExecucaoAteMs: AGORA_MS + 600_000, execucaoId: 'outro' });
+    });
+
+    const r = await h.umTick();
+
+    expect(r.desfecho).toBe('lease-perdido');
+    expect(avisoImportacao(h)).toBeUndefined();
+  });
+
+  it('the count a RE-DERIVED final write stored is the one the threshold reads', async () => {
+    const h = montar();
+    contaPronta(h);
+    h.responder = () => ({ status: 503, corpo: 'x' });
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => undefined);
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => {
+      // Two refusal records after the lease: the retry stores 2 + 1 = 3.
+      seedPoll(h, {
+        emExecucaoAteMs: AGORA_MS + 300_000,
+        execucaoId: 'exec-1',
+        falhasSeguidas: 2,
+        ultimoErro: 'credencial-ausente',
+      });
+    });
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho: 'falha', motivo: 'falha-transitoria' });
+    expect(h.poll()).toMatchObject({ falhasSeguidas: 3, ultimoErro: 'falha-transitoria' });
+    expect(avisoImportacao(h)).toMatchObject({
+      resolvidoEm: null,
+      params: { motivo: 'falha-transitoria' },
+    });
   });
 
   it('a clean run with a stored count of 0 makes NO aviso call', async () => {
