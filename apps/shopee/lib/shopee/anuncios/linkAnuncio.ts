@@ -29,25 +29,70 @@
  * DOCUMENT PER CHILD — plus one unfiltered `variashopee` read per child, awaited
  * in sequence. For a 50-model listing that is **51 sequential round trips and at
  * least 100 documents read** on one operator action ("at least", because a child
- * carrying links for a second conta answers more rows and they are filtered in
- * memory). Enterprise bills data SCANNED, so the DOCUMENT count is the number
- * that matters — stated here so nobody discovers it later.
+ * carrying links for a second conta — or a second LISTING — answers more rows and
+ * they are filtered in memory). Enterprise bills data SCANNED, so the DOCUMENT
+ * count is the number that matters — stated here so nobody discovers it later.
  *
  * ## ⚠️ Duplicates: lexically FIRST, one log line, NEVER a delete
  *
- * Both resolvers reuse `escolherLink` from `produtos/resolveProduto.ts` rather
- * than re-implementing the rule. A second copy with a comment claiming the two
- * agree is the exact shape the root `CLAUDE.md` names — and this rule is one a
+ * Every resolver here reuses `escolherLink` from `produtos/resolveProduto.ts`
+ * rather than re-implementing the rule. A second copy with a comment claiming the
+ * two agree is the exact shape the root `CLAUDE.md` names — and this rule is one a
  * copy would drift on, because a link document is the only record of a binding
  * an operator may have made by hand.
  *
- * ## ⚠️ {@link sincronizarLinksDeVariacao} is ONE function, shared
+ * ## ⚠️ TWO produto resolvers, and which one a caller takes is a PUBLISH question
+ *
+ * Since step 19 (#1527) one produto can hold several links of one conta on
+ * purpose: a native kit beside the ordinary listing it was converted from (that
+ * one SUPERSEDED, L8), or the new kit of a recriar beside the old one (REMOVED, or
+ * superseded when its delete did not take).
+ *
+ *  - {@link resolverLinkPorProduto} — **lexical, in step 11's ORDER**:
+ *    `escolherLink` over every link of the conta. It is the PUBLISH path's
+ *    resolver (`prepararPublicacao`), and Lucas's L10(3) is that publishing a
+ *    non-kit produto must not change: a produto whose REMOVED link sorts first
+ *    still answers `listagem-removida` there, exactly as before. Reordering it
+ *    would silently re-aim a publish at another listing (M185). ⚠️ Its candidate
+ *    SET did change in step 19, deliberately (OP-27): "every link of the conta"
+ *    is now {@link lerVinculosDaConta}, which folds both stored conta
+ *    encodings, so a link in the legacy bare encoding — invisible to publish on
+ *    main, which then CREATED a second listing — is now a candidate. That bug
+ *    fix is the one exception to L10(3)'s "must not change": for such a
+ *    produto the publish now differs from step 11's.
+ *  - {@link resolverLinkVivoPorProduto} — **tiered**, for the paths that ADDRESS a
+ *    listing that exists on Shopee rather than decide which one to publish:
+ *    re-verify (and so the `reverificar:anuncio` CLI), `anuncio-status` and
+ *    pause. With no `linkDocId` it prefers an ACTIVE native kit
+ *    (`ehKitNativoAtivo`), then any link that is neither removed nor superseded,
+ *    then the rest — `escolherLink` within each tier — so "pause this produto"
+ *    pauses the kit that sells, never the converted listing whose doc id merely
+ *    sorts first.
+ *
+ * A named `linkDocId` narrows BOTH to that one document before any ordering, so
+ * an operator can always address the old listing explicitly — which is exactly
+ * how a Seller-Centre deletion is confirmed (`reverificar:anuncio --link <old>`).
+ *
+ * ## ⚠️ {@link sincronizarLinksDeVariacao} is ONE function, shared — and PER LISTING
  *
  * Both the publisher's model leg and `reverificar-anuncio` refresh
  * `variashopee` from a FRESH `get_model_list` under the same rules. Two copies
  * of "reconcile by `model_id`, never by position; MARK a vanished model, never
  * delete it" is the drift shape, so there is one implementation and both
  * callers import it.
+ *
+ * ⚠️ **The model list it reconciles against is ONE listing's**, so it reconciles
+ * only that listing's rows: {@link lerLinksDeVariacao} keeps a row only when its
+ * `produtoShopeeOuterRef` names the listing's `prodshopee` doc id, through the
+ * shared `idDoRef` fold (`core/vinculosShopee.ts` — both stored encodings, the
+ * fold the stock and price planners attribute models with). Before step 19 the
+ * read was per PRODUTO, and a child carrying the rows of TWO listings — a
+ * converted ordinary listing and its native kit (L8), a recriar's old and new
+ * kit — would have had every row of the OTHER listing stamped `modeloAusenteEm`
+ * on each re-verify, which `vinculosShopee.ts`'s `modelosUtilizaveis` then drops
+ * from steps 12/13: a listing that is still selling would silently stop
+ * receiving stock and price. A row whose ref is unreadable is skipped and logged,
+ * never marked — no planner can attribute it either.
  *
  * Clock-free and Next-free: `nowMs` is a parameter, every Firestore access goes
  * through a `@delfrance/data/admin/collections` handle, and nothing here opens a
@@ -56,7 +101,10 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import type { ShopeeModel } from '@delfrance/integrations-shopee';
 import {
+  ESTADO_ANUNCIO_SHOPEE,
   SHOPEE_MODEL_STATUS,
+  ehKitNativoAtivo,
+  ehVinculoSubstituido,
   estadoAnuncioShopeeSchema,
   toOuterRef,
   type EstadoAnuncioShopee,
@@ -69,6 +117,7 @@ import {
   variacaoShopeeLinkCollection,
 } from '@delfrance/data/admin/collections';
 
+import { idDoRef } from '../core/vinculosShopee';
 import { INDICES_COMPOSTOS_SHOPEE } from '../pedidos/produtoResolve';
 import { modelStatusDeLink } from '../produtos/mapeamento';
 import { escolherLink, linhasDeGrupo } from '../produtos/resolveProduto';
@@ -179,9 +228,90 @@ export async function resolverLinkPorItemId(
   );
 }
 
+/** One `prodshopee` document of the produto, conta already filtered — UNVALIDATED. */
+export interface VinculoLidoDaConta {
+  readonly id: string;
+  readonly raw: Record<string, unknown>;
+}
+
+/**
+ * EVERY `prodshopee` document of ONE produto that belongs to THIS conta — the
+ * ONE read the publish dispatcher (step 19, #1527 — `anuncios/publicarShopee.ts`
+ * hands it to `kits/armaDePublicacao.ts`) and both produto resolvers below
+ * share, so the dispatcher and the resolver the item arm then runs can never
+ * disagree about which links exist.
+ *
+ * **No `where`** (see the header): the whole subcollection, the conta compared
+ * in memory.
+ *
+ * ⚠️ The conta comparison is the shared fold (1) of `core/vinculosShopee.ts`
+ * (`idDoRef`, the LAST path segment), the same one `kits/prepararKit.ts` and the
+ * stock and price planners attribute links with. EQUAL: the two stored
+ * encodings of one integração (`documents/integracao/<id>` and the legacy bare
+ * `integracao/<id>` the migrated corpus carries). DISTINCT: any other id. Before
+ * step 19 this read compared the canonical ref EXACTLY, so a link stored in the
+ * bare legacy encoding was invisible to publish (a publish then CREATED a second
+ * listing) while steps 12/13 sent it stock and price; the fold makes the
+ * publish path see the same links every other Shopee path sees.
+ */
+export async function lerVinculosDaConta(
+  db: Firestore,
+  integracaoId: string,
+  produtoId: string,
+): Promise<readonly VinculoLidoDaConta[]> {
+  const snap = await produtoShopeeLinkCollection.ref(db, { produtoId }).get();
+  return snap.docs
+    .map((d) => ({ id: d.id, raw: (d.data() ?? {}) as Record<string, unknown> }))
+    .filter((l) => idDoRef(l.raw[INDICE_LISTAGEM.campos[1]]) === integracaoId);
+}
+
+/**
+ * This conta's `prodshopee` rows under ONE produto ({@link lerVinculosDaConta}),
+ * narrowed to `linkDocId` when one is named — so both produto resolvers can
+ * differ only in how they ORDER the same candidates.
+ *
+ * ⚠️ The conta filter runs FIRST, so a `linkDocId` naming another conta's
+ * document narrows to nothing.
+ */
+async function linksDaContaNoProduto(
+  db: Firestore,
+  integracaoId: string,
+  produtoId: string,
+  linkDocId: string | null | undefined,
+): Promise<LinhaDeLinkLida[]> {
+  const daConta: LinhaDeLinkLida[] = (await lerVinculosDaConta(db, integracaoId, produtoId)).map(
+    (l) => ({ id: l.id, raw: l.raw, produtoId }),
+  );
+
+  return linkDocId == null || linkDocId === ''
+    ? daConta
+    : daConta.filter((l) => l.id === linkDocId);
+}
+
 /**
  * produto → the listing link for THIS conta, with **no `where`** (see the
- * header). For the three routes and the CLI.
+ * header). For the PUBLISH path (`prepararPublicacao`) — the route and the CLI.
+ *
+ * ⚠️ **Lexical, on purpose: the ORDER is step 11's, unchanged by step 19.** With
+ * no `linkDocId` it is `escolherLink` over EVERY link of the conta — a removed or
+ * superseded one included — so a produto whose removed listing sorts first is
+ * answered `listagem-removida`, never quietly re-aimed at another listing
+ * (L10(3), M185). The tiered order belongs to {@link resolverLinkVivoPorProduto},
+ * whose callers address a listing rather than choose one to publish.
+ *
+ * ⚠️ **What step 19 DID change is the candidate set** (OP-27). "Every link of
+ * the conta" is {@link lerVinculosDaConta}, which folds both stored conta
+ * encodings where main compared the canonical ref exactly. So a link stored in
+ * the legacy bare encoding is now published TO (main ignored it and created a
+ * second listing), and beside a canonical link it competes in the same lexical
+ * order. Publishing a non-kit produto is therefore unchanged only while every
+ * link carries the canonical ref — which every link this app writes does; the
+ * migrated corpus is where the two differ. The `item_id`-keyed lookups still
+ * compare EXACTLY, on the server: {@link resolverLinkPorItemId} (the listing
+ * pushes), step 5's `pedidos/produtoResolve.ts` rungs and step 9's
+ * `produtos/resolveProduto.ts` ride the declared composite's `==`, so a
+ * bare-encoded link stays invisible to them, while steps 12/13 attribute links
+ * per produto through the same fold this read uses.
  *
  * `linkDocId` narrows to one document when the caller already knows it. ⚠️ A
  * `linkDocId` naming a document that belongs to ANOTHER conta resolves `null`,
@@ -194,14 +324,7 @@ export async function resolverLinkPorProduto(
   produtoId: string,
   linkDocId?: string | null,
 ): Promise<LinkDeAnuncio | null> {
-  const conta = contaRefDe(integracaoId);
-  const snap = await produtoShopeeLinkCollection.ref(db, { produtoId }).get();
-  const daConta: LinhaDeLinkLida[] = snap.docs
-    .map((d) => ({ id: d.id, raw: (d.data() ?? {}) as Record<string, unknown>, produtoId }))
-    .filter((l) => l.raw[INDICE_LISTAGEM.campos[1]] === conta);
-
-  const candidatos =
-    linkDocId == null || linkDocId === '' ? daConta : daConta.filter((l) => l.id === linkDocId);
+  const candidatos = await linksDaContaNoProduto(db, integracaoId, produtoId, linkDocId);
 
   return comoLinkDeAnuncio(
     escolherLink(candidatos, {
@@ -211,6 +334,60 @@ export async function resolverLinkPorProduto(
       subcolecao: 'prodshopee',
     }),
   );
+}
+
+/**
+ * A link that still names a LIVE listing for publish purposes: not `removido`
+ * and not superseded. ⚠️ An unrecognised stored `estadoAnuncio` reads as `null`
+ * ({@link estadoAnuncioDeLink}), which is NOT `removido` — a reading nobody
+ * understands is never treated as a deletion.
+ */
+function ehVinculoVivo(raw: Record<string, unknown>): boolean {
+  return estadoAnuncioDeLink(raw) !== ESTADO_ANUNCIO_SHOPEE.removido && !ehVinculoSubstituido(raw);
+}
+
+/**
+ * produto → the link of the listing that is ALIVE on Shopee, for this conta —
+ * the tiered sibling of {@link resolverLinkPorProduto} (step 19, #1527, R-12(b)).
+ * Same signature, same no-`where` read, same conta filter and the same
+ * `linkDocId` narrowing (a named id wins outright, whatever its state).
+ *
+ * With no `linkDocId`, three tiers, `escolherLink` (lexically first, one log
+ * line) WITHIN each:
+ *
+ *  1. an ACTIVE native kit — `ehKitNativoAtivo` (`@delfrance/schemas`, the ONE
+ *     predicate): `kitNativo === true`, not removed, not superseded, an
+ *     addressable `item_id`;
+ *  2. any other link that is neither `removido` nor superseded;
+ *  3. the rest — so a produto whose every listing is gone still resolves, and
+ *     the caller reports that listing's state instead of a 404.
+ *
+ * ⚠️ Callers: `reverificarAnuncio.ts` (the route and the `reverificar:anuncio`
+ * CLI) and `pausarAnuncio.ts` (`anuncio-status`). NEVER the publish path: the
+ * order a PUBLISH resolves in is {@link resolverLinkPorProduto}'s, and changing
+ * it changes what a non-kit produto publishes to (L10(3), M185).
+ */
+export async function resolverLinkVivoPorProduto(
+  db: Firestore,
+  integracaoId: string,
+  produtoId: string,
+  linkDocId?: string | null,
+): Promise<LinkDeAnuncio | null> {
+  const candidatos = await linksDaContaNoProduto(db, integracaoId, produtoId, linkDocId);
+  const contexto = {
+    integracaoId,
+    produtoId,
+    linkDocId: linkDocId ?? null,
+    subcolecao: 'prodshopee',
+  };
+
+  const nativosAtivos = candidatos.filter((l) => ehKitNativoAtivo(l.raw));
+  if (nativosAtivos.length > 0) return comoLinkDeAnuncio(escolherLink(nativosAtivos, contexto));
+
+  const vivos = candidatos.filter((l) => ehVinculoVivo(l.raw));
+  if (vivos.length > 0) return comoLinkDeAnuncio(escolherLink(vivos, contexto));
+
+  return comoLinkDeAnuncio(escolherLink(candidatos, contexto));
 }
 
 function tierIndexDeLink(raw: Record<string, unknown>): readonly number[] {
@@ -235,17 +412,32 @@ function modelIdUtilizavel(bruto: unknown): number | null {
 }
 
 /**
- * Every `variashopee` under the CHILDREN of one parent produto, for this conta.
+ * Every `variashopee` under the CHILDREN of one parent produto, for this conta —
+ * and, when `linkDocId` is a string, for that ONE LISTING.
  *
  * The children come from `produtos (paiId == produtoPaiId)` — the query
  * `jaTemFilhos` already runs, so its index cost is paid — and each child's
  * `variashopee` subcollection is read UNFILTERED with the conta compared in
  * memory, for the header's reason.
+ *
+ * `linkDocId` is the LISTING's `prodshopee` doc id (not a `variashopee` id): a
+ * row is kept only when `idDoRef(produtoShopeeOuterRef) === linkDocId` — the
+ * shared fold, both stored encodings (`documents/produtos/…/prodshopee/<id>` and
+ * the bare path) read alike, any other listing's row left out. A row whose ref
+ * is unreadable is skipped with one log line: it belongs to no listing anybody
+ * can name, so it must never be MARKED by a reading of this one.
+ *
+ * ⚠️ `null` = unfiltered — every listing's rows of this conta. Kept ONLY for a
+ * step-11 FIRST publish, which has no link to filter by yet; every caller that
+ * holds a listing passes its id (`reverificarAnuncio.ts`, `modelosPublicacao.ts`,
+ * and `publicarAnuncio.ts`'s item arm once a link resolved). Required rather than
+ * optional so a new caller has to decide.
  */
 export async function lerLinksDeVariacao(
   db: Firestore,
   integracaoId: string,
   produtoPaiId: string,
+  linkDocId: string | null,
 ): Promise<readonly LinkDeVariacao[]> {
   const conta = contaRefDe(integracaoId);
   const filhos = await produtoCollection.ref(db, {}).where('paiId', '==', produtoPaiId).get();
@@ -256,6 +448,17 @@ export async function lerLinksDeVariacao(
     for (const d of snap.docs) {
       const raw = (d.data() ?? {}) as Record<string, unknown>;
       if (raw[INDICE_VARIACAO.campos[1]] !== conta) continue;
+      if (linkDocId !== null) {
+        const daListagem = idDoRef(raw.produtoShopeeOuterRef);
+        if (daListagem === null) {
+          console.warn(
+            '[shopee/anuncios] vínculo de variação sem referência legível ao anúncio; fora da sincronização',
+            { integracaoId, produtoId: filho.id, varLinkDocId: d.id, linkDocId },
+          );
+          continue;
+        }
+        if (daListagem !== linkDocId) continue;
+      }
       saida.push({
         produtoId: filho.id,
         linkDocId: d.id,
@@ -292,9 +495,16 @@ export interface ResultadoSincronizacaoModelos {
 }
 
 /**
- * Reconcile the stored child links of ONE parent produto against a FRESH
- * `get_model_list` reading. Called by the publisher's model leg and by
- * `reverificar-anuncio` — ONE implementation, two callers.
+ * Reconcile the stored child links of ONE LISTING of one parent produto against a
+ * FRESH `get_model_list` reading of that listing. Called by the publisher's model
+ * leg and by `reverificar-anuncio` — ONE implementation, two callers.
+ *
+ * ⚠️ **Per listing** (step 19, L8): `linkDocId` is the listing's `prodshopee` doc
+ * id and goes straight to {@link lerLinksDeVariacao}, so only that listing's rows
+ * are refreshed, marked or matched. Another listing's rows under the same
+ * children — the ordinary listing a native kit replaced, the old kit of a recriar
+ * — are not in the reading's scope and are never touched by it; a reading of the
+ * new kit cannot stamp the old listing's models absent, and vice versa.
  *
  * The three rules, each of which a test pins:
  *
@@ -327,18 +537,20 @@ export interface ResultadoSincronizacaoModelos {
  * `update()` REPLACES a map where set-merge deep-merges it. A link document
  * deleted meanwhile answers `false` and is counted in neither counter.
  *
- * ⚠️ Positional, and `(integracaoId, produtoPaiId)` are two strings in a row:
- * swapping them resolves no child and the sync silently does nothing. The order
- * mirrors {@link lerLinksDeVariacao}, which is the only reader it calls.
+ * ⚠️ Positional, and `(integracaoId, produtoPaiId, linkDocId)` are three strings
+ * in a row: swapping them resolves no child (or no listing) and the sync silently
+ * does nothing. The order mirrors {@link lerLinksDeVariacao}, which is the only
+ * reader it calls.
  */
 export async function sincronizarLinksDeVariacao(
   db: Firestore,
   integracaoId: string,
   produtoPaiId: string,
+  linkDocId: string | null,
   modelos: readonly ShopeeModel[],
   nowMs: number,
 ): Promise<ResultadoSincronizacaoModelos> {
-  const links = await lerLinksDeVariacao(db, integracaoId, produtoPaiId);
+  const links = await lerLinksDeVariacao(db, integracaoId, produtoPaiId, linkDocId);
 
   const porModelId = new Map<number, ShopeeModel>();
   for (const modelo of modelos) {

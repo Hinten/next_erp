@@ -1,0 +1,5 @@
+{
+  "error": "product.error_busi",
+  "message": "Failed to create product : external error: mupltiple main sku itemId:ModelId, 2500139871:2000458824), source: marketplace.listing.item.itemmanagement.mpsku.add_virtual_sku, code: REDACTED",
+  "warning": ""
+}

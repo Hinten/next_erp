@@ -57,12 +57,12 @@ export function ProdutoFotoCell({ db, produto }: { db: Firestore; produto: Produ
       <Center
         w={THUMB_PX}
         h={THUMB_PX}
-        bg="var(--mantine-color-gray-1)"
+        bg="var(--mantine-color-default-hover)"
         role="img"
         aria-label="Sem foto"
         style={{ borderRadius: 'var(--mantine-radius-sm)' }}
       >
-        <IconPhotoOff size={Math.round(THUMB_PX * 0.5)} color="var(--mantine-color-gray-5)" />
+        <IconPhotoOff size={Math.round(THUMB_PX * 0.5)} color="var(--mantine-color-dimmed)" />
       </Center>
     );
   }
