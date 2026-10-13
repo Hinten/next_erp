@@ -36,11 +36,11 @@ const USE_FIREBASE_EMULATOR = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === 
 /**
  * True when this build talks to the emulator suite.
  *
- * ⚠️ Needed as a CAPABILITY gate, not just for wiring: the emulator is a
- * Standard-edition Firestore and rejects the Pipelines API, while the SDK still
- * exposes `db.pipeline()` — so `isPipelineSupported(db)` answers *yes* and the
- * call fails at execution time. Any code with a pipeline path plus a classic
- * fallback must branch on THIS, not on the SDK probe.
+ * This identifies the configured transport, not general pipeline capability.
+ * Firestore emulator 1.22.0 supports some pipelines in Enterprise mode, which
+ * firebase.e2e.json enables. Existing callers may still use this flag to retain
+ * a fallback until their exact query shape has integration coverage; the SDK's
+ * `db.pipeline()` probe alone says nothing about backend expression support.
  */
 export function isUsingFirebaseEmulator(): boolean {
   return USE_FIREBASE_EMULATOR;

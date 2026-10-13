@@ -893,6 +893,12 @@ UNKNOWN — docs do not say**, and it must be confirmed live before any stock-sy
 Also unstated: whether ordering a kit decrements component stock, and whether a component's stock
 change is echoed anywhere (`push 5` carries only reserved-stock changes).
 
+> ⚠️ **Measured since (step 19's probe #1, SG sandbox, 2026-10-06 — #1527):** kit stock IS derived —
+> min ⌊component stock / quantity⌋ over ALL components, recomputed synchronously, each kit model
+> its own, readable only through `get_model_list(kit)` (`stock_info_v2`); `update_stock` on a kit
+> is refused ("Invalid product setting"). Whether a kit ORDER decrements the components is still
+> open: register row 270 in `apps/shopee/lib/shopee/kits/README.md` §8.
+
 ### 7.3 Shape
 
 `add_kit_item` request:
@@ -987,6 +993,13 @@ Definition, verbatim:
 The only compositional edit is **appending** a new kit variation. There is no `delete_kit_item`;
 whether `v2.product.delete_item` accepts a kit item is **UNKNOWN — docs do not say**.
 
+> ⚠️ **Measured since (step 19's probes, SG sandbox, 2026-10-06/07 — #1527):** "frozen" is not a
+> refusal — a QUANTITY change on an existing model answers **200 and is silently ignored** (the
+> read-back keeps the old quantity), so no kit write may be read as applied from its ack.
+> `update_kit_item` is PARTIAL (omitted models are kept), and an append is `model_id: 0` plus the
+> full tier list. `delete_item` DOES work on a kit (it then reads `SELLER_DELETE`), and so does
+> `unlist_item`, both ways.
+
 ### 7.6 `generate_kit_image`
 
 > *"This API generates a single consolidated image by combining the cover images of all selected
@@ -1009,6 +1022,11 @@ confirmed against a real BR shop. The kit APIs carry
 `api_permission: ["ERP System","Seller In House System","Product Management","Swam ERP"]` — the same
 set as `add_item`, so app permissions are not an extra gate. `add_kit_item` / `get_kit_item_info` /
 `update_kit_item` are New API 2024-10-18; `generate_kit_image` 2025-09-26.
+
+> ⚠️ **Answered since (step 19, 2026-10-07 — #1527):** the announcements DO state the region —
+> 1493 (the BR launch, end of 2024) and 1310 (whitelisted BR local SIP sellers from 2025-12-20).
+> Whether Lucas's shop and app are whitelisted for the OpenAPI kit ops stays open: register row
+> 272 in `apps/shopee/lib/shopee/kits/README.md` §8 (the first BR `--live` kit create settles it).
 
 ### 7.8 Contrast with `bundle_deal`
 

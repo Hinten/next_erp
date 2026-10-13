@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
+  SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
+  SHOPEE_SURFACE,
   ShopeeNetworkError,
+  ShopeeOperacaoNaoServidaError,
   type ShopeeClient,
+  shopeeErrorFromEnvelope,
 } from '@delfrance/integrations-shopee';
 
 import { type ShopeeTaxonomiaCtx, __setShopeeTaxonomiaClockForTests } from './cache';
@@ -229,7 +233,9 @@ describe('lerLimitesDeKit', () => {
       }),
     });
 
-    const limites = await lerLimitesDeKit(ctx, 100182);
+    const lidos = await lerLimitesDeKit(ctx, 100182);
+    if (lidos.estado !== 'servido') throw new Error('esperava limites servidos');
+    const { limites } = lidos;
     expect(limites.descriptionLimit).toMatchObject({
       descriptionLengthMin: 5,
       descriptionLengthMax: 3000,
@@ -249,9 +255,62 @@ describe('lerLimitesDeKit', () => {
   it('não inventa campos quando a página responde vazio', async () => {
     const { ctx } = ctxCom({ kit: async () => ({}) });
 
-    const limites = await lerLimitesDeKit(ctx, null);
-    expect(limites.descriptionLimit).toBeNull();
-    expect(limites.dtsLimit).toBeNull();
-    expect(limites.componentCountLimitOfSingleModel).toBeNull();
+    const lidos = await lerLimitesDeKit(ctx, null);
+    if (lidos.estado !== 'servido') throw new Error('esperava limites servidos');
+    expect(lidos.limites.descriptionLimit).toBeNull();
+    expect(lidos.limites.dtsLimit).toBeNull();
+    expect(lidos.limites.componentCountLimitOfSingleModel).toBeNull();
+  });
+
+  it('M75 — o 404 do GATEWAY é o desfecho tipado `indisponivel`: nem lança, nem vira banda nula', async () => {
+    // Passo 19: o host que não roteia `get_kit_item_limit` (a sonda da SG) é um
+    // FATO que o chamador decide — publicar sem banda local e deixar a recusa da
+    // Shopee falar — nunca uma falha a capturar, e nunca uma banda de `null`s
+    // que se leria como "a Shopee respondeu e não pôs limite".
+    const gateway = shopeeErrorFromEnvelope(
+      { error: 'error_not_found', message: null, request_id: null, warning: null },
+      { path: SHOPEE_GET_KIT_ITEM_LIMIT_PATH, httpStatus: 404, surface: SHOPEE_SURFACE.business },
+    );
+    expect(gateway).toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+    const { chamadas, ctx } = ctxCom({
+      kit: async () => {
+        throw gateway;
+      },
+    });
+
+    await expect(lerLimitesDeKit(ctx, 100182)).resolves.toEqual({ estado: 'indisponivel' });
+    // O par: cacheado como VALOR, a segunda leitura não chama a Shopee.
+    await expect(lerLimitesDeKit(ctx, 100182)).resolves.toEqual({ estado: 'indisponivel' });
+    expect(chamadas.kit).toBe(1);
+    expect(chamadas.item).toBe(0);
+  });
+
+  it('⛔ QUASE-PAR: uma falha de verdade continua SUBINDO (nunca vira `indisponivel`)', async () => {
+    const { chamadas, ctx } = ctxCom({
+      kit: async () => {
+        throw new ShopeeNetworkError('fetch falhou');
+      },
+    });
+
+    await expect(lerLimitesDeKit(ctx, 100182)).rejects.toBeInstanceOf(ShopeeNetworkError);
+    await expect(lerLimitesDeKit(ctx, 100182)).rejects.toBeInstanceOf(ShopeeNetworkError);
+    expect(chamadas.kit).toBe(2);
+  });
+
+  it('o desfecho servido carrega a banda projetada, e o DTO valida', async () => {
+    const { ctx } = ctxCom({
+      kit: async () => ({
+        component_count_limit_of_single_model: banda({ min_limit: 2, max_limit: 10 }),
+      }),
+    });
+
+    const lidos = await lerLimitesDeKit(ctx, 100182);
+    expect(lidos).toMatchObject({
+      estado: 'servido',
+      limites: { componentCountLimitOfSingleModel: { min: 2, max: 10 } },
+    });
+    if (lidos.estado === 'servido') {
+      expect(() => limitesDeKitDtoSchema.parse(lidos.limites)).not.toThrow();
+    }
   });
 });

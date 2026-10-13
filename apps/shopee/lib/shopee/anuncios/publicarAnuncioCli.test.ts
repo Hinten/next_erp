@@ -38,6 +38,14 @@ import {
 
 import { ESTADO_ANUNCIO_SHOPEE, fotoSchema } from '@delfrance/schemas';
 
+import type { PlanoKit } from '../kits/planoKit';
+import type { ContextoKitPreparado } from '../kits/prepararKit';
+import type { EnsaioDeKit } from '../kits/publicarKit';
+import {
+  MENSAGEM_KIT_INCERTO,
+  comandoDeRetomada,
+  type ResultadoPublicacaoKit,
+} from '../kits/resultadoKit';
 import type { AtributosProjetados } from '../taxonomia/dto';
 import { naoDocId } from './corpoPublicacao';
 import {
@@ -53,16 +61,25 @@ import type { PlanoPublicacao } from './planoPublicacao';
 import {
   ArgumentoInvalidoError,
   MSG_CATEGORIA_NAO_NUMERICA,
+  MSG_CLI_RECRIAR_E_CONVERTER,
+  MSG_CLI_RECRIAR_SEM_LINK,
   MSG_STATUS_INVALIDO,
+  NOTA_SANDBOX_SG_KIT,
   USO_PUBLICAR_ANUNCIO,
   descreverErroPublicacao,
   lerArgsPublicar,
+  renderizarEnsaioDeKit,
   renderizarPlano,
   renderizarResultado,
+  renderizarResultadoKit,
   resumoDaPublicacao,
+  resumoDoEnsaioDeKit,
   resumoDoResultado,
+  resumoDoResultadoKit,
   type ContextoDoEnsaio,
+  type OpcoesDoKitCli,
 } from './publicarAnuncioCli';
+import { lerArgsReverificar } from './reverificarAnuncioCli';
 import type { ResultadoPublicacao } from './publicarAnuncio';
 import type { ResultadoTabelaDeMedidasShopee } from './tabelaMedidasPublicacao';
 import { MOTIVO_TAX_INFO_OMITIDO } from './taxInfoPublicacao';
@@ -447,6 +464,9 @@ describe('lerArgsPublicar', () => {
         live: false,
         json: false,
         projectId: null,
+        principal: null,
+        recriar: false,
+        converterEmKit: false,
       },
     });
   });
@@ -465,6 +485,8 @@ describe('lerArgsPublicar', () => {
       '--live',
       '--project',
       'demo-erp',
+      '--principal=comp-a-filho',
+      '--recriar',
     ]);
     expect(cmd).toEqual({
       kind: 'publicar',
@@ -477,6 +499,9 @@ describe('lerArgsPublicar', () => {
         live: true,
         json: true,
         projectId: 'demo-erp',
+        principal: 'comp-a-filho',
+        recriar: true,
+        converterEmKit: false,
       },
     });
   });
@@ -617,6 +642,77 @@ describe('lerArgsPublicar', () => {
       /Opção desconhecida/,
     );
     expect(() => lerArgsPublicar(['--', '--integracao', INTEGRACAO_ID])).toThrow(/Separador/);
+  });
+});
+
+describe('lerArgsPublicar — as três opções de kit nativo (passo 19)', () => {
+  const BASE = ['--integracao', INTEGRACAO_ID, '--produto', PRODUTO_ID] as const;
+  const args = (...extra: string[]) => {
+    const cmd = lerArgsPublicar([...BASE, ...extra]);
+    if (cmd.kind !== 'publicar') throw new Error('esperava publicar');
+    return cmd.args;
+  };
+
+  it('--principal é um id de documento, pela MESMA regra de --produto', () => {
+    expect(args('--principal', 'comp-a-filho').principal).toBe('comp-a-filho');
+    expect(args('--principal=comp-a-filho').principal).toBe('comp-a-filho');
+    // ⚠️ NEAR-MISS: um caminho ou um nome relativo NUNCA é um produto componente.
+    for (const recusado of ['produtos/comp-a', '..', '']) {
+      expect(() => args('--principal', recusado)).toThrow(ArgumentoInvalidoError);
+    }
+    expect(() => args('--principal')).toThrow(/--principal exige um valor/);
+  });
+
+  it('⚠️ PAR (M175, a metade da CLI): --recriar COM --link passa; SEM --link é o erro de uso — a recriação sempre nomeia o kit antigo', () => {
+    expect(args('--link', LINK_DOC_ID, '--recriar')).toMatchObject({
+      linkDocId: LINK_DOC_ID,
+      recriar: true,
+      converterEmKit: false,
+    });
+    // A ordem das flags não importa: a checagem é depois da leitura inteira.
+    expect(args('--recriar', '--link', LINK_DOC_ID).recriar).toBe(true);
+    expect(() => args('--recriar')).toThrow(ArgumentoInvalidoError);
+    expect(() => args('--recriar')).toThrow(MSG_CLI_RECRIAR_SEM_LINK);
+    expect(() => args('--recriar', '--principal', 'comp-a-filho', '--live')).toThrow(
+      MSG_CLI_RECRIAR_SEM_LINK,
+    );
+  });
+
+  it('⚠️ PAR: --converter-em-kit sozinho ou com --link passa; junto com --recriar é o erro de uso — UMA ação de kit por execução', () => {
+    expect(args('--converter-em-kit')).toMatchObject({
+      linkDocId: null,
+      recriar: false,
+      converterEmKit: true,
+    });
+    expect(args('--converter-em-kit', '--link', LINK_DOC_ID).linkDocId).toBe(LINK_DOC_ID);
+    expect(() => args('--converter-em-kit', '--recriar', '--link', LINK_DOC_ID)).toThrow(
+      MSG_CLI_RECRIAR_E_CONVERTER,
+    );
+    // ⚠️ As duas recusas acontecem ANTES de qualquer leitura: nenhuma delas é a
+    // 400 da rota — é a mesma regra, falada com as flags DESTE comando.
+    expect(MSG_CLI_RECRIAR_SEM_LINK).toContain('--link');
+    expect(MSG_CLI_RECRIAR_E_CONVERTER).toContain('--converter-em-kit');
+  });
+
+  it('a ajuda ainda vence as recusas de kit, e a ajuda documenta as três opções', () => {
+    expect(lerArgsPublicar(['--recriar', '--converter-em-kit', '--help'])).toEqual({
+      kind: 'ajuda',
+    });
+    for (const flag of ['--principal <id>', '--recriar', '--converter-em-kit']) {
+      expect(USO_PUBLICAR_ANUNCIO).toContain(flag);
+    }
+    // R-w: o aviso de nunca rodar dois comandos de kit ao mesmo tempo.
+    expect(USO_PUBLICAR_ANUNCIO).toContain('NUNCA rode um comando de kit');
+    // ⚠️ A frase velha ("KIT é recusado antes de existir plano") morreu com o
+    // despachante: um kit nativo agora é publicado, não recusado.
+    expect(USO_PUBLICAR_ANUNCIO).not.toContain('FILHO ou KIT é recusado');
+  });
+
+  it('(OP-9 / H4) a ajuda diz que --status UNLIST VALE na criação de um kit nativo e só é ignorado numa republicação', () => {
+    expect(USO_PUBLICAR_ANUNCIO).toContain('vale na CRIAÇÃO (add_kit_item com «unlisted»)');
+    expect(USO_PUBLICAR_ANUNCIO).toContain('e é ignorado numa republicação.');
+    // ⛔ A frase velha mentia: desde o OP-9 a criação MANDA `unlisted: true`.
+    expect(USO_PUBLICAR_ANUNCIO).not.toContain('o add_kit_item vai sem «unlisted»');
   });
 });
 
@@ -1040,22 +1136,65 @@ describe('um plano bloqueado', () => {
 /* ========================================================================== */
 
 describe('scripts/publicar-anuncio.ts', () => {
-  it('⛔ só chama publicarAnuncioShopee DEPOIS do ramo do dry-run', () => {
+  /** The dry-run branch, from its guard to the live marker. */
+  const RAMO_DRY_RUN = FONTE_SCRIPT.slice(
+    FONTE_SCRIPT.indexOf('if (!live) {'),
+    FONTE_SCRIPT.indexOf('/* ---------------------------------- live'),
+  );
+  /** The live branch, from its marker to the end of `main`. */
+  const RAMO_LIVE = FONTE_SCRIPT.slice(
+    FONTE_SCRIPT.indexOf('/* ---------------------------------- live'),
+    FONTE_SCRIPT.indexOf('await main()'),
+  );
+
+  it('⛔ só chama publicarShopee DEPOIS do ramo do dry-run', () => {
     // O mutante é mover a chamada para o caminho padrão: uma rehearsal passaria
-    // a criar anúncio de verdade sem ninguém pedir `--live`.
+    // a criar anúncio (ou KIT) de verdade sem ninguém pedir `--live`.
     const guarda = FONTE_SCRIPT.indexOf('if (!live) {');
-    const chamada = FONTE_SCRIPT.indexOf('await publicarAnuncioShopee(');
+    const chamada = FONTE_SCRIPT.indexOf('await publicarShopee(');
     expect(guarda).toBeGreaterThan(0);
     expect(chamada).toBeGreaterThan(guarda);
-    // …e ela acontece UMA vez só.
-    expect(FONTE_SCRIPT.match(/await publicarAnuncioShopee\(/g)).toHaveLength(1);
+    // …e ela acontece UMA vez só, no ramo live.
+    expect(FONTE_SCRIPT.match(/await publicarShopee\(/g)).toHaveLength(1);
+    expect(RAMO_LIVE).toContain('await publicarShopee(');
   });
 
-  it('o dry-run chama prepararPublicacao e planejarPublicacao, e nenhum escritor', () => {
-    expect(FONTE_SCRIPT).toContain('await prepararPublicacao(');
-    expect(FONTE_SCRIPT).toContain('planejarPublicacao(');
-    expect(FONTE_SCRIPT).toContain('await resolverFotosDaPublicacao(');
+  it('⛔ (L10-R1, a metade da CLI do M186) o dry-run e o --live passam pelo MESMO despachante — nenhum dos dois escolhe anúncio por conta própria', () => {
+    // O dry-run pergunta ao despachante (`ensaiarPublicacaoShopee`), e o --live
+    // também (`publicarShopee`). Passar o `--link` CRU a `prepararPublicacao`
+    // re-resolveria lexicalmente sobre TODOS os vínculos — um kit removido ou um
+    // anúncio substituído inclusive — e ensaiaria OUTRO anúncio do que o --live
+    // publica.
+    expect(RAMO_DRY_RUN).toContain('await ensaiarPublicacaoShopee(');
+    expect(FONTE_SCRIPT.match(/ensaiarPublicacaoShopee\(/g)).toHaveLength(1);
+    for (const atalho of [
+      'prepararPublicacao(',
+      'publicarAnuncioShopee(',
+      'publicarKitShopee(',
+      'ensaiarKitShopee(',
+      'prepararKit(',
+    ]) {
+      expect(FONTE_SCRIPT).not.toContain(atalho);
+    }
+  });
+
+  it('o dry-run planeja o item com o contexto que o despachante preparou, e nenhum escritor', () => {
+    expect(RAMO_DRY_RUN).toContain('planejarPublicacao(');
+    expect(RAMO_DRY_RUN).toContain('await resolverFotosDaPublicacao(');
+    expect(RAMO_DRY_RUN).toContain('renderizarEnsaioDeKit(');
     expect(FONTE_SCRIPT).not.toContain('aplicarPublicacao(');
+    expect(RAMO_DRY_RUN).not.toContain('publicarShopee(');
+  });
+
+  it('o --live liga o `increment` do aviso de composição, como a rota', () => {
+    expect(FONTE_SCRIPT).toContain('increment: (by: number) => FieldValue.increment(by)');
+    expect(FONTE_SCRIPT).toContain("await import('firebase-admin/firestore')");
+  });
+
+  it('⚠️ um kit INCERTO no --live sai com 1 — e é o ÚNICO exitCode do ramo live além do 404', () => {
+    expect(RAMO_LIVE).toContain("res.resultado.desfecho === 'incerto'");
+    expect(RAMO_LIVE.match(/process\.exitCode = 1/g)).toHaveLength(2);
+    expect(RAMO_LIVE).toContain('renderizarResultadoKit(');
   });
 
   it('devolve na ajuda ANTES do primeiro await import', () => {
@@ -1102,6 +1241,52 @@ describe('descreverErroPublicacao', () => {
     expect(texto).toContain(PRODUTO_ID);
     expect(texto).toContain('novo (primeira publicação)');
     expect(texto).toContain('a recusa é anterior');
+  });
+
+  it('(R3-02) o fecho de um bloqueio NUNCA promete que nenhum vínculo foi gravado no --live: um kit nativo grava antes de recusar', () => {
+    // The `kit-atualizar` applier's deleted-target branch: the link is written
+    // `removido` and THEN this refusal is thrown — the same class, the same
+    // motivo a dispatcher refusal carries, so only the closing can be honest.
+    const linhas = descreverErroPublicacao(
+      new ShopeePublishBlockedError({
+        produtoId: KIT_PRODUTO,
+        itemId: KIT_ITEM,
+        problemas: [
+          {
+            campo: null,
+            motivo: MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida,
+            mensagem: 'mecanismo',
+          },
+        ],
+      }),
+    );
+    const texto = linhas.join('\n');
+    // ⛔ The old unconditional promise is gone…
+    expect(texto).not.toContain('Nada foi enviado à Shopee e nenhum vínculo foi gravado');
+    // …the dry run keeps its guarantee, on its own line…
+    expect(linhas.at(-2)).toBe(
+      '  No --dry-run a recusa é anterior a qualquer escrita: nada foi enviado à Shopee e ' +
+        'nenhum vínculo foi gravado.',
+    );
+    // …and `--live` says what a kit arm may already have written.
+    expect(linhas.at(-1)).toBe(
+      '  ⚠️ No --live ela pode vir DEPOIS de escritas: um kit nativo grava antes no ERP o que ' +
+        'leu da Shopee (o vínculo, as variações do kit, o aviso de composição), e a atualização ' +
+        'de um anúncio comum pode já ter enviado o update_item. Releia com --dry-run antes de ' +
+        'repetir.',
+    );
+    // ⛔ QUASE-PAR: a REJEIÇÃO da Shopee não ganha essas linhas — ela já tem a sua.
+    const rejeitada = descreverErroPublicacao(
+      new ShopeePublishRejectedError({
+        etapa: ETAPA_PUBLICACAO.updateKitItem,
+        shopeeCode: 'product.error_param',
+        produtoId: KIT_PRODUTO,
+        itemId: KIT_ITEM,
+        problemas: [],
+      }),
+    ).join('\n');
+    expect(rejeitada).not.toContain('No --dry-run a recusa');
+    expect(rejeitada).toContain('Escritas ANTERIORES podem ter acontecido');
   });
 
   it('uma recusa da Shopee nomeia a ETAPA e o code — e NÃO promete que nada foi enviado', () => {
@@ -1185,5 +1370,626 @@ describe('descreverErroPublicacao', () => {
     expect(texto).toContain('--produto <produtoId> é obrigatório.');
     expect(texto).toContain('publicar:anuncio');
     expect(texto).not.toContain('importar:pedido');
+  });
+
+  it('(passo 19) um add_kit_item recusado de vez (`nao-criado`) diz que a Shopee NÃO criou o kit — nunca "o add_item"', () => {
+    const linhas = descreverErroPublicacao(
+      new ShopeePublishRejectedError({
+        etapa: ETAPA_PUBLICACAO.addKitItem,
+        shopeeCode: 'product.error_busi_cannot_edit_vsku',
+        produtoId: KIT_PRODUTO,
+        itemId: null,
+        problemas: [
+          {
+            campo: null,
+            motivo: MOTIVO_PROBLEMA_PUBLICACAO.kitBloqueadoPelaShopee,
+            mensagem: 'mecanismo',
+          },
+        ],
+      }),
+    );
+    const texto = linhas.join('\n');
+    expect(texto).toContain('o add_kit_item foi recusado: a Shopee não criou o kit');
+    expect(texto).not.toContain('o add_item foi recusado');
+    // ⚠️ QUASE-PAR: a etapa de step 11 continua dizendo o que dizia.
+    const doItem = descreverErroPublicacao(
+      new ShopeePublishRejectedError({
+        etapa: ETAPA_PUBLICACAO.addItem,
+        shopeeCode: 'product.error_param',
+        produtoId: PRODUTO_ID,
+        itemId: null,
+        problemas: [],
+      }),
+    ).join('\n');
+    expect(doItem).toContain('nenhum (o add_item foi recusado)');
+  });
+});
+
+/* ========================================================================== */
+/*  8 · o kit nativo (passo 19) — o ensaio e o resultado, por NOME             */
+/* ========================================================================== */
+
+const KIT_PRODUTO = 'kit-k';
+const KIT_ITEM = 2500139870;
+const COMP_A_ITEM = 2500139871;
+const COMP_A_MODELO = 2000458821;
+const COMP_B_ITEM = 2500139872;
+const VINCULO_KIT = 'vinculo-kit-1';
+const VINCULO_ANTIGO = 'vinculo-kit-antigo';
+const VINCULO_COMUM = 'link-comum';
+const SENTINELA_IMAGEM_DE_OPCAO = 'SENTINELA-IMAGEM-DE-OPCAO-DO-KIT';
+
+const OPCOES_KIT: OpcoesDoKitCli = { integracaoId: INTEGRACAO_ID, projectId: null, sandbox: false };
+
+/** Azul = A (o principal) + B (sem variação); Verde = 2 × A. */
+const LINHAS_AZUL = [
+  {
+    component_item_id: COMP_A_ITEM,
+    component_model_id: COMP_A_MODELO,
+    quantity: 1,
+    main_component: true as const,
+  },
+  { component_item_id: COMP_B_ITEM, quantity: 1 },
+];
+const LINHAS_VERDE = [
+  { component_item_id: COMP_A_ITEM, component_model_id: COMP_A_MODELO, quantity: 2 },
+];
+
+/**
+ * A kit dry run as `ensaiarKitShopee` answers it — every sentinel where the
+ * value it stands for REALLY lives, so each absence below is not vacuous.
+ */
+function ensaioDeKit(
+  over: {
+    readonly contexto?: Partial<ContextoKitPreparado>;
+    readonly plano?: Partial<PlanoKit>;
+  } = {},
+): EnsaioDeKit {
+  const contexto: ContextoKitPreparado = {
+    arma: { arma: 'kit-criar' },
+    integracaoId: INTEGRACAO_ID,
+    produto: { id: KIT_PRODUTO, sku: 'KIT-1', raw: { nome: 'Kit camiseta e boné' } },
+    filhos: [
+      {
+        produtoId: 'kit-k-azul',
+        sku: 'KIT-1-AZ',
+        ordem: 1,
+        componentesKit: { 'comp-a-filho': { quantidade: 1 }, 'comp-b-membro': { quantidade: 1 } },
+        preco: 99.9,
+        variante: 'Azul',
+      },
+      {
+        produtoId: 'kit-k-verde',
+        sku: 'KIT-1-VD',
+        ordem: 2,
+        componentesKit: { 'comp-a-filho': { quantidade: 2 } },
+        preco: 99.9,
+        variante: 'Verde',
+      },
+    ],
+    familiaDeUm: false,
+    grupo: { id: 'grupo-cor', nome: 'Cor' },
+    gruposDistintos: 1,
+    descricao: SENTINELA_DESCRICAO,
+    resolucao: new Map(),
+    temModelos: new Map(),
+    categoriaPorProduto: new Map(),
+    principal: { itemId: COMP_A_ITEM, modelId: COMP_A_MODELO },
+    principalPedido: { itemId: COMP_A_ITEM, modelId: COMP_A_MODELO },
+    limites: { estado: 'indisponivel' },
+    canais: [],
+    vinculos: [],
+    alvo: null,
+    vivo: null,
+    linhasDoAnuncio: [],
+    linhasDaConta: [],
+    busca: { completo: true, achados: [], paginas: 1, chamadas: 2 },
+    nossosVivos: new Map(),
+    fotos: {
+      item: {
+        imageIds: [SENTINELA_IMAGE_ID],
+        reutilizadas: 0,
+        enviadas: 1,
+        falhas: [
+          {
+            arquivoId: 'arq-3',
+            motivo: MOTIVO_FOTO_PUBLICACAO.http,
+            mensagem: `falhou ao baixar ${SENTINELA_URL_ARQUIVO}`,
+          },
+        ],
+        consideradas: 2,
+        descartadasPeloLimite: 0,
+      },
+      imagensDeOpcao: null,
+      tabelaDeMedidas: null,
+      resumo: {
+        consideradas: 2,
+        reutilizadas: 0,
+        enviadas: 1,
+        falhas: 1,
+        descartadasPeloLimite: 0,
+      },
+    },
+    ...over.contexto,
+  };
+  const plano: PlanoKit = {
+    problemas: [],
+    avisos: [
+      {
+        codigo: 'componente-nao-limita-estoque',
+        produtoId: 'comp-b-membro',
+        mensagem: 'o componente comp-b-membro está com «Limita estoque» desligado',
+      },
+    ],
+    kitNovo: { acao: 'criar' },
+    corpo: {
+      item_setting: {
+        item_name: 'Kit camiseta e boné',
+        images: { image_id_list: [SENTINELA_IMAGE_ID] },
+        description_type: 'normal',
+        description: SENTINELA_DESCRICAO,
+        logistic_info: [{ logistic_id: 90_003, enabled: true }],
+        weight: 0.8,
+        dimension: { package_height: 10, package_length: 30, package_width: 20 },
+        item_sku: 'KIT-1',
+        tier_variation_list: [
+          {
+            name: 'Cor',
+            // Nada do passo 19 envia imagem de opção — o sentinela prova que,
+            // se um corpo futuro enviar, ela não tem campo por onde viajar.
+            option_list: [
+              { option: 'Azul', image: { image_id: SENTINELA_IMAGEM_DE_OPCAO } },
+              { option: 'Verde', image: { image_id: SENTINELA_IMAGEM_DE_OPCAO } },
+            ],
+          },
+        ],
+        model_list: [
+          {
+            tier_index: [0],
+            original_price: 99.9,
+            model_sku: 'KIT-1-AZ',
+            component_list: LINHAS_AZUL,
+          },
+          {
+            tier_index: [1],
+            original_price: 99.9,
+            model_sku: 'KIT-1-VD',
+            component_list: LINHAS_VERDE,
+          },
+        ],
+      },
+      sync_setting: { auto_sync_dts: true },
+    },
+    modelos: [
+      { filhoId: 'kit-k-azul', tierIndex: 0, linhas: LINHAS_AZUL, projecaoCompleta: true },
+      { filhoId: 'kit-k-verde', tierIndex: 1, linhas: LINHAS_VERDE, projecaoCompleta: true },
+    ],
+    principal: { itemId: COMP_A_ITEM, modelId: COMP_A_MODELO },
+    sku: 'KIT-1',
+    ...over.plano,
+  };
+  return { contexto, plano };
+}
+
+/** A kit `--live` result, `criado` by default. */
+function resultadoKit(over: Partial<ResultadoPublicacaoKit> = {}): ResultadoPublicacaoKit {
+  return {
+    arma: 'kit-criar',
+    desfecho: 'criado',
+    produtoId: KIT_PRODUTO,
+    itemId: KIT_ITEM,
+    linkDocId: VINCULO_KIT,
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    itemStatus: 'NORMAL',
+    kitNativo: true,
+    modelos: { vinculados: 2, anexados: 0, semFilho: 0 },
+    antecessor: null,
+    avisos: [],
+    avisosResolvidos: 0,
+    chamadasShopee: 9,
+    recusa: null,
+    comando: null,
+    ...over,
+  };
+}
+
+/** The `incerto` of a given arm, its `comando` built by the REAL `comandoDeRetomada`. */
+function resultadoIncerto(
+  arma: ResultadoPublicacaoKit['arma'],
+  linkDocId: string | null,
+  principal: string | null,
+): ResultadoPublicacaoKit {
+  return resultadoKit({
+    arma,
+    desfecho: 'incerto',
+    itemId: null,
+    linkDocId: null,
+    estadoAnuncio: null,
+    itemStatus: null,
+    kitNativo: null,
+    modelos: { vinculados: 0, anexados: 0, semFilho: 0 },
+    recusa: {
+      codigo: 'product.error_busi',
+      fraseShopee: 'Too many connections',
+      motivo: MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee,
+    },
+    comando: comandoDeRetomada(arma, {
+      integracaoId: INTEGRACAO_ID,
+      produtoId: KIT_PRODUTO,
+      linkDocId,
+      principal,
+    }),
+  });
+}
+
+/** `pnpm --filter @delfrance/shopee-app <script> …flags` ⇒ the flags, as argv. */
+function argvDoComando(comando: string, script: string): string[] {
+  const prefixo = `pnpm --filter @delfrance/shopee-app ${script} `;
+  expect(comando.startsWith(prefixo)).toBe(true);
+  return comando.slice(prefixo.length).split(' ');
+}
+
+describe('o ensaio de um kit nativo (passo 19) — a lista permitida', () => {
+  const e = ensaioDeKit();
+  const resumo = resumoDoEnsaioDeKit(e, OPCOES_KIT);
+  const texto = renderizarEnsaioDeKit(e, OPCOES_KIT).join('\n');
+  const comoJson = JSON.stringify(resumo);
+
+  it.each([
+    ['a arma', 'arma kit-criar'],
+    ['o item_sku', 'KIT-1'],
+    ['as variações no eixo', '2 no eixo "Cor"'],
+    ['o principal', `item ${String(COMP_A_ITEM)} modelo ${String(COMP_A_MODELO)}`],
+    [
+      'a busca de SKU com páginas e chamadas',
+      '1 página(s), 2 chamada(s) — nenhum kit com este SKU',
+    ],
+    ['a decisão do kit novo', 'CRIAR (add_kit_item)'],
+    ['o título (de propósito)', '"Kit camiseta e boné"'],
+    [
+      'a descrição como CONTAGEM',
+      `«REDIGIDA — ${String(SENTINELA_DESCRICAO.length)} caractere(s)»`,
+    ],
+    ['as opções do tier', '"Cor": "Azul", "Verde"'],
+    [
+      'os componentes com o principal marcado',
+      `${String(COMP_A_ITEM)}/${String(COMP_A_MODELO)} ×1 (principal)`,
+    ],
+    ['o componente sem variação SEM modelo', `${String(COMP_B_ITEM)} ×1`],
+    ['o aviso com o código', 'componente-nao-limita-estoque'],
+    [
+      'a falha de foto como arquivo + motivo',
+      `falha: arquivo arq-3 — ${MOTIVO_FOTO_PUBLICACAO.http}`,
+    ],
+    ['o veredito', 'problemas: NENHUM — este kit é publicável'],
+  ])('imprime %s', (_o, trecho) => {
+    expect(texto).toContain(trecho);
+  });
+
+  it.each([
+    ['a description', SENTINELA_DESCRICAO],
+    ['um image_id', SENTINELA_IMAGE_ID],
+    ['a imagem de uma opção do tier', SENTINELA_IMAGEM_DE_OPCAO],
+    ['a URL de um arquivo (só existe na mensagem da falha)', SENTINELA_URL_ARQUIVO],
+  ])('⛔ NÃO carrega %s — nem no texto, nem no --json', (_o, sentinela) => {
+    expect(texto).not.toContain(sentinela);
+    expect(comoJson).not.toContain(sentinela);
+  });
+
+  it('…e cada sentinela REALMENTE está no ensaio — nenhuma ausência é vazia', () => {
+    const cru = JSON.stringify(e.plano.corpo) + JSON.stringify(e.contexto.fotos);
+    for (const s of [
+      SENTINELA_DESCRICAO,
+      SENTINELA_IMAGE_ID,
+      SENTINELA_IMAGEM_DE_OPCAO,
+      SENTINELA_URL_ARQUIVO,
+    ]) {
+      expect(cru).toContain(s);
+    }
+  });
+
+  it('o resumo tem um conjunto de campos FIXO — um campo novo tem de ser olhado', () => {
+    expect(Object.keys(resumo).sort()).toEqual(
+      [
+        'alvoLinkDocId',
+        'arma',
+        'avisos',
+        'busca',
+        'conteudo',
+        'corpo',
+        'eixo',
+        'familiaDeUm',
+        'fotos',
+        'kitNovo',
+        'limitesKit',
+        'modelos',
+        'principal',
+        'principalPedido',
+        'problemas',
+        'produtoId',
+        'sandbox',
+        'sku',
+        'statusDoAlvo',
+        'variacoes',
+      ].sort(),
+    );
+    expect(Object.keys(resumo.corpo ?? {}).sort()).toEqual(
+      [
+        'canais',
+        'descricaoChars',
+        'dimension',
+        'imagens',
+        'itemName',
+        'itemNameChars',
+        'itemSku',
+        'modelos',
+        'tier',
+        'weight',
+      ].sort(),
+    );
+  });
+
+  it('⚠️ a nota do sandbox SG aparece SÓ no sandbox (preço em SGD num campo BRL)', () => {
+    expect(texto).not.toContain(NOTA_SANDBOX_SG_KIT);
+    expect(renderizarEnsaioDeKit(e, { sandbox: true }).join('\n')).toContain(NOTA_SANDBOX_SG_KIT);
+  });
+
+  it('um plano RECUSADO diz que NADA seria enviado e lista cada problema', () => {
+    const recusado = ensaioDeKit({
+      plano: {
+        corpo: null,
+        kitNovo: { acao: 'recusar', problemas: [] },
+        problemas: [
+          {
+            campo: 'principal',
+            motivo: MOTIVO_PUBLICACAO_BLOQUEADA.principalObrigatorio,
+            mensagem: 'o kit tem componentes de mais de um anúncio da Shopee',
+          },
+        ],
+      },
+    });
+    const linhas = renderizarEnsaioDeKit(recusado, OPCOES_KIT).join('\n');
+    expect(linhas).toContain('### problemas (1) — NADA seria enviado');
+    expect(linhas).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.principalObrigatorio);
+    expect(linhas).toContain('RECUSADO (veja os problemas)');
+    expect(linhas).not.toContain('### add_kit_item');
+    // Sem corpo, os modelos PLANEJADOS ainda aparecem — o operador vê a receita.
+    expect(linhas).toContain('### modelos planejados (2)');
+  });
+
+  it('⛔ QUASE-PAR — kit-atualizar: a busca NÃO roda (L10(4)), o conteúdo do update_kit_item aparece, e foto pulada é "não resolvidas", nunca "sem foto"', () => {
+    const atualizar = ensaioDeKit({
+      contexto: {
+        arma: { arma: 'kit-atualizar', linkDocId: VINCULO_KIT },
+        alvo: { linkDocId: VINCULO_KIT, raw: {} },
+        vivo: { status: 'NORMAL', kit: null, criadoEm: null },
+        busca: null,
+        fotos: null,
+      },
+      plano: {
+        kitNovo: null,
+        corpo: null,
+        conteudo: {
+          itemName: 'Kit camiseta e boné',
+          description: SENTINELA_DESCRICAO,
+          imageIds: null,
+          logisticInfo: [{ logistic_id: 90_003, enabled: true }],
+          weight: 0.8,
+          dimension: null,
+        },
+      },
+    });
+    const resumoAtualizar = resumoDoEnsaioDeKit(atualizar, OPCOES_KIT);
+    const linhas = renderizarEnsaioDeKit(atualizar, OPCOES_KIT).join('\n');
+    expect(resumoAtualizar.busca).toBeNull();
+    expect(linhas).toContain('busca de SKU duplicado .. não roda');
+    expect(linhas).toContain(`vínculo alvo ............ ${VINCULO_KIT}   item_status vivo=NORMAL`);
+    expect(linhas).toContain('### update_kit_item');
+    expect(linhas).toContain('— (fotos não resolvidas)');
+    expect(linhas).toContain('não resolvidas — nada seria enviado');
+    expect(linhas).not.toContain('kit novo ................');
+    expect(JSON.stringify(resumoAtualizar)).not.toContain(SENTINELA_DESCRICAO);
+  });
+
+  it('uma RETOMADA (completar) diz qual kit já vinculado ela completa — e que nada é criado', () => {
+    const retomada = ensaioDeKit({
+      contexto: { arma: { arma: 'kit-recriar', linkDocId: VINCULO_ANTIGO } },
+      plano: {
+        corpo: null,
+        kitNovo: { acao: 'completar', linkDocId: VINCULO_KIT, itemId: KIT_ITEM },
+      },
+    });
+    expect(renderizarEnsaioDeKit(retomada, OPCOES_KIT).join('\n')).toContain(
+      `COMPLETAR o kit ${String(KIT_ITEM)} já vinculado (vínculo ${VINCULO_KIT}) — nada é criado`,
+    );
+  });
+});
+
+describe('o resultado de um kit nativo no --live (passo 19)', () => {
+  it('criado: arma, desfecho, item, vínculo e a leitura de volta — sem bloco de incerteza e sem reverificar', () => {
+    const r = resumoDoResultadoKit(resultadoKit(), OPCOES_KIT);
+    const texto = renderizarResultadoKit(resultadoKit(), OPCOES_KIT).join('\n');
+    expect(texto).toContain('arma kit-criar, desfecho criado');
+    expect(texto).toContain(`${String(KIT_ITEM)}   vínculo=${VINCULO_KIT}`);
+    expect(texto).toContain('kitNativo=sim');
+    expect(r.mensagemIncerto).toBeNull();
+    expect(r.comandoDeRetomada).toBeNull();
+    expect(r.comandoReverificar).toBeNull();
+    expect(texto).not.toContain('INCERTO');
+  });
+
+  it('o resumo do --live tem um conjunto de campos FIXO', () => {
+    expect(Object.keys(resumoDoResultadoKit(resultadoKit(), OPCOES_KIT)).sort()).toEqual(
+      [
+        'antecessor',
+        'arma',
+        'avisos',
+        'avisosResolvidos',
+        'chamadasShopee',
+        'comandoDeRetomada',
+        'comandoReverificar',
+        'desfecho',
+        'estadoAnuncio',
+        'itemId',
+        'itemStatus',
+        'kitNativo',
+        'linkDocId',
+        'mensagemIncerto',
+        'modelos',
+        'produtoId',
+        'recusa',
+        'sandbox',
+      ].sort(),
+    );
+  });
+
+  it('⚠️ INCERTO: a frase do seam VERBATIM, a recusa da Shopee, e o comando EXATO a repetir — com o modo --live', () => {
+    const res = resultadoIncerto('kit-recriar', VINCULO_ANTIGO, 'comp-a-filho');
+    const r = resumoDoResultadoKit(res, OPCOES_KIT);
+    const texto = renderizarResultadoKit(res, OPCOES_KIT).join('\n');
+
+    expect(r.mensagemIncerto).toBe(MENSAGEM_KIT_INCERTO);
+    expect(texto).toContain(MENSAGEM_KIT_INCERTO);
+    expect(texto).toContain('product.error_busi (instabilidade-shopee) — "Too many connections"');
+    expect(r.comandoDeRetomada).toBe(
+      `pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao ${INTEGRACAO_ID} ` +
+        `--produto ${KIT_PRODUTO} --link ${VINCULO_ANTIGO} --recriar --principal comp-a-filho --live`,
+    );
+    expect(texto).toContain(r.comandoDeRetomada ?? '§');
+    // ⛔ Nunca o separador que o pnpm repassa ao script (pnpm-run-args).
+    expect(r.comandoDeRetomada).not.toMatch(/ -- /);
+  });
+
+  it.each([
+    ['kit-criar', null, null],
+    ['kit-criar', null, 'comp-a-filho'],
+    ['kit-recriar', VINCULO_ANTIGO, null],
+    ['kit-converter', null, 'comp-a-filho'],
+    ['kit-converter', VINCULO_COMUM, null],
+  ] as const)(
+    '⚠️ IDA E VOLTA (S1F-03): o comando impresso para %s (--link %s, --principal %s) é ACEITO por lerArgsPublicar e repete EXATAMENTE as opções de kit, em --live',
+    (arma, linkDocId, principal) => {
+      const r = resumoDoResultadoKit(resultadoIncerto(arma, linkDocId, principal), {
+        ...OPCOES_KIT,
+        projectId: 'demo-erp',
+      });
+      const cmd = lerArgsPublicar(argvDoComando(r.comandoDeRetomada ?? '', 'publicar:anuncio'));
+      expect(cmd.kind).toBe('publicar');
+      if (cmd.kind !== 'publicar') return;
+      expect(cmd.args).toMatchObject({
+        integracaoId: INTEGRACAO_ID,
+        produtoId: KIT_PRODUTO,
+        linkDocId,
+        principal,
+        recriar: arma === 'kit-recriar',
+        converterEmKit: arma === 'kit-converter',
+        live: true,
+        projectId: 'demo-erp',
+      });
+    },
+  );
+
+  it('⛔ QUASE-PAR: o --project só entra no comando quando foi passado', () => {
+    const sem = resumoDoResultadoKit(resultadoIncerto('kit-criar', null, null), OPCOES_KIT);
+    expect(sem.comandoDeRetomada).not.toContain('--project');
+    expect(sem.comandoDeRetomada?.endsWith(' --live')).toBe(true);
+  });
+
+  it('⚠️ PAR (L8): depois de um converter, o anúncio comum SUBSTITUÍDO continua vivo — o resumo dá o reverificar:anuncio EXATO, aceito pelo parser DELE', () => {
+    const res = resultadoKit({
+      arma: 'kit-converter',
+      antecessor: {
+        itemId: 2500139861,
+        linkDocId: VINCULO_COMUM,
+        excluido: false,
+        substituido: true,
+      },
+    });
+    const r = resumoDoResultadoKit(res, { ...OPCOES_KIT, projectId: 'demo-erp' });
+    const texto = renderizarResultadoKit(res, { ...OPCOES_KIT, projectId: 'demo-erp' }).join('\n');
+
+    expect(texto).toContain('SUBSTITUÍDO — continua vivo na Shopee');
+    expect(texto).toContain('exclua-o no Seller Centre');
+    const cmd = lerArgsReverificar(
+      argvDoComando(r.comandoReverificar ?? '', 'reverificar:anuncio'),
+    );
+    expect(cmd).toEqual({
+      kind: 'reverificar',
+      args: {
+        integracaoId: INTEGRACAO_ID,
+        produtoId: KIT_PRODUTO,
+        linkDocId: VINCULO_COMUM,
+        json: false,
+        projectId: 'demo-erp',
+      },
+    });
+  });
+
+  it('⛔ QUASE-PAR: um recriar cujo delete DEU CERTO, ou que parou no portão (antigo intocado), NÃO pede reverificar', () => {
+    const excluido = resultadoKit({
+      arma: 'kit-recriar',
+      antecessor: {
+        itemId: KIT_ITEM,
+        linkDocId: VINCULO_ANTIGO,
+        excluido: true,
+        substituido: false,
+      },
+    });
+    const intocado = resultadoKit({
+      arma: 'kit-recriar',
+      antecessor: {
+        itemId: KIT_ITEM,
+        linkDocId: VINCULO_ANTIGO,
+        excluido: false,
+        substituido: false,
+      },
+    });
+    expect(resumoDoResultadoKit(excluido, OPCOES_KIT).comandoReverificar).toBeNull();
+    expect(resumoDoResultadoKit(intocado, OPCOES_KIT).comandoReverificar).toBeNull();
+    expect(renderizarResultadoKit(excluido, OPCOES_KIT).join('\n')).toContain('EXCLUÍDO na Shopee');
+    expect(renderizarResultadoKit(intocado, OPCOES_KIT).join('\n')).toContain('INTOCADO');
+    // …e o recriar cujo delete NÃO pegou (substituído) pede, como o converter.
+    const naoPegou = resultadoKit({
+      arma: 'kit-recriar',
+      antecessor: {
+        itemId: KIT_ITEM,
+        linkDocId: VINCULO_ANTIGO,
+        excluido: false,
+        substituido: true,
+      },
+    });
+    expect(resumoDoResultadoKit(naoPegou, OPCOES_KIT).comandoReverificar).toContain(
+      `--link ${VINCULO_ANTIGO}`,
+    );
+  });
+
+  it('os avisos saem com código, produto e a frase de MECANISMO; a nota do sandbox só no sandbox', () => {
+    const res = resultadoKit({
+      avisos: [
+        {
+          codigo: 'receita-divergente',
+          produtoId: 'kit-k-verde',
+          mensagem: 'a variação kit-k-verde não ficou igual à composição do ERP',
+        },
+      ],
+      avisosResolvidos: 1,
+    });
+    const texto = renderizarResultadoKit(res, OPCOES_KIT).join('\n');
+    expect(texto).toContain('### avisos (1)');
+    expect(texto).toContain('receita-divergente');
+    expect(texto).toContain('kit-k-verde');
+    expect(texto).toContain('1 resolvido(s)');
+    expect(texto).not.toContain(NOTA_SANDBOX_SG_KIT);
+    expect(renderizarResultadoKit(res, { ...OPCOES_KIT, sandbox: true }).join('\n')).toContain(
+      NOTA_SANDBOX_SG_KIT,
+    );
+  });
+
+  it('o --json passa por JSON.parse e chega ao mesmo objeto redigido', () => {
+    const r = resumoDoResultadoKit(
+      resultadoIncerto('kit-converter', VINCULO_COMUM, 'comp-a-filho'),
+      OPCOES_KIT,
+    );
+    expect(JSON.parse(JSON.stringify(r))).toEqual(r);
   });
 });

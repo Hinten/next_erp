@@ -99,6 +99,23 @@ function show(client: Partial<MercadoLivreClient>, over: Partial<ModalProps> = {
 }
 
 describe('SizeChartEditorModal — failed domain load', () => {
+  it('requires an explicit checkbox action before declaring that nothing was created', async () => {
+    const onRecover = vi.fn().mockResolvedValue({ chart: null, chartIndex: 0 });
+    show(
+      { sizeChartDomains: vi.fn().mockResolvedValue(DOMAINS), sizeChartSpecs: vi.fn() },
+      { recoveryRequired: true, onRecover },
+    );
+    const name = screen.getByRole('textbox', { name: /Nome da guia/ });
+    fireEvent.change(name, { target: { value: 'Keep this input' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Recuperar envio anterior' }));
+    await waitFor(() => expect(onRecover).toHaveBeenCalledWith(false));
+    fireEvent.click(
+      screen.getByLabelText('Verifiquei no Mercado Livre que nenhuma guia ou linha foi criada.'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Recuperar envio anterior' }));
+    await waitFor(() => expect(onRecover).toHaveBeenLastCalledWith(true));
+    expect((name as HTMLInputElement).value).toBe('Keep this input');
+  });
   it('heals a one-off blip without ever showing the operator an error', async () => {
     const sizeChartDomains = vi
       .fn()

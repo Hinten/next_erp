@@ -1,9 +1,12 @@
 import {
   PENDENCIA_RECLAMACAO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   pendenciaReclamacaoSchema,
+  situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
   type PendenciaReclamacao,
+  type SituacaoAnuncioForaDaSincronizacao,
   type TipoAviso,
 } from '@delfrance/schemas';
 
@@ -53,11 +56,89 @@ const FRASE_PENDENCIA_RECLAMACAO: Record<PendenciaReclamacao, string> = {
  * (ou um param ausente) cai no fallback — nunca em "undefined". O `safeParse` é
  * o que impede um `'toString'` gravado de achar uma chave herdada do objeto.
  */
+/**
+ * "Nome (MLB123)" when the producer resolved a name, the bare id otherwise. The
+ * id always rides along: two ML categories can share a leaf name, and the id is
+ * what the operator matches against the produto's category field.
+ */
+function rotuloCategoria(params: Aviso['params'], nome: string, id: string): string {
+  const idCategoria = p(params, id);
+  const nomeCategoria = params[nome];
+  return typeof nomeCategoria === 'string' && nomeCategoria !== ''
+    ? `${nomeCategoria} (${idCategoria})`
+    : idCategoria;
+}
+
+/**
+ * "Comissão estimada pelo Mercado Livre: 16% → 11,5%." — only when the producer
+ * stored BOTH numbers. One alone compares nothing, and a string (a producer bug
+ * or a future shape) must not render as a percentage.
+ */
+function fraseComissao(params: Aviso['params']): string {
+  const erp = params.comissaoCategoriaErpPct;
+  const ml = params.comissaoCategoriaMlPct;
+  if (typeof erp !== 'number' || typeof ml !== 'number') return '';
+  if (!Number.isFinite(erp) || !Number.isFinite(ml)) return '';
+  const pct = (v: number) => `${v.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%`;
+  return ` Comissão estimada pelo Mercado Livre: ${pct(erp)} → ${pct(ml)}.`;
+}
+
 function frasePendencia(valor: Aviso['params'][string] | undefined): string {
   const codigo = pendenciaReclamacaoSchema.safeParse(valor);
   return codigo.success
     ? FRASE_PENDENCIA_RECLAMACAO[codigo.data]
     : 'confira a situação da devolução';
+}
+
+/**
+ * The recriar clause of `shopeeKitReceitaDivergente`: the runnable command when
+ * the aviso names the link, and otherwise where to get it. `--recriar` refuses
+ * to run without `--link`, so a `—` (the builder's "no link") or an absent
+ * param must never print `--link — --recriar`. The republish the sentence
+ * already asks for FIRST prints that `--link` for a kit it reads divergent.
+ */
+function fraseRecriarKit(params: Aviso['params']): string {
+  const vinculo = p(params, 'vinculo');
+  return vinculo === '—'
+    ? 'recrie o kit com o --link que a republicação indicar (o --recriar exige o vínculo do kit ' +
+        'antigo, e este aviso não o identificou)'
+    : `recrie o kit (publicar:anuncio --link ${vinculo} --recriar)`;
+}
+
+/**
+ * pt-BR do porquê o anúncio está fora da sincronização, com o conserto — TOTAL
+ * sobre o código (`params.situacao`, um {@link SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO}).
+ * Mesma razão de {@link FRASE_PENDENCIA_RECLAMACAO}: o produtor grava o CÓDIGO.
+ */
+const FRASE_SITUACAO_ANUNCIO: Record<SituacaoAnuncioForaDaSincronizacao, string> = {
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao]:
+    'ele está vinculado a uma variação, e não ao produto pai — refaça o vínculo no produto pai',
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.paiIdInvalido]:
+    'o cadastro do produto tem um vínculo de produto pai inválido — corrija o cadastro do produto',
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente]:
+    'ele aponta para um produto que não existe mais — encerre o anúncio no canal ou peça a ' +
+    'remoção do vínculo órfão',
+};
+
+/**
+ * A frase da situação, ou um texto neutro — o mesmo contrato de
+ * {@link frasePendencia}: código mais novo que esta tela, param ausente ou uma
+ * chave herdada (`'toString'`) caem no fallback, nunca em "undefined".
+ */
+function fraseSituacaoAnuncio(valor: Aviso['params'][string] | undefined): string {
+  const codigo = situacaoAnuncioForaDaSincronizacaoSchema.safeParse(valor);
+  return codigo.success ? FRASE_SITUACAO_ANUNCIO[codigo.data] : 'confira o vínculo do anúncio';
+}
+
+/**
+ * A frase extra quando o produto tem mais de um anúncio na mesma situação.
+ * ⚠️ Só para um NÚMERO maior que 1 — o produtor grava a contagem como número; um
+ * valor de outro tipo omite a frase em vez de adivinhar uma contagem.
+ */
+function fraseOutrosAnuncios(valor: Aviso['params'][string] | undefined): string {
+  return typeof valor === 'number' && valor > 1
+    ? ` Este produto tem ${String(valor)} anúncios nessa situação.`
+    : '';
 }
 
 /**
@@ -209,6 +290,48 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       `A devolução ${p(params, 'devolucao')} do pedido ${p(params, 'pedido')} aguarda você: ` +
       `${frasePendencia(params.pendencia)}. Sem resposta até o prazo, o canal decide sozinho — ` +
       'em geral a favor do comprador. Abra a aba Incidentes do pedido.',
+  },
+  // Sem `runbook`: o conserto está no app — a categoria do produto. ⚠️ A frase diz
+  // que o aviso se encerra ao TROCAR a categoria do produto, porque é exatamente o
+  // resolvedor (`onProdutoCategoriaAlterada`): quem decidir manter a categoria
+  // antiga precisa saber que o aviso não some sozinho.
+  [TIPO_AVISO.anuncioCategoriaAlterada]: {
+    titulo: 'Categoria do anúncio alterada',
+    corpo: (params) =>
+      `O Mercado Livre moveu o anúncio ${p(params, 'anuncio')} para a categoria ` +
+      `${rotuloCategoria(params, 'categoriaMlNome', 'categoriaMlId')}, mas o produto continua ` +
+      `na categoria ${rotuloCategoria(params, 'categoriaErpNome', 'categoriaErpId')} — é ela ` +
+      'que escolhe as fórmulas de preço (comissão, frete) e as regras de imposto da NF-e.' +
+      `${fraseComissao(params)} Confira se a nova categoria tem fórmulas e impostos ` +
+      'configurados (sem fórmulas, valem as padrão da lista), troque a categoria do produto ' +
+      'e das variações, e recalcule o preço. O aviso se encerra quando a categoria do ' +
+      'produto for alterada.',
+  },
+  // Sem `runbook`: o conserto é a rota/CLI de publicação hoje (um botão no passo
+  // 21). ⚠️ "Republique PRIMEIRO" é a ação segura: um reapontamento do mapa (#1450)
+  // muda a impressão digital da receita sem mudar a receita na Shopee, e o
+  // `--recriar` exclui um anúncio que está vendendo. Por isso a frase nomeia o
+  // `--link` do vínculo — um `--recriar` sem ele não diz qual kit trocar — e,
+  // sem vínculo conhecido, não imprime comando nenhum (`fraseRecriarKit`).
+  [TIPO_AVISO.shopeeKitReceitaDivergente]: {
+    titulo: 'Kit da Shopee com composição antiga',
+    corpo: (params) =>
+      `A composição das variações ${p(params, 'variacoes')} do kit ${p(params, 'kit')} mudou no ERP, mas o kit ` +
+      `${p(params, 'anuncio')} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
+      'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
+      '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+      `Senão, ${fraseRecriarKit(params)} ou volte a composição ao que está na Shopee.`,
+  },
+  // Sem `runbook`: o conserto está no app — o cadastro do produto (para onde o aviso
+  // aponta) ou, para o produto que não existe mais, a página da conta no canal.
+  [TIPO_AVISO.anuncioForaDaSincronizacao]: {
+    titulo: 'Anúncio fora da sincronização',
+    // ⚠️ "no canal", nunca "no Mercado Livre": o tipo é neutro quanto ao canal (o
+    // `canal` do aviso já diz qual), e a frase vale para o próximo que o produzir.
+    corpo: (params) =>
+      `O anúncio ${p(params, 'anuncio')} está ativo no canal, mas não recebe estoque nem ` +
+      `preço automaticamente: ${fraseSituacaoAnuncio(params.situacao)}.` +
+      fraseOutrosAnuncios(params.anuncios),
   },
   // Sem `runbook`: o conserto está no app — o painel da conta (o link do aviso)
   // atualiza a validade depois que o proprietário renova no painel da Loja Integrada.

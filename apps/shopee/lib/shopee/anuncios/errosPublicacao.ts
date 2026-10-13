@@ -42,12 +42,17 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 22 members.
+ *   before writing. 47 members: step 11's 22, the nineteen native-kit
+ *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
+ *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6) and the
+ *   five refusals only the publish dispatcher produces
+ *   (`kits/armaDePublicacao.ts`, PR 7).
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 22 plus the five only a WIRE rejection can produce (step 18 added the
- *   two size-chart refusals on `size_chart_info`). A problema is a field-level
- *   observation, and after the first Shopee call there are causes no pre-write
- *   check could have seen.
+ *   those 47 plus the twelve only a WIRE rejection can produce (step 18 added the
+ *   two size-chart refusals on `size_chart_info`; step 19 the seven native-kit
+ *   refusals, whose ONE producer is `kits/recusaKit.ts`). A problema is a
+ *   field-level observation, and after the first Shopee call there are causes no
+ *   pre-write check could have seen.
  * - {@link ETAPA_PUBLICACAO} — where in the `aplicar` sequence a rejection
  *   landed. Not a reason at all; the answer to "what exists on the channel now".
  *
@@ -149,10 +154,15 @@ export type MotivoPublicacaoBloqueada =
    */
   | 'produto-e-filho'
   /**
-   * The listing is a **NATIVE Shopee kit** — `kitNativo` on the stored link
-   * (what Shopee reported about the live listing), or `ehKitVirtual` on a first
-   * publish. Kit publishing is its own step (`add_kit_item`), so it is refused
-   * here rather than published as if it were a plain produto.
+   * A **NATIVE Shopee kit** reached step 11's ITEM planner — `kitNativo` on the
+   * stored link (what Shopee reported about the live listing), or
+   * `ehKitVirtual` on a first publish.
+   *
+   * ⚠️ Since step 19 (#1527, PR 7) this is a DEFENSIVE assertion, not an
+   * operator-facing refusal: the publish dispatcher (`kits/armaDePublicacao.ts`)
+   * routes every native kit to its own arms (`add_kit_item` /
+   * `update_kit_item`), so reaching the item planner with one is a bug in the
+   * routing, and the sentence says so.
    *
    * ⚠️ **NOT the ERP's `ehKit`**, which publishes as an ordinary listing whose
    * quantity merely derives from its components. Step 11 keyed this member on
@@ -161,7 +171,80 @@ export type MotivoPublicacaoBloqueada =
    * persisted in `falhaPublicacao.problemas[]`, so renaming it would orphan
    * every stored refusal.
    */
-  | 'produto-e-kit';
+  | 'produto-e-kit'
+  /*
+   * ---- Step 19 (#1527): the native-kit refusals of the kit core (PR 5). ----
+   * Each one is decided by READING (the produto, its children, the links, the
+   * component resolution, the duplicate scan) before any Shopee WRITE, and each
+   * is produced in `kits/` — spelled there through this constant only.
+   */
+  /** The kit produto has NO sellable unit (no child at all): nothing to make a kit model of. */
+  | 'kit-sem-unidade-vendavel'
+  /** A sellable unit (a family child, or a família de um's member) whose `componentesKit` is empty. */
+  | 'kit-sem-componentes'
+  /** More children than a kit takes models (`SHOPEE_KIT_MAX_MODELOS`, 9 — L2). */
+  | 'kit-variacoes-demais'
+  /**
+   * 2+ children that do not vary on exactly ONE grupo — on two or more, or on
+   * none at all (its own sentence); a kit has exactly one tier (L2).
+   */
+  | 'kit-dois-eixos'
+  /** A kit model with ONE component row needs `quantity >= 2` (announcement 1262; R-5). */
+  | 'kit-componente-unico-quantidade'
+  /** K has no SKU: the duplicate scan and step 9's import key on it. Create arms only. */
+  | 'kit-sem-sku'
+  /** K's SKU has leading/trailing whitespace, which the scan and the import trim. Create arms only. */
+  | 'kit-sku-com-espacos'
+  /** Another ROOT produto shares K's SKU, so step 9's parent rung could not land on K (R-14). */
+  | 'kit-sku-repetido'
+  /** A component has no listing in this conta (no `prodshopee`/`variashopee` reaches it). */
+  | 'componente-nao-publicado'
+  /** A component whose listing HAS variations, with no model the ERP can name. */
+  | 'componente-sem-modelo'
+  /** A component that is itself a native Shopee kit — kit of kits is not supported. */
+  | 'componente-e-kit-nativo'
+  /** A component whose listing is neither `NORMAL` nor `UNLIST` (or unreadable). */
+  | 'componente-anuncio-inativo'
+  /** A kit model outside the served `component_count_limit_of_single_model` band (R-f). */
+  | 'componentes-fora-da-faixa'
+  /** The kit spans 2+ Shopee items and no `--principal` was named (L1). */
+  | 'principal-obrigatorio'
+  /** The named `--principal` is not part of the kit's composition. */
+  | 'principal-invalido'
+  /** The L6 scan found a Shopee kit with K's SKU that is not this produto's ("importe-o"). */
+  | 'kit-ja-existe-na-shopee'
+  /** The L6 scan stopped at its page ceiling: nothing was created. */
+  | 'busca-de-kit-incompleta'
+  /** Two or more LIVE native-kit links of the produto in this conta (native links only, L10(3)). */
+  | 'vinculos-ambiguos'
+  /** The link was superseded by a native kit (L8): publish no longer targets it. */
+  | 'vinculo-substituido'
+  /*
+   * ---- Step 19 (#1527), PR 6: the recriar's safety net (R-m). ----
+   * Produced ONLY by `kits/recriarKit.ts`, spelled there through this constant.
+   */
+  /**
+   * `--recriar` named a LIVE kit whose shape and recipe already equal the ERP's
+   * (and whose main is the one named, if any): there is nothing to recreate, so
+   * nothing is deleted for nothing. Zero Shopee writes.
+   */
+  | 'recriacao-sem-diferenca'
+  /*
+   * ---- Step 19 (#1527), PR 7: the publish DISPATCHER's own refusals. ----
+   * Produced ONLY by `kits/armaDePublicacao.ts`, spelled there through this
+   * constant. Each is decided from the produto and the conta's link documents
+   * alone, before any Shopee call.
+   */
+  /** `ehKitVirtual` is on while `ehKit` is off — the server refuses the mismatch (O-8). */
+  | 'kit-virtual-sem-kit'
+  /** `--converter-em-kit` found no live ORDINARY listing of the produto in this conta. */
+  | 'converter-sem-anuncio-comum'
+  /** `--converter-em-kit` on a produto whose `ehKit` is off: only a kit can become a native kit. */
+  | 'converter-sem-kit'
+  /** `--converter-em-kit` re-run after the conversion finished: exactly ONE live native kit, no ordinary listing. */
+  | 'ja-e-kit-nativo'
+  /** `--principal`, `--recriar` or `--converter-em-kit` on a publish the dispatcher routed to step 11's item arm. */
+  | 'opcao-de-kit-em-anuncio-comum';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -191,17 +274,47 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   listagemRemovida: 'listagem-removida',
   produtoEFilho: 'produto-e-filho',
   produtoEKit: 'produto-e-kit',
+  kitSemUnidadeVendavel: 'kit-sem-unidade-vendavel',
+  kitSemComponentes: 'kit-sem-componentes',
+  kitVariacoesDemais: 'kit-variacoes-demais',
+  kitDoisEixos: 'kit-dois-eixos',
+  kitComponenteUnicoQuantidade: 'kit-componente-unico-quantidade',
+  kitSemSku: 'kit-sem-sku',
+  kitSkuComEspacos: 'kit-sku-com-espacos',
+  kitSkuRepetido: 'kit-sku-repetido',
+  componenteNaoPublicado: 'componente-nao-publicado',
+  componenteSemModelo: 'componente-sem-modelo',
+  componenteEKitNativo: 'componente-e-kit-nativo',
+  componenteAnuncioInativo: 'componente-anuncio-inativo',
+  componentesForaDaFaixa: 'componentes-fora-da-faixa',
+  principalObrigatorio: 'principal-obrigatorio',
+  principalInvalido: 'principal-invalido',
+  kitJaExisteNaShopee: 'kit-ja-existe-na-shopee',
+  buscaDeKitIncompleta: 'busca-de-kit-incompleta',
+  vinculosAmbiguos: 'vinculos-ambiguos',
+  vinculoSubstituido: 'vinculo-substituido',
+  recriacaoSemDiferenca: 'recriacao-sem-diferenca',
+  kitVirtualSemKit: 'kit-virtual-sem-kit',
+  converterSemAnuncioComum: 'converter-sem-anuncio-comum',
+  converterSemKit: 'converter-sem-kit',
+  jaEKitNativo: 'ja-e-kit-nativo',
+  opcaoDeKitEmAnuncioComum: 'opcao-de-kit-em-anuncio-comum',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**
  * Everything a `problemas[]` entry may carry: every pre-write refusal, plus the
- * five only a WIRE rejection (or, for the size-chart photo, a failed upload of
+ * twelve only a WIRE rejection (or, for the size-chart photo, a failed upload of
  * it) can produce.
  *
  * The same superset relationship `MOTIVO_FALHA_JOB` has to
  * `MOTIVO_IMPORT_BLOQUEADO` on the import side, and for the same reason: a
- * {@link ShopeePublishBlockedError} may never carry one of the extra five,
+ * {@link ShopeePublishBlockedError} may never carry one of the extra twelve,
  * because none of them is a decision reached by READING the produto.
+ *
+ * ⚠️ The seven native-kit members (step 19) are classified by SENTENCE AND code
+ * in `kits/recusaKit.ts` — their only producer, which spells each one through
+ * this constant and never as a quoted slug (`errosPublicacao.test.ts` O7 accepts
+ * only the constant spelling for them).
  */
 export type MotivoProblemaPublicacao =
   | MotivoPublicacaoBloqueada
@@ -233,6 +346,47 @@ export type MotivoProblemaPublicacao =
    */
   | 'tabela-de-medidas-foto-recusada'
   /**
+   * Step 19 — `product.error_busi` "Invalid product setting" on a kit: this
+   * write does not apply to a kit (measured on `update_stock`). Permanent.
+   */
+  | 'operacao-invalida-para-kit'
+  /**
+   * Step 19 — `product.error_busi` carrying Shopee's database "Too many
+   * connections" (measured on `add_kit_item`). TRANSIENT: the write may have
+   * landed, so a create re-reads before it ever resends.
+   */
+  | 'instabilidade-shopee'
+  /**
+   * Step 19 — `product.error_server` "generate kit image toggle closed": the
+   * feature is off in this shop. Permanent despite the code's `transient` kind;
+   * the cover goes through `upload_image` instead.
+   */
+  | 'imagem-de-kit-desligada'
+  /**
+   * Step 19 — the code `.` with "product is not found" (a non-kit id, measured)
+   * or `error_param` "The information you queried is not found" (documented).
+   * ⚠️ A DELETED kit still reads, so this is "not a kit", never "deleted".
+   */
+  | 'kit-inexistente'
+  /**
+   * Step 19 — `error_busi_cannot_edit_vsku` on a kit op: this shop/app may not
+   * create or edit kits through OpenAPI (a whitelist only the Shopee manager
+   * opens). A store-level refusal, never a fault of the produto.
+   */
+  | 'kit-bloqueado-pela-shopee'
+  /**
+   * Step 19 — `product.error_busi` "The amount of component in this Kit
+   * Variation …": a kit model's component band. The only way the band is
+   * learnt when `get_kit_item_limit` is not served.
+   */
+  | 'faixa-de-componentes'
+  /**
+   * Step 19 — `product.error_busi` "mupltiple main sku" (probe #2): a second
+   * main component in the kit. The package guard makes it unreachable; the row
+   * exists so a guard drift reads as a refusal, never as "maybe created".
+   */
+  | 'kit-principal-duplicado'
+  /**
    * A refusal the classifier could not attribute to any request field. The
    * entry's `campo` is `null` and its `mensagem` carries Shopee's own prose —
    * the one place provider text is allowed, because dropping it would leave the
@@ -247,6 +401,13 @@ export const MOTIVO_PROBLEMA_PUBLICACAO = {
   impostoRecusado: 'imposto-recusado',
   tabelaDeMedidasRecusada: 'tabela-de-medidas-recusada',
   tabelaDeMedidasFotoRecusada: 'tabela-de-medidas-foto-recusada',
+  operacaoInvalidaParaKit: 'operacao-invalida-para-kit',
+  instabilidadeShopee: 'instabilidade-shopee',
+  imagemDeKitDesligada: 'imagem-de-kit-desligada',
+  kitInexistente: 'kit-inexistente',
+  kitBloqueadoPelaShopee: 'kit-bloqueado-pela-shopee',
+  faixaDeComponentes: 'faixa-de-componentes',
+  kitPrincipalDuplicado: 'kit-principal-duplicado',
   desconhecido: 'desconhecido',
 } as const satisfies Record<string, MotivoProblemaPublicacao>;
 
@@ -370,7 +531,13 @@ export type EtapaPublicacao =
   | 'update_model'
   | 'get_model_list'
   | 'relistagem'
-  | 'leitura-de-volta';
+  | 'leitura-de-volta'
+  /** Step 19 — the native-kit create (PR 5). A rejection here leaves nothing on the channel. */
+  | 'add_kit_item'
+  /** Step 19 — the native-kit republish (PR 5). */
+  | 'update_kit_item'
+  /** Step 19 — the recriar's delete of the OLD kit (its producer lands with PR 6). */
+  | 'delete_item';
 
 /**
  * The closed set of etapas.
@@ -379,7 +546,8 @@ export type EtapaPublicacao =
  * enums, and this is a hand-written union), and declared anyway for the two
  * reasons the repo's own convention names: the value is PERSISTED, so one
  * spelling is worth having, and a type-only union cannot be enumerated by the
- * test that asserts these ten and no more.
+ * test that asserts these thirteen and no more (step 19 appended the three
+ * native-kit operations after step 11's ten).
  */
 export const ETAPA_PUBLICACAO = {
   fotos: 'fotos',
@@ -392,6 +560,9 @@ export const ETAPA_PUBLICACAO = {
   getModelList: 'get_model_list',
   relistagem: 'relistagem',
   leituraDeVolta: 'leitura-de-volta',
+  addKitItem: 'add_kit_item',
+  updateKitItem: 'update_kit_item',
+  deleteItem: 'delete_item',
 } as const satisfies Record<string, EtapaPublicacao>;
 
 /**

@@ -1,7 +1,26 @@
 /* eslint-disable no-console, no-restricted-syntax, no-restricted-imports -- standalone staging CLI: mirrors THE query verbatim; defineAdminCollection handles have no pipeline surface and the app's admin singleton needs Next env */
 import { initializeApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { FieldPath, getFirestore } from 'firebase-admin/firestore';
 import * as pipelines from '@google-cloud/firestore/pipelines';
+
+// The plan-text readers and the #1200 verdicts live in ONE module, shared with
+// the automated staging suite (lib/marketplace/estoque/auditoriaNaoEnumerados.staging.test.ts)
+// and unit-tested offline (lib/firebase/explainPlan.test.ts). Never copy a
+// regex back into this file: two copies of a verdict drift apart while both
+// read correct (#1369).
+import {
+  NUMERIC_BOUND_RE,
+  RECUSA_EXPLAIN_ENTERPRISE_RE,
+  classicoServeAvisosAbertos,
+  classicoServeVarredura,
+  julgarPlanoDaVarredura,
+  julgarPlanoDosAvisosAbertos,
+  nomesDeNos,
+  parseAccessNodes,
+  predicateInResidualFilters,
+  scansSemIdentificador,
+  uniqueNodes,
+} from '../lib/firebase/explainPlan.mjs';
 
 // ⚠️ BLOCKING pre-merge gate for Step 10 PR C — run MANUALLY against staging
 // (agents never run firebase; index deploy is a coordinated human step).
@@ -160,10 +179,84 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     it with the worst-case force-all `changedSinceMs = -1` (every anchor
 //     survives S4): same bounded page, so it is cheap, and it shows the plan
 //     when the computed filter selects nothing away.
+//  6. The #1200 monthly LINK AUDIT's two CLASSIC queries — the precondition the
+//     master flag now carries (`sweepMercadoLivreAnunciosNaoEnumerados`, 02:30
+//     on the 1st). Both are read-only here; nothing is seeded for them.
+//     (a) The walk (`fetchLinksNaoEnumeradosPage`,
+//         lib/marketplace/anuncios/linksNaoEnumerados.ts — shared with the price
+//         job's report since #1191) as the AUDIT runs it: a `produtoMercadoLivre`
+//         COLLECTION GROUP query, ONE stored ref form at a time —
+//         `contaOuterRef == <form>` (`contaRef`), never the price phase's `in`
+//         over both — `select('id','estado')`, `orderBy(documentId)`, `limit`,
+//         and — the page that matters — a `startAfter(<DocumentReference>)`
+//         keyset, because a group's `__name__` is the full path. Probed once
+//         PER ref form. It must ride the COLLECTION_GROUP entry
+//         `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)` (#1191),
+//         BOUNDED on `contaOuterRef` (a closed value range — a push-down over an
+//         unbounded range, a bare `ranges: /` (older dialect: `(-∞..+∞)`), is
+//         the shape of a walk of every conta, so it does not pass here), SEEKING
+//         its cursor (a key lower bound, not a per-entry test), with no residual
+//         Filter (the cursor read residually re-reads every earlier page: the
+//         walk turns quadratic) and no Sort node (the index did not deliver key
+//         order, so every page sorts the form's whole remainder). Page 2's
+//         cursor is page 1's FIRST link when page 1 holds two — the SHAPE is what
+//         this proves, and that choice guarantees page 2 a row — else a
+//         reference just below it.
+//     (b) The run's ONE open-avisos read (`listarAvisosAbertos`,
+//         lib/marketplace/estoque/auditoriaNaoEnumerados.ts): `avisos where
+//         resolvidoEm == null`, NO `orderBy`, `limit(AVISOS_ABERTOS_MAX + 1)`,
+//         `select('tipo','canal','params')` — the bell's predicate, which the
+//         declared `avisos(resolvidoEm ASC)` entry must serve as the closed
+//         `[null]` point: exactly the open rows, never the resolved history.
+//     Each is also EXECUTED plainly first, as a correctness probe the emulator
+//     lane cannot give against Enterprise: page 2 must resume exactly after its
+//     cursor, and every aviso the read returns must be open.
+//     ⚠️ ENTERPRISE REFUSES CLASSIC EXPLAIN — `3 INVALID_ARGUMENT: Explain
+//     options are not supported in RunQuery API for Enterprise edition` (the
+//     same wall `apps/functions/scripts/check-delete-cost.mjs` and
+//     `check-text-search-index.mjs` record). So each query's classic
+//     `explain({ analyze: true })` is tried first and judged on
+//     `indexesUsed` when a database accepts it; on the refusal, the SDK's own
+//     PIPELINE TRANSLATION of that same query MINUS ITS `select`
+//     (`db.pipeline().createFrom(<…SemProjecao>)`) is explained instead,
+//     labeled PROXY and judged with the access-node heuristics below — never a
+//     hand-built pipeline that could drift from the query it stands for.
+//     ⚠️ Not the projected query itself: `createFrom` puts its `select` before
+//     the `exists(__name__)`/`sort(__name__)` stages it derives, the key is
+//     gone, and the proxy returns zero rows and no plan (staging, 2026-10-08).
+//     ⚠️ Both shapes are the answer to two PROXY-PLAN findings measured on
+//     staging (2026-10-08, lib/firebase/explainPlan.mjs's header): the walk's
+//     old `in` over both ref forms was sorted by a `MajorSort` (every page read
+//     the conta's whole remainder), and the avisos KEY RANGE the audit used to
+//     read had no seekable access path (it scanned the whole collection). Both
+//     PASS on staging since 2026-10-09. The walk is judged on its SHAPE only (no
+//     read ceiling is passed: see `relatarVeredicto`); the open-avisos read is
+//     judged on its shape AND against the rows it returned, which a bounded
+//     read scans exactly. The automated `test:staging` suite, which seeds the
+//     neighbours a walk ceiling needs, runs the same verdicts with ceilings.
+//     Read what that proves precisely: a proxy that rides no node on the
+//     expected entry means the index is not READY in this project — index
+//     readiness does not depend on the API — so it FAILS; a proxy PASS proves
+//     the index is READY and serves the predicate, NOT the classic query's own
+//     plan. Confirm that one in Query Insights (the `produtoMercadoLivre`
+//     collection-group row and the `avisos` row after the first audit run) or
+//     `firestore.googleapis.com/api/billable_read_units`.
+//     ⚠️ Cost: before the CG entry is READY, every walk execution here
+//     full-scans the `produtoMercadoLivre` group until its `limit`-th match;
+//     the open-avisos read returns EVERY open aviso of the project (it mirrors
+//     production's cap verbatim — see `avisosAbertosQuerySemProjecao`) — billed,
+//     like everything in this script. CHECK_AUDITORIA=0 skips the whole section.
 //
 // ---- ACCESS-NODE heuristics (calibrated on the REAL staging plan text of
 // gate run 2, 2026-07-28 — the explain format is not machine-stable, so the
-// printed plans remain the actual gate: READ them before merging PR C). The
+// printed plans remain the actual gate: READ them before merging PR C). Since
+// #1200 they live in lib/firebase/explainPlan.mjs (unit-tested offline, and the
+// same module the automated `test:staging` suite judges with) — edit them THERE,
+// and recalibrate against a printed plan when the dialect moves. They WERE
+// recalibrated on 2026-10-08 (the bounds print as a TREE under `ranges: /`, an
+// unbounded scan as a bare `ranges: /`, the sort node as `MajorSort`, and every
+// page carries an exists-only residual Filter) — that module's header has the
+// dialect, and `lib/firebase/__planos__/` the captured plans. The
 // plan is parsed into access-node blocks: a SequentialScan / SeekingScan /
 // IndexSeek / TableScan / EntityScan / CollectionScan bullet — in fact ANY
 // `• <Name>Scan` — plus its body up to the next `•` node bullet. Recognizing
@@ -241,13 +334,19 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // probe family even when discovery finds real linked anchors; seeding
 // always relocates the depósito probe — and, unless overridden, spike (a)
 // — to the seeded family. CHECK_ANCHOR_AB=0 skips the anchor-predicate A/B spike (5. above).
+// CHECK_AUDITORIA=0 skips the #1200 link-audit section (6. above); it runs by
+// default, because it is the master flag's precondition. Run it the same way —
+// a HUMAN, against STAGING, never an agent and never against production.
 // Targets the named `default` database (Enterprise — never `(default)`),
 // overridable via FIREBASE_DATABASE_ID.
 //
 // ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchMovimentosDaJanela` in
 // apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts — this script mirrors
 // both in plain JS (the TS module is not importable from a .mjs script); a
-// shape change there must be reflected here or the proof goes stale.
+// shape change there must be reflected here or the proof goes stale. Section 6
+// mirrors two more the same way: `fetchLinksNaoEnumeradosPage`'s one-form page
+// (anuncios/linksNaoEnumerados.ts) and `listarAvisosAbertos`
+// (estoque/auditoriaNaoEnumerados.ts).
 // ⚠️ The window filter deliberately has NO component arm (ADR 0014): a kit sale
 // stamps the kit's own estoque doc, so `maxComp` was removed rather than being
 // forgotten here. The sales signal is likewise gone — the `pedidos` sold-ids
@@ -264,6 +363,11 @@ const pageLimit = Number.isInteger(pageLimitRaw) && pageLimitRaw > 0 ? pageLimit
 // question it answered is closed (shape A is permanent), so it stays only as a
 // record. `CHECK_ANCHOR_AB=1` still runs it; re-declare an index first.
 const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '0') !== '0';
+// The #1200 link-audit section (header 6.) — ON by default: it is the master
+// flag's precondition. Its walk executions return at most CHECK_PAGE_LIMIT rows
+// each and its open-avisos read every open aviso; what that does NOT bound (the
+// scan, before the CG entry is READY) is in 6.
+const runAuditoria = (process.env.CHECK_AUDITORIA ?? '1') !== '0';
 
 // Mirrors the shipped daily window: `dailyWindowHours()` (24) minus
 // `windowOverlapSec()` (20) — bulkEstoquePlan.ts defaults, janelaDoSweep('daily').
@@ -881,102 +985,10 @@ try {
 
   /* ---------------- access-node heuristics (see header) ----------------------- */
 
-  // The completely-unbounded range line — `(-∞..+∞)` — never counts as a bound;
-  // a half-bounded range (`[1,234L..+∞)`, a timestamp cutoff) DOES.
-  const UNBOUNDED_RE = /\(-(?:∞|inf)\s*\.\.\s*\+?(?:∞|inf)\)/i;
-
-  // A NUMERIC constraint bound: `[1,782,652,331,060,000L..+∞)`, `[1234L]`,
-  // `(-1..500L]`. Anchored at the `|----` marker and shape-matched, never
-  // digit-matched: `["depositos/checkstock-1785244325954-dep"]` is full of
-  // digits, and the keyset bound `(EntityRef[…]..oid(000…))` ends in a
-  // parenthesised number — neither may read as a timestamp range.
-  const NUMERIC_BOUND_RE = /^\|-+\s*[[(]\s*-?[\d,]+L?\s*(?:\.\.|[\])])/;
-
-  /**
-   * Parse the plan into access-node blocks: a SequentialScan / SeekingScan /
-   * IndexSeek / TableScan / EntityScan / CollectionScan bullet — plus ANY
-   * other `• <Name>Scan`, so a node type this dialect has not shown us yet is
-   * still SEEN rather than silently skipped — with every body line up to the
-   * next `•` node bullet. The identifier-less names are the point: a
-   * `TableScan` carries no `index:` line at all (staging run 2 emits one for
-   * the varLinks probe), and a parser blind to it cannot report a raw scan.
-   * Extracted per node: the `index:`/`identifier:` line carrying `@[id = …]`
-   * (SequentialScan/SeekingScan spell it `index:`, IndexSeek `identifier:`),
-   * the `partition:` value, the `filter:` push-down line, and the constraint
-   * VALUE lines (`|----…`) under the `ranges:`/`constraints:` header —
-   * `boundedLines` keeps only the ones that are not `(-∞..+∞)`.
-   */
-  function parseAccessNodes(plan) {
-    const lines = plan.split('\n');
-    const nodes = [];
-    for (let i = 0; i < lines.length; i += 1) {
-      const m = lines[i].match(
-        /•\s+(SequentialScan|SeekingScan|IndexSeek|TableScan|EntityScan|CollectionScan|\w*Scan)\b/,
-      );
-      if (m == null) continue;
-      let end = lines.length;
-      for (let j = i + 1; j < lines.length; j += 1) {
-        if (/•\s+\w/.test(lines[j])) {
-          end = j;
-          break;
-        }
-      }
-      const block = lines.slice(i + 1, end);
-      const idLine = block.find((l) => /\b(?:index|identifier):\s*\S.*@\[id\s*=/.test(l)) ?? null;
-      const identifier =
-        idLine == null ? null : idLine.replace(/^.*?\b(?:index|identifier):\s*/, '').trim();
-      const partitionLine = block.find((l) => /\bpartition:\s*\S/.test(l)) ?? null;
-      const partition =
-        partitionLine == null ? null : partitionLine.replace(/^.*?\bpartition:\s*/, '').trim();
-      // TableScan names its target with `kind:` instead of an index — printed
-      // so an identifier-less node still says WHAT it scanned.
-      const kindLine = block.find((l) => /\bkind:\s*\S/.test(l)) ?? null;
-      const kind = kindLine == null ? null : kindLine.replace(/^.*?\bkind:\s*/, '').trim();
-      const filterLine = block.find((l) => /\bfilter:\s*\(/.test(l)) ?? null;
-      const filter = filterLine == null ? null : filterLine.replace(/^.*?\bfilter:\s*/, '').trim();
-      const boundLines = [];
-      let inConstraints = false;
-      for (const l of block) {
-        if (/\b(?:ranges|constraints):/.test(l)) {
-          inConstraints = true;
-          continue;
-        }
-        if (!inConstraints) continue;
-        if (/Execution:/.test(l) || l.replace(/[|\s]/g, '') === '') {
-          inConstraints = false;
-          continue;
-        }
-        if (l.includes('|----')) boundLines.push(l.slice(l.indexOf('|----')));
-      }
-      // Per-node `Execution:` stats. The A/B spike (header 5.) turns on these:
-      // whether the `links.length() > 0` post-filter prunes BEFORE the estoque
-      // rollups is not decidable from the printed TREE (it is a shape, not an
-      // order) — but the estoque nodes' own execution counts say it outright.
-      const execIdx = block.findIndex((l) => /\bExecution:/.test(l));
-      const execution =
-        execIdx === -1
-          ? []
-          : block
-              .slice(execIdx)
-              .map((l) => l.replace(/^[|\s]+/, '').trim())
-              .filter((l) => l !== '');
-      nodes.push({
-        type: m[1],
-        // Bullet position in the printed plan — 1-BASED, because that is how a
-        // human counts lines in the plan text dumped above. `i` is a 0-based
-        // array index; printing it raw is off by one (review catch on #890).
-        line: i + 1,
-        identifier,
-        kind,
-        partition,
-        filter,
-        boundLines,
-        boundedLines: boundLines.filter((l) => !UNBOUNDED_RE.test(l)),
-        execution,
-      });
-    }
-    return nodes;
-  }
+  // `parseAccessNodes`, `uniqueNodes`, `predicateInResidualFilters`, the bound
+  // regexes and the identifier-less split are imported from
+  // lib/firebase/explainPlan.mjs (top of file) — the ONE copy the staging suite
+  // judges with too. Only the PRINTING and `fail()` plumbing stays here.
 
   /** Printed-plan honesty: show exactly what each judged node carries. */
   function printNode(n) {
@@ -989,55 +1001,23 @@ try {
     if (n.filter != null) console.log(`      filter: ${n.filter}`);
   }
 
-  /** Dedupe identically-shaped nodes for printing (plans repeat subquery nodes). */
-  function uniqueNodes(list) {
-    const seen = new Set();
-    const out = [];
-    for (const n of list) {
-      const key = `${n.type}|${n.identifier}|${n.kind}|${n.filter}|${n.boundLines.join(';')}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(n);
-    }
-    return out;
-  }
-
-  /**
-   * Does the target predicate show up in a RESIDUAL `Filter` NODE — rows read
-   * and then thrown away? Only `• Filter` blocks count, and only their
-   * `expression:` bodies. A node-local `filter:` line is the OPPOSITE finding:
-   * it is a push-down INTO an access node (that is how `equal_any($parentId,
-   * …)` rides the CG index), so counting it as residual would condemn the
-   * healthy plan. Blocks run from the `• Filter` bullet to the next `•` bullet
-   * or the node's `Execution:` stats, whichever comes first.
-   */
-  function predicateInResidualFilters(plan, predicateRe) {
-    const lines = plan.split('\n');
-    for (let i = 0; i < lines.length; i += 1) {
-      if (!/•\s+Filter\b/.test(lines[i])) continue;
-      for (let j = i + 1; j < lines.length; j += 1) {
-        if (/•\s+\w/.test(lines[j]) || /\bExecution:/.test(lines[j])) break;
-        if (/\bexpression:\s/.test(lines[j]) && predicateRe.test(lines[j])) return true;
-      }
-    }
-    return false;
-  }
-
   // Negative-first: an identifier-less access node ANYWHERE is a raw full
   // scan — UNLESS it is partition-bounded. A `subcollection()` probe with no
   // `where` (the varLinks join) compiles to a `TableScan` with a non-root
   // `partition:`: it reads one parent's subcollection and there is no
-  // predicate an index could serve, so it is reported, not failed.
+  // predicate an index could serve, so it is reported, not failed. The split
+  // itself is `scansSemIdentificador` (explainPlan.mjs).
   function failIdentifierlessScans(label, nodes) {
-    for (const n of uniqueNodes(nodes.filter((x) => x.identifier == null))) {
+    const { cheios, porParticao } = scansSemIdentificador(nodes);
+    for (const n of porParticao) {
       printNode(n);
-      if (n.partition != null && n.partition !== '/') {
-        console.log(
-          `NOTE  ${label}: identifier-less ${n.type} is partition-bounded (${n.partition}) — ` +
-            `a subcollection probe with no predicate to index; not a full scan`,
-        );
-        continue;
-      }
+      console.log(
+        `NOTE  ${label}: identifier-less ${n.type} is partition-bounded (${n.partition}) — ` +
+          `a subcollection probe with no predicate to index; not a full scan`,
+      );
+    }
+    for (const n of cheios) {
+      printNode(n);
       fail(`${label}: identifier-less ${n.type} in the plan — a raw full scan`);
     }
   }
@@ -1614,6 +1594,314 @@ try {
       '\n=== fetchStockFamilies page 2 (daily, WORST CASE changedSinceMs = -1 — not shipped) ===',
     );
     await explainDailyPage2('worst case: force-all, every anchor survives S4', -1);
+  }
+
+  /* ------- #1200 link audit: CG walk page 2 per ref form + open avisos (6.) ------- */
+
+  // Mirrors `contaRefForms` (packages/data/src/admin/produtos/integracoesComProduto.ts):
+  // the two stored forms of the conta ref, which the audit walks one at a time.
+  const contaRefForms = [`documents/integracao/${integracaoId}`, `integracao/${integracaoId}`];
+
+  /**
+   * ONE ref form's walk page WITHOUT its projection, verbatim from
+   * `consultaDaVarreduraSemProjecao` with a `contaRef`
+   * (lib/marketplace/anuncios/linksNaoEnumerados.ts; keep-in-sync note in the
+   * header) — what the PROXY explains. ⚠️ Never feed `createFrom` the projected
+   * query: the SDK (`@google-cloud/firestore` 8.6.0) emits its `select` stage
+   * BEFORE the `exists(__name__)` / `sort(__name__)` / cursor stages it derives
+   * from the order, the projection drops the document key, and the pipeline
+   * returns zero rows and no `explainStats` (measured on staging, 2026-10-08).
+   * The projection changes what each row returns, never the range or the order.
+   */
+  const walkQuerySemProjecao = (contaRef) =>
+    db
+      .collectionGroup('produtoMercadoLivre')
+      .where('contaOuterRef', '==', contaRef)
+      .orderBy(FieldPath.documentId())
+      .limit(pageLimit);
+  /**
+   * THE walk page as the audit runs it (`consultaDaVarredura`): the base plus its
+   * `select`, applied LAST — a classic query's projection is one field of the
+   * request, so this is the same `StructuredQuery` whatever the call order.
+   */
+  const walkQuery = (contaRef) => walkQuerySemProjecao(contaRef).select('id', 'estado');
+
+  // Mirrors AVISOS_ABERTOS_MAX (estoque/auditoriaNaoEnumerados.ts).
+  const AVISOS_ABERTOS_MAX = 5_000;
+  /**
+   * THE open-avisos read WITHOUT its projection, verbatim from
+   * `consultaDosAvisosAbertosSemProjecao` — what the PROXY explains, for the
+   * reason `walkQuerySemProjecao` gives. ⚠️ Verbatim INCLUDING the cap, unlike
+   * the walk's page size: the proxy's `sort(__name__)` (the SDK's translation of
+   * a query with no order) sits above an unordered fetch, so it sorts the whole
+   * `[null]` run before its limit — a smaller limit here would make it CUT
+   * (`sortsQueCortam`), a plan production never runs. So this returns every
+   * open aviso of the project, as production does.
+   */
+  const avisosAbertosQuerySemProjecao = () =>
+    db
+      .collection('avisos')
+      .where('resolvidoEm', '==', null)
+      .limit(AVISOS_ABERTOS_MAX + 1);
+  /** THE open-avisos read as `listarAvisosAbertos` runs it: the base plus its `select`. */
+  const avisosAbertosQuery = () =>
+    avisosAbertosQuerySemProjecao().select('tipo', 'canal', 'params');
+
+  /**
+   * The PROXY of a classic query — what Enterprise will explain (header 6.):
+   * the SDK's own pipeline translation (`createFrom`) of the query's
+   * PROJECTION-LESS half (`walkQuerySemProjecao` / `avisosAbertosQuerySemProjecao`),
+   * the same call the staging suite makes. Never a hand-built pipeline beside
+   * the query it stands for: two copies of one query drift apart while both
+   * read correct (#1369) — the hand-built proxies this replaced, here and in
+   * the staging suite, already disagreed with each other on a page size.
+   */
+  const proxyDe = (query) => () => db.pipeline().createFrom(query);
+
+  /**
+   * Classic explain-analyze, or why it could not run. Enterprise's refusal
+   * (header 6., `RECUSA_EXPLAIN_ENTERPRISE_RE`) is `{ recusado }` and NOT a
+   * failure — it says something about the API, nothing about the index. Any
+   * other gRPC error IS one: on a Standard database a missing composite is
+   * `9 FAILED_PRECONDITION`, the classic "requires an index".
+   */
+  async function explainClassico(label, query) {
+    try {
+      const { metrics } = await query.explain({ analyze: true });
+      return { metrics, recusado: null };
+    } catch (err) {
+      if (!isGrpcCodedError(err)) throw err;
+      if (err.code === 3 && RECUSA_EXPLAIN_ENTERPRISE_RE.test(err.message)) {
+        console.log(`NOTE  ${label}: classic explain refused by Enterprise — explaining the PROXY`);
+        return { metrics: null, recusado: err.message };
+      }
+      fail(`${label}: classic explain failed — ${err.message}`);
+      return { metrics: null, recusado: null };
+    }
+  }
+
+  /**
+   * The classic verdict, when a database accepts classic explain at all. `aceita`
+   * is one of explainPlan.mjs's `classicoServe*` predicates — each already
+   * refuses an empty `indexesUsed`.
+   */
+  function julgarClassico(label, metrics, aceita) {
+    const usados = metrics.planSummary?.indexesUsed ?? [];
+    const stats = metrics.executionStats ?? {};
+    console.log(`  indexesUsed: ${JSON.stringify(usados)}`);
+    console.log(
+      `  resultsReturned: ${stats.resultsReturned}  readOperations: ${stats.readOperations}`,
+    );
+    console.log(`  debugStats: ${JSON.stringify(stats.debugStats ?? {})}`);
+    if (aceita(usados)) {
+      console.log(`PASS  ${label} (classic plan)`);
+      return;
+    }
+    fail(`${label}: the classic plan does not ride the expected index — read indexesUsed above`);
+  }
+
+  /**
+   * One proxy explain-analyze: its plan (`null` when it returned none — 0 rows
+   * carry none) and the rows it returned.
+   */
+  async function explainProxy(label, build) {
+    const snap = await build().execute({
+      explainOptions: { mode: 'analyze', outputFormat: 'text' },
+    });
+    const proxyPlan = snap.explainStats?.text ?? '';
+    console.log(`rows returned: ${snap.results.length} (${label})`);
+    console.log(`\n----- FULL PLAN (PROXY — pipeline translation, ${label}) -----\n`);
+    console.log(proxyPlan);
+    return { plano: proxyPlan.trim() === '' ? null : proxyPlan, linhas: snap.results };
+  }
+
+  /**
+   * Print a #1200 verdict (`julgarPlanoDa*` in explainPlan.mjs — the SAME
+   * verdict the staging suite asserts) and fail each motivo. The judged node and
+   * the read counters summed over the judged nodes, when the dialect prints
+   * them, are shown either way.
+   *
+   * ⚠️ The WALK is judged with no `leituraMaxima`, so only its plan SHAPE can
+   * pass: a push-down or a cursor tested per entry fails even when it seeks. A
+   * walk ceiling proves something only where every failure mode provably reads
+   * past it, and that takes seeded neighbours on every side of the range — which
+   * `test:staging` (auditoriaNaoEnumerados.staging.test.ts) has and a real conta
+   * here does not. The open-avisos read is different: its shape check stands on
+   * its own, and its ceiling — the rows it returned — can only fail it more.
+   */
+  function relatarVeredicto(label, veredicto) {
+    if (veredicto.alvo != null) printNode(veredicto.alvo);
+    const { leitura } = veredicto;
+    console.log(
+      `  read counters: ${
+        leitura == null
+          ? '(none printed on at least one judged node)'
+          : `${leitura.rotulo} = ${leitura.valor} over ${leitura.nos} node(s)`
+      }`,
+    );
+    for (const m of veredicto.motivos) fail(`${label}: [${m.codigo}] ${m.mensagem}`);
+    if (veredicto.motivos.length === 0) console.log(`PASS  ${label}: ${veredicto.detalhe}`);
+  }
+
+  if (!runAuditoria) {
+    console.log('\n=== #1200 link audit queries — SKIPPED (CHECK_AUDITORIA=0) ===');
+  } else {
+    /* ---- (a) the walk, per ref form: page 1 for a real cursor, then page 2 ---- */
+
+    let formasProvadas = 0;
+    for (const contaRef of contaRefForms) {
+      console.log(
+        `\n=== #1200 link audit (a): produtoMercadoLivre CG walk, page 2 — ${contaRef} ===`,
+      );
+      const pagina1 = await walkQuery(contaRef).get();
+      console.log(
+        `page 1 (classic, executed): ${pagina1.docs.length} link(s) of conta ${integracaoId} ` +
+          `stored as ${contaRef}`,
+      );
+      const primeiro = pagina1.docs[0] ?? null;
+      let cursorRef = null;
+      let esperadoNaPagina2 = null;
+      if (pagina1.docs.length >= 2) {
+        // A REAL page-1 reference — its FIRST, not its last: the keyset SHAPE is
+        // what this proves, and resuming after the first guarantees page 2 a row
+        // (zero rows carry no explainStats). Page 2 must open on page 1's second.
+        cursorRef = primeiro.ref;
+        esperadoNaPagina2 = pagina1.docs[1].ref.path;
+      } else if (primeiro != null) {
+        // One link only (the seeded probe family, typically). A cursor just BELOW
+        // it: the owning produto id minus its last character is a strict prefix,
+        // and a prefix sorts first segment by segment — so every link of that
+        // produto, the first one included, lies after it. Same keyset shape.
+        const produtoId = primeiro.ref.parent.parent?.id ?? '';
+        if (produtoId.length > 1) {
+          cursorRef = db
+            .collection('produtos')
+            .doc(produtoId.slice(0, -1))
+            .collection('produtoMercadoLivre')
+            .doc(primeiro.id);
+          esperadoNaPagina2 = primeiro.ref.path;
+        }
+      }
+
+      if (cursorRef == null) {
+        // Not a FAIL by itself: a conta's links may all sit in ONE form. That at
+        // least one form proves the shape is checked after the loop.
+        console.log(
+          `NOTE  audit walk: no usable link stored as ${contaRef} — this form's page 2 ` +
+            'cannot return a row, so it proves nothing',
+        );
+        continue;
+      }
+      formasProvadas += 1;
+      console.log(`page 2 cursor: ${cursorRef.path}`);
+      // Correctness probe — the CLASSIC query, executed: `startAfter(<DocumentReference>)`
+      // on a group must resume exactly after the cursor, not from the top.
+      const pagina2 = await walkQuery(contaRef).startAfter(cursorRef).get();
+      const abriuEm = pagina2.docs[0]?.ref.path ?? null;
+      if (abriuEm === esperadoNaPagina2) {
+        console.log(`PASS  audit walk: classic page 2 resumes right after the cursor (${abriuEm})`);
+      } else {
+        fail(
+          `audit walk (${contaRef}): classic page 2 opened on ${JSON.stringify(abriuEm)}, ` +
+            `expected ${esperadoNaPagina2} — startAfter(<DocumentReference>) did not resume ` +
+            'after the cursor',
+        );
+      }
+
+      const labelWalk = `audit walk page 2 (CG contaOuterRef == ${contaRef} + keyset)`;
+      console.log(`\n--- ${labelWalk}: classic explain ---`);
+      const classico = await explainClassico(labelWalk, walkQuery(contaRef).startAfter(cursorRef));
+      if (classico.metrics != null) {
+        julgarClassico(labelWalk, classico.metrics, classicoServeVarredura);
+      } else if (classico.recusado != null) {
+        const { plano: proxyPlan } = await explainProxy(
+          labelWalk,
+          proxyDe(walkQuerySemProjecao(contaRef).startAfter(cursorRef)),
+        );
+        if (proxyPlan == null) {
+          fail(`${labelWalk}: the PROXY returned no plan (0 rows) — nothing proven`);
+        } else {
+          console.log(`  plan nodes: ${nomesDeNos(proxyPlan).join(', ')}`);
+          // `julgarPlanoDaVarredura` covers what this block used to check inline:
+          // no identifier-less root scan (a collection group has no parent
+          // partition to excuse one), the CG entry ridden AND bounded on
+          // contaOuterRef, the page-2 cursor a SEEK (`comCursor`), neither
+          // predicate residual, no Sort node.
+          relatarVeredicto(
+            `${labelWalk} PROXY`,
+            julgarPlanoDaVarredura(proxyPlan, { comCursor: true }),
+          );
+        }
+      }
+    }
+    if (formasProvadas === 0) {
+      fail(
+        `audit walk: conta ${integracaoId} has no usable produtoMercadoLivre link in either ref ` +
+          'form — no page 2 can return a row, so nothing is proven. Point CHECK_INTEGRACAO_ID at ' +
+          'a conta with anúncios, or run with CHECK_SEED=1',
+      );
+    } else {
+      console.log(
+        'NOTE  PROXY verdicts prove the CG entry is READY and serves this predicate — ' +
+          "NOT the classic query's own plan, so any other FAIL above (a sort, an over-read) " +
+          'is a PROXY-PLAN finding. Confirm the classic plan in Query Insights after the ' +
+          'first audit run (header 6.)',
+      );
+    }
+
+    /* ---- (b) the open-avisos read ---- */
+
+    console.log('\n=== #1200 link audit (b): the open-avisos read (resolvidoEm == null) ===');
+    // Correctness probe — the CLASSIC read, executed: how many open avisos the
+    // audit's run would list, and whether that listing is whole.
+    const abertos = await avisosAbertosQuery().get();
+    console.log(`open avisos (classic, executed): ${abertos.docs.length}`);
+    if (abertos.docs.length > AVISOS_ABERTOS_MAX) {
+      console.log(
+        `NOTE  more than ${AVISOS_ABERTOS_MAX} open avisos: the audit would call this listing ` +
+          'TRUNCATED and resolve nothing this run',
+      );
+    }
+
+    const labelAvisos = 'open-avisos read (resolvidoEm == null, no orderBy)';
+    console.log(`\n--- ${labelAvisos}: classic explain ---`);
+    const classicoAvisos = await explainClassico(labelAvisos, avisosAbertosQuery());
+    if (classicoAvisos.metrics != null) {
+      julgarClassico(labelAvisos, classicoAvisos.metrics, classicoServeAvisosAbertos);
+    } else if (classicoAvisos.recusado != null) {
+      const { plano: proxyPlan, linhas } = await explainProxy(
+        labelAvisos,
+        proxyDe(avisosAbertosQuerySemProjecao()),
+      );
+      // The proxy reads full documents (no projection): every one must be OPEN.
+      const fechados = linhas.filter((r) => r.data()?.resolvidoEm !== null);
+      if (fechados.length > 0) {
+        fail(
+          `${labelAvisos}: the read returned ${fechados.length} aviso(s) that are not open — ` +
+            JSON.stringify(fechados.slice(0, 5).map((r) => r.ref?.path ?? '(no ref)')),
+        );
+      }
+      if (proxyPlan == null) {
+        fail(
+          `${labelAvisos}: the PROXY returned no plan — this project has no open aviso, so ` +
+            'nothing is proven. `test:staging` (auditoriaNaoEnumerados.staging.test.ts) seeds ' +
+            'its own and runs the same verdict',
+        );
+      } else {
+        console.log(`  plan nodes: ${nomesDeNos(proxyPlan).join(', ')}`);
+        // The [null] point on `avisos(resolvidoEm)`, no residual selection, no
+        // sort that cuts — and no more index rows than the rows it returned.
+        relatarVeredicto(
+          `${labelAvisos} PROXY`,
+          julgarPlanoDosAvisosAbertos(proxyPlan, { leituraMaxima: linhas.length }),
+        );
+        console.log(
+          'NOTE  PROXY verdict — a FAIL above is a PROXY-PLAN finding unless it is ' +
+            '`indice-ausente` (the entry is not READY); the classic read itself is confirmed ' +
+            'in Query Insights (header 6.)',
+        );
+      }
+    }
   }
 } finally {
   // The seed must NEVER outlive the run — delete it even when a check failed

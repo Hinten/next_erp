@@ -1,12 +1,11 @@
 /**
  * The operator's chart changed or disappeared before a local save.
  *
- * saveChartTransaction compares the entire opened chart against tx.get on every
+ * Chart saves and staged draft removals compare the complete baseline against tx.get on every
  * retry, then writes in that same transaction. The manager and modal narrow on
  * this class to preserve typing and give persistent reopen guidance.
  *
- * The local draft-delete path still uses its separate positional identity check;
- * making that removal staged and race-safe is follow-up work outside #1778.
+ * A draft deletion conflict retains the pending removal for review and undo.
  */
 export class SizeChartConflictError extends Error {
   constructor(

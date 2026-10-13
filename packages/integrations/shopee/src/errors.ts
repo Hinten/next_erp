@@ -16,8 +16,14 @@
  * between two modules.
  *
  * ⚠️ Shopee does NOT signal failure with an HTTP status. `error === ''` is the
- * success signal and a failing call is routinely HTTP 200, so nothing here may
- * be keyed on `httpStatus`; it is carried for diagnostics only.
+ * success signal and a failing call is routinely HTTP 200, so no VERDICT here
+ * may be keyed on `httpStatus`; it is carried for diagnostics.
+ *
+ * ⚠️ ONE exception, and it is not a verdict: {@link ShopeeOperacaoNaoServidaError}
+ * reads `httpStatus === 404` to REFINE the class of a call that has already
+ * failed (`error` non-empty). Success is still decided by `error` alone, and the
+ * refined class keeps the base's `code` and `kind`, so every ladder reads it as
+ * before.
  */
 
 /**
@@ -264,6 +270,40 @@ export class ShopeeApiPartialError extends ShopeeApiError {
 }
 
 /**
+ * The GATEWAY's "this host does not route this path": HTTP 404 +
+ * `error === 'error_not_found'` exactly + `message === null` +
+ * `request_id === null`. kind `'other'`, code verbatim — every existing ladder
+ * unchanged.
+ *
+ * MEASURED (SG sandbox, 2026-10-06, step 19 probe): `get_kit_item_limit` answered
+ * HTTP 404 with the bare body `{"error":"error_not_found"}` — no `message`, no
+ * `request_id` — and a made-up path answers the same. So it is the HOST that
+ * does not serve the operation, not the operation refusing an input; the app
+ * turns it into a cacheable "unavailable" VALUE instead of a failure.
+ *
+ * ⚠️ All FOUR conditions, never fewer. `error_not_found` alone is a documented
+ * BUSINESS code on ten logistics/discount pages, and the app already reads it as
+ * "pedido inexistente" — a business answer carries a `message` and a
+ * `request_id`, and the gateway's carries neither. A test pins each condition
+ * with its near-miss.
+ *
+ * ⚠️ The ONE place a class reads `httpStatus`, against the module header — and
+ * only to refine a FAILURE class, never the success verdict: the envelope has
+ * already failed on `error` when this is built.
+ *
+ * ⚠️ A SUBCLASS with the SAME `code` and `kind` on purpose: every
+ * `instanceof ShopeeApiError` arm and every code table keeps reading it exactly
+ * as before; only new code narrows on it. As with the other subclasses, a ladder
+ * that narrows on it tests it BEFORE the base class.
+ */
+export class ShopeeOperacaoNaoServidaError extends ShopeeApiError {
+  constructor(message: string, init: ShopeeApiErrorInit) {
+    super(message, init);
+    this.name = 'ShopeeOperacaoNaoServidaError';
+  }
+}
+
+/**
  * The body did not match the schema that describes it — or a 2xx carried no JSON
  * at all.
  *
@@ -355,6 +395,10 @@ const KIND_BY_CODE = new Map<string, ShopeeErrorKind>(
     error_rate_limit: SHOPEE_ERROR_KIND.burst,
     error_limit: SHOPEE_ERROR_KIND.daily,
     // --- Shopee's side, retryable ------------------------------------------
+    // ⚠️ `error_server` has ONE MEASURED permanent use (generate_kit_image's
+    // feature toggle: "…generate kit image toggle closed.", step 19 probe). It
+    // stays `transient` here — the documented "Something wrong. Please try
+    // later." on every page — and the kit classifier overrides it by SENTENCE.
     error_server: SHOPEE_ERROR_KIND.transient,
     error_network: SHOPEE_ERROR_KIND.transient,
     // --- ours, and NOT a reason to disconnect anything ----------------------
@@ -416,11 +460,15 @@ export function shopeeCodeSemPrefixoDeModulo(code: string): string | null {
  * - EQUAL: `' logistics.package_already_shipped'` ≡ `'package_already_shipped'`
  *   (a leading blank on the ship page), `'order.upload_invoice_error\t'` ≡
  *   `'upload_invoice_error'` (a trailing TAB on the invoice page),
- *   `'common.batch_api_all_failed'` ≡ `'batch_api_all_failed'`.
+ *   `'common.batch_api_all_failed'` ≡ `'batch_api_all_failed'`; and the bare
+ *   dot the kit pages answer (`"."`, "product is not found", step 19 probe)
+ *   `'.'` ≡ `' . '` — trimmed only, since a lone dot has no module to strip.
  * - DISTINCT: `'a.b.error_limit'` keeps `b.` (exactly ONE segment — a greedy
  *   strip would let any code that merely ENDS in a known one match); the CASE is
  *   kept (`'Error_Param'` ≠ `'error_param'`); a longer suffix stays longer
- *   (`'batch_api_all_failed_x'` ≠ `'batch_api_all_failed'`).
+ *   (`'batch_api_all_failed_x'` ≠ `'batch_api_all_failed'`); and `'x.'` and
+ *   `'..'` stay themselves, never `'.'` (a prefix with nothing after it is not
+ *   stripped, and `'..'` has no module name).
  *
  * The VERBATIM code stays the caller's, for its log line; a table never
  * returns this. `test/errors.test.ts` pins each side.
@@ -472,6 +520,17 @@ export interface ShopeeErrorContext {
   readonly retryAfterSeconds?: number | null;
 }
 
+/** {@link ShopeeOperacaoNaoServidaError}'s status — the gateway's 404. */
+const HTTP_ROTA_NAO_SERVIDA = 404;
+
+/**
+ * {@link ShopeeOperacaoNaoServidaError}'s code, compared EXACTLY (never through
+ * {@link shopeeCodigoCanonico}): the measured gateway body is the bare
+ * `{"error":"error_not_found"}`, and a padded or module-prefixed spelling was
+ * never seen from the gateway, so it stays a plain failure.
+ */
+const CODIGO_ROTA_NAO_SERVIDA = 'error_not_found';
+
 /**
  * Build the right {@link ShopeeApiError} subclass for a failing envelope.
  *
@@ -489,6 +548,11 @@ export interface ShopeeErrorContext {
  * ⚠️ `providerMessage` is `env.message` VERBATIM for the same reason — every
  * subclass built here carries it (the rate limit through the `...init` spread),
  * and the transport's partial rebuild copies it field by field.
+ *
+ * ⚠️ {@link ShopeeOperacaoNaoServidaError} is the ONE branch that reads
+ * `ctx.httpStatus`, and it reads it only AFTER the envelope has already failed:
+ * it refines which failure this is, never whether the call failed. All four of
+ * its conditions are EXACT — no trim, no prefix strip, `''` is not `null`.
  */
 export function shopeeErrorFromEnvelope(
   env: ShopeeErrorEnvelope,
@@ -514,6 +578,14 @@ export function shopeeErrorFromEnvelope(
       kind,
       retryAfterSeconds: ctx.retryAfterSeconds ?? null,
     });
+  }
+  if (
+    ctx.httpStatus === HTTP_ROTA_NAO_SERVIDA &&
+    env.error === CODIGO_ROTA_NAO_SERVIDA &&
+    env.message === null &&
+    env.request_id === null
+  ) {
+    return new ShopeeOperacaoNaoServidaError(message, init);
   }
   return new ShopeeApiError(message, init);
 }

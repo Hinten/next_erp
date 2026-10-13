@@ -9,7 +9,15 @@
  *  2. `prodshopee.item_id == itemId` — the LISTING link, saved under the parent
  *     (or simple) produto. It BINDS the line only when the line has no
  *     variation; for a variation line it supplies `paiId` and nothing else (see
- *     below). This is also the rung a KIT line resolves on.
+ *     below). ⚠️ It answers the link's OWNER, with no família-de-um hop — the
+ *     native-kit component resolution (`produtos/kitShopee.ts`) hops a hit
+ *     itself, through `unidadeVendavelDaRaiz`.
+ *
+ * A native-KIT order line carries the KIT MODEL's id (a kit's models are its own
+ * `model_list`; the step-19 SG probe's single-model kit had one, under a
+ * one-option tier), so it binds on rung 1 through the kit model's
+ * `variashopee`, under the kit child; rung 2 answers a kit line only when it
+ * arrives with `model_id 0`.
  *  3. the SKU rungs, through `resolverProdutoPorSku` in
  *     `@delfrance/data/admin/produtos` — the promoted, channel-neutral stage
  *     Mercado Livre ends on too, so the three guards that decide which produto a
@@ -67,8 +75,10 @@ import { chaveDaLinhaShopee } from './orderIds';
 /**
  * The kit arm's two readers live with the line mapping, where the escrow ITEM is
  * already the subject. Re-exported here because the kit arm is part of THIS
- * cascade's contract (rung 2 answers a kit line, and `kit_items` is never
- * exploded) and a caller resolving a line reaches for them next.
+ * cascade's contract (a kit line binds the ERP kit produto — on rung 1 through
+ * the kit model's `variashopee`, on rung 2 only for a `model_id 0` line — and
+ * `kit_items` is never exploded) and a caller resolving a line reaches for them
+ * next.
  */
 export { componentesDoKit, ehKitShopee } from './itens';
 

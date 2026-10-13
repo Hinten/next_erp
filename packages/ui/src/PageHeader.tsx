@@ -24,8 +24,13 @@ export interface PageHeaderProps {
  */
 export function PageHeader({ title, description, actions }: PageHeaderProps) {
   return (
-    <Group justify="space-between" align="flex-end" wrap="nowrap">
-      <Stack gap={2}>
+    <Group
+      justify="space-between"
+      align="flex-end"
+      wrap="wrap"
+      style={{ minWidth: 0, maxWidth: '100%' }}
+    >
+      <Stack gap={2} style={{ flex: '1 1 240px', minWidth: 0, overflowWrap: 'anywhere' }}>
         {typeof title === 'string' ? <Title order={2}>{title}</Title> : title}
         {description && (
           <Text c="dimmed" size="sm">
@@ -33,7 +38,7 @@ export function PageHeader({ title, description, actions }: PageHeaderProps) {
           </Text>
         )}
       </Stack>
-      {actions && <Group>{actions}</Group>}
+      {actions && <Group style={{ flexShrink: 0, maxWidth: '100%' }}>{actions}</Group>}
     </Group>
   );
 }
