@@ -352,11 +352,13 @@ surface further in.
 
 ## Adding a lane
 
-1. Copy the `changes` + `gate` pair from `ci-mercado-livre.yml` (the simplest —
-   one required job, no guards) or `ci-storage.yml` (two required jobs, no
-   guards). The `run:` body of every gate is **byte-identical**; only the `env:`
-   block and the `JOBS:` manifest differ. Copy it from a real file rather than
-   retyping 200-odd lines of shell, then `diff` the two bodies to prove you did.
+1. Copy the `changes` + `gate` pair from `ci-shopee.yml` (the simplest — one
+   required job, no guards) or `ci-storage.yml` (two required jobs, no guards).
+   `ci-mercado-livre.yml` is no longer the simple case: three required jobs plus
+   an `optional:not_fork` staging job. The `run:` body of every gate is
+   **byte-identical**; only the `env:` block and the `JOBS:` manifest differ.
+   Copy it from a real file rather than retyping 200-odd lines of shell, then
+   `diff` the two bodies to prove you did.
    Assertion 17 already enforces that for the re-read loop specifically.
 2. Give it `--roots`, `--self`, and a unique ASCII gate name.
 3. Add it to `LANES` in `packages/config-eslint/rules/ci-lane-gates.test.js`.
@@ -417,11 +419,16 @@ mitigates the staleness it leaves.
   nowhere. That is why the domain lanes matter and why their scope must be derived.
   An exclusion is a **promise** that the owning lane runs them; never add a filter
   without an owner on the other side.
-- **A lane's `test` script is not always `test`.** `ci-mercado-livre` needs two
-  jobs because `apps/mercado-livre` splits its suite across two vitest configs:
-  `vitest.config.ts` excludes `**/*.firestore.test.ts`, `vitest.firestore.config.ts`
-  includes only those. A file matching neither glob runs in NO job. When adding a
-  lane, read the workspace's scripts — do not assume `turbo run test` covers it.
+- **A lane's `test` script is not always `test`.** `ci-mercado-livre` needs four
+  jobs because `apps/mercado-livre` splits its suite across four vitest configs,
+  disjoint by filename suffix: `vitest.config.ts` (`ML offline (unit)`, required)
+  excludes `**/*.firestore.test.ts`, `**/*.tasks.test.ts` and `**/*.staging.test.ts`;
+  `vitest.firestore.config.ts` (`ML backend on the Firestore emulator`, required),
+  `vitest.tasks.config.ts` (`ML Cloud Tasks round trip`, required) and
+  `vitest.staging.config.ts` (`ML staging Enterprise queries`, `optional:not_fork` —
+  it reads the `FIREBASE_*_STAGING` secrets a fork PR cannot see) each include only
+  their own suffix. A file matching none of those globs runs in NO job. When adding
+  a lane, read the workspace's scripts — do not assume `turbo run test` covers it.
 
 ### Moving tests into a lane is not a latency win — measured
 

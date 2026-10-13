@@ -193,6 +193,24 @@ not a candidate and can stay stale on Mercado Livre for up to a month.
 affordable, and the monthly pass is the corrector. Do not "fix" it by restoring
 the component join without redoing the cost arithmetic above.
 
+**Addendum (#1200) — the monthly link audit is not a tier, and no tier changed.**
+All three tiers enumerate through the same anchor terms (`paiId == null` and
+`integracoesComProduto array-contains <conta>`), so a live anúncio whose produto
+falls outside them is a candidate on none of them, the full pass included: a
+produto whose `integracoesComProduto` lost the conta, or a link sitting on a
+variation child. `sweepMercadoLivreAnunciosNaoEnumerados` (02:30 on the 1st,
+`apps/mercado-livre/lib/marketplace/estoque/auditoriaNaoEnumerados.ts`) walks
+each conta's *links* instead. It sends nothing and calls no Mercado Livre API: it
+re-adds the conta to a produto that lost it — a guarded write, before the 03:00
+full pass, so that pass enumerates the family again — and reports everything it
+cannot heal as avisos. What the full pass then re-sends is still decided by its
+own change check above ("changed since the last full run"), so a healed family
+whose stock did not move since then is not re-sent;
+`apps/mercado-livre/functions/DEPLOY.md` ("The monthly link audit") carries the
+exact semantics and the gaps. **The cost arithmetic above is unchanged**: the
+audit reads each conta's links plus one masked key read per produto holding a
+live link, once a month; it adds nothing to any tick and widens no anchor term.
+
 ### 4. The estoque ledger is summable
 
 `historicoEstoque` records `movimento` (and `movimentoReservada`) as a **signed

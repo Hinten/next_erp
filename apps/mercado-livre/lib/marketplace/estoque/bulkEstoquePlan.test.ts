@@ -6,7 +6,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 // tests — assertions target the stages/expressions the code builds, via a fake
 // `db.pipeline()` chain below. Chainable methods live on prototypes so
 // `toEqual` structural assertions see only the tag data.
-const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
+const { mockPipelinesExports, FakeChain, Expr } = vi.hoisted(() => {
   class Expr {
     constructor(props: Record<string, unknown>) {
       Object.assign(this, props);
@@ -131,7 +131,9 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     },
   } as Record<string, unknown>;
 
-  return { mockPipelinesExports, FakeChain };
+  // `Expr` leaves the hoisted scope for ONE reader: the S1 ⇔ classifier binding
+  // below tells a recorded expression from a literal operand by `instanceof`.
+  return { mockPipelinesExports, FakeChain, Expr };
 });
 
 vi.mock('@google-cloud/firestore/pipelines', () => mockPipelinesExports);
@@ -185,6 +187,7 @@ import {
   chaveMovimento,
   windowOverlapSec,
 } from './bulkEstoquePlan';
+import { classificarLinkNaoEnumerado } from '../anuncios/linksNaoEnumerados';
 
 /* ------------------------------ fake Firestore ----------------------------- */
 // THE query never runs in unit tests: `db.pipeline()` answers from a queue of
@@ -1182,6 +1185,132 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
     await fetchStockFamilies(asDb(db), FS_ARGS);
 
     expect(db.pipelineExecutions[0]![6]).toEqual({ stage: 'limit', args: [3] });
+  });
+});
+
+/**
+ * #1200 — S1 ⇔ the link walk's classifier, BOUND.
+ *
+ * `anuncios/linksNaoEnumerados.classificarLinkNaoEnumerado` is S1 re-derived:
+ * it is how the monthly audit (`estoque/auditoriaNaoEnumerados.ts`) decides
+ * which produtos this query cannot see — and which of them it heals. The pair
+ * used to be held together by a sentence: the classifier's own suite tests the
+ * classifier alone, so it cannot notice S1 moving. This evaluates the S1
+ * `where` that `fetchStockFamilies` actually RECORDED over the 24-document
+ * matrix (`paiId` × `integracoesComProduto`) and asserts, per document,
+ * `classifier === null ⇔ S1 matches`. A third S1 term, a `!= null` in the
+ * classifier, or a soft `nonEmptyString` on `paiId` each red it.
+ * `precoPlan.test.ts` binds the price anchor query to the same classifier over
+ * the same matrix.
+ *
+ * The evaluator models exactly the expression kinds S1 uses, with pipeline
+ * semantics: a field the document lacks is ABSENT, and `equal(ABSENT, null)` is
+ * FALSE — like the classic `== null`, an absent field satisfies no equality. A
+ * non-`Expr` operand is a literal. An `Expr` kind it has no semantics for
+ * THROWS, so a new S1 shape has to extend it rather than slip past it.
+ */
+describe('S1 ⇔ classificarLinkNaoEnumerado — the binding (#1200)', () => {
+  const AUSENTE = Symbol('ausente');
+
+  function avaliar(expr: unknown, doc: DocData): unknown {
+    if (!(expr instanceof Expr)) return expr; // a literal operand
+    const e = expr as unknown as Record<string, unknown>;
+    switch (e.kind) {
+      case 'field': {
+        const nome = e.name as string;
+        return Object.prototype.hasOwnProperty.call(doc, nome) ? doc[nome] : AUSENTE;
+      }
+      case 'constant':
+        return e.v;
+      case 'and':
+        return (e.xs as unknown[]).every((x) => avaliar(x, doc) === true);
+      case 'equal': {
+        const l = avaliar(e.l, doc);
+        const r = avaliar(e.r, doc);
+        return l !== AUSENTE && r !== AUSENTE && l === r;
+      }
+      case 'arrayContains': {
+        const l = avaliar(e.l, doc);
+        return Array.isArray(l) && l.includes(avaliar(e.v, doc));
+      }
+      default:
+        throw new Error(`avaliar: Expr '${String(e.kind)}' sem semântica — estenda o avaliador`);
+    }
+  }
+
+  const PAI_IDS: ReadonlyArray<readonly [string, unknown]> = [
+    ['null', null],
+    ["''", ''],
+    ['ausente', AUSENTE],
+    ["'X'", 'X'],
+  ];
+  const INTEGRACOES: ReadonlyArray<readonly [string, unknown]> = [
+    ['[conta]', [CONTA]],
+    ['[]', []],
+    ['ausente', AUSENTE],
+    ["['outra']", ['outra']],
+    ['[1, null, conta]', [1, null, CONTA]],
+    ["'nope'", 'nope'],
+  ];
+  const MATRIZ = PAI_IDS.flatMap(([pNome, paiId]) =>
+    INTEGRACOES.map(([iNome, integracoes]) => {
+      const doc: DocData = {};
+      if (paiId !== AUSENTE) doc.paiId = paiId;
+      if (integracoes !== AUSENTE) doc.integracoesComProduto = integracoes;
+      return { caso: `paiId=${pNome} · integracoesComProduto=${iNome}`, doc };
+    }),
+  );
+
+  /** The S1 expression exactly as `fetchStockFamilies` handed it to the pipeline. */
+  async function s1Gravado(): Promise<unknown> {
+    const db = new FakeDb();
+    db.queuePipelinePage([]);
+    await fetchStockFamilies(asDb(db), {
+      integracaoId: CONTA,
+      depositoId: DEPOSITO_ID,
+      changedSinceMs: FROM_MS,
+      pageLimit: 10,
+    });
+    const stages = db.pipelineExecutions[0]!;
+    // S1 is the where straight after the SOURCE — S4's window where is a later
+    // stage over added fields, and is not an anchor term.
+    expect(stages[0]).toEqual({ stage: 'collection', args: ['produtos'] });
+    expect(stages[1]!.stage).toBe('where');
+    return stages[1]!.args[0];
+  }
+
+  it('the matrix is the full 4 × 6 cross product', () => {
+    expect(MATRIZ).toHaveLength(24);
+    expect(new Set(MATRIZ.map((m) => m.caso)).size).toBe(24);
+  });
+
+  it('classifier === null exactly where the RECORDED S1 matches — all 24 documents', async () => {
+    const s1 = await s1Gravado();
+
+    const divergentes = MATRIZ.flatMap(({ caso, doc }) => {
+      const s1Casa = avaliar(s1, doc) === true;
+      const codigo = classificarLinkNaoEnumerado(doc, CONTA);
+      return s1Casa === (codigo === null)
+        ? []
+        : [`${caso}: S1 ${s1Casa ? 'casa' : 'não casa'}, classificador ${String(codigo)}`];
+    });
+
+    expect(divergentes).toEqual([]);
+  });
+
+  it('non-vacuous: S1 matches exactly the two documents a sweep enumerates', async () => {
+    const s1 = await s1Gravado();
+
+    expect(MATRIZ.filter(({ doc }) => avaliar(s1, doc) === true).map((m) => m.caso)).toEqual([
+      'paiId=null · integracoesComProduto=[conta]',
+      'paiId=null · integracoesComProduto=[1, null, conta]',
+    ]);
+  });
+
+  it('the evaluator refuses an Expr kind it has no semantics for', () => {
+    const naoModelado = (mockPipelinesExports.not as (b: unknown) => unknown)(true);
+
+    expect(() => avaliar(naoModelado, {})).toThrow(/sem semântica/);
   });
 });
 
