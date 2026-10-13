@@ -24,6 +24,7 @@ import {
   buildLocalizacaoOp,
   deleteProdutoCascade,
   findProdutoReferences,
+  kitStatusChangeDoSave,
   planMovimentacao,
   propagateKitStatusToChildren,
   resolveKitGuardInputs,
@@ -469,6 +470,99 @@ describe('kit-status child propagation (buildKitStatusChildOps)', () => {
     );
     if (ops[0]!.type !== 'update') throw new Error('expected an update op');
     expect(ops[0]!.data).toMatchObject({ ehKit: false, ehKitVirtual: false });
+  });
+});
+
+/**
+ * `kitStatusChangeDoSave` — the kit flip read from the save TRANSACTION (the doc
+ * it read + the patch it wrote), never from the form.
+ *
+ * ⚠️ The near-miss that matters: a save that did not touch the kit fields must
+ * report NO change whatever the stored status is — a form-side "new" diffed
+ * against a server-side "old" is how a stale cache paint un-kitted children.
+ */
+describe('kitStatusChangeDoSave', () => {
+  const MAPA = { c1: { quantidade: 2, limitarEstoque: true } };
+
+  it('a patch that never touches the kit fields reports no change (kit OR non-kit)', () => {
+    for (const before of [
+      { ehKit: true, ehKitVirtual: true, componentesKit: MAPA },
+      { ehKit: true, ehKitVirtual: false },
+      { ehKit: false, ehKitVirtual: false },
+    ]) {
+      const c = kitStatusChangeDoSave(before, { nome: 'x', ultimaModificacao: 1 });
+      expect(c.ehKit, JSON.stringify(before)).toBe(c.oldEhKit);
+      expect(c.ehKitVirtual, JSON.stringify(before)).toBe(c.oldEhKitVirtual);
+    }
+  });
+
+  it('un-kitting: new comes from the patch, old from the doc the transaction read', () => {
+    expect(
+      kitStatusChangeDoSave(
+        { ehKit: true, ehKitVirtual: true, componentesKit: MAPA, filhoUnicoId: 'm1' },
+        { ehKit: false, ehKitVirtual: false, componentesKit: null, componentesKitKeys: null },
+      ),
+    ).toEqual({
+      ehKit: false,
+      ehKitVirtual: false,
+      oldEhKit: true,
+      oldEhKitVirtual: true,
+      componentesKit: null,
+      membroUnicoId: 'm1',
+    });
+  });
+
+  it('becoming a kit: the sole member gets the WRITTEN map, and keeps it when the patch omits it', () => {
+    expect(
+      kitStatusChangeDoSave(
+        { ehKit: false, filhoUnicoId: 'm1' },
+        { ehKit: true, componentesKit: MAPA },
+      ),
+    ).toMatchObject({ ehKit: true, oldEhKit: false, componentesKit: MAPA, membroUnicoId: 'm1' });
+    // The map the patch did not carry is the STORED one, never a form's.
+    expect(
+      kitStatusChangeDoSave({ ehKit: false, componentesKit: MAPA }, { ehKit: true }),
+    ).toMatchObject({ componentesKit: MAPA });
+  });
+
+  it('"new" virtual is the effective pair; "old" is the stored flag as it is', () => {
+    // A stored legacy mismatch counts as virtual on the OLD side…
+    expect(
+      kitStatusChangeDoSave({ ehKit: false, ehKitVirtual: true }, { ehKitVirtual: false }),
+    ).toMatchObject({ ehKitVirtual: false, oldEhKitVirtual: true });
+    // …while the NEW side never reads a flag that «É kit» does not back.
+    expect(
+      kitStatusChangeDoSave({ ehKit: false, ehKitVirtual: false }, { ehKitVirtual: true }),
+    ).toMatchObject({ ehKitVirtual: false, oldEhKitVirtual: false });
+    expect(
+      kitStatusChangeDoSave({ ehKit: true, ehKitVirtual: false }, { ehKitVirtual: true }),
+    ).toMatchObject({ ehKitVirtual: true, oldEhKitVirtual: false });
+  });
+
+  it('strict on the stored values: a stray string, null or absent key is "not a kit"', () => {
+    expect(kitStatusChangeDoSave({ ehKit: 'true', ehKitVirtual: 'true' }, {})).toMatchObject({
+      ehKit: false,
+      ehKitVirtual: false,
+      oldEhKit: false,
+      oldEhKitVirtual: false,
+    });
+    expect(kitStatusChangeDoSave({}, { nome: 'x' })).toMatchObject({
+      ehKit: false,
+      oldEhKit: false,
+      componentesKit: null,
+      membroUnicoId: null,
+    });
+  });
+
+  it('only a plain object is a map, and only a non-empty string is a pointer', () => {
+    for (const junk of ['abc', ['c1'], 7, null]) {
+      expect(
+        kitStatusChangeDoSave({ ehKit: true, componentesKit: junk }, {}).componentesKit,
+        JSON.stringify(junk),
+      ).toBeNull();
+    }
+    expect(kitStatusChangeDoSave({ filhoUnicoId: '' }, {}).membroUnicoId).toBeNull();
+    expect(kitStatusChangeDoSave({ filhoUnicoId: 9 }, {}).membroUnicoId).toBeNull();
   });
 });
 

@@ -146,6 +146,9 @@ describe('saveRecord — tier 3 concurrency guard (#824)', () => {
     expect(derive).toHaveBeenCalledTimes(2);
     expect(result.patch).toMatchObject({ historico: ['primeiro', 'concorrente', 'nosso'] });
     expect(db.read(DOC_PATH)).toMatchObject(result.patch);
+    // `before` is the WINNING attempt's read — the version the commit was
+    // checked against — never the losing first one.
+    expect(result.before).toMatchObject({ historico: ['primeiro', 'concorrente'] });
   });
 
   it('refuses a user-field conflict before calling the derivation', async () => {

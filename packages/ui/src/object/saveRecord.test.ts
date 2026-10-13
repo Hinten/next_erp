@@ -74,6 +74,7 @@ describe('saveRecord — transactional derivation', () => {
     });
     expect(derive).toHaveBeenCalledWith(null, { nome: 'Nova' });
     expect(result.patch).toEqual({ nome: 'Nova', telefoneGerenciado: true });
+    expect(result.before).toBeNull();
     expect(firestoreMock.txMock.set).toHaveBeenCalledWith(expect.anything(), result.patch);
   });
 
@@ -98,6 +99,8 @@ describe('saveRecord — transactional derivation', () => {
       nome: 'Depois',
       telefonesAdicionais: ['14155552671', '5511999998888'],
     });
+    // What the save replaced: the doc the transaction read, for `onAfterSave`.
+    expect(result.before).toEqual(current);
     expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), result.patch);
   });
 
@@ -159,7 +162,13 @@ describe('saveRecord', () => {
       { nome: 'novo nome' },
     );
     expect(firestoreMock.txMock.set).not.toHaveBeenCalled();
-    expect(result).toEqual({ id: 'EXISTING_ID', patch: { nome: 'novo nome' }, documents: [] });
+    // No baseline, no sibling, no derivation ⇒ the transaction read nothing.
+    expect(result).toEqual({
+      id: 'EXISTING_ID',
+      patch: { nome: 'novo nome' },
+      documents: [],
+      before: null,
+    });
   });
 
   it('preserves explicit null in the patch (NullClearButton path)', async () => {
