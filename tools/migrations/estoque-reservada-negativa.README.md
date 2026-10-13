@@ -69,25 +69,30 @@ under the kit-sold stamp, which writes no counters at all by design (ADR 0014 §
 
 ## Cost
 
-**No index is needed, and none should be added.** The walk is a plain
-`orderBy(documentId())` key-order scan over `collectionGroup('estoques')`, with
-the `< 0` test done in memory — the one ordering Firestore always serves without
-a declared index. Only a document that actually holds a negative pays for the
-`historicoEstoque` read.
+**The key index is the only index this needs, and no filter index should be
+added.** The walk is a plain `orderBy(documentId())` key-order scan over
+`collectionGroup('estoques')`, with the `< 0` test done in memory, riding the
+**declared** collection-group key index `estoques(__name__ ASC)` (#1895, listed
+in `key-walks.json`). Enterprise has no implicit key index: without it every page
+re-scans the whole group (#1895 measured an unindexed collection-group walk
+table-scanning all 6,342 `enderecos` docs on every page of 300). Only a document
+that actually holds a negative pays for the `historicoEstoque` read.
 
 The narrower `where('quantidadeReservada','<',0)` looks cheaper and is not. On
 Firestore **Enterprise** an undeclared range filter never throws
 `FAILED_PRECONDITION` — it silently full-scans and bills data scanned. On
 **Standard**, where production still lives (rule 8), it throws and demands a new
-composite (`quantidadeReservada ASC, __name__ ASC`). Either way it costs an index
-deploy and a build wait for a one-off read-only report.
+composite (`quantidadeReservada ASC, __name__ ASC`). Either way it costs a
+filter-index deploy and a build wait for a one-off read-only report.
 
-### If the collection-group walk is refused
+### The `produtos` fallback
 
 Pass `--target produtos` for the fallback: walk `produtos` by document id and read
-each one's `estoques` subcollection. Same report, more round trips, and it needs
-nothing beyond the native key ordering on a plain collection. The flag exists so
-the fallback is a runtime choice rather than a code edit mid-run.
+each one's `estoques` subcollection. Same report, more round trips; the walk rides
+the declared collection key index `produtos(__name__ ASC)` (#1895) instead of the
+collection-group one. Enterprise never _refuses_ either shape — a walk whose key
+index is missing silently re-scans its collection on every page instead. The flag
+exists so the fallback is a runtime choice rather than a code edit mid-run.
 
 ```bash
 pnpm --filter @delfrance/migrations audit:estoque-reservada-negativa --project <id> --target produtos

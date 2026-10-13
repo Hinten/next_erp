@@ -67,7 +67,12 @@ import {
 
 const PAGE_SIZE = 300;
 
-/** Page any collection by document id — stable cursor, bounded memory, no index. */
+/**
+ * Page any collection by document id — stable cursor, bounded memory. Rides the
+ * DECLARED key index `produtos(__name__ ASC)` (#1895, `key-walks.json`):
+ * Enterprise has no implicit one, and without it every page re-scans the whole
+ * collection.
+ */
 async function* pagesByDocId(base: Query): AsyncGenerator<QueryDocumentSnapshot[]> {
   let cursor: QueryDocumentSnapshot | undefined;
   for (;;) {

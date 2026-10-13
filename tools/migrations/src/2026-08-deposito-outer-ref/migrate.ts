@@ -35,8 +35,13 @@ import { planDepositoOuterRef } from './transform';
  * post-cutover question (#836).
  *
  * ---- Cost, honestly: two collection-group scans plus one root-collection scan,
- * and Firestore Enterprise bills DATA SCANNED. Paged by document key —
- * Firestore's always-available native ordering, so no index is needed — with
+ * and Firestore Enterprise bills DATA SCANNED. Paged by document key, riding
+ * the DECLARED key indexes — collection group `estoques(__name__ ASC)` and
+ * `historicoEstoque(__name__ ASC)`, collection `integracao(__name__ ASC)`
+ * (#1895, listed in `key-walks.json`). Enterprise has no implicit key index:
+ * without one every page re-scans the whole collection (staging, #1895: an
+ * unindexed collection-group walk table-scanned all 6,342 `enderecos` docs on
+ * EVERY page of 300). Those key indexes are the ONLY ones this needs, with
  * every decision made in code on the fetched page. A `where` on the field could
  * not narrow it: the values that need changing are the ones NOT equal to a
  * canonical value, and Firestore has no "not prefix" predicate.

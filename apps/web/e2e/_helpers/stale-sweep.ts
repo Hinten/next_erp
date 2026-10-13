@@ -321,20 +321,24 @@ async function collectPage(
  * Every doc in `target` matching any of `prefixes`, by doc id and by declared
  * field. Returns whether collection was truncated by the budget.
  *
- * ⚠️ The `documentId()` range has NO index behind it on the staging database
- * (#1874). Firestore Enterprise creates none — not even one on the document key —
- * and none of these collections declares one, so the planner walks some other
- * index of the target end to end, cuts the prefix range in a residual filter and
- * sorts in memory: on `produtos` it read 221 index rows to return 1 (staging,
- * #1200's suite, 2026-10-09). Accepted on purpose, not overlooked: the bill lands
- * on staging only, each pass reads each target's index ONCE (a second page —
- * a prefix matching more than {@link PAGE_SIZE} docs — reads it again), and the
- * alternative — a key index on twenty collections — would charge every
- * production write for a staging-only saving. `arquivos` is the exception that
- * rides one, declared for its orphan sweep. The field ranges are served by the single-field indexes already declared
- * for most of these collections; note an implicit field `orderBy` drops docs
- * missing that field, which is why `pedidos` declares both `numero` and
- * `observacoesInternas` rather than relying on either alone.
+ * ⚠️ The `documentId()` range has no index behind it unless one is DECLARED
+ * (#1874): Firestore Enterprise creates none, not even one on the document key.
+ * Without one the planner walks some other index of the target end to end, cuts
+ * the prefix range in a residual filter and sorts in memory: on `produtos` it
+ * read 221 index rows to return 1 (staging, #1200's suite, 2026-10-09). Accepted
+ * on purpose, not overlooked: the bill lands on staging only, each pass reads
+ * each target's index ONCE (a second page — a prefix matching more than
+ * {@link PAGE_SIZE} docs — reads it again), and declaring a key index on twenty
+ * collections FOR THIS SWEEP would charge every production write for a
+ * staging-only saving. Some targets do ride one today, for other readers:
+ * `arquivos` permanently (its orphan sweep), and `pedidos`, `produtos`,
+ * `clientes`, `chat`, `integracao`, `usuarios`, `balanco` and `metodo_pgto`
+ * only until the cutover — those are the migrations' key indexes (#1895),
+ * deleted afterwards (#1896). Don't rely on them here. The field ranges are
+ * served by the single-field indexes already declared for most of these
+ * collections; note an implicit field `orderBy` drops docs missing that field,
+ * which is why `pedidos` declares both `numero` and `observacoesInternas` rather
+ * than relying on either alone.
  *
  * Both queries project as little as possible: the sweep reads nothing off a
  * candidate but its `ref` and its `createTime`, and `createTime` rides the

@@ -1,0 +1,118 @@
+{
+  "$comment": "Every collection a tools/migrations script walks page by page with orderBy(FieldPath.documentId()) (#1895). Firestore Enterprise has NO implicit document-key index: without a declared `__name__ ASC` index each page scans the whole collection (#1874 measured 313 index rows per page of 100), so a walk costs N²/page instead of N. Each (collection, scope) here has exactly one `__name__ ASC` entry in firestore.indexes.json; src/keyWalks.indexes.test.ts pins the pairing both ways and that every key-walking script is listed. scripts/check-key-walks.mjs proves on a live project that each walk rides its index. These indexes are MIGRATION-ONLY: delete them after the cutover (#1896).",
+  "walks": [
+    { "script": "2026-06-pedido-pagamento-micros", "collection": "pedidos", "scope": "COLLECTION" },
+    {
+      "script": "2026-06-pedido-pagamento-micros",
+      "collection": "metodo_pgto",
+      "scope": "COLLECTION"
+    },
+    {
+      "script": "2026-08-conversa-cliente-outer-ref",
+      "collection": "clientes",
+      "scope": "COLLECTION"
+    },
+    { "script": "2026-08-conversa-cliente-outer-ref", "collection": "chat", "scope": "COLLECTION" },
+    {
+      "script": "2026-08-deposito-outer-ref",
+      "collection": "estoques",
+      "scope": "COLLECTION_GROUP"
+    },
+    {
+      "script": "2026-08-deposito-outer-ref",
+      "collection": "historicoEstoque",
+      "scope": "COLLECTION_GROUP"
+    },
+    { "script": "2026-08-deposito-outer-ref", "collection": "integracao", "scope": "COLLECTION" },
+    {
+      "script": "2026-08-estoque-reservada-negativa",
+      "collection": "estoques",
+      "scope": "COLLECTION_GROUP"
+    },
+    {
+      "script": "2026-08-estoque-reservada-negativa",
+      "collection": "produtos",
+      "scope": "COLLECTION"
+    },
+    {
+      "script": "2026-08-historico-estoque-v2",
+      "collection": "historicoEstoque",
+      "scope": "COLLECTION_GROUP"
+    },
+    {
+      "script": "2026-08-ml-integracoes-com-produto",
+      "collection": "produtoMercadoLivre",
+      "scope": "COLLECTION_GROUP"
+    },
+    {
+      "script": "2026-08-ml-integracoes-com-produto",
+      "collection": "variacaoMercadoLivre",
+      "scope": "COLLECTION_GROUP"
+    },
+    {
+      "script": "2026-08-ml-integracoes-com-produto",
+      "collection": "produtos",
+      "scope": "COLLECTION"
+    },
+    {
+      "script": "2026-08-ml-lastmarketplaceupdate",
+      "collection": "pedidos",
+      "scope": "COLLECTION"
+    },
+    { "script": "2026-08-ml-pedido-pago-audit", "collection": "pedidos", "scope": "COLLECTION" },
+    { "script": "2026-08-ml-precos-ghost-keys", "collection": "produtos", "scope": "COLLECTION" },
+    {
+      "script": "2026-08-produto-ultima-modificacao",
+      "collection": "produtos",
+      "scope": "COLLECTION"
+    },
+    { "script": "2026-08-telefone-e164", "collection": "clientes", "scope": "COLLECTION_GROUP" },
+    { "script": "2026-08-telefone-e164", "collection": "enderecos", "scope": "COLLECTION_GROUP" },
+    { "script": "2026-08-telefone-e164", "collection": "filiais", "scope": "COLLECTION_GROUP" },
+    { "script": "2026-08-telefone-e164", "collection": "int_frete", "scope": "COLLECTION_GROUP" },
+    { "script": "2026-08-telefone-e164", "collection": "pagamentos", "scope": "COLLECTION_GROUP" },
+    { "script": "2026-09-ml-cliente-fork-audit", "collection": "clientes", "scope": "COLLECTION" },
+    {
+      "script": "2026-09-ml-cliente-fork-audit",
+      "collection": "orderML",
+      "scope": "COLLECTION_GROUP"
+    },
+    { "script": "2026-09-nfe-totais", "collection": "nfev4", "scope": "COLLECTION_GROUP" },
+    { "script": "2026-09-produto-sem-variacoes", "collection": "produtos", "scope": "COLLECTION" },
+    { "script": "2026-09-produto-sem-variacoes", "collection": "pedidos", "scope": "COLLECTION" },
+    { "script": "2026-09-produto-sem-variacoes", "collection": "balanco", "scope": "COLLECTION" },
+    {
+      "script": "2026-09-whatsapp-contato-cliente",
+      "collection": "clientes",
+      "scope": "COLLECTION"
+    },
+    {
+      "script": "2026-09-whatsapp-contato-cliente",
+      "collection": "integracao",
+      "scope": "COLLECTION"
+    },
+    {
+      "script": "2026-09-whatsapp-contato-cliente",
+      "collection": "usuarios",
+      "scope": "COLLECTION"
+    },
+    { "script": "2026-09-whatsapp-contato-cliente", "collection": "user", "scope": "COLLECTION" },
+    {
+      "script": "2026-09-whatsapp-contato-cliente",
+      "collection": "whatsappConversas",
+      "scope": "COLLECTION"
+    },
+    {
+      "script": "2026-09-whatsapp-contato-cliente",
+      "collection": "whatsappIdentidades",
+      "scope": "COLLECTION"
+    },
+    {
+      "script": "2026-09-whatsapp-contato-cliente",
+      "collection": "whatsappMensagens",
+      "scope": "COLLECTION"
+    },
+    { "script": "2026-10-kit-virtual-contagem", "collection": "produtos", "scope": "COLLECTION" },
+    { "script": "2026-10-li-token-legado", "collection": "integracao", "scope": "COLLECTION" }
+  ]
+}
