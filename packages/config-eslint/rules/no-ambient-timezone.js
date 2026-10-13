@@ -75,6 +75,7 @@ const SERVER_PATHS = [
   '/apps/mercado-livre/',
   '/apps/mercado-pago/',
   '/apps/shopee/',
+  '/apps/loja-integrada/',
   '/apps/whatsapp/',
   '/apps/integrations/',
   '/packages/integrations/',
