@@ -4,7 +4,7 @@
  *
  * ## Provenance
  *
- * The first four come from Loja Integrada's PUBLIC OpenAPI document (the one
+ * The first five come from Loja Integrada's PUBLIC OpenAPI document (the one
  * `li-doc.mjs` reads), redacted:
  *
  *  - `categoriaPagina1` — the `GET /v1/categoria` 200 example, trimmed to three
@@ -15,6 +15,9 @@
  *  - `metaLimite15` — the `meta` of the single `GET /v1/pedido/search` example,
  *    which answers `limit: 15`: the provider does not always echo the limit
  *    asked for.
+ *  - `pedidoBuscaExemplo` — that whole example, both rows, verbatim: it holds no
+ *    personal value (the cliente is a resource URI, the money is the
+ *    document's own).
  *  - `corpo409Bruto` — the document's only `/v1` error example (a `409` on a
  *    produto alias), which is a bare JSON STRING, not an object.
  *
@@ -106,6 +109,58 @@ export const metaLimite15 = {
   offset: 0,
   previous: null,
   total_count: 2,
+} as const;
+
+const situacaoCancelado = {
+  aprovado: false,
+  cancelado: true,
+  codigo: 'pedido_cancelado',
+  final: true,
+  id: 8,
+  nome: 'Pedido Cancelado',
+  notificar_comprador: true,
+  padrao: false,
+  resource_uri: '/api/v1/situacao/8',
+} as const;
+
+export const pedidoBuscaExemplo = {
+  meta: metaLimite15,
+  objects: [
+    {
+      cliente: '/api/v1/cliente/34220641',
+      data_criacao: '2022-10-31T12:17:51.633657',
+      data_expiracao: '2022-11-06T12:17:51.733114',
+      data_modificacao: '2022-10-31T12:17:58.949670',
+      id_anymarket: null,
+      id_externo: null,
+      numero: 164,
+      peso_real: '0.170',
+      resource_uri: '/api/v1/pedido/164',
+      situacao: situacaoCancelado,
+      utm_campaign: null,
+      valor_desconto: '0.00',
+      valor_envio: '21.38',
+      valor_subtotal: '85.00',
+      valor_total: '106.38',
+    },
+    {
+      cliente: '/api/v1/cliente/34220641',
+      data_criacao: '2022-10-31T12:28:05.704751',
+      data_expiracao: '2022-11-06T12:28:05.782308',
+      data_modificacao: '2022-10-31T12:28:12.653648',
+      id_anymarket: null,
+      id_externo: null,
+      numero: 165,
+      peso_real: '0.450',
+      resource_uri: '/api/v1/pedido/165',
+      situacao: situacaoCancelado,
+      utm_campaign: null,
+      valor_desconto: '0.00',
+      valor_envio: '21.38',
+      valor_subtotal: '11.10',
+      valor_total: '32.48',
+    },
+  ],
 } as const;
 
 /** The raw body text, exactly as the document shows it: a JSON string literal. */

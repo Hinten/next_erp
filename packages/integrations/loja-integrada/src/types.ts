@@ -1,11 +1,13 @@
 /**
  * Loja Integrada REST v1 wire schemas — RESPONSE shapes only, and only the ones
- * something consumes today: the Tastypie paging envelope and the categoria row
- * (the validating GET lists categorias).
+ * something consumes today: the Tastypie paging envelope, the categoria row
+ * (the validating GET lists categorias) and the pedido search row (the order
+ * poller, master-plan step 3).
  *
- * Every other resource (pedido, situação, produto, estoque, preço, imagem,
- * marca, grades, envio, pagamento) arrives with its first consumer, written
- * against captured responses rather than the public document's examples.
+ * Every other resource (the pedido detail, situação, produto, estoque, preço,
+ * imagem, marca, grades, envio, pagamento) arrives with its first consumer,
+ * written against captured responses rather than the public document's
+ * examples.
  *
  * ## Passthrough
  *
@@ -71,3 +73,35 @@ export const liCategoriaSchema = z
   .passthrough();
 
 export type CategoriaLi = z.infer<typeof liCategoriaSchema>;
+
+/**
+ * One row of `GET /v1/pedido/search` as the order poller reads it: only what it
+ * decides on, everything else kept by `.passthrough()`. The poller never maps
+ * an order (the importer re-fetches it by `numero`, D13).
+ *
+ *  - `numero`: the order key, a JSON number or a quoted one (`wireInt()`). A
+ *    row without it costs the page, because nothing can be enqueued for it.
+ *  - `data_modificacao`: deliberately `z.unknown().optional()`. Its shape is
+ *    canonicalised by the app (`lerDataLi`), which turns anything unexpected —
+ *    an absent key included — into a per-row `formato-de-data`: one odd stamp
+ *    must never cost the whole page, or the other rows on it would not be
+ *    enqueued either. ⚠️ The `.optional()` is load-bearing: Zod 4 rejects an
+ *    ABSENT key under a bare `z.unknown()` (`expected nonoptional`), which
+ *    would fail the page for one row.
+ *
+ * ⚠️ `numero` passes here as ANY safe integer, zero and negatives included; the
+ * task payload's grammar (`numeroPedidoLiSchema`, positive decimal) is checked
+ * where the payload is built.
+ *
+ * ⚠️ Written against the public document's two example rows, the exception to
+ * the rule above: it stays that way only until a captured search response
+ * (capture C1) is committed as a fixture and confirms it.
+ */
+export const liPedidoBuscaLinhaSchema = z
+  .object({
+    numero: wireInt(),
+    data_modificacao: z.unknown().optional(),
+  })
+  .passthrough();
+
+export type PedidoBuscaLinhaLi = z.infer<typeof liPedidoBuscaLinhaSchema>;

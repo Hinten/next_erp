@@ -554,6 +554,19 @@ export {
 } from './notificacaoLojaIntegrada';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta cursor,
+  // lease and dedup state of the Loja Integrada order poller (master plan
+  // step 3, PR 3-e). Bare: no Meta, never a combined `{ schema, meta }`.
+  CURSOR_POLL_LI_REGEX,
+  MARCA_DATA_ILEGIVEL_LI,
+  cursorPollLiSchema,
+  pollPedidosLojaIntegradaSchema,
+  vistoPollLiSchema,
+  type PollPedidosLojaIntegrada,
+  type VistoPollLi,
+} from './pollPedidosLojaIntegrada';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
