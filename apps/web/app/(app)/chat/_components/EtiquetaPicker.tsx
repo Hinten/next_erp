@@ -40,7 +40,7 @@ export function EtiquetaPicker({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            border: `${value == null ? 2.5 : 1}px solid var(--mantine-color-dimmed)`,
+            border: `${value == null ? 2.5 : 1}px solid var(--mantine-color-${value == null ? 'blue-text' : 'dimmed'})`,
           }}
         >
           <IconX size={size * 0.6} />

@@ -26,11 +26,12 @@ test.describe.serial('TableView list mode e2e — depósitos', () => {
   const uppercase = { id: `${prefix}-002`, nome: `${prefix}-ACAI-002` };
   const nearMiss = { id: `${prefix}-003`, nome: `${prefix}-Açúcar-003` };
   let fixturesCreated = false;
-  let firestoreHost: string;
+  let browserFirestoreHost: string;
 
   test.beforeAll(async () => {
     expect(process.env.FIREBASE_PROJECT_ID).toBe('demo-erp');
-    firestoreHost = readEmulatorAccessConfig().firestoreHost;
+    readEmulatorAccessConfig();
+    browserFirestoreHost = process.env.NEXT_PUBLIC_FIREBASE_EMULATOR_HOST ?? '127.0.0.1';
     await seedDepositos(prefix, 3);
     fixturesCreated = true;
     const batch = db().batch();
@@ -58,7 +59,7 @@ test.describe.serial('TableView list mode e2e — depósitos', () => {
     await gesture();
     const response = await responsePromise;
     const url = new URL(response.url());
-    expect(url.hostname).toBe(firestoreHost);
+    expect(url.hostname).toBe(browserFirestoreHost);
     expect(url.port).toBe('8080');
     expect(url.pathname).toBe('/v1/projects/demo-erp/databases/default/documents:executePipeline');
     expect(response.status()).toBe(200);
