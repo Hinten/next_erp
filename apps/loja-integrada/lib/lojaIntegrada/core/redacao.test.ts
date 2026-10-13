@@ -2305,9 +2305,11 @@ describe('caps', () => {
     expect(em(r.ok ? r.corpo : null, 'objects.0.sku')).toBe('sku-0001');
   });
 
-  // Builds and scans a 32 MB string: seconds on a loaded CI runner, so the
-  // default timeout would turn load into a red test.
-  it('a body over 32 MB is refused by the fixture profile', { timeout: 30_000 }, () => {
+  // Builds and scans a 32 MB string: seconds on a loaded CI runner. One CI run
+  // (the whole graph testing in parallel) stretched the sibling totality test
+  // from about 3 s alone to 31 s, so neither the default timeout nor 30 s is a
+  // safe bound under that load.
+  it('a body over 32 MB is refused by the fixture profile', { timeout: 60_000 }, () => {
     expect(LIMITE_ANALISE_BYTES.fixture).toBe(32 * 1024 * 1024);
     const corpo = `"${'x'.repeat(LIMITE_ANALISE_BYTES.fixture)}"`;
     expect(fixture('/v1/produto/1', 200, corpo)).toMatchObject({
@@ -2330,26 +2332,43 @@ describe('caps', () => {
 });
 
 describe('totality — never throws', () => {
-  const corpos: readonly (string | null)[] = [
-    null,
-    '',
-    'null',
-    '"x"',
-    '[]',
-    '<html><body>Erro</body></html>',
-    '{"a": ',
-    `${'['.repeat(10_000)}${']'.repeat(10_000)}`,
-    `[${Array(500_000).fill('1').join(',')}]`,
-    `"${'x'.repeat(2 * 1024 * 1024)}"`,
+  // One labelled row per body, one test per row (below). The label is a short
+  // description and is the ONLY thing a test title carries: a title that printed
+  // the body would print up to 2 MB of it.
+  const corpos: Array<[etiqueta: string, corpo: string | null]> = [
+    ['no body at all (null)', null],
+    ['an empty string', ''],
+    ['the JSON literal null', 'null'],
+    ['a short JSON string', '"x"'],
+    ['an empty JSON array', '[]'],
+    ['an HTML error page', '<html><body>Erro</body></html>'],
+    ['a truncated JSON object', '{"a": '],
+    ['an array nested 10,000 deep', `${'['.repeat(10_000)}${']'.repeat(10_000)}`],
+    ['an array of 500,000 numbers', `[${Array(500_000).fill('1').join(',')}]`],
+    ['a JSON string of 2 MB', `"${'x'.repeat(2 * 1024 * 1024)}"`],
   ];
   const caminhos = ['/v1/pedido/1', '/v1/situacao/', '/v1/produto/1', '/webhooks/v1/pedido'];
   const statuses = [200, 401, 429, 503, null];
 
-  // About 3 s alone, on 2 MB bodies; under a parallel run it passed 5 s once, so
-  // the default timeout would turn load into a red test.
-  it('over every body × class × status, in both profiles', { timeout: 30_000 }, () => {
-    let n = 0;
-    for (const corpo of corpos) {
+  // The table is the coverage: a row dropped by mistake would silently shrink
+  // the suite, so its size and the uniqueness of its labels are asserted. Only
+  // numbers are compared, so a failure never prints a body.
+  it('the table still has all 10 bodies, each under its own label', () => {
+    expect(corpos.length).toBe(10);
+    expect(new Set(corpos.map(([etiqueta]) => etiqueta)).size).toBe(corpos.length);
+  });
+
+  // Each body is its own test with its own budget. Alone, the whole set took
+  // about 3 s (the 2 MB, 500,000-item and 10,000-deep bodies carry nearly all of
+  // it); in one CI run, with the whole graph testing in parallel, the single
+  // 400-call test took 31.1 s and tripped its 30 s timeout. Split per body, a
+  // slow body fails alone and by name, and 60 s each is a budget no other body
+  // can spend.
+  it.each(corpos)(
+    'never throws for %s, over every path × status in both profiles',
+    { timeout: 60_000 },
+    (_etiqueta, corpo) => {
+      let n = 0;
       for (const caminho of caminhos) {
         for (const status of statuses) {
           expect(() => log(caminho, status, corpo)).not.toThrow();
@@ -2357,9 +2376,9 @@ describe('totality — never throws', () => {
           n += 1;
         }
       }
-    }
-    expect(n).toBe(corpos.length * caminhos.length * statuses.length);
-  });
+      expect(n).toBe(caminhos.length * statuses.length);
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */
