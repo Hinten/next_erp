@@ -69,6 +69,7 @@ import {
   importadorPedidoLi,
   persistirFalhaNotificacaoLi,
   processarNotificacaoLi,
+  redriveAposSalvarTokenLi,
   redrivePedidosAdiadosDaConta,
   reprocessarAdiadasLi,
   reprocessarNotificacoesLi,
@@ -881,6 +882,57 @@ describe('redrivePedidosAdiadosDaConta', () => {
     const r2 = await redrivePedidosAdiadosDaConta(asDb(db), ID, 5, espiao2.logger);
     expect(r2.truncado).toBe(false);
     expect(espiao2.chamadas).toEqual([]);
+  });
+});
+
+describe('redriveAposSalvarTokenLi — the best-effort wrapper the credential routes call', () => {
+  it('returns what the re-drive did, and moves only this conta’s deferred rows', async () => {
+    const db = new FakeDb();
+    const a = seedNotificacao(db, pedido({ numero: '1' }), { status: 'deferred', tentativas: 3 });
+    const parado = seedNotificacao(db, pedido({ numero: '2' }), { status: 'parked' });
+    const outra = seedNotificacao(db, pedido({ contaId: OUTRA, numero: '1' }), {
+      status: 'deferred',
+    });
+    const antes = { parado: db.ler(parado), outra: db.ler(outra) };
+    expect(await redriveAposSalvarTokenLi(asDb(db), ID)).toEqual({
+      encontradas: 1,
+      redirecionadas: 1,
+      truncado: false,
+    });
+    expect(db.ler(a)).toMatchObject({ status: 'failed', tentativas: 0 });
+    expect(db.ler(parado)).toEqual(antes.parado);
+    expect(db.ler(outra)).toEqual(antes.outra);
+  });
+
+  it.each([1, 5, 9, 14, 16])(
+    'a gRPC status error (%i) is logged by code and swallowed as null',
+    async (codigo) => {
+      const db = new FakeDb();
+      db.falharConsulta(COLECAO, grpc(codigo, 'mensagem que nao deve ser logada'));
+      const espiao = loggerEspiao();
+      expect(await redriveAposSalvarTokenLi(asDb(db), ID, espiao.logger)).toBeNull();
+      expect(espiao.chamadas).toHaveLength(1);
+      expect(espiao.chamadas[0]?.[1]).toEqual({ contaId: ID, code: codigo });
+      expect(JSON.stringify(espiao.chamadas)).not.toContain('mensagem que nao deve');
+    },
+  );
+
+  it.each([
+    ['a plain Error', new Error('bug')],
+    ['a TypeError', new TypeError('bug')],
+    [
+      'a string `code` (a FirebaseError shape)',
+      Object.assign(new Error('x'), { code: 'functions/internal' }),
+    ],
+    ['code 0 (not an error status)', Object.assign(new Error('x'), { code: 0 })],
+    ['code 17 (outside the gRPC space)', Object.assign(new Error('x'), { code: 17 })],
+    ['a non-Error throw', 'falhou'],
+  ])('near-miss: %s is rethrown, never swallowed (rule 6)', async (_nome, erro) => {
+    const db = new FakeDb();
+    db.falharConsulta(COLECAO, erro as Error);
+    const espiao = loggerEspiao();
+    await expect(redriveAposSalvarTokenLi(asDb(db), ID, espiao.logger)).rejects.toBe(erro);
+    expect(espiao.chamadas).toEqual([]);
   });
 });
 

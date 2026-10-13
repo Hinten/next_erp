@@ -53,10 +53,11 @@
  * orders. The deferred lane re-drives daily for `MAX_TENTATIVAS_DEFERRED` (7)
  * days, and a token save pulls the conta's rows that are ALREADY `deferred`
  * back at once ({@link redrivePedidosAdiadosDaConta}, called by the credential
- * routes from PR 3-b). `graduateDeferredTransientErrors` sends a row whose
- * precondition cleared but whose import then THREW back to the hot lane with a
- * fresh budget. A conta that is still parked RETURNS `adiado` and never throws,
- * so it never graduates by mistake.
+ * routes through {@link redriveAposSalvarTokenLi}, best effort).
+ * `graduateDeferredTransientErrors` sends a row whose precondition cleared but
+ * whose import then THREW back to the hot lane with a fresh budget. A conta that
+ * is still parked RETURNS `adiado` and never throws, so it never graduates by
+ * mistake.
  *
  * ⚠️ Accepted residue (step-3 plan Q4, option A): a run that found the conta
  * parked (or parked it), and writes the row after a token save's re-drive,
@@ -86,6 +87,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { ZodError, z } from 'zod';
 import { notificacaoLojaIntegradaCollection } from '@delfrance/data/admin/collections';
+import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import {
   MAX_TENTATIVAS,
   MAX_TENTATIVAS_DEFERRED,
@@ -656,4 +658,32 @@ export async function redrivePedidosAdiadosDaConta(
     );
   }
   return { encontradas: snap.docs.length, redirecionadas, truncado };
+}
+
+/**
+ * The re-drive as the two credential routes call it: BEST EFFORT. The token is
+ * already saved and validated when this runs, so a Firestore failure here must
+ * never fail the request — the daily deferred sweep drains whatever this missed.
+ *
+ * Narrowed by CLASS (root rule 6): only a gRPC status error — the shape every
+ * Admin-SDK Firestore failure takes — is logged (the code, never the message)
+ * and swallowed, as `null`; anything else is a bug and is rethrown. The
+ * narrowing is deliberately wider than "transient": the conta's credential is
+ * saved either way, and the daily sweep is the backstop for any of them.
+ */
+export async function redriveAposSalvarTokenLi(
+  db: Firestore,
+  contaId: string,
+  logger: LoggerNotificacaoLi = loggerPadrao,
+): Promise<ResultadoRedriveLi | null> {
+  try {
+    return await redrivePedidosAdiadosDaConta(db, contaId, LIMITE_REDRIVE_LI, logger);
+  } catch (err) {
+    if (!isGrpcStatusError(err)) throw err;
+    logger.warn(
+      '[loja-integrada/notificacoes] re-drive após salvar o token falhou — a varredura diária cobre',
+      { contaId, code: err.code },
+    );
+    return null;
+  }
 }

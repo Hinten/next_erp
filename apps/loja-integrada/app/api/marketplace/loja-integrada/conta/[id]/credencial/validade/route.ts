@@ -29,8 +29,11 @@
  *  7. `atualizarValidade` under the read's `updateTime`: a write in between is
  *     409 `LI_CREDENCIAL_ALTERADA`, a removal in between 409
  *     `LI_CREDENCIAL_AUSENTE`;
- *  8. the avisos, clocked by this write's commit time, then 200 with the status
- *     projected from the values written.
+ *  8. the avisos, clocked by this write's commit time;
+ *  9. the RE-DRIVE of this conta's `deferred` notifications (the write cleared
+ *     `reconexaoPendente`), best effort: a Firestore failure is logged and the
+ *     answer stays 200 (`redriveAposSalvarTokenLi`); then 200 with the status
+ *     projected from the values written. Only this success path re-drives.
  *
  * No post-write conta re-check, unlike the save: this is an `update`, which can
  * never create the document, so a conta deleted meanwhile leaves nothing behind
@@ -60,6 +63,7 @@ import { lerContaLojaIntegrada, naoEhIdDeConta } from '@/lib/lojaIntegrada/core/
 import { tokenCabeNaRef } from '@/lib/lojaIntegrada/core/credencial';
 import { atualizarValidade, lerCredencial } from '@/lib/lojaIntegrada/core/credentialStore';
 import { criarObservadorLi } from '@/lib/lojaIntegrada/core/log';
+import { redriveAposSalvarTokenLi } from '@/lib/lojaIntegrada/notificacoes/notificacao';
 import {
   LiContaNaoEncontradaError,
   LiCredencialAlteradaError,
@@ -154,6 +158,10 @@ export async function PUT(
       },
       { increment: (by) => FieldValue.increment(by), nowMs: agoraMs, logger: console },
     );
+
+    // The renewal cleared `reconexaoPendente`: this conta's deferred
+    // notifications go back to the hot lane. Best effort — never changes the answer.
+    await redriveAposSalvarTokenLi(db, id);
 
     const resposta: RespostaCredencialLojaIntegrada = {
       ...statusDaCredencial(
