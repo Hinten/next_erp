@@ -7,7 +7,7 @@ trigger. Those all buy "survive indefinitely without a cutover", and there **is*
 a cutover (root `CLAUDE.md` rule 8 / ADR 0013), so they pay for something already
 bought and leave permanent compat code nobody deletes.
 
-Sixteen dated subfolders live under `src/` today — twelve that write
+Seventeen dated subfolders live under `src/` today — thirteen that write
 (`migrate.ts`, or `backfill.ts`; `2026-09-produto-sem-variacoes` also carries an
 `audit.ts`) and four read-only audits (`audit.ts` alone). Most
 carry a runbook beside this file — `telefone-e164.README.md`,

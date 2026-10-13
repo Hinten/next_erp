@@ -57,7 +57,7 @@ function QuoteFrame({ children, onClick }: { children: React.ReactNode; onClick?
       onClick={onClick}
       style={{
         borderLeft: '3px solid var(--mantine-color-blue-4)',
-        background: 'var(--mantine-color-gray-0)',
+        background: 'var(--mantine-color-default-hover)',
         borderRadius: 4,
         padding: '4px 8px',
         marginBottom: 4,

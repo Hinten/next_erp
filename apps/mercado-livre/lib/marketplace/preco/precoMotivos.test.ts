@@ -3,9 +3,10 @@
  * `mensagemDe` cases untouched — that they still pass through the re-export is
  * the proof the move was behaviour-preserving — so this file covers what the
  * move newly makes assertable: that the table is COMPLETE against the codes the
- * price stack actually emits.
+ * price stack actually emits — including the four `NAO_ENUMERADO_*` codes, whose
+ * emitter has lived in `anuncios/linksNaoEnumerados.ts` since #1200.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -46,11 +47,13 @@ describe('the table covers the codes the price stack emits', () => {
    * operator gets an unexplained code.
    *
    * ⚠️ Matches ANY single-quoted UPPER_SNAKE literal, not `code:`/`motivo:`
-   * properties. The narrow version found nothing at all in `precoReconciliacao.ts`
-   * — which emits `return 'NAO_ENUMERADO_*'` — and in `precoSync.ts`, which
-   * passes `'RECONCILIACAO_INCOMPLETA'` positionally, so both files' cases
-   * passed over an empty set. Measured against all four emitters, the ONLY
-   * non-motivo literals this shape picks up are the `MERCADO_LIVRE_*` env names.
+   * properties. The narrow version found nothing at all in the reconciliation
+   * walk — which emitted `return 'NAO_ENUMERADO_*'` then and spells them as
+   * `CODIGO_NAO_ENUMERADO` property VALUES now (`anuncios/linksNaoEnumerados.ts`)
+   * — and in `precoSync.ts`, which passes `'RECONCILIACAO_INCOMPLETA'`
+   * positionally, so both files' cases passed over an empty set. Measured
+   * against all four emitters, the ONLY non-motivo literals this shape picks up
+   * are the `MERCADO_LIVRE_*` env names.
    */
   function codigosEmitidos(arquivo: string): string[] {
     const src = readFileSync(arquivo, 'utf8')
@@ -84,28 +87,40 @@ describe('the table covers the codes the price stack emits', () => {
    *
    * The route directory is here because `atualizar-precos/route.ts` emits
    * `SEM_TABELA_NORMAL`, which no file under `preco/` does.
+   *
+   * ⚠️ The one FILE root is `anuncios/linksNaoEnumerados.ts`, and it is a file
+   * rather than its directory on purpose. Since #1200 the four `NAO_ENUMERADO_*`
+   * codes are emitted there (the walk moved out of `precoReconciliacao.ts` to be
+   * shared with the monthly stock audit), so without it they would leave the
+   * scan while every case here stayed green — the exact shape of both rounds
+   * above. Walking all of `anuncios/` instead would sweep in the publish stack's
+   * own UPPER_SNAKE literals, which are not price motivos. A file root that no
+   * longer exists THROWS (ENOENT) rather than scanning nothing, so a rename or
+   * move of that module reds this suite until the root follows it.
    */
   const RAIZES = [
     resolve(HERE),
     resolve(HERE, '../../../app/api/marketplace/mercado-livre/atualizar-precos'),
+    resolve(HERE, '../anuncios/linksNaoEnumerados.ts'),
   ];
 
   function arquivosEmissores(): string[] {
     const out: string[] = [];
+    const ehEmissor = (nome: string): boolean =>
+      nome.endsWith('.ts') && !nome.endsWith('.test.ts') && nome !== 'precoMotivos.ts';
     const walk = (dir: string): void => {
       for (const entrada of readdirSync(dir, { withFileTypes: true })) {
         const p = resolve(dir, entrada.name);
         if (entrada.isDirectory()) walk(p);
-        else if (
-          entrada.name.endsWith('.ts') &&
-          !entrada.name.endsWith('.test.ts') &&
-          entrada.name !== 'precoMotivos.ts'
-        ) {
-          out.push(p);
-        }
+        else if (ehEmissor(entrada.name)) out.push(p);
       }
     };
-    for (const raiz of RAIZES) walk(raiz);
+    for (const raiz of RAIZES) {
+      // `statSync` throws ENOENT on a missing root — loud, by design (above).
+      if (statSync(raiz).isDirectory()) walk(raiz);
+      else if (ehEmissor(basename(raiz))) out.push(raiz);
+      else throw new Error(`precoMotivos.test: a raiz ${raiz} não é um emissor .ts`);
+    }
     return out;
   }
 
@@ -123,6 +138,18 @@ describe('the table covers the codes the price stack emits', () => {
   it('the scan still discovers codes', () => {
     const todos = new Set(porArquivo.flatMap((e) => e.codigos));
     expect(todos.size).toBeGreaterThanOrEqual(20);
+  });
+
+  it('the shared link walk is scanned — all four NAO_ENUMERADO_* codes are discovered (#1200)', () => {
+    // The two floors above cannot see this root go missing: four codes out of
+    // twenty-odd, and the file count has slack. Pin the root by what it yields.
+    const walk = porArquivo.find((e) => e.arquivo === 'linksNaoEnumerados.ts');
+    expect(walk?.codigos.slice().sort()).toEqual([
+      'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO',
+      'NAO_ENUMERADO_LINK_EM_VARIACAO',
+      'NAO_ENUMERADO_PAI_ID_INVALIDO',
+      'NAO_ENUMERADO_PRODUTO_AUSENTE',
+    ]);
   });
 
   it('every code emitted anywhere in the price stack has a message', () => {

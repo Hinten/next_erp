@@ -191,7 +191,7 @@ export default function WhatsappVinculoPage() {
               key={message.id}
               gap={4}
               p="sm"
-              style={{ border: '1px solid var(--mantine-color-gray-3)', borderRadius: 8 }}
+              style={{ border: '1px solid var(--mantine-color-default-border)', borderRadius: 8 }}
             >
               {message.conteudo && (
                 <Text style={{ whiteSpace: 'pre-wrap' }}>{message.conteudo}</Text>

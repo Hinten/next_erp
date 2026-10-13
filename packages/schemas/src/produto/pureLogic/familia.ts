@@ -353,6 +353,53 @@ export function ehKitVirtualEfetivo(p: {
 }
 
 /**
+ * The kit fields a produto save must ADD so the document it leaves behind keeps
+ * the kit invariant — «É kit virtual» only beside «É kit», and a non-kit carries
+ * no component map. Pure; the editor runs it as `deriveTransactionPatch`, i.e.
+ * inside the save transaction, over the `tx.get` result (`current`) and the
+ * dirty patch about to be written.
+ *
+ * ⚠️ **Why the editor's `deriveOnSave` is not enough.** It derives the same
+ * values, but from the FORM, and ObjectView writes a derived key only when it
+ * differs from the form's own value. A form painted from a stale IndexedDB copy
+ * (a client transaction has no latency compensation) and dirtied before server
+ * truth arrives therefore omits it: turning «É kit» off over a stale
+ * `ehKitVirtual: false` derives `false`, sees "no change", and leaves the stored
+ * `true` in place — `{ ehKit: false, ehKitVirtual: true }`, the mismatch the
+ * Shopee publisher refuses (`kit-virtual-sem-kit`). That is the
+ * `produto-kit.cadastros` e2e flake; a second operator tab reaches the same
+ * state. Root `CLAUDE.md` rule 7: re-derive from what the transaction READ.
+ *
+ * ⚠️ **It decides on the RESULTING document** (`key in patch ? patch : current`),
+ * never on `current` alone: `saveRecord` merges `{ ...patch, ...derived }`, so
+ * only a returned key can override a patch that carries `ehKitVirtual: true`
+ * over a stored `ehKit: false` — and a patch turning «É kit» ON keeps the
+ * stored flag and map it would otherwise clear.
+ *
+ * It only ever switches OFF, so it can never mint a virtual kit or a map nobody
+ * wrote. Returns `{}` when the resulting document already holds the invariant.
+ * Strict `=== true`, like {@link ehKitVirtualEfetivo}.
+ */
+export function camposDeKitDoPatch(
+  current: Readonly<Record<string, unknown>> | null,
+  patch: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const resultante = (campo: string): unknown => (campo in patch ? patch[campo] : current?.[campo]);
+  const ehKit = resultante('ehKit');
+  const derivados: Record<string, unknown> = {};
+  if (resultante('ehKitVirtual') === true && !ehKitVirtualEfetivo({ ehKit, ehKitVirtual: true })) {
+    derivados.ehKitVirtual = false;
+  }
+  // Same rule as the editor's `deriveOnSave`: a non-kit carries no map, and the
+  // keys denorm (the delete guard's `array-contains`) goes with it.
+  if (ehKit !== true) {
+    if (resultante('componentesKit') != null) derivados.componentesKit = null;
+    if (resultante('componentesKitKeys') != null) derivados.componentesKitKeys = null;
+  }
+  return derivados;
+}
+
+/**
  * The fields a sole member MIRRORS from its parent — the create-time copy and
  * the ongoing sync are the same list, deliberately, so the two cannot drift into
  * disagreeing about what "a mirror" contains.

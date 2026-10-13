@@ -22,7 +22,7 @@ import { ttlExpiry } from './shared/ttl';
  *  - job identity/state: `integracaoId`, `status`, `baixarPreco` (the request
  *    toggle the route sanitizes from the body), `startedBy`;
  *  - the resumable cursors: `afterAnchorId` over anchor produtos and
- *    `afterLinkPath` over the conta's links (each with its own
+ *    `reconciliacaoForma` + `afterLinkPath` over the conta's links (each with its own
  *    `*Concluido` flag for the null disambiguation), plus `fila` (the drafts
  *    still to send, at most one plan page's worth, persisted after EVERY item
  *    so a retry resumes exactly where it left off);
@@ -157,7 +157,8 @@ export const envioPrecoMercadoLivreSchema = z.object({
   planejamentoConcluido: z.boolean().default(false),
   /**
    * The RECONCILIATION phase's keyset cursor (#1072) — the FULL document path
-   * of the last link read, `null` before its first page.
+   * of the last link read in the form `reconciliacaoForma` names, `null` before
+   * that form's first page.
    *
    * ⚠️ A path, not a doc id, and that is not a style choice: the phase pages a
    * COLLECTION GROUP, where `__name__` is the full path, so `startAfter` needs
@@ -165,6 +166,23 @@ export const envioPrecoMercadoLivreSchema = z.object({
    * `afterAnchorId` uses is a root-collection affordance and does not transfer.
    */
   afterLinkPath: z.string().nullable().default(null),
+  /**
+   * Which stored `contaOuterRef` form the reconciliation is walking — an index
+   * into `contaRefForms` (#1862). `afterLinkPath` is a cursor INSIDE this form:
+   * the phase reads one form at a time with `==`, because an `in` over both
+   * sorted the conta's whole remainder on every page.
+   *
+   * ⚠️ It must stay in this schema AND in the job's checkpoint patch: the schema
+   * is a bare `z.object`, so a key it does not declare is stripped on every
+   * parse, the index reads back as 0 after every handover, and the phase
+   * re-walks form 0 until `PRECO_RECON_MAX_PAGES` cuts it — form 1 never read.
+   *
+   * A job checkpointed by the old `in` walk carries no index and resumes form 0
+   * after that walk's merged cursor: every form-0 link up to that path was
+   * already read, and form 1 restarts from its beginning — so the worst case is
+   * a re-reported row, never a missed one.
+   */
+  reconciliacaoForma: z.number().int().nonnegative().default(0),
   /**
    * The reconciliation twin of `planejamentoConcluido` — its own flag rather
    * than a widened meaning for that one, so each stays single-purpose and an

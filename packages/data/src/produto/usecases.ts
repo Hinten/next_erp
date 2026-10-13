@@ -18,6 +18,7 @@ import {
   type ParentParaMembroUnico,
   type Produto,
   camposDeKitDoMembroUnico,
+  ehKitVirtualEfetivo,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoWriteOp } from './port';
@@ -458,6 +459,45 @@ export interface KitStatusChange {
 /** True when `ehKit` or `ehKitVirtual` actually changed across the save. */
 function kitStatusChanged(c: KitStatusChange): boolean {
   return c.ehKit !== c.oldEhKit || c.ehKitVirtual !== c.oldEhKitVirtual;
+}
+
+/**
+ * The parent's kit-status transition as ONE SAVE TRANSACTION saw it: the
+ * document it read (`before`) against that document with the patch it wrote
+ * over it. Pure.
+ *
+ * ⚠️ **Never build this from the form.** A produto form painted from a stale
+ * IndexedDB copy and edited before server truth arrives holds the CACHED kit
+ * status on every key the operator did not touch. A form-side "new" diffed
+ * against a server-side "old" then propagates a flip the parent never made —
+ * un-kitting every variation child and clearing their maps while the parent
+ * stays a kit. Both sides here come from the transaction, so a save that
+ * did not move the kit status reports no change, whatever the form showed.
+ *
+ * "Old" reads the stored flags as they are (a legacy `ehKitVirtual: true` on a
+ * non-kit counts, as the editor's previous snapshot-pinned value did); "new" is
+ * the flag pair as {@link ehKitVirtualEfetivo} reads it, the value the children
+ * mirror. `componentesKit` and the sole member's id come from the stored
+ * document too — never the form's map.
+ */
+export function kitStatusChangeDoSave(
+  before: Readonly<Record<string, unknown>>,
+  patch: Readonly<Record<string, unknown>>,
+): KitStatusChange {
+  const depois: Record<string, unknown> = { ...before, ...patch };
+  const mapa = depois.componentesKit;
+  const membro = depois.filhoUnicoId;
+  return {
+    ehKit: depois.ehKit === true,
+    ehKitVirtual: ehKitVirtualEfetivo(depois),
+    oldEhKit: before.ehKit === true,
+    oldEhKitVirtual: before.ehKitVirtual === true,
+    componentesKit:
+      mapa !== null && typeof mapa === 'object' && !Array.isArray(mapa)
+        ? (mapa as Record<string, unknown>)
+        : null,
+    membroUnicoId: typeof membro === 'string' && membro !== '' ? membro : null,
+  };
 }
 
 /**
