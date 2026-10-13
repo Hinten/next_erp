@@ -165,7 +165,13 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
     await page.getByRole('tab', { name: 'Kit' }).click();
 
     // Toggle "É kit" OFF and save — the parent stops being a kit. «É kit
-    // virtual» is left ON in the form on purpose: the save must switch it off.
+    // virtual» is not touched on purpose: the save must switch it off. ⚠️ This
+    // navigation is deliberately NOT gated on server truth: the editor may paint
+    // the cached copy from BEFORE the save above (flag OFF) and take the click
+    // before the server snapshot arrives. That stale path is what this step
+    // covers end-to-end — there `deriveOnSave` sees "no change", and only the
+    // save transaction's `camposDeKitDoPatch` (over the doc it read) switches the
+    // stored flag off. Do not add a wait here without keeping a stale-path case.
     await page.getByRole('switch', { name: 'É kit', exact: true }).click();
     await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
 
@@ -183,8 +189,10 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
       .toEqual({ kit: null, ehKit: false });
 
     await test.step('desmarcar É kit desmarca também É kit virtual', async () => {
-      // The editor's `deriveOnSave` stores «É kit virtual» only together with
-      // «É kit» (`ehKitVirtualEfetivo`), so the parent never keeps the mismatch.
+      // The editor stores «É kit virtual» only together with «É kit»
+      // (`ehKitVirtualEfetivo`): `deriveOnSave` from a form that matches the
+      // stored doc, and the save transaction's `camposDeKitDoPatch` from the doc
+      // it read whatever the form showed — so the parent never keeps the mismatch.
       await expect
         .poll(
           async () => {

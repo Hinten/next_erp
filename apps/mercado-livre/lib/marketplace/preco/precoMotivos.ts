@@ -62,10 +62,14 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   TEMPO_ESGOTADO: 'Não tentado: o tempo do envio se esgotou. Tente com menos produtos.',
   REAUTH: 'Não tentado: a conta precisa ser reconectada ao Mercado Livre.',
   ERRO_CANAL: 'O Mercado Livre não respondeu. Tente novamente.',
-  // The account-wide job's reconciliation phase (#1072). The manual push never
-  // EMITS them — it reads anchors by key, so it has no unenumerated set — but
-  // the table is the repo's registry of the price vocabulary, and a code that
-  // is not in it is a code nobody can look up.
+  // The account-wide job's reconciliation phase (#1072). Emitted by the shared
+  // link walk, `anuncios/linksNaoEnumerados.ts` (`CODIGO_NAO_ENUMERADO`, #1200),
+  // which `precoMotivos.test.ts` scans as a named FILE root — it lives outside
+  // `preco/`. The manual push never EMITS them — it reads anchors by key, so it
+  // has no unenumerated set — but the table is the repo's registry of the price
+  // vocabulary, and a code that is not in it is a code nobody can look up. (The
+  // monthly stock audit shares the walk but not this wording: it raises
+  // `anuncioForaDaSincronizacao` avisos, whose pt-BR lives with the bell.)
   NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO:
     'O anúncio está ativo, mas o produto não registra esta conta — por isso o envio em massa ' +
     'não o alcançou. Envie o preço por aqui, pela tabela de produtos.',

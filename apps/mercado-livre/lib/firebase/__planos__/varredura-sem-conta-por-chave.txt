@@ -1,0 +1,70 @@
+Execution:
+ results returned: 2
+ query id: 2befb76608439632
+ request peak memory usage: 49.56 KiB (50,752 B)
+ data bytes read: 12.21 KiB (12,499 B)
+ entity row scanned: 2
+ index row scanned: 25
+
+Billing:
+ read units: 4
+
+Tree:
+• Compute
+|  $out_1: map_set($record_1, "__name__", $__name___1, "__key__", unset)
+|  is query result: true
+|
+|  Execution:
+|   records returned: 2
+|   latency: 5.95 ms (local <1 ms)
+|
+└── • Compute
+    |  $__name___1: $__key___6
+    |
+    |  Execution:
+    |   records returned: 2
+    |   latency: 5.91 ms (local <1 ms)
+    |
+    └── • Fetch
+        |  order: PRESERVE_INPUT_ORDER
+        |  source: **/produtoMercadoLivre
+        |  input record id: $rid_2
+        |  output bindings: {$__key___6=get_field(row(), "__key__"), $record_1=row()}
+        |  output: [$__key___6, $record_1]
+        |
+        |  Execution:
+        |   records returned: 2
+        |   latency: 5.91 ms (local 2.20 ms)
+        |   peak memory usage: 45.56 KiB (46,656 B)
+        |   data bytes read: 6.24 KiB (6,394 B)
+        |
+        └── • MajorSort
+            |  fields: [$__key___4 ASC]
+            |  output: [$rid_2]
+            |  limit: 2
+            |
+            |  Execution:
+            |   records returned: 2
+            |   latency: 3.71 ms (local <1 ms)
+            |   peak memory usage: 4.00 KiB (4,096 B)
+            |
+            └── • Filter
+                |  expression: exists($__key___4)
+                |
+                |  Execution:
+                |   records returned: 25
+                |   latency: 3.64 ms (local <1 ms)
+                |   post-filtered rows: 0
+                |
+                └── • SequentialScan
+                       properties: Selection {  }
+                       fields: [null, $__key___4, $rid_2]
+                       index: **/produtoMercadoLivre (isUserProductModel ASC, __key__ ASC)@[id = CICAgJil0IYJ]
+                       key ordering length: 3
+                       ranges: /
+
+                       Execution:
+                        records returned: 25
+                        latency: 3.52 ms
+                        records scanned: 25
+                        data bytes read: 5.96 KiB (6,105 B)

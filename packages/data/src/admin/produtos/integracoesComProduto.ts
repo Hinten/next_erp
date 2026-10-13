@@ -37,8 +37,14 @@
  *
  * ## Race discipline (root CLAUDE.md rule 7 / ADR 0011)
  *
- * - The ADD is **tier 0**: `arrayUnion` is commutative and idempotent, so an
- *   Eventarc redelivery or a concurrent publish costs nothing. Nothing to lose.
+ * The tier follows WHERE the writer's evidence came from, not which way the
+ * write moves the array — so the ADD has two writers in two tiers.
+ *
+ * - The EVENT-derived add ({@link adicionarConta}, the link triggers) is
+ *   **tier 0**: `arrayUnion` is commutative and idempotent, so an Eventarc
+ *   redelivery or a concurrent publish costs nothing. Its evidence IS the event
+ *   that made the link count, and a later close fires an event of its own that
+ *   runs the guarded remove — nothing to lose.
  * - The REMOVE reads before it writes, so it is **tier 1**: it runs inside
  *   `runTransaction` and re-derives membership from the `tx.get` result. A
  *   concurrent publish landing in the queried range fails the version check and
@@ -47,8 +53,17 @@
  *   survivors reader is a caller-supplied closure (ML's two collection-bound
  *   ones, Shopee's unfiltered `prodshopee` scan), so the class is unchanged:
  *   the verdict still comes from the callback's own `tx.get`.
- * - Never resurrect a produto: the produto cascade deletes these links, so both
- *   paths narrow `NOT_FOUND` and return.
+ * - The READ-derived add ({@link adicionarContaSeViva}, #1200 — the monthly ML
+ *   link audit that heals a produto whose array lost the conta) is **tier 1
+ *   for the same reason as the remove**: its evidence is a walk page read
+ *   earlier, not an event. ⚠️ `arrayUnion` having no loser does NOT make it
+ *   tier 0 there: a stale add landing after the link CLOSED is a false positive
+ *   that never heals, because the close's own event already ran (and found
+ *   nothing to remove), {@link planLinkChange}'s fast path ignores every later
+ *   write to a closed link, and the audit only ever adds. So it re-reads the
+ *   survivors inside the transaction exactly as the remove does.
+ * - Never resurrect a produto: the produto cascade deletes these links, so all
+ *   three paths narrow `NOT_FOUND` and return.
  *
  * ## What is deliberately NOT written
  *
@@ -173,6 +188,10 @@ export function planLinkChange(
  * Add a conta to the produto's array. Tier 0 — `arrayUnion`, no read, no
  * precondition, safe to replay.
  *
+ * ⚠️ Tier 0 only for a caller whose evidence is the EVENT itself (the link
+ * triggers). A caller acting on a link it READ earlier must use
+ * {@link adicionarContaSeViva} instead — see the header's race discipline.
+ *
  * Returns false when the produto is gone: the cascade beat us and re-creating
  * it as a husk carrying one field would be far worse than a missing entry.
  */
@@ -217,6 +236,62 @@ export async function removerContaSeOrfa(
       if (await sobrevivem(tx)) return false;
       tx.update(produtoCollection.docRef(db, {}, produtoId), {
         [CAMPO]: sentinelas.arrayRemove(integracaoId),
+      });
+      return true;
+    });
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw err;
+  }
+}
+
+/**
+ * Add a conta to the produto's array, but ONLY while a transactional re-read
+ * proves it still holds a qualifying link for that conta — the READ-DERIVED
+ * add, the mirror image of {@link removerContaSeOrfa} (#1200).
+ *
+ * Its caller's evidence is a read, not an event: the monthly ML link audit
+ * walked the conta's links, saw a live one on an anchor whose array lacks the
+ * conta, and heals it — possibly minutes after that page was read. A plain
+ * {@link adicionarConta} there can lose to a concurrent close: the link closes,
+ * the close's trigger runs the guarded remove and finds nothing to remove (the
+ * conta was never listed), and THEN the stale `arrayUnion` lands. That false
+ * positive is PERMANENT, not one skipped sweep row: {@link planLinkChange}'s
+ * fast path ignores every later write to an already-closed link (it neither
+ * counted before nor counts now), and the audit never removes, so nothing would
+ * ever look at that entry again.
+ *
+ * Tier 1, for the remove's reason. `sobrevivem` runs inside the transaction
+ * and the verdict comes from ITS `tx.get` — never from the walk's snapshot,
+ * which is the binding read outside the transaction that root `CLAUDE.md`
+ * rule 7 says is not a guard. The survivor query joins the read set, so a
+ * close landing while this attempt is open aborts it and the retry re-derives;
+ * a close that committed first is simply seen. Both orders converge:
+ * add-then-close hands the trigger's remove a conta to drop, close-then-add
+ * adds nothing.
+ *
+ * ⚠️ The produto itself is deliberately NOT read: the union is a transform, so
+ * there is no stored value to lose, and the `tx.update` on an absent produto
+ * fails `NOT_FOUND` at commit — the cascade race, narrowed here exactly as on
+ * the other two writers so a deleted produto is never resurrected as a husk.
+ * Anything else rethrows (root `CLAUDE.md` rule 6).
+ *
+ * @returns true when the union committed (the conta is listed now — it may
+ *   already have been, `arrayUnion` is idempotent); false when no qualifying
+ *   link survived or the produto is gone.
+ */
+export async function adicionarContaSeViva(
+  db: Firestore,
+  produtoId: string,
+  integracaoId: string,
+  sobrevivem: (tx: FirebaseFirestore.Transaction) => Promise<boolean>,
+  sentinelas: SentinelasDeArray,
+): Promise<boolean> {
+  try {
+    return await db.runTransaction(async (tx) => {
+      if (!(await sobrevivem(tx))) return false;
+      tx.update(produtoCollection.docRef(db, {}, produtoId), {
+        [CAMPO]: sentinelas.arrayUnion(integracaoId),
       });
       return true;
     });

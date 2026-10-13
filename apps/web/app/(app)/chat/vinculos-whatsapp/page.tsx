@@ -64,7 +64,7 @@ export default function WhatsappVinculosPage() {
           key={row.id}
           p="md"
           gap={4}
-          style={{ border: '1px solid var(--mantine-color-gray-3)', borderRadius: 8 }}
+          style={{ border: '1px solid var(--mantine-color-default-border)', borderRadius: 8 }}
         >
           <Group justify="space-between">
             <Anchor component={Link} href={`/chat/vinculos-whatsapp/${encodeURIComponent(row.id)}`}>

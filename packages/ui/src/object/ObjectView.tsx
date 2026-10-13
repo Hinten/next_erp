@@ -74,6 +74,17 @@ export interface ValidationIssue {
   message: string;
 }
 
+/**
+ * What the save transaction did to the main document, handed to `onAfterSave`:
+ * the document as the committing attempt READ it (`null` on a create) and the
+ * patch it WROTE over it (empty when only sibling documents were written).
+ * `{ ...before, ...patch }` is the stored document this save left behind.
+ */
+export interface CommittedSave {
+  before: Readonly<Record<string, unknown>> | null;
+  patch: Readonly<Record<string, unknown>>;
+}
+
 export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends ZodTypeAny = S> {
   title?: ReactNode;
   description?: ReactNode;
@@ -239,8 +250,20 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * / `deriveOnSave`), so sibling writes can read exactly what was persisted
    * without a re-read race — e.g. the produto editor diffs `values.precos` for
    * its history records and child propagation.
+   *
+   * ⚠️ `values` is the FORM plus what the save wrote. A key the save did not
+   * write keeps the form's value, and a form painted from a stale cache copy is
+   * not what is stored. So a hook that diffs the record's state (old vs new)
+   * reads `committed` instead: the main document as the save transaction READ
+   * it (`before`) and the patch it WROTE over it. `committed` is absent when no
+   * transaction ran (the "nothing changed" path, which still calls this hook);
+   * `before` is null on a create.
    */
-  onAfterSave?: (id: string, values: Record<string, unknown>) => Promise<void> | void;
+  onAfterSave?: (
+    id: string,
+    values: Record<string, unknown>,
+    committed?: CommittedSave,
+  ) => Promise<void> | void;
   saveLabel?: string;
   /** Show a secondary "Salvar e continuar" button. Default true. */
   showSaveAndContinue?: boolean;
@@ -755,7 +778,10 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // staged child documents). Runs on BOTH save paths; a failure surfaces
       // in the form alert and skips onSaved (the record itself is saved — the
       // user can retry just the sibling step by saving again).
-      await onAfterSave?.(result.id, committedValues);
+      await onAfterSave?.(result.id, committedValues, {
+        before: result.before ?? null,
+        patch: result.patch,
+      });
       if (continueEditing) {
         notifications.show({ color: 'green', message: 'Salvo.' });
       } else {
@@ -1130,7 +1156,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
           >
             <Stack>
               {(title || description) && (
-                <Stack gap={2}>
+                <Stack gap={2} style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
                   {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
                   {description && (
                     <Text c="dimmed" size="sm">

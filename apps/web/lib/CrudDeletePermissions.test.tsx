@@ -77,6 +77,9 @@ vi.mock('@/app/(app)/clientes/[id]/_components/EnderecosSection', () => ({
 vi.mock('@/app/(app)/canais/_components/RecalcularPrecosCanalAction', () => ({
   RecalcularPrecosCanalAction: () => null,
 }));
+vi.mock('@/app/(app)/canais/loja-integrada/_components/ContaLojaIntegradaPanel', () => ({
+  ContaLojaIntegradaPanel: () => null,
+}));
 vi.mock('@/app/(app)/canais/mercado-livre/_components/ContaMercadoLivrePanel', () => ({
   ContaMercadoLivrePanel: () => null,
 }));
@@ -92,6 +95,7 @@ vi.mock('@/app/(app)/canais/whatsapp/_components/ContaWhatsappHealth', () => ({
 
 import BandeiraCartaoPage from '@/app/(app)/bandeiras-cartao/[id]/page';
 import BalcaoPage from '@/app/(app)/canais/balcao/[id]/page';
+import ContaLojaIntegradaPage from '@/app/(app)/canais/loja-integrada/[id]/page';
 import ContaMercadoLivrePage from '@/app/(app)/canais/mercado-livre/[id]/page';
 import ContaShopeePage from '@/app/(app)/canais/shopee/[id]/page';
 import ContaWhatsappPage from '@/app/(app)/canais/whatsapp/[id]/page';
@@ -129,6 +133,11 @@ const PAGES: PageCase[] = [
   { path: '/motivos-incidente/[id]', Page: MotivoIncidentePage, permissions: PERM.pedido },
   { path: '/operacoes/[id]', Page: OperacaoPage, permissions: PERM.fiscal },
   { path: '/canais/balcao/[id]', Page: BalcaoPage, permissions: PERM.integracao },
+  {
+    path: '/canais/loja-integrada/[id]',
+    Page: ContaLojaIntegradaPage,
+    permissions: PERM.integracao,
+  },
   { path: '/canais/mercado-livre/[id]', Page: ContaMercadoLivrePage, permissions: PERM.integracao },
   { path: '/canais/shopee/[id]', Page: ContaShopeePage, permissions: PERM.integracao },
   { path: '/canais/whatsapp/[id]', Page: ContaWhatsappPage, permissions: PERM.integracao },
