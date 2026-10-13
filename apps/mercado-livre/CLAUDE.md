@@ -31,7 +31,7 @@ all and records the cross-theme edges. There is deliberately **no barrel
 | `size-charts/` | grades de tamanho |
 | `categorias/` | category tree & catalog metadata |
 | `nfe/` | NF-e upload to ML |
-| `frete/` | `int_frete` ⇆ ML conta sync |
+| `frete/` | `int_frete` ⇆ ML conta sync — a binding of `@delfrance/data/admin/frete` |
 
 ⚠️ Three things bind to these paths from **outside** the app and red CI on a
 move: `tools/deploy-env/preflight.mjs` (reads `estoque/bulkEstoquePlan.ts` from

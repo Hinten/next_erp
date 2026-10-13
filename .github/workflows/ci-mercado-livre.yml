@@ -123,6 +123,19 @@ on:
       - 'packages/schemas/src/nfe.ts'
       - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/shared/outerRef.ts'
+      # Same class, one more promotion. Shopee step 20 (#1528) moved the
+      # `int_frete` ⇆ conta sync out of `lib/marketplace/frete/intFreteSync.ts`
+      # into `packages/data/src/admin/frete`, which that file now only BINDS
+      # (the tolerant bare-ref matcher is all that stays in ML), and the
+      # binding's per-channel facts — `integracao.tipo`, `int_frete.tipo`, the
+      # back-ref key, the log prefix — are ML's row of `VINCULO_INT_FRETE_CONTA`
+      # in `intFrete.ts`. `onIntegracaoMercadoLivreChanged` and the order
+      # import's `resolveMercadoEnviosIntFrete` both run that core, so a
+      # main/Codex push touching only it — the planner that decides whether a
+      # conta's freight doc is created, adopted, patched or deactivated — would
+      # not fire this lane's safety net.
+      - 'packages/data/src/admin/frete/**'
+      - 'packages/schemas/src/intFrete.ts'
       - 'packages/data/src/admin/defineAdminCollection.ts'
       - 'packages/data/src/admin/grpcErrors.ts'
       - 'packages/schemas/src/integracao.ts'
