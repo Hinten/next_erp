@@ -272,6 +272,15 @@ describe('the dedup key — the ORDER, whatever stamp or origin', () => {
     ]);
     expect(chaves.size).toBe(3);
   });
+
+  it('near-miss: the conta/numero boundary is kept — c1 + 123 and c11 + 23 are two orders', () => {
+    // A conta id may end in a digit and a numero starts with one, so a key
+    // that joined the two without a separator would fold these into one order
+    // and the sweep would skip the second.
+    expect(dedupKeyLi(pedido({ contaId: 'c1', numero: '123' }))).not.toBe(
+      dedupKeyLi(pedido({ contaId: 'c11', numero: '23' })),
+    );
+  });
 });
 
 /* -------------------------------------------------------------------------- */
