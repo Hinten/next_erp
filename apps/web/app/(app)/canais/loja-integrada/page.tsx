@@ -37,16 +37,20 @@ export default function CanalLojaIntegradaPage() {
   return (
     <>
       {/*
-        Registering a conta is all this screen does today, and an operator has no
-        way to tell a channel that is merely quiet from one that is not wired up
-        yet. Saying it here is cheaper than the support ticket that starts with
-        "the Loja Integrada orders never arrived".
+        Registering a conta and storing its token is all this channel does today,
+        and an operator has no way to tell a channel that is merely quiet from one
+        that is not wired up yet. Saying it here is cheaper than the support
+        ticket that starts with "the Loja Integrada orders never arrived". The
+        token is validated ONCE, when it is saved — the copy says so, and does
+        not call the conta "conectada".
       */}
       <Alert color="blue" title="O que esta tela faz hoje" mb="md">
-        Esta tela cadastra a conta da Loja Integrada, e só isso. Importar produtos, importar
-        pedidos, enviar estoque, enviar preço e enviar NF-e ainda não estão ligados neste canal;
-        cada um chega em um passo seguinte da integração. Até lá nada é sincronizado automaticamente
-        com a Loja Integrada, em nenhuma direção.
+        Esta tela cadastra a conta da Loja Integrada e guarda o Personal Token de cada conta: o
+        token é validado na Loja Integrada no momento em que é salvo, e a tela da conta mostra a
+        validade informada, avisando a partir de 30 dias antes do vencimento. Importar produtos,
+        importar pedidos, enviar estoque, enviar preço e enviar NF-e ainda não estão ligados neste
+        canal; cada um chega em um passo seguinte da integração. Até lá nada é sincronizado
+        automaticamente com a Loja Integrada, em nenhuma direção.
       </Alert>
 
       <TableView<typeof integracaoSchema>
