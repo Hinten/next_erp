@@ -1,0 +1,11 @@
+.erp-focus:focus-visible,
+:root :is(input, textarea, select):focus-visible {
+  outline: 2px solid var(--erp-focus-ring);
+  outline-offset: calc(0.125rem * var(--mantine-scale));
+}
+
+/* The static Indicator already paints its own background. Its identical pulse
+   layer makes browser contrast tools report an ambiguous pseudo-background. */
+.erp-indicator:not([data-processing])::before {
+  content: none;
+}

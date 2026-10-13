@@ -29,6 +29,14 @@ export interface EhKitFieldProps {
    * resolves so a promotion can't slip past the warning during the initial read.
    */
   loading?: boolean;
+  /**
+   * The kit root has an ACTIVE native Shopee kit link (`useKitNativoShopee`,
+   * the shared `ehKitNativoAtivo`; step 19, #1527). While it does, a
+   * NON-BLOCKING notice says Shopee keeps the kit's old recipe (L4(1)) —
+   * whatever the «É kit» switch currently says: the LINK is the only authority.
+   * Editar-only: a new produto can have no link.
+   */
+  kitNativoShopee?: boolean;
 }
 
 /**
@@ -40,6 +48,14 @@ export interface EhKitFieldProps {
  * explicit confirmation (warning it can break stock); a persistent alert stays
  * visible while it remains a kit AND still referenced. Editar-only — a brand-new
  * produto (novo) can't be referenced yet.
+ *
+ * It also carries the Shopee native-kit notice (step 19, #1527, L4(1)): while
+ * the produto's root has an active native Shopee kit link, a yellow alert says
+ * Shopee keeps the kit's composition frozen. It does NOT read the switch: turning
+ * «É kit» OFF clears the whole recipe on save (`componentesKit: null`), the most
+ * destructive recipe change there is, so the notice must stay up exactly then.
+ * It never blocks or confirms anything — a recipe change is allowed (L4); after
+ * the save the `shopeeKitReceitaDivergente` aviso tracks the divergence.
  */
 export function EhKitField({
   label,
@@ -49,6 +65,7 @@ export function EhKitField({
   referencedByKits,
   hasMore,
   loading,
+  kitNativoShopee,
 }: EhKitFieldProps) {
   const [confirming, setConfirming] = useState(false);
   const referenced = referencedByKits.length > 0;
@@ -76,6 +93,23 @@ export function EhKitField({
         // past the warning before we know whether this produto is a component.
         disabled={disabled || loading}
       />
+
+      {kitNativoShopee === true && (
+        <Alert
+          color="yellow"
+          variant="light"
+          icon={<IconAlertTriangle size={18} />}
+          title="Este kit é um kit nativo da Shopee"
+          data-testid="aviso-kit-nativo-shopee"
+        >
+          <Text size="sm">
+            A Shopee não permite alterar os componentes nem as quantidades de um kit já criado. Se
+            você mudar a composição aqui, o kit na Shopee continua com a receita antiga e o estoque
+            que ela calcula pode ficar errado. Depois de salvar, um aviso fica aberto até o kit ser
+            recriado ou a composição voltar à que está na Shopee.
+          </Text>
+        </Alert>
+      )}
 
       {isKit && referenced && (
         <Alert

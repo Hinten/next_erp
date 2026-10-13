@@ -150,7 +150,9 @@ import {
  * step 19), decided by {@link kitNativoDoAnuncio}: the stored link's
  * `kitNativo` on a republish, `ehKitVirtual` on a first publish. Step 11 keyed
  * that refusal on `ehKit` alone, which made the entire legacy kit catalogue
- * permanently unpublishable.
+ * permanently unpublishable. Since step 19 (PR 7) that refusal is a defensive
+ * assertion: the dispatcher sends a native kit to the kit arms before this
+ * mapper runs (see {@link kitNativoDoAnuncio}).
  */
 export interface ProdutoParaPublicar {
   readonly id: string;
@@ -621,6 +623,17 @@ export function sizeChartInfoParaPublicar(
  * `publicarAnuncio.ts`. They are two sites deciding one thing, which is exactly
  * the shape that drifts when it is written twice.
  *
+ * ⚠️ **Since step 19 (#1527, PR 7) both producers are a DEFENSIVE assertion,
+ * never an answer.** A native kit is published by the kit arms
+ * (`add_kit_item` / `update_kit_item`, `../kits/`), and the dispatcher
+ * (`escolherArmaDePublicacao`, `../kits/armaDePublicacao.ts`) routes every
+ * native-kit link (`kitNativo === true`) and every `ehKitVirtual` first
+ * publish (`ehKitVirtualEfetivo`, no live link) there before this item planner
+ * runs. So reaching `produto-e-kit` here means a kit slipped past the
+ * dispatcher — a defect of the ERP, which the refusal's own sentence says —
+ * and the refusal keeps it from going out as an ORDINARY listing through
+ * `add_item`.
+ *
  * ⚠️ **`produto.ehKit` NEVER refuses.** It is the ERP's "assembled from
  * components" flag, and the ERP holds thousands of such produtos that the
  * legacy app published to Shopee as ORDINARY listings. Step 11 keyed the
@@ -631,16 +644,23 @@ export function sizeChartInfoParaPublicar(
  *   reported about the live listing (`tag.kit`, folded by `ehKitDe` in
  *   `../produtos/itemLido.ts`), so on an update it is the only statement about
  *   the listing that is not a guess, and it WINS over anything the produto
- *   says. `false` and an absent/`null` reading both publish: nothing in this
- *   catalogue is a native kit today, and a link imported before the field
- *   existed must not be read as one.
+ *   says. `false` and an absent/`null` reading both publish: a native kit's
+ *   link carries the LITERAL `true` from the link write that follows
+ *   `add_kit_item` on (`../kits/vinculosKit.ts`), and no native kit existed in
+ *   this catalogue before step 19 created the first ones — so an unstamped link
+ *   is an ORDINARY listing (the legacy corpus, or one imported before the field
+ *   existed) and must not be read as a kit.
  * - **No link — a first publish.** `produto.ehKitVirtual` is the ERP's own
  *   statement that the MARKETPLACE resolves the composition
  *   (`produto/collection/produto.ts:105-110`), which on Shopee means
- *   `add_kit_item` — step 19. The invariant `ehKit === false ⇒
- *   ehKitVirtual === false` (`apps/functions/src/produtos/onProdutoDeleted.ts:52-54`)
- *   means this arm can only ever fire on a kit, so an ordinary produto is never
- *   touched by it.
+ *   `add_kit_item` — step 19's `kit-criar` arm. ⚠️ `ehKit === false ⇒
+ *   ehKitVirtual === false` is NOT an invariant of the stored data: nothing in
+ *   the schema stops a doc from carrying the flag beside `ehKit: false`
+ *   (`onProdutoDeleted` clears the pair only when a kit's LAST component is
+ *   deleted — `ehKitVirtualEfetivo`'s docblock, `@delfrance/schemas`). What
+ *   keeps an ordinary produto out of this arm is `escolherArmaDePublicacao`,
+ *   which refuses that mismatch (`kit-virtual-sem-kit`) before any plan exists,
+ *   while the web switches the flag off on save from step 19 on.
  *
  * ⚠️ It is deliberately **not** the same predicate as the stock sweep's
  * (`../estoque/podeEnviarEstoque.ts`), which reads the link's field and nothing
@@ -693,7 +713,9 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
       problema(
         null,
         MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
-        'o anúncio é um kit NATIVO da Shopee — publicar kit é outro passo (add_kit_item)',
+        'o anúncio é um kit NATIVO da Shopee e chegou ao montador de anúncio comum — kit nativo é ' +
+          'publicado pelo caminho de kit (add_kit_item / update_kit_item), para onde o ERP o ' +
+          'encaminha antes de montar qualquer anúncio; chegar aqui é defeito do ERP, nada foi enviado',
       ),
     );
   }

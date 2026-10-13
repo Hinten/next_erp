@@ -76,10 +76,22 @@
  * is NOT here — it is `projetarTabelaShopee` in `@delfrance/schemas`.
  * `test/tabelasDeMedidas.test.ts` pins this module at this door.
  *
- * ⚠️ These ten re-exports are WILDCARD, so every step-11 addition — the twelve
+ * ⚠️ Step 19 (native kits, #1527) added one more NEW MODULE, with its own line
+ * below: `kits.ts` — the three kit-write paths (`add_kit_item`,
+ * `update_kit_item`, `generate_kit_image`), their wire-shaped request types and
+ * guards (exactly ONE `main_component` per KIT, `component_model_id` positive or
+ * omitted, a one-row model with `quantity >= 2`, 1…10 images), the wire
+ * constants (`SHOPEE_KIT_MAX_MODELS`, `SHOPEE_KIT_IMAGE_MAX` — 10, NOT the
+ * item's 9 — and `get_kit_item_limit`'s own success alias) and
+ * `linhasDeReenvioDoKit`, the ONE copy of a live kit model's components back
+ * onto the wire. The operations are `api.ts`'s and the response schemas
+ * `types.ts`'s section "Kits — escrita (step 19)". `test/kits.test.ts` pins this
+ * module at this door.
+ *
+ * ⚠️ These eleven re-exports are WILDCARD, so every step-11 addition — the twelve
  * operations, their wire-shaped request interfaces, the response schemas and the
  * wire bounds — reaches `@delfrance/integrations-shopee` with no line to add
- * here. A NEW MODULE would need one; a new export inside these ten does not,
+ * here. A NEW MODULE would need one; a new export inside these eleven does not,
  * and a test in `test/api.test.ts` pins the twelve operation names so a rename
  * cannot silently drop one from the public surface.
  */
@@ -94,3 +106,4 @@ export * from './arquivo';
 export * from './logistica';
 export * from './devolucoes';
 export * from './tabelasDeMedidas';
+export * from './kits';

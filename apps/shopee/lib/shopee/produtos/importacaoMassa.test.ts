@@ -25,7 +25,7 @@ import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
 import { ShopeeContaSemShopIdError, ShopeeSemCredencialError } from '../core/tokenStore';
 import { INDICES_COMPOSTOS_SHOPEE } from '../pedidos/produtoResolve';
-import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
+import { FakeDb, asDb, increment, type DocData } from '../testing/fakeDb';
 import {
   MOTIVO_FALHA_JOB,
   ShopeeImportBlockedError,
@@ -153,8 +153,14 @@ function listaDeModelos(): ShopeeModelList {
   return { tier_variation: [], model: [] } as unknown as ShopeeModelList;
 }
 
+/**
+ * ⚠️ `model_list: []` by default, as the package's schema guarantees on the real
+ * wire (`.default([])`): the drain reads the component ids off it (step 19).
+ */
 function kitInfo(produto: DocData | null): ShopeeKitItemInfo {
-  return { product_info: produto } as unknown as ShopeeKitItemInfo;
+  return {
+    product_info: produto === null ? null : { model_list: [], ...produto },
+  } as unknown as ShopeeKitItemInfo;
 }
 
 function resultado(over: Partial<ResultadoImportacaoShopee> = {}): ResultadoImportacaoShopee {
@@ -217,6 +223,7 @@ function montar(
     resolverContexto: async () => contexto(cliente),
     importarAnuncio,
     importarKit,
+    increment,
     scheduler: { enqueue },
     now: () => AGORA_MS,
     ...over.deps,
@@ -1250,10 +1257,126 @@ describe('processarImportacaoShopee — kits e lote desconhecido', () => {
 
     expect(importarAnuncio).toHaveBeenCalledTimes(1);
     expect(importarKit).toHaveBeenCalledTimes(1);
+    // ⚠️ O id do KIT nunca passa por get_item_base_info (só o lote da
+    // varredura); um kit SEM componentes não gasta nem a leitura deles.
+    expect(cliente.getItemBaseInfo).toHaveBeenCalledTimes(1);
     expect(cliente.getItemBaseInfo).toHaveBeenCalledWith({ itemIds: [1] });
-    // ⚠️ O kit NUNCA passa por get_item_base_info.
     expect(cliente.getKitItemInfo).toHaveBeenCalledWith({ itemId: 9 });
     expect(job(db).kits).toBe(1);
+  });
+
+  it('(passo 19) o kit lê o has_model dos COMPONENTES num lote só, e o leva no ItemLido', async () => {
+    const COMPONENTE_A = 2500139871;
+    const COMPONENTE_B = 2500139872;
+    const cliente = clienteFalso({
+      getItemBaseInfo: vi.fn(async () =>
+        corpoBase([
+          linhaBase(COMPONENTE_B, { has_model: false }),
+          linhaBase(COMPONENTE_A, { has_model: true }),
+        ]),
+      ),
+      getKitItemInfo: vi.fn(async () =>
+        kitInfo({
+          item_id: 9,
+          model_list: [
+            {
+              model_id: 2000458820,
+              component_list: [
+                { component_item_id: COMPONENTE_A, component_model_id: 2000458821 },
+                { component_item_id: COMPONENTE_B, component_model_id: 2000458829 },
+              ],
+            },
+            {
+              model_id: 2000458822,
+              component_list: [{ component_item_id: COMPONENTE_B, component_model_id: 2000458829 }],
+            },
+          ],
+        }),
+      ),
+    });
+    const { db, deps, importarKit } = montar({ cliente });
+    semearJob(db, { filaKits: [9] });
+
+    await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    // UM lote, ids DISTINTOS, nunca o id do próprio kit.
+    expect(cliente.getItemBaseInfo).toHaveBeenCalledTimes(1);
+    expect(cliente.getItemBaseInfo).toHaveBeenCalledWith({
+      itemIds: [COMPONENTE_A, COMPONENTE_B],
+    });
+    const [depsDoKit, entrada] = importarKit.mock.calls[0] as [{ increment: unknown }, ItemLido];
+    expect([...(entrada.temModelosDosComponentes ?? new Map()).entries()]).toEqual([
+      [COMPONENTE_B, false],
+      [COMPONENTE_A, true],
+    ]);
+    expect(depsDoKit.increment).toBe(increment);
+  });
+
+  it('sem increment injetado com filaKits não vazia LANÇA — não é contenção', async () => {
+    const { db, deps, importarKit } = montar({ deps: { increment: undefined } });
+    semearJob(db, { filaKits: [9] });
+
+    await expect(processarImportacaoShopee(deps, PAYLOAD, 0)).rejects.toThrow(/increment/);
+    expect(importarKit).not.toHaveBeenCalled();
+    expect(job(db).failureCount).toBe(0);
+  });
+
+  it('(OP-1) um kit que MANTEVE a receita do ERP é concluído E dito numa linha de log — só ids', async () => {
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { db, deps, importarKit } = montar();
+    importarKit.mockResolvedValueOnce(
+      resultado({
+        produtoId: 'kit-9',
+        criado: false,
+        kit: {
+          componentes: 1,
+          criado: false,
+          avisos: [
+            { codigo: 'receita-divergente', produtoId: 'filho-a', mensagem: 'frase' },
+            { codigo: 'receita-divergente', produtoId: 'filho-b', mensagem: 'frase' },
+          ],
+        },
+      }),
+    );
+    semearJob(db, { filaKits: [9] });
+
+    await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    // Concluído, não contido: conta no `kits` e não vira linha de falha.
+    expect(job(db).kits).toBe(1);
+    expect(job(db).failureCount).toBe(0);
+    const linhas = aviso.mock.calls.filter(
+      (c) => c[0] === '[shopee/importacao] kit importado mantendo a receita do ERP',
+    );
+    expect(linhas).toEqual([
+      [
+        '[shopee/importacao] kit importado mantendo a receita do ERP',
+        {
+          jobId: JOB,
+          integracaoId: INT_A,
+          itemId: 9,
+          produtoId: 'kit-9',
+          receitaDivergente: ['filho-a', 'filho-b'],
+        },
+      ],
+    ]);
+  });
+
+  it('⛔ NEAR-MISS (OP-1): um kit SEM aviso — lista vazia ou ausente — não escreve linha nenhuma', async () => {
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { db, deps, importarKit } = montar();
+    importarKit
+      .mockResolvedValueOnce(resultado({ kit: { componentes: 1, criado: true, avisos: [] } }))
+      .mockResolvedValueOnce(resultado({ kit: { componentes: 1, criado: true } }));
+    semearJob(db, { filaKits: [9, 10] });
+
+    await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    expect(importarKit).toHaveBeenCalledTimes(2);
+    expect(job(db).kits).toBe(2);
+    expect(
+      aviso.mock.calls.filter((c) => String(c[0]).includes('mantendo a receita do ERP')),
+    ).toEqual([]);
   });
 
   it('uma linha ILEGÍVEL do lote é contida por item — os irmãos saudáveis importam', async () => {

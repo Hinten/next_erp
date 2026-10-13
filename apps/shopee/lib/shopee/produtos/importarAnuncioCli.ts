@@ -694,6 +694,11 @@ export function resumirResultado(res: ResultadoImportacaoShopee): string[] {
     linhas.push(
       `  kit ..................... ${String(res.kit.componentes)} componentes · produto ${res.kit.criado ? 'criado' : 'atualizado'}`,
     );
+    // OP-1 (step 19): a kept ERP recipe edit is said HERE too, not only in
+    // `--json` — the sentence the importer built (ids only), one line each.
+    for (const aviso of res.kit.avisos ?? []) {
+      linhas.push(`  aviso do kit ............ ${aviso.codigo} — ${aviso.mensagem}`);
+    }
   }
   return linhas;
 }

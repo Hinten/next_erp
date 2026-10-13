@@ -129,6 +129,62 @@ describe('os três padrões de chamada', () => {
 
     expect(dobro.chamadas).toEqual(['getItemBaseInfo', 'getKitItemInfo']);
   });
+
+  it('(passo 19) um kit COM componentes lê o has_model deles num lote e o leva no registro', async () => {
+    const COMPONENTE_A = 2500139871;
+    const COMPONENTE_B = 2500139872;
+    const kitComComponentes = shopeeKitItemInfoPayloadSchema.parse({
+      product_info: {
+        item_id: ITEM_ID,
+        item_name: 'Kit de Camisetas',
+        model_list: [
+          {
+            model_id: 2000458820,
+            component_list: [
+              { component_item_id: COMPONENTE_A, component_model_id: 2000458821, quantity: 2 },
+              { component_item_id: COMPONENTE_B, component_model_id: 2000458829, quantity: 1 },
+            ],
+          },
+        ],
+      },
+    });
+    // A PRIMEIRA leitura de base é a do próprio kit; a SEGUNDA, a dos componentes.
+    let leiturasDeBase = 0;
+    const dobro = criarCliente({
+      base: () => {
+        leiturasDeBase += 1;
+        return leiturasDeBase === 1
+          ? payload(LINHA_KIT)
+          : payload(
+              { item_id: COMPONENTE_A, has_model: true },
+              { item_id: COMPONENTE_B, has_model: false },
+            );
+      },
+      kit: () => kitComComponentes,
+    });
+
+    const lido = await lerAnuncioShopee(dobro.client, ITEM_ID);
+
+    expect(dobro.chamadas).toEqual(['getItemBaseInfo', 'getKitItemInfo', 'getItemBaseInfo']);
+    expect(vi.mocked(dobro.client.getItemBaseInfo).mock.calls).toEqual([
+      [{ itemIds: [ITEM_ID] }],
+      [{ itemIds: [COMPONENTE_A, COMPONENTE_B] }],
+    ]);
+    expect([...(lido.temModelosDosComponentes ?? new Map()).entries()]).toEqual([
+      [COMPONENTE_A, true],
+      [COMPONENTE_B, false],
+    ]);
+    expect(lido.models).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS: um anúncio COMUM não ganha mapa de componentes nem leitura extra', async () => {
+    const dobro = criarCliente({ base: () => payload(LINHA_SIMPLES) });
+
+    const lido = await lerAnuncioShopee(dobro.client, ITEM_ID);
+
+    expect(dobro.chamadas).toEqual(['getItemBaseInfo']);
+    expect('temModelosDosComponentes' in lido).toBe(false);
+  });
 });
 
 describe('o registro montado é o MESMO que o job monta', () => {

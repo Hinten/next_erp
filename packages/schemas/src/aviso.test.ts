@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { MOTIVO_RESOLUCAO_RECEITA_KIT } from './receitaKitShopee';
 import {
   CANAL_AVISO,
   CANAL_AVISO_LABELS,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   TIPO_AVISO_LABELS,
   avisoNaoLido,
@@ -16,6 +20,7 @@ import {
   marcarTodosComoLidos,
   pendenciaReclamacaoSchema,
   rotaInternaSegura,
+  situacaoAnuncioForaDaSincronizacaoSchema,
   tipoAvisoSchema,
   urlExternaSegura,
   type Aviso,
@@ -92,6 +97,56 @@ describe('TIPO_AVISO_LABELS', () => {
     expect(TIPO_AVISO_LABELS.reclamacaoAguardandoVendedor).toBe('Reclamação aguardando o vendedor');
   });
 
+  it('declares the native-kit recipe tipo (Shopee step 19) with its pt-BR label', () => {
+    // Shopee-prefixed on purpose: only a Shopee native kit freezes its
+    // composition at create, so the condition IS the channel's.
+    expect(TIPO_AVISO.shopeeKitReceitaDivergente).toBe('shopeeKitReceitaDivergente');
+    expect(tipoAvisoSchema.safeParse('shopeeKitReceitaDivergente').success).toBe(true);
+    expect(TIPO_AVISO_LABELS.shopeeKitReceitaDivergente).toBe(
+      'Kit da Shopee com composição antiga',
+    );
+    // Near-miss: the tipo is persisted, so a respelling is a DIFFERENT tipo.
+    expect(tipoAvisoSchema.safeParse('shopeeKitReceitaDivergentes').success).toBe(false);
+    expect(tipoAvisoSchema.safeParse('kitReceitaDivergente').success).toBe(false);
+  });
+
+  it('parses a stored row of the native-kit recipe tipo with its four id params', () => {
+    const parsed = umAviso({
+      tipo: TIPO_AVISO.shopeeKitReceitaDivergente,
+      canal: CANAL_AVISO.shopee,
+      params: { kit: 'k1', anuncio: '2500139870', vinculo: 'l1', variacoes: 'c1, c2' },
+      urlInterna: { rota: ROTAS_AVISO.produto.build('k1'), campo: 'componentesKit' },
+    });
+    expect(parsed.tipo).toBe('shopeeKitReceitaDivergente');
+    expect(parsed.params).toEqual({
+      kit: 'k1',
+      anuncio: '2500139870',
+      vinculo: 'l1',
+      variacoes: 'c1, c2',
+    });
+    expect(parsed.urlInterna).toEqual({ rota: '/produtos/k1', campo: 'componentesKit' });
+  });
+
+  it('names a machine resolver for the native-kit recipe tipo: every motivo the constant defines', () => {
+    // The collection is `serverOwned` — an aviso nothing resolves stands until
+    // retention — so the tipo's docblock must name each resolution motivo, and
+    // it must name exactly the ones `MOTIVO_RESOLUCAO_RECEITA_KIT` defines.
+    const FONTE = readFileSync(join(import.meta.dirname, 'aviso.ts'), 'utf8');
+    const inicio = FONTE.indexOf('**`shopeeKitReceitaDivergente`**');
+    expect(inicio).toBeGreaterThan(-1);
+    const fim = FONTE.indexOf('export const tipoAvisoSchema', inicio);
+    const bloco = FONTE.slice(inicio, fim);
+    expect(bloco).toContain('produced by step 19 (#1527)');
+    const motivos = Object.values(MOTIVO_RESOLUCAO_RECEITA_KIT);
+    expect(motivos).toHaveLength(5);
+    for (const motivo of motivos) expect(bloco, motivo).toContain(`\`${motivo}\``);
+  });
+
+  it('labels the link-audit tipo without a provider name — it is channel-neutral', () => {
+    expect(TIPO_AVISO.anuncioForaDaSincronizacao).toBe('anuncioForaDaSincronizacao');
+    expect(TIPO_AVISO_LABELS.anuncioForaDaSincronizacao).toBe('Anúncio fora da sincronização');
+  });
+
   it('names and labels the two Loja Integrada tipos (step 2)', () => {
     // Channel-SPECIFIC on purpose, unlike the three above: the remedy (only the
     // store owner can generate or renew the token, in the painel) is the
@@ -157,6 +212,41 @@ describe('PENDENCIA_RECLAMACAO', () => {
     expect(pendenciaReclamacaoSchema.options).toHaveLength(3);
     expect(pendenciaReclamacaoSchema.safeParse('organizar-coleta').success).toBe(false);
     expect(pendenciaReclamacaoSchema.safeParse('responder_solicitacao').success).toBe(false);
+  });
+});
+
+describe('SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO', () => {
+  it('is exactly the three findings a human must fix, mirrored member for member', () => {
+    expect(situacaoAnuncioForaDaSincronizacaoSchema.options).toEqual([
+      'link-em-variacao',
+      'pai-id-invalido',
+      'produto-ausente',
+    ]);
+    expect(SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO).toEqual({
+      linkEmVariacao: 'link-em-variacao',
+      paiIdInvalido: 'pai-id-invalido',
+      produtoAusente: 'produto-ausente',
+    });
+    expect(Object.values(SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO).sort()).toEqual(
+      [...situacaoAnuncioForaDaSincronizacaoSchema.options].sort(),
+    );
+  });
+
+  it('has NO member for the healed class, nor for the walk codes', () => {
+    // `conta-fora-do-produto` is the near-miss: the audit re-adds the conta and
+    // logs it, so an aviso for it would be one nobody has to act on. The walk's
+    // `NAO_ENUMERADO_*` codes are a different set the producer maps FROM — a
+    // stored one would mean the mapping was skipped.
+    for (const naoMembro of [
+      'conta-fora-do-produto',
+      'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO',
+      'NAO_ENUMERADO_LINK_EM_VARIACAO',
+      'link_em_variacao',
+    ]) {
+      expect(situacaoAnuncioForaDaSincronizacaoSchema.safeParse(naoMembro).success, naoMembro).toBe(
+        false,
+      );
+    }
   });
 });
 
@@ -378,6 +468,50 @@ describe('chaveDeAviso — the return tipo (Shopee step 17)', () => {
         entidade: '2609100000000001',
       }),
     );
+  });
+});
+
+describe('chaveDeAviso — the link-audit tipo (#1200)', () => {
+  // ONE row per PRODUTO per conta. The monthly audit stores conta and produto only
+  // in the id, reads the open avisos once per run and keeps ONE conta's rows by
+  // PARSING the id — exactly three `:` segments, the tipo first, the conta second
+  // compared whole — so the shape below is what its resolver reads back.
+  const foraDaSincronizacao = (conta: string, produtoId: string) =>
+    chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta, entidade: produtoId });
+  /** The producer's parse of an id against one conta: `<tipo>:<conta>:<produto>`. */
+  const daConta = (conta: string, chave: string) => {
+    const segmentos = chave.split(':');
+    return (
+      segmentos.length === 3 &&
+      segmentos[0] === chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao }) &&
+      `${segmentos[0]}:${segmentos[1]}` ===
+        chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta }) &&
+      segmentos[2] !== ''
+    );
+  };
+
+  it('keeps the conta as the SECOND segment and the produto last, with no janela', () => {
+    expect(foraDaSincronizacao('int-1', 'prod-1')).toBe('anuncioForaDaSincronizacao:int-1:prod-1');
+    expect(daConta('int-1', foraDaSincronizacao('int-1', 'prod-1'))).toBe(true);
+  });
+
+  it('keeps a prefix-sharing conta, another tipo and the bare prefix OUT of the conta’s rows', () => {
+    // `c10` shares `c1` as a string prefix; the WHOLE segment tells them apart,
+    // and only because the fold never lets a `:` into a segment.
+    expect(daConta('c1', foraDaSincronizacao('c10', 'p'))).toBe(false);
+    expect(daConta('c1', foraDaSincronizacao('c1:0', 'p'))).toBe(false);
+    expect(
+      daConta(
+        'c1',
+        chaveDeAviso({ tipo: TIPO_AVISO.estoqueAcimaDoDisponivel, conta: 'c1', entidade: 'p' }),
+      ),
+    ).toBe(false);
+    expect(
+      daConta('c1', chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta: 'c1' })),
+    ).toBe(false);
+    // …while a produtoId carrying a `:` is folded, so its row still parses as the conta's.
+    expect(foraDaSincronizacao('c1', 'a:b')).toBe('anuncioForaDaSincronizacao:c1:a_b');
+    expect(daConta('c1', foraDaSincronizacao('c1', 'a:b'))).toBe(true);
   });
 });
 

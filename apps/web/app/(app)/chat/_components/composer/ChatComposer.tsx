@@ -167,7 +167,7 @@ function EntrarNaConversa({ conversaId }: { conversaId: string }) {
   }
 
   return (
-    <Box p="sm" style={{ borderTop: '1px solid var(--mantine-color-gray-2)' }}>
+    <Box p="sm" style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
       <Button
         fullWidth
         variant="light"
@@ -397,7 +397,7 @@ function ComposerInput({
                 <Box
                   p="xs"
                   style={{
-                    border: '1px solid var(--mantine-color-gray-3)',
+                    border: '1px solid var(--mantine-color-default-border)',
                     borderRadius: 'var(--mantine-radius-sm)',
                     maxHeight: 200,
                     overflowY: 'auto',
@@ -520,7 +520,7 @@ function ComposerInput({
   return (
     <Box
       p="sm"
-      style={{ borderTop: '1px solid var(--mantine-color-gray-2)' }}
+      style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}
       onDragOver={(e) => {
         if (podeAnexar) e.preventDefault();
       }}
@@ -578,7 +578,7 @@ function ComposerInput({
           minRows={1}
           maxRows={10}
           maxLength={rules.limiteCaracteres}
-          style={{ flex: 1 }}
+          style={{ flex: 1, minWidth: 0 }}
           disabled={sending}
           error={overLimit}
         />

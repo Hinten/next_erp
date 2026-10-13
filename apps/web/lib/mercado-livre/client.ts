@@ -17,6 +17,10 @@ import { useMemo } from 'react';
 import type { z } from 'zod';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
+import {
+  mercadoLivreRastreioResultSchema,
+  type MercadoLivreRastreioResult,
+} from '@delfrance/schemas';
 
 import { useAuth } from '@/lib/auth/useAuth';
 import { filenameFromDisposition } from '@/lib/http/filenameFromDisposition';
@@ -762,7 +766,7 @@ export interface MercadoLivreClient {
     attributes?: Array<Record<string, unknown>>;
   }): Promise<MercadoLivreChartSpecs>;
   /**
-   * Send the tabMedi's edited chart list for one account to ML and persist
+   * Send one committed chart/version for one account to ML and persist
    * the ids (PERM.integracao.write). ML chart-validation problems come back
    * as `validationErrors` on the 200 body (partial success is DATA); only
    * infrastructure failures throw.
@@ -770,8 +774,23 @@ export interface MercadoLivreClient {
   sizeChartSync(input: {
     integracaoId: string;
     tabMediId: string;
-    tabelas: unknown[];
+    operationId: string;
+    chartIndex: number;
+    chart: import('@delfrance/schemas').MlSizeChart;
+    recoveryChartId?: string | null;
   }): Promise<MercadoLivreSyncChartsResult>;
+  sizeChartSyncStatus(input: {
+    integracaoId: string;
+    tabMediId: string;
+  }): Promise<import('./wire').MercadoLivreChartSyncStatus>;
+  sizeChartRecover(input: {
+    integracaoId: string;
+    tabMediId: string;
+    operationId: string;
+    expectedChart: import('@delfrance/schemas').MlSizeChart | null;
+    recoveryChartId: string | null;
+    confirmNoCreation: boolean;
+  }): Promise<import('./wire').MercadoLivreChartRecoveryResult>;
   /**
    * Ask a model to read the tabela's photos and fill the grid
    * (PERM.integracao.write).
@@ -844,6 +863,8 @@ export interface MercadoLivreClient {
    * `ML_INVOICE_PENDING` while the shipment hasn't received the NF-e yet).
    */
   etiqueta(pedidoId: string, formato: 'pdf' | 'zpl2'): Promise<MercadoLivreEtiquetaArtifact>;
+  /** Carrier tracking link for the persisted pedido (PERM.frete.read). */
+  rastrear(pedidoId: string): Promise<MercadoLivreRastreioResult>;
   /**
    * Manually (re)send the pedido's approved NF-e to its ML shipment
    * (PERM.pedido.write). 202 `{ enqueued: true }` means ENQUEUED, not uploaded —
@@ -1268,6 +1289,17 @@ export function createMercadoLivreClient(config: {
       }),
     sizeChartSync: (input) =>
       call('/api/marketplace/mercado-livre/size-charts/sync', wire.syncChartsResultSchema, input),
+    sizeChartSyncStatus: ({ integracaoId, tabMediId }) =>
+      call(
+        `/api/marketplace/mercado-livre/size-charts/sync?integracaoId=${encodeURIComponent(integracaoId)}&tabMediId=${encodeURIComponent(tabMediId)}`,
+        wire.chartSyncStatusSchema,
+      ),
+    sizeChartRecover: (input) =>
+      call(
+        '/api/marketplace/mercado-livre/size-charts/recuperar',
+        wire.chartRecoveryResultSchema,
+        input,
+      ),
     sizeChartExcluir: (input) =>
       call(
         '/api/marketplace/mercado-livre/size-charts/excluir',
@@ -1288,6 +1320,11 @@ export function createMercadoLivreClient(config: {
         formato === 'pdf'
           ? { filename: `etiqueta-${pedidoId}.pdf`, contentType: 'application/pdf' }
           : { filename: `etiqueta-${pedidoId}.zip`, contentType: 'application/zip' },
+      ),
+    rastrear: (pedidoId) =>
+      call(
+        `/api/marketplace/mercado-livre/rastreio?pedidoId=${encodeURIComponent(pedidoId)}`,
+        mercadoLivreRastreioResultSchema,
       ),
     enviarNfe: (input) =>
       call('/api/marketplace/mercado-livre/enviar-nfe', wire.enqueuedSchema, input),
