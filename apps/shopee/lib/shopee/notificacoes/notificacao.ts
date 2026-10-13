@@ -39,10 +39,18 @@
 import { type Firestore, FieldValue } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { notificacaoShopeeCollection } from '@delfrance/data/admin/collections';
-import type { EstadoAnuncioShopee, EstadoFrete } from '@delfrance/schemas';
+// `NOTIFICACAO_RESILIENCIA_STATUS` is the ONE value import from here, and it
+// widens nothing: `notificacaoShopeeCollection` above already loads
+// `@delfrance/schemas` as a value (its handle is built from the schema).
+import {
+  NOTIFICACAO_RESILIENCIA_STATUS,
+  type EstadoAnuncioShopee,
+  type EstadoFrete,
+} from '@delfrance/schemas';
 import {
   asInt,
   asMillis,
+  DEFAULT_REPROCESS_LIMIT,
   defineNotificationPipeline,
   MAX_TENTATIVAS,
   MAX_TENTATIVAS_DEFERRED,
@@ -1074,11 +1082,27 @@ const ACAO_DEVOLUCAO_OUTRO_PEDIDO: Extract<
  * ⚠️ "BUILDS" is the whole qualifier, and there is exactly ONE exception: the
  * `sem-conta` defer reason is a SHARED template emitted verbatim by all five
  * arms (conta, code 3, frete, anúncio, devolução) — unprefixed, byte-identical —
- * so a deferred row of that kind is told apart by its `kind` + `code`, never by
- * its reason string. Prefixing four of the five would make the fifth the odd
- * one out instead.
+ * built by ONE `motivoSemConta(shopId)`. The row stores no `kind`
+ * (`toDocFields`), so that exact string is how a stored `sem-conta` row is
+ * recognised — step 20's re-drive matches it. Prefixing four of the five would
+ * make the fifth the odd one out instead.
  */
 const PREFIXO_MOTIVO_CODE3 = 'push_code 3:';
+
+/**
+ * The `sem-conta` defer reason — ONE builder for all five arms (conta, code 3,
+ * frete, anúncio, devolução). `kind` is NOT persisted (`toDocFields`), so this
+ * exact string is the only stored trace of the kind, and it is what
+ * {@link redriveDeferredSemContaForShopId} matches — EXACTLY, no fold.
+ *
+ * ⚠️ Its text is the template the five arms emitted inline before step 20, byte
+ * for byte, so a row deferred before this builder existed still matches. Edit it
+ * and every `deferred` row already stored stops being recognised until the daily
+ * lane drains it.
+ */
+export function motivoSemConta(shopId: number): string {
+  return `loja ${String(shopId)} não mapeia nenhuma integração Shopee ativa`;
+}
 
 /**
  * Every park/defer reason the SHIPMENT arm (codes 4/30/47) BUILDS starts here.
@@ -1503,7 +1527,7 @@ export async function processNotificationPayload(
       return {
         kind: 'sem-conta',
         shopId,
-        reason: `loja ${String(shopId)} não mapeia nenhuma integração Shopee ativa`,
+        reason: motivoSemConta(shopId),
       };
     }
 
@@ -1618,7 +1642,7 @@ export async function processNotificationPayload(
       return {
         kind: 'sem-conta',
         shopId,
-        reason: `loja ${String(shopId)} não mapeia nenhuma integração Shopee ativa`,
+        reason: motivoSemConta(shopId),
       };
     }
 
@@ -1759,7 +1783,7 @@ export async function processNotificationPayload(
       return {
         kind: 'sem-conta',
         shopId,
-        reason: `loja ${String(shopId)} não mapeia nenhuma integração Shopee ativa`,
+        reason: motivoSemConta(shopId),
       };
     }
 
@@ -1895,7 +1919,7 @@ export async function processNotificationPayload(
       return {
         kind: 'sem-conta',
         shopId,
-        reason: `loja ${String(shopId)} não mapeia nenhuma integração Shopee ativa`,
+        reason: motivoSemConta(shopId),
       };
     }
 
@@ -2090,7 +2114,7 @@ export async function processNotificationPayload(
       return {
         kind: 'sem-conta',
         shopId,
-        reason: `loja ${String(shopId)} não mapeia nenhuma integração Shopee ativa`,
+        reason: motivoSemConta(shopId),
       };
     }
     console.warn('[shopee] push de autorização sem loja mapeada — ack', {
@@ -2481,4 +2505,110 @@ export function reprocessDeferredNotifications(
   deps: ShopeeProcessDeps = defaultProcessDeps,
 ): Promise<ReprocessResult> {
   return pipelineFor(deps).reprocessDeferred(db, opts);
+}
+
+// ── the #808 connect re-drive (step 20, #1528) ──────────────────────────────
+
+/** How many deferred rows of the shop ONE event reads — any kind; only `sem-conta` rows are moved. */
+export const REDRIVE_SEM_CONTA_LEITURA = 500;
+/** How many it moves: one hot-lane page. Re-driven rows carry `processedAt: 0` and sort ahead of real hot failures. */
+export const REDRIVE_SEM_CONTA_LIMIT = DEFAULT_REPROCESS_LIMIT;
+
+/** What one connect-time re-drive did, for the caller's log line. */
+export interface RedriveSemContaResult {
+  /** Deferred rows of the shop read (any kind). */
+  encontradas: number;
+  /** Of those, the ones whose `erro` is exactly `motivoSemConta(shopId)`. */
+  semConta: number;
+  /** Of those, the ones actually moved back to the hot lane (`mergeIfExists` true). */
+  redirecionadas: number;
+  /** The read page was full, or more `sem-conta` rows matched than `limit` — the daily lane drains the rest. */
+  truncado: boolean;
+}
+
+/**
+ * Pull the `sem-conta` rows deferred on THIS shop back into the hot lane, so the
+ * next 30-minute sweep processes them (#808) — the Shopee twin of Mercado
+ * Livre's `redriveDeferredForUserId`. Called by `onIntegracaoShopeeChanged` once
+ * a conta write makes `shopId` resolvable.
+ *
+ * A LATENCY optimisation over {@link reprocessDeferredNotifications}, never a
+ * replacement: whatever it misses (a row past either cap, an event that never
+ * fired) still drains daily. That is why hitting a cap only warns.
+ *
+ * Scope: only rows whose `erro` is EXACTLY {@link motivoSemConta}`(shopId)`.
+ * Other deferred kinds of the same shop — a `pedido-adiado` credential or quota
+ * defer, a `devolucao:` / `rastreio:` defer — wait on preconditions a connect
+ * does not clear, so they are read (they share the page) and left alone. That
+ * is why the read page ({@link REDRIVE_SEM_CONTA_LEITURA}) is wider than the
+ * move cap: a page of `limit` rows could be filled by those other kinds. The
+ * query is NOT scoped by `erro`, on purpose: the connect re-drive guard would
+ * then demand a `(status, erro)` index on a field that holds unbounded error
+ * text.
+ *
+ * Three facts a caller must know:
+ * - A code-1 `sem-conta` row whose one candidate shop came only from
+ *   `data.shop_id_list` ({@link lojasDoPushDeConta}) is stored with
+ *   `shop_id: null` — the parser lifts only `shop_id` / `shopid` /
+ *   `data.shop_id` / `data.shopid`, and `toDocFields` stores that. This query
+ *   never finds such a row; only the daily lane drains it.
+ * - A re-drive resets `tentativas` to 0, so it restarts the row's deferred
+ *   budget if the row re-defers. The caller therefore re-applies
+ *   `shopIdResolvivel` (`core/contaCache.ts`) to a FRESH conta read before
+ *   calling this, so a stale event re-drives nothing.
+ * - It runs no transaction. A row that left `deferred` between the query and the
+ *   write goes back to `failed` — one extra hot attempt, the same as Mercado
+ *   Livre. A re-driven row whose shop is unresolvable again re-defers with the
+ *   same reason. A row deleted in between resolves `false` from
+ *   `mergeIfExists` and is not counted — never resurrected as a ghost. A replay
+ *   finds no `deferred` + `sem-conta` row left, which is the idempotence the
+ *   trigger's at-least-once delivery needs. Nor does anything tie this query to
+ *   a push in flight during the connect: a push whose task read the conta
+ *   (`findIntegracaoByShopId`, uncached on a miss) before the connect write but
+ *   commits its deferred row after this query is not re-driven; it drains on
+ *   the daily lane (≤ 24 h + the sweep cadence). The same holds for a hot-sweep
+ *   re-process in flight. Latency only — no row is lost.
+ *
+ * ⚠️ The query needs the `notificacoesShopee (status ASC, shop_id ASC)`
+ * composite. Firestore Enterprise auto-creates none and silently full-scans
+ * (billing the scan) rather than failing. It MUST stay in this file — the one
+ * that calls `defineNotificationPipeline` — because that is where
+ * `notificationGuardrails.test.ts` (guard D) looks for it.
+ */
+export async function redriveDeferredSemContaForShopId(
+  db: Firestore,
+  shopId: number,
+  limit: number = REDRIVE_SEM_CONTA_LIMIT,
+): Promise<RedriveSemContaResult> {
+  // `shop_id` is a NUMBER on both sides (`notificacaoShopee.ts`: `z.number().int()`).
+  const snap = await notificacaoShopeeCollection
+    .ref(db, {})
+    .where('status', '==', NOTIFICACAO_RESILIENCIA_STATUS.deferred)
+    .where('shop_id', '==', shopId)
+    .limit(REDRIVE_SEM_CONTA_LEITURA)
+    .get();
+
+  const motivo = motivoSemConta(shopId);
+  const semConta = snap.docs.filter((d) => d.data().erro === motivo);
+
+  const erro = `loja ${String(shopId)} resolvível — reprocessando`;
+  let redirecionadas = 0;
+  for (const d of semConta.slice(0, limit)) {
+    if (await basePipeline.redrive(db, d.id, erro)) redirecionadas += 1;
+  }
+
+  const truncado = snap.docs.length >= REDRIVE_SEM_CONTA_LEITURA || semConta.length > limit;
+  if (truncado) {
+    console.warn('[shopee] redrive atingiu o limite — o restante sai na varredura diária', {
+      shopId,
+      limit,
+      leitura: REDRIVE_SEM_CONTA_LEITURA,
+    });
+  }
+  return {
+    encontradas: snap.docs.length,
+    semConta: semConta.length,
+    redirecionadas,
+    truncado,
+  };
 }
