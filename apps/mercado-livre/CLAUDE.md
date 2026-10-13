@@ -516,8 +516,8 @@ fires no triggers at all), or the link sits on a variation child (class 3).
 `sweepMercadoLivreAnunciosNaoEnumerados` (02:30 on the 1st,
 `estoque/auditoriaNaoEnumerados.ts`) walks each active conta's LINKS through
 `anuncios/linksNaoEnumerados.ts` — the walk the price job's reconciliation already
-ran, now shared, here one stored ref form at a time (`contaOuterRef ==`; the price
-phase keeps its `in`) — HEALS class 2 with the tier-1 `adicionarContaSeViva` so the
+ran, now shared, one stored ref form at a time (`contaOuterRef ==`, for both consumers
+since #1862) — HEALS class 2 with the tier-1 `adicionarContaSeViva` so the
 03:00 force-all enumerates the family again, and raises one
 `anuncioForaDaSincronizacao` aviso per produto for what needs a human, resolved
 only by a later COMPLETE walk plus a fresh re-read. Its avisos come from ONE read

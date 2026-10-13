@@ -102,9 +102,10 @@ export async function GET(req: Request): Promise<NextResponse> {
     //
     // ⚠️ Every field with no schema default must be listed or `parseRead` fails:
     // `integracaoId`, `status`, `startedAt`, `updatedAt`. The unprojected ones
-    // (`fila`, `afterAnchorId`, `afterLinkPath`, `startedBy`, both `*Concluido`
-    // flags, `linksReconciliados`, `reconciliacaoPaginas`) all default, so the
-    // parse stays on its success path. `projecao.test.ts` pins that.
+    // (`fila`, `afterAnchorId`, `afterLinkPath`, `reconciliacaoForma`, `startedBy`,
+    // both `*Concluido` flags, `linksReconciliados`, `reconciliacaoPaginas`) all
+    // default, so the parse stays on its success path. `projecao.test.ts` pins
+    // that.
     .select(...CAMPOS_PROJETADOS)
     .limit(limite)
     .get();

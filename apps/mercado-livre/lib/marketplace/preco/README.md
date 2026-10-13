@@ -23,11 +23,15 @@ discovery cannot reach.
   the same two anchor terms. This file keeps only what is price-shaped — the
   `MERCADO_LIVRE_PRECO_RECONCILIACAO_ENABLED` flag, the page-size env tunable
   (`fetchPrecoReconPage` defaults the shared walk's REQUIRED `pageLimit` to
-  `precoReconPageLimit()` — the walk reads no env), the page cap and the
-  job-facing types — and re-exports
-  `classificarLinkNaoEnumerado`. `precoReconciliacao.test.ts` was kept
-  byte-unchanged by the move: it is the regression proof that the walk still
-  behaves the same through this binding. Class 2 (a produto missing the conta)
+  `precoReconPageLimit()` — the walk reads no env), the page cap, the two-form
+  cursor and the job-facing types — and re-exports
+  `classificarLinkNaoEnumerado`. ⚠️ **Since #1862 the phase walks one stored ref
+  form at a time** (`contaOuterRef ==`, the audit's shape): the `in` over both
+  forms it used to run was sorted on the staging proxy by a `MajorSort` that
+  read the conta's whole remainder on every page. Its cursor is therefore a
+  PAIR — `reconciliacaoForma` + `afterLinkPath` on the job doc — and the form
+  index must stay in the schema and in `checkpoint()`, or a parse strips it
+  and the job re-walks form 0 until the page cap. Class 2 (a produto missing the conta)
   is still REPORTED here, but the stock audit now heals it monthly — one array
   serves both sweeps.
 - `precoManual.ts` — "enviar preço agora" for a hand-picked produto set.

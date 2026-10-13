@@ -448,7 +448,7 @@ describe('the walk — ONE stored ref form at a time, each `==` with its own cur
     expect(t2.chamadas.map((c) => c.pageLimit)).toEqual([2, 2]);
   });
 
-  it('⛔ every page names ONE form — the price phase’s `in` (no `contaRef`) is never asked for', async () => {
+  it('⛔ every page names ONE form — an `in` over both (the price phase’s until #1862) is never asked for', async () => {
     const t = montar({ contas: ['c1', 'c2'] });
     await t.run();
     expect(t.chamadas.map((c) => [c.conta, c.contaRef])).toEqual([

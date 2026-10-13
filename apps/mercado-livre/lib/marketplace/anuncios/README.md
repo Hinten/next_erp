@@ -94,14 +94,13 @@ its status and moderation state current. The inverse direction (ML → ERP) is
   PATH: `preco/precoMotivos.test.ts` scans this file for those codes and throws
   `ENOENT` if it moves. Rides the COLLECTION_GROUP index
   `produtoMercadoLivre(contaOuterRef, __name__)`; every query is classic, so it
-  all runs in the emulator. Two walk SHAPES: without `contaRef` a page reads
-  both stored ref forms at once (`contaOuterRef in [...]`, the price phase's —
-  `preco/precoReconciliacao.test.ts` is its byte-unchanged regression proof);
-  with `contaRef` — one of the conta's two forms, anything else refused before
-  a read — it reads that form alone (`==`), which the audit drains form by
-  form because one `==` is a single key-ordered stream (a `Limit` over a
-  cursor seek on the staging proxy) where the `in` sorts the conta's whole
-  remainder on every page. A cursor belongs to its form. `pageLimit` is
+  all runs in the emulator. ONE walk shape: a page reads one of the conta's
+  two stored ref forms (`contaRef`, required — anything else is refused before
+  a read) with `contaOuterRef ==`, and both consumers drain the forms one
+  after the other, because one `==` is a single key-ordered stream (a `Limit`
+  over a cursor seek on the staging proxy) where an `in` over both sorts the
+  conta's whole remainder on every page. The price phase ran that `in` until
+  #1862. A cursor belongs to its form. `pageLimit` is
   required and must be an integer ≥ 1 — a 0 would read as a drained, COMPLETE
   walk. `consultaDaVarredura` is one
   page as an UNEXECUTED query, exported so the staging suite
