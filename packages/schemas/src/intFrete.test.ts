@@ -232,6 +232,91 @@ describe('intFreteSchema — golden Flutter docs', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*          contaShopeeFreteOuterRef — the Shopee conta back-ref (#1528)       */
+/* -------------------------------------------------------------------------- */
+
+describe('intFreteSchema — contaShopeeFreteOuterRef (#1528)', () => {
+  /**
+   * A legacy `FreteShopee` doc with exactly the keys `_$FreteShopeeToJson` writes
+   * (`.old/packages/canais_de_venda/shopee/lib/src/models.g.dart:127-154`):
+   * `FreteShopee.fromConta` sets tipo / nome / ativo / the filial / the back-ref,
+   * the base constructor stamps `dataCadastro` in ms, `mapa` / `faixaCep` /
+   * `horarioDeCorte` / `enderecoDeOrigem` are `writeNotNull` and never set (so
+   * ABSENT), there is no `prazoExtra` (not a `FreteShopee` field) and no
+   * `ultimaModificacao`, and the ODM's `docId` rides along. This is the shape
+   * the window import brings in, and the sync ADOPTS it by this key.
+   */
+  const legado = {
+    tipo: 'shopee',
+    nome: 'Loja Shopee',
+    ativo: true,
+    dataCadastro: 1718000000000,
+    filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+    contaShopeeFreteOuterRef: 'documents/integracao/int-1',
+    docId: 'legacy-1',
+  };
+
+  it('T21 — parses the legacy FreteShopee golden doc, keeping the back-ref and the ODM docId', () => {
+    const parsed = intFreteSchema.parse(legado);
+
+    expect(parsed).toMatchObject(legado);
+    expect(parsed.contaShopeeFreteOuterRef).toBe('documents/integracao/int-1');
+    // The keys the legacy serializer never wrote come back defaulted, never absent.
+    expect(parsed.ultimaModificacao).toBeNull();
+    expect(parsed.prazoExtra).toBe(0);
+    expect(parsed.horarioDeCorte).toBeNull();
+    // The Mercado Livre twin is a DIFFERENT key: a Shopee doc leaves it null.
+    expect(parsed.contaMercadoLivreMercadoEnviosOuterRef).toBeNull();
+    // `.passthrough()` keeps the ODM metadata the legacy app wrote.
+    expect((parsed as Record<string, unknown>).docId).toBe('legacy-1');
+  });
+
+  it('T22 — an absent key reads back as an explicit null (a non-shopee doc, and the golden one without it)', () => {
+    const motoboy = intFreteSchema.parse({
+      tipo: 'motoboy',
+      nome: 'Motoboy Centro',
+      ativo: true,
+      filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+      dataCadastro: 1718000000000,
+    });
+    expect(motoboy.contaShopeeFreteOuterRef).toBeNull();
+    // PRESENT with null, not missing: a browser `addDoc` of the parsed value
+    // must never carry `undefined`, and the converter writes every key.
+    expect(Object.hasOwn(motoboy, 'contaShopeeFreteOuterRef')).toBe(true);
+
+    const semChave: Record<string, unknown> = { ...legado };
+    delete semChave.contaShopeeFreteOuterRef;
+    const parsed = intFreteSchema.parse(semChave);
+    expect(parsed.contaShopeeFreteOuterRef).toBeNull();
+    expect(Object.hasOwn(parsed, 'contaShopeeFreteOuterRef')).toBe(true);
+  });
+
+  it('T23 — the canonical `documents/integracao/<id>` passes; the bare `integracao/<id>` (near-miss) FAILS', () => {
+    const campo = intFreteSchema.shape.contaShopeeFreteOuterRef;
+
+    // Equal side: the canonical ref and an explicit null are both valid.
+    expect(campo.safeParse('documents/integracao/int-1').success).toBe(true);
+    expect(campo.safeParse(null).success).toBe(true);
+
+    // Near-miss: the bare `pathNoDocuments` spelling is NOT the canonical form.
+    // The sync's lookup is an equality on the canonical string, so a doc holding
+    // the bare form would never be found — the schema must not bless it either.
+    expect(campo.safeParse('integracao/int-1').success).toBe(false);
+    // A path ending on a COLLECTION is not a dereferenceable doc ref.
+    expect(campo.safeParse('documents/integracao').success).toBe(false);
+
+    const doc = intFreteSchema.safeParse({
+      ...legado,
+      contaShopeeFreteOuterRef: 'integracao/int-1',
+    });
+    expect(doc.success).toBe(false);
+    if (!doc.success) {
+      expect(doc.error.issues.map((i) => i.path)).toEqual([['contaShopeeFreteOuterRef']]);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                           faixaCepOptionString                             */
 /* -------------------------------------------------------------------------- */
 

@@ -241,6 +241,9 @@ export {
 
 export {
   DIA_DA_SEMANA_LABELS,
+  // The per-channel facts of the conta → `int_frete` sync (#1528); the IO core
+  // that consumes them is `@delfrance/data/admin/frete` (#1369: one core).
+  VINCULO_INT_FRETE_CONTA,
   calcularPrazoDespachoCivil,
   diaDaSemanaSchema,
   faixaCepOptionString,
@@ -258,6 +261,7 @@ export {
   tokenMelEnv,
   tokenMelEnvMeta,
   tokenMelEnvSchema,
+  type CampoBackRefIntFrete,
   type DiaDaSemana,
   type FaixaDeCep,
   type HorarioDeCorte,
@@ -266,6 +270,7 @@ export {
   type PartesCivis,
   type PrazoDespachoCivil,
   type TokenMelEnv,
+  type VinculoIntFreteConta,
 } from './intFrete';
 
 // Pedido domain (pedido + pagamento + incidente + historicoEstadoPedido
