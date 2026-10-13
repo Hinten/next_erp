@@ -186,8 +186,9 @@ import {
 //         lib/marketplace/anuncios/linksNaoEnumerados.ts — shared with the price
 //         job's report since #1191) as the AUDIT runs it: a `produtoMercadoLivre`
 //         COLLECTION GROUP query, ONE stored ref form at a time —
-//         `contaOuterRef == <form>` (`contaRef`), never the price phase's `in`
-//         over both — `select('id','estado')`, `orderBy(documentId)`, `limit`,
+//         `contaOuterRef == <form>` (`contaRef`, the price job's page too since
+//         #1862), never an `in` over both — `select('id','estado')`,
+//         `orderBy(documentId)`, `limit`,
 //         and — the page that matters — a `startAfter(<DocumentReference>)`
 //         keyset, because a group's `__name__` is the full path. Probed once
 //         PER ref form. It must ride the COLLECTION_GROUP entry

@@ -4,12 +4,17 @@
  * a pipeline's `execute({ explainOptions: { mode: 'analyze', outputFormat:
  * 'text' } })` — and the two verdicts the #1200 link audit stands on.
  *
- * ONE copy, two consumers (the #1369 rule — two files that "mirror" each other
+ * ONE copy, three consumers (the #1369 rule — two files that "mirror" each other
  * drift toward plausible while disagreeing):
  *  - `scripts/check-stock-indexes.mjs`, the MANUAL staging gate a human runs;
  *  - `lib/marketplace/estoque/auditoriaNaoEnumerados.staging.test.ts`, the
  *    automated suite `ci-mercado-livre.yml` runs against staging on every
- *    in-scope PR, which asserts every verdict a PASS on the audit's own pages.
+ *    in-scope PR, which asserts every verdict a PASS on the audit's own pages;
+ *  - `apps/functions/scripts/check-sweep-indexes.mjs` (#1874), the arquivo
+ *    sweeps' manual gate, by RELATIVE path — it imports only the generic
+ *    readers (`parseAccessNodes`, `scansSemIdentificador`,
+ *    `contadoresDoCabecalho`, `sortsQueCortam`, `RECUSA_EXPLAIN_ENTERPRISE_RE`),
+ *    so renaming or moving one of those breaks that script, which no lane runs.
  * Plain `.mjs` + JSDoc (`@ts-check`, so `tsc` still checks it through the
  * importing test) because the script runs under bare `node`, which cannot import
  * TypeScript. Nothing here touches Firestore: every function takes the plan TEXT
@@ -82,10 +87,10 @@
  *    8-link conta read 8 index rows to return 2, page 2 read 6, the last page 2
  *    — every page reads the conta's whole remainder. One `==` per ref form
  *    prints `• Limit` instead and reads exactly the page (2 of 2, with and
- *    without a cursor). So the AUDIT walks one ref form at a time
- *    (`linksNaoEnumerados.ts`, `contaRef`), and that page is what the staging
- *    suite asserts a PASS on; the price phase keeps its `in` — its own query,
- *    left as it is;
+ *    without a cursor). So the walk reads one ref form at a time
+ *    (`linksNaoEnumerados.ts`, `contaRef`) — the audit from the start, the
+ *    price phase since #1862 — and that page is what the staging suite
+ *    asserts a PASS on;
  *  - a document-KEY range on `avisos` has NO seekable access path: no avisos
  *    index leads with `__key__`, and every shape tried — cursors, `where`
  *    filters on the key, a start bound only, no bound — rode
@@ -974,10 +979,10 @@ export function julgarPlanoDaVarredura(plan, { comCursor = false, leituraMaxima 
         'limit can cut it; were the classic query to execute the same way, the walk would be ' +
         'quadratic in the conta’s link count, in index rows. Measured on the staging proxy ' +
         '2026-10-08: `contaOuterRef in [both ref forms]` sorts this way (page 1 of an 8-link ' +
-        'conta read 8 rows to return 2), while one `==` per ref form — the audit’s page — ' +
-        'prints `• Limit` and reads exactly the page. On the price phase’s `in` page this is ' +
-        'that known proxy-plan finding; on the audit’s one-form page it is a regression — ' +
-        'read the printed plan.',
+        'conta read 8 rows to return 2), while one `==` per ref form — the walk’s page, for ' +
+        'the audit and (since #1862) the price phase — prints `• Limit` and reads exactly the ' +
+        'page. On the retired `in` page this is that known proxy-plan finding; on a one-form ' +
+        'page it is a regression — read the printed plan.',
     });
   }
   const fluxos = noIndice.reduce((s, n) => s + fluxosDeConta(n), 0);
