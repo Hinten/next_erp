@@ -101,6 +101,12 @@ export function precoReconPageLimit(): number {
  * until something else killed it. Past the cap the phase concludes and records
  * `RECONCILIACAO_INCOMPLETA` — the `PRICE_SYNC_MAX_PAUSES` discipline, refuse
  * loudly rather than retry forever.
+ *
+ * It counts the pages of BOTH ref forms together (#1862), and each form can
+ * end on a page that reads nothing (the one after a full last page, or an
+ * empty form). So a conta needs ≲ `PRECO_RECON_MAX_PAGES × pageLimit` links
+ * (100 000 at the default page size), less up to two pages, to be walked
+ * whole. A larger conta still concludes, with the incomplete row.
  */
 export const PRECO_RECON_MAX_PAGES = 200;
 
