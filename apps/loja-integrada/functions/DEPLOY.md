@@ -51,7 +51,10 @@ exactly as they are until the window:
   the bundle, and a blank value counts as unset. A mismatch is the #1108 failure:
   the Admin SDK targets `us-central1`, the task is **silently dropped**, and the
   caller still sees success.
-- **One-time IAM** (see below) — required before the first deploy of the queue.
+- **One-time IAM** (see below) — required before the first enqueue, i.e. the
+  poller's first tick. The queue-level grants can only be made once the deploy
+  has created the queue, and with `TASKS_INVOKER_SA` set the deploy makes two of
+  them itself; the act-as grant is always manual.
 
 ## Deploy
 
@@ -158,10 +161,13 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # apps/loja-integrada, whose credential routes read it too.
 # LOJA_INTEGRADA_CHAMADAS=on
 
-# The region of the reads queue. Blank or unset = the FUNCTIONS_REGION inlined
-# into the bundle (a blank value counts as unset, #1108). Set it only for a queue
-# that really lives in another region, and then App Hosting's copy (step 4) must
-# equal it.
+# The region of the reads queue. LEAVE IT UNSET: blank or unset = the
+# FUNCTIONS_REGION inlined into the bundle (a blank value counts as unset, #1108).
+# The queue is created WITH its function, by this deploy, in FUNCTIONS_REGION and
+# nowhere else, so any other value names a queue that does not exist: every
+# enqueue is dropped while it reports success (#1108). If you set it at all, set
+# it to exactly the FUNCTIONS_REGION the deploying shell exported. App Hosting's
+# copy (step 4) must equal the same region.
 # LOJA_INTEGRADA_TASKS_REGION=
 
 # Sweep-only mode. Exactly `1` makes the poller's enqueue throw, so each
@@ -236,20 +242,39 @@ identity that enqueues: the order poller puts its synthetic notifications onto
 enqueuing in step 4 (the inbound order webhook), and the credential routes never
 enqueue — they only re-drive rows already in Firestore.
 
+The enqueuing identity needs **three** grants. In step 3 `<enqueuing-sa>` is the
+functions runtime SA, the identity the poller runs as (by default
+`PROJECT_NUMBER-compute@developer.gserviceaccount.com`); step 4 revisits this
+block when the App Hosting runtime SA joins.
+
 ```bash
-# Functions runtime SA (the identity the poller runs as; by default
-#   PROJECT_NUMBER-compute@developer.gserviceaccount.com):
-# it needs roles/cloudtasks.enqueuer to create a task, and roles/run.invoker ON
-# THE SERVICE for Cloud Tasks to dispatch it.
-#
-# ⚠ SINCE #1133 THE DEPLOY DOES BOTH for you when TASKS_INVOKER_SA is set (see
-# below). Run these by hand only for a deploy without that variable:
+# 1 - permission to CREATE the task. Queue-level, so it can only run once the
+# deploy has created the queue.
+# ⚠ SINCE #1133 THE DEPLOY APPLIES THIS ONE when TASKS_INVOKER_SA is set - except
+# on the first deploy of the queue, which crashes on exactly this binding (see the
+# firebase-tools section below for the workaround).
 gcloud tasks queues add-iam-policy-binding filaLeituraLojaIntegrada \
   --location=<region> --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \
   --role="roles/cloudtasks.enqueuer"
 
+# 2 - permission to ACT AS the account the task's OIDC token names. The Admin SDK
+# stamps that token with the enqueuer's own identity, and Cloud Tasks refuses to
+# create a task carrying an OIDC token without actAs on that account, even when
+# the caller IS that account. In step 3 both are the functions runtime SA.
+# ⚠ THE DEPLOY NEVER APPLIES THIS ONE: TASKS_INVOKER_SA covers grants 1 and 3
+# only. Without it every enqueue fails `permission-denied`, which the producer
+# rethrows untouched (it is not a transient failure).
+gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
+  --project=<project-id> \
+  --member="serviceAccount:<enqueuing-sa>" \
+  --role="roles/iam.serviceAccountUser"
+
+# 3 - permission to DISPATCH: roles/run.invoker ON THE SERVICE (see below).
+# ⚠ SINCE #1133 THE DEPLOY APPLIES THIS ONE when TASKS_INVOKER_SA is set. Run it
+# by hand only for a deploy without that variable.
 gcloud run services add-iam-policy-binding filaLeituraLojaIntegrada --region=<region> \
+  --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \
   --role="roles/run.invoker"
 ```
@@ -297,7 +322,9 @@ Export it in the shell you run `firebase deploy` from. `build.mjs` inlines it
 (esbuild `define`, exactly like `FUNCTIONS_REGION`) and the `onTaskDispatched`
 in this codebase declares it as `invoker`; firebase-tools then applies the list
 to **both** legs of the trip — `roles/run.invoker` on the function's Cloud Run
-service **and** `roles/cloudtasks.enqueuer` on its queue.
+service **and** `roles/cloudtasks.enqueuer` on its queue. It never applies grant 2,
+the act-as on the functions runtime SA: that one stays a manual `gcloud` grant
+with or without this variable.
 
 ```bash
 export TASKS_INVOKER_SA="<functions-runtime-sa>"
@@ -313,8 +340,8 @@ functions runtime SA alone; step 4 adds the App Hosting runtime SA, and a later
 deploy that forgets it removes its role. If steps 3 and 4 reach a project in the
 same window, name both from the first deploy.
 
-⚠️ **Unset ⇒ the option is omitted entirely.** The build prints a warning and the
-manual `gcloud` grants above stay required. It never guesses a value: a wrong one
+⚠️ **Unset ⇒ the option is omitted entirely.** The build prints a warning and
+grants 1 and 3 above become manual too. It never guesses a value: a wrong one
 would lock out the legitimate caller, and a permissive one would be far worse.
 
 ⚠️ A redeploy with **no** `invoker` declared does not clear an existing binding —
@@ -376,7 +403,10 @@ flipped:
    one dispatch per second, and Cloud Scheduler lists the schedule functions.
 2. `gcloud run services get-iam-policy filaLeituraLojaIntegrada` and
    `gcloud tasks queues get-iam-policy filaLeituraLojaIntegrada` both name every
-   identity in `TASKS_INVOKER_SA`.
+   identity in `TASKS_INVOKER_SA`, and
+   `gcloud iam service-accounts get-iam-policy <functions-runtime-sa>` lists
+   `roles/iam.serviceAccountUser` for each of them (grant 2, which no deploy
+   makes).
 3. The Firestore index `notificacoesLojaIntegrada (status, processedAt)` and
    `(status, contaId)` are READY: on Enterprise a missing index does not fail, it
    full-scans and bills the scan.

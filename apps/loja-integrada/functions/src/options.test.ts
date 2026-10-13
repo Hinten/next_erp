@@ -57,9 +57,13 @@ describe('options.ts — the blank-region guard', () => {
     expect(process.env.LOJA_INTEGRADA_TASKS_REGION).toBe('us-central1');
   });
 
-  // NEAR-MISS: the guard exists for the BLANK, not to overwrite an operator's
-  // choice. A real value must survive — a queue in a different region from the
-  // function is a legitimate decision (and `??` alone already respects it).
+  // NEAR-MISS: the guard exists for the BLANK, and it does not second-guess a
+  // real value — `options.ts` keeps it and `??` alone already would. This pins
+  // only that mechanics. It does NOT make a cross-region value correct here: the
+  // one queue is created with its function, in `FUNCTIONS_REGION`, so a different
+  // value names a queue that does not exist (#1108). DEPLOY.md says to leave the
+  // variable unset or equal to `FUNCTIONS_REGION`; the distinct value below only
+  // makes "kept" observable apart from "overwritten".
   it('KEEPS a real value, without overwriting it with the inlined region', async () => {
     process.env.FUNCTIONS_REGION = 'us-central1';
     process.env.LOJA_INTEGRADA_TASKS_REGION = 'us-east4';
