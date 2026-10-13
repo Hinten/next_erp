@@ -100,6 +100,31 @@ describe('saveRecord — transactional derivation', () => {
     });
     expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), result.patch);
   });
+
+  // A derivation must be able to OVERRIDE what the form sent: the produto
+  // editor's kit rule switches a dirty `ehKitVirtual: true` off when the doc it
+  // read is no longer a kit (`camposDeKitDoPatch`), which only holds if the
+  // derived keys are merged last.
+  it('a derived key wins over the same key in the dirty patch', async () => {
+    firestoreMock.txMock.get.mockResolvedValue({
+      exists: () => true,
+      data: () => ({ ehKit: false, ehKitVirtual: false }),
+    });
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'existing',
+      values: { ehKitVirtual: true },
+      dirtyFields: { ehKitVirtual: true },
+      currentUserUid: 'u1',
+      deriveTransactionPatch: () => ({ ehKitVirtual: false }),
+    });
+    expect(result.patch).toEqual({ ehKitVirtual: false });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), {
+      ehKitVirtual: false,
+    });
+  });
 });
 
 describe('saveRecord', () => {

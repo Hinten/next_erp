@@ -11,7 +11,9 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
  *
  *  1. `deriveOnSave` switches «É kit virtual» off when «É kit» is off, and the
  *     children kit-status sync uses that DERIVED value (O-8; M159's editar half,
- *     also pinned end-to-end by `produto-kit.cadastros`);
+ *     also pinned end-to-end by `produto-kit.cadastros`); the save transaction's
+ *     `deriveTransactionPatch` re-applies the rule over the STORED doc, which is
+ *     what holds when the form was painted from a stale cache copy;
  *  2. the «É kit» field's NON-BLOCKING Shopee notice is fed by
  *     `useKitNativoShopee` over the kit ROOT (`paiId ?? id`) — the link decides,
  *     never the produto's `ehKitVirtual` (R-v; M160's page half).
@@ -23,6 +25,10 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 interface Capturado {
   fields?: Record<string, FieldConfig>;
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
+  deriveTransactionPatch?: (
+    current: Record<string, unknown> | null,
+    patch: Record<string, unknown>,
+  ) => Record<string, unknown>;
   onAfterSave?: (id: string, values: Record<string, unknown>) => Promise<void>;
 }
 
@@ -188,6 +194,32 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
   it('a kit that keeps «É kit virtual» propagates it unchanged (near-miss)', async () => {
     await capturado().onAfterSave!('p1', { ehKit: true, ehKitVirtual: true });
     expect(h.propagacoes[0]).toMatchObject({ ehKit: true, ehKitVirtual: true });
+  });
+
+  // The `produto-kit.cadastros` flake: the form painted a stale cache copy
+  // («É kit virtual» OFF) while the server held it ON, so `deriveOnSave` saw "no
+  // change" and the patch never carried the flag. The transaction hook decides
+  // over the doc it READ, so the switch-off reaches Firestore anyway.
+  it('the save transaction switches «É kit virtual» off over the STORED doc, not the form', () => {
+    const derivar = capturado().deriveTransactionPatch;
+    expect(derivar).toBeDefined();
+    expect(
+      derivar!(
+        {
+          ehKit: true,
+          ehKitVirtual: true,
+          componentesKit: { c1: { quantidade: 2, limitarEstoque: true } },
+          componentesKitKeys: ['c1'],
+        },
+        { ehKit: false, componentesKit: null, componentesKitKeys: null },
+      ),
+    ).toEqual({ ehKitVirtual: false });
+  });
+
+  it('the save transaction leaves a kit that stays a kit alone (near-miss)', () => {
+    expect(
+      capturado().deriveTransactionPatch!({ ehKit: true, ehKitVirtual: true }, { nome: 'x' }),
+    ).toEqual({});
   });
 });
 

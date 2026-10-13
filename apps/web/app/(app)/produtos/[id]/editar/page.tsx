@@ -16,6 +16,7 @@ import {
   type ProdutoExtraData,
   type Video,
   buildFotoRefs,
+  camposDeKitDoPatch,
   deriveFotosArquivosIds,
   ehKitVirtualEfetivo,
   normalizeVariacoesUid,
@@ -588,6 +589,12 @@ export default function EditarProdutoPage() {
       transactionWrites={(id, values, context) =>
         buildProdutoTransactionWrites(db, id, values, 'editar', context)
       }
+      // The kit invariant re-derived INSIDE the save transaction, over the doc
+      // it read: `deriveOnSave` below compares against the FORM, so a form
+      // painted from a stale cache copy and edited before server truth arrives
+      // omits the switch-off and the stored «É kit virtual»/map survive
+      // (`camposDeKitDoPatch`'s docblock; root `CLAUDE.md` rule 7).
+      deriveTransactionPatch={camposDeKitDoPatch}
       deriveOnSave={(values) => {
         // Keep the Flutter wire shapes on every save: bare group ids sorted
         // by ordem, canonical group-major fake paths for the variants. The
@@ -630,9 +637,11 @@ export default function EditarProdutoPage() {
           // are order-sensitive, so an unsorted list churns dirty detection.
           componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
           // «É kit virtual» means nothing without «É kit» (`ehKitVirtualEfetivo`,
-          // the shared predicate): turning the kit off switches it off too, so
-          // the produto never stores the mismatch the Shopee publisher refuses
-          // (`kit-virtual-sem-kit`). A stored legacy mismatch heals on the next save.
+          // the shared predicate): turning the kit off switches it off too, the
+          // mismatch the Shopee publisher refuses (`kit-virtual-sem-kit`). This
+          // derivation only covers a form that matches the stored doc; the
+          // guarantee that the produto never stores the mismatch is
+          // `deriveTransactionPatch` above, which also heals a stored legacy one.
           ehKitVirtual: ehKitVirtualEfetivo({
             ehKit: values.ehKit,
             ehKitVirtual: values.ehKitVirtual,
@@ -681,7 +690,8 @@ export default function EditarProdutoPage() {
         // a child of a non-kit can't stay a kit, so its `componentesKit` is
         // cleared. "Old" value = the ref pinned at the first emit, else the
         // live snapshot (so a save beating that emit still propagates).
-        // `ehKitVirtual` is the value `deriveOnSave` wrote — never the raw switch.
+        // `ehKitVirtual` is the value the save wrote — never the raw switch
+        // (`values` carries `deriveOnSave`'s result and the transaction's patch).
         const newEhKit = values.ehKit === true;
         const newEhKitVirtual = ehKitVirtualEfetivo({
           ehKit: values.ehKit,
