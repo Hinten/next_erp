@@ -5,15 +5,29 @@
  *
  * It REFUSES, in this order, each with its own class (`erros.ts`):
  *
+ *  0. the READ SWITCH (`LOJA_INTEGRADA_CHAMADAS`, `core/valvulas.ts`) is not
+ *     exactly `on` → `LiChamadasDesligadasError`, after ONE `chamada-bloqueada`
+ *     line — and before ANY Firestore read and before a client exists (D17:
+ *     mock only until the window sets the switch). The environment is a
+ *     PARAMETER (`deps.ambiente`): nothing under `lib/lojaIntegrada` reads the
+ *     process environment;
  *  1. no such conta, or not a Loja Integrada conta → `LiContaNaoEncontradaError`;
  *  2. `ativo === false` → `LiContaInativaError`;
  *  3. one UNCACHED credential read, to fail fast — none stored →
  *     `LiCredencialAusenteError`, corrupt → `LiCredencialInvalidaError` (paths
  *     only), parked → `LiContaParadaError`.
  *
- * ⚠️ The ORDER is part of the contract: an inactive conta is refused as
- * inactive even when its credential is also missing, corrupt or parked, so a
- * deactivated conta never reads as "fix the token".
+ * ⚠️ The ORDER is part of the contract: the switch comes first because it is
+ * what keeps an agent's process from ever reaching Loja Integrada; an inactive
+ * conta is refused as inactive even when its credential is also missing,
+ * corrupt or parked, so a deactivated conta never reads as "fix the token".
+ *
+ * ## Every call is PACED
+ *
+ * The getter waits `deps.ritmo.intervaloMs` (`core/ritmo.ts`) BEFORE it re-reads
+ * the credential, so every request through a context is preceded by one full
+ * interval. The package awaits the getter outside the request deadline, so the
+ * wait never eats the call's own budget.
  *
  * The routes do NOT come through here: they must be able to fix a parked or
  * inactive conta, so they read it uncached and require only `tipo === 3`.
@@ -59,12 +73,15 @@ import { lerContaEmCache } from './contaCache';
 import { refDaCredencial } from './credencial';
 import { type CredencialLida, lerCredencial } from './credentialStore';
 import {
+  LiChamadasDesligadasError,
   LiContaInativaError,
   LiContaNaoEncontradaError,
   LiContaParadaError,
   LiCredencialAusenteError,
 } from './erros';
 import { type OpcoesObservadorLi, criarObservadorLi } from './log';
+import type { RitmoLi } from './ritmo';
+import { type AmbienteLi, lerChaveDeChamadas, registrarChamadaBloqueadaLi } from './valvulas';
 
 /**
  * Send `x-correlation-id` on the context client's requests. **`false` until the
@@ -81,7 +98,18 @@ export interface ContextoLojaIntegrada {
   readonly cliente: LiLeituraClient;
 }
 
+/** The operation name the read switch's refusal line carries. */
+export const OPERACAO_CONTEXTO_LI = 'contexto';
+
 export interface ContextoDeps {
+  /**
+   * The process environment, as the entry point passes it in — read for the
+   * read switch only, ONCE, as the first statement. REQUIRED: a context built
+   * without it would have to guess, and the only safe guess is "off".
+   */
+  readonly ambiente: AmbienteLi;
+  /** The pacer (`core/ritmo.ts`): the wait before every request. REQUIRED. */
+  readonly ritmo: RitmoLi;
   /**
    * What the logger adds to each line of this context's calls (step 3:
    * `{ fluxo: 'intake', tentativa, idTarefa, idNotificacao }`), and the sink
@@ -109,8 +137,18 @@ async function credencialUtilizavel(db: Firestore, integracaoId: string): Promis
 export async function loadLojaIntegradaContext(
   db: Firestore,
   integracaoId: string,
-  deps: ContextoDeps = {},
+  deps: ContextoDeps,
 ): Promise<ContextoLojaIntegrada> {
+  // FIRST: no Firestore read, no client, nothing at all while the switch is off.
+  if (!lerChaveDeChamadas(deps.ambiente)) {
+    // `conta` LAST: whatever `registro` carries, the line names this conta.
+    registrarChamadaBloqueadaLi(OPERACAO_CONTEXTO_LI, deps.ambiente, {
+      ...deps.registro,
+      conta: integracaoId,
+    });
+    throw new LiChamadasDesligadasError(integracaoId);
+  }
+
   const conta = await lerContaEmCache(db, integracaoId);
   if (conta === null || conta.tipo !== INTEGRACAO_TIPO.lojaIntegrada) {
     throw new LiContaNaoEncontradaError(integracaoId);
@@ -120,8 +158,12 @@ export async function loadLojaIntegradaContext(
   // Fail fast: a flow that cannot make a single request should not start.
   await credencialUtilizavel(db, integracaoId);
 
+  const { ritmo } = deps;
   const cliente = criarClienteLeituraLi({
     obterCredencial: async (): Promise<CredencialLi> => {
+      // The pacer FIRST, then the read: a park or a save that lands during the
+      // wait is what this request sees (module header).
+      await ritmo.esperar(ritmo.intervaloMs);
       // Re-read every time — never the copy read above (module header).
       const { credencial } = await credencialUtilizavel(db, integracaoId);
       return { token: credencial.personalToken, ref: refDaCredencial(credencial) };

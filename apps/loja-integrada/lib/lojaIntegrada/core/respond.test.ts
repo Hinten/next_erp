@@ -6,6 +6,7 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  LiChamadasDesligadasError,
   LiContaInativaError,
   LiContaNaoEncontradaError,
   LiContaParadaError,
@@ -39,6 +40,7 @@ describe('respostaDeErroLi', () => {
     [new LiCredencialAlteradaError(ID), 409, CODIGO_ERRO_LI.credencialAlterada],
     [new LiContaParadaError(ID, 401, 1), 409, CODIGO_ERRO_LI.reconexaoPendente],
     [new LiEstacionamentoEmConflitoError(ID, 3), 503, CODIGO_ERRO_LI.estacionamentoEmConflito],
+    [new LiChamadasDesligadasError(ID), 503, CODIGO_ERRO_LI.chamadasDesligadas],
   ] as const;
 
   for (const [err, status, code] of casos) {
