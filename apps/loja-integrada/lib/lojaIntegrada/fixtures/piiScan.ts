@@ -422,18 +422,57 @@ export function semFalsosConhecidosLi(t: string): string {
 }
 
 /**
+ * A JS/JSON string escape: an escaped backslash, `\u{…}`, `\uXXXX`, `\xXX`, or a
+ * one-letter control escape.
+ */
+const ESCAPE_DE_STRING =
+  /\\(?:(\\)|u\{([0-9A-Fa-f]{1,6})\}|u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2})|[nrtvfb0])/g;
+
+/**
+ * `t` with its string escapes decoded: a control escape (`\n`, `\t`, …) reads as
+ * a space, a code-point escape as its character, `\\` as one backslash. A
+ * fixture or a `.ts` literal holds an embedded line break as `\n` on ONE
+ * physical line, and read raw the escape's letter glues onto the next word
+ * (`Exemplo\nModa` folds to `exemplo nmoda`).
+ */
+function semEscapesDeString(t: string): string {
+  return t.replace(
+    ESCAPE_DE_STRING,
+    (
+      _escape: string,
+      barra: string | undefined,
+      chaves: string | undefined,
+      u: string | undefined,
+      x: string | undefined,
+    ) => {
+      if (barra !== undefined) return '\\';
+      const hex = chaves ?? u ?? x;
+      if (hex === undefined) return ' ';
+      const ponto = Number.parseInt(hex, 16);
+      return ponto <= 0x10ffff ? String.fromCodePoint(ponto) : ' ';
+    },
+  );
+}
+
+/**
  * The kinds one line of a doc, a fixture or a PR-body draft trips: the store
  * names, and every redactor pattern (bare 11/14 digits only with valid check
- * digits), on the line as written and percent-decoded. The repository's
- * mandated fakes are skipped.
+ * digits), on the line as written and percent-decoded — and, when it holds a
+ * backslash, with its string escapes decoded too. The repository's mandated
+ * fakes are skipped.
  */
 export function tiposNaLinhaLi(linha: string, lista: ListaDeNomesLi): TipoAchadoLi[] {
   const tipos = new Set<TipoAchadoLi>();
-  for (const forma of formasDecodificadas(linha)) {
-    for (const t of tiposMascaradosLi(semFalsosConhecidosLi(forma), { digitos: true })) {
-      tipos.add(t);
+  const leituras = linha.includes('\\') ? new Set([linha, semEscapesDeString(linha)]) : [linha];
+  for (const leitura of leituras) {
+    for (const forma of formasDecodificadas(leitura)) {
+      for (const t of tiposMascaradosLi(semFalsosConhecidosLi(forma), { digitos: true })) {
+        tipos.add(t);
+      }
     }
   }
-  if (contemNomeDeLoja(linha, lista)) tipos.add('nome-de-loja');
+  for (const leitura of leituras) {
+    if (contemNomeDeLoja(leitura, lista)) tipos.add('nome-de-loja');
+  }
   return [...tipos];
 }
