@@ -12,13 +12,14 @@ Everything here is **offline-verified only**. The probe measured the wire
 through the package's own operations against the **SG sandbox** shop; no module
 in this folder has ever run against a BR shop, staging or production.
 
-## The twenty-four modules, in five families
+## The twenty-six modules, in five families
 
 The families are the seam, not a filing convention.
 
 - **The seam and the pure half** — `errosPublicacao.ts` (the two error classes,
-  the 22-member `MOTIVO_PUBLICACAO_BLOQUEADA` vocabulary, `ETAPA_PUBLICACAO`
-  and `limitarMensagemProblema`), `constantesAnuncio.ts` (the ten app-level
+  the `MOTIVO_PUBLICACAO_BLOQUEADA` vocabulary — step 11's 22 members plus step
+  19's native-kit members, whose count `errosPublicacao.test.ts` pins —,
+  `ETAPA_PUBLICACAO` and `limitarMensagemProblema`), `constantesAnuncio.ts` (the ten app-level
   constants; every WIRE bound stays in `@delfrance/integrations-shopee`),
   `montagemAnuncio.ts` (the `add_item` / `update_item` bodies and eighteen
   pre-write refusals), `taxInfoPublicacao.ts` (the ten-member BR `tax_info`
@@ -44,9 +45,14 @@ The families are the seam, not a filing convention.
 - **The push arm and the surfaces** — `pushAnuncio.ts` (the codes-16/27
   handlers), `avisoAnuncio.ts` (the `anuncioComViolacao` producer and its
   resolver), `corpoPublicacao.ts` (the three routes' body readers),
-  `publicarAnuncioCli.ts` (the rehearsal CLI's allow-list renderer) and
-  `integracoesComProdutoShopee.ts` (the link trigger's Shopee bindings of the
-  promoted `integracoesComProduto` core).
+  `publicarShopee.ts` (step 19, PR 7: the ONE entry point the publish route and
+  the CLI call — the dispatcher, then step 11's `publicarAnuncioShopee` or the
+  kit arms, plus `ensaiarPublicacaoShopee`, the dry run's half, so the dry run
+  and `--live` address ONE listing), `publicarAnuncioCli.ts` (the rehearsal
+  CLI's allow-list renderer, the item AND the kit summaries),
+  `reverificarAnuncioCli.ts` (step 19, PR 6: `reverificar:anuncio`'s pure half)
+  and `integracoesComProdutoShopee.ts` (the link trigger's Shopee bindings of
+  the promoted `integracoesComProduto` core).
 
 ## The design, clause by clause
 
@@ -177,9 +183,25 @@ decided by `kitNativoDoAnuncio` in `montagemAnuncio.ts`: on a republish the
 stored link's `kitNativo` — what Shopee itself reported about the live listing
 (`tag.kit`) — and on a first publish the produto's `ehKitVirtual`, the ERP's own
 statement that the marketplace resolves the composition. `false`, `null` and an
-absent key all publish, because no native kit exists in this catalogue today.
+absent key all publish: a native kit's link carries the LITERAL `true` from the
+link write that follows `add_kit_item` on (`../kits/vinculosKit.ts`), and no
+native kit existed in this catalogue before step 19 created the first ones, so
+an unstamped link is an ORDINARY listing.
 The same predicate is called by BOTH producers of the refusal (the mapper and
 `publicarAnuncio.ts`'s pre-write throw), which is what stops the two drifting.
+
+⚠️ **Since step 19 (#1527, PR 7) `produto-e-kit` is a DEFENSIVE assertion,
+never an answer.** The route and `publicar:anuncio` reach this folder only
+through the dispatcher (`escolherArmaDePublicacao`, `../kits/armaDePublicacao.ts`,
+called by `publicarShopee.ts`), which sends every native-kit link
+(`kitNativo === true`) and every `ehKitVirtualEfetivo` produto with no live link
+to the kit arms (`../kits/`) — and refuses `ehKitVirtual` without `ehKit`
+(`kit-virtual-sem-kit`), since nothing in the stored data enforces
+`ehKit === false ⇒ ehKitVirtual === false`. So this item planner never meets a
+kit it should build; reaching the refusal means a kit slipped past the
+dispatcher, and its sentence says it is a defect of the ERP. Two live ORDINARY
+links still take step 11's lexically-first pick (`escolherLink`, L10(3)):
+publishing a non-kit produto did not change.
 
 ### The update sequence: full lists, and `item_status` is never sent
 
@@ -471,15 +493,26 @@ this folder ever takes from a write echo is `add_item`'s `item_id`, because that
 is an identifier — and it is validated as a positive safe integer, a violation
 being a provider anomaly rather than a publish refusal.
 
-### Four writers of `item_status`, and why the overlap is safe
+### Five writers of `item_status`, and why the overlap is safe
 
-`item_status` / `estadoAnuncio` / `deboost` are written by FOUR paths: the
-publisher's read-back, `pausarAnuncio`, `reverificarAnuncio` and the push
-handlers. There is no ordering guard beyond "last read wins", and that is
-deliberate — **all four write only what they just READ from
-`get_item_base_info`**, so the field converges on the listing's real state
-instead of on whichever request arrived last. `shopeeLink.ts`'s own docblock
-names all four (it said TWO before this step) so the count cannot silently rot.
+`item_status` / `estadoAnuncio` are written by FIVE writers, grouped the way
+`shopeeLink.ts`'s own docblock enumerates them: step 9's product import, the
+publisher's read-back, pause / re-list + `reverificarAnuncio` (`pausarAnuncio`,
+`reverificarAnuncio`), the push handlers, and — since step 19 (#1527) — the
+native-kit arms' write-back #2 (`kits/vinculosKit.ts`). `deboost` rides the same
+reads for every writer but step 9's import, which never writes it. There is no ordering guard beyond "last
+read wins", and that is deliberate — **all five write only what they just READ**,
+so the field converges on the listing's real state instead of on whichever
+request arrived last. The kit arms' reads: `get_item_base_info` of a kit they
+just created, completed or republished; a linked kit a create-arm run reads GONE
+(a batched status outside the live set, or no row) folds to `estadoAnuncio:
+'removido'` alone, `item_status` untouched — the reverify's not-found shape; and
+the recriar's read-back of the OLD kit after its `delete_item` (`SELLER_DELETE`
+⇒ `removido`). ⚠️ One guard the other four do not have: kit #2 never moves a
+link OUT of `removido` (a tier-1 `lastUpdateTime` precondition, R1-RT7-05), so
+a slow republish read cannot revive the old kit a recriar just deleted.
+`shopeeLink.ts`'s docblock names all five (it said TWO before step 11, FOUR
+before step 19) so the count cannot silently rot.
 
 What is NOT shared: `pausadoPeloErp` is the lifecycle's alone,
 `ultimaPublicacao` / `falhaPublicacao` the publisher's alone, and
@@ -630,9 +663,13 @@ So nobody reads a gap as a bug:
   `/medidas` entry that is removed leaves the live chart where it is.
   ⚠️ `size_chart` is an image id on write and a URL on read — never round-trip
   it (step 18 reads the URL's presence only).
-- **Publishing a kit ON Shopee (step 19).** A NATIVE Shopee kit is refused as
-  `produto-e-kit` — `kitNativo` on the stored link, or `ehKitVirtual` on a first
-  publish. An ordinary ERP `ehKit` produto publishes like any other.
+- **Building a NATIVE kit — `../kits/`, never this folder (step 19).** The
+  route and `publicar:anuncio` reach it through the dispatcher: a live
+  native-kit link ⇒ `kit-atualizar` (or `--recriar` / `--converter-em-kit`), an
+  `ehKitVirtualEfetivo` produto with no live link ⇒ `kit-criar`. The item
+  planner here never builds a kit body; `produto-e-kit` is its defensive
+  assertion (above). An ordinary ERP `ehKit` produto publishes like any other.
+  The design is `../kits/README.md`.
 - **`apps/web` (step 21)** — the produto tab, the `anuncioStatus` provider row
   and the registry rows. The three routes and the CLI land HERE.
 - **`batch_add_item`**, and authoring `scheduled_publish_time` (it is READ, for
@@ -647,7 +684,9 @@ So nobody reads a gap as a bug:
   package — `delete_item` for the probe's own cleanup, `delete_model` because
   `update_tier_variation` deletes by omission and a model is never deleted by
   this step. Recorded so a later reader does not read the absence as an
-  oversight (registers 75 / 75's twin).
+  oversight (registers 75 / 75's twin). Since step 19 `delete_item` has ONE
+  production caller, outside this folder: the recriar's "ensure the old kit is
+  gone" step (`../kits/recriarKit.ts`), sent only to an old KIT that reads live.
 - **A dead-picture self-heal.** Shopee reports no parseable per-id message for a
   purged `image_id`; `error_param: Image not exist.` classifies to `sem-fotos`
   and the operator re-uploads. Recorded gap.

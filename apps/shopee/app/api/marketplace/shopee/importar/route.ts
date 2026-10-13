@@ -28,6 +28,7 @@
  * (404 conta, 409 reauth / sem shop id, 502 schema/http, 503 rede).
  */
 import { NextResponse } from 'next/server';
+import { FieldValue } from 'firebase-admin/firestore';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore, tryGetAdminBucket } from '@/lib/firebase/admin';
@@ -89,8 +90,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       categorias: criarMemoDeCategorias(client, ctx.integracaoId),
     };
 
+    // ⚠️ The kit arm re-evaluates the recipe aviso (step 19), which can RAISE
+    // through an increment — wrapped rather than passed by reference, like
+    // every other `increment` this app wires.
     const res = ehKitDe(entrada.base)
-      ? await importarKitShopee(deps, entrada)
+      ? await importarKitShopee(
+          { ...deps, increment: (by: number) => FieldValue.increment(by) },
+          entrada,
+        )
       : await importarAnuncioShopee(deps, entrada);
 
     // Built by NAME: the result type is ours, and echoing it whole is how a

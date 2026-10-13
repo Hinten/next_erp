@@ -291,7 +291,7 @@ function ComponentLabel({ db, produtoId }: { db: Firestore; produtoId: string })
   const data = snap.data?.data as { nome?: string | null; sku?: string | null } | undefined;
   const label = data ? `${data.sku ?? 'Sem SKU'} - ${data.nome ?? 'Sem nome'}` : produtoId;
   return (
-    <Text size="sm" style={{ flex: 3, minWidth: 0 }}>
+    <Text size="sm" style={{ flex: '3 1 160px', minWidth: 0, overflowWrap: 'anywhere' }}>
       {label}
     </Text>
   );
@@ -705,10 +705,16 @@ export function KitManager({
         return (
           <Box
             key={id}
-            bg={index % 2 === 1 ? 'gray.0' : undefined}
+            bg={
+              marked
+                ? 'var(--mantine-color-red-light)'
+                : index % 2 === 1
+                  ? 'var(--mantine-color-default-hover)'
+                  : undefined
+            }
             style={{ borderRadius: 4, padding: '4px 8px' }}
           >
-            <Group wrap="nowrap" align="flex-end" gap="xs" opacity={marked ? 0.55 : 1}>
+            <Group wrap="wrap" align="flex-end" gap="xs">
               <ComponentLabel db={db} produtoId={id} />
               <NumberInput
                 label="Qtd"

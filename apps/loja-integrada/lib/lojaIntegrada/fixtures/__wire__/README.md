@@ -13,8 +13,9 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
   product names, descriptions, URLs, image paths, tracking codes, external order ids,
   configuration labels and cost (`fixture` profile of `core/redacao.ts`).
 - SKUs, order numeros, dates, quantities and prices are real (master plan D17, Q3).
-- Error bodies keep only their shape, booleans, short numbers and short digit strings;
-  no error message text is ever kept.
+- Error bodies keep only their shape, booleans, null, safe integers below 1e7 and 1–7 digit
+  strings under the allowed code keys; key names outside `[A-Za-z_]{1,32}` are renamed
+  `chave_redigida_<n>`, and no error message text is ever kept.
 - Each envelope says which credential the capture ran under, the capture date (no time
   of day), the redacted request line, the status, the body class and form, and the raw
   body's byte count.

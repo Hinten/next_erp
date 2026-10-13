@@ -40,6 +40,16 @@
  * `get_model_list` is never called for it (probe P3: it would answer zero
  * models anyway).
  *
+ * ⚠️ **The kit flag rides the projection, never the queue** (step 19, L5).
+ * `kit` is `ehKitDe(base)` — step 9's ONE reading of `tag.kit`, imported, never
+ * re-spelled — taken from the SAME fresh base row the status and the prices
+ * come from, and the sender picks the kit transport (`update_kit_item`) from it
+ * at G9. It is OPTIONAL and present only on a kit, so every typed literal of an
+ * ordinary read stays valid and `absent` reads as "an ordinary item". Nothing
+ * persisted carries it: the planner, `ItemPlanejadoPreco` and the job's queue
+ * entry are unchanged, and a listing that became (or stopped being) a kit since
+ * the plan is sent on the transport its fresh read names.
+ *
  * Calls per item: the base row comes from the injected batched reader
  * (`leitorDeBase.ts` — one call per chunk, not per item, so it counts ZERO
  * here), plus ONE `get_model_list` for a has-model listing. Every error reaches
@@ -55,6 +65,7 @@ import {
 } from '@delfrance/integrations-shopee';
 import { roundReais } from '@delfrance/core/money';
 
+import { ehKitDe } from '../produtos/itemLido';
 import { precoDePrateleiraDe } from '../produtos/mapeamento';
 import { SHOPEE_PRECO_MODEL_ID_SEM_MODELO } from './constantesPreco';
 import type { LeitorDeBase } from './leitorDeBase';
@@ -87,6 +98,12 @@ export interface LeituraDePreco {
    * `SHOPEE_PRECO_MODEL_ID_SEM_MODELO`, priced from the base row.
    */
   readonly modelos: readonly ModeloLido[];
+  /**
+   * `true` ⇔ the fresh base row reads as a NATIVE Shopee kit (`ehKitDe(base)`,
+   * `tag.kit === true`) — the G9 transport switch (`update_kit_item`). ABSENT
+   * on every other read: absent ⇒ an ordinary item, `update_price`.
+   */
+  readonly kit?: boolean;
 }
 
 /** The ONE `has_model` test of this module — the projection and the read both use it. */
@@ -148,6 +165,8 @@ export function projetarLeitura(
     itemStatus: base.item_status ?? null,
     temModelos,
     modelos: lidos,
+    // Present ONLY on a kit (`LeituraDePreco.kit`): every ordinary read keeps its shape.
+    ...(ehKitDe(base) ? { kit: true } : {}),
   };
 }
 

@@ -1,0 +1,14 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/web/lib/mercado-livre/chartPersistence.ts",
+        "$TURBO_ROOT$/apps/web/lib/mercado-livre/chartConflict.ts",
+        "$TURBO_ROOT$/apps/web/lib/data/tabelaDeMedidasCollection.ts",
+        "$TURBO_ROOT$/apps/mercado-livre/lib/marketplace/size-charts/**"
+      ]
+    }
+  }
+}

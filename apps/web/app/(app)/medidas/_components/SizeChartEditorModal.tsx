@@ -118,6 +118,12 @@ export interface SizeChartEditorModalProps {
    * Without it "Enviar" would only fail after the round trip.
    */
   canWrite: boolean;
+  recoveryRequired?: boolean;
+  recoveryChartId?: string;
+  onRecoveryChartId?: (value: string) => void;
+  onRecover?: (
+    confirmNoCreation: boolean,
+  ) => Promise<{ chart: MlSizeChart | null; chartIndex: number }>;
   /** Persist the guia on the tabMedi doc without contacting ML. */
   onSaveDraft: (chart: MlSizeChart, chartIndex: number | null) => Promise<void>;
   /** Send this conta's guias to ML; resolves with the problems ML reported. */
@@ -160,6 +166,10 @@ export function SizeChartEditorModal({
   chartIndex,
   grupos,
   canWrite,
+  recoveryRequired,
+  recoveryChartId,
+  onRecoveryChartId,
+  onRecover,
   onSaveDraft,
   onSend,
   onDuplicate,
@@ -182,11 +192,12 @@ export function SizeChartEditorModal({
   const [grupoId, setGrupoId] = useState<string | null>(grupoIdOf(chart));
 
   const [rows, setRows] = useState<ChartRowDraft[]>([]);
+  const [confirmNoCreation, setConfirmNoCreation] = useState(false);
   const [units, setUnits] = useState<Record<string, string | null>>({});
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [validationErrors, setValidationErrors] = useState<MercadoLivreChartValidationError[]>([]);
   const [errorChartIndex, setErrorChartIndex] = useState(0);
-  const [busy, setBusy] = useState<'draft' | 'send' | null>(null);
+  const [busy, setBusy] = useState<'draft' | 'send' | 'recover' | null>(null);
   const [definicaoOpen, setDefinicaoOpen] = useState(!sent);
 
   /**
@@ -688,6 +699,37 @@ export function SizeChartEditorModal({
     }
   }
 
+  async function recover(): Promise<void> {
+    if (!onRecover) return;
+    setBusy('recover');
+    try {
+      const result = await onRecover(confirmNoCreation);
+      if (result.chart != null)
+        setRows((current) => adoptChartRowIds(current, current, result.chart!));
+      setConfirmNoCreation(false);
+      notifications.show({
+        color: 'green',
+        message: 'Pendência do envio resolvida. Confira a guia e envie suas alterações novamente.',
+      });
+    } catch (err) {
+      if (err instanceof SizeChartConflictError)
+        notifications.show({ color: 'red', message: err.message, autoClose: false });
+      else if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      )
+        notifications.show({
+          color: 'red',
+          message: mercadoLivreErrorMessage(err, {
+            unknown: 'Não foi possível recuperar o envio anterior.',
+          }),
+        });
+      else throw err;
+    } finally {
+      setBusy(null);
+    }
+  }
+
   /* -------------------------------- render ------------------------------- */
 
   /*
@@ -732,6 +774,43 @@ export function SizeChartEditorModal({
         exactly how this failed in CI.
       */}
       <Stack gap="md" data-testid="ml-size-chart-editor">
+        {recoveryRequired && onRecover && (
+          <Alert color="orange" title="Envio anterior sem confirmação">
+            <Stack gap="sm">
+              <Text size="sm">
+                Recupere o resultado anterior antes de enviar novamente. Suas alterações serão
+                mantidas.
+              </Text>
+              <Checkbox
+                label="Verifiquei no Mercado Livre que nenhuma guia ou linha foi criada."
+                description="Confirme somente após conferir no Mercado Livre. Uma criação existente deve ser recuperada pelo ID."
+                checked={confirmNoCreation}
+                disabled={busy != null || !canWrite || !!recoveryChartId}
+                onChange={(event) => setConfirmNoCreation(event.currentTarget.checked)}
+              />
+              <SizeChartActionButton
+                onClick={() => {
+                  void recover();
+                }}
+                loading={busy === 'recover'}
+                gate={sizeChartEditorGate('recuperar', gateInput)}
+              >
+                Recuperar envio anterior
+              </SizeChartActionButton>
+            </Stack>
+          </Alert>
+        )}
+        {recoveryRequired && !sent && (
+          <TextInput
+            label="ID da guia criada no Mercado Livre"
+            description="Use somente para recuperar uma criação sem confirmação. O conteúdo e a conta serão verificados antes de continuar."
+            value={recoveryChartId ?? ''}
+            onChange={(event) => {
+              setConfirmNoCreation(false);
+              onRecoveryChartId?.(event.currentTarget.value);
+            }}
+          />
+        )}
         <TextInput
           label="Nome da guia"
           description={`Como a guia aparece no Mercado Livre (até ${String(CHART_NAME_MAX)} caracteres, apenas letras, números e espaços).`}
