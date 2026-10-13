@@ -96,6 +96,7 @@ describe('ObjectView save flow', () => {
     saveRecordMock.mockResolvedValueOnce({
       id: 'EXISTING',
       patch: { nome: 'Updated', email: 'committed@example.com' },
+      before: { nome: 'Alice', email: 'stored@example.com' },
     });
     render(
       <Wrap>
@@ -120,7 +121,13 @@ describe('ObjectView save flow', () => {
     expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe(
       'committed@example.com',
     );
-    expect(onAfterSave).toHaveBeenCalledWith('EXISTING', {
+    // ⚠️ `committed` carries what the transaction READ (`stored@…`, not the
+    // form's `before@…` paint) and the patch it WROTE.
+    expect(onAfterSave.mock.calls[0]![2]).toEqual({
+      before: { nome: 'Alice', email: 'stored@example.com' },
+      patch: { nome: 'Updated', email: 'committed@example.com' },
+    });
+    expect(onAfterSave.mock.calls[0]![1]).toEqual({
       nome: 'Updated',
       email: 'committed@example.com',
     });
@@ -383,8 +390,13 @@ describe('ObjectView save flow', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar' }));
     });
-    // The transformed save values are handed through as the second argument.
-    expect(onAfterSave).toHaveBeenCalledWith('EXISTING', expect.objectContaining({ nome: 'Once' }));
+    // The transformed save values are handed through as the second argument,
+    // what the transaction did as the third (no read here ⇒ `before: null`).
+    expect(onAfterSave).toHaveBeenCalledWith(
+      'EXISTING',
+      expect.objectContaining({ nome: 'Once' }),
+      { before: null, patch: {} },
+    );
     expect(onSaved).not.toHaveBeenCalled();
 
     // Path 2: "Salvar" with onAfterSave rejecting → alert shown, onSaved skipped.
@@ -506,6 +518,9 @@ describe('ObjectView save flow', () => {
       'EXISTING',
       expect.objectContaining({ nome: 'Alice' }),
     );
+    // No transaction ran, so there is no `committed` — a hook that diffs the
+    // record's state must not read the form as if it were what is stored.
+    expect(onAfterSave.mock.calls[0]).toHaveLength(2);
     expect(onSaved).toHaveBeenCalledWith('EXISTING');
     expect(notifyShow).not.toHaveBeenCalledWith(expect.objectContaining({ color: 'yellow' }));
   });
@@ -700,6 +715,7 @@ describe('transientFields (aggregate page-model extras kept out of the doc write
     expect(onAfterSave).toHaveBeenCalledWith(
       'EXISTING',
       expect.objectContaining({ nome: 'Updated', anotacao: 'oculto' }),
+      { before: null, patch: {} },
     );
   });
 
