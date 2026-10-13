@@ -8,6 +8,7 @@ import {
   LATENCIA_LI_ESTIMADA_MS,
   MAX_PAGINAS_POLL,
   ORCAMENTO_CONTA_MS,
+  ORCAMENTO_MINIMO_CONTA_MS,
   ORCAMENTO_TICK_MS,
   custoPlanejadoDoDrenoMs,
   orcamentoDaContaMs,
@@ -45,6 +46,13 @@ describe('the budget constants', () => {
     expect(ORCAMENTO_CONTA_MS).toBeLessThanOrEqual(ORCAMENTO_TICK_MS);
     // The last conta may overshoot its budget by one pacer interval.
     expect(ORCAMENTO_TICK_MS + RITMO_LEITURA_LI_MS).toBeLessThan(INTERVALO_DO_AGENDAMENTO_MS);
+  });
+
+  it('a conta is started with at least one page’s planned cost (4 000 ms)', () => {
+    expect(ORCAMENTO_MINIMO_CONTA_MS).toBe(custoPlanejadoDoDrenoMs(1));
+    expect(ORCAMENTO_MINIMO_CONTA_MS).toBe(4_000);
+    // Never more than a whole conta budget: a fresh tick always starts its first conta.
+    expect(ORCAMENTO_MINIMO_CONTA_MS).toBeLessThanOrEqual(ORCAMENTO_CONTA_MS);
   });
 
   it("the lease outlives a run's longest life: budget + one interval + one whole request", () => {

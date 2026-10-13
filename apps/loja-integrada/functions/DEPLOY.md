@@ -93,12 +93,12 @@ are local builds; neither deploys anything.
 
 ## Functions in this codebase
 
-| Export                                | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `filaLeituraLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | The ONE reads queue of the channel (order intake now; the import-job and reconcile reads join it later). The body dispatches on the task's `tipo`: `pedido` runs one notification through the pipeline, any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, `retryConfig` 3 attempts with 60 s → 300 s backoff and one doubling, `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesLojaIntegrada` only on retry-exhaustion, park or defer. |
-| `reprocessLojaIntegradaNotifications` | `onSchedule('*/30 * * * *')`           | The backstop, draining BOTH lanes on one tick (`limit 10` each): `failed` notifications older than the hot window, then the deferred lane (a parked conta, an inactive conta, a missing credential, the switch off). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`. `America/Sao_Paulo`, `timeoutSeconds 540`.                                                                                                                                                   |
-| `sweepLojaIntegradaTokenExpiry`       | `onSchedule('30 6 * * *')`             | The DAILY token-expiry sweep: raises the expiry and reconnection avisos at the 30-day horizon, resolves them once a new date or credential lands, and closes the orphaned rows of contas that no longer exist. Reads only the stored credential — **no Loja Integrada call**, so the read switch does not gate it. `America/Sao_Paulo`, `timeoutSeconds 120`.                                                                                                                                                          |
-| `pollLojaIntegradaPedidos`            | `onSchedule('*/5 * * * *')`            | The 5-minute order poller (arrives with the poller change of step 3; it ships behind the read switch AND the importer-seam gate). It keeps a durable cursor and a single-flight lease per conta, enqueues one synthetic notification per changed order onto the reads queue, and records its refusals on its own document so a stuck conta raises an aviso. Runs inline in its own schedule, paced at the reads interval. `America/Sao_Paulo`, `timeoutSeconds 300`.                                                   |
+| Export                                | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filaLeituraLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | The ONE reads queue of the channel (order intake now; the import-job and reconcile reads join it later). The body dispatches on the task's `tipo`: `pedido` runs one notification through the pipeline, any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, `retryConfig` 3 attempts with 60 s → 300 s backoff and one doubling, `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesLojaIntegrada` only on retry-exhaustion, park or defer.                                                                                                                                                                                                              |
+| `reprocessLojaIntegradaNotifications` | `onSchedule('*/30 * * * *')`           | The backstop, draining BOTH lanes on one tick (`limit 10` each): `failed` notifications older than the hot window, then the deferred lane (a parked conta, an inactive conta, a missing credential, the switch off). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`. `America/Sao_Paulo`, `timeoutSeconds 540`.                                                                                                                                                                                                                                                                                                                                                                |
+| `sweepLojaIntegradaTokenExpiry`       | `onSchedule('30 6 * * *')`             | The DAILY token-expiry sweep: raises the expiry and reconnection avisos at the 30-day horizon, resolves them once a new date or credential lands, and closes the orphaned rows of contas that no longer exist. Reads only the stored credential — **no Loja Integrada call**, so the read switch does not gate it. `America/Sao_Paulo`, `timeoutSeconds 120`.                                                                                                                                                                                                                                                                                                                                                                       |
+| `pollLojaIntegradaPedidos`            | `onSchedule('*/5 * * * *')`            | The 5-minute order poller, behind TWO gates that each stop a tick with zero reads: the importer seam (empty until master-plan step 5) and the read switch. Per active conta, one after another (220 s per tick, at most 100 s per conta): a single-flight lease and a durable cursor on `pollPedidosLojaIntegrada/{id}`, `GET /v1/pedido/search/` paced at the reads interval (at most 20 pages), one synthetic notification per changed order onto the reads queue (persisted `failed` instead in sweep-only mode). A refusal or a stuck window is counted on the same document and raises the `critico` aviso `lojaIntegradaImportacaoParada`. Reads `LOJA_INTEGRADA_POLL_LOOKBACK_H`. `America/Sao_Paulo`, `timeoutSeconds 300`. |
 
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
 and names the queue after the function, so renaming `filaLeituraLojaIntegrada`
@@ -410,8 +410,32 @@ flipped:
 3. The Firestore index `notificacoesLojaIntegrada (status, processedAt)` and
    `(status, contaId)` are READY: on Enterprise a missing index does not fail, it
    full-scans and bills the scan.
-4. The first poller tick (once the poller change is deployed and the read switch
-   is on) asks for orders modified since a moment AT OR BEFORE the legacy app's
-   last import — a later start would leave a gap — every active conta has a
-   `pollPedidosLojaIntegrada` document, and no `lojaIntegradaImportacaoParada`
-   aviso is open.
+4. The first poller tick (once the importer seam is filled in step 5 and the
+   read switch is on) asks for orders modified since a moment AT OR BEFORE the
+   legacy app's last import — a later start would leave a gap — every active
+   conta has a `pollPedidosLojaIntegrada` document, and no
+   `lojaIntegradaImportacaoParada` aviso is open.
+
+## Runbook: a conta whose window is too large to drain
+
+The poller reads at most `meta.limit` × 20 changed orders per window, and it
+refuses a larger one on its first page (`janela-grande-demais`, a `critico`
+aviso at once) rather than advance past orders it never read. It happens after a
+conta was inactive or parked for weeks (about 20 days at a limit of 20, 50 at a
+limit of 50, at the planned volume). There is no saved continuation (step-3 plan
+Q6). To re-bootstrap the conta from `LOJA_INTEGRADA_POLL_LOOKBACK_H`:
+
+1. Decide the look-back that covers the gap, and that it stays under the cap
+   above; set it in `.env.deploy` and redeploy if it changes.
+2. In the console, on `pollPedidosLojaIntegrada/<integracaoId>`, set `cursor` to
+   `null` (the null TYPE, not the text) — while no run holds the lease, i.e.
+   `emExecucaoAteMs` is `0` or in the past: a run in progress would re-derive
+   its own cursor over the edit. Leave every other field as it is.
+3. The next tick anchors a fresh cursor at now − look-back and drains it. The
+   stored `falhasSeguidas` is what makes that first clean run resolve the aviso,
+   which is why the document is edited and NOT deleted: a deleted document
+   comes back with a count of 0, and a clean run with a count of 0 makes no
+   aviso call, so the open aviso would stay open.
+
+Orders changed before the new bound are not re-read: check them by hand against
+the store if the gap was longer than the look-back.

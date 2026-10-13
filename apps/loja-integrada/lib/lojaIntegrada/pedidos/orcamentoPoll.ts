@@ -61,10 +61,18 @@ export function custoPlanejadoDoDrenoMs(paginas: number): number {
 }
 
 /**
+ * The least budget a conta is STARTED with, in ms: one page's planned cost. A
+ * conta the tick can give less is `sem-tempo` (nothing written) and the next
+ * tick reaches it — rather than starting a run that cannot read one page and
+ * would end in a COUNTED `orcamento-esgotado` through no fault of its own.
+ */
+export const ORCAMENTO_MINIMO_CONTA_MS = custoPlanejadoDoDrenoMs(1);
+
+/**
  * The budget of the conta about to run, in ms: min({@link ORCAMENTO_CONTA_MS},
- * what is left of the tick that started at `inicioDoTickMs`). `0` means the
- * tick has no time left: the conta is not started (`sem-tempo`, nothing
- * written), and the next tick reaches it.
+ * what is left of the tick that started at `inicioDoTickMs`). Below
+ * {@link ORCAMENTO_MINIMO_CONTA_MS} (`0` included) the conta is not started
+ * (`sem-tempo`, nothing written), and the next tick reaches it.
  */
 export function orcamentoDaContaMs(inicioDoTickMs: number, agoraMs: number): number {
   const restante = ORCAMENTO_TICK_MS - (agoraMs - inicioDoTickMs);

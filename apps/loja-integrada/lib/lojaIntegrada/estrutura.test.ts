@@ -407,6 +407,7 @@ describe('lib/lojaIntegrada layout', () => {
         'pedidos/dataLi.ts',
         'pedidos/janelaPoll.ts',
         'pedidos/orcamentoPoll.ts',
+        'pedidos/pollPedidos.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
         'sanitizacao/lote.ts',

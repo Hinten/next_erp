@@ -12,8 +12,9 @@ import { espiarStdout, seedConta, seedCredencial } from '../../lib/lojaIntegrada
 import { seedNotificacaoLi } from '../../lib/lojaIntegrada/testing/notificacoes';
 
 /**
- * The DECLARED options of every trigger in this codebase, and what the two
- * schedule bodies bind — which nothing else covers.
+ * The DECLARED options of every trigger in this codebase, and what the sweep
+ * and expiry schedule bodies bind — which nothing else covers (the poller's
+ * root has its own suite, `pollPedidos.test.ts`).
  *
  * `onSchedule` and `onTaskDispatched` record their options onto
  * `func.__endpoint` at import time and run nothing, so most of this file is a
@@ -84,6 +85,7 @@ vi.mock('../../lib/lojaIntegrada/conta/expiracaoSweep', async (importOriginal) =
 const modulo = await import('./index');
 const {
   filaLeituraLojaIntegrada,
+  pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
 } = modulo;
@@ -99,8 +101,13 @@ afterAll(() => {
   else process.env.TASKS_INVOKER_SA = originalTasksInvokerSa;
 });
 
-/** Every scheduled trigger this codebase exports. The exhaustiveness test makes adding one mandatory. */
+/**
+ * Every scheduled trigger this codebase exports. The exhaustiveness test makes
+ * adding one mandatory. The poller's own options and bindings are pinned in
+ * `pollPedidos.test.ts`.
+ */
 const AGENDAMENTOS = {
+  pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
 } as const;
@@ -474,9 +481,14 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
 describe('every trigger of the codebase', () => {
   const TODOS = { ...AGENDAMENTOS, ...FILAS };
 
-  it('every onSchedule export is in AGENDAMENTOS — and there are exactly two', () => {
+  it('every onSchedule export is in AGENDAMENTOS — and there are exactly three', () => {
     expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
-    expect(Object.keys(AGENDAMENTOS)).toHaveLength(2);
+    expect(Object.keys(AGENDAMENTOS)).toHaveLength(3);
+    expect(exportadosCom('scheduleTrigger')).toEqual([
+      'pollLojaIntegradaPedidos',
+      'reprocessLojaIntegradaNotifications',
+      'sweepLojaIntegradaTokenExpiry',
+    ]);
   });
 
   it('the task exports are EXACTLY {filaLeituraLojaIntegrada}', () => {

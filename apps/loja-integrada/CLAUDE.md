@@ -214,6 +214,27 @@ still be fixed. Only the context loader refuses those.
   (env whole, the importer from the seam table per run). `index.ts` exports only triggers:
   any other runtime export there reads as a Cloud Function name.
 
+## Order poller (step 3)
+
+- `pedidos/pollPedidos.ts` runs one tick and one conta's run; `dataLi.ts`, `janelaPoll.ts`
+  and `orcamentoPoll.ts` are its pure date, window and budget layer. The root
+  `functions/src/pollPedidos.ts` (`pollLojaIntegradaPedidos`, `*/5`, 300 s) binds every
+  dependency: `importadorPresente = importadorPedidoLi() !== null`, the parsed look-back.
+- Two gates, each with ZERO reads: the empty importer seam (until step 5), then the read
+  switch. Contas run one after another; containment per conta is a gRPC error ONLY.
+- `pollPedidosLojaIntegrada/{id}` is written only under preconditions: the lease
+  (`create`, or `update` once expired), the refusal record (never while the lease is held,
+  never a cursor), and the final write on the lease's `writeTime`, re-derived from ONE
+  re-read when it loses. The cursor is the platform's naive text; arithmetic is zone-free.
+- The aviso `lojaIntegradaImportacaoParada` is clocked by the run's FIRST write to that
+  document, and resolved only when the stored `falhasSeguidas` was above 0. So the
+  re-bootstrap runbook NULLS the cursor and never deletes the document
+  (`functions/DEPLOY.md`): a fresh document would never resolve an open aviso.
+- A conta parked mid-drain keeps its stored `vistos` (the run's additions are dropped, so
+  they are re-enqueued once the token is back).
+- The row schema is written from the public document's two examples: PR 3-e stays a
+  draft and `MINIMO_DE_FIXTURES` stays 0 until the owner's C1/C2 fixtures are committed.
+
 ## CI (step 3)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
