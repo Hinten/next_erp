@@ -27,18 +27,22 @@
  *    behind the regex layer; the `fixture` profile walks a keep-list.
  * 5. **`webhook`** (`/webhooks/…`): no excerpt, ever — its body carries the
  *    receiver's secret.
- * 6. **Non-2xx bodies** get an error walk (`percorrerErro`) that is an
- *    allow-list too: a STRING survives only under a key of
- *    {@link CHAVES_TEXTO_ERRO_LI} (exact, case-insensitive), and even there only
- *    when it is a CODE (`ehCodigoDeErro`: at most 32 characters, either 1 to 7
- *    digits or one-case letter words with at most 4 trailing digits) and clean.
- *    Every other string — under any other key, or a root string with no key at
- *    all — is refused, whatever its shape: a key deny-list plus a shape filter
- *    kept a partial token echoed under a key nobody listed, and the 2xx `token`
- *    shape under an allowed key kept a whole base62 or hex credential (both
- *    review on #1877). A 401/403 is never excerpted in the `log`
- *    profile, whatever the class: it is the answer that may echo the token, and
- *    the package scrubs only the token as sent.
+ * 6. **Non-2xx JSON bodies** get an error walk (`percorrerErro`) that keeps
+ *    the STRUCTURE and guesses nothing about a value's shape, in both profiles:
+ *    booleans and `null`; a number only as a safe integer below 1e7 in
+ *    magnitude; a string only as 1 to 7 digits under a key of
+ *    {@link CHAVES_TEXTO_ERRO_LI} (exact, case-insensitive; an array inherits
+ *    its key) — a numeric code as text, `"633"`; a key NAME only as 1 to 32
+ *    letters or `_` (`CHAVE_DE_ERRO`), any other key becoming
+ *    `chave_redigida_<n>`, `n` its position. Every other value — a code WORD
+ *    such as `Unauthorized` or `SLUG_IN_USE` included — is refused. Three
+ *    rounds of review on #1877 each found a leak in a shape rule: a key
+ *    deny-list kept a partial token under a key nobody listed, the 2xx `token`
+ *    shape kept a whole base62 or hex credential under `error`, and the code
+ *    grammar after it kept a first name, an e-mail local part, a domain, a
+ *    token echoed as a KEY and any fraction below 1e7. A 401/403 is never
+ *    excerpted in the `log` profile, whatever the class: it is the answer that
+ *    may echo the token, and the package scrubs only the token as sent.
  *
  *    On `catalogo`/`configuracao`, a JSON object or array error takes the same
  *    walk. Only an error that is TEXT — not JSON, or a JSON scalar such as the
@@ -47,27 +51,33 @@
  *    HTML 429 and a validation message land (PLAN §1.2 item 6; step-2b plan §1
  *    item 8).
  *
- *    ⚠️ The accepted residual surface, and the whole of it: (a) a code-shaped
- *    fragment under an allow-listed key — a letters-only, one-case token of up
- *    to 32 characters still passes; (b) on `catalogo`/`configuracao`, an error
- *    that is TEXT (not JSON, or a bare JSON string like the 409 `"Slug already
- *    in use."`) keeps its regex-masked text, any fragment in it included. The
- *    price on the other side: a `catalogo`/`configuracao` JSON error, a 429
- *    included, loses its message strings — the call line carries `codigoLimite`
- *    and `retryAfterS` from the package anyway. Widening the keys, the code
- *    shape or the text classes to "see the error" reopens the leak.
+ *    ⚠️ The accepted residual surface: (a) a KEY name of letters and `_` only
+ *    survives an error body, and it could itself echo a word (a name, a
+ *    letters-only fragment of a token); (b) on `catalogo`/`configuracao`, an
+ *    error that is TEXT (not JSON, or a bare JSON scalar like the 409 `"Slug
+ *    already in use."`) keeps its regex-masked text, which may hold a name or a
+ *    partial token. Nothing else of a JSON error body survives but its
+ *    structure (nesting, array lengths, the key names of (a)), booleans,
+ *    `null`, an empty string under a denied key, safe integers below 1e7 in
+ *    magnitude and 1–7 digit strings under the allowed keys. The price: error
+ *    names and messages never reach the log — the call line carries
+ *    `codigoLimite` and `retryAfterS` from the package anyway. Widening the
+ *    keys, the string rule, the key grammar or the text classes to "see the
+ *    error" reopens the leak.
  *
  * ## Two profiles
  *
- * - `log`: a refused value becomes `'<redacted>'`, and the kept text then passes
- *   the regex layer (`mascararTexto`), which replaces each hit with a tag such as
- *   `<redacted:email>` and counts it.
+ * - `log`: a refused value becomes `'<redacted>'`, and the kept text of a 2xx
+ *   body (keys included) then passes the regex layer (`mascararTexto`), which
+ *   replaces each hit with a tag such as `<redacted:email>` and counts it.
  * - `fixture`: committed fixtures are PUBLIC, so every class goes through a
  *   keep-list, a refused value becomes a fake of the SAME JSON type derived from
  *   its key name only (so redaction is idempotent), keys outside the identifier
- *   grammar become `chave_redigida_<n>`, and an error body keeps only its shape and
- *   short digit strings. On top of the log tables it fakes tracking codes, the
- *   pedido's external ids and `preco_custo`, and configuration labels.
+ *   grammar become `chave_redigida_<n>`, and an error body takes the very walk
+ *   of the `log` profile (item 6), with fakes in place of `'<redacted>'`, so a
+ *   fixture is never laxer than a log line. On top of the log tables it fakes
+ *   tracking codes, the pedido's external ids and `preco_custo`, and
+ *   configuration labels.
  *
  * ## The regex layer is deliberately its OWN
  *
@@ -1079,14 +1089,18 @@ export const PREFIXOS_FALSOS_CATALOGO_LI: readonly string[] = ['descricao', 'seo
 
 /**
  * The ONLY keys under which an error body may keep a string (matched exactly,
- * case-insensitively; an array inherits its key, an object does not). Each is
- * where an error names a CODE, never a message:
+ * case-insensitively; an array inherits its key, an object does not), and even
+ * there only a string of 1 to 7 DIGITS — a numeric code written as text. Each
+ * is where an error may name a code, never a message:
  *
  * - `codigo`, `code`: where a code sits, e.g. the limit codes the package
  *   matches (`"codigo": 633`, `"code":"633"`).
- * - `erro`, `error`: a short error name (`"error": "Unauthorized"`, the legacy
- *   freight answer's `"erro": "0"`).
+ * - `erro`, `error`: the legacy freight answer's `"erro": "0"`.
  * - `tipo`, `campo`: which kind of error, and which field failed validation.
+ *
+ * A WORD under any of them — `"error": "Unauthorized"`, `"code": "SLUG_IN_USE"`,
+ * a field name — is refused like any other string: no value-shape rule could
+ * tell an error name from a person's name or a token (review on #1877, round 3).
  *
  * Left out on purpose: free text (`detail`, `detalhe`, `mensagem`, `message`,
  * `msg_erro`: where an echo lands), `id` (an echoed correlation id; the line
@@ -1136,6 +1150,8 @@ interface Percurso {
   readonly negacoes: boolean;
   /** Fake the catalogue keys whole (the `fixture` catalogue walk). */
   readonly falsasDoCatalogo: boolean;
+  /** A non-2xx body (`percorrerErro`): its keys take {@link CHAVE_DE_ERRO}, denied subtrees included. */
+  readonly erro: boolean;
   mascarados: number;
 }
 
@@ -1153,13 +1169,42 @@ function definir(alvo: Record<string, ValorJsonLi>, chave: string, valor: ValorJ
 }
 
 /**
- * The OUTPUT names of an object's keys: `log` passes each through the regex
- * layer; `fixture` renames a key outside the identifier grammar to
- * `chave_redigida_<n>`, `n` its 1-based position among its siblings (bumped past
- * any sibling that already holds that name). A placeholder matches the grammar,
- * so re-redaction keeps it.
+ * The key grammar of an ERROR body, in both profiles: 1 to 32 letters or `_`,
+ * the shape of a real field name. A key with a digit, a separator, a space or a
+ * non-ASCII letter is what an echoed token, e-mail or name looks like, and a
+ * regex layer over the key cannot tell them apart (review on #1877, round 3).
+ * Strictly inside {@link CHAVE_CONFORME}, so a fixture is never laxer here.
+ */
+const CHAVE_DE_ERRO = /^[A-Za-z_]{1,32}$/;
+
+/**
+ * Each key that fails `conforme` becomes `chave_redigida_<n>`, `n` its 1-based
+ * position among its siblings (bumped past any sibling that already holds that
+ * name), so the result is deterministic and a re-run gives the same names.
+ */
+function nomesPosicionais(chaves: readonly string[], conforme: (k: string) => boolean): string[] {
+  const usadas = new Set(chaves.filter(conforme));
+  return chaves.map((k, i) => {
+    if (conforme(k)) return k;
+    let n = i + 1;
+    while (usadas.has(`chave_redigida_${String(n)}`)) n += chaves.length;
+    const nome = `chave_redigida_${String(n)}`;
+    usadas.add(nome);
+    return nome;
+  });
+}
+
+/**
+ * The OUTPUT names of an object's keys.
+ *
+ * - An error body, both profiles: {@link CHAVE_DE_ERRO}, positional otherwise.
+ * - A 2xx body, `log`: each key through the regex layer.
+ * - A 2xx body, `fixture`: the identifier grammar ({@link CHAVE_CONFORME}),
+ *   positional otherwise. A placeholder matches that grammar, so re-redaction
+ *   keeps it.
  */
 function nomesDeSaida(chaves: readonly string[], ctx: Percurso): string[] {
+  if (ctx.erro) return nomesPosicionais(chaves, (k) => CHAVE_DE_ERRO.test(k));
   if (ctx.perfil === 'log') {
     return chaves.map((k) => {
       const m = mascararTexto(k, { digitos: true });
@@ -1167,15 +1212,7 @@ function nomesDeSaida(chaves: readonly string[], ctx: Percurso): string[] {
       return m.texto;
     });
   }
-  const usadas = new Set(chaves.filter((k) => CHAVE_CONFORME.test(k)));
-  return chaves.map((k, i) => {
-    if (CHAVE_CONFORME.test(k)) return k;
-    let n = i + 1;
-    while (usadas.has(`chave_redigida_${String(n)}`)) n += chaves.length;
-    const nome = `chave_redigida_${String(n)}`;
-    usadas.add(nome);
-    return nome;
-  });
+  return nomesPosicionais(chaves, (k) => CHAVE_CONFORME.test(k));
 }
 
 /** A key that cannot be part of a table path (it would read as a path of its own). */
@@ -1294,13 +1331,27 @@ function percorrer2xx(
 }
 
 /**
- * The error walk (a non-2xx JSON body; see `corpoParaLog` for which), both
- * profiles. Keys and booleans and `null` survive; a number survives only with at
- * most 7 integer digits. A string survives only under a key of
- * {@link CHAVES_TEXTO_ERRO_LI} (a root string has none), and then — `log`: only
- * when it is a CODE ({@link ehCodigoDeErro}), with no run of 8 or more digits,
- * and untouched by the regex layer; `fixture`: only when it is 1 to 7 digits.
- * Denied subtrees and keys apply. No message text survives either.
+ * The error walk (a non-2xx JSON body; see `corpoParaLog` for which), the same
+ * rules in both profiles. It keeps the STRUCTURE and guesses nothing about a
+ * value's shape:
+ *
+ * - booleans and `null` survive;
+ * - a number survives only when it is a safe integer below 1e7 in magnitude;
+ * - a string survives only when it is 1 to 7 digits under a key of
+ *   {@link CHAVES_TEXTO_ERRO_LI} — a numeric code as text (`"633"`). A root
+ *   string has no key; every other string, a code WORD included, is refused;
+ * - a key keeps its NAME only under {@link CHAVE_DE_ERRO} (`nomesDeSaida`);
+ * - denied subtrees and keys apply, and take the same key rule.
+ *
+ * A refused value is `'<redacted>'` (`log`) or a fake of its JSON type
+ * (`fixture`). No regex layer runs: nothing that survives can hold a hit.
+ *
+ * Why value shapes are gone: two rounds of them each kept a leak. The 2xx
+ * `token` shape kept a whole base62 or hex credential under `error`; the code
+ * grammar that replaced it (one-case letter words, at most 4 trailing digits)
+ * kept a first name, `JOAO_DA_SILVA`, an e-mail local part, a domain and a
+ * letters-only token, while a token echoed as a KEY and any fraction below 1e7
+ * passed both (review on #1877, round 3).
  *
  * Why 7 and 8: a bare CEP is 8 digits, a mobile without its area code 9, a CPF
  * that starts with zeros 9 or fewer once written as a number — and an error
@@ -1309,29 +1360,9 @@ function percorrer2xx(
  */
 const NUMERO_MAXIMO_NO_ERRO = 1e7;
 const DIGITOS_CURTOS = /^\d{1,7}$/;
-const SEQUENCIA_LONGA_DE_DIGITOS = /\d{8}/;
 
-/** The longest code an allow-listed error key may keep. */
-const COMPRIMENTO_MAXIMO_CODIGO = 32;
-/**
- * Words of letters, each all-lowercase, ALL-UPPERCASE or Capitalized, joined by
- * ONE `_`, `.` or `-`, with at most 4 digits at the very end: `invalid_request`,
- * `SLUG_IN_USE`, `erro.validacao`, `Unauthorized`, `E1`, `campo1`.
- */
-const CODIGO_DE_LETRAS =
-  /^(?:[a-z]+|[A-Z]+|[A-Z][a-z]+)(?:[_.-](?:[a-z]+|[A-Z]+|[A-Z][a-z]+))*\d{0,4}$/;
-
-/**
- * Whether a string under an allow-listed error key is shaped like a CODE: at most
- * 32 characters, and either 1 to 7 digits (`633`) or {@link CODIGO_DE_LETRAS}.
- * The old filter was the 2xx `token` shape (`[A-Za-z0-9_.-]{1,64}`), which a
- * credential echoed under `error` or `codigo` passes whole: a base62 or hex run
- * interleaves letters and digits, and a letters-only one interleaves case inside
- * a word (`abcDEF_ghiJKLmno`); neither is a code, so neither survives — nor does
- * a camelCase name, the price of refusing the second (review on #1877).
- */
-const ehCodigoDeErro = (v: string) =>
-  v.length <= COMPRIMENTO_MAXIMO_CODIGO && (DIGITOS_CURTOS.test(v) || CODIGO_DE_LETRAS.test(v));
+const numeroSeguroNoErro = (v: number) =>
+  Number.isSafeInteger(v) && Math.abs(v) < NUMERO_MAXIMO_NO_ERRO;
 
 function percorrerErro(v: unknown, chave: string | null, prof: number, ctx: Percurso): ValorJsonLi {
   if (prof > PROFUNDIDADE_MAXIMA_PERCURSO) return fundoDemais(ctx);
@@ -1345,20 +1376,12 @@ function percorrerErro(v: unknown, chave: string | null, prof: number, ctx: Perc
   }
   if (v === null || typeof v === 'boolean') return v;
   if (typeof v === 'number') {
-    if (Math.abs(v) < NUMERO_MAXIMO_NO_ERRO) return v;
+    if (numeroSeguroNoErro(v)) return v;
     return ctx.perfil === 'log' ? REDIGIDO : 0;
   }
   if (typeof v !== 'string') return fundoDemais(ctx);
-  const permitida = chaveDeTextoDeErro(chave);
-  if (ctx.perfil === 'fixture') return permitida && DIGITOS_CURTOS.test(v) ? v : FALSO_LI.texto;
-  // The digit-run and regex rules stay on top of the shape: the shape implies
-  // the first today, and a widened shape must not silently drop either.
-  const seguro =
-    permitida &&
-    ehCodigoDeErro(v) &&
-    !SEQUENCIA_LONGA_DE_DIGITOS.test(v) &&
-    mascararTexto(v, { digitos: true }).mascarados === 0;
-  return seguro ? v : REDIGIDO;
+  if (chaveDeTextoDeErro(chave) && DIGITOS_CURTOS.test(v)) return v;
+  return ctx.perfil === 'log' ? REDIGIDO : FALSO_LI.texto;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1435,12 +1458,14 @@ function percurso(
   perfil: PerfilRedacaoLi,
   tabelaAtual: TabelaRedacaoLi | null,
   politica: PoliticaCorpoLi,
+  erro: boolean,
 ): Percurso {
   return {
     perfil,
     tabela: tabelaAtual,
     negacoes: politica === 'estrutural',
     falsasDoCatalogo: perfil === 'fixture' && politica === 'catalogo',
+    erro,
     mascarados: 0,
   };
 }
@@ -1489,8 +1514,9 @@ function corpoParaLog(e: EntradaCorpoLi): CorpoParaLogLi {
   // exception: its keep-list exists because the body (gateway `configuracoes`)
   // is not trusted whole.
   if (analise.forma !== 'json') return nada(analise.forma);
-  const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica);
-  const saida = ehSucesso(e.status)
+  const sucesso = ehSucesso(e.status);
+  const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica, !sucesso);
+  const saida = sucesso
     ? percorrer2xx(analise.valor, '', null, 0, ctx)
     : percorrerErro(analise.valor, null, 0, ctx);
   return {
@@ -1515,8 +1541,9 @@ function corpoParaFixture(e: EntradaCorpoLi): CorpoParaFixtureLi {
     }
     return { ok: true, politica, forma: analise.forma, bytes, corpo: null };
   }
-  const ctx = percurso('fixture', tabelaDoCaminho(e.caminho), politica);
-  const corpo = ehSucesso(e.status)
+  const sucesso = ehSucesso(e.status);
+  const ctx = percurso('fixture', tabelaDoCaminho(e.caminho), politica, !sucesso);
+  const corpo = sucesso
     ? percorrer2xx(analise.valor, '', null, 0, ctx)
     : percorrerErro(analise.valor, null, 0, ctx);
   return { ok: true, politica, forma: 'json', bytes, corpo };
