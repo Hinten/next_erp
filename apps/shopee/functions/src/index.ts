@@ -165,6 +165,15 @@ import * as stockSendHandlers from './sendStock';
  * is NOT a pure backstop: push code 29 reports four fields, so for what it
  * never reports (negotiation, due dates, compensation) this tick is the
  * PRIMARY signal (register 233).
+ *
+ * Master plan step 20 (#1528) adds the THIRD Firestore trigger,
+ * `onIntegracaoShopeeChanged` (./onIntegracaoShopeeChanged) — the SECOND `onDocumentWritten`
+ * on `integracao` (Mercado Livre's is the first), so it fires for every channel's conta write
+ * and returns before any read unless the conta is, or was, Shopee — and not even then for a
+ * write that moves no mirrored field and no resolvability. It re-reads the conta inside a
+ * transaction and converges the conta's `int_frete` doc to it through the shared
+ * `@delfrance/data/admin/frete` core and, when a conta becomes resolvable, re-drives that
+ * shop's `sem-conta` deferred pushes.
  */
 
 /**
@@ -304,6 +313,10 @@ export { onProdutoShopeeLinkChanged } from './onProdutoShopeeLinkChanged';
 // Master plan step 14 (#1522): the NF-e approval trigger, the first producer of
 // `processShopeeNfeUpload`. No `secrets:` — it never calls Shopee.
 export { onNfeAprovadaShopee } from './onNfeAprovadaShopee';
+
+// Master plan step 20 (#1528): the conta's int_frete doc (+ the #808 re-drive).
+// No `secrets:` — it never calls Shopee.
+export { onIntegracaoShopeeChanged } from './onIntegracaoShopeeChanged';
 
 /**
  * Reprocess backstop, draining BOTH retry lanes on the same tick:
