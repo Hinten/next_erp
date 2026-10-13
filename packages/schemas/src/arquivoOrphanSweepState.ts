@@ -11,8 +11,10 @@ import type { CollectionMetadata } from './types';
  * a given orphan would starve that orphan out of the scan window forever — a
  * liveness gap, not a correctness bug (nothing wrong ever got deleted).
  *
- * The fix pages by **document key** (`FieldPath.documentId()`, Firestore's
- * always-available native ordering — no index needed) instead, and persists how
+ * The fix pages by **document key** (`FieldPath.documentId()`) instead — which on
+ * Firestore Enterprise needs the declared `arquivos(__name__ ASC)` index, since
+ * Enterprise has no implicit key index and a key-ordered page without it scans
+ * the whole collection (#1874) — and persists how
  * far the last tick got so the NEXT tick continues from there rather than
  * re-reading the same head of the collection. When a page comes back shorter
  * than `BATCH_LIMIT` the sweep has reached the end of the collection in key

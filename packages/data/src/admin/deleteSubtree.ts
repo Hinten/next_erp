@@ -33,10 +33,13 @@ import type {
  * (measured: 330 units over 66 calls), returns only the subcollections that
  * actually hold documents, and works on a ref whose document is already gone —
  * which is exactly how an `onDocumentDeleted` cascade reaches its orphans. Every
- * delete query below it is then **kinded** and bounded to one parent path, so it
- * rides Firestore's always-available document-key index and needs nothing
- * declared in `firestore.indexes.json`. Precedent: the cursor-paged
- * `fetchArquivoPage` in `apps/functions/src/arquivos/arquivoOrphanSweep.ts` (#234).
+ * delete query below it is then **kinded** and bounded to ONE parent's
+ * subcollection, so what it can read is that subcollection and nothing else.
+ * ⚠️ Not because of a key index: Enterprise has none unless declared (#1874), so
+ * key order there costs a scan of whatever the query covers. Here that is one
+ * parent's subcollection, which is why nothing is declared in
+ * `firestore.indexes.json` — a WHOLE-collection key walk is a different matter
+ * (see `fetchArquivoPage` in `apps/functions/src/arquivos/arquivoOrphanSweep.ts`).
  *
  * ⚠️ **Do not replace `listCollections()` with a registry-derived list.** It is
  * tempting — `ALL_DOMAINS` knows most of these paths — but it is wrong, not

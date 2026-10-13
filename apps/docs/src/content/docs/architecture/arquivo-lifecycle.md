@@ -284,6 +284,10 @@ deployed manually:
 - `arquivos(uploadState, criadoEm)` — the phantom sweep (equality + range + orderBy).
 - `arquivos(markedForDeletionAt)` — the marked sweep (range + sort; `null` docs are
   excluded by the range predicate).
+- `arquivos(__name__ ASC)` — the round-robin page of the unreferenced sweep. Enterprise
+  has no implicit document-key index (#1874): without this entry the page walks another
+  arquivos index end to end and sorts in memory, reading the whole collection on every
+  tick to keep 100 rows.
 - Six single-field, `COLLECTION_GROUP` indexes on `mensagem`: `anexoStorage`,
   `audio.audio`, `image.image`, `video.video`, `sticker.sticker`, and
   `genericDocument.genericDocument`. The OR refcount query depends on all six.
@@ -292,17 +296,19 @@ deployed manually:
 
 All three sweeps are bounded at **100 docs/run**. Grace windows:
 `ARQUIVO_ORPHAN_GRACE_HOURS` (48h) for the phantom + unreferenced passes;
-`ARQUIVO_MARKED_GRACE_HOURS` (1h) for the marked pass. The round-robin page uses native
-document-id ordering and needs no declared index. Owner refchecks use `getAll` only for
+`ARQUIVO_MARKED_GRACE_HOURS` (1h) for the marked pass. The round-robin page orders by
+document id and rides the declared key index above. Owner refchecks use `getAll` only for
 the distinct owners in the page. Mensagem refchecks run with concurrency 8 and
 `limit(1)`; only candidates that look unreferenced pay the second transactional query.
 
 `packages/schemas/src/mensagemArquivoRefs.indexes.test.ts` keeps the field inventory and
-index declarations synchronized. `apps/functions/scripts/check-sweep-indexes.mjs` runs
-`explain({ analyze: true })` against the named `default` database, logs
-`indexesUsed`/read/scan metrics, and fails if the live plans do not use all seven indexes.
-The emulator cannot run Query Explain; this check belongs to the coordinated deployment
-runbook, after indexes reach `READY`.
+index declarations synchronized. `apps/functions/scripts/check-sweep-indexes.mjs` explains
+every sweep query against the named `default` database — classic `explain()` where the
+database accepts it, else (Enterprise refuses it) the SDK's pipeline translation of the
+same query — prints each plan with its read counters, and fails if a plan does not ride
+its declared index or the round-robin page reads more than its own rows. The emulator
+cannot run either explain; this check belongs to the coordinated deployment runbook,
+after indexes reach `READY`.
 
 ## Known gaps & follow-ups
 
