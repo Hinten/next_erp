@@ -96,6 +96,11 @@ still be fixed. Only the context loader refuses those.
   spelled-out leaves with predicates. Profile `log`: `<redacted>` plus the regex layer,
   then a 2 KB cut (mask first, cut second). Profile `fixture` (fixtures are public): fakes
   of the same type, `chave_redigida_<n>` keys, error bodies keep shape and short digits.
+- Error bodies are an allow-list too: a string survives only under `CHAVES_TEXTO_ERRO_LI`
+  (`codigo`, `code`, `erro`, `error`, `tipo`, `campo`; exact, any case), and there only if
+  code-shaped and clean. On `catalogo`/`configuracao` a JSON object or array error takes that
+  walk; only TEXT (non-JSON, or a JSON scalar like the spec's 409) keeps its masked text, for
+  a plain/HTML 429 or a validation message. Never add a key to "see the message".
 - A new field or path stays redacted until a table lists it. Listing one means adding the
   leaf with its predicate AND regenerating the committed leaf inventory, which reads the
   gitignored spec cache only: `MSYS_NO_PATHCONV=1 node

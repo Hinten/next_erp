@@ -183,13 +183,41 @@ describe('linhaDaChamada — the line is a projection', () => {
       });
       expect(JSON.stringify(linha)).not.toContain(parcial);
     }
-    // Near-miss: the same 400 under a stored credential keeps its masked text.
+    // Near-miss: the same 400 under a stored credential keeps an excerpt — the
+    // error walk's, so the code stays and the echo does not.
     const guardada = linhaDaChamada(
       evento({ caminho: '/v1/categoria/', status: 400, resultado: 'http', corpo }),
       OPCOES,
     ).linha;
     expect(guardada.versaoCredencial).toBe(String(VERSAO_MS));
-    expect(guardada.trechoCorpo).toBe(corpo);
+    expect(guardada.trechoCorpo).toBe('{"detalhe":"<redacted>","codigo":"x1"}');
+  });
+
+  it('a stored-credential error echoing a partial token under an undocumented key logs no fragment of it', () => {
+    // The package scrubs only the token AS SENT; a code-shaped fragment under a
+    // key no list names used to survive both the error walk and the catalogue text.
+    const parcial = 'li-token-sentinela-AAAA';
+    for (const caminho of ['/v1/pedido/search/', '/v1/categoria/', '/v1/situacao/']) {
+      for (const [status, resultado] of [
+        [400, 'http'],
+        [404, 'nao-encontrado'],
+        [422, 'http'],
+        [429, 'limite'],
+        [500, 'http'],
+        [503, 'http'],
+      ] as const) {
+        for (const corpo of [
+          JSON.stringify({ detalhe: parcial, codigo: 'x1' }),
+          JSON.stringify({ erroInterno: { ref: parcial } }),
+          JSON.stringify([{ chaveUsada: parcial }]),
+        ]) {
+          const { linha } = linhaDaChamada(evento({ caminho, status, resultado, corpo }), OPCOES);
+          expect(linha.versaoCredencial).toBe(String(VERSAO_MS));
+          expect(linha.trechoCorpo, `${caminho} ${String(status)} ${corpo}`).not.toBeNull();
+          expect(JSON.stringify(linha), `${caminho} ${String(status)}`).not.toContain(parcial);
+        }
+      }
+    }
   });
 
   it('a call with no response logs no body', () => {
