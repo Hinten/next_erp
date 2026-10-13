@@ -200,6 +200,10 @@ export async function lerPreparo(
     pai.existente !== null,
     modelos,
     combos.map((c) => ({ variacoesUid: c.variacoesUid })),
+    // ⚠️ EXPLICITLY unscoped: an ordinary listing keeps the claim check over
+    // every row of the conta, exactly as before step 19. Only the kit arm
+    // scopes it to its own listing (R-u, S2C-01).
+    null,
   );
 
   const filhos: PreparoFilhoShopee[] = [];

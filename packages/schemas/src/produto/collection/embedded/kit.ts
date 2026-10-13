@@ -10,6 +10,13 @@ import { z } from 'zod';
  * `quantidade` (min 1) is how many of the component go into one kit;
  * `limitarEstoque` flags whether the component constrains the kit's available
  * stock. `.passthrough()` preserves any extra field the migrated corpus carries.
+ *
+ * ⚠️ `limitarEstoque` is DEPRECATED (Lucas, 2026-10-07): every component will
+ * limit stock. Shopee native kits already send every component regardless of
+ * the flag (step 19, #1527), because Shopee derives a kit's stock from ALL its
+ * components; removal is tracked in #1835, which also covers the corpus rows
+ * that hold it `false`, the ERP availability rule, Mercado Livre and the web
+ * editor. Do not add readers.
  */
 export const kitSchema = z
   .object({
@@ -18,6 +25,11 @@ export const kitSchema = z
       .int()
       .min(1, 'A quantidade do componente deve ser ao menos 1')
       .default(1),
+    /**
+     * @deprecated Deprecated (Lucas, 2026-10-07): every component will limit
+     * stock. Shopee native kits already send every component regardless
+     * (step 19); removal tracked in #1835. Do not add readers.
+     */
     limitarEstoque: z.boolean().default(true),
     timestamp: z.number().int().nullable().default(null),
   })

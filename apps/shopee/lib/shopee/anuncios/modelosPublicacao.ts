@@ -36,7 +36,10 @@
  *     link in place (new model_id + new tier_index)".
  *  2. **Sync** — `sincronizarLinksDeVariacao` (C10, `linkAnuncio.ts`): the ONE
  *     implementation, shared with `reverificarAnuncio.ts`. It refreshes what
- *     matches and MARKS what vanished; it never mints and never deletes.
+ *     matches and MARKS what vanished; it never mints and never deletes. Since
+ *     step 19 it is PER LISTING: it reads only the rows that point at THIS
+ *     listing's link, so another listing's rows under the same children are
+ *     never marked by this one's model list.
  *  3. **Mint** — a live model with no child link, matched to one of OUR models
  *     by `tier_index`, becomes a new `variashopee` document through
  *     `aplicarLinkDaVariacao`. A model Shopee answered with `model_id: 0` is
@@ -365,10 +368,15 @@ export async function aplicarModelos(
       ? await repontarVinculosDeModelo(deps, entrada, linkPaiId, montagem.modelos, modelos)
       : 0;
 
+  // ⚠️ PER LISTING: the reading is THIS listing's model list, so only the rows
+  // that point at `linkPaiId` are reconciled against it. A child may also carry
+  // another listing's rows (a native kit beside the ordinary listing it
+  // replaced, step 19 L8), and a per-PRODUTO sync would stamp those absent.
   const sincronia = await sincronizarLinksDeVariacao(
     deps.db,
     deps.integracaoId,
     entrada.produtoPaiId,
+    linkPaiId,
     modelos,
     deps.nowMs,
   );

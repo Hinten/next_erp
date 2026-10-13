@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { resolverProdutoPorSku } from './resolveProdutoPorSku';
+import { resolverProdutoPorSku, unidadeVendavelDaRaiz } from './resolveProdutoPorSku';
 
 /* -------------------------------------------------------------------------- */
 /*                               fake Firestore                               */
@@ -628,4 +628,60 @@ it('⚠️ TODO degrau roda sob limit(2) — o segundo documento é o SINAL, nun
     ],
     [['sku', 'ABC-UN']],
   ]);
+});
+
+/* -------------------------------------------------------------------------- */
+/*               unidadeVendavelDaRaiz — the ONE exported hop rule            */
+/* -------------------------------------------------------------------------- */
+
+describe('unidadeVendavelDaRaiz — a regra exportada (passo 19 da Shopee a reusa)', () => {
+  it('um invólucro de família de UM responde o MEMBRO', () => {
+    expect(
+      unidadeVendavelDaRaiz({
+        ehKit: false,
+        produtoId: 'pai',
+        familia: { id: 'pai', paiId: null, filhoUnicoId: 'membro' },
+      }),
+    ).toBe('membro');
+  });
+
+  it('⛔ NEAR-MISS: um KIT de família de um fica no PAI — o espelho nunca é a resposta', () => {
+    expect(
+      unidadeVendavelDaRaiz({
+        ehKit: true,
+        produtoId: 'pai',
+        familia: { id: 'pai', paiId: null, filhoUnicoId: 'membro' },
+      }),
+    ).toBe('pai');
+  });
+
+  it('um produto sem família, ou um FILHO com filhoUnicoId velho, responde ele mesmo', () => {
+    expect(
+      unidadeVendavelDaRaiz({
+        ehKit: false,
+        produtoId: 'p',
+        familia: { id: 'p', filhoUnicoId: null },
+      }),
+    ).toBe('p');
+    // O guarda de deriva: `paiId` projetado vence o `filhoUnicoId` desnormalizado.
+    expect(
+      unidadeVendavelDaRaiz({
+        ehKit: false,
+        produtoId: 'filho',
+        familia: { id: 'filho', paiId: 'pai', filhoUnicoId: 'outro' },
+      }),
+    ).toBe('filho');
+  });
+
+  it('o degrau de raiz da cascata usa a MESMA regra (membro de invólucro, pai de kit)', async () => {
+    const db = new FakeDb();
+    db.seed('w', { sku: 'W', paiId: null, filhoUnicoId: 'w-m' });
+    db.seed('k', { sku: 'K', paiId: null, filhoUnicoId: 'k-m', ehKit: true });
+
+    const involucro = await resolverProdutoPorSku(asDb(db), { sku: 'W', paiId: null, canal: ML });
+    const kit = await resolverProdutoPorSku(asDb(db), { sku: 'K', paiId: null, canal: ML });
+
+    expect(involucro).toEqual({ produtoId: 'w-m', via: 'sku-membro-unico' });
+    expect(kit).toEqual({ produtoId: 'k', via: 'sku-root' });
+  });
 });

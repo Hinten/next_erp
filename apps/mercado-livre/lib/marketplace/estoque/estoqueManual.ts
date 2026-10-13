@@ -242,7 +242,11 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
     '(MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED). Por padrão este produto é enviado.',
   // ⚠️ No `'nao-publicado'` (#1087): an oculto produto whose anúncio is live is
   // SENT now, and says so through `AVISO_OCULTO_NO_ERP` on the `enviado` row.
-  'conta-fora-do-produto': 'O produto não está vinculado a esta conta.',
+  // Push-only (#1200), three states: trigger lag, every link closed, denorm drift.
+  'conta-fora-do-produto':
+    'O produto não está registrado nesta conta. Se acabou de publicar, tente novamente em ' +
+    'alguns segundos; se persistir, o anúncio está encerrado ou o cadastro está ' +
+    'desatualizado — este caso é corrigido pela auditoria mensal (dia 1º).',
   'task-excede-limite': 'A sincronização gera dados demais para um único envio.',
   'produto-nao-encontrado': 'Produto não encontrado.',
   'familia-nao-encontrada': 'Produto não encontrado ou não é um produto pai.',

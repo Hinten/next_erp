@@ -2,12 +2,14 @@ import '@mantine/core/styles.css';
 import '@mantine/dates/styles.css';
 import '@mantine/notifications/styles.css';
 import '@mantine/charts/styles.css';
+import '@delfrance/ui/src/theme.css';
 
 import type { ReactNode } from 'react';
 import { ColorSchemeScript, mantineHtmlProps } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { AuthProvider } from '@/lib/auth';
 import { QueryProvider } from '@/lib/query/QueryProvider';
+import { COLOR_SCHEME_STORAGE_KEY } from '@/lib/theme/colorScheme';
 import { MantineAppProvider } from './MantineAppProvider';
 
 export const metadata = {
@@ -19,7 +21,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="pt-BR" {...mantineHtmlProps}>
       <head>
-        <ColorSchemeScript defaultColorScheme="light" />
+        <ColorSchemeScript defaultColorScheme="auto" localStorageKey={COLOR_SCHEME_STORAGE_KEY} />
       </head>
       <body>
         <MantineAppProvider>

@@ -8,11 +8,17 @@ const AZUL_RGB = 0x2196f3; // this app's colour input
 const AZUL_ARGB = 0xff2196f3; // legacy Flutter `Colors.blue.value`
 
 describe('integracaoBadgeStyle', () => {
-  it('paints the badge and picks a readable foreground for a dark colour', () => {
-    // Legacy's rule: luminance > 0.5 → black text, else near-white.
+  it('paints the stored blue and chooses the foreground with enough contrast', () => {
     expect(integracaoBadgeStyle(AZUL_ARGB)).toEqual({
       backgroundColor: '#2196f3',
-      color: '#f5f5f5',
+      color: '#000000',
+    });
+  });
+
+  it('retains white text for a dark colour', () => {
+    expect(integracaoBadgeStyle(0x673ab7)).toEqual({
+      backgroundColor: '#673ab7',
+      color: '#ffffff',
     });
   });
 

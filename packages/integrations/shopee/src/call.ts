@@ -9,14 +9,15 @@
  *
  * ⚠️ That invariant has exactly TWO exceptions, and both are opt-in PER
  * OPERATION. The first is about the VALUE:
- * {@link ShopeeCallParams.emptyErrorAliases}. Three pages — the two on the
- * lost-push queue and `v2.order.get_package_detail` — print `"-"` where the
- * others print `""`, and the six `v2.returns.*` pages of step 17 print `"-"` or
- * `" "` (one SPACE); the alias exists so those nine operations can read it as
- * success. It is never a global widening: the default stays exact equality
- * with `''`, the opt-in is per CALL SITE — nine of them, over THREE constants —
- * and a `' '` is a failure everywhere except the six returns call sites, the
- * only ones whose constant (`SHOPEE_RETURNS_ERROR_ALIASES`) names it.
+ * {@link ShopeeCallParams.emptyErrorAliases}. Four pages — the two on the
+ * lost-push queue, `v2.order.get_package_detail` and step 19's
+ * `v2.product.get_kit_item_limit` — print `"-"` where the others print `""`,
+ * and the six `v2.returns.*` pages of step 17 print `"-"` or `" "` (one SPACE);
+ * the alias exists so those ten operations can read it as success. It is never
+ * a global widening: the default stays exact equality with `''`, the opt-in is
+ * per CALL SITE — ten of them, over FOUR constants — and a `' '` is a failure
+ * everywhere except the six returns call sites, the only ones whose constant
+ * (`SHOPEE_RETURNS_ERROR_ALIASES`) names it.
  *
  * ⚠️ The second is about the KEY: {@link ShopeeCallParams.erroAusenteEhSucesso},
  * ONE call site (`get_item_violation_info`), whose SUCCESS body omits `error`
@@ -177,18 +178,24 @@ interface ShopeeCallBase<S extends z.ZodType> {
   /**
    * Envelope `error` values THIS OPERATION accepts as success, beyond `''`.
    *
-   * ⚠️ Exactly NINE call sites over THREE constants — the two lost-push pages
+   * ⚠️ Exactly TEN call sites over FOUR constants — the two lost-push pages
    * (`get_lost_push_message`, `confirm_consumed_lost_push_message`) SHARE
    * `SHOPEE_LOST_PUSH_ERROR_ALIASES` (`['-']`), `v2.order.get_package_detail`
    * (step 7) carries its own `SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES` (`['-']`),
-   * and the six `v2.returns.*` operations (step 17) share
-   * `SHOPEE_RETURNS_ERROR_ALIASES` (`[' ', '-']`, `devolucoes.ts`) — and every
+   * the six `v2.returns.*` operations (step 17) share
+   * `SHOPEE_RETURNS_ERROR_ALIASES` (`[' ', '-']`, `devolucoes.ts`), and
+   * `v2.product.get_kit_item_limit` (step 19) carries its own
+   * `SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES` (`['-']`, `kits.ts`) — and every
    * one of them is here because the page CONTRADICTS ITSELF: its
    * parameter table samples `error` as `""` ("Empty if no error happened") while
    * its rendered response sample prints `"-"` (or, on four returns pages, `" "`)
-   * for `error`, `message` AND `warning`. Other cached pages,
-   * `get_app_push_config` and `get_order_detail` included, sample `""` — so the
-   * tolerance is opt-in per CALL SITE because the
+   * for `error`, `message` AND `warning`. The kit-limit page qualifies on its
+   * ONE success sample (`{"error": "-", "message": "success", "warning": "-"}`),
+   * added on the doc's word: no host has answered a success yet (the SG sandbox
+   * does not route the path — a bare 404), so a BR shop settles it, and it is
+   * its OWN constant because a product page's contradiction is not the order
+   * module's. Other cached pages, `get_app_push_config` and `get_order_detail`
+   * included, sample `""` — so the tolerance is opt-in per CALL SITE because the
    * contradiction is per PAGE: the order op carries a SECOND constant rather
    * than reusing a lost-push-named one, while the two lost-push pages share
    * theirs because they are one queue, one page family, one observation — the
@@ -201,8 +208,8 @@ interface ShopeeCallBase<S extends z.ZodType> {
    *
    * ⚠️ EXACT equality against each alias — never a trim, never a
    * `.length === 0` fold. `' '` stays a failure on every operation whose
-   * constant does not NAME it (the lost-push pair, `get_package_detail`, every
-   * other page), and a test pins it; on the returns operations `'  '`, `'\t'`
+   * constant does not NAME it (the lost-push pair, `get_package_detail`,
+   * `get_kit_item_limit`, every other page), and a test pins it; on the returns operations `'  '`, `'\t'`
    * and `' -'` stay failures. Neither `-` nor `' '` appears on any documented
    * error list (Shopee's are `error_data`, `error_param`, `error_server`, …), so
    * the alias cannot mask a real code — and every returns schema REQUIRES
@@ -217,9 +224,9 @@ interface ShopeeCallBase<S extends z.ZodType> {
    *
    * ⚠️ `warning: "-"` is NOT filtered here: no config in this repo sets
    * `onWarning` today (grepped 2026-09-14 — `apps/shopee` wires none), and if one
-   * ever does it will see `-` as noise on the three `['-']` operations,
-   * `get_package_detail` included: that page samples `"warning": "-"` as well.
-   * (No returns sample prints a `warning` at all.)
+   * ever does it will see `-` as noise on the four `['-']` operations,
+   * `get_package_detail` and `get_kit_item_limit` included: both pages sample
+   * `"warning": "-"` as well. (No returns sample prints a `warning` at all.)
    */
   readonly emptyErrorAliases?: readonly string[];
   /**
@@ -647,7 +654,7 @@ export async function shopeeCall<S extends z.ZodType>(
 
   // ⚠️ EXACT equality with the empty string, and EXACT equality with each alias.
   // `' '` is a failure — trimming here, on either side, would read a padded
-  // value as a success. See `emptyErrorAliases` for the nine operations that
+  // value as a success. See `emptyErrorAliases` for the ten operations that
   // carry one and why the tolerance is per operation.
   const sucesso = envelope.error === '' || (p.emptyErrorAliases?.includes(envelope.error) ?? false);
   if (!sucesso) {

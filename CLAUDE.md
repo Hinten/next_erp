@@ -101,8 +101,12 @@ not "deduplicate" them without changing how required checks are published.
    **`default`**, not `(default)` — pass it explicitly or every op fails
    `5 NOT_FOUND`; and Enterprise omits the implicit trailing `__name__` field,
    so index JSON copied from Standard-edition docs is wrong. Enterprise also
-   unlocks the **Pipelines API** (used in `packages/data` and the arquivo orphan
-   sweep), which does **not** run in the emulator — hence the test seams.
+   unlocks the **Pipelines API** (used in `packages/data`). The stable Firestore
+   emulator **1.22.0**, bundled by CI's pinned `firebase-tools@15.25.0`, supports
+   pipeline queries in **Enterprise mode**; `firebase.e2e.json` opts in. Support
+   is partial: search, query explain/index usage and production concurrency still
+   need their existing validation. Prove each exact query shape before migrating
+   its tests or removing a test seam; see the `firestore-pipelines` skill.
 2. **The Firestore rulesets are GENERATED — never hand-edit, never deploy.**
    `packages/rules-gen` emits both from the Zod collection metadata. Any
    `*Meta` permission/path, PERM, or validator-whitelist change means running
@@ -130,7 +134,8 @@ not "deduplicate" them without changing how required checks are published.
    `*.tasks.test.ts` can drive receiver → enqueue → the real `onTaskDispatched`
    → Firestore), and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
-   `*.emulator.e2e.spec.ts` — six today. Every other e2e spec hits staging. Do
+   `*.emulator.e2e.spec.ts`, including catalog flows whose pipeline shapes are
+   verified on the Enterprise emulator. Every other e2e spec hits staging. Do
    **not** add a local-dev emulator mode: `NEXT_PUBLIC_USE_FIREBASE_EMULATOR`
    exists for that CI lane only and is off by default.
 5. **`apps/web` is client-first.** Default to `'use client'` — the ERP is behind

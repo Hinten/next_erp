@@ -9,6 +9,7 @@ import {
   Badge,
   Box,
   Divider,
+  Drawer,
   Group,
   Loader,
   Stack,
@@ -128,7 +129,43 @@ function ClienteSection({ conversa }: { conversa: Conversa }) {
  * metadata (origem, datas, etiqueta, participantes). Collapsible; lives in the
  * `ChatInboxShell`'s reserved third pane.
  */
-export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
+export function ConversaSidePanel({
+  conversa,
+  variant = 'panel',
+}: {
+  conversa: Conversa;
+  variant?: 'panel' | 'drawer';
+}) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  if (variant === 'drawer') {
+    return (
+      <>
+        <Tooltip label="Mostrar detalhes">
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            aria-label="Mostrar detalhes"
+            onClick={() => setDrawerOpen(true)}
+          >
+            <IconLayoutSidebarRightExpand size={18} />
+          </ActionIcon>
+        </Tooltip>
+        <Drawer
+          opened={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          title="Detalhes da conversa"
+          position="right"
+          size="sm"
+        >
+          <ConversaPanelContent conversa={conversa} onClose={() => setDrawerOpen(false)} />
+        </Drawer>
+      </>
+    );
+  }
+  return <ConversaPanelContent conversa={conversa} />;
+}
+
+function ConversaPanelContent({ conversa, onClose }: { conversa: Conversa; onClose?: () => void }) {
   const [open, setOpen] = useState(true);
   const dataCadastro = formatMs(conversa.data_cadastro);
   const prazo = formatMs(conversa.prazo_resposta);
@@ -147,7 +184,10 @@ export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
 
   if (!open) {
     return (
-      <Box style={{ borderLeft: '1px solid var(--mantine-color-gray-2)', paddingLeft: 8 }} py="xs">
+      <Box
+        style={{ borderLeft: '1px solid var(--mantine-color-default-border)', paddingLeft: 8 }}
+        py="xs"
+      >
         <Tooltip label="Mostrar detalhes" position="left">
           <ActionIcon
             variant="subtle"
@@ -164,11 +204,11 @@ export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
 
   return (
     <Box
-      w={PANEL_WIDTH}
+      w={onClose ? '100%' : PANEL_WIDTH}
       style={{
-        flex: `0 0 ${PANEL_WIDTH}px`,
-        borderLeft: '1px solid var(--mantine-color-gray-2)',
-        paddingLeft: 12,
+        flex: onClose ? undefined : `0 0 ${PANEL_WIDTH}px`,
+        borderLeft: onClose ? undefined : '1px solid var(--mantine-color-default-border)',
+        paddingLeft: onClose ? undefined : 12,
         overflowY: 'auto',
         minHeight: 0,
       }}
@@ -182,7 +222,7 @@ export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
             <ActionIcon
               variant="subtle"
               color="gray"
-              onClick={() => setOpen(false)}
+              onClick={onClose ?? (() => setOpen(false))}
               aria-label="Ocultar detalhes"
             >
               <IconLayoutSidebarRightCollapse size={18} />
@@ -222,7 +262,7 @@ export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
                   height: 16,
                   borderRadius: '50%',
                   background: argbToRgba(conversa.cor_etiqueta),
-                  border: '1px solid var(--mantine-color-gray-3)',
+                  border: '1px solid var(--mantine-color-default-border)',
                 }}
               />
             </Tooltip>
