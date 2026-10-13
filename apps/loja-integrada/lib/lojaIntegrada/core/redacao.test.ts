@@ -1355,7 +1355,7 @@ describe('the error walk keeps a string only under an allow-listed key (review o
   it.each(['codigo', 'code', 'erro', 'error', 'tipo', 'campo', 'Codigo', 'CODE', 'Erro', 'eRRoR'])(
     'keep: a short code-shaped string under %j survives (log), and short digits do (fixture)',
     (chave) => {
-      for (const valor of ['campo_invalido', 'E-123.a', '533', 'Unauthorized']) {
+      for (const valor of ['campo_invalido', 'not-found.E1', '533', 'Unauthorized']) {
         expect(logJson('/v1/pedido/1', 400, { [chave]: valor }), valor).toEqual({
           [chave]: valor,
         });
@@ -1482,6 +1482,141 @@ describe('the error walk keeps a string only under an allow-listed key (review o
         n: 5,
       });
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   Under an allow-listed key, only a CODE-shaped value survives (#1877, r2)  */
+/* -------------------------------------------------------------------------- */
+
+const CHAVES_DE_TEXTO = ['codigo', 'code', 'erro', 'error', 'tipo', 'campo'] as const;
+
+/**
+ * Credential-shaped values, 20 to 40 characters: each passed the old shape
+ * filter (`[A-Za-z0-9_.-]{1,64}`, no 8-digit run, no regex hit), so under an
+ * allow-listed key it reached the log verbatim.
+ */
+const TOKENS_ALEATORIOS = [
+  'aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d', // base62, 40
+  'Zq7Xk2Lm9Pw4Rt8Vn3Ys', // base62, 20
+  '3f9a1c7e5b2d8f4a6c0e9b1d', // hex, 24
+  'A1B2C3D4E5F6A7B8C9D0E1F2', // hex, upper, 24
+  '9b2f6c1e-4d7a-4e3b-8c5f-2a1d9e7b6c4f', // a UUID, 36
+  TOKEN_PARCIAL, // letters only, case interleaved within a word, 21
+] as const;
+
+/** What an LI error names: a status code, a short code, an error name, a field. */
+const CODIGOS = [
+  '633',
+  'x1',
+  'E1',
+  'Unauthorized',
+  'invalid_request',
+  'SLUG_IN_USE',
+  'erro.validacao',
+  'campo1',
+] as const;
+
+const LETRAS_32 = 'abcdefghijklmnopqrstuvwxyzabcdef';
+
+describe('under an allow-listed error key only a code-shaped value survives (review on #1877, round 2)', () => {
+  it('the probe values are what the old filter let through: token-shaped, 20 to 40 chars, no 8-digit run', () => {
+    for (const t of TOKENS_ALEATORIOS) {
+      expect(t, t).toMatch(/^[A-Za-z0-9_.-]{20,40}$/);
+      expect(t, t).not.toMatch(/\d{8}/);
+      expect(mascararTexto(t, { digitos: true }).mascarados, t).toBe(0);
+    }
+    expect(LETRAS_32).toHaveLength(32);
+  });
+
+  it.each(CHAVES_DE_TEXTO)(
+    'a credential-shaped value under %j is redacted, alone, in an array and in an array of arrays',
+    (chave) => {
+      for (const t of TOKENS_ALEATORIOS) {
+        const r = log('/v1/pedido/1', 400, JSON.stringify({ [chave]: t, x: [t], y: [[t]] }));
+        expect(r.trecho, t).not.toContain(t);
+        expect(logJson('/v1/pedido/1', 400, { [chave]: t }), t).toEqual({ [chave]: REDIGIDO });
+        expect(logJson('/v1/pedido/1', 400, { [chave]: [t] }), t).toEqual({
+          [chave]: [REDIGIDO],
+        });
+        expect(logJson('/v1/pedido/1', 400, { [chave]: [[t]] }), t).toEqual({
+          [chave]: [[REDIGIDO]],
+        });
+        // Same on the catalogue and configuration classes, which take the walk for JSON errors.
+        expect(logJson('/v1/produto/1', 429, { [chave]: [t] }), t).toEqual({
+          [chave]: [REDIGIDO],
+        });
+        expect(logJson('/v1/situacao/', 500, { [chave]: t }), t).toEqual({ [chave]: REDIGIDO });
+      }
+    },
+  );
+
+  it.each(CHAVES_DE_TEXTO)(
+    'keep: a code under %j survives, alone, in an array and in an array of arrays',
+    (chave) => {
+      expect(logJson('/v1/pedido/1', 400, { [chave]: 633 })).toEqual({ [chave]: 633 });
+      for (const c of CODIGOS) {
+        expect(logJson('/v1/pedido/1', 400, { [chave]: c }), c).toEqual({ [chave]: c });
+        expect(logJson('/v1/pedido/1', 400, { [chave]: [c] }), c).toEqual({ [chave]: [c] });
+        expect(logJson('/v1/pedido/1', 400, { [chave]: [[c]] }), c).toEqual({ [chave]: [[c]] });
+      }
+    },
+  );
+
+  it.each(CHAVES_DE_TEXTO)('the length cap under %j: 32 letters survive, 33 do not', (chave) => {
+    expect(logJson('/v1/pedido/1', 400, { [chave]: LETRAS_32 })).toEqual({ [chave]: LETRAS_32 });
+    expect(logJson('/v1/pedido/1', 400, { [chave]: `${LETRAS_32}g` })).toEqual({
+      [chave]: REDIGIDO,
+    });
+    expect(logJson('/v1/pedido/1', 400, { [chave]: [`${LETRAS_32}g`] })).toEqual({
+      [chave]: [REDIGIDO],
+    });
+  });
+
+  it.each([
+    // [kept, refused]: each pair differs at one boundary of the shape.
+    ['E1234', 'E12345'], // at most 4 trailing digits
+    ['1234567', '12345678'], // at most 7 digits alone
+    ['not-found', 'not--found'], // ONE separator between words
+    ['erro.validacao', 'erro.validacao.'], // a separator joins two words
+    ['erro_validacao', '_erro_validacao'], // a word starts the value
+    ['Unauthorized', 'UnAuthorized'], // per word: lower, UPPER or Capitalized
+    ['SLUG_IN_USE', 'Slug_IN_uSE'], // ... and so is every word after a separator
+    ['Not_Found', 'Not_FounD'],
+    ['invalid_request', 'invalidRequest'], // no camelCase: a mixed-case word is refused
+    ['E123', 'E123a'], // digits only at the end
+    ['campo1', 'E-123.a'], // a separator joins letters, never digits
+    ['x1', 'x 1'],
+  ])('near-miss: %j survives, %j does not', (mantido, recusado) => {
+    expect(logJson('/v1/pedido/1', 400, { codigo: mantido })).toEqual({ codigo: mantido });
+    expect(logJson('/v1/pedido/1', 400, { codigo: recusado })).toEqual({ codigo: REDIGIDO });
+  });
+
+  it('the regex layer still applies to a code-shaped value: a letters-only alphanumeric CNPJ', () => {
+    const cnpj = gerarCnpj('ABCDEFGHIJKL');
+    const invalido = `${cnpj.slice(0, 13)}${String((Number(cnpj[13]) + 1) % 10)}`;
+    expect(logJson('/v1/pedido/1', 400, { codigo: cnpj, erro: [cnpj] })).toEqual({
+      codigo: REDIGIDO,
+      erro: [REDIGIDO],
+    });
+    // Near-miss: the same shape with a wrong check digit is a code, and survives.
+    expect(logJson('/v1/pedido/1', 400, { codigo: invalido })).toEqual({ codigo: invalido });
+  });
+
+  it('fixture: never loosened — under an allow-listed key only 1 to 7 digits survive', () => {
+    expect(
+      fixtureJson('/v1/pedido/1', 400, {
+        codigo: 'x1',
+        error: ['Unauthorized'],
+        tipo: [['633']],
+        campo: TOKENS_ALEATORIOS[0],
+      }),
+    ).toEqual({
+      codigo: FALSO_LI.texto,
+      error: [FALSO_LI.texto],
+      tipo: [['633']],
+      campo: FALSO_LI.texto,
+    });
   });
 });
 
