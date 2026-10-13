@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { MOTIVO_RESOLUCAO_RECEITA_KIT } from './receitaKitShopee';
 import {
+  CANAL_AVISO,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -87,6 +91,51 @@ describe('TIPO_AVISO_LABELS', () => {
   it('labels the return tipo without a provider name — it is channel-neutral', () => {
     expect(TIPO_AVISO.reclamacaoAguardandoVendedor).toBe('reclamacaoAguardandoVendedor');
     expect(TIPO_AVISO_LABELS.reclamacaoAguardandoVendedor).toBe('Reclamação aguardando o vendedor');
+  });
+
+  it('declares the native-kit recipe tipo (Shopee step 19) with its pt-BR label', () => {
+    // Shopee-prefixed on purpose: only a Shopee native kit freezes its
+    // composition at create, so the condition IS the channel's.
+    expect(TIPO_AVISO.shopeeKitReceitaDivergente).toBe('shopeeKitReceitaDivergente');
+    expect(tipoAvisoSchema.safeParse('shopeeKitReceitaDivergente').success).toBe(true);
+    expect(TIPO_AVISO_LABELS.shopeeKitReceitaDivergente).toBe(
+      'Kit da Shopee com composição antiga',
+    );
+    // Near-miss: the tipo is persisted, so a respelling is a DIFFERENT tipo.
+    expect(tipoAvisoSchema.safeParse('shopeeKitReceitaDivergentes').success).toBe(false);
+    expect(tipoAvisoSchema.safeParse('kitReceitaDivergente').success).toBe(false);
+  });
+
+  it('parses a stored row of the native-kit recipe tipo with its four id params', () => {
+    const parsed = umAviso({
+      tipo: TIPO_AVISO.shopeeKitReceitaDivergente,
+      canal: CANAL_AVISO.shopee,
+      params: { kit: 'k1', anuncio: '2500139870', vinculo: 'l1', variacoes: 'c1, c2' },
+      urlInterna: { rota: ROTAS_AVISO.produto.build('k1'), campo: 'componentesKit' },
+    });
+    expect(parsed.tipo).toBe('shopeeKitReceitaDivergente');
+    expect(parsed.params).toEqual({
+      kit: 'k1',
+      anuncio: '2500139870',
+      vinculo: 'l1',
+      variacoes: 'c1, c2',
+    });
+    expect(parsed.urlInterna).toEqual({ rota: '/produtos/k1', campo: 'componentesKit' });
+  });
+
+  it('names a machine resolver for the native-kit recipe tipo: every motivo the constant defines', () => {
+    // The collection is `serverOwned` — an aviso nothing resolves stands until
+    // retention — so the tipo's docblock must name each resolution motivo, and
+    // it must name exactly the ones `MOTIVO_RESOLUCAO_RECEITA_KIT` defines.
+    const FONTE = readFileSync(join(import.meta.dirname, 'aviso.ts'), 'utf8');
+    const inicio = FONTE.indexOf('**`shopeeKitReceitaDivergente`**');
+    expect(inicio).toBeGreaterThan(-1);
+    const fim = FONTE.indexOf('export const tipoAvisoSchema', inicio);
+    const bloco = FONTE.slice(inicio, fim);
+    expect(bloco).toContain('produced by step 19 (#1527)');
+    const motivos = Object.values(MOTIVO_RESOLUCAO_RECEITA_KIT);
+    expect(motivos).toHaveLength(5);
+    for (const motivo of motivos) expect(bloco, motivo).toContain(`\`${motivo}\``);
   });
 });
 

@@ -60,7 +60,7 @@ import { gitGrep } from './lib/repo-scan.js';
  * bottom of this file.
  */
 const PATTERN =
-  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches|mesmoPrecoEmReais)\\b';
+  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches|mesmoPrecoEmReais|mesmaReceitaKitShopee|chaveReceitaKitErp|principalDoKitShopee|mesmoEnderecoDeComponente|modeloDoComponenteKit)\\b';
 
 /**
  * Source only. Tests are excluded deliberately: a test SHOULD exercise a fold
@@ -137,6 +137,8 @@ const INVENTARIO = {
     'DEFINES `mesmoPrecoEmReais(atual, alvo)`, the skip-if-equal fold of SHOPEE’s price sync (step 13, #1521) — not of every channel that sends a price: Mercado Livre’s price sender keeps its own equivalent copy in `apps/mercado-livre/lib/marketplace/preco/precoDraftSend.ts` — `priceFieldMatches` (`roundReais(raw) === preco`, behind its gate-2 variations skip and its gate-7 verifier), plus the single-price gate 2’s `currentListingPrice(item) === draft.preco` — equivalent today only because ML’s target is already rounded by `precoDaTabela`. That file does not name this helper, so a change to this fold’s reach does NOT move ML’s; routing ML through the helper is a follow-up, and would earn it a line here. A `true` means "the marketplace already shows this price" and the send is SKIPPED, so folding too much drops a real price edit behind a green run. Equal: two numbers whose `roundReais` agree — `10.004` ≡ `10`, `0.1 + 0.2` ≡ `0.3`, `49.999` ≡ `50`, `24.015` ≡ `24.02` (the rounding reads the double, so the up-lean counts). Distinct: anything one centavo apart after rounding — `49.99` ≠ `50`, `11.10` ≠ `11.11`, `24.015` ≠ `24.01`, and ⚠️ `49.991` ≠ `50`, which a `< 0.01` tolerance would equate (0.009 apart, different centavos); a `null` current price never equals anything. `roundReais` itself does NOT join the pattern (≈46 importers, the rejected band), and neither does `precoDaTabela` defined beside it — a transform (reads + rounds), not an equality. Near-miss: `precoCalculo.test.ts` — "NEAR-MISS: 49.991 ≠ 50 — 0.009 apart, yet different centavos (a `< 0.01` tolerance would equate them)" and "NEAR-MISS: one centavo apart stays DISTINCT — 49.99 ≠ 50, 11.10 ≠ 11.11", paired with "EQUAL pair: 10.004 ≡ 10 and 0.1 + 0.2 ≡ 0.3 (float residue is not an edit)" and "EQUAL pair across a rounding UP: 49.999 ≡ 50 and 10.006 ≡ 10.01 (a truncating fold would split them)".',
   'packages/ai/src/text.ts':
     'Defines `normalizeLoose` (trim, pt-BR lowercase, NFD, strip diacritics). The one place the fold’s exact reach is specified.',
+  'packages/schemas/src/receitaKitShopee.ts':
+    'DEFINES the Shopee native-kit recipe folds (step 19, #1527) — the ONE module the create, the republish, the recriar, the step-9 import and the recipe trigger call (#1369), with the EQUAL/DISTINCT tables in its docblocks. Three scopes, kept apart on purpose. (1) `mesmaReceitaKitShopee(erp, shopee, temModelosPorItem)` is the per-MODEL recipe fold: a `true` re-stamps the kit row’s fingerprint and lets the L4 aviso resolve, so folding too much hides a recipe Shopee does not hold while Shopee derives the kit’s stock from it. Equal: a plain component (ERP side absent model) vs Shopee’s hidden non-zero default `component_model_id` when the item has NO variations; row order; duplicate keys SUMMED (2 + 3 ≡ 5); `main_component` and every display field. Distinct: quantity (2 vs 3); a component added or removed; model A vs model B of an item WITH variations; a `null` model vs a model on an item that HAS variations (a resolution hole, never a plain item); an item whose `has_model` is unknown compares its model ids literally. (2) `principalDoKitShopee` / `mesmoEnderecoDeComponente` read the kit-level MAIN, outside fold (1) so "main moved" and "quantity changed" stay distinguishable; the main is folded by the same default-model rule, and two components or model A vs B stay distinct. (3) `chaveReceitaKitErp` is an ERP-side FINGERPRINT compared by plain equality with the stored stamp. Equal: key order, `limitarEstoque`, `timestamp`, passthrough extras; `null` ≡ `{}`; and every `quantidade` that is not a positive safe int, which reads `null` — `0` ≡ `-1` ≡ absent, `1.5` ≡ `2.5` (legacy rows only: `kitSchema` is `int().min(1)`, so no writer stores one, and an edit between two such values is accepted as no change). Distinct: any change of a valid `quantidade`, and a valid one vs a malformed one (`1` vs `0`); a key added, removed or renamed (a #1450 repoint included — accepted: a republish that reads Shopee equal re-stamps it); `{p1: 12}` vs `{p11: 2}` (no separator collision). Near-miss: `receitaKitShopee.test.ts` §fold (M12 quantity, M13 reorder, M14 summed duplicate, M15 the hidden id on a plain item, M16 a `null` model on an item with variations, M17 the main moved) and §fingerprint (M18 the `limitarEstoque`/`timestamp` equal pair, M19 `{p1: 12}` vs `{p11: 2}`, and the malformed-quantidade fold: "EQUAL pair (legacy-only fold): 0 ≡ -1 and 1.5 ≡ 2.5 — every malformed quantidade reads null" paired with "NEAR-MISS of the legacy-only fold: a VALID quantidade never folds with a malformed one"). (4) `modeloDoComponenteKit` DEFINES the default-model rule underneath (1) and (2) and the create\'s address (OP-4). Equal: `has_model` false ⇒ `null` whatever the wire id (Shopee\'s hidden default); `has_model` true with a non-usable id (0, negative, fractional, absent) ⇒ `null`. Distinct: `has_model` true keeps a positive id (model A vs B stay apart); `has_model` UNKNOWN keeps the id VERBATIM — `0` stays `0`, a hidden id stays itself, never a guess. Near-miss: "(M3) has_model UNKNOWN ⇒ the model id VERBATIM, never a guess" paired with "(M1) has_model false ⇒ null: the plain B hidden id is meaningless" and "(M4) has_model true + a non-usable id (0, negative, fractional, absent) ⇒ null".',
   'packages/data/src/pipeline-queries.ts':
     'Defines `sanitizeSearchDsl`, which turns operator input into a Firestore search-DSL string — so it decides which two terms issue the SAME text query. Equal: the DSL operator characters (`" ( ) + : ~ ^ * ? -`) collapsed to spaces, runs of whitespace collapsed, ends trimmed — `Porta-lápis` ≡ `Porta lápis`, because a raw `-` NEGATES and would ask for "Porta but NOT lápis" and return nothing with no error. Distinct: singular vs plural (`Camiseta` / `Camisetas`), accented vs unaccented (`Leão` / `Leao`), and case — all three are the pt-BR ANALYZER’s business at query time, and folding them here would replace a measured, partial backend behaviour with a total one (accent folding was measured INCONSISTENT: `Leao` reaches `Leão`, `Ceramica` does not reach `Cerâmica`). Also distinct from a match: a term of pure operators returns `undefined`, never the empty DSL string. Near-miss: `pipeline-queries.test.ts` — "folds a term whose operators the DSL would have read as syntax" paired with "keeps NEAR-MISSES distinct — the analyzer relates them, not this".',
   'packages/ui/src/table/TableView.tsx':
@@ -229,6 +231,47 @@ describe('every file folding a value to decide sameness is inventoried', () => {
     expect(regex.test('mesmoPrecoEmReaisOuCentavos(x)')).toBe(false);
     expect(regex.test('const r = roundReais(valor);')).toBe(false);
     expect(regex.test('precoDaTabela(produto.precos, tabelaId)')).toBe(false);
+  });
+
+  it('⚠️ matches the four Shopee kit-recipe folds and NOT their lookalikes or the stamp field', () => {
+    // The same two controls for the step-19 addition (#1527). The negative half
+    // matters more than usual here: `receitaKitConferida` (the stored stamp) is
+    // written by every kit writer, and `chaveAvisoReceitaKitShopee` /
+    // `componentesKitDaReceitaShopee` / `escolherPrincipalDoKit` live beside the
+    // folds in the same module — none of them decides sameness, and a pattern
+    // that caught them would inventory every writer of the stamp.
+    const regex = new RegExp(PATTERN);
+
+    expect(
+      regex.test('if (!mesmaReceitaKitShopee(erp, vivo, temModelos)) divergentes.push(id);'),
+    ).toBe(true);
+    expect(regex.test('const chave = chaveReceitaKitErp(filho.componentesKit);')).toBe(true);
+    expect(regex.test('const vivo = principalDoKitShopee(modelos, temModelos);')).toBe(true);
+    expect(regex.test('mesmoEnderecoDeComponente(nomeado, vivo)')).toBe(true);
+
+    expect(regex.test('mesmaReceitaKitShopeeLegada(x)')).toBe(false);
+    expect(regex.test('chaveReceitaKitErpV2(x)')).toBe(false);
+    expect(regex.test('{ receitaKitConferida: null }')).toBe(false);
+    expect(regex.test('chaveAvisoReceitaKitShopee(integracaoId, kitProdutoId)')).toBe(false);
+    expect(regex.test('componentesKitDaReceitaShopee(linhas)')).toBe(false);
+    expect(regex.test('escolherPrincipalDoKit(modelos, principal)')).toBe(false);
+    expect(regex.test('mesmoEnderecoDeComponentes(a, b)')).toBe(false);
+  });
+
+  it('⚠️ matches the default-model rule `modeloDoComponenteKit` and NOT its lookalikes or the field it fills', () => {
+    // The same two controls for the step-19 review's addition (OP-4): the rule's
+    // output becomes an address and a cascade key outside its definer, so every
+    // caller must say what it folds. The negative half keeps OUT the field the
+    // import stores it in (`modelIdDoComponente`), written on every kit line.
+    const regex = new RegExp(PATTERN);
+
+    expect(
+      regex.test('const modelId = modeloDoComponenteKit({ modelId, itemTemModelos: temModelos });'),
+    ).toBe(true);
+
+    expect(regex.test('modeloDoComponenteKitLegado(x)')).toBe(false);
+    expect(regex.test('modeloDoComponente(x)')).toBe(false);
+    expect(regex.test('readonly modelIdDoComponente: number;')).toBe(false);
   });
 
   it('⚠️ still covers the file the guard was written for', () => {

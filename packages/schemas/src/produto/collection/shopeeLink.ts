@@ -632,6 +632,31 @@ export const produtoShopeeLinkSchema = z
      * same length as `estoqueRecusaMensagem`.
      */
     precoRecusaMensagem: z.string().nullable().default(null),
+
+    // === step 19 (#1527) — native kits: the SUPERSEDED pair (L8). Same rule as
+    // the blocks above — bare consts on this `.passthrough()` shape ⇒ no ruleset
+    // regeneration — the same nullable/default discipline, and FLAT for the same
+    // `mergeIfExists` reason.
+    //
+    // ⚠️ "Superseded" is NOT "removed". The listing it marks is still LIVE on
+    // Shopee and may still be selling, so it changes only which link a PUBLISH
+    // addresses: the stock and price syncs (steps 12/13) and the order cascade
+    // keep serving it until the listing is deleted in Seller Centre and a
+    // reverify folds it to `removido`. A stale stock on a selling listing
+    // oversells.
+    //
+    // ⚠️ Every stamp below is MILLISECONDS.
+
+    /**
+     * Set on the OLD link only: the doc id of the link that replaced it — the
+     * ordinary listing a "converter em kit nativo" replaced, or the old native
+     * kit of a recriar whose delete did not take. `null` (or absent) = not
+     * superseded. Read through {@link ehVinculoSubstituido}, never compared raw:
+     * an empty string is "not superseded" too.
+     */
+    substituidoPorLinkDocId: z.string().nullable().default(null),
+    /** MILLISECONDS. When {@link substituidoPorLinkDocId} was written. */
+    substituidoEm: z.number().int().nullable().default(null),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;
@@ -715,6 +740,24 @@ export const variacaoShopeeLinkSchema = z
      * its own row's reason.
      */
     precoRecusaCodigo: z.string().nullable().default(null),
+
+    // === step 19 (#1527) — one field on a KIT-MODEL row, never a gate on a send.
+
+    /**
+     * The ERP recipe fingerprint of this row's CHILD at the last VERIFIED
+     * equality: written only when a read-back of Shopee's live kit model came out
+     * equal to the ERP recipe, never on a write's 200 (Shopee answers 200 to a
+     * kit quantity change it silently ignores). `null` = never verified equal —
+     * an ordinary (non-kit) model row, a row whose read-back differed, or one
+     * written before step 19.
+     *
+     * ⚠️ A FINGERPRINT of the ERP side, not a recipe: it is never read to build
+     * or compare a Shopee request, and never sent to Shopee. It exists for the
+     * L4 aviso decision, which compares it with the child's CURRENT fingerprint
+     * OFFLINE (the produto trigger holds no Shopee token) to tell whether the
+     * kit on Shopee still carries the recipe the ERP now has.
+     */
+    receitaKitConferida: z.string().nullable().default(null),
   })
   .passthrough();
 export type VariacaoShopeeLink = z.infer<typeof variacaoShopeeLinkSchema>;
@@ -815,4 +858,83 @@ export function podeMoverAnuncioShopee(
     return { pode: false, motivo: 'ja-pausado' };
   }
   return { pode: true };
+}
+
+/* -------------------------------------------------------------------------- */
+/*         Step 19 (#1527) — which native-kit link is live, which sells        */
+/* -------------------------------------------------------------------------- */
+
+/** A Shopee `item_id` that can address a listing: a positive safe integer. */
+function ehItemIdEnderecavel(itemId: unknown): boolean {
+  return typeof itemId === 'number' && Number.isSafeInteger(itemId) && itemId > 0;
+}
+
+/**
+ * Whether this link was SUPERSEDED (L8): `substituidoPorLinkDocId` is a
+ * non-empty string. `null`, an absent key, `''` or a non-string are "not
+ * superseded" — a stray empty string must not silently hide a live link from
+ * publish.
+ */
+export function ehVinculoSubstituido(l: { readonly substituidoPorLinkDocId?: unknown }): boolean {
+  const v = l.substituidoPorLinkDocId;
+  return typeof v === 'string' && v !== '';
+}
+
+/**
+ * THE "live native-kit link" predicate (step 19, L9): Shopee reports the
+ * listing as a kit (`kitNativo === true`), it is not `removido`, it is not
+ * superseded, and its `item_id` is a positive safe integer.
+ *
+ * ONE predicate on purpose — a surface asking "does this produto have a native
+ * Shopee kit to publish to / warn about?" asks this rather than re-deriving it,
+ * so a publish arm, an operator notice and an import cannot disagree about
+ * which links count.
+ * Under L9 no item-less native link exists, so a link without an addressable
+ * `item_id` is never "active", whatever it stores.
+ *
+ * ⚠️ Strict `kitNativo === true`: `null` (a link no import or publish has
+ * stamped) is NOT a native kit — the same direction as the stock gate, where
+ * only `true` changes behaviour.
+ *
+ * ⚠️ Not the question "does this kit still SELL?" — a superseded native kit can
+ * still be selling. That is {@link ehKitNativoQueAindaVende}.
+ */
+export function ehKitNativoAtivo(l: {
+  readonly kitNativo?: unknown;
+  readonly estadoAnuncio?: unknown;
+  readonly substituidoPorLinkDocId?: unknown;
+  readonly item_id?: unknown;
+}): boolean {
+  return (
+    l.kitNativo === true &&
+    l.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido &&
+    !ehVinculoSubstituido(l) &&
+    ehItemIdEnderecavel(l.item_id)
+  );
+}
+
+/**
+ * Whether this native-kit link's listing may still be SELLING on Shopee: an
+ * active one ({@link ehKitNativoAtivo}), OR a superseded native kit that is
+ * neither `removido` nor `banido` and has an addressable `item_id`.
+ *
+ * ⚠️ The row filter of the L4 aviso decision ONLY. A recriar whose
+ * `delete_item` did not take leaves the old kit superseded but still listed,
+ * selling the OLD composition — so its rows must keep the "kit on Shopee with
+ * the old recipe" aviso open until the listing is really gone. Publish never
+ * asks this: it addresses only {@link ehKitNativoAtivo}.
+ *
+ * A superseded `banido` kit is excluded (Shopee is not selling it); a
+ * superseded `em_revisao`/`pausado`/`desconhecido`/`null` reading still counts —
+ * not proof the listing stopped selling.
+ */
+export function ehKitNativoQueAindaVende(l: Parameters<typeof ehKitNativoAtivo>[0]): boolean {
+  if (ehKitNativoAtivo(l)) return true;
+  return (
+    l.kitNativo === true &&
+    ehVinculoSubstituido(l) &&
+    l.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido &&
+    l.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.banido &&
+    ehItemIdEnderecavel(l.item_id)
+  );
 }
