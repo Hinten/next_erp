@@ -3,6 +3,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 
 import {
   PRECO_RECONCILIACAO_FLAG_ENV,
+  type PrecoReconCursor,
   classificarLinkNaoEnumerado,
   fetchPrecoReconPage,
   precoReconPageLimit,
@@ -43,6 +44,8 @@ class FakeDb {
   selectedFields: string[] | null = null;
   /** Field masks passed to `getAll`. */
   getAllMask: string[] | null = null;
+  /** Every group query's `where` clauses, in execution order — the #1862 pin reads this. */
+  readonly clausesPorConsulta: Array<Array<{ field: string; op: string; value: unknown }>> = [];
 
   seedLink(path: string, data: DocData): void {
     this.links.set(path, data);
@@ -91,6 +94,7 @@ class FakeDb {
         return q;
       },
       async get() {
+        self.clausesPorConsulta.push([...clauses]);
         let rows = [...self.links.entries()].filter(
           ([path, d]) =>
             path.split('/').slice(-2, -1)[0] === groupId &&
@@ -367,14 +371,19 @@ describe('fetchPrecoReconPage', () => {
 
   /* --------------------------------- scoping -------------------------------- */
 
-  it('accepts BOTH stored contaOuterRef forms', async () => {
+  it('accepts BOTH stored contaOuterRef forms — one after the other', async () => {
     const db = new FakeDb();
     db.seedLink(linkPath('P1'), { contaOuterRef: REF_CANONICO, id: 'MLB1', estado: 'p' });
     db.seedLink(linkPath('P2'), { contaOuterRef: REF_BARE, id: 'MLB2', estado: 'p' });
 
-    const page = await run(db);
+    const forma0 = await run(db);
+    expect(forma0.naoEnumerados.map((o) => o.produtoId)).toEqual(['P1']);
+    // The canonical form drained: hand over to the bare one, from its START.
+    expect(forma0.next).toEqual({ forma: 1, afterLinkPath: null });
 
-    expect(page.naoEnumerados.map((o) => o.produtoId).sort()).toEqual(['P1', 'P2']);
+    const forma1 = await fetchPrecoReconPage(asDb(db), { integracaoId: CONTA, forma: 1 });
+    expect(forma1.naoEnumerados.map((o) => o.produtoId)).toEqual(['P2']);
+    expect(forma1.next).toBeNull();
   });
 
   it('ignores links belonging to another conta', async () => {
@@ -416,20 +425,20 @@ describe('fetchPrecoReconPage', () => {
 
     const first = await fetchPrecoReconPage(asDb(db), { integracaoId: CONTA, pageLimit: 2 });
     expect(first.naoEnumerados.map((o) => o.produtoId)).toEqual(['P1', 'P2']);
-    expect(first.nextAfterLinkPath).toBe(linkPath('P2'));
+    expect(first.next).toEqual({ forma: 0, afterLinkPath: linkPath('P2') });
 
     // The resume hands Firestore a DocumentReference — the fake throws on a
     // bare id, which is what real Firestore does ("must result in a valid
     // document path"). This is the one bug a laxer fake would hide.
     const second = await fetchPrecoReconPage(asDb(db), {
       integracaoId: CONTA,
-      afterLinkPath: first.nextAfterLinkPath,
+      ...first.next!,
       pageLimit: 2,
     });
     expect(second.naoEnumerados.map((o) => o.produtoId)).toEqual(['P3']);
     expect(db.startAfterArg).toMatchObject({ path: linkPath('P2') });
-    // A short page drains the walk.
-    expect(second.nextAfterLinkPath).toBeNull();
+    // A short page drains the FORM — the walk goes on with the next one.
+    expect(second.next).toEqual({ forma: 1, afterLinkPath: null });
   });
 
   it('throws on a corrupt cursor rather than silently restarting the walk', async () => {
@@ -444,13 +453,19 @@ describe('fetchPrecoReconPage', () => {
     await expect(run(db, '')).rejects.toThrow(/cursor de reconciliação/);
   });
 
-  it('concludes on a short page even when every row was filtered out', async () => {
+  it('concludes on a short page of the LAST form even when every row was filtered out', async () => {
     const db = new FakeDb();
     seedLiveLink(db, 'P1', { estado: 'c' });
+    db.seedLink(linkPath('P2'), { contaOuterRef: REF_BARE, id: 'MLB2', estado: 'c' });
 
-    const page = await fetchPrecoReconPage(asDb(db), { integracaoId: CONTA, pageLimit: 5 });
-
-    expect(page.nextAfterLinkPath).toBeNull();
+    const forma0 = await fetchPrecoReconPage(asDb(db), { integracaoId: CONTA, pageLimit: 5 });
+    expect(forma0.next).toEqual({ forma: 1, afterLinkPath: null });
+    const forma1 = await fetchPrecoReconPage(asDb(db), {
+      integracaoId: CONTA,
+      forma: 1,
+      pageLimit: 5,
+    });
+    expect(forma1.next).toBeNull();
   });
 
   it('keeps the cursor on a FULL page whose rows were all filtered out', async () => {
@@ -464,7 +479,7 @@ describe('fetchPrecoReconPage', () => {
     const page = await fetchPrecoReconPage(asDb(db), { integracaoId: CONTA, pageLimit: 2 });
 
     expect(page.naoEnumerados).toEqual([]);
-    expect(page.nextAfterLinkPath).toBe(linkPath('P2'));
+    expect(page.next).toEqual({ forma: 0, afterLinkPath: linkPath('P2') });
   });
 
   it('reads nothing at all when the page has no live links', async () => {
@@ -476,6 +491,77 @@ describe('fetchPrecoReconPage', () => {
     // No `getAll` round trip for a page with nothing to classify.
     expect(db.getAllMask).toBeNull();
   });
+
+  /* ------------------ #1862: one ref form at a time, never `in` ------------------ */
+
+  it('walks the WHOLE conta with one `==` per page — never an `in` — each link once', async () => {
+    // What #1862 pins: `contaOuterRef in [both forms]` merged two index streams
+    // with a `• MajorSort` that read the conta's whole remainder on every page
+    // (staging proxy, 2026-10-08) — a walk quadratic in the conta's link count.
+    // One `==` is one key-ordered stream: a `• Limit` that reads exactly the
+    // page. The forms are INTERLEAVED in key order here, so a walk that resumed
+    // one form from the other's cursor would skip links.
+    const db = new FakeDb();
+    const canonicos = ['P1', 'P3', 'P5'];
+    const bares = ['P2', 'P4'];
+    for (const p of canonicos) {
+      db.seedLink(linkPath(p), { contaOuterRef: REF_CANONICO, id: `MLB-${p}`, estado: 'p' });
+    }
+    for (const p of bares) {
+      db.seedLink(linkPath(p), { contaOuterRef: REF_BARE, id: `MLB-${p}`, estado: 'p' });
+    }
+
+    const vistos: string[] = [];
+    let cursor: PrecoReconCursor | null = { forma: 0, afterLinkPath: null };
+    let paginas = 0;
+    while (cursor != null) {
+      const page = await fetchPrecoReconPage(asDb(db), {
+        integracaoId: CONTA,
+        ...cursor,
+        pageLimit: 2,
+      });
+      vistos.push(...page.naoEnumerados.map((o) => o.produtoId));
+      cursor = page.next;
+      paginas += 1;
+      expect(paginas).toBeLessThan(10); // a stalled cursor fails here, not by timeout
+    }
+
+    // The canonical form first, then the bare one — each link exactly once.
+    expect(vistos).toEqual([...canonicos, ...bares]);
+    expect(db.clausesPorConsulta).toHaveLength(paginas);
+    expect(db.clausesPorConsulta).toEqual(
+      [REF_CANONICO, REF_CANONICO, REF_BARE, REF_BARE].map((value) => [
+        { field: 'contaOuterRef', op: '==', value },
+      ]),
+    );
+  });
+
+  it('a conta whose links are all on the SECOND form drains the empty first one, then reads them', async () => {
+    const db = new FakeDb();
+    db.seedLink(linkPath('P1'), { contaOuterRef: REF_BARE, id: 'MLB1', estado: 'p' });
+
+    const forma0 = await run(db);
+    expect(forma0.naoEnumerados).toEqual([]);
+    expect(forma0.next).toEqual({ forma: 1, afterLinkPath: null });
+    const forma1 = await fetchPrecoReconPage(asDb(db), { integracaoId: CONTA, forma: 1 });
+    expect(forma1.naoEnumerados.map((o) => o.produtoId)).toEqual(['P1']);
+    expect(forma1.next).toBeNull();
+  });
+
+  it.each([-1, 2, 0.5, Number.NaN])(
+    'refuses forma %s before reading anything — it is machine-written, so a bad one is corruption',
+    async (forma) => {
+      // Clamping would re-walk or skip a form; concluding would call a walk that
+      // never read the second form complete.
+      const db = new FakeDb();
+      seedLiveLink(db, 'P1');
+
+      await expect(fetchPrecoReconPage(asDb(db), { integracaoId: CONTA, forma })).rejects.toThrow(
+        /forma da reconciliação de anúncios inválida/,
+      );
+      expect(db.clausesPorConsulta).toEqual([]);
+    },
+  );
 
   /* ------------------------------ the projections --------------------------- */
 

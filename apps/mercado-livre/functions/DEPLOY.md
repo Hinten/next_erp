@@ -697,8 +697,8 @@ does not fail the query: it full-scans the collection group and bills the bytes,
 conta, every month. It needs no new deploy — #1191 declared it (commit `de225899e`,
 merged 2026-08-20) in the same commit as the anchor composite
 `produtos(paiId, integracoesComProduto, __name__)`, so an index deploy from any later
-tree carries both. The price job's reconciliation phase rides the same index (with its
-own `in` over both forms). Verify READY rather than assume it:
+tree carries both. The price job's reconciliation phase rides the same index with the
+same one-form `==` walk (#1862). Verify READY rather than assume it:
 
 ```bash
 gcloud firestore indexes composite list --project <project-id> --database default

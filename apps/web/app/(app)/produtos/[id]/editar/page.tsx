@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -16,6 +16,7 @@ import {
   type ProdutoExtraData,
   type Video,
   buildFotoRefs,
+  camposDeKitDoPatch,
   deriveFotosArquivosIds,
   ehKitVirtualEfetivo,
   normalizeVariacoesUid,
@@ -27,7 +28,9 @@ import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from 
 import {
   ProdutoReferencedError,
   deleteProdutoCascade,
+  kitStatusChangeDoSave,
   propagateKitStatusToChildren,
+  type KitStatusChange,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { uploadProductImage } from '@delfrance/storage';
@@ -181,10 +184,9 @@ export default function EditarProdutoPage() {
     [params.id, effectiveVariationRows],
   );
 
-  // Live snapshot of this produto: feeds the parent-kit lookup below (`paiId`)
-  // and the kit-status "old value" fallback in `onAfterSave` (precos/custo
-  // history is no longer read from it — that bookkeeping is server-owned now,
-  // see `lastSavedKitStatus` below).
+  // Live snapshot of this produto: feeds the parent-kit lookup below (`paiId`).
+  // Neither precos/custo history (server-owned now) nor the kit-status sync
+  // (read from the save transaction, see `kitPendente` below) diffs against it.
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
   // Parent kit-status (#298): when this produto is a variation child (`paiId`
@@ -239,36 +241,13 @@ export default function EditarProdutoPage() {
   const referencedByMore = referencedByAll.length > REFERENCED_BY_DISPLAY;
   // Kit-status bookkeeping (Flutter parity, `produtoTableProvider.dart:556-589`):
   // when `ehKit`/`ehKitVirtual` flips, the existing variation children are
-  // synced on save. `lastSavedKitStatus` pins the PERSISTED status once, from
-  // the first doc emit, so it can serve as the "old" value at onAfterSave time
-  // (precos/custo history had the same pinning idiom, but that bookkeeping is
-  // gone now — the `onProdutoPrecoCustoChanged` trigger diffs against the
-  // stored doc itself).
-  const lastSavedKitStatus = useRef<{ ready: boolean; ehKit: boolean; ehKitVirtual: boolean }>({
-    ready: false,
-    ehKit: false,
-    ehKitVirtual: false,
-  });
-  // Paint-then-correct, NOT gate-until-server: this ref is the "old" value
-  // `propagateKitStatusToChildren` diffs against at save time, so it must be
-  // populated the moment anything is loaded (a save that finds it unready would
-  // diff against `false` and propagate a change that never happened). The cache
-  // emission seeds it; the authoritative one corrects it, once, while it still
-  // describes the LAST SAVED state — i.e. before the operator saves.
-  const serverPinnedKitStatus = useRef(false);
-  useEffect(() => {
-    if (!produtoSnap.data) return;
-    const serverTruth = produtoSnap.fromCache === false;
-    if (lastSavedKitStatus.current.ready && !(serverTruth && !serverPinnedKitStatus.current)) {
-      return;
-    }
-    lastSavedKitStatus.current = {
-      ready: true,
-      ehKit: produtoSnap.data.data.ehKit ?? false,
-      ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
-    };
-    if (serverTruth) serverPinnedKitStatus.current = true;
-  }, [produtoSnap.data, produtoSnap.fromCache]);
+  // synced on save. The flip is read from the SAVE TRANSACTION
+  // (`kitStatusChangeDoSave` over `onAfterSave`'s `committed`), never from the
+  // form or a pinned snapshot: a form painted from a stale cache diffed against
+  // server truth used to propagate a flip the parent never made. This ref holds
+  // a propagation that FAILED, so the next save — even a "nothing changed" one —
+  // retries it: the children still reflect its `old` side.
+  const kitPendente = useRef<KitStatusChange | null>(null);
 
   // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
   // to this product and uploads are enabled.
@@ -588,6 +567,12 @@ export default function EditarProdutoPage() {
       transactionWrites={(id, values, context) =>
         buildProdutoTransactionWrites(db, id, values, 'editar', context)
       }
+      // The kit invariant re-derived INSIDE the save transaction, over the doc
+      // it read: `deriveOnSave` below compares against the FORM, so a form
+      // painted from a stale cache copy and edited before server truth arrives
+      // omits the switch-off and the stored «É kit virtual»/map survive
+      // (`camposDeKitDoPatch`'s docblock; root `CLAUDE.md` rule 7).
+      deriveTransactionPatch={camposDeKitDoPatch}
       deriveOnSave={(values) => {
         // Keep the Flutter wire shapes on every save: bare group ids sorted
         // by ordem, canonical group-major fake paths for the variants. The
@@ -630,9 +615,11 @@ export default function EditarProdutoPage() {
           // are order-sensitive, so an unsorted list churns dirty detection.
           componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
           // «É kit virtual» means nothing without «É kit» (`ehKitVirtualEfetivo`,
-          // the shared predicate): turning the kit off switches it off too, so
-          // the produto never stores the mismatch the Shopee publisher refuses
-          // (`kit-virtual-sem-kit`). A stored legacy mismatch heals on the next save.
+          // the shared predicate): turning the kit off switches it off too, the
+          // mismatch the Shopee publisher refuses (`kit-virtual-sem-kit`). This
+          // derivation only covers a form that matches the stored doc; the
+          // guarantee that the produto never stores the mismatch is
+          // `deriveTransactionPatch` above, which also heals a stored legacy one.
           ehKitVirtual: ehKitVirtualEfetivo({
             ehKit: values.ehKit,
             ehKitVirtual: values.ehKitVirtual,
@@ -665,7 +652,7 @@ export default function EditarProdutoPage() {
         }
         return issues;
       }}
-      onAfterSave={async (id, values) => {
+      onAfterSave={async (id, _values, committed) => {
         // Precos/custo history + child-precos propagation used to be recorded
         // here (client-side, diffed against `lastSavedPrecos`/`lastSavedCusto`).
         // Both are now server-owned: the `onProdutoPrecoCustoChanged` Cloud
@@ -679,39 +666,33 @@ export default function EditarProdutoPage() {
         // `produtoTableProvider.dart:556-589`): when the parent's
         // `ehKit`/`ehKitVirtual` flips, sync the EXISTING variation children —
         // a child of a non-kit can't stay a kit, so its `componentesKit` is
-        // cleared. "Old" value = the ref pinned at the first emit, else the
-        // live snapshot (so a save beating that emit still propagates).
-        // `ehKitVirtual` is the value `deriveOnSave` wrote — never the raw switch.
-        const newEhKit = values.ehKit === true;
-        const newEhKitVirtual = ehKitVirtualEfetivo({
-          ehKit: values.ehKit,
-          ehKitVirtual: values.ehKitVirtual,
-        });
-        const oldKit = lastSavedKitStatus.current.ready
-          ? lastSavedKitStatus.current
-          : {
-              ehKit: produtoSnap.data?.data.ehKit ?? false,
-              ehKitVirtual: produtoSnap.data?.data.ehKitVirtual ?? false,
-            };
-        await propagateKitStatusToChildren(port, id, {
-          ehKit: newEhKit,
-          ehKitVirtual: newEhKitVirtual,
-          oldEhKit: oldKit.ehKit,
-          oldEhKitVirtual: oldKit.ehKitVirtual,
-          // ⛔ Both of these or the propagation is the half-write it used to be:
-          // a sole member left `ehKit: true` with a null map makes
-          // `calcularAlteracoesEstoque` skip the line entirely, so the sale moves
-          // NO stock. The pointer scopes it — only the sole member mirrors the
-          // parent's map; a real variation authors its own.
-          componentesKit: (values as { componentesKit?: Record<string, unknown> | null })
-            .componentesKit,
-          membroUnicoId: produtoSnap.data?.data.filhoUnicoId ?? null,
-        });
-        lastSavedKitStatus.current = {
-          ready: true,
-          ehKit: newEhKit,
-          ehKitVirtual: newEhKitVirtual,
-        };
+        // cleared. Old and new both come from the save TRANSACTION (the doc it
+        // read and the patch it wrote — `kitStatusChangeDoSave`), so a stale
+        // form can neither invent a flip nor hide one. The sole member's map
+        // and pointer come from there too (⛔ both, or a sole member is left
+        // `ehKit: true` with a null map and a sale moves NO stock).
+        //
+        // No transaction ran (`committed` absent: the "nothing changed" path)
+        // ⇒ this save moved no kit status, so only a FAILED earlier
+        // propagation is retried. One that failed keeps its `old` side: its
+        // write never landed, so the children still reflect it.
+        const desteSave = committed?.before
+          ? kitStatusChangeDoSave(committed.before, committed.patch)
+          : null;
+        const pendente = kitPendente.current;
+        const mudanca =
+          desteSave && pendente
+            ? {
+                ...desteSave,
+                oldEhKit: pendente.oldEhKit,
+                oldEhKitVirtual: pendente.oldEhKitVirtual,
+              }
+            : (desteSave ?? pendente);
+        if (mudanca) {
+          kitPendente.current = mudanca;
+          await propagateKitStatusToChildren(port, id, mudanca);
+          kitPendente.current = null;
+        }
 
         // (The extraData singleton is now written atomically with the produto
         // doc via `transactionWrites`, not here — so a flaky connection can't
