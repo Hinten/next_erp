@@ -273,3 +273,214 @@ stamp here and the clear that #2 already does.
 | U0 nothing sent                                               | a crash before `update_kit_item`; a refusal | the same republish                                          |
 | U1 the update applied (an appended model live), no row for it | a crash before the rows                     | binds that model by option, writes its row, appends nothing |
 | U2 rows written, the aviso not re-decided                     | a crash before `reavaliar`                  | its own `reavaliar`                                         |
+
+## 6. Recriar vs converter (`recriarKit.ts`)
+
+Shopee never changes the recipe of a live kit: a quantity change is a silent 200
+(§1). So a new recipe means a NEW kit. Two explicit commands make one, and both
+are ENSURE sequences built from §2's `garantirKitNovo` + `completarKit`. Neither
+stores anything about its own progress.
+
+|                    | `--link <kit antigo> --recriar` (L4(4))                                                        | `--converter-em-kit` (L8)                                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| target             | a native-kit link: live, removed or superseded — ALWAYS named, so a re-run is the same command | a live ORDINARY link (an old-model kit listing): named, or step 11's lexically-first pick among the live ordinary links |
+| scan exclusion     | the target's `item_id` (the old kit carries the same SKU)                                      | none (an ordinary listing is not a kit row)                                                                             |
+| the old listing    | `delete_item`d once the gate passes; superseded when the delete does not take                  | NEVER touched: no Shopee write carries its `item_id`; it is superseded and keeps its stock and price (¹)                |
+| the aviso decision | `kit-recriado`, after every stamp                                                              | `kit-recriado`, after the supersede                                                                                     |
+| produto gate       | the target's own link (`kitNativo === true`)                                                   | `ehKit === true` — NOT `ehKitVirtual`, which old kits carry false/null                                                  |
+
+(¹) The only call that may carry the ordinary listing's `item_id` is a READ: the
+L6 scan's batched `get_item_base_info`, when its list row has `tag: null` (a
+legacy row is a candidate until its base info says `tag.kit: false`).
+
+**The recriar, in order:**
+
+| step | what it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (−)  | the scan's verdict FIRST: a foreign hit, the produto's own superseded kit, an incomplete scan or two OURS refuse before anything else, so an unlinked same-SKU twin is always named                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 0    | the SAFETY NET: a LIVE target whose every model is bound, every ERP child bound, every pair folding EQUAL, with `--principal` absent or equal to the live main ⇒ `recriacao-sem-diferenca`, zero Shopee writes (the aviso decision still runs). Skipped on a removed or superseded target, and on a resume (another live native link exists)                                                                                                                                                                                                                                                                                                                  |
+| 1    | ensure the new kit: create (`add_kit_item`, the link write, `completarKit('tier-enviado')`), or complete the one already linked (`completarKit('opcao')`), or refuse ("importe-o" / the list). `incerto` ⇒ the 202 at once                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 2    | the DELETE GATE, only while the target still exists. The new kit must: read `NORMAL`/`UNLIST`, and `NORMAL` whenever the old kit reads `NORMAL` — a paused kit never replaces a kit on sale, so `--recriar --status UNLIST` over a live kit stops here and deletes nothing (else `kit-novo-inativo`); carry the ERP composition, i.e. every ERP child bound, every pair folding EQUAL on the read-back and no `receita-divergente`/`variacao-nao-anexada`/`modelo-sem-filho` (else `kit-novo-divergente`); carry the named `--principal` (else `principal-diferente`); be NEWER than the target by `create_time` (else `kit-alvo-mais-novo`). Any miss ⇒ STOP |
+| 3    | ensure the old kit is gone: it reads deleted already ⇒ no call, the link written `removido`; `NORMAL`/`UNLIST` ⇒ `delete_item`, then a re-read; `BANNED`/`REVIEWING` is never sent a delete ⇒ superseded + `kit-antigo-nao-excluido`                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 4    | `reavaliarAvisoDeReceitaKit(…, 'kit-recriado')`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+
+The converter is steps 1, a supersede of the ordinary link, and 4: no safety
+net, no gate, nothing destructive to protect. A named `--principal` that is not
+the completed kit's main warns `principal-diferente` and still supersedes.
+
+**Rules a change must not break:**
+
+- **`incerto` stops everything.** No gate, no step 3, no supersede, no aviso
+  decision: an uncertain create may or may not exist, and the exact command the
+  202 prints is the way back (M183).
+- **The `delete_item` ack is never trusted.** Only the re-read decides. Deleted
+  (`SELLER_DELETE`, `SHOPEE_DELETE`, or an absent row) ⇒ #2 on the OLD link, which
+  folds to `removido`; a delete that timed out but that Shopee executed is the
+  success path. Anything else ⇒ the old link is superseded by the new one and the
+  run warns `kit-antigo-nao-excluido`: the old kit still sells the OLD
+  composition, so its rows keep the aviso open until it is gone. A failed call is
+  narrowed to the package's `ShopeeError` family minus `ShopeeConfigError` (rule
+  6); anything else rethrows.
+- **The gate guards only an ACTION on a target that still exists.** A target
+  whose link is `removido`, or that reads deleted, is not live-read again
+  (`prepararKit` skips the read on a `removido` link, M123); the gate is skipped,
+  and the completion's own warnings are reported as they are.
+- **The gate compares against the COMPLETED kit, never the target.** On a
+  recriar or converter RESUME (`decidirKitNovo` answers `completar`),
+  `prepararKit` reads the completed kit live, step "4b". Its read-back main
+  becomes the context's `principal`, which feeds the limits category and
+  `principal-diferente`. That costs ONE extra `lerAnuncioShopee`, since
+  `completarKit` reads the same kit again. If that kit reads with no main,
+  `principal` is `null` and the local band is skipped.
+- **`kit-alvo-mais-novo` names the kit to pass.** With the target newer than the
+  completed kit, it names the older one (`--link <ele> --recriar`). With EQUAL
+  `create_time`s, or either one `null`, there is no "older" to name, and it asks
+  the operator to check.
+- **The old `variashopee` rows are LEFT AS THEY ARE.** Rung 1 of the order
+  cascade has no `modeloAusenteEm` filter, so old orders still bind, and the
+  per-listing sync below never marks them from the new kit's reading.
+
+### What "superseded" means (R-12)
+
+Two flat scalars on the OLD link, `substituidoPorLinkDocId` and `substituidoEm`
+(ms). ONE writer, `carimbarSubstituicao` (`vinculosKit.ts`, a flat `merge` a
+re-run re-writes identically), from two sites: the converter, and a recriar
+whose delete did not take. It changes **publish only**:
+
+- the dispatcher never routes a plain publish to a superseded link, and naming
+  one answers `vinculo-substituido` — except `--recriar` on a superseded NATIVE
+  kit, which retries the delete that did not take;
+- steps 12 and 13 do NOT read it: the old ordinary listing keeps its
+  component-min stock and its `update_price` until it is deleted (L8 ⚠️: it is
+  still selling, and a stale stock on it oversells); a superseded old native kit
+  keeps its step-13 kit price;
+- the order cascade does not read it (rung 1 binds by `model_id` and rung 2 by
+  `item_id`), so old orders still resolve.
+
+### Two resolvers, and why PUBLISH stays lexical
+
+- **`resolverLinkPorProduto`** is the publish path's resolver
+  (`prepararPublicacao`). It stays main's lexical `escolherLink` over every link
+  of the conta, unchanged, because L10(3) says publishing a non-kit produto must
+  not change. Reordering it would publish a non-kit produto whose REMOVED link
+  sorts first to its live link, where main answers `listagem-removida` (M185,
+  `publicarAnuncio.test.ts`).
+- **`resolverLinkVivoPorProduto`** (`linkAnuncio.ts`) serves the reverify, the
+  status, `pausar` and the `reverificar:anuncio` CLI. Same signature, conta
+  filter and `linkDocId` narrowing. With no `linkDocId` it picks an active native
+  kit (`ehKitNativoAtivo`), then a link neither removed nor superseded, then the
+  rest, using `escolherLink` within each tier. So `pausar` on a converted produto
+  unlists the new kit, never the superseded listing (M185's near-miss,
+  `pausarAnuncio.test.ts`).
+
+### The model-list sync is per LISTING (R-12(e))
+
+A converted or recreated produto holds TWO listings' `variashopee` rows under the
+same children. `lerLinksDeVariacao` and `sincronizarLinksDeVariacao` take the
+listing's `linkDocId` and keep only the rows whose
+`idDoRef(produtoShopeeOuterRef)` equals it, over BOTH stored encodings. A row
+whose ref is unreadable is skipped and logged, never marked; `null` means
+unfiltered, and only a step-11 first publish (no link yet) passes it. Without
+the filter, reverifying one listing would stamp the OTHER's rows
+`modeloAusenteEm`, and steps 12/13 would drop them (M121).
+
+### Deleting an old listing — the runbook
+
+No Shopee push reports a SELLER delete, and the stock and price senders never
+write `estadoAnuncio`. So the ERP learns that an old listing (a converted one, or
+an old kit whose delete did not take) is gone only when someone re-verifies it.
+Lucas deletes it in Seller Centre, then runs (`scripts/README.md` §18):
+
+```bash
+pnpm --filter @delfrance/shopee-app reverificar:anuncio --integracao <integracaoId> --produto <produtoId> --link <linkDocId>
+```
+
+`SELLER_DELETE` folds to `removido`, and steps 12/13 then skip the link as
+`anuncio-removido`. Until that run, a step-12/13 write to it lands on those
+senders' existing refusal paths (register 300). The CLI has **no dry run**: it
+only reads Shopee and writes the reading, and it refuses `--dry-run` and
+`--live`.
+
+**The aviso hook.** After any write whose resulting `estadoAnuncio` is `removido`
+on a link with `kitNativo === true`, the reverify and the push handlers (codes
+16/27) call `reavaliarAvisoDeKitRemovido` (`reverificarAnuncio.ts`). That covers
+the read path's `SELLER_DELETE` fold, the not-found arm, and the push's
+`SHOPEE_DELETE`. It runs on an unchanged reading too, so a crash between the link
+write and the decision converges on the re-run. The shared decision then picks
+the motivo:
+
+- no kit of the produto still sells ⇒ `sem-kit-ativo`;
+- the deleted kit was a recriar's superseded OLD kit and the new one folds equal
+  ⇒ `kit-recriado` (the deletion finished the recriar, M120);
+- the new kit still diverges ⇒ the aviso stays open.
+
+An ordinary link never reaches it: zero aviso reads.
+
+### Crash recovery — what the operator runs from each state
+
+Every terminal state below sends no Shopee write when the same command runs
+again.
+
+**`--link L_old --recriar`:**
+
+| state found                                      | arises from                                                   | run                                                                                                                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R0 nothing done                                  | a crash before `add_kit_item`; `nao-criado`                   | the same command: it creates                                                                                                                                   |
+| R1 new kit on Shopee, unlinked                   | `incerto` that did create; a crash before the new link write  | the same command refuses "importe-o" ⇒ `importar:anuncio <item>` (the listing-scoped child cascade lands on K's children) ⇒ R2                                 |
+| R2 new kit linked, L_old live                    | a crash before the delete                                     | the same command completes the new kit, passes the gate, deletes L_old's kit. A plain publish meanwhile answers `vinculos-ambiguos` naming both, with the hint |
+| R2′ new kit not live, or not equal to the ERP    | Shopee's own state; an ERP edit after the create              | every run stops at the gate (`kit-novo-inativo` / `kit-novo-divergente`), L_old untouched; once the new kit is live and aligned, the same command finishes     |
+| R3 L_old's kit deleted, its link not `removido`  | a crash between `delete_item` and the old-link write; a purge | the same command: the target reads deleted ⇒ gate skipped ⇒ NO second `delete_item` ⇒ `removido` written                                                       |
+| R5 L_old superseded                              | its delete did not take (warned)                              | a plain publish republishes the NEW kit; the same command retries the delete (or delete it in Seller Centre and run `reverificar:anuncio --link L_old`)        |
+| R4 done: L_old `removido`, the new kit with rows | —                                                             | the same command answers `retomado` with zero Shopee writes; `--link <new kit> --recriar` with nothing different is `recriacao-sem-diferenca`                  |
+
+**`--converter-em-kit`:**
+
+| state found                             | arises from                                              | run                                                                                                                                       |
+| --------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| V0 nothing done                         | a crash before `add_kit_item`; `nao-criado`              | the same command: it creates, then supersedes                                                                                             |
+| V1 new kit unlinked, L_ord live         | `incerto` that did create; a crash before the link write | the same command refuses "importe-o" ⇒ `importar:anuncio <item>` (L_ord's rows are left byte-unchanged) ⇒ V2                              |
+| V2 new kit linked, L_ord not superseded | a crash before the supersede                             | `--converter-em-kit` completes and supersedes; a plain publish republishes the new kit                                                    |
+| V3 done: L_ord superseded               | —                                                        | `--converter-em-kit` answers `ja-e-kit-nativo`, zero writes; a plain publish is `kit-atualizar`; delete L_ord in Seller Centre + reverify |
+
+A phase-A miss (say, `sem-peso`) refuses any create-arm run, a resume included,
+before the first Shopee read, and it adds and removes no fact: the run after the
+ERP fix resumes from the same row. Meanwhile `--link <kit novo>` (a plain
+publish) still completes the new kit.
+
+Pinned by RT5 (recipe change → aviso → recriar → resolved), RT6 (converter → the
+old listing is still served by steps 12/13 and the reverify; the PR 8 half lives
+in `precos/kitNativoImportado.test.ts`), RT13 (recriar R1/R2/R5 resumes) and RT14
+(converter V1/V2 resumes, with zero writes carrying the ordinary `item_id`), all
+in `recriarKit.test.ts` except where noted; the dispatcher halves of RT13/RT14
+are in `anuncios/publicarShopee.test.ts`.
+
+### The SKU rules
+
+- **The scan (L6) runs on the create arms only** — `kit-criar`, `--recriar`,
+  `--converter-em-kit` — and never on a republish (L10(4)).
+- **What it scans.** It pages `get_item_list` over `STATUS_BUSCA_KIT` =
+  `NORMAL`/`UNLIST`/`REVIEWING`/`BANNED`, with no `update_time_from`. A deleted kit
+  is never a hit. Beyond `MAX_PAGINAS_BUSCA_KIT` (100 pages), it refuses
+  `busca-de-kit-incompleta`.
+- **Fail-closed on `tag`.** A row whose `tag`/`tag.kit` is null is a candidate,
+  decided by its base info; only `tag.kit === false` is dropped. A missing tag
+  costs reads, never a duplicate kit.
+- **The SKU match is step 9's identity**: `skuDoItemShopee(base) === sku`, where
+  `skuDoItemShopee` is `(item_sku ?? '').trim()`, case-sensitive like the parent
+  rung's `where('sku','==',…)`.
+- **OURS is decided by the link docs.** A linked kit that the list does not show
+  yet (~9 s of listing latency) still exists: one batched `get_item_base_info`
+  confirms it. A linked id that reads deleted is written `removido` before the
+  run acts.
+- **Our side must be clean.** A SKU missing, padded or shared is refused in phase
+  A, before any Shopee read. "Missing" and "padded" are not re-derived here: every
+  guard (phase A, the republish's `sku-do-kit-nao-enviado`, the rung-2 read) asks
+  `situacaoDoSkuDoKit` (`planoKit.ts`), which asks `skuDoItemShopee` itself — K's SKU
+  must be a FIXED POINT of the import's fold, so a wider fold moves every guard with it
+  (R2-F3):
+  - `kit-sem-sku`;
+  - `kit-sku-com-espacos` (register 299);
+  - `kit-sku-repetido` — phase A runs step 9's rung-2 query
+    (`produtos where sku == K.sku and paiId == null limit(2)`, the existing
+    `produtos (sku, paiId)` composite) and refuses unless it returns exactly K.
+    Otherwise the L9 recovery import could decline rung 2 and MINT a produto.

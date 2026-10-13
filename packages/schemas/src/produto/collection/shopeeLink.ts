@@ -480,12 +480,23 @@ export const produtoShopeeLinkSchema = z
      * `dadosLinkListagem` (`produtos/mapeamento.ts`) — so the field converges
      * to DATA on every import rather than staying three-valued for ever.
      * ⚠️ Wired only on 2026-09-28; until then this paragraph described a stamp
-     * nothing wrote.
+     * nothing wrote. Since step 19 (#1527) step 11's publish read-back stamps
+     * it the same way, and a native kit CREATED by the ERP is `true` from the
+     * link write that follows its `add_kit_item` on (the literal the create's
+     * own 200 proves; the read-back then rewrites it from `ehKitDe()`), so a
+     * crash between the two can never leave a native kit reading as an
+     * ordinary listing.
      *
-     * `null` = a link no import has stamped yet — the legacy corpus, a link
-     * imported before 2026-09-28, or one a step-11 first publish created —
-     * **it SENDS**, which is the safe direction, because no native Shopee kit
-     * exists in this catalogue today. Only `kitNativo === true` refuses.
+     * `null` = a link nothing has read back yet — the legacy corpus, a link
+     * imported before 2026-09-28, or one a step-11 first publish created before
+     * its read-back landed. Step 12 **SENDS** stock for it, the safe direction
+     * for an ordinary listing; only `kitNativo === true` refuses, and that
+     * refusal is real now that the publish route creates native kits (and
+     * step 9 imports any made in Seller Centre): Shopee derives a kit's stock
+     * from its components, so step 12 answers `kit-derivado`.
+     * Step 13 is the opposite since step 19 (L5): a `kitNativo === true`
+     * listing's PRICE is planned and sent like any other, through
+     * `update_kit_item` instead of `update_price`.
      */
     kitNativo: z.boolean().nullable().default(null),
     /**

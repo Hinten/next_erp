@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { shopeeModelSchema, type ShopeeModel } from '@delfrance/integrations-shopee';
@@ -8,6 +11,7 @@ import { INDICES_COMPOSTOS_SHOPEE } from '../pedidos/produtoResolve';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import {
   lerLinksDeVariacao,
+  lerVinculosDaConta,
   resolverLinkPorItemId,
   resolverLinkPorProduto,
   resolverLinkVivoPorProduto,
@@ -255,6 +259,118 @@ describe('resolverLinkPorProduto', () => {
     });
 
     expect((await resolverLinkPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('link-a');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   (2a) lerVinculosDaConta — the ONE read the dispatcher and both resolvers  */
+/*        share (step 19, PR 7; cut-note #11)                                   */
+/* -------------------------------------------------------------------------- */
+
+describe('lerVinculosDaConta', () => {
+  it('PAR: as DUAS grafias do ref da conta (documents/… e a nua legada) são a MESMA conta', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-canonico');
+    semearLinkPai(db, 'link-legado', { contaProdutoShopeeOuterRef: `integracao/${INTEGRACAO}` });
+
+    const lidos = await lerVinculosDaConta(asDb(db), INTEGRACAO, PAI);
+
+    expect(lidos.map((l) => l.id).sort()).toEqual(['link-canonico', 'link-legado']);
+    // The doc is handed back RAW — the dispatcher reads the stored shape.
+    expect(lidos.find((l) => l.id === 'link-legado')?.raw.item_id).toBe(ITEM_ID);
+  });
+
+  it('⛔ QUASE-PAR: outra conta fica de fora nas DUAS grafias, e um ref ilegível também', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-nosso');
+    semearLinkPai(db, 'alheio-canonico', { contaProdutoShopeeOuterRef: REF_OUTRA_CONTA });
+    semearLinkPai(db, 'alheio-legado', { contaProdutoShopeeOuterRef: `integracao/${OUTRA}` });
+    semearLinkPai(db, 'sem-conta', { contaProdutoShopeeOuterRef: null });
+    semearLinkPai(db, 'conta-em-branco', { contaProdutoShopeeOuterRef: '' });
+
+    const lidos = await lerVinculosDaConta(asDb(db), INTEGRACAO, PAI);
+
+    expect(lidos.map((l) => l.id)).toEqual(['link-nosso']);
+  });
+
+  it('a mesma leitura serve o resolvedor da publicação: um vínculo na grafia NUA é publicável (antes ficava invisível e a publicação criava um segundo anúncio)', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-legado', { contaProdutoShopeeOuterRef: `integracao/${INTEGRACAO}` });
+
+    expect((await resolverLinkPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe(
+      'link-legado',
+    );
+    expect(
+      (await resolverLinkPorProduto(asDb(db), INTEGRACAO, PAI, 'link-legado'))?.linkDocId,
+    ).toBe('link-legado');
+    // ⛔ quase-par: a grafia nua de OUTRA conta continua invisível.
+    const db2 = new FakeDb();
+    semearLinkPai(db2, 'link-alheio', { contaProdutoShopeeOuterRef: `integracao/${OUTRA}` });
+    expect(await resolverLinkPorProduto(asDb(db2), INTEGRACAO, PAI)).toBeNull();
+  });
+
+  it('roda SEM where, como os resolvedores — a conta é comparada em memória', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-1');
+
+    await lerVinculosDaConta(asDb(db), INTEGRACAO, PAI);
+
+    const consulta = ultimaConsulta(db);
+    expect(consulta.fonte).toBe(`produtos/${PAI}/prodshopee`);
+    expect(consulta.clausulas).toEqual([]);
+  });
+
+  it('(R5-2 / OP-27) PAR: o CONJUNTO cresceu e a ORDEM é a do passo 11 — o vínculo NU que ordena primeiro vence o canônico (a main o ignorava e escolhia o canônico)', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'b-canonico', { item_id: ITEM_ID });
+    semearLinkPai(db, 'a-legado', {
+      contaProdutoShopeeOuterRef: `integracao/${INTEGRACAO}`,
+      item_id: ITEM_KIT_NOVO,
+    });
+
+    // The same lexical pick over the folded set: a-legado < b-canonico.
+    expect((await resolverLinkPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe('a-legado');
+    // ⛔ quase-par: the ORDER did not move — with the canonical one sorting
+    // first, it is still the canonical one.
+    const db2 = new FakeDb();
+    semearLinkPai(db2, 'a-canonico', { item_id: ITEM_ID });
+    semearLinkPai(db2, 'b-legado', {
+      contaProdutoShopeeOuterRef: `integracao/${INTEGRACAO}`,
+      item_id: ITEM_KIT_NOVO,
+    });
+    expect((await resolverLinkPorProduto(asDb(db2), INTEGRACAO, PAI))?.linkDocId).toBe(
+      'a-canonico',
+    );
+  });
+
+  it('(OP-27) ⛔ QUASE-PAR: a busca por item_id NO ÍNDICE continua EXATA — o vínculo na grafia nua é invisível a ela, o canônico não', async () => {
+    const db = new FakeDb();
+    semearLinkPai(db, 'link-legado', { contaProdutoShopeeOuterRef: `integracao/${INTEGRACAO}` });
+    // Publish sees it (the fold)…
+    expect((await resolverLinkPorProduto(asDb(db), INTEGRACAO, PAI))?.linkDocId).toBe(
+      'link-legado',
+    );
+    // …the listing-push lookup does not: its `==` rides the declared composite.
+    expect(await resolverLinkPorItemId(asDb(db), INTEGRACAO, ITEM_ID)).toBeNull();
+
+    const canonico = new FakeDb();
+    semearLinkPai(canonico, 'link-canonico');
+    expect((await resolverLinkPorItemId(asDb(canonico), INTEGRACAO, ITEM_ID))?.linkDocId).toBe(
+      'link-canonico',
+    );
+  });
+
+  it('(R5-2) o docblock não promete que publicar um não-kit ficou IDÊNTICO ao passo 11 — ele nomeia a mudança do CONJUNTO', () => {
+    // The fold above is a deliberate behaviour change for a bare-encoded link;
+    // a header that calls the publish path "unchanged since step 11" or
+    // "byte-identical to step 11" is the claim Lucas would sign off against.
+    const fonte = readFileSync(fileURLToPath(new URL('./linkAnuncio.ts', import.meta.url)), 'utf8')
+      .replace(/\r\n/g, '\n')
+      .replace(/\n\s*\*\s*/g, ' ');
+    expect(fonte).not.toMatch(/unchanged since step 11/);
+    expect(fonte).not.toMatch(/byte-identical to step 11/);
+    expect(fonte).toMatch(/What step 19 DID change is the candidate set/);
+    expect(fonte).toMatch(/Its candidate SET did change in step 19/);
   });
 });
 

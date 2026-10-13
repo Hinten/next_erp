@@ -952,6 +952,36 @@ describe('montarAnuncio — o apagão do catálogo legado de kits', () => {
     expect(motivos(montado.problemas)).toContain('produto-e-kit');
   });
 
+  it('⚠️ (passo 19, PR 7) produto-e-kit é ASSERÇÃO defensiva: a frase diz que chegar aqui é defeito do ERP e aponta o caminho de kit — nunca "outro passo"', () => {
+    // O despachante manda todo vínculo `kitNativo` (e todo `ehKitVirtual` sem
+    // vínculo vivo) para os braços de kit ANTES deste montador; a recusa só
+    // existe para um kit que escapou dele, e a frase tem de dizer isso.
+    for (const caso of [
+      { produto: kitDoErp(), link: link({ kitNativo: true }) },
+      { produto: kitDoErp({ ehKitVirtual: true }), link: null },
+    ]) {
+      const montado = montarAnuncio(
+        args({ ...caso, ownDisponivel: 100, disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES }),
+      );
+      const recusa = montado.problemas.find(
+        (p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
+      );
+      expect(recusa?.mensagem).toContain('defeito do ERP');
+      expect(recusa?.mensagem).toContain('add_kit_item');
+      expect(recusa?.mensagem).not.toContain('outro passo');
+    }
+    // ⛔ QUASE-PAR: o kit COMUM do ERP (vínculo ordinário) não recebe frase nenhuma.
+    const comum = montarAnuncio(
+      args({
+        produto: kitDoErp({ ehKitVirtual: true }),
+        link: link({ kitNativo: false }),
+        ownDisponivel: 100,
+        disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES,
+      }),
+    );
+    expect(motivos(comum.problemas)).not.toContain('produto-e-kit');
+  });
+
   it('⚠️ os DOIS produtores de produto-e-kit chamam O MESMO predicado (M-30)', () => {
     const pasta = fileURLToPath(new URL('.', import.meta.url));
     const mapeador = readFileSync(`${pasta}montagemAnuncio.ts`, { encoding: 'utf8' });
