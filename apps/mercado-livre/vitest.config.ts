@@ -32,6 +32,13 @@ export default defineConfig({
       // would skip here for lack of an emulator. It belongs to
       // vitest.tasks.config.ts / `test:tasks`.
       '**/*.tasks.test.ts',
+      // Third suite, worse failure: `*.staging.test.ts` reaches the REAL staging
+      // Firestore. Collected here it would either skip (no credentials — green
+      // having run nothing) or, in a shell that exports staging credentials,
+      // write to staging from the OFFLINE suite. It belongs to
+      // vitest.staging.config.ts / `test:staging`. Unanchored for the same reason
+      // as the two entries above.
+      '**/*.staging.test.ts',
     ],
   },
   resolve: {

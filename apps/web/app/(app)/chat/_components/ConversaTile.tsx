@@ -2,7 +2,17 @@
 
 import { useMemo } from 'react';
 import Link from 'next/link';
-import { Avatar, Box, Checkbox, Group, Stack, Text, ThemeIcon, Tooltip } from '@mantine/core';
+import {
+  Avatar,
+  Box,
+  Checkbox,
+  Group,
+  Stack,
+  Text,
+  ThemeIcon,
+  Tooltip,
+  useMantineTheme,
+} from '@mantine/core';
 import { IconAlertCircle, IconCheck, IconChecks, IconClock, IconPencil } from '@tabler/icons-react';
 import { ESTADO_ENVIO, type Conversa, type EstadoEnvioMensagem } from '@delfrance/schemas';
 import { etiquetaTint } from '@/lib/chat/etiquetaCores';
@@ -39,11 +49,13 @@ function DeliveryTick({
   estado,
   visualizado,
   nossa,
+  foreground,
 }: {
   estado: EstadoEnvioMensagem | undefined;
   visualizado: number | null | undefined;
   /** Whether WE sent the last message — the tile is not a receipt for theirs. */
   nossa: boolean;
+  foreground?: string;
 }) {
   if (estado == null || !nossa) return null;
   // ⚠️ The SECOND check means READ, matching `MensagemStatusIcon` in the thread,
@@ -52,7 +64,13 @@ function DeliveryTick({
   // receipt writes `estadoEnvio: recebido` in the SAME patch as `visualizado` —
   // the thread showed two checks and the tile showed nothing at all.
   if (visualizado != null) {
-    return <IconChecks size={14} color="var(--mantine-color-blue-6)" aria-label="Visualizado" />;
+    return (
+      <IconChecks
+        size={14}
+        color={foreground ?? 'var(--mantine-color-blue-text)'}
+        aria-label="Visualizado"
+      />
+    );
   }
   switch (estado) {
     case ESTADO_ENVIO.erro:
@@ -60,16 +78,28 @@ function DeliveryTick({
         <Tooltip label="Erro no envio" withArrow>
           <IconAlertCircle
             size={14}
-            color="var(--mantine-color-red-6)"
+            color={foreground ?? 'var(--mantine-color-red-text)'}
             aria-label="Erro no envio"
           />
         </Tooltip>
       );
     case ESTADO_ENVIO.enviando:
     case ESTADO_ENVIO.salva:
-      return <IconClock size={14} color="var(--mantine-color-gray-5)" aria-label="Enviando" />;
+      return (
+        <IconClock
+          size={14}
+          color={foreground ?? 'var(--mantine-color-dimmed)'}
+          aria-label="Enviando"
+        />
+      );
     case ESTADO_ENVIO.enviado:
-      return <IconCheck size={14} color="var(--mantine-color-gray-5)" aria-label="Enviado" />;
+      return (
+        <IconCheck
+          size={14}
+          color={foreground ?? 'var(--mantine-color-dimmed)'}
+          aria-label="Enviado"
+        />
+      );
     case ESTADO_ENVIO.recebido:
     case ESTADO_ENVIO.excluido:
     case ESTADO_ENVIO.banida:
@@ -108,7 +138,11 @@ export function ConversaTile({
   onToggleSelect,
 }: ConversaTileProps) {
   const { data: lastMsg, loading } = useLastMensagem(id, conversa.ultima_modificacao);
-  const tint = etiquetaTint(conversa.cor_etiqueta);
+  const theme = useMantineTheme();
+  const tint = etiquetaTint(conversa.cor_etiqueta, {
+    light: theme.white,
+    dark: theme.colors.dark[7],
+  });
   const draft = useMemo(() => hasDraft(id), [id]);
 
   const preview = loading ? '…' : lastMensagemPreview(lastMsg, { meuUid, origem: conversa.origem });
@@ -128,6 +162,7 @@ export function ConversaTile({
       )}
       <Box
         component={Link}
+        className="erp-focus"
         href={href}
         aria-current={active ? 'true' : undefined}
         p="xs"
@@ -138,8 +173,12 @@ export function ConversaTile({
           textDecoration: 'none',
           color: tint ? tint.color : 'inherit',
           borderRadius: theme.radius.sm,
-          background: tint ? tint.background : active ? theme.colors.blue[0] : undefined,
-          borderLeft: active ? `3px solid ${theme.colors.blue[6]}` : '3px solid transparent',
+          background: tint
+            ? tint.background
+            : active
+              ? 'var(--mantine-color-blue-light)'
+              : undefined,
+          borderLeft: active ? '3px solid var(--mantine-color-blue-text)' : '3px solid transparent',
         })}
       >
         <Group gap="sm" wrap="nowrap" align="flex-start">
@@ -170,13 +209,20 @@ export function ConversaTile({
               <Group gap={4} wrap="nowrap">
                 {draft && (
                   <Tooltip label="Rascunho não enviado" withArrow>
-                    <ThemeIcon variant="transparent" size={16} color="gray" aria-label="Rascunho">
+                    <ThemeIcon
+                      variant="transparent"
+                      size={16}
+                      color="gray"
+                      aria-label="Rascunho"
+                      style={{ color: mutedColor }}
+                    >
                       <IconPencil size={14} />
                     </ThemeIcon>
                   </Tooltip>
                 )}
                 <DeliveryTick
                   estado={lastMsg?.estadoEnvio}
+                  foreground={tint?.color}
                   visualizado={lastMsg?.visualizado}
                   nossa={
                     lastMsg != null &&

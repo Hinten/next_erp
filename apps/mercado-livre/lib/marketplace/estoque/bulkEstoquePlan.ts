@@ -110,6 +110,24 @@
  * ⚠️ The failure was not merely silent, it was UNOBSERVABLE: the produto never
  * reached `buildSendTasks`, so there was no skip row and no log line, and the
  * sweep persists only `skips.length` anyway.
+ * ⚠️ The two remaining terms have the same blind spot, smaller, and it is
+ * covered OUTSIDE this query rather than by widening it (#1200). A produto with
+ * a live anúncio is never enumerated here when its `integracoesComProduto` lost
+ * the conta (#804 class 2 — a lost trigger event; the cutover import fires no
+ * triggers at all) or when the link sits on a variation CHILD (class 3), and
+ * neither leaves a skip row. The monthly link audit
+ * (`estoque/auditoriaNaoEnumerados.ts`, 02:30 on the 1st — it finishes before
+ * the 03:00 full pass) walks the conta's LINKS instead, through the same walk
+ * the price job's reconciliation runs (`anuncios/linksNaoEnumerados.ts`). It
+ * HEALS class 2 by re-adding the conta, so the full pass that follows
+ * enumerates the family again (and re-sends whatever moved while it was
+ * invisible — `deveEnviarFamiliaCore` still gates on the last reconciliação
+ * baseline), and reports everything it cannot heal as avisos in the bell.
+ * S1 is UNCHANGED by it: the two-term shape is the economical one (#431/#890),
+ * and the audit spends one walk a month against S1's ~96 ticks a day. The
+ * audit's classifier IS this predicate re-derived, and `bulkEstoquePlan.test.ts`
+ * evaluates the S1 `where` actually recorded against it over a 24-document
+ * matrix — a term added here reds that binding until the classifier moves too.
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
@@ -1048,9 +1066,17 @@ export type FetchStockFamiliesByIds = (
  *     deveEnviarFamilia".
  *  3. **No `paiId` / `integracoesComProduto` anchor terms.** Those exist to
  *     bound the SWEEP's scan and buy nothing against ≤50 point reads. Dropping
- *     them is what makes `buildSendTasks`' `'conta-fora-do-produto'` rung
- *     actually fire, turning #804's "the classes silently drop out, none
- *     produces a skip row" into an explicit, operator-visible row.
+ *     them makes this the ONLY path on which `buildSendTasks`'
+ *     `'conta-fora-do-produto'` rung can fire — the sweep's S1 filters the same
+ *     field server-side, in the same execution that projects it, so every row
+ *     the sweep hands over already carries the conta. Here it turns #804's "the
+ *     classes silently drop out, none produces a skip row" into an explicit,
+ *     operator-visible row, for three states: trigger LAG right after a publish
+ *     (the #920 link trigger has not added the conta yet), every one of the
+ *     conta's links CLOSED or never published (the trigger rightly removed it),
+ *     and denorm DRIFT (#804 class 2 — which the monthly
+ *     `estoque/auditoriaNaoEnumerados.ts` heals; `estoqueManual`'s message says
+ *     so).
  *     ⚠️ `publicado` is no longer one of them on EITHER path (#1087): the sweep
  *     stopped filtering on it, so there is nothing left here to un-filter, and
  *     the matching `'nao-publicado'` rung is gone. An oculto produto with a
@@ -1739,7 +1765,9 @@ function membroPodeEnviar(
  * conta has NO listings on this family), `'kit-virtual'`
  * (functions.dart:286-289, and since #1087 reached ONLY while the
  * `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED` escape hatch is on), then the
- * defensive `'conta-fora-do-produto'`.
+ * by-ids-only `'conta-fora-do-produto'` — unreachable from the sweep, whose S1
+ * already filtered the same field; it fires only for the manual push (see the
+ * rung, and {@link fetchStockFamiliesByIds} point 3).
  * ⚠️ Each is a `return`, so it costs the WHOLE family — which is why the
  * `publicado` rung had to go (#1087) rather than merely stop being reached: an
  * ERP catalogue flag must not silence every listing and child of a family that
@@ -1820,11 +1848,17 @@ export function buildSendTasks(
   // catalogue flag aborted the entire family — every listing this conta holds
   // and every variation child — behind a single bare skip row carrying no
   // itemId and no linkDocId. `podeEnviarEstoque` decides per LISTING now.
-  // DEFENSIVE-ONLY rung: S1 already filters the conta server-side (keep the S1
-  // term). Since #920 it earns its keep twice over — the array is maintained by
-  // an EVENTUALLY-consistent trigger, so this is the rung that catches a stale
-  // entry the trigger has not caught up with. Keep both it and the S6
-  // projection: dropping the projection alone silently disables this check.
+  // BY-IDS-ONLY rung — UNREACHABLE from the sweep. S1 filters this same field
+  // server-side (keep the S1 term), in the same execution that projects it, so
+  // every row `fetchStockFamilies` returns already carries the conta. It fires
+  // only on the manual push, whose `fetchStockFamiliesByIds` carries no anchor
+  // terms, and there it names one of three states: trigger LAG right after a
+  // publish (the #920 trigger is eventually consistent and has not added the
+  // conta yet), every one of the conta's links CLOSED or never published (the
+  // trigger rightly removed it), or denorm DRIFT (#804 class 2 — invisible to
+  // the sweep, healed by the monthly `estoque/auditoriaNaoEnumerados.ts`).
+  // Keep both it and the S6 projection: dropping the projection alone silently
+  // disables this check.
   if (!row.integracoesComProduto.includes(opts.integracaoId)) {
     return skipOnly(anchorId, 'conta-fora-do-produto');
   }

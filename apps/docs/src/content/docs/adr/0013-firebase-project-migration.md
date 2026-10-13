@@ -36,7 +36,7 @@ What makes this hard is not the data. Google's managed export/import moves
 documents reliably. What is hard is everything an export **does not** carry, and
 the order the rest has to happen in: indexes, TTL policies, PITR and backup
 schedules do not travel; Cloud Tasks queues are created by a functions deploy;
-`NEXT_PUBLIC_*` values are inlined at build time, so seven App Hosting backends
+`NEXT_PUBLIC_*` values are inlined at build time, so ten App Hosting backends
 need rebuilding rather than reconfiguring; and four providers hold webhook URLs
 that carry the project id.
 
@@ -135,7 +135,7 @@ inter-region data-transfer charge is **structural**. Only the new project can en
 
 Verified against Google's own location tables (August 2026). The binding constraint
 is **Firebase App Hosting, which exists in six regions worldwide** — `us-central1`,
-`us-east4`, `us-east5`, `asia-east1`, `asia-southeast1`, `europe-west4` — and seven
+`us-east4`, `us-east5`, `asia-east1`, `asia-southeast1`, `europe-west4` — and ten
 backends need it.
 
 The full service matrix across the realistic candidates. Every row here is an
@@ -144,7 +144,7 @@ the shortlist, and they are not estimates:
 
 | | `us-central1` Iowa | `us-east1` S. Carolina | `us-east4` N. Virginia | `us-east5` Columbus | `southamerica-east1` São Paulo |
 |---|---|---|---|---|---|
-| **App Hosting** — 7 backends | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **App Hosting** — 10 backends | ✅ | ❌ | ✅ | ✅ | ❌ |
 | **Cloud Tasks** — 10 queues | ✅ | ✅ | ✅ | ❌ | ✅ |
 | **Cloud Scheduler** — 12 jobs | ✅ | ✅ | ✅ | ❌ | ✅ |
 | **Firestore Enterprise + Pipelines** | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -166,7 +166,7 @@ the US East Coast, so its latency to Brazil is comparable to `us-east4`'s; and i
 one of the three **baseline-priced** US regions (with `us-central1` and `us-west1` — the
 trio Google's Always Free quotas apply to), so it does **not** carry `us-east4`'s ~15%
 premium. On every axis that matters it is `us-east4`'s equal or better — it is simply
-not an App Hosting region, and seven backends need one. That is also where most of the
+not an App Hosting region, and ten backends need one. That is also where most of the
 functions already run today, which is why the current layout looks so nearly right.
 **If App Hosting ever reaches `us-east1`, this decision should be reopened.**
 
@@ -319,7 +319,8 @@ The order is load-bearing.
    Cloud Tasks queues. Point a receiver at the new project before its queue
    exists and every enqueue fails into the persist-for-the-sweep fallback — the
    `*_TASKS_DISABLED=1` valves exist for exactly this gap.
-2. **Rebuild and deploy all seven App Hosting backends.** `NEXT_PUBLIC_*` values
+2. **Rebuild and deploy all ten App Hosting backends** (one per
+   `apps/*/apphosting.yaml`). `NEXT_PUBLIC_*` values
    are inlined by Next at build time, so this is a rebuild, not an env swap.
    `turbo.json`'s `globalEnv` lists them and should bust the cache; confirm it
    did rather than assuming.

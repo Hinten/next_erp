@@ -4,18 +4,22 @@ import {
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   TIPO_AVISO_LABELS,
   avisoReceitaKitShopee,
   avisoSchema,
   pendenciaReclamacaoSchema,
+  situacaoAnuncioForaDaSincronizacaoSchema,
+  type SituacaoAnuncioForaDaSincronizacao,
 } from '@delfrance/schemas';
 import { MENSAGENS_POR_TIPO } from './mensagens';
 
 /**
  * The two dispatch tipos of Shopee step 15b (#1744), rendered with the params
  * their producer writes (`apps/shopee/lib/shopee/avisos/despachoAutomatico.ts`),
- * and the return tipo of step 17 (#1525) further down.
+ * the return tipo of step 17 (#1525) further down, and the Mercado Livre
+ * link-audit tipo (#1200) after it.
  *
  * `rotas.test.ts` already proves every row renders `{}` without "undefined".
  * This file pins the sentences verbatim and renders the producers' planos
@@ -315,6 +319,151 @@ describe('MENSAGENS_POR_TIPO.anuncioCategoriaAlterada', () => {
   });
 });
 
+/**
+ * The link-audit tipo of #1200, rendered with the params its producer writes
+ * (`apps/mercado-livre/lib/marketplace/estoque/auditoriaNaoEnumerados.ts`):
+ * exactly `{ situacao, anuncio, anuncios }`, `situacao` a CODE and `anuncios` a
+ * NUMBER. Same reason for the literals as above — `apps/web` has no dependency
+ * edge to `apps/mercado-livre`.
+ */
+describe('MENSAGENS_POR_TIPO.anuncioForaDaSincronizacao', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.anuncioForaDaSincronizacao];
+  const ITEM_ID = 'MLB1234567890';
+  const PRODUTO_ID = 'produto-123';
+  const INTEGRACAO_ID = 'integracao-ml-1';
+  const INICIO = 'está ativo no canal, mas não recebe estoque nem preço automaticamente: ';
+  const FRASES: Record<SituacaoAnuncioForaDaSincronizacao, string> = {
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao]:
+      'ele está vinculado a uma variação, e não ao produto pai — refaça o vínculo no produto pai',
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.paiIdInvalido]:
+      'o cadastro do produto tem um vínculo de produto pai inválido — corrija o cadastro do ' +
+      'produto',
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente]:
+      'ele aponta para um produto que não existe mais — encerre o anúncio no canal ou peça a ' +
+      'remoção do vínculo órfão',
+  };
+  const corpoCom = (situacao: string | number | undefined, anuncios: string | number = 1) =>
+    mensagem.corpo({
+      anuncio: ITEM_ID,
+      anuncios,
+      ...(situacao === undefined ? {} : { situacao }),
+    });
+
+  it('renders every situação code as its own phrase, in its slot', () => {
+    // Every member of the closed set has a pinned phrase — a code added to the
+    // schema without one fails here, not as a blank slot in the bell.
+    expect(Object.keys(FRASES).sort()).toEqual(
+      [...situacaoAnuncioForaDaSincronizacaoSchema.options].sort(),
+    );
+    for (const [codigo, frase] of Object.entries(FRASES)) {
+      expect(corpoCom(codigo), codigo).toBe(`O anúncio ${ITEM_ID} ${INICIO}${frase}.`);
+    }
+  });
+
+  it('never names a channel — the tipo is channel-neutral', () => {
+    for (const codigo of situacaoAnuncioForaDaSincronizacaoSchema.options) {
+      expect(corpoCom(codigo, 3), codigo).not.toMatch(/mercado ?livre/i);
+    }
+  });
+
+  it('falls back on an unknown, absent or inherited code — never "undefined"', () => {
+    // The healed class (no aviso, so no phrase), the walk's own code that the
+    // producer maps FROM, a near-miss spelling, a number, nothing at all, and a
+    // key every object inherits.
+    for (const situacao of [
+      'conta-fora-do-produto',
+      'NAO_ENUMERADO_LINK_EM_VARIACAO',
+      'link_em_variacao',
+      '',
+      0,
+      undefined,
+      'toString',
+      '__proto__',
+    ]) {
+      const corpo = corpoCom(situacao);
+      expect(corpo, String(situacao)).toBe(
+        `O anúncio ${ITEM_ID} ${INICIO}confira o vínculo do anúncio.`,
+      );
+      expect(corpo, String(situacao)).not.toContain('undefined');
+    }
+  });
+
+  it('renders `{}` with the placeholder and the fallback, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(`O anúncio — ${INICIO}confira o vínculo do anúncio.`);
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('renders an empty item id (a link that names none) as the placeholder', () => {
+    expect(
+      mensagem.corpo({
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente,
+        anuncio: '',
+        anuncios: 1,
+      }),
+    ).toMatch(/^O anúncio — está ativo no canal/);
+  });
+
+  it('adds the count sentence only when the produto has MORE than one such anúncio', () => {
+    const codigo = SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao;
+    const base = `O anúncio ${ITEM_ID} ${INICIO}${FRASES[codigo]}.`;
+    expect(corpoCom(codigo, 1)).toBe(base);
+    expect(corpoCom(codigo, 2)).toBe(`${base} Este produto tem 2 anúncios nessa situação.`);
+    expect(corpoCom(codigo, 3)).toBe(`${base} Este produto tem 3 anúncios nessa situação.`);
+    // The producer writes a NUMBER; a string count is not parsed into a guess,
+    // and a zero or absent count adds nothing.
+    expect(corpoCom(codigo, '3')).toBe(base);
+    expect(corpoCom(codigo, 0)).toBe(base);
+    expect(mensagem.corpo({ situacao: codigo, anuncio: ITEM_ID }), 'sem `anuncios`').toBe(base);
+  });
+
+  it('renders both producer route shapes as stored, the code in `motivo` too', () => {
+    // `produto-ausente` lands on the CONTA's channel page — a produto that no
+    // longer exists has no page to open; every other situação lands on the produto.
+    const planos = [
+      {
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao,
+        rota: ROTAS_AVISO.produto.build(PRODUTO_ID),
+        esperada: `/produtos/${PRODUTO_ID}`,
+      },
+      {
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente,
+        rota: ROTAS_AVISO.canalMercadoLivre.build(INTEGRACAO_ID),
+        esperada: `/canais/mercado-livre/${INTEGRACAO_ID}`,
+      },
+    ];
+    for (const { situacao, rota, esperada } of planos) {
+      const params = { situacao, anuncio: ITEM_ID, anuncios: 3 };
+      const aviso = comoArmazenado({
+        tipo: TIPO_AVISO.anuncioForaDaSincronizacao,
+        severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.mercadoLivre,
+        params,
+        motivo: situacao,
+        urlInterna: { rota, campo: null },
+      });
+      expect(aviso.tipo, situacao).toBe(TIPO_AVISO.anuncioForaDaSincronizacao);
+      expect(aviso.severidade, situacao).toBe(SEVERIDADE_AVISO.atencao);
+      expect(aviso.canal, situacao).toBe(CANAL_AVISO.mercadoLivre);
+      expect(aviso.params, situacao).toEqual(params);
+      expect(aviso.motivo, situacao).toBe(situacao);
+      expect(aviso.urlInterna?.rota, situacao).toBe(esperada);
+      // A periodic observation by one scheduled writer: no provider clock, no deadline.
+      expect(aviso.relogioEvento, situacao).toBeNull();
+      expect(aviso.prazo, situacao).toBeNull();
+      expect(mensagem.corpo(aviso.params), situacao).toBe(
+        `O anúncio ${ITEM_ID} ${INICIO}${FRASES[situacao]}. ` +
+          'Este produto tem 3 anúncios nessa situação.',
+      );
+    }
+  });
+
+  it('is titled like its label and carries no runbook — the cadastro is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.anuncioForaDaSincronizacao);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
 describe('the producer planos as stored', () => {
   it('parse, keeping the checkout route and the class severity', () => {
     // A plano the schema rejected would never reach the bell at all; one it
@@ -461,5 +610,148 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
   it('is titled like its label and carries no runbook — the publish route/CLI is the fix', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.shopeeKitReceitaDivergente);
     expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+/**
+ * The two Loja Integrada tipos of step 2 (#1829), rendered with the params their
+ * producers write (`apps/loja-integrada/lib/lojaIntegrada/avisos/avisos.ts`):
+ * expiry `{ loja, dias, expiraEm }` — `dias` a NUMBER, `expiraEm` a
+ * `YYYY-MM-DD` civil date — and reconexão `{ loja, status }`.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaTokenExpirando', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaTokenExpirando];
+  const LOJA = 'Conta A';
+  const RENOVE = 'Renove no painel e atualize a validade no ERP.';
+  const VENCIDO =
+    'Se o token não foi renovado no painel, ele foi revogado — gere um novo e salve-o no ERP. ' +
+    'Se foi renovado, atualize a validade no ERP.';
+
+  it('renders the conta, the days and the date (DD/MM/AAAA) in their slots', () => {
+    expect(mensagem.corpo({ loja: LOJA, dias: 12, expiraEm: '2026-11-02' })).toBe(
+      `O token da Loja Integrada da loja ${LOJA} vence em 12 dia(s) (02/11/2026). ${RENOVE}`,
+    );
+  });
+
+  it('says "vence hoje" at zero days, and keeps one day apart from it', () => {
+    expect(mensagem.corpo({ loja: LOJA, dias: 0, expiraEm: '2026-11-02' })).toBe(
+      `O token da Loja Integrada da loja ${LOJA} vence hoje (02/11/2026). ${RENOVE}`,
+    );
+    expect(mensagem.corpo({ loja: LOJA, dias: 1, expiraEm: '2026-11-02' })).toBe(
+      `O token da Loja Integrada da loja ${LOJA} vence em 1 dia(s) (02/11/2026). ${RENOVE}`,
+    );
+  });
+
+  it('says the date has passed at negative days — never "vence em -1 dia(s)"', () => {
+    for (const dias of [-1, -30]) {
+      const corpo = mensagem.corpo({ loja: LOJA, dias, expiraEm: '2026-11-02' });
+      expect(corpo, String(dias)).toBe(
+        `A validade informada para o token da Loja Integrada da loja ${LOJA} já passou ` +
+          `(02/11/2026). ${VENCIDO}`,
+      );
+      expect(corpo, String(dias)).not.toContain(String(dias));
+    }
+  });
+
+  it('formats the date by splitting the string — no time-zone shift to the day before', () => {
+    // `new Date('2026-01-01')` is UTC midnight: rendered in São Paulo it would
+    // read 31/12/2025. The split cannot move a day.
+    expect(mensagem.corpo({ loja: LOJA, dias: 5, expiraEm: '2026-01-01' })).toContain(
+      '(01/01/2026)',
+    );
+  });
+
+  it('omits a missing or malformed date rather than printing it raw', () => {
+    for (const expiraEm of [undefined, '2026-11-2', '02/11/2026', 20261102, '']) {
+      const corpo = mensagem.corpo({
+        loja: LOJA,
+        dias: 12,
+        ...(expiraEm === undefined ? {} : { expiraEm }),
+      });
+      expect(corpo, String(expiraEm)).toBe(
+        `O token da Loja Integrada da loja ${LOJA} vence em 12 dia(s). ${RENOVE}`,
+      );
+    }
+  });
+
+  it('renders `{}` with the placeholders, never "undefined" or "NaN"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(`O token da Loja Integrada da loja — vence em — dia(s). ${RENOVE}`);
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('NaN');
+  });
+
+  it('renders the producer plano as stored, with the expiry on the `prazo` field', () => {
+    const prazoUs = AGORA_US + 20 * 86_400_000_000;
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaTokenExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: LOJA, dias: 20, expiraEm: '2026-10-29' },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      prazo: prazoUs,
+    });
+    expect(aviso.canal).toBe(CANAL_AVISO.lojaIntegrada);
+    expect(aviso.prazo).toBe(prazoUs);
+    expect(aviso.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(mensagem.corpo(aviso.params)).toBe(
+      `O token da Loja Integrada da loja ${LOJA} vence em 20 dia(s) (29/10/2026). ${RENOVE}`,
+    );
+  });
+
+  it('is titled like its label and carries no runbook — the conta panel is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaTokenExpirando);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.lojaIntegradaReconexaoPendente', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaReconexaoPendente];
+  const PARADA = 'A importação fica parada até salvar um token válido.';
+
+  it('renders the conta and the HTTP status in their slots, for 401 and 403', () => {
+    for (const status of [401, 403]) {
+      expect(mensagem.corpo({ loja: 'Conta A', status }), String(status)).toBe(
+        `A Loja Integrada recusou o token da loja Conta A (HTTP ${String(status)}). ${PARADA}`,
+      );
+    }
+  });
+
+  it('renders `{}` with the placeholder and no status, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(`A Loja Integrada recusou o token da loja —. ${PARADA}`);
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('treats an empty status like a missing one: no "(HTTP —)" clause', () => {
+    expect(mensagem.corpo({ loja: 'Conta A', status: '' })).toBe(
+      `A Loja Integrada recusou o token da loja Conta A. ${PARADA}`,
+    );
+  });
+
+  it('renders the producer plano as stored', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', status: 403 },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(aviso.severidade).toBe(SEVERIDADE_AVISO.critico);
+    expect(aviso.prazo).toBeNull();
+    expect(mensagem.corpo(aviso.params)).toBe(
+      `A Loja Integrada recusou o token da loja Conta A (HTTP 403). ${PARADA}`,
+    );
+  });
+
+  it('is titled like its label, with a runbook naming the owner and the painel', () => {
+    // The remedy is outside the app: only the store owner can generate or renew
+    // the token. The runbook says who and where; saving it is the in-app half.
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaReconexaoPendente);
+    expect(mensagem.runbook).toBe(
+      'Peça ao proprietário da loja que gere um novo token ou renove o atual no painel da Loja ' +
+        'Integrada (Configurações > Chave para API) e salve-o na conta, no ERP.',
+    );
   });
 });

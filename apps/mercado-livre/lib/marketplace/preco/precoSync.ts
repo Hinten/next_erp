@@ -612,6 +612,7 @@ export async function processPriceSyncJob(
     let fila = [...job.fila];
     let afterAnchorId = job.afterAnchorId;
     let planejamentoConcluido = job.planejamentoConcluido;
+    let reconciliacaoForma = job.reconciliacaoForma;
     let afterLinkPath = job.afterLinkPath;
     let reconciliacaoConcluida = job.reconciliacaoConcluida;
     let reconciliacaoPaginas = job.reconciliacaoPaginas;
@@ -830,6 +831,7 @@ export async function processPriceSyncJob(
           filaRestante: fila.length,
           afterAnchorId,
           planejamentoConcluido,
+          reconciliacaoForma,
           afterLinkPath,
           reconciliacaoConcluida,
           reconciliacaoPaginas,
@@ -1102,6 +1104,7 @@ export async function processPriceSyncJob(
         const fetchRecon = deps.fetchReconPage ?? fetchPrecoReconPage;
         const page = await fetchRecon(db, {
           integracaoId: payload.integracaoId,
+          forma: reconciliacaoForma,
           afterLinkPath,
           pageLimit: precoReconPageLimit(),
         });
@@ -1115,8 +1118,16 @@ export async function processPriceSyncJob(
           });
         }
         linksReconciliados += page.inspecionados;
-        afterLinkPath = page.nextAfterLinkPath;
-        reconciliacaoConcluida = page.nextAfterLinkPath == null;
+        // The cursor is a PAIR (#1862): the walk drains one stored ref form
+        // before it opens the next, so a form handover persists the new form
+        // with a null path, and only the last form's drained page concludes.
+        if (page.next != null) {
+          reconciliacaoForma = page.next.forma;
+          afterLinkPath = page.next.afterLinkPath;
+        } else {
+          afterLinkPath = null;
+          reconciliacaoConcluida = true;
+        }
       }
       await checkpoint();
     }

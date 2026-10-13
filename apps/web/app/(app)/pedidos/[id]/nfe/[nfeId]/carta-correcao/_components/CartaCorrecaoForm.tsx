@@ -131,7 +131,7 @@ export function CartaCorrecaoForm({ pedidoId, nfeId }: { pedidoId: string; nfeId
             <Paper withBorder p="md" radius="md" bg="var(--mantine-color-yellow-light)">
               <Group gap="xs" mb="xs">
                 <IconClockHour4 size={20} color="var(--mantine-color-yellow-8)" />
-                <Text fw={600} c="yellow.8">
+                <Text fw={600} c="yellow">
                   Carta de correção em processamento (cStat {result.cStat})
                 </Text>
               </Group>
@@ -150,7 +150,7 @@ export function CartaCorrecaoForm({ pedidoId, nfeId }: { pedidoId: string; nfeId
             <Paper withBorder p="md" radius="md" bg="var(--mantine-color-teal-light)">
               <Group gap="xs" mb="xs">
                 <IconCircleCheck size={20} color="var(--mantine-color-teal-7)" />
-                <Text fw={600} c="teal.8">
+                <Text fw={600} c="teal">
                   Carta de correção registrada (cStat {result.cStat})
                 </Text>
               </Group>

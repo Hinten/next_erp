@@ -115,6 +115,9 @@ catalogs:
       specifier: ^4.4.3
       version: 4.4.3
 
+overrides:
+  '@axe-core/playwright>playwright-core': 1.60.0
+
 importers:
 
   .:
@@ -337,6 +340,67 @@ importers:
         specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
+  apps/loja-integrada:
+    dependencies:
+      '@delfrance/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@delfrance/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      '@delfrance/integrations-loja-integrada':
+        specifier: workspace:*
+        version: link:../../packages/integrations/loja-integrada
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      firebase-admin:
+        specifier: 'catalog:'
+        version: 14.2.0
+      next:
+        specifier: 16.2.6
+        version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.6
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.6(react@19.2.6)
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+    devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../packages/config-eslint
+      '@delfrance/config-tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/config-tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.4
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.14)
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
+      eslint-config-next:
+        specifier: 'catalog:'
+        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
+
   apps/melhor-envio:
     dependencies:
       '@delfrance/auth':
@@ -452,6 +516,9 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
+      '@delfrance/config-vitest':
+        specifier: workspace:*
+        version: link:../../packages/config-vitest
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
@@ -822,6 +889,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@axe-core/playwright':
+        specifier: ^4.13.0
+        version: 4.13.0(playwright-core@1.60.0)
       '@delfrance/config-eslint':
         specifier: workspace:*
         version: link:../../packages/config-eslint
@@ -1106,6 +1176,34 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/integrations/loja-integrada:
+    dependencies:
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+    devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
+      '@delfrance/config-tsconfig':
+        specifier: workspace:*
+        version: link:../../config-tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.4
       eslint:
         specifier: 'catalog:'
         version: 9.39.4
@@ -1703,6 +1801,11 @@ packages:
 
   '@astrojs/yaml2ts@0.2.3':
     resolution: {integrity: sha512-PJzRmgQzUxI2uwpdX2lXSHtP4G8ocp24/t+bZyf5Fy0SZLSF9f9KXZoMlFM/XCGue+B0nH/2IZ7FpBYQATBsCg==}
+
+  '@axe-core/playwright@4.13.0':
+    resolution: {integrity: sha512-6YLx+kxXu5GJceG4ozFg+33a2EMTdjYwWGloJ3sb9Kta5pp+ZNS53uxGVog5JetIY8s++P5UrtX+cri+u0VAVg==}
+    peerDependencies:
+      playwright-core: 1.60.0
 
   '@babel/code-frame@7.29.0':
     resolution: {integrity: sha512-9NhCeYjq9+3uxgdtp20LSiJXJvN0FeCtNGpJxuMFZ1Kv3cWUNb6DOhJwUvcVCzKGR66cw4njwM6hrJLqgOwbcw==}
@@ -4205,6 +4308,10 @@ packages:
 
   axe-core@4.11.4:
     resolution: {integrity: sha512-KunSNx+TVpkAw/6ULfhnx+HWRecjqZGTOyquAoWHYLRSdK1tB5Ihce1ZW+UY3fj33bYAFWPu7W/GRSmmrCGuxA==}
+    engines: {node: '>=4'}
+
+  axe-core@4.13.0:
+    resolution: {integrity: sha512-UzGt8zg7Ny8djbYMhxl2zuEevVa7r2gJjYY5Lwr1xM7+XU2nd6CkIWFTVcCIbAP63vSz71NaVyyuSk9lHKcy0A==}
     engines: {node: '>=4'}
 
   axios-ntlm@1.4.6:
@@ -8316,6 +8423,11 @@ snapshots:
     dependencies:
       yaml: 2.9.0
 
+  '@axe-core/playwright@4.13.0(playwright-core@1.60.0)':
+    dependencies:
+      axe-core: 4.13.0
+      playwright-core: 1.60.0
+
   '@babel/code-frame@7.29.0':
     dependencies:
       '@babel/helper-validator-identifier': 7.28.5
@@ -10894,6 +11006,8 @@ snapshots:
       possible-typed-array-names: 1.1.0
 
   axe-core@4.11.4: {}
+
+  axe-core@4.13.0: {}
 
   axios-ntlm@1.4.6(debug@4.4.3):
     dependencies:

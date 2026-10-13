@@ -214,14 +214,14 @@ export function ListingStatusStrip({
           operator reads "Removido pelo Mercado Livre", finds Republicar
           disabled, and has nothing to go on. */}
       {estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao && (
-        <Text size="xs" c="red.7" data-testid="ml-aviso-removido">
+        <Text size="xs" c="red" data-testid="ml-aviso-removido">
           O Mercado Livre removeu este anúncio e ele não pode ser reativado. Use “Descartar anúncio
           removido” para publicar um novo com os mesmos dados, ou exclua o anúncio.
         </Text>
       )}
 
       {estado === ESTADO_PUBLICACAO_ML.pausado && (
-        <Text size="xs" c="orange.7" data-testid="ml-aviso-pausado">
+        <Text size="xs" c="orange" data-testid="ml-aviso-pausado">
           Anúncio pausado. Salvar ou republicar este anúncio o reativa no Mercado Livre.
         </Text>
       )}

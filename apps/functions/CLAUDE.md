@@ -80,7 +80,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Storage lifecycle exports include:
   (then `onArquivoDeleted` frees the object + cascades any derivatives). **Round-robin
   paging (#234)**: candidates come
   from `fetchArquivoPage`, a **classic** `orderBy(FieldPath.documentId())` query
-  (Firestore's always-available native ordering, no declared index) paginated with
+  riding the declared `arquivos(__name__ ASC)` index, paginated with
   `startAfter(lastKey)` — no pipeline, no server-side age/ownership filter. The
   grace-window (`criadoEm<cutoff`) and owner-media (`parseOwnedMediaDir`) scoping
   happen on the fetched page, in code. The last key reached is persisted to
@@ -104,12 +104,18 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Storage lifecycle exports include:
   `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is
   microseconds-since-epoch (schema default `nowMicros()`).
   ⚠️ **Index requirement**: this Enterprise edition creates NO index automatically
-  — the two arquivo sweep indexes (`arquivos(uploadState, criadoEm)` +
-  `arquivos(markedForDeletionAt)`), the six single-field `mensagem` collection-group
-  indexes and `mensagens.arquivoId` are declared in `firestore.indexes.json` and must be deployed manually;
-  verify usage live with `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`).
-  The round-robin arquivo page scan itself needs no index (document-key ordering is
-  native); the diagnostic covers the mensagem refcount query that each candidate uses.
+  — the three arquivo sweep indexes (`arquivos(uploadState, criadoEm)`,
+  `arquivos(markedForDeletionAt)` and the key index `arquivos(__name__ ASC)`), the
+  six single-field `mensagem` collection-group indexes and `mensagens.arquivoId` are
+  declared in `firestore.indexes.json` and must be deployed manually; verify them live
+  with `scripts/check-sweep-indexes.mjs`, which explains each query's pipeline PROXY
+  (Enterprise refuses classic `explain()`). ⚠️ **The round-robin page needs its index
+  too (#1874)** — "document-key ordering is native, no index needed" is Firestore
+  STANDARD. Enterprise has no implicit key index, and the page does not fail without
+  one: it walks a dense arquivos index end to end, cuts the cursor residually and
+  sorts in memory, so every 48h tick reads the whole collection for 100 rows. The
+  emulator cannot show this (Standard edition); the diagnostic's page section and
+  `src/arquivos/arquivoOrphanSweep.indexes.test.ts` are the guards.
 
 - **`onProdutoDeleted`** (`onDocumentDeleted('produtos/{produtoId}')`) — the
   authoritative produto delete cascade (#226/#136/#199), core

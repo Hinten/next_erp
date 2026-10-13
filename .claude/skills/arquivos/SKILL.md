@@ -310,7 +310,10 @@ Start from the owner-scoped or globally-shared pattern above; do not mix them.
   `firebase emulators:exec … "pnpm --filter @delfrance/functions test:storage"`.
 - The unreferenced sweep pages `arquivos` by document key (a classic
   `FieldPath.documentId()` query, no Pipelines API involved since #234) and persists
-  its round-robin cursor to `arquivoOrphanSweepState/cursor` — it runs in the
+  its round-robin cursor to `arquivoOrphanSweepState/cursor`. ⚠️ On Enterprise that
+  page needs the declared `arquivos(__name__ ASC)` index — there is no implicit key
+  index, and without it every page scans the collection (#1874); the emulator auto-
+  creates key order, so only `scripts/check-sweep-indexes.mjs` shows it. It runs in the
   emulator without a seam, though `fetchPage`/`resolveReferenced` stay overridable
   for cursor-mechanics unit tests. Grace envs are set to `0` in tests so
   freshly-written docs qualify.
