@@ -424,9 +424,53 @@ export function executarSanitizacao(
 
 /**
  * Every listed store name and every redactor pattern in the named UTF-8 text
- * files (a doc, a fixture, a PR-body draft), reported as `<arquivo>:<linha> ::
- * <tipo>` — never the term, never the value. The repository's mandated fakes
- * (`000.000.000-00`, `…@….invalid`) are skipped. Reads no capture.
+ * files (a doc, a fixture, a PR-body draft) — never the term, never the value.
+ * The repository's mandated fakes (`000.000.000-00`, `…@….invalid`) are
+ * skipped. Reads no capture. A file that is UTF-16 or not valid UTF-8 is
+ * refused whole (`<arquivo> :: utf16` / `:: utf8-invalido`), never read through
+ * replacement characters. Each file gets two passes (`achadosDasLinhas`):
+ *
+ * 1. **Each line**, reported as `<arquivo>:<linha> :: <tipo>`. A line holding a
+ *    backslash is also read with its string escapes decoded, so a fixture's or
+ *    a `.ts` literal's `Exemplo\nModa` is not read `exemplo nmoda`.
+ * 2. **Each window of 2 and of 3 consecutive lines**, reported as
+ *    `<arquivo>:<primeira>-<ultima> :: <tipo>`. A hard wrap can split a
+ *    multi-word store name (`…the Loja Exemplo` / `Moda store`) so that no
+ *    single line holds it, and a line-only check then prints `clean.` and
+ *    exits 0: the gate before a public push would fail OPEN. The window's lines
+ *    are joined, every whitespace run collapsed, and each reading of the joined
+ *    text gets the same detectors as a line (`tiposNaLinhaLi`). Every
+ *    continuation line is read both with its leading whitespace, `>` quote
+ *    markers and list marker dropped (`1. … Loja` / `2. Exemplo …`) and as
+ *    written (a `2000.` opening a line may be the end of a name, not a list
+ *    number), each line's choice on its own. Each join is one space, or nothing
+ *    after a line ending in a hyphen or a soft hyphen (`Exem-` / `plaria`: a
+ *    one-word name has no separator-free form to fall back on).
+ *
+ * A window reports a kind only as the SMALLEST span that finds it: never when
+ * one of its own lines already reports that kind, and a 3-line window never
+ * when one of its two 2-line windows finds it. A second occurrence hidden that
+ * way still leaves the file refused (exit 1), and surfaces on the re-run once
+ * the reported one is fixed.
+ *
+ * A blank line is a line like any other and joins as nothing, so a name split
+ * by one blank line is still reported (`<arquivo>:1-3`): fail-closed, because
+ * the check cannot tell a paragraph break from a wrap (a bare `>` inside a
+ * quote, loose list items), and a false alarm costs a re-run where a miss
+ * publishes the name.
+ *
+ * The same fail-closed trade makes false alarms across structural boundaries
+ * (two list items, a heading and the next paragraph, two table rows) when a
+ * listed name is built from common words; there is no allow-list, so such a
+ * line is reworded.
+ *
+ * Out of reach: a name spread over four or more lines (paragraph breaks inside
+ * it); a continuation prefix holding letters or digits next to other text
+ * (Supercite `LF>`, `REM`); a token cut inside itself with no hyphen at the
+ * cut; and, on one line too, markup between the words (`Exemplo<br>Moda`,
+ * `&nbsp;`, a footnote marker) and look-alike characters (fullwidth,
+ * Cyrillic). No redactor pattern needs the joining space to match: a phone
+ * wrapped after its `(DD)` is reported on the line holding the number.
  */
 function verificar(
   caminhos: readonly string[],
@@ -446,22 +490,114 @@ function verificar(
       achados.push(`${rotulo} :: utf16`);
       return;
     }
-    texto.texto.split(/\r?\n/).forEach((linha, n) => {
-      linhasLidas += 1;
-      for (const tipo of tiposNaLinhaLi(linha, lista)) {
-        achados.push(`${rotulo}:${String(n + 1)} :: ${tipo}`);
-      }
-    });
+    if (!utf8Valido(bytes)) {
+      achados.push(`${rotulo} :: utf8-invalido`);
+      return;
+    }
+    const linhas = texto.texto.split(/\r?\n/);
+    linhasLidas += linhas.length;
+    achados.push(...achadosDasLinhas(rotulo, linhas, lista));
   });
   const cabecalho = `sanitizar --verificar: ${String(caminhos.length)} file(s), ${String(linhasLidas)} line(s).`;
   if (achados.length === 0) return { saida: fim([cabecalho, 'clean.']), escritas: [], codigo: 0 };
   return {
     saida: fim([
       cabecalho,
-      `FOUND ${String(achados.length)}: each line is <file>:<line> :: <kind>; a value is never printed.`,
+      `FOUND ${String(achados.length)}: each line is <file>:<line> :: <kind>, or <file>:<first>-<last> :: <kind> for a span of wrapped lines; a value is never printed.`,
       ...achados.map((a) => `  ${a}`),
     ]),
     escritas: [],
     codigo: 1,
   };
+}
+
+/**
+ * Whether `bytes` are valid UTF-8. The lenient decoder turns a stray Windows-1252
+ * byte into U+FFFD, which folds to a word break: `Ex\xEAmplo` would read
+ * `ex mplo` and a listed name would pass. The fatal one throws a `TypeError`.
+ */
+function utf8Valido(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return true;
+  } catch (err) {
+    if (err instanceof TypeError) return false;
+    throw err;
+  }
+}
+
+/**
+ * What a continuation line can lose in a window's reading: leading whitespace,
+ * `>` quote markers (nested ones too), list markers (`-`, `*`, `+`, `1.`, `1)`,
+ * `a.`, `B)`, `(1)`, `(a)`), a task box (`[ ]`, `[x]`) and a bare number (a
+ * pasted listing's line-number gutter), a marker only when a space or the end
+ * of the line follows it.
+ */
+const PREFIXO_DE_CONTINUACAO =
+  /^(?:\s*(?:>|(?:[-*+]|\d{1,9}[.)]?|[A-Za-z][.)]|\((?:\d{1,9}|[A-Za-z])\)|\[[ xX]\])(?=\s|$)))*\s*/;
+
+/** A hyphen or a soft hyphen (U+00AD) ending a line: a word may be cut there. */
+const HIFEN_NO_FIM = /[-­]\s*$/;
+
+const colapsar = (t: string) => t.replace(/\s+/g, ' ');
+
+/**
+ * Every reading of consecutive lines joined into one, whitespace runs collapsed:
+ * each continuation line as written AND with its prefix dropped, each choice on
+ * its own (`2.` dropped, `2000.` kept), and each join one space or, after a line
+ * ending in a hyphen, nothing (`Exem-` / `plaria`). Deduplicated, so plain prose
+ * costs one reading.
+ */
+function leiturasDaJanela(linhas: readonly string[]): ReadonlySet<string> {
+  const [primeira = '', ...continuacoes] = linhas;
+  let leituras: ReadonlySet<string> = new Set([colapsar(primeira)]);
+  for (const linha of continuacoes) {
+    const formas = new Set([linha, linha.replace(PREFIXO_DE_CONTINUACAO, '')]);
+    const seguintes = new Set<string>();
+    for (const anterior of leituras) {
+      const cortada = HIFEN_NO_FIM.test(anterior) ? anterior.replace(HIFEN_NO_FIM, '') : null;
+      for (const forma of formas) {
+        seguintes.add(colapsar(`${anterior} ${forma}`));
+        if (cortada !== null) seguintes.add(colapsar(`${cortada}${forma}`));
+      }
+    }
+    leituras = seguintes;
+  }
+  return leituras;
+}
+
+/** One file's findings, in line order: each line, then each window it opens (see {@link verificar}). */
+function achadosDasLinhas(
+  rotulo: string,
+  linhas: readonly string[],
+  lista: ListaDeNomesLi,
+): string[] {
+  const nenhum: ReadonlySet<string> = new Set();
+  const tiposDaJanela = (inicio: number, quantas: number): ReadonlySet<string> =>
+    inicio + quantas > linhas.length
+      ? nenhum
+      : new Set(
+          [...leiturasDaJanela(linhas.slice(inicio, inicio + quantas))].flatMap((t) =>
+            tiposNaLinhaLi(t, lista),
+          ),
+        );
+  const porLinha = linhas.map((linha) => new Set<string>(tiposNaLinhaLi(linha, lista)));
+  const porPar = linhas.map((_, n) => tiposDaJanela(n, 2));
+  const algumaLinhaTem = (inicio: number, quantas: number, tipo: string) =>
+    porLinha.slice(inicio, inicio + quantas).some((tipos) => tipos.has(tipo));
+  const daJanela = (inicio: number, quantas: number, tipo: string) =>
+    `${rotulo}:${String(inicio + 1)}-${String(inicio + quantas)} :: ${tipo}`;
+
+  const achados: string[] = [];
+  porLinha.forEach((tipos, n) => {
+    for (const tipo of tipos) achados.push(`${rotulo}:${String(n + 1)} :: ${tipo}`);
+    for (const tipo of porPar[n] ?? nenhum) {
+      if (!algumaLinhaTem(n, 2, tipo)) achados.push(daJanela(n, 2, tipo));
+    }
+    for (const tipo of tiposDaJanela(n, 3)) {
+      const numPar = porPar.slice(n, n + 2).some((par) => par.has(tipo));
+      if (!numPar && !algumaLinhaTem(n, 3, tipo)) achados.push(daJanela(n, 3, tipo));
+    }
+  });
+  return achados;
 }
