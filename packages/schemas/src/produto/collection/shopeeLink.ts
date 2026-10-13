@@ -22,12 +22,24 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *
  * ## The writer inventory, whole
  *
- * Four groups of fields have a named writer set, and none of the four overlap:
+ * Five groups of fields have a named writer set, and none of the five overlap:
  *  - **`item_status` + `estadoAnuncio`** — FOUR writers, enumerated on
  *    {@link shopeeItemStatusSchema} below;
  *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
  *    sender. Nothing clears them but the sender's own clean-send path;
- *  - **`kitNativo`** (step 12) — **ONE** writer, step 9's product import;
+ *  - **`kitNativo`** (step 12) — **ONE** writer, step 9's product import. Since
+ *    step 19 (#1527) that import writes a NEW native-kit listing link (its
+ *    cascade found none) at a DERIVED doc id — `idDoVinculoDeKit(integracaoId,
+ *    item_id)`, `apps/shopee`'s `kits/idsKit.ts` — instead of an auto id, the id
+ *    the kit create writes too, so the two land on ONE document; a link the
+ *    cascade finds keeps its id, and an ordinary listing still gets an auto id;
+ *  - **`receitaKitConferida`** (step 19, on a KIT-MODEL `variashopee`) — ONE
+ *    rule for every writer site: each writes `chaveReceitaKitErp` of the ERP
+ *    recipe a READ-BACK of Shopee's live kit just folded EQUAL to. ONE writer
+ *    site: step 9's kit import (the recipe it writes IS the read-back, so the
+ *    stamp is fold-equal by construction). Re-stamps are flat `mergeIfExists`,
+ *    never a full `set`. Nothing reads it to decide a Shopee write — only the
+ *    L4 aviso decision (`reavaliarAvisoDeReceitaKit`) reads it;
  *  - **the ten `preco*` scalars** (step 13) — **ONE** writer, the price
  *    sender; nothing clears them but its clean send; none is ever read to
  *    decide a send. Six sit on the item doc, four on each model doc.
