@@ -3,7 +3,7 @@
  * Functions codebase is bundled and shipped.
  *
  * Sibling of `env-files.mjs`, which owns the same question for FILES. Both are
- * shared by all seven `prepare-deploy.mjs`, and both fail the predeploy hook
+ * shared by all eight `prepare-deploy.mjs`, and both fail the predeploy hook
  * outright rather than degrading — for the same reason: a deploy artifact is
  * uploaded and run, and a wrong one is discovered in production or not at all.
  *
@@ -31,7 +31,7 @@
  *
  * ## WHERE IT RUNS, AND WHY THAT PLACEMENT
  *
- * From the `predeploy` ARRAY of the seven `firebase.*.deploy.json`, ahead of
+ * From the `predeploy` ARRAY of the eight `firebase.*.deploy.json`, ahead of
  * `prepare-deploy.mjs`. The deploy config is what defines a deploy, so the guard
  * fires exactly when deploying and needs no opt-out flag:
  *
@@ -188,6 +188,38 @@ const CODEBASES = {
     },
     deployShellSource: 'apps/shopee/lib/shopee/estoque/constantesEstoque.ts',
     runtimeOverrides: ['SHOPEE_TASKS_REGION'],
+  },
+  'loja-integrada': {
+    // ⚠️ Master-plan step 3 ships the codebase AND `firebase.loja-integrada.deploy.json`
+    // INERT: nobody has run it, and the deploy itself is a manual coordinated
+    // human step in the migration window (root `CLAUDE.md` rule 8). The row is
+    // wired as a real predeploy hook while still earning its keep offline
+    // through `bundle-inlining.test.js`, which builds every CODEBASES
+    // `build.mjs` and proves the region actually reaches the bundle. Same MP
+    // shape: one region, inherited by the task/schedule functions through
+    // `setGlobalOptions`.
+    deployConfig: 'firebase.loja-integrada.deploy.json',
+    buildScript: 'apps/loja-integrada/functions/build.mjs',
+    deployDoc: 'apps/loja-integrada/functions/DEPLOY.md',
+    // No FIREBASE_DATABASE_ID: this codebase has no Firestore trigger, which is
+    // the only thing that reads the database id during codebase analysis. The
+    // day one arrives, `build.mjs` defines it AND this list gains it — the
+    // `lists EVERY build.mjs default` test fails the one-sided edit.
+    inlined: { FUNCTIONS_REGION: null },
+    tasksRegionVar: 'FUNCTIONS_REGION',
+    // ⚠️ `null` until the App Hosting enqueuer exists (step 4). In step 3 only
+    // the functions themselves enqueue (the order poller), so there is no
+    // second env to agree with: a non-null pair here would make
+    // `crossCheckNote` tell the operator to set an `apphosting.yaml` row that
+    // nothing reads. `storage` is the precedent. Step 4 sets both values and
+    // adds this codebase to the `backend cross-check` list in
+    // `preflight.test.js`.
+    backendVar: null,
+    backendManifest: null,
+    // The reads queue's `rateLimits` are LITERALS (concurrency 1 is a
+    // correctness property, not a tunable), so there is no deploy-shell knob.
+    deployShell: {},
+    runtimeOverrides: ['LOJA_INTEGRADA_TASKS_REGION'],
   },
   nfe: {
     deployConfig: 'firebase.nfe.deploy.json',
