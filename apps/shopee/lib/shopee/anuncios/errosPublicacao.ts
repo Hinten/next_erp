@@ -44,10 +44,11 @@
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
  *   before writing. 22 members.
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 22 plus the five only a WIRE rejection can produce (step 18 added the
- *   two size-chart refusals on `size_chart_info`). A problema is a field-level
- *   observation, and after the first Shopee call there are causes no pre-write
- *   check could have seen.
+ *   those 22 plus the twelve only a WIRE rejection can produce (step 18 added the
+ *   two size-chart refusals on `size_chart_info`; step 19 the seven native-kit
+ *   refusals, whose ONE producer is `kits/recusaKit.ts`). A problema is a
+ *   field-level observation, and after the first Shopee call there are causes no
+ *   pre-write check could have seen.
  * - {@link ETAPA_PUBLICACAO} — where in the `aplicar` sequence a rejection
  *   landed. Not a reason at all; the answer to "what exists on the channel now".
  *
@@ -195,13 +196,18 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
 
 /**
  * Everything a `problemas[]` entry may carry: every pre-write refusal, plus the
- * five only a WIRE rejection (or, for the size-chart photo, a failed upload of
+ * twelve only a WIRE rejection (or, for the size-chart photo, a failed upload of
  * it) can produce.
  *
  * The same superset relationship `MOTIVO_FALHA_JOB` has to
  * `MOTIVO_IMPORT_BLOQUEADO` on the import side, and for the same reason: a
- * {@link ShopeePublishBlockedError} may never carry one of the extra five,
+ * {@link ShopeePublishBlockedError} may never carry one of the extra twelve,
  * because none of them is a decision reached by READING the produto.
+ *
+ * ⚠️ The seven native-kit members (step 19) are classified by SENTENCE AND code
+ * in `kits/recusaKit.ts` — their only producer, which spells each one through
+ * this constant and never as a quoted slug (`errosPublicacao.test.ts` O7 accepts
+ * only the constant spelling for them).
  */
 export type MotivoProblemaPublicacao =
   | MotivoPublicacaoBloqueada
@@ -233,6 +239,47 @@ export type MotivoProblemaPublicacao =
    */
   | 'tabela-de-medidas-foto-recusada'
   /**
+   * Step 19 — `product.error_busi` "Invalid product setting" on a kit: this
+   * write does not apply to a kit (measured on `update_stock`). Permanent.
+   */
+  | 'operacao-invalida-para-kit'
+  /**
+   * Step 19 — `product.error_busi` carrying Shopee's database "Too many
+   * connections" (measured on `add_kit_item`). TRANSIENT: the write may have
+   * landed, so a create re-reads before it ever resends.
+   */
+  | 'instabilidade-shopee'
+  /**
+   * Step 19 — `product.error_server` "generate kit image toggle closed": the
+   * feature is off in this shop. Permanent despite the code's `transient` kind;
+   * the cover goes through `upload_image` instead.
+   */
+  | 'imagem-de-kit-desligada'
+  /**
+   * Step 19 — the code `.` with "product is not found" (a non-kit id, measured)
+   * or `error_param` "The information you queried is not found" (documented).
+   * ⚠️ A DELETED kit still reads, so this is "not a kit", never "deleted".
+   */
+  | 'kit-inexistente'
+  /**
+   * Step 19 — `error_busi_cannot_edit_vsku` on a kit op: this shop/app may not
+   * create or edit kits through OpenAPI (a whitelist only the Shopee manager
+   * opens). A store-level refusal, never a fault of the produto.
+   */
+  | 'kit-bloqueado-pela-shopee'
+  /**
+   * Step 19 — `product.error_busi` "The amount of component in this Kit
+   * Variation …": a kit model's component band. The only way the band is
+   * learnt when `get_kit_item_limit` is not served.
+   */
+  | 'faixa-de-componentes'
+  /**
+   * Step 19 — `product.error_busi` "mupltiple main sku" (probe #2): a second
+   * main component in the kit. The package guard makes it unreachable; the row
+   * exists so a guard drift reads as a refusal, never as "maybe created".
+   */
+  | 'kit-principal-duplicado'
+  /**
    * A refusal the classifier could not attribute to any request field. The
    * entry's `campo` is `null` and its `mensagem` carries Shopee's own prose —
    * the one place provider text is allowed, because dropping it would leave the
@@ -247,6 +294,13 @@ export const MOTIVO_PROBLEMA_PUBLICACAO = {
   impostoRecusado: 'imposto-recusado',
   tabelaDeMedidasRecusada: 'tabela-de-medidas-recusada',
   tabelaDeMedidasFotoRecusada: 'tabela-de-medidas-foto-recusada',
+  operacaoInvalidaParaKit: 'operacao-invalida-para-kit',
+  instabilidadeShopee: 'instabilidade-shopee',
+  imagemDeKitDesligada: 'imagem-de-kit-desligada',
+  kitInexistente: 'kit-inexistente',
+  kitBloqueadoPelaShopee: 'kit-bloqueado-pela-shopee',
+  faixaDeComponentes: 'faixa-de-componentes',
+  kitPrincipalDuplicado: 'kit-principal-duplicado',
   desconhecido: 'desconhecido',
 } as const satisfies Record<string, MotivoProblemaPublicacao>;
 
