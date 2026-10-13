@@ -273,7 +273,7 @@ function DimensoesPesoField({ medidas }: { medidas: MedidasDoPacote | null }) {
             : `Peso líquido ${EMPTY_VALUE}`}
         </Text>
         {faltando.length > 0 && (
-          <Text size="sm" c="orange.7">
+          <Text size="sm" c="orange">
             {`Falta preencher: ${listarEmPortugues(faltando)}`}
           </Text>
         )}
@@ -358,7 +358,7 @@ function MarcaField({
             beside the real empty marker, "—". */}
         <Text size="sm">{naoSeAplica ? 'Não se aplica' : (resolvida ?? EMPTY_VALUE)}</Text>
         {faltando && (
-          <Text size="sm" c="orange.7">
+          <Text size="sm" c="orange">
             Falta preencher: Marca
           </Text>
         )}

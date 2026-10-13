@@ -65,6 +65,7 @@ export default defineConfig({
     // the production-build CI serving + client source maps (E2E_SOURCEMAPS).
     trace: 'retain-on-failure',
     video: 'retain-on-failure',
+    screenshot: 'only-on-failure',
     // Default: every spec runs as the seeded test user. Specs that need to
     // assert unauthenticated behaviour set `test.use({ storageState: { ... } })`.
     storageState: STORAGE_STATE,

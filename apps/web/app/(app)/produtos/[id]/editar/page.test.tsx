@@ -9,9 +9,12 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 /**
  * `/produtos/[id]/editar` — step 19's two web pieces (#1527, reconcile §2.10):
  *
- *  1. `deriveOnSave` switches «É kit virtual» off when «É kit» is off, and the
- *     children kit-status sync uses that DERIVED value (O-8; M159's editar half,
- *     also pinned end-to-end by `produto-kit.cadastros`);
+ *  1. `deriveOnSave` switches «É kit virtual» off when «É kit» is off (O-8;
+ *     M159's editar half, also pinned end-to-end by `produto-kit.cadastros`); the
+ *     save transaction's `deriveTransactionPatch` re-applies the rule over the
+ *     STORED doc, which is what holds when the form was painted from a stale
+ *     cache copy — and the children kit-status sync reads the flip from that
+ *     same transaction (`committed`), never from the form;
  *  2. the «É kit» field's NON-BLOCKING Shopee notice is fed by
  *     `useKitNativoShopee` over the kit ROOT (`paiId ?? id`) — the link decides,
  *     never the produto's `ehKitVirtual` (R-v; M160's page half).
@@ -23,7 +26,15 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 interface Capturado {
   fields?: Record<string, FieldConfig>;
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
-  onAfterSave?: (id: string, values: Record<string, unknown>) => Promise<void>;
+  deriveTransactionPatch?: (
+    current: Record<string, unknown> | null,
+    patch: Record<string, unknown>,
+  ) => Record<string, unknown>;
+  onAfterSave?: (
+    id: string,
+    values: Record<string, unknown>,
+    committed?: { before: Record<string, unknown> | null; patch: Record<string, unknown> },
+  ) => Promise<void>;
 }
 
 interface Snap {
@@ -42,6 +53,8 @@ const h = vi.hoisted(() => ({
   /** What the stubbed link hook answers. */
   temKitNativo: false,
   propagacoes: [] as Record<string, unknown>[],
+  /** How many of the next propagations the stubbed use-case fails. */
+  falhasDePropagacao: 0,
 }));
 
 vi.mock('@delfrance/ui', async (importOriginal) => ({
@@ -84,6 +97,10 @@ vi.mock('@delfrance/data/produto', async (importOriginal) => ({
     change: Record<string, unknown>,
   ) => {
     h.propagacoes.push(change);
+    if (h.falhasDePropagacao > 0) {
+      h.falhasDePropagacao -= 1;
+      throw new Error('rede caiu no meio da propagação');
+    }
     return [];
   },
 }));
@@ -137,6 +154,7 @@ beforeEach(() => {
   h.raizes.length = 0;
   h.temKitNativo = false;
   h.propagacoes.length = 0;
+  h.falhasDePropagacao = 0;
 });
 
 describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19, O-8, M159)', () => {
@@ -174,8 +192,20 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
     ).toBe(false);
   });
 
-  it('the children kit-status sync uses the DERIVED flag, never the raw switch', async () => {
-    await capturado().onAfterSave!('p1', { ehKit: false, ehKitVirtual: true });
+  it('the children kit-status sync reads the flip the TRANSACTION wrote, never the raw switch', async () => {
+    await capturado().onAfterSave!(
+      'p1',
+      { ehKit: false, ehKitVirtual: true },
+      {
+        before: { ehKit: true, ehKitVirtual: true },
+        patch: {
+          ehKit: false,
+          ehKitVirtual: false,
+          componentesKit: null,
+          componentesKitKeys: null,
+        },
+      },
+    );
     expect(h.propagacoes).toHaveLength(1);
     expect(h.propagacoes[0]).toMatchObject({
       ehKit: false,
@@ -185,9 +215,136 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
     });
   });
 
-  it('a kit that keeps «É kit virtual» propagates it unchanged (near-miss)', async () => {
-    await capturado().onAfterSave!('p1', { ehKit: true, ehKitVirtual: true });
-    expect(h.propagacoes[0]).toMatchObject({ ehKit: true, ehKitVirtual: true });
+  it('a kit that keeps «É kit virtual» reports no flip (near-miss)', async () => {
+    await capturado().onAfterSave!(
+      'p1',
+      { ehKit: true, ehKitVirtual: true },
+      { before: { ehKit: true, ehKitVirtual: true }, patch: { nome: 'x' } },
+    );
+    expect(h.propagacoes[0]).toMatchObject({
+      ehKit: true,
+      ehKitVirtual: true,
+      oldEhKit: true,
+      oldEhKitVirtual: true,
+    });
+  });
+
+  // ⚠️ The bug this replaced: a form painted from a stale cache copy (here «É kit»
+  // OFF) and saved with an unrelated edit used to diff that FORM against server
+  // truth and un-kit every child while the parent stayed a kit.
+  it('a STALE form that never touched «É kit» propagates no flip', async () => {
+    await capturado().onAfterSave!(
+      'p1',
+      { ehKit: false, ehKitVirtual: false, componentesKit: null, nome: 'x' },
+      {
+        before: { ehKit: true, ehKitVirtual: true, componentesKit: { c1: { quantidade: 1 } } },
+        patch: { nome: 'x' },
+      },
+    );
+    expect(h.propagacoes[0]).toMatchObject({
+      ehKit: true,
+      ehKitVirtual: true,
+      oldEhKit: true,
+      oldEhKitVirtual: true,
+      componentesKit: { c1: { quantidade: 1 } },
+    });
+  });
+
+  it('the sole member mirrors the COMMITTED map and pointer, not the form’s', async () => {
+    const gravado = { c1: { quantidade: 2, limitarEstoque: true } };
+    await capturado().onAfterSave!(
+      'p1',
+      { ehKit: true, componentesKit: { velho: { quantidade: 9 } } },
+      {
+        before: { ehKit: false, filhoUnicoId: 'm1' },
+        patch: { ehKit: true, componentesKit: gravado },
+      },
+    );
+    expect(h.propagacoes[0]).toMatchObject({
+      ehKit: true,
+      oldEhKit: false,
+      componentesKit: gravado,
+      membroUnicoId: 'm1',
+    });
+  });
+
+  it('no transaction ran ("nothing changed") and nothing pending ⇒ no propagation', async () => {
+    // The form disagrees with the stored doc, but this save wrote nothing.
+    await capturado().onAfterSave!('p1', { ehKit: false, ehKitVirtual: false });
+    expect(h.propagacoes).toHaveLength(0);
+  });
+
+  it('a FAILED propagation is retried by the next save, even a "nothing changed" one, then cleared', async () => {
+    const unkit = {
+      before: { ehKit: true, ehKitVirtual: false },
+      patch: { ehKit: false, componentesKit: null, componentesKitKeys: null },
+    };
+    h.falhasDePropagacao = 1;
+    await expect(capturado().onAfterSave!('p1', { ehKit: false }, unkit)).rejects.toThrow(
+      'rede caiu',
+    );
+    await capturado().onAfterSave!('p1', { ehKit: false });
+    expect(h.propagacoes).toHaveLength(2);
+    expect(h.propagacoes[1]).toEqual(h.propagacoes[0]);
+    expect(h.propagacoes[1]).toMatchObject({ ehKit: false, oldEhKit: true });
+    // Succeeded ⇒ cleared: the next pristine save propagates nothing.
+    await capturado().onAfterSave!('p1', { ehKit: false });
+    expect(h.propagacoes).toHaveLength(2);
+  });
+
+  it('a pending retry keeps its OLD side when the next save writes the doc', async () => {
+    h.falhasDePropagacao = 1;
+    await expect(
+      capturado().onAfterSave!(
+        'p1',
+        {},
+        { before: { ehKit: true }, patch: { ehKit: false, componentesKit: null } },
+      ),
+    ).rejects.toThrow('rede caiu');
+    // The un-kit never reached the children, so they are still kits: the next
+    // save (an unrelated edit) must still un-kit them…
+    await capturado().onAfterSave!('p1', {}, { before: { ehKit: false }, patch: { nome: 'x' } });
+    expect(h.propagacoes[1]).toMatchObject({ ehKit: false, oldEhKit: true });
+  });
+
+  it('NEAR-MISS: a pending retry the next save reverted propagates no flip', async () => {
+    h.falhasDePropagacao = 1;
+    await expect(
+      capturado().onAfterSave!(
+        'p1',
+        {},
+        { before: { ehKit: true }, patch: { ehKit: false, componentesKit: null } },
+      ),
+    ).rejects.toThrow('rede caiu');
+    // …but turning «É kit» back ON leaves the children exactly where they are.
+    await capturado().onAfterSave!('p1', {}, { before: { ehKit: false }, patch: { ehKit: true } });
+    expect(h.propagacoes[1]).toMatchObject({ ehKit: true, oldEhKit: true });
+  });
+
+  // The `produto-kit.cadastros` flake: the form painted a stale cache copy
+  // («É kit virtual» OFF) while the server held it ON, so `deriveOnSave` saw "no
+  // change" and the patch never carried the flag. The transaction hook decides
+  // over the doc it READ, so the switch-off reaches Firestore anyway.
+  it('the save transaction switches «É kit virtual» off over the STORED doc, not the form', () => {
+    const derivar = capturado().deriveTransactionPatch;
+    expect(derivar).toBeDefined();
+    expect(
+      derivar!(
+        {
+          ehKit: true,
+          ehKitVirtual: true,
+          componentesKit: { c1: { quantidade: 2, limitarEstoque: true } },
+          componentesKitKeys: ['c1'],
+        },
+        { ehKit: false, componentesKit: null, componentesKitKeys: null },
+      ),
+    ).toEqual({ ehKitVirtual: false });
+  });
+
+  it('the save transaction leaves a kit that stays a kit alone (near-miss)', () => {
+    expect(
+      capturado().deriveTransactionPatch!({ ehKit: true, ehKitVirtual: true }, { nome: 'x' }),
+    ).toEqual({});
   });
 });
 

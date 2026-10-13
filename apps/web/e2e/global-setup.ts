@@ -1,4 +1,11 @@
-import { type Browser, type FullConfig, type Page, chromium, request } from '@playwright/test';
+import {
+  type Browser,
+  type BrowserContext,
+  type FullConfig,
+  type Page,
+  chromium,
+  request,
+} from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -205,19 +212,20 @@ async function captureAndVerifyAuth(
 }
 
 /**
- * Logs in through the UI and writes `storageState` (cookies + IndexedDB).
+ * Logs in through the UI and captures `storageState` (cookies + IndexedDB),
+ * optionally writing it to disk for the shared global setup.
  * Crucially waits for Firebase to flush the auth user to IndexedDB *before*
  * capturing — capturing earlier yields a user.json without the
  * `firebase:authUser:*` key, i.e. a session that silently fails to restore.
  */
-async function captureAuthenticatedState(
+export async function captureAuthenticatedState(
   browser: Browser,
   baseURL: string,
   email: string,
   password: string,
-  storageStatePath: string,
-): Promise<void> {
-  const context = await browser.newContext({ baseURL });
+  storageStatePath?: string,
+): Promise<Awaited<ReturnType<BrowserContext['storageState']>>> {
+  const context = await browser.newContext({ baseURL, storageState: { cookies: [], origins: [] } });
   try {
     const page = await context.newPage();
     await page.goto('/login');
@@ -230,7 +238,7 @@ async function captureAuthenticatedState(
     // Firebase SDK persists that session into IndexedDB asynchronously. Wait
     // for the write to land so the storageState capture below can't race it.
     await waitForFirebaseAuthPersisted(page);
-    await context.storageState({ path: storageStatePath, indexedDB: true });
+    return await context.storageState({ path: storageStatePath, indexedDB: true });
   } finally {
     await context.close();
   }

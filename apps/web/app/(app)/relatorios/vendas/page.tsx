@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import Link from 'next/link';
-import { Alert, Anchor, Group, Skeleton, Stack, Table, Text } from '@mantine/core';
+import { Alert, Anchor, Box, Group, Skeleton, Stack, Table, Text } from '@mantine/core';
 import { DonutChart } from '@mantine/charts';
 import { PageHeader } from '@delfrance/ui';
 import { formatReais } from '@delfrance/core/money';
@@ -52,25 +52,41 @@ export default function VendasPorEstadoPage() {
         <Text c="dimmed">Nenhum pedido encontrado.</Text>
       ) : (
         <>
-          <Group align="flex-start" wrap="nowrap">
+          <Group align="flex-start">
             <DonutChart
               data={donut}
               size={240}
               thickness={36}
-              withLabelsLine
-              withLabels
+              withLabelsLine={false}
+              withLabels={false}
               chartLabel={data ? `${data.length} pedidos` : undefined}
             />
-            <Stack flex={1} gap="xs">
+            <Stack
+              component="ul"
+              aria-label="Resumo por estado"
+              flex={1}
+              gap="xs"
+              style={{ flexBasis: 280, minWidth: 0, listStyle: 'none', margin: 0, padding: 0 }}
+            >
               {byBucket.map((b) => (
                 <Group
+                  component="li"
                   key={b.bucket}
                   justify="space-between"
                   py={4}
                   px="xs"
-                  style={{ borderBottom: '1px solid var(--mantine-color-gray-2)' }}
+                  style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
                 >
-                  <Text size="sm">{ESTADO_BUCKET_LABELS[b.bucket]}</Text>
+                  <Group gap="xs">
+                    <Box
+                      aria-hidden="true"
+                      bg={BUCKET_COLOR[b.bucket] ?? 'gray.5'}
+                      w={12}
+                      h={12}
+                      style={{ borderRadius: 2, flexShrink: 0 }}
+                    />
+                    <Text size="sm">{ESTADO_BUCKET_LABELS[b.bucket]}</Text>
+                  </Group>
                   <Group gap="md">
                     <Text size="sm" c="dimmed">
                       {b.count} pedido(s)

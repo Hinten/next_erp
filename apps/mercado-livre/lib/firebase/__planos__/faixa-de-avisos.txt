@@ -1,0 +1,72 @@
+Execution:
+ results returned: 2
+ query id: 3084e8ac9a8e7b91
+ request peak memory usage: 74.34 KiB (76,128 B)
+ data bytes read: 2.27 KiB (2,321 B)
+ entity row scanned: 2
+ index row scanned: 8
+
+Billing:
+ read units: 3
+
+Tree:
+• Compute
+|  $out_1: map_set($record_1, "__name__", $__name___1, "__key__", unset)
+|  is query result: true
+|
+|  Execution:
+|   records returned: 2
+|   latency: 5.72 ms (local <1 ms)
+|
+└── • Compute
+    |  $__name___1: $__key___2
+    |
+    |  Execution:
+    |   records returned: 2
+    |   latency: 5.68 ms (local <1 ms)
+    |
+    └── • Fetch
+        |  order: PRESERVE_INPUT_ORDER
+        |  source: /avisos
+        |  input record id: $rid_2
+        |  output bindings: {$__key___2=get_field(row(), "__key__"), $record_1=row()}
+        |  output: [$__key___2, $record_1]
+        |
+        |  Execution:
+        |   records returned: 2
+        |   latency: 5.68 ms (local 2.37 ms)
+        |   peak memory usage: 6.00 KiB (6,144 B)
+        |   data bytes read: 1.18 KiB (1,206 B)
+        |
+        └── • MajorSort
+            |  fields: [$key_5 ASC]
+            |  output: [$rid_2]
+            |  limit: 500
+            |
+            |  Execution:
+            |   records returned: 2
+            |   latency: 3.31 ms (local <1 ms)
+            |   peak memory usage: 68.34 KiB (69,984 B)
+            |
+            └── • Filter
+                |  expression: (exists($key_5) AND (($key_5 > ref(projects/<PROJECT>/databases/default/documents/avisos/anuncioForaDaSincronizacao:e2e-ml1200-<RUN>-x:)) OR ($key_5 == ref(projects/<PROJECT>/databases/default/documents/avisos/anuncioForaDaSincronizacao:e2e-ml1200-<RUN>-x:))) AND ($key_5 < ref(projects/<PROJECT>/databases/default/documents/avisos/anuncioForaDaSincronizacao:e2e-ml1200-<RUN>-x;)))
+                |
+                |  Execution:
+                |   records returned: 2
+                |   latency: 3.20 ms (local <1 ms)
+                |   post-filtered rows: 6
+                |
+                └── • SequentialScan
+                       properties: Selection {  }
+                       fields: [null, $rid_2]
+                       key: $key_5
+                       index: /avisos (resolvidoEm ASC)@[id = CICAgJjUgIcJ]
+                       partition: /
+                       key ordering length: 2
+                       ranges: /
+
+                       Execution:
+                        records returned: 8
+                        latency: 3.01 ms
+                        records scanned: 8
+                        data bytes read: 1.09 KiB (1,115 B)

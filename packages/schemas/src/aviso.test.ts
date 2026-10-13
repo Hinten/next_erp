@@ -4,19 +4,23 @@ import { join } from 'node:path';
 import { MOTIVO_RESOLUCAO_RECEITA_KIT } from './receitaKitShopee';
 import {
   CANAL_AVISO,
+  CANAL_AVISO_LABELS,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   TIPO_AVISO_LABELS,
   avisoNaoLido,
   avisoSchema,
   avisosLeituraSchema,
+  canalAvisoSchema,
   chaveDeAviso,
   entradaDeLeitura,
   marcarTodosComoLidos,
   pendenciaReclamacaoSchema,
   rotaInternaSegura,
+  situacaoAnuncioForaDaSincronizacaoSchema,
   tipoAvisoSchema,
   urlExternaSegura,
   type Aviso,
@@ -137,6 +141,57 @@ describe('TIPO_AVISO_LABELS', () => {
     expect(motivos).toHaveLength(5);
     for (const motivo of motivos) expect(bloco, motivo).toContain(`\`${motivo}\``);
   });
+
+  it('labels the link-audit tipo without a provider name — it is channel-neutral', () => {
+    expect(TIPO_AVISO.anuncioForaDaSincronizacao).toBe('anuncioForaDaSincronizacao');
+    expect(TIPO_AVISO_LABELS.anuncioForaDaSincronizacao).toBe('Anúncio fora da sincronização');
+  });
+
+  it('names and labels the two Loja Integrada tipos (step 2)', () => {
+    // Channel-SPECIFIC on purpose, unlike the three above: the remedy (only the
+    // store owner can generate or renew the token, in the painel) is the
+    // channel's own — the `shopeeDesautorizado` choice, not `canalSemCredencial`.
+    expect(TIPO_AVISO.lojaIntegradaTokenExpirando).toBe('lojaIntegradaTokenExpirando');
+    expect(TIPO_AVISO.lojaIntegradaReconexaoPendente).toBe('lojaIntegradaReconexaoPendente');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaTokenExpirando).toBe('Token da Loja Integrada expirando');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaReconexaoPendente).toBe(
+      'Token da Loja Integrada recusado',
+    );
+  });
+});
+
+describe('CANAL_AVISO', () => {
+  it('keeps the named-member constant and the labels in step with the enum', () => {
+    // `escreverAviso` full-parses on create, so a canal the enum lacks is a
+    // write that throws — and a label the map lacks typechecks everywhere.
+    expect(Object.keys(CANAL_AVISO).sort()).toEqual([...canalAvisoSchema.options].sort());
+    for (const [nome, valor] of Object.entries(CANAL_AVISO)) expect(valor, nome).toBe(nome);
+    expect(Object.keys(CANAL_AVISO_LABELS).sort()).toEqual([...canalAvisoSchema.options].sort());
+  });
+
+  it('carries Loja Integrada, spelled exactly — near-miss spellings stay refused', () => {
+    expect(CANAL_AVISO.lojaIntegrada).toBe('lojaIntegrada');
+    expect(CANAL_AVISO_LABELS.lojaIntegrada).toBe('Loja Integrada');
+    for (const quase of ['loja-integrada', 'lojaintegrada', 'LojaIntegrada', 'loja_integrada']) {
+      expect(canalAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses a Loja Integrada plano as stored, keeping canal, route and severity', () => {
+    const parsed = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', status: 401 },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(parsed.canal).toBe('lojaIntegrada');
+    expect(parsed.severidade).toBe('critico');
+    expect(parsed.params).toEqual({ loja: 'Conta A', status: 401 });
+    expect(parsed.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(parsed.relogioEvento).toBe(1_800_000_000_123_456);
+  });
 });
 
 describe('PENDENCIA_RECLAMACAO', () => {
@@ -157,6 +212,41 @@ describe('PENDENCIA_RECLAMACAO', () => {
     expect(pendenciaReclamacaoSchema.options).toHaveLength(3);
     expect(pendenciaReclamacaoSchema.safeParse('organizar-coleta').success).toBe(false);
     expect(pendenciaReclamacaoSchema.safeParse('responder_solicitacao').success).toBe(false);
+  });
+});
+
+describe('SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO', () => {
+  it('is exactly the three findings a human must fix, mirrored member for member', () => {
+    expect(situacaoAnuncioForaDaSincronizacaoSchema.options).toEqual([
+      'link-em-variacao',
+      'pai-id-invalido',
+      'produto-ausente',
+    ]);
+    expect(SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO).toEqual({
+      linkEmVariacao: 'link-em-variacao',
+      paiIdInvalido: 'pai-id-invalido',
+      produtoAusente: 'produto-ausente',
+    });
+    expect(Object.values(SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO).sort()).toEqual(
+      [...situacaoAnuncioForaDaSincronizacaoSchema.options].sort(),
+    );
+  });
+
+  it('has NO member for the healed class, nor for the walk codes', () => {
+    // `conta-fora-do-produto` is the near-miss: the audit re-adds the conta and
+    // logs it, so an aviso for it would be one nobody has to act on. The walk's
+    // `NAO_ENUMERADO_*` codes are a different set the producer maps FROM — a
+    // stored one would mean the mapping was skipped.
+    for (const naoMembro of [
+      'conta-fora-do-produto',
+      'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO',
+      'NAO_ENUMERADO_LINK_EM_VARIACAO',
+      'link_em_variacao',
+    ]) {
+      expect(situacaoAnuncioForaDaSincronizacaoSchema.safeParse(naoMembro).success, naoMembro).toBe(
+        false,
+      );
+    }
   });
 });
 
@@ -381,6 +471,79 @@ describe('chaveDeAviso — the return tipo (Shopee step 17)', () => {
   });
 });
 
+describe('chaveDeAviso — the link-audit tipo (#1200)', () => {
+  // ONE row per PRODUTO per conta. The monthly audit stores conta and produto only
+  // in the id, reads the open avisos once per run and keeps ONE conta's rows by
+  // PARSING the id — exactly three `:` segments, the tipo first, the conta second
+  // compared whole — so the shape below is what its resolver reads back.
+  const foraDaSincronizacao = (conta: string, produtoId: string) =>
+    chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta, entidade: produtoId });
+  /** The producer's parse of an id against one conta: `<tipo>:<conta>:<produto>`. */
+  const daConta = (conta: string, chave: string) => {
+    const segmentos = chave.split(':');
+    return (
+      segmentos.length === 3 &&
+      segmentos[0] === chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao }) &&
+      `${segmentos[0]}:${segmentos[1]}` ===
+        chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta }) &&
+      segmentos[2] !== ''
+    );
+  };
+
+  it('keeps the conta as the SECOND segment and the produto last, with no janela', () => {
+    expect(foraDaSincronizacao('int-1', 'prod-1')).toBe('anuncioForaDaSincronizacao:int-1:prod-1');
+    expect(daConta('int-1', foraDaSincronizacao('int-1', 'prod-1'))).toBe(true);
+  });
+
+  it('keeps a prefix-sharing conta, another tipo and the bare prefix OUT of the conta’s rows', () => {
+    // `c10` shares `c1` as a string prefix; the WHOLE segment tells them apart,
+    // and only because the fold never lets a `:` into a segment.
+    expect(daConta('c1', foraDaSincronizacao('c10', 'p'))).toBe(false);
+    expect(daConta('c1', foraDaSincronizacao('c1:0', 'p'))).toBe(false);
+    expect(
+      daConta(
+        'c1',
+        chaveDeAviso({ tipo: TIPO_AVISO.estoqueAcimaDoDisponivel, conta: 'c1', entidade: 'p' }),
+      ),
+    ).toBe(false);
+    expect(
+      daConta('c1', chaveDeAviso({ tipo: TIPO_AVISO.anuncioForaDaSincronizacao, conta: 'c1' })),
+    ).toBe(false);
+    // …while a produtoId carrying a `:` is folded, so its row still parses as the conta's.
+    expect(foraDaSincronizacao('c1', 'a:b')).toBe('anuncioForaDaSincronizacao:c1:a_b');
+    expect(daConta('c1', foraDaSincronizacao('c1', 'a:b'))).toBe(true);
+  });
+});
+
+describe('chaveDeAviso — the two Loja Integrada tipos (step 2)', () => {
+  // ONE row per CONTA for each tipo: the producers (save, renewal, park, sweep)
+  // and the resolvers recompute the key from the integração id alone, so a key
+  // they could not recompute would be a row nothing ever closes.
+  const expiracao = (conta: string) =>
+    chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaTokenExpirando, conta });
+  const reconexao = (conta: string) =>
+    chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente, conta });
+
+  it('keys each tipo on the conta alone — no janela, so a new expiry date reuses the row', () => {
+    expect(expiracao('int-1')).toBe('lojaIntegradaTokenExpirando:int-1');
+    expect(reconexao('int-1')).toBe('lojaIntegradaReconexaoPendente:int-1');
+    expect(expiracao('int-1')).toBe(
+      chaveDeAviso({
+        tipo: TIPO_AVISO.lojaIntegradaTokenExpirando,
+        conta: 'int-1',
+        entidade: null,
+        janela: null,
+      }),
+    );
+  });
+
+  it('separates two contas, and the two tipos of one conta', () => {
+    expect(expiracao('int-1')).not.toBe(expiracao('int-2'));
+    expect(reconexao('int-1')).not.toBe(reconexao('int-2'));
+    expect(expiracao('int-1')).not.toBe(reconexao('int-1'));
+  });
+});
+
 describe('avisoNaoLido', () => {
   const semLeitura: AvisosLeitura = avisosLeituraSchema.parse({});
 
@@ -527,6 +690,14 @@ describe('ROTAS_AVISO', () => {
 
   it('builds a concrete Shopee conta route', () => {
     expect(ROTAS_AVISO.canalShopee.build('abc')).toBe('/canais/shopee/abc');
+  });
+
+  it('builds a concrete Loja Integrada conta route', () => {
+    expect(ROTAS_AVISO.canalLojaIntegrada.padrao).toBe('/canais/loja-integrada/[id]');
+    expect(ROTAS_AVISO.canalLojaIntegrada.build('abc')).toBe('/canais/loja-integrada/abc');
+    expect(rotaInternaSegura(ROTAS_AVISO.canalLojaIntegrada.build('abc'))).toBe(
+      '/canais/loja-integrada/abc',
+    );
   });
 
   it('lands a dispatch aviso on the checkout, with the pedido id as `?pedido=`', () => {

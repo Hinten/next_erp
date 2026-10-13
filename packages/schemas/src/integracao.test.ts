@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { credenciaisLojaIntegradaMeta } from './credenciaisLojaIntegrada';
 import {
   brandShopeeMeta,
   brandShopeeSchema,
@@ -526,7 +527,15 @@ describe('brandShopee', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('integracao metas', () => {
-  it('integracaoMeta targets integracao and cascades every credential subcollection', () => {
+  it('integracaoMeta targets integracao and cascades the declared credential subcollections', () => {
+    // ⚠️ "Declared", not "every": the Loja Integrada Personal Token store
+    // (`credenciaisLojaIntegrada`) is deliberately NOT listed. Nothing at runtime
+    // reads `meta.cascade` — the conta delete trigger walks `listCollections()`
+    // and reclaims what exists, exactly as it reclaims `brandshopee`, which this
+    // list never declared either (`caroGenerico.storage.test.ts` proves the walk
+    // deletes an unregistered subcollection). Adding the line would edit
+    // `integracao.ts`, which is on the NF-e live lane's path list, so every push
+    // would cost a SEFAZ homologação emission for a line nothing reads.
     expect(integracaoMeta.collectionPath).toBe('integracao');
     expect(integracaoMeta.cascade).toEqual([
       { path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' },
@@ -636,13 +645,23 @@ describe('Mercado Livre legacy-grant token collections', () => {
   });
 
   it('does NOT relax the sibling credential stores', () => {
-    // The legacy-grant exception is ML-only. `credenciais`, `credenciaisWhatsapp`
-    // and `usuariosTeste` must stay deny-all and unregistered.
+    // The legacy-grant exception is ML-only. `credenciais`, `credenciaisWhatsapp`,
+    // `credenciaisLojaIntegrada` and `usuariosTeste` must stay deny-all and
+    // unregistered.
     const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
     expect(paths).not.toContain('integracao/{integracaoId}/credenciais');
     expect(paths).not.toContain('integracao/{integracaoId}/credenciaisWhatsapp');
+    expect(paths).not.toContain('integracao/{integracaoId}/credenciaisLojaIntegrada');
     expect(paths).not.toContain('integracao/{integracaoId}/usuariosTeste');
     expect(credenciaisWhatsappMeta.permissions).toEqual({ read: 0n, write: 0n, delete: 0n });
+    expect(credenciaisLojaIntegradaMeta.collectionPath).toBe(
+      'integracao/{integracaoId}/credenciaisLojaIntegrada',
+    );
+    expect(credenciaisLojaIntegradaMeta.permissions).toEqual({
+      read: 0n,
+      write: 0n,
+      delete: 0n,
+    });
   });
 });
 

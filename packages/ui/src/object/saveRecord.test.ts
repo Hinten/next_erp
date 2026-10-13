@@ -74,6 +74,7 @@ describe('saveRecord — transactional derivation', () => {
     });
     expect(derive).toHaveBeenCalledWith(null, { nome: 'Nova' });
     expect(result.patch).toEqual({ nome: 'Nova', telefoneGerenciado: true });
+    expect(result.before).toBeNull();
     expect(firestoreMock.txMock.set).toHaveBeenCalledWith(expect.anything(), result.patch);
   });
 
@@ -98,7 +99,34 @@ describe('saveRecord — transactional derivation', () => {
       nome: 'Depois',
       telefonesAdicionais: ['14155552671', '5511999998888'],
     });
+    // What the save replaced: the doc the transaction read, for `onAfterSave`.
+    expect(result.before).toEqual(current);
     expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), result.patch);
+  });
+
+  // A derivation must be able to OVERRIDE what the form sent: the produto
+  // editor's kit rule switches a dirty `ehKitVirtual: true` off when the doc it
+  // read is no longer a kit (`camposDeKitDoPatch`), which only holds if the
+  // derived keys are merged last.
+  it('a derived key wins over the same key in the dirty patch', async () => {
+    firestoreMock.txMock.get.mockResolvedValue({
+      exists: () => true,
+      data: () => ({ ehKit: false, ehKitVirtual: false }),
+    });
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'existing',
+      values: { ehKitVirtual: true },
+      dirtyFields: { ehKitVirtual: true },
+      currentUserUid: 'u1',
+      deriveTransactionPatch: () => ({ ehKitVirtual: false }),
+    });
+    expect(result.patch).toEqual({ ehKitVirtual: false });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), {
+      ehKitVirtual: false,
+    });
   });
 });
 
@@ -134,7 +162,13 @@ describe('saveRecord', () => {
       { nome: 'novo nome' },
     );
     expect(firestoreMock.txMock.set).not.toHaveBeenCalled();
-    expect(result).toEqual({ id: 'EXISTING_ID', patch: { nome: 'novo nome' }, documents: [] });
+    // No baseline, no sibling, no derivation ⇒ the transaction read nothing.
+    expect(result).toEqual({
+      id: 'EXISTING_ID',
+      patch: { nome: 'novo nome' },
+      documents: [],
+      before: null,
+    });
   });
 
   it('preserves explicit null in the patch (NullClearButton path)', async () => {

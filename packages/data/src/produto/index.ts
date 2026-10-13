@@ -23,6 +23,7 @@ export {
   type ChildComponentesKit,
   buildKitStatusChildOps,
   propagateKitStatusToChildren,
+  kitStatusChangeDoSave,
   type KitStatusChange,
   resolveKitGuardInputs,
   type ResolvedKitGuards,
