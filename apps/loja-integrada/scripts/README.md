@@ -40,6 +40,11 @@ pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-captur
 pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-capturas" --verificar /abs/path/fixture.json /abs/path/pr-body.md
 ```
 
+- `--verificar` prints `<file>:<line> :: <kind>`, never the term or the value. It also
+  reads every window of 2 and 3 consecutive lines joined, so a store name split by a
+  hard wrap is reported as `<file>:<first>-<last> :: <kind>`, and a line's string
+  escapes decoded (`\n` inside a JSON or `.ts` literal). A file that is not valid UTF-8
+  is refused whole as `<file> :: utf8-invalido`.
 - `--sobrescrever` replaces an existing fixture whose bytes differ; identical bytes are
   always a no-op.
 - Exit codes: 0 done (or a clean dry run or check), 1 refused (nothing written),
