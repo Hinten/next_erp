@@ -97,10 +97,18 @@ still be fixed. Only the context loader refuses those.
   then a 2 KB cut (mask first, cut second). Profile `fixture` (fixtures are public): fakes
   of the same type, `chave_redigida_<n>` keys, error bodies keep shape and short digits.
 - Error bodies are an allow-list too: a string survives only under `CHAVES_TEXTO_ERRO_LI`
-  (`codigo`, `code`, `erro`, `error`, `tipo`, `campo`; exact, any case), and there only if
-  code-shaped and clean. On `catalogo`/`configuracao` a JSON object or array error takes that
-  walk; only TEXT (non-JSON, or a JSON scalar like the spec's 409) keeps its masked text, for
-  a plain/HTML 429 or a validation message. Never add a key to "see the message".
+  (`codigo`, `code`, `erro`, `error`, `tipo`, `campo`; exact, any case; an array inherits its
+  key), and there only if it is a CODE — at most 32 chars, 1–7 digits or one-case letter
+  words joined by one `_`/`.`/`-` with at most 4 trailing digits — and clean. On
+  `catalogo`/`configuracao` a JSON object or array error takes that walk; only TEXT (non-JSON,
+  or a JSON scalar like the spec's 409) keeps its masked text, for a plain/HTML 429 or a
+  validation message. Never add a key to "see the message".
+- ⚠️ The accepted residual surface, and the whole of it: a code-shaped fragment under an
+  allowed key (a one-case, letters-only token of up to 32 chars passes); and on
+  `catalogo`/`configuracao`, non-JSON error text and a bare JSON-string error keep their
+  regex-masked text (the 409 `"Slug already in use."`). The price: a `catalogo`/`configuracao`
+  JSON error, a 429 included, loses its message strings — `codigoLimite`/`retryAfterS` are
+  logged separately. Widening the keys, the code shape or the text classes reopens the leak.
 - A new field or path stays redacted until a table lists it. Listing one means adding the
   leaf with its predicate AND regenerating the committed leaf inventory, which reads the
   gitignored spec cache only: `MSYS_NO_PATHCONV=1 node

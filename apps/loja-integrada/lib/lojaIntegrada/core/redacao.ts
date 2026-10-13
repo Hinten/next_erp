@@ -30,10 +30,13 @@
  * 6. **Non-2xx bodies** get an error walk (`percorrerErro`) that is an
  *    allow-list too: a STRING survives only under a key of
  *    {@link CHAVES_TEXTO_ERRO_LI} (exact, case-insensitive), and even there only
- *    when short and code-shaped. Every other string — under any other key, or a
- *    root string with no key at all — is refused, whatever its shape: a key
- *    deny-list plus a shape filter kept a partial token echoed under a key
- *    nobody listed (review on #1877). A 401/403 is never excerpted in the `log`
+ *    when it is a CODE (`ehCodigoDeErro`: at most 32 characters, either 1 to 7
+ *    digits or one-case letter words with at most 4 trailing digits) and clean.
+ *    Every other string — under any other key, or a root string with no key at
+ *    all — is refused, whatever its shape: a key deny-list plus a shape filter
+ *    kept a partial token echoed under a key nobody listed, and the 2xx `token`
+ *    shape under an allowed key kept a whole base62 or hex credential (both
+ *    review on #1877). A 401/403 is never excerpted in the `log`
  *    profile, whatever the class: it is the answer that may echo the token, and
  *    the package scrubs only the token as sent.
  *
@@ -42,11 +45,17 @@
  *    spec's one `/v1` error, the 409 `"Slug already in use."` — keeps its whole
  *    text behind the regex layer in the `log` profile: that is where a plain or
  *    HTML 429 and a validation message land (PLAN §1.2 item 6; step-2b plan §1
- *    item 8). A JSON 429 loses its message text, not its code: the call
- *    line carries `codigoLimite` and `retryAfterS` from the package anyway.
- *    ⚠️ Residual: a code-shaped fragment under an allow-listed key, or inside
- *    such a text, still survives; the six keys and the text classes are the
- *    whole surface, and widening either to "see the error" reopens it.
+ *    item 8).
+ *
+ *    ⚠️ The accepted residual surface, and the whole of it: (a) a code-shaped
+ *    fragment under an allow-listed key — a letters-only, one-case token of up
+ *    to 32 characters still passes; (b) on `catalogo`/`configuracao`, an error
+ *    that is TEXT (not JSON, or a bare JSON string like the 409 `"Slug already
+ *    in use."`) keeps its regex-masked text, any fragment in it included. The
+ *    price on the other side: a `catalogo`/`configuracao` JSON error, a 429
+ *    included, loses its message strings — the call line carries `codigoLimite`
+ *    and `retryAfterS` from the package anyway. Widening the keys, the code
+ *    shape or the text classes to "see the error" reopens the leak.
  *
  * ## Two profiles
  *
@@ -1289,9 +1298,9 @@ function percorrer2xx(
  * profiles. Keys and booleans and `null` survive; a number survives only with at
  * most 7 integer digits. A string survives only under a key of
  * {@link CHAVES_TEXTO_ERRO_LI} (a root string has none), and then — `log`: only
- * when code-shaped (`token`), with no run of 8 or more digits, and untouched by
- * the regex layer; `fixture`: only when it is 1 to 7 digits. Denied subtrees and
- * keys apply. No message text survives either.
+ * when it is a CODE ({@link ehCodigoDeErro}), with no run of 8 or more digits,
+ * and untouched by the regex layer; `fixture`: only when it is 1 to 7 digits.
+ * Denied subtrees and keys apply. No message text survives either.
  *
  * Why 7 and 8: a bare CEP is 8 digits, a mobile without its area code 9, a CPF
  * that starts with zeros 9 or fewer once written as a number — and an error
@@ -1301,6 +1310,28 @@ function percorrer2xx(
 const NUMERO_MAXIMO_NO_ERRO = 1e7;
 const DIGITOS_CURTOS = /^\d{1,7}$/;
 const SEQUENCIA_LONGA_DE_DIGITOS = /\d{8}/;
+
+/** The longest code an allow-listed error key may keep. */
+const COMPRIMENTO_MAXIMO_CODIGO = 32;
+/**
+ * Words of letters, each all-lowercase, ALL-UPPERCASE or Capitalized, joined by
+ * ONE `_`, `.` or `-`, with at most 4 digits at the very end: `invalid_request`,
+ * `SLUG_IN_USE`, `erro.validacao`, `Unauthorized`, `E1`, `campo1`.
+ */
+const CODIGO_DE_LETRAS =
+  /^(?:[a-z]+|[A-Z]+|[A-Z][a-z]+)(?:[_.-](?:[a-z]+|[A-Z]+|[A-Z][a-z]+))*\d{0,4}$/;
+
+/**
+ * Whether a string under an allow-listed error key is shaped like a CODE: at most
+ * 32 characters, and either 1 to 7 digits (`633`) or {@link CODIGO_DE_LETRAS}.
+ * The old filter was the 2xx `token` shape (`[A-Za-z0-9_.-]{1,64}`), which a
+ * credential echoed under `error` or `codigo` passes whole: a base62 or hex run
+ * interleaves letters and digits, and a letters-only one interleaves case inside
+ * a word (`abcDEF_ghiJKLmno`); neither is a code, so neither survives — nor does
+ * a camelCase name, the price of refusing the second (review on #1877).
+ */
+const ehCodigoDeErro = (v: string) =>
+  v.length <= COMPRIMENTO_MAXIMO_CODIGO && (DIGITOS_CURTOS.test(v) || CODIGO_DE_LETRAS.test(v));
 
 function percorrerErro(v: unknown, chave: string | null, prof: number, ctx: Percurso): ValorJsonLi {
   if (prof > PROFUNDIDADE_MAXIMA_PERCURSO) return fundoDemais(ctx);
@@ -1320,9 +1351,11 @@ function percorrerErro(v: unknown, chave: string | null, prof: number, ctx: Perc
   if (typeof v !== 'string') return fundoDemais(ctx);
   const permitida = chaveDeTextoDeErro(chave);
   if (ctx.perfil === 'fixture') return permitida && DIGITOS_CURTOS.test(v) ? v : FALSO_LI.texto;
+  // The digit-run and regex rules stay on top of the shape: the shape implies
+  // the first today, and a widened shape must not silently drop either.
   const seguro =
     permitida &&
-    TOKEN_TEXTO.test(v) &&
+    ehCodigoDeErro(v) &&
     !SEQUENCIA_LONGA_DE_DIGITOS.test(v) &&
     mascararTexto(v, { digitos: true }).mascarados === 0;
   return seguro ? v : REDIGIDO;

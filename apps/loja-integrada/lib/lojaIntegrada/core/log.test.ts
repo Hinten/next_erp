@@ -220,6 +220,32 @@ describe('linhaDaChamada — the line is a projection', () => {
     }
   });
 
+  it('a stored-credential error echoing a credential-shaped value under an ALLOWED key logs no fragment of it; a code survives', () => {
+    // The allowed keys (codigo, code, erro, error, tipo, campo) keep a value only
+    // when it is code-shaped; a 20-40 char token-shaped echo used to pass.
+    const ecos = ['aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d', '3f9a1c7e5b2d8f4a6c0e9b1d'];
+    for (const caminho of ['/v1/pedido/search/', '/v1/categoria/', '/v1/situacao/']) {
+      for (const [status, resultado] of [
+        [400, 'http'],
+        [429, 'limite'],
+        [500, 'http'],
+      ] as const) {
+        const corpo = JSON.stringify({
+          codigo: ecos[0],
+          error: [ecos[1]],
+          tipo: [[ecos[0]]],
+          code: 'SLUG_IN_USE',
+        });
+        const { linha } = linhaDaChamada(evento({ caminho, status, resultado, corpo }), OPCOES);
+        const contexto = `${caminho} ${String(status)}`;
+        for (const eco of ecos) expect(JSON.stringify(linha), contexto).not.toContain(eco);
+        expect(linha.trechoCorpo, contexto).toBe(
+          '{"codigo":"<redacted>","error":["<redacted>"],"tipo":[["<redacted>"]],"code":"SLUG_IN_USE"}',
+        );
+      }
+    }
+  });
+
   it('a call with no response logs no body', () => {
     const { linha } = linhaDaChamada(
       evento({ status: null, corpo: null, resultado: 'rede' }),
