@@ -50,7 +50,7 @@ export const prettier = eslintConfigPrettier;
  * two different physical copies here — this package's peer context is
  * `@typescript-eslint/parser`, next's is `eslint-import-resolver-typescript` —
  * so pnpm hands out two distinct module objects for 2.32.0 and ESLint compares
- * by identity. Dropping the guard therefore throws in all 9 Next apps rather
+ * by identity. Dropping the guard therefore throws in all 10 Next apps rather
  * than silently deduping.
  *
  * @param {string} tsconfigRootDir usually `import.meta.dirname`
@@ -181,7 +181,7 @@ export function typeAware(
         //
         // ⚠️ This needs the `import` plugin, which is registered above under
         // `registerPlugin` rather than in the base block: the base block has no
-        // plugin of its own beyond `delfrance`, and the 9 Next apps get `import`
+        // plugin of its own beyond `delfrance`, and the 10 Next apps get `import`
         // from `eslint-config-next` instead. Setting the rule here and getting
         // the plugin from a different config object is fine — flat config merges
         // `plugins` across every object matching a file, which is exactly how

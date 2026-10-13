@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   camposDeKitDoMembroUnico,
+  camposDeKitDoPatch,
   colapsarPaiEFilhoUnico,
   derivarFilhoUnico,
   ehFamiliaDeUm,
@@ -361,6 +362,134 @@ describe('ehKitVirtualEfetivo — ehKit AND ehKitVirtual, both strictly true', (
         componentesKit: { c1: { quantidade: 1 } },
       }),
     ).toMatchObject({ ehKit: true, ehKitVirtual: false });
+  });
+});
+
+/**
+ * `camposDeKitDoPatch` — the kit invariant re-derived INSIDE the save
+ * transaction, from the stored document (`current`) and the dirty patch.
+ *
+ * ⚠️ Both halves, deliberately: every "switches off" case has a near-miss that
+ * must come back `{}`. The one that matters most is a patch turning «É kit» ON
+ * over a stored virtual flag — a rule gated on `current` alone would clear the
+ * flag the operator is just making meaningful.
+ */
+describe('camposDeKitDoPatch — re-derives the kit invariant over the RESULTING doc', () => {
+  const MAPA = { c1: { quantidade: 2, limitarEstoque: true } };
+  const CHAVES = ['c1'];
+
+  it('the e2e flake: «É kit» off over a stale form still switches «É kit virtual» off', () => {
+    // The stale form had `ehKitVirtual: false`, so the patch omits it; the
+    // stored `true` would survive the write.
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, ehKitVirtual: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { ehKit: false, componentesKit: null, componentesKitKeys: null },
+      ),
+    ).toEqual({ ehKitVirtual: false });
+  });
+
+  it('a second writer turned «É kit» off: a patch carrying ehKitVirtual true is overridden', () => {
+    expect(
+      camposDeKitDoPatch({ ehKit: false, ehKitVirtual: false }, { ehKitVirtual: true }),
+    ).toEqual({ ehKitVirtual: false });
+  });
+
+  it('a stored legacy mismatch heals on an unrelated save', () => {
+    expect(camposDeKitDoPatch({ ehKit: false, ehKitVirtual: true }, { nome: 'x' })).toEqual({
+      ehKitVirtual: false,
+    });
+    expect(camposDeKitDoPatch({ ehKitVirtual: true }, { nome: 'x' })).toEqual({
+      ehKitVirtual: false,
+    });
+  });
+
+  it('NEAR-MISS: a virtual kit that stays a kit is left alone', () => {
+    expect(camposDeKitDoPatch({ ehKit: true, ehKitVirtual: true }, { nome: 'x' })).toEqual({});
+    expect(camposDeKitDoPatch({ ehKit: true }, { ehKitVirtual: true })).toEqual({});
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, ehKitVirtual: false, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { ehKitVirtual: true },
+      ),
+    ).toEqual({});
+  });
+
+  it('NEAR-MISS: a patch turning «É kit» ON keeps the stored flag and map (decides on the RESULT)', () => {
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: false, ehKitVirtual: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { ehKit: true },
+      ),
+    ).toEqual({});
+  });
+
+  it('NEAR-MISS: a flag that is not strictly true is not switched (nothing to switch off)', () => {
+    for (const ehKitVirtual of [false, null, undefined, 'true', 1]) {
+      expect(
+        camposDeKitDoPatch({ ehKit: false, ehKitVirtual }, { nome: 'x' }),
+        String(ehKitVirtual),
+      ).toEqual({});
+    }
+    expect(camposDeKitDoPatch({ ehKit: false }, { nome: 'x' })).toEqual({});
+  });
+
+  it('«É kit» stored as a stray string is not a kit (strict, like ehKitVirtualEfetivo)', () => {
+    expect(camposDeKitDoPatch({ ehKit: 'true', ehKitVirtual: true }, { nome: 'x' })).toEqual({
+      ehKitVirtual: false,
+    });
+  });
+
+  it('clears the component map and its keys when the result is not a kit', () => {
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { ehKit: false },
+      ),
+    ).toEqual({ componentesKit: null, componentesKitKeys: null });
+    // Legacy: a non-kit that still carries a map heals on an unrelated save.
+    expect(camposDeKitDoPatch({ ehKit: false, componentesKit: MAPA }, { nome: 'x' })).toEqual({
+      componentesKit: null,
+    });
+    expect(camposDeKitDoPatch({ componentesKitKeys: CHAVES }, { nome: 'x' })).toEqual({
+      componentesKitKeys: null,
+    });
+    // An EMPTY map is still a map on a non-kit (`deriveOnSave` writes null too).
+    expect(
+      camposDeKitDoPatch({ ehKit: false, componentesKit: {}, componentesKitKeys: [] }, {}),
+    ).toEqual({ componentesKit: null, componentesKitKeys: null });
+  });
+
+  it('NEAR-MISS: a kit keeps its map, edited or not', () => {
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { nome: 'x' },
+      ),
+    ).toEqual({});
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { componentesKit: { c2: { quantidade: 1 } }, componentesKitKeys: ['c2'] },
+      ),
+    ).toEqual({});
+  });
+
+  it('NEAR-MISS: nothing to clear when the map is already null in the result', () => {
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: false, componentesKit: null, componentesKitKeys: null },
+        { nome: 'x' },
+      ),
+    ).toEqual({});
+    expect(camposDeKitDoPatch({ ehKit: false }, { nome: 'x' })).toEqual({});
+  });
+
+  it('reads the patch alone when there is no stored document (create)', () => {
+    expect(camposDeKitDoPatch(null, { ehKit: false, ehKitVirtual: true })).toEqual({
+      ehKitVirtual: false,
+    });
+    expect(camposDeKitDoPatch(null, { ehKit: true, ehKitVirtual: true })).toEqual({});
   });
 });
 

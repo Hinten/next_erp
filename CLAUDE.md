@@ -152,7 +152,7 @@ not "deduplicate" them without changing how required checks are published.
    exception. ESLint blocks the mechanical part (`no-empty` + two
    `no-restricted-syntax` selectors); which class sits on the RHS is convention.
    ⚠️ Flat config **replaces** a rule by name instead of merging, so a workspace
-   that redeclares `no-restricted-syntax` drops the base selectors. Five apps
+   that redeclares `no-restricted-syntax` drops the base selectors. Seven apps
    re-spread them; **`apps/nfe`** and **`packages/integrations/nfe`**
    deliberately opt out (the nfe package via an explicit `'no-restricted-syntax': 'off'`
    block) — there the catch rule is OFF and the convention is on you, which is
@@ -249,7 +249,7 @@ not "deduplicate" them without changing how required checks are published.
   it, so the rest of it had silently drifted out of sync with the schemas. A
   replacement is planned.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
-  `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) — API-only App
+  `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) · `loja-integrada` (:3010) — API-only App
   Hosting backends, **one deployable per channel**, each importing its logic
   from the matching `packages/integrations/<channel>`.
 - `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`.
@@ -266,14 +266,14 @@ truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
 be imported only behind `./admin`; enforced by
 `packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
-breaking it fails nothing) · `integrations/<channel>` — **six packages, all
+breaking it fails nothing) · `integrations/<channel>` — **seven packages, all
 implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api,
-shopee. ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
+shopee, loja-integrada (read client only so far). ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
 amazon-sp-api, facebook, loja-integrada) were **deleted** in #815: they existed
 only to typecheck against `MarketplaceChannel`, and had no importer anywhere.
-**Four of the five stay deleted**; `shopee` was **re-created** as a real
-fetch-only package (the Shopee master plan, step 1) — it declares no
-`MarketplaceChannel` and has no plugin registry, only Shopee's wire protocol.
+**Three of the five stay deleted**; `shopee` and `loja-integrada` were **re-created** as
+real fetch-only packages — they declare no `MarketplaceChannel` and have no
+plugin registry, only the provider's wire protocol.
 **That contract is gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
 (`packages/schemas/src/shared/marketplace.ts`, the `FREIGHT_TIPO_CAPS` shape) and
 implemented as one App Hosting backend per channel; its shared data shapes live in
@@ -318,7 +318,7 @@ can push nothing.
 ```bash
 pnpm install                                # per worktree too; apps read ../../.env.local
 pnpm --filter @delfrance/web dev            # ONE app — prefer this
-pnpm dev                                    # WARNING: 10 dev servers, :3000-:3009
+pnpm dev                                    # WARNING: 11 dev servers, :3000-:3010
 pnpm turbo run lint typecheck               # before commits
 pnpm format:check                           # a CI gate; `pnpm format` fixes
 pnpm turbo run test
@@ -509,7 +509,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   core, `./react` adds the `react-hooks` warns (plugin supplied by
   `eslint-config-next`, or registered locally as in `packages/ui`), and
   `typeAware(...)` layers the async-correctness rules scoped to the workspace's
-  tsconfig `include`. The 9 Next apps spread base + react + `eslint-config-next`
+  tsconfig `include`. The 10 Next apps spread base + react + `eslint-config-next`
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
@@ -599,7 +599,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   type — never by the member set, which is not an identity: `'1' | '2'` is both
   `IndIncentivo` and the NF-e engine's `TpAmb`, and matching on the set once
   rewrote `tpImp: '1'` (DANFE layout) to `MOD_BCST.listaNegativa`.
-- Firebase App Hosting deploys **every** Next app — 9 `apphosting.yaml` files, 9
+- Firebase App Hosting deploys **every** Next app — 10 `apphosting.yaml` files, 10
   Next apps, no exception since `webchat` (the one static export, served by
   `firebase.json` hosting) was dropped on 2026-09-07; `firebase.json` no longer
   has a `hosting` key at all. Heavy work goes to Cloud Functions. Public legal
@@ -618,7 +618,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   runtime `dependencies` (every `prepare-deploy.mjs` copies `dependencies`
   verbatim into an artifact that plain cloud `npm install` must resolve), all
   `peerDependencies` (libraries keep broad ranges), `workspace:*` specs, and
-  **`next` in the 9 `apps/*/package.json` that have an `apphosting.yaml`** —
+  **`next` in the 10 `apps/*/package.json` that have an `apphosting.yaml`** —
   an exact literal there, never `catalog:` and never a `^` range. The App
   Hosting buildpack `google.nodejs.firebasenextjs` derives `FRAMEWORK_VERSION`
   from a lockfile it cannot read (`pnpm-lock.yaml`), silently falls back to the
@@ -641,13 +641,13 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   Three high-blast-radius deps stay pinned **exact** in the catalog for the same
   "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.2.0`)
   and `firebase-functions` (`7.3.2`). ⚠️ `next` propagates by **copy**, not by
-  reference: the catalog is still where a bump *starts*, but it is **10
-  deliberate edits** — the catalog plus the 9 App Hosting app manifests — and
+  reference: the catalog is still where a bump *starts*, but it is **11
+  deliberate edits** — the catalog plus the 10 App Hosting app manifests — and
   the guard above fails on drift. ⚠️ `packages/ui`'s devDependency is now its
   **SOLE** remaining `catalog:` consumer — `apps/webchat` was the other, deleted
   with the webchat widget — which makes that one spec load-bearing: literalise it
   and `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
-  next install, leaving the 9 app pins agreeing with nothing. There is no margin
+  next install, leaving the 10 app pins agreeing with nothing. There is no margin
   left; a change that must touch it adds a replacement keeper in the same commit. Do not bump it with `pnpm add` — under `catalogMode: strict`
   that rewrites the spec back to `catalog:`, the exact string that blocks the
   deploy. **`packageManager` is the sole authority for pnpm *in CI*** — corepack

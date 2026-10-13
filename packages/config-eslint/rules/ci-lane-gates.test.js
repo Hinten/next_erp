@@ -166,14 +166,20 @@ const LANES = {
     // library must run this lane") satisfied by the graph rather than by a second
     // entry someone has to remember to keep.
     roots: ['@delfrance/mercado-livre-app'],
-    // Fully offline — no ML credentials, ever (ML has no sandbox), so all three
-    // suite jobs are required and the lane runs on forks too.
+    // No ML credentials, ever (ML has no sandbox). The three emulator/offline
+    // jobs are fully offline, so they are required and run on forks too. The
+    // fourth reads the STAGING Firebase secrets (#1200 — the Enterprise
+    // database's real plans), which a fork PR cannot see: `optional:not_fork`,
+    // the same class as ci-rules' server-side compile — the offline and
+    // emulator jobs still certify the logic on a fork, and the gate names the
+    // staging skip instead of passing it silently.
     //
-    // The three jobs partition every ML test BY GLOB: `vitest.config.ts`
-    // excludes both `**/*.firestore.test.ts` and `**/*.tasks.test.ts`, and each
-    // dedicated config includes only its own suffix. `ci.yml` excludes both ML
-    // workspaces from its `turbo run test`, so when this lane skips, NO ML test
-    // runs anywhere — which is what the gate exists to say out loud.
+    // The four jobs partition every ML test BY GLOB: `vitest.config.ts`
+    // excludes `**/*.firestore.test.ts`, `**/*.tasks.test.ts` and
+    // `**/*.staging.test.ts`, and each dedicated config includes only its own
+    // suffix. `ci.yml` excludes both ML workspaces from its `turbo run test`, so
+    // when this lane skips, NO ML test runs anywhere — which is what the gate
+    // exists to say out loud.
     jobs: [
       { id: 'ml-offline', check: 'ML offline (unit)', class: 'required' },
       {
@@ -189,6 +195,14 @@ const LANES = {
         id: 'ml-tasks-roundtrip',
         check: 'ML Cloud Tasks round trip',
         class: 'required',
+      },
+      {
+        // #1200: the `*.staging.test.ts` files against the REAL staging
+        // Firestore — Enterprise edition, the one place an unindexed query
+        // full-scans instead of failing, and refuses classic explain.
+        id: 'ml-staging-enterprise',
+        check: 'ML staging Enterprise queries',
+        class: 'optional:not_fork',
       },
     ],
   },

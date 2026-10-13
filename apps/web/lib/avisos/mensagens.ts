@@ -1,9 +1,12 @@
 import {
   PENDENCIA_RECLAMACAO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   pendenciaReclamacaoSchema,
+  situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
   type PendenciaReclamacao,
+  type SituacaoAnuncioForaDaSincronizacao,
   type TipoAviso,
 } from '@delfrance/schemas';
 
@@ -100,6 +103,81 @@ function fraseRecriarKit(params: Aviso['params']): string {
     ? 'recrie o kit com o --link que a republicação indicar (o --recriar exige o vínculo do kit ' +
         'antigo, e este aviso não o identificou)'
     : `recrie o kit (publicar:anuncio --link ${vinculo} --recriar)`;
+}
+
+/**
+ * pt-BR do porquê o anúncio está fora da sincronização, com o conserto — TOTAL
+ * sobre o código (`params.situacao`, um {@link SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO}).
+ * Mesma razão de {@link FRASE_PENDENCIA_RECLAMACAO}: o produtor grava o CÓDIGO.
+ */
+const FRASE_SITUACAO_ANUNCIO: Record<SituacaoAnuncioForaDaSincronizacao, string> = {
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao]:
+    'ele está vinculado a uma variação, e não ao produto pai — refaça o vínculo no produto pai',
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.paiIdInvalido]:
+    'o cadastro do produto tem um vínculo de produto pai inválido — corrija o cadastro do produto',
+  [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente]:
+    'ele aponta para um produto que não existe mais — encerre o anúncio no canal ou peça a ' +
+    'remoção do vínculo órfão',
+};
+
+/**
+ * A frase da situação, ou um texto neutro — o mesmo contrato de
+ * {@link frasePendencia}: código mais novo que esta tela, param ausente ou uma
+ * chave herdada (`'toString'`) caem no fallback, nunca em "undefined".
+ */
+function fraseSituacaoAnuncio(valor: Aviso['params'][string] | undefined): string {
+  const codigo = situacaoAnuncioForaDaSincronizacaoSchema.safeParse(valor);
+  return codigo.success ? FRASE_SITUACAO_ANUNCIO[codigo.data] : 'confira o vínculo do anúncio';
+}
+
+/**
+ * A frase extra quando o produto tem mais de um anúncio na mesma situação.
+ * ⚠️ Só para um NÚMERO maior que 1 — o produtor grava a contagem como número; um
+ * valor de outro tipo omite a frase em vez de adivinhar uma contagem.
+ */
+function fraseOutrosAnuncios(valor: Aviso['params'][string] | undefined): string {
+  return typeof valor === 'number' && valor > 1
+    ? ` Este produto tem ${String(valor)} anúncios nessa situação.`
+    : '';
+}
+
+/**
+ * `YYYY-MM-DD` (a civil date, as the Loja Integrada producers store
+ * `params.expiraEm`) → `DD/MM/AAAA`, by splitting the string. ⚠️ No `Date`
+ * parsing on purpose: `new Date('2026-11-02')` is UTC midnight, which the
+ * browser renders as the PREVIOUS day in São Paulo. Anything else — absent, a
+ * number, a malformed string — returns `null` and the sentence omits the date.
+ */
+function dataCivilBr(valor: Aviso['params'][string] | undefined): string | null {
+  if (typeof valor !== 'string') return null;
+  const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(valor);
+  if (partes === null) return null;
+  const [, ano = '', mes = '', dia = ''] = partes;
+  return `${dia}/${mes}/${ano}`;
+}
+
+/**
+ * The expiry sentence's tense. `dias` is written as a NUMBER (`0` on the last
+ * day, negative once the date has passed); anything else falls back to the
+ * future-tense sentence with the placeholder, never "undefined".
+ */
+function corpoExpiracaoLojaIntegrada(params: Aviso['params']): string {
+  const loja = p(params, 'loja');
+  const data = dataCivilBr(params.expiraEm);
+  const quando = data === null ? '' : ` (${data})`;
+  const dias = params.dias;
+  if (typeof dias === 'number' && dias < 0) {
+    return (
+      `A validade informada para o token da Loja Integrada da loja ${loja} já passou${quando}. ` +
+      'Se o token não foi renovado no painel, ele foi revogado — gere um novo e salve-o no ERP. ' +
+      'Se foi renovado, atualize a validade no ERP.'
+    );
+  }
+  const prazo = dias === 0 ? 'vence hoje' : `vence em ${p(params, 'dias')} dia(s)`;
+  return (
+    `O token da Loja Integrada da loja ${loja} ${prazo}${quando}. ` +
+    'Renove no painel e atualize a validade no ERP.'
+  );
 }
 
 export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
@@ -243,6 +321,42 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
       '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
       `Senão, ${fraseRecriarKit(params)} ou volte a composição ao que está na Shopee.`,
+  },
+  // Sem `runbook`: o conserto está no app — o cadastro do produto (para onde o aviso
+  // aponta) ou, para o produto que não existe mais, a página da conta no canal.
+  [TIPO_AVISO.anuncioForaDaSincronizacao]: {
+    titulo: 'Anúncio fora da sincronização',
+    // ⚠️ "no canal", nunca "no Mercado Livre": o tipo é neutro quanto ao canal (o
+    // `canal` do aviso já diz qual), e a frase vale para o próximo que o produzir.
+    corpo: (params) =>
+      `O anúncio ${p(params, 'anuncio')} está ativo no canal, mas não recebe estoque nem ` +
+      `preço automaticamente: ${fraseSituacaoAnuncio(params.situacao)}.` +
+      fraseOutrosAnuncios(params.anuncios),
+  },
+  // Sem `runbook`: o conserto está no app — o painel da conta (o link do aviso)
+  // atualiza a validade depois que o proprietário renova no painel da Loja Integrada.
+  [TIPO_AVISO.lojaIntegradaTokenExpirando]: {
+    titulo: 'Token da Loja Integrada expirando',
+    // ⚠️ `dias` 0 e negativo têm frases próprias: "vence em 0 dia(s)" e "vence em -3
+    // dia(s)" seriam lidos como erro do sistema, não como um token vencido.
+    corpo: corpoExpiracaoLojaIntegrada,
+  },
+  [TIPO_AVISO.lojaIntegradaReconexaoPendente]: {
+    titulo: 'Token da Loja Integrada recusado',
+    corpo: (params) => {
+      // `p()` decides what "missing" means (absent OR ''), so the clause and the
+      // placeholder can never disagree: a missing status drops the whole clause.
+      const status = p(params, 'status', '');
+      return (
+        `A Loja Integrada recusou o token da loja ${p(params, 'loja')}` +
+        `${status === '' ? '' : ` (HTTP ${status})`}. ` +
+        'A importação fica parada até salvar um token válido.'
+      );
+    },
+    // O remédio está FORA do app: só o proprietário da loja gera ou renova o token.
+    runbook:
+      'Peça ao proprietário da loja que gere um novo token ou renove o atual no painel da Loja ' +
+      'Integrada (Configurações > Chave para API) e salve-o na conta, no ERP.',
   },
 };
 
