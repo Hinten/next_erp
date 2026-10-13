@@ -1084,6 +1084,45 @@ describe('PUT …/credencial — re-drives this conta’s DEFERRED notifications
     expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
   });
 
+  // A failure AT or AFTER the credential write must not re-drive either: the
+  // re-drive belongs after the write, the conta re-check and the avisos.
+  it('a write that loses its race (409) re-drives nothing — the parked token was not replaced', async () => {
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    aceitarTudo();
+    const carimbo = seedCredencial(db, ID, { personalToken: TOKEN_B });
+    db.antesDaProximaEscrita(CAMINHO, () => {
+      db.seed(CAMINHO, credencialDoc({ personalToken: TOKEN_B, tokenAtualizadoEmMs: 7 }));
+    });
+
+    const res = await salvar({
+      token: TOKEN_A,
+      expiraEm: EXPIRA_LONGE,
+      versaoEsperada: relogioDoDocumentoUs(carimbo),
+    });
+
+    expect(res.status).toBe(409);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  it('a conta deleted while the token was validated (404, write undone) re-drives nothing', async () => {
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    aceitarTudo();
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      await integracaoCollection.docRef(asDb(db), {}, ID).delete();
+    });
+
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+    expect(res.status).toBe(404);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
   it('DELETE does not re-drive: there is no token to retry with', async () => {
     const c = seedLinhas();
     seedCredencial(db, ID);

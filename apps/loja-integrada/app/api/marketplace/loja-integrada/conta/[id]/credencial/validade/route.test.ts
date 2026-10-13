@@ -585,6 +585,36 @@ describe('PUT …/credencial/validade — re-drives this conta’s DEFERRED noti
     await expect(renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao })).rejects.toBe(bug);
   });
 
+  // A failure AT the write must not re-drive either: the renewal did not clear
+  // the park, so the re-drive belongs after `atualizarValidade`.
+  it.each<[string, () => Promise<void>]>([
+    [
+      'a write between the read and the update (LI_CREDENCIAL_ALTERADA)',
+      async () => {
+        db.seed(CAMINHO, credencialDoc({ tokenAtualizadoEmMs: 99 }));
+      },
+    ],
+    [
+      'a removal between the read and the update (LI_CREDENCIAL_AUSENTE)',
+      async () => {
+        await removerCredencial(asDb(db), ID);
+      },
+    ],
+  ])('a renewal that loses its write race re-drives nothing: %s → 409', async (_nome, corrida) => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    db.antesDaProximaEscrita(CAMINHO, corrida);
+
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+    expect(res.status).toBe(409);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
   it('a refusal re-drives nothing: 409, 422, 503, 499 and 404 leave the deferred rows and the collection alone', async () => {
     const versao = seedParada();
     const c = seedLinhas();
