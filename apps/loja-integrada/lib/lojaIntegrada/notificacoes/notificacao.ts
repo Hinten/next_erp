@@ -51,18 +51,26 @@
  * ⚠️ A PARKED CONTA DEFERS — it never drops. Tasks enqueued before a token died
  * are already behind the poller's cursor, so dropping them would lose those
  * orders. The deferred lane re-drives daily for `MAX_TENTATIVAS_DEFERRED` (7)
- * days, and a token save pulls the conta's rows back at once
- * ({@link redrivePedidosAdiadosDaConta}, called by the credential routes from PR
- * 3-b). `graduateDeferredTransientErrors` sends a row whose precondition
- * cleared but whose import then THREW back to the hot lane with a fresh budget.
- * A conta that is still parked RETURNS `adiado` and never throws, so it never
- * graduates by mistake.
+ * days, and a token save pulls the conta's rows that are ALREADY `deferred`
+ * back at once ({@link redrivePedidosAdiadosDaConta}, called by the credential
+ * routes from PR 3-b). `graduateDeferredTransientErrors` sends a row whose
+ * precondition cleared but whose import then THREW back to the hot lane with a
+ * fresh budget. A conta that is still parked RETURNS `adiado` and never throws,
+ * so it never graduates by mistake.
  *
- * ⚠️ Accepted residue (step-3 plan Q4, option A): a token save whose re-drive
- * lands between the deferred sweep's read of a row and its mark is overwritten
- * by that mark — the row waits one more day, or, on its 7th pass, parks. The
- * window is a few hundred milliseconds in a 30-minute sweep;
- * `notificacao.test.ts` pins both cases.
+ * ⚠️ Accepted residue (step-3 plan Q4, option A): a run that found the conta
+ * parked (or parked it), and writes the row after a token save's re-drive,
+ * defeats that re-drive. Three windows, each from the park found to the write:
+ *
+ *  - the DEFERRED sweep's mark overwrites the re-drive: the row waits one more
+ *    day, or, on its 7th pass, parks (Q4);
+ *  - the TASK's deferred `create`, and the HOT sweep's migration of a `failed`
+ *    row: the re-drive's query found no `deferred` row to move, so the row is
+ *    written `deferred` with `tentativas` 0 — it waits up to one more day and is
+ *    never parked by this.
+ *
+ * Never a loss: the next daily deferred pass sees the healthy conta and imports.
+ * Each window is milliseconds wide; `notificacao.test.ts` pins all four cases.
  *
  * ## No transaction anywhere
  *
@@ -610,7 +618,9 @@ export interface ResultadoRedriveLi {
  * Mercado Livre's `redriveDeferredForUserId` shape.
  *
  * A LATENCY optimisation over the daily deferred sweep, never a replacement:
- * whatever it misses (past the cap, or a route that failed) still drains daily.
+ * whatever it misses (past the cap, a route that failed, or a row written
+ * `deferred` just after its query — the module header's residue) still drains
+ * daily.
  * Each row goes through the shared store's `redrive` — `mergeIfExists`, so a
  * row deleted between the query and the write is never resurrected — and never
  * through a hand-written patch. Idempotent: a replay finds nothing left to move.

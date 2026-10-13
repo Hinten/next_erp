@@ -186,7 +186,9 @@ still be fixed. Only the context loader refuses those.
 - A parked conta DEFERS, never drops (#808): daily re-drive for 7 days,
   `graduateDeferredTransientErrors`, and `redrivePedidosAdiadosDaConta` on a token save
   (`(status, contaId)` index). Accepted residue (Q4): a re-drive between the deferred
-  sweep's read and its mark is overwritten — one more day, or parked on the 7th pass.
+  sweep's read and its mark is overwritten — one more day, or parked on the 7th pass. It
+  moves only rows already `deferred`, so a task's create or a hot-sweep migration that
+  found the park before it and writes after it waits up to one more day (`tentativas` 0).
 - The pacer (`core/ritmo.ts`): 2 000 ms before EVERY call through a context, in the getter,
   outside the request deadline.
 - Doc id `<conta>:<numero>:<origem>:<stamp digits | ->`, built from schema-validated parts

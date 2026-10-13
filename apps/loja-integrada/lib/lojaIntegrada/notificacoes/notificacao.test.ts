@@ -886,21 +886,31 @@ describe('redrivePedidosAdiadosDaConta', () => {
 
 /* -------------------------------------------------------------------------- */
 
-describe('Q4 (option A, accepted): a re-drive landing between the deferred sweep’s read and its mark', () => {
-  /** The token comes back and the route re-drives, right before the sweep's mark. */
-  function salvarERedirecionarAntesDoMark(db: FakeDb, caminho: string): void {
-    db.antesDaProximaEscrita(caminho, async () => {
-      const lida = await lerCredencial(asDb(db), ID);
-      await salvarCredencial(asDb(db), ID, {
-        personalToken: TOKEN_B,
-        tokenExpiraEmMs: AGORA_MS + 60 * DIA_MS,
-        agoraMs: AGORA_MS,
-        versaoEsperada: lida!.updateTime,
-      });
-      expect((await redrivePedidosAdiadosDaConta(asDb(db), ID)).redirecionadas).toBe(1);
+/**
+ * The token comes back and the route re-drives, right before the run's write of
+ * `caminho`. Records what the re-drive moved — `null` until the hook has run.
+ */
+function salvarERedirecionarAntesDaEscrita(
+  db: FakeDb,
+  caminho: string,
+): { redirecionadas: number | null } {
+  const visto: { redirecionadas: number | null } = { redirecionadas: null };
+  db.antesDaProximaEscrita(caminho, async () => {
+    const lida = await lerCredencial(asDb(db), ID);
+    await salvarCredencial(asDb(db), ID, {
+      personalToken: TOKEN_B,
+      tokenExpiraEmMs: AGORA_MS + 60 * DIA_MS,
+      agoraMs: AGORA_MS,
+      versaoEsperada: lida!.updateTime,
     });
-  }
+    visto.redirecionadas = (await redrivePedidosAdiadosDaConta(asDb(db), ID)).redirecionadas;
+  });
+  return visto;
+}
 
+const HORA_MS = 60 * 60 * 1000;
+
+describe('Q4 (option A, accepted): a re-drive landing between the deferred sweep’s read and its mark', () => {
   it('pass 6: the mark overwrites the re-drive — the row waits ONE more day, then imports', async () => {
     const db = new FakeDb();
     contaParada(db);
@@ -909,8 +919,9 @@ describe('Q4 (option A, accepted): a re-drive landing between the deferred sweep
       status: 'deferred',
       tentativas: MAX_TENTATIVAS_DEFERRED - 2,
     });
-    salvarERedirecionarAntesDoMark(db, caminho);
+    const visto = salvarERedirecionarAntesDaEscrita(db, caminho);
     await reprocessarAdiadasLi(asDb(db), {}, deps);
+    expect(visto.redirecionadas).toBe(1);
     expect(db.ler(caminho)).toMatchObject({
       status: 'deferred',
       tentativas: MAX_TENTATIVAS_DEFERRED - 1,
@@ -929,12 +940,53 @@ describe('Q4 (option A, accepted): a re-drive landing between the deferred sweep
       status: 'deferred',
       tentativas: MAX_TENTATIVAS_DEFERRED - 1,
     });
-    salvarERedirecionarAntesDoMark(db, caminho);
+    const visto = salvarERedirecionarAntesDaEscrita(db, caminho);
     await reprocessarAdiadasLi(asDb(db), {}, depsTarefa({ importador: importa }));
+    expect(visto.redirecionadas).toBe(1);
     expect(db.ler(caminho)).toMatchObject({
       status: 'parked',
       tentativas: MAX_TENTATIVAS_DEFERRED,
     });
+  });
+});
+
+describe('the same residue, two more windows: the park found BEFORE the re-drive, the row written AFTER it', () => {
+  /** Neither lane takes the row back within the day; the next day's deferred pass imports it. */
+  async function esperaUmDiaEImporta(db: FakeDb, caminho: string, deps: DepsTarefaLi) {
+    __resetAllReadCaches();
+    const emDuasHoras = { now: Date.now() + 2 * HORA_MS };
+    expect((await reprocessarNotificacoesLi(asDb(db), emDuasHoras, deps)).processed).toBe(0);
+    expect((await reprocessarAdiadasLi(asDb(db), emDuasHoras, deps)).processed).toBe(0);
+    expect(db.ler(caminho)).toMatchObject({ status: 'deferred', tentativas: 0 });
+    const s = await reprocessarAdiadasLi(asDb(db), { now: Date.now() + 2 * DIA_MS }, deps);
+    expect(s.outcomes).toEqual({ importado: 1 });
+    expect(db.ler(caminho)).toBeUndefined();
+  }
+
+  it('the task: its deferred create lands after the re-drive — one more day, never lost', async () => {
+    const db = new FakeDb();
+    contaParada(db);
+    const deps = depsTarefa({ importador: importa });
+    const caminho = caminhoDe(pedido());
+    const visto = salvarERedirecionarAntesDaEscrita(db, caminho);
+    expect((await tratarTarefaLeituraLi(asDb(db), pedido(), 0, deps)).outcome).toBe('deferred');
+    // The re-drive's query ran before the create: there was no row to move.
+    expect(visto.redirecionadas).toBe(0);
+    expect(db.ler(caminho)).toMatchObject({ status: 'deferred', tentativas: 0 });
+    await esperaUmDiaEImporta(db, caminho, deps);
+  });
+
+  it('the hot sweep: its migration mark lands after the re-drive — one more day, never lost', async () => {
+    const db = new FakeDb();
+    contaParada(db);
+    const deps = depsTarefa({ importador: importa });
+    const caminho = seedNotificacao(db, pedido(), { status: 'failed', tentativas: 1 });
+    const visto = salvarERedirecionarAntesDaEscrita(db, caminho);
+    await reprocessarNotificacoesLi(asDb(db), {}, deps);
+    // The re-drive moves `deferred` rows only, and this one was still `failed`.
+    expect(visto.redirecionadas).toBe(0);
+    expect(db.ler(caminho)).toMatchObject({ status: 'deferred', tentativas: 0 });
+    await esperaUmDiaEImporta(db, caminho, deps);
   });
 });
 
