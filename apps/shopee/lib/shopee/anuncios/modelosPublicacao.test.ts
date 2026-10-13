@@ -545,6 +545,9 @@ describe('aplicarModelos — o create com filhos', () => {
         precoEnviadoEm: null,
         precoRecusaEm: null,
         precoRecusaCodigo: null,
+        // Step 19's kit-recipe fingerprint — born null; stamped only on a kit model row
+        // whose read-back folds equal (`variacaoShopeeLinkSchema`).
+        receitaKitConferida: null,
       },
     ]);
     expect(docsEm(db, FILHO_B)[0]?.model_id).toBe(MODEL_B);

@@ -4,16 +4,23 @@ import { join } from 'node:path';
 import {
   SHOPEE_ERROR_KIND,
   SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
+  SHOPEE_GET_ITEM_BASE_INFO_PATH,
+  SHOPEE_GET_ITEM_LIST_PATH,
+  SHOPEE_GET_KIT_ITEM_INFO_PATH,
+  SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
+  SHOPEE_GET_MODEL_LIST_PATH,
   SHOPEE_GET_RETURN_DETAIL_PATH,
   SHOPEE_GET_RETURN_LIST_PATH,
   SHOPEE_GET_SIZE_CHART_DETAIL_PATH,
   SHOPEE_GET_SIZE_CHART_LIST_PATH,
+  SHOPEE_ITEM_STATUS_WIRE,
   SHOPEE_RETURN_ACCEPT_OFFER_PATH,
   SHOPEE_RETURN_CONFIRM_PATH,
   SHOPEE_RETURN_OFFER_PATH,
   SHOPEE_RETURN_SOLUTION,
   ShopeeApiError,
   type ShopeeClient,
+  ShopeeOperacaoNaoServidaError,
   createShopeeClient,
   lerPaginaDeTabelasDeMedidas,
   resolveShopeeHosts,
@@ -29,8 +36,23 @@ import { SHOPEE_SIZE_CHART_INPUT_TYPE, ehReturnSnShopee } from '@delfrance/schem
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CATEGORIA_DOC_DO_KIT,
+  CORPOS_KIT_LEITURA,
   FIXTURE_ESCROW_DETAIL_DOC_KIT,
   FIXTURE_ESCROW_DETAIL_QTY2_SG,
+  FIXTURE_ITEM_BASE_INFO_SG_KIT,
+  FIXTURE_ITEM_LIST_SG_COM_KIT,
+  FIXTURE_ITEM_LIST_SG_SELLER_DELETE,
+  FIXTURE_KIT_ITEM_INFO_SG_APAGADO,
+  FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT,
+  FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO,
+  FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404,
+  FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO,
+  FIXTURE_MODEL_LIST_SG_KIT,
+  IDS_APAGADOS_SEM_PAPEL,
+  IDS_DO_KIT_NO_CORPUS,
+  IMAGEM_DOC_DO_KIT,
+  RELOGIO_SONDA_KIT_1_S,
   FIXTURE_ORDER_DETAIL_DOC_MASKED_VN,
   FIXTURE_ORDER_DETAIL_QTY2_SG,
   FIXTURE_ORDER_DETAIL_QTY2_SG_PROCESSED,
@@ -49,12 +71,16 @@ import {
   FIXTURE_SIZE_CHART_LIST_DOC,
   FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA,
   WIRE_DIR,
+  lerBaseDosItens,
   lerBuscaDePacotes,
   lerDetalheDeTabelaDeMedidas,
   lerDevolucaoDetalhe,
   lerEscrowDetalhe,
   lerFixture,
+  lerKitDoCorpus,
   lerListaDeDevolucoes,
+  lerListaDeItens,
+  lerListaDeModelos,
   lerListaDeTabelasDeMedidas,
   lerPedidoDetalhe,
   listarFixtures,
@@ -78,6 +104,32 @@ const CORPOS_TABELA_DE_MEDIDAS = [
   FIXTURE_SIZE_CHART_LIST_DOC,
 ] as const;
 
+/** Os dezenove corpos de ANTES do passo 19, na ordem do inventário. */
+const CORPOS_ANTES_DO_PASSO_19 = [
+  FIXTURE_RETURN_ACCEPT_OFFER_DOC,
+  FIXTURE_RETURN_CONFIRM_DOC,
+  FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC,
+  FIXTURE_ESCROW_DETAIL_DOC_KIT,
+  FIXTURE_ESCROW_DETAIL_QTY2_SG,
+  FIXTURE_ORDER_DETAIL_DOC_MASKED_VN,
+  FIXTURE_ORDER_DETAIL_QTY2_SG_PROCESSED,
+  FIXTURE_ORDER_DETAIL_QTY2_SG,
+  FIXTURE_RETURN_DETAIL_DOC,
+  FIXTURE_RETURN_LIST_DOC,
+  FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE,
+  FIXTURE_SIZE_CHART_DETAIL_DOC,
+  FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA,
+  FIXTURE_SIZE_CHART_LIST_DOC,
+  FIXTURE_RETURN_OFFER_DOC,
+  FIXTURE_SEARCH_PACKAGE_LIST_DOC,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
+] as const;
+
+/** Os corpos dos kits nativos (passo 19): o conjunto de leitura (PR 3). */
+const CORPOS_KIT = [...CORPOS_KIT_LEITURA] as const;
+
 describe('o inventário do corpus', () => {
   it('é exatamente o conjunto de corpos que este passo promoveu', () => {
     // ⚠️ Conjunto EXATO, não um piso: "nunca adicione um arquivo à mão" só vale
@@ -85,30 +137,21 @@ describe('o inventário do corpus', () => {
     // (2026-09-10), e este teste, os loaders e a tabela do README mudaram no
     // MESMO commit — que é a revisão que uma fixture nova precisa ter. O passo
     // 15b fez o mesmo com os quatro corpos de `search_package_list`, o 17 com
-    // os seis das devoluções e o 18 com os quatro das tabelas de medidas.
+    // os seis das devoluções, o 18 com os quatro das tabelas de medidas e o 19
+    // com os nove de leitura dos kits nativos.
     // ⚠️ `get_size_chart_detail.doc-id-inexistente` ordena ANTES de
     // `get_size_chart_detail.doc`: `-` (0x2D) < `.` (0x2E).
-    expect(listarFixtures()).toEqual([
-      FIXTURE_RETURN_ACCEPT_OFFER_DOC,
-      FIXTURE_RETURN_CONFIRM_DOC,
-      FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC,
-      FIXTURE_ESCROW_DETAIL_DOC_KIT,
-      FIXTURE_ESCROW_DETAIL_QTY2_SG,
-      FIXTURE_ORDER_DETAIL_DOC_MASKED_VN,
-      FIXTURE_ORDER_DETAIL_QTY2_SG_PROCESSED,
-      FIXTURE_ORDER_DETAIL_QTY2_SG,
-      FIXTURE_RETURN_DETAIL_DOC,
-      FIXTURE_RETURN_LIST_DOC,
-      FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE,
-      FIXTURE_SIZE_CHART_DETAIL_DOC,
-      FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA,
-      FIXTURE_SIZE_CHART_LIST_DOC,
-      FIXTURE_RETURN_OFFER_DOC,
-      FIXTURE_SEARCH_PACKAGE_LIST_DOC,
-      FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
-      FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
-      FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
+    expect(listarFixtures().filter((f) => !CORPOS_KIT.includes(f as never))).toEqual([
+      ...CORPOS_ANTES_DO_PASSO_19,
     ]);
+    expect(listarFixtures()).toEqual([...CORPOS_ANTES_DO_PASSO_19, ...CORPOS_KIT].sort());
+  });
+
+  it('a lista de leitura do kit está ORDENADA', () => {
+    // A constante diz "sorted" no docblock; um arquivo novo enfiado
+    // fora de ordem passaria no inventário acima (que ordena) e mentiria aqui.
+    expect([...CORPOS_KIT_LEITURA]).toEqual([...CORPOS_KIT_LEITURA].sort());
+    expect(CORPOS_KIT_LEITURA).toHaveLength(9);
   });
 
   it('traz um README que separa o que a Shopee MANDOU do que a doc IMPRIME', () => {
@@ -124,11 +167,12 @@ describe('o inventário do corpus', () => {
     expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE);
     for (const file of CORPOS_DEVOLUCAO) expect(readme, file).toContain(`\`${file}\``);
     for (const file of CORPOS_TABELA_DE_MEDIDAS) expect(readme, file).toContain(`\`${file}\``);
+    for (const file of CORPOS_KIT) expect(readme, file).toContain(`\`${file}\``);
     expect(readme).toContain('unverified for BR');
     // A contagem da prosa anda com o inventário: um corpo novo sem a frase
     // corrigida deixaria o README mentindo sobre o próprio diretório.
-    expect(listarFixtures()).toHaveLength(19);
-    expect(readme).toContain('Nineteen bodies today');
+    expect(listarFixtures()).toHaveLength(28);
+    expect(readme).toContain('Twenty-eight bodies today');
     // ⚠️ E a âncora do sentido inverso: o slot vazio ACABOU, então a frase que o
     // anunciava não pode sobreviver ao corpo que o preencheu.
     expect(readme).not.toContain('pending from Lucas');
@@ -1201,4 +1245,378 @@ describe('as tabelas de medidas pelo CLIENTE do pacote, com o corpo commitado no
       });
     },
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/*     Os kits nativos (passo 19, #1527): as capturas das duas sondas SG       */
+/* -------------------------------------------------------------------------- */
+
+const {
+  kit: KIT,
+  modeloDoKit: KIT_M1,
+  componenteA: A,
+  modeloDoComponenteA: A_W02,
+  componenteB: B,
+  modeloOcultoDoComponenteB: B_OCULTO,
+} = IDS_DO_KIT_NO_CORPUS;
+
+/** O TEXTO commitado de um corpo — para o que só os bytes dizem. */
+function textoDoCorpo(file: string): string {
+  return readFileSync(join(WIRE_DIR, file), 'utf8');
+}
+
+/** Toda string de um corpo, em qualquer profundidade. */
+function todasAsStrings(v: unknown, acc: string[] = []): string[] {
+  if (typeof v === 'string') acc.push(v);
+  else if (Array.isArray(v)) for (const x of v) todasAsStrings(x, acc);
+  else if (v !== null && typeof v === 'object')
+    for (const x of Object.values(v)) todasAsStrings(x, acc);
+  return acc;
+}
+
+/**
+ * Todo número de 7+ dígitos que um corpo do kit pode carregar: um PAPEL do README,
+ * um relógio de sonda — ou os dígitos da imagem da doc, que não são um número.
+ */
+const NUMEROS_COM_PAPEL: ReadonlySet<string> = new Set(
+  [...Object.values(IDS_DO_KIT_NO_CORPUS), ...IDS_APAGADOS_SEM_PAPEL, RELOGIO_SONDA_KIT_1_S].map(
+    String,
+  ),
+);
+
+describe('os kits nativos — ids por PAPEL, nunca o `1000001` achatado das sondas (M47)', () => {
+  it.each(CORPOS_KIT)('%s não guarda o `1000001` que a máscara da sonda escreveu', (file) => {
+    // ⚠️ M47: um id achatado é IMPOSSÍVEL de juntar e ambíguo com o partner de
+    // fixture (`1000001`). A promoção trocou cada um pelo seu papel.
+    expect(textoDoCorpo(file)).not.toContain('1000001');
+  });
+
+  it.each(CORPOS_KIT)(
+    '%s: todo número de 7+ dígitos é um PAPEL do README — nenhum id real sobrou',
+    (file) => {
+      const corridas = [...textoDoCorpo(file).matchAll(/\d{7,}/g)].map(([d]) => d);
+      expect(
+        corridas.filter((d) => !NUMEROS_COM_PAPEL.has(d) && !IMAGEM_DOC_DO_KIT.includes(d)),
+      ).toEqual([]);
+    },
+  );
+
+  it('âncora anti-vacuidade: o conjunto do kit CARREGA os papéis — o filtro acima vê alguma coisa', () => {
+    const tudo = CORPOS_KIT.map(textoDoCorpo).join('\n');
+    for (const id of [KIT, KIT_M1, A, A_W02, B, B_OCULTO]) expect(tudo).toContain(String(id));
+    // …e um id de 10 dígitos que NÃO é papel seria pego pela mesma regex.
+    expect([...'"item_id": 2500139999'.matchAll(/\d{7,}/g)].map(([d]) => d)).toEqual([
+      '2500139999',
+    ]);
+    expect(NUMEROS_COM_PAPEL.has('2500139999')).toBe(false);
+  });
+
+  it('o README traz a tabela de PAPÉIS — cada id do corpus com o papel que ele faz', () => {
+    const readme = readFileSync(join(WIRE_DIR, 'README.md'), 'utf8');
+    for (const id of [KIT, KIT_M1, A, A_W02, B, B_OCULTO, RELOGIO_SONDA_KIT_1_S]) {
+      expect(readme, String(id)).toContain(`\`${String(id)}\``);
+    }
+    expect(readme).toContain(
+      `\`${String(IDS_APAGADOS_SEM_PAPEL[0])}\`–\`${String(IDS_APAGADOS_SEM_PAPEL[5])}\``,
+    );
+    expect(IDS_APAGADOS_SEM_PAPEL[5] - IDS_APAGADOS_SEM_PAPEL[0]).toBe(5);
+    expect(readme).toContain(IMAGEM_DOC_DO_KIT);
+    expect(readme).toContain(`\`${String(CATEGORIA_DOC_DO_KIT)}\``);
+  });
+
+  it.each(CORPOS_KIT)(
+    '%s: nenhuma URL real e nenhum id de imagem da sonda — só o marcador e a imagem da doc',
+    (file) => {
+      const strings = todasAsStrings(lerFixture(file));
+      const urls = strings.filter((s) => /^https?:\/\//.test(s));
+      expect(urls.filter((u) => u !== 'https://example.invalid/file/redacted')).toEqual([]);
+      const imagens = strings.filter((s) => /^[a-z]{2}-\d+-/.test(s));
+      expect(imagens.filter((i) => i !== IMAGEM_DOC_DO_KIT)).toEqual([]);
+      expect('request_id' in (lerFixture(file) as Record<string, unknown>)).toBe(false);
+    },
+  );
+
+  it('PAPÉIS DISTINTOS — nenhum id faz dois papéis', () => {
+    const ids = [...Object.values(IDS_DO_KIT_NO_CORPUS), ...IDS_APAGADOS_SEM_PAPEL];
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('os kits nativos — a junção vale DENTRO da sonda 1 (M47)', () => {
+  const lista = lerListaDeItens(FIXTURE_ITEM_LIST_SG_COM_KIT).item;
+  const kit = lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO).product_info!;
+  const apagados = lerListaDeItens(FIXTURE_ITEM_LIST_SG_SELLER_DELETE).item;
+
+  it('lista, base, kit, modelos e o kit apagado falam do MESMO kit e dos MESMOS componentes', () => {
+    const base = lerBaseDosItens(FIXTURE_ITEM_BASE_INFO_SG_KIT).item_list[0]!;
+    const modelos = lerListaDeModelos(FIXTURE_MODEL_LIST_SG_KIT).model;
+    const apagado = lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_APAGADO).product_info!;
+
+    expect(lista.map((linha) => linha.item_id)).toEqual([KIT, A, B]);
+    expect(kit.item_id).toBe(lista[0]!.item_id);
+    expect(base.item_id).toBe(kit.item_id);
+    expect(base.item_sku).toBe(kit.item_sku);
+    expect(modelos.map((m) => m.model_id)).toEqual(kit.model_list.map((m) => m.model_id));
+    expect(kit.model_list[0]!.component_list.map((c) => c.component_item_id)).toEqual([
+      lista[1]!.item_id,
+      lista[2]!.item_id,
+    ]);
+    expect(apagado.item_id).toBe(kit.item_id);
+    expect(apagado.model_list).toEqual(kit.model_list);
+    expect(apagados[0]!.item_id).toBe(kit.item_id);
+  });
+
+  it('QUASE-IGUAL: o oculto de B não é o modelo de A, nem o item de B, nem 0 — e o kit não é componente', () => {
+    const [a, b] = kit.model_list[0]!.component_list;
+    expect(b!.component_model_id).toBe(B_OCULTO);
+    expect(b!.component_model_id).not.toBe(a!.component_model_id);
+    expect(b!.component_model_id).not.toBe(b!.component_item_id);
+    expect(b!.component_model_id).not.toBe(0);
+    expect(a!.component_item_id).not.toBe(b!.component_item_id);
+    expect([a!.component_item_id, b!.component_item_id]).not.toContain(kit.item_id);
+  });
+
+  it('os seis apagados SEM papel não colidem com papel nenhum', () => {
+    expect(apagados.slice(1).map((linha) => linha.item_id)).toEqual([...IDS_APAGADOS_SEM_PAPEL]);
+    for (const id of IDS_APAGADOS_SEM_PAPEL) {
+      expect(Object.values(IDS_DO_KIT_NO_CORPUS)).not.toContain(id);
+    }
+  });
+});
+
+describe('os kits nativos — o que as LEITURAS da sonda 1 assentam (pelo schema do pacote)', () => {
+  const kit = lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO).product_info!;
+
+  it('get_kit_item_info: `image` e `long_image` SINGULAR, `sync_setting`, descrição `normal`, categoria ESCALAR', () => {
+    expect(kit.image?.image_id_list).toEqual([IMAGEM_DOC_DO_KIT]);
+    expect(kit.images).toBeNull();
+    // ⚠️ M40's evidence: só `image_ratio` — nenhum `image_id_list` no singular.
+    expect(kit.long_image?.image_ratio).toBe('3:4');
+    expect(kit.long_image?.image_id_list).toBeNull();
+    expect(kit.long_images).toBeNull();
+    expect(kit.sync_setting?.auto_sync_dts).toBe(true);
+    expect(kit.description_type).toBe('normal');
+    expect(kit.description).toMatch(/\S/);
+    expect(kit.category_id).toBe(CATEGORIA_DOC_DO_KIT);
+    expect(kit.item_status).toBe('NORMAL');
+    expect(kit.item_sku).toBe('SONDA-KIT');
+    expect(kit.create_time).toBe(RELOGIO_SONDA_KIT_1_S);
+    expect(
+      kit.tier_variation_list?.map((t) => [t.name, t.option_list.map((o) => o.option)]),
+    ).toEqual([['Kit', ['Kit um']]]);
+  });
+
+  it('UM principal no kit inteiro — o componente A, quantidade 2; B com 1', () => {
+    const linhas = kit.model_list.flatMap((m) => m.component_list);
+    expect(linhas.filter((c) => c.main_component === true).map((c) => c.component_item_id)).toEqual(
+      [A],
+    );
+    expect(linhas.map((c) => [c.component_item_id, c.quantity, c.main_component])).toEqual([
+      [A, 2, true],
+      [B, 1, false],
+    ]);
+  });
+
+  it('⚠️ o id OCULTO de B: NÃO-ZERO, sem nome nem SKU — e AUSENTE da lista de modelos de B', () => {
+    const [a, b] = kit.model_list[0]!.component_list;
+    expect(b).toMatchObject({
+      component_item_id: B,
+      component_model_id: B_OCULTO,
+      component_model_name: '',
+      component_item_or_model_sku: '',
+    });
+    // QUASE-IGUAL: A tem nome e SKU de modelo de verdade.
+    expect(a).toMatchObject({
+      component_item_id: A,
+      component_model_id: A_W02,
+      component_model_name: 'White,02',
+      component_item_or_model_sku: 'KIT-COMP-A-M1',
+    });
+    const deB = lerListaDeModelos(FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO);
+    expect(deB.model).toEqual([]);
+    expect(deB.tier_variation).toEqual([]);
+    expect(textoDoCorpo(FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO)).not.toContain(String(B_OCULTO));
+  });
+
+  it('o estoque do kit só se lê em get_model_list(kit) — a base do kit não o traz', () => {
+    const [modelo] = lerListaDeModelos(FIXTURE_MODEL_LIST_SG_KIT).model;
+    // min(⌊2 / 2⌋, ⌊6 / 1⌋) = 1 — a medição da sonda 1 no estado E0.
+    expect(modelo!.stock_info_v2?.summary_info?.total_available_stock).toBe(1);
+    expect(modelo!.stock_info_v2?.seller_stock).toEqual([
+      { location_id: 'SGZ', stock: 1, if_saleable: true },
+    ]);
+    const base = lerBaseDosItens(FIXTURE_ITEM_BASE_INFO_SG_KIT).item_list[0]!;
+    expect(base.has_model).toBe(true);
+    expect(base.tag?.kit).toBe(true);
+    expect(base.stock_info_v2).toBeNull();
+    const baseCrua = lerFixture(FIXTURE_ITEM_BASE_INFO_SG_KIT) as {
+      response: { item_list: Record<string, unknown>[] };
+    };
+    expect('stock_info_v2' in baseCrua.response.item_list[0]!).toBe(false);
+  });
+
+  it('`tag.kit` vem na LINHA de get_item_list — true no kit, false nos dois componentes', () => {
+    expect(lerListaDeItens(FIXTURE_ITEM_LIST_SG_COM_KIT).item.map((l) => l.tag?.kit)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    const apagados = lerListaDeItens(FIXTURE_ITEM_LIST_SG_SELLER_DELETE);
+    expect(apagados.item.map((l) => l.item_status)).toEqual(Array(7).fill('SELLER_DELETE'));
+    expect(apagados.item.map((l) => l.tag?.kit)).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(apagados.has_next_page).toBe(false);
+  });
+
+  it('um kit APAGADO ainda é lido — SELLER_DELETE, os canais desligados', () => {
+    const apagado = lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_APAGADO).product_info!;
+    expect(apagado.item_status).toBe('SELLER_DELETE');
+    expect(apagado.logistic_info?.map((l) => l.enabled)).toEqual([false, false]);
+    // QUASE-IGUAL: o MESMO kit, vivo, tinha os dois canais ligados.
+    expect(kit.logistic_info?.map((l) => l.enabled)).toEqual([true, true]);
+  });
+
+  it('um item que NÃO é kit: `"error": "."` e "product is not found" — sem `response`', () => {
+    const cru = lerFixture(FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT) as Record<string, unknown>;
+    expect(Object.keys(cru).sort()).toEqual(['error', 'message', 'warning']);
+    expect(cru.error).toBe('.');
+    expect(cru.message).toMatch(/^product is not found : /);
+    expect(() => lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT)).toThrow();
+  });
+
+  it('get_kit_item_limit: o corpo NU do gateway — só `error`, sem `message` nem `request_id`', () => {
+    expect(lerFixture(FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404)).toEqual({ error: 'error_not_found' });
+  });
+});
+
+/**
+ * Um cliente REAL do pacote cujo `fetch` responde o TEXTO do arquivo commitado
+ * com o status dado, registrando o método e o caminho de cada chamada.
+ */
+function clienteDoKit(
+  file: string,
+  status = 200,
+): {
+  readonly client: ShopeeClient;
+  readonly chamadas: { readonly metodo: string | undefined; readonly caminho: string }[];
+} {
+  const texto = textoDoCorpo(file);
+  const chamadas: { metodo: string | undefined; caminho: string }[] = [];
+  const transporte = vi.fn<typeof globalThis.fetch>((entrada, init) => {
+    const url =
+      typeof entrada === 'string' ? entrada : entrada instanceof URL ? entrada.href : entrada.url;
+    chamadas.push({ metodo: init?.method, caminho: new URL(url).pathname });
+    return Promise.resolve(
+      new Response(texto, { status, headers: { 'content-type': 'application/json' } }),
+    );
+  });
+  const client = createShopeeClient({
+    partnerId: 1000001,
+    partnerKey: 'chave-de-teste-nao-e-credencial',
+    hosts: resolveShopeeHosts({ sandbox: true }),
+    fetch: transporte,
+    shopId: 987654,
+    getAccessToken: () => Promise.resolve('access-inventado'),
+  });
+  return { client, chamadas };
+}
+
+describe('os kits nativos — as LEITURAS pelo CLIENTE do pacote, com o corpo commitado no fio', () => {
+  it.each([
+    [
+      FIXTURE_ITEM_LIST_SG_COM_KIT,
+      SHOPEE_GET_ITEM_LIST_PATH,
+      (c: ShopeeClient): Promise<unknown> =>
+        c.getItemList({ offset: 0, pageSize: 100, statuses: [SHOPEE_ITEM_STATUS_WIRE.normal] }),
+      (): unknown => lerListaDeItens(FIXTURE_ITEM_LIST_SG_COM_KIT),
+    ],
+    [
+      FIXTURE_ITEM_LIST_SG_SELLER_DELETE,
+      SHOPEE_GET_ITEM_LIST_PATH,
+      (c: ShopeeClient): Promise<unknown> =>
+        c.getItemList({
+          offset: 0,
+          pageSize: 100,
+          statuses: [SHOPEE_ITEM_STATUS_WIRE.sellerDelete],
+        }),
+      (): unknown => lerListaDeItens(FIXTURE_ITEM_LIST_SG_SELLER_DELETE),
+    ],
+    [
+      FIXTURE_ITEM_BASE_INFO_SG_KIT,
+      SHOPEE_GET_ITEM_BASE_INFO_PATH,
+      (c: ShopeeClient): Promise<unknown> => c.getItemBaseInfo({ itemIds: [KIT] }),
+      (): unknown => lerBaseDosItens(FIXTURE_ITEM_BASE_INFO_SG_KIT),
+    ],
+    [
+      FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO,
+      SHOPEE_GET_KIT_ITEM_INFO_PATH,
+      (c: ShopeeClient): Promise<unknown> => c.getKitItemInfo({ itemId: KIT }),
+      (): unknown => lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_POS_CRIACAO),
+    ],
+    [
+      FIXTURE_KIT_ITEM_INFO_SG_APAGADO,
+      SHOPEE_GET_KIT_ITEM_INFO_PATH,
+      (c: ShopeeClient): Promise<unknown> => c.getKitItemInfo({ itemId: KIT }),
+      (): unknown => lerKitDoCorpus(FIXTURE_KIT_ITEM_INFO_SG_APAGADO),
+    ],
+    [
+      FIXTURE_MODEL_LIST_SG_KIT,
+      SHOPEE_GET_MODEL_LIST_PATH,
+      (c: ShopeeClient): Promise<unknown> => c.getModelList({ itemId: KIT }),
+      (): unknown => lerListaDeModelos(FIXTURE_MODEL_LIST_SG_KIT),
+    ],
+    [
+      FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO,
+      SHOPEE_GET_MODEL_LIST_PATH,
+      (c: ShopeeClient): Promise<unknown> => c.getModelList({ itemId: B }),
+      (): unknown => lerListaDeModelos(FIXTURE_MODEL_LIST_SG_ITEM_SEM_VARIACAO),
+    ],
+  ] as const)(
+    '%s RESOLVE num GET, e o que o cliente devolve é o que o loader devolve',
+    async (file, caminho, chamar, carregar) => {
+      const { client, chamadas } = clienteDoKit(file);
+      await expect(chamar(client)).resolves.toEqual(carregar());
+      expect(chamadas).toEqual([{ metodo: 'GET', caminho }]);
+    },
+  );
+
+  it('o item que NÃO é kit REJEITA com o `ShopeeApiError` de código "." — nunca a classe do 404', async () => {
+    const promessa = clienteDoKit(FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT).client.getKitItemInfo({
+      itemId: A,
+    });
+    await expect(promessa).rejects.toBeInstanceOf(ShopeeApiError);
+    await expect(promessa).rejects.not.toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+    await expect(promessa).rejects.toMatchObject({
+      code: '.',
+      providerMessage: (lerFixture(FIXTURE_KIT_ITEM_INFO_SG_NAO_KIT) as { message: string })
+        .message,
+    });
+  });
+
+  it('⚠️ o corpo nu servido com 404 é `ShopeeOperacaoNaoServidaError` — e o MESMO corpo com 200 é a classe BASE', async () => {
+    const com404 = clienteDoKit(FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404, 404).client.getKitItemLimit({
+      categoryId: CATEGORIA_DOC_DO_KIT,
+    });
+    await expect(com404).rejects.toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+    await expect(com404).rejects.toMatchObject({ code: 'error_not_found', httpStatus: 404 });
+    // QUASE-IGUAL: o status é a ÚNICA diferença — e é ele que o arquivo não guarda.
+    const com200 = clienteDoKit(FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404, 200).client.getKitItemLimit({
+      categoryId: CATEGORIA_DOC_DO_KIT,
+    });
+    await expect(com200).rejects.toBeInstanceOf(ShopeeApiError);
+    await expect(com200).rejects.not.toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+  });
+
+  it('o caminho do limite de kit é o DELE — nunca o do item', async () => {
+    const { client, chamadas } = clienteDoKit(FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404, 404);
+    await expect(client.getKitItemLimit({ categoryId: CATEGORIA_DOC_DO_KIT })).rejects.toThrow();
+    expect(chamadas).toEqual([{ metodo: 'GET', caminho: SHOPEE_GET_KIT_ITEM_LIMIT_PATH }]);
+  });
 });

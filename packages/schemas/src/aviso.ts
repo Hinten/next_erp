@@ -96,6 +96,7 @@ export const TIPO_AVISO_LABELS = {
   etiquetaComPrazo: 'Etiqueta com prazo de impressão',
   reclamacaoAguardandoVendedor: 'Reclamação aguardando o vendedor',
   anuncioCategoriaAlterada: 'Categoria do anúncio alterada',
+  shopeeKitReceitaDivergente: 'Kit da Shopee com composição antiga',
   anuncioForaDaSincronizacao: 'Anúncio fora da sincronização',
 } as const;
 
@@ -335,6 +336,59 @@ export const TIPO_AVISO_LABELS = {
  *
  * ---
  *
+ * **`shopeeKitReceitaDivergente`** (produced by step 19 (#1527), Shopee native
+ * kits) — the composition of a kit produto changed in the ERP after its native
+ * Shopee kit was created, and the kit on Shopee still carries the OLD recipe.
+ * Shopee does not let a kit's components or quantities change (a quantity
+ * change is answered 200 and silently ignored), and it derives the kit's stock
+ * itself from that frozen recipe — so the stock it shows may be wrong. The
+ * operator republishes first (if Shopee already holds the same composition, the
+ * aviso closes by itself), else recreates the kit or puts the ERP composition
+ * back. A recipe change never BLOCKS anything (Lucas, L4): this aviso is the
+ * whole signal.
+ *
+ *  - **Name is Shopee-prefixed on purpose**, unlike the channel-neutral tipos
+ *    above: the condition IS the channel's — only a Shopee native kit freezes
+ *    its composition at create — and the wording names Shopee's own remedy.
+ *  - **Key**: ONE row per (conta, KIT produto) — `chaveAvisoReceitaKitShopee`
+ *    (`receitaKitShopee.ts`), no `janela`. A family kit with three divergent
+ *    children is ONE aviso naming the three, never three avisos.
+ *  - **Severity `atencao`**: the kit still sells, and `critico` escalates out of
+ *    the app.
+ *  - **`params` are ids only** — `kit` (the kit produto), `anuncio` (the Shopee
+ *    `item_id`, or `—`), `vinculo` (the link doc id the recriar advice names, or
+ *    `—`) and `variacoes` (the divergent children, sorted, joined by `, `). No
+ *    produto name, no SKU, no provider prose.
+ *  - **`urlInterna`** = the kit produto's page, `campo: 'componentesKit'`.
+ *  - **Machine resolvers** (this docblock's own rule, above) — FIVE motivos,
+ *    `MOTIVO_RESOLUCAO_RECEITA_KIT` (`receitaKitShopee.ts`), each reached
+ *    through ONE shared open/resolve decision (`decidirAvisoDeReceitaKit`,
+ *    same module) over the CURRENT recipes, never a blind resolve:
+ *    `receita-igual-a-shopee` (the ERP recipe was edited back to what Shopee
+ *    holds), `kit-recriado` (a create arm finished — criar, recriar or
+ *    converter — or a superseded old kit was seen deleted while the new one
+ *    matches), `republicado-igual` (a republish read the kit back equal to the
+ *    ERP), `importado` (a re-import found the kit equal to the ERP) and
+ *    `sem-kit-ativo` (no native kit of that produto still sells on the conta —
+ *    deleted in Seller Centre and reverified, or removed by a recriar). The
+ *    last one is what keeps a kit that no longer exists from leaving its aviso
+ *    standing until retention.
+ *  - **`relogioEvento`** = the latest commit time, in µs, of every document the
+ *    decision read, so a decision computed from an older snapshot that lands
+ *    late is dropped as stale instead of reopening or closing a newer row.
+ *  - **Writer — step 9's kit import** (`apps/shopee`, `produtos/kitShopee.ts`):
+ *    after writing a native kit it calls `reavaliarAvisoDeReceitaKit`
+ *    (`@delfrance/data/admin/avisos`) ONCE for (conta, kit) with motivo
+ *    `importado`. Before its writes it stamps the fingerprint on the kit-model
+ *    rows it is about to merge, so the trigger its own produto writes fire
+ *    already reads the new stamp. A child whose ERP recipe differs from the
+ *    kit's while one of its rows on an active native kit carries a stamp other
+ *    than the current fingerprint (an edit this aviso tracks) is KEPT
+ *    (L10(2)): no recipe and no stamp is written for it, so the aviso stays
+ *    open and the import reports `receita-divergente`.
+ *
+ * ---
+ *
  * **`anuncioForaDaSincronizacao`** (#1200 — first producer
  * `apps/mercado-livre/lib/marketplace/estoque/auditoriaNaoEnumerados.ts`, the
  * monthly link audit) — a LIVE anúncio that no automatic stock or price sync can
@@ -420,6 +474,7 @@ export const tipoAvisoSchema = z
     'etiquetaComPrazo',
     'reclamacaoAguardandoVendedor',
     'anuncioCategoriaAlterada',
+    'shopeeKitReceitaDivergente',
     'anuncioForaDaSincronizacao',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
@@ -441,6 +496,7 @@ export const TIPO_AVISO = {
   etiquetaComPrazo: 'etiquetaComPrazo',
   reclamacaoAguardandoVendedor: 'reclamacaoAguardandoVendedor',
   anuncioCategoriaAlterada: 'anuncioCategoriaAlterada',
+  shopeeKitReceitaDivergente: 'shopeeKitReceitaDivergente',
   anuncioForaDaSincronizacao: 'anuncioForaDaSincronizacao',
 } as const satisfies Record<string, TipoAviso>;
 

@@ -67,7 +67,7 @@ import { lerFamiliasDePrecoPorIds, lerPrecosDosProdutos } from '../precos/descob
 import { montarItensDePreco, precificarItem } from '../precos/planoPreco';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { construirIndice } from '../taxonomia/categorias';
-import { FakeDb, asDb, grpc } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { criarMemoDeCategorias } from './categoriaShopee';
 import { ShopeePrecoDesatualizadoError, aplicarPrecosShopee } from './estoquePrecos';
 import { processarImportacaoShopee } from './importacaoMassa';
@@ -76,6 +76,7 @@ import { renderResumoImportacao, resumoDoPlano } from './importarAnuncioCli';
 import type {
   ContextoImportacaoShopee,
   ImportarAnuncioDeps,
+  ImportarKitShopeeDeps,
   ItemLido,
   ResultadoImportacaoShopee,
 } from './itemLido';
@@ -97,6 +98,8 @@ import { idDoFilhoPlanejado, idDoPaiPlanejado } from './resolveProduto';
 
 const ITEM_ID = 2500139861;
 const COMPONENTE = 2500139862;
+/** O id de modelo OCULTO de um componente sem variação (sonda 1 do passo 19). */
+const MODELO_OCULTO_DO_COMPONENTE = 2000458829;
 const KIT_ID = 2500139863;
 const MODEL_A = 2000458802;
 const MODEL_B = 2000458803;
@@ -266,9 +269,10 @@ beforeEach(() => {
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
 });
 
-function deps(db: FakeDb, parcial: Partial<ImportarAnuncioDeps> = {}): ImportarAnuncioDeps {
+function deps(db: FakeDb, parcial: Partial<ImportarKitShopeeDeps> = {}): ImportarKitShopeeDeps {
   return {
     db: asDb(db),
+    increment,
     integracaoId: INTEGRACAO,
     tabelaNormalOuterRef: TABELA_NORMAL,
     tabelaPromocionalOuterRef: null,
@@ -1204,11 +1208,16 @@ describe('⛔ o braço ALREADY_EXISTS da criação: o merge nunca leva preço ne
               model_sku: 'KIT-001-0',
               original_price: 99.9,
               component_list: [
-                { component_item_id: COMPONENTE, component_model_id: 0, quantity: 1 },
+                {
+                  component_item_id: COMPONENTE,
+                  component_model_id: MODELO_OCULTO_DO_COMPONENTE,
+                  quantity: 1,
+                },
               ],
             },
           ],
         }),
+        temModelosDosComponentes: new Map([[COMPONENTE, false]]),
         itemId: ITEM_ID,
       });
 
@@ -1278,7 +1287,16 @@ describe('o kit passa pela MESMA regra — uma função, nenhuma cópia, e tamb�
         model_id: ids[i],
         model_sku: `KIT-001-${String(i)}`,
         original_price,
-        component_list: [{ component_item_id: COMPONENTE, component_model_id: 0, quantity: 1 }],
+        // O id OCULTO que a Shopee devolve para um componente sem variação
+        // (medido, sonda 1 do passo 19) — ligado pela listagem porque o
+        // `has_model` dele é false (o mapa abaixo).
+        component_list: [
+          {
+            component_item_id: COMPONENTE,
+            component_model_id: MODELO_OCULTO_DO_COMPONENTE,
+            quantity: 1,
+          },
+        ],
       })),
     });
   }
@@ -1294,6 +1312,7 @@ describe('o kit passa pela MESMA regra — uma função, nenhuma cópia, e tamb�
       models: null,
       taxInfo: null,
       kit: kit(precos),
+      temModelosDosComponentes: new Map([[COMPONENTE, false]]),
       itemId: ITEM_ID,
     });
   }
@@ -1746,7 +1765,9 @@ describe('o job em massa entrega `job.options` — as de preço incluídas — a
         ),
         getKitItemInfo: vi.fn(
           async (p: { itemId: number }) =>
-            ({ product_info: { item_id: p.itemId } }) as unknown as ShopeeKitItemInfo,
+            ({
+              product_info: { item_id: p.itemId, model_list: [] },
+            }) as unknown as ShopeeKitItemInfo,
         ),
       };
       const contexto: ContextoImportacaoShopee = {
@@ -1763,6 +1784,7 @@ describe('o job em massa entrega `job.options` — as de preço incluídas — a
           resolverContexto: async () => contexto,
           importarAnuncio,
           importarKit,
+          increment,
           scheduler: { enqueue: vi.fn(async () => {}) },
           now: () => AGORA,
         },

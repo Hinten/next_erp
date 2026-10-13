@@ -22,11 +22,11 @@ import { importacaoShopeeOptionsSchema } from '@delfrance/schemas';
 
 import { criarMemoDeCategorias } from '../produtos/categoriaShopee';
 import { importarAnuncioShopee } from '../produtos/importarAnuncio';
-import type { ImportarAnuncioDeps, ItemLido } from '../produtos/itemLido';
+import type { ImportarKitShopeeDeps, ItemLido } from '../produtos/itemLido';
 import { importarKitShopee } from '../produtos/kitShopee';
 import { idDoPaiPlanejado } from '../produtos/resolveProduto';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
-import { type DocData, FakeDb, asDb } from '../testing/fakeDb';
+import { type DocData, FakeDb, asDb, increment } from '../testing/fakeDb';
 import { lerFamiliasDePrecoPorIds } from './descobertaPreco';
 import { MOTIVO_PRECO_SHOPEE } from './errosPreco';
 import { montarItensDePreco } from './planoPreco';
@@ -35,6 +35,13 @@ import { montarItensDePreco } from './planoPreco';
 
 const ITEM_ID = 2500139861;
 const COMPONENTE = 2500139862;
+/**
+ * O id de modelo OCULTO de um componente sem variação, como o
+ * `get_kit_item_info` de fato o devolve (medido, sonda 1 do passo 19): diferente
+ * de zero, nunca o `item_id`. O import o liga pela listagem porque o `has_model`
+ * do componente é `false`.
+ */
+const MODELO_OCULTO_DO_COMPONENTE = 2000458829;
 const MODEL_A = 2000458802;
 const INTEGRACAO = 'int-1';
 const REF_CONTA = `documents/integracao/${INTEGRACAO}`;
@@ -65,9 +72,10 @@ beforeEach(() => {
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
 });
 
-function deps(db: FakeDb): ImportarAnuncioDeps {
+function deps(db: FakeDb): ImportarKitShopeeDeps {
   return {
     db: asDb(db),
+    increment,
     integracaoId: INTEGRACAO,
     tabelaNormalOuterRef: 'documents/listaDePrecos/tab-normal',
     tabelaPromocionalOuterRef: null,
@@ -94,10 +102,17 @@ function entradaDeKit(): ItemLido {
           model_id: MODEL_A,
           model_sku: 'KIT-001-A',
           original_price: 99.9,
-          component_list: [{ component_item_id: COMPONENTE, component_model_id: 0, quantity: 1 }],
+          component_list: [
+            {
+              component_item_id: COMPONENTE,
+              component_model_id: MODELO_OCULTO_DO_COMPONENTE,
+              quantity: 1,
+            },
+          ],
         },
       ],
     }),
+    temModelosDosComponentes: new Map([[COMPONENTE, false]]),
     itemId: ITEM_ID,
   };
 }
