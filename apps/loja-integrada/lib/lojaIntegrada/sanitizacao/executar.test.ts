@@ -25,7 +25,7 @@ interface Disco {
   readonly naoArquivos?: readonly string[];
   readonly git?: readonly string[];
   readonly fixtures?: Readonly<Record<string, string>>;
-  readonly outros?: Readonly<Record<string, string>>;
+  readonly outros?: Readonly<Record<string, string | Uint8Array>>;
 }
 
 function disco(d: Disco = {}): SistemaDeArquivosDaSanitizacao & { readonly lidos: string[] } {
@@ -55,7 +55,8 @@ function disco(d: Disco = {}): SistemaDeArquivosDaSanitizacao & { readonly lidos
     fixtureExistente: (nome) => d.fixtures?.[nome] ?? null,
     lerArquivo: (caminho) => {
       const v = d.outros?.[caminho];
-      return v === undefined ? null : b(v);
+      if (v === undefined) return null;
+      return typeof v === 'string' ? b(v) : v;
     },
   };
 }
@@ -376,6 +377,24 @@ describe('--verificar', () => {
     expect(r.saida).toContain('arquivo-1:1 :: cpf');
     expect(r.saida.toLowerCase()).not.toContain('exemplo');
   });
+
+  it('a file that is not valid UTF-8 is refused, never read through replacement characters', () => {
+    // A Windows-1252 `ê` (0xEA): decoded leniently it becomes U+FFFD, the name
+    // folds to `loja ex mplo`, and the run would print `clean.`.
+    const r = rodar(
+      ['--entrada', PASTA, '--verificar', 'doc.md', 'ok.md'],
+      disco({
+        outros: {
+          'doc.md': new Uint8Array([...b('a Loja Ex'), 0xea, ...b('mplo vendeu\n')]),
+          'ok.md': '﻿tudo certo, até aqui\n',
+        },
+      }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  doc.md :: utf8-invalido\n');
+    expect(r.saida).not.toContain('ok.md');
+    expect(r.saida.toLowerCase()).not.toContain('mplo');
+  });
 });
 
 describe('--verificar — a name split by a line wrap', () => {
@@ -506,6 +525,54 @@ describe('--verificar — a name split by a line wrap', () => {
     // The same words, never adjacent: farther apart than a window, or with a word between.
     esperarLimpo('a Loja\nalfa\nbeta\nExemplo\n');
     esperarLimpo('a Loja nova\nExemplo antigo\n');
+  });
+
+  it('more continuation markers: a letter, a parenthesised one, a task box, a line-number gutter', () => {
+    // Kept between the words, each would hide the name (`loja b exemplo`).
+    esperarAchados('a. o pedido da Loja\nb. Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('B) o pedido da Loja\nC) Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('(1) o pedido da Loja\n(2) Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('(a) o pedido da Loja\n(b) Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('- [ ] o pedido da Loja\n- [x] Exemplo chegou\n', [
+      'doc.md:1-2 :: nome-de-loja',
+    ]);
+    // A pasted listing's line numbers.
+    esperarAchados('12  o pedido da Loja\n13  Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+  });
+
+  it('each continuation line is read both ways on its own: one marker dropped, the next kept', () => {
+    // The `2.` must go and the `2000.` must stay: neither "drop every marker"
+    // nor "keep every marker" reads `loja exemplo 2000`.
+    esperarAchados(
+      '1. o pedido da Loja\n2. Exemplo\n2000. fim\n',
+      ['doc.md:1-3 :: nome-de-loja'],
+      'Loja Exemplo 2000\n',
+    );
+  });
+
+  it('a word cut by a hyphen that ends the line is also read rejoined, so a one-word name is found', () => {
+    // A one-word name has no separator-free form to fall back on: joined by a
+    // space, `Exem-` / `plaria` reads `exem plaria`.
+    const UMA_PALAVRA = 'Exemplaria\n';
+    esperarAchados('a Exem-\nplaria abriu\n', ['doc.md:1-2 :: nome-de-loja'], UMA_PALAVRA);
+    esperarAchados('a Exem­\nplaria abriu\n', ['doc.md:1-2 :: nome-de-loja'], UMA_PALAVRA);
+    esperarAchados('- a Exem-\n  plaria abriu\n', ['doc.md:1-2 :: nome-de-loja'], UMA_PALAVRA);
+    esperarAchados('a Exem-\nplar-\nia abriu\n', ['doc.md:1-3 :: nome-de-loja'], UMA_PALAVRA);
+    // Near-misses: a hyphen inside the line, and a word between the parts.
+    esperarLimpo('a Exem-plo\nplaria abriu\n', UMA_PALAVRA);
+    esperarLimpo('a Exem-\nnova plaria\n', UMA_PALAVRA);
+  });
+
+  it('a string escape is decoded: a line break written as `\\n` sits on one physical line', () => {
+    // Read raw, the escape's letter glues onto the next word (`loja nexemplo`).
+    esperarAchados('{"obs": "a Loja\\nExemplo chegou"}\n', ['doc.md:1 :: nome-de-loja']);
+    esperarAchados("const obs = 'a Loja\\tExemplo';\n", ['doc.md:1 :: nome-de-loja']);
+    esperarAchados('{"obs": "a Loja\\u00a0Exemplo"}\n', ['doc.md:1 :: nome-de-loja']);
+    esperarAchados('{"obs": "a Loja Ex\\u00eamplo"}\n', ['doc.md:1 :: nome-de-loja']);
+    esperarAchados("'a Loja\\x20Exemplo'\n", ['doc.md:1 :: nome-de-loja']);
+    esperarAchados("'a Loja\\u{20}Exemplo'\n", ['doc.md:1 :: nome-de-loja']);
+    // An escaped backslash is a backslash: `\\` + `n` is not a line break.
+    esperarLimpo('{"obs": "a Loja\\\\nExemplo"}\n');
   });
 });
 
