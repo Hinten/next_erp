@@ -15,7 +15,18 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions/v2';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 
+import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
+
 import { sweepLojaIntegradaTokenExpiry as runTokenExpirySweep } from '../../lib/lojaIntegrada/conta/expiracaoSweep';
+import {
+  FILA_LEITURA_LI,
+  type RegistroTarefaLi,
+  type ReprocessResult,
+  reprocessarAdiadasLi,
+  reprocessarNotificacoesLi,
+} from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { depsDeLeituraLi } from './depsLeitura';
+import * as filaLeitura from './filaLeitura';
 import { getDb } from './lib/admin';
 
 /**
@@ -25,10 +36,116 @@ import { getDb } from './lib/admin';
  * ships INERT — running it is a manual coordinated human step, root
  * `CLAUDE.md` rule 8).
  *
+ * Master plan step 3 wires the notification pipeline: ONE reads queue
+ * (`filaLeituraLojaIntegrada`, ./filaLeitura) dispatching on the task's `tipo`,
+ * the 30-minute reprocess sweep over both lanes, and the daily token-expiry
+ * sweep. The 5-minute order poller — the queue's first producer — arrives with
+ * its own change.
+ *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
- * named, never a wildcard.
+ * named, never a wildcard. `index.test.ts` pins every trigger's options and
+ * that its maps cover every export.
  */
+
+// Rename-safety: the DEPLOYED function name is the export KEY of the handler
+// below, and every producer enqueues against `FILA_LEITURA_LI`. ESM export
+// names must be static literals (you can't compute an `export const` name), so
+// instead of deriving one from the other we assert — at module load, i.e.
+// during Firebase's deploy codebase analysis — that they never drifted. A rename
+// that updates only one side fails the deploy loudly here instead of silently
+// enqueuing onto a queue that does not exist.
+if (!(FILA_LEITURA_LI in filaLeitura)) {
+  throw new Error(
+    '[loja-integrada] function-name drift: functions/src/filaLeitura.ts must export a ' +
+      `handler named '${FILA_LEITURA_LI}' (the enqueue target). ` +
+      'Rename the export and the FILA_LEITURA_LI constant together.',
+  );
+}
+
+/** The ONE reads queue (rate-limited to one dispatch at a time, retry with backoff). */
+export { filaLeituraLojaIntegrada } from './filaLeitura';
+
+/**
+ * Documents examined per lane on each tick of the reprocess sweep. NOT exported:
+ * every runtime export of this file is read as a Cloud Function name.
+ */
+const LIMITE_POR_RAIA_LI = 10;
+
+/**
+ * The `registro` of a sweep run: the same flow as the queue's, with no Cloud
+ * Tasks attempt and no task id — the sweep is not a task.
+ */
+const REGISTRO_DA_VARREDURA: RegistroTarefaLi = {
+  fluxo: 'intake',
+  tentativa: null,
+  idTarefa: null,
+};
+
+/**
+ * One lane's log lines. `outcomes` and the counts only; per-row failures by
+ * DOCUMENT ID — the row itself already holds the reason (`erro`), and an error
+ * message is not something this channel's logs repeat (`apps/loja-integrada`
+ * CLAUDE.md, "Logging and redaction").
+ */
+function registrarRaia(
+  raia: 'quente' | 'adiada',
+  result: ReprocessResult,
+  marca: ReturnType<typeof readCacheMark>,
+): void {
+  logger.info(`[loja-integrada] reprocess sweep (${raia})`, {
+    processed: result.processed,
+    outcomes: result.outcomes,
+    errorCount: result.errors.length,
+    // Read-cache hits/misses accrued by THIS lane. Reports the SWEEP process's
+    // caches, not the queue's — they are separate deployments.
+    readCache: readCacheDelta(marca),
+  });
+  if (result.errors.length > 0) {
+    logger.warn(`[loja-integrada] reprocess sweep (${raia}) had per-doc failures`, {
+      docIds: result.errors.slice(0, 10).map((e) => e.docId),
+    });
+  }
+}
+
+/**
+ * The backstop over BOTH lanes of `notificacoesLojaIntegrada`, on one tick:
+ * first the hot lane (`failed` rows older than an hour), then the deferred lane
+ * (a parked conta, an inactive conta, a missing credential, the read switch
+ * off), `LIMITE_POR_RAIA_LI` rows each.
+ *
+ * It runs the SAME pipeline as the queue, inline — the same context, the same
+ * read switch, the same importer seam (`depsDeLeituraLi`) — so a re-drive
+ * answers exactly what the task would have.
+ *
+ * The two lanes are logged SEPARATELY, never summed: they answer different
+ * questions ("is processing healthy" vs "how many contas still owe us a
+ * reconnection"), and a sum would hide a growing deferred backlog inside a
+ * healthy `processed`.
+ *
+ * 540 s: up to twenty rows processed SEQUENTIALLY, each of which may make a
+ * paced Loja Integrada round trip (2 000 ms before every call) once the read
+ * switch and the importer are on — the gen2 60 s default cannot absorb that.
+ */
+export const reprocessLojaIntegradaNotifications = onSchedule(
+  {
+    schedule: '*/30 * * * *',
+    timeZone: 'America/Sao_Paulo',
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const db = getDb();
+    const deps = depsDeLeituraLi(REGISTRO_DA_VARREDURA);
+
+    const marcaQuente = readCacheMark();
+    const quente = await reprocessarNotificacoesLi(db, { limit: LIMITE_POR_RAIA_LI }, deps);
+    registrarRaia('quente', quente, marcaQuente);
+
+    const marcaAdiada = readCacheMark();
+    const adiada = await reprocessarAdiadasLi(db, { limit: LIMITE_POR_RAIA_LI }, deps);
+    registrarRaia('adiada', adiada, marcaAdiada);
+  },
+);
 
 /**
  * The DAILY token-expiry sweep. Walks every Loja Integrada conta, raises the
