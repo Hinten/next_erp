@@ -135,6 +135,11 @@ describe('ConversaActionsMenu — gating', () => {
     expect(screen.getByText('Definir etiqueta')).toBeTruthy();
     expect(screen.getByText('Renomear')).toBeTruthy();
     expect(screen.getByText('Deixar a conversa')).toBeTruthy();
+    expect(
+      screen
+        .getByRole('menuitem', { name: 'Deixar a conversa' })
+        .style.getPropertyValue('--menu-item-color'),
+    ).toBe('var(--mantine-color-red-text)');
     // Gated out:
     expect(screen.queryByText('Entrar na conversa')).toBeNull();
     expect(screen.queryByText('Enviar mensagem padrão')).toBeNull();
@@ -226,6 +231,11 @@ describe('ConversaActionsMenu — Mercado Livre question moderation (#533)', () 
     openMenu();
     expect(screen.getByText('Excluir pergunta')).toBeTruthy();
     expect(screen.getByText('Bloquear usuário')).toBeTruthy();
+    for (const name of ['Excluir pergunta', 'Bloquear usuário']) {
+      expect(
+        screen.getByRole('menuitem', { name }).style.getPropertyValue('--menu-item-color'),
+      ).toBe('var(--mantine-color-red-text)');
+    }
   });
 
   it('offers neither on a post-sale ML thread, which has no such actions', () => {

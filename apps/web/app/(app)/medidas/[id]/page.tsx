@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
@@ -48,6 +49,12 @@ export default function TabelaDeMedidasPage() {
   const { allowed: canDelete } = usePermission(PERM.produto.delete);
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
+  const flushDraftRemovals = useRef<(() => Promise<void>) | null>(null);
+  const [draftRemovalsDirty, setDraftRemovalsDirty] = useState(false);
+  const handleDraftRemovalsDirty = useCallback(
+    (dirty: boolean) => setDraftRemovalsDirty(dirty),
+    [],
+  );
 
   async function handleDelete(id: string) {
     await deleteDoc(tabelaDeMedidasCollection.docRef(db, {}, id));
@@ -70,6 +77,8 @@ export default function TabelaDeMedidasPage() {
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
         sections={MEDIDA_SECTIONS_EDITAR}
+        persistentSections={['Mercado Livre']}
+        extraDirty={draftRemovalsDirty}
         transientFields={MEDIDA_TRANSIENT_FIELDS_EDITAR}
         // The ML map stays out of the form (the ML tab writes it itself), so the
         // partial-save patch never touches it. The Shopee map is IN the form
@@ -99,9 +108,16 @@ export default function TabelaDeMedidasPage() {
             label: 'Mercado Livre',
             section: 'Mercado Livre',
             // Self-contained tab: reads live doc state + drives the size-chart
-            // sync endpoint, decoupled from this form's save.
+            // sync endpoint. Draft removals flush after this form's save.
             renderInput: (p) => (
-              <MedidasMercadoLivreManager tabMediId={params.id} db={db} disabled={p.disabled} />
+              <MedidasMercadoLivreManager
+                key={params.id}
+                tabMediId={params.id}
+                db={db}
+                disabled={p.disabled}
+                flushRef={flushDraftRemovals}
+                onDirtyChange={handleDraftRemovalsDirty}
+              />
             ),
           },
           fotos: {
@@ -138,6 +154,7 @@ export default function TabelaDeMedidasPage() {
           return { fotosArquivosIds: ids.length > 0 ? ids : null };
         }}
         saveLabel="Salvar alterações"
+        onAfterSave={() => flushDraftRemovals.current?.()}
         canEdit={canWrite}
         readOnly={!canWrite}
         canDelete={canDelete}

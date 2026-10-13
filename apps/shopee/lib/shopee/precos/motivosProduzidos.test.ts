@@ -141,8 +141,11 @@ function autorizadosJaProduzidos(
 /**
  * Os órfãos POR PROJETO, cada um com a razão de uma linha que o autoriza.
  *
- * ⚠️ VAZIA, e vazia de propósito: os 46 membros têm produtor (44 no primeiro PR,
- * mais `job-interrompido` e `job-cancelado`, produzidos pelo job do segundo). O
+ * ⚠️ VAZIA, e vazia de propósito: os 45 membros têm produtor (44 no primeiro PR,
+ * mais `job-interrompido` e `job-cancelado`, produzidos pelo job do segundo,
+ * menos `kit-derivado` — APOSENTADO no passo 19 (R-13) junto com o seu único
+ * produtor, o degrau 3 do plano, quando o kit nativo passou a ser enviado por
+ * `update_kit_item`; um membro sem produtor sai da união, nunca vem para cá). O
  * passo 12 precisou de uma linha (`pisoAcimaDaBanda`, uma banda que não viaja
  * na tarefa); o preço não tem equivalente — a reconciliação CORTOU os nomes que
  * nada produziria (`status-desconhecido`, `familia-nao-encontrada`, a pausa
@@ -180,13 +183,29 @@ describe('todo motivo de preço declarado tem um PRODUTOR fora de errosPreco.ts'
     }
   });
 
-  it('os 46 motivos: cada um é escrito por ALGUM outro arquivo (ou está na lista autorizada com razão)', () => {
+  it('os 45 motivos: cada um é escrito por ALGUM outro arquivo (ou está na lista autorizada com razão)', () => {
     const fontes = fontesQuePodemProduzir(['errosPreco.ts']);
     expect(
       membrosSemProdutor(MOTIVO_PRECO_SHOPEE, fontes, ORFAOS_AUTORIZADOS),
       'motivos declarados que NINGUÉM produz e que não estão autorizados',
     ).toEqual([]);
-    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(46);
+    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(45);
+  });
+
+  it('⛔ (M151, R-13) `kit-derivado` saiu da união E de todo produtor: nenhuma fonte de preço o grafa entre aspas nem pela chave', () => {
+    // O inverso do teste acima: um membro aposentado cujo produtor ficasse
+    // para trás voltaria a ser escrito em linhas de relatório e em
+    // `precoRecusaMotivo` com uma grafia que a tabela não renderiza mais.
+    const slugs: readonly string[] = Object.values(MOTIVO_PRECO_SHOPEE);
+    expect(slugs).not.toContain('kit-derivado');
+    const fontes = fontesQuePodemProduzir([]);
+    const produtores = [...fontes].filter(
+      ([, fonte]) =>
+        fonte.includes("'kit-derivado'") ||
+        fonte.includes('"kit-derivado"') ||
+        /\bMOTIVO_PRECO_SHOPEE\.kitDerivado\b/.test(fonte),
+    );
+    expect(produtores.map(([nome]) => nome)).toEqual([]);
   });
 
   it('a lista de órfãos autorizados está VAZIA e não guarda um membro que já ganhou produtor', () => {
@@ -271,7 +290,7 @@ function dobraDeSlug(texto: string): string {
 /** Todo literal `'...'` de uma linha só, que é o formato de um slug. */
 const LITERAL_DE_UMA_LINHA = /'([^'\\\r\n]{3,60})'/g;
 
-/** Os 44 slugs do vocabulário, que é o universo do detector. */
+/** Os 45 slugs do vocabulário, que é o universo do detector. */
 function todosOsSlugs(): Set<string> {
   return new Set<string>(Object.values(MOTIVO_PRECO_SHOPEE));
 }
@@ -370,12 +389,12 @@ describe('a dobra de slug: o que ela trata como IGUAL e o que precisa continuar 
     expect(dobraDeSlug(MOTIVO_PRECO_SHOPEE.precoInvalido)).not.toBe(alvo);
   });
 
-  it('os 46 slugs dobram para 46 formas distintas', () => {
+  it('os 45 slugs dobram para 45 formas distintas', () => {
     // Se dois membros colidissem sob a dobra, o detector apontaria o membro
     // errado numa mensagem de falha — e este é o único lugar que checa isso.
     const slugs = todosOsSlugs();
     const dobras = new Set([...slugs].map(dobraDeSlug));
-    expect(slugs.size).toBe(46);
+    expect(slugs.size).toBe(45);
     expect(dobras.size).toBe(slugs.size);
   });
 

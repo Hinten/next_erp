@@ -2,13 +2,29 @@
  * The two Shopee link documents, WRITTEN (#1517, step 9) — the thin applier of
  * the `EscritaDeLink` entries `planejarImportacaoShopee` already built.
  *
- * ## ⚠️ Resolve, then write — the id is never derived
+ * ## ⚠️ Resolve, then write — the id is never derived (ONE exception: a native kit)
  *
  * `produtoShopeeLinkCollection`'s own header says it: the document ids are
  * Firestore AUTO ids, and the Shopee ids live in the `item_id` / `model_id`
  * FIELDS. So idempotence cannot come from a deterministic id the way it does for
  * a Mercado Livre link — the RESOLVE is the idempotence. A hit MERGEs onto the
  * document the cascade settled on; a miss ADDs a fresh one.
+ *
+ * ⚠️ **A NATIVE KIT is the exception (step 19, #1527, R-u).** A kit has a
+ * second writer the resolve cannot see: the kit create writes its link right
+ * after `add_kit_item` answers an `item_id`, with no document before it (L9).
+ * An import running between that answer and the create's link write — or after
+ * a crash between them — would `add` a SECOND `prodshopee` for one `item_id`.
+ * So the kit arm (`kitShopee.ts`'s `comCamposDeKit`) turns a missed listing
+ * link into `{ acao: 'merge', docId: idDoVinculoDeKit(integracaoId, item_id) }`
+ * and every NEW kit-model row into
+ * `{ acao: 'merge', docId: idDaVariacaoDeKit(linkDocId, model_id) }`
+ * (`kits/idsKit.ts`): the create computes the same ids, so both writers land on
+ * ONE link and ONE row per (link, model) whichever runs first — rule 7 tier 0.
+ * A cascade HIT still merges onto the document it found, whatever its id (every
+ * pre-step-19 kit link keeps its auto id), and an ordinary listing keeps `add`.
+ * Nothing in THIS file changed for it: the merge-at-docId arms below are the
+ * applier, and an upsert at a derived id is exactly what they already do.
  *
  * ## ⚠️ `merge`, never `set`
  *

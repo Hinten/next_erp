@@ -1,6 +1,11 @@
 import { type ScheduleOptions, onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
 
+import {
+  AUDITORIA_LOG_PREFIX,
+  resumirAuditoria,
+  runAuditoriaNaoEnumerados,
+} from '../../lib/marketplace/estoque/auditoriaNaoEnumerados';
 import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/estoque/bulkEstoquePlan';
 import {
   type StockSweepMode,
@@ -51,6 +56,59 @@ import { TASKS_SCHEDULER_REGION } from './options';
  * Timeout: worst case per tick is N contas × (bounded pipeline pages + up to
  * `maxTasksPerSweep()` sequential Cloud Tasks enqueues) — the 60s onSchedule
  * default can't absorb that; 540s matches `importMercadoLivreOrders`.
+ *
+ * ---- The FOURTH schedule, and the one that is not a tier: the monthly link
+ * audit (#1200), `sweepMercadoLivreAnunciosNaoEnumerados` at the bottom.
+ *
+ * All three tiers enumerate PRODUTOS through S1's two anchor terms (`paiId ==
+ * null` AND `integracoesComProduto array-contains <conta>`), so a live anúncio
+ * whose produto falls outside them is invisible to every tier at once and leaves
+ * no trace — a sweep reports `completed` while that listing keeps selling at
+ * whatever stock it last had. Once a month the audit walks each conta's LINKS
+ * instead (`runAuditoriaNaoEnumerados`, lib/marketplace/estoque/
+ * auditoriaNaoEnumerados.ts): it re-adds the conta to a produto whose array lost
+ * it (the tier-1 read-derived heal) and raises ONE aviso per produto (new ones
+ * capped per conta per run) for what only a human can fix. It sends nothing,
+ * enqueues nothing and writes no
+ * `estoqueMercadoLivreSync` state doc.
+ *
+ *  - **Why 02:30 on the 1st.** The heal must land BEFORE the 03:00 force-all
+ *    re-enumerates the catalogue, or a healed family waits a whole month for its
+ *    next full pass. 02:30 plus the 540 s timeout is 02:39 — clear of 03:00 even
+ *    for a run killed at its timeout (`index.test.ts` pins the cron AND that
+ *    arithmetic against the reconciliação's own parsed cron). It shares the 02:30
+ *    slot with an ordinary incremental tick, harmlessly: the audit owns no state
+ *    doc, no cursor and no queue that tick could contend for.
+ *  - **Why the reconciliação valve does not gate it.**
+ *    `MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED` is an ML-QUOTA valve — it exists
+ *    to switch off a pass that costs more ML calls than the drift it heals. The
+ *    audit makes ZERO ML calls, so it runs with that valve off, behind the master
+ *    `MERCADO_LIVRE_STOCK_SYNC_ENABLED` alone (read inside
+ *    `runAuditoriaNaoEnumerados`). Its handler names no other flag, and a
+ *    source-read test in `index.test.ts` keeps it that way.
+ *  - **Why its own options literal.** `sweepScheduleOptions` binds the ML app
+ *    secrets, and a function that never calls ML must not carry them
+ *    (`options.ts`).
+ *  - ⚠️ **Precondition: the COLLECTION_GROUP index
+ *    `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)` must be READY wherever
+ *    the master flag is on.** It was declared in the same commit as S1's own
+ *    entry (#1191), so a project where S1 is indexed has it. Without it nothing
+ *    fails: Enterprise full-scans the whole collection group — every link of
+ *    every conta — on every page of the walk, silently and billed by data
+ *    scanned. `scripts/check-stock-indexes.mjs` carries the plan check.
+ *  - **What a heal does and does NOT send (owner decision D4).** The audit holds
+ *    no ML secret, so a healed family reaches ML through the 03:00 force-all.
+ *    That pass is a force-all for ENUMERATION only: the send policy
+ *    (`deveEnviarFamiliaCore`) still skips a family whose stock did not move
+ *    since the conta's `lastReconciliacaoAtUs` baseline, the previous completed
+ *    full pass. So a healed family is re-sent at 03:00 only if its stock moved
+ *    since that pass — which, in steady state, covers every movement made while
+ *    it was invisible: the audit that ran just before that pass left it visible
+ *    (healthy or healed), so the invisibility began after the baseline.
+ *    Otherwise — a month whose full pass was off or pre-empted, or drift older
+ *    than one cycle — it converges on the family's next stock movement or a
+ *    manual push; the summary line names the healed anchors (`amostraCurados`)
+ *    for exactly that push.
  */
 
 /** Shared onSchedule options minus the schedule itself (see the module doc). */
@@ -186,5 +244,63 @@ export const sweepMercadoLivreStockReconciliacao = onSchedule(
       return;
     }
     await runAndLog('reconciliacao');
+  },
+);
+
+/**
+ * The MONTHLY link audit (#1200) — 02:30 America/Sao_Paulo on the 1st, half an
+ * hour before the force-all above, so the classes it heals are enumerable again
+ * by the time that pass runs. Not a tier: it sends nothing (module doc, "The
+ * FOURTH schedule").
+ *
+ * ⚠️ Its OWN options literal, never `sweepScheduleOptions`: that helper binds
+ * the ML app secrets, and the audit makes zero ML calls. `index.test.ts`
+ * asserts the endpoint carries no `MERCADO_LIVRE_CLIENT_ID`.
+ *
+ * ⚠️ Gated by the master flag alone (inside `runAuditoriaNaoEnumerados`), NEVER
+ * by `STOCK_RECONCILIACAO_FLAG_ENV` — owner decision D2: it runs even with the
+ * reconciliação valve off, because that valve rations ML quota and the audit
+ * spends none. A source-read test in `index.test.ts` pins that this handler
+ * names no such flag; keep the handler self-contained (no shared helper that
+ * could read one on its behalf).
+ *
+ * No try/catch: per-conta Firestore failures are already contained inside the
+ * run and come back as `error` on that conta's result; anything else is a bug
+ * and must fail the invocation loudly (root `CLAUDE.md` rule 6).
+ */
+export const sweepMercadoLivreAnunciosNaoEnumerados = onSchedule(
+  {
+    schedule: '30 2 1 * *',
+    timeZone: 'America/Sao_Paulo',
+    // Cloud Scheduler does not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
+    // No `secrets:` — deliberately (doc above). 540 s is the run's hard stop;
+    // the audit's own time budget (`AUDITORIA_ORCAMENTO_MS`, 400 s) leaves the
+    // rest for the last in-flight write and the per-conta log lines.
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const inicio = Date.now();
+    const result = await runAuditoriaNaoEnumerados(getDb(), { agora: () => Date.now() });
+    if (!result.enabled) {
+      logger.info(`${AUDITORIA_LOG_PREFIX} disabled (${STOCK_SYNC_FLAG_ENV} != '1') — no-op`);
+      return;
+    }
+    // THE summary line — its message is exactly AUDITORIA_LOG_PREFIX (the
+    // per-conta lines append `: conta concluída`), which is what the #948 cost
+    // step greps to attribute the audit separately from the stock tiers.
+    logger.info(AUDITORIA_LOG_PREFIX, resumirAuditoria(result, Date.now() - inicio));
+    const errors = result.contas.filter((c) => c.error != null);
+    if (errors.length > 0) {
+      logger.warn(`${AUDITORIA_LOG_PREFIX} had per-conta failures`, {
+        errors: errors.slice(0, 10).map((c) => ({ integracaoId: c.integracaoId, error: c.error })),
+      });
+    }
+    if (result.errorInativas != null) {
+      logger.warn(`${AUDITORIA_LOG_PREFIX} inactive-conta pass contained a Firestore failure`, {
+        error: result.errorInativas,
+        inativasResolvidas: result.inativasResolvidas,
+      });
+    }
   },
 );

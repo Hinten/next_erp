@@ -22,17 +22,53 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *
  * ## The writer inventory, whole
  *
- * Four groups of fields have a named writer set, and none of the four overlap:
- *  - **`item_status` + `estadoAnuncio`** — FOUR writers, enumerated on
+ * Six groups of fields have a named writer set, and none of the six overlap:
+ *  - **`item_status` + `estadoAnuncio`** — FIVE writers, enumerated on
  *    {@link shopeeItemStatusSchema} below;
  *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
  *    sender. Nothing clears them but the sender's own clean-send path;
- *  - **`kitNativo`** (step 12) — **ONE** writer, step 9's product import;
+ *  - **`kitNativo`** (step 12) — **THREE** writer sites since step 19 (#1527),
+ *    ONE rule: each writes `ehKitDe()` of the `get_item_base_info` row it just
+ *    READ, with ONE exception. (1) Step 9's product import. Since step 19 that
+ *    import writes a NEW native-kit listing link (its cascade found none) at a
+ *    DERIVED doc id — `idDoVinculoDeKit(integracaoId, item_id)`, `apps/shopee`'s
+ *    `kits/idsKit.ts` — instead of an auto id, the id the kit create writes
+ *    too, so the two land on ONE document; a link the cascade finds keeps its
+ *    id, and an ordinary listing still gets an auto id. (2) Step 11's
+ *    write-back #2 (`anuncios/publicarAnuncio.ts`), from its read-back — so an
+ *    ordinary listing step 11 created stops reading `null` for ever. (3) The
+ *    native-kit arms (`kits/vinculosKit.ts`): the ONE link write right after a
+ *    successful `add_kit_item` writes the LITERAL `true` — the exception, which
+ *    that call's own 200 proves, so a crash before the read-back still leaves
+ *    steps 12/13 treating the listing as a kit — and their #2 overwrites it
+ *    with `ehKitDe` of the read-back;
+ *  - **`receitaKitConferida`** (step 19, on a KIT-MODEL `variashopee`) — ONE
+ *    rule for every writer site: each writes `chaveReceitaKitErp` of the ERP
+ *    recipe a READ-BACK of Shopee's live kit just folded EQUAL to. THREE writer
+ *    sites: step 9's kit import (the recipe it writes IS the read-back, so the
+ *    stamp is fold-equal by construction); the kit completion after a create
+ *    — criar, recriar, converter — (`kits/aplicarKit.ts`'s `completarKit`,
+ *    through `kits/vinculosKit.ts`), which stamps a child only when ITS
+ *    read-back model folds equal and writes `null` on a new row otherwise; and
+ *    a fold-EQUAL republish (`kits/republicarKit.ts`), bound and appended
+ *    children alike. Never on a write's 200: Shopee answers 200 to a kit
+ *    quantity change it silently ignores. Re-stamps are flat `mergeIfExists`,
+ *    never a full `set`. Nothing reads it to decide a Shopee write — only the
+ *    L4 aviso decision (`reavaliarAvisoDeReceitaKit`) reads it;
  *  - **the ten `preco*` scalars** (step 13) — **ONE** writer, the price
  *    sender; nothing clears them but its clean send; none is ever read to
- *    decide a send. Six sit on the item doc, four on each model doc.
+ *    decide a send. Six sit on the item doc, four on each model doc;
+ *  - **the SUPERSEDED pair** `substituidoPorLinkDocId` + `substituidoEm` (step
+ *    19, #1527, L8) — **ONE** writer, `carimbarSubstituicao` (`apps/shopee`'s
+ *    `kits/vinculosKit.ts`), reached from exactly two places: the "converter em
+ *    kit nativo" step that supersedes the ordinary listing it replaced, and a
+ *    recriar whose `delete_item` did not take (the old native kit stays live,
+ *    superseded by the new one). A flat `merge` of the two scalars; re-running
+ *    it re-writes the same pointer. Nothing clears it. Only PUBLISH reads it
+ *    (to skip the link) and the live-link resolver behind re-verify, status and
+ *    pause (to rank it last) — steps 12/13 and the order cascade ignore it.
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
- * fingerprint and never writes either, so it can never race the four above.
+ * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
  *
  * Wire notes (from the parity audit, #289 + #363, corrected by #1519):
@@ -65,7 +101,7 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  * `get_item_violation_info`, `get_kit_item_info`). Widened from
  * `NORMAL`/`UNLIST` by step 9 (#1517).
  *
- * ⚠️ FOUR writers now, and no ordering guard beyond "last read wins":
+ * ⚠️ FIVE writers now, and no ordering guard beyond "last read wins":
  *  - the product IMPORT writes whatever `get_item_base_info` just reported —
  *    step 9 (#1517);
  *  - the publish READ-BACK writes what `get_item_base_info` reports once the
@@ -74,8 +110,16 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    read-back of the same call, never the REQUESTED flag: `success_list[].unlist`
  *    is an echo of what we asked for, not a status — step 11;
  *  - the push handlers (push_code 16 and 27) RE-READ `get_item_base_info` and
- *    write that, never a status taken from the push body — step 11.
- * All four write only what they just READ from the one authoritative call, so a
+ *    write that, never a status taken from the push body — step 11;
+ *  - the native-kit arms' #2 (`apps/shopee`'s `kits/vinculosKit.ts`) write the
+ *    read-back `get_item_base_info` of a kit they just created, completed or
+ *    republished — step 19 (#1527). The same writer folds a linked kit a
+ *    create-arm run reads GONE (a batched status outside the live set, or no
+ *    row at all) to `estadoAnuncio: 'removido'` alone, leaving `item_status`
+ *    untouched — the reverify's not-found shape. And it writes the recriar's
+ *    read-back of the OLD kit after its `delete_item`: Shopee keeps a deleted
+ *    kit readable as `SELLER_DELETE`, which folds to `removido`.
+ * All five write only what they just READ from the one authoritative call, so a
  * replay in any order converges. An earlier revision of this docblock called the
  * field push-only (true before step 9), then said TWO writers (true before step
  * 11). ⚠️ STILL FOUR after step 12 (#1520): the stock sender READS this field
@@ -87,10 +131,17 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  * push carried no status at all; push 18 carries the real one and the handler
  * still re-reads it — `guide 18` / `guide 746`: a push never replaces the API.
  *
- * ⚠️ `SELLER_DELETE` / `SHOPEE_DELETE` are members because the wire has them,
- * NOT because anything writes them: the import REFUSES a deleted listing
- * outright (`ShopeeImportBlockedError`, motivo `item-deletado`) — never a
- * produto from a deleted listing — and the push writes only `UNLIST`.
+ * ⚠️ `SELLER_DELETE` / `SHOPEE_DELETE` are written ONLY as a READ of a listing
+ * Shopee deleted but still serves (a deleted item stays readable for 90 days):
+ * the re-verify and the two listing pushes store whatever `get_item_base_info`
+ * reports, and since step 19 (#1527) the recriar's read-back of the OLD kit
+ * after its `delete_item` stores `SELLER_DELETE` the same way — the writer that
+ * makes this member reachable on purpose. Either folds to `estadoAnuncio:
+ * 'removido'`. No writer ever INVENTS one: a listing Shopee no longer answers
+ * for at all writes `estadoAnuncio: 'removido'` and no `item_status` (the
+ * legacy defect stamped `SELLER_DELETE` from a 404). The import still REFUSES a
+ * deleted listing outright (`ShopeeImportBlockedError`, motivo `item-deletado`)
+ * — never a produto from a deleted listing.
  *
  * ⚠️ The pre-2024 `DELETED` spelling (`announcement 769`/`841`, effective
  * 2024-01-18) is deliberately ABSENT. A migrated link doc may still hold it;
@@ -295,7 +346,7 @@ export const produtoShopeeLinkSchema = z
      * The folded state of this listing — {@link estadoAnuncioShopeeSchema}.
      * `null` means NEVER FOLDED (a step-9 link), which is not evidence of
      * anything and is deliberately treated as movable/live, never as dead.
-     * Written by all four `item_status` writers, from the same read.
+     * Written by all five `item_status` writers, from the same read.
      */
     estadoAnuncio: estadoAnuncioShopeeSchema.nullable().default(null),
     /**
@@ -429,12 +480,23 @@ export const produtoShopeeLinkSchema = z
      * `dadosLinkListagem` (`produtos/mapeamento.ts`) — so the field converges
      * to DATA on every import rather than staying three-valued for ever.
      * ⚠️ Wired only on 2026-09-28; until then this paragraph described a stamp
-     * nothing wrote.
+     * nothing wrote. Since step 19 (#1527) step 11's publish read-back stamps
+     * it the same way, and a native kit CREATED by the ERP is `true` from the
+     * link write that follows its `add_kit_item` on (the literal the create's
+     * own 200 proves; the read-back then rewrites it from `ehKitDe()`), so a
+     * crash between the two can never leave a native kit reading as an
+     * ordinary listing.
      *
-     * `null` = a link no import has stamped yet — the legacy corpus, a link
-     * imported before 2026-09-28, or one a step-11 first publish created —
-     * **it SENDS**, which is the safe direction, because no native Shopee kit
-     * exists in this catalogue today. Only `kitNativo === true` refuses.
+     * `null` = a link nothing has read back yet — the legacy corpus, a link
+     * imported before 2026-09-28, or one a step-11 first publish created before
+     * its read-back landed. Step 12 **SENDS** stock for it, the safe direction
+     * for an ordinary listing; only `kitNativo === true` refuses, and that
+     * refusal is real now that the publish route creates native kits (and
+     * step 9 imports any made in Seller Centre): Shopee derives a kit's stock
+     * from its components, so step 12 answers `kit-derivado`.
+     * Step 13 is the opposite since step 19 (L5): a `kitNativo === true`
+     * listing's PRICE is planned and sent like any other, through
+     * `update_kit_item` instead of `update_price`.
      */
     kitNativo: z.boolean().nullable().default(null),
     /**
@@ -511,7 +573,7 @@ export const produtoShopeeLinkSchema = z
      *
      * ⚠️ `||` between the two mechanisms, **`&&` between the two fingerprint
      * halves — either one moving LIFTS the skip.** That is the whole design:
-     * **nobody writes a clear to lift it.** The four `item_status` writers
+     * **nobody writes a clear to lift it.** The five `item_status` writers
      * enumerated on {@link shopeeItemStatusSchema} lift it by doing their job, so
      * the refusal expires against the reading that caused it instead of against a
      * clock or a second writer that could disagree. The stock sender's clean-send
@@ -632,6 +694,31 @@ export const produtoShopeeLinkSchema = z
      * same length as `estoqueRecusaMensagem`.
      */
     precoRecusaMensagem: z.string().nullable().default(null),
+
+    // === step 19 (#1527) — native kits: the SUPERSEDED pair (L8). Same rule as
+    // the blocks above — bare consts on this `.passthrough()` shape ⇒ no ruleset
+    // regeneration — the same nullable/default discipline, and FLAT for the same
+    // `mergeIfExists` reason.
+    //
+    // ⚠️ "Superseded" is NOT "removed". The listing it marks is still LIVE on
+    // Shopee and may still be selling, so it changes only which link a PUBLISH
+    // addresses: the stock and price syncs (steps 12/13) and the order cascade
+    // keep serving it until the listing is deleted in Seller Centre and a
+    // reverify folds it to `removido`. A stale stock on a selling listing
+    // oversells.
+    //
+    // ⚠️ Every stamp below is MILLISECONDS.
+
+    /**
+     * Set on the OLD link only: the doc id of the link that replaced it — the
+     * ordinary listing a "converter em kit nativo" replaced, or the old native
+     * kit of a recriar whose delete did not take. `null` (or absent) = not
+     * superseded. Read through {@link ehVinculoSubstituido}, never compared raw:
+     * an empty string is "not superseded" too.
+     */
+    substituidoPorLinkDocId: z.string().nullable().default(null),
+    /** MILLISECONDS. When {@link substituidoPorLinkDocId} was written. */
+    substituidoEm: z.number().int().nullable().default(null),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;
@@ -657,6 +744,13 @@ export const variacaoShopeeLinkSchema = z
      * operator can see it, because a delete throws away the only record that the
      * ERP ever bound this variação to that model. A model that comes back simply
      * clears the stamp.
+     *
+     * ⚠️ Stamped only by a read of THIS row's own listing (the one its
+     * `produtoShopeeOuterRef` names): since step 19 (#1527) the model-list sync
+     * is per listing, because one child can carry the rows of two live listings
+     * (a native kit beside the ordinary listing it superseded) and the steps
+     * 12/13 planners drop a stamped row — a reading of one listing marking the
+     * other's rows would silently stop serving a listing that still sells.
      */
     modeloAusenteEm: z.number().int().nullable().default(null),
 
@@ -715,6 +809,24 @@ export const variacaoShopeeLinkSchema = z
      * its own row's reason.
      */
     precoRecusaCodigo: z.string().nullable().default(null),
+
+    // === step 19 (#1527) — one field on a KIT-MODEL row, never a gate on a send.
+
+    /**
+     * The ERP recipe fingerprint of this row's CHILD at the last VERIFIED
+     * equality: written only when a read-back of Shopee's live kit model came out
+     * equal to the ERP recipe, never on a write's 200 (Shopee answers 200 to a
+     * kit quantity change it silently ignores). `null` = never verified equal —
+     * an ordinary (non-kit) model row, a row whose read-back differed, or one
+     * written before step 19.
+     *
+     * ⚠️ A FINGERPRINT of the ERP side, not a recipe: it is never read to build
+     * or compare a Shopee request, and never sent to Shopee. It exists for the
+     * L4 aviso decision, which compares it with the child's CURRENT fingerprint
+     * OFFLINE (the produto trigger holds no Shopee token) to tell whether the
+     * kit on Shopee still carries the recipe the ERP now has.
+     */
+    receitaKitConferida: z.string().nullable().default(null),
   })
   .passthrough();
 export type VariacaoShopeeLink = z.infer<typeof variacaoShopeeLinkSchema>;
@@ -815,4 +927,83 @@ export function podeMoverAnuncioShopee(
     return { pode: false, motivo: 'ja-pausado' };
   }
   return { pode: true };
+}
+
+/* -------------------------------------------------------------------------- */
+/*         Step 19 (#1527) — which native-kit link is live, which sells        */
+/* -------------------------------------------------------------------------- */
+
+/** A Shopee `item_id` that can address a listing: a positive safe integer. */
+function ehItemIdEnderecavel(itemId: unknown): boolean {
+  return typeof itemId === 'number' && Number.isSafeInteger(itemId) && itemId > 0;
+}
+
+/**
+ * Whether this link was SUPERSEDED (L8): `substituidoPorLinkDocId` is a
+ * non-empty string. `null`, an absent key, `''` or a non-string are "not
+ * superseded" — a stray empty string must not silently hide a live link from
+ * publish.
+ */
+export function ehVinculoSubstituido(l: { readonly substituidoPorLinkDocId?: unknown }): boolean {
+  const v = l.substituidoPorLinkDocId;
+  return typeof v === 'string' && v !== '';
+}
+
+/**
+ * THE "live native-kit link" predicate (step 19, L9): Shopee reports the
+ * listing as a kit (`kitNativo === true`), it is not `removido`, it is not
+ * superseded, and its `item_id` is a positive safe integer.
+ *
+ * ONE predicate on purpose — a surface asking "does this produto have a native
+ * Shopee kit to publish to / warn about?" asks this rather than re-deriving it,
+ * so a publish arm, an operator notice and an import cannot disagree about
+ * which links count.
+ * Under L9 no item-less native link exists, so a link without an addressable
+ * `item_id` is never "active", whatever it stores.
+ *
+ * ⚠️ Strict `kitNativo === true`: `null` (a link no import or publish has
+ * stamped) is NOT a native kit — the same direction as the stock gate, where
+ * only `true` changes behaviour.
+ *
+ * ⚠️ Not the question "does this kit still SELL?" — a superseded native kit can
+ * still be selling. That is {@link ehKitNativoQueAindaVende}.
+ */
+export function ehKitNativoAtivo(l: {
+  readonly kitNativo?: unknown;
+  readonly estadoAnuncio?: unknown;
+  readonly substituidoPorLinkDocId?: unknown;
+  readonly item_id?: unknown;
+}): boolean {
+  return (
+    l.kitNativo === true &&
+    l.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido &&
+    !ehVinculoSubstituido(l) &&
+    ehItemIdEnderecavel(l.item_id)
+  );
+}
+
+/**
+ * Whether this native-kit link's listing may still be SELLING on Shopee: an
+ * active one ({@link ehKitNativoAtivo}), OR a superseded native kit that is
+ * neither `removido` nor `banido` and has an addressable `item_id`.
+ *
+ * ⚠️ The row filter of the L4 aviso decision ONLY. A recriar whose
+ * `delete_item` did not take leaves the old kit superseded but still listed,
+ * selling the OLD composition — so its rows must keep the "kit on Shopee with
+ * the old recipe" aviso open until the listing is really gone. Publish never
+ * asks this: it addresses only {@link ehKitNativoAtivo}.
+ *
+ * A superseded `banido` kit is excluded (Shopee is not selling it); a
+ * superseded `em_revisao`/`pausado`/`desconhecido`/`null` reading still counts —
+ * not proof the listing stopped selling.
+ */
+export function ehKitNativoQueAindaVende(l: Parameters<typeof ehKitNativoAtivo>[0]): boolean {
+  if (ehKitNativoAtivo(l)) return true;
+  return (
+    l.kitNativo === true &&
+    ehVinculoSubstituido(l) &&
+    l.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido &&
+    l.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.banido &&
+    ehItemIdEnderecavel(l.item_id)
+  );
 }

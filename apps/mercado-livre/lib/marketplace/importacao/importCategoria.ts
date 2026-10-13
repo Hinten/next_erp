@@ -98,15 +98,26 @@ export async function importCategoriaChain(
   }
 
   const chain = buildCategoriaChain(detail, now);
+  await criarCadeiaCategoria(deps.db, chain);
+  return chain.leafOuterRef;
+}
+
+/**
+ * Write a built chain, CREATE-IF-ABSENT: an existing `categorias/<id>` doc —
+ * Flutter-written or ERP-curated — is never overwritten. Shared by the import
+ * and the #847 recategorization aviso, which creates the category ML moved a
+ * listing INTO so the operator can actually pick it on the produto.
+ *
+ * Firestore failures propagate (retryable); ALREADY_EXISTS is the expected,
+ * idempotent outcome for every node that is already there.
+ */
+export async function criarCadeiaCategoria(db: Firestore, chain: CategoriaChain): Promise<void> {
   for (const doc of chain.docs) {
     try {
-      await categoriaCollection
-        .docRef(deps.db, {}, doc.id)
-        .create(categoriaCollection.parse(doc.data));
+      await categoriaCollection.docRef(db, {}, doc.id).create(categoriaCollection.parse(doc.data));
     } catch (err) {
       if (isAlreadyExists(err)) continue; // an existing categoria (either app) is never overwritten
       throw err;
     }
   }
-  return chain.leafOuterRef;
 }

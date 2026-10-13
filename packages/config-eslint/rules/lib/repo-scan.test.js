@@ -123,9 +123,10 @@ describe('gitCheckAttr', () => {
     expect(__repoScanMissCount()).toBe(0);
   });
 
-  it('reads the attribute .gitattributes pins, and reports unset paths', () => {
+  it('reads the attribute .gitattributes pins, and reports unspecified attributes', () => {
     const attrs = gitCheckAttr('eol', ['.husky/pre-commit', 'package.json']);
     expect(attrs['.husky/pre-commit']).toBe('lf');
-    expect(attrs['package.json']).toBe('unspecified');
+    expect(attrs['package.json']).toBe('lf');
+    expect(gitCheckAttr('diff', ['package.json'])['package.json']).toBe('unspecified');
   });
 });

@@ -1,7 +1,7 @@
 /**
  * Mercado Livre channel library — platform-neutral (fetch-only, no Firestore).
  *
- * The OAuth core (`oauth.ts`), the typed REST client (`api.ts`, 62 operations),
+ * The OAuth core (`oauth.ts`), the typed REST client (`api.ts`, 63 operations),
  * the error taxonomy (`errors.ts`), the payload schemas (`types.ts`) and the pure
  * ML↔ERP mappers ship here. Token persistence, refresh and every stateful flow
  * are driven by the App Hosting backend (`apps/mercado-livre`), which holds the

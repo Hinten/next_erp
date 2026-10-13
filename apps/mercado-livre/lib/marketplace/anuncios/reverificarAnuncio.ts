@@ -217,7 +217,14 @@ export async function reverificarAnuncio(
     // Drop the stale diagnosis so the produto tab stops showing a fault the
     // listing may no longer have. `moderacoes` comes AFTER the spread: it was
     // just read from ML, so it overrides the healed `[]` rather than the reverse.
-    extra: { ...clearFalha(), moderacoes },
+    // #847: ML's category too — it can recategorize a listing on its own, and
+    // this button is the operator's way to pull the truth NOW. Fill-only: an
+    // omitted field never nulls a stored one.
+    extra: {
+      ...clearFalha(),
+      moderacoes,
+      ...(item.category_id != null ? { category_id: item.category_id } : {}),
+    },
   });
 
   return {
@@ -292,6 +299,7 @@ async function reverificarFamilia(
       // path states at length.
       moderacoes: await consultarModeracoes(api, membro.itemId, lido.status, lido.subStatus),
       userProductId: lido.userProductId,
+      categoryId: lido.categoryId,
     });
     relatorio.push({
       itemId: membro.itemId,
@@ -341,6 +349,8 @@ interface LeituraDeMembro {
   status: string | null;
   subStatus: string[] | null;
   userProductId: string | null;
+  /** #847 — fill-only, folded into the parent's category; `null` = not learned. */
+  categoryId: string | null;
 }
 
 /**
@@ -384,6 +394,9 @@ async function lerMembros(
       // #706: free here, and this is one of the few surfaces that sees a
       // member's own item — the field is written fill-only.
       'user_product_id',
+      // #847: ML recategorizes on its own; the family's category is folded
+      // from its members' readings. Free here for the same reason.
+      'category_id',
     ]);
     const posicional = resposta.length === lote.length;
     resposta.forEach((entrada, indice) => {
@@ -396,7 +409,7 @@ async function lerMembros(
         // would leave a stale `active` standing and the sweep would keep trying.
         // It still cannot cancel the family on its own: `foldFamilyStatus` needs
         // every member closed.
-        out.set(id, { status: 'closed', subStatus: [], userProductId: null });
+        out.set(id, { status: 'closed', subStatus: [], userProductId: null, categoryId: null });
         return;
       }
       if (entrada.code !== 200) return;
@@ -404,6 +417,7 @@ async function lerMembros(
         status: typeof body.status === 'string' ? body.status : null,
         subStatus: Array.isArray(body.sub_status) ? (body.sub_status as string[]) : null,
         userProductId: typeof body.user_product_id === 'string' ? body.user_product_id : null,
+        categoryId: typeof body.category_id === 'string' ? body.category_id : null,
       });
     });
   }

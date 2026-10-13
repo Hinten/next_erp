@@ -26,6 +26,9 @@ vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => firestoreD
 vi.mock('@/lib/freight/client', () => ({ useFreightClient: () => clientes.freight }));
 vi.mock('@/lib/mercado-livre/client', () => ({ useMercadoLivreClient: () => clientes.ml }));
 vi.mock('@/lib/shopee/client', () => ({ useShopeeClient: () => clientes.shopee }));
+vi.mock('@/lib/auth/usePermission', () => ({
+  usePermission: () => ({ allowed: true, loading: false }),
+}));
 vi.mock('@/lib/checkout/etiqueta/registry', () => ({
   emitirOuImprimirEtiqueta: (input: EtiquetaProviderInput) => emitirMock(input),
 }));
@@ -135,9 +138,34 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe('EtiquetaRowAction — alcance da Shopee (#1523)', () => {
+  it('tracks an ML shipment from the row without requesting a label', async () => {
+    const rastrear = vi
+      .fn()
+      .mockResolvedValue({ name: 'Carrier', url: 'https://carrier.example/track' });
+    clientes.ml = { rastrear };
+    const replace = vi.fn();
+    vi.spyOn(window, 'open').mockReturnValue({
+      opener: null,
+      closed: false,
+      location: { replace },
+    } as unknown as Window);
+    renderComHost(
+      pedidoCom({
+        externalOptionIntegracao: INTEGRACAO_FRETE.mercadoLivre,
+        externalId: '555',
+        codRastreio: null,
+      }),
+    );
+    fireEvent.click(botao('Rastrear'));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('https://carrier.example/track'));
+    expect(rastrear).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(emitirMock).not.toHaveBeenCalled();
+  });
+
   it('um pedido Shopee SEM integracaoFreteOuterRef mostra os dois botões, sem ler int_frete', () => {
     renderComHost(PEDIDO_SHOPEE);
     expect(botao(ZPL2)).toBeTruthy();

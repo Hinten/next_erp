@@ -197,8 +197,37 @@ describe('montarItensDePreco — rung 2: `sem-item-id`', () => {
 /*                       rung 3 — the native kit (M52/M24)                     */
 /* -------------------------------------------------------------------------- */
 
-describe('montarItensDePreco — rung 3: o kit NATIVO da Shopee, nunca o kit do ERP', () => {
-  it('⚠️ PAR (M52) — `kitNativo: true` no VÍNCULO ⇒ `kit-derivado`, nenhum item', () => {
+describe('montarItensDePreco — rung 3: o kit NATIVO da Shopee é PLANEJADO (passo 19, L5)', () => {
+  /** Um kit nativo de DOIS modelos, cada um no SEU filho — as linhas que a criação grava. */
+  const filhosDoKit = (): FilhoDePreco[] => [
+    filho('filho-azul', [varLink(LINK_A, MODELO, 'var-azul')]),
+    filho('filho-verde', [varLink(LINK_A, MODELO + 1, 'var-verde')]),
+  ];
+
+  it('⚠️ PAR (M151) — `kitNativo: true` com os modelos vinculados ⇒ UM item, com os MESMOS modelos de um anúncio comum; nenhum pulo', () => {
+    const kit = montarItensDePreco(
+      familia({ links: [link({ kitNativo: true })], children: filhosDoKit() }),
+      INTEGRACAO,
+    );
+    const comum = montarItensDePreco(familia({ children: filhosDoKit() }), INTEGRACAO);
+    expect(kit.pulos).toEqual([]);
+    expect(kit.itens).toEqual([
+      {
+        produtoId: ANCORA,
+        linkDocId: LINK_A,
+        itemId: ITEM_A,
+        modelos: [
+          { modelId: MODELO, produtoId: 'filho-azul', varLinkDocId: 'var-azul' },
+          { modelId: MODELO + 1, produtoId: 'filho-verde', varLinkDocId: 'var-verde' },
+        ],
+      },
+    ]);
+    // O plano NÃO carrega o transporte: o item do kit é byte a byte o do comum
+    // (a fila persistida não muda; o G9 escolhe `update_kit_item` pela leitura).
+    expect(kit).toEqual(comum);
+  });
+
+  it('⚠️ PAR (M153) — `kitNativo: true` SEM vínculo de modelo ⇒ `sem-modelos`, NUNCA o item sem modelos do degrau 8', () => {
     const plano = montarItensDePreco(familia({ links: [link({ kitNativo: true })] }), INTEGRACAO);
     expect(plano.itens).toEqual([]);
     expect(plano.pulos).toEqual([
@@ -206,36 +235,66 @@ describe('montarItensDePreco — rung 3: o kit NATIVO da Shopee, nunca o kit do 
         produtoId: ANCORA,
         linkDocId: LINK_A,
         itemId: ITEM_A,
-        motivo: MOTIVO_PRECO_SHOPEE.kitDerivado,
+        motivo: MOTIVO_PRECO_SHOPEE.semModelos,
         modelos: [],
       },
     ]);
+    // Um vínculo de modelo de OUTRO anúncio não conta (fold 2): o kit segue sem modelos.
+    const deOutroAnuncio = montarItensDePreco(
+      familia({
+        links: [link({ kitNativo: true })],
+        children: [filho('filho-1', [varLink(LINK_B, MODELO, 'var-1')])],
+      }),
+      INTEGRACAO,
+    );
+    expect(deOutroAnuncio.pulos.map((p) => p.motivo)).toEqual([MOTIVO_PRECO_SHOPEE.semModelos]);
   });
 
-  it('⚠️ QUASE-IGUAL (M52/M24) — um kit do ERP (`ehKit`, `ehKitVirtual`) com `kitNativo` falso ou ausente É planejado', () => {
+  it('⛔ QUASE-IGUAL (M153/M24) — o MESMO anúncio sem vínculo de modelo e `kitNativo` falso, ausente ou nulo ⇒ UM item SEM modelos (o preço da âncora)', () => {
     // A família não carrega flag de produto nenhuma; os campos extras abaixo
-    // chegam só para provar que nada os lê.
+    // chegam só para provar que nada os lê (um kit do ERP é um anúncio comum).
     const kitDoErp = { ...familia(), ehKit: true, ehKitVirtual: true };
     for (const kitNativo of [false, undefined, null]) {
       const plano = montarItensDePreco({ ...kitDoErp, links: [link({ kitNativo })] }, INTEGRACAO);
       expect(plano.pulos).toEqual([]);
-      expect(plano.itens).toHaveLength(1);
+      expect(plano.itens).toEqual([
+        { produtoId: ANCORA, linkDocId: LINK_A, itemId: ITEM_A, modelos: [] },
+      ]);
     }
   });
 
-  it('QUASE-IGUAL — só o booleano `true` é kit nativo: `"true"` e `1` são planejados', () => {
+  it('QUASE-IGUAL — só o booleano `true` é kit nativo: `"true"` e `1` sem modelos são o item SEM modelos', () => {
     for (const kitNativo of ['true', 1]) {
       const plano = montarItensDePreco(familia({ links: [link({ kitNativo })] }), INTEGRACAO);
-      expect(plano.itens).toHaveLength(1);
+      expect(plano.pulos).toEqual([]);
+      expect(plano.itens).toEqual([
+        { produtoId: ANCORA, linkDocId: LINK_A, itemId: ITEM_A, modelos: [] },
+      ]);
     }
   });
 
-  it('a ORDEM: sem `item_id` vence o kit (rung 2 antes do 3)', () => {
+  it('a ORDEM: sem `item_id` vence o kit (rung 2 antes de tudo o que o kit decide)', () => {
     const plano = montarItensDePreco(
       familia({ links: [link({ item_id: 0, kitNativo: true })] }),
       INTEGRACAO,
     );
     expect(plano.pulos.map((p) => p.motivo)).toEqual([MOTIVO_PRECO_SHOPEE.semItemId]);
+  });
+
+  it('o kit passa pelos degraus 5–7 como qualquer anúncio: um filho com DOIS modelos do kit ⇒ `forma-de-modelo-divergente`', () => {
+    const plano = montarItensDePreco(
+      familia({
+        links: [link({ kitNativo: true })],
+        children: [
+          filho('filho-1', [
+            varLink(LINK_A, MODELO, 'var-1'),
+            varLink(LINK_A, MODELO + 1, 'var-2'),
+          ]),
+        ],
+      }),
+      INTEGRACAO,
+    );
+    expect(plano.pulos.map((p) => p.motivo)).toEqual([MOTIVO_PRECO_SHOPEE.formaDeModeloDivergente]);
   });
 });
 
@@ -283,12 +342,12 @@ describe('montarItensDePreco — rung 4: `anuncio-removido` pelo que está GRAVA
     }
   });
 
-  it('a ORDEM: o kit vence o removido (rung 3 antes do 4), e o removido vence a forma dos modelos', () => {
+  it('a ORDEM: o degrau 4 vale para o kit nativo (removido vence o kit sem modelos), e o removido vence a forma dos modelos', () => {
     const kitRemovido = montarItensDePreco(
       familia({ links: [link({ kitNativo: true, item_status: 'SELLER_DELETE' })] }),
       INTEGRACAO,
     );
-    expect(kitRemovido.pulos.map((p) => p.motivo)).toEqual([MOTIVO_PRECO_SHOPEE.kitDerivado]);
+    expect(kitRemovido.pulos.map((p) => p.motivo)).toEqual([MOTIVO_PRECO_SHOPEE.anuncioRemovido]);
 
     const removidoComFormaRuim = montarItensDePreco(
       familia({
@@ -496,7 +555,7 @@ describe('montarItensDePreco — os modelos DESTE anúncio', () => {
     expect(plano.pulos[0]?.itemId).toBe(ITEM_A);
   });
 
-  it('a recusa de um anúncio não toca o vizinho: kit num vínculo, item no outro', () => {
+  it('a recusa de um anúncio não toca o vizinho: kit SEM modelos num vínculo, item no outro', () => {
     const plano = montarItensDePreco(
       familia({
         links: [link({ kitNativo: true }), link({ linkDocId: LINK_B, item_id: ITEM_B })],
@@ -504,9 +563,34 @@ describe('montarItensDePreco — os modelos DESTE anúncio', () => {
       INTEGRACAO,
     );
     expect(plano.pulos.map((p) => [p.linkDocId, p.motivo])).toEqual([
-      [LINK_A, MOTIVO_PRECO_SHOPEE.kitDerivado],
+      [LINK_A, MOTIVO_PRECO_SHOPEE.semModelos],
     ]);
     expect(plano.itens.map((i) => i.linkDocId)).toEqual([LINK_B]);
+  });
+
+  it('o kit nativo e o anúncio comum ANTIGO do mesmo produto (L8): os dois são planejados, cada um com os SEUS modelos', () => {
+    // O conversor deixa a listagem comum viva e vendendo; o passo 13 continua
+    // servindo-a (R-12(c)) ao lado do kit novo. Nada aqui lê "substituído".
+    const plano = montarItensDePreco(
+      familia({
+        links: [
+          link({ linkDocId: LINK_A, item_id: ITEM_A, kitNativo: true }),
+          link({ linkDocId: LINK_B, item_id: ITEM_B, substituidoPorLinkDocId: LINK_A }),
+        ],
+        children: [
+          filho('filho-1', [
+            varLink(LINK_A, MODELO, 'var-kit'),
+            varLink(LINK_B, MODELO + 7, 'var-comum'),
+          ]),
+        ],
+      }),
+      INTEGRACAO,
+    );
+    expect(plano.pulos).toEqual([]);
+    expect(plano.itens.map((i) => [i.linkDocId, i.modelos.map((m) => m.modelId)])).toEqual([
+      [LINK_A, [MODELO]],
+      [LINK_B, [MODELO + 7]],
+    ]);
   });
 
   it('toda linha do plano é da ÂNCORA e usa um motivo do vocabulário', () => {
