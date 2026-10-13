@@ -2567,7 +2567,12 @@ export interface RedriveSemContaResult {
  *   (`findIntegracaoByShopId`, uncached on a miss) before the connect write but
  *   commits its deferred row after this query is not re-driven; it drains on
  *   the daily lane (≤ 24 h + the sweep cadence). The same holds for a hot-sweep
- *   re-process in flight. Latency only — no row is lost.
+ *   re-process in flight, and for a row whose last daily attempt threw a
+ *   TRANSIENT error: the shared sweep's batch-isolation `store.mark` overwrites
+ *   its `erro` with the error's message (this channel does not opt into
+ *   `graduateDeferredTransientErrors`), so it no longer matches
+ *   {@link motivoSemConta} until the next daily attempt re-defers it with the
+ *   canonical reason. Latency only — no row is lost.
  *
  * ⚠️ The query needs the `notificacoesShopee (status ASC, shop_id ASC)`
  * composite. Firestore Enterprise auto-creates none and silently full-scans
