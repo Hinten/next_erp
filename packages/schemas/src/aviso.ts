@@ -386,6 +386,42 @@ export const TIPO_AVISO_LABELS = {
  *    than the current fingerprint (an edit this aviso tracks) is KEPT
  *    (L10(2)): no recipe and no stamp is written for it, so the aviso stays
  *    open and the import reports `receita-divergente`.
+ *  - **Writer — the native-kit create and republish** (`apps/shopee`,
+ *    `kits/aplicarKit.ts`'s `criarKit` and `kits/republicarKit.ts`): each calls
+ *    `reavaliarAvisoDeReceitaKit` ONCE for (conta, kit) AFTER its own stamps —
+ *    motivo `kit-recriado` once a create's completion has stamped every child
+ *    whose READ-BACK folded equal, `republicado-igual` once a republish has
+ *    re-stamped the children its read-back found equal — never a blind
+ *    resolve. A child whose read-back folds DISTINCT keeps a `null` (or its
+ *    old) stamp, so that same decision OPENS the aviso naming it. An uncertain
+ *    create (`incerto`) writes nothing at all, this decision included.
+ *  - **Writer — the recriar, the converter, the re-verify and the listing
+ *    pushes** (`apps/shopee`, `kits/recriarKit.ts`, `anuncios/reverificarAnuncio.ts`
+ *    and `anuncios/pushAnuncio.ts`): the recriar and the converter call
+ *    `reavaliarAvisoDeReceitaKit` ONCE for (conta, kit) as their last step, motivo
+ *    `kit-recriado` — a recriar whose delete did not take leaves the old kit
+ *    superseded and still selling, so its rows keep the aviso OPEN. The
+ *    re-verify (the `reverificar-anuncio` route and the `reverificar:anuncio`
+ *    CLI) and the code 16/27 push handlers call it after any write whose
+ *    resulting `estadoAnuncio` is `removido` on a link whose `kitNativo` is
+ *    `true` — through ONE shared gate, `reavaliarAvisoDeKitRemovido` — with
+ *    motivo `kit-recriado`: the decision answers `sem-kit-ativo` by itself when
+ *    no kit of the produto still sells, and `kit-recriado` only when the deleted
+ *    kit was the superseded old one and the new kit folds equal. An ordinary
+ *    listing never reaches it. No Shopee push reports a SELLER delete, so the
+ *    operator's re-verify is how a Seller-Centre deletion closes this aviso.
+ *  - **Writer — the produto trigger** (`apps/functions`): `onProdutoChanged`
+ *    calls `avisarReceitaKitShopee` (`produtos/avisoReceitaKitShopee.ts`) LAST,
+ *    behind a pure gate on the recipe fingerprint (an ordinary save reads
+ *    nothing). For every (conta, kit) the saved produto's `variashopee` rows
+ *    name, it hands the pair to `reavaliarAvisoDeReceitaKit` with motivo
+ *    `receita-igual-a-shopee` and the event time as `agoraUs` (the staleness
+ *    clock stays the decision's own) — it decides nothing itself and writes
+ *    this tipo only through that shared decision. A produto DELETE is never a
+ *    recipe change, so deleting the child that held the only divergent row
+ *    leaves the aviso open; a later re-import, republish or recriar/converter
+ *    can close it (a sibling's recipe edit re-evaluates the kit too, but with
+ *    every sibling in step it keeps the aviso open for that sibling).
  *
  * ---
  *

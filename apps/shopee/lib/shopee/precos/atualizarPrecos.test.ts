@@ -405,7 +405,10 @@ function familiaComModelos(anchorId: string, itemId: number): FamiliaDePreco {
   };
 }
 
-/** Uma família que o PLANO pula: `kit-derivado` (kit nativo da Shopee). */
+/**
+ * Uma família que o PLANO pula: um kit nativo da Shopee SEM vínculo de modelo
+ * (`sem-modelos` — desde o passo 19 um kit COM modelos é planejado e enviado).
+ */
 function familiaKit(anchorId: string, itemId: number): FamiliaDePreco {
   return {
     anchorId,
@@ -1056,7 +1059,7 @@ describe('o despacho — o PLANO', () => {
     expect(m.enviar).not.toHaveBeenCalled();
     expect(m.lerPrecos).not.toHaveBeenCalled();
     expect(motivosDoShard(m)).toEqual([
-      ['kit-derivado', 'pulado'],
+      ['sem-modelos', 'pulado'],
       ['sem-link', 'pulado'],
     ]);
     expect(jobNoBanco(m)).toMatchObject({
@@ -1796,7 +1799,7 @@ describe('J-1 / D-1 — um cancelamento para o lote DEPOIS do item em voo', () =
       afterAnchorId: null,
       planejamentoConcluido: false,
     });
-    // Nem a linha de pulo do plano (`kit-derivado`) chegou: o lote caiu INTEIRO.
+    // Nem a linha de pulo do plano (`sem-modelos`) chegou: o lote caiu INTEIRO.
     expect(motivosDoShard(m)).toEqual([['job-cancelado', 'nao-tentado']]);
     expect(m.db.lotes).toEqual([]);
     expect(m.avaliarConta).not.toHaveBeenCalled();

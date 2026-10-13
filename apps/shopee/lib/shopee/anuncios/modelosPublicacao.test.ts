@@ -887,6 +887,38 @@ describe('aplicarModelos — os vínculos de variação', () => {
 
     expect(db.patches.filter((x) => x.path.endsWith('variashopee/v-a'))).toEqual([]);
   });
+
+  it('a LISTAGEM do vínculo é filtrada (passo 19): a linha de OUTRA listagem do mesmo filho não é marcada', async () => {
+    // R-12(e): o filho carrega também a linha do kit nativo que substituiu este
+    // anúncio (L8). A leitura DESTE anúncio não conhece o modelo do kit, e uma
+    // sincronização por PRODUTO o marcaria ausente — e os passos 12/13 deixariam
+    // de servir um anúncio que continua vendendo.
+    const db = new FakeDb();
+    semearFilhos(db, FILHO_A);
+    semearVinculo(db, FILHO_A, 'v-a', { model_id: MODEL_A, tier_index: [0] });
+    semearVinculo(db, FILHO_A, 'v-kit', {
+      produtoShopeeOuterRef: `documents/produtos/${PAI}/prodshopee/link-kit`,
+      model_id: 2000458820,
+      tier_index: [0],
+    });
+    const fresca = arvore(['Azul'], [{ model_id: MODEL_A, tier_index: [0] }]);
+    const cliente = clienteFake({ leituras: [fresca, fresca] });
+
+    const p = plano({
+      ehAtualizacao: true,
+      link: LINK,
+      linkDocId: LINK_PAI,
+      filhos: [filho(FILHO_A, 'v-azul')],
+      linksDeVariacao: [vinculo(FILHO_A, 'v-a', MODEL_A, [0])],
+    });
+    const r = await aplicarModelos(deps(db, cliente), p, ITEM_ID, LINK_PAI);
+
+    expect(r.marcados).toBe(0);
+    expect(db.patches.filter((x) => x.path.endsWith('variashopee/v-kit'))).toEqual([]);
+    const doKit = db.store[`produtos/${FILHO_A}/variashopee/v-kit`]?.data;
+    expect(doKit?.model_status).toBe(SHOPEE_MODEL_STATUS.normal);
+    expect(doKit?.modeloAusenteEm).toBeUndefined();
+  });
 });
 
 /* -------------------------------------------------------------------------- */

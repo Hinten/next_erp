@@ -1,9 +1,10 @@
 # `__wire__` — Shopee response bodies, redacted
 
-Twenty-eight bodies today: five for the step-5 order import (#1513), four for
-step 15b's package search (#1744), six for step 17's returns (#1525), four for
-step 18's size charts (#1526) and nine for step 19's native kits (#1527). Two
-provenances, and they are **not equally strong**:
+Forty-six bodies today: five for the step-5 order import (#1513), four for step
+15b's package search (#1744), six for step 17's returns (#1525), four for
+step 18's size charts (#1526) and twenty-seven for step 19's native kits
+(#1527) — nine reads and eighteen writes. Two provenances, and they are **not
+equally strong**:
 
 | file                                               | endpoint                  | provenance                                                                                   | verified against the live API?                                                   |
 | -------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -22,6 +23,24 @@ provenances, and they are **not equally strong**:
 | `get_kit_item_info.sg-apagado.json`                | `get_kit_item_info`       | kit probe #1: the same kit after `delete_item` — it still reads, `SELLER_DELETE`             | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
 | `get_kit_item_info.sg-nao-kit.json`                | `get_kit_item_info`       | kit probe #1: a NON-kit `item_id` — `"error": "."`, "product is not found"                   | ✅ Shopee sent this                                                              |
 | `get_kit_item_limit.sg-http404.json`               | `get_kit_item_limit`      | kit probe #1: a path the sandbox host does not route — HTTP 404, the bare body               | ✅ Shopee sent this — ⚠️ the 404 STATUS is not in the file                       |
+| `add_kit_item.sg.json`                             | `add_kit_item`            | kit probe #1: the create that took — the identical retry of the transient refusal            | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `add_kit_item.sg-too-many-connections.json`        | `add_kit_item`            | kit probe #1: the first create — `product.error_busi`, "Too many connections"                | ✅ Shopee sent this                                                              |
+| `add_kit_item.sg-corpo-vazio.json`                 | `add_kit_item`            | kit probe #1: an empty body — "virtual sku setting is empty"                                 | ✅ Shopee sent this                                                              |
+| `add_kit_item.sg-dois-principais.json`             | `add_kit_item`            | kit probe #2 (SG sandbox, 2026-10-07): a main component on BOTH models                       | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `update_kit_item.sg-sem-item-id.json`              | `update_kit_item`         | kit probe #1: no `item_id` — `"error": "."`, "product is not found"                          | ✅ Shopee sent this                                                              |
+| `update_kit_item.sg-parcial.json`                  | `update_kit_item`         | kit probe #2: ONE model and no tier list — the bare 200 (the other model was KEPT)           | ✅ Shopee sent this                                                              |
+| `update_kit_item.sg-anexar.json`                   | `update_kit_item`         | kit probe #2: `model_id: 0` + the whole tier list — the bare 200 (it was appended)           | ✅ Shopee sent this                                                              |
+| `update_kit_item.sg-quantidade-ignorada.json`      | `update_kit_item`         | kit probe #2: a QUANTITY change — the same bare 200, and the change was IGNORED              | ✅ Shopee sent this                                                              |
+| `get_kit_item_info.sg-quantidade-ignorada.json`    | `get_kit_item_info`       | kit probe #2: the family kit read back after that — three models, quantities unchanged       | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `generate_kit_image.sg-toggle-fechado.json`        | `generate_kit_image`      | kit probe #1: valid ids — `product.error_server`, "generate kit image toggle closed"         | ✅ Shopee sent this                                                              |
+| `generate_kit_image.sg-chaves-do-doc.json`         | `generate_kit_image`      | kit probe #1: the page's own component keys — "ItemId is required"                           | ✅ Shopee sent this                                                              |
+| `generate_kit_image.sg-sem-model-id.json`          | `generate_kit_image`      | kit probe #1: a component without `model_id` — "ModelId is required"                         | ✅ Shopee sent this                                                              |
+| `generate_kit_image.sg-um-componente.json`         | `generate_kit_image`      | kit probe #1: ONE component — "between 2 and 9 items"                                        | ✅ Shopee sent this                                                              |
+| `update_stock.sg-kit.json`                         | `update_stock`            | kit probe #1: stock sent to a kit — refused, with `failure_list` and a `debug_message`       | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `delete_item.sg-kit.json`                          | `delete_item`             | kit probe #1: the kit deleted — `response: {}`                                               | ✅ Shopee sent this                                                              |
+| `get_item_base_info.sg-kit-apagado.json`           | `get_item_base_info`      | kit probe #1: the delete's read-back — `SELLER_DELETE`, still `tag.kit: true`                | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `update_price.sg-kit.json`                         | `update_price`            | kit probe #2: one kit model's price — accepted, in `success_list`                            | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
+| `unlist_item.sg-kit.json`                          | `unlist_item`             | kit probe #2: the family kit unlisted — accepted                                             | ✅ Shopee sent this — ⚠️ ids reassigned by role, see “Native kits”               |
 | `get_order_detail.doc-masked-vn.json`              | `get_order_detail`        | the sample printed on the `v2.order.get_order_detail` reference page (a **VN** order)        | ❌ doc only — ⚠️ **unverified for BR**                                           |
 | `get_escrow_detail.doc-kit.json`                   | `get_escrow_detail`       | the sample printed on the `v2.payment.get_escrow_detail` reference page                      | ❌ doc only — and one field is demonstrably a doc artefact, see “kit ids” below  |
 | `search_package_list.doc.json`                     | `search_package_list`     | the sample printed on the `v2.order.search_package_list` reference page (a **VN** channel)   | ❌ doc only — a VN channel id, unverified for BR; its `sort` echo is wrong       |
@@ -43,7 +62,7 @@ pages, and `api v2.product.get_size_chart_list` /
 `api v2.product.get_size_chart_detail` for the four size-chart bodies); the first
 three sandbox bodies were pasted
 from the Shopee console's own test tool, and the three `search_package_list` ones
-were written by a read-only probe script (see below). The nine kit
+were written by a read-only probe script (see below). The twenty-seven kit
 bodies are the two step-19 kit probes' own captures, promoted with their ids
 reassigned by role (see **The native-kit bodies**). The nineteen bodies before
 step 19 all went through
@@ -342,7 +361,7 @@ What they carry, each asserted in `wireCorpus.test.ts`:
 
 ## The native-kit bodies (step 19, #1527)
 
-Every one of the nine was SENT by Shopee — the SG sandbox shop, answering
+Every one of the twenty-seven was SENT by Shopee — the SG sandbox shop, answering
 the two kit probes of #1527: probe #1 (2026-10-06, one kit `SONDA-KIT` with one
 model) and probe #2 (2026-10-07, the family kit `SONDA-KIT2`, two models and then
 a third appended). ⚠️ **The sandbox shop is SG**: none of this says a BR shop
@@ -383,7 +402,7 @@ promotion put back, and only this:
   paired `get_item_base_info` read of those same ids answered.
 
 No body carried a `request_id`; `debug_message` stays wherever Shopee sent it. All
-nine are Prettier-formatted, and `redactWireBody` changes nothing on them
+twenty-seven are Prettier-formatted, and `redactWireBody` changes nothing on them
 (no denylisted key on these pages). ⚠️ **`image.image_url_list` is NOT on that
 denylist**: here the probes' own URL replacement kept the real URLs out, and a
 real BR kit capture needs the path added to `../redact.ts` before it is promoted.
@@ -396,11 +415,16 @@ real BR kit capture needs the path added to `../redact.ts` before it is promoted
 | component B — the plain item, no variations                          | `2500139872`                |
 | **B's hidden default model id** — in NO `get_model_list` body        | `2000458829`                |
 | six unrelated listings the sandbox shop deleted in earlier probes    | `2500139881`–`2500139886`   |
+| the kit's second model (`tier_index: [1]`, probe #2)                 | `2000458823`                |
+| the APPENDED kit model (`tier_index: [2]`, probe #2)                 | `2000458822`                |
+| component A's models `White,04` / `White,08` (probe #2)              | `2000458824` / `2000458825` |
 
 ⚠️ **Joins hold WITHIN ONE probe only.** Probe #1's kit and probe #2's kit are
-two different kits that both carry the kit role `2500139870` (every body here
-is probe #1's). And never join a kit body with the order, returns or size-chart
-sets. The six unrelated ids have no role.
+two different kits that both carry the kit role `2500139870` (probe #2's bodies:
+`add_kit_item.sg-dois-principais`, `update_kit_item.sg-parcial` / `-anexar` /
+`-quantidade-ignorada`, `get_kit_item_info.sg-quantidade-ignorada`,
+`update_price.sg-kit` and `unlist_item.sg-kit`). And never join a kit body with
+the order, returns or size-chart sets. The six unrelated ids have no role.
 
 **Not committed:** probe #1's stock sequence (`estoque/*`: no ERP code reads kit
 stock, and the measurement lives in #1527 as prose), the `add_item` capture whose
@@ -438,3 +462,40 @@ Each one is asserted in `wireCorpus.test.ts`:
   is NOT in the file (a capture is the body); the test serves it with 404, the
   file name says so, and the same body at 200 must stay the base `ShopeeApiError`,
   never `ShopeeOperacaoNaoServidaError`.
+
+### What the writes settle
+
+Each one is asserted in `wireCorpus.test.ts`:
+
+- `add_kit_item` succeeds with `{item_id}` under `response`. Its first attempt
+  failed with `product.error_busi` "… Error 1040: Too many connections …", a
+  Shopee-side transient that an identical retry cured — and that is the SAME code
+  as `update_stock`'s permanent refusal of a kit, so only the sentence tells them
+  apart.
+- **ONE main per KIT** (P2-a): a main component on both models is
+  `product.error_busi` "… mupltiple main sku …" (Shopee's spelling, byte-exact).
+  An empty body is `product.error_param` "virtual sku setting is empty".
+- ⚠️ **`update_kit_item`'s 200 says NOTHING about what was applied.** The partial
+  update, the append and the quantity change all answered the SAME bare envelope
+  (`error`, `message`, `warning`, all `""`, no `response`), and the three files
+  are byte-identical on purpose. Only the read-back says what happened, and for
+  the quantity change it says the change was SILENTLY IGNORED: every component
+  quantity of `get_kit_item_info.sg-quantidade-ignorada` is still `1`. Every kit
+  write is verified by read-back. Without `item_id` the update answers the dot
+  error (`… VskuId: value must be greater than 0`).
+- That read-back is the family kit: ONE tier `Kit` with three options, three
+  models at `tier_index` `[0]`, `[1]`, `[2]` (the third appended), ONE main in the
+  whole kit (on model 0), each model its OWN model of A, and B's hidden id on all
+  three.
+- `generate_kit_image` never produced an image: the toggle is closed
+  (`product.error_server` "… generate kit image toggle closed." — a shop setting
+  under a transient-looking code), the page's own `component_item_id` keys are
+  refused ("ItemId is required"), a component with no `model_id` is refused
+  ("ModelId is required"), and so is a single component ("between 2 and 9
+  items").
+- `update_stock` on a kit is refused: `product.error_busi` "Invalid product
+  setting. Please verify." WITH a `failure_list` row for the kit model.
+- `delete_item` on a kit answers `response: {}`, and the read-back is
+  `SELLER_DELETE` with `tag.kit: true` still set.
+- `update_price` on a kit model is accepted (P2-d), and so is `unlist_item` on a
+  kit (P2-e).
