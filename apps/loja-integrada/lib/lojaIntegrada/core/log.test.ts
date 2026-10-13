@@ -161,7 +161,7 @@ describe('linhaDaChamada — the line is a projection', () => {
     // the package scrubs only the token AS SENT: a partial or escaped echo
     // survives the scrub.
     const parcial = 'li-token-sentinela-AAAA';
-    const corpo = JSON.stringify({ detalhe: `token ${parcial} recusado`, codigo: 'x1' });
+    const corpo = JSON.stringify({ detalhe: `token ${parcial} recusado`, codigo: '633' });
     for (const [status, resultado] of [
       [200, 'schema'],
       [400, 'http'],
@@ -190,7 +190,7 @@ describe('linhaDaChamada — the line is a projection', () => {
       OPCOES,
     ).linha;
     expect(guardada.versaoCredencial).toBe(String(VERSAO_MS));
-    expect(guardada.trechoCorpo).toBe('{"detalhe":"<redacted>","codigo":"x1"}');
+    expect(guardada.trechoCorpo).toBe('{"detalhe":"<redacted>","codigo":"633"}');
   });
 
   it('a stored-credential error echoing a partial token under an undocumented key logs no fragment of it', () => {
@@ -221,8 +221,8 @@ describe('linhaDaChamada — the line is a projection', () => {
   });
 
   it('a stored-credential error echoing a credential-shaped value under an ALLOWED key logs no fragment of it; a code survives', () => {
-    // The allowed keys (codigo, code, erro, error, tipo, campo) keep a value only
-    // when it is code-shaped; a 20-40 char token-shaped echo used to pass.
+    // The allowed keys (codigo, code, erro, error, tipo, campo) keep a string only
+    // when it is 1 to 7 digits; a 20-40 char token-shaped echo used to pass.
     const ecos = ['aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d', '3f9a1c7e5b2d8f4a6c0e9b1d'];
     for (const caminho of ['/v1/pedido/search/', '/v1/categoria/', '/v1/situacao/']) {
       for (const [status, resultado] of [
@@ -234,13 +234,55 @@ describe('linhaDaChamada — the line is a projection', () => {
           codigo: ecos[0],
           error: [ecos[1]],
           tipo: [[ecos[0]]],
-          code: 'SLUG_IN_USE',
+          code: '633',
         });
         const { linha } = linhaDaChamada(evento({ caminho, status, resultado, corpo }), OPCOES);
         const contexto = `${caminho} ${String(status)}`;
         for (const eco of ecos) expect(JSON.stringify(linha), contexto).not.toContain(eco);
         expect(linha.trechoCorpo, contexto).toBe(
-          '{"codigo":"<redacted>","error":["<redacted>"],"tipo":[["<redacted>"]],"code":"SLUG_IN_USE"}',
+          '{"codigo":"<redacted>","error":["<redacted>"],"tipo":[["<redacted>"]],"code":"633"}',
+        );
+      }
+    }
+  });
+
+  it('a stored-credential error echoing a token as a KEY, or a word or a fraction under an allowed key, logs none of it; a numeric code survives', () => {
+    // Round 3 on #1877: a key passed only the regex layer, and the code-word
+    // grammar kept a first name, a full name, an e-mail local part and an
+    // error NAME under the allowed keys, and any fraction below 1e7.
+    const base62 = 'aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7d';
+    const hex = '3f9a1c7e5b2d8f4a6c0e9b1d';
+    const palavras = [
+      'Joao',
+      'JOAO_DA_SILVA',
+      'joao.silva',
+      'Unauthorized',
+      'SLUG_IN_USE',
+    ] as const;
+    for (const caminho of ['/v1/pedido/search/', '/v1/categoria/', '/v1/situacao/']) {
+      for (const [status, resultado] of [
+        [400, 'http'],
+        [429, 'limite'],
+        [500, 'http'],
+      ] as const) {
+        const corpo = JSON.stringify({
+          [base62]: 1,
+          erro: { [hex]: palavras[0] },
+          error: palavras[3],
+          code: palavras[4],
+          tipo: [palavras[1]],
+          campo: palavras[2],
+          codigo: '633',
+          limite: 12.5,
+        });
+        const { linha } = linhaDaChamada(evento({ caminho, status, resultado, corpo }), OPCOES);
+        const contexto = `${caminho} ${String(status)}`;
+        const texto = JSON.stringify(linha);
+        for (const eco of [base62, hex, ...palavras, '12.5']) {
+          expect(texto, `${contexto} ${eco}`).not.toContain(eco);
+        }
+        expect(linha.trechoCorpo, contexto).toBe(
+          '{"chave_redigida_1":1,"erro":{"chave_redigida_1":"<redacted>"},"error":"<redacted>","code":"<redacted>","tipo":["<redacted>"],"campo":"<redacted>","codigo":"633","limite":"<redacted>"}',
         );
       }
     }
