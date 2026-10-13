@@ -96,20 +96,25 @@ still be fixed. Only the context loader refuses those.
   (`estrutural` by default, `configuracao`, `catalogo`, `webhook` never excerpted), then
   spelled-out leaves with predicates. Profile `log`: `<redacted>` plus the regex layer,
   then a 2 KB cut (mask first, cut second). Profile `fixture` (fixtures are public): fakes
-  of the same type, `chave_redigida_<n>` keys, error bodies keep shape and short digits.
-- Error bodies are an allow-list too: a string survives only under `CHAVES_TEXTO_ERRO_LI`
-  (`codigo`, `code`, `erro`, `error`, `tipo`, `campo`; exact, any case; an array inherits its
-  key), and there only if it is a CODE — at most 32 chars, 1–7 digits or one-case letter
-  words joined by one `_`/`.`/`-` with at most 4 trailing digits — and clean. On
-  `catalogo`/`configuracao` a JSON object or array error takes that walk; only TEXT (non-JSON,
-  or a JSON scalar like the spec's 409) keeps its masked text, for a plain/HTML 429 or a
-  validation message. Never add a key to "see the message".
-- ⚠️ The accepted residual surface, and the whole of it: a code-shaped fragment under an
-  allowed key (a one-case, letters-only token of up to 32 chars passes); and on
-  `catalogo`/`configuracao`, non-JSON error text and a bare JSON-string error keep their
-  regex-masked text (the 409 `"Slug already in use."`). The price: a `catalogo`/`configuracao`
-  JSON error, a 429 included, loses its message strings — `codigoLimite`/`retryAfterS` are
-  logged separately. Widening the keys, the code shape or the text classes reopens the leak.
+  of the same type, `chave_redigida_<n>` keys, error bodies take the log's error walk.
+- A JSON error body keeps its STRUCTURE and guesses no value shape (`percorrerErro`, both
+  profiles): booleans and `null`; a number only as a safe integer below 1e7; a string only
+  as 1–7 digits under `CHAVES_TEXTO_ERRO_LI` (`codigo`, `code`, `erro`, `error`, `tipo`,
+  `campo`; exact, any case; an array inherits its key) — `Unauthorized`, `SLUG_IN_USE` and
+  every other word are `<redacted>`; a key name only as 1–32 letters/`_`, any other key
+  becoming `chave_redigida_<n>` by position. Three review rounds on #1877 each broke a shape
+  rule (a token as a KEY, a first name or a domain under `erro`, a fraction under any key).
+  On `catalogo`/`configuracao` a JSON object or array error takes that walk; only TEXT
+  (non-JSON, or a JSON scalar like the spec's 409) keeps its masked text, for a plain/HTML
+  429 or a validation message. Never add a key or a shape to "see the message".
+- ⚠️ The accepted residual surface: (a) a key name of letters/`_` survives an error body
+  and could itself echo a word; (b) on `catalogo`/`configuracao`, non-JSON error text and a
+  bare JSON-scalar error (the 409 `"Slug already in use."`) keep their regex-masked text,
+  which may hold a name or a partial token. Nothing else of a JSON error body survives but
+  its structure, booleans, `null`, an empty string under a denied key, safe integers below
+  1e7 and 1–7 digit strings under the allowed keys. The price: error names and messages
+  never reach the log — `codigoLimite`/`retryAfterS` are logged separately. Widening the
+  keys, the string rule, the key grammar or the text classes reopens the leak.
 - A new field or path stays redacted until a table lists it. Listing one means adding the
   leaf with its predicate AND regenerating the committed leaf inventory, which reads the
   gitignored spec cache only: `MSYS_NO_PATHCONV=1 node
