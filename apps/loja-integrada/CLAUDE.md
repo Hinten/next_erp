@@ -194,7 +194,11 @@ still be fixed. Only the context loader refuses those.
   stays). Accepted residue (Q4): a re-drive between the deferred sweep's read and its mark
   is overwritten — one more day, or parked on the 7th pass. It moves only rows already
   `deferred`, so a task's create or a hot-sweep migration that found the park before it and
-  writes after it waits up to one more day (`tentativas` 0).
+  writes after it waits up to one more day (`tentativas` 0). Reverse: the re-drive's write
+  has no precondition, so a park landing between its query and its write is reset to
+  `failed`/0/0 — one extra attempt, then a re-park or an import. Its writes go 20 at a
+  time (`CONCORRENCIA_REDRIVE_LI`): the routes await it inside the ceiling `prazos.test.ts`
+  budgets.
 - The pacer (`core/ritmo.ts`): 2 000 ms before EVERY call through a context, in the getter,
   outside the request deadline.
 - Doc id `<conta>:<numero>:<origem>:<stamp digits | ->`, built from schema-validated parts

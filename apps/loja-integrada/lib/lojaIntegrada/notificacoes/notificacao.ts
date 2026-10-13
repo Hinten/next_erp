@@ -70,8 +70,20 @@
  *    written `deferred` with `tentativas` 0 — it waits up to one more day and is
  *    never parked by this.
  *
+ * And the REVERSE direction: the re-drive's own write carries no precondition
+ * (the shared store's `redrive`, never reordered here — plan section 4), so a
+ * PARK that lands between the re-drive's query and its write of that row (the
+ * deferred sweep's 7th pass, an `importador-ausente` park once the conta reads
+ * clean, or a hot-sweep park of a row graduated in between) is reset to the hot
+ * lane as `failed`/0/0. It costs one extra attempt, which parks again or imports.
+ * The window runs from the query to that row's write round — at most
+ * `ceil(LIMITE_REDRIVE_LI / CONCORRENCIA_REDRIVE_LI)` rounds, since the writes go
+ * {@link CONCORRENCIA_REDRIVE_LI} at a time. If it ever matters: condition each
+ * write on the query snapshot's `updateTime` and skip on FAILED_PRECONDITION.
+ *
  * Never a loss: the next daily deferred pass sees the healthy conta and imports.
- * Each window is milliseconds wide; `notificacao.test.ts` pins all four cases.
+ * Each window is milliseconds to seconds wide; `notificacao.test.ts` pins all
+ * five cases.
  *
  * ## No transaction anywhere
  *
@@ -147,6 +159,14 @@ export const CANAL_LOG_LI = 'loja-integrada';
 
 /** Rows one token-save re-drive moves at most; the daily deferred sweep drains the rest. */
 export const LIMITE_REDRIVE_LI = 500;
+
+/**
+ * Re-drive writes in flight at once. The credential routes await the re-drive
+ * after the Loja Integrada call, inside the request ceiling, so a full page
+ * must cost `ceil(LIMITE_REDRIVE_LI / CONCORRENCIA_REDRIVE_LI)` write rounds,
+ * not 500 serial updates (`prazos.test.ts` budgets those rounds).
+ */
+export const CONCORRENCIA_REDRIVE_LI = 20;
 
 /* -------------------------------------------------------------------------- */
 /*                              The task payload                              */
@@ -626,6 +646,10 @@ export interface ResultadoRedriveLi {
  * Each row goes through the shared store's `redrive` — `mergeIfExists`, so a
  * row deleted between the query and the write is never resurrected — and never
  * through a hand-written patch. Idempotent: a replay finds nothing left to move.
+ * The writes go out {@link CONCORRENCIA_REDRIVE_LI} at a time (the credential
+ * routes await this inside the request ceiling, `prazos.test.ts`), and none is
+ * conditioned on the row still being `deferred` — the module header's reverse
+ * window.
  *
  * ⚠️ Its query needs the `(status ASC, contaId ASC)` composite on
  * `notificacoesLojaIntegrada` (guard D in `notificationGuardrails.test.ts`).
@@ -646,8 +670,10 @@ export async function redrivePedidosAdiadosDaConta(
 
   const erro = `token da conta ${contaId} salvo — reprocessando`;
   let redirecionadas = 0;
-  for (const d of snap.docs) {
-    if (await armazenamentoLi.redrive(db, d.id, erro)) redirecionadas += 1;
+  for (let i = 0; i < snap.docs.length; i += CONCORRENCIA_REDRIVE_LI) {
+    const lote = snap.docs.slice(i, i + CONCORRENCIA_REDRIVE_LI);
+    const movidas = await Promise.all(lote.map((d) => armazenamentoLi.redrive(db, d.id, erro)));
+    redirecionadas += movidas.filter(Boolean).length;
   }
 
   const truncado = snap.docs.length >= limite;
