@@ -4,12 +4,17 @@
  * a pipeline's `execute({ explainOptions: { mode: 'analyze', outputFormat:
  * 'text' } })` — and the two verdicts the #1200 link audit stands on.
  *
- * ONE copy, two consumers (the #1369 rule — two files that "mirror" each other
+ * ONE copy, three consumers (the #1369 rule — two files that "mirror" each other
  * drift toward plausible while disagreeing):
  *  - `scripts/check-stock-indexes.mjs`, the MANUAL staging gate a human runs;
  *  - `lib/marketplace/estoque/auditoriaNaoEnumerados.staging.test.ts`, the
  *    automated suite `ci-mercado-livre.yml` runs against staging on every
- *    in-scope PR, which asserts every verdict a PASS on the audit's own pages.
+ *    in-scope PR, which asserts every verdict a PASS on the audit's own pages;
+ *  - `apps/functions/scripts/check-sweep-indexes.mjs` (#1874), the arquivo
+ *    sweeps' manual gate, by RELATIVE path — it imports only the generic
+ *    readers (`parseAccessNodes`, `scansSemIdentificador`,
+ *    `contadoresDoCabecalho`, `sortsQueCortam`, `RECUSA_EXPLAIN_ENTERPRISE_RE`),
+ *    so renaming or moving one of those breaks that script, which no lane runs.
  * Plain `.mjs` + JSDoc (`@ts-check`, so `tsc` still checks it through the
  * importing test) because the script runs under bare `node`, which cannot import
  * TypeScript. Nothing here touches Firestore: every function takes the plan TEXT

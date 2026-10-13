@@ -310,12 +310,21 @@ type ResolveMensagemReferenced = (arquivoIds: string[]) => Promise<ReadonlySet<s
 
 /**
  * Default page fetch: a plain **classic** query ordered by
- * `FieldPath.documentId()` — Firestore's always-available native ordering, no
- * declared index needed — paginated with `startAfter(lastKey)`. Unlike the old
+ * `FieldPath.documentId()`, paginated with `startAfter(lastKey)`. Unlike the old
  * `criadoEm`-oldest-first scan, this is **not** scoped server-side to owner
  * media or the grace window: {@link sweepUnreferencedArquivos} applies both
  * filters to the fetched page, in code, the same way it already re-verifies
  * owner references. No pipeline involved, so this runs in the emulator too.
+ *
+ * ⚠️ **Key order is NOT free on this database (#1874).** Firestore Enterprise
+ * creates no index at all — not even one on the document key — so this page
+ * rides the declared `arquivos(__name__ ASC)` entry in `firestore.indexes.json`.
+ * Without it the query does not fail: the planner walks another arquivos index
+ * end to end (both sweep indexes are dense, so they hold every arquivo), cuts
+ * the cursor in a residual filter and sorts in memory — every 48h tick reads the
+ * whole collection to keep 100 rows. The Standard emulator auto-creates the key
+ * order, so no emulator test can see this; `scripts/check-sweep-indexes.mjs` is
+ * the live check, and the index guard test pins the entry.
  *
  * `criadoEm` is read raw (no `arquivoCollection.parseRead`, which would
  * validate the WHOLE doc for a field the sweep only needs to compare) but
@@ -351,7 +360,8 @@ async function fetchArquivoPage(db: Firestore, lastKey: string | null): Promise<
  * than `BATCH_LIMIT` long-lived REFERENCED photos older than a given orphan,
  * that orphan never entered the scan window again — a liveness gap. This now
  * pages `arquivos` by **document key** via {@link fetchArquivoPage} (no
- * server-side age/ownership filter) and persists how far it got in
+ * server-side age/ownership filter; rides the declared key index — see there)
+ * and persists how far it got in
  * `arquivoOrphanSweepStateCollection` (doc {@link ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID}):
  * the next tick's page starts right after it. A page shorter than
  * `BATCH_LIMIT` means the scan reached the end of the collection in key order,
