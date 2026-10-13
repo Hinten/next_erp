@@ -4,6 +4,8 @@
  * and their STRING codes (`testing/falhaDeEnfileiramento.ts`). No transport is
  * real and no network is reachable: the queue is a recording fake.
  */
+import { AppErrorCode, type FirebaseAppError } from 'firebase-admin/app';
+import { type FirebaseFunctionsError, FunctionsErrorCode } from 'firebase-admin/functions';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MissingRegionError } from '@delfrance/core/region';
 import { LiError } from '@delfrance/integrations-loja-integrada';
@@ -179,6 +181,25 @@ describe('enfileirarNomeandoFalhaTransitoriaLi — transient vs deploy', () => {
     expect(falhaDoApp('network-error').message).toContain(CORPO_DA_RESPOSTA_DO_TASKS);
   });
 
+  // The `FirebaseAppError` arm builds its own named error, so the assertion above
+  // (a `functions/*` failure) says nothing about it. The fixture's socket message
+  // carries the sentinel too (asserted just above), so a leak shows here.
+  it.each([['network-error'], ['network-timeout']])(
+    'the app/%s named error carries the class and code ONLY — never the SDK message, never a cause',
+    async (code) => {
+      const err = await rejeicaoDe(rejeicaoDoTransporte(falhaDoApp(code)));
+
+      expect(err).toBeInstanceOf(LiTarefasTransitoriasError);
+      const e = err as LiTarefasTransitoriasError;
+      expect(e.message).toBe(
+        `enqueue no Cloud Tasks falhou de forma transitória (FirebaseAppError app/${code})`,
+      );
+      expect(e.message).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+      expect(JSON.stringify(e)).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+      expect(e.cause).toBeUndefined();
+    },
+  );
+
   // ⚠️ NEAR-MISS pairs. The same `functions/unknown-error` is transient with a
   // response and a config error without one; `not-found` and
   // `permission-denied` are a broken deploy even though Cloud Tasks answered.
@@ -225,6 +246,73 @@ describe('enfileirarNomeandoFalhaTransitoriaLi — transient vs deploy', () => {
     await expect(
       enfileirarNomeandoFalhaTransitoriaLi(() => Promise.resolve()),
     ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * The transient set is CLOSED over the pinned SDK's own vocabulary. The
+ * near-miss rows above name deploy codes one by one, so a code added to the set
+ * that none of them names (`failed-precondition`, `task-already-exists`,
+ * `app/internal-error`, `app/unable-to-parse-response`) passed all of them. This
+ * table gives EVERY code the two classes declare a disposition: a `functions/*`
+ * code built WITH a response (Cloud Tasks answered; the status never enters the
+ * narrowing, so one serves every row), an `app/*` code without one (the SDK's
+ * HTTP client never attaches one). A `firebase-admin` bump that adds a code reds
+ * the first test until someone decides where it belongs.
+ */
+describe('enfileirarNomeandoFalhaTransitoriaLi — the transient set is CLOSED', () => {
+  const ESPERADO: Readonly<Record<string, 'nomeada' | 'intocada'>> = {
+    'functions/aborted': 'nomeada',
+    'functions/internal-error': 'nomeada',
+    'functions/unknown-error': 'nomeada',
+    'functions/failed-precondition': 'intocada',
+    'functions/invalid-argument': 'intocada',
+    'functions/invalid-credential': 'intocada',
+    'functions/not-found': 'intocada',
+    'functions/permission-denied': 'intocada',
+    'functions/task-already-exists': 'intocada',
+    'functions/unauthenticated': 'intocada',
+    'app/network-error': 'nomeada',
+    'app/network-timeout': 'nomeada',
+    'app/app-deleted': 'intocada',
+    'app/duplicate-app': 'intocada',
+    'app/internal-error': 'intocada',
+    'app/invalid-app-name': 'intocada',
+    'app/invalid-app-options': 'intocada',
+    'app/invalid-argument': 'intocada',
+    'app/invalid-credential': 'intocada',
+    'app/no-app': 'intocada',
+    'app/unable-to-parse-response': 'intocada',
+  };
+
+  /** What the classifier made of one SDK failure: named, untouched, or something else. */
+  async function disposicao(
+    sdk: FirebaseFunctionsError | FirebaseAppError,
+  ): Promise<[string, string]> {
+    const err = await rejeicaoDe(rejeicaoDoTransporte(sdk));
+    if (err === sdk) return [sdk.code, 'intocada'];
+    if (err instanceof LiTarefasTransitoriasError && err.codigo === sdk.code) {
+      return [sdk.code, 'nomeada'];
+    }
+    return [sdk.code, 'outra'];
+  }
+
+  it('covers every code the pinned SDK declares, and no other', () => {
+    const vocabulario = [
+      ...Object.values(FunctionsErrorCode).map((c) => `functions/${c}`),
+      ...Object.values(AppErrorCode).map((c) => `app/${c}`),
+    ];
+    expect(vocabulario.sort()).toEqual(Object.keys(ESPERADO).sort());
+  });
+
+  it('names exactly the five transient codes and rethrows every other one untouched', async () => {
+    const obtido = Object.fromEntries(
+      await Promise.all([
+        ...Object.values(FunctionsErrorCode).map((c) => disposicao(falhaDoFunctions(c))),
+        ...Object.values(AppErrorCode).map((c) => disposicao(falhaDoApp(c))),
+      ]),
+    );
+    expect(obtido).toEqual(ESPERADO);
   });
 });
 

@@ -8,7 +8,7 @@ import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
 import { FakeDb, asDb } from '../../lib/lojaIntegrada/testing/fakeDb';
-import { espiarStdout } from '../../lib/lojaIntegrada/testing/fixtures';
+import { espiarStdout, seedConta, seedCredencial } from '../../lib/lojaIntegrada/testing/fixtures';
 import { seedNotificacaoLi } from '../../lib/lojaIntegrada/testing/notificacoes';
 
 /**
@@ -325,6 +325,39 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
       { docIds: ['conta-li-1:1001:poll:-'] },
     );
     expect(JSON.stringify(warn.mock.calls)).not.toContain('mensagem-que-nao-vai-ao-log');
+  });
+
+  // The stubbed lanes above touch no cache, so both deltas are `null` there and
+  // a deferred lane measured from the HOT lane's mark would read the same. Here
+  // the lanes run real: the hot lane's one row loads the conta through the read
+  // cache, the deferred lane has no row and reads nothing — so its delta must
+  // come out zero, not the hot lane's reads counted a second time.
+  it("measures each lane's readCache from ITS OWN mark — the deferred lane does not repeat the hot lane's reads", async () => {
+    vi.stubEnv('LOJA_INTEGRADA_CHAMADAS', 'on');
+    seedConta(fake, 'conta-li-1');
+    seedCredencial(fake, 'conta-li-1');
+    const falhou = seedNotificacaoLi(fake, 'conta-li-1', '1001', 'failed');
+
+    await rodarAgendamento(reprocessLojaIntegradaNotifications);
+
+    // Anti-vacuity: the hot lane really ran its row through the context.
+    expect(fake.ler(falhou)).toMatchObject({ status: 'parked', erro: 'importador-ausente' });
+    expect(info).toHaveBeenNthCalledWith(
+      1,
+      '[loja-integrada] reprocess sweep (quente)',
+      expect.objectContaining({
+        processed: 1,
+        readCache: { 'li:integracao': { hits: 0, misses: 1 } },
+      }),
+    );
+    expect(info).toHaveBeenNthCalledWith(
+      2,
+      '[loja-integrada] reprocess sweep (adiada)',
+      expect.objectContaining({
+        processed: 0,
+        readCache: { 'li:integracao': { hits: 0, misses: 0 } },
+      }),
+    );
   });
 });
 
