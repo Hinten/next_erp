@@ -1082,7 +1082,8 @@ describe('error bodies', () => {
       endereco: REDIGIDO,
       documento: REDIGIDO,
       x_doc: REDIGIDO,
-      codigo: 'campo_invalido',
+      // A code WORD is refused too: only 1 to 7 digits survive (review on #1877, round 3).
+      codigo: REDIGIDO,
       pedido: 123456,
     });
   });
@@ -1116,6 +1117,7 @@ describe('error bodies', () => {
     expect(String(cpfComZeros)).toHaveLength(9);
     const corpo = {
       codigo: 'E123',
+      code: '123',
       pedido: 1_234_567,
       valor: '12345678',
       contato: '987654321',
@@ -1123,7 +1125,8 @@ describe('error bodies', () => {
       ref: 'cep_12345678',
     };
     expect(logJson('/v1/pedido/1', 400, corpo)).toEqual({
-      codigo: 'E123',
+      codigo: REDIGIDO,
+      code: '123',
       pedido: 1_234_567,
       valor: REDIGIDO,
       contato: REDIGIDO,
@@ -1146,16 +1149,22 @@ describe('error bodies', () => {
   it('in an error body a denied key is denied in any case, and celular* and cep* by prefix', () => {
     // Strings already need an allow-listed key; the deny list is what still drops
     // a NUMBER or a boolean (and a whole subtree) under a personal key.
-    const corpo = { CEP: 'abc', Nome: 'Fulano', cep_destino: 1, celular_2: true, Email: 'y' };
+    const corpo = {
+      CEP: 'abc',
+      Nome: 'Fulano',
+      cep_destino: 1,
+      celular_comercial: true,
+      Email: 'y',
+    };
     expect(logJson('/v1/pedido/1', 400, corpo)).toEqual({
       CEP: REDIGIDO,
       Nome: REDIGIDO,
       cep_destino: REDIGIDO,
-      celular_2: REDIGIDO,
+      celular_comercial: REDIGIDO,
       Email: REDIGIDO,
     });
-    // Near-miss: a code-shaped value under an allow-listed key, in any case, survives.
-    expect(logJson('/v1/pedido/1', 400, { Codigo: 'abc' })).toEqual({ Codigo: 'abc' });
+    // Near-miss: a short digit code under an allow-listed key, in any case, survives.
+    expect(logJson('/v1/pedido/1', 400, { Codigo: '12' })).toEqual({ Codigo: '12' });
     // Near-miss: a number and a boolean under an ordinary key (the prefix at the
     // END, not the start) survive.
     expect(logJson('/v1/pedido/1', 400, { x_cep: 1, x_celular: true })).toEqual({
@@ -1252,10 +1261,10 @@ describe('error bodies', () => {
     const json = log(
       '/v1/categoria/',
       400,
-      JSON.stringify({ detail: `Filtro inválido para ${PII_FALSA.email}`, codigo: 'filtro' }),
+      JSON.stringify({ detail: `Filtro inválido para ${PII_FALSA.email}`, codigo: '533' }),
     );
     expect(json).toMatchObject({ politica: 'catalogo', forma: 'json', mascarados: 0 });
-    expect(json.trecho).toBe('{"detail":"<redacted>","codigo":"filtro"}');
+    expect(json.trecho).toBe('{"detail":"<redacted>","codigo":"533"}');
   });
 
   it('fixture: a catalogue 400 echoing a product name keeps no string but "codigo": "533"', () => {
@@ -1353,18 +1362,19 @@ describe('the error walk keeps a string only under an allow-listed key (review o
   );
 
   it.each(['codigo', 'code', 'erro', 'error', 'tipo', 'campo', 'Codigo', 'CODE', 'Erro', 'eRRoR'])(
-    'keep: a short code-shaped string under %j survives (log), and short digits do (fixture)',
+    'keep: short digits under %j survive (log and fixture); a code WORD does not',
     (chave) => {
-      for (const valor of ['campo_invalido', 'not-found.E1', '533', 'Unauthorized']) {
+      expect(logJson('/v1/pedido/1', 400, { [chave]: '533' })).toEqual({ [chave]: '533' });
+      expect(fixtureJson('/v1/pedido/1', 400, { [chave]: '533' })).toEqual({ [chave]: '533' });
+      for (const valor of ['campo_invalido', 'not-found.E1', 'Unauthorized']) {
         expect(logJson('/v1/pedido/1', 400, { [chave]: valor }), valor).toEqual({
-          [chave]: valor,
+          [chave]: REDIGIDO,
         });
       }
-      expect(fixtureJson('/v1/pedido/1', 400, { [chave]: '533' })).toEqual({ [chave]: '533' });
     },
   );
 
-  it('under an allow-listed key the shape, digit and regex rules still apply', () => {
+  it('under an allow-listed key anything but 1 to 7 digits is redacted', () => {
     expect(
       logJson('/v1/pedido/1', 422, {
         codigo: 'ref_1234567890',
@@ -1394,21 +1404,21 @@ describe('the error walk keeps a string only under an allow-listed key (review o
         longo: 12_345_678,
         ok: false,
         nada: null,
-        codigo: ['sku_duplicado', 'Nome do Cliente'],
-        tipo: [['pix']],
-        detalhes: ['sku_duplicado'],
-        error: { code: 'E1', message: 'texto livre', usuario: 'fulano_exemplo' },
-        campo: { nome: 'sku', x: 'sku' },
+        codigo: ['533', 'Nome do Cliente'],
+        tipo: [['7']],
+        detalhes: ['533'],
+        error: { code: '1', message: 'texto livre', usuario: 'fulano_exemplo' },
+        campo: { nome: '2', x: '2' },
       }),
     ).toEqual({
       qualquer: 1_234_567,
       longo: REDIGIDO,
       ok: false,
       nada: null,
-      codigo: ['sku_duplicado', REDIGIDO],
-      tipo: [['pix']],
+      codigo: ['533', REDIGIDO],
+      tipo: [['7']],
       detalhes: [REDIGIDO],
-      error: { code: 'E1', message: REDIGIDO, usuario: REDIGIDO },
+      error: { code: '1', message: REDIGIDO, usuario: REDIGIDO },
       campo: { nome: REDIGIDO, x: REDIGIDO },
     });
   });
@@ -1439,10 +1449,8 @@ describe('the error walk keeps a string only under an allow-listed key (review o
           codigo: 633,
         });
       }
-      const lista = log(caminho, 400, JSON.stringify([{ erro: 'sku_duplicado', valor: 'abc' }]));
-      expect(JSON.parse(lista.trecho ?? ''), caminho).toEqual([
-        { erro: 'sku_duplicado', valor: REDIGIDO },
-      ]);
+      const lista = log(caminho, 400, JSON.stringify([{ erro: '533', valor: 'abc' }]));
+      expect(JSON.parse(lista.trecho ?? ''), caminho).toEqual([{ erro: '533', valor: REDIGIDO }]);
     }
     // A JSON 429 keeps its code; the message text is the price (`codigoLimite` carries the code anyway).
     expect(
@@ -1486,7 +1494,7 @@ describe('the error walk keeps a string only under an allow-listed key (review o
 });
 
 /* -------------------------------------------------------------------------- */
-/*   Under an allow-listed key, only a CODE-shaped value survives (#1877, r2)  */
+/*   Under an allow-listed key, a credential never survives (#1877, round 2)   */
 /* -------------------------------------------------------------------------- */
 
 const CHAVES_DE_TEXTO = ['codigo', 'code', 'erro', 'error', 'tipo', 'campo'] as const;
@@ -1505,28 +1513,16 @@ const TOKENS_ALEATORIOS = [
   TOKEN_PARCIAL, // letters only, case interleaved within a word, 21
 ] as const;
 
-/** What an LI error names: a status code, a short code, an error name, a field. */
-const CODIGOS = [
-  '633',
-  'x1',
-  'E1',
-  'Unauthorized',
-  'invalid_request',
-  'SLUG_IN_USE',
-  'erro.validacao',
-  'campo1',
-] as const;
+/** What survives under an allow-listed key: a numeric code as text, 1 to 7 digits. */
+const CODIGOS_NUMERICOS = ['633', '0', '0633', '1234567'] as const;
 
-const LETRAS_32 = 'abcdefghijklmnopqrstuvwxyzabcdef';
-
-describe('under an allow-listed error key only a code-shaped value survives (review on #1877, round 2)', () => {
+describe('under an allow-listed error key a credential-shaped value never survives (review on #1877, round 2)', () => {
   it('the probe values are what the old filter let through: token-shaped, 20 to 40 chars, no 8-digit run', () => {
     for (const t of TOKENS_ALEATORIOS) {
       expect(t, t).toMatch(/^[A-Za-z0-9_.-]{20,40}$/);
       expect(t, t).not.toMatch(/\d{8}/);
       expect(mascararTexto(t, { digitos: true }).mascarados, t).toBe(0);
     }
-    expect(LETRAS_32).toHaveLength(32);
   });
 
   it.each(CHAVES_DE_TEXTO)(
@@ -1552,10 +1548,10 @@ describe('under an allow-listed error key only a code-shaped value survives (rev
   );
 
   it.each(CHAVES_DE_TEXTO)(
-    'keep: a code under %j survives, alone, in an array and in an array of arrays',
+    'keep: a numeric code under %j survives, as a number and as 1 to 7 digits, alone, in an array and in an array of arrays',
     (chave) => {
       expect(logJson('/v1/pedido/1', 400, { [chave]: 633 })).toEqual({ [chave]: 633 });
-      for (const c of CODIGOS) {
+      for (const c of CODIGOS_NUMERICOS) {
         expect(logJson('/v1/pedido/1', 400, { [chave]: c }), c).toEqual({ [chave]: c });
         expect(logJson('/v1/pedido/1', 400, { [chave]: [c] }), c).toEqual({ [chave]: [c] });
         expect(logJson('/v1/pedido/1', 400, { [chave]: [[c]] }), c).toEqual({ [chave]: [[c]] });
@@ -1563,44 +1559,27 @@ describe('under an allow-listed error key only a code-shaped value survives (rev
     },
   );
 
-  it.each(CHAVES_DE_TEXTO)('the length cap under %j: 32 letters survive, 33 do not', (chave) => {
-    expect(logJson('/v1/pedido/1', 400, { [chave]: LETRAS_32 })).toEqual({ [chave]: LETRAS_32 });
-    expect(logJson('/v1/pedido/1', 400, { [chave]: `${LETRAS_32}g` })).toEqual({
-      [chave]: REDIGIDO,
-    });
-    expect(logJson('/v1/pedido/1', 400, { [chave]: [`${LETRAS_32}g`] })).toEqual({
-      [chave]: [REDIGIDO],
-    });
-  });
-
   it.each([
-    // [kept, refused]: each pair differs at one boundary of the shape.
-    ['E1234', 'E12345'], // at most 4 trailing digits
-    ['1234567', '12345678'], // at most 7 digits alone
-    ['not-found', 'not--found'], // ONE separator between words
-    ['erro.validacao', 'erro.validacao.'], // a separator joins two words
-    ['erro_validacao', '_erro_validacao'], // a word starts the value
-    ['Unauthorized', 'UnAuthorized'], // per word: lower, UPPER or Capitalized
-    ['SLUG_IN_USE', 'Slug_IN_uSE'], // ... and so is every word after a separator
-    ['Not_Found', 'Not_FounD'],
-    ['invalid_request', 'invalidRequest'], // no camelCase: a mixed-case word is refused
-    ['E123', 'E123a'], // digits only at the end
-    ['campo1', 'E-123.a'], // a separator joins letters, never digits
-    ['x1', 'x 1'],
+    // [kept, refused]: each pair differs at one boundary of `^\d{1,7}$`.
+    ['1234567', '12345678'], // at most 7 digits
+    ['633', '633a'], // digits only
+    ['633', ' 633'], // nothing around them
+    ['633', '633\n'], // not even a trailing newline
+    ['633', '-633'], // no sign
+    ['633', '633.0'], // no fraction
+    ['1', ''], // at least one
   ])('near-miss: %j survives, %j does not', (mantido, recusado) => {
     expect(logJson('/v1/pedido/1', 400, { codigo: mantido })).toEqual({ codigo: mantido });
     expect(logJson('/v1/pedido/1', 400, { codigo: recusado })).toEqual({ codigo: REDIGIDO });
   });
 
-  it('the regex layer still applies to a code-shaped value: a letters-only alphanumeric CNPJ', () => {
+  it('no letter survives under an allowed key: a valid alphanumeric CNPJ and an invalid one alike', () => {
     const cnpj = gerarCnpj('ABCDEFGHIJKL');
     const invalido = `${cnpj.slice(0, 13)}${String((Number(cnpj[13]) + 1) % 10)}`;
-    expect(logJson('/v1/pedido/1', 400, { codigo: cnpj, erro: [cnpj] })).toEqual({
+    expect(logJson('/v1/pedido/1', 400, { codigo: cnpj, erro: [invalido] })).toEqual({
       codigo: REDIGIDO,
       erro: [REDIGIDO],
     });
-    // Near-miss: the same shape with a wrong check digit is a code, and survives.
-    expect(logJson('/v1/pedido/1', 400, { codigo: invalido })).toEqual({ codigo: invalido });
   });
 
   it('fixture: never loosened — under an allow-listed key only 1 to 7 digits survive', () => {
@@ -1617,6 +1596,185 @@ describe('under an allow-listed error key only a code-shaped value survives (rev
       tipo: [['633']],
       campo: FALSO_LI.texto,
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  The error walk keeps structure and numeric codes, nothing else (#1877, r3) */
+/* -------------------------------------------------------------------------- */
+
+const BASE62_40 = TOKENS_ALEATORIOS[0];
+const HEX_24 = TOKENS_ALEATORIOS[2];
+
+/**
+ * Words the round-2 code grammar let through under an allowed key: a first
+ * name, a full name, an e-mail local part, a domain, the error NAMES it was
+ * built to keep, and a letters-only token with 4 trailing digits.
+ */
+const PALAVRAS = [
+  'Joao',
+  'JOAO_DA_SILVA',
+  'joao.silva',
+  'example.invalid',
+  'Unauthorized',
+  'invalid_request',
+  'SLUG_IN_USE',
+  'E1',
+  'zqxkvbnmwrtplsdfghjk1234',
+] as const;
+
+describe('the error walk keeps only structure and numeric codes (review on #1877, round 3)', () => {
+  it('a token echoed as a KEY becomes a positional placeholder, at the root and nested, in both profiles', () => {
+    for (const token of [BASE62_40, HEX_24]) {
+      const corpo = {
+        [token]: 1,
+        erro: { codigo: 633, [token]: true },
+        detalhes: [{ [token]: null }],
+        cliente: { [token]: 'x' },
+      };
+      for (const caminho of ['/v1/pedido/1', '/v1/produto/1', '/v1/situacao/']) {
+        for (const status of [400, 429, 500]) {
+          const contexto = `${token} ${caminho} ${String(status)}`;
+          const r = log(caminho, status, JSON.stringify(corpo));
+          expect(r.trecho, contexto).not.toContain(token);
+          expect(JSON.parse(r.trecho ?? ''), contexto).toEqual({
+            chave_redigida_1: 1,
+            erro: { codigo: 633, chave_redigida_2: true },
+            detalhes: [{ chave_redigida_1: null }],
+            cliente: { chave_redigida_1: REDIGIDO },
+          });
+          const f = fixtureJson(caminho, status, corpo);
+          expect(JSON.stringify(f), contexto).not.toContain(token);
+          expect(f, contexto).toEqual({
+            chave_redigida_1: 1,
+            erro: { codigo: 633, chave_redigida_2: true },
+            detalhes: [{ chave_redigida_1: null }],
+            cliente: { chave_redigida_1: FALSO_LI.texto },
+          });
+          // The placeholders are deterministic, so a fixture re-run changes nothing.
+          expect(fixtureJson(caminho, status, f), contexto).toEqual(f);
+        }
+      }
+    }
+  });
+
+  it('a key NAME survives only as 1 to 32 letters or `_`: nomeCliente keeps its name, its value is redacted', () => {
+    expect(logJson('/v1/pedido/1', 400, { nomeCliente: 'Joao' })).toEqual({
+      nomeCliente: REDIGIDO,
+    });
+    for (const [mantida, renomeada] of [
+      ['nomeCliente', 'nomeCliente1'], // no digit
+      ['a'.repeat(32), 'a'.repeat(33)], // at most 32
+      ['nome_cliente', 'nome-cliente'], // `_` only
+      ['_', 'nome cliente'], // no space
+      ['Acao', 'Ação'], // ASCII letters only
+      ['x', ''], // at least one
+    ] as const) {
+      expect(logJson('/v1/pedido/1', 400, { [mantida]: 633 }), mantida).toEqual({
+        [mantida]: 633,
+      });
+      expect(logJson('/v1/pedido/1', 400, { [renomeada]: 633 }), renomeada).toEqual({
+        chave_redigida_1: 633,
+      });
+      expect(fixtureJson('/v1/pedido/1', 400, { [mantida]: 633 }), mantida).toEqual({
+        [mantida]: 633,
+      });
+      expect(fixtureJson('/v1/pedido/1', 400, { [renomeada]: 633 }), renomeada).toEqual({
+        chave_redigida_1: 633,
+      });
+    }
+  });
+
+  it('the 2xx walk is untouched: a digit-bearing key keeps its name there (log)', () => {
+    expect(logJson('/v1/pedido/165', 200, { campo1: 'x', numero: 165 })).toEqual({
+      campo1: REDIGIDO,
+      numero: 165,
+    });
+  });
+
+  it.each([...CHAVES_DE_TEXTO, 'Codigo', 'CODE', 'eRRoR'])(
+    'a word under %j is redacted, alone, in an array and in an array of arrays, on every class',
+    (chave) => {
+      for (const p of PALAVRAS) {
+        expect(logJson('/v1/pedido/1', 400, { [chave]: p }), p).toEqual({ [chave]: REDIGIDO });
+        expect(logJson('/v1/pedido/1', 400, { [chave]: [p] }), p).toEqual({
+          [chave]: [REDIGIDO],
+        });
+        expect(logJson('/v1/pedido/1', 400, { [chave]: [[p]] }), p).toEqual({
+          [chave]: [[REDIGIDO]],
+        });
+        expect(logJson('/v1/produto/1', 429, { [chave]: p }), p).toEqual({ [chave]: REDIGIDO });
+        expect(logJson('/v1/situacao/', 500, { [chave]: [p] }), p).toEqual({
+          [chave]: [REDIGIDO],
+        });
+      }
+    },
+  );
+
+  it.each(['codigo', 'code'])('keep: "633" and 633 under %j', (chave) => {
+    expect(logJson('/v1/pedido/1', 400, { [chave]: '633' })).toEqual({ [chave]: '633' });
+    expect(logJson('/v1/pedido/1', 400, { [chave]: 633 })).toEqual({ [chave]: 633 });
+    expect(fixtureJson('/v1/pedido/1', 400, { [chave]: '633' })).toEqual({ [chave]: '633' });
+    expect(fixtureJson('/v1/pedido/1', 400, { [chave]: 633 })).toEqual({ [chave]: 633 });
+  });
+
+  it('a number survives only as a safe integer below 1e7 in magnitude, under any key', () => {
+    for (const chave of ['codigo', 'code', 'limite', 'qualquer']) {
+      for (const n of [12.5, 1234567.891, 12_345_678, -12.5, 0.1, 1e7, -1e7, 2 ** 53]) {
+        expect(logJson('/v1/pedido/1', 400, { [chave]: n }), `${chave} ${String(n)}`).toEqual({
+          [chave]: REDIGIDO,
+        });
+        expect(fixtureJson('/v1/pedido/1', 400, { [chave]: n }), `${chave} ${String(n)}`).toEqual({
+          [chave]: 0,
+        });
+      }
+      for (const n of [0, 633, 9_999_999, -9_999_999]) {
+        expect(logJson('/v1/pedido/1', 400, { [chave]: n }), `${chave} ${String(n)}`).toEqual({
+          [chave]: n,
+        });
+        expect(fixtureJson('/v1/pedido/1', 400, { [chave]: n }), `${chave} ${String(n)}`).toEqual({
+          [chave]: n,
+        });
+      }
+    }
+    // A root number takes the same rule (an estrutural error has no text exception).
+    expect(log('/v1/pedido/1', 409, '12.5').trecho).toBe('"<redacted>"');
+    expect(log('/v1/pedido/1', 409, '633').trecho).toBe('633');
+  });
+
+  it('the round-3 probes together, through one estrutural 500', () => {
+    const corpo = {
+      [BASE62_40]: 1,
+      erro: 'Joao',
+      code: 'JOAO_DA_SILVA',
+      tipo: ['joao.silva'],
+      campo: 'example.invalid',
+      error: 'zqxkvbnmwrtplsdfghjk1234',
+      codigo: '633',
+      valor: 1234567.891,
+      nomeCliente: 'Joao',
+    };
+    const r = log('/v1/pedido/search/', 500, JSON.stringify(corpo));
+    expect(r.trecho).toBe(
+      '{"chave_redigida_1":1,"erro":"<redacted>","code":"<redacted>","tipo":["<redacted>"],"campo":"<redacted>","error":"<redacted>","codigo":"633","valor":"<redacted>","nomeCliente":"<redacted>"}',
+    );
+    // And the round-1 probe still reads exactly as it did.
+    expect(
+      log(
+        '/v1/pedido/search/',
+        500,
+        JSON.stringify({ detalhe: TOKEN_PARCIAL, nomeCliente: 'Joao', cpfx: CPF_PONTUADO }),
+      ).trecho,
+    ).toBe('{"detalhe":"<redacted>","nomeCliente":"<redacted>","cpfx":"<redacted>"}');
+  });
+
+  it('near-miss: the catalogue and configuration TEXT exception is unchanged — a bare JSON string keeps its masked text', () => {
+    for (const caminho of ['/v1/produto/1', '/v1/situacao/']) {
+      expect(log(caminho, 409, '"Slug already in use."').trecho, caminho).toBe(
+        '"Slug already in use."',
+      );
+      expect(log(caminho, 429, 'SLUG_IN_USE Joao').trecho, caminho).toBe('SLUG_IN_USE Joao');
+    }
   });
 });
 
@@ -2304,8 +2462,8 @@ describe('near-miss pairs the mutation run found missing', () => {
     expect(fixtureJson('/v1/pedido/1', 400, corpo)).toEqual({ a: 0, b: -1_234_567 });
   });
 
-  it('error walk: a denied credential key drops even a code-shaped value; the same value under codigo stays', () => {
-    const valor = 'abc123';
+  it('error walk: a denied credential key drops even a numeric code; the same value under codigo stays', () => {
+    const valor = '123';
     const corpo = {
       token: valor,
       Token: valor,
