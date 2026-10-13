@@ -18,6 +18,7 @@ import {
   precoPageLimit,
   precoRatePauseMin,
 } from './precoPlan';
+import { classificarLinkNaoEnumerado } from '../anuncios/linksNaoEnumerados';
 
 /* ------------------------------ fake Firestore ----------------------------- */
 // fetchPrecoPage runs CLASSIC queries only (no pipelines — the module doc's
@@ -918,6 +919,76 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
     seedLink(db, 'A1', 'link1');
     const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 });
     expect(page.rows[0]!.propagatePriceToChildren).toBe(false);
+  });
+});
+
+/**
+ * #1200 — the anchor query ⇔ the link walk's classifier, BOUND.
+ *
+ * `anuncios/linksNaoEnumerados.classificarLinkNaoEnumerado` is this query's
+ * anchor predicate re-derived: the reconciliation phase reports, and the monthly
+ * stock audit heals, exactly the produtos it calls non-null. Its own suite tests
+ * it alone, which cannot notice THIS query moving — so the 24-document matrix
+ * (`paiId` × `integracoesComProduto`) is seeded here and run through the REAL
+ * `fetchPrecoPage`, whose fake applies the clauses the query actually passed
+ * (`==` is `===`, so an absent `paiId` matches no equality, exactly like
+ * Firestore). `bulkEstoquePlan.test.ts` binds the stock S1 to the same
+ * classifier over the same matrix.
+ */
+describe('fetchPrecoPage ⇔ classificarLinkNaoEnumerado — the binding (#1200)', () => {
+  const AUSENTE = Symbol('ausente');
+  const PAI_IDS: ReadonlyArray<readonly [string, unknown]> = [
+    ['null', null],
+    ["''", ''],
+    ['ausente', AUSENTE],
+    ["'X'", 'X'],
+  ];
+  const INTEGRACOES: ReadonlyArray<readonly [string, unknown]> = [
+    ['[conta]', [CONTA]],
+    ['[]', []],
+    ['ausente', AUSENTE],
+    ["['outra']", ['outra']],
+    ['[1, null, conta]', [1, null, CONTA]],
+    ["'nope'", 'nope'],
+  ];
+  // No `publicado` on purpose: it is not an anchor term (#1072), so a
+  // `publicado == true` re-added to the query drops every row here and reds the
+  // binding — independently of the "EXACTLY two terms" guard above.
+  const MATRIZ = PAI_IDS.flatMap(([pNome, paiId], p) =>
+    INTEGRACOES.map(([iNome, integracoes], i) => {
+      const doc: DocData = {};
+      if (paiId !== AUSENTE) doc.paiId = paiId;
+      if (integracoes !== AUSENTE) doc.integracoesComProduto = integracoes;
+      return { id: `P${p}-I${i}`, caso: `paiId=${pNome} · integracoesComProduto=${iNome}`, doc };
+    }),
+  );
+
+  it('classifier === null exactly where the anchor query returns the produto — all 24', async () => {
+    const db = new FakeDb();
+    for (const { id, doc } of MATRIZ) db.seed('produtos', id, doc);
+
+    const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 100 });
+    // One page held everything — a truncation must not pass for "not enumerated".
+    expect(page.nextAfterAnchorId).toBeNull();
+    const enumerados = new Set(page.rows.map((r) => r.produtoId));
+
+    const divergentes = MATRIZ.flatMap(({ id, caso, doc }) => {
+      const consultaCasa = enumerados.has(id);
+      const codigo = classificarLinkNaoEnumerado(doc, CONTA);
+      return consultaCasa === (codigo === null)
+        ? []
+        : [
+            `${caso}: consulta ${consultaCasa ? 'casa' : 'não casa'}, classificador ${String(codigo)}`,
+          ];
+    });
+
+    expect(MATRIZ).toHaveLength(24);
+    expect(divergentes).toEqual([]);
+    // Non-vacuous: exactly the two documents a sweep enumerates.
+    expect(MATRIZ.filter(({ id }) => enumerados.has(id)).map((m) => m.caso)).toEqual([
+      'paiId=null · integracoesComProduto=[conta]',
+      'paiId=null · integracoesComProduto=[1, null, conta]',
+    ]);
   });
 });
 

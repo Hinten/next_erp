@@ -1,0 +1,4 @@
+{
+  "error": "product.error_unknown",
+  "message": "parameter invalid : invalid GenerateKitImageRequest.ComponentList[1]: embedded message failed validation | caused by: invalid KitComponent.ModelId: ModelId is required"
+}

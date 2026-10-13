@@ -162,6 +162,28 @@
  * ⚠️ This file is in `firestore-transaction-inventory`'s scope from here on —
  * that guard greps raw TEXT, so even a doc comment naming the method pulls a
  * file in. Its entry is the "test harness" one, beside `occTransaction.ts`.
+ *
+ * Added by step 19 (#1527), again strictly ADDITIVELY, for the kit-recipe aviso
+ * (`reavaliarAvisoDeReceitaKit` in `@delfrance/data/admin/avisos`), whose clock
+ * is the newest `updateTime` in MICROSECONDS and whose reads run in ONE
+ * read-only transaction:
+ *
+ *  - {@link CarimboFake} carries `seconds` (= `seq`) and `nanoseconds` (= `0`),
+ *    the two fields a real `Timestamp` exposes and `microsDeUpdateTime` reads.
+ *    Without them the clock reads `NaN` — a watermark that compares false
+ *    against everything. `seq`, `isEqual` and `toMillis` are unchanged;
+ *  - {@link FakeDb.runTransaction} takes the Admin SDK's optional second
+ *    argument and records it in {@link FakeDb.opcoesDeTransacao}, so a test can
+ *    assert `{ readOnly: true }`; every path read THROUGH the transaction lands
+ *    in {@link FakeDb.leiturasEmTransacao}, so a test can assert that a read did
+ *    not escape the snapshot; and a write staged inside a `readOnly`
+ *    transaction THROWS, as the Admin SDK does. ⚠️ One divergence stays: the
+ *    engine may still re-run a read-only callback when a concurrent write lands
+ *    on what it read, while the real SDK never retries a read-only transaction.
+ *    A callback with no writes is idempotent, and the retry only ever reads
+ *    FRESHER data, so it can hide no stale-snapshot bug — but a test that holds
+ *    a read-only callback at `occ.beforeCommit` sees the retry, not the stale
+ *    snapshot. Hold such a caller AFTER its transaction instead.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
@@ -184,6 +206,10 @@ export type DocData = Record<string, unknown>;
  */
 export interface CarimboFake {
   readonly seq: number;
+  /** = {@link CarimboFake.seq} (step 19) — the `Timestamp` field `microsDeUpdateTime` reads. */
+  readonly seconds: number;
+  /** Always `0` (step 19), so the µs clock of a stamp is exactly `seq · 1e6`. */
+  readonly nanoseconds: number;
   isEqual(outro: unknown): boolean;
   toMillis(): number;
 }
@@ -191,6 +217,8 @@ export interface CarimboFake {
 function carimbo(seq: number): CarimboFake {
   return {
     seq,
+    seconds: seq,
+    nanoseconds: 0,
     isEqual: (outro: unknown) =>
       typeof outro === 'object' && outro !== null && (outro as { seq?: unknown }).seq === seq,
     toMillis: () => seq,
@@ -468,6 +496,17 @@ export class FakeDb {
    * a race test is about.
    */
   readonly opLog: { op: OccOpKind; path: string }[] = [];
+  /**
+   * The options of every {@link FakeDb.runTransaction} call, in call order —
+   * `undefined` when the caller passed none (step 19).
+   */
+  readonly opcoesDeTransacao: (Readonly<Record<string, unknown>> | undefined)[] = [];
+  /**
+   * Every path read THROUGH a transaction (`tx.get` / `tx.getAll`), in call
+   * order, retries included (step 19). A read that bypassed the transaction is
+   * in {@link FakeDb.opLog} and absent here.
+   */
+  readonly leiturasEmTransacao: string[] = [];
   /** Exposed so a test can set `db.occ.beforeCommit` / read `db.occ.txLog`. */
   readonly occ = new OccEngine({
     applyWrite: (kind, path, data) => this.aplicarEscritaTransacional(kind, path, data),
@@ -501,9 +540,39 @@ export class FakeDb {
    *
    * ⚠️ A throw from the callback PROPAGATES — the real SDK only retries its own
    * ABORTED, and a bug in the code under test must not be swallowed by a fake.
+   *
+   * `options` (step 19) is recorded, and `readOnly: true` makes every staged
+   * write throw — see the step-19 note in the header for the one divergence.
    */
-  runTransaction<T>(fn: (tx: OccTransaction) => Promise<T>): Promise<T> {
-    return this.occ.runTransaction(fn);
+  runTransaction<T>(
+    fn: (tx: OccTransaction) => Promise<T>,
+    options?: Readonly<Record<string, unknown>>,
+  ): Promise<T> {
+    this.opcoesDeTransacao.push(options);
+    const somenteLeitura = options?.readOnly === true;
+    const recusar = (verbo: string, ref: { path: string }): never => {
+      throw new Error(
+        `FakeDb: tx.${verbo}('${ref.path}') numa transação readOnly — o Admin SDK recusa a escrita`,
+      );
+    };
+    return this.occ.runTransaction((tx) =>
+      fn({
+        get: (alvo) => {
+          this.leiturasEmTransacao.push(alvo.path);
+          return tx.get(alvo);
+        },
+        getAll: (...alvos) => {
+          for (const alvo of alvos) this.leiturasEmTransacao.push(alvo.path);
+          return tx.getAll(...alvos);
+        },
+        set: (ref, data) => (somenteLeitura ? recusar('set', ref) : tx.set(ref, data)),
+        create: (ref, data) => (somenteLeitura ? recusar('create', ref) : tx.create(ref, data)),
+        update: (ref, patch, precondicao) =>
+          somenteLeitura ? recusar('update', ref) : tx.update(ref, patch, precondicao),
+        delete: (ref, precondicao) =>
+          somenteLeitura ? recusar('delete', ref) : tx.delete(ref, precondicao),
+      }),
+    );
   }
 
   seed(path: string, data: DocData): void {

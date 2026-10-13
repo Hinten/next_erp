@@ -842,6 +842,10 @@ export {
   type SizeChartMiss,
   type SizeChartResolution,
 } from './tabelaDeMedidasMercadoLivre';
+export {
+  mlSizeChartSyncRequestSchema,
+  type MlSizeChartSyncRequest,
+} from './tabelaDeMedidasMercadoLivre';
 
 // Shopee size charts (step 18, #1526): the stored entry, its read slice and THE
 // selection rule publish and `/medidas` both call (#1369 — one copy).
@@ -1441,6 +1445,8 @@ export {
   PENDENCIA_RECLAMACAO,
   motivoImportacaoParadaLiSchema,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  situacaoAnuncioForaDaSincronizacaoSchema,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
   avisoNaoLido,
   entradaDeLeitura,
@@ -1457,10 +1463,22 @@ export {
   type RotaAvisoKey,
   type PendenciaReclamacao,
   type MotivoImportacaoParadaLi,
+  type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
+export {
+  mercadoLivreRastreioResultSchema,
+  type MercadoLivreRastreioResult,
+} from './rastreioMercadoLivre';
 
 // The ONE copy of the Shopee `return_sn` shape (step 17, #1525) — the push
 // parser, the reclamação routes and the web mount all read it. Not a collection,
 // so no `registry.ts` entry; outside `pedido/`, so no NF-e live run.
 export { RETURN_SN_SHOPEE_MAX, ehReturnSnShopee } from './devolucaoShopee';
+
+// The ONE Shopee native-kit recipe module (step 19, #1527): ERP componentesKit ⇄
+// Shopee component_list, THE recipe fold, the bounds and the L4 aviso decision —
+// the kit arms, step 9's import, the recipe trigger and the web all call it
+// (#1369). Not a collection, so no `registry.ts` entry. A star export on purpose:
+// the fold-inventory scan greps raw text, so a listed barrel would need a row.
+export * from './receitaKitShopee';

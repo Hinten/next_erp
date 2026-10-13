@@ -35,7 +35,7 @@ vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
   tabelaDeMedidasCollection: { docRef: () => h.ref },
 }));
 
-const { saveChartTransaction } = await import('./chartPersistence');
+const { saveChartTransaction, removeChartDraftsTransaction } = await import('./chartPersistence');
 
 const PATH = 'tabMedi/tab-1';
 const CONTA = 'conta.with.dot';
@@ -156,6 +156,204 @@ beforeEach(() => {
       }),
     ),
   );
+});
+
+describe('removeChartDraftsTransaction', () => {
+  const draft: MlSizeChart = { ...CHART, id: null, legacy: { keep: true } };
+  const second: MlSizeChart = { ...draft, nome: 'Segunda' };
+  const removal = (original = draft, chartIndex = 0, integracaoId = CONTA) => ({
+    original,
+    chartIndex,
+    integracaoId,
+  });
+  const remove = (removals = [removal()]) =>
+    removeChartDraftsTransaction({
+      db: {} as Firestore,
+      tabMediId: 'tab-1',
+      removals,
+    });
+
+  beforeEach(() => {
+    document = baseDocument([draft, OTHER, second]);
+  });
+
+  it('removes multiple original indices and writes only literal account paths and a millisecond stamp', async () => {
+    const before = structuredClone(document!);
+    const start = Date.now();
+    const result = await remove([removal(), removal(second, 2)]);
+    expect(result).toEqual({ [CONTA]: [OTHER] });
+    expect(charts()).toEqual([OTHER]);
+    expect(Object.keys(committed[0]!)).toEqual([
+      JSON.stringify(['tabelasDeMedidasMercadoLivre', CONTA, 'tabelas']),
+    ]);
+    expect(Object.keys(committed[1]!)).toEqual([JSON.stringify(['ultimaModificacao'])]);
+    expect(document?.ultimaModificacao).toBeGreaterThanOrEqual(start);
+    expect(document?.ultimaModificacao).toBeLessThanOrEqual(Date.now());
+    expect(document).toEqual({
+      ...before,
+      ultimaModificacao: document?.ultimaModificacao,
+      tabelasDeMedidasMercadoLivre: {
+        ...(before.tabelasDeMedidasMercadoLivre as Doc),
+        [CONTA]: { tabelas: [OTHER], legacyMetadata: 'keep' },
+      },
+    });
+  });
+
+  it.each(['row edit', 'reordered target', 'removed target', 'newly sent', 'deleted parent'])(
+    'refuses a competing %s after an actual OCC retry',
+    async (change) => {
+      interleave((tx) => {
+        if (change === 'deleted parent') {
+          tx.delete(h.ref);
+          return;
+        }
+        const changed = change === 'row edit' ? { ...draft, rows: [] } : { ...draft, id: 'SENT' };
+        const tabelas =
+          change === 'reordered target'
+            ? [OTHER, draft, second]
+            : change === 'removed target'
+              ? [OTHER, second]
+              : [changed, OTHER, second];
+        tx.update(h.ref, encodePatch({ tabelasDeMedidasMercadoLivre: { [CONTA]: { tabelas } } }));
+      });
+      await expect(remove()).rejects.toBeInstanceOf(SizeChartConflictError);
+      expect(reads).toBe(2);
+      expect(engine.txLog.some((attempt) => attempt.phase === 'abort')).toBe(true);
+      expect(engine.txLog.filter((attempt) => attempt.phase === 'commit')).toHaveLength(1);
+      if (change === 'deleted parent') expect(document).toBeUndefined();
+      else expect(charts()).toHaveLength(change === 'removed target' ? 2 : 3);
+    },
+  );
+
+  it('rebuilds a retry preserving appends, sibling charts, metadata, accounts, Shopee and ordinary fields', async () => {
+    const remoteOther = {
+      ...OTHER,
+      nome: 'Mudança remota',
+      exclusaoSolicitadaEm: '2026-10-08T00:00:00Z',
+      unknown: [1],
+    };
+    const appended = { id: null, nome: 'Concorrente' };
+    const map = {
+      [CONTA]: { tabelas: [draft, remoteOther, second, appended], legacyMetadata: 'updated' },
+      outra: { tabelas: [remoteOther], unknown: true },
+    };
+    const shopee = { loja: [{ size_chart_id: 99 }] };
+    interleave((tx) =>
+      tx.update(
+        h.ref,
+        encodePatch({
+          descricao: 'Remota',
+          tabelasDeMedidasMercadoLivre: map,
+          tabelasMedidasShopee: shopee,
+        }),
+      ),
+    );
+    await remove();
+    expect(reads).toBe(2);
+    expect(document).toMatchObject({
+      descricao: 'Remota',
+      tabelasMedidasShopee: shopee,
+      tabelasDeMedidasMercadoLivre: {
+        ...map,
+        [CONTA]: { ...map[CONTA], tabelas: [remoteOther, second, appended] },
+      },
+    });
+    expect(charts()[0]?.exclusaoSolicitadaEm).toBe('2026-10-08T00:00:00Z');
+  });
+
+  it('commits removals across accounts together, but one changed target aborts the entire batch', async () => {
+    const map = document!.tabelasDeMedidasMercadoLivre as Doc;
+    map.outra = { tabelas: [second], metadata: 'keep' };
+    const batch = [removal(), removal(second, 0, 'outra')];
+    interleave((tx) =>
+      tx.update(
+        h.ref,
+        encodePatch({
+          tabelasDeMedidasMercadoLivre: {
+            ...map,
+            outra: { tabelas: [{ ...second, rows: [] }], metadata: 'keep' },
+          },
+        }),
+      ),
+    );
+    await expect(remove(batch)).rejects.toBeInstanceOf(SizeChartConflictError);
+    expect(charts()).toEqual([draft, OTHER, second]);
+    expect(engine.txLog.filter((attempt) => attempt.phase === 'commit')).toHaveLength(1);
+    document = baseDocument([draft]);
+    (document.tabelasDeMedidasMercadoLivre as Doc).outra = { tabelas: [second], metadata: 'keep' };
+    await remove(batch);
+    expect(document.tabelasDeMedidasMercadoLivre).toMatchObject({
+      [CONTA]: { tabelas: [] },
+      outra: { tabelas: [], metadata: 'keep' },
+    });
+  });
+
+  it('accepts reordered object keys without weakening the full-chart guard', async () => {
+    const original = {
+      legacy: draft.legacy,
+      rows: draft.rows,
+      domain_id: draft.domain_id,
+      nome: draft.nome,
+      id: null,
+    };
+    await expect(remove([removal(original)])).resolves.toEqual({ [CONTA]: [OTHER, second] });
+  });
+
+  it.each([
+    ['01', '1'],
+    ['90,5', '90,50'],
+  ])('keeps %s and %s distinct in row values', async (opened, current) => {
+    const original = { ...draft, rows: [{ attributes: [{ id: 'SIZE', value_name: opened }] }] };
+    document = baseDocument([
+      { ...original, rows: [{ attributes: [{ id: 'SIZE', value_name: current }] }] },
+    ]);
+    await expect(remove([removal(original)])).rejects.toBeInstanceOf(SizeChartConflictError);
+    expect(committed).toHaveLength(0);
+  });
+
+  it('detects changes to unknown chart fields', async () => {
+    document = baseDocument([{ ...draft, legacy: { keep: false } }]);
+    await expect(remove()).rejects.toBeInstanceOf(SizeChartConflictError);
+    expect(committed).toHaveLength(0);
+  });
+
+  it.each([
+    undefined,
+    null,
+    'invalid',
+    {},
+    { tabelas: null },
+    { tabelas: 'invalid' },
+    { tabelas: [{ id: 42 }] },
+  ])('refuses missing or malformed account entries without changing them: %j', async (entry) => {
+    document = {
+      ...baseDocument(),
+      tabelasDeMedidasMercadoLivre: entry === undefined ? {} : { [CONTA]: entry },
+    };
+    const before = structuredClone(document);
+    await expect(remove()).rejects.toBeInstanceOf(SizeChartConflictError);
+    expect(document).toEqual(before);
+    expect(committed).toHaveLength(0);
+  });
+
+  it.each([undefined, null, ''])('allows an unsent chart with id %j', async (id) => {
+    const original = id === undefined ? { nome: 'Sem id' } : { id, nome: 'Sem id' };
+    document = baseDocument([original]);
+    await remove([removal(original)]);
+    expect(charts()).toEqual([]);
+  });
+
+  it('refuses an explicitly supplied sent chart', async () => {
+    document = baseDocument([CHART]);
+    await expect(remove([removal(CHART)])).rejects.toBeInstanceOf(SizeChartConflictError);
+    expect(committed).toHaveLength(0);
+  });
+
+  it('does nothing for an empty batch, including on a missing table', async () => {
+    document = undefined;
+    await expect(remove([])).resolves.toEqual({});
+    expect(h.execute).not.toHaveBeenCalled();
+  });
 });
 
 describe('saveChartTransaction', () => {

@@ -1,7 +1,14 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { SHOPEE_ERROR_KIND, ShopeeApiError, ShopeeError } from '@delfrance/integrations-shopee';
+import {
+  SHOPEE_ADD_KIT_ITEM_PATH,
+  SHOPEE_DELETE_ITEM_PATH,
+  SHOPEE_ERROR_KIND,
+  SHOPEE_UPDATE_KIT_ITEM_PATH,
+  ShopeeApiError,
+  ShopeeError,
+} from '@delfrance/integrations-shopee';
 
 import { erroContidoPorConta } from '../core/containment';
 // ⚠️ `respond.ts` imports `next/server` and is therefore NOT Next-free — which is
@@ -28,6 +35,50 @@ import { MOTIVO_TAX_INFO_OMITIDO } from './taxInfoPublicacao';
 const PRODUTO_ID = 'prod-fixture-1';
 const ITEM_ID = 2500139861;
 const MAX_MENSAGEM_PROBLEMA = constantes.MAX_MENSAGEM_PROBLEMA;
+
+/**
+ * As DEZENOVE recusas de kit nativo do núcleo (passo 19, PR 5) — chaves de
+ * `MOTIVO_PUBLICACAO_BLOQUEADA`, todas produzidas em `kits/planoKit.ts`. (As
+ * cinco só do despachante entraram com o PR 7, e `recriacao-sem-diferenca` com o
+ * PR 6, cada uma junto do seu produtor.)
+ */
+const CHAVES_DO_NUCLEO_DO_KIT = [
+  'kitSemUnidadeVendavel',
+  'kitSemComponentes',
+  'kitVariacoesDemais',
+  'kitDoisEixos',
+  'kitComponenteUnicoQuantidade',
+  'kitSemSku',
+  'kitSkuComEspacos',
+  'kitSkuRepetido',
+  'componenteNaoPublicado',
+  'componenteSemModelo',
+  'componenteEKitNativo',
+  'componenteAnuncioInativo',
+  'componentesForaDaFaixa',
+  'principalObrigatorio',
+  'principalInvalido',
+  'kitJaExisteNaShopee',
+  'buscaDeKitIncompleta',
+  'vinculosAmbiguos',
+  'vinculoSubstituido',
+] as const satisfies readonly (keyof typeof MOTIVO_PUBLICACAO_BLOQUEADA)[];
+
+const RECUSAS_DE_KIT_DO_NUCLEO: readonly string[] = CHAVES_DO_NUCLEO_DO_KIT.map(
+  (chave) => MOTIVO_PUBLICACAO_BLOQUEADA[chave],
+);
+
+/**
+ * As CINCO recusas que só o DESPACHO da publicação produz (passo 19, PR 7) —
+ * chaves de `MOTIVO_PUBLICACAO_BLOQUEADA`, todas em `kits/armaDePublicacao.ts`.
+ */
+const CHAVES_DO_DESPACHO = [
+  'kitVirtualSemKit',
+  'converterSemAnuncioComum',
+  'converterSemKit',
+  'jaEKitNativo',
+  'opcaoDeKitEmAnuncioComum',
+] as const satisfies readonly (keyof typeof MOTIVO_PUBLICACAO_BLOQUEADA)[];
 
 function problemaDeBloqueio(
   motivo: ProblemaDeBloqueio['motivo'],
@@ -60,7 +111,7 @@ function recusado(
 }
 
 describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
-  it('1 — o vocabulário bloqueado é EXATAMENTE estes vinte e dois slugs', () => {
+  it('1 — o vocabulário bloqueado é EXATAMENTE estes quarenta e sete slugs', () => {
     // A PERSISTED vocabulary (`falhaPublicacao.motivo` e
     // `falhaPublicacao.problemas[].motivo`). Esta lista É o pino: o
     // `as const satisfies` garante o TIPO dos valores, mas não impede que um
@@ -71,21 +122,48 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
     // ele é o kit NATIVO da Shopee (`kitNativo` no vínculo, `ehKitVirtual` na
     // primeira publicação), nunca o `ehKit` do ERP. O SLUG não mudou, e é por
     // isso que as recusas já gravadas continuam legíveis.
+    // ⚠️ O passo 19 (PR 5, o núcleo do kit) acrescentou DEZENOVE recusas de kit
+    // nativo — todas decididas LENDO, antes de qualquer escrita na Shopee —, o
+    // PR 6 a rede de segurança da recriação (`recriacao-sem-diferenca`) e o PR 7
+    // as CINCO recusas do despacho da publicação.
     expect([...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)].sort()).toEqual([
       'atributo-obrigatorio',
+      'busca-de-kit-incompleta',
       'categoria-invalida',
       'combinacao-duplicada',
+      'componente-anuncio-inativo',
+      'componente-e-kit-nativo',
+      'componente-nao-publicado',
+      'componente-sem-modelo',
+      'componentes-fora-da-faixa',
+      'converter-sem-anuncio-comum',
+      'converter-sem-kit',
       'descricao-fora-da-faixa',
       'estoque-abaixo-do-minimo',
       'filho-sem-preco',
+      'ja-e-kit-nativo',
+      'kit-componente-unico-quantidade',
+      'kit-dois-eixos',
+      'kit-ja-existe-na-shopee',
+      'kit-sem-componentes',
+      'kit-sem-sku',
+      'kit-sem-unidade-vendavel',
+      'kit-sku-com-espacos',
+      'kit-sku-repetido',
+      'kit-variacoes-demais',
+      'kit-virtual-sem-kit',
       'listagem-removida',
       'logistica-sem-canal',
       'marca-sem-nome',
       'nome-fora-da-faixa',
+      'opcao-de-kit-em-anuncio-comum',
       'opcoes-demais',
       'preco-fora-da-faixa',
+      'principal-invalido',
+      'principal-obrigatorio',
       'produto-e-filho',
       'produto-e-kit',
+      'recriacao-sem-diferenca',
       'sem-descricao',
       'sem-dimensoes',
       'sem-fotos',
@@ -94,8 +172,10 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
       'sem-peso',
       'sem-preco',
       'variacao-sem-vinculo',
+      'vinculo-substituido',
+      'vinculos-ambiguos',
     ]);
-    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(22);
+    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(47);
   });
 
   it('2 — ⛔ NEAR-MISS: `imposto-incompleto` NÃO é membro, e `estoque-abaixo-do-minimo` É', () => {
@@ -135,9 +215,12 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
 });
 
 describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
-  it('5 — o vocabulário de problema é o bloqueado MAIS exatamente cinco slugs de wire', () => {
+  it('5 — o vocabulário de problema é o bloqueado MAIS exatamente doze slugs de wire', () => {
     // O passo 18 acrescentou os dois de `size_chart_info`: o modelo que a Shopee
-    // recusou e a foto da tabela que ela recusou (ou cujo upload falhou).
+    // recusou e a foto da tabela que ela recusou (ou cujo upload falhou). O passo
+    // 19 acrescentou as sete recusas de KIT NATIVO, cujo único produtor é
+    // `kits/recusaKit.ts` (`preco-fora-da-faixa`, a oitava linha daquela tabela,
+    // já era membro BLOQUEADO).
     expect([...Object.values(MOTIVO_PROBLEMA_PUBLICACAO)].sort()).toEqual(
       [
         ...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA),
@@ -145,35 +228,79 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
         'imposto-recusado',
         'tabela-de-medidas-recusada',
         'tabela-de-medidas-foto-recusada',
+        'operacao-invalida-para-kit',
+        'instabilidade-shopee',
+        'imagem-de-kit-desligada',
+        'kit-inexistente',
+        'kit-bloqueado-pela-shopee',
+        'faixa-de-componentes',
+        'kit-principal-duplicado',
         'desconhecido',
       ].sort(),
     );
-    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(27);
+    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(59);
   });
 
-  it('6 — ⛔ NEAR-MISS: os cinco slugs de WIRE não pertencem ao vocabulário BLOQUEADO', () => {
+  it('6 — ⛔ NEAR-MISS: os doze slugs de WIRE não pertencem ao vocabulário BLOQUEADO', () => {
     // O publisher nunca RECUSA por um deles: nenhum é uma decisão tomada lendo
     // o produto. Se escorregassem para o conjunto bloqueado, um
     // `ShopeePublishBlockedError` passaria a poder dizer "bloqueado por
     // promoção" sem que uma única chamada tivesse sido feita.
     // ⚠️ Os dois da tabela de medidas idem: um `avisoObrigatoria` é um AVISO
-    // (nunca um bloqueio), e o BLOQUEADO continua com 22 membros.
+    // (nunca um bloqueio), e o BLOQUEADO só cresceu pelas 19 recusas de kit do
+    // passo 19 (pela rede de segurança da recriação, PR 6, e pelas cinco do
+    // despacho, PR 7) — 47 membros.
+    // ⚠️ E os sete de KIT (passo 19) também: cada um é uma frase da Shopee
+    // classificada DEPOIS de uma escrita, nunca algo lido no produto.
     const bloqueados: readonly string[] = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA);
     expect(bloqueados).not.toContain('bloqueado-por-promocao');
     expect(bloqueados).not.toContain('imposto-recusado');
     expect(bloqueados).not.toContain('tabela-de-medidas-recusada');
     expect(bloqueados).not.toContain('tabela-de-medidas-foto-recusada');
     expect(bloqueados).not.toContain('desconhecido');
-    expect(bloqueados).toHaveLength(22);
+    for (const slug of [
+      'operacao-invalida-para-kit',
+      'instabilidade-shopee',
+      'imagem-de-kit-desligada',
+      'kit-inexistente',
+      'kit-bloqueado-pela-shopee',
+      'faixa-de-componentes',
+      'kit-principal-duplicado',
+    ]) {
+      expect(bloqueados, slug).not.toContain(slug);
+    }
+    expect(bloqueados).toHaveLength(47);
+  });
+
+  it('6b — ⛔ NEAR-MISS: as 19 recusas de KIT do núcleo SÃO bloqueio, e as 7 de wire do kit NÃO', () => {
+    // As duas famílias do passo 19 caem em lados OPOSTOS da mesma fronteira, e
+    // por isso a fronteira é o que se testa: a do núcleo (`kits/planoKit.ts`) é
+    // decidida LENDO o produto, os vínculos e a busca de SKU antes de qualquer
+    // escrita; a do classificador (`kits/recusaKit.ts`) é uma frase da Shopee
+    // lida DEPOIS de uma escrita. Trocar uma de lado faria um
+    // `ShopeePublishBlockedError` dizer "a Shopee recusou" sem chamada nenhuma —
+    // ou um bloqueio de leitura sumir do vocabulário que a rota aceita.
+    const bloqueados: readonly string[] = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA);
+    for (const slug of RECUSAS_DE_KIT_DO_NUCLEO) expect(bloqueados, slug).toContain(slug);
+    for (const chave of CHAVES_DAS_RECUSAS_DE_KIT) {
+      expect(bloqueados, chave).not.toContain(MOTIVO_PROBLEMA_PUBLICACAO[chave]);
+    }
+    // Disjuntas entre si — nenhum slug de kit vive nos dois lados.
+    const doWire = new Set<string>(
+      CHAVES_DAS_RECUSAS_DE_KIT.map((c) => MOTIVO_PROBLEMA_PUBLICACAO[c]),
+    );
+    expect(RECUSAS_DE_KIT_DO_NUCLEO.filter((s) => doWire.has(s))).toEqual([]);
   });
 });
 
 describe('ETAPA_PUBLICACAO', () => {
-  it('7 — as etapas são EXATAMENTE estas dez, na grafia da ordem do `aplicar`', () => {
+  it('7 — as etapas são EXATAMENTE estas treze, na grafia da ordem do `aplicar`', () => {
     // Também PERSISTIDA (`falhaPublicacao.etapa`), e a única coisa que responde
     // "o que existe no canal agora". As sete primeiras são nomes de operação da
     // Shopee em `snake_case` porque é assim que o log e a doc as chamam; as três
-    // últimas são passos nossos e ficam em pt-BR.
+    // seguintes são passos nossos e ficam em pt-BR. As três ÚLTIMAS são do kit
+    // nativo (passo 19), de novo nomes de operação da Shopee: o create, a
+    // republicação e a exclusão do kit antigo de uma recriação.
     expect([...Object.values(ETAPA_PUBLICACAO)]).toEqual([
       'fotos',
       'add_item',
@@ -185,7 +312,28 @@ describe('ETAPA_PUBLICACAO', () => {
       'get_model_list',
       'relistagem',
       'leitura-de-volta',
+      'add_kit_item',
+      'update_kit_item',
+      'delete_item',
     ]);
+  });
+
+  it('7b — as três etapas de kit são o ÚLTIMO segmento do caminho da operação no pacote', () => {
+    // `publicarAnuncio.ts` atribui uma falha à etapa pelo último segmento do
+    // `err.path` (`etapaDaFalha`), então uma etapa de kit grafada diferente do
+    // caminho real nunca seria reconhecida. Os caminhos vêm do PACOTE — nenhum
+    // é redigitado aqui.
+    const ultimo = (caminho: string): string => caminho.split('/').at(-1) ?? '';
+    expect(ETAPA_PUBLICACAO.addKitItem).toBe(ultimo(SHOPEE_ADD_KIT_ITEM_PATH));
+    expect(ETAPA_PUBLICACAO.updateKitItem).toBe(ultimo(SHOPEE_UPDATE_KIT_ITEM_PATH));
+    expect(ETAPA_PUBLICACAO.deleteItem).toBe(ultimo(SHOPEE_DELETE_ITEM_PATH));
+    // E o cabeçalho as escreve como qualquer outra etapa.
+    expect(cabecalhoDaRecusa(ETAPA_PUBLICACAO.addKitItem, 'product.error_busi', true)).toBe(
+      'Publicação recusada pela Shopee em add_kit_item (product.error_busi)',
+    );
+    expect(cabecalhoDaRecusa(ETAPA_PUBLICACAO.updateKitItem, '', true)).toBe(
+      'Publicação recusada pela Shopee em update_kit_item',
+    );
   });
 });
 
@@ -500,18 +648,32 @@ describe('constantesAnuncio', () => {
  * compila, passa em todo teste de pareamento chave↔slug e só aparece quando um
  * operador pergunta por que aquele veredicto nunca sai.
  *
- * O universo lido é TEXTO CRU: todo `*.ts` não-teste desta pasta mais os três
- * roteiros da etapa 11. Texto cru porque o que se quer pegar é um membro sem
- * nenhuma menção — um `import` não o mostraria, e uma checagem de tipo menos
- * ainda.
+ * O universo lido é TEXTO CRU: todo `*.ts` não-teste desta pasta, todo `*.ts`
+ * não-teste de `../kits/` (passo 19: o classificador de recusas de kit, e depois
+ * o núcleo do kit, produzem membros destes vocabulários de LÁ — sem esta pasta
+ * o teste ficaria vermelho por um membro que tem produtor, ou, pior, verde só
+ * porque outra menção o cobria) mais os três roteiros da etapa 11. Texto cru
+ * porque o que se quer pegar é um membro sem nenhuma menção — um `import` não o
+ * mostraria, e uma checagem de tipo menos ainda.
  */
 const RAIZ_ANUNCIOS = new URL('./', import.meta.url);
+const RAIZ_KITS = new URL('../kits/', import.meta.url);
 
 const ROTAS_DA_ETAPA_11 = [
   '../../../app/api/marketplace/shopee/publicar/route.ts',
   '../../../app/api/marketplace/shopee/anuncio-status/route.ts',
   '../../../app/api/marketplace/shopee/reverificar-anuncio/route.ts',
 ] as const;
+
+/** As fontes de `../kits/`, chaveadas por `../kits/<nome>` — nunca pelo nome nu. */
+function fontesDosKits(): Map<string, string> {
+  const fontes = new Map<string, string>();
+  for (const nome of readdirSync(RAIZ_KITS)) {
+    if (!nome.endsWith('.ts') || nome.endsWith('.test.ts')) continue;
+    fontes.set(`../kits/${nome}`, readFileSync(new URL(nome, RAIZ_KITS), 'utf8'));
+  }
+  return fontes;
+}
 
 function fontesQuePodemProduzir(excluir: readonly string[]): Map<string, string> {
   const fontes = new Map<string, string>();
@@ -520,16 +682,43 @@ function fontesQuePodemProduzir(excluir: readonly string[]): Map<string, string>
     if (excluir.includes(nome)) continue;
     fontes.set(nome, readFileSync(new URL(nome, RAIZ_ANUNCIOS), 'utf8'));
   }
+  for (const [chave, fonte] of fontesDosKits()) {
+    if (excluir.includes(chave)) continue;
+    fontes.set(chave, fonte);
+  }
   for (const rel of ROTAS_DA_ETAPA_11) {
     fontes.set(rel, readFileSync(new URL(rel, RAIZ_ANUNCIOS), 'utf8'));
   }
   return fontes;
 }
 
+/**
+ * As sete recusas de KIT NATIVO (passo 19) — chaves de
+ * `MOTIVO_PROBLEMA_PUBLICACAO`, cujo único produtor é `kits/recusaKit.ts`.
+ */
+const CHAVES_DAS_RECUSAS_DE_KIT = [
+  'operacaoInvalidaParaKit',
+  'instabilidadeShopee',
+  'imagemDeKitDesligada',
+  'kitInexistente',
+  'kitBloqueadoPelaShopee',
+  'faixaDeComponentes',
+  'kitPrincipalDuplicado',
+] as const satisfies readonly (keyof typeof MOTIVO_PROBLEMA_PUBLICACAO)[];
+
+/**
+ * A ÚNICA grafia que conta como produtor de uma recusa de kit: a constante.
+ * ⚠️ Nunca o slug entre aspas — uma união de TIPOS soletra os slugs entre aspas
+ * e não produz nada (S3F-06).
+ */
+function produzPelaConstante(fonte: string, chave: string): boolean {
+  return fonte.includes(`MOTIVO_PROBLEMA_PUBLICACAO.${chave}`);
+}
+
 describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublicacao.ts', () => {
-  it('os 22 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
+  it('os 47 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
     // O arquivo que DECLARA está fora do universo, senão a asserção seria
-    // vácua: a própria união de tipos soletra os 22 slugs.
+    // vácua: a própria união de tipos soletra os 47 slugs.
     const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
     // Uma âncora: se a leitura da pasta falhar, o teste passa sozinho.
     expect(fontes.size).toBeGreaterThan(10);
@@ -545,16 +734,86 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     }
 
     expect(orfaos, 'motivos declarados que NINGUÉM produz').toEqual([]);
-    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(22);
+    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(47);
   });
 
-  it('os 5 motivos só de WIRE: cada um também é escrito por ALGUM outro arquivo', () => {
+  it('as 5 recusas do DESPACHO (PR 7): o produtor é `kits/armaDePublicacao.ts`, pela CONSTANTE', () => {
+    // Elas entram JUNTO do despacho (lente 8): um membro sem produtor no PR
+    // dele seria uma promessa que nada cumpre. A âncora é o ARQUIVO — uma menção
+    // em outro módulo de `kits/` manteria o membro "produzido" depois de o
+    // despacho perder a linha que recusa — e a grafia é a da constante.
+    const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
+    const despacho = fontes.get('../kits/armaDePublicacao.ts');
+    expect(despacho, 'kits/armaDePublicacao.ts fora do universo de O7').toBeDefined();
+    const fonte = despacho ?? '';
+    const semProdutor = CHAVES_DO_DESPACHO.filter(
+      (chave) => !fonte.includes(`MOTIVO_PUBLICACAO_BLOQUEADA.${chave}`),
+    );
+    expect(semProdutor, 'recusas do despacho que ele não produz').toEqual([]);
+    const aspas = CHAVES_DO_DESPACHO.map((c) => MOTIVO_PUBLICACAO_BLOQUEADA[c]).filter(
+      (slug) => fonte.includes(`'${slug}'`) || fonte.includes(`"${slug}"`),
+    );
+    expect(aspas, 'slugs do despacho soletrados entre aspas').toEqual([]);
+    // ⛔ QUASE-PAR: nenhum OUTRO arquivo as produz — elas existem só porque o
+    // despacho escolhe um braço; o núcleo do kit e o passo 11 nunca as veem.
+    for (const [nome, outra] of fontes) {
+      if (nome === '../kits/armaDePublicacao.ts') continue;
+      for (const chave of CHAVES_DO_DESPACHO) {
+        const slug = MOTIVO_PUBLICACAO_BLOQUEADA[chave];
+        const produz =
+          outra.includes(`MOTIVO_PUBLICACAO_BLOQUEADA.${chave}`) ||
+          outra.includes(`'${slug}'`) ||
+          outra.includes(`"${slug}"`);
+        expect(produz, `${nome} produz ${slug}`).toBe(false);
+      }
+    }
+  });
+
+  it('a recusa da RECRIAÇÃO (PR 6): o produtor é `kits/recriarKit.ts`, pela CONSTANTE', () => {
+    // `recriacao-sem-diferenca` é a rede de segurança do `--recriar` (R-m) e
+    // tem UM produtor. A âncora é o ARQUIVO (sem ela, uma menção em qualquer
+    // outro módulo de `kits/` manteria o membro "produzido" depois de o
+    // aplicador perder a linha que recusa), e a grafia é a da constante.
+    const recriar = fontesQuePodemProduzir(['errosPublicacao.ts']).get('../kits/recriarKit.ts');
+    expect(recriar, 'kits/recriarKit.ts fora do universo de O7').toBeDefined();
+    const fonte = recriar ?? '';
+    expect(fonte).toContain('MOTIVO_PUBLICACAO_BLOQUEADA.recriacaoSemDiferenca');
+    const slug = MOTIVO_PUBLICACAO_BLOQUEADA.recriacaoSemDiferenca;
+    expect(fonte.includes(`'${slug}'`) || fonte.includes(`"${slug}"`)).toBe(false);
+    // ⛔ QUASE-PAR: o planejador do núcleo NÃO a produz — ela só existe no
+    // braço que recria, depois do veredito da busca.
+    const plano = fontesQuePodemProduzir(['errosPublicacao.ts']).get('../kits/planoKit.ts') ?? '';
+    expect(plano).not.toContain('recriacaoSemDiferenca');
+  });
+
+  it('as 19 recusas de kit do NÚCLEO: o produtor é `kits/planoKit.ts`, pela CONSTANTE', () => {
+    // O passo 19 declarou dezenove membros bloqueados cujo produtor mora em
+    // `kits/` (lido por O7 desde o PR 4). A âncora é o ARQUIVO: sem ela, uma
+    // menção qualquer em outro módulo de `kits/` deixaria um membro "produzido"
+    // depois de o planejador perder a linha que o recusa. E a grafia é a da
+    // constante — o planejador nunca soletra um slug entre aspas.
+    const plano = fontesQuePodemProduzir(['errosPublicacao.ts']).get('../kits/planoKit.ts');
+    expect(plano, 'kits/planoKit.ts fora do universo de O7').toBeDefined();
+    const fonte = plano ?? '';
+    const semProdutor = CHAVES_DO_NUCLEO_DO_KIT.filter(
+      (chave) => !fonte.includes(`MOTIVO_PUBLICACAO_BLOQUEADA.${chave}`),
+    );
+    expect(semProdutor, 'recusas de kit que o planejador não produz').toEqual([]);
+    const aspas = RECUSAS_DE_KIT_DO_NUCLEO.filter(
+      (slug) => fonte.includes(`'${slug}'`) || fonte.includes(`"${slug}"`),
+    );
+    expect(aspas, 'slugs do núcleo soletrados entre aspas em kits/planoKit.ts').toEqual([]);
+  });
+
+  it('os 12 motivos só de WIRE: cada um também é escrito por ALGUM outro arquivo', () => {
     // A mesma regra para os membros que só um problema carrega — os dois de
     // `size_chart_info` (passo 18) entraram com um produtor cada (as linhas da
-    // tabela de `problemasPublicacao.ts`), e um membro novo sem produtor fica
-    // vermelho aqui.
+    // tabela de `problemasPublicacao.ts`), os sete de kit (passo 19) com as
+    // linhas de `kits/recusaKit.ts`, e um membro novo sem produtor fica vermelho
+    // aqui.
     const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
     expect(fontes.has('problemasPublicacao.ts')).toBe(true);
+    expect(fontes.has('../kits/recusaKit.ts')).toBe(true);
 
     const bloqueados = new Set<string>(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA));
     const soDeWire = Object.entries(MOTIVO_PROBLEMA_PUBLICACAO).filter(
@@ -563,7 +822,14 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     expect(soDeWire.map(([chave]) => chave).sort()).toEqual([
       'bloqueadoPorPromocao',
       'desconhecido',
+      'faixaDeComponentes',
+      'imagemDeKitDesligada',
       'impostoRecusado',
+      'instabilidadeShopee',
+      'kitBloqueadoPelaShopee',
+      'kitInexistente',
+      'kitPrincipalDuplicado',
+      'operacaoInvalidaParaKit',
       'tabelaDeMedidasFotoRecusada',
       'tabelaDeMedidasRecusada',
     ]);
@@ -577,6 +843,58 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
       if (!temProdutor) orfaos.push(`${chave} (${slug})`);
     }
     expect(orfaos, 'motivos de wire declarados que NINGUÉM produz').toEqual([]);
+  });
+
+  it('M74 — as 7 recusas de KIT: o produtor mora em `kits/`, e O7 LÊ essa pasta', () => {
+    // Antes do passo 19 a varredura lia só `anuncios/` e as três rotas. Um
+    // membro produzido SÓ em `kits/recusaKit.ts` ficaria órfão — ou, se outra
+    // menção qualquer o cobrisse, verde pelo motivo errado. Por isso a âncora é
+    // a pasta no universo E o classificador produzindo os sete pela constante.
+    const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
+    const recusaKit = fontes.get('../kits/recusaKit.ts');
+    expect(recusaKit, 'kits/recusaKit.ts fora do universo de O7').toBeDefined();
+
+    const semProdutorNoClassificador = CHAVES_DAS_RECUSAS_DE_KIT.filter(
+      (chave) => !produzPelaConstante(recusaKit ?? '', chave),
+    );
+    expect(semProdutorNoClassificador).toEqual([]);
+
+    // ⛔ QUASE-PAR: o `excluir` alcança `kits/` pela chave `../kits/<nome>` —
+    // tirar o classificador do universo o tira de verdade.
+    expect(fontesQuePodemProduzir(['../kits/recusaKit.ts']).has('../kits/recusaKit.ts')).toBe(
+      false,
+    );
+  });
+
+  it('M164 — ⛔ uma união de TIPOS com o slug entre aspas NÃO produz uma recusa de kit', () => {
+    // S3F-06. O7 genérico conta qualquer grafia entre aspas, então uma
+    // `type MotivoRecusaKit = '…' | '…'` em `kits/` manteria um membro
+    // "produzido" depois de a sua linha da tabela sumir. Para os sete de kit a
+    // ÚNICA grafia aceita é a constante — e nenhuma fonte de `kits/` soletra um
+    // deles entre aspas.
+    const uniao =
+      'export type MotivoRecusaKit = \'kit-inexistente\' | "faixa-de-componentes";\n' +
+      "const ROTULO = 'kit-principal-duplicado';";
+    for (const chave of ['kitInexistente', 'faixaDeComponentes', 'kitPrincipalDuplicado']) {
+      expect(produzPelaConstante(uniao, chave), chave).toBe(false);
+    }
+    // O PAR: a grafia da constante conta.
+    expect(
+      produzPelaConstante('motivo: MOTIVO_PROBLEMA_PUBLICACAO.kitInexistente,', 'kitInexistente'),
+    ).toBe(true);
+
+    const fontesKits = fontesDosKits();
+    expect(fontesKits.has('../kits/recusaKit.ts')).toBe(true);
+    const aspas: string[] = [];
+    for (const [nome, fonte] of fontesKits) {
+      for (const chave of CHAVES_DAS_RECUSAS_DE_KIT) {
+        const slug = MOTIVO_PROBLEMA_PUBLICACAO[chave];
+        if (fonte.includes(`'${slug}'`) || fonte.includes(`"${slug}"`)) {
+          aspas.push(`${nome}: ${slug}`);
+        }
+      }
+    }
+    expect(aspas, 'slugs de kit soletrados entre aspas em kits/').toEqual([]);
   });
 
   it('os 11 motivos de tax_info omitido: cada um é escrito pela CONSTANTE companheira', () => {
