@@ -147,9 +147,11 @@
  * mirrors: the query ops keep `…Params`, the body ops take the body. See
  * {@link ShopeeAddItemRequest}.
  *
- * ⚠️ Two of the twelve ship with **no caller in this repo** and say so in their
- * own docblocks — {@link ShopeeClient.deleteModel} and
- * {@link ShopeeClient.deleteItem} (the sandbox probe's cleanup).
+ * ⚠️ One of the twelve ships with **no caller in this repo** and says so in its
+ * own docblock — {@link ShopeeClient.deleteModel}. {@link ShopeeClient.deleteItem}
+ * shipped the same way (the sandbox probe's cleanup) and got its FIRST production
+ * caller in step 19 (#1527): the native-kit recriar, which deletes the OLD kit
+ * only after the new one is created and reads back live.
  *
  * ⚠️ Three of Shopee's own contradictions are instrumented as single literals
  * rather than guessed, all three in `types.ts`:
@@ -602,7 +604,10 @@ export const SHOPEE_ADD_MODEL_PATH = '/api/v2/product/add_model';
 export const SHOPEE_UPDATE_MODEL_PATH = '/api/v2/product/update_model';
 /** `POST` — Shop-signed. Envelope only. ⚠️ No step-11 caller — see {@link ShopeeClient.deleteModel}. */
 export const SHOPEE_DELETE_MODEL_PATH = '/api/v2/product/delete_model';
-/** `POST` — Shop-signed. Envelope only. ⚠️ No step-11 caller — see {@link ShopeeClient.deleteItem}. */
+/**
+ * `POST` — Shop-signed. Envelope only. ⚠️ No step-11 caller; its one production
+ * caller is step 19's native-kit recriar — see {@link ShopeeClient.deleteItem}.
+ */
 export const SHOPEE_DELETE_ITEM_PATH = '/api/v2/product/delete_item';
 /** `POST` — Shop-signed. WRAPPED. Batch pause / re-list, 1…50 items per call. */
 export const SHOPEE_UNLIST_ITEM_PATH = '/api/v2/product/unlist_item';
@@ -2053,8 +2058,9 @@ export interface ShopeeClient {
   /**
    * Ask Shopee to compose a kit cover from 2…9 components.
    *
-   * ⚠️ **No caller in step 19** — the `deleteModel` / `deleteItem` precedent:
-   * it exists for the BR rehearsal. A kit's cover goes through step 11's
+   * ⚠️ **No caller in step 19** — the `deleteModel` precedent (and `deleteItem`'s,
+   * until step 19's recriar became its first caller): it exists for the BR
+   * rehearsal. A kit's cover goes through step 11's
    * `upload_image` instead, because this op cannot serve a NEW kit with a plain
    * component: its `model_id` is REQUIRED, and for an item with no variations
    * the only id Shopee takes is the hidden default model id, which exists only
@@ -2247,14 +2253,24 @@ export interface ShopeeClient {
   /**
    * Delete ONE item.
    *
-   * ⚠️ **No step-11 caller: the sandbox probe's cleanup only.** The publisher
-   * never deletes a listing — pausing is `unlist_item` — and Shopee's own delete
-   * is not a tidy inverse of create: a deleted item stays readable for 90 days,
-   * cannot be updated, and four separate promotion locks refuse the call outright
+   * ⚠️ **No step-11 caller.** The publisher never deletes a listing — pausing is
+   * `unlist_item` — and Shopee's own delete is not a tidy inverse of create: a
+   * deleted item stays readable for 90 days (as `SELLER_DELETE`), cannot be
+   * updated, and four separate promotion locks refuse the call outright
    * (`error_cannt_delete_in_promotion`, `error_in_item_promotion_delete_lock`,
    * `error_in_model_promotion_delete_lock`, `error_slash_price_item_delete_lock`).
-   * It exists so a rehearsal against the sandbox shop can clean up after itself
-   * instead of leaving a probe item behind for a human to find.
+   * It shipped so a rehearsal against the sandbox shop could clean up after
+   * itself instead of leaving a probe item behind for a human to find.
+   *
+   * **Its first production caller is step 19 (#1527): the native-kit recriar**
+   * (`apps/shopee`, `kits/recriarKit.ts`). Shopee refuses a recipe change on a
+   * live kit, so recreating one is "create the NEW kit FIRST, then delete the
+   * old" (L4) — and the delete is sent only to an old kit that reads `NORMAL` or
+   * `UNLIST`, only after the new one reads back live with the ERP composition.
+   * The caller never trusts this ack: it re-reads the old item, and only a
+   * deleted reading marks the old link `removido`; anything else (a refusal
+   * above included) leaves the old kit SUPERSEDED and warns. Probe #2 measured
+   * `delete_item` on a kit as OK on the SG sandbox.
    */
   deleteItem(body: ShopeeDeleteItemRequest): Promise<ShopeeWriteAck>;
 

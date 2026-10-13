@@ -563,7 +563,17 @@ export async function prepararPublicacao(
 
   const descricao = await lerDescricao(db, entrada.produtoId);
   const filhosCrus = await lerFilhos(db, entrada.produtoId);
-  const linksDeVariacao = await lerLinksDeVariacao(db, deps.integracaoId, entrada.produtoId);
+  // ⚠️ PER LISTING (step 19, L8): only the rows that point at the RESOLVED link.
+  // A child may also carry another listing's rows — the native kit a converted
+  // ordinary listing now sits beside — and binding a child to that listing's
+  // model would plan this listing's update against the wrong `model_id`. `null`
+  // (no link yet) is the step-11 first publish, which has nothing to filter by.
+  const linksDeVariacao = await lerLinksDeVariacao(
+    db,
+    deps.integracaoId,
+    entrada.produtoId,
+    linkResolvido?.linkDocId ?? null,
+  );
   const grupos = await lerGrupos(db, filhosCrus);
 
   /* ---- estoque: the produto, every child, and every kit COMPONENT of both. -- */

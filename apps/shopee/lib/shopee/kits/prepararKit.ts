@@ -31,6 +31,16 @@
  *    batched `get_item_base_info` over our own linked kits the list did not
  *    show (S2C-02). A republish NEVER scans (L10(4)): `busca` is `null` and
  *    `nossosVivos` empty there.
+ *
+ *    PR 6's two create arms: `kit-recriar` reads its TARGET (the old native
+ *    kit) live in step 3 — unless the target link is already `removido`, which
+ *    costs zero reads (M123) — and its scan EXCLUDES the target's `item_id`
+ *    (the old kit carries the very SKU searched, M115). `kit-converter` never
+ *    reads its ordinary antecessor at all: nothing is sent to it (L8, M116).
+ *    And when the scan says the new kit already exists and is linked (a
+ *    `completar`, the resume of either), the principal is the COMPLETED kit's
+ *    read-back main — never the target's (V2R3-01) — read here, before the
+ *    plan, so the limits category agrees with it.
  * 5. **LAST, the photos** — K's own pictures through step 11's resolver, capped
  *    at {@link tetoDeFotosDoKit} — and ONLY when the run will send content: a
  *    create arm whose scan verdict (`decidirKitNovo`) is `criar`, or a
@@ -53,6 +63,7 @@
  */
 import type { ShopeeClient } from '@delfrance/integrations-shopee';
 import {
+  ESTADO_ANUNCIO_SHOPEE,
   componentesKitSchema,
   ehFamiliaDeUm,
   fotoSchema,
@@ -85,6 +96,7 @@ import {
 } from '../anuncios/publicarAnuncio';
 import { lerLimitesKitCached, type LimitesKitLidos } from '../taxonomia/cache';
 import { MOTIVO_IMPORT_BLOQUEADO, ShopeeImportBlockedError } from '../produtos/errosImportacao';
+import type { ItemLido } from '../produtos/itemLido';
 import { lerAnuncioShopee } from '../produtos/lerAnuncio';
 import { linhasLidasDoModeloKit } from './aplicarKit';
 import { lerBaseInfoDosItens, resolverComponentesDoKitErp } from './componentesKit';
@@ -268,9 +280,15 @@ async function lerStatusDosNossos(
 }
 
 /** The target kit's live read (`ContextoKit.vivo`) plus the component `has_model`s it carried. */
-interface KitVivoLido {
+export interface KitVivoLido {
   readonly vivo: NonNullable<ContextoKit['vivo']>;
   readonly temModelos: ReadonlyMap<number, boolean>;
+  /**
+   * PR 6: the whole read, `null` on an absent or illegible row — what the
+   * recriar's read-back of the OLD kit after its `delete_item` writes as #2 (a
+   * deleted kit stays readable as `SELLER_DELETE`).
+   */
+  readonly item: ItemLido | null;
 }
 
 /**
@@ -280,8 +298,12 @@ interface KitVivoLido {
  * DELETED listing (`item-nao-encontrado`) and reads `{ status: null, kit: null
  * }` — a kit purged ~90 days after its delete must not throw every run.
  * Everything else propagates (rule 6).
+ *
+ * Exported for PR 6: the recriar re-reads the OLD kit through this same
+ * adapter after its `delete_item` (`recriarKit.ts`), so the two readings of a
+ * deleted kit cannot disagree.
  */
-async function lerKitVivo(client: ShopeeClient, itemId: number): Promise<KitVivoLido> {
+export async function lerKitVivo(client: ShopeeClient, itemId: number): Promise<KitVivoLido> {
   try {
     const item = await lerAnuncioShopee(client, itemId);
     return {
@@ -291,6 +313,7 @@ async function lerKitVivo(client: ShopeeClient, itemId: number): Promise<KitVivo
         criadoEm: item.base.create_time ?? null,
       },
       temModelos: item.temModelosDosComponentes ?? new Map<number, boolean>(),
+      item,
     };
   } catch (err) {
     if (
@@ -300,6 +323,7 @@ async function lerKitVivo(client: ShopeeClient, itemId: number): Promise<KitVivo
       return {
         vivo: { status: null, kit: null, criadoEm: null },
         temModelos: new Map<number, boolean>(),
+        item: null,
       };
     }
     throw err;
@@ -537,7 +561,7 @@ export async function prepararKit(
   }
 
   let vivo: ContextoKit['vivo'] = null;
-  if (arma.arma === 'kit-atualizar' && alvo !== null) {
+  if (alvo !== null && leAlvoAoVivo(arma, alvo)) {
     const itemId = idDeItemUtilizavel(alvo.raw.item_id);
     if (itemId !== null) {
       const lido = await lerKitVivo(deps.client, itemId);
@@ -578,15 +602,60 @@ export async function prepararKit(
     busca = await localizarKitsPorSku(deps.client, db, {
       integracaoId: deps.integracaoId,
       sku: produto.sku,
-      // `kit-criar` excludes nothing (an ordinary listing is not a kit row);
-      // PR 6's recriar excludes its target's `item_id` here.
-      excluirItemIds: new Set<number>(),
+      // `kit-criar` and `kit-converter` exclude nothing (an ordinary listing is
+      // not a kit row); the recriar excludes its target's `item_id` (M115).
+      excluirItemIds: itemIdsForaDaBusca(arma, alvo),
     });
     const listados = new Set(busca.achados.map((a) => a.itemId));
     nossosVivos = await lerStatusDosNossos(
       deps.client,
       [...nativos.nossos.keys()].filter((id) => !listados.has(id)),
     );
+  }
+
+  /* ---- 4b. PR 6: a recriar/converter RESUME reads the COMPLETED kit's main. */
+  // V2R3-01: when the new kit already exists and is linked (`completar`), the
+  // run names no principal of its own — the main is frozen on Shopee (L1) — so
+  // the principal the plan, the limits and the recriar's delete gate read is
+  // the COMPLETED kit's, never the target's (`vivo` is the OLD kit's read on a
+  // recriar and `null` on a converter).
+  let retomada: {
+    readonly principal: EnderecoShopeeDoComponente | null;
+    readonly limites: LimitesKitLidos | null;
+  } | null = null;
+  if (busca !== null && (arma.arma === 'kit-recriar' || arma.arma === 'kit-converter')) {
+    const garantia = decidirKitNovo(
+      busca,
+      nativos.nossos,
+      nossosVivos,
+      nativos.substituidos,
+      nativos.sucessorDe,
+    );
+    if (garantia.acao === 'completar') {
+      const completado = await lerKitVivo(deps.client, garantia.itemId);
+      for (const [id, tem] of completado.temModelos) {
+        if (!temModelos.has(id)) temModelos.set(id, tem);
+      }
+      const principalCompletado =
+        completado.vivo.kit === null
+          ? null
+          : principalDoKitShopee(
+              completado.vivo.kit.model_list.map(linhasLidasDoModeloKit),
+              temModelos,
+            );
+      const categoriaCompletada = categoriaDoPrincipal(
+        principalCompletado,
+        resolvidos.resolucao,
+        resolvidos.categoriaPorProduto,
+      );
+      retomada = {
+        principal: principalCompletado,
+        limites:
+          categoriaCompletada === null
+            ? null
+            : await lerLimitesKitCached(deps.taxonomia, categoriaCompletada),
+      };
+    }
   }
 
   const contexto: ContextoKit = {
@@ -601,11 +670,11 @@ export async function prepararKit(
     resolucao: resolvidos.resolucao,
     temModelos,
     categoriaPorProduto: resolvidos.categoriaPorProduto,
-    principal,
+    principal: retomada === null ? principal : retomada.principal,
     principalPedido,
     principalSolicitado: entrada.principal,
     statusPedido: entrada.statusPedido,
-    limites,
+    limites: retomada === null ? limites : retomada.limites,
     canais,
     vinculos,
     alvo,
@@ -633,17 +702,59 @@ export async function prepararKit(
 
 /**
  * The target link of the arm: `kit-atualizar`'s named link (the dispatcher hands
- * only a live native link of THIS conta), `null` for a first create.
+ * only a live native link of THIS conta), the recriar's named TARGET (a native
+ * link: live, removed or superseded — PR 6), the converter's ordinary
+ * ANTECESSOR (PR 6), `null` for a first create.
  */
 function alvoDoArma(arma: ArmaDeKit, vinculos: readonly VinculoDaConta[]): ContextoKit['alvo'] {
-  if (arma.arma !== 'kit-atualizar') return null;
-  const achado = vinculos.find((v) => v.id === arma.linkDocId);
+  let linkDocId: string;
+  switch (arma.arma) {
+    case 'kit-criar':
+      return null;
+    case 'kit-atualizar':
+    case 'kit-recriar':
+      linkDocId = arma.linkDocId;
+      break;
+    case 'kit-converter':
+      linkDocId = arma.antecessorLinkDocId;
+      break;
+  }
+  const achado = vinculos.find((v) => v.id === linkDocId);
   if (achado === undefined) {
     // A link of another conta (or none) never reaches a kit arm: the dispatcher
     // reads this very list. Reaching here is a caller defect.
-    throw new Error(`prepararKit: o vínculo ${arma.linkDocId} não é desta conta neste produto`);
+    throw new Error(`prepararKit: o vínculo ${linkDocId} não é desta conta neste produto`);
   }
   return { linkDocId: achado.id, raw: achado.raw };
+}
+
+/**
+ * Whether the arm reads its target kit LIVE in step 3: a republish always; a
+ * recriar unless the target link is already `removido` — nothing left to read
+ * or to delete, so ZERO calls (M123, V2R1-05). A converter never: its target is
+ * an ordinary listing nothing is sent to (L8, M116).
+ */
+function leAlvoAoVivo(arma: ArmaDeKit, alvo: NonNullable<ContextoKit['alvo']>): boolean {
+  switch (arma.arma) {
+    case 'kit-atualizar':
+      return true;
+    case 'kit-recriar':
+      return alvo.raw.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido;
+    case 'kit-criar':
+    case 'kit-converter':
+      return false;
+  }
+}
+
+/**
+ * The L6 scan's exclusion (R-14): the recriar's TARGET `item_id` — the old kit
+ * carries the very SKU searched and is never "the new one" (M115). Nothing for
+ * criar and converter: an ordinary listing is not a kit row.
+ */
+function itemIdsForaDaBusca(arma: ArmaDeKit, alvo: ContextoKit['alvo']): ReadonlySet<number> {
+  if (arma.arma !== 'kit-recriar' || alvo === null) return new Set<number>();
+  const itemId = idDeItemUtilizavel(alvo.raw.item_id);
+  return itemId === null ? new Set<number>() : new Set<number>([itemId]);
 }
 
 /**

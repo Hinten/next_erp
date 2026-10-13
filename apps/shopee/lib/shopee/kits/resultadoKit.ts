@@ -41,14 +41,21 @@ import type { MotivoRecusaKit } from './recusaKit';
 /* -------------------------------------------------------------------------- */
 
 /**
- * Which applier one publish reaches (reconcile §2.5.1). PR 5's members only —
- * see the module docblock for how PR 6 widens it.
+ * Which applier one publish reaches (reconcile §2.5.1). PR 5's three members
+ * plus PR 6's two — see the module docblock for how it is widened.
  */
 export type ArmaDePublicacao =
   /** `linkDocId` is `null` ONLY when the conta has no link at all (a first ordinary publish). */
   | { readonly arma: 'item'; readonly linkDocId: string | null }
   | { readonly arma: 'kit-criar' }
-  | { readonly arma: 'kit-atualizar'; readonly linkDocId: string };
+  | { readonly arma: 'kit-atualizar'; readonly linkDocId: string }
+  /**
+   * PR 6 — the TARGET (old) native-kit link: live, removed or superseded. A
+   * recriar always NAMES it (R-a), so a re-run is literally the same command.
+   */
+  | { readonly arma: 'kit-recriar'; readonly linkDocId: string }
+  /** PR 6 — the live ORDINARY link the new native kit replaces (L8). */
+  | { readonly arma: 'kit-converter'; readonly antecessorLinkDocId: string };
 
 /** One conta-filtered `prodshopee` document of the produto, read once by the entry point. */
 export interface VinculoDaConta {

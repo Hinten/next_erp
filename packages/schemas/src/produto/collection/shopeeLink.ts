@@ -22,7 +22,7 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *
  * ## The writer inventory, whole
  *
- * Five groups of fields have a named writer set, and none of the five overlap:
+ * Six groups of fields have a named writer set, and none of the six overlap:
  *  - **`item_status` + `estadoAnuncio`** — FIVE writers, enumerated on
  *    {@link shopeeItemStatusSchema} below;
  *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
@@ -57,7 +57,16 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    L4 aviso decision (`reavaliarAvisoDeReceitaKit`) reads it;
  *  - **the ten `preco*` scalars** (step 13) — **ONE** writer, the price
  *    sender; nothing clears them but its clean send; none is ever read to
- *    decide a send. Six sit on the item doc, four on each model doc.
+ *    decide a send. Six sit on the item doc, four on each model doc;
+ *  - **the SUPERSEDED pair** `substituidoPorLinkDocId` + `substituidoEm` (step
+ *    19, #1527, L8) — **ONE** writer, `carimbarSubstituicao` (`apps/shopee`'s
+ *    `kits/vinculosKit.ts`), reached from exactly two places: the "converter em
+ *    kit nativo" step that supersedes the ordinary listing it replaced, and a
+ *    recriar whose `delete_item` did not take (the old native kit stays live,
+ *    superseded by the new one). A flat `merge` of the two scalars; re-running
+ *    it re-writes the same pointer. Nothing clears it. Only PUBLISH reads it
+ *    (to skip the link) and the live-link resolver behind re-verify, status and
+ *    pause (to rank it last) — steps 12/13 and the order cascade ignore it.
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
  * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
@@ -107,7 +116,9 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    republished — step 19 (#1527). The same writer folds a linked kit a
  *    create-arm run reads GONE (a batched status outside the live set, or no
  *    row at all) to `estadoAnuncio: 'removido'` alone, leaving `item_status`
- *    untouched — the reverify's not-found shape.
+ *    untouched — the reverify's not-found shape. And it writes the recriar's
+ *    read-back of the OLD kit after its `delete_item`: Shopee keeps a deleted
+ *    kit readable as `SELLER_DELETE`, which folds to `removido`.
  * All five write only what they just READ from the one authoritative call, so a
  * replay in any order converges. An earlier revision of this docblock called the
  * field push-only (true before step 9), then said TWO writers (true before step
@@ -120,10 +131,17 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  * push carried no status at all; push 18 carries the real one and the handler
  * still re-reads it — `guide 18` / `guide 746`: a push never replaces the API.
  *
- * ⚠️ `SELLER_DELETE` / `SHOPEE_DELETE` are members because the wire has them,
- * NOT because anything writes them: the import REFUSES a deleted listing
- * outright (`ShopeeImportBlockedError`, motivo `item-deletado`) — never a
- * produto from a deleted listing — and the push writes only `UNLIST`.
+ * ⚠️ `SELLER_DELETE` / `SHOPEE_DELETE` are written ONLY as a READ of a listing
+ * Shopee deleted but still serves (a deleted item stays readable for 90 days):
+ * the re-verify and the two listing pushes store whatever `get_item_base_info`
+ * reports, and since step 19 (#1527) the recriar's read-back of the OLD kit
+ * after its `delete_item` stores `SELLER_DELETE` the same way — the writer that
+ * makes this member reachable on purpose. Either folds to `estadoAnuncio:
+ * 'removido'`. No writer ever INVENTS one: a listing Shopee no longer answers
+ * for at all writes `estadoAnuncio: 'removido'` and no `item_status` (the
+ * legacy defect stamped `SELLER_DELETE` from a 404). The import still REFUSES a
+ * deleted listing outright (`ShopeeImportBlockedError`, motivo `item-deletado`)
+ * — never a produto from a deleted listing.
  *
  * ⚠️ The pre-2024 `DELETED` spelling (`announcement 769`/`841`, effective
  * 2024-01-18) is deliberately ABSENT. A migrated link doc may still hold it;
@@ -715,6 +733,13 @@ export const variacaoShopeeLinkSchema = z
      * operator can see it, because a delete throws away the only record that the
      * ERP ever bound this variação to that model. A model that comes back simply
      * clears the stamp.
+     *
+     * ⚠️ Stamped only by a read of THIS row's own listing (the one its
+     * `produtoShopeeOuterRef` names): since step 19 (#1527) the model-list sync
+     * is per listing, because one child can carry the rows of two live listings
+     * (a native kit beside the ordinary listing it superseded) and the steps
+     * 12/13 planners drop a stamped row — a reading of one listing marking the
+     * other's rows would silently stop serving a listing that still sells.
      */
     modeloAusenteEm: z.number().int().nullable().default(null),
 
