@@ -1,18 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   shopeeItemBaseInfoRowSchema,
+  shopeeKitItemSchema,
   shopeeModelSchema,
   shopeeTaxInfoSchema,
+  type ShopeeKitItem,
   type ShopeeModel,
 } from '@delfrance/integrations-shopee';
-import { variacaoShopeeLinkCollection } from '@delfrance/data/admin/collections';
+import {
+  produtoShopeeLinkCollection,
+  variacaoShopeeLinkCollection,
+} from '@delfrance/data/admin/collections';
+import { importacaoShopeeOptionsSchema } from '@delfrance/schemas';
 
-import { FakeDb, asDb } from '../testing/fakeDb';
-import type { ItemLido } from './itemLido';
+import { idDaVariacaoDeKit, idDoVinculoDeKit } from '../kits/idsKit';
+import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { importarAnuncioShopee } from './importarAnuncio';
+import type { ImportarKitShopeeDeps, ItemLido } from './itemLido';
+import { importarKitShopee } from './kitShopee';
 import { aplicarLinkDaListagem, aplicarLinkDaVariacao } from './links';
 import { caminhoDoLinkDaListagem, dadosLinkListagem, dadosLinkVariacao } from './mapeamento';
 import type { EscritaDeLink } from './planoImportacao';
+import { idDoFilhoPlanejado, idDoPaiPlanejado } from './resolveProduto';
 
 /* ---------------------------------- fixtures ------------------------------ */
 
@@ -392,3 +402,184 @@ describe('aplicarLinkDaVariacao', () => {
 function variacaoSemCarimbo(db: FakeDb, dados: Record<string, unknown>): Promise<unknown> {
   return variacaoShopeeLinkCollection.add(asDb(db), { produtoId: FILHO }, dados);
 }
+
+/* -------- 3. passo 19: o kit nativo, a ÚNICA exceção ao id nunca derivado ------- */
+
+/** Papéis do passo 19 (D1): o kit e o seu modelo; o componente é um anúncio comum. */
+const KIT_ITEM = 2500139870;
+const KIT_MODELO = 2000458820;
+const COMPONENTE = 2500139872;
+const VINCULO_DO_KIT = idDoVinculoDeKit(INTEGRACAO, KIT_ITEM);
+
+function kitDoPasso19(): ShopeeKitItem {
+  return shopeeKitItemSchema.parse({
+    item_id: KIT_ITEM,
+    item_name: 'Kit Passo 19',
+    item_sku: 'KIT-19',
+    model_list: [
+      {
+        model_id: KIT_MODELO,
+        model_sku: 'KIT-19-UN',
+        original_price: 50,
+        component_list: [{ component_item_id: COMPONENTE, component_model_id: 0, quantity: 2 }],
+      },
+    ],
+  });
+}
+
+function entradaDoKit(): ItemLido {
+  return {
+    base: shopeeItemBaseInfoRowSchema.parse({ item_id: KIT_ITEM, tag: { kit: true } }),
+    models: null,
+    taxInfo: null,
+    kit: kitDoPasso19(),
+    itemId: KIT_ITEM,
+  };
+}
+
+function depsDoImport(db: FakeDb): ImportarKitShopeeDeps {
+  return {
+    db: asDb(db),
+    increment,
+    integracaoId: INTEGRACAO,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    depositoOuterRef: null,
+    options: importacaoShopeeOptionsSchema.parse({ importarFotos: false }),
+    nowMs: AGORA,
+  };
+}
+
+/** O componente, um produto simples ligado pelo `prodshopee` do anúncio dele. */
+function semearComponente(db: FakeDb): void {
+  db.seed('produtos/comp', { nome: 'Componente', sku: 'COMP', paiId: null });
+  db.seed(`produtos/comp/prodshopee/vinc-comp`, {
+    item_id: COMPONENTE,
+    contaProdutoShopeeOuterRef: REF_CONTA,
+  });
+}
+
+/** A ESCRITA do vínculo que a criação do kit faz logo depois do `add_kit_item` (R-k, tier 0). */
+function escritaDaCriacao(db: FakeDb, produtoId: string): Promise<void> {
+  return produtoShopeeLinkCollection.merge(asDb(db), { produtoId }, VINCULO_DO_KIT, {
+    contaProdutoShopeeOuterRef: REF_CONTA,
+    item_id: KIT_ITEM,
+    item_name: 'Kit Passo 19',
+    kitNativo: true,
+  });
+}
+
+/** Todo `prodshopee` do banco que nomeia o kit — sob QUALQUER produto. */
+function vinculosDoKit(db: FakeDb): string[] {
+  return Object.entries(db.store)
+    .filter(
+      ([p, d]) =>
+        /\/prodshopee\/[^/]+$/.test(p) && (d.data as { item_id?: unknown }).item_id === KIT_ITEM,
+    )
+    .map(([p]) => p);
+}
+
+describe('passo 19 — o vínculo NOVO de um kit nasce no id derivado (M65)', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  });
+
+  it('um kit sem vínculo importado ⇒ o `prodshopee` mora em `idDoVinculoDeKit(int-1, 2500139870)`', async () => {
+    const db = new FakeDb();
+    semearComponente(db);
+
+    await importarKitShopee(depsDoImport(db), entradaDoKit());
+
+    const pai = idDoPaiPlanejado(INTEGRACAO, KIT_ITEM);
+    expect(db.idsEm(`produtos/${pai}/prodshopee`)).toEqual([VINCULO_DO_KIT]);
+    expect(VINCULO_DO_KIT).toBe('0d36512cfa0fe35978c32b283eb23e4506cea04af4781e2bcedc157f96765285');
+  });
+
+  it('a escrita da CRIAÇÃO e depois o import ⇒ UM `prodshopee`', async () => {
+    const db = new FakeDb();
+    semearComponente(db);
+    db.seed('produtos/kit-k', { nome: 'Kit', sku: 'KIT-19', paiId: null, ehKit: true });
+    await escritaDaCriacao(db, 'kit-k');
+
+    await importarKitShopee(depsDoImport(db), entradaDoKit());
+
+    expect(vinculosDoKit(db)).toEqual([`produtos/kit-k/prodshopee/${VINCULO_DO_KIT}`]);
+  });
+
+  it('o import e DEPOIS a escrita da criação (a corrida que o id derivado fecha) ⇒ UM `prodshopee`', async () => {
+    const db = new FakeDb();
+    semearComponente(db);
+    // O import acha K pelo SKU (degrau 2) — o kit criado ainda não tem vínculo.
+    db.seed('produtos/kit-k', { nome: 'Kit', sku: 'KIT-19', paiId: null, ehKit: true });
+
+    await importarKitShopee(depsDoImport(db), entradaDoKit());
+    await escritaDaCriacao(db, 'kit-k');
+
+    expect(vinculosDoKit(db)).toEqual([`produtos/kit-k/prodshopee/${VINCULO_DO_KIT}`]);
+    expect(lerDoc(db, `produtos/kit-k/prodshopee/${VINCULO_DO_KIT}`)).toMatchObject({
+      kitNativo: true,
+      contaProdutoShopeeOuterRef: REF_CONTA,
+    });
+  });
+
+  it('⛔ NEAR-MISS: um anúncio COMUM continua fazendo `add` num id automático', async () => {
+    const db = new FakeDb();
+
+    await importarAnuncioShopee(depsDoImport(db), item());
+
+    const pai = idDoPaiPlanejado(INTEGRACAO, ITEM_ID);
+    const ids = db.idsEm(`produtos/${pai}/prodshopee`);
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).toMatch(/^auto-/);
+  });
+});
+
+describe('passo 19 — a linha de um modelo de kit nasce no id derivado (M60)', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  });
+
+  it('o `variashopee` do modelo mora em `idDaVariacaoDeKit(vínculo, model_id)` — e um segundo import mantém UMA linha', async () => {
+    const db = new FakeDb();
+    semearComponente(db);
+    const pai = idDoPaiPlanejado(INTEGRACAO, KIT_ITEM);
+    const filho = idDoFilhoPlanejado(pai, KIT_MODELO);
+
+    await importarKitShopee(depsDoImport(db), entradaDoKit());
+    await importarKitShopee({ ...depsDoImport(db), nowMs: AGORA + 1 }, entradaDoKit());
+
+    expect(db.idsEm(`produtos/${filho}/variashopee`)).toEqual([
+      idDaVariacaoDeKit(VINCULO_DO_KIT, KIT_MODELO),
+    ]);
+    expect(
+      lerDoc(db, `produtos/${filho}/variashopee/${idDaVariacaoDeKit(VINCULO_DO_KIT, KIT_MODELO)}`),
+    ).toMatchObject({
+      model_id: KIT_MODELO,
+      produtoShopeeOuterRef: `documents/${caminhoDoLinkDaListagem(pai, VINCULO_DO_KIT)}`,
+    });
+  });
+
+  it('⛔ NEAR-MISS: um vínculo e uma linha de kit de ANTES do passo 19 (ids automáticos) são reusados — nunca um segundo', async () => {
+    const db = new FakeDb();
+    semearComponente(db);
+    db.seed('produtos/kit-k', { nome: 'Kit', sku: 'KIT-19', paiId: null, ehKit: true });
+    db.seed('produtos/kit-k/prodshopee/auto-antigo', {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: KIT_ITEM,
+      kitNativo: true,
+    });
+    db.seed('produtos/filho-k', { nome: 'Kit UN', sku: 'KIT-19-UN', paiId: 'kit-k', ehKit: true });
+    db.seed('produtos/filho-k/variashopee/linha-antiga', {
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+      produtoShopeeOuterRef: 'documents/produtos/kit-k/prodshopee/auto-antigo',
+      model_id: KIT_MODELO,
+    });
+
+    await importarKitShopee(depsDoImport(db), entradaDoKit());
+
+    expect(db.idsEm('produtos/kit-k/prodshopee')).toEqual(['auto-antigo']);
+    expect(db.idsEm('produtos/filho-k/variashopee')).toEqual(['linha-antiga']);
+  });
+});

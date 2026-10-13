@@ -109,7 +109,7 @@ import { loadShopeeContext } from '../core/shopee';
 import { itemStatusDe, montarItemLido, type ItemLido } from '../produtos/itemLido';
 import { itemStatusDeLink } from '../produtos/mapeamento';
 import { RELIST_PRIMEIRO } from './constantesAnuncio';
-import { resolverLinkPorProduto, type LinkDeAnuncio } from './linkAnuncio';
+import { resolverLinkVivoPorProduto, type LinkDeAnuncio } from './linkAnuncio';
 import { agendadoParaMsDe, estadoDoAnuncio } from './statusAnuncio';
 
 /* -------------------------------------------------------------------------- */
@@ -671,9 +671,13 @@ export async function definirStatusAnunciosShopee(
   const alvos: AlvoDeStatus[] = [];
 
   // ---- Step 1: resolve serially, order preserved.
+  // ⚠️ The TIERED resolver (step 19, R-12(b)): with no `linkDocId`, a produto's
+  // ACTIVE native kit wins over the ordinary listing it superseded, so pausing
+  // "this produto" pauses the listing that sells. Never the publish resolver,
+  // whose lexical pick could land on the superseded or removed listing.
   for (const produtoId of solicitados) {
     const produtoNome = await nomeDoProduto(db, produtoId);
-    const link = await resolverLinkPorProduto(db, entrada.integracaoId, produtoId, linkDocId);
+    const link = await resolverLinkVivoPorProduto(db, entrada.integracaoId, produtoId, linkDocId);
     if (link === null) {
       produtosSemAnuncio.push({
         produtoId,

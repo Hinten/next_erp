@@ -566,7 +566,7 @@ describe('ensaiarEnvioDePreco', () => {
     ]);
   });
 
-  it('o que não chega a anúncio: inexistente, família sumida e sem-link por id pedido; kit nativo vira PULO do plano', async () => {
+  it('o que não chega a anúncio: inexistente, família sumida e sem-link por id pedido; kit nativo SEM vínculo de modelo vira PULO do plano (`sem-modelos`)', async () => {
     const r = leitores({
       produtos: {
         'prod-sem-familia': { nome: 'Sem família' },
@@ -604,8 +604,8 @@ describe('ensaiarEnvioDePreco', () => {
         anuncioId: String(ITEM + 7),
         linkDocId: 'link-prod-kit',
         modelos: 0,
-        motivo: MOTIVO_PRECO_SHOPEE.kitDerivado,
-        mensagem: mensagemDoMotivoDePreco(MOTIVO_PRECO_SHOPEE.kitDerivado),
+        motivo: MOTIVO_PRECO_SHOPEE.semModelos,
+        mensagem: mensagemDoMotivoDePreco(MOTIVO_PRECO_SHOPEE.semModelos),
       },
     ]);
     expect(e.anuncios).toEqual([]);
@@ -883,7 +883,7 @@ describe('⚠️ paridade: o ensaio e o envio REAL respondem as MESMAS linhas', 
         `prod-sumiu|${ITEM + 3}|null|falha|${MOTIVO_PRECO_SHOPEE.anuncioInexistente}`,
         `prod-grade|${ITEM + 4}|prod-grade-a|enviado|null`,
         `prod-grade|${ITEM + 4}|prod-grade-b|pulado|${MOTIVO_PRECO_SHOPEE.precoMenorBloqueado}`,
-        `prod-kit|${ITEM + 6}|null|pulado|${MOTIVO_PRECO_SHOPEE.kitDerivado}`,
+        `prod-kit|${ITEM + 6}|null|pulado|${MOTIVO_PRECO_SHOPEE.semModelos}`,
       ].sort(),
     );
   });

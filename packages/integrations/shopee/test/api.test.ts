@@ -73,6 +73,7 @@ import {
   ShopeeConfigError,
   ShopeeHttpError,
   ShopeeNetworkError,
+  ShopeeOperacaoNaoServidaError,
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
@@ -158,6 +159,18 @@ import {
   assertSizeChartListParams,
   lerPaginaDeTabelasDeMedidas,
 } from '../src/tabelasDeMedidas';
+import {
+  SHOPEE_ADD_KIT_ITEM_PATH,
+  SHOPEE_GENERATE_KIT_IMAGE_PATH,
+  SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES,
+  SHOPEE_UPDATE_KIT_ITEM_PATH,
+  type ShopeeAddKitItemRequest,
+  type ShopeeUpdateKitItemRequest,
+  assertAddKitItemRequest,
+  assertGenerateKitImageParams,
+  assertUpdateKitItemRequest,
+  linhasDeReenvioDoKit,
+} from '../src/kits';
 
 /** ⚠️ Invented. Never a real Shopee partner key. */
 const TEST_PARTNER_KEY = 'chave-de-teste-nao-e-credencial';
@@ -8174,7 +8187,7 @@ describe('as devoluções (passo 17)', () => {
     }
   });
 
-  it('D16 — FONTE: cada bloco tem o guarda ANTES do token, UM `shopeeCall`, o apelido UMA vez, nenhum `.response`, nenhum laço, nenhum trim e nenhuma outra tolerância; seis call sites do apelido, nove no arquivo; os métodos vêm DEPOIS do searchPackageList', () => {
+  it('D16 — FONTE: cada bloco tem o guarda ANTES do token, UM `shopeeCall`, o apelido UMA vez, nenhum `.response`, nenhum laço, nenhum trim e nenhuma outra tolerância; seis call sites do apelido, dez no arquivo; os métodos vêm DEPOIS do searchPackageList', () => {
     const blocos: readonly (readonly [string, string, 'GET' | 'POST'])[] = [
       ['getReturnList: async', 'assertReturnListParams(p)', 'GET'],
       ['getReturnDetail: async', 'assertAlvoDeDevolucao(p)', 'GET'],
@@ -8211,10 +8224,11 @@ describe('as devoluções (passo 17)', () => {
     expect(blocoDoMetodo('offerReturn: async')).toContain(
       "seHouver('proposed_adjusted_refund_amount', p.proposedAdjustedRefundAmount)",
     );
-    // As contagens do ARQUIVO: seis call sites do apelido das devoluções, e nove
-    // `emptyErrorAliases:` ao todo (dois lost-push, o get_package_detail, as seis).
+    // As contagens do ARQUIVO: seis call sites do apelido das devoluções, e dez
+    // `emptyErrorAliases:` ao todo (dois lost-push, o get_package_detail, as seis
+    // e — passo 19 — o get_kit_item_limit, sobre a QUARTA constante).
     expect(FONTE_API.split(apelido).length - 1).toBe(6);
-    expect(FONTE_API.split('emptyErrorAliases:').length - 1).toBe(9);
+    expect(FONTE_API.split('emptyErrorAliases:').length - 1).toBe(10);
     // O LUGAR: depois do último método do passo 15b — nenhum recorte antigo se alarga.
     expect(FONTE_API.indexOf('getReturnList: async')).toBeGreaterThan(
       FONTE_API.indexOf('searchPackageList: async'),
@@ -8705,5 +8719,512 @@ describe('o anexo da tabela de medidas — `size_chart_info` (passo 18)', () => 
         'assertSizeChartInfoRequest(req.size_chart_info)',
       );
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     os kits nativos (passo 19, #1527)                       */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Ids de FIXTURE por papel (D1) — nunca de uma loja real: o kit e o seu modelo,
+ * o componente A (com variações) e o B (SEM variações, com o id OCULTO que só a
+ * leitura de um kit existente expõe). A imagem e o canal são amostras da doc.
+ */
+const ID_KIT = 2500139870;
+const MODELO_DO_KIT = 2000458820;
+const ITEM_COMPONENTE_A = 2500139871;
+const MODELO_COMPONENTE_A = 2000458821;
+const ITEM_COMPONENTE_B = 2500139872;
+const MODELO_OCULTO_B = 2000458829;
+const IMAGEM_KIT = 'br-11134207-7r98o-lzri4neb5vcv18';
+
+/** Um kit de UM modelo (`Kit`/`Padrão`): A com modelo e principal, B SEM `component_model_id`. */
+const CORPO_KIT: ShopeeAddKitItemRequest = {
+  sync_setting: { auto_sync_dts: true },
+  item_setting: {
+    item_name: 'Kit de teste',
+    images: { image_id_list: [IMAGEM_KIT] },
+    description_type: 'normal',
+    description: 'Descrição do kit de teste',
+    logistic_info: [{ logistic_id: 90003, enabled: true }],
+    weight: 1.5,
+    item_sku: 'KIT-1',
+    tier_variation_list: [{ name: 'Kit', option_list: [{ option: 'Padrão' }] }],
+    model_list: [
+      {
+        tier_index: [0],
+        original_price: 49.9,
+        model_sku: 'KIT-1',
+        component_list: [
+          {
+            component_item_id: ITEM_COMPONENTE_A,
+            component_model_id: MODELO_COMPONENTE_A,
+            quantity: 1,
+            main_component: true,
+          },
+          { component_item_id: ITEM_COMPONENTE_B, quantity: 2 },
+        ],
+      },
+    ],
+  },
+};
+
+/** O sucesso do `add_kit_item` — com um `warning` NÃO vazio: o canal de falha parcial de uma escrita. */
+const ADD_KIT_BODY = {
+  request_id: 'req-add-kit',
+  error: '',
+  message: '',
+  warning: 'aviso de teste: um campo foi ignorado',
+  response: { item_id: ID_KIT },
+};
+
+/** A leitura viva do kit criado: B volta com o id OCULTO, não-zero, nome e sku vazios. */
+const KIT_LIDO_BODY = {
+  request_id: 'req-kit-lido',
+  error: '',
+  message: '',
+  response: {
+    product_info: {
+      item_id: ID_KIT,
+      item_name: 'Kit de teste',
+      item_status: 'NORMAL',
+      item_sku: 'KIT-1',
+      tier_variation_list: [{ name: 'Kit', option_list: [{ option: 'Padrão' }] }],
+      model_list: [
+        {
+          model_id: MODELO_DO_KIT,
+          model_sku: 'KIT-1',
+          original_price: 49.9,
+          tier_index: [0],
+          component_list: [
+            {
+              component_item_id: ITEM_COMPONENTE_A,
+              component_model_id: MODELO_COMPONENTE_A,
+              quantity: 1,
+              main_component: true,
+            },
+            {
+              component_item_id: ITEM_COMPONENTE_B,
+              component_model_id: MODELO_OCULTO_B,
+              component_model_name: '',
+              component_item_or_model_sku: '',
+              quantity: 2,
+              main_component: false,
+            },
+          ],
+        },
+      ],
+    },
+  },
+};
+
+describe('os kits nativos (passo 19)', () => {
+  it('K1/M37 — addKitItem: POST no SEU caminho, o corpo do fio BYTE A BYTE (B sem `component_model_id`), e o envelope INTEIRO de volta — o `warning` incluído', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_KIT_BODY));
+    const res = await createShopeeClient(shopConfig(fetchMock)).addKitItem(CORPO_KIT);
+
+    // ⚠️ M37: o ENVELOPE, nunca `res.response` — o `warning` de um sucesso é o
+    // canal de falha parcial, e o `request_id` é o que se cita ao suporte.
+    expect(res.response.item_id).toBe(ID_KIT);
+    expect(res.warning).toBe('aviso de teste: um campo foi ignorado');
+    expect(res.request_id).toBe('req-add-kit');
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('POST');
+    expect(url.pathname).toBe(SHOPEE_ADD_KIT_ITEM_PATH);
+    expect(url.pathname).toBe('/api/v2/product/add_kit_item');
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+    expect(corpoEnviado(fetchMock)).toBe(JSON.stringify(CORPO_KIT));
+    const linhaB = (
+      JSON.parse(corpoEnviado(fetchMock)) as {
+        item_setting: { model_list: { component_list: Record<string, unknown>[] }[] };
+      }
+    ).item_setting.model_list[0]!.component_list[1]!;
+    expect('component_model_id' in linhaB).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('K2/M37 — addKitItem NUNCA é repetido: rede, um `error_busi` transitório, um `error_server` e um 2xx sem `item_id` custam UMA chamada cada', async () => {
+    const rede = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError('fetch failed');
+    });
+    expect(await erroDe(createShopeeClient(shopConfig(rede)).addKitItem(CORPO_KIT))).toBeInstanceOf(
+      ShopeeNetworkError,
+    );
+    expect(rede).toHaveBeenCalledTimes(1);
+
+    // A frase MEDIDA na sonda: transitória, sob o MESMO código da recusa permanente.
+    const transitorio = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: 'product.error_busi',
+        message: 'Failed to create product : external error: Error 1040: Too many connections',
+        request_id: 'req-busi',
+      }),
+    );
+    const erroBusi = await erroDe(
+      createShopeeClient(shopConfig(transitorio)).addKitItem(CORPO_KIT),
+    );
+    expect(erroBusi).toBeInstanceOf(ShopeeApiError);
+    expect((erroBusi as ShopeeApiError).code).toBe('product.error_busi');
+    expect(transitorio).toHaveBeenCalledTimes(1);
+
+    const servidor = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: 'error_server', message: 'Something wrong. Please try later.' }),
+    );
+    expect(
+      await erroDe(createShopeeClient(shopConfig(servidor)).addKitItem(CORPO_KIT)),
+    ).toBeInstanceOf(ShopeeApiError);
+    expect(servidor).toHaveBeenCalledTimes(1);
+
+    // ⚠️ Um 2xx sem `item_id` legível é "criado, id desconhecido" — `ShopeeSchemaError`,
+    // nunca um sucesso e nunca um reenvio.
+    const semId = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: '', message: '', request_id: 'req-sem-id', response: {} }),
+    );
+    expect(
+      await erroDe(createShopeeClient(shopConfig(semId)).addKitItem(CORPO_KIT)),
+    ).toBeInstanceOf(ShopeeSchemaError);
+    expect(semId).toHaveBeenCalledTimes(1);
+  });
+
+  it('K3 — os três guardas rodam ANTES do token: um corpo recusado não pede token nem gasta chamada', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ACK_BODY));
+    const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+    const client = createShopeeClient(shopConfig(fetchMock, getAccessToken));
+
+    const comZero: ShopeeAddKitItemRequest = {
+      ...CORPO_KIT,
+      item_setting: {
+        ...CORPO_KIT.item_setting,
+        model_list: [
+          {
+            ...CORPO_KIT.item_setting.model_list[0]!,
+            component_list: [
+              {
+                component_item_id: ITEM_COMPONENTE_A,
+                component_model_id: MODELO_COMPONENTE_A,
+                quantity: 1,
+                main_component: true,
+              },
+              { component_item_id: ITEM_COMPONENTE_B, component_model_id: 0, quantity: 2 },
+            ],
+          },
+        ],
+      },
+    };
+    expect(await erroDe(client.addKitItem(comZero))).toBeInstanceOf(ShopeeConfigError);
+    expect(await erroDe(client.updateKitItem({ item_id: ID_KIT }))).toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(
+      await erroDe(
+        client.generateKitImage({
+          componentes: [{ itemId: ITEM_COMPONENTE_A, modelId: MODELO_COMPONENTE_A }],
+        }),
+      ),
+    ).toBeInstanceOf(ShopeeConfigError);
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // E os mesmos guardas que `kits.ts` exporta — um só, não uma cópia no método.
+    expect(() => {
+      assertAddKitItemRequest(comZero);
+    }).toThrow(ShopeeConfigError);
+    expect(() => {
+      assertUpdateKitItemRequest({ item_id: ID_KIT });
+    }).toThrow(ShopeeConfigError);
+  });
+
+  it('K4 — IDA E VOLTA: getKitItemInfo (leitor real) → linhasDeReenvioDoKit → updateKitItem PARCIAL: o id OCULTO de B vai ao fio verbatim, sem tier; o ack é o envelope NU', async () => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse(KIT_LIDO_BODY))
+      .mockResolvedValueOnce(jsonResponse(ACK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const vivo = (await client.getKitItemInfo({ itemId: ID_KIT })).product_info!.model_list[0]!;
+    const corpo: ShopeeUpdateKitItemRequest = {
+      item_id: ID_KIT,
+      item_setting: {
+        model_list: [
+          {
+            model_id: vivo.model_id,
+            tier_index: [vivo.tier_index[0]!],
+            original_price: 44.9,
+            component_list: linhasDeReenvioDoKit(vivo),
+          },
+        ],
+      },
+    };
+    const ack = await client.updateKitItem(corpo);
+    expect(ack.request_id).toBe('req-ack');
+    expect('response' in ack).toBe(false);
+
+    const [rawUrl, init] = fetchMock.mock.calls[1]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('POST');
+    expect(url.pathname).toBe(SHOPEE_UPDATE_KIT_ITEM_PATH);
+    expect(url.pathname).toBe('/api/v2/product/update_kit_item');
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+    expect(String(init?.body)).toBe(
+      JSON.stringify({
+        item_id: ID_KIT,
+        item_setting: {
+          model_list: [
+            {
+              model_id: MODELO_DO_KIT,
+              tier_index: [0],
+              original_price: 44.9,
+              component_list: [
+                {
+                  component_item_id: ITEM_COMPONENTE_A,
+                  component_model_id: MODELO_COMPONENTE_A,
+                  quantity: 1,
+                  main_component: true,
+                },
+                {
+                  component_item_id: ITEM_COMPONENTE_B,
+                  component_model_id: MODELO_OCULTO_B,
+                  quantity: 2,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    expect(String(init?.body)).not.toContain('tier_variation_list');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('K5 — updateKitItem lê o ack com `response: {}` + `debug_message` (a forma do delete_item medida na sonda) e a frase de uma recusa verbatim, UMA chamada', async () => {
+    const comResposta = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: '', message: '', warning: '', response: {}, debug_message: '' }),
+    );
+    const ack = await createShopeeClient(shopConfig(comResposta)).updateKitItem({
+      item_id: ID_KIT,
+      item_setting: { item_name: 'Kit de teste renomeado' },
+    });
+    expect(ack.error).toBe('');
+
+    const fora = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: 'product.error_price_out_of_range',
+        message: 'Price should be within 1.00-499999.00 for model Kit Variation 1',
+        request_id: 'req-faixa',
+      }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fora)).updateKitItem({
+        item_id: ID_KIT,
+        item_setting: {
+          model_list: [{ model_id: MODELO_DO_KIT, tier_index: [0], original_price: 0.5 }],
+        },
+      }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).providerMessage).toBe(
+      'Price should be within 1.00-499999.00 for model Kit Variation 1',
+    );
+    expect(fora).toHaveBeenCalledTimes(1);
+  });
+
+  it('K6/M36 — generateKitImage monta o corpo com as chaves da SONDA (`item_id`/`model_id`), BYTE A BYTE, nunca as da página', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        request_id: 'req-img',
+        error: '',
+        message: '',
+        response: { kit_image: 'imagem-do-kit-inventada' },
+      }),
+    );
+    const res = await createShopeeClient(shopConfig(fetchMock)).generateKitImage({
+      componentes: [
+        { itemId: ITEM_COMPONENTE_A, modelId: MODELO_COMPONENTE_A },
+        { itemId: ITEM_COMPONENTE_B, modelId: MODELO_OCULTO_B },
+      ],
+    });
+    // O envelope INTEIRO.
+    expect(res.response.kit_image).toBe('imagem-do-kit-inventada');
+    expect(res.request_id).toBe('req-img');
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    expect(init?.method).toBe('POST');
+    expect(new URL(String(rawUrl)).pathname).toBe(SHOPEE_GENERATE_KIT_IMAGE_PATH);
+    expect(String(init?.body)).toBe(
+      `{"component_list":[{"item_id":${String(ITEM_COMPONENTE_A)},"model_id":${String(MODELO_COMPONENTE_A)}},{"item_id":${String(ITEM_COMPONENTE_B)},"model_id":${String(MODELO_OCULTO_B)}}]}`,
+    );
+    // ⛔ QUASE-IGUAL: as chaves DOCUMENTADAS nunca saem — o validador as recusa.
+    expect(String(init?.body)).not.toContain('component_item_id');
+    expect(String(init?.body)).not.toContain('component_model_id');
+    expect(String(init?.body)).not.toContain('itemId');
+  });
+
+  it('K7 — o "toggle closed" da sonda chega como ShopeeApiError com o código e a FRASE verbatim, UMA chamada (o classificador da app lê a frase)', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: 'product.error_server',
+        message:
+          'Internal error, please try again later or contact openapi team. generate kit image toggle closed.',
+      }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).generateKitImage({
+        componentes: [
+          { itemId: ITEM_COMPONENTE_A, modelId: MODELO_COMPONENTE_A },
+          { itemId: ITEM_COMPONENTE_B, modelId: MODELO_OCULTO_B },
+        ],
+      }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('product.error_server');
+    expect((erro as ShopeeApiError).providerMessage).toContain('generate kit image toggle closed.');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('K8/M31 — getKitItemLimit: `"-"` é SUCESSO (a única amostra de sucesso da página); `" "` e `" -"` continuam FALHA; um `-` sem `response` morre no schema', async () => {
+    const traco = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...KIT_LIMIT_BODY, error: '-', message: 'success', warning: '-' }),
+    );
+    const lido = await createShopeeClient(shopConfig(traco)).getKitItemLimit({ categoryId: 4321 });
+    expect(lido.component_count_limit_of_single_model?.max_limit).toBe(10);
+
+    for (const quase of [' ', ' -', '- ', '--']) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse({ ...KIT_LIMIT_BODY, error: quase }),
+      );
+      const erro = await erroDe(createShopeeClient(shopConfig(fetchMock)).getKitItemLimit({}));
+      expect(erro, JSON.stringify(quase)).toBeInstanceOf(ShopeeApiError);
+      expect((erro as ShopeeApiError).code, JSON.stringify(quase)).toBe(quase);
+    }
+
+    // O custo de errar a favor do apelido: um `-` que significava falha não traz
+    // `response` e vira `ShopeeSchemaError` — nunca uma faixa inventada.
+    const semPayload = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: '-', message: '-', warning: '-' }),
+    );
+    expect(
+      await erroDe(createShopeeClient(shopConfig(semPayload)).getKitItemLimit()),
+    ).toBeInstanceOf(ShopeeSchemaError);
+
+    // O `''` de sempre continua sucesso.
+    const vazio = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(KIT_LIMIT_BODY));
+    await expect(createShopeeClient(shopConfig(vazio)).getKitItemLimit()).resolves.toBeDefined();
+  });
+
+  it('K9 — o 404 NU do sandbox (`{"error":"error_not_found"}`) é `ShopeeOperacaoNaoServidaError`, não um sucesso nem um apelido', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: 'error_not_found' }, 404),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).getKitItemLimit({ categoryId: 4321 }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+    expect((erro as ShopeeApiError).code).toBe('error_not_found');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('K10 — a superfície pública: as três operações SÓ no cliente da LOJA, e o módulo `kits.ts` sai pelo index', () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ACK_BODY));
+    const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock));
+    const partner = pacote.createShopeePartnerClient(partnerConfig(fetchMock));
+
+    for (const nome of ['addKitItem', 'updateKitItem', 'generateKitImage'] as const) {
+      expect(typeof client[nome], nome).toBe('function');
+      expect(nome in partner, nome).toBe(false);
+    }
+    // O cliente de parceiro continua com as MESMAS cinco operações.
+    expect(Object.keys(partner)).toHaveLength(5);
+
+    const caminhos = [
+      pacote.SHOPEE_ADD_KIT_ITEM_PATH,
+      pacote.SHOPEE_UPDATE_KIT_ITEM_PATH,
+      pacote.SHOPEE_GENERATE_KIT_IMAGE_PATH,
+    ];
+    expect(caminhos).toStrictEqual([
+      SHOPEE_ADD_KIT_ITEM_PATH,
+      SHOPEE_UPDATE_KIT_ITEM_PATH,
+      SHOPEE_GENERATE_KIT_IMAGE_PATH,
+    ]);
+    expect(pacote.SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES).toBe(SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES);
+    expect(pacote.linhasDeReenvioDoKit).toBe(linhasDeReenvioDoKit);
+    expect(pacote.assertGenerateKitImageParams).toBe(assertGenerateKitImageParams);
+    expect(typeof pacote.shopeeKitItemWriteSchema.parse).toBe('function');
+    expect(typeof pacote.shopeeGenerateKitImageSchema.parse).toBe('function');
+  });
+
+  it('K11 — FONTE: cada escrita tem o guarda ANTES do token, UM `shopeeCall`, POST, o envelope INTEIRO, o seu schema, sem laço, sem tolerância; o apelido UMA vez no getKitItemLimit; os membros ficam ao lado do getKitItemInfo', () => {
+    const blocos: readonly (readonly [string, string, string, string])[] = [
+      [
+        'addKitItem: async',
+        'assertAddKitItemRequest(body)',
+        'SHOPEE_ADD_KIT_ITEM_PATH',
+        'shopeeKitItemWriteSchema',
+      ],
+      [
+        'updateKitItem: async',
+        'assertUpdateKitItemRequest(body)',
+        'SHOPEE_UPDATE_KIT_ITEM_PATH',
+        'shopeeWriteAckSchema',
+      ],
+      [
+        'generateKitImage: async',
+        'assertGenerateKitImageParams(p)',
+        'SHOPEE_GENERATE_KIT_IMAGE_PATH',
+        'shopeeGenerateKitImageSchema',
+      ],
+    ];
+    for (const [marcador, guarda, caminho, schema] of blocos) {
+      const bloco = blocoDoMetodo(marcador);
+      expect(bloco.indexOf(guarda), marcador).toBeGreaterThan(-1);
+      expect(bloco.indexOf(guarda), marcador).toBeLessThan(bloco.indexOf('signedCall()'));
+      expect(bloco.split('shopeeCall(').length - 1, marcador).toBe(1);
+      expect(bloco, marcador).toContain("method: 'POST'");
+      expect(bloco, marcador).toContain('return shopeeCall(');
+      expect(bloco, marcador).toContain(caminho);
+      expect(bloco, marcador).toContain(`schema: ${schema},`);
+      expect(bloco, marcador).toContain('surface: SHOPEE_SURFACE.business');
+      for (const proibido of [
+        '.response',
+        '.trim(',
+        'emptyErrorAliases',
+        'payloadNoErro',
+        'avisoEmLista',
+        'erroAusenteEhSucesso',
+        'for (',
+        'while',
+        'catch',
+        '.then(',
+      ]) {
+        expect(bloco, `${marcador} ${proibido}`).not.toContain(proibido);
+      }
+    }
+    // O apelido do kit: UMA vez no arquivo, e no bloco do getKitItemLimit.
+    const apelido = 'emptyErrorAliases: SHOPEE_KIT_ITEM_LIMIT_ERROR_ALIASES';
+    expect(FONTE_API.split(apelido).length - 1).toBe(1);
+    expect(blocoDoMetodo('getKitItemLimit: async')).toContain(apelido);
+    expect(blocoDoMetodo('getKitItemInfo: async')).not.toContain('emptyErrorAliases');
+    // O LUGAR: logo depois do getKitItemInfo, antes dos pedidos — nos DOIS lados.
+    const info = FONTE_API.indexOf('getKitItemInfo: async');
+    const pedidos = FONTE_API.indexOf('getOrderList: async');
+    for (const marcador of [
+      'addKitItem: async',
+      'updateKitItem: async',
+      'generateKitImage: async',
+    ]) {
+      expect(FONTE_API.indexOf(marcador), marcador).toBeGreaterThan(info);
+      expect(FONTE_API.indexOf(marcador), marcador).toBeLessThan(pedidos);
+    }
+    const infoNaInterface = FONTE_API.indexOf('getKitItemInfo(p: GetKitItemInfoParams)');
+    expect(FONTE_API.indexOf('addKitItem(body: ShopeeAddKitItemRequest)')).toBeGreaterThan(
+      infoNaInterface,
+    );
+    expect(FONTE_API.indexOf('getKitItemInfo(p: GetKitItemInfoParams)')).toBeGreaterThan(
+      FONTE_API.indexOf('export interface ShopeeClient {'),
+    );
+    // As frases velhas que viraram falsas com a medição (stale lines do passo 19).
+    expect(FONTE_API).not.toContain('Nothing in this repo may infer one');
   });
 });

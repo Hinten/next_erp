@@ -95,6 +95,9 @@ export const TIPO_AVISO_LABELS = {
   despachoAutomaticoPendente: 'Despacho automático pendente',
   etiquetaComPrazo: 'Etiqueta com prazo de impressão',
   reclamacaoAguardandoVendedor: 'Reclamação aguardando o vendedor',
+  anuncioCategoriaAlterada: 'Categoria do anúncio alterada',
+  shopeeKitReceitaDivergente: 'Kit da Shopee com composição antiga',
+  anuncioForaDaSincronizacao: 'Anúncio fora da sincronização',
 } as const;
 
 /**
@@ -277,6 +280,219 @@ export const TIPO_AVISO_LABELS = {
  *    change — `escreverAviso` drops an EQUAL clock — and the resolve passes the
  *    same value to `resolverAviso`, so a late, older resolve cannot close a
  *    newer row. ⚠️ Per-return µs: never compare it with another tipo's.
+ *
+ * ---
+ *
+ * **`anuncioCategoriaAlterada`** (#847 — producer
+ * `apps/mercado-livre/lib/marketplace/anuncios/categoriaAnuncio.ts`, run by the
+ * ML functions trigger `onAnuncioCategoriaAlterada`) — Mercado Livre moved a
+ * listing to another category on its own (automatic recategorization, or a split
+ * of its category tree), while the produto's ERP category still names the OLD
+ * one. The ERP category is what selects the price list's formulas
+ * (`formulasPorCategoria` — commission, frete) and the NF-e tax rules, and it is
+ * never moved automatically, so only an operator can decide.
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the `estoqueAcimaDoDisponivel` reason
+ *    above; `canal` says which marketplace did it.
+ *  - **Raised NARROWLY**: only when the produto's ERP category is
+ *    `categorias/<the ML category the listing just left>` — the import names ERP
+ *    categories after ML's, so that is the case where the commission lever is
+ *    demonstrably stale. A curated, non-ML ERP category raises nothing. Not
+ *    raised either when ML's own `percentage_fee` is identical for both
+ *    categories at the listing's price and type — nothing to reprice — but
+ *    then the row is still RECORDED, closed as `mesma-comissao`, because the
+ *    ERP category is still stale: a closed row that no one reviewed
+ *    (`mesma-comissao`, `anuncio-encerrado`, `anuncio-desvinculado`) keeps
+ *    its `params.categoriaErpId` tracked, so a LATER move at a different
+ *    commission raises even though `anterior` no longer names it. That memory
+ *    lasts as long as the row: `sweepAvisosResolvidos` deletes it 90 days
+ *    after the close.
+ *  - **Machine resolvers** (this docblock's own rule, above), each a
+ *    TRANSITION: the produto's ERP category becomes the listing's current ML
+ *    category (`categoria-erp-alinhada` — the operator aligned it, or ML moved
+ *    the listing back); the ERP category changed to anything else
+ *    (`categoria-erp-alterada` — an operator reviewed it and chose); the fees
+ *    turned out identical on a later move (`mesma-comissao`); the listing
+ *    stopped being live (`anuncio-encerrado`) or its link was deleted
+ *    (`anuncio-desvinculado`). ⚠️ Residual: an operator who deliberately keeps
+ *    the old category while the commission differs leaves the row open — there
+ *    is no dismiss button (see `avisoMeta.serverOwned`).
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId,
+ *    janela: linkDocId })` — ONE row per LISTING LINK. A produto can carry two
+ *    listings on one conta, each its own occurrence; the link id rides in its
+ *    own segment (not concatenated into `entidade`), so the fold of one id can
+ *    never shift a boundary into the other.
+ *  - **`params`**: `anuncio` (the ML listing id), `categoriaErpId` +
+ *    `categoriaMlId` (always), `categoriaErpNome` + `categoriaMlNome` (when
+ *    resolvable), `comissaoCategoriaErpPct` + `comissaoCategoriaMlPct` (NUMBERS,
+ *    only when ML answered both — a fee preview, never a promise).
+ *  - **Severity `atencao`**: nothing is down — the listing sells — but every
+ *    sale may be priced on the wrong commission. The RAISE carries no
+ *    `relogioEvento`: ML sends no clock for a recategorization, and every
+ *    decision is re-derived from the CURRENT link and produto, so replays
+ *    converge without one. Only the `mesma-comissao` record passes one — our
+ *    own observation time, in ms — because the shared resolver seeds a
+ *    missing row only with a clock; a clockless raise is never blocked by it.
+ *
+ * ---
+ *
+ * **`shopeeKitReceitaDivergente`** (produced by step 19 (#1527), Shopee native
+ * kits) — the composition of a kit produto changed in the ERP after its native
+ * Shopee kit was created, and the kit on Shopee still carries the OLD recipe.
+ * Shopee does not let a kit's components or quantities change (a quantity
+ * change is answered 200 and silently ignored), and it derives the kit's stock
+ * itself from that frozen recipe — so the stock it shows may be wrong. The
+ * operator republishes first (if Shopee already holds the same composition, the
+ * aviso closes by itself), else recreates the kit or puts the ERP composition
+ * back. A recipe change never BLOCKS anything (Lucas, L4): this aviso is the
+ * whole signal.
+ *
+ *  - **Name is Shopee-prefixed on purpose**, unlike the channel-neutral tipos
+ *    above: the condition IS the channel's — only a Shopee native kit freezes
+ *    its composition at create — and the wording names Shopee's own remedy.
+ *  - **Key**: ONE row per (conta, KIT produto) — `chaveAvisoReceitaKitShopee`
+ *    (`receitaKitShopee.ts`), no `janela`. A family kit with three divergent
+ *    children is ONE aviso naming the three, never three avisos.
+ *  - **Severity `atencao`**: the kit still sells, and `critico` escalates out of
+ *    the app.
+ *  - **`params` are ids only** — `kit` (the kit produto), `anuncio` (the Shopee
+ *    `item_id`, or `—`), `vinculo` (the link doc id the recriar advice names, or
+ *    `—`) and `variacoes` (the divergent children, sorted, joined by `, `). No
+ *    produto name, no SKU, no provider prose.
+ *  - **`urlInterna`** = the kit produto's page, `campo: 'componentesKit'`.
+ *  - **Machine resolvers** (this docblock's own rule, above) — FIVE motivos,
+ *    `MOTIVO_RESOLUCAO_RECEITA_KIT` (`receitaKitShopee.ts`), each reached
+ *    through ONE shared open/resolve decision (`decidirAvisoDeReceitaKit`,
+ *    same module) over the CURRENT recipes, never a blind resolve:
+ *    `receita-igual-a-shopee` (the ERP recipe was edited back to what Shopee
+ *    holds), `kit-recriado` (a create arm finished — criar, recriar or
+ *    converter — or a superseded old kit was seen deleted while the new one
+ *    matches), `republicado-igual` (a republish read the kit back equal to the
+ *    ERP), `importado` (a re-import found the kit equal to the ERP) and
+ *    `sem-kit-ativo` (no native kit of that produto still sells on the conta —
+ *    deleted in Seller Centre and reverified, or removed by a recriar). The
+ *    last one is what keeps a kit that no longer exists from leaving its aviso
+ *    standing until retention.
+ *  - **`relogioEvento`** = the latest commit time, in µs, of every document the
+ *    decision read, so a decision computed from an older snapshot that lands
+ *    late is dropped as stale instead of reopening or closing a newer row.
+ *  - **Writer — step 9's kit import** (`apps/shopee`, `produtos/kitShopee.ts`):
+ *    after writing a native kit it calls `reavaliarAvisoDeReceitaKit`
+ *    (`@delfrance/data/admin/avisos`) ONCE for (conta, kit) with motivo
+ *    `importado`. Before its writes it stamps the fingerprint on the kit-model
+ *    rows it is about to merge, so the trigger its own produto writes fire
+ *    already reads the new stamp. A child whose ERP recipe differs from the
+ *    kit's while one of its rows on an active native kit carries a stamp other
+ *    than the current fingerprint (an edit this aviso tracks) is KEPT
+ *    (L10(2)): no recipe and no stamp is written for it, so the aviso stays
+ *    open and the import reports `receita-divergente`.
+ *  - **Writer — the native-kit create and republish** (`apps/shopee`,
+ *    `kits/aplicarKit.ts`'s `criarKit` and `kits/republicarKit.ts`): each calls
+ *    `reavaliarAvisoDeReceitaKit` ONCE for (conta, kit) AFTER its own stamps —
+ *    motivo `kit-recriado` once a create's completion has stamped every child
+ *    whose READ-BACK folded equal, `republicado-igual` once a republish has
+ *    re-stamped the children its read-back found equal — never a blind
+ *    resolve. A child whose read-back folds DISTINCT keeps a `null` (or its
+ *    old) stamp, so that same decision OPENS the aviso naming it. An uncertain
+ *    create (`incerto`) writes nothing at all, this decision included.
+ *  - **Writer — the recriar, the converter, the re-verify and the listing
+ *    pushes** (`apps/shopee`, `kits/recriarKit.ts`, `anuncios/reverificarAnuncio.ts`
+ *    and `anuncios/pushAnuncio.ts`): the recriar and the converter call
+ *    `reavaliarAvisoDeReceitaKit` ONCE for (conta, kit) as their last step, motivo
+ *    `kit-recriado` — a recriar whose delete did not take leaves the old kit
+ *    superseded and still selling, so its rows keep the aviso OPEN. The
+ *    re-verify (the `reverificar-anuncio` route and the `reverificar:anuncio`
+ *    CLI) and the code 16/27 push handlers call it after any write whose
+ *    resulting `estadoAnuncio` is `removido` on a link whose `kitNativo` is
+ *    `true` — through ONE shared gate, `reavaliarAvisoDeKitRemovido` — with
+ *    motivo `kit-recriado`: the decision answers `sem-kit-ativo` by itself when
+ *    no kit of the produto still sells, and `kit-recriado` only when the deleted
+ *    kit was the superseded old one and the new kit folds equal. An ordinary
+ *    listing never reaches it. No Shopee push reports a SELLER delete, so the
+ *    operator's re-verify is how a Seller-Centre deletion closes this aviso.
+ *  - **Writer — the produto trigger** (`apps/functions`): `onProdutoChanged`
+ *    calls `avisarReceitaKitShopee` (`produtos/avisoReceitaKitShopee.ts`) LAST,
+ *    behind a pure gate on the recipe fingerprint (an ordinary save reads
+ *    nothing). For every (conta, kit) the saved produto's `variashopee` rows
+ *    name, it hands the pair to `reavaliarAvisoDeReceitaKit` with motivo
+ *    `receita-igual-a-shopee` and the event time as `agoraUs` (the staleness
+ *    clock stays the decision's own) — it decides nothing itself and writes
+ *    this tipo only through that shared decision. A produto DELETE is never a
+ *    recipe change, so deleting the child that held the only divergent row
+ *    leaves the aviso open; a later re-import, republish or recriar/converter
+ *    can close it (a sibling's recipe edit re-evaluates the kit too, but with
+ *    every sibling in step it keeps the aviso open for that sibling).
+ *
+ * ---
+ *
+ * **`anuncioForaDaSincronizacao`** (#1200 — first producer
+ * `apps/mercado-livre/lib/marketplace/estoque/auditoriaNaoEnumerados.ts`, the
+ * monthly link audit) — a LIVE anúncio that no automatic stock or price sync can
+ * reach. Both senders' anchor queries enumerate family PARENTS carrying the conta
+ * (`paiId == null` plus `integracoesComProduto` containing it), so a link on a
+ * variation child, a produto whose `paiId` is neither null nor a usable id, or a
+ * link whose produto no longer exists is never enumerated — and leaves no trace:
+ * the sweep reports `completed` while that listing keeps selling at whatever stock
+ * it last had.
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the `estoqueAcimaDoDisponivel` reason
+ *    above: the gap belongs to the parent-anchored query shape, not to Mercado
+ *    Livre, and `canal` already carries which channel raised it.
+ *  - ⚠️ **The audit's FOURTH finding never raises this tipo.** A produto that
+ *    merely lost the conta from `integracoesComProduto` (class 2: a lost trigger
+ *    event, or the cutover import, which fires none) is HEALED in place — the
+ *    conta re-added under a guard that re-reads the links — and only logged. No
+ *    human is needed for it, and an aviso nobody has to act on teaches the team
+ *    to ignore the bell. {@link situacaoAnuncioForaDaSincronizacaoSchema} has no
+ *    member for it, on purpose.
+ *  - **Machine resolvers** (this docblock's own rule, above), both seen by the
+ *    producer: (1) a COMPLETED monthly walk of that conta's links that no longer
+ *    finds the produto, re-confirmed by a fresh read of that produto's links and
+ *    of the produto itself before it resolves
+ *    (`resolucaoMotivo: 'nao-encontrado-na-auditoria'`). ⚠️ A TRUNCATED walk
+ *    (page cap, time budget, a cursor that stopped advancing) resolves NOTHING:
+ *    there "not found" only means "not reached", and resolving on it would close
+ *    a real row this month and re-raise it the next — and neither does a run
+ *    whose listing of the open avisos came back past its cap. (2) The conta is no longer
+ *    an active Mercado Livre integração (`resolucaoMotivo: 'conta-inativa'`):
+ *    nothing walks its links any more, so resolver (1) can never fire for it,
+ *    and without this its rows would stand until retention. ⚠️ Both judge
+ *    MERCADO LIVRE state, so both act only on rows stamped
+ *    `canal: 'mercadoLivre'`: the next channel to produce this tipo brings its
+ *    own resolvers, and resolver (2) would otherwise close that channel's rows
+ *    every month — its conta is never an ML integração.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
+ *    — ONE row per PRODUTO, no `janela`. Every monthly walk recomputes the same
+ *    id, so a finding that persists refreshes its row instead of opening a new
+ *    one. ⚠️ The SHAPE is load-bearing: an aviso stores its conta and entidade
+ *    only in its id, so the producer reads the open avisos once per run (the
+ *    bell's own `resolvidoEm == null`) and finds its rows by PARSING the id —
+ *    exactly `<tipo>:<conta>:<produto>`, the conta segment compared whole — so
+ *    `conta` must stay the second segment, and the fold must keep every `:` out
+ *    of a segment. `entidade` is the produtoId, never the ML item id: the
+ *    route is built from it, and a produto relisted under a new item id keeps the
+ *    row the operator already knows about. The `estoqueAcimaDoDisponivel` fold
+ *    caveat applies (a dot and an underscore in a produtoId are one key).
+ *  - **Severity `atencao`**: the rest of the catalogue syncs normally, the
+ *    finding is a standing data defect seen once a month rather than an
+ *    incident, and `critico` escalates out of the app.
+ *  - **`params` are exactly `situacao`** — a
+ *    {@link SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO} CODE, never a fragment, so a
+ *    wording fix in `mensagens.ts` is retroactive — **`anuncio`** (the
+ *    lexicographically SMALLEST live ML item id the walk saw for that produto —
+ *    not the first seen, so a walk that meets the same listings in another order
+ *    recomputes the same params and writes nothing; `''` when no link names one)
+ *    **and `anuncios`** (how many live anúncios of that produto are in the
+ *    situação, a NUMBER). `motivo` = `situacao`. A repeat replaces `params`
+ *    wholesale, which is safe here: every walk recomputes all three.
+ *  - **No `relogioEvento`, ever**: this is a periodic observation by a single
+ *    scheduled writer, not an out-of-order provider event — there is no provider
+ *    clock to compare, and the dedup id alone is the race guard (tier 0). No
+ *    `prazo` either: nobody set a deadline.
+ *  - **Route**: the produto page (`ROTAS_AVISO.produto`), where the link is
+ *    re-pointed or the cadastro fixed — EXCEPT `produto-ausente`, which goes to
+ *    the conta's channel page (`ROTAS_AVISO.canalMercadoLivre`): a produto that
+ *    no longer exists has no page to open.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -293,6 +509,9 @@ export const tipoAvisoSchema = z
     'despachoAutomaticoPendente',
     'etiquetaComPrazo',
     'reclamacaoAguardandoVendedor',
+    'anuncioCategoriaAlterada',
+    'shopeeKitReceitaDivergente',
+    'anuncioForaDaSincronizacao',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -312,6 +531,9 @@ export const TIPO_AVISO = {
   despachoAutomaticoPendente: 'despachoAutomaticoPendente',
   etiquetaComPrazo: 'etiquetaComPrazo',
   reclamacaoAguardandoVendedor: 'reclamacaoAguardandoVendedor',
+  anuncioCategoriaAlterada: 'anuncioCategoriaAlterada',
+  shopeeKitReceitaDivergente: 'shopeeKitReceitaDivergente',
+  anuncioForaDaSincronizacao: 'anuncioForaDaSincronizacao',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -343,6 +565,42 @@ export const PENDENCIA_RECLAMACAO = {
   responderProposta: 'responder-proposta',
   enviarEvidencias: 'enviar-evidencias',
 } as const satisfies Record<string, PendenciaReclamacao>;
+
+/**
+ * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's
+ * `params.situacao` (and its `motivo`), a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders, so a wording fix is retroactive.
+ *
+ * One member per finding a HUMAN must fix, each with its own remedy: a link on a
+ * variation child (re-point it at the family parent), a cadastro whose `paiId`
+ * is neither null nor a usable id (fix the cadastro), and a link that outlived
+ * its produto (end the anúncio, or remove the orphan link).
+ *
+ * ⚠️ Its own closed set, NOT the walk's `NAO_ENUMERADO_*` codes. Those are an
+ * `apps/mercado-livre` constant this browser-safe package cannot import, and they
+ * carry a fourth member — the produto missing the conta — that the audit HEALS
+ * and never raises, so there is deliberately no `conta-fora-do-produto` here.
+ *
+ * Stored as an aviso PARAM (`z.record(string, string | number)`), so the aviso
+ * schema itself does not validate it: a code newer than the web build reaches
+ * the reader as a plain string, and `mensagens.ts` falls back rather than
+ * printing `undefined`.
+ */
+export const situacaoAnuncioForaDaSincronizacaoSchema = z.enum([
+  'link-em-variacao',
+  'pai-id-invalido',
+  'produto-ausente',
+]);
+export type SituacaoAnuncioForaDaSincronizacao = z.infer<
+  typeof situacaoAnuncioForaDaSincronizacaoSchema
+>;
+
+/** Named members of {@link situacaoAnuncioForaDaSincronizacaoSchema} — see `delfrance/prefer-schema-enum`. */
+export const SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO = {
+  linkEmVariacao: 'link-em-variacao',
+  paiIdInvalido: 'pai-id-invalido',
+  produtoAusente: 'produto-ausente',
+} as const satisfies Record<string, SituacaoAnuncioForaDaSincronizacao>;
 
 /* -------------------------------------------------------------------------- */
 /*                              Route builders                                */

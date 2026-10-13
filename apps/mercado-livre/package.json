@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:firestore": "vitest run --config vitest.firestore.config.ts",
     "test:tasks": "vitest run --config vitest.tasks.config.ts",
+    "test:staging": "vitest run --config vitest.staging.config.ts",
     "backfill:int-frete": "dotenv -e ../../.env.local -- tsx scripts/backfill-int-frete.ts",
     "check:deposito-source": "dotenv -e ../../.env.local -- tsx scripts/check-deposito-source.ts",
     "census:up-single": "dotenv -e ../../.env.local -- tsx scripts/census-up-single.ts",
@@ -44,6 +45,7 @@
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
+    "@delfrance/config-vitest": "workspace:*",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "esbuild": "catalog:",

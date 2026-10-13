@@ -1,7 +1,9 @@
 'use client';
 
 import { Suspense, type ReactNode } from 'react';
-import { Box, Group, Skeleton, Stack } from '@mantine/core';
+import Link from 'next/link';
+import { Box, Button, Group, Skeleton, Stack } from '@mantine/core';
+import { IconArrowLeft } from '@tabler/icons-react';
 import { PageHeader } from '@delfrance/ui';
 import { WhatsappVinculosButton } from './WhatsappVinculosButton';
 import { ConversaListPane } from './ConversaListPane';
@@ -21,23 +23,42 @@ export function ChatInboxShell({
   activeId,
   children,
   rightPane,
+  mobileRightPane,
 }: {
   activeId?: string;
   children: ReactNode;
   rightPane?: ReactNode;
+  mobileRightPane?: ReactNode;
 }) {
   return (
     <Stack h="calc(100vh - 96px)" gap="md">
       <Group justify="space-between">
         <PageHeader title="Chat" description="Atendimentos em tempo real" />
-        <WhatsappVinculosButton />
+        <Group gap="xs">
+          <WhatsappVinculosButton />
+          {mobileRightPane && <Box hiddenFrom="lg">{mobileRightPane}</Box>}
+        </Group>
       </Group>
+      {activeId && (
+        <Button
+          component={Link}
+          href="/chat?tab=todas"
+          variant="subtle"
+          leftSection={<IconArrowLeft size={16} />}
+          hiddenFrom="lg"
+          size="xs"
+          style={{ alignSelf: 'flex-start' }}
+        >
+          Voltar às conversas
+        </Button>
+      )}
       <Group align="stretch" gap="md" style={{ flex: 1, minHeight: 0 }} wrap="nowrap">
         <Box
-          w={LIST_PANE_WIDTH}
+          w={{ base: '100%', lg: LIST_PANE_WIDTH }}
+          display={activeId ? { base: 'none', lg: 'block' } : undefined}
           style={{
-            flex: `0 0 ${LIST_PANE_WIDTH}px`,
-            borderRight: '1px solid var(--mantine-color-gray-2)',
+            flex: '0 0 auto',
+            borderRight: '1px solid var(--mantine-color-default-border)',
             paddingRight: 12,
             minHeight: 0,
           }}
@@ -46,8 +67,17 @@ export function ChatInboxShell({
             <ConversaListPane activeId={activeId} />
           </Suspense>
         </Box>
-        <Box style={{ flex: 1, minWidth: 0, display: 'flex', minHeight: 0 }}>{children}</Box>
-        {rightPane}
+        <Box
+          display={{ base: activeId ? 'flex' : 'none', lg: 'flex' }}
+          style={{ flex: 1, minWidth: 0, minHeight: 0 }}
+        >
+          {children}
+        </Box>
+        {rightPane && (
+          <Box visibleFrom="lg" style={{ display: 'flex', minHeight: 0 }}>
+            {rightPane}
+          </Box>
+        )}
       </Group>
     </Stack>
   );

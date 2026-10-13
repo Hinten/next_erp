@@ -46,6 +46,8 @@ const PRODUTO_C = 'prod-c';
 const ITEM_A = 2500139861;
 const ITEM_B = 2500139862;
 const ITEM_C = 2500139863;
+/** Step 19 (D1 role): a native Shopee kit. */
+const ITEM_KIT = 2500139870;
 
 const AGORA = 1_757_000_000_000;
 
@@ -509,6 +511,43 @@ describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
     ]);
     expect(res.listings).toEqual([]);
     expect(fake.ops).toEqual([]);
+  });
+
+  it('M185 (near-miss, passo 19): um produto CONVERTIDO cujo anúncio comum substituído ordena primeiro pausa o KIT NATIVO vivo', async () => {
+    // L8: `link-1` é o anúncio comum que o kit substituiu — ainda vivo na Shopee
+    // e lexicamente PRIMEIRO. "Pausar este produto" é pausar o que vende: o kit.
+    // O resolvedor da PUBLICAÇÃO (léxico) escolheria `link-1`; pausar não usa ele.
+    const db = new FakeDb();
+    semearProduto(db, PRODUTO_A, 'Kit convertido');
+    semearLink(db, PRODUTO_A, ITEM_A, {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      item_status: SHOPEE_ITEM_STATUS.normal,
+      kitNativo: false,
+      substituidoPorLinkDocId: 'link-2',
+      substituidoEm: AGORA - 1,
+    });
+    semearLink(
+      db,
+      PRODUTO_A,
+      ITEM_KIT,
+      {
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+        item_status: SHOPEE_ITEM_STATUS.normal,
+        kitNativo: true,
+      },
+      'link-2',
+    );
+    const fake = clienteFake({
+      unlist: () => envelopeUnlist([ITEM_KIT]),
+      base: () => releitura([linhaBase(ITEM_KIT, { item_status: SHOPEE_ITEM_STATUS.unlist })]),
+    });
+
+    const res = await definirStatusAnunciosShopee(asDb(db), entrada(), deps(fake.client));
+
+    expect(fake.unlists[0]?.item_list).toEqual([{ item_id: ITEM_KIT, unlist: true }]);
+    expect(linhaDe(res, PRODUTO_A).linkDocId).toBe('link-2');
+    // The superseded ordinary listing is NOT touched: nothing is sent or written for it.
+    expect(patchesDoLink(db, PRODUTO_A, 'link-1')).toEqual([]);
   });
 
   it('um link de OUTRA conta não é alvo — o produto conta como sem anúncio', async () => {

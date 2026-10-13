@@ -127,6 +127,7 @@ describe('ConversaTile', () => {
     );
     const link = screen.getByRole('link');
     expect(link.getAttribute('style')).toContain('244, 67, 54');
+    expect(link.style.color).toBe('light-dark(rgb(0, 0, 0), rgb(255, 255, 255))');
   });
 
   it('shows the draft indicator when a saved draft exists', () => {

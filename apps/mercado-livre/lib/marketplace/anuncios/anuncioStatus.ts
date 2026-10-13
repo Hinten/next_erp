@@ -285,6 +285,9 @@ async function definirStatusFamilia(
       moderacoes: precisaConsultarModeracao(item.status, item.sub_status) ? null : [],
       // Not learned here — this call asks for nothing but a status change.
       userProductId: null,
+      // #847: the PUT answers with ML's whole item, so its category IS a fresh
+      // reading of ML's own value — fill-only, folded into the parent's.
+      categoryId: item.category_id ?? null,
     });
     relatorio.push({
       itemId: membro.itemId,

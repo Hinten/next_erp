@@ -17,7 +17,8 @@ one form exists. Import: `import * as pipelines from '@google-cloud/firestore/pi
 (admin) or `firebase/firestore/pipelines` (client `execute(pipeline)` helper).
 
 Edition: Pipelines are a **Firestore Enterprise edition (Native mode)** feature.
-Not available in the emulator. Global limits: **60s deadline** (`DEADLINE_EXCEEDED`),
+The stable emulator 1.22.0 supports a subset in Enterprise mode; verify exact
+query shapes and see SKILL.md §7 for limits. Global limits: **60s deadline** (`DEADLINE_EXCEEDED`),
 **128 MiB** materialized-data memory (`RESOURCE_EXHAUSTED`), `INTERNAL` = contact
 support. Enterprise runs any query shape without an index (it full-scans instead
 of failing) and **bills data scanned** — index hot queries (see SKILL.md §6).

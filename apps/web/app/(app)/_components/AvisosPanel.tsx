@@ -42,8 +42,6 @@ export interface AvisosPanelProps {
   onMarcarLido: (avisoId: string) => Promise<void> | void;
   onMarcarTodosLidos: () => Promise<void> | void;
   onNavegar?: () => void;
-  /** Renders every row expanded, for the full `/inicio` list. */
-  completo?: boolean;
 }
 
 /**
@@ -61,7 +59,6 @@ export function AvisosPanel({
   onMarcarLido,
   onMarcarTodosLidos,
   onNavegar,
-  completo = false,
 }: AvisosPanelProps) {
   if (loading) {
     return (
@@ -98,13 +95,7 @@ export function AvisosPanel({
       </Group>
 
       {rows.map((row) => (
-        <LinhaAviso
-          key={row.id}
-          row={row}
-          completo={completo}
-          onMarcarLido={onMarcarLido}
-          onNavegar={onNavegar}
-        />
+        <LinhaAviso key={row.id} row={row} onMarcarLido={onMarcarLido} onNavegar={onNavegar} />
       ))}
     </Stack>
   );
@@ -112,12 +103,10 @@ export function AvisosPanel({
 
 function LinhaAviso({
   row,
-  completo,
   onMarcarLido,
   onNavegar,
 }: {
   row: AvisoRow;
-  completo: boolean;
   onMarcarLido: AvisosPanelProps['onMarcarLido'];
   onNavegar?: () => void;
 }) {
@@ -156,7 +145,7 @@ function LinhaAviso({
         )}
       </Group>
 
-      <Text size="xs" c="dimmed" lineClamp={completo ? undefined : 3}>
+      <Text size="xs" c="dimmed" style={{ overflowWrap: 'anywhere' }}>
         {mensagem.corpo(aviso.params)}
       </Text>
 

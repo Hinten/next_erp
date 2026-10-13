@@ -4,17 +4,22 @@ import {
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   TIPO_AVISO_LABELS,
+  avisoReceitaKitShopee,
   avisoSchema,
   pendenciaReclamacaoSchema,
+  situacaoAnuncioForaDaSincronizacaoSchema,
+  type SituacaoAnuncioForaDaSincronizacao,
 } from '@delfrance/schemas';
 import { MENSAGENS_POR_TIPO } from './mensagens';
 
 /**
  * The two dispatch tipos of Shopee step 15b (#1744), rendered with the params
  * their producer writes (`apps/shopee/lib/shopee/avisos/despachoAutomatico.ts`),
- * and the return tipo of step 17 (#1525) further down.
+ * the return tipo of step 17 (#1525) further down, and the Mercado Livre
+ * link-audit tipo (#1200) after it.
  *
  * `rotas.test.ts` already proves every row renders `{}` without "undefined".
  * This file pins the sentences verbatim and renders the producers' planos
@@ -242,6 +247,223 @@ describe('MENSAGENS_POR_TIPO.reclamacaoAguardandoVendedor', () => {
   });
 });
 
+/**
+ * #847 — the producer is `apps/mercado-livre/lib/marketplace/anuncios/avisoCategoria.ts`.
+ * Same rule as the Shopee planos above: no dependency edge reaches it from here, so
+ * the plano is a LITERAL, and the producer's own test pins the same params.
+ */
+describe('MENSAGENS_POR_TIPO.anuncioCategoriaAlterada', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.anuncioCategoriaAlterada];
+  const RESTO =
+    ' Confira se a nova categoria tem fórmulas e impostos configurados (sem fórmulas, valem ' +
+    'as padrão da lista), troque a categoria do produto e das variações, e recalcule o ' +
+    'preço. O aviso se encerra quando a categoria do produto for alterada.';
+  const COMPLETO = {
+    anuncio: 'MLB4567',
+    categoriaErpId: 'MLB1',
+    categoriaErpNome: 'Roupas > Camisetas',
+    categoriaMlId: 'MLB2',
+    categoriaMlNome: 'Roupas > Camisetas e Regatas',
+    comissaoCategoriaErpPct: 16,
+    comissaoCategoriaMlPct: 11.5,
+  };
+
+  it('renders the sentence verbatim with every param, the commission in pt-BR', () => {
+    expect(mensagem.corpo(COMPLETO)).toBe(
+      'O Mercado Livre moveu o anúncio MLB4567 para a categoria Roupas > Camisetas e Regatas ' +
+        '(MLB2), mas o produto continua na categoria Roupas > Camisetas (MLB1) — é ela que ' +
+        'escolhe as fórmulas de preço (comissão, frete) e as regras de imposto da NF-e. ' +
+        `Comissão estimada pelo Mercado Livre: 16% → 11,5%.${RESTO}`,
+    );
+  });
+
+  it('ids only: no names, no fees — the bare ids, and NO commission sentence', () => {
+    expect(
+      mensagem.corpo({ anuncio: 'MLB4567', categoriaErpId: 'MLB1', categoriaMlId: 'MLB2' }),
+    ).toBe(
+      'O Mercado Livre moveu o anúncio MLB4567 para a categoria MLB2, mas o produto continua ' +
+        'na categoria MLB1 — é ela que escolhe as fórmulas de preço (comissão, frete) e as ' +
+        `regras de imposto da NF-e.${RESTO}`,
+    );
+  });
+
+  it('ONE fee alone, or a fee stored as text, renders no commission sentence', () => {
+    const base = { anuncio: 'MLB4567', categoriaErpId: 'MLB1', categoriaMlId: 'MLB2' };
+    expect(mensagem.corpo({ ...base, comissaoCategoriaErpPct: 16 })).not.toContain('Comissão');
+    expect(
+      mensagem.corpo({ ...base, comissaoCategoriaErpPct: '16', comissaoCategoriaMlPct: 11 }),
+    ).not.toContain('Comissão');
+  });
+
+  it('renders `{}` with placeholders, never "undefined"', () => {
+    const texto = mensagem.corpo({});
+    expect(texto).not.toContain('undefined');
+    expect(texto).toContain('o anúncio — para a categoria —');
+  });
+
+  it('the producer plano parses as stored, pointing at the produto', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.anuncioCategoriaAlterada,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.mercadoLivre,
+      params: COMPLETO,
+      urlInterna: { rota: ROTAS_AVISO.produto.build('prod-1'), campo: null },
+    });
+    expect(aviso.params).toEqual(COMPLETO);
+    expect(aviso.urlInterna?.rota).toBe('/produtos/prod-1');
+  });
+
+  it('is titled like its label and carries no runbook — the produto is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.anuncioCategoriaAlterada);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+/**
+ * The link-audit tipo of #1200, rendered with the params its producer writes
+ * (`apps/mercado-livre/lib/marketplace/estoque/auditoriaNaoEnumerados.ts`):
+ * exactly `{ situacao, anuncio, anuncios }`, `situacao` a CODE and `anuncios` a
+ * NUMBER. Same reason for the literals as above — `apps/web` has no dependency
+ * edge to `apps/mercado-livre`.
+ */
+describe('MENSAGENS_POR_TIPO.anuncioForaDaSincronizacao', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.anuncioForaDaSincronizacao];
+  const ITEM_ID = 'MLB1234567890';
+  const PRODUTO_ID = 'produto-123';
+  const INTEGRACAO_ID = 'integracao-ml-1';
+  const INICIO = 'está ativo no canal, mas não recebe estoque nem preço automaticamente: ';
+  const FRASES: Record<SituacaoAnuncioForaDaSincronizacao, string> = {
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao]:
+      'ele está vinculado a uma variação, e não ao produto pai — refaça o vínculo no produto pai',
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.paiIdInvalido]:
+      'o cadastro do produto tem um vínculo de produto pai inválido — corrija o cadastro do ' +
+      'produto',
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente]:
+      'ele aponta para um produto que não existe mais — encerre o anúncio no canal ou peça a ' +
+      'remoção do vínculo órfão',
+  };
+  const corpoCom = (situacao: string | number | undefined, anuncios: string | number = 1) =>
+    mensagem.corpo({
+      anuncio: ITEM_ID,
+      anuncios,
+      ...(situacao === undefined ? {} : { situacao }),
+    });
+
+  it('renders every situação code as its own phrase, in its slot', () => {
+    // Every member of the closed set has a pinned phrase — a code added to the
+    // schema without one fails here, not as a blank slot in the bell.
+    expect(Object.keys(FRASES).sort()).toEqual(
+      [...situacaoAnuncioForaDaSincronizacaoSchema.options].sort(),
+    );
+    for (const [codigo, frase] of Object.entries(FRASES)) {
+      expect(corpoCom(codigo), codigo).toBe(`O anúncio ${ITEM_ID} ${INICIO}${frase}.`);
+    }
+  });
+
+  it('never names a channel — the tipo is channel-neutral', () => {
+    for (const codigo of situacaoAnuncioForaDaSincronizacaoSchema.options) {
+      expect(corpoCom(codigo, 3), codigo).not.toMatch(/mercado ?livre/i);
+    }
+  });
+
+  it('falls back on an unknown, absent or inherited code — never "undefined"', () => {
+    // The healed class (no aviso, so no phrase), the walk's own code that the
+    // producer maps FROM, a near-miss spelling, a number, nothing at all, and a
+    // key every object inherits.
+    for (const situacao of [
+      'conta-fora-do-produto',
+      'NAO_ENUMERADO_LINK_EM_VARIACAO',
+      'link_em_variacao',
+      '',
+      0,
+      undefined,
+      'toString',
+      '__proto__',
+    ]) {
+      const corpo = corpoCom(situacao);
+      expect(corpo, String(situacao)).toBe(
+        `O anúncio ${ITEM_ID} ${INICIO}confira o vínculo do anúncio.`,
+      );
+      expect(corpo, String(situacao)).not.toContain('undefined');
+    }
+  });
+
+  it('renders `{}` with the placeholder and the fallback, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(`O anúncio — ${INICIO}confira o vínculo do anúncio.`);
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('renders an empty item id (a link that names none) as the placeholder', () => {
+    expect(
+      mensagem.corpo({
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente,
+        anuncio: '',
+        anuncios: 1,
+      }),
+    ).toMatch(/^O anúncio — está ativo no canal/);
+  });
+
+  it('adds the count sentence only when the produto has MORE than one such anúncio', () => {
+    const codigo = SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao;
+    const base = `O anúncio ${ITEM_ID} ${INICIO}${FRASES[codigo]}.`;
+    expect(corpoCom(codigo, 1)).toBe(base);
+    expect(corpoCom(codigo, 2)).toBe(`${base} Este produto tem 2 anúncios nessa situação.`);
+    expect(corpoCom(codigo, 3)).toBe(`${base} Este produto tem 3 anúncios nessa situação.`);
+    // The producer writes a NUMBER; a string count is not parsed into a guess,
+    // and a zero or absent count adds nothing.
+    expect(corpoCom(codigo, '3')).toBe(base);
+    expect(corpoCom(codigo, 0)).toBe(base);
+    expect(mensagem.corpo({ situacao: codigo, anuncio: ITEM_ID }), 'sem `anuncios`').toBe(base);
+  });
+
+  it('renders both producer route shapes as stored, the code in `motivo` too', () => {
+    // `produto-ausente` lands on the CONTA's channel page — a produto that no
+    // longer exists has no page to open; every other situação lands on the produto.
+    const planos = [
+      {
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao,
+        rota: ROTAS_AVISO.produto.build(PRODUTO_ID),
+        esperada: `/produtos/${PRODUTO_ID}`,
+      },
+      {
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente,
+        rota: ROTAS_AVISO.canalMercadoLivre.build(INTEGRACAO_ID),
+        esperada: `/canais/mercado-livre/${INTEGRACAO_ID}`,
+      },
+    ];
+    for (const { situacao, rota, esperada } of planos) {
+      const params = { situacao, anuncio: ITEM_ID, anuncios: 3 };
+      const aviso = comoArmazenado({
+        tipo: TIPO_AVISO.anuncioForaDaSincronizacao,
+        severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.mercadoLivre,
+        params,
+        motivo: situacao,
+        urlInterna: { rota, campo: null },
+      });
+      expect(aviso.tipo, situacao).toBe(TIPO_AVISO.anuncioForaDaSincronizacao);
+      expect(aviso.severidade, situacao).toBe(SEVERIDADE_AVISO.atencao);
+      expect(aviso.canal, situacao).toBe(CANAL_AVISO.mercadoLivre);
+      expect(aviso.params, situacao).toEqual(params);
+      expect(aviso.motivo, situacao).toBe(situacao);
+      expect(aviso.urlInterna?.rota, situacao).toBe(esperada);
+      // A periodic observation by one scheduled writer: no provider clock, no deadline.
+      expect(aviso.relogioEvento, situacao).toBeNull();
+      expect(aviso.prazo, situacao).toBeNull();
+      expect(mensagem.corpo(aviso.params), situacao).toBe(
+        `O anúncio ${ITEM_ID} ${INICIO}${FRASES[situacao]}. ` +
+          'Este produto tem 3 anúncios nessa situação.',
+      );
+    }
+  });
+
+  it('is titled like its label and carries no runbook — the cadastro is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.anuncioForaDaSincronizacao);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
 describe('the producer planos as stored', () => {
   it('parse, keeping the checkout route and the class severity', () => {
     // A plano the schema rejected would never reach the bell at all; one it
@@ -257,5 +479,136 @@ describe('the producer planos as stored', () => {
 
     expect(comoArmazenado(PLANO_DESPACHO_MANUAL).severidade).toBe(SEVERIDADE_AVISO.critico);
     expect(comoArmazenado(PLANO_ETIQUETA).params).toEqual({ pedido: ORDER_SN });
+  });
+});
+
+/**
+ * The native-kit recipe tipo of Shopee step 19 (#1527). Its ONE definition
+ * (`avisoReceitaKitShopee`) sits in `@delfrance/schemas`, so — unlike the
+ * dispatch planos above — the writer's own builder is rendered here, not a
+ * copied literal.
+ *
+ * ⚠️ M30: the order of the advice is the safety property. A #1450 repoint of the
+ * map flips the ERP fingerprint while Shopee's recipe is unchanged, and
+ * `--recriar` deletes a LIVE listing — so the sentence must say "republish
+ * FIRST", and its recriar must name the link (`--link {vinculo} --recriar`),
+ * never a bare `--recriar`.
+ */
+describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.shopeeKitReceitaDivergente];
+  const KIT = 'k1';
+  const ITEM_ID = 2500139870;
+  const VINCULO = 'l-kit-1';
+
+  const corpoEsperado = (kit: string, anuncio: string, vinculo: string, variacoes: string) =>
+    `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
+    `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
+    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    `Senão, recrie o kit (publicar:anuncio --link ${vinculo} --recriar) ou volte a composição ao que ` +
+    'está na Shopee.';
+
+  /**
+   * The same sentence when the aviso names NO link (the builder's `—`, or the
+   * param absent): a `--recriar` refuses to run without `--link`, so the reader
+   * prints no command with a dangling `--link —` — it sends the operator to the
+   * `--link` the republish (already the first step) prints for a divergent kit.
+   */
+  const corpoSemVinculoEsperado = (kit: string, anuncio: string, variacoes: string) =>
+    `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
+    `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
+    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    'Senão, recrie o kit com o --link que a republicação indicar (o --recriar exige o vínculo do kit ' +
+    'antigo, e este aviso não o identificou) ou volte a composição ao que está na Shopee.';
+
+  it('renders the sentence verbatim with every param', () => {
+    expect(
+      mensagem.corpo({ kit: KIT, anuncio: String(ITEM_ID), vinculo: VINCULO, variacoes: 'c1, c2' }),
+    ).toBe(corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'));
+  });
+
+  it('M30 — tells the operator to republish FIRST, before any recriar', () => {
+    const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
+    expect(corpo).toContain('Republique o kit primeiro');
+    expect(corpo).toContain('este aviso se resolve sozinho');
+    expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(corpo.indexOf('recrie o kit'));
+  });
+
+  it('M30 — the recriar names its link: `--link {vinculo} --recriar`, never a bare `--recriar`', () => {
+    const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
+    expect(corpo).toContain(`publicar:anuncio --link ${VINCULO} --recriar`);
+    // Every `--recriar` in the sentence is the one the link precedes.
+    const ocorrencias = [...corpo.matchAll(/--recriar/g)];
+    expect(ocorrencias).toHaveLength(1);
+    expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
+  });
+
+  it('renders `{}` with the placeholder in every slot, never "undefined" — and no link-less command', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(corpoSemVinculoEsperado('—', '—', '—'));
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('renders what the ONE builder writes, each param in its slot (writer → reader)', () => {
+    const plano = avisoReceitaKitShopee({
+      integracaoId: 'int-1',
+      kitProdutoId: KIT,
+      itemId: ITEM_ID,
+      linkDocId: VINCULO,
+      variacoesDivergentes: ['c2', 'c1'],
+    });
+    const aviso = comoArmazenado(plano);
+    expect(aviso.tipo).toBe(TIPO_AVISO.shopeeKitReceitaDivergente);
+    expect(aviso.urlInterna).toEqual({ rota: `/produtos/${KIT}`, campo: 'componentesKit' });
+    expect(mensagem.corpo(aviso.params)).toBe(
+      corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'),
+    );
+  });
+
+  it('renders the builder’s `—` for an unknown item and link without a dangling flag value', () => {
+    const plano = avisoReceitaKitShopee({
+      integracaoId: 'int-1',
+      kitProdutoId: KIT,
+      itemId: null,
+      linkDocId: null,
+      variacoesDivergentes: ['c1'],
+    });
+    const corpo = mensagem.corpo(comoArmazenado(plano).params);
+    expect(corpo).toBe(corpoSemVinculoEsperado(KIT, '—', 'c1'));
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('null');
+  });
+
+  it('M30 — a link the aviso does not know prints NO `--link —` command: `--recriar` requires `--link`', () => {
+    // The builder's `—`, an absent param and an empty one all mean "no link".
+    const semVinculo: Record<string, string>[] = [
+      { kit: KIT, anuncio: '1', vinculo: '—', variacoes: 'c1' },
+      { kit: KIT, anuncio: '1', variacoes: 'c1' },
+      { kit: KIT, anuncio: '1', vinculo: '', variacoes: 'c1' },
+    ];
+    for (const params of semVinculo) {
+      const corpo = mensagem.corpo(params);
+      expect(corpo).toBe(corpoSemVinculoEsperado(KIT, '1', 'c1'));
+      expect(corpo).not.toMatch(/--link\s+—/);
+      expect(corpo).not.toMatch(/publicar:anuncio --link/);
+      expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
+      expect([...corpo.matchAll(/--recriar/g)]).toHaveLength(1);
+      // Still republish FIRST — the republish is what prints the `--link`.
+      expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(
+        corpo.indexOf('recrie o kit'),
+      );
+    }
+  });
+
+  it('NEAR-MISS: a KNOWN link keeps the runnable command, byte-for-byte', () => {
+    const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
+    expect(corpo).toBe(corpoEsperado(KIT, '1', VINCULO, 'c1'));
+    expect(corpo).not.toBe(corpoSemVinculoEsperado(KIT, '1', 'c1'));
+  });
+
+  it('is titled like its label and carries no runbook — the publish route/CLI is the fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.shopeeKitReceitaDivergente);
+    expect(mensagem.runbook).toBeUndefined();
   });
 });

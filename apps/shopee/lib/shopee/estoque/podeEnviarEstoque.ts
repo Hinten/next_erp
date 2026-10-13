@@ -58,16 +58,32 @@
  *
  * ## ⚠️ The kit rung reads the LINK, never the produto
  *
- * `kitNativo` is what SHOPEE reported for this listing (`tag.kit`), stamped by
- * step 9's import. It is **not** the produto's own `ehKit` flag, and the two
- * must never be conflated: this ERP holds thousands of `ehKit` produtos that
- * are ORDINARY Shopee listings whose stock is sent at the component-derived
- * quantity, so reading the produto's flag here would be a total, silent stock
- * outage for the entire legacy kit catalogue. Three-valued on purpose — `null`
- * is a link no import has stamped yet (the legacy corpus, or one imported
- * before the stamp was wired on 2026-09-28) and it SENDS, which is the safe
- * direction because no native Shopee kit exists in this catalogue today. Only
- * `true` refuses.
+ * `kitNativo` is what SHOPEE reported for this listing (`tag.kit`). Since step
+ * 19 (#1527) three writer sites stamp it: step 9's import, step 11's write-back
+ * #2 and the native-kit arms (`kits/vinculosKit.ts`) — whose ONE link write
+ * right after a successful `add_kit_item` writes the LITERAL `true`, so a
+ * native kit the publish route or `publicar:anuncio` creates is `true` from its
+ * first stored state on, before any read-back (a crash there still skips it
+ * here). It is **not** the produto's own `ehKit` flag, and the two must never
+ * be conflated: this ERP holds thousands of `ehKit` produtos that are ORDINARY
+ * Shopee listings whose stock is sent at the component-derived quantity — the
+ * old-model kits, which stay ordinary until someone converts them on purpose
+ * (`--converter-em-kit`) — so reading the produto's flag here would be a total,
+ * silent stock outage for the entire legacy kit catalogue. Three-valued on
+ * purpose — `null` is a link no writer has stamped (the legacy corpus, or one
+ * imported before the stamp was wired on 2026-09-28) and it SENDS. That is the
+ * safe direction because every such link is an ORDINARY listing: no native
+ * Shopee kit existed in this catalogue before step 19 created the first ones,
+ * and each of those carries the literal `true` from the link write on. Only
+ * `true` refuses: Shopee derives a native kit's stock from its components
+ * (`update_stock` on a kit is refused), and the ERP sends theirs.
+ *
+ * ⚠️ A SUPERSEDED link (`substituidoPorLinkDocId`, L8 — the ordinary listing a
+ * "converter em kit nativo" replaced, or an old kit whose recriar delete did
+ * not take) is NOT a rung here and must never become one: that listing is
+ * still LIVE and selling, so a stale quantity on it oversells. It keeps
+ * receiving stock until it is deleted in Seller Centre and a re-verify reads it
+ * `removido` (rung 2).
  *
  * ⚠️ And with a link in hand, `kitNativo` is the ONLY thing that decides.
  * `produto` is carried for symmetry with the publish-side predicate
@@ -83,8 +99,9 @@
  * readings is non-null, so a stamp that wrote down no state cannot latch a
  * listing on `null === null`.
  *
- * ⚠️ **Nobody writes a clear.** The four `item_status` writers (the publish
- * read-back, the pause, the re-verify and both push handlers) lift the skip by
+ * ⚠️ **Nobody writes a clear.** The five `item_status` writers (the publish
+ * read-back, the pause, the re-verify, both push handlers and — since step 19
+ * — the native-kit arms' read-back, `kits/vinculosKit.ts`) lift the skip by
  * doing their job, so a refusal expires against the very reading that caused
  * it rather than against a clock or a second writer free to disagree. The ONE
  * deliberate bypass is `opcoes.ignorarRecusa`, set from the route's and the

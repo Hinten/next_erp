@@ -656,7 +656,7 @@ function RestaurarAction({
         Restaurar
       </Button>
       {staged && (
-        <Text size="xs" c="yellow.8">
+        <Text size="xs" c="yellow">
           Valor restaurado da modificação de{' '}
           {staged.timestamp ? dateFmt.format(microsToDate(staged.timestamp)) : '—'} — salve para
           aplicar.
@@ -737,7 +737,7 @@ function RestaurarDocumentoAction({
         Restaurar documento
       </Button>
       {staged && (
-        <Text size="xs" c="yellow.8">
+        <Text size="xs" c="yellow">
           Documento restaurado da modificação de{' '}
           {staged.timestamp ? dateFmt.format(microsToDate(staged.timestamp)) : '—'} — salve para
           aplicar.
