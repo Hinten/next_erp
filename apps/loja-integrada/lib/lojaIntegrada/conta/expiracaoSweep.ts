@@ -49,13 +49,17 @@
  * `criadoEm desc` — the collection's declared `(resolvidoEm ASC, criadoEm DESC)`
  * composite, no new index — at {@link PAGINA_AVISOS_ABERTOS} rows a page and at
  * most {@link MAX_PAGINAS_AVISOS_ABERTOS} pages, with a `truncado` flag. The
- * canal and the two tipos are filtered in CODE (no index can express them), and
- * a row whose id is not one of pass (a)'s chaves is resolved as
- * `conta-removida` — an expiry row clockless, a reconexão row CLOCKED by the
- * conta enumeration's `readTime` (`resolverAvisoDeContaRemovida`): a conta
- * created and parked after that list was read raised at a later clock and is
- * left open for the next tick, which lists it. Rows of existing contas are pass
- * (a)'s, never touched here.
+ * canal and the channel's three tipos (`TIPOS_AVISO_LI`) are filtered in CODE
+ * (no index can express them), and a row whose id is not one of the LISTED
+ * contas' chaves is resolved as `conta-removida` — an expiry row clockless; a
+ * reconexão row and a step-3 import-stopped row CLOCKED by the conta
+ * enumeration's `readTime` (`resolverAvisoDeContaRemovida`): a conta created
+ * after that list was read, and then parked or failing to import, raised at a
+ * later clock and is left open for the next tick, which lists it. Rows of
+ * existing contas are never touched here: the expiry and reconexão rows are
+ * pass (a)'s, and the import-stopped row belongs to the order poller (step-3
+ * PR 3-e), so its chave is in the existing set too — otherwise this pass would
+ * close a LIVE conta's open import-stopped row every day.
  *
  * The cursor is the last row's snapshot, and the server seeks past its VALUES:
  * a row this pass resolved is no longer in the result, and paging continues
@@ -84,6 +88,7 @@ import {
   TIPOS_AVISO_LI,
   avisarReconexaoPendente,
   chaveExpiracao,
+  chaveImportacaoParada,
   chaveReconexao,
   resolverAvisoDeContaRemovida,
   resolverExpiracaoToken,
@@ -269,10 +274,13 @@ export async function sweepLojaIntegradaTokenExpiry(
   }
 
   /* ---- pass (b): open rows of contas that no longer exist ----------------- */
+  // Every chave a LISTED conta may hold — the import-stopped one too, whose
+  // producer is the order poller, not this sweep (module header).
   const chavesExistentes = new Set<string>();
   for (const conta of contas) {
     chavesExistentes.add(chaveExpiracao(conta.integracaoId));
     chavesExistentes.add(chaveReconexao(conta.integracaoId));
+    chavesExistentes.add(chaveImportacaoParada(conta.integracaoId));
   }
 
   let lidos = 0;

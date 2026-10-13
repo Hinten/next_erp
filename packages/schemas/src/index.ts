@@ -1439,6 +1439,8 @@ export {
   ROTAS_AVISO,
   pendenciaReclamacaoSchema,
   PENDENCIA_RECLAMACAO,
+  motivoImportacaoParadaLiSchema,
+  MOTIVO_IMPORTACAO_PARADA_LI,
   chaveDeAviso,
   avisoNaoLido,
   entradaDeLeitura,
@@ -1454,6 +1456,7 @@ export {
   type ChaveAvisoInput,
   type RotaAvisoKey,
   type PendenciaReclamacao,
+  type MotivoImportacaoParadaLi,
 } from './aviso';
 export * from './shared/inicio';
 
