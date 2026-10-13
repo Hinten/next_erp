@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { isIPv4 } from 'node:net';
 import { FirebaseError, deleteApp, initializeApp } from 'firebase/app';
 import {
   connectAuthEmulator,
@@ -82,13 +83,15 @@ export function readEmulatorAccessConfig(
 }
 
 function isLoopbackHost(host: string): boolean {
-  return host === '127.0.0.1' || host === 'localhost';
+  // Validate the full dotted address before checking its loopback network;
+  // URL-style shorthand and malformed octets must never route a preflight.
+  return host === 'localhost' || (isIPv4(host) && host.startsWith('127.'));
 }
 
 function readHost(env: NodeJS.ProcessEnv, key: string, port: number): string {
   const value = env[key]?.trim();
-  const match = value?.match(/^(127\.0\.0\.1|localhost):([0-9]+)$/);
-  if (!match || Number(match[2]) !== port) {
+  const match = value?.match(/^([^:]+):([0-9]+)$/);
+  if (!match || !isLoopbackHost(match[1]!) || match[2] !== String(port)) {
     throw new Error(`[verify-emulator-access] ${key} must be a loopback host on port ${port}.`);
   }
   return match[1]!;

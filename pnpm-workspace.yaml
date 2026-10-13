@@ -53,6 +53,9 @@ catalog:
   zod: ^4.4.3
 catalogMode: strict
 cleanupUnusedCatalogs: true
+overrides:
+  # The auditor must use the ERP test runner's Page type, not the MCP browser's alpha version.
+  '@axe-core/playwright>playwright-core': 1.60.0
 allowBuilds:
   '@firebase/util': true
   # Pure TypeScript SDK — ws, p-retry, protobufjs and google-auth-library, none

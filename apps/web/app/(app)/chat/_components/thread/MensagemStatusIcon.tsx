@@ -68,14 +68,14 @@ export function MensagemStatusIcon({ mensagem }: { mensagem: Mensagem }) {
     case ESTADO_ENVIO.enviado:
       statusNode = (
         <Tooltip label="Enviado" withArrow>
-          <IconCheck size={ICON_SIZE} aria-label="Enviado" color="var(--mantine-color-gray-6)" />
+          <IconCheck size={ICON_SIZE} aria-label="Enviado" color="var(--mantine-color-dimmed)" />
         </Tooltip>
       );
       break;
     case ESTADO_ENVIO.recebido:
       statusNode = (
         <Tooltip label="Recebido" withArrow>
-          <IconCheck size={ICON_SIZE} aria-label="Recebido" color="var(--mantine-color-gray-6)" />
+          <IconCheck size={ICON_SIZE} aria-label="Recebido" color="var(--mantine-color-dimmed)" />
         </Tooltip>
       );
       break;
@@ -87,7 +87,7 @@ export function MensagemStatusIcon({ mensagem }: { mensagem: Mensagem }) {
           <IconAlertCircle
             size={ICON_SIZE}
             aria-label="Erro no envio"
-            color="var(--mantine-color-red-6)"
+            color="var(--mantine-color-red-text)"
           />
         </Tooltip>
       );
@@ -114,7 +114,7 @@ export function MensagemStatusIcon({ mensagem }: { mensagem: Mensagem }) {
           <IconCheck
             size={ICON_SIZE}
             aria-label="Visualizado"
-            color="var(--mantine-color-blue-6)"
+            color="var(--mantine-color-blue-text)"
           />
         </Tooltip>
       )}

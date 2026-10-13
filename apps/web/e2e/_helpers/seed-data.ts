@@ -13,6 +13,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import {
   CANAL_AVISO,
   clienteSchema,
+  ESTADO_ENVIO,
   ESTADO_FRETE,
   ESTADO_PEDIDO,
   FORMA_PAGAMENTO,
@@ -27,6 +28,7 @@ import {
   STATUS_PAGAMENTO,
   TIPO_AVISO,
   type MlSizeChart,
+  type Mensagem,
   TIPO_INTEGRACAO_PGTO,
   whatsappIdentidadeSchema,
 } from '@delfrance/schemas';
@@ -34,6 +36,7 @@ import { millisToMicros } from '@delfrance/core/datetime';
 import { escreverAviso, resolverAviso } from '@delfrance/data/admin/avisos';
 import { db } from '@delfrance/test-fixtures';
 import { getRunId, workerIndex } from './run-id';
+import { ETIQUETA_CORES } from '../../lib/chat/etiquetaCores';
 
 /** High Unicode code point — upper bound for a Firestore prefix range query. */
 const PREFIX_MAX = String.fromCharCode(0xffff);
@@ -1044,6 +1047,8 @@ export async function seedMensagem(
     tipo?: string;
     estadoEnvio?: number;
     userId?: string | null;
+    context?: Mensagem['context'];
+    referral?: Mensagem['referral'];
   },
 ): Promise<void> {
   await db()
@@ -1073,6 +1078,8 @@ export async function seedMensagem(
       anexo_url: null,
       timestamp: data.timestampMs,
       data_cadastro: data.timestampMs,
+      ...(data.context ? { context: data.context } : {}),
+      ...(data.referral ? { referral: data.referral } : {}),
     });
 }
 
@@ -1387,6 +1394,114 @@ export async function cleanupConversas(prefix: string): Promise<void> {
   }
   await deleteChunked(snap.docs.map((d) => d.ref));
   await db().collection('integracao').doc(`${prefix}-chat-integracao`).delete();
+}
+
+/**
+ * Display-only fixtures for the light/dark readability matrix. All outbound
+ * messages are already sent; opening the composer never dispatches a provider
+ * message. The aviso is addressed to the ephemeral operator, so another
+ * suite's read watermark cannot make the populated bell assertion vacuous.
+ */
+export async function seedThemeReadabilityFixtures(prefix: string, operatorUid: string) {
+  const chat = await seedConversas(prefix);
+  const now = Date.now();
+  const untagged = chat.pendente;
+  const batch = db().batch();
+  batch.update(db().collection('chat').doc(untagged.id), {
+    estadoConversa: 1,
+    usuarios: [operatorUid],
+  });
+  const template = (await db().collection('chat').doc(chat.vermelha.id).get()).data()!;
+  const tagged = ETIQUETA_CORES.map((cor, index) => {
+    const id = `${prefix}-palette-${index}`;
+    batch.set(db().collection('chat').doc(id), {
+      ...template,
+      ...seedWhatsappFixtureBindings(batch, prefix, id, now),
+      nome: id,
+      cor_etiqueta: cor,
+      ultima_modificacao: now + 10 + index,
+    });
+    return { id, nome: id, cor };
+  });
+  await batch.commit();
+
+  const customerText = `${prefix} customer message`;
+  const operatorText = `${prefix} current operator reply`;
+  const otherOperatorText = `${prefix} other operator note`;
+  const quoteId = `${prefix}-quote-source`;
+  const referralHeadline = `${prefix} referral headline`;
+  const referralBody = `${prefix} referral body`;
+  await seedMensagem(untagged.id, quoteId, {
+    conteudo: customerText,
+    timestampMs: now - 30_000,
+    estadoEnvio: ESTADO_ENVIO.recebido,
+  });
+  await seedMensagem(untagged.id, `${prefix}-other-operator`, {
+    conteudo: otherOperatorText,
+    timestampMs: now - 20_000,
+    estadoEnvio: ESTADO_ENVIO.enviado,
+    userId: `${prefix}-other-operator`,
+  });
+  await seedMensagem(untagged.id, `${prefix}-current-operator`, {
+    conteudo: operatorText,
+    timestampMs: now - 10_000,
+    estadoEnvio: ESTADO_ENVIO.enviado,
+    userId: operatorUid,
+    context: { mensagemOuterRef: `documents/chat/${untagged.id}/mensagem/${quoteId}` },
+  });
+  await seedMensagem(untagged.id, `${prefix}-referral`, {
+    conteudo: `${prefix} referred customer`,
+    timestampMs: now,
+    estadoEnvio: ESTADO_ENVIO.recebido,
+    referral: { headline: referralHeadline, body: referralBody },
+  });
+
+  await seedCategorias(prefix, 3);
+  const kit = await seedKitEstoqueFixtures(prefix);
+  const stock = await seedProdutoComFilho(prefix);
+  const unmatchedId = `${prefix}-pai-filho-m`;
+  const stockChild = (await db().collection('produtos').doc(stock.childId).get()).data()!;
+  await db()
+    .collection('produtos')
+    .doc(unmatchedId)
+    .set({
+      ...stockChild,
+      nome: `${prefix}-pai M`,
+      sku: `${prefix.toUpperCase().replace(/-/g, '_')}_PAI_M`,
+      ordem: 1,
+    });
+  await seedEstoqueDoc(stock.childId, kit.depositoId, 12, 2);
+  await seedEstoqueDoc(unmatchedId, kit.depositoId, 7, 1);
+
+  const avisoId = `${prefix}-aviso`;
+  await seedAvisoUnico(avisoId, `${prefix}-shop`);
+  await db().collection('avisos').doc(avisoId).update({ destinatarioUid: operatorUid });
+  return {
+    untagged,
+    tagged,
+    customerText,
+    operatorText,
+    otherOperatorText,
+    referralHeadline,
+    referralBody,
+    kit,
+    stock: { ...stock, unmatchedId },
+    avisoId,
+  };
+}
+
+/** Prefix-scoped cleanup also works when the seed stopped part way through. */
+export async function cleanupThemeReadabilityFixtures(prefix: string): Promise<void> {
+  for (const suffix of ['kit', 'comp1', 'comp2', 'pai', 'pai-filho', 'pai-filho-m']) {
+    await cleanupProdutoEstoque(`${prefix}-${suffix}`);
+  }
+  await cleanupConversas(prefix);
+  await cleanupAvisos([`${prefix}-aviso`]);
+  await Promise.all([
+    cleanupByNamePrefix('categorias', prefix),
+    cleanupByNamePrefix('produtos', prefix),
+    cleanupByNamePrefix('depositos', prefix),
+  ]);
 }
 
 /**
@@ -4520,7 +4635,7 @@ export async function seedAvisos(prefix: string): Promise<{ ids: string[]; broad
       {
         ...base,
         tipo: 'canalSemCredencial',
-        params: { canal: 'Shopee' },
+        params: { canal: `${prefix}-Shopee` },
         destinatarioUid: null,
         criadoEm: agoraUs + 1,
       },

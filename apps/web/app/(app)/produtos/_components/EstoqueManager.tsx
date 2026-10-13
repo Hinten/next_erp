@@ -467,10 +467,26 @@ function EstoqueProdutoSection({
 
   return (
     <Box
-      bg={highlight ? 'yellow.1' : zebra ? 'gray.0' : undefined}
-      style={{ opacity: dimmed ? 0.45 : 1, borderRadius: 4, padding: 8 }}
+      bg={
+        highlight
+          ? 'var(--mantine-color-yellow-light)'
+          : zebra
+            ? 'var(--mantine-color-default-hover)'
+            : undefined
+      }
+      style={{ borderRadius: 4, padding: 8 }}
     >
-      <Divider label={label} labelPosition="left" mb={6} />
+      <Divider
+        label={label}
+        labelPosition="left"
+        mb={6}
+        styles={{ label: { minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' } }}
+      />
+      {dimmed && (
+        <Text size="xs" c="dimmed" mb={6}>
+          Não corresponde ao filtro.
+        </Text>
+      )}
       <Stack gap={4}>
         {depositos.map((dep) => {
           const est = byId.get(makeEstoqueUid(produto.id, dep.id));
@@ -552,8 +568,8 @@ function EstoqueDepositoRow({
   };
 
   return (
-    <Group gap="sm" wrap="nowrap" align="center">
-      <Text size="sm" style={{ flex: 2, minWidth: 0 }}>
+    <Group gap="sm" wrap="wrap" align="center">
+      <Text size="sm" style={{ flex: '2 1 120px', minWidth: 0, overflowWrap: 'anywhere' }}>
         {deposito.nome}
       </Text>
       <TextInput
@@ -565,12 +581,12 @@ function EstoqueDepositoRow({
         maxLength={50}
         disabled={disabled}
         size="xs"
-        style={{ flex: 3 }}
+        style={{ flex: '3 1 160px', minWidth: 0 }}
       />
-      <Text size="sm" ta="right" style={{ flex: 1 }}>
+      <Text size="sm" ta="right" style={{ flex: '1 1 48px' }}>
         {fmt(quantidade)}
       </Text>
-      <Text size="sm" ta="right" style={{ flex: 1 }}>
+      <Text size="sm" ta="right" style={{ flex: '1 1 48px' }}>
         {fmt(reservada)}
       </Text>
       <DisponivelCell
@@ -639,7 +655,7 @@ function DisponivelCell({ ownDisponivel, kit, depositoId, ariaSuffix }: Disponiv
     }
   }
   return (
-    <Text size="sm" ta="right" style={{ flex: 1 }} aria-label={`Disponível ${ariaSuffix}`}>
+    <Text size="sm" ta="right" style={{ flex: '1 1 48px' }} aria-label={`Disponível ${ariaSuffix}`}>
       {fmt(ownDisponivel)}
       {kitSuffix}
     </Text>
