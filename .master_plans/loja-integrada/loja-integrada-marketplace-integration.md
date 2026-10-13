@@ -448,7 +448,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 2. Every new query has its composite declared in `firestore.indexes.json` in the same PR, or names the existing index it reuses. `delfrance/default-query-needs-index` and `defaultQuery.indexes.test.ts` stay green.
 3. If any `*Meta`, PERM, validator whitelist, enum, cascade or new admin-only collection changed: **both** rulesets regenerated (`gen:rules` **and** `gen:rules:e2e`) plus both snapshots refreshed. Agents never deploy rules; the deploy is a window step.
 4. New env vars appear in the root `.env.example` **and** the app's `apphosting.yaml` (and the functions env) **in the step that introduces them**.
-5. The CI lane runs the new tests. `ci-loja-integrada.yml` lands in step 2, the first step with emulator tests, because a lane that skips runs the tests nowhere.
+5. The CI lane runs the new tests. `ci-loja-integrada.yml` lands in step 3, together with the first emulator test (the tasks round trip). Step 2's tests are all offline, against an in-memory fake, so a lane there would have nothing to run. A lane that skips runs the tests nowhere.
 6. New `runTransaction` sites are classified in `firestore-transaction-inventory.test.js`, and a new HTTP client that exports a `{ curto, longo }` timeout constant is registered in `http-client-timeout-ceiling.test.js`. A GET-only client with one budget (step 1) has no row.
 7. Anything that must run against production data or infrastructure is surfaced as a §5 item. It is never done by the agent and never left as a TODO.
 
@@ -540,11 +540,29 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 
   The live validating GET is first exercised by Lucas with the probe token, after step 2 ships the credential form.
 - **Timing:** after Step 0's gate. The package is the only place LI is called from.
-- **Does NOT:** OAuth, refresh, oauth-state or PKCE; the `chave_api + aplicacao` mode; query-string credentials; reuse the legacy client's key; the connect route, proxy, credential schema or store (step 2); any LI write method; retry, backoff or pacing; a CI lane (step 2).
+- **Does NOT:** OAuth, refresh, oauth-state or PKCE; the `chave_api + aplicacao` mode; query-string credentials; reuse the legacy client's key; the connect route, proxy, credential schema or store (step 2); any LI write method; retry, backoff or pacing; a CI lane (step 3).
 
-### Step 2: Credential store + context + read cache + expiry aviso + 401 parking (+ the CI lane)
+### Step 2: Credential store + context + read cache + expiry aviso + 401 parking
 
-- **Gate:** always. **Trigger:** library + one daily `onSchedule`. **Docs:** help 931152.
+- **Gate:** always. **Trigger:** library + the credential routes; the daily `onSchedule` wrapper ships in step 3. **Docs:** help 931152.
+- **Re-cut at implementation** (the approved step plan, 2026-10-08). Where a bullet below disagrees with this list, this list wins:
+  1. The expiry sweep is split. Its body (`lib/lojaIntegrada/conta/expiracaoSweep.ts`) ships in step 2 and is tested offline. Its `onSchedule` trigger ships in step 3, in the nested functions codebase, because a codebase created for one schedule could not show in CI that the schedule fires.
+  2. There is no CI lane in step 2. It lands in step 3 with the first emulator test. The park is proven offline against a fake that models `lastUpdateTime` and `NOT_FOUND`.
+  3. Parking is a tier-1 precondition write, not a class-B transaction: read, decide, `update(patch, { lastUpdateTime })`, re-read on `FAILED_PRECONDITION` and on `NOT_FOUND`, at most 3 attempts. No Loja Integrada source file may contain the transaction API's call name, because the inventory test greps every non-test source file for it.
+  4. The park guard compares a versioned ref (`fingerprint of the stored personalToken` + `.` + `tokenAtualizadoEmMs`) with the ref of the token that got the 401. It is never the stored `tokenFingerprint` field, so a hand-edited field cannot disable parking, and re-saving the same token cannot be re-parked by a request already in flight. The nested field is `refCredencial`, not `fingerprint`.
+  5. Everything that needs a pipeline or a queue moves out: the deferred lane, the re-drive on save, the poller skip and the intake outcome "conta parada" go to step 3; the step-7 deferral goes to step 7. The deferred cap is the shared `MAX_TENTATIVAS_DEFERRED = 7`, so the "14 days" below cannot be met as written and is settled in the step-3 and step-7 plans.
+  6. A renewal route is added: `PUT …/conta/[id]/credencial/validade`, body `{expiraEm, versaoEsperada}`. The Personal Token is shown once and renewing it in the painel keeps the same token, so without this route a renewed token's expiry could never be updated. It doubles as a revalidate action after a false park.
+  7. `CANAL_AVISO` gains `lojaIntegrada`. The rulesets do not change: the generator reads no cascade, and `avisos` is server-owned and deny-all.
+  8. Step 2 does not edit `packages/schemas/src/integracao.ts`, and the declarative cascade line is dropped. Nothing at runtime reads `meta.cascade`: the conta delete trigger walks `listCollections()`. The credential schema lives in a new file, `packages/schemas/src/credenciaisLojaIntegrada.ts`, so no step-2 PR touches a path that fires the live SEFAZ suite.
+  9. Step 2 ships as five stacked PRs: W1 (the conta CRUD in `apps/web`, first, because the aviso route needs its `[id]` page), a (schemas), b (backend), c (the credential panel), and d (the migration script, a sibling).
+  10. The connect, renewal and status routes read the conta uncached and require only `tipo === 3`, bypassing the refusing context loader. Otherwise a parked or inactive conta could never be fixed.
+  11. The park aviso is clocked by the credential document's own commit time in µs, not by a wall clock. Commit times on one document are strictly ordered, so a late park raise can never reopen a row that a newer save closed.
+  12. Web corrections: no `CAMPOS_POR_CANAL.lojaIntegrada` entry (its totality test fails only when `integracaoSchema.shape` gains a key); the e2e spec is a staging `.vendas.` spec, not an emulator one; and `call<T>()` already validates its response.
+  13. The context's client sends no `x-correlation-id` until §1.2 item 23 is settled. If `/v1` answers that header with a 403, an enabled header would park a conta on its first call.
+  14. The connect route re-checks the conta after writing. If the conta was deleted while the token was being validated, it deletes the credential it just wrote and answers 404, because the cascade walk runs on the conta delete only.
+  15. Credential writes from the panel carry the version the operator saw (rule 7, tier 3). The status route returns `versaoCredencialUs`, the µs of the credential document's `updateTime`; save and renewal send it back and write under `lastUpdateTime`; a loss is a 409. This reverses the "tier 0, last write wins" line below. DELETE stays unconditional.
+  16. The expiry check covers every tipo-3 conta that has a credential, active or not. Deactivating a conta in the ERP does not stop the token's 3-month clock, and an unrenewed token is revoked for good. Removing the token silences the warning.
+  - **Known limit of the sweep's second pass:** the pass that closes avisos of deleted contas reads open avisos newest-first, 200 per page and at most 5 pages. The rows it exists to close are the oldest, so beyond 1,000 open avisos across the whole repo they are never reached. This is Shopee's registered limit too. The cure is a composite index on canal, tipo, resolvidoEm and criadoEm, which is an index deploy for the window, surfaced in the step plan and not opened as an issue.
 - **Why a bespoke store, not the generic `integracao/{id}/credenciais`:**
   - The generic schema is OAuth-token-shaped.
   - The `integracao.ts` docstring already says LI's static key must be introduced "directly in admin-only storage".
@@ -553,39 +571,40 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Connect route and app plumbing (moved from step 1):**
   - The `PUT`/`DELETE` credential route (step 1 lists its contract), calling `validarPersonalToken` unchanged.
   - `proxy.ts`: CORS for `/api/marketplace/*` only (`ALLOWED_ADMIN_ORIGINS`); `verifyCaller` copied per #1431; `lib/firebase/admin.ts`.
-  - **Rule 7 for the route:** tier 0. There is one writer (an operator saving a token), and last-write-wins is correct. The save also clears `reconexaoPendente` in the same write.
+  - **Rule 7 for the route:** tier 1, losing to tier 3 (re-cut item 15). Two operators and two tabs are plausible, so the save carries the version the operator saw: `create` when the credential is absent, otherwise `update` under `lastUpdateTime`, and a lost race is a 409 `LI_CREDENCIAL_ALTERADA`. The save also clears `reconexaoPendente` in the same write and never mentions `webhookPedido`.
+  - **A token already stored on another LI conta is refused (409 `LI_TOKEN_DE_OUTRA_CONTA`),** active or inactive, which catches pasting the same token into both contas. It cannot catch two tokens swapped between contas: no LI endpoint identifies the store.
+  - **Renewal and removal:** `PUT …/credencial/validade` re-validates the stored token and saves a new expiry under the same version check; `DELETE …/credencial` is idempotent and unconditional.
 - **Firestore:**
   - **`integracao/{id}/credenciaisLojaIntegrada/current`** is strict and admin-only, outside `ALL_DOMAINS`. Fields:
     - `personalToken`.
-    - `tokenFingerprint`: a sha256 prefix, for guards and logs.
+    - `tokenFingerprint`: a sha256 prefix with a domain prefix, diagnostic only (logs and support). It is never the guard input.
     - `tokenExpiraEmMs` (ms) and `tokenAtualizadoEmMs` (ms).
     - `webhookPedido: {notifyUrl, token}`, `.nullable().default(null)` (step 4).
-    - `reconexaoPendente: {desdeMs (ms), status, fingerprint}`, `.nullable().default(null)`.
-  - **Cascade:** `integracaoMeta.cascade` gains `credenciaisLojaIntegrada`, so a conta delete frees it.
-  - **New avisos:** `TIPO_AVISO` gains `lojaIntegradaTokenExpirando` and `lojaIntegradaReconexaoPendente`, plus `ROTAS_AVISO.canalLojaIntegrada`.
-  - **Indexes:** none; doc reads by id only. The expiry sweep enumerates contas through the existing `integracao (tipo ASC, ativo ASC)`.
-  - **Rulesets:** regenerate both, plus both snapshots (cascade, new admin-only collection, new `TIPO_AVISO` values).
+    - `reconexaoPendente: {desdeMs (ms), status, refCredencial}`, `.nullable().default(null)`. `desdeMs` is for display only and is never compared.
+  - **Cascade:** none declared (re-cut item 8). The conta delete trigger's `listCollections()` walk reclaims the subcollection, as it already does for `brandshopee`, and the connect route's post-write re-check closes the one race the walk leaves.
+  - **New avisos:** `TIPO_AVISO` gains `lojaIntegradaTokenExpirando` and `lojaIntegradaReconexaoPendente`, plus `CANAL_AVISO.lojaIntegrada` and `ROTAS_AVISO.canalLojaIntegrada`. Both are in-app only: the expiry reminder has no e-mail or WhatsApp delivery.
+  - **Indexes:** none new. Doc reads are by id; the expiry sweep and the wrong-store guard enumerate contas through the existing `integracao (tipo ASC, nome ASC)` (every tipo-3 conta, active or not, so `ativo` is not in the query); the sweep's second pass reuses `avisos (resolvidoEm ASC, criadoEm DESC)`.
+  - **Rulesets:** unchanged, verified rather than regenerated. The new subcollection is default-denied because no rule matches it, the new enums do not reach the generator, and `avisos` is server-owned. `gen:rules:check` and `gen:rules:e2e:check` must show no diff; a diff means something was registered by mistake.
   - **Env:** `ALLOWED_ADMIN_ORIGINS`, in `.env.example` + `apphosting.yaml`, because `proxy.ts` is its only reader.
 - **Seam:**
-  - **`core/contexto.ts`:** `loadLojaIntegradaContext(integracaoId)` reads the `integracao` doc through `createCachedDocReader` (15-min TTL). The **credential read is uncached**: it carries the parking state, and one read per task is cheap at D12 volume. `ativo === false` ⇒ `LiContaInativaError`, and the conta stops importing, stock and price.
+  - **`core/contexto.ts`:** `loadLojaIntegradaContext(db, integracaoId, deps)` reads the `integracao` doc through `createCachedDocReader` (15-min TTL; an inactive conta is never served from the cache, so reactivation takes effect at once). The **credential read is uncached**, and the client re-reads it on every request: it carries the parking state, a new token is picked up mid-batch, and one read per call is cheap at D12 volume. The order is conta missing or wrong tipo ⇒ 404, `ativo === false` ⇒ `LiContaInativaError`, credential absent, corrupt or parked ⇒ its own refusal, so the conta stops importing, stock and price. The app errors do not extend the package's `LiError`, so a step-3 `catch (err instanceof LiError)` cannot swallow a parked-conta refusal. The client is built with the correlation-id header off (re-cut item 13). `lib/lojaIntegrada/**` takes `db` as a parameter and is Next-free, because step 3's functions bundle imports it.
 - **Expiry (one threshold):**
-  - `sweepLojaIntegradaTokenExpiry` runs daily → `escreverAviso` `lojaIntegradaTokenExpirando` at ≤ 30 days, which is when LI starts showing "Renovar". It is resolved when the operator saves a later expiry.
+  - `sweepLojaIntegradaTokenExpiry(db, deps)` (step 2) is wrapped in a daily `onSchedule` in step 3 → `escreverAviso` `lojaIntegradaTokenExpirando` at ≤ 30 days, which is when LI starts showing "Renovar". The save and renewal routes refresh it at once: they resolve it when the new expiry is more than 30 days away and re-raise it with fresh params otherwise. The aviso is keyed on the conta alone, so a new expiry date never mints a new row. Within the sweep, one conta's corrupt credential is contained and recorded without costing the other conta its warning.
   - The 401 park is the backstop; there is no second escalation tier.
-  - The conta status route `GET /api/marketplace/loja-integrada/conta/[id]` reports `{configurado, expiraEm, diasParaExpirar, reconexaoPendente}`, never the token.
+  - The conta status route `GET /api/marketplace/loja-integrada/conta/[id]` reports `{configurado, expiraEm, diasParaExpirar, situacaoValidade, atualizadoEmMs, versaoCredencialUs, reconexaoPendente}`, never the token and never the park's ref. It is an explicit projection, never a spread of the document.
 - **Parking on 401/403:**
   - Any `LiAuthError` marks `reconexaoPendente` and raises `lojaIntegradaReconexaoPendente` (`critico`).
-  - **Intake while parked:** the poller skips the conta without advancing its cursor, and intake tasks for a parked conta return a deterministic "conta parada" outcome (no retry). Both are safe because the un-advanced cursor re-reads every change once the token is restored.
-  - **Re-drive:** tasks that cannot be re-derived (step-7 write-backs, step-11 publish jobs) take the **deferred** disposition (#808 lane). In LI terms the lane exists because an expired token is a human-scale outage of hours to days, which retries cannot fix and which must not burn the retry budget. Saving a validated token clears the park and enqueues the conta's deferred docs. A deferred doc older than 14 days is parked for good with an aviso; the step plan confirms the age.
-- **Rule 7:** parking is a **class-B transaction** with a named guard. The stored `tokenFingerprint` must equal the fingerprint of the token that got the 401; otherwise a 401 from a token the operator has just replaced would park a healthy conta. Inventoried in `firestore-transaction-inventory.test.js`.
-- **CI lane:** `ci-loja-integrada.yml` ships **in this PR**, because the parking transaction's emulator tests need it. It follows the `changes`/`gate` pattern with `CI gate (loja-integrada)` / `CI scope (loja-integrada)`, and it is registered in `ci-lane-gates.test.js` `LANES` and `main-red-alert.yml`. The "lanes"/"pinnable checks" counts in root `CLAUDE.md` are updated. Pinning it in `protect-main` is a manual follow-up for Lucas. Firestore emulator ports come from the inventory (proposed 8085; the step plan checks).
+  - **Intake while parked (step 3, not step 2):** the poller skips the conta without advancing its cursor, and intake tasks for a parked conta return a deterministic "conta parada" outcome (no retry). Both are safe because the un-advanced cursor re-reads every change once the token is restored. Step 3 also decides drop versus defer for tasks already enqueued when the token dies; the research recommends defer.
+  - **Re-drive:** tasks that cannot be re-derived (step-7 write-backs, step-11 publish jobs) take the **deferred** disposition (#808 lane). In LI terms the lane exists because an expired token is a human-scale outage of hours to days, which retries cannot fix and which must not burn the retry budget. Saving a validated token clears the park and enqueues the conta's deferred docs (steps 3 and 7; the re-drive needs `notificacoesLojaIntegrada (status ASC, contaId ASC)`, which this plan did not declare). The shared deferred cap is 7 attempts (`MAX_TENTATIVAS_DEFERRED`), so the 14-day age cannot be met as written; the step-3 and step-7 plans settle it.
+- **Rule 7:** parking is a **tier-1 precondition write** with a named guard (re-cut items 3 and 4), not a transaction, so it has no line in `firestore-transaction-inventory.test.js`. The ref derived from the stored token must equal the ref of the token that got the 401; otherwise a 401 from a token the operator has just replaced would park a healthy conta. The reconexão aviso is clocked by the credential document's commit time in µs (item 11); the one module that converts to µs is `lib/lojaIntegrada/avisos/avisos.ts`.
+- **CI lane:** moved to step 3 (re-cut item 2), because step 2 has no emulator test. `ci-loja-integrada.yml` will follow the `changes`/`gate` pattern with `CI gate (loja-integrada)` / `CI scope (loja-integrada)`, and it is registered in `ci-lane-gates.test.js` `LANES` and `main-red-alert.yml`. The "lanes"/"pinnable checks" counts in root `CLAUDE.md` are updated. Pinning it in `protect-main` is a manual follow-up for Lucas. Firestore emulator ports come from the inventory (proposed 8085; the step plan checks).
 - **Dry-run/valve:** none (no LI write).
 - **Verification:**
   - The sweep warns at 29 days and stays silent at 31.
-  - A 401 from a stale fingerprint parks nothing, while one from the current fingerprint does.
-  - A parked conta's step-7 task is deferred and re-driven after a save.
-  - A parked conta's intake task returns without retry.
+  - A 401 from a stale ref parks nothing, while one from the current ref does; a save or a delete landing between the park's read and write ends in no write.
+  - Moved out: a parked conta's step-7 task is deferred and re-driven after a save (step 7), and its intake task returns without retry (step 3).
 - **Timing:** before any LI-calling flow, which all read the context and can trigger a park. It lands with step 21's conta CRUD and credential form so Lucas can enter the probe token; the connect route and its only caller therefore land together.
-- **Does NOT:** renew the token (no API exists); cache the credential; store the expiry on the `integracao` doc.
+- **Does NOT:** renew the token (no API exists; the renewal route only re-validates it and records the new expiry date); cache the credential; store the expiry on the `integracao` doc; edit `integracao.ts`; create the daily trigger, a queue, a pipeline or a CI lane (step 3).
 
 ### Step 2b: Structured logger + write valves + canary allow-list + dry-run diff + read-only probe CLI
 
@@ -656,8 +675,8 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **Env:** `LOJA_INTEGRADA_POLL_LOOKBACK_H` (default 72), `LOJA_INTEGRADA_TASKS_DISABLED`, `LOJA_INTEGRADA_TASKS_REGION` (real value), in `.env.example`, `apphosting.yaml` and the functions env.
 - **Seam:**
   - `defineNotificationPipeline` (enqueue-first; "deterministic outcomes RETURN, transient failures THROW"), `requireRegion`, and `tasksInvoker.ts` copied verbatim.
-  - The nested `apps/loja-integrada/functions` codebase holds `processLojaIntegradaNotification`, `reprocessLojaIntegradaNotifications` (every 30 min), the poller and the expiry sweep. Queue export names equal the queue constants.
-  - `firebase.loja-integrada.tasks.json` (tasks emulator; ports from the inventory, proposed 5004/9501) and the `*.tasks.test.ts` suite run in the step-2 lane.
+  - The nested `apps/loja-integrada/functions` codebase holds `processLojaIntegradaNotification`, `reprocessLojaIntegradaNotifications` (every 30 min), the poller and the daily `onSchedule` wrapper of the expiry sweep, whose body ships in step 2. Queue export names equal the queue constants.
+  - `firebase.loja-integrada.tasks.json` (tasks emulator; ports from the inventory, proposed 5004/9501) and the `*.tasks.test.ts` suite run in the step-3 lane, which also adds the rule-4 carve-out line and the lane and pinnable-check count edits to root `CLAUDE.md`.
 - **Bootstrap** (orchestrator call): if there is no cursor ⇒ `now − LOJA_INTEGRADA_POLL_LOOKBACK_H`. It is idempotent by the deterministic pedido id. The window sets it from the legacy gap (§5 item 7).
 - **Dispositions:**
   - imported/unchanged → ack;
@@ -1122,16 +1141,16 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 ### Step 21: `apps/web`: register, do not copy
 
 - **Gate:** derived from the caps row (row actions are gated off `estoque.suporte`, `enviarPreco` and `pausarAnuncio` via `apps/web/lib/marketplace/caps/`, never off "a provider file exists"). **Trigger:** the UI surfaces below, landing with the step whose backend they call. **Docs:** the skill's "`apps/web` half".
-- **Conta CRUD `/canais/loja-integrada`** (lands with step 2):
+- **Conta CRUD `/canais/loja-integrada`** (lands with step 2: PR W1 the screens, PR c the credential panel):
   - Replace `CanalCapsPanel` with `TableView`/`ObjectView` on `integracaoSchema` (`queryParams: { tipo: 3 }`).
-  - Add a `CAMPOS_POR_CANAL.lojaIntegrada` entry (the totality test reds otherwise).
+  - No `CAMPOS_POR_CANAL.lojaIntegrada` entry: its totality test fails only when `integracaoSchema.shape` gains a key, which step 2 does not do.
   - The **credential form** (token + expiry; write-only, never displayed).
   - A status panel (expiry, days left, reconexão pendente) via `useLojaIntegradaClient` (`NEXT_PUBLIC_LOJA_INTEGRADA_URL`).
 - **Produto LI tab + "Enviar"** (step 11): **no `MercadoLivreTab` fork.** The LI tab is a thin LI-specific component over shared primitives. Whether anything is extracted is decided in the step-21 plan, with the second channel's needs in hand.
 - **The variation linker** on `grupoDeVariacoes` (step 10) and **the import screen** (step 9) are new LI-specific surfaces, with their job cards via `contaJobs` (`useContaJobFan`, a `describe<Job>StartError` beside the client).
 - **Row/bulk actions:** one provider file plus one `PROVIDERS` row in `lib/marketplace/{estoque,preco,anuncioStatus}/registry.ts`. `caps/registriesAlinhadas.test.ts` requires them before `implementado` flips.
 - **Frete tab:** the target selector (`integracaoTargetOuterRef`) for LI pedidos (step 15).
-- ⚠️ **`apps/web` calls the DEPLOYED backend, even in local dev,** and `call<T>()` casts rather than validates. Each web PR therefore names the backend version it needs, and the UI tolerates an older backend: it feature-probes, never assumes.
+- ⚠️ **`apps/web` calls the DEPLOYED backend, even in local dev.** `call<T>()` already validates its response against a schema (the earlier note that it casts is stale), but each web PR still names the backend version it needs, and the UI tolerates an older backend: it feature-probes, never assumes. The Loja Integrada client also refuses to send from an `https:` page to a plain `http:` base URL, because the PUT body carries the store's token.
 - **Firestore:** `integracao` via the existing Meta.
   - **Indexes:** the TableView update-monitor query on `integracao` with `tipo == 3` reuses `integracao (tipo ASC, nome ASC)` / `(tipo ASC, dataCadastro DESC)`, whichever the meta's `defaultQuery` orders by. This is verified by `defaultQuery.indexes.test.ts` in the step-21 PR.
   - The new LI collections have no Meta, hence no `defaultQuery`.
@@ -1143,7 +1162,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 - **Verification:**
   - Unit tests per provider (gating off caps).
   - `registriesAlinhadas` stays green.
-  - e2e: `canais-loja-integrada.vendas.e2e.spec.ts` on the `canais-shopee` model, against emulators.
+  - e2e: `canais-loja-integrada.vendas.e2e.spec.ts` on the `canais-shopee` model, a staging `.vendas.` spec (not an emulator one), with the backend stubbed by `page.route` where the cases need it.
   - Live UI first at the window.
 - **Timing:** each surface lands with its backend step.
 - **Does NOT:** fork ML/Shopee tabs; add an `OrigemConversa`; gate any action on a provider file's existence.
@@ -1165,7 +1184,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 - **Flip `implementado: true`** once every `'sim'` that is built has its web provider (`registriesAlinhadas`), and `enviarNfe` is documented as dropped by decision.
 - **Verification:** all guard suites green; `registriesAlinhadas` green with `implementado: true`.
 - **Timing:** last code step, before the window.
-- **Does NOT:** deploy anything (window steps, §5); create the CI lane (step 2 did).
+- **Does NOT:** deploy anything (window steps, §5); create the CI lane (step 3 did).
 
 ### 4.23 Request budget and queues (D12 volumes, per store, 100 req/min = 6,000 req/h)
 
@@ -1229,7 +1248,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 3. **Step 1a** (#1813): caps row + registry test flips.
 4. **Step 1** (#1814): package + guard change + package docs (PR a); bare app scaffold + rosters and counts (PR b).
 5. **Steps 2 + 2b** (#1829, #1815):
-   - PR a: credential/context/aviso/parking + the connect route, `proxy.ts`, `verifyCaller` and Admin init (moved from step 1) + **the CI lane** + the step-21 conta CRUD and credential form.
+   - Five stacked PRs (re-cut item 9): W1 the step-21 conta CRUD; a the schemas, enums and admin handle; b the backend (`proxy.ts`, `verifyCaller` and Admin init moved from step 1, the credential routes, store, context, park, avisos and the sweep body); c the credential panel; d the migration script, as a sibling. The CI lane is **not** in step 2 (it is step 3's).
    - PR b: logger/valves/canary/probe CLI.
 
    ⇒ **Probe round 1** (Lucas, read-only, under the Personal Token, each capture recording its credential type): §1.2 items 3 (read part, if a pending order exists), 10, 11, 13, 14, 16 (read part), 18, 19, 20, 22, 23 and 24 are settled, and redacted captures are committed as fixtures.
@@ -1280,8 +1299,8 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Why the timing:** tokens are per store and owner-only, the 3-month clock starts at generation, and the production project only exists at the window.
 2. **Remove the legacy credential field from the migrated LI `integracao` docs.**
    - **Phase:** Phase 2, right after the Firestore import and before Phase 3 traffic.
-   - **Action:** a one-shot `tools/migrations` script (written in step 2's PR, following that package's contract) applies `FieldValue.delete()` to that field on every `integracao` doc with `tipo == 3`, in dry-run first, then for real.
-   - **Verify:** a census query returns 0 tipo-3 docs carrying the field.
+   - **Action:** a one-shot `tools/migrations` script (written in step 2's PR, following that package's contract) applies `FieldValue.delete()` to that field on every `integracao` doc that carries it, whatever its tipo (the field is not modelled and nothing reads it, so any presence is an exposed credential), in dry-run first, then for real. Each row logs the tipo and the doc id, never the value, and a second pass reports zero.
+   - **Verify:** a census query returns 0 docs carrying the field.
    - **Why the timing:** the new code never reads it, and the credential lives in the admin-only store. The legacy app reads the legacy project, not the migrated copy, so nothing in the new project needs it. Since 2026-10-07 that field carries the legacy's Personal Token, so the migrated copy holds a live credential until item 10 revokes it.
 3. **Valves: `dry-run` first, then `on`, only after the legacy app is OFF.**
    - **Phase:** Phase 4.
@@ -1298,7 +1317,8 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Commands:** `firebase deploy --only firestore:indexes --project <new>`; `firebase deploy --only firestore:rules --project <new>`; `firebase deploy --config firebase.loja-integrada.deploy.json --project <new>`; App Hosting rollouts for `loja-integrada` and `web`.
    - **Verify:** indexes READY in the console; the queues are listed in Cloud Tasks; `/api/health` answers 200.
    - **Why the timing:** on Enterprise a missing index full-scans and bills instead of failing; an enqueue against a queue that does not exist yet is dropped while the route answers 200; `apps/web` calls the deployed backend.
-   - **Rulesets deployed:** those regenerated by steps 2, 3, 5, 9, 10, 12, 13 (if a collection was added) and 20.
+   - **Rulesets deployed:** those regenerated by steps 3, 5, 9, 10, 12, 13 (if a collection was added) and 20. Step 2 regenerates none: its credential subcollection is default-denied.
+  - **Env at rollout (step 2):** the `apps/loja-integrada` rollout must set `ALLOWED_ADMIN_ORIGINS` (without it the backend allows no origin and every browser call fails CORS), and the `apps/web` rollout must set `NEXT_PUBLIC_LOJA_INTEGRADA_URL` to an `https:` origin (without it the credential panel stays disabled and says the backend is not configured).
    - **Indexes declared by this plan:**
      - `notificacoesLojaIntegrada (status, processedAt)`;
      - collection group `produtolojaintegrada (contaLojaIntegrada, id)`;
@@ -1349,7 +1369,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 - [x] Decisions D1–D16 recorded; vetoable orchestrator calls listed, including 1019 in the D7 guard (§2.1).
 - [x] Every LI write has a valve, a canary, a dry-run and a read-back or a stated substitute (§4.26).
 - [x] Every step names its indexes, ruleset regeneration and env vars (§4.iii).
-- [x] The CI lane lands with the first emulator test (step 2).
+- [x] The CI lane lands with the first emulator test (step 3).
 - [ ] This plan approved by Lucas (PR review).
 - [x] Tracker #1812 + per-step issues #1813–#1830 opened together with this plan's PR #1811 (D14).
 - [x] The §0 legacy credential is resolved: the live legacy has run on Personal Tokens on both stores since 2026-10-07.
