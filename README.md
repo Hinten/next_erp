@@ -24,7 +24,7 @@ Shared code lives under `packages/`:
 - `packages/auth/` — permission helpers, BigInt-encoded custom claims.
 - `packages/ui/` — Mantine v9 theme + primitives.
 - `packages/core/` — money, address, documents, tenant, wire, region.
-- `packages/integrations/*/` — provider libraries, each imported directly by its app (NF-e, Mercado Livre, Mercado Pago, WhatsApp, freight, Shopee).
+- `packages/integrations/*/` — provider libraries, each imported directly by its app (NF-e, Mercado Livre, Mercado Pago, WhatsApp, freight, Shopee, Loja Integrada).
 - `packages/config-*` — shared ESLint/TS/Prettier configs.
 
 ## Stack

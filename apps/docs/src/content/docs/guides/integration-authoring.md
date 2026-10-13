@@ -72,10 +72,11 @@ Firestore-bound half**:
 | `whatsapp-cloud-api` | `apps/whatsapp` | typed Graph client + webhook envelope schemas |
 | `freight-br` | `apps/melhor-envio` | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking |
 | `shopee` | `apps/shopee` | Shopee Open Platform: HMAC request signing, hosts, consent URL + token endpoints, wire schemas |
+| `loja-integrada` | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET client, Tastypie paging, typed errors |
 
-⚠️ Four throw-only marketplace scaffolds (`amazon-sp-api`, `magalu`, `loja-integrada`,
-`facebook`) were deleted in #815 and stay deleted. `shopee` came back as a **real**
-fetch-only package — the ADR-0015 shape, the opposite of the scaffold. That those
+⚠️ Three throw-only marketplace scaffolds (`amazon-sp-api`, `magalu`, `facebook`)
+were deleted in #815 and stay deleted. `shopee` and `loja-integrada` came back as
+**real** fetch-only packages — the ADR-0015 shape, the opposite of the scaffold. That those
 other channels are planned is recorded by `INTEGRACAO_TIPO` and their
 `MARKETPLACE_TIPO_CAPS` rows.
 

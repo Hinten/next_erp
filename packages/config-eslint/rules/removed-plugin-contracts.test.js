@@ -348,22 +348,24 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     expect(read(CORE_BARREL)).toMatch(/export \* from '\.\/money';/);
   });
 
-  it('the four remaining throw-only channel scaffolds stay deleted', () => {
+  it('the three remaining throw-only channel scaffolds stay deleted', () => {
     // They existed only to typecheck against the removed contract, and had no
     // importer anywhere. Recreating one is how the contract comes back.
     //
-    // ⚠️ `shopee` LEFT this list, and only this list. It is a real package again —
-    // fetch-only signing/hosts/wire schemas/typed errors for the Shopee Open
-    // Platform, paired with `apps/shopee` — which is the ADR-0015 shape, the
-    // opposite of the throw-only scaffold that was deleted. Shrinking the list
-    // alone would have reopened the hole this guard exists for, so the shape it
-    // graduated INTO is asserted by the sibling test below.
+    // ⚠️ `shopee` and `loja-integrada` LEFT this list, and only this list. Each
+    // is a real package again — `shopee`: fetch-only signing/hosts/wire
+    // schemas/typed errors for the Shopee Open Platform, paired with
+    // `apps/shopee`; `loja-integrada`: a fetch-only, GET-only client with typed
+    // errors and paging, paired with `apps/loja-integrada` — which is the
+    // ADR-0015 shape, the opposite of the throw-only scaffold that was deleted.
+    // Shrinking the list alone would have reopened the hole this guard exists
+    // for, so the shape they graduated INTO is asserted by the sibling test below.
     //
     // ⚠️ Keyed on the MANIFEST, not the directory. A deleted workspace package can
     // leave an empty `node_modules/` behind in an existing checkout, which would
     // make a directory check red locally and green on a fresh CI clone — the
     // worst kind of guard. `package.json` is what makes it a package.
-    for (const pkg of ['magalu', 'amazon-sp-api', 'facebook', 'loja-integrada']) {
+    for (const pkg of ['magalu', 'amazon-sp-api', 'facebook']) {
       expect(
         existsSync(resolve(repoRoot, `packages/integrations/${pkg}/package.json`)),
         `packages/integrations/${pkg} was recreated — see ADR 0015`,
@@ -371,36 +373,57 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     }
   });
 
-  it('the re-created shopee package is a library, not a channel plugin', () => {
-    // The replacement for shopee's row in the list above. A package that exists
-    // again may only exist in the ADR-0015 shape: it describes the PROVIDER's
-    // wire protocol and nothing about this ERP's orchestration.
-    //
-    // ⚠️ Guarded by `existsSync` rather than asserted unconditionally so this
-    // file keeps working if the package is ever removed again — but the vacuity
-    // check below means an EMPTIED `src/` cannot pass it silently.
-    const manifest = resolve(repoRoot, 'packages/integrations/shopee/package.json');
-    if (!existsSync(manifest)) return;
+  it.each(['shopee', 'loja-integrada'])(
+    'the re-created %s package is a library, not a channel plugin',
+    (pkg) => {
+      // The replacement for the rows these packages left in the list above. A
+      // package that exists again may only exist in the ADR-0015 shape: it
+      // describes the PROVIDER's wire protocol and nothing about this ERP's
+      // orchestration.
+      //
+      // ⚠️ ASSERTED, never an early `return`: a mistyped or stale entry in this
+      // list (`'loja-integrda'`) would otherwise read nothing and still PASS. If
+      // a package is ever deleted again, the same commit moves its name back to
+      // the must-not-exist list above — the edit that brought it here, reversed.
+      // The vacuity check below then means an EMPTIED `src/` cannot pass either.
+      const manifest = resolve(repoRoot, `packages/integrations/${pkg}/package.json`);
+      expect(
+        existsSync(manifest),
+        `packages/integrations/${pkg} is listed as re-created but has no package.json`,
+      ).toBe(true);
 
-    const srcDir = resolve(repoRoot, 'packages/integrations/shopee/src');
-    const files = readdirSync(srcDir, { recursive: true })
-      .map(String)
-      .filter((f) => f.endsWith('.ts'));
+      const srcDir = resolve(repoRoot, `packages/integrations/${pkg}/src`);
+      const files = readdirSync(srcDir, { recursive: true })
+        .map(String)
+        .filter((f) => f.endsWith('.ts'));
 
-    for (const file of files) {
-      const src = readFileSync(resolve(srcDir, file), 'utf8');
-      expect(declaresMarketplaceChannel(src), `${file} declares MarketplaceChannel`).toBe(false);
-      expect(reExportsMarketplaceChannelSymbol(src), `${file} re-exports MarketplaceChannel`).toBe(
-        false,
-      );
-      expect(hasMarketplaceRegistry(src), `${file} registers a marketplace plugin`).toBe(false);
-    }
+      for (const file of files) {
+        const src = readFileSync(resolve(srcDir, file), 'utf8');
+        expect(declaresMarketplaceChannel(src), `${file} declares MarketplaceChannel`).toBe(false);
+        expect(
+          reExportsMarketplaceChannelSymbol(src),
+          `${file} re-exports MarketplaceChannel`,
+        ).toBe(false);
+        expect(hasMarketplaceRegistry(src), `${file} registers a marketplace plugin`).toBe(false);
+      }
 
-    // Vacuity guard: an empty (or wrongly-rooted) `src/` would make the loop above
-    // pass without reading a line — the exact failure mode this file's other
-    // anchors exist to close.
-    expect(files.length, 'no shopee src files were read').toBeGreaterThan(0);
-  });
+      // Vacuity guard: an empty (or wrongly-rooted) `src/` would make the loop above
+      // pass without reading a line — the exact failure mode this file's other
+      // anchors exist to close.
+      expect(files.length, `no ${pkg} src files were read`).toBeGreaterThan(0);
+
+      // ⚠️ And the files read are THIS package's: the entry its manifest's `main`
+      // names must be among them. The count alone passes for a `src/` rooted at
+      // another package's sources, and with this anchor an emptied or re-rooted
+      // `src/` still fails if the count above is ever dropped.
+      const { main } = JSON.parse(readFileSync(manifest, 'utf8'));
+      expect(typeof main, `packages/integrations/${pkg}/package.json has no main`).toBe('string');
+      expect(
+        files.map((f) => resolve(srcDir, f)),
+        `the ${pkg} files read do not include its manifest's main (${main})`,
+      ).toContain(resolve(dirname(manifest), main));
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */

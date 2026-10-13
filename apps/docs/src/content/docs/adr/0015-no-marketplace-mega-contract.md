@@ -182,11 +182,18 @@ does not exist yet: the same unreached surface, one round later.
   members as `throw`. What Shopee supports is still declared in
   `MARKETPLACE_TIPO_CAPS`, and its `implementado` stays `false` until the channel
   ships. The guard above changed with it: it still asserts the ABSENCE of the
-  other four scaffolds (`magalu`, `amazon-sp-api`, `facebook`,
-  `loja-integrada`), and for `shopee` it now asserts the SHAPE — every file
-  under its `src/` declares no `MarketplaceChannel`, re-exports none, and
+  other three scaffolds (`magalu`, `amazon-sp-api`, `facebook`), and for
+  `shopee` and `loja-integrada` it now asserts the SHAPE — every file under
+  their `src/` declares no `MarketplaceChannel`, re-exports none, and
   registers no marketplace plugin. Shrinking the absence list alone would have
   reopened exactly the hole the guard exists for.
+- **`packages/integrations/loja-integrada` exists again, in the same shape.**
+  Step 1 of the Loja Integrada master plan re-created it as a fetch-only,
+  GET-only library: the Personal Token request header, the typed error taxonomy,
+  Tastypie paging and the validating GET that the connect route will call. Like
+  `shopee`, it declares no `MarketplaceChannel`, registers no plugin and touches
+  no Firestore; what the channel supports stays in `MARKETPLACE_TIPO_CAPS`, and its
+  `implementado` stays `false` until the channel ships.
 
 ## Status
 
