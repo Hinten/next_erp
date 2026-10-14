@@ -182,7 +182,7 @@ v2026 needs no RDT, only roles (migration guide, Step 2). Orders v0 was deprecat
 
 ## 7. Conclusion and recommendation
 
-> **Superseded in part (2026-10-14, after this report):** Amazon's retired LATAM page "DBA caso de uso" documents the BR bulk flow, a 3-minute URL life, and that **resubmitting an already-scheduled order returns the same schedule**. The operator confirmed that a reprint (a resubmit) returns a fresh label URL in production. Risk 2 below is therefore softened: the stored ZPL is the primary copy and a resubmit is the recovery path. See `latam-dba-review.md`.
+> **Superseded in part (2026-10-14, after this report):** Amazon's retired LATAM page "DBA caso de uso" documents the BR bulk flow, a 3-minute URL life, and that **resubmitting an already-scheduled order returns the same schedule**. The operator confirmed that a reprint (a resubmit) returns a fresh label URL in production. Risk 2 below is therefore resolved differently: no label is stored; once an order is scheduled, each print fetches a fresh link through the same call (plan D12, step 15). See `latam-dba-review.md`.
 
 **Option A: build the documented DBA invoice step plus the Easy Ship bulk call (RDT, ZPL) that runs in production for BR today.** Recommended as the primary path.
 - **For it:**

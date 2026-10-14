@@ -4,6 +4,8 @@ Provenance: read-only research dated 2026-10-14 for the Amazon SP-API marketplac
 
 ---
 
+**Amendment (2026-10-14, after this verification):** the stock cluster below verified `estoque.protocolo: 'por-anuncio'` under the then-assumed ≤ 1,000 SKUs. The operator corrected the catalogue to ~20,000 SKUs, so the plan's row now records `'feed-assincrono'` with `loteMax: 25000` for the bulk path (JSON_LISTINGS_FEED), keeping per-SKU `patchListingsItem` for sale-driven deltas. The verified facts (rates, feed limits, Amazon's 1,500-item guidance) are unchanged; only the volume they are applied to changed.
+
 **Tally:** 21 held, 4 corrected, 1 unsettled (one entry per field; the estoque members count separately). "Corrected" with an unchanged value means the evidence or wording was fixed; see each entry.
 
 ## Cluster: auth-push
