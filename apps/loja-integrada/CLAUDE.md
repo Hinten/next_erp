@@ -146,7 +146,13 @@ still be fixed. Only the context loader refuses those.
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor is 0 until the first fixture PR raises it.
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (19), so a fixture that
+  disappears fails it.
+- Kept on review of the first corpus (2026-10-14), not leaks: a 14-digit window INSIDE a
+  longer SKU that passes the CNPJ check (the scan tests whole values; any one window passes
+  by chance about 1% of the time, and the sibling variant's window fails), LI's own
+  numeric ids (the importer's join keys), `meta.total_count` (the kept numeros already
+  show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it).
 - `estrutura.test.ts` proves the sanitizer's import closure reaches no network or process
   module, no package client, no `firebase-admin`/`@delfrance/data`, no credential module,
   no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;
@@ -242,7 +248,7 @@ still be fixed. Only the context loader refuses those.
 - A conta parked mid-drain keeps its stored `vistos` (the run's additions are dropped, so
   they are re-enqueued once the token is back).
 - The row schema is written from the public document's two examples: PR 3-e stays a
-  draft and `MINIMO_DE_FIXTURES` stays 0 until the owner's C1/C2 fixtures are committed.
+  draft until it is checked against the owner's committed captures (`__wire__/pedido-*`).
 
 ## CI (step 3)
 

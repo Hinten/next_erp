@@ -24,8 +24,9 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
 
 `wireCorpus.test.ts` reads this folder: every file must be a valid envelope, serialised
 as `JSON.stringify(v, null, 2) + '\n'`, and pass both layers of `piiScan.ts`.
-`MINIMO_DE_FIXTURES` is 0 until the first fixture PR (step 3), which raises it to that
-PR's count so an emptied folder fails.
+`MINIMO_DE_FIXTURES` is the number of committed fixtures (19 since the owner's first
+captures, step 3), so a fixture that disappears fails the test. A change that adds or
+deliberately removes a fixture moves it in the same commit.
 
 This folder is excluded from Prettier and checked out with LF line endings
 (`.prettierignore`, `.gitattributes`), so a re-run over an unchanged capture writes
