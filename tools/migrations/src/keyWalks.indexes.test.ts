@@ -49,6 +49,11 @@ const PERMANENTES: ReadonlyArray<{ collection: string; scope: Escopo; leitor: st
     scope: 'COLLECTION',
     leitor: 'apps/functions arquivo orphan sweep, round-robin page (#1874)',
   },
+  {
+    collection: 'CMUN',
+    scope: 'COLLECTION',
+    leitor: 'tools/cmun-table dump — re-export/seed of the CEP table, after the cutover too (#785)',
+  },
 ];
 
 function lerCaminhadas(): Caminhada[] {
