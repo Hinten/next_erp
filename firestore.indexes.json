@@ -134,6 +134,20 @@
       ]
     },
     {
+      "collectionGroup": "notificacoesShopee",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "shop_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
