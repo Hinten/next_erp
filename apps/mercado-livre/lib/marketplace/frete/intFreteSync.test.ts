@@ -15,7 +15,7 @@ import {
 /* ------------------------------ fake Firestore ---------------------------- */
 // Own copy (the sibling order tests keep theirs — not shared). Scoped to what
 // `intFreteSync.ts` touches: `int_frete` (chained `where` equality + `add` +
-// merge-`set`) and `integracao` (a single doc `get` for the delete guard).
+// merge-`set`/`update`) and `integracao` (a single doc `get` for the delete guard).
 // `opLog` is real so the zero-write assertions below mean something.
 
 type DocData = Record<string, unknown>;
@@ -77,6 +77,12 @@ class FakeDb {
         lendo = false;
         pendentes.push(async () => {
           await ref.set(data, opts);
+        });
+      },
+      update(ref: FakeRef, data: DocData) {
+        lendo = false;
+        pendentes.push(async () => {
+          await ref.set(data, { merge: true });
         });
       },
     };

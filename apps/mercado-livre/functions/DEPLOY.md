@@ -490,7 +490,7 @@ auto-creates nothing and bills data scanned):
 
 It is already in `firestore.indexes.json`; deploy with
 `firebase deploy --only firestore:indexes`. The same entry also converts the order
-importer's `resolveMercadoEnviosIntFreteOuterRef` from a full scan into an
+importer's `resolveMercadoEnviosIntFrete` from a full scan into an
 index-bound equality — that one was live on the import hot path.
 
 ### Second responsibility: the deferred-notification re-drive (#808)

@@ -2,19 +2,23 @@
 /**
  * Pure readers of a Firestore **Enterprise** explain plan — the `text` output of
  * a pipeline's `execute({ explainOptions: { mode: 'analyze', outputFormat:
- * 'text' } })` — and the two verdicts the #1200 link audit stands on.
+ * 'text' } })` — the two verdicts the #1200 link audit stands on, and the
+ * key-page verdict (`julgarPaginaPorChave`, #1874/#1895) for any walk by
+ * document key.
  *
- * ONE copy, three consumers (the #1369 rule — two files that "mirror" each other
+ * ONE copy, four consumers (the #1369 rule — two files that "mirror" each other
  * drift toward plausible while disagreeing):
  *  - `scripts/check-stock-indexes.mjs`, the MANUAL staging gate a human runs;
  *  - `lib/marketplace/estoque/auditoriaNaoEnumerados.staging.test.ts`, the
  *    automated suite `ci-mercado-livre.yml` runs against staging on every
  *    in-scope PR, which asserts every verdict a PASS on the audit's own pages;
  *  - `apps/functions/scripts/check-sweep-indexes.mjs` (#1874), the arquivo
- *    sweeps' manual gate, by RELATIVE path — it imports only the generic
- *    readers (`parseAccessNodes`, `scansSemIdentificador`,
- *    `contadoresDoCabecalho`, `sortsQueCortam`, `RECUSA_EXPLAIN_ENTERPRISE_RE`),
- *    so renaming or moving one of those breaks that script, which no lane runs.
+ *    sweeps' manual gate, and
+ *  - `tools/migrations/scripts/check-key-walks.mjs` (#1895), the migrations'
+ *    key-index gate — both by RELATIVE path, importing only generic readers and
+ *    `julgarPaginaPorChave` (`parseAccessNodes`, `scansSemIdentificador`,
+ *    `contadoresDoCabecalho`, `indicesUsados`, `RECUSA_EXPLAIN_ENTERPRISE_RE`),
+ *    so renaming or moving one of those breaks scripts no lane runs.
  * Plain `.mjs` + JSDoc (`@ts-check`, so `tsc` still checks it through the
  * importing test) because the script runs under bare `node`, which cannot import
  * TypeScript. Nothing here touches Firestore: every function takes the plan TEXT
@@ -1158,6 +1162,131 @@ export function julgarPlanoDosAvisosAbertos(plan, { leituraMaxima = null } = {})
       descreverLeitura(leitura, leituraMaxima) +
       (notas.length > 0 ? ` — ${notas.join('; ')}` : '');
   }
+  return { motivos, nos, alvo, detalhe, leitura, leituraTotal };
+}
+
+/* ------------------- a page walked by document key (#1874) ------------------- */
+
+/**
+ * The distinct `index:` identifiers a plan's access nodes ride, `@[id = …]`
+ * stripped — what a report prints as "indexes ridden".
+ *
+ * @param {readonly AccessNode[]} nos
+ * @returns {string[]}
+ */
+export function indicesUsados(nos) {
+  /** @type {string[]} */
+  const out = [];
+  for (const n of nos) {
+    const id = n.identifier?.replace(/@\[.*$/, '').trim();
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * The index a walk by document KEY must ride: one LEADING with the key —
+ * `/<coll> (__key__ ASC…` for COLLECTION scope, `**\/<coll> (__key__ ASC…` for
+ * COLLECTION_GROUP (the dialect prints `__name__` as `__key__`). Enterprise
+ * creates none by itself (#1874), so it exists only where `firestore.indexes.json`
+ * declares it. A key-led composite with more fields still delivers key order, so
+ * the match stops at the first field.
+ *
+ * @param {'COLLECTION' | 'COLLECTION_GROUP'} escopo
+ * @param {string} colecao
+ * @returns {RegExp}
+ */
+export function indiceDeChaveRe(escopo, colecao) {
+  const nome = colecao.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  const prefixo = escopo === 'COLLECTION_GROUP' ? '\\*\\*\\/' : '\\/';
+  return new RegExp(`^${prefixo}${nome} \\(__(?:key|name)__ ASC[,)]`);
+}
+
+/**
+ * One page of a walk by document key — `<coll>.orderBy(__name__).limit(n)`,
+ * page 1 or after a `startAfter` cursor — explained through its pipeline PROXY.
+ * It must:
+ *  1. contain no identifier-less scan over the root partition — a full scan;
+ *  2. ride {@link indiceDeChaveRe} for its collection and scope;
+ *  3. have no sort that CUTS its input ({@link sortsQueCortam}). Without a key
+ *     index this is THE symptom: key order comes from a `• MajorSort` TopN over
+ *     everything the scan read;
+ *  4. read at most `pagina + 1` index rows — the plan-wide `index row scanned`,
+ *     and the summed `records scanned` of the nodes on the key index. A page that
+ *     reads more is not confined to its own rows. An unprinted total fails too
+ *     (the safe direction).
+ * MEASURED on staging (#1874, `arquivos`, 313 docs, page of 100 after a cursor):
+ * with no key index the page rode `/arquivos (markedForDeletionAt ASC)` with a
+ * bare `ranges: /`, read all 313 index rows, cut the cursor in a residual
+ * Filter and sorted (`__planos__/pagina-por-chave-sem-indice.txt`); with
+ * `arquivos(__name__ ASC)` declared it rode `/arquivos (__key__ ASC)`, the cursor
+ * a range from the key up, under a `• Limit`, reading exactly 100
+ * (`__planos__/pagina-por-chave-com-indice.txt`). So one page costs the whole
+ * collection without the index, and a full walk N²/page instead of N.
+ *
+ * @param {string} plan
+ * @param {{ escopo: 'COLLECTION' | 'COLLECTION_GROUP', colecao: string, pagina: number }} opcoes
+ * @returns {VeredictoDoPlano}
+ */
+export function julgarPaginaPorChave(plan, { escopo, colecao, pagina }) {
+  const nos = parseAccessNodes(plan);
+  /** @type {Motivo[]} */
+  const motivos = [];
+  const consequencia =
+    `Every page of a walk of ${colecao} reads the whole ${
+      escopo === 'COLLECTION_GROUP' ? 'collection group' : 'collection'
+    } to keep ${pagina} rows — the walk costs N²/${pagina} index rows instead of N, billed as ` +
+    'data scanned.';
+
+  for (const n of scansSemIdentificador(nos).cheios) {
+    motivos.push({
+      codigo: 'scan-sem-indice',
+      mensagem: `an identifier-less ${n.type} (plan line ${n.line}) — a full scan. ${consequencia}`,
+    });
+  }
+  const indiceRe = indiceDeChaveRe(escopo, colecao);
+  const noIndice = nos.filter((n) => n.identifier != null && indiceRe.test(n.identifier));
+  if (noIndice.length === 0) {
+    const usados = indicesUsados(nos);
+    motivos.push({
+      codigo: 'indice-de-chave-ausente',
+      mensagem:
+        `no access node rides a key index on ${colecao} (${escopo}) — it rides ${
+          usados.length === 0 ? 'none' : usados.join(' | ')
+        }. Enterprise creates no key index by itself; declare ${colecao}(__name__ ASC) in ` +
+        `firestore.indexes.json and wait for READY. ${consequencia}`,
+    });
+  }
+  const cortes = sortsQueCortam(plan);
+  if (cortes.length > 0) {
+    motivos.push({
+      codigo: 'sort-que-corta',
+      mensagem:
+        `${cortes.map((n) => `${n.nome} (plan line ${n.linha})`).join('; ')} consumed more rows ` +
+        'than it returned (or printed no count) — key order produced by a TopN over the scan.',
+    });
+  }
+  const leitura = somaDeLeituras(noIndice);
+  const leituraTotal = linhasDeIndiceLidas(plan);
+  if (
+    leituraTotal == null ||
+    leituraTotal > pagina + 1 ||
+    (leitura != null && leitura.valor > pagina + 1)
+  ) {
+    motivos.push({
+      codigo: 'leitura-excessiva',
+      mensagem: `read ${
+        leituraTotal == null
+          ? 'an unprinted number of index rows (no `index row scanned` header)'
+          : `${descreverExcesso(leitura, leituraTotal)} index rows`
+      } for a page of ${pagina} — the page is not confined to its own rows.`,
+    });
+  }
+  const alvo = noIndice[0] ?? null;
+  const detalhe =
+    alvo != null && motivos.length === 0
+      ? `a key seek on ${alvo.identifier}${descreverLeitura(leitura, pagina + 1)}`
+      : null;
   return { motivos, nos, alvo, detalhe, leitura, leituraTotal };
 }
 

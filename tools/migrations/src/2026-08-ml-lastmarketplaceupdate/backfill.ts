@@ -45,8 +45,12 @@ import {
  * its next delivery.
  *
  * Idempotent: a pedido already carrying the max of its mirrors is left alone.
- * Needs no index — a plain `orderBy(documentId())` key-order scan (see the audit
- * script for why the narrower query would be worse on Firestore Enterprise).
+ * One index only: a plain `orderBy(documentId())` key-order scan riding the
+ * DECLARED key index `pedidos(__name__ ASC)` (#1895, listed in `key-walks.json`)
+ * — Enterprise has no implicit one, and without it every page re-scans the
+ * collection (staging, #1895: 1,665 index rows read per page of 300 on
+ * `pedidos`). See the audit script for why the narrower filtered query would be
+ * worse on Firestore Enterprise.
  */
 
 const PAGE_SIZE = 300;

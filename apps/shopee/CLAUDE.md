@@ -2,7 +2,7 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–10 of
+Runs on `:3009` in dev. Steps 1–20 (16 deferred) of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
 conta status, the access-token refresh, the cached taxonomy reads, the inbound
 push receiver with its Cloud Tasks queue, nested functions codebase, weekly
@@ -13,7 +13,7 @@ per-package observation into the pedido's `freteInicial`, the step-8 weekly
 stuck-reservation sweep that re-drives — and, where it cannot decide, SURFACES —
 a pedido still holding a stock reservation past the horizon, and the step-9
 product import (an anúncio → a produto, one at a time or the whole shop through
-a resumable Cloud Tasks job)**.
+a resumable Cloud Tasks job)**; later steps below.
 
 ⚠️ **Step 5 is where this app started writing ERP business data** — `pedidos`,
 `clientes`, `enderecos`, `incidentes`, since step 6 the
@@ -106,8 +106,9 @@ a page of the 3-day queue irreversibly.
   `lib/shopee/testing/falhaDeEnfileiramento.ts`, never with `grpc(14)`.
 - `lib/shopee/core/contaCache.ts` — the two cached integração readers:
   `readConta` (by integração id, extracted out of `core/shopee.ts`) and
-  `findIntegracaoByShopId`, which is what turns a push's `shop_id` into a conta.
-  Token-free by construction — it touches `integracaoCollection` only.
+  `findIntegracaoByShopId`, which turns a push's `shop_id` into a conta, plus
+  step 20's read-free payload twin `shopIdResolvivel`. Token-free — it
+  touches `integracaoCollection` only.
 - `lib/shopee/core/contas.ts` — `listarContasShopeeAtivas`, the ONE
   `integracao (tipo, ativo)` enumeration every per-conta sweep walks. Promoted
   out of `orderBackfill.ts` by step 6, verbatim and with its docblock; the
@@ -225,6 +226,13 @@ a page of the 3-day queue irreversibly.
   `functions/src/processNfeUpload.ts`'s `processShopeeNfeUpload`, the FIFTH
   `onTaskDispatched` (one dispatch at a time, 120 s, 4 attempts, re-enqueued
   by itself for the waits and the recheck).
+- `functions/src/onIntegracaoShopeeChanged.ts` — step 20's THIRD Firestore
+  trigger, on `integracao/{integracaoId}`: re-reads the conta INSIDE the
+  transaction and converges its `int_frete` doc (tipo `shopee`) to it through
+  `@delfrance/data/admin/frete` — no event clock, so delivery order cannot
+  matter; ADOPTS the legacy doc by `contaShopeeFreteOuterRef`; deactivates,
+  never deletes; no secrets. No pedido this app imports points at it. It also
+  re-drives the shop's `sem-conta` pushes once `shop_id` resolves.
 - `app/api/marketplace/shopee/enviar-nfe/route.ts` — the NF-e re-drive,
   `PERM.pedido.write` (the only Shopee route not on `integracao.*`): strict
   `{ pedidoId, nfeId? }`, enqueue only, 202; 409 `SHOPEE_NFE_NAO_ELEGIVEL`,
@@ -439,12 +447,12 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **108** suites in this app name (106 drive it), and since step 8 it has a
+  **111** suites in this app name (109 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
   step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
-  19: 108 — the two `*.tasks.test.ts` suites it counts name the double in a
-  docblock only).
+  19: 108, 20: 111 — the two `*.tasks.test.ts` suites it counts name the double
+  in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
@@ -721,8 +729,10 @@ deferred row says which one wrote it: `push_code 3:` for the order import,
 for returns. ⚠️ The ONE exception is the shared
 `sem-conta` defer — the unmapped-shop rows in the table above and their
 code-1 twin: all five arms emit the same UNPREFIXED `loja <id> não mapeia…`
-template, so there the discriminator is the row's `kind` + `code`, never the
-string. The four error→disposition readers
+template, built by ONE `motivoSemConta(shopId)`: no `kind` is stored, so that
+string is what step 20's re-drive matches, EXACTLY (a code-1 row naming its
+shop only in `shop_id_list` stores no `shop_id`; the daily lane drains it).
+The four error→disposition readers
 (`disposicaoDaFalhaDe{Importacao,Rastreio,Anuncio,Devolucao}`) are one private
 class table with four prefixes — step 5's behaviour is byte-identical and its
 tests are unedited, which is the proof that the refactor changed nothing.
@@ -1851,8 +1861,8 @@ reuses and `shared/ttl.ts`. **Step 14 grew it by exactly two** —
 `packages/schemas/src/nfeEnvioCanal.ts` (the shared NF-e predicates) and
 `packages/schemas/src/nfe.ts` (`ESTADO_NFE`, `CHAVE_NFE_REGEX`, the trigger's
 `nfeMeta`). **Step 17 grew it by exactly one** —
-`packages/schemas/src/devolucaoShopee.ts` (`ehReturnSnShopee`) — for a closure
-of **51** entries today.
+`packages/schemas/src/devolucaoShopee.ts` (`ehReturnSnShopee`); **step 20** by
+`packages/data/src/admin/frete/**` — for a closure of **52** entries today.
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 
@@ -1951,8 +1961,8 @@ lists the expected caveats.
 Firebase App Hosting, own backend, root `apps/shopee`. Env + secrets via the
 Firebase console / Secret Manager. The nested Cloud Functions codebase
 (`functions/`) deploys separately — see **`functions/DEPLOY.md`**, including the
-three IAM roles the receiver needs before it can enqueue. Since step 17 it
-holds **nineteen** functions: twelve `onSchedule`s, five queues and two
+three IAM roles the receiver needs before it can enqueue. Since step 20 it
+holds **twenty** functions: twelve `onSchedule`s, five queues and three
 Firestore triggers.
 `firebase.shopee.deploy.json` shipped with step 3 and is **inert**: a config file
 deploys nothing, running it is a manual coordinated human step (root CLAUDE.md

@@ -112,13 +112,16 @@ name: CI — Shopee
 #     on Enterprise a missing index does not throw — it silently full-scans and
 #     bills the scan. That is guard C/D in
 #     packages/data/src/admin/notifications/notificationGuardrails.test.ts, and
-#     the SEVEN Shopee composites deploy in the migration window (#1532):
+#     the NINE Shopee composites deploy in the migration window (#1532):
 #     notificacoesShopee (status, processedAt); integracao (tipo, shop_id,
 #     ativo); prodshopee (item_id, contaProdutoShopeeOuterRef) collection-group;
 #     variashopee (model_id, contaVariacaoShopeeOuterRef) collection-group;
-#     importacoesShopee (integracaoId, status), step 9's; and step 13's two
+#     importacoesShopee (integracaoId, status), step 9's; step 13's two
 #     enviosPrecoShopee ones, (integracaoId, status) for the one-active guard
-#     and (integracaoId, startedAt DESC) for the history route.
+#     and (integracaoId, startedAt DESC) for the history route; and step 20's
+#     int_frete (tipo, contaShopeeFreteOuterRef, ativo, dataCadastro DESC), the
+#     conta-sync lookup, and notificacoesShopee (status, shop_id), the #808
+#     re-drive.
 #   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
 #     emulator — dispatch is pure FIFO (firebase-tools#8254, open). ⚠️ This
 #     channel no longer "sets no delay": the notification scheduler still sets
@@ -276,6 +279,19 @@ on:
       # entry above.
       - 'packages/schemas/src/nfeEnvioCanal.ts'
       - 'packages/schemas/src/nfe.ts'
+      # Step 20 (#1528, the int_frete sync) reaches ONE path no entry above
+      # covers: the conta ⇆ `int_frete` core promoted out of
+      # apps/mercado-livre into `packages/data/src/admin/frete`, which
+      # `onIntegracaoShopeeChanged` runs and the functions bundle inlines. Its
+      # per-channel facts — Shopee's row of `VINCULO_INT_FRETE_CONTA` — live in
+      # `intFrete.ts`, with the freight tipo and the `shopee-` doc-id prefix
+      # (`INTEGRACAO_FRETE`) in `shared/frete.ts` and the conta tipo
+      # (`INTEGRACAO_TIPO`, plus the label the core's log lines use) in
+      # `integracao.ts`, all three already listed. Without this entry a
+      # main/Codex push touching only the planner that decides whether a
+      # conta's freight doc is created, adopted, patched or deactivated would
+      # not fire this lane's safety net.
+      - 'packages/data/src/admin/frete/**'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'
@@ -416,8 +432,8 @@ jobs:
       # success check counts COLLECTED files, not run tests — and this job is a
       # `required` row in the gate manifest.
       REQUIRE_EMULATOR: '1'
-      # SEVENTEEN of the codebase's nineteen triggers declare both of these as
-      # `secrets:` — the exceptions are the two Firestore triggers, which never
+      # SEVENTEEN of the codebase's twenty triggers declare both of these as
+      # `secrets:` — the exceptions are the three Firestore triggers, which never
       # call Shopee — and demo-erp has no Secret Manager. Invented values are
       # safe AND sufficient: every exercised path refuses before any Shopee call,
       # and an invented key cannot sign a call that Shopee would answer.

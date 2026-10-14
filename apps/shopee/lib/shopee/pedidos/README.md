@@ -574,8 +574,9 @@ simply a stored value the ladder arbitrates — a hand-set `entregue` refuses a
 later `postado`, a hand-typed `codRastreio` is replaced by the first fold value.
 
 **The Frete tab now locks on the BLOCK.** `apps/web`'s `FreteTab` used to key
-`marketplaceOwned` on the resolved `int_frete` document alone, and step 5 never
-sets an `integracaoFreteOuterRef` (step 20 does) — so a Shopee pedido rendered
+`marketplaceOwned` on the resolved `int_frete` document alone, and no step sets
+an `integracaoFreteOuterRef` on a Shopee pedido (step 20 maintains the conta's
+`int_frete` document but stamps no pedido, #1528) — so a Shopee pedido rendered
 the editable generic body and a save latched `hasUserInteraction`. Ownership is
 now the OR of the two declarations over the marketplace-owned PREDICATE: a
 resolved document can WIDEN the lock and can never narrow it. ⚠️ One consequence

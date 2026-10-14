@@ -36,27 +36,33 @@ import { auditarReservaNegativa, type HistoricoResumo, type ReservaNegativaRow }
  * bulk write against production data belongs in the coordinated cutover window.
  * The flag is REJECTED rather than ignored, so nobody can assume it worked.
  *
- * ## No index required
+ * ## One index: the document key
  *
  * The walk is a plain `orderBy(documentId())` key-order scan with the `< 0` test
- * done in memory. That is the ONE ordering Firestore always serves without a
- * declared index. `where('quantidadeReservada','<',0)` looks cheaper and is not:
+ * done in memory, riding the DECLARED collection-group key index
+ * `estoques(__name__ ASC)` (#1895, listed in `key-walks.json`). Enterprise has
+ * no implicit key index: without it every page re-scans the whole group
+ * (staging, #1895: an unindexed collection-group walk table-scanned all 6,342
+ * `enderecos` docs on every page of 300). That key index is the ONLY one this
+ * needs. `where('quantidadeReservada','<',0)` looks cheaper and is not:
  * on Firestore ENTERPRISE an undeclared range filter never throws
  * `FAILED_PRECONDITION` — it silently full-scans and bills data scanned — and on
  * STANDARD, where production still lives (rule 8), it throws and demands a new
- * composite. Either way it costs an index deploy and a build wait for a one-off
- * read-only report. Do not "optimize" this.
+ * composite. Either way it costs a filter-index deploy and a build wait for a
+ * one-off read-only report. Do not "optimize" this.
  *
  * Only a document that actually holds a negative pays for the `historicoEstoque`
  * read below.
  *
  * ## Two walk shapes
  *
- * Default is a `collectionGroup('estoques')` key-order scan. If a target project
- * refuses to serve it unindexed, pass `--target produtos` for the fallback: walk
- * `produtos` by document id and read each one's `estoques` subcollection. Same
- * report, more round trips. The flag exists so the fallback is a runtime choice
- * rather than a code edit mid-incident.
+ * Default is a `collectionGroup('estoques')` key-order scan on the collection-group
+ * key index above. `--target produtos` is the fallback: walk `produtos` by
+ * document id, riding its declared key index `produtos(__name__ ASC)` (#1895),
+ * and read each one's `estoques` subcollection. Same report, more round trips.
+ * Enterprise never REFUSES either shape — a walk whose key index is missing
+ * silently re-scans its collection on every page instead. The flag exists so the
+ * fallback is a runtime choice rather than a code edit mid-incident.
  */
 
 const PAGE_SIZE = 300;
@@ -108,8 +114,8 @@ async function* todosOsEstoques(ctx: MigrationContext): AsyncGenerator<QueryDocu
     return;
   }
   // Fallback: produtos by key order, then each one's subcollection. More round
-  // trips, but it needs nothing beyond the native document-key ordering on a
-  // plain collection.
+  // trips; the walk rides the declared collection key index
+  // `produtos(__name__ ASC)` (#1895) instead of the collection-group one.
   const produtos = ctx.db.collection('produtos') as CollectionReference;
   for await (const docs of pagesByDocId(produtos)) {
     for (const produto of docs) {

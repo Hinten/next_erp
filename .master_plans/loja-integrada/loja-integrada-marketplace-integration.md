@@ -809,7 +809,9 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **Multiple `envios[]`:** the first one drives `freteInicial`, and the rest are logged and raise an aviso (§7 q6).
 - **Firestore:**
   - `pedidos`, `pagamentos` (step 6), `clientes`, `enderecos`, `int_frete.mapa` (via step 20).
-  - **Indexes:** collection group `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` (new); `int_frete (tipo ASC, contaLojaIntegradaEnviosOuterRef ASC, ativo ASC)` (new); SKU fallback reuses `produtos (sku ASC)` / `(sku ASC, paiId ASC)`.
+  - **Indexes:** collection group `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` (new); `int_frete` needs no index of its own (see below); SKU fallback reuses `produtos (sku ASC)` / `(sku ASC, paiId ASC)`.
+    - The importer's `int_frete` read is the core's `buscarIntFreteDaConta(…, { apenasAtivo: true })`: three equalities on `(tipo, contaLojaIntegradaEnviosOuterRef, ativo)`. It uses the equality prefix of step 20's 4-field `int_frete (…, dataCadastro DESC)` index, as ML's `orderImport.ts` read does.
+    - A separate 3-field index reds T25 (2026-10-13, Shopee step 20, #1528).
   - **Rulesets:** regenerate both + snapshots (new `TIPO_AVISO` values: `lojaIntegradaSituacaoDesconhecida`, `lojaIntegradaPedidoHub`, `lojaIntegradaPedidoContestado`, `lojaIntegradaMultiEnvio`, plus one for an unsupported freight target, named in the step plan).
   - **Env:** none.
 - **Seam:** `findOrCreateCliente`, `@delfrance/core/wire`, the promoted SKU cascade, `getPrazoDespachoNoFuso`.
@@ -1126,7 +1128,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
   - Paid ⇔ codigo ∈ {pedido_pago, faturado, em_producao, pedido_em_separacao, pedido_enviado, pronto_para_retirada, pedido_entregue}.
   - Contested, refunded (incl. 1020), cancelled or 1019 ⇒ refuse.
   - An LI error lets the operator continue only after an explicit confirmation (parity).
-- **Firestore:** reads `pedidos`, `int_frete`. **Indexes:** `int_frete (tipo ASC, contaLojaIntegradaEnviosOuterRef ASC, ativo ASC)` (step 5). **Rulesets:** none (`FREIGHT_TIPO_CAPS` is not a Meta; checked). **Env:** none.
+- **Firestore:** reads `pedidos`, `int_frete`. **Indexes:** none new. `resolverIntFrete` reads the pedido's `integracaoFreteOuterRef` with one `getDoc`, not a query. Any back-ref lookup uses the equality prefix of step 20's 4-field `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)` index (2026-10-13, #1528). **Rulesets:** none (`FREIGHT_TIPO_CAPS` is not a Meta; checked). **Env:** none.
 - **Seam:** `lib/checkout/etiqueta/types.ts` (injected clients and UI capabilities), `resolverIntFrete`.
 - **Rule 7:** none new; the ME purchase follows the freight domain's own guards.
 - **Dry-run/valve:** none toward LI (read-only).
@@ -1146,26 +1148,32 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 
 ### Step 20: `int_frete` sync (the per-conta `EnviosLojaIntegrada` doc + mapa)
 
-- **Gate:** `etiqueta !== 'nenhuma'` + D6. **Trigger:** the Firestore trigger `onIntegracaoLojaIntegradaChanged` (integracao create/update/delete, tipo 3), in the ML `intFreteSync.ts` shape. **Docs:** the `freight-integrations` skill.
+- **Shared core (2026-10-13, after Shopee step 20, #1528; Lucas Q6(a)):** this step writes NO sync logic of its own. It binds `@delfrance/data/admin/frete` (`intFreteContaSync`, one core for every channel, #1369) with a new `VINCULO_INT_FRETE_CONTA` row and its state-driven `reconciliarIntFreteDaConta` (no event clock). The index is the 4-field `(tipo, <back-ref>, ativo, dataCadastro DESC)` that the T25 pin walks. The mapa auto-registration helper stays LI-specific. A planner, lookup or chooser written here would be the second copy #1369 forbids.
+- **Gate:** `etiqueta !== 'nenhuma'` + D6. **Trigger:** the Firestore trigger `onIntegracaoLojaIntegradaChanged` (integracao create/update/delete, tipo 3). It is a thin binding in the shape of Shopee's `apps/shopee/functions/src/onIntegracaoShopeeChanged.ts`: `deveReconciliar(before, after)` as a cost-only pre-filter, then `reconciliarIntFreteDaConta(db, integracaoId)`. **Docs:** the `freight-integrations` skill.
 - **Wire:** none (no LI call).
 - **Behaviour:**
-  - Materialise or deactivate the `int_frete` doc of tipo `lojaIntegrada`.
-  - **Adopt** the migrated legacy doc by its `contaLojaIntegradaEnviosOuterRef` back-reference instead of creating a second one.
+  - Materialise or deactivate the `int_frete` doc of tipo `lojaIntegrada`. The core's planner makes that decision.
+  - **Adopt** the migrated legacy doc by its `contaLojaIntegradaEnviosOuterRef` back-reference instead of creating a second one. The core's lookup does this.
   - **Mapa auto-registration helper** (called by step 5): append `{nomeOriginal: '<nome> - <tipo trimmed>', idOriginal: '<id>---<code>', observacao: 'Origem: Pedido <numero>', integracaoUid: null}` **only when the id part is absent**; zero writes when it is present. Consequence: an order whose code differs from the mapped entry's is imported unmapped (step 5 matches the full `'<id>---<code>'`), and step 15 still resolves it at label time by the id part.
 - **Firestore:**
-  - `int_frete`. `intFreteSchema` gains `contaLojaIntegradaEnviosOuterRef` (`.nullable().default(null)`, server-owned, like ML's).
-  - **Indexes:** `int_frete (tipo ASC, contaLojaIntegradaEnviosOuterRef ASC, ativo ASC)` (new; ML's has an extra `dataCadastro DESC` and is not reused).
-  - **Rulesets:** regenerate both + snapshots (`intFreteSchema`).
+  - `int_frete`. `intFreteSchema` gains `contaLojaIntegradaEnviosOuterRef` (`.nullable().default(null)`, server-owned, like ML's and Shopee's). The new key is meant to break pins: the `ANCORA` in `packages/schemas/src/intFrete.vinculo.test.ts` and the pinned list in `apps/web/app/(app)/logistica/_components/slices.test.ts` must both name it, and `SHARED_EXCLUDED` (`slices.ts`) must hide it.
+  - **Indexes:** `int_frete (tipo ASC, contaLojaIntegradaEnviosOuterRef ASC, ativo ASC, dataCadastro DESC)` (new). T25 in `packages/schemas/src/intFrete.vinculo.test.ts` requires exactly one index of this shape per `VINCULO_INT_FRETE_CONTA` row; ML's and Shopee's have the same shape. The sync's 2-equality lookup and step 5's `apenasAtivo` 3-equality read both use its equality prefix. Neither query orders: the newest-`dataCadastro` tie-break is done client-side. A 3-field index reds T25, whether it replaces this one or sits beside it.
+  - **Rulesets:** none regenerate. `int_frete` is not in rules-gen's `VALIDATOR_WHITELIST` (`packages/rules-gen/src/registry.ts`), so a new `intFreteSchema` field emits no field clause, and the step changes no `*Meta`. Shopee step 20 added `contaShopeeFreteOuterRef` the same way and left both rulesets and both snapshots byte-identical.
   - **Env:** none.
-- **Seam:** the ML `intFreteSync.ts` pattern.
+- **Seam:** `intFreteContaSync(VINCULO_INT_FRETE_CONTA.lojaIntegrada)` from `@delfrance/data/admin/frete`. Do not copy the ML `intFreteSync.ts`: it is now itself a binding of the core. The new row in `packages/schemas/src/intFrete.ts`:
+  - Has `tipoConta: 3`, `tipoFrete: 'lojaIntegrada'`, `campoBackRef: 'contaLojaIntegradaEnviosOuterRef'` and a `rotuloLog`.
+  - Has a `prefixoDocId`, as Shopee's row does, so a first create lands at `<prefixoDocId>-<integracaoId>` (rule 7 tier 0). The lookup still adopts the legacy auto-id doc.
+  - Is added to T24 in `intFrete.vinculo.test.ts` too, because T24 pins every row byte for byte.
 - **Rule 7:**
-  - The trigger is watermarked against the event time (**tier 2**). The unit (the trigger event's time, converted to µs) is stated beside the field in the step plan, with a near-miss test (an equal event is ignored, a later one applies, an ms-unit stored value compares correctly).
-  - The mapa helper is a **class-B transaction** that re-reads `mapa` inside `tx.get`. Inventoried.
+  - The sync is **class A**, with no event clock and no watermark. `reconciliarIntFreteDaConta` takes only the id. Inside the transaction it re-reads three things through `tx.get`: the conta, the lookup and, on a miss, the deterministic id. So a replayed, retried or out-of-order event converges to the conta as it stands at commit.
+  - The `runTransaction` call lives in the core and is covered by the core's existing inventory row; extend that row's text to name LI. The LI trigger file never spells the identifier.
+  - The mapa helper stays LI-specific. It is a **class-B transaction** that re-reads `mapa` inside `tx.get`, with its own inventory row. The core's patches and deactivations never write `mapa`. They write only the scalar keys it builds (the mirrored fields, `tipo`, the back-ref and `ultimaModificacao`). Its create writes `mapa` only at the schema default, on a doc that did not exist. So the helper's appends survive every sync.
 - **Dry-run/valve:** none.
 - **Verification:**
   - An adopt-vs-create test (legacy doc adopted, no duplicate).
   - Mapa append idempotence (same id twice ⇒ one entry; a different code with the same id ⇒ no new entry).
-  - Out-of-order trigger events.
+  - Out-of-order trigger events converge to the conta's current state. There is no watermark to test.
+- **Window (§5 item 11, 2026-10-13):** this step's PR also ships a `tools/migrations` adoption pass in the shape of Shopee's `migrate:shopee-int-frete` (#1889). It plans through the trigger's own zero-option binding and applies through its `reconciliarIntFreteDaConta`, and its dry run must report zero `duplicados`, `nao-canonico` and `compartilhado` rows before the LI functions deploy. The binding takes no `refTolerante`: the legacy wrote the canonical back-ref (§3), so the pass reports the exception once instead of every lookup miss paying a `tipo ==` scan. That pass's `transform.ts` binds `syncShopee` at module level; parameterise it by the `VINCULO_INT_FRETE_CONTA` row rather than copying its STOP verdict (#1369).
 - **Web** (with step 21):
   - **The "Mapeamento do Frete" editor is NEW work.** Each row maps one LI shipping method to a target integration plus, for Melhor Envio, a service. No mapa editor exists in `apps/web` today: `apps/web/app/(app)/logistica/_components/slices.ts` deliberately excludes `mapa` from every screen.
   - **The "Horário de Corte" editor reuses** the existing `apps/web/app/(app)/logistica/_components/HorarioCorteEditor.tsx`.
@@ -1354,13 +1362,13 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Commands:** `firebase deploy --only firestore:indexes --project <new>`; `firebase deploy --only firestore:rules --project <new>`; `firebase deploy --config firebase.loja-integrada.deploy.json --project <new>`; App Hosting rollouts for `loja-integrada` and `web`.
    - **Verify:** indexes READY in the console; the queues are listed in Cloud Tasks; `/api/health` answers 200.
    - **Why the timing:** on Enterprise a missing index full-scans and bills instead of failing; an enqueue against a queue that does not exist yet is dropped while the route answers 200; `apps/web` calls the deployed backend.
-   - **Rulesets deployed:** those regenerated by steps 5, 9, 10, 12, 13 (if a collection was added) and 20. Steps 2 and 3 regenerate none: their collections (the credential subcollection, `notificacoesLojaIntegrada`, `pollPedidosLojaIntegrada`) are bare and default-denied, which `gen:rules:check` verifies.
+   - **Rulesets deployed:** those regenerated by steps 5, 9, 10, 12 and 13 (if a collection was added). Steps 2, 3 and 20 regenerate none: step 2's credential subcollection and step 3's collections (`notificacoesLojaIntegrada`, `pollPedidosLojaIntegrada`) are bare and default-denied, which `gen:rules:check` verifies; step 20's back-ref is a schema field on `int_frete`, which is not in the validator whitelist.
   - **Env at rollout (step 2):** the `apps/loja-integrada` rollout must set `ALLOWED_ADMIN_ORIGINS` (without it the backend allows no origin and every browser call fails CORS), and the `apps/web` rollout must set `NEXT_PUBLIC_LOJA_INTEGRADA_URL` to an `https:` origin (without it the credential panel stays disabled and says the backend is not configured).
    - **Indexes declared by this plan:**
      - `notificacoesLojaIntegrada (status, processedAt)`;
      - `notificacoesLojaIntegrada (status, contaId)` (step 3's token-save re-drive);
      - collection group `produtolojaintegrada (contaLojaIntegrada, id)`;
-     - `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo)`;
+     - `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)` (step 20, pinned by T25);
      - `importacoesLojaIntegrada (integracaoId, status)`;
      - collection group `categorialojaintegrada (contaLojaIntegrada, id)`;
      - plus any composite the step-12/13 plans add after measurement. The reused existing ones are named in those steps.
@@ -1395,6 +1403,11 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Action:** the owner opens each store's painel (Configurações > Chave para API) and uses **Remover** on the legacy's tokens only, identified by the label they were created with. The new integration's tokens stay.
    - **Verify:** the new integration's next poll still answers 2xx, and nothing else in the operation depends on the removed tokens.
    - **Why the timing:** removing them earlier stops the live legacy while it is still the sole writer of the LI store. Keeping them after the window leaves a live credential in the legacy project and in the migrated copy of the legacy credential field (item 2). Revocation makes both inert.
+11. **The `int_frete` adoption pass (step 20).**
+   - **Phase:** Phase 2, after the Firestore import (Shopee's twin is #1208 Phase 2b), with item 5's `int_frete` index READY, and before item 5's `loja-integrada` functions deploy (Phase 3 step 1).
+   - **Action:** the one-shot `tools/migrations` script written in step 20's PR, in the shape of Shopee's `migrate:shopee-int-frete` (#1889): dry run → `--apply` → dry run again. It plans through the trigger's own zero-option binding, `intFreteContaSync(VINCULO_INT_FRETE_CONTA.lojaIntegrada)` with no `refTolerante`, and applies through that binding's `reconciliarIntFreteDaConta`. It adopts the imported `EnviosLojaIntegrada` docs, creates the missing ones at `<prefixoDocId>-<integracaoId>`, and deactivates the orphans. It STOPS on duplicates, non-canonical back-refs and a doc two contas claim: `--apply` refuses before its first write while any is left, and a person resolves each one, never by deleting a doc.
+   - **Verify:** before the functions deploy, a dry run reports zero `duplicados`, `nao-canonico` and `compartilhado` rows. The dry run after `--apply` reports zero contas with a planned write (the idempotence check).
+   - **Why the timing:** an import fires no trigger, so no imported conta reaches `onIntegracaoLojaIntegradaChanged`. The binding has no tolerant scan, so a migrated doc whose back-ref is not canonical is invisible to the lookup. That conta's first save after the deploy would create `<prefixoDocId>-<integracaoId>` beside it with a null `mapa`, and step 5 would then import every order unmapped while the operator's mapping sits on the doc nothing reads. Not earlier: until the switch the legacy app is the sole live writer of these docs (it appends to `mapa` on import), so an earlier run is superseded.
 
 ---
 
