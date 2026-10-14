@@ -39,6 +39,7 @@ import {
   orderSchema,
   printResponseSchema,
   shipmentServicesResponseSchema,
+  shipmentServicesStrictResponseSchema,
   validationErrorSchema,
 } from './types';
 import type { z } from 'zod';
@@ -60,8 +61,16 @@ export interface MelhorEnvioApi {
   getMe(): Promise<Me>;
   /** `GET /api/v2/me/balance` — wallet balance. */
   getBalance(): Promise<Balance>;
-  /** `GET /api/v2/me/shipment/services` — carrier services + their company. */
-  listServices(): Promise<ShipmentService[]>;
+  /**
+   * `GET /api/v2/me/shipment/services` — carrier services + their company.
+   *
+   * By default a 2xx body that is not a list reads as `[]`, which is what
+   * `ensureCartAgency` needs (no carrier found → no agency added).
+   * `{ estrito: true }` refuses such a body with `MelhorEnvioSchemaError`
+   * instead — for a caller that shows the list, where `[]` would claim the
+   * account has no services.
+   */
+  listServices(opcoes?: { readonly estrito?: boolean }): Promise<ShipmentService[]>;
   /** `GET /api/v2/me/shipment/agencies` — a carrier's drop-off agencies. */
   listAgencies(params: {
     company: number | null;
@@ -197,12 +206,15 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
     );
   }
 
-  const listServices = (): Promise<ShipmentService[]> =>
+  // One call and one deadline either way; only the reading of the body differs.
+  const listServices = (opcoes?: { readonly estrito?: boolean }): Promise<ShipmentService[]> =>
     request<ShipmentService[]>(
       'listServices',
       'GET',
       '/api/v2/me/shipment/services',
-      shipmentServicesResponseSchema,
+      opcoes?.estrito === true
+        ? shipmentServicesStrictResponseSchema
+        : shipmentServicesResponseSchema,
     );
 
   const listAgencies = (params: {
