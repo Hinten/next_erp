@@ -24,6 +24,7 @@ import {
   balanceSchema,
   calculateResponseSchema,
   meSchema,
+  shipmentServiceSchema,
 } from '../melhor-envio/types';
 import type { CalculateRequest, CalculateResponse, CartInsertRequest } from '../melhor-envio/types';
 
@@ -49,10 +50,10 @@ import {
 /**
  * ⚠️ Schemas rather than interfaces, with the types inferred from them — one
  * definition, so the runtime check and the type cannot disagree. The ME wire
- * shapes (`meSchema`, `balanceSchema`, `agencySchema`, `calculateResponseSchema`)
- * are reused from `../melhor-envio/types` rather than re-described here: those
- * ARE the shapes this route forwards, and a second description of them would be
- * a second thing to keep in step.
+ * shapes (`meSchema`, `balanceSchema`, `agencySchema`, `shipmentServiceSchema`,
+ * `calculateResponseSchema`) are reused from `../melhor-envio/types` rather than
+ * re-described here: those ARE the shapes this route forwards, and a second
+ * description of them would be a second thing to keep in step.
  *
  * Unknown keys pass — nothing here is `.strict()`. The browser calls the
  * DEPLOYED apps/melhor-envio, so a newer backend must not break an older tab.
@@ -77,6 +78,20 @@ export const freightAgenciasResultSchema = z.object({
   agencies: z.array(agencySchema).default([]),
 });
 export type FreightAgenciasResult = z.infer<typeof freightAgenciasResultSchema>;
+
+/**
+ * `servicos` result — the carrier services of a Melhor Envio account, each with
+ * its company. Feeds the service picker of a sales channel's freight mapping.
+ *
+ * ⚠️ The array is REQUIRED, unlike `agencias`' `.default([])`: that default rests
+ * on a caller already reading the field tolerantly, and nothing reads this one
+ * that way. A 2xx without `servicos` did not come from this route, and an empty
+ * picker would read as "this account has no services" — a claim nobody made.
+ */
+export const freightServicosResultSchema = z.object({
+  servicos: z.array(shipmentServiceSchema),
+});
+export type FreightServicosResult = z.infer<typeof freightServicosResultSchema>;
 
 /** `comprar` result — the bought label, its print URL and tracking code. */
 export const freightComprarResultSchema = z.object({
@@ -125,6 +140,13 @@ export interface FreightHttpClient {
     intFreteId: string,
     params: { service: number; state: string; city: string },
   ): Promise<FreightAgenciasResult>;
+  /**
+   * The account's carrier services (`id`, `name`, `company`) — what a freight
+   * mapping row stores as its Melhor Envio target. The account's token stays on
+   * the server. A backend that predates the route answers 404
+   * (`FreightNotFoundError`), which a caller may read as "not available yet".
+   */
+  servicos(intFreteId: string): Promise<FreightServicosResult>;
   /** Buy + generate + print a label for `pedidoId` (idempotent on resume). */
   comprar(
     intFreteId: string,
@@ -174,6 +196,7 @@ export const FREIGHT_NIVEL_POR_OPERACAO = {
   calculate: 'curto',
   conta: 'curto',
   agencias: 'curto',
+  servicos: 'curto',
   comprar: 'longo',
   imprimir: 'curto',
   rastrear: 'curto',
@@ -452,6 +475,13 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
         freightAgenciasResultSchema,
       );
     },
+    servicos: (intFreteId) =>
+      call(
+        'servicos',
+        'GET',
+        `/api/freight/melhor-envio/servicos?intFreteId=${encodeURIComponent(intFreteId)}`,
+        freightServicosResultSchema,
+      ),
     comprar: (intFreteId, pedidoId, cartPayload, printLabelId) =>
       call('comprar', 'POST', '/api/freight/melhor-envio/comprar', freightComprarResultSchema, {
         intFreteId,
