@@ -402,6 +402,8 @@ describe('lib/lojaIntegrada layout', () => {
         'core/redacao.ts',
         'core/refCredencial.ts',
         'core/valvulas.ts',
+        'core/ritmo.ts',
+        'notificacoes/notificacao.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
         'sanitizacao/lote.ts',

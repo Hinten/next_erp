@@ -169,10 +169,50 @@ still be fixed. Only the context loader refuses those.
 - The read switch `LOJA_INTEGRADA_CHAMADAS` (D17): only the exact `on` lets this code call
   Loja Integrada. Both credential `PUT`s check it right after the id, before the body is
   read: otherwise 503 `LI_CHAMADAS_DESLIGADAS` and one `chamada-bloqueada` line, with zero
-  fetches. The `DELETE` makes no call and is not gated. Step 3's context loader checks it
-  too. It stays unset everywhere (locally and in staging too) until the window sets it.
+  fetches. The `DELETE` makes no call and is not gated. The context loader checks it FIRST,
+  before any Firestore read (`deps.ambiente` is required). It stays unset everywhere
+  (locally and in staging too) until the window sets it.
 - The names live in the root `.env.example` (blank) and as comment rows in
   `apphosting.yaml`, never `env:` rows; `valvulas.test.ts` pins both.
+
+## Notification pipeline (step 3)
+
+- `notificacoes/notificacao.ts` binds the shared failures-only core to
+  `notificacoesLojaIntegrada` (bare schema, ids only, unknown keys stripped). ONE reads
+  queue, `filaLeituraLojaIntegrada` (= the function name), dispatching on `tipo`.
+- A run: the context (switch, conta, credential), then the importer SEAM
+  (`DESTINO_TIPO_LI`, empty until step 5 ⇒ `importador-ausente` PARKS). Only the functions
+  roots read `importadorPedidoLi()`; `lib` takes `deps.importador`.
+- Classifier: the app refusals (switch off, inactive, token missing/corrupt, parked)
+  DEFER; conta gone DROPS; `LiAuthError` parks the conta (`tratarFalhaDeAutenticacao`) and
+  defers, or rethrows when the 401 was for an older token; 404 parks; a non-transient
+  HTTP/schema/paging/Zod refusal parks (class and status only); 429, 5xx, network,
+  `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base.
+- A parked conta DEFERS, never drops (#808): daily re-drive for 7 days,
+  `graduateDeferredTransientErrors`, and on a token save or renewal the routes' best-effort
+  `redriveAposSalvarTokenLi` (`(status, contaId)` index; a gRPC failure is logged, the 200
+  stays). Accepted residue (Q4): a re-drive between the deferred sweep's read and its mark
+  is overwritten — one more day, or parked on the 7th pass. It moves only rows already
+  `deferred`, so a task's create or a hot-sweep migration that found the park before it and
+  writes after it waits up to one more day (`tentativas` 0). Reverse: the re-drive's write
+  has no precondition, so a park landing between its query and its write is reset to
+  `failed`/0/0 — one extra attempt, then a re-park or an import. Its writes go 20 at a
+  time (`CONCORRENCIA_REDRIVE_LI`): the routes await it inside the ceiling `prazos.test.ts`
+  budgets.
+- The pacer (`core/ritmo.ts`): 2 000 ms before EVERY call through a context, in the getter,
+  outside the request deadline.
+- Doc id `<conta>:<numero>:<origem>:<stamp digits | ->`, built from schema-validated parts
+  (no doc-id guard); the stamp is in it, so a parked row never swallows a later change.
+- Never write `onTaskDispatched(` in `lib/`: triggers live in `functions/`.
+- The producer `notificacoes/agendador.ts` is pure (the queue is a parameter): exactly
+  `LOJA_INTEGRADA_TASKS_DISABLED=1` → `LiTarefasDesligadasError`; a transient Cloud Tasks
+  failure (REST, STRING codes; `functions/*` only WITH an `httpResponse`) →
+  `LiTarefasTransitoriasError`; anything else rethrown untouched. The payload goes ALONE (no
+  task id, no `uri`). Each root reads the env and binds the queue (`functions/src/agendador.ts`;
+  App Hosting from step 4). Fake failures with `testing/falhaDeEnfileiramento.ts`.
+- The functions roots bind every read run's deps in ONE place, `functions/src/depsLeitura.ts`
+  (env whole, the importer from the seam table per run). `index.ts` exports only triggers:
+  any other runtime export there reads as a Cloud Function name.
 
 ## Config
 
