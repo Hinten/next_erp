@@ -93,9 +93,15 @@ export type CategoriaLi = z.infer<typeof liCategoriaSchema>;
  * task payload's grammar (`numeroPedidoLiSchema`, positive decimal) is checked
  * where the payload is built.
  *
- * ⚠️ Written against the public document's two example rows, the exception to
- * the rule above: it stays that way only until a captured search response
- * (capture C1) is committed as a fixture and confirms it.
+ * Written first against the public document's two example rows, then
+ * CONFIRMED by the owner's C1 captures (the `pedido-search-*` fixtures of
+ * `apps/loja-integrada`): every captured row passes it, its `data_modificacao`
+ * is already a canonical stamp, and the filtered search lists no row below the
+ * bound it was sent — pinned by
+ * `apps/loja-integrada/lib/lojaIntegrada/pedidos/capturasBusca.test.ts`.
+ * ⚠️ The captured rows come ordered by `numero`, NOT by `data_modificacao`;
+ * the poller deliberately assumes no order (its cursor is the max stamp over
+ * the whole drain).
  */
 export const liPedidoBuscaLinhaSchema = z
   .object({

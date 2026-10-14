@@ -247,8 +247,13 @@ still be fixed. Only the context loader refuses those.
   open aviso.
 - A conta parked mid-drain keeps its stored `vistos` (the run's additions are dropped, so
   they are re-enqueued once the token is back).
-- The row schema is written from the public document's two examples: PR 3-e stays a
-  draft until it is checked against the owner's committed captures (`__wire__/pedido-*`).
+- The row schema was written from the public document's two examples and is now
+  CONFIRMED by the owner's C1 captures (`__wire__/pedido-search-*`): every row passes it,
+  `data_modificacao` arrives already canonical, the filtered search lists nothing below
+  its bound (so `filtroIgnoradoLi` stays false), and the `%3A` capture is byte for byte
+  the query the poller sends. Pinned by `pedidos/capturasBusca.test.ts`. ⚠️ The rows come
+  ordered by `numero`, NOT by `data_modificacao`; the poller deliberately assumes no
+  order (the cursor is the max stamp over the whole drain).
 
 ## CI (step 3)
 
