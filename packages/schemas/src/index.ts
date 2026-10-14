@@ -1463,3 +1463,10 @@ export { RETURN_SN_SHOPEE_MAX, ehReturnSnShopee } from './devolucaoShopee';
 // (#1369). Not a collection, so no `registry.ts` entry. A star export on purpose:
 // the fold-inventory scan greps raw text, so a listed barrel would need a row.
 export * from './receitaKitShopee';
+
+// The machine-readable next step of a Shopee publish refusal (step 21, #1529):
+// the refusal sites in `apps/shopee` produce it, the web's wire parses it per row
+// and maps it to a button — one vocabulary, never a second copy (#1369). Also the
+// ONE copy of the wait an uncertain kit create asks for. Not a collection, so no
+// `registry.ts` entry.
+export * from './shopeeAcaoSugerida';
