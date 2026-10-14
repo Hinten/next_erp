@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { FirebaseError } from 'firebase/app';
+import type { Firestore } from 'firebase/firestore';
+import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { createMercadoLivreClient } from '@/lib/mercado-livre/client';
 
+import { enviarEstoqueParaMarketplaces } from '../estoque/enviarEstoqueRun';
 import { PushProgressDialog } from './PushProgressDialog';
 import type { PushRowBase } from './types';
 
@@ -117,6 +121,63 @@ describe('PushProgressDialog — a run that BREAKS', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Fechar' })).toBeTruthy();
     });
+    expect(screen.queryByText('O envio foi interrompido')).toBeNull();
+  });
+});
+
+describe('PushProgressDialog — cancellation', () => {
+  it('keeps cancellation visible when the final account fetch is aborted', async () => {
+    let requestStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    const fetchImpl = vi.fn<typeof globalThis.fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('The operation was aborted.', 'AbortError')),
+            { once: true },
+          );
+          requestStarted();
+        }),
+    );
+    const mercadoLivre = createMercadoLivreClient({
+      baseUrl: 'http://localhost:3006',
+      getAuthToken: async () => 'token',
+      fetch: fetchImpl,
+    });
+    renderDialog((reenviarComErro, signal, onProgress) =>
+      enviarEstoqueParaMarketplaces(
+        [{ produtoId: 'p1', produtoNome: 'Camiseta', integracoesComProduto: ['c1'] }],
+        reenviarComErro,
+        {
+          db: {} as Firestore,
+          deps: { mercadoLivre },
+          lerIntegracoes: async () =>
+            new Map([
+              ['c1', { nome: 'Loja ML', tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: true }],
+            ]),
+          signal,
+        },
+        onProgress,
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar preços' }));
+    // Abort only once fetch has started, before there are response headers.
+    // This exercises the client's wrapped fetch error and the real runner's
+    // terminal cancellation flag, rather than returning a canned run result.
+    await started;
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    expect(await screen.findByRole('button', { name: 'Fechar' })).toBeTruthy();
+    expect(
+      screen.getByText('Execução cancelada — os itens já processados foram concluídos.'),
+    ).toBeTruthy();
+    expect(screen.queryAllByTestId(/^envio-preco-row-/)).toHaveLength(0);
+    expect(screen.queryByText('Não foi possível contatar o serviço do Mercado Livre.')).toBeNull();
     expect(screen.queryByText('O envio foi interrompido')).toBeNull();
   });
 });
