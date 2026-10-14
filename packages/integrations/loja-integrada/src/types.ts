@@ -15,9 +15,10 @@
  *
  * ## Numbers
  *
- * ⚠️ This is the ONLY file under `src/` that uses Zod for numbers, and every one
- * goes through `wireInt()` / `wireNumber()` from `@delfrance/core/wire`: a
- * serializer that quotes ONE field must not cost the whole page (#1087).
+ * ⚠️ This file and `pedidoTipos.ts` are the only ones under `src/` that use Zod
+ * for numbers, and every one goes through `wireInt()` / `wireNumber()` from
+ * `@delfrance/core/wire`: a serializer that quotes ONE field must not cost the
+ * whole page (#1087).
  * Enforced by
  * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`,
  * which scans every file under `src/` and anchors on three lines of this file.

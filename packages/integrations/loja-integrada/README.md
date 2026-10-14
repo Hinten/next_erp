@@ -6,14 +6,16 @@ store, the connect route, the sweeps) lives in `apps/loja-integrada`.
 
 What ships here:
 
-| Module         | Holds                                                                                          |
-| -------------- | ---------------------------------------------------------------------------------------------- |
-| `api.ts`       | `URL_BASE_LI`, `CAMINHO_VALIDACAO` and `validarPersonalToken`, the validating GET              |
-| `client.ts`    | The GET-only transport: `criarClienteLeituraLi`, the strict token check, no redirect following |
-| `paginacao.ts` | `paginarLi`, Tastypie paging rebuilt from `meta.next`, with caller cancellation                |
-| `prazos.ts`    | `PRAZO_LI_MS`, the per-call deadline keyed on the operation class                              |
-| `types.ts`     | The `{ meta, objects }` paging envelope and the categoria row schema                           |
-| `errors.ts`    | The typed errors, the 429 scope (read from the body) and `Retry-After` (from the header)       |
+| Module           | Holds                                                                                                                  |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `api.ts`         | `URL_BASE_LI`, `CAMINHO_VALIDACAO` and `validarPersonalToken`, the validating GET                                      |
+| `client.ts`      | The GET-only transport: `criarClienteLeituraLi`, the strict token check, no redirect following                         |
+| `paginacao.ts`   | `paginarLi`, Tastypie paging rebuilt from `meta.next`, with caller cancellation                                        |
+| `pedidos.ts`     | The order import's reads: `buscarPedidoLi`, `listarHistoricoSituacaoLi` (every page) and `buscarProdutoPorIdExternoLi` |
+| `pedidoTipos.ts` | The order detail, situação, situação-history row and produto-identity response schemas, written against captures       |
+| `prazos.ts`      | `PRAZO_LI_MS`, the per-call deadline keyed on the operation class                                                      |
+| `types.ts`       | The `{ meta, objects }` paging envelope and the categoria row schema                                                   |
+| `errors.ts`      | The typed errors, the 429 scope (read from the body) and `Retry-After` (from the header)                               |
 
 ## The token rule
 
@@ -50,7 +52,11 @@ token **raw** after `Basic ` (not base64-encoded by us).
   only consumer, and it redacts the event before anything is written.
 - **No body excerpt on any error.** Response text never rides an exception.
 - **No `process.env`.** Every value is a parameter.
-- **No resource schemas beyond the paging envelope and categoria.** The rest arrive
+- **No resource schema before its first consumer.** Beyond the paging envelope and
+  categoria, only the order import's shapes ship (`pedidoTipos.ts`); the rest arrive
   with their first consumer, written against captured responses.
+- **No decision about an order.** `pedidos.ts` reads and parses; mapping a
+  situação, a payment or a line is the app's (`apps/loja-integrada`), through the
+  shared situação table in `@delfrance/schemas`.
 - **No `build` script**, deliberately: `ci.yml`'s seven-job split relies on no
   `packages/*` workspace defining one.
