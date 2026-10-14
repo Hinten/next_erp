@@ -298,6 +298,20 @@ describe('MapaFreteManager — states', () => {
     expect(screen.queryByTestId('mapa-frete-linha-0')).toBeNull();
   });
 
+  it('a doc that no longer belongs to the conta is read-only, and says why', () => {
+    // The listener stopped naming the loaded doc (its back-ref or tipo moved):
+    // a save would write a doc the conta no longer routes by.
+    renderManager([linha(1)], { frete: { ...ENCONTRADO, naConsulta: false } });
+    expect(destino(0)?.disabled).toBe(true);
+    expect(screen.getByText('O frete desta conta mudou')).toBeTruthy();
+  });
+
+  it('NEAR-MISS: the same doc still in the conta’s query is editable', () => {
+    renderManager([linha(1)], { frete: { ...ENCONTRADO, naConsulta: true } });
+    expect(destino(0)?.disabled).toBe(false);
+    expect(screen.queryByText('O frete desta conta mudou')).toBeNull();
+  });
+
   it('an inactive doc and a conta with several docs are both flagged', () => {
     renderManager([linha(1)], { frete: { ...ENCONTRADO, ativo: false, total: 2 } });
     expect(screen.getByText('Frete inativo')).toBeTruthy();

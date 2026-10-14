@@ -32,6 +32,8 @@ const h = vi.hoisted(() => ({
   occ: null as unknown as import('@delfrance/data/testing').OccEngine,
   ler: (_path: string, raw: Record<string, unknown>): Record<string, unknown> => raw,
   alvos: [] as { id: string; data: Record<string, unknown> }[],
+  /** How many times the target list was read (`getDocs`). */
+  leiturasAlvos: 0,
   permissoes: 0n,
   replace: vi.fn(),
   toasts: [] as string[],
@@ -105,9 +107,10 @@ vi.mock('firebase/firestore', async (importActual) => ({
   ...(await importActual<typeof import('firebase/firestore')>()),
   runTransaction: (_db: unknown, fn: (tx: OccTransaction) => Promise<unknown>) =>
     h.occ.runTransaction(fn),
-  getDocs: async () => ({
-    docs: h.alvos.map((a) => ({ id: a.id, data: () => structuredClone(a.data) })),
-  }),
+  getDocs: async () => {
+    h.leiturasAlvos += 1;
+    return { docs: h.alvos.map((a) => ({ id: a.id, data: () => structuredClone(a.data) })) };
+  },
   getDoc: async (ref: { path: string }) => ({ data: () => h.docs.get(ref.path) }),
   deleteDoc: vi.fn(),
 }));
@@ -302,6 +305,7 @@ beforeEach(() => {
   h.consultaDoCache = false;
   h.toasts.length = 0;
   h.servicos.mockClear();
+  h.leiturasAlvos = 0;
   h.replace.mockReset();
   h.alvos = [
     { id: 'moto-1', data: { tipo: 'motoboy', nome: 'Moto Centro', ativo: true } },
@@ -603,6 +607,16 @@ describe('/canais/loja-integrada/[id] — the freight tabs ride the conta’s sa
     await waitFor(() => expect(destino(0).value).toBe('Moto antiga (excluída)'));
     expect(destino(1).value).toBe('Balcão (Retirar na Loja) (inativa)');
     expect(destino(2).value).toBe('Moto Sul (Motoboy)');
+  });
+
+  it('the target list is read only once the mapping tab is opened', async () => {
+    // The tab is mounted from page load; a conta screen opened for anything else
+    // must not pay for the freight picker.
+    await renderPage();
+    expect(screen.getByTestId('mapa-frete-linha-0')).toBeTruthy();
+    expect(h.leiturasAlvos).toBe(0);
+    await abrirAba('Mapeamento do Frete');
+    await waitFor(() => expect(h.leiturasAlvos).toBe(1));
   });
 
   it('a stored Melhor Envio row asks the backend for its services only once the tab is opened', async () => {

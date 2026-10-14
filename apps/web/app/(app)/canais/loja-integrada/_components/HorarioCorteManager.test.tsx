@@ -90,6 +90,12 @@ describe('HorarioCorteManager', () => {
     expect(adicionar()?.disabled).toBe(true);
   });
 
+  it('read-only once the loaded doc no longer belongs to the conta, and says why', () => {
+    renderManager([LINHA], { frete: { ...ENCONTRADO, naConsulta: false } });
+    expect(adicionar()?.disabled).toBe(true);
+    expect(screen.getByText('O frete desta conta mudou')).toBeTruthy();
+  });
+
   it('(c) offers no editor before the server-truth seed', () => {
     h.pronto = false;
     renderManager([LINHA]);
