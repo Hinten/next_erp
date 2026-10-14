@@ -25,7 +25,7 @@ interface Disco {
   readonly naoArquivos?: readonly string[];
   readonly git?: readonly string[];
   readonly fixtures?: Readonly<Record<string, string>>;
-  readonly outros?: Readonly<Record<string, string>>;
+  readonly outros?: Readonly<Record<string, string | Uint8Array>>;
 }
 
 function disco(d: Disco = {}): SistemaDeArquivosDaSanitizacao & { readonly lidos: string[] } {
@@ -55,7 +55,8 @@ function disco(d: Disco = {}): SistemaDeArquivosDaSanitizacao & { readonly lidos
     fixtureExistente: (nome) => d.fixtures?.[nome] ?? null,
     lerArquivo: (caminho) => {
       const v = d.outros?.[caminho];
-      return v === undefined ? null : b(v);
+      if (v === undefined) return null;
+      return typeof v === 'string' ? b(v) : v;
     },
   };
 }
@@ -375,6 +376,203 @@ describe('--verificar', () => {
     );
     expect(r.saida).toContain('arquivo-1:1 :: cpf');
     expect(r.saida.toLowerCase()).not.toContain('exemplo');
+  });
+
+  it('a file that is not valid UTF-8 is refused, never read through replacement characters', () => {
+    // A Windows-1252 `ê` (0xEA): decoded leniently it becomes U+FFFD, the name
+    // folds to `loja ex mplo`, and the run would print `clean.`.
+    const r = rodar(
+      ['--entrada', PASTA, '--verificar', 'doc.md', 'ok.md'],
+      disco({
+        outros: {
+          'doc.md': new Uint8Array([...b('a Loja Ex'), 0xea, ...b('mplo vendeu\n')]),
+          'ok.md': '﻿tudo certo, até aqui\n',
+        },
+      }),
+    );
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida).toContain('  doc.md :: utf8-invalido\n');
+    expect(r.saida).not.toContain('ok.md');
+    expect(r.saida.toLowerCase()).not.toContain('mplo');
+  });
+});
+
+describe('--verificar — a name split by a line wrap', () => {
+  /** A list holding only a three-word name, so two of its words alone match nothing. */
+  const TRES_PALAVRAS = 'Loja Exemplo Moda\n';
+
+  /** `doc.md` checked against the store-name list `nomes`. */
+  const verificarDoc = (texto: string, nomes = NOMES) =>
+    rodar(
+      ['--entrada', PASTA, '--verificar', 'doc.md'],
+      disco({ arquivos: { 'nomes-proibidos.txt': nomes }, outros: { 'doc.md': texto } }),
+    );
+
+  /** The finding lines, in order, without their indent. */
+  const achadosDe = (saida: string) =>
+    saida
+      .split('\n')
+      .filter((l) => l.startsWith('  '))
+      .map((l) => l.trim());
+
+  /** Refused with exactly these findings, and never a word of the name in the output. */
+  function esperarAchados(texto: string, esperados: readonly string[], nomes = NOMES) {
+    const r = verificarDoc(texto, nomes);
+    expect(achadosDe(r.saida)).toEqual(esperados);
+    expect(r).toMatchObject({ codigo: 1, escritas: [] });
+    expect(r.saida.toLowerCase()).not.toContain('exemplo');
+    expect(r.saida.toLowerCase()).not.toContain('moda');
+  }
+
+  function esperarLimpo(texto: string, nomes = NOMES) {
+    const r = verificarDoc(texto, nomes);
+    expect(achadosDe(r.saida)).toEqual([]);
+    expect(r).toMatchObject({ codigo: 0, escritas: [] });
+    expect(r.saida).toContain('clean.');
+  }
+
+  it('a two-word name split across two lines is `<file>:<n>-<m>`', () => {
+    esperarAchados('o pedido da Loja\nExemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    // After an unrelated line: the 3-line window 1-3 does not repeat the 2-line one.
+    esperarAchados('linha limpa\no pedido da Loja\nExemplo chegou\n', [
+      'doc.md:2-3 :: nome-de-loja',
+    ]);
+  });
+
+  it('a three-word name split across two lines, at either space', () => {
+    esperarAchados(
+      'chegou o pedido da Loja Exemplo\nModa ontem\n',
+      ['doc.md:1-2 :: nome-de-loja'],
+      TRES_PALAVRAS,
+    );
+    esperarAchados(
+      'chegou o pedido da Loja\nExemplo Moda ontem\n',
+      ['doc.md:1-2 :: nome-de-loja'],
+      TRES_PALAVRAS,
+    );
+  });
+
+  it('a three-word name split across three lines is reported once, as the 3-line window', () => {
+    esperarAchados(
+      'chegou o pedido da Loja\nExemplo\nModa ontem\n',
+      ['doc.md:1-3 :: nome-de-loja'],
+      TRES_PALAVRAS,
+    );
+  });
+
+  it("a continuation line's quote markers, indentation and list marker are dropped before the join", () => {
+    esperarAchados('> o pedido da Loja\n> Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('> > o pedido da Loja\n> > Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('- o pedido da Loja\n  Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    // Unstripped, the `2.` would sit between the words (`loja 2 exemplo`) and hide the name.
+    esperarAchados('1. o pedido da Loja\n2. Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('- o pedido da Loja\n  1) Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    // A marker needs a space after it: the `2.0` after `1. ` belongs to the name.
+    esperarAchados(
+      'o pedido da Loja\n1. 2.0 Exemplo chegou\n',
+      ['doc.md:1-2 :: nome-de-loja'],
+      'Loja 2.0 Exemplo\n',
+    );
+  });
+
+  it('the window is read as written too: a number opening a line may end a name', () => {
+    // Read only with the `2000. ` dropped as a list marker, the name would lose its last word.
+    esperarAchados(
+      'o pedido da Loja Exemplo\n2000. Depois chegou outro\n',
+      ['doc.md:1-2 :: nome-de-loja'],
+      'Loja Exemplo 2000\n',
+    );
+  });
+
+  it('CRLF endings: the same label, and the header counts the same lines', () => {
+    const r = verificarDoc('o pedido da Loja\r\nExemplo chegou\r\n');
+    expect(achadosDe(r.saida)).toEqual(['doc.md:1-2 :: nome-de-loja']);
+    expect(r.saida).toContain('sanitizar --verificar: 1 file(s), 3 line(s).\n');
+    expect(r.codigo).toBe(1);
+  });
+
+  it('a blank line between the parts is fail-closed: the window spans it', () => {
+    esperarAchados('o pedido da Loja\n\nExemplo chegou\n', ['doc.md:1-3 :: nome-de-loja']);
+    esperarAchados('> o pedido da Loja\n>\n> Exemplo chegou\n', ['doc.md:1-3 :: nome-de-loja']);
+  });
+
+  it('a kind one of its lines already reports is not repeated by the window; another occurrence is', () => {
+    esperarAchados('a Loja Exemplo vendeu, e a Loja\nExemplo também\n', [
+      'doc.md:1 :: nome-de-loja',
+    ]);
+    esperarAchados('a Loja Exemplo vendeu\nde novo a Loja\nExemplo também\n', [
+      'doc.md:1 :: nome-de-loja',
+      'doc.md:2-3 :: nome-de-loja',
+    ]);
+  });
+
+  it('a phone wrapped at its space is reported once, on the line holding the number', () => {
+    // No redactor pattern needs the joining space: the number alone already matches.
+    const r = verificarDoc('ligue +55 (00)\n91234-5678 hoje\n');
+    expect(achadosDe(r.saida)).toEqual(['doc.md:2 :: telefone']);
+    expect(r.codigo).toBe(1);
+    expect(r.saida).not.toContain('91234');
+  });
+
+  it('near-misses stay clean', () => {
+    // The words on lines separated by an unrelated non-blank line.
+    esperarLimpo('o pedido da Loja\nfoi entregue ontem\nExemplo de texto\n');
+    // A different word order.
+    esperarLimpo('o Exemplo\nLoja chegou\n');
+    // Two of the three words.
+    esperarLimpo('o pedido da Loja\nExemplo chegou\n', TRES_PALAVRAS);
+    esperarLimpo('o pedido da Loja Exemplo\nchegou ontem\n', TRES_PALAVRAS);
+    // The same words, never adjacent: farther apart than a window, or with a word between.
+    esperarLimpo('a Loja\nalfa\nbeta\nExemplo\n');
+    esperarLimpo('a Loja nova\nExemplo antigo\n');
+  });
+
+  it('more continuation markers: a letter, a parenthesised one, a task box, a line-number gutter', () => {
+    // Kept between the words, each would hide the name (`loja b exemplo`).
+    esperarAchados('a. o pedido da Loja\nb. Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('B) o pedido da Loja\nC) Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('(1) o pedido da Loja\n(2) Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('(a) o pedido da Loja\n(b) Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+    esperarAchados('- [ ] o pedido da Loja\n- [x] Exemplo chegou\n', [
+      'doc.md:1-2 :: nome-de-loja',
+    ]);
+    // A pasted listing's line numbers.
+    esperarAchados('12  o pedido da Loja\n13  Exemplo chegou\n', ['doc.md:1-2 :: nome-de-loja']);
+  });
+
+  it('each continuation line is read both ways on its own: one marker dropped, the next kept', () => {
+    // The `2.` must go and the `2000.` must stay: neither "drop every marker"
+    // nor "keep every marker" reads `loja exemplo 2000`.
+    esperarAchados(
+      '1. o pedido da Loja\n2. Exemplo\n2000. fim\n',
+      ['doc.md:1-3 :: nome-de-loja'],
+      'Loja Exemplo 2000\n',
+    );
+  });
+
+  it('a word cut by a hyphen that ends the line is also read rejoined, so a one-word name is found', () => {
+    // A one-word name has no separator-free form to fall back on: joined by a
+    // space, `Exem-` / `plaria` reads `exem plaria`.
+    const UMA_PALAVRA = 'Exemplaria\n';
+    esperarAchados('a Exem-\nplaria abriu\n', ['doc.md:1-2 :: nome-de-loja'], UMA_PALAVRA);
+    esperarAchados('a Exem­\nplaria abriu\n', ['doc.md:1-2 :: nome-de-loja'], UMA_PALAVRA);
+    esperarAchados('- a Exem-\n  plaria abriu\n', ['doc.md:1-2 :: nome-de-loja'], UMA_PALAVRA);
+    esperarAchados('a Exem-\nplar-\nia abriu\n', ['doc.md:1-3 :: nome-de-loja'], UMA_PALAVRA);
+    // Near-misses: a hyphen inside the line, and a word between the parts.
+    esperarLimpo('a Exem-plo\nplaria abriu\n', UMA_PALAVRA);
+    esperarLimpo('a Exem-\nnova plaria\n', UMA_PALAVRA);
+  });
+
+  it('a string escape is decoded: a line break written as `\\n` sits on one physical line', () => {
+    // Read raw, the escape's letter glues onto the next word (`loja nexemplo`).
+    esperarAchados('{"obs": "a Loja\\nExemplo chegou"}\n', ['doc.md:1 :: nome-de-loja']);
+    esperarAchados("const obs = 'a Loja\\tExemplo';\n", ['doc.md:1 :: nome-de-loja']);
+    esperarAchados('{"obs": "a Loja\\u00a0Exemplo"}\n', ['doc.md:1 :: nome-de-loja']);
+    esperarAchados('{"obs": "a Loja Ex\\u00eamplo"}\n', ['doc.md:1 :: nome-de-loja']);
+    esperarAchados("'a Loja\\x20Exemplo'\n", ['doc.md:1 :: nome-de-loja']);
+    esperarAchados("'a Loja\\u{20}Exemplo'\n", ['doc.md:1 :: nome-de-loja']);
+    // An escaped backslash is a backslash: `\\` + `n` is not a line break.
+    esperarLimpo('{"obs": "a Loja\\\\nExemplo"}\n');
   });
 });
 
