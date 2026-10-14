@@ -147,6 +147,65 @@ describe('building the next request from meta.next', () => {
     expect(segunda.getAll('limit')).toHaveLength(1);
   });
 
+  it('a key in next that the caller did not send is DROPPED — only offset and the caller keys travel', async () => {
+    // The captured order search answers a `next` with an undocumented extra key;
+    // forwarding it would send a parameter nobody reviewed.
+    const f = sequencia(
+      pagina(0, '/api/v1/categoria?offset=20&limit=20&an=Xy7-qq_9Zt', [1]),
+      pagina(20, null, [2]),
+    );
+    await coletar(categorias(f, { query: { limit: 20 } }));
+    const segunda = requisicao(f, 1).url.searchParams;
+    expect([...segunda.keys()].sort()).toEqual(['limit', 'offset']);
+    expect(segunda.get('offset')).toBe('20');
+    expect(requisicao(f, 1).url.href).not.toContain('an=');
+  });
+
+  it('an unknown next key carrying a token-shaped value no longer costs the page', async () => {
+    // Forwarded, it would reach the client's token-in-URL refusal and throw
+    // `LiConfigError('token-na-url')` for a key this package never needed.
+    const f = sequencia(
+      pagina(0, `/api/v1/categoria?offset=20&an=${TOKEN}`, [1]),
+      pagina(20, null, [2]),
+    );
+    const paginas = await coletar(categorias(f));
+    expect(paginas).toHaveLength(2);
+    expect(requisicao(f, 1).url.href).not.toContain(TOKEN);
+  });
+
+  it('near-miss: a CALLER key whose next value carries the token is still refused by the client', async () => {
+    // The drop narrows what is forwarded; it does not weaken the client's check
+    // on what IS forwarded.
+    const f = sequencia(
+      pagina(0, `/api/v1/categoria?offset=20&removido=${TOKEN}`, [1]),
+      pagina(20, null, [2]),
+    );
+    const err = await falha(coletar(categorias(f, { query: { limit: 20, removido: false } })));
+    expect(err).toBeInstanceOf(LiConfigError);
+    expect((err as LiConfigError).motivo).toBe('token-na-url');
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it('a REPEATED key the caller did not send is dropped with the rest, not refused', async () => {
+    const f = sequencia(
+      pagina(0, '/api/v1/categoria?offset=20&an=a&an=b', [1]),
+      pagina(20, null, [2]),
+    );
+    expect(await coletar(categorias(f))).toHaveLength(2);
+    expect(requisicao(f, 1).url.searchParams.has('an')).toBe(false);
+  });
+
+  it('near-miss: a REPEATED caller key is still refused as ambiguous', async () => {
+    const f = sequencia(
+      pagina(0, '/api/v1/categoria?offset=20&removido=true&removido=false', [1]),
+      pagina(20, null, [2]),
+    );
+    const err = await falha(coletar(categorias(f, { query: { limit: 20, removido: false } })));
+    expect(err).toBeInstanceOf(LiSchemaError);
+    expect(err).toMatchObject({ motivo: 'formato', campos: ['meta.next'] });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
   it('every page requests the caller path, under its own deadline signal', async () => {
     const f = sequencia(pagina(0, '/api/v1/categoria?offset=20', [1]), pagina(20, null, [2]));
     await coletar(categorias(f));
