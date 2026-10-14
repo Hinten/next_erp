@@ -43,13 +43,13 @@ the bundle, proven before the first deploy.
 - The App Hosting backend for `apps/shopee` created in the Firebase console.
 - Env / secrets on the deployed function: `FIREBASE_PROJECT_ID` + admin creds,
   plus `SHOPEE_PARTNER_ID` and `SHOPEE_PARTNER_KEY` in Secret Manager (see
-  **Secrets** below — both are `secrets:` on seventeen of the **nineteen**
+  **Secrets** below — both are `secrets:` on seventeen of the **twenty**
   functions: the **five queue handlers** (step 14's `processShopeeNfeUpload` is
   the fifth) plus the **twelve** schedules (step 17's `sweepShopeeReturns` is
-  the twelfth). ⚠️ The exceptions are the two
-  Firestore triggers — step 11's `onProdutoShopeeLinkChanged` and step 14's
-  `onNfeAprovadaShopee` — and they bind **none** of them, because neither calls
-  Shopee).
+  the twelfth). ⚠️ The exceptions are the three Firestore triggers — step 11's
+  `onProdutoShopeeLinkChanged`, step 14's `onNfeAprovadaShopee` and step 20's
+  `onIntegracaoShopeeChanged` — and they bind **none** of them, because none
+  calls Shopee).
 - **Region match**: the App Hosting backend must enqueue onto the queue in the
   function's region. The enqueuer resolves it from
   `SHOPEE_TASKS_REGION ?? FUNCTIONS_REGION`, and there is **no default** — an
@@ -169,18 +169,20 @@ number and exits 0 — it reports green over exactly the step-7 regression this
 block exists to catch. Only `grep -q` per name has a per-name exit status.
 
 ⚠️ **Step 12 adds NO name to that loop, and neither do steps 13 and 14, nor
-the sweeps of steps 15b and 17 — the omission is deliberate.** `sendShopeeStock`,
+the sweeps of steps 15b and 17, nor step 20's trigger — the omission is
+deliberate.** `sendShopeeStock`,
 `sweepShopeeStock`, `sweepShopeeStockDaily`, `sweepShopeeStockReconciliacao`,
 step 13's `processShopeePriceSync`, step 14's `processShopeeNfeUpload` and
-`onNfeAprovadaShopee`, step 15b's `sweepShopeeAutoArrange` and step 17's
-`sweepShopeeReturns` are **static exports** of `src/index.ts`, not dynamic
+`onNfeAprovadaShopee`, step 15b's `sweepShopeeAutoArrange`, step 17's
+`sweepShopeeReturns` and step 20's `onIntegracaoShopeeChanged` are **static
+exports** of `src/index.ts`, not dynamic
 `import()`s (the sweeps' modules,
 `../../lib/shopee/pedidos/arranjoAutomaticoSweep` and
 `../../lib/shopee/devolucoes/devolucoesSweep`, are static imports of that
 file), so esbuild cannot silently drop them the way it could drop
 a lazily-imported handler: an absent one is a missing EXPORT, which
 `src/index.test.ts`'s three maps (`FILAS` is 5, `AGENDAMENTOS` is 12,
-`GATILHOS` is 2) already fail on. Adding them here would suggest the loop is a
+`GATILHOS` is 3) already fail on. Adding them here would suggest the loop is a
 completeness check when it is a dynamic-import smoke check.
 
 ## Functions in this codebase
@@ -206,14 +208,15 @@ completeness check when it is a dynamic-import smoke check.
 | `sweepShopeeStockReconciliacao`  | `onSchedule('10 3 1 * *')`             | #1520 — the MONTHLY FORCE-SEND, 03:10 on day 1. `changedSinceMs: -1` and no ledger pre-pass: every live listing of every active conta is re-sent at the number the ERP holds now. ⚠️ **It ships ON with no flag of its own** — announcement 1445 says Shopee returns stock by itself when an order is cancelled, which makes keeping the number right an obligation rather than an optimisation, and a backstop that ships off is #778’s failure. It is still under the ONE master valve, and its blast radius is bounded by `SHOPEE_STOCK_MAX_TASKS_PER_SWEEP` (2 000): a tick that hits the cap writes a `truncada` carimbo and the NEXT tick resumes from it. `timeoutSeconds 540`, both secrets, no `region:`; **ENQUEUES**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `onProdutoShopeeLinkChanged`     | `onDocumentWritten` (Firestore)        | #1519 / master-plan step 11 — the codebase's **FIRST Firestore trigger** and the TENTH: `onDocumentWritten` on `produtos/{produtoId}/prodshopee/{linkId}`, the only one here that never calls Shopee. It maintains `produtos.integracoesComProduto`, so `/produtos` can badge a Shopee-linked produto. ⚠️ **Zero reads and zero writes on the overwhelming majority of invocations**: `planejarMudancaDeLinkShopee` is pure and answers "nothing moved" for a status-only merge, so the handler never even opens a Firestore handle — a test pins that path. When affiliation DOES move it adds the conta with `arrayUnion`, or re-derives orphanhood by reading the produto's WHOLE `prodshopee` subcollection (no `where`, so **no new composite index**) and removes with `arrayRemove`. `database` is the LITERAL name **`default`**, inlined at build time from `FIREBASE_DATABASE_ID` — never the `(default)` sentinel, which fails every op `5 NOT_FOUND`. `retry: true`, safe because the add is an `arrayUnion` and the remove re-derives inside its own read set. **No secrets**, and it **does not enqueue**, so it needs no Cloud Tasks IAM at all. No per-function `region:`: it inherits `setGlobalOptions`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `onNfeAprovadaShopee`            | `onDocumentWritten` (Firestore)        | #1522 / master-plan step 14 — the codebase's **SECOND Firestore trigger**: `onDocumentWritten` on `pedidos/{pedidoId}/nfev4/{nfeId}`, TRANSITION-gated — `decideNfeUploadTransition(before, after)` enqueues only on the edge INTO ready (aprovada, proc present, first `<tpAmb>` = `1`), so the window's `nfe-totais` rewrite of every approved document enqueues nothing. ⚠️ **Zero reads and NO log line on the overwhelming majority of invocations**: every `nfev4` write in the project fires it (the Eventarc note under Cutover). On the edge, a legible non-SALE proc is one `info` line and 0 reads; otherwise ONE pedido read, the ownership proof (`avaliarPedidoParaNfeShopee`) and ONE enqueue onto `processShopeeNfeUpload` with `scheduleDelaySeconds: ATRASO_SERPRO_S` (360 s — Shopee checks the note against SERPRO, which lags the SEFAZ authorization). With `SHOPEE_TASKS_DISABLED=1` it raises the aviso `tasks-desabilitadas`, one per pedido, instead of enqueuing, and resolves. `database` is the LITERAL **`default`**; `retry: true`, and every other error rethrows for Eventarc to redeliver. **No secrets** (it never calls Shopee), and no `invoker`: Eventarc invokes it, while its enqueue runs as the functions runtime SA. No per-function `region:`. ⚠️ Named `onNfeAprovadaShopee`, never `onNfeAprovada`: Mercado Livre's codebase already deploys that name into the same project (#1707).                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `onIntegracaoShopeeChanged`      | `onDocumentWritten` (Firestore)        | #1528 / master-plan step 20 — the codebase's **THIRD Firestore trigger**: `onDocumentWritten` on `integracao/{integracaoId}`, the SECOND on that path (Mercado Livre's `onIntegracaoMercadoLivreChanged` is the first; `apps/functions`' `onIntegracaoDeleted` cascade also fires on a delete), so EVERY channel's conta write reaches it and returns before any read unless the conta is, or was, Shopee — as does a Shopee write that moves no mirrored field and no resolvability. It re-reads the conta INSIDE one transaction and converges the conta's `int_frete` doc (tipo `shopee`) to it through `@delfrance/data/admin/frete` — adopt the legacy doc by `contaShopeeFreteOuterRef`, else create `shopee-<integracaoId>`; patch only what moved; deactivate, never delete, once the conta is gone or no longer Shopee. No event clock: a replayed or out-of-order delivery cannot roll anything back. When the conta becomes resolvable it re-reads the conta once more and re-drives that shop's `sem-conta` deferred rows (at most 50 per event out of a 500-row read; the daily lane drains the rest, including a code-1 row that named its shop only in `shop_id_list` and was stored without a `shop_id`). `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing). No per-function `region:`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ### Secrets: `SHOPEE_PARTNER_ID` + `SHOPEE_PARTNER_KEY`
 
 Both are declared as `secrets:` on **all five queue handlers** and on **every
-one of the twelve schedules** — seventeen of the nineteen functions, the exceptions
-being the two Firestore triggers (step 11's and step 14's), which bind neither
+one of the twelve schedules** — seventeen of the twenty functions, the exceptions
+being the three Firestore triggers (steps 11, 14 and 20), which bind none
 because they make no Shopee call at all (`src/index.test.ts` asserts that
-absence on EVERY trigger in a loop, so a secret drifting onto either reds CI)
+absence on EVERY trigger in a loop, so a secret drifting onto any reds CI)
 — because all of them can reach a PUBLIC-signed Shopee call
 (`shopeeConfig()` → `createShopeePartnerClient`) — and the order backfill needs
 them for its Shop-signed calls too, since the access token rides in the query
@@ -599,12 +602,13 @@ is how `SHOPEE_PARTNER_ID` / `SHOPEE_PARTNER_KEY` travel).
 
 ## ⚠️ One-time IAM — the App Hosting backend enqueues Cloud Tasks
 
-⚠️ **Nothing below applies to the two Firestore triggers AS INVOKED
+⚠️ **Nothing below applies to the three Firestore triggers AS INVOKED
 FUNCTIONS, and adding them here would do HARM.** A Firestore trigger is invoked
-by **Eventarc**, not by a Cloud Tasks enqueuer, so `onProdutoShopeeLinkChanged`
-and `onNfeAprovadaShopee` need no per-service `roles/run.invoker` — neither
-declares an `invoker` at all. And `TASKS_INVOKER_SA` is **AUTHORITATIVE**: a
-deploy REPLACES the member list it names, so adding a principal "for the
+by **Eventarc**, not by a Cloud Tasks enqueuer, so `onProdutoShopeeLinkChanged`,
+`onNfeAprovadaShopee` and `onIntegracaoShopeeChanged` need no per-service
+`roles/run.invoker` — none declares an `invoker` at all. And
+`TASKS_INVOKER_SA` is **AUTHORITATIVE**: a deploy REPLACES the member list it
+names, so adding a principal "for the
 trigger" would DISPLACE one that matters and break the queue leg instead. Grant
 the roles below for the **queue** functions only. ⚠️ `onNfeAprovadaShopee`
 still ENQUEUES onto `processShopeeNfeUpload`, as the **functions runtime SA** —
@@ -1021,13 +1025,20 @@ Three gaps to know about:
   fires on the stock suite's seed and write-back, which assert nothing about it,
   and step 14's `onNfeAprovadaShopee` is the one whose effect a suite asserts.
   The link trigger's BODY is covered by unit tests over the app's own FakeDb,
-  and both triggers' OPTIONS by `src/index.test.ts` over `__endpoint`, in a loop
+  and every trigger's OPTIONS by `src/index.test.ts` over `__endpoint`, in a loop
   over EVERY trigger — the document pattern, `database: 'default'` (exact
   equality on the parsed field, never a `JSON.stringify().toContain()`, because
   the serialized endpoint always carries `"namespace":"(default)"`),
   `retry: true` and the empty secret set. What no test can show is that
   **Eventarc** delivers anything in a real project; the first real proof is the
-  deploy (see Cutover).
+  deploy (see Cutover). Step 20's `onIntegracaoShopeeChanged` also fires in that
+  emulator on every `*.tasks.test.ts` conta seed and teardown. It writes nothing
+  any suite reads: the seeds carry no filial and no `dataCadastro`, so the
+  reconcile answers `incompleto` (`nao-encontrado` on the teardown); a test that
+  seeds a resolvable conta defers only `devolucao:` / `rastreio:` / credential
+  rows, and every `sem-conta` row (the receiver and listing suites', step 17's
+  RT-1) names a shop no seeded conta claims — each test draws its own random
+  shop. No suite asserts it.
 - **None of the twelve `onSchedule` triggers ever executes in CI.** The functions
   emulator logs them as "ignored because the pubsub emulator does not exist or
   is not running", so the lane loads them and nothing drives them. Their bodies
@@ -1043,7 +1054,7 @@ Three gaps to know about:
   that Cloud Scheduler actually fires them; the first real proof is the deploy.
 - **Nothing here proves the composite indexes are declared.** The emulator
   auto-creates every composite and on Enterprise a missing one does not throw —
-  it full-scans and bills the scan. The **seven** Shopee composites deploy in the
+  it full-scans and bills the scan. The **nine** Shopee composites deploy in the
   migration window (#1532): `notificacoesShopee (status, processedAt)`;
   `integracao (tipo, shop_id, ativo)`;
   `prodshopee (item_id, contaProdutoShopeeOuterRef)`, collection-group;
@@ -1053,15 +1064,22 @@ Three gaps to know about:
   `enviosPrecoShopee (integracaoId, status)`, the price job's one-active guard,
   and `enviosPrecoShopee (integracaoId, startedAt DESC)`, its history route —
   plus that collection's `expiraEm` TTL policy, which rides the same indexes
-  deploy. All seven are declared in `firestore.indexes.json`; declaring is not
-  deploying.
+  deploy; and since step 20
+  `int_frete (tipo, contaShopeeFreteOuterRef, ativo, dataCadastro DESC)`, the
+  conta-sync lookup that adopts a migrated legacy doc, and
+  `notificacoesShopee (status, shop_id)`, the #808 re-drive. All nine are
+  declared in `firestore.indexes.json`; declaring is not deploying.
 
 ## Cutover
 
 No legacy Shopee service writes a document this codebase writes (the legacy
 app never wrote a `pedshopee`, and its push handling and token store are the
 anti-patterns the shared seams replaced, master plan §3), so there is no
-predecessor to race for a DOCUMENT. ⚠️ But the legacy project ran SEVERAL Shopee
+predecessor to race for a DOCUMENT. (Since step 20 one shape is shared: the
+legacy APP's conta screen wrote the Shopee `int_frete` docs this codebase now
+maintains — in the source project only, so they arrive by the import and the
+adoption pass, never by a race; **Step 20's deploy order** below.) ⚠️ But the
+legacy project ran SEVERAL Shopee
 Cloud Run services (`.old/docker-repos-local:87-98`; the targets are in
 `.old/packages/canais_de_venda/shopee/lib/functions.dart`), and every one still
 running after the switch-off acts on the SAME Shopee shop — the shared-provider
@@ -1214,6 +1232,22 @@ update-only window Shopee refuses (register 234) fails the conta as a
 contained `error_param` on every tick, visible in the summary line; and a dead
 grant is not skipped (unlike step 15b's) — four refresh attempts a day per
 such conta, logged as a contained conta failure.
+
+⚠️ **Step 20's deploy order.** `onIntegracaoShopeeChanged` adds no queue, no
+schedule and no env var, and it has reached no project yet. What it needs is
+ORDER:
+
+- the `int_frete (tipo, contaShopeeFreteOuterRef, ativo, dataCadastro DESC)`
+  index (and `notificacoesShopee (status, shop_id)`) via #1532 is READY first;
+- inside the window, after the import, the `int_frete` adoption pass runs
+  (#1889, a #1208 Phase 2b step; runbook
+  `tools/migrations/shopee-int-frete.README.md`), because an import fires no
+  trigger — and its dry run must report ZERO `duplicados`, ZERO
+  `nao-canonico` (every `bloqueado-nao-canonico` line carries one) and ZERO
+  `compartilhado` rows, each resolved by a human, before this codebase deploys: the trigger has no
+  tolerant scan, so a conta's first save would otherwise create
+  `shopee-<integracaoId>` beside a legacy doc whose back-ref is not canonical;
+- then this codebase. Before the import, run nothing.
 
 ⚠️ **Eventarc cost: `onNfeAprovadaShopee` is the THIRD function on
 `pedidos/{pedidoId}/nfev4/{nfeId}`** (beside Mercado Livre's `onNfeAprovada` and

@@ -8,11 +8,13 @@ import {
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 
+import { FakeDb as FakeDbShopee, asDb as asDbShopee } from '../testing/fakeDb';
 import {
   __setShopeeCacheClockForTests,
   findIntegracaoByShopId,
   invalidateShopeeConta,
   readConta,
+  shopIdResolvivel,
 } from './contaCache';
 
 /**
@@ -273,6 +275,80 @@ describe('findIntegracaoByShopId', () => {
     invalidateShopeeConta('int-1');
 
     await expect(findIntegracaoByShopId(asDb(db), 987654)).resolves.toBeNull();
+  });
+});
+
+describe('shopIdResolvivel — parity with the real resolver', () => {
+  // The predicate reads a PAYLOAD; the resolver runs a QUERY. Two copies of one
+  // rule drift toward plausible (#1369), so every row goes through BOTH and the
+  // expected verdict is asserted on each — parity alone would also hold if both
+  // sides answered `false` for everything.
+  //
+  // ⚠️ This table runs on the SHARED Shopee double, not on the local one above:
+  // that one drops the operator, while the shared one honours `==` as strict
+  // equality on the stored value and never matches a document that LACKS the
+  // field — Firestore's own rule, and the reason an absent `ativo` is NOT
+  // resolvable here even though the conta's schema defaults it to `true`.
+  interface Linha {
+    caso: string;
+    conta: () => DocData;
+    resolvivel: boolean;
+  }
+
+  const LINHAS: Linha[] = [
+    { caso: 'a valid conta', conta: () => contaDoc(), resolvivel: true },
+    {
+      caso: '`ativo` absent',
+      conta: () => {
+        const semAtivo = contaDoc();
+        delete semAtivo.ativo;
+        return semAtivo;
+      },
+      resolvivel: false,
+    },
+    { caso: "`ativo: 'true'`", conta: () => contaDoc({ ativo: 'true' }), resolvivel: false },
+    { caso: '`ativo: false`', conta: () => contaDoc({ ativo: false }), resolvivel: false },
+    {
+      caso: '`tipo: 1` (Mercado Livre)',
+      conta: () => contaDoc({ tipo: INTEGRACAO_TIPO.mercadoLivre }),
+      resolvivel: false,
+    },
+    { caso: "`tipo: '5'`", conta: () => contaDoc({ tipo: '5' }), resolvivel: false },
+    {
+      caso: "`shop_id: '987654'`",
+      conta: () => contaDoc({ shop_id: '987654' }),
+      resolvivel: false,
+    },
+    { caso: '`shop_id: null`', conta: () => contaDoc({ shop_id: null }), resolvivel: false },
+    {
+      caso: '`shop_id: 987654.5`',
+      conta: () => contaDoc({ shop_id: 987654.5 }),
+      resolvivel: false,
+    },
+  ];
+
+  it.each(LINHAS)('$caso ⇒ resolvível: $resolvivel', async ({ conta, resolvivel }) => {
+    const raw = conta();
+    const db = new FakeDbShopee();
+    db.seed(CONTA_PATH, raw);
+    __resetAllReadCaches();
+
+    const valor = shopIdResolvivel(raw);
+    const resolvedor = (await findIntegracaoByShopId(asDbShopee(db), 987654)) === 'int-1';
+
+    // Parity: the predicate names this shop exactly when the real query finds this conta…
+    expect({ predicado: valor === 987654, resolvedor }).toEqual({
+      predicado: resolvivel,
+      resolvedor: resolvivel,
+    });
+    // …and an unresolvable payload is `null`, never a near-miss number (`987654.5`) that
+    // the trigger would compare against `before` and hand to the re-drive.
+    expect(valor).toBe(resolvivel ? 987654 : null);
+  });
+
+  it('resolves nothing for a missing snapshot (the create and delete sides of a trigger)', () => {
+    expect(shopIdResolvivel(null)).toBeNull();
+    expect(shopIdResolvivel(undefined)).toBeNull();
   });
 });
 

@@ -39,6 +39,20 @@
  *    `-por-where` / `-so-inicio` — the same range as key filters / bounded at
  *    the start only. All three ride `avisos(resolvidoEm)` UNBOUNDED and scan the
  *    whole collection — real near-misses of the open-avisos verdict.
+ * Captured on 2026-10-13 by `apps/functions/scripts/check-sweep-indexes.mjs`
+ * (#1874), the arquivo orphan sweep's round-robin page — `arquivos
+ * .orderBy(__name__).limit(100).startAfter(<key>)` over 313 docs:
+ *  - `pagina-por-chave-sem-indice` — BEFORE `arquivos(__name__ ASC)` existed:
+ *    rides `/arquivos (markedForDeletionAt ASC)` unbounded, reads all 313 index
+ *    rows, cuts the cursor in a residual Filter and `MajorSort`s to 100;
+ *  - `pagina-por-chave-com-indice` — AFTER: rides `/arquivos (__key__ ASC)`, the
+ *    cursor a range from the key up, `• Limit`, reading exactly 100.
+ * Captured on 2026-10-13 by `tools/migrations/scripts/check-key-walks.mjs`
+ * (#1895), the telefone-e164 migration's page 1 — `collectionGroup('enderecos')
+ * .orderBy(__name__).limit(300)`, before any key index:
+ *  - `pagina-por-chave-tablescan-grupo` — no index at all: an identifier-less
+ *    `• TableScan` of all 6,342 DOCUMENTS (2.2 MiB, 569 read units) under a
+ *    `MajorSort` to 300, and no `index row scanned` header to read.
  * Every one of them is a PIPELINE plan — a PROXY of the classic query
  * (`explainPlan.mjs`'s header), not the classic query's own plan.
  * ⚠️ The two-form plan with its sort swapped for a Limit is not a correct plan
@@ -62,6 +76,9 @@ import {
   VARIAVEL_RESOLVIDO_RE,
   classicoServeAvisosAbertos,
   classicoServeVarredura,
+  indiceDeChaveRe,
+  indicesUsados,
+  julgarPaginaPorChave,
   contadorDeLeitura,
   contadoresDeExecucao,
   contadoresDoCabecalho,
@@ -130,6 +147,10 @@ const PAGINAS_DA_AUDITORIA = [0, 1].flatMap((forma) =>
   ),
 );
 const AVISOS_ABERTOS = planoReal('avisos-abertos');
+const PAGINA_SEM_INDICE_DE_CHAVE = planoReal('pagina-por-chave-sem-indice');
+const PAGINA_COM_INDICE_DE_CHAVE = planoReal('pagina-por-chave-com-indice');
+const ARQUIVOS = { escopo: 'COLLECTION', colecao: 'arquivos', pagina: 100 } as const;
+const PAGINA_TABLESCAN_DE_GRUPO = planoReal('pagina-por-chave-tablescan-grupo');
 
 const CG = '**/produtoMercadoLivre (contaOuterRef ASC, __key__ ASC)@[id = CICAgJil0IYK]';
 const INDICE_AVISOS = '/avisos (resolvidoEm ASC)@[id = CICAgJjUgIcJ]';
@@ -1033,5 +1054,117 @@ describe('classic explain (a database that accepts it)', () => {
     ]) {
       expect(classicoServeAvisosAbertos(usados), JSON.stringify(usados)).toBe(false);
     }
+  });
+});
+
+describe('julgarPaginaPorChave — a page walked by document key (#1874), on real plans', () => {
+  it('FAILS the real page with no key index: another index, every row read, a TopN', () => {
+    const v = julgarPaginaPorChave(PAGINA_SEM_INDICE_DE_CHAVE, ARQUIVOS);
+    expect(v.motivos.map((m) => m.codigo)).toEqual([
+      'indice-de-chave-ausente',
+      'sort-que-corta',
+      'leitura-excessiva',
+    ]);
+    // It rode an INDEX — the failure is the wrong one, not a raw table scan.
+    expect(v.motivos.some((m) => m.codigo === 'scan-sem-indice')).toBe(false);
+    expect(v.motivos[0]?.mensagem).toContain('/arquivos (markedForDeletionAt ASC)');
+    expect(v.leituraTotal).toBe(313);
+    expect(v.alvo).toBeNull();
+    expect(v.detalhe).toBeNull();
+  });
+
+  it('PASSES the real page on the declared key index: a seek reading exactly the page', () => {
+    const v = julgarPaginaPorChave(PAGINA_COM_INDICE_DE_CHAVE, ARQUIVOS);
+    expect(v.motivos).toEqual([]);
+    expect(v.alvo?.identifier).toMatch(/^\/arquivos \(__key__ ASC\)@/);
+    expect(v.leituraTotal).toBe(100);
+    expect(v.leitura?.valor).toBe(100);
+    expect(v.detalhe).toContain('a key seek on /arquivos (__key__ ASC)');
+  });
+
+  it('FAILS the real collection-group page with NO index at all: a table scan of every document', () => {
+    const v = julgarPaginaPorChave(PAGINA_TABLESCAN_DE_GRUPO, {
+      escopo: 'COLLECTION_GROUP',
+      colecao: 'enderecos',
+      pagina: 300,
+    });
+    expect(v.motivos.map((m) => m.codigo)).toEqual([
+      'scan-sem-indice',
+      'indice-de-chave-ausente',
+      'sort-que-corta',
+      'leitura-excessiva',
+    ]);
+    // A table scan prints no index counter at all — "unprinted" must FAIL, never pass.
+    expect(v.leituraTotal).toBeNull();
+    expect(contadoresDoCabecalho(PAGINA_TABLESCAN_DE_GRUPO)['entity row scanned']).toBe(6342);
+  });
+
+  it('NEAR-MISS: the right index, but the plan-wide total read past the page', () => {
+    const v = julgarPaginaPorChave(
+      derivar(PAGINA_COM_INDICE_DE_CHAVE, [' index row scanned: 100', ' index row scanned: 313']),
+      ARQUIVOS,
+    );
+    expect(v.motivos.map((m) => m.codigo)).toEqual(['leitura-excessiva']);
+  });
+
+  it('NEAR-MISS: the right index, but the scan node itself read past the page', () => {
+    const v = julgarPaginaPorChave(
+      derivar(PAGINA_COM_INDICE_DE_CHAVE, ['records scanned: 100', 'records scanned: 313']),
+      ARQUIVOS,
+    );
+    expect(v.motivos.map((m) => m.codigo)).toEqual(['leitura-excessiva']);
+  });
+
+  it('NEAR-MISS: no `index row scanned` header proves nothing — it fails', () => {
+    const v = julgarPaginaPorChave(
+      derivar(PAGINA_COM_INDICE_DE_CHAVE, [' index row scanned: 100\n', '']),
+      ARQUIVOS,
+    );
+    expect(v.motivos.map((m) => m.codigo)).toEqual(['leitura-excessiva']);
+  });
+
+  it('NEAR-MISS: the same key index is the wrong one for another scope or collection', () => {
+    for (const opcoes of [
+      { ...ARQUIVOS, escopo: 'COLLECTION_GROUP' as const },
+      { ...ARQUIVOS, colecao: 'arquivo' },
+    ]) {
+      const v = julgarPaginaPorChave(PAGINA_COM_INDICE_DE_CHAVE, opcoes);
+      expect(
+        v.motivos.map((m) => m.codigo),
+        JSON.stringify(opcoes),
+      ).toEqual(['indice-de-chave-ausente']);
+    }
+  });
+
+  it('indiceDeChaveRe: the key LEADS, in this scope, on this collection — nothing looser', () => {
+    const colecao = indiceDeChaveRe('COLLECTION', 'arquivos');
+    for (const sim of [
+      '/arquivos (__key__ ASC)@[id = CICAgJjU8o8K]',
+      '/arquivos (__name__ ASC)',
+      '/arquivos (__key__ ASC, criadoEm ASC)',
+    ]) {
+      expect(colecao.test(sim), sim).toBe(true);
+    }
+    for (const nao of [
+      '**/arquivos (__key__ ASC)',
+      '/arquivos (markedForDeletionAt ASC)',
+      '/arquivos (criadoEm ASC, __key__ ASC)',
+      '/arquivos (__key__ DESC)',
+      '/arquivosX (__key__ ASC)',
+    ]) {
+      expect(colecao.test(nao), nao).toBe(false);
+    }
+    const grupo = indiceDeChaveRe('COLLECTION_GROUP', 'historicoEstoque');
+    expect(grupo.test('**/historicoEstoque (__key__ ASC)@[id = x]')).toBe(true);
+    expect(grupo.test('/historicoEstoque (__key__ ASC)')).toBe(false);
+  });
+
+  it('indicesUsados: distinct identifiers, `@[id = …]` stripped', () => {
+    expect(indicesUsados(parseAccessNodes(PAGINA_SEM_INDICE_DE_CHAVE))).toEqual([
+      '/arquivos (markedForDeletionAt ASC)',
+    ]);
+    expect(indicesUsados(parseAccessNodes(PAGINA_COM_INDICE_DE_CHAVE))).toEqual([
+      '/arquivos (__key__ ASC)',
+    ]);
   });
 });

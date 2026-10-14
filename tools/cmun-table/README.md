@@ -38,6 +38,14 @@ the service account's own project must match it. Writes
 `data/cmun-export-<date>.jsonl` sorted by `cepInicial`, so a future re-export
 diffs line-wise instead of as one opaque blob.
 
+⚠️ The dump pages `CMUN` by document key. On a Firestore **Enterprise** project
+(production after the cutover, staging, any fresh environment), that rides the
+declared key index `CMUN(__name__ ASC)` in `firestore.indexes.json`. Enterprise
+has no implicit one, and without it every page of 1,000 re-reads the whole
+collection (#1874, #1895). Deploy the indexes before dumping from an Enterprise
+project. `src/dump.indexes.test.ts` keeps the walk and the index paired. The
+legacy Standard project needs nothing: there, key order is native.
+
 ## 2. Import into a target project
 
 ```bash

@@ -9,9 +9,10 @@ import { NOME_DA_CONTAGEM, run } from './audit';
  * `predicate.test.ts` covers the decisions; this covers the promises the README
  * makes about HOW the walk reaches them, which the pure module cannot see: that
  * `--apply` is refused, that nothing is ever written, that the scan is the
- * index-free `orderBy(documentId())` walk, that only a counted produto pays for
- * its link reads, and that EVERY child's `variacaoMercadoLivre` is probed — the
- * I/O half of M161.
+ * unfiltered `orderBy(documentId())` walk (on the declared key index
+ * `produtos(__name__ ASC)`, #1895 — no filter index), that only a counted
+ * produto pays for its link reads, and that EVERY child's `variacaoMercadoLivre`
+ * is probed — the I/O half of M161.
  *
  * Importing `audit.ts` is safe under vitest: its entrypoint guard compares
  * `import.meta.url` to `process.argv[1]`, which is the vitest binary here, so
@@ -219,7 +220,7 @@ describe('kit-virtual-contagem — the walk', () => {
     });
   });
 
-  it('walks produtos by documentId with no filter — the index-free scan', async () => {
+  it('walks produtos by documentId with no filter — the key-index walk (#1895)', async () => {
     const leituras: Leitura[] = [];
     await run(ctx({ cols: corpus, leituras }));
     const varredura = leituras.filter((l) => l.path === 'produtos' && l.where === null);

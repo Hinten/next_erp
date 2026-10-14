@@ -62,10 +62,12 @@ import { microsDeSegundosShopee, positivoOuNull, segundosShopeeUtilizaveis } fro
  * applied this rule UNCONDITIONALLY, over `ship_by_date`, with a fixed −3 h
  * offset. See {@link prazoDespachoShopee}.
  *
- * ⚠️ **A constant, and only until step 7.** When a Shopee `int_frete` document
- * exists, its operator-configured `horarioDeCorte` replaces this list (the
- * Mercado Livre `intFreteSync.ts` shape). Not built here — this step writes no
- * `int_frete` and reads none.
+ * ⚠️ **A constant, and it stays one.** No Shopee `int_frete` document feeds it:
+ * step 20 (#1528) keeps that document in step with the conta but mirrors only
+ * nome / ativo / filial / dataCadastro, no screen leads to a Shopee doc's
+ * `horarioDeCorte` (each `/logistica` slice lists only its own `tipo`), and the
+ * legacy never read one here either — so this importer reads no `int_frete`.
+ * `ship_by_date` stays the authority; this list is only its fallback.
  */
 export const HORARIO_DE_CORTE_PADRAO_SHOPEE: readonly HorarioDeCorte[] = [1, 2, 3, 4, 5].map(
   (diaDaSemana) => ({

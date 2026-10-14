@@ -45,11 +45,14 @@ import {
  * production belongs in the coordinated cutover window (#1402 is that step).
  * The flag is REJECTED rather than ignored, so nobody can assume it worked.
  *
- * ## No index required, and deliberately so
+ * ## One index per walk — the document key — and deliberately so
  *
  * Every walk here is a plain `orderBy(documentId())` key-order scan with the
- * tests done in memory — the ONE ordering Firestore always serves without a
- * declared index.
+ * tests done in memory, riding the DECLARED key indexes `produtos(__name__ ASC)`,
+ * `pedidos(__name__ ASC)` and `balanco(__name__ ASC)` (#1895, listed in
+ * `key-walks.json`). Enterprise has no implicit key index: without one every
+ * page re-scans the whole collection (staging, #1895: 1,665 index rows read per
+ * page of 300 on `pedidos`). Those key indexes are the ONLY ones this needs.
  *
  * ⚠️ `where('paiId','==',null)` looks cheaper and is a trap. On Firestore
  * ENTERPRISE an undeclared filter never throws `FAILED_PRECONDITION` — it
@@ -103,7 +106,10 @@ const VEREDITOS_RELATADOS: ReadonlySet<VereditoProduto> = new Set<VereditoProdut
   'orfao',
 ]);
 
-/** Page any collection by document id — stable cursor, bounded memory, no index. */
+/**
+ * Page any collection by document id — stable cursor, bounded memory. Rides the
+ * collection's declared `__name__ ASC` key index (#1895, `key-walks.json`).
+ */
 async function* pagesByDocId(base: Query): AsyncGenerator<QueryDocumentSnapshot[]> {
   let cursor: QueryDocumentSnapshot | undefined;
   for (;;) {
@@ -297,8 +303,8 @@ async function contarReservasAbertas(ctx: MigrationContext): Promise<ReservasAbe
  *
  * ⚠️ An open balanço stores `estado: null` — the unstored `'aberto'`
  * (`balanco.ts:95-108`). Filtering in memory rather than with `where('estado','==',null)`
- * keeps the walk index-free and treats an ABSENT key the same as a stored null,
- * which `balancoAceitaLancamento` also does.
+ * keeps the walk on its key index alone (no filter index) and treats an ABSENT
+ * key the same as a stored null, which `balancoAceitaLancamento` also does.
  */
 async function lerDepositosEmBalanco(ctx: MigrationContext): Promise<Set<string>> {
   const depositos = new Set<string>();

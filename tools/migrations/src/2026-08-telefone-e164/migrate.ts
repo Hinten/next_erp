@@ -89,8 +89,9 @@ export class UnknownTargetError extends Error {
  * Resolve `--target a,b` (parsed by the shared runner) to the target set.
  * Empty selection means the safe default — `clientes` alone.
  *
- * De-duplicated, order preserved. Each target is a collection-group scan, which
- * is unindexed on Enterprise and therefore billed by data scanned — repeating
+ * De-duplicated, order preserved. Each target is a full collection-group scan
+ * riding its declared key index (#1895), so a page reads its own rows — but a
+ * full run still reads every document once, billed by data scanned — repeating
  * one because `--target clientes,clientes` was typed would silently double that
  * bill for no work.
  */
@@ -134,9 +135,13 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   for (const target of targets) {
     log(`[telefone-e164] ${target.name} (${target.collectionGroup}) — ${target.note}`);
     // A collection group reaches `clientes/{id}/enderecos` and
-    // `pedidos/{id}/pagamentos` without walking their parents. It is unindexed
-    // on Enterprise, hence a full scan — acceptable for a one-shot migration,
-    // and the reason this is a manual run rather than anything scheduled.
+    // `pedidos/{id}/pagamentos` without walking their parents. Each walk rides
+    // its DECLARED collection-group key index `<group>(__name__ ASC)` (#1895,
+    // `key-walks.json`), so a page reads its own rows — without it every page
+    // table-scanned the whole group (#1895: all 6,342 `enderecos` docs, on every
+    // page of 300). A full run still reads every document once, billed by data
+    // scanned — acceptable for a one-shot migration, and the reason this is a
+    // manual run rather than anything scheduled.
     for await (const docs of pagesByDocId(ctx.db.collectionGroup(target.collectionGroup))) {
       for (const doc of docs) {
         docsScanned += 1;

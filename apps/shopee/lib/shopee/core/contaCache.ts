@@ -137,6 +137,20 @@ async function consultarIntegracaoPorShopId(db: Firestore, shopId: number): Prom
 }
 
 /**
+ * The PAYLOAD twin of {@link consultarIntegracaoPorShopId}: the shop id this raw conta snapshot would
+ * resolve for — `tipo === INTEGRACAO_TIPO.shopee`, `ativo === true` (strict), an integer `shop_id` —
+ * or null. Read-free, so the step-20 trigger gates its #808 arm on it BEFORE any read (and re-applies
+ * it to a fresh read before acting).
+ * ⚠️ An ABSENT `ativo` is NOT resolvable here — the query's `ativo == true` excludes it — unlike the
+ * int_frete MIRROR, which reads absent as true (`@delfrance/data/admin/frete`). Both are right; do not
+ * unify them. Pinned against the real resolver by a parity table (`contaCache.test.ts`), never by a comment.
+ */
+export function shopIdResolvivel(conta: Record<string, unknown> | null | undefined): number | null {
+  if (conta == null || conta.tipo !== INTEGRACAO_TIPO.shopee || conta.ativo !== true) return null;
+  return Number.isSafeInteger(conta.shop_id) ? (conta.shop_id as number) : null;
+}
+
+/**
  * The cached `shop_id` resolve, cross-checked against the conta it names.
  *
  * `shop_id` changes exactly once in a conta's life that matters here: when the
