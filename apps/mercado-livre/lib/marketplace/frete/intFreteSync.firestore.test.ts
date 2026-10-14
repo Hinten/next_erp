@@ -76,45 +76,48 @@ describe.skipIf(!EMULATED)('ML freight current-state reconciliation (Firestore e
     expect((await freightRef.get()).updateTime!.isEqual(saved.updateTime!)).toBe(true);
   });
 
-  it('adopts a bare legacy reference, preserves operator settings and the historical ID', async () => {
-    const db = getAdminFirestore();
-    const id = newContaId();
-    const legacyId = 'historical-' + id;
-    cleanup.push('int_frete/' + legacyId);
-    const config = {
-      enderecoDeOrigem: { cep: '01001000' },
-      horarioDeCorte: [{ diaDaSemana: 1 }],
-      mapa: { personalizado: true },
-      faixaCep: ['01000'],
-      prazoExtra: 3,
-    };
-    await db.collection('integracao').doc(id).set(conta({ nome: 'Current store' }));
-    await db
-      .collection('int_frete')
-      .doc(legacyId)
-      .set(
-        frete(id, {
-          ...config,
-          ativo: false,
-          contaMercadoLivreMercadoEnviosOuterRef: 'integracao/' + id,
-          ultimaModificacao: CADASTRO + 9_000_000_000_000,
-        }),
-      );
+  it(
+    'adopts a bare legacy reference, preserves operator settings and the historical ID',
+    async () => {
+      const db = getAdminFirestore();
+      const id = newContaId();
+      const legacyId = 'historical-' + id;
+      cleanup.push('int_frete/' + legacyId);
+      const config = {
+        enderecoDeOrigem: { cep: '01001000' },
+        horarioDeCorte: [{ diaDaSemana: 1 }],
+        mapa: { personalizado: true },
+        faixaCep: ['01000'],
+        prazoExtra: 3,
+      };
+      await db.collection('integracao').doc(id).set(conta({ nome: 'Current store' }));
+      await db
+        .collection('int_frete')
+        .doc(legacyId)
+        .set(
+          frete(id, {
+            ...config,
+            ativo: false,
+            contaMercadoLivreMercadoEnviosOuterRef: 'integracao/' + id,
+            ultimaModificacao: CADASTRO + 9_000_000_000_000,
+          }),
+        );
 
-    expect(await buscarIntFreteDaConta(db, id)).toMatchObject({ id: legacyId });
-    expect(await reconciliarIntFreteDaConta(db, id)).toMatchObject({
-      action: 'atualizado',
-      intFreteId: legacyId,
-    });
-    const saved = await db.collection('int_frete').doc(legacyId).get();
-    expect(saved.exists).toBe(true);
-    expect(saved.data()).toMatchObject({ ...frete(id), ...config, nome: 'Current store' });
-    expect((await db.collection('int_frete').doc('mercadoLivre-' + id).get()).exists).toBe(false);
-    expect(await reconciliarIntFreteDaConta(db, id)).toEqual({
-      action: 'inalterado',
-      intFreteId: legacyId,
-    });
-  });
+      expect(await buscarIntFreteDaConta(db, id)).toMatchObject({ id: legacyId });
+      expect(await reconciliarIntFreteDaConta(db, id)).toMatchObject({
+        action: 'atualizado',
+        intFreteId: legacyId,
+      });
+      const saved = await db.collection('int_frete').doc(legacyId).get();
+      expect(saved.exists).toBe(true);
+      expect(saved.data()).toMatchObject({ ...frete(id), ...config, nome: 'Current store' });
+      expect((await db.collection('int_frete').doc('mercadoLivre-' + id).get()).exists).toBe(false);
+      expect(await reconciliarIntFreteDaConta(db, id)).toEqual({
+        action: 'inalterado',
+        intFreteId: legacyId,
+      });
+    },
+  );
 
   it('deactivates a retyped or deleted account and reactivates current ML state', async () => {
     const db = getAdminFirestore();
@@ -137,22 +140,25 @@ describe.skipIf(!EMULATED)('ML freight current-state reconciliation (Firestore e
     expect((await freightRef.get()).data()!.ativo).toBe(false);
   });
 
-  it('concurrent first reconciliations leave exactly one deterministic freight record', async () => {
-    const db = getAdminFirestore();
-    const id = newContaId();
-    await db.collection('integracao').doc(id).set(conta());
+  it(
+    'concurrent first reconciliations leave exactly one deterministic freight record',
+    async () => {
+      const db = getAdminFirestore();
+      const id = newContaId();
+      await db.collection('integracao').doc(id).set(conta());
 
-    const results = await Promise.all([
-      reconciliarIntFreteDaConta(db, id),
-      reconciliarIntFreteDaConta(db, id),
-    ]);
-    expect(results.map((result) => result.action).sort()).toEqual(['criado', 'inalterado']);
-    const saved = await db
-      .collection('int_frete')
-      .where('tipo', '==', 'mercadoLivre')
-      .where('contaMercadoLivreMercadoEnviosOuterRef', '==', 'documents/integracao/' + id)
-      .get();
-    expect(saved.docs.map((doc) => doc.id)).toEqual(['mercadoLivre-' + id]);
-    expect(saved.docs[0]!.data()).toMatchObject(frete(id));
-  });
+      const results = await Promise.all([
+        reconciliarIntFreteDaConta(db, id),
+        reconciliarIntFreteDaConta(db, id),
+      ]);
+      expect(results.map((result) => result.action).sort()).toEqual(['criado', 'inalterado']);
+      const saved = await db
+        .collection('int_frete')
+        .where('tipo', '==', 'mercadoLivre')
+        .where('contaMercadoLivreMercadoEnviosOuterRef', '==', 'documents/integracao/' + id)
+        .get();
+      expect(saved.docs.map((doc) => doc.id)).toEqual(['mercadoLivre-' + id]);
+      expect(saved.docs[0]!.data()).toMatchObject(frete(id));
+    },
+  );
 });

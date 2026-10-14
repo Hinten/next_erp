@@ -800,7 +800,10 @@ describe('T10 a bare `integracao/<id>` back-ref', () => {
     expect(host.intFrete('legacy-bare')!.contaMercadoLivreMercadoEnviosOuterRef).toBe(CANONICO);
   });
 
-  it.each([['a', 'b'], ['b', 'a']])(
+  it.each([
+    ['a', 'b'],
+    ['b', 'a'],
+  ])(
     'Mercado Livre adopts the lower-ID bare-reference legacy record before deterministic fallback (%s, %s)',
     async (first, second) => {
       const host = new Host();

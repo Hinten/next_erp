@@ -3,7 +3,10 @@ import { FUNCTIONS_REGION } from './options';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { integracaoMeta } from '@delfrance/schemas';
 
-import { deveReconciliar, reconciliarIntFreteDaConta } from '../../lib/marketplace/frete/intFreteSync';
+import {
+  deveReconciliar,
+  reconciliarIntFreteDaConta,
+} from '../../lib/marketplace/frete/intFreteSync';
 import {
   redriveDeferredForUserId,
   userIdResolvivel,

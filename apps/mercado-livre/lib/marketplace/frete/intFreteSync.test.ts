@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
+import { integracaoCollection } from '@delfrance/data/admin/collections';
 import {
   OccEngine,
   type OccReadable,
@@ -90,7 +91,7 @@ class FakeDb {
 
   async escreverConta(data: DocData): Promise<void> {
     await this.occ.runTransaction(async (tx) => {
-      tx.set(this.collection('integracao').doc(CONTA_ID), data);
+      tx.set(integracaoCollection.docRef(asDb(this), {}, CONTA_ID), data);
     });
   }
 
@@ -327,7 +328,10 @@ describe('deveReconciliar', () => {
   });
 });
 
-for (const ids of [['if-a', 'if-z'], ['if-z', 'if-a']]) {
+for (const ids of [
+  ['if-a', 'if-z'],
+  ['if-z', 'if-a'],
+]) {
   it('chooses the lower ID on an equal date in result order ' + ids.join(', '), async () => {
     const db = new FakeDb();
     for (const id of ids) seedIntFrete(db, id);
@@ -449,14 +453,18 @@ describe('reconciliarIntFreteDaConta', () => {
   it('adopts and normalizes a bare back-reference in place', async () => {
     const db = new FakeDb();
     db.seed('integracao', CONTA_ID, conta());
-    seedIntFrete(db, 'if-legacy', { contaMercadoLivreMercadoEnviosOuterRef: 'integracao/' + CONTA_ID });
+    seedIntFrete(db, 'if-legacy', {
+      contaMercadoLivreMercadoEnviosOuterRef: 'integracao/' + CONTA_ID,
+    });
     const result = await reconciliarIntFreteDaConta(asDb(db), CONTA_ID);
     expect(result).toEqual({
       action: 'atualizado',
       intFreteId: 'if-legacy',
       campos: ['contaMercadoLivreMercadoEnviosOuterRef'],
     });
-    expect(db.docs('int_frete').get('if-legacy')!.contaMercadoLivreMercadoEnviosOuterRef).toBe(CANONICO);
+    expect(db.docs('int_frete').get('if-legacy')!.contaMercadoLivreMercadoEnviosOuterRef).toBe(
+      CANONICO,
+    );
     expect(db.docs('int_frete').size).toBe(1);
   });
 
