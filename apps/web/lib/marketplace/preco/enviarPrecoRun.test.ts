@@ -36,7 +36,7 @@ function run(
   return enviarPrecoParaMarketplaces(
     alvos,
     { baixarPreco: false, incluirNaoPublicados: true, ...opcoes },
-    { db, deps: { mercadoLivre: null }, lerIntegracoes: lerIntegracoes as never },
+    { db, deps: { mercadoLivre: null, shopee: null }, lerIntegracoes: lerIntegracoes as never },
     vi.fn(),
   );
 }

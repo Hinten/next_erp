@@ -4,6 +4,7 @@ import { Checkbox } from '@mantine/core';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { useShopeeClient } from '@/lib/shopee/client';
 import { AvisoCanaisNaoSuportados } from '@/lib/marketplace/caps/AvisoCanaisNaoSuportados';
 import { PushProgressDialog } from '@/lib/marketplace/push/PushProgressDialog';
 import {
@@ -30,6 +31,7 @@ export interface EnviarEstoqueDialogProps {
 
 export function EnviarEstoqueDialog({ opened, alvos, onClose }: EnviarEstoqueDialogProps) {
   const mercadoLivre = useMercadoLivreClient();
+  const shopee = useShopeeClient();
   // The same shared `['integracoes']` entry `/produtos` already holds — this
   // resolves the selection's conta ids to a tipo at no extra read.
   const { byId, status } = useIntegracoes(getFirebaseFirestore());
@@ -63,9 +65,9 @@ export function EnviarEstoqueDialog({ opened, alvos, onClose }: EnviarEstoqueDia
         <Checkbox
           label="Reenviar anúncios com erro"
           description={
-            'Anúncios marcados com erro ficam de fora por padrão: o Mercado Livre já ' +
-            'confirmou que eles estão saudáveis, então foi o envio anterior que ele recusou. ' +
-            'Marque para reverificar cada um e tentar de novo.'
+            'Anúncios cujo último envio de estoque o canal recusou ficam de fora por padrão: ' +
+            'reenviar o mesmo número costuma ser recusado de novo. Marque para tentar mesmo ' +
+            'assim — no Mercado Livre, cada anúncio é reverificado antes do envio.'
           }
           checked={reenviarComErro}
           onChange={(e) => definir(e.currentTarget.checked)}
@@ -75,7 +77,7 @@ export function EnviarEstoqueDialog({ opened, alvos, onClose }: EnviarEstoqueDia
         enviarEstoqueParaMarketplaces(
           alvos,
           reenviarComErro,
-          { db: getFirebaseFirestore(), deps: { mercadoLivre }, signal },
+          { db: getFirebaseFirestore(), deps: { mercadoLivre, shopee }, signal },
           onProgress,
         )
       }

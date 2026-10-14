@@ -31,7 +31,12 @@ function run(
   return enviarEstoqueParaMarketplaces(
     alvos,
     false,
-    { db, deps: { mercadoLivre: null }, lerIntegracoes: lerIntegracoes as never, signal },
+    {
+      db,
+      deps: { mercadoLivre: null, shopee: null },
+      lerIntegracoes: lerIntegracoes as never,
+      signal,
+    },
     onProgress,
   );
 }
@@ -98,29 +103,30 @@ describe('enviarEstoqueParaMarketplaces', () => {
   });
 
   it('only warns about an unsupported channel for produtos that actually list it', async () => {
-    const lerIntegracoes = vi
-      .fn()
-      .mockResolvedValue(
-        contas({ shopee: { nome: 'Shopee', tipo: INTEGRACAO_TIPO.shopee, ativo: true } }),
-      );
+    const lerIntegracoes = vi.fn().mockResolvedValue(
+      contas({
+        li: { nome: 'Loja Integrada', tipo: INTEGRACAO_TIPO.lojaIntegrada, ativo: true },
+      }),
+    );
     const spy = vi
       .spyOn(mercadoLivreStockProvider, 'enviarEstoque')
       .mockResolvedValue({ rows: [], pausadoAte: null });
 
     const res = await run(
-      [
-        alvo({ produtoId: 'p1' }),
-        alvo({ produtoId: 'p2', integracoesComProduto: ['ml-1', 'shopee'] }),
-      ],
+      [alvo({ produtoId: 'p1' }), alvo({ produtoId: 'p2', integracoesComProduto: ['ml-1', 'li'] })],
       lerIntegracoes,
     );
 
     // Scoped by the CONTA, not by the reason — which reason a channel earns is
-    // the caps table's business and it moved once already (Shopee's Phase 0
-    // survey turned "nobody checked" into "not built here").
-    const shopeeRows = res.rows.filter((r) => r.integracaoId === 'shopee');
-    expect(shopeeRows.map((r) => r.produtoId)).toEqual(['p2']);
-    expect(shopeeRows[0]!.motivo).toBe('canal-nao-implementado');
+    // the caps table's business and it moved once already (Loja Integrada's Phase
+    // 0 survey turned "nobody checked" into "not built here"). Loja Integrada
+    // flips `implementado` at ITS step 22
+    // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`);
+    // whichever channel flips second re-points this example. The arm itself is
+    // pinned table-free in `../caps/suporteCanal.test.ts:16-25`.
+    const liRows = res.rows.filter((r) => r.integracaoId === 'li');
+    expect(liRows.map((r) => r.produtoId)).toEqual(['p2']);
+    expect(liRows[0]!.motivo).toBe('canal-nao-implementado');
     spy.mockRestore();
   });
 

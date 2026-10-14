@@ -11,7 +11,8 @@ whichever channel each one named. This directory is that walk, written once.
 - `types.ts` — `PushRowBase` (what every result row shares), `PushAlvo`,
   `PushIntegracao`, `PushDeps` (the per-channel clients), and `buildProviderMap`.
 - `run.ts` — `enviarParaMarketplaces`: the fan-out, the single chunked
-  integração read, the cancel checks and the incremental `onProgress`.
+  integração read, the cancel checks (before the read, before each dispatch, and
+  once after the loop) and the incremental `onProgress`.
 - `PushProgressDialog.tsx` — the non-dismissible progress dialog, one live row
   per listing, Cancelar → Fechar.
 
@@ -56,9 +57,19 @@ integração) shape is deliberately widened here.
 ## Adding a channel
 
 Per operation: **a backend route**, **a provider file**, **one row in
-`buildProviderMap`**. You never touch `run.ts`, the dialog, the produtos page or
-the other channels' providers. The per-operation READMEs spell it out
-(`../estoque/README.md`, `../preco/README.md`).
+`buildProviderMap`**. Once per channel: **its client in `PushDeps`** — a REQUIRED
+field, so the compiler lists every `deps` literal to thread it through (the three
+dialogs, the produto ML tab's one line, the tests). You never touch `run.ts`,
+`PushProgressDialog`, the produtos page or the other channels' providers. The
+per-operation READMEs spell it out (`../estoque/README.md`, `../preco/README.md`).
+
+⚠️ **Which contas a run calls comes from the selection's `integracoesComProduto`**
+(`run.ts` dispatches to the union of those ids): a conta no selected produto names
+is never called, so that denorm's completeness bounds every run. Each channel's
+link trigger keeps it — Mercado Livre on parent and variação links, Shopee on the
+parent link only.
+
+⚠️ **Known limit (#1529, Q6(v)):** a selection made ONLY of variation children of a family published by THIS app reaches no Shopee conta — the link trigger stamps the conta on the anchor alone, and `run.ts` dispatches to the contas the selection's `integracoesComProduto` names. The default `/produtos` list shows parents only. A child that DOES reach the backend is resolved to its anchor there.
 
 The dialog's only per-operation knob is `rotuloSucesso` — the wording of the
 `enviado` outcome ("Enviado" / "Pausado"). The outcome VOCABULARY itself stays
@@ -72,6 +83,13 @@ precisely so registering a real channel never means editing the placeholder.
 ## Where the tests are
 
 `run.ts` is pinned by `../estoque/enviarEstoqueRun.test.ts` — dedup, the
-whole-selection dispatch, the per-conta row keys, both cancel checks. It runs
-against the shared code path through the estoque binding, so it is not duplicated
-under `../preco/`; that suite pins only what the price binding itself decides.
+whole-selection dispatch, the per-conta row keys, the two cancel checks before a
+dispatch. It runs against the shared code path through the estoque binding, so it
+is not duplicated under `../preco/`; that suite pins only what the price binding
+itself decides.
+
+The one case pinned directly, in `run.test.ts`, is the cancel that lands DURING
+the last conta's dispatch: a provider answers an abort with `{ rows: [] }` and
+relies on the run to report it, so the run checks the signal once more after the
+loop (#1529, Q5(b)). It needs a dispatch that aborts mid-call, which is simpler to
+inject into the orchestrator than to fake through a provider.
