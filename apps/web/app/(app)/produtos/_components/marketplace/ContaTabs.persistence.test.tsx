@@ -42,6 +42,7 @@ function Harness({ log }: { log: string[] }) {
           { id: 'conta-b', label: 'Loja B' },
         ]}
         renderPanel={(contaId) => <Probe log={log} name={contaId} />}
+        testIdPrefix="ml"
       />
     </MantineProvider>
   );
