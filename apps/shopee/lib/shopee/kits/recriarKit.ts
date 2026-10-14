@@ -58,6 +58,7 @@ import {
 import {
   ESTADO_ANUNCIO_SHOPEE,
   MOTIVO_RESOLUCAO_RECEITA_KIT,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   ehVinculoSubstituido,
   mesmaReceitaKitShopee,
   mesmoEnderecoDeComponente,
@@ -98,7 +99,10 @@ import { carimbarSubstituicao, escreverLeituraDoKit } from './vinculosKit';
 /*                         The sentences (pt-BR, ids only)                     */
 /* -------------------------------------------------------------------------- */
 
-/** `recriacao-sem-diferenca` (§2.5.2) — the safety net's refusal. */
+/**
+ * `recriacao-sem-diferenca` (§2.5.2) — the safety net's refusal. Its `acao`
+ * (step 21) is a plain republish, without the kit options.
+ */
 export function problemaRecriacaoSemDiferenca(itemId: number): ProblemaDeBloqueio {
   return {
     campo: 'recriar',
@@ -108,6 +112,7 @@ export function problemaRecriacaoSemDiferenca(itemId: number): ProblemaDeBloquei
         'principal — não há o que recriar; publique sem --recriar (para trocar o principal, ' +
         'informe --principal)',
     ),
+    acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit },
   };
 }
 
