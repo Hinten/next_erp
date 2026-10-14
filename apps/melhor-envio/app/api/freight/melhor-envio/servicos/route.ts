@@ -7,6 +7,13 @@
  * it. A thin forward: the list is validated by the freight-br API client and
  * returned as `{ servicos }`, and the account's token never leaves the server.
  *
+ * ⚠️ The read is `listServices({ estrito: true })`. The default read turns any
+ * 2xx that is not a list (no body, `{}`, a status message, an HTML page) into
+ * `[]`, which this route would answer as `200 { servicos: [] }`: a picker saying
+ * the account has no services. The strict read fails it instead
+ * (`MelhorEnvioSchemaError` → 502). A list Melhor Envio did send, an empty one
+ * included, is still answered 200.
+ *
  * `intFreteId` must be ONE document id (`docIdSchema`), refused with a 400
  * otherwise. A value with a `/` addresses another path entirely: an odd segment
  * count is a plain Admin SDK error (a 500 for the caller's mistake), an even one
@@ -39,7 +46,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   const db = getAdminFirestore();
   try {
     const ctx = await loadMelhorEnvioContext(db, intFreteId);
-    const servicos = await ctx.api.listServices();
+    const servicos = await ctx.api.listServices({ estrito: true });
     return NextResponse.json({ servicos });
   } catch (err) {
     if (isMelhorEnvioError(err)) return melhorEnvioErrorResponse(err);

@@ -87,6 +87,11 @@ export type FreightAgenciasResult = z.infer<typeof freightAgenciasResultSchema>;
  * on a caller already reading the field tolerantly, and nothing reads this one
  * that way. A 2xx without `servicos` did not come from this route, and an empty
  * picker would read as "this account has no services" — a claim nobody made.
+ *
+ * This guards only the ROUTE's envelope. The hop before it is the route's: it
+ * reads Melhor Envio with `listServices({ estrito: true })`, so a Melhor Envio
+ * 2xx that is not a list is a 502 (`FreightServerError` here), never
+ * `{ servicos: [] }`. An empty array therefore means Melhor Envio sent one.
  */
 export const freightServicosResultSchema = z.object({
   servicos: z.array(shipmentServiceSchema),

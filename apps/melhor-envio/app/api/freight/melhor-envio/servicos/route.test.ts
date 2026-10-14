@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
+  createMelhorEnvioApi,
   MelhorEnvioHttpError,
   MelhorEnvioReauthRequiredError,
 } from '@delfrance/integrations-freight-br';
 import {
   createFreightHttpClient,
   FreightNotFoundError,
+  FreightServerError,
 } from '@delfrance/integrations-freight-br/http-client';
 
 const h = vi.hoisted(() => ({
@@ -134,6 +136,61 @@ describe('GET /api/freight/melhor-envio/servicos', () => {
     expect(await res.json()).toEqual({ servicos: SERVICOS });
     expect(h.loadCtx).toHaveBeenCalledWith(expect.anything(), 'int-1');
     expect(h.listServices).toHaveBeenCalledTimes(1);
+    // The strict read: see the real-client block below for what it refuses.
+    expect(h.listServices).toHaveBeenCalledWith({ estrito: true });
+  });
+
+  /**
+   * The browser client requires `servicos`, but that only guards this route's
+   * own envelope. One hop earlier, the default `listServices` read turns any 2xx
+   * that is not a list into `[]`, which would go out as `200 { servicos: [] }` —
+   * a picker telling the operator the account has no services. A REAL API
+   * client, over an injected Melhor Envio fetch, pins what such a body becomes.
+   */
+  describe('the Melhor Envio body, through the real API client', () => {
+    function melhorEnvioRespondendo(texto: string) {
+      const fetchMe = vi.fn(async () => new Response(texto, { status: 200 }));
+      h.loadCtx.mockImplementation(async () => ({
+        intFreteId: 'int-1',
+        api: createMelhorEnvioApi({
+          baseUrl: 'https://melhor-envio.invalid',
+          getAccessToken: async () => 'token-de-teste',
+          userAgent: 'teste',
+          fetchImpl: fetchMe,
+        }),
+      }));
+      return fetchMe;
+    }
+
+    it.each([
+      ['an empty body', ''],
+      ['an empty object', '{}'],
+      ['a status message', '{"message":"em manutencao"}'],
+      ['an HTML page', '<!DOCTYPE html><html>em manutencao</html>'],
+    ])('answers 502 for %s, never 200 { servicos: [] }', async (_caso, texto) => {
+      h.verifyIdToken.mockResolvedValue(READER);
+      const fetchMe = melhorEnvioRespondendo(texto);
+
+      const res = await GET(req({ intFreteId: 'int-1' }, BEARER));
+
+      expect(res.status).toBe(502);
+      expect(fetchMe).toHaveBeenCalledTimes(1);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('near-miss: a list Melhor Envio sent is answered 200, an empty one included', async () => {
+      h.verifyIdToken.mockResolvedValue(READER);
+
+      melhorEnvioRespondendo(JSON.stringify(SERVICOS));
+      const cheia = await GET(req({ intFreteId: 'int-1' }, BEARER));
+      expect(cheia.status).toBe(200);
+      expect(await cheia.json()).toEqual({ servicos: SERVICOS });
+
+      melhorEnvioRespondendo('[]');
+      const vazia = await GET(req({ intFreteId: 'int-1' }, BEARER));
+      expect(vazia.status).toBe(200);
+      expect(await vazia.json()).toEqual({ servicos: [] });
+    });
   });
 
   describe('the int_frete doc, through the real loader', () => {
@@ -230,5 +287,20 @@ describe('the browser client against this route', () => {
     usarLoaderReal({ tipo: 'motoboy' });
 
     await expect(cliente().servicos('int-1')).rejects.toBeInstanceOf(FreightNotFoundError);
+  });
+
+  it('reads a Melhor Envio body that is not a list as FreightServerError, not as no services', async () => {
+    h.verifyIdToken.mockResolvedValue(READER);
+    h.loadCtx.mockImplementation(async () => ({
+      intFreteId: 'int-1',
+      api: createMelhorEnvioApi({
+        baseUrl: 'https://melhor-envio.invalid',
+        getAccessToken: async () => 'token-de-teste',
+        userAgent: 'teste',
+        fetchImpl: async () => new Response('{"message":"em manutencao"}', { status: 200 }),
+      }),
+    }));
+
+    await expect(cliente().servicos('int-1')).rejects.toBeInstanceOf(FreightServerError);
   });
 });
