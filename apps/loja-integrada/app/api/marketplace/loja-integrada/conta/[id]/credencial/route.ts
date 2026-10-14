@@ -8,7 +8,12 @@
  *
  * ## PUT, in order — and nothing is written before step 7
  *
- *  1. the caller, the id, the body (`{ token, expiraEm, versaoEsperada }`; the
+ *  0. the caller and the id; then the READ SWITCH (`LOJA_INTEGRADA_CHAMADAS`,
+ *     `core/valvulas.ts`): anything but the exact `on` is 503
+ *     `LI_CHAMADAS_DESLIGADAS`, logged as one `chamada-bloqueada` line, before
+ *     the body (and the token in it) is even read — no Firestore read, no Loja
+ *     Integrada call. Mock only until the cutover (D17): the window sets it;
+ *  1. the body (`{ token, expiraEm, versaoEsperada }`; the
  *     token is trimmed at both ends by the schema, once);
  *  2. the expiry date: a real date, today..today + 120 days in São Paulo (422);
  *  3. the conta, read UNCACHED; only `tipo === 3` is required (404), so an
@@ -40,8 +45,9 @@
  *
  * Unconditional and idempotent (tier 0): the intent is "no token on this
  * conta", whoever saved the current one. No Loja Integrada call — there is no
- * revoke API; the owner removes the token in the painel. Both avisos are
- * resolved, the reconexão one clocked by the delete's commit time.
+ * revoke API; the owner removes the token in the painel — so the read switch
+ * does not gate it. Both avisos are resolved, the reconexão one clocked by the
+ * delete's commit time.
  *
  * ## Token hygiene
  *
@@ -104,6 +110,7 @@ import {
   isLiAppError,
   lerCorpoLi,
   respostaCancelada,
+  respostaChamadasDesligadas,
   respostaDeErroLi,
   respostaDeVeredito,
   respostaIdInvalido,
@@ -111,6 +118,7 @@ import {
   respostaTokenNaRef,
   respostaValidadeRecusada,
 } from '@/lib/lojaIntegrada/core/respond';
+import { lerChaveDeChamadas, registrarChamadaBloqueadaLi } from '@/lib/lojaIntegrada/core/valvulas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -129,6 +137,13 @@ export async function PUT(
   if ('error' in auth) return auth.error;
   const { id } = await params;
   if (naoEhIdDeConta(id)) return respostaIdInvalido();
+
+  // The read switch (D17): read once, before the body. Off ⇒ no read, no call.
+  const ambiente = process.env;
+  if (!lerChaveDeChamadas(ambiente)) {
+    registrarChamadaBloqueadaLi('validarPersonalToken', ambiente, { conta: id });
+    return respostaChamadasDesligadas();
+  }
 
   const corpo = await lerCorpoLi(req, corpoSalvarCredencialLiSchema);
   if (!corpo.ok) return corpo.resposta;

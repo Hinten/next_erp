@@ -12,10 +12,10 @@
  *    `firestore-transaction-inventory.test.js` greps raw text, and a mention —
  *    even in a comment — would demand an inventory class for a site that does
  *    not exist. The word is assembled below so this file does not contain it;
- *  - the logger and the redactor stay light: `core/redacao.ts` and
+ *  - the logger, the redactor and the valves stay light: `core/redacao.ts` and
  *    `core/refCredencial.ts` import only `zod` and `@delfrance/core/*`, and the
- *    transitive import closure of the logger never reaches the Admin SDK, the
- *    admin data layer, Next or the app alias;
+ *    transitive import closure of the logger and of `core/valvulas.ts` never
+ *    reaches the Admin SDK, the admin data layer, Next or the app alias;
  *  - the observer seam: outside `core/log.ts`, every observer handed to the
  *    package is exactly `criarObservadorLi(…)` as imported from the logger —
  *    the whole value, under its own name, never shadowed — and no file names
@@ -131,8 +131,18 @@ const proibidoNoFecho = (espec: string) =>
   espec.startsWith('next') ||
   espec.startsWith('@/');
 
-/** The logger's entry points (the sanitizer's own, stricter closure is below; 2b-c adds the valves). */
-const ENTRADAS_DO_FECHO = ['core/log.ts', 'core/redacao.ts', 'core/refCredencial.ts'];
+/**
+ * The logger's entry points, and the valves', which step 3's functions bundle
+ * imports too (the sanitizer's own, stricter closure is below). The valves keep
+ * their own conta-id grammar: `core/contas.ts` would pull in the collections
+ * handle, the credential store and the avisos.
+ */
+const ENTRADAS_DO_FECHO = [
+  'core/log.ts',
+  'core/redacao.ts',
+  'core/refCredencial.ts',
+  'core/valvulas.ts',
+];
 
 /* ----------------------------- the sanitizer ------------------------------ */
 
@@ -391,6 +401,7 @@ describe('lib/lojaIntegrada layout', () => {
         'core/log.ts',
         'core/redacao.ts',
         'core/refCredencial.ts',
+        'core/valvulas.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
         'sanitizacao/lote.ts',
@@ -442,7 +453,7 @@ describe('lib/lojaIntegrada layout', () => {
     );
   });
 
-  it("the logger's import closure reaches no Admin SDK, admin data layer, Next or @/ alias", () => {
+  it("the logger's and the valves' import closure reaches no Admin SDK, admin data layer, Next or @/ alias", () => {
     const fecho = fechoDeImportacoes(ENTRADAS_DO_FECHO, lerDoDisco);
     expect(fecho.arquivos).toEqual(ENTRADAS_DO_FECHO.slice().sort());
     expect(fecho.externos.filter(proibidoNoFecho)).toEqual([]);
@@ -547,6 +558,29 @@ describe('the guards, on synthetic source', () => {
       }),
     );
     expect(fecho.externos.filter(proibidoNoFecho)).toEqual(['@delfrance/data/admin']);
+  });
+
+  it("import closure: valvulas.ts → log.ts is accepted; valvulas.ts → contas.ts is flagged, through Firestore's handle", () => {
+    const aceito = fechoDeImportacoes(
+      ['core/valvulas.ts'],
+      leitor({
+        'core/valvulas.ts': "import { registrarEventoLi } from './log';",
+        'core/log.ts': "import { versaoDaRef } from './refCredencial';",
+        'core/refCredencial.ts': 'export const x = 1;',
+      }),
+    );
+    expect(aceito.externos.filter(proibidoNoFecho)).toEqual([]);
+    const recusado = fechoDeImportacoes(
+      ['core/valvulas.ts'],
+      leitor({
+        'core/valvulas.ts': "import { naoEhIdDeConta } from './contas';",
+        'core/contas.ts':
+          "import { integracaoCollection } from '@delfrance/data/admin/collections';",
+      }),
+    );
+    expect(recusado.externos.filter(proibidoNoFecho)).toEqual([
+      '@delfrance/data/admin/collections',
+    ]);
   });
 
   it.each([

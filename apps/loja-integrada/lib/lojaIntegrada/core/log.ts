@@ -93,8 +93,11 @@ export type OpcoesRegistroLi = Omit<OpcoesObservadorLi, 'conta'> & {
   readonly conta: string | null;
 };
 
-/** What a line is about. Each write step adds its own. */
-export type EventoLi = 'chamada' | 'valvula';
+/**
+ * What a line is about: a call, a valve read at a run's start, a call the read
+ * switch refused (`core/valvulas.ts`). Each write step adds its own.
+ */
+export type EventoLi = 'chamada' | 'valvula' | 'chamada-bloqueada';
 
 /** A type alias, not an interface: it must be assignable to the sink's record of campos. */
 export type LinhaChamadaLi = {
@@ -268,7 +271,8 @@ export function criarObservadorLi(o: OpcoesObservadorLi): (e: ChamadaLi) => void
 }
 
 /**
- * Any other event line (the valve read at a run's start, from 2b-c on): the
+ * Any other event line (the valve read at a run's start, a call the read switch
+ * refused): the
  * same envelope as a call line — `evento`, `conta`, `fluxo`, `tentativa`,
  * `idTarefa`, `idNotificacao` — then the event's own primitive campos. A campo
  * may not overwrite the envelope.

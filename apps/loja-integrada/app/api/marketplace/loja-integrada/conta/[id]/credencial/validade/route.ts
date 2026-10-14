@@ -11,7 +11,11 @@
  *
  * In order:
  *
- *  1. the caller, the id, the body;
+ *  0. the caller and the id; then the read switch (`LOJA_INTEGRADA_CHAMADAS`,
+ *     `core/valvulas.ts`): anything but the exact `on` is 503
+ *     `LI_CHAMADAS_DESLIGADAS` with one `chamada-bloqueada` line, before any
+ *     read and before any Loja Integrada call (D17);
+ *  1. the body;
  *  2. the expiry date: a real date, today..today + 120 days in São Paulo (422);
  *  3. the conta, read UNCACHED; only `tipo === 3` is required (404);
  *  4. the stored credential: absent ⇒ 409 `LI_CREDENCIAL_AUSENTE`; corrupt ⇒
@@ -65,12 +69,14 @@ import {
   isLiAppError,
   lerCorpoLi,
   respostaCancelada,
+  respostaChamadasDesligadas,
   respostaDeErroLi,
   respostaDeVeredito,
   respostaIdInvalido,
   respostaTokenNaRef,
   respostaValidadeRecusada,
 } from '@/lib/lojaIntegrada/core/respond';
+import { lerChaveDeChamadas, registrarChamadaBloqueadaLi } from '@/lib/lojaIntegrada/core/valvulas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -83,6 +89,13 @@ export async function PUT(
   if ('error' in auth) return auth.error;
   const { id } = await params;
   if (naoEhIdDeConta(id)) return respostaIdInvalido();
+
+  // The read switch (D17): read once, before the body. Off ⇒ no read, no call.
+  const ambiente = process.env;
+  if (!lerChaveDeChamadas(ambiente)) {
+    registrarChamadaBloqueadaLi('validarPersonalToken', ambiente, { conta: id });
+    return respostaChamadasDesligadas();
+  }
 
   const corpo = await lerCorpoLi(req, corpoRenovarValidadeLiSchema);
   if (!corpo.ok) return corpo.resposta;

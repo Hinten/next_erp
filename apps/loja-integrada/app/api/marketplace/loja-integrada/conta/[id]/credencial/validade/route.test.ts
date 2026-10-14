@@ -18,6 +18,7 @@ import {
 } from '@/lib/lojaIntegrada/avisos/avisos';
 import { fingerprintDoToken, refDaCredencial } from '@/lib/lojaIntegrada/core/credencial';
 import { removerCredencial } from '@/lib/lojaIntegrada/core/credentialStore';
+import { CHAMADAS_ENV_LI } from '@/lib/lojaIntegrada/core/valvulas';
 import { FakeDb, asDb, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
 import {
   AGORA_MS,
@@ -113,6 +114,8 @@ beforeEach(() => {
   seedConta(db, ID, { nome: 'Loja Um' });
   console$ = espiarConsole();
   stdout = espiarStdout();
+  // Every case below but the read-switch ones runs with calls allowed.
+  vi.stubEnv(CHAMADAS_ENV_LI, 'on');
 });
 
 afterEach(() => {
@@ -120,6 +123,118 @@ afterEach(() => {
   stdout.restaurar();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+describe('PUT …/credencial/validade — the read switch: only the exact `on` calls Loja Integrada', () => {
+  it.each([
+    ['unset', undefined, 'INFO'],
+    ['blank', '', 'INFO'],
+    ['ON', 'ON', 'WARNING'],
+    ['" on"', ' on', 'WARNING'],
+    ['true', 'true', 'WARNING'],
+  ])(
+    '%s: a fixed 503 LI_CHAMADAS_DESLIGADAS — the stored token never sent, nothing read or written',
+    async (_caso, valor, severidade) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, valor);
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const versao = seedParada();
+
+      const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+      expect(res.status).toBe(503);
+      const texto = await res.text();
+      expect(JSON.parse(texto)).toMatchObject({ code: CODIGO_ERRO_LI.chamadasDesligadas });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(chamadas).toHaveLength(0);
+      expect(db.leituras).toEqual([]);
+      expect(db.escritas).toEqual([]);
+      expect(linhasDeLog()).toEqual([
+        expect.objectContaining({
+          severity: severidade,
+          evento: 'chamada-bloqueada',
+          conta: ID,
+          operacao: 'validarPersonalToken',
+          valorReconhecido: severidade === 'INFO',
+        }),
+      ]);
+      const tudo = [texto, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+      expect(tudo).not.toContain(TOKEN_A);
+    },
+  );
+
+  it('near-miss: the exact `on` re-validates with exactly one fetch', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+    expect(res.status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(chamadas).toHaveLength(1);
+  });
+
+  /**
+   * Bodies the route refuses on their own (400, 400, 422) once the switch is on.
+   * With it off, the 503 must win over each: the switch comes BEFORE the body is
+   * read, which `bodyUsed` pins directly.
+   */
+  const CORPOS_RECUSAVEIS: [string, unknown, number][] = [
+    ['an empty object', {}, 400],
+    [
+      'a body carrying a token',
+      { expiraEm: NOVA_VALIDADE, versaoEsperada: 1, token: 'outro' },
+      400,
+    ],
+    ['a refused date', { expiraEm: '2027-01-14', versaoEsperada: 1 }, 422],
+  ];
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'off + %s: still the 503 — the body is never read',
+    async (_caso, corpo) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const req = requisicao('PUT', `${ID}/credencial/validade`, { corpo });
+
+      const res = await PUT(req, contexto(ID));
+
+      expect(res.status).toBe(503);
+      expect(await corpoDe(res)).toMatchObject({ code: CODIGO_ERRO_LI.chamadasDesligadas });
+      expect(req.bodyUsed).toBe(false);
+      expect(chamadas).toHaveLength(0);
+      expect(db.leituras).toEqual([]);
+      expect(linhasDeLog().map((l) => l.evento)).toEqual(['chamada-bloqueada']);
+    },
+  );
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'near-miss: on + %s is refused by the body check itself (%i), with no call',
+    async (_caso, corpo, status) => {
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const req = requisicao('PUT', `${ID}/credencial/validade`, { corpo });
+      const res = await PUT(req, contexto(ID));
+      expect(res.status).toBe(status);
+      expect(req.bodyUsed).toBe(true);
+      expect(chamadas).toHaveLength(0);
+    },
+  );
+
+  it('the caller and the id are still checked first: 401, 403 and 400 with the switch off', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const corpo = { expiraEm: NOVA_VALIDADE, versaoEsperada: seedParada() };
+    const semAuth = await PUT(
+      requisicao('PUT', `${ID}/credencial/validade`, { semAuth: true, corpo }),
+      contexto(ID),
+    );
+    expect(semAuth.status).toBe(401);
+    const idRuim = await renovar(corpo, { id: '..' });
+    expect(idRuim.status).toBe(400);
+    expect(await corpoDe(idRuim)).toMatchObject({ code: CODIGO_ERRO_LI.idInvalido });
+    h.verifyIdToken.mockResolvedValue(LEITOR);
+    expect((await renovar(corpo)).status).toBe(403);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(linhasDeLog()).toEqual([]);
+  });
 });
 
 describe('PUT …/credencial/validade — aceito', () => {
