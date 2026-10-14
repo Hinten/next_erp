@@ -204,6 +204,15 @@ still be fixed. Only the context loader refuses those.
 - Doc id `<conta>:<numero>:<origem>:<stamp digits | ->`, built from schema-validated parts
   (no doc-id guard); the stamp is in it, so a parked row never swallows a later change.
 - Never write `onTaskDispatched(` in `lib/`: triggers live in `functions/`.
+- The producer `notificacoes/agendador.ts` is pure (the queue is a parameter): exactly
+  `LOJA_INTEGRADA_TASKS_DISABLED=1` → `LiTarefasDesligadasError`; a transient Cloud Tasks
+  failure (REST, STRING codes; `functions/*` only WITH an `httpResponse`) →
+  `LiTarefasTransitoriasError`; anything else rethrown untouched. The payload goes ALONE (no
+  task id, no `uri`). Each root reads the env and binds the queue (`functions/src/agendador.ts`;
+  App Hosting from step 4). Fake failures with `testing/falhaDeEnfileiramento.ts`.
+- The functions roots bind every read run's deps in ONE place, `functions/src/depsLeitura.ts`
+  (env whole, the importer from the seam table per run). `index.ts` exports only triggers:
+  any other runtime export there reads as a Cloud Function name.
 
 ## Config
 
