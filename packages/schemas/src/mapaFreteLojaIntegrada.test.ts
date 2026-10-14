@@ -113,6 +113,9 @@ describe('chaveFormaEnvioLi — the full `<id>---<code>` key', () => {
     for (const forma of [null, undefined, 'PAC', 141909, [FORMA]]) {
       expect(chaveFormaEnvioLi(forma), JSON.stringify(forma)).toBeNull();
     }
+    // An ARRAY is refused even when it carries the method's fields as properties.
+    expect(chaveFormaEnvioLi(Object.assign([], FORMA))).toBeNull();
+    expect(montarEntradaDoMapaLi({ forma: Object.assign([], FORMA), numero: 1 })).toBeNull();
   });
 });
 
@@ -194,6 +197,9 @@ describe('entradaDoMapaPorChaveLi — the tolerant raw presence read', () => {
   it('skips elements that are not plain objects', () => {
     const alvo = linha();
     expect(entradaDoMapaPorChaveLi([null, 'x', 5, [CHAVE], alvo], CHAVE)).toBe(alvo);
+    // An array element is skipped even when it carries an `idOriginal` property.
+    const arranjo = Object.assign([], { idOriginal: CHAVE });
+    expect(entradaDoMapaPorChaveLi([arranjo, alvo], CHAVE)).toBe(alvo);
   });
 
   it('a `mapa` that is not an array reads as "no row" — a map-shaped one included', () => {

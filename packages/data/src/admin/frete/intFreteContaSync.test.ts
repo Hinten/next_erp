@@ -856,6 +856,16 @@ describe.each(CENARIOS)('$nome', (c) => {
         'velho-ativo',
       ],
       [
+        // A copy that kept NaN as a date would keep the first doc it saw (every comparison
+        // against NaN is false) — the lookup's private copy diverging from the shared one.
+        'a NaN dataCadastro reads as 0 in both, never a date that wins by arriving first',
+        [
+          ['a-nan', doc({ dataCadastro: Number.NaN })],
+          ['b', doc()],
+        ],
+        'b',
+      ],
+      [
         'an equal-date active pair goes to the lowest id (higher id seeded first)',
         [
           ['b', doc({ nome: 'Gemeo B' })],
