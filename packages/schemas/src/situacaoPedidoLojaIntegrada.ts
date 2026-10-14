@@ -48,11 +48,12 @@ import { ESTADO_PEDIDO, type EstadoPedido } from './pedido/collection/pedido';
  * cancellation (`pedido_cancelado`), the refund (`pagamento_devolvido`) and the
  * cancellation request (`cancelamento_solicitado`). "Captured" means the
  * order's situação history, up to the observed situação, holds a codigo in
- * {@link CODIGOS_LI_CAPTURADO}, or the observed codigo is itself one of them
- * ({@link alvoDeCriacaoLi} applies the second half). A dispute, a chargeback
- * and a refund without return all presuppose a captured payment, so they are
- * capture evidence on their own; a codigo that is capture evidence answers the
- * same either way.
+ * {@link CODIGOS_LI_CAPTURADO}, or the observed codigo is itself one of them.
+ * A dispute, a chargeback and a refund without return all presuppose a
+ * captured payment, so they are capture evidence on their own; that second
+ * half needs no code, because every row of a capture-evidence codigo answers
+ * the same either way (pinned in the test: a row that started to depend on
+ * capture would need the observed codigo counted here).
  *
  * ## What this table does NOT decide
  *
@@ -346,9 +347,9 @@ export interface AlvoDeCriacaoLi {
  * codigo the table does not know.
  *
  * @param capturadoNoHistorico whether the order's situação history, up to the
- *   observed situação, holds a {@link CODIGOS_LI_CAPTURADO} codigo. The
- *   observed codigo counts on its own (a dispute proves the capture), so a
- *   caller with no history evidence still gets the captured answer for it.
+ *   observed situação, holds a {@link CODIGOS_LI_CAPTURADO} codigo. For a
+ *   codigo that is itself capture evidence the answer is the same either way
+ *   (see "Captured or not" above).
  */
 export function alvoDeCriacaoLi(
   codigo: string,
@@ -356,8 +357,7 @@ export function alvoDeCriacaoLi(
 ): AlvoDeCriacaoLi | null {
   const linha = situacaoLi(codigo);
   if (linha === null) return null;
-  const capturado = capturadoNoHistorico || CODIGOS_LI_CAPTURADO.has(linha.codigo);
-  return capturado
+  return capturadoNoHistorico
     ? { estado: linha.estado.capturado, statusPagamento: linha.statusPagamento.capturado }
     : { estado: linha.estado.naoCapturado, statusPagamento: linha.statusPagamento.naoCapturado };
 }
