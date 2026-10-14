@@ -436,7 +436,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 
 ### 4.ii Conventions every step obeys
 
-- **No generic `catch`** (rule 6). Narrow on the in-repo classes (`LiAuthError`, `LiThrottleError`, `LiNotFoundError`, `ZodError`, …) and `throw err` otherwise; `err instanceof Error` does not count. This applies especially to the logger, the probe CLI, the error classifier and the `onChamada` observer.
+- **No generic `catch`** (rule 6). Narrow on the in-repo classes (`LiAuthError`, `LiThrottleError`, `LiNotFoundError`, `ZodError`, …) and `throw err` otherwise; `err instanceof Error` does not count. This applies especially to the logger, the capture sanitizer, the error classifier and the `onChamada` observer.
 - **Every optional Firestore field is `.nullable().default(null)`**, never bare `.optional()` and never a bare `X | null`.
 - **Money via `roundReais`.** Provider responses are read via `lerRespostaJson`, and numbers are read string-or-number tolerant (`integration-response-numbers-tolerant`).
 - **Watermark units are written beside every field** (µs vs ms). Comparisons go through `coerceToMicros`.
@@ -607,7 +607,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Timing:** before any LI-calling flow, which all read the context and can trigger a park. It lands with step 21's conta CRUD and credential form, so the connect route and its only caller land together. No token is saved before the window (D17).
 - **Does NOT:** renew the token (no API exists; the renewal route only re-validates it and records the new expiry date); cache the credential; store the expiry on the `integracao` doc; edit `integracao.ts`; create the daily trigger, a queue, a pipeline or a CI lane (step 3).
 
-### Step 2b: Structured logger + write valves + canary allow-list + dry-run diff + read-only probe CLI
+### Step 2b: Structured logger + write valves + canary allow-list + dry-run diff + capture sanitizer
 
 - **Gate:** always. **Trigger:** library + CLI. **Docs:** D4.
 - **Logger** (`core/log.ts`): one JSON line per LI call, with a Cloud Logging severity. Fields:
@@ -644,13 +644,12 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Dry-run:** build the exact payload, perform the read-only GET of LI's current state, and log `{payload, atual, diff}` per field. It writes nothing to LI **and nothing to the "sent" stamps in Firestore**, so turning `on` later still sends.
 - **Read-back** after every real write: GET the resource, compare the fields written, and log `deriva` with both values. Persistent drift is left to the daily reconcile (steps 12–13).
 - **Restore snapshot:** for catalogue writes, the pre-write GET body is logged at INFO level before the PUT. Rollback = re-PUT that body, by a person.
-- **Probe CLI** `scripts/sondar.ts` (`pnpm --filter @delfrance/loja-integrada-app sondar --conta <id> GET /v1/...`):
-  - It receives the read-only client type, so a non-GET cannot compile.
-  - It reads the token from env (`.env.local` only) and never prints it. Output is redacted JSON.
-  - Every capture records the credential type it ran under (`credencial: 'personal-token'`) beside the request line.
-  - `--salvar` writes to a gitignored `.capturas/`.
-  - `fixture` converts a capture into `lib/lojaIntegrada/fixtures/__wire__/`. The conversion runs through the **same allow-list** (non-allow-listed strings are replaced with obviously fake values such as `000.000.000-00`) plus a two-layer `piiScan.ts` (the Shopee precedent).
-  - It is run by Lucas, or by an agent only with his explicit go for that session.
+- **Capture sanitizer** `scripts/sanitizar.ts` (`pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada <pasta> [--so <nome>]… [--dry-run] [--sobrescrever]`, or `--verificar <arquivo>…`; PR 2b-b, D17). It replaces the probe CLI: no code here calls LI, reads a token or spawns a process, and an `estrutura.test.ts` import-closure guard proves it.
+  - **Captures are the owner's own.** Each is a pair: the raw body `<nome>.json` and a sidecar `<nome>.txt` holding `METHOD URL STATUS`, a mandatory `credencial:` line (`personal-token`, `personal-token-invalido`, `chave-api-aplicacao`, `sessao-painel`) and an optional `data:`, never a header. A HAR file, a header line or a credential in the URL refuses it.
+  - **They live outside every git checkout** (`~/li-capturas`): the sanitizer refuses a folder with a `.git` entry in it or above it, and refuses to run without the owner's local store-name list (`nomes-proibidos.txt`), which never enters the repository.
+  - Each body goes through the `fixture` redaction profile, then a two-layer `piiScan.ts` (re-sanitization fixpoint; patterns, check digits, tracking codes, addresses and the store-name list). An allow-listed value the profile had to fake is a finding too. **Any finding refuses the whole run and writes nothing.**
+  - Output is a self-describing envelope per pair in `lib/lojaIntegrada/fixtures/__wire__/` (request line, status, class, form, credential type, capture date; no manifest). `--dry-run` prints leaf paths, JSON types and treatments, never values; `--verificar` runs the store names and patterns over docs, fixtures and PR text before a push.
+  - Agents run it and read only its output and the sanitized fixtures; they never open a raw capture. A fixture is pushed only after the owner has seen it.
 - **Firestore:** none. **Indexes:** none. **Rulesets:** none. **Env:** the five valves and five canary lists, in `.env.example`, `apphosting.yaml` and the functions env, all defaulting to unset ⇒ off.
 - **Seam:** the `onChamada` hook from step 1.
 - **Rule 7:** none (no Firestore write).
@@ -659,8 +658,8 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - A valve parsing table: `'on'`, `'ON'`, `' on'`, `'true'`, unset.
   - A canary table.
   - A dry-run produces zero LI writes; a fake transport asserts only GETs.
-- **Timing:** before any write step, since each write step's code calls the valve. It also comes before probe round 1, which needs the CLI.
-- **Does NOT:** send any write; commit any capture; keep the token anywhere but env and the credential store.
+- **Timing:** before any write step, since each write step's code calls the valve. The sanitizer comes before step 3, whose first fixtures need it.
+- **Does NOT:** send any write; make any LI call; handle any token; keep any raw capture inside the repository.
 
 ### Step 3: Poller (primary) + notification pipeline + Cloud Tasks queues
 
