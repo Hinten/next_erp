@@ -934,3 +934,156 @@ test.describe('Theme readability checker rejects rendering defects', () => {
     expect(report.resolvedTextTargets).toEqual([]);
   });
 });
+
+/**
+ * Models the staging failure of 2026-10-13: a live report re-rendered while its
+ * chart was being measured, and recharts re-keys every tick, so identical new
+ * label nodes replaced the ones axe had just scanned. The re-render lands on
+ * the frame after the checker scrolls a label into view — inside the stability
+ * wait in which Playwright threw "Element is not attached to the DOM".
+ */
+async function rerenderOnFirstScroll(page: Page, selector: string): Promise<void> {
+  await page.locator('body').evaluate((body) => {
+    const spacer = document.createElement('div');
+    spacer.style.height = `${innerHeight * 2}px`;
+    body.querySelector('h1')!.after(spacer);
+  });
+  await page.evaluate((labels) => {
+    addEventListener(
+      'scroll',
+      () => {
+        for (const node of document.querySelectorAll(labels))
+          node.replaceWith(node.cloneNode(true));
+      },
+      { capture: true, once: true },
+    );
+  }, selector);
+}
+
+/** Replaces an identical node for `id` on each of its next `times` placements. */
+async function replaceWhilePlacing(page: Page, id: string, times: number): Promise<void> {
+  await page.evaluate(
+    ({ id, times }) => {
+      const original = Element.prototype.scrollIntoView;
+      let remaining = times;
+      Element.prototype.scrollIntoView = function (this: Element, ...args) {
+        if (this.id === id && remaining > 0) {
+          remaining -= 1;
+          this.replaceWith(this.cloneNode(true));
+        }
+        return original.apply(this, args);
+      };
+    },
+    { id, times },
+  );
+}
+
+test.describe('Theme readability checker re-measures a page that re-rendered mid-audit', () => {
+  // Which round trip the re-render lands in varies, so the pass count may be
+  // 1 (it landed before a re-resolution) or 2 (it hit a measurement); what
+  // must never happen is a finding about the replaced node, or a throw.
+  test('reports nothing about chart labels a re-render replaced after the scan', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    await rerenderOnFirstScroll(page, '#chart tspan');
+    // Only the heading is required: the labels are reached as axe review
+    // targets, below the fold, exactly like the report's tick labels.
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      required: [page.getByRole('heading', { name: 'Populated chart fixture' })],
+    });
+    expect(report.issues).toEqual([]);
+    expect(report.passes).toBeLessThanOrEqual(2);
+    expect(report.resolvedSvgTextTargets.some(({ target }) => target.includes('#count'))).toBe(
+      true,
+    );
+  });
+
+  test('reports nothing about a required target a re-render replaced', async ({ page }) => {
+    await fixture(page);
+    await rerenderOnFirstScroll(page, '#copy');
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      required: [page.locator('#copy')],
+    });
+    expect(report.issues).toEqual([]);
+    expect(report.passes).toBeLessThanOrEqual(2);
+  });
+
+  test('re-runs the pass when the replacement hits an axe review target mid-measurement', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    await replaceWhilePlacing(page, 'count', 1);
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      required: [page.locator('#center')],
+    });
+    expect(report.issues).toEqual([]);
+    expect(report.passes).toBe(2);
+  });
+
+  test('re-runs the pass when the replacement hits a required target mid-measurement', async ({
+    page,
+  }) => {
+    await fixture(page);
+    await replaceWhilePlacing(page, 'copy', 1);
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      required: [page.locator('#copy')],
+    });
+    expect(report.issues).toEqual([]);
+    expect(report.passes).toBe(2);
+  });
+
+  test('re-runs the pass when the replacement lands inside the opacity walk', async ({ page }) => {
+    await fixture(page);
+    // A detached node computes `opacity: ''`, and Number('') is 0: without a
+    // connection check that reads as a zero-opacity finding, never retried.
+    await page.evaluate(() => {
+      const original = window.getComputedStyle.bind(window);
+      let pending = true;
+      window.getComputedStyle = (element: Element, pseudo?: string | null) => {
+        if (pending && element.id === 'copy') {
+          pending = false;
+          element.replaceWith(element.cloneNode(true));
+        }
+        return original(element, pseudo);
+      };
+    });
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      required: [page.locator('#copy')],
+    });
+    expect(report.issues).toEqual([]);
+    expect(report.passes).toBe(2);
+  });
+
+  test('fails as unstable-dom, not a crash, when the page never stops replacing it', async ({
+    page,
+  }) => {
+    await chartFixture(page);
+    await replaceWhilePlacing(page, 'count', Number.MAX_SAFE_INTEGER);
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      required: [page.locator('#center')],
+    });
+    expect(report.passes).toBe(3);
+    expect(report.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining(['detached', 'unstable-dom']),
+    );
+  });
+
+  test('still reports a genuinely missing required element instead of re-running', async ({
+    page,
+  }) => {
+    await fixture(page);
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      required: [page.locator('#never-rendered')],
+    });
+    expect(report.passes).toBe(1);
+    expect(report.issues.map((issue) => issue.code)).toContain('missing-or-ambiguous');
+  });
+});

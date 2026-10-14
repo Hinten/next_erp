@@ -200,8 +200,12 @@ to the kit arms (`../kits/`) — and refuses `ehKitVirtual` without `ehKit`
 `ehKit === false ⇒ ehKitVirtual === false`. So this item planner never meets a
 kit it should build; reaching the refusal means a kit slipped past the
 dispatcher, and its sentence says it is a defect of the ERP. Two live ORDINARY
-links still take step 11's lexically-first pick (`escolherLink`, L10(3)):
-publishing a non-kit produto did not change.
+links still take step 11's lexically-first pick (`escolherLink`, L10(3)). ⚠️ One
+exception (OP-27, PR #1869): `lerVinculosDaConta` matches the conta by
+`idDoRef(contaProdutoShopeeOuterRef)`, so a legacy BARE-encoded link
+(`integracao/<id>`) is now visible to publish, for a non-kit produto too — it
+republishes onto that listing where step 11 created a second one. The pick's
+ORDER did not change; the `item_id` lookups still compare exactly.
 
 ### The update sequence: full lists, and `item_status` is never sent
 

@@ -183,9 +183,13 @@ because readers tolerate the bare form (`aplicarBalanco.ts:228-233`).
 ⚠️ A full key-order walk of `produtos`, plus one `estoques` subcollection read per
 candidate. Firestore **Enterprise** bills data scanned.
 
-No index is required and none should be added. Every walk is
-`orderBy(documentId())` with the tests done in memory — the one ordering Firestore
-always serves without a declared index. `where('paiId','==',null)` looks cheaper
+The key index is the only index this needs, and no filter index should be added.
+Every walk is `orderBy(documentId())` with the tests done in memory, riding the
+**declared** key indexes `produtos(__name__ ASC)`, `pedidos(__name__ ASC)` and
+`balanco(__name__ ASC)` (#1895, listed in `key-walks.json`). Enterprise has no
+implicit key index: without one every page re-scans the whole collection (#1895
+measured 1,665 index rows read per page of 300 on `pedidos`).
+`where('paiId','==',null)` looks cheaper
 and is a trap: on Enterprise an undeclared filter never throws
 `FAILED_PRECONDITION`, it silently full-scans and bills it — and it would not help
 anyway, because "has children" is only knowable by observing some _other_

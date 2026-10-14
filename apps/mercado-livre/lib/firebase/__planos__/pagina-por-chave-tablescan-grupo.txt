@@ -1,0 +1,49 @@
+Execution:
+ results returned: 300
+ query id: <QUERY>
+ request peak memory usage: 1.14 MiB (1,195,743 B)
+ data bytes read: 2.22 MiB (2,328,515 B)
+ entity row scanned: 6,342
+
+Billing:
+ read units: 569
+
+Tree:
+• Compute
+|  $out_1: map_set($record_1, "__name__", $__name___1, "__key__", unset)
+|  is query result: true
+|
+|  Execution:
+|   records returned: 300
+|   latency: 60.33 ms (local 1.95 ms)
+|
+└── • MajorSort
+    |  fields: [$__name___1 ASC]
+    |  output: [$__name___1, $record_1]
+    |  limit: 300
+    |
+    |  Execution:
+    |   records returned: 300
+    |   latency: 58.38 ms (local 3.99 ms)
+    |   peak memory usage: 1.14 MiB (1,195,743 B)
+    |
+    └── • Compute
+        |  $__name___1: $__key___2
+        |
+        |  Execution:
+        |   records returned: 6,342
+        |   latency: 54.39 ms (local 2.12 ms)
+        |
+        └── • TableScan
+               source: **/enderecos
+               order: UNDEFINED
+               filter: exists(get_field(row(), "__key__"))
+               output bindings: {$__key___2=get_field(row(), "__key__"), $record_1=row()}
+               output: [$__key___2, $record_1]
+
+               Execution:
+                records returned: 6,342
+                latency: 52.27 ms
+                post-filtered rows: 0
+                records scanned: 6,342
+                data bytes read: 2.22 MiB (2,328,515 B)

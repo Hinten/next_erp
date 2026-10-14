@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { nfev4Collection, produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
+import {
+  integracaoCollection,
+  nfev4Collection,
+  produtoShopeeLinkCollection,
+} from '@delfrance/data/admin/collections';
 import { nfeMeta } from '@delfrance/schemas';
 
 import { JANELA_DEVOLUCOES_SEGUNDOS } from '../../lib/shopee/devolucoes/devolucoesSweep';
@@ -92,6 +96,7 @@ const {
   sweepShopeeStuckReservations,
   onProdutoShopeeLinkChanged,
   onNfeAprovadaShopee,
+  onIntegracaoShopeeChanged,
 } = modulo;
 
 afterAll(() => {
@@ -194,9 +199,14 @@ const FILAS = {
  * `database`, `retry`, region and secrets read by nothing — the map exhaustive
  * and the coverage empty. The three `todo GATILHO…` tests below walk the map
  * instead, and {@link CAMINHOS_DOS_GATILHOS} makes the document path a
- * per-trigger row the compiler demands, so a THIRD trigger lands covered.
+ * per-trigger row the compiler demands — and the THIRD (step 20,
+ * `onIntegracaoShopeeChanged`) landed covered that way.
  */
-const GATILHOS = { onProdutoShopeeLinkChanged, onNfeAprovadaShopee } as const;
+const GATILHOS = {
+  onProdutoShopeeLinkChanged,
+  onNfeAprovadaShopee,
+  onIntegracaoShopeeChanged,
+} as const;
 
 /**
  * The document path each trigger must listen on — derived from the HANDLE,
@@ -214,6 +224,11 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: nfev4Collection.resolvePath({ pedidoId: '{pedidoId}' }),
     ancora: 'pedidos/{pedidoId}/nfev4',
     folha: '{nfeId}',
+  },
+  onIntegracaoShopeeChanged: {
+    colecao: integracaoCollection.resolvePath({}),
+    ancora: 'integracao',
+    folha: '{integracaoId}',
   },
 } as const satisfies Record<
   keyof typeof GATILHOS,

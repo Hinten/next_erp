@@ -19,7 +19,9 @@
  *   .env.deploy               → copy, renamed to `.env` in the artifact
  *   .env.deploy.<project-id>  → copy, renamed to `.env.<project-id>`
  *   .env.local / .env.example → ignore (emulator seed / doc template; pre-existing meaning)
- *   .env.secrets*             → REJECT, fail the predeploy hook
+ *   .env.secrets*             → REJECT, fail the predeploy hook — and so does any
+ *                               `.env.deploy.<suffix>` whose ARTIFACT name would
+ *                               start with it (`.env.deploy.secrets` → `.env.secrets`)
  *   .env / any other .env.*   → REJECT, telling the operator to rename
  *
  * WHY THE RENAME. firebase-tools reads exactly `.env`, `.env.<project-id>` and
@@ -56,6 +58,12 @@ const DEPLOY_RE = /^\.env\.deploy(?:\.([a-z0-9-]+))?$/;
  * (a doc template, uploaded for nothing) and `.env.deploy.local` → `.env.local`
  * (which firebase-tools applies to the emulator, never to a deploy). Both are
  * operator mistakes worth naming rather than silently honouring.
+ *
+ * `secrets` is deliberately NOT here. It is a legal project-id suffix too, and
+ * `.env.deploy.secrets` → `.env.secrets` is far worse than a reserved meaning — but
+ * it is one member of a family (`secrets-x`, `secretsmanager`, …) that only a check
+ * on the DESTINATION name covers, and this set's "reserved for a different purpose"
+ * message would be the wrong thing to tell the operator. See `classifyEnvFile`.
  */
 const RESERVED_SUFFIXES = new Set(['example', 'local']);
 
@@ -96,7 +104,27 @@ export function classifyEnvFile(name) {
           'reserves for a different purpose. Pick a real project id as the suffix.',
       };
     }
-    return { action: 'copy', dest: `.env.${projectId}` };
+    const dest = `.env.${projectId}`;
+    // The DESTINATION gets the same prefix rule as the source above. The rename is
+    // what makes this necessary: rejecting only by source name let
+    // `.env.deploy.secrets` through and wrote it into the artifact under the very
+    // name this module exists to keep out. Same prefix, same reach — so
+    // `.env.deploy.secretsmanager` is refused exactly as `.env.secretsmanager` is,
+    // and a project whose id really starts that way still has `.env.deploy` or a
+    // `.firebaserc` alias as the suffix.
+    if (dest.startsWith(SECRETS_PREFIX)) {
+      return {
+        action: 'reject',
+        reason:
+          `"${name}" would land in the artifact as "${dest}", the credential template's ` +
+          `name (${SECRETS_PREFIX}*), which must never reach a deploy artifact. Everything ` +
+          'in the artifact is uploaded to the gcf-sources bucket and baked in plaintext into ' +
+          'the Cloud Run revision. Put credentials in Secret Manager ' +
+          '(`firebase functions:secrets:set <NAME>`); for plain deploy-time values use ' +
+          '".env.deploy", or a real project id or alias as the suffix.',
+      };
+    }
+    return { action: 'copy', dest };
   }
 
   if (IGNORED.has(name)) return { action: 'ignore' };
