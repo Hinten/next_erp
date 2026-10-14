@@ -58,6 +58,7 @@ import {
   FILA_LEITURA_LI,
   type DepsTarefaLi,
   type ImportadorPedidoLi,
+  CONCORRENCIA_REDRIVE_LI,
   LIMITE_REDRIVE_LI,
   MOTIVO_ADIAMENTO_LI,
   type PayloadNotificacaoLi,
@@ -69,6 +70,7 @@ import {
   importadorPedidoLi,
   persistirFalhaNotificacaoLi,
   processarNotificacaoLi,
+  redriveAposSalvarTokenLi,
   redrivePedidosAdiadosDaConta,
   reprocessarAdiadasLi,
   reprocessarNotificacoesLi,
@@ -875,6 +877,31 @@ describe('redrivePedidosAdiadosDaConta', () => {
     expect(db.ler(b)).toMatchObject({ status: 'failed' });
   });
 
+  it('writes the rows with BOUNDED concurrency — never one RPC at a time, never unbounded', async () => {
+    // The credential routes await this after the Loja Integrada call, inside the
+    // request ceiling (`prazos.test.ts`): 500 serial updates would be its slowest step.
+    expect(CONCORRENCIA_REDRIVE_LI).toBeGreaterThan(1);
+    const db = new FakeDb();
+    const total = CONCORRENCIA_REDRIVE_LI * 2 + 3;
+    let emVoo = 0;
+    let pico = 0;
+    for (let i = 1; i <= total; i += 1) {
+      const c = seedNotificacao(db, pedido({ numero: String(i) }), { status: 'deferred' });
+      db.antesDaProximaEscrita(c, async () => {
+        emVoo += 1;
+        pico = Math.max(pico, emVoo);
+        await new Promise((r) => setTimeout(r, 1));
+        emVoo -= 1;
+      });
+    }
+    expect(await redrivePedidosAdiadosDaConta(asDb(db), ID)).toEqual({
+      encontradas: total,
+      redirecionadas: total,
+      truncado: false,
+    });
+    expect(pico).toBe(CONCORRENCIA_REDRIVE_LI);
+  });
+
   it('a full page is truncated and LOGGED — the daily sweep drains the rest', async () => {
     const db = new FakeDb();
     for (const numero of ['1', '2', '3']) {
@@ -890,6 +917,57 @@ describe('redrivePedidosAdiadosDaConta', () => {
     const r2 = await redrivePedidosAdiadosDaConta(asDb(db), ID, 5, espiao2.logger);
     expect(r2.truncado).toBe(false);
     expect(espiao2.chamadas).toEqual([]);
+  });
+});
+
+describe('redriveAposSalvarTokenLi — the best-effort wrapper the credential routes call', () => {
+  it('returns what the re-drive did, and moves only this conta’s deferred rows', async () => {
+    const db = new FakeDb();
+    const a = seedNotificacao(db, pedido({ numero: '1' }), { status: 'deferred', tentativas: 3 });
+    const parado = seedNotificacao(db, pedido({ numero: '2' }), { status: 'parked' });
+    const outra = seedNotificacao(db, pedido({ contaId: OUTRA, numero: '1' }), {
+      status: 'deferred',
+    });
+    const antes = { parado: db.ler(parado), outra: db.ler(outra) };
+    expect(await redriveAposSalvarTokenLi(asDb(db), ID)).toEqual({
+      encontradas: 1,
+      redirecionadas: 1,
+      truncado: false,
+    });
+    expect(db.ler(a)).toMatchObject({ status: 'failed', tentativas: 0 });
+    expect(db.ler(parado)).toEqual(antes.parado);
+    expect(db.ler(outra)).toEqual(antes.outra);
+  });
+
+  it.each([1, 5, 9, 14, 16])(
+    'a gRPC status error (%i) is logged by code and swallowed as null',
+    async (codigo) => {
+      const db = new FakeDb();
+      db.falharConsulta(COLECAO, grpc(codigo, 'mensagem que nao deve ser logada'));
+      const espiao = loggerEspiao();
+      expect(await redriveAposSalvarTokenLi(asDb(db), ID, espiao.logger)).toBeNull();
+      expect(espiao.chamadas).toHaveLength(1);
+      expect(espiao.chamadas[0]?.[1]).toEqual({ contaId: ID, code: codigo });
+      expect(JSON.stringify(espiao.chamadas)).not.toContain('mensagem que nao deve');
+    },
+  );
+
+  it.each([
+    ['a plain Error', new Error('bug')],
+    ['a TypeError', new TypeError('bug')],
+    [
+      'a string `code` (a FirebaseError shape)',
+      Object.assign(new Error('x'), { code: 'functions/internal' }),
+    ],
+    ['code 0 (not an error status)', Object.assign(new Error('x'), { code: 0 })],
+    ['code 17 (outside the gRPC space)', Object.assign(new Error('x'), { code: 17 })],
+    ['a non-Error throw', 'falhou'],
+  ])('near-miss: %s is rethrown, never swallowed (rule 6)', async (_nome, erro) => {
+    const db = new FakeDb();
+    db.falharConsulta(COLECAO, erro as Error);
+    const espiao = loggerEspiao();
+    await expect(redriveAposSalvarTokenLi(asDb(db), ID, espiao.logger)).rejects.toBe(erro);
+    expect(espiao.chamadas).toEqual([]);
   });
 });
 
@@ -996,6 +1074,33 @@ describe('the same residue, two more windows: the park found BEFORE the re-drive
     expect(visto.redirecionadas).toBe(0);
     expect(db.ler(caminho)).toMatchObject({ status: 'deferred', tentativas: 0 });
     await esperaUmDiaEImporta(db, caminho, deps);
+  });
+});
+
+describe('the reverse window: a park landing between the re-drive’s query and its write', () => {
+  it('is reset to the hot lane — one extra attempt, then parked again; never a loss', async () => {
+    const db = new FakeDb();
+    contaSaudavel(db);
+    // Step 3: the importer seam is empty, so a healthy conta's row PARKS (`importador-ausente`).
+    const deps = depsTarefa();
+    const caminho = seedNotificacao(db, pedido(), { status: 'deferred', tentativas: 2 });
+    db.antesDaProximaEscrita(caminho, async () => {
+      // The deferred sweep runs after the re-drive's query and before its write: it parks the row.
+      const s = await reprocessarAdiadasLi(asDb(db), {}, deps);
+      expect(s.processed).toBe(1);
+      expect(db.ler(caminho)).toMatchObject({ status: 'parked' });
+    });
+    expect(await redrivePedidosAdiadosDaConta(asDb(db), ID)).toEqual({
+      encontradas: 1,
+      redirecionadas: 1,
+      truncado: false,
+    });
+    // The re-drive's write carries no precondition: the park is undone.
+    expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: 0, processedAt: 0 });
+    // The next hot sweep spends the one extra attempt and parks it again.
+    __resetAllReadCaches();
+    await reprocessarNotificacoesLi(asDb(db), {}, deps);
+    expect(db.ler(caminho)).toMatchObject({ status: 'parked' });
   });
 });
 

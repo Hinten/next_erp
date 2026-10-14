@@ -53,10 +53,11 @@
  * orders. The deferred lane re-drives daily for `MAX_TENTATIVAS_DEFERRED` (7)
  * days, and a token save pulls the conta's rows that are ALREADY `deferred`
  * back at once ({@link redrivePedidosAdiadosDaConta}, called by the credential
- * routes from PR 3-b). `graduateDeferredTransientErrors` sends a row whose
- * precondition cleared but whose import then THREW back to the hot lane with a
- * fresh budget. A conta that is still parked RETURNS `adiado` and never throws,
- * so it never graduates by mistake.
+ * routes through {@link redriveAposSalvarTokenLi}, best effort).
+ * `graduateDeferredTransientErrors` sends a row whose precondition cleared but
+ * whose import then THREW back to the hot lane with a fresh budget. A conta that
+ * is still parked RETURNS `adiado` and never throws, so it never graduates by
+ * mistake.
  *
  * ⚠️ Accepted residue (step-3 plan Q4, option A): a run that found the conta
  * parked (or parked it), and writes the row after a token save's re-drive,
@@ -69,8 +70,20 @@
  *    written `deferred` with `tentativas` 0 — it waits up to one more day and is
  *    never parked by this.
  *
+ * And the REVERSE direction: the re-drive's own write carries no precondition
+ * (the shared store's `redrive`, never reordered here — plan section 4), so a
+ * PARK that lands between the re-drive's query and its write of that row (the
+ * deferred sweep's 7th pass, an `importador-ausente` park once the conta reads
+ * clean, or a hot-sweep park of a row graduated in between) is reset to the hot
+ * lane as `failed`/0/0. It costs one extra attempt, which parks again or imports.
+ * The window runs from the query to that row's write round — at most
+ * `ceil(LIMITE_REDRIVE_LI / CONCORRENCIA_REDRIVE_LI)` rounds, since the writes go
+ * {@link CONCORRENCIA_REDRIVE_LI} at a time. If it ever matters: condition each
+ * write on the query snapshot's `updateTime` and skip on FAILED_PRECONDITION.
+ *
  * Never a loss: the next daily deferred pass sees the healthy conta and imports.
- * Each window is milliseconds wide; `notificacao.test.ts` pins all four cases.
+ * Each window is milliseconds to seconds wide; `notificacao.test.ts` pins all
+ * five cases.
  *
  * ## No transaction anywhere
  *
@@ -86,6 +99,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { ZodError, z } from 'zod';
 import { notificacaoLojaIntegradaCollection } from '@delfrance/data/admin/collections';
+import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import {
   MAX_TENTATIVAS,
   MAX_TENTATIVAS_DEFERRED,
@@ -145,6 +159,14 @@ export const CANAL_LOG_LI = 'loja-integrada';
 
 /** Rows one token-save re-drive moves at most; the daily deferred sweep drains the rest. */
 export const LIMITE_REDRIVE_LI = 500;
+
+/**
+ * Re-drive writes in flight at once. The credential routes await the re-drive
+ * after the Loja Integrada call, inside the request ceiling, so a full page
+ * must cost `ceil(LIMITE_REDRIVE_LI / CONCORRENCIA_REDRIVE_LI)` write rounds,
+ * not 500 serial updates (`prazos.test.ts` budgets those rounds).
+ */
+export const CONCORRENCIA_REDRIVE_LI = 20;
 
 /* -------------------------------------------------------------------------- */
 /*                              The task payload                              */
@@ -624,6 +646,10 @@ export interface ResultadoRedriveLi {
  * Each row goes through the shared store's `redrive` — `mergeIfExists`, so a
  * row deleted between the query and the write is never resurrected — and never
  * through a hand-written patch. Idempotent: a replay finds nothing left to move.
+ * The writes go out {@link CONCORRENCIA_REDRIVE_LI} at a time (the credential
+ * routes await this inside the request ceiling, `prazos.test.ts`), and none is
+ * conditioned on the row still being `deferred` — the module header's reverse
+ * window.
  *
  * ⚠️ Its query needs the `(status ASC, contaId ASC)` composite on
  * `notificacoesLojaIntegrada` (guard D in `notificationGuardrails.test.ts`).
@@ -644,8 +670,10 @@ export async function redrivePedidosAdiadosDaConta(
 
   const erro = `token da conta ${contaId} salvo — reprocessando`;
   let redirecionadas = 0;
-  for (const d of snap.docs) {
-    if (await armazenamentoLi.redrive(db, d.id, erro)) redirecionadas += 1;
+  for (let i = 0; i < snap.docs.length; i += CONCORRENCIA_REDRIVE_LI) {
+    const lote = snap.docs.slice(i, i + CONCORRENCIA_REDRIVE_LI);
+    const movidas = await Promise.all(lote.map((d) => armazenamentoLi.redrive(db, d.id, erro)));
+    redirecionadas += movidas.filter(Boolean).length;
   }
 
   const truncado = snap.docs.length >= limite;
@@ -656,4 +684,32 @@ export async function redrivePedidosAdiadosDaConta(
     );
   }
   return { encontradas: snap.docs.length, redirecionadas, truncado };
+}
+
+/**
+ * The re-drive as the two credential routes call it: BEST EFFORT. The token is
+ * already saved and validated when this runs, so a Firestore failure here must
+ * never fail the request — the daily deferred sweep drains whatever this missed.
+ *
+ * Narrowed by CLASS (root rule 6): only a gRPC status error — the shape every
+ * Admin-SDK Firestore failure takes — is logged (the code, never the message)
+ * and swallowed, as `null`; anything else is a bug and is rethrown. The
+ * narrowing is deliberately wider than "transient": the conta's credential is
+ * saved either way, and the daily sweep is the backstop for any of them.
+ */
+export async function redriveAposSalvarTokenLi(
+  db: Firestore,
+  contaId: string,
+  logger: LoggerNotificacaoLi = loggerPadrao,
+): Promise<ResultadoRedriveLi | null> {
+  try {
+    return await redrivePedidosAdiadosDaConta(db, contaId, LIMITE_REDRIVE_LI, logger);
+  } catch (err) {
+    if (!isGrpcStatusError(err)) throw err;
+    logger.warn(
+      '[loja-integrada/notificacoes] re-drive após salvar o token falhou — a varredura diária cobre',
+      { contaId, code: err.code },
+    );
+    return null;
+  }
 }
