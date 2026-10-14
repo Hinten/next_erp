@@ -11,10 +11,19 @@
  *    file of this app, tests and fakes included. The guard in
  *    `firestore-transaction-inventory.test.js` greps raw text, and a mention —
  *    even in a comment — would demand an inventory class for a site that does
- *    not exist. The word is assembled below so this file does not contain it.
+ *    not exist. The word is assembled below so this file does not contain it;
+ *  - the logger and the redactor stay light: `core/redacao.ts` and
+ *    `core/refCredencial.ts` import only `zod` and `@delfrance/core/*`, and the
+ *    transitive import closure of the logger never reaches the Admin SDK, the
+ *    admin data layer, Next or the app alias;
+ *  - the observer seam: outside `core/log.ts`, every observer handed to the
+ *    package is exactly `criarObservadorLi(…)` as imported from the logger —
+ *    the whole value, under its own name, never shadowed — and no file names
+ *    the raw event type: it carries the raw query and the full response text,
+ *    and only the logger redacts them.
  */
-import { readFileSync, readdirSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, posix, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -33,7 +42,170 @@ function arquivosTs(dir: string): string[] {
 }
 
 const rel = (p: string) => relative(RAIZ_LIB, p).split(sep).join('/');
+const relApp = (p: string) => relative(RAIZ_APP, p).split(sep).join('/');
 const ehTeste = (p: string) => p.endsWith('.test.ts');
+
+/** Every module specifier in a source text: `from '…'`, `import '…'`, `import('…')`. */
+function especificadores(texto: string): string[] {
+  const saida: string[] = [];
+  const re =
+    /\bfrom\s+['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
+  for (const m of texto.matchAll(re)) saida.push(m[1] ?? m[2] ?? m[3] ?? '');
+  return saida;
+}
+
+/** A source text by its path relative to `lib/lojaIntegrada`, or `null`. */
+type LeitorDeFonte = (caminho: string) => string | null;
+
+const lerDoDisco: LeitorDeFonte = (caminho) => {
+  const absoluto = join(RAIZ_LIB, ...caminho.split('/'));
+  return existsSync(absoluto) ? readFileSync(absoluto, 'utf8') : null;
+};
+
+/**
+ * The transitive closure of RELATIVE imports from `entradas`: every file
+ * reached, and every non-relative specifier any of them imports. A relative
+ * import that resolves to no file is reported as `?<path>` — fail closed.
+ */
+function fechoDeImportacoes(
+  entradas: readonly string[],
+  ler: LeitorDeFonte,
+): { arquivos: string[]; externos: string[] } {
+  const arquivos: string[] = [];
+  const externos = new Set<string>();
+  const pendentes = [...entradas];
+  while (pendentes.length > 0) {
+    const arquivo = pendentes.pop() ?? '';
+    if (arquivos.includes(arquivo)) continue;
+    const texto = ler(arquivo);
+    if (texto === null) {
+      externos.add(`?${arquivo}`);
+      continue;
+    }
+    arquivos.push(arquivo);
+    for (const espec of especificadores(texto)) {
+      if (!espec.startsWith('.')) {
+        externos.add(espec);
+        continue;
+      }
+      const base = posix.normalize(posix.join(posix.dirname(arquivo), espec));
+      const alvo = [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((c) => ler(c) !== null);
+      pendentes.push(alvo ?? base);
+    }
+  }
+  return { arquivos: arquivos.sort(), externos: [...externos].sort() };
+}
+
+/** What the logger's closure may never reach. */
+const proibidoNoFecho = (espec: string) =>
+  espec.startsWith('?') ||
+  espec.startsWith('firebase-admin') ||
+  espec.startsWith('@delfrance/data') ||
+  espec.startsWith('next') ||
+  espec.startsWith('@/');
+
+/** The logger's entry points (later steps add the valves and the sanitizer). */
+const ENTRADAS_DO_FECHO = ['core/log.ts', 'core/redacao.ts', 'core/refCredencial.ts'];
+
+/** The one file allowed to see the raw call event and build an observer. */
+const ARQUIVO_DO_LOGGER = 'lib/lojaIntegrada/core/log.ts';
+/** The logger as a module, relative to the app root (`@/` resolves there). */
+const MODULO_DO_LOGGER = 'lib/lojaIntegrada/core/log';
+const PROPRIEDADE = 'onChamada: ';
+const SEAM_OK = `${PROPRIEDADE}criarObservadorLi(`;
+
+/**
+ * The index of the `)` that closes the `(` at `abre`, skipping quoted text, or
+ * -1 when it never closes.
+ */
+function fimDaChamada(texto: string, abre: number): number {
+  let nivel = 0;
+  let aspas: string | null = null;
+  for (let i = abre; i < texto.length; i++) {
+    const c = texto[i];
+    if (aspas !== null) {
+      if (c === '\\') i++;
+      else if (c === aspas) aspas = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') aspas = c;
+    else if (c === '(') nivel += 1;
+    else if (c === ')') {
+      nivel -= 1;
+      if (nivel === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** A specifier as an app-relative module path (`@/x` → `x`, `./x` against the file). */
+function moduloDe(arquivo: string, espec: string): string {
+  if (espec.startsWith('@/')) return espec.slice(2);
+  if (espec.startsWith('.')) return posix.normalize(posix.join(posix.dirname(arquivo), espec));
+  return espec;
+}
+
+/**
+ * Why a source text (`arquivo` relative to the app root) breaks the observer
+ * seam; empty when it does not.
+ *
+ * 1. Every `onChamada` is `onChamada: criarObservadorLi(…)`, and that call is
+ *    the WHOLE value: the next token after its closing `)` is `,` or `}` — so
+ *    `criarObservadorLi(…) && ((e) => …)` cannot slip an inline observer in.
+ * 2. A file that has the seam imports `criarObservadorLi` under its own name
+ *    from the logger module, and every other mention of the name is one of its
+ *    seam calls — so a local function, a parameter or a renamed import of the
+ *    same name cannot stand in for it.
+ * 3. No file names the raw event type.
+ */
+function violacoesDoSeam(arquivo: string, texto: string): string[] {
+  if (arquivo === ARQUIVO_DO_LOGGER) return [];
+  const violacoes: string[] = [];
+  const chamadas = new Set<number>();
+  let i = texto.indexOf('onChamada');
+  while (i !== -1) {
+    if (!texto.startsWith(SEAM_OK, i)) {
+      violacoes.push(`${arquivo}: onChamada at ${String(i)} is not ${SEAM_OK}…)`);
+    } else {
+      const nome = i + PROPRIEDADE.length;
+      chamadas.add(nome);
+      const fim = fimDaChamada(texto, i + SEAM_OK.length - 1);
+      const depois =
+        fim === -1
+          ? ''
+          : texto
+              .slice(fim + 1)
+              .trimStart()
+              .charAt(0);
+      if (depois !== ',' && depois !== '}') {
+        violacoes.push(`${arquivo}: the observer at ${String(nome)} is not the whole value`);
+      }
+    }
+    i = texto.indexOf('onChamada', i + 1);
+  }
+  if (chamadas.size > 0) {
+    const importacoes: (readonly [number, number])[] = [];
+    for (const m of texto.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+      const nomes = (m[1] ?? '').split(',').map((n) => n.trim());
+      if (
+        nomes.includes('criarObservadorLi') &&
+        moduloDe(arquivo, m[2] ?? '') === MODULO_DO_LOGGER
+      ) {
+        importacoes.push([m.index, m.index + m[0].length]);
+      }
+    }
+    const fora = [...texto.matchAll(/\bcriarObservadorLi\b/g)]
+      .map((m) => m.index)
+      .filter((j) => !chamadas.has(j) && !importacoes.some(([a, b]) => j >= a && j < b));
+    if (importacoes.length === 0 || fora.length > 0) {
+      violacoes.push(
+        `${arquivo}: criarObservadorLi is not the logger's (imported from it: ${String(importacoes.length > 0)}; other mentions at ${fora.join(', ') || 'none'})`,
+      );
+    }
+  }
+  if (/\bChamadaLi\b/.test(texto)) violacoes.push(`${arquivo}: names ChamadaLi`);
+  return violacoes;
+}
 
 describe('lib/lojaIntegrada layout', () => {
   const todos = arquivosTs(RAIZ_LIB);
@@ -50,6 +222,9 @@ describe('lib/lojaIntegrada layout', () => {
         'core/estacionamento.ts',
         'core/contexto.ts',
         'core/respond.ts',
+        'core/log.ts',
+        'core/redacao.ts',
+        'core/refCredencial.ts',
       ]),
     );
   });
@@ -76,6 +251,42 @@ describe('lib/lojaIntegrada layout', () => {
     }
   });
 
+  it('core/redacao.ts and core/refCredencial.ts import only zod and @delfrance/core/*', () => {
+    const permitido = (espec: string) => espec === 'zod' || espec.startsWith('@delfrance/core/');
+    for (const arquivo of ['core/redacao.ts', 'core/refCredencial.ts']) {
+      const texto = lerDoDisco(arquivo);
+      expect(texto, arquivo).not.toBeNull();
+      expect(
+        especificadores(texto ?? '').filter((e) => !permitido(e)),
+        arquivo,
+      ).toEqual([]);
+    }
+    // Anti-vacuity: the reader sees the redactor's real imports.
+    expect(especificadores(lerDoDisco('core/redacao.ts') ?? '')).toEqual(
+      expect.arrayContaining(['zod', '@delfrance/core/wire', '@delfrance/core/documents']),
+    );
+  });
+
+  it("the logger's import closure reaches no Admin SDK, admin data layer, Next or @/ alias", () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_FECHO, lerDoDisco);
+    expect(fecho.arquivos).toEqual(ENTRADAS_DO_FECHO.slice().sort());
+    expect(fecho.externos.filter(proibidoNoFecho)).toEqual([]);
+  });
+
+  it('the observer seam: only criarObservadorLi(…) is handed to the package, and only log.ts names the raw event', () => {
+    const fontes = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
+    const violacoes = fontes.flatMap((p) => violacoesDoSeam(relApp(p), readFileSync(p, 'utf8')));
+    expect(violacoes).toEqual([]);
+    // Anti-vacuity: the three wired sites exist, and the logger itself is exempt.
+    const sites = fontes.filter((p) => readFileSync(p, 'utf8').includes(SEAM_OK)).map(relApp);
+    expect(sites.sort()).toEqual([
+      'app/api/marketplace/loja-integrada/conta/[id]/credencial/route.ts',
+      'app/api/marketplace/loja-integrada/conta/[id]/credencial/validade/route.ts',
+      'lib/lojaIntegrada/core/contexto.ts',
+    ]);
+    expect(fontes.map(relApp)).toContain(ARQUIVO_DO_LOGGER);
+  });
+
   it('no file of this app names the multi-document atomic-write call', () => {
     const palavra = ['run', 'Transaction'].join('');
     const arquivos = arquivosTs(RAIZ_APP);
@@ -85,5 +296,124 @@ describe('lib/lojaIntegrada layout', () => {
         false,
       );
     }
+  });
+});
+
+// The two guards above can only fail on a file that does not exist yet, so pin
+// them on synthetic source text: each must flag what it exists to flag.
+describe('the guards, on synthetic source', () => {
+  const leitor =
+    (arquivos: Readonly<Record<string, string>>): LeitorDeFonte =>
+    (caminho) =>
+      Object.hasOwn(arquivos, caminho) ? (arquivos[caminho] ?? null) : null;
+
+  it('import closure: log.ts → refCredencial.ts is accepted', () => {
+    const fecho = fechoDeImportacoes(
+      ['core/log.ts'],
+      leitor({
+        'core/log.ts': "import { versaoDaRef } from './refCredencial';\nimport { z } from 'zod';",
+        'core/refCredencial.ts': 'export const x = 1;',
+      }),
+    );
+    expect(fecho.arquivos).toEqual(['core/log.ts', 'core/refCredencial.ts']);
+    expect(fecho.externos.filter(proibidoNoFecho)).toEqual([]);
+  });
+
+  it('import closure: log.ts → credencial.ts is flagged, through what credencial.ts imports', () => {
+    const fecho = fechoDeImportacoes(
+      ['core/log.ts'],
+      leitor({
+        'core/log.ts': "import { versaoDaRef } from './credencial';",
+        'core/credencial.ts': "import { sha256Hex } from '@delfrance/data/admin';",
+      }),
+    );
+    expect(fecho.externos.filter(proibidoNoFecho)).toEqual(['@delfrance/data/admin']);
+  });
+
+  it.each([
+    ["import type { Firestore } from 'firebase-admin/firestore';", 'firebase-admin/firestore'],
+    ["import { NextResponse } from 'next/server';", 'next/server'],
+    ["import { x } from '@/lib/firebase/admin';", '@/lib/firebase/admin'],
+    ["const m = await import('@delfrance/data/admin/cache');", '@delfrance/data/admin/cache'],
+    ["export { y } from './sumiu';", '?core/sumiu'],
+  ])('import closure flags %s', (fonte, esperado) => {
+    const fecho = fechoDeImportacoes(['core/log.ts'], leitor({ 'core/log.ts': fonte }));
+    expect(fecho.externos.filter(proibidoNoFecho)).toEqual([esperado]);
+  });
+
+  const IMPORTA_DO_LOGGER = "import { criarObservadorLi } from './log';\n";
+
+  it.each([
+    ['an inline observer', 'cliente({ onChamada: (e) => console.warn(e) })'],
+    ['a forwarded one', 'cliente({ onChamada: deps.x })'],
+    ['the shorthand', 'cliente({ onChamada })'],
+    ['a destructured one', 'const { onChamada } = deps;'],
+    [
+      'the raw event type',
+      "import type { ChamadaLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    [
+      'the call combined with an inline observer',
+      `${IMPORTA_DO_LOGGER}cliente({ onChamada: criarObservadorLi({ conta }) && ((e) => console.warn(e.corpo)) })`,
+    ],
+    [
+      'the call combined with a forwarded one',
+      `${IMPORTA_DO_LOGGER}cliente({ onChamada: criarObservadorLi({ conta }) || deps.x, x: 1 })`,
+    ],
+    [
+      'an unbalanced call',
+      `${IMPORTA_DO_LOGGER}cliente({ onChamada: criarObservadorLi({ conta: f(") })`,
+    ],
+    [
+      'a local function of the same name',
+      'const criarObservadorLi = (o) => (e) => console.log(e.corpo);\n' +
+        'cliente({ onChamada: criarObservadorLi({ conta }) });',
+    ],
+    [
+      'the name imported from elsewhere',
+      "import { criarObservadorLi } from './outro/log';\n" +
+        'cliente({ onChamada: criarObservadorLi({ conta }) });',
+    ],
+    [
+      'another export renamed to the name',
+      "import { escritorPadrao as criarObservadorLi } from './log';\n" +
+        'cliente({ onChamada: criarObservadorLi({ conta }) });',
+    ],
+    [
+      'a parameter that shadows the import',
+      `${IMPORTA_DO_LOGGER}function f(criarObservadorLi) { return cliente({ onChamada: criarObservadorLi({ conta }) }); }`,
+    ],
+  ])('seam flags %s', (_caso, fonte) => {
+    expect(violacoesDoSeam('lib/lojaIntegrada/core/contexto.ts', fonte)).toHaveLength(1);
+  });
+
+  it('seam accepts criarObservadorLi(…) imported from the logger, and exempts the logger itself', () => {
+    expect(
+      violacoesDoSeam(
+        'lib/lojaIntegrada/core/contexto.ts',
+        "import { type OpcoesObservadorLi, criarObservadorLi } from './log';\n" +
+          'cliente({\n  onChamada: criarObservadorLi({ ...deps.registro, conta: id }),\n  x: 1,\n});',
+      ),
+    ).toEqual([]);
+    expect(
+      violacoesDoSeam(
+        'app/x/route.ts',
+        "import { criarObservadorLi } from '@/lib/lojaIntegrada/core/log';\n" +
+          'validarPersonalToken({ token, onChamada: criarObservadorLi({ conta: f(")") }) })',
+      ),
+    ).toEqual([]);
+    // Near-miss: the same call, but the import path is relative to ANOTHER directory.
+    expect(
+      violacoesDoSeam(
+        'app/x/route.ts',
+        "import { criarObservadorLi } from './log';\n" +
+          'validarPersonalToken({ token, onChamada: criarObservadorLi({ conta: id }) })',
+      ),
+    ).toHaveLength(1);
+    expect(
+      violacoesDoSeam(ARQUIVO_DO_LOGGER, 'export function f(e: ChamadaLi) { onChamada(e); }'),
+    ).toEqual([]);
+    // A longer name that merely contains the type's name is not the type.
+    expect(violacoesDoSeam('app/x/route.ts', 'type R = ResultadoChamadaLi;')).toEqual([]);
   });
 });

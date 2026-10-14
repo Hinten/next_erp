@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import {
   CODIGO_ERRO_LI,
@@ -34,6 +35,7 @@ import {
   caminhoConta,
   caminhoCredencial,
   credencialDoc,
+  espiarStdout,
   seedConta,
   seedCredencial,
 } from '@/lib/lojaIntegrada/testing/fixtures';
@@ -86,6 +88,17 @@ const EXPIRA_PERTO_MS = Date.UTC(2027, 1, 5, 2, 59, 59);
 
 let db: FakeDb;
 let console$: ReturnType<typeof espiarConsole>;
+let stdout: ReturnType<typeof espiarStdout>;
+
+/** The logger's lines on stdout, parsed: one JSON object per line. */
+function linhasDeLog(): Record<string, unknown>[] {
+  return stdout
+    .escritas()
+    .join('')
+    .split('\n')
+    .filter((l) => l !== '')
+    .map((l) => z.record(z.string(), z.unknown()).parse(JSON.parse(l)));
+}
 
 function salvar(corpo: unknown, opts: { id?: string; sinal?: AbortSignal } = {}) {
   return PUT(
@@ -115,11 +128,13 @@ beforeEach(() => {
   h.verifyIdToken.mockResolvedValue(ESCRITOR);
   seedConta(db, ID, { nome: 'Loja Um' });
   console$ = espiarConsole();
+  stdout = espiarStdout();
 });
 
 afterEach(() => {
   expect(h.estacionar).not.toHaveBeenCalled();
   console$.restaurar();
+  stdout.restaurar();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -663,6 +678,56 @@ describe('DELETE …/credencial', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*                        The validating GET is logged                         */
+/* -------------------------------------------------------------------------- */
+
+describe('PUT …/credencial — the validating GET is ONE log line', () => {
+  it('aceito: one chamada line for this conta, labelled as a candidate credential', async () => {
+    aceitarTudo();
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(res.status).toBe(200);
+    const linhas = linhasDeLog();
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatchObject({
+      severity: 'INFO',
+      evento: 'chamada',
+      conta: ID,
+      operacao: 'validarPersonalToken',
+      metodo: 'GET',
+      recurso: 'categoria',
+      politica: 'catalogo',
+      caminho: '/v1/categoria/?limit=1',
+      status: 200,
+      resultado: 'ok',
+      credencial: 'personal-token',
+      versaoCredencial: null,
+      enviouCorrelationId: false,
+    });
+  });
+
+  it('recusado: the line is an ERROR, still one per PUT', async () => {
+    stubFetch(() => respostaJson(401, { erro: 'qualquer' }));
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(res.status).toBe(422);
+    const linhas = linhasDeLog();
+    expect(linhas.map((l) => [l.severity, l.resultado, l.conta])).toEqual([['ERROR', 'auth', ID]]);
+  });
+
+  it('near-miss: a refusal before the call, and a malformed token, write NO line', async () => {
+    const chamadas = aceitarTudo();
+    const carimbo = seedCredencial(db, ID);
+    await salvar({
+      token: TOKEN_B,
+      expiraEm: EXPIRA_LONGE,
+      versaoEsperada: relogioDoDocumentoUs(carimbo) - 1,
+    });
+    await salvar({ token: 'a bc', expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(chamadas).toHaveLength(0);
+    expect(linhasDeLog()).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                               Token hygiene                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -691,7 +756,10 @@ describe('the token and its fingerprint appear in no answer and no log line', ()
     );
     // refused and inconclusive, each echoing the token in ITS body. The candidate
     // is a NEW token that still contains the sentinel (TOKEN_A itself is stored
-    // on ID now, so the wrong-store guard would answer before any call).
+    // on ID now, so the wrong-store guard would answer before any call). The
+    // echo is only PART of the token sent, so the package's exact-token scrub
+    // misses it: only the logger's own rule (a candidate credential's line has
+    // no body excerpt) keeps it out of stdout.
     proibidos.push(fingerprintDoToken(`${TOKEN_A}x`));
     for (const status of [401, 500]) {
       stubFetch(() => respostaJson(status, { detalhe: `token ${TOKEN_A} recusado` }));
@@ -716,7 +784,9 @@ describe('the token and its fingerprint appear in no answer and no log line', ()
     await registrar(remover());
 
     expect(respostas).toHaveLength(8);
-    const tudo = [...respostas, textoDe(console$.argumentos())].join('\n');
+    // Anti-vacuity: the stdout lines searched below exist (aceito ×2, 401, 500).
+    expect(linhasDeLog().filter((l) => l.evento === 'chamada')).toHaveLength(4);
+    const tudo = [...respostas, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
     for (const p of proibidos) expect(tudo).not.toContain(p);
   });
 });

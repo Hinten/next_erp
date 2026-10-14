@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import type { ChamadaLi } from '@delfrance/integrations-loja-integrada';
 import { z } from 'zod';
 
 import { FakeDb, asDb } from '../testing/fakeDb';
@@ -10,6 +9,8 @@ import {
   TOKEN_A,
   TOKEN_B,
   caminhoCredencial,
+  espiarStdout,
+  gravadorDeLog,
   seedConta,
   seedCredencial,
 } from '../testing/fixtures';
@@ -143,7 +144,10 @@ describe('the client re-reads the credential on EVERY request', () => {
     seedConta(db, ID);
     seedCredencial(db, ID);
     const espiao = fetchEspiao();
-    const ctx = await loadLojaIntegradaContext(asDb(db), ID, { fetch: espiao.fetch });
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      fetch: espiao.fetch,
+      registro: { escrever: gravadorDeLog().escrever },
+    });
     await chamar(ctx.cliente);
     expect(espiao.pedidos).toHaveLength(1);
     const [pedido] = espiao.pedidos;
@@ -159,7 +163,10 @@ describe('the client re-reads the credential on EVERY request', () => {
     seedConta(db, ID);
     seedCredencial(db, ID);
     const espiao = fetchEspiao();
-    const ctx = await loadLojaIntegradaContext(asDb(db), ID, { fetch: espiao.fetch });
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      fetch: espiao.fetch,
+      registro: { escrever: gravadorDeLog().escrever },
+    });
     const lida = await lerCredencial(asDb(db), ID);
     await estacionarConta(
       asDb(db),
@@ -176,7 +183,10 @@ describe('the client re-reads the credential on EVERY request', () => {
     seedConta(db, ID);
     seedCredencial(db, ID);
     const espiao = fetchEspiao();
-    const ctx = await loadLojaIntegradaContext(asDb(db), ID, { fetch: espiao.fetch });
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      fetch: espiao.fetch,
+      registro: { escrever: gravadorDeLog().escrever },
+    });
     await chamar(ctx.cliente);
     const lida = await lerCredencial(asDb(db), ID);
     await salvarCredencial(asDb(db), ID, {
@@ -196,7 +206,10 @@ describe('the client re-reads the credential on EVERY request', () => {
     const db = new FakeDb();
     seedConta(db, ID);
     seedCredencial(db, ID);
-    const ctx = await loadLojaIntegradaContext(asDb(db), ID, { fetch: fetchEspiao().fetch });
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      fetch: fetchEspiao().fetch,
+      registro: { escrever: gravadorDeLog().escrever },
+    });
     const antes = db.leituras.filter((p) => p === caminhoCredencial(ID)).length;
     await chamar(ctx.cliente);
     await chamar(ctx.cliente);
@@ -204,21 +217,94 @@ describe('the client re-reads the credential on EVERY request', () => {
     expect(db.leituras.filter((p) => p === caminhoCredencial(ID)).length - antes).toBe(3);
   });
 
-  it('the observer event carries the versioned ref, never the token', async () => {
+  it('each call is ONE log line: the credential VERSION, never the token or its fingerprint', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    const atualizadoEmMs = AGORA_MS - DIA_MS;
+    seedCredencial(db, ID, { tokenAtualizadoEmMs: atualizadoEmMs });
+    const gravador = gravadorDeLog();
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
+      fetch: fetchEspiao().fetch,
+      registro: { escrever: gravador.escrever, fluxo: 'intake', tentativa: 2, idTarefa: 't-1' },
+    });
+    await chamar(ctx.cliente);
+    expect(gravador.linhas).toHaveLength(1);
+    const [linha] = gravador.linhas;
+    expect(linha?.severidade).toBe('INFO');
+    expect(linha?.campos).toMatchObject({
+      evento: 'chamada',
+      conta: ID,
+      fluxo: 'intake',
+      tentativa: 2,
+      idTarefa: 't-1',
+      idNotificacao: null,
+      operacao: 'teste',
+      credencial: 'personal-token',
+      versaoCredencial: String(atualizadoEmMs),
+      enviouCorrelationId: false,
+      status: 200,
+      resultado: 'ok',
+    });
+    const texto = JSON.stringify(gravador.linhas);
+    expect(texto).not.toContain(TOKEN_A);
+    expect(texto).not.toContain(fingerprintDoToken(TOKEN_A));
+  });
+
+  it('near-miss: a conta smuggled into registro is ignored — the line names THIS context', async () => {
     const db = new FakeDb();
     seedConta(db, ID);
     seedCredencial(db, ID);
-    const eventos: ChamadaLi[] = [];
+    const gravador = gravadorDeLog();
+    const registro = { escrever: gravador.escrever, conta: 'outra-conta' };
     const ctx = await loadLojaIntegradaContext(asDb(db), ID, {
       fetch: fetchEspiao().fetch,
-      onChamada: (e) => eventos.push(e),
+      registro,
     });
     await chamar(ctx.cliente);
-    expect(eventos).toHaveLength(1);
-    expect(eventos[0]?.refCredencial).toMatch(
-      new RegExp(`^${fingerprintDoToken(TOKEN_A)}\\.\\d+$`),
-    );
-    expect(eventos[0]?.enviouCorrelationId).toBe(false);
-    expect(JSON.stringify(eventos)).not.toContain(TOKEN_A);
+    expect(gravador.linhas.map((l) => l.campos.conta)).toEqual([ID]);
+  });
+
+  it('near-miss: an observer smuggled into deps or registro is never called — only the logger sees the event', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const gravador = gravadorDeLog();
+    const vistos: unknown[] = [];
+    const onChamada = (e: unknown) => {
+      vistos.push(e);
+    };
+    // A variable, not a literal: the type system allows the extra keys, so only
+    // the loader's own wiring keeps them out.
+    const deps = {
+      fetch: fetchEspiao().fetch,
+      registro: { escrever: gravador.escrever, onChamada },
+      onChamada,
+    };
+    const ctx = await loadLojaIntegradaContext(asDb(db), ID, deps);
+    await chamar(ctx.cliente);
+    expect(vistos).toEqual([]);
+    expect(gravador.linhas.map((l) => l.campos.conta)).toEqual([ID]);
+  });
+
+  it('with no registro, one call writes exactly ONE JSON line through the default sink', async () => {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const stdout = espiarStdout();
+    try {
+      const ctx = await loadLojaIntegradaContext(asDb(db), ID, { fetch: fetchEspiao().fetch });
+      await chamar(ctx.cliente);
+      const escritas = stdout.escritas();
+      expect(escritas).toHaveLength(1);
+      expect(escritas[0]?.endsWith('\n')).toBe(true);
+      expect(JSON.parse(escritas[0] ?? '')).toMatchObject({
+        severity: 'INFO',
+        evento: 'chamada',
+        conta: ID,
+      });
+      expect(escritas.join('')).not.toContain(TOKEN_A);
+    } finally {
+      stdout.restaurar();
+    }
   });
 });

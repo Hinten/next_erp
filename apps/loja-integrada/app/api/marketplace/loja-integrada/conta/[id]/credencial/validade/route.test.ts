@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { CODIGO_ERRO_LI, respostaCredencialLojaIntegradaSchema } from '@delfrance/schemas';
 
 import {
@@ -25,6 +26,7 @@ import {
   caminhoAviso,
   caminhoCredencial,
   credencialDoc,
+  espiarStdout,
   seedConta,
   seedCredencial,
 } from '@/lib/lojaIntegrada/testing/fixtures';
@@ -61,6 +63,17 @@ const WEBHOOK = { notifyUrl: 'https://exemplo.invalid/h', token: 'w'.repeat(43) 
 
 let db: FakeDb;
 let console$: ReturnType<typeof espiarConsole>;
+let stdout: ReturnType<typeof espiarStdout>;
+
+/** The logger's lines on stdout, parsed: one JSON object per line. */
+function linhasDeLog(): Record<string, unknown>[] {
+  return stdout
+    .escritas()
+    .join('')
+    .split('\n')
+    .filter((l) => l !== '')
+    .map((l) => z.record(z.string(), z.unknown()).parse(JSON.parse(l)));
+}
 
 function renovar(corpo: unknown, opts: { id?: string; sinal?: AbortSignal } = {}) {
   const id = opts.id ?? ID;
@@ -99,10 +112,12 @@ beforeEach(() => {
   h.verifyIdToken.mockResolvedValue(ESCRITOR);
   seedConta(db, ID, { nome: 'Loja Um' });
   console$ = espiarConsole();
+  stdout = espiarStdout();
 });
 
 afterEach(() => {
   console$.restaurar();
+  stdout.restaurar();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -309,18 +324,53 @@ describe('PUT …/credencial/validade — verdicts other than aceito', () => {
   });
 });
 
+describe('the validating GET is ONE log line', () => {
+  it('one chamada line per PUT, for this conta; none for a refusal before the call', async () => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = relogioDoDocumentoUs(seedCredencial(db, ID));
+    // A stale version: refused before any call, so no line.
+    await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao - 1 });
+    expect(linhasDeLog()).toEqual([]);
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+    expect(res.status).toBe(200);
+    const linhas = linhasDeLog();
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatchObject({
+      severity: 'INFO',
+      evento: 'chamada',
+      conta: ID,
+      operacao: 'validarPersonalToken',
+      caminho: '/v1/categoria/?limit=1',
+      status: 200,
+      resultado: 'ok',
+      credencial: 'personal-token',
+      versaoCredencial: null,
+    });
+  });
+});
+
 describe('hygiene and structure', () => {
   it('the stored token and its fingerprint appear in no answer and no log line', async () => {
     const respostas: string[] = [];
+    // A PARTIAL echo survives the package's exact-token scrub; only the logger's
+    // own rule (a candidate credential's line has no body excerpt) stops it.
+    const parcial = TOKEN_A.slice(0, -4);
     for (const status of [200, 401, 500]) {
-      stubFetch(() => respostaJson(status, status === 200 ? ENVELOPE_VAZIO : { eco: TOKEN_A }));
+      stubFetch(() =>
+        respostaJson(
+          status,
+          status === 200 ? ENVELOPE_VAZIO : { eco: TOKEN_A, detalhe: `token ${parcial} recusado` },
+        ),
+      );
       const versao = relogioDoDocumentoUs(db.carimboDe(CAMINHO) ?? seedCredencial(db, ID));
       respostas.push(
         await (await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao })).text(),
       );
     }
-    const tudo = [...respostas, textoDe(console$.argumentos())].join('\n');
-    expect(tudo).not.toContain(TOKEN_A);
+    // Anti-vacuity: each of the three PUTs wrote its line, and it is searched below.
+    expect(linhasDeLog()).toHaveLength(3);
+    const tudo = [...respostas, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+    expect(tudo).not.toContain(parcial);
     expect(tudo).not.toContain(fingerprintDoToken(TOKEN_A));
   });
 

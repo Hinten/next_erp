@@ -23,8 +23,9 @@
  *     conta, active or inactive, is 409 `LI_TOKEN_DE_OUTRA_CONTA`;
  *  6. a token short enough to sit inside its own ref is 422 — the package
  *     would refuse every request made with it. Still nothing sent;
- *  7. `validarPersonalToken`, exactly ONE call: `aceito` stores; `recusado` and
- *     `invalido` are 422, `inconclusivo` 502 (`respostaDeVeredito`);
+ *  7. `validarPersonalToken`, exactly ONE call, logged as one `chamada` line by
+ *     the app logger (`core/log.ts`) whenever it was sent: `aceito` stores;
+ *     `recusado` and `invalido` are 422, `inconclusivo` 502 (`respostaDeVeredito`);
  *  8. the versioned write (`salvarCredencial`): a lost race is 409, never an
  *     overwrite (root rule 7, tier 3);
  *  9. the conta is read AGAIN: deleted (or re-typed) while the token was being
@@ -48,7 +49,10 @@
  * and no URL; a malformed-JSON `SyntaxError` (whose message quotes the body) is
  * answered with a fixed sentence (`lerCorpoLi`). Logs carry the conta id, the
  * verdict, Loja Integrada's status and the correlation id — never the token
- * nor its fingerprint.
+ * nor its fingerprint. The validating GET's own line labels the credential
+ * `versaoCredencial: null` (a candidate has no stored version yet) and carries
+ * no body excerpt: the package scrubs only the exact token sent, and a refusal
+ * may echo it in part or escaped.
  *
  * ## The caller going away
  *
@@ -91,6 +95,7 @@ import {
   removerCredencial,
   salvarCredencial,
 } from '@/lib/lojaIntegrada/core/credentialStore';
+import { criarObservadorLi } from '@/lib/lojaIntegrada/core/log';
 import {
   LiContaNaoEncontradaError,
   LiCredencialAlteradaError,
@@ -153,7 +158,11 @@ export async function PUT(
 
     let validacao: ValidacaoTokenLi;
     try {
-      validacao = await validarPersonalToken({ token, sinal: req.signal });
+      validacao = await validarPersonalToken({
+        token,
+        sinal: req.signal,
+        onChamada: criarObservadorLi({ conta: id }),
+      });
     } catch (err) {
       if (req.signal.aborted && err === req.signal.reason) return respostaCancelada();
       throw err;

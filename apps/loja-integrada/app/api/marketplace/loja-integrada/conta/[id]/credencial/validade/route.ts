@@ -18,9 +18,10 @@
  *     409 `LI_CREDENCIAL_INVALIDA`; a version other than `versaoEsperada` ⇒
  *     409 `LI_CREDENCIAL_ALTERADA` — all before any Loja Integrada call;
  *  5. a stored token that would sit inside its NEW ref ⇒ 422 (never sent);
- *  6. `validarPersonalToken` on the stored token, exactly ONE call, mapped like
- *     the save (`respostaDeVeredito`). A `recusado` here does NOT park: the next
- *     flow call does, through the context;
+ *  6. `validarPersonalToken` on the stored token, exactly ONE call, logged as one
+ *     `chamada` line (`core/log.ts`) and mapped like the save
+ *     (`respostaDeVeredito`). A `recusado` here does NOT park: the next flow call
+ *     does, through the context;
  *  7. `atualizarValidade` under the read's `updateTime`: a write in between is
  *     409 `LI_CREDENCIAL_ALTERADA`, a removal in between 409
  *     `LI_CREDENCIAL_AUSENTE`;
@@ -54,6 +55,7 @@ import { validarDataDeValidade } from '@/lib/lojaIntegrada/conta/validade';
 import { lerContaLojaIntegrada, naoEhIdDeConta } from '@/lib/lojaIntegrada/core/contas';
 import { tokenCabeNaRef } from '@/lib/lojaIntegrada/core/credencial';
 import { atualizarValidade, lerCredencial } from '@/lib/lojaIntegrada/core/credentialStore';
+import { criarObservadorLi } from '@/lib/lojaIntegrada/core/log';
 import {
   LiContaNaoEncontradaError,
   LiCredencialAlteradaError,
@@ -104,7 +106,11 @@ export async function PUT(
 
     let validacao: ValidacaoTokenLi;
     try {
-      validacao = await validarPersonalToken({ token, sinal: req.signal });
+      validacao = await validarPersonalToken({
+        token,
+        sinal: req.signal,
+        onChamada: criarObservadorLi({ conta: id }),
+      });
     } catch (err) {
       if (req.signal.aborted && err === req.signal.reason) return respostaCancelada();
       throw err;

@@ -42,6 +42,12 @@ token **raw** after `Basic ` (not base64-encoded by us).
 - **No retry, backoff or rate limiter.** The rate-limit error carries its scope and
   `Retry-After`; durable retry belongs to the app.
 - **No logging.** `onChamada` is the observation hook; the app decides what is kept.
+  `validarPersonalToken` forwards an optional `onChamada` to its client too, so the
+  validating GET is observable like any other call (its event carries
+  `refCredencial: 'candidato'`; a malformed token sends nothing and is not
+  observed). An observer must never throw: the client rethrows its error in place
+  of the outcome. The app's observer (`apps/loja-integrada`, `core/log.ts`) is the
+  only consumer, and it redacts the event before anything is written.
 - **No body excerpt on any error.** Response text never rides an exception.
 - **No `process.env`.** Every value is a parameter.
 - **No resource schemas beyond the paging envelope and categoria.** The rest arrive

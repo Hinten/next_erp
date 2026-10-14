@@ -36,10 +36,19 @@
  * There is no local expiry refusal: `tokenExpiraEmMs` is advisory (a renewal in
  * the painel keeps the token alive past it), and Loja Integrada's 401 is the
  * verdict.
+ *
+ * ## Every call is logged, and the caller cannot change how
+ *
+ * The client's observer is ALWAYS the app logger (`log.ts`), built here with
+ * `conta` set to this context's `integracaoId` — after the caller's options, so
+ * a call can never be logged under another conta. The caller passes only what
+ * the logger adds to each line (`registro`: the flow, the attempt, the task and
+ * notification ids, and a sink for tests), never an observer of its own: the raw
+ * event carries the query and the full response text, and only `log.ts`
+ * redacts it (`estrutura.test.ts` enforces the seam).
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
-  type ChamadaLi,
   type CredencialLi,
   type LiLeituraClient,
   criarClienteLeituraLi,
@@ -55,13 +64,14 @@ import {
   LiContaParadaError,
   LiCredencialAusenteError,
 } from './erros';
+import { type OpcoesObservadorLi, criarObservadorLi } from './log';
 
 /**
  * Send `x-correlation-id` on the context client's requests. **`false` until the
  * master plan's §1.2 item 23 is settled**: the public document lists that header
  * only for the Enviali paths, and if `/v1` answered it with a 403 an enabled
  * header would PARK every conta on its first call. The id is still generated and
- * reaches `onChamada`, so the app's logs correlate either way.
+ * reaches the observer, so the app's logs correlate either way.
  */
 export const ENVIAR_CORRELATION_ID_LI = false;
 
@@ -72,8 +82,12 @@ export interface ContextoLojaIntegrada {
 }
 
 export interface ContextoDeps {
-  /** The observer, forwarded to the package. Its events never carry the token. */
-  readonly onChamada?: (e: ChamadaLi) => void;
+  /**
+   * What the logger adds to each line of this context's calls (step 3:
+   * `{ fluxo: 'intake', tentativa, idTarefa, idNotificacao }`), and the sink
+   * (tests). `conta` is not among them: it is always this context's id.
+   */
+  readonly registro?: Omit<OpcoesObservadorLi, 'conta'>;
   /** Test seams, forwarded as-is. */
   readonly fetch?: typeof globalThis.fetch;
   readonly gerarCorrelationId?: () => string;
@@ -113,7 +127,8 @@ export async function loadLojaIntegradaContext(
       return { token: credencial.personalToken, ref: refDaCredencial(credencial) };
     },
     enviarCorrelationId: ENVIAR_CORRELATION_ID_LI,
-    onChamada: deps.onChamada,
+    // `conta` LAST: whatever the options carry, the line names this conta.
+    onChamada: criarObservadorLi({ ...deps.registro, conta: integracaoId }),
     fetch: deps.fetch,
     gerarCorrelationId: deps.gerarCorrelationId,
   });

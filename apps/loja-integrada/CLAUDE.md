@@ -77,6 +77,55 @@ still be fixed. Only the context loader refuses those.
   out of responses and logs.
 - The tokens belong to this integration alone, separate from the legacy app's (D16).
 
+## Logging and redaction (step 2b)
+
+- ONE JSON line per Loja Integrada call, with a Cloud Logging `severity`, written by
+  `core/log.ts` through `process.stdout.write` (never `console.*`, no new dependency).
+- The observer is always `criarObservadorLi(…)`: the context loader builds it itself
+  (callers pass only `registro`: flow, attempt, task/notification ids, a test sink; `conta`
+  is always the context's id), and both credential routes pass it to the validating GET.
+  Only `core/log.ts` names `ChamadaLi`, the raw event (raw query, full body). The
+  `estrutura.test.ts` guards fail on any other observer, on that type named elsewhere, and
+  on a logger import closure reaching `firebase-admin`, `@delfrance/data`, `next` or `@/`.
+- The credential is labelled by `credencial: 'personal-token'` and `versaoCredencial` (the
+  ref's version suffix, read through `core/refCredencial.ts`, the format's one owner) —
+  never the ref, never the fingerprint.
+- `core/redacao.ts` is pure and total (no clock, I/O, env or `catch`; imports only `zod`
+  and `@delfrance/core/*`). Allow-lists fail closed: the path picks the policy
+  (`estrutural` by default, `configuracao`, `catalogo`, `webhook` never excerpted), then
+  spelled-out leaves with predicates. Profile `log`: `<redacted>` plus the regex layer,
+  then a 2 KB cut (mask first, cut second). Profile `fixture` (fixtures are public): fakes
+  of the same type, `chave_redigida_<n>` keys, error bodies take the log's error walk.
+- A JSON error body keeps its STRUCTURE and guesses no value shape (`percorrerErro`, both
+  profiles): booleans and `null`; a number only as a safe integer below 1e7; a string only
+  as 1–7 digits under `CHAVES_TEXTO_ERRO_LI` (`codigo`, `code`, `erro`, `error`, `tipo`,
+  `campo`; exact, any case; an array inherits its key) — `Unauthorized`, `SLUG_IN_USE` and
+  every other word are `<redacted>`; a key name only as 1–32 letters/`_`, any other key
+  becoming `chave_redigida_<n>` by position. Three review rounds on #1877 each broke a shape
+  rule (a token as a KEY, a first name or a domain under `erro`, a fraction under any key).
+  On `catalogo`/`configuracao` a JSON object or array error takes that walk; only TEXT
+  (non-JSON, or a JSON scalar like the spec's 409) keeps its masked text, for a plain/HTML
+  429 or a validation message. Never add a key or a shape to "see the message".
+- ⚠️ The accepted residual surface: (a) a key name of letters/`_` survives an error body
+  and could itself echo a word; (b) on `catalogo`/`configuracao`, non-JSON error text and a
+  bare JSON-scalar error (the 409 `"Slug already in use."`) keep their regex-masked text,
+  which may hold a name or a partial token. Nothing else of a JSON error body survives but
+  its structure, booleans, `null`, an empty string under a denied key, safe integers below
+  1e7 and 1–7 digit strings under the allowed keys. The price: error names and messages
+  never reach the log — `codigoLimite`/`retryAfterS` are logged separately. Widening the
+  keys, the string rule, the key grammar or the text classes reopens the leak.
+- A new field or path stays redacted until a table lists it. Listing one means adding the
+  leaf with its predicate AND regenerating the committed leaf inventory, which reads the
+  gitignored spec cache only: `MSYS_NO_PATHCONV=1 node
+  .master_plans/loja-integrada/evidence/li-doc.mjs folhas --saida
+  apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pairs: the
+  file's own operations; pass `<METHOD> <path>…` pairs, all of them, to change the list).
+  `redacao.test.ts` demands every inventory leaf be classified exactly once.
+- The excerpt fails closed where the token may echo back: a 401/403 is never excerpted on
+  any path, and neither is any answer to the validating GET (a candidate credential,
+  `versaoCredencial: null`). The package scrubs only the exact token sent, so a partial or
+  escaped echo would otherwise reach the log. Never relax either rule to "see the error".
+
 ## Config
 
 - `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`: emulator
