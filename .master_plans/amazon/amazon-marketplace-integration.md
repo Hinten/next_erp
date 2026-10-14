@@ -63,7 +63,7 @@ Citation conventions:
   - chat and Q&A (`'nao'`);
   - size charts and native kits (`'nao'`; the ERP computes kit quantity);
   - the stuck-reservation sweep (Amazon cancels; the event carries it);
-  - returns and claims (POST; `'desconhecido'` until settled);
+  - returns, refunds and claims (POST, P4: refund and return detection done properly, replacing D17's interim inference; `reclamacoes` is `'desconhecido'` until settled);
   - publishing, product-type schemas, listing notifications, Finances, B2B price and External Fulfillment (all POST).
 
 ---
@@ -239,7 +239,7 @@ A gap investigation then read every changelog entry and every docs page for Easy
 | D14 | **Issues:** a tracker plus one issue per step, opened only after Lucas approves this written plan. Migration-window issues (§5) need a **separate** yes. | — |
 | D15 | **Execution:** every step gets a Phase-3 step plan that Lucas approves before code is written; stacked draft PRs. | §4.25. |
 | D16 | **All AWS-side code lives in this repository, in TypeScript, in a dedicated folder** (Lucas, 2026-10-14: nothing may again exist only in the AWS console, as the old forwarder did). The relay is an **AWS CDK v2 app in TypeScript** at `infra/amazon-relay/`: a workspace package that is typechecked, linted and tested (`aws-cdk-lib/assertions`) like any other. No account id, ARN, URL or secret value is in the code; they arrive as deploy-time context or from Secrets Manager. Agents never deploy it; the owner runs `cdk deploy` in the window (W2). | Step 3; W2. |
-| D17 | **Order items vs sale state.** Amazon zeroes item values and quantities on a cancelled order **[operator]** (undocumented), and Lucas suspects a cancelled, refunded or returned order may also lose its items. Orders v2026 has no refund or return status, so reversal is read from the order data: `CANCELLED`, a line `cancellation` block, a refused/undeliverable/returning/returned/lost/damaged package, or a zeroed `SHIPPED` order. **Reversed ⇒ keep every stored line, quantity and value** (0 never overwrites a stored positive value, no line is deleted); only the estado, status, cancellation info and freight state change, and the reservation is released with the stored lines. **Approved but not yet shipped, with no reversal signal ⇒ the items must match Amazon exactly** (never ship more or fewer): any difference is a blocking divergence (`estado: error` + aviso), never applied silently. **Before approval ⇒ mirror Amazon.** | Steps 5–7; §3. |
+| D17 | **Order items vs sale state.** Amazon zeroes item values and quantities on a cancelled order **[operator]** (undocumented), and Lucas suspects a cancelled, refunded or returned order may also lose its items. Orders v2026 has no refund or return status, so reversal is read from the order data: `CANCELLED`, a line `cancellation` block, a refused/undeliverable/returning/returned/lost/damaged package, or a zeroed `SHIPPED` order. **Reversed ⇒ keep every stored line, quantity and value** (0 never overwrites a stored positive value, no line is deleted); only the estado, status, cancellation info and freight state change, and the reservation is released with the stored lines. **Approved but not yet shipped, with no reversal signal ⇒ the items must match Amazon exactly** (never ship more or fewer): any difference is a blocking divergence (`estado: error` + aviso), never applied silently. **Before approval ⇒ mirror Amazon.** The refund/return part of the reversal detection is an **interim inference**; P4 replaces it with explicit signals after the cutover. | Steps 5–7; §3; P4. |
 | D18 | **⏸ Listings discussion gate.** The legacy listing flows have several known problems that Lucas will describe in person. Before the Phase-3 plan of **any listing step** is written, Lucas walks through those problems and we agree on the best way forward. That covers the pre-cutover link (steps 9 + 9b) and every listing part after the cutover (steps 10, 11, P1, the P3 import mode), plus the link-doc census W11. Everything this plan says about listings is a starting point, not a decision, until that discussion has happened. | Steps 9, 9b, 10, 11, P1, P3; W11; §7. |
 
 **Orchestrator calls (vetoable, one line each):**
@@ -359,7 +359,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
 | 14 NF-e upload | 14 | PRE | Delivery by Amazon API. |
 | 15 Labels | 15 | PRE | Easy Ship bulk: automatic scheduling; the ZPL is fetched on demand at print time, never stored. |
 | 16 Chat | dropped | — | `perguntas`/`mensagensPosVenda: 'nao'`. |
-| 17 Claims / returns | 17 | POST | `'desconhecido'` until C6. |
+| 17 Claims / returns | 17 → P4 | POST | Folded into P4 (refunds and returns done properly). `'desconhecido'` until C6. |
 | 18 Tabela de medidas | dropped | — | `'nao'`. |
 | 19 Kits virtuais | dropped | — | `'nao'`; quantity is ERP-computed in step 12. |
 | 20 `int_frete` sync | 20 | PRE | `'amz'` back-ref binding + adoption. |
@@ -569,7 +569,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
     - `fulfillment.fulfillmentStatus = CANCELLED`;
     - a line with a `cancellation` block (`cancellationRequest` or `cancellationExecution`);
     - a package whose `packageStatus.detailedStatus` is `REJECTED_BY_BUYER`, `UNDELIVERABLE`, `RETURNING_TO_SELLER`, `RETURNED_TO_SELLER`, `LOST` or `DAMAGED`;
-    - an order already `SHIPPED` (or a pedido already invoiced) whose lines or money arrive zeroed, emptied or short: that is how a refund or return would show up, and nothing left to ship can be protected by blocking it.
+    - an order already `SHIPPED` (or a pedido already invoiced) whose lines or money arrive zeroed, emptied or short: that is how a refund or return would show up, and nothing left to ship can be protected by blocking it. **Interim:** P4 replaces this inference with explicit refund and return signals after the cutover.
   - **Reversed ⇒ keep everything stored.** On a cancelled order Amazon sends item values **and quantities** as 0 **[operator]**, may drop the items (suspected), and refunds or returns may do the same (suspected by Lucas). Copied blindly, a 0 quantity breaks the reservation release, and 0 money breaks the line totals, the pagamento and the return NF-e built from the pedido. So:
     - every stored line is kept (matched by `OrderItemId`; migrated lines through `mktplaceId`), even when `orderItems` is empty, absent or short;
     - a 0 or absent quantity or money value never overwrites a stored value > 0; each group is kept as a unit (a line: quantity + unit price + discount + tax; the order: freight + total; a pagamento: `valor`);
@@ -780,7 +780,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 - **Verification:** gates refuse before `ACCEPTED`; the zip is downloaded within the request; first `.zpl` entry extraction; a second call returns the same tracking id (fixture from capture C3); `MissingPackageDimensions` ⇒ 409.
 - **Does NOT:** store labels; choose slots; patch catalog dimensions; reschedule (Seller Central); request PDF.
 
-### Steps 16, 18, 19: DROPPED (§4.24) · Step 17: returns/claims — POST
+### Steps 16, 18, 19: DROPPED (§4.24) · Step 17: returns/claims — POST, folded into P4
 
 ### Step 20: `int_frete` binding for `'amz'` — PRE
 
@@ -816,6 +816,22 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
   - B2B price;
   - External Fulfillment evaluation (the documented alternative path for BR DBA);
   - the DPP retention purge.
+- **P4: refunds and returns, done properly** (⏸ an in-depth discussion with Lucas first; requested on 2026-10-14).
+  - **Why:** before the cutover, D17 can only *infer* a refund or return from the order data (a zeroed `SHIPPED` order, a line `cancellation` block, a return-type package status), because Orders v2026 has no refund or return status. That inference protects the stored items and values, but it does not tell the ERP *what* happened: which items, how much was refunded, whether the goods came back.
+  - **Sources to explore** (all documented, all deferred; none is in the pre-cutover slice):
+    - **Finances API v2024-06-19** `listTransactions` with `relatedIdentifierName = ORDER_ID`: refund transactions per order (the v0 event operations, with `RefundEventList`, are removed 2027-08-27);
+    - the **`TRANSACTION_UPDATE`** notification (SQS): a new transaction posted to the seller account, which can ride the step-3 relay and receiver;
+    - **MFN returns reports** (`GET_FLAT_FILE_RETURNS_DATA_BY_RETURN_DATE` and siblings: return reason, refund amount, A-to-z flag; BR availability undocumented);
+    - the **External Fulfillment Returns API** v2024-09-11 (`listReturns`/`getReturn`, read-only; BR eligibility undocumented; the same check settles `reclamacoes`);
+    - the Orders v2026 signals D17 already reads (`cancellation`, `packages[].packageStatus`);
+    - seller-issued refunds through the `POST_PAYMENT_ADJUSTMENT_DATA` feed, if Lucas wants the ERP to issue them.
+  - **ERP side to design together:**
+    - the pedido estado and pagamento status for a partial or full refund;
+    - the return NF-e (devolução), which needs the original stored values D17 keeps;
+    - stock re-entry when the goods come back;
+    - the aviso and operator flow.
+  - **Captures first:** one refunded order and one returned order, read before and after, from the Orders, Finances and returns sources.
+  - **Outcome:** an explicit refund/return signal replaces D17's "zeroed `SHIPPED` order" inference; the keep-stored rule stays.
 
 ### 4.23 Request budget (D8 volumes; default usage plans)
 
@@ -845,7 +861,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 | Template step 4 missed-feed replay | no replay feed in SP-API | the cursor + SQS retention + DLQ |
 | Sweep tiering | not assumed (D8) | deltas + one daily reconcile; tiering is decided from the step-12 scan measurement at ~20,000 SKUs |
 
-**Deferred by decision (POST, D3):** steps 10, 11, 17 and P1–P3.
+**Deferred by decision (POST, D3):** steps 10, 11, 17 (folded into P4) and P1–P4.
 
 ### 4.25 Execution order to reach cutover parity (stacked draft PRs; each step's Phase-3 plan approved first, D15)
 
@@ -967,6 +983,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 2. **Reservations:** keep PENDING Amazon orders reserving ERP stock (the current behaviour), or reserve only from UNSHIPPED?
 3. **Pickup rescheduling:** is it acceptable that rescheduling a DBA pickup stays in Seller Central (there is no documented BR API for it)?
 4. **Listings (D18):** the known problems of the legacy listing flows, and the best way to handle each one. To be discussed when we reach step 9, before any listing step plan is written.
+5. **Refunds and returns (P4):** how the ERP should detect and handle them properly, beyond D17's interim inference. To be explored in depth after the cutover.
 
 ---
 
