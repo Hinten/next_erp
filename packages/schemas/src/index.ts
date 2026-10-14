@@ -1467,3 +1467,11 @@ export { RETURN_SN_SHOPEE_MAX, ehReturnSnShopee } from './devolucaoShopee';
 // (#1369). Not a collection, so no `registry.ts` entry. A star export on purpose:
 // the fold-inventory scan greps raw text, so a listed barrel would need a row.
 export * from './receitaKitShopee';
+
+// The Loja Integrada freight `mapa` rules (step 20, #1826): the shipping-method
+// key, the "mapped" target id, the raw presence read, the appended row and the
+// target tipos — the importer, the conta screen and the window pass all call
+// them (#1369). Not a collection, so no `registry.ts` entry. A star export on
+// purpose: the fold-inventory scan greps raw text, so a listed barrel would need
+// a row.
+export * from './mapaFreteLojaIntegrada';
