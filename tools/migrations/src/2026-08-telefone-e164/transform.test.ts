@@ -141,8 +141,9 @@ describe('resolveTargets', () => {
   });
 
   it('de-duplicates — a repeated target must not scan the group twice', () => {
-    // Each target is an unindexed collection-group scan on Enterprise, billed
-    // by data scanned, so a duplicate silently doubles the bill for no work.
+    // Each target is a full collection-group scan (on its declared key index,
+    // #1895) billed by data scanned, so a duplicate silently doubles the bill
+    // for no work.
     expect(resolveTargets(['clientes', 'clientes']).map((t) => t.name)).toEqual(['clientes']);
     expect(resolveTargets(['cheque', 'clientes', 'cheque']).map((t) => t.name)).toEqual([
       'cheque',

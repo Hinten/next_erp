@@ -95,10 +95,13 @@ native kit.
 
 ## Cost
 
-No index is needed, and none should be added. The walk is a plain
-`orderBy(documentId())` key-order scan of `produtos`, with
-`ehKitVirtual === true` tested in memory — the `2026-08-ml-pedido-pago-audit`
-shape, and the one ordering Firestore always serves without a declared index.
+The key index is the only index the walk needs, and no filter index should be
+added. The walk is a plain `orderBy(documentId())` key-order scan of `produtos`,
+with `ehKitVirtual === true` tested in memory — the
+`2026-08-ml-pedido-pago-audit` shape — riding the **declared** key index
+`produtos(__name__ ASC)` (#1895, listed in `key-walks.json`). Enterprise has no
+implicit key index: without it every page re-scans the collection (#1895
+measured 1,665 index rows read per page of 300 on `pedidos`).
 `where('ehKitVirtual','==',true)` looks cheaper and is not: Firestore
 **Enterprise** never throws `FAILED_PRECONDITION` for a missing index; it silently
 full-scans and bills data scanned. Indexing it would need a NEW composite for a
