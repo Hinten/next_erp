@@ -146,8 +146,14 @@ still be fixed. Only the context loader refuses those.
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor `MINIMO_DE_FIXTURES` is the committed count (19), so a fixture that
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (18), so a fixture that
   disappears fails it.
+- ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
+  identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
+  until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw
+  pair first, or regenerate with `--so` naming only the pairs wanted. The shipped state is
+  covered without it: `pedido-pix` and `pedido-cartao` (`situacao.codigo`
+  `pedido_enviado`, a tracking code under `envios`) and `historico-pedido-enviado`.
 - Kept on review of the first corpus (2026-10-14), not leaks: a 14-digit window INSIDE a
   longer SKU that passes the CNPJ check (the scan tests whole values; any one window passes
   by chance about 1% of the time, and the sibling variant's window fails), LI's own

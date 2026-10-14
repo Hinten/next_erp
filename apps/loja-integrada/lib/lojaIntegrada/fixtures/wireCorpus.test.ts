@@ -15,8 +15,10 @@ import {
 
 /**
  * The floor that keeps the assertions below non-vacuous: the number of committed
- * fixtures, 19 since the owner's first captures (step 3) — the Mercado Livre
- * corpus test is the precedent.
+ * fixtures, 18 since the owner's first captures (step 3) — the Mercado Livre
+ * corpus test is the precedent. Those captures held 19 pairs; `pedido-enviado`
+ * was a byte-identical duplicate of `pedido-boleto` (the same order requested
+ * twice) and is not committed (`__wire__/README.md`).
  *
  * ⚠️ It equals the count on purpose, so a fixture that disappears fails here
  * instead of silently shrinking what the scan below covers. A change that adds
@@ -24,7 +26,7 @@ import {
  * the same commit. Below it, "every fixture is valid and clean" holds of fewer
  * files than were reviewed.
  */
-const MINIMO_DE_FIXTURES = 19;
+const MINIMO_DE_FIXTURES = 18;
 
 describe('__wire__ corpus', () => {
   const arquivos = listarArquivosDoCorpusLi();

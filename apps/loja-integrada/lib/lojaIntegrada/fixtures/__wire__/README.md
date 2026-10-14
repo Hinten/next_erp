@@ -24,9 +24,19 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
 
 `wireCorpus.test.ts` reads this folder: every file must be a valid envelope, serialised
 as `JSON.stringify(v, null, 2) + '\n'`, and pass both layers of `piiScan.ts`.
-`MINIMO_DE_FIXTURES` is the number of committed fixtures (19 since the owner's first
+`MINIMO_DE_FIXTURES` is the number of committed fixtures (18 since the owner's first
 captures, step 3), so a fixture that disappears fails the test. A change that adds or
 deliberately removes a fixture moves it in the same commit.
+
+## Excluded on purpose
+
+- `pedido-enviado`: the owner's raw pair requested the same order as `pedido-boleto` and
+  sanitized to identical bytes, so it is not committed. The shipped state is still
+  covered: `pedido-pix` and `pedido-cartao` are orders in `pedido_enviado` with a tracking
+  code under `envios`, and `historico-pedido-enviado` is a shipped order's status history.
+  The raw pair stays in the owner's capture folder until he deletes it, and a sanitizer
+  run without `--so` would write it back: delete that raw pair first, or regenerate with
+  `--so` naming only the pairs wanted.
 
 This folder is excluded from Prettier and checked out with LF line endings
 (`.prettierignore`, `.gitattributes`), so a re-run over an unchanged capture writes
