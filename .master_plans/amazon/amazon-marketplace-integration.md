@@ -175,7 +175,7 @@ Under D11 these split into three kinds:
 2. **`paymentMethod` strings** for Pix, card and boleto, and whether split payments appear as several executions (C1). CAPTURABLE. The importer treats the field as an open string with a fallback to `99`.
 3. **Does `programs[]` carry `AMAZON_EASY_SHIP`, `DELIVERY_BY_AMAZON` or both for a BR DBA order? Are `packages[]` and `fulfillmentOrders[]` filled? Does `lastUpdatedTime` move on package events?** (C1). CAPTURABLE. It decides whether step 7 needs its in-transit refresh sweep.
 4. **Is the ITEM proceeds amount tax-inclusive for BR, and how are discounts signed?** (C1). CAPTURABLE.
-4b. **Exactly which fields Amazon zeroes or drops on a cancelled order** (`quantityOrdered`, `product.price.unitPrice`, `proceeds.breakdowns`, `proceeds.grandTotal`, `payment.paymentExecutions[].paymentAmount`), whether a partial cancellation lowers the quantity instead of zeroing it, and whether `orderItems` comes back empty or short (suspected by Lucas, not yet observed). The zeroing itself is known from production **[operator]** (D17); the models do not document it. CAPTURABLE (C1: one order captured before and after its cancellation).
+4b. **Exactly which fields Amazon zeroes or drops on a cancelled order** (`quantityOrdered`, `product.price.unitPrice`, `proceeds.breakdowns`, `proceeds.grandTotal`, `payment.paymentExecutions[].paymentAmount`), whether a partial cancellation lowers the quantity instead of zeroing it, whether `orderItems` comes back empty or short, and what a refunded or returned (still `SHIPPED`) order looks like: zeroed proceeds, a `cancellation` block, a package status (suspected by Lucas, not yet observed). The zeroing itself is known from production **[operator]** (D17); the models do not document it. CAPTURABLE (C1: one order captured before and after its cancellation).
 5. **Invoice status response keys** (`invoiceStatus` vs `orderInvoicingStatus` vs `invoices[]`) (C2). CAPTURABLE.
 6. **The bulk response shape, the zip layout and the resubmit response** (C3). CAPTURABLE from the legacy reprint. The resubmit behaviour itself is live-proven **[operator]**.
 7. **The `ORDER_CHANGE` envelope as the Pipe forwards it** (C4). CAPTURABLE from a temporary queue or Amazon's sample.
@@ -239,7 +239,7 @@ A gap investigation then read every changelog entry and every docs page for Easy
 | D14 | **Issues:** a tracker plus one issue per step, opened only after Lucas approves this written plan. Migration-window issues (§5) need a **separate** yes. | — |
 | D15 | **Execution:** every step gets a Phase-3 step plan that Lucas approves before code is written; stacked draft PRs. | §4.25. |
 | D16 | **All AWS-side code lives in this repository, in TypeScript, in a dedicated folder** (Lucas, 2026-10-14: nothing may again exist only in the AWS console, as the old forwarder did). The relay is an **AWS CDK v2 app in TypeScript** at `infra/amazon-relay/`: a workspace package that is typechecked, linted and tested (`aws-cdk-lib/assertions`) like any other. No account id, ARN, URL or secret value is in the code; they arrive as deploy-time context or from Secrets Manager. Agents never deploy it; the owner runs `cdk deploy` in the window (W2). | Step 3; W2. |
-| D17 | **Cancellation zero guard.** When an order is cancelled, Amazon sends item values and quantities as **0** **[operator]**, which the models do not document. An incoming 0 (or absent) quantity or money value **never overwrites a stored value > 0**; the stored value is kept. **An import never deletes a line either:** Lucas suspects a cancelled order may also come back without its items, so a stored line missing from the incoming `orderItems` (or an empty or absent list) is kept as it is. The estado still moves to `cancelado`, and the reservation is released with the stored lines and quantities. A real non-zero change still wins, and a new line is still added. | Steps 5–6; §3. |
+| D17 | **Order items vs sale state.** Amazon zeroes item values and quantities on a cancelled order **[operator]** (undocumented), and Lucas suspects a cancelled, refunded or returned order may also lose its items. Orders v2026 has no refund or return status, so reversal is read from the order data: `CANCELLED`, a line `cancellation` block, a refused/undeliverable/returning/returned/lost/damaged package, or a zeroed `SHIPPED` order. **Reversed ⇒ keep every stored line, quantity and value** (0 never overwrites a stored positive value, no line is deleted); only the estado, status, cancellation info and freight state change, and the reservation is released with the stored lines. **Approved but not yet shipped, with no reversal signal ⇒ the items must match Amazon exactly** (never ship more or fewer): any difference is a blocking divergence (`estado: error` + aviso), never applied silently. **Before approval ⇒ mirror Amazon.** | Steps 5–7; §3. |
 | D18 | **⏸ Listings discussion gate.** The legacy listing flows have several known problems that Lucas will describe in person. Before the Phase-3 plan of **any listing step** is written, Lucas walks through those problems and we agree on the best way forward. That covers the pre-cutover link (steps 9 + 9b) and every listing part after the cutover (steps 10, 11, P1, the P3 import mode), plus the link-doc census W11. Everything this plan says about listings is a starting point, not a decision, until that discussion has happened. | Steps 9, 9b, 10, 11, P1, P3; W11; §7. |
 
 **Orchestrator calls (vetoable, one line each):**
@@ -328,7 +328,7 @@ A gap investigation then read every changelog entry and every docs page for Easy
   **[model; ERP rule]**
 - **Stock** from the **conta's** depósito, integer, clamped at 0. Kit quantity = the min over limiting components of ⌊disponível/qtd⌋ **[ERP rule, ADR 0014]**. One quantity function serves publish, sweep and manual sends.
 - **Price** scoped per conta. Parents skipped (non-buyable). Money via `roundReais`. The whole offer (our_price + min + max) compared before writing **[ERP rule, D9]**.
-- **Zero never overwrites a stored value, and an import never deletes a line** **[operator, D17]**: Amazon zeroes item values and quantities on a cancelled order, and may drop its items. A 0 or absent incoming quantity or money value keeps the stored positive value, and a stored line missing from the incoming items is kept (step 5).
+- **Items and values by sale state** **[operator + model, D17]**: on a reversed sale (cancelled, line cancellation, return/refusal package status, or a zeroed shipped order) the stored lines and values are kept; on an approved order not yet shipped the items must match Amazon exactly, and any difference blocks the pedido for a human; before approval Amazon is mirrored (step 5).
 - **DBA detection** (legacy and LATAM rule) re-expressed for v2026: `programs[]` and `tax.taxInvoicing.invoiceStatus` **[model; LATAM, retired]**.
 
 **Other legacy-code findings are kept in the operator's private notes; only the rules above are ported.**
@@ -563,25 +563,23 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
   - `pedido.marketplace {tipo: 'amazon', status: <fulfillmentStatus verbatim>, statusEm}`; `MARKETPLACE_PEDIDO_TIPO` gains `amazon`.
   - Items through link docs; unmatched lines flagged.
   - Money from `proceeds.breakdowns` (ITEM, SHIPPING, DISCOUNT, TAX), with tax inclusion settled by capture C1.
-- **Cancellation zero guard (D17) — `preservarValoresNaoZero(armazenado, recebido)`, a pure function:**
-  - **Why:** on a cancelled order Amazon sends item values **and quantities** as 0 **[operator]**. Copied blindly, a 0 quantity breaks the reservation release, and 0 money breaks the line totals, the pagamento and any later return NF-e built from the pedido.
-  - **Groups, each kept or replaced as a unit:**
-    - each line: `quantidade` + unit price + discount + tax;
-    - the order: freight value + total;
-    - each pagamento: `valor`.
-  - **Rule:** if a group's key value arrives as **0 or absent** (a line's quantity *or* unit price; the order's total; the payment's amount) while the stored one is **> 0**, the **whole stored group is kept**. Otherwise the incoming group is written; a real non-zero change, such as a quantity going 2 → 1, always wins.
-  - **Missing lines are never deleted** (Lucas suspects a cancelled order can come back without its items; not yet observed, so guarded defensively). Lines are matched by `OrderItemId` (migrated lines through `mktplaceId`):
-    - a stored line absent from the incoming `orderItems` is kept unchanged;
-    - an **empty or absent** `orderItems` keeps every stored line;
-    - an incoming line with no stored match is added;
-    - Amazon has no legitimate way to remove a line from an existing order (a partial cancellation changes quantities or the line's `cancellation` block, it does not remove the line), so "never delete through an import" is safe.
-  - ⚠️ **The wire schema must tolerate a missing or empty `orderItems`.** The v2026 model lists it as required on `Order`. A strict parser would turn an item-less cancelled order into a `ZodError`: the notification would be parked and the cancellation never recorded. The schema accepts absent or `[]`, and the guard above decides what to keep.
-  - **What still changes:** the estado (`cancelado`, refund after payment) and `pedido.marketplace.status`. The reservation is released with the **stored** lines and quantities.
-  - **First import** (nothing stored): what arrives is written. A non-CANCELLED order with a 0 quantity or price raises an aviso, because it cannot be invoiced. A first-seen CANCELLED order is skipped anyway.
-  - **Every status, not only CANCELLED:** cancellation is the observed trigger, but a positive → 0 change on an existing Amazon order line has no legitimate cause, and a PENDING order may also lack money.
-  - **Observability:** the task's log line carries `detail: 'valor-zero-preservado'` and the count of preserved groups.
-  - **Rule 7:** decided from the pedido read inside the step-5 transaction (`tx.get`), together with the watermark, never from a read taken before it.
   - `freteInicial` seeded with `seedFreteInicial`: `externalOptionIntegracao = INTEGRACAO_FRETE.amazon`, `integracaoFreteOuterRef` = the conta's `'amz'` int_frete (step 20), `prazoDespacho = shipByWindow.latestDateTime` (µs), `modalidade` from the conta.
+- **Order items vs sale state (D17) — `reconciliarItens(armazenado, recebido)`, a pure function.** Which rule applies depends on whether the sale was **reversed**, decided from the incoming order:
+  - **Reversal signals** **[model]**. Orders v2026 has **no refund or return status** (a refunded or returned order stays `SHIPPED`; refunds live in the Finances API), so the guard keys on what the order data does carry:
+    - `fulfillment.fulfillmentStatus = CANCELLED`;
+    - a line with a `cancellation` block (`cancellationRequest` or `cancellationExecution`);
+    - a package whose `packageStatus.detailedStatus` is `REJECTED_BY_BUYER`, `UNDELIVERABLE`, `RETURNING_TO_SELLER`, `RETURNED_TO_SELLER`, `LOST` or `DAMAGED`;
+    - an order already `SHIPPED` (or a pedido already invoiced) whose lines or money arrive zeroed, emptied or short: that is how a refund or return would show up, and nothing left to ship can be protected by blocking it.
+  - **Reversed ⇒ keep everything stored.** On a cancelled order Amazon sends item values **and quantities** as 0 **[operator]**, may drop the items (suspected), and refunds or returns may do the same (suspected by Lucas). Copied blindly, a 0 quantity breaks the reservation release, and 0 money breaks the line totals, the pagamento and the return NF-e built from the pedido. So:
+    - every stored line is kept (matched by `OrderItemId`; migrated lines through `mktplaceId`), even when `orderItems` is empty, absent or short;
+    - a 0 or absent quantity or money value never overwrites a stored value > 0; each group is kept as a unit (a line: quantity + unit price + discount + tax; the order: freight + total; a pagamento: `valor`);
+    - what changes: the estado (`cancelado`, refund after payment), `pedido.marketplace.status`, the cancellation info and the freight state (step 7). The reservation, if any, is released with the **stored** lines and quantities. A zeroed `SHIPPED` order with no explicit signal also raises an aviso ("possível reembolso ou devolução") so someone checks the return flow.
+  - **Approved but not yet shipped (UNSHIPPED / PARTIALLY_SHIPPED), no reversal signal ⇒ the items must match Amazon exactly: never ship more or fewer.** If the incoming item set or any line differs from the stored pedido (a line added, removed or zeroed, or a quantity or price changed), the import does **not** apply it silently. It is a **blocking divergence**: persist `estado: error` with the diff and raise an aviso, then stop, so the order is neither picked, invoiced nor shipped until a human checks (the ML `orderShipmentConference` pattern: persist the error, never just throw).
+  - **Before approval (PENDING / PENDING_AVAILABILITY) ⇒ Amazon's list is mirrored as it arrives** (lines added, updated and removed); nothing has been picked or invoiced yet.
+  - **First import** (nothing stored): what arrives is written. A non-reversed order with a 0 quantity or price raises an aviso, because it cannot be invoiced. A first-seen CANCELLED order is skipped anyway.
+  - ⚠️ **The wire schema must tolerate a missing or empty `orderItems`.** The v2026 model lists it as required on `Order`. A strict parser would turn an item-less cancelled order into a `ZodError`: the notification would be parked and the cancellation never recorded. The schema accepts absent or `[]`; the rules above decide what happens.
+  - **Observability:** the task's log line carries `detail: 'itens-preservados-reversao'` or `'divergencia-itens-aprovado'` plus the counts.
+  - **Rule 7:** decided from the pedido read inside the step-5 transaction (`tx.get`), together with the watermark, never from a read taken before it.
 - **Cliente:**
   - `findOrCreateCliente` with `cpf_cnpj` from `taxRegistrations[BUYER]`, the buyer name, and the address from `recipient.deliveryAddress` + `extendedFields`, with the IBGE code resolved at import.
   - A PENDING order (name and address still gated) creates the pedido **without** a cliente. The PENDING→UNSHIPPED `ORDER_CHANGE` re-fetches and completes it.
@@ -592,26 +590,22 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
 - **Verification:**
   - `orderIds.test.ts` (vectors + near-misses);
   - an estado table test that enumerates every `FulfillmentStatus`;
-  - the zero guard, with near-misses:
-    - stored quantity 2 + incoming 0 ⇒ 2 kept, and the line's price kept with it;
-    - stored price 10.00 + incoming 0 or absent ⇒ 10.00 kept;
-    - stored 10.00 + incoming 9.50 ⇒ 9.50; stored quantity 2 + incoming 1 ⇒ 1 (real changes pass);
-    - stored 10.00 + incoming 0.01 ⇒ 0.01 (the near-miss of zero);
-    - stored 0 + incoming 0 ⇒ 0;
-    - a cancelled order with zeroed lines ⇒ estado `cancelado`, lines unchanged, reservation released with the stored quantity;
-    - a cancelled order whose `orderItems` is empty, absent, or missing one of two stored lines ⇒ estado `cancelado`, every stored line kept, reservation released for all of them, and no `ZodError`;
-    - an incoming line not yet stored ⇒ added (the guard never blocks new lines);
+  - the D17 item rules, one table over (sale state × incoming change), with near-misses:
+    - **reversed** (CANCELLED / line `cancellation` block / return-type package status / zeroed `SHIPPED`): stored quantity 2 + incoming 0 ⇒ 2 kept with its price; stored price 10.00 + incoming 0 or absent ⇒ 10.00 kept; `orderItems` empty, absent or missing one of two lines ⇒ every stored line kept, no `ZodError`; estado and status still updated; reservation released with the stored lines;
+    - **approved, not shipped, no reversal signal**: a line removed, added or zeroed, or a quantity 2 → 1 ⇒ `estado: error` + aviso with the diff, nothing silently applied; an identical item set ⇒ no divergence;
+    - **near-misses across the boundary**: the same zeroed line on a CANCELLED order ⇒ kept, on an UNSHIPPED order with no signal ⇒ divergence; a `SHIPPED` order with unchanged values ⇒ no aviso; stored 10.00 + incoming 0.01 on UNSHIPPED ⇒ divergence (a change, not a zero);
+    - **before approval**: PENDING items mirrored, including a removed line;
   - the models' BR sandbox orders (B2B `searchOrders` case + `getOrder 171-9876543-2109876`) as fixtures;
   - a migrated-pedido fixture with legacy item keys;
   - PENDING without PII ⇒ no cliente.
 
-  Captures C1 settle §1.2 items 1–4 before merge.
+  Captures C1 settle §1.2 items 1–4b before merge.
 - **Does NOT:** keep an order mirror; map the notification body; create produtos.
 
 ### Step 6: Payment → pagamento — PRE (same task as step 5)
 
 - **Wire:** `payment.paymentExecutions[]` (PAYMENT). **Id:** the same digest as the pedido.
-- **Mapping:** the §3 payment-form table; `valor` = the sum of the executions (reconciled against `proceeds.grandTotal`, which is what the seller receives); approved from UNSHIPPED; cancelled → the cancel/refund status. The D17 zero guard applies: a cancellation that zeroes the payment amount changes the status but keeps the stored `valor`.
+- **Mapping:** the §3 payment-form table; `valor` = the sum of the executions (reconciled against `proceeds.grandTotal`, which is what the seller receives); approved from UNSHIPPED; cancelled → the cancel/refund status. D17 applies: on a reversed sale (cancellation, return, refund) a zeroed payment amount changes the status but keeps the stored `valor`; on an approved order not yet shipped a changed amount is part of the blocking divergence.
 - **Does NOT:** record Amazon fees (Finances, P3) or installments (not exposed).
 - **Verification:** each `paymentMethod` with a fallback; card/Pix carry the acquirer CNPJ + authorization code into the NF-e payment group.
 
