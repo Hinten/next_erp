@@ -259,8 +259,13 @@ async function inspectTarget(target: Locator): Promise<ThemeReadabilityIssue[]> 
           const root = node.getRootNode();
           return node.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
         };
+        // Playwright resolves the locator and runs this in two round trips, and
+        // a detached node computes `opacity: ''`, which Number() reads as 0:
+        // check the connection before the walk and again on a zero it finds.
+        if (!element.isConnected) return 'detached' as const;
         for (let node: Element | null = element; node; node = parent(node)) {
-          if (Number(getComputedStyle(node).opacity) === 0) return 'zero-opacity' as const;
+          if (Number(getComputedStyle(node).opacity) === 0)
+            return element.isConnected ? ('zero-opacity' as const) : ('detached' as const);
         }
         // Playwright's notion of stable: the same box on consecutive frames.
         const deadline = performance.now() + 5_000;

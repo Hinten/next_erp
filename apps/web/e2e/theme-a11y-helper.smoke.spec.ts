@@ -1037,6 +1037,29 @@ test.describe('Theme readability checker re-measures a page that re-rendered mid
     expect(report.passes).toBe(2);
   });
 
+  test('re-runs the pass when the replacement lands inside the opacity walk', async ({ page }) => {
+    await fixture(page);
+    // A detached node computes `opacity: ''`, and Number('') is 0: without a
+    // connection check that reads as a zero-opacity finding, never retried.
+    await page.evaluate(() => {
+      const original = window.getComputedStyle.bind(window);
+      let pending = true;
+      window.getComputedStyle = (element: Element, pseudo?: string | null) => {
+        if (pending && element.id === 'copy') {
+          pending = false;
+          element.replaceWith(element.cloneNode(true));
+        }
+        return original(element, pseudo);
+      };
+    });
+    const report = await auditThemeReadability(page, {
+      scheme: 'light',
+      required: [page.locator('#copy')],
+    });
+    expect(report.issues).toEqual([]);
+    expect(report.passes).toBe(2);
+  });
+
   test('fails as unstable-dom, not a crash, when the page never stops replacing it', async ({
     page,
   }) => {
