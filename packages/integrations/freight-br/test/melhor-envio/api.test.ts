@@ -195,6 +195,12 @@ describe('createMelhorEnvioApi.listServices', () => {
     await expect(respondendo(texto).listServices()).resolves.toEqual([]);
   });
 
+  it('near-miss: estrito: false is the default read, not a strict one', async () => {
+    await expect(
+      respondendo('{"message":"em manutencao"}').listServices({ estrito: false }),
+    ).resolves.toEqual([]);
+  });
+
   it.each(NAO_LISTAS)('estrito refuses %s with a MelhorEnvioSchemaError', async (_caso, texto) => {
     const err = await respondendo(texto)
       .listServices({ estrito: true })
