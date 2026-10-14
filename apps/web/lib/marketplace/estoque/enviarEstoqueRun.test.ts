@@ -171,11 +171,13 @@ describe('enviarEstoqueParaMarketplaces', () => {
   ])('cancels the $posicao account and keeps completed rows', async ({ contaIds, cancelarEm }) => {
     const controller = new AbortController();
     const onProgress = vi.fn();
-    const lerIntegracoes = vi.fn().mockResolvedValue(
-      new Map(
-        contaIds.map((id) => [id, { nome: id, tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: true }]),
-      ),
-    );
+    const lerIntegracoes = vi
+      .fn()
+      .mockResolvedValue(
+        new Map(
+          contaIds.map((id) => [id, { nome: id, tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: true }]),
+        ),
+      );
     let avisarInicio!: () => void;
     const iniciado = new Promise<void>((resolve) => {
       avisarInicio = resolve;

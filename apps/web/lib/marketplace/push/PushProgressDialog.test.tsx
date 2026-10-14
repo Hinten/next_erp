@@ -155,9 +155,7 @@ describe('PushProgressDialog — cancellation', () => {
           db: {} as Firestore,
           deps: { mercadoLivre },
           lerIntegracoes: async () =>
-            new Map([
-              ['c1', { nome: 'Loja ML', tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: true }],
-            ]),
+            new Map([['c1', { nome: 'Loja ML', tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: true }]]),
           signal,
         },
         onProgress,
