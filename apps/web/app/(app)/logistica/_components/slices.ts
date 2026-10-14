@@ -11,14 +11,12 @@ import { INTEGRACAO_FRETE } from '@delfrance/schemas';
  * UI yet (marketplace freight is read-only for now); existing values survive
  * untouched because ObjectView only writes dirty fields.
  *
- * `contaMercadoLivreMercadoEnviosOuterRef` and `contaShopeeFreteOuterRef` are
- * excluded for a different reason: each is **server-owned** (its channel's
- * `onIntegracao…Changed` trigger keeps the freight doc in sync with its conta —
- * #782, #1528) and only ever set on its marketplace `tipo`, which has no slice
- * here at all. Since `intFreteSchema` is shared by all four slices and this
- * filter is an EXCLUDE-list, leaving one out would render it as an editable
- * text input on every screen below — `slices.test.ts` pins every back-ref
- * `VINCULO_INT_FRETE_CONTA` declares.
+ * `contaMercadoLivreMercadoEnviosOuterRef` is excluded for a different reason:
+ * it is **server-owned** (the `onIntegracaoMercadoLivreChanged` trigger keeps
+ * the ML freight doc in sync with its conta — #782) and only ever set on the
+ * `mercadoLivre` tipo, which has no slice here at all. Since `intFreteSchema`
+ * is shared by all four slices and this filter is an EXCLUDE-list, leaving it
+ * out would render it as an editable text input on every screen below.
  */
 export interface LogisticaSlice {
   /** Route segment under /logistica. */
@@ -42,7 +40,6 @@ export const SHARED_EXCLUDED = [
   'ultimaModificacao',
   'mapa',
   'contaMercadoLivreMercadoEnviosOuterRef',
-  'contaShopeeFreteOuterRef',
 ] as const;
 
 /** Tab names — `intFreteFields` assigns the special editors to them; every
