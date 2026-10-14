@@ -214,13 +214,39 @@ still be fixed. Only the context loader refuses those.
   (env whole, the importer from the seam table per run). `index.ts` exports only triggers:
   any other runtime export there reads as a Cloud Function name.
 
+## CI (step 3)
+
+- Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
+  of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;
+  `vitest.tasks.config.ts` (`pnpm test:tasks`) includes exactly those two. A file matching
+  neither glob runs in NO job. Both configs cover the nested `functions/` codebase, and
+  `eslint.config.mjs` lints the emulator suites (raw refs allowed in those two suffixes).
+- The emulator suites run only in `.github/workflows/ci-loja-integrada.yml`: ONE job,
+  `Loja Integrada Cloud Tasks round trip`, behind the pinnable `CI gate (loja-integrada)`.
+  No `ci.yml` exclusion, so a skipped lane loses only the round trip. Editing the workflow
+  → the `ci-lanes` skill.
+- The job: `prepare-deploy.mjs`, then `firebase emulators:exec --config
+  firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085/5004/9501;
+  that file sits ONE DOT from `firebase.loja-integrada.deploy.json`, the only one that
+  deploys), then `pnpm test:tasks`. Run it locally the same way (JDK 21) with
+  `FUNCTIONS_REGION` = `LOJA_INTEGRADA_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
+  `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `LOJA_INTEGRADA_CHAMADAS=off`.
+  A region mismatch is the silent drop of #1108: the poll times out instead of failing.
+- D17 holds in the lane through TWO layers. The job env sets `LOJA_INTEGRADA_CHAMADAS: 'off'`
+  (the functions emulator inherits it; the setup's fetch kill-switch reaches only the vitest
+  process), and `vitest.tasks.setup.ts` refuses to start when the shell has it `on` or an
+  artifact `.env*` file (selected by an anchored name, never a prefix) names it. A suite
+  must stop at the switch: this lane never turns it on, and a context past the switch is
+  not testable here.
+- A new `*.tasks.test.ts` / `*.firestore.test.ts` joins the same job and check name. Its
+  `beforeEach` wipes what it reads (one shared emulator, files run serially), and a drop
+  is proved by a LATER sentinel row, never by polling for an absence.
+- The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
+  `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, or that the
+  emulator honours `maxConcurrentDispatches`.
+
 ## Config
 
-- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`: emulator
-  suites need their own lane — **none exists yet** (planned for step 3), so the change
-  that adds the first such suite must add its lane too, or it runs nowhere while every
-  check stays green. `eslint.config.mjs` still lints them. Both already cover the nested
-  `functions/` codebase.
 - The Firestore database id is `default`: `lib/firebase/admin.ts` passes it explicitly.
   `ALLOWED_ADMIN_ORIGINS` is REQUIRED in production (see `apphosting.yaml`).
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.
