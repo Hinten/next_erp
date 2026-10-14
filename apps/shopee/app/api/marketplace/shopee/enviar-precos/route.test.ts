@@ -789,6 +789,69 @@ describe('(4) o envelope — R-12 a R-16', () => {
   });
 });
 
+/* --------------------------- K8 — the per-model label ---------------------- */
+
+describe('(4b) o rótulo por modelo — K8 (#1529)', () => {
+  const FILHO_SUMIDO = 'prod-1-g';
+
+  /** One envelope, three rows: two models of one listing and a no-model listing. */
+  function respostaComModelos(): EnvioPrecoResponse {
+    const linha = (variacaoProdutoId: string | null, anuncioId: string) => ({
+      produtoId: ANCORA,
+      produtoNome: 'Camiseta',
+      variacaoProdutoId,
+      anuncioId,
+      linkDocId: LINK,
+      outcome: 'enviado' as const,
+      motivo: null,
+      mensagem: 'ok',
+      preco: 15,
+      precoAnterior: 10,
+      variacoes: null,
+      codigo: null,
+    });
+    return {
+      canal: 'shopee',
+      integracaoId: INT,
+      contaNome: 'Loja teste',
+      solicitados: 1,
+      familias: 1,
+      resumo: { enviados: 3, pulados: 0, falhas: 0, naoTentados: 0 },
+      listings: [
+        linha(FILHO, String(ITEM_ID)),
+        linha(FILHO_SUMIDO, String(ITEM_ID)),
+        linha(null, String(ITEM_ID + 1)),
+      ],
+      produtosSemEnvio: [],
+      pausadoAte: null,
+    };
+  }
+
+  it('⚠️ (K8) uma linha de MODELO traz o nome e o sku do FILHO; uma sem modelo, ambos null; as chaves são as declaradas', async () => {
+    db.seed(`produtos/${ANCORA}`, { nome: 'Camiseta', sku: 'CAM', paiId: null });
+    db.seed(`produtos/${FILHO}`, { nome: 'Camiseta P', sku: 'CAM-P', paiId: ANCORA });
+    h.enviar.mockResolvedValue(respostaComModelos());
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { listings: Record<string, unknown>[] };
+    expect(body.listings.map((l) => [l.variacaoProdutoId, l.variacaoNome, l.variacaoSku])).toEqual([
+      [FILHO, 'Camiseta P', 'CAM-P'],
+      // A child gone between the run and the join reads blank, never a failure.
+      [FILHO_SUMIDO, null, null],
+      // No model ⇒ no child ⇒ no label — never the ANCHOR's name.
+      [null, null, null],
+    ]);
+    for (const l of body.listings) {
+      expect(Object.keys(l).sort()).toEqual([...CHAVES_DA_LISTAGEM_PRECO].sort());
+    }
+    // The join reads the CHILDREN, never the anchor every model shares.
+    expect(db.caminhos).toContain(`produtos/${FILHO}`);
+    expect(db.caminhos).not.toContain(`produtos/${ANCORA}`);
+  });
+});
+
 /* ------------------------------ R-17 … R-20 -------------------------------- */
 
 describe('(5) aborts e erros — R-17 a R-20', () => {

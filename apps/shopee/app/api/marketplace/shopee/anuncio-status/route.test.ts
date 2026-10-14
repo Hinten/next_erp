@@ -14,7 +14,7 @@ import {
   CODIGO_SELECAO_INVALIDA,
 } from '@/lib/shopee/anuncios/corpoPublicacao';
 import type { AnuncioStatusResponse } from '@/lib/shopee/anuncios/pausarAnuncio';
-import { FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
+import { type DocData, FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
 
 type ModuloPausar = typeof import('@/lib/shopee/anuncios/pausarAnuncio');
 
@@ -145,11 +145,42 @@ function respostaDouble(): AnuncioStatusResponse {
   } as unknown as AnuncioStatusResponse;
 }
 
+/** The same double as the price route suite: `getAll(...refs, { fieldMask })` with a real mask. */
+class FakeDbComLote extends FakeDb {
+  getAll(...args: unknown[]) {
+    const ultimo = args[args.length - 1];
+    const opcoes =
+      typeof ultimo === 'object' && ultimo !== null && 'fieldMask' in ultimo
+        ? (ultimo as { fieldMask: string[] })
+        : null;
+    const refs = (opcoes === null ? args : args.slice(0, -1)) as {
+      id: string;
+      get: () => Promise<{ exists: boolean; data: () => DocData | undefined }>;
+    }[];
+    return Promise.all(
+      refs.map(async (ref) => {
+        const snap = await ref.get();
+        const dados = snap.data();
+        return {
+          id: ref.id,
+          exists: snap.exists,
+          data: () => {
+            if (!snap.exists || dados === undefined || opcoes === null) return dados;
+            const saida: DocData = {};
+            for (const c of opcoes.fieldMask) if (Object.hasOwn(dados, c)) saida[c] = dados[c];
+            return saida;
+          },
+        };
+      }),
+    );
+  }
+}
+
 let db: FakeDb;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  db = new FakeDb();
+  db = new FakeDbComLote();
   h.db.atual = asDb(db);
   h.verifyIdToken.mockResolvedValue(ESCRITOR);
   h.loadCtx.mockResolvedValue(ctxDouble());

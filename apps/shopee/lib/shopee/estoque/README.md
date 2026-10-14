@@ -435,10 +435,10 @@ Three residuals of the manual path, recorded rather than fixed:
   producer today** — resolving a real band would need one `get_item_limit` per
   listing — so the `banda` clamp arm has never run outside a fixture and the
   plan's `banda` column reads `—`;
-- `produtoNome` costs **up to 50 document reads per manual request**, one per
-  requested id, in parallel and unmeasured. It is step 11's `nomeDoProduto`
-  precedent; a batched `getAll` would be one round trip, but the shared test
-  double has no such member;
+- the requested ids are resolved ONCE, by one masked `getAll`
+  (`core/anchors.ts`): a variation child is pushed through its anchor's listing
+  and reported under its own id when the anchor has none — the cross-channel
+  rule of `apps/web/lib/marketplace/estoque/types.ts`;
 - `enviarEstoqueManual.ts`'s `MENSAGEM_ENVIO_LIMPO` is the ONE sentence
   outside `MENSAGEM_POR_MOTIVO`, for `motivo === null` only — that map is a
   vocabulary of refusals plus one annotation and deliberately has no member for

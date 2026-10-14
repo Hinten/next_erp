@@ -21,7 +21,7 @@ import {
 } from '@delfrance/schemas';
 import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 
-import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { type DocData, FakeDb, asDb, increment } from '../testing/fakeDb';
 import {
   MOTIVO_STATUS_ANUNCIO,
   definirStatusAnunciosShopee,
@@ -53,6 +53,42 @@ const AGORA = 1_757_000_000_000;
 
 const PAUSAR = ACAO_STATUS_ANUNCIO.pausar;
 const REATIVAR = ACAO_STATUS_ANUNCIO.reativar;
+
+/**
+ * The shared double plus the ONE Admin-SDK read it does not model —
+ * `Firestore.getAll(...refs, { fieldMask })`, with a real mask — which the
+ * anchor resolution (`core/anchors.ts`) makes. Extended HERE (the price suites'
+ * rule), never in `testing/fakeDb.ts`.
+ */
+class FakeDbComLote extends FakeDb {
+  getAll(...args: unknown[]) {
+    const ultimo = args[args.length - 1];
+    const opcoes =
+      typeof ultimo === 'object' && ultimo !== null && 'fieldMask' in ultimo
+        ? (ultimo as { fieldMask: string[] })
+        : null;
+    const refs = (opcoes === null ? args : args.slice(0, -1)) as {
+      id: string;
+      get: () => Promise<{ exists: boolean; data: () => DocData | undefined }>;
+    }[];
+    return Promise.all(
+      refs.map(async (ref) => {
+        const snap = await ref.get();
+        const dados = snap.data();
+        return {
+          id: ref.id,
+          exists: snap.exists,
+          data: () => {
+            if (!snap.exists || dados === undefined || opcoes === null) return dados;
+            const saida: DocData = {};
+            for (const c of opcoes.fieldMask) if (Object.hasOwn(dados, c)) saida[c] = dados[c];
+            return saida;
+          },
+        };
+      }),
+    );
+  }
+}
 
 function caminhoDoLink(produtoId: string, linkId = 'link-1'): string {
   return `produtos/${produtoId}/prodshopee/${linkId}`;
@@ -243,7 +279,7 @@ afterEach(() => {
 
 describe('definirStatusAnunciosShopee — o lote', () => {
   it('uma seleção de 3 produtos gera UMA chamada unlist_item com os 3 item_id', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearTudo(db, PRODUTO_B, ITEM_B);
     semearTudo(db, PRODUTO_C, ITEM_C);
@@ -275,7 +311,7 @@ describe('definirStatusAnunciosShopee — o lote', () => {
   });
 
   it('um produtoId repetido é deduplicado antes de virar chamada', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => envelopeUnlist([ITEM_A]),
@@ -293,7 +329,7 @@ describe('definirStatusAnunciosShopee — o lote', () => {
   });
 
   it('⚠️ 51 produtos RECUSAM a requisição inteira — a seleção nunca é truncada', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     const muitos = Array.from(
       { length: SHOPEE_UNLIST_MAX_ITEMS + 1 },
       (_, i) => `prod-${String(i)}`,
@@ -313,7 +349,7 @@ describe('definirStatusAnunciosShopee — o lote', () => {
   });
 
   it('linkDocId com mais de um produtoId é recusado como bug de chamador', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     const fake = clienteFake();
     await expect(
       definirStatusAnunciosShopee(
@@ -331,7 +367,7 @@ describe('definirStatusAnunciosShopee — o lote', () => {
 
 describe('definirStatusAnunciosShopee — a releitura manda', () => {
   it('⚠️ o item_status escrito vem da RELEITURA, nunca do success_list.unlist', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     // A re-list whose echo says `unlist: true` and whose READ-BACK says NORMAL.
     semearTudo(db, PRODUTO_A, ITEM_A, ESTADO_ANUNCIO_SHOPEE.pausado);
     const fake = clienteFake({
@@ -365,7 +401,7 @@ describe('definirStatusAnunciosShopee — a releitura manda', () => {
     // NORMAL (elas são eventualmente consistentes), e o que se grava é o que se
     // LEU. Um `acao === pausar ? 'UNLIST' : 'NORMAL'` gravaria um estado que
     // ninguém observou.
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A, ESTADO_ANUNCIO_SHOPEE.ativo);
     const fake = clienteFake({
       unlist: () => envelopeUnlist([ITEM_A]),
@@ -395,7 +431,7 @@ describe('definirStatusAnunciosShopee — a releitura manda', () => {
   });
 
   it('a releitura é UMA chamada get_item_base_info com os ids aceitos, nunca get_item_list', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearTudo(db, PRODUTO_B, ITEM_B);
     const fake = clienteFake({
@@ -420,7 +456,7 @@ describe('definirStatusAnunciosShopee — a releitura manda', () => {
   });
 
   it('⚠️ um id aceito ausente da releitura é FALHA, e nada é escrito para ele', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearTudo(db, PRODUTO_B, ITEM_B);
     const fake = clienteFake({
@@ -446,7 +482,7 @@ describe('definirStatusAnunciosShopee — a releitura manda', () => {
   });
 
   it('⚠️ uma linha ILEGÍVEL (o sentinela null por linha) conta como ausente', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => envelopeUnlist([ITEM_A]),
@@ -460,7 +496,7 @@ describe('definirStatusAnunciosShopee — a releitura manda', () => {
   });
 
   it('⚠️ o patch de ciclo de vida é PLANO — mergeIfExists lança em objeto aninhado', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => envelopeUnlist([ITEM_A]),
@@ -495,7 +531,7 @@ describe('definirStatusAnunciosShopee — a releitura manda', () => {
 
 describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
   it('um produto sem link entra em produtosSemAnuncio e não custa chamada nenhuma', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearProduto(db, PRODUTO_A, 'Camiseta sem anúncio');
     const fake = clienteFake();
 
@@ -517,7 +553,7 @@ describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
     // L8: `link-1` é o anúncio comum que o kit substituiu — ainda vivo na Shopee
     // e lexicamente PRIMEIRO. "Pausar este produto" é pausar o que vende: o kit.
     // O resolvedor da PUBLICAÇÃO (léxico) escolheria `link-1`; pausar não usa ele.
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearProduto(db, PRODUTO_A, 'Kit convertido');
     semearLink(db, PRODUTO_A, ITEM_A, {
       estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
@@ -551,7 +587,7 @@ describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
   });
 
   it('um link de OUTRA conta não é alvo — o produto conta como sem anúncio', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearProduto(db, PRODUTO_A, 'Camiseta de outra conta');
     db.seed(caminhoDoLink(PRODUTO_A), {
       contaProdutoShopeeOuterRef: REF_OUTRA_CONTA,
@@ -614,7 +650,7 @@ describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
   it.each(PRE_CHECAGEM)(
     'um anúncio $motivo é PULADO antes da chamada',
     async ({ motivo, itemId, estado, acao }) => {
-      const db = new FakeDb();
+      const db = new FakeDbComLote();
       semearProduto(db, PRODUTO_A, 'Camiseta Básica');
       semearLink(db, PRODUTO_A, itemId, { estadoAnuncio: estado });
       const fake = clienteFake();
@@ -630,7 +666,7 @@ describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
   );
 
   it('⚠️ NEAR-MISS: estadoAnuncio null NÃO é pulado — vai para a Shopee', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearProduto(db, PRODUTO_A, 'Camiseta importada pelo passo 9');
     semearLink(db, PRODUTO_A, ITEM_A, { estadoAnuncio: null });
     const fake = clienteFake({
@@ -645,7 +681,7 @@ describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
   });
 
   it('pausadoPeloErp vira true num pausar bem-sucedido, e NÃO se move num pulado', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearProduto(db, PRODUTO_B, 'Já pausado');
     semearLink(db, PRODUTO_B, ITEM_B, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado });
@@ -665,7 +701,7 @@ describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
   });
 
   it('⚠️ uma FALHA não move pausadoPeloErp, mas grava o estado que acabou de ler', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () =>
@@ -692,7 +728,7 @@ describe('definirStatusAnunciosShopee — descoberta e pré-checagem', () => {
 
 describe('definirStatusAnunciosShopee — recusas por entrada', () => {
   it('todas as entradas recusadas ainda respondem 200 com os motivos como DADOS', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearTudo(db, PRODUTO_B, ITEM_B);
     const fake = clienteFake({
@@ -727,7 +763,7 @@ describe('definirStatusAnunciosShopee — recusas por entrada', () => {
   it.each(GRAFIAS_DE_PROMOCAO)(
     'as TRÊS grafias do bloqueio por promoção classificam igual (%s)',
     async (grafia) => {
-      const db = new FakeDb();
+      const db = new FakeDbComLote();
       semearTudo(db, PRODUTO_A, ITEM_A);
       const fake = clienteFake({
         unlist: () => envelopeUnlist([], [{ item_id: ITEM_A, failed_reason: grafia }]),
@@ -745,7 +781,7 @@ describe('definirStatusAnunciosShopee — recusas por entrada', () => {
   );
 
   it('⚠️ NEAR-MISS: uma quarta grafia inventada NÃO classifica — cai no verbatim', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const inventada = 'error_unlist_promotion_lock';
     const fake = clienteFake({
@@ -761,7 +797,7 @@ describe('definirStatusAnunciosShopee — recusas por entrada', () => {
   });
 
   it('uma frase que EMBUTE o token classifica — failed_reason é uma sentença', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () =>
@@ -783,7 +819,7 @@ describe('definirStatusAnunciosShopee — recusas por entrada', () => {
   });
 
   it('um error_param prefixado por "product." classifica como o bare', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearTudo(db, PRODUTO_B, ITEM_B);
     const fake = clienteFake({
@@ -809,7 +845,7 @@ describe('definirStatusAnunciosShopee — recusas por entrada', () => {
   });
 
   it('um anúncio banido que a pré-checagem não viu vem da Shopee como falha própria', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () =>
@@ -835,7 +871,7 @@ describe('definirStatusAnunciosShopee — recusas por entrada', () => {
   });
 
   it('uma recusa reconciliada POR item_id, nunca por posição', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearTudo(db, PRODUTO_B, ITEM_B);
     const fake = clienteFake({
@@ -873,7 +909,7 @@ describe('definirStatusAnunciosShopee — as duas portas', () => {
   });
 
   it("reativar recusado com error_set_normal_unlisted_item cai para update_item {item_status:'NORMAL'} — e só isso vai no corpo", async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A, ESTADO_ANUNCIO_SHOPEE.pausado);
     const fake = clienteFake({
       unlist: () =>
@@ -897,7 +933,7 @@ describe('definirStatusAnunciosShopee — as duas portas', () => {
   });
 
   it('⚠️ quando as DUAS portas recusam, a entrada é falha com o código real — nunca uma terceira tentativa', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A, ESTADO_ANUNCIO_SHOPEE.pausado);
     const fake = clienteFake({
       unlist: () =>
@@ -923,7 +959,7 @@ describe('definirStatusAnunciosShopee — as duas portas', () => {
   });
 
   it('⚠️ um bloqueio por promoção é TERMINAL — a segunda porta não é gasta', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A, ESTADO_ANUNCIO_SHOPEE.pausado);
     const fake = clienteFake({
       unlist: () =>
@@ -942,7 +978,7 @@ describe('definirStatusAnunciosShopee — as duas portas', () => {
   });
 
   it('um erro de ENVELOPE que classifica como error_set_normal_unlisted_item cai para a outra porta', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A, ESTADO_ANUNCIO_SHOPEE.pausado);
     const fake = clienteFake({
       unlist: () => {
@@ -963,7 +999,7 @@ describe('definirStatusAnunciosShopee — as duas portas', () => {
   });
 
   it('um erro de ENVELOPE que não classifica assim SOBE — nada é escrito', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => {
@@ -978,7 +1014,7 @@ describe('definirStatusAnunciosShopee — as duas portas', () => {
   });
 
   it('um pausar NUNCA abre a porta update_item', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () =>
@@ -1000,7 +1036,7 @@ describe('definirStatusAnunciosShopee — as duas portas', () => {
 
 describe('definirStatusAnunciosShopee — a escrita', () => {
   it('o merge é mergeIfExists — um link apagado no meio não é ressuscitado', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => envelopeUnlist([ITEM_A]),
@@ -1028,7 +1064,7 @@ describe('definirStatusAnunciosShopee — a escrita', () => {
 
 describe('definirStatusAnunciosShopee — cotas', () => {
   it('a cota DIÁRIA preenche pausadoAte e marca o resto como nao-tentado', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearTudo(db, PRODUTO_B, ITEM_B);
     const fake = clienteFake({
@@ -1052,7 +1088,7 @@ describe('definirStatusAnunciosShopee — cotas', () => {
   });
 
   it('⚠️ a RAJADA sobe — ela é um transitório, não uma cota', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => {
@@ -1067,7 +1103,7 @@ describe('definirStatusAnunciosShopee — cotas', () => {
   });
 
   it('a cota DIÁRIA na RELEITURA deixa a entrada em sem-leitura-apos, sem escrever', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => envelopeUnlist([ITEM_A]),
@@ -1126,7 +1162,7 @@ describe('definirStatusAnunciosShopee — o envelope', () => {
   ] as const;
 
   it('o envelope é byte-compatível com AnuncioStatusResponse', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => envelopeUnlist([ITEM_A]),
@@ -1148,7 +1184,7 @@ describe('definirStatusAnunciosShopee — o envelope', () => {
   });
 
   it('⚠️ membros é SEMPRE null — a Shopee não tem família de anúncio', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     semearProduto(db, PRODUTO_B, 'Já pausado');
     semearLink(db, PRODUTO_B, ITEM_B, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado });
@@ -1167,7 +1203,7 @@ describe('definirStatusAnunciosShopee — o envelope', () => {
   });
 
   it('o produtoNome vem do produto, e um nome em branco é ausência', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     db.seed(`produtos/${PRODUTO_A}`, { nome: '   ', paiId: null });
     semearLink(db, PRODUTO_A, ITEM_A, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
     const fake = clienteFake({
@@ -1181,7 +1217,7 @@ describe('definirStatusAnunciosShopee — o envelope', () => {
   });
 
   it('a mensagem de sucesso diz o que a Shopee CONFIRMOU, não o que foi pedido', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const fake = clienteFake({
       unlist: () => envelopeUnlist([ITEM_A]),
@@ -1196,7 +1232,7 @@ describe('definirStatusAnunciosShopee — o envelope', () => {
   });
 
   it('a linha de log carrega contagens e tokens, nunca a prosa da Shopee', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semearTudo(db, PRODUTO_A, ITEM_A);
     const prosa = 'error_unlist_in_promotion: a very chatty provider sentence';
     const fake = clienteFake({
@@ -1213,5 +1249,169 @@ describe('definirStatusAnunciosShopee — o envelope', () => {
       .join('|');
     expect(inteiro).not.toContain('chatty provider sentence');
     expect(linhas[0]?.[1]).toMatchObject({ integracaoId: INTEGRACAO, falhas: 1 });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  (#1529) a requested CHILD moves its ANCHOR's listing — T1–T3               */
+/* -------------------------------------------------------------------------- */
+
+describe('definirStatusAnunciosShopee — um FILHO pedido resolve na âncora (#1529, T1–T3)', () => {
+  const FILHO_A = 'prod-a-p';
+
+  function semearFilho(db: FakeDb, paiId: string = PRODUTO_A): void {
+    db.seed(`produtos/${FILHO_A}`, { nome: 'Camiseta P', paiId });
+  }
+
+  it('⚠️ (T1) [filho] ⇒ o anúncio VIVO da âncora é movido, e a linha nomeia a ÂNCORA', async () => {
+    const db = new FakeDbComLote();
+    semearTudo(db, PRODUTO_A, ITEM_A);
+    semearFilho(db);
+    const fake = clienteFake({
+      unlist: () => envelopeUnlist([ITEM_A]),
+      base: () => releitura([linhaBase(ITEM_A, { item_status: SHOPEE_ITEM_STATUS.unlist })]),
+    });
+
+    const res = await definirStatusAnunciosShopee(
+      asDb(db),
+      entrada({ produtoIds: [FILHO_A] }),
+      deps(fake.client),
+    );
+
+    expect(fake.unlists[0]?.item_list).toEqual([{ item_id: ITEM_A, unlist: true }]);
+    expect(res.listings.map((l) => [l.produtoId, l.outcome])).toEqual([[PRODUTO_A, 'enviado']]);
+    expect(res.produtosSemAnuncio).toEqual([]);
+    expect(patchesDoLink(db, PRODUTO_A)).toHaveLength(1);
+    expect(res.solicitados).toBe(1);
+    expect(res.familias).toBe(1);
+  });
+
+  it('⚠️ (T2) [filho, âncora] ⇒ UMA entrada no unlist_item — o anúncio é movido uma vez', async () => {
+    const db = new FakeDbComLote();
+    semearTudo(db, PRODUTO_A, ITEM_A);
+    semearFilho(db);
+    const fake = clienteFake({
+      unlist: () => envelopeUnlist([ITEM_A]),
+      base: () => releitura([linhaBase(ITEM_A, { item_status: SHOPEE_ITEM_STATUS.unlist })]),
+    });
+
+    const res = await definirStatusAnunciosShopee(
+      asDb(db),
+      entrada({ produtoIds: [FILHO_A, PRODUTO_A] }),
+      deps(fake.client),
+    );
+
+    expect(fake.unlists).toHaveLength(1);
+    expect(fake.unlists[0]?.item_list).toEqual([{ item_id: ITEM_A, unlist: true }]);
+    expect(res.listings).toHaveLength(1);
+    // The row is the ANCHOR's, with the anchor's own name — never the child's.
+    expect(res.listings[0]).toMatchObject({ produtoId: PRODUTO_A, produtoNome: 'Produto prod-a' });
+    expect(patchesDoLink(db, PRODUTO_A)).toHaveLength(1);
+    expect(res.solicitados).toBe(2);
+    expect(res.familias).toBe(1);
+  });
+
+  it('⚠️ (T3) [filho] + o linkDocId de um anúncio da ÂNCORA ⇒ ESSE anúncio', async () => {
+    const db = new FakeDbComLote();
+    semearTudo(db, PRODUTO_A, ITEM_A);
+    semearLink(
+      db,
+      PRODUTO_A,
+      ITEM_B,
+      { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo, item_status: SHOPEE_ITEM_STATUS.normal },
+      'link-2',
+    );
+    semearFilho(db);
+    const fake = clienteFake({
+      unlist: () => envelopeUnlist([ITEM_B]),
+      base: () => releitura([linhaBase(ITEM_B, { item_status: SHOPEE_ITEM_STATUS.unlist })]),
+    });
+
+    const res = await definirStatusAnunciosShopee(
+      asDb(db),
+      entrada({ produtoIds: [FILHO_A], linkDocId: 'link-2' }),
+      deps(fake.client),
+    );
+
+    expect(fake.unlists[0]?.item_list).toEqual([{ item_id: ITEM_B, unlist: true }]);
+    expect(linhaDe(res, PRODUTO_A).linkDocId).toBe('link-2');
+    expect(patchesDoLink(db, PRODUTO_A, 'link-1')).toEqual([]);
+  });
+
+  it('⚠️ (T3) QUASE-PAR: [filho] + um linkDocId que NÃO é da âncora (mesmo que exista sob o filho) ⇒ sem-anuncio nomeando o FILHO', async () => {
+    const db = new FakeDbComLote();
+    semearTudo(db, PRODUTO_A, ITEM_A);
+    semearFilho(db);
+    // A live link under the CHILD's own subcollection: narrowing on the
+    // requested id instead of its anchor would find — and move — this one.
+    semearLink(
+      db,
+      FILHO_A,
+      ITEM_C,
+      { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo, item_status: SHOPEE_ITEM_STATUS.normal },
+      'link-do-filho',
+    );
+    const fake = clienteFake();
+
+    const res = await definirStatusAnunciosShopee(
+      asDb(db),
+      entrada({ produtoIds: [FILHO_A], linkDocId: 'link-do-filho' }),
+      deps(fake.client),
+    );
+
+    expect(fake.ops).toEqual([]);
+    expect(res.listings).toEqual([]);
+    expect(res.produtosSemAnuncio).toEqual([
+      {
+        produtoId: FILHO_A,
+        produtoNome: 'Camiseta P',
+        motivo: MOTIVO_STATUS_ANUNCIO.semAnuncio,
+        mensagem: 'Anúncio não encontrado neste produto para esta conta Shopee.',
+      },
+    ]);
+  });
+
+  it('[filho] cuja âncora não tem anúncio nesta conta ⇒ sem-anuncio nomeia o FILHO, sem nenhuma chamada', async () => {
+    const db = new FakeDbComLote();
+    semearProduto(db, PRODUTO_A, 'Camiseta sem anúncio');
+    semearFilho(db);
+    const fake = clienteFake();
+
+    const res = await definirStatusAnunciosShopee(
+      asDb(db),
+      entrada({ produtoIds: [PRODUTO_A, FILHO_A] }),
+      deps(fake.client),
+    );
+
+    expect(fake.ops).toEqual([]);
+    expect(res.produtosSemAnuncio.map((p) => [p.produtoId, p.produtoNome])).toEqual([
+      [PRODUTO_A, 'Camiseta sem anúncio'],
+      [FILHO_A, 'Camiseta P'],
+    ]);
+  });
+
+  it('um id sem documento é sem-anuncio, com nome null, e não custa chamada', async () => {
+    const db = new FakeDbComLote();
+    semearTudo(db, PRODUTO_A, ITEM_A);
+    const fake = clienteFake({
+      unlist: () => envelopeUnlist([ITEM_A]),
+      base: () => releitura([linhaBase(ITEM_A, { item_status: SHOPEE_ITEM_STATUS.unlist })]),
+    });
+
+    const res = await definirStatusAnunciosShopee(
+      asDb(db),
+      entrada({ produtoIds: ['prod-fantasma', PRODUTO_A] }),
+      deps(fake.client),
+    );
+
+    expect(res.produtosSemAnuncio).toEqual([
+      {
+        produtoId: 'prod-fantasma',
+        produtoNome: null,
+        motivo: MOTIVO_STATUS_ANUNCIO.semAnuncio,
+        mensagem: expect.stringContaining('não tem anúncio') as unknown as string,
+      },
+    ]);
+    expect(fake.unlists[0]?.item_list).toEqual([{ item_id: ITEM_A, unlist: true }]);
   });
 });
