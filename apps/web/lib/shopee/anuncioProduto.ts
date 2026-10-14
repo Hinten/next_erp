@@ -13,14 +13,25 @@
  * Total over `unknown`: a soft-read hands the tab the RAW link document when it
  * does not parse (a migrated row, a half-written one), so nothing here assumes
  * a field is typed.
+ *
+ * The second half (PR 7) is the COPY of the tab's actions: what a refused
+ * publish's machine-readable next step reads as ({@link TEXTO_ACAO_SUGERIDA},
+ * {@link textoDoProblemaShopee}) and what a re-verify says it found
+ * ({@link resumoDaReverificacaoShopee}). ⚠️ None of it is ever a command line:
+ * the server's refusal sentences are written for the CLI (`--link`,
+ * `--recriar`, `importar:anuncio`), and the operator here has buttons.
  */
 import {
   FUSO_FISCAL,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   anuncioShopeeVivo,
   ehVinculoSubstituido,
   estadoAnuncioShopeeSchema,
   type EstadoAnuncioShopee,
+  type TipoAcaoSugeridaPublicacaoShopee,
 } from '@delfrance/schemas';
+
+import type { ProblemaShopee, RespostaReverificarShopee } from './wire';
 
 /**
  * The Brazilian storefront's product page. The legacy app built the same URL
@@ -153,4 +164,166 @@ export function ordenarVinculosShopee<
     }
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                      PR 7 — the copy of the tab's actions                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What a DRAFT link (`item_id: null`) shows where "Publicar" would be. A first
+ * publish is NOT offered in step 21: the item arm has no duplicate guard (its
+ * first write-back lands only after `add_item` answers), so a network error on
+ * one would invite a second listing — and the draft link itself belongs to the
+ * listing-authoring step that follows (#1911).
+ */
+export const FRASE_PRIMEIRA_PUBLICACAO_SHOPEE =
+  'Primeira publicação: chega na etapa de autoria do anúncio.';
+
+/**
+ * What the operator READS for each machine-readable next step of a refused
+ * publish (`problemas[].acao`, `@delfrance/schemas`' `shopeeAcaoSugerida.ts`).
+ * Exhaustive by type: a `tipo` added to that vocabulary breaks the build here
+ * until it has a sentence. {@link textoDoProblemaShopee} appends the ids the
+ * `acao` carries.
+ *
+ * ⚠️ `importar` is worded as a CONDITION, never a promise. The mass import
+ * (`apps/shopee/lib/shopee/produtos/importacaoMassa.ts`) imports only the
+ * listings NO link names — a kit already bound to another produto is skipped —
+ * and its parent cascade (`resolveProduto.ts`) binds a kit to the ONE root
+ * produto whose `sku` equals the kit's: two such produtos decline that rung and
+ * the import CREATES a new produto instead. A kit whose components the ERP
+ * cannot resolve yet is refused (`kit-componente-nao-vinculado`) until a later
+ * run. The web has no single-listing import (no `ShopeeClient` method calls
+ * `…/importar`), so the mass import is the only door the sentence can name.
+ */
+export const TEXTO_ACAO_SUGERIDA = {
+  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar]:
+    'Este kit nativo precisa ser recriado na Shopee: o anúncio atual não pode mais ser publicado.',
+  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar]:
+    'Republique o anúncio que responde por este produto, sem as opções de kit.',
+  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit]:
+    'Republique sem as opções de kit nativo — elas não se aplicam a este anúncio agora.',
+  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal]:
+    'Informe qual componente é o principal do kit nativo.',
+  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar]:
+    'Já existe na Shopee um kit com o SKU deste produto — não crie outro. A importação em ' +
+    'massa (Canais › Shopee) o vincula a este produto se ele ainda não estiver vinculado a ' +
+    'nenhum produto, se nenhum outro produto tiver o mesmo SKU e se os componentes do kit já ' +
+    'estiverem vinculados no ERP; um kit já vinculado a outro produto continua onde está.',
+  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo]:
+    'Mais de um vínculo ativo responde por este produto nesta conta — escolha em qual agir: ' +
+    'cada um tem o seu próprio bloco nesta aba.',
+} as const satisfies Record<TipoAcaoSugeridaPublicacaoShopee, string>;
+
+/**
+ * A `republicar` that names no link: the refusal knew no successor. Never a
+ * button — a publish naming no link can reach a FIRST create, which this step
+ * does not offer.
+ */
+const FRASE_REPUBLICAR_SEM_VINCULO =
+  'O vínculo não foi indicado: use "Republicar" no bloco do anúncio ativo desta conta.';
+
+/**
+ * A sentence written for a TERMINAL: a `--flag`, a `<verbo>:anuncio` script
+ * name, or the word "comando". The server-side pin (`exigirAcaoSeHaComando` in
+ * the kit suites) guarantees such a refusal also carries an `acao`; this is the
+ * browser's own backstop for one that does not (the `instabilidade-shopee`
+ * refusal tells the CLI to run "o mesmo comando" again).
+ */
+const FRASE_DE_TERMINAL = /(^|\s)--[a-z]|:anuncio\b|\bcomandos?\b/i;
+
+/** Whether `texto` is CLI copy the tab must not show (see {@link FRASE_DE_TERMINAL}). */
+export function ehFraseDeTerminal(texto: string): boolean {
+  return FRASE_DE_TERMINAL.test(texto);
+}
+
+/** What stands in for a refusal sentence written for the terminal. */
+export const FRASE_RECUSA_SEM_PASSO_SHOPEE =
+  'Esta recusa não traz um próximo passo que a aba ofereça. Use "Reverificar" para ler o ' +
+  'anúncio na Shopee antes de publicar de novo.';
+
+/**
+ * The operator copy of ONE refusal row of a 422.
+ *
+ *  - WITH an `acao`: {@link TEXTO_ACAO_SUGERIDA} plus the ids the `acao` names.
+ *    ⚠️ The server's `mensagem` is NEVER shown for such a row — it is the CLI's
+ *    sentence, and the next step it describes is a button here.
+ *  - Without one (the step-11 refusals, mechanism sentences): the `mensagem` —
+ *    unless it reads as a terminal instruction, which becomes
+ *    {@link FRASE_RECUSA_SEM_PASSO_SHOPEE}.
+ */
+export function textoDoProblemaShopee(p: Pick<ProblemaShopee, 'mensagem' | 'acao'>): string {
+  const { acao } = p;
+  if (acao === null) {
+    return ehFraseDeTerminal(p.mensagem) ? FRASE_RECUSA_SEM_PASSO_SHOPEE : p.mensagem;
+  }
+  const base = TEXTO_ACAO_SUGERIDA[acao.tipo];
+  switch (acao.tipo) {
+    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar:
+      return `${base} Vínculo: ${acao.linkDocId}.`;
+    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar:
+      return acao.linkDocId === null
+        ? `${base} ${FRASE_REPUBLICAR_SEM_VINCULO}`
+        : `${base} Vínculo: ${acao.linkDocId}.`;
+    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar:
+      return `${base} Anúncio(s) na Shopee: ${acao.itemIds.map(String).join(', ')}.`;
+    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo:
+      return `${base} Vínculos: ${acao.linkDocIds.join(', ')}.`;
+    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit:
+    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal:
+      return base;
+  }
+}
+
+/** The toast a re-verify answers with: what the ERP did with Shopee's reading. */
+export interface ResumoDaReverificacaoShopee {
+  readonly cor: string;
+  readonly titulo: string;
+  readonly mensagem: string;
+}
+
+/**
+ * The re-verify's toast, keyed on the route's `acao` — a FREE string on the
+ * wire, so a value this build does not know gets the neutral sentence, never a
+ * crash. The title names the state the ERP now holds.
+ */
+export function resumoDaReverificacaoShopee(
+  r: RespostaReverificarShopee,
+): ResumoDaReverificacaoShopee {
+  const titulo = `Anúncio reverificado — ${ROTULO_ESTADO_ANUNCIO_SHOPEE[r.estadoAnuncio]}`;
+  let cor: string;
+  let frase: string;
+  switch (r.acao) {
+    case 'atualizado':
+      cor = 'green';
+      frase = 'O ERP atualizou o anúncio com o que a Shopee informa agora.';
+      break;
+    case 'ignorado-sem-mudanca':
+      cor = 'blue';
+      frase = 'Nada mudou desde a última leitura.';
+      break;
+    case 'removido':
+      cor = 'orange';
+      frase = 'A Shopee não tem mais este anúncio — o vínculo foi marcado como removido.';
+      break;
+    default:
+      cor = 'blue';
+      frase = 'A Shopee respondeu à reverificação.';
+  }
+  const extras = [
+    r.deboost ? 'Ele está rebaixado na busca.' : null,
+    r.violacoesLidas
+      ? null
+      : 'As violações não puderam ser lidas agora — as mostradas são as guardadas.',
+    r.modelos !== null && r.modelos.ausentes > 0
+      ? `${String(r.modelos.ausentes)} variação(ões) não estão mais na Shopee.`
+      : null,
+    r.avisoReceitaKit === 'resolvido'
+      ? 'O aviso de composição do kit foi resolvido.'
+      : r.avisoReceitaKit === 'aberto'
+        ? 'O aviso de composição do kit continua aberto.'
+        : null,
+  ].filter((t): t is string => t !== null);
+  return { cor, titulo, mensagem: [frase, ...extras].join(' ') };
 }

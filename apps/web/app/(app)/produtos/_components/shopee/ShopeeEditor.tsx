@@ -3,9 +3,19 @@
 import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import type { Firestore } from 'firebase/firestore';
-import { Alert, Anchor, Badge, Group, Loader, Stack, Text } from '@mantine/core';
+import { useQueryClient } from '@tanstack/react-query';
+import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Stack, Text } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
-import { INTEGRACAO_TIPO, idDoRef, idFromRef, vinculoShopeeEhDaConta } from '@delfrance/schemas';
+import { parseIsoToMillis } from '@delfrance/core/datetime';
+import {
+  ACAO_STATUS_ANUNCIO,
+  INTEGRACAO_TIPO,
+  idDoRef,
+  idFromRef,
+  vinculoShopeeEhDaConta,
+  type AcaoStatusAnuncio,
+} from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 
@@ -14,28 +24,39 @@ import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoShopeeLinkCollection } from '@/lib/data/produtoShopeeLinkCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
+import { formatarInstanteShopee, resumoDaReverificacaoShopee } from '@/lib/shopee/anuncioProduto';
+import {
+  ShopeeClientHttpError,
+  ShopeeClientNetworkError,
+  useShopeeClient,
+  type ShopeeClient,
+} from '@/lib/shopee/client';
+import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee } from '@/lib/shopee/erros';
 import { ContaTabs, type ContaTabItem } from '../marketplace/ContaTabs';
+import type { AcaoDoAnuncioShopee, AcoesShopee } from './AcoesAnuncioShopee';
 import {
   ContaShopeePanel,
   type ContaShopee,
   type TabelaMedidasDoProduto,
   type VinculoShopee,
 } from './ContaShopeePanel';
+import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
 import { textoPreenchido } from './campos';
 
 /**
  * The produto editor's **Shopee** tab (step 21-3, #1529): one tab per Shopee
  * conta, each holding every listing that conta has on this produto — its state,
  * the refusals Shopee or the ERP stored on it, the violations, the size chart a
- * publish would send, the storefront link and, on demand, its models.
+ * publish would send, the storefront link, on demand its models, and the
+ * actions on it: pause / reactivate, re-verify, republish.
  *
- * READ-ONLY. Every listing document is written by apps/shopee — publish, the
- * import, the stock and price senders, pause/re-list, the re-verify and the
+ * NO CLIENT WRITE. Every listing document is written by apps/shopee — publish,
+ * the import, the stock and price senders, pause/re-list, the re-verify and the
  * listing pushes — so the link docs are read LIVE: the tab repaints from the
- * same snapshot those writers land in. Nothing here writes a link, and the
- * actions on a listing (pause, re-verify, republish, the native-kit arms) call
- * the apps/shopee routes, never the registry rows, which stay shadowed until
- * the step-22 flip (#1530, decision D1).
+ * same snapshot those writers land in. An action here calls the apps/shopee
+ * route DIRECTLY (`useShopeeClient`), never the registry rows, which stay
+ * shadowed until the step-22 flip (#1530, decision D1). One write from this
+ * tab at a time: every write button is disabled while one is in flight.
  *
  * ## Which conta a link belongs to
  *
@@ -56,9 +77,10 @@ import { textoPreenchido } from './campos';
  *    so a re-show never unmounts `ContaTabs` — which would lose the selected
  *    conta — or the listing blocks.
  *  - **R2 — every piece of UI state lives HERE, keyed by link doc id**
- *    (`modelosAbertos` today), never inside a block: React keeps a hidden
- *    Activity's state, and one map at the top survives anything a child's
- *    remount could throw away.
+ *    (`modelosAbertos`, `desfechos`, the write in flight, the pause being
+ *    confirmed), never inside a block: React keeps a hidden Activity's state,
+ *    and one map at the top survives anything a child's remount could throw
+ *    away — an in-flight handler's `setState` lands here normally.
  */
 
 /** How many Shopee contas the tab strip shows — the `/medidas` Shopee tab's bound. */
@@ -82,11 +104,69 @@ const CHAVE_SEM_CONTA = '__sem_conta__';
 export interface ShopeeEditorProps {
   produtoId: string;
   db: Firestore;
-  /** The produto form is read-only. Nothing in the tab writes yet; the actions will honour it. */
+  /** The produto form is read-only: every action button is disabled. */
   disabled?: boolean;
 }
 
-export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
+/** The pause being confirmed: a pause stops a live sale, so it is asked first. */
+interface AlvoDaPausa {
+  readonly contaId: string;
+  readonly linkDocId: string;
+}
+
+/** A link that is not (or no longer) this conta's — the 404s of publish and re-verify. */
+const MENSAGEM_VINCULO_FORA_DA_CONTA =
+  'Este vínculo não pertence mais a esta conta — a lista foi atualizada.';
+
+/**
+ * A failed action, worded for the operator. The publish 422s keep their rows
+ * (each with its `acao`); the link-addressing codes get the tab's own sentence;
+ * everything else is `descreverFalhaShopee`, the channel's one ladder.
+ */
+function desfechoDaFalha(
+  err: ShopeeClientHttpError | ShopeeClientNetworkError,
+): DesfechoAcaoShopee {
+  if (err instanceof ShopeeClientHttpError) {
+    const { code, detalhes } = err;
+    if (
+      code === CODIGO_FALHA_SHOPEE.publicacaoBloqueada ||
+      code === CODIGO_FALHA_SHOPEE.publicacaoRecusada
+    ) {
+      return {
+        tipo: 'recusado',
+        antesDaShopee: code === CODIGO_FALHA_SHOPEE.publicacaoBloqueada,
+        etapa: detalhes.etapa,
+        problemas: detalhes.problemas ?? [],
+        mensagem: err.message,
+      };
+    }
+    if (
+      code === CODIGO_FALHA_SHOPEE.anuncioNaoEncontrado ||
+      code === CODIGO_FALHA_SHOPEE.anuncioSemVinculo
+    ) {
+      return { tipo: 'falha', mensagem: MENSAGEM_VINCULO_FORA_DA_CONTA };
+    }
+    if (code === CODIGO_FALHA_SHOPEE.anuncioNaoPublicado) {
+      return { tipo: 'falha', mensagem: 'Este vínculo ainda não foi publicado na Shopee.' };
+    }
+    if (code === CODIGO_FALHA_SHOPEE.contaPausada) {
+      const ms = detalhes.pausadoAte === null ? null : parseIsoToMillis(detalhes.pausadoAte);
+      const ate = ms === null ? null : formatarInstanteShopee(ms);
+      return {
+        tipo: 'falha',
+        mensagem:
+          'A cota diária da Shopee desta conta se esgotou' +
+          (ate === null ? '.' : ` — até ${ate}.`),
+      };
+    }
+  }
+  return {
+    tipo: 'falha',
+    mensagem: descreverFalhaShopee(err, { desconhecido: 'Falha ao falar com a Shopee.' }).mensagem,
+  };
+}
+
+export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   // `integracao` is integracao.read-protected while the links follow the
   // produto's permissions, so the contas query is gated on the bit — without
   // it Firestore would answer a raw permission-denied. `loading` first: the
@@ -166,6 +246,116 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
   // time half expires while the tab is open reads as armed until the next
   // open, which is the cheap direction for a notice.
   const [agoraMs] = useState(() => Date.now());
+
+  // ---- The actions (PR 7). Every route below is `integracao.write`. --------
+  const { allowed: podeEscrever, loading: escritaCarregando } = usePermission(
+    PERM.integracao.write,
+  );
+  const client = useShopeeClient();
+  const queryClient = useQueryClient();
+  // R2: the write in flight, each link's last outcome and the pause being
+  // confirmed — all here, never inside a block.
+  const [emVoo, setEmVoo] = useState<AcoesShopee['emVoo']>(null);
+  const [desfechos, setDesfechos] = useState<ReadonlyMap<string, DesfechoAcaoShopee>>(
+    () => new Map(),
+  );
+  const [alvoDaPausa, setAlvoDaPausa] = useState<AlvoDaPausa | null>(null);
+
+  const registrarDesfecho = useCallback((linkDocId: string, d: DesfechoAcaoShopee | null) => {
+    setDesfechos((prev) => {
+      const next = new Map(prev);
+      if (d === null) next.delete(linkDocId);
+      else next.set(linkDocId, d);
+      return next;
+    });
+  }, []);
+
+  /**
+   * Run ONE write on ONE link: clear its last outcome, hold the in-flight flag
+   * (every write button is disabled while it is set), record what came back.
+   * A failure is narrowed by the client's two classes and becomes the link's
+   * outcome; anything else is not ours and rethrows (root rule 6).
+   */
+  async function executar(
+    linkDocId: string,
+    acao: AcaoDoAnuncioShopee,
+    tarefa: (c: ShopeeClient) => Promise<DesfechoAcaoShopee | null>,
+  ) {
+    if (client === null || emVoo !== null) return;
+    setEmVoo({ linkDocId, acao });
+    registrarDesfecho(linkDocId, null);
+    try {
+      registrarDesfecho(linkDocId, await tarefa(client));
+    } catch (err) {
+      if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
+        registrarDesfecho(linkDocId, desfechoDaFalha(err));
+        return;
+      }
+      throw err;
+    } finally {
+      setEmVoo(null);
+    }
+  }
+
+  /** Each listing's models are re-read after a write that can change them (the prefix of every key). */
+  function invalidarModelos() {
+    void queryClient.invalidateQueries({ queryKey: ['shopee-modelos', produtoId] });
+  }
+
+  /**
+   * Pause or reactivate ONE listing — the link is NAMED, so a produto holding
+   * several listings on the conta moves only this one. 200 even when Shopee
+   * refused it: the run's own per-listing sentence becomes the outcome.
+   */
+  function definirStatus(contaId: string, linkDocId: string, acao: AcaoStatusAnuncio) {
+    void executar(linkDocId, acao, async (c) => ({
+      tipo: 'status',
+      resposta: await c.definirStatusAnuncios({
+        integracaoId: contaId,
+        produtoIds: [produtoId],
+        acao,
+        linkDocId,
+      }),
+    }));
+  }
+
+  /** Re-read ONE listing from Shopee. The toast says what the ERP did; the snapshot repaints the rest. */
+  function reverificar(contaId: string, linkDocId: string) {
+    void executar(linkDocId, 'reverificar', async (c) => {
+      const resposta = await c.reverificarAnuncio({ integracaoId: contaId, produtoId, linkDocId });
+      const resumo = resumoDaReverificacaoShopee(resposta);
+      notifications.show({ color: resumo.cor, title: resumo.titulo, message: resumo.mensagem });
+      invalidarModelos();
+      return null;
+    });
+  }
+
+  /**
+   * Republish an EXISTING link, named — with no kit option, ever: a plain
+   * republish never reaches a create arm, so the uncertain-create rules do not
+   * apply to it.
+   */
+  function republicar(contaId: string, linkDocId: string) {
+    void executar(linkDocId, 'publicar', async (c) => {
+      const resposta = await c.publicar({ integracaoId: contaId, produtoId, linkDocId });
+      invalidarModelos();
+      return { tipo: 'publicado', resposta };
+    });
+  }
+
+  const acoes: AcoesShopee = {
+    permitidas: !escritaCarregando && podeEscrever,
+    bloqueadas: disabled === true || client === null || emVoo !== null,
+    emVoo,
+    desfechoDe: (linkDocId) => desfechos.get(linkDocId) ?? null,
+    pedirPausa: (contaId, linkDocId) => setAlvoDaPausa({ contaId, linkDocId }),
+    reativar: (contaId, linkDocId) =>
+      definirStatus(contaId, linkDocId, ACAO_STATUS_ANUNCIO.reativar),
+    reverificar,
+    republicar,
+  };
+  /** A tab built from a link's conta ref alone names no conta the operator can act on. */
+  const semAcoes: AcoesShopee = { ...acoes, permitidas: false };
 
   /** The contas, by name — a client-side sort over ≤ `MAX_CONTAS` rows leaves the live query untouched. */
   const contas = useMemo<ContaShopee[]>(
@@ -325,10 +515,48 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
               agoraMs={agoraMs}
               modelosAbertos={modelosAbertos}
               onAlternarModelos={alternarModelos}
+              acoes={aba.conta.encontrada ? acoes : semAcoes}
             />
           );
         }}
       />
+      {/* A pause stops a live sale, so it is confirmed. It is immediate on
+          confirm and never staged behind the produto's save: the write is not
+          the form's — it is Shopee's, through apps/shopee. */}
+      <Modal
+        opened={alvoDaPausa !== null}
+        onClose={() => setAlvoDaPausa(null)}
+        title="Pausar anúncio"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            O anúncio deixa de vender na Shopee até ser reativado. Na Shopee o anúncio é a família
+            inteira: todas as variações dele param juntas.
+          </Text>
+          <Group justify="flex-end" gap="sm">
+            <Button type="button" variant="default" onClick={() => setAlvoDaPausa(null)}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              color="orange"
+              disabled={acoes.bloqueadas}
+              onClick={() => {
+                if (alvoDaPausa === null) return;
+                setAlvoDaPausa(null);
+                definirStatus(
+                  alvoDaPausa.contaId,
+                  alvoDaPausa.linkDocId,
+                  ACAO_STATUS_ANUNCIO.pausar,
+                );
+              }}
+            >
+              Pausar
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Stack>
   );
 }
