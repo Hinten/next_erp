@@ -240,6 +240,7 @@ A gap investigation then read every changelog entry and every docs page for Easy
 | D15 | **Execution:** every step gets a Phase-3 step plan that Lucas approves before code is written; stacked draft PRs. | §4.25. |
 | D16 | **All AWS-side code lives in this repository, in TypeScript, in a dedicated folder** (Lucas, 2026-10-14: nothing may again exist only in the AWS console, as the old forwarder did). The relay is an **AWS CDK v2 app in TypeScript** at `infra/amazon-relay/`: a workspace package that is typechecked, linted and tested (`aws-cdk-lib/assertions`) like any other. No account id, ARN, URL or secret value is in the code; they arrive as deploy-time context or from Secrets Manager. Agents never deploy it; the owner runs `cdk deploy` in the window (W2). | Step 3; W2. |
 | D17 | **Cancellation zero guard.** When an order is cancelled, Amazon sends item values and quantities as **0** **[operator]**, which the models do not document. An incoming 0 (or absent) quantity or money value **never overwrites a stored value > 0**; the stored value is kept. The estado still moves to `cancelado`, and the reservation is released with the stored quantity. A real non-zero change still wins. | Steps 5–6; §3. |
+| D18 | **⏸ Listings discussion gate.** The legacy listing flows have several known problems that Lucas will describe in person. Before the Phase-3 plan of **any listing step** is written, Lucas walks through those problems and we agree on the best way forward. That covers the pre-cutover link (steps 9 + 9b) and every listing part after the cutover (steps 10, 11, P1, the P3 import mode), plus the link-doc census W11. Everything this plan says about listings is a starting point, not a decision, until that discussion has happened. | Steps 9, 9b, 10, 11, P1, P3; W11; §7. |
 
 **Orchestrator calls (vetoable, one line each):**
 - **Stock:** sale-driven deltas are `patchListingsItem` merges per SKU while a flush holds fewer than 1,500 SKUs; anything bigger (the daily reconcile's drift, an operator "send all", the window's first push) is one `JSON_LISTINGS_FEED` with a submission record (step 12a).
@@ -633,6 +634,8 @@ Amazon cancels orders whose payment fails. `ORDER_CHANGE` (`OrderStatusChange` t
 
 ### Step 9 + 9b: Listing link (read-only) + the anchor trigger — PRE
 
+> **⏸ Discussion first (D18).** Before this step's Phase-3 plan, Lucas walks through the known problems of the legacy listing flows and we decide how to handle them. The bullets below are the starting point for that conversation, not a decision.
+
 - **Gate:** `importarAnuncio: 'sim'`. **Trigger:** HTTP + a Cloud Task job; 9b is a Firestore trigger. **Docs:** D:report-type-values-inventory; M:listingsItems_2021-08-01.json; M:reports_2021-06-30.json.
 - **Link job** (`importacoesAmazon/{jobId}`, the ML mass-import job shape: a durable checkpoint, a self-re-enqueuing chain, capped failure detail):
   1. `createReport GET_MERCHANT_LISTINGS_ALL_DATA` → `getReport` → `getReportDocument`, parsed **by header name**.
@@ -650,9 +653,13 @@ Amazon cancels orders whose payment fails. `ORDER_CHANGE` (`OrderStatusChange` t
 
 ### Step 10: Product Type Definitions — POST
 
+> **⏸ Discussion first (D18)**, as for step 9.
+
 Cached `getDefinitionsProductType` (locale `pt_BR`) for publishing. Not needed before the cutover: stock and price patches use `productType: PRODUCT`.
 
 ### Step 11: Publish / edit / pause + `linksVariacoesAmazon` typing — POST
+
+> **⏸ Discussion first (D18)**, as for step 9. Publishing is where most of the legacy listing problems sit.
 
 `putListingsItem` with `VALIDATION_PREVIEW` first; families; pause through `purchasable_offer.end_at`.
 
@@ -799,7 +806,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 
 ### P1–P3: POST-cutover
 
-- **P1:** listing and product notifications. EventBridge `LISTINGS_ITEM_STATUS_CHANGE`, `LISTINGS_ITEM_ISSUES_CHANGE` (payload 2023-12-13; 1.0 was removed) and `LISTINGS_ITEM_MFN_QUANTITY_CHANGE` (fires on our own patches too: filter the echo) → a rule → an API destination → the step-3 receiver.
+- **P1:** (⏸ D18 discussion first) listing and product notifications. EventBridge `LISTINGS_ITEM_STATUS_CHANGE`, `LISTINGS_ITEM_ISSUES_CHANGE` (payload 2023-12-13; 1.0 was removed) and `LISTINGS_ITEM_MFN_QUANTITY_CHANGE` (fires on our own patches too: filter the echo) → a rule → an API destination → the step-3 receiver.
 - **P2:** automated LWA secret rotation (`rotateApplicationClientSecret`, grantless, plus the "Application Client New Secret" SQS row in Developer Central).
 - **P3:**
   - "create produto from listing" import mode;
@@ -847,7 +854,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 5. **Steps 3 + 4** (receiver, pipeline, backstop, CI lane).
 6. **Step 20.**
 7. **Steps 5 + 6 + 7** (captures C1 first).
-8. **Steps 9 + 9b + 21-link** (order items need links).
+8. **⏸ The listings discussion (D18)**, then **steps 9 + 9b + 21-link** (order items need links).
 9. **Step 14 → step 15 + 21-etiqueta** (captures C2, C3 first).
 10. **Step 12a** (feed infrastructure), then **step 12 + 21-estoque.**
 11. **Step 13 + 21-preço** (the bulk path reuses 12a).
@@ -919,7 +926,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 10. **W10: intake smoke + first label.**
     - **Phase:** 4.
     - **Action:** one real order goes SQS → Pipe → receiver → task → pedido (ids, links, payment, `freteInicial`). Then the first DBA NF-e upload and label on a canary order.
-11. **W11: `integracoesComProduto` + link-doc census.**
+11. **W11: `integracoesComProduto` + link-doc census** (⏸ its repair rules follow the D18 listings discussion).
     - **Phase:** 4.
     - **Action:** a read-only census of `prodAmazon` (by field, since doc ids are mixed): missing anchors, duplicates, children carrying the parent's ASIN or SKU. It produces an operator repair list.
     - **Why:** an import fires no triggers.
@@ -942,12 +949,13 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 - [x] All AWS-side code is TypeScript in the repository (`infra/amazon-relay/`, D16); nothing lives only in the AWS console.
 - [x] `assinaWebhook: 'sim'` with its Amazon meaning written in the row, and the receiver fails closed (step 3).
 - [x] Legacy corpus checked: `prodAmazon` (mixed ids), `tokenoaut`, the `'amz'` `int_frete`, the produto denorms and the two deterministic ids constrain the port. **No order mirror exists, and none is invented** (§3).
-- [x] Decisions D1–D17 recorded, with the vetoable orchestrator calls (§2.1).
+- [x] Decisions D1–D18 recorded, with the vetoable orchestrator calls (§2.1).
 - [x] Every Amazon write has a valve, a canary, a dry-run and a read-back (§4.26).
 - [x] The PRE/POST split is explicit on every step (§4.i).
 - [ ] This plan approved by Lucas (PR review).
 - [ ] Tracker + step issues opened (D14, after approval).
 - [ ] L1 roles confirmed; L4 AWS access; L6 redirect-URI domain.
+- [ ] The listings discussion held (D18) before the step-9 plan.
 
 ---
 
@@ -956,6 +964,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 1. **`faixaDePrecoAmazon` v1:** `minimo` = the promotional list when > 0, else the normal price, and `maximo` = the normal price. Is that the range you want until the new price-range model exists?
 2. **Reservations:** keep PENDING Amazon orders reserving ERP stock (the current behaviour), or reserve only from UNSHIPPED?
 3. **Pickup rescheduling:** is it acceptable that rescheduling a DBA pickup stays in Seller Central (there is no documented BR API for it)?
+4. **Listings (D18):** the known problems of the legacy listing flows, and the best way to handle each one. To be discussed when we reach step 9, before any listing step plan is written.
 
 ---
 
