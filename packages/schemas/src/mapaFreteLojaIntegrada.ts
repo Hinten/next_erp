@@ -48,7 +48,10 @@ function idDaChave(id: unknown): string | null {
   return Number.isSafeInteger(Number(texto)) ? texto : null;
 }
 
-/** The code part of the key: a string VERBATIM; `null` or absent ⇒ the literal `'null'`. */
+/**
+ * The code part of the key: a string VERBATIM; `null` or absent ⇒ the literal `'null'` — which the
+ * STRING `'null'` also is, so the two cannot be told apart (accepted: the stored key format).
+ */
 function codeDaChave(code: unknown): string | null {
   if (code === null || code === undefined) return 'null';
   return typeof code === 'string' ? code : null;
@@ -69,10 +72,13 @@ function codeDaChave(code: unknown): string | null {
  * - **code:** a string is kept VERBATIM — no trim, no case fold, `''` stays `''`. `null` and an
  *   absent (or `undefined`) code both render as the literal `'null'` — the key the stored rows
  *   carry for a method without a code, so they keep matching. Any other type ⇒ `null`.
+ *   ⚠️ Accepted collision: a code that IS the string `'null'` renders the same `'141909---null'`.
+ *   The stored key format cannot tell it from a missing code, and the stored rows already carry
+ *   that key, so the two share one row.
  *
  * Equal: `{id: 141909, code: 'PAC'}` ≡ `{id: '141909', code: 'PAC'}` → `'141909---PAC'`;
- * `{code: null}` ≡ no code → `'141909---null'`. Distinct: `'PAC '`, `'pac'`, `'SEDEX'`; id
- * `14190`; `code: ''` → `'141909---'`.
+ * `{code: 'null'}` ≡ `{code: null}` ≡ no code → `'141909---null'`. Distinct: `'PAC '`, `'pac'`,
+ * `'SEDEX'`, `'NULL'`; id `14190`; `code: ''` → `'141909---'`.
  */
 export function chaveFormaEnvioLi(forma: unknown): string | null {
   const objeto = comoObjeto(forma);

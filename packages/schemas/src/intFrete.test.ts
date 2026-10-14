@@ -447,12 +447,54 @@ describe('escolherIntFreteMaisNovo', () => {
     expect(escolherIntFreteMaisNovo([b, a])).toBe(a);
   });
 
-  it('a dataCadastro that is not a number counts as 0', () => {
+  it('a dataCadastro that is not a finite number counts as 0', () => {
     const texto = doc('a', { dataCadastro: '2026-01-05T10:00:00.000Z' });
     const um = doc('z', { dataCadastro: 1 });
     expect(escolherIntFreteMaisNovo([texto, um])).toBe(um);
     // Absent and 0 tie, so the lowest id decides.
     expect(escolherIntFreteMaisNovo([doc('b', { dataCadastro: 0 }), doc('a', {})])?.id).toBe('a');
+  });
+
+  it('⚠️ a NaN or infinite dataCadastro counts as 0 too — the pick never depends on the arrival order', () => {
+    // `typeof NaN === 'number'`, and every `>` / `===` against NaN is false: kept as a date, a
+    // NaN seen first would beat every newer doc and, seen later, never win.
+    for (const naoFinito of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const estranho = doc('a', { dataCadastro: naoFinito });
+      const datado = doc('b', { dataCadastro: 2000 });
+      expect(escolherIntFreteMaisNovo([estranho, datado]), String(naoFinito)).toBe(datado);
+      expect(escolherIntFreteMaisNovo([datado, estranho]), String(naoFinito)).toBe(datado);
+      // Read as 0, it TIES an absent date, so the lowest id decides — in either order.
+      const semData = doc('0', {});
+      expect(escolherIntFreteMaisNovo([estranho, semData]), String(naoFinito)).toBe(semData);
+      expect(escolherIntFreteMaisNovo([semData, estranho]), String(naoFinito)).toBe(semData);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: it reads RAW bodies — a converter-parsed body can name ANOTHER doc', () => {
+    // The importer's lookup queries `ativo == true`, which EXCLUDES a doc with no `ativo` field;
+    // the schema's `ativo` default turns that absence into `true`, and `millisSinceEpoch`'s
+    // preprocess turns an ISO string into ms. Fed the parsed bodies, the importer's predicate
+    // picks a doc the importer never routes from.
+    const base = {
+      tipo: 'lojaIntegrada',
+      nome: 'Loja Teste',
+      filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+      contaLojaIntegradaEnviosOuterRef: 'documents/integracao/int-1',
+    };
+    const ativoVelho = { ...base, ativo: true, dataCadastro: 1718000000000 };
+    const semAtivoNovo = { ...base, dataCadastro: 1735689600000 };
+    const ehAtivo = (d: Readonly<Record<string, unknown>>) => d.ativo === true;
+    const crus = [doc('a', ativoVelho), doc('b', semAtivoNovo)];
+    const parseados = crus.map((c) => doc(c.id, intFreteSchema.parse(c.data)));
+    expect(escolherIntFreteMaisNovo(crus, ehAtivo)?.id).toBe('a');
+    expect(escolherIntFreteMaisNovo(parseados, ehAtivo)?.id).toBe('b');
+
+    // The date half: an ISO `dataCadastro` reads as 0 raw and as ms parsed.
+    const isoNovo = { ...base, ativo: true, dataCadastro: '2025-01-01T00:00:00.000Z' };
+    const crusIso = [doc('a', ativoVelho), doc('b', isoNovo)];
+    const parseadosIso = crusIso.map((c) => doc(c.id, intFreteSchema.parse(c.data)));
+    expect(escolherIntFreteMaisNovo(crusIso)?.id).toBe('a');
+    expect(escolherIntFreteMaisNovo(parseadosIso)?.id).toBe('b');
   });
 
   it('⚠️ NEAR-MISS: the predicate filters BEFORE the pick — the importer’s pick is the older ACTIVE doc', () => {

@@ -831,13 +831,27 @@ describe.each(CENARIOS)('$nome', (c) => {
 
   it('T57 the importer pick: `buscarIntFreteDaConta(…, { apenasAtivo: true })` names the doc `escolherIntFreteMaisNovo(…, ativo === true)` names', async () => {
     // ONE chooser for the core and the browser (#1369, #1826): the conta screen calls the schemas
-    // copy over its listener's docs, the importer calls this lookup — they must agree.
+    // copy over its listener's RAW docs, the importer calls this lookup — they must agree.
+    /** A doc with NO `ativo` field: the lookup's `ativo == true` excludes it, and so must the pick. */
+    const semAtivo = (over: DocData): DocData => {
+      const data = doc(over);
+      delete data.ativo;
+      return data;
+    };
     const conjuntos: Array<[string, Array<[string, DocData]>, string]> = [
       [
         'an older ACTIVE doc beats a newer inactive one',
         [
           ['velho-ativo', doc({ dataCadastro: CADASTRO - 1000 })],
           ['novo-inativo', doc({ dataCadastro: CADASTRO + 1000, ativo: false })],
+        ],
+        'velho-ativo',
+      ],
+      [
+        'an older ACTIVE doc beats a newer one with NO `ativo` field (raw — never the schema default)',
+        [
+          ['velho-ativo', doc({ dataCadastro: CADASTRO - 1000 })],
+          ['novo-sem-ativo', semAtivo({ dataCadastro: CADASTRO + 1000 })],
         ],
         'velho-ativo',
       ],

@@ -49,6 +49,19 @@ describe('chaveFormaEnvioLi — the full `<id>---<code>` key', () => {
     expect(chaveFormaEnvioLi({ id: 141909, code: undefined })).toBe('141909---null');
   });
 
+  it('⚠️ EQUAL pair (accepted collision): a code that IS the string `null` keys like a missing code', () => {
+    // The stored key format cannot tell them apart, and the stored rows of a method without a
+    // code carry `---null`, so a provider code spelled `null` shares their row. Pinned in this
+    // direction on purpose: the collision is the format's, not a fold this module could undo.
+    expect(chaveFormaEnvioLi({ id: 141909, code: 'null' })).toBe('141909---null');
+    expect(chaveFormaEnvioLi({ id: 141909, code: 'null' })).toBe(
+      chaveFormaEnvioLi({ id: 141909, code: null }),
+    );
+    // …but only that exact spelling: the code is still verbatim.
+    expect(chaveFormaEnvioLi({ id: 141909, code: 'NULL' })).toBe('141909---NULL');
+    expect(chaveFormaEnvioLi({ id: 141909, code: 'null ' })).toBe('141909---null ');
+  });
+
   it('⚠️ NEAR-MISS: an EMPTY code is not a missing one — `141909---`, never `141909---null`', () => {
     expect(chaveFormaEnvioLi({ id: 141909, code: '' })).toBe('141909---');
     expect(chaveFormaEnvioLi({ id: 141909, code: '' })).not.toBe('141909---null');
