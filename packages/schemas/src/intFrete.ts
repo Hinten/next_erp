@@ -3,7 +3,8 @@ import type { CollectionMetadata } from './types';
 import { millisSinceEpoch } from './shared/datetime';
 import { outerRefSchema } from './shared/outerRef';
 import { enderecoSchema } from './endereco';
-import { integracoesFreteSchema } from './shared/frete';
+import { INTEGRACAO_TIPO, type IntegracaoTipo } from './integracao';
+import { INTEGRACAO_FRETE, integracoesFreteSchema, type IntegracaoFrete } from './shared/frete';
 
 const PERM_FRETE_READ = 1n << 88n;
 const PERM_FRETE_WRITE = 1n << 89n;
@@ -187,15 +188,32 @@ export const intFreteSchema = z
      * (`.old/packages/canais_de_venda/mercado_livre/lib/src/models.dart:332`),
      * which the order importer matches on to find the account's freight config.
      *
-     * **Server-owned** (#782): the sole writer is the
-     * `onIntegracaoMercadoLivreChanged` trigger in the `mercado-livre` functions
-     * codebase, which keeps this doc in sync with the conta. Null on every other
-     * `tipo` — hence nullable, despite being mandatory for `mercadoLivre`.
+     * **Server-owned** (#782): the sole writers are the
+     * `onIntegracaoMercadoLivreChanged` trigger (`mercado-livre` functions
+     * codebase), which keeps this doc in sync with the conta, and
+     * `apps/mercado-livre/scripts/backfill-int-frete.ts`, both through
+     * `@delfrance/data/admin/frete`. Null on every other `tipo` — hence
+     * nullable, despite being mandatory for `mercadoLivre`.
      */
     contaMercadoLivreMercadoEnviosOuterRef: outerRefSchema
       .nullable()
       .default(null)
       .describe('Conta Mercado Livre'),
+    /**
+     * Back-reference to the Shopee conta (`integracao`, tipo shopee) this
+     * freight doc belongs to — `documents/integracao/<id>`. Legacy
+     * `FreteShopee.contaShopeeFreteOuterRef`
+     * (`.old/packages/canais_de_venda/shopee/lib/src/models.dart:155-157`), a
+     * plain string the legacy ODM always wrote in the canonical `documents/…`
+     * form — so the migrated docs are ADOPTED by this key, never duplicated.
+     *
+     * **Server-owned** (#1528): the sole writers are the `onIntegracaoShopeeChanged`
+     * trigger (`shopee` functions codebase) and the window pass, both through
+     * `@delfrance/data/admin/frete`. Protected by convention, like the Mercado
+     * Livre twin above — hidden from every `/logistica` slice by `SHARED_EXCLUDED`,
+     * not by a rule. Null on every other `tipo`.
+     */
+    contaShopeeFreteOuterRef: outerRefSchema.nullable().default(null).describe('Conta Shopee'),
     enderecoDeOrigem: enderecoSchema
       .passthrough()
       .nullable()
@@ -248,6 +266,54 @@ export const intFreteSchema = z
   })
   .passthrough();
 export type IntFrete = z.infer<typeof intFreteSchema>;
+
+/**
+ * The `int_frete` keys that hold a channel's conta back-reference — derived from the SCHEMA's own
+ * keys, so a misspelled `campoBackRef` fails `tsc`, and a third channel's field joins the union by
+ * itself (`intFrete.vinculo.test.ts` then demands its row below).
+ */
+export type CampoBackRefIntFrete = Extract<
+  keyof typeof intFreteSchema.shape,
+  `conta${string}OuterRef`
+>;
+
+/**
+ * Everything that is channel-specific about keeping a marketplace conta's `int_frete` doc in step
+ * with it — pure facts, consumed by `@delfrance/data/admin/frete`'s `intFreteContaSync` (one IO core
+ * for every channel, #1369). Nothing here is a `*Meta`, so no ruleset regenerates.
+ */
+export interface VinculoIntFreteConta {
+  /** `integracao.tipo` — the INT enum. */
+  readonly tipoConta: IntegracaoTipo;
+  /** `int_frete.tipo` — the STRING enum. The two are different enums; this row is the bridge. */
+  readonly tipoFrete: IntegracaoFrete;
+  /** The back-reference key, holding `documents/integracao/<id>`. */
+  readonly campoBackRef: CampoBackRefIntFrete;
+  /** Log prefix of every line the core writes for this channel. */
+  readonly rotuloLog: string;
+  /**
+   * Present ⇒ a NEW doc is created at `<prefixoDocId>-<integracaoId>`, so two concurrent first
+   * syncs target ONE path (rule 7 tier 0). Absent ⇒ a random id (Mercado Livre, unchanged). The
+   * lookup still adopts a legacy auto-id doc either way.
+   */
+  readonly prefixoDocId?: string;
+}
+
+export const VINCULO_INT_FRETE_CONTA = {
+  mercadoLivre: {
+    tipoConta: INTEGRACAO_TIPO.mercadoLivre,
+    tipoFrete: INTEGRACAO_FRETE.mercadoLivre,
+    campoBackRef: 'contaMercadoLivreMercadoEnviosOuterRef',
+    rotuloLog: '[mercado-livre]',
+  },
+  shopee: {
+    tipoConta: INTEGRACAO_TIPO.shopee,
+    tipoFrete: INTEGRACAO_FRETE.shopee,
+    campoBackRef: 'contaShopeeFreteOuterRef',
+    rotuloLog: '[shopee]',
+    prefixoDocId: INTEGRACAO_FRETE.shopee,
+  },
+} as const satisfies Record<string, VinculoIntFreteConta>;
 
 export const intFreteMeta: CollectionMetadata = {
   collectionPath: 'int_frete',

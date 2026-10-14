@@ -35,6 +35,8 @@ export interface ThemeReadabilityReport {
     target: string;
     reason: 'imgNode' | 'bgOverlap' | 'shortTextContent' | 'elmPartiallyObscuring';
   }>;
+  /** Audit passes run; above 1 only when the page replaced measured elements. */
+  passes: number;
 }
 
 async function resolveAxeTarget(
@@ -245,38 +247,83 @@ async function inspectTarget(target: Locator): Promise<ThemeReadabilityIssue[]> 
   if (!(await target.isVisible())) {
     return [{ code: 'hidden', target: name, detail: 'Required element is not visible' }];
   }
-  const zeroOpacity = await target.evaluate((element) => {
-    const parent = (node: Element): Element | null => {
-      const root = node.getRootNode();
-      return node.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
-    };
-    for (let node: Element | null = element; node; node = parent(node)) {
-      if (Number(getComputedStyle(node).opacity) === 0) return true;
-    }
-    return false;
-  });
-  if (zeroOpacity) {
-    return [{ code: 'zero-opacity', target: name, detail: 'Element or ancestor has zero opacity' }];
-  }
   try {
-    await target.scrollIntoViewIfNeeded({ timeout: 5_000 });
-    // Nearest scrolling can leave otherwise reachable text beneath a fixed
-    // application header. Center through the real scroll containers before
-    // checking viewport clipping and the actual foreground hit stack.
-    await target.evaluate((element) =>
-      element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }),
-    );
-    const inViewport = await target.evaluate(
-      (element) =>
-        new Promise<boolean>((resolve) => {
+    // One in-page step on one element, never Playwright's scrollIntoViewIfNeeded:
+    // a live listener re-rendering the page (a report over the latest pedidos
+    // while other suites write them) can replace the element mid-wait, and that
+    // threw "Element is not attached to the DOM" out of the whole audit. Here a
+    // replaced element reports `detached`, which re-runs the pass instead.
+    const placement = await target.evaluate(
+      async (element) => {
+        const parent = (node: Element): Element | null => {
+          const root = node.getRootNode();
+          return node.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
+        };
+        // Playwright resolves the locator and runs this in two round trips, and
+        // a detached node computes `opacity: ''`, which Number() reads as 0:
+        // check the connection before the walk and again on a zero it finds.
+        if (!element.isConnected) return 'detached' as const;
+        for (let node: Element | null = element; node; node = parent(node)) {
+          if (Number(getComputedStyle(node).opacity) === 0)
+            return element.isConnected ? ('zero-opacity' as const) : ('detached' as const);
+        }
+        // Playwright's notion of stable: the same box on consecutive frames.
+        const deadline = performance.now() + 5_000;
+        let box = element.getBoundingClientRect();
+        for (let stableFrames = 0; stableFrames < 2; ) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          if (!element.isConnected) return 'detached' as const;
+          const next = element.getBoundingClientRect();
+          const same =
+            next.x === box.x &&
+            next.y === box.y &&
+            next.width === box.width &&
+            next.height === box.height;
+          stableFrames = same ? stableFrames + 1 : 0;
+          box = next;
+          if (!same && performance.now() > deadline) return 'unstable' as const;
+        }
+        // Nearest scrolling can leave otherwise reachable text beneath a fixed
+        // application header. Center through the real scroll containers before
+        // checking viewport clipping and the actual foreground hit stack.
+        element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+        const ratio = await new Promise<number>((resolve) => {
           const observer = new IntersectionObserver(([entry]) => {
             observer.disconnect();
-            resolve((entry?.intersectionRatio ?? 0) >= 0.9);
+            resolve(entry?.intersectionRatio ?? 0);
           });
           observer.observe(element);
-        }),
+        });
+        // A detached element intersects nothing: that is a replacement, not a clip.
+        return element.isConnected ? ratio : ('detached' as const);
+      },
+      undefined,
+      { timeout: 5_000 },
     );
-    if (!inViewport) {
+    if (placement === 'zero-opacity') {
+      return [
+        { code: 'zero-opacity', target: name, detail: 'Element or ancestor has zero opacity' },
+      ];
+    }
+    if (placement === 'detached') {
+      return [
+        {
+          code: 'detached',
+          target: name,
+          detail: 'The page replaced this element while it was being measured',
+        },
+      ];
+    }
+    if (placement === 'unstable') {
+      return [
+        {
+          code: 'unreachable',
+          target: name,
+          detail: 'Element did not hold a stable position within five seconds',
+        },
+      ];
+    }
+    if (placement < 0.9) {
       return [
         {
           code: 'clipped',
@@ -285,13 +332,18 @@ async function inspectTarget(target: Locator): Promise<ThemeReadabilityIssue[]> 
         },
       ];
     }
-    const actionable = await target.evaluate((element) =>
-      element.matches(
-        'button, input:not([type="hidden"]), select, textarea, a[href], [role="button"], [role="link"], [role="checkbox"], [role="switch"]',
-      ),
+    // Bounded like every other step: a locator that stops matching would
+    // otherwise wait out the whole test instead of reporting where it vanished.
+    const actionable = await target.evaluate(
+      (element) =>
+        element.matches(
+          'button, input:not([type="hidden"]), select, textarea, a[href], [role="button"], [role="link"], [role="checkbox"], [role="switch"]',
+        ),
+      undefined,
+      { timeout: 5_000 },
     );
     if (actionable) {
-      if (!(await target.isEnabled())) {
+      if (!(await target.isEnabled({ timeout: 5_000 }))) {
         return [
           { code: 'disabled', target: name, detail: 'Required actionable control is disabled' },
         ];
@@ -321,9 +373,13 @@ async function inspectPaint(
     | 'plain-text-visibility'
     | 'svg-text',
 ): Promise<ThemeReadabilityIssue[]> {
-  const issues = await target.evaluate((element, paintMode) => {
+  const measure = (element: Element, paintMode: typeof mode) => {
     type Rgba = [number, number, number, number];
     const problems: Array<{ code: string; detail: string }> = [];
+    // Playwright resolves a locator and evaluates on the result in two round
+    // trips; a re-render in between hands over a detached node with no layout.
+    if (!element.isConnected)
+      return [{ code: 'detached', detail: 'The page replaced this element as it was measured' }];
     const parent = (node: Element): Element | null => {
       const root = node.getRootNode();
       return node.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
@@ -941,15 +997,65 @@ async function inspectPaint(
         detail: 'Essential control has no visible painted SVG shape',
       });
     return problems;
-  }, mode);
+  };
+  let issues: Awaited<ReturnType<typeof measure>>;
+  try {
+    // The measurement itself is one atomic in-page call, but locating its
+    // element waits; bound that so a vanished target reports, not hangs.
+    issues = await target.evaluate(measure, mode, { timeout: 5_000 });
+  } catch (err) {
+    if (!(err instanceof errors.TimeoutError)) throw err;
+    issues = [
+      { code: 'missing-or-ambiguous', detail: 'Element vanished before its paint was measured' },
+    ];
+  }
   return issues.map((issue) => ({ ...issue, target: target.toString() }));
 }
 
+/**
+ * Passes in all before a page that keeps replacing what is being measured
+ * fails as `unstable-dom`. Re-renders on staging come in bursts of concurrent
+ * suite writes; a page still replacing nodes after three passes is a finding.
+ */
+const MAX_AUDIT_PASSES = 3;
+
+/**
+ * A pass is only as good as the DOM it measured. Axe scans once; every review
+ * target is then re-resolved by selector and measured. A live listener that
+ * re-renders in between (a report over the latest pedidos while other suites
+ * write them) leaves the scan describing nodes that no longer exist, so such a
+ * pass is discarded and the whole audit re-run on the settled page — never
+ * reported as the page's defect, never silently accepted.
+ */
 export async function auditThemeReadability(
   page: Page,
   options: ThemeReadabilityOptions,
 ): Promise<ThemeReadabilityReport> {
+  for (let pass = 1; ; pass++) {
+    const { stale, report } = await auditPass(page, options);
+    if (!stale) return { ...report, passes: pass };
+    if (pass === MAX_AUDIT_PASSES) {
+      report.issues.push({
+        code: 'unstable-dom',
+        target: options.scope ?? 'body',
+        detail: `The page replaced audited elements during each of ${MAX_AUDIT_PASSES} passes`,
+      });
+      return { ...report, passes: pass };
+    }
+  }
+}
+
+async function auditPass(
+  page: Page,
+  options: ThemeReadabilityOptions,
+): Promise<{ stale: boolean; report: Omit<ThemeReadabilityReport, 'passes'> }> {
   const issues: ThemeReadabilityIssue[] = [];
+  // Set when a measured element turns out to have been replaced mid-pass.
+  let stale = false;
+  const markReplaced = (targetIssues: ThemeReadabilityIssue[]) => {
+    if (targetIssues.some((issue) => issue.code === 'detached')) stale = true;
+    return targetIssues;
+  };
   const scheme = await page.locator('html').getAttribute('data-mantine-color-scheme');
   if (scheme !== options.scheme)
     issues.push({
@@ -967,34 +1073,54 @@ export async function auditThemeReadability(
       detail: 'At least one required element must be declared',
     });
   for (const target of options.required) {
-    const targetIssues = await inspectTarget(target);
+    const targetIssues = markReplaced(await inspectTarget(target));
     issues.push(...targetIssues);
     if (targetIssues.length === 0) {
-      const directText = await target.evaluate((element) => {
-        if (element.children.length > 0 || (element.textContent?.trim() ?? '') === '') return null;
-        if (element instanceof SVGTextContentElement && element.matches('text, tspan'))
-          return 'svg-text' as const;
-        if (
-          element instanceof HTMLElement &&
-          !element.matches(
-            'button, input, select, textarea, a[href], [role="button"], [role="link"], [role="checkbox"], [role="switch"]',
-          )
-        )
-          return 'plain-text-visibility' as const;
-        return null;
-      });
+      let directText: 'svg-text' | 'plain-text-visibility' | null;
+      try {
+        directText = await target.evaluate(
+          (element) => {
+            if (element.children.length > 0 || (element.textContent?.trim() ?? '') === '')
+              return null;
+            if (element instanceof SVGTextContentElement && element.matches('text, tspan'))
+              return 'svg-text' as const;
+            if (
+              element instanceof HTMLElement &&
+              !element.matches(
+                'button, input, select, textarea, a[href], [role="button"], [role="link"], [role="checkbox"], [role="switch"]',
+              )
+            )
+              return 'plain-text-visibility' as const;
+            return null;
+          },
+          undefined,
+          { timeout: 5_000 },
+        );
+      } catch (err) {
+        if (!(err instanceof errors.TimeoutError)) throw err;
+        issues.push(
+          ...markReplaced([
+            {
+              code: 'detached',
+              target: target.toString(),
+              detail: 'The page replaced this element right after it was placed',
+            },
+          ]),
+        );
+        continue;
+      }
       // Axe can omit genuinely covered/clipped text entirely. Required text
       // must satisfy line visibility independently of whether axe tests it.
-      if (directText) issues.push(...(await inspectPaint(target, directText)));
+      if (directText) issues.push(...markReplaced(await inspectPaint(target, directText)));
     }
   }
   for (const target of options.icons ?? []) {
-    const targetIssues = await inspectTarget(target);
+    const targetIssues = markReplaced(await inspectTarget(target));
     issues.push(...targetIssues);
-    if (targetIssues.length === 0) issues.push(...(await inspectPaint(target, 'icon')));
+    if (targetIssues.length === 0) issues.push(...markReplaced(await inspectPaint(target, 'icon')));
   }
   for (const target of options.focus ?? []) {
-    const targetIssues = await inspectTarget(target);
+    const targetIssues = markReplaced(await inspectTarget(target));
     issues.push(...targetIssues);
     if (targetIssues.length > 0) continue;
     // Enter keyboard modality, then traverse away and back: :focus-visible is
@@ -1002,7 +1128,7 @@ export async function auditThemeReadability(
     await target.focus();
     await page.keyboard.press('Tab');
     await page.keyboard.press('Shift+Tab');
-    issues.push(...(await inspectPaint(target, 'focus')));
+    issues.push(...markReplaced(await inspectPaint(target, 'focus')));
     await target.blur();
   }
   // Trial clicks deliberately exercise hit testing, but also hover controls.
@@ -1052,13 +1178,33 @@ export async function auditThemeReadability(
             });
             continue;
           }
-          const svgText =
-            checkData.messageKey !== 'nonBmp' &&
-            (await glyph.count()) === 1 &&
-            (await glyph.evaluate(
-              (element) =>
-                element instanceof SVGTextContentElement && element.matches('text, tspan'),
-            ));
+          // Axe's selector was unique when it scanned. Not resolving to exactly
+          // one element now means the node was replaced since: a stale pass,
+          // not a missing element on the page.
+          const replaced: ThemeReadabilityIssue = {
+            code: 'detached',
+            target: JSON.stringify(node.target),
+            detail: 'The page replaced this review target between the scan and its measurement',
+          };
+          if ((await glyph.count()) !== 1) {
+            issues.push(...markReplaced([replaced]));
+            continue;
+          }
+          let svgText: boolean;
+          try {
+            svgText =
+              checkData.messageKey !== 'nonBmp' &&
+              (await glyph.evaluate(
+                (element) =>
+                  element instanceof SVGTextContentElement && element.matches('text, tspan'),
+                undefined,
+                { timeout: 5_000 },
+              ));
+          } catch (err) {
+            if (!(err instanceof errors.TimeoutError)) throw err;
+            issues.push(...markReplaced([replaced]));
+            continue;
+          }
           // Image-node and background-overlap reviews are resolved only for
           // SVG text with independently verified glyph/background geometry.
           if (
@@ -1086,6 +1232,11 @@ export async function auditThemeReadability(
                         ? 'short-text'
                         : 'plain-text',
                 );
+          // A finding on a node that no longer resolves uniquely describes the
+          // replaced node, not the page: re-run rather than report it as final.
+          if (glyphIssues.length > 0 && (await glyph.count()) !== 1)
+            glyphIssues.push({ ...replaced, target: glyph.toString() });
+          markReplaced(glyphIssues);
           if (glyphIssues.length === 0) {
             if (svgText && checkData.messageKey !== 'nonBmp')
               resolvedSvgTextTargets.push({
@@ -1123,12 +1274,15 @@ export async function auditThemeReadability(
       detail: 'No text node was tested for color contrast',
     });
   return {
-    scheme: options.scheme,
-    issues,
-    axe,
-    resolvedGlyphTargets,
-    resolvedTextTargets,
-    resolvedSvgTextTargets,
+    stale,
+    report: {
+      scheme: options.scheme,
+      issues,
+      axe,
+      resolvedGlyphTargets,
+      resolvedTextTargets,
+      resolvedSvgTextTargets,
+    },
   };
 }
 

@@ -127,7 +127,11 @@ Nested fields are written with a **dotted key** (`sede.telefone`), never a
 nested object: `update()` replaces a nested map, which would wipe every sibling
 field of `sede`.
 
-The migration scans **collection groups**, which are unindexed on Firestore
-Enterprise and therefore full scans billed by data scanned. Acceptable for a
-one-shot manual run — which is exactly why this is a script an operator invokes
-and not something scheduled.
+The migration scans **collection groups**, each riding its **declared**
+collection-group key index `<group>(__name__ ASC)` (#1895, listed in
+`key-walks.json`), so a page reads its own rows. Without it, Enterprise has no
+implicit key index and every page table-scans the whole group (#1895 measured
+all 6,342 `enderecos` docs read on every page of 300). A full run still reads
+every document once, billed by data scanned. Acceptable for a one-shot manual
+run — which is exactly why this is a script an operator invokes and not
+something scheduled.

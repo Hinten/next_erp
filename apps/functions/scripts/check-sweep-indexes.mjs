@@ -10,9 +10,10 @@ import { FieldPath, Filter, getFirestore } from 'firebase-admin/firestore';
 import {
   RECUSA_EXPLAIN_ENTERPRISE_RE,
   contadoresDoCabecalho,
+  indicesUsados,
+  julgarPaginaPorChave,
   parseAccessNodes,
   scansSemIdentificador,
-  sortsQueCortam,
 } from '../../mercado-livre/lib/firebase/explainPlan.mjs';
 
 // Live diagnostic: prove every query `reconcileArquivoOrphans` runs is
@@ -172,11 +173,6 @@ function indiceRe(escopo, colecao, campos) {
   return new RegExp(
     `^${prefixo}${esc(colecao)} \\(${campos.map(esc).join(', ')}(?:, __(?:key|name)__ ASC)?\\)`,
   );
-}
-
-/** Distinct `index:` identifiers the plan's access nodes ride, `@[id = …]` stripped. */
-function indicesUsados(nos) {
-  return [...new Set(nos.map((n) => n.identifier?.replace(/@\[.*$/, '').trim()).filter(Boolean))];
 }
 
 /**
@@ -374,47 +370,26 @@ const pagina = (lastKey) => {
   if (lastKey !== null) query = query.startAfter(lastKey);
   return query;
 };
-/** The access path the page must ride — the dialect prints `__name__` as `__key__`. */
-const INDICE_DE_CHAVE_RE = /^\/arquivos \(__(?:key|name)__ ASC\)/;
-
 /**
- * KEY-BOUNDED iff the plan rides a key-leading arquivos index, no sort consumes
- * more rows than it returns, and the whole query read at most the page (+1, the
- * row that tells the scan to stop). A sweep page that reads more pays a scan of
- * the collection on every 48h tick for 100 rows.
+ * The page's verdict is the shared `julgarPaginaPorChave` (explainPlan.mjs, unit-
+ * tested against this very page's staging plans, before and after its key index):
+ * it must ride `arquivos(__name__ ASC)`, with no sort cutting its input, reading
+ * at most the page. A page that reads more pays a scan of the collection on every
+ * 48h tick for 100 rows.
  */
 function julgarPagina(label, plano) {
-  const c = imprimirContadores(plano);
-  const nos = parseAccessNodes(plano);
-  const usados = indicesUsados(nos);
+  imprimirContadores(plano);
+  const usados = indicesUsados(parseAccessNodes(plano));
   console.log(
     `  indexes ridden: ${usados.length === 0 ? '(none — identifier-less scan)' : usados.join(' | ')}`,
   );
-  const motivos = [];
-  for (const n of scansSemIdentificador(nos).cheios) {
-    motivos.push(`an identifier-less ${n.type} (plan line ${n.line}) reads the whole collection`);
-  }
-  if (!usados.some((u) => INDICE_DE_CHAVE_RE.test(u))) {
-    motivos.push(
-      'no access node rides arquivos(__name__ ASC) — Enterprise has no implicit key index, so ' +
-        'key order is produced by a sort over everything the scan read',
-    );
-  }
-  for (const n of sortsQueCortam(plano)) {
-    motivos.push(
-      `${n.nome} (plan line ${n.linha}) consumed more rows than it returned (or printed no ` +
-        'count) — a TopN over everything the scan read',
-    );
-  }
-  const lidas = c['index row scanned'];
-  if (lidas == null || lidas > BATCH_LIMIT + 1) {
-    motivos.push(
-      `read ${lidas ?? 'an unprinted number of'} index rows for a page of ${BATCH_LIMIT} — the page ` +
-        'is not confined to its own rows',
-    );
-  }
-  for (const m of motivos) fail(`${label}: ${m}`);
-  if (motivos.length === 0) console.log(`PASS  ${label}: a key seek reading ${lidas} index rows`);
+  const veredicto = julgarPaginaPorChave(plano, {
+    escopo: 'COLLECTION',
+    colecao: 'arquivos',
+    pagina: BATCH_LIMIT,
+  });
+  for (const m of veredicto.motivos) fail(`${label}: [${m.codigo}] ${m.mensagem}`);
+  if (veredicto.motivos.length === 0) console.log(`PASS  ${label}: ${veredicto.detalhe}`);
 }
 
 console.log(

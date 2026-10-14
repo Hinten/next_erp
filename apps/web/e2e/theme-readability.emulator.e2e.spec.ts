@@ -16,8 +16,10 @@ import { applyTextFilter, expectListMode, searchTableView } from './helpers/tabl
 import { expectThemeReadable } from './helpers/theme-a11y';
 import { warmRoutes } from './helpers/warmup';
 import {
+  cleanupThemeCheckoutFixtures,
   cleanupThemeReportFixtures,
   expectThemeReportFixturesInRecentWindow,
+  seedThemeCheckoutFixtures,
   seedThemeReportFixtures,
 } from './helpers/theme-fixtures';
 
@@ -60,6 +62,7 @@ const test = base.extend<object, { themeOperator: ThemeOperator }>({
           await Promise.all([
             cleanupThemeReadabilityFixtures(prefix),
             cleanupThemeReportFixtures(prefix),
+            cleanupThemeCheckoutFixtures(prefix),
             resetAvisosLeitura(user.uid),
           ]);
         } finally {
@@ -88,11 +91,13 @@ const test = base.extend<object, { themeOperator: ThemeOperator }>({
 test.describe('Theme readability — populated component states', () => {
   let fixtures: Awaited<ReturnType<typeof seedThemeReadabilityFixtures>>;
   let reportFixtures: Awaited<ReturnType<typeof seedThemeReportFixtures>>;
+  let checkoutFixtures: Awaited<ReturnType<typeof seedThemeCheckoutFixtures>>;
 
   test.beforeAll(async ({ browser, themeOperator }) => {
     test.setTimeout(240_000);
     fixtures = await seedThemeReadabilityFixtures(prefix, themeOperator.uid);
     reportFixtures = await seedThemeReportFixtures(prefix);
+    checkoutFixtures = await seedThemeCheckoutFixtures(prefix);
     await warmRoutes(browser, [
       '/categorias',
       '/categorias/novo',
@@ -101,6 +106,7 @@ test.describe('Theme readability — populated component states', () => {
       `/produtos/${fixtures.stock.parentId}/editar`,
       '/chat',
       '/relatorios/vendas',
+      '/relatorios/checkouts',
       `/chat/${fixtures.untagged.id}`,
     ]);
   });
@@ -309,6 +315,31 @@ test.describe('Theme readability — populated component states', () => {
           // outer SVG labels would duplicate them and collide with leader lines.
           await expect(page.locator('.recharts-pie-label-text')).toHaveCount(0);
           await audit(required, [], { focus: [back] });
+        });
+
+        await test.step('checkouts chart fits a collaborator name wider than its axis', async () => {
+          // The staging smoke audit clipped this axis only when some run's
+          // long-named collaborator happened to have checkouts. Seed one here
+          // so the label is always present, always too long, and always audited.
+          const { nome } = checkoutFixtures;
+          await page.goto('/relatorios/checkouts');
+          const heading = page.getByRole('heading', { name: 'Checkouts', exact: true });
+          // Found by the full name its <title> keeps; the drawn text is fitted.
+          const tick = page.locator(
+            `xpath=//*[local-name()="g"][*[local-name()="title"][.="${nome}"]]/*[local-name()="text"]/*[local-name()="tspan"]`,
+          );
+          const row = page.getByRole('row').filter({
+            has: page.getByRole('cell', { name: nome, exact: true }),
+          });
+          await expect(tick).toHaveCount(1, { timeout: 20_000 });
+          const drawn = (await tick.textContent()) ?? '';
+          expect(drawn, 'The axis label is cut with an ellipsis').toMatch(/…$/);
+          expect(nome.startsWith(drawn.slice(0, -1)), 'and keeps the start of the name').toBe(true);
+          await expect(row.getByRole('cell').nth(1)).toHaveText(/^\d+$/);
+          expect(Number(await row.getByRole('cell').nth(1).innerText())).toBeGreaterThanOrEqual(
+            checkoutFixtures.count,
+          );
+          await audit([heading, tick, ...(await row.getByRole('cell').all())]);
         });
 
         await test.step('missing product thumbnail and populated product table', async () => {

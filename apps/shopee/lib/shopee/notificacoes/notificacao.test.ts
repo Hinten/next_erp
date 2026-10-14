@@ -161,6 +161,7 @@ const {
   lojasExpirandoDoPush12,
   mensagemDoErro,
   motivoDoParque,
+  motivoSemConta,
   MOTIVO_SEM_AUTHORIZE_TYPE,
   parseNotificationBody,
   payloadDeDocumento,
@@ -1571,10 +1572,12 @@ describe('code 3 — importação do pedido', () => {
     // `get_order_detail` continua respondendo. Sem o adiamento, os pedidos
     // feitos antes de uma conexão tardia só seriam alcançáveis pela janela de
     // 24 h da varredura inicial.
+    // ⚠️ A razão é a do builder ÚNICO, byte a byte (T33): é a string exata que o
+    // re-drive do passo 20 casa numa linha adiada, que não grava `kind`.
     expect(pedido).toEqual({
       kind: 'sem-conta',
       shopId: SHOP_ID,
-      reason: expect.stringContaining(String(SHOP_ID)),
+      reason: motivoSemConta(SHOP_ID),
     });
     expect(toDisposition(pedido).kind).toBe('defer');
     expect(conta2.kind).toBe('ack');
@@ -2071,11 +2074,11 @@ describe('codes 4/30/47 — o braço do frete (passo 7)', () => {
     // ⚠️ O MESMO `sem-conta` do braço do code 3, e a mesma leitura: um operador
     // conectando a loja torna a remessa ACIONÁVEL — o pacote continua existindo
     // na Shopee e o `get_package_detail` continua respondendo por ele. A
-    // inversão do code 2 não se aplica.
+    // inversão do code 2 não se aplica. A razão é a do builder único (T33).
     expect(out).toEqual({
       kind: 'sem-conta',
       shopId: SHOP_ID,
-      reason: expect.stringContaining(String(SHOP_ID)),
+      reason: motivoSemConta(SHOP_ID),
     });
     expect(toDisposition(out)).toEqual({ kind: 'defer', reason: expect.any(String) });
     // O handler jamais foi invocado, então o import preguiçoso nem disparou.
@@ -2261,8 +2264,9 @@ describe('codes 4/30/47 — o braço do frete (passo 7)', () => {
     const razaoCode3 = doCode3.kind === 'sem-conta' ? doCode3.reason : '';
     // O template é COMPARTILHADO: as duas razões são a mesma string, e nenhuma
     // começa por um prefixo de braço. Quem responde "qual braço escreveu esta
-    // linha adiada" é o `kind` + o `code` da linha, nunca o texto dela — que é
-    // exatamente o que os docblocks de PREFIXO_MOTIVO_* passaram a dizer.
+    // linha adiada" é o `code` da linha, nunca o texto dela; e "é uma linha
+    // `sem-conta`" é a string EXATA de `motivoSemConta`, porque a linha não grava
+    // `kind` (`toDocFields`) — o que o docblock de PREFIXO_MOTIVO_CODE3 diz.
     expect(razaoFrete).toBe(razaoCode3);
     expect(razaoFrete.startsWith('rastreio: ')).toBe(false);
     expect(razaoFrete.startsWith('push_code 3: ')).toBe(false);
@@ -2672,11 +2676,11 @@ describe('codes 16/27 — o braço do anúncio (passo 11)', () => {
     // continua correndo. O que torna o defer certo é o outro lado: um push para
     // uma loja sem integração ATIVA é, na maioria das vezes, uma conta
     // DESATIVADA, que TEM documentos de vínculo — então uma re-condução dentro
-    // dos sete dias cai num produto real.
+    // dos sete dias cai num produto real. A razão é a do builder único (T33).
     expect(out).toEqual({
       kind: 'sem-conta',
       shopId: SHOP_ID,
-      reason: expect.stringContaining(String(SHOP_ID)),
+      reason: motivoSemConta(SHOP_ID),
     });
     expect(toDisposition(out)).toEqual({ kind: 'defer', reason: expect.any(String) });
     // O handler jamais foi invocado, então nenhuma chamada à Shopee saiu.
@@ -2844,7 +2848,8 @@ describe('codes 16/27 — o braço do anúncio (passo 11)', () => {
     const razaoCode3 = doCode3.kind === 'sem-conta' ? doCode3.reason : '';
     // O template é COMPARTILHADO pelos CINCO braços: as razões são a mesma
     // string, e nenhuma começa por um prefixo de braço. Quem responde "qual braço
-    // escreveu esta linha adiada" é o `kind` + o `code`, nunca o texto.
+    // escreveu esta linha adiada" é o `code`, nunca o texto (a linha não grava
+    // `kind`; o texto só diz que ela é `sem-conta`).
     expect(razaoAnuncio).toBe(razaoCode3);
     expect(razaoAnuncio.startsWith('anuncio: ')).toBe(false);
     // ÂNCORA: a razão nomeia a loja — sem isto a negativa acima passaria com ''.
@@ -3177,17 +3182,18 @@ describe('code 29 — o braço da devolução (passo 17)', () => {
     );
 
     // DEFER, e a inversão do code 2 não se aplica: conectar a loja torna a
-    // devolução ACIONÁVEL (ela ainda existe na Shopee).
+    // devolução ACIONÁVEL (ela ainda existe na Shopee). A razão é a do builder
+    // único (T33).
     expect(daDevolucao).toEqual({
       kind: 'sem-conta',
       shopId: SHOP_ID,
-      reason: expect.any(String),
+      reason: motivoSemConta(SHOP_ID),
     });
     expect(toDisposition(daDevolucao).kind).toBe('defer');
     const razao = daDevolucao.kind === 'sem-conta' ? daDevolucao.reason : '';
     const razaoCode3 = doCode3.kind === 'sem-conta' ? doCode3.reason : '';
     // O template é o MESMO nos cinco braços — quem diz qual braço escreveu a
-    // linha adiada é o `kind` + o `code`, nunca o texto.
+    // linha adiada é o `code`, nunca o texto (a linha não grava `kind`).
     expect(razao).toBe(razaoCode3);
     expect(razao.startsWith('devolucao')).toBe(false);
     // ÂNCORA: a razão nomeia a loja — sem isto a negativa acima passaria com ''.
@@ -3630,7 +3636,8 @@ describe('defer — só para uma loja de um push code 1 que não mapeia nada', (
       payload({ code: 1, shopId: 111, data: { shop_id: 111 } }),
       deps,
     );
-    expect(out).toMatchObject({ kind: 'sem-conta', shopId: 111 });
+    // A razão é a do builder único, como nos outros quatro braços (T33).
+    expect(out).toEqual({ kind: 'sem-conta', shopId: 111, reason: motivoSemConta(111) });
     expect(toDisposition(out).kind).toBe('defer');
   });
 
@@ -4020,6 +4027,23 @@ describe('a fiação do pipeline', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
     expect(fonte).toContain('collection: notificacaoShopeeCollection');
     expect(fonte).not.toMatch(/\bcollection,\s*$/m);
+  });
+
+  // ⚠️ T33 (#1528, passo 20) — o motivo `sem-conta` tem UM builder. A linha
+  // adiada não grava `kind` (`toDocFields`), então a string exata é o único
+  // rastro do tipo, e o re-drive do passo 20 a casa por `===`. Um braço que
+  // voltasse a montar o texto INLINE — mesmo byte a byte — seria uma segunda
+  // cópia esperando para derivar; com uma palavra trocada, as linhas dele
+  // ficariam fora do re-drive em silêncio. As cinco asserções `reason:
+  // motivoSemConta(…)` acima pegam a palavra trocada; esta pega a cópia idêntica.
+  it('T33 — o texto `sem-conta` aparece UMA vez na fonte, dentro de motivoSemConta', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
+    expect(fonte.split('não mapeia nenhuma integração Shopee ativa')).toHaveLength(2);
+    // E os bytes são os de ANTES do builder: uma linha adiada antes do passo 20
+    // continua sendo reconhecida pelo re-drive.
+    expect(motivoSemConta(SHOP_ID)).toBe(
+      `loja ${String(SHOP_ID)} não mapeia nenhuma integração Shopee ativa`,
+    );
   });
 
   it('identidadeDoPush separa o que sobrevive a uma reentrega do que não', () => {

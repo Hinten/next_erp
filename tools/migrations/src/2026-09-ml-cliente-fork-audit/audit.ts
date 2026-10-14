@@ -56,13 +56,17 @@ import {
  * the mirror by collection group and reads only those parents. That also means
  * a non-ML pedido is never fetched at all.
  *
- * ## No index required
+ * ## One index per walk: the document key
  *
- * Both walks are plain `orderBy(documentId())` key-order scans — the ONE
- * ordering Firestore always serves without a declared index. On ENTERPRISE a
- * missing index does NOT throw, it silently full-scans and bills data scanned,
- * so a "narrower" filtered query here would be more expensive, not less. Do not
- * "optimize" this into a `where`.
+ * Both walks are plain `orderBy(documentId())` key-order scans, each riding its
+ * DECLARED key index — collection `clientes(__name__ ASC)` and collection group
+ * `orderML(__name__ ASC)` (#1895, listed in `key-walks.json`). Enterprise has no
+ * implicit key index: without one every page re-scans the whole collection
+ * (staging, #1895: an unindexed collection-group walk table-scanned all 6,342
+ * `enderecos` docs on every page of 300). Those key indexes are the ONLY ones
+ * this needs. On ENTERPRISE a missing index does NOT throw, it silently
+ * full-scans and bills data scanned, so a "narrower" filtered query here would
+ * be more expensive, not less. Do not "optimize" this into a `where`.
  *
  * ## Memory
  *

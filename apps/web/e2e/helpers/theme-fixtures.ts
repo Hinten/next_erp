@@ -3,10 +3,14 @@ import { millisToMicros } from '@delfrance/core/datetime';
 import { deleteDocumentSubtree } from '@delfrance/data/admin';
 import {
   bucketOf,
+  checkoutFretePedidoSchema,
   ESTADO_BUCKET_LABELS,
   ESTADO_PEDIDO,
   ESTADO_PEDIDO_LABELS,
+  MODALIDADE_FRETE,
   pedidoSchema,
+  seedFreteInicial,
+  usuarioSchema,
   type EstadoPedido,
 } from '@delfrance/schemas';
 import { db } from '@delfrance/test-fixtures';
@@ -149,4 +153,57 @@ export async function cleanupThemeReportFixtures(prefix: string): Promise<void> 
       }
     }),
   );
+}
+
+const CHECKOUT_FIXTURE_COUNT = 3;
+
+function checkoutFixture(prefix: string) {
+  return {
+    userId: `${prefix}-checkout-colaborador`,
+    pedidoId: `${prefix}-checkout-pedido`,
+    // One unbreakable token far wider than the chart's 180px user axis: the
+    // shape of the e2e collaborator id that clipped the staging report.
+    nome: `${prefix}-colaborador-com-um-nome-sem-espacos`,
+  };
+}
+
+/**
+ * A collaborator with three checkouts today, so the default (current month)
+ * checkouts report always ranks and names them, whatever else the run wrote.
+ * No parent pedido: the report reads the `checkout` collection group, and a
+ * bare subcollection fires no pedido trigger whose history cleanup must await.
+ */
+export async function seedThemeCheckoutFixtures(prefix: string) {
+  readEmulatorAccessConfig();
+  const { userId, pedidoId, nome } = checkoutFixture(prefix);
+  const batch = db().batch();
+  batch.set(
+    db().collection('usuarios').doc(userId),
+    usuarioSchema.parse({ nome, colaborador: true }),
+  );
+  for (let index = 0; index < CHECKOUT_FIXTURE_COUNT; index += 1) {
+    batch.set(
+      db()
+        .collection('pedidos')
+        .doc(pedidoId)
+        .collection('checkout')
+        .doc(`${prefix}-checkout-${index}`),
+      checkoutFretePedidoSchema.parse({
+        usuarioCheckoutFretePedidoOuterRef: `documents/usuarios/${userId}`,
+        timestamp: Date.now() - 1000 * (index + 1),
+        freteNoMomentoDoCheckout: seedFreteInicial(MODALIDADE_FRETE.semTransporte, true),
+      }),
+    );
+  }
+  await batch.commit();
+  return { nome, count: CHECKOUT_FIXTURE_COUNT };
+}
+
+export async function cleanupThemeCheckoutFixtures(prefix: string): Promise<void> {
+  readEmulatorAccessConfig();
+  const { userId, pedidoId } = checkoutFixture(prefix);
+  const result = await deleteDocumentSubtree(db(), db().collection('pedidos').doc(pedidoId));
+  expect(result.failedDeletes, `Delete checkout fixtures under ${pedidoId}`).toBe(0);
+  expect(result.truncated).toBe(false);
+  await db().collection('usuarios').doc(userId).delete();
 }

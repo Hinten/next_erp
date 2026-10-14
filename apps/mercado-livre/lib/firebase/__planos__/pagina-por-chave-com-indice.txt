@@ -1,0 +1,70 @@
+Execution:
+ results returned: 100
+ query id: <QUERY>
+ request peak memory usage: 345.99 KiB (354,294 B)
+ data bytes read: 139.62 KiB (142,973 B)
+ entity row scanned: 100
+ index row scanned: 100
+
+Billing:
+ read units: 111
+
+Tree:
+• Compute
+|  $out_1: map_set($record_1, "__name__", $__name___1, "__key__", unset)
+|  is query result: true
+|
+|  Execution:
+|   records returned: 100
+|   latency: 9.59 ms (local <1 ms)
+|
+└── • Compute
+    |  $__name___1: $__key___2
+    |
+    |  Execution:
+    |   records returned: 100
+    |   latency: 9.10 ms (local <1 ms)
+    |
+    └── • Fetch
+        |  order: PRESERVE_INPUT_ORDER
+        |  source: /arquivos
+        |  input record id: $rid_2
+        |  output bindings: {$__key___2=get_field(row(), "__key__"), $record_1=row()}
+        |  output: [$__key___2, $record_1]
+        |
+        |  Execution:
+        |   records returned: 100
+        |   latency: 8.97 ms (local 4.81 ms)
+        |   peak memory usage: 345.99 KiB (354,294 B)
+        |   data bytes read: 95.65 KiB (97,947 B)
+        |
+        └── • Limit
+            |  limit: 100
+            |
+            |  Execution:
+            |   records returned: 100
+            |   latency: 4.17 ms (local <1 ms)
+            |
+            └── • Filter
+                |  expression: exists($key_6)
+                |
+                |  Execution:
+                |   records returned: 100
+                |   latency: 3.96 ms (local <1 ms)
+                |   post-filtered rows: 0
+                |
+                └── • SequentialScan
+                       properties: Selection {  }
+                       fields: [$key_6, $rid_2]
+                       index: /arquivos (__key__ ASC)@[id = CICAgJjU8o8K]
+                       partition: /
+                       key ordering length: 2
+                       ranges: /
+                               |----(EntityRef[partitionRef=<PROJECT>#default, path=/arquivos/<ID>]..oid(000000000000000000000000))
+
+                       Execution:
+                        records returned: 100
+                        latency: 3.54 ms
+                        records scanned: 100
+                        data bytes read: 43.97 KiB (45,026 B)
+

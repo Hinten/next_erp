@@ -361,9 +361,10 @@ whose delete did not take. It changes **publish only**:
 ### Two resolvers, and why PUBLISH stays lexical
 
 - **`resolverLinkPorProduto`** is the publish path's resolver
-  (`prepararPublicacao`). It stays main's lexical `escolherLink` over every link
-  of the conta, unchanged, because L10(3) says publishing a non-kit produto must
-  not change. Reordering it would publish a non-kit produto whose REMOVED link
+  (`prepararPublicacao`). It keeps main's lexical `escolherLink` ORDER over every
+  link of the conta (L10(3)); only the candidate SET grew — the conta filter
+  accepts both stored conta-ref encodings (OP-27, PR #1869), so a legacy
+  bare-encoded link is now a candidate for a non-kit produto too. Reordering it would publish a non-kit produto whose REMOVED link
   sorts first to its live link, where main answers `listagem-removida` (M185,
   `publicarAnuncio.test.ts`).
 - **`resolverLinkVivoPorProduto`** (`linkAnuncio.ts`) serves the reverify, the
