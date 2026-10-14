@@ -538,6 +538,27 @@ export {
 } from './notificacaoShopee';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only backlog
+  // of the Loja Integrada reads queue (master plan step 3). Bare: a combined
+  // `{ schema, meta }` export would trip `registry.test.ts`.
+  CONTA_ID_LI_REGEX,
+  DATA_MODIFICACAO_LI_REGEX,
+  NUMERO_PEDIDO_LI_REGEX,
+  ORIGEM_NOTIFICACAO_LI,
+  TIPO_TAREFA_LI,
+  camposNotificacaoLi,
+  contaIdLiSchema,
+  dataModificacaoLiSchema,
+  notificacaoLojaIntegradaSchema,
+  numeroPedidoLiSchema,
+  origemNotificacaoLiSchema,
+  tipoTarefaLiSchema,
+  type NotificacaoLojaIntegrada,
+  type OrigemNotificacaoLi,
+  type TipoTarefaLi,
+} from './notificacaoLojaIntegrada';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
@@ -1427,6 +1448,8 @@ export {
   ROTAS_AVISO,
   pendenciaReclamacaoSchema,
   PENDENCIA_RECLAMACAO,
+  motivoImportacaoParadaLiSchema,
+  MOTIVO_IMPORTACAO_PARADA_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1444,6 +1467,7 @@ export {
   type ChaveAvisoInput,
   type RotaAvisoKey,
   type PendenciaReclamacao,
+  type MotivoImportacaoParadaLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';

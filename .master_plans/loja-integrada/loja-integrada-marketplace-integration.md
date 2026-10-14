@@ -513,7 +513,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **`api.ts`:** `validarPersonalToken`, the validating GET (see Connect below).
   - **Deferred to the first consumer.** Captures arrive per step, from step 3 on (D17), so schemas written now from spec examples would be rewritten against them.
     - Resource schemas: pedido search row and detail, including **both `itens[].produto` shapes** (steps 3 and 5); situação and histórico (5); pagamento (6); produto list/detail (9); marca and grades (10); imagem (11); estoque (12); preço (13); envio (5, 7 and 20).
-    - **Naive São Paulo dates** → µs epoch (`dataLiParaMicros`, tz-aware, not a fixed −03:00) and the cursor formatter, which emits exactly the documented `AAAA-MM-DDTHH:MM:SS` (seconds-truncated, no fraction, no offset). They land in step 3 as two generic helpers in `@delfrance/core/datetime`, not in this package.
+    - **Naive São Paulo dates** → µs epoch (`dataLiParaMicros`, tz-aware, not a fixed −03:00) and the cursor formatter, which emits exactly the documented `AAAA-MM-DDTHH:MM:SS` (seconds-truncated, no fraction, no offset). They land with their first consumer, not in this package. Step 3 needs neither: its poller keeps LI's stamp as canonical TEXT (no µs conversion) and renders the bootstrap bound with the existing `formatIsoNoFuso`; the µs conversion lands with step 5's watermark (zone from capture C5).
     - Webhook `Z`/offset dates are parsed by their own offset (step 4).
 - **App** `apps/loja-integrada` (`@delfrance/loja-integrada-app`, Next 16.2.6, API-only, `:3010`) is a **bare scaffold** in PR b:
   - `app/api/health`, `apphosting.yaml` (`minInstances: 0`) and `CLAUDE.md`.
@@ -595,8 +595,8 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - The conta status route `GET /api/marketplace/loja-integrada/conta/[id]` reports `{configurado, expiraEm, diasParaExpirar, situacaoValidade, atualizadoEmMs, versaoCredencialUs, reconexaoPendente}`, never the token and never the park's ref. It is an explicit projection, never a spread of the document.
 - **Parking on 401/403:**
   - Any `LiAuthError` marks `reconexaoPendente` and raises `lojaIntegradaReconexaoPendente` (`critico`).
-  - **Intake while parked (step 3, not step 2):** the poller skips the conta without advancing its cursor, and intake tasks for a parked conta return a deterministic "conta parada" outcome (no retry). Both are safe because the un-advanced cursor re-reads every change once the token is restored. Step 3 also decides drop versus defer for tasks already enqueued when the token dies; the research recommends defer.
-  - **Re-drive:** tasks that cannot be re-derived (step-7 write-backs, step-11 publish jobs) take the **deferred** disposition (#808 lane). In LI terms the lane exists because an expired token is a human-scale outage of hours to days, which retries cannot fix and which must not burn the retry budget. Saving a validated token clears the park and enqueues the conta's deferred docs (steps 3 and 7; the re-drive needs `notificacoesLojaIntegrada (status ASC, contaId ASC)`, which this plan did not declare). The shared deferred cap is 7 attempts (`MAX_TENTATIVAS_DEFERRED`), so the 14-day age cannot be met as written; the step-3 and step-7 plans settle it.
+  - **Intake while parked (step 3, not step 2; decided there):** the poller skips the conta without advancing its cursor, and an intake task for a parked conta **defers** (`adiado/conta-parada`, the deferred lane) — never a "conta parada, no retry" drop, because tasks enqueued before the token died are already behind the cursor and a drop would lose those orders. A token save re-drives the conta's deferred rows at once.
+  - **Re-drive:** tasks that cannot be re-derived (step-7 write-backs, step-11 publish jobs) take the **deferred** disposition (#808 lane). In LI terms the lane exists because an expired token is a human-scale outage of hours to days, which retries cannot fix and which must not burn the retry budget. Saving a validated token clears the park and enqueues the conta's deferred docs (steps 3 and 7; the re-drive needs `notificacoesLojaIntegrada (status ASC, contaId ASC)`, which this plan did not declare). The shared deferred cap is 7 attempts (`MAX_TENTATIVAS_DEFERRED`), so the 14-day age cannot be met as written. Step 3 settled it for intake by accepting the 7-day horizon (the 30-day expiry aviso and the critical reconexão aviso both come before the loss) and declared the `(status, contaId)` index; step 7 settles its own lane.
 - **Rule 7:** parking is a **tier-1 precondition write** with a named guard (re-cut items 3 and 4), not a transaction, so it has no line in `firestore-transaction-inventory.test.js`. The ref derived from the stored token must equal the ref of the token that got the 401; otherwise a 401 from a token the operator has just replaced would park a healthy conta. The reconexão aviso is clocked by the credential document's commit time in µs (item 11); the one module that converts to µs is `lib/lojaIntegrada/avisos/avisos.ts`.
 - **CI lane:** moved to step 3 (re-cut item 2), because step 2 has no emulator test. `ci-loja-integrada.yml` will follow the `changes`/`gate` pattern with `CI gate (loja-integrada)` / `CI scope (loja-integrada)`, and it is registered in `ci-lane-gates.test.js` `LANES` and `main-red-alert.yml`. The "lanes"/"pinnable checks" counts in root `CLAUDE.md` are updated. Pinning it in `protect-main` is a manual follow-up for Lucas. Firestore emulator ports come from the inventory (proposed 8085; the step plan checks).
 - **Dry-run/valve:** none (no LI write).
@@ -663,52 +663,64 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Timing:** before any write step, since each write step's code calls the valve. The sanitizer comes before step 3, whose first fixtures need it.
 - **Does NOT:** send any write; make any LI call; handle any token; keep any raw capture inside the repository; build the write engine (step 7, PR a).
 
-### Step 3: Poller (primary) + notification pipeline + Cloud Tasks queues
+### Step 3: Poller (primary) + notification pipeline + Cloud Tasks queue
 
-- **Gate:** `importarPedido`, `notificacoes`, P6. **Trigger:** `onSchedule` every 5 min → Cloud Task. **Docs:** `spec GET /v1/pedido/search`.
-- **Wire:** `GET /v1/pedido/search?since_atualizado=<cursor − 120 s>&limit=50` (+ `offset` via `meta.next`). The search-then-detail pattern is **[live-proven, legacy credential]**; the details below are what the legacy does not prove:
+- **Gate:** `importarPedido`, `notificacoes`, P6. **Trigger:** `onSchedule` every 5 min — the poller runs INLINE in its own schedule, not as a queued task, so intake keeps running in sweep-only mode (`LOJA_INTEGRADA_TASKS_DISABLED=1`) — → one Cloud Task per changed order. **Docs:** `spec GET /v1/pedido/search`.
+- **Build (step plan approved 2026-10-13, five stacked PRs):** 3-a the pipeline core, offline (schema, handle, classifier, dispositions, the deferred lane, the context's read switch and pacer, the `lojaIntegradaImportacaoParada` aviso tipo, both indexes); 3-b the token-save re-drive in the two credential routes; 3-c the nested functions codebase and its deploy plumbing; 3-d the lane and the first emulator round trip; 3-e the poller, kept a draft until the owner's C1 and C2 fixtures are committed. The capture-gated PR sits on top, so nothing below it waits for a capture.
+- **Nothing in step 3 can call Loja Integrada (D17).**
+  - The task's importer is a SEAM (`DESTINO_TIPO_LI`), empty until step 5 fills it; with the seam empty the outcome is `importador-ausente`, which parks. Only the functions codebase's composition roots read the seam; the library takes the importer as a dependency, so tests inject a fake.
+  - The poller refuses to run while the seam is empty (Shopee's backfill guard): without that gate every tick would leave one terminal parked row per order.
+  - Every call goes through the context loader, which checks `LOJA_INTEGRADA_CHAMADAS` FIRST — before any Firestore read and before a client exists — and refuses unless it is exactly `on`. The switch stays unset everywhere until §5 item 1. The loader's environment is a required parameter (`ambiente`), because the library never reads the process environment.
+  - Every call through a context is paced: 2,000 ms before each, inside the credential getter, outside the 20 s request deadline.
+- **Wire:** `GET /v1/pedido/search?since_atualizado=<cursor − overlap>&limit=50` (+ `offset` via `meta.next`). The search-then-detail pattern is **[live-proven, legacy credential]**; the details below are what the legacy does not prove:
   - `since_atualizado` is sent in the documented `AAAA-MM-DDTHH:MM:SS` form: seconds, no fraction, no offset.
   - `limit=50` is requested, but the page size actually used is the `meta.limit` read back. 50 is documentation-only until then; the legacy has only ever used 20 live (§1.2 item 10).
-  - Next pages are rebuilt from `meta.next`'s query string against `/v1/pedido/search`, never followed verbatim. The trailing-slash form is the one the step-1 client already sends; `meta.next`'s form comes from capture C1 (§1.2 item 13, D17).
-  - The overlap absorbs same-second ties and inclusive bounds.
-  - Ordering is undocumented and never assumed, so the cursor advances only to `max(data_modificacao)` of a **fully drained** window.
-  - **One drain loop with a time budget and no persisted continuation.** The poller only enqueues, so a 2-week backlog (~300 orders, ~6 pages at 50, ~15 at 20) drains in one run. If the budget or page cap (40 pages) is hit, the cursor does not advance, the next tick re-drains (idempotent), and an aviso is raised.
-- **Synthetic notifications:** each row → `{contaId, numero, dataModificacaoUs, origem: 'poll'}`, enqueued onto the same queue the webhook uses. The cursor is written only after every row is enqueued or persisted (the Shopee lost-push ordering rule).
+  - Next pages are rebuilt from `meta.next`'s query string against the slash path, never followed verbatim, and a dropped filter is re-added. `meta.next`'s form comes from capture C1 (§1.2 item 13, D17).
+  - **The overlap is 120 s for ties plus a 4 h zone margin** (`SOBREPOSICAO_S = 14_520`), until C1 and C5 agree on the zone. A `vistos` map (numero → canonical stamp) stops the newest order being re-enqueued on every idle tick (a bare 120 s overlap would re-list it about 288 times a day per store). `vistos` is pruned only below the filter-tolerance bound (`since − 4 h − 10 min`), so a zone mismatch cannot cause repeated re-enqueues, is capped at 5,000 entries, and is persisted on every final write except one ended by a park.
+  - Ordering is undocumented and never assumed, so the cursor advances only to `max(data_modificacao)` of a **fully drained, consistent** window, never backwards, clamped to now + 10 min (rendered in UTC). Three checks block an advance: **filter ignored** (a row below the tolerance bound: stop, aviso at once), **window too large** (page 1's `total_count > meta.limit × 20`: refused before draining, aviso at once) and **unstable window** (fewer distinct rows than the largest `total_count` seen).
+  - **One drain loop with a time budget and no persisted continuation.** The cap is `MAX_PAGINAS_POLL = 20`, sized from the budget by a pure invariant: `20 × (2,000 ms pacer + 2,000 ms estimated latency) ≤ 100 s − 10 s` per conta, inside a 220 s tick. The latency figure is unmeasured and named as such. A budget-exhausted run persists `vistos`, so a window that fits the cap converges over a few ticks; only a run with no progress counts as a failure.
+  - A window too big to drain (a conta inactive or parked for about 20–50 days or more) is refused on page 1 with a `critico` aviso; the runbook is "delete `pollPedidosLojaIntegrada/{id}` to re-bootstrap from the look-back". The livelock is acknowledged rather than designed away.
+- **Synthetic notifications:** each row → `{tipo: 'pedido', contaId, numero, origem: 'poll', dataModificacaoLi}` onto the reads queue. `dataModificacaoLi` is LI's own stamp as canonical text (26 characters, `…:SS.ffffff`, zone unknown until C5): nothing decides on it, because step 5 watermarks on the stamp of its own GET, and it adds no µs conversion site. An enqueue failure that is transient, or the queue switched off, persists the row as `failed` at its deterministic id (Shopee's shape); any other enqueue failure is a broken deploy and fails the tick loudly. No task `id` is passed, so step 5's importer must be idempotent (D13's re-fetch).
 - **Firestore:**
   - **`pollPedidosLojaIntegrada/{integracaoId}`** is a bare const outside `ALL_DOMAINS` (`perms 0n`, no Meta ⇒ no `defaultQuery`). Fields:
-    - `cursor`: a string, LI's naive São Paulo `AAAA-MM-DDTHH:MM:SS`, the value the API takes. Fixed width ⇒ lexicographic order = time order.
-    - `emExecucaoAteMs` (ms), the single-flight lease.
-    - `ultimaVarreduraEmMs` (ms).
-    - `ultimoErro`, `.nullable().default(null)`.
-  - **`notificacoesLojaIntegrada`** is failures-only (`notificationResilienceFields()`). `docIdOf = <contaId>:<numero>:<dataModificacaoUs | ->` goes through the doc-id guard.
-    - **No collapse is claimed**: the webhook's `data_modificacao` is UTC with ms precision, while REST's is naive with µs precision.
-    - Duplicates are harmless because the import is idempotent.
-  - **Indexes:** `notificacoesLojaIntegrada (status ASC, processedAt ASC)` (new, for the reprocess sweep); the conta enumeration reuses `integracao (tipo ASC, ativo ASC)`.
-  - **Rulesets:** regenerate both + snapshots (two new bare collections).
-  - **Env:** `LOJA_INTEGRADA_POLL_LOOKBACK_H` (default 72), `LOJA_INTEGRADA_TASKS_DISABLED`, `LOJA_INTEGRADA_TASKS_REGION` (real value), in `.env.example`, `apphosting.yaml` and the functions env.
+    - `cursor`: LI's naive `AAAA-MM-DDTHH:MM:SS`, the value the API takes; fixed width ⇒ lexicographic order = time order. `.nullable().default(null)`.
+    - `emExecucaoAteMs` (ms) and `execucaoId`, the single-flight lease; `ultimaVarreduraEmMs` (ms).
+    - `ultimoErro` (the motivo enum the import-stopped aviso shares), `falhasSeguidas`, `vistos`.
+    - A **refusal record** (an active conta whose credential is missing or corrupt, an invalid look-back, an invalid conta id) gives a refusing conta a failure counter and an aviso clock without taking the lease, and never sets a cursor.
+  - **`notificacoesLojaIntegrada`** is failures-only (`notificationResilienceFields()`), its wire fields ids only, unknown keys stripped. The doc id is `<contaId>:<numero>:<origem>:<stamp digits | ->`, built from schema-validated parts: every segment matches a restrictive regex, so no doc-id guard is needed. The stamp is in the id, so a parked row never swallows a later change of the same order. **No collapse is claimed** with the webhook's stamp (UTC, ms) — duplicates are harmless because the import is idempotent.
+  - **Indexes:** `notificacoesLojaIntegrada (status ASC, processedAt ASC)` (both sweep lanes) and `(status ASC, contaId ASC)` (the token-save re-drive), both new. The conta enumeration reuses the shipped `listarContasLojaIntegrada` and its `integracao (tipo ASC, nome ASC)`.
+  - **Rulesets:** none. Verified with `gen:rules:check` and `gen:rules:e2e:check`, never regenerated: a bare collection outside `ALL_DOMAINS` gets no rules block, and the aviso enums never reach the generator.
+  - **Aviso `lojaIntegradaImportacaoParada`** (`critico`, canal `lojaIntegrada`, params `loja` + a `motivo` code): raised by the poller at its failure thresholds, clocked by the µs commit time of the run's first poll-document write (the lease or the refusal record), and resolved only after a stored failure. Never raised for a parked conta, an inactive conta, the switch off, a busy lease or an absent importer. The expiry sweep's orphan pass knows its chave, so it never closes a live conta's row; a gone conta's row is resolved clocked by the enumeration's read time.
+  - **Env:** `LOJA_INTEGRADA_POLL_LOOKBACK_H` (unset or blank ⇒ 72; otherwise `^[1-9][0-9]{0,3}$` and ≤ 2,160, and an invalid value refuses the bootstrap as `lookback-invalido` rather than defaulting), `LOJA_INTEGRADA_TASKS_DISABLED` (exactly `1`), `LOJA_INTEGRADA_TASKS_REGION` (blank ⇒ the inlined `FUNCTIONS_REGION`). All three are read only by the functions codebase: the root `.env.example` and the functions `.env.deploy`, never `apphosting.yaml` rows. `LOJA_INTEGRADA_CHAMADAS` gains the functions surface.
 - **Seam:**
-  - `defineNotificationPipeline` (enqueue-first; "deterministic outcomes RETURN, transient failures THROW"), `requireRegion`, and `tasksInvoker.ts` copied verbatim.
-  - The nested `apps/loja-integrada/functions` codebase holds `processLojaIntegradaNotification`, `reprocessLojaIntegradaNotifications` (every 30 min), the poller and the daily `onSchedule` wrapper of the expiry sweep, whose body ships in step 2. Queue export names equal the queue constants.
-  - `firebase.loja-integrada.tasks.json` (tasks emulator; ports from the inventory, proposed 5004/9501) and the `*.tasks.test.ts` suite run in the step-3 lane, which also adds the rule-4 carve-out line and the lane and pinnable-check count edits to root `CLAUDE.md`.
-- **Bootstrap** (orchestrator call): if there is no cursor ⇒ `now − LOJA_INTEGRADA_POLL_LOOKBACK_H`. It is idempotent by the deterministic pedido id. The window sets it from the legacy gap (§5 item 7).
-- **Dispositions:**
-  - imported/unchanged → ack;
-  - hub order → ack + flag (step 5);
-  - conta parked → "conta parada" (no retry; step 2);
-  - 404 → park the notification;
-  - unknown codigo → imported as `error` + aviso;
-  - `LiThrottleError`/5xx/network → throw (Cloud Tasks backoff).
-- **Rule 7:** the cursor doc has **several possible writers**: an overlapping tick, a Cloud Task retry, a late older run.
-  - **Single-flight:** a run takes the lease by `update({emExecucaoAteMs}, {lastUpdateTime})` only if the lease has expired.
-  - **Advance-only:** the cursor is re-read and moved only forward, with `update(…, {lastUpdateTime: snap.updateTime})`. FAILED_PRECONDITION ⇒ re-read and retry once.
-  - Both are **tier 1 (native precondition)**; no transaction, so there is no inventory line.
+  - `defineNotificationPipeline` (enqueue-first; "deterministic outcomes RETURN, transient failures THROW"), `requireRegion` with an object literal, and `tasksInvoker.ts` copied verbatim.
+  - **One reads queue, `filaLeituraLojaIntegrada`**, whose export name is the queue name: §4.23 puts intake, import-job and reconcile reads on that queue, and Firebase binds one function per queue, so the function dispatches on the task's `tipo`. It replaces the earlier `processLojaIntegradaNotification`. No writes-queue function ships before step 7, which is its first producer.
+  - The nested `apps/loja-integrada/functions` codebase holds `filaLeituraLojaIntegrada`, `reprocessLojaIntegradaNotifications` (every 30 min: the hot lane, then the deferred lane), `pollLojaIntegradaPedidos` (every 5 min) and `sweepLojaIntegradaTokenExpiry` (daily, the step-2 body).
+  - **The guard rosters move here from step 22**, because they discover codebases themselves and go red the moment the codebase exists: `tasks-invoker-inventory`, `runtime-deps-pinned`, `functions-region-supplied`, `functions-export-names`, the `tools/deploy-env/preflight.mjs` row (`backendVar: null` until step 4's App Hosting enqueuer) and an inert `firebase.loja-integrada.deploy.json`.
+  - **The lane `ci-loja-integrada.yml`** (Shopee's one-job shape; no `ci.yml` exclusion, so the unit suites stay in `CI test`) runs `*.tasks.test.ts` and `*.firestore.test.ts` against `firebase.loja-integrada.tasks.json` (ports 8085/5004/9501). The job sets `LOJA_INTEGRADA_CHAMADAS: 'off'` — the D17 layer for the functions-emulator process — and its `push: paths:` are written one entry per line, with no brace patterns. The app gains a `workspace:*` devDependency on `@delfrance/deploy-env`, so the PR scope sees `tools/deploy-env`. The lane also adds the rule-4 carve-out line and the lane and pinnable-check count edits to root `CLAUDE.md`.
+- **Bootstrap** (orchestrator call): if there is no cursor ⇒ `now − LOJA_INTEGRADA_POLL_LOOKBACK_H`, rendered in São Paulo time (the wider window) and anchored by the first lease, so repeated failures never slide it forward. It is idempotent by the deterministic pedido id. The window sets it from the legacy gap (§5 item 7).
+- **Dispositions** (of a notification; the poller's own outcomes are in the step plan):
+  - imported → resolve. The other import outcomes — unchanged, hub order (ack + flag), unknown codigo (imported as `error` + aviso) — arrive with step 5, and the outcome switch is exhaustive, so each must be mapped before it compiles;
+  - conta gone → drop;
+  - read switch off, conta inactive, token missing, corrupt or **parked** → **defer**, never drop: tasks enqueued before a token died are already behind the cursor, so dropping them would lose those orders. The deferred lane re-drives daily for `MAX_TENTATIVAS_DEFERRED` (7) passes — the earlier "14 days" cannot be met by the shared cap — `graduateDeferredTransientErrors` returns a row whose import then threw to the hot lane with a fresh budget, and a token save (or a renewal) re-drives the conta's deferred rows at once;
+  - `LiAuthError` → park the conta (`tratarFalhaDeAutenticacao`, the step-2 park's first caller) and defer; a 401 that belonged to an older token is rethrown, so the retry uses the new one;
+  - 404 → park the notification; a non-transient HTTP, schema, paging or Zod refusal → park, recording the class and status only; importer absent → park;
+  - `LiThrottleError`/5xx/network/timeout, our own `LiConfigError`, gRPC and anything unknown → throw (Cloud Tasks backoff, then the hot lane). The `LiError` base is never caught.
+  - **Accepted residue:** a token save whose re-drive lands between the deferred sweep's read of a row and its mark is overwritten by that mark — the row waits one more day, or, on its 7th pass, parks. The re-drive moves only rows that are already deferred, so two more windows behave the same way: a task's deferred create, or the hot sweep's migration of a failed row, that found the conta parked before the re-drive and writes after it. That row is written deferred with zero attempts, so it waits up to one more day and is never parked by this. None of the windows loses an order: the next daily deferred pass sees the healthy conta. Tests pin all four cases.
+- **Rule 7:** tier 1 (native precondition) everywhere; no transaction, so there is no inventory line.
+  - **Lease:** `create` when the poll doc is absent, otherwise `update({emExecucaoAteMs, execucaoId}, {lastUpdateTime})` only if the lease has expired. ALREADY_EXISTS or FAILED_PRECONDITION ⇒ another run holds it, exit.
+  - **Final write:** preconditioned on the lease's write time. On FAILED_PRECONDITION, re-read: another run's lease ⇒ write nothing; still ours ⇒ re-derive (`max(cursor)`, merged `vistos`) and retry once. The cursor never moves backwards.
+  - **Refusal record:** `create`, or `update(…, {lastUpdateTime})` only when no lease is held; it never touches the cursor or the lease.
+  - **Failure docs:** the shared store — `create` ignores ALREADY_EXISTS, the re-drive is `mergeIfExists` and never resurrects a deleted row.
 - **Queues and rates:** §4.23. **Dry-run/valve:** none (read-only).
 - **Verification:**
-  - Fixture-driven sweep tests: empty page, one page, page cap hit ⇒ cursor unchanged, a boundary order re-seen, cursor never moved backwards by a stale run, lease held ⇒ second run exits, rows out of `data_modificacao` order, a `meta.limit` smaller than requested, an `/api/v1` `meta.next` rebuilt against `/v1`.
-  - §1.2 items 10, 11 and 13 are settled by the owner's capture C1 (under the Personal Token, D17) before merge.
+  - Fixture-driven sweep tests: empty page, one page, page cap hit ⇒ cursor unchanged, a boundary order re-seen, cursor never moved backwards by a stale run, lease held ⇒ second run exits, rows out of `data_modificacao` order, a `meta.limit` smaller than requested, an `/api/v1` `meta.next` rebuilt against `/v1`; the budget invariant over its four constants; convergence of a window three budgets long in ≤ 4 ticks.
+  - The pipeline's full disposition matrix (task, hot sweep, deferred sweep), the classifier table, the read switch with zero Firestore operations, the #808 path, the deferred cap, graduation, the re-drive and its race with the deferred sweep; near-miss pairs for every equality decision; the mutation checks recorded in each PR body.
+  - Emulator: the real enqueue → the tasks emulator → the real `filaLeituraLojaIntegrada` → a `deferred` document (switch off); the lease and preconditions against real Firestore.
+  - §1.2 items 10, 11 and 13 are settled by the owner's capture C1 (under the Personal Token, D17) before 3-e merges.
   - **Live end-to-end (poll → task → import → pedido) is deferred to the window** (§5 smoke). There is no staging rehearsal (§7 q4, closed by D17).
 - **Timing:** after P6 and step 2, since it reads the context and can park. It comes before step 5, which consumes its notifications.
-- **Does NOT:** map anything (the task re-fetches); filter by situação (every changed order is imported); persist a continuation; follow `meta.next` verbatim.
+- **Does NOT:** make any LI call (the importer seam is empty); map anything (the task re-fetches, step 5); filter by situação (every changed order is imported); persist a continuation; follow `meta.next` verbatim; ship a writes queue (step 7) or a webhook receiver (step 4).
 
 ### Step 4: Webhook receiver (accelerator) + registration route (used only at the window)
 
@@ -874,7 +886,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - `envios[i].id` comes from `freteInicial.externalId`, stored at import.
 - **Read-back:** `GET /v1/pedido/{numero}` → compare `objeto` and situação, and log any drift.
 - **Firestore:** reads `pedidos/{id}` and the history doc; writes nothing. **Indexes:** none. **Rulesets:** none. **Env:** `LOJA_INTEGRADA_MODO_RASTREIO`, `LOJA_INTEGRADA_CANARIO_RASTREIO` (step 2b).
-- **Seam:** the step-2 deferred lane for a parked conta (these events cannot be re-derived).
+- **Seam:** the deferred lane for a parked conta that step 3 built for the reads queue (these events cannot be re-derived); step 7 is the writes queue's first producer and adds its own function. ⚠️ A write must never run inline in a sweep: the shared reprocess sweep calls `process()` inline, which would break the writes queue's serialisation.
 - **Rule 7:** **serialised** (§4.23). All LI writes run on the writes queue with `maxConcurrentDispatches: 1`, so no two write-back tasks run their check-then-act at the same time. The task name = the history doc id dedups redelivery.
   - Two history docs racing (e.g. `postado` and `entregue` created close together, executed in either order): whichever runs second reads LI's state after the first one's write. If `entregue` ran first, the `postado` task skips the situação by the no-regress guard and still writes the tracking code if `objeto` is empty.
   - The residual risk is a painel edit landing between the guard GET and the PUT. That is **tier 3 (tell the human)**: the read-back logs the drift and raises an aviso.
@@ -1203,16 +1215,12 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 
 - **Gate:** every `'sim'` built. **Trigger:** none.
 - **Firestore:** none. **Indexes:** none new. **Rulesets:** none. **Env:** the functions env file completed.
-- **Deploy configs:**
-  - `firebase.loja-integrada.deploy.json`: functions block only, codebase `loja-integrada`, predeploy preflight + `prepare-deploy.mjs`, no firestore/storage keys. It is inert until a human runs it.
-  - The `tools/deploy-env/preflight.mjs` row.
-- **Guard rosters:**
+- **Deploy configs — moved to step 3** (they ship with the codebase, as Shopee's did): the inert `firebase.loja-integrada.deploy.json` (functions block only, codebase `loja-integrada`, predeploy preflight + `prepare-deploy.mjs`, no firestore/storage keys) and the `tools/deploy-env/preflight.mjs` row. Step 4 sets the row's `backendVar`/`backendManifest` when the App Hosting enqueuer lands; step 22 only re-checks them.
+- **Guard rosters — moved to step 3**, because they discover codebases themselves and go red the moment the functions codebase exists:
   - `apphosting-next-pinned` (`KNOWN_APPHOSTING_APPS`) and `next-firestore-external` (`KNOWN_NEXT_APPS`) were done in step 1 PR b, with the app.
-  - `runtime-deps-pinned` (the functions `package.json` with exact `firebase-admin`/`firebase-functions`).
-  - `tasks-invoker-inventory`.
-  - `functions-region-supplied` (`REGION_COMMANDS`, `KNOWN_BUILDERS`).
-  - `firestore-transaction-inventory` (final check). `integration-response-numbers-tolerant` was extended in step 1 PR a; `http-client-timeout-ceiling` has no row for the package-only client.
-- **Docs and layout:** `apps/loja-integrada/functions/DEPLOY.md` (IAM: enqueuer + invoker for both the App Hosting and the functions runtime identities). The root `CLAUDE.md` layout lines (":3000–:3010", the app bullet) and the app counts landed with the app in step 1 PR b.
+  - `runtime-deps-pinned`, `tasks-invoker-inventory`, `functions-region-supplied` (`REGION_COMMANDS`, `KNOWN_BUILDERS`) and `functions-export-names`: step 3.
+  - Left here: `firestore-transaction-inventory` (final check). `integration-response-numbers-tolerant` was extended in step 1 PR a; `http-client-timeout-ceiling` has no row for the package-only client.
+- **Docs and layout:** `apps/loja-integrada/functions/DEPLOY.md` ships with step 3 (the functions runtime identity enqueues from the poller); step 4 adds the App Hosting identity, and step 22 checks that the IAM section names both. The root `CLAUDE.md` layout lines (":3000–:3010", the app bullet) and the app counts landed with the app in step 1 PR b.
 - **Flip `implementado: true`** once every `'sim'` that is built has its web provider (`registriesAlinhadas`), and `enviarNfe` is documented as dropped by decision.
 - **Verification:** all guard suites green; `registriesAlinhadas` green with `implementado: true`.
 - **Timing:** last code step, before the window.
@@ -1230,13 +1238,18 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 | Daily reconcile | estoque + preço list pages (500 rows: 25 + 25 at `limit` 20, 5 + 5 at 100), diff PUTs, list read-back | 60–110 |
 | **Steady total** | | **≈ 1,000–1,400/day ≈ 45–60/h ≈ 1 % of the bucket** |
 
-**Queues (decided; numeric values are starting points the step-3 plan confirms):** two Cloud Tasks queues, shared by both stores, **each with `maxConcurrentDispatches: 1`**.
-- **Pacing:** an in-task pacer spaces LI calls. Because each queue runs one task at a time, the pacer is global per queue.
-- **Reads queue** (`filaLeituraLojaIntegrada`): intake tasks, import-job tasks and reconcile reads, at **≤ 30 calls/min**.
-- **Writes queue** (`filaEscritaLojaIntegrada`): every LI write and its guard/read-back GETs (steps 7, 11, 12, 13, 4-registration), at **≤ 60 calls/min**. Concurrency 1 here is what makes the stock/price/status writes **serialised** (Rule 7 in steps 7, 11, 12, 13).
-- **Combined budget:** ≤ 90 calls/min **even if every call hits one store**, under that store's 100/min. The per-IP (1,200/min) and per-application (3,000/min) buckets are unreachable.
-- **Retries:** `minBackoff 10 s`, `maxBackoff 300 s`. `LiThrottleError` THROWS, so Cloud Tasks backs off, and the log line carries the code.
-- **Guard test:** a test pins both queues' concurrency at 1.
+**Queues (decided; the reads queue's numbers confirmed by the step-3 plan):** two Cloud Tasks queues, shared by both stores, **each with `maxConcurrentDispatches: 1`**. Step 3 ships only the reads queue; the writes queue ships with its first producer, step 7.
+- **Pacing:** a pacer waits **2,000 ms before every LI call** made through a context (inside the credential getter, outside the 20 s request deadline). Because each queue runs one task at a time, N calls take at least N × the interval across task boundaries, with no shared state.
+- **Reads queue** (`filaLeituraLojaIntegrada`, one function dispatching on the task's `tipo`): intake tasks, import-job tasks and reconcile reads. `maxConcurrentDispatches: 1`, `maxDispatchesPerSecond: 1`, `timeoutSeconds: 300`, ⇒ **≤ 30 calls/min**.
+- **Writes queue** (`filaEscritaLojaIntegrada`, step 7): every LI write and its guard/read-back GETs (steps 7, 11, 12, 13, 4-registration), at **≤ 60 calls/min**. Concurrency 1 here is what makes the stock/price/status writes **serialised** (Rule 7 in steps 7, 11, 12, 13).
+- **Honest budget** (corrected by the step-3 plan; the earlier "≤ 90 calls/min even if every call hits one store" left out the poller and the inline sweep):
+  - step 3 itself makes **zero** LI calls (the importer seam is empty);
+  - after step 5: the reads queue ≤ 30/min; outside it, the poller (inline in its own schedule) 1 call per 5 min per idle conta and ≤ 30/min when catching up, and the inline reprocess sweep, normally empty, ≤ 30/min — a theoretical worst of **90/min per store**;
+  - step 7's writes queue adds ≤ 60/min, a theoretical worst of **150/min against LI's 100**, which step 7 must re-cost;
+  - a 429 is lossless: the task throws and backs off, and the poller does not advance.
+  The per-IP (1,200/min) and per-application (3,000/min) buckets are unreachable.
+- **Retries:** `maxAttempts` = the shared `TASK_MAX_ATTEMPTS` (3), `minBackoff 60 s`, `maxBackoff 300 s`, `maxDoublings 1` — not 10 s: LI's throttle-window semantics are undocumented (§1.2 item 6), and with 10 s and 20 s waits all three attempts land inside one 100/min window, while with 60 s and 120 s each retry lands in a fresh minute. `LiThrottleError` THROWS, so Cloud Tasks backs off, and the log line carries the code.
+- **Guard test:** a test pins each queue's concurrency at 1 (the reads queue's in step 3).
 
 **Bursts:**
 
@@ -1349,10 +1362,11 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Commands:** `firebase deploy --only firestore:indexes --project <new>`; `firebase deploy --only firestore:rules --project <new>`; `firebase deploy --config firebase.loja-integrada.deploy.json --project <new>`; App Hosting rollouts for `loja-integrada` and `web`.
    - **Verify:** indexes READY in the console; the queues are listed in Cloud Tasks; `/api/health` answers 200.
    - **Why the timing:** on Enterprise a missing index full-scans and bills instead of failing; an enqueue against a queue that does not exist yet is dropped while the route answers 200; `apps/web` calls the deployed backend.
-   - **Rulesets deployed:** those regenerated by steps 3, 5, 9, 10, 12 and 13 (if a collection was added). Steps 2 and 20 regenerate none: step 2's credential subcollection is default-denied, and step 20's back-ref is a schema field on `int_frete`, which is not in the validator whitelist.
+   - **Rulesets deployed:** those regenerated by steps 5, 9, 10, 12 and 13 (if a collection was added). Steps 2, 3 and 20 regenerate none: step 2's credential subcollection and step 3's collections (`notificacoesLojaIntegrada`, `pollPedidosLojaIntegrada`) are bare and default-denied, which `gen:rules:check` verifies; step 20's back-ref is a schema field on `int_frete`, which is not in the validator whitelist.
   - **Env at rollout (step 2):** the `apps/loja-integrada` rollout must set `ALLOWED_ADMIN_ORIGINS` (without it the backend allows no origin and every browser call fails CORS), and the `apps/web` rollout must set `NEXT_PUBLIC_LOJA_INTEGRADA_URL` to an `https:` origin (without it the credential panel stays disabled and says the backend is not configured).
    - **Indexes declared by this plan:**
      - `notificacoesLojaIntegrada (status, processedAt)`;
+     - `notificacoesLojaIntegrada (status, contaId)` (step 3's token-save re-drive);
      - collection group `produtolojaintegrada (contaLojaIntegrada, id)`;
      - `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)` (step 20, pinned by T25);
      - `importacoesLojaIntegrada (integracaoId, status)`;
@@ -1365,8 +1379,9 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Why:** an import fires no triggers. A gap is invisible to stock and price discovery, which is a silent outage.
 7. **Seed the poll cursor by look-back.**
    - **Phase:** Phase 3 step 1 (set before the functions deploy).
-   - **Action:** read the newest legacy `integracao/{contaId}/pedManager` `lastTimeStamp` per conta (from the export or the legacy console). Set `LOJA_INTEGRADA_POLL_LOOKBACK_H` = hours since the **older** of the two, + 24 h margin. If the legacy import stops early for any reason, for example an unrenewed legacy token (§0), this look-back covers the gap the same way.
-   - **Verify:** the first poll run logs a `since_atualizado` at or before that timestamp, and every LI order in the painel since then has a pedido.
+   - **Action:** read the newest legacy `integracao/{contaId}/pedManager` `lastTimeStamp` per conta (from the export or the legacy console). Set `LOJA_INTEGRADA_POLL_LOOKBACK_H` = hours since the **older** of the two, + 24 h margin, in the functions `.env.deploy`. If the legacy import stops early for any reason, for example an unrenewed legacy token (§0), this look-back covers the gap the same way.
+   - **Constraints (step 3):** the value must match `^[1-9][0-9]{0,3}$` and be ≤ 2,160 — an invalid value is not defaulted, it refuses the bootstrap (`lookback-invalido`, aviso at once). It must also stay under the drain cap: at most `meta.limit × 20` distinct modified orders in the window, about 20 days at a limit of 20 and about 50 days at 50, at D12's ~20 orders a day. A larger window is refused on page 1 with a `critico` aviso; the remedy is a shorter look-back plus deleting the conta's `pollPedidosLojaIntegrada/{id}` to re-bootstrap.
+   - **Verify:** the first poll run logs a `since_atualizado` at or before that timestamp, every active conta has a `pollPedidosLojaIntegrada` doc, there is no `lojaIntegradaImportacaoParada` aviso, and every LI order in the painel since then has a pedido.
    - **Why:** the look-back is idempotent by the deterministic ids, and it runs after the legacy app is off so no later legacy write supersedes it.
 8. **First live writes, one flow at a time, on canaries.**
    - **Phase:** Phase 4, inside item 3.
