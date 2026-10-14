@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OccEngine, type OccTransaction } from '@delfrance/data/testing';
 import { INTEGRACAO_FRETE, TIPOS_ALVO_MAPA_FRETE_LI } from '@delfrance/schemas';
-import type { TransactionWriteContext } from '@delfrance/ui';
+import type { TransactionDocumentGuard, TransactionWriteContext } from '@delfrance/ui';
 
 /**
  * The pure half of the Loja Integrada conta's freight tabs (step 20, #1826):
@@ -90,6 +90,15 @@ const HORARIO: Doc[] = [
 ];
 
 const SERVICO = { id: 1, name: 'PAC', company: { id: 1, name: 'Correios' } };
+
+/** A guard's projections, by form field. */
+function projecoes(
+  guard: TransactionDocumentGuard,
+): Record<string, TransactionDocumentGuard['toFormValue']> {
+  return Object.fromEntries(
+    [guard, ...(guard.extraFormFields ?? [])].map((p) => [p.formField, p.toFormValue]),
+  );
+}
 
 function contexto(baseline: Doc | null | undefined): TransactionWriteContext {
   return { getBaseline: (path) => (path === FRETE_PATH ? baseline : undefined) };
@@ -223,21 +232,18 @@ describe('escritasFreteDaContaLi — the conta save’s sibling write', () => {
     expect(write?.ref.path).toBe(FRETE_PATH);
     expect(write?.type === 'delete' ? null : Object.keys(write?.data ?? {})).toEqual(['mapa']);
     expect(write?.guard?.baseline).toBe(baseline);
-    expect(write?.guard?.formField).toBe(CAMPO_MAPA_FRETE_LI);
   });
 
-  it('a horário-only edit writes only horarioDeCorte, and its guard reloads that field', () => {
+  it('a horário-only edit writes only horarioDeCorte', () => {
     const values = {
       [CAMPO_MAPA_FRETE_LI]: [LINHA_A, LINHA_ME],
       [CAMPO_HORARIO_CORTE_LI]: HORARIO,
     };
     const [write] = escritasFreteDaContaLi(db, FRETE, values, contexto(baseline));
     expect(write?.type === 'delete' ? null : write?.data).toEqual({ horarioDeCorte: HORARIO });
-    expect(write?.guard?.formField).toBe(CAMPO_HORARIO_CORTE_LI);
-    expect(write?.guard?.toFormValue({ horarioDeCorte: ['remoto'] }, null)).toEqual(['remoto']);
   });
 
-  it('both edited ⇒ one write with both fields; the guard reloads the mapa', () => {
+  it('both edited ⇒ one write with both fields', () => {
     const values = { [CAMPO_MAPA_FRETE_LI]: [LINHA_A], [CAMPO_HORARIO_CORTE_LI]: HORARIO };
     const writes = escritasFreteDaContaLi(db, FRETE, values, contexto(baseline));
     expect(writes).toHaveLength(1);
@@ -245,8 +251,52 @@ describe('escritasFreteDaContaLi — the conta save’s sibling write', () => {
       mapa: [LINHA_A],
       horarioDeCorte: HORARIO,
     });
-    expect(writes[0]?.guard?.toFormValue({ mapa: ['remoto'] }, null)).toEqual(['remoto']);
-    expect(writes[0]?.guard?.toFormValue(null, ['local'])).toBeNull();
+  });
+
+  it('⚠️ the guard projects BOTH tabs, whichever field the save writes', () => {
+    // A rebase moves the whole doc's baseline; a tab it did not project would keep
+    // a value that baseline no longer matches, and the next save would write it.
+    for (const values of [
+      { [CAMPO_MAPA_FRETE_LI]: [LINHA_A], [CAMPO_HORARIO_CORTE_LI]: null },
+      { [CAMPO_MAPA_FRETE_LI]: [LINHA_A, LINHA_ME], [CAMPO_HORARIO_CORTE_LI]: HORARIO },
+      { [CAMPO_MAPA_FRETE_LI]: [LINHA_A], [CAMPO_HORARIO_CORTE_LI]: HORARIO },
+    ]) {
+      const [write] = escritasFreteDaContaLi(db, FRETE, values, contexto(baseline));
+      expect(Object.keys(projecoes(write!.guard!)).sort()).toEqual(
+        [CAMPO_HORARIO_CORTE_LI, CAMPO_MAPA_FRETE_LI].sort(),
+      );
+    }
+  });
+
+  it('a field this save did NOT write shows the server value after a rebase', () => {
+    const values = { [CAMPO_MAPA_FRETE_LI]: [LINHA_A], [CAMPO_HORARIO_CORTE_LI]: null };
+    const [write] = escritasFreteDaContaLi(db, FRETE, values, contexto(baseline));
+    const atual = { ...baseline, horarioDeCorte: HORARIO };
+    expect(projecoes(write!.guard!)[CAMPO_HORARIO_CORTE_LI]!(atual, null)).toEqual(HORARIO);
+  });
+
+  it('EQUAL pair: a written field that did NOT collide keeps the form value (reload keeps the edit)', () => {
+    const values = { [CAMPO_MAPA_FRETE_LI]: [LINHA_A], [CAMPO_HORARIO_CORTE_LI]: HORARIO };
+    const [write] = escritasFreteDaContaLi(db, FRETE, values, contexto(baseline));
+    // Only the horário moved on the server: the mapa edit is uncontested.
+    const atual = { ...baseline, horarioDeCorte: [{ ...HORARIO[0], horaDeCorte: 10 }] };
+    expect(projecoes(write!.guard!)[CAMPO_MAPA_FRETE_LI]!(atual, ['meu'])).toEqual(['meu']);
+  });
+
+  it('⚠️ NEAR-MISS: a written field that COLLIDED shows the server value', () => {
+    const values = { [CAMPO_MAPA_FRETE_LI]: [LINHA_A], [CAMPO_HORARIO_CORTE_LI]: HORARIO };
+    const [write] = escritasFreteDaContaLi(db, FRETE, values, contexto(baseline));
+    const remoto = [{ ...HORARIO[0], horaDeCorte: 10 }];
+    const atual = { ...baseline, horarioDeCorte: remoto };
+    expect(projecoes(write!.guard!)[CAMPO_HORARIO_CORTE_LI]!(atual, HORARIO)).toEqual(remoto);
+  });
+
+  it('a deleted doc shows null in both tabs', () => {
+    const values = { [CAMPO_MAPA_FRETE_LI]: [LINHA_A], [CAMPO_HORARIO_CORTE_LI]: HORARIO };
+    const [write] = escritasFreteDaContaLi(db, FRETE, values, contexto(baseline));
+    const p = projecoes(write!.guard!);
+    expect(p[CAMPO_MAPA_FRETE_LI]!(null, ['meu'])).toBeNull();
+    expect(p[CAMPO_HORARIO_CORTE_LI]!(null, HORARIO)).toBeNull();
   });
 
   it('never writes a wrongly shaped stored mapa it seeded verbatim', () => {
@@ -358,9 +408,20 @@ describe('escritasFreteDaContaLi × saveRecord — what reaches the store', () =
 
   it('NEAR-MISS: a remote change to a field this save does NOT write commits without a conflict', async () => {
     h.docs.set(FRETE_PATH, { ...SEMEADO, horarioDeCorte: HORARIO });
-    await salvar(SEMEADO, [motoboy(LINHA_A), LINHA_ME]);
+    const r = await salvar(SEMEADO, [motoboy(LINHA_A), LINHA_ME]);
     expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual(HORARIO);
     expect(h.docs.get(FRETE_PATH)?.mapa).toEqual([motoboy(LINHA_A), LINHA_ME]);
+    // …and the NEXT save: the commit rebases onto the stored doc, the remote
+    // horário included, and projects it into the horário tab — so the form
+    // equals the new baseline and nothing is written back.
+    const doc = r.documents[0]!;
+    const p = projecoes(doc.guard);
+    const proximo = {
+      [CAMPO_MAPA_FRETE_LI]: p[CAMPO_MAPA_FRETE_LI]!(doc.data, [motoboy(LINHA_A), LINHA_ME]),
+      [CAMPO_HORARIO_CORTE_LI]: p[CAMPO_HORARIO_CORTE_LI]!(doc.data, null),
+    };
+    expect(proximo[CAMPO_HORARIO_CORTE_LI]).toEqual(HORARIO);
+    expect(escritasFreteDaContaLi(db, FRETE, proximo, contexto(doc.data))).toEqual([]);
   });
 
   it('(d) save, edit the same row, save: the rebased baseline raises no conflict', async () => {

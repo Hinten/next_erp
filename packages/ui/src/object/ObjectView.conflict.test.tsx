@@ -52,7 +52,7 @@ vi.mock('@mantine/notifications', async () => {
 import { ObjectView } from './ObjectView';
 import { useObjectViewTransactionDocuments } from './ObjectViewTransactionDocuments';
 import type { TransactionDocumentGuard, TransactionDocumentConflict } from './saveRecord';
-import { RecordConflictError } from './saveRecord';
+import { RecordConflictError, acknowledgedSiblingBaseline } from './saveRecord';
 
 const schema = z.object({
   nome: z.string().nullable().optional().describe('Nome'),
@@ -492,5 +492,164 @@ describe('ObjectView — sibling conflicts', () => {
     expect(saveRecordMock.mock.calls[1]?.[0].siblingWrites('EXISTING')[0].guard.baseline).toEqual(
       committed,
     );
+  });
+
+  it('"Salvar mesmo assim" acknowledges ONLY the sibling fields the modal showed', async () => {
+    // A partial update compares only what it writes, so a remote change to
+    // another field is never listed. Taking the whole server copy as the new
+    // baseline would accept it unseen: a form field still showing the old value
+    // would then read as an edit and be written back over it.
+    const shown: TransactionDocumentConflict = {
+      path: EXTRA_PATH,
+      current: { descricao: 'Remote', marca: 'Remote marca' },
+      fields: ['descricao'],
+      guard: extraGuard(EXTRA_LOADED),
+    };
+    saveRecordMock
+      .mockRejectedValueOnce(new RecordConflictError(LOADED, [], false, [shown]))
+      .mockResolvedValueOnce({ id: 'EXISTING', patch: {}, documents: [] });
+    renderExtraView();
+    await editAndSave('Descrição', 'Local');
+    await click('Salvar mesmo assim');
+    expect(saveRecordMock.mock.calls[1]?.[0].siblingWrites('EXISTING')[0].guard.baseline).toEqual({
+      descricao: 'Remote',
+      marca: 'Marca',
+    });
+  });
+});
+
+describe('acknowledgedSiblingBaseline — what an override accepts', () => {
+  const conflictOf = (
+    current: Record<string, unknown> | null,
+    fields: string[],
+    baseline: Record<string, unknown> | null = EXTRA_LOADED,
+  ): TransactionDocumentConflict => ({
+    path: EXTRA_PATH,
+    current,
+    fields,
+    guard: extraGuard(baseline),
+  });
+
+  it('moves the shown fields to the server value and keeps every other one as loaded', () => {
+    expect(
+      acknowledgedSiblingBaseline(
+        conflictOf({ descricao: 'Remote', marca: 'Remote marca', nova: 1 }, ['descricao']),
+      ),
+    ).toEqual({ descricao: 'Remote', marca: 'Marca' });
+  });
+
+  it('a shown field the server REMOVED is removed from the baseline too', () => {
+    expect(acknowledgedSiblingBaseline(conflictOf({ descricao: 'Original' }, ['marca']))).toEqual({
+      descricao: 'Original',
+    });
+  });
+
+  it('a deletion or a creation (@exists) takes the server copy whole', () => {
+    expect(acknowledgedSiblingBaseline(conflictOf(null, ['@exists']))).toBeNull();
+    const created = { descricao: 'Nova', marca: 'Nova' };
+    expect(acknowledgedSiblingBaseline(conflictOf(created, ['@exists'], null))).toEqual(created);
+  });
+});
+
+describe('ObjectView — a sibling shown in SEVERAL form fields', () => {
+  const twoFieldSchema = extraSchema.extend({
+    marcaExtra: z.string().nullable().default(null),
+  });
+  const twoFieldGuard = (
+    baseline: Record<string, unknown> | null | undefined,
+  ): TransactionDocumentGuard => ({
+    ...extraGuard(baseline),
+    extraFormFields: [
+      {
+        formField: 'marcaExtra',
+        toFormValue: (data) => (data === null ? null : (data.marca as string)),
+      },
+    ],
+  });
+
+  function MarcaInput({ value, onChange }: { value: unknown; onChange: (next: unknown) => void }) {
+    const documents = useObjectViewTransactionDocuments();
+    React.useEffect(() => {
+      if (value !== null) return;
+      documents?.seedFormField('marcaExtra', EXTRA_LOADED.marca);
+      onChange(EXTRA_LOADED.marca);
+    }, [value, documents, onChange]);
+    return (
+      <>
+        <label>
+          Marca
+          <input
+            value={(value as string | null) ?? ''}
+            onChange={(e) => onChange(e.target.value)}
+          />
+        </label>
+        {/* What the NEXT reload starts this field's defaults from. */}
+        <span data-testid="marca-baseline">{String(documents?.getFormBaseline('marcaExtra'))}</span>
+      </>
+    );
+  }
+
+  function renderTwoFieldView() {
+    return render(
+      <Wrap>
+        <ObjectView
+          schema={twoFieldSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          recordId="EXISTING"
+          currentUserUid="u1"
+          transientFields={['extraData', 'marcaExtra']}
+          fields={{
+            extraData: {
+              renderInput: (props) => <ExtraInput value={props.value} onChange={props.onChange} />,
+            },
+            marcaExtra: {
+              renderInput: (props) => <MarcaInput value={props.value} onChange={props.onChange} />,
+            },
+          }}
+          transactionWrites={(_id, values, context) => [
+            {
+              type: 'update',
+              ref: { path: EXTRA_PATH } as never,
+              data: { descricao: (values.extraData as { descricao: string }).descricao },
+              guard: twoFieldGuard(context.getBaseline(EXTRA_PATH)),
+            },
+          ]}
+        />
+      </Wrap>,
+    );
+  }
+  const marca = () => (screen.getByLabelText('Marca') as HTMLInputElement).value;
+
+  it('a commit re-projects EVERY field showing the document, not only the first', async () => {
+    const stored = { descricao: 'Saved', marca: 'Remote marca' };
+    saveRecordMock.mockResolvedValueOnce({
+      id: 'EXISTING',
+      patch: {},
+      documents: [{ path: EXTRA_PATH, data: stored, guard: twoFieldGuard(EXTRA_LOADED) }],
+    });
+    renderTwoFieldView();
+    await editAndSaveContinue('Descrição', 'Saved');
+    expect(marca()).toBe('Remote marca');
+  });
+
+  it('"Recarregar do servidor" re-projects EVERY field showing the document', async () => {
+    saveRecordMock.mockRejectedValueOnce(
+      new RecordConflictError(LOADED, [], false, [
+        {
+          path: EXTRA_PATH,
+          current: { descricao: 'Remote', marca: 'Remote marca' },
+          fields: ['descricao'],
+          guard: twoFieldGuard(EXTRA_LOADED),
+        },
+      ]),
+    );
+    renderTwoFieldView();
+    await editAndSave('Descrição', 'Local');
+    await click('Recarregar do servidor');
+    expect((screen.getByLabelText('Descrição') as HTMLInputElement).value).toBe('Remote');
+    expect(marca()).toBe('Remote marca');
+    // …and its form baseline with it, which the next reload's defaults start from.
+    expect(screen.getByTestId('marca-baseline').textContent).toBe('Remote marca');
   });
 });

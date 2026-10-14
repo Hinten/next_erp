@@ -3,6 +3,7 @@ import { valuesEqual } from '@delfrance/core';
 import { INTEGRACAO_FRETE, TIPOS_ALVO_MAPA_FRETE_LI } from '@delfrance/schemas';
 import type {
   TransactionDocumentGuard,
+  TransactionFormProjection,
   TransactionWrite,
   TransactionWriteContext,
 } from '@delfrance/ui';
@@ -183,10 +184,14 @@ export function valoresDoFreteDaContaLi(
  * transaction: anyone else's change to it since load (another operator, or the
  * importer appending a newly seen shipping method) raises the conflict modal.
  *
- * ⚠️ One guard per document, and a guard names ONE form field for "reload from
- * server": the mapa when it is written, else the horário. When BOTH were edited
- * and the horário is what collided, "Recarregar do servidor" reloads the mapa
- * and keeps the operator's horário (the modal still lists the collision).
+ * ⚠️ **The guard projects BOTH tabs' fields**, the one this save does not write
+ * included. The baseline is the whole doc, and every rebase moves it whole — a
+ * commit to what was stored, "Recarregar do servidor" to the server's version —
+ * while "changed" is decided per field against it. A tab left holding its old
+ * value would then differ from a baseline that moved under it, and the next save
+ * would write that stale value back, unguarded, over the change it never saw
+ * (another operator's horário, the importer's appended row). See
+ * {@link projecaoDoFreteDaContaLi} for what each rebase shows.
  *
  * ⚠️ No `ultimaModificacao` stamp: `saveRecord` strips the stamp fields from a
  * guarded sibling update, so the stored stamp is left as it was.
@@ -212,13 +217,48 @@ export function escritasFreteDaContaLi(
     if (!valuesEqual(horario, baseline.horarioDeCorte ?? null)) data.horarioDeCorte = horario;
   }
   if (Object.keys(data).length === 0) return [];
-  const campoMapa = 'mapa' in data;
   const guard: TransactionDocumentGuard = {
     baseline,
     label: ROTULO_FRETE_DA_CONTA_LI,
-    formField: campoMapa ? CAMPO_MAPA_FRETE_LI : CAMPO_HORARIO_CORTE_LI,
-    toFormValue: (current) =>
-      valoresDoFreteDaContaLi(current)[campoMapa ? CAMPO_MAPA_FRETE_LI : CAMPO_HORARIO_CORTE_LI],
+    ...projecaoDoFreteDaContaLi(CAMPO_MAPA_FRETE_LI, data, baseline),
+    extraFormFields: [projecaoDoFreteDaContaLi(CAMPO_HORARIO_CORTE_LI, data, baseline)],
   };
   return [{ type: 'update', ref: ref as DocumentReference<unknown>, data, guard }];
+}
+
+/** The freight doc's field each transient form field shows. */
+const CHAVE_DO_CAMPO = {
+  [CAMPO_MAPA_FRETE_LI]: 'mapa',
+  [CAMPO_HORARIO_CORTE_LI]: 'horarioDeCorte',
+} as const;
+
+/**
+ * What form field `campo` shows after a rebase of the freight doc to `current`,
+ * for a save that wrote `escrito` over `baseline`:
+ *
+ * - **the server's value** (`current`, projected as the seed projects it) —
+ *   for a field this save did not write, and for one that collided;
+ * - **the form's own value** — only for a field this save wrote and that did
+ *   NOT collide (stored equals `baseline`, the comparison the guard makes), so
+ *   "Recarregar do servidor" keeps the edit nobody contested. On a commit the
+ *   two coincide: the stored value IS the one written.
+ *
+ * A deleted doc (`current === null`) shows `null` in both fields.
+ */
+export function projecaoDoFreteDaContaLi(
+  campo: keyof typeof CHAVE_DO_CAMPO,
+  escrito: Readonly<Record<string, unknown>>,
+  baseline: Readonly<Record<string, unknown>> | undefined,
+): TransactionFormProjection {
+  const chave = CHAVE_DO_CAMPO[campo];
+  return {
+    formField: campo,
+    toFormValue: (current, formValue) =>
+      chave in escrito &&
+      current !== null &&
+      baseline !== undefined &&
+      valuesEqual(baseline[chave], current[chave])
+        ? formValue
+        : valoresDoFreteDaContaLi(current)[campo],
+  };
 }

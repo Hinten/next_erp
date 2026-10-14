@@ -49,6 +49,8 @@ import {
   NothingChangedError,
   MissingTransactionBaselineError,
   RecordConflictError,
+  acknowledgedSiblingBaseline,
+  formProjections,
   saveRecord,
   type DeriveTransactionPatch,
   type TransactionWrite,
@@ -616,10 +618,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         transactionDocuments.getFormBaseline(key) ?? form.formState.defaultValues?.[key] ?? null;
     }
     try {
+      // EVERY form field showing the document: its baseline moves whole below.
       for (const doc of conflict.documents) {
-        const { formField, toFormValue } = doc.guard;
-        defaults[formField] = toFormValue(doc.current, defaults[formField]);
-        keep[formField] = toFormValue(doc.current, keep[formField]);
+        for (const { formField, toFormValue } of formProjections(doc.guard)) {
+          defaults[formField] = toFormValue(doc.current, defaults[formField]);
+          keep[formField] = toFormValue(doc.current, keep[formField]);
+        }
       }
     } catch (err) {
       if (err instanceof ZodError) {
@@ -632,7 +636,8 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     }
     for (const doc of conflict.documents) {
       transactionDocuments.rebase(doc.path, doc.current);
-      transactionDocuments.rebaseFormField(doc.guard.formField, defaults[doc.guard.formField]);
+      for (const { formField } of formProjections(doc.guard))
+        transactionDocuments.rebaseFormField(formField, defaults[formField]);
     }
     const retained = { ...defaults };
     for (const key of Object.keys(dirtyNow)) {
@@ -738,8 +743,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       const committedValues = { ...values, ...result.patch };
       for (const doc of result.documents ?? []) {
         transactionDocuments.rebase(doc.path, doc.data);
-        const { formField, toFormValue } = doc.guard;
-        committedValues[formField] = toFormValue(doc.data, committedValues[formField]);
+        // `doc.data` is the stored document — the fields this save did not write
+        // included — so every form field showing it is re-projected, not only
+        // the guard's first one.
+        for (const { formField, toFormValue } of formProjections(doc.guard))
+          committedValues[formField] = toFormValue(doc.data, committedValues[formField]);
       }
       for (const key of transientFields) {
         if (
@@ -1274,8 +1282,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                     for (const field of conflict!.fields)
                       baseline.current[field] = conflict!.current[field];
                   }
+                  // A sibling likewise moves only its displayed fields: the form
+                  // is not re-projected here, so accepting a change the modal did
+                  // not show would make the next save write the old value back.
                   for (const doc of conflict!.documents)
-                    transactionDocuments.rebase(doc.path, doc.current);
+                    transactionDocuments.rebase(doc.path, acknowledgedSiblingBaseline(doc));
                   setConflict(null);
                   // Plain re-save. `baseline.current` was re-based onto the version
                   // shown when the conflict was caught, so the guard still runs: if

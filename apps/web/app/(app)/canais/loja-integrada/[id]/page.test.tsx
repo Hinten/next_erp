@@ -35,6 +35,8 @@ const h = vi.hoisted(() => ({
   permissoes: 0n,
   replace: vi.fn(),
   toasts: [] as string[],
+  /** The Melhor Envio service list read (never answers: the select stays loading). */
+  servicos: vi.fn((_intFreteId: string) => new Promise<never>(() => undefined)),
 }));
 
 function refFalso(path: string) {
@@ -121,7 +123,7 @@ vi.mock('next/navigation', () => ({
 }));
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
 vi.mock('@/lib/freight/client', () => ({
-  useFreightClient: () => ({ servicos: () => new Promise(() => undefined) }),
+  useFreightClient: () => ({ servicos: h.servicos }),
 }));
 vi.mock('@/app/(app)/canais/loja-integrada/_components/ContaLojaIntegradaPanel', () => ({
   ContaLojaIntegradaPanel: () => null,
@@ -177,6 +179,8 @@ const SEGUNDA = {
   horaPostagem: 18,
   minutosPostagem: 0,
 };
+/** {@link SEGUNDA} as another writer changed it after the page loaded. */
+const SEGUNDA_REMOTA = { ...SEGUNDA, horaDeCorte: 10 };
 
 function conta(): Doc {
   return {
@@ -267,6 +271,25 @@ async function salvar(rotulo: 'Salvar alterações' | 'Salvar e continuar' = 'Sa
   });
 }
 
+async function clicar(nome: string) {
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: nome }));
+  });
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+async function renomearConta(nome: string) {
+  await abrirAba('Dados gerais');
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText('Nome'), { target: { value: nome } });
+  });
+}
+
+/** The conflict modal's name for the freight doc. */
+const ROTULO = 'Frete da conta';
+
 const commits = () => h.occ.txLog.filter((e) => e.phase === 'commit').length;
 const mapaGuardado = () => h.docs.get(FRETE_PATH)!.mapa as Doc[];
 const conflito = () => screen.queryByText('Registro alterado');
@@ -278,6 +301,7 @@ beforeEach(() => {
   h.servido.clear();
   h.consultaDoCache = false;
   h.toasts.length = 0;
+  h.servicos.mockClear();
   h.replace.mockReset();
   h.alvos = [
     { id: 'moto-1', data: { tipo: 'motoboy', nome: 'Moto Centro', ativo: true } },
@@ -418,6 +442,134 @@ describe('/canais/loja-integrada/[id] — the freight tabs ride the conta’s sa
     expect(mapaGuardado()).toEqual([...(frete().mapa as Doc[]), nova]);
   });
 
+  it('"Salvar mesmo assim" on a mapa conflict never writes back the horário it did not show', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Mapeamento do Frete');
+    await escolherDestino(0, 'Moto Norte (Motoboy)');
+    escritaConcorrente((doc) => {
+      (doc.mapa as Doc[])[1] = linha(2);
+      doc.horarioDeCorte = [SEGUNDA_REMOTA];
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    // The modal names only what this save writes: the mapa.
+    expect(screen.getByText(`${ROTULO} — mapa`)).toBeTruthy();
+    expect(screen.queryByText(`${ROTULO} — horarioDeCorte`)).toBeNull();
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    // The operator kept THEIR mapa over the one the modal showed…
+    expect(mapaGuardado()).toEqual([
+      { ...linha(1), integracaoUid: 'moto-2', targetTipoIntegracao: 'motoboy' },
+      (frete().mapa as Doc[])[1],
+    ]);
+    // …and accepted nothing about the horário, which the modal never showed.
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA_REMOTA]);
+    // …nor on the save after it: the commit carried the remote horário into the form.
+    await renomearConta('Conta renomeada');
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA_REMOTA]);
+  });
+
+  it('a remote horário change is not undone by the SECOND mapa save after it', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Mapeamento do Frete');
+    await escolherDestino(0, 'Moto Norte (Motoboy)');
+    escritaConcorrente((doc) => {
+      doc.horarioDeCorte = [SEGUNDA_REMOTA];
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    // Disjoint fields: the first save commits and keeps the remote horário…
+    expect(conflito()).toBeNull();
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA_REMOTA]);
+    // …and so must the next one.
+    await escolherDestino(0, 'Moto Centro (Motoboy)');
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(2);
+    expect(mapaGuardado()[0]?.integracaoUid).toBe('moto-1');
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA_REMOTA]);
+  });
+
+  it('a conta-only save after a freight commit leaves the remote horário alone', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Mapeamento do Frete');
+    await escolherDestino(0, 'Moto Norte (Motoboy)');
+    escritaConcorrente((doc) => {
+      doc.horarioDeCorte = [SEGUNDA_REMOTA];
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(commits()).toBe(1);
+    await renomearConta('Conta renomeada');
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(2);
+    expect(h.docs.get(CONTA_PATH)?.nome).toBe('Conta renomeada');
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA_REMOTA]);
+  });
+
+  it('"Recarregar do servidor" on a mapa conflict reloads the horário too, so the next save keeps it', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Mapeamento do Frete');
+    await escolherDestino(0, 'Moto Norte (Motoboy)');
+    const remoto = escritaConcorrente((doc) => {
+      (doc.mapa as Doc[])[1] = linha(2);
+      doc.horarioDeCorte = [SEGUNDA_REMOTA];
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    await clicar('Recarregar do servidor');
+    expect(conflito()).toBeNull();
+    // The contested mapa is the server's again; the operator re-applies the edit.
+    expect(destino(0).value).toBe('Nenhum');
+    await escolherDestino(0, 'Moto Norte (Motoboy)');
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(mapaGuardado()).toEqual([
+      { ...linha(1), integracaoUid: 'moto-2', targetTipoIntegracao: 'motoboy' },
+      (remoto.mapa as Doc[])[1],
+    ]);
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA_REMOTA]);
+  });
+
+  it('"Recarregar do servidor" keeps the freight edit that did NOT collide', async () => {
+    // Both tabs edited; only the horário collided. Reload takes the server's
+    // horário and keeps the operator's mapa edit, which the next save writes.
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Mapeamento do Frete');
+    await escolherDestino(0, 'Moto Norte (Motoboy)');
+    await abrirAba('Horário de Corte');
+    await act(async () => {
+      fireEvent.change(screen.getAllByLabelText('Corte (h) 1')[0]!, { target: { value: '15' } });
+    });
+    escritaConcorrente((doc) => {
+      doc.horarioDeCorte = [SEGUNDA_REMOTA];
+    });
+    await act(async () => rerenderPage());
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(screen.getByText(`${ROTULO} — horarioDeCorte`)).toBeTruthy();
+    expect(screen.queryByText(`${ROTULO} — mapa`)).toBeNull();
+    await clicar('Recarregar do servidor');
+    expect((screen.getAllByLabelText('Corte (h) 1')[0] as HTMLInputElement).value).toBe('10');
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA_REMOTA]);
+    expect(mapaGuardado()[0]?.integracaoUid).toBe('moto-2');
+  });
+
   it('(c) no edit before server truth: a cache-only freight doc offers nothing to edit', async () => {
     semear(FRETE_PATH, frete(), true);
     await renderPage();
@@ -451,6 +603,33 @@ describe('/canais/loja-integrada/[id] — the freight tabs ride the conta’s sa
     await waitFor(() => expect(destino(0).value).toBe('Moto antiga (excluída)'));
     expect(destino(1).value).toBe('Balcão (Retirar na Loja) (inativa)');
     expect(destino(2).value).toBe('Moto Sul (Motoboy)');
+  });
+
+  it('a stored Melhor Envio row asks the backend for its services only once the tab is opened', async () => {
+    // The tabs are mounted from page load; a conta screen opened for its token
+    // alone must not call the Melhor Envio backend once per stored account.
+    h.alvos.push({
+      id: 'me-conta',
+      data: { tipo: 'melhorEnvios', nome: 'Conta ME', ativo: true },
+    });
+    semear(
+      FRETE_PATH,
+      frete({
+        mapa: [
+          linha(1, {
+            integracaoUid: 'me-conta',
+            targetTipoIntegracao: 'melhorEnvios',
+            nomeTarget: 'Correios — PAC',
+            targetData: { id: 1, name: 'PAC', company: { id: 1, name: 'Correios' } },
+          }),
+        ],
+      }),
+    );
+    await renderPage();
+    expect(screen.getByTestId('mapa-frete-linha-0')).toBeTruthy();
+    expect(h.servicos).not.toHaveBeenCalled();
+    await abrirAba('Mapeamento do Frete');
+    await waitFor(() => expect(h.servicos).toHaveBeenCalledWith('me-conta'));
   });
 
   it('(i) a mapa whose rows fail the row schema keeps EVERY row through a save', async () => {
@@ -492,6 +671,30 @@ describe('/canais/loja-integrada/[id] — Horário de Corte', () => {
       },
     ]);
     expect(mapaGuardado()).toEqual(frete().mapa);
+  });
+
+  it('the importer appending after load does not stop a horário save, and the append survives the NEXT save', async () => {
+    // A horário-only save does not write the mapa, so the append is no conflict;
+    // its commit must then carry the appended row into the form too, or a later
+    // conta-only save would read the stale mapa as an edit and write it back.
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Horário de Corte');
+    await act(async () => {
+      fireEvent.change(screen.getAllByLabelText('Corte (h) 1')[0]!, { target: { value: '15' } });
+    });
+    const nova = linha(3, { idOriginal: '1003---null' });
+    escritaConcorrente((doc) => (doc.mapa as Doc[]).push(nova), { listener: false });
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(mapaGuardado()).toEqual([...(frete().mapa as Doc[]), nova]);
+    await renomearConta('Conta renomeada');
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(h.docs.get(CONTA_PATH)?.nome).toBe('Conta renomeada');
+    expect(mapaGuardado()).toEqual([...(frete().mapa as Doc[]), nova]);
+    expect((h.docs.get(FRETE_PATH)?.horarioDeCorte as Doc[])[0]?.horaDeCorte).toBe(15);
   });
 
   it('(h) a duplicated weekday shows inline and blocks the save', async () => {

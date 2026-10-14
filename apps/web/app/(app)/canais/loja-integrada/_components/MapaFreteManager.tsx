@@ -87,7 +87,8 @@ export function MapaFreteManager({ db, frete, value, onChange, disabled }: MapaF
   const { allowed: podeEscreverFrete } = usePermission(PERM.frete.write);
   const semente = useSemearFreteDaContaLi(db, intFreteIdDe(frete));
 
-  // Latch: the tab is mounted from page load; read the targets once it is opened.
+  // Latch: the tab is mounted from page load; read the targets, and each stored
+  // Melhor Envio row's services, once it is opened.
   const sectionActive = useSectionActive();
   const [aberto, setAberto] = useState(false);
   if (sectionActive !== false && !aberto) setAberto(true);
@@ -159,6 +160,7 @@ export function MapaFreteManager({ db, frete, value, onChange, disabled }: MapaF
             alvos={alvos.alvos}
             armazenados={alvos.armazenados}
             carregandoAlvos={alvos.carregando}
+            aberto={aberto}
             editavel={editavel}
             pendentes={pendentes}
             recusas={recusas}
@@ -181,6 +183,8 @@ interface LinhaDoMapaProps {
   readonly alvos: readonly AlvoFreteLi[];
   readonly armazenados: ReadonlyMap<string, AlvoFreteLi | null>;
   readonly carregandoAlvos: boolean;
+  /** The tab has been opened: the service list may be read. */
+  readonly aberto: boolean;
   readonly editavel: boolean;
   readonly pendentes: Readonly<Record<string, string>>;
   readonly recusas: Readonly<Record<string, MotivoRecusaAlvoLi>>;
@@ -194,6 +198,7 @@ function LinhaDoMapa({
   alvos,
   armazenados,
   carregandoAlvos,
+  aberto,
   editavel,
   pendentes,
   recusas,
@@ -307,6 +312,7 @@ function LinhaDoMapa({
             intFreteId={escolhidoId}
             value={pendenteId === undefined ? servicoArmazenado(linha) : null}
             nomeArmazenado={pendenteId === undefined ? textoOuNull(linha.nomeTarget) : null}
+            habilitado={aberto}
             disabled={!editavel || chave === null}
             onChange={(servico: ServicoMelhorEnvioLi) => {
               if (chave === null) return;

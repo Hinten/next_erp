@@ -23,6 +23,14 @@ export interface ServicoMelhorEnvioSelectProps {
   readonly disabled?: boolean;
   /** Field label; distinct per row so each select is addressable. */
   readonly label: string;
+  /**
+   * Read the list only once this is true — the tab's first opening. The tab is
+   * mounted from page load, and every stored Melhor Envio row renders this
+   * select, so without the latch a conta screen opened for anything else would
+   * call the Melhor Envio backend once per stored account. Until then the stored
+   * service shows under its stored label.
+   */
+  readonly habilitado: boolean;
 }
 
 /** Never re-asked after a 404: the backend predates the route, and asking again changes nothing. */
@@ -50,11 +58,12 @@ export function ServicoMelhorEnvioSelect({
   onChange,
   disabled,
   label,
+  habilitado,
 }: ServicoMelhorEnvioSelectProps) {
   const client = useFreightClient();
   const servicos = useQuery({
     queryKey: ['me-servicos', intFreteId],
-    enabled: client !== null,
+    enabled: habilitado && client !== null,
     staleTime: 5 * 60_000,
     retry: repetir,
     queryFn: () => client!.servicos(intFreteId),

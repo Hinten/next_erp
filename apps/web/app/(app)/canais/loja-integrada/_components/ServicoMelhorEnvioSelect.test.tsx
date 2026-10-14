@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   FreightNotFoundError,
@@ -40,12 +40,13 @@ function renderSelect(props: Partial<Parameters<typeof ServicoMelhorEnvioSelect>
           value={null}
           nomeArmazenado={null}
           onChange={onChange}
+          habilitado
           {...props}
         />
       </MantineTestProvider>
     </QueryClientProvider>,
   );
-  return { onChange, view };
+  return { onChange, view, qc };
 }
 
 const entrada = () => screen.getAllByLabelText('Serviço')[0] as HTMLInputElement;
@@ -88,6 +89,33 @@ describe('ServicoMelhorEnvioSelect', () => {
     ).toBeTruthy();
     expect(entrada().disabled).toBe(true);
     expect(h.servicos).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks nothing until habilitado, showing the stored service meanwhile; then asks once', async () => {
+    h.servicos.mockResolvedValue(LISTA);
+    const { view, qc } = renderSelect({
+      value: 7,
+      nomeArmazenado: 'Transportadora — Expresso',
+      habilitado: false,
+    });
+    expect(entrada().value).toBe('Transportadora — Expresso');
+    expect(h.servicos).not.toHaveBeenCalled();
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <MantineTestProvider>
+          <ServicoMelhorEnvioSelect
+            label="Serviço"
+            intFreteId="me-conta"
+            value={7}
+            nomeArmazenado="Transportadora — Expresso"
+            onChange={vi.fn()}
+            habilitado
+          />
+        </MantineTestProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(h.servicos).toHaveBeenCalledTimes(1));
+    expect(h.servicos).toHaveBeenCalledWith('me-conta');
   });
 
   it('keeps a stored service missing from the list visible under its stored label', async () => {
