@@ -104,6 +104,10 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaTokenExpirando: 'Token da Loja Integrada expirando',
   lojaIntegradaReconexaoPendente: 'Token da Loja Integrada recusado',
   lojaIntegradaImportacaoParada: 'Importação de pedidos da Loja Integrada parada',
+  lojaIntegradaSituacaoDesconhecida: 'Situação desconhecida em pedido da Loja Integrada',
+  lojaIntegradaPedidoContestado: 'Pedido da Loja Integrada contestado',
+  lojaIntegradaPedidoHub: 'Pedido da Loja Integrada vindo de um hub',
+  lojaIntegradaFreteNaoSuportado: 'Forma de envio da Loja Integrada sem frete utilizável',
 } as const;
 
 /**
@@ -584,6 +588,113 @@ export const TIPO_AVISO_LABELS = {
  *    enumeration's read time, so a conta created after that read keeps its row).
  *    A row left open when the conta is deactivated stays open until the conta
  *    is reactivated and polls cleanly, or is deleted (a documented residue).
+ *
+ * ---
+ *
+ * **The four order-import tipos** (Loja Integrada steps 5 and 6, #1817 and
+ * #1818 — producer: the order importer of `apps/loja-integrada`, PR 5-c). Shared
+ * by all four:
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: each one is
+ *    about one order or one shipping method, the order intake keeps running,
+ *    and `critico` escalates out of the app.
+ *  - **`params.loja`** is the conta name.
+ *  - Raised on an import that WROTE the order and on one that found nothing to
+ *    change alike — never on one that read an older observation than the
+ *    pedido already holds. A retry after a crash between the pedido write and
+ *    the avisos therefore still raises them.
+ *
+ * **`lojaIntegradaSituacaoDesconhecida`** — an order arrived with a situação
+ * codigo the shared table (`SITUACOES_LI`, `situacaoPedidoLojaIntegrada.ts`)
+ * does not know. The order is still imported, marked with the importer's own
+ * error text (a new pedido at `error`, an existing one keeping its estado), so
+ * nothing is lost while a developer adds the codigo to the table.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido; `pedidoId` is the deterministic digest.
+ *  - **`params` are exactly `loja`, `pedido`** (the order's numero, as text)
+ *    **and `codigo`** (the unknown codigo, as received).
+ *  - **`relogioEvento`** = the order's modification stamp in µs, as the import
+ *    converted it, so a late import of an older observation can neither reopen
+ *    nor close the row. ⚠️ Per-order µs: never compare it with another tipo's.
+ *  - **Route**: the pedido (`ROTAS_AVISO.pedido`).
+ *  - **Machine resolver**: the next import of that order with a KNOWN codigo,
+ *    clocked by its stamp. Residue: a table that learns the codigo in a later
+ *    release does not resolve a row by itself — the order's next change does;
+ *    an order that never changes again keeps its row until retention.
+ *
+ * **`lojaIntegradaPedidoContestado`** — Loja Integrada shows the order's
+ * payment contested: a dispute (`pagamento_em_disputa`), or a refund-type
+ * codigo (`pagamento_devolvido`, `pedido_chargeback`,
+ * `pagamento_devolvido_sem_retorno`) on a pedido whose stock removal was
+ * already applied.
+ *
+ *  - ⚠️ **It does NOT block dispatch.** The pedido's dispute overlay blocks only
+ *    for the incident origins listed as marketplace ones, and Loja Integrada is
+ *    not among them (a later step decides whether it joins). The wording says
+ *    so, so nobody reads the row as a hold that is not there.
+ *  - What the import did: on a dispute the pedido stays `pago` and its payment
+ *    `em_disputa` (a hold, still counted as paid). On a refund-type codigo
+ *    after a removal it KEPT the stored estado and payment status, because the
+ *    goods may not have come back: an estado that reverts the removal would
+ *    restock them. The row is where that refund is recorded.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido; a later observation replaces `params`.
+ *  - **`params` are exactly `loja`, `pedido` and `motivo`** — a
+ *    {@link MOTIVO_PEDIDO_CONTESTADO_LI} CODE, never a sentence. `motivo` (the
+ *    field) carries the same code.
+ *  - **`relogioEvento`**: the order's modification stamp in µs, as above.
+ *  - **Route**: the pedido.
+ *  - **Machine resolver**: the next import of that order whose codigo no longer
+ *    contests (a dispute closed back to a paid codigo), clocked by its stamp.
+ *    Residue, accepted: the three refund-type codigos are FINAL in Loja
+ *    Integrada, so on them the row stands until retention unless the situação
+ *    is changed in the painel.
+ *
+ * **`lojaIntegradaPedidoHub`** — an order carries a hub marker (an
+ * `id_anymarket`, a `PAGAMENTOEXTERNO` payment form, or the webhook receiver's
+ * hint): it was injected through the platform's marketplace hub, and this
+ * integration imports only the storefront's own orders (D5). No pedido and no
+ * pagamento are written for it. Never expected; the row exists so a hub
+ * switched on in the painel is seen instead of silently skipped.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — the digest the pedido WOULD have; no pedido document exists.
+ *  - **`params` are exactly `loja` and `pedido`** (the numero).
+ *  - **`relogioEvento`**: the order's modification stamp in µs, as above.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`): there is no
+ *    pedido page to open.
+ *  - **Machine resolver**: the next import of that order without a marker
+ *    (which then imports it), or one that finds it in a dead-sale codigo
+ *    (cancelled or refunded: nothing is left to import), clocked by its stamp.
+ *
+ * **`lojaIntegradaFreteNaoSuportado`** — an order's shipping method is MAPPED
+ * in the conta's `int_frete.mapa`, but to a target the import cannot route to:
+ * the target document is missing or inactive, its tipo is not one the import
+ * routes (Melhor Envio, motoboy, retirada na loja), or a Melhor Envio target
+ * names no service. The order still imports, its freight on the conta's own
+ * Loja Integrada `int_frete`, and the label step resolves it later. ⚠️ Raised
+ * for neither a DELIBERATE `fob` or `outros` mapping (the label step routes
+ * those) nor an UNMAPPED method (its `mapa` row is already the operator's
+ * to-do).
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade:
+ *    sha256Hex(chave) })` — one row per shipping method, where `chave` is its
+ *    full `'<id>---<code>'` registration key, DIGESTED: {@link chaveDeAviso}
+ *    folds `.`, `/`, `\`, `:`, `#`, brackets and whitespace into `_` while the
+ *    `mapa` keeps the code verbatim, so two distinct keys would share one row,
+ *    and a long code would overflow the document id.
+ *  - **`params` are exactly `loja`, `formaEnvio`** (the `mapa` row's display
+ *    name), **`chave`** (the raw key, so the operator can find the row)
+ *    **and `motivo`** — a {@link MOTIVO_FRETE_NAO_SUPORTADO_LI} CODE.
+ *  - **`relogioEvento`** = the µs `readTime` of the read of the target document:
+ *    this row records an observation of the TARGET's state, not an order event.
+ *    ⚠️ Never compare it with the order-clocked tipos above.
+ *  - **Route**: the conta page, whose "Mapeamento do Frete" tab holds the row.
+ *  - **Machine resolver**: the next import of an order with that key that
+ *    routes, or finds the key unmapped — clocked by its target read, clockless
+ *    when no target was read. Residue: a key no later order uses stands until
+ *    retention.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -606,6 +717,10 @@ export const tipoAvisoSchema = z
     'lojaIntegradaTokenExpirando',
     'lojaIntegradaReconexaoPendente',
     'lojaIntegradaImportacaoParada',
+    'lojaIntegradaSituacaoDesconhecida',
+    'lojaIntegradaPedidoContestado',
+    'lojaIntegradaPedidoHub',
+    'lojaIntegradaFreteNaoSuportado',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -631,6 +746,10 @@ export const TIPO_AVISO = {
   lojaIntegradaTokenExpirando: 'lojaIntegradaTokenExpirando',
   lojaIntegradaReconexaoPendente: 'lojaIntegradaReconexaoPendente',
   lojaIntegradaImportacaoParada: 'lojaIntegradaImportacaoParada',
+  lojaIntegradaSituacaoDesconhecida: 'lojaIntegradaSituacaoDesconhecida',
+  lojaIntegradaPedidoContestado: 'lojaIntegradaPedidoContestado',
+  lojaIntegradaPedidoHub: 'lojaIntegradaPedidoHub',
+  lojaIntegradaFreteNaoSuportado: 'lojaIntegradaFreteNaoSuportado',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -720,6 +839,70 @@ export const MOTIVO_IMPORTACAO_PARADA_LI = {
   filtroIgnorado: 'filtro-ignorado',
   janelaGrandeDemais: 'janela-grande-demais',
 } as const satisfies Record<string, MotivoImportacaoParadaLi>;
+
+/**
+ * Why a Loja Integrada order is contested — the `lojaIntegradaPedidoContestado`
+ * aviso's `params.motivo`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
+ * shape: a wording fix is retroactive). One member per contesting situação
+ * codigo, named by `situacaoPedidoLojaIntegrada.ts`'s table:
+ *
+ *  - `disputa` — `pagamento_em_disputa`: a HOLD; the payment still counts as
+ *    paid, and the codigo may move on;
+ *  - `chargeback` — `pedido_chargeback`; `devolvido` — `pagamento_devolvido`;
+ *    `devolvido-sem-retorno` — `pagamento_devolvido_sem_retorno`: refunds,
+ *    FINAL in Loja Integrada, raised only when the pedido's stock removal was
+ *    already applied (otherwise the import reverses the sale on its own).
+ *
+ * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
+ * code newer than the web build reaches the reader as a plain string, and
+ * `mensagens.ts` falls back rather than printing `undefined`.
+ */
+export const motivoPedidoContestadoLiSchema = z.enum([
+  'disputa',
+  'chargeback',
+  'devolvido',
+  'devolvido-sem-retorno',
+]);
+export type MotivoPedidoContestadoLi = z.infer<typeof motivoPedidoContestadoLiSchema>;
+
+/** Named members of {@link motivoPedidoContestadoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_PEDIDO_CONTESTADO_LI = {
+  disputa: 'disputa',
+  chargeback: 'chargeback',
+  devolvido: 'devolvido',
+  devolvidoSemRetorno: 'devolvido-sem-retorno',
+} as const satisfies Record<string, MotivoPedidoContestadoLi>;
+
+/**
+ * Why a mapped Loja Integrada shipping method cannot route an order — the
+ * `lojaIntegradaFreteNaoSuportado` aviso's `params.motivo`, a CODE the wording
+ * in `apps/web/lib/avisos/mensagens.ts` renders. One member per remedy:
+ *
+ *  - `alvo-ausente` — the mapped `int_frete` document does not exist (re-map);
+ *  - `alvo-inativo` — it exists but is inactive (re-activate or re-map);
+ *  - `tipo-nao-suportado` — its tipo is not one the import routes (Melhor
+ *    Envio, motoboy, retirada na loja), nor a deliberate `fob` / `outros`;
+ *  - `alvo-sem-servico` — a Melhor Envio target that names no service.
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoFreteNaoSuportadoLiSchema = z.enum([
+  'alvo-ausente',
+  'alvo-inativo',
+  'tipo-nao-suportado',
+  'alvo-sem-servico',
+]);
+export type MotivoFreteNaoSuportadoLi = z.infer<typeof motivoFreteNaoSuportadoLiSchema>;
+
+/** Named members of {@link motivoFreteNaoSuportadoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_FRETE_NAO_SUPORTADO_LI = {
+  alvoAusente: 'alvo-ausente',
+  alvoInativo: 'alvo-inativo',
+  tipoNaoSuportado: 'tipo-nao-suportado',
+  alvoSemServico: 'alvo-sem-servico',
+} as const satisfies Record<string, MotivoFreteNaoSuportadoLi>;
 
 /**
  * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's

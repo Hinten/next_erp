@@ -1,13 +1,19 @@
 import {
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  MOTIVO_PEDIDO_CONTESTADO_LI,
   PENDENCIA_RECLAMACAO,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
+  motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaLiSchema,
+  motivoPedidoContestadoLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
+  type MotivoFreteNaoSuportadoLi,
   type MotivoImportacaoParadaLi,
+  type MotivoPedidoContestadoLi,
   type PendenciaReclamacao,
   type SituacaoAnuncioForaDaSincronizacao,
   type TipoAviso,
@@ -134,6 +140,73 @@ function fraseMotivoImportacaoParada(valor: Aviso['params'][string] | undefined)
   return codigo.success
     ? FRASE_MOTIVO_IMPORTACAO_PARADA_LI[codigo.data]
     : 'confira o registro da varredura de pedidos';
+}
+
+/**
+ * pt-BR do que contesta um pedido da Loja Integrada — TOTAL sobre o código
+ * (`params.motivo`, um {@link MOTIVO_PEDIDO_CONTESTADO_LI}). O produtor (o
+ * importador de pedidos) grava o CÓDIGO, nunca a frase.
+ */
+const FRASE_MOTIVO_CONTESTADO_LI: Record<MotivoPedidoContestadoLi, string> = {
+  [MOTIVO_PEDIDO_CONTESTADO_LI.disputa]: 'o pagamento está em disputa',
+  [MOTIVO_PEDIDO_CONTESTADO_LI.chargeback]:
+    'o comprador contestou a cobrança junto ao emissor do cartão (chargeback)',
+  [MOTIVO_PEDIDO_CONTESTADO_LI.devolvido]: 'o pagamento foi devolvido ao comprador',
+  [MOTIVO_PEDIDO_CONTESTADO_LI.devolvidoSemRetorno]:
+    'o pagamento foi devolvido ao comprador sem o retorno da mercadoria',
+};
+
+/**
+ * O corpo do aviso de pedido contestado. ⚠️ Diz SEMPRE que o despacho não fica
+ * bloqueado: nada no ERP segura o envio de um pedido da Loja Integrada por
+ * causa deste aviso, e quem lesse "contestado" como bloqueio enviaria sem
+ * conferir — ou deixaria de enviar um pedido que só está em disputa. Nos três
+ * códigos de devolução a frase diz também que o estado e o pagamento foram
+ * MANTIDOS (a mercadoria pode não ter voltado) e que a situação é final lá,
+ * porque é por isso que o aviso não some sozinho. Um código mais novo que esta
+ * tela, uma chave herdada (`'toString'`) ou um param ausente caem no texto
+ * neutro, nunca em "undefined".
+ */
+function corpoPedidoContestadoLi(params: Aviso['params']): string {
+  const codigo = motivoPedidoContestadoLiSchema.safeParse(params.motivo);
+  const abertura =
+    `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} está contestado na Loja ` +
+    `Integrada: ${codigo.success ? FRASE_MOTIVO_CONTESTADO_LI[codigo.data] : 'o pagamento foi contestado'}. ` +
+    'O despacho NÃO fica bloqueado no ERP — confira o pedido antes de enviar.';
+  if (!codigo.success || codigo.data === MOTIVO_PEDIDO_CONTESTADO_LI.disputa) {
+    return (
+      `${abertura} O aviso se encerra quando a Loja Integrada mostrar o pedido numa situação ` +
+      'que não seja de contestação (por exemplo, pago de novo).'
+    );
+  }
+  return (
+    `${abertura} O ERP manteve o estado e o pagamento do pedido, porque a mercadoria pode não ` +
+    'ter voltado: confira a devolução e ajuste o pedido e o estoque se for o caso. Essa situação ' +
+    'é final na Loja Integrada, então o aviso só se encerra se ela for mudada no painel da loja.'
+  );
+}
+
+/**
+ * pt-BR do porquê a forma de envio mapeada não serve à importação — TOTAL sobre
+ * o código (`params.motivo`, um {@link MOTIVO_FRETE_NAO_SUPORTADO_LI}).
+ */
+const FRASE_MOTIVO_FRETE_NAO_SUPORTADO_LI: Record<MotivoFreteNaoSuportadoLi, string> = {
+  [MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoAusente]:
+    'o frete para o qual ela está mapeada não existe mais',
+  [MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo]: 'o frete para o qual ela está mapeada está inativo',
+  [MOTIVO_FRETE_NAO_SUPORTADO_LI.tipoNaoSuportado]:
+    'ela está mapeada para um tipo de frete que a importação não usa (só Melhor Envio, ' +
+    'motoboy e retirada na loja)',
+  [MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoSemServico]:
+    'ela está mapeada para um frete do Melhor Envio sem serviço definido',
+};
+
+/** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */
+function fraseMotivoFreteNaoSuportado(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoFreteNaoSuportadoLiSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_MOTIVO_FRETE_NAO_SUPORTADO_LI[codigo.data]
+    : 'o frete para o qual ela está mapeada não pode ser usado';
 }
 
 /**
@@ -419,6 +492,49 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'Se o motivo for o token, salve um token válido na conta. Nos demais casos, um ' +
       'desenvolvedor confere o registro da varredura de pedidos; quando há pedidos alterados ' +
       'demais, reiniciar o cursor da conta faz a leitura recomeçar pelo período inicial de busca.',
+  },
+  // Os quatro tipos da importação de pedidos (passos 5 e 6). Todos `atencao`: cada um
+  // fala de UM pedido ou UMA forma de envio, e a entrada de pedidos segue funcionando.
+  [TIPO_AVISO.lojaIntegradaSituacaoDesconhecida]: {
+    titulo: 'Situação desconhecida em pedido da Loja Integrada',
+    corpo: (params) =>
+      `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} chegou da Loja Integrada ` +
+      `com a situação "${p(params, 'codigo')}", que o ERP não conhece. O pedido foi importado e ` +
+      'ficou marcado com um erro até a situação ser reconhecida — confira-o no painel da Loja ' +
+      'Integrada. O aviso se encerra quando o pedido voltar com uma situação conhecida.',
+    // O conserto é de código: a situação nova entra na tabela compartilhada.
+    runbook:
+      'Um desenvolvedor inclui a situação nova na tabela de situações da Loja Integrada ' +
+      '(packages/schemas, situacaoPedidoLojaIntegrada.ts) e decide o estado e o status de ' +
+      'pagamento dela.',
+  },
+  [TIPO_AVISO.lojaIntegradaPedidoContestado]: {
+    titulo: 'Pedido da Loja Integrada contestado',
+    corpo: corpoPedidoContestadoLi,
+  },
+  [TIPO_AVISO.lojaIntegradaPedidoHub]: {
+    titulo: 'Pedido da Loja Integrada vindo de um hub',
+    corpo: (params) =>
+      `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} chegou à Loja Integrada por ` +
+      'um hub de marketplaces e não foi importado: esta integração importa só os pedidos da ' +
+      'própria loja virtual. Confira no painel da Loja Integrada se algum hub foi ativado. O ' +
+      'aviso se encerra se o pedido voltar sem as marcas de hub ou for cancelado.',
+    // O conserto está fora do app: no painel da loja, ou numa decisão de plano.
+    runbook:
+      'Pedidos de hub não são importados por decisão do plano da integração. Se um hub foi ' +
+      'ativado de propósito, um desenvolvedor precisa avaliar como esses pedidos entram no ERP.',
+  },
+  // Sem `runbook`: o conserto está no app — a aba Mapeamento do Frete da conta, para
+  // onde o aviso aponta.
+  [TIPO_AVISO.lojaIntegradaFreteNaoSuportado]: {
+    titulo: 'Forma de envio da Loja Integrada sem frete utilizável',
+    corpo: (params) =>
+      `A forma de envio ${p(params, 'formaEnvio')} da loja ${p(params, 'loja')} não pôde ser ` +
+      `usada na importação de pedidos: ${fraseMotivoFreteNaoSuportado(params.motivo)}. Os ` +
+      'pedidos com ela foram importados com o frete da própria Loja Integrada, e o mapeamento é ' +
+      'conferido de novo na hora da etiqueta. Revise o mapeamento na aba Mapeamento do Frete da ' +
+      'conta; o aviso se encerra quando um pedido com essa forma de envio for importado depois ' +
+      'da correção.',
   },
 };
 

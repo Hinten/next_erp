@@ -1450,6 +1450,10 @@ export {
   PENDENCIA_RECLAMACAO,
   motivoImportacaoParadaLiSchema,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  motivoPedidoContestadoLiSchema,
+  MOTIVO_PEDIDO_CONTESTADO_LI,
+  motivoFreteNaoSuportadoLiSchema,
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1468,6 +1472,8 @@ export {
   type RotaAvisoKey,
   type PendenciaReclamacao,
   type MotivoImportacaoParadaLi,
+  type MotivoPedidoContestadoLi,
+  type MotivoFreteNaoSuportadoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';

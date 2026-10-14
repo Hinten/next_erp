@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   CANAL_AVISO,
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  MOTIVO_PEDIDO_CONTESTADO_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -10,7 +12,9 @@ import {
   TIPO_AVISO_LABELS,
   avisoReceitaKitShopee,
   avisoSchema,
+  motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaLiSchema,
+  motivoPedidoContestadoLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type SituacaoAnuncioForaDaSincronizacao,
@@ -822,5 +826,183 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaImportacaoParada', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaImportacaoParada);
     expect(mensagem.runbook).toContain('salve um token válido na conta');
     expect(mensagem.runbook).toContain('registro da varredura de pedidos');
+  });
+});
+
+/**
+ * The four order-import tipos of Loja Integrada steps 5–6, rendered with the
+ * params their producer (the importer, PR 5-c) writes: `{ loja, pedido, codigo }`,
+ * `{ loja, pedido, motivo }`, `{ loja, pedido }` and
+ * `{ loja, formaEnvio, chave, motivo }`.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaSituacaoDesconhecida', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaSituacaoDesconhecida];
+
+  it('renders the order, the conta and the unknown codigo in their slots', () => {
+    expect(mensagem.corpo({ loja: 'Conta A', pedido: '165', codigo: 'situacao_nova' })).toBe(
+      'O pedido 165 da loja Conta A chegou da Loja Integrada com a situação "situacao_nova", ' +
+        'que o ERP não conhece. O pedido foi importado e ficou marcado com um erro até a ' +
+        'situação ser reconhecida — confira-o no painel da Loja Integrada. O aviso se encerra ' +
+        'quando o pedido voltar com uma situação conhecida.',
+    );
+  });
+
+  it('renders `{}` with placeholders, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toContain('O pedido — da loja —');
+    expect(corpo).toContain('"—"');
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('is titled like its label, with a runbook naming the shared table — the fix is code', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaSituacaoDesconhecida);
+    expect(mensagem.runbook).toContain('situacaoPedidoLojaIntegrada.ts');
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoContestado];
+  const NAO_BLOQUEIA = 'O despacho NÃO fica bloqueado no ERP — confira o pedido antes de enviar.';
+  const MANTIDO = 'O ERP manteve o estado e o pagamento do pedido';
+
+  it('a dispute: the phrase, NOT blocked, and how it closes', () => {
+    expect(
+      mensagem.corpo({
+        loja: 'Conta A',
+        pedido: '165',
+        motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
+      }),
+    ).toBe(
+      'O pedido 165 da loja Conta A está contestado na Loja Integrada: o pagamento está em ' +
+        `disputa. ${NAO_BLOQUEIA} O aviso se encerra quando a Loja Integrada mostrar o pedido ` +
+        'numa situação que não seja de contestação (por exemplo, pago de novo).',
+    );
+  });
+
+  it('every refund-type motivo says the estado and payment were KEPT, and that it is final', () => {
+    for (const motivo of [
+      MOTIVO_PEDIDO_CONTESTADO_LI.chargeback,
+      MOTIVO_PEDIDO_CONTESTADO_LI.devolvido,
+      MOTIVO_PEDIDO_CONTESTADO_LI.devolvidoSemRetorno,
+    ]) {
+      const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
+      expect(corpo, motivo).toContain(NAO_BLOQUEIA);
+      expect(corpo, motivo).toContain(MANTIDO);
+      expect(corpo, motivo).toContain('é final na Loja Integrada');
+    }
+    // Near-miss: the dispute is a hold, not a refund — nothing was "kept" there.
+    expect(mensagem.corpo({ motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa })).not.toContain(MANTIDO);
+  });
+
+  it('is TOTAL over the motivo codes: every one has its own phrase, never the fallback', () => {
+    const frases = new Set<string>();
+    for (const motivo of motivoPedidoContestadoLiSchema.options) {
+      const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
+      expect(corpo, motivo).not.toContain('o pagamento foi contestado.');
+      expect(corpo, motivo).not.toContain('undefined');
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoPedidoContestadoLiSchema.options.length);
+  });
+
+  it('a newer code, an inherited key or a missing motivo falls back — still NOT blocked', () => {
+    for (const motivo of ['motivo-do-futuro', 'toString', '', 3]) {
+      const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
+      expect(corpo, String(motivo)).toContain('o pagamento foi contestado.');
+      expect(corpo, String(motivo)).toContain(NAO_BLOQUEIA);
+    }
+    expect(mensagem.corpo({})).not.toContain('undefined');
+  });
+
+  it('renders the producer plano as stored', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoContestado,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165', motivo: MOTIVO_PEDIDO_CONTESTADO_LI.chargeback },
+      motivo: MOTIVO_PEDIDO_CONTESTADO_LI.chargeback,
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    expect(aviso.urlInterna?.rota).toBe(`/pedidos/${PEDIDO_ID}/editar`);
+    expect(mensagem.corpo(aviso.params)).toContain('(chargeback)');
+  });
+
+  it('is titled like its label and carries no runbook — the pedido is the fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoContestado);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoHub', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoHub];
+
+  it('says the order was NOT imported, and why', () => {
+    const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165' });
+    expect(corpo).toContain('O pedido 165 da loja Conta A chegou à Loja Integrada por um hub');
+    expect(corpo).toContain('não foi importado');
+    expect(mensagem.corpo({})).not.toContain('undefined');
+  });
+
+  it('is titled like its label, with a runbook — the decision is outside the app', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoHub);
+    expect(mensagem.runbook).toContain('não são importados');
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.lojaIntegradaFreteNaoSuportado', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaFreteNaoSuportado];
+
+  it('renders the method, the conta and the motivo, and points at the mapping tab', () => {
+    expect(
+      mensagem.corpo({
+        loja: 'Conta A',
+        formaEnvio: 'Envio X - pac',
+        chave: '1---PAC',
+        motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo,
+      }),
+    ).toBe(
+      'A forma de envio Envio X - pac da loja Conta A não pôde ser usada na importação de ' +
+        'pedidos: o frete para o qual ela está mapeada está inativo. Os pedidos com ela foram ' +
+        'importados com o frete da própria Loja Integrada, e o mapeamento é conferido de novo ' +
+        'na hora da etiqueta. Revise o mapeamento na aba Mapeamento do Frete da conta; o aviso ' +
+        'se encerra quando um pedido com essa forma de envio for importado depois da correção.',
+    );
+  });
+
+  it('is TOTAL over the motivo codes, and falls back for anything else', () => {
+    const frases = new Set<string>();
+    for (const motivo of motivoFreteNaoSuportadoLiSchema.options) {
+      const corpo = mensagem.corpo({ loja: 'Conta A', formaEnvio: 'X', motivo });
+      expect(corpo, motivo).not.toContain('não pode ser usado.');
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoFreteNaoSuportadoLiSchema.options.length);
+    for (const motivo of ['fob', 'toString', '']) {
+      expect(mensagem.corpo({ motivo }), motivo).toContain('não pode ser usado.');
+    }
+  });
+
+  it('renders the producer plano as stored, routed to the conta page', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: {
+        loja: 'Conta A',
+        formaEnvio: 'Envio X - pac',
+        chave: '1---PAC',
+        motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.tipoNaoSuportado,
+      },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_789_000_000_000_001,
+    });
+    expect(aviso.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(mensagem.corpo(aviso.params)).toContain('só Melhor Envio, motoboy e retirada na loja');
+  });
+
+  it('is titled like its label and carries no runbook — the mapping tab is the fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaFreteNaoSuportado);
+    expect(mensagem.runbook).toBeUndefined();
   });
 });
