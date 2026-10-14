@@ -7,13 +7,18 @@ trigger. Those all buy "survive indefinitely without a cutover", and there **is*
 a cutover (root `CLAUDE.md` rule 8 / ADR 0013), so they pay for something already
 bought and leave permanent compat code nobody deletes.
 
-Eighteen dated subfolders live under `src/` today — fourteen that write
+Nineteen dated subfolders live under `src/` today — fifteen that write
 (`migrate.ts`, or `backfill.ts`; `2026-09-produto-sem-variacoes` also carries an
 `audit.ts`) and four read-only audits (`audit.ts` alone). Most
 carry a runbook beside this file — `telefone-e164.README.md`,
 `historico-estoque-v2.README.md`, and so on — with the reasoning, the target
 ordering and the verification for that one job. This file is only the contract
 they share.
+
+One undated folder sits beside them: `src/intFreteAdocao/`, the `int_frete`
+adoption pass that two dated folders bind — `2026-10-shopee-int-frete` and
+`2026-10-li-int-frete`, each a thin `transform.ts` + `backfill.ts` over the same
+plan (`plano.ts`) and I/O (`executar.ts`), so the STOP verdict exists once.
 
 ⚠️ Two do not, and neither satisfies point 5 below as written:
 `2026-08-ml-lastmarketplaceupdate` has no runbook, no pure module and no test,
