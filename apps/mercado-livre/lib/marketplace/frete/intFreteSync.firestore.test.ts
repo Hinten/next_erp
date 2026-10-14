@@ -4,6 +4,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import { intFreteCollection, integracaoCollection } from '@delfrance/data/admin/collections';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
 import { buscarIntFreteDaConta, reconciliarIntFreteDaConta } from './intFreteSync';
@@ -54,11 +55,11 @@ describe.skipIf(!EMULATED)('ML freight current-state reconciliation (Firestore e
   it('creates once, persists schema defaults and produces an unchanged second pass', async () => {
     const db = getAdminFirestore();
     const id = newContaId();
-    await db.collection('integracao').doc(id).set(conta());
+    await integracaoCollection.docRef(db, {}, id).set(conta());
 
     const first = await reconciliarIntFreteDaConta(db, id);
     expect(first).toMatchObject({ action: 'criado', intFreteId: 'mercadoLivre-' + id });
-    const freightRef = db.collection('int_frete').doc(first.intFreteId!);
+    const freightRef = intFreteCollection.docRef(db, {}, first.intFreteId!);
     const saved = await freightRef.get();
     expect(saved.exists).toBe(true);
     expect(saved.data()).toMatchObject({
@@ -88,28 +89,27 @@ describe.skipIf(!EMULATED)('ML freight current-state reconciliation (Firestore e
       faixaCep: ['01000'],
       prazoExtra: 3,
     };
-    await db.collection('integracao').doc(id).set(conta({ nome: 'Current store' }));
-    await db
-      .collection('int_frete')
-      .doc(legacyId)
-      .set(
-        frete(id, {
-          ...config,
-          ativo: false,
-          contaMercadoLivreMercadoEnviosOuterRef: 'integracao/' + id,
-          ultimaModificacao: CADASTRO + 9_000_000_000_000,
-        }),
-      );
+    await integracaoCollection.docRef(db, {}, id).set(conta({ nome: 'Current store' }));
+    const legacyRef = intFreteCollection.docRef(db, {}, legacyId);
+    await legacyRef.set(
+      frete(id, {
+        ...config,
+        ativo: false,
+        contaMercadoLivreMercadoEnviosOuterRef: 'integracao/' + id,
+        ultimaModificacao: CADASTRO + 9_000_000_000_000,
+      }),
+    );
 
     expect(await buscarIntFreteDaConta(db, id)).toMatchObject({ id: legacyId });
     expect(await reconciliarIntFreteDaConta(db, id)).toMatchObject({
       action: 'atualizado',
       intFreteId: legacyId,
     });
-    const saved = await db.collection('int_frete').doc(legacyId).get();
+    const saved = await legacyRef.get();
     expect(saved.exists).toBe(true);
     expect(saved.data()).toMatchObject({ ...frete(id), ...config, nome: 'Current store' });
-    expect((await db.collection('int_frete').doc('mercadoLivre-' + id).get()).exists).toBe(false);
+    const deterministicRef = intFreteCollection.docRef(db, {}, 'mercadoLivre-' + id);
+    expect((await deterministicRef.get()).exists).toBe(false);
     expect(await reconciliarIntFreteDaConta(db, id)).toEqual({
       action: 'inalterado',
       intFreteId: legacyId,
@@ -119,8 +119,8 @@ describe.skipIf(!EMULATED)('ML freight current-state reconciliation (Firestore e
   it('deactivates a retyped or deleted account and reactivates current ML state', async () => {
     const db = getAdminFirestore();
     const id = newContaId();
-    const accountRef = db.collection('integracao').doc(id);
-    const freightRef = db.collection('int_frete').doc('mercadoLivre-' + id);
+    const accountRef = integracaoCollection.docRef(db, {}, id);
+    const freightRef = intFreteCollection.docRef(db, {}, 'mercadoLivre-' + id);
     await accountRef.set(conta());
     await reconciliarIntFreteDaConta(db, id);
     expect((await freightRef.get()).exists).toBe(true);
@@ -140,15 +140,15 @@ describe.skipIf(!EMULATED)('ML freight current-state reconciliation (Firestore e
   it('concurrent first calls create one deterministic freight record', async () => {
     const db = getAdminFirestore();
     const id = newContaId();
-    await db.collection('integracao').doc(id).set(conta());
+    await integracaoCollection.docRef(db, {}, id).set(conta());
 
     const results = await Promise.all([
       reconciliarIntFreteDaConta(db, id),
       reconciliarIntFreteDaConta(db, id),
     ]);
     expect(results.map((result) => result.action).sort()).toEqual(['criado', 'inalterado']);
-    const saved = await db
-      .collection('int_frete')
+    const saved = await intFreteCollection
+      .ref(db, {})
       .where('tipo', '==', 'mercadoLivre')
       .where('contaMercadoLivreMercadoEnviosOuterRef', '==', 'documents/integracao/' + id)
       .get();
