@@ -48,6 +48,7 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
         tipoFrete: 'mercadoLivre',
         campoBackRef: 'contaMercadoLivreMercadoEnviosOuterRef',
         rotuloLog: '[mercado-livre]',
+        prefixoDocId: 'mercadoLivre',
       },
       shopee: {
         tipoConta: 5,
@@ -92,10 +93,11 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
     }
   });
 
-  it('shopee mints a deterministic doc id (`shopee-<integracaoId>`); mercadoLivre keeps a random one', () => {
+  it('both channels mint deterministic document IDs (#1888)', () => {
     expect(VINCULO_INT_FRETE_CONTA.shopee.prefixoDocId).toBe('shopee');
     expect(`${VINCULO_INT_FRETE_CONTA.shopee.prefixoDocId}-int-1`).toBe('shopee-int-1');
-    expect(Object.hasOwn(VINCULO_INT_FRETE_CONTA.mercadoLivre, 'prefixoDocId')).toBe(false);
+    expect(VINCULO_INT_FRETE_CONTA.mercadoLivre.prefixoDocId).toBe('mercadoLivre');
+    expect(`${VINCULO_INT_FRETE_CONTA.mercadoLivre.prefixoDocId}-int-1`).toBe('mercadoLivre-int-1');
   });
 });
 

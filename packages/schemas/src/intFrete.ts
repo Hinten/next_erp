@@ -293,7 +293,7 @@ export interface VinculoIntFreteConta {
   readonly rotuloLog: string;
   /**
    * Present ⇒ a NEW doc is created at `<prefixoDocId>-<integracaoId>`, so two concurrent first
-   * syncs target ONE path (rule 7 tier 0). Absent ⇒ a random id (Mercado Livre, unchanged). The
+   * reconciliations target ONE path (rule 7 tier 0). Absent ⇒ a random ID. The
    * lookup still adopts a legacy auto-id doc either way.
    */
   readonly prefixoDocId?: string;
@@ -305,6 +305,7 @@ export const VINCULO_INT_FRETE_CONTA = {
     tipoFrete: INTEGRACAO_FRETE.mercadoLivre,
     campoBackRef: 'contaMercadoLivreMercadoEnviosOuterRef',
     rotuloLog: '[mercado-livre]',
+    prefixoDocId: INTEGRACAO_FRETE.mercadoLivre,
   },
   shopee: {
     tipoConta: INTEGRACAO_TIPO.shopee,

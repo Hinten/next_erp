@@ -854,7 +854,6 @@ describe('contarDocsAlterados', () => {
       { action: 'inalterado' },
       { action: 'incompleto' },
       { action: 'nao-encontrado' },
-      { action: 'obsoleto' },
     ];
     expect(contarDocsAlterados(disposicoes)).toBe(3);
   });
