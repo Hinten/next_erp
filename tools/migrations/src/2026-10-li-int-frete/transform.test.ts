@@ -611,6 +611,30 @@ describe('auditarMapa — read-only counts', () => {
     });
   });
 
+  it('⚠️ NEAR-MISS: tipoForaDosAlvos and uidComCaminho count MAPPED rows only', () => {
+    const auditoria = auditarMapa({
+      docs: [
+        docComMapa('a', [
+          // Unmapped, whatever the tipo or the uid's shape: counted under neither.
+          linhaDoMapa({ integracaoUid: null, targetTipoIntegracao: 'mercadoLivre' }),
+          linhaDoMapa({ integracaoUid: '', targetTipoIntegracao: null }),
+          linhaDoMapa({ integracaoUid: 42, targetTipoIntegracao: 'shopee' }),
+          // The same outside tipo, mapped through a path: counted under both.
+          linhaDoMapa({ integracaoUid: 'int_frete/abc', targetTipoIntegracao: 'mercadoLivre' }),
+        ]),
+      ],
+      idsDosAlvos: ['abc'],
+    });
+    expect(auditoria).toEqual({
+      docsComMapaInvalido: 0,
+      linhas: 4,
+      mapeadas: 1,
+      tipoForaDosAlvos: 1,
+      alvoAusente: 0,
+      uidComCaminho: 1,
+    });
+  });
+
   it('every one of the five target tipos is inside; a marketplace tipo or no tipo is outside', () => {
     const dentro = TIPOS_ALVO_MAPA_FRETE_LI.map((tipo) =>
       linhaDoMapa({ integracaoUid: 'abc', targetTipoIntegracao: tipo }),
