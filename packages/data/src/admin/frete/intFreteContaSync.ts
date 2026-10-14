@@ -6,18 +6,21 @@
  * upserting it on every save; the new stack saves the conta through a plain `ObjectView` with no
  * companion write, so a Firestore trigger per channel keeps it in step instead. Mercado Livre did
  * it first (#782, `apps/mercado-livre/lib/marketplace/frete/intFreteSync.ts`, now a binding of
- * this module); Shopee step 20 (#1528) is the second channel, and the per-channel facts — the two
- * tipo enums, the back-ref key, the log prefix, the deterministic-id prefix — are ONE pure row
- * each in `VINCULO_INT_FRETE_CONTA` (`@delfrance/schemas`). Nothing here knows a channel by name.
+ * this module); Shopee step 20 (#1528) is the second channel and Loja Integrada step 20 (#1826)
+ * the third, and the per-channel facts — the two tipo enums, the back-ref key, the log prefix, the
+ * deterministic-id prefix — are ONE pure row each in `VINCULO_INT_FRETE_CONTA`
+ * (`@delfrance/schemas`). Nothing here knows a channel by name. Neither does the doc chooser: the
+ * newest-`dataCadastro` pick is `escolherIntFreteMaisNovo` (`@delfrance/schemas`), so a browser
+ * surface that must name the same doc calls the same copy.
  *
  * ---- One pure planner, two drivers ----
  * {@link SyncIntFreteConta.planejarIntFreteDaConta} makes every create / patch / deactivate
  * decision. Two drivers apply it, and the window pass (`tools/migrations`) runs it over a scan:
  *
- *  - **Shopee — state-driven** (`reconciliarIntFreteDaConta`). The caller passes the conta ID and
- *    nothing else. Inside ONE `db.runTransaction` the conta is re-read through `tx.get`, the doc
- *    is looked up through `tx.get` (plus the deterministic id on a miss), and the planner decides
- *    from those snapshots alone. Rule 7 class **A**: nothing captured outside reaches the write,
+ *  - **Shopee and Loja Integrada — state-driven** (`reconciliarIntFreteDaConta`). The caller
+ *    passes the conta ID and nothing else. Inside ONE `db.runTransaction` the conta is re-read
+ *    through `tx.get`, the doc is looked up through `tx.get` (plus the deterministic id on a
+ *    miss), and the planner decides from those snapshots alone. Rule 7 class **A**: nothing captured outside reaches the write,
  *    so there is no event clock and no watermark — a replayed, retried or out-of-order event
  *    converges to the conta as it stands at commit, and a conta write landing between the read
  *    and the commit puts the conta in the conflict set, so the attempt re-runs. A create targets
@@ -68,6 +71,7 @@ import type { DocumentData, Firestore, Query, Transaction } from 'firebase-admin
 import { coerceToMillis } from '@delfrance/core/datetime';
 import {
   INTEGRACAO_TIPO_LABELS,
+  escolherIntFreteMaisNovo,
   toOuterRef,
   toOuterRefOrNull,
   type VinculoIntFreteConta,
@@ -168,10 +172,10 @@ export interface OpcoesSyncIntFrete {
   /**
    * Mercado Livre only (`refMatchesIntegracao`): enables the tolerant fallback scan for a doc
    * whose back-ref is stored in a non-canonical form. Absent ⇒ the lookup never scans: the Shopee
-   * trigger reads only the two-equality query and the deterministic id. The window pass
-   * (`tools/migrations/src/2026-10-shopee-int-frete/backfill.ts`) does read the channel's whole
-   * `tipo ==` population — once, by design — and REPORTS a non-canonical ref instead of matching
-   * it, refusing to create beside it.
+   * and Loja Integrada bindings read only the two-equality query and the deterministic id. The
+   * Shopee window pass (`tools/migrations/src/2026-10-shopee-int-frete/backfill.ts`) does read the
+   * channel's whole `tipo ==` population — once, by design — and REPORTS a non-canonical ref
+   * instead of matching it, refusing to create beside it.
    */
   readonly refTolerante?: (ref: unknown, integracaoId: string) => boolean;
 }
@@ -225,8 +229,8 @@ export interface SyncIntFreteConta {
   ): PlanoIntFrete;
   /**
    * This conta's freight doc: the newest `dataCadastro`, and on an equal `dataCadastro` the
-   * lexically LOWEST doc id — explicit in `maisNovoPorDataCadastro`, so the pick does not depend
-   * on the order a query returns its docs in.
+   * lexically LOWEST doc id — explicit in `escolherIntFreteMaisNovo` (`@delfrance/schemas`), so
+   * the pick does not depend on the order a query returns its docs in.
    *
    * ⚠️ That is NOT the legacy tie-break, and there was no single legacy rule. Legacy Mercado Livre
    * ran `orderBy__dataCadastro(false).first()` (`ascending: false` ⇒ DESC, and Firestore orders
@@ -259,7 +263,10 @@ export interface SyncIntFreteConta {
     integracaoId: string,
     opts?: { apenasAtivo?: boolean; tx?: Transaction },
   ): Promise<IntFreteEncontrado | null>;
-  /** Shopee: state-driven, class A. Re-reads the conta through `tx.get`; takes no conta, no clock. */
+  /**
+   * Shopee and Loja Integrada: state-driven, class A. Re-reads the conta through `tx.get`; takes
+   * no conta, no clock.
+   */
   reconciliarIntFreteDaConta(db: Firestore, integracaoId: string): Promise<DisposicaoIntFrete>;
   /**
    * Mercado Livre: event-driven, class B. Creates the doc when absent, otherwise patches ONLY the
@@ -290,41 +297,6 @@ export interface SyncIntFreteConta {
    * tipo reads `false` (a known ML gap, closed by moving ML onto the state-driven driver, #1888).
    */
   contaRealmenteExcluida(db: Firestore, integracaoId: string): Promise<boolean>;
-}
-
-/**
- * The newest `dataCadastro` among the candidates that pass `filtro`; on an equal `dataCadastro`
- * the lexically LOWER doc id wins — a plain `<` on the ids (UTF-16 order, which agrees with
- * Firestore's `__name__` order for the ASCII ids every writer here produces).
- *
- * The tie is explicit so the pick never depends on the order the candidates arrive in: the
- * drivers' lookup (over a query result) and the window pass's chooser (over its own scan) must
- * name the SAME doc, and the window pass reports that choice as `escolhido` / `duplicados`.
- * Before, a tie kept the first doc seen. That is the lowest id only where an unordered result
- * comes back in ascending `__name__` (Standard); Enterprise guarantees no order for a query
- * without `orderBy`, so the drivers' tie pick depended on the query plan and is now always the
- * lowest id — a deliberate determinism change (see `buscarIntFreteDaConta`), not a no-op.
- */
-function maisNovoPorDataCadastro(
-  candidatos: ReadonlyArray<IntFreteEncontrado>,
-  filtro?: (raw: Record<string, unknown>) => boolean,
-): IntFreteEncontrado | null {
-  let melhor: IntFreteEncontrado | null = null;
-  let melhorData = -Infinity;
-  for (const candidato of candidatos) {
-    if (filtro && !filtro(candidato.data)) continue;
-    const dataCadastro =
-      typeof candidato.data.dataCadastro === 'number' ? candidato.data.dataCadastro : 0;
-    if (
-      melhor == null ||
-      dataCadastro > melhorData ||
-      (dataCadastro === melhorData && candidato.id < melhor.id)
-    ) {
-      melhor = candidato;
-      melhorData = dataCadastro;
-    }
-  }
-  return melhor;
 }
 
 function comoEncontrados(
@@ -448,10 +420,10 @@ export function intFreteContaSync(
     docs: ReadonlyArray<IntFreteEncontrado>,
     integracaoId: string,
   ): IntFreteEncontrado | null => {
-    const direto = maisNovoPorDataCadastro(docs, (raw) => ehDocDaConta(raw, integracaoId));
+    const direto = escolherIntFreteMaisNovo(docs, (raw) => ehDocDaConta(raw, integracaoId));
     if (direto != null) return direto;
     if (refTolerante != null) {
-      const tolerante = maisNovoPorDataCadastro(
+      const tolerante = escolherIntFreteMaisNovo(
         docs,
         (raw) => raw.tipo === tipoFrete && refTolerante(raw[campoBackRef], integracaoId),
       );
@@ -481,7 +453,7 @@ export function intFreteContaSync(
     if (opts.apenasAtivo === true) q = q.where('ativo', '==', true);
 
     const snap = await ler(q);
-    const direto = maisNovoPorDataCadastro(comoEncontrados(snap.docs));
+    const direto = escolherIntFreteMaisNovo(comoEncontrados(snap.docs));
     if (direto != null || refTolerante == null) return direto;
 
     // Fallback (Mercado Livre only): a doc whose back-ref is stored in a non-canonical form (bare
@@ -492,7 +464,7 @@ export function intFreteContaSync(
     let scan: Query = intFreteCollection.ref(db, {}).where('tipo', '==', tipoFrete);
     if (opts.apenasAtivo === true) scan = scan.where('ativo', '==', true);
     const scanSnap = await ler(scan);
-    const tolerante = maisNovoPorDataCadastro(comoEncontrados(scanSnap.docs), (raw) =>
+    const tolerante = escolherIntFreteMaisNovo(comoEncontrados(scanSnap.docs), (raw) =>
       refTolerante(raw[campoBackRef], integracaoId),
     );
     if (tolerante != null) {

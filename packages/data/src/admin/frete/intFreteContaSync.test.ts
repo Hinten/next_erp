@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   VINCULO_INT_FRETE_CONTA,
+  escolherIntFreteMaisNovo,
   intFreteSchema,
   type VinculoIntFreteConta,
 } from '@delfrance/schemas';
@@ -289,11 +290,13 @@ const refToleranteDeTeste = (ref: unknown, integracaoId: string): boolean =>
   (ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`));
 
 const shopee = intFreteContaSync(V.shopee);
+const lojaIntegrada = intFreteContaSync(V.lojaIntegrada);
 const ml = intFreteContaSync(V.mercadoLivre, { refTolerante: refToleranteDeTeste });
 
 /**
- * The two bindings, each through the driver it runs in production: Shopee writes the conta and
- * RECONCILES (state-driven); Mercado Livre hands the event's conta to its event-driven pair.
+ * The three bindings, each through the driver it runs in production: Shopee and Loja Integrada
+ * write the conta and RECONCILE (state-driven); Mercado Livre hands the event's conta to its
+ * event-driven pair.
  */
 interface Cenario {
   nome: string;
@@ -319,6 +322,19 @@ const CENARIOS: Cenario[] = [
     aplicar: async (host, conta) => {
       await host.escreverConta(ID, conta);
       return shopee.reconciliarIntFreteDaConta(asDb(host), ID);
+    },
+  },
+  {
+    nome: 'lojaIntegrada — reconcile',
+    vinculo: V.lojaIntegrada,
+    sync: lojaIntegrada,
+    outro: V.shopee,
+    carimbo: RELOGIO_MS,
+    avisoIncompleto:
+      '[loja-integrada] conta Loja Integrada sem dados suficientes para criar o int_frete',
+    aplicar: async (host, conta) => {
+      await host.escreverConta(ID, conta);
+      return lojaIntegrada.reconciliarIntFreteDaConta(asDb(host), ID);
     },
   },
   {
@@ -379,17 +395,19 @@ describe('diffCamposIntFrete', () => {
   });
 });
 
-/* --------------------------- both bindings (T1–T19) ----------------------- */
+/* --------------------------- every binding (T1–T19) ----------------------- */
 
 describe.each(CENARIOS)('$nome', (c) => {
   const conta = (over: DocData = {}) => contaDe(c.vinculo, over);
   const doc = (over: DocData = {}) => docDe(c.vinculo, over);
+  /** The deterministic id a prefixed row creates at; any other id for a row without a prefix. */
+  const idDeterministico = `${c.vinculo.prefixoDocId ?? 'sem-prefixo'}-${ID}`;
 
   it('T1 creates the doc mirroring the conta, with the schema defaults filled in', async () => {
     const host = new Host();
     const d = await c.aplicar(host, conta());
     expect(d.action).toBe('criado');
-    if (c.vinculo.prefixoDocId != null) expect(d.intFreteId).toBe(`shopee-${ID}`);
+    if (c.vinculo.prefixoDocId != null) expect(d.intFreteId).toBe(idDeterministico);
     else expect(d.intFreteId).toMatch(/^auto-\d+$/);
     expect(host.colecao('int_frete').size).toBe(1);
     const criado = host.intFrete(d.intFreteId!)!;
@@ -629,12 +647,12 @@ describe.each(CENARIOS)('$nome', (c) => {
   });
 
   it('T16 every path completes with all its reads before its write (the engine throws otherwise)', async () => {
-    // create — for Shopee the lookup MISSES, so the deterministic-id read runs too
+    // create — for a prefixed row the lookup MISSES, so the deterministic-id read runs too
     const criar = new Host();
     await expect(c.aplicar(criar, conta())).resolves.toMatchObject({ action: 'criado' });
     if (c.vinculo.prefixoDocId != null) {
       expect(criar.leituras).toEqual(
-        expect.arrayContaining([`integracao/${ID}`, 'int_frete', `int_frete/shopee-${ID}`]),
+        expect.arrayContaining([`integracao/${ID}`, 'int_frete', `int_frete/${idDeterministico}`]),
       );
     }
     // patch
@@ -740,7 +758,7 @@ describe.each(CENARIOS)('$nome', (c) => {
       [
         'det-id with altered ref',
         conta(),
-        [[`shopee-${ID}`, doc({ [c.vinculo.campoBackRef]: null })]],
+        [[idDeterministico, doc({ [c.vinculo.campoBackRef]: null })]],
       ],
     ];
     for (const [caso, contaFixture, docs, esperado] of fixtures) {
@@ -758,6 +776,107 @@ describe.each(CENARIOS)('$nome', (c) => {
       if ('id' in plano && plano.id != null) expect(d.intFreteId, caso).toBe(plano.id);
       if (esperado !== undefined) expect(d.intFreteId, caso).toBe(esperado);
     }
+  });
+
+  it('T56 adopt-and-patch leaves a multi-row legacy `mapa` and the `horarioDeCorte` deep-equal to what was seeded', async () => {
+    // The Loja Integrada `EnviosLojaIntegrada` shape (#1826): a mapped row, an unmapped row
+    // carrying a key the schema does not model, and a row with no `idOriginal`. The sync must
+    // never write `mapa` or `horarioDeCorte` on a patch — the mapa helper appends to it and the
+    // conta screen edits it, and neither may lose a row to a conta save.
+    const mapa = [
+      {
+        nomeOriginal: 'Gateway Teste - PAC',
+        idOriginal: '141909---PAC',
+        observacao: 'Origem: Pedido 101',
+        nomeTarget: 'Empresa Teste — Serviço Teste',
+        targetData: { id: 1, name: 'Serviço Teste', company: { id: 2, name: 'Empresa Teste' } },
+        integracaoUid: 'me-1',
+        targetTipoIntegracao: 'melhorEnvios',
+      },
+      {
+        nomeOriginal: 'Gateway Teste - Expresso',
+        idOriginal: '141909---null',
+        observacao: 'Origem: Pedido 102',
+        nomeTarget: null,
+        targetData: null,
+        integracaoUid: null,
+        targetTipoIntegracao: 'outros',
+        campoDesconhecido: 'mantém',
+      },
+      {
+        nomeOriginal: 'Retirada',
+        idOriginal: null,
+        observacao: null,
+        nomeTarget: null,
+        targetData: null,
+        integracaoUid: 'ret-1',
+        targetTipoIntegracao: 'retiradaNaLoja',
+      },
+    ];
+    const host = new Host();
+    host.seed('int_frete', 'legacy-1', {
+      ...doc({ nome: 'Nome Antigo', ativo: false }),
+      docId: 'legacy-1',
+      mapa,
+      horarioDeCorte: CONFIG_HUMANA.horarioDeCorte,
+    });
+    const d = await c.aplicar(host, conta());
+    expect(d).toEqual({ action: 'atualizado', intFreteId: 'legacy-1', campos: ['ativo', 'nome'] });
+    const adotado = host.intFrete('legacy-1')!;
+    expect(adotado).toMatchObject({ nome: 'Loja Teste', ativo: true });
+    expect(adotado.mapa).toStrictEqual(mapa);
+    expect(adotado.horarioDeCorte).toStrictEqual(CONFIG_HUMANA.horarioDeCorte);
+    expect(host.colecao('int_frete').size).toBe(1);
+  });
+
+  it('T57 the importer pick: `buscarIntFreteDaConta(…, { apenasAtivo: true })` names the doc `escolherIntFreteMaisNovo(…, ativo === true)` names', async () => {
+    // ONE chooser for the core and the browser (#1369, #1826): the conta screen calls the schemas
+    // copy over its listener's docs, the importer calls this lookup — they must agree.
+    const conjuntos: Array<[string, Array<[string, DocData]>, string]> = [
+      [
+        'an older ACTIVE doc beats a newer inactive one',
+        [
+          ['velho-ativo', doc({ dataCadastro: CADASTRO - 1000 })],
+          ['novo-inativo', doc({ dataCadastro: CADASTRO + 1000, ativo: false })],
+        ],
+        'velho-ativo',
+      ],
+      [
+        'an equal-date active pair goes to the lowest id (higher id seeded first)',
+        [
+          ['b', doc({ nome: 'Gemeo B' })],
+          ['a', doc({ nome: 'Gemeo A' })],
+        ],
+        'a',
+      ],
+      [
+        'all of them together (lower id seeded first)',
+        [
+          ['a', doc({ nome: 'Gemeo A' })],
+          ['velho-ativo', doc({ dataCadastro: CADASTRO - 1000 })],
+          ['novo-inativo', doc({ dataCadastro: CADASTRO + 1000, ativo: false })],
+          ['b', doc({ nome: 'Gemeo B' })],
+        ],
+        'a',
+      ],
+    ];
+    for (const [caso, docs, esperado] of conjuntos) {
+      const host = new Host();
+      for (const [id, data] of docs) host.seed('int_frete', id, data);
+      const daSchema = escolherIntFreteMaisNovo(docsComo(host), (d) => d.ativo === true);
+      const doCore = await c.sync.buscarIntFreteDaConta(asDb(host), ID, { apenasAtivo: true });
+      expect(daSchema?.id, caso).toBe(esperado);
+      expect(doCore?.id, caso).toBe(esperado);
+    }
+    // Near-miss: WITHOUT the predicate the schemas pick names the newer inactive doc, which the
+    // importer's lookup never returns — the predicate is load-bearing, not decoration.
+    const host = new Host();
+    host.seed('int_frete', 'velho-ativo', doc({ dataCadastro: CADASTRO - 1000 }));
+    host.seed('int_frete', 'novo-inativo', doc({ dataCadastro: CADASTRO + 1000, ativo: false }));
+    expect(escolherIntFreteMaisNovo(docsComo(host))?.id).toBe('novo-inativo');
+    expect((await c.sync.buscarIntFreteDaConta(asDb(host), ID, { apenasAtivo: true }))?.id).toBe(
+      'velho-ativo',
+    );
   });
 });
 
@@ -866,21 +985,40 @@ describe('T12 Mercado Livre stale deactivate', () => {
   });
 });
 
-describe('T13 race — two first Shopee reconciles of one conta', () => {
+/**
+ * The state-driven bindings — every row with a deterministic id, each through
+ * `reconciliarIntFreteDaConta` — for the reconcile-only tests (T13, T17, T52, T53).
+ */
+interface Reconciliado {
+  nome: string;
+  vinculo: VinculoIntFreteConta & { readonly prefixoDocId: string };
+  sync: SyncIntFreteConta;
+  /** Another channel's row — the tipo a conta is edited away to. */
+  outro: VinculoIntFreteConta;
+}
+
+const RECONCILIADOS: Reconciliado[] = [
+  { nome: 'shopee', vinculo: V.shopee, sync: shopee, outro: V.mercadoLivre },
+  { nome: 'lojaIntegrada', vinculo: V.lojaIntegrada, sync: lojaIntegrada, outro: V.shopee },
+];
+
+const idDeterministicoDe = (r: Reconciliado): string => `${r.vinculo.prefixoDocId}-${ID}`;
+
+describe.each(RECONCILIADOS)('T13 race — two first $nome reconciles of one conta', (r) => {
   it.each([
     ['with query-range protection', false],
     ['WITHOUT query-range protection (the deterministic id alone holds)', true],
   ])('%s: ONE doc, one abort, both resolve', async (_caso, semProtecao) => {
     const host = new Host();
     host.semProtecaoDeFantasma = semProtecao;
-    await host.escreverConta(ID, contaDe(V.shopee));
-    const reconciliar = () => shopee.reconciliarIntFreteDaConta(asDb(host), ID);
+    await host.escreverConta(ID, contaDe(r.vinculo));
+    const reconciliar = () => r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
     const [a, b] = await emCorrida(host, reconciliar, reconciliar);
     expect(a.status).toBe('fulfilled');
     expect(b.status).toBe('fulfilled');
-    const acoes = [a, b].map((r) => (r as PromiseFulfilledResult<DisposicaoIntFrete>).value.action);
+    const acoes = [a, b].map((x) => (x as PromiseFulfilledResult<DisposicaoIntFrete>).value.action);
     expect(acoes.sort()).toEqual(['criado', 'inalterado']);
-    expect([...host.colecao('int_frete').keys()]).toEqual([`shopee-${ID}`]);
+    expect([...host.colecao('int_frete').keys()]).toEqual([idDeterministicoDe(r)]);
     expect(host.occ.txLog.filter((e) => e.phase === 'abort')).toHaveLength(1);
   });
 });
@@ -1011,27 +1149,30 @@ describe('T15 patch races', () => {
   });
 });
 
-describe('T17 Shopee: the query misses but the deterministic-id doc exists', () => {
-  it('patches its back-ref and tipo back; still one doc', async () => {
-    const host = new Host();
-    host.seed(
-      'int_frete',
-      `shopee-${ID}`,
-      docDe(V.shopee, { tipo: 'outros', contaShopeeFreteOuterRef: null }),
-    );
-    await host.escreverConta(ID, contaDe(V.shopee));
-    expect(await shopee.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
-      action: 'atualizado',
-      intFreteId: `shopee-${ID}`,
-      campos: ['tipo', 'contaShopeeFreteOuterRef'],
+describe.each(RECONCILIADOS)(
+  'T17 $nome: the query misses but the deterministic-id doc exists',
+  (r) => {
+    it('patches its back-ref and tipo back; still one doc', async () => {
+      const host = new Host();
+      host.seed(
+        'int_frete',
+        idDeterministicoDe(r),
+        docDe(r.vinculo, { tipo: 'outros', [r.vinculo.campoBackRef]: null }),
+      );
+      await host.escreverConta(ID, contaDe(r.vinculo));
+      expect(await r.sync.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
+        action: 'atualizado',
+        intFreteId: idDeterministicoDe(r),
+        campos: ['tipo', r.vinculo.campoBackRef],
+      });
+      expect(host.colecao('int_frete').size).toBe(1);
+      expect(host.intFrete(idDeterministicoDe(r))).toMatchObject({
+        tipo: r.vinculo.tipoFrete,
+        [r.vinculo.campoBackRef]: CANONICO,
+      });
     });
-    expect(host.colecao('int_frete').size).toBe(1);
-    expect(host.intFrete(`shopee-${ID}`)).toMatchObject({
-      tipo: 'shopee',
-      contaShopeeFreteOuterRef: CANONICO,
-    });
-  });
-});
+  },
+);
 
 describe('T20 / T20b — a conta present under ANOTHER tipo', () => {
   it('T20 Mercado Livre `contaRealmenteExcluida` checks existence only (characterization)', async () => {
@@ -1057,8 +1198,8 @@ describe('T20 / T20b — a conta present under ANOTHER tipo', () => {
   });
 });
 
-describe('T52 Shopee reconcile is order-free (K1-F1)', () => {
-  const conta = (over: DocData = {}) => contaDe(V.shopee, over);
+describe.each(RECONCILIADOS)('T52 $nome reconcile is order-free (K1-F1)', (r) => {
+  const conta = (over: DocData = {}) => contaDe(r.vinculo, over);
   const SEQUENCIAS: Array<{
     nome: string;
     inicial: DocData | null;
@@ -1072,7 +1213,7 @@ describe('T52 Shopee reconcile is order-free (K1-F1)', () => {
     {
       nome: 'tipo away → back',
       inicial: conta(),
-      escritas: [conta({ tipo: V.mercadoLivre.tipoConta }), conta()],
+      escritas: [conta({ tipo: r.outro.tipoConta }), conta()],
     },
     { nome: 'ativo on, then delete', inicial: conta({ ativo: false }), escritas: [conta(), null] },
     {
@@ -1090,16 +1231,16 @@ describe('T52 Shopee reconcile is order-free (K1-F1)', () => {
 
   function espelha(host: Host, final: DocData | null): void {
     const docs = [...host.colecao('int_frete').values()];
-    if (final == null || final.tipo !== V.shopee.tipoConta) {
+    if (final == null || final.tipo !== r.vinculo.tipoConta) {
       expect(docs.every((d) => d.ativo === false)).toBe(true);
       return;
     }
     expect(docs).toHaveLength(1);
     expect(docs[0]).toMatchObject({
-      tipo: 'shopee',
+      tipo: r.vinculo.tipoFrete,
       nome: final.nome,
       ativo: final.ativo ?? true,
-      contaShopeeFreteOuterRef: CANONICO,
+      [r.vinculo.campoBackRef]: CANONICO,
       filialIntegracaoFreteOuterRef: FILIAL,
       dataCadastro: CADASTRO,
     });
@@ -1109,7 +1250,7 @@ describe('T52 Shopee reconcile is order-free (K1-F1)', () => {
     const host = new Host();
     if (inicial != null) {
       await host.escreverConta(ID, inicial);
-      await shopee.reconciliarIntFreteDaConta(asDb(host), ID);
+      await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
     }
     return host;
   }
@@ -1122,7 +1263,7 @@ describe('T52 Shopee reconcile is order-free (K1-F1)', () => {
       const final = escritas[escritas.length - 1] ?? null;
       for (let evento = 0; evento < escritas.length; evento += 1) {
         const antes = host.escritasIntFrete();
-        await shopee.reconciliarIntFreteDaConta(asDb(host), ID);
+        await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
         espelha(host, final);
         if (evento > 0) expect(host.escritasIntFrete()).toBe(antes);
       }
@@ -1135,32 +1276,36 @@ describe('T52 Shopee reconcile is order-free (K1-F1)', () => {
       const host = await partindoDe(inicial);
       for (const escrita of escritas) {
         await host.escreverConta(ID, escrita);
-        await shopee.reconciliarIntFreteDaConta(asDb(host), ID);
+        await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
       }
       const final = escritas[escritas.length - 1] ?? null;
       espelha(host, final);
       const antes = host.escritasIntFrete();
-      await shopee.reconciliarIntFreteDaConta(asDb(host), ID);
+      await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
       expect(host.escritasIntFrete()).toBe(antes);
       espelha(host, final);
     },
   );
 });
 
-describe('T53 the conta is in the reconcile read set', () => {
+describe.each(RECONCILIADOS)('T53 $nome: the conta is in the reconcile read set', (r) => {
   it('a conta write landing between the read and the commit aborts the attempt; the retry writes B', async () => {
     const host = new Host();
-    host.seed('integracao', ID, contaDe(V.shopee, { nome: 'A' }));
-    host.seed('int_frete', `shopee-${ID}`, docDe(V.shopee, { nome: 'Original' }));
+    host.seed('integracao', ID, contaDe(r.vinculo, { nome: 'A' }));
+    host.seed('int_frete', idDeterministicoDe(r), docDe(r.vinculo, { nome: 'Original' }));
     let escreveu = false;
     host.occ.beforeCommit = async (ctx) => {
       if (escreveu || !escreveNome('A')(ctx)) return;
       escreveu = true;
-      await host.escreverConta(ID, contaDe(V.shopee, { nome: 'B' }));
+      await host.escreverConta(ID, contaDe(r.vinculo, { nome: 'B' }));
     };
-    const d = await shopee.reconciliarIntFreteDaConta(asDb(host), ID);
-    expect(d).toEqual({ action: 'atualizado', intFreteId: `shopee-${ID}`, campos: ['nome'] });
-    expect(host.intFrete(`shopee-${ID}`)!.nome).toBe('B');
+    const d = await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
+    expect(d).toEqual({
+      action: 'atualizado',
+      intFreteId: idDeterministicoDe(r),
+      campos: ['nome'],
+    });
+    expect(host.intFrete(idDeterministicoDe(r))!.nome).toBe('B');
     expect(host.occ.txLog.filter((e) => e.phase === 'abort')).toEqual([
       expect.objectContaining({ conflictPath: `integracao/${ID}` }),
     ]);

@@ -246,6 +246,9 @@ export {
   VINCULO_INT_FRETE_CONTA,
   calcularPrazoDespachoCivil,
   diaDaSemanaSchema,
+  // THE pick among a conta's `int_frete` docs — shared by the sync core and the
+  // browser, which cannot import the core's admin entry (#1369, #1826).
+  escolherIntFreteMaisNovo,
   faixaCepOptionString,
   faixaDeCepSchema,
   getPrazoDespacho,
@@ -262,6 +265,7 @@ export {
   tokenMelEnvMeta,
   tokenMelEnvSchema,
   type CampoBackRefIntFrete,
+  type CandidatoIntFrete,
   type DiaDaSemana,
   type FaixaDeCep,
   type HorarioDeCorte,
