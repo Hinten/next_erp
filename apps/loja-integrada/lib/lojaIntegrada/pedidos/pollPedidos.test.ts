@@ -68,6 +68,7 @@ import {
   LIMIAR_AVISO_IMPORTACAO_PARADA_LI,
   type ResultadoContaPollLi,
   type ResultadoTickPollLi,
+  executarContaPollLi,
   executarPollPedidosLi,
   resumirTickPollLi,
 } from './pollPedidos';
@@ -346,6 +347,35 @@ describe('the gates: ZERO reads before them', () => {
     expect(h.fake.escritas.some((e) => e.caminho.includes('conta-inativa'))).toBe(false);
     expect(h.urls).toHaveLength(1);
     expect(h.linhasDoPoll().map((l) => l.campos.conta)).toEqual([ID]);
+  });
+
+  it('an inactive conta costs no READ either: it is dropped from the list before any context is loaded', async () => {
+    const h = montar();
+    seedConta(h.fake, 'conta-inativa', { nome: 'A inativa', ativo: false });
+    seedCredencial(h.fake, 'conta-inativa');
+    contaPronta(h);
+
+    await h.tick();
+
+    // The context would refuse it too, but only after reading it — every tick.
+    expect(h.fake.leituras.filter((p) => p.includes('conta-inativa'))).toEqual([]);
+  });
+
+  it('a conta run checks the switch AGAIN itself (defence in depth): off → chamadas-desligadas, zero reads, nothing written', async () => {
+    const h = montar();
+    contaPronta(h);
+
+    const r = await executarContaPollLi(
+      asDb(h.fake),
+      { integracaoId: ID, nome: `Loja ${ID}`, ativo: true },
+      ORCAMENTO_CONTA_MS,
+      h.deps({ ambiente: {} }),
+    );
+
+    expect(r).toMatchObject({ desfecho: 'chamadas-desligadas', motivo: null });
+    expect(h.fake.leituras).toEqual([]);
+    expect(h.fake.escritas).toEqual([]);
+    expect(h.urls).toEqual([]);
   });
 });
 
@@ -868,6 +898,62 @@ describe('the fail-safes', () => {
     expect(Object.keys(h.poll()?.vistos as object)).toEqual(['1001', '1002']);
   });
 
+  it('a total_count that grows past the cap AFTER page 1 is janela-instavel (it may heal), never janela-grande-demais', async () => {
+    const h = montar();
+    contaPronta(h);
+    const linhas = [1001, 1002, 1003, 1004].map((n, i) =>
+      linha(n, `2027-01-15T10:3${String(i)}:00`),
+    );
+    h.responder = (url) => {
+      const offset = Number(url.searchParams.get('offset') ?? '0');
+      const meta = {
+        limit: 2,
+        offset,
+        previous: null,
+        next: offset === 0 ? '/api/v1/pedido/search/?limit=2&offset=2' : null,
+        // Page 1 announces a window that fits; page 2, one row past the cap (limit × 20).
+        total_count: offset === 0 ? 4 : 2 * MAX_PAGINAS_POLL + 1,
+      };
+      return { status: 200, corpo: { meta, objects: linhas.slice(offset, offset + 2) } };
+    };
+
+    const r = await h.umTick();
+
+    // Page 2 was drained, not refused: the size check belongs to page 1 only.
+    expect(h.enfileirados.map((p) => p.numero)).toEqual(['1001', '1002', '1003', '1004']);
+    expect(r).toMatchObject({ desfecho: 'falha', motivo: 'janela-instavel', paginas: 2 });
+    expect(h.poll()).toMatchObject({
+      cursor: CURSOR,
+      falhasSeguidas: 1,
+      ultimoErro: 'janela-instavel',
+    });
+    // Counted at 3, unlike janela-grande-demais, raised at once.
+    expect(avisoImportacao(h)).toBeUndefined();
+  });
+
+  it.each([
+    [
+      'an invalid numero outranks an unreadable stamp and an unstable window',
+      [linha(0, '2027-01-15T10:30:00'), linha(1001, '31/10/2022 12:17')],
+      MOTIVO_IMPORTACAO_PARADA_LI.respostaInvalida,
+    ],
+    [
+      'an unreadable stamp outranks an unstable window',
+      [linha(1001, '31/10/2022 12:17'), linha(1002, '2027-01-15T10:31:00')],
+      MOTIVO_IMPORTACAO_PARADA_LI.formatoDeData,
+    ],
+  ])('the motivo after a complete drain: %s', async (_n, linhas, motivo) => {
+    const h = montar();
+    contaPronta(h);
+    // One row more announced than listed: the window is ALSO unstable.
+    h.responder = paginado([linhas], { total: 3 });
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho: 'falha', motivo });
+    expect(h.poll()).toMatchObject({ cursor: CURSOR, falhasSeguidas: 1, ultimoErro: motivo });
+  });
+
   it('no total_count on any page: the check is skipped and logged, and the run advances', async () => {
     const h = montar();
     contaPronta(h);
@@ -1271,6 +1357,94 @@ describe('the budget', () => {
     expect(avisoImportacao(h)).toBeUndefined();
   });
 
+  it('spent after progress that was only PERSISTED (the sweep-only valve) is progress too: counter unchanged', async () => {
+    const h = montar();
+    contaPronta(h);
+    seedPoll(h, { falhasSeguidas: 2, ultimoErro: 'orcamento-esgotado' });
+    h.falhaDoEnfileiramento = () => Promise.reject(new LiTarefasDesligadasError());
+    h.custoDoEnfileiramentoMs = ORCAMENTO_CONTA_MS;
+    h.responder = paginado(
+      [[linha(1001, '2027-01-15T10:30:00')], [linha(1002, '2027-01-15T10:31:00')]],
+      { limit: 1 },
+    );
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({
+      desfecho: 'orcamento-com-progresso',
+      enfileiradas: 0,
+      persistidas: 1,
+    });
+    expect(h.poll()).toMatchObject({
+      cursor: CURSOR,
+      falhasSeguidas: 2,
+      ultimoErro: 'orcamento-esgotado',
+    });
+    expect(h.poll()?.vistos).toEqual({ '1001': '2027-01-15T10:30:00.000000' });
+    expect(avisoImportacao(h)).toBeUndefined();
+  });
+
+  // The run's budget starts at AGORA_MS; the 2 s pacer wait plus this answer
+  // put the enqueue checkpoint exactly AT the deadline, or 1 ms short of it.
+  it.each([
+    ['at exactly its deadline the run stops before the enqueue', 0, 'falha', 0],
+    ['near-miss: 1 ms before it, the row is enqueued', 1, 'sucesso', 1],
+  ])('the budget, %s', async (_n, folgaMs, desfecho, enfileiradas) => {
+    const h = montar();
+    contaPronta(h);
+    h.latenciaMs = ORCAMENTO_CONTA_MS - 2_000 - folgaMs;
+    h.responder = paginado([[linha(1001, '2027-01-15T10:30:00')]]);
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho, enfileiradas });
+  });
+
+  it('no call goes out past the deadline: a budget spent DURING a pacer wait stops the run before the next request', async () => {
+    const h = montar();
+    contaPronta(h);
+    // Page 1's row was already seen: no enqueue, so no checkpoint on that page.
+    seedPoll(h, { vistos: { '1001': '2027-01-15T10:30:00.000000' } });
+    // Page 1 ends 1 s before the deadline (2 s wait + 97 s answer); page 2's 2 s wait crosses it.
+    h.latenciaMs = ORCAMENTO_CONTA_MS - 3_000;
+    h.responder = paginado(
+      [[linha(1001, '2027-01-15T10:30:00')], [linha(1002, '2027-01-15T10:31:00')]],
+      { limit: 1 },
+    );
+
+    const r = await h.umTick();
+
+    expect(h.esperas).toEqual([2_000, 2_000]);
+    expect(h.urls).toHaveLength(1);
+    expect(r).toMatchObject({ desfecho: 'falha', motivo: 'orcamento-esgotado', enfileiradas: 0 });
+  });
+
+  it('a conta started late in the tick gets only what the tick has LEFT, never a full conta budget', async () => {
+    const h = montar();
+    seedConta(h.fake, 'conta-a', { nome: 'A' });
+    seedCredencial(h.fake, 'conta-a');
+    seedPoll(h, {}, 'pollPedidosLojaIntegrada/conta-a');
+    seedConta(h.fake, 'conta-b', { nome: 'B' });
+    seedCredencial(h.fake, 'conta-b');
+    seedPoll(h, {}, 'pollPedidosLojaIntegrada/conta-b');
+    // A's answer leaves B 20 s of the tick (above the minimum); B's own answer
+    // takes 25 s, so B's budget is spent before its first row is enqueued.
+    const comUmaLinha = paginado([[linha(1001, '2027-01-15T10:30:00')]]);
+    h.responder = (url) => {
+      const primeira = h.urls.length === 1;
+      h.avancar(primeira ? 220_000 - 2_000 - 20_000 : 25_000);
+      return primeira ? vazio(url) : comUmaLinha(url);
+    };
+
+    const r = await h.tick();
+
+    expect(r.contas.map((c) => [c.integracaoId, c.desfecho, c.motivo])).toEqual([
+      ['conta-a', 'janela-vazia', null],
+      ['conta-b', 'falha', 'orcamento-esgotado'],
+    ]);
+    expect(h.enfileirados).toEqual([]);
+  });
+
   it('a window three budgets long CONVERGES in ≤ 4 ticks, and the cursor moves only on the last', async () => {
     const h = montar();
     contaPronta(h);
@@ -1431,6 +1605,45 @@ describe('the lease', () => {
     expect(r.desfecho).toBe('lease-ocupado');
     expect(h.urls).toEqual([]);
     expect(h.poll()).toMatchObject({ execucaoId: 'vencedor' });
+  });
+
+  it.each([
+    ['the first lease (create) on an absent document', true],
+    ['a lease update on an expired one', false],
+  ])(
+    '%s failing UNAVAILABLE is a contained Firestore error, never read as a busy lease',
+    async (_n, cursorless) => {
+      const h = montar();
+      contaPronta(h, { cursorless });
+      h.fake.falharEscrita(CAMINHO_POLL, grpc(14, 'UNAVAILABLE'));
+
+      const r = await h.umTick();
+
+      expect(r).toMatchObject({ desfecho: 'erro-firestore', codigoGrpc: 14 });
+      expect(h.urls).toEqual([]);
+    },
+  );
+
+  it('a retry that loses its precondition AGAIN gives up as lease-perdido (one WARNING), never as an error', async () => {
+    const h = montar();
+    contaPronta(h);
+    h.responder = paginado([[linha(1001, '2027-01-15T10:30:00')]]);
+    const aindaNosso = { emExecucaoAteMs: AGORA_MS + 300_000, execucaoId: 'exec-1' };
+    // Write 1 is the lease; before write 2 (the final write) AND write 3 (its
+    // one retry) a write lands that leaves the lease ours.
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => undefined);
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => {
+      seedPoll(h, { ...aindaNosso, falhasSeguidas: 1 });
+    });
+    h.fake.antesDaProximaEscrita(CAMINHO_POLL, () => {
+      seedPoll(h, { ...aindaNosso, falhasSeguidas: 2 });
+    });
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho: 'lease-perdido', codigoGrpc: null, enfileiradas: 1 });
+    expect(h.poll()).toMatchObject({ ...aindaNosso, cursor: CURSOR, falhasSeguidas: 2 });
+    expect(h.linhasDoPoll().filter((l) => l.campos.alerta === 'lease-perdido')).toHaveLength(1);
   });
 
   it('a STALE run (taken over mid-run) neither moves the cursor back nor clears the other run’s lease', async () => {
@@ -1648,6 +1861,24 @@ describe('the refusal record', () => {
     expect(r).toMatchObject({ desfecho: 'recusa-adiada', motivo: 'credencial-ausente' });
     expect(h.fake.escritasEm(CAMINHO_POLL)).toEqual([]);
     expect(avisoImportacao(h)).toBeUndefined();
+  });
+
+  it('the record writes its three fields only: an EXPIRED lease it finds, and the cursor, are left exactly as they were', async () => {
+    const h = montar();
+    seedConta(h.fake, ID);
+    seedPoll(h, { emExecucaoAteMs: AGORA_MS - 1, execucaoId: 'antigo', falhasSeguidas: 1 });
+
+    const r = await h.umTick();
+
+    expect(r).toMatchObject({ desfecho: 'recusa', motivo: 'credencial-ausente' });
+    expect(h.fake.escritasEm(CAMINHO_POLL).map((e) => e.dados)).toEqual([
+      { ultimoErro: 'credencial-ausente', falhasSeguidas: 2, ultimaVarreduraEmMs: AGORA_MS },
+    ]);
+    expect(h.poll()).toMatchObject({
+      cursor: CURSOR,
+      emExecucaoAteMs: AGORA_MS - 1,
+      execucaoId: 'antigo',
+    });
   });
 
   it('a record that loses its precondition is skipped, never retried over the winner', async () => {
@@ -1958,6 +2189,19 @@ describe('the import-stopped aviso', () => {
       severidade: 'WARNING',
       campos: { passo: 'resolver', codigoGrpc: 14 },
     });
+  });
+
+  it('a NON-gRPC failure in the aviso step is a defect: rethrown, the tick fails, the final write never lands', async () => {
+    const h = montar();
+    contaPronta(h);
+    seedPoll(h, { falhasSeguidas: 3, ultimoErro: 'falha-transitoria' });
+    h.fake.falharLeitura(caminhoAviso(chaveImportacaoParada(ID)), new RangeError('defeito'));
+
+    await expect(h.tick()).rejects.toBeInstanceOf(RangeError);
+
+    // Only a gRPC status error is logged and swallowed there.
+    expect(h.linhasDoPoll().some((l) => l.campos.alerta === 'aviso-nao-gravado')).toBe(false);
+    expect(h.poll()).toMatchObject({ falhasSeguidas: 3, execucaoId: 'exec-1' });
   });
 
   it('the clock: an OLDER raise after a newer resolve stays resolved', async () => {
