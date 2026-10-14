@@ -412,13 +412,17 @@ describe('notification connect re-drive indexes (D)', () => {
     });
   });
 
-  it('detects the Mercado Livre re-drive, so this guard is not vacuously empty', () => {
+  it('detects the Mercado Livre and Shopee re-drives, so this guard is not vacuously empty', () => {
     // Without this, deleting redriveDeferredForUserId (or breaking the regex)
     // would leave `redrivers` empty and the guard above passing over nothing.
-    // ⚠️ If ML ever legitimately loses its connect re-drive, delete this `it`
-    // deliberately rather than letting the suite quietly stop checking anything.
-    expect(redrivers.map((r) => `${handlePaths.get(r.handleName)}:${r.field}`)).toContain(
-      'notificacoesMercadoLivre:user_id',
+    // Shopee's redriveDeferredSemContaForShopId (#1528, the #808 twin) is listed
+    // too: its query moving out of the file that calls
+    // defineNotificationPipeline, or losing its `status` lead, would otherwise
+    // drop it from `redrivers` and leave its (status, shop_id) index unchecked.
+    // ⚠️ If a channel ever legitimately loses its connect re-drive, delete its
+    // entry deliberately rather than letting the suite quietly stop checking it.
+    expect(redrivers.map((r) => `${handlePaths.get(r.handleName)}:${r.field}`)).toEqual(
+      expect.arrayContaining(['notificacoesMercadoLivre:user_id', 'notificacoesShopee:shop_id']),
     );
   });
 

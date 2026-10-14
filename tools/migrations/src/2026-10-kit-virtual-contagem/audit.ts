@@ -36,11 +36,14 @@ import {
  * REJECTED rather than ignored, so nobody can assume it worked. There is no write
  * path in this file at all — no `writer`, no `set`, no `update`.
  *
- * ## No index required
+ * ## One index: the document key
  *
  * The walk is a plain `orderBy(documentId())` key-order scan of `produtos` with
  * the `ehKitVirtual === true` test done in memory — the `2026-08-ml-pedido-pago-audit`
- * shape, and the ONE ordering Firestore always serves without a declared index.
+ * shape — riding the DECLARED key index `produtos(__name__ ASC)` (#1895, listed in
+ * `key-walks.json`). Enterprise has no implicit key index: without it every page
+ * re-scans the collection (staging, #1895: 1,665 index rows read per page of 300
+ * on `pedidos`). That key index is the ONLY one the walk needs.
  * `where('ehKitVirtual','==',true)` looks cheaper and is not: Firestore ENTERPRISE
  * never throws for a missing index, it silently full-scans and bills data scanned,
  * and indexing it would need a NEW composite for a one-off report.

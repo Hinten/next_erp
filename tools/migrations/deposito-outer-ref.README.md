@@ -87,8 +87,13 @@ silently misses the other half.
 ## Cost
 
 Two collection-group scans plus one root-collection scan, and Firestore
-Enterprise bills **data scanned**. Paged by document key — Firestore's
-always-available native ordering, so **no index is needed**. A `where` could not
+Enterprise bills **data scanned**. Paged by document key, riding the
+**declared** key indexes — collection group `estoques(__name__ ASC)` and
+`historicoEstoque(__name__ ASC)`, collection `integracao(__name__ ASC)` (#1895,
+listed in `key-walks.json`). Enterprise has no implicit key index: without one
+every page re-scans the whole collection (#1895 measured an unindexed
+collection-group walk table-scanning all 6,342 `enderecos` docs on every page of
+300). **Those key indexes are the only ones this needs.** A `where` could not
 narrow it: the docs needing a change are the ones _not_ equal to a canonical
 value, and Firestore has no "not prefix" predicate.
 

@@ -3,6 +3,7 @@ import {
   type MantineColorsTuple,
   type MantineThemeOverride,
   Indicator,
+  alpha,
   createTheme,
   darken,
 } from '@mantine/core';
@@ -57,16 +58,27 @@ export const cssVariablesResolver: CSSVariablesResolver = (t) => {
   // Several saturated ramps (yellow, orange, green) have no palette shade with
   // enough text contrast over their light variant. Keep the hue and darken the
   // semantic foreground once here instead of patching each badge/alert/link.
+  // The outline variant paints its label AND border with `-outline`, which
+  // Mantine takes from the primary shade in light (green[8] on white is 3.4:1)
+  // and from shade 4 in dark (violet[4] on a hovered row is 3.3:1), so it reads
+  // the same foreground; its hover tint keeps Mantine's 5% of that colour.
   const lightForegrounds = Object.fromEntries(
-    Object.entries(t.colors).flatMap(([name, colors]) => [
-      [`--mantine-color-${name}-text`, darken(colors[9], 0.3)],
-      [`--mantine-color-${name}-light-color`, darken(colors[9], 0.3)],
-    ]),
+    Object.entries(t.colors).flatMap(([name, colors]) => {
+      const foreground = darken(colors[9], 0.3);
+      return [
+        [`--mantine-color-${name}-text`, foreground],
+        [`--mantine-color-${name}-light-color`, foreground],
+        [`--mantine-color-${name}-outline`, foreground],
+        [`--mantine-color-${name}-outline-hover`, alpha(foreground, 0.05)],
+      ];
+    }),
   );
   const darkForegrounds = Object.fromEntries(
     Object.entries(t.colors).flatMap(([name, colors]) => [
       [`--mantine-color-${name}-text`, colors[2]],
       [`--mantine-color-${name}-light-color`, colors[2]],
+      [`--mantine-color-${name}-outline`, colors[2]],
+      [`--mantine-color-${name}-outline-hover`, alpha(colors[2], 0.05)],
     ]),
   );
   return {

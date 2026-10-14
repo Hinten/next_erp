@@ -141,8 +141,13 @@ count means nothing until the authoritative run inside the window.
 ⚠️ Two full key-order scans — every `clientes` document and every `orderML`
 document — plus one `getAll` per 200 ML pedidos. On Firestore **Enterprise** that
 is billed by **data scanned**, and a missing index does not throw, it silently
-full-scans. Both walks are `orderBy(documentId())`, the one ordering always
-served without a declared index, so a "narrower" `where` here would cost more,
+full-scans. Both walks are `orderBy(documentId())`, each riding its **declared**
+key index — collection `clientes(__name__ ASC)` and collection group
+`orderML(__name__ ASC)` (#1895, listed in `key-walks.json`). Enterprise has no
+implicit key index: without one every page re-scans the whole collection, so the
+walk costs ~N²/page instead of N (#1895 measured an unindexed collection-group
+walk table-scanning all 6,342 `enderecos` docs on every page of 300). Those key
+indexes are the only ones this needs; a "narrower" `where` here would cost more,
 not less. Note the figure in the run log; it is acceptable for a one-off.
 
 Two maps are held for the whole run (every cliente's ML id, one entry per ML
