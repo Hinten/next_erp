@@ -50,7 +50,10 @@ export interface AuditoriaDoMapa {
   mapeadas: number;
   /** Mapped rows whose `targetTipoIntegracao` is not one of `TIPOS_ALVO_MAPA_FRETE_LI`. */
   tipoForaDosAlvos: number;
-  /** Mapped rows whose target id is the id of NO scanned doc of the five target tipos. */
+  /**
+   * Mapped rows whose target id is the id of NO scanned doc of the five target tipos. The scan
+   * reads ids only, so an INACTIVE target counts as present: a row mapped to one is not here.
+   */
   alvoAusente: number;
   /** Mapped rows whose `integracaoUid` is not the bare id it names (a path, or stray slashes). */
   uidComCaminho: number;

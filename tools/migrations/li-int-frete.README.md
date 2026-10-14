@@ -158,6 +158,12 @@ conta screen's "Mapeamento do Frete" tab after the window, never by a script. A
 `docsComMapaInvalido` doc needs a person before the importer can register new
 shipping methods on it.
 
+⚠️ **A row mapped to an inactive target is not flagged.** The target scan reads
+ids only, so a doc of the five tipos whose `ativo` is false counts as present,
+never under `alvoAusente`. Such a row needs the same fix as one mapped to a
+missing target. To find these rows, list the inactive docs of the five tipos (a
+handful) and search the Loja Integrada docs' `mapa` for their ids.
+
 ## When
 
 Inside the window (a #1208 Phase 2 step; Shopee's twin is #1889), in this order:
@@ -215,7 +221,8 @@ dataCadastro), then a re-run.
 1. The second dry run (step 4) reports **0** contas with planned writes.
 2. Spot-check two contas: the doc's `nome`, `ativo` and filial equal the conta's,
    and its `mapa` and `horarioDeCorte` equal the imported ones.
-3. The `mapa` audit counts were read and any finding handed to the operator.
+3. The `mapa` audit counts were read, the inactive-target check above was done,
+   and any finding was handed to the operator.
 
 ## Cost
 

@@ -49,8 +49,9 @@ function log(message: string): void {
 /**
  * The read-only `mapa` audit: counts, never a STOP verdict and never a write. Masked to the doc ids
  * (an empty `select()`), so no target's credential — a Melhor Envio doc carries its OAuth app's
- * `client_secret` — is ever pulled into this process. On a dry run it also writes ONE
- * `auditoria-mapa` JSONL row.
+ * `client_secret` — is ever pulled into this process. The same mask means an inactive target
+ * counts as present (not `alvoAusente`). On a dry run it also writes ONE `auditoria-mapa` JSONL
+ * row.
  */
 export const auditoriaDoMapa: AuditoriaDaPassagem = async (ctx, docs) => {
   const alvosSnap = await ctx.db

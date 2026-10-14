@@ -793,6 +793,28 @@ describe('backfill.ts run — the shared I/O, bound to Loja Integrada, plus the 
     expect(resumo).toEqual({ docsScanned: 6, docsChanged: 2 });
   });
 
+  it('an INACTIVE target counts as present — the target scan reads ids only, never `ativo`', async () => {
+    // Pins the runbook's stated gap: only a target missing from the scan is `alvoAusente`.
+    const inativo = { id: 'if-inativo', data: { tipo: 'motoboy', nome: 'Moto', ativo: false } };
+    const mapeado = legado(
+      'legacy-3',
+      {
+        mapa: [
+          linhaDoMapa({ integracaoUid: 'if-inativo', targetTipoIntegracao: 'motoboy' }),
+          linhaDoMapa({ integracaoUid: 'if-sumido', targetTipoIntegracao: 'motoboy' }),
+        ],
+      },
+      'int-3',
+    );
+    const { db } = bancoFalso(contas, [mapeado, inativo]);
+    const { ctx, linhas } = contexto(db);
+    await run(ctx);
+    expect(linhas.find((l) => l.field === 'auditoria-mapa')?.value).toMatchObject({
+      mapeadas: 2,
+      alvoAusente: 1,
+    });
+  });
+
   it('--apply: idsAExecutar verbatim through the core, (db, id) only; no audit read', async () => {
     const { db, consultas } = bancoFalso(contas, docs);
     const { ctx, linhas } = contexto(db, { apply: true });
