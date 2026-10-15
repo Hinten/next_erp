@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   calcularPrazoDespachoCivil,
+  escolherIntFreteMaisNovo,
   faixaCepOptionString,
   faixaDeCepSchema,
   getPrazoDespacho,
@@ -313,6 +314,207 @@ describe('intFreteSchema — contaShopeeFreteOuterRef (#1528)', () => {
     if (!doc.success) {
       expect(doc.error.issues.map((i) => i.path)).toEqual([['contaShopeeFreteOuterRef']]);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   contaLojaIntegradaEnviosOuterRef — the Loja Integrada conta back-ref      */
+/*                               (#1826)                                       */
+/* -------------------------------------------------------------------------- */
+
+describe('intFreteSchema — contaLojaIntegradaEnviosOuterRef (#1826)', () => {
+  /**
+   * A migrated `EnviosLojaIntegrada` doc in the corpus shape of master plan §3: the plain fields,
+   * the canonical back-ref, a `mapa` whose rows carry all seven keys (one mapped to a Melhor Envio
+   * service, one unmapped carrying a key the schema does not model, one with no `idOriginal`), a
+   * `horarioDeCorte`, and the ODM's `docId`. No `ultimaModificacao`, no `prazoExtra`.
+   */
+  const legado = {
+    tipo: 'lojaIntegrada',
+    nome: 'Loja Teste',
+    ativo: true,
+    dataCadastro: 1718000000000,
+    filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+    contaLojaIntegradaEnviosOuterRef: 'documents/integracao/int-1',
+    mapa: [
+      {
+        nomeOriginal: 'Gateway Teste - PAC',
+        idOriginal: '141909---PAC',
+        observacao: 'Origem: Pedido 101',
+        nomeTarget: 'Empresa Teste — Serviço Teste',
+        targetData: { id: 1, name: 'Serviço Teste', company: { id: 2, name: 'Empresa Teste' } },
+        integracaoUid: 'me-1',
+        targetTipoIntegracao: 'melhorEnvios',
+      },
+      {
+        nomeOriginal: 'Gateway Teste - Expresso',
+        idOriginal: '141909---null',
+        observacao: 'Origem: Pedido 102',
+        nomeTarget: null,
+        targetData: null,
+        integracaoUid: null,
+        targetTipoIntegracao: 'outros',
+        campoDesconhecido: 'mantém',
+      },
+      {
+        nomeOriginal: 'Retirada',
+        idOriginal: null,
+        observacao: null,
+        nomeTarget: 'Retirada Loja Matriz',
+        targetData: null,
+        integracaoUid: 'ret-1',
+        targetTipoIntegracao: 'retiradaNaLoja',
+      },
+    ],
+    horarioDeCorte: [
+      {
+        diaDaSemana: 1,
+        horaDeCorte: 14,
+        minutosDeCorte: 0,
+        prazoDePostagem: 0,
+        horaPostagem: 18,
+        minutosPostagem: 0,
+      },
+    ],
+    docId: 'legacy-1',
+  };
+
+  it('parses the golden doc, keeping the mapa rows, the horário, the back-ref and the ODM docId', () => {
+    const parsed = intFreteSchema.parse(legado);
+
+    expect(parsed).toMatchObject(legado);
+    expect(parsed.contaLojaIntegradaEnviosOuterRef).toBe('documents/integracao/int-1');
+    expect(parsed.mapa).toHaveLength(3);
+    // Every row keeps its seven keys; the unknown one rides `.passthrough()`.
+    expect((parsed.mapa?.[1] as Record<string, unknown>).campoDesconhecido).toBe('mantém');
+    expect(parsed.mapa?.[2]?.idOriginal).toBeNull();
+    expect(parsed.horarioDeCorte).toEqual(legado.horarioDeCorte);
+    // The twins are DIFFERENT keys: a Loja Integrada doc leaves both null.
+    expect(parsed.contaShopeeFreteOuterRef).toBeNull();
+    expect(parsed.contaMercadoLivreMercadoEnviosOuterRef).toBeNull();
+    expect(parsed.ultimaModificacao).toBeNull();
+    expect(parsed.prazoExtra).toBe(0);
+    expect((parsed as Record<string, unknown>).docId).toBe('legacy-1');
+  });
+
+  it('an absent key reads back as an explicit null, present on the parsed value', () => {
+    const motoboy = intFreteSchema.parse({
+      tipo: 'motoboy',
+      nome: 'Motoboy Centro',
+      ativo: true,
+      filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+      dataCadastro: 1718000000000,
+    });
+    expect(motoboy.contaLojaIntegradaEnviosOuterRef).toBeNull();
+    expect(Object.hasOwn(motoboy, 'contaLojaIntegradaEnviosOuterRef')).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: the canonical `documents/integracao/<id>` passes; the bare `integracao/<id>` FAILS', () => {
+    const campo = intFreteSchema.shape.contaLojaIntegradaEnviosOuterRef;
+    expect(campo.safeParse('documents/integracao/int-1').success).toBe(true);
+    expect(campo.safeParse(null).success).toBe(true);
+    expect(campo.safeParse('integracao/int-1').success).toBe(false);
+
+    const doc = intFreteSchema.safeParse({
+      ...legado,
+      contaLojaIntegradaEnviosOuterRef: 'integracao/int-1',
+    });
+    expect(doc.success).toBe(false);
+    if (!doc.success) {
+      expect(doc.error.issues.map((i) => i.path)).toEqual([['contaLojaIntegradaEnviosOuterRef']]);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            escolherIntFreteMaisNovo — THE pick among a conta's docs        */
+/* -------------------------------------------------------------------------- */
+
+describe('escolherIntFreteMaisNovo', () => {
+  const doc = (id: string, data: Record<string, unknown>) => ({ id, data });
+
+  it('the newest dataCadastro wins, whatever the arrival order', () => {
+    const velho = doc('a', { dataCadastro: 1000 });
+    const novo = doc('z', { dataCadastro: 2000 });
+    expect(escolherIntFreteMaisNovo([velho, novo])).toBe(novo);
+    expect(escolherIntFreteMaisNovo([novo, velho])).toBe(novo);
+  });
+
+  it('⚠️ NEAR-MISS: an EQUAL dataCadastro goes to the lowest id, in either arrival order', () => {
+    const a = doc('a', { dataCadastro: 1000 });
+    const b = doc('b', { dataCadastro: 1000 });
+    expect(escolherIntFreteMaisNovo([a, b])).toBe(a);
+    expect(escolherIntFreteMaisNovo([b, a])).toBe(a);
+  });
+
+  it('a dataCadastro that is not a finite number counts as 0', () => {
+    const texto = doc('a', { dataCadastro: '2026-01-05T10:00:00.000Z' });
+    const um = doc('z', { dataCadastro: 1 });
+    expect(escolherIntFreteMaisNovo([texto, um])).toBe(um);
+    // Absent and 0 tie, so the lowest id decides.
+    expect(escolherIntFreteMaisNovo([doc('b', { dataCadastro: 0 }), doc('a', {})])?.id).toBe('a');
+  });
+
+  it('⚠️ a NaN or infinite dataCadastro counts as 0 too — the pick never depends on the arrival order', () => {
+    // `typeof NaN === 'number'`, and every `>` / `===` against NaN is false: kept as a date, a
+    // NaN seen first would beat every newer doc and, seen later, never win.
+    for (const naoFinito of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const estranho = doc('a', { dataCadastro: naoFinito });
+      const datado = doc('b', { dataCadastro: 2000 });
+      expect(escolherIntFreteMaisNovo([estranho, datado]), String(naoFinito)).toBe(datado);
+      expect(escolherIntFreteMaisNovo([datado, estranho]), String(naoFinito)).toBe(datado);
+      // Read as 0, it TIES an absent date, so the lowest id decides — in either order.
+      const semData = doc('0', {});
+      expect(escolherIntFreteMaisNovo([estranho, semData]), String(naoFinito)).toBe(semData);
+      expect(escolherIntFreteMaisNovo([semData, estranho]), String(naoFinito)).toBe(semData);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: it reads RAW bodies — a converter-parsed body can name ANOTHER doc', () => {
+    // The importer's lookup queries `ativo == true`, which EXCLUDES a doc with no `ativo` field;
+    // the schema's `ativo` default turns that absence into `true`, and `millisSinceEpoch`'s
+    // preprocess turns an ISO string into ms. Fed the parsed bodies, the importer's predicate
+    // picks a doc the importer never routes from.
+    const base = {
+      tipo: 'lojaIntegrada',
+      nome: 'Loja Teste',
+      filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+      contaLojaIntegradaEnviosOuterRef: 'documents/integracao/int-1',
+    };
+    const ativoVelho = { ...base, ativo: true, dataCadastro: 1718000000000 };
+    const semAtivoNovo = { ...base, dataCadastro: 1735689600000 };
+    const ehAtivo = (d: Readonly<Record<string, unknown>>) => d.ativo === true;
+    const crus = [doc('a', ativoVelho), doc('b', semAtivoNovo)];
+    const parseados = crus.map((c) => doc(c.id, intFreteSchema.parse(c.data)));
+    expect(escolherIntFreteMaisNovo(crus, ehAtivo)?.id).toBe('a');
+    expect(escolherIntFreteMaisNovo(parseados, ehAtivo)?.id).toBe('b');
+
+    // The date half: an ISO `dataCadastro` reads as 0 raw and as ms parsed.
+    const isoNovo = { ...base, ativo: true, dataCadastro: '2025-01-01T00:00:00.000Z' };
+    const crusIso = [doc('a', ativoVelho), doc('b', isoNovo)];
+    const parseadosIso = crusIso.map((c) => doc(c.id, intFreteSchema.parse(c.data)));
+    expect(escolherIntFreteMaisNovo(crusIso)?.id).toBe('a');
+    expect(escolherIntFreteMaisNovo(parseadosIso)?.id).toBe('b');
+  });
+
+  it('⚠️ NEAR-MISS: the predicate filters BEFORE the pick — the importer’s pick is the older ACTIVE doc', () => {
+    const ativoVelho = doc('velho', { ativo: true, dataCadastro: 1000 });
+    const inativoNovo = doc('novo', { ativo: false, dataCadastro: 2000 });
+    expect(escolherIntFreteMaisNovo([ativoVelho, inativoNovo], (d) => d.ativo === true)).toBe(
+      ativoVelho,
+    );
+    // Without the predicate the SAME docs pick the newer inactive one.
+    expect(escolherIntFreteMaisNovo([ativoVelho, inativoNovo])).toBe(inativoNovo);
+  });
+
+  it('nothing to pick ⇒ null', () => {
+    expect(escolherIntFreteMaisNovo([])).toBeNull();
+    expect(
+      escolherIntFreteMaisNovo(
+        [doc('a', { ativo: false, dataCadastro: 1 })],
+        (d) => d.ativo === true,
+      ),
+    ).toBeNull();
   });
 });
 

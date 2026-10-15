@@ -19,7 +19,11 @@ import {
 import { fingerprintDoToken, refDaCredencial } from '@/lib/lojaIntegrada/core/credencial';
 import { removerCredencial } from '@/lib/lojaIntegrada/core/credentialStore';
 import { CHAMADAS_ENV_LI } from '@/lib/lojaIntegrada/core/valvulas';
-import { FakeDb, asDb, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
+import { FakeDb, asDb, grpc, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
+import {
+  COLECAO_NOTIFICACOES_LI,
+  seedNotificacaoLi,
+} from '@/lib/lojaIntegrada/testing/notificacoes';
 import {
   AGORA_MS,
   DIA_MS,
@@ -493,5 +497,156 @@ describe('hygiene and structure', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
     expect(fonte.split('validarPersonalToken(').length - 1).toBe(1);
     expect(fonte).not.toContain('estacionamento');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              the re-drive of the conta's deferred notifications               */
+/* -------------------------------------------------------------------------- */
+
+describe('PUT …/credencial/validade — re-drives this conta’s DEFERRED notifications (best effort)', () => {
+  const OUTRA = 'conta-li-2';
+  const consultasDeRedrive = () =>
+    db.consultas.filter((c) => c.colecao === COLECAO_NOTIFICACOES_LI);
+
+  function seedLinhas() {
+    return {
+      a: seedNotificacaoLi(db, ID, '1', 'deferred', { tentativas: 4 }),
+      b: seedNotificacaoLi(db, ID, '2', 'deferred', { tentativas: 1 }),
+      parado: seedNotificacaoLi(db, ID, '3', 'parked'),
+      falho: seedNotificacaoLi(db, ID, '4', 'failed', { tentativas: 2 }),
+      outra: seedNotificacaoLi(db, OUTRA, '1', 'deferred', { tentativas: 4 }),
+    };
+  }
+
+  it('a renewal that clears the park moves ONLY this conta’s deferred rows, each with exactly one write', async () => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    const c = seedLinhas();
+    const antes = { parado: db.ler(c.parado), falho: db.ler(c.falho), outra: db.ler(c.outra) };
+
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+    expect(res.status).toBe(200);
+    expect(db.ler(CAMINHO)?.reconexaoPendente).toBeNull();
+    for (const caminho of [c.a, c.b]) {
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: 0, processedAt: 0 });
+      expect(String(db.ler(caminho)?.erro)).toContain(ID);
+      expect(db.escritasEm(caminho).map((e) => e.verbo)).toEqual(['update']);
+    }
+    // Near-misses: another conta's deferred row, this conta's parked and failed rows.
+    expect(db.ler(c.parado)).toEqual(antes.parado);
+    expect(db.ler(c.falho)).toEqual(antes.falho);
+    expect(db.ler(c.outra)).toEqual(antes.outra);
+    for (const caminho of [c.parado, c.falho, c.outra]) {
+      expect(db.escritasEm(caminho)).toEqual([]);
+    }
+    expect(consultasDeRedrive()).toHaveLength(1);
+    expect(consultasDeRedrive()[0]).toMatchObject({
+      filtros: [
+        ['status', '==', 'deferred'],
+        ['contaId', '==', ID],
+      ],
+    });
+  });
+
+  it.each([
+    ['UNAVAILABLE (14)', 14],
+    ['FAILED_PRECONDITION (9)', 9],
+  ])(
+    'a gRPC failure of the re-drive (%s) is logged by code and the answer stays 200 — the renewal WAS saved',
+    async (_nome, codigo) => {
+      stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const versao = seedParada();
+      const c = seedLinhas();
+      db.falharConsulta(COLECAO_NOTIFICACOES_LI, grpc(codigo, 'falha de teste'));
+
+      const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+      expect(res.status).toBe(200);
+      respostaCredencialLojaIntegradaSchema.parse(await corpoDe(res));
+      expect(db.ler(CAMINHO)?.tokenExpiraEmMs).toBe(NOVA_VALIDADE_MS);
+      expect(db.ler(c.a)).toMatchObject({ status: 'deferred', tentativas: 4 });
+      const avisos = console$
+        .argumentos()
+        .filter((a) => String(a[0]).includes('re-drive após salvar o token falhou'));
+      expect(avisos).toHaveLength(1);
+      expect(avisos[0]?.[1]).toEqual({ contaId: ID, code: codigo });
+      expect(textoDe(console$.argumentos())).not.toContain(TOKEN_A);
+    },
+  );
+
+  it('near-miss: an error that is NOT a gRPC status is rethrown, never swallowed (rule 6)', async () => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    seedLinhas();
+    const bug = new RangeError('um defeito, não o Firestore');
+    db.falharConsulta(COLECAO_NOTIFICACOES_LI, bug);
+    await expect(renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao })).rejects.toBe(bug);
+  });
+
+  // A failure AT the write must not re-drive either: the renewal did not clear
+  // the park, so the re-drive belongs after `atualizarValidade`.
+  it.each<[string, () => Promise<void>]>([
+    [
+      'a write between the read and the update (LI_CREDENCIAL_ALTERADA)',
+      async () => {
+        db.seed(CAMINHO, credencialDoc({ tokenAtualizadoEmMs: 99 }));
+      },
+    ],
+    [
+      'a removal between the read and the update (LI_CREDENCIAL_AUSENTE)',
+      async () => {
+        await removerCredencial(asDb(db), ID);
+      },
+    ],
+  ])('a renewal that loses its write race re-drives nothing: %s → 409', async (_nome, corrida) => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    db.antesDaProximaEscrita(CAMINHO, corrida);
+
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+    expect(res.status).toBe(409);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  it('a refusal re-drives nothing: 409, 422, 503, 499 and 404 leave the deferred rows and the collection alone', async () => {
+    const versao = seedParada();
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b), outra: db.ler(c.outra) };
+    const corpo = { expiraEm: NOVA_VALIDADE, versaoEsperada: versao };
+
+    // 422: Loja Integrada refuses the stored token.
+    stubFetch(() => respostaJson(401, { error: 'x' }));
+    expect((await renovar(corpo)).status).toBe(422);
+
+    // 503: the read switch is off.
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    expect((await renovar(corpo)).status).toBe(503);
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+
+    // 499: the caller went away during the validation.
+    const controller = new AbortController();
+    stubFetch((_url, init) => {
+      controller.abort(new Error('o navegador desistiu'));
+      return Promise.reject(init.signal?.reason);
+    });
+    expect((await renovar(corpo, { sinal: controller.signal })).status).toBe(499);
+
+    // 404: no such conta.
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    expect((await renovar(corpo, { id: 'nao-existe' })).status).toBe(404);
+
+    // 409: a stale version.
+    expect((await renovar({ ...corpo, versaoEsperada: versao + 1 })).status).toBe(409);
+
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b), outra: db.ler(c.outra) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
   });
 });

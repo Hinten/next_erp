@@ -176,6 +176,34 @@
       ]
     },
     {
+      "collectionGroup": "notificacoesLojaIntegrada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notificacoesLojaIntegrada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesWhatsapp",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1135,6 +1163,28 @@
         },
         {
           "fieldPath": "contaShopeeFreteOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ativo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dataCadastro",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "int_frete",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaLojaIntegradaEnviosOuterRef",
           "order": "ASCENDING"
         },
         {
