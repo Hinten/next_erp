@@ -946,7 +946,8 @@ export function MercadoLivreEditor({
         produtoIds: [produtoId],
         nomePorProdutoId: new Map(),
         reenviarComErro: temLatched,
-        deps: { mercadoLivre: client },
+        // This tab dispatches only to its own Mercado Livre conta.
+        deps: { mercadoLivre: client, shopee: null },
       });
       setStockResultByLink((prev) => {
         const next = { ...prev };

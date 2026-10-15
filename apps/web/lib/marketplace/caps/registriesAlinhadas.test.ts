@@ -4,7 +4,7 @@ import { INTEGRACAO_TIPO, type IntegracaoTipo } from '@delfrance/schemas';
 import { PROVIDERS as PROVIDERS_ANUNCIO_STATUS } from '../anuncioStatus/registry';
 import { PROVIDERS as PROVIDERS_ESTOQUE } from '../estoque/registry';
 import { PROVIDERS as PROVIDERS_PRECO } from '../preco/registry';
-import { type AcaoCanal, capsPermitem } from './suporteCanal';
+import { type AcaoCanal, capsPermitem, vereditoCanal } from './suporteCanal';
 
 /**
  * The drift test — what makes `MARKETPLACE_TIPO_CAPS` load-bearing rather than
@@ -37,14 +37,52 @@ const REGISTRIES: ReadonlyArray<readonly [AcaoCanal, Partial<Record<IntegracaoTi
 
 const TODOS_OS_TIPOS = Object.values(INTEGRACAO_TIPO);
 
+/**
+ * ⚠️ THE ONE NAMED EXCEPTION — Shopee, rows-first (#1529 step 21 → #1530 step 22).
+ *
+ * Step 21 registered Shopee's three providers while its caps row still says
+ * `implementado: false`, so for Shopee the assertion below would compare `false`
+ * (caps) with `true` (a provider) — the FIRST bullet above. It is safe here, unlike
+ * the case that bullet warns about, for one structural reason: `vereditoCanal`
+ * answers `canal-nao-implementado` BEFORE it consults any provider map, so every
+ * caller — the dialogs' warning, the runs' `suportado` (pinned with a Shopee conta
+ * in `../estoque/enviarEstoqueRun.test.ts`, `../preco/enviarPrecoRun.test.ts` and
+ * `../anuncioStatus/pausarAnunciosRun.test.ts`), `resolve*` — still reports
+ * Shopee as not built and hands it the placeholder. The provider is unreachable,
+ * not offered: nothing 4xx's, and the table does not lie (the survey says Shopee
+ * CAN; the row says WE have not shipped it — both true).
+ *
+ * The middle state is pinned EXACTLY below, so it cannot outlive its purpose: the
+ * step-22 flip turns that verdict into `suportado` and reds the pin. Delete this
+ * set, the `continue` and both tests in the flip's commit. The set is pinned to one
+ * member: a second exception is a deliberate edit here, never a silent append.
+ */
+const LINHAS_ANTES_DO_FLIP: ReadonlySet<IntegracaoTipo> = new Set([INTEGRACAO_TIPO.shopee]);
+
 describe('the caps table and the apps/web registries agree', () => {
   it.each(REGISTRIES)('%s', (acao, providers) => {
     for (const tipo of TODOS_OS_TIPOS) {
+      if (LINHAS_ANTES_DO_FLIP.has(tipo)) continue; // pinned exactly below
       expect(
         capsPermitem(acao, tipo),
         `tipo ${String(tipo)}: MARKETPLACE_TIPO_CAPS and the ${acao} registry disagree`,
       ).toBe(providers[tipo] !== undefined);
     }
+  });
+
+  it.each(REGISTRIES)(
+    '%s: Shopee holds the rows-first middle state — remove at the step-22 flip (#1530)',
+    (acao, providers) => {
+      expect(providers[INTEGRACAO_TIPO.shopee], 'the Shopee provider row').toBeDefined();
+      expect(vereditoCanal(acao, INTEGRACAO_TIPO.shopee, providers)).toEqual({
+        suportado: false,
+        motivo: 'canal-nao-implementado',
+      });
+    },
+  );
+
+  it('the named exception is exactly Shopee', () => {
+    expect([...LINHAS_ANTES_DO_FLIP]).toEqual([INTEGRACAO_TIPO.shopee]);
   });
 
   it('is comparing against registries that really have a provider', () => {

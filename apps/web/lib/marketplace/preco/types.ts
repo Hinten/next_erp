@@ -30,6 +30,13 @@ export interface PricePushRow extends PushRowBase {
   preco: number | null;
   /** What the listing carried before, when the run got far enough to read it. */
   precoAnterior: number | null;
+  /**
+   * DISPLAY ONLY — which variation a per-MODEL row is about (its SKU, else its
+   * name). Shopee prices one row per model, all naming the same anchor and
+   * anúncio, so without it five models of one listing read identically. Mercado
+   * Livre never sets it; `detalheLinhaPreco` prints it only when non-empty.
+   */
+  variacao?: string | null;
 }
 
 /** What one channel's push returned, already flattened into display rows. */
@@ -47,7 +54,7 @@ export type PricePushDeps = PushDeps;
 
 export interface PricePushInput {
   integracao: PricePushIntegracao;
-  /** Family anchors (or any produto — the backend resolves to the anchor). */
+  /** Family anchors or variation children — every registered channel's backend resolves a child one `paiId` hop to its anchor, and its rows name the ANCHOR. */
   produtoIds: readonly string[];
   /** Names for the report, so a skip row can still say which produto it was. */
   nomePorProdutoId: ReadonlyMap<string, string>;

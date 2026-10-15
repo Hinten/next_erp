@@ -561,10 +561,41 @@ describe('the plugin system itself stays deleted (#1444)', () => {
 describe('MARKETPLACE_TIPO_CAPS stays wired to reality', () => {
   const capsSrc = read(CAPS);
 
+  /**
+   * Every caps row's `channel` / `implementado` pair — a trailing line comment
+   * after the channel is legal (the Shopee and Loja Integrada rows carry one).
+   *
+   * ⚠️ The regex this replaced required a NEWLINE right after `channel: '…',`, so
+   * it never read a commented row: the existence check below would have skipped
+   * Shopee's flip without a word. The coverage test pins that every row is read.
+   */
+  const PAR_DE_LINHA =
+    /channel:\s*(?:'([^']+)'|null),[ \t]*(?:\/\/[^\n]*)?\n\s*implementado:\s*(true|false),/g;
+  const pares = [...capsSrc.matchAll(PAR_DE_LINHA)].map((m) => ({
+    channel: m[1] ?? null,
+    implementado: m[2] === 'true',
+  }));
   /** Rows whose `channel` is named and whose `implementado` is true. */
-  const implementedChannels = [
-    ...capsSrc.matchAll(/channel:\s*'([^']+)',\s*\n\s*implementado:\s*true/g),
-  ].map((m) => m[1]);
+  const implementedChannels = pares
+    .filter((p) => p.implementado && p.channel !== null)
+    .map((p) => p.channel);
+
+  it('parses EVERY row of the table (guards the assertions below)', () => {
+    // Each row-level `implementado:` line must belong to a pair the regex read — a
+    // row the regex cannot read would be skipped by the existence check below
+    // without a word.
+    const linhas = capsSrc.match(/^\s*implementado:\s*(?:true|false),\s*$/gm) ?? [];
+    expect(linhas.length).toBeGreaterThan(0);
+    expect(pares.length).toBe(linhas.length);
+    expect(pares.map((p) => p.channel)).toEqual(
+      expect.arrayContaining(['mercado-livre', 'shopee', 'loja-integrada']),
+    );
+  });
+
+  it('reads a trailing comment after the channel (the Shopee row shape)', () => {
+    const src = "    channel: 'x', // apps/x\n    implementado: true,\n";
+    expect([...src.matchAll(PAR_DE_LINHA)].map((m) => m[1])).toEqual(['x']);
+  });
 
   it('finds at least one implemented row (guards the assertions below)', () => {
     expect(implementedChannels).toContain('mercado-livre');
