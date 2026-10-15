@@ -150,6 +150,19 @@ describe('HorarioCorteManager — a refusal names its rows', () => {
     expect(invalido('Dia da semana', 3)).toBe(true);
   });
 
+  it('judges the list the save KEEPS: a staged deletion shifts the index of every row after it', () => {
+    // Over the raw list the repeat sits at index 3, which names no row the
+    // editor shows; over the list the save keeps it sits at 2 — row 4.
+    const TERCA = { ...LINHA, diaDaSemana: 2 };
+    const QUARTA = { ...LINHA, diaDaSemana: 3 };
+    renderManager([{ ...LINHA, [DELETE_MARK]: true }, TERCA, QUARTA, QUARTA], {
+      recusa: 'Dia da semana duplicado',
+    });
+    expect(invalido('Dia da semana', 4)).toBe(true);
+    expect(invalido('Dia da semana', 3)).toBe(false);
+    expect(invalido('Dia da semana', 2)).toBe(false);
+  });
+
   it('⚠️ NEAR-MISS: the same list with NO refusal marks nothing — an untouched stored list is not judged', () => {
     renderManager([LINHA, LINHA]);
     expect(invalido('Dia da semana', 2)).toBe(false);
