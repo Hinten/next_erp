@@ -198,5 +198,6 @@ export async function enviarParaMarketplaces<Row extends PushRowBase>(
   // as if it had finished — its produtos gone from the counts, no banner.
   if (cancelou()) cancelado = true;
 
-  return { rows, cancelado };
+  // A cancel during the final dispatch has no next iteration to set the flag.
+  return { rows, cancelado: cancelado || cancelou() };
 }

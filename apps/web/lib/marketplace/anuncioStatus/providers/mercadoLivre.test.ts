@@ -3,6 +3,7 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
+  createMercadoLivreClient,
   type MercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 
@@ -56,6 +57,39 @@ const listing = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('mercadoLivreAnuncioStatusProvider', () => {
+  it('cancels the real client while fetch is pending without inventing failure rows', async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const fetchImpl = vi.fn<typeof globalThis.fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true },
+          );
+          started();
+        }),
+    );
+    const client = createMercadoLivreClient({
+      baseUrl: 'http://localhost:3006',
+      getAuthToken: async () => 'token',
+      fetch: fetchImpl,
+    });
+    const pending = mercadoLivreAnuncioStatusProvider.definirStatus(
+      input(client.definirStatusAnuncios, { signal: controller.signal }),
+    );
+
+    await fetchStarted;
+    expect(fetchImpl.mock.calls[0]![1]?.signal).toBe(controller.signal);
+    controller.abort();
+
+    await expect(pending).resolves.toEqual({ rows: [], pausadoAte: null });
+  });
+
   it('maps every listing through, one row each', async () => {
     // A produto can carry SEVERAL anúncios on one conta (#781) — the row unit is
     // the listing, so two listings must never collapse into one row.
@@ -126,11 +160,15 @@ describe('mercadoLivreAnuncioStatusProvider', () => {
     expect(res.rows[0]).toMatchObject({ outcome: 'falha', motivo: 'sem-cliente' });
   });
 
-  it('turns an HTTP error into failure rows carrying the backend’s message', async () => {
+  it.each([false, true])('preserves HTTP refusals even when aborted=%s', async (aborted) => {
+    const controller = new AbortController();
+    if (aborted) controller.abort();
     const definir = vi
       .fn()
       .mockRejectedValue(new MercadoLivreClientHttpError('conta desconectada', 409, 'ML_REAUTH'));
-    const res = await mercadoLivreAnuncioStatusProvider.definirStatus(input(definir));
+    const res = await mercadoLivreAnuncioStatusProvider.definirStatus(
+      input(definir, { signal: controller.signal }),
+    );
     expect(res.rows[0]).toMatchObject({
       outcome: 'falha',
       motivo: 'ML_REAUTH',
@@ -138,10 +176,15 @@ describe('mercadoLivreAnuncioStatusProvider', () => {
     });
   });
 
-  it('turns a network error into failure rows', async () => {
+  it('keeps a genuine network failure as a row while the signal is active', async () => {
     const definir = vi.fn().mockRejectedValue(new MercadoLivreClientNetworkError('offline'));
-    const res = await mercadoLivreAnuncioStatusProvider.definirStatus(input(definir));
-    expect(res.rows[0]).toMatchObject({ outcome: 'falha', motivo: 'rede' });
+    const signal = new AbortController().signal;
+    const res = await mercadoLivreAnuncioStatusProvider.definirStatus(input(definir, { signal }));
+    expect(res.rows[0]).toMatchObject({
+      outcome: 'falha',
+      motivo: 'rede',
+      mensagem: 'Não foi possível contatar o serviço do Mercado Livre.',
+    });
   });
 
   it('treats an abort as a clean cancel — no rows, not a failure', async () => {
@@ -149,13 +192,18 @@ describe('mercadoLivreAnuncioStatusProvider', () => {
     const res = await mercadoLivreAnuncioStatusProvider.definirStatus(input(definir));
     // The RUN reports the cancellation; inventing failure rows here would tell
     // the operator their own Cancelar broke something.
-    expect(res.rows).toEqual([]);
+    expect(res).toEqual({ rows: [], pausadoAte: null });
   });
 
-  it('RETHROWS anything else (repo rule 6 — never a generic catch)', async () => {
-    const definir = vi.fn().mockRejectedValue(new TypeError('bug'));
+  it.each([false, true])('rethrows unknown errors even when aborted=%s', async (aborted) => {
+    const controller = new AbortController();
+    if (aborted) controller.abort();
+    const error = new TypeError('bug');
+    const definir = vi.fn().mockRejectedValue(error);
     await expect(
-      mercadoLivreAnuncioStatusProvider.definirStatus(input(definir)),
-    ).rejects.toBeInstanceOf(TypeError);
+      mercadoLivreAnuncioStatusProvider.definirStatus(
+        input(definir, { signal: controller.signal }),
+      ),
+    ).rejects.toBe(error);
   });
 });

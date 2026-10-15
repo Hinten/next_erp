@@ -6,8 +6,12 @@ deploys to its own Firebase App Hosting backend.
 
 ## What lives here
 
-- `app/api/freight/melhor-envio/{oauth/start,calculate,conta,comprar,imprimir,rastrear}/route.ts`
+- `app/api/freight/melhor-envio/{oauth/start,calculate,conta,agencias,servicos,comprar,imprimir,rastrear}/route.ts`
   — authenticated (Bearer ID token → `PERM.frete`) routes the apps/web browser calls.
+  `servicos` lists the account's carrier services for the service picker of a
+  sales channel's freight mapping; it refuses an `intFreteId` that is not one
+  document id (400), and reads Melhor Envio with `listServices({ estrito: true })`,
+  so a 2xx that is not a list is a 502, never an empty list.
 - `app/api/oauth/melhor-envio/callback/route.ts` — the OAuth redirect target (no
   Bearer; the signed `state` is the trust anchor) → verify → **redeem the attempt**
   → exchange → persist. ⚠️ **#1034**: verifying the HMAC is not enough — it proves
