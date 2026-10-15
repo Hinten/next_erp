@@ -174,9 +174,13 @@ function corpoPedidoContestadoLi(params: Aviso['params']): string {
     `Integrada: ${codigo.success ? FRASE_MOTIVO_CONTESTADO_LI[codigo.data] : 'o pagamento foi contestado'}. ` +
     'O despacho NÃO fica bloqueado no ERP — confira o pedido antes de enviar.';
   if (!codigo.success || codigo.data === MOTIVO_PEDIDO_CONTESTADO_LI.disputa) {
+    // O resolvedor fecha a linha em QUALQUER importação seguinte que não a levanta —
+    // inclusive um estorno antes de o estoque sair —, então a frase nomeia o único caso
+    // que a mantém aberta, em vez de prometer "uma situação que não seja de contestação".
     return (
-      `${abertura} O aviso se encerra quando a Loja Integrada mostrar o pedido numa situação ` +
-      'que não seja de contestação (por exemplo, pago de novo).'
+      `${abertura} O aviso se encerra quando a Loja Integrada tirar o pedido da disputa ` +
+      '(por exemplo, pago de novo ou cancelado); se o pagamento for devolvido depois que o ' +
+      'estoque do pedido já saiu, o aviso continua aberto, agora como devolução.'
     );
   }
   return (
@@ -194,9 +198,11 @@ const FRASE_MOTIVO_FRETE_NAO_SUPORTADO_LI: Record<MotivoFreteNaoSuportadoLi, str
   [MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoAusente]:
     'o frete para o qual ela está mapeada não existe mais',
   [MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo]: 'o frete para o qual ela está mapeada está inativo',
+  // FOB e outros são um mapeamento VÁLIDO (a etiqueta os resolve, e a importação não
+  // levanta aviso para eles): a frase não pode mandar o operador para longe deles.
   [MOTIVO_FRETE_NAO_SUPORTADO_LI.tipoNaoSuportado]:
-    'ela está mapeada para um tipo de frete que a importação não usa (só Melhor Envio, ' +
-    'motoboy e retirada na loja)',
+    'ela está mapeada para um tipo de frete que a importação não usa: mapeie-a para Melhor ' +
+    'Envio, motoboy ou retirada na loja — ou para FOB ou outros, que a etiqueta resolve',
   [MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoSemServico]:
     'ela está mapeada para um frete do Melhor Envio sem serviço definido',
 };

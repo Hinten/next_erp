@@ -866,6 +866,9 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
   const MANTIDO = 'O ERP manteve o estado e o pagamento do pedido';
 
   it('a dispute: the phrase, NOT blocked, and how it closes', () => {
+    // The resolver closes the row on ANY later import that does not raise it —
+    // a refund before the stock left included — so the sentence names the one
+    // case that keeps it open instead of promising "a non-contest situação".
     expect(
       mensagem.corpo({
         loja: 'Conta A',
@@ -874,8 +877,9 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
       }),
     ).toBe(
       'O pedido 165 da loja Conta A está contestado na Loja Integrada: o pagamento está em ' +
-        `disputa. ${NAO_BLOQUEIA} O aviso se encerra quando a Loja Integrada mostrar o pedido ` +
-        'numa situação que não seja de contestação (por exemplo, pago de novo).',
+        `disputa. ${NAO_BLOQUEIA} O aviso se encerra quando a Loja Integrada tirar o pedido ` +
+        'da disputa (por exemplo, pago de novo ou cancelado); se o pagamento for devolvido ' +
+        'depois que o estoque do pedido já saiu, o aviso continua aberto, agora como devolução.',
     );
   });
 
@@ -998,7 +1002,23 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaFreteNaoSuportado', () => {
       relogioEvento: 1_789_000_000_000_001,
     });
     expect(aviso.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
-    expect(mensagem.corpo(aviso.params)).toContain('só Melhor Envio, motoboy e retirada na loja');
+    expect(mensagem.corpo(aviso.params)).toContain(
+      'ela está mapeada para um tipo de frete que a importação não usa: mapeie-a para Melhor ' +
+        'Envio, motoboy ou retirada na loja — ou para FOB ou outros, que a etiqueta resolve',
+    );
+  });
+
+  it('`tipo-nao-suportado` names FOB and outros as a valid fix — a deliberate mapping raises no aviso', () => {
+    // The import routes Melhor Envio, motoboy and retirada; a FOB/outros row is
+    // routed at label time and resolves the aviso. A sentence that listed only
+    // the first three would send the operator away from a correct mapping.
+    const corpo = mensagem.corpo({
+      loja: 'Conta A',
+      formaEnvio: 'X',
+      motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.tipoNaoSuportado,
+    });
+    expect(corpo).toContain('FOB ou outros');
+    expect(corpo).not.toContain('só Melhor Envio');
   });
 
   it('is titled like its label and carries no runbook — the mapping tab is the fix', () => {

@@ -7,7 +7,9 @@
  * ⚠️ Every VALUE here is invented. The captures live with the app that owns
  * them (`apps/loja-integrada`); this package copies only their shape, so its
  * schema tests run against what the provider really sends without carrying a
- * single captured value. The numero `165` is the public document's own example.
+ * single captured value. The two exceptions are not captured either: the
+ * numero `165` and the pagamento id `69291176` are the public document's own
+ * example values.
  *
  * What the shape pins, leaf by leaf:
  *

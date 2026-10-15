@@ -393,7 +393,7 @@ A missing payment id is an error in the new code. **Never** normalise the pagame
   - `PAGAMENTOEXTERNO` → hub guard **[spec]**.
   - Anything else → `outros`, keeping the raw codigo. An incoming `outros` never overwrites a known stored forma. `pagamento_banco` appears in no capture, and nothing reads it.
   - Parcelas come from `parcelamento.numero_parcelas`, defaulting to 1 when absent (`parcelamento` is `{}` on pix and boleto) **[spec, captured]**.
-- **Unit discount spreading** **[ERP rule]**: `descontoUnitario = (quantidade × preco_venda − preco_subtotal) / quantidade` when positive. When `preco_subtotal` exceeds `quantidade × preco_venda`, the unit price becomes `preco_subtotal / quantidade`.
+- **Unit discount spreading** **[ERP rule]**: `descontoUnitario = (quantidade × preco_venda − preco_subtotal) / quantidade` when positive. A line whose `preco_subtotal` exceeds `quantidade × preco_venda` is not adjusted: `precoDeVenda` stays the wire `preco_venda`, and a negative order-level residual raises incidente `li-totais-divergentes` (step 5).
 - **Freight `mapa` auto-registration and matching** **[ERP rule]**:
   - Every unseen `forma_envio` is appended to the conta's `EnviosLojaIntegrada.mapa` the first time an order uses it, with `integracaoUid` unset.
   - An unmapped method is visible to the operator and never fails the import.
@@ -768,14 +768,14 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - `listarHistoricoSituacaoLi` → `GET /v1/situacao_historico/search/?numero=&limit=50`, every page. The `limit` is sent explicitly because the default is 20.
   - `buscarProdutoPorIdExternoLi` → `GET /v1/produto/{id}/?id_externo=1`, the line fallback.
   - Each one only reads, and each goes through the step-3 context, so nothing runs while the read switch is off (D17). The id is checked to be a positive safe integer before any path is built.
-  - **The required set is minimal**, because a schema refusal parks the task for good: `numero`, `situacao.codigo` (a plain string, never an enum), `data_modificacao`, and `itens`/`envios`/`pagamentos` as arrays (absent ⇒ `[]`). Everything else is optional and passthrough.
+  - **The required set is minimal**, because a schema refusal parks the task for good: `numero`, `situacao.codigo` (a plain string, never an enum), `data_modificacao`, and `itens`/`envios`/`pagamentos` as arrays (absent or `null` ⇒ `[]`). Everything else is optional and passthrough.
   - Money goes through `wireNumber()`: line prices carry four decimals, totals two, quantities three, and one instalment value arrived as a JSON number. `preco_custo` stays unparsed, because one unreadable cost must never fail the order. `forma_envio.id` stays raw, so step 20's key decides its form.
   - The GET carries a top-level `id`. It is never a key: the path, every resource URI and the pedido id use the `numero`.
   - **Paging:** `meta.next` forwards only `offset` plus the caller's own keys. A captured order search answers a `next` with an undocumented extra key.
 - **One import, in order.** Every deterministic refusal comes before the first write.
   1. **Detail GET.** `String(corpo.numero)` must equal the task's numero, and the stamp must read. The notification's own stamp never decides.
   2. **History GET**, normalised.
-     - Strict on queue attempts 0 and 1: a codigo absent from the history, or a broken chain, retries.
+     - Strict on queue attempts 0 and 1: a detail codigo other than `pedido_efetuado` (9) absent from the history (it has no creation row), or a broken chain, retries.
      - Degraded from attempt 2 and in the sweep: decide from what was read, set an underivable date to null, log a WARNING.
      - So a permanent gap costs two backoffs, never a parked order.
   3. **Read the pedido.** A stored watermark strictly newer ⇒ `obsoleto`, with zero writes of any kind.
@@ -789,7 +789,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Pedido fields:**
   - id = the deterministic digest (§3); `numero = String(numero)`; `integracaoPedidoOuterRef = 'documents/integracao/<contaId>'`; `operacaoPedidoOuterRef` from the conta.
   - `valorCobrado = valor_total`; `descontoTotal = valor_desconto` plus the positive line residual (Items below).
-  - `timestamp` and `lastMarketplaceUpdate` through `dataLiParaMicros`.
+  - `timestamp` from `data_criacao` and `lastMarketplaceUpdate` from `data_modificacao`, both through `dataLiParaMicros`.
   - `error`: only a `[loja-integrada] `-prefixed message, cleared only when it is ours.
   - No filial field, no `marketplace` block, no status echo (D2).
 - **Watermark:** The incoming stamp is LI's naive time, converted once by `dataLiParaMicros`. A stored stamp may come from another writer, in another unit or zone; it is read through `coerceToMicros`, and a migrated pedido's first new observation re-applies, which the window rehearsal verifies.
@@ -819,7 +819,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **Captured** means one of two things. Either the normalised history, up to the observed situação, holds a codigo of `CODIGOS_LI_CAPTURADO`, or the observed codigo is one of them.
     - That set is the paid codigos plus 6, 16 and 1020, which all presuppose a captured payment. It equals the catalogue's `aprovado: true` set; the test pins it against C3, and the code never reads it from the flag.
     - The table answers `null` for an unknown codigo, never an `error` and never an exception. The importer decides what that means.
-  - **Removal applied** means `estoqueAplicado.removido` is non-empty: the predicate the stock sync itself uses. A refund-type codigo on a pedido whose stock removal was applied keeps the stored estado and payment status and raises an aviso, because the goods may not have come back. A reversing estado would restock them, and a refund status beside a kept `pago` would be relabelled by the next reconcile.
+  - **Removal applied** means `estoqueAplicado.removido` is non-empty: the predicate the stock sync itself uses. A refund-type codigo on a pedido whose stock removal was applied keeps the stored estado and payment status and raises an aviso, because the goods may not have come back. A reversing estado would restock them, and a refund status beside a kept `pago` would be relabelled by the next reconcile. As the table says, `pagamento_devolvido` (7) takes that arm only when captured.
   - **Ladder** (the Shopee shape). The "keep both" arm is evaluated first. Then:
     - a stored estado off the ladder is never moved;
     - the ladder moves forward only: a painel reversal from paid to 2 or 3 keeps `pago`, with a WARNING;
@@ -828,7 +828,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     - `error` ↔ anything.
   - **Dates:** the approval is the `data` of the first capture-evidence entry; the cancellation is the last entry reaching 7, 8, 16 or 1020. A date the degraded mode cannot derive is null.
   - **Stale orders:** a stale order that LI auto-cancels arrives as `pedido_cancelado` (8) without a capture, so it lands at `cancelado` and releases its reservation here (§4.i, template 8).
-- **Hub guard (D5):** `id_anymarket` non-null, any `pagamentos[].forma_pagamento.codigo === 'PAGAMENTOEXTERNO'`, or the receiver's `hubHint` ⇒ no pedido and no pagamento; aviso `lojaIntegradaPedidoHub`. `integration_data` is not a marker.
+- **Hub guard (D5):** `id_anymarket` non-null, any `pagamentos[].forma_pagamento.codigo === 'PAGAMENTOEXTERNO'`, or the receiver's `hubHint` ⇒ no pedido and no pagamento; aviso `lojaIntegradaPedidoHub`. Neither `integration_data` nor the order's own `id_externo` (a store-side ERP may stamp it) is a marker.
 - **Cliente/endereço:**
   - **The fiscal identity is the BUYER**, read from `cliente.*` only:
     - the document is `cliente.cnpj ?? cliente.cpf`, digits only and check-digit validated, else absent;

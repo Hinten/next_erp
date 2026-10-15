@@ -14,7 +14,8 @@
  * only when no order can be imported without it:
  *
  *  - the pedido: `numero`, `situacao.codigo`, `data_modificacao`, and `itens`,
- *    `envios` and `pagamentos` as arrays (an ABSENT one reads as `[]`);
+ *    `envios` and `pagamentos` as arrays (an ABSENT or `null` one reads as
+ *    `[]`);
  *  - a history row: `id`, `numero`, `data` and `situacao.codigo`.
  *
  * Everything else is `.nullable().optional()`, and a field no mapper reads is
@@ -53,10 +54,12 @@
  *  - `itens[].preco_custo` is `z.unknown()`: its value is not reliably numeric,
  *    and one unreadable cost must never cost the order (the mapper reads it with
  *    `parseWireDecimal`, which answers `null`);
- *  - `envios[].forma_envio.id` is kept RAW (string or number): the shipping
- *    method's registration key (`chaveFormaEnvioLi`) is the authority on that
- *    id's form, and a coercion here would fold `'0141909'` or `' 141909'` into
- *    a key that function deliberately refuses.
+ *  - `envios[].forma_envio.id` is kept RAW (string or number): step 20's
+ *    shipping-method key builder (`mapaFreteLojaIntegrada.ts` in
+ *    `@delfrance/schemas`) is the authority on that id's form, and a coercion
+ *    here would fold `'0141909'` or `' 141909'` into a key that builder
+ *    deliberately refuses. ⚠️ Name no helper of that module in this file: the
+ *    equivalence-fold inventory scans comments too.
  *
  * Text that only LOOKS numeric stays text end to end: `sku` (14 to 17 digits,
  * beyond what a safe integer guarantees), the CEP, the address number, the
@@ -74,6 +77,20 @@ const textoOuNumero = z.union([z.string(), z.number()]);
 
 /** A free-text leaf, absent or `null` when the provider has nothing. */
 const texto = () => z.string().nullable().optional();
+
+/**
+ * A list the import iterates. An ABSENT key and a JSON `null` both read as
+ * `[]` — an order with no payment yet or no shipment may well send `null`, and a
+ * refusal here would park it for good. A value that is neither (an object, a
+ * string) is still refused. The `.nullish().transform()` idiom of
+ * `mlShipmentOrdersSchema`.
+ */
+function lista<T extends z.ZodType>(item: T) {
+  return z
+    .array(item)
+    .nullish()
+    .transform((v) => v ?? []);
+}
 
 /**
  * The situação as an order (or a history row) embeds it. Only `codigo` is
@@ -246,7 +263,12 @@ export const liEnderecoEntregaSchema = z
  *
  * ⚠️ Keyed by `numero`, never by the top-level `id` the GET also carries: the
  * path, every resource URI and the deterministic pedido id all use the numero.
- * `id_anymarket` and `id_externo` are read only for presence (the hub guard).
+ *
+ * `id_anymarket` is read for presence only (one of the hub guard's markers).
+ * The order's own `id_externo` is NOT a hub marker — a store-side ERP may stamp
+ * it through the platform's API on an ordinary storefront order — and nothing
+ * reads it, so it is not declared: `.passthrough()` keeps it, whatever its
+ * shape.
  */
 export const liPedidoSchema = z
   .object({
@@ -260,11 +282,10 @@ export const liPedidoSchema = z
     valor_desconto: wireNumber().nullable().optional(),
     cliente: liPedidoClienteSchema.nullable().optional(),
     endereco_entrega: liEnderecoEntregaSchema.nullable().optional(),
-    itens: z.array(liPedidoItemSchema).default([]),
-    envios: z.array(liPedidoEnvioSchema).default([]),
-    pagamentos: z.array(liPedidoPagamentoSchema).default([]),
+    itens: lista(liPedidoItemSchema),
+    envios: lista(liPedidoEnvioSchema),
+    pagamentos: lista(liPedidoPagamentoSchema),
     id_anymarket: textoOuNumero.nullable().optional(),
-    id_externo: textoOuNumero.nullable().optional(),
     cliente_obs: texto(),
     utm_campaign: texto(),
   })

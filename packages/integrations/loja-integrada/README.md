@@ -52,9 +52,11 @@ token **raw** after `Basic ` (not base64-encoded by us).
   only consumer, and it redacts the event before anything is written.
 - **No body excerpt on any error.** Response text never rides an exception.
 - **No `process.env`.** Every value is a parameter.
-- **No resource schema before its first consumer.** Beyond the paging envelope and
-  categoria, only the order import's shapes ship (`pedidoTipos.ts`); the rest arrive
-  with their first consumer, written against captured responses.
+- **No resource schema far ahead of its consumer.** Beyond the paging envelope and
+  categoria, only the order import's shapes and reads ship (`pedidoTipos.ts`,
+  `pedidos.ts`), a few PRs ahead of the order importer in `apps/loja-integrada`
+  (master-plan step 5) that consumes them; every other resource arrives with its
+  first consumer, written against captured responses.
 - **No decision about an order.** `pedidos.ts` reads and parses; mapping a
   situação, a payment or a line is the app's (`apps/loja-integrada`), through the
   shared situação table in `@delfrance/schemas`.

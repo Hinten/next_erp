@@ -625,9 +625,10 @@ export const TIPO_AVISO_LABELS = {
  *
  * **`lojaIntegradaPedidoContestado`** — Loja Integrada shows the order's
  * payment contested: a dispute (`pagamento_em_disputa`), or a refund-type
- * codigo (`pagamento_devolvido`, `pedido_chargeback`,
- * `pagamento_devolvido_sem_retorno`) on a pedido whose stock removal was
- * already applied.
+ * codigo on a pedido whose stock removal was already applied —
+ * `pedido_chargeback` and `pagamento_devolvido_sem_retorno` always, and
+ * `pagamento_devolvido` only when the payment was CAPTURED (an uncaptured one
+ * is a cancellation: the table's `cancelado`, which raises nothing).
  *
  *  - ⚠️ **It does NOT block dispatch.** The pedido's dispute overlay blocks only
  *    for the incident origins listed as marketplace ones, and Loja Integrada is
@@ -637,7 +638,9 @@ export const TIPO_AVISO_LABELS = {
  *    `em_disputa` (a hold, still counted as paid). On a refund-type codigo
  *    after a removal it KEPT the stored estado and payment status, because the
  *    goods may not have come back: an estado that reverts the removal would
- *    restock them. The row is where that refund is recorded.
+ *    restock them. The row is where that refund is recorded. WITHOUT an applied
+ *    removal the same codigo reverses the sale through the table and raises
+ *    nothing.
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
  *    — one row per pedido; a later observation replaces `params`.
  *  - **`params` are exactly `loja`, `pedido` and `motivo`** — a
@@ -645,11 +648,20 @@ export const TIPO_AVISO_LABELS = {
  *    field) carries the same code.
  *  - **`relogioEvento`**: the order's modification stamp in µs, as above.
  *  - **Route**: the pedido.
- *  - **Machine resolver**: the next import of that order whose codigo no longer
- *    contests (a dispute closed back to a paid codigo), clocked by its stamp.
- *    Residue, accepted: the three refund-type codigos are FINAL in Loja
- *    Integrada, so on them the row stands until retention unless the situação
- *    is changed in the painel.
+ *  - **Machine resolver**: ANY later import of that order that does not raise
+ *    this tipo resolves it, whatever its codigo, clocked by its stamp (an
+ *    `obsoleto` import writes nothing, so it never resolves). That covers a
+ *    dispute closed back to a paid codigo, a cancellation, and ⚠️ a refund-type
+ *    codigo WITHOUT an applied removal: that import reverses the sale and raises
+ *    nothing, so it closes an open `disputa` row, which must never stand beside
+ *    a reversed pedido. So "still contested" is never
+ *    `SituacaoLi.motivoContestacao !== null` — that field names the motivo a
+ *    codigo raises WHEN it raises, and is non-null on the refund-type codigos
+ *    either way. An import that raises again (a refund after a removal,
+ *    following a dispute) replaces the row's `params` instead.
+ *    Residue, accepted: a row raised BY a refund-type codigo after a removal
+ *    stands until retention, because those codigos are FINAL in Loja Integrada,
+ *    unless the situação is changed in the painel.
  *
  * **`lojaIntegradaPedidoHub`** — an order carries a hub marker (an
  * `id_anymarket`, a `PAGAMENTOEXTERNO` payment form, or the webhook receiver's
@@ -687,13 +699,23 @@ export const TIPO_AVISO_LABELS = {
  *  - **`params` are exactly `loja`, `formaEnvio`** (the `mapa` row's display
  *    name), **`chave`** (the raw key, so the operator can find the row)
  *    **and `motivo`** — a {@link MOTIVO_FRETE_NAO_SUPORTADO_LI} CODE.
- *  - **`relogioEvento`** = the µs `readTime` of the read of the target document:
- *    this row records an observation of the TARGET's state, not an order event.
+ *  - **`relogioEvento`** = the µs `readTime` of the read the routing decided
+ *    from: the target document's read when one was made (every raise has one —
+ *    a missing target is a read too), else the conta's `int_frete` read, whose
+ *    `mapa` held the key unmapped or did not hold it. This row records an
+ *    observation of the mapping's and the target's STATE, not an order event.
  *    ⚠️ Never compare it with the order-clocked tipos above.
  *  - **Route**: the conta page, whose "Mapeamento do Frete" tab holds the row.
- *  - **Machine resolver**: the next import of an order with that key that
- *    routes, or finds the key unmapped — clocked by its target read, clockless
- *    when no target was read. Residue: a key no later order uses stands until
+ *  - **Machine resolver**: the next import of an order with that key whose
+ *    routing raises no aviso — routed to its target, mapped to `fob` or
+ *    `outros`, unmapped, or finding no Loja Integrada `int_frete` for the conta
+ *    (a method with no usable key has no row to resolve) — clocked as above.
+ *    ⚠️ NEVER clockless: the reprocess sweep runs inline beside the serial
+ *    queue, so an import that read the `mapa` before the operator re-mapped the
+ *    key could otherwise close the row a newer target read had just raised.
+ *    Residue, accepted: one observation spans two reads and carries the newer
+ *    one's clock, so a raise whose `mapa` read predates a concurrent re-map
+ *    stands until the key's next import; a key no later order uses stands until
  *    retention.
  */
 export const tipoAvisoSchema = z
@@ -852,7 +874,8 @@ export const MOTIVO_IMPORTACAO_PARADA_LI = {
  *  - `chargeback` — `pedido_chargeback`; `devolvido` — `pagamento_devolvido`;
  *    `devolvido-sem-retorno` — `pagamento_devolvido_sem_retorno`: refunds,
  *    FINAL in Loja Integrada, raised only when the pedido's stock removal was
- *    already applied (otherwise the import reverses the sale on its own).
+ *    already applied — and `devolvido` only when the payment was also captured
+ *    (otherwise the import reverses or cancels the sale on its own).
  *
  * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
  * code newer than the web build reaches the reader as a plain string, and

@@ -155,6 +155,29 @@ describe('liPedidoSchema: the required set is minimal', () => {
     expect(p.endereco_entrega).toBeUndefined();
   });
 
+  it.each(['itens', 'envios', 'pagamentos'] as const)(
+    'a JSON `null` %s reads as [] like an absent one — a refusal would park the order for good',
+    (campo) => {
+      const p = liPedidoSchema.parse({ ...MINIMO, [campo]: null });
+      expect(p[campo]).toEqual([]);
+    },
+  );
+
+  it('the order’s own `id_externo` is NOT a hub marker and is not typed: any shape parses, kept raw', () => {
+    // A store-side ERP may stamp it through the platform's API; the hub guard
+    // reads `id_anymarket` only. Undeclared, it can never fail the parse.
+    for (const idExterno of ['ERP-123', 4512, { origem: 'erp', id: 9 }, true]) {
+      const p = liPedidoSchema.parse({ ...MINIMO, id_externo: idExterno });
+      expect(p).toHaveProperty('id_externo', idExterno);
+    }
+  });
+
+  it('`id_anymarket` stays typed (text or number, nullable) — the hub guard reads its presence', () => {
+    expect(liPedidoSchema.parse({ ...MINIMO, id_anymarket: 'AM-1' }).id_anymarket).toBe('AM-1');
+    expect(liPedidoSchema.parse({ ...MINIMO, id_anymarket: 77 }).id_anymarket).toBe(77);
+    expect(liPedidoSchema.parse({ ...MINIMO, id_anymarket: null }).id_anymarket).toBeNull();
+  });
+
   it('an empty line, shipment and payment parse — every leaf inside them is optional', () => {
     const p = liPedidoSchema.parse({ ...MINIMO, itens: [{}], envios: [{}], pagamentos: [{}] });
     expect(p.itens).toHaveLength(1);

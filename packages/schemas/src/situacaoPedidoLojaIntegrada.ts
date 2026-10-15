@@ -61,7 +61,8 @@ import { ESTADO_PEDIDO, type EstadoPedido } from './pedido/collection/pedido';
  * (the estado ladder, a reversal from paid refused, and the "removal applied"
  * arm where a refund keeps the stored estado and status and raises the
  * `lojaIntegradaPedidoContestado` aviso instead, because the goods may not have
- * come back) belong to the importer, which reads {@link CODIGOS_LI_ESTORNO} and
+ * come back — for `pagamento_devolvido` only when the payment was captured)
+ * belong to the importer, which reads {@link CODIGOS_LI_ESTORNO} and
  * {@link SituacaoLi.motivoContestacao} for them.
  *
  * Pure and total: no clock, no network, no Firestore. A codigo this table does
@@ -134,10 +135,16 @@ export interface SituacaoLi {
    */
   readonly mantemStatusArmazenado: boolean;
   /**
-   * The `lojaIntegradaPedidoContestado` motivo this codigo raises: always for
-   * the dispute; for the three refund-type codigos ({@link CODIGOS_LI_ESTORNO})
-   * only on a pedido whose stock removal was applied — the importer decides
-   * that arm. `null` for a codigo that never contests.
+   * The `lojaIntegradaPedidoContestado` motivo this codigo raises WHEN it
+   * raises: always for the dispute; for the refund-type codigos
+   * ({@link CODIGOS_LI_ESTORNO}) only on a pedido whose stock removal was
+   * applied, and for `pagamento_devolvido` only when the payment was also
+   * captured — the importer decides that arm. `null` for a codigo that never
+   * contests.
+   *
+   * ⚠️ Not a "still contested" predicate: it is non-null on a refund-type
+   * codigo whether or not the import raises, and an import that does not raise
+   * resolves the aviso (see its docblock in `aviso.ts`).
    */
   readonly motivoContestacao: MotivoPedidoContestadoLi | null;
 }
@@ -311,7 +318,11 @@ export const CODIGO_LI_EM_DISPUTA: CodigoSituacaoLi = C.pagamentoEmDisputa;
 
 /**
  * The refund-type codigos: on a pedido whose stock removal was applied, the
- * importer keeps the stored estado and status and raises the contestado aviso.
+ * importer keeps the stored estado and status and raises the contestado aviso —
+ * for `pagamento_devolvido` only when the payment was also CAPTURED. An
+ * uncaptured `pagamento_devolvido` takes its row's uncaptured arm (`cancelado`)
+ * even after a removal, and without a removal every one of them takes its row
+ * as on create.
  */
 export const CODIGOS_LI_ESTORNO: ReadonlySet<string> = new Set<string>([
   C.pagamentoDevolvido,
