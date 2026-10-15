@@ -5,6 +5,7 @@ import { MOTIVO_RESOLUCAO_RECEITA_KIT } from './receitaKitShopee';
 import {
   CANAL_AVISO,
   CANAL_AVISO_LABELS,
+  MOTIVO_IMPORTACAO_PARADA_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -18,6 +19,7 @@ import {
   chaveDeAviso,
   entradaDeLeitura,
   marcarTodosComoLidos,
+  motivoImportacaoParadaLiSchema,
   pendenciaReclamacaoSchema,
   rotaInternaSegura,
   situacaoAnuncioForaDaSincronizacaoSchema,
@@ -157,6 +159,56 @@ describe('TIPO_AVISO_LABELS', () => {
     expect(TIPO_AVISO_LABELS.lojaIntegradaReconexaoPendente).toBe(
       'Token da Loja Integrada recusado',
     );
+  });
+
+  it('names and labels the Loja Integrada import-stopped tipo (step 3)', () => {
+    expect(TIPO_AVISO.lojaIntegradaImportacaoParada).toBe('lojaIntegradaImportacaoParada');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaImportacaoParada).toBe(
+      'Importação de pedidos da Loja Integrada parada',
+    );
+    // Near-miss spellings are other tipos — refused by the enum, never folded.
+    for (const quase of ['lojaIntegradaImportacaoParado', 'lojaintegradaImportacaoParada']) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses an import-stopped plano as stored: critico, the conta route, a clock', () => {
+    const parsed = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', motivo: MOTIVO_IMPORTACAO_PARADA_LI.filtroIgnorado },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(parsed).toMatchObject({
+      tipo: 'lojaIntegradaImportacaoParada',
+      severidade: 'critico',
+      canal: 'lojaIntegrada',
+      params: { loja: 'Conta A', motivo: 'filtro-ignorado' },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(parsed.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+  });
+});
+
+describe('MOTIVO_IMPORTACAO_PARADA_LI', () => {
+  it('keeps the named-member constant in step with the enum, member for member', () => {
+    expect(Object.values(MOTIVO_IMPORTACAO_PARADA_LI).sort()).toEqual(
+      [...motivoImportacaoParadaLiSchema.options].sort(),
+    );
+    expect(motivoImportacaoParadaLiSchema.options).toHaveLength(13);
+  });
+
+  it('near-miss: a parked conta and the switch off are NOT motivos — they never raise this aviso', () => {
+    for (const quase of [
+      'conta-parada',
+      'chamadas-desligadas',
+      'conta-inativa',
+      'Filtro-ignorado',
+    ]) {
+      expect(motivoImportacaoParadaLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
   });
 });
 
@@ -541,6 +593,14 @@ describe('chaveDeAviso — the two Loja Integrada tipos (step 2)', () => {
     expect(expiracao('int-1')).not.toBe(expiracao('int-2'));
     expect(reconexao('int-1')).not.toBe(reconexao('int-2'));
     expect(expiracao('int-1')).not.toBe(reconexao('int-1'));
+  });
+
+  it('the step-3 import-stopped tipo is keyed on the conta alone too, apart from the other two', () => {
+    const importacao = (conta: string) =>
+      chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaImportacaoParada, conta });
+    expect(importacao('int-1')).toBe('lojaIntegradaImportacaoParada:int-1');
+    expect(importacao('int-1')).not.toBe(importacao('int-2'));
+    expect(new Set([importacao('int-1'), expiracao('int-1'), reconexao('int-1')]).size).toBe(3);
   });
 });
 

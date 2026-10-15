@@ -1,0 +1,66 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/pedido/search/",
+    "query": [
+      [
+        "limit",
+        "1"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 905,
+    "corpo": {
+      "meta": {
+        "limit": 1,
+        "next": "/api/v1/pedido/search?offset=1&limit=1&an=<redacted>",
+        "offset": 0,
+        "previous": null,
+        "total_count": 12787
+      },
+      "objects": [
+        {
+          "cliente": "REDACTED",
+          "data_criacao": "2022-01-10T09:52:33.501363",
+          "data_expiracao": "2022-01-19T09:01:14.743418",
+          "data_modificacao": "2022-01-25T06:00:41.915156",
+          "id": 0,
+          "id_anymarket": null,
+          "id_externo": null,
+          "integration_data": {
+            "integrator": null,
+            "marketplace": null,
+            "reference": "REDACTED"
+          },
+          "numero": 10000,
+          "peso_real": "0.087",
+          "resource_uri": "/api/v1/pedido/10000",
+          "situacao": {
+            "aprovado": false,
+            "cancelado": true,
+            "codigo": "pedido_cancelado",
+            "final": true,
+            "id": 8,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/8"
+          },
+          "utm_campaign": null,
+          "valor_desconto": "0.00",
+          "valor_envio": "11.12",
+          "valor_subtotal": "13.01",
+          "valor_total": "24.13"
+        }
+      ]
+    }
+  }
+}

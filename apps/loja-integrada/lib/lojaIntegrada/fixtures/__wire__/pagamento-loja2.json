@@ -1,0 +1,308 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/pagamento/",
+    "query": [
+      [
+        "limit",
+        "100"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "configuracao",
+    "forma": "json",
+    "bytes": 7318,
+    "corpo": {
+      "meta": {
+        "limit": 100,
+        "next": null,
+        "offset": 0,
+        "previous": null,
+        "total_count": 25
+      },
+      "objects": [
+        {
+          "codigo": "proxy-pagali-v2-pix",
+          "configuracoes": {
+            "ativo": true,
+            "disponivel": true
+          },
+          "id": 72,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/72"
+        },
+        {
+          "codigo": "proxy-appmax-v1-cartao",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 65,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/65"
+        },
+        {
+          "codigo": "pagali-boleto",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": true
+          },
+          "id": 33,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/33"
+        },
+        {
+          "codigo": "proxy-appmax-v1-boleto",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 64,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/64"
+        },
+        {
+          "codigo": "proxy-pagarme-v5-boleto",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 36,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/36"
+        },
+        {
+          "codigo": "proxy-pagali-v2-boleto",
+          "configuracoes": {
+            "ativo": true,
+            "disponivel": true
+          },
+          "id": 74,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/74"
+        },
+        {
+          "codigo": "proxy-mercadopago-v1-boleto",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 47,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/47"
+        },
+        {
+          "codigo": "proxy-pagbank-v1-boleto",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 58,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/58"
+        },
+        {
+          "codigo": "proxy-mercadopago-v1-cartao",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 48,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/48"
+        },
+        {
+          "codigo": "proxy-mercadopago-v1-redirect",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 49,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/49"
+        },
+        {
+          "codigo": "mercadopagov1",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 21,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/21"
+        },
+        {
+          "codigo": "proxy-pagaleve-v1-redirect",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 77,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/77"
+        },
+        {
+          "codigo": "proxy-pagali-v2-cartao",
+          "configuracoes": {
+            "ativo": true,
+            "disponivel": true
+          },
+          "id": 73,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/73"
+        },
+        {
+          "codigo": "pagali-cartao",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": true
+          },
+          "id": 34,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/34"
+        },
+        {
+          "codigo": "proxy-entrega-v1-entrega",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 46,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/46"
+        },
+        {
+          "codigo": "proxy-pagarme-v5-cartao",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 35,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/35"
+        },
+        {
+          "codigo": "proxy-pagbank-v1-cartao",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 59,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/59"
+        },
+        {
+          "codigo": "proxy-pagbank-v1-redirect",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 60,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/60"
+        },
+        {
+          "codigo": "proxy-paypal-express-checkout-redirect",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 39,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/39"
+        },
+        {
+          "codigo": "proxy-paypal-checkout-v2-redirect",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 40,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/40"
+        },
+        {
+          "codigo": "proxy-paypal-bcdc-v1-external",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 68,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/68"
+        },
+        {
+          "codigo": "pptransparente",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 17,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/17"
+        },
+        {
+          "codigo": "proxy-paypal-bcdc-v1-wallet",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 67,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/67"
+        },
+        {
+          "codigo": "pagali-pix",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": true
+          },
+          "id": 32,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/32"
+        },
+        {
+          "codigo": "proxy-paghiper-v1-boleto",
+          "configuracoes": {
+            "ativo": false,
+            "disponivel": false
+          },
+          "id": 41,
+          "imagem": "REDACTED",
+          "nome": "REDACTED",
+          "resource_uri": "/api/v1/pagamento/41"
+        }
+      ]
+    }
+  }
+}

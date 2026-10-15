@@ -1,0 +1,6 @@
+---
+"@delfrance/integrations-freight-br": minor
+"@delfrance/melhor-envio-app": patch
+---
+
+A Melhor Envio account's carrier services can now be listed from the browser, for the service picker of a sales channel's freight mapping. `apps/melhor-envio` gains `GET /api/freight/melhor-envio/servicos?intFreteId=…` (`PERM.frete.read`): a thin forward of `listServices` that answers `{ servicos }` and keeps the account's token on the server. It refuses an `intFreteId` that is not one document id with a 400, before any read; a doc that is absent or not of tipo Melhor Envio is a 404, as on the other freight routes. The browser `FreightHttpClient` gains `servicos(intFreteId)`, read through the new `freightServicosResultSchema` at the `curto` deadline tier (a repeat is harmless). Unlike `agencias`, the array is required: nothing reads it tolerantly, and an empty picker would claim the account has no services. That guards the route's own envelope; the hop before it is guarded by the route itself, which reads Melhor Envio through the new `listServices({ estrito: true })`, so a Melhor Envio 2xx that is not a list (no body, `{}`, a status message, an HTML page) is a 502 rather than `{ servicos: [] }`. The default `listServices()` read stays tolerant for `ensureCartAgency`. A backend that predates the route answers 404, which the client maps to `FreightNotFoundError`.

@@ -6,22 +6,34 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { chaveDeAviso, TIPO_AVISO } from '@delfrance/schemas';
+import { escreverAviso } from '@delfrance/data/admin/avisos';
+import {
+  CANAL_AVISO,
+  MOTIVO_IMPORTACAO_PARADA_LI,
+  ROTAS_AVISO,
+  SEVERIDADE_AVISO,
+  chaveDeAviso,
+  TIPO_AVISO,
+} from '@delfrance/schemas';
 
 import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { AGORA_MS, DIA_MS, caminhoAviso } from '../testing/fixtures';
 import {
   MOTIVO_AVISO_LI,
+  TIPOS_AVISO_LI,
   agoraUsDe,
   avisarExpiracaoToken,
+  avisarImportacaoParada,
   avisarReconexaoPendente,
   chaveExpiracao,
+  chaveImportacaoParada,
   chaveReconexao,
   prazoUsDe,
   relogioDoDocumentoUs,
   resolverAvisoDeContaRemovida,
   resolverAvisosAposRemocao,
   resolverExpiracaoToken,
+  resolverImportacaoParada,
   resolverReconexaoPendente,
   sincronizarAvisoDeExpiracao,
   sincronizarAvisosAposValidacao,
@@ -279,6 +291,199 @@ describe('resolverAvisoDeContaRemovida (the orphan pass)', () => {
     expect(db.ler(caminhoAviso(chave))).toMatchObject({
       resolucaoMotivo: 'conta-removida',
       relogioEvento: 9_000,
+    });
+  });
+});
+
+describe('the import-stopped tipo (step 3) in the orphan pass', () => {
+  /** An open import-stopped row, raised at `relogioUs` — the poller's shape (PR 3-e). */
+  function raise(db: FakeDb, relogioUs: number) {
+    return escreverAviso(
+      asDb(db),
+      {
+        tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+        conta: ID,
+        severidade: SEVERIDADE_AVISO.critico,
+        canal: CANAL_AVISO.lojaIntegrada,
+        params: { loja: 'Loja', motivo: MOTIVO_IMPORTACAO_PARADA_LI.filtroIgnorado },
+        urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build(ID), campo: null },
+        relogioEvento: relogioUs,
+      },
+      { increment, agoraUs: agoraUsDe(deps) },
+    );
+  }
+
+  it('its key is the conta alone, apart from the other two, and the tipo is listed', async () => {
+    expect(chaveImportacaoParada(ID)).toBe(
+      chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaImportacaoParada, conta: ID }),
+    );
+    expect(new Set([chaveImportacaoParada(ID), chaveExpiracao(ID), chaveReconexao(ID)]).size).toBe(
+      3,
+    );
+    expect(chaveImportacaoParada(ID)).not.toBe(chaveImportacaoParada('conta-li-2'));
+    expect([...TIPOS_AVISO_LI].sort()).toEqual(
+      [
+        TIPO_AVISO.lojaIntegradaTokenExpirando,
+        TIPO_AVISO.lojaIntegradaReconexaoPendente,
+        TIPO_AVISO.lojaIntegradaImportacaoParada,
+      ].sort(),
+    );
+    const { chave } = await raise(new FakeDb(), 1_000);
+    expect(chave).toBe(chaveImportacaoParada(ID));
+  });
+
+  it('a row is closed CLOCKED by the list read time, and stamped with it', async () => {
+    const db = new FakeDb();
+    await raise(db, 1_000);
+    expect(
+      await resolverAvisoDeContaRemovida(asDb(db), chaveImportacaoParada(ID), 2_000, deps),
+    ).toBe(true);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      resolucaoMotivo: 'conta-removida',
+      relogioEvento: 2_000,
+    });
+  });
+
+  it('near-miss: a row raised AFTER the list was read stays open', async () => {
+    const db = new FakeDb();
+    await raise(db, 3_000);
+    expect(
+      await resolverAvisoDeContaRemovida(asDb(db), chaveImportacaoParada(ID), 2_000, deps),
+    ).toBe(false);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      resolvidoEm: null,
+      relogioEvento: 3_000,
+    });
+  });
+
+  it('no row yet: the resolve SEEDS a resolved one, so a late, older raise is dropped', async () => {
+    const db = new FakeDb();
+    expect(
+      await resolverAvisoDeContaRemovida(asDb(db), chaveImportacaoParada(ID), 2_000, deps),
+    ).toBe(false);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      severidade: 'critico',
+      canal: 'lojaIntegrada',
+      relogioEvento: 2_000,
+      resolucaoMotivo: 'conta-removida',
+    });
+    expect((await raise(db, 1_500)).resultado).toBe('ignorado');
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))?.resolvidoEm).not.toBeNull();
+  });
+
+  it('an import-stopped-tipo id no producer computes is closed clockless (nothing races it)', async () => {
+    const db = new FakeDb();
+    const chave = chaveDeAviso({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      conta: ID,
+      entidade: 'x',
+    });
+    db.seed(caminhoAviso(chave), {
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      severidade: 'critico',
+      canal: 'lojaIntegrada',
+      params: {},
+      criadoEm: 1,
+      atualizadoEm: 1,
+      ocorrencias: 1,
+      resolvidoEm: null,
+      resolucaoMotivo: null,
+      relogioEvento: 9_000,
+    });
+    expect(await resolverAvisoDeContaRemovida(asDb(db), chave, 2_000, deps)).toBe(true);
+    expect(db.ler(caminhoAviso(chave))).toMatchObject({
+      resolucaoMotivo: 'conta-removida',
+      relogioEvento: 9_000,
+    });
+  });
+});
+
+describe('the import-stopped aviso: producer and resolver of the order poller', () => {
+  const evento = {
+    integracaoId: ID,
+    lojaNome: 'Loja',
+    motivo: MOTIVO_IMPORTACAO_PARADA_LI.falhaTransitoria,
+    relogioUs: 5_000,
+  };
+
+  it('raises critico, in-app, with exactly loja and motivo, at the given clock', async () => {
+    const db = new FakeDb();
+    const { chave, resultado } = await avisarImportacaoParada(asDb(db), evento, deps);
+
+    expect(chave).toBe(chaveImportacaoParada(ID));
+    expect(resultado).toBe('criado');
+    const row = db.ler(caminhoAviso(chave));
+    expect(row).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build(ID), campo: null },
+      relogioEvento: 5_000,
+      resolvidoEm: null,
+      criadoEm: AGORA_MS * 1000,
+    });
+    // A CODE, never a sentence: the web renders it.
+    expect(row?.params).toEqual({ loja: 'Loja', motivo: 'falha-transitoria' });
+  });
+
+  it('a repeat at a later clock refreshes the motivo without moving criadoEm; an equal clock is dropped', async () => {
+    const db = new FakeDb();
+    await avisarImportacaoParada(asDb(db), evento, deps);
+    const depois = await avisarImportacaoParada(
+      asDb(db),
+      { ...evento, motivo: MOTIVO_IMPORTACAO_PARADA_LI.janelaInstavel, relogioUs: 6_000 },
+      { increment, nowMs: AGORA_MS + DIA_MS },
+    );
+    expect(depois.resultado).toBe('repetido');
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      params: { motivo: 'janela-instavel' },
+      criadoEm: AGORA_MS * 1000,
+      ocorrencias: 2,
+    });
+    // NEAR-MISS: the same clock again is the same observation.
+    expect(
+      (await avisarImportacaoParada(asDb(db), { ...evento, relogioUs: 6_000 }, deps)).resultado,
+    ).toBe('ignorado');
+  });
+
+  it('the resolve is CLOCKED and stamped importacao-retomada; an older raise stays resolved, a newer one reopens', async () => {
+    const db = new FakeDb();
+    await avisarImportacaoParada(asDb(db), evento, deps);
+
+    expect(
+      await resolverImportacaoParada(asDb(db), ID, deps, { relogioUs: 7_000, lojaNome: 'Loja' }),
+    ).toBe(true);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      resolucaoMotivo: 'importacao-retomada',
+      relogioEvento: 7_000,
+    });
+    expect(MOTIVO_AVISO_LI.importacaoRetomada).toBe('importacao-retomada');
+
+    // A run whose lease was taken over raises late, at an older clock: dropped.
+    expect(
+      (await avisarImportacaoParada(asDb(db), { ...evento, relogioUs: 6_500 }, deps)).resultado,
+    ).toBe('ignorado');
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))?.resolvidoEm).not.toBeNull();
+
+    // NEAR-MISS: a newer failure reopens it.
+    expect(
+      (await avisarImportacaoParada(asDb(db), { ...evento, relogioUs: 7_001 }, deps)).resultado,
+    ).toBe('reaberto');
+  });
+
+  it('no row yet: the resolve SEEDS a resolved one with the store name and the clock', async () => {
+    const db = new FakeDb();
+    expect(
+      await resolverImportacaoParada(asDb(db), ID, deps, { relogioUs: 7_000, lojaNome: 'Loja' }),
+    ).toBe(false);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Loja' },
+      relogioEvento: 7_000,
+      resolucaoMotivo: 'importacao-retomada',
     });
   });
 });
