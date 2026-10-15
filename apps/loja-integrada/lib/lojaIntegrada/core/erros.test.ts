@@ -13,6 +13,7 @@ import { LiError } from '@delfrance/integrations-loja-integrada';
 import * as erros from './erros';
 import {
   LiAppError,
+  LiChamadasDesligadasError,
   LiContaInativaError,
   LiContaNaoEncontradaError,
   LiContaParadaError,
@@ -33,14 +34,15 @@ const INSTANCIAS: readonly LiAppError[] = [
   new LiCredencialAlteradaError(ID),
   new LiContaParadaError(ID, 401, 1),
   new LiEstacionamentoEmConflitoError(ID, 3),
+  new LiChamadasDesligadasError(ID),
 ];
 
 describe('the app errors are NOT LiError', () => {
-  it('every exported subclass of LiAppError is instantiated here (7 of them)', () => {
+  it('every exported subclass of LiAppError is instantiated here (8 of them)', () => {
     const subclasses = Object.values(erros).filter(
       (v) => typeof v === 'function' && v.prototype instanceof LiAppError,
     );
-    expect(subclasses).toHaveLength(7);
+    expect(subclasses).toHaveLength(8);
     for (const classe of subclasses) {
       expect(
         INSTANCIAS.some((e) => e.constructor === classe),

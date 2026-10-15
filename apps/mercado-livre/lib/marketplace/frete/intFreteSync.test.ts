@@ -1,143 +1,156 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
+import { integracaoCollection } from '@delfrance/data/admin/collections';
+import {
+  OccEngine,
+  type OccReadable,
+  type OccTransaction,
+  type OccWriteKind,
+} from '@delfrance/data/testing';
 
 import {
   buscarIntFreteDaConta,
-  contaRealmenteExcluida,
-  desativarIntFreteDaConta,
+  deveReconciliar,
   ehContaMercadoLivre,
   montarCamposIntFrete,
   mudouCampoSincronizado,
+  planejarIntFreteDaConta,
+  reconciliarIntFreteDaConta,
   refCanonicalDaConta,
-  sincronizarIntFreteDaConta,
 } from './intFreteSync';
 
-/* ------------------------------ fake Firestore ---------------------------- */
-// Own copy (the sibling order tests keep theirs — not shared). Scoped to what
-// `intFreteSync.ts` touches: `int_frete` (chained `where` equality + `add` +
-// merge-`set`/`update`) and `integracao` (a single doc `get` for the delete guard).
-// `opLog` is real so the zero-write assertions below mean something.
-
 type DocData = Record<string, unknown>;
-
 interface FakeRef {
   id: string;
-  get(): Promise<{ exists: boolean; id: string; data: () => DocData | undefined }>;
-  set(data: DocData, opts?: { merge?: boolean }): Promise<void>;
+  path: string;
+  get(): Promise<{
+    exists: boolean;
+    id: string;
+    data: () => DocData | undefined;
+    readTime: { toMillis(): number };
+  }>;
 }
 interface FakeQuery {
+  path: string;
   get(): Promise<{ docs: Array<{ id: string; data: () => DocData }>; empty: boolean }>;
 }
 
+/**
+ * Document OCC only: queries deliberately have NO range protection. Two first reconciles must
+ * contend on their deterministic document read, rather than rely on this fake protecting a scan.
+ * Snapshots are copied, writes are buffered, and all reads must precede writes.
+ */
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
-  readonly opLog: Array<{ op: 'get' | 'query' | 'add' | 'set' | 'create'; path: string }> = [];
-  /** Transactions opened — `runTransaction` bumps this once per call. */
+  readonly opLog: Array<{ op: 'get' | 'query' | OccWriteKind; path: string }> = [];
+  readonly txReads: string[] = [];
+  readonly committedWrites: Array<{ op: OccWriteKind; path: string }> = [];
+  readonly occ: OccEngine;
   transacoes = 0;
+  tentativas = 0;
+  readTimeMs = READ_MS;
+  beforeCommit?: () => Promise<void> | void;
   private autoN = 0;
 
-  private col(path: string): Map<string, DocData> {
-    let c = this.cols.get(path);
-    if (!c) this.cols.set(path, (c = new Map()));
+  constructor() {
+    this.occ = new OccEngine({
+      applyWrite: (kind, docPath, data) => {
+        const [colPath, id] = docPath.split('/');
+        const stored = this.col(colPath!).get(id!);
+        if (kind === 'create' && stored != null) throw new Error('ALREADY_EXISTS');
+        if (kind === 'update' && stored == null) throw new Error('NOT_FOUND');
+        this.col(colPath!).set(
+          id!,
+          structuredClone(kind === 'update' ? { ...stored, ...data } : data),
+        );
+        this.committedWrites.push({ op: kind, path: docPath });
+      },
+      logWrite: (op, docPath) => this.opLog.push({ op, path: docPath }),
+    });
+    this.occ.beforeCommit = () => {
+      const hook = this.beforeCommit;
+      this.beforeCommit = undefined;
+      return hook?.();
+    };
+  }
+
+  private col(colPath: string): Map<string, DocData> {
+    let c = this.cols.get(colPath);
+    if (!c) this.cols.set(colPath, (c = new Map()));
     return c;
   }
-  seed(path: string, id: string, data: DocData): void {
-    this.col(path).set(id, data);
+  seed(colPath: string, id: string, data: DocData): void {
+    this.col(colPath).set(id, structuredClone(data));
   }
-  docs(path: string): Map<string, DocData> {
-    return this.col(path);
+  docs(colPath: string): Map<string, DocData> {
+    return this.col(colPath);
   }
-  writes(): Array<{ op: string; path: string }> {
-    return this.opLog.filter((o) => o.op === 'add' || o.op === 'set' || o.op === 'create');
+  writes() {
+    return this.committedWrites.filter((write) => write.path.startsWith('int_frete/'));
   }
 
-  /**
-   * Minimal read-write transaction. Writes are BUFFERED and applied on commit, and a
-   * write flips `lendo` off so a later read throws — pinning Firestore's real
-   * all-reads-before-any-write rule rather than silently tolerating a violation.
-   */
-  async runTransaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
-    const self = this;
+  async escreverConta(data: DocData): Promise<void> {
+    await this.occ.runTransaction(async (tx) => {
+      tx.set(integracaoCollection.docRef(asDb(this), {}, CONTA_ID), data);
+    });
+  }
+
+  runTransaction<T>(fn: (tx: OccTransaction) => Promise<T>): Promise<T> {
     this.transacoes += 1;
-    const pendentes: Array<() => Promise<void>> = [];
-    let lendo = true;
-    const tx = {
-      async get(alvo: FakeRef | FakeQuery) {
-        if (!lendo) throw new Error('transaction: read after write');
-        return alvo.get();
-      },
-      create(ref: FakeRef, data: DocData) {
-        lendo = false;
-        self.opLog.push({ op: 'create', path: `${ref.id}` });
-        pendentes.push(async () => {
-          await ref.set(data);
-        });
-      },
-      set(ref: FakeRef, data: DocData, opts?: { merge?: boolean }) {
-        lendo = false;
-        pendentes.push(async () => {
-          await ref.set(data, opts);
-        });
-      },
-      update(ref: FakeRef, data: DocData) {
-        lendo = false;
-        pendentes.push(async () => {
-          await ref.set(data, { merge: true });
-        });
-      },
-    };
-    const saida = await fn(tx);
-    for (const aplicar of pendentes) await aplicar();
-    return saida;
+    return this.occ.runTransaction(async (tx) => {
+      this.tentativas += 1;
+      return fn({
+        ...tx,
+        get: async <TSnapshot>(target: OccReadable<TSnapshot>): Promise<TSnapshot> => {
+          this.txReads.push(target.path === 'unprotected-query' ? 'query' : target.path);
+          return tx.get(target);
+        },
+      });
+    });
   }
 
-  private query(path: string, clauses: Array<[string, unknown]>) {
-    const self = this;
-    const q = {
-      where(field: string, _op: string, value: unknown) {
-        return self.query(path, [...clauses, [field, value]]);
-      },
-      async get() {
-        self.opLog.push({ op: 'query', path });
-        const rows = [...self.col(path).entries()].filter(([, d]) =>
+  private query(colPath: string, clauses: Array<[string, unknown]>) {
+    return {
+      // Never written: query reads acquire no range conflict protection.
+      path: 'unprotected-query',
+      where: (field: string, _op: string, value: unknown): FakeQuery =>
+        this.query(colPath, [...clauses, [field, value]]),
+      get: async () => {
+        this.opLog.push({ op: 'query', path: colPath });
+        const rows = [...this.col(colPath).entries()].filter(([, d]) =>
           clauses.every(([f, v]) => d[f] === v),
         );
         return {
-          docs: rows.map(([id, d]) => ({ id, data: () => d, exists: true })),
+          docs: rows.map(([id, d]) => ({ id, data: () => structuredClone(d), exists: true })),
           empty: rows.length === 0,
         };
       },
     };
-    return q;
   }
 
-  collection(path: string) {
-    const self = this;
+  collection(colPath: string) {
     return {
-      doc: (id?: string) => {
-        const docId = id ?? `auto-${(self.autoN += 1)}`;
+      doc: (id?: string): FakeRef => {
+        const docId = id ?? 'auto-' + String((this.autoN += 1));
+        const docPath = colPath + '/' + docId;
         return {
           id: docId,
+          path: docPath,
           get: async () => {
-            self.opLog.push({ op: 'get', path: `${path}/${docId}` });
-            const col = self.col(path);
-            return { exists: col.has(docId), id: docId, data: () => col.get(docId) };
-          },
-          set: async (data: DocData, opts?: { merge?: boolean }) => {
-            self.opLog.push({ op: 'set', path: `${path}/${docId}` });
-            const col = self.col(path);
-            col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : data);
+            this.opLog.push({ op: 'get', path: docPath });
+            const data = this.col(colPath).get(docId);
+            const readTime = this.readTimeMs;
+            return {
+              exists: data != null,
+              id: docId,
+              data: () => (data == null ? undefined : structuredClone(data)),
+              readTime: { toMillis: () => readTime },
+            };
           },
         };
       },
-      add: async (data: DocData) => {
-        const docId = `auto-${(self.autoN += 1)}`;
-        self.opLog.push({ op: 'add', path: `${path}/${docId}` });
-        self.col(path).set(docId, data);
-        return { id: docId };
-      },
       where: (field: string, op: string, value: unknown) =>
-        self.query(path, []).where(field, op, value),
+        this.query(colPath, []).where(field, op, value),
     };
   }
 }
@@ -150,7 +163,7 @@ const CONTA_ID = 'conta-A';
 const CANONICO = `documents/integracao/${CONTA_ID}`;
 const FILIAL = 'documents/filiais/fil-1';
 const CADASTRO = Date.parse('2026-01-05T10:00:00.000Z');
-const EVENT_MS = Date.parse('2026-08-04T12:00:00.000Z');
+const READ_MS = Date.parse('2026-08-04T12:00:00.000Z');
 
 function conta(over: DocData = {}): DocData {
   return {
@@ -286,7 +299,7 @@ describe('buscarIntFreteDaConta', () => {
     expect(console.warn).toHaveBeenCalled();
   });
 
-  it('picks the newest dataCadastro (the legacy orderBy desc + first tie-break)', async () => {
+  it('picks the newest dataCadastro regardless of result order', async () => {
     const db = new FakeDb();
     seedIntFrete(db, 'if-old', { dataCadastro: 1000 });
     seedIntFrete(db, 'if-new', { dataCadastro: 2000 });
@@ -304,255 +317,285 @@ describe('buscarIntFreteDaConta', () => {
   });
 });
 
-/* ---------------------------------- sync ---------------------------------- */
+describe('deveReconciliar', () => {
+  it('includes create, delete and both type transitions with identical mirrored fields', () => {
+    expect(deveReconciliar(null, conta())).toBe(true);
+    expect(deveReconciliar(conta(), null)).toBe(true);
+    expect(deveReconciliar(conta(), conta({ tipo: 5 }))).toBe(true);
+    expect(deveReconciliar(conta({ tipo: 5 }), conta())).toBe(true);
+    expect(deveReconciliar(conta(), conta({ user_id: 999 }))).toBe(false);
+    expect(deveReconciliar(conta({ tipo: 5 }), conta({ tipo: 6 }))).toBe(false);
+  });
+});
 
-describe('sincronizarIntFreteDaConta', () => {
-  it('creates the doc with the mirrored fields when none exists', async () => {
+for (const ids of [
+  ['if-a', 'if-z'],
+  ['if-z', 'if-a'],
+]) {
+  it('chooses the lower ID on an equal date in result order ' + ids.join(', '), async () => {
     const db = new FakeDb();
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao.action).toBe('criado');
-    const criado = db.docs('int_frete').get(disposicao.intFreteId!)!;
-    expect(criado).toMatchObject({
+    for (const id of ids) seedIntFrete(db, id);
+    expect(await buscarIntFreteDaConta(asDb(db), CONTA_ID)).toMatchObject({ id: 'if-a' });
+  });
+}
+
+describe('reconciliarIntFreteDaConta', () => {
+  it('creates the deterministic document with mirrored fields and readTime metadata', async () => {
+    const db = new FakeDb();
+    db.seed('integracao', CONTA_ID, conta());
+    const result = await reconciliarIntFreteDaConta(asDb(db), CONTA_ID);
+    expect(result).toMatchObject({ action: 'criado', intFreteId: 'mercadoLivre-' + CONTA_ID });
+    const created = db.docs('int_frete').get(result.intFreteId!)!;
+    expect(created).toMatchObject({
       tipo: 'mercadoLivre',
       nome: 'Loja ML',
       ativo: true,
       filialIntegracaoFreteOuterRef: FILIAL,
       contaMercadoLivreMercadoEnviosOuterRef: CANONICO,
       dataCadastro: CADASTRO,
-      ultimaModificacao: EVENT_MS,
+      ultimaModificacao: READ_MS,
+      prazoExtra: 0,
+      enderecoDeOrigem: null,
     });
-    // Schema defaults fill the rest — the doc must be readable by the Flutter app.
-    expect(criado.prazoExtra).toBe(0);
-    expect(criado.enderecoDeOrigem).toBeNull();
+    expect(CADASTRO).not.toBe(READ_MS);
+    expect(db.transacoes).toBe(1);
+    expect(db.txReads).toEqual([
+      'integracao/' + CONTA_ID,
+      'query',
+      'query',
+      'int_frete/mercadoLivre-' + CONTA_ID,
+    ]);
   });
 
-  it('mirrors dataCadastro from the conta, NOT the event time', async () => {
+  it('skips an incomplete account rather than creating invalid required fields', async () => {
     const db = new FakeDb();
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(db.docs('int_frete').get(disposicao.intFreteId!)!.dataCadastro).toBe(CADASTRO);
-    expect(CADASTRO).not.toBe(EVENT_MS);
-  });
-
-  it('skips creation when a non-nullable field is unresolvable, and warns', async () => {
-    const db = new FakeDb();
-    const disposicao = await sincronizarIntFreteDaConta(
-      asDb(db),
-      CONTA_ID,
-      conta({ filialIntegracaoPedidoOuterRef: null }),
-      EVENT_MS,
-    );
-    expect(disposicao).toEqual({
+    db.seed('integracao', CONTA_ID, conta({ filialIntegracaoPedidoOuterRef: null }));
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toEqual({
       action: 'incompleto',
       faltando: ['filialIntegracaoPedidoOuterRef'],
     });
     expect(db.docs('int_frete').size).toBe(0);
+    expect(db.writes()).toHaveLength(0);
     expect(console.warn).toHaveBeenCalled();
   });
 
-  it('patches ONLY the fields that differ, and stamps ultimaModificacao', async () => {
+  it('patches only differing account-authoritative fields and preserves freight configuration', async () => {
     const db = new FakeDb();
-    seedIntFrete(db, 'if-1', {
+    db.seed('integracao', CONTA_ID, conta({ nome: 'Loja ML 2' }));
+    const config = {
       enderecoDeOrigem: { cep: '01001000' },
       horarioDeCorte: [{ diaDaSemana: 1 }],
+      mapa: { personalizado: true },
+      faixaCep: ['01000'],
+      prazoExtra: 3,
+      client_id: 'operator-client',
+      client_secret: 'operator-secret',
+    };
+    seedIntFrete(db, 'if-legacy', { ...config, ultimaModificacao: READ_MS + 3_600_000 });
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toEqual({
+      action: 'atualizado',
+      intFreteId: 'if-legacy',
+      campos: ['nome'],
     });
-    const disposicao = await sincronizarIntFreteDaConta(
-      asDb(db),
-      CONTA_ID,
-      conta({ nome: 'Loja ML 2' }),
-      EVENT_MS,
-    );
-    expect(disposicao).toEqual({ action: 'atualizado', intFreteId: 'if-1', campos: ['nome'] });
-    const doc = db.docs('int_frete').get('if-1')!;
-    expect(doc.nome).toBe('Loja ML 2');
-    expect(doc.ultimaModificacao).toBe(EVENT_MS);
-    // Legacy null-preserving `update()` parity: operator-authored config survives.
-    expect(doc.enderecoDeOrigem).toEqual({ cep: '01001000' });
-    expect(doc.horarioDeCorte).toEqual([{ diaDaSemana: 1 }]);
-    // dataCadastro is a creation date — an unrelated edit must not move it.
-    expect(doc.dataCadastro).toBe(CADASTRO);
+    expect(db.docs('int_frete').get('if-legacy')).toMatchObject({
+      ...config,
+      nome: 'Loja ML 2',
+      dataCadastro: CADASTRO,
+      ultimaModificacao: READ_MS,
+    });
+    expect(db.docs('int_frete').size).toBe(1);
+    expect(db.transacoes).toBe(1);
   });
 
-  it('writes NOTHING when everything already matches (replay-safe)', async () => {
+  it('writes nothing when mirrored fields already match and does not advance a watermark', async () => {
     const db = new FakeDb();
-    seedIntFrete(db, 'if-1');
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao).toEqual({ action: 'inalterado', intFreteId: 'if-1' });
+    db.seed('integracao', CONTA_ID, conta());
+    seedIntFrete(db, 'if-1', { ultimaModificacao: READ_MS - 1 });
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toEqual({
+      action: 'inalterado',
+      intFreteId: 'if-1',
+    });
+    expect(db.writes()).toHaveLength(0);
+    expect(db.docs('int_frete').get('if-1')!.ultimaModificacao).toBe(READ_MS - 1);
+  });
+
+  it('a no-op followed by an older replay retains the current account fields (#1888/T55)', async () => {
+    const db = new FakeDb();
+    db.seed('integracao', CONTA_ID, conta({ nome: 'Current account' }));
+    seedIntFrete(db, 'if-1', { nome: 'Current account', ultimaModificacao: READ_MS - 5_000 });
+    await reconciliarIntFreteDaConta(asDb(db), CONTA_ID);
+    // There is no event body or event time in the API: the stale delivery passes the same ID.
+    db.readTimeMs = READ_MS + 5_000;
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toEqual({
+      action: 'inalterado',
+      intFreteId: 'if-1',
+    });
+    expect(db.docs('int_frete').get('if-1')).toMatchObject({
+      nome: 'Current account',
+      ultimaModificacao: READ_MS - 5_000,
+    });
     expect(db.writes()).toHaveLength(0);
   });
 
-  it('re-activates the existing doc instead of creating a duplicate', async () => {
+  it('reactivates the existing document and preserves its historical ID', async () => {
     const db = new FakeDb();
-    seedIntFrete(db, 'if-1', { ativo: false });
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao).toEqual({ action: 'atualizado', intFreteId: 'if-1', campos: ['ativo'] });
+    db.seed('integracao', CONTA_ID, conta());
+    seedIntFrete(db, 'if-historical', { ativo: false });
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toEqual({
+      action: 'atualizado',
+      intFreteId: 'if-historical',
+      campos: ['ativo'],
+    });
     expect(db.docs('int_frete').size).toBe(1);
-    expect(db.docs('int_frete').get('if-1')!.ativo).toBe(true);
+    expect(db.docs('int_frete').has('mercadoLivre-' + CONTA_ID)).toBe(false);
   });
 
-  it('normalizes a bare back-ref in place on the next pass', async () => {
+  it('adopts and normalizes a bare back-reference in place', async () => {
     const db = new FakeDb();
+    db.seed('integracao', CONTA_ID, conta());
     seedIntFrete(db, 'if-legacy', {
-      contaMercadoLivreMercadoEnviosOuterRef: `integracao/${CONTA_ID}`,
+      contaMercadoLivreMercadoEnviosOuterRef: 'integracao/' + CONTA_ID,
     });
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao.campos).toEqual(['contaMercadoLivreMercadoEnviosOuterRef']);
+    const result = await reconciliarIntFreteDaConta(asDb(db), CONTA_ID);
+    expect(result).toEqual({
+      action: 'atualizado',
+      intFreteId: 'if-legacy',
+      campos: ['contaMercadoLivreMercadoEnviosOuterRef'],
+    });
     expect(db.docs('int_frete').get('if-legacy')!.contaMercadoLivreMercadoEnviosOuterRef).toBe(
       CANONICO,
     );
+    expect(db.docs('int_frete').size).toBe(1);
   });
 
-  it('never writes dataCadastro for a conta that has none (no churn on repeat runs)', async () => {
+  it('recovers the deterministic path when its back-reference was edited', async () => {
     const db = new FakeDb();
-    seedIntFrete(db, 'if-1');
+    db.seed('integracao', CONTA_ID, conta());
+    const id = 'mercadoLivre-' + CONTA_ID;
+    seedIntFrete(db, id, { contaMercadoLivreMercadoEnviosOuterRef: 'documents/integracao/other' });
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toMatchObject({
+      action: 'atualizado',
+      intFreteId: id,
+    });
+    expect(db.docs('int_frete').get(id)!.contaMercadoLivreMercadoEnviosOuterRef).toBe(CANONICO);
+    expect(db.docs('int_frete').size).toBe(1);
+  });
+
+  it('retains unresolvable existing registration data without repeat churn', async () => {
+    const db = new FakeDb();
     const semData = conta();
     delete semData.dataCadastro;
-    const primeira = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, semData, EVENT_MS);
-    const segunda = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, semData, EVENT_MS + 5000);
-    expect(primeira.action).toBe('inalterado');
-    expect(segunda.action).toBe('inalterado');
+    db.seed('integracao', CONTA_ID, semData);
+    seedIntFrete(db, 'if-1');
+    expect((await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).action).toBe('inalterado');
+    db.readTimeMs += 5_000;
+    expect((await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).action).toBe('inalterado');
     expect(db.writes()).toHaveLength(0);
     expect(db.docs('int_frete').get('if-1')!.dataCadastro).toBe(CADASTRO);
   });
-});
 
-/* ------------------------------- deactivate ------------------------------- */
-
-describe('desativarIntFreteDaConta', () => {
-  it('flips ativo false without touching dataCadastro, and never deletes', async () => {
+  it('deactivates a deleted account while preserving the document and operator settings', async () => {
     const db = new FakeDb();
-    seedIntFrete(db, 'if-1');
-    const disposicao = await desativarIntFreteDaConta(asDb(db), CONTA_ID, EVENT_MS);
-    expect(disposicao).toEqual({ action: 'desativado', intFreteId: 'if-1', campos: ['ativo'] });
-    const doc = db.docs('int_frete').get('if-1')!;
-    expect(doc.ativo).toBe(false);
-    expect(doc.dataCadastro).toBe(CADASTRO);
-    expect(doc.ultimaModificacao).toBe(EVENT_MS);
-    // Pedidos hold integracaoFreteOuterRef pointing here — the doc must survive.
+    seedIntFrete(db, 'if-1', {
+      enderecoDeOrigem: { cep: '01001000' },
+      ultimaModificacao: READ_MS + 1,
+    });
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toEqual({
+      action: 'desativado',
+      intFreteId: 'if-1',
+      campos: ['ativo'],
+    });
+    expect(db.docs('int_frete').get('if-1')).toMatchObject({
+      ativo: false,
+      dataCadastro: CADASTRO,
+      ultimaModificacao: READ_MS,
+      enderecoDeOrigem: { cep: '01001000' },
+    });
     expect(db.docs('int_frete').size).toBe(1);
-  });
-
-  it('is idempotent on an already-inactive doc', async () => {
-    const db = new FakeDb();
-    seedIntFrete(db, 'if-1', { ativo: false });
-    const disposicao = await desativarIntFreteDaConta(asDb(db), CONTA_ID, EVENT_MS);
-    expect(disposicao).toEqual({ action: 'inalterado', intFreteId: 'if-1' });
-    expect(db.writes()).toHaveLength(0);
-  });
-
-  it('reports nao-encontrado when the account has no freight doc', async () => {
-    const db = new FakeDb();
-    const disposicao = await desativarIntFreteDaConta(asDb(db), CONTA_ID, EVENT_MS);
-    expect(disposicao).toEqual({ action: 'nao-encontrado' });
-    expect(db.writes()).toHaveLength(0);
-  });
-});
-
-/* --------------------- concurrency: tx + staleness guard ------------------ */
-
-describe('transactional writes', () => {
-  it('runs the create path inside ONE transaction', async () => {
-    const db = new FakeDb();
-    await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
     expect(db.transacoes).toBe(1);
-    expect(db.docs('int_frete').size).toBe(1);
+    expect((await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).action).toBe('inalterado');
+    expect(db.writes()).toHaveLength(1);
   });
 
-  it('runs the update path inside ONE transaction', async () => {
+  it('a replayed delete reconciles a conta recreated under another type (#1888/T20)', async () => {
     const db = new FakeDb();
-    seedIntFrete(db, 'if-1', { nome: 'Nome antigo' });
-    await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(db.transacoes).toBe(1);
-    expect(db.docs('int_frete').get('if-1')!.nome).toBe('Loja ML');
-  });
-
-  it('runs the deactivate path inside ONE transaction', async () => {
-    const db = new FakeDb();
+    db.seed('integracao', CONTA_ID, conta({ tipo: 5 }));
     seedIntFrete(db, 'if-1');
-    await desativarIntFreteDaConta(asDb(db), CONTA_ID, EVENT_MS);
-    expect(db.transacoes).toBe(1);
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toMatchObject({
+      action: 'desativado',
+    });
     expect(db.docs('int_frete').get('if-1')!.ativo).toBe(false);
   });
 
-  it('reads the lookup THROUGH the transaction (not as a loose read)', async () => {
-    // The FakeDb transaction throws on a read issued after a write; a lookup that
-    // bypassed `tx` would also bypass conflict detection, reopening the RMW gap.
+  it('a replayed delete preserves the current recreated ML conta and restores its freight state', async () => {
     const db = new FakeDb();
-    seedIntFrete(db, 'if-1', { nome: 'Nome antigo' });
-    await expect(
-      sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS),
-    ).resolves.toMatchObject({ action: 'atualizado' });
-  });
-});
-
-describe('staleness guard (ultimaModificacao)', () => {
-  it('does nothing when the stored doc is NEWER than the event', async () => {
-    const db = new FakeDb();
-    // A human edited the freight doc in /logistica one hour AFTER this conta event.
-    seedIntFrete(db, 'if-1', {
-      nome: 'Nome escolhido a mao',
-      ultimaModificacao: EVENT_MS + 3_600_000,
+    db.seed('integracao', CONTA_ID, conta({ nome: 'Recreated store' }));
+    seedIntFrete(db, 'if-1', { ativo: false });
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toMatchObject({
+      action: 'atualizado',
     });
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao).toEqual({ action: 'obsoleto', intFreteId: 'if-1' });
-    expect(db.writes()).toHaveLength(0);
-    expect(db.docs('int_frete').get('if-1')!.nome).toBe('Nome escolhido a mao');
-  });
-
-  it('applies when the stored doc is OLDER than the event', async () => {
-    const db = new FakeDb();
-    seedIntFrete(db, 'if-1', { nome: 'Nome antigo', ultimaModificacao: EVENT_MS - 1 });
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao).toMatchObject({ action: 'atualizado' });
-    expect(db.docs('int_frete').get('if-1')!.nome).toBe('Loja ML');
-  });
-
-  it('applies on an EQUAL stamp (same instant, and the write is idempotent)', async () => {
-    const db = new FakeDb();
-    seedIntFrete(db, 'if-1', { nome: 'Nome antigo', ultimaModificacao: EVENT_MS });
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao).toMatchObject({ action: 'atualizado' });
-  });
-
-  it('applies when the stored doc has NO ultimaModificacao (legacy Flutter doc)', async () => {
-    const db = new FakeDb();
-    seedIntFrete(db, 'if-1', { nome: 'Nome antigo' });
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao).toMatchObject({ action: 'atualizado' });
-  });
-
-  it('tolerates a non-ms stored stamp (ISO string) rather than mis-ordering it', async () => {
-    const db = new FakeDb();
-    seedIntFrete(db, 'if-1', {
-      nome: 'Nome escolhido a mao',
-      ultimaModificacao: new Date(EVENT_MS + 3_600_000).toISOString(),
+    expect(db.docs('int_frete').get('if-1')).toMatchObject({
+      ativo: true,
+      nome: 'Recreated store',
     });
-    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
-    expect(disposicao).toEqual({ action: 'obsoleto', intFreteId: 'if-1' });
+    expect((await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).action).toBe('inalterado');
   });
 
-  it('blocks a stale DEACTIVATE — a doc re-activated after the delete event survives', async () => {
+  it('type changes away and back reconcile even with identical mirrored fields', async () => {
     const db = new FakeDb();
-    seedIntFrete(db, 'if-1', { ativo: true, ultimaModificacao: EVENT_MS + 1 });
-    const disposicao = await desativarIntFreteDaConta(asDb(db), CONTA_ID, EVENT_MS);
-    expect(disposicao).toEqual({ action: 'obsoleto', intFreteId: 'if-1' });
-    expect(db.docs('int_frete').get('if-1')!.ativo).toBe(true);
-    expect(db.writes()).toHaveLength(0);
-  });
-});
-
-/* ------------------------------- delete guard ----------------------------- */
-
-describe('contaRealmenteExcluida', () => {
-  it('is true only when the conta is confirmed absent right now', async () => {
-    const db = new FakeDb();
-    await expect(contaRealmenteExcluida(asDb(db), CONTA_ID)).resolves.toBe(true);
+    seedIntFrete(db, 'if-1');
+    db.seed('integracao', CONTA_ID, conta({ tipo: 5 }));
+    expect((await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).action).toBe('desativado');
     db.seed('integracao', CONTA_ID, conta());
-    await expect(contaRealmenteExcluida(asDb(db), CONTA_ID)).resolves.toBe(false);
+    expect((await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).action).toBe('atualizado');
+    expect(db.docs('int_frete').get('if-1')!.ativo).toBe(true);
+  });
+
+  it('reports no freight document for an absent or unrelated account without creating one', async () => {
+    const db = new FakeDb();
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toEqual({
+      action: 'nao-encontrado',
+    });
+    db.seed('integracao', CONTA_ID, conta({ tipo: 5 }));
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toEqual({
+      action: 'nao-encontrado',
+    });
+    expect(db.writes()).toHaveLength(0);
+  });
+
+  it('re-derives the plan on transaction retry after an intervening account edit', async () => {
+    const db = new FakeDb();
+    db.seed('integracao', CONTA_ID, conta({ nome: 'Read first' }));
+    seedIntFrete(db, 'if-1');
+    db.beforeCommit = () => db.escreverConta(conta({ nome: 'Concurrent winner' }));
+    expect(await reconciliarIntFreteDaConta(asDb(db), CONTA_ID)).toMatchObject({
+      action: 'atualizado',
+    });
+    expect(db.tentativas).toBe(2);
+    expect(db.writes()).toHaveLength(1);
+    expect(db.docs('int_frete').get('if-1')!.nome).toBe('Concurrent winner');
+  });
+
+  it('two first reconciles create one document without query-range protection', async () => {
+    const db = new FakeDb();
+    db.seed('integracao', CONTA_ID, conta());
+    const results = await Promise.all([
+      reconciliarIntFreteDaConta(asDb(db), CONTA_ID),
+      reconciliarIntFreteDaConta(asDb(db), CONTA_ID),
+    ]);
+    expect(results.map((result) => result.action).sort()).toEqual(['criado', 'inalterado']);
+    expect([...db.docs('int_frete').keys()]).toEqual(['mercadoLivre-' + CONTA_ID]);
+    expect(db.tentativas).toBe(3);
+    expect(db.writes()).toHaveLength(1);
   });
 });
 
-describe('refCanonicalDaConta', () => {
-  it('is the Flutter ODM `documents/` form the importer matches on', () => {
+describe('pure planner and canonical reference', () => {
+  it('plans the same deterministic creation without Firestore', () => {
+    expect(planejarIntFreteDaConta(CONTA_ID, conta(), null)).toMatchObject({
+      acao: 'criar',
+      id: 'mercadoLivre-' + CONTA_ID,
+    });
     expect(refCanonicalDaConta(CONTA_ID)).toBe(CANONICO);
   });
 });

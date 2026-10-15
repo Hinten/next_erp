@@ -83,7 +83,7 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 | `sendMercadoLivreStock`                  | `onTaskDispatched` (Cloud Tasks queue)                                                                       | Step 10 PR B + #693 — the stock **send** queue. Attempt zero sends sweep quantities verbatim; real Cloud Tasks retries and pause re-enqueues refresh them with bounded deterministic BatchGets. One task still means one ML stock write. The 429 pause gate, terminal 4xx ladder, deploy-time rate limits and `MERCADO_LIVRE_STOCK_SYNC_ENABLED` gate remain unchanged. See "Stock retry refresh" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `processMercadoLivrePriceSync`           | `onTaskDispatched` (Cloud Tasks queue)                                                                       | Step 11 PR-C — "Atualizar preços": manual bulk price sync for one conta. Pages the conta's linked produtos, prices from the tabela normal, GETs the item before every PUT (skip-if-equal, fresh status gate, decrease guard unless `baixarPreco`), sends **price-only** bodies (`item.price.not_modifiable` maps to a terminal skip), and re-enqueues itself onto its OWN queue until the job (`enviosPrecoMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `onNfeAprovada`                          | `onDocumentWritten` (`pedidos/{pedidoId}/nfev4/{nfeId}`, named `default` DB, `retry: true`)                  | Step 12 (#739) — the codebase's **first Firestore trigger**: fires on every `pedidos/{pedidoId}/nfev4/{nfeId}` write (named `default` database); when a production (`<tpAmb>1`) NF-e reaches `aprovada` with `xml_nfe_proc` present, ONE pedido read filters non-ML pedidos and it enqueues one `{ pedidoId, nfeId }` task onto the NF-e upload queue — **zero Firestore writes** (a non-ML approval costs exactly that 1 read; no task, no doc). Binds **no secrets** (never touches the ML API — see `src/options.ts`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `onIntegracaoMercadoLivreChanged`        | `onDocumentWritten` (`integracao/{integracaoId}`, named `default` DB, `retry: true`)                         | #782 — mirrors a Mercado Livre conta onto its Mercado Envios `int_frete` doc: created on connect, re-synced when `nome` / `ativo` / filial / `dataCadastro` change, **deactivated** (never deleted) when the conta is deleted or its `tipo` is edited away. Restores what the legacy Flutter conta screen did inline on every save. **Plus #808**: when a write makes a seller RESOLVABLE (a `user_id` stamp, an `ativo` flip), re-drives every notification deferred on that seller back into the hot sweep lane. Every gate runs before the first read, so any non-ML conta write — and any ML token refresh — costs zero reads and zero writes; a `user_id` stamp now pays for one indexed notification query, which is the point. Binds **no secrets** (pure Firestore — see `src/options.ts`).                                                                                                                                                                                                                                                                                |
+| `onIntegracaoMercadoLivreChanged`        | `onDocumentWritten` (`integracao/{integracaoId}`, named `default` DB, `retry: true`)                         | #782 / #1888 — reconciles a Mercado Livre account with its Mercado Envios `int_frete` record from current state read inside one transaction. Creates on connect, reconciles mirrored-field and account-type changes, and deactivates (never deletes) when the current account is absent or belongs to another type. Existing records retain their IDs and freight configuration; new records use `mercadoLivre-<accountId>`. `ultimaModificacao` is snapshot-read display metadata, not an event guard. **Plus #808**: when a write makes a seller RESOLVABLE (a `user_id` stamp, an `ativo` flip), re-drives deferred notifications into the hot sweep lane. Gates run before reads: unrelated account writes and ML token refreshes cost zero reads and writes. Binds **no secrets** (pure Firestore; see `src/options.ts`).                                                                                                                                                                                                                                                     |
 | `onProdutoMercadoLivreLinkChanged`       | `onDocumentWritten` (`produtos/{produtoId}/produtoMercadoLivre/{linkId}`, named `default` DB, `retry: true`) | #920 — owns `produtos.integracoesComProduto` on family PARENTS, the anchor pre-filter both sweeps open with, derived from the link itself (`linkHasLiveListing`: an item id, and `estado !== 'c'`). The ADD is an `arrayUnion` (tier 0); the REMOVE runs only after a transactional re-read finds no surviving live parent link for the conta (tier 1). Decides from the event payload before any read, so the constant `estado`/`errors` writebacks cost zero reads and zero writes. Binds **no secrets** (pure Firestore).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `onVariacaoMercadoLivreLinkChanged`      | `onDocumentWritten` (`produtos/{produtoId}/variacaoMercadoLivre/{docId}`, named `default` DB, `retry: true`) | #920 — the same denorm on variation CHILDREN (`paiId` set), from their `variacaoMercadoLivre` links. Neither sweep reads it (both open with `paiId == null`); it keeps the produto list's integração filter and badge honest. Deliberately ignores `estado`, which lives only on the parent link. Binds **no secrets**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `onAnuncioCategoriaAlterada`             | `onDocumentWritten` (`produtos/{produtoId}/produtoMercadoLivre/{linkId}`, `retry: true`)                     | #847 — raises the `anuncioCategoriaAlterada` aviso when ML recategorized a LIVE listing and the produto's ERP category (which picks the price formulas' commission and the NF-e taxes) still names the category ML left; closes it when the listing stops being live or its link is deleted. Decides from the event payload before any read, so routine link writebacks cost nothing. The ONE Firestore trigger here that **binds both secrets**: its raise reads the new category (creating it in `categorias`, create-if-absent) and ML's fee preview. ML failures degrade to an aviso with ids only; Firestore failures retry.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -468,12 +468,13 @@ Optional, later: delete the now-orphaned `nfe-ml` Cloud Run service itself
 once the new path has soaked — the trigger deletion above is what stops the
 double-fire; the idle service is only cost/noise.
 
-## Mercado Envios `int_frete` sync trigger (#782)
+## Mercado Envios `int_frete` reconciliation trigger (#782, #1888)
 
 `onIntegracaoMercadoLivreChanged` needs **no queue, no secrets and no IAM grant** — it
-is pure Firestore. It does need one new composite index, deployed **before** the
-function, or its first invocations silently full-scan `int_frete` (Enterprise
-auto-creates nothing and bills data scanned):
+is pure Firestore. Its lookup uses this existing composite index, which must be
+ready before the Phase 2b backfill and Phase 3 Functions deployment. Without it,
+queries silently full-scan `int_frete` (Enterprise auto-creates nothing and bills
+data scanned):
 
 ```json
 {
@@ -488,10 +489,9 @@ auto-creates nothing and bills data scanned):
 }
 ```
 
-It is already in `firestore.indexes.json`; deploy with
-`firebase deploy --only firestore:indexes`. The same entry also converts the order
-importer's `resolveMercadoEnviosIntFrete` from a full scan into an
-index-bound equality — that one was live on the import hot path.
+It is already in `firestore.indexes.json` and belongs to the cutover's index
+readiness step. #1888 adds no index. The same entry serves the order importer's
+`resolveMercadoEnviosIntFrete` equality lookup.
 
 ### Second responsibility: the deferred-notification re-drive (#808)
 
@@ -501,7 +501,8 @@ integração. It still binds **no secrets** — it only MARKS the documents, and
 `reprocessMercadoLivreNotifications` (which does bind them) does the reprocessing
 on its next tick.
 
-One more composite index, again deployed **before** the function:
+The deferred re-drive uses another existing composite index, ready **before**
+the function:
 
 ```json
 {
@@ -522,39 +523,57 @@ Nothing else is needed: the deferred lane itself rides the EXISTING
 `reprocessMercadoLivreNotifications` rather than as a new scheduled function, so
 there is no new Cloud Scheduler job to provision.
 
-**Deploy order**: indexes → this functions codebase → the backfill. Then verify the
-Eventarc trigger:
+**Cutover order (#1888, [#1905](https://github.com/Hinten/next_erp/issues/1905),
+[#1208](https://github.com/Hinten/next_erp/issues/1208))**: in Phase 2b, after
+import and index readiness, run the authoritative freight backfill. In Phase 3,
+deploy the current ML Functions codebase using the isolated configuration:
 
 ```bash
-gcloud eventarc triggers list --project <project-id>
+firebase deploy --only functions:mercado-livre \
+  --config firebase.mercado-livre.deploy.json \
+  --project <NEW>
+```
+
+Humans perform these operations under root rule 8. Import fires no Cloud
+Functions triggers, so a companion freight record is not automatically derived
+from the imported account. A pass before the window is superseded by later
+legacy writes; it cannot replace the authoritative post-import pass.
+
+**Backfill** — account creation before this trigger shipped, or an imported
+account with no companion record, needs an explicit reconciliation. The
+trigger's skip-if-unchanged gate means a no-op touch will not create one.
+Dry-run, apply, then dry-run again against the new project:
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <NEW>
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <NEW> --apply
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <NEW>
+```
+
+The backfill drives the trigger's own `reconciliarIntFreteDaConta` with only
+the account ID. It re-reads account and freight state inside a transaction;
+event timestamps and captured pagination fields cannot overwrite a newer
+account state. Dry-run uses fresh read-only snapshots and the same pure planner,
+including the deterministic-path fallback, so its preview is advisory under
+concurrent changes.
+
+Existing canonical or bare-reference records retain their IDs and operator-owned
+configuration. Bare references are normalized; only newly created records use
+`mercadoLivre-<accountId>`. Equal registration dates select the lexically lower
+ID. An already-reconciled project writes nothing on another apply pass.
+Require the final dry-run to report no planned writes, inspect `incompleto`
+accounts, and verify adopted IDs and preserved configuration. An incomplete
+account lacks a usable name, filial, or registration date; resolve the account
+data and re-run.
+
+After the Phase 3 deployment, verify the Eventarc trigger:
+
+```bash
+gcloud eventarc triggers list --project <NEW>
 # expect a trigger for onintegracaomercadolivrechanged,
 # event type google.cloud.firestore.document.v1.written,
 # filtered to database 'default' + the integracao/* document path
 ```
-
-**Backfill** — contas connected in the new UI have no `int_frete` doc at all, and the
-trigger's skip-if-unchanged means a no-op touch will not create one. Dry-run first:
-
-```bash
-pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <project-id>
-```
-
-then apply:
-
-```bash
-pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <project-id> --apply
-```
-
-It drives the trigger's own `sincronizarIntFreteDaConta`, so the two can never
-disagree. Idempotent (re-running an already-synced project writes nothing), so it is
-safe to run again; it also normalizes any `contaMercadoLivreMercadoEnviosOuterRef`
-still stored in the bare `integracao/<id>` form. A conta reported `incompleto` has no
-filial (or no nome) yet — `int_frete` cannot represent that, so fill the field in and
-re-run.
-
-**No cutover coupling.** Unlike the NF-e trigger, this one can ship at any time:
-it converges on the same doc via the same back-ref, writing the same values, so a
-second run — a redelivery, the sweep, or the editor — finds nothing to change.
 
 ## Runtime env (stock sync, Step 10)
 

@@ -1,10 +1,13 @@
 import {
+  MOTIVO_IMPORTACAO_PARADA_LI,
   PENDENCIA_RECLAMACAO,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
+  motivoImportacaoParadaLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
+  type MotivoImportacaoParadaLi,
   type PendenciaReclamacao,
   type SituacaoAnuncioForaDaSincronizacao,
   type TipoAviso,
@@ -88,6 +91,49 @@ function frasePendencia(valor: Aviso['params'][string] | undefined): string {
   return codigo.success
     ? FRASE_PENDENCIA_RECLAMACAO[codigo.data]
     : 'confira a situação da devolução';
+}
+
+/**
+ * pt-BR do motivo de uma importação de pedidos da Loja Integrada parada — TOTAL
+ * sobre o código (`params.motivo`, um {@link MOTIVO_IMPORTACAO_PARADA_LI}). O
+ * produtor (a varredura de pedidos) grava o CÓDIGO, nunca a frase.
+ */
+const FRASE_MOTIVO_IMPORTACAO_PARADA_LI: Record<MotivoImportacaoParadaLi, string> = {
+  [MOTIVO_IMPORTACAO_PARADA_LI.credencialAusente]: 'a conta está ativa, mas não tem token salvo',
+  [MOTIVO_IMPORTACAO_PARADA_LI.credencialInvalida]:
+    'o token salvo está ilegível — remova-o e salve-o de novo',
+  [MOTIVO_IMPORTACAO_PARADA_LI.lookbackInvalido]:
+    'o período inicial de busca de pedidos está configurado com um valor inválido',
+  [MOTIVO_IMPORTACAO_PARADA_LI.idDeContaInvalido]:
+    'o id desta conta não é aceito pela varredura de pedidos',
+  [MOTIVO_IMPORTACAO_PARADA_LI.orcamentoEsgotado]:
+    'a Loja Integrada respondeu devagar demais para ler todos os pedidos alterados',
+  [MOTIVO_IMPORTACAO_PARADA_LI.janelaInstavel]: 'a lista de pedidos mudou durante a leitura',
+  [MOTIVO_IMPORTACAO_PARADA_LI.falhaTransitoria]:
+    'a Loja Integrada falhou seguidamente (limite de requisições, erro no servidor ou rede)',
+  [MOTIVO_IMPORTACAO_PARADA_LI.limiteDePaginas]:
+    'há mais pedidos alterados do que uma varredura consegue ler',
+  [MOTIVO_IMPORTACAO_PARADA_LI.paginacaoInvalida]: 'a paginação da Loja Integrada não avançou',
+  [MOTIVO_IMPORTACAO_PARADA_LI.respostaInvalida]:
+    'a Loja Integrada respondeu fora do formato esperado',
+  [MOTIVO_IMPORTACAO_PARADA_LI.formatoDeData]:
+    'uma data de modificação de pedido veio num formato desconhecido',
+  [MOTIVO_IMPORTACAO_PARADA_LI.filtroIgnorado]:
+    'a Loja Integrada ignorou o filtro de data da busca de pedidos',
+  [MOTIVO_IMPORTACAO_PARADA_LI.janelaGrandeDemais]:
+    'há pedidos alterados demais desde a última leitura',
+};
+
+/**
+ * A frase do motivo, ou um texto neutro. ⚠️ Um código mais novo que esta tela
+ * (ou um param ausente) cai no fallback — nunca em "undefined"; o `safeParse` é
+ * o que impede um `'toString'` gravado de achar uma chave herdada do objeto.
+ */
+function fraseMotivoImportacaoParada(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoImportacaoParadaLiSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_MOTIVO_IMPORTACAO_PARADA_LI[codigo.data]
+    : 'confira o registro da varredura de pedidos';
 }
 
 /**
@@ -357,6 +403,22 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
     runbook:
       'Peça ao proprietário da loja que gere um novo token ou renove o atual no painel da Loja ' +
       'Integrada (Configurações > Chave para API) e salve-o na conta, no ERP.',
+  },
+  // Crítico: o caminho garantido de entrada de pedidos (a varredura a cada 5
+  // minutos) parou para esta conta. Uma conta PARADA por token recusado nunca
+  // levanta este aviso — quem fala é o aviso de token recusado.
+  [TIPO_AVISO.lojaIntegradaImportacaoParada]: {
+    titulo: 'Importação de pedidos da Loja Integrada parada',
+    corpo: (params) =>
+      `Os pedidos da loja ${p(params, 'loja')} não estão sendo importados da Loja Integrada: ` +
+      `${fraseMotivoImportacaoParada(params.motivo)}. Pedidos novos e alterados não chegam ao ` +
+      'ERP enquanto isso não se resolver.',
+    // Só os dois motivos de token têm conserto no app (o painel da conta); os
+    // demais são da varredura e ficam com quem lê o Cloud Logging.
+    runbook:
+      'Se o motivo for o token, salve um token válido na conta. Nos demais casos, um ' +
+      'desenvolvedor confere o registro da varredura de pedidos; quando há pedidos alterados ' +
+      'demais, reiniciar o cursor da conta faz a leitura recomeçar pelo período inicial de busca.',
   },
 };
 

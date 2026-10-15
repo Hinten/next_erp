@@ -1,0 +1,126 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/situacao_historico/search/",
+    "query": [
+      [
+        "numero",
+        "50801"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 2032,
+    "corpo": {
+      "meta": {
+        "limit": 20,
+        "next": null,
+        "offset": 0,
+        "previous": null,
+        "total_count": 3
+      },
+      "objects": [
+        {
+          "alterado_por": "REDACTED",
+          "alterado_por_nome": "REDACTED",
+          "data": "2026-10-11T12:43:42.861051",
+          "id": 386091446,
+          "numero": 50801,
+          "obs": null,
+          "resource_uri": "/api/v1/situacao_historico/386091446",
+          "situacao": {
+            "aprovado": false,
+            "cancelado": false,
+            "codigo": "aguardando_pagamento",
+            "final": false,
+            "id": 2,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/2"
+          },
+          "situacao_anterior": {
+            "aprovado": false,
+            "cancelado": false,
+            "codigo": "pedido_efetuado",
+            "final": false,
+            "id": 9,
+            "nome": "REDACTED",
+            "notificar_comprador": false,
+            "padrao": true,
+            "resource_uri": "/api/v1/situacao/9"
+          }
+        },
+        {
+          "alterado_por": "REDACTED",
+          "alterado_por_nome": "REDACTED",
+          "data": "2026-10-11T12:44:47.454154",
+          "id": 386091502,
+          "numero": 50801,
+          "obs": null,
+          "resource_uri": "/api/v1/situacao_historico/386091502",
+          "situacao": {
+            "aprovado": true,
+            "cancelado": false,
+            "codigo": "pedido_pago",
+            "final": false,
+            "id": 4,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/4"
+          },
+          "situacao_anterior": {
+            "aprovado": false,
+            "cancelado": false,
+            "codigo": "aguardando_pagamento",
+            "final": false,
+            "id": 2,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/2"
+          }
+        },
+        {
+          "alterado_por": "REDACTED",
+          "alterado_por_nome": "REDACTED",
+          "data": "2026-10-13T16:30:32.465647",
+          "id": 386295516,
+          "numero": 50801,
+          "obs": null,
+          "resource_uri": "/api/v1/situacao_historico/386295516",
+          "situacao": {
+            "aprovado": true,
+            "cancelado": false,
+            "codigo": "pedido_enviado",
+            "final": true,
+            "id": 11,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/11"
+          },
+          "situacao_anterior": {
+            "aprovado": true,
+            "cancelado": false,
+            "codigo": "pedido_pago",
+            "final": false,
+            "id": 4,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/4"
+          }
+        }
+      ]
+    }
+  }
+}
