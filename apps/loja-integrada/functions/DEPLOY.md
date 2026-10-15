@@ -56,8 +56,12 @@ create, patch or deactivate. That is why this deploy waits for the window's
   `integracao/{integracaoId}` in the NAMED `default` database — never the
   `(default)` sentinel, which deploys fine and never fires. `build.mjs` inlines
   `FIREBASE_DATABASE_ID` (unset or blank → `default`) and the preflight prints
-  the value it baked; leave it unset, or set it to exactly `default`.
-  `src/index.test.ts` pins the analysed binding.
+  the value it baked; leave it unset in the BUILD environment (the deploy shell
+  and the repo-root `.env.functions`), or set it to exactly `default`. The
+  define replaces every read of the variable in the bundle, `getDb()`'s
+  included, so the trigger and every other function use that build-time value
+  and a runtime override reaches neither. `src/index.test.ts` pins the analysed
+  binding.
 - **The `int_frete` index READY, and the adoption pass run, before this
   deploy.** The trigger's lookup rides
   `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)`;
@@ -131,6 +135,13 @@ and names the queue after the function, so renaming `filaLeituraLojaIntegrada`
 creates a NEW queue and strands whatever the old one held. The name is fixed at
 the first deploy. `src/index.ts` carries a rename-safety assertion tying the
 export key to the `FILA_LEITURA_LI` constant the enqueuer targets.
+
+⚠️ **The conta trigger shares its path.** `onIntegracaoLojaIntegradaChanged` is
+the THIRD `onDocumentWritten` on `integracao/{integracaoId}`, after Mercado
+Livre's `onIntegracaoMercadoLivreChanged` and Shopee's `onIntegracaoShopeeChanged`
+(and `apps/functions`' `onIntegracaoDeleted` cascade also fires on a delete). So
+every conta write of any channel costs three Eventarc invocations, and each of
+the three returns with zero reads for a write that is not its own channel's.
 
 ⚠️ **The pacer.** Every Loja Integrada call made through a context waits 2,000 ms
 first, so one queue makes at most 30 calls a minute across task boundaries
@@ -439,13 +450,23 @@ flipped:
    (checked before the deploy, see Prerequisites): on Enterprise a missing index
    does not fail, it full-scans and bills the scan.
 4. The console lists `onIntegracaoLojaIntegradaChanged` as a Firestore trigger on
-   database `default`. Then prove one mirrored change reaches the doc: rename
-   one conta and rename it back, and confirm that its `int_frete` doc's `nome`
-   followed and its `ultimaModificacao` moved — or find the
+   database `default`, and the Eventarc trigger carries that filter:
+
+   ```bash
+   gcloud eventarc triggers list --project <project-id>
+   # expect a trigger for onintegracaolojaintegradachanged,
+   # event type google.cloud.firestore.document.v1.written,
+   # filtered to database 'default' + the integracao/* document path
+   ```
+
+   Then prove one mirrored change reaches the doc: rename one conta and rename
+   it back, and confirm that its `int_frete` doc's `nome` followed and its
+   `ultimaModificacao` moved — or find the
    `[loja-integrada] onIntegracaoLojaIntegradaChanged` log line with action
    `atualizado`. ⚠️ A plain conta save proves nothing: one that moves no
    mirrored field writes nothing by design, and right after the adoption pass's
    `--apply` every adopted doc is already in step.
+
 5. The first poller tick (once the importer seam is filled in step 5 and the
    read switch is on) asks for orders modified since a moment AT OR BEFORE the
    legacy app's last import — a later start would leave a gap — every active

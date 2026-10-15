@@ -35,19 +35,24 @@ import { getDb } from './lib/admin';
  * deactivates its freight doc.
  *
  * ONE arm, unlike Shopee's two: Shopee's second arm re-drives deferred pushes when a conta becomes
- * resolvable, and this channel already covers that case with the daily deferred lane and the
+ * resolvable, and this channel already covers that case with the deferred lane (re-driven on its
+ * one-day window by `reprocessLojaIntegradaNotifications`, which ticks every 30 minutes) and the
  * credential routes' re-drive on a token save (step 3).
  *
  * ---- The database binding, and what the build define does and does not do ----
  * ⚠️ `database` is the repo's NAMED `default` database, never the `(default)` sentinel: a trigger
  * bound to `(default)` deploys fine and never fires. `process.env.FIREBASE_DATABASE_ID ?? 'default'`
- * already resolves an UNSET variable to `default`, exactly as `src/lib/admin.ts` reads the same
- * variable at runtime for `getDb()`. `build.mjs` defines the id anyway, built with `||`: that
- * also turns a BLANK export into `default`, which `??` would pass through as an empty id, and it
- * lets the deploy preflight's table print the value the build baked
- * (`tools/deploy-env/preflight.mjs`, this codebase's `inlined` row). `index.test.ts` pins the
- * analysed endpoint's `eventFilters.database` to exactly `'default'` and the define in the build
- * source; that offline pin, not the emulator, is the guard for the binding.
+ * already resolves an UNSET variable to `default`, the same way `src/lib/admin.ts` reads the
+ * variable for `getDb()`. `build.mjs` defines the id anyway, built with `||`: that also turns a
+ * BLANK export into `default` — under `??` a blank reaches firebase-functions as `''`, which it
+ * binds as `(default)` (its `database || '(default)'`), the never-fires case — and it lets the
+ * deploy preflight's table print the value the build baked (`tools/deploy-env/preflight.mjs`,
+ * this codebase's `inlined` row). The define replaces EVERY read of the variable in the bundle,
+ * `admin.ts`'s included: unbundled (the tests) both read the environment, but deployed, the
+ * trigger's binding and `getDb()` share the one build-time value, and a runtime override reaches
+ * neither. `index.test.ts` pins the analysed endpoint's `eventFilters.database` to exactly
+ * `'default'` and the define in the build source; that offline pin, not the emulator, is the
+ * guard for the binding.
  *
  * No `region:` — `options.ts` sets it globally. `retry: true`: the reconcile is replay-safe by
  * construction, and a lost race (two first syncs contending on `lojaIntegrada-<id>`) is exactly

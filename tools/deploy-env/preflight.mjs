@@ -206,10 +206,11 @@ const CODEBASES = {
     // bound to the named `default` database). The trigger's own `?? 'default'`
     // already resolves an UNSET variable correctly, so the define changes no
     // value there; `build.mjs` builds it with `||`, which also turns a BLANK
-    // export into `default`, and listing it here is what makes this table print
-    // the value the build bakes. The `lists EVERY build.mjs default` test fails
-    // a define this list omits, and the drift test a listed key the build does
-    // not define.
+    // export into `default` (under `??` a blank would bind the `(default)`
+    // sentinel), and listing it here is what makes this table print the value
+    // the build bakes — for the trigger AND for `getDb()`, whose read the define
+    // replaces too. The `lists EVERY build.mjs default` test fails a define this
+    // list omits, and the drift test a listed key the build does not define.
     inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
     tasksRegionVar: 'FUNCTIONS_REGION',
     // ⚠️ `null` until the App Hosting enqueuer exists (step 4). In step 3 only

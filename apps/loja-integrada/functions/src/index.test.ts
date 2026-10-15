@@ -578,10 +578,13 @@ describe('the Firestore triggers (GATILHOS)', () => {
     // or without a define, so the exact-equality test above stays green over a
     // build that dropped it. The define does not change the answer for an UNSET
     // variable (the source's `??` already yields `default`, as `src/lib/admin.ts`
-    // does at runtime); what it adds is narrower — `||` turns a BLANK export into
-    // `default`, which `??` would pass through, and the preflight table prints
-    // what the build baked (`tools/deploy-env/preflight.test.js` fails a define
-    // that table omits). Remove the define and THIS test is what goes red.
+    // does unbundled); what it adds is narrower — `||` turns a BLANK export into
+    // `default` (under `??` a blank reaches firebase-functions as `''`, which it
+    // binds as `(default)`), the preflight table prints what the build baked
+    // (`tools/deploy-env/preflight.test.js` fails a define that table omits), and
+    // in the bundle it replaces `admin.ts`'s read too, so the binding and
+    // `getDb()` share the build-time value. Remove the define and THIS test is
+    // what goes red.
     const build = readFileSync(fileURLToPath(new URL('../build.mjs', import.meta.url)), 'utf8');
 
     expect(build).toContain("'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId)");

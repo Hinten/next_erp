@@ -2,7 +2,8 @@
  * The conta trigger, end to end, against the real emulators (`ci-loja-integrada.yml`) — and the
  * FIRST run of the shared `int_frete` core (`@delfrance/data/admin/frete`) against a real
  * Firestore: its transactional lookup query, its `tx.create` at the deterministic id, its
- * `readTime` stamp and its field-level patch.
+ * `readTime` stamp (in ms, bracketed by this process's clock on every write) and its field-level
+ * patch.
  *
  * What runs for real here, with nothing mocked:
  *
@@ -129,6 +130,22 @@ function aguardar(ms: number): Promise<void> {
   });
 }
 
+/** Clock skew tolerated between this process and the emulator, which run on the same host. */
+const FOLGA_RELOGIO_MS = 5_000;
+
+/**
+ * The core stamps `ultimaModificacao` with the conta read's `readTime` in MILLISECONDS. A lower
+ * bound alone is unit-blind — a µs- or ns-scale value is larger still — so the stamp is bracketed
+ * by this process's own clock: no earlier than just before the write that caused it, no later
+ * than now. The update monitor orders browser-ms `saveRecord` stamps against this one, so a
+ * stamp in another unit would sit above every one of them.
+ */
+function esperarCarimboEmMs(carimbo: unknown, antesDaEscrita: number): void {
+  expect(typeof carimbo).toBe('number');
+  expect(carimbo as number).toBeGreaterThanOrEqual(antesDaEscrita - FOLGA_RELOGIO_MS);
+  expect(carimbo as number).toBeLessThanOrEqual(Date.now() + FOLGA_RELOGIO_MS);
+}
+
 /**
  * Poll the freight doc until `pronto` holds, and return its RAW data.
  *
@@ -217,6 +234,7 @@ describe.skipIf(!EMULATED || !TASKS)(
 
     it('uma conta completa CRIA int_frete/lojaIntegrada-<id> com os campos espelhados e a back-ref canônica', async () => {
       const conta = CONTA.criar;
+      const antes = Date.now();
       await contaRef(conta).set(contaCompleta('Loja de teste A'));
 
       const doc = await aguardarFrete(idDeterministico(conta), (d) => d != null, 'criado');
@@ -237,20 +255,24 @@ describe.skipIf(!EMULATED || !TASKS)(
         contaMercadoLivreMercadoEnviosOuterRef: null,
         contaShopeeFreteOuterRef: null,
       });
-      // The conta read's `readTime` in ms (display only; no sync decision reads it).
-      expect(typeof doc.ultimaModificacao).toBe('number');
+      // The conta read's `readTime` in ms (display only; no sync decision reads it) — the save
+      // time, never the conta's `dataCadastro`.
+      esperarCarimboEmMs(doc.ultimaModificacao, antes);
       expect(doc.ultimaModificacao).toBeGreaterThan(DATA_CADASTRO);
     }, 120_000);
 
     it('um rename PATCHA o doc, e a configuração do operador (mapa, horarioDeCorte) sobrevive', async () => {
       const conta = CONTA.renomear;
       const id = idDeterministico(conta);
+      const antes = Date.now();
       await contaRef(conta).set(contaCompleta('Nome 1'));
       const criado = await aguardarFrete(id, (d) => d?.nome === 'Nome 1', 'criado');
+      esperarCarimboEmMs(criado.ultimaModificacao, antes);
 
       // What the mapa helper and the conta screen write: the core never writes either field on a
       // patch, so both must come back byte-equal.
       await freteRef(id).update({ mapa: [LINHA_MAPA], horarioDeCorte: [HORARIO] });
+      const antesDoRename = Date.now();
       await contaRef(conta).update({ nome: 'Nome 2' });
 
       const doc = await aguardarFrete(id, (d) => d?.nome === 'Nome 2', 'renomeado');
@@ -263,7 +285,8 @@ describe.skipIf(!EMULATED || !TASKS)(
         filialIntegracaoFreteOuterRef: FILIAL,
         dataCadastro: DATA_CADASTRO,
       });
-      // The stamp moved with the patch: a later conta read, a later `readTime`.
+      // The stamp moved with the patch: a later conta read, a later `readTime` — still in ms.
+      esperarCarimboEmMs(doc.ultimaModificacao, antesDoRename);
       expect(doc.ultimaModificacao).toBeGreaterThan(criado.ultimaModificacao as number);
     }, 120_000);
 
@@ -273,6 +296,7 @@ describe.skipIf(!EMULATED || !TASKS)(
       await contaRef(conta).set(contaCompleta('Loja de teste C'));
       await aguardarFrete(id, (d) => d?.ativo === true, 'criado');
 
+      const antesDoDelete = Date.now();
       await contaRef(conta).delete();
 
       // Polling for `ativo: false` reads the doc, so it also proves the doc still EXISTS:
@@ -282,6 +306,8 @@ describe.skipIf(!EMULATED || !TASKS)(
         nome: 'Loja de teste C',
         contaLojaIntegradaEnviosOuterRef: backRef(conta),
       });
+      // The deactivation stamps too — the `readTime` of the read that found the conta gone.
+      esperarCarimboEmMs(doc.ultimaModificacao, antesDoDelete);
     }, 120_000);
 
     it('um doc migrado (id automático, back-ref canônica) é ADOTADO — e nenhum lojaIntegrada-<id> nasce ao lado', async () => {
@@ -300,6 +326,7 @@ describe.skipIf(!EMULATED || !TASKS)(
         horarioDeCorte: [HORARIO],
       });
 
+      const antes = Date.now();
       await contaRef(conta).set(contaCompleta('Nome atual'));
 
       const doc = await aguardarFrete(
@@ -315,6 +342,8 @@ describe.skipIf(!EMULATED || !TASKS)(
       });
       expect(doc.mapa).toEqual([LINHA_MAPA]);
       expect(doc.horarioDeCorte).toEqual([HORARIO]);
+      // The legacy stamp (1) is replaced by the adopting read's `readTime`, in ms.
+      esperarCarimboEmMs(doc.ultimaModificacao, antes);
 
       // Sound after the positive: the ONE reconcile this conta write caused is the one that
       // patched the adopted doc, and every later one finds it by the same lookup — a create

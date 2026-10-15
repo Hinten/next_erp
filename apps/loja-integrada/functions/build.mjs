@@ -33,13 +33,18 @@ export async function bundle(outfile) {
   // `(default)` sentinel.
   //
   // ⚠️ What this define does NOT do: change the answer for an UNSET variable.
-  // The trigger's own `?? 'default'` already resolves that to `default`, exactly
-  // as `src/lib/admin.ts` reads the same variable at runtime for `getDb()`. What
-  // it does: `||` also turns a BLANK export into `default`, which `??` would
-  // pass through as an empty database id, and it makes the preflight table print
-  // the value the build baked. The binding itself is pinned offline by
-  // src/index.test.ts (exactly `'default'` on the analysed endpoint, plus a
-  // source assertion over this line).
+  // The trigger's own `?? 'default'` already resolves that to `default`, the
+  // same way `src/lib/admin.ts` reads the variable for `getDb()`. What it does:
+  // `||` also turns a BLANK export into `default` — under `??` a blank reaches
+  // firebase-functions as `''`, which it binds as `(default)` (its
+  // `database || '(default)'`), the never-fires case — and it makes the
+  // preflight table print the value the build baked. And it replaces EVERY read
+  // of the variable in the bundle, `admin.ts`'s included: unbundled (the tests)
+  // both read the environment, but deployed, the trigger's binding and `getDb()`
+  // share this one build-time value, and a runtime override reaches neither.
+  // The binding itself is pinned offline by src/index.test.ts (exactly
+  // `'default'` on the analysed endpoint, plus a source assertion over this
+  // line).
   //
   // ⚠️ `|| 'default'`, not `requireBuildRegion` — an unset value has a correct
   // answer here, where an unset region does not.
