@@ -347,6 +347,16 @@ describe('the backend cross-check note', () => {
     expect(crossCheckNote('storage', 'us-east1')).toBeNull();
   });
 
+  it('has no backend note for loja-integrada until its App Hosting enqueuer exists', () => {
+    // Step 3 enqueues only from inside the functions (the order poller), so there
+    // is no `apphosting.yaml` row to cross-check. Step 4 adds the first App
+    // Hosting enqueuer: it sets both values, moves this codebase into the
+    // `it.each` above and deletes this test — a deliberate edit, not a drift.
+    expect(CODEBASES['loja-integrada'].backendVar).toBeNull();
+    expect(CODEBASES['loja-integrada'].backendManifest).toBeNull();
+    expect(crossCheckNote('loja-integrada', 'us-east1')).toBeNull();
+  });
+
   it('surfaces the runtime override on the queue that has no sweep', () => {
     const { rows } = preflight('storage', { TASKS_INVOKER_SA: GOOD_SA });
 

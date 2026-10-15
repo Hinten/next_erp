@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-ISOLATED config for the apps/loja-integrada/functions (codebase `loja-integrada`) Cloud Functions — the queued order-intake reads function `filaLeituraLojaIntegrada`, the 30-minute `reprocessLojaIntegradaNotifications` backstop (hot + deferred lanes), the daily `sweepLojaIntegradaTokenExpiry` and, with the order poller, the 5-minute `pollLojaIntegradaPedidos` (master plan step 3). Contains ONLY a functions block — deliberately NO firestore/storage/emulators keys — so a stray deploy with this config can push the functions codebase and NOTHING else; it cannot reach a ruleset or an index. Shipping it INERT: the file existing does not deploy anything, and the deploy itself is a MANUAL, coordinated human step in the migration window (root `CLAUDE.md` rule 8) — agents never run `firebase deploy`. ⚠️ This file sits one dot apart from `firebase.loja-integrada.tasks.json` (the emulator config of the CI lane): only THIS one deploys, so read the whole filename before any deploy. The predeploy hook runs tools/deploy-env/preflight.mjs (which ABORTS on a missing TASKS_INVOKER_SA or a region without Cloud Tasks) and then apps/loja-integrada/functions/scripts/prepare-deploy.mjs, which esbuild-bundles the functions + writes a MINIMAL workspace-free package.json. The functions need FIREBASE_PROJECT_ID + admin creds in their env, and no secret: the per-conta token lives in Firestore. Deploy: firebase deploy --only functions:loja-integrada --config firebase.loja-integrada.deploy.json --project <id>. See apps/loja-integrada/functions/DEPLOY.md.",
+  "functions": [
+    {
+      "source": ".deploy/loja-integrada-functions",
+      "codebase": "loja-integrada",
+      "runtime": "nodejs22",
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs loja-integrada",
+        "node apps/loja-integrada/functions/scripts/prepare-deploy.mjs"
+      ],
+      "ignore": ["node_modules"]
+    }
+  ]
+}

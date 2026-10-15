@@ -38,8 +38,13 @@
  *     The conta delete's discovery walk runs once, on the delete, so a write
  *     landing after it would otherwise stay for ever;
  * 10. the avisos (the reconexão row resolved, clocked by this write's commit
- *     time; the expiry row raised or resolved by the shared threshold), then
- *     200 with the status projected from the values written.
+ *     time; the expiry row raised or resolved by the shared threshold);
+ * 11. the RE-DRIVE: this conta's notifications already `deferred` (a park
+ *     deferred them) go back to the hot lane, so the next 30-minute sweep
+ *     imports them instead of waiting out their day. Best effort — a Firestore
+ *     failure is logged and the answer stays 200 (`redriveAposSalvarTokenLi`);
+ *     then 200 with the status projected from the values written. Only the
+ *     success path gets here: a 409, 422, 503, 499 or 404 re-drives nothing.
  *
  * ## DELETE
  *
@@ -47,7 +52,7 @@
  * conta", whoever saved the current one. No Loja Integrada call — there is no
  * revoke API; the owner removes the token in the painel — so the read switch
  * does not gate it. Both avisos are resolved, the reconexão one clocked by the
- * delete's commit time.
+ * delete's commit time. It never re-drives: there is no token to retry with.
  *
  * ## Token hygiene
  *
@@ -102,6 +107,7 @@ import {
   salvarCredencial,
 } from '@/lib/lojaIntegrada/core/credentialStore';
 import { criarObservadorLi } from '@/lib/lojaIntegrada/core/log';
+import { redriveAposSalvarTokenLi } from '@/lib/lojaIntegrada/notificacoes/notificacao';
 import {
   LiContaNaoEncontradaError,
   LiCredencialAlteradaError,
@@ -219,6 +225,10 @@ export async function PUT(
       },
       depsDeAviso(agoraMs),
     );
+
+    // A parked conta's deferred notifications go back to the hot lane at once.
+    // Best effort: the token is saved, so this never changes the answer.
+    await redriveAposSalvarTokenLi(db, id);
 
     const resposta: RespostaCredencialLojaIntegrada = {
       ...statusDaCredencial(

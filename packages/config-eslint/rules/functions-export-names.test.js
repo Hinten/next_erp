@@ -216,7 +216,7 @@ describe('repository function entrypoints (#1707)', () => {
     expect(
       entrypoints.length,
       `Only ${entrypoints.length} Functions entrypoints discovered`,
-    ).toBeGreaterThanOrEqual(7);
+    ).toBeGreaterThanOrEqual(8);
     expect(entrypoints.map(({ codebase }) => codebase)).toEqual(
       expect.arrayContaining([
         'storage',
@@ -226,6 +226,7 @@ describe('repository function entrypoints (#1707)', () => {
         'whatsapp',
         'shopee',
         'melhor-envio',
+        'loja-integrada',
       ]),
     );
     const inventory = assertUniqueFunctionNames(

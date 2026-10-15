@@ -60,10 +60,12 @@ the bundle, proven before the first deploy.
   `FUNCTIONS_REGION` the deploying shell inlined into this bundle. A mismatch is
   the #1108 failure — the Admin SDK targets `us-central1`, the task is
   **silently dropped**, and the receiver still answers 204.
-  ⚠️ `apps/shopee/apphosting.yaml` ships that entry with a **blank** value
-  today, deliberately: blank reads as unset, so the enqueue throws and the sweep
-  drains — loud and lossless — rather than aiming at a queue that is not there.
-  Filling it in is part of step 22 / #1530.
+  ⚠️ `apps/shopee/apphosting.yaml` deliberately has **no** row for it: unset,
+  the enqueue throws and the sweep drains — loud and lossless — rather than
+  aiming at a queue that is not there. Set it in the project's App Hosting
+  console once this codebase is deployed there (production: step 22 / #1530).
+  Never as a `value: ''` row — App Hosting rejects the whole manifest
+  (`fah/invalid-apphosting-yaml`) before the build starts.
 - **One-time IAM** (see below) — required before the callback URL cutover
   (#1534) so the receiver can enqueue.
 

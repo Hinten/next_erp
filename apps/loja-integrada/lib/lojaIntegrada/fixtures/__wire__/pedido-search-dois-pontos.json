@@ -1,0 +1,66 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/pedido/search/",
+    "query": [
+      [
+        "limit",
+        "1"
+      ],
+      [
+        "since_atualizado",
+        "2026-09-30T00:00:00"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 935,
+    "corpo": {
+      "meta": {
+        "limit": 1,
+        "next": "/api/v1/pedido/search?since_atualizado=2026-09-30T00%3A00%3A00&offset=1&limit=1&an=<redacted>",
+        "offset": 0,
+        "previous": null,
+        "total_count": 24
+      },
+      "objects": [
+        {
+          "cliente": "REDACTED",
+          "data_criacao": "2026-09-17T16:55:05.057307",
+          "data_expiracao": "2026-09-23T16:55:05.142579",
+          "data_modificacao": "2026-10-07T15:57:35.806453",
+          "id": 0,
+          "id_anymarket": null,
+          "id_externo": null,
+          "integration_data": null,
+          "numero": 22752,
+          "peso_real": "0.258",
+          "resource_uri": "/api/v1/pedido/22752",
+          "situacao": {
+            "aprovado": true,
+            "cancelado": false,
+            "codigo": "pagamento_devolvido_sem_retorno",
+            "final": true,
+            "id": 1020,
+            "nome": "REDACTED",
+            "notificar_comprador": false,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/1020"
+          },
+          "utm_campaign": "REDACTED",
+          "valor_desconto": "0.00",
+          "valor_envio": "0.00",
+          "valor_subtotal": "38.39",
+          "valor_total": "38.39"
+        }
+      ]
+    }
+  }
+}

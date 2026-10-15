@@ -20,13 +20,11 @@ afterAll(() => {
 // `sendOutbound.test.ts` — the real `onDocumentWritten` is used, and the returned
 // CloudFunction is driven through its `.run(event)` handle.
 const core = vi.hoisted(() => ({
-  contaRealmenteExcluida: vi.fn(async () => true),
-  desativarIntFreteDaConta: vi.fn(async () => ({ action: 'desativado' })),
-  sincronizarIntFreteDaConta: vi.fn(async () => ({ action: 'criado', intFreteId: 'if-1' })),
+  reconciliarIntFreteDaConta: vi.fn(async () => ({ action: 'criado', intFreteId: 'if-1' })),
 }));
 vi.mock('../../lib/marketplace/frete/intFreteSync', async () => {
-  // `ehContaMercadoLivre` / `mudouCampoSincronizado` are the trigger's free gates —
-  // keep them REAL so the zero-read assertions below test the actual predicate.
+  // `deveReconciliar` is the trigger's free freight gate —
+  // keep it REAL so the zero-read assertions below test the actual predicate.
   const real = await vi.importActual<typeof import('../../lib/marketplace/frete/intFreteSync')>(
     '../../lib/marketplace/frete/intFreteSync',
   );
@@ -51,13 +49,12 @@ vi.mock('../../lib/marketplace/notificacoes/notificacao', async () => {
   return { ...real, ...notif };
 });
 
-const admin = vi.hoisted(() => ({ db: { __fake: 'db' } }));
-vi.mock('./lib/admin', () => ({ getDb: () => admin.db }));
+const admin = vi.hoisted(() => ({ db: { __fake: 'db' }, getDb: vi.fn() }));
+vi.mock('./lib/admin', () => ({ getDb: () => admin.getDb() }));
 
 const { onIntegracaoMercadoLivreChanged } = await import('./onIntegracaoMercadoLivreChanged');
 
 const EVENT_TIME = '2026-08-04T12:00:00.000Z';
-const EVENT_MS = Date.parse(EVENT_TIME);
 const CONTA_ID = 'conta-A';
 
 type Snap = { exists: boolean; data: () => Record<string, unknown> };
@@ -93,7 +90,7 @@ const conta = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
-  core.contaRealmenteExcluida.mockResolvedValue(true);
+  admin.getDb.mockReturnValue(admin.db);
 });
 
 describe('onIntegracaoMercadoLivreChanged wiring', () => {
@@ -123,70 +120,61 @@ describe('onIntegracaoMercadoLivreChanged wiring', () => {
     expect(eventTrigger.eventFilters.database).toBe('default');
   });
 
-  it('syncs on create, passing the named db, the after-snapshot and the EVENT time', async () => {
-    const after = conta();
-    await run(null, after);
-    expect(core.sincronizarIntFreteDaConta).toHaveBeenCalledWith(
-      admin.db,
-      CONTA_ID,
-      after,
-      EVENT_MS,
-    );
+  it('reconciles on create with only the named db and account ID', async () => {
+    await run(null, conta());
+    expect(core.reconciliarIntFreteDaConta).toHaveBeenCalledExactlyOnceWith(admin.db, CONTA_ID);
   });
 
-  it('syncs when a mirrored field moves', async () => {
+  it('reconciles when a mirrored field moves', async () => {
     await run(conta(), conta({ ativo: false }));
-    expect(core.sincronizarIntFreteDaConta).toHaveBeenCalledOnce();
+    expect(core.reconciliarIntFreteDaConta).toHaveBeenCalledOnce();
   });
 
-  it('does not sync int_frete when no mirrored field moved (token refresh / user_id stamp)', async () => {
+  it('skips freight for token refreshes and user_id stamps', async () => {
     await run(conta(), conta({ user_id: 999 }));
-    expect(core.sincronizarIntFreteDaConta).not.toHaveBeenCalled();
-    expect(core.desativarIntFreteDaConta).not.toHaveBeenCalled();
+    expect(core.reconciliarIntFreteDaConta).not.toHaveBeenCalled();
   });
 
-  it('ignores a conta of another channel entirely', async () => {
-    await run(null, { ...conta(), tipo: 6 }); // whatsapp
-    expect(core.sincronizarIntFreteDaConta).not.toHaveBeenCalled();
-    expect(core.desativarIntFreteDaConta).not.toHaveBeenCalled();
-    expect(core.contaRealmenteExcluida).not.toHaveBeenCalled();
+  it('costs zero reads for an unrelated account create, edit, or delete', async () => {
+    await run(null, conta({ tipo: 6 }));
+    await run(conta({ tipo: 6 }), conta({ tipo: 6, nome: 'Other' }));
+    await run(conta({ tipo: 6 }), null);
+    expect(core.reconciliarIntFreteDaConta).not.toHaveBeenCalled();
+    expect(notif.redriveDeferredForUserId).not.toHaveBeenCalled();
+    expect(admin.getDb).not.toHaveBeenCalled();
   });
 
-  it('deactivates when the tipo is edited AWAY from Mercado Livre', async () => {
-    await run(conta(), conta({ tipo: 5 })); // shopee
-    expect(core.desativarIntFreteDaConta).toHaveBeenCalledWith(admin.db, CONTA_ID, EVENT_MS);
-    expect(core.sincronizarIntFreteDaConta).not.toHaveBeenCalled();
+  it('costs zero reads for an ML token refresh', async () => {
+    await run(conta(), conta({ token: 'refreshed' }));
+    expect(core.reconciliarIntFreteDaConta).not.toHaveBeenCalled();
+    expect(admin.getDb).not.toHaveBeenCalled();
   });
 
-  describe('delete arm', () => {
-    it('deactivates once the conta is confirmed gone', async () => {
-      await run(conta(), null);
-      expect(core.contaRealmenteExcluida).toHaveBeenCalledWith(admin.db, CONTA_ID);
-      expect(core.desativarIntFreteDaConta).toHaveBeenCalledWith(admin.db, CONTA_ID, EVENT_MS);
-    });
+  it('reconciles both type transitions even when mirrored fields are unchanged', async () => {
+    await run(conta(), conta({ tipo: 5 }));
+    await run(conta({ tipo: 5 }), conta());
+    expect(core.reconciliarIntFreteDaConta).toHaveBeenCalledTimes(2);
+    expect(core.reconciliarIntFreteDaConta).toHaveBeenLastCalledWith(admin.db, CONTA_ID);
+  });
 
-    it('does NOT deactivate when the conta exists again (replayed / out-of-order event)', async () => {
-      core.contaRealmenteExcluida.mockResolvedValue(false);
-      await run(conta(), null);
-      expect(core.desativarIntFreteDaConta).not.toHaveBeenCalled();
-    });
+  it('reconciles an ML delete without an outside existence check', async () => {
+    await run(conta(), null);
+    expect(core.reconciliarIntFreteDaConta).toHaveBeenCalledExactlyOnceWith(admin.db, CONTA_ID);
+  });
 
-    it('ignores the delete of a non-Mercado-Livre conta without any read', async () => {
-      await run({ ...conta(), tipo: 6 }, null);
-      expect(core.contaRealmenteExcluida).not.toHaveBeenCalled();
-      expect(core.desativarIntFreteDaConta).not.toHaveBeenCalled();
-    });
+  it('propagates freight failures before starting deferred re-drive', async () => {
+    core.reconciliarIntFreteDaConta.mockRejectedValueOnce(new Error('freight unavailable'));
+    await expect(run(null, conta({ user_id: 999 }))).rejects.toThrow('freight unavailable');
+    expect(notif.redriveDeferredForUserId).not.toHaveBeenCalled();
   });
 
   describe('deferred-notification re-drive arm (#808)', () => {
     it('re-drives when the OAuth exchange stamps user_id — the write int_frete deliberately skips', async () => {
-      // This is the whole reason the arm sits ABOVE the mudouCampoSincronizado
-      // gate: a `user_id` stamp moves no mirrored field, so that gate returns
-      // before ever seeing it, yet it is exactly the moment the seller becomes
-      // resolvable.
+      // A user_id stamp skips freight through the positive cost gate, while the
+      // independent notification arm still sees the now-resolvable seller.
       await run(conta(), conta({ user_id: 999 }));
       expect(notif.redriveDeferredForUserId).toHaveBeenCalledWith(admin.db, 999);
-      expect(core.sincronizarIntFreteDaConta).not.toHaveBeenCalled();
+      expect(core.reconciliarIntFreteDaConta).not.toHaveBeenCalled();
     });
 
     it('re-drives on create when the conta already carries a user_id (legacy corpus)', async () => {
@@ -235,7 +223,10 @@ describe('onIntegracaoMercadoLivreChanged wiring', () => {
       ).rejects.toThrow('firestore unavailable');
 
       // ...and the sync still happened, before the throw.
-      expect(core.sincronizarIntFreteDaConta).toHaveBeenCalledOnce();
+      expect(core.reconciliarIntFreteDaConta).toHaveBeenCalledOnce();
+      expect(core.reconciliarIntFreteDaConta.mock.invocationCallOrder[0]).toBeLessThan(
+        notif.redriveDeferredForUserId.mock.invocationCallOrder[0]!,
+      );
     });
 
     it('still re-drives for a write the int_frete gate skips (the whole point of the gate being positive)', async () => {
@@ -243,7 +234,7 @@ describe('onIntegracaoMercadoLivreChanged wiring', () => {
       // but this is exactly the write the #808 arm exists for. An early `return`
       // in the sync gate would swallow it.
       await run(conta(), conta({ user_id: 999 }));
-      expect(core.sincronizarIntFreteDaConta).not.toHaveBeenCalled();
+      expect(core.reconciliarIntFreteDaConta).not.toHaveBeenCalled();
       expect(notif.redriveDeferredForUserId).toHaveBeenCalledWith(admin.db, 999);
     });
   });

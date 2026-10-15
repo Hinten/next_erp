@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
-import { liCategoriaSchema, liEnvelopeSchema, liMetaSchema } from '../src/types';
-import { categoriaPagina1, categoriaUltimaPagina, metaLimite15 } from './_fixtures/especificacao';
+import {
+  liCategoriaSchema,
+  liEnvelopeSchema,
+  liMetaSchema,
+  liPedidoBuscaLinhaSchema,
+} from '../src/types';
+import {
+  categoriaPagina1,
+  categoriaUltimaPagina,
+  metaLimite15,
+  pedidoBuscaExemplo,
+} from './_fixtures/especificacao';
 
 const envelopeCategoria = liEnvelopeSchema(liCategoriaSchema);
+const envelopePedidoBusca = liEnvelopeSchema(liPedidoBuscaLinhaSchema);
+const [linha164, linha165] = pedidoBuscaExemplo.objects;
 
 describe('the document examples', () => {
   it('the categoria list example parses', () => {
@@ -85,5 +97,73 @@ describe('passthrough', () => {
   it('a row missing a declared field fails', () => {
     const { nome: _nome, ...semNome } = categoriaPagina1.objects[0];
     expect(liCategoriaSchema.safeParse(semNome).success).toBe(false);
+  });
+});
+
+describe('the pedido search row', () => {
+  it("the document's example parses: both rows, meta.limit read back as 15", () => {
+    const r = envelopePedidoBusca.safeParse(pedidoBuscaExemplo);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.meta.limit).toBe(15);
+    expect(r.data.meta.total_count).toBe(2);
+    expect(r.data.objects.map((o) => o.numero)).toEqual([164, 165]);
+    // The stamp is carried through untouched: canonicalising it is the app's job.
+    expect(r.data.objects.map((o) => o.data_modificacao)).toEqual([
+      '2022-10-31T12:17:58.949670',
+      '2022-10-31T12:28:12.653648',
+    ]);
+  });
+
+  it('a quoted numero reads as the number (one quoting serializer must not cost the page)', () => {
+    expect(liPedidoBuscaLinhaSchema.parse({ ...linha164, numero: '164' }).numero).toBe(164);
+  });
+
+  it('near-miss: a numero that is not an integer, or absent, fails the row', () => {
+    for (const numero of ['164.5', 164.5, 'cento', '', null, '9007199254740992']) {
+      expect(
+        liPedidoBuscaLinhaSchema.safeParse({ ...linha164, numero }).success,
+        String(numero),
+      ).toBe(false);
+    }
+    const { numero: _numero, ...semNumero } = linha164;
+    expect(liPedidoBuscaLinhaSchema.safeParse(semNumero).success).toBe(false);
+  });
+
+  it('data_modificacao is NOT validated here: any shape, or none, still parses the row', () => {
+    for (const data_modificacao of [
+      '2022-10-31 12:17:58',
+      '2022-10-31T12:17:58Z',
+      1667218678,
+      null,
+      { $date: 'x' },
+    ]) {
+      const r = liPedidoBuscaLinhaSchema.safeParse({ ...linha165, data_modificacao });
+      expect(r.success, JSON.stringify(data_modificacao)).toBe(true);
+      if (r.success) expect(r.data.data_modificacao).toEqual(data_modificacao);
+    }
+    // An ABSENT key too: under a bare `z.unknown()` Zod 4 fails it as `nonoptional`.
+    const { data_modificacao: _data, ...semData } = linha165;
+    const r = liPedidoBuscaLinhaSchema.safeParse(semData);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.data_modificacao).toBeUndefined();
+  });
+
+  it('one odd stamp does not cost the page: the envelope still parses every row', () => {
+    const r = envelopePedidoBusca.safeParse({
+      ...pedidoBuscaExemplo,
+      objects: [{ ...linha164, data_modificacao: 'ontem' }, linha165],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.objects.map((o) => o.numero)).toEqual([164, 165]);
+  });
+
+  it('every undeclared field of the row is kept (passthrough)', () => {
+    const r = liPedidoBuscaLinhaSchema.parse({ ...linha165, campo_novo: 1 });
+    expect(r).toMatchObject({
+      situacao: { codigo: 'pedido_cancelado' },
+      resource_uri: '/api/v1/pedido/165',
+      campo_novo: 1,
+    });
   });
 });

@@ -3,6 +3,7 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
+  createMercadoLivreClient,
   type MercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 
@@ -57,6 +58,39 @@ const listing = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('mercadoLivrePriceProvider', () => {
+  it('cancels the real client while fetch is pending without inventing failure rows', async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const fetchImpl = vi.fn<typeof globalThis.fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true },
+          );
+          started();
+        }),
+    );
+    const client = createMercadoLivreClient({
+      baseUrl: 'http://localhost:3006',
+      getAuthToken: async () => 'token',
+      fetch: fetchImpl,
+    });
+    const pending = mercadoLivrePriceProvider.enviarPreco(
+      input(client.enviarPrecos, { signal: controller.signal }),
+    );
+
+    await fetchStarted;
+    expect(fetchImpl.mock.calls[0]![1]?.signal).toBe(controller.signal);
+    controller.abort();
+
+    await expect(pending).resolves.toEqual({ rows: [], pausadoAte: null });
+  });
+
   it('maps every listing through, one row each', async () => {
     // A produto can carry SEVERAL anúncios on one conta (#781) — the row unit is
     // the listing, so two listings must never collapse into one row.
@@ -192,7 +226,9 @@ describe('mercadoLivrePriceProvider', () => {
     expect(res.rows[0]).toMatchObject({ outcome: 'falha', motivo: 'sem-cliente' });
   });
 
-  it('a conta-level 4xx becomes one failure row per produto, carrying the backend code', async () => {
+  it.each([false, true])('preserves HTTP refusals even when aborted=%s', async (aborted) => {
+    const controller = new AbortController();
+    if (aborted) controller.abort();
     const enviarPrecos = vi
       .fn()
       .mockRejectedValue(
@@ -201,6 +237,7 @@ describe('mercadoLivrePriceProvider', () => {
 
     const res = await mercadoLivrePriceProvider.enviarPreco(
       input(enviarPrecos as never, {
+        signal: controller.signal,
         produtoIds: ['p1', 'p2'],
         nomePorProdutoId: new Map([
           ['p1', 'Camiseta'],
@@ -217,22 +254,30 @@ describe('mercadoLivrePriceProvider', () => {
     });
   });
 
-  it('a network failure is a row, not an exception', async () => {
+  it('keeps a genuine network failure as a row while the signal is active', async () => {
     const enviarPrecos = vi.fn().mockRejectedValue(new MercadoLivreClientNetworkError('offline'));
-    const res = await mercadoLivrePriceProvider.enviarPreco(input(enviarPrecos as never));
-    expect(res.rows[0]).toMatchObject({ outcome: 'falha', motivo: 'rede' });
+    const signal = new AbortController().signal;
+    const res = await mercadoLivrePriceProvider.enviarPreco(input(enviarPrecos, { signal }));
+    expect(res.rows[0]).toMatchObject({
+      outcome: 'falha',
+      motivo: 'rede',
+      mensagem: 'Não foi possível contatar o serviço do Mercado Livre.',
+    });
   });
 
   it('a cancel produces NO rows — the run reports the cancellation itself', async () => {
     const enviarPrecos = vi.fn().mockRejectedValue(new DOMException('aborted', 'AbortError'));
     const res = await mercadoLivrePriceProvider.enviarPreco(input(enviarPrecos as never));
-    expect(res.rows).toEqual([]);
+    expect(res).toEqual({ rows: [], pausadoAte: null });
   });
 
-  it('anything else is rethrown — never a generic catch (repo rule 6)', async () => {
-    const enviarPrecos = vi.fn().mockRejectedValue(new TypeError('coding bug'));
+  it.each([false, true])('rethrows unknown errors even when aborted=%s', async (aborted) => {
+    const controller = new AbortController();
+    if (aborted) controller.abort();
+    const error = new TypeError('coding bug');
+    const enviarPrecos = vi.fn().mockRejectedValue(error);
     await expect(
-      mercadoLivrePriceProvider.enviarPreco(input(enviarPrecos as never)),
-    ).rejects.toBeInstanceOf(TypeError);
+      mercadoLivrePriceProvider.enviarPreco(input(enviarPrecos, { signal: controller.signal })),
+    ).rejects.toBe(error);
   });
 });

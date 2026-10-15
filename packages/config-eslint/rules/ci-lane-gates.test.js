@@ -228,6 +228,29 @@ const LANES = {
       },
     ],
   },
+  '.github/workflows/ci-loja-integrada.yml': {
+    gate: 'CI gate (loja-integrada)',
+    scope: 'CI scope (loja-integrada)',
+    // One root. The nested `functions/` codebase belongs to the app by path
+    // prefix, and `@delfrance/integrations-loja-integrada`, `@delfrance/data`,
+    // `@delfrance/schemas`, `@delfrance/core` and `@delfrance/deploy-env` (a
+    // `workspace:*` devDependency of the app) are all in its closure, so the
+    // graph runs this lane on a change to any of them without a list to maintain.
+    roots: ['@delfrance/loja-integrada-app'],
+    // ⚠️ ONE certified job, and deliberately so — the Shopee shape. This lane
+    // owns NO exclusion: `ci.yml` still runs every `@delfrance/loja-integrada-app`
+    // unit test in `CI test`, unfiltered and with no `if:`. So a skip here loses
+    // only the emulator round trip, never the unit suites. The job's two suffixes
+    // (`*.tasks.test.ts` and `*.firestore.test.ts`) share one config, so a
+    // Firestore-only proof joins the same job rather than adding a check name.
+    jobs: [
+      {
+        id: 'loja-integrada-tasks-roundtrip',
+        check: 'Loja Integrada Cloud Tasks round trip',
+        class: 'required',
+      },
+    ],
+  },
   '.github/workflows/ci-storage.yml': {
     gate: 'CI gate (storage)',
     scope: 'CI scope (storage)',
