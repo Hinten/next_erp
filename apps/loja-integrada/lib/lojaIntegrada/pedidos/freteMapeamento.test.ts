@@ -330,6 +330,22 @@ describe('the dispatch deadline: set on the pago rung only, from the approval', 
     expect(prazoDespachoLiUs(corte16h, terca15h)).toBe(prazoDespachoLiUs(null, terca9h));
   });
 
+  it('⚠️ a stored text-integer hour (`"16"`) is read by the SHARED rule: the conta’s same-day deadline, as every other surface reads it', () => {
+    const corte16hTexto = [1, 2, 3, 4, 5].map((diaDaSemana) => ({
+      diaDaSemana,
+      horaDeCorte: '16',
+      minutosDeCorte: 0,
+    }));
+    expect(prazoDespachoLiUs(corte16hTexto, terca15h)).toBe(prazoDespachoLiUs(null, terca9h));
+    // NEAR-MISS: the noon rule would have put the same approval on the next day.
+    expect(prazoDespachoLiUs(corte16hTexto, terca15h)).not.toBe(prazoDespachoLiUs(null, terca15h));
+  });
+
+  it('a row the shared rule cannot read (`"16h"`) is dropped there; none left ⇒ the noon rule', () => {
+    const ilegivel = [1, 2, 3, 4, 5].map((diaDaSemana) => ({ diaDaSemana, horaDeCorte: '16h' }));
+    expect(prazoDespachoLiUs(ilegivel, terca15h)).toBe(prazoDespachoLiUs(null, terca15h));
+  });
+
   it('⚠️ rows without a cut-off hour are an unset schedule ⇒ the noon rule', () => {
     const vazios = [1, 2, 3, 4, 5, 6, 7].map((diaDaSemana) => ({ diaDaSemana, horaDeCorte: null }));
     expect(horarioDeCorteUtilizavelLi(vazios)).toBeNull();
@@ -412,6 +428,35 @@ describe('the block', () => {
     expect(freteDoPedidoSchema.safeParse(freteDeCriacaoLi(m, ESTADO_PEDIDO.pago)).success).toBe(
       true,
     );
+  });
+
+  it('EQUAL pair: valor_envio and the shipment’s valor agree ⇒ that value, no divergence', () => {
+    const m = mapear(pedido());
+    expect(m.base.valorCobrado).toBe(11.6);
+    expect(m.valorDivergente).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: valor_envio > 0 with no shipment valor ⇒ the block STILL carries the freight (CIF, NF-e vFrete)', () => {
+    for (const valor of [null, '']) {
+      const m = mapear(pedido({}, { valor }));
+      expect(m.base.valorCobrado, String(valor)).toBe(11.6);
+      expect(m.base.modalidade, String(valor)).toBe(MODALIDADE_FRETE.cif);
+      expect(m.valorDivergente, String(valor)).toBe(false);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: free shipping (valor_envio 0) beside a shipment valor > 0 ⇒ the ORDER’s 0, and the divergence is reported', () => {
+    const m = mapear(pedido({ valor_envio: '0.00' }, { valor: '11.60' }));
+    expect(m.base.valorCobrado).toBe(0);
+    expect(m.base.modalidade).toBe(MODALIDADE_FRETE.fob);
+    expect(m.valorDivergente).toBe(true);
+  });
+
+  it('no valor_envio: the shipment’s valor decides both the value and the modalidade', () => {
+    const m = mapear(pedido({ valor_envio: null }));
+    expect(m.base.valorCobrado).toBe(11.6);
+    expect(m.base.modalidade).toBe(MODALIDADE_FRETE.cif);
+    expect(m.valorDivergente).toBe(false);
   });
 
   it("⚠️ objeto '' ⇒ no tracking code", () => {
@@ -562,6 +607,31 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
       prazoDespacho: 1,
       integracaoFreteOuterRef: 'documents/int_frete/x',
     });
+    // ⚠️ …and the routed target's OPTION never lands beside another target's ref.
+    expect(r?.bloco.externalOptionId).toBeNull();
+    expect(r?.campos).not.toContain('externalOptionId');
+  });
+
+  it('⚠️ NEAR-MISS: a stored ref to the conta’s LI doc (an order first imported unmapped) keeps a null option', () => {
+    const naConta = { ...armazenado, integracaoFreteOuterRef: REF_LI };
+    const r = mesclarFreteLi(naConta, m, { congelado: false, estadoPedido: ESTADO_PEDIDO.pago });
+    expect(r?.bloco.integracaoFreteOuterRef).toBe(REF_LI);
+    expect(r?.bloco.externalOptionId).toBeNull();
+  });
+
+  it('EQUAL pair: a stored ref naming the SAME target (any ref form) takes the option', () => {
+    for (const ref of ['documents/int_frete/me-1', 'int_frete/me-1']) {
+      const mesmo = { ...armazenado, integracaoFreteOuterRef: ref };
+      const r = mesclarFreteLi(mesmo, m, { congelado: true, estadoPedido: ESTADO_PEDIDO.pago });
+      expect(r?.bloco.externalOptionId, ref).toBe('2');
+      expect(r?.bloco.integracaoFreteOuterRef, ref).toBe(ref);
+    }
+    // NEAR-MISS: a longer target id is another target.
+    const outro = { ...armazenado, integracaoFreteOuterRef: 'documents/int_frete/me-12' };
+    expect(
+      mesclarFreteLi(outro, m, { congelado: true, estadoPedido: ESTADO_PEDIDO.pago })?.bloco
+        .externalOptionId,
+    ).toBeNull();
   });
 
   it('unpaid: no promotion and no deadline', () => {

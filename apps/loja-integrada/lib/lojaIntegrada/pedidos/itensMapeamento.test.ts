@@ -74,11 +74,29 @@ describe('the produto reference form', () => {
     }
   });
 
-  it('the object form: a usable id_externo wins; else resource_uri is read as the string form', () => {
-    expect(formaDoProdutoLi({ resource_uri: '/api/v1/produto/5', id_externo: 77 })).toEqual({
+  it('⚠️ EQUAL pair: the object form with a Loja Integrada resource_uri IS that id (narrowest first), whatever its id_externo', () => {
+    expect(formaDoProdutoLi({ resource_uri: '/api/v1/produto/5', id_externo: 77 })).toEqual(
+      formaDoProdutoLi('/api/v1/produto/5'),
+    );
+    expect(formaDoProdutoLi({ resource_uri: '/api/v1/produto/5/', id_externo: '77' })).toEqual({
+      forma: 'id-li',
+      idLi: '5',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: the object form WITHOUT a readable Loja Integrada id falls back to its id_externo', () => {
+    expect(formaDoProdutoLi({ id_externo: 77 })).toEqual({ forma: 'id-externo', idExterno: '77' });
+    expect(formaDoProdutoLi({ resource_uri: 'REDACTED', id_externo: 77 })).toEqual({
       forma: 'id-externo',
       idExterno: '77',
     });
+    // A resource_uri in the id_externo form is itself the external id.
+    expect(
+      formaDoProdutoLi({ resource_uri: '/api/v1/produto/77?id_externo=1', id_externo: null }),
+    ).toEqual({ forma: 'id-externo', idExterno: '77' });
+  });
+
+  it('the object form: the remaining edges', () => {
     // EQUAL pair: a numeric id_externo and its decimal string.
     expect(formaDoProdutoLi({ id_externo: '77' })).toEqual(formaDoProdutoLi({ id_externo: 77 }));
     // An empty id_externo is nothing: the resource path decides.
@@ -226,6 +244,24 @@ describe('the unit discount and the subtotal reconciliation', () => {
     expect(r.residuo).toBe(0.01);
     expect(r.descontoExtra).toBe(0.01);
     expect(r.divergente).toBe(false);
+  });
+
+  it('⚠️ a positive residual BEYOND a centavo per line is still absorbed, and reported: rounding cannot explain it', () => {
+    const linha = item({ quantidade: '1.000', preco_venda: '10.0000', preco_subtotal: '10.0000' });
+    const r = mapear([linha], 9.5);
+    expect(r.residuo).toBe(0.5);
+    expect(r.descontoExtra).toBe(0.5);
+    expect(r.divergente).toBe(true);
+  });
+
+  it('NEAR-MISS: the bound is one centavo PER LINE — 0.02 over two lines is rounding, 0.03 is not', () => {
+    const duas = [
+      item({ id: 1, quantidade: '1.000', preco_venda: '10.0000', preco_subtotal: '10.0000' }),
+      item({ id: 2, quantidade: '1.000', preco_venda: '10.0000', preco_subtotal: '10.0000' }),
+    ];
+    expect(mapear(duas, 19.98).divergente).toBe(false);
+    expect(mapear(duas, 19.97).divergente).toBe(true);
+    expect(mapear(duas, 19.97).descontoExtra).toBe(0.03);
   });
 
   it('⚠️ NEAR-MISS: a negative residual is reported, never adjusted', () => {

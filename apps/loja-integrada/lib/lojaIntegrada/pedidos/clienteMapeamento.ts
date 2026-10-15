@@ -20,8 +20,12 @@
  *  - **`nome`:** for PJ the `razao_social`, else (or when it is unusable) the
  *    `nome`; a masked or placeholder value (`nomeUtilizavel`) is dropped. The
  *    seam's field is a string, so "no name" is `''`, which it reads as none.
- *  - **Contact:** the e-mail, and `telefone_celular`, else `telefone_principal`
- *    (the seam sanitises both). No `ie`: the buyer block carries none.
+ *  - **Contact:** the e-mail — only one the cliente schema's own `email` leaf
+ *    accepts (`clienteSchema.shape.email`): the seam guards only a blank one,
+ *    so any other address the leaf refuses would throw a ZodError inside the
+ *    cliente step and park the whole order for good — and `telefone_celular`,
+ *    else `telefone_principal` (the seam sanitises the phone). No `ie`: the
+ *    buyer block carries none.
  *
  * ⚠️ `endereco_entrega`'s document is NEVER offered. `findOrCreateCliente`
  * fills a matched cliente's MISSING document from its input, so a recipient's
@@ -37,12 +41,15 @@
  *    not an id, and `BR` is the default the builder stores as nothing.
  *  - The builder force-fills (its `ENDERECO_FALLBACKS`, `AC` for an absent
  *    estado) and nulls the person fields. {@link comRecebedorLi} then puts the
- *    RECIPIENT's name on it — `razao_social`, else `nome` — so the label names
- *    whoever receives; its document and phone stay `null`.
+ *    RECIPIENT's name on it — the buyer's rule on the delivery block:
+ *    `razao_social` for a PJ recipient (its `cnpj` a valid CNPJ), else `nome` —
+ *    so the label names whoever receives; its document and phone stay `null`.
+ *    The delivery block's document is READ for that decision only.
  */
 import {
   TIPO_CLIENTE,
   buildEnderecoForcado,
+  clienteSchema,
   cpfCnpjUtilizavel,
   nomeUtilizavel,
   valorUtilizavel,
@@ -69,6 +76,20 @@ const COMPRIMENTO_CNPJ = 14;
 function nomeOuNulo(valor: unknown): string | null {
   const nome = nomeUtilizavel(valor);
   return nome === null ? null : nome.slice(0, MAX_NOME);
+}
+
+/** A CNPJ field holding a VALID CNPJ (check digits, 14 characters): the PJ test. */
+function cnpjValido(valor: unknown): boolean {
+  return cpfCnpjUtilizavel(valor)?.length === COMPRIMENTO_CNPJ;
+}
+
+/**
+ * The buyer's e-mail, usable AND accepted by the cliente schema's own leaf, or
+ * `null` (module header). The schema decides — no regex is restated here.
+ */
+function emailUtilizavel(valor: unknown): string | null {
+  const email = valorUtilizavel(valor);
+  return email !== null && clienteSchema.shape.email.safeParse(email).success ? email : null;
 }
 
 /** The buyer's document (module header): the canonical CPF or CNPJ, or `null`. */
@@ -104,7 +125,7 @@ export function clienteDoPedidoLi(cliente: ClienteLi | null | undefined): Client
       ie: null,
       telefone:
         valorUtilizavel(cliente?.telefone_celular) ?? valorUtilizavel(cliente?.telefone_principal),
-      email: valorUtilizavel(cliente?.email),
+      email: emailUtilizavel(cliente?.email),
       // `idMercadoLivre` OMITTED: the key means "no evidence".
     },
     identidadeForte: documento !== null,
@@ -140,9 +161,13 @@ export function enderecoDoPedidoLi(
   return buildEnderecoForcado(enderecoBrutoLi(endereco));
 }
 
-/** The recipient's name: `razao_social`, else `nome`, usable only; else `null`. */
+/**
+ * The recipient's name: `razao_social` for a PJ recipient (a valid CNPJ), else
+ * `nome` — usable only; else `null`. The same rule as the buyer's name.
+ */
 export function nomeDoRecebedorLi(endereco: EnderecoEntregaLi | null | undefined): string | null {
-  return nomeOuNulo(endereco?.razao_social) ?? nomeOuNulo(endereco?.nome);
+  const pj = cnpjValido(endereco?.cnpj);
+  return (pj ? nomeOuNulo(endereco?.razao_social) : null) ?? nomeOuNulo(endereco?.nome);
 }
 
 /**

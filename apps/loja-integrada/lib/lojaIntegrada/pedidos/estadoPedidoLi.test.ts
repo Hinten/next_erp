@@ -1,8 +1,10 @@
+import { temMovimentoAplicado } from '@delfrance/data/pedido';
 import type { SituacaoHistoricoLinhaLi } from '@delfrance/integrations-loja-integrada';
 import {
   ESTADO_PEDIDO,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   STATUS_PAGAMENTO,
+  estoqueAplicadoSchema,
   type EstadoPedido,
   type StatusPagamento,
 } from '@delfrance/schemas';
@@ -259,6 +261,68 @@ describe('strict and degraded: a hole retries twice, then imports with its dates
     const rows = cadeia(9, 2, 4);
     expect(ok(ler(4, [...rows, rows[1]!])).corte).toHaveLength(2);
   });
+
+  it('⚠️ a break AFTER the last visible reversal row could hide a later reach of it ⇒ the cancellation date is NOT derivable', () => {
+    // 9→2→8, then a row that left 4 (not 8): something between them is missing.
+    const rows = [linha(100, 0, 2, 9), linha(101, 1, 8, 2), linha(102, 2, 11, 4)];
+    const h = ok(ler(8, rows, MODO_HISTORICO_LI.degradado));
+    expect(h.lacunas).toEqual([LACUNA_HISTORICO_LI.cadeiaQuebrada]);
+    expect(h.dataCancelamento).toEqual({ derivavel: false });
+  });
+
+  it('⚠️ NEAR-MISS: a break BEFORE the reversal row cannot hide a later reach ⇒ the cancellation date is derivable', () => {
+    // A row that left 3 for 4 (the step into 3 is missing), then the 8.
+    const rows = [linha(100, 0, 2, 9), linha(101, 1, 4, 3), linha(102, 2, 8, 4)];
+    const h = ok(ler(8, rows, MODO_HISTORICO_LI.degradado));
+    expect(h.lacunas).toEqual([LACUNA_HISTORICO_LI.cadeiaQuebrada]);
+    expect(h.dataCancelamento).toEqual({ derivavel: true, us: us(2) });
+  });
+
+  it('⚠️ a truncated start whose FIRST row is the capture: an earlier capture row may be cut off ⇒ approval NOT derivable', () => {
+    // The first row reached 4 from 2: everything before 2 is missing.
+    const rows = [linha(100, 0, 4, 2), linha(101, 1, 11, 4)];
+    const h = ok(ler(11, rows, MODO_HISTORICO_LI.degradado));
+    expect(h.lacunas).toEqual([LACUNA_HISTORICO_LI.inicioTruncado]);
+    expect(h.capturado).toBe(true);
+    expect(h.dataAprovacao).toEqual({ derivavel: false });
+  });
+
+  it('EQUAL pair: a first row whose previous situação is NULL is a complete start, not a truncation (strict accepts it)', () => {
+    const rows = [
+      { ...linha(100, 0, 2, 9), situacao_anterior: null },
+      linha(101, 1, 4, 2),
+    ] satisfies SituacaoHistoricoLinhaLi[];
+    const h = ok(ler(4, rows));
+    expect(h.lacunas).toEqual([]);
+    expect(h.dataAprovacao).toEqual({ derivavel: true, us: us(1) });
+    // …the same as a first row that left pedido_efetuado.
+    expect(ok(ler(4, cadeia(9, 2, 4))).dataAprovacao).toEqual(h.dataAprovacao);
+  });
+
+  it('⚠️ two rows with the SAME stamp arriving newest first: ordered by id, so the chain holds and the cut is right', () => {
+    const mesmo = data(0);
+    const rows = [
+      { ...linha(101, 0, 4, 2), data: mesmo },
+      { ...linha(100, 0, 2, 9), data: mesmo },
+    ];
+    const h = ok(ler(4, rows));
+    expect(h.lacunas).toEqual([]);
+    expect(h.corte.map((l) => l.id)).toEqual([100, 101]);
+    expect(h.capturado).toBe(true);
+  });
+});
+
+describe('⚠️ an UNKNOWN detail codigo derives no date (its status is kept, so its dates are too)', () => {
+  it('9→2→8→xyz: neither date is derivable, so a stored cancellation date survives', () => {
+    const rows = [...cadeia(9, 2, 8), { ...linha(102, 2, 8, 8), situacao: { codigo: 'xyz' } }];
+    const h = ok(ler('xyz', rows));
+    expect(h.dataCancelamento).toEqual({ derivavel: false });
+    expect(h.dataAprovacao).toEqual({ derivavel: false });
+  });
+
+  it('NEAR-MISS: a KNOWN non-reversal codigo still derives "no cancellation date" (null)', () => {
+    expect(ok(ler(4, cadeia(9, 2, 4))).dataCancelamento).toEqual({ derivavel: true, us: null });
+  });
 });
 
 describe('the codigo: exact, through the shared table', () => {
@@ -351,8 +415,9 @@ describe('an unknown codigo keeps the order and says so', () => {
 });
 
 describe('⚠️ a refund after an applied removal keeps estado and status, and raises the aviso', () => {
-  const REMOVIDO = { removido: { produto1: 2 } };
-  const SEM_REMOCAO = { removido: {} };
+  /** A stock snapshot as the sync writes it: a removal applied. */
+  const REMOVIDO = { depositoId: 'd1', ehSaida: true, removido: { produto1: 2 } };
+  const SEM_REMOCAO = { depositoId: 'd1', ehSaida: true, removido: {} };
 
   it.each([
     [1020, true, MOTIVO_PEDIDO_CONTESTADO_LI.devolvidoSemRetorno, STATUS_PAGAMENTO.estornado],
@@ -396,6 +461,30 @@ describe('⚠️ a refund after an applied removal keeps estado and status, and 
     expect(d.contestacao).toBeNull();
   });
 
+  it('⚠️ a stored PAGO is capture evidence the history may have lost: 7 after a removal is KEPT, even with an empty degraded history', () => {
+    // Degraded mode, nothing read: the history alone cannot say the payment was captured.
+    const h = ok(ler(7, [], MODO_HISTORICO_LI.degradado));
+    expect(h.capturado).toBe(false);
+    const d = decidirEstadoLi({
+      armazenado: { estado: ESTADO_PEDIDO.pago, estoqueAplicado: REMOVIDO },
+      codigo: c(7),
+      capturado: h.capturado,
+    });
+    expect(d.estado).toBeNull();
+    expect(d.motivo).toBe(MOTIVO_ESTADO_LI.contestadoAposRemocao);
+    expect(d.statusPagamento.atualizacao).toEqual({ tipo: 'manter' });
+    // A payment seen for the first time is the CAPTURED refund, never a cancellation.
+    expect(d.statusPagamento.criacao).toBe(STATUS_PAGAMENTO.estornado);
+    expect(d.contestacao).toBe(MOTIVO_PEDIDO_CONTESTADO_LI.devolvido);
+    // …and without the removal it is the uncaptured arm, as on create.
+    const semRemocao = decidirEstadoLi({
+      armazenado: { estado: ESTADO_PEDIDO.pago, estoqueAplicado: SEM_REMOCAO },
+      codigo: c(7),
+      capturado: false,
+    });
+    expect(semRemocao.estado).toBe(ESTADO_PEDIDO.cancelado);
+  });
+
   it('⚠️ NEAR-MISS: a cancellation (8) is not a refund-type codigo: it reverses even after a removal', () => {
     const d = decidirEstadoLi({
       armazenado: { estado: ESTADO_PEDIDO.pago, estoqueAplicado: REMOVIDO },
@@ -405,14 +494,21 @@ describe('⚠️ a refund after an applied removal keeps estado and status, and 
     expect(d.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
   });
 
-  it('a NEW payment on the kept arm is created aprovado, the status the kept sale had', () => {
-    const d = decidirEstadoLi({
-      armazenado: { estado: ESTADO_PEDIDO.pago, estoqueAplicado: REMOVIDO },
-      codigo: c(1020),
-      capturado: true,
-    });
-    expect(d.statusPagamento.criacao).toBe(STATUS_PAGAMENTO.aprovado);
-  });
+  it.each([
+    [1020, STATUS_PAGAMENTO.estornado],
+    [16, STATUS_PAGAMENTO.devolvido],
+    [7, STATUS_PAGAMENTO.estornado],
+  ] as const)(
+    '⚠️ a NEW payment on the kept arm (codigo %s) takes the table’s refund status: it pays nothing, so Σ paid stays the kept payments’',
+    (cod, status) => {
+      const d = decidirEstadoLi({
+        armazenado: { estado: ESTADO_PEDIDO.pago, estoqueAplicado: REMOVIDO },
+        codigo: c(cod),
+        capturado: true,
+      });
+      expect(d.statusPagamento).toEqual({ criacao: status, atualizacao: { tipo: 'manter' } });
+    },
+  );
 
   it('a create has no removal: the refund codigo takes its table row', () => {
     const d = decidirEstadoLi({ armazenado: null, codigo: c(1020), capturado: true });
@@ -420,24 +516,117 @@ describe('⚠️ a refund after an applied removal keeps estado and status, and 
     expect(d.contestacao).toBeNull();
   });
 
-  it('remocaoAplicadaLi: only a NON-EMPTY `removido` map counts', () => {
+  it('remocaoAplicadaLi IS the stock sync’s predicate: the snapshot parsed as the sync parses it, then `temMovimentoAplicado`', () => {
+    const snapshots: unknown[] = [
+      REMOVIDO,
+      SEM_REMOCAO,
+      { ...SEM_REMOCAO, adicionado: { a: 1 } },
+      { ...SEM_REMOCAO, removido: null, reservado: { a: 1 } },
+      { depositoId: 'd1', ehSaida: true },
+    ];
+    for (const s of snapshots) {
+      const parsed = estoqueAplicadoSchema.parse(s);
+      expect(remocaoAplicadaLi(s), JSON.stringify(s)).toBe(temMovimentoAplicado(parsed));
+    }
     expect(remocaoAplicadaLi(REMOVIDO)).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: a reservation, an empty map or a snapshot the sync itself refuses is NOT applied', () => {
     for (const nao of [
       SEM_REMOCAO,
-      { removido: null },
-      { removido: [1] },
+      { ...SEM_REMOCAO, removido: null, reservado: { a: 1 } },
+      // The sync refuses these snapshots outright ('estoqueAplicado inválido'): it never restocks them.
+      { removido: { produto1: 2 } },
+      { ...REMOVIDO, campoEstranho: 1 },
+      { ...REMOVIDO, removido: [1] },
       {},
       null,
       'x',
-      { reservado: { a: 1 } },
     ]) {
       expect(remocaoAplicadaLi(nao), JSON.stringify(nao)).toBe(false);
     }
   });
 });
 
+describe('⚠️ a refund-type codigo on an estado the business owns raises the aviso (the operator must learn of it)', () => {
+  it.each([
+    [16, MOTIVO_PEDIDO_CONTESTADO_LI.chargeback],
+    [1020, MOTIVO_PEDIDO_CONTESTADO_LI.devolvidoSemRetorno],
+    [7, MOTIVO_PEDIDO_CONTESTADO_LI.devolvido],
+  ] as const)(
+    'stored finalizado (no removal) + codigo %s ⇒ estado kept, aviso raised',
+    (cod, motivo) => {
+      const d = decidirEstadoLi({
+        armazenado: { estado: ESTADO_PEDIDO.finalizado, estoqueAplicado: null },
+        codigo: c(cod),
+        capturado: true,
+      });
+      expect(d.estado).toBeNull();
+      expect(d.motivo).toBe(MOTIVO_ESTADO_LI.foraDaEscada);
+      expect(d.contestacao).toBe(motivo);
+    },
+  );
+
+  it('NEAR-MISS: a paid codigo on the same finalizado raises nothing; a cancellation (8) has no motivo to raise', () => {
+    for (const cod of [4, 8]) {
+      const d = decidirEstadoLi({
+        armazenado: { estado: ESTADO_PEDIDO.finalizado, estoqueAplicado: null },
+        codigo: c(cod),
+        capturado: true,
+      });
+      expect(d.motivo, String(cod)).toBe(MOTIVO_ESTADO_LI.foraDaEscada);
+      expect(d.contestacao, String(cod)).toBeNull();
+    }
+  });
+});
+
 describe('the estado ladder', () => {
-  const escreve = (de: unknown, para: EstadoPedido) => estadoLiAplicavel(de, para);
+  const escreve = (de: unknown, para: EstadoPedido, capturado = false) =>
+    estadoLiAplicavel(de, para, capturado);
+
+  it('⚠️ a CAPTURED pedido at processandoCancelamento never drops below pago: 4→1019→2 is a painel reversal (regressivo)', () => {
+    for (const abaixo of [
+      ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+      ESTADO_PEDIDO.emAnalise,
+      ESTADO_PEDIDO.carrinho,
+    ]) {
+      expect(escreve(ESTADO_PEDIDO.processandoCancelamento, abaixo, true), abaixo).toEqual({
+        escrever: false,
+        motivo: MOTIVO_ESTADO_LI.regressivo,
+      });
+    }
+    // Back to pago is still allowed, captured or not.
+    expect(escreve(ESTADO_PEDIDO.processandoCancelamento, ESTADO_PEDIDO.pago, true)).toMatchObject({
+      escrever: true,
+    });
+  });
+
+  it('⚠️ NEAR-MISS: an UNCAPTURED 2→1019→2 (a request on an unpaid order, withdrawn) is written', () => {
+    expect(
+      escreve(
+        ESTADO_PEDIDO.processandoCancelamento,
+        ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+        false,
+      ),
+    ).toEqual({
+      escrever: true,
+      estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+      ressuscitado: false,
+    });
+  });
+
+  it('end to end through the history: 9→2→4→1019→2 keeps the estado; 9→2→1019→2 moves it', () => {
+    const armazenado = { estado: ESTADO_PEDIDO.processandoCancelamento, estoqueAplicado: null };
+    const pago = ok(ler(2, cadeia(9, 2, 4, 1019, 2)));
+    expect(pago.capturado).toBe(true);
+    const mantido = decidirEstadoLi({ armazenado, codigo: c(2), capturado: pago.capturado });
+    expect(mantido.estado).toBeNull();
+    expect(mantido.motivo).toBe(MOTIVO_ESTADO_LI.regressivo);
+    const naoPago = ok(ler(2, cadeia(9, 2, 1019, 2)));
+    expect(naoPago.capturado).toBe(false);
+    const movido = decidirEstadoLi({ armazenado, codigo: c(2), capturado: naoPago.capturado });
+    expect(movido.estado).toBe(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento);
+  });
 
   it('stored finalizado + a paid codigo ⇒ unchanged (the business owns it)', () => {
     expect(escreve(ESTADO_PEDIDO.finalizado, ESTADO_PEDIDO.pago)).toEqual({

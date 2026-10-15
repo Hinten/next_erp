@@ -60,12 +60,18 @@ still be fixed. Only the context loader refuses those.
 
 - `lib/lojaIntegrada/**` is Next-free and takes `db` as a parameter, because step 3's
   functions bundle imports it. The one exception is `core/respond.ts`.
-- Two modules convert to µs (`avisos.test.ts` counts the calls):
-  `lib/lojaIntegrada/avisos/avisos.ts` (`agoraUsDe`, `prazoUsDe` and the Timestamp-to-µs
-  function) and, for the order import, `lib/lojaIntegrada/pedidos/dataLi.ts`
+- Two modules convert time units (`avisos.test.ts` counts the calls, the zone-carrying
+  naive read included): `lib/lojaIntegrada/avisos/avisos.ts` (`agoraUsDe`, `prazoUsDe` and
+  the Timestamp-to-µs function) and, for the order import, `lib/lojaIntegrada/pedidos/dataLi.ts`
   (`dataLiParaMicros` for LI's naive stamps, read in `FUSO_DATAS_LI` — America/Sao_Paulo by
-  inference —, `microsArmazenadoLi` for a stored stamp in another writer's unit, and
-  `microsDeMillisLi`). Everything else stays in ms.
+  inference —, `microsArmazenadoLi` for a stored stamp in another writer's unit,
+  `microsDeMillisLi` and `millisDeMicrosLi`). No other module converts: the conta and
+  aviso code works in ms, the order import's mappers carry µs as the pedido and pagamento
+  schemas do. ⚠️ Settle the LI zone BEFORE the first live import: the stored watermarks
+  keep the zone they were converted in, so changing `FUSO_DATAS_LI` afterwards is a window
+  step (shift or clear the stored LI `lastMarketplaceUpdate`/`lastProviderUpdate`), never
+  an edit alone — moved east, every change within the zone difference of the last import
+  is dropped as `obsoleto`. Only a westward move is safe without it (`dataLi.ts` header).
   A document commit time is the aviso clock for the park. An observation of ABSENCE (no
   credential, a conta gone) is clocked by the snapshot's `readTime`: the reconexão aviso
   is never resolved clockless, or a park committed after the read loses its open row for

@@ -10,6 +10,8 @@ import {
   dataLiParaMicros,
   deslocarDataLi,
   lerDataLi,
+  microsDeMillisLi,
+  millisDeMicrosLi,
   msIngenuoDeDataLi,
   renderizarDataLi,
 } from './dataLi';
@@ -223,5 +225,18 @@ describe('dataLiParaMicros — the order import’s one conversion to an instant
     ]) {
       expect(dataLiParaMicros(ruim), String(ruim)).toBeNull();
     }
+  });
+});
+
+describe('the ms ↔ µs pair the dispatch deadline crosses', () => {
+  it('EQUAL pair: a whole-ms instant survives µs → ms → µs', () => {
+    const us = 1_772_550_000_123_000;
+    expect(microsDeMillisLi(millisDeMicrosLi(us))).toBe(us);
+  });
+
+  it('⚠️ NEAR-MISS: the sub-ms part is dropped (floor), never rounded up; ms ≠ µs', () => {
+    expect(millisDeMicrosLi(1_772_550_000_123_999)).toBe(1_772_550_000_123);
+    expect(millisDeMicrosLi(1_772_550_000_123_000)).not.toBe(1_772_550_000_123_000);
+    expect(microsDeMillisLi(1_772_550_000_123)).toBe(1_772_550_000_123_000);
   });
 });

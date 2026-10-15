@@ -1,7 +1,7 @@
 import type { ViaCepClient } from '@delfrance/core/cep';
 import { validateCNPJ, validateCPF } from '@delfrance/core/documents';
 import { liPedidoSchema } from '@delfrance/integrations-loja-integrada';
-import { TIPO_CLIENTE, UF_SIGLA, recoverEnderecoFromCep } from '@delfrance/schemas';
+import { TIPO_CLIENTE, UF_SIGLA, clienteSchema, recoverEnderecoFromCep } from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -140,6 +140,35 @@ describe('the buyer is the fiscal identity, from cliente.* only', () => {
     expect(clienteDoPedidoLi(cliente({ email: '' })).campos.email).toBeNull();
   });
 
+  it('EQUAL pair: an address the cliente schema accepts is offered, trimmed', () => {
+    expect(clienteDoPedidoLi(cliente({ email: 'fulana@example.com' })).campos.email).toBe(
+      'fulana@example.com',
+    );
+    expect(clienteDoPedidoLi(cliente({ email: ' fulana@example.com ' })).campos.email).toBe(
+      'fulana@example.com',
+    );
+    expect(clienteSchema.shape.email.safeParse('fulana@example.com').success).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: an address the cliente schema REFUSES is never offered (it would park the whole order on a ZodError)', () => {
+    for (const ruim of [
+      'fulana.@example.com',
+      'a..b@example.com',
+      `${'a'.repeat(245)}@example.com`,
+      'sem-arroba',
+    ]) {
+      expect(clienteSchema.shape.email.safeParse(ruim).success, ruim.slice(0, 20)).toBe(false);
+      expect(
+        clienteDoPedidoLi(cliente({ email: ruim })).campos.email,
+        ruim.slice(0, 20),
+      ).toBeNull();
+    }
+    // The phone and document legs still decide.
+    const r = clienteDoPedidoLi(cliente({ email: 'a..b@example.com', cpf: CPF }));
+    expect(r.campos.cpf_cnpj).toBe(CPF);
+    expect(r.identidadeForte).toBe(true);
+  });
+
   it('no buyer block ⇒ an empty identity, never a throw', () => {
     expect(clienteDoPedidoLi(null)).toEqual({
       campos: {
@@ -234,12 +263,23 @@ describe('the endereço', () => {
     expect(r.fields.pais).toBe('AR');
   });
 
-  it('the recipient’s name: razao_social, else nome; a masked one is none', () => {
-    expect(nomeDoRecebedorLi(entrega({ razao_social: 'Loja Destino Ltda' }))).toBe(
+  it('the recipient’s name: razao_social for a PJ recipient (a valid CNPJ), else nome; a masked one is none', () => {
+    expect(nomeDoRecebedorLi(entrega({ razao_social: 'Loja Destino Ltda', cnpj: CNPJ }))).toBe(
       'Loja Destino Ltda',
     );
+    expect(nomeDoRecebedorLi(entrega({ razao_social: '', cnpj: CNPJ }))).toBe('Quem Recebe');
     expect(nomeDoRecebedorLi(entrega({}))).toBe('Quem Recebe');
     expect(nomeDoRecebedorLi(entrega({ nome: 'Q****e' }))).toBeNull();
     expect(nomeDoRecebedorLi(null)).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a PF recipient’s razao_social is never the name — the buyer side’s rule, on the same field', () => {
+    for (const campos of [
+      { razao_social: 'Outra Coisa Ltda' },
+      { razao_social: 'Outra Coisa Ltda', cpf: CPF },
+      { razao_social: 'Outra Coisa Ltda', cnpj: '11222333000180' },
+    ]) {
+      expect(nomeDoRecebedorLi(entrega(campos)), JSON.stringify(campos)).toBe('Quem Recebe');
+    }
   });
 });

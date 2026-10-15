@@ -121,7 +121,7 @@ function importar(pedido: PedidoLi, modalidadeConta = MODALIDADE_FRETE.fob) {
   const pagos = sumPagamentosPagos(
     pagamentos.pagamentos.map((p) => ({ valor: p.valor, status_pagamento: p.statusCriacao })),
   );
-  return { itens, mapeado, blocoFrete, derivado, somaPagamentos, pagos, escrita };
+  return { itens, frete, mapeado, blocoFrete, derivado, somaPagamentos, pagos, escrita };
 }
 
 /** What the NF-e totals: the derived total, minus the freight when it is not CIF. */
@@ -138,6 +138,9 @@ describe('the captures: the imported pedido and its payments agree to the centav
     expect(r.derivado.valorCobrado === r.mapeado.congelaveis.valorCobrado, 'derived').toBe(true);
     expect(r.somaPagamentos === r.derivado.valorCobrado, 'Σ payments').toBe(true);
     expect(totalDaNota(r.derivado, r.blocoFrete) === r.somaPagamentos, 'NF-e total').toBe(true);
+    // …so the import's own totals check stays quiet.
+    expect(r.escrita.totaisDivergentes, 'no totals incidente').toBe(false);
+    expect(r.frete?.valorDivergente, 'no freight-value incidente').toBe(false);
     // The freight block carries the order's freight value.
     expect(r.derivado.valorFreteInicial === roundReais(pedido.valor_envio ?? 0), 'freight').toBe(
       true,
@@ -238,7 +241,35 @@ describe('synthetic orders', () => {
     expect(r.itens.ok && r.itens.divergente).toBe(true);
     expect(r.mapeado.congelaveis.descontoTotal).toBe(0);
     expect(r.derivado.valorCobrado).not.toBe(r.somaPagamentos);
+    expect(r.escrita.totaisDivergentes).toBe(true);
   });
+
+  it.each([
+    ['rounded once (20.25)', '20.25', '30.25'],
+    ['rounded per line (20.26)', '20.26', '30.26'],
+  ])(
+    '⚠️ two lines at a half centavo (10.1250 each), valor_subtotal %s: the per-line sum (the NF-e) and the once-rounded derived total part by a centavo ⇒ REPORTED',
+    (_rotulo, subtotal, total) => {
+      const linha = { quantidade: '1.000', preco_venda: '10.1250', preco_subtotal: '10.1250' };
+      const pedido = liPedidoSchema.parse({
+        ...base,
+        valor_subtotal: subtotal,
+        valor_envio: '10.00',
+        valor_desconto: '0.00',
+        valor_total: total,
+        itens: [
+          { id: 1, ...linha },
+          { id: 2, ...linha },
+        ],
+        pagamentos: [{ id: 1, valor: total, pagamento_tipo: 'instantPayment' }],
+      });
+      const r = importar(pedido);
+      // Neither residual rule fires: at most a centavo per line.
+      expect(r.itens.ok && r.itens.divergente).toBe(false);
+      expect(r.derivado.valorCobrado).not.toBe(r.somaPagamentos);
+      expect(r.escrita.totaisDivergentes).toBe(true);
+    },
+  );
 
   it('two payments: both documents, and Σ equals the total', () => {
     const pedido = liPedidoSchema.parse({

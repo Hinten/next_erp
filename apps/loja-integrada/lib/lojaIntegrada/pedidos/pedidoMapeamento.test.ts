@@ -1,3 +1,4 @@
+import { microsDeDataHoraNoFuso } from '@delfrance/core/datetime';
 import { liPedidoSchema, type PedidoLi } from '@delfrance/integrations-loja-integrada';
 import {
   ESTADO_FRETE,
@@ -220,6 +221,31 @@ describe('the watermark (tier 2, µs)', () => {
     });
   });
 
+  it('⚠️ a zone moved EAST after an import: a stamp an hour LATER reads older than the stored watermark ⇒ obsoleto, the change dropped', () => {
+    // Stored under the zone of the first import; the change arrives an hour later.
+    const s = {
+      ...armazenado(),
+      lastMarketplaceUpdate: microsDeDataHoraNoFuso(STAMP, 'America/Sao_Paulo'),
+    };
+    const umaHoraDepois = '2026-03-10T16:20:10.123456';
+    const comoUtc = microsDeDataHoraNoFuso(umaHoraDepois, 'UTC')!;
+    expect(montarEscritaPedidoLi(s, mapeado(wire(), { watermarkUs: comoUtc }), AGORA_US).tipo).toBe(
+      'obsoleto',
+    );
+    // NEAR-MISS: the same stamp in the SAME zone applies; so does a WESTWARD move.
+    expect(
+      montarEscritaPedidoLi(
+        s,
+        mapeado(wire(), { watermarkUs: dataLiParaMicros(umaHoraDepois)! }),
+        AGORA_US,
+      ).tipo,
+    ).toBe('atualizar');
+    const comoManaus = microsDeDataHoraNoFuso(umaHoraDepois, 'America/Manaus')!;
+    expect(
+      montarEscritaPedidoLi(s, mapeado(wire(), { watermarkUs: comoManaus }), AGORA_US).tipo,
+    ).toBe('atualizar');
+  });
+
   it('a stored null ⇒ proceeds', () => {
     const s = { ...armazenado(), lastMarketplaceUpdate: null };
     expect(patch(montarEscritaPedidoLi(s, mapeado(), AGORA_US))).toMatchObject({
@@ -363,6 +389,35 @@ describe('the update groups', () => {
     });
     const e = montarEscritaPedidoLi(s, m, AGORA_US);
     expect(e).toMatchObject({ tipo: 'atualizar', grupos: ['watermark'] });
+  });
+
+  it('⚠️ the totals check runs on what will be STORED: a re-priced line LI changed is kept (append-only), so the stored lines no longer add up to the new total', () => {
+    const s = criado();
+    const reprecificado = wire({
+      valor_subtotal: '159.90',
+      valor_total: '171.50',
+      itens: [
+        { ...wire().itens[0], preco_venda: '49.9000', preco_subtotal: '49.9000' },
+        wire().itens[1],
+      ],
+    });
+    const e = montarEscritaPedidoLi(
+      s,
+      mapeado(reprecificado, { watermarkUs: WATERMARK_US + 1 }),
+      AGORA_US,
+    );
+    expect(e.tipo).toBe('atualizar');
+    expect(e.tipo === 'atualizar' && e.totaisDivergentes).toBe(true);
+  });
+
+  it('NEAR-MISS: the unchanged order agrees (create and redelivery); a FROZEN pedido is the operator’s money, never checked', () => {
+    const e = montarEscritaPedidoLi(null, mapeado(), AGORA_US);
+    expect(e.tipo === 'criar' && e.totaisDivergentes).toBe(false);
+    const igual = montarEscritaPedidoLi(criado(), mapeado(), AGORA_US);
+    expect(igual.tipo === 'sem-mudanca' && igual.totaisDivergentes).toBe(false);
+    const congelado = { ...criado(), hasUserInteraction: true, descontoTotal: 50 };
+    const r = montarEscritaPedidoLi(congelado, mapeado(), AGORA_US);
+    expect(r.tipo === 'sem-mudanca' && r.totaisDivergentes).toBe(false);
   });
 
   it('ultimaModificacao never goes backwards', () => {

@@ -13,12 +13,18 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { dataLiParaMicros } from './dataLi';
-import type { DataDoHistoricoLi } from './estadoPedidoLi';
+import {
+  MODO_HISTORICO_LI,
+  decidirEstadoLi,
+  lerHistoricoLi,
+  type DataDoHistoricoLi,
+} from './estadoPedidoLi';
 import { idPagamentoLi } from './orderIdsLi';
 import {
   cartaoLi,
   formaPagamentoLi,
   mapearPagamentosLi,
+  mesmaDecisaoDePagamentoLi,
   montarEscritaPagamentoLi,
   parcelasLi,
   type PagamentoMapeadoLi,
@@ -223,6 +229,29 @@ describe('the mapping', () => {
     expect(r).toEqual({ ok: false, campos: ['pagamentos[].valor'] });
   });
 
+  it('⚠️ a create carries a cancellation date only beside a refund status', () => {
+    const canceladoUs = WATERMARK_US - 500;
+    const datas = {
+      aprovacao: NENHUMA,
+      cancelamento: { derivavel: true, us: canceladoUs },
+    } as const;
+    const [estornado] = mapear(
+      [{ id: 1, valor: '10.00' }],
+      { criacao: STATUS_PAGAMENTO.estornado, atualizacao: { tipo: 'manter' } },
+      datas,
+    );
+    const e = montarEscritaPagamentoLi(null, estornado!, AGORA_US);
+    expect(e.tipo === 'criar' && e.corpo.dataCancelamento).toBe(canceladoUs);
+    // NEAR-MISS: the same date beside an `aprovado` creation is never written.
+    const [aprovado] = mapear(
+      [{ id: 1, valor: '10.00' }],
+      { criacao: STATUS_PAGAMENTO.aprovado, atualizacao: { tipo: 'manter' } },
+      datas,
+    );
+    const a = montarEscritaPagamentoLi(null, aprovado!, AGORA_US);
+    expect(a.tipo === 'criar' && a.corpo.dataCancelamento).toBeNull();
+  });
+
   it('a create body parses, with no vencimento, juros or tarifas and the order clock', () => {
     const [m] = mapear([
       { id: 1, valor: '50.00', pagamento_tipo: 'creditCard', parcelamento: { numero_parcelas: 2 } },
@@ -405,6 +434,116 @@ describe('the update overlay', () => {
     ).toEqual({ tipo: 'sem-mudanca' });
   });
 
+  it('⚠️ the cancellation date follows the STATUS: a kept status (the keep-both arm) never gets one', () => {
+    const canceladoUs = WATERMARK_US - 500;
+    const mantido = base({
+      statusAtualizacao: { tipo: 'manter' },
+      dataCancelamento: { derivavel: true, us: canceladoUs },
+    });
+    expect(montarEscritaPagamentoLi(armazenado(), mantido, AGORA_US)).toEqual({
+      tipo: 'sem-mudanca',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: the same date beside a WRITTEN refund status is written', () => {
+    const canceladoUs = WATERMARK_US - 500;
+    const estornado = base({
+      statusAtualizacao: { tipo: 'status', status: STATUS_PAGAMENTO.estornado },
+      dataCancelamento: { derivavel: true, us: canceladoUs },
+    });
+    expect(montarEscritaPagamentoLi(armazenado(), estornado, AGORA_US)).toMatchObject({
+      tipo: 'atualizar',
+      patch: { status_pagamento: STATUS_PAGAMENTO.estornado, dataCancelamento: canceladoUs },
+    });
+  });
+
+  it('a status kept by the ladder (a painel reversal) keeps the stored dates; one already at the target refreshes them', () => {
+    const regressivo = base({
+      statusAtualizacao: { tipo: 'status', status: STATUS_PAGAMENTO.pendente },
+      dataCancelamento: NENHUMA,
+    });
+    expect(
+      montarEscritaPagamentoLi(armazenado({ dataCancelamento: 5 }), regressivo, AGORA_US),
+    ).toEqual({ tipo: 'sem-mudanca' });
+    const canceladoUs = WATERMARK_US - 500;
+    const jaEstornado = base({
+      statusAtualizacao: { tipo: 'status', status: STATUS_PAGAMENTO.estornado },
+      dataCancelamento: { derivavel: true, us: canceladoUs },
+    });
+    expect(
+      montarEscritaPagamentoLi(
+        armazenado({ status_pagamento: STATUS_PAGAMENTO.estornado, dataCancelamento: null }),
+        jaEstornado,
+        AGORA_US,
+      ),
+    ).toMatchObject({ tipo: 'atualizar', patch: { dataCancelamento: canceladoUs } });
+  });
+
+  it('a resurrected payment (a dead status left) drops its cancellation date', () => {
+    const revivido = base({
+      statusAtualizacao: { tipo: 'status', status: STATUS_PAGAMENTO.aprovado },
+      dataCancelamento: NENHUMA,
+    });
+    expect(
+      montarEscritaPagamentoLi(
+        armazenado({ status_pagamento: STATUS_PAGAMENTO.estornado, dataCancelamento: 5 }),
+        revivido,
+        AGORA_US,
+      ),
+    ).toMatchObject({
+      tipo: 'atualizar',
+      patch: { status_pagamento: STATUS_PAGAMENTO.aprovado, dataCancelamento: null },
+      statusRessuscitado: true,
+    });
+  });
+
+  it('⚠️ end to end: an UNKNOWN codigo after a cancellation (9→2→8→xyz) keeps the stored status AND its date', () => {
+    const h = lerHistoricoLi({
+      numero: 165,
+      codigoDetalhe: 'xyz',
+      linhas: [
+        {
+          id: 1,
+          numero: 165,
+          data: '2026-03-02T10:00:00',
+          situacao: { codigo: 'aguardando_pagamento' },
+          situacao_anterior: { codigo: 'pedido_efetuado' },
+        },
+        {
+          id: 2,
+          numero: 165,
+          data: '2026-03-02T10:01:00',
+          situacao: { codigo: 'pedido_cancelado' },
+          situacao_anterior: { codigo: 'aguardando_pagamento' },
+        },
+        {
+          id: 3,
+          numero: 165,
+          data: '2026-03-02T10:02:00',
+          situacao: { codigo: 'xyz' },
+          situacao_anterior: { codigo: 'pedido_cancelado' },
+        },
+      ],
+      modo: MODO_HISTORICO_LI.estrito,
+    });
+    if (!h.ok) throw new Error('history refused');
+    const d = decidirEstadoLi({
+      armazenado: { estado: 'cancelado', estoqueAplicado: null },
+      codigo: 'xyz',
+      capturado: h.capturado,
+    });
+    const [m] = mapear(
+      [{ id: 1, valor: '100.00', pagamento_tipo: 'bankInvoice' }],
+      d.statusPagamento,
+      { aprovacao: h.dataAprovacao, cancelamento: h.dataCancelamento },
+    );
+    const cancelado = armazenado({
+      status_pagamento: STATUS_PAGAMENTO.cancelado,
+      dataCancelamento: 5,
+    });
+    expect(montarEscritaPagamentoLi(cancelado, m!, AGORA_US)).toEqual({ tipo: 'sem-mudanca' });
+  });
+
   it('fill-once id and dataCadastro; ultimaModificacao never goes backwards', () => {
     const e = montarEscritaPagamentoLi(
       armazenado({ id: null, dataCadastro: null, ultimaModificacao: AGORA_US + 5 }),
@@ -419,5 +558,64 @@ describe('the update overlay', () => {
     expect(montarEscritaPagamentoLi(armazenado({ id: 'outro' }), base(), AGORA_US)).toEqual({
       tipo: 'sem-mudanca',
     });
+  });
+});
+
+describe('mesmaDecisaoDePagamentoLi: when a lost pedido precondition must re-write the payments', () => {
+  const aprovado = STATUS_PAGAMENTO.aprovado;
+  const estornado = STATUS_PAGAMENTO.estornado;
+
+  it('EQUAL pair: the same creation status and the same update (status/status, manter/manter)', () => {
+    expect(
+      mesmaDecisaoDePagamentoLi(
+        { criacao: estornado, atualizacao: { tipo: 'status', status: estornado } },
+        { criacao: estornado, atualizacao: { tipo: 'status', status: estornado } },
+      ),
+    ).toBe(true);
+    expect(
+      mesmaDecisaoDePagamentoLi(
+        { criacao: estornado, atualizacao: { tipo: 'manter' } },
+        { criacao: estornado, atualizacao: { tipo: 'manter' } },
+      ),
+    ).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: a removal applied in between (refund status → kept) is ANOTHER decision; so is another status or creation', () => {
+    expect(
+      mesmaDecisaoDePagamentoLi(
+        { criacao: estornado, atualizacao: { tipo: 'status', status: estornado } },
+        { criacao: estornado, atualizacao: { tipo: 'manter' } },
+      ),
+    ).toBe(false);
+    expect(
+      mesmaDecisaoDePagamentoLi(
+        { criacao: aprovado, atualizacao: { tipo: 'status', status: aprovado } },
+        { criacao: aprovado, atualizacao: { tipo: 'status', status: estornado } },
+      ),
+    ).toBe(false);
+    expect(
+      mesmaDecisaoDePagamentoLi(
+        { criacao: aprovado, atualizacao: { tipo: 'manter' } },
+        { criacao: estornado, atualizacao: { tipo: 'manter' } },
+      ),
+    ).toBe(false);
+  });
+
+  it('end to end: S without the removal and S′ with it decide 1020 differently', () => {
+    const decidir = (estoqueAplicado: unknown) =>
+      decidirEstadoLi({
+        armazenado: { estado: 'pago', estoqueAplicado },
+        codigo: 'pagamento_devolvido_sem_retorno',
+        capturado: true,
+      }).statusPagamento;
+    const s = decidir(null);
+    const sLinha = decidir({ depositoId: 'd', ehSaida: true, removido: { p: 1 } });
+    expect(mesmaDecisaoDePagamentoLi(s, sLinha)).toBe(false);
+    expect(
+      mesmaDecisaoDePagamentoLi(
+        sLinha,
+        decidir({ depositoId: 'd', ehSaida: true, removido: { q: 2 } }),
+      ),
+    ).toBe(true);
   });
 });

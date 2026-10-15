@@ -20,6 +20,9 @@
  *    joins `descontoTotal`, so the pedido's own total still equals the order's;
  *    `r < 0` is reported (`divergente`, the `li-totais-divergentes` incidente)
  *    and never adjusted — the NF-e's own total guard then names the mismatch.
+ *    A positive `r` above one centavo PER LINE is absorbed too but ALSO
+ *    reported: rounding a 4-dp line can move it by a centavo at most, so
+ *    anything larger means `valor_subtotal` disagrees with the lines.
  *  - `custo` is `preco_custo` when it reads as a number (a JSON number, or a
  *    decimal string through `parseWireDecimal`), else `null`; an unreadable cost
  *    never costs the order.
@@ -41,8 +44,10 @@
  *  - the same path with exactly `?id_externo=1` — the store's EXTERNAL id
  *    (`id-externo`), which the importer resolves by SKU first and then through
  *    the `id_externo` GET;
- *  - the object form `{ resource_uri, id_externo }`: a usable `id_externo`
- *    wins, else `resource_uri` is read as the string form.
+ *  - the object form `{ resource_uri, id_externo }`: `resource_uri` read as the
+ *    string form first — the Loja Integrada id is the narrowest key, and the
+ *    object then answers exactly as its bare URI would — and only without a
+ *    readable one a usable `id_externo`.
  *
  * Anything else is NEITHER form (`nenhuma`) — `''`, a placeholder, a full URL,
  * an id with a leading zero, a non-positive or unsafe id — and the line falls
@@ -98,9 +103,12 @@ function formaDaUri(uri: string): FormaProdutoLi {
 export function formaDoProdutoLi(produto: PedidoItemLi['produto']): FormaProdutoLi {
   if (typeof produto === 'string') return formaDaUri(produto);
   if (produto === null || produto === undefined) return NENHUMA;
+  // Narrowest first: a readable resource_uri names the produto itself.
+  const daUri =
+    typeof produto.resource_uri === 'string' ? formaDaUri(produto.resource_uri) : NENHUMA;
+  if (daUri.forma !== 'nenhuma') return daUri;
   const idExterno = idCanonico(produto.id_externo);
-  if (idExterno !== null) return { forma: 'id-externo', idExterno };
-  return typeof produto.resource_uri === 'string' ? formaDaUri(produto.resource_uri) : NENHUMA;
+  return idExterno === null ? NENHUMA : { forma: 'id-externo', idExterno };
 }
 
 /** The Loja Integrada id of a variation line's parent (`produto_pai`), or `null`. */
@@ -173,7 +181,10 @@ export type ItensMapeadosLi =
       readonly residuo: number;
       /** The positive residual: what joins `descontoTotal`. */
       readonly descontoExtra: number;
-      /** A negative residual: the `li-totais-divergentes` incidente, no adjustment. */
+      /**
+       * The `li-totais-divergentes` incidente: a negative residual (never
+       * adjusted), or a positive one rounding cannot explain (absorbed anyway).
+       */
       readonly divergente: boolean;
       /** The ids of the lines with no produto. */
       readonly semProduto: readonly string[];
@@ -181,6 +192,9 @@ export type ItensMapeadosLi =
 
 /** Below this, `q·pv − subtotal` is float noise, not a discount (prices have ≤ 4 dp, quantities ≤ 3). */
 const RUIDO = 1e-9;
+
+/** The most rounding one 4-dp line can move the residual by: a centavo. */
+const RESIDUO_MAXIMO_POR_LINHA = 0.01;
 
 /** `preco_custo` as a number, or `null` (module header). */
 export function custoDoItemLi(precoCusto: unknown): number | null {
@@ -246,12 +260,13 @@ export function mapearItensLi(entrada: EntradaItensLi): ItensMapeadosLi {
   });
 
   const residuo = valorSubtotal == null ? 0 : roundReais(roundReais(somaDasLinhas) - valorSubtotal);
+  const limite = roundReais(RESIDUO_MAXIMO_POR_LINHA * itens.length);
   return {
     ok: true,
     itens: mapeados,
     residuo,
     descontoExtra: residuo > 0 ? residuo : 0,
-    divergente: residuo < 0,
+    divergente: residuo < 0 || residuo > limite,
     semProduto,
   };
 }

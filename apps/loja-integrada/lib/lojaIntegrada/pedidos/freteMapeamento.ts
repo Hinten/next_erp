@@ -17,6 +17,13 @@
  * conta configured otherwise is overridden, and the answer says so
  * (`sobrescrita`) for the importer's one WARNING.
  *
+ * "The order's freight" is ONE value ({@link valorFreteDoPedidoLi}): the order's
+ * `valor_envio` — the leaf the order total adds up — else the first shipment's
+ * `valor`. The modalidade AND the block's `valorCobrado` (the NF-e's `vFrete`)
+ * both read it, so they can never disagree. A shipment `valor` that contradicts
+ * `valor_envio` is reported (`valorDivergente`, the `li-totais-divergentes`
+ * incidente), never imported silently.
+ *
  * ## The routing — the one place this import names step 20's key folds
  *
  * The key is the FULL `'<id>---<code>'` (`chaveFormaEnvioLi`): one id carries
@@ -43,15 +50,21 @@
  * `envios[0]` drives it; more than one shipment is reported (`multiEnvio`, a
  * non-blocking incidente) and never expected. `externalId` is the shipment id,
  * `externalOptionData` the raw `forma_envio`, `externalOptionIntegracao` stays
- * `null` (the label step decides it), `valorCobrado = roundReais(envio.valor)`,
+ * `null` (the label step decides it), `valorCobrado` the order's freight
+ * (above, rounded),
  * `timestamp` and `dataPrevisaoEntrega` (+ `prazo` days) from the shipment's
  * creation stamp, `codRastreio` the tracking code (`''` is none), and
  * `enderecoFreteOuterReference` the fiscal endereço.
  *
  * `prazoDespacho` is set only on the `pago` rung: a dispatch deadline counts
  * from the approval. It is the conta's `horarioDeCorte` applied to the approval
- * date in `FUSO_FISCAL`; rows without a cut-off hour do not count, and with
- * none left (or a schedule that answers nothing) the noon rule applies.
+ * date in `FUSO_FISCAL` by the SHARED rule (`getPrazoDespachoNoFuso`), which
+ * reads the stored rows tolerantly itself (text integers read, unreadable rows
+ * dropped) — this module never validates them in front of it, so the schedule
+ * answers here exactly as on every other surface. The one step-5 choice on top:
+ * a row whose `horaDeCorte` is absent or `null` is an UNSET weekday and is left
+ * out (the shared rule would read it as a midnight cut-off). With no row left,
+ * or a schedule that answers nothing, the noon rule applies.
  *
  * Freight estado on CREATE: `aguardandoPostagem` only with a tracking code AND
  * the pedido at `pago`; `despachoAutorizado` at `pago` without one; otherwise
@@ -64,6 +77,13 @@
  *    `enderecoFreteOuterReference` (each only while stored empty), and the
  *    promotion `iniciado → despachoAutorizado` when the pedido is `pago`. One
  *    operator save must never blind tracking or the paid promotion.
+ *    ⚠️ `externalOptionId` means something different per target tipo (a Melhor
+ *    Envio service id, a motoboy option), so it is filled only beside ITS ref:
+ *    in the same merge that fills `integracaoFreteOuterRef`, or when the stored
+ *    ref already names the routed target (`toOuterRefOrNull` on both sides: a
+ *    bare `int_frete/<id>` ≡ its `documents/` form; a longer id is another
+ *    target). A ref stored first (the conta's own LI doc, an operator's choice)
+ *    never gets another target's option beside it.
  *  - FROZEN while the pedido carries `hasUserInteraction`: `valorCobrado`,
  *    `externalOptionData`, `dataPrevisaoEntrega`, and seeding an absent block,
  *    so an operator's money edit survives the next Loja Integrada change. An
@@ -86,10 +106,10 @@ import {
   chaveFormaEnvioLi,
   entradaDoMapaPorChaveLi,
   getPrazoDespachoNoFuso,
-  horarioDeCorteSchema,
   idDoAlvoDoMapaLi,
   seedFreteInicial,
   toOuterRef,
+  toOuterRefOrNull,
   type EstadoPedido,
   type FreteDoPedido,
   type HorarioDeCorte,
@@ -100,7 +120,8 @@ import {
 } from '@delfrance/schemas';
 
 import type { RegistroDoMapaLi } from '../frete/mapaFrete';
-import { dataLiParaMicros, microsDeMillisLi } from './dataLi';
+import { dataLiParaMicros, microsDeMillisLi, millisDeMicrosLi } from './dataLi';
+import { vazioArmazenadoLi } from './vazioArmazenado';
 
 /* -------------------------------------------------------------------------- */
 /*                               the modalidade                                */
@@ -126,9 +147,29 @@ export function modalidadeFreteLi(
   return { modalidade: modalidadeConta ?? MODALIDADE_FRETE.cif, sobrescrita: false };
 }
 
-/** The order's freight value: `valor_envio`, else the first shipment's, else 0. */
-export function valorFreteDoPedidoLi(pedido: PedidoLi): number {
-  return pedido.valor_envio ?? pedido.envios[0]?.valor ?? 0;
+/**
+ * The order's freight (module header): `valor_envio`, else the first shipment's
+ * `valor`, rounded to centavos — or `null` when neither leaf carries one. The
+ * modalidade and the block's `valorCobrado` both read THIS value.
+ */
+export function valorFreteDoPedidoLi(pedido: PedidoLi): number | null {
+  const valor = pedido.valor_envio ?? pedido.envios[0]?.valor ?? null;
+  return valor === null ? null : roundReais(valor);
+}
+
+/**
+ * The shipment's `valor` contradicts the order's `valor_envio` — both present
+ * and a centavo or more apart — on an order with ONE shipment (several
+ * shipments are their own incidente, and their values sum). Equal: the same
+ * centavo. Distinct: one centavo apart; `0` vs any positive value. An absent
+ * leaf contradicts nothing.
+ */
+export function valorFreteDivergenteLi(pedido: PedidoLi): boolean {
+  if (pedido.envios.length !== 1) return false;
+  const doPedido = pedido.valor_envio;
+  const doEnvio = pedido.envios[0]?.valor;
+  if (doPedido == null || doEnvio == null) return false;
+  return roundReais(doPedido) !== roundReais(doEnvio);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -330,16 +371,21 @@ export const HORARIO_DE_CORTE_PADRAO_LI: readonly HorarioDeCorte[] = [1, 2, 3, 4
 );
 
 /**
- * The conta's schedule, raw-read: the rows that parse AND carry a cut-off hour.
- * `null` when none do — a row without an hour is an unset weekday, never "cut
- * off at midnight".
+ * The conta's STORED schedule minus the rows that carry no cut-off hour (an
+ * unset weekday, never "cut off at midnight"), RAW — or `null` when no row is
+ * left. Nothing else is filtered or validated here: the shared rule reads the
+ * rest tolerantly itself (a text `'16'` is 16, a row it cannot read is
+ * dropped), so this import and every other surface read one schedule one way.
  */
-export function horarioDeCorteUtilizavelLi(bruto: unknown): readonly HorarioDeCorte[] | null {
+export function horarioDeCorteUtilizavelLi(bruto: unknown): readonly unknown[] | null {
   if (!Array.isArray(bruto)) return null;
-  const linhas = (bruto as readonly unknown[]).flatMap((linha) => {
-    const lida = horarioDeCorteSchema.safeParse(linha);
-    return lida.success && lida.data.horaDeCorte !== null ? [lida.data] : [];
-  });
+  const linhas = (bruto as readonly unknown[]).filter(
+    (linha) =>
+      typeof linha === 'object' &&
+      linha !== null &&
+      !Array.isArray(linha) &&
+      (linha as Record<string, unknown>).horaDeCorte != null,
+  );
   return linhas.length > 0 ? linhas : null;
 }
 
@@ -353,10 +399,17 @@ export function prazoDespachoLiUs(
   dataAprovacaoUs: number | null,
 ): number | null {
   if (dataAprovacaoUs === null) return null;
-  const aprovadoMs = Math.floor(dataAprovacaoUs / 1000);
+  const aprovadoMs = millisDeMicrosLi(dataAprovacaoUs);
   const horarios = horarioDeCorteUtilizavelLi(horarioDeCorteConta);
+  // Raw rows, as every other caller hands them: the shared rule reads them tolerantly.
   const daConta =
-    horarios === null ? null : getPrazoDespachoNoFuso(horarios, aprovadoMs, FUSO_FISCAL);
+    horarios === null
+      ? null
+      : getPrazoDespachoNoFuso(
+          horarios as unknown as readonly HorarioDeCorte[],
+          aprovadoMs,
+          FUSO_FISCAL,
+        );
   const ms = daConta ?? getPrazoDespachoNoFuso(HORARIO_DE_CORTE_PADRAO_LI, aprovadoMs, FUSO_FISCAL);
   return ms === null ? null : microsDeMillisLi(ms);
 }
@@ -389,6 +442,8 @@ export interface FreteMapeadoLi {
   readonly modalidadeSobrescrita: boolean;
   /** More than one shipment: the `li-multi-envio` incidente. */
   readonly multiEnvio: boolean;
+  /** The shipment's `valor` contradicts `valor_envio`: the `li-totais-divergentes` incidente. */
+  readonly valorDivergente: boolean;
 }
 
 /** The tracking code, or `null`: `''` is none, and one past the schema's cap is unusable. */
@@ -403,10 +458,8 @@ export function mapearFreteLi(entrada: EntradaFreteLi): FreteMapeadoLi | null {
   const { pedido, roteamento } = entrada;
   const envio = pedido.envios[0];
   if (envio === undefined) return null;
-  const { modalidade, sobrescrita } = modalidadeFreteLi(
-    valorFreteDoPedidoLi(pedido),
-    entrada.modalidadeConta,
-  );
+  const valorFrete = valorFreteDoPedidoLi(pedido);
+  const { modalidade, sobrescrita } = modalidadeFreteLi(valorFrete ?? 0, entrada.modalidadeConta);
   const criadoUs = dataLiParaMicros(envio.data_criacao);
   const forma = envio.forma_envio;
   const base: FreteDoPedido = {
@@ -417,7 +470,7 @@ export function mapearFreteLi(entrada: EntradaFreteLi): FreteMapeadoLi | null {
     externalOptionData: forma == null ? null : { ...forma },
     integracaoFreteOuterRef: roteamento.integracaoFreteOuterRef,
     estado: ESTADO_FRETE.iniciado,
-    valorCobrado: envio.valor == null ? null : roundReais(envio.valor),
+    valorCobrado: valorFrete,
     codRastreio: codRastreioLi(envio.objeto),
     prazoDespacho: null,
     dataPrevisaoEntrega:
@@ -431,6 +484,7 @@ export function mapearFreteLi(entrada: EntradaFreteLi): FreteMapeadoLi | null {
     prazoDespachoSePagoUs: prazoDespachoLiUs(entrada.horarioDeCorteConta, entrada.dataAprovacaoUs),
     modalidadeSobrescrita: sobrescrita,
     multiEnvio: pedido.envios.length > 1,
+    valorDivergente: valorFreteDivergenteLi(pedido),
   };
 }
 
@@ -455,11 +509,6 @@ export function freteDeCriacaoLi(
 /* -------------------------------------------------------------------------- */
 /*                                  the merge                                  */
 /* -------------------------------------------------------------------------- */
-
-/** Nothing stored yet, for a fill-once field: `null`, absent or `''` (never `0`). */
-function vazio(valor: unknown): boolean {
-  return valor === null || valor === undefined || valor === '';
-}
 
 /**
  * Strict structural equality of two JSON values: the same key SET (order
@@ -540,9 +589,16 @@ export function mesclarFreteLi(
     externalOptionId: mapeado.base.externalOptionId,
     enderecoFreteOuterReference: mapeado.base.enderecoFreteOuterReference,
   };
+  // The option belongs to ITS target: filled only beside the ref it names.
+  const refRoteada = mapeado.base.integracaoFreteOuterRef;
+  const opcaoDoAlvo =
+    refRoteada !== null &&
+    (vazioArmazenadoLi(atual.integracaoFreteOuterRef) ||
+      toOuterRefOrNull(atual.integracaoFreteOuterRef) === refRoteada);
   for (const campo of CAMPOS_FRETE_PREENCHER_UMA_VEZ_LI) {
     const valor = novos[campo];
-    if (valor !== null && valor !== undefined && vazio(atual[campo])) {
+    if (campo === 'externalOptionId' && !opcaoDoAlvo) continue;
+    if (valor !== null && valor !== undefined && vazioArmazenadoLi(atual[campo])) {
       bloco[campo] = valor;
       campos.push(campo);
     }

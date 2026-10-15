@@ -54,11 +54,35 @@
  * or kept), `lastProviderUpdate`, and the approval and cancellation dates when
  * the history could derive them; fill-once `id`, `dataCadastro` and `cartao`;
  * `ultimaModificacao = max(stored, now)` on a non-empty patch.
+ *
+ * The CANCELLATION date follows the status (the Shopee rule: it is stamped only
+ * with a reversal status). A create carries it only beside a refund or
+ * cancellation status; an update overlays it only when the status is written,
+ * or already IS the target — never while the status is kept against the
+ * codigo (the keep-both arm, a cancellation request, a painel reversal, an
+ * operator's status). So a payment kept `aprovado` never shows a cancellation
+ * date, and a resurrected one drops its old date with its dead status.
+ *
+ * ## ⚠️ Rule 7: the status is derived from the PEDIDO snapshot (for 5-c)
+ *
+ * `statusCriacao` / `statusAtualizacao` come from the step-5 decision, which
+ * reads the stored PEDIDO (its estado and its applied stock removal) — not this
+ * document. A pagamento's own precondition retry re-reads only the pagamento,
+ * so it re-applies that decision verbatim, and the pagamentos are written
+ * BEFORE the pedido. So when the pedido's precondition is lost and the
+ * decision is re-derived from the newer snapshot S′, compare it with the one
+ * the pagamentos were written with ({@link mesmaDecisaoDePagamentoLi}); when
+ * it differs (the stock sync applied the removal in between, say, turning a
+ * refund into the keep-both arm), map and write EVERY pagamento again — each
+ * re-read — with S′'s decision before retrying the pedido. Otherwise a
+ * `estornado` payment is left beside a kept `pago`: the exact pair the
+ * keep-both arm exists to prevent.
  */
 import { roundReais } from '@delfrance/core/money';
 import type { PedidoLi, PedidoPagamentoLi } from '@delfrance/integrations-loja-integrada';
 import {
   FORMA_PAGAMENTO,
+  STATUS_PAGAMENTO,
   type Cartao,
   type FormaPagamento,
   type StatusPagamento,
@@ -66,11 +90,13 @@ import {
 
 import { dataLiParaMicros, microsArmazenadoLi } from './dataLi';
 import {
+  MOTIVO_STATUS_LI,
   statusPagamentoLiAplicavel,
   type AlvoStatusPagamentoLi,
   type DataDoHistoricoLi,
 } from './estadoPedidoLi';
 import { idPagamentoLi } from './orderIdsLi';
+import { vazioArmazenadoLi } from './vazioArmazenado';
 
 /* -------------------------------------------------------------------------- */
 /*                                  the forma                                  */
@@ -175,6 +201,33 @@ export function parcelasLi(pagamento: PedidoPagamentoLi): {
 /*                                  the docs                                   */
 /* -------------------------------------------------------------------------- */
 
+/** The step-5 decision's payment half (`DecisaoEstadoLi.statusPagamento`). */
+export interface DecisaoPagamentoLi {
+  readonly criacao: StatusPagamento;
+  readonly atualizacao: AlvoStatusPagamentoLi;
+}
+
+/**
+ * Whether two payment decisions write the same thing — the 5-c retry's test
+ * (module header, "Rule 7"). Equal: the same creation status and the same
+ * update (two `manter`s, or the same target status). Distinct: `manter` vs any
+ * status, two different statuses, two different creation statuses.
+ */
+export function mesmaDecisaoDePagamentoLi(a: DecisaoPagamentoLi, b: DecisaoPagamentoLi): boolean {
+  if (a.criacao !== b.criacao) return false;
+  if (a.atualizacao.tipo === 'manter' || b.atualizacao.tipo === 'manter') {
+    return a.atualizacao.tipo === b.atualizacao.tipo;
+  }
+  return a.atualizacao.status === b.atualizacao.status;
+}
+
+/** The statuses a cancellation date belongs to: a reversal or a cancellation. */
+const STATUS_COM_CANCELAMENTO: ReadonlySet<StatusPagamento> = new Set<StatusPagamento>([
+  STATUS_PAGAMENTO.cancelado,
+  STATUS_PAGAMENTO.estornado,
+  STATUS_PAGAMENTO.devolvido,
+]);
+
 export interface PagamentoMapeadoLi {
   readonly docId: string;
   /** The payment's id as text: the document's fill-once `id`. */
@@ -197,11 +250,8 @@ export interface PagamentoMapeadoLi {
 export interface EntradaPagamentosLi {
   readonly contaId: string;
   readonly pedido: PedidoLi;
-  /** From the step-5 decision (`decidirEstadoLi`). */
-  readonly statusPagamento: {
-    readonly criacao: StatusPagamento;
-    readonly atualizacao: AlvoStatusPagamentoLi;
-  };
+  /** From the step-5 decision (`decidirEstadoLi`) — of the CURRENT pedido snapshot (module header). */
+  readonly statusPagamento: DecisaoPagamentoLi;
   readonly dataAprovacao: DataDoHistoricoLi;
   readonly dataCancelamento: DataDoHistoricoLi;
   /** `dataLiParaMicros(pedido.data_modificacao)`. */
@@ -252,11 +302,6 @@ export function mapearPagamentosLi(entrada: EntradaPagamentosLi): PagamentosMape
 
 const usOuNulo = (data: DataDoHistoricoLi): number | null => (data.derivavel ? data.us : null);
 
-/** Nothing stored yet, for a fill-once field: `null`, absent or `''` (never `0`). */
-function vazio(valor: unknown): boolean {
-  return valor === null || valor === undefined || valor === '';
-}
-
 export type EscritaPagamentoLi =
   /** The full document; the importer parses it (`pagamentoSchema`) before any write. */
   | { readonly tipo: 'criar'; readonly corpo: Readonly<Record<string, unknown>> }
@@ -295,7 +340,10 @@ export function corpoDoPagamentoLi(
     vencimento: null,
     ultimaModificacao: nowUs,
     lastProviderUpdate: mapeado.watermarkUs,
-    dataCancelamento: usOuNulo(mapeado.dataCancelamento),
+    // Only beside a refund or cancellation status (module header).
+    dataCancelamento: STATUS_COM_CANCELAMENTO.has(mapeado.statusCriacao)
+      ? usOuNulo(mapeado.dataCancelamento)
+      : null,
     dataAprovacao: usOuNulo(mapeado.dataAprovacao),
     dataCadastro: mapeado.dataCadastroUs,
   };
@@ -326,12 +374,17 @@ export function montarEscritaPagamentoLi(
     mapeado.statusAtualizacao,
   );
   if (veredito.escrever) patch.status_pagamento = veredito.status;
+  // The cancellation date follows the status: written with it, or refreshed
+  // beside a status already at the target — never while the status is kept.
+  const statusSegueOCodigo = veredito.escrever || veredito.motivo === MOTIVO_STATUS_LI.semMudanca;
 
-  for (const [campo, data] of [
-    ['dataAprovacao', mapeado.dataAprovacao],
-    ['dataCancelamento', mapeado.dataCancelamento],
+  for (const [campo, data, segue] of [
+    ['dataAprovacao', mapeado.dataAprovacao, true],
+    ['dataCancelamento', mapeado.dataCancelamento, statusSegueOCodigo],
   ] as const) {
-    if (data.derivavel && microsArmazenadoLi(armazenado[campo]) !== data.us) patch[campo] = data.us;
+    if (segue && data.derivavel && microsArmazenadoLi(armazenado[campo]) !== data.us) {
+      patch[campo] = data.us;
+    }
   }
 
   // A 99 is a guess: only a KNOWN forma is overlaid, with its instalments.
@@ -346,14 +399,14 @@ export function montarEscritaPagamentoLi(
   const formaFinal = formaConhecida ? mapeado.forma.forma : armazenado.forma_de_pagamento;
   if (
     FORMAS_COM_CARTAO.has(formaFinal as FormaPagamento) &&
-    vazio(armazenado.cartao) &&
+    vazioArmazenadoLi(armazenado.cartao) &&
     mapeado.cartao !== null
   ) {
     patch.cartao = mapeado.cartao;
   }
 
-  if (vazio(armazenado.id)) patch.id = mapeado.id;
-  if (vazio(armazenado.dataCadastro) && mapeado.dataCadastroUs !== null) {
+  if (vazioArmazenadoLi(armazenado.id)) patch.id = mapeado.id;
+  if (vazioArmazenadoLi(armazenado.dataCadastro) && mapeado.dataCadastroUs !== null) {
     patch.dataCadastro = mapeado.dataCadastroUs;
   }
 

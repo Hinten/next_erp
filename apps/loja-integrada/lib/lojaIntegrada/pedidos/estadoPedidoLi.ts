@@ -31,7 +31,9 @@
  * left — or the detail's codigo is one. The approval date is the `data` of the
  * first row reaching a capture-evidence codigo; the cancellation date is the
  * `data` of the row reaching the detail's codigo when that codigo is a reversal
- * (7, 8, 16 or 1020).
+ * (7, 8, 16 or 1020). A detail codigo the table does not know derives NEITHER
+ * date: the import keeps the stored payment status for it, so it keeps the
+ * stored dates too.
  *
  * ## Strict and degraded
  *
@@ -55,6 +57,7 @@ import {
   STATUS_PAGAMENTO,
   alvoDeCriacaoLi,
   estadoPedidoSchema,
+  estoqueAplicadoSchema,
   situacaoLi,
   statusPagamentoSchema,
   type EstadoPedido,
@@ -62,6 +65,7 @@ import {
   type SituacaoLi,
   type StatusPagamento,
 } from '@delfrance/schemas';
+import { temMovimentoAplicado } from '@delfrance/data/pedido';
 import type { SituacaoHistoricoLinhaLi } from '@delfrance/integrations-loja-integrada';
 
 import { dataLiParaMicros, lerDataLi } from './dataLi';
@@ -232,6 +236,8 @@ export function lerHistoricoLi(entrada: EntradaHistoricoLi): LeituraHistoricoLi 
 
   const lista = [...lacunas];
   if (modo === MODO_HISTORICO_LI.estrito && lista.length > 0) return { ok: false, lacunas: lista };
+  // An unknown codigo keeps the stored payment status, and so its dates (module header).
+  const codigoConhecido = situacaoLi(codigoDetalhe) !== null;
 
   const linhasDescartadas =
     lacunas.has(LACUNA_HISTORICO_LI.numeroDivergente) ||
@@ -249,7 +255,9 @@ export function lerHistoricoLi(entrada: EntradaHistoricoLi): LeituraHistoricoLi 
   // before it (or anywhere, for a dropped row) could hide an earlier one.
   const iAprovacao = corte.findIndex((l) => CODIGOS_LI_CAPTURADO.has(l.codigo));
   let dataAprovacao: DataDoHistoricoLi;
-  if (iAprovacao < 0) {
+  if (!codigoConhecido) {
+    dataAprovacao = NAO_DERIVAVEL;
+  } else if (iAprovacao < 0) {
     dataAprovacao = capturado ? NAO_DERIVAVEL : derivada(null);
   } else {
     const escondida =
@@ -262,7 +270,9 @@ export function lerHistoricoLi(entrada: EntradaHistoricoLi): LeituraHistoricoLi 
   // Cancellation: the row reaching the detail's reversal codigo, unless it is
   // missing or a later reach of it could be hidden.
   let dataCancelamento: DataDoHistoricoLi;
-  if (!CODIGOS_REVERSAO.has(codigoDetalhe)) {
+  if (!codigoConhecido) {
+    dataCancelamento = NAO_DERIVAVEL;
+  } else if (!CODIGOS_REVERSAO.has(codigoDetalhe)) {
     dataCancelamento = derivada(null);
   } else if (ausente || linhasDescartadas || quebras.some((q) => q > ultimo)) {
     dataCancelamento = NAO_DERIVAVEL;
@@ -318,19 +328,17 @@ export function erroSituacaoDesconhecidaLi(codigo: string): string {
 }
 
 /**
- * Whether the pedido's stock removal was APPLIED: its `estoqueAplicado.removido`
- * is a non-empty map — the predicate the stock sync itself uses. Read raw and
- * tolerantly: anything else is "not applied".
+ * Whether the pedido's stock removal was APPLIED. Not a copy of the stock
+ * sync's rule but the rule itself: the raw snapshot is parsed exactly as the
+ * sync parses it (`estoqueAplicadoSchema`) and handed to the sync's own
+ * `temMovimentoAplicado` — a physical movement applied, which for a saída
+ * pedido is its removal, and which is what makes the sync RESTOCK on a reversing
+ * estado. A snapshot that does not parse is "not applied": the sync refuses
+ * such a snapshot outright and never restocks it either.
  */
 export function remocaoAplicadaLi(estoqueAplicado: unknown): boolean {
-  if (typeof estoqueAplicado !== 'object' || estoqueAplicado === null) return false;
-  const removido = (estoqueAplicado as Record<string, unknown>).removido;
-  return (
-    typeof removido === 'object' &&
-    removido !== null &&
-    !Array.isArray(removido) &&
-    Object.keys(removido).length > 0
-  );
+  const lido = estoqueAplicadoSchema.safeParse(estoqueAplicado);
+  return lido.success && temMovimentoAplicado(lido.data);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -398,19 +406,34 @@ export type VereditoEstadoLi =
  * 2. a stored estado off {@link ESTADOS_LI_GOVERNAVEIS} — or not an estado at
  *    all — is never moved (`fora-da-escada`);
  * 3. on {@link ORDEM_ESTADO_LI}, forward only: a painel reversal from `pago` to
- *    awaiting payment keeps `pago` (`regressivo`, logged as a WARNING);
+ *    awaiting payment keeps `pago` (`regressivo`, logged as a WARNING). A
+ *    CAPTURED pedido at `processandoCancelamento` holds the same paid rung — a
+ *    request is not a refund — so 4 → 1019 → 2 is refused the same way, and the
+ *    estado agrees with the payment ladder, which keeps `aprovado`;
  * 4. everything else writes: `pago` ↔ `processandoCancelamento` both ways, a
  *    reversal from any rung, `error` ↔ anything, and a dead sale may be left
  *    (`ressuscitado`, logged): the detail is a re-fetch of the live order.
+ *
+ * @param capturado the history verdict ({@link lerHistoricoLi}).
  */
-export function estadoLiAplicavel(armazenado: unknown, destino: EstadoPedido): VereditoEstadoLi {
+export function estadoLiAplicavel(
+  armazenado: unknown,
+  destino: EstadoPedido,
+  capturado: boolean,
+): VereditoEstadoLi {
   if (armazenado === destino) return { escrever: false, motivo: MOTIVO_ESTADO_LI.semMudanca };
   const lido = estadoPedidoSchema.safeParse(armazenado);
   if (!lido.success || !ESTADOS_LI_GOVERNAVEIS.has(lido.data)) {
     return { escrever: false, motivo: MOTIVO_ESTADO_LI.foraDaEscada };
   }
-  const de = (ORDEM_ESTADO_LI as readonly EstadoPedido[]).indexOf(lido.data);
-  const para = (ORDEM_ESTADO_LI as readonly EstadoPedido[]).indexOf(destino);
+  const ordem = ORDEM_ESTADO_LI as readonly EstadoPedido[];
+  // A captured cancellation request still stands on the paid rung.
+  const degrauArmazenado =
+    capturado && lido.data === ESTADO_PEDIDO.processandoCancelamento
+      ? ESTADO_PEDIDO.pago
+      : lido.data;
+  const de = ordem.indexOf(degrauArmazenado);
+  const para = ordem.indexOf(destino);
   if (de >= 0 && para >= 0 && para < de) {
     return { escrever: false, motivo: MOTIVO_ESTADO_LI.regressivo };
   }
@@ -557,16 +580,35 @@ export interface EntradaDecisaoEstadoLi {
  *
  * The "keep both" arm is evaluated BEFORE the ladder: a refund-type codigo
  * (`CODIGOS_LI_ESTORNO`; `pagamento_devolvido` only when captured) on a pedido
- * whose stock removal was applied keeps the stored estado and payment status
- * and raises the contestado aviso, because the goods may not have come back —
- * a reversing estado would restock them, and a refund status beside a kept
- * `pago` would be relabelled by the next estado reconcile. A NEW pagamento seen
- * on that arm is created `aprovado`, the status the kept sale had, for the same
- * reason.
+ * whose stock removal was applied keeps the stored estado and the stored
+ * payment statuses and raises the contestado aviso, because the goods may not
+ * have come back — a reversing estado would restock them, and a refund status
+ * written over a kept `pago`'s payments would be relabelled by the next estado
+ * reconcile. For `pagamento_devolvido`, a stored `pago` counts as capture
+ * evidence beside the history: the pedido was seen paid, and a degraded
+ * history (rows missing, or none read) must not turn a refund of shipped goods
+ * into a restocking cancellation. A NEW pagamento seen on that arm is created
+ * at the table's refund status: it pays nothing, so the payments already
+ * stored (kept as they are) still carry the sale, and the paid sum never
+ * counts the refunded money as paid.
+ *
+ * A refund-type codigo on a stored estado the ladder does not govern (the
+ * business owns it: `finalizado`, …) keeps that estado — and still raises the
+ * contestado aviso, so the operator learns that the platform reversed a sale
+ * the business closed. ⚠️ A cancellation (`pedido_cancelado`) there raises
+ * nothing: the aviso has no motivo for it, and its payment status is the only
+ * trace.
  *
  * A codigo the table does not know creates the pedido at `error` and keeps the
  * stored estado on an update; either way the importer's error text is set and
  * a payment status is kept (a new payment is created `pendente`).
+ *
+ * ⚠️ The payment statuses are derived from the SAME stored pedido as the estado
+ * (its estado and its applied removal). The importer writes the pagamentos
+ * before the pedido; when the pedido's precondition is lost and this decision
+ * is re-derived from the newer snapshot, a `statusPagamento` that changed means
+ * the pagamentos must be written again with it before the pedido is retried
+ * (`mesmaDecisaoDePagamentoLi`, `pagamentoMapeamento.ts`).
  */
 export function decidirEstadoLi(entrada: EntradaDecisaoEstadoLi): DecisaoEstadoLi {
   const { armazenado, codigo, capturado } = entrada;
@@ -609,10 +651,13 @@ export function decidirEstadoLi(entrada: EntradaDecisaoEstadoLi): DecisaoEstadoL
   const erro: ErroLi = { tipo: 'limpar' };
   const disputa = codigo === CODIGO_SITUACAO_LI.pagamentoEmDisputa;
 
+  // A stored `pago` is capture evidence too, for the refund that needs it.
+  const capturadoOuPago = capturado || estadoArmazenado === ESTADO_PEDIDO.pago;
+  const estorno = CODIGOS_LI_ESTORNO.has(codigo);
   const manterAposRemocao =
     armazenado !== null &&
-    CODIGOS_LI_ESTORNO.has(codigo) &&
-    (codigo !== CODIGO_SITUACAO_LI.pagamentoDevolvido || capturado) &&
+    estorno &&
+    (codigo !== CODIGO_SITUACAO_LI.pagamentoDevolvido || capturadoOuPago) &&
     remocaoAplicadaLi(armazenado.estoqueAplicado);
 
   if (manterAposRemocao) {
@@ -621,7 +666,11 @@ export function decidirEstadoLi(entrada: EntradaDecisaoEstadoLi): DecisaoEstadoL
       motivo: MOTIVO_ESTADO_LI.contestadoAposRemocao,
       ressuscitado: false,
       estadoResultante: estadoArmazenado,
-      statusPagamento: { criacao: STATUS_PAGAMENTO.aprovado, atualizacao: { tipo: 'manter' } },
+      // Stored payments kept; a NEW one at the (captured) refund status pays nothing.
+      statusPagamento: {
+        criacao: linha.statusPagamento.capturado,
+        atualizacao: { tipo: 'manter' },
+      },
       erro,
       contestacao: linha.motivoContestacao,
       situacaoDesconhecida: null,
@@ -649,7 +698,10 @@ export function decidirEstadoLi(entrada: EntradaDecisaoEstadoLi): DecisaoEstadoL
     };
   }
 
-  const veredito = estadoLiAplicavel(armazenado.estado, alvo.estado);
+  const veredito = estadoLiAplicavel(armazenado.estado, alvo.estado, capturado);
+  // A refund on an estado the business owns: kept, but the operator is told.
+  const estornoForaDaEscada =
+    estorno && !veredito.escrever && veredito.motivo === MOTIVO_ESTADO_LI.foraDaEscada;
   return {
     estado: veredito.escrever ? veredito.estado : null,
     motivo: veredito.escrever ? null : veredito.motivo,
@@ -657,7 +709,7 @@ export function decidirEstadoLi(entrada: EntradaDecisaoEstadoLi): DecisaoEstadoL
     estadoResultante: veredito.escrever ? veredito.estado : estadoArmazenado,
     statusPagamento,
     erro,
-    contestacao,
+    contestacao: estornoForaDaEscada ? linha.motivoContestacao : contestacao,
     situacaoDesconhecida: null,
   };
 }

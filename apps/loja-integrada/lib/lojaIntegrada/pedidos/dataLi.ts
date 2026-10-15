@@ -6,16 +6,20 @@
  *
  * ## The order import's µs boundary
  *
- * Besides `avisos/avisos.ts`, this is the app's one module that converts to µs
- * (`avisos.test.ts` counts the calls). The order import's three conversions all
- * live here, so the units cannot drift between its mappers:
+ * Besides `avisos/avisos.ts`, this is the app's one module that converts
+ * between time units (`avisos.test.ts` counts the calls, the zone-carrying
+ * naive conversion included). The order import's four conversions all live
+ * here, so the units — and the zone — cannot drift between its mappers, which
+ * carry µs end to end, as the pedido and pagamento schemas do:
  *
  *  - {@link dataLiParaMicros} — an INCOMING Loja Integrada stamp, read in
  *    {@link FUSO_DATAS_LI};
  *  - {@link microsArmazenadoLi} — a STORED stamp another writer may have left
  *    in another unit (ms, µs, an ISO string);
  *  - {@link microsDeMillisLi} — an instant the import computed in ms (the
- *    dispatch deadline).
+ *    dispatch deadline);
+ *  - {@link millisDeMicrosLi} — a µs instant handed to a rule that takes ms
+ *    (the dispatch deadline's approval date).
  *
  * ## Two shapes, both fixed width, so string order is time order
  *
@@ -43,12 +47,26 @@
  *    epoch: never compare one with a clock reading, and never store one;
  *  - the IMPORT converts each stamp exactly once, through
  *    {@link dataLiParaMicros}, so two LI stamps it compares were converted the
- *    same way and a constant zone error cancels out of that comparison. What a
- *    wrong zone would shift is the stored instants themselves (dates shown to
- *    an operator, a dispatch deadline).
+ *    same way — as long as the zone is the SAME one for both — and a constant
+ *    zone error cancels out of that comparison. What a wrong zone would shift
+ *    is the stored instants themselves (dates shown to an operator, a dispatch
+ *    deadline).
  *
- * When a capture settles the zone, {@link FUSO_DATAS_LI} is the one constant to
- * change.
+ * ⚠️ That "constant" is the whole guarantee: the stored watermarks
+ * (`pedido.lastMarketplaceUpdate`, `pagamento.lastProviderUpdate`) keep the
+ * zone they were converted in. So the zone must be settled BEFORE the first
+ * live import, and changing {@link FUSO_DATAS_LI} after any import is a window
+ * step, never a code edit alone. Moved EAST (São Paulo → UTC, say), every new
+ * stamp converts up to 3 h EARLIER than the stored ones it is compared with:
+ * the import answers `obsoleto`, writes nothing, and resolves the
+ * notification, so any Loja Integrada change within those hours of the last
+ * import is dropped — a paid order cancelled an hour later stays paid. The
+ * change therefore ships together with a pass over the stored LI watermarks
+ * of both fields (shifted by the zone difference, or cleared so the next
+ * import re-applies), or with one import pass that ignores the stored stamp.
+ * Only a WESTWARD move is safe without it: new stamps then read later, never
+ * earlier. Pinned by `pedidoMapeamento.test.ts` ("a zone moved east after an
+ * import").
  *
  * ## The canonicalisation is a FOLD — what it equates and what it keeps apart
  *
@@ -60,13 +78,19 @@
  * whitespace, a day the calendar does not have, a non-string. Pinned by
  * `dataLi.test.ts`.
  */
-import { coerceToMicros, microsDeDataHoraNoFuso, millisToMicros } from '@delfrance/core/datetime';
+import {
+  coerceToMicros,
+  microsDeDataHoraNoFuso,
+  microsToMillis,
+  millisToMicros,
+} from '@delfrance/core/datetime';
 import { CURSOR_POLL_LI_REGEX, DATA_MODIFICACAO_LI_REGEX } from '@delfrance/schemas';
 
 /**
  * The zone the order import reads Loja Integrada's naive stamps in — INFERRED,
- * unconfirmed (module header). The one constant to change when a capture
- * settles it.
+ * unconfirmed (module header). Settle it before the first live import:
+ * changing it afterwards needs the stored-watermark pass the module header
+ * describes, never an edit of this line alone.
  */
 export const FUSO_DATAS_LI = 'America/Sao_Paulo';
 
@@ -152,6 +176,15 @@ export function microsArmazenadoLi(valor: unknown): number | null {
 /** An instant the import computed in ms (a dispatch deadline) as µs. */
 export function microsDeMillisLi(ms: number): number {
   return millisToMicros(ms);
+}
+
+/**
+ * A µs instant as ms, for a rule that takes ms (the dispatch deadline's
+ * approval date) — truncated toward zero, which for any instant after 1970 is
+ * the floor.
+ */
+export function millisDeMicrosLi(us: number): number {
+  return microsToMillis(us);
 }
 
 /**

@@ -8,7 +8,11 @@
  * snapshot, hands its raw data here, and writes what comes back — a create, or
  * an update under a `lastUpdateTime` precondition. On a lost precondition it
  * re-reads and calls this again: every group is re-derived from the snapshot it
- * is handed, and nothing decided against an older one is re-applied.
+ * is handed, and nothing decided against an older one is re-applied. ⚠️ That
+ * includes the PAGAMENTOS, written before the pedido from the decision this
+ * returns: when the re-derived `decisao.statusPagamento` differs from the one
+ * they were written with (`mesmaDecisaoDePagamentoLi`), the importer writes
+ * them again before retrying the pedido (`pagamentoMapeamento.ts`, "Rule 7").
  *
  * ## The fields
  *
@@ -44,15 +48,37 @@
  *
  * An operator's money edit therefore survives the next Loja Integrada change,
  * and one operator save never blinds tracking or the paid promotion.
+ *
+ * ## The totals check (`totaisDivergentes`, the `li-totais-divergentes` incidente)
+ *
+ * Every answer but `obsoleto` says whether the pedido AS IT WILL BE STORED adds
+ * up — `derivePedidoFreteTotals` over its lines, `descontoTotal` and freight
+ * block, the sum the operator's first save writes into `valorCobrado` — to the
+ * order's `valor_total`. The line mapper's residual sees only the INCOMING
+ * lines; this sees the stored ones an update keeps (the lines are append-only,
+ * while the money is re-taken), and the one-centavo split between the NF-e's
+ * per-line rounding and the derived total's single rounding (two lines at a
+ * half centavo). Non-blocking: it reports, it never adjusts. Not checked: a
+ * FROZEN pedido (the money is the operator's), an order without `valor_total`,
+ * and stored values that do not read as the ERP's own (a line that fails the
+ * item schema, a non-numeric money field) — the NF-e's total guard still names
+ * a real mismatch there.
  */
 import { roundReais } from '@delfrance/core/money';
 import type { PedidoLi } from '@delfrance/integrations-loja-integrada';
-import { toOuterRef, type ItemDoPedido, type OuterRef } from '@delfrance/schemas';
+import {
+  derivePedidoFreteTotals,
+  itemDoPedidoSchema,
+  toOuterRef,
+  type ItemDoPedido,
+  type OuterRef,
+} from '@delfrance/schemas';
 
 import { PREFIXO_ERRO_LI, decidirEstadoLi, type DecisaoEstadoLi } from './estadoPedidoLi';
 import { dataLiParaMicros, microsArmazenadoLi } from './dataLi';
 import { freteDeCriacaoLi, mesclarFreteLi, type FreteMapeadoLi } from './freteMapeamento';
 import { idPedidoLi } from './orderIdsLi';
+import { vazioArmazenadoLi } from './vazioArmazenado';
 
 /* -------------------------------------------------------------------------- */
 /*                                 the mapping                                 */
@@ -234,21 +260,71 @@ export type EscritaPedidoLi =
       readonly tipo: 'criar';
       readonly corpo: Readonly<Record<string, unknown>>;
       readonly decisao: DecisaoEstadoLi;
+      /** The totals check (module header). */
+      readonly totaisDivergentes: boolean;
     }
   /** The stored watermark is strictly newer: NOTHING is written, avisos included. */
   | { readonly tipo: 'obsoleto'; readonly armazenadoUs: number }
   /** Accepted, re-derived, and nothing differs. */
-  | { readonly tipo: 'sem-mudanca'; readonly decisao: DecisaoEstadoLi }
+  | {
+      readonly tipo: 'sem-mudanca';
+      readonly decisao: DecisaoEstadoLi;
+      readonly totaisDivergentes: boolean;
+    }
   | {
       readonly tipo: 'atualizar';
       readonly patch: Readonly<Record<string, unknown>>;
       readonly grupos: readonly GrupoPedidoLi[];
       readonly decisao: DecisaoEstadoLi;
+      readonly totaisDivergentes: boolean;
     };
 
-/** Nothing stored yet, for a fill-once field: `null`, absent or `''` (never `0`). */
-function vazio(valor: unknown): boolean {
-  return valor === null || valor === undefined || valor === '';
+/** A finite number, or `undefined` when the stored value is not one. */
+function numeroFinito(valor: unknown): number | undefined {
+  return typeof valor === 'number' && Number.isFinite(valor) ? valor : undefined;
+}
+
+/** The lines of a stored (or written) `itens` map, each read as the ERP's item; `null` if any is not. */
+function itensLegiveis(bruto: unknown): ItemDoPedido[] | null {
+  const linhas = linhasArmazenadas(bruto);
+  if (linhas === null) return null;
+  const itens: ItemDoPedido[] = [];
+  for (const { item } of linhas) {
+    const lido = itemDoPedidoSchema.safeParse(item);
+    if (!lido.success) return null;
+    itens.push(lido.data);
+  }
+  return itens;
+}
+
+/**
+ * Whether the pedido as it will be stored fails to add up to `valorTotal`
+ * (module header). `false` — not reported — when a value cannot be read.
+ */
+function totaisDivergentesLi(
+  itens: readonly ItemDoPedido[] | null,
+  descontoTotal: unknown,
+  freteInicial: unknown,
+  valorTotal: number | null,
+): boolean {
+  const desconto = numeroFinito(descontoTotal);
+  if (valorTotal === null || itens === null || desconto === undefined) return false;
+  let valorFrete: number | null = null;
+  if (freteInicial !== null && freteInicial !== undefined) {
+    if (typeof freteInicial !== 'object' || Array.isArray(freteInicial)) return false;
+    const bruto = (freteInicial as Record<string, unknown>).valorCobrado;
+    if (bruto !== null && bruto !== undefined) {
+      const lido = numeroFinito(bruto);
+      if (lido === undefined) return false;
+      valorFrete = lido;
+    }
+  }
+  const derivado = derivePedidoFreteTotals({
+    itens,
+    descontoTotal: desconto,
+    freteInicial: { valorCobrado: valorFrete },
+  });
+  return derivado.valorCobrado !== roundReais(valorTotal);
 }
 
 function corpoDeCriacao(
@@ -296,7 +372,18 @@ export function montarEscritaPedidoLi(
       codigo: mapeado.codigo,
       capturado: mapeado.capturado,
     });
-    return { tipo: 'criar', corpo: corpoDeCriacao(mapeado, decisao, nowUs), decisao };
+    const corpo = corpoDeCriacao(mapeado, decisao, nowUs);
+    return {
+      tipo: 'criar',
+      corpo,
+      decisao,
+      totaisDivergentes: totaisDivergentesLi(
+        mapeado.congelaveis.itens,
+        corpo.descontoTotal,
+        corpo.freteInicial,
+        mapeado.congelaveis.valorCobrado,
+      ),
+    };
   }
 
   const armazenadoUs = microsArmazenadoLi(armazenado.lastMarketplaceUpdate);
@@ -340,7 +427,8 @@ export function montarEscritaPedidoLi(
     ['clientePedidoOuterRef', p.clientePedidoOuterRef],
     ['enderecoFiscalOuterRef', p.enderecoFiscalOuterRef],
   ] as const) {
-    if (valor !== null && vazio(armazenado[campo])) definir(campo, valor, 'preencher-uma-vez');
+    if (valor !== null && vazioArmazenadoLi(armazenado[campo]))
+      definir(campo, valor, 'preencher-uma-vez');
   }
 
   const congelado = armazenado.hasUserInteraction === true;
@@ -370,8 +458,19 @@ export function montarEscritaPedidoLi(
     }
   }
 
-  if (Object.keys(patch).length === 0) return { tipo: 'sem-mudanca', decisao };
+  // The totals as they will be STORED: the patch over the snapshot.
+  const final = (campo: string): unknown => (campo in patch ? patch[campo] : armazenado[campo]);
+  const totaisDivergentes =
+    !congelado &&
+    totaisDivergentesLi(
+      itensLegiveis(final('itens')),
+      final('descontoTotal'),
+      final('freteInicial'),
+      mapeado.congelaveis.valorCobrado,
+    );
+
+  if (Object.keys(patch).length === 0) return { tipo: 'sem-mudanca', decisao, totaisDivergentes };
   const ultima = microsArmazenadoLi(armazenado.ultimaModificacao);
   patch.ultimaModificacao = ultima !== null && ultima > nowUs ? ultima : nowUs;
-  return { tipo: 'atualizar', patch, grupos: [...grupos], decisao };
+  return { tipo: 'atualizar', patch, grupos: [...grupos], decisao, totaisDivergentes };
 }

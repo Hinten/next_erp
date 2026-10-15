@@ -80,7 +80,7 @@ import {
   type ModoHistoricoLi,
 } from './estadoPedidoLi';
 import { decidirMapaLi, mapearFreteLi, rotearFreteLi } from './freteMapeamento';
-import { mapearItensLi } from './itensMapeamento';
+import { idLiDoProdutoPai, mapearItensLi, referenciasDeProdutoLi } from './itensMapeamento';
 import { idPedidoLi } from './orderIdsLi';
 import {
   formaPagamentoLi,
@@ -404,7 +404,7 @@ describe('PR 5-b: the estado verdict on the captures', () => {
       linhas.every((l) => l.numero === pedido.numero),
       'same numero',
     ).toBe(true);
-    expect(linhas).toHaveLength(2);
+    expect(linhas.length === 2, 'two rows').toBe(true);
     expect(
       linhas.some((l) => l.situacao_anterior == null),
       'a creation row',
@@ -413,7 +413,7 @@ describe('PR 5-b: the estado verdict on the captures', () => {
     // STRICT mode accepts it: no hole.
     const r = importar('pedido-cancelado.json', linhas, MODO_HISTORICO_LI.estrito);
     expect(r.h.lacunas).toEqual([]);
-    expect(r.h.corte).toHaveLength(2);
+    expect(r.h.corte.length === 2, 'cut of two rows').toBe(true);
     expect(r.h.capturado).toBe(false);
     expect(r.escrita.decisao.estado).toBe(ESTADO_PEDIDO.cancelado);
     expect(r.escrita.decisao.statusPagamento.criacao).toBe(STATUS_PAGAMENTO.cancelado);
@@ -424,7 +424,9 @@ describe('PR 5-b: the estado verdict on the captures', () => {
       r.h.dataCancelamento.derivavel && r.h.dataCancelamento.us === esperado,
       'objects[1].data',
     ).toBe(true);
-    expect(r.h.dataAprovacao).toEqual({ derivavel: true, us: null });
+    expect(r.h.dataAprovacao.derivavel && r.h.dataAprovacao.us === null, 'no approval date').toBe(
+      true,
+    );
     expect(r.corposPagamento[0]?.status_pagamento).toBe(STATUS_PAGAMENTO.cancelado);
     expect(r.corposPagamento[0]?.dataCancelamento === esperado, 'payment dataCancelamento').toBe(
       true,
@@ -445,7 +447,7 @@ describe('PR 5-b: the estado verdict on the captures', () => {
     );
     expect(h.lacunas).toEqual([]);
     expect(h.capturado).toBe(true);
-    expect(h.corte).toHaveLength(3);
+    expect(h.corte.length === 3, 'cut of three rows').toBe(true);
     const primeiroPago = linhas.find((l) => l.situacao.codigo === 'pedido_pago');
     expect(primeiroPago !== undefined, 'a paid row').toBe(true);
     expect(
@@ -453,7 +455,10 @@ describe('PR 5-b: the estado verdict on the captures', () => {
       'approval',
     ).toBe(true);
     // No reversal codigo: no cancellation date.
-    expect(h.dataCancelamento).toEqual({ derivavel: true, us: null });
+    expect(
+      h.dataCancelamento.derivavel && h.dataCancelamento.us === null,
+      'no cancellation date',
+    ).toBe(true);
   });
 
   it('⚠️ the same history against a detail still at pedido_pago is cut THERE (the shipped row is newer than it)', () => {
@@ -467,7 +472,7 @@ describe('PR 5-b: the estado verdict on the captures', () => {
       }),
       'pago',
     );
-    expect(h.corte).toHaveLength(2);
+    expect(h.corte.length === 2, 'cut of two rows').toBe(true);
     expect(h.capturado).toBe(true);
   });
 
@@ -493,7 +498,7 @@ describe('PR 5-b: the estado verdict on the captures', () => {
       expect(r.escrita.decisao.estado, nome).toBe(estado);
       // A paid order with no history: captured, its approval date not derivable.
       if (estado === ESTADO_PEDIDO.pago)
-        expect(r.h.dataAprovacao, nome).toEqual({ derivavel: false });
+        expect(r.h.dataAprovacao.derivavel === false, `${nome} approval`).toBe(true);
     }
   });
 });
@@ -527,25 +532,31 @@ describe('PR 5-b: ids, lines, buyer and address on all 5 captures', () => {
     let linhas = 0;
     for (const nome of PEDIDOS) {
       const { pedido, itens } = importar(nome);
-      expect(itens.residuo, `${nome} residual`).toBe(0);
-      expect(itens.semProduto).toHaveLength(pedido.itens.length);
+      const refs = referenciasDeProdutoLi(pedido.itens);
+      expect(refs.length === pedido.itens.length, `${nome} one reference per line`).toBe(true);
+      expect(itens.residuo === 0, `${nome} residual`).toBe(true);
+      expect(itens.semProduto.length === pedido.itens.length, `${nome} unmatched`).toBe(true);
       itens.itens.forEach((l, i) => {
         const w = pedido.itens[i]!;
         const rotulo = `${nome} itens[${String(i)}]`;
-        expect(l.descontoUnitario, `${rotulo} descontoUnitario`).toBe(0);
+        expect(l.descontoUnitario === 0, `${rotulo} descontoUnitario`).toBe(true);
         expect(l.precoDeVenda === w.preco_venda, `${rotulo} precoDeVenda`).toBe(true);
-        expect(l.custo, `${rotulo} custo`).toBeNull();
+        expect(l.custo === null, `${rotulo} custo`).toBe(true);
         expect(
           typeof l.sku === 'string' && l.sku === w.sku && l.sku.length >= 14,
           `${rotulo} sku`,
         ).toBe(true);
         expect(l.ensureUniqueId === String(w.id), `${rotulo} key`).toBe(true);
+        // `produto_pai` is a KEPT resource path — the only real evidence of the
+        // produto path shape — so the parent reference must read from it.
+        expect(idLiDoProdutoPai(w.produto_pai) !== null, `${rotulo} produto_pai`).toBe(true);
+        expect(refs[i]?.idLiPai != null, `${rotulo} idLiPai`).toBe(true);
       });
       linhas += itens.itens.length;
     }
     expect(linhas).toBe(6);
     // pedido-boleto carries two lines.
-    expect(importar('pedido-boleto.json').itens.itens).toHaveLength(2);
+    expect(importar('pedido-boleto.json').itens.itens.length === 2, 'boleto lines').toBe(true);
   });
 
   it('no captured buyer has a strong identity, and every address takes uf-desconhecida', () => {
@@ -553,7 +564,7 @@ describe('PR 5-b: ids, lines, buyer and address on all 5 captures', () => {
       const p = detalhe(nome);
       const c = clienteDoPedidoLi(p.cliente);
       expect(c.identidadeForte, `${nome} identity`).toBe(false);
-      expect(c.campos.cpf_cnpj, `${nome} document`).toBeNull();
+      expect(c.campos.cpf_cnpj === null, `${nome} document`).toBe(true);
       expect(enderecoDoPedidoLi(p.endereco_entrega).kind, `${nome} endereço`).toBe(
         'uf-desconhecida',
       );
@@ -597,7 +608,7 @@ describe('PR 5-b: freight on the captures', () => {
       unknown
     >;
     expect(boleto.estado).toBe(ESTADO_FRETE.despachoAutorizado);
-    expect(boleto.codRastreio).toBeNull();
+    expect(boleto.codRastreio === null, 'boleto code').toBe(true);
     const pix = importar('pedido-pix.json').escrita.corpo.freteInicial as Record<string, unknown>;
     expect(pix.codRastreio !== null, 'pix code').toBe(true);
     expect(pix.estado).toBe(ESTADO_FRETE.aguardandoPostagem);
@@ -662,7 +673,7 @@ describe('PR 5-b: payments on the captures', () => {
     const p = r.corposPagamento[0]!;
     expect(p.forma_de_pagamento).toBe(FORMA_PAGAMENTO.boleto_bancario);
     expect(p.status_pagamento).toBe(STATUS_PAGAMENTO.pendente);
-    expect(p.cartao).toBeNull();
+    expect(p.cartao === null, 'no card block').toBe(true);
     expect(p.parcelas).toBe(1);
     expect(p.vencimento).toBeNull();
   });
@@ -676,7 +687,11 @@ describe('PR 5-b: payments on the captures', () => {
   it('pedido-pix: forma 17 with the card block {tpIntegra 2, bandeira null, cAut null}', () => {
     const p = importar('pedido-pix.json').corposPagamento[0]!;
     expect(p.forma_de_pagamento).toBe(FORMA_PAGAMENTO.pix);
-    expect(p.cartao).toMatchObject({ tpIntegra: '2', bandeira: null, cAut: null });
+    const c = p.cartao as Record<string, unknown> | null;
+    expect(
+      c !== null && c.tpIntegra === '2' && c.bandeira === null && c.cAut === null,
+      'pix card block',
+    ).toBe(true);
   });
 
   it('pedido-cartao: forma 3, several instalments, not à vista, cAut null, bandeira null, no vencimento', () => {
@@ -685,7 +700,8 @@ describe('PR 5-b: payments on the captures', () => {
     expect(p.forma_de_pagamento).toBe(FORMA_PAGAMENTO.cartao_credito);
     expect((p.parcelas as number) > 1, 'parcelas > 1').toBe(true);
     expect(p.aVista).toBe(false);
-    expect(p.cartao).toMatchObject({ bandeira: null, cAut: null });
+    const c = p.cartao as Record<string, unknown> | null;
+    expect(c !== null && c.bandeira === null && c.cAut === null, 'card block').toBe(true);
     expect(p.vencimento).toBeNull();
     // The order's expiry exists and is never the due date.
     expect('data_expiracao' in (captura('pedido-cartao.json').resposta.corpo as object)).toBe(true);
@@ -694,7 +710,10 @@ describe('PR 5-b: payments on the captures', () => {
   it('every payment: valor is the wire valor, the doc keyed by the payment id, never null status', () => {
     for (const nome of PEDIDOS) {
       const r = importar(nome);
-      expect(r.pagamentos.pagamentos).toHaveLength(r.pedido.pagamentos.length);
+      expect(
+        r.pagamentos.pagamentos.length === r.pedido.pagamentos.length,
+        `${nome} every payment`,
+      ).toBe(true);
       r.corposPagamento.forEach((p, i) => {
         expect(p.valor === r.pedido.pagamentos[i]!.valor, `${nome} valor`).toBe(true);
         expect(p.status_pagamento !== null, `${nome} status`).toBe(true);
