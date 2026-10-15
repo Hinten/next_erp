@@ -1064,8 +1064,10 @@ describe('os dez campos preco* do passo 13', () => {
     expect(FONTE).toMatch(
       /nothing clears them but its clean send; none is ever read to\s*\*\s*decide a send/,
     );
-    // A regra de leitura do modelo: comparada no MESMO doc, zero escritas de limpeza.
-    expect(FONTE).toContain('`precoRecusaEm >= (precoEnviadoEm ?? 0)`');
+    // A regra de leitura do preço: os helpers compartilhados, nunca a frase antiga (#1369).
+    expect(FONTE).toContain('recusaPrecoDoModeloShopeeLegivel');
+    expect(FONTE).toContain('recusaPrecoDoAnuncioShopeeLegivel');
+    expect(FONTE).not.toContain('`precoRecusaEm >= (precoEnviadoEm ?? 0)`');
   });
 });
 

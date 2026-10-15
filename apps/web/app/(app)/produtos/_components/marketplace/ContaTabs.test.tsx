@@ -31,6 +31,7 @@ function renderTabs(items: readonly ContaTabItem[], defaultId?: string | null) {
         items={items}
         defaultId={defaultId}
         renderPanel={(contaId) => <Probe contaId={contaId} />}
+        testIdPrefix="ml"
       />
     </MantineTestProvider>,
   );
@@ -97,6 +98,7 @@ describe('ContaTabs', () => {
           items={TRES.filter((i) => i.id !== 'conta-c')}
           defaultId="conta-c"
           renderPanel={(contaId) => <Probe contaId={contaId} />}
+          testIdPrefix="ml"
         />
       </MantineTestProvider>,
     );
@@ -127,5 +129,22 @@ describe('ContaTabs', () => {
   it('renders nothing at all with no accounts', () => {
     const { container } = renderTabs([]);
     expect(container.querySelector('[role="tab"]')).toBeNull();
+  });
+
+  it("names an unopened panel's placeholder after the channel that renders it", () => {
+    // Shared by the Mercado Livre and Shopee tabs (#1529): a placeholder
+    // hard-wired to `ml-` would answer to the other channel's testids.
+    render(
+      <MantineTestProvider>
+        <ContaTabs
+          items={TRES}
+          renderPanel={(contaId) => <Probe contaId={contaId} />}
+          testIdPrefix="shopee"
+        />
+      </MantineTestProvider>,
+    );
+
+    expect(screen.getByTestId('shopee-conta-placeholder-conta-b')).toBeTruthy();
+    expect(screen.queryByTestId('ml-conta-placeholder-conta-b')).toBeNull();
   });
 });

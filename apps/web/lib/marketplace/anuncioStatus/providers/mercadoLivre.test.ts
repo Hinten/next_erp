@@ -24,6 +24,7 @@ function input(
         definirStatusAnuncios == null
           ? null
           : ({ definirStatusAnuncios } as unknown as MercadoLivreClient),
+      shopee: null,
     },
     ...over,
   };

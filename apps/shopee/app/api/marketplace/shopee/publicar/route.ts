@@ -39,9 +39,11 @@
  * 200 with the publish summary, built BY NAME — step 11's for the item arm, the
  * kit summary for a kit arm · **202** for a kit create whose outcome Shopee left
  * UNCERTAIN (`desfecho: 'incerto'`): NOTHING was written, and the body carries
- * Shopee's refusal (`recusa`), the sentence `MENSAGEM_KIT_INCERTO` and the exact
- * command to re-run (`comando`) · 400 for a bad body (both kit actions at once,
- * or `recriar` with no `linkDocId`, included) · 404
+ * Shopee's refusal (`recusa`), the sentence `MENSAGEM_KIT_INCERTO`, the exact
+ * command to re-run (`comando`, the CLI's) and — since step 21 (#1529) — the
+ * wait in MILLISECONDS (`aguardarMs`, the schemas' `AGUARDAR_KIT_INCERTO_SHOPEE_MS`)
+ * the produto's Shopee tab holds its identical re-send for · 400 for a bad body
+ * (both kit actions at once, or `recriar` with no `linkDocId`, included) · 404
  * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the produto does not exist or the named
  * `linkDocId` is not this conta's · everything else goes to
  * `shopeeErrorResponse`, which holds the two per-produto publish arms (a
@@ -55,6 +57,7 @@
 import { NextResponse } from 'next/server';
 import { FieldValue } from 'firebase-admin/firestore';
 import { createShopeePartnerClient } from '@delfrance/integrations-shopee';
+import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -252,8 +255,12 @@ export async function POST(req: Request): Promise<NextResponse> {
       // Accepted, not done: Shopee may or may not have created the kit, and
       // NOTHING was written. The operator waits and re-runs EXACTLY `comando`
       // (S1F-03) — a plain publish would be a different arm after a recriar or
-      // a converter.
-      return NextResponse.json({ ...kit, mensagem: MENSAGEM_KIT_INCERTO }, { status: 202 });
+      // a converter. `aguardarMs` is that wait for the web, which re-sends the
+      // identical body; it is the ONE copy the sentence interpolates (#1369).
+      return NextResponse.json(
+        { ...kit, mensagem: MENSAGEM_KIT_INCERTO, aguardarMs: AGUARDAR_KIT_INCERTO_SHOPEE_MS },
+        { status: 202 },
+      );
     }
     return NextResponse.json(kit);
   } catch (err) {

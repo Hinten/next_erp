@@ -14,7 +14,12 @@ import {
   shopeeLogisticsChannelSchema,
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
-import { ESTADO_ANUNCIO_SHOPEE, toOuterRef, varianteFakePath } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  toOuterRef,
+  varianteFakePath,
+} from '@delfrance/schemas';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 
 import {
@@ -995,6 +1000,7 @@ describe('prepararKit — o --principal', () => {
         campo: 'principal',
         motivo: MOTIVO_PUBLICACAO_BLOQUEADA.principalInvalido,
         mensagem: 'o componente principal fantasma não faz parte da composição do kit',
+        acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal },
       },
     ]);
     expect(loja.ops).toEqual(['get_item_base_info']);

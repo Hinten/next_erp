@@ -853,3 +853,190 @@ describe('getPrazoDespachoNoFuso', () => {
     }
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*                  Stored schedules the schema does not model                */
+/*                                                                            */
+/*  The web freight tabs read `int_frete` through a SOFT read, which hands    */
+/*  back the raw document when the parse fails — so whatever the imported     */
+/*  corpus holds reaches the rule unvalidated. Every case below compares a    */
+/*  malformed schedule with the answer its readable rows give on their own.   */
+/* -------------------------------------------------------------------------- */
+
+/** A value as it may sit in Firestore — typed past the schema on purpose. */
+function armazenado(valor: unknown): HorarioDeCorte[] {
+  return valor as HorarioDeCorte[];
+}
+
+/** Monday 2021-01-04, 10:00 — before `corteSegunda`'s 16:30 cut-off. */
+const SEGUNDA_10H = { diaDaSemana: 1, ano: 2021, mes: 0, dia: 4, hora: 10, minuto: 0 };
+
+const corteQuarta = {
+  diaDaSemana: 3 as const,
+  horaDeCorte: 16,
+  minutosDeCorte: 0,
+  prazoDePostagem: 0,
+  horaPostagem: 11,
+  minutosPostagem: 45,
+};
+
+describe('calcularPrazoDespachoCivil — stored shapes the schema does not model', () => {
+  it('skips rows that are not objects: the answer is the readable rows’ own', () => {
+    const soValidas = calcularPrazoDespachoCivil([corteSegunda], SEGUNDA_10H);
+    // A schedule that answers nothing would make the comparison prove nothing.
+    expect(soValidas).toEqual({ ano: 2021, mes: 0, dia: 4, hora: 18, minuto: 0 });
+    expect(
+      calcularPrazoDespachoCivil(
+        armazenado([null, 'texto', 7, corteSegunda, undefined]),
+        SEGUNDA_10H,
+      ),
+    ).toEqual(soValidas);
+  });
+
+  it('a schedule with no readable row answers nothing, like an empty one', () => {
+    expect(calcularPrazoDespachoCivil(armazenado([null, 'texto']), SEGUNDA_10H)).toBeNull();
+  });
+
+  it.each([
+    ['a map keyed by weekday', { 1: corteSegunda }],
+    ['a string', 'segunda 16:30'],
+    ['a number', 1],
+    ['a bare row', corteSegunda],
+  ])('a stored value that is not a list (%s) answers nothing', (_caso, valor) => {
+    expect(calcularPrazoDespachoCivil(armazenado(valor), SEGUNDA_10H)).toBeNull();
+    // NEAR-MISS: the same row inside a list does answer.
+    expect(calcularPrazoDespachoCivil([corteSegunda], SEGUNDA_10H)).not.toBeNull();
+  });
+
+  it.each([
+    ['null', null],
+    ['NaN', Number.NaN],
+    ['a fraction', 1.5],
+    ['text that is no integer', 'segunda'],
+    ['a boolean', true],
+    ['absent', undefined],
+  ])('a row whose weekday is unreadable (%s) governs no day', (_caso, diaDaSemana) => {
+    expect(
+      calcularPrazoDespachoCivil(armazenado([{ ...corteSegunda, diaDaSemana }]), SEGUNDA_10H),
+    ).toBeNull();
+    // ...and does not shadow a readable row for the same day behind it.
+    expect(
+      calcularPrazoDespachoCivil(
+        armazenado([{ ...corteSegunda, diaDaSemana, horaPostagem: 9 }, corteSegunda]),
+        SEGUNDA_10H,
+      ),
+    ).toEqual(calcularPrazoDespachoCivil([corteSegunda], SEGUNDA_10H));
+  });
+
+  /** One Monday row: cut-off 14:00, posted the same day at 16:00. */
+  const corteSegunda14h = {
+    diaDaSemana: 1,
+    horaDeCorte: 14,
+    minutosDeCorte: 0,
+    prazoDePostagem: 0,
+    horaPostagem: 16,
+    minutosPostagem: 0,
+  };
+  const SEGUNDA_16H = { ano: 2021, mes: 0, dia: 4, hora: 16, minuto: 0 };
+
+  it.each(Object.keys(corteSegunda14h))(
+    'EQUAL PAIR: `%s` stored as integer text reads as that integer',
+    (campo) => {
+      expect(calcularPrazoDespachoCivil(armazenado([corteSegunda14h]), SEGUNDA_10H)).toEqual(
+        SEGUNDA_16H,
+      );
+      const comoTexto = {
+        ...corteSegunda14h,
+        [campo]: String(corteSegunda14h[campo as keyof typeof corteSegunda14h]),
+      };
+      expect(calcularPrazoDespachoCivil(armazenado([comoTexto]), SEGUNDA_10H)).toEqual(SEGUNDA_16H);
+    },
+  );
+
+  it('EQUAL PAIR: a text prazoDePostagem is added, never concatenated', () => {
+    const comPrazo = (prazoDePostagem: unknown) =>
+      calcularPrazoDespachoCivil(
+        armazenado([{ ...corteSegunda, prazoDePostagem }, corteQuarta]),
+        SEGUNDA_10H,
+      );
+    // The integer 2 shifts the target to quarta, two days on; `1 + '2'` was '12'.
+    expect(comPrazo(2)).toEqual({ ano: 2021, mes: 0, dia: 6, hora: 11, minuto: 45 });
+    expect(comPrazo('2')).toEqual(comPrazo(2));
+  });
+
+  it.each([
+    ['text with a unit', '16h'],
+    ['a fractional text', '16.5'],
+    ['hex text', '0x10'],
+    ['exponent text', '1.6e1'],
+    ['empty text', ''],
+    ['NaN', Number.NaN],
+    ['a fraction', 16.5],
+    ['a boolean', true],
+    ['an object', {}],
+  ])(
+    'NEAR-MISS: a horaPostagem that is present but unreadable (%s) drops the row — never a 00:00 deadline before `agora`',
+    (_caso, horaPostagem) => {
+      const alvo = calcularPrazoDespachoCivil(
+        armazenado([{ ...corteSegunda14h, horaPostagem }]),
+        SEGUNDA_10H,
+      );
+      expect(alvo).not.toEqual({ ...SEGUNDA_16H, hora: 0 });
+      expect(alvo).toBeNull();
+    },
+  );
+
+  it.each(Object.keys(corteSegunda14h).filter((campo) => campo !== 'diaDaSemana'))(
+    'NEAR-MISS: an unreadable `%s` drops its row, which then shadows nothing',
+    (campo) => {
+      const ilegivel = { ...corteSegunda14h, [campo]: 'x' };
+      expect(calcularPrazoDespachoCivil(armazenado([ilegivel]), SEGUNDA_10H)).toBeNull();
+      expect(calcularPrazoDespachoCivil(armazenado([ilegivel, corteSegunda]), SEGUNDA_10H)).toEqual(
+        calcularPrazoDespachoCivil([corteSegunda], SEGUNDA_10H),
+      );
+    },
+  );
+
+  it('an ABSENT field still reads as the legacy null default — only a present, unreadable one drops the row', () => {
+    const { horaPostagem: _semPostagem, ...semHoraPostagem } = corteSegunda14h;
+    expect(calcularPrazoDespachoCivil(armazenado([semHoraPostagem]), SEGUNDA_10H)).toEqual({
+      ...SEGUNDA_16H,
+      hora: 0,
+    });
+    expect(
+      calcularPrazoDespachoCivil(
+        armazenado([{ ...corteSegunda14h, horaPostagem: null }]),
+        SEGUNDA_10H,
+      ),
+    ).toEqual({ ...SEGUNDA_16H, hora: 0 });
+  });
+
+  it('an out-of-range value is read as stored — the rule computes what Flutter computed', () => {
+    // Hour 25 is refused by the schema, yet Flutter read it as an int: every
+    // hour of the day is "before" it, so the same day always passes.
+    const tarde = { ...SEGUNDA_10H, hora: 23, minuto: 59 };
+    expect(calcularPrazoDespachoCivil([{ ...corteSegunda, horaDeCorte: 25 }], tarde)).toEqual({
+      ano: 2021,
+      mes: 0,
+      dia: 4,
+      hora: 18,
+      minuto: 0,
+    });
+    // NEAR-MISS: with the stored 16 the same instant missed the cut-off.
+    expect(calcularPrazoDespachoCivil([corteSegunda], tarde)).toBeNull();
+  });
+
+  it('both bindings reach the tolerant core', () => {
+    const segunda10h = new Date(2021, 0, 4, 10, 0);
+    expect(getPrazoDespacho(armazenado([null, corteSegunda]), segunda10h)).toEqual(
+      getPrazoDespacho([corteSegunda], segunda10h),
+    );
+    expect(getPrazoDespacho(armazenado({ 1: corteSegunda }), segunda10h)).toBeNull();
+
+    const instante = Date.UTC(2021, 0, 4, 16, 59);
+    expect(
+      getPrazoDespachoNoFuso(armazenado(['texto', ...CORTE_14H_SEG_A_SEX]), instante, SAO_PAULO),
+    ).toBe(SEGUNDA_00H_SP);
+    expect(getPrazoDespachoNoFuso(armazenado({ 1: corte14h(1) }), instante, SAO_PAULO)).toBeNull();
+  });
+});

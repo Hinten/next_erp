@@ -141,16 +141,23 @@ export interface ArgsBuscarFamiliasShopeePorIds {
    * The ids to read, used VERBATIM as the `documents()` source: each one is read
    * as its OWN family anchor, and callers must pass anchors.
    *
-   * ⚠️ Nothing on the manual path resolves a variation child to its anchor —
-   * `enviarEstoqueManualShopee` and the `enviar:estoque` CLI hand over the
-   * deduped request exactly as it arrived. A child id therefore comes back as a
-   * row whose `anchorId` IS the child: the child's own `integracoesComProduto`,
-   * the child's own `prodshopee` links and, as `children`, the produtos whose
-   * `paiId` is the child. The listing link lives on the anchor (the link trigger
-   * stamps the conta onto the produto that owns the `prodshopee` document), so
-   * the planner normally answers `conta-fora-do-produto` (or `sem-link`),
-   * nothing is sent, and the manual push reports the id in `produtosSemEnvio`.
-   * An id with no document yields no row at all (`documents()` omits it).
+   * The ONE caller is `planejarEnvioEstoqueShopee` (`planejarEnvioEstoque.ts`),
+   * which resolves each requested id to its anchor first (`core/anchors.ts`) and
+   * hands over the DEDUPED anchors of the request — so a variation child is read
+   * through its anchor's row. BOTH modes of the manual push go through it: the
+   * route and `enviar:estoque --live` (via `enviarEstoqueManualShopee`) AND the
+   * `enviar:estoque` dry run, so the rehearsal reads exactly the families the
+   * live run sends from (review of PR #1948 — the dry run used to pass the ids
+   * as typed here, and planned a child as its own listing-less anchor while
+   * `--live` pushed the whole family).
+   *
+   * ⚠️ Why the resolution must stay upstream: this reader applies no anchor
+   * predicate, so a child id handed over directly comes back as a row whose
+   * `anchorId` IS the child — the child's own `integracoesComProduto`, its own
+   * `prodshopee` links and, as `children`, the produtos whose `paiId` is the
+   * child — and the planner normally answers `conta-fora-do-produto` (or
+   * `sem-link`), since the listing link lives on the anchor. An id with no
+   * document yields no row at all (`documents()` omits it).
    */
   readonly produtoIds: readonly string[];
 }
