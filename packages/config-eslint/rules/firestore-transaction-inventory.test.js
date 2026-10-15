@@ -126,6 +126,8 @@ const PATHSPECS = [
  * 2 event-clock watermark, 3 tell the human.
  */
 const INVENTARIO = {
+  'apps/mercado-livre/lib/marketplace/notificacoes/missedFeedsSweep.ts':
+    'B (#1292): recordMissedFeedsHealth reads the app health inside every OCC attempt and refuses lastSweepAtUs >= the incoming attempt stamp (both microseconds). It advances the watermark on the same write, preserves lastSuccessAtUs from that fresh snapshot on failure, and only advances success after all streams drain. Provider and task I/O remain outside the transaction. Tests: missedFeedsSweep.test.ts and missedFeedsSweep.firestore.test.ts.',
   'apps/mercado-livre/lib/marketplace/size-charts/sizeChartOperation.ts':
     'B/C (#1799): acquire re-reads the account control, operation and parent. Every checkpoint rechecks owner and the entire projected target against tx.get on each OCC attempt, rebuilds siblings from that read, and records provider receipts even when local write-back loses. Recovery acquires the active operation after its ms lease and rechecks owner/control plus the reviewed current draft before pure ID/cache projection; remote GET and operator-confirmed non-creation happen outside the callback. Pending POSTs retain their reservation until recovery; abandoned IDs cannot replay. No network I/O inside callbacks. Tests: sizeChartSend.test.ts, sizeChartRecovery.test.ts and sizeChartOperation.firestore.test.ts.',
   'packages/data/src/testing/memoryFirestore.ts':

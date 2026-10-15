@@ -150,7 +150,10 @@ export type ItemsApiResolver = (db: Firestore, integracaoId: string) => Promise<
 export const resolveItemsApiFromContext: ItemsApiResolver = async (db, integracaoId) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  return createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  return createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
 };
 
 /**

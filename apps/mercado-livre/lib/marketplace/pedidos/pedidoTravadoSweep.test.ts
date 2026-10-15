@@ -185,7 +185,12 @@ function fakeScheduler() {
 function armApi(result: MlOrder | Error): void {
   h.loadMercadoLivreContext.mockResolvedValue({
     conta: { user_id: 55 },
-    resolveChannelContext: async () => ({ accessToken: 'AT', account: {} }),
+    resolveChannelContext: async () => ({
+      accessToken: 'AT',
+      getAccessToken: async () => 'AT',
+      invalidateAccessToken: vi.fn(),
+      account: {},
+    }),
   });
   h.createMercadoLivreApi.mockReturnValue({
     getOrder: async () => {
@@ -638,7 +643,12 @@ describe('failure isolation', () => {
       }
       return {
         conta: { user_id: 55 },
-        resolveChannelContext: async () => ({ accessToken: 'AT', account: {} }),
+        resolveChannelContext: async () => ({
+          accessToken: 'AT',
+          getAccessToken: async () => 'AT',
+          invalidateAccessToken: vi.fn(),
+          account: {},
+        }),
       };
     });
     h.createMercadoLivreApi.mockReturnValue({ getOrder: async () => order({ status: 'paid' }) });

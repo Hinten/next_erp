@@ -51,7 +51,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const ctx = await loadMercadoLivreContext(db, body.integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createMercadoLivreApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     const result = await importProduto(
       {

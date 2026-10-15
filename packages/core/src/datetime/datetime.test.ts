@@ -9,6 +9,7 @@ import {
   dateToMillis,
   fimDoDiaNoFuso,
   formatIsoNoFuso,
+  microsDeDataHoraNoFuso,
   microsToDate,
   microsToMillis,
   millisToDate,
@@ -341,6 +342,125 @@ describe('dataCivilNoFuso', () => {
       expect(dataCivilNoFuso(fim ?? 0, SAO_PAULO)).toBe(dia);
       expect(dataCivilNoFuso((fim ?? 0) + 1000, SAO_PAULO)).toBe(somarDiasCivis(dia, 1));
     }
+  });
+});
+
+describe('microsDeDataHoraNoFuso', () => {
+  const HORA_US = 3_600_000_000;
+  const us = (...p: Parameters<typeof Date.UTC>) => Date.UTC(...p) * 1000;
+
+  it('reads a São Paulo wall time as -03:00 all year (no daylight saving since 2019)', () => {
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00', SAO_PAULO)).toBe(us(2026, 9, 14, 13));
+    // January and July: no summer offset in either.
+    expect(microsDeDataHoraNoFuso('2026-01-15T10:00:00', SAO_PAULO)).toBe(us(2026, 0, 15, 13));
+    expect(microsDeDataHoraNoFuso('2026-07-01T12:00:00', SAO_PAULO)).toBe(us(2026, 6, 1, 15));
+  });
+
+  it('São Paulo and UTC read the same text exactly three hours apart', () => {
+    const texto = '2026-10-14T23:30:00.250000';
+    const sp = microsDeDataHoraNoFuso(texto, SAO_PAULO);
+    const utc = microsDeDataHoraNoFuso(texto, 'UTC');
+    expect(utc).toBe(us(2026, 9, 14, 23, 30, 0, 250));
+    expect((sp ?? 0) - (utc ?? 0)).toBe(3 * HORA_US);
+  });
+
+  it('keeps every fraction digit the text carries — microseconds, not milliseconds', () => {
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00.123456', 'UTC')).toBe(
+      us(2026, 9, 14, 10) + 123_456,
+    );
+  });
+
+  it('EQUAL PAIR: no fraction ≡ `.000000`, and a short fraction ≡ its zero-padded form', () => {
+    const inteiro = microsDeDataHoraNoFuso('2026-10-14T10:00:00', SAO_PAULO);
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00.000000', SAO_PAULO)).toBe(inteiro);
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00.0', SAO_PAULO)).toBe(inteiro);
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00.5', SAO_PAULO)).toBe(
+      microsDeDataHoraNoFuso('2026-10-14T10:00:00.500000', SAO_PAULO),
+    );
+  });
+
+  it('NEAR-MISS: one microsecond apart stays one microsecond apart; `.1` is not `.01`', () => {
+    const base = microsDeDataHoraNoFuso('2026-10-14T10:00:00', SAO_PAULO) ?? 0;
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00.000001', SAO_PAULO)).toBe(base + 1);
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00.1', SAO_PAULO)).toBe(base + 100_000);
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00.01', SAO_PAULO)).toBe(base + 10_000);
+  });
+
+  it.each([
+    ['an offset (Temporal would DISCARD it)', '2026-10-14T10:00:00-03:00'],
+    ['a positive offset', '2026-10-14T10:00:00+00:00'],
+    ['a Z', '2026-10-14T10:00:00Z'],
+    ['a zone annotation', '2026-10-14T10:00:00[America/Sao_Paulo]'],
+    ['seven fraction digits (Temporal would truncate them)', '2026-10-14T10:00:00.1234567'],
+    ['a leap second (Temporal would read it as :59)', '2026-12-31T23:59:60'],
+    ['hour 24', '2026-10-14T24:00:00'],
+    ['a day the calendar does not have', '2026-02-30T10:00:00'],
+    ['month 13', '2026-13-01T10:00:00'],
+    ['a space for the T', '2026-10-14 10:00:00'],
+    ['a comma decimal separator', '2026-10-14T10:00:00,5'],
+    ['no seconds', '2026-10-14T10:00'],
+    ['a date alone', '2026-10-14'],
+    ['surrounding whitespace', ' 2026-10-14T10:00:00'],
+    ['a trailing line break', '2026-10-14T10:00:00\n'],
+    ['an empty string', ''],
+  ])('refuses %s with null', (_caso, texto) => {
+    expect(microsDeDataHoraNoFuso(texto, SAO_PAULO)).toBeNull();
+  });
+
+  it('refuses the ISO extended-year spelling that Temporal itself would accept', () => {
+    // `+002026-…` IS 2026 to Temporal, so only the anchored shape check keeps a
+    // non-contract spelling out; without the `^` the regex would match its
+    // `2026-…` tail and the stamp would be read.
+    expect(microsDeDataHoraNoFuso('+002026-10-14T10:00:00', 'UTC')).toBeNull();
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00', 'UTC')).toBe(us(2026, 9, 14, 10));
+  });
+
+  it('NEAR-MISS: the leap-second refusal does not reach a real `:59`', () => {
+    expect(microsDeDataHoraNoFuso('2026-12-31T23:59:59', 'UTC')).toBe(us(2026, 11, 31, 23, 59, 59));
+  });
+
+  describe('an explicit zone that DOES observe daylight saving (America/New_York)', () => {
+    const NOVA_YORK = 'America/New_York';
+
+    it('a wall time inside the spring-forward gap moves FORWARD by the gap', () => {
+      // 2026-03-08: 02:00 EST jumps to 03:00 EDT, so 02:30 never happens.
+      expect(microsDeDataHoraNoFuso('2026-03-08T02:30:00', NOVA_YORK)).toBe(us(2026, 2, 8, 7, 30));
+      // The minute before the gap is still EST (-05:00).
+      expect(microsDeDataHoraNoFuso('2026-03-08T01:59:59', NOVA_YORK)).toBe(
+        us(2026, 2, 8, 6, 59, 59),
+      );
+    });
+
+    it('a repeated wall time (fall-back) takes the EARLIER instant', () => {
+      // 2026-11-01: 01:30 happens twice; the first is EDT (-04:00).
+      expect(microsDeDataHoraNoFuso('2026-11-01T01:30:00', NOVA_YORK)).toBe(us(2026, 10, 1, 5, 30));
+    });
+
+    it('the same text is a different instant in another zone', () => {
+      expect(microsDeDataHoraNoFuso('2026-07-01T12:00:00', NOVA_YORK)).toBe(us(2026, 6, 1, 16));
+      expect(microsDeDataHoraNoFuso('2026-07-01T12:00:00', SAO_PAULO)).toBe(us(2026, 6, 1, 15));
+    });
+  });
+
+  it('São Paulo before 2019 had daylight saving: its gap resolves forward too', () => {
+    // 2018-11-04: midnight jumped to 01:00 (-02:00).
+    expect(microsDeDataHoraNoFuso('2018-11-04T00:30:00', SAO_PAULO)).toBe(us(2018, 10, 4, 3, 30));
+  });
+
+  it('agrees with formatIsoNoFuso: the instant prints back as the same wall time', () => {
+    const lido = microsDeDataHoraNoFuso('2026-10-14T21:05:09.123000', SAO_PAULO) ?? 0;
+    expect(formatIsoNoFuso(lido / 1000, SAO_PAULO)).toBe('2026-10-14T21:05:09.123-03:00');
+  });
+
+  it('returns null outside the µs safe-integer range rather than a lossy number', () => {
+    expect(microsDeDataHoraNoFuso('1600-01-01T00:00:00', 'UTC')).toBeNull();
+    expect(microsDeDataHoraNoFuso('2300-01-01T00:00:00', 'UTC')).toBeNull();
+    expect(microsDeDataHoraNoFuso('1970-01-01T00:00:00', 'UTC')).toBe(0);
+  });
+
+  it('throws on an unknown zone id — even for a stamp it would otherwise refuse', () => {
+    expect(() => microsDeDataHoraNoFuso('2026-10-14T10:00:00', 'Not/AZone')).toThrow(RangeError);
+    expect(() => microsDeDataHoraNoFuso('lixo', 'Not/AZone')).toThrow(RangeError);
   });
 });
 
