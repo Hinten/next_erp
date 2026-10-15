@@ -166,7 +166,9 @@ export type MotivoConfigAmazon =
   | 'token-na-url'
   | 'user-agent'
   | 'credencial-lwa'
-  | 'redirect-uri';
+  | 'redirect-uri'
+  | 'application-id'
+  | 'state';
 
 /**
  * OUR input was unusable, and **no request was made**.
@@ -186,6 +188,13 @@ export type MotivoConfigAmazon =
  *   authorization code that is empty or outside visible ASCII.
  * - `'redirect-uri'` — not an absolute `https:` URL, or carrying a fragment or
  *   userinfo.
+ * - `'application-id'` — the consent URL's `application_id` (the app's Solution
+ *   Provider Portal id) is empty, longer than 200 characters, or outside
+ *   visible ASCII.
+ * - `'state'` — the consent URL's `state` is empty or outside visible ASCII.
+ *
+ * The last two are raised by `montarUrlConsentimento` (`consentimento.ts`), which
+ * builds a URL and sends nothing: "no request was made" holds trivially there.
  *
  * ⚠️ The message never echoes the offending value: a rejected token is still a
  * token, a rejected `ref` may contain one, and a rejected path may carry a query.
@@ -223,6 +232,10 @@ function mensagemDeConfig(motivo: MotivoConfigAmazon, operacao: string): string 
       return `${prefixo} o client id, o client secret, o refresh token ou o código de autorização está vazio ou tem caractere fora do ASCII visível. ${nada}`;
     case 'redirect-uri':
       return `${prefixo} o redirect_uri precisa ser uma URL https absoluta, sem fragmento (#) e sem usuário ou senha. ${nada}`;
+    case 'application-id':
+      return `${prefixo} o application_id do aplicativo está vazio, passa de 200 caracteres ou tem caractere fora do ASCII visível. ${nada}`;
+    case 'state':
+      return `${prefixo} o state está vazio ou tem caractere fora do ASCII visível. ${nada}`;
   }
 }
 

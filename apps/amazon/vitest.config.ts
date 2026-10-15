@@ -16,8 +16,8 @@ export default defineConfig({
     // (not a pnpm workspace package) once a later step adds it. The parent app's
     // tasks (tsconfig `**/*.ts`, `eslint .`, this vitest config) cover it, so
     // its tests are included here too.
-    // `proxy.ts` (the CORS middleware) will sit at the app root, outside every
-    // directory glob above — name its test explicitly or it never runs.
+    // `proxy.ts` (the CORS middleware) sits at the app root, outside every
+    // directory glob above — its test is named explicitly or it never runs.
     include: ['{app,lib,functions}/**/*.test.ts', 'proxy.test.ts'],
     // `foo.tasks.test.ts` DOES match the include above (`*` is greedy over
     // non-slash chars), so without this an emulator suite would be collected

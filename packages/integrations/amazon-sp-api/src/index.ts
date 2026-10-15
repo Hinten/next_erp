@@ -2,14 +2,13 @@
  * Amazon Selling Partner API channel library: platform-neutral and
  * **fetch-only**, no Firestore.
  *
- * What ships here: the two Login with Amazon token exchanges (`lwa.ts`), a
- * GET-only SP-API client for the North America host that serves the BR store
+ * What ships here: the two Login with Amazon token exchanges (`lwa.ts`), the
+ * Seller Central consent URL that starts the authorization (`consentimento.ts`),
+ * a GET-only SP-API client for the North America host that serves the BR store
  * (`client.ts`), the per-call deadlines, the typed errors, and the wire schemas
- * those three consume. Everything stateful (the credential store, the OAuth
- * routes, the access-token cache, the sweeps) will be driven by the App Hosting
- * backend `apps/amazon`, which holds the Firestore/Admin-SDK dependency: step 1
- * PR b adds the app, and the OAuth routes, credential store and token cache
- * arrive in step 2.
+ * those consume. Everything stateful (the credential store, the OAuth routes,
+ * the access-token cache, the sweeps) is driven by the App Hosting backend
+ * `apps/amazon`, which holds the Firestore/Admin-SDK dependency.
  *
  * This is the ADR-0015 shape: a channel is a LIBRARY paired with an app, not a
  * plugin implementing an ERP-orchestration contract. There is deliberately no
@@ -49,3 +48,4 @@ export * from './prazos';
 export * from './types';
 export * from './client';
 export * from './lwa';
+export * from './consentimento';

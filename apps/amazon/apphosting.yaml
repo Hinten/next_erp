@@ -1,8 +1,9 @@
 # Firebase App Hosting backend config for apps/amazon.
 # API-only service for the Amazon (SP-API) marketplace channel. Step 1 of the
-# master plan ships only the bare scaffold (`GET /api/health`); the connect
-# route, the push receiver, the Firestore access and the backstop poll arrive in
-# later steps.
+# master plan shipped the bare scaffold (`GET /api/health`); step 2 adds the
+# Firebase Admin init, the CORS proxy, the conta status route, the OAuth start
+# route and the public OAuth callback. The push receiver, the Firestore-backed
+# flows and the backstop poll arrive in later steps.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -15,14 +16,62 @@ runConfig:
   # Step 3, which adds the receiver, re-checks this.
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
-# No `timeoutSeconds` — the platform default is what the later timeout-ceiling
-# test compares against.
+# No `timeoutSeconds` — the platform default is what
+# `lib/amazon/prazos.test.ts` compares the OAuth callback's one exchange against.
 #
 # No `runConfig.vpcAccess` — this channel needs no static egress IP: the LWA
 # token exchange is authorized by the app's client credentials, and an SP-API
 # call by its LWA access token alone (no AWS IAM or SigV4 since 2023-10-02,
 # master plan step 1).
 #
-# No `env:` block and no variables listed: nothing here reads the environment
-# yet. The step that adds the first route documents and declares every variable
-# it reads, here, in the same change (master plan §4.iii item 4).
+# Environment this backend reads (step 2). None of it gets an `env:` row below,
+# on purpose: COMMENT ROWS ONLY, so nothing baked into the manifest can override
+# a console value during the window, and the list stays here so the next step
+# that reads a variable declares it in the same change:
+#
+#   FIREBASE_PROJECT_ID          OPTIONAL. `lib/firebase/admin.ts` resolves the
+#                                project from this, then GOOGLE_CLOUD_PROJECT, then
+#                                FIREBASE_CONFIG.projectId (the one App Hosting
+#                                actually injects), then the service account. Leave
+#                                it unset on a deployed backend.
+#   FIREBASE_DATABASE_ID         OPTIONAL. Unset means the database named `default`
+#                                (Enterprise names it `default`, never `(default)`).
+#                                Never add a blank `env:` row for it: an empty
+#                                string is a value, not an absence.
+#   AMAZON_LWA_CLIENT_ID         Console value. The public half of the app's Login
+#                                with Amazon pair.
+#   AMAZON_APPLICATION_ID        Console value. The consent URL's `application_id`.
+#   AMAZON_OAUTH_REDIRECT_URI    Console value. `<this backend's https origin on the
+#                                production custom domain>/api/oauth/amazon/callback`,
+#                                sent on the consent URL and repeated byte for byte
+#                                in the code exchange; registered on the app as an
+#                                ADDITIONAL redirect URI. An http (localhost) URI is
+#                                refused by Amazon and by the package.
+#   WEB_APP_URL                  Console value. The apps/web origin the callback
+#                                redirects the browser back to.
+#   AMAZON_LWA_CLIENT_SECRET     Secret Manager. The secret half of the LWA pair
+#                                (180-day rotation; see AMAZON_LWA_SEGREDO_EXPIRA_EM).
+#   AMAZON_OAUTH_STATE_SECRET    Secret Manager. The HMAC key of the signed OAuth state.
+#   ALLOWED_ADMIN_ORIGINS        Console value, REQUIRED in production: the whole
+#                                CORS allow-list of apps/web origins, read by
+#                                `proxy.ts` only. localhost is allowed outside
+#                                production only (#821/T5), so an unset value allows
+#                                NO origin and every browser call fails CORS.
+#   AMAZON_CHAMADAS              The READ SWITCH (`lib/amazon/core/valvulas.ts`).
+#                                UNSET until the migration window (master plan §5,
+#                                W5; mock only before it, D11): only the exact `on`
+#                                lets this backend call Amazon. Anything else makes
+#                                the OAuth start answer 503 AMAZON_CHAMADAS_DESLIGADAS
+#                                and the callback redirect with `integracao_desligada`
+#                                without consuming the attempt. Set it on BOTH
+#                                surfaces (this console and the functions codebase).
+#   AMAZON_LWA_SEGREDO_EXPIRA_EM NOT read by this backend: the daily expiry sweep
+#                                runs in the nested functions codebase (step 3),
+#                                which reads it from its own deploy env. Listed so
+#                                nobody sets it here expecting an effect.
+#
+# The two Secret Manager values are NOT committed anywhere: the root secrets
+# template lists their names blank, and the rollout that creates the backend
+# grants it access to them (window item W1).
+#
+# No `env:` block: nothing here needs a value baked into the manifest.
