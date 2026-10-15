@@ -1,7 +1,9 @@
 /**
  * Loja Integrada's NAIVE date-times, read and written as text — the order
- * poller's stamps and bounds (master plan step 3, PR 3-e). Pure: no clock, no
- * zone, no I/O.
+ * poller's stamps and bounds (master plan step 3, PR 3-e) — and the order
+ * import's ONE conversion of such a text into an instant (step 5, PR 5-b).
+ * Pure: no clock, no I/O; the only zone is {@link FUSO_DATAS_LI}, passed
+ * explicitly.
  *
  * ## Two shapes, both fixed width, so string order is time order
  *
@@ -13,13 +15,28 @@
  *    {@link canonicaDoCursorLi} lifts one to a canonical stamp (`.000000`)
  *    before it is compared with a stamp.
  *
- * Which zone the platform writes its stamps in, and reads its filter in, is
- * unknown until a capture settles it. So nothing here ever turns one of these
- * texts into an instant: {@link msIngenuoDeDataLi} reads the NAIVE fields as if
- * they were UTC, purely to do arithmetic on them (`Date.UTC` / `getUTC*`, which
- * `no-ambient-timezone` allows), and {@link renderizarDataLi} writes the result
- * back as naive text. ⚠️ A `msIngenuo` is NOT an epoch: never compare one with a
- * clock reading, and never store one.
+ * ## The zone: America/Sao_Paulo, INFERRED and unconfirmed
+ *
+ * The platform writes every stamp without an offset and documents no zone, and
+ * no capture proves which one it is. The order import reads them in
+ * {@link FUSO_DATAS_LI} (`America/Sao_Paulo`): a Brazilian storefront's local
+ * wall time is the inference, not a measurement. Two things keep a wrong
+ * inference cheap, and neither depends on it:
+ *
+ *  - the POLLER never turns a text into an instant. {@link msIngenuoDeDataLi}
+ *    reads the naive fields as if they were UTC, purely to do arithmetic on
+ *    them (`Date.UTC` / `getUTC*`, which `no-ambient-timezone` allows), and
+ *    {@link renderizarDataLi} writes the result back as naive text; its window
+ *    carries a 4 h zone margin (`janelaPoll.ts`). ⚠️ A `msIngenuo` is NOT an
+ *    epoch: never compare one with a clock reading, and never store one;
+ *  - the IMPORT converts each stamp exactly once, through
+ *    {@link dataLiParaMicros}, so two LI stamps it compares were converted the
+ *    same way and a constant zone error cancels out of that comparison. What a
+ *    wrong zone would shift is the stored instants themselves (dates shown to
+ *    an operator, a dispatch deadline).
+ *
+ * When a capture settles the zone, {@link FUSO_DATAS_LI} is the one constant to
+ * change.
  *
  * ## The canonicalisation is a FOLD — what it equates and what it keeps apart
  *
@@ -31,7 +48,15 @@
  * whitespace, a day the calendar does not have, a non-string. Pinned by
  * `dataLi.test.ts`.
  */
+import { microsDeDataHoraNoFuso } from '@delfrance/core/datetime';
 import { CURSOR_POLL_LI_REGEX, DATA_MODIFICACAO_LI_REGEX } from '@delfrance/schemas';
+
+/**
+ * The zone the order import reads Loja Integrada's naive stamps in — INFERRED,
+ * unconfirmed (module header). The one constant to change when a capture
+ * settles it.
+ */
+export const FUSO_DATAS_LI = 'America/Sao_Paulo';
 
 /** A stamp as the platform may send it: whole seconds and an optional 1–6 digit fraction. */
 const DATA_LI_ACEITA = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.([0-9]{1,6}))?$/;
@@ -81,6 +106,25 @@ export function lerDataLi(bruto: unknown): string | null {
   const canonica = `${bruto.slice(0, 19)}.${(m[1] ?? '').padEnd(6, '0')}`;
   // The field ranges (month 13, hour 24, second 60) and a real calendar day.
   return msIngenuoDeDataLi(canonica) === null ? null : canonica;
+}
+
+/**
+ * A Loja Integrada stamp as the INSTANT it names, in µs since the epoch, read
+ * in {@link FUSO_DATAS_LI} — or `null` when {@link lerDataLi} refuses it (or the
+ * instant falls outside the µs safe range). The order import's ONE conversion:
+ * the watermark, `timestamp`, the history dates and the freight dates all go
+ * through it, so two stamps it compares were converted the same way.
+ *
+ * ⚠️ Never `coerceToMicros` on an incoming stamp: an offset-less ISO string is
+ * read there as UTC, three hours away from this. `coerceToMicros` is for the
+ * STORED side, which may hold another writer's unit.
+ *
+ * Fold: the {@link lerDataLi} fold (`X` ≡ `X.000000`, `.1` ≡ `.100000`); one
+ * microsecond apart stays distinct.
+ */
+export function dataLiParaMicros(bruto: unknown): number | null {
+  const canonica = lerDataLi(bruto);
+  return canonica === null ? null : microsDeDataHoraNoFuso(canonica, FUSO_DATAS_LI);
 }
 
 /**
