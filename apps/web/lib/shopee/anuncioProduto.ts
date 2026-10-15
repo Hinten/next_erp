@@ -180,6 +180,16 @@ export function ordenarVinculosShopee<
 export const FRASE_PRIMEIRA_PUBLICACAO_SHOPEE =
   'Primeira publicação: chega na etapa de autoria do anúncio.';
 
+/** The `importar` row's first half: what was found. */
+const FRASE_KIT_JA_EXISTE_SHOPEE =
+  'Já existe na Shopee um kit com o SKU deste produto — não crie outro.';
+
+/** The `importar` row's second half: the one door for a hit NO link holds (see below). */
+const FRASE_IMPORTACAO_EM_MASSA_SHOPEE =
+  'A importação em massa (Canais › Shopee) o vincula a este produto se ele ainda não estiver ' +
+  'vinculado a nenhum produto, se nenhum outro produto tiver o mesmo SKU e se os componentes do ' +
+  'kit já estiverem vinculados no ERP; um kit já vinculado a outro produto continua onde está.';
+
 /**
  * What the operator READS for each machine-readable next step of a refused
  * publish (`problemas[].acao`, `@delfrance/schemas`' `shopeeAcaoSugerida.ts`).
@@ -197,16 +207,6 @@ export const FRASE_PRIMEIRA_PUBLICACAO_SHOPEE =
  * run. The web has no single-listing import (no `ShopeeClient` method calls
  * `…/importar`), so the mass import is the only door the sentence can name.
  */
-/** The `importar` row's first half: what was found. */
-const FRASE_KIT_JA_EXISTE_SHOPEE =
-  'Já existe na Shopee um kit com o SKU deste produto — não crie outro.';
-
-/** The `importar` row's second half: the one door for a hit NO link holds (see below). */
-const FRASE_IMPORTACAO_EM_MASSA_SHOPEE =
-  'A importação em massa (Canais › Shopee) o vincula a este produto se ele ainda não estiver ' +
-  'vinculado a nenhum produto, se nenhum outro produto tiver o mesmo SKU e se os componentes do ' +
-  'kit já estiverem vinculados no ERP; um kit já vinculado a outro produto continua onde está.';
-
 export const TEXTO_ACAO_SUGERIDA = {
   [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar]:
     'Este kit nativo precisa ser recriado na Shopee: o anúncio atual não pode mais ser publicado.',
