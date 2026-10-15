@@ -364,8 +364,9 @@ The per-surface notes below stay the authority on behaviour.
   bug the claims path had to fix. `bucket: null` degrades to skip-all with ONE warn
   per message: losing the customer’s message because Storage was unavailable would
   be far worse than losing the photo.
-- `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
-  keeps its own so they deploy + log independently).
+- `lib/auth` binds the shared verifier in `@delfrance/data/admin/auth`;
+  `lib/firebase` owns this backend's SDK initialization. Shared primitives keep
+  deployments and logs independent without copying security decisions (#1431).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
   `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks.
 
