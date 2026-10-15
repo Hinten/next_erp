@@ -113,6 +113,26 @@ describe('useImportarTodosShopeeAction', () => {
     expect(result.current.state.reatados.has('job-vivo')).toBe(true);
   });
 
+  it('NEAR MISS — a second attach ADDS to the attached set; the first card keeps its note', async () => {
+    // One conta per start (`maxSelection: 1`), so accumulation only shows across
+    // two consecutive starts — each one a busy start on its own conta.
+    h.clientRef.current = shopeeClientFalso({
+      startMassImport: vi.fn(async ({ integracaoId }) => {
+        throw emAndamento(`job-${integracaoId}`);
+      }),
+    });
+    const { result } = renderHook(() => useImportarTodosShopeeAction());
+
+    await abrirEIniciar(result, [row('a', 'Conta A')]);
+    await abrirEIniciar(result, [row('b', 'Conta B')]);
+
+    expect(result.current.state.entries).toEqual([
+      { kind: 'started', conta: { id: 'a', nome: 'Conta A' }, jobId: 'job-a' },
+      { kind: 'started', conta: { id: 'b', nome: 'Conta B' }, jobId: 'job-b' },
+    ]);
+    expect([...result.current.state.reatados].sort()).toEqual(['job-a', 'job-b']);
+  });
+
   it('a busy start from an older backend (no jobId) is a yellow entry, never a fake card', async () => {
     h.clientRef.current = shopeeClientFalso({
       startMassImport: vi.fn(async () => {
