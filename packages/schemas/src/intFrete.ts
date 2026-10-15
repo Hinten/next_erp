@@ -511,6 +511,62 @@ export interface PrazoDespachoCivil {
   readonly minuto: number;
 }
 
+/** One cut-off row as the rule reads it: integers or absent, nothing else. */
+interface LinhaDeCorte {
+  readonly diaDaSemana: number;
+  readonly horaDeCorte: number | null;
+  readonly minutosDeCorte: number | null;
+  readonly prazoDePostagem: number | null;
+  readonly horaPostagem: number | null;
+  readonly minutosPostagem: number | null;
+}
+
+function inteiroOuAusente(valor: unknown): number | null {
+  return Number.isInteger(valor) ? (valor as number) : null;
+}
+
+/**
+ * The rows of a STORED schedule the rule can read, in stored order.
+ *
+ * The typed parameter is a promise the data does not keep: the web freight
+ * tabs read `int_frete` through a soft read, which hands back the raw document
+ * when the parse fails, so the imported corpus reaches the rule unvalidated.
+ * So, deliberately:
+ *
+ *   - a stored value that is not a list has no rows (a map keyed by weekday, a
+ *     bare row), and neither does a row that is not an object (`null`, text);
+ *   - every field is read only as an integer — the one shape Flutter's reader
+ *     accepted (Dart `int`; `DIA_DA_SEMANA_fromJson(int)`), so text, fractions
+ *     and NaN were never a document it could load. Anything else reads as
+ *     ABSENT, never coerced: a text `prazoDePostagem` used to concatenate
+ *     (`1 + '2'` is `'12'`) and silently answer nothing;
+ *   - a row with no integer weekday governs no day and is dropped, so it can
+ *     neither answer for one nor shadow a readable row behind it;
+ *   - RANGE is not checked. An hour of 25 is read as stored, exactly as Flutter
+ *     computed with it — the `/logistica` editor's schema is where it is fixed.
+ *
+ * A valid schedule passes through unchanged.
+ */
+function linhasDeCorte(horarios: unknown): LinhaDeCorte[] {
+  if (!Array.isArray(horarios)) return [];
+  const linhas: LinhaDeCorte[] = [];
+  for (const linha of horarios as unknown[]) {
+    if (linha === null || typeof linha !== 'object') continue;
+    const campos = linha as Record<string, unknown>;
+    const diaDaSemana = inteiroOuAusente(campos.diaDaSemana);
+    if (diaDaSemana === null) continue;
+    linhas.push({
+      diaDaSemana,
+      horaDeCorte: inteiroOuAusente(campos.horaDeCorte),
+      minutosDeCorte: inteiroOuAusente(campos.minutosDeCorte),
+      prazoDePostagem: inteiroOuAusente(campos.prazoDePostagem),
+      horaPostagem: inteiroOuAusente(campos.horaPostagem),
+      minutosPostagem: inteiroOuAusente(campos.minutosPostagem),
+    });
+  }
+  return linhas;
+}
+
 /**
  * The cut-off rule itself: pure, zone-free, over civil components.
  *
@@ -528,6 +584,10 @@ export interface PrazoDespachoCivil {
  *   - The result is `agora + (c + prazoDePostagem) days` at
  *     `horaPostagem:minutosPostagem` (defaulting 00:00).
  *
+ * It reads only the rows {@link linhasDeCorte} can read — a stored row the
+ * schema does not model is skipped rather than thrown on, where Flutter's whole
+ * document failed to load.
+ *
  * ⚠️ Extracted from {@link getPrazoDespacho} rather than copied. The rule now
  * runs on two surfaces — an operator's browser (their own zone, correct) and a
  * server importing a marketplace order (`America/Sao_Paulo`, explicit) — and a
@@ -538,20 +598,21 @@ export function calcularPrazoDespachoCivil(
   horarios: ReadonlyArray<HorarioDeCorte> | null | undefined,
   agora: PartesCivis,
 ): PrazoDespachoCivil | null {
-  if (!horarios || horarios.length === 0) return null;
+  const linhas = linhasDeCorte(horarios);
+  if (linhas.length === 0) return null;
 
-  let encontrado: HorarioDeCorte | null = null;
+  let encontrado: LinhaDeCorte | null = null;
   let c = 0;
   const max = 7;
   let currentDia = agora.diaDaSemana;
-  const diaDeHoje = horarios.find((h) => h.diaDaSemana === currentDia);
+  const diaDeHoje = linhas.find((h) => h.diaDaSemana === currentDia);
   const prazoDePostagem = diaDeHoje?.prazoDePostagem ?? 0;
 
   while (encontrado === null && c < max) {
     const cIter = c;
     const diaIter = currentDia;
     encontrado =
-      horarios.find((h) => {
+      linhas.find((h) => {
         let targetDia = diaIter + prazoDePostagem;
         if (targetDia > 7) targetDia = targetDia - 7;
         return (
