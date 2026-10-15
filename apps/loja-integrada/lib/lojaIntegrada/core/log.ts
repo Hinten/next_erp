@@ -95,9 +95,10 @@ export type OpcoesRegistroLi = Omit<OpcoesObservadorLi, 'conta'> & {
 
 /**
  * What a line is about: a call, a valve read at a run's start, a call the read
- * switch refused (`core/valvulas.ts`). Each write step adds its own.
+ * switch refused (`core/valvulas.ts`), a run of the order poller
+ * (`pedidos/pollPedidos.ts`). Each write step adds its own.
  */
-export type EventoLi = 'chamada' | 'valvula' | 'chamada-bloqueada';
+export type EventoLi = 'chamada' | 'valvula' | 'chamada-bloqueada' | 'poll';
 
 /** A type alias, not an interface: it must be assignable to the sink's record of campos. */
 export type LinhaChamadaLi = {
