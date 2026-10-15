@@ -73,9 +73,10 @@ Firestore-bound half**:
 | `freight-br` | `apps/melhor-envio` | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking |
 | `shopee` | `apps/shopee` | Shopee Open Platform: HMAC request signing, hosts, consent URL + token endpoints, wire schemas |
 | `loja-integrada` | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET client, Tastypie paging, typed errors |
+| `amazon-sp-api` | `apps/amazon` | Amazon SP-API (NA host, BR marketplace): LWA token exchanges, GET-only client, typed errors |
 
-⚠️ Three throw-only marketplace scaffolds (`amazon-sp-api`, `magalu`, `facebook`)
-were deleted in #815 and stay deleted. `shopee` and `loja-integrada` came back as
+⚠️ Two throw-only marketplace scaffolds (`magalu`, `facebook`) were deleted in
+#815 and stay deleted. `shopee`, `loja-integrada` and `amazon-sp-api` came back as
 **real** fetch-only packages — the ADR-0015 shape, the opposite of the scaffold. That those
 other channels are planned is recorded by `INTEGRACAO_TIPO` and their
 `MARKETPLACE_TIPO_CAPS` rows.
