@@ -2,7 +2,7 @@
 
 import { Alert, List, Stack, Text } from '@mantine/core';
 import {
-  pularPorRecusaAnterior,
+  mecanismosDaRecusaAnterior,
   recusaEstoqueDoAnuncioShopeeLegivel,
   recusaPrecoDoAnuncioShopeeLegivel,
   type ProdutoShopeeLink,
@@ -26,14 +26,16 @@ export interface RecusasAnuncioShopeeProps {
  * `shopeeLinkLeitura.ts` in `@delfrance/schemas` — a refusal shows while no
  * success stamp is newer, a tie shows it — the module `apps/shopee` reads the
  * same documents with. The stock refusal ALSO shows while the stock gate's skip
- * set is armed (`pularPorRecusaAnterior`, the gate's own function): that skip is
- * the operative fact even when a late success stamp hid the sentence.
+ * set is armed (`mecanismosDaRecusaAnterior`, the two halves of the gate's own
+ * `pularPorRecusaAnterior`): that skip is the operative fact even when a late
+ * success stamp hid the sentence, and WHICH half is armed decides what the
+ * notice promises (`fraseDaSuspensao`).
  */
 export function RecusasAnuncioShopee({ link, agoraMs }: RecusasAnuncioShopeeProps) {
   const falha = lerFalhaPublicacao(link.falhaPublicacao);
   const estoqueLegivel = recusaEstoqueDoAnuncioShopeeLegivel(link);
-  const estoqueSuspenso = pularPorRecusaAnterior(link, agoraMs);
-  const prazoEstoque = formatarInstanteShopee(link.estoqueRecusaAte);
+  const suspensao = mecanismosDaRecusaAnterior(link, agoraMs);
+  const estoqueSuspenso = suspensao.tempo || suspensao.estado;
   const precoLegivel = recusaPrecoDoAnuncioShopeeLegivel(link);
   const agendamentoFalhouEm = formatarInstanteShopee(link.agendamentoFalhouEm);
   const taxInfoOmitido = textoPreenchido(link.taxInfoOmitido);
@@ -84,9 +86,7 @@ export function RecusasAnuncioShopee({ link, agoraMs }: RecusasAnuncioShopeeProp
           </Text>
           {estoqueSuspenso && (
             <Text size="sm" mt={4}>
-              O envio automático de estoque está suspenso para este anúncio: a Shopee já o recusou
-              neste mesmo estado. Ele volta quando o anúncio mudar.
-              {prazoEstoque === null ? '' : ` Prazo registrado: ${prazoEstoque}.`}
+              {fraseDaSuspensao(suspensao, link.estoqueRecusaAte)}
             </Text>
           )}
         </Alert>
@@ -114,6 +114,36 @@ export function RecusasAnuncioShopee({ link, agoraMs }: RecusasAnuncioShopeeProp
         </Text>
       )}
     </Stack>
+  );
+}
+
+/**
+ * Why the stock sender skips this listing, worded by WHICH of the gate's two
+ * mechanisms is armed (`mecanismosDaRecusaAnterior` — never re-derived here):
+ *
+ * - TIME only — it lifts at the deadline, whatever the listing does meanwhile;
+ *   "it comes back when the listing changes" would be false.
+ * - STATE only — it lifts when the listing's reading moves. No deadline is
+ *   printed: one that is absent or already past is not what holds it.
+ * - both — a promotion refusal records the fingerprint beside its deadline, so
+ *   after the deadline the STATE half still holds until the reading moves.
+ */
+function fraseDaSuspensao(
+  { tempo, estado }: { readonly tempo: boolean; readonly estado: boolean },
+  ate: unknown,
+): string {
+  const prazo = formatarInstanteShopee(ate);
+  const ateOPrazo = prazo === null ? 'até o prazo registrado' : `até ${prazo}`;
+  if (tempo && estado) {
+    return (
+      `O envio automático de estoque está suspenso para este anúncio ${ateOPrazo}; ` +
+      'depois disso, como a Shopee já o recusou neste mesmo estado, só volta quando o anúncio mudar.'
+    );
+  }
+  if (tempo) return `O envio automático de estoque está suspenso para este anúncio ${ateOPrazo}.`;
+  return (
+    'O envio automático de estoque está suspenso para este anúncio: a Shopee já o recusou ' +
+    'neste mesmo estado. Ele volta quando o anúncio mudar.'
   );
 }
 

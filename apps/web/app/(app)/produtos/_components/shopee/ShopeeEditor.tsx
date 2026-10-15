@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { useQueryClient } from '@tanstack/react-query';
 import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Stack, Text } from '@mantine/core';
@@ -12,7 +13,7 @@ import {
   ACAO_STATUS_ANUNCIO,
   INTEGRACAO_TIPO,
   idDoRef,
-  idFromRef,
+  lerRefTabelaDeMedidas,
   vinculoShopeeEhDaConta,
   type AcaoStatusAnuncio,
 } from '@delfrance/schemas';
@@ -57,13 +58,13 @@ import {
 } from './ContaShopeePanel';
 import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
 import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeModal';
-import { textoPreenchido } from './campos';
 
 /**
  * The produto editor's **Shopee** tab (step 21-3, #1529): one tab per Shopee
  * conta, each holding every listing that conta has on this produto — its state,
- * the refusals Shopee or the ERP stored on it, the violations, the size chart a
- * publish would send, the storefront link, the native kit (its badge, the ERP
+ * the refusals Shopee or the ERP stored on it, the violations, the template
+ * entry the produto's tabela de medidas holds for it (never what a publish
+ * sent — residual 7), the storefront link, the native kit (its badge, the ERP
  * recipe and its warnings), on demand its models, and the actions on it: pause
  * / reactivate, re-verify, republish, recriar / converter em kit nativo.
  *
@@ -238,7 +239,12 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   const produto = produtoSnap.data?.data;
   // A variation child carries no listing of its own — its MODEL lives on the
   // parent's listing — so the tab sends the operator there and reads nothing.
-  const paiId = textoPreenchido(produto?.paiId);
+  // ⚠️ "Child" is the publish dispatcher's test (`publicarShopee.ts`: any
+  // non-empty string), NOT a trim: the tab's Republicar reaches that gate, so a
+  // whitespace-only `paiId` the dispatcher refuses as `produto-e-filho` must
+  // not be offered as a root here either. `''` is a root for every rule.
+  const paiBruto: unknown = produto?.paiId;
+  const paiId = typeof paiBruto === 'string' && paiBruto !== '' ? paiBruto : null;
   const ehRaiz = produtoSnap.data !== undefined && paiId === null;
 
   const contasQuery = useMemo(
@@ -263,12 +269,14 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   );
   const linksSnap = useSnapshot(linksQuery);
 
-  // The produto's tabela de medidas, read by its id the way the Mercado Livre
-  // editor reads it: each listing block says which Shopee template entry it
-  // holds for that listing's conta and category. Memoised for the reason
-  // `produtoDocRef` is.
-  const tabelaId = textoPreenchido(produto?.tabelaDeMedidasModaUid);
-  const tabelaDocId = tabelaId === null ? null : textoPreenchido(idFromRef(tabelaId));
+  // The produto's tabela de medidas: each listing block says which Shopee
+  // template entry it holds for that listing's conta and category. The ref is
+  // resolved by `lerRefTabelaDeMedidas` — the rule the Shopee publish resolves
+  // it with — so a ref into another collection reads NOTHING here, as it reads
+  // nothing there. Memoised for the reason `produtoDocRef` is.
+  const tabelaModaUid: unknown = produto?.tabelaDeMedidasModaUid;
+  const refTabela = useMemo(() => lerRefTabelaDeMedidas(tabelaModaUid), [tabelaModaUid]);
+  const tabelaDocId = refTabela.tipo === 'tabela' ? refTabela.id : null;
   const tabelaDocRef = useMemo(
     () =>
       ehRaiz && tabelaDocId !== null ? tabelaDeMedidasCollection.docRef(db, {}, tabelaDocId) : null,
@@ -276,16 +284,17 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   );
   const tabelaSnap = useDocSnapshot(tabelaDocRef);
   const tabelaMedidas = useMemo<TabelaMedidasDoProduto>(() => {
-    if (tabelaDocId === null) return { estado: 'sem-tabela' };
+    if (refTabela.tipo === 'sem-tabela') return { estado: 'sem-tabela' };
+    if (refTabela.tipo === 'ref-invalida') return { estado: 'ref-invalida', ref: refTabela.ref };
     if (tabelaSnap.data === undefined) return { estado: 'carregando' };
-    if (tabelaSnap.data === null) return { estado: 'ausente', id: tabelaDocId };
+    if (tabelaSnap.data === null) return { estado: 'ausente', id: refTabela.id };
     return {
       estado: 'tabela',
-      id: tabelaDocId,
+      id: refTabela.id,
       nome: tabelaSnap.data.data.nome,
       entradasShopee: tabelaSnap.data.data.tabelasMedidasShopee,
     };
-  }, [tabelaDocId, tabelaSnap.data]);
+  }, [refTabela, tabelaSnap.data]);
 
   // R2: which listings have their "Variações" open, by link doc id.
   const [modelosAbertos, setModelosAbertos] = useState<ReadonlySet<string>>(() => new Set());
@@ -337,8 +346,9 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
    * Run ONE write on ONE link: take the lock (a write already in flight from
    * this tab makes this a no-op), clear the link's last outcome, record what
    * came back. A failure is narrowed by the client's two classes and becomes
-   * the link's outcome — a refused kit create remembering its `pedido`; anything
-   * else is not ours and rethrows (root rule 6).
+   * the link's outcome — a refused kit create remembering its `pedido`; so does
+   * a `FirebaseError` (below); anything else is not ours and rethrows (root
+   * rule 6).
    */
   async function executar(
     linkDocId: string,
@@ -355,6 +365,14 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
     } catch (err) {
       if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
         registrarDesfecho(linkDocId, desfechoDaFalha(err, pedido));
+        return;
+      }
+      // ⚠️ A failed ID-token refresh: `getAuthToken()` is awaited OUTSIDE the
+      // client's try (`client.ts`), so it is none of the client's classes, and
+      // rethrown from these `void`-ed handlers it would end a confirmed pause in
+      // silence. Nothing was sent, so it is a definite answer — never uncertain.
+      if (err instanceof FirebaseError) {
+        registrarDesfecho(linkDocId, { tipo: 'falha', mensagem: err.message });
         return;
       }
       throw err;

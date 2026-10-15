@@ -26,6 +26,7 @@ import {
   lerIncerto,
   ordenarVinculosShopee,
   resumoDaReverificacaoShopee,
+  textoDaEtapaShopee,
   textoDoAvisoKit,
   textoDoProblemaShopee,
   urlDoAnuncioShopee,
@@ -280,6 +281,59 @@ describe('textoDoProblemaShopee', () => {
     for (const t of [recriar, importar, escolher]) expect(t).not.toMatch(TEXTO_DE_TERMINAL);
   });
 
+  it('an `importar` hit a link already holds names its produto, never the mass import (R5-08)', () => {
+    const MASSA = 'importação em massa';
+    // One held, one free, in the same row: worded APART.
+    const misto = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: {
+        tipo: T.importar,
+        itemIds: [1000009, 1000010],
+        vinculados: [{ itemId: 1000010, produtoId: 'prod-2' }],
+      },
+    });
+    expect(misto).toContain(MASSA);
+    expect(misto).toContain('Anúncio(s) na Shopee sem vínculo: 1000009.');
+    expect(misto).toContain(
+      'O anúncio 1000010 já está vinculado ao produto prod-2 — a importação não o muda; confira o SKU desse produto.',
+    );
+    expect(misto).not.toContain('O anúncio 1000009');
+
+    // Every hit held: the mass-import sentence goes — it cannot help any of them.
+    const todos = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: {
+        tipo: T.importar,
+        itemIds: [1000010],
+        vinculados: [{ itemId: 1000010, produtoId: 'prod-2' }],
+      },
+    });
+    expect(todos).not.toContain(MASSA);
+    expect(todos).toContain('Já existe na Shopee um kit com o SKU deste produto — não crie outro.');
+    expect(todos).toContain('O anúncio 1000010 já está vinculado ao produto prod-2');
+
+    // The server reported NONE held: every id is a mass-import candidate.
+    const nenhum = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: { tipo: T.importar, itemIds: [1000009], vinculados: [] },
+    });
+    expect(nenhum).toBe(
+      `${TEXTO_ACAO_SUGERIDA[T.importar]} Anúncio(s) na Shopee sem vínculo: 1000009.`,
+    );
+    for (const t of [misto, todos, nenhum]) expect(t).not.toMatch(TEXTO_DE_TERMINAL);
+  });
+
+  it('NEAR-MISS: an `importar` from a server that does not report `vinculados` reads as before', () => {
+    for (const vinculados of [undefined, null]) {
+      expect(
+        textoDoProblemaShopee({
+          mensagem: CLI,
+          acao: { tipo: T.importar, itemIds: [1000009, 1000010], vinculados },
+        }),
+      ).toBe(`${TEXTO_ACAO_SUGERIDA[T.importar]} Anúncio(s) na Shopee: 1000009, 1000010.`);
+    }
+  });
+
   it('a republish names its link, or says there is none — never offering a publish with no link', () => {
     expect(
       textoDoProblemaShopee({ mensagem: CLI, acao: { tipo: T.republicar, linkDocId: 'L2' } }),
@@ -299,6 +353,50 @@ describe('textoDoProblemaShopee', () => {
     expect(
       textoDoProblemaShopee({ mensagem: 'rode exatamente o mesmo comando de novo', acao: null }),
     ).toBe(FRASE_RECUSA_SEM_PASSO_SHOPEE);
+  });
+});
+
+describe('textoDaEtapaShopee', () => {
+  /** apps/shopee's `EtapaPublicacao` (`errosPublicacao.ts`), all thirteen. */
+  const ETAPAS = [
+    'fotos',
+    'add_item',
+    'update_item',
+    'init_tier_variation',
+    'update_tier_variation',
+    'add_model',
+    'update_model',
+    'get_model_list',
+    'relistagem',
+    'leitura-de-volta',
+    'add_kit_item',
+    'update_kit_item',
+    'delete_item',
+  ];
+  const DESCONHECIDA = 'uma etapa que esta tela ainda não descreve';
+
+  it('labels every step the server names, and never prints the raw code', () => {
+    for (const etapa of ETAPAS) {
+      const texto = textoDaEtapaShopee(etapa);
+      expect(texto, etapa).toMatch(/^Recusada na etapa: .+\. Escritas anteriores/);
+      // `fotos` is a pt-BR word as well as a code; every other code is a slug.
+      if (etapa !== 'fotos') expect(texto, etapa).not.toContain(etapa);
+      expect(texto, etapa).not.toContain(DESCONHECIDA);
+      expect(texto, etapa).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
+  it('says a refused create created nothing — the one fact the step alone settles', () => {
+    expect(textoDaEtapaShopee('add_kit_item')).toContain('a Shopee não criou o kit');
+    expect(textoDaEtapaShopee('add_item')).toContain('a Shopee não criou o anúncio');
+  });
+
+  it('NEAR-MISS: an unknown step, or an inherited property name, gets the neutral label', () => {
+    for (const etapa of ['etapa_nova', 'toString', '__proto__', 'constructor', '']) {
+      const texto = textoDaEtapaShopee(etapa);
+      expect(texto, etapa).toContain(DESCONHECIDA);
+      expect(texto, etapa).not.toContain('undefined');
+    }
   });
 });
 

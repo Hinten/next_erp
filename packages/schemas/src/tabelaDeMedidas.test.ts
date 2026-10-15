@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { buildFotoRefs } from './storage/foto';
-import { tabelaDeMedidasMeta, tabelaDeMedidasSchema } from './tabelaDeMedidas';
+import {
+  lerRefTabelaDeMedidas,
+  tabelaDeMedidasMeta,
+  tabelaDeMedidasSchema,
+} from './tabelaDeMedidas';
 
 describe('tabelaDeMedidasSchema', () => {
   it('accepts a minimal valid record with null codigo and descricao', () => {
@@ -198,6 +202,33 @@ describe('tabelaDeMedidasSchema', () => {
       fotos: [buildFotoRefs('tm1', 'h1')],
     });
     expect(out.fotos?.[0]?.arquivoOuterRef).toBe('arquivos/tm1_h1');
+  });
+});
+
+describe('lerRefTabelaDeMedidas — the ONE ref rule publish and the Shopee tab share', () => {
+  it('resolves the canonical and the bare form to the same id', () => {
+    for (const ref of ['documents/tabMedi/tab-1', 'tabMedi/tab-1']) {
+      expect(lerRefTabelaDeMedidas(ref), ref).toStrictEqual({ tipo: 'tabela', id: 'tab-1' });
+    }
+  });
+
+  it('NEAR-MISS: a ref whose LAST segment is a tabela id but which does not point into tabMedi', () => {
+    for (const ref of [
+      'documents/produtos/tab-1',
+      'categorias/tab-1',
+      'tab-1',
+      'documents/tabMedi/tab-1/fotos/f-1',
+      'documents/tabMedi/..',
+      'documents/tabMedi/',
+    ]) {
+      expect(lerRefTabelaDeMedidas(ref), ref).toStrictEqual({ tipo: 'ref-invalida', ref });
+    }
+  });
+
+  it('a value that is not a string, or is blank, names no tabela', () => {
+    for (const ref of [undefined, null, '', '   ', 42, { path: 'documents/tabMedi/tab-1' }]) {
+      expect(lerRefTabelaDeMedidas(ref)).toStrictEqual({ tipo: 'sem-tabela' });
+    }
   });
 });
 

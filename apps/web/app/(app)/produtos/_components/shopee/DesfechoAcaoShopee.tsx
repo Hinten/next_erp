@@ -11,6 +11,7 @@ import {
   ehFraseDeTerminal,
   formatarInstanteShopee,
   FRASE_RECUSA_SEM_PASSO_SHOPEE,
+  textoDaEtapaShopee,
   textoDoAvisoKit,
   textoDoProblemaShopee,
 } from '@/lib/shopee/anuncioProduto';
@@ -46,7 +47,11 @@ export type DesfechoAcaoShopee =
       readonly tipo: 'recusado';
       /** `true` for the 422 that refused BEFORE any Shopee write. */
       readonly antesDaShopee: boolean;
-      /** What exists on Shopee NOW, after a mid-publish refusal. */
+      /**
+       * WHERE in the publish sequence a mid-publish refusal landed (apps/shopee's
+       * `EtapaPublicacao`) — never a channel state, which depends on the arm
+       * too. Worded by `textoDaEtapaShopee`; the raw code is never printed.
+       */
       readonly etapa: string | null;
       readonly problemas: readonly ProblemaShopee[];
       /** The backend's own summary — shown only when no row could be read. */
@@ -425,7 +430,7 @@ function DesfechoRecusado({
       }
     >
       <Stack gap="xs">
-        {desfecho.etapa !== null && <Text size="sm">Na Shopee agora: {desfecho.etapa}.</Text>}
+        {desfecho.etapa !== null && <Text size="sm">{textoDaEtapaShopee(desfecho.etapa)}</Text>}
         {desfecho.problemas.length === 0 ? (
           <Text size="sm">{semTerminal(desfecho.mensagem)}</Text>
         ) : (
