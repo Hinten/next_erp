@@ -9,6 +9,7 @@ import type {
   ValidationIssue,
 } from '@delfrance/ui';
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
+import { stripThenNullIfEmpty } from '@/lib/freight/stripThenNullIfEmpty';
 
 /**
  * The Loja Integrada conta screen's two freight tabs ("Mapeamento do Frete" and
@@ -171,8 +172,10 @@ export function valoresDoFreteDaContaLi(
  * seeded from server truth.
  *
  * - **Nothing changed ⇒ no write.** A field is written only when its form value
- *   differs from the seeded doc's (structural equality), so a conta-only save, or
- *   an edit undone before saving, leaves the freight doc alone.
+ *   differs from the seeded doc's (structural equality; the horário compared, and
+ *   written, as its save transform leaves it — see
+ *   {@link alteracoesDoFreteDaContaLi}), so a conta-only save, or an edit undone
+ *   before saving, leaves the freight doc alone.
  * - **No doc ⇒ no write**: no `intFreteId`, or a baseline that confirmed the doc
  *   ABSENT (`null`). The browser never creates it.
  * - **Not seeded yet (`undefined`)**: the tabs are read-only until the seed, so
@@ -230,18 +233,20 @@ export function escritasFreteDaContaLi(
  * whole list is written, so the whole list must then pass — "changed" is
  * {@link alteracoesDoFreteDaContaLi}'s decision, never a second comparison.
  *
- * `values` is what `ObjectView` validates: the form with every
- * `prepareForSave` applied (staged deletions dropped, an emptied list as
- * `null`). For a pristine horário that is the seeded value itself, save for a
- * stored `[]`, which arrives as `null` — "changed", and valid, so nothing is
- * refused that the save would not write.
+ * `values` is what `ObjectView` validates — the form with EVERY field's
+ * `prepareForSave` applied — while `transactionWrites` gets only the DIRTY
+ * fields' transforms. The two inputs differ for a pristine horário the
+ * transform changes (a stored row carrying the staged-deletion key, a stored
+ * `[]`); the decision is reached under that same transform on both sides, so
+ * it holds either way and nothing is refused that the save would not write.
  *
  * `mapa` is never checked: the editor only replaces one row's target through
  * {@link aplicarAlvoLi}, so every other row is written back as stored.
  *
  * Issues are keyed under {@link CAMPO_HORARIO_CORTE_LI}, so `ObjectView` shows
  * them on the "Horário de Corte" tab, switches to it, and names it in its
- * refusal toast.
+ * refusal toast. `ObjectView` keeps them as ONE flat message at that key; the
+ * tab marks the rows with {@link errosPorLinhaDoHorarioLi}.
  */
 export function problemasDoFreteDaContaLi(
   db: Firestore,
@@ -251,12 +256,56 @@ export function problemasDoFreteDaContaLi(
 ): ValidationIssue[] {
   const alteracoes = alteracoesDoFreteDaContaLi(db, intFreteId, values, context);
   if (alteracoes === null || !('horarioDeCorte' in alteracoes.data)) return [];
-  const resultado = intFreteSchema.shape.horarioDeCorte.safeParse(alteracoes.data.horarioDeCorte);
-  if (resultado.success) return [];
-  return resultado.error.issues.map((issue) => ({
+  return problemasDoHorarioDeCorte(alteracoes.data.horarioDeCorte).map((issue) => ({
     path: [CAMPO_HORARIO_CORTE_LI, ...issue.path.map(String)].join('.'),
     message: issue.message,
   }));
+}
+
+/**
+ * The error tree the "Horário de Corte" editor is handed, from the field's own
+ * (`errorTree`) and its current form value.
+ *
+ * `ObjectView` keeps a `validate` refusal as ONE flat `{ type, message }` at the
+ * form key — its merge cuts every issue's path at the first segment — so on its
+ * own the refusal names no row, and on an imported list of several rows the
+ * operator cannot tell which one breaks the rule. When, and ONLY when, the
+ * field carries that refusal, this hangs each issue of the same rule, over the
+ * same prepared value, under `[row][field]`, where the editor marks the cell
+ * (row indices count the rows the save keeps, as the editor maps them); the
+ * flat message stays, under the list. An issue about a whole row or the whole
+ * value has no cell and stays only there.
+ *
+ * Without a refusal the tree is returned as is: an untouched stored list is
+ * never judged ({@link problemasDoFreteDaContaLi}), so it is never marked either.
+ */
+export function errosPorLinhaDoHorarioLi(horario: unknown, errorTree: unknown): unknown {
+  if (
+    errorTree === null ||
+    typeof errorTree !== 'object' ||
+    typeof (errorTree as { message?: unknown }).message !== 'string'
+  ) {
+    return errorTree;
+  }
+  const arvore: Record<string, unknown> = { ...(errorTree as Record<string, unknown>) };
+  for (const issue of problemasDoHorarioDeCorte(horario)) {
+    const [linha, campo] = issue.path;
+    if (typeof linha !== 'number' || typeof campo !== 'string') continue;
+    const daLinha = (arvore[linha] ?? {}) as Record<string, unknown>;
+    if (daLinha[campo] !== undefined) continue;
+    arvore[linha] = { ...daLinha, [campo]: { type: 'custom', message: issue.message } };
+  }
+  return arvore;
+}
+
+/**
+ * The freight schema's own `horarioDeCorte` rule (one row per weekday, hours in
+ * range) over `horario` as the save prepares it — the ONE rule behind both the
+ * refusal and the rows it marks. Paths are relative to the list.
+ */
+function problemasDoHorarioDeCorte(horario: unknown) {
+  const resultado = intFreteSchema.shape.horarioDeCorte.safeParse(stripThenNullIfEmpty(horario));
+  return resultado.success ? [] : resultado.error.issues;
 }
 
 /**
@@ -271,6 +320,16 @@ export function problemasDoFreteDaContaLi(
  *   an edit undone before saving, leaves it alone.
  * - **Not seeded yet (`undefined`)**: a field is written when it is non-null;
  *   `saveRecord` then refuses the whole save (see `escritasFreteDaContaLi`).
+ *
+ * ⚠️ The horário is compared, and written, as its save transform
+ * ({@link stripThenNullIfEmpty}, the field's `prepareForSave`) leaves it, on
+ * BOTH sides. `ObjectView` applies that transform to everything before
+ * `validate` but only to dirty fields before `transactionWrites`, so the same
+ * pristine list can arrive either way; compared raw, a stored row carrying the
+ * staged-deletion key would read as "changed" to the validator and "unchanged"
+ * to the write, and an untouched list would be refused over a write that never
+ * happens. The transform is idempotent, so an already prepared value is
+ * unaffected.
  */
 function alteracoesDoFreteDaContaLi(
   db: Firestore,
@@ -287,14 +346,15 @@ function alteracoesDoFreteDaContaLi(
   const baseline = context.getBaseline(ref.path);
   if (baseline === null) return null;
   const mapa = values[CAMPO_MAPA_FRETE_LI] ?? null;
-  const horario = values[CAMPO_HORARIO_CORTE_LI] ?? null;
+  const horario = stripThenNullIfEmpty(values[CAMPO_HORARIO_CORTE_LI] ?? null);
   const data: Record<string, unknown> = {};
   if (baseline === undefined) {
     if (mapa !== null) data.mapa = mapa;
     if (horario !== null) data.horarioDeCorte = horario;
   } else {
     if (!valuesEqual(mapa, baseline.mapa ?? null)) data.mapa = mapa;
-    if (!valuesEqual(horario, baseline.horarioDeCorte ?? null)) data.horarioDeCorte = horario;
+    const guardado = stripThenNullIfEmpty(baseline.horarioDeCorte ?? null);
+    if (!valuesEqual(horario, guardado)) data.horarioDeCorte = horario;
   }
   if (Object.keys(data).length === 0) return null;
   return { ref, baseline, data };

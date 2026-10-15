@@ -50,13 +50,17 @@ function toRows(value: unknown): unknown[] {
 }
 
 /**
- * The fields of one stored row. A row that is not an object (`null`, a string —
- * imported shapes the schema does not model) reads as an empty row instead of
- * crashing the editor, and with it every screen that mounts it; it is kept
- * verbatim until the operator edits or deletes it.
+ * The fields of one stored row — what the row SHOWS, and what an edit of it
+ * starts from. A row that is not an object (`null`, a string — imported shapes
+ * the schema does not model) reads as the blank row "Adicionar horário" starts
+ * from, instead of crashing the editor and with it every screen that mounts it.
+ * It is kept verbatim until the operator edits or deletes it; then the edit
+ * lands on that blank row, so the weekday the Select shows is the weekday
+ * saved (Select fires no change for the value it already shows, so a row saved
+ * without it could not be fixed by confirming it).
  */
 function camposDe(row: unknown): HorarioRow {
-  return row !== null && typeof row === 'object' ? (row as HorarioRow) : {};
+  return row !== null && typeof row === 'object' ? (row as HorarioRow) : EMPTY_ROW;
 }
 
 export function HorarioCorteEditor({

@@ -38,8 +38,13 @@ function HorarioHarness({ initial, errorTree }: { initial: unknown[]; errorTree?
         errorTree={errorTree}
         descriptor={{} as FieldRenderProps['descriptor']}
       />
+      <output data-testid="horario-value">{JSON.stringify(value)}</output>
     </MantineTestProvider>
   );
+}
+
+function horarioValue(): unknown[] {
+  return JSON.parse(screen.getByTestId('horario-value').textContent ?? '[]') as unknown[];
 }
 
 function faixaValue(): Array<Record<string, unknown>> {
@@ -143,7 +148,17 @@ describe('HorarioCorteEditor', () => {
     expect(screen.getByText('Dia da semana duplicado')).toBeTruthy();
   });
 
-  it('a stored row that is not an object reads as an empty row, kept verbatim until edited', () => {
+  /** The row "Adicionar horário" starts from: Monday, every number blank. */
+  const LINHA_EM_BRANCO = {
+    diaDaSemana: 1,
+    horaDeCorte: null,
+    minutosDeCorte: null,
+    prazoDePostagem: null,
+    horaPostagem: null,
+    minutosPostagem: null,
+  };
+
+  it('a stored row that is not an object shows as the blank row, and an edit saves the row it shows', () => {
     const onChange = vi.fn();
     render(
       <MantineTestProvider>
@@ -158,9 +173,26 @@ describe('HorarioCorteEditor', () => {
       </MantineTestProvider>,
     );
     expect(screen.getAllByLabelText(/^Dia da semana \d$/)).toHaveLength(3);
+    expect((screen.getByLabelText('Dia da semana 1') as HTMLInputElement).value).toBe(
+      'Segunda-feira',
+    );
     expect((screen.getAllByLabelText('Corte (h) 1')[0] as HTMLInputElement).value).toBe('');
     fireEvent.change(screen.getAllByLabelText('Corte (h) 1')[0]!, { target: { value: '15' } });
-    // The edited row becomes a row; the other unmodelled one is left as stored.
-    expect(onChange).toHaveBeenLastCalledWith([{ horaDeCorte: 15 }, 'texto', { diaDaSemana: 2 }]);
+    // The weekday on screen is the weekday saved — Select never fires onChange
+    // for the value it already shows, so a row saved WITHOUT it could not be
+    // fixed by confirming it. The other unmodelled row is left as stored.
+    expect(onChange).toHaveBeenLastCalledWith([
+      { ...LINHA_EM_BRANCO, horaDeCorte: 15 },
+      'texto',
+      { diaDaSemana: 2 },
+    ]);
+  });
+
+  it('deleting, then restoring, a stored row that is not an object leaves the row it showed', () => {
+    render(<HorarioHarness initial={[null]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir horário 1' }));
+    expect(horarioValue()).toEqual([{ ...LINHA_EM_BRANCO, [DELETE_MARK]: true }]);
+    fireEvent.click(screen.getByRole('button', { name: 'Desfazer exclusão do horário 1' }));
+    expect(horarioValue()).toEqual([{ ...LINHA_EM_BRANCO, [DELETE_MARK]: false }]);
   });
 });

@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OccEngine, type OccTransaction } from '@delfrance/data/testing';
 import { INTEGRACAO_FRETE, TIPOS_ALVO_MAPA_FRETE_LI } from '@delfrance/schemas';
-import type { TransactionDocumentGuard, TransactionWriteContext } from '@delfrance/ui';
+import {
+  DELETE_MARK,
+  type TransactionDocumentGuard,
+  type TransactionWriteContext,
+} from '@delfrance/ui';
 
 /**
  * The pure half of the Loja Integrada conta's freight tabs (step 20, #1826):
@@ -391,6 +395,46 @@ describe('problemasDoFreteDaContaLi — the horário rule runs only on what the 
       const julgado = problemasDoFreteDaContaLi(db, FRETE, valores(atual), ctx).length > 0;
       expect(julgado).toBe(escreve);
     }
+  });
+
+  it('⚠️ "changed" holds on EITHER side of the save transform: an untouched list is untouched both ways', () => {
+    // ObjectView hands `validate` the form with EVERY field's `prepareForSave`
+    // applied, but `transactionWrites` only a DIRTY field's. The horário's
+    // transform changes a stored list even untouched — it drops the
+    // staged-deletion key and any row it marks, and turns `[]` into `null` — so
+    // the same pristine list reaches the two transformed and as stored.
+    for (const [guardado, transformado] of [
+      [[{ ...SEGUNDA, [DELETE_MARK]: false }, SEGUNDA], duplicado],
+      [[{ ...SEGUNDA, [DELETE_MARK]: true }, SEGUNDA, SEGUNDA], duplicado],
+      [[], null],
+    ] as const) {
+      const { contexto: ctx, valores } = semeado(guardado);
+      for (const atual of [structuredClone(guardado), structuredClone(transformado)]) {
+        expect(problemasDoFreteDaContaLi(db, FRETE, valores(atual), ctx)).toEqual([]);
+        expect(escritasFreteDaContaLi(db, FRETE, valores(atual), ctx)).toEqual([]);
+      }
+    }
+  });
+
+  it('writes the horário as the save transform leaves it: staged deletions dropped, an emptied list as null', () => {
+    const TERCA = { ...SEGUNDA, diaDaSemana: 2 };
+    const { contexto: ctx, valores } = semeado([SEGUNDA, TERCA]);
+    const dados = (atual: unknown) =>
+      escritasFreteDaContaLi(db, FRETE, valores(atual), ctx).map((w) =>
+        w.type === 'delete' ? null : w.data,
+      );
+    expect(
+      dados([
+        { ...SEGUNDA, [DELETE_MARK]: true },
+        { ...TERCA, [DELETE_MARK]: false },
+      ]),
+    ).toEqual([{ horarioDeCorte: [TERCA] }]);
+    expect(
+      dados([
+        { ...SEGUNDA, [DELETE_MARK]: true },
+        { ...TERCA, [DELETE_MARK]: true },
+      ]),
+    ).toEqual([{ horarioDeCorte: null }]);
   });
 
   it('no doc, or no write, ⇒ nothing to judge', () => {

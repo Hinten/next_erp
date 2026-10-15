@@ -11,6 +11,7 @@ import { integracaoSchema } from '@delfrance/schemas';
 import { type FieldConfig, ObjectView, type TransactionWriteContext } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { stripThenNullIfEmpty } from '@/lib/freight/stripThenNullIfEmpty';
 import { useAuth, usePermission } from '@/lib/auth';
 import {
   CAMPO_HORARIO_CORTE_LI,
@@ -18,7 +19,6 @@ import {
   escritasFreteDaContaLi,
   problemasDoFreteDaContaLi,
 } from '@/lib/loja-integrada/freteDaConta';
-import { intFreteFields } from '@/app/(app)/logistica/_components/intFreteFields';
 import { RecalcularPrecosCanalAction } from '../../_components/RecalcularPrecosCanalAction';
 import { ContaLojaIntegradaPanel } from '../_components/ContaLojaIntegradaPanel';
 import { HorarioCorteManager } from '../_components/HorarioCorteManager';
@@ -94,8 +94,9 @@ export default function ContaLojaIntegradaPage() {
         label: 'Horários de corte',
         section: SECAO_HORARIO,
         // The /logistica editor's own save-time transform: staged deletions
-        // dropped, an emptied list stored as null.
-        prepareForSave: intFreteFields.horarioDeCorte?.prepareForSave,
+        // dropped, an emptied list stored as null. The save's "changed"
+        // decision compares under the same one (`alteracoesDoFreteDaContaLi`).
+        prepareForSave: stripThenNullIfEmpty,
         renderInput: (p) => <HorarioCorteManager db={db} frete={frete} {...p} />,
       },
     }),

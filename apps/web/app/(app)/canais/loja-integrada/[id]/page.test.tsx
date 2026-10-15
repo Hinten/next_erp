@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { OccEngine, type OccTransaction } from '@delfrance/data/testing';
 import { PERM } from '@delfrance/auth';
 import { intFreteSchema, integracaoSchema } from '@delfrance/schemas';
+import { DELETE_MARK } from '@delfrance/ui';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
 /**
@@ -724,10 +725,17 @@ describe('/canais/loja-integrada/[id] — Horário de Corte', () => {
     });
     await salvar();
     expect(screen.getAllByText('Dia da semana duplicado').length).toBeGreaterThan(0);
+    // On the row that breaks the rule, not only under the list.
+    expect(diaInvalido(2)).toBe(true);
+    expect(diaInvalido(1)).toBe(false);
     expect(commits()).toBe(0);
     expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA]);
   });
 });
+
+/** Whether horário row `linha`'s weekday (1-based) is marked invalid. */
+const diaInvalido = (linha: number) =>
+  screen.getAllByLabelText(`Dia da semana ${linha}`)[0]!.getAttribute('aria-invalid') === 'true';
 
 /** Type `valor` into the cut-off hour of horário row `linha` (1-based). */
 async function digitarCorte(linha: number, valor: string) {
@@ -753,6 +761,17 @@ describe('/canais/loja-integrada/[id] — a stored horário is validated only on
     // The tab is mounted from page load: an editor that crashed on these would
     // take the whole conta screen down with it.
     ['rows that are not objects', [null, 'texto', SEGUNDA]],
+    // The field's save transform CHANGES these two even untouched (it drops the
+    // staged-deletion key, and a row it marks): validation is handed the
+    // transformed list, the write the stored one, and both must call it unchanged.
+    [
+      'a row carrying the staged-deletion key, beside its duplicate',
+      [{ ...SEGUNDA, [DELETE_MARK]: false }, SEGUNDA],
+    ],
+    [
+      'a staged deletion, beside the duplicate it leaves',
+      [{ ...SEGUNDA, [DELETE_MARK]: true }, SEGUNDA, SEGUNDA],
+    ],
   ])('untouched, %s does not block a conta-only save, and is not written', async (_c, horario) => {
     semear(FRETE_PATH, frete({ horarioDeCorte: horario }));
     await renderPage();
@@ -819,6 +838,8 @@ describe('/canais/loja-integrada/[id] — a stored horário is validated only on
     expect(abaHorario().getAttribute('aria-selected')).toBe('true');
     expect(h.toasts).toEqual([RECUSA_NA_ABA_HORARIO]);
     expect(screen.getAllByText('Dia da semana duplicado').length).toBeGreaterThan(0);
+    expect(diaInvalido(2)).toBe(true);
+    expect(diaInvalido(1)).toBe(false);
   });
 
   it('an out-of-range cut-off hour typed by the operator is refused', async () => {
@@ -830,6 +851,29 @@ describe('/canais/loja-integrada/[id] — a stored horário is validated only on
     expect(commits()).toBe(0);
     expect(escritas).toEqual([]);
     expect(h.toasts).toEqual([RECUSA_NA_ABA_HORARIO]);
+    expect(screen.getAllByLabelText('Corte (h) 1')[0]!.getAttribute('aria-invalid')).toBe('true');
     expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA]);
+  });
+
+  it('an edit of a stored row that is not an object saves the row it shows', async () => {
+    // Shown as the blank row (Monday): the weekday on screen must be the one
+    // saved, or the edit is refused over a value the operator cannot see.
+    semear(FRETE_PATH, frete({ horarioDeCorte: [null] }));
+    await renderPage();
+    await abrirAba('Horário de Corte');
+    await digitarCorte(1, '15');
+    await salvar();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([FRETE_PATH]);
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([
+      {
+        diaDaSemana: 1,
+        horaDeCorte: 15,
+        minutosDeCorte: null,
+        prazoDePostagem: null,
+        horaPostagem: null,
+        minutosPostagem: null,
+      },
+    ]);
   });
 });

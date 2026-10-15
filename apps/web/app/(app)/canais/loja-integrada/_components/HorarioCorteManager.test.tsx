@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { PERM } from '@delfrance/auth';
-import type { FieldRenderProps } from '@delfrance/ui';
+import { DELETE_MARK, type FieldRenderProps } from '@delfrance/ui';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { FreteDaContaLi } from './useFreteDaContaLi';
 
@@ -42,7 +42,16 @@ const LINHA = {
 
 function renderManager(
   value: unknown,
-  { frete = ENCONTRADO, disabled = false }: { frete?: FreteDaContaLi; disabled?: boolean } = {},
+  {
+    frete = ENCONTRADO,
+    disabled = false,
+    recusa,
+  }: {
+    frete?: FreteDaContaLi;
+    disabled?: boolean;
+    /** The page's refusal of the horário, as ObjectView hands it to the field: ONE flat message. */
+    recusa?: string;
+  } = {},
 ) {
   const onChange = vi.fn();
   const props: FieldRenderProps = {
@@ -52,6 +61,8 @@ function renderManager(
     onChange,
     onBlur: () => undefined,
     disabled,
+    error: recusa,
+    errorTree: recusa === undefined ? undefined : { type: 'custom', message: recusa },
     descriptor: {} as never,
   };
   render(
@@ -64,6 +75,10 @@ function renderManager(
 
 const adicionar = () =>
   screen.queryByRole('button', { name: 'Adicionar horário' }) as HTMLButtonElement | null;
+
+/** Whether row `linha`'s (1-based) `rotulo` cell is marked invalid. */
+const invalido = (rotulo: string, linha: number) =>
+  screen.getAllByLabelText(`${rotulo} ${linha}`)[0]!.getAttribute('aria-invalid') === 'true';
 
 beforeEach(() => {
   h.permissoes = PERM.frete.write;
@@ -107,5 +122,37 @@ describe('HorarioCorteManager', () => {
     renderManager(null, { frete: { estado: 'ausente' } });
     expect(screen.getByText('Esta conta ainda não tem frete')).toBeTruthy();
     expect(adicionar()).toBeNull();
+  });
+});
+
+describe('HorarioCorteManager — a refusal names its rows', () => {
+  // ObjectView hands a page-level refusal to the field as ONE flat message, so
+  // the rows it is about are re-derived from the same rule over the same value.
+  it('marks the row that repeats a weekday, and keeps the message under the list', () => {
+    renderManager([LINHA, LINHA], { recusa: 'Dia da semana duplicado' });
+    expect(invalido('Dia da semana', 2)).toBe(true);
+    expect(invalido('Dia da semana', 1)).toBe(false);
+    expect(screen.getAllByText('Dia da semana duplicado')).toHaveLength(2);
+  });
+
+  it('marks the cell out of range', () => {
+    renderManager([{ ...LINHA, horaDeCorte: 30 }], { recusa: 'Too big' });
+    expect(invalido('Corte (h)', 1)).toBe(true);
+    expect(invalido('Corte (min)', 1)).toBe(false);
+  });
+
+  it('maps the row past a staged deletion, as the save strips it', () => {
+    renderManager([{ ...LINHA, [DELETE_MARK]: true }, LINHA, LINHA], {
+      recusa: 'Dia da semana duplicado',
+    });
+    expect(invalido('Dia da semana', 1)).toBe(false);
+    expect(invalido('Dia da semana', 2)).toBe(false);
+    expect(invalido('Dia da semana', 3)).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: the same list with NO refusal marks nothing — an untouched stored list is not judged', () => {
+    renderManager([LINHA, LINHA]);
+    expect(invalido('Dia da semana', 2)).toBe(false);
+    expect(screen.queryByText('Dia da semana duplicado')).toBeNull();
   });
 });
