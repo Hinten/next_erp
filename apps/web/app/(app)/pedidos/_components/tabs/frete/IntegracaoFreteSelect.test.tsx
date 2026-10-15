@@ -120,6 +120,7 @@ describe('IntegracaoFreteSelect', () => {
     fireEvent.click(input());
     fireEvent.click(await screen.findByRole('option', { name: label(motoboy) }));
 
-    expect(onChange).toHaveBeenCalledExactlyOnceWith(motoboy.id);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0]?.[0]).toBe(motoboy.id);
   });
 });
