@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Firestore } from 'firebase-admin/firestore';
 import {
   __resetAllReadCaches,
   READ_CACHE_DISABLED_ENV,
@@ -15,6 +16,7 @@ import {
 import {
   __setAccessTokenCacheClockForTests,
   type AccessTokenScope,
+  accessTokenScope,
   getCachedAccessToken,
   invalidateCachedAccessToken,
 } from './accessTokenCache';
@@ -81,9 +83,11 @@ afterEach(() => {
 describe('Mercado Livre access-token cache', () => {
   it('collapses repeated and simultaneous lookups into one credential query', async () => {
     const store = storeWith(token());
-    expect(await Promise.all(Array.from({ length: 20 }, () =>
-      getCachedAccessToken(SCOPE, store, CONFIG),
-    ))).toEqual(Array(20).fill('original'));
+    expect(
+      await Promise.all(
+        Array.from({ length: 20 }, () => getCachedAccessToken(SCOPE, store, CONFIG)),
+      ),
+    ).toEqual(Array(20).fill('original'));
     expect(await getCachedAccessToken(SCOPE, store, CONFIG)).toBe('original');
     expect(store.loadValid).toHaveBeenCalledTimes(1);
     expect(store.loadLatest).not.toHaveBeenCalled();
@@ -110,13 +114,40 @@ describe('Mercado Livre access-token cache', () => {
     const refresh = vi.fn(async () => RESPONSE);
     await getCachedAccessToken(SCOPE, store, CONFIG, { refresh });
     now += 100;
-    expect(await Promise.all([
-      getCachedAccessToken(SCOPE, store, CONFIG, { refresh }),
-      getCachedAccessToken(SCOPE, store, CONFIG, { refresh }),
-    ])).toEqual(['renewed', 'renewed']);
+    expect(
+      await Promise.all([
+        getCachedAccessToken(SCOPE, store, CONFIG, { refresh }),
+        getCachedAccessToken(SCOPE, store, CONFIG, { refresh }),
+      ]),
+    ).toEqual(['renewed', 'renewed']);
     expect(refresh).toHaveBeenCalledExactlyOnceWith(CONFIG, 'refresh-only-in-store');
     expect(store.save).toHaveBeenCalledTimes(1);
     expect(store.save.mock.calls[0]?.[0].refresh_token).toBe('rotated-refresh');
+  });
+
+  it('keeps the namespace stable for the same Firestore handle', () => {
+    // The scope needs only object identity and the public database ID, without SDK I/O.
+    const db = { databaseId: 'default' } as unknown as Firestore;
+    const scope = accessTokenScope(db, 'client', 'i1');
+
+    expect(accessTokenScope(db, 'client', 'i1')).toEqual(scope);
+    expect(scope.slice(1)).toEqual(['default', 'client', 'i1']);
+  });
+
+  it('isolates Firestore handles with the same database, client and account IDs', async () => {
+    // Separate handles can point at separate projects; no private project property is needed.
+    const firstDb = { databaseId: 'default' } as unknown as Firestore;
+    const secondDb = { databaseId: 'default' } as unknown as Firestore;
+    const firstScope = accessTokenScope(firstDb, 'client', 'i1');
+    const secondScope = accessTokenScope(secondDb, 'client', 'i1');
+    const first = storeWith(token('first'));
+    const second = storeWith(token('second'));
+
+    expect(firstScope[0]).not.toBe(secondScope[0]);
+    expect(firstScope.slice(1)).toEqual(secondScope.slice(1));
+    expect(await getCachedAccessToken(firstScope, first, CONFIG)).toBe('first');
+    expect(await getCachedAccessToken(secondScope, second, CONFIG)).toBe('second');
+    expect(second.loadValid).toHaveBeenCalledTimes(1);
   });
 
   it.each([0, 1, 2, 3])('isolates scope component %i', async (component) => {
@@ -194,7 +225,12 @@ describe('Mercado Livre access-token cache', () => {
   it('does not let an invalidated pending load replace a reconnected credential', async () => {
     const store = storeWith(token('B'));
     let finish!: (value: TokenDuravel | null) => void;
-    store.loadValid.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    store.loadValid.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
     const pending = getCachedAccessToken(SCOPE, store, CONFIG);
     invalidateCachedAccessToken(SCOPE);
     expect(await getCachedAccessToken(SCOPE, store, CONFIG)).toBe('B');
@@ -206,7 +242,9 @@ describe('Mercado Livre access-token cache', () => {
 
   it('keeps loser recovery queries fresh and caches only the winning access token', async () => {
     const store = storeWith(token('expired', START - 1));
-    store.loadValid.mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+    store.loadValid
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(token('winner'));
     const sleep = vi.fn(async () => undefined);
     const refresh = vi.fn(async () => {

@@ -368,8 +368,9 @@ describe.skipIf(!EMULATED)('createTokenDuravelStore (Firestore emulator)', () =>
     await store.save(tok({ access_token: 'after-reconnect' }));
     expect(await getCachedAccessToken(scope, store, config)).toBe('after-reconnect');
     expect(loadValid).toHaveBeenCalledTimes(2);
-    expect((await rawColl(integracaoId).doc('current').get()).data()?.access_token)
-      .toBe('after-reconnect');
+    expect((await rawColl(integracaoId).doc('current').get()).data()?.access_token).toBe(
+      'after-reconnect',
+    );
 
     expect(await store.deleteAll()).toBe(1);
     await expect(getCachedAccessToken(scope, store, config)).rejects.toBeInstanceOf(

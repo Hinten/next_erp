@@ -1555,21 +1555,24 @@ describe('createMercadoLivreApi — rejected access tokens', () => {
     { name: 'test-user creation', send: (api) => api.criarUsuarioTeste('MLB') },
   ];
 
-  it.each(requests)('notifies for the token sent by $name without replaying it', async ({ send }) => {
-    const response = jsonResponse({ error: 'invalid_token' }, 401);
-    const readBody = vi.spyOn(response, 'text');
-    const fetchMock = vi.fn(async () => response);
-    const getAccessToken = vi.fn(async () => 'rejected-token');
-    const onAccessTokenRejected = vi.fn();
-    const api = createMercadoLivreApi(cfg(fetchMock, { getAccessToken, onAccessTokenRejected }));
+  it.each(requests)(
+    'notifies for the token sent by $name without replaying it',
+    async ({ send }) => {
+      const response = jsonResponse({ error: 'invalid_token' }, 401);
+      const readBody = vi.spyOn(response, 'text');
+      const fetchMock = vi.fn(async () => response);
+      const getAccessToken = vi.fn(async () => 'rejected-token');
+      const onAccessTokenRejected = vi.fn();
+      const api = createMercadoLivreApi(cfg(fetchMock, { getAccessToken, onAccessTokenRejected }));
 
-    await expect(send(api)).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+      await expect(send(api)).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
 
-    expect(onAccessTokenRejected).toHaveBeenCalledExactlyOnceWith('rejected-token');
-    expect(getAccessToken).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(readBody).toHaveBeenCalledTimes(1);
-  });
+      expect(onAccessTokenRejected).toHaveBeenCalledExactlyOnceWith('rejected-token');
+      expect(getAccessToken).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(readBody).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([{ error: 'invalid_token' }, { message: 'invalid_token' }])(
     'recognizes the exact invalid_token code in %j',
@@ -1658,7 +1661,9 @@ describe('createMercadoLivreApi — rejected access tokens', () => {
     await expect(api.getMe()).resolves.toMatchObject(USER);
     const first = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     const next = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
-    expect((first[1].headers as Record<string, string>).Authorization).toBe('Bearer rejected-token');
+    expect((first[1].headers as Record<string, string>).Authorization).toBe(
+      'Bearer rejected-token',
+    );
     expect((next[1].headers as Record<string, string>).Authorization).toBe('Bearer new-token');
     expect(onAccessTokenRejected).toHaveBeenCalledExactlyOnceWith('rejected-token');
     expect(getAccessToken).toHaveBeenCalledTimes(2);

@@ -62,13 +62,17 @@ describe('durable credential mutation invalidation', () => {
       docs: Array.from({ length: 451 }, (_, id) => ({ ref: { id } })),
       size: 451,
     });
-    h.commit.mockImplementationOnce(async () => { events.push('first batch'); });
+    h.commit.mockImplementationOnce(async () => {
+      events.push('first batch');
+    });
     h.commit.mockImplementationOnce(async () => {
       events.push('failed batch');
       throw failure;
     });
     const store = createTokenDuravelStore(db, 'i1', {
-      onCredentialsChanged: () => { events.push('invalidate'); },
+      onCredentialsChanged: () => {
+        events.push('invalidate');
+      },
     });
     await expect(store.deleteAll()).rejects.toBe(failure);
     expect(events).toEqual(['invalidate', 'first batch', 'failed batch', 'invalidate']);

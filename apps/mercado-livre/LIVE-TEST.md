@@ -1236,7 +1236,6 @@ chosen region too. (Firestore triggers are only a latency consideration, not a h
 Picking one of those two regions for the new project removes the cross-region split
 entirely.
 
-
 ## Access-token cache and refresh rotation (#996)
 
 This is a human-run check using an already connected Mercado Livre **test seller**
@@ -1268,11 +1267,11 @@ the operation's existing error. The failed operation is not replayed, and an
 unexpired token in Firestore is not forcibly refreshed. Reconnect normally if
 the provider has revoked the grant and no newer usable credential exists.
 
-| Observation | Result |
-| --- | --- |
-| Test integration / seller ID | Not run |
-| Original expiry / probe timestamps | Not run |
+| Observation                                                 | Result  |
+| ----------------------------------------------------------- | ------- |
+| Test integration / seller ID                                | Not run |
+| Original expiry / probe timestamps                          | Not run |
 | Original token before refresh: HTTP status / seller matches | Not run |
-| Original token after refresh: HTTP status / seller matches | Not run |
-| Replacement token: HTTP status / seller matches | Not run |
-| Cache misses / hits before and after TTL or kill switch | Not run |
+| Original token after refresh: HTTP status / seller matches  | Not run |
+| Replacement token: HTTP status / seller matches             | Not run |
+| Cache misses / hits before and after TTL or kill switch     | Not run |

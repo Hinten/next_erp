@@ -18,11 +18,15 @@ import {
 } from './tokenStore';
 
 export type AccessTokenScope = readonly [
-  projectId: string,
+  firestoreNamespace: string,
   databaseId: string,
   clientId: string,
   integracaoId: string,
 ];
+
+// A handle identifies its project/database without reading private SDK fields.
+const firestoreNamespaces = new WeakMap<Firestore, string>();
+let nextFirestoreNamespace = 0;
 
 let nowFn: () => number = () => Date.now();
 
@@ -41,14 +45,17 @@ export function accessTokenScope(
   clientId: string,
   integracaoId: string,
 ): AccessTokenScope {
-  return [db.projectId, db.databaseId, clientId, integracaoId];
+  let namespace = firestoreNamespaces.get(db);
+  if (namespace === undefined) {
+    nextFirestoreNamespace += 1;
+    namespace = String(nextFirestoreNamespace);
+    firestoreNamespaces.set(db, namespace);
+  }
+  return [namespace, db.databaseId, clientId, integracaoId];
 }
 
 /** A delayed 401 for an old token must leave its replacement alone. */
-export function invalidateCachedAccessToken(
-  scope: AccessTokenScope,
-  rejectedToken?: string,
-): void {
+export function invalidateCachedAccessToken(scope: AccessTokenScope, rejectedToken?: string): void {
   accessTokens.invalidate(
     scope,
     rejectedToken === undefined ? undefined : (token) => token.accessToken === rejectedToken,
