@@ -39,9 +39,11 @@
  *
  * ## Callers
  *
- * None in step 2's production code: the routes never import this module (a
- * route test pins it). The first callers are step 3's poller and task, through
- * {@link tratarFalhaDeAutenticacao}.
+ * The routes never import this module (a route test pins it). The first
+ * production caller is step 3's notification classifier
+ * (`notificacoes/notificacao.ts`, a `LiAuthError` from the importer), through
+ * {@link tratarFalhaDeAutenticacao}; the order poller (step-3 PR 3-e) is the
+ * second.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { credenciaisLojaIntegradaCollection } from '@delfrance/data/admin/collections';

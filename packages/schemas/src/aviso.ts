@@ -103,6 +103,7 @@ export const TIPO_AVISO_LABELS = {
   anuncioForaDaSincronizacao: 'Anúncio fora da sincronização',
   lojaIntegradaTokenExpirando: 'Token da Loja Integrada expirando',
   lojaIntegradaReconexaoPendente: 'Token da Loja Integrada recusado',
+  lojaIntegradaImportacaoParada: 'Importação de pedidos da Loja Integrada parada',
 } as const;
 
 /**
@@ -550,6 +551,39 @@ export const TIPO_AVISO_LABELS = {
  *    token, each clocked by its own write; the daily sweep when the conta is not
  *    parked (clocked) or holds no token (clockless, `credencial-removida`), and
  *    when the conta no longer exists (clockless, `conta-removida`).
+ *
+ * ---
+ *
+ * **`lojaIntegradaImportacaoParada`** (Loja Integrada step 3, #1830 — producer:
+ * the 5-minute order poller of `apps/loja-integrada`, step-3 PR 3-e) — the
+ * poller could not read a conta's changed orders, repeatedly or in a way that
+ * will not heal by itself, so orders placed in the store are not reaching the
+ * ERP through the guaranteed intake path (D13).
+ *
+ *  - **Channel-specific**: the motivos and their remedies are this poller's
+ *    own (a look-back the window sets, a window too large to drain, a filter
+ *    the platform ignored), and the consequence the sentence states is the
+ *    order intake.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
+ *    in-app only.
+ *  - **`params` are exactly `loja`** (the conta name) **and `motivo`** — a
+ *    {@link MOTIVO_IMPORTACAO_PARADA_LI} CODE, never a sentence, so a wording
+ *    fix in `mensagens.ts` is retroactive.
+ *  - **`relogioEvento`** = the µs commit time of the poll run's FIRST write to
+ *    its poll document (the lease, or the refusal record). Every write there is
+ *    preconditioned, so these clocks rise strictly across runs, and a late raise
+ *    from a run whose lease was taken over is dropped. ⚠️ Per-document µs:
+ *    never compare it with another tipo's.
+ *  - **Never raised** for a parked conta (`lojaIntegradaReconexaoPendente` says
+ *    that), an inactive conta, the read switch off, a busy lease or an absent
+ *    importer.
+ *  - **Machine resolvers**: the poller, on a clean run after a stored failure
+ *    (clocked by that run's lease); the daily expiry sweep's orphan pass when
+ *    the conta no longer exists (`conta-removida`, CLOCKED by the conta
+ *    enumeration's read time, so a conta created after that read keeps its row).
+ *    A row left open when the conta is deactivated stays open until the conta
+ *    is reactivated and polls cleanly, or is deleted (a documented residue).
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -571,6 +605,7 @@ export const tipoAvisoSchema = z
     'anuncioForaDaSincronizacao',
     'lojaIntegradaTokenExpirando',
     'lojaIntegradaReconexaoPendente',
+    'lojaIntegradaImportacaoParada',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -595,6 +630,7 @@ export const TIPO_AVISO = {
   anuncioForaDaSincronizacao: 'anuncioForaDaSincronizacao',
   lojaIntegradaTokenExpirando: 'lojaIntegradaTokenExpirando',
   lojaIntegradaReconexaoPendente: 'lojaIntegradaReconexaoPendente',
+  lojaIntegradaImportacaoParada: 'lojaIntegradaImportacaoParada',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -626,6 +662,64 @@ export const PENDENCIA_RECLAMACAO = {
   responderProposta: 'responder-proposta',
   enviarEvidencias: 'enviar-evidencias',
 } as const satisfies Record<string, PendenciaReclamacao>;
+
+/**
+ * Why the Loja Integrada order poller stopped importing a conta — the
+ * `lojaIntegradaImportacaoParada` aviso's `params.motivo`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
+ * shape: a wording fix is retroactive). The poll document's last error (step-3
+ * PR 3-e) is the same vocabulary.
+ *
+ *  - a refusal before any read: `credencial-ausente`, `credencial-invalida`
+ *    (the conta is active but its token is missing or unreadable),
+ *    `lookback-invalido` (the bootstrap look-back the window sets is not a
+ *    valid number of hours), `id-de-conta-invalido`;
+ *  - a run that could not finish: `orcamento-esgotado` (the platform answered
+ *    too slowly to drain the window), `janela-instavel` (the list changed while
+ *    it was read), `falha-transitoria` (throttling, 5xx or the network,
+ *    repeatedly), `limite-de-paginas`, `paginacao-invalida`,
+ *    `resposta-invalida`, `formato-de-data`;
+ *  - a run that refused to advance on purpose: `filtro-ignorado` (the
+ *    platform returned orders older than the filter), `janela-grande-demais`
+ *    (more changed orders than one run may read).
+ *
+ * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
+ * code newer than the web build reaches the reader as a plain string, and
+ * `mensagens.ts` falls back rather than printing `undefined`.
+ */
+export const motivoImportacaoParadaLiSchema = z.enum([
+  'credencial-ausente',
+  'credencial-invalida',
+  'lookback-invalido',
+  'id-de-conta-invalido',
+  'orcamento-esgotado',
+  'janela-instavel',
+  'falha-transitoria',
+  'limite-de-paginas',
+  'paginacao-invalida',
+  'resposta-invalida',
+  'formato-de-data',
+  'filtro-ignorado',
+  'janela-grande-demais',
+]);
+export type MotivoImportacaoParadaLi = z.infer<typeof motivoImportacaoParadaLiSchema>;
+
+/** Named members of {@link motivoImportacaoParadaLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_IMPORTACAO_PARADA_LI = {
+  credencialAusente: 'credencial-ausente',
+  credencialInvalida: 'credencial-invalida',
+  lookbackInvalido: 'lookback-invalido',
+  idDeContaInvalido: 'id-de-conta-invalido',
+  orcamentoEsgotado: 'orcamento-esgotado',
+  janelaInstavel: 'janela-instavel',
+  falhaTransitoria: 'falha-transitoria',
+  limiteDePaginas: 'limite-de-paginas',
+  paginacaoInvalida: 'paginacao-invalida',
+  respostaInvalida: 'resposta-invalida',
+  formatoDeData: 'formato-de-data',
+  filtroIgnorado: 'filtro-ignorado',
+  janelaGrandeDemais: 'janela-grande-demais',
+} as const satisfies Record<string, MotivoImportacaoParadaLi>;
 
 /**
  * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's

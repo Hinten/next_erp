@@ -6,6 +6,7 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  LiChamadasDesligadasError,
   LiContaInativaError,
   LiContaNaoEncontradaError,
   LiContaParadaError,
@@ -19,6 +20,7 @@ import {
   isLiAppError,
   lerCorpoLi,
   respostaCancelada,
+  respostaChamadasDesligadas,
   respostaDeErroLi,
   respostaDeVeredito,
   respostaIdInvalido,
@@ -38,6 +40,7 @@ describe('respostaDeErroLi', () => {
     [new LiCredencialAlteradaError(ID), 409, CODIGO_ERRO_LI.credencialAlterada],
     [new LiContaParadaError(ID, 401, 1), 409, CODIGO_ERRO_LI.reconexaoPendente],
     [new LiEstacionamentoEmConflitoError(ID, 3), 503, CODIGO_ERRO_LI.estacionamentoEmConflito],
+    [new LiChamadasDesligadasError(ID), 503, CODIGO_ERRO_LI.chamadasDesligadas],
   ] as const;
 
   for (const [err, status, code] of casos) {
@@ -179,9 +182,21 @@ describe('the fixed answers', () => {
     });
   });
 
+  it('the read switch off is 503 LI_CHAMADAS_DESLIGADAS — not the park conflict sharing its status', async () => {
+    const res = respostaChamadasDesligadas();
+    expect(res.status).toBe(503);
+    const corpo: unknown = await res.json();
+    expect(corpo).toEqual({
+      error: expect.stringContaining('Nada foi enviado à Loja Integrada nem salvo') as unknown,
+      code: CODIGO_ERRO_LI.chamadasDesligadas,
+    });
+    expect(CODIGO_ERRO_LI.chamadasDesligadas).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
+  });
+
   it('every refusal parses as the shared error envelope', async () => {
     for (const res of [
       respostaIdInvalido(),
+      respostaChamadasDesligadas(),
       respostaTokenNaRef(),
       respostaTokenDeOutraConta(),
       respostaDeVeredito({ veredito: 'recusado', status: 403, motivo: 'm', correlationId: 'c' }),

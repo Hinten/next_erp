@@ -52,6 +52,7 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
         tipoFrete: 'mercadoLivre',
         campoBackRef: 'contaMercadoLivreMercadoEnviosOuterRef',
         rotuloLog: '[mercado-livre]',
+        prefixoDocId: 'mercadoLivre',
       },
       shopee: {
         tipoConta: 5,
@@ -103,9 +104,11 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
     }
   });
 
-  it('shopee and lojaIntegrada mint deterministic doc ids (`<prefixo>-<integracaoId>`); mercadoLivre keeps random ones', () => {
+  it('every channel mints deterministic doc ids (`<prefixo>-<integracaoId>`, #1888, #1826)', () => {
     expect(VINCULO_INT_FRETE_CONTA.shopee.prefixoDocId).toBe('shopee');
     expect(`${VINCULO_INT_FRETE_CONTA.shopee.prefixoDocId}-int-1`).toBe('shopee-int-1');
+    expect(VINCULO_INT_FRETE_CONTA.mercadoLivre.prefixoDocId).toBe('mercadoLivre');
+    expect(`${VINCULO_INT_FRETE_CONTA.mercadoLivre.prefixoDocId}-int-1`).toBe('mercadoLivre-int-1');
     expect(VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId).toBe('lojaIntegrada');
     expect(`${VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId}-int-1`).toBe(
       'lojaIntegrada-int-1',
@@ -114,9 +117,9 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
     expect(`${VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId}-int-1`).not.toBe(
       'lojaintegrada-int-1',
     );
-    expect(Object.hasOwn(VINCULO_INT_FRETE_CONTA.mercadoLivre, 'prefixoDocId')).toBe(false);
     // Two prefixed rows never share a prefix — their deterministic ids would collide.
     const prefixos = LINHAS.flatMap(([, l]) => (l.prefixoDocId == null ? [] : [l.prefixoDocId]));
+    expect(prefixos).toHaveLength(LINHAS.length);
     expect(new Set(prefixos).size).toBe(prefixos.length);
   });
 });
