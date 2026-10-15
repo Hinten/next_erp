@@ -205,29 +205,31 @@ runConfig:
 #                           (#821/T5), so an unset value allows NO origin at all.
 
 env:
-  # Region of `processShopeeNotification` and its Cloud Tasks queue, read by the
-  # receiver's enqueuer (lib/shopee/shopeeTasks.ts).
+  # ⚠️ `SHOPEE_TASKS_REGION` (the region of `processShopeeNotification` and its
+  # Cloud Tasks queue, read by lib/shopee/shopeeTasks.ts) DELIBERATELY has no row
+  # here, and unset is the SAFE state. `requireRegion` falls through to
+  # FUNCTIONS_REGION, which App Hosting does not set — so the enqueue THROWS, the
+  # receiver persists the push as `failed`, and the 30-minute sweep drains it.
+  # Nothing is lost. Baking a region here before the functions codebase is
+  # deployed would buy the opposite: a well-formed queue path pointing at a queue
+  # that does not exist, which the Admin SDK resolves to us-central1 and DROPS
+  # silently while the route still answers 204 (#1108). A refused enqueue is
+  # recoverable; a dropped one is not even visible.
   #
-  # ⚠️ DELIBERATELY BLANK, and blank is the SAFE state. `requireRegion` treats a
-  # blank as unset and falls through to FUNCTIONS_REGION, which App Hosting does
-  # not set — so today the enqueue THROWS, the receiver persists the push as
-  # `failed`, and the 30-minute sweep drains it. Nothing is lost. Baking a region
-  # here before the functions codebase is actually deployed would buy the
-  # opposite: a well-formed queue path pointing at a queue that does not exist,
-  # which the Admin SDK resolves to us-central1 and DROPS silently while the
-  # route still answers 204 (#1108). A refused enqueue is recoverable; a dropped
-  # one is not even visible.
+  # ⚠️ It used to sit here as `value: ''`, and App Hosting REFUSES that row: the
+  # build's preparer step fails with `fah/invalid-apphosting-yaml` ("either
+  # 'value' or 'secret' field is required") before a line of the app is built —
+  # an empty string counts as no value. Do not re-add a blank row as a reminder.
+  # `requireRegion` reads blank and unset identically, so dropping it changed no
+  # runtime behaviour; it also leaves a console value nothing to compete with.
   #
-  # Fill it in — here or in the console — in the SAME change that deploys
-  # apps/shopee/functions (step 22, #1530), with the value
-  # `node tools/deploy-env/preflight.mjs shopee` prints for FUNCTIONS_REGION in
-  # the deploying shell. The two must be equal; App Hosting exposes no region
-  # variable of its own, so there is nothing to derive it from.
-  - variable: SHOPEE_TASKS_REGION
-    value: ''
-    availability:
-      - RUNTIME
-
+  # Set it in the Firebase console (App Hosting → this backend → Environment) of
+  # the project whose functions are deployed — never here, because a value in
+  # this file reaches EVERY project's backend — once apps/shopee/functions is
+  # deployed there (staging: the rollout guide; production: step 22, #1530).
+  # Use the value `node tools/deploy-env/preflight.mjs shopee` prints for
+  # FUNCTIONS_REGION in the deploying shell. The two must be equal; App Hosting
+  # exposes no region variable of its own, so there is nothing to derive it from.
   - variable: SHOPEE_PARTNER_ID
     secret: SHOPEE_PARTNER_ID
     availability:

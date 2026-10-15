@@ -33,6 +33,7 @@ import type { ValidadeRecusada } from '../conta/validade';
 
 import {
   LiAppError,
+  LiChamadasDesligadasError,
   LiContaInativaError,
   LiContaNaoEncontradaError,
   LiContaParadaError,
@@ -75,6 +76,10 @@ function mapear(err: LiAppError): Mapeamento {
   if (err instanceof LiEstacionamentoEmConflitoError) {
     // Transient by definition: three writers in a row won the same document.
     return { status: 503, code: CODIGO_ERRO_LI.estacionamentoEmConflito };
+  }
+  if (err instanceof LiChamadasDesligadasError) {
+    // The same answer `respostaChamadasDesligadas` gives before the body is read.
+    return { status: 503, code: CODIGO_ERRO_LI.chamadasDesligadas };
   }
   // A subclass nobody mapped is a bug in THIS file, not a client error.
   throw new TypeError(`respond.ts: ${err.name} não tem mapeamento HTTP`);

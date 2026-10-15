@@ -213,3 +213,74 @@ describe('FakeDb', () => {
     expect(() => col.startAfter(comNome).orderBy('nome')).toThrow(/orderBy\(\) depois/);
   });
 });
+
+describe('FakeDb — what the shared notification store needs (step 3)', () => {
+  it("where('<') compares within ONE type: null, absent and other types never match", async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { status: 'failed', processedAt: 10 });
+    db.seed('integracao/b', { status: 'failed', processedAt: 20 });
+    db.seed('integracao/c', { status: 'failed', processedAt: 30 });
+    db.seed('integracao/d', { status: 'failed', processedAt: null });
+    db.seed('integracao/e', { status: 'failed' });
+    db.seed('integracao/f', { status: 'failed', processedAt: '5' });
+    db.seed('integracao/g', { status: 'deferred', processedAt: 1 });
+    const snap = await integracaoCollection
+      .ref(asDb(db), {})
+      .where('status', '==', 'failed')
+      .where('processedAt', '<', 30)
+      .orderBy('processedAt')
+      .limit(10)
+      .get();
+    expect(snap.docs.map((d) => d.id)).toEqual(['a', 'b']);
+    expect(db.consultas.at(-1)?.filtros).toEqual([
+      ['status', '==', 'failed'],
+      ['processedAt', '<', 30],
+    ]);
+    // Near-miss: the bound itself is excluded (strictly below).
+    const ate20 = await integracaoCollection.ref(asDb(db), {}).where('processedAt', '<', 20).get();
+    expect(ate20.docs.map((d) => d.id).sort()).toEqual(['a', 'g']);
+  });
+
+  it("where('<') refuses a bound it does not model, and '>' stays refused", () => {
+    const col = integracaoCollection.ref(asDb(new FakeDb()), {});
+    expect(() => col.where('x', '<', null)).toThrow(/número ou texto/);
+    expect(() => col.where('x', '<', true)).toThrow(/número ou texto/);
+    expect(() => col.where('x', '>', 1)).toThrow(/operador/);
+  });
+
+  it('set(…, { merge: true }) upserts flat fields, keeps the others, and logs a set', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.set({ x: 1 }, { merge: true });
+    expect(db.ler('integracao/a')).toEqual({ x: 1 });
+    await ref.update({ y: 2 });
+    const w = await ref.set({ x: 3, n: increment(1) }, { merge: true });
+    expect(db.ler('integracao/a')).toEqual({ x: 3, y: 2, n: 1 });
+    expect(db.escritasEm('integracao/a').map((e) => e.verbo)).toEqual(['set', 'update', 'set']);
+    expect((await ref.get()).updateTime?.isEqual(w.writeTime)).toBe(true);
+  });
+
+  it('set refuses every form it does not model — synchronously, before anything lands', () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    expect(() => ref.set({ x: 1 })).toThrow(/set\(\) não é modelado/);
+    expect(() => ref.set({ x: 1 }, { merge: false })).toThrow(/set\(\) não é modelado/);
+    expect(() => ref.set({ x: 1 }, { mergeFields: ['x'] })).toThrow(/set\(\) não é modelado/);
+    expect(() => ref.set({ m: { a: 1 } }, { merge: true })).toThrow(/mapa aninhado/);
+    expect(() => ref.set({ 'a.b': 1 }, { merge: true })).toThrow(/ponto/);
+    expect(() => ref.set({ x: undefined }, { merge: true })).toThrow(/undefined/);
+    expect(db.escritas).toEqual([]);
+  });
+
+  it('a merge-set meets an interleaved write like any other write', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ status: 'deferred', tentativas: 5 });
+    db.antesDaProximaEscrita('integracao/a', async () => {
+      await ref.update({ status: 'failed', tentativas: 0 });
+    });
+    await ref.set({ status: 'deferred', tentativas: 6 }, { merge: true });
+    // The merge-set lands LAST and wins — the real server's behaviour too.
+    expect(db.ler('integracao/a')).toEqual({ status: 'deferred', tentativas: 6 });
+  });
+});

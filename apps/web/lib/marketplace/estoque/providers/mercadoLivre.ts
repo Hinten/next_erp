@@ -96,13 +96,12 @@ export const mercadoLivreStockProvider: StockPushProvider = {
         return falhaGeral(err.message, err.code ?? 'erro-http');
       }
       if (err instanceof MercadoLivreClientNetworkError) {
+        // The client wraps fetch aborts before headers arrive as network errors.
+        if (input.signal?.aborted) return { rows: [], pausadoAte: null };
         // Pinned verbatim by the produto ML-tab e2e — do not reword casually.
         return falhaGeral('Não foi possível contatar o serviço do Mercado Livre.', 'rede');
       }
-      // The operator hit Cancelar: `fetch` rejects the aborted request with a
-      // DOMException named 'AbortError'. That is a clean cancel, not a failure —
-      // without this arm it fell to the rethrow below and surfaced as an
-      // unhandled exception. No rows: the run reports the cancellation itself.
+      // Body-read aborts remain bare AbortErrors. No rows: the run reports the cancel.
       if (err instanceof DOMException && err.name === 'AbortError') {
         return { rows: [], pausadoAte: null };
       }

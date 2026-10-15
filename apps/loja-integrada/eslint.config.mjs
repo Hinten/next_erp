@@ -76,7 +76,7 @@ const config = [
     },
   },
   {
-    // The emulator suites (added in a later step) need RAW refs, and for the same
+    // The emulator suites (`ci-loja-integrada.yml`) need RAW refs, and for the same
     // reason the rule exists: the handles validate against the Zod schema, and these
     // tests must reach around that validation on purpose. They read back the
     // PHYSICAL document to check what the handle actually stored — reading

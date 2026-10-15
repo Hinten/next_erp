@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CANAL_AVISO,
+  MOTIVO_IMPORTACAO_PARADA_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -9,6 +10,7 @@ import {
   TIPO_AVISO_LABELS,
   avisoReceitaKitShopee,
   avisoSchema,
+  motivoImportacaoParadaLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type SituacaoAnuncioForaDaSincronizacao,
@@ -767,5 +769,72 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaReconexaoPendente', () => {
       'Peça ao proprietário da loja que gere um novo token ou renove o atual no painel da Loja ' +
         'Integrada (Configurações > Chave para API) e salve-o na conta, no ERP.',
     );
+  });
+});
+
+/**
+ * The step-3 import-stopped tipo, rendered with the params its producer (the
+ * Loja Integrada order poller, PR 3-e) writes: `{ loja, motivo }`, `motivo` a
+ * `MOTIVO_IMPORTACAO_PARADA_LI` CODE.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaImportacaoParada', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaImportacaoParada];
+  const FIM = 'Pedidos novos e alterados não chegam ao ERP enquanto isso não se resolver.';
+
+  it('renders the conta and the motivo phrase in their slots', () => {
+    expect(
+      mensagem.corpo({ loja: 'Conta A', motivo: MOTIVO_IMPORTACAO_PARADA_LI.filtroIgnorado }),
+    ).toBe(
+      'Os pedidos da loja Conta A não estão sendo importados da Loja Integrada: a Loja ' +
+        `Integrada ignorou o filtro de data da busca de pedidos. ${FIM}`,
+    );
+  });
+
+  it('is TOTAL over the motivo codes: every one has its own phrase, never the fallback', () => {
+    const frases = new Set<string>();
+    for (const motivo of motivoImportacaoParadaLiSchema.options) {
+      const corpo = mensagem.corpo({ loja: 'Conta A', motivo });
+      expect(corpo, motivo).not.toContain('confira o registro');
+      expect(corpo, motivo).not.toContain('undefined');
+      expect(corpo, motivo).not.toContain(motivo);
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoImportacaoParadaLiSchema.options.length);
+  });
+
+  it('a code newer than this build, an inherited key or a missing motivo falls back', () => {
+    for (const motivo of ['motivo-do-futuro', 'toString', '', 7]) {
+      expect(mensagem.corpo({ loja: 'Conta A', motivo }), String(motivo)).toBe(
+        'Os pedidos da loja Conta A não estão sendo importados da Loja Integrada: confira o ' +
+          `registro da varredura de pedidos. ${FIM}`,
+      );
+    }
+    expect(mensagem.corpo({})).toBe(
+      'Os pedidos da loja — não estão sendo importados da Loja Integrada: confira o registro ' +
+        `da varredura de pedidos. ${FIM}`,
+    );
+  });
+
+  it('renders the producer plano as stored', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', motivo: MOTIVO_IMPORTACAO_PARADA_LI.credencialAusente },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(aviso.severidade).toBe(SEVERIDADE_AVISO.critico);
+    expect(aviso.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(mensagem.corpo(aviso.params)).toBe(
+      'Os pedidos da loja Conta A não estão sendo importados da Loja Integrada: a conta está ' +
+        `ativa, mas não tem token salvo. ${FIM}`,
+    );
+  });
+
+  it('is titled like its label, with a runbook for the motivos the app cannot fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaImportacaoParada);
+    expect(mensagem.runbook).toContain('salve um token válido na conta');
+    expect(mensagem.runbook).toContain('registro da varredura de pedidos');
   });
 });
