@@ -13,7 +13,7 @@ name: CI — Loja Integrada
 # behind its own gate. A skip of this lane therefore loses only the emulator
 # round trip, never the unit suites.
 #
-# ONE job, four suite files today:
+# ONE job, five suite files today:
 #   - `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts` — the round
 #     trip below;
 #   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/pollPedidos.tasks.test.ts` —
@@ -22,7 +22,16 @@ name: CI — Loja Integrada
 #     — the poller's lease and preconditions on the real Firestore;
 #   - `apps/loja-integrada/lib/lojaIntegrada/frete/mapaFrete.firestore.test.ts`
 #     — the freight `mapa` registration's union and precondition on the real
-#     Firestore (step 20).
+#     Firestore (step 20);
+#   - `apps/loja-integrada/functions/src/onIntegracaoLojaIntegradaChanged.tasks.test.ts`
+#     — the conta trigger (step 20): a write to `integracao` → the real deployed
+#     `onDocumentWritten` → the shared `int_frete` core → a created, patched,
+#     deactivated or adopted `int_frete` doc, read back raw. It is the first
+#     real-Firestore run of that core.
+# ⚠️ The trigger fires on EVERY suite's `integracao` writes, not only its own:
+# the functions emulator loads the whole codebase. The rules that keep the files
+# apart (unique conta ids, the step-3 suites' incomplete seeds, the trigger
+# suite awaiting its own last write) are in `vitest.tasks.config.ts`.
 # Adding a file with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it
 # to THIS job — no new job, no new check name, no new row in the gate manifest.
 # Both suffixes share one config on purpose (`vitest.tasks.config.ts`).
@@ -100,6 +109,15 @@ name: CI — Loja Integrada
 #     exposes db.pipeline(), so feature-probing answers yes then fails at
 #     execution. Nothing in this codebase builds a pipeline query.
 #   - The importer, or any call to Loja Integrada. By design — see the switch above.
+#   - Eventarc's ORDERING and REDELIVERY. The emulator delivers each write to
+#     `onIntegracaoLojaIntegradaChanged` once; that a replayed or out-of-order
+#     event converges is argued by the core being state-driven and covered by
+#     its unit suite in packages/data, never here.
+#   - The trigger's DATABASE binding, or any ABSENCE. The emulator serves
+#     whichever database it is asked for, so a trigger bound to `(default)` is
+#     not proven to fail here, and an emulator cannot show that a function did
+#     nothing. Both are pinned OFFLINE in functions/src/index.test.ts and
+#     functions/src/onIntegracaoLojaIntegradaChanged.test.ts.
 #   - A PR that touches ONLY a shared package outside the app's `workspace:*`
 #     closure. The `changes` job below walks that graph from the app, so a change
 #     reaching the bundle by any other edge (a path alias, a copied file) does
