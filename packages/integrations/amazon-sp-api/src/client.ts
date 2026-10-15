@@ -55,8 +55,8 @@
  *     a URL or a user-agent that carries the token.
  *  3. Generate the correlation id (ours only; Amazon documents no request
  *     header for it, so it is never sent).
- *  4. Build exactly `x-amz-access-token`, `user-agent` and `accept`. No
- *     `Content-Type` on a GET.
+ *  4. Build exactly `x-amz-access-token`, `x-amz-date`, `user-agent` and
+ *     `accept`. No `Content-Type` on a GET.
  *  5. Send through `transporte.ts`: one deadline, `redirect: 'manual'`, the body
  *     read inside the window, the deadline released in `finally`.
  *  6. Classify the outcome into the `errors.ts` taxonomy, by HTTP STATUS —
@@ -284,6 +284,21 @@ function lerCodigosErro(texto: string, token: string): readonly string[] {
   return codigos;
 }
 
+/**
+ * `x-amz-date`: the request time in ISO-8601 basic UTC (`20190430T123600Z`).
+ * The connecting page (D:connecting-to-the-selling-partner-api, Step 3) lists it
+ * among the request headers and its unsigned example request carries it, but no
+ * page says whether the gateway requires it since SigV4 was dropped — and D11
+ * forbids finding out live before the window. One timestamp is cheaper than a
+ * rejected request, so it is always sent, from the injected clock.
+ */
+function dataAmz(ms: number): string {
+  return new Date(ms)
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/.d{3}Z$/, 'Z');
+}
+
 export function criarClienteSpApi(opts: OpcoesClienteSpApi): SpApiLeituraClient {
   if (!userAgentValido(opts.userAgent)) {
     throw new AmazonConfigError('user-agent', {
@@ -332,6 +347,7 @@ export function criarClienteSpApi(opts: OpcoesClienteSpApi): SpApiLeituraClient 
     // 4. Exactly these headers.
     const headers: Record<string, string> = {
       'x-amz-access-token': accessToken,
+      'x-amz-date': dataAmz(agora()),
       'user-agent': userAgent,
       accept: 'application/json',
     };
