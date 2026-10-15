@@ -182,6 +182,22 @@ describe('what the pages carry', () => {
     expect(primeira?.objetos.map((o) => o.id)).toEqual([7645875, 7645904, 7645906]);
     expect(primeira?.objetos[1]?.categoria_pai).toBe('/api/v1/categoria/7645875');
   });
+
+  it("an empty total_count ('') costs nothing: the page and its rows arrive, total_count null", async () => {
+    const vazia = pagina(0, null, [1, 2]);
+    const f = sequencia({ ...vazia, meta: { ...vazia.meta, total_count: '' } });
+    const [primeira] = await coletar(categorias(f));
+    expect(primeira?.meta.total_count).toBeNull();
+    expect(primeira?.objetos.map((o) => o.id)).toEqual([1, 2]);
+  });
+
+  it('near-miss: a total_count that is not one integer still refuses the page, at meta.total_count', async () => {
+    const torta = pagina(0, null, [1]);
+    const f = sequencia({ ...torta, meta: { ...torta.meta, total_count: 'abc' } });
+    const err = await falha(coletar(categorias(f)));
+    expect(err).toBeInstanceOf(LiSchemaError);
+    expect(err).toMatchObject({ motivo: 'formato', campos: ['meta.total_count'], status: 200 });
+  });
 });
 
 describe('malformed meta.next → LiSchemaError', () => {

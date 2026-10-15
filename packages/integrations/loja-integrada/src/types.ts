@@ -30,12 +30,41 @@ import { wireInt } from '@delfrance/core/wire';
 import { z } from 'zod';
 
 /**
+ * An OPTIONAL leaf that also reads an exact `''` as `null`. The provider writes
+ * `''` for "nothing" on other leaves of this API (the sanitized captures carry
+ * it on text fields), and `wireInt()` alone refuses it — `.nullable()` does not
+ * help, since `''` is not `null` — so one empty optional number would cost the
+ * whole page.
+ *
+ *  - Only the exact `''`. A whitespace-only string is still handed to the
+ *    schema and refused: the captures hold none, and a blank the provider
+ *    never sends is a drift worth seeing.
+ *  - A non-empty string that is not one integer (`'abc'`, `'2.5'`) is still
+ *    refused by `wireInt()`.
+ *  - A REQUIRED leaf never gets it (`limit`, `offset`, a row's `id` or
+ *    `numero`), so an empty one is refused at its own path.
+ *
+ * ⚠️ The `.optional()` sits OUTSIDE the preprocess, so an absent key never
+ * reaches it and stays `undefined`.
+ */
+function vazioComoNulo<T extends z.ZodType>(schema: T) {
+  return z.preprocess((v) => (v === '' ? null : v), schema.nullable()).optional();
+}
+
+/** {@link vazioComoNulo} over `wireInt()`: an optional count or id. */
+const inteiroOpcional = () => vazioComoNulo(wireInt());
+
+/**
  * Tastypie's `meta` block.
  *
  * ⚠️ `limit` is read back, never assumed: the provider may cap a requested limit
  * (the public document's own `pedido/search` example answers `limit: 15`).
  * `next` / `previous` are RELATIVE paths under `/api/v1/…`, never followed
  * verbatim — `paginacao.ts` takes only their query string.
+ *
+ * `total_count` absent, `null` and `''` are one outcome: no total announced.
+ * ⚠️ Never `0` for `''` — a total of zero claims an EMPTY window, which is a
+ * statement the provider did not make.
  */
 export const liMetaSchema = z
   .object({
@@ -43,7 +72,7 @@ export const liMetaSchema = z
     next: z.string().nullable(),
     offset: wireInt(),
     previous: z.string().nullable(),
-    total_count: wireInt().nullable().optional(),
+    total_count: inteiroOpcional(),
   })
   .passthrough();
 
