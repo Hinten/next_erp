@@ -27,15 +27,24 @@
  * ## An empty string is the provider's "nothing"
  *
  * Every optional number, count, id and nested object reads an exact `''` as
- * `null` (`vazioComoNulo` and its two numeric forms below, where the reason is
- * written). A text leaf keeps its `''`: it already parses, and the mapper
- * decides what an empty text means. Only the required set stays strict.
+ * `null` (`vazioComoNulo` and its two numeric forms, from `vazio.ts`, where
+ * the reason and what the rule does NOT widen are written). A text leaf keeps
+ * its `''`: it already parses, and the mapper decides what an empty text
+ * means.
+ *
+ * Only the required set stays strict — the order `numero`, the `situacao`, a
+ * history row's `id` and `numero`, the produto identity `id` — so an empty one
+ * is refused at its own path. The three lists (`lista`) are part of that set
+ * and keep refusing a string, `''` included; so does a list entry, which is an
+ * object.
  *
  * That includes the three ids the import keys a write on (`itens[].id`,
  * `envios[].id`, `pagamentos[].id`): absent, `null` and `''` all arrive as "no
- * id", one outcome, and this schema does not decide what a missing key costs.
- * The importer does, in one place, before its first write; it never builds a
- * key out of a missing id (`String(null)` is the key `'null'`).
+ * id", one outcome, and this schema does not decide what a missing key costs —
+ * refusing only the third spelling of the same "no id" would decide one
+ * absence in two places. The importer does, in one place, before its first
+ * write; it never builds a key out of a missing id (`String(null)` is the key
+ * `'null'`).
  *
  * ## Passthrough
  *
@@ -81,8 +90,10 @@
  * beyond what a safe integer guarantees), the CEP, the address number, the
  * card authorization code.
  */
-import { wireInt, wireNumber } from '@delfrance/core/wire';
+import { wireInt } from '@delfrance/core/wire';
 import { z } from 'zod';
+
+import { inteiroOpcional, numeroOpcional, vazioComoNulo } from './vazio';
 
 /**
  * An identifier the provider may type either way, read as given — the older
@@ -93,56 +104,6 @@ const textoOuNumero = z.union([z.string(), z.number()]);
 
 /** A free-text leaf, absent or `null` when the provider has nothing. */
 const texto = () => z.string().nullable().optional();
-
-/**
- * An OPTIONAL leaf whose empty string `''` (and only `''`) reads as `null`,
- * then `schema`; absent stays `undefined`, `null` stays `null`.
- *
- * ## Why
- *
- * The provider writes "nothing" as `''`: the sanitized captures keep every
- * empty string as it arrived, and on most of the captured orders they carry
- * one at text leaves of the buyer, of the delivery address and of the order's
- * own note. No numeric or object leaf was empty in them, but the same
- * serializer writes those too, and the cost of being wrong is out of all
- * proportion: `toNumberish` in `@delfrance/core/wire` hands `''` to
- * `z.number()` UNCHANGED (it is not a number, and the core must never read it
- * as 0), the client validates the whole body, and the importer parks a
- * `LiSchemaError` for good. One empty weight on one line would cost the whole
- * order, forever. `.nullable()` does not help: `''` is not `null`.
- *
- * ## What it does NOT widen
- *
- *  - Only the exact `''`. A whitespace-only string is still handed to the
- *    schema, so a numeric leaf refuses it: the captures hold none, and a blank
- *    the provider never sends is a drift worth seeing.
- *  - A non-empty string that is not one number (`'abc'`, a pt-BR comma) is
- *    still refused by `wireNumber()` / `wireInt()`. This is not `z.unknown()`,
- *    which `preco_custo` keeps because its real form is not evidenced (the
- *    sanitized captures fake it).
- *  - A REQUIRED leaf never gets it — the order `numero`, the `situacao`, a
- *    history row's `id` and `numero`, the produto identity `id` — so an empty
- *    one is refused at its own path.
- *  - An id the import KEYS a write on (`itens[].id`, `envios[].id`,
- *    `pagamentos[].id`) DOES get it, on purpose: it is optional, so `null` and
- *    an absent key already reach the importer, and refusing only the third
- *    spelling of the same "no id" would decide one absence in two places. The
- *    importer refuses a missing key in one place, before its first write.
- *  - The three lists (`lista`) are part of the required set and keep refusing
- *    a string, `''` included; so does a list entry, which is an object.
- *
- * ⚠️ The `.optional()` sits OUTSIDE the preprocess, so an absent key never
- * reaches it and stays `undefined`.
- */
-function vazioComoNulo<T extends z.ZodType>(schema: T) {
-  return z.preprocess((v) => (v === '' ? null : v), schema.nullable()).optional();
-}
-
-/** {@link vazioComoNulo} over `wireNumber()`: an optional amount, weight or size. */
-const numeroOpcional = () => vazioComoNulo(wireNumber());
-
-/** {@link vazioComoNulo} over `wireInt()`: an optional count or id. */
-const inteiroOpcional = () => vazioComoNulo(wireInt());
 
 /**
  * A list the import iterates. An ABSENT key and a JSON `null` both read as
