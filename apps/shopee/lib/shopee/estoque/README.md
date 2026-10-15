@@ -47,10 +47,12 @@ The families are the seam, not a filing convention.
   per-model attribution), `linkEstoque.ts` (the four link writers and the ONE
   clearer), `avisoEstoque.ts` (the clamp aviso and its machine resolver) and
   `shopeeStockTasks.ts` (the Cloud Tasks scheduler).
-- **The surfaces** — `enviarEstoqueManual.ts` (the in-process manual push) and
-  `enviarEstoqueCli.ts` (the pure half of the `enviar:estoque` rehearsal). Their
-  I/O halves live outside this folder: `app/api/marketplace/shopee/enviar-estoque/route.ts`
-  and `scripts/enviar-estoque.ts`.
+- **The surfaces** — `planejarEnvioEstoque.ts` (the manual push's WRITE-FREE
+  resolve-and-plan prefix, called by BOTH modes), `enviarEstoqueManual.ts` (the
+  in-process manual push) and `enviarEstoqueCli.ts` (the pure half of the
+  `enviar:estoque` rehearsal). Their I/O halves live outside this folder:
+  `app/api/marketplace/shopee/enviar-estoque/route.ts` and
+  `scripts/enviar-estoque.ts`.
 
 ## The design, clause by clause
 
@@ -438,7 +440,12 @@ Three residuals of the manual path, recorded rather than fixed:
 - the requested ids are resolved ONCE, by one masked `getAll`
   (`core/anchors.ts`): a variation child is pushed through its anchor's listing
   and reported under its own id when the anchor has none — the cross-channel
-  rule of `apps/web/lib/marketplace/estoque/types.ts`;
+  rule of `apps/web/lib/marketplace/estoque/types.ts`. That resolution, the
+  family read over the anchors and the planner live in ONE write-free module,
+  `planejarEnvioEstoque.ts`, which the route, `--live` AND the dry run all call:
+  the dry run used to keep its own copy that read the ids as typed, so it
+  planned a child as its own listing-less anchor ("nothing to send") while
+  `--live` pushed the whole family (review of PR #1948);
 - `enviarEstoqueManual.ts`'s `MENSAGEM_ENVIO_LIMPO` is the ONE sentence
   outside `MENSAGEM_POR_MOTIVO`, for `motivo === null` only — that map is a
   vocabulary of refusals plus one annotation and deliberately has no member for
