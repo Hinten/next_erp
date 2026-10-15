@@ -10,12 +10,13 @@ import {
 import {
   NOME_TIER_KIT_UNICO,
   OPCAO_TIER_KIT_UNICO,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   chaveReceitaKitErp,
   type EnderecoShopeeDoComponente,
   type ResolucaoComponenteKit,
 } from '@delfrance/schemas';
 
-import { MOTIVO_PUBLICACAO_BLOQUEADA } from '../anuncios/errosPublicacao';
+import { MOTIVO_PUBLICACAO_BLOQUEADA, type ProblemaPublicacao } from '../anuncios/errosPublicacao';
 import type { FotosResolvidas } from '../anuncios/planoPublicacao';
 import { CAP_FOTOS_KIT } from './constantesKit';
 import type { AchadoKitPorSku } from './localizarKitPorSku';
@@ -24,6 +25,8 @@ import {
   decidirKitNovo,
   opcaoDoTierKit,
   planejarKit,
+  problemaDoPrincipalSolicitado,
+  problemaKitRemovido,
   problemaVinculoSubstituido,
   problemaVinculosAmbiguos,
   problemasDaFaseA,
@@ -33,6 +36,7 @@ import {
   type EntradaDaFaseA,
 } from './planoKit';
 import type { ContextoKit, FilhoDoKit, VinculoDaConta } from './resultadoKit';
+import { exigirAcaoEmTodas, exigirAcaoSeHaComando } from './testing/exigirAcao';
 
 /**
  * R2-F3: step 9's rung-2 fold, WIDENABLE per test. Every SKU guard in
@@ -233,9 +237,16 @@ function vinculo(id: string, raw: Record<string, unknown>): VinculoDaConta {
   return { id, raw };
 }
 
-function motivos(problemas: readonly { readonly motivo: string }[]): string[] {
-  return problemas.map((p) => p.motivo);
+/**
+ * The motivos of a refusal list — and K2 (step 21) on EVERY refusal that passes
+ * through here: a sentence naming a CLI flag or command must carry an `acao`.
+ */
+function motivos(problemas: readonly ProblemaPublicacao[]): string[] {
+  return exigirAcaoEmTodas(problemas).map((p) => p.motivo);
 }
+
+/** Step 21's `acao` vocabulary, short. */
+const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
 
 function faseA(over: Partial<EntradaDaFaseA> = {}): EntradaDaFaseA {
   const ctx = contexto();
@@ -525,6 +536,8 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
             'já existe na Shopee um kit com o SKU deste produto (item 2500139870, 2500139873) — ' +
             'importe-o (importar:anuncio) em vez de criar outro (item 2500139873 já vinculado ao ' +
             'produto prod-outro)',
+          // K1 (step 21): every hit, sorted like the sentence — never an empty list.
+          acao: { tipo: T.importar, itemIds: [KIT, KIT_2] },
         },
       ],
     });
@@ -572,6 +585,8 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
     expect(problemas[0]?.mensagem).toContain('link-velho');
     expect(problemas[0]?.mensagem).toContain('--link link-novo');
     expect(problemas[0]?.mensagem).not.toContain('importe-o');
+    // K1 (step 21): the republish targets the SUCCESSOR, never the superseded link.
+    expect(problemas[0]?.acao).toEqual({ tipo: T.republicar, linkDocId: 'link-novo' });
   });
 
   it('M180 — substituído próprio + estrangeiro, nas DUAS ordens da lista ⇒ UMA recusa com os dois', () => {
@@ -588,6 +603,8 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
       expect(motivos(problemas)).toEqual([M.vinculoSubstituido, M.kitJaExisteNaShopee]);
       expect(problemas[1]?.mensagem).toContain('(item 2500139870)');
       expect(problemas[1]?.mensagem).not.toContain('2500139873');
+      // K1: only the FOREIGN hit is to import; K's own superseded kit is not.
+      expect(problemas[1]?.acao).toEqual({ tipo: T.importar, itemIds: [KIT] });
     }
   });
 
@@ -610,6 +627,10 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
     expect(problemas[0]?.mensagem).toContain(
       'o produto tem 2 kits nativos ativos nesta conta (link-1 (item 2500139870), link-2 (item 2500139873))',
     );
+    expect(problemas[0]?.acao).toEqual({
+      tipo: T.escolherVinculo,
+      linkDocIds: ['link-1', 'link-2'],
+    });
   });
 });
 
@@ -628,6 +649,7 @@ describe('as frases compartilhadas com o despachante (PR 7)', () => {
         'informe qual com --link; se uma recriação foi interrompida, termine-a com --link ' +
         '<kit antigo> --recriar (se o --link apontar o kit novo, nada é excluído e a resposta ' +
         'diz qual é o antigo)',
+      acao: { tipo: T.escolherVinculo, linkDocIds: ['link-1', 'link-2'] },
     });
   });
 
@@ -723,6 +745,7 @@ describe('planejarKit — a criação de uma família de um', () => {
   it('M96 — dois itens sem --principal ⇒ principal-obrigatorio, nunca um padrão silencioso', () => {
     const plano = planejarKit(contexto({ principal: null, principalPedido: null }), fotos());
     expect(motivos(plano.problemas)).toEqual([M.principalObrigatorio]);
+    expect(plano.problemas[0]?.acao).toEqual({ tipo: T.informarPrincipal });
     expect(plano.corpo).toBeNull();
     // ⛔ QUASE-PAR: UM item só ⇒ o padrão é ele, sem recusa.
     const umItem = planejarKit(
@@ -751,6 +774,7 @@ describe('planejarKit — a criação de uma família de um', () => {
         motivo: M.principalInvalido,
         mensagem:
           'o componente principal item 2500139871 modelo 2000458822 não faz parte da composição do kit',
+        acao: { tipo: T.informarPrincipal },
       },
     ]);
   });
@@ -1258,6 +1282,7 @@ describe('OP-8 — um --principal NOMEADO que não resolve recusa principal-inva
         campo: 'principal',
         motivo: M.principalInvalido,
         mensagem: 'o componente principal fantasma não faz parte da composição do kit',
+        acao: { tipo: T.informarPrincipal },
       },
     ]);
     expect(plano.corpo).toBeNull();
@@ -1290,6 +1315,7 @@ describe('OP-8 — um --principal NOMEADO que não resolve recusa principal-inva
         mensagem:
           `o componente principal ${A} não tem anúncio utilizável nesta conta Shopee — corrija o ` +
           'componente ou informe outro (--principal)',
+        acao: { tipo: T.informarPrincipal },
       },
     ]);
   });
@@ -1314,6 +1340,84 @@ describe('OP-8 — um --principal NOMEADO que não resolve recusa principal-inva
 
     const republicacao = planejarKit(atualizar({ principalSolicitado: 'fantasma' }), fotos());
     expect(motivos(republicacao.problemas)).not.toContain(M.principalInvalido);
+  });
+});
+
+describe('step 21 (K1/K2) — o `acao` de cada recusa que nomeia um comando de CLI', () => {
+  it('K1 — cada produtor exportado carrega o `acao` EXATO', () => {
+    expect(
+      problemaVinculoSubstituido({
+        linkDocId: 'link-velho',
+        itemId: KIT_2,
+        novoLinkDocId: 'link-novo',
+      }).acao,
+    ).toEqual({ tipo: T.republicar, linkDocId: 'link-novo' });
+    // ⛔ QUASE-PAR: sem sucessor conhecido ⇒ republicar SEM vínculo — nunca o substituído.
+    expect(
+      problemaVinculoSubstituido({ linkDocId: 'link-velho', itemId: null, novoLinkDocId: null })
+        .acao,
+    ).toEqual({ tipo: T.republicar, linkDocId: null });
+    expect(problemaKitRemovido({ itemId: KIT, linkDocId: 'link-kit' }).acao).toEqual({
+      tipo: T.recriar,
+      linkDocId: 'link-kit',
+    });
+    expect(
+      problemaVinculosAmbiguos([
+        { linkDocId: 'link-2', itemId: KIT_2 },
+        { linkDocId: 'link-1', itemId: KIT },
+        { linkDocId: 'link-3', itemId: null },
+      ]).acao,
+    ).toEqual({ tipo: T.escolherVinculo, linkDocIds: ['link-2', 'link-1', 'link-3'] });
+  });
+
+  it('K1 — kit-ja-existe-na-shopee: `importar` com TODO item achado, na ordem da frase', () => {
+    const r = decidirKitNovo(
+      busca([
+        { itemId: KIT, vinculo: null },
+        { itemId: KIT_2, vinculo: { produtoId: 'outro-produto', linkDocId: 'link-alheio' } },
+      ]),
+      new Map(),
+      new Map(),
+      new Map(),
+    );
+    const problemas = r.acao === 'recusar' ? r.problemas : [];
+    expect(motivos(problemas)).toEqual([M.kitJaExisteNaShopee]);
+    expect(problemas[0]?.acao).toEqual({ tipo: T.importar, itemIds: [KIT, KIT_2] });
+  });
+
+  it('K1 — principal-invalido: as DUAS frases de problemaDoPrincipalSolicitado pedem `informar-principal`', () => {
+    for (const id of [A, 'fantasma']) {
+      const p = problemaDoPrincipalSolicitado({
+        arma: { arma: 'kit-criar' },
+        filhos: [filho(MEMBRO)],
+        resolucao: new Map([[A, { ok: false, motivo: 'componente-nao-publicado' }]]),
+        principalSolicitado: id,
+      });
+      expect(p?.acao, id).toEqual({ tipo: T.informarPrincipal });
+    }
+  });
+
+  it('⚠️ K2 — nenhuma recusa que nomeia --flag ou :anuncio sai sem `acao`; e as demais saem SEM a chave', () => {
+    const recusas: ProblemaPublicacao[] = [
+      problemaVinculoSubstituido({ linkDocId: 'l', itemId: KIT, novoLinkDocId: 'n' }),
+      problemaVinculoSubstituido({ linkDocId: 'l', itemId: null, novoLinkDocId: null }),
+      problemaVinculosAmbiguos([
+        { linkDocId: 'a', itemId: KIT },
+        { linkDocId: 'b', itemId: KIT_2 },
+      ]),
+      problemaKitRemovido({ itemId: null, linkDocId: 'l' }),
+      ...planejarKit(contexto({ principal: null, principalPedido: null }), fotos()).problemas,
+      ...problemasDaFaseA(faseA({ produto: { id: K, sku: null, raw: {} }, descricao: null })),
+    ];
+    for (const p of recusas) exigirAcaoSeHaComando(p);
+    // ⛔ NEAR-MISS: a refusal with no CLI text carries NO `acao` key at all —
+    // absent, never `undefined`, so its stored / served shape did not change.
+    const semComando = recusas.filter((p) => !/--|:anuncio/.test(p.mensagem));
+    expect(semComando.length).toBeGreaterThan(0);
+    for (const p of semComando) expect(Object.keys(p)).toEqual(['campo', 'motivo', 'mensagem']);
+    // ...and the guard itself bites: the same sentence WITHOUT `acao` throws.
+    const semAcao = { ...problemaKitRemovido({ itemId: KIT, linkDocId: 'l' }), acao: undefined };
+    expect(() => exigirAcaoSeHaComando(semAcao)).toThrow(/listagem-removida/);
   });
 });
 

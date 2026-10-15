@@ -7,7 +7,11 @@
  * dispatcher's own partition: what decides is how a STORED doc reads.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ESTADO_ANUNCIO_SHOPEE, toOuterRef } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  toOuterRef,
+} from '@delfrance/schemas';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 
 import { MOTIVO_PUBLICACAO_BLOQUEADA } from '../anuncios/errosPublicacao';
@@ -21,6 +25,7 @@ import {
   type ResultadoDoDespacho,
 } from './armaDePublicacao';
 import type { VinculoDaConta } from './resultadoKit';
+import { exigirAcaoSeHaComando } from './testing/exigirAcao';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures — role ids only (s19-ctx).                                        */
@@ -83,13 +88,22 @@ function despachar(
   return escolherArmaDePublicacao({ produto, vinculos, corpo: corpo(over) });
 }
 
-/** The refusal, asserting there IS one (and only one problem, the dispatcher's way). */
+/**
+ * The refusal, asserting there IS one (and only one problem, the dispatcher's
+ * way) — and K2 (step 21) on every refusal this suite produces: a sentence that
+ * names a CLI flag or command must carry an `acao`.
+ */
 function recusa(r: ResultadoDoDespacho | null) {
   if (r === null) throw new Error('esperava recusa, veio null (o 404 do vínculo alheio)');
   if (r.ok) throw new Error(`esperava recusa, veio a arma ${JSON.stringify(r.arma)}`);
   expect(r.problemas).toHaveLength(1);
-  return r.problemas[0]!;
+  const p = r.problemas[0]!;
+  exigirAcaoSeHaComando(p);
+  return p;
 }
+
+/** Step 21's `acao` vocabulary, short. */
+const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
 
 function arma(r: ResultadoDoDespacho | null) {
   if (r === null) throw new Error('esperava arma, veio null (o 404 do vínculo alheio)');
@@ -611,6 +625,68 @@ describe('(5) nenhum vínculo vivo', () => {
     expect(arma(despachar(KIT_EFETIVO, [], { principal: 'comp-a' }))).toEqual({
       arma: 'kit-criar',
     });
+  });
+});
+
+/* ========================================================================== */
+/*  step 21 (K1) — every dispatcher refusal's `acao`, exactly                  */
+/* ========================================================================== */
+
+describe('step 21 (K1) — o `acao` EXATO de cada recusa do despacho', () => {
+  it('ja-e-kit-nativo ⇒ republicar O kit nativo nomeado', () => {
+    const p = recusa(
+      despachar(
+        KIT_ANTIGO,
+        [nativo('a-kit', KIT_1), comum('b-comum', COMUM_1, substituidoPor('a-kit'))],
+        { converterEmKit: true },
+      ),
+    );
+    expect(p.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.jaEKitNativo);
+    expect(p.acao).toEqual({ tipo: T.republicar, linkDocId: 'a-kit' });
+  });
+
+  it('opcao-de-kit-em-anuncio-comum ⇒ sem-opcoes-de-kit, no --principal e no --recriar', () => {
+    for (const over of [{ principal: 'comp-a' }, { linkDocId: 'a-vivo', recriar: true }] as const) {
+      const p = recusa(despachar(NAO_KIT, [comum('a-vivo', COMUM_1)], over));
+      expect(p.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.opcaoDeKitEmAnuncioComum);
+      expect(p.acao).toEqual({ tipo: T.semOpcoesDeKit });
+    }
+  });
+
+  it('vinculo-substituido ⇒ republicar o SUCESSOR, nunca o vínculo pedido', () => {
+    const vinculos = [nativo('a-velho', KIT_1, substituidoPor('b-novo')), nativo('b-novo', KIT_2)];
+    const p = recusa(despachar(KIT_EFETIVO, vinculos, { linkDocId: 'a-velho' }));
+    expect(p.acao).toEqual({ tipo: T.republicar, linkDocId: 'b-novo' });
+    expect(p.acao).not.toEqual({ tipo: T.republicar, linkDocId: 'a-velho' });
+  });
+
+  it('vinculos-ambiguos ⇒ escolher-vinculo com os vivos na ordem da FRASE', () => {
+    const p = recusa(despachar(KIT_EFETIVO, [nativo('b-kit', KIT_2), nativo('a-kit', KIT_1)]));
+    expect(p.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.vinculosAmbiguos);
+    expect(p.mensagem).toContain(`a-kit (item ${String(KIT_1)}), b-kit (item ${String(KIT_2)})`);
+    expect(p.acao).toEqual({ tipo: T.escolherVinculo, linkDocIds: ['a-kit', 'b-kit'] });
+  });
+
+  it('listagem-removida (kit) ⇒ recriar O vínculo que a frase nomeia', () => {
+    const vinculos = [
+      nativo('a-velho', KIT_1, { ...REMOVIDO, ultimaModificacao: 1_000 }),
+      nativo('b-novo', KIT_2, { ...REMOVIDO, ultimaModificacao: 2_000 }),
+    ];
+    const p = recusa(despachar(KIT_ANTIGO, vinculos));
+    expect(p.mensagem).toContain('--link b-novo --recriar');
+    expect(p.acao).toEqual({ tipo: T.recriar, linkDocId: 'b-novo' });
+  });
+
+  it('⛔ quase-par: as recusas SEM comando de CLI não ganham a chave `acao`', () => {
+    for (const p of [
+      recusa(despachar(NAO_KIT, [comum('link-comum', COMUM_1)], { converterEmKit: true })),
+      recusa(despachar({ id: 'prod-1', paiId: null, ehKit: false, ehKitVirtual: true }, [])),
+      recusa(
+        despachar(KIT_ANTIGO, [comum('c-removido', COMUM_2, REMOVIDO)], { converterEmKit: true }),
+      ),
+    ]) {
+      expect(Object.keys(p), p.motivo).toEqual(['campo', 'motivo', 'mensagem']);
+    }
   });
 });
 
