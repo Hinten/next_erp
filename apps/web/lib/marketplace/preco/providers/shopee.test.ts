@@ -113,6 +113,24 @@ describe('shopeePriceProvider', () => {
     expect(res.rows.map((r) => r.variacao)).toEqual(['CAM-AZ-P', 'Azul M', null]);
   });
 
+  it('P5b — a blank SKU falls back to the name; a blank name falls back to null', async () => {
+    // The ERP writes `sku: ''` for every child of a parent with no SKU, so the
+    // empty string — not null — is the common case for exactly these families.
+    const enviarPrecos = vi.fn<EnviarPrecos>().mockResolvedValue(
+      envelope({
+        listings: [
+          modelo({ variacaoProdutoId: 'c1', variacaoSku: '', variacaoNome: 'Azul P' }),
+          modelo({ variacaoProdutoId: 'c2', variacaoSku: '   ', variacaoNome: 'Azul M' }),
+          modelo({ variacaoProdutoId: 'c3', variacaoSku: '', variacaoNome: '  ' }),
+          // Near miss: a SKU that is only padded is still the SKU, trimmed.
+          modelo({ variacaoProdutoId: 'c4', variacaoSku: ' CAM-AZ-G ', variacaoNome: 'Azul G' }),
+        ],
+      }),
+    );
+    const res = await shopeePriceProvider.enviarPreco(input(enviarPrecos));
+    expect(res.rows.map((r) => r.variacao)).toEqual(['Azul P', 'Azul M', null, 'CAM-AZ-G']);
+  });
+
   it("carries the row's price, the shelf price it replaced and the backend sentence", async () => {
     const enviarPrecos = vi.fn<EnviarPrecos>().mockResolvedValue(
       envelope({
