@@ -55,7 +55,7 @@
  * the history could derive them; fill-once `id`, `dataCadastro` and `cartao`;
  * `ultimaModificacao = max(stored, now)` on a non-empty patch.
  */
-import { coerceToMicros } from '@delfrance/core/datetime';
+
 import { roundReais } from '@delfrance/core/money';
 import type { PedidoLi, PedidoPagamentoLi } from '@delfrance/integrations-loja-integrada';
 import {
@@ -65,7 +65,7 @@ import {
   type StatusPagamento,
 } from '@delfrance/schemas';
 
-import { dataLiParaMicros } from './dataLi';
+import { dataLiParaMicros, microsArmazenadoLi } from './dataLi';
 import {
   statusPagamentoLiAplicavel,
   type AlvoStatusPagamentoLi,
@@ -313,7 +313,7 @@ export function montarEscritaPagamentoLi(
 ): EscritaPagamentoLi {
   if (armazenado === null) return { tipo: 'criar', corpo: corpoDoPagamentoLi(mapeado, nowUs) };
 
-  const armazenadoUs = coerceToMicros(armazenado.lastProviderUpdate);
+  const armazenadoUs = microsArmazenadoLi(armazenado.lastProviderUpdate);
   if (armazenadoUs !== null && mapeado.watermarkUs < armazenadoUs) {
     return { tipo: 'obsoleto', armazenadoUs };
   }
@@ -332,7 +332,7 @@ export function montarEscritaPagamentoLi(
     ['dataAprovacao', mapeado.dataAprovacao],
     ['dataCancelamento', mapeado.dataCancelamento],
   ] as const) {
-    if (data.derivavel && coerceToMicros(armazenado[campo]) !== data.us) patch[campo] = data.us;
+    if (data.derivavel && microsArmazenadoLi(armazenado[campo]) !== data.us) patch[campo] = data.us;
   }
 
   // A 99 is a guess: only a KNOWN forma is overlaid, with its instalments.
@@ -359,7 +359,7 @@ export function montarEscritaPagamentoLi(
   }
 
   if (Object.keys(patch).length === 0) return { tipo: 'sem-mudanca' };
-  const ultima = coerceToMicros(armazenado.ultimaModificacao);
+  const ultima = microsArmazenadoLi(armazenado.ultimaModificacao);
   patch.ultimaModificacao = ultima !== null && ultima > nowUs ? ultima : nowUs;
   return {
     tipo: 'atualizar',

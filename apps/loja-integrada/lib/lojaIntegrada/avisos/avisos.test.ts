@@ -607,14 +607,17 @@ function contar(texto: string, agulha: string): number {
   return texto.split(agulha).length - 1;
 }
 
-describe('⚠️ the µs boundary: exactly two ms → µs calls and one Timestamp → µs read', () => {
+describe('⚠️ the µs boundary: two converting modules, every call counted', () => {
   const rotas = fontes(RAIZ_ROTAS);
   const arquivos = [...fontes(RAIZ_LIB), ...rotas];
   const avisos = fileURLToPath(new URL('./avisos.ts', import.meta.url));
+  /** The order import's conversions (step 5): one stored-stamp coercion, one ms → µs. */
+  const dataLi = fileURLToPath(new URL('../pedidos/dataLi.ts', import.meta.url));
 
   it('the scan found the lib and the conta routes', () => {
     expect(arquivos.length).toBeGreaterThan(5);
     expect(arquivos).toContain(avisos);
+    expect(arquivos).toContain(dataLi);
     expect(rotas.filter((r) => r.includes('conta'))).toHaveLength(3);
   });
 
@@ -622,14 +625,22 @@ describe('⚠️ the µs boundary: exactly two ms → µs calls and one Timestam
     expect(contar(readFileSync(avisos, 'utf8'), 'millisToMicros(')).toBe(2);
   });
 
+  it('pedidos/dataLi.ts converts once each: microsDeMillisLi and microsArmazenadoLi', () => {
+    const texto = readFileSync(dataLi, 'utf8');
+    expect(contar(texto, 'millisToMicros(')).toBe(1);
+    // The import line and the one call.
+    expect(contar(texto, 'coerceToMicros')).toBe(2);
+  });
+
   it('no other module converts: no ms → µs call, no nanosecond read, no toMillis, no coercion', () => {
     for (const arquivo of arquivos) {
       const texto = readFileSync(arquivo, 'utf8');
       const ehAvisos = arquivo === avisos;
-      expect(contar(texto, 'millisToMicros('), arquivo).toBe(ehAvisos ? 2 : 0);
+      const ehDataLi = arquivo === dataLi;
+      expect(contar(texto, 'millisToMicros('), arquivo).toBe(ehAvisos ? 2 : ehDataLi ? 1 : 0);
       expect(contar(texto, '.nanoseconds'), arquivo).toBe(ehAvisos ? 1 : 0);
       expect(contar(texto, 'toMillis('), arquivo).toBe(0);
-      expect(contar(texto, 'coerceToMicros'), arquivo).toBe(0);
+      expect(contar(texto, 'coerceToMicros'), arquivo).toBe(ehDataLi ? 2 : 0);
     }
   });
 });

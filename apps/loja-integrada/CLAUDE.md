@@ -60,11 +60,12 @@ still be fixed. Only the context loader refuses those.
 
 - `lib/lojaIntegrada/**` is Next-free and takes `db` as a parameter, because step 3's
   functions bundle imports it. The one exception is `core/respond.ts`.
-- Two modules convert to µs: `lib/lojaIntegrada/avisos/avisos.ts` (`agoraUsDe`, `prazoUsDe`
-  and the Timestamp-to-µs function) and `lib/lojaIntegrada/pedidos/dataLi.ts`
-  (`dataLiParaMicros`: LI's naive stamps read in `FUSO_DATAS_LI`, America/Sao_Paulo by
-  inference, the order import's only conversion; the pedido mappers take its µs as given).
-  Everything else stays in ms.
+- Two modules convert to µs (`avisos.test.ts` counts the calls):
+  `lib/lojaIntegrada/avisos/avisos.ts` (`agoraUsDe`, `prazoUsDe` and the Timestamp-to-µs
+  function) and, for the order import, `lib/lojaIntegrada/pedidos/dataLi.ts`
+  (`dataLiParaMicros` for LI's naive stamps, read in `FUSO_DATAS_LI` — America/Sao_Paulo by
+  inference —, `microsArmazenadoLi` for a stored stamp in another writer's unit, and
+  `microsDeMillisLi`). Everything else stays in ms.
   A document commit time is the aviso clock for the park. An observation of ABSENCE (no
   credential, a conta gone) is clocked by the snapshot's `readTime`: the reconexão aviso
   is never resolved clockless, or a park committed after the read loses its open row for

@@ -25,7 +25,7 @@
  *
  * The incoming stamp is LI's naive time, converted once by `dataLiParaMicros`.
  * A stored stamp may come from another writer, in another unit or zone; it is
- * read through `coerceToMicros`, and a migrated pedido's first new observation
+ * read through `microsArmazenadoLi`, and a migrated pedido's first new observation
  * re-applies, which the window rehearsal verifies. A stored stamp strictly
  * newer ⇒ `obsoleto`, with nothing written; equal or older ⇒ the patch is
  * built, and an EMPTY patch writes nothing (`sem-mudanca`) — so an equal-stamp
@@ -45,13 +45,13 @@
  * An operator's money edit therefore survives the next Loja Integrada change,
  * and one operator save never blinds tracking or the paid promotion.
  */
-import { coerceToMicros } from '@delfrance/core/datetime';
+
 import { roundReais } from '@delfrance/core/money';
 import type { PedidoLi } from '@delfrance/integrations-loja-integrada';
 import { toOuterRef, type ItemDoPedido, type OuterRef } from '@delfrance/schemas';
 
 import { PREFIXO_ERRO_LI, decidirEstadoLi, type DecisaoEstadoLi } from './estadoPedidoLi';
-import { dataLiParaMicros } from './dataLi';
+import { dataLiParaMicros, microsArmazenadoLi } from './dataLi';
 import { freteDeCriacaoLi, mesclarFreteLi, type FreteMapeadoLi } from './freteMapeamento';
 import { idPedidoLi } from './orderIdsLi';
 
@@ -300,7 +300,7 @@ export function montarEscritaPedidoLi(
     return { tipo: 'criar', corpo: corpoDeCriacao(mapeado, decisao, nowUs), decisao };
   }
 
-  const armazenadoUs = coerceToMicros(armazenado.lastMarketplaceUpdate);
+  const armazenadoUs = microsArmazenadoLi(armazenado.lastMarketplaceUpdate);
   if (armazenadoUs !== null && mapeado.watermarkUs < armazenadoUs) {
     return { tipo: 'obsoleto', armazenadoUs };
   }
@@ -372,7 +372,7 @@ export function montarEscritaPedidoLi(
   }
 
   if (Object.keys(patch).length === 0) return { tipo: 'sem-mudanca', decisao };
-  const ultima = coerceToMicros(armazenado.ultimaModificacao);
+  const ultima = microsArmazenadoLi(armazenado.ultimaModificacao);
   patch.ultimaModificacao = ultima !== null && ultima > nowUs ? ultima : nowUs;
   return { tipo: 'atualizar', patch, grupos: [...grupos], decisao };
 }

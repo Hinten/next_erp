@@ -73,7 +73,7 @@
  * belongs to the label flow, and a tracking write-back that bumps the order's
  * stamp re-imports as no freight change at all.
  */
-import { millisToMicros } from '@delfrance/core/datetime';
+
 import { roundReais } from '@delfrance/core/money';
 import { sha256Hex } from '@delfrance/data/admin';
 import type { PedidoLi } from '@delfrance/integrations-loja-integrada';
@@ -101,7 +101,7 @@ import {
 } from '@delfrance/schemas';
 
 import type { RegistroDoMapaLi } from '../frete/mapaFrete';
-import { dataLiParaMicros } from './dataLi';
+import { dataLiParaMicros, microsDeMillisLi } from './dataLi';
 
 /* -------------------------------------------------------------------------- */
 /*                               the modalidade                                */
@@ -359,7 +359,7 @@ export function prazoDespachoLiUs(
   const daConta =
     horarios === null ? null : getPrazoDespachoNoFuso(horarios, aprovadoMs, FUSO_FISCAL);
   const ms = daConta ?? getPrazoDespachoNoFuso(HORARIO_DE_CORTE_PADRAO_LI, aprovadoMs, FUSO_FISCAL);
-  return ms === null ? null : millisToMicros(ms);
+  return ms === null ? null : microsDeMillisLi(ms);
 }
 
 /* -------------------------------------------------------------------------- */

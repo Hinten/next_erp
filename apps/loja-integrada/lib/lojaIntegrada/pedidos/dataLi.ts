@@ -1,9 +1,21 @@
 /**
  * Loja Integrada's NAIVE date-times, read and written as text — the order
  * poller's stamps and bounds (master plan step 3, PR 3-e) — and the order
- * import's ONE conversion of such a text into an instant (step 5, PR 5-b).
- * Pure: no clock, no I/O; the only zone is {@link FUSO_DATAS_LI}, passed
- * explicitly.
+ * import's conversions to µs (step 5, PR 5-b). Pure: no clock, no I/O; the
+ * only zone is {@link FUSO_DATAS_LI}, passed explicitly.
+ *
+ * ## The order import's µs boundary
+ *
+ * Besides `avisos/avisos.ts`, this is the app's one module that converts to µs
+ * (`avisos.test.ts` counts the calls). The order import's three conversions all
+ * live here, so the units cannot drift between its mappers:
+ *
+ *  - {@link dataLiParaMicros} — an INCOMING Loja Integrada stamp, read in
+ *    {@link FUSO_DATAS_LI};
+ *  - {@link microsArmazenadoLi} — a STORED stamp another writer may have left
+ *    in another unit (ms, µs, an ISO string);
+ *  - {@link microsDeMillisLi} — an instant the import computed in ms (the
+ *    dispatch deadline).
  *
  * ## Two shapes, both fixed width, so string order is time order
  *
@@ -48,7 +60,7 @@
  * whitespace, a day the calendar does not have, a non-string. Pinned by
  * `dataLi.test.ts`.
  */
-import { microsDeDataHoraNoFuso } from '@delfrance/core/datetime';
+import { coerceToMicros, microsDeDataHoraNoFuso, millisToMicros } from '@delfrance/core/datetime';
 import { CURSOR_POLL_LI_REGEX, DATA_MODIFICACAO_LI_REGEX } from '@delfrance/schemas';
 
 /**
@@ -111,13 +123,13 @@ export function lerDataLi(bruto: unknown): string | null {
 /**
  * A Loja Integrada stamp as the INSTANT it names, in µs since the epoch, read
  * in {@link FUSO_DATAS_LI} — or `null` when {@link lerDataLi} refuses it (or the
- * instant falls outside the µs safe range). The order import's ONE conversion:
- * the watermark, `timestamp`, the history dates and the freight dates all go
- * through it, so two stamps it compares were converted the same way.
+ * instant falls outside the µs safe range). The order import's ONE reading of
+ * an incoming stamp: the watermark, `timestamp`, the history dates and the
+ * freight dates all go through it, so two stamps it compares were converted the
+ * same way.
  *
- * ⚠️ Never `coerceToMicros` on an incoming stamp: an offset-less ISO string is
- * read there as UTC, three hours away from this. `coerceToMicros` is for the
- * STORED side, which may hold another writer's unit.
+ * ⚠️ Never {@link microsArmazenadoLi} on an incoming stamp: it reads an
+ * offset-less ISO string as UTC, three hours away from this.
  *
  * Fold: the {@link lerDataLi} fold (`X` ≡ `X.000000`, `.1` ≡ `.100000`); one
  * microsecond apart stays distinct.
@@ -125,6 +137,21 @@ export function lerDataLi(bruto: unknown): string | null {
 export function dataLiParaMicros(bruto: unknown): number | null {
   const canonica = lerDataLi(bruto);
   return canonica === null ? null : microsDeDataHoraNoFuso(canonica, FUSO_DATAS_LI);
+}
+
+/**
+ * A STORED stamp as µs, whatever unit another writer left it in — a µs or ms
+ * number (by magnitude), an ISO string, a `Date` — or `null` (absent, or not a
+ * stamp). Only ever the stored side of a comparison: a watermark another writer
+ * (or the migrated corpus) may hold in another unit.
+ */
+export function microsArmazenadoLi(valor: unknown): number | null {
+  return coerceToMicros(valor);
+}
+
+/** An instant the import computed in ms (a dispatch deadline) as µs. */
+export function microsDeMillisLi(ms: number): number {
+  return millisToMicros(ms);
 }
 
 /**
