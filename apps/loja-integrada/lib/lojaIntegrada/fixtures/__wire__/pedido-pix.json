@@ -1,0 +1,185 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/pedido/50806/",
+    "query": []
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 3904,
+    "corpo": {
+      "cliente": {
+        "cnpj": null,
+        "cpf": "000.000.000-00",
+        "data_nascimento": null,
+        "email": "redigido@example.invalid",
+        "id": 0,
+        "nome": "REDACTED",
+        "razao_social": null,
+        "resource_uri": "REDACTED",
+        "sexo": "",
+        "telefone_celular": "(00) 00000-0000",
+        "telefone_principal": null
+      },
+      "cliente_obs": "",
+      "cupom_desconto": {
+        "aplicar_no_total": false,
+        "ativo": false,
+        "categorias": [],
+        "clientes": [],
+        "codigo": "REDACTED",
+        "condicao_cliente": "REDACTED",
+        "condicao_produto": "REDACTED",
+        "cumulativo": false,
+        "data_criacao": "REDACTED",
+        "data_modificacao": "REDACTED",
+        "descricao": "REDACTED",
+        "grupos": [],
+        "id": 0,
+        "id_externo": null,
+        "produtos": [],
+        "quantidade": 0,
+        "quantidade_por_cliente": 0,
+        "quantidade_usada": 0,
+        "resource_uri": "REDACTED",
+        "tipo": "REDACTED",
+        "validade": "REDACTED",
+        "valor": "REDACTED",
+        "valor_minimo": null
+      },
+      "data_criacao": "2026-10-13T06:54:38.720849",
+      "data_expiracao": "2026-10-19T06:54:38.832798",
+      "data_modificacao": "2026-10-13T16:30:32.760280",
+      "endereco_entrega": {
+        "bairro": "REDACTED",
+        "cep": "00000-000",
+        "cidade": "REDACTED",
+        "cnpj": null,
+        "complemento": "REDACTED",
+        "cpf": "000.000.000-00",
+        "endereco": "REDACTED",
+        "estado": "REDACTED",
+        "id": 0,
+        "ie": null,
+        "nome": "REDACTED",
+        "numero": "REDACTED",
+        "pais": "REDACTED",
+        "razao_social": null,
+        "referencia": "REDACTED",
+        "rg": null,
+        "tipo": "REDACTED"
+      },
+      "envios": [
+        {
+          "data_criacao": "2026-10-13T06:54:38.748501",
+          "data_modificacao": "2026-10-13T16:30:32.725086",
+          "forma_envio": {
+            "code": "Correios-2",
+            "id": 59360,
+            "nome": "REDACTED",
+            "tipo": "REDACTED"
+          },
+          "id": 129500348,
+          "link_rastreio": null,
+          "objeto": "AA000000000BR",
+          "pedido": "REDACTED",
+          "prazo": 6,
+          "valor": "14.80"
+        }
+      ],
+      "id": 0,
+      "id_anymarket": null,
+      "id_externo": null,
+      "integration_data": null,
+      "itens": [
+        {
+          "altura": 5,
+          "disponibilidade": 0,
+          "id": 283657987,
+          "largura": 10,
+          "linha": 1,
+          "ncm": null,
+          "nome": "REDACTED",
+          "pedido": "/api/v1/pedido/50806",
+          "peso": "0.100",
+          "preco_cheio": "49.9900",
+          "preco_custo": "REDACTED",
+          "preco_promocional": null,
+          "preco_subtotal": "49.9900",
+          "preco_venda": "49.9900",
+          "produto": "REDACTED",
+          "produto_pai": "/api/v1/produto/402289749",
+          "profundidade": 10,
+          "quantidade": "1.000",
+          "sku": "676536253018001",
+          "tipo": "atributo_opcao",
+          "variacao": {
+            "chave_redigida_1": {
+              "cor": "REDACTED",
+              "cor_secundaria": null,
+              "nome": "REDACTED"
+            },
+            "Tamanho": {
+              "nome": "REDACTED"
+            }
+          }
+        }
+      ],
+      "numero": 50806,
+      "pagamentos": [
+        {
+          "authorization_code": null,
+          "banco": null,
+          "bandeira": null,
+          "boleto_url": null,
+          "codigo_retorno_gateway": null,
+          "forma_pagamento": {
+            "codigo": "proxy-pagali-v2-pix",
+            "configuracoes": {
+              "ativo": false,
+              "disponivel": false
+            },
+            "id": 72,
+            "imagem": "REDACTED",
+            "nome": "REDACTED",
+            "resource_uri": "REDACTED"
+          },
+          "id": 129500472,
+          "identificador_id": null,
+          "mensagem_gateway": null,
+          "pagamento_tipo": "instantPayment",
+          "parcelamento": {},
+          "pix_code": "REDACTED",
+          "pix_qrcode": "REDACTED",
+          "transacao_id": "REDACTED",
+          "valor": "59.79",
+          "valor_pago": "59.79"
+        }
+      ],
+      "peso_real": "0.100",
+      "resource_uri": "/api/v1/pedido/50806",
+      "situacao": {
+        "aprovado": true,
+        "cancelado": false,
+        "codigo": "pedido_enviado",
+        "final": true,
+        "id": 11,
+        "nome": "REDACTED",
+        "notificar_comprador": true,
+        "padrao": false,
+        "resource_uri": "/api/v1/situacao/11"
+      },
+      "utm_campaign": "REDACTED",
+      "valor_desconto": "5.00",
+      "valor_envio": "14.80",
+      "valor_subtotal": "49.99",
+      "valor_total": "59.79"
+    }
+  }
+}

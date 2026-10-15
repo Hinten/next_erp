@@ -10,7 +10,34 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 
 import { fingerprintDoToken } from '../core/credencial';
 import type { CampoLogLi, EscritorLogLi, SeveridadeLi } from '../core/log';
+import { RITMO_LEITURA_LI_MS, type RitmoLi } from '../core/ritmo';
+import { type AmbienteLi, CHAMADAS_ENV_LI, MODO_LI } from '../core/valvulas';
 import type { DocData, FakeDb } from './fakeDb';
+
+/** The environment with the read switch ON — the only value that lets a context call. */
+export const AMBIENTE_LIGADO: AmbienteLi = Object.freeze({ [CHAMADAS_ENV_LI]: MODO_LI.on });
+
+/**
+ * A pacer that never sleeps: every wait is recorded (and handed to `aoEsperar`,
+ * so a suite can advance a fake clock or log the order of events).
+ */
+export function ritmoFalso(aoEsperar: (ms: number) => void = () => undefined): {
+  ritmo: RitmoLi;
+  esperas: number[];
+} {
+  const esperas: number[] = [];
+  return {
+    ritmo: {
+      intervaloMs: RITMO_LEITURA_LI_MS,
+      esperar: (ms) => {
+        esperas.push(ms);
+        aoEsperar(ms);
+        return Promise.resolve();
+      },
+    },
+    esperas,
+  };
+}
 
 /** A sentinel token: long, visible ASCII, impossible to mistake for a real one. */
 export const TOKEN_A = 'li-token-sentinela-AAAA-0123456789';

@@ -214,6 +214,22 @@ export const intFreteSchema = z
      * not by a rule. Null on every other `tipo`.
      */
     contaShopeeFreteOuterRef: outerRefSchema.nullable().default(null).describe('Conta Shopee'),
+    /**
+     * Back-reference to the Loja Integrada conta (`integracao`, tipo lojaIntegrada) this freight
+     * doc belongs to — `documents/integracao/<id>`, the `EnviosLojaIntegrada` doc of master plan
+     * §3. The migrated docs carry it in that canonical form, so they are ADOPTED by this key,
+     * never duplicated.
+     *
+     * **Server-owned** (#1826): the sole writers are the `onIntegracaoLojaIntegradaChanged`
+     * trigger (`loja-integrada` functions codebase) and the window pass, both through
+     * `@delfrance/data/admin/frete`. Protected by convention, like its two twins above — hidden
+     * from every `/logistica` slice by `SHARED_EXCLUDED`, not by a rule. Null on every other
+     * `tipo`.
+     */
+    contaLojaIntegradaEnviosOuterRef: outerRefSchema
+      .nullable()
+      .default(null)
+      .describe('Conta Loja Integrada'),
     enderecoDeOrigem: enderecoSchema
       .passthrough()
       .nullable()
@@ -293,7 +309,7 @@ export interface VinculoIntFreteConta {
   readonly rotuloLog: string;
   /**
    * Present ⇒ a NEW doc is created at `<prefixoDocId>-<integracaoId>`, so two concurrent first
-   * syncs target ONE path (rule 7 tier 0). Absent ⇒ a random id (Mercado Livre, unchanged). The
+   * reconciliations target ONE path (rule 7 tier 0). Absent ⇒ a random ID. The
    * lookup still adopts a legacy auto-id doc either way.
    */
   readonly prefixoDocId?: string;
@@ -305,6 +321,7 @@ export const VINCULO_INT_FRETE_CONTA = {
     tipoFrete: INTEGRACAO_FRETE.mercadoLivre,
     campoBackRef: 'contaMercadoLivreMercadoEnviosOuterRef',
     rotuloLog: '[mercado-livre]',
+    prefixoDocId: INTEGRACAO_FRETE.mercadoLivre,
   },
   shopee: {
     tipoConta: INTEGRACAO_TIPO.shopee,
@@ -313,7 +330,80 @@ export const VINCULO_INT_FRETE_CONTA = {
     rotuloLog: '[shopee]',
     prefixoDocId: INTEGRACAO_FRETE.shopee,
   },
+  lojaIntegrada: {
+    tipoConta: INTEGRACAO_TIPO.lojaIntegrada,
+    tipoFrete: INTEGRACAO_FRETE.lojaIntegrada,
+    campoBackRef: 'contaLojaIntegradaEnviosOuterRef',
+    rotuloLog: '[loja-integrada]',
+    prefixoDocId: INTEGRACAO_FRETE.lojaIntegrada,
+  },
 } as const satisfies Record<string, VinculoIntFreteConta>;
+
+/**
+ * One `int_frete` doc a chooser picks among: its id and its RAW stored body (`snap.data()` read
+ * with no converter), never a converter-parsed one — see {@link escolherIntFreteMaisNovo}.
+ */
+export interface CandidatoIntFrete {
+  readonly id: string;
+  readonly data: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * THE pick among a conta's `int_frete` docs: the newest `dataCadastro` among the candidates that
+ * pass `filtro`; on an equal `dataCadastro` the lexically LOWER doc id wins — a plain `<` on the
+ * ids (UTF-16 order, which agrees with Firestore's `__name__` order for the ASCII ids every writer
+ * here produces). A `dataCadastro` that is not a finite number counts as 0 — a string, an absent
+ * value, and `NaN` or an infinity alike. `null` when nothing passes.
+ *
+ * ⚠️ **RAW bodies only** — the stored data as read with no converter, never the client
+ * converter's soft-parsed value. The parse changes both things this pick reads: `ativo`'s schema
+ * default turns an ABSENT `ativo` into `true` (the importer's `ativo == true` query excludes that
+ * doc), and `millisSinceEpoch`'s preprocess turns an ISO string into ms and rescales a µs number
+ * (raw, the string counts as 0 and the µs number wins). A soft parse also falls back to the raw
+ * value whenever any unrelated field fails, so a parsed list mixes both shapes. Fed parsed
+ * bodies, a screen would show a doc the importer never routes from.
+ *
+ * ONE copy for every surface that must name the SAME doc (#1369): the sync core's lookup and its
+ * window passes' chooser (`@delfrance/data/admin/frete`), and the Loja Integrada conta screen's
+ * freight tabs, which run in the browser and cannot import that admin entry. An order importer —
+ * and any screen that must show what the importer will use — passes
+ * `(data) => data.ativo === true`, over raw bodies the same pick as the core's
+ * `buscarIntFreteDaConta(…, { apenasAtivo: true })`; the reconciler (`reconciliarIntFreteDaConta`)
+ * passes no `ativo` filter, so re-enabling a conta finds its deactivated doc instead of creating a
+ * second one.
+ *
+ * The tie is explicit, and a non-finite date reads as 0, so the pick never depends on the order the
+ * candidates arrive in: the reconciler's lookup (over a query result) and the window pass's
+ * chooser (over its own scan) must name the SAME doc, and the window pass reports that choice as
+ * `escolhido` / `duplicados`. (Every comparison against `NaN` is false, so a `NaN` kept as a date
+ * would win when seen first and never when seen later.) Before, a tie kept the first doc seen.
+ * That is the lowest id only where an unordered result comes back in ascending `__name__`
+ * (Standard); Enterprise guarantees no order for a query without `orderBy`, so the lookup's tie
+ * pick depended on the query plan and is now always the lowest id — a deliberate determinism
+ * change (see the core's `buscarIntFreteDaConta`), not a no-op; parity with the legacy Mercado
+ * Livre highest id was considered for #1888 and the lower-id policy retained.
+ */
+export function escolherIntFreteMaisNovo<C extends CandidatoIntFrete>(
+  candidatos: ReadonlyArray<C>,
+  filtro?: (data: C['data']) => boolean,
+): C | null {
+  let melhor: C | null = null;
+  let melhorData = -Infinity;
+  for (const candidato of candidatos) {
+    if (filtro && !filtro(candidato.data)) continue;
+    const bruto = candidato.data.dataCadastro;
+    const dataCadastro = typeof bruto === 'number' && Number.isFinite(bruto) ? bruto : 0;
+    if (
+      melhor == null ||
+      dataCadastro > melhorData ||
+      (dataCadastro === melhorData && candidato.id < melhor.id)
+    ) {
+      melhor = candidato;
+      melhorData = dataCadastro;
+    }
+  }
+  return melhor;
+}
 
 export const intFreteMeta: CollectionMetadata = {
   collectionPath: 'int_frete',

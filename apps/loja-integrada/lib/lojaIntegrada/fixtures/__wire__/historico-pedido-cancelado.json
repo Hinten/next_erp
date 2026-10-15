@@ -1,0 +1,95 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/situacao_historico/search/",
+    "query": [
+      [
+        "numero",
+        "50796"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 1405,
+    "corpo": {
+      "meta": {
+        "limit": 20,
+        "next": null,
+        "offset": 0,
+        "previous": null,
+        "total_count": 2
+      },
+      "objects": [
+        {
+          "alterado_por": "REDACTED",
+          "alterado_por_nome": "REDACTED",
+          "data": "2026-10-05T23:23:04.350554",
+          "id": 385390443,
+          "numero": 50796,
+          "obs": null,
+          "resource_uri": "/api/v1/situacao_historico/385390443",
+          "situacao": {
+            "aprovado": false,
+            "cancelado": false,
+            "codigo": "aguardando_pagamento",
+            "final": false,
+            "id": 2,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/2"
+          },
+          "situacao_anterior": {
+            "aprovado": false,
+            "cancelado": false,
+            "codigo": "pedido_efetuado",
+            "final": false,
+            "id": 9,
+            "nome": "REDACTED",
+            "notificar_comprador": false,
+            "padrao": true,
+            "resource_uri": "/api/v1/situacao/9"
+          }
+        },
+        {
+          "alterado_por": "REDACTED",
+          "alterado_por_nome": "REDACTED",
+          "data": "2026-10-06T11:30:07.499845",
+          "id": 385463460,
+          "numero": 50796,
+          "obs": null,
+          "resource_uri": "/api/v1/situacao_historico/385463460",
+          "situacao": {
+            "aprovado": false,
+            "cancelado": true,
+            "codigo": "pedido_cancelado",
+            "final": true,
+            "id": 8,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/8"
+          },
+          "situacao_anterior": {
+            "aprovado": false,
+            "cancelado": false,
+            "codigo": "aguardando_pagamento",
+            "final": false,
+            "id": 2,
+            "nome": "REDACTED",
+            "notificar_comprador": true,
+            "padrao": false,
+            "resource_uri": "/api/v1/situacao/2"
+          }
+        }
+      ]
+    }
+  }
+}
