@@ -5,8 +5,8 @@
  * two-equality query and the deterministic `lojaIntegrada-<id>` doc.
  *
  * Every caller that has to name the same doc goes through this constant, so no two of them can
- * decide differently: the conta trigger (a later step-20 PR) reconciles through
- * `reconciliarIntFreteDaConta`, step 5's importer finds the conta's freight doc with
+ * decide differently: the conta trigger (`functions/src/onIntegracaoLojaIntegradaChanged.ts`)
+ * reconciles through `reconciliarIntFreteDaConta`, step 5's importer finds the conta's freight doc with
  * `buscarIntFreteDaConta(db, contaId, { apenasAtivo: true })` (never cached: its answer feeds a
  * write), and `frete/mapaFrete.ts` checks a doc's tipo and back-ref with `ehDocDaConta`. All the
  * logic, and the rule-7 argument for it, is the core's (`@delfrance/data/admin/frete`); this file
