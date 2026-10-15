@@ -10,9 +10,11 @@
  * `apps/web/lib/marketplace/estoque/types.ts` states for every registered
  * channel.
  *
- * Two callers today — the manual stock push (`estoque/enviarEstoqueManual.ts`)
- * and the listing status action (`anuncios/pausarAnuncio.ts`) — so it lives in
- * `core/` rather than in whichever one happened to need it first.
+ * Two callers today — the manual stock push's shared plan
+ * (`estoque/planejarEnvioEstoque.ts`, which both its `--live`/route path and
+ * its `enviar:estoque` dry run call) and the listing status action
+ * (`anuncios/pausarAnuncio.ts`) — so it lives in `core/` rather than in
+ * whichever one happened to need it first.
  *
  * ⚠️ The manual PRICE push does not call this module: `precos/enviarPrecoManual.ts`
  * keeps its private `paiDe` and `conferirContabilidadeDePreco` (step 21,
