@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { useQueryClient } from '@tanstack/react-query';
 import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Stack, Text } from '@mantine/core';
@@ -282,7 +283,8 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
    * Run ONE write on ONE link: clear its last outcome, hold the in-flight flag
    * (every write button is disabled while it is set), record what came back.
    * A failure is narrowed by the client's two classes and becomes the link's
-   * outcome; anything else is not ours and rethrows (root rule 6).
+   * outcome; so does a `FirebaseError` (below); anything else is not ours and
+   * rethrows (root rule 6).
    */
   async function executar(
     linkDocId: string,
@@ -297,6 +299,14 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
     } catch (err) {
       if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
         registrarDesfecho(linkDocId, desfechoDaFalha(err));
+        return;
+      }
+      // ⚠️ A failed ID-token refresh: `getAuthToken()` is awaited OUTSIDE the
+      // client's try (`client.ts`), so it is none of the client's classes, and
+      // rethrown from these `void`-ed handlers it would end a confirmed pause in
+      // silence. Nothing was sent, so it is a definite answer — never uncertain.
+      if (err instanceof FirebaseError) {
+        registrarDesfecho(linkDocId, { tipo: 'falha', mensagem: err.message });
         return;
       }
       throw err;

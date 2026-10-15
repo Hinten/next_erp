@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import {
@@ -926,6 +927,33 @@ describe('ShopeeEditor — pause and reactivate (podeMoverAnuncioShopee)', () =>
     expect(within(bloco('L1')).queryByText('Anúncio pausado na Shopee.')).toBeNull();
   });
 
+  it('a failed ID-token refresh ends a confirmed pause WITH an outcome, never in silence', async () => {
+    comEscrita();
+    // `getAuthToken()` runs outside the client's try: the rejection is the raw
+    // Firebase Auth error, none of the client's classes — and nothing was sent.
+    const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>(() =>
+      Promise.reject(
+        new FirebaseError('auth/network-request-failed', 'Falha ao renovar a sessão.'),
+      ),
+    );
+    h.client = shopeeClientFalso({ definirStatusAnuncios });
+    h.links = [link('L1')];
+    renderEditor();
+
+    fireEvent.click(botao('L1', 'Pausar anúncio'));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Pausar anúncio' })).getByRole('button', {
+        name: 'Pausar',
+      }),
+    );
+
+    const desfecho = await waitFor(() => screen.getByTestId('shopee-desfecho-L1'));
+    expect(within(desfecho).getByText('Falha ao renovar a sessão.')).toBeDefined();
+    expect(definirStatusAnuncios).toHaveBeenCalledTimes(1);
+    // The lock is released: the operator can try again.
+    expect(botao('L1', 'Pausar anúncio').hasAttribute('disabled')).toBe(false);
+  });
+
   it('sends nothing when the pause is cancelled', () => {
     comEscrita();
     const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>();
@@ -1038,6 +1066,25 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
     ).toBeNull();
   });
 
+  it('NEAR-MISS: an item id that is present but addresses no listing (0, a quoted number) gets no button at all', () => {
+    comEscrita();
+    // A parsed link can carry 0 (`z.number().int()`), and a soft-read hands the
+    // raw document over, so a stringified id reaches the block as it is.
+    h.links = [
+      link('L-zero', { item_id: 0, estadoAnuncio: null }),
+      link('L-texto', { item_id: '1000001', estadoAnuncio: null }),
+    ];
+    renderEditor();
+    for (const id of ['L-zero', 'L-texto']) {
+      // Positive first: the block rendered, as an unpublished listing.
+      expect(within(bloco(id)).getByText('Não publicado')).toBeDefined();
+      expect(semBotao(id, 'Reverificar'), id).toBeNull();
+      expect(semBotao(id, /Publicar/), id).toBeNull();
+      expect(semBotao(id, 'Pausar anúncio'), id).toBeNull();
+      expect(semBotao(id, 'Reativar anúncio'), id).toBeNull();
+    }
+  });
+
   it('(h) renders a refused publish by its acao — the button acts on the link the acao names — and never a terminal sentence', async () => {
     comEscrita();
     const problemas: ProblemaShopee[] = [
@@ -1108,32 +1155,46 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
     });
   });
 
-  it('names the mid-publish state when Shopee refused after a write', async () => {
-    comEscrita();
-    const recusa = recusa422(
-      [
-        {
-          campo: 'model_list',
-          motivo: 'modelo-recusado',
-          mensagem: 'Modelo recusado.',
-          acao: null,
-        },
-      ],
-      CODIGO_FALHA_SHOPEE.publicacaoRecusada,
-    );
-    const comEtapa = new ShopeeClientHttpError(recusa.message, 422, recusa.code, null, null, {
-      ...recusa.detalhes,
-      etapa: 'init_tier_variation',
-    });
-    h.client = shopeeClientFalso({ publicar: () => Promise.reject(comEtapa) });
-    h.links = [link('L1')];
-    renderEditor();
-    fireEvent.click(botao('L1', 'Republicar'));
-    await waitFor(() =>
-      expect(within(bloco('L1')).getByText('A Shopee recusou a publicação')).toBeDefined(),
-    );
-    expect(within(bloco('L1')).getByText('Na Shopee agora: init_tier_variation.')).toBeDefined();
-  });
+  it.each([
+    ['init_tier_variation', 'criação das variações'],
+    ['add_kit_item', 'criação do kit — a Shopee não criou o kit'],
+    // NEAR-MISS: a step this build does not know is never printed as its code.
+    ['etapa_nova_do_servidor', 'uma etapa que esta tela ainda não descreve'],
+  ])(
+    'says WHERE a mid-publish refusal landed (%s), never the raw step code as a channel state',
+    async (etapa, rotulo) => {
+      comEscrita();
+      const recusa = recusa422(
+        [
+          {
+            campo: 'model_list',
+            motivo: 'modelo-recusado',
+            mensagem: 'Modelo recusado.',
+            acao: null,
+          },
+        ],
+        CODIGO_FALHA_SHOPEE.publicacaoRecusada,
+      );
+      const comEtapa = new ShopeeClientHttpError(recusa.message, 422, recusa.code, null, null, {
+        ...recusa.detalhes,
+        etapa,
+      });
+      h.client = shopeeClientFalso({ publicar: () => Promise.reject(comEtapa) });
+      h.links = [link('L1')];
+      renderEditor();
+      fireEvent.click(botao('L1', 'Republicar'));
+      await waitFor(() =>
+        expect(within(bloco('L1')).getByText('A Shopee recusou a publicação')).toBeDefined(),
+      );
+      expect(
+        within(bloco('L1')).getByText(
+          `Recusada na etapa: ${rotulo}. Escritas anteriores podem já ter chegado à Shopee — use "Reverificar" antes de repetir.`,
+        ),
+      ).toBeDefined();
+      expect(within(bloco('L1')).queryByText(new RegExp(etapa))).toBeNull();
+      expect(within(bloco('L1')).queryByText(/Na Shopee agora/)).toBeNull();
+    },
+  );
 });
 
 describe('ShopeeEditor — re-verify, and one write at a time', () => {
@@ -1147,14 +1208,23 @@ describe('ShopeeEditor — re-verify, and one write at a time', () => {
         }),
     );
     h.client = shopeeClientFalso({ reverificarAnuncio });
-    h.links = [link('L1'), link('L2', { item_id: 1000002 })];
+    // L2 never folded (`estadoAnuncio: null`): it shows BOTH status buttons, so
+    // Reativar is held to the one-write rule too.
+    h.links = [link('L1'), link('L2', { item_id: 1000002, estadoAnuncio: null })];
     renderEditor();
 
     fireEvent.click(botao('L1', 'Reverificar'));
-    const escrita = ['Republicar', 'Reverificar', 'Pausar anúncio'];
-    for (const id of ['L1', 'L2']) {
-      for (const nome of escrita) expect(botao(id, nome).hasAttribute('disabled')).toBe(true);
+    const escrita = {
+      L1: ['Republicar', 'Reverificar', 'Pausar anúncio'],
+      L2: ['Republicar', 'Reverificar', 'Pausar anúncio', 'Reativar anúncio'],
+    };
+    for (const [id, nomes] of Object.entries(escrita)) {
+      for (const nome of nomes) expect(botao(id, nome).hasAttribute('disabled'), nome).toBe(true);
     }
+    // The spinner sits on the ONE button in flight — that listing, that action.
+    expect(botao('L1', 'Reverificar').hasAttribute('data-loading')).toBe(true);
+    expect(botao('L2', 'Reverificar').hasAttribute('data-loading')).toBe(false);
+    expect(botao('L1', 'Pausar anúncio').hasAttribute('data-loading')).toBe(false);
     expect(reverificarAnuncio.mock.calls[0]?.[0]).toStrictEqual({
       integracaoId: 'int-1',
       produtoId: 'prod-1',
@@ -1165,8 +1235,8 @@ describe('ShopeeEditor — re-verify, and one write at a time', () => {
       soltar(reverificado({ deboost: true }));
       await Promise.resolve();
     });
-    for (const id of ['L1', 'L2']) {
-      for (const nome of escrita) expect(botao(id, nome).hasAttribute('disabled')).toBe(false);
+    for (const [id, nomes] of Object.entries(escrita)) {
+      for (const nome of nomes) expect(botao(id, nome).hasAttribute('disabled'), nome).toBe(false);
     }
     expect(h.notify).toHaveBeenCalledWith({
       color: 'green',
@@ -1253,10 +1323,12 @@ describe('ShopeeEditor — who may act', () => {
 
   it('disables every action on a read-only form, and while there is no client', () => {
     comEscrita();
-    h.links = [link('L1')];
+    h.links = [link('L1'), link('L-nulo', { item_id: 1000002, estadoAnuncio: null })];
     const { unmount } = renderEditor({ disabled: true });
     expect(botao('L1', 'Republicar').hasAttribute('disabled')).toBe(true);
     expect(botao('L1', 'Pausar anúncio').hasAttribute('disabled')).toBe(true);
+    // A click on an enabled Reativar here WOULD send: `executar` does not read `disabled`.
+    expect(botao('L-nulo', 'Reativar anúncio').hasAttribute('disabled')).toBe(true);
     unmount();
 
     h.client = null;

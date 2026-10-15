@@ -536,8 +536,13 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
             'já existe na Shopee um kit com o SKU deste produto (item 2500139870, 2500139873) — ' +
             'importe-o (importar:anuncio) em vez de criar outro (item 2500139873 já vinculado ao ' +
             'produto prod-outro)',
-          // K1 (step 21): every hit, sorted like the sentence — never an empty list.
-          acao: { tipo: T.importar, itemIds: [KIT, KIT_2] },
+          // K1 (step 21): every hit, sorted like the sentence — never an empty list;
+          // the one a link already holds names its produto, as the sentence does.
+          acao: {
+            tipo: T.importar,
+            itemIds: [KIT, KIT_2],
+            vinculados: [{ itemId: KIT_2, produtoId: 'prod-outro' }],
+          },
         },
       ],
     });
@@ -604,7 +609,7 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
       expect(problemas[1]?.mensagem).toContain('(item 2500139870)');
       expect(problemas[1]?.mensagem).not.toContain('2500139873');
       // K1: only the FOREIGN hit is to import; K's own superseded kit is not.
-      expect(problemas[1]?.acao).toEqual({ tipo: T.importar, itemIds: [KIT] });
+      expect(problemas[1]?.acao).toEqual({ tipo: T.importar, itemIds: [KIT], vinculados: [] });
     }
   });
 
@@ -1382,7 +1387,24 @@ describe('step 21 (K1/K2) — o `acao` de cada recusa que nomeia um comando de C
     );
     const problemas = r.acao === 'recusar' ? r.problemas : [];
     expect(motivos(problemas)).toEqual([M.kitJaExisteNaShopee]);
-    expect(problemas[0]?.acao).toEqual({ tipo: T.importar, itemIds: [KIT, KIT_2] });
+    // ⚠️ `toStrictEqual`: the hit a link already holds names ITS produto (the
+    // mass import skips it), and the unlinked one is NOT listed there.
+    expect(problemas[0]?.acao).toStrictEqual({
+      tipo: T.importar,
+      itemIds: [KIT, KIT_2],
+      vinculados: [{ itemId: KIT_2, produtoId: 'outro-produto' }],
+    });
+  });
+
+  it('K1 — kit-ja-existe-na-shopee with NO hit linked: `vinculados` is empty, never absent', () => {
+    const r = decidirKitNovo(
+      busca([{ itemId: KIT, vinculo: null }]),
+      new Map(),
+      new Map(),
+      new Map(),
+    );
+    const problemas = r.acao === 'recusar' ? r.problemas : [];
+    expect(problemas[0]?.acao).toStrictEqual({ tipo: T.importar, itemIds: [KIT], vinculados: [] });
   });
 
   it('K1 — principal-invalido: as DUAS frases de problemaDoPrincipalSolicitado pedem `informar-principal`', () => {

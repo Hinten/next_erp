@@ -197,6 +197,16 @@ export const FRASE_PRIMEIRA_PUBLICACAO_SHOPEE =
  * run. The web has no single-listing import (no `ShopeeClient` method calls
  * `…/importar`), so the mass import is the only door the sentence can name.
  */
+/** The `importar` row's first half: what was found. */
+const FRASE_KIT_JA_EXISTE_SHOPEE =
+  'Já existe na Shopee um kit com o SKU deste produto — não crie outro.';
+
+/** The `importar` row's second half: the one door for a hit NO link holds (see below). */
+const FRASE_IMPORTACAO_EM_MASSA_SHOPEE =
+  'A importação em massa (Canais › Shopee) o vincula a este produto se ele ainda não estiver ' +
+  'vinculado a nenhum produto, se nenhum outro produto tiver o mesmo SKU e se os componentes do ' +
+  'kit já estiverem vinculados no ERP; um kit já vinculado a outro produto continua onde está.';
+
 export const TEXTO_ACAO_SUGERIDA = {
   [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar]:
     'Este kit nativo precisa ser recriado na Shopee: o anúncio atual não pode mais ser publicado.',
@@ -206,11 +216,7 @@ export const TEXTO_ACAO_SUGERIDA = {
     'Republique sem as opções de kit nativo — elas não se aplicam a este anúncio agora.',
   [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal]:
     'Informe qual componente é o principal do kit nativo.',
-  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar]:
-    'Já existe na Shopee um kit com o SKU deste produto — não crie outro. A importação em ' +
-    'massa (Canais › Shopee) o vincula a este produto se ele ainda não estiver vinculado a ' +
-    'nenhum produto, se nenhum outro produto tiver o mesmo SKU e se os componentes do kit já ' +
-    'estiverem vinculados no ERP; um kit já vinculado a outro produto continua onde está.',
+  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar]: `${FRASE_KIT_JA_EXISTE_SHOPEE} ${FRASE_IMPORTACAO_EM_MASSA_SHOPEE}`,
   [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo]:
     'Mais de um vínculo ativo responde por este produto nesta conta — escolha em qual agir: ' +
     'cada um tem o seu próprio bloco nesta aba.',
@@ -267,13 +273,96 @@ export function textoDoProblemaShopee(p: Pick<ProblemaShopee, 'mensagem' | 'acao
         ? `${base} ${FRASE_REPUBLICAR_SEM_VINCULO}`
         : `${base} Vínculo: ${acao.linkDocId}.`;
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar:
-      return `${base} Anúncio(s) na Shopee: ${acao.itemIds.map(String).join(', ')}.`;
+      return textoDoImportar(acao.itemIds, acao.vinculados);
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo:
       return `${base} Vínculos: ${acao.linkDocIds.join(', ')}.`;
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit:
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal:
       return base;
   }
+}
+
+/**
+ * The `importar` row. A hit a link ALREADY holds is skipped by the mass import
+ * (it imports only the listings no link names), so pointing it there sends the
+ * operator to a whole-conta job that changes nothing: such a hit names its
+ * produto instead, and when every hit is held the mass-import sentence goes.
+ * `vinculados` absent or `null` (a server older than the field) words every id
+ * alike, as before.
+ */
+function textoDoImportar(
+  itemIds: readonly number[],
+  vinculados: readonly { readonly itemId: number; readonly produtoId: string }[] | null | undefined,
+): string {
+  const ids = (lista: readonly number[]) => lista.map(String).join(', ');
+  if (vinculados == null) {
+    return `${TEXTO_ACAO_SUGERIDA[TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar]} Anúncio(s) na Shopee: ${ids(itemIds)}.`;
+  }
+  const donoDe = new Map(vinculados.map((v) => [v.itemId, v.produtoId]));
+  const livres = itemIds.filter((id) => !donoDe.has(id));
+  const partes = [FRASE_KIT_JA_EXISTE_SHOPEE];
+  if (livres.length > 0) {
+    partes.push(
+      FRASE_IMPORTACAO_EM_MASSA_SHOPEE,
+      `Anúncio(s) na Shopee sem vínculo: ${ids(livres)}.`,
+    );
+  }
+  for (const id of itemIds) {
+    const produtoId = donoDe.get(id);
+    if (produtoId === undefined) continue;
+    partes.push(
+      `O anúncio ${String(id)} já está vinculado ao produto ${produtoId} — a importação não o ` +
+        'muda; confira o SKU desse produto.',
+    );
+  }
+  return partes.join(' ');
+}
+
+/**
+ * Where in the publish sequence a mid-publish refusal LANDED, in the operator's
+ * words — `detalhes.etapa` of a 422 `SHOPEE_PUBLISH_REJECTED`, which is
+ * apps/shopee's closed `EtapaPublicacao` (`errosPublicacao.ts`).
+ *
+ * ⚠️ A PLACE, never a channel STATE: what exists on Shopee after a refusal
+ * depends on the ARM as well (a recriar creates the new kit before it deletes
+ * the old one, so a refused `add_kit_item` leaves the old kit live), and only
+ * the server knows the arm. So the label claims nothing beyond what the step
+ * alone settles.
+ */
+const ROTULO_ETAPA_PUBLICACAO_SHOPEE: Readonly<Record<string, string>> = {
+  fotos: 'envio das fotos',
+  add_item: 'criação do anúncio — a Shopee não criou o anúncio',
+  update_item: 'atualização do anúncio',
+  init_tier_variation: 'criação das variações',
+  update_tier_variation: 'atualização das variações',
+  add_model: 'criação dos modelos',
+  update_model: 'atualização dos modelos',
+  get_model_list: 'leitura dos modelos',
+  relistagem: 'reativação do anúncio',
+  'leitura-de-volta': 'conferência do anúncio depois da publicação',
+  add_kit_item: 'criação do kit — a Shopee não criou o kit',
+  update_kit_item: 'atualização do kit',
+  delete_item: 'exclusão do kit antigo',
+};
+
+/** An etapa this build does not know — the raw code is never printed. */
+const ROTULO_ETAPA_DESCONHECIDA_SHOPEE = 'uma etapa que esta tela ainda não descreve';
+
+/**
+ * The sentence a mid-publish refusal opens with: where it landed
+ * ({@link ROTULO_ETAPA_PUBLICACAO_SHOPEE}, an own-property lookup with a neutral
+ * fallback), and the caution the CLI gives for the same case — earlier writes
+ * may have landed, so the listing is read back before anything is repeated.
+ */
+export function textoDaEtapaShopee(etapa: string): string {
+  const rotulo =
+    (Object.hasOwn(ROTULO_ETAPA_PUBLICACAO_SHOPEE, etapa)
+      ? ROTULO_ETAPA_PUBLICACAO_SHOPEE[etapa]
+      : undefined) ?? ROTULO_ETAPA_DESCONHECIDA_SHOPEE;
+  return (
+    `Recusada na etapa: ${rotulo}. Escritas anteriores podem já ter chegado à Shopee — use ` +
+    '"Reverificar" antes de repetir.'
+  );
 }
 
 /** The toast a re-verify answers with: what the ERP did with Shopee's reading. */
