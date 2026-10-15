@@ -61,7 +61,11 @@ const BODY = { integracaoId: 'int-1', produtoId: 'prod-1', categoryId: 'MLB31447
 /** Lets a request run all the way to `suggestAttributes`, offline. */
 const deixarPassar = () => {
   h.loadCtx.mockResolvedValue({
-    resolveChannelContext: async () => ({ accessToken: 'tok' }),
+    resolveChannelContext: async () => ({
+      accessToken: 'tok',
+      getAccessToken: async () => 'tok',
+      invalidateAccessToken: vi.fn(),
+    }),
   });
   h.suggest.mockResolvedValue({ leaf: true, sugestoes: [], atributos: [] });
 };

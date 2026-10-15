@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { FieldValue } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions/v2';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
@@ -23,10 +26,10 @@ import { seedNotificacaoLi } from '../../lib/lojaIntegrada/testing/notificacoes'
  * Cloud Scheduler), and the queue's rate and retry ladder are honoured by the
  * real Cloud Tasks only — an assertion here is the only place either can fail.
  *
- * ⚠️ Three maps — {@link AGENDAMENTOS}, {@link FILAS} and the empty set of
- * event triggers — and an exhaustiveness test for each, so a trigger added later
- * lands covered or reds this file. Shopee's codebase learned that one family at
- * a time.
+ * ⚠️ Three maps — {@link AGENDAMENTOS}, {@link FILAS} and {@link GATILHOS} (the
+ * Firestore triggers, with their paths in {@link CAMINHOS_DOS_GATILHOS}) — and
+ * an exhaustiveness test for each, so a trigger added later lands covered or
+ * reds this file. Shopee's codebase learned that one family at a time.
  *
  * `FUNCTIONS_REGION` is normally inlined at build time (esbuild `define` in
  * build.mjs); here it is stubbed BEFORE the import so `options.ts` does not
@@ -85,6 +88,7 @@ vi.mock('../../lib/lojaIntegrada/conta/expiracaoSweep', async (importOriginal) =
 const modulo = await import('./index');
 const {
   filaLeituraLojaIntegrada,
+  onIntegracaoLojaIntegradaChanged,
   pollLojaIntegradaPedidos,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
@@ -120,6 +124,39 @@ const AGENDAMENTOS = {
  */
 const FILAS = { filaLeituraLojaIntegrada } as const;
 
+/**
+ * Every FIRESTORE-TRIGGER export — the third sibling of {@link AGENDAMENTOS}
+ * and {@link FILAS}, and it exists for the same reason. A gen2 Firestore
+ * trigger carries `eventTrigger`, so the two exhaustiveness tests that filter
+ * on `scheduleTrigger` / `taskQueueTrigger` enumerate it in NEITHER: without
+ * this map its region, its `database`, its secrets and its `retry` would be read
+ * by nothing.
+ *
+ * The failure it guards is the silent one: an `onDocument*` bound to the
+ * `(default)` sentinel, or with no `database` at all, deploys fine and never
+ * fires, with nothing anywhere to say so. Master plan step 20 added the first
+ * (`onIntegracaoLojaIntegradaChanged`); the `every GATILHO…` tests below walk
+ * the MAP, never a named trigger, so a second one lands covered.
+ */
+const GATILHOS = { onIntegracaoLojaIntegradaChanged } as const;
+
+/**
+ * The document path each trigger must listen on — derived from the HANDLE,
+ * never a second literal, plus an ANCHOR literal so the comparison can never be
+ * two `undefined`s agreeing. `satisfies` over the {@link GATILHOS} keys: a
+ * trigger with no row here does not compile.
+ */
+const CAMINHOS_DOS_GATILHOS = {
+  onIntegracaoLojaIntegradaChanged: {
+    colecao: integracaoCollection.resolvePath({}),
+    ancora: 'integracao',
+    folha: '{integracaoId}',
+  },
+} as const satisfies Record<
+  keyof typeof GATILHOS,
+  { colecao: string; ancora: string; folha: string }
+>;
+
 type Endpoint = Record<string, unknown>;
 
 function endpointOf(fn: unknown): Endpoint {
@@ -143,6 +180,16 @@ interface GatilhoDeFila {
 
 function filaDe(fn: unknown): GatilhoDeFila {
   return endpointOf(fn).taskQueueTrigger as GatilhoDeFila;
+}
+
+interface GatilhoDeEvento {
+  eventFilters?: { database?: string };
+  eventFilterPathPatterns?: { document?: string };
+  retry?: boolean;
+}
+
+function gatilhoDeEvento(fn: unknown): GatilhoDeEvento {
+  return endpointOf(fn).eventTrigger as GatilhoDeEvento;
 }
 
 /** The module's exports that carry an endpoint with `chave`. */
@@ -475,11 +522,84 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*                            The Firestore triggers                          */
+/* -------------------------------------------------------------------------- */
+
+describe('the Firestore triggers (GATILHOS)', () => {
+  it("every GATILHO binds the NAMED 'default' database — never '(default)', never an absent one", () => {
+    // THE load-bearing assertion of this block, and it MUST be an exact equality
+    // on the parsed field — never a `JSON.stringify(...).toContain('default')`:
+    // the serialized endpoint always carries `"namespace":"(default)"`, and an
+    // OMITTED `database` defaults to `"(default)"` too, so a substring check
+    // passes in every case and guards nothing. Firestore Enterprise names this
+    // project's database literally `default`; a trigger bound to `(default)`
+    // deploys fine and never fires. This offline pin, not the emulator lane,
+    // guards the binding: the emulator auto-creates any database it is asked
+    // for, so a wrong one is not proven to fail there.
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      const banco = gatilhoDeEvento(fn).eventFilters?.database;
+      expect(banco, nome).toBe('default');
+      // NEAR-MISS: the sentinel spelling and the absent value, both refused.
+      expect(banco, nome).toBeDefined();
+      expect(banco, nome).not.toBe('(default)');
+    }
+  });
+
+  it('every GATILHO declares retry: true', () => {
+    // At-least-once redelivery for transient Firestore failures; without it the
+    // event is dropped on the first one. Safe because the reconcile is
+    // state-driven: a redelivery replays the ORIGINAL before/after, and the
+    // reconcile reads neither — it re-reads the conta itself.
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      expect(gatilhoDeEvento(fn).retry, nome).toBe(true);
+    }
+  });
+
+  it('every GATILHO listens on the path of its CAMINHOS_DOS_GATILHOS row — and no two on the same one', () => {
+    // A guessed collection name deploys fine and never fires, exactly like a
+    // wrong `database`. Distinctness catches a whole trigger copy-pasted with the
+    // first one's `document:` kept.
+    const caminhos: string[] = [];
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      const esperado = CAMINHOS_DOS_GATILHOS[nome as keyof typeof GATILHOS];
+      const caminho = gatilhoDeEvento(fn).eventFilterPathPatterns?.document;
+      expect(caminho, nome).toBe(`${esperado.colecao}/${esperado.folha}`);
+      // ÂNCORA: the handle really resolved the collection.
+      expect(esperado.colecao, nome).toBe(esperado.ancora);
+      caminhos.push(caminho ?? '');
+    }
+    expect(new Set(caminhos).size).toBe(caminhos.length);
+    expect(Object.keys(CAMINHOS_DOS_GATILHOS).sort()).toEqual(Object.keys(GATILHOS).sort());
+  });
+
+  it('⚠️ build.mjs DEFINES the database id the triggers bind', () => {
+    // A SOURCE assertion, because no runtime assertion can see it: unbundled,
+    // `process.env.FIREBASE_DATABASE_ID ?? 'default'` answers `'default'` with
+    // or without a define, so the exact-equality test above stays green over a
+    // build that dropped it. The define does not change the answer for an UNSET
+    // variable (the source's `??` already yields `default`, as `src/lib/admin.ts`
+    // does unbundled); what it adds is narrower — `||` turns a BLANK export into
+    // `default` (under `??` a blank reaches firebase-functions as `''`, which it
+    // binds as `(default)`), the preflight table prints what the build baked
+    // (`tools/deploy-env/preflight.test.js` fails a define that table omits), and
+    // in the bundle it replaces `admin.ts`'s read too, so the binding and
+    // `getDb()` share the build-time value. Remove the define and THIS test is
+    // what goes red.
+    const build = readFileSync(fileURLToPath(new URL('../build.mjs', import.meta.url)), 'utf8');
+
+    expect(build).toContain("'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId)");
+    expect(build).toContain("process.env.FIREBASE_DATABASE_ID || 'default'");
+    // ÂNCORA: the file really was read and really is this codebase's build.
+    expect(build).toContain("'process.env.FUNCTIONS_REGION': JSON.stringify(region)");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                         Across every exported trigger                      */
 /* -------------------------------------------------------------------------- */
 
 describe('every trigger of the codebase', () => {
-  const TODOS = { ...AGENDAMENTOS, ...FILAS };
+  const TODOS = { ...AGENDAMENTOS, ...FILAS, ...GATILHOS };
 
   it('every onSchedule export is in AGENDAMENTOS — and there are exactly three', () => {
     expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
@@ -495,10 +615,37 @@ describe('every trigger of the codebase', () => {
     expect(exportadosCom('taskQueueTrigger')).toEqual(['filaLeituraLojaIntegrada']);
   });
 
-  it('there is no event, HTTPS or callable trigger', () => {
-    expect(exportadosCom('eventTrigger')).toEqual([]);
+  it('every event-trigger export is in GATILHOS — exactly {onIntegracaoLojaIntegradaChanged}', () => {
+    // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
+    // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
+    // `database`, region, secrets and `retry` read by nothing.
+    expect(exportadosCom('eventTrigger')).toEqual(Object.keys(GATILHOS).sort());
+    expect(exportadosCom('eventTrigger')).toEqual(['onIntegracaoLojaIntegradaChanged']);
+  });
+
+  it('there is no HTTPS or callable trigger', () => {
     expect(exportadosCom('httpsTrigger')).toEqual([]);
     expect(exportadosCom('callableTrigger')).toEqual([]);
+  });
+
+  it('the THREE families are DISJOINT — nothing is a schedule, a queue and a trigger at once', () => {
+    // An export in two maps would satisfy both exhaustiveness tests and have its
+    // options read by the wrong set. All THREE pairs: with three families there
+    // are three ways to duplicate, and two of them would pass a check written
+    // for two.
+    const familias = { AGENDAMENTOS, FILAS, GATILHOS };
+    const pares = [
+      ['AGENDAMENTOS', 'FILAS'],
+      ['AGENDAMENTOS', 'GATILHOS'],
+      ['FILAS', 'GATILHOS'],
+    ] as const;
+
+    for (const [a, b] of pares) {
+      const naPrimeira = new Set(Object.keys(familias[a]));
+      for (const nome of Object.keys(familias[b])) {
+        expect(naPrimeira.has(nome), `${nome} is in ${a} AND in ${b}`).toBe(false);
+      }
+    }
   });
 
   it('every runtime export IS a trigger — a constant exported here would read as a function name', () => {
@@ -528,7 +675,7 @@ describe('every trigger of the codebase', () => {
     }
   });
 
-  it('declares NO secret anywhere — the token lives per conta in Firestore', () => {
+  it('declares NO secret anywhere — the token lives per conta in Firestore, and the conta trigger never calls the platform', () => {
     // A declared secret missing from Secret Manager fails the whole deploy.
     for (const [nome, fn] of Object.entries(TODOS)) {
       expect(endpointOf(fn).secretEnvironmentVariables ?? [], nome).toEqual([]);

@@ -25,6 +25,7 @@ import {
   type MlStockSendTask,
   type StockContextLoader,
   type StockSendDeps,
+  type StockSendContext,
   mlStockSendTaskSchema,
   processStockSendTask,
 } from './estoqueSend';
@@ -439,7 +440,7 @@ interface HarnessOpts {
     version: string,
     locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
   ) => Promise<{ stock: MlUserProductStock | null; version: string | null }>;
-  resolveChannelContext?: () => Promise<{ accessToken: string }>;
+  resolveChannelContext?: StockSendContext['resolveChannelContext'];
   jitterSec?: (maxS: number) => number;
   /**
    * Cloud Tasks attempt index. Defaults to 0 — the FIRST attempt, exactly as a
@@ -509,7 +510,13 @@ function makeHarness(opts: HarnessOpts = {}) {
   }));
   const contextLoader: StockContextLoader = vi.fn(async () => ({
     conta: opts.conta ?? { depositoOuterRef: DEP_REF },
-    resolveChannelContext: opts.resolveChannelContext ?? (async () => ({ accessToken: 'tok' })),
+    resolveChannelContext:
+      opts.resolveChannelContext ??
+      (async () => ({
+        accessToken: 'tok',
+        getAccessToken: async () => 'tok',
+        invalidateAccessToken: vi.fn(),
+      })),
   }));
   const enqueue = vi.fn(async () => {});
   const jitterSec = vi.fn(opts.jitterSec ?? ((_maxS: number) => 0));

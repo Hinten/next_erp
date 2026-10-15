@@ -17,9 +17,10 @@
  *
  * ## Numbers
  *
- * ⚠️ This is the ONLY file under `src/` that uses Zod for numbers, and every one
- * goes through `wireInt()` / `wireNumber()` from `@delfrance/core/wire`: a
- * serializer that quotes ONE field must not cost the whole page (#1087).
+ * ⚠️ This file, `pedidoTipos.ts` and `vazio.ts` are the only ones under `src/`
+ * that use Zod for numbers, and every one goes through `wireInt()` /
+ * `wireNumber()` from `@delfrance/core/wire`: a serializer that quotes ONE
+ * field must not cost the whole page (#1087).
  * Enforced by
  * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`,
  * which scans every file under `src/` and anchors on three lines of this file.
@@ -29,6 +30,8 @@
 import { wireInt } from '@delfrance/core/wire';
 import { z } from 'zod';
 
+import { inteiroOpcional } from './vazio';
+
 /**
  * Tastypie's `meta` block.
  *
@@ -36,6 +39,11 @@ import { z } from 'zod';
  * (the public document's own `pedido/search` example answers `limit: 15`).
  * `next` / `previous` are RELATIVE paths under `/api/v1/…`, never followed
  * verbatim — `paginacao.ts` takes only their query string.
+ *
+ * `total_count` absent, `null` and `''` are one outcome: no total announced
+ * (`inteiroOpcional()`, `vazio.ts`) — never `0`. `limit` and `offset` are
+ * required, and so are a row's `id` and `numero` below: an empty one is refused
+ * at its own path.
  */
 export const liMetaSchema = z
   .object({
@@ -43,7 +51,7 @@ export const liMetaSchema = z
     next: z.string().nullable(),
     offset: wireInt(),
     previous: z.string().nullable(),
-    total_count: wireInt().nullable().optional(),
+    total_count: inteiroOpcional(),
   })
   .passthrough();
 

@@ -209,21 +209,28 @@ A few facts are already **live-proven by the working legacy, under the `chave_ap
 13. **`meta.next` form and the trailing slash.**
     - **Known from the working legacy:** `meta.next` is an `/api/v1/...` URI, while spec paths are `/v1/...`. Design: rebuild each next request from `meta.next`'s query string against the operation's own `/v1` path (e.g. `/v1/pedido/search`); never follow the URI verbatim.
     - **READ-ONLY:** whether the trailing slash matters. The legacy sends `/pedido/search/`; the spec path has none. Step 1 sends the slash form (the spec's own curl example and the legacy's live calls) and never follows a redirect, so a wrong form shows as a visible 3xx instead of doubling the calls. Only the slash form is captured: no decision depends on the other one.
-14. **Situação 1020 (`pagamento_devolvido_sem_retorno`).**
+14. **Situação 1020 (`pagamento_devolvido_sem_retorno`). SETTLED by capture C3.**
     - **Sources:** its id and flags come only from the legacy enum. The spec's `GET /v1/situacao` example has 15 rows and omits it, and the tag lists the codigo without an id.
     - **What LI says:** help 924633 treats it as cancelled, with the item not returned to stock, and e-mails the buyer. Step 5 maps it as refunded, per the help center.
-    - **READ-ONLY:** `GET /v1/situacao` on each store confirms its id and flags, and whether a store can define custom situações, **before step 5's estado table is frozen**.
+    - **Settled:** `GET /v1/situacao` answered the same on both stores. It has 16 codigos, no custom situação, and 1020 with its id. The flags confirm that the estado must come from the codigo alone, because a delivered order and a chargeback carry the same three. Step 5's table is frozen on this catalogue.
 15. **Does an API situação PUT e-mail the buyer?** Undocumented.
     - The PUT body is only `{codigo}`, so the caller has no notify switch, and the spec never defines `notificar_comprador`.
     - Help 924633 says LI e-mails the buyer on every status change, with one template per status. It does not say whether an API PUT fires the same mailer as the painel.
     - WRITE-ONLY. Defence: **assume every write to 11, 13 or 14 may e-mail the buyer**; `notificar_comprador` is a hint, not a guarantee. ⇒ D7's never-write-onto set, skip when LI already shows the target, serialised writes (step 7).
 16. **How LI represents "no promotion", and how to clear `promocional`.** The spec shows both `null` and `"0.00"` as no-promotion states: the `GET /v1/{produto_preco}` list example has a row with `promocional: "0.00"` next to `cheio: "259.90"`, and many rows with `promocional: null`. The PUT request schema types `promocional` as integer and never documents `null`. The reading part is **READ-ONLY-CAPTURABLE, before the step-13 merge**: a captured GET of the preço of products with no promotion on each store and record which representation LI uses. The wire value for clearing is picked from that result. Whether the PUT accepts it stays WRITE-ONLY. On read-back, both `null` and `0.00` count as cleared. A failed clear raises an aviso and is retried with the other representation only on the canary, by a human decision. That fallback is chosen in the window, not automated.
 17. **Parent `ativo` cascading to children.** Undocumented. The panel has a per-variation "Variação ativa?" toggle, so children carry their own `ativo`. WRITE-ONLY. Defence: pause/resume writes every family member, so a family pause may cost 1 + N GET-merge-PUTs.
-18. **`valor_pago` filling, and `boleto_url`/`pix_code` on GET.** READ-ONLY. The spec GET example has `valor_pago: "32.48"`, and only the webhook example shows `null` on an approved order. `boleto_url`/`pix_code` appear only on the `PUT /v1/pedido` echo. The schema treats all three as optional.
+18. **`valor_pago` filling, and `boleto_url`/`pix_code` on GET. SETTLED by the order captures (C5).** The spec GET example has `valor_pago: "32.48"`, and only the webhook example shows `null` on an approved order. In the spec, `boleto_url`/`pix_code` appear only on the `PUT /v1/pedido` echo.
+    - **What the captures show:** `valor_pago` is a copy of the amount due, not a paid signal. It equals `valor` on an order still awaiting payment and on one never paid.
+    - `boleto_url`, `pix_code` and `pix_qrcode` are present on GET.
+    - The schema treats all of them as optional. Step 6 writes `valor`, reads the payment status from the situação codigo alone, and never persists the payment links.
 19. **Family discovery on import.** `filhos` on parents is documented **in examples only** (spec GET /v1/produto, spec GET /v1/produto/{produto_id}); it is not in the list-item schema. `GET /v1/produto` has no `tipo` or `pai` filter. Whether children appear as rows in `GET /v1/produto` pages, and whether list rows carry `pai`, is **READ-ONLY-CAPTURABLE**: the spec list example has 20 rows, none with `pai`, and `pai` is not among the list-item keys. The importer discovers children through `filhos` plus per-child GETs and never depends on children appearing in the list.
 20. **The `/v1/produto_estoque/{produto_id}` path id is the produto id, not the estoque row id** (the example `id` ≠ path). READ-ONLY with a child id.
 21. **Duplicate-SKU error shape.** The legacy-observed response is a `400` with an "integridade" message **[legacy-observed, unverified]**. WRITE-ONLY. Defence: a tolerant match (400 + "integridade"), then `GET /v1/produto?sku=` and adopt.
-22. **Payment method codes for pix and card on our stores.** READ-ONLY. Run `GET /v1/pagamento` on each store, plus one real pix order `GET /v1/pedido/{numero}` (redacted), before step 6 merges. The spec catalogue has no pix gateway, and `pagamento_tipo` appears only as `creditCard`.
+22. **Payment method codes for pix and card on our stores. SETTLED by captures C4 (`GET /v1/pagamento` on each store) and C5 (the orders).** The spec catalogue has no pix gateway, and `pagamento_tipo` appears only as `creditCard`.
+    - **What the captures show:** the active methods are `proxy-pagali-v2-{pix,boleto,cartao}`, plus one redirect method on one store.
+    - The orders carry `pagamento_tipo` `instantPayment`, `bankInvoice` and `creditCard`.
+    - `pagamento_banco` appears nowhere, and `PAGAMENTOEXTERNO` is in neither catalogue.
+    - Step 6 maps by `pagamento_tipo` first (§3).
 23. **Does `/v1` accept an unknown `x-correlation-id` request header?** (It is documented only for Enviali.) READ-ONLY, from an optional capture the owner makes with the header (D17). If any rejection is seen, the header is dropped on `/v1`; without that capture it stays off. Until then the step-1 validating GET sends no such header: a gateway that refused it with a 403 would make a valid new token read as refused.
 24. **`GET /v1/produto` filters and `removido`.**
     - **Declared vs prose:** the declared parameters are only `sku`, `ativo`, `data_modificacao__gte` and `data_modificacao__lte`. `removido`, `data_criacao` and the `__lt`/`__gt` operators appear only in prose. There is no `tipo` or `pai` filter.
@@ -239,9 +246,9 @@ Every caps field was handed to an independent skeptic, with the spec, the help c
 
 A completeness critic then reconciled the verdicts. Each contradiction was settled as follows:
 
-- **Order key = `numero`** (gap 1). Every `resource_uri` is `/api/v1/pedido/<numero>`, and `GET /v1/pedido/{pedido_id}` has no top-level `id` at all. `spec GET /v1/pedido_dce/{pedido_id}` says outright "o valor informado na URL é o número do pedido" (its tag only says "através do número do pedido"). NF `sale_number` is "o número do pedido". The working legacy fetches order detail by numero live. The one verdict that said "key on the LI id" had confused it with the SHIPMENT id: `PUT /v1/pedido_envio/{id}` takes `envios[i].id` ("Não utilize o ID do pedido nesta chamada").
+- **Order key = `numero`** (gap 1). Every `resource_uri` is `/api/v1/pedido/<numero>`, and the spec's `GET /v1/pedido/{pedido_id}` example has no top-level `id` at all. The captures (C5) do show one, and the import never keys on it. `spec GET /v1/pedido_dce/{pedido_id}` says outright "o valor informado na URL é o número do pedido" (its tag only says "através do número do pedido"). NF `sale_number` is "o número do pedido". The working legacy fetches order detail by numero live. The one verdict that said "key on the LI id" had confused it with the SHIPMENT id: `PUT /v1/pedido_envio/{id}` takes `envios[i].id` ("Não utilize o ID do pedido nesta chamada").
 - **`filhos` is documented in examples only** (spec GET /v1/produto, spec GET /v1/produto/{produto_id}, POST/PUT examples), not in the list-item schema. The importer discovers families through it. Children as list rows is a probe (§1.2 item 19).
-- **`boleto_url` / `pix_code` appear in the spec only on the `PUT /v1/pedido/{pedido_id}` echo.** They are optional, never required.
+- **`boleto_url` / `pix_code` appear in the spec only on the `PUT /v1/pedido/{pedido_id}` echo.** The captures show them on GET too (§1.2 item 18). They are optional, never required, and never persisted.
 - **The 05/10/2026 discontinuation** (help 931152, modified 2026-09-22) reads as: the store's own credential is now the Personal Token, and the "chave de aplicação" now identifies only integrators/partner apps (help 5360466). D3 picks the Personal Token. The live legacy integration moved to Personal Tokens on 2026-10-07, so the announcement no longer threatens it (§0).
 - **Freight model:** `etiqueta: 'emit'`. `FREIGHT_TIPO_CAPS.lojaIntegrada` (`marketplaceOwned: true`, `labelMode: 'fetch'`) is a placeholder that contradicts the evidence; it changes in step 15.
 - **`forma_envio` key mismatch** (`code` on GET, `codigo` on the webhook). This reinforces "re-fetch, never map the body"; the `int_frete.mapa` key is built from the GET shape.
@@ -374,17 +381,19 @@ A missing payment id is an error in the new code. **Never** normalise the pagame
 **Legacy surfaces replaced, not ported:** the legacy scheduled services and UI-driven flows are replaced by the pipeline below.
 
 **Business rules to re-derive.** Each carries its source class:
-- **Order estado by situação `codigo`, never by the `aprovado`/`cancelado` flags** **[spec]**. The spec's own flags make `pagamento_em_disputa` (6) and `pedido_chargeback` (16) `aprovado: true`, and `cancelamento_solicitado` (1019) `cancelado: true, final: false`. The full enumerated table is in step 5. An unknown codigo is `error`, never a default.
-- **Paid = the first situação-history entry that reached an approved codigo** **[spec]**. That entry comes from `GET /v1/situacao_historico/search?numero=`, which also yields the approval and cancellation dates. Cancelled after approval ⇒ refund (`estornadoIntegralmente`); cancelled before approval ⇒ `cancelado` **[ERP rule]**.
-- **Payment form by `pagamento_tipo` + `forma_pagamento.codigo`:**
-  - Boleto family `boleto`/`wcboleto`/`pmboleto`/`pmboletov2`/`psboleto`/`pagali-boleto`/`mpboleto` → boleto **[spec]**.
-  - `deposito` → depósito **[spec]**.
-  - `creditCard` → cartão **[spec]**.
+- **Order estado AND payment status by situação `codigo`, never by the `aprovado`/`cancelado` flags** **[spec, captured C3]**. The spec's own flags make `pagamento_em_disputa` (6) and `pedido_chargeback` (16) `aprovado: true`, and `cancelamento_solicitado` (1019) `cancelado: true, final: false`. The full enumerated table is in step 5 (one shared table in `packages/schemas`). An unknown codigo keeps the order and raises an aviso, never a default.
+- **Captured = the situação history up to the observed codigo holds a capture-evidence codigo** **[spec]**: a paid one, a dispute (6), a chargeback (16) or a refund without return (1020). The history comes from `GET /v1/situacao_historico/search?numero=`, which also yields the approval and cancellation dates. Cancelled after a capture ⇒ refund (`estornadoIntegralmente`); cancelled before ⇒ `cancelado` **[ERP rule]**.
+- **Payment form by `pagamento_tipo` first, then the exact `forma_pagamento.codigo`** **[spec, captured C4/C5]**:
+  - `instantPayment` → pix, `creditCard` → cartão, `bankInvoice` → boleto.
+  - Without one, by codigo:
+    - the boleto family `boleto`/`wcboleto`/`pmboleto`/`pmboletov2`/`psboleto`/`pagali-boleto`/`mpboleto`/`proxy-pagali-v2-boleto` → boleto;
+    - `pagali-pix`/`proxy-pagali-v2-pix` → pix;
+    - `proxy-pagali-v2-cartao` → cartão;
+    - `deposito` → depósito.
   - `PAGAMENTOEXTERNO` → hub guard **[spec]**.
-  - Pix (`instantPayment`, `pagali-pix`) and the old `pagamento_banco` key beside `banco` **[legacy-observed, unverified]**: pinned by the §1.2 item 22 captures before step 6 merges.
-  - Anything else → `outros`, keeping the raw codigo/nome.
-  - Parcelas come from `parcelamento.numero_parcelas`, defaulting to 1 only when absent **[spec]**.
-- **Unit discount spreading** **[ERP rule]**: `descontoUnitario = (quantidade × preco_venda − preco_subtotal) / quantidade` when positive. When `preco_subtotal` exceeds `quantidade × preco_venda`, the unit price becomes `preco_subtotal / quantidade`.
+  - Anything else → `outros`, keeping the raw codigo. An incoming `outros` never overwrites a known stored forma. `pagamento_banco` appears in no capture, and nothing reads it.
+  - Parcelas come from `parcelamento.numero_parcelas`, defaulting to 1 when absent (`parcelamento` is `{}` on pix and boleto) **[spec, captured]**.
+- **Unit discount spreading** **[ERP rule]**: `descontoUnitario = (quantidade × preco_venda − preco_subtotal) / quantidade` when positive. A line whose `preco_subtotal` exceeds `quantidade × preco_venda` is not adjusted: `precoDeVenda` stays the wire `preco_venda`, and a negative order-level residual raises incidente `li-totais-divergentes` (step 5).
 - **Freight `mapa` auto-registration and matching** **[ERP rule]**:
   - Every unseen `forma_envio` is appended to the conta's `EnviosLojaIntegrada.mapa` the first time an order uses it, with `integracaoUid` unset.
   - An unmapped method is visible to the operator and never fails the import.
@@ -439,7 +448,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **No generic `catch`** (rule 6). Narrow on the in-repo classes (`LiAuthError`, `LiThrottleError`, `LiNotFoundError`, `ZodError`, …) and `throw err` otherwise; `err instanceof Error` does not count. This applies especially to the logger, the capture sanitizer, the error classifier and the `onChamada` observer.
 - **Every optional Firestore field is `.nullable().default(null)`**, never bare `.optional()` and never a bare `X | null`.
 - **Money via `roundReais`.** Provider responses are read via `lerRespostaJson`, and numbers are read string-or-number tolerant (`integration-response-numbers-tolerant`).
-- **Watermark units are written beside every field** (µs vs ms). Comparisons go through `coerceToMicros`.
+- **Watermark units are written beside every field** (µs vs ms). Comparisons are made in the field's own unit, through `coerceToMicros` or `coerceToMillis`: `int_frete` and the Mercado Livre links stamp ms, while pedido, pagamento and produto stamp µs.
 - **Task payloads and failure docs carry ids only, no PII.**
 - **Live end-to-end verification of any LI read or write happens first at the window.** There is no staging rehearsal (§7 q4, closed by D17). Every step's Verification says what is fixture-only. A behaviour live-proven by the legacy (§1.3) is still re-confirmed under the Personal Token.
 
@@ -513,7 +522,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **`api.ts`:** `validarPersonalToken`, the validating GET (see Connect below).
   - **Deferred to the first consumer.** Captures arrive per step, from step 3 on (D17), so schemas written now from spec examples would be rewritten against them.
     - Resource schemas: pedido search row and detail, including **both `itens[].produto` shapes** (steps 3 and 5); situação and histórico (5); pagamento (6); produto list/detail (9); marca and grades (10); imagem (11); estoque (12); preço (13); envio (5, 7 and 20).
-    - **Naive São Paulo dates** → µs epoch (`dataLiParaMicros`, tz-aware, not a fixed −03:00) and the cursor formatter, which emits exactly the documented `AAAA-MM-DDTHH:MM:SS` (seconds-truncated, no fraction, no offset). They land with their first consumer, not in this package. Step 3 needs neither: its poller keeps LI's stamp as canonical TEXT (no µs conversion) and renders the bootstrap bound with the existing `formatIsoNoFuso`; the µs conversion lands with step 5's watermark (zone from capture C5).
+    - **Naive São Paulo dates** → µs epoch (`dataLiParaMicros`, tz-aware, not a fixed −03:00) and the cursor formatter, which emits exactly the documented `AAAA-MM-DDTHH:MM:SS` (seconds-truncated, no fraction, no offset). They land with their first consumer, not in this package. Step 3 needs neither: its poller keeps LI's stamp as canonical TEXT (no µs conversion) and renders the bootstrap bound with the existing `formatIsoNoFuso`. The µs conversion lands with step 5's watermark (zone from capture C5): `dataLiParaMicros` in `apps/loja-integrada/lib/lojaIntegrada/pedidos/dataLi.ts`, over the core's zone-parameterised `microsDeDataHoraNoFuso` (`@delfrance/core/datetime`).
     - Webhook `Z`/offset dates are parsed by their own offset (step 4).
 - **App** `apps/loja-integrada` (`@delfrance/loja-integrada-app`, Next 16.2.6, API-only, `:3010`) is a **bare scaffold** in PR b:
   - `app/api/health`, `apphosting.yaml` (`minInstances: 0`) and `CLAUDE.md`.
@@ -728,7 +737,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Receiver** `app/api/webhooks/loja-integrada/[contaId]/pedido/route.ts`:
   1. The conta comes from the **URL path**, followed by one uncached credential read.
   2. **Secret unset ⇒ 503. Header missing, or not `Bearer <secret>` ⇒ 401.** The compare is `timingSafeEqual` on equal-length buffers, and a length mismatch counts as a mismatch.
-  3. The body is bounded (e.g. 256 KB). Only `numero`, `data_modificacao` and a boolean `hubHint` (`marketplace_info`/`id_anymarket` present) are parsed.
+  3. The body is bounded (e.g. 256 KB). Only `numero`, `data_modificacao` and a boolean `hubHint` (`marketplace_info`/`id_anymarket` present) are parsed. "Present" is neither absent, `null` nor `''`, the rule step 5's schema applies: `id_anymarket` is read through that same leaf (`liPedidoSchema.shape.id_anymarket`, which reads `''` as `null`), never restated, and the receiver's tests pin `id_anymarket: ''` as no hint.
   4. Enqueue `{contaId, numero, dataModificacaoUs, origem: 'webhook', hubHint}` and answer 200 (LI's expected ack is undocumented).
   5. If the enqueue fails → `persistNotificationFailure` → still 200.
 
@@ -752,108 +761,214 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 
 ### Step 5: Order → pedido import (incl. inbound tracking)
 
-- **Gate:** `importarPedido: 'sim'`, `consolidaPacote: 'nao'`, `dadosFiscaisSeparados: 'nao'`, `rastreio: 'pull'`. **Trigger:** Cloud Task (poll or webhook notification).
+- **Gate:** `importarPedido: 'sim'`, `consolidaPacote: 'nao'`, `dadosFiscaisSeparados: 'nao'`, `rastreio: 'pull'`. **Trigger:** Cloud Task on the reads queue (poll or webhook notification).
 - **Docs:** `spec GET /v1/pedido/{pedido_id}`, `spec GET /v1/situacao_historico/search`, `spec tag Situações do pedido`, help 924633, help 912137.
-- **Wire:** `GET /v1/pedido/{numero}` (always; **[live-proven, legacy credential]**) + `GET /v1/situacao_historico/search?numero=` (approval/cancellation dates; paginated).
+- **Wire** (`packages/integrations/loja-integrada/src/pedidos.ts`; schemas in `pedidoTipos.ts`). The slash form, as captured:
+  - `buscarPedidoLi` → `GET /v1/pedido/{numero}/`, always (**[live-proven, legacy credential]**; captured, C5).
+  - `listarHistoricoSituacaoLi` → `GET /v1/situacao_historico/search/?numero=&limit=50`, every page. The `limit` is sent explicitly because the default is 20.
+  - `buscarProdutoPorIdExternoLi` → `GET /v1/produto/{id}/?id_externo=1`, the line fallback.
+  - Each one only reads, and each goes through the step-3 context, so nothing runs while the read switch is off (D17). The id is checked to be a positive safe integer before any path is built.
+  - **The required set is minimal**, because a schema refusal parks the task for good: `numero`, `situacao.codigo` (a plain string, never an enum), `data_modificacao`, and `itens`/`envios`/`pagamentos` as arrays (absent or `null` ⇒ `[]`). Everything else is optional and passthrough.
+  - **An exact `''` is the provider's "nothing"**: an optional number, count, id or nested object reads it as `null` (a refusal would park the whole order for one empty leaf); a text leaf keeps its `''`; the required set still refuses it at its own path. This includes the three ids a write is keyed on (`itens[].id`, `envios[].id`, `pagamentos[].id`), so absent, `null` and `''` arrive as ONE "no id", and the importer decides what that costs, in one place (import step 1).
+  - Money goes through `wireNumber()`: line prices carry four decimals, totals two, quantities three, and one instalment value arrived as a JSON number. `preco_custo` stays unparsed, because one unreadable cost must never fail the order. `forma_envio.id` stays raw, so step 20's key decides its form.
+  - The GET carries a top-level `id`. It is never a key: the path, every resource URI and the pedido id use the `numero`.
+  - **Paging:** `meta.next` forwards only `offset` plus the caller's own keys. A captured order search answers a `next` with an undocumented extra key.
+- **One import, in order.** Every deterministic refusal comes before the first write.
+  1. **Detail GET.** `String(corpo.numero)` must equal the task's numero, and the stamp must read. The notification's own stamp never decides. Every key the import writes from must be present too: each line's `id`, `envios[0].id` and each pagamento's `id` (absent, `null` and `''` read alike in the wire schema). A missing one is refused here, in this one place, and no key is ever built out of it: `String(null)` is the key `'null'`.
+  2. **History GET**, normalised.
+     - Strict on queue attempts 0 and 1: a detail codigo other than `pedido_efetuado` (9) absent from the history (it has no creation row), or a broken chain, retries.
+     - Degraded from attempt 2 and in the sweep: decide from what was read, set an underivable date to null, log a WARNING.
+     - So a permanent gap costs two backoffs, never a parked order.
+  3. **Read the pedido.** A stored watermark strictly newer ⇒ `obsoleto`, with zero writes of any kind.
+  4. **Hub guard** ⇒ `hub`: no pedido and no pagamento.
+  5. **Resolve the produtos** (reads only).
+  6. **Freight:** `buscarIntFreteDaConta(…, { apenasAtivo: true })`, step 20's `registrarFormaEnvioNoMapaLi`, the routing decision, and one read of the target by id.
+  7. **Cliente and endereço**, only while the pedido has no refs.
+  8. **Build and parse the whole pedido write** before any pagamento write. A `ZodError` here parks with zero writes, so no pagamento is ever left under a missing pedido.
+  9. **Pagamentos** (step 6), **then the pedido.**
+  10. **Avisos and incidentes**, on `importado` and `sem-mudanca` alike, never on `obsoleto`. A retry after a crash between 9 and 10 still writes them.
 - **Pedido fields:**
-  - id = the deterministic digest (§3); `numero = String(numero)`.
-  - `integracaoPedidoOuterRef = 'documents/integracao/<contaId>'`.
-  - operação/filial/modalidade come from the conta.
-  - `valorCobrado = valor_total`, `descontoTotal = valor_desconto`, `timestamp` = `data_criacao` (µs).
-- **Watermark:**
-  - Field `lastMarketplaceUpdate`, **µs**; the incoming `data_modificacao` (naive São Paulo, µs resolution) is converted by `dataLiParaMicros`.
-  - **Null direction: a missing stored value ⇒ proceed** (no evidence; a first import or a migrated pedido without the stamp).
-  - A stored value in another unit (the corpus may hold ms or s) goes through `coerceToMicros` before the compare.
-  - Equal ⇒ `ignorado-sem-mudanca`; newer by 1 µs ⇒ apply.
-  - The watermark advances on the write that wins.
-- **Estado ladder (enumerated, by codigo):**
+  - id = the deterministic digest (§3); `numero = String(numero)`; `integracaoPedidoOuterRef = 'documents/integracao/<contaId>'`; `operacaoPedidoOuterRef` from the conta.
+  - `valorCobrado = valor_total`; `descontoTotal = valor_desconto` plus the positive line residual (Items below).
+  - `timestamp` from `data_criacao` and `lastMarketplaceUpdate` from `data_modificacao`, both through `dataLiParaMicros`.
+  - `error`: only a `[loja-integrada] `-prefixed message, cleared only when it is ours.
+  - No filial field, no `marketplace` block, no status echo (D2).
+- **Watermark:** The incoming stamp is LI's naive time, converted once by `dataLiParaMicros`. A stored stamp may come from another writer, in another unit or zone; it is read through `coerceToMicros`, and a migrated pedido's first new observation re-applies, which the window rehearsal verifies.
+  - The field is `lastMarketplaceUpdate`, in **µs**. `dataLiParaMicros` (`apps/loja-integrada/lib/lojaIntegrada/pedidos/dataLi.ts`) wraps the core's `microsDeDataHoraNoFuso`, which reads a naive stamp in an explicit zone.
+  - **Null direction:** a missing stored value ⇒ proceed (a first import, or a migrated pedido without the stamp).
+  - The incoming stamp is accepted when it is `>=` the stored one. An EQUAL stamp still builds its patch, and an empty patch writes nothing (`sem-mudanca`). So an equal-stamp redelivery that binds a newly linked line still applies.
+  - The accepted value is written, never a `max`; it advances on the write that wins.
+- **The situação table** (`packages/schemas/src/situacaoPedidoLojaIntegrada.ts`, `SITUACOES_LI`). Estado and payment status come from the situação codigo through one shared table, never from the situação flags.
+  - It is frozen on capture C3 (§1.2 item 14): 16 codigos, the same on both stores.
+  - The flags cannot decide. A delivered order and a chargeback carry the same three flags, and `cancelamento_solicitado` is `cancelado: true` while not final.
+  - The payment statuses follow the repo's `STATUS_PAGAMENTO` convention, which Mercado Livre and Mercado Pago already share: `in_process` → `em_revisao`, `in_mediation` → `em_disputa`, `refunded` → `estornado`, `charged_back` → `devolvido`.
 
-  | Codigo(s) | ERP estado |
-  |---|---|
-  | `pedido_efetuado` (9) | carrinho |
-  | `aguardando_pagamento` (2), `pagamento_em_analise` (3) | aguardando confirmação de pagamento |
-  | `pedido_pago` (4), `faturado` (1018), `em_producao` (17), `pedido_em_separacao` (15), `pedido_enviado` (11), `pronto_para_retirada` (13), `pedido_entregue` (14) | **pago** (the ceiling for every marketplace path) |
-  | `pagamento_em_disputa` (6), `pedido_chargeback` (16) | stays `pago`; flagged contested + aviso; no auto-cancel, no restock |
-  | `cancelamento_solicitado` (1019) | processando cancelamento (not terminal) |
-  | `pedido_cancelado` (8) | `cancelado`, or `estornadoIntegralmente` if the history shows a prior approval |
-  | `pagamento_devolvido` (7) | `estornadoIntegralmente` |
-  | `pagamento_devolvido_sem_retorno` (1020) | `estornadoIntegralmente`, i.e. refunded per the help center: LI treats it as cancelled, the item does NOT return to LI stock, and the buyer is e-mailed (help 924633). Its id and flags come only from the legacy enum (§1.2 item 14) |
-  | **any other codigo** | **`error` + aviso `lojaIntegradaSituacaoDesconhecida`** |
+  | Codigo (id) | Create estado | Update estado | `status_pagamento` |
+  |---|---|---|---|
+  | `pedido_efetuado` (9) | `carrinho` | ladder | `pendente` |
+  | `aguardando_pagamento` (2) | `aguardandoConfirmacaoDePagamento` (reserves stock) | ladder | `pendente` |
+  | `pagamento_em_analise` (3) | `emAnalise` (reserves stock) | ladder | `em_revisao` |
+  | `pedido_pago` (4), `faturado` (1018), `em_producao` (17), `pedido_em_separacao` (15), `pedido_enviado` (11), `pronto_para_retirada` (13), `pedido_entregue` (14) | **`pago`** (the ceiling for every marketplace path) | ladder | `aprovado` |
+  | `pagamento_em_disputa` (6) | `pago` + aviso `lojaIntegradaPedidoContestado` (`disputa`) | the same | `em_disputa` (a hold: it still counts as paid) |
+  | `cancelamento_solicitado` (1019) | `processandoCancelamento` (not terminal) | ladder | an update keeps the stored status; a create is `aprovado` if captured, else `pendente` |
+  | `pedido_cancelado` (8) | captured ⇒ `estornadoIntegralmente`, else `cancelado` | the same | `estornado` / `cancelado` |
+  | `pagamento_devolvido` (7) | captured ⇒ `estornadoIntegralmente`, else `cancelado` | captured **and removal applied** ⇒ keep the stored estado and status + aviso (`devolvido`); otherwise as on create | `estornado` / `cancelado` |
+  | `pedido_chargeback` (16) | `estornadoIntegralmente` | removal applied ⇒ keep both + aviso (`chargeback`); otherwise `estornadoIntegralmente` | `devolvido` |
+  | `pagamento_devolvido_sem_retorno` (1020) | `estornadoIntegralmente` (help 924633: cancelled, and the item does not return to LI stock) | removal applied ⇒ keep both + aviso (`devolvido-sem-retorno`); otherwise `estornadoIntegralmente` | `estornado` |
+  | **any other codigo** | `error` + aviso `lojaIntegradaSituacaoDesconhecida` | keep the stored estado + our error text + the aviso | create `pendente`; an update keeps |
 
-  The Phase-3 plan confirms the exact ERP estado names and the reservation release per row. **The table is frozen only after the `GET /v1/situacao` capture C3** (§1.2 item 14, D17) has confirmed 1020's id and flags on both stores. This table is also where a stale order that LI auto-cancels releases its reservation (§4.i, template 8).
-- **Hub guard (D5):** if `id_anymarket` is non-null, any `pagamentos[].forma_pagamento.codigo === 'PAGAMENTOEXTERNO'`, or the receiver set `hubHint` ⇒ do not create a pedido; ack + aviso `lojaIntegradaPedidoHub`.
+  - **Captured** means one of two things. Either the normalised history, up to the observed situação, holds a codigo of `CODIGOS_LI_CAPTURADO`, or the observed codigo is one of them.
+    - That set is the paid codigos plus 6, 16 and 1020, which all presuppose a captured payment. It equals the catalogue's `aprovado: true` set; the test pins it against C3, and the code never reads it from the flag.
+    - The table answers `null` for an unknown codigo, never an `error` and never an exception. The importer decides what that means.
+  - **Removal applied** means `estoqueAplicado.removido` is non-empty: the predicate the stock sync itself uses. A refund-type codigo on a pedido whose stock removal was applied keeps the stored estado and payment status and raises an aviso, because the goods may not have come back. A reversing estado would restock them, and a refund status beside a kept `pago` would be relabelled by the next reconcile. As the table says, `pagamento_devolvido` (7) takes that arm only when captured.
+  - **Ladder** (the Shopee shape). The "keep both" arm is evaluated first. Then:
+    - a stored estado off the ladder is never moved;
+    - the ladder moves forward only: a painel reversal from paid to 2 or 3 keeps `pago`, with a WARNING;
+    - `pago` ↔ `processandoCancelamento` both ways;
+    - a dead sale may be left (`ressuscitado`);
+    - `error` ↔ anything.
+  - **Dates:** the approval is the `data` of the first capture-evidence entry; the cancellation is the last entry reaching 7, 8, 16 or 1020. A date the degraded mode cannot derive is null.
+  - **Stale orders:** a stale order that LI auto-cancels arrives as `pedido_cancelado` (8) without a capture, so it lands at `cancelado` and releases its reservation here (§4.i, template 8).
+- **Hub guard (D5):** `id_anymarket` non-null, any `pagamentos[].forma_pagamento.codigo === 'PAGAMENTOEXTERNO'`, or the receiver's `hubHint` ⇒ no pedido and no pagamento; aviso `lojaIntegradaPedidoHub`. Neither `integration_data` nor the order's own `id_externo` (a store-side ERP may stamp it) is a marker.
 - **Cliente/endereço:**
-  - documento = `endereco_entrega.cnpj ?? endereco_entrega.cpf ?? cliente.cnpj ?? cliente.cpf` (digits only, check-digit validated).
-  - `ie`/`tipo` come from `endereco_entrega`; `isento` in any case → IE isento.
-  - `findOrCreateCliente`.
-  - An LGPD-anonymised name ("Alterado pela LGPD") never overwrites a captured identity.
-  - Empty documents are tolerated: they raise a fiscal review flag, not a failure.
-  - `makeEnderecoId`/`ensureEndereco` from `packages/data/src/admin/enderecos`; cMun from the CEP via `packages/data/src/admin/cmun.ts`.
-- **Items:** `ensureUniqueId = String(item.id)`. The produto is resolved through **two distinct keys**:
-  - (a) A URI string **without** `?id_externo` gives the **LI produto id**. It is converted to a number and looked up in the link docs by fields, never by a computed doc id (§3): collection group `produtolojaintegrada` where `contaLojaIntegrada == 'documents/integracao/<id>'` and `id == <number>`.
-  - (b) The **object form** `{id_externo, resource_uri}`, or any URI carrying `?id_externo=1`, gives an **id_externo**, not the LI id. It is resolved by `itens[].sku`, scoped to the conta, through the promoted SKU cascade in `packages/data/src/admin/produtos`. If that fails, a read-only `GET /v1/produto/{id}?id_externo=1` yields the LI id, which then goes through (a).
-  - `produto_pai` is tried next, then SKU.
-  - An unmatched line keeps `produtoUid: null` and is surfaced, never dropped.
-  - Prices follow the discount-spreading rule (§3), and money goes through `roundReais`.
+  - **The fiscal identity is the BUYER**, read from `cliente.*` only:
+    - the document is `cliente.cnpj ?? cliente.cpf`, digits only and check-digit validated, else absent;
+    - PJ when the CNPJ is valid, and `nome` is then `razao_social`; an LGPD placeholder is dropped;
+    - the e-mail, and the phone `telefone_celular ?? telefone_principal`.
+  - **`endereco_entrega`'s document is never offered.** `findOrCreateCliente` fills a matched cliente's missing document from its input, and the NF-e would then name the recipient instead of the buyer.
+  - **No strong identity:** with no matching cliente, the pedido imports without cliente and endereço, plus incidente `li-cliente-sem-identidade`. A weak match (e-mail or phone) links the pedido: that is the channel-wide rule.
+  - **Endereço:**
+    - `endereco_entrega` maps to `rawEnderecoInputSchema`; `pais` counts only as a two-letter code other than `BR`.
+    - `buildEnderecoForcado` builds it. An unknown estado is recovered through ViaCEP and stored either way; no CEP ⇒ no endereço, retried on later runs.
+    - `ensureEndereco` stores it, tier 0. **cMun is not resolved at import.**
+  - **Recipient:** the endereço's `nome` is `endereco_entrega.razao_social` (PJ) or `nome`, so the label names whoever receives. Its document and phone stay null, and `clienteRecebedorOuterReference` stays null.
+- **Items:**
+  - `ensureUniqueId = String(item.id)`. `sku` stays text end to end (14 to 17 digits).
+  - `precoDeVenda` is the wire `preco_venda`, unrounded (four decimals; `vUnCom` takes ten).
+  - `descontoUnitario = (q·pv − subtotal) / q` when positive.
+  - `custo` is `preco_custo` when it reads as a number, else null.
+  - **Subtotal reconciliation:** a positive residual against `valor_subtotal` goes into `descontoTotal`. A negative one raises incidente `li-totais-divergentes`, with no adjustment.
+  - **Produto resolution, narrowest first.** Link docs are read with every stored form of the conta reference.
+    - (a) A URI string with no query gives the LI produto id. The link-doc collection-group query resolves it by fields.
+      - One hit binds its owner. A root owner is hopped through `unidadeVendavelDaRaiz`: the kit guard keeps a kit root, and a família-de-um wrapper binds its sole member.
+      - More than one hit is ambiguous.
+    - (c) `produto_pai` gives the ERP parent; then `resolverProdutoPorSku`.
+    - (b) An `id_externo` form tries the SKU first, then `buscarProdutoPorIdExternoLi` ⇒ (a).
+      - Around that GET only, a 404 or a malformed body makes the LINE unmatched (incidente `li-produto-nao-vinculado`), never the order.
+      - Every other error rethrows.
+  - An unmatched line keeps `produtoUid: null` and is never dropped.
 - **Freight and inbound tracking:**
-  - **Mapa auto-registration** goes through step 20's helper.
-  - **Target matching at import uses the full `'<id>---<code>'`** and requires the mapa entry's `integracaoUid` to be set (parity; §3).
-    - Target `melhorEnvios`: `freteInicial` points at the TARGET `int_frete`, with `externalOptionId = targetData.id`.
-    - Target `motoboy` / `retiradaNaLoja`: the target is set without an option.
-    - Any other target: aviso, no failure. `freteInicial` stays on the conta's `lojaIntegrada` `int_frete`, and label time resolves it (step 15).
-  - **Unmapped:** `freteInicial` is built from the per-conta `EnviosLojaIntegrada` (step 20), with `externalOptionIntegracao: 'lojaIntegrada'`.
-  - **In every case:** `externalId = envios[i].id`, `externalOptionData = forma_envio` (GET shape), `valorCobrado = envio.valor`, `dataPrevisaoEntrega = data_criacao + prazo` days.
-  - `codRastreio = objeto`, with `''` → null.
-  - Estado is `aguardandoPostagem` if a code exists, else `iniciado`; it is promoted to `despachoAutorizado` once `pago`.
-  - `prazoDespacho` comes from `horarioDeCorte` (`getPrazoDespachoNoFuso`), else the noon rule.
-  - **Multiple `envios[]`:** the first one drives `freteInicial`, and the rest are logged and raise an aviso (§7 q6).
+  - **Modalidade:** An LI payment includes the freight, so an order with freight imports as CIF (`'0'`): the only modalidade under which the NF-e total equals the payments. Without freight it is `conta.modalidadeFreteImportacao ?? '0'`. A conta configured otherwise gets one WARNING.
+  - **Mapa auto-registration** goes through step 20's helper, with `envios[0]`. Import-time matching uses the full `'<id>---<code>'` key and requires the row's `integracaoUid`.
+
+    | Result | `integracaoFreteOuterRef` | Aviso |
+    |---|---|---|
+    | Mapped; target active; tipo `melhorEnvios`, `motoboy` or `retiradaNaLoja` | the target (`melhorEnvios`: `externalOptionId = String(targetData.id)`) | — |
+    | Mapped to `fob` or `outros` (deliberate; step 15 routes them at label time) | the conta's LI doc | none |
+    | Mapped, but the target is missing or inactive, its tipo is another, or a Melhor Envio target has no service id | the conta's LI doc | `lojaIntegradaFreteNaoSuportado` |
+    | Unmapped, or a method with no usable key | the conta's LI doc | none |
+    | No LI `int_frete` for the conta | null | none |
+
+  - **In every case:**
+    - `externalId = String(envios[0].id)`; `externalOptionData = forma_envio` (GET shape); `externalOptionIntegracao = null` (step 15 decides it);
+    - `valorCobrado = roundReais(envio.valor)`; `dataPrevisaoEntrega = data_criacao + prazo` days;
+    - `codRastreio = objeto`, with `''` → null;
+    - `enderecoFreteOuterReference` = the fiscal endereço (fill-once when it resolves later); `clienteRecebedorOuterReference = null`.
+  - **`prazoDespacho`:** Set only on the `pago` rung: a dispatch deadline counts from the approval. It comes from `horarioDeCorte` (`getPrazoDespachoNoFuso`), else the noon rule.
+  - **Freight estado:** on create, `aguardandoPostagem` only with a code AND the pedido at `pago`, otherwise `iniciado`. It is promoted `iniciado → despachoAutorizado` at `pago`.
+  - **Multiple `envios[]`:** not expected (decided 2026-10-14). `envios[0]` drives the block, and the rest raise a non-blocking incidente `li-multi-envio`.
+  - **The step-7 loop:** a tracking write-back bumps the order's stamp. The re-import then advances only the watermark group and the pagamentos' clocks. Estado, freight and items stay unchanged, and no history row is written.
+- **Update groups** (the Shopee freeze split):
+  - **Watermark:** as above.
+  - **Always:** the estado, through the table and the ladder, and our own error text.
+  - **Fill-once:** the refs, `numero`, `timestamp` and the operação.
+  - **Freight outside the freeze:** fill-once tracking, deadline and refs, and the paid promotion.
+  - **Frozen while `hasUserInteraction`:** items (append-only), `valorCobrado`, `descontoTotal`, the freight money and data, and seeding an absent block.
+  - So an operator's money edit survives the next LI change, and one operator save never blinds tracking.
+- **Avisos and incidentes:**
+  - **Four aviso tipos**, each with a machine resolver and documented on `tipoAvisoSchema` (`aviso.ts`):
+    - `lojaIntegradaSituacaoDesconhecida`;
+    - `lojaIntegradaPedidoContestado`, whose wording says dispatch is NOT blocked;
+    - `lojaIntegradaPedidoHub`;
+    - `lojaIntegradaFreteNaoSuportado`, keyed by the digest of the full shipping-method key, because the aviso key fold would merge two methods.
+  - **Non-blocking incidentes** at deterministic ids (`TIPO_INCIDENTE.outros`): unmatched lines, multi-envio, buyers without an identity, and divergent totals.
 - **Firestore:**
-  - `pedidos`, `pagamentos` (step 6), `clientes`, `enderecos`, `int_frete.mapa` (via step 20).
-  - **Indexes:** collection group `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` (new); `int_frete` needs no index of its own (see below); SKU fallback reuses `produtos (sku ASC)` / `(sku ASC, paiId ASC)`.
+  - Writes `pedidos`, `pagamentos` (step 6), `clientes`, `enderecos`, `incidentes`, `avisos` and `int_frete.mapa` (via step 20).
+  - **Indexes:** collection group `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` (new, pinned in `produtoLojaIntegrada.indexes.test.ts`); `int_frete` needs no index of its own (see below); the SKU fallback reuses `produtos (sku ASC)` / `(sku ASC, paiId ASC)`.
     - The importer's `int_frete` read is the core's `buscarIntFreteDaConta(…, { apenasAtivo: true })`: three equalities on `(tipo, contaLojaIntegradaEnviosOuterRef, ativo)`. It uses the equality prefix of step 20's 4-field `int_frete (…, dataCadastro DESC)` index, as ML's `orderImport.ts` read does.
     - A separate 3-field index reds T25 (2026-10-13, Shopee step 20, #1528).
-  - **Rulesets:** regenerate both + snapshots (new `TIPO_AVISO` values: `lojaIntegradaSituacaoDesconhecida`, `lojaIntegradaPedidoHub`, `lojaIntegradaPedidoContestado`, `lojaIntegradaMultiEnvio`, plus one for an unsupported freight target, named in the step plan).
-  - **Env:** none.
-- **Seam:** `findOrCreateCliente`, `@delfrance/core/wire`, the promoted SKU cascade, `getPrazoDespachoNoFuso`.
-- **Rule 7:** a **class-B transaction**. The GETs run outside it. Inside, the watermark is re-derived from `tx.get`, every written value is derived from that snapshot, and the watermark advances on the winning write. Inventoried.
+    - The link owner, the freight target and the pedido are read by id.
+  - **Rulesets:** none regenerate. Aviso enums never reach rules-gen, incidentes are not whitelisted, and no pedido or pagamento schema changes. Both `gen:rules*:check` still run.
+  - **Env:** none. ViaCEP is bound in the functions deps, not configured.
+- **Seam:**
+  - `findOrCreateCliente`, `ensureEndereco` and `buildEnderecoForcado`;
+  - `@delfrance/core/wire` and `@delfrance/core/datetime` (`microsDeDataHoraNoFuso`);
+  - the promoted SKU cascade and `getPrazoDespachoNoFuso`;
+  - the situação table and step 20's mapa helpers.
+- **Rule 7:** no transaction. The app's structure test bans the call, and step 20 set the precedent.
+  - **Tier 0:** deterministic ids and `create`.
+  - **Tier 1:** the pedido `update(patch, { lastUpdateTime })` against the snapshot just read. A lost precondition re-derives every group from a fresh read, at most 3 times.
+  - **Tier 2:** the µs watermark.
+  - **Why that is enough:** imports are serialised by the reads queue (`maxConcurrentDispatches: 1`), every other writer only fails our precondition, and an operator's save conflicts through `saveRecord`. No inventory line.
 - **Dry-run/valve:** none (no LI write).
+- **PR split:**
+  - **5-a**, on `main`: the wire schemas and GETs, the paging fix, the situação table, the zone helper, the aviso tipos and their wording, the index, and this text.
+  - **5-b:** the pure mappers and the capture tests.
+  - **5-c:** the importer.
+  - **5-d:** fills the step-3 seam, flips its pins, and updates the docs.
+  - **5-r** (optional): refreshes two fixture leaves.
 - **Verification:**
-  - Mapper tests over redacted spec-example fixtures and captures:
-    - **both `produto` shapes**, including the id_externo case resolved by SKU and the URI case converted to a number;
-    - multi-pagamento and hub orders;
-    - every codigo, including 1020 and an unknown one;
-    - `objeto: ''`.
-  - Freight near-misses: a full `'<id>---<code>'` match with `integracaoUid` set routes to the target; the same id with a different code is not matched at import; a matched entry with `integracaoUid` unset is treated as unmapped; an unsupported target raises an aviso and does not fail.
-  - Watermark near-misses: equal stamp ignored; one µs newer wins; null stored ⇒ proceeds; ms-unit stored value compared correctly.
-  - The `orderIds.test.ts` vectors.
-  - §1.2 item 14 is settled by capture C3 before merge (D17).
+  - **5-a:**
+    - the wire schemas over bodies in the captures' shape, and over the committed captures themselves (`pedidos/capturasPedido.test.ts`): every body parses, and `''` at any leaf is refused only on the required set;
+    - the paging drop of an unknown `next` key;
+    - `microsDeDataHoraNoFuso`: `X` ≡ `X.000000`, +1 µs, São Paulo vs UTC 3 h apart, a DST gap, an offset or `Z` refused;
+    - the situação table, pinned row by row and against C3: one row per codigo, the capture set equals `aprovado: true`, the paid set is that set minus 6, 16 and 1020;
+    - its near-misses: 3 is not `em_processo_aprovacao`; 16 is neither `estornado` nor `em_disputa`; 1019 is not `cancelado`; an unknown codigo is `null`.
+  - **5-b:** capture tests on the order, history and payment-catalogue fixtures, plus near-miss pairs for the watermark, the codigo, the history, the refund after a removal, the forma, the money, the modalidade, the cliente, the endereço, the freight, the aviso key, the freeze and the ladder.
+  - **5-c:** the importer against fakes and the emulator: precondition losses, `obsoleto` with zero writes, the pre-write parse, a crash between writes, and the step-7 loop.
+  - The `orderIds.test.ts` vectors (§3).
   - **Live import is first seen at the window.**
-- **Timing:** after step 3 (its producer) and step 20 (the mapa helper and the int_frete doc it reads).
-- **Does NOT:** map the webhook body; write any order-level field back to LI; consolidate orders; keep a status echo on the pedido (D2).
+- **Timing:** after step 3 (its producer) and step 20 (the mapa helper and the `int_frete` doc it reads).
+- **Does NOT:**
+  - map the webhook body;
+  - write anything to LI;
+  - consolidate orders;
+  - keep a status echo, a mirror or a `marketplace` block on the pedido (D2);
+  - resolve cMun, move stock, or cancel or restock on a dispute;
+  - settle.
 
 ### Step 6: Payments (inline)
 
 - **Gate:** `importarPagamento: 'sim'`. **Trigger:** the same Cloud Task as step 5 (no extra LI call). **Docs:** `spec GET /v1/pedido/{pedido_id}`, `spec GET /v1/pagamento`.
 - **Wire:** none beyond step 5's GETs.
-- **Mapping:** one `pedidos/{id}/pagamentos/{sha256("integracao/<contaId>-<pagamentos[].id>")}` per `pagamentos[]` entry; iterate, never take `[0]`.
-  - `valor` = `valor`.
-  - Forma by `pagamento_tipo` + `forma_pagamento.codigo` (§3; the pix and `pagamento_banco` handling is **[legacy-observed, unverified]**, pinned by §1.2 item 22 before merge).
-  - Parcelas, and card `{bandeira, cAut = authorization_code}` when present.
-  - **Status comes from the order codigo** (pending / em análise / aprovado / contested / cancelado / devolvido; the table is fixed in the step plan). Dates come from the situação history.
+- **Mapping:** one `pedidos/{id}/pagamentos/{sha256("integracao/<contaId>-<pagamentos[].id>")}` per `pagamentos[]` entry. Iterate, never take `[0]`. A non-positive or unsafe `pagamentos[].id` is a schema refusal.
+  - **`valor = roundReais(valor)`, never `valor_pago`.** `valor_pago` is a copy of the amount due: the captures show it equal to `valor` on an order still awaiting payment.
+  - **Forma: `pagamento_tipo` first** (`instantPayment` → 17, `creditCard` → 3, `bankInvoice` → 15). Without it, the exact codigo table (§3). Else 99, with the raw codigo in the description.
+  - **`cartao`** on formas 3, 4 and 17 is always `{ tpIntegra: '2', bandeira: null, cAut: authorization_code ?? null }`.
+    - It is always present because the NF-e needs a card block on those formas, and the captured card order carries no authorization code.
+    - `bandeira` stays null until a capture shows LI's brand vocabulary.
+  - **Parcelas:** `max(1, numero_parcelas ?? 1)` (`parcelamento` is `{}` on pix and boleto); `aVista = parcelas <= 1`. `juros`, `tarifas` and `vencimento` are null: the order's expiry is never a boleto due date.
+  - **Status:** from the step-5 table, never null. On the "keep both" arm the stored status is kept.
+  - **Dates:** `dataCadastro` (fill-once) from `data_criacao`; the approval and cancellation dates from the history.
+  - `pagamento.marketplace` stays null.
   - The spec has no fee, net, interest or settlement field, so none is derived.
-  - `valor_pago` may be null (the webhook example shows null on an approved order) and is never the paid signal.
 - **Firestore:** `pedidos/{id}/pagamentos/{digest}`. **Indexes:** none (writes by id). **Rulesets:** none. **Env:** none.
-- **Seam:** `@delfrance/core/wire`, `roundReais`.
-- **Rule 7:** class-B, in the same transaction family as step 5.
-  - The per-pagamento watermark is `ultimaModificacao` in **µs**.
-  - **Null direction: missing stored ⇒ proceed**, the payments convention. It is consistent with the pedido.
-  - A legacy-unit value goes through `coerceToMicros`.
-  - Equal ⇒ no write.
+- **Seam:** `@delfrance/core/wire`, `roundReais`, the situação table.
+- **Rule 7:** tiers 0, 1 and 2, as in step 5. Each pagamento has its own read and its own preconditioned write, at most 3 attempts.
+  - **The watermark is `lastProviderUpdate`**, in µs: the order's LI clock. It is never `ultimaModificacao`, which is the ERP's own clock and must not be compared with a provider's.
+  - A missing stored value ⇒ proceed; `>=`; an empty patch writes nothing.
+  - Pagamentos are written **before** the pedido. A crash after them leaves the pedido's watermark un-advanced, and the redelivery converges.
+  - **Overlay on update:** `valor`, `status_pagamento`, `lastProviderUpdate`, `ultimaModificacao`, `dataAprovacao` and `dataCancelamento`.
+    - The forma, `parcelas` and `aVista` are overlaid only from a known, non-99 forma: an incoming 99 never overwrites a stored forma.
+    - `cartao` is fill-once.
+  - **Status ladder:** a paid rank never regresses to pending; a dead status may be left; an off-ladder stored status is never moved.
 - **Dry-run/valve:** none.
 - **Verification:**
-  - Fixtures: a pix order with `parcelamento: {}` (a **[legacy-observed]** shape, replaced by the redacted real capture from §1.2 item 22 once available), a card with installments, and a null `valor_pago` on an approved order.
-  - Watermark near-misses as in step 5.
-- **Timing:** with step 5 (the same transaction).
+  - capture rows: pix with `parcelamento: {}` and a card block, a card with instalments, boleto, and an unpaid order whose `valor_pago` equals `valor`;
+  - a synthetic two-payment order;
+  - forma near-misses: tipo first; an absent tipo plus a boleto codigo ⇒ 15; `INSTANTPAYMENT` is not 17; a stored operator forma is kept over an incoming 99;
+  - watermark near-misses as in step 5.
+- **Timing:** with step 5 (the same task).
 - **Does NOT:** call `/v1/pagamento*` for transactions (it is the method catalogue); build a settlement sweep.
 
 ### Step 7: OUTBOUND status write-back (D7). Inbound tracking is in step 5
@@ -1152,7 +1267,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 - **Shared chooser (2026-10-14):** the core's newest-`dataCadastro` pick (an equal date ⇒ the lowest doc id) moved to `escolherIntFreteMaisNovo` in `packages/schemas/src/intFrete.ts`, and the core consumes it. The conta screen runs in the browser and cannot import the core's admin entry, so this is how it shows the doc the importer will use: the importer's pick is that function with `ativo === true`, the same doc `buscarIntFreteDaConta(…, { apenasAtivo: true })` returns. A cross-module test in the core's suite pins the two together. It reads **raw** bodies only, never the client converter's parsed value: the parse turns an absent `ativo` into `true` (a doc the importer's `ativo == true` query excludes) and rescales `dataCadastro`, so a parsed list can name another doc. A non-finite `dataCadastro` reads as 0, so the pick never depends on the order the docs arrive in.
 - **Gate:** `etiqueta !== 'nenhuma'` + D6. **Trigger:** the Firestore trigger `onIntegracaoLojaIntegradaChanged` (integracao create/update/delete, tipo 3). It is a thin binding in the shape of Shopee's `apps/shopee/functions/src/onIntegracaoShopeeChanged.ts`: `deveReconciliar(before, after)` as a cost-only pre-filter, then `reconciliarIntFreteDaConta(db, integracaoId)`. **Docs:** the `freight-integrations` skill.
 - **Trigger plumbing:** it is the `loja-integrada` functions codebase's first Firestore trigger.
-  - `FIREBASE_DATABASE_ID` becomes a build-time define of that codebase (`functions/build.mjs`), with its `inlined` row in `tools/deploy-env/preflight.mjs`. Runtime already reads the same variable, so the define changes no resolved value; it turns a blank export into `default` and lets the preflight table print what the build baked.
+  - `FIREBASE_DATABASE_ID` becomes a build-time define of that codebase (`functions/build.mjs`), with its `inlined` row in `tools/deploy-env/preflight.mjs`. The source's `?? 'default'` already resolves an unset variable to `default`, so the define changes no value for an unset one; it turns a blank export into `default` (under `??` a blank binds the `(default)` sentinel) and lets the preflight table print what the build baked. In the bundle it also replaces `getDb()`'s read, so the trigger and `getDb()` share the build-time value and a runtime override reaches neither.
   - `functions/src/index.test.ts` pins `eventFilters.database` to exactly `'default'` (never `'(default)'`, never absent), the inherited region, `retry: true` and no secrets. That offline pin, not the emulator, guards the database binding.
   - One arm only: the step-3 token-save re-drive and the daily deferred lane already cover what Shopee's second arm re-drives.
 - **Wire:** none (no LI call).
@@ -1204,7 +1319,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
   - **Which doc:** the importer's pick, `escolherIntFreteMaisNovo` with `ativo === true`, over a listener on the 20-a index's equality prefix that reads the docs' raw data (no converter; see the shared chooser above); an inactive-only conta shows a badge, several docs show a warning. **The browser never creates the doc.**
   - **Rows are never added or removed** in the editor. A row is mapped to one of `TIPOS_ALVO_MAPA_FRETE_LI` (melhorEnvios, motoboy, retiradaNaLoja, fob, outros) or cleared ("Nenhum": `integracaoUid` null, target tipo `outros`). A Melhor Envio target also needs a service, listed by a new `apps/melhor-envio` route, `/api/freight/melhor-envio/servicos`, through the freight client. If the route answers 404 (an older backend) the select degrades: it keeps the stored service visible and blocks picking a new one.
   - **Targets:** import routes only melhorEnvios, motoboy and retiradaNaLoja targets (step 5). fob and outros remain selectable for label-time routing; at import they raise the step-5 aviso without failing.
-- **PRs (2026-10-14):** 20-a the schemas, the chooser, the index, the core's LI coverage, the `/logistica` exclusion and this text; 20-b the window pass; 20-c the Melhor Envio service list; 20-d the conta-screen tabs; 20-e the mapa helper; 20-f the trigger and its plumbing. 20-a and 20-c are based on `main`; 20-b and 20-d on 20-a, retargeted to `main` once it merges; 20-e and 20-f sit on the step-3 stack, because the helper and the trigger need the app's functions codebase and its emulator lane.
+- **PRs (2026-10-14):** 20-a the schemas, the chooser, the index, the core's LI coverage, the `/logistica` exclusion and this text; 20-b the window pass; 20-c the Melhor Envio service list; 20-d the conta-screen tabs; 20-e the mapa helper; 20-f the trigger and its plumbing. 20-a and 20-c are based on `main`; 20-b and 20-d on 20-a, retargeted to `main` once it merges; 20-e (based on `main` once the step-3 stack merged) and 20-f (on 20-e) need the app's functions codebase and its emulator lane.
 - **Timing:** before step 5, which reads the doc and calls the helper.
 - **Does NOT:** register anything at LI; write sync logic, a watermark or an event clock of its own; edit `packages/schemas/src/shared/frete.ts`, `packages/schemas/src/integracao.ts` or `FREIGHT_TIPO_CAPS` (step 15); regenerate a ruleset; offer `mapa` row add or delete in the UI.
 
@@ -1325,7 +1440,11 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
    ⇒ **Captures, per step** (D17): the owner captures the listed read-only production responses himself, under the Personal Token, each recording its credential type, and keeps them outside the repository; the step-2b sanitizer converts them into committed fixtures. They settle §1.2 items 3 (read part, if a pending order exists), 10, 11, 13, 14, 16 (read part), 18, 19, 20, 22, 23 and 24, each before the step that depends on it.
 6. **Step 3** (#1830): poller + pipeline + queues (+ tasks emulator config).
 7. **Step 20** (#1826): int_frete sync + mapa helper (step 5's freight mapping depends on it).
-8. **Steps 5 + 6** (#1817, #1818): order/payment import (PR a: ids, mappers, fixtures; PR b: wiring). The estado table is frozen only after the §1.2 item 14 capture (C3).
+8. **Steps 5 + 6** (#1817, #1818): order/payment import in four PRs.
+   - **5-a**, on `main`: wire schemas and GETs, the paging fix, the situação table, the zone helper, the aviso tipos, the index and the step text.
+   - Then, stacked on step 20's last PR: **5-b** (pure mappers and capture tests) → **5-c** (the importer) → **5-d** (wiring and docs).
+   - An optional **5-r** refreshes two fixture leaves.
+   - The estado table is frozen on the §1.2 item 14 capture (C3).
 9. **Step 15** (#1825): label routing + checkout re-check + `FREIGHT_TIPO_CAPS`.
 10. **Step 7** (#1819): write engine (PR a, moved from step 2b, D17) + status write-back (valve OFF).
 11. **Step 10** (#1821): categories/brands/grades reads + typed linker data (+ the web linker), typing `arakene_variation_id` on the `shopeeLinkVariacoes.ts` precedent.
@@ -1335,7 +1454,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 15. **Step 11** (#1822): publish/edit/pause (valve OFF) (+ the produto LI tab and the anuncioStatus row action).
 16. **Step 4** (#1816): webhook receiver + registration route (registration only at the window).
 17. **Step 22** (#1828): deploy isolation, guard rosters, flip `implementado`.
-18. **The window** (§5), with the legacy app OFF. Step 21 (#1827) ships piecewise with steps 2, 9, 10, 11, 12, 13 and 15.
+18. **The window** (§5), with the legacy app OFF. Step 21 (#1827) ships piecewise with steps 2, 9, 10, 11, 12, 13, 15 and 20 (step 20's conta-screen freight tabs and the Melhor Envio service list).
 
 ### 4.26 LI write inventory (every write → valve → dry-run → read-back)
 
@@ -1387,8 +1506,12 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Phases:** indexes (Phase 0 step 3) → `firestore.rules` (Phase 0 step 4) → the `loja-integrada` functions codebase (Phase 3 step 1; it provisions queues, schedules and triggers) → `apps/loja-integrada` App Hosting with the real `LOJA_INTEGRADA_TASKS_REGION` (Phase 3 step 2) → `apps/web` (Phase 3 step 2).
    - **Commands:** `firebase deploy --only firestore:indexes --project <new>`; `firebase deploy --only firestore:rules --project <new>`; `firebase deploy --config firebase.loja-integrada.deploy.json --project <new>`; App Hosting rollouts for `loja-integrada` and `web`.
    - **Verify:** indexes READY in the console; the queues are listed in Cloud Tasks; `/api/health` answers 200.
+   - **The functions deploy now also provisions a Firestore trigger** (step 20): `onIntegracaoLojaIntegradaChanged` on `integracao/{integracaoId}`. It deploys only after item 11's adoption pass, with the `int_frete` index READY. Verify two things:
+     - the console lists `onIntegracaoLojaIntegradaChanged` as a Firestore trigger on database `default`, and `gcloud eventarc triggers list --project <new>` shows its trigger (event type `google.cloud.firestore.document.v1.written`) filtered to database `default` and the `integracao/*` path;
+     - a mirrored field change reaches the doc: rename one conta and rename it back, then confirm that its `int_frete` doc's `nome` followed and its `ultimaModificacao` moved, or find the `[loja-integrada] onIntegracaoLojaIntegradaChanged` log line with action `atualizado`. A conta save that touches no mirrored field writes nothing, by design, and right after item 11's `--apply` every adopted doc is already in sync, so a plain save proves nothing.
+   - **`apps/melhor-envio` App Hosting before `apps/web`** (step 20's service list, `/api/freight/melhor-envio/servicos`): a preference, not a hard order. The conta screen's service select feature-probes the route, so with `apps/web` first a new Melhor Envio target cannot be picked until the route rolls out, and nothing breaks.
    - **Why the timing:** on Enterprise a missing index full-scans and bills instead of failing; an enqueue against a queue that does not exist yet is dropped while the route answers 200; `apps/web` calls the deployed backend.
-   - **Rulesets deployed:** those regenerated by steps 5, 9, 10, 12 and 13 (if a collection was added). Steps 2, 3 and 20 regenerate none: step 2's credential subcollection and step 3's collections (`notificacoesLojaIntegrada`, `pollPedidosLojaIntegrada`) are bare and default-denied, which `gen:rules:check` verifies; step 20's back-ref is a schema field on `int_frete`, which is not in the validator whitelist.
+   - **Rulesets deployed:** those regenerated by steps 9, 10, 12 and 13 (if a collection was added). Steps 2, 3, 5, 6 and 20 regenerate none: step 2's credential subcollection and step 3's collections (`notificacoesLojaIntegrada`, `pollPedidosLojaIntegrada`) are bare and default-denied, which `gen:rules:check` verifies; steps 5 and 6 add only aviso enums, which never reach the generator, and write no new pedido or pagamento field; step 20's back-ref is a schema field on `int_frete`, which is not in the validator whitelist.
   - **Env at rollout (step 2):** the `apps/loja-integrada` rollout must set `ALLOWED_ADMIN_ORIGINS` (without it the backend allows no origin and every browser call fails CORS), and the `apps/web` rollout must set `NEXT_PUBLIC_LOJA_INTEGRADA_URL` to an `https:` origin (without it the credential panel stays disabled and says the backend is not configured).
    - **Indexes declared by this plan:**
      - `notificacoesLojaIntegrada (status, processedAt)`;
@@ -1408,6 +1531,11 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Action:** read the newest legacy `integracao/{contaId}/pedManager` `lastTimeStamp` per conta (from the export or the legacy console). Set `LOJA_INTEGRADA_POLL_LOOKBACK_H` = hours since the **older** of the two, + 24 h margin, in the functions `.env.deploy`. If the legacy import stops early for any reason, for example an unrenewed legacy token (§0), this look-back covers the gap the same way.
    - **Constraints (step 3):** the value must match `^[1-9][0-9]{0,3}$` and be ≤ 2,160 — an invalid value is not defaulted, it refuses the bootstrap (`lookback-invalido`, aviso at once). It must also stay under the drain cap: at most `meta.limit × 20` distinct modified orders in the window, about 20 days at a limit of 20 and about 50 days at 50, at D12's ~20 orders a day. A larger window is refused on page 1 with a `critico` aviso; the remedy is a shorter look-back plus deleting the conta's `pollPedidosLojaIntegrada/{id}` to re-bootstrap.
    - **Verify:** the first poll run logs a `since_atualizado` at or before that timestamp, every active conta has a `pollPedidosLojaIntegrada` doc, there is no `lojaIntegradaImportacaoParada` aviso, and every LI order in the painel since then has a pedido.
+   - **Verify the look-back's first re-apply of the migrated LI pedidos (step 5).** A migrated pedido's first new observation re-applies, because its stored stamp may come from another writer, in another unit or zone. So check:
+     - no stored `finalizado` moved;
+     - the cliente and endereço refs are untouched;
+     - the number of `estado` writes per conta;
+     - endereço twins only for repeat buyers.
    - **Why:** the look-back is idempotent by the deterministic ids, and it runs after the legacy app is off so no later legacy write supersedes it.
 8. **First live writes, one flow at a time, on canaries.**
    - **Phase:** Phase 4, inside item 3.
@@ -1422,7 +1550,11 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 9. **Intake smoke (read-only).**
    - **Phase:** Phase 4.
    - **Action:** watch one real LI order flow poll → task → pedido (and webhook → task once item 4 is done).
-   - **Verify:** the pedido id equals the deterministic digest, items are linked, the payment is mapped, and `freteInicial` is routed.
+   - **Verify:** the pedido id equals the deterministic digest, items are linked, the payment is mapped, and `freteInicial` is routed. Also check the step-5/6 specifics:
+     - the formas come out as 15, 17 or 3, and a pix payment carries a `cartao` block;
+     - an order with freight has modalidade `'0'`;
+     - `enderecoFreteOuterReference` is set;
+     - an unmatched line raises an incidente.
    - **Why:** fixtures cannot prove the NEW code's live read path. The legacy's live use of Personal Tokens (§1.3) proves the endpoints and the credential, not this code.
 10. **Revoke the legacy app's Personal Tokens.**
    - **Phase:** Phase 4, after the legacy app is switched off **and** after the new integration's first calls succeed with its own tokens (item 1).
@@ -1454,7 +1586,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 - [x] The §0 legacy credential is resolved: the live legacy has run on Personal Tokens on both stores since 2026-10-07.
 - [x] A probe Personal Token per store for the NEW integration: not needed before the window (D17). The production tokens (P1, D16) are generated at the window.
 - [x] The IP-binding gate answered "not bound" (P6): settled live on 2026-10-07 (§1.2 item 7).
-- [ ] The owner's `GET /v1/situacao` capture C3 (1020's id and flags, §1.2 item 14, D17) done before step 5's estado table is frozen.
+- [x] The owner's `GET /v1/situacao` capture C3 (1020's id and flags, §1.2 item 14, D17) done before step 5's estado table is frozen.
 
 ---
 
@@ -1472,7 +1604,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
      - captures stay out of git.
    - Yes or no?
 5. **Stock reservation:** should LI orders awaiting payment hold ERP stock (then the stock push adds LI's `quantidade_reservada`, model A), or should LI alone reserve them (model B)? This decides step 12's quantity. Note that LI's own help articles disagree on whether Pedido Efetuado reserves (§1.2 item 3).
-6. **Multi-envio orders:** do the stores ever split one order into several shipments? If never, the first `envios[]` entry plus an aviso is enough.
+6. ~~**Multi-envio orders:** do the stores ever split one order into several shipments? If never, the first `envios[]` entry plus an aviso is enough.~~ **Decided on 2026-10-14:** never. The first `envios[]` entry drives the freight, and any other raises a non-blocking incidente on the pedido, not an aviso (step 5).
 7. **Kit staleness:** a component sold on another channel reaches an LI kit's quantity only at the daily reconcile (≤ ~24 h). Acceptable, or should the step-12 plan cost a scoped propagation for LI-linked kits?
 8. ~~**Where the freight-mapping editor lives** (step 20/21).~~ **Decided on 2026-10-07** (Lucas delegated the choice): a "Mapeamento do Frete" tab plus a "Horário de Corte" tab on the LI conta screen `/canais/loja-integrada/[id]`, as in the legacy, because the operator maps methods where the conta is configured. The rejected option was a `/logistica/loja-integrada` page beside the other freight editors.
 
