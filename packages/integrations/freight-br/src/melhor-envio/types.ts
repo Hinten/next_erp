@@ -246,6 +246,28 @@ export type ShipmentService = z.infer<typeof shipmentServiceSchema>;
 
 export const shipmentServicesResponseSchema = z.preprocess(toArray, z.array(shipmentServiceSchema));
 
+/** Unwrap the `{ data: [...] }` envelope; anything else is left for `z.array` to judge. */
+function unwrapData(v: unknown): unknown {
+  if (v != null && typeof v === 'object' && Array.isArray((v as { data?: unknown }).data)) {
+    return (v as { data: unknown[] }).data;
+  }
+  return v;
+}
+
+/**
+ * The same list, read STRICTLY: a bare array or `{ data: [...] }`, and nothing
+ * else. Where `toArray` reads any other 2xx body — none at all, `{}`, a status
+ * message, an HTML page — as `[]`, this one fails it.
+ *
+ * ⚠️ For a caller that SHOWS the list. `[]` is harmless to `ensureCartAgency`
+ * (no carrier found, so no agency is added), but a picker would present it as
+ * "this account has no services", a claim Melhor Envio never made.
+ */
+export const shipmentServicesStrictResponseSchema = z.preprocess(
+  unwrapData,
+  z.array(shipmentServiceSchema),
+);
+
 /**
  * `GET /api/v2/me/shipment/agencies` — a carrier drop-off agency. Only `id` is
  * needed for the cart `agency`; the rest passes through. Drop-off carriers

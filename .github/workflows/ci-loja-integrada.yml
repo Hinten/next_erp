@@ -13,11 +13,16 @@ name: CI — Loja Integrada
 # behind its own gate. A skip of this lane therefore loses only the emulator
 # round trip, never the unit suites.
 #
-# ONE job, ONE suite file (3 tests):
-# `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts`. Adding a file
-# with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it to THIS job —
-# no new job, no new check name, no new row in the gate manifest. Both suffixes
-# share one config on purpose (`vitest.tasks.config.ts`).
+# ONE job, three suite files today:
+#   - `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts` — the round
+#     trip below;
+#   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/pollPedidos.tasks.test.ts` —
+#     the order poller's enqueues into that same round trip;
+#   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/pollPedidos.firestore.test.ts`
+#     — the poller's lease and preconditions on the real Firestore.
+# Adding a file with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it
+# to THIS job — no new job, no new check name, no new row in the gate manifest.
+# Both suffixes share one config on purpose (`vitest.tasks.config.ts`).
 #
 # What the single job proves, with nothing mocked:
 #
@@ -50,9 +55,13 @@ name: CI — Loja Integrada
 #     when the switch is `on` in the shell or when an env file in the generated
 #     artifact names it.
 #
-# So the suites stay on paths that stop at the switch: the dispatched function
-# writes a document having made zero platform calls — by call order, not by a
-# mock. A suite that needs a context PAST the switch is a different lane's job.
+# So a DISPATCHED function stops at the switch: it writes a document having
+# made zero platform calls — by call order, not by a mock — and this lane never
+# turns the switch on in the environment. Only code running in the VITEST
+# process may build a context past the switch, and only with `ambiente` `on`
+# passed as a PARAMETER and a scripted `deps.fetch` (the two poller suites do,
+# as apps/loja-integrada/CLAUDE.md describes); the fetch kill-switch above still
+# guards that process.
 #
 # ⚠️ The suites are disjoint BY GLOB. `apps/loja-integrada/vitest.config.ts`
 # EXCLUDES `**/*.tasks.test.ts` and `**/*.firestore.test.ts`, and
@@ -64,10 +73,12 @@ name: CI — Loja Integrada
 #   - That Cloud Scheduler fires. The functions emulator logs every `onSchedule`
 #     trigger as "ignored because the pubsub emulator does not exist or is not
 #     running", so this lane loads every `onSchedule` trigger of the codebase
-#     (the 30-minute reprocess sweep and the daily token-expiry sweep today) and
-#     never runs them. Their bodies are covered by the unit suites in `CI test`,
-#     and their trigger OPTIONS — cron, timeZone, timeoutSeconds — by
-#     apps/loja-integrada/functions/src/index.test.ts.
+#     (the 30-minute reprocess sweep, the daily token-expiry sweep and the
+#     5-minute order poller `pollLojaIntegradaPedidos` today) and never runs
+#     them. Their bodies are covered by the unit suites in `CI test` — the
+#     poller's also by the two poller suites above, called in the vitest process
+#     rather than fired — and their trigger OPTIONS — cron, timeZone,
+#     timeoutSeconds — by apps/loja-integrada/functions/src/index.test.ts.
 #   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
 #     emulator — dispatch is pure FIFO (firebase-tools#8254, open). The reads
 #     queue sets none today; a producer that adds one must not assert it here,
