@@ -176,6 +176,34 @@
       ]
     },
     {
+      "collectionGroup": "notificacoesLojaIntegrada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notificacoesLojaIntegrada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesWhatsapp",
       "queryScope": "COLLECTION",
       "fields": [

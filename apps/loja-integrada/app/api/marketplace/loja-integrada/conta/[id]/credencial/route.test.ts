@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import {
   CODIGO_ERRO_LI,
@@ -24,7 +25,12 @@ import {
 } from '@/lib/lojaIntegrada/avisos/avisos';
 import { fingerprintDoToken, refDaCredencial } from '@/lib/lojaIntegrada/core/credencial';
 import { MENSAGEM_CORPO_NAO_JSON } from '@/lib/lojaIntegrada/core/respond';
+import { CHAMADAS_ENV_LI } from '@/lib/lojaIntegrada/core/valvulas';
 import { FakeDb, asDb, grpc, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
+import {
+  COLECAO_NOTIFICACOES_LI,
+  seedNotificacaoLi,
+} from '@/lib/lojaIntegrada/testing/notificacoes';
 import {
   AGORA_MS,
   DIA_MS,
@@ -34,6 +40,7 @@ import {
   caminhoConta,
   caminhoCredencial,
   credencialDoc,
+  espiarStdout,
   seedConta,
   seedCredencial,
 } from '@/lib/lojaIntegrada/testing/fixtures';
@@ -86,6 +93,17 @@ const EXPIRA_PERTO_MS = Date.UTC(2027, 1, 5, 2, 59, 59);
 
 let db: FakeDb;
 let console$: ReturnType<typeof espiarConsole>;
+let stdout: ReturnType<typeof espiarStdout>;
+
+/** The logger's lines on stdout, parsed: one JSON object per line. */
+function linhasDeLog(): Record<string, unknown>[] {
+  return stdout
+    .escritas()
+    .join('')
+    .split('\n')
+    .filter((l) => l !== '')
+    .map((l) => z.record(z.string(), z.unknown()).parse(JSON.parse(l)));
+}
 
 function salvar(corpo: unknown, opts: { id?: string; sinal?: AbortSignal } = {}) {
   return PUT(
@@ -115,13 +133,158 @@ beforeEach(() => {
   h.verifyIdToken.mockResolvedValue(ESCRITOR);
   seedConta(db, ID, { nome: 'Loja Um' });
   console$ = espiarConsole();
+  stdout = espiarStdout();
+  // Every case below but the read-switch ones runs with calls allowed.
+  vi.stubEnv(CHAMADAS_ENV_LI, 'on');
 });
 
 afterEach(() => {
   expect(h.estacionar).not.toHaveBeenCalled();
   console$.restaurar();
+  stdout.restaurar();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+/* -------------------------------------------------------------------------- */
+/*                        PUT — the read switch (D17)                          */
+/* -------------------------------------------------------------------------- */
+
+describe('PUT …/credencial — the read switch: only the exact `on` calls Loja Integrada', () => {
+  /** A value that must never reach a log line or an answer. */
+  const VALOR_SENTINELA = 'on-SENTINELA-valor-da-chave';
+
+  it.each([
+    ['unset', undefined, 'INFO'],
+    ['blank', '', 'INFO'],
+    ['off', 'off', 'INFO'],
+    ['ON', 'ON', 'WARNING'],
+    ['" on"', ' on', 'WARNING'],
+    ['"on "', 'on ', 'WARNING'],
+    ['true', 'true', 'WARNING'],
+    ['1', '1', 'WARNING'],
+    ['a sentinel', VALOR_SENTINELA, 'WARNING'],
+  ])(
+    '%s: a fixed 503 LI_CHAMADAS_DESLIGADAS — the fetch mock never called, nothing read or written',
+    async (_caso, valor, severidade) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, valor);
+      const chamadas = aceitarTudo();
+
+      const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+      expect(res.status).toBe(503);
+      const texto = await res.text();
+      expect(JSON.parse(texto)).toEqual({
+        // True after the window too, when the same code answers a mis-set value.
+        error:
+          'As chamadas à Loja Integrada estão desligadas neste backend (até a migração, ou ' +
+          'por configuração). Nada foi enviado à Loja Integrada nem salvo.',
+        code: CODIGO_ERRO_LI.chamadasDesligadas,
+      });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(chamadas).toHaveLength(0);
+      // Before the body and before any Firestore read.
+      expect(db.leituras).toEqual([]);
+      expect(db.escritas).toEqual([]);
+      // One line, by operation and conta — never the value, never the token.
+      expect(linhasDeLog()).toEqual([
+        expect.objectContaining({
+          severity: severidade,
+          evento: 'chamada-bloqueada',
+          conta: ID,
+          operacao: 'validarPersonalToken',
+          chave: CHAMADAS_ENV_LI,
+          valorReconhecido: severidade === 'INFO',
+        }),
+      ]);
+      const tudo = [texto, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+      expect(tudo).not.toContain(TOKEN_A);
+      expect(tudo).not.toContain(VALOR_SENTINELA);
+    },
+  );
+
+  it('near-miss: the exact `on` validates with exactly one fetch and saves', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const chamadas = aceitarTudo();
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(res.status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(chamadas).toHaveLength(1);
+    expect(linhasDeLog().map((l) => l.evento)).toEqual(['chamada']);
+  });
+
+  /**
+   * Bodies the route refuses on their own (400, 400, 422) once the switch is on.
+   * With it off, the 503 must win over each: the switch comes BEFORE the body
+   * (and the token in it) is read, which `bodyUsed` pins directly.
+   */
+  const CORPOS_RECUSAVEIS: [string, { corpo?: unknown; corpoBruto?: string }, number][] = [
+    ['an empty object', { corpo: {} }, 400],
+    ['malformed JSON carrying the token', { corpoBruto: `{"token":"${TOKEN_A}","expiraEm":` }, 400],
+    [
+      'a refused date',
+      { corpo: { token: TOKEN_A, expiraEm: '2027-01-14', versaoEsperada: null } },
+      422,
+    ],
+  ];
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'off + %s: still the 503 — the body is never read',
+    async (_caso, corpo) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+      const chamadas = aceitarTudo();
+      const req = requisicao('PUT', `${ID}/credencial`, corpo);
+
+      const res = await PUT(req, contexto(ID));
+
+      expect(res.status).toBe(503);
+      const texto = await res.text();
+      expect(JSON.parse(texto)).toMatchObject({ code: CODIGO_ERRO_LI.chamadasDesligadas });
+      expect(req.bodyUsed).toBe(false);
+      expect(chamadas).toHaveLength(0);
+      expect(db.leituras).toEqual([]);
+      expect(linhasDeLog().map((l) => l.evento)).toEqual(['chamada-bloqueada']);
+      const tudo = [texto, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+      expect(tudo).not.toContain(TOKEN_A);
+    },
+  );
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'near-miss: on + %s is refused by the body check itself (%i), with no call',
+    async (_caso, corpo, status) => {
+      const chamadas = aceitarTudo();
+      const req = requisicao('PUT', `${ID}/credencial`, corpo);
+      const res = await PUT(req, contexto(ID));
+      expect(res.status).toBe(status);
+      expect(req.bodyUsed).toBe(true);
+      expect(chamadas).toHaveLength(0);
+    },
+  );
+
+  it('the caller and the id are still checked first: 401, 403 and 400 with the switch off', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    aceitarTudo();
+    const semAuth = await PUT(
+      requisicao('PUT', `${ID}/credencial`, { semAuth: true, corpo: {} }),
+      contexto(ID),
+    );
+    expect(semAuth.status).toBe(401);
+    expect((await salvar({}, { id: '..' })).status).toBe(400);
+    h.verifyIdToken.mockResolvedValue(LEITOR);
+    expect((await salvar({})).status).toBe(403);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(linhasDeLog()).toEqual([]);
+  });
+
+  it('near-miss: DELETE makes no Loja Integrada call, so the switch does not gate it', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    aceitarTudo();
+    seedCredencial(db, ID);
+    expect((await remover()).status).toBe(200);
+    expect(db.ler(CAMINHO)).toBeUndefined();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -663,6 +826,56 @@ describe('DELETE …/credencial', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*                        The validating GET is logged                         */
+/* -------------------------------------------------------------------------- */
+
+describe('PUT …/credencial — the validating GET is ONE log line', () => {
+  it('aceito: one chamada line for this conta, labelled as a candidate credential', async () => {
+    aceitarTudo();
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(res.status).toBe(200);
+    const linhas = linhasDeLog();
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatchObject({
+      severity: 'INFO',
+      evento: 'chamada',
+      conta: ID,
+      operacao: 'validarPersonalToken',
+      metodo: 'GET',
+      recurso: 'categoria',
+      politica: 'catalogo',
+      caminho: '/v1/categoria/?limit=1',
+      status: 200,
+      resultado: 'ok',
+      credencial: 'personal-token',
+      versaoCredencial: null,
+      enviouCorrelationId: false,
+    });
+  });
+
+  it('recusado: the line is an ERROR, still one per PUT', async () => {
+    stubFetch(() => respostaJson(401, { erro: 'qualquer' }));
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(res.status).toBe(422);
+    const linhas = linhasDeLog();
+    expect(linhas.map((l) => [l.severity, l.resultado, l.conta])).toEqual([['ERROR', 'auth', ID]]);
+  });
+
+  it('near-miss: a refusal before the call, and a malformed token, write NO line', async () => {
+    const chamadas = aceitarTudo();
+    const carimbo = seedCredencial(db, ID);
+    await salvar({
+      token: TOKEN_B,
+      expiraEm: EXPIRA_LONGE,
+      versaoEsperada: relogioDoDocumentoUs(carimbo) - 1,
+    });
+    await salvar({ token: 'a bc', expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(chamadas).toHaveLength(0);
+    expect(linhasDeLog()).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                               Token hygiene                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -691,7 +904,10 @@ describe('the token and its fingerprint appear in no answer and no log line', ()
     );
     // refused and inconclusive, each echoing the token in ITS body. The candidate
     // is a NEW token that still contains the sentinel (TOKEN_A itself is stored
-    // on ID now, so the wrong-store guard would answer before any call).
+    // on ID now, so the wrong-store guard would answer before any call). The
+    // echo is only PART of the token sent, so the package's exact-token scrub
+    // misses it: only the logger's own rule (a candidate credential's line has
+    // no body excerpt) keeps it out of stdout.
     proibidos.push(fingerprintDoToken(`${TOKEN_A}x`));
     for (const status of [401, 500]) {
       stubFetch(() => respostaJson(status, { detalhe: `token ${TOKEN_A} recusado` }));
@@ -716,7 +932,9 @@ describe('the token and its fingerprint appear in no answer and no log line', ()
     await registrar(remover());
 
     expect(respostas).toHaveLength(8);
-    const tudo = [...respostas, textoDe(console$.argumentos())].join('\n');
+    // Anti-vacuity: the stdout lines searched below exist (aceito ×2, 401, 500).
+    expect(linhasDeLog().filter((l) => l.evento === 'chamada')).toHaveLength(4);
+    const tudo = [...respostas, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
     for (const p of proibidos) expect(tudo).not.toContain(p);
   });
 });
@@ -726,5 +944,192 @@ describe('structure', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
     expect(fonte.split('validarPersonalToken(').length - 1).toBe(1);
     expect(fonte).not.toContain('estacionamento');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              PUT — the re-drive of the conta's deferred notifications         */
+/* -------------------------------------------------------------------------- */
+
+describe('PUT …/credencial — re-drives this conta’s DEFERRED notifications (best effort)', () => {
+  /** Queries the re-drive made on the failures collection. */
+  const consultasDeRedrive = () =>
+    db.consultas.filter((c) => c.colecao === COLECAO_NOTIFICACOES_LI);
+
+  /** One row per status for this conta, plus a deferred row of ANOTHER conta. */
+  function seedLinhas() {
+    return {
+      a: seedNotificacaoLi(db, ID, '1', 'deferred', { tentativas: 4 }),
+      b: seedNotificacaoLi(db, ID, '2', 'deferred', { tentativas: 1 }),
+      parado: seedNotificacaoLi(db, ID, '3', 'parked'),
+      falho: seedNotificacaoLi(db, ID, '4', 'failed', { tentativas: 2 }),
+      outra: seedNotificacaoLi(db, OUTRA, '1', 'deferred', { tentativas: 4 }),
+    };
+  }
+
+  it('a success moves ONLY this conta’s deferred rows to the hot lane, each with exactly one write', async () => {
+    aceitarTudo();
+    const c = seedLinhas();
+    const antes = { parado: db.ler(c.parado), falho: db.ler(c.falho), outra: db.ler(c.outra) };
+
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+    expect(res.status).toBe(200);
+    expect(db.ler(CAMINHO)?.personalToken).toBe(TOKEN_A);
+    for (const caminho of [c.a, c.b]) {
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: 0, processedAt: 0 });
+      expect(String(db.ler(caminho)?.erro)).toContain(ID);
+      expect(db.escritasEm(caminho).map((e) => e.verbo)).toEqual(['update']);
+    }
+    // Near-misses: another conta's deferred row, and this conta's parked and
+    // failed ones, are not touched — not even written.
+    expect(db.ler(c.parado)).toEqual(antes.parado);
+    expect(db.ler(c.falho)).toEqual(antes.falho);
+    expect(db.ler(c.outra)).toEqual(antes.outra);
+    for (const caminho of [c.parado, c.falho, c.outra]) {
+      expect(db.escritasEm(caminho)).toEqual([]);
+    }
+    // ONE query, through the (status, contaId) shape of the declared index.
+    expect(consultasDeRedrive()).toHaveLength(1);
+    expect(consultasDeRedrive()[0]).toMatchObject({
+      filtros: [
+        ['status', '==', 'deferred'],
+        ['contaId', '==', ID],
+      ],
+    });
+  });
+
+  it('a save with nothing deferred re-drives nothing and answers 200', async () => {
+    aceitarTudo();
+    const falho = seedNotificacaoLi(db, ID, '4', 'failed');
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(res.status).toBe(200);
+    expect(consultasDeRedrive()).toHaveLength(1);
+    expect(db.escritasEm(falho)).toEqual([]);
+  });
+
+  it.each([
+    ['UNAVAILABLE (14)', 14],
+    ['FAILED_PRECONDITION (9)', 9],
+  ])(
+    'a gRPC failure of the re-drive (%s) is logged by code and the answer stays 200 — the token WAS saved',
+    async (_nome, codigo) => {
+      aceitarTudo();
+      const c = seedLinhas();
+      db.falharConsulta(COLECAO_NOTIFICACOES_LI, grpc(codigo, 'falha de teste'));
+
+      const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+      expect(res.status).toBe(200);
+      respostaCredencialLojaIntegradaSchema.parse(await corpoDe(res));
+      expect(db.ler(CAMINHO)?.personalToken).toBe(TOKEN_A);
+      // Nothing moved: the daily deferred sweep is the backstop.
+      expect(db.ler(c.a)).toMatchObject({ status: 'deferred', tentativas: 4 });
+      const avisos = console$
+        .argumentos()
+        .filter((a) => String(a[0]).includes('re-drive após salvar o token falhou'));
+      expect(avisos).toHaveLength(1);
+      expect(avisos[0]?.[1]).toEqual({ contaId: ID, code: codigo });
+      expect(textoDe(console$.argumentos())).not.toContain(TOKEN_A);
+    },
+  );
+
+  it('near-miss: an error that is NOT a gRPC status is rethrown, never swallowed (rule 6)', async () => {
+    aceitarTudo();
+    seedLinhas();
+    const bug = new RangeError('um defeito, não o Firestore');
+    db.falharConsulta(COLECAO_NOTIFICACOES_LI, bug);
+    await expect(
+      salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null }),
+    ).rejects.toBe(bug);
+  });
+
+  it('a refusal re-drives nothing: 409, 422, 503, 499 and 404 leave the deferred rows and the collection alone', async () => {
+    const c = seedLinhas();
+    const intactas = () => ({
+      a: db.ler(c.a),
+      b: db.ler(c.b),
+      outra: db.ler(c.outra),
+    });
+    const antes = intactas();
+    const corpo = { token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null };
+
+    // 422: Loja Integrada refuses the token.
+    stubFetch(() => respostaJson(401, { error: 'x' }));
+    expect((await salvar(corpo)).status).toBe(422);
+
+    // 503: the read switch is off.
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    expect((await salvar(corpo)).status).toBe(503);
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+
+    // 499: the caller went away while the token was being validated.
+    const controller = new AbortController();
+    stubFetch((_url, init) => {
+      controller.abort(new Error('o navegador desistiu'));
+      return Promise.reject(init.signal?.reason);
+    });
+    expect((await salvar(corpo, { sinal: controller.signal })).status).toBe(499);
+
+    // 404: no such conta.
+    aceitarTudo();
+    expect((await salvar(corpo, { id: 'nao-existe' })).status).toBe(404);
+
+    // 409: a stale version (a credential exists, the panel saw none).
+    seedCredencial(db, ID);
+    expect((await salvar(corpo)).status).toBe(409);
+
+    expect(consultasDeRedrive()).toEqual([]);
+    expect(intactas()).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  // A failure AT or AFTER the credential write must not re-drive either: the
+  // re-drive belongs after the write, the conta re-check and the avisos.
+  it('a write that loses its race (409) re-drives nothing — the parked token was not replaced', async () => {
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    aceitarTudo();
+    const carimbo = seedCredencial(db, ID, { personalToken: TOKEN_B });
+    db.antesDaProximaEscrita(CAMINHO, () => {
+      db.seed(CAMINHO, credencialDoc({ personalToken: TOKEN_B, tokenAtualizadoEmMs: 7 }));
+    });
+
+    const res = await salvar({
+      token: TOKEN_A,
+      expiraEm: EXPIRA_LONGE,
+      versaoEsperada: relogioDoDocumentoUs(carimbo),
+    });
+
+    expect(res.status).toBe(409);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  it('a conta deleted while the token was validated (404, write undone) re-drives nothing', async () => {
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    aceitarTudo();
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      await integracaoCollection.docRef(asDb(db), {}, ID).delete();
+    });
+
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+    expect(res.status).toBe(404);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  it('DELETE does not re-drive: there is no token to retry with', async () => {
+    const c = seedLinhas();
+    seedCredencial(db, ID);
+    const antes = db.ler(c.a);
+    expect((await remover()).status).toBe(200);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect(db.ler(c.a)).toEqual(antes);
+    expect(db.escritasEm(c.a)).toEqual([]);
   });
 });

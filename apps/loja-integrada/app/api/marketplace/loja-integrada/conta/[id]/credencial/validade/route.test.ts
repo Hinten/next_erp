@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { CODIGO_ERRO_LI, respostaCredencialLojaIntegradaSchema } from '@delfrance/schemas';
 
 import {
@@ -17,7 +18,12 @@ import {
 } from '@/lib/lojaIntegrada/avisos/avisos';
 import { fingerprintDoToken, refDaCredencial } from '@/lib/lojaIntegrada/core/credencial';
 import { removerCredencial } from '@/lib/lojaIntegrada/core/credentialStore';
-import { FakeDb, asDb, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
+import { CHAMADAS_ENV_LI } from '@/lib/lojaIntegrada/core/valvulas';
+import { FakeDb, asDb, grpc, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
+import {
+  COLECAO_NOTIFICACOES_LI,
+  seedNotificacaoLi,
+} from '@/lib/lojaIntegrada/testing/notificacoes';
 import {
   AGORA_MS,
   DIA_MS,
@@ -25,6 +31,7 @@ import {
   caminhoAviso,
   caminhoCredencial,
   credencialDoc,
+  espiarStdout,
   seedConta,
   seedCredencial,
 } from '@/lib/lojaIntegrada/testing/fixtures';
@@ -61,6 +68,17 @@ const WEBHOOK = { notifyUrl: 'https://exemplo.invalid/h', token: 'w'.repeat(43) 
 
 let db: FakeDb;
 let console$: ReturnType<typeof espiarConsole>;
+let stdout: ReturnType<typeof espiarStdout>;
+
+/** The logger's lines on stdout, parsed: one JSON object per line. */
+function linhasDeLog(): Record<string, unknown>[] {
+  return stdout
+    .escritas()
+    .join('')
+    .split('\n')
+    .filter((l) => l !== '')
+    .map((l) => z.record(z.string(), z.unknown()).parse(JSON.parse(l)));
+}
 
 function renovar(corpo: unknown, opts: { id?: string; sinal?: AbortSignal } = {}) {
   const id = opts.id ?? ID;
@@ -99,12 +117,128 @@ beforeEach(() => {
   h.verifyIdToken.mockResolvedValue(ESCRITOR);
   seedConta(db, ID, { nome: 'Loja Um' });
   console$ = espiarConsole();
+  stdout = espiarStdout();
+  // Every case below but the read-switch ones runs with calls allowed.
+  vi.stubEnv(CHAMADAS_ENV_LI, 'on');
 });
 
 afterEach(() => {
   console$.restaurar();
+  stdout.restaurar();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+describe('PUT …/credencial/validade — the read switch: only the exact `on` calls Loja Integrada', () => {
+  it.each([
+    ['unset', undefined, 'INFO'],
+    ['blank', '', 'INFO'],
+    ['ON', 'ON', 'WARNING'],
+    ['" on"', ' on', 'WARNING'],
+    ['true', 'true', 'WARNING'],
+  ])(
+    '%s: a fixed 503 LI_CHAMADAS_DESLIGADAS — the stored token never sent, nothing read or written',
+    async (_caso, valor, severidade) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, valor);
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const versao = seedParada();
+
+      const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+      expect(res.status).toBe(503);
+      const texto = await res.text();
+      expect(JSON.parse(texto)).toMatchObject({ code: CODIGO_ERRO_LI.chamadasDesligadas });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(chamadas).toHaveLength(0);
+      expect(db.leituras).toEqual([]);
+      expect(db.escritas).toEqual([]);
+      expect(linhasDeLog()).toEqual([
+        expect.objectContaining({
+          severity: severidade,
+          evento: 'chamada-bloqueada',
+          conta: ID,
+          operacao: 'validarPersonalToken',
+          valorReconhecido: severidade === 'INFO',
+        }),
+      ]);
+      const tudo = [texto, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+      expect(tudo).not.toContain(TOKEN_A);
+    },
+  );
+
+  it('near-miss: the exact `on` re-validates with exactly one fetch', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+    expect(res.status).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(chamadas).toHaveLength(1);
+  });
+
+  /**
+   * Bodies the route refuses on their own (400, 400, 422) once the switch is on.
+   * With it off, the 503 must win over each: the switch comes BEFORE the body is
+   * read, which `bodyUsed` pins directly.
+   */
+  const CORPOS_RECUSAVEIS: [string, unknown, number][] = [
+    ['an empty object', {}, 400],
+    [
+      'a body carrying a token',
+      { expiraEm: NOVA_VALIDADE, versaoEsperada: 1, token: 'outro' },
+      400,
+    ],
+    ['a refused date', { expiraEm: '2027-01-14', versaoEsperada: 1 }, 422],
+  ];
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'off + %s: still the 503 — the body is never read',
+    async (_caso, corpo) => {
+      vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const req = requisicao('PUT', `${ID}/credencial/validade`, { corpo });
+
+      const res = await PUT(req, contexto(ID));
+
+      expect(res.status).toBe(503);
+      expect(await corpoDe(res)).toMatchObject({ code: CODIGO_ERRO_LI.chamadasDesligadas });
+      expect(req.bodyUsed).toBe(false);
+      expect(chamadas).toHaveLength(0);
+      expect(db.leituras).toEqual([]);
+      expect(linhasDeLog().map((l) => l.evento)).toEqual(['chamada-bloqueada']);
+    },
+  );
+
+  it.each(CORPOS_RECUSAVEIS)(
+    'near-miss: on + %s is refused by the body check itself (%i), with no call',
+    async (_caso, corpo, status) => {
+      const chamadas = stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const req = requisicao('PUT', `${ID}/credencial/validade`, { corpo });
+      const res = await PUT(req, contexto(ID));
+      expect(res.status).toBe(status);
+      expect(req.bodyUsed).toBe(true);
+      expect(chamadas).toHaveLength(0);
+    },
+  );
+
+  it('the caller and the id are still checked first: 401, 403 and 400 with the switch off', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const corpo = { expiraEm: NOVA_VALIDADE, versaoEsperada: seedParada() };
+    const semAuth = await PUT(
+      requisicao('PUT', `${ID}/credencial/validade`, { semAuth: true, corpo }),
+      contexto(ID),
+    );
+    expect(semAuth.status).toBe(401);
+    const idRuim = await renovar(corpo, { id: '..' });
+    expect(idRuim.status).toBe(400);
+    expect(await corpoDe(idRuim)).toMatchObject({ code: CODIGO_ERRO_LI.idInvalido });
+    h.verifyIdToken.mockResolvedValue(LEITOR);
+    expect((await renovar(corpo)).status).toBe(403);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(linhasDeLog()).toEqual([]);
+  });
 });
 
 describe('PUT …/credencial/validade — aceito', () => {
@@ -309,18 +443,53 @@ describe('PUT …/credencial/validade — verdicts other than aceito', () => {
   });
 });
 
+describe('the validating GET is ONE log line', () => {
+  it('one chamada line per PUT, for this conta; none for a refusal before the call', async () => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = relogioDoDocumentoUs(seedCredencial(db, ID));
+    // A stale version: refused before any call, so no line.
+    await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao - 1 });
+    expect(linhasDeLog()).toEqual([]);
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+    expect(res.status).toBe(200);
+    const linhas = linhasDeLog();
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatchObject({
+      severity: 'INFO',
+      evento: 'chamada',
+      conta: ID,
+      operacao: 'validarPersonalToken',
+      caminho: '/v1/categoria/?limit=1',
+      status: 200,
+      resultado: 'ok',
+      credencial: 'personal-token',
+      versaoCredencial: null,
+    });
+  });
+});
+
 describe('hygiene and structure', () => {
   it('the stored token and its fingerprint appear in no answer and no log line', async () => {
     const respostas: string[] = [];
+    // A PARTIAL echo survives the package's exact-token scrub; only the logger's
+    // own rule (a candidate credential's line has no body excerpt) stops it.
+    const parcial = TOKEN_A.slice(0, -4);
     for (const status of [200, 401, 500]) {
-      stubFetch(() => respostaJson(status, status === 200 ? ENVELOPE_VAZIO : { eco: TOKEN_A }));
+      stubFetch(() =>
+        respostaJson(
+          status,
+          status === 200 ? ENVELOPE_VAZIO : { eco: TOKEN_A, detalhe: `token ${parcial} recusado` },
+        ),
+      );
       const versao = relogioDoDocumentoUs(db.carimboDe(CAMINHO) ?? seedCredencial(db, ID));
       respostas.push(
         await (await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao })).text(),
       );
     }
-    const tudo = [...respostas, textoDe(console$.argumentos())].join('\n');
-    expect(tudo).not.toContain(TOKEN_A);
+    // Anti-vacuity: each of the three PUTs wrote its line, and it is searched below.
+    expect(linhasDeLog()).toHaveLength(3);
+    const tudo = [...respostas, textoDe(console$.argumentos()), ...stdout.escritas()].join('\n');
+    expect(tudo).not.toContain(parcial);
     expect(tudo).not.toContain(fingerprintDoToken(TOKEN_A));
   });
 
@@ -328,5 +497,156 @@ describe('hygiene and structure', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
     expect(fonte.split('validarPersonalToken(').length - 1).toBe(1);
     expect(fonte).not.toContain('estacionamento');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              the re-drive of the conta's deferred notifications               */
+/* -------------------------------------------------------------------------- */
+
+describe('PUT …/credencial/validade — re-drives this conta’s DEFERRED notifications (best effort)', () => {
+  const OUTRA = 'conta-li-2';
+  const consultasDeRedrive = () =>
+    db.consultas.filter((c) => c.colecao === COLECAO_NOTIFICACOES_LI);
+
+  function seedLinhas() {
+    return {
+      a: seedNotificacaoLi(db, ID, '1', 'deferred', { tentativas: 4 }),
+      b: seedNotificacaoLi(db, ID, '2', 'deferred', { tentativas: 1 }),
+      parado: seedNotificacaoLi(db, ID, '3', 'parked'),
+      falho: seedNotificacaoLi(db, ID, '4', 'failed', { tentativas: 2 }),
+      outra: seedNotificacaoLi(db, OUTRA, '1', 'deferred', { tentativas: 4 }),
+    };
+  }
+
+  it('a renewal that clears the park moves ONLY this conta’s deferred rows, each with exactly one write', async () => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    const c = seedLinhas();
+    const antes = { parado: db.ler(c.parado), falho: db.ler(c.falho), outra: db.ler(c.outra) };
+
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+    expect(res.status).toBe(200);
+    expect(db.ler(CAMINHO)?.reconexaoPendente).toBeNull();
+    for (const caminho of [c.a, c.b]) {
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: 0, processedAt: 0 });
+      expect(String(db.ler(caminho)?.erro)).toContain(ID);
+      expect(db.escritasEm(caminho).map((e) => e.verbo)).toEqual(['update']);
+    }
+    // Near-misses: another conta's deferred row, this conta's parked and failed rows.
+    expect(db.ler(c.parado)).toEqual(antes.parado);
+    expect(db.ler(c.falho)).toEqual(antes.falho);
+    expect(db.ler(c.outra)).toEqual(antes.outra);
+    for (const caminho of [c.parado, c.falho, c.outra]) {
+      expect(db.escritasEm(caminho)).toEqual([]);
+    }
+    expect(consultasDeRedrive()).toHaveLength(1);
+    expect(consultasDeRedrive()[0]).toMatchObject({
+      filtros: [
+        ['status', '==', 'deferred'],
+        ['contaId', '==', ID],
+      ],
+    });
+  });
+
+  it.each([
+    ['UNAVAILABLE (14)', 14],
+    ['FAILED_PRECONDITION (9)', 9],
+  ])(
+    'a gRPC failure of the re-drive (%s) is logged by code and the answer stays 200 — the renewal WAS saved',
+    async (_nome, codigo) => {
+      stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+      const versao = seedParada();
+      const c = seedLinhas();
+      db.falharConsulta(COLECAO_NOTIFICACOES_LI, grpc(codigo, 'falha de teste'));
+
+      const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+      expect(res.status).toBe(200);
+      respostaCredencialLojaIntegradaSchema.parse(await corpoDe(res));
+      expect(db.ler(CAMINHO)?.tokenExpiraEmMs).toBe(NOVA_VALIDADE_MS);
+      expect(db.ler(c.a)).toMatchObject({ status: 'deferred', tentativas: 4 });
+      const avisos = console$
+        .argumentos()
+        .filter((a) => String(a[0]).includes('re-drive após salvar o token falhou'));
+      expect(avisos).toHaveLength(1);
+      expect(avisos[0]?.[1]).toEqual({ contaId: ID, code: codigo });
+      expect(textoDe(console$.argumentos())).not.toContain(TOKEN_A);
+    },
+  );
+
+  it('near-miss: an error that is NOT a gRPC status is rethrown, never swallowed (rule 6)', async () => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    seedLinhas();
+    const bug = new RangeError('um defeito, não o Firestore');
+    db.falharConsulta(COLECAO_NOTIFICACOES_LI, bug);
+    await expect(renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao })).rejects.toBe(bug);
+  });
+
+  // A failure AT the write must not re-drive either: the renewal did not clear
+  // the park, so the re-drive belongs after `atualizarValidade`.
+  it.each<[string, () => Promise<void>]>([
+    [
+      'a write between the read and the update (LI_CREDENCIAL_ALTERADA)',
+      async () => {
+        db.seed(CAMINHO, credencialDoc({ tokenAtualizadoEmMs: 99 }));
+      },
+    ],
+    [
+      'a removal between the read and the update (LI_CREDENCIAL_AUSENTE)',
+      async () => {
+        await removerCredencial(asDb(db), ID);
+      },
+    ],
+  ])('a renewal that loses its write race re-drives nothing: %s → 409', async (_nome, corrida) => {
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    const versao = seedParada();
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    db.antesDaProximaEscrita(CAMINHO, corrida);
+
+    const res = await renovar({ expiraEm: NOVA_VALIDADE, versaoEsperada: versao });
+
+    expect(res.status).toBe(409);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  it('a refusal re-drives nothing: 409, 422, 503, 499 and 404 leave the deferred rows and the collection alone', async () => {
+    const versao = seedParada();
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b), outra: db.ler(c.outra) };
+    const corpo = { expiraEm: NOVA_VALIDADE, versaoEsperada: versao };
+
+    // 422: Loja Integrada refuses the stored token.
+    stubFetch(() => respostaJson(401, { error: 'x' }));
+    expect((await renovar(corpo)).status).toBe(422);
+
+    // 503: the read switch is off.
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    expect((await renovar(corpo)).status).toBe(503);
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+
+    // 499: the caller went away during the validation.
+    const controller = new AbortController();
+    stubFetch((_url, init) => {
+      controller.abort(new Error('o navegador desistiu'));
+      return Promise.reject(init.signal?.reason);
+    });
+    expect((await renovar(corpo, { sinal: controller.signal })).status).toBe(499);
+
+    // 404: no such conta.
+    stubFetch(() => respostaJson(200, ENVELOPE_VAZIO));
+    expect((await renovar(corpo, { id: 'nao-existe' })).status).toBe(404);
+
+    // 409: a stale version.
+    expect((await renovar({ ...corpo, versaoEsperada: versao + 1 })).status).toBe(409);
+
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b), outra: db.ler(c.outra) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
   });
 });

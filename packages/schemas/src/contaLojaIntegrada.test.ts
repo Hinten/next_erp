@@ -245,6 +245,13 @@ describe('CODIGO_ERRO_LI', () => {
     expect(new Set(codigos).size).toBe(codigos.length);
     for (const c of codigos) expect(c).toMatch(/^LI_[A-Z_]+$/);
   });
+
+  it('the read switch has its own wire code: the panel keys its copy on it, and an older browser on the status', () => {
+    // Two 503s with opposite advice: a park conflict clears on a retry, the
+    // read switch only at the cutover. The wire string is the contract.
+    expect(CODIGO_ERRO_LI.chamadasDesligadas).toBe('LI_CHAMADAS_DESLIGADAS');
+    expect(CODIGO_ERRO_LI.chamadasDesligadas).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
+  });
 });
 
 describe('barrel', () => {

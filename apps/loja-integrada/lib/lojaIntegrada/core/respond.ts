@@ -10,8 +10,8 @@
  *    `CLAUDE.md` rule 6);
  *  - the request-level refusals the three routes share: a malformed id, a
  *    malformed body ({@link lerCorpoLi}), a refused expiry date, a validation
- *    verdict other than `aceito`, a token already stored on another conta, and
- *    a caller that went away (499).
+ *    verdict other than `aceito`, a token already stored on another conta, the
+ *    read switch off (503), and a caller that went away (499).
  *
  * ⚠️ The ONE module under `lib/lojaIntegrada/` that imports `next/server`, and
  * therefore the one module step 3's functions bundle must never reach. Nothing
@@ -33,6 +33,7 @@ import type { ValidadeRecusada } from '../conta/validade';
 
 import {
   LiAppError,
+  LiChamadasDesligadasError,
   LiContaInativaError,
   LiContaNaoEncontradaError,
   LiContaParadaError,
@@ -75,6 +76,10 @@ function mapear(err: LiAppError): Mapeamento {
   if (err instanceof LiEstacionamentoEmConflitoError) {
     // Transient by definition: three writers in a row won the same document.
     return { status: 503, code: CODIGO_ERRO_LI.estacionamentoEmConflito };
+  }
+  if (err instanceof LiChamadasDesligadasError) {
+    // The same answer `respostaChamadasDesligadas` gives before the body is read.
+    return { status: 503, code: CODIGO_ERRO_LI.chamadasDesligadas };
   }
   // A subclass nobody mapped is a bug in THIS file, not a client error.
   throw new TypeError(`respond.ts: ${err.name} não tem mapeamento HTTP`);
@@ -222,6 +227,24 @@ export function respostaTokenNaRef(): NextResponse {
     422,
     CODIGO_ERRO_LI.tokenInvalido,
     'O token é curto demais para ser um Personal Token. Nada foi enviado à Loja Integrada.',
+  );
+}
+
+/**
+ * 503 `LI_CHAMADAS_DESLIGADAS` — the read switch (`LOJA_INTEGRADA_CHAMADAS`,
+ * `core/valvulas.ts`) is not exactly `on`. Answered before the body is read, so
+ * nothing was sent to Loja Integrada and nothing was stored (D17: mock only
+ * until the cutover, when the window sets the switch on both surfaces). The
+ * sentence names both causes: after the window the same answer means a mis-set
+ * value (`ON`, ` on`, `true`), which the `chamada-bloqueada` line flags as a
+ * WARNING.
+ */
+export function respostaChamadasDesligadas(): NextResponse {
+  return respostaLi(
+    503,
+    CODIGO_ERRO_LI.chamadasDesligadas,
+    'As chamadas à Loja Integrada estão desligadas neste backend (até a migração, ou ' +
+      'por configuração). Nada foi enviado à Loja Integrada nem salvo.',
   );
 }
 

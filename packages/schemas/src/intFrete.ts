@@ -310,7 +310,7 @@ export interface VinculoIntFreteConta {
   readonly rotuloLog: string;
   /**
    * Present ⇒ a NEW doc is created at `<prefixoDocId>-<integracaoId>`, so two concurrent first
-   * syncs target ONE path (rule 7 tier 0). Absent ⇒ a random id (Mercado Livre, unchanged). The
+   * reconciliations target ONE path (rule 7 tier 0). Absent ⇒ a random ID. The
    * lookup still adopts a legacy auto-id doc either way.
    */
   readonly prefixoDocId?: string;
@@ -322,6 +322,7 @@ export const VINCULO_INT_FRETE_CONTA = {
     tipoFrete: INTEGRACAO_FRETE.mercadoLivre,
     campoBackRef: 'contaMercadoLivreMercadoEnviosOuterRef',
     rotuloLog: '[mercado-livre]',
+    prefixoDocId: INTEGRACAO_FRETE.mercadoLivre,
   },
   shopee: {
     tipoConta: INTEGRACAO_TIPO.shopee,
@@ -368,18 +369,20 @@ export interface CandidatoIntFrete {
  * freight tabs, which run in the browser and cannot import that admin entry. An order importer —
  * and any screen that must show what the importer will use — passes
  * `(data) => data.ativo === true`, over raw bodies the same pick as the core's
- * `buscarIntFreteDaConta(…, { apenasAtivo: true })`; the sync drivers pass no `ativo` filter, so
- * re-enabling a conta finds its deactivated doc instead of creating a second one.
+ * `buscarIntFreteDaConta(…, { apenasAtivo: true })`; the reconciler (`reconciliarIntFreteDaConta`)
+ * passes no `ativo` filter, so re-enabling a conta finds its deactivated doc instead of creating a
+ * second one.
  *
  * The tie is explicit, and a non-finite date reads as 0, so the pick never depends on the order the
- * candidates arrive in: the drivers' lookup (over a query result) and the window pass's chooser
- * (over its own scan) must name the SAME doc, and the window pass reports that choice as
+ * candidates arrive in: the reconciler's lookup (over a query result) and the window pass's
+ * chooser (over its own scan) must name the SAME doc, and the window pass reports that choice as
  * `escolhido` / `duplicados`. (Every comparison against `NaN` is false, so a `NaN` kept as a date
- * would win when seen first and never when seen later.) Before, a tie kept the first doc seen. That is the lowest id only where an unordered result
- * comes back in ascending `__name__` (Standard); Enterprise guarantees no order for a query
- * without `orderBy`, so the drivers' tie pick depended on the query plan and is now always the
- * lowest id — a deliberate determinism change (see the core's `buscarIntFreteDaConta`), not a
- * no-op.
+ * would win when seen first and never when seen later.) Before, a tie kept the first doc seen.
+ * That is the lowest id only where an unordered result comes back in ascending `__name__`
+ * (Standard); Enterprise guarantees no order for a query without `orderBy`, so the lookup's tie
+ * pick depended on the query plan and is now always the lowest id — a deliberate determinism
+ * change (see the core's `buscarIntFreteDaConta`), not a no-op; parity with the legacy Mercado
+ * Livre highest id was considered for #1888 and the lower-id policy retained.
  */
 export function escolherIntFreteMaisNovo<C extends CandidatoIntFrete>(
   candidatos: ReadonlyArray<C>,
