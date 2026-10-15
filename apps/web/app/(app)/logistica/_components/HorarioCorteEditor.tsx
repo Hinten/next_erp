@@ -45,8 +45,22 @@ const DIA_OPTIONS = (Object.entries(DIA_DA_SEMANA_LABELS) as [string, string][])
   ([value, label]) => ({ value, label }),
 );
 
-function toRows(value: unknown): HorarioRow[] {
-  return Array.isArray(value) ? (value as HorarioRow[]) : [];
+function toRows(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+/**
+ * The fields of one stored row — what the row SHOWS, and what an edit of it
+ * starts from. A row that is not an object (`null`, a string — imported shapes
+ * the schema does not model) reads as the blank row "Adicionar horário" starts
+ * from, instead of crashing the editor and with it every screen that mounts it.
+ * It is kept verbatim until the operator edits or deletes it; then the edit
+ * lands on that blank row, so the weekday the Select shows is the weekday
+ * saved (Select fires no change for the value it already shows, so a row saved
+ * without it could not be fixed by confirming it).
+ */
+function camposDe(row: unknown): HorarioRow {
+  return row !== null && typeof row === 'object' ? (row as HorarioRow) : EMPTY_ROW;
 }
 
 export function HorarioCorteEditor({
@@ -62,7 +76,7 @@ export function HorarioCorteEditor({
   const rows = toRows(value);
 
   const patchRow = (index: number, patch: Partial<HorarioRow>) => {
-    onChange(rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+    onChange(rows.map((r, i) => (i === index ? { ...camposDe(r), ...patch } : r)));
   };
 
   const numberCell = (
@@ -76,7 +90,7 @@ export function HorarioCorteEditor({
     <NumberInput
       label={cellLabel}
       aria-label={`${cellLabel} ${index + 1}`}
-      value={(rows[index]?.[key] as number | null | undefined) ?? ''}
+      value={(camposDe(rows[index])[key] as number | null | undefined) ?? ''}
       onChange={(v) => patchRow(index, { [key]: typeof v === 'number' ? Math.trunc(v) : null })}
       onBlur={onBlur}
       disabled={disabled || marked}
@@ -105,7 +119,8 @@ export function HorarioCorteEditor({
             Nenhum horário de corte cadastrado.
           </Text>
         )}
-        {rows.map((row, i) => {
+        {rows.map((stored, i) => {
+          const row = camposDe(stored);
           const marked = row[DELETE_MARK] === true;
           const errIdx = errIndices[i] ?? -1;
           return (

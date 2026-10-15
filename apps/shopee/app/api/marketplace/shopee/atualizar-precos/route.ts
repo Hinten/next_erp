@@ -125,7 +125,7 @@ const TAG_LOG = '[shopee/precos] atualizar-precos';
  * job's `erro` and rendered to the operator.
  *
  * ⚠️ firebase-admin's own classes leave `name` at the base `'Error'` (measured
- * on 14.2.0: `new FirebaseFunctionsError(…).name === 'Error'`), and they are
+ * on 14.5.0: `new FirebaseFunctionsError(…).name === 'Error'`), and they are
  * exactly what the REST enqueue raises — so those two are named by CLASS, with
  * the SDK's closed-set `code` beside it (`functions/not-found` is a queue not
  * deployed yet, `functions/permission-denied` a missing grant). The code is the

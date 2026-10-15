@@ -49,6 +49,8 @@ import {
   NothingChangedError,
   MissingTransactionBaselineError,
   RecordConflictError,
+  acknowledgedSiblingBaseline,
+  formProjections,
   saveRecord,
   type DeriveTransactionPatch,
   type TransactionWrite,
@@ -151,8 +153,19 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * `section` in `fields`). The hook reads what's about to be saved plus any
    * page-held state the closure captures (e.g. subcollection editors), so the
    * whole page model can validate in one place. Must be pure; a real shape
-   * error on a key always wins over a cross-document one. */
-  validate?: (values: Record<string, unknown>) => readonly ValidationIssue[];
+   * error on a key always wins over a cross-document one.
+   *
+   * `context` is the SAME read-only registry `transactionWrites` receives, so a
+   * rule about a transient field can ask what the save would do with it — e.g.
+   * judge a value seeded from a sibling document only when it differs from the
+   * baseline it was seeded from, the comparison that decides whether it is
+   * written at all. A value nobody changed is not written, so a rule that
+   * refused it would block the save over data the save never touches.
+   */
+  validate?: (
+    values: Record<string, unknown>,
+    context: TransactionWriteContext,
+  ) => readonly ValidationIssue[];
 
   /**
    * Top-level form keys that are validated + rendered like any field but are
@@ -424,6 +437,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // so this walk runs once per config, not once per keystroke.
   const preparedTransforms = useMemo(() => collectPrepareForSave(fieldOverrides), [fieldOverrides]);
 
+  // The sibling-document registry (see `transactionWrites`): created here,
+  // ahead of the resolver, because `validate` reads it too. A different record
+  // gets a new registry; the first create/save retains it.
+  const transactionDocuments = useMemo(createTransactionDocuments, [recordId]);
+
   // Validate what will be SAVED, not the raw editor state: apply each
   // field's `prepareForSave` before delegating to zodResolver. Staged
   // deletions are the motivating case — a schema-invalid row marked with
@@ -442,7 +460,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // Merge cross-document issues at each path's first segment. A real shape
       // error already on that key wins (don't clobber); otherwise the issue
       // blocks the save and routes to the key's tab via the section map.
-      const issues = validate(prepared);
+      const issues = validate(prepared, transactionDocuments);
       if (issues.length === 0) return result;
       const errors: Record<string, unknown> = { ...(result.errors as Record<string, unknown>) };
       const rootMessages: string[] = [];
@@ -472,7 +490,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       return { ...result, errors } as typeof result;
     };
     return wrapped;
-  }, [schema, preparedTransforms, validate]);
+  }, [schema, preparedTransforms, validate, transactionDocuments]);
 
   const form = useForm<FieldValues>({
     resolver,
@@ -504,8 +522,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // would fire on every save and operators would learn to click through it. That
   // is not hypothetical: it is the bug #791 fixed for `lastMarketplaceUpdate`.
   const baseline = useRef<Record<string, unknown> | null>(null);
-  // A different record gets a new registry; the first create/save retains it.
-  const transactionDocuments = useMemo(createTransactionDocuments, [recordId]);
   useServerTruthSeed({
     id: docSnap.data?.id,
     fromCache: docSnap.fromCache,
@@ -616,10 +632,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         transactionDocuments.getFormBaseline(key) ?? form.formState.defaultValues?.[key] ?? null;
     }
     try {
+      // EVERY form field showing the document: its baseline moves whole below.
       for (const doc of conflict.documents) {
-        const { formField, toFormValue } = doc.guard;
-        defaults[formField] = toFormValue(doc.current, defaults[formField]);
-        keep[formField] = toFormValue(doc.current, keep[formField]);
+        for (const { formField, toFormValue } of formProjections(doc.guard)) {
+          defaults[formField] = toFormValue(doc.current, defaults[formField]);
+          keep[formField] = toFormValue(doc.current, keep[formField]);
+        }
       }
     } catch (err) {
       if (err instanceof ZodError) {
@@ -632,7 +650,8 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     }
     for (const doc of conflict.documents) {
       transactionDocuments.rebase(doc.path, doc.current);
-      transactionDocuments.rebaseFormField(doc.guard.formField, defaults[doc.guard.formField]);
+      for (const { formField } of formProjections(doc.guard))
+        transactionDocuments.rebaseFormField(formField, defaults[formField]);
     }
     const retained = { ...defaults };
     for (const key of Object.keys(dirtyNow)) {
@@ -738,8 +757,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       const committedValues = { ...values, ...result.patch };
       for (const doc of result.documents ?? []) {
         transactionDocuments.rebase(doc.path, doc.data);
-        const { formField, toFormValue } = doc.guard;
-        committedValues[formField] = toFormValue(doc.data, committedValues[formField]);
+        // `doc.data` is the stored document — the fields this save did not write
+        // included — so every form field showing it is re-projected, not only
+        // the guard's first one.
+        for (const { formField, toFormValue } of formProjections(doc.guard))
+          committedValues[formField] = toFormValue(doc.data, committedValues[formField]);
       }
       for (const key of transientFields) {
         if (
@@ -1274,8 +1296,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                     for (const field of conflict!.fields)
                       baseline.current[field] = conflict!.current[field];
                   }
+                  // A sibling likewise moves only its displayed fields: the form
+                  // is not re-projected here, so accepting a change the modal did
+                  // not show would make the next save write the old value back.
                   for (const doc of conflict!.documents)
-                    transactionDocuments.rebase(doc.path, doc.current);
+                    transactionDocuments.rebase(doc.path, acknowledgedSiblingBaseline(doc));
                   setConflict(null);
                   // Plain re-save. `baseline.current` was re-based onto the version
                   // shown when the conflict was caught, so the guard still runs: if

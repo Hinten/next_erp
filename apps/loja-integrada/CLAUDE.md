@@ -261,7 +261,31 @@ still be fixed. Only the context loader refuses those.
   ordered by `numero`, NOT by `data_modificacao`; the poller deliberately assumes no
   order (the cursor is the max stamp over the whole drain).
 
-## CI (step 3)
+## Freight doc and mapa (step 20)
+
+- `frete/intFrete.ts` is the app's ONE binding of the shared `int_frete` core
+  (`syncIntFreteLi`, zero options). Never a second binding or a hand-written lookup.
+- The conta trigger `functions/src/onIntegracaoLojaIntegradaChanged.ts` (the codebase's first
+  Firestore trigger) runs that binding: `deveReconciliar(before, after)` as a zero-read cost
+  filter, then `reconciliarIntFreteDaConta(getDb(), id)` — rule 7 class A inside the core, no
+  event clock. One arm only; logs the id and the action with field names, never `nome` or a
+  value. `database` is the named `default` (`build.mjs` defines the id; `index.test.ts` pins
+  it), `retry: true`, no `region:`, no secrets, no Loja Integrada call.
+  `onIntegracaoLojaIntegradaChanged.test.ts` pins every absence offline (mocking only the
+  reconcile); `onIntegracaoLojaIntegradaChanged.tasks.test.ts` is its emulator positive
+  (create, rename, delete ⇒ `ativo: false`, adopt a migrated auto-id doc).
+- `frete/mapaFrete.ts` (`registrarFormaEnvioNoMapaLi`) appends one unmapped `mapa` row per
+  new shipping method. Tier 1: a RAW read through the admin handle, never cached (it feeds a
+  write); presence on the FULL `'<id>---<code>'` key from `@delfrance/schemas`, never the id
+  part or a local copy; then `update({ mapa: deps.arrayUnion(row) }, { lastUpdateTime })`. A 9
+  or 5 re-reads and re-decides, at most 3 attempts, then `LiMapaFreteEmConflitoError` (the
+  classifier returns `null`: the task retries).
+- It writes `mapa` only (never `ultimaModificacao`), never parses or rewrites stored rows (a
+  `ZodError` would park the task), never merge-`set`s (that would resurrect a removed doc), and
+  logs ids only. `deps.arrayUnion` is `FieldValue.arrayUnion` in production, the fake's
+  sentinel in tests.
+
+## CI (steps 3 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;
@@ -290,9 +314,15 @@ still be fixed. Only the context loader refuses those.
 - A new `*.tasks.test.ts` / `*.firestore.test.ts` joins the same job and check name. Its
   `beforeEach` wipes what it reads (one shared emulator, files run serially), and a drop
   is proved by a LATER sentinel row, never by polling for an absence.
+- The conta trigger fires on EVERY suite's `integracao` writes (the functions emulator loads
+  the whole codebase). So a suite that writes `integracao` docs uses conta ids no other suite
+  seeds, and a suite whose writes fire the trigger awaits the trigger's last write before it
+  ends. The step-3 suites seed contas with no filial and no `dataCadastro`, which the core
+  plans as `incompleto` (reads only). Why one job anyway: `vitest.tasks.config.ts`.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
-  `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, or that the
-  emulator honours `maxConcurrentDispatches`.
+  `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
+  emulator honours `maxConcurrentDispatches`, Eventarc ordering or redelivery, or a
+  trigger's `database` binding (pinned offline in `functions/src/index.test.ts`).
 
 ## Config
 

@@ -84,7 +84,7 @@ export {
   type ObjectViewTransactionDocuments,
   type TransactionWriteContext,
 } from './object/ObjectViewTransactionDocuments';
-export { type TransactionDocumentGuard } from './object/saveRecord';
+export { type TransactionDocumentGuard, type TransactionFormProjection } from './object/saveRecord';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';
 export { RecordPager, type RecordPagerProps } from './object/RecordPager';

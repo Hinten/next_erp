@@ -79,7 +79,7 @@ export interface CaptureResult {
 
 export interface CaptureDeps {
   readonly fetchImpl: typeof fetch;
-  readonly accessToken: string;
+  readonly getAccessToken: () => Promise<string>;
   readonly baseUrl?: string;
 }
 
@@ -331,7 +331,7 @@ export async function captureOne(
     method: 'GET',
     headers: {
       Accept: 'application/json',
-      Authorization: `Bearer ${deps.accessToken}`,
+      Authorization: `Bearer ${await deps.getAccessToken()}`,
       'User-Agent': CAPTURE_USER_AGENT,
       ...captureTarget.headers,
     },

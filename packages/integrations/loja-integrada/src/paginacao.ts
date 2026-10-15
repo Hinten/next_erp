@@ -8,23 +8,31 @@
  * ## How the next request is built
  *
  * Each page is a `cliente.get` against **the caller's own `caminho`**, used
- * verbatim. From `meta.next` only the QUERY STRING is taken, and merged with the
- * caller's original query:
+ * verbatim. From `meta.next` only the QUERY STRING is read, and the next query
+ * holds exactly `offset` plus the keys the caller sent — nothing else:
  *
- *  - a key present in `next` keeps `next`'s value (that is how `offset` moves);
- *  - an original key MISSING from `next` is added back, so a filter the provider
- *    forgot to carry (`since_atualizado`, `removido`) is never silently dropped —
- *    EXCEPT `offset`, which comes from `next` alone: the caller's starting offset
- *    must never stand in for one the provider left out;
+ *  - `offset` comes from `next` ALONE (that is how the page moves): the caller's
+ *    starting offset must never stand in for one the provider left out;
+ *  - a key the caller sent keeps `next`'s value when `next` carries it, and is
+ *    added back when it does not, so a filter the provider forgot to carry
+ *    (`since_atualizado`, `removido`) is never silently dropped;
+ *  - **any other key in `next` is dropped.** The provider's `next` carries keys
+ *    nobody asked for (a captured order search adds an undocumented one), and
+ *    forwarding them would send a parameter no caller reviewed — and an opaque
+ *    value that happened to contain the token would make the client refuse the
+ *    whole page (`LiConfigError('token-na-url')`) for a key we never needed. A
+ *    REPEATED key is refused only among the keys read here (see the next
+ *    section);
  *  - the `next` path and any HOST in it are ignored. The token is only ever sent
  *    to `URL_BASE_LI`, whatever a response body says.
  *
  * ## When it stops
  *
  *  - `next === null` — the end; the generator returns.
- *  - `next` empty, unparseable, repeating a key, or without an `offset` of plain
- *    digits within the safe-integer range — `LiSchemaError` (`'formato'`,
- *    `campos: ['meta.next']`), whatever offset the caller's own query carried.
+ *  - `next` empty, unparseable, repeating `offset` or a key the caller sent, or
+ *    without an `offset` of plain digits within the safe-integer range —
+ *    `LiSchemaError` (`'formato'`, `campos: ['meta.next']`), whatever offset the
+ *    caller's own query carried.
  *  - `next`'s offset not STRICTLY past BOTH the current page's `meta.offset` and
  *    the offset this page was requested at — `LiPaginacaoError('offset-nao-avanca')`,
  *    which would otherwise loop for ever. Both, because a provider answering a
@@ -43,8 +51,9 @@
  * it, never assumed equal to the requested limit.
  *
  * ⚠️ `maxPaginas` and the `next` offset are checked with `Number.isSafeInteger`
- * and `/^\d+$/`, not with Zod: `types.ts` is the only file under `src/` that may
- * use Zod for numbers (`integration-response-numbers-tolerant.test.js`).
+ * and `/^\d+$/`, not with Zod: only the wire-schema files (`types.ts`,
+ * `pedidoTipos.ts`) use Zod for numbers, and only through `wireInt()` /
+ * `wireNumber()` (`integration-response-numbers-tolerant.test.js`).
  */
 import type { z } from 'zod';
 
@@ -112,21 +121,25 @@ function proximaPagina(
     throw err;
   }
 
-  const query = new Map<string, string>();
+  // Only `offset` and the caller's own keys are read; every other key in `next`
+  // is dropped here, before anything is built from it (module header).
+  const lidas = new Map<string, string>();
   for (const [k, v] of url.searchParams) {
+    if (k !== 'offset' && !original.has(k)) continue;
     // A repeated key is ambiguous (which offset?), and our query shape cannot
     // carry a multi-value filter back. Fail loudly rather than pick one.
-    if (query.has(k)) throw malFormado();
-    query.set(k, v);
+    if (lidas.has(k)) throw malFormado();
+    lidas.set(k, v);
   }
 
   // ⚠️ Read from `next` ALONE, before the merge below: merged first, the
   // caller's own starting `offset` would fill the gap and a malformed `next`
   // would be followed instead of refused.
-  const offset = lerOffset(query.get('offset'));
+  const offset = lerOffset(lidas.get('offset'));
   if (offset === null) throw malFormado();
 
-  // `offset` is in `query` by now, so the merge can never re-add the caller's.
+  // `offset` is in `lidas` by now, so the merge can never re-add the caller's.
+  const query = new Map(lidas);
   for (const [k, v] of original) if (!query.has(k)) query.set(k, v);
 
   return { query: Object.fromEntries(query), offset };

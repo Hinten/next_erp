@@ -94,7 +94,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const ctx = await loadMercadoLivreContext(db, integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createMercadoLivreApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     // The behaviour (record ML's real state, clear `errors`, stamp `closed` on
     // a 404) lives in lib/marketplace/anuncios/reverificarAnuncio.ts — shared verbatim
