@@ -13,13 +13,16 @@ name: CI — Loja Integrada
 # behind its own gate. A skip of this lane therefore loses only the emulator
 # round trip, never the unit suites.
 #
-# ONE job, three suite files today:
+# ONE job, four suite files today:
 #   - `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts` — the round
 #     trip below;
 #   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/pollPedidos.tasks.test.ts` —
 #     the order poller's enqueues into that same round trip;
 #   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/pollPedidos.firestore.test.ts`
-#     — the poller's lease and preconditions on the real Firestore.
+#     — the poller's lease and preconditions on the real Firestore;
+#   - `apps/loja-integrada/lib/lojaIntegrada/frete/mapaFrete.firestore.test.ts`
+#     — the freight `mapa` registration's union and precondition on the real
+#     Firestore (step 20).
 # Adding a file with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it
 # to THIS job — no new job, no new check name, no new row in the gate manifest.
 # Both suffixes share one config on purpose (`vitest.tasks.config.ts`).

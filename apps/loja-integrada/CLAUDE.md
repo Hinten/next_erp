@@ -261,6 +261,21 @@ still be fixed. Only the context loader refuses those.
   ordered by `numero`, NOT by `data_modificacao`; the poller deliberately assumes no
   order (the cursor is the max stamp over the whole drain).
 
+## Freight doc and mapa (step 20)
+
+- `frete/intFrete.ts` is the app's ONE binding of the shared `int_frete` core
+  (`syncIntFreteLi`, zero options). Never a second binding or a hand-written lookup.
+- `frete/mapaFrete.ts` (`registrarFormaEnvioNoMapaLi`) appends one unmapped `mapa` row per
+  new shipping method. Tier 1: a RAW read through the admin handle, never cached (it feeds a
+  write); presence on the FULL `'<id>---<code>'` key from `@delfrance/schemas`, never the id
+  part or a local copy; then `update({ mapa: deps.arrayUnion(row) }, { lastUpdateTime })`. A 9
+  or 5 re-reads and re-decides, at most 3 attempts, then `LiMapaFreteEmConflitoError` (the
+  classifier returns `null`: the task retries).
+- It writes `mapa` only (never `ultimaModificacao`), never parses or rewrites stored rows (a
+  `ZodError` would park the task), never merge-`set`s (that would resurrect a removed doc), and
+  logs ids only. `deps.arrayUnion` is `FieldValue.arrayUnion` in production, the fake's
+  sentinel in tests.
+
 ## CI (step 3)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
