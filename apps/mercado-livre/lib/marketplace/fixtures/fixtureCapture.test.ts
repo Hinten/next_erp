@@ -296,10 +296,7 @@ describe('captureOne — the request', () => {
 
   it('resolves the current token for each target in a capture plan', async () => {
     const { fetchImpl, chamadas } = stubFetch();
-    const getAccessToken = vi
-      .fn()
-      .mockResolvedValueOnce('first')
-      .mockResolvedValueOnce('renewed');
+    const getAccessToken = vi.fn().mockResolvedValueOnce('first').mockResolvedValueOnce('renewed');
     const plan = buildCapturePlan({ ...SEM_IDS, shipmentIds: ['99'] }).slice(0, 2);
 
     await captureAll(plan, { fetchImpl, getAccessToken, baseUrl: BASE });
@@ -568,8 +565,10 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
     const { fetchImpl } = stubFetch(() => new Response('', { status: 500 }));
     const vistos: CaptureResult[] = [];
     await expect(
-      captureAll([plan[0]!], { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE }, (r) =>
-        vistos.push(r),
+      captureAll(
+        [plan[0]!],
+        { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE },
+        (r) => vistos.push(r),
       ),
     ).rejects.toBeInstanceOf(FixtureCaptureHttpError);
     expect(vistos).toEqual([]);
