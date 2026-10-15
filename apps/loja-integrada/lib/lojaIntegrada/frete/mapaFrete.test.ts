@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { ZodError } from 'zod';
 import { intFreteCollection } from '@delfrance/data/admin/collections';
+import { mapaDeIntegracoesSchema } from '@delfrance/schemas';
 
 import { classificarFalhaLi } from '../notificacoes/notificacao';
 import { type DocData, FakeDb, arrayUnion, asDb, grpc, increment } from '../testing/fakeDb';
@@ -182,6 +183,27 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
     }
   });
 
+  it('⚠️ NEAR-MISS (raw read): a stored row under the key that FAILS the row schema is still the method ⇒ ja-presente, zero writes, never a second row beside it', async () => {
+    const casos: readonly [string, DocData][] = [
+      ['no nomeOriginal', { idOriginal: '141909---PAC' }],
+      [
+        'a target tipo the schema does not know',
+        { ...linha('141909---PAC', 7), targetTipoIntegracao: 'desconhecido' },
+      ],
+      ['a non-string nomeOriginal', { ...linha('141909---PAC', 7), nomeOriginal: 42 }],
+    ];
+    for (const [nome, armazenada] of casos) {
+      // Anti-vacuity: each stored row really fails the row schema.
+      expect(mapaDeIntegracoesSchema.safeParse(armazenada).success, nome).toBe(false);
+      const db = new FakeDb();
+      db.seed(CAMINHO, docFrete({ mapa: [armazenada] }));
+
+      expect(await registrar(db), nome).toEqual({ resultado: 'ja-presente', mapa: [armazenada] });
+      expect(db.escritas, nome).toEqual([]);
+      expect(mapaDe(db), nome).toEqual([armazenada]);
+    }
+  });
+
   it('legacy rows stay BYTE-identical: nothing parsed or normalised, and no ZodError on rows that fail the row schema', async () => {
     const legado: unknown[] = [
       { idOriginal: null, nomeOriginal: 'Legado', chaveDesconhecida: { a: 1 } },
@@ -285,6 +307,46 @@ describe('registrarFormaEnvioNoMapaLi: rule 7, tier 1', () => {
       ultimaModificacao: 2,
       mapa: [linha('141909---PAC', 1001)],
     });
+    expect(leiturasDoFrete(db)).toBe(2);
+  });
+
+  it('the doc RETYPED or re-pointed at another conta between the read and the write ⇒ the re-read re-runs the doc check: sem-int-frete, nothing appended', async () => {
+    const casos: readonly [string, DocData][] = [
+      ['retyped to shopee', { tipo: 'shopee' }],
+      [
+        'back-ref re-pointed at another conta',
+        { contaLojaIntegradaEnviosOuterRef: 'documents/integracao/outra' },
+      ],
+    ];
+    for (const [nome, patch] of casos) {
+      const db = new FakeDb();
+      db.seed(CAMINHO, docFrete({ mapa: [] }));
+      db.antesDaProximaEscrita(CAMINHO, async () => {
+        await escritaConcorrente(db, patch);
+      });
+
+      expect(await registrar(db), nome).toEqual({ resultado: 'sem-int-frete', mapa: null });
+
+      expect(db.ler(CAMINHO), nome).toMatchObject({ ...patch, mapa: [] });
+      // The concurrent write only: this call wrote nothing on its second attempt.
+      expect(db.escritasEm(CAMINHO), nome).toHaveLength(1);
+      expect(leiturasDoFrete(db), nome).toBe(2);
+    }
+  });
+
+  it('`mapa` turned into a MAP between the read and the write ⇒ the re-read re-runs the shape check: mapa-invalido, the map kept as it is', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, docFrete({ mapa: [] }));
+    const mapa = { '141909---PAC': { integracaoUid: 'me-1' } };
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      await escritaConcorrente(db, { mapa });
+    });
+
+    expect(await registrar(db)).toEqual({ resultado: 'mapa-invalido', mapa: null });
+
+    // A union on the retry would have replaced the map with [row].
+    expect(mapaDe(db)).toEqual(mapa);
+    expect(db.escritasEm(CAMINHO)).toHaveLength(1);
     expect(leiturasDoFrete(db)).toBe(2);
   });
 

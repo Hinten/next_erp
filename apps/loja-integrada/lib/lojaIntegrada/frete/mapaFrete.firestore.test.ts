@@ -4,10 +4,14 @@
  *
  * The offline suite (`mapaFrete.test.ts`) proves the decisions against `testing/fakeDb.ts`, which
  * MODELS how the server applies the two primitives the helper rests on: `arrayUnion` and the
- * `lastUpdateTime` precondition. This file proves the model:
+ * `lastUpdateTime` precondition. This file proves the model, both halves of the union and the
+ * precondition:
  *
  *  - the union onto a `null`, an absent and an existing array: the stored rows come back
  *    untouched, the new row last;
+ *  - the union's dedup: the server and the fake answer one union with the same array — the same
+ *    key set in another order is one value, a number is not its string, `0` is not `null`, and a
+ *    duplicate inside one call lands once;
  *  - two registrations of ONE new key, both past their read before either writes
  *    (`Promise.all`, held at a barrier): exactly one row lands, and the loser's write fails 9;
  *  - a raw `update(…, { lastUpdateTime })` on a DELETED doc fails (9, or 5) and never
@@ -37,6 +41,7 @@ import {
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
+import { FakeDb, arrayUnion as uniaoDoFake } from '../testing/fakeDb';
 import { type MapaFreteDeps, registrarFormaEnvioNoMapaLi } from './mapaFrete';
 
 const EMULATED = Boolean(env.FIRESTORE_EMULATOR_HOST);
@@ -51,6 +56,7 @@ const CONTAS = {
   corrida: 'conta-li-mapa-ci-corrida',
   removido: 'conta-li-mapa-ci-removido',
   mapa: 'conta-li-mapa-ci-mapa',
+  uniao: 'conta-li-mapa-ci-uniao',
 } as const;
 
 const PAC = { id: 141909, code: 'PAC', nome: 'Gateway A', tipo: 'Transportadora' } as const;
@@ -230,6 +236,28 @@ describe.skipIf(!EMULATED)('the freight mapa registration on real Firestore', ()
     // A second order with the same method appends nothing.
     expect((await registrar(CONTAS.lista, 4)).resultado).toBe('ja-presente');
     expect((await refFrete(CONTAS.lista).get()).get('mapa')).toHaveLength(legado.length + 1);
+  });
+
+  it('the union’s dedup is STRUCTURAL — the same key set in another order is one value, `7` ≠ `"7"`, `0` ≠ `null`, a duplicate inside one call lands once — and the fake answers exactly the same', async () => {
+    const ref = refFrete(CONTAS.uniao);
+    const armazenado = [{ b: 2, a: 1 }, 7, null];
+    // EQUAL to a stored element: `{ a: 1, b: 2 }` and `null`. NEAR-MISS: one key more (`c: 0`,
+    // twice), the string `'7'`, the number `0`.
+    const elementos = [{ a: 1, b: 2 }, { a: 1, b: 2, c: 0 }, '7', 0, null, { a: 1, b: 2, c: 0 }];
+    const esperado = [{ b: 2, a: 1 }, 7, null, { a: 1, b: 2, c: 0 }, '7', 0];
+    await ref.set({ mapa: armazenado });
+
+    await ref.update({ mapa: FieldValue.arrayUnion(...elementos) });
+
+    expect((await ref.get()).get('mapa')).toEqual(esperado);
+    // The model `mapaFrete.test.ts` runs on, fed the same union.
+    const fake = new FakeDb();
+    fake.seed('int_frete/x', { mapa: armazenado });
+    await fake
+      .collection('int_frete')
+      .doc('x')
+      .update({ mapa: uniaoDoFake(...elementos) });
+    expect(fake.ler('int_frete/x')?.mapa).toEqual(esperado);
   });
 
   it('Promise.all of two registrations of ONE new key, both past their read ⇒ exactly ONE row; the loser’s write fails 9 and its re-read finds the row', async () => {

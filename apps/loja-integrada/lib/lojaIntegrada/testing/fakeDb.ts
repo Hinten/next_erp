@@ -170,8 +170,12 @@ function ehUniao(v: unknown): v is { __arrayUnion: unknown[] } {
  * equal values. Distinct: a number and its string (`1` ≠ `'1'`), `0` and `null`, arrays of
  * another length.
  *
- * ⚠️ Deliberately NOT named after a shared fold helper: the `equivalence-fold-inventory` guard
- * keys on those names, and this file would then owe it a row.
+ * This is the test double's emulation of the server's `arrayUnion` value equality, not a sameness
+ * decision in product code, and it owns its own copy on purpose: a shared deep-equality helper
+ * answers its callers' question, which may not be Firestore's. Its scope is pinned both ways in
+ * `fakeDb.test.ts` ("an array keeps every stored element untouched…": the EQUAL pairs and the
+ * NEAR-MISSES), and `frete/mapaFrete.firestore.test.ts` feeds one union to the emulator and to
+ * this fake and expects the same array from both.
  */
 function mesmoValorArmazenado(a: unknown, b: unknown): boolean {
   if (a === b) return true;

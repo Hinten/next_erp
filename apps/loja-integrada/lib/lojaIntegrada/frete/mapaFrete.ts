@@ -16,18 +16,24 @@
  *
  *  - **Why the read.** Each row carries the order number in `observacao`, so an unconditional
  *    union would append one row per order. The presence read bounds the array to one row per key.
- *  - **Why the precondition.** Two registrations of one key that overlap (an at-least-once
- *    duplicate of the same task) would both read "absent" and both append. The stamp makes the
- *    second fail `FAILED_PRECONDITION` (9).
+ *  - **Why the precondition.** An exact replay of one order builds the same row, and `arrayUnion`'s
+ *    value dedup already absorbs it. What the dedup cannot absorb is two overlapping registrations
+ *    whose rows DIFFER: above all two different orders carrying the same new method (say, a
+ *    handler still running after the queue gave up on its dispatch and moved on). Their rows
+ *    differ only in `observacao`, so both would read "absent" and both would append: two rows for
+ *    one key. The stamp makes the second fail `FAILED_PRECONDITION` (9).
  *  - **On a lost precondition** (9, or `NOT_FOUND` (5), handled the same so the outcome does not
  *    hinge on which code the server picks for a removal): RE-READ and RE-DECIDE from the doc
- *    check. The row that lost is never re-applied; a doc removed meanwhile answers
- *    `sem-int-frete`, and an `update` can never resurrect it.
+ *    check — the doc, its shape and the key, all from the new read. The row that lost is never
+ *    re-applied; a doc removed meanwhile answers `sem-int-frete`, and an `update` can never
+ *    resurrect it.
  *  - At most {@link MAX_TENTATIVAS_MAPA_FRETE_LI} attempts, then {@link LiMapaFreteEmConflitoError}:
  *    the step-3 classifier returns `null` for it, so the task rethrows and retries.
- *  - The other writers of this doc cannot lose the append. The conta trigger patches scalar fields
- *    and the conta screen rewrites `mapa` under its own guard; a commit by either only makes this
- *    precondition fail, and the retry re-decides against what landed.
+ *  - **The other writers of this doc.** A commit by the conta trigger or by the conta screen while
+ *    this call is in flight only makes the precondition fail, and the retry re-decides against
+ *    what landed. An append that has ALREADY landed is a different matter: the screen's guarded
+ *    whole-field save raises a conflict for it, and an operator who keeps their own version drops
+ *    that row. The next order that uses the method registers it again, so the loss heals itself.
  *
  * ⚠️ This module must never name the Admin SDK's multi-document atomic-write call — not even in a
  * comment (`estrutura.test.ts`, and `firestore-transaction-inventory.test.js` would demand a class

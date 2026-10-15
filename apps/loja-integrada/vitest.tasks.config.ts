@@ -18,7 +18,7 @@ import { defineConfig } from 'vitest/config';
 // trigger that a shared emulator could disturb; the day one lands, give it a
 // config of its own rather than letting a trigger fire inside another suite.
 //
-// Each file's `beforeEach` wipes the collections it reads, because the files
+// Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({
   test: {
