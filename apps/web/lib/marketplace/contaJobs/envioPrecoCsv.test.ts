@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { MercadoLivreRelatorioEnvioPrecoLinha } from '@/lib/mercado-livre/client';
 import {
   ENVIO_PRECO_CSV_HEADER,
+  MAX_PAGINAS_RELATORIO_PRECO,
   buildEnvioPrecoCsv,
   envioPrecoCsvFilename,
   type EnvioPrecoCsvResumo,
@@ -209,5 +210,15 @@ describe('envioPrecoCsvFilename', () => {
   it('degrades rather than producing a nameless file', () => {
     expect(envioPrecoCsvFilename('///', 0)).toContain('conta');
     expect(envioPrecoCsvFilename('Conta A', Number.NaN)).toContain('sem-data');
+  });
+});
+
+describe('MAX_PAGINAS_RELATORIO_PRECO', () => {
+  it('stays at the 100 pages Mercado Livre’s download looped over before #1529', () => {
+    // Mercado Livre's download hook compares against the SYMBOL, so a lowered cap
+    // would truncate every long report (with the trailer saying so) while its
+    // tests stayed green: `useBaixarRelatorioPreco.test.ts` fetches at most two
+    // pages. The literal is the pin.
+    expect(MAX_PAGINAS_RELATORIO_PRECO).toBe(100);
   });
 });
