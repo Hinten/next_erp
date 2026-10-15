@@ -1235,3 +1235,44 @@ chosen region too. (Firestore triggers are only a latency consideration, not a h
 
 Picking one of those two regions for the new project removes the cross-region split
 entirely.
+
+
+## Access-token cache and refresh rotation (#996)
+
+This is a human-run check using an already connected Mercado Livre **test seller**
+and its staging integration. It is not a prerequisite for the cache implementation.
+Use a trusted local process that keeps credentials in memory; never print token
+responses, Authorization headers, access tokens or refresh tokens to the terminal,
+logs, screenshots or this run record. Do not mint another test user.
+
+1. Read the current durable credential directly, bypassing the cache. Record only
+   its absolute expiry and the observation time. Allow enough time before expiry
+   for all probes; otherwise the result cannot distinguish rotation from expiry.
+2. Call the read-only `GET /users/me` with the original access token and record
+   its HTTP status and whether the seller ID matches the expected test seller.
+3. Refresh once through the existing token endpoint using the latest refresh
+   token. Immediately persist the complete returned credential through the normal
+   store before issuing any further probe. A rotated refresh token must never
+   be discarded.
+4. Before the original token's recorded expiry, repeat `GET /users/me` with the
+   original token, then with the replacement. Record the two statuses, timestamps
+   and seller-match booleans only. These observations answer whether this refresh
+   invalidated the previous access token; do not infer an answer from the docs.
+5. In the same warm process, run repeated ordinary API reads and compare the
+   `ml:access-token` cache counters: a valid-token burst should show one miss and
+   subsequent hits. After 60 seconds, the next read should miss. The existing
+   `DATA_READ_CACHE_DISABLED=1` switch should restore uncached credential reads.
+
+A token-specific 401 evicts only the matching local access token and preserves
+the operation's existing error. The failed operation is not replayed, and an
+unexpired token in Firestore is not forcibly refreshed. Reconnect normally if
+the provider has revoked the grant and no newer usable credential exists.
+
+| Observation | Result |
+| --- | --- |
+| Test integration / seller ID | Not run |
+| Original expiry / probe timestamps | Not run |
+| Original token before refresh: HTTP status / seller matches | Not run |
+| Original token after refresh: HTTP status / seller matches | Not run |
+| Replacement token: HTTP status / seller matches | Not run |
+| Cache misses / hits before and after TTL or kill switch | Not run |

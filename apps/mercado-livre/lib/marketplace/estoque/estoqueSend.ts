@@ -322,12 +322,18 @@ export interface StockSendApi {
 export interface StockSendContext {
   /** The parsed integração doc (`depositoOuterRef` rides through). */
   readonly conta: Readonly<Record<string, unknown>>;
-  resolveChannelContext(now?: number): Promise<{ accessToken: string }>;
+  resolveChannelContext(now?: number): Promise<{
+    getAccessToken: () => Promise<string>;
+    invalidateAccessToken: (token: string) => void;
+  }>;
 }
 
 export type StockContextLoader = (db: Firestore, integracaoId: string) => Promise<StockSendContext>;
 
-export type StockApiFactory = (config: { getAccessToken: () => Promise<string> }) => StockSendApi;
+export type StockApiFactory = (config: {
+  getAccessToken: () => Promise<string>;
+  onAccessTokenRejected?: (token: string) => void;
+}) => StockSendApi;
 
 export interface StockSendDeps {
   /** The stock-queue enqueue seam (`createMlStockTaskScheduler()` in prod). */
@@ -739,7 +745,10 @@ export async function processStockSendTask(
     });
 
     const channelCtx = await ctx.resolveChannelContext(nowMs);
-    api = apiFactory({ getAccessToken: async () => channelCtx.accessToken });
+    api = apiFactory({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     // (3a) #706 multiorigem: a whole different write protocol. Branches BEFORE
     // the `PUT /items` body build, because on a `warehouse_management` account

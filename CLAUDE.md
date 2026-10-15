@@ -358,7 +358,10 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 - **Repeated read of a slow-changing doc/query** on a server surface →
   `@delfrance/data/admin/cache` (`createReadCache` / `createCachedDocReader`)
   via the `firestore-read-cache` skill; TTL is mandatory and *is* the staleness
-  bound. **Never** cache a `tx.get()`, an OAuth token, or a value you write back.
+  bound. **Never** cache a `tx.get()`, OAuth refresh credentials or queries used
+  to decide/recover a refresh, or a value you write back. Access-token-only caches
+  may hold the token + absolute expiry with a short TTL, validate expiry on every
+  use, and evict only the exact rejected token; see the skill's narrow exception.
 - **Data that should expire → a Firestore TTL policy**, a `fieldOverrides` entry
   (`"ttl": true`) in `firestore.indexes.json` that deploys with the indexes
   (verified on Enterprise, #1639). The field is always a NEW `expiraEm:

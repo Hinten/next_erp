@@ -280,7 +280,7 @@ describe('captureOne — the request', () => {
     const { fetchImpl, chamadas } = stubFetch();
     await captureOne(alvo(buildCapturePlan({ ...SEM_IDS, shipmentIds: ['99'] }), '/shipments/99'), {
       fetchImpl,
-      accessToken: TOKEN,
+      getAccessToken: async () => TOKEN,
       baseUrl: BASE,
     });
 
@@ -294,6 +294,20 @@ describe('captureOne — the request', () => {
     });
   });
 
+  it('resolves the current token for each target in a capture plan', async () => {
+    const { fetchImpl, chamadas } = stubFetch();
+    const getAccessToken = vi.fn().mockResolvedValueOnce('first').mockResolvedValueOnce('renewed');
+    const plan = buildCapturePlan({ ...SEM_IDS, shipmentIds: ['99'] }).slice(0, 2);
+
+    await captureAll(plan, { fetchImpl, getAccessToken, baseUrl: BASE });
+
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+    expect(chamadas.map((call) => call.headers.authorization)).toEqual([
+      'Bearer first',
+      'Bearer renewed',
+    ]);
+  });
+
   /**
    * ⚠️ Also pins that the DOTTED param names survive URL building unescaped.
    * `players.user_id` is the name ML documents; a `.` percent-encoded to `%2E`
@@ -305,7 +319,7 @@ describe('captureOne — the request', () => {
     const plano = buildCapturePlan({ ...SEM_IDS, sellerId: SELLER });
     await captureOne(alvo(plano, BUSCA_CLAIMS), {
       fetchImpl,
-      accessToken: TOKEN,
+      getAccessToken: async () => TOKEN,
       baseUrl: BASE,
     });
     expect(chamadas[0]!.url).toBe(
@@ -328,7 +342,7 @@ describe('captureOne — byte-faithfulness', () => {
     const { fetchImpl } = stubFetch(() => new Response(OMITIDO, { status: 200 }));
     const r = await captureOne(
       { slug: 'orders-123', path: '/orders/123' },
-      { fetchImpl, accessToken: TOKEN, baseUrl: BASE },
+      { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE },
     );
 
     expect(r.body).toBe(OMITIDO);
@@ -340,7 +354,7 @@ describe('captureOne — byte-faithfulness', () => {
       const { fetchImpl } = stubFetch(() => new Response(payload, { status: 200 }));
       const r = await captureOne(
         { slug: 'orders-123', path: '/orders/123' },
-        { fetchImpl, accessToken: TOKEN, baseUrl: BASE },
+        { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE },
       );
       return r.body;
     };
@@ -354,7 +368,7 @@ describe('captureOne — byte-faithfulness', () => {
     const { fetchImpl } = stubFetch(() => new Response(cru, { status: 200 }));
     const r = await captureOne(
       { slug: 'orders-123', path: '/orders/123' },
-      { fetchImpl, accessToken: TOKEN, baseUrl: BASE },
+      { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE },
     );
     expect(r.body).toBe(cru);
   });
@@ -393,7 +407,11 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
         : new Response('{"ok":true}', { status: 200 }),
     );
 
-    const results = await captureAll(plan, { fetchImpl, accessToken: TOKEN, baseUrl: BASE });
+    const results = await captureAll(plan, {
+      fetchImpl,
+      getAccessToken: async () => TOKEN,
+      baseUrl: BASE,
+    });
 
     expect(chamadas).toHaveLength(3);
     expect(results.map((r) => [r.target.slug, r.status, r.ok])).toEqual([
@@ -426,7 +444,11 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
           : new Response('{"ok":true}', { status: 200 }),
       );
 
-      const results = await captureAll(plan, { fetchImpl, accessToken: TOKEN, baseUrl: BASE });
+      const results = await captureAll(plan, {
+        fetchImpl,
+        getAccessToken: async () => TOKEN,
+        baseUrl: BASE,
+      });
 
       expect(chamadas.map((c) => c.url)).toEqual([
         `${BASE}/orders/1`,
@@ -458,7 +480,11 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
         : new Response('{"ok":true}', { status: 200 }),
     );
 
-    const results = await captureAll(comBusca, { fetchImpl, accessToken: TOKEN, baseUrl: BASE });
+    const results = await captureAll(comBusca, {
+      fetchImpl,
+      getAccessToken: async () => TOKEN,
+      baseUrl: BASE,
+    });
     expect(results).toHaveLength(4);
     expect(results[3]!.status).toBe(400);
   });
@@ -471,7 +497,7 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
     );
 
     await expect(
-      captureAll(plan, { fetchImpl, accessToken: TOKEN, baseUrl: BASE }),
+      captureAll(plan, { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE }),
     ).rejects.toBeInstanceOf(FixtureCaptureHttpError);
   });
 
@@ -479,7 +505,7 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
     const { fetchImpl } = stubFetch(() => new Response('segredo-do-corpo', { status: 503 }));
     const erro = await captureOne(plan[0]!, {
       fetchImpl,
-      accessToken: TOKEN,
+      getAccessToken: async () => TOKEN,
       baseUrl: BASE,
     }).catch((err: unknown) => err);
 
@@ -525,7 +551,11 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
 
     const vistos: CaptureResult[] = [];
     await expect(
-      captureAll(plan, { fetchImpl, accessToken: TOKEN, baseUrl: BASE }, (r) => vistos.push(r)),
+      captureAll(
+        plan,
+        { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE },
+        (r) => vistos.push(r),
+      ),
     ).rejects.toBeInstanceOf(FixtureCaptureHttpError);
 
     expect(vistos.map((r) => r.target.slug)).toEqual(['orders-1', 'packs-1']);
@@ -535,7 +565,7 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
     const { fetchImpl } = stubFetch(() => new Response('', { status: 500 }));
     const vistos: CaptureResult[] = [];
     await expect(
-      captureAll([plan[0]!], { fetchImpl, accessToken: TOKEN, baseUrl: BASE }, (r) =>
+      captureAll([plan[0]!], { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE }, (r) =>
         vistos.push(r),
       ),
     ).rejects.toBeInstanceOf(FixtureCaptureHttpError);
@@ -549,7 +579,7 @@ describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal'
         : new Response('{"ok":true}', { status: 200 }),
     );
     await expect(
-      captureAll(plan, { fetchImpl, accessToken: TOKEN, baseUrl: BASE }),
+      captureAll(plan, { fetchImpl, getAccessToken: async () => TOKEN, baseUrl: BASE }),
     ).rejects.toBeInstanceOf(FixtureCaptureHttpError);
     expect(chamadas.map((c) => c.url)).toEqual([`${BASE}/orders/1`, `${BASE}/packs/1`]);
   });

@@ -9,7 +9,11 @@ import {
   isVersionConflict,
   sanitizeRequestPath,
 } from '../src/errors';
-import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
+import {
+  type MercadoLivreApi,
+  type MercadoLivreApiConfig,
+  createMercadoLivreApi,
+} from '../src/api';
 import { ML_MULTIGET_MAX_IDS, orderSchema } from '../src/types';
 import {
   __resetAvisoFormatoLegado,
@@ -1516,6 +1520,149 @@ describe('createMercadoLivreApi — User-Products migration (#441)', () => {
       constructor: MercadoLivreHttpError,
       status: 500,
     });
+  });
+});
+
+describe('createMercadoLivreApi — rejected access tokens', () => {
+  const requests: Array<{
+    name: string;
+    send: (api: MercadoLivreApi) => Promise<unknown>;
+  }> = [
+    { name: 'JSON GET', send: (api) => api.getMe() },
+    { name: 'JSON POST', send: (api) => api.createItem({ title: 'Example' }) },
+    {
+      name: 'multipart upload',
+      send: (api) =>
+        api.uploadPicture({
+          filename: 'photo.jpg',
+          contentType: 'image/jpeg',
+          data: new Uint8Array([1]),
+        }),
+    },
+    {
+      name: 'XML upload',
+      send: (api) => api.sendShipmentInvoiceData(123, '<nfeProc/>'),
+    },
+    { name: 'label download', send: (api) => api.getShipmentLabels('123', 'pdf') },
+    {
+      name: 'claim attachment download',
+      send: (api) => api.downloadClaimAttachment(123, 'photo.jpg'),
+    },
+    {
+      name: 'post-sale attachment download',
+      send: (api) => api.downloadPostSaleAttachment('attachment-123'),
+    },
+    { name: 'test-user creation', send: (api) => api.criarUsuarioTeste('MLB') },
+  ];
+
+  it.each(requests)('notifies for the token sent by $name without replaying it', async ({ send }) => {
+    const response = jsonResponse({ error: 'invalid_token' }, 401);
+    const readBody = vi.spyOn(response, 'text');
+    const fetchMock = vi.fn(async () => response);
+    const getAccessToken = vi.fn(async () => 'rejected-token');
+    const onAccessTokenRejected = vi.fn();
+    const api = createMercadoLivreApi(cfg(fetchMock, { getAccessToken, onAccessTokenRejected }));
+
+    await expect(send(api)).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+
+    expect(onAccessTokenRejected).toHaveBeenCalledExactlyOnceWith('rejected-token');
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(readBody).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([{ error: 'invalid_token' }, { message: 'invalid_token' }])(
+    'recognizes the exact invalid_token code in %j',
+    async (body) => {
+      const onAccessTokenRejected = vi.fn();
+      const api = createMercadoLivreApi(
+        cfg(vi.fn(async () => jsonResponse(body, 401)), { onAccessTokenRejected }),
+      );
+
+      await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+
+      expect(onAccessTokenRejected).toHaveBeenCalledExactlyOnceWith('live-token');
+    },
+  );
+
+  it.each([
+    { error: 'unauthorized', message: 'Missing permission' },
+    { error: 'identity_validation_pending' },
+    { message: 'invalid_token: expired' },
+    { error: 'INVALID_TOKEN' },
+    { error_description: 'invalid_token' },
+    { message: 'invalid token' },
+  ])('keeps unrelated or non-exact 401 errors unchanged (%j)', async (body) => {
+    const fetchMock = vi.fn(async () => jsonResponse(body, 401));
+    const onAccessTokenRejected = vi.fn();
+    const api = createMercadoLivreApi(cfg(fetchMock, { onAccessTokenRejected }));
+
+    await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+
+    expect(onAccessTokenRejected).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves reauth mapping when no rejection callback is configured', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ error: 'invalid_token' }, 401));
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not infer a token rejection from a non-JSON 401 body', async () => {
+    const fetchMock = vi.fn(async () => new Response('invalid_token', { status: 401 }));
+    const onAccessTokenRejected = vi.fn();
+    const api = createMercadoLivreApi(cfg(fetchMock, { onAccessTokenRejected }));
+
+    await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+
+    expect(onAccessTokenRejected).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([403, 429, 500])('does not evict or replay an HTTP %s response', async (status) => {
+    const body = { error: 'invalid_token' };
+    const fetchMock = vi.fn(async () => jsonResponse(body, status));
+    const onAccessTokenRejected = vi.fn();
+    const api = createMercadoLivreApi(cfg(fetchMock, { onAccessTokenRejected }));
+
+    await expect(api.getMe()).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status,
+      body,
+    });
+
+    expect(onAccessTokenRejected).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('gets a new token only for the next operation after eviction', async () => {
+    let accessToken = 'rejected-token';
+    const getAccessToken = vi.fn(async () => accessToken);
+    const onAccessTokenRejected = vi.fn(() => {
+      accessToken = 'new-token';
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ message: 'invalid_token' }, 401))
+      .mockResolvedValueOnce(jsonResponse(USER));
+    const api = createMercadoLivreApi(cfg(fetchMock, { getAccessToken, onAccessTokenRejected }));
+
+    await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+
+    await expect(api.getMe()).resolves.toMatchObject(USER);
+    const first = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const next = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect((first[1].headers as Record<string, string>).Authorization).toBe('Bearer rejected-token');
+    expect((next[1].headers as Record<string, string>).Authorization).toBe('Bearer new-token');
+    expect(onAccessTokenRejected).toHaveBeenCalledExactlyOnceWith('rejected-token');
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
