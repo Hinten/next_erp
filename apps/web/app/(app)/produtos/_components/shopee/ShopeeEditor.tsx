@@ -5,7 +5,12 @@ import Link from 'next/link';
 import type { Firestore } from 'firebase/firestore';
 import { Alert, Anchor, Badge, Group, Loader, Stack, Text } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { INTEGRACAO_TIPO, idDoRef, idFromRef, vinculoShopeeEhDaConta } from '@delfrance/schemas';
+import {
+  INTEGRACAO_TIPO,
+  idDoRef,
+  lerRefTabelaDeMedidas,
+  vinculoShopeeEhDaConta,
+} from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 
@@ -21,13 +26,13 @@ import {
   type TabelaMedidasDoProduto,
   type VinculoShopee,
 } from './ContaShopeePanel';
-import { textoPreenchido } from './campos';
 
 /**
  * The produto editor's **Shopee** tab (step 21-3, #1529): one tab per Shopee
  * conta, each holding every listing that conta has on this produto — its state,
- * the refusals Shopee or the ERP stored on it, the violations, the size chart a
- * publish would send, the storefront link and, on demand, its models.
+ * the refusals Shopee or the ERP stored on it, the violations, the template
+ * entry the produto's tabela de medidas holds for it (never what a publish
+ * sent — residual 7), the storefront link and, on demand, its models.
  *
  * READ-ONLY. Every listing document is written by apps/shopee — publish, the
  * import, the stock and price senders, pause/re-list, the re-verify and the
@@ -101,7 +106,12 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
   const produto = produtoSnap.data?.data;
   // A variation child carries no listing of its own — its MODEL lives on the
   // parent's listing — so the tab sends the operator there and reads nothing.
-  const paiId = textoPreenchido(produto?.paiId);
+  // ⚠️ "Child" is the publish dispatcher's test (`publicarShopee.ts`: any
+  // non-empty string), NOT a trim: the tab's Republicar reaches that gate, so a
+  // whitespace-only `paiId` the dispatcher refuses as `produto-e-filho` must
+  // not be offered as a root here either. `''` is a root for every rule.
+  const paiBruto: unknown = produto?.paiId;
+  const paiId = typeof paiBruto === 'string' && paiBruto !== '' ? paiBruto : null;
   const ehRaiz = produtoSnap.data !== undefined && paiId === null;
 
   const contasQuery = useMemo(
@@ -126,12 +136,14 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
   );
   const linksSnap = useSnapshot(linksQuery);
 
-  // The produto's tabela de medidas, read by its id the way the Mercado Livre
-  // editor reads it: each listing block says which Shopee template entry it
-  // holds for that listing's conta and category. Memoised for the reason
-  // `produtoDocRef` is.
-  const tabelaId = textoPreenchido(produto?.tabelaDeMedidasModaUid);
-  const tabelaDocId = tabelaId === null ? null : textoPreenchido(idFromRef(tabelaId));
+  // The produto's tabela de medidas: each listing block says which Shopee
+  // template entry it holds for that listing's conta and category. The ref is
+  // resolved by `lerRefTabelaDeMedidas` — the rule the Shopee publish resolves
+  // it with — so a ref into another collection reads NOTHING here, as it reads
+  // nothing there. Memoised for the reason `produtoDocRef` is.
+  const tabelaModaUid: unknown = produto?.tabelaDeMedidasModaUid;
+  const refTabela = useMemo(() => lerRefTabelaDeMedidas(tabelaModaUid), [tabelaModaUid]);
+  const tabelaDocId = refTabela.tipo === 'tabela' ? refTabela.id : null;
   const tabelaDocRef = useMemo(
     () =>
       ehRaiz && tabelaDocId !== null ? tabelaDeMedidasCollection.docRef(db, {}, tabelaDocId) : null,
@@ -139,16 +151,17 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
   );
   const tabelaSnap = useDocSnapshot(tabelaDocRef);
   const tabelaMedidas = useMemo<TabelaMedidasDoProduto>(() => {
-    if (tabelaDocId === null) return { estado: 'sem-tabela' };
+    if (refTabela.tipo === 'sem-tabela') return { estado: 'sem-tabela' };
+    if (refTabela.tipo === 'ref-invalida') return { estado: 'ref-invalida', ref: refTabela.ref };
     if (tabelaSnap.data === undefined) return { estado: 'carregando' };
-    if (tabelaSnap.data === null) return { estado: 'ausente', id: tabelaDocId };
+    if (tabelaSnap.data === null) return { estado: 'ausente', id: refTabela.id };
     return {
       estado: 'tabela',
-      id: tabelaDocId,
+      id: refTabela.id,
       nome: tabelaSnap.data.data.nome,
       entradasShopee: tabelaSnap.data.data.tabelasMedidasShopee,
     };
-  }, [tabelaDocId, tabelaSnap.data]);
+  }, [refTabela, tabelaSnap.data]);
 
   // R2: which listings have their "Variações" open, by link doc id.
   const [modelosAbertos, setModelosAbertos] = useState<ReadonlySet<string>>(() => new Set());

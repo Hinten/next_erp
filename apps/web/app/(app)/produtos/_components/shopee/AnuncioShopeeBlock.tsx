@@ -28,7 +28,8 @@ export interface AnuncioShopeeBlockProps {
 /**
  * One Shopee listing (`data-testid="shopee-anuncio-<linkDocId>"`), top to
  * bottom: its state, what was refused on it, what Shopee says is wrong with it,
- * the size chart a publish would send, and — on demand — its models.
+ * the template entry the produto's tabela de medidas holds for this listing
+ * (never what a publish sent — residual 7), and — on demand — its models.
  *
  * Read-only: every value comes from the live link document (or, for the models,
  * a one-shot read). Presentational — the open/closed state of "Variações"
