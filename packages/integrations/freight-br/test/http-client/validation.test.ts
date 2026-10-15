@@ -88,6 +88,48 @@ describe('a 2xx whose body is not what we claimed', () => {
     expect(r.agencies).toEqual([]);
   });
 
+  it('near-miss: an absent servicos array FAILS the read — it is not defaulted like agencies', async () => {
+    // `agencias` defaults because a caller already reads it tolerantly; nothing
+    // reads `servicos` that way, and an empty picker would claim the account has
+    // no services at all.
+    const c = client(mockFetch(async () => ok('{}')));
+
+    const err = (await c.servicos('f1').catch((e: unknown) => e)) as FreightSchemaError;
+
+    expect(err).toBeInstanceOf(FreightSchemaError);
+    expect(err.campos).toEqual(['servicos']);
+  });
+
+  it('reads a quoted service or company id as a number and keeps unknown keys', async () => {
+    // The ME response shapes are wire-tolerant (`wireNumber`), and a newer
+    // backend's extra keys must not break an older tab.
+    const corpo = {
+      servicos: [
+        { id: '3', name: 'Expresso', company: { id: '2', name: 'Transportadora B' }, type: 'x' },
+      ],
+      novoCampo: true,
+    };
+    const c = client(mockFetch(async () => ok(JSON.stringify(corpo))));
+
+    const r = await c.servicos('f1');
+
+    expect(r.servicos[0]).toMatchObject({ id: 3, company: { id: 2, name: 'Transportadora B' } });
+    expect(r.servicos[0]).toHaveProperty('type', 'x');
+  });
+
+  it('near-miss: a service without an id fails the read rather than reaching the picker', async () => {
+    // The id is what a mapping row stores; a service the operator can pick must
+    // carry one.
+    const c = client(
+      mockFetch(async () => ok(JSON.stringify({ servicos: [{ name: 'Econômico' }] }))),
+    );
+
+    const err = (await c.servicos('f1').catch((e: unknown) => e)) as FreightSchemaError;
+
+    expect(err).toBeInstanceOf(FreightSchemaError);
+    expect(err.campos).toEqual(['servicos[].id']);
+  });
+
   it('⚠️ names the fields but never the values', async () => {
     // A freight response carries account data; this message reaches the browser.
     const c = client(

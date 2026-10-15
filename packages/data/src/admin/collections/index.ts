@@ -92,6 +92,7 @@ export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollec
 export { notificacaoMelhorEnvioCollection } from './notificacaoMelhorEnvioCollection';
 export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { notificacaoLojaIntegradaCollection } from './notificacaoLojaIntegradaCollection';
+export { pollPedidosLojaIntegradaCollection } from './pollPedidosLojaIntegradaCollection';
 export { clienteCollection } from './clienteCollection';
 export { clienteIdentidadeCollection } from './clienteIdentidadeCollection';
 export { conversaCollection } from './conversaCollection';

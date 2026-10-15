@@ -1,0 +1,161 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/pedido/50796/",
+    "query": []
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 3238,
+    "corpo": {
+      "cliente": {
+        "cnpj": null,
+        "cpf": "000.000.000-00",
+        "data_nascimento": null,
+        "email": "redigido@example.invalid",
+        "id": 0,
+        "nome": "REDACTED",
+        "razao_social": null,
+        "resource_uri": "REDACTED",
+        "sexo": "",
+        "telefone_celular": "(00) 00000-0000",
+        "telefone_principal": null
+      },
+      "cliente_obs": "",
+      "cupom_desconto": null,
+      "data_criacao": "2026-10-05T23:23:03.307215",
+      "data_expiracao": "2026-10-11T23:23:03.455881",
+      "data_modificacao": "2026-10-06T11:30:07.484810",
+      "endereco_entrega": {
+        "bairro": "REDACTED",
+        "cep": "00000-000",
+        "cidade": "REDACTED",
+        "cnpj": null,
+        "complemento": null,
+        "cpf": "000.000.000-00",
+        "endereco": "REDACTED",
+        "estado": "REDACTED",
+        "id": 0,
+        "ie": null,
+        "nome": "REDACTED",
+        "numero": "REDACTED",
+        "pais": "REDACTED",
+        "razao_social": null,
+        "referencia": null,
+        "rg": null,
+        "tipo": "REDACTED"
+      },
+      "envios": [
+        {
+          "data_criacao": "2026-10-05T23:23:03.333691",
+          "data_modificacao": "2026-10-05T23:23:03.333708",
+          "forma_envio": {
+            "code": "retirar_pessoalmente",
+            "id": 12015,
+            "nome": "REDACTED",
+            "tipo": null
+          },
+          "id": 129105144,
+          "link_rastreio": null,
+          "objeto": null,
+          "pedido": "REDACTED",
+          "prazo": 1,
+          "valor": "0.00"
+        }
+      ],
+      "id": 0,
+      "id_anymarket": null,
+      "id_externo": null,
+      "integration_data": null,
+      "itens": [
+        {
+          "altura": 5,
+          "disponibilidade": 0,
+          "id": 282825407,
+          "largura": 10,
+          "linha": 1,
+          "ncm": null,
+          "nome": "REDACTED",
+          "pedido": "/api/v1/pedido/50796",
+          "peso": "0.200",
+          "preco_cheio": "239.0000",
+          "preco_custo": "REDACTED",
+          "preco_promocional": null,
+          "preco_subtotal": "239.0000",
+          "preco_venda": "239.0000",
+          "produto": "REDACTED",
+          "produto_pai": "/api/v1/produto/399590973",
+          "profundidade": 10,
+          "quantidade": "1.000",
+          "sku": "58777437501752028",
+          "tipo": "atributo_opcao",
+          "variacao": {
+            "chave_redigida_1": {
+              "cor": "REDACTED",
+              "cor_secundaria": null,
+              "nome": "REDACTED"
+            },
+            "Tamanho": {
+              "nome": "REDACTED"
+            }
+          }
+        }
+      ],
+      "numero": 50796,
+      "pagamentos": [
+        {
+          "authorization_code": null,
+          "banco": null,
+          "bandeira": null,
+          "boleto_url": null,
+          "codigo_retorno_gateway": null,
+          "forma_pagamento": {
+            "codigo": "proxy-pagali-v2-pix",
+            "configuracoes": {
+              "ativo": false,
+              "disponivel": false
+            },
+            "id": 72,
+            "imagem": "REDACTED",
+            "nome": "REDACTED",
+            "resource_uri": "REDACTED"
+          },
+          "id": 129105268,
+          "identificador_id": null,
+          "mensagem_gateway": null,
+          "pagamento_tipo": "instantPayment",
+          "parcelamento": {},
+          "pix_code": "REDACTED",
+          "pix_qrcode": "REDACTED",
+          "transacao_id": "REDACTED",
+          "valor": "239.00",
+          "valor_pago": "239.00"
+        }
+      ],
+      "peso_real": "0.200",
+      "resource_uri": "/api/v1/pedido/50796",
+      "situacao": {
+        "aprovado": false,
+        "cancelado": true,
+        "codigo": "pedido_cancelado",
+        "final": true,
+        "id": 8,
+        "nome": "REDACTED",
+        "notificar_comprador": true,
+        "padrao": false,
+        "resource_uri": "/api/v1/situacao/8"
+      },
+      "utm_campaign": null,
+      "valor_desconto": "0.00",
+      "valor_envio": "0.00",
+      "valor_subtotal": "239.00",
+      "valor_total": "239.00"
+    }
+  }
+}

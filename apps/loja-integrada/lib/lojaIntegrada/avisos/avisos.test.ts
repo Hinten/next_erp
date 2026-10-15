@@ -23,6 +23,7 @@ import {
   TIPOS_AVISO_LI,
   agoraUsDe,
   avisarExpiracaoToken,
+  avisarImportacaoParada,
   avisarReconexaoPendente,
   chaveExpiracao,
   chaveImportacaoParada,
@@ -32,6 +33,7 @@ import {
   resolverAvisoDeContaRemovida,
   resolverAvisosAposRemocao,
   resolverExpiracaoToken,
+  resolverImportacaoParada,
   resolverReconexaoPendente,
   sincronizarAvisoDeExpiracao,
   sincronizarAvisosAposValidacao,
@@ -393,6 +395,95 @@ describe('the import-stopped tipo (step 3) in the orphan pass', () => {
     expect(db.ler(caminhoAviso(chave))).toMatchObject({
       resolucaoMotivo: 'conta-removida',
       relogioEvento: 9_000,
+    });
+  });
+});
+
+describe('the import-stopped aviso: producer and resolver of the order poller', () => {
+  const evento = {
+    integracaoId: ID,
+    lojaNome: 'Loja',
+    motivo: MOTIVO_IMPORTACAO_PARADA_LI.falhaTransitoria,
+    relogioUs: 5_000,
+  };
+
+  it('raises critico, in-app, with exactly loja and motivo, at the given clock', async () => {
+    const db = new FakeDb();
+    const { chave, resultado } = await avisarImportacaoParada(asDb(db), evento, deps);
+
+    expect(chave).toBe(chaveImportacaoParada(ID));
+    expect(resultado).toBe('criado');
+    const row = db.ler(caminhoAviso(chave));
+    expect(row).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build(ID), campo: null },
+      relogioEvento: 5_000,
+      resolvidoEm: null,
+      criadoEm: AGORA_MS * 1000,
+    });
+    // A CODE, never a sentence: the web renders it.
+    expect(row?.params).toEqual({ loja: 'Loja', motivo: 'falha-transitoria' });
+  });
+
+  it('a repeat at a later clock refreshes the motivo without moving criadoEm; an equal clock is dropped', async () => {
+    const db = new FakeDb();
+    await avisarImportacaoParada(asDb(db), evento, deps);
+    const depois = await avisarImportacaoParada(
+      asDb(db),
+      { ...evento, motivo: MOTIVO_IMPORTACAO_PARADA_LI.janelaInstavel, relogioUs: 6_000 },
+      { increment, nowMs: AGORA_MS + DIA_MS },
+    );
+    expect(depois.resultado).toBe('repetido');
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      params: { motivo: 'janela-instavel' },
+      criadoEm: AGORA_MS * 1000,
+      ocorrencias: 2,
+    });
+    // NEAR-MISS: the same clock again is the same observation.
+    expect(
+      (await avisarImportacaoParada(asDb(db), { ...evento, relogioUs: 6_000 }, deps)).resultado,
+    ).toBe('ignorado');
+  });
+
+  it('the resolve is CLOCKED and stamped importacao-retomada; an older raise stays resolved, a newer one reopens', async () => {
+    const db = new FakeDb();
+    await avisarImportacaoParada(asDb(db), evento, deps);
+
+    expect(
+      await resolverImportacaoParada(asDb(db), ID, deps, { relogioUs: 7_000, lojaNome: 'Loja' }),
+    ).toBe(true);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      resolucaoMotivo: 'importacao-retomada',
+      relogioEvento: 7_000,
+    });
+    expect(MOTIVO_AVISO_LI.importacaoRetomada).toBe('importacao-retomada');
+
+    // A run whose lease was taken over raises late, at an older clock: dropped.
+    expect(
+      (await avisarImportacaoParada(asDb(db), { ...evento, relogioUs: 6_500 }, deps)).resultado,
+    ).toBe('ignorado');
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))?.resolvidoEm).not.toBeNull();
+
+    // NEAR-MISS: a newer failure reopens it.
+    expect(
+      (await avisarImportacaoParada(asDb(db), { ...evento, relogioUs: 7_001 }, deps)).resultado,
+    ).toBe('reaberto');
+  });
+
+  it('no row yet: the resolve SEEDS a resolved one with the store name and the clock', async () => {
+    const db = new FakeDb();
+    expect(
+      await resolverImportacaoParada(asDb(db), ID, deps, { relogioUs: 7_000, lojaNome: 'Loja' }),
+    ).toBe(false);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Loja' },
+      relogioEvento: 7_000,
+      resolucaoMotivo: 'importacao-retomada',
     });
   });
 });
