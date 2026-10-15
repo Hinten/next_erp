@@ -33,7 +33,7 @@ The `predeploy` hook runs `apps/nfe/functions/scripts/prepare-deploy.mjs`, which
    each spec fresh — `firebase-admin` + `firebase-functions` are pinned **exact**
    here for that reason (a range ships a version CI never tested; 7.3.2 moved
    `express` 4→5 in a _patch_). Bump them alongside `pnpm-workspace.yaml`'s catalog
-   and the other four artifact manifests —
+   and the other seven artifact manifests —
    `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails on drift;
 3. **copies the SEFAZ `ca/*.pem` chains + MOC XSD schemas** next to the bundle —
    `src/options.ts` sets `NFE_CA_DIR=./ca` + `NFE_SCHEMA_DIR=./schemas`

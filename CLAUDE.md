@@ -488,8 +488,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 ## Key fixed decisions
 
 - Firebase backend stays. Node >= 22. Zod is the schema source of truth.
-- **firebase-admin and firebase-functions are pinned EXACT — `14.2.0` and
-  `7.3.2` — in the catalog AND in all five deploy-artifact manifests, and do not
+- **firebase-admin and firebase-functions are pinned EXACT — `14.5.0` and
+  `7.4.0` — in the catalog AND in all eight deploy-artifact manifests, and do not
   lower either below admin v14 / functions 7.3.0.** `apps/functions` needs the v8
   Pipelines API + `FieldValue.maximum/minimum` (a downgrade fails typecheck), and
   7.3.0 is the first firebase-functions whose peer range admits
@@ -503,8 +503,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `firebase-functions@7.3.2` moved `express` from `^4.21.0` to `^5.2.1` (an
   Express **major**, for CVE remediation) in a **patch** release, so under the old
   `^7.3.0` every function deployed after 2026-07-28 ran Express 5 in production
-  while CI still tested Express 4, with no signal anywhere. A bump is now six
-  deliberate edits — the catalog plus the five manifests — and
+  while CI still tested Express 4, with no signal anywhere. A bump is now nine
+  deliberate edits — the catalog plus the eight manifests — and
   `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails if they drift
   apart or if either spec regains a range. ⚠️ The `^14` **peerDependencies** in
   `packages/data` and `packages/storage` stay broad; libraries do not pin.
@@ -643,8 +643,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   there ships an untested version (see the firebase pins above);
   `packages/config-eslint/rules/runtime-deps-pinned.test.js` enforces it.
   Three high-blast-radius deps stay pinned **exact** in the catalog for the same
-  "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.2.0`)
-  and `firebase-functions` (`7.3.2`). ⚠️ `next` propagates by **copy**, not by
+  "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.5.0`)
+  and `firebase-functions` (`7.4.0`). ⚠️ `next` propagates by **copy**, not by
   reference: the catalog is still where a bump *starts*, but it is **11
   deliberate edits** — the catalog plus the 10 App Hosting app manifests — and
   the guard above fails on drift. ⚠️ `packages/ui`'s devDependency is now its
