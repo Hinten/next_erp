@@ -296,7 +296,7 @@ function dataAmz(ms: number): string {
   return new Date(ms)
     .toISOString()
     .replace(/[-:]/g, '')
-    .replace(/.d{3}Z$/, 'Z');
+    .replace(/\.\d{3}Z$/, 'Z');
 }
 
 export function criarClienteSpApi(opts: OpcoesClienteSpApi): SpApiLeituraClient {
