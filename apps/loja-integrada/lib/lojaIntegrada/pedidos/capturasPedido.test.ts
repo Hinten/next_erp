@@ -17,19 +17,48 @@
  *    that refuses the provider's "nothing" fails here by construction, as long
  *    as a capture carries it.
  *
+ * And, since PR 5-b, every committed capture mapped END TO END through the
+ * import's pure mappers (`pedidos/*Mapeamento.ts`, `estadoPedidoLi.ts`,
+ * `orderIdsLi.ts`): the estado verdict (the cancelled order against its own
+ * history, the shipped history against a synthetic detail of its numero), the
+ * ids, the lines and their money, the buyer and the address, the freight
+ * routing from a raw `mapa`, and the payments — plus the payment-method
+ * catalogues and the 404. Nothing here depends on `itens[].produto`, which the
+ * sanitized captures fake. The totals cross-check is `totaisPedido.test.ts`.
+ *
  * ⚠️ Every assertion is a boolean, a count or a set of KEY paths, labelled with
  * the fixture name, so a failure never prints a body value (the
  * `wireCorpus.test.ts` convention), and a Zod error is never printed: it can
- * quote the value it refused. Fixtures are read only through the corpus loader.
+ * quote the value it refused. An ERP-side value this import computes (an
+ * estado, a forma, a status code) may be compared directly. Fixtures are read
+ * only through the corpus loader.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { roundReais } from '@delfrance/core/money';
 import {
   CAMINHO_HISTORICO_SITUACAO_LI,
+  LiNotFoundError,
+  buscarPedidoLi,
+  criarClienteLeituraLi,
   liEnvelopeSchema,
   liPedidoSchema,
   liSituacaoHistoricoLinhaSchema,
+  type PedidoLi,
+  type SituacaoHistoricoLinhaLi,
 } from '@delfrance/integrations-loja-integrada';
+import {
+  ESTADO_FRETE,
+  ESTADO_PEDIDO,
+  FORMA_PAGAMENTO,
+  INTEGRACAO_FRETE,
+  MODALIDADE_FRETE,
+  STATUS_PAGAMENTO,
+  chaveFormaEnvioLi,
+  montarEntradaDoMapaLi,
+  pagamentoSchema,
+  pedidoSchema,
+} from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
@@ -39,6 +68,26 @@ import {
   lerFixtureLi,
   listarArquivosDoCorpusLi,
 } from '../fixtures/wireCorpus';
+import { classificarFalhaLi } from '../notificacoes/notificacao';
+import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { clienteDoPedidoLi, enderecoDoPedidoLi } from './clienteMapeamento';
+import { dataLiParaMicros, lerDataLi } from './dataLi';
+import {
+  LACUNA_HISTORICO_LI,
+  MODO_HISTORICO_LI,
+  lerHistoricoLi,
+  type LeituraHistoricoLi,
+  type ModoHistoricoLi,
+} from './estadoPedidoLi';
+import { decidirMapaLi, mapearFreteLi, rotearFreteLi } from './freteMapeamento';
+import { mapearItensLi } from './itensMapeamento';
+import { idPedidoLi } from './orderIdsLi';
+import {
+  formaPagamentoLi,
+  mapearPagamentosLi,
+  montarEscritaPagamentoLi,
+} from './pagamentoMapeamento';
+import { mapearPedidoLi, montarEscritaPedidoLi } from './pedidoMapeamento';
 
 /** Every order-detail capture in the corpus (the 404 one is not a body). */
 const PEDIDOS = [
@@ -229,5 +278,492 @@ describe('the situação-history captures', () => {
         expect(recusados, `${rotulo} recusados`).toEqual(ESTRITOS_LINHA);
       });
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              PR 5-b: every capture through the pure mappers                 */
+/* -------------------------------------------------------------------------- */
+
+const CONTA = 'CONTA1';
+const INT_FRETE_LI = 'lojaIntegrada-CONTA1';
+const REF_INT_FRETE_LI = 'documents/int_frete/lojaIntegrada-CONTA1';
+const AGORA_US = 1_900_000_000_000_000;
+
+/** A detail capture, through the import's own schema. */
+function detalhe(nome: string): PedidoLi {
+  const r = liPedidoSchema.safeParse(captura(nome).resposta.corpo);
+  if (!r.success) throw new Error(`${nome}: does not parse`);
+  return r.data;
+}
+
+/** A history capture's rows, through the listing's page schema. */
+function historico(nome: string): readonly SituacaoHistoricoLinhaLi[] {
+  const r = paginaDoHistorico.safeParse(captura(nome).resposta.corpo);
+  if (!r.success) throw new Error(`${nome}: does not parse`);
+  return r.data.objects;
+}
+
+function lido(leitura: LeituraHistoricoLi, rotulo: string) {
+  if (!leitura.ok) throw new Error(`${rotulo}: the history was refused`);
+  return leitura;
+}
+
+/**
+ * One capture, mapped end to end the way the importer composes the mappers: no
+ * produto resolves, the conta's freight doc exists with an EMPTY `mapa` (so the
+ * method is unmapped), and the conta is configured FOB — so CIF on an order
+ * with freight is the override, and the conta's own FOB shows on one without.
+ */
+function importar(
+  nome: string,
+  linhas: readonly SituacaoHistoricoLinhaLi[] = [],
+  modo: ModoHistoricoLi = MODO_HISTORICO_LI.degradado,
+) {
+  const pedido = detalhe(nome);
+  const watermarkUs = dataLiParaMicros(pedido.data_modificacao);
+  if (watermarkUs === null) throw new Error(`${nome}: unreadable stamp`);
+  const h = lido(
+    lerHistoricoLi({ numero: pedido.numero, codigoDetalhe: pedido.situacao.codigo, linhas, modo }),
+    nome,
+  );
+  const itens = mapearItensLi({
+    itens: pedido.itens,
+    valorSubtotal: pedido.valor_subtotal,
+    resolucoes: new Map(),
+    nowUs: AGORA_US,
+  });
+  if (!itens.ok) throw new Error(`${nome}: lines refused`);
+  const formaEnvio = pedido.envios[0]?.forma_envio;
+  const decisaoMapa = decidirMapaLi({
+    intFreteLiId: INT_FRETE_LI,
+    registro: { resultado: 'registrada', mapa: [] },
+    formaEnvio,
+  });
+  const roteamento = rotearFreteLi({
+    intFreteLiId: INT_FRETE_LI,
+    decisao: decisaoMapa,
+    alvo: null,
+  });
+  const dataAprovacaoUs = h.dataAprovacao.derivavel ? h.dataAprovacao.us : null;
+  const frete = mapearFreteLi({
+    pedido,
+    modalidadeConta: MODALIDADE_FRETE.fob,
+    roteamento,
+    horarioDeCorteConta: null,
+    dataAprovacaoUs,
+    enderecoFiscalOuterRef: null,
+  });
+  const mapeado = mapearPedidoLi({
+    contaId: CONTA,
+    operacaoOuterRef: null,
+    pedido,
+    watermarkUs,
+    capturado: h.capturado,
+    itens: itens.itens,
+    descontoExtra: itens.descontoExtra,
+    frete,
+    clientePedidoOuterRef: null,
+    enderecoFiscalOuterRef: null,
+  });
+  const escrita = montarEscritaPedidoLi(null, mapeado, AGORA_US);
+  if (escrita.tipo !== 'criar') throw new Error(`${nome}: expected a create`);
+  const pagamentos = mapearPagamentosLi({
+    contaId: CONTA,
+    pedido,
+    statusPagamento: escrita.decisao.statusPagamento,
+    dataAprovacao: h.dataAprovacao,
+    dataCancelamento: h.dataCancelamento,
+    watermarkUs,
+  });
+  if (!pagamentos.ok) throw new Error(`${nome}: payments refused`);
+  const corposPagamento = pagamentos.pagamentos.map((p) => {
+    const e = montarEscritaPagamentoLi(null, p, AGORA_US);
+    if (e.tipo !== 'criar') throw new Error(`${nome}: expected a payment create`);
+    return e.corpo;
+  });
+  return {
+    pedido,
+    h,
+    itens,
+    decisaoMapa,
+    roteamento,
+    frete,
+    mapeado,
+    escrita,
+    pagamentos,
+    corposPagamento,
+  };
+}
+
+describe('PR 5-b: the estado verdict on the captures', () => {
+  it('pedido-cancelado + its own history: 2 rows, chain intact, no creation row ⇒ not captured ⇒ cancelado / cancelado', () => {
+    const linhas = historico('historico-pedido-cancelado.json');
+    const pedido = detalhe('pedido-cancelado.json');
+    expect(
+      linhas.every((l) => l.numero === pedido.numero),
+      'same numero',
+    ).toBe(true);
+    expect(linhas).toHaveLength(2);
+    expect(
+      linhas.some((l) => l.situacao_anterior == null),
+      'a creation row',
+    ).toBe(false);
+
+    // STRICT mode accepts it: no hole.
+    const r = importar('pedido-cancelado.json', linhas, MODO_HISTORICO_LI.estrito);
+    expect(r.h.lacunas).toEqual([]);
+    expect(r.h.corte).toHaveLength(2);
+    expect(r.h.capturado).toBe(false);
+    expect(r.escrita.decisao.estado).toBe(ESTADO_PEDIDO.cancelado);
+    expect(r.escrita.decisao.statusPagamento.criacao).toBe(STATUS_PAGAMENTO.cancelado);
+    // The cancellation date is objects[1].data, through the one conversion.
+    const esperado = dataLiParaMicros(linhas[1]?.data);
+    expect(r.h.dataCancelamento.derivavel, 'derivable').toBe(true);
+    expect(
+      r.h.dataCancelamento.derivavel && r.h.dataCancelamento.us === esperado,
+      'objects[1].data',
+    ).toBe(true);
+    expect(r.h.dataAprovacao).toEqual({ derivavel: true, us: null });
+    expect(r.corposPagamento[0]?.status_pagamento).toBe(STATUS_PAGAMENTO.cancelado);
+    expect(r.corposPagamento[0]?.dataCancelamento === esperado, 'payment dataCancelamento').toBe(
+      true,
+    );
+  });
+
+  it('historico-pedido-enviado + a SYNTHETIC codigo-11 detail of its numero: captured, approval = the first paid row', () => {
+    const linhas = historico('historico-pedido-enviado.json');
+    const numero = linhas[0]!.numero;
+    const h = lido(
+      lerHistoricoLi({
+        numero,
+        codigoDetalhe: 'pedido_enviado',
+        linhas,
+        modo: MODO_HISTORICO_LI.estrito,
+      }),
+      'enviado',
+    );
+    expect(h.lacunas).toEqual([]);
+    expect(h.capturado).toBe(true);
+    expect(h.corte).toHaveLength(3);
+    const primeiroPago = linhas.find((l) => l.situacao.codigo === 'pedido_pago');
+    expect(primeiroPago !== undefined, 'a paid row').toBe(true);
+    expect(
+      h.dataAprovacao.derivavel && h.dataAprovacao.us === dataLiParaMicros(primeiroPago?.data),
+      'approval',
+    ).toBe(true);
+    // No reversal codigo: no cancellation date.
+    expect(h.dataCancelamento).toEqual({ derivavel: true, us: null });
+  });
+
+  it('⚠️ the same history against a detail still at pedido_pago is cut THERE (the shipped row is newer than it)', () => {
+    const linhas = historico('historico-pedido-enviado.json');
+    const h = lido(
+      lerHistoricoLi({
+        numero: linhas[0]!.numero,
+        codigoDetalhe: 'pedido_pago',
+        linhas,
+        modo: MODO_HISTORICO_LI.estrito,
+      }),
+      'pago',
+    );
+    expect(h.corte).toHaveLength(2);
+    expect(h.capturado).toBe(true);
+  });
+
+  it('⚠️ the details with no history capture: strict refuses (the codigo is absent), degraded decides from the codigo', () => {
+    const aguardando = detalhe('pedido-aguardando.json');
+    expect(
+      lerHistoricoLi({
+        numero: aguardando.numero,
+        codigoDetalhe: aguardando.situacao.codigo,
+        linhas: [],
+        modo: MODO_HISTORICO_LI.estrito,
+      }),
+    ).toEqual({ ok: false, lacunas: [LACUNA_HISTORICO_LI.codigoAusente] });
+
+    const esperado: Record<string, string> = {
+      'pedido-aguardando.json': ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+      'pedido-boleto.json': ESTADO_PEDIDO.pago,
+      'pedido-cartao.json': ESTADO_PEDIDO.pago,
+      'pedido-pix.json': ESTADO_PEDIDO.pago,
+    };
+    for (const [nome, estado] of Object.entries(esperado)) {
+      const r = importar(nome);
+      expect(r.escrita.decisao.estado, nome).toBe(estado);
+      // A paid order with no history: captured, its approval date not derivable.
+      if (estado === ESTADO_PEDIDO.pago)
+        expect(r.h.dataAprovacao, nome).toEqual({ derivavel: false });
+    }
+  });
+});
+
+describe('PR 5-b: ids, lines, buyer and address on all 5 captures', () => {
+  it('the pedido id is the numero’s digest; numero is stored as text; the stamps are canonical', () => {
+    const ids = new Set<string>();
+    for (const nome of PEDIDOS) {
+      const { pedido, mapeado } = importar(nome);
+      expect(mapeado.pedidoId === idPedidoLi(CONTA, pedido.numero), `${nome} id`).toBe(true);
+      expect(mapeado.preencherUmaVez.numero === String(pedido.numero), `${nome} numero`).toBe(true);
+      expect(lerDataLi(pedido.data_modificacao) === pedido.data_modificacao, `${nome} stamp`).toBe(
+        true,
+      );
+      ids.add(mapeado.pedidoId);
+    }
+    expect(ids.size).toBe(PEDIDOS.length);
+  });
+
+  it('the valor_total identity: total = subtotal + freight − discount (to the centavo)', () => {
+    for (const nome of PEDIDOS) {
+      const p = detalhe(nome);
+      const calculado = roundReais(
+        (p.valor_subtotal ?? 0) + (p.valor_envio ?? 0) - (p.valor_desconto ?? 0),
+      );
+      expect(calculado === roundReais(p.valor_total ?? Number.NaN), nome).toBe(true);
+    }
+  });
+
+  it('every line: descontoUnitario 0, the 4-dp price kept as is, no cost (faked) and no refusal, SKU text at full length', () => {
+    let linhas = 0;
+    for (const nome of PEDIDOS) {
+      const { pedido, itens } = importar(nome);
+      expect(itens.residuo, `${nome} residual`).toBe(0);
+      expect(itens.semProduto).toHaveLength(pedido.itens.length);
+      itens.itens.forEach((l, i) => {
+        const w = pedido.itens[i]!;
+        const rotulo = `${nome} itens[${String(i)}]`;
+        expect(l.descontoUnitario, `${rotulo} descontoUnitario`).toBe(0);
+        expect(l.precoDeVenda === w.preco_venda, `${rotulo} precoDeVenda`).toBe(true);
+        expect(l.custo, `${rotulo} custo`).toBeNull();
+        expect(
+          typeof l.sku === 'string' && l.sku === w.sku && l.sku.length >= 14,
+          `${rotulo} sku`,
+        ).toBe(true);
+        expect(l.ensureUniqueId === String(w.id), `${rotulo} key`).toBe(true);
+      });
+      linhas += itens.itens.length;
+    }
+    expect(linhas).toBe(6);
+    // pedido-boleto carries two lines.
+    expect(importar('pedido-boleto.json').itens.itens).toHaveLength(2);
+  });
+
+  it('no captured buyer has a strong identity, and every address takes uf-desconhecida', () => {
+    for (const nome of PEDIDOS) {
+      const p = detalhe(nome);
+      const c = clienteDoPedidoLi(p.cliente);
+      expect(c.identidadeForte, `${nome} identity`).toBe(false);
+      expect(c.campos.cpf_cnpj, `${nome} document`).toBeNull();
+      expect(enderecoDoPedidoLi(p.endereco_entrega).kind, `${nome} endereço`).toBe(
+        'uf-desconhecida',
+      );
+    }
+  });
+
+  it('every create body parses (pedido and payments) and names the order’s numero', () => {
+    for (const nome of PEDIDOS) {
+      const r = importar(nome);
+      expect(pedidoSchema.safeParse(r.escrita.corpo).success, `${nome} pedido`).toBe(true);
+      for (const corpo of r.corposPagamento) {
+        expect(pagamentoSchema.safeParse(corpo).success, `${nome} pagamento`).toBe(true);
+      }
+    }
+  });
+});
+
+describe('PR 5-b: freight on the captures', () => {
+  it('modalidade: CIF on the 4 orders with freight (overriding the FOB conta); the conta’s FOB on the one without', () => {
+    for (const nome of PEDIDOS) {
+      const r = importar(nome);
+      const comFrete = (r.pedido.valor_envio ?? 0) > 0;
+      expect(r.frete?.base.modalidade, nome).toBe(
+        comFrete ? MODALIDADE_FRETE.cif : MODALIDADE_FRETE.fob,
+      );
+      expect(r.frete?.modalidadeSobrescrita, nome).toBe(comFrete);
+    }
+    expect(PEDIDOS.filter((n) => (detalhe(n).valor_envio ?? 0) > 0)).toHaveLength(4);
+    expect((detalhe('pedido-cancelado.json').valor_envio ?? 0) > 0).toBe(false);
+  });
+
+  it('the freight estado: aguardando ⇒ iniciado (no deadline); boleto ⇒ despachoAutorizado, no code; pix ⇒ aguardandoPostagem', () => {
+    const aguardando = importar('pedido-aguardando.json').escrita.corpo.freteInicial as Record<
+      string,
+      unknown
+    >;
+    expect(aguardando.estado).toBe(ESTADO_FRETE.iniciado);
+    expect(aguardando.prazoDespacho).toBeNull();
+    const boleto = importar('pedido-boleto.json').escrita.corpo.freteInicial as Record<
+      string,
+      unknown
+    >;
+    expect(boleto.estado).toBe(ESTADO_FRETE.despachoAutorizado);
+    expect(boleto.codRastreio).toBeNull();
+    const pix = importar('pedido-pix.json').escrita.corpo.freteInicial as Record<string, unknown>;
+    expect(pix.codRastreio !== null, 'pix code').toBe(true);
+    expect(pix.estado).toBe(ESTADO_FRETE.aguardandoPostagem);
+  });
+
+  it('every capture routes UNMAPPED to the conta’s LI doc from an empty mapa; integração null', () => {
+    for (const nome of PEDIDOS) {
+      const r = importar(nome);
+      expect(r.decisaoMapa.tipo, nome).toBe('nao-mapeado');
+      expect(r.roteamento.integracaoFreteOuterRef).toBe(REF_INT_FRETE_LI);
+      expect(r.frete?.base.externalOptionIntegracao, nome).toBeNull();
+      expect(
+        r.frete?.base.externalId === String(r.pedido.envios[0]?.id),
+        `${nome} externalId`,
+      ).toBe(true);
+    }
+  });
+
+  it('a raw mapa row built from a capture’s own method, mapped to an active Melhor Envio target ⇒ that target', () => {
+    for (const nome of PEDIDOS) {
+      const forma = detalhe(nome).envios[0]?.forma_envio;
+      const linha = montarEntradaDoMapaLi({ forma, numero: 1 });
+      expect(linha !== null, `${nome} row`).toBe(true);
+      const mapa = [{ ...linha, integracaoUid: 'me-1', targetData: { id: 2 } }];
+      const decisao = decidirMapaLi({
+        intFreteLiId: INT_FRETE_LI,
+        registro: { resultado: 'ja-presente', mapa },
+        formaEnvio: forma,
+      });
+      expect(decisao.tipo, nome).toBe('mapeado');
+      const r = rotearFreteLi({
+        intFreteLiId: INT_FRETE_LI,
+        decisao,
+        alvo: { existe: true, dados: { tipo: INTEGRACAO_FRETE.melhorEnvios, ativo: true } },
+      });
+      expect(r.integracaoFreteOuterRef, nome).toBe('documents/int_frete/me-1');
+      expect(r.externalOptionId, nome).toBe('2');
+    }
+  });
+
+  it('three carrier codes under ONE forma_envio.id ⇒ three keys; the pickup method (tipo null) has a key', () => {
+    const porId = new Map<string, Set<string>>();
+    for (const nome of PEDIDOS) {
+      const forma = detalhe(nome).envios[0]?.forma_envio;
+      const chave = chaveFormaEnvioLi(forma);
+      expect(chave !== null, `${nome} key`).toBe(true);
+      const id = String(forma?.id);
+      (porId.get(id) ?? porId.set(id, new Set()).get(id)!).add(chave!);
+      if (forma?.tipo === null) expect(chave !== null, `${nome} pickup key`).toBe(true);
+    }
+    const maior = Math.max(...[...porId.values()].map((s) => s.size));
+    expect(maior).toBe(3);
+    expect(PEDIDOS.some((n) => detalhe(n).envios[0]?.forma_envio?.tipo === null)).toBe(true);
+  });
+});
+
+describe('PR 5-b: payments on the captures', () => {
+  it('pedido-aguardando: forma 15, pendente although valor_pago == valor; no card; 1 parcela from {}; no vencimento', () => {
+    const r = importar('pedido-aguardando.json');
+    const w = r.pedido.pagamentos[0]!;
+    expect(w.valor_pago === w.valor, 'valor_pago is a copy of valor').toBe(true);
+    const p = r.corposPagamento[0]!;
+    expect(p.forma_de_pagamento).toBe(FORMA_PAGAMENTO.boleto_bancario);
+    expect(p.status_pagamento).toBe(STATUS_PAGAMENTO.pendente);
+    expect(p.cartao).toBeNull();
+    expect(p.parcelas).toBe(1);
+    expect(p.vencimento).toBeNull();
+  });
+
+  it('pedido-boleto: forma 15, aprovado', () => {
+    const p = importar('pedido-boleto.json').corposPagamento[0]!;
+    expect(p.forma_de_pagamento).toBe(FORMA_PAGAMENTO.boleto_bancario);
+    expect(p.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+  });
+
+  it('pedido-pix: forma 17 with the card block {tpIntegra 2, bandeira null, cAut null}', () => {
+    const p = importar('pedido-pix.json').corposPagamento[0]!;
+    expect(p.forma_de_pagamento).toBe(FORMA_PAGAMENTO.pix);
+    expect(p.cartao).toMatchObject({ tpIntegra: '2', bandeira: null, cAut: null });
+  });
+
+  it('pedido-cartao: forma 3, several instalments, not à vista, cAut null, bandeira null, no vencimento', () => {
+    const r = importar('pedido-cartao.json');
+    const p = r.corposPagamento[0]!;
+    expect(p.forma_de_pagamento).toBe(FORMA_PAGAMENTO.cartao_credito);
+    expect((p.parcelas as number) > 1, 'parcelas > 1').toBe(true);
+    expect(p.aVista).toBe(false);
+    expect(p.cartao).toMatchObject({ bandeira: null, cAut: null });
+    expect(p.vencimento).toBeNull();
+    // The order's expiry exists and is never the due date.
+    expect('data_expiracao' in (captura('pedido-cartao.json').resposta.corpo as object)).toBe(true);
+  });
+
+  it('every payment: valor is the wire valor, the doc keyed by the payment id, never null status', () => {
+    for (const nome of PEDIDOS) {
+      const r = importar(nome);
+      expect(r.pagamentos.pagamentos).toHaveLength(r.pedido.pagamentos.length);
+      r.corposPagamento.forEach((p, i) => {
+        expect(p.valor === r.pedido.pagamentos[i]!.valor, `${nome} valor`).toBe(true);
+        expect(p.status_pagamento !== null, `${nome} status`).toBe(true);
+        expect(p.lastProviderUpdate === r.mapeado.watermarkUs, `${nome} clock`).toBe(true);
+      });
+    }
+  });
+
+  it('the payment-method catalogues: every ACTIVE codigo maps to a known forma, except the redirect (pinned at 99)', () => {
+    const catalogo = z.object({
+      objects: z.array(
+        z
+          .object({
+            codigo: z.string(),
+            configuracoes: z.object({ ativo: z.boolean() }).passthrough(),
+          })
+          .passthrough(),
+      ),
+    });
+    const REDIRECT = 'proxy-mercadopago-v1-redirect';
+    let redirectAtivo = false;
+    for (const nome of ['pagamento-loja1.json', 'pagamento-loja2.json']) {
+      const r = catalogo.safeParse(captura(nome).resposta.corpo);
+      if (!r.success) throw new Error(`${nome}: not a catalogue`);
+      const ativos = r.data.objects.filter((o) => o.configuracoes.ativo);
+      expect(ativos.length > 0, `${nome} active`).toBe(true);
+      for (const o of ativos) {
+        const forma = formaPagamentoLi({ forma_pagamento: { codigo: o.codigo } }).forma;
+        if (o.codigo === REDIRECT) {
+          redirectAtivo = true;
+          expect(forma, `${nome} ${o.codigo}`).toBe(FORMA_PAGAMENTO.outros);
+        } else {
+          expect(forma !== FORMA_PAGAMENTO.outros, `${nome} ${o.codigo}`).toBe(true);
+        }
+      }
+    }
+    expect(redirectAtivo, 'the redirect pin is exercised').toBe(true);
+  });
+});
+
+describe('PR 5-b: pedido-inexistente', () => {
+  it('the captured 404, served through the real client, is LiNotFoundError ⇒ the pedido-inexistente park', async () => {
+    const e = captura('pedido-inexistente.json');
+    expect(e.resposta.status).toBe(404);
+    const numero = /^\/v1\/pedido\/([1-9][0-9]*)\/$/.exec(e.requisicao.caminho)?.[1];
+    expect(numero !== undefined, 'numero').toBe(true);
+    const fetch: typeof globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(e.resposta.forma === 'json' ? JSON.stringify(e.resposta.corpo) : '', {
+          status: e.resposta.status,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    const cliente = criarClienteLeituraLi({
+      obterCredencial: () => ({ token: 'token-de-teste', ref: 'conta-de-teste' }),
+      fetch,
+    });
+    let erro: unknown = null;
+    try {
+      await buscarPedidoLi(cliente, numero!);
+    } catch (err) {
+      if (!(err instanceof LiNotFoundError)) throw err;
+      erro = err;
+    }
+    expect(erro).toBeInstanceOf(LiNotFoundError);
+    const resultado = await classificarFalhaLi(asDb(new FakeDb()), erro, null, {
+      agoraMs: () => 0,
+      increment,
+    });
+    expect(resultado).toEqual({ kind: 'pedido-inexistente' });
   });
 });
