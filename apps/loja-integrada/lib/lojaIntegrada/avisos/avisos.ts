@@ -1,9 +1,8 @@
 /**
- * The producers and resolvers of the two Loja Integrada avisos —
- * `lojaIntegradaTokenExpirando` and `lojaIntegradaReconexaoPendente` — and the
- * µs boundary of this app. The third tipo, `lojaIntegradaImportacaoParada`
- * (step 3), has its key and its orphan resolve here already; its producer and
- * its poller-side resolve arrive with the order poller (step-3 PR 3-e).
+ * The producers and resolvers of the three Loja Integrada avisos —
+ * `lojaIntegradaTokenExpirando`, `lojaIntegradaReconexaoPendente` and (step 3)
+ * `lojaIntegradaImportacaoParada`, raised and resolved by the order poller
+ * (`pedidos/pollPedidos.ts`) — and the µs boundary of this app.
  *
  * ## ⚠️ The ONE module in `apps/loja-integrada` that speaks MICROSECONDS
  *
@@ -66,6 +65,7 @@ import {
   CANAL_AVISO,
   FUSO_FISCAL,
   LIMIAR_AVISO_TOKEN_LI_DIAS,
+  type MotivoImportacaoParadaLi,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
@@ -73,7 +73,7 @@ import {
   diasParaExpirarLi,
 } from '@delfrance/schemas';
 
-/** The motivos every machine resolution of these two tipos is stamped with. */
+/** The motivos every machine resolution of these three tipos is stamped with. */
 export const MOTIVO_AVISO_LI = {
   /** A save or a renewal validated the token just now. */
   tokenValidado: 'token-validado',
@@ -85,6 +85,8 @@ export const MOTIVO_AVISO_LI = {
   credencialRemovida: 'credencial-removida',
   /** The conta no longer exists as a Loja Integrada conta. */
   contaRemovida: 'conta-removida',
+  /** The order poller read the conta cleanly after a counted failure. */
+  importacaoRetomada: 'importacao-retomada',
 } as const;
 export type MotivoAvisoLi = (typeof MOTIVO_AVISO_LI)[keyof typeof MOTIVO_AVISO_LI];
 
@@ -267,7 +269,7 @@ export function resolverAvisoDeContaRemovida(
   const semente =
     alvo.tipo === TIPO_AVISO.lojaIntegradaReconexaoPendente
       ? sementeReconexao(alvo.conta, relogioListaUs, null)
-      : sementeImportacaoParada(alvo.conta, relogioListaUs);
+      : sementeImportacaoParada(alvo.conta, relogioListaUs, null);
   return resolverAviso(db, chave, MOTIVO_AVISO_LI.contaRemovida, agora, semente);
 }
 
@@ -357,17 +359,98 @@ function sementeReconexao(
 /**
  * The complete seed of a RESOLVED import-stopped row, for a clocked resolve that
  * finds none — the raise's metadata minus the params this observation does not
- * know (the store name and the motivo: the conta is gone).
+ * know: the motivo always (a clean run has none), the store name when the conta
+ * is gone.
  */
-function sementeImportacaoParada(integracaoId: string, relogioUs: number): ResolverAvisoOpts {
+function sementeImportacaoParada(
+  integracaoId: string,
+  relogioUs: number,
+  lojaNome: string | null,
+): ResolverAvisoOpts {
   return {
     tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
     conta: integracaoId,
     severidade: SEVERIDADE_AVISO.critico,
     canal: CANAL_AVISO.lojaIntegrada,
+    ...(lojaNome === null ? {} : { params: { loja: lojaNome } }),
     urlInterna: urlInterna(integracaoId),
     relogioEvento: relogioUs,
   };
+}
+
+/** One counted failure of the order poller that reached its aviso threshold. */
+export interface ImportacaoParadaLi {
+  readonly integracaoId: string;
+  /** The conta's `nome` — the operator-facing store name. */
+  readonly lojaNome: string;
+  /** The poll document's `ultimoErro`: a CODE the web wording renders. */
+  readonly motivo: MotivoImportacaoParadaLi;
+  /**
+   * µs — the commit time of the poll run's FIRST write to its poll document
+   * (the lease, or the refusal record).
+   */
+  readonly relogioUs: number;
+}
+
+/**
+ * Raise (or refresh) "the order import of this conta stopped" — the order
+ * poller's aviso (`pedidos/pollPedidos.ts` decides WHEN: at its threshold).
+ *
+ * CLOCKED by the poll document's commit time ({@link ImportacaoParadaLi}):
+ * every write to that document is preconditioned, so the clocks of two runs are
+ * strictly ordered, and a late raise from a run whose lease was taken over —
+ * older than the resolve of the run that took it — is dropped by
+ * `escreverAviso`. A repeat refreshes `motivo` without moving `criadoEm`.
+ *
+ * `critico`, and NO `escalar` is passed: in-app only, like the reconexão aviso.
+ */
+export function avisarImportacaoParada(
+  db: Firestore,
+  evento: ImportacaoParadaLi,
+  deps: AvisoDepsLi,
+): Promise<{ chave: string; resultado: ResultadoAviso }> {
+  return escreverAviso(
+    db,
+    {
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      conta: evento.integracaoId,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      // Structured params, never a sentence: `apps/web/lib/avisos/mensagens.ts`
+      // renders the motivo CODE, so a wording fix is retroactive.
+      params: { loja: evento.lojaNome, motivo: evento.motivo },
+      urlInterna: urlInterna(evento.integracaoId),
+      relogioEvento: evento.relogioUs,
+    },
+    depsDeEscrita(deps),
+  );
+}
+
+/**
+ * Close the import-stopped aviso — ALWAYS clocked, by the commit time of the
+ * clean poll run's lease (`relogioUs`), as `importacao-retomada`. When the row
+ * is absent it seeds a RESOLVED one carrying that clock, so a late raise from an
+ * older run is still dropped.
+ *
+ * ⚠️ The poller calls it only when the stored `falhasSeguidas` was above 0: a
+ * clocked resolve re-stamps a resolved row's watermark (or seeds one), so a
+ * call on every healthy run would cost one aviso write per conta per tick.
+ *
+ * `true` only on a real open → resolved transition.
+ */
+export function resolverImportacaoParada(
+  db: Firestore,
+  integracaoId: string,
+  deps: { nowMs: number },
+  relogio: { readonly relogioUs: number; readonly lojaNome: string },
+): Promise<boolean> {
+  return resolverAviso(
+    db,
+    chaveImportacaoParada(integracaoId),
+    MOTIVO_AVISO_LI.importacaoRetomada,
+    { agoraUs: agoraUsDe(deps) },
+    sementeImportacaoParada(integracaoId, relogio.relogioUs, relogio.lojaNome),
+  );
 }
 
 /**

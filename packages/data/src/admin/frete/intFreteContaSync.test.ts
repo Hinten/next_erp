@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   VINCULO_INT_FRETE_CONTA,
+  escolherIntFreteMaisNovo,
   intFreteSchema,
   type VinculoIntFreteConta,
 } from '@delfrance/schemas';
@@ -288,10 +289,12 @@ const refToleranteDeTeste = (ref: unknown, integracaoId: string): boolean =>
   (ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`));
 
 const shopee = intFreteContaSync(V.shopee);
+const lojaIntegrada = intFreteContaSync(V.lojaIntegrada);
 const ml = intFreteContaSync(V.mercadoLivre, { refTolerante: refToleranteDeTeste });
 
 /**
- * Both production bindings write the account and reconcile its current state.
+ * Every production binding — Shopee, Loja Integrada and Mercado Livre — writes the account and
+ * reconciles its current state through the ONE `reconciliarIntFreteDaConta` (#1888, #1826).
  */
 interface Cenario {
   nome: string;
@@ -317,6 +320,19 @@ const CENARIOS: Cenario[] = [
     aplicar: async (host, conta) => {
       await host.escreverConta(ID, conta);
       return shopee.reconciliarIntFreteDaConta(asDb(host), ID);
+    },
+  },
+  {
+    nome: 'lojaIntegrada — reconcile',
+    vinculo: V.lojaIntegrada,
+    sync: lojaIntegrada,
+    outro: V.shopee,
+    carimbo: RELOGIO_MS,
+    avisoIncompleto:
+      '[loja-integrada] conta Loja Integrada sem dados suficientes para criar o int_frete',
+    aplicar: async (host, conta) => {
+      await host.escreverConta(ID, conta);
+      return lojaIntegrada.reconciliarIntFreteDaConta(asDb(host), ID);
     },
   },
   {
@@ -375,7 +391,30 @@ describe('diffCamposIntFrete', () => {
   });
 });
 
-/* --------------------------- both bindings (T1–T19) ----------------------- */
+/* --------------------------- every binding (T1–T19) ----------------------- */
+
+/** The rows of `VINCULO_INT_FRETE_CONTA`, named by `int_frete.tipo` and sorted. */
+const TIPOS_DE_TODA_LINHA = Object.values(V)
+  .map((v) => v.tipoFrete)
+  .sort();
+
+describe('CENARIOS — the parameterised suite covers every binding', () => {
+  // `describe.each(CENARIOS)` below carries every reconcile test (T1–T9, T11–T13, T15–T20,
+  // T52–T54, T56, T57) for each channel. A row dropped here, or a new channel's row never
+  // added, silently removes that channel's whole suite while every test left still passes, so
+  // the table is pinned to the schema's rows rather than to a count.
+  it('has exactly one scenario per VINCULO_INT_FRETE_CONTA row', () => {
+    expect(CENARIOS.map((c) => c.vinculo.tipoFrete).sort()).toEqual(TIPOS_DE_TODA_LINHA);
+  });
+
+  it.each(CENARIOS)(
+    '$nome: its sync is built for its own row, and its near-miss is another channel',
+    (c) => {
+      expect(c.sync.vinculo).toBe(c.vinculo);
+      expect(c.outro.tipoFrete).not.toBe(c.vinculo.tipoFrete);
+    },
+  );
+});
 
 describe.each(CENARIOS)('$nome', (c) => {
   const conta = (over: DocData = {}) => contaDe(c.vinculo, over);
@@ -758,6 +797,131 @@ describe.each(CENARIOS)('$nome', (c) => {
       if (esperado !== undefined) expect(d.intFreteId, caso).toBe(esperado);
     }
   });
+
+  it('T56 adopt-and-patch leaves a multi-row legacy `mapa` and the `horarioDeCorte` deep-equal to what was seeded', async () => {
+    // The Loja Integrada `EnviosLojaIntegrada` shape (#1826): a mapped row, an unmapped row
+    // carrying a key the schema does not model, and a row with no `idOriginal`. The reconcile
+    // must never write `mapa` or `horarioDeCorte` on a patch — the mapa helper appends to it and
+    // the conta screen edits it, and neither may lose a row to a conta save.
+    const mapa = [
+      {
+        nomeOriginal: 'Gateway Teste - PAC',
+        idOriginal: '141909---PAC',
+        observacao: 'Origem: Pedido 101',
+        nomeTarget: 'Empresa Teste — Serviço Teste',
+        targetData: { id: 1, name: 'Serviço Teste', company: { id: 2, name: 'Empresa Teste' } },
+        integracaoUid: 'me-1',
+        targetTipoIntegracao: 'melhorEnvios',
+      },
+      {
+        nomeOriginal: 'Gateway Teste - Expresso',
+        idOriginal: '141909---null',
+        observacao: 'Origem: Pedido 102',
+        nomeTarget: null,
+        targetData: null,
+        integracaoUid: null,
+        targetTipoIntegracao: 'outros',
+        campoDesconhecido: 'mantém',
+      },
+      {
+        nomeOriginal: 'Retirada',
+        idOriginal: null,
+        observacao: null,
+        nomeTarget: null,
+        targetData: null,
+        integracaoUid: 'ret-1',
+        targetTipoIntegracao: 'retiradaNaLoja',
+      },
+    ];
+    const host = new Host();
+    host.seed('int_frete', 'legacy-1', {
+      ...doc({ nome: 'Nome Antigo', ativo: false }),
+      docId: 'legacy-1',
+      mapa,
+      horarioDeCorte: CONFIG_HUMANA.horarioDeCorte,
+    });
+    const d = await c.aplicar(host, conta());
+    expect(d).toEqual({ action: 'atualizado', intFreteId: 'legacy-1', campos: ['ativo', 'nome'] });
+    const adotado = host.intFrete('legacy-1')!;
+    expect(adotado).toMatchObject({ nome: 'Loja Teste', ativo: true });
+    expect(adotado.mapa).toStrictEqual(mapa);
+    expect(adotado.horarioDeCorte).toStrictEqual(CONFIG_HUMANA.horarioDeCorte);
+    expect(host.colecao('int_frete').size).toBe(1);
+  });
+
+  it('T57 the importer pick: `buscarIntFreteDaConta(…, { apenasAtivo: true })` names the doc `escolherIntFreteMaisNovo(…, ativo === true)` names', async () => {
+    // ONE chooser for the core and the browser (#1369, #1826): the conta screen calls the schemas
+    // copy over its listener's RAW docs, the importer calls this lookup — they must agree.
+    /** A doc with NO `ativo` field: the lookup's `ativo == true` excludes it, and so must the pick. */
+    const semAtivo = (over: DocData): DocData => {
+      const data = doc(over);
+      delete data.ativo;
+      return data;
+    };
+    const conjuntos: Array<[string, Array<[string, DocData]>, string]> = [
+      [
+        'an older ACTIVE doc beats a newer inactive one',
+        [
+          ['velho-ativo', doc({ dataCadastro: CADASTRO - 1000 })],
+          ['novo-inativo', doc({ dataCadastro: CADASTRO + 1000, ativo: false })],
+        ],
+        'velho-ativo',
+      ],
+      [
+        'an older ACTIVE doc beats a newer one with NO `ativo` field (raw — never the schema default)',
+        [
+          ['velho-ativo', doc({ dataCadastro: CADASTRO - 1000 })],
+          ['novo-sem-ativo', semAtivo({ dataCadastro: CADASTRO + 1000 })],
+        ],
+        'velho-ativo',
+      ],
+      [
+        // A copy that kept NaN as a date would keep the first doc it saw (every comparison
+        // against NaN is false) — the lookup's private copy diverging from the shared one.
+        'a NaN dataCadastro reads as 0 in both, never a date that wins by arriving first',
+        [
+          ['a-nan', doc({ dataCadastro: Number.NaN })],
+          ['b', doc()],
+        ],
+        'b',
+      ],
+      [
+        'an equal-date active pair goes to the lowest id (higher id seeded first)',
+        [
+          ['b', doc({ nome: 'Gemeo B' })],
+          ['a', doc({ nome: 'Gemeo A' })],
+        ],
+        'a',
+      ],
+      [
+        'all of them together (lower id seeded first)',
+        [
+          ['a', doc({ nome: 'Gemeo A' })],
+          ['velho-ativo', doc({ dataCadastro: CADASTRO - 1000 })],
+          ['novo-inativo', doc({ dataCadastro: CADASTRO + 1000, ativo: false })],
+          ['b', doc({ nome: 'Gemeo B' })],
+        ],
+        'a',
+      ],
+    ];
+    for (const [caso, docs, esperado] of conjuntos) {
+      const host = new Host();
+      for (const [id, data] of docs) host.seed('int_frete', id, data);
+      const daSchema = escolherIntFreteMaisNovo(docsComo(host), (d) => d.ativo === true);
+      const doCore = await c.sync.buscarIntFreteDaConta(asDb(host), ID, { apenasAtivo: true });
+      expect(daSchema?.id, caso).toBe(esperado);
+      expect(doCore?.id, caso).toBe(esperado);
+    }
+    // Near-miss: WITHOUT the predicate the schemas pick names the newer inactive doc, which the
+    // importer's lookup never returns — the predicate is load-bearing, not decoration.
+    const host = new Host();
+    host.seed('int_frete', 'velho-ativo', doc({ dataCadastro: CADASTRO - 1000 }));
+    host.seed('int_frete', 'novo-inativo', doc({ dataCadastro: CADASTRO + 1000, ativo: false }));
+    expect(escolherIntFreteMaisNovo(docsComo(host))?.id).toBe('novo-inativo');
+    expect((await c.sync.buscarIntFreteDaConta(asDb(host), ID, { apenasAtivo: true }))?.id).toBe(
+      'velho-ativo',
+    );
+  });
 });
 
 /* ------------------------- binding-specific behaviour --------------------- */
@@ -766,17 +930,36 @@ describe('T10 a bare `integracao/<id>` back-ref', () => {
   const bare = (vinculo: VinculoIntFreteConta) =>
     docDe(vinculo, { [vinculo.campoBackRef]: `integracao/${ID}` });
 
-  it('Shopee: NOT found (no tolerant scan without refTolerante) ⇒ created at shopee-int-1', async () => {
-    const host = new Host();
-    host.seed('int_frete', 'legacy-bare', bare(V.shopee));
-    await host.escreverConta(ID, contaDe(V.shopee));
-    expect(await shopee.buscarIntFreteDaConta(asDb(host), ID)).toBeNull();
-    expect(shopee.escolherIntFreteDaConta(docsComo(host), ID)).toBeNull();
-    const d = await shopee.reconciliarIntFreteDaConta(asDb(host), ID);
-    expect(d).toMatchObject({ action: 'criado', intFreteId: `shopee-${ID}` });
-    expect(host.intFrete('legacy-bare')!.contaShopeeFreteOuterRef).toBe(`integracao/${ID}`);
-    expect(console.warn).not.toHaveBeenCalled();
+  /** Every binding built WITHOUT `refTolerante` — Mercado Livre is the only one with it. */
+  const SEM_REF_TOLERANTE = [
+    ['Shopee', V.shopee, shopee],
+    ['Loja Integrada', V.lojaIntegrada, lojaIntegrada],
+  ] as const;
+
+  it('the non-tolerant table plus Mercado Livre covers every VINCULO_INT_FRETE_CONTA row', () => {
+    expect(
+      [
+        ...SEM_REF_TOLERANTE.map(([, vinculo]) => vinculo.tipoFrete),
+        V.mercadoLivre.tipoFrete,
+      ].sort(),
+    ).toEqual(TIPOS_DE_TODA_LINHA);
+    for (const [, vinculo, sync] of SEM_REF_TOLERANTE) expect(sync.vinculo).toBe(vinculo);
   });
+
+  it.each(SEM_REF_TOLERANTE)(
+    '%s: NOT found (no tolerant scan without refTolerante) ⇒ created at the deterministic id',
+    async (_canal, vinculo, sync) => {
+      const host = new Host();
+      host.seed('int_frete', 'legacy-bare', bare(vinculo));
+      await host.escreverConta(ID, contaDe(vinculo));
+      expect(await sync.buscarIntFreteDaConta(asDb(host), ID)).toBeNull();
+      expect(sync.escolherIntFreteDaConta(docsComo(host), ID)).toBeNull();
+      const d = await sync.reconciliarIntFreteDaConta(asDb(host), ID);
+      expect(d).toMatchObject({ action: 'criado', intFreteId: `${vinculo.prefixoDocId}-${ID}` });
+      expect(host.intFrete('legacy-bare')![vinculo.campoBackRef]).toBe(`integracao/${ID}`);
+      expect(console.warn).not.toHaveBeenCalled();
+    },
+  );
 
   it('Mercado Livre: found by the tolerant scan, warned about, and canonicalised', async () => {
     const host = new Host();

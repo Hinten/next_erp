@@ -156,6 +156,81 @@ describe('createMelhorEnvioApi.listAgencies', () => {
   });
 });
 
+/**
+ * Two readings of one endpoint. The default is TOLERANT: a 2xx that is neither
+ * a bare array nor `{ data: [...] }` reads as `[]`, and `ensureCartAgency` relies
+ * on that (no carrier found → no agency added). `{ estrito: true }` is for a
+ * caller that SHOWS the list, where `[]` would claim the account has no services
+ * — so there an unrecognised body must fail instead.
+ */
+describe('createMelhorEnvioApi.listServices', () => {
+  const SERVICOS = [{ id: 3, name: 'Expresso', company: { id: 2, name: 'Transportadora B' } }];
+
+  function respondendo(texto: string) {
+    return api(mockFetch(async () => new Response(texto, { status: 200 })));
+  }
+
+  // 2xx bodies that are not a list: none at all, an object without `data`, a
+  // status message, a page that is not JSON (read as `{ raw }`), and a `data`
+  // that is not an array.
+  const NAO_LISTAS = [
+    ['an empty body', ''],
+    ['an empty object', '{}'],
+    ['a status message', '{"message":"em manutencao"}'],
+    ['an HTML page', '<!DOCTYPE html><html>em manutencao</html>'],
+    ['a data field that is not an array', '{"data":{"id":3}}'],
+  ] as const;
+
+  it('GETs the services endpoint', async () => {
+    const fetchMock = mockFetch(async () => new Response(JSON.stringify(SERVICOS)));
+
+    await expect(api(fetchMock).listServices({ estrito: true })).resolves.toEqual(SERVICOS);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(new URL(String(url)).pathname).toBe('/api/v2/me/shipment/services');
+    expect(init?.method).toBe('GET');
+  });
+
+  it.each(NAO_LISTAS)('by default reads %s as no services', async (_caso, texto) => {
+    await expect(respondendo(texto).listServices()).resolves.toEqual([]);
+  });
+
+  it('near-miss: estrito: false is the default read, not a strict one', async () => {
+    await expect(
+      respondendo('{"message":"em manutencao"}').listServices({ estrito: false }),
+    ).resolves.toEqual([]);
+  });
+
+  it.each(NAO_LISTAS)('estrito refuses %s with a MelhorEnvioSchemaError', async (_caso, texto) => {
+    const err = await respondendo(texto)
+      .listServices({ estrito: true })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MelhorEnvioSchemaError);
+    // The message reaches the browser: field paths only, never the body.
+    expect((err as MelhorEnvioSchemaError).message).not.toContain('manutencao');
+  });
+
+  it.each([
+    ['a bare array', JSON.stringify(SERVICOS)],
+    ['the { data } envelope', JSON.stringify({ data: SERVICOS })],
+  ])('near-miss: estrito still reads %s', async (_caso, texto) => {
+    await expect(respondendo(texto).listServices({ estrito: true })).resolves.toEqual(SERVICOS);
+  });
+
+  it('near-miss: estrito reads a bare [] as the empty list Melhor Envio stated', async () => {
+    await expect(respondendo('[]').listServices({ estrito: true })).resolves.toEqual([]);
+  });
+
+  it('estrito still validates each service (an id is required)', async () => {
+    const err = await respondendo(JSON.stringify([{ name: 'Expresso' }]))
+      .listServices({ estrito: true })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MelhorEnvioSchemaError);
+  });
+});
+
 describe('createMelhorEnvioApi account', () => {
   it('parses /me (GET, no body) and /me/balance', async () => {
     const meBody = {

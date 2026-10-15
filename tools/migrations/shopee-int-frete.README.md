@@ -18,8 +18,10 @@ longer exists stays active for good.
 
 ## No decision of its own
 
-`transform.ts` holds no rule. It calls the shared core's own pure planner and
-chooser (`planejarIntFreteDaConta`, `escolherIntFreteDaConta` from
+The pass holds no rule. Its plan — the labels, the STOP verdict, the JSONL rows
+— is the shared `src/intFreteAdocao/plano.ts`, which every channel's pass binds
+(`transform.ts` binds it to the Shopee row), and it calls the shared core's own
+pure planner and chooser (`planejarIntFreteDaConta`, `escolherIntFreteDaConta` from
 `@delfrance/data/admin/frete`) through the SAME zero-option binding the trigger
 runs, and `--apply` hands each executable conta id, verbatim, to that binding's
 `reconciliarIntFreteDaConta` — which re-reads the conta and the doc inside its
@@ -176,8 +178,12 @@ idempotence check — or re-seed; staging data never needs to be preserved.
 
 ## Code
 
-- `src/2026-10-shopee-int-frete/transform.ts` — the plan: labels, the STOP
-  verdict, the JSONL rows. Pure, unit-tested in `transform.test.ts`.
-- `src/2026-10-shopee-int-frete/backfill.ts` — the two scans, the rows, and the
-  `--apply` loop over the core. I/O only.
+- `src/intFreteAdocao/plano.ts` — the plan, shared by every channel's pass:
+  labels, the STOP verdict, the JSONL rows. Pure.
+- `src/intFreteAdocao/executar.ts` — the two scans, the rows, and the `--apply`
+  loop over the core. I/O only.
+- `src/2026-10-shopee-int-frete/transform.ts` — binds that pass to the Shopee
+  row (`syncShopee`, the trigger's own binding); `backfill.ts` is the entry
+  point. Unit-tested in `transform.test.ts`, which pins the Shopee behaviour and
+  has stayed unedited since the extraction.
 - The decisions themselves: `packages/data/src/admin/frete/intFreteContaSync.ts`.
