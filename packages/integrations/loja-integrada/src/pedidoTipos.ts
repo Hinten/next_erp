@@ -18,11 +18,20 @@
  *    `[]`);
  *  - a history row: `id`, `numero`, `data` and `situacao.codigo`.
  *
- * Everything else is `.nullable().optional()`, and a field no mapper reads is
+ * Everything else is optional and nullable, and a field no mapper reads is
  * not declared at all — `.passthrough()` keeps it, and a declared field can
  * only add a way for the parse to fail. That is why the order expiry
  * (`data_expiracao`, never a boleto due date), the coupon, `integration_data`
  * and the PIX/boleto payment links are absent here.
+ *
+ * ## An empty string is the provider's "nothing"
+ *
+ * Every optional number, count and nested object reads an exact `''` as
+ * `null` (`vazioComoNulo` and its two numeric forms below, where the reason is
+ * written). A text leaf keeps its `''`: it already parses, and the mapper
+ * decides what an empty text means. The required set, and the three ids the
+ * import keys a write on (`itens[].id`, `envios[].id`, `pagamentos[].id`),
+ * stay strict: an empty identity is refused at its own path.
  *
  * ## Passthrough
  *
@@ -44,16 +53,18 @@
  * ## Numbers
  *
  * Every numeric leaf goes through `wireInt()` / `wireNumber()` from
- * `@delfrance/core/wire`: money arrives as decimal STRINGS (line prices with
- * four decimals, quantities with three, totals with two), while one instalment
- * value arrived as a JSON number. Enforced by
+ * `@delfrance/core/wire` (an optional one through `inteiroOpcional()` /
+ * `numeroOpcional()`, which wrap them): money arrives as decimal STRINGS
+ * (line prices with four decimals, quantities with three, totals with two),
+ * while one instalment value arrived as a JSON number. Enforced by
  * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`,
  * which scans every file under `src/`. Two deliberate exceptions, each stated
  * at its field:
  *
  *  - `itens[].preco_custo` is `z.unknown()`: its value is not reliably numeric,
  *    and one unreadable cost must never cost the order (the mapper reads it with
- *    `parseWireDecimal`, which answers `null`);
+ *    `parseWireDecimal`, which answers `null`). `numeroOpcional()` does not
+ *    subsume it: it reads `''` as `null` but refuses free text;
  *  - `envios[].forma_envio.id` is kept RAW (string or number): step 20's
  *    shipping-method key builder (`mapaFreteLojaIntegrada.ts` in
  *    `@delfrance/schemas`) is the authority on that id's form, and a coercion
@@ -79,6 +90,55 @@ const textoOuNumero = z.union([z.string(), z.number()]);
 const texto = () => z.string().nullable().optional();
 
 /**
+ * An OPTIONAL leaf whose empty string `''` (and only `''`) reads as `null`,
+ * then `schema`; absent stays `undefined`, `null` stays `null`.
+ *
+ * ## Why
+ *
+ * The provider writes "nothing" as `''`: the sanitized captures keep every
+ * empty string as it arrived, and on most of the captured orders they carry
+ * one at text leaves of the buyer, of the delivery address and of the order's
+ * own note. No numeric or object leaf was empty in them, but the same
+ * serializer writes those too, and the cost of being wrong is out of all
+ * proportion: `toNumberish` in `@delfrance/core/wire` hands `''` to
+ * `z.number()` UNCHANGED (it is not a number, and the core must never read it
+ * as 0), the client validates the whole body, and the importer parks a
+ * `LiSchemaError` for good. One empty weight on one line would cost the whole
+ * order, forever. `.nullable()` does not help: `''` is not `null`.
+ *
+ * ## What it does NOT widen
+ *
+ *  - Only the exact `''`. A whitespace-only string is still handed to the
+ *    schema, so a numeric leaf refuses it: the captures hold none, and a blank
+ *    the provider never sends is a drift worth seeing.
+ *  - A non-empty string that is not one number (`'abc'`, a pt-BR comma) is
+ *    still refused by `wireNumber()` / `wireInt()`. This is not `z.unknown()`:
+ *    `preco_custo` keeps that, because its captured value is free TEXT, which
+ *    this helper would refuse.
+ *  - A REQUIRED leaf never gets it — the order `numero`, the `situacao`, a
+ *    history row's `id` and `numero`, the produto identity `id` — and neither
+ *    does an id the import KEYS a write on (`itens[].id`, `envios[].id`,
+ *    `pagamentos[].id`). An empty identity is a broken identity, not an absent
+ *    one — the plan's step 6 already refuses a bad payment id — so it is
+ *    refused at its own path rather than read as an absent id the importer
+ *    would replace by some fallback.
+ *  - The three lists (`lista`) are part of the required set and keep refusing
+ *    a string, `''` included.
+ *
+ * ⚠️ The `.optional()` sits OUTSIDE the preprocess, so an absent key never
+ * reaches it and stays `undefined`.
+ */
+function vazioComoNulo<T extends z.ZodType>(schema: T) {
+  return z.preprocess((v) => (v === '' ? null : v), schema.nullable()).optional();
+}
+
+/** {@link vazioComoNulo} over `wireNumber()`: an optional amount, weight or size. */
+const numeroOpcional = () => vazioComoNulo(wireNumber());
+
+/** {@link vazioComoNulo} over `wireInt()`: an optional count, or an id nothing keys on. */
+const inteiroOpcional = () => vazioComoNulo(wireInt());
+
+/**
  * A list the import iterates. An ABSENT key and a JSON `null` both read as
  * `[]` — an order with no payment yet or no shipment may well send `null`, and a
  * refusal here would park it for good. A value that is neither (an object, a
@@ -100,7 +160,7 @@ export const liSituacaoSchema = z
   .object({
     codigo: z.string(),
     /** The provider's numeric id — diagnostic only, never a key. */
-    id: wireInt().nullable().optional(),
+    id: inteiroOpcional(),
   })
   .passthrough();
 
@@ -124,30 +184,37 @@ export const liProdutoDoItemSchema = z.union([
 /** One order line. */
 export const liPedidoItemSchema = z
   .object({
+    /** The line's write key (`ensureUniqueId`): an empty one is refused, never `null`. */
     id: wireInt().nullable().optional(),
-    linha: wireInt().nullable().optional(),
+    linha: inteiroOpcional(),
     sku: texto(),
     nome: texto(),
     tipo: texto(),
-    quantidade: wireNumber().nullable().optional(),
-    preco_venda: wireNumber().nullable().optional(),
-    preco_cheio: wireNumber().nullable().optional(),
-    preco_promocional: wireNumber().nullable().optional(),
-    preco_subtotal: wireNumber().nullable().optional(),
+    quantidade: numeroOpcional(),
+    preco_venda: numeroOpcional(),
+    preco_cheio: numeroOpcional(),
+    preco_promocional: numeroOpcional(),
+    preco_subtotal: numeroOpcional(),
     /**
-     * ⚠️ `z.unknown()`, NOT `wireNumber()`: an empty or non-numeric string here
-     * would fail the whole order. The mapper reads it with `parseWireDecimal`.
-     * The `.optional()` is load-bearing: Zod 4 rejects an ABSENT key under a
-     * bare `z.unknown()`.
+     * ⚠️ `z.unknown()`, NOT `numeroOpcional()`: that one reads `''` as `null`
+     * but still refuses a non-numeric string, and the captured cost IS free
+     * text, so it would fail the whole order. The mapper reads it with
+     * `parseWireDecimal`. The `.optional()` is load-bearing: Zod 4 rejects an
+     * ABSENT key under a bare `z.unknown()`.
      */
     preco_custo: z.unknown().optional(),
+    /**
+     * Keeps an empty string as `''`, like a text leaf: it already parses, and
+     * which form a reference has (a resource URI, an `id_externo`) is the
+     * importer's form test to decide. `''` is neither form.
+     */
     produto: liProdutoDoItemSchema.nullable().optional(),
     /** The parent produto's resource URI, for a variation line. */
     produto_pai: texto(),
-    peso: wireNumber().nullable().optional(),
-    altura: wireNumber().nullable().optional(),
-    largura: wireNumber().nullable().optional(),
-    profundidade: wireNumber().nullable().optional(),
+    peso: numeroOpcional(),
+    altura: numeroOpcional(),
+    largura: numeroOpcional(),
+    profundidade: numeroOpcional(),
   })
   .passthrough();
 
@@ -171,14 +238,15 @@ export const liFormaEnvioSchema = z
 /** One shipment of an order. `prazo` is in days. */
 export const liPedidoEnvioSchema = z
   .object({
+    /** The freight block's `externalId`: an empty one is refused, never `null`. */
     id: wireInt().nullable().optional(),
     objeto: texto(),
     link_rastreio: texto(),
-    prazo: wireInt().nullable().optional(),
-    valor: wireNumber().nullable().optional(),
+    prazo: inteiroOpcional(),
+    valor: numeroOpcional(),
     data_criacao: texto(),
     data_modificacao: texto(),
-    forma_envio: liFormaEnvioSchema.nullable().optional(),
+    forma_envio: vazioComoNulo(liFormaEnvioSchema),
   })
   .passthrough();
 
@@ -187,7 +255,7 @@ export type PedidoEnvioLi = z.infer<typeof liPedidoEnvioSchema>;
 /** The payment method an order's payment used. */
 export const liFormaPagamentoSchema = z
   .object({
-    id: wireInt().nullable().optional(),
+    id: inteiroOpcional(),
     codigo: texto(),
     nome: texto(),
   })
@@ -196,8 +264,8 @@ export const liFormaPagamentoSchema = z
 /** The instalment plan: `{}` on a PIX or boleto payment. */
 export const liParcelamentoSchema = z
   .object({
-    numero_parcelas: wireInt().nullable().optional(),
-    valor_parcela: wireNumber().nullable().optional(),
+    numero_parcelas: inteiroOpcional(),
+    valor_parcela: numeroOpcional(),
   })
   .passthrough();
 
@@ -210,12 +278,13 @@ export const liParcelamentoSchema = z
  */
 export const liPedidoPagamentoSchema = z
   .object({
+    /** The pagamento doc's key (step 6): an empty one is refused, never `null`. */
     id: wireInt().nullable().optional(),
-    valor: wireNumber().nullable().optional(),
-    valor_pago: wireNumber().nullable().optional(),
+    valor: numeroOpcional(),
+    valor_pago: numeroOpcional(),
     pagamento_tipo: texto(),
-    forma_pagamento: liFormaPagamentoSchema.nullable().optional(),
-    parcelamento: liParcelamentoSchema.nullable().optional(),
+    forma_pagamento: vazioComoNulo(liFormaPagamentoSchema),
+    parcelamento: vazioComoNulo(liParcelamentoSchema),
     bandeira: texto(),
     authorization_code: texto(),
   })
@@ -226,7 +295,7 @@ export type PedidoPagamentoLi = z.infer<typeof liPedidoPagamentoSchema>;
 /** The buyer: the order's fiscal identity. */
 export const liPedidoClienteSchema = z
   .object({
-    id: wireInt().nullable().optional(),
+    id: inteiroOpcional(),
     nome: texto(),
     razao_social: texto(),
     cpf: texto(),
@@ -264,8 +333,9 @@ export const liEnderecoEntregaSchema = z
  * ⚠️ Keyed by `numero`, never by the top-level `id` the GET also carries: the
  * path, every resource URI and the deterministic pedido id all use the numero.
  *
- * `id_anymarket` is read for presence only (one of the hub guard's markers).
- * The order's own `id_externo` is NOT a hub marker — a store-side ERP may stamp
+ * `id_anymarket` is read for presence only (one of the hub guard's markers),
+ * so its `''` reads as `null`: the provider's "nothing" must never look like a
+ * marker, which would keep an ordinary order out as a hub one. The order's own `id_externo` is NOT a hub marker — a store-side ERP may stamp
  * it through the platform's API on an ordinary storefront order — and nothing
  * reads it, so it is not declared: `.passthrough()` keeps it, whatever its
  * shape.
@@ -276,16 +346,16 @@ export const liPedidoSchema = z
     situacao: liSituacaoSchema,
     data_modificacao: z.string(),
     data_criacao: texto(),
-    valor_total: wireNumber().nullable().optional(),
-    valor_subtotal: wireNumber().nullable().optional(),
-    valor_envio: wireNumber().nullable().optional(),
-    valor_desconto: wireNumber().nullable().optional(),
-    cliente: liPedidoClienteSchema.nullable().optional(),
-    endereco_entrega: liEnderecoEntregaSchema.nullable().optional(),
+    valor_total: numeroOpcional(),
+    valor_subtotal: numeroOpcional(),
+    valor_envio: numeroOpcional(),
+    valor_desconto: numeroOpcional(),
+    cliente: vazioComoNulo(liPedidoClienteSchema),
+    endereco_entrega: vazioComoNulo(liEnderecoEntregaSchema),
     itens: lista(liPedidoItemSchema),
     envios: lista(liPedidoEnvioSchema),
     pagamentos: lista(liPedidoPagamentoSchema),
-    id_anymarket: textoOuNumero.nullable().optional(),
+    id_anymarket: vazioComoNulo(textoOuNumero),
     cliente_obs: texto(),
     utm_campaign: texto(),
   })
@@ -304,7 +374,7 @@ export const liSituacaoHistoricoLinhaSchema = z
     numero: wireInt(),
     data: z.string(),
     situacao: liSituacaoSchema,
-    situacao_anterior: liSituacaoSchema.nullable().optional(),
+    situacao_anterior: vazioComoNulo(liSituacaoSchema),
   })
   .passthrough();
 

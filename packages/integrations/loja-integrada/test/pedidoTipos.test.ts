@@ -1,10 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { z } from 'zod';
 
 import {
+  type liEnderecoEntregaSchema,
+  type liFormaEnvioSchema,
+  type liPedidoClienteSchema,
   liPedidoSchema,
   liProdutoIdentidadeSchema,
   liSituacaoHistoricoLinhaSchema,
   liSituacaoSchema,
+  type PedidoEnvioLi,
+  type PedidoItemLi,
+  type PedidoLi,
+  type PedidoPagamentoLi,
+  type SituacaoHistoricoLinhaLi,
 } from '../src/pedidoTipos';
 import {
   historicoCanceladoNaFormaCapturada,
@@ -215,6 +224,269 @@ describe('liPedidoSchema: the required set is minimal', () => {
     ['itens that is not an array', { ...MINIMO, itens: {} }],
   ])('refuses %s', (_caso, corpo) => {
     expect(liPedidoSchema.safeParse(corpo).success).toBe(false);
+  });
+});
+
+type Caminho = readonly (string | number)[];
+
+/**
+ * The card order (captured shape) with each leaf at `caminho` replaced by its
+ * `valor`, or DELETED when that is `undefined`. A deep copy every time.
+ */
+function pedidoComFolhas(edicoes: readonly (readonly [Caminho, unknown])[]) {
+  const corpo = structuredClone(pedidoCartaoNaFormaCapturada) as Record<string, unknown>;
+  for (const [caminho, valor] of edicoes) {
+    let alvo = corpo as Record<string | number, unknown>;
+    for (const seg of caminho.slice(0, -1)) alvo = alvo[seg] as Record<string | number, unknown>;
+    const ultimo = caminho[caminho.length - 1]!;
+    if (valor === undefined) delete alvo[ultimo];
+    else alvo[ultimo] = valor;
+  }
+  return corpo;
+}
+
+const pedidoCom = (caminho: Caminho, valor: unknown) => pedidoComFolhas([[caminho, valor]]);
+
+function folha(corpo: unknown, caminho: Caminho): unknown {
+  let v = corpo;
+  for (const seg of caminho) v = (v as Record<string | number, unknown>)[seg];
+  return v;
+}
+
+/** The parsed leaf, or `'RECUSADO'` when the whole order is refused. */
+function lerComFolha(caminho: Caminho, valor: unknown): unknown {
+  const r = liPedidoSchema.safeParse(pedidoCom(caminho, valor));
+  return r.success ? folha(r.data, caminho) : 'RECUSADO';
+}
+
+const nomeado = (caminhos: Caminho[]) => caminhos.map((c) => [c.join('.'), c] as const);
+
+/**
+ * Every OPTIONAL leaf of the order that reads `''` as `null`, by kind. ⚠️ The
+ * list IS the inventory: a leaf that loses its helper fails its own `''` case
+ * below, by name. Each path exists in the card order, so the test exercises
+ * the leaf inside a whole, otherwise valid body.
+ */
+const FOLHAS_NUMERO: Caminho[] = [
+  ['valor_total'],
+  ['valor_subtotal'],
+  ['valor_envio'],
+  ['valor_desconto'],
+  ['itens', 0, 'quantidade'],
+  ['itens', 0, 'preco_venda'],
+  ['itens', 0, 'preco_cheio'],
+  ['itens', 0, 'preco_promocional'],
+  ['itens', 0, 'preco_subtotal'],
+  ['itens', 0, 'peso'],
+  ['itens', 0, 'altura'],
+  ['itens', 0, 'largura'],
+  ['itens', 0, 'profundidade'],
+  ['envios', 0, 'valor'],
+  ['pagamentos', 0, 'valor'],
+  ['pagamentos', 0, 'valor_pago'],
+  ['pagamentos', 0, 'parcelamento', 'valor_parcela'],
+];
+
+/** Counts, and the ids nothing keys a write on (diagnostic or unread). */
+const FOLHAS_INTEIRO: Caminho[] = [
+  ['situacao', 'id'],
+  ['itens', 0, 'linha'],
+  ['envios', 0, 'prazo'],
+  ['pagamentos', 0, 'parcelamento', 'numero_parcelas'],
+  ['pagamentos', 0, 'forma_pagamento', 'id'],
+  ['cliente', 'id'],
+];
+
+const FOLHAS_OBJETO: Caminho[] = [
+  ['cliente'],
+  ['endereco_entrega'],
+  ['envios', 0, 'forma_envio'],
+  ['pagamentos', 0, 'forma_pagamento'],
+  ['pagamentos', 0, 'parcelamento'],
+];
+
+describe('an empty optional wire leaf reads as null — it never parks the order', () => {
+  it('a full order in the captured shape with an empty `peso` on one line parses, and that leaf is null', () => {
+    const r = liPedidoSchema.safeParse(pedidoCom(['itens', 0, 'peso'], ''));
+    expect(r.success).toBe(true);
+    expect(r.data?.itens[0]?.peso).toBeNull();
+    // The sibling line is untouched.
+    expect(r.data?.itens[1]?.peso).toBe(0.1);
+  });
+
+  describe.each(nomeado(FOLHAS_NUMERO))('number leaf `%s`', (_nome, caminho) => {
+    it("'' reads as null", () => {
+      expect(lerComFolha(caminho, '')).toBeNull();
+    });
+    it.each([
+      ['a non-numeric string', 'abc'],
+      ['a whitespace-only string', '  '],
+      ['a pt-BR decimal comma', '1,50'],
+    ])('near-miss: %s is still refused — only the exact empty string is "nothing"', (_c, v) => {
+      expect(lerComFolha(caminho, v)).toBe('RECUSADO');
+    });
+    it('null stays null and an absent key stays undefined', () => {
+      expect(lerComFolha(caminho, null)).toBeNull();
+      expect(lerComFolha(caminho, undefined)).toBeUndefined();
+    });
+    it('a wire value still parses — a JSON number, a decimal string, and a zero that is not "nothing"', () => {
+      expect(lerComFolha(caminho, 12.5)).toBe(12.5);
+      expect(lerComFolha(caminho, '12.5000')).toBe(12.5);
+      expect(lerComFolha(caminho, 0)).toBe(0);
+      expect(lerComFolha(caminho, '0')).toBe(0);
+    });
+  });
+
+  describe.each(nomeado(FOLHAS_INTEIRO))('integer leaf `%s`', (_nome, caminho) => {
+    it("'' reads as null", () => {
+      expect(lerComFolha(caminho, '')).toBeNull();
+    });
+    it.each([
+      ['a non-numeric string', 'abc'],
+      ['a whitespace-only string', '  '],
+      ['a fractional string', '2.5'],
+    ])('near-miss: %s is still refused', (_c, v) => {
+      expect(lerComFolha(caminho, v)).toBe('RECUSADO');
+    });
+    it('null stays null and an absent key stays undefined', () => {
+      expect(lerComFolha(caminho, null)).toBeNull();
+      expect(lerComFolha(caminho, undefined)).toBeUndefined();
+    });
+    it('a wire value still parses — a JSON number, a quoted one, and a zero', () => {
+      expect(lerComFolha(caminho, 7)).toBe(7);
+      expect(lerComFolha(caminho, '7')).toBe(7);
+      expect(lerComFolha(caminho, 0)).toBe(0);
+      expect(lerComFolha(caminho, '0')).toBe(0);
+    });
+  });
+
+  describe.each(nomeado(FOLHAS_OBJETO))('object leaf `%s`', (_nome, caminho) => {
+    it("'' reads as null", () => {
+      expect(lerComFolha(caminho, '')).toBeNull();
+    });
+    it.each([
+      ['a non-empty string', 'abc'],
+      ['a whitespace-only string', '  '],
+      ['an array', []],
+    ])('near-miss: %s is still refused', (_c, v) => {
+      expect(lerComFolha(caminho, v)).toBe('RECUSADO');
+    });
+    it('null stays null, an absent key stays undefined, and an object still parses', () => {
+      expect(lerComFolha(caminho, null)).toBeNull();
+      expect(lerComFolha(caminho, undefined)).toBeUndefined();
+      expect(lerComFolha(caminho, { extra: 1 })).toEqual({ extra: 1 });
+    });
+  });
+
+  it("`id_anymarket` (read for presence) reads '' as null; any other text, a blank included, stays as given", () => {
+    expect(lerComFolha(['id_anymarket'], '')).toBeNull();
+    // Near-miss: only the exact empty string is folded.
+    expect(lerComFolha(['id_anymarket'], ' ')).toBe(' ');
+    expect(lerComFolha(['id_anymarket'], 'AM-1')).toBe('AM-1');
+    expect(lerComFolha(['id_anymarket'], 0)).toBe(0);
+    expect(lerComFolha(['id_anymarket'], null)).toBeNull();
+    expect(lerComFolha(['id_anymarket'], undefined)).toBeUndefined();
+  });
+
+  it("text-capable leaves keep their '' — it already parses, and the mapper reads text", () => {
+    expect(lerComFolha(['itens', 0, 'produto'], '')).toBe('');
+    expect(lerComFolha(['envios', 0, 'forma_envio', 'id'], '')).toBe('');
+    expect(lerComFolha(['cliente_obs'], '')).toBe('');
+    expect(lerComFolha(['endereco_entrega', 'complemento'], '')).toBe('');
+  });
+
+  it('a whole order with several empty optional leaves at once parses, and keeps everything else', () => {
+    const vazias: Caminho[] = [
+      ['valor_desconto'],
+      ['itens', 0, 'peso'],
+      ['itens', 1, 'altura'],
+      ['envios', 0, 'prazo'],
+      ['envios', 0, 'forma_envio'],
+      ['pagamentos', 0, 'parcelamento', 'numero_parcelas'],
+      ['situacao', 'id'],
+      ['cliente', 'id'],
+      ['id_anymarket'],
+    ];
+    const p = liPedidoSchema.parse(pedidoComFolhas(vazias.map((c) => [c, ''] as const)));
+    expect(p.valor_desconto).toBeNull();
+    expect(p.itens[0]?.peso).toBeNull();
+    expect(p.itens[1]?.altura).toBeNull();
+    expect(p.envios[0]?.prazo).toBeNull();
+    expect(p.envios[0]?.forma_envio).toBeNull();
+    expect(p.pagamentos[0]?.parcelamento?.numero_parcelas).toBeNull();
+    expect(p.situacao.id).toBeNull();
+    expect(p.cliente?.id).toBeNull();
+    expect(p.id_anymarket).toBeNull();
+    // Everything else is read exactly as before.
+    expect(p.numero).toBe(NUMERO_EXEMPLO);
+    expect(p.situacao.codigo).toBe('pedido_enviado');
+    expect(p.valor_total).toBe(152.2);
+    expect(p.itens[0]?.quantidade).toBe(2);
+    expect(p.envios[0]?.valor).toBe(18.5);
+    expect(p.pagamentos[0]?.parcelamento?.valor_parcela).toBe(50.73);
+    expect(p.cliente?.email).toBe(pedidoCartaoNaFormaCapturada.cliente.email);
+  });
+
+  it.each([
+    ['the order `numero`', ['numero']],
+    ['the `situacao`', ['situacao']],
+    ['`itens` (a list never reads a string as [])', ['itens']],
+    ['`envios`', ['envios']],
+    ['`pagamentos`', ['pagamentos']],
+    ['a line id (its write key)', ['itens', 0, 'id']],
+    ['a shipment id (the freight externalId)', ['envios', 0, 'id']],
+    ['a payment id (the pagamento key)', ['pagamentos', 0, 'id']],
+  ] as const)(
+    'an empty REQUIRED or KEY leaf — %s — is still refused, at its own path',
+    (_c, caminho) => {
+      const r = liPedidoSchema.safeParse(pedidoCom(caminho, ''));
+      expect(r.success).toBe(false);
+      expect(r.error?.issues.map((i) => i.path.join('.'))).toEqual([caminho.join('.')]);
+    },
+  );
+
+  it('the history row: an empty `id` or `numero` is refused, an empty previous situação reads as null', () => {
+    const base = historicoCanceladoNaFormaCapturada.objects[1]!;
+    expect(liSituacaoHistoricoLinhaSchema.safeParse({ ...base, id: '' }).success).toBe(false);
+    expect(liSituacaoHistoricoLinhaSchema.safeParse({ ...base, numero: '' }).success).toBe(false);
+    expect(liSituacaoHistoricoLinhaSchema.safeParse({ ...base, situacao: '' }).success).toBe(false);
+    const linha = liSituacaoHistoricoLinhaSchema.parse({
+      ...base,
+      situacao: { ...base.situacao, id: '' },
+      situacao_anterior: '',
+    });
+    expect(linha.situacao_anterior).toBeNull();
+    expect(linha.situacao.id).toBeNull();
+    expect(linha.situacao.codigo).toBe('pedido_cancelado');
+    // Near-miss: a non-empty string is not a situação.
+    expect(
+      liSituacaoHistoricoLinhaSchema.safeParse({ ...base, situacao_anterior: 'abc' }).success,
+    ).toBe(false);
+  });
+
+  it('the produto identity: an empty `id` is refused — there is nothing to resolve to', () => {
+    expect(liProdutoIdentidadeSchema.safeParse({ id: '', sku: 'A' }).success).toBe(false);
+  });
+
+  it('the parsed TYPES are unchanged: the helper widens the input, never the output', () => {
+    expectTypeOf<PedidoLi['valor_total']>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<PedidoItemLi['peso']>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<PedidoItemLi['id']>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<PedidoEnvioLi['prazo']>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<PedidoPagamentoLi['valor']>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<PedidoLi['id_anymarket']>().toEqualTypeOf<string | number | null | undefined>();
+    expectTypeOf<PedidoLi['cliente']>().toEqualTypeOf<
+      z.output<typeof liPedidoClienteSchema> | null | undefined
+    >();
+    expectTypeOf<PedidoLi['endereco_entrega']>().toEqualTypeOf<
+      z.output<typeof liEnderecoEntregaSchema> | null | undefined
+    >();
+    expectTypeOf<PedidoEnvioLi['forma_envio']>().toEqualTypeOf<
+      z.output<typeof liFormaEnvioSchema> | null | undefined
+    >();
+    expectTypeOf<SituacaoHistoricoLinhaLi['situacao_anterior']>().toEqualTypeOf<
+      z.output<typeof liSituacaoSchema> | null | undefined
+    >();
   });
 });
 
