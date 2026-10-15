@@ -1240,6 +1240,8 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       resolveChannelContext: async () => ({
         integracaoId: 'conta-A',
         accessToken: 'AT',
+        getAccessToken: async () => 'AT',
+        invalidateAccessToken: vi.fn(),
         account: {},
       }),
     });
@@ -1458,6 +1460,8 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       resolveChannelContext: async () => ({
         integracaoId: 'conta-A',
         accessToken: 'AT',
+        getAccessToken: async () => 'AT',
+        invalidateAccessToken: vi.fn(),
         account: {},
       }),
     });
@@ -1613,6 +1617,8 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         resolveChannelContext: async () => ({
           integracaoId: 'conta-A',
           accessToken: 'AT',
+          getAccessToken: async () => 'AT',
+          invalidateAccessToken: vi.fn(),
           account: {},
         }),
       });
@@ -1747,6 +1753,8 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         resolveChannelContext: async () => ({
           integracaoId: 'conta-A',
           accessToken: 'AT',
+          getAccessToken: async () => 'AT',
+          invalidateAccessToken: vi.fn(),
           account: {},
         }),
       });
@@ -1958,6 +1966,8 @@ describe('handleNotificationTask — claims claim-import dispatch (Step 14)', ()
       resolveChannelContext: async () => ({
         integracaoId: 'conta-A',
         accessToken: 'AT',
+        getAccessToken: async () => 'AT',
+        invalidateAccessToken: vi.fn(),
         account: {},
       }),
     });

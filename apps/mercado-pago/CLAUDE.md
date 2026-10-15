@@ -138,8 +138,9 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
   `apps/web` can tell it from the bare HTML 404 of a backend that predates the link routes.
 - `lib/signatures/hmac.ts` — constant-time `verifyHmac` + `verifyMpSignature` (MP's
   `ts=…,v1=…` manifest HMAC over `id;request-id;ts`).
-- `lib/{auth,firebase}` — per-app copies of the shared helpers (each backend keeps
-  its own so they deploy + log independently).
+- `lib/auth` binds the shared verifier in `@delfrance/data/admin/auth`;
+  `lib/firebase` owns this backend's SDK initialization. Shared primitives keep
+  deployments and logs independent without copying security decisions (#1431).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
   `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks. Mirrors
   `apps/mercado-livre/functions`.

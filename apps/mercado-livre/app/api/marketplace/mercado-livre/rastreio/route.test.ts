@@ -60,7 +60,11 @@ beforeEach(() => {
   seed();
   h.context.mockResolvedValue({
     conta: { ativo: true },
-    resolveChannelContext: async () => ({ accessToken: 'ml-token' }),
+    resolveChannelContext: async () => ({
+      accessToken: 'ml-token',
+      getAccessToken: async () => 'ml-token',
+      invalidateAccessToken: vi.fn(),
+    }),
   });
   h.factory.mockReturnValue({ getShipmentCarrier: h.carrier });
   h.carrier.mockResolvedValue({ name: 'Carrier', url: URL_TRACK });

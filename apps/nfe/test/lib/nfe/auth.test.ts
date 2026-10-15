@@ -14,13 +14,13 @@ import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
 import { AuthErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
 import { PERM } from '@delfrance/auth';
 
-const h = vi.hoisted(() => ({ verifyIdToken: vi.fn() }));
+const h = vi.hoisted(() => ({ verifyIdToken: vi.fn(), getAdminAuth: vi.fn() }));
 
 vi.mock('@/lib/firebase/admin', () => ({
-  getAdminAuth: () => ({ verifyIdToken: h.verifyIdToken }),
+  getAdminAuth: h.getAdminAuth,
 }));
 
-const { verifyCaller } = await import('@/lib/nfe/auth');
+const { verifyCaller, authError } = await import('@/lib/nfe/auth');
 
 const REQUIRED = PERM.fiscal.write;
 const CALLER = { uid: 'u1', permissions: REQUIRED.toString() };
@@ -36,6 +36,8 @@ function expectError(result: Awaited<ReturnType<typeof verifyCaller>>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.verifyIdToken.mockReset();
+  h.getAdminAuth.mockReset().mockReturnValue({ verifyIdToken: h.verifyIdToken });
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
@@ -106,5 +108,63 @@ describe('verifyCaller', () => {
     await expect(verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED)).rejects.toThrow(
       'impostor',
     );
+  });
+
+  it('does not initialize Admin when the Authorization header is missing', async () => {
+    await verifyCaller(req(), REQUIRED);
+    expect(h.getAdminAuth).not.toHaveBeenCalled();
+  });
+
+  it('maps a synchronous FirebaseAppError from the local Admin getter to 500', async () => {
+    const failure = new FirebaseAppError({
+      code: AppErrorCode.INVALID_CREDENTIAL,
+      message: 'getter failed',
+    });
+    h.getAdminAuth.mockImplementation(() => {
+      throw failure;
+    });
+    const error = expectError(await verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED));
+    expect(error.status).toBe(500);
+    expect(await error.json()).toEqual({
+      error: 'Falha ao inicializar Firebase Admin (app/invalid-credential): getter failed',
+      code: 'app/invalid-credential',
+    });
+    expect(h.verifyIdToken).not.toHaveBeenCalled();
+  });
+
+  it('rethrows an unexpected error from the local Admin getter unchanged', async () => {
+    const failure = new TypeError('getter failed');
+    h.getAdminAuth.mockImplementation(() => {
+      throw failure;
+    });
+    await expect(verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED)).rejects.toBe(failure);
+  });
+
+  it('keeps the app-specific token rejection log', async () => {
+    const failure = new FirebaseAuthError({
+      code: AuthErrorCode.ID_TOKEN_EXPIRED,
+      message: 'expired token',
+    });
+    h.verifyIdToken.mockRejectedValue(failure);
+    await verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED);
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(
+      `[nfe/auth] verifyIdToken rejected: auth/id-token-expired - ${failure.message}`,
+    );
+  });
+
+  it('preserves the fiscal rejection fields accepted by authError', async () => {
+    const response = authError(422, {
+      error: 'rejected',
+      code: 'FISCAL',
+      cStat: '999',
+      xMotivo: 'reason',
+    });
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: 'rejected',
+      code: 'FISCAL',
+      cStat: '999',
+      xMotivo: 'reason',
+    });
   });
 });

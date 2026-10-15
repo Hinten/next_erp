@@ -538,10 +538,10 @@ deploy config or `prepare-deploy.mjs`.
    ⚠️ **That artifact carries no lockfile**, so the cloud install resolves each
    spec fresh and a `^` range installs whatever is newest *at deploy time* — a
    version no CI lane ever tested. `firebase-admin` + `firebase-functions` are
-   therefore pinned **exact** (`14.2.0` / `7.3.2`); `firebase-functions@7.3.2`
+   therefore pinned **exact** (`14.5.0` / `7.4.0`); `firebase-functions@7.3.2`
    moved `express` 4→5 in a **patch** release, which under the old `^7.3.0` ran
    Express 5 in production against CI on Express 4. Bump them together with
-   `pnpm-workspace.yaml`'s catalog and the four nested artifact manifests —
+   `pnpm-workspace.yaml`'s catalog and the seven nested artifact manifests —
    `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails on drift.
    (`@google-cloud/firestore` and `sharp` still float; a known carve-out.)
 

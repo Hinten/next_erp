@@ -57,7 +57,10 @@ export async function GET(req: Request): Promise<NextResponse> {
   try {
     const ctx = await loadMercadoLivreContext(getAdminFirestore(), integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createMercadoLivreApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     const [raizes, me] = await Promise.all([getCategoriasRaizCached(api), api.getMe()]);
     const raiz = encontrarCategoriaTeste(raizes);

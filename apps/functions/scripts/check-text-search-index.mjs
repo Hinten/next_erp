@@ -408,7 +408,7 @@ async function probarTermo(rotulo, termo, fabrica, preferir = 'literal') {
  *
  * ⚠️ `documentMatches` is the ONLY option, not a preference. The field-scoped
  * form the docs show — `field('nome').matches(dsl)` — is **commented out** in
- * both SDKs this repo installs (`@google-cloud/firestore` 8.6.0 declares
+ * both SDKs this repo installs (`@google-cloud/firestore` 9.3.1 still declares
  * `// matches(rquery…)`, and `@firebase/firestore` 4.14.1 exports no `matches`
  * at all). So a text search here is document-wide by construction: it hits
  * EVERY indexed search field.

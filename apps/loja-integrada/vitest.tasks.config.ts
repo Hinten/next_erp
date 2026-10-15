@@ -14,11 +14,30 @@ import { defineConfig } from 'vitest/config';
 // both — so a file with either suffix runs here, and a file matching neither
 // glob runs in NO job at all. A Firestore-only proof can therefore share the
 // round-trip job's emulators: no second config, no second port, no second check
-// name and no extra clause in the lane's gate manifest. Step 3 has no Firestore
-// trigger that a shared emulator could disturb; the day one lands, give it a
-// config of its own rather than letting a trigger fire inside another suite.
+// name and no extra clause in the lane's gate manifest.
 //
-// Each file's `beforeEach` wipes the collections it reads, because the files
+// ⚠️ Since step 20 the codebase has a Firestore trigger,
+// `onIntegracaoLojaIntegradaChanged`, and the functions emulator loads it, so it
+// fires on EVERY suite's `integracao` writes here. Staying in one job is a COST
+// choice, not a necessity: a Firestore-only config without the functions
+// emulator is possible (Mercado Livre runs its `*.firestore.test.ts` that way),
+// but it costs a second `emulators:exec`, a check name and a gate-manifest row,
+// and only the `.firestore.` suites could move there — `*.tasks.test.ts` needs
+// the functions emulator, which loads the whole codebase, trigger included.
+// Sharing stays safe under three rules:
+//   - a suite that writes `integracao` docs uses conta ids NO other suite seeds;
+//   - the step-3 suites seed Loja Integrada contas with no filial and no
+//     `dataCadastro`, which the shared core plans as `incompleto`: the trigger
+//     only READS there (and a deleted conta with no freight doc is
+//     `nao-encontrado`). A suite that seeds a COMPLETE conta makes the trigger
+//     write `int_frete`, and so becomes a trigger suite;
+//   - a suite whose writes fire the trigger awaits the trigger's LAST write
+//     before it ends: every case polls for its expected positive state, and the
+//     teardown waits for the deactivation its conta delete causes
+//     (`functions/src/onIntegracaoLojaIntegradaChanged.tasks.test.ts`), so no
+//     reconcile spills into the next file.
+//
+// Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({
   test: {
