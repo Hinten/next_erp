@@ -130,7 +130,12 @@ function baseDeps(over: Record<string, unknown> = {}) {
     contaNome: 'Loja ML',
     contextLoader: vi.fn().mockResolvedValue({
       conta: CONTA_DOC,
-      resolveChannelContext: () => Promise.resolve({ accessToken: 'tok' }),
+      resolveChannelContext: () =>
+        Promise.resolve({
+          accessToken: 'tok',
+          getAccessToken: async () => 'tok',
+          invalidateAccessToken: vi.fn(),
+        }),
     }),
     // The full surface `reverificarAnuncio` may reach, so an override that adds
     // one of them still types. `getLastModeration` answers "none" and

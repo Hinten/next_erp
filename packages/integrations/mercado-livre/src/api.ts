@@ -130,6 +130,11 @@ export interface MercadoLivreApiConfig {
    * concern (the app-side token store) — this client just sends what it's given.
    */
   readonly getAccessToken: () => Promise<string>;
+  /**
+   * Evict this exact access token when ML answers 401 with `invalid_token`.
+   * Permission/identity failures do not trigger it; the request is never replayed.
+   */
+  readonly onAccessTokenRejected?: (accessToken: string) => void;
   readonly baseUrl?: string;
   readonly userAgent?: string;
   readonly fetch?: typeof globalThis.fetch;
@@ -759,12 +764,13 @@ export interface MercadoLivreApi {
    * must therefore be idempotent, and must NOT keep a `sent`-based cursor —
    * an entry filed after a run would sit permanently below such a cursor.
    *
-   * `topic` is ML's documented filter. It is exposed for diagnostics but the
-   * sweep deliberately does not use it: it cannot reduce the number of entries
-   * that must be read, only split them across one request per topic.
+   * `items` requires `siteId`; query each site separately. Other topics can
+   * use the app-wide feed or the documented `topic` filter.
    */
   getMissedFeeds(params: {
     appId: string;
+    /** Required by ML for topic=items. */
+    siteId?: string;
     topic?: string;
     limit?: number;
     offset?: number;
@@ -819,6 +825,14 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     }
   }
 
+  function responseError(
+    res: Response,
+    request: { method: string; url: string },
+    accessToken: string,
+  ): Promise<Error> {
+    return toHttpError(res, request, () => config.onAccessTokenRejected?.(accessToken));
+  }
+
   async function requestWithStatus<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
@@ -848,7 +862,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
     if (res.ok)
       return { data: await parseOk(res, schema), status: res.status, headers: res.headers };
-    throw await toHttpError(res, { method, url });
+    throw await responseError(res, { method, url }, token);
   }
 
   /** `requestWithStatus` for the (overwhelming) majority of callers, which only
@@ -918,7 +932,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       mensagemDeRede,
     );
     if (res.ok) return parseOk(res, schema);
-    throw await toHttpError(res, { method: 'POST', url });
+    throw await responseError(res, { method: 'POST', url }, token);
   }
 
   function uploadPicture(file: PictureFile): Promise<MlPictureUpload> {
@@ -956,7 +970,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       'Falha de rede ao enviar a NF-e ao Mercado Livre',
     );
     if (res.ok) return parseOk(res, mlShipmentInvoiceSchema);
-    throw await toHttpError(res, { method: 'POST', url });
+    throw await responseError(res, { method: 'POST', url }, token);
   }
 
   /**
@@ -994,7 +1008,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         }
         throw httpErrorFromBody(res, text, { method: 'GET', url });
       }
-      throw await toHttpError(res, { method: 'GET', url });
+      throw await responseError(res, { method: 'GET', url }, token);
     }
     const bytes = new Uint8Array(await res.arrayBuffer());
     // Legacy guard: ML has returned 2xx with an empty body — that is a failed
@@ -1037,7 +1051,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       },
       'Falha de rede ao baixar o anexo do Mercado Livre',
     );
-    if (!res.ok) throw await toHttpError(res, { method: 'GET', url });
+    if (!res.ok) throw await responseError(res, { method: 'GET', url }, token);
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.length === 0) {
       throw new MercadoLivreHttpError(
@@ -1108,7 +1122,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       );
       // A FAILED mint carries no password, so the shared error mapping is safe
       // here — it is only the 2xx body that must never be echoed.
-      if (!res.ok) throw await toHttpError(res, { method: 'POST', url });
+      if (!res.ok) throw await responseError(res, { method: 'POST', url }, token);
       return parseTestUser(await res.text());
     },
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
@@ -1479,9 +1493,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     // `buildUrl` drops every `undefined` query value, so an omitted `topic` /
     // `limit` / `offset` simply does not reach the URL — do NOT add `?? 0`
     // defaults here, that would pin ML's own defaults to ours.
-    getMissedFeeds: ({ appId, topic, limit, offset }) =>
+    getMissedFeeds: ({ appId, topic, siteId, limit, offset }) =>
       request('GET', '/missed_feeds', mlMissedFeedsSchema, {
-        query: { app_id: appId, topic, limit, offset },
+        query: { app_id: appId, topic, site_id: siteId, limit, offset },
       }),
   };
 }
@@ -1573,8 +1587,9 @@ async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {
 async function toHttpError(
   res: Response,
   request: { method: string; url: string },
+  onAccessTokenRejected?: () => void,
 ): Promise<Error> {
-  return httpErrorFromBody(res, await res.text(), request);
+  return httpErrorFromBody(res, await res.text(), request, onAccessTokenRejected);
 }
 
 /** `toHttpError` for a body that was already consumed (the label 400 branch). */
@@ -1582,6 +1597,7 @@ function httpErrorFromBody(
   res: Response,
   text: string,
   request: { method: string; url: string },
+  onAccessTokenRejected?: () => void,
 ): Error {
   let body: unknown = text.length > 0 ? text : null;
   if (text.length > 0) {
@@ -1597,11 +1613,21 @@ function httpErrorFromBody(
     ? (parsed.data.message ?? parsed.data.error_description ?? parsed.data.error)
     : undefined;
 
-  // 401 = the access token was rejected → the account must reconnect.
+  // A 401 can also mean missing permissions or an identity check. Only the
+  // documented token error evicts a credential; every 401 retains its existing
+  // reauth mapping, and none of them replays the request.
   if (res.status === 401) {
+    if (
+      parsed.success &&
+      (parsed.data.error === 'invalid_token' || parsed.data.message === 'invalid_token')
+    ) {
+      onAccessTokenRejected?.();
+    }
     return new MercadoLivreReauthRequiredError(
       'refresh_failed',
       message ?? 'Token do Mercado Livre inválido. Reconecte a conta.',
+      res.status,
+      body,
     );
   }
   return new MercadoLivreHttpError(

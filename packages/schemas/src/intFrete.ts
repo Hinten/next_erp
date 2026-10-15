@@ -154,8 +154,9 @@ export type HorarioDeCorte = z.infer<typeof horarioDeCorteSchema>;
  * at `.old/packages/integracao_frete/lib/src/models.dart:233`: translates a
  * marketplace shipping option (`nomeOriginal` / `idOriginal`) into a target
  * internal integration (`integracaoUid` + `targetTipoIntegracao` +
- * provider-specific `targetData`). Not surfaced in the UI yet — kept for
- * read/write parity with Flutter-authored docs.
+ * provider-specific `targetData`). Edited on the Loja Integrada conta screen's
+ * "Mapeamento do Frete" tab (`/canais/loja-integrada/[id]`, #1826), which maps
+ * each row and never adds or removes one; hidden on every `/logistica` slice.
  */
 export const mapaDeIntegracoesSchema = z
   .object({

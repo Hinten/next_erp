@@ -57,7 +57,11 @@ const OK = { integracaoId: 'int-1', claimId: 5204934310, acao: 'reembolso' };
 beforeEach(() => {
   vi.clearAllMocks();
   h.verifyCaller.mockResolvedValue({ caller: { uid: 'u1', permissions: undefined } });
-  h.resolveChannelContext.mockResolvedValue({ accessToken: 'tok' });
+  h.resolveChannelContext.mockResolvedValue({
+    accessToken: 'tok',
+    getAccessToken: async () => 'tok',
+    invalidateAccessToken: vi.fn(),
+  });
   h.loadCtx.mockResolvedValue({
     conta: { user_id: 415458330 },
     resolveChannelContext: h.resolveChannelContext,

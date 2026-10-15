@@ -30,9 +30,15 @@ theme were ever split.
   folders.
 - `notificacaoFrescor.ts` — decides when an ML 404 may be acked versus retried
   (the transient-404 window).
-- `missedFeedsSweep.ts` — the daily 05:00 `missed_feeds` backstop (#812). Asks
-  ML what it failed to deliver and replays it onto the same queue. Keeps **no
-  cursor**, deliberately.
+- `missedFeedsSweep.ts` — daily 05:00 app-wide recovery (#812 / #1292), with
+  automatic credential discovery in `missedFeedsAccess.ts`, explicit item-site
+  queries and guarded application health. Replays onto the same queue and keeps
+  **no cursor**. Incomplete coverage fails the scheduled invocation.
+- `missedFeedsProbe.ts` — sanitized, read-only provider-contract diagnostic used
+  by `scripts/probe-missed-feeds.ts`; sends no tasks. It records all three query
+  shapes per connected candidate, including HTTP rejections, before looking for
+  an account accepted by the site-qualified items stream. A failed discovery
+  still prints the sanitized evidence and exits unsuccessfully.
 - `orderBackfill.ts` — the 15-minute order-backfill sweep; enqueues discovered
   orders onto the same pipeline.
 - `coldStartPolicy.test.ts` — no source sibling. Reads `apphosting.yaml` and

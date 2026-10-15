@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { avisoCollection, integracaoCollection } from '@delfrance/data/admin/collections';
 import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin/grpcErrors';
 
-import { FakeDb, asDb, increment } from './fakeDb';
+import { FakeDb, arrayUnion, asDb, increment } from './fakeDb';
 
 function refDe(db: FakeDb, id: string) {
   return integracaoCollection.docRef(asDb(db), {}, id);
@@ -282,5 +282,77 @@ describe('FakeDb — what the shared notification store needs (step 3)', () => {
     await ref.set({ status: 'deferred', tentativas: 6 }, { merge: true });
     // The merge-set lands LAST and wins — the real server's behaviour too.
     expect(db.ler('integracao/a')).toEqual({ status: 'deferred', tentativas: 6 });
+  });
+});
+
+describe('FakeDb — the array-union sentinel (step 20, the freight mapa)', () => {
+  it('an absent, null or non-array field becomes exactly the elements', async () => {
+    const db = new FakeDb();
+    await refDe(db, 'a').create({ outro: 1 });
+    await refDe(db, 'b').create({ l: null });
+    await refDe(db, 'c').create({ l: { chave: 'um mapa' } });
+    await refDe(db, 'd').create({ l: 'texto' });
+    await refDe(db, 'a').update({ l: arrayUnion({ k: 1 }, 'x') });
+    await refDe(db, 'b').update({ l: arrayUnion({ k: 1 }) });
+    await refDe(db, 'c').update({ l: arrayUnion({ k: 1 }) });
+    await refDe(db, 'd').update({ l: arrayUnion({ k: 1 }) });
+    expect(db.ler('integracao/a')).toEqual({ outro: 1, l: [{ k: 1 }, 'x'] });
+    expect(db.ler('integracao/b')).toEqual({ l: [{ k: 1 }] });
+    expect(db.ler('integracao/c')).toEqual({ l: [{ k: 1 }] });
+    expect(db.ler('integracao/d')).toEqual({ l: [{ k: 1 }] });
+  });
+
+  it('an array keeps every stored element untouched and gains, in order, each element not already there', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    const legado = [{ b: 2, a: 1, extra: [1, { z: null }] }, 'solto', null, 7];
+    await ref.create({ l: legado });
+    // EQUAL: the same key SET in another order, an equal nested array.
+    await ref.update({ l: arrayUnion({ a: 1, extra: [1, { z: null }], b: 2 }, 'solto', 7) });
+    expect(db.ler('integracao/a')).toEqual({ l: legado });
+    // NEAR-MISS: a number and its string, 0 and null, another nested length, one key more.
+    const quase = [
+      '7',
+      0,
+      { a: 1, extra: [1], b: 2 },
+      { a: 1, b: 2, extra: [1, { z: null }], c: 0 },
+    ];
+    await ref.update({ l: arrayUnion(...quase) });
+    expect(db.ler('integracao/a')).toEqual({ l: [...legado, ...quase] });
+  });
+
+  it('duplicates among the elements land once; the write log keeps the sentinel, not the merged array', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ l: [] });
+    await ref.update({ l: arrayUnion({ k: 1 }, { k: 1 }) });
+    expect(db.ler('integracao/a')).toEqual({ l: [{ k: 1 }] });
+    expect(db.escritasEm('integracao/a').at(-1)?.dados).toEqual({
+      l: { __arrayUnion: [{ k: 1 }, { k: 1 }] },
+    });
+  });
+
+  it('a stale lastUpdateTime refuses the union with 9 and applies nothing', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await ref.create({ l: ['a'] });
+    const lido = await ref.get();
+    await ref.update({ outro: 1 });
+    await expect(
+      ref.update({ l: arrayUnion('b') }, { lastUpdateTime: lido.updateTime }),
+    ).rejects.toSatisfy(isFailedPrecondition);
+    expect(db.ler('integracao/a')).toEqual({ l: ['a'], outro: 1 });
+  });
+
+  it('refuses it where it is not modelled: create, a merge-set, an undefined inside an element', async () => {
+    const db = new FakeDb();
+    const ref = refDe(db, 'a');
+    await expect(ref.create({ l: arrayUnion('a') })).rejects.toThrow(/arrayUnion em create/);
+    expect(() => ref.set({ l: arrayUnion('a') }, { merge: true })).toThrow(
+      /arrayUnion em set merge/,
+    );
+    await ref.create({ l: [] });
+    await expect(ref.update({ l: arrayUnion({ k: undefined }) })).rejects.toThrow(/undefined/);
+    expect(db.ler('integracao/a')).toEqual({ l: [] });
   });
 });

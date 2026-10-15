@@ -3,8 +3,8 @@
  * **GET-only**, no Firestore.
  *
  * The modules that ship here (transport, typed errors, Tastypie paging, the
- * response schemas and the token validator) are exported from this barrel as
- * they land. Everything stateful (the credential store, the connect route, the
+ * response schemas, the token validator and the order import's reads) are
+ * exported from this barrel as they land. Everything stateful (the credential store, the connect route, the
  * sweeps) is driven by the App Hosting backend `apps/loja-integrada`, which
  * holds the Firestore/Admin-SDK dependency.
  *
@@ -37,3 +37,5 @@ export * from './types';
 export * from './client';
 export * from './paginacao';
 export * from './api';
+export * from './pedidoTipos';
+export * from './pedidos';

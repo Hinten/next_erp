@@ -439,7 +439,8 @@ export async function runPedidoTravadoSweep(
         userId = typeof ctx.conta.user_id === 'number' ? ctx.conta.user_id : null;
         const channelCtx = await ctx.resolveChannelContext();
         const api = createMercadoLivreApi({
-          getAccessToken: async () => channelCtx.accessToken,
+          getAccessToken: channelCtx.getAccessToken,
+          onAccessTokenRejected: channelCtx.invalidateAccessToken,
         });
         order = await api.getOrder(orderId);
       } catch (err) {
