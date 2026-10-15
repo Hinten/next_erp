@@ -135,10 +135,10 @@ describe('the queue path', () => {
 
   it('writes requireRegion as an object literal of STATIC process.env reads — the shape `define` can inline', () => {
     // `tools/deploy-env/bundle-inlining.test.js` proves this on the BUILT bundle,
-    // but only for code the bundle contains, and nothing imports this root until
-    // the order poller does. Until then this pins the shape at the source: a
-    // computed argument (`requireRegion(candidatos)`, an env indexed by name)
-    // leaves FUNCTIONS_REGION a live read, `undefined` after a deploy.
+    // which contains this root since the order poller imports it. This pins the
+    // same shape at the source, where the failure names the file: a computed
+    // argument (`requireRegion(candidatos)`, an env indexed by name) leaves
+    // FUNCTIONS_REGION a live read, `undefined` after a deploy.
     const fonte = readFileSync(
       fileURLToPath(new URL('./agendador.ts', import.meta.url)),
       'utf8',
