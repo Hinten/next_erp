@@ -93,7 +93,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env.MERCADO_LIVRE_TEST_USERS_ENABLED = '1';
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
-  h.resolveChannelContext.mockResolvedValue({ integracaoId: 'i', accessToken: 'AT', account: {} });
+  h.resolveChannelContext.mockResolvedValue({
+    integracaoId: 'i',
+    accessToken: 'AT',
+    getAccessToken: async () => 'AT',
+    invalidateAccessToken: vi.fn(),
+    account: {},
+  });
   h.loadCtx.mockResolvedValue({
     resolveChannelContext: h.resolveChannelContext,
     store: { deleteAll: h.deleteAll },
@@ -385,6 +391,8 @@ describe('POST body — the single-role mint', () => {
     h.resolveChannelContext.mockResolvedValue({
       integracaoId: 'i',
       accessToken: 'AT',
+      getAccessToken: async () => 'AT',
+      invalidateAccessToken: vi.fn(),
       account: {},
     });
     h.loadCtx.mockResolvedValue({

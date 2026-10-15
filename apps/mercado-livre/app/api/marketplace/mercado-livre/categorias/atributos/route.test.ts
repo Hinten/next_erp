@@ -44,7 +44,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   __resetAllReadCaches();
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
-  h.resolveChannelContext.mockResolvedValue({ integracaoId: 'i', accessToken: 'AT', account: {} });
+  h.resolveChannelContext.mockResolvedValue({
+    integracaoId: 'i',
+    accessToken: 'AT',
+    getAccessToken: async () => 'AT',
+    invalidateAccessToken: vi.fn(),
+    account: {},
+  });
   h.loadCtx.mockResolvedValue({ resolveChannelContext: h.resolveChannelContext });
   h.getCategory.mockResolvedValue({ id: 'MLB31447', children_categories: [] });
   h.getCategoryAttributes.mockResolvedValue([
