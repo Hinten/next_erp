@@ -30,6 +30,15 @@
  *  - every write resolves `{ writeTime }`;
  *  - the `{ __increment: n }` sentinel ({@link increment}), APPLIED on write,
  *    because `escreverAviso` writes `deps.increment(1)`;
+ *  - the `{ __arrayUnion: [...] }` sentinel ({@link arrayUnion}), APPLIED on
+ *    `update` only (step 20: the freight `mapa` registration writes
+ *    `deps.arrayUnion(row)`), with the server's semantics — the same as
+ *    `apps/shopee/lib/shopee/testing/fakeDb.ts`: an absent, `null` or non-array
+ *    field becomes the elements; an array keeps every stored element untouched
+ *    and gains, in order, each element not structurally equal to one already
+ *    there (same key SET in any order, same values; `1` ≠ `'1'`, `0` ≠ `null`).
+ *    A `create` or a merge-`set` carrying it throws: neither is modelled. The
+ *    write log keeps the sentinel itself, which a read-modify-write would not;
  *  - `collection().where(campo, '==', valor)`, `where(campo, '<', valor)` (step
  *    3: the shared sweep's lane query), `orderBy`, `limit`, `startAfter(doc)`
  *    and `get()` → `{ docs, empty, size, readTime }` — see "Queries" below.
@@ -140,6 +149,54 @@ function ehIncremento(v: unknown): v is { __increment: number } {
     v !== null &&
     typeof (v as { __increment?: unknown }).__increment === 'number'
   );
+}
+
+/** The array-union sentinel this fake applies — pass it as `deps.arrayUnion`. */
+export function arrayUnion(...elementos: unknown[]): unknown {
+  return { __arrayUnion: elementos };
+}
+
+function ehUniao(v: unknown): v is { __arrayUnion: unknown[] } {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    Array.isArray((v as { __arrayUnion?: unknown }).__arrayUnion)
+  );
+}
+
+/**
+ * Structural equality, the union's dedup key: the same primitive (`null` only to `null`), arrays
+ * of the same length element by element, and plain objects with the same key SET (any order) and
+ * equal values. Distinct: a number and its string (`1` ≠ `'1'`), `0` and `null`, arrays of
+ * another length.
+ *
+ * ⚠️ Deliberately NOT named after a shared fold helper: the `equivalence-fold-inventory` guard
+ * keys on those names, and this file would then owe it a row.
+ */
+function mesmoValorArmazenado(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => mesmoValorArmazenado(x, b[i]));
+  }
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false;
+  const ca = a as DocData;
+  const cb = b as DocData;
+  const ka = Object.keys(ca);
+  if (ka.length !== Object.keys(cb).length) return false;
+  return ka.every((k) => Object.hasOwn(cb, k) && mesmoValorArmazenado(ca[k], cb[k]));
+}
+
+/** The server's `arrayUnion`: keep the stored array, append each element not already in it. */
+function unir(armazenado: unknown, elementos: readonly unknown[]): unknown[] {
+  const saida = Array.isArray(armazenado) ? [...(armazenado as unknown[])] : [];
+  for (const elemento of elementos) {
+    if (!saida.some((existente) => mesmoValorArmazenado(existente, elemento))) {
+      saida.push(structuredClone(elemento));
+    }
+  }
+  return saida;
 }
 
 /** The real SDK refuses `undefined` anywhere in a payload; so does this. */
@@ -365,6 +422,8 @@ export class FakeDb {
       if (ehIncremento(valor)) {
         const atual = saida[chave];
         saida[chave] = (typeof atual === 'number' ? atual : 0) + valor.__increment;
+      } else if (ehUniao(valor)) {
+        saida[chave] = unir(saida[chave], valor.__arrayUnion);
       } else {
         saida[chave] = structuredClone(valor);
       }
@@ -397,12 +456,21 @@ export class FakeDb {
         if (Object.values(data).some(ehIncremento)) {
           throw new Error('FakeDb: increment em create — use um número');
         }
+        if (Object.values(data).some(ehUniao)) {
+          throw new Error('FakeDb: arrayUnion em create não é modelado — use uma lista');
+        }
         const writeTime = this.registrar('create', caminho, data);
         this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
         return { writeTime };
       },
       update: async (patch: DocData, precondicao?: { lastUpdateTime?: unknown }) => {
         recusarIndefinido(patch, caminho);
+        for (const [chave, valor] of Object.entries(patch)) {
+          // The real SDK refuses `undefined` inside the union's elements too.
+          if (ehUniao(valor)) {
+            valor.__arrayUnion.forEach((e, i) => recusarIndefinido(e, `${caminho}.${chave}[${i}]`));
+          }
+        }
         if (Object.keys(patch).length === 0) throw new Error('FakeDb: update vazio');
         for (const chave of Object.keys(patch)) {
           if (chave.includes('.')) {
@@ -460,6 +528,11 @@ export class FakeDb {
         for (const [chave, valor] of Object.entries(data)) {
           if (chave.includes('.')) {
             throw new Error(`FakeDb: chave com ponto em set merge ('${chave}') não é modelada`);
+          }
+          // A merge-set UPSERTS: on a removed document it would resurrect it. Nothing in
+          // this app unions through one, so refuse rather than model it.
+          if (ehUniao(valor)) {
+            throw new Error(`FakeDb: arrayUnion em set merge ('${chave}') não é modelado`);
           }
           // A merge-set deep-merges maps field by field; `aplicar` replaces the
           // top-level key. Refuse rather than diverge.
