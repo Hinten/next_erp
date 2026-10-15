@@ -308,7 +308,10 @@ const defaultResolveContext: NonNullable<PriceSyncRunDeps['resolveContext']> = a
 ) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
   return {
     api,
     tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),

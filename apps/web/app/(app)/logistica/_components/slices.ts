@@ -7,9 +7,10 @@ import { INTEGRACAO_FRETE } from '@delfrance/schemas';
  * `integracao`). Each slice pins its `tipo` on create and scopes the list
  * query; the form differences are just which schema fields are shown.
  *
- * `mapa` (marketplace → internal routing) is excluded everywhere — it has no
- * UI yet (marketplace freight is read-only for now); existing values survive
- * untouched because ObjectView only writes dirty fields.
+ * `mapa` (marketplace → internal routing) is excluded everywhere — it is
+ * edited on the Loja Integrada conta screen (`/canais/loja-integrada/[id]`,
+ * "Mapeamento do Frete", #1826), never here; existing values survive untouched
+ * because ObjectView only writes dirty fields.
  *
  * `contaMercadoLivreMercadoEnviosOuterRef`, `contaShopeeFreteOuterRef` and
  * `contaLojaIntegradaEnviosOuterRef` are excluded for a different reason: each is

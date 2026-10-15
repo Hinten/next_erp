@@ -30,6 +30,7 @@ import {
   type MlSizeChart,
   type Mensagem,
   TIPO_INTEGRACAO_PGTO,
+  VINCULO_INT_FRETE_CONTA,
   whatsappIdentidadeSchema,
 } from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
@@ -1060,6 +1061,181 @@ export async function cleanupAmazonFixtures(prefix: string): Promise<void> {
 export async function getIntegracaoById(id: string): Promise<Record<string, unknown> | null> {
   const data = (await db().collection('integracao').doc(id).get()).data();
   return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
+ * The `mapa` every conta of {@link seedLojaIntegradaFreteFixtures} starts with:
+ * three schema-COMPLETE rows (all seven keys), so a save that rewrites the
+ * array can be compared row by row — a row the operator did not touch must
+ * come back byte-identical.
+ */
+export function mapaFreteLiE2e(): Record<string, unknown>[] {
+  const linha = (n: number, code: string): Record<string, unknown> => ({
+    nomeOriginal: `Forma ${n}`,
+    idOriginal: `${1000 + n}---${code}`,
+    observacao: `Origem: Pedido ${n}`,
+    nomeTarget: null,
+    targetData: null,
+    integracaoUid: null,
+    targetTipoIntegracao: INTEGRACAO_FRETE.outros,
+  });
+  return [linha(1, 'A'), linha(2, 'B'), linha(3, 'null')];
+}
+
+/** The deterministic id the server core gives a Loja Integrada conta's freight doc. */
+export function intFreteIdDaContaLi(contaId: string): string {
+  return `${VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId}-${contaId}`;
+}
+
+/**
+ * Loja Integrada contas WITH their freight doc (step 20, #1826), for the conta
+ * screen's "Mapeamento do Frete" / "Horário de Corte" tabs, plus the two
+ * freight integrations a `mapa` row can be pointed at: a Motoboy and a Melhor
+ * Envio account.
+ *
+ * ⚠️ The freight doc is written FIRST, at the server core's deterministic id,
+ * with the canonical back-ref and the conta's mirrored values (`nome`, `ativo`,
+ * filial, `dataCadastro`); only THEN is the conta written. So the suite holds
+ * whether or not the conta trigger runs on the target project: a trigger finds
+ * this doc by its back-ref, plans it in sync, and writes nothing — it never
+ * creates a second one.
+ */
+export async function seedLojaIntegradaFreteFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ contaIds: string[]; motoboyId: string; melhorEnvioId: string }> {
+  const filialId = `${prefix}-ref-filial`;
+  const filialRef = `documents/filiais/${filialId}`;
+  const dataCadastro = Date.now();
+  const vinculo = VINCULO_INT_FRETE_CONTA.lojaIntegrada;
+
+  await db()
+    .collection('filiais')
+    .doc(filialId)
+    .set({
+      razaoSocial: `${prefix}-ref-filial`,
+      fantasia: null,
+      cnae: null,
+      cnpj: '99999999999962',
+      ie: '999999999',
+      iest: null,
+      imun: null,
+      sede: {
+        idExterno: null,
+        logradouro: 'Av. Teste',
+        numero: '1',
+        bairro: 'Centro',
+        complemento: null,
+        cep: '01310100',
+        codigoMunicipio: null,
+        cidade: 'São Paulo',
+        estado: 'SP',
+        cPais: null,
+        pais: null,
+        nome: null,
+        cpf_cnpj: null,
+        rg: null,
+        ie: null,
+        imun: null,
+        email: null,
+        telefone: null,
+      },
+      timestamp: dataCadastro,
+    });
+
+  const intFreteBase = {
+    ativo: true,
+    filialIntegracaoFreteOuterRef: filialRef,
+    contaMercadoLivreMercadoEnviosOuterRef: null,
+    contaShopeeFreteOuterRef: null,
+    contaLojaIntegradaEnviosOuterRef: null,
+    enderecoDeOrigem: null,
+    dataCadastro,
+    ultimaModificacao: dataCadastro,
+    mapa: null,
+    faixaCep: null,
+    horarioDeCorte: null,
+    prazoExtra: 0,
+    client_id: null,
+    client_secret: null,
+  };
+  const motoboyId = `${prefix}-motoboy`;
+  const melhorEnvioId = `${prefix}-me`;
+  const alvos = db().batch();
+  alvos.set(db().collection('int_frete').doc(motoboyId), {
+    ...intFreteBase,
+    tipo: INTEGRACAO_FRETE.motoboy,
+    nome: motoboyId,
+  });
+  alvos.set(db().collection('int_frete').doc(melhorEnvioId), {
+    ...intFreteBase,
+    tipo: INTEGRACAO_FRETE.melhorEnvios,
+    nome: melhorEnvioId,
+  });
+  await alvos.commit();
+
+  const contaIds = Array.from({ length: n }, (_, i) => `${prefix}-${pad(i + 1)}`);
+  const fretes = db().batch();
+  for (const contaId of contaIds) {
+    fretes.set(db().collection('int_frete').doc(intFreteIdDaContaLi(contaId)), {
+      ...intFreteBase,
+      tipo: vinculo.tipoFrete,
+      nome: contaId,
+      [vinculo.campoBackRef]: `documents/integracao/${contaId}`,
+      mapa: mapaFreteLiE2e(),
+    });
+  }
+  await fretes.commit();
+
+  const contas = db().batch();
+  for (const contaId of contaIds) {
+    contas.set(db().collection('integracao').doc(contaId), {
+      tipo: vinculo.tipoConta,
+      padrao: false,
+      nome: contaId,
+      cpf_cnpj: null,
+      idCadIntTran: null,
+      ativo: true,
+      cor: null,
+      modalidadeFreteImportacao: null,
+      filialIntegracaoPedidoOuterRef: filialRef,
+      tabelaNormalOuterRef: null,
+      tabelaPromocionalOuterRef: null,
+      operacaoOuterRef: null,
+      operacaoDevolucaoOuterRef: null,
+      depositoOuterRef: null,
+      dataCadastro,
+    });
+  }
+  await contas.commit();
+
+  return { contaIds, motoboyId, melhorEnvioId };
+}
+
+/** Teardown for `seedLojaIntegradaFreteFixtures` — every doc it wrote is named by the prefix. */
+export async function cleanupLojaIntegradaFreteFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupByNamePrefix('integracao', prefix),
+    cleanupByNamePrefix('int_frete', prefix),
+    cleanupByFieldPrefix('filiais', 'razaoSocial', prefix),
+  ]);
+}
+
+/** The raw stored `int_frete` doc `id`, or null. */
+export async function getIntFreteDoc(id: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('int_frete').doc(id).get();
+  return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * Append one `mapa` row to an `int_frete` doc the way the order importer does
+ * (an `arrayUnion`): another writer landing while a screen has the doc open.
+ */
+export async function appendMapaFreteRow(id: string, row: Record<string, unknown>): Promise<void> {
+  await db()
+    .collection('int_frete')
+    .doc(id)
+    .update({ mapa: FieldValue.arrayUnion(row) });
 }
 
 /** Teardown for `seedWhatsappFixtures`. */

@@ -79,7 +79,11 @@ const ALVO = { produtoId: PRODUTO, itemId: 'MLB111' };
 beforeEach(() => {
   vi.clearAllMocks();
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
-  h.resolveChannelContext.mockResolvedValue({ accessToken: 'AT' });
+  h.resolveChannelContext.mockResolvedValue({
+    accessToken: 'AT',
+    getAccessToken: async () => 'AT',
+    invalidateAccessToken: vi.fn(),
+  });
   h.loadCtx.mockResolvedValue({
     conta: { operacaoOuterRef: 'documents/operacao/op-venda' },
     resolveChannelContext: h.resolveChannelContext,

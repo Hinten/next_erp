@@ -11,6 +11,7 @@ import {
   LOSER_REREAD_DELAY_MS,
   type TokenDuravelStore,
   getOrRefreshAccessToken,
+  getOrRefreshAccessTokenWithExpiry,
   tokenDuravelFromResponse,
 } from './tokenStore';
 
@@ -229,5 +230,40 @@ describe('getOrRefreshAccessToken', () => {
       ).rejects.toBe(dead);
       expect(sleep).toHaveBeenCalledExactlyOnceWith(LOSER_REREAD_DELAY_MS);
     });
+  });
+});
+
+describe('getOrRefreshAccessTokenWithExpiry', () => {
+  it('projects exactly the access token and absolute expiry from a stored credential', async () => {
+    const value = tok({ access_token: 'live', expires_in: NOW + HOUR });
+    expect(
+      await getOrRefreshAccessTokenWithExpiry(fakeStore({ valid: value }), config, {
+        now: NOW,
+      }),
+    ).toEqual({ accessToken: 'live', expiresAt: NOW + HOUR });
+  });
+
+  it('projects the guarded absolute expiry after persisting a refresh', async () => {
+    const store = fakeStore({ latest: tok({ expires_in: NOW - 1 }) });
+    expect(
+      await getOrRefreshAccessTokenWithExpiry(store, config, {
+        now: NOW,
+        refresh: async () => RESP,
+      }),
+    ).toEqual({ accessToken: 'AT2', expiresAt: NOW + RESP.expires_in * 1000 - 5000 });
+    expect(store.persisted).toHaveLength(1);
+  });
+
+  it('projects the winning credential without retaining its refresh token', async () => {
+    const winner = tok({ access_token: 'winner', expires_in: NOW + HOUR });
+    const store = fakeStore({ validSeq: [null, winner], latest: tok({ expires_in: NOW - 1 }) });
+    expect(
+      await getOrRefreshAccessTokenWithExpiry(store, config, {
+        now: NOW,
+        refresh: async () => {
+          throw new MercadoLivreReauthRequiredError('refresh_failed', 'already used');
+        },
+      }),
+    ).toEqual({ accessToken: 'winner', expiresAt: NOW + HOUR });
   });
 });

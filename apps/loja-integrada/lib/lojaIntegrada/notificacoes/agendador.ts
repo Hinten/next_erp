@@ -94,7 +94,7 @@ export class LiTarefasDesligadasError extends Error {
 
 /**
  * The Cloud Tasks enqueue failures that are TRANSIENT — each an outcome of
- * `TaskQueue.enqueue` in the pinned `firebase-admin` (14.2.0) that a later
+ * `TaskQueue.enqueue` in the pinned `firebase-admin` (14.5.0) that a later
  * attempt can clear.
  *
  * ⚠️ `TaskQueue.enqueue` is a REST client, not a gRPC one: it throws
