@@ -24,9 +24,10 @@ the run; so does this. Read `../push/README.md` for what is shared and what
 each operation deliberately keeps.
 
 `enviarEstoqueRun.test.ts` is where the SHARED orchestrator is pinned — dedup,
-the whole-selection dispatch, the per-conta row keys, both cancel checks before a
-dispatch (the cancel DURING the last one is `../push/run.test.ts`). It is not
-duplicated under `../preco/`.
+the whole-selection dispatch, the per-conta row keys and every cancel check,
+including a cancel during the only, final or middle conta's dispatch (#1914).
+`../push/run.test.ts` (#1529, R1) pins the same post-loop check against the
+orchestrator directly. It is not duplicated under `../preco/`.
 
 ## Why the ROW unit is the listing, not the produto
 

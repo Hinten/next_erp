@@ -109,11 +109,12 @@ describe('shopeeStockProvider', () => {
 
   it('P3 — a child resolved to its anchor AND a produto with no listing both reach the report', async () => {
     // RT1 (the backend's S1/S3): the operator picked a CHILD and a produto with no
-    // Shopee link; the backend answers a row for the child's ANCHOR and a
-    // `produtosSemEnvio` entry under the id asked for.
+    // Shopee link; the backend answers a row for the child's ANCHOR — carrying the
+    // ANCHOR's own name, which `core/anchors.ts` reads for an anchor nobody
+    // requested (MUT-1) — and a `produtosSemEnvio` entry under the id asked for.
     const enviarEstoque = vi.fn<EnviarEstoque>().mockResolvedValue(
       envelope({
-        listings: [listing({ produtoId: 'anchor-1', produtoNome: null, linkDocId: 'lnk-a' })],
+        listings: [listing({ produtoId: 'anchor-1', produtoNome: 'Camiseta', linkDocId: 'lnk-a' })],
         produtosSemEnvio: [
           {
             produtoId: 'p2',
@@ -137,6 +138,8 @@ describe('shopeeStockProvider', () => {
       expect.objectContaining({
         key: 'anchor-1:int-1:1000001',
         produtoId: 'anchor-1',
+        // The anchor's name passes through — never the child's label, never null.
+        produtoNome: 'Camiseta',
         outcome: 'enviado',
         linkDocId: 'lnk-a',
       }),
@@ -149,6 +152,19 @@ describe('shopeeStockProvider', () => {
         motivo: 'sem-link',
         mensagem: 'O produto não tem anúncio nesta conta.',
       }),
+    ]);
+  });
+
+  it('P3b — a SELECTED anchor with a blank stored name (backend null) takes the selection label', async () => {
+    // The fallback's only job: `nomePorProdutoId` is keyed by the selection.
+    const enviarEstoque = vi
+      .fn<EnviarEstoque>()
+      .mockResolvedValue(envelope({ listings: [listing({ produtoId: 'p1', produtoNome: null })] }));
+    const res = await shopeeStockProvider.enviarEstoque(
+      input(enviarEstoque, { nomePorProdutoId: new Map([['p1', 'Camiseta da tabela']]) }),
+    );
+    expect(res.rows.map((r) => [r.produtoId, r.produtoNome])).toEqual([
+      ['p1', 'Camiseta da tabela'],
     ]);
   });
 

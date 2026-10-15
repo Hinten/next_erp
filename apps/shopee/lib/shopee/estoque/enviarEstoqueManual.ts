@@ -25,9 +25,10 @@
  * be a second copy of a decision that already has a home, and the copies drift
  * toward plausible. What this module owns is the RESOLUTION and the ACCOUNTING:
  * each requested id is resolved ONCE to its family anchor
- * ({@link resolverAnchorsShopee}, one masked batch read) — a variation child is
- * pushed through its anchor's listing — and every requested produto leaves in
- * exactly one place: its own `produtosSemEnvio` entry, or the rows of the anchor
+ * ({@link resolverAnchorsShopee}, one masked batch read, plus a masked `nome`
+ * read for an anchor nobody requested) — a variation child is pushed through its
+ * anchor's listing, under the anchor's name — and every requested produto leaves
+ * in exactly one place: its own `produtosSemEnvio` entry, or the rows of the anchor
  * it resolved to ({@link conferirContabilidadePorAnchor}).
  *
  * ⚠️ **The retry ladder is load-bearing, not ceremony.** `retryCount: 0` on a
@@ -568,7 +569,8 @@ export async function enviarEstoqueManualShopee(
     );
   }
 
-  // --- each requested id → its family anchor: ONE masked batch read, one hop.
+  // --- each requested id → its family anchor: ONE masked batch read, one hop
+  // (plus a masked `nome` read for an anchor nobody requested, for its rows).
   const resolvidos = await resolverAnchorsShopee(db, solicitados);
   const nomeDe = (produtoId: string): string | null => resolvidos.nomeDe.get(produtoId) ?? null;
 

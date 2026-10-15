@@ -85,10 +85,12 @@
  * link hangs off the family anchor. So each requested id is resolved ONCE to its
  * anchor (`core/anchors.ts`, one masked batch read): pausing a selected child
  * pauses its family's listing, a child and its own anchor move ONE listing once,
- * rows name the ANCHOR, and `produtosSemAnuncio` names the REQUESTED id. Every
+ * rows name the ANCHOR (with the anchor's own `nome`, even when only the child
+ * was selected), and `produtosSemAnuncio` names the REQUESTED id. Every
  * requested id leaves in exactly one of the two, asserted per anchor.
  *
- * **Cost**: 1 masked batch read of the requested produtos (`nome`, `paiId`), 1
+ * **Cost**: 1 masked batch read of the requested produtos (`nome`, `paiId`), plus
+ * 1 masked `nome` read of the anchors nobody requested (only when there is one), 1
  * `prodshopee` subcollection read per distinct anchor, ≤ 1 write per accepted
  * link, and ≤ 2 + N Shopee calls where N is the number of entries the re-list
  * door had to retry one by one.
@@ -682,9 +684,10 @@ export async function definirStatusAnunciosShopee(
   const alvos: AlvoDeStatus[] = [];
 
   // ---- Step 1: each requested id → its family ANCHOR (#1529): ONE masked batch
-  // read, one hop. A Shopee listing IS the family — `unlist_item` is per item —
-  // so a requested variation child moves its anchor's listing, and a child and
-  // its own anchor are ONE listing, moved once.
+  // read, one hop (plus a masked `nome` read for an anchor nobody requested, so
+  // its row carries its name). A Shopee listing IS the family — `unlist_item` is
+  // per item — so a requested variation child moves its anchor's listing, and a
+  // child and its own anchor are ONE listing, moved once.
   const resolvidos = await resolverAnchorsShopee(db, solicitados);
   const nomeDe = (produtoId: string): string | null => resolvidos.nomeDe.get(produtoId) ?? null;
 
