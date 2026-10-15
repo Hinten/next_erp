@@ -5,7 +5,9 @@ import { MOTIVO_RESOLUCAO_RECEITA_KIT } from './receitaKitShopee';
 import {
   CANAL_AVISO,
   CANAL_AVISO_LABELS,
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  MOTIVO_PEDIDO_CONTESTADO_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -19,7 +21,9 @@ import {
   chaveDeAviso,
   entradaDeLeitura,
   marcarTodosComoLidos,
+  motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaLiSchema,
+  motivoPedidoContestadoLiSchema,
   pendenciaReclamacaoSchema,
   rotaInternaSegura,
   situacaoAnuncioForaDaSincronizacaoSchema,
@@ -208,6 +212,137 @@ describe('MOTIVO_IMPORTACAO_PARADA_LI', () => {
       'Filtro-ignorado',
     ]) {
       expect(motivoImportacaoParadaLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+});
+
+describe('the four Loja Integrada order-import tipos (steps 5–6)', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('names and labels each one', () => {
+    expect(TIPO_AVISO.lojaIntegradaSituacaoDesconhecida).toBe('lojaIntegradaSituacaoDesconhecida');
+    expect(TIPO_AVISO.lojaIntegradaPedidoContestado).toBe('lojaIntegradaPedidoContestado');
+    expect(TIPO_AVISO.lojaIntegradaPedidoHub).toBe('lojaIntegradaPedidoHub');
+    expect(TIPO_AVISO.lojaIntegradaFreteNaoSuportado).toBe('lojaIntegradaFreteNaoSuportado');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaSituacaoDesconhecida).toBe(
+      'Situação desconhecida em pedido da Loja Integrada',
+    );
+    expect(TIPO_AVISO_LABELS.lojaIntegradaPedidoContestado).toBe(
+      'Pedido da Loja Integrada contestado',
+    );
+    expect(TIPO_AVISO_LABELS.lojaIntegradaPedidoHub).toBe(
+      'Pedido da Loja Integrada vindo de um hub',
+    );
+    expect(TIPO_AVISO_LABELS.lojaIntegradaFreteNaoSuportado).toBe(
+      'Forma de envio da Loja Integrada sem frete utilizável',
+    );
+  });
+
+  it('near-miss: a multi-shipment order is NOT a tipo — it is a non-blocking incidente', () => {
+    // The master plan once listed a multi-shipment aviso; it became an incidente
+    // on the pedido (multi-shipment orders are not expected at all).
+    for (const quase of ['lojaIntegradaMultiEnvio', 'lojaIntegradaPedidoContestada']) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('the three order-keyed tipos never share a row for one pedido, nor across contas', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO], conta: string) =>
+      chaveDeAviso({ tipo, conta, entidade: PEDIDO_ID });
+    const tipos = [
+      TIPO_AVISO.lojaIntegradaSituacaoDesconhecida,
+      TIPO_AVISO.lojaIntegradaPedidoContestado,
+      TIPO_AVISO.lojaIntegradaPedidoHub,
+    ];
+    expect(new Set(tipos.map((t) => chave(t, 'int-1'))).size).toBe(3);
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoContestado, 'int-1')).toBe(
+      `lojaIntegradaPedidoContestado:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoContestado, 'int-1')).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoContestado, 'int-2'),
+    );
+  });
+
+  it('why the freight key is a DIGEST: the raw key folds two shipping methods into one row', () => {
+    // `.` and `_` are one character to the aviso key, while the mapa keeps the
+    // code verbatim — so `1---PAC.X` and `1---PAC_X` (two mapa rows) would
+    // collide here. The producer digests the key instead.
+    const crua = (chave: string) =>
+      chaveDeAviso({
+        tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+        conta: 'int-1',
+        entidade: chave,
+      });
+    expect(crua('1---PAC.X')).toBe(crua('1---PAC_X'));
+  });
+
+  it('parses each plano as stored: atencao, the route, an order clock', () => {
+    const contestado = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoContestado,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165', motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa },
+      motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    expect(contestado).toMatchObject({
+      tipo: 'lojaIntegradaPedidoContestado',
+      canal: 'lojaIntegrada',
+      params: { loja: 'Conta A', pedido: '165', motivo: 'disputa' },
+      motivo: 'disputa',
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    const frete = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: {
+        loja: 'Conta A',
+        formaEnvio: 'Envio X - pac',
+        chave: '1---PAC',
+        motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo,
+      },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+    });
+    expect(frete.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(frete.params.motivo).toBe('alvo-inativo');
+  });
+});
+
+describe('MOTIVO_PEDIDO_CONTESTADO_LI', () => {
+  it('keeps the named-member constant in step with the enum, member for member', () => {
+    expect(Object.values(MOTIVO_PEDIDO_CONTESTADO_LI).sort()).toEqual(
+      [...motivoPedidoContestadoLiSchema.options].sort(),
+    );
+    expect(motivoPedidoContestadoLiSchema.options).toEqual([
+      'disputa',
+      'chargeback',
+      'devolvido',
+      'devolvido-sem-retorno',
+    ]);
+  });
+
+  it('near-miss: a cancellation is NOT a contest, and the wire codigos are not the codes', () => {
+    for (const quase of ['cancelado', 'pedido_chargeback', 'devolvido_sem_retorno', 'Disputa']) {
+      expect(motivoPedidoContestadoLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+});
+
+describe('MOTIVO_FRETE_NAO_SUPORTADO_LI', () => {
+  it('keeps the named-member constant in step with the enum, member for member', () => {
+    expect(Object.values(MOTIVO_FRETE_NAO_SUPORTADO_LI).sort()).toEqual(
+      [...motivoFreteNaoSuportadoLiSchema.options].sort(),
+    );
+    expect(motivoFreteNaoSuportadoLiSchema.options).toHaveLength(4);
+  });
+
+  it('near-miss: an unmapped method and a deliberate fob/outros mapping are NOT motivos', () => {
+    // Neither raises this aviso: the unmapped row is already the operator's to-do,
+    // and fob/outros route at label time.
+    for (const quase of ['nao-mapeado', 'fob', 'outros', 'sem-int-frete']) {
+      expect(motivoFreteNaoSuportadoLiSchema.safeParse(quase).success, quase).toBe(false);
     }
   });
 });

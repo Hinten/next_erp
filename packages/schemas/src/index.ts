@@ -465,6 +465,29 @@ export {
   type StatusContaLojaIntegrada,
 } from './contaLojaIntegrada';
 
+// THE Loja Integrada situação table (master plan step 5, #1817): codigo →
+// create estado and payment status, the capture sets, the contest motivo — the
+// order importer, the label step's paid re-check and the web all read it
+// (#1369). Not a collection: no meta, nothing to register; outside `pedido/`,
+// so no NF-e live run.
+export {
+  CODIGO_LI_CANCELADO,
+  CODIGO_LI_CANCELAMENTO_SOLICITADO,
+  CODIGO_LI_EM_DISPUTA,
+  CODIGO_SITUACAO_LI,
+  CODIGOS_LI_CAPTURADO,
+  CODIGOS_LI_ESTORNO,
+  CODIGOS_LI_PAGO,
+  SITUACOES_LI,
+  alvoDeCriacaoLi,
+  codigoSituacaoLiSchema,
+  situacaoLi,
+  type AlvoDeCriacaoLi,
+  type CodigoSituacaoLi,
+  type PorCapturaLi,
+  type SituacaoLi,
+} from './situacaoPedidoLojaIntegrada';
+
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
 // Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
 // `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the
@@ -1469,6 +1492,10 @@ export {
   PENDENCIA_RECLAMACAO,
   motivoImportacaoParadaLiSchema,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  motivoPedidoContestadoLiSchema,
+  MOTIVO_PEDIDO_CONTESTADO_LI,
+  motivoFreteNaoSuportadoLiSchema,
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1487,6 +1514,8 @@ export {
   type RotaAvisoKey,
   type PendenciaReclamacao,
   type MotivoImportacaoParadaLi,
+  type MotivoPedidoContestadoLi,
+  type MotivoFreteNaoSuportadoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
