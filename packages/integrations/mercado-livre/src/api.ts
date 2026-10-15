@@ -759,12 +759,13 @@ export interface MercadoLivreApi {
    * must therefore be idempotent, and must NOT keep a `sent`-based cursor —
    * an entry filed after a run would sit permanently below such a cursor.
    *
-   * `topic` is ML's documented filter. It is exposed for diagnostics but the
-   * sweep deliberately does not use it: it cannot reduce the number of entries
-   * that must be read, only split them across one request per topic.
+   * `items` requires `siteId`; query each site separately. Other topics can
+   * use the app-wide feed or the documented `topic` filter.
    */
   getMissedFeeds(params: {
     appId: string;
+    /** Required by ML for topic=items. */
+    siteId?: string;
     topic?: string;
     limit?: number;
     offset?: number;
@@ -1479,9 +1480,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     // `buildUrl` drops every `undefined` query value, so an omitted `topic` /
     // `limit` / `offset` simply does not reach the URL — do NOT add `?? 0`
     // defaults here, that would pin ML's own defaults to ours.
-    getMissedFeeds: ({ appId, topic, limit, offset }) =>
+    getMissedFeeds: ({ appId, topic, siteId, limit, offset }) =>
       request('GET', '/missed_feeds', mlMissedFeedsSchema, {
-        query: { app_id: appId, topic, limit, offset },
+        query: { app_id: appId, topic, site_id: siteId, limit, offset },
       }),
   };
 }
@@ -1602,6 +1603,8 @@ function httpErrorFromBody(
     return new MercadoLivreReauthRequiredError(
       'refresh_failed',
       message ?? 'Token do Mercado Livre inválido. Reconecte a conta.',
+      res.status,
+      body,
     );
   }
   return new MercadoLivreHttpError(

@@ -20,6 +20,7 @@
     "promote:fixtures": "tsx scripts/promote-fixtures.ts",
     "verify:wire": "dotenv -e ../../.env.local -- tsx scripts/verify-wire-live.ts",
     "inspect:anuncio": "dotenv -e ../../.env.local -- tsx scripts/inspect-anuncio.ts",
+    "probe:missed-feeds": "tsx scripts/probe-missed-feeds.ts",
     "probe:package-format": "dotenv -e ../../.env.local -- tsx scripts/probe-package-format.ts",
     "inspect:pedido": "dotenv -e ../../.env.local -- tsx scripts/inspect-pedido.ts",
     "dump:notificacoes": "dotenv -e ../../.env.local -- tsx scripts/dump-notificacoes.ts",

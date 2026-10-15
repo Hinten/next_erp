@@ -104,20 +104,26 @@ The per-surface notes below stay the authority on behaviour.
   WHOLE resource because `<topic>:<last segment>` would collide `/orders/7` with
   `/shipments/7`. The doc's `id` FIELD stays null — the derived value keys the document, it
   is not a claim ML issued one.
-- `lib/marketplace/notificacoes/missedFeedsSweep.ts` — **#812**: the daily 05:00 `missed_feeds`
-  backstop. Everything else in this channel can only re-drive a notification that was
-  RECEIVED; this asks ML what it failed to deliver (`GET /missed_feeds` — filed only
-  after its ~8 retries over ~1h, retained 2 days) and replays each entry onto the same
-  queue a webhook feeds. It is the mitigation that makes `minInstances: 0` defensible
-  (a blown ack is recovered next morning, at up to ~24h latency — the decision and its
-  cost are recorded in `apphosting.yaml`). ⚠️ It keeps **NO cursor**, deliberately: the
-  feed has no time filter, and an entry is filed ~1h AFTER ML gives up, so a `sent`-based
-  cursor advanced at 05:00 would permanently skip one sent at 04:55. Coverage rests on
-  `period × 2 ≤ 48h retention` instead — stretching the cron silently deletes the
-  backstop (`functions/src/index.test.ts` asserts the literal). Unknown topics are
-  skipped and counted, never enqueued, so a replay cannot park a fresh doc every morning
-  (#813); `request`/`response` are stripped from every entry (the callback URL is a leak
-  surface, #811). Flag-gated OFF behind `MERCADO_LIVRE_MISSED_FEEDS_ENABLED`.
+- `lib/marketplace/notificacoes/missedFeedsSweep.ts` — **#812 / #1292**: the daily
+  05:00 application-wide missed-delivery backstop. `missedFeedsAccess.ts` enumerates
+  active ML integrations in document-ID order and selects the first refreshable
+  token that can read `items` for the first configured site. Seller-only 401/403s
+  are skipped without revoking grants; outages are failures, never "no account".
+  It pages the feed ONCE per app, preserving each entry's `user_id` for the existing
+  queue's seller routing and deferred lane. `items` is always read per site
+  (`MERCADO_LIVRE_MISSED_FEEDS_SITE_IDS`, default MLB); an unfiltered stream adds
+  the other topics. Only an explicit missing-site 400 switches that stream to
+  separate non-ignored known-topic streams. Unknown topics and ignored topics
+  are counted separately. `actions` survives; `request`/`response` do not.
+  No cursor: late-filed entries and 48h retention require daily complete drains.
+  All streams share in-tick dedup; failed enqueues do not consume a dedup key.
+  Health is `missedFeedsMercadoLivre/app-<appId>`, protected against older
+  overlapping runs, with `lastSuccessAtUs` advanced only on complete coverage.
+  Missing access, stream errors, page caps and time exhaustion fail the scheduled
+  invocation. Ships OFF behind `MERCADO_LIVRE_MISSED_FEEDS_ENABLED`.
+  `probe:missed-feeds --project <id>` reports sanitized live contract evidence
+  without enqueueing; token refresh may persist a fresh credential. Live provider
+  verification remains required before acceptance; agents do not deploy.
 - `lib/marketplace/core/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/core/tokenStore.ts` — the durable-token store over the admin-only

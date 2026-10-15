@@ -89,7 +89,7 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 | `onAnuncioCategoriaAlterada`             | `onDocumentWritten` (`produtos/{produtoId}/produtoMercadoLivre/{linkId}`, `retry: true`)                     | #847 — raises the `anuncioCategoriaAlterada` aviso when ML recategorized a LIVE listing and the produto's ERP category (which picks the price formulas' commission and the NF-e taxes) still names the category ML left; closes it when the listing stops being live or its link is deleted. Decides from the event payload before any read, so routine link writebacks cost nothing. The ONE Firestore trigger here that **binds both secrets**: its raise reads the new category (creating it in `categorias`, create-if-absent) and ML's fee preview. ML failures degrade to an aviso with ids only; Firestore failures retry.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `onProdutoCategoriaAlterada`             | `onDocumentWritten` (`produtos/{produtoId}`, named `default` DB, `retry: true`)                              | #847 — closes every open `anuncioCategoriaAlterada` aviso of a produto the moment an operator changes its ERP category (`categoria-erp-alinhada` / `categoria-erp-alterada`). Runs on EVERY produto write but decides from the payload first: only a real `categoriaProdutoOuterRef` change reads anything. Binds **no secrets**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `processMercadoLivreNfeUpload`           | `onTaskDispatched` (Cloud Tasks queue)                                                                       | Step 12 (#739) — uploads the raw signed nfeProc XML to ML `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` so the shipment leaves `invoice_pending`. One task = one NF-e (no self-continuation); 6 attempts over a ≈25–30 min backoff envelope. **Zero writes on the happy path** — idempotency is the live shipment-status gate; the flow's only Firestore write is the failure stamp `freteInicial.estado = 'error'` on the pedido, with the detail in structured Cloud Logging. Single in-flight dispatch. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `sweepMercadoLivreMissedFeeds`           | `onSchedule('0 5 * * *')`                                                                                    | #812 — the **`missed_feeds` backstop**, 05:00 America/Sao_Paulo: asks ML what it FAILED to deliver to our webhook (`GET /missed_feeds`; an entry is filed only after ML's ~8 retries over ~1h, retained 2 days) and replays each known-topic entry onto the notification queue — the same idempotent path a real webhook takes. It is the only recovery for a notification that was **never received**; everything else here can only re-drive what already landed. ⚠️ The DAILY period is load-bearing: the feed has no time filter, so the sweep keeps **no cursor** and coverage rests entirely on `period × 2 ≤ 48h retention` — stretching the cron silently deletes the backstop for anything filed between runs (`src/index.test.ts` asserts the literal). Unknown topics are skipped and counted, never enqueued, so a replay cannot park a fresh doc every morning (#813). `MERCADO_LIVRE_CLIENT_ID` does double duty: token refresh **and** the `app_id` query param. **No-op until `MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1`.** `timeoutSeconds: 540`; binds both secrets. |
+| `sweepMercadoLivreMissedFeeds`           | `onSchedule('0 5 * * *')`                                                                                    | #812 / #1292 — the app-wide **`missed_feeds` backstop**, 05:00 America/Sao_Paulo: asks ML what it FAILED to deliver to our webhook (`GET /missed_feeds`; an entry is filed only after ML's ~8 retries over ~1h, retained 2 days) and replays each known-topic entry onto the notification queue — the same idempotent path a real webhook takes. It is the only recovery for a notification that was **never received**; everything else here can only re-drive what already landed. ⚠️ The DAILY period is load-bearing: the feed has no time filter, so the sweep keeps **no cursor** and coverage rests entirely on `period × 2 ≤ 48h retention` — stretching the cron silently deletes the backstop for anything filed between runs (`src/index.test.ts` asserts the literal). Unknown topics are skipped and counted, never enqueued, so a replay cannot park a fresh doc every morning (#813). `MERCADO_LIVRE_CLIENT_ID` does double duty: token refresh **and** the `app_id` query param. **No-op until `MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1`.** `timeoutSeconds: 540`; binds both secrets. |
 | `sweepMercadoLivrePedidosTravados`       | `onSchedule('0 4 * * 1')`                                                                                    | #1087 follow-up — the **weekly** release of pedidos stuck awaiting a payment that never resolved, Monday 04:00 America/Sao_Paulo, and the only TIME-based release in this channel (every other one is event-driven, so a reservation whose terminal ML event never arrived was held forever). Mostly a RE-DRIVER: it asks ML and enqueues a synthetic `orders_v2` so the existing import arms decide, writing `pagamentoNaoRealizado` itself only when ML still reports the order pre-payment past the horizon. ⚠️ **It ENDS SALES**: no-op until `MERCADO_LIVRE_PEDIDO_TRAVADO_SWEEP_ENABLED=1`, and `MERCADO_LIVRE_PEDIDO_TRAVADO_DRY_RUN=1` decides and counts without writing — run the dry run first. `timeoutSeconds: 540`; binds both secrets.                                                                                                                                                                                                                                                                                                                              |
 
 **All 19 exports above are deployed targets** — one `firebase deploy --only functions:mercado-livre`
@@ -850,6 +850,8 @@ MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
 # The missed_feeds backstop (#812). Enable it in the deploy that PRECEDES the
 # callback-URL flip, not after — see the note below and the cutover section.
 MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1
+# Item sites queried separately; blank/unset also defaults to MLB.
+MERCADO_LIVRE_MISSED_FEEDS_SITE_IDS=MLB
 # The high-stock skip on the incremental tier (ADR 0014). Default 100.
 MERCADO_LIVRE_STOCK_LIMIAR_ALTO=100
 # ESCAPE HATCH (#1087) — leave it COMMENTED OUT: the default (absent) is the
@@ -976,15 +978,47 @@ Two reasons the "after" reading is worse than merely late:
 So: **enable it in the functions deploy that precedes the URL switch.** That is
 the only position which is neither a mid-window redeploy nor an early ingestion.
 
-On the first enabled run, read two fields of its log line:
+### Missed-feed access and verification (#1292)
 
-- **`httpCodes`** — ML's record of what OUR endpoint answered. A wall of `5xx`
-  means the receiver was failing; timeouts point at the cold-start hypothesis
-  behind `minInstances: 0` (see `apps/mercado-livre/apphosting.yaml`).
-- **`escopoAparente`** — whether ML's response looks `app-wide` or `per-seller`.
-  ML does not document this, and the sweep is written to be correct either way;
-  once this reads `app-wide` for a week, the follow-up that collapses it to a
-  single API call per tick is safe to take.
+The feed belongs to the application. The sweep discovers active integrations in
+stable ID order and uses the first token accepted by a site-qualified items read.
+It reuses that first page, then reads each application stream only once. No owner
+integration ID is configured. The app owner must be connected through the existing
+OAuth flow; disconnecting that account can disable recovery if no other accepted
+credential exists. A seller rejected by this endpoint keeps its seller credential.
+
+Items are queried for every configured `MERCADO_LIVRE_MISSED_FEEDS_SITE_IDS`
+(default `MLB`). The unfiltered feed is also drained; only an explicit
+missing-site HTTP 400 changes it to separate non-ignored known-topic queries.
+Unrelated 400s, rate limits and outages fail coverage rather than triggering a
+fallback or being reported as an absent account.
+
+Before acceptance, run the diagnostic with explicitly exported runtime credentials
+and a staging project (no environment file is loaded by the command):
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app probe:missed-feeds --project <staging-project>
+```
+
+`FIREBASE_PROJECT_ID` must already equal `--project`. The command compares
+unfiltered, items without site, and items with site, reporting statuses, response
+shapes and topic counts only. It does not enqueue, modify callback configuration
+or print tokens/raw bodies. Resolving a credential can refresh and persist its
+rotating token. Empty pages cannot establish whether unfiltered results contain
+items. Attach observed results to #1292; unit tests are not live evidence.
+
+On enabled runs, inspect `complete`, `selectedIntegracaoId`, `streams`,
+`errors`, `topicosPulados`, and `httpCodes`. Health lives at
+`missedFeedsMercadoLivre/app-<appId>`; old per-integration rows are historical
+only. `lastSweepAtUs` marks the latest attempt, and `lastSuccessAtUs` advances
+only when every required stream reaches an empty page. Page caps, the 480-second
+collection budget, missing access and stream failures produce an ERROR summary
+and a failed scheduled invocation. A slower older run cannot replace newer health.
+
+Deploy the corrected functions and site configuration as human-operated cutover
+work before the callback switch, following #1208 phase ordering. Agents do not
+perform that deployment or enable the flag. Any additional cutover tracking issue
+requires human approval before creation. No business-data backfill is required.
 
 ### ⚠️ The flag ships OFF — flip it only at the coordinated cutover
 

@@ -1,65 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import {
-  missedFeedsMercadoLivreMeta,
-  missedFeedsMercadoLivreSchema,
-} from './missedFeedsMercadoLivre';
+import { missedFeedsMercadoLivreMeta, missedFeedsMercadoLivreSchema } from './missedFeedsMercadoLivre';
 import { ALL_DOMAINS } from './registry';
 
 describe('missedFeedsMercadoLivreSchema', () => {
-  it('parses an empty doc with all defaults (conta never swept)', () => {
+  it('defaults an unswept diagnostic to incomplete with no successful run', () => {
     expect(missedFeedsMercadoLivreSchema.parse({})).toEqual({
-      lastSweepAtUs: null,
-      lastError: null,
-      lastFoundCount: null,
-      lastEnqueuedCount: null,
-      lastSkippedCount: null,
-      lastTruncated: null,
+      appId: null, selectedIntegracaoId: null, complete: false, streams: [],
+      lastSweepAtUs: null, lastSuccessAtUs: null, lastError: null,
+      lastFoundCount: null, lastEnqueuedCount: null, lastSkippedCount: null, lastTruncated: null,
     });
   });
-
-  it('round-trips a clean-sweep doc (µs values preserved)', () => {
-    const doc = {
-      lastSweepAtUs: 1718003900000000,
-      lastError: null,
-      lastFoundCount: 7,
-      lastEnqueuedCount: 5,
-      lastSkippedCount: 2,
-      lastTruncated: false,
-    };
-    expect(missedFeedsMercadoLivreSchema.parse(doc)).toEqual(doc);
+  it('retains old diagnostic rows without interpreting them as app success', () => {
+    const parsed = missedFeedsMercadoLivreSchema.parse({ lastSweepAtUs: 1718003900000000, lastFoundCount: 7 });
+    expect(parsed).toMatchObject({ lastSweepAtUs: 1718003900000000, appId: null, complete: false, lastSuccessAtUs: null });
   });
-
-  it('round-trips a contained-error doc (counters left null)', () => {
-    const doc = {
-      lastSweepAtUs: 1718003900000000,
-      lastError: 'Token do Mercado Livre inválido. Reconecte a conta.',
-      lastFoundCount: null,
-      lastEnqueuedCount: null,
-      lastSkippedCount: null,
-      lastTruncated: null,
-    };
-    expect(missedFeedsMercadoLivreSchema.parse(doc)).toEqual(doc);
-  });
-
-  it('round-trips a TRUNCATED doc — capacity signal, lastError stays null', () => {
-    const parsed = missedFeedsMercadoLivreSchema.parse({
-      lastSweepAtUs: 1718003900000000,
-      lastError: null,
-      lastFoundCount: 1000,
-      lastEnqueuedCount: 1000,
-      lastSkippedCount: 0,
-      lastTruncated: true,
+  it('round-trips application health and stream coverage in microseconds', () => {
+    const doc = missedFeedsMercadoLivreSchema.parse({
+      appId: '42', selectedIntegracaoId: 'owner', complete: true,
+      lastSweepAtUs: 1718003900000000, lastSuccessAtUs: 1718003900000000,
+      streams: [{ topic: 'items', siteId: 'MLB', pages: 1, found: 0, novos: 0,
+        enqueued: 0, skippedTopic: 0, skippedIgnorado: 0, skippedInvalid: 0,
+        complete: true, truncated: false, error: null }],
     });
-    expect(parsed.lastTruncated).toBe(true);
-    expect(parsed.lastError).toBeNull();
+    expect(doc.lastSuccessAtUs).toBe(1718003900000000);
+    expect(missedFeedsMercadoLivreSchema.parse(doc)).toEqual(doc);
   });
-
-  it('carries NO cursor field — the absence is the design (#812)', () => {
-    // `GET /missed_feeds` has no time filter, and an entry is filed ~1h after
-    // ML gives up, so a `sent`-based cursor advanced at 05:00 would permanently
-    // skip an entry sent at 04:55. Retention (48h) vs schedule period (24h) is
-    // what guarantees coverage instead. If this ever fails, someone re-added a
-    // cursor and must re-read the schema docstring first.
+  it('has no feed cursor', () => {
     expect(Object.keys(missedFeedsMercadoLivreSchema.shape)).not.toContain('cursorUs');
   });
 });
