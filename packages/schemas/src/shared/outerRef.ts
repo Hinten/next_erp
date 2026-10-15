@@ -128,3 +128,27 @@ export function parseRef(raw: string): { collection: string; id: string } {
     id: segs[segs.length - 1] ?? '',
   };
 }
+
+/** Firestore reserves both relative-path names; either one addresses elsewhere. */
+const NOMES_RELATIVOS = new Set(['.', '..']);
+
+/**
+ * Is this untrusted value unusable as a Firestore **document id**?
+ *
+ * `.doc()` validates the resulting PATH, not the id, and it does so outside any
+ * `try` the caller owns. Measured against a real `firebase-admin` Firestore:
+ * `''` throws ("Path must be a non-empty string"), `'a/b'` throws ("must point
+ * to a document"), and `'a/b/c'` does NOT throw — it resolves to a document two
+ * levels below the collection meant, which comes back as a puzzling miss. This
+ * refuses all three with one condition, plus the two relative-path names
+ * Firestore reserves.
+ *
+ * TYPE-checked and never truthiness-checked: a non-string that happens to be
+ * truthy sails past a `!value` guard and then throws deep inside `.doc(id)`.
+ * (Moved here from `apps/shopee`'s `corpoPublicacao.ts`, which re-exports it,
+ * so `lerRefTabelaDeMedidas` (`tabelaDeMedidas.ts`) and the Shopee
+ * request-body readers share ONE predicate.)
+ */
+export function naoDocId(v: unknown): boolean {
+  return typeof v !== 'string' || v === '' || v.includes('/') || NOMES_RELATIVOS.has(v);
+}

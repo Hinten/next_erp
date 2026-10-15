@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ESTADO_ANUNCIO_SHOPEE } from './shopeeLink';
 import {
   anuncioShopeeVivo,
+  mecanismosDaRecusaAnterior,
   pularPorRecusaAnterior,
   recusaEstoqueDoAnuncioShopeeLegivel,
   recusaEstoqueDoModeloShopeeLegivel,
@@ -338,6 +339,58 @@ describe('pularPorRecusaAnterior — o mecanismo de TEMPO', () => {
     ];
     for (const doc of lixo) {
       expect(() => pularPorRecusaAnterior(doc, AGORA)).not.toThrow();
+    }
+  });
+});
+
+describe('mecanismosDaRecusaAnterior — QUAL metade está armada (a aba diz por quê)', () => {
+  const lendo = { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo, item_status: 'NORMAL' } as const;
+  const impressao = {
+    estoqueRecusaEm: AGORA - 1_000,
+    estoqueRecusaEstado: ESTADO_ANUNCIO_SHOPEE.ativo,
+    estoqueRecusaItemStatus: 'NORMAL',
+  } as const;
+
+  it('separa as duas metades: só TEMPO, só ESTADO, as duas, nenhuma', () => {
+    expect(
+      mecanismosDaRecusaAnterior(link({ ...lendo, estoqueRecusaAte: AGORA + 60_000 }), AGORA),
+    ).toStrictEqual({ tempo: true, estado: false });
+    expect(mecanismosDaRecusaAnterior(link({ ...lendo, ...impressao }), AGORA)).toStrictEqual({
+      tempo: false,
+      estado: true,
+    });
+    expect(
+      mecanismosDaRecusaAnterior(
+        link({ ...lendo, ...impressao, estoqueRecusaAte: AGORA + 60_000 }),
+        AGORA,
+      ),
+    ).toStrictEqual({ tempo: true, estado: true });
+    // NEAR-MISS: o prazo no INSTANTE exato já não arma (< estrito), e a leitura movida
+    // desarma o ESTADO.
+    expect(
+      mecanismosDaRecusaAnterior(
+        link({
+          ...impressao,
+          estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado,
+          item_status: 'UNLIST',
+          estoqueRecusaAte: AGORA,
+        }),
+        AGORA,
+      ),
+    ).toStrictEqual({ tempo: false, estado: false });
+  });
+
+  it('pularPorRecusaAnterior é exatamente tempo || estado', () => {
+    for (const extra of [
+      {},
+      { estoqueRecusaAte: AGORA + 1 },
+      impressao,
+      { ...impressao, estoqueRecusaAte: AGORA + 1 },
+      { ...impressao, estoqueRecusaAte: AGORA - 1 },
+    ]) {
+      const l = link({ ...lendo, ...extra });
+      const { tempo, estado } = mecanismosDaRecusaAnterior(l, AGORA);
+      expect(pularPorRecusaAnterior(l, AGORA)).toBe(tempo || estado);
     }
   });
 });

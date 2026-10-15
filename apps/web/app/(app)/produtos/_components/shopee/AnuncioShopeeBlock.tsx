@@ -32,8 +32,9 @@ export interface AnuncioShopeeBlockProps {
 /**
  * One Shopee listing (`data-testid="shopee-anuncio-<linkDocId>"`), top to
  * bottom: its state, what was refused on it, what Shopee says is wrong with it,
- * the size chart a publish would send, on demand its models — then the outcome
- * of the last action on it, and the action row.
+ * the template entry the produto's tabela de medidas holds for this listing
+ * (never what a publish sent — residual 7), on demand its models — then the
+ * outcome of the last action on it, and the action row.
  *
  * Every value shown comes from the live link document (or, for the models, a
  * one-shot read): an action calls an apps/shopee route, and the block repaints

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -11,12 +11,14 @@ import {
   SHOPEE_MODEL_STATUS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
 } from '@delfrance/schemas';
+import { formatReais } from '@delfrance/core/money';
 import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
   type ShopeeClient,
 } from '@/lib/shopee/client';
 import { CODIGO_FALHA_SHOPEE } from '@/lib/shopee/erros';
+import { formatarInstanteShopee } from '@/lib/shopee/anuncioProduto';
 import {
   DETALHES_ERRO_SHOPEE_VAZIOS,
   type AnuncioStatusShopee,
@@ -62,6 +64,8 @@ const h = vi.hoisted(() => ({
   /** What `useShopeeClient` hands the editor (`null` = no signed-in user yet). */
   client: null as ShopeeClient | null,
   notify: vi.fn(),
+  /** Every `tabMedi` doc id the tab built a ref to — WHICH tabela it chose to read. */
+  tabMediIds: [] as string[],
 }));
 
 vi.mock('@/lib/shopee/client', async (importOriginal) => {
@@ -125,7 +129,12 @@ vi.mock('@/lib/data/variacaoShopeeLinkCollection', () => ({
   },
 }));
 vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
-  tabelaDeMedidasCollection: { docRef: () => ({ __doc: 'tabMedi' }) },
+  tabelaDeMedidasCollection: {
+    docRef: (_db: unknown, _ctx: unknown, id: string) => {
+      h.tabMediIds.push(id);
+      return { __doc: 'tabMedi' };
+    },
+  },
 }));
 
 const { ShopeeEditor } = await import('./ShopeeEditor');
@@ -176,6 +185,7 @@ beforeEach(() => {
   h.tabMedi = null;
   h.carregando = false;
   h.consultas = new Set();
+  h.tabMediIds = [];
   h.permitidos = new Set([PERM.integracao.read]);
   h.client = shopeeClientFalso();
   h.notify.mockReset();
@@ -381,6 +391,73 @@ describe('ShopeeEditor — refusals and violations, through the shared readers',
     expect(within(bloco('L-movido')).queryByText('Estoque recusado')).toBeNull();
   });
 
+  describe('the stock suspension, worded by WHICH half of the skip set is armed', () => {
+    // `agoraMs` is captured when the editor mounts, so the clock is frozen
+    // BEFORE the render; only `Date` is faked (no timer is involved).
+    const AGORA = Date.UTC(2026, 9, 15, 15);
+    const PRAZO = AGORA + 60_000;
+    /** A clean send NEWER than the refusal: the sentence alone would hide it. */
+    const superada = { estoqueRecusaEm: AGORA - 120_000, estoqueEnviadoEm: AGORA - 60_000 };
+    const impressao = {
+      estoqueRecusaEstado: ESTADO_ANUNCIO_SHOPEE.ativo,
+      estoqueRecusaItemStatus: 'NORMAL',
+      item_status: 'NORMAL',
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers({ now: AGORA, toFake: ['Date'] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('TIME only: suspended until the deadline, never "it comes back when the listing changes"', () => {
+      h.links = [
+        link('L-tempo', { ...superada, estoqueRecusaAte: PRAZO }),
+        // NEAR-MISS: a deadline one millisecond ago no longer holds anything.
+        link('L-vencido', { ...superada, item_id: 1000002, estoqueRecusaAte: AGORA - 1 }),
+        // NEAR-MISS: the exact instant already releases (strict `<`).
+        link('L-exato', { ...superada, item_id: 1000003, estoqueRecusaAte: AGORA }),
+      ];
+      renderEditor();
+      const b = within(bloco('L-tempo'));
+      expect(b.getByText('Estoque recusado')).toBeDefined();
+      expect(
+        b.getByText(
+          `O envio automático de estoque está suspenso para este anúncio até ${formatarInstanteShopee(PRAZO)!}.`,
+        ),
+      ).toBeDefined();
+      expect(b.queryByText(/neste mesmo estado/)).toBeNull();
+      expect(b.queryByText(/quando o anúncio mudar/)).toBeNull();
+      for (const id of ['L-vencido', 'L-exato']) {
+        expect(within(bloco(id)).queryByText('Estoque recusado')).toBeNull();
+        expect(within(bloco(id)).queryByText(/suspenso/)).toBeNull();
+      }
+    });
+
+    it('both halves: until the deadline, and after it until the listing changes', () => {
+      h.links = [link('L-ambos', { ...superada, ...impressao, estoqueRecusaAte: PRAZO })];
+      renderEditor();
+      expect(
+        within(bloco('L-ambos')).getByText(
+          `O envio automático de estoque está suspenso para este anúncio até ${formatarInstanteShopee(PRAZO)!}; depois disso, como a Shopee já o recusou neste mesmo estado, só volta quando o anúncio mudar.`,
+        ),
+      ).toBeDefined();
+    });
+
+    it('STATE only: a deadline already past is not printed as what holds it', () => {
+      h.links = [link('L-estado', { ...superada, ...impressao, estoqueRecusaAte: AGORA - 1 })];
+      renderEditor();
+      const b = within(bloco('L-estado'));
+      expect(
+        b.getByText(
+          'O envio automático de estoque está suspenso para este anúncio: a Shopee já o recusou neste mesmo estado. Ele volta quando o anúncio mudar.',
+        ),
+      ).toBeDefined();
+      expect(b.queryByText(/Prazo registrado|até /)).toBeNull();
+    });
+  });
+
   it('lists the violations, a legacy row as a duration and never a date', () => {
     h.links = [
       link('L1', {
@@ -443,6 +520,50 @@ describe('ShopeeEditor — the size chart a listing resolves to', () => {
         .getByRole('link', { name: /Abrir tabela/ })
         .getAttribute('href'),
     ).toBe('/medidas/tm-1');
+    expect(h.tabMediIds).toEqual(['tm-1']);
+  });
+
+  it.each([
+    ['another collection', 'documents/produtos/tm-1'],
+    ['another collection, bare form', 'categorias/tm-1'],
+    ['a bare id (no collection)', 'tm-1'],
+    ['a subcollection below a tabela', 'documents/tabMedi/tm-1/fotos/f-1'],
+    ['a relative-path id', 'documents/tabMedi/..'],
+  ])(
+    'reads NO tabela for a ref publish would not resolve (%s) — the shared rule, not the last segment',
+    (_rotulo, ref) => {
+      h.produto = { nome: 'Camiseta', paiId: null, tabelaDeMedidasModaUid: ref };
+      // Present on purpose: reading `tabMedi/<last segment>` would find it.
+      h.tabMedi = {
+        nome: 'Camisetas adulto',
+        tabelasMedidasShopee: {
+          'int-1': [{ categoryId: 100087, size_chart_id: 700024639, name: 'Camisetas' }],
+        },
+      };
+      h.links = [link('L1', { category_id: 100087 })];
+      renderEditor();
+      expect(h.tabMediIds).toEqual([]);
+      expect(
+        within(bloco('L1')).getByText(
+          `Tabela de medidas: o produto aponta para algo que não é uma tabela de medidas (${ref}).`,
+        ),
+      ).toBeDefined();
+      expect(within(bloco('L1')).queryByText(/modelo #/)).toBeNull();
+    },
+  );
+
+  it('NEAR-MISS: the bare `tabMedi/<id>` form resolves to the same tabela as the canonical one', () => {
+    h.produto = { nome: 'Camiseta', paiId: null, tabelaDeMedidasModaUid: 'tabMedi/tm-1' };
+    h.tabMedi = {
+      nome: 'Camisetas adulto',
+      tabelasMedidasShopee: {
+        'int-1': [{ categoryId: 100087, size_chart_id: 700024639, name: 'Camisetas' }],
+      },
+    };
+    h.links = [link('L1', { category_id: 100087 })];
+    renderEditor();
+    expect(h.tabMediIds).toEqual(['tm-1']);
+    expect(within(bloco('L1')).getByText(/modelo #700024639/)).toBeDefined();
   });
 
   it('says the produto has no tabela when it names none', () => {
@@ -492,6 +613,82 @@ describe('ShopeeEditor — the models, read only on demand', () => {
     // Each child read by its own path, never a collection-group query.
     expect(h.getDocs).toHaveBeenCalledWith(expect.objectContaining({ produtoId: 'f1' }));
   });
+
+  it('bounds each model refusal by the stamps the shared readers name — its own AND the listing’s', async () => {
+    h.links = [link('L1', { precoEnviadoEm: 1_000, estoqueEnviadoEm: 1_000 })];
+    const L1 = 'documents/produtos/prod-1/prodshopee/L1';
+    h.filhos = [
+      { id: 'f1', data: { nome: 'Camiseta P', paiId: 'prod-1' } },
+      { id: 'f2', data: { nome: 'Camiseta M', paiId: 'prod-1' } },
+      { id: 'f3', data: { nome: 'Camiseta G', paiId: 'prod-1' } },
+    ];
+    // f1 — both refusals NEWER than every stamp: both cells show "Recusado".
+    h.varLinks.set('f1', [
+      {
+        id: 'v-f1',
+        data: {
+          produtoShopeeOuterRef: L1,
+          model_id: 2000001,
+          precoRecusaEm: 2_000,
+          precoRecusaCodigo: 'error_price_too_low',
+          estoqueRecusaEm: 1_500,
+          estoqueRecusaCodigo: 'error_estoque',
+        },
+      },
+    ]);
+    // f2 — NEAR-MISS on the LISTING's stamps: each refusal 1 ms older than the
+    // listing's clean send, no stamp of its own. Both hide.
+    h.varLinks.set('f2', [
+      {
+        id: 'v-f2',
+        data: {
+          produtoShopeeOuterRef: L1,
+          model_id: 2000003,
+          precoEnviado: 39.9,
+          precoRecusaEm: 999,
+          precoRecusaCodigo: 'error_anchor_item',
+          estoqueRecusaEm: 999,
+          estoqueRecusaCodigo: 'error_estoque_velho',
+        },
+      },
+    ]);
+    // f3 — NEAR-MISS on the model's OWN price stamp (newer than the listing's,
+    // so only its own hides it); its stock refusal TIES the listing's send,
+    // and a tie shows.
+    h.varLinks.set('f3', [
+      {
+        id: 'v-f3',
+        data: {
+          produtoShopeeOuterRef: L1,
+          model_id: 2000004,
+          precoEnviado: 29.9,
+          precoRecusaEm: 2_000,
+          precoEnviadoEm: 2_001,
+          precoRecusaCodigo: 'error_anchor_modelo',
+          estoqueRecusaEm: 1_000,
+          estoqueRecusaCodigo: 'error_estoque_empate',
+        },
+      },
+    ]);
+    renderEditor();
+    fireEvent.click(within(bloco('L1')).getByRole('button', { name: 'Ver variações' }));
+    const tabela = await waitFor(() => screen.getByTestId('shopee-modelos-L1'));
+    /** [Variação, Modelo, Situação, Estoque, Preço] of one child's row. */
+    const celulas = (nome: string) =>
+      within(within(tabela).getByText(nome).closest('tr')!)
+        .getAllByRole('cell')
+        .map((c) => c.textContent);
+
+    expect(celulas('Camiseta P').slice(3)).toEqual([
+      'Recusado (error_estoque)',
+      'Recusado (error_price_too_low)',
+    ]);
+    expect(celulas('Camiseta M').slice(3)).toEqual(['—', formatReais(39.9)]);
+    expect(celulas('Camiseta G').slice(3)).toEqual([
+      'Recusado (error_estoque_empate)',
+      formatReais(29.9),
+    ]);
+  });
 });
 
 describe('ShopeeEditor — what it does not read', () => {
@@ -506,6 +703,25 @@ describe('ShopeeEditor — what it does not read', () => {
     expect(screen.queryByTestId('shopee-anuncio-L1')).toBeNull();
     // Not merely hidden: the child's listing subcollection is never queried.
     expect(h.consultas.has('prodshopee')).toBe(false);
+  });
+
+  it('calls a produto a child by the publish dispatcher’s rule: a blank paiId is a child, an empty one a root', () => {
+    // `' '` — the dispatcher refuses its Republicar as `produto-e-filho`, so the
+    // tab must not offer it as a root (a trim would).
+    h.produto = { nome: 'Camiseta P', paiId: ' ' };
+    h.links = [link('L1')];
+    const { unmount } = renderEditor();
+    expect(screen.getByTestId('shopee-variacao-filha')).toBeDefined();
+    expect(h.consultas.has('prodshopee')).toBe(false);
+    unmount();
+
+    // NEAR-MISS: `''` is a root for every server rule — the links are read.
+    h.produto = { nome: 'Camiseta', paiId: '' };
+    h.consultas = new Set();
+    renderEditor();
+    expect(screen.queryByTestId('shopee-variacao-filha')).toBeNull();
+    expect(h.consultas.has('prodshopee')).toBe(true);
+    expect(bloco('L1')).toBeDefined();
   });
 
   it('asks for the integrações read permission instead of hitting a permission-denied', () => {
