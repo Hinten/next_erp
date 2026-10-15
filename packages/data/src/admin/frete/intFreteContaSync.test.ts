@@ -393,6 +393,29 @@ describe('diffCamposIntFrete', () => {
 
 /* --------------------------- every binding (T1–T19) ----------------------- */
 
+/** The rows of `VINCULO_INT_FRETE_CONTA`, named by `int_frete.tipo` and sorted. */
+const TIPOS_DE_TODA_LINHA = Object.values(V)
+  .map((v) => v.tipoFrete)
+  .sort();
+
+describe('CENARIOS — the parameterised suite covers every binding', () => {
+  // `describe.each(CENARIOS)` below carries every reconcile test (T1–T9, T11–T13, T15–T20,
+  // T52–T54, T56, T57) for each channel. A row dropped here, or a new channel's row never
+  // added, silently removes that channel's whole suite while every test left still passes, so
+  // the table is pinned to the schema's rows rather than to a count.
+  it('has exactly one scenario per VINCULO_INT_FRETE_CONTA row', () => {
+    expect(CENARIOS.map((c) => c.vinculo.tipoFrete).sort()).toEqual(TIPOS_DE_TODA_LINHA);
+  });
+
+  it.each(CENARIOS)(
+    '$nome: its sync is built for its own row, and its near-miss is another channel',
+    (c) => {
+      expect(c.sync.vinculo).toBe(c.vinculo);
+      expect(c.outro.tipoFrete).not.toBe(c.vinculo.tipoFrete);
+    },
+  );
+});
+
 describe.each(CENARIOS)('$nome', (c) => {
   const conta = (over: DocData = {}) => contaDe(c.vinculo, over);
   const doc = (over: DocData = {}) => docDe(c.vinculo, over);
@@ -907,10 +930,23 @@ describe('T10 a bare `integracao/<id>` back-ref', () => {
   const bare = (vinculo: VinculoIntFreteConta) =>
     docDe(vinculo, { [vinculo.campoBackRef]: `integracao/${ID}` });
 
-  it.each([
+  /** Every binding built WITHOUT `refTolerante` — Mercado Livre is the only one with it. */
+  const SEM_REF_TOLERANTE = [
     ['Shopee', V.shopee, shopee],
     ['Loja Integrada', V.lojaIntegrada, lojaIntegrada],
-  ] as const)(
+  ] as const;
+
+  it('the non-tolerant table plus Mercado Livre covers every VINCULO_INT_FRETE_CONTA row', () => {
+    expect(
+      [
+        ...SEM_REF_TOLERANTE.map(([, vinculo]) => vinculo.tipoFrete),
+        V.mercadoLivre.tipoFrete,
+      ].sort(),
+    ).toEqual(TIPOS_DE_TODA_LINHA);
+    for (const [, vinculo, sync] of SEM_REF_TOLERANTE) expect(sync.vinculo).toBe(vinculo);
+  });
+
+  it.each(SEM_REF_TOLERANTE)(
     '%s: NOT found (no tolerant scan without refTolerante) ⇒ created at the deterministic id',
     async (_canal, vinculo, sync) => {
       const host = new Host();
