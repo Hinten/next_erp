@@ -447,12 +447,12 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **111** suites in this app name (109 drive it), and since step 8 it has a
+  **113** suites in this app name (111 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
   step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
-  19: 108, 20: 111 — the two `*.tasks.test.ts` suites it counts name the double
-  in a docblock only).
+  19: 108, 20: 111, 21: 113 — the two `*.tasks.test.ts` suites it counts name
+  the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
@@ -1320,7 +1320,8 @@ are the rules a change must not break.**
   transients take the 3-attempt ladder; the cursor is the SERVER's
   (`has_next_page` true with no `next_offset` is TERMINAL — register item 66).
   `finalizarImportacaoShopee` is the ONE transaction under `produtos/` (class B,
-  inventoried) and the only file there that may name the API.
+  inventoried) and the only file there that may name the API. A busy start's 409
+  carries the running `jobId`.
 - **No ruleset regeneration, no new env var.** Publishing, stock, price, size
   charts and creating a kit ON Shopee are steps 11/12/13/18/19; `/produtos`
   shows the Shopee badge since step 11's link trigger.
@@ -1394,10 +1395,11 @@ cursor, echoed verbatim (it is not `offset + pageSize`), and the caller asks for
 the next one.
 
 **`brandshopee` is untouched, and stays the curated shortlist.** Shopee's brand
-API is extremely slow, so the supported brands are registered once and read from
-our own database — the produto's brand dropdown reads `integracao/{id}/brandshopee`,
-the `marcas` route serves only the REGISTRATION picker, and the shortlist is
-maintained from the conta screen (step 21) and re-validated at publish (step 11).
+API is extremely slow, so brands are to be registered once and read from our own
+database — but NOTHING reads `integracao/{id}/brandshopee` yet: the produto's
+brand dropdown and the conta-screen shortlist editor are listing authoring's
+(#1911, the step after 21). The `marcas` route serves only the REGISTRATION
+picker, and publish re-validates the brand (step 11).
 
 **Recommendations are OFFERED, never applied** (`applied: false`, #799), and a
 suggested id absent from the tree degrades that ROW (`unresolved`, one log line)
@@ -1457,6 +1459,9 @@ The first SENDER of a quantity. Reasoning: `estoque/README.md`.
   the next 00:00 UTC+8. `ShopeeRateLimitError` EXTENDS `ShopeeApiError`.
 - Shopee restores stock on a cancellation (announcement 1445), so the monthly
   reconciliação is an obligation, not a backstop.
+- A requested variation child resolves ONE `paiId` hop to its anchor
+  (`core/anchors.ts`) in the manual push and in `anuncio-status`, as price
+  always did; rows name the anchor, `produtosSem*` the requested id.
 
 ## Price sync (`lib/shopee/precos/`, step 13)
 
@@ -1481,7 +1486,8 @@ The first SENDER of a price. Reasoning: `precos/README.md`.
 - ONE conta ladder for both routes, `exigirContaParaPreco`. In the job a
   cancel lets only the listing in flight finish; the report counters are
   tier-0 `increment`/`maximum`, the plan checkpoint tier-1 `lastUpdateTime`;
-  a stamped `erro` never carries Shopee's text.
+  a stamped `erro` never carries Shopee's text. A busy start's 409 carries the
+  running `jobId`; the web card attaches to it.
 
 ## NF-e upload (`lib/shopee/nfe/`, step 14)
 
@@ -1646,12 +1652,16 @@ the pick (see **Publish**). Depth and register rows 248–269:
   (`reverificar:anuncio`).
 - A produto can hold TWO listings' `variashopee` rows (converter, recriar): the
   model sync and every binding filter rows by
-  `idDoRef(produtoShopeeOuterRef) === linkDocId`, never by produto.
+  `idDoRef(produtoShopeeOuterRef) === linkDocId` (`@delfrance/schemas`), never
+  by produto.
 - Kit refusals are read by SENTENCE in `recusaKit.ts`, never by `KIND_BY_CODE`.
 - Stock: never (step 12 `kit-derivado`). Price: step 13 sends
   `update_kit_item`. A recipe edit opens `shopeeKitReceitaDivergente` (the
   `apps/functions` trigger vs `receitaKitConferida`). Depth + register rows
   270–306: `kits/README.md`.
+- A refusal that names a CLI flag also carries `acao` (`@delfrance/schemas`
+  `shopeeAcaoSugerida.ts`) and the 202 carries `aguardarMs`: the web tab keys
+  on those, never on a sentence (`exigirAcaoSeHaComando` pins it).
 
 ## Rules specific to this app
 

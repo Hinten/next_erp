@@ -1312,6 +1312,12 @@ error, the wrong sentence for a human who typed one flag too many.
 ⚠️ A bare `--` is refused, and no command in this file carries one (see the note
 at the top).
 
+⚠️ **Pass the ANCHOR, even though `--live` forgives a variação.** Since step 21
+the module behind `--live` resolves a requested child ONE `paiId` hop to its
+anchor (`core/anchors.ts`) and pushes the family; the dry run still reads every
+id AS TYPED, so a child there plans `conta-fora-do-produto` (or `sem-link`) — a
+rehearsal that disagrees with the run it rehearses.
+
 **What the dry run calls, and what it can never call.** It reads
 `produtoCollection.docRef(…).get()` once per requested id (for the name),
 `buscarFamiliasShopeePorIds`, `quantidadesDaFamiliaShopee`,
@@ -1414,8 +1420,12 @@ SHOPEE_CONTA_PAUSADA` before any provider call; this command reads the state
 - **The plan is PROVISIONAL about the floor.** `get_item_promotion` is read once,
   before the send; a promotion that starts between the two answers a refusal the
   sender handles by re-reading the floor and retrying ONCE.
-- **`produtoNome` costs one extra document read per requested id** (up to 50, in
-  parallel). It buys the name in every row; nothing else reads it.
+- **In the dry run, `produtoNome` costs one extra document read per requested
+  id** (up to 50, in parallel) and buys the name in every row; nothing else
+  reads it. Under `--live` it costs nothing extra — the names ride the ONE
+  masked `getAll` that resolves each REQUESTED id to its anchor
+  (`core/anchors.ts`), so a listing row reached only through a requested child
+  carries no name.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it writes
   quantities on a real marketplace, and even a dry run calls Shopee.
 

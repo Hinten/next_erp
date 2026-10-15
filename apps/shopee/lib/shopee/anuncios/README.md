@@ -563,11 +563,13 @@ therefore declares **no index at all** and `firestore.indexes.json` is
 byte-unchanged. Adding a `where` reds three tests, and the reason is that file,
 not style.
 
-`anuncioShopeeVivo(raw)` is total and non-throwing, and reads an ABSENT
-`estadoAnuncio` as VIVO — the safe direction: a draft link that has not been
-published yet must not un-badge a produto. `contaDoLinkShopee` reads
-`contaProdutoShopeeOuterRef` (⚠️ **not** ML's `contaOuterRef`), with a near-miss
-test proving a `contaOuterRef`-shaped document resolves to `null`.
+`anuncioShopeeVivo(raw)` — in `@delfrance/schemas`'s `shopeeLinkLeitura.ts`
+since step 21, re-exported here by `statusAnuncio.ts` — is total and
+non-throwing, and reads an ABSENT `estadoAnuncio` as VIVO — the safe direction:
+a draft link that has not been published yet must not un-badge a produto.
+`contaDoLinkShopee` reads `contaProdutoShopeeOuterRef` (⚠️ **not** ML's
+`contaOuterRef`), with a near-miss test proving a `contaOuterRef`-shaped
+document resolves to `null`.
 
 ⚠️ **Register 81 is open and is MIGRATION-WINDOW work** (root `CLAUDE.md` rule
 8): whether a gen-2 Firestore trigger on this project needs Eventarc/Pub-Sub
