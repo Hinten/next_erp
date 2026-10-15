@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseWireDecimal } from '@delfrance/core/wire';
 import type { CollectionMetadata } from './types';
 import { millisSinceEpoch } from './shared/datetime';
 import { outerRefSchema } from './shared/outerRef';
@@ -522,8 +523,49 @@ interface LinhaDeCorte {
   readonly minutosPostagem: number | null;
 }
 
-function inteiroOuAusente(valor: unknown): number | null {
-  return Number.isInteger(valor) ? (valor as number) : null;
+/** A stored field the rule cannot read as an integer — it drops the whole row. */
+const ILEGIVEL = Symbol('ilegivel');
+
+/**
+ * One stored field as the rule reads it: absent (`null`/`undefined`, the null
+ * default the rule already treats as 0), an integer, or text that spells
+ * exactly one integer under the shared wire grammar ({@link parseWireDecimal}
+ * — `'16'`, `' 16 '`, `'16.0'`; never `'16h'`, `'0x10'`, `'1.6e1'`, `''`).
+ * Anything else is {@link ILEGIVEL}.
+ */
+function lerCampo(valor: unknown): number | null | typeof ILEGIVEL {
+  if (valor === null || valor === undefined) return null;
+  const numero = typeof valor === 'string' ? parseWireDecimal(valor) : valor;
+  return Number.isInteger(numero) ? (numero as number) : ILEGIVEL;
+}
+
+/** One stored row as the rule reads it, or `null` when the row cannot answer. */
+function lerLinha(campos: Record<string, unknown>): LinhaDeCorte | null {
+  const diaDaSemana = lerCampo(campos.diaDaSemana);
+  const horaDeCorte = lerCampo(campos.horaDeCorte);
+  const minutosDeCorte = lerCampo(campos.minutosDeCorte);
+  const prazoDePostagem = lerCampo(campos.prazoDePostagem);
+  const horaPostagem = lerCampo(campos.horaPostagem);
+  const minutosPostagem = lerCampo(campos.minutosPostagem);
+  if (
+    diaDaSemana === null ||
+    diaDaSemana === ILEGIVEL ||
+    horaDeCorte === ILEGIVEL ||
+    minutosDeCorte === ILEGIVEL ||
+    prazoDePostagem === ILEGIVEL ||
+    horaPostagem === ILEGIVEL ||
+    minutosPostagem === ILEGIVEL
+  ) {
+    return null;
+  }
+  return {
+    diaDaSemana,
+    horaDeCorte,
+    minutosDeCorte,
+    prazoDePostagem,
+    horaPostagem,
+    minutosPostagem,
+  };
 }
 
 /**
@@ -536,13 +578,17 @@ function inteiroOuAusente(valor: unknown): number | null {
  *
  *   - a stored value that is not a list has no rows (a map keyed by weekday, a
  *     bare row), and neither does a row that is not an object (`null`, text);
- *   - every field is read only as an integer — the one shape Flutter's reader
- *     accepted (Dart `int`; `DIA_DA_SEMANA_fromJson(int)`), so text, fractions
- *     and NaN were never a document it could load. Anything else reads as
- *     ABSENT, never coerced: a text `prazoDePostagem` used to concatenate
- *     (`1 + '2'` is `'12'`) and silently answer nothing;
- *   - a row with no integer weekday governs no day and is dropped, so it can
- *     neither answer for one nor shadow a readable row behind it;
+ *   - a field that is an integer, or text that spells one, reads as that
+ *     integer. Before this, text reached JS arithmetic RAW: `<` and the `Date`
+ *     constructor coerced `'16'` correctly, but `+` concatenated
+ *     (`1 + '2'` is `'12'`) and `===` never matched, so a text
+ *     `prazoDePostagem` silently answered nothing;
+ *   - a field that is PRESENT but no integer (`'16h'`, `16.5`, NaN, `true`)
+ *     drops the whole row, exactly like a row with no weekday. Reading it as
+ *     absent would keep the row answering with an invented 0 — a `horaPostagem`
+ *     of 00:00, i.e. a deadline before `agora`. A dropped row neither answers
+ *     for its day nor shadows a readable row behind it;
+ *   - an ABSENT field (`null`, missing) stays the legacy null default, 0;
  *   - RANGE is not checked. An hour of 25 is read as stored, exactly as Flutter
  *     computed with it — the `/logistica` editor's schema is where it is fixed.
  *
@@ -553,17 +599,8 @@ function linhasDeCorte(horarios: unknown): LinhaDeCorte[] {
   const linhas: LinhaDeCorte[] = [];
   for (const linha of horarios as unknown[]) {
     if (linha === null || typeof linha !== 'object') continue;
-    const campos = linha as Record<string, unknown>;
-    const diaDaSemana = inteiroOuAusente(campos.diaDaSemana);
-    if (diaDaSemana === null) continue;
-    linhas.push({
-      diaDaSemana,
-      horaDeCorte: inteiroOuAusente(campos.horaDeCorte),
-      minutosDeCorte: inteiroOuAusente(campos.minutosDeCorte),
-      prazoDePostagem: inteiroOuAusente(campos.prazoDePostagem),
-      horaPostagem: inteiroOuAusente(campos.horaPostagem),
-      minutosPostagem: inteiroOuAusente(campos.minutosPostagem),
-    });
+    const lida = lerLinha(linha as Record<string, unknown>);
+    if (lida !== null) linhas.push(lida);
   }
   return linhas;
 }
