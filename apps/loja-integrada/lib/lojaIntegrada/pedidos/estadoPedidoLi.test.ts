@@ -135,6 +135,14 @@ describe('the history verdict: captured or not', () => {
     }
   });
 
+  it('a capture codigo counts as a row’s situação AND as the situação a row left', () => {
+    // The dispute row's successor lost its link (it says it left 2): only the row itself shows 6.
+    const soComoSituacao = [linha(100, 0, 2, 9), linha(101, 1, 6, 2), linha(102, 2, 8, 2)];
+    expect(ok(ler(8, soComoSituacao, MODO_HISTORICO_LI.degradado)).capturado).toBe(true);
+    // A truncated start: only the first row's previous situação shows the payment.
+    expect(ok(ler(8, [linha(100, 0, 8, 4)], MODO_HISTORICO_LI.degradado)).capturado).toBe(true);
+  });
+
   it('⚠️ an entry NEWER than the detail is decided at the cut, never on the whole history', () => {
     // The detail still says 2; the history, read after it, already shows the payment.
     const h = ok(ler(2, cadeia(9, 2, 4)));
