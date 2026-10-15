@@ -87,7 +87,8 @@ function decodeScalar(raw) {
  * Each entry is `{ line, fields }`, where `fields` maps every key declared at
  * the item's own indent to its decoded scalar (`null` when absent). `line` is
  * the 1-based line of the item's `-`. Comment and blank lines are skipped
- * BEFORE anything is matched, so prose naming a field never stands in for one.
+ * BEFORE anything is matched, so prose naming a field never stands in for one —
+ * except inside a `|`/`>` block scalar's body, where a `#` line is content.
  *
  * `problems` lists shapes the scanner refuses to read.
  */
@@ -111,10 +112,20 @@ function scanEnv(source) {
 
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i];
-    if (/^\S/.test(line) && !line.startsWith('#')) break;
+    // A column-0 `-` is still an item: YAML lets a block sequence sit at its
+    // parent key's indent, and stopping there would skip the whole block.
+    if (/^[^\s#-]/.test(line)) break;
+    const indent = line.match(/^ */)[0].length;
+
+    // Inside a `|`/`>` block scalar a `#` is content, not a comment, so the
+    // body is read BEFORE comment lines are dropped.
+    if (blockKey && line.trim() !== '' && indent > keyIndent) {
+      const prev = current.fields[blockKey];
+      current.fields[blockKey] = `${prev}${prev ? '\n' : ''}${line.trim()}`;
+      continue;
+    }
     if (line.trim() === '' || line.trim().startsWith('#')) continue;
 
-    const indent = line.match(/^ */)[0].length;
     const dash = /^( *)- *(.*)$/.exec(line);
 
     if (dash && (itemIndent === null || indent === itemIndent)) {
@@ -142,10 +153,6 @@ function scanEnv(source) {
     if (indent === keyIndent) {
       blockKey = null;
       readKey(line.slice(indent), i);
-    } else if (indent > keyIndent && blockKey) {
-      // Continuation of a `|`/`>` block scalar: the value is its joined text.
-      const prev = current.fields[blockKey] ?? '';
-      current.fields[blockKey] = `${prev}${prev ? '\n' : ''}${line.trim()}`;
     }
     // Deeper lines under any other key (`availability:`'s list) are not ours.
   }
@@ -292,6 +299,37 @@ describe('the env-entry scanner (self-test)', () => {
   it('refuses shapes it cannot read rather than passing them', () => {
     expect(envViolations('x.yaml', "env:\n  - { variable: X, value: '' }\n")).toHaveLength(1);
     expect(envViolations('x.yaml', 'env: []\n')).toHaveLength(1);
+  });
+
+  it('reads items written at the env key’s own indent', () => {
+    // Valid YAML, and App Hosting rejects a blank row in it just the same. A
+    // scanner that took the column-0 `-` for the next top-level key would read
+    // no entries at all and pass.
+    const src = [
+      'env:',
+      '- variable: SHOPEE_TASKS_REGION',
+      "  value: ''",
+      '  availability:',
+      '    - RUNTIME',
+      '- variable: TZ',
+      '  value: America/Sao_Paulo',
+      'runConfig:',
+      '  minInstances: 0',
+      '',
+    ].join('\n');
+    expect(envViolations('x.yaml', src)).toEqual([
+      'x.yaml:2 — `SHOPEE_TASKS_REGION` has neither a non-empty `value` nor a non-empty `secret`',
+    ]);
+    expect(scanEnv(src).entries.map((e) => e.fields.variable)).toEqual([
+      'SHOPEE_TASKS_REGION',
+      'TZ',
+    ]);
+  });
+
+  it('keeps a `#` line inside a block scalar as content', () => {
+    const src = ['env:', '  - variable: BLOCK', '    value: |', '      #hash-first', ''].join('\n');
+    expect(envViolations('x.yaml', src)).toEqual([]);
+    expect(scanEnv(src).entries[0].fields.value).toBe('#hash-first');
   });
 
   it('stops at the next top-level key', () => {
