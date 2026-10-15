@@ -155,7 +155,10 @@ export class MercadoLivreValidationError extends MercadoLivreError {
 }
 
 /**
- * The stored grant is dead — `invalid_grant` on either the code exchange (the
+ * A credential is missing/dead, or a REST endpoint rejected authorization.
+ * A REST 401 can be an owner-only endpoint restriction, not a revoked seller
+ * grant: inspect status/body before requesting re-consent or revoking anything.
+ * `invalid_grant` on either the code exchange (the
  * authorization code is expired or already used) or a refresh (the refresh
  * token is expired, revoked, or already used), or no credential at all. The
  * account must complete the OAuth consent flow again; a plain retry won't fix it.

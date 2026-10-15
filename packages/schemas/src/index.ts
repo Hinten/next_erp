@@ -669,12 +669,14 @@ export {
 } from './liquidacaoShopee';
 
 export {
-  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
-  // for the flag-gated `missed_feeds` backstop sweep (#812). Bare schema+meta
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — application health
+  // for the flag-gated `missed_feeds` backstop sweep (#812 / #1292). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
   // missedFeedsMercadoLivre.ts. Carries no cursor by design: ML's feed has no
   // time filter, so retention vs schedule period is what guarantees coverage.
   missedFeedsMercadoLivreSchema,
+  missedFeedsStreamSchema,
+  type MissedFeedsStream,
   missedFeedsMercadoLivreMeta,
   type MissedFeedsMercadoLivre,
 } from './missedFeedsMercadoLivre';
