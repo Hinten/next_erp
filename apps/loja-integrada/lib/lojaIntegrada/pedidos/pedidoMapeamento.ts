@@ -45,7 +45,6 @@
  * An operator's money edit therefore survives the next Loja Integrada change,
  * and one operator save never blinds tracking or the paid promotion.
  */
-
 import { roundReais } from '@delfrance/core/money';
 import type { PedidoLi } from '@delfrance/integrations-loja-integrada';
 import { toOuterRef, type ItemDoPedido, type OuterRef } from '@delfrance/schemas';

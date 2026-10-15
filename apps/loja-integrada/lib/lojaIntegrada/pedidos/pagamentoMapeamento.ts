@@ -55,7 +55,6 @@
  * the history could derive them; fill-once `id`, `dataCadastro` and `cartao`;
  * `ultimaModificacao = max(stored, now)` on a non-empty patch.
  */
-
 import { roundReais } from '@delfrance/core/money';
 import type { PedidoLi, PedidoPagamentoLi } from '@delfrance/integrations-loja-integrada';
 import {

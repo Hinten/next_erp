@@ -73,7 +73,6 @@
  * belongs to the label flow, and a tracking write-back that bumps the order's
  * stamp re-imports as no freight change at all.
  */
-
 import { roundReais } from '@delfrance/core/money';
 import { sha256Hex } from '@delfrance/data/admin';
 import type { PedidoLi } from '@delfrance/integrations-loja-integrada';
