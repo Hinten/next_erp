@@ -4,7 +4,10 @@ import {
   ESTADO_PEDIDO,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   STATUS_PAGAMENTO,
+  alvoDeCriacaoLi,
+  codigoSituacaoLiSchema,
   estoqueAplicadoSchema,
+  situacaoLi,
   type EstadoPedido,
   type StatusPagamento,
 } from '@delfrance/schemas';
@@ -376,6 +379,42 @@ describe('the codigo: exact, through the shared table', () => {
     const naoCapturado = decidirEstadoLi({ armazenado: null, codigo: c(1019), capturado: false });
     expect(naoCapturado.statusPagamento.criacao).toBe(STATUS_PAGAMENTO.pendente);
   });
+});
+
+describe('every situação row, through the decision: the importer answers what the shared table says', () => {
+  // The table itself is pinned row by row in `@delfrance/schemas`
+  // (`situacaoPedidoLojaIntegrada.test.ts`). This pins the other half: that
+  // the decision hands each row's estado and status through, capture arm by
+  // capture arm, on a create and on an update — so a row the importer
+  // misreads cannot hide behind a table that is right.
+  const codigos = codigoSituacaoLiSchema.options;
+
+  it('covers the whole catalogue', () => {
+    expect(codigos).toHaveLength(16);
+  });
+
+  it.each(codigos.flatMap((codigo) => [true, false].map((cap) => [codigo, cap] as const)))(
+    '%s (captured: %s) ⇒ the table’s estado and status',
+    (codigo, capturado) => {
+      const tabela = alvoDeCriacaoLi(codigo, capturado)!;
+      const linhaTabela = situacaoLi(codigo)!;
+      const criado = decidirEstadoLi({ armazenado: null, codigo, capturado });
+      expect(criado.estado).toBe(tabela.estado);
+      expect(criado.statusPagamento.criacao).toBe(tabela.statusPagamento);
+      // An update from the lowest rung, nothing applied: every target is reachable.
+      const atualizado = decidirEstadoLi({
+        armazenado: { estado: ESTADO_PEDIDO.carrinho, estoqueAplicado: null },
+        codigo,
+        capturado,
+      });
+      expect(atualizado.estadoResultante).toBe(tabela.estado);
+      expect(atualizado.statusPagamento.atualizacao).toEqual(
+        linhaTabela.mantemStatusArmazenado
+          ? { tipo: 'manter' }
+          : { tipo: 'status', status: tabela.statusPagamento },
+      );
+    },
+  );
 });
 
 describe('an unknown codigo keeps the order and says so', () => {

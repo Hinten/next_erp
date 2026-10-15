@@ -264,6 +264,23 @@ describe('the unit discount and the subtotal reconciliation', () => {
     expect(mapear(duas, 19.97).descontoExtra).toBe(0.03);
   });
 
+  it('⚠️ a SUB-centavo line discount is kept: it can move the line’s centavo (10.0060 sold at 10.0020)', () => {
+    const linha = item({ quantidade: '1.000', preco_venda: '10.0060', preco_subtotal: '10.0020' });
+    const r = mapear([linha], 10);
+    expect(r.itens[0]?.descontoUnitario).toBeCloseTo(0.004, 10);
+    // Without it the line reads 10.01 and a phantom centavo joins descontoTotal.
+    expect(r.residuo).toBe(0);
+    expect(r.descontoExtra).toBe(0);
+  });
+
+  it('⚠️ NEAR-MISS: a negative residual of ONE centavo is already reported', () => {
+    const linha = item({ quantidade: '1.000', preco_venda: '10.0000', preco_subtotal: '10.0000' });
+    const r = mapear([linha], 10.01);
+    expect(r.residuo).toBe(-0.01);
+    expect(r.descontoExtra).toBe(0);
+    expect(r.divergente).toBe(true);
+  });
+
   it('⚠️ NEAR-MISS: a negative residual is reported, never adjusted', () => {
     const linha = item({ quantidade: '1.000', preco_venda: '10.0000', preco_subtotal: '10.0000' });
     const r = mapear([linha], 10.5);
