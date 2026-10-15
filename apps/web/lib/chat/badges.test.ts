@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ESTADO_ENVIO } from '@delfrance/schemas';
+import { ESTADO_ENVIO, ORIGEM_CONVERSA } from '@delfrance/schemas';
 import { countAwaitingReply, formatBadgeCount } from './badges';
 
 describe('formatBadgeCount', () => {
@@ -35,4 +35,16 @@ describe('countAwaitingReply', () => {
   it('is zero for an empty set', () => {
     expect(countAwaitingReply([])).toBe(0);
   });
+});
+
+it('does not count a read WhatsApp auto-reply as a customer awaiting response', () => {
+  expect(
+    countAwaitingReply(
+      [
+        { estadoEnvio: ESTADO_ENVIO.recebido, user_id: null },
+        { estadoEnvio: ESTADO_ENVIO.recebido, clienteMensagemOuterRef: 'documents/clientes/c1' },
+      ],
+      [{ origem: ORIGEM_CONVERSA.whatsapp }, { origem: ORIGEM_CONVERSA.whatsapp }],
+    ),
+  ).toBe(1);
 });

@@ -21,7 +21,10 @@ export function MensagemQuote({
   onNavigate?: (id: string) => void;
 }) {
   const { referenced, loading } = useMensagemRef(refPath);
-  const autor = useAutorNome(referenced?.mensagem.user_id);
+  const autor = useAutorNome(
+    referenced?.mensagem.user_id,
+    referenced?.mensagem.clienteMensagemOuterRef,
+  );
 
   if (loading) return <Skeleton height={34} radius="sm" />;
   if (!referenced) {
@@ -54,7 +57,7 @@ function QuoteFrame({ children, onClick }: { children: React.ReactNode; onClick?
       onClick={onClick}
       style={{
         borderLeft: '3px solid var(--mantine-color-blue-4)',
-        background: 'var(--mantine-color-gray-0)',
+        background: 'var(--mantine-color-default-hover)',
         borderRadius: 4,
         padding: '4px 8px',
         marginBottom: 4,

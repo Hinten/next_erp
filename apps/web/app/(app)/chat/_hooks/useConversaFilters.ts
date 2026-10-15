@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useMemo } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import {
   CONVERSA_ORDENS,
   CONVERSA_TABS,
@@ -66,8 +66,6 @@ function parseEtiqueta(raw: string | null): number | null {
 }
 
 export function useConversaFilters(): ConversaFiltersState {
-  const router = useRouter();
-  const pathname = usePathname();
   const searchParams = useSearchParams();
 
   const tab = parseTab(searchParams.get('tab'));
@@ -83,17 +81,15 @@ export function useConversaFilters(): ConversaFiltersState {
   // must stay distinct from an absent param (search mode off).
   const busca = searchParams.get('busca');
 
-  // Push a mutated copy of the current params, replacing history so the
-  // back button doesn't accumulate every filter tweak.
-  const commit = useCallback(
-    (mutate: (p: URLSearchParams) => void) => {
-      const next = new URLSearchParams(searchParams.toString());
-      mutate(next);
-      const qs = next.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-    },
-    [router, pathname, searchParams],
-  );
+  // These filters only change client-side Firestore queries. Native history
+  // syncs Next's useSearchParams without a route navigation that can restore
+  // the previous query string. Read the current URL so consecutive changes
+  // compose even before React renders the first one.
+  const commit = useCallback((mutate: (p: URLSearchParams) => void) => {
+    const next = new URL(window.location.href);
+    mutate(next.searchParams);
+    window.history.replaceState(null, '', `${next.pathname}${next.search}${next.hash}`);
+  }, []);
 
   const setTab = useCallback(
     (nextTab: ConversaTab) => commit((p) => aplicarTab(p, nextTab)),

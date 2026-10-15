@@ -6,9 +6,12 @@ that adds new codes (consolidated below).
 
 **Width: 3 or 4 digits.** Pré-NT 2025.002 todos os cStats eram 3 dígitos;
 NT 2025.002 §5.1 estendeu o campo para 4 dígitos para abrir espaço às
-rejeições exclusivas dos novos tributos (IBS/CBS/IS). Parsers devem aceitar
-`^[0-9]{3,4}$`. Códigos novos da NT 2025.001 (452, 853, 797, etc.) ainda
-são 3 dígitos.
+rejeições exclusivas dos novos tributos (IBS/CBS/IS). O gate XSD de toda
+resposta já aceita `[0-9]{3,4}`; para um valor que não passou por ele use
+`isCStat` (`src/state/index.ts`). `classifyCStat` compara strings EXATAS —
+todo código de 4 dígitos da RTC cai em `rejeitada` → `done-rejected`. Códigos
+novos da NT 2025.001 (452, 853, 797, etc.) ainda são 3 dígitos. O `nProt`
+passou a ter 15 **ou** 17 dígitos (mesma NT).
 
 ## Success / processing
 
@@ -23,16 +26,37 @@ são 3 dígitos.
 | 107 | Serviço em Operação | Service up |
 | 108 / 109 | Serviço paralisado (momentâneo / sem previsão) | Consider contingency |
 
-## Denial (NF-e is stored, but unusable)
+## Denial — abolished for mod 55 since 2024-09-16 (NT 2024.001)
 
-| cStat | Meaning |
-|---|---|
-| 110 | Uso Denegado |
-| 301 | Denegada — irregularidade fiscal do emitente |
-| 302 | Denegada — irregularidade fiscal do destinatário |
+⚠️ **No NF-e (modelo 55) can be denied any more.** NT 2024.001 (produção
+16/09/2024, v1.20 §2.5.2.1) "elimina o processo de denegação também para a NF-e
+(modelo 55), substituindo por processo de rejeição", implementing CONFAZ Ajuste
+SINIEF 43/23 (which revoked the denegação ground, inciso II of the Ajuste SINIEF
+07/05 cláusula sétima, from 2024-08-01). Source vendored at
+`sources/nt/2024/NT2024_001_v1_20.pdf`.
 
-A denegada NF-e is recorded by SEFAZ; the operation cannot proceed. Do not
-resend the same number — it is consumed.
+| cStat | Before 2024-09-16 | Since (NT 2024.001) |
+|---|---|---|
+| 110 | Uso Denegado | not produced for mod 55 |
+| 301 | Uso Denegado: irregularidade fiscal do emitente (RV 1C17-40) | RV **deleted** (§2.3.2) — an irregular emitente is now **781** |
+| 302 | Uso Denegado: irregularidade fiscal do destinatário (RV 5E17-40) | **Rejeição** — same code |
+| 303 | Uso Denegado: destinatário não habilitado a operar na UF (RV 5E17-60) | **Rejeição** — same code |
+| 307 | Uso Denegado: emitente bloqueado pela UF de destino, consumidor final (RV 1C17-50) | **Rejeição** — same code |
+| 781 | (NFC-e only) | **Rejeição: Emissor não habilitado** — RV 1C17-38 extended to mod 55 (§2.2.7) |
+
+So today 302/303/307/781 are **ordinary rejections**: the NF-e is not stored and
+the número is free — regularize the cadastro and resend with the **same
+número/série**, exactly what the NT intends. Never treat them as blocking: a doc
+refused with one of them must stay re-emittable (`STATUS_BLOQUEADORES` leaves
+them out on purpose, pinned by `test/state/state.test.ts` — see #1733).
+
+A denial — 110/301/302 returned by `consSitNFe` for a chave SEFAZ has stored,
+or met behind a 205 / 539 on a resend — can now only describe an NF-e denied
+**before 2024-09-16** (a legacy chave). THAT NF-e is recorded at SEFAZ and its
+número **is** consumed: never resend it. ⚠️ What tells the two apart is the
+**source**, not the element: a 302 inside the `protNFe` of a fresh
+authorization reply is today's rejection (the número is free), because SEFAZ
+returns rejections in `protNFe/infProt` too.
 
 ## Duplicidade — the recovery-critical codes
 
@@ -42,7 +66,7 @@ constantly after communication failures. **They are recoverable, not fatal.**
 | cStat | Meaning | Marker in `xMotivo` |
 |---|---|---|
 | 204 | Duplicidade de NF-e | `[nRec:999999999999999]` |
-| 205 | NF-e denegada na base da SEFAZ | `[nRec:...]` |
+| 205 | NF-e denegada na base da SEFAZ (only a pre-2024-09-16 denial — see "Denial" above) | `[nRec:...]` |
 | 218 | NF-e já está cancelada na base da SEFAZ | `[nRec:...]` |
 | 539 | Duplicidade de NF-e com diferença na Chave de Acesso | `[chNFe:44digits][nRec:...]` |
 | 635 | NF-e com mesmo número/série já transmitida, aguardando processamento | — |
@@ -64,7 +88,8 @@ On 204 / 205 / 218 / 539:
      adopt that protocol, mark the NF-e authorized. The earlier "failure" was
      just a lost response.
    - `cStat=101`/cancelada → mark cancelada.
-   - denegada → mark denegada.
+   - denegada (110/301/302 — necessarily a pre-2024-09-16 denial, see
+     "Denial") → terminal: that número is consumed, never resend it.
 3. For **539**, the key SEFAZ holds differs in `cNF`/DV — query with the
    `chNFe` from `xMotivo`, not the locally computed one.
 4. Note (NT 2018.005): if the resent NF-e's `DigestValue` matches the stored
@@ -82,7 +107,7 @@ something to query.
 | 225 | Falha no schema XML do lote |
 | 252 | Ambiente informado diverge do ambiente de recebimento |
 | 280 / 281 / 286 | Certificado de transmissão inválido / vencido / sem cadeia |
-| 290–298 | Certificado/assinatura de assinatura inválidos |
+| 290–298 | Certificado/assinatura de assinatura inválidos (conjunto exato de strings — `'0290'` não é 290) |
 | 416 | Falha na descompactação da área de dados (Zip) |
 | **452** | **Rejeição: Solicitada resposta assíncrona para Lote com somente 1 (uma) NF-e** (NT 2025.001 RV GAP03a-3, produção 13/10/2025) |
 | 656 | Consumo Indevido — **ban path, see below** |
@@ -124,6 +149,75 @@ the signing, then resend with a fresh number is **not** needed (the NF-e was
 never stored). Plain rejections (schema, business rules) → fix and resend with
 the **same** number (the NF-e was discarded, not stored).
 
+## Faixa 178–186 — cadastro LCC-RFB (NT 2026.007)
+
+⚠️ **Estes códigos não aparecem em NENHUMA tabela pública de cStat.** As três
+cópias independentes (`nfephp-org/sped-nfe` `docs/cStat.md` e `storage/cstat.json`,
+`mazinsw/nfe-api`) saltam de 152 direto para 200, e o MOC 7.0 Anexo I vendorado
+em `sources/moc7/` também não os traz — são posteriores a essa linha de base. É
+por isso que um `181` chega parecendo código inválido ou de middleware. A fonte é
+a NT, vendorada em `sources/nt/2026/NT_2026.007_v1.00_EmissaoSemIE_RV_LCC.pdf`.
+
+A **LCC-RFB** (Lista Centralizada de Contribuintes da RFB) é uma réplica nacional
+do cadastro CNPJ da Receita Federal sincronizada com cada SEFAZ autorizadora. A
+NT 2026.007 §5.10 ("Banco de Dados: Validação Cadastro LCC-RFB") passou a exigir
+que **todo CNPJ citado no documento exista na lista e esteja `02-Ativa`**. Todas
+as regras abaixo são `Obrig.` e valem "para todas as SEFAZ Autorizadoras".
+
+**Cronograma: implantação teste 01/09/2026 · implantação produção 03/11/2026.**
+
+| RV | cStat | Rejeição |
+|---|---|---|
+| 12C02-10 | **178** | CNPJ `[XX.XXX.XXX/XXXX-DV]` do emitente não cadastrado na Receita Federal |
+| 12C02-20 | 179 | CNPJ `[…]` do emitente com situação irregular na Receita Federal |
+| 12C21-20 | 180 | Código Regime Tributário do emitente diverge do cadastro na Receita Federal |
+| **12E02-10** | **181** | **CNPJ `[…]` do destinatário não cadastrado na Receita Federal** |
+| 12E02-20 | 182 | CNPJ `[…]` do Destinatário com situação irregular na Receita Federal |
+| 12F02-10 | 183 | CNPJ `[…]` do Local de Retirada não cadastrado na Receita Federal |
+| 12F02-20 | 184 | CNPJ `[…]` do Local de Retirada com situação irregular na Receita Federal |
+| 12G02-10 | 185 | CNPJ `[…]` do Local de Entrega não cadastrado na Receita Federal |
+| 12G02-20 | 186 | CNPJ `[…]` do Local de Entrega com situação irregular na Receita Federal |
+| 1P10-30 / 1P10-32 | — | Autor de Evento — não cadastrado / situação irregular na Receita Federal |
+
+Cada regra lê *"Acessar LCC-RFB (Chave: UF do X, CNPJ do X. **Desconsiderar
+LCC.cSitCNPJ = 99 - Exclusão Lógica**)"*, e as variantes `-20` disparam quando
+`cSitCNPJ ≠ 02-Ativa`. A mesma NT **removeu a RV 5E17-70** ("CNPJ Destinatário
+não cadastrado") em favor destas.
+
+⚠️ **Campos cobertos: emit `C02`, dest `E02`, retirada `F02`, entrega `G02` e o
+autor do evento — e MAIS NENHUM.** `transporta`, o CNPJ da instituição de
+pagamento (`card/CNPJ`) e `infIntermed/CNPJ` **não** passam pela LCC-RFB, então
+um CNPJ de teste nessas posições continua válido. Não saia trocando os quatro.
+
+⚠️ **A RV só dispara "se informado CNPJ" — um destinatário PESSOA FÍSICA (tag
+`E03`, CPF) está fora do escopo de 181/182.** Isso é o que explica dois
+comportamentos que parecem contraditórios em CI: os suites que usam
+`buildHomologacaoFixture` (destinatário PJ) são rejeitados, enquanto
+`orchestrator.homologacao` e `epec.homologacao`, que montam um destinatário PF,
+continuam autorizando.
+
+### Recuperação
+
+Rejeição cadastral **não é retentável com o mesmo dado** — a NF-e não é
+armazenada, e reenviar o mesmo CNPJ só repete o código. Corrija o participante e
+reenvie com o **mesmo número/série**. `classifyCStat` (`src/state/index.ts`) cai
+no bucket padrão `'rejeitada'` → `ESTADO_NFE.rejeitada`, que é o tratamento
+correto; não crie ramo próprio.
+
+⚠️ **Em homologação isso colide com a rejeição 597** ("NF-e emitida em ambiente
+de homologação com CNPJ do destinatário diferente de 99999999000191"): 597 exige
+um CNPJ que a LCC-RFB rejeita, porque `99999999000191` é um placeholder que não
+consta no cadastro da Receita.
+
+⚠️ **Nem os CNPJs de teste OFICIAIS resolvem**, e isso foi MEDIDO: a SEFAZ
+publica uma tabela "CNPJs alfa cadastrados no CCC de homologação" (material da
+NT 2026.004), e emitir para `PC3D315K000193` voltou 181 igual
+([run 35605049930](https://github.com/Hinten/next_erp/actions/runs/35605049930),
+2026-09-21). O **CCC** é o cadastro dos estados; a RV consulta a **LCC-RFB**,
+a réplica federal — uma linha num não implica linha no outro. **Não gaste quota
+tentando outro CNPJ.** A única saída conhecida é um destinatário **CPF** (tag
+`E03`), fora do escopo da regra. Detalhes em `homologacao.md`.
+
 ## cStats novos por NT (consolidado)
 
 ### NT 2025.001 (simplificação operacional, set/2025)
@@ -145,7 +239,19 @@ the **same** number (the NF-e was discarded, not stored).
 NFC-e específicos da mesma NT (não relevantes para este skill NF-e-only):
 407, 444, 445, 474, 583 — todos ligados ao QR Code v3.
 
-### NT 2025.002 (Reforma Tributária, v1.40 mai/2026)
+**RVs alteradas (cStat pré-existente).** A NT também reescreveu RVs de códigos
+que já existiam no MOC 7.0 — o código não muda, o que muda é quando ele
+dispara:
+
+| cStat | Mensagem | RV |
+|---|---|---|
+| 805 | A SEFAZ do destinatário não permite Contribuinte Isento de Inscrição Estadual | `E16a-30` (Obrig., `idDest` 1 ou 2, 17 UFs) e `E16a-35` (Facult., `idDest=1`) |
+
+No MOC 7.0 a `E16a-30` era só interestadual, com outra lista de UFs. Histórico,
+exceções, a armadilha da 696 e onde o app orienta o operador: seção "`indIEDest`
+mais rigoroso" em `sincrono-vs-assincrono.md`.
+
+### NT 2025.002 (Reforma Tributária, v1.51 jul/2026)
 
 cStats novos têm 4 dígitos. Os mais "afiados" (rejeição instantânea quando
 RTC entra em vigor — 03/08/2026 para CRT=3):
@@ -166,14 +272,54 @@ RTC entra em vigor — 03/08/2026 para CRT=3):
 | 1145 | NF-e de Crédito tipo 2 (ZFM) só permitida a partir de 2029 | B25.2-30 |
 | 1153–1157 | Erros em dPrevEntrega (data prevista de entrega) | B10a-10 a B10a-50 |
 | 1200 / 1201 / 1202 | cClassTrib incompatível com tpNFDebito / tpNFCredito / nota | UB14-70/80/60 |
+| 1001 | Nota de crédito/débito com ICMS/PIS/COFINS/IPI (só IBS/CBS) | B25-80 |
+| 1003 | Nota de crédito referenciando documento que não é NF-e 55 | B25-100 |
+| 1009 / 1139 | Nota de débito sem `tpNFDebito` / `tpNFDebito` sem finNFe=6 | B25.1-20 / B25.1-10 |
+| 1164 / 1163 | Nota de crédito sem `tpNFCredito` / `tpNFCredito` sem finNFe=5 | B25.2-20 / B25.2-10 |
+| 1161 / 1162 / 1152 | Crédito não-entrada / débito não-saída / crédito 03 não-entrada | B25-110 / B25-120 / B25.2-40 |
+| 254 / 255 / 269 / 678 / 1027 | NF referenciada do crédito: ausente / várias / outro CNPJ / outra UF / indevida (ZFM) | B25-30…65 |
+| 1129 / 1171 | Transferência de crédito / ajuste de competência sem IBS nem CBS > 0 | UB106-40 / UB112-30 |
+| 1131 / 1132, 1169 / 1170, 1172 / 1173 | Grupo de transferência / ajuste de competência / estorno informado indevidamente / não informado (indicadores do CST ou do cClassTrib) | UB14, UB112, UB116 |
+| 1133 / 1168 | `gTransfCred` fora de nota de débito / fora dos tipos 01 e 05 | UB106-30 / UB106-31 |
+| 1176 / 1177 | Total do IBS / da CBS estornados difere da soma dos itens | W59f / W59g |
 
 Lista completa em `rtc-ibs-cbs-is.md` e nos PDFs originais sob
-`references/sources/nt/2025/NT_2025.002_v1.40_*.pdf`.
+`references/sources/nt/2025/NT_2025.002_v1.51_RTC.pdf` (the v1.40 PDF stays beside it for provenance).
+
+## idDest, CFOP e o local de entrega (#422)
+
+A UF de destino da operação é a da ENTREGA quando o pedido tem um endereço de
+entrega que é outro documento (`ufDestinoOperacao`); o `<enderDest>` continua
+sendo o endereço FISCAL e o `<entrega>` (Grupo G) vai no XML. As regras que
+tornam isso necessário — conferidas no Anexo I do MOC 7.0 (v7.00, nov/2020) e
+nas NTs vendorizadas:
+
+| cStat | Regra | O que valida | Por que o `<entrega>` resolve |
+|---|---|---|---|
+| 732 / 733 | I08-40 / I08-60 | 1º dígito do CFOP × `idDest` | CFOP e `idDest` saem da MESMA UF (`isInterstateFor` e `buildIde` usam `ufDestinoOperacao`) |
+| 772 | E12-30 (obrig.) | `idDest=2` com `enderDest/UF` = UF do emitente | Exceção 1: `entrega/UF` ≠ UF do emitente |
+| 773 | E12-40 (obrig.) | `idDest=1` com `enderDest/UF` ≠ UF do emitente, **só não-consumidor** | Exceção 2: `entrega/UF` = UF do emitente |
+| 523 | I08-90 (facult.) | CFOP interestadual com UF emitente = UF destinatário | NT 2020.006 v1.31: "alteração da regra I08-90 para considerar local de entrega e retirada" |
+| 694 | NA01-20 (obrig.) | falta `ICMSUFDest` em interestadual p/ consumidor não contribuinte | NT 2022.005 v1.11, Exceção 12: **não se aplica a CRT=1** (e RV suspensa desde 01/01/2022) |
+
+⚠️ **521** (I08-70, facultativa) — `idDest=1` com UF do emitente ≠ UF do
+destinatário e `indIEDest=1` — **não** tem exceção de entrega no texto do
+Anexo I. Só é alcançável por uma venda B2B a contribuinte com endereço fiscal
+em outra UF e entrega na UF do emitente.
+
+O `<entrega>` exige CPF ou CNPJ (choice obrigatório do `TLocal`). O CNPJ ali
+entra na validação LCC-RFB da NT 2026.007 (faixa 185/186 acima); em
+homologação use um recebedor pessoa física.
 
 ## Resend rule of thumb
 
-- **Rejected** (not 100/150, not duplicidade, not denegada) → NF-e was *not*
-  stored → fix and resend, **same número/série**.
+- **Rejected** (not 100/150, not duplicidade) → NF-e was *not* stored → fix
+  and resend, **same número/série**. Since NT 2024.001 that includes the
+  cadastro irregularities 302/303/307/781 (formerly denials).
+- **Denegada** (110/301/302 returned by `consSitNFe` for a stored chave, or
+  behind a 205) → only an NF-e denied before 2024-09-16 → stored, número
+  consumed → never resend it. A 302 in a fresh authorization reply is the
+  rejection above, not this.
 - **Duplicidade** → NF-e *may be* stored → `consSitNFe`, never blind-resend.
 - **Authorized but response lost** → `consSitNFe` recovers the protocol.
 - **Normal-emission NF-e pendente de retorno** that you give up on → it needs a

@@ -62,7 +62,7 @@ describe('a 2xx that is not the shape we claimed', () => {
     )) as AdminClientRespostaInvalidaError;
 
     expect(err).toBeInstanceOf(AdminClientRespostaInvalidaError);
-    expect(err.campos).toEqual(['uid']);
+    expect(err.campos).toEqual(['uid', 'operationId', 'targetId']);
   });
 
   it('keeps permissions a STRING — the BigInt encoding, not a number', async () => {
@@ -80,9 +80,18 @@ describe('a 2xx that is not the shape we claimed', () => {
 
   it('still returns a well-formed result', async () => {
     // The control.
-    stubFetch(async () => new Response(JSON.stringify({ uid: 'u1' }), { status: 200 }));
+    stubFetch(
+      async () =>
+        new Response(JSON.stringify({ uid: 'u1', operationId: 'op', targetId: 'u1' }), {
+          status: 200,
+        }),
+    );
 
-    await expect(createUser(PAYLOAD, TOKEN)).resolves.toEqual({ uid: 'u1' });
+    await expect(createUser(PAYLOAD, TOKEN)).resolves.toEqual({
+      uid: 'u1',
+      operationId: 'op',
+      targetId: 'u1',
+    });
   });
 });
 

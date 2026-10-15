@@ -1,7 +1,7 @@
 'use client';
 
 import type { ZodObject, ZodRawShape } from 'zod';
-import { type CollectionHandle } from '@delfrance/data';
+import type { CollectionHandle } from '@delfrance/data';
 import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
 import { CollectionSelect } from './CollectionSelect';
 

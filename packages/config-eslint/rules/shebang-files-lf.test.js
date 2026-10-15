@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { REPO_ROOT, gitCheckAttr, gitLsFilesZ } from './lib/repo-scan.js';
@@ -26,10 +26,8 @@ import { REPO_ROOT, gitCheckAttr, gitLsFilesZ } from './lib/repo-scan.js';
  * run while CI ran them green. `core.autocrlf=true` is what makes the two
  * platforms disagree, and `.gitattributes` is the only thing that overrides it.
  *
- * WHY A GUARD AND NOT JUST THE RULES. `.gitattributes` is a per-path allowlist;
- * a new shebang file simply is not covered by it, and nothing says so. This test
- * derives the set from the repo — first two bytes of every tracked file — so the
- * rules cannot fall behind the files.
+ * The repository-wide LF default protects new paths too. This guard derives
+ * shebang files from the repo so a future exception cannot silently break them.
  */
 
 let shebangCache = null;
@@ -40,8 +38,10 @@ let shebangCache = null;
  * Deliberately unguarded: `openSync` throwing means a tracked path is missing
  * from the working tree, which is a broken checkout, not a case to skip over
  * quietly — and skipping it silently would shrink the set this guard checks.
- * Verified there is nothing legitimate to tolerate: the repo has no submodules
- * and every `git ls-files -s` entry is a regular blob (100644/100755).
+ * The one deliberate exception is a symbolic link: Git does not apply text/EOL
+ * conversion to its target string, and opening a link to a directory as a file
+ * raises EISDIR. The repo has no submodules; every other tracked entry is a
+ * regular blob (100644/100755).
  *
  * ⚠️ TRACKED-ONLY, and deliberately unlike its four neighbours. The other
  * repo-scanning guards here (`env-example-location`, `ci-lane-gates`,
@@ -66,7 +66,10 @@ function shebangFiles() {
   const out = [];
   const buf = Buffer.alloc(2);
   for (const file of gitLsFilesZ()) {
-    const fd = openSync(resolve(REPO_ROOT, file), 'r');
+    const path = resolve(REPO_ROOT, file);
+    if (lstatSync(path).isSymbolicLink()) continue;
+
+    const fd = openSync(path, 'r');
     try {
       const n = readSync(fd, buf, 0, 2, 0);
       if (n === 2 && buf[0] === 0x23 && buf[1] === 0x21) out.push(file);
@@ -96,11 +99,14 @@ describe('shebang files check out with LF', () => {
     expect(found).toContain('.github/scripts/e2e-affected.mjs');
     // ...and a known non-member: this very file starts with `import`.
     expect(found).not.toContain('packages/config-eslint/rules/shebang-files-lf.test.js');
+    // A tracked directory symlink is neither opened nor mistaken for file data.
+    expect(found).not.toContain('.agents/skills');
 
-    // The attribute reader must distinguish, or assertion 1 is vacuous too.
+    // Ordinary source files inherit the same repository-wide LF default.
     const attrs = eolAttrs(['.github/scripts/e2e-affected.mjs', 'package.json']);
     expect(attrs['.github/scripts/e2e-affected.mjs']).toBe('lf');
-    expect(attrs['package.json']).toBe('unspecified');
+    expect(attrs['package.json']).toBe('lf');
+    expect(gitCheckAttr('diff', ['package.json'])['package.json']).toBe('unspecified');
   });
 
   // ------------------------------------------------------------------
@@ -135,18 +141,11 @@ describe('shebang files check out with LF', () => {
         'adding the attribute alone does not rewrite an existing checkout, so the',
         'bug survives until you do.',
         '',
-        '  per file:    rm <f> && git checkout -- <f>',
-        '  whole tree:  git rm --cached -r . && git reset --hard',
+        '  node packages/config-eslint/normalize-line-endings.mjs',
         '',
-        '⚠️ Two things that look like they would work and do not, both measured:',
-        '`git add --renormalize .` re-applies the clean filter into the INDEX only',
-        'and never touches the disk (and is a strict no-op here, since the blobs',
-        'are already LF). `git rm --cached <f> && git checkout -- <f>` cannot work',
-        'in either order: `checkout` reads FROM the index, which `rm --cached` just',
-        'emptied, so it fails with "pathspec did not match any file(s) known to',
-        'git". A bare `git reset --hard` is not dependable either — it rewrites the',
-        'file only when git currently considers it modified, which after the',
-        'attribute lands it may not.',
+        'The repair changes only CRLF bytes in tracked LF-backed text files,',
+        'preserving edits and leaving the index untouched. `git add --renormalize`',
+        'changes the INDEX only; it does not repair an existing working copy.',
       ].join('\n'),
     ).toEqual([]);
   });

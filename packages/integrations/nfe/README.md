@@ -61,6 +61,21 @@ in a route handler) reach for `loadCertificateFromPath(path, pwd)` or
       since hand-verification against ICP-Brasil's published roots is
       the right step before trusting in **produção**.
 
+      ⚠️ **One file per transport — the bare call fetches only the home
+      SEFAZ.** `--uf=` defaults to `SP`, and each contingency transport
+      chains through a _different_ host, so it needs its own run:
+
+      ```powershell
+      pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca --uf=SVC-AN --ambiente=homologacao
+      pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca --uf=SVC-RS --ambiente=homologacao
+      pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca --uf=AN     --ambiente=homologacao
+      ```
+
+      `AN` is the Ambiente Nacional (`hom1.nfe.fazenda.gov.br`) — the EPEC
+      evento drop-box `apps/nfe`'s `rt.an()` reads. Because those transports
+      load their chain **lazily**, a missing slot surfaces only when
+      contingency is exercised, never at boot.
+
    2. **Explicit env-var override** — set `NFE_TLS_CA_PATH=/abs/path/to/chain.pem`
       to point at any PEM bundle you already trust.
 
@@ -179,7 +194,7 @@ const out = generateNFe({
   transpXml: '<transp>...</transp>',
   pagXml: '<pag>...</pag>',
 });
-// out.chave is the 44-digit access key (anti-loss anchor)
+// out.chave is the 44-character access key (anti-loss anchor)
 // out.nfeXml is the unsigned <NFe>...</NFe>
 
 const signedXml = signNFe(out.nfeXml, cert);
@@ -191,7 +206,7 @@ const signedXml = signNFe(out.nfeXml, cert);
 | Module            | Job                                                                                                                     |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `src/operations/` | **Typed entry points** — start here                                                                                     |
-| `src/generator/`  | Pedido data → unsigned `<NFe>` + 44-digit chave                                                                         |
+| `src/generator/`  | Pedido data → unsigned `<NFe>` + 44-char chave                                                                          |
 | `src/sign/`       | XMLDSig signing via `xml-crypto`                                                                                        |
 | `src/xsd/`        | Canonical SEFAZ XSD validation (`xmllint-wasm`)                                                                         |
 | `src/safety/`     | Produção guards — `assertSafeTpAmb` (generator entry), `assertSafeTpAmbForTransport` (every POST; no `NODE_ENV` escape) |

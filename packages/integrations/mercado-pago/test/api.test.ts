@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TIPO_PAGAMENTO_MP } from '@delfrance/schemas';
 import {
   MercadoPagoHttpError,
   MercadoPagoNetworkError,
   MercadoPagoReauthRequiredError,
+  MercadoPagoRequestError,
   MercadoPagoValidationError,
 } from '../src/errors';
-import { type MercadoPagoApiConfig, createMercadoPagoApi } from '../src/api';
+import { type MercadoPagoApiConfig, createMercadoPagoApi, mpCauseCodes } from '../src/api';
+import type { MpPreferenceExpireRequest, MpPreferenceRequest } from '../src/requests';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -288,5 +291,639 @@ describe('a validation failure names the field it choked on', () => {
     expect(message).not.toContain('123456');
     expect(message).not.toContain('FULANO');
     expect(message).not.toContain('payer@x.z');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                      Payment links (#367): the request side                 */
+/* -------------------------------------------------------------------------- */
+
+const LINK_ID = 'aB3dE5gH7jK9mN1pQ3rS';
+const PEDIDO_ID = 'Xk29fLq0PzA81mNbVc7T';
+const DEADLINE = '2026-09-30T23:59:59.000-03:00';
+
+const PREFERENCE_REQUEST: MpPreferenceRequest = {
+  items: [
+    {
+      id: LINK_ID,
+      title: 'Pedido #123 — Maria',
+      quantity: 1,
+      currency_id: 'BRL',
+      unit_price: 33.33,
+    },
+  ],
+  external_reference: PEDIDO_ID,
+  metadata: { link_id: LINK_ID },
+  expires: true,
+  expiration_date_to: DEADLINE,
+  date_of_expiration: DEADLINE,
+};
+
+const EXPIRE_PATCH: MpPreferenceExpireRequest = {
+  expires: true,
+  expiration_date_to: '2026-09-29T14:30:00.000-03:00',
+  date_of_expiration: '2026-09-29T14:30:00.000-03:00',
+};
+
+const PREFERENCE = {
+  id: '123456789-aaaa-bbbb',
+  init_point: 'https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789-aaaa-bbbb',
+};
+
+/** The parsed JSON body a mocked `fetch` was actually handed. */
+function sentBody(init: RequestInit | undefined): unknown {
+  const raw = init?.body;
+  if (typeof raw !== 'string') throw new Error('expected a string request body');
+  return JSON.parse(raw);
+}
+
+function urlOf(input: string | URL | Request): URL {
+  if (typeof input === 'string') return new URL(input);
+  if (input instanceof URL) return input;
+  return new URL(input.url);
+}
+
+/** Await a promise that must reject with a `MercadoPagoHttpError`, and return it. */
+async function httpErrorFrom(promise: Promise<unknown>): Promise<MercadoPagoHttpError> {
+  try {
+    await promise;
+  } catch (err) {
+    if (err instanceof MercadoPagoHttpError) return err;
+    throw err;
+  }
+  throw new Error('expected a MercadoPagoHttpError');
+}
+
+/** Await a promise that must reject with a `MercadoPagoRequestError`, and return it. */
+async function requestErrorFrom(promise: Promise<unknown>): Promise<MercadoPagoRequestError> {
+  try {
+    await promise;
+  } catch (err) {
+    if (err instanceof MercadoPagoRequestError) return err;
+    throw err;
+  }
+  throw new Error('expected a MercadoPagoRequestError');
+}
+
+/** A valid request with `over` laid on top — typed loosely because the point is to BREAK it. */
+function requestWith(over: Record<string, unknown>): MpPreferenceRequest {
+  return { ...PREFERENCE_REQUEST, ...over } as unknown as MpPreferenceRequest;
+}
+
+/** A valid request whose only item has `over` laid on top. */
+function itemWith(over: Record<string, unknown>): MpPreferenceRequest {
+  return requestWith({ items: [{ ...PREFERENCE_REQUEST.items[0], ...over }] });
+}
+
+describe('createPreference', () => {
+  it('POSTs the JSON body to /checkout/preferences and parses {id, init_point}', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE, 201),
+    );
+    const pref = await createMercadoPagoApi(cfg(fetchMock)).createPreference(PREFERENCE_REQUEST);
+
+    expect(pref.id).toBe(PREFERENCE.id);
+    expect(pref.init_point).toBe(PREFERENCE.init_point);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadopago.com/checkout/preferences');
+    expect(init!.method).toBe('POST');
+    const headers = init!.headers as Record<string, string>;
+    expect(headers['Content-Type']).toBe('application/json');
+    expect(headers.Authorization).toBe('Bearer live-token');
+    expect(sentBody(init)).toEqual(PREFERENCE_REQUEST);
+  });
+
+  it('never sends an idempotency key (an honoured one could return an EXPIRED preference)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE, 201),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).createPreference(PREFERENCE_REQUEST);
+    const headers = fetchMock.mock.calls[0]![1]!.headers as Record<string, string>;
+    expect(Object.keys(headers).map((h) => h.toLowerCase())).not.toContain('x-idempotency-key');
+  });
+
+  it('⚠️ a POST whose fetch throws is attempted EXACTLY once — a retry could mint a 2nd preference', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('ECONNRESET'));
+    // The default maxRetries (3) is in force: the POST simply does not use it.
+    const api = createMercadoPagoApi(cfg(fetchMock));
+    await expect(api.createPreference(PREFERENCE_REQUEST)).rejects.toBeInstanceOf(
+      MercadoPagoNetworkError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a POST that got an HTTP answer is not repeated either', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'invalid_items', status: 400 }, 400),
+    );
+    const err = await httpErrorFrom(
+      createMercadoPagoApi(cfg(fetchMock)).createPreference(PREFERENCE_REQUEST),
+    );
+    expect(err.status).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 401 on the POST asks for a re-auth', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'invalid access token' }, 401),
+    );
+    await expect(
+      createMercadoPagoApi(cfg(fetchMock)).createPreference(PREFERENCE_REQUEST),
+    ).rejects.toBeInstanceOf(MercadoPagoReauthRequiredError);
+  });
+
+  it('a GET carries no body and no Content-Type', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(USER),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).getMe();
+    const init = fetchMock.mock.calls[0]![1]!;
+    expect(init.body).toBeUndefined();
+    expect(Object.keys(init.headers as Record<string, string>)).not.toContain('Content-Type');
+  });
+
+  it('accepts the full body: payment_methods and every payer part', async () => {
+    const full: MpPreferenceRequest = {
+      ...PREFERENCE_REQUEST,
+      payment_methods: {
+        excluded_payment_types: [{ id: TIPO_PAGAMENTO_MP.boleto }],
+        installments: 6,
+      },
+      payer: {
+        name: 'Maria',
+        surname: 'da Silva',
+        email: 'maria@example.com',
+        phone: { area_code: '11', number: '999998888' },
+        identification: { type: 'CPF', number: '12345678901' },
+      },
+    };
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE, 201),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).createPreference(full);
+    expect(sentBody(fetchMock.mock.calls[0]![1])).toEqual(full);
+  });
+
+  it.each([0.01, 33.33, 100, 1234.5])('accepts a unit_price of %s', async (unitPrice) => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE, 201),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).createPreference(
+      itemWith({ unit_price: unitPrice }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('survives a 201 whose enrichment fields have the wrong type (the preference already exists)', async () => {
+    // Mercado Pago has ALREADY created the preference when this parse runs, so a
+    // validation failure would orphan a payable link whose id we no longer hold.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(
+        {
+          ...PREFERENCE,
+          expires: 'yes',
+          date_created: 5,
+          expiration_date_to: {},
+          metadata: 'not-an-object',
+          brand_new_mp_field: 1,
+        },
+        201,
+      ),
+    );
+    const pref = await createMercadoPagoApi(cfg(fetchMock)).createPreference(PREFERENCE_REQUEST);
+    expect(pref.id).toBe(PREFERENCE.id);
+    expect(pref.init_point).toBe(PREFERENCE.init_point);
+    expect(pref.expires).toBeNull();
+    expect(pref.metadata).toBeNull();
+    expect((pref as Record<string, unknown>).brand_new_mp_field).toBe(1);
+  });
+
+  it('a preference answer missing init_point names the field and quotes no value', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ id: 'pref-secret-123' }, 201),
+    );
+    const err = await createMercadoPagoApi(cfg(fetchMock))
+      .createPreference(PREFERENCE_REQUEST)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(MercadoPagoValidationError);
+    const message = (err as MercadoPagoValidationError).message;
+    expect(message).toMatch(/init_point/);
+    expect(message).not.toContain('pref-secret-123');
+  });
+});
+
+describe('a request body is validated against its STRICT schema BEFORE anything is sent', () => {
+  // Each row is a body Mercado Pago would either reject with an opaque 4xx or,
+  // worse, accept with an effect we never meant (a per-preference notification
+  // URL that overrides the panel webhook, a quoted amount, a UTC date).
+  const cases: Array<[string, MpPreferenceRequest, string]> = [
+    [
+      'an extra key notification_url',
+      requestWith({ notification_url: 'https://example.test/hook' }),
+      'notification_url',
+    ],
+    [
+      'an extra key back_urls',
+      requestWith({ back_urls: { success: 'https://x.test' } }),
+      'back_urls',
+    ],
+    ['an extra key binary_mode', requestWith({ binary_mode: true }), 'binary_mode'],
+    ['an extra key inside the item', itemWith({ category_id: 'art' }), 'items.0.category_id'],
+    ['a 3-decimal unit_price (33.333)', itemWith({ unit_price: 33.333 }), 'items.0.unit_price'],
+    ['a STRING unit_price', itemWith({ unit_price: '33.33' }), 'items.0.unit_price'],
+    ['a zero unit_price', itemWith({ unit_price: 0 }), 'items.0.unit_price'],
+    ['a negative unit_price', itemWith({ unit_price: -1 }), 'items.0.unit_price'],
+    ['an infinite unit_price', itemWith({ unit_price: Infinity }), 'items.0.unit_price'],
+    ['a quantity of 2', itemWith({ quantity: 2 }), 'items.0.quantity'],
+    ['a currency other than BRL', itemWith({ currency_id: 'USD' }), 'items.0.currency_id'],
+    [
+      'two items',
+      requestWith({ items: [PREFERENCE_REQUEST.items[0], PREFERENCE_REQUEST.items[0]] }),
+      'items',
+    ],
+    [
+      'an external_reference of 65 characters',
+      requestWith({ external_reference: 'a'.repeat(65) }),
+      'external_reference',
+    ],
+    [
+      'an external_reference with "@"',
+      requestWith({ external_reference: 'a@b' }),
+      'external_reference',
+    ],
+    ['an empty external_reference', requestWith({ external_reference: '' }), 'external_reference'],
+    [
+      'a link_id that is not 20 alphanumerics',
+      requestWith({ metadata: { link_id: 'short' } }),
+      'metadata.link_id',
+    ],
+    [
+      'an extra metadata key',
+      requestWith({ metadata: { link_id: LINK_ID, pedido: PEDIDO_ID } }),
+      'metadata.pedido',
+    ],
+    [
+      'an expiration_date_to ending in Z',
+      requestWith({ expiration_date_to: '2026-09-30T23:59:59.000Z' }),
+      'expiration_date_to',
+    ],
+    [
+      'a date_of_expiration without milliseconds',
+      requestWith({ date_of_expiration: '2026-09-30T23:59:59-03:00' }),
+      'date_of_expiration',
+    ],
+    ['expires: false', requestWith({ expires: false }), 'expires'],
+    [
+      'an excluded payment type account_money',
+      requestWith({ payment_methods: { excluded_payment_types: [{ id: 'account_money' }] } }),
+      'payment_methods.excluded_payment_types.0.id',
+    ],
+    [
+      'ALL four excludable types excluded',
+      requestWith({
+        payment_methods: {
+          excluded_payment_types: Object.values(TIPO_PAGAMENTO_MP).map((id) => ({ id })),
+        },
+      }),
+      'payment_methods.excluded_payment_types',
+    ],
+    [
+      'installments of 37',
+      requestWith({ payment_methods: { installments: 37 } }),
+      'payment_methods.installments',
+    ],
+    [
+      'installments of 0',
+      requestWith({ payment_methods: { installments: 0 } }),
+      'payment_methods.installments',
+    ],
+    ['a malformed payer e-mail', requestWith({ payer: { email: 'not-an-email' } }), 'payer.email'],
+    [
+      'a payer phone with a one-digit area_code',
+      requestWith({ payer: { phone: { area_code: '5', number: '999998888' } } }),
+      'payer.phone.area_code',
+    ],
+    [
+      'a payer identification of the wrong length',
+      requestWith({ payer: { identification: { type: 'CPF', number: '1234567890' } } }),
+      'payer.identification.number',
+    ],
+    [
+      'a 14-character number under the CPF type',
+      requestWith({ payer: { identification: { type: 'CPF', number: '12345678000195' } } }),
+      'payer.identification',
+    ],
+    [
+      'an 11-digit number under the CNPJ type',
+      requestWith({ payer: { identification: { type: 'CNPJ', number: '12345678901' } } }),
+      'payer.identification',
+    ],
+    [
+      'a payer key the schema does not have (address)',
+      requestWith({ payer: { address: { zip_code: '01310100' } } }),
+      'payer.address',
+    ],
+  ];
+
+  it.each(cases)(
+    'rejects %s — nothing is fetched, no token is requested',
+    async (_label, body, path) => {
+      const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+        jsonResponse(PREFERENCE, 201),
+      );
+      const getAccessToken = vi.fn(async () => 'live-token');
+      const api = createMercadoPagoApi(cfg(fetchMock, { getAccessToken }));
+
+      const err = await requestErrorFrom(api.createPreference(body));
+
+      expect(err.campos).toContain(path);
+      expect(err.message).toContain(path);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getAccessToken).not.toHaveBeenCalled();
+    },
+  );
+
+  it('⚠️ the message carries field PATHS and never a value (a body can hold e-mail and CPF)', async () => {
+    const api = createMercadoPagoApi(cfg(vi.fn()));
+    const err = await requestErrorFrom(
+      api.createPreference(
+        requestWith({
+          payer: {
+            email: 'secret.person-at-example.com', // no "@": invalid
+            phone: { area_code: '11', number: '12345' }, // 5 digits is not a phone
+          },
+        }),
+      ),
+    );
+    expect(err.campos).toEqual(expect.arrayContaining(['payer.email', 'payer.phone.number']));
+    expect(err.message).toMatch(/payer\.email/);
+    expect(err.message).not.toContain('secret.person');
+    expect(err.message).not.toContain('12345');
+    expect(err.campos.join(' ')).not.toContain('secret.person');
+  });
+
+  it('reports every invalid field at once, once each', async () => {
+    const api = createMercadoPagoApi(cfg(vi.fn()));
+    const err = await requestErrorFrom(
+      api.createPreference(requestWith({ external_reference: 'a@b', expires: false })),
+    );
+    expect([...err.campos].sort()).toEqual(['expires', 'external_reference']);
+  });
+});
+
+describe('updatePreference', () => {
+  it('PUTs the expire patch to /checkout/preferences/{id}', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).updatePreference(PREFERENCE.id, EXPIRE_PATCH);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`https://api.mercadopago.com/checkout/preferences/${PREFERENCE.id}`);
+    expect(init!.method).toBe('PUT');
+    expect(sentBody(init)).toEqual(EXPIRE_PATCH);
+  });
+
+  it('⚠️ the patch moves BOTH dates — a Pix issued earlier stays payable until date_of_expiration', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).updatePreference(PREFERENCE.id, EXPIRE_PATCH);
+    expect(Object.keys(sentBody(fetchMock.mock.calls[0]![1]) as object).sort()).toEqual([
+      'date_of_expiration',
+      'expiration_date_to',
+      'expires',
+    ]);
+  });
+
+  it('escapes the id, so it cannot address another path', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).updatePreference('a/b?c', EXPIRE_PATCH);
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      'https://api.mercadopago.com/checkout/preferences/a%2Fb%3Fc',
+    );
+  });
+
+  it('DOES retry a network throw — the patch is idempotent (the POST is the near-miss)', async () => {
+    const fetchMock = vi.fn();
+    fetchMock
+      .mockRejectedValueOnce(new TypeError('ECONNRESET'))
+      .mockResolvedValueOnce(jsonResponse(PREFERENCE));
+    const pref = await createMercadoPagoApi(cfg(fetchMock)).updatePreference(
+      PREFERENCE.id,
+      EXPIRE_PATCH,
+    );
+    expect(pref.id).toBe(PREFERENCE.id);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a 404 is an HTTP error carrying the status, not retried', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'preference not found' }, 404),
+    );
+    const err = await httpErrorFrom(
+      createMercadoPagoApi(cfg(fetchMock)).updatePreference(PREFERENCE.id, EXPIRE_PATCH),
+    );
+    expect(err.status).toBe(404);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a patch WITHOUT date_of_expiration — the fallback when Mercado Pago 400s it', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE),
+    );
+    const semPrazoOffline: MpPreferenceExpireRequest = {
+      expires: true,
+      expiration_date_to: EXPIRE_PATCH.expiration_date_to,
+    };
+    await createMercadoPagoApi(cfg(fetchMock)).updatePreference(PREFERENCE.id, semPrazoOffline);
+    expect(sentBody(fetchMock.mock.calls[0]![1])).toEqual(semPrazoOffline);
+  });
+
+  it.each([
+    ['a patch without expiration_date_to', { expires: true, date_of_expiration: DEADLINE }],
+    ['a patch with only expires', { expires: true }],
+    ['a patch ending in Z', { ...EXPIRE_PATCH, date_of_expiration: '2026-09-29T17:30:00.000Z' }],
+    ['expires: false', { ...EXPIRE_PATCH, expires: false }],
+    ['an extra key', { ...EXPIRE_PATCH, expiration_date_from: DEADLINE }],
+  ])('rejects %s before fetch', async (_label, patch) => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PREFERENCE),
+    );
+    await expect(
+      createMercadoPagoApi(cfg(fetchMock)).updatePreference(
+        PREFERENCE.id,
+        patch as unknown as MpPreferenceExpireRequest,
+      ),
+    ).rejects.toBeInstanceOf(MercadoPagoRequestError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('searchPayments', () => {
+  const PAGE = {
+    paging: { total: 3, limit: 30, offset: 0 },
+    results: [
+      { id: 111, external_reference: PEDIDO_ID },
+      { id: 222, external_reference: PEDIDO_ID },
+    ],
+  };
+
+  it('sends the exact search params, with the widest allowed window', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PAGE),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).searchPayments({
+      externalReference: PEDIDO_ID,
+      offset: 60,
+      limit: 30,
+    });
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = urlOf(rawUrl);
+    expect(`${url.origin}${url.pathname}`).toBe('https://api.mercadopago.com/v1/payments/search');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      external_reference: PEDIDO_ID,
+      sort: 'date_created',
+      criteria: 'desc',
+      range: 'date_created',
+      begin_date: 'NOW-360DAYS',
+      end_date: 'NOW',
+      limit: '30',
+      offset: '60',
+    });
+    expect(init!.method).toBe('GET');
+  });
+
+  it('URL-encodes the external_reference', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PAGE),
+    );
+    await createMercadoPagoApi(cfg(fetchMock)).searchPayments({
+      externalReference: 'a&b=c',
+      offset: 0,
+      limit: 30,
+    });
+    expect(urlOf(fetchMock.mock.calls[0]![0]).searchParams.get('external_reference')).toBe('a&b=c');
+  });
+
+  it('reads a page', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(PAGE),
+    );
+    const page = await createMercadoPagoApi(cfg(fetchMock)).searchPayments({
+      externalReference: PEDIDO_ID,
+      offset: 0,
+      limit: 30,
+    });
+    expect(page.paging?.total).toBe(3);
+    expect(page.results?.map((r) => r.id)).toEqual([111, 222]);
+  });
+
+  it('tolerates quoted numbers in paging and in the ids (#1087)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        paging: { total: '3', limit: '30', offset: '0' },
+        results: [{ id: '174034247387', external_reference: PEDIDO_ID }],
+      }),
+    );
+    const page = await createMercadoPagoApi(cfg(fetchMock)).searchPayments({
+      externalReference: PEDIDO_ID,
+      offset: 0,
+      limit: 30,
+    });
+    expect(page.paging).toMatchObject({ total: 3, limit: 30, offset: 0 });
+    expect(page.results?.[0]?.id).toBe(174034247387);
+  });
+
+  it('one odd element field costs that field, never the page', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        paging: 'garbage',
+        results: [
+          {
+            id: 111,
+            external_reference: 42,
+            payer: { anything: ['goes'] },
+            transaction_amount: '1,50',
+          },
+          { id: 222, external_reference: PEDIDO_ID },
+        ],
+      }),
+    );
+    const page = await createMercadoPagoApi(cfg(fetchMock)).searchPayments({
+      externalReference: PEDIDO_ID,
+      offset: 0,
+      limit: 30,
+    });
+    expect(page.paging).toBeNull();
+    expect(page.results?.map((r) => r.id)).toEqual([111, 222]);
+    expect(page.results?.[0]?.external_reference).toBeNull();
+  });
+
+  it('DOES retry a network throw (a read)', async () => {
+    const fetchMock = vi.fn();
+    fetchMock
+      .mockRejectedValueOnce(new TypeError('ECONNRESET'))
+      .mockResolvedValueOnce(jsonResponse(PAGE));
+    await createMercadoPagoApi(cfg(fetchMock)).searchPayments({
+      externalReference: PEDIDO_ID,
+      offset: 0,
+      limit: 30,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a 400 with cause code 2001 is an HTTP error whose code mpCauseCodes reads', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(
+        {
+          message: 'Already posted the same request in the last minute',
+          error: 'bad_request',
+          status: 400,
+          cause: [{ code: 2001, description: 'Already posted the same request' }],
+        },
+        400,
+      ),
+    );
+    const err = await httpErrorFrom(
+      createMercadoPagoApi(cfg(fetchMock)).searchPayments({
+        externalReference: PEDIDO_ID,
+        offset: 0,
+        limit: 30,
+      }),
+    );
+    expect(err.status).toBe(400);
+    expect(mpCauseCodes(err)).toEqual(['2001']);
+  });
+});
+
+describe('mpCauseCodes', () => {
+  const httpError = (body: unknown) => new MercadoPagoHttpError('MP 400', 400, body);
+
+  it('reads numeric and string codes, in order, as strings', () => {
+    expect(
+      mpCauseCodes(httpError({ cause: [{ code: 2001 }, { code: '9062', description: 'x' }] })),
+    ).toEqual(['2001', '9062']);
+  });
+
+  it('skips an entry it cannot read instead of losing the ones it can', () => {
+    const cause = ['junk', null, { nope: 1 }, { code: {} }, { code: 2001 }];
+    expect(mpCauseCodes(httpError({ cause }))).toEqual(['2001']);
+  });
+
+  it.each([
+    ['an empty cause array', { cause: [] }],
+    ['no cause at all', { message: 'boom' }],
+    ['a cause that is not an array', { cause: '2001' }],
+    ['a null body', null],
+    ['a raw-text body', 'upstream connect error'],
+  ])('is [] for %s', (_label, body) => {
+    expect(mpCauseCodes(httpError(body))).toEqual([]);
   });
 });

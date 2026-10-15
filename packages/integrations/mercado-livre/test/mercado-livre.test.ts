@@ -247,6 +247,8 @@ function searchClaim(id: number, lastUpdated: string) {
   };
 }
 
+const SELLER_ID = 3616169770;
+
 describe('importIncidentsMl (claims import, Step 14)', () => {
   it('pages the opened-claims search: nextCursor advances by page length until paging.total is consumed', async () => {
     const fetchMock = vi.fn();
@@ -268,7 +270,7 @@ describe('importIncidentsMl (claims import, Step 14)', () => {
       );
     const api = apiWithFetch(fetchMock);
 
-    const page1 = await importIncidentsMl(api);
+    const page1 = await importIncidentsMl(api, SELLER_ID);
     expect(page1.items.map((i) => i.externalId)).toEqual(['1', '2']);
     expect(page1.items[0]!.kind).toBe('mediation');
     // Search items are bare — no messages/reason (hydrate via getIncident).
@@ -280,8 +282,12 @@ describe('importIncidentsMl (claims import, Step 14)', () => {
     expect(url1.searchParams.get('status')).toBe('opened');
     expect(url1.searchParams.get('limit')).toBe('30');
     expect(url1.searchParams.get('offset')).toBe('0');
+    // ⚠️ ML's own recommended base pair. Without it the query is an unbounded
+    // scan its docs warn can get the application rate-limited or blocked.
+    expect(url1.searchParams.get('players.user_id')).toBe(String(SELLER_ID));
+    expect(url1.searchParams.get('players.role')).toBe('respondent');
 
-    const page2 = await importIncidentsMl(api, page1.nextCursor);
+    const page2 = await importIncidentsMl(api, SELLER_ID, page1.nextCursor);
     expect(page2.items.map((i) => i.externalId)).toEqual(['3']);
     expect(page2.nextCursor).toBeUndefined(); // 2 + 1 == total 3
     const url2 = new URL(String(fetchMock.mock.calls[1]![0]));
@@ -301,8 +307,51 @@ describe('importIncidentsMl (claims import, Step 14)', () => {
     const api = apiWithFetch(fetchMock);
     const sinceMs = Date.parse('2026-07-05T00:00:00.000-04:00');
 
-    const page = await importIncidentsMl(api, { sinceMs });
+    const page = await importIncidentsMl(api, SELLER_ID, { sinceMs });
     expect(page.items.map((i) => i.externalId)).toEqual(['2']);
     expect(page.nextCursor).toBeUndefined(); // 0 + 2 == total 2, filter aside
+  });
+
+  /**
+   * ⚠️ **The non-terminating walk.** An empty page leaves `consumed` equal to
+   * the offset that was passed in, so `consumed < total` still holds against a
+   * stale or estimated `total` and the cursor emitted is the SAME one the caller
+   * arrived with. A driver looping `while (page.nextCursor)` re-issues an
+   * identical request for ever, and the 10000-row guard cannot break it because
+   * the offset never advances.
+   */
+  it('ENDS the walk on an empty page, even while paging.total still claims more', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ paging: { total: 5, offset: 0, limit: 30 }, data: [] }),
+    );
+    const api = apiWithFetch(fetchMock);
+
+    const page = await importIncidentsMl(api, SELLER_ID);
+    expect(page.items).toEqual([]);
+    expect(page.nextCursor).toBeUndefined();
+  });
+
+  /**
+   * The control for the rule above: the stop must key on the RAW page, not on
+   * the `sinceMs`-filtered view. A page that filters down to nothing DID
+   * advance the offset, so its walk must continue — testing `items` instead of
+   * `page.data` would truncate exactly these.
+   */
+  it('KEEPS paging when the page filtered to nothing but the offset advanced', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        paging: { total: 10, offset: 0, limit: 30 },
+        data: [
+          searchClaim(1, '2026-07-01T00:00:00.000-04:00'), // stale
+          searchClaim(2, '2026-07-02T00:00:00.000-04:00'), // stale
+        ],
+      }),
+    );
+    const api = apiWithFetch(fetchMock);
+    const sinceMs = Date.parse('2026-07-05T00:00:00.000-04:00');
+
+    const page = await importIncidentsMl(api, SELLER_ID, { sinceMs });
+    expect(page.items).toEqual([]); // everything filtered out …
+    expect(page.nextCursor).toEqual({ token: '2' }); // … but the walk goes on
   });
 });

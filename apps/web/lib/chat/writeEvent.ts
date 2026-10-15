@@ -1,8 +1,8 @@
-import { type WriteBatch } from 'firebase/firestore';
+import type { WriteBatch } from 'firebase/firestore';
 import { TIPO_MENSAGEM, ESTADO_ENVIO } from '@delfrance/schemas';
 import { mensagemCollection } from '@/lib/data/conversaCollection';
 import { newDocId } from '@/lib/data/newDocId';
-import { getFirebaseFirestore } from '@/lib/firebase/client';
+import type { getFirebaseFirestore } from '@/lib/firebase/client';
 
 /**
  * Append a lifecycle EVENT mensagem (`tipo: 'e'`) for a conversa to a batch —
@@ -47,6 +47,8 @@ export function writeEvent(
     // An event is authored by an OPERATOR (a real `usuarios` doc) or by the
     // system — never by the contact, so the cliente-author ref is always null.
     clienteMensagemOuterRef: null,
+    whatsappDestino: null,
+    whatsappIntegracaoId: null,
     urlAvatar: null,
     midGroup: null,
     error: null,

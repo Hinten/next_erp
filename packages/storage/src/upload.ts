@@ -10,6 +10,8 @@ import {
   type Arquivo,
   type Filetype,
   STORAGE_ROOT,
+  chatArquivoId,
+  chatMediaPath,
   filetypeFromMime,
   normalizeContentType,
   nowMicros,
@@ -49,9 +51,10 @@ interface PutArquivoArgs {
 
 /**
  * Create the `Arquivo` doc, then upload the bytes (**create-first**).
- * Content-addressed: if the doc already exists at `docId` the object is already
- * in Storage, so we reuse it and skip both the upload and the write (the Flutter
- * dedup contract).
+ * Content-addressed: a complete doc at `docId` is reused without uploading or
+ * rewriting it (the Flutter dedup contract). An incomplete create-first anchor
+ * for the same path is recovered by replaying the idempotent object upload and
+ * finalizing the doc.
  *
  * The doc is the durable **anchor**: it is written BEFORE the upload so that a
  * client that dies mid-upload leaves a `uploadState: 'pending'` doc with no
@@ -65,10 +68,14 @@ interface PutArquivoArgs {
  */
 async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
   const docRef = arquivoCollection.docRef(args.db, {}, args.docId);
+  const slash = args.storagePath.lastIndexOf('/');
+  const filepath = slash >= 0 ? args.storagePath.slice(0, slash) : null;
+  const filename = slash >= 0 ? args.storagePath.slice(slash + 1) : args.storagePath;
 
   const existing = await getDoc(docRef);
   if (existing.exists()) {
     const stored = existing.data();
+    let healed = stored;
     // ⚠️ Self-heal the resize marker on a dedup hit.
     //
     // Uploads are content-addressed, so re-adding the same bytes returns here
@@ -86,14 +93,25 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
     // untouched, and legacy Flutter-written originals heal on re-upload too.
     if (args.resizeState === 'pending' && stored.resizeState == null) {
       await updateDoc(docRef, { resizeState: 'pending' });
-      return { id: args.docId, arquivo: { ...stored, resizeState: 'pending' } };
+      healed = { ...healed, resizeState: 'pending' };
     }
-    return { id: args.docId, arquivo: stored };
+    // A previous create-first attempt may have died after creating the anchor
+    // but before uploading/patching the object. Reusing that doc as a successful
+    // dedup would let callers persist a permanently broken ref. When the anchor
+    // still owns this exact deterministic path and has no URL, safely replay the
+    // idempotent byte upload and patch it instead.
+    if (stored.url == null && stored.filepath === filepath && stored.filename === filename) {
+      const objectRef = storageRef(args.storage, args.storagePath);
+      await uploadBytes(objectRef, args.bytes, {
+        contentType: args.contentType,
+        customMetadata: { arquivoId: args.docId },
+      });
+      const url = await getDownloadURL(objectRef);
+      await updateDoc(docRef, { url });
+      healed = { ...healed, url };
+    }
+    return { id: args.docId, arquivo: healed };
   }
-
-  const slash = args.storagePath.lastIndexOf('/');
-  const filepath = slash >= 0 ? args.storagePath.slice(0, slash) : null;
-  const filename = slash >= 0 ? args.storagePath.slice(slash + 1) : args.storagePath;
 
   // 1. Create-first: write the anchor doc with `url` not yet known and
   //    `uploadState: 'pending'` (flipped to 'finalized' by the onObjectFinalized
@@ -157,6 +175,65 @@ export async function uploadFile(args: UploadFileArgs): Promise<UploadResult> {
     contentType: args.contentType,
     docId: hash,
     storagePath: `${dir}/${filename}`,
+    filetype: filetypeFromMime(args.contentType),
+    originalFilename: args.originalFilename,
+  });
+}
+
+export interface UploadChatFileArgs {
+  storage: FirebaseStorage;
+  db: Firestore;
+  bytes: Uint8Array | ArrayBuffer | Blob;
+  contentType: string;
+  originalFilename?: string | null;
+}
+
+/**
+ * Upload an inbox attachment under the message-owned `chat/` namespace.
+ *
+ * The `chat_` doc-id prefix deliberately isolates the dedup domain from the
+ * generic `uploadFile` bare-hash ids. Existing legacy chat uploads remain
+ * readable and sweepable by their `filepath`; only new uploads use this id.
+ */
+export async function uploadChatFile(args: UploadChatFileArgs): Promise<UploadResult> {
+  const bytes = await toBytes(args.bytes);
+  const hash = await sha512Hex(bytes);
+  const ext = extensionForContentType(args.contentType);
+  const storagePath = chatMediaPath(hash, ext);
+
+  // Pre-namespace composer uploads used the bare hash as the Arquivo id while
+  // already storing bytes at `chat/<hash>.<ext>`. Reuse such an anchor when it
+  // belongs to this content path; creating `chat_<hash>` beside it would give
+  // two docs ownership of one Storage object, so deleting either could break the
+  // other. A bare-hash doc under `media/` is a generic-upload collision and must
+  // NOT be reused — that collision is why the new namespace exists.
+  const legacyRef = arquivoCollection.docRef(args.db, {}, hash);
+  const legacy = await getDoc(legacyRef);
+  if (legacy.exists()) {
+    const stored = legacy.data();
+    const ownsLegacyChatObject =
+      stored.filepath === STORAGE_ROOT.chat &&
+      (stored.filename === hash || stored.filename.startsWith(`${hash}.`));
+    if (ownsLegacyChatObject) {
+      return putArquivo({
+        storage: args.storage,
+        db: args.db,
+        bytes,
+        contentType: args.contentType,
+        docId: hash,
+        storagePath: `${STORAGE_ROOT.chat}/${stored.filename}`,
+        filetype: filetypeFromMime(args.contentType),
+        originalFilename: args.originalFilename,
+      });
+    }
+  }
+  return putArquivo({
+    storage: args.storage,
+    db: args.db,
+    bytes,
+    contentType: args.contentType,
+    docId: chatArquivoId(hash),
+    storagePath,
     filetype: filetypeFromMime(args.contentType),
     originalFilename: args.originalFilename,
   });

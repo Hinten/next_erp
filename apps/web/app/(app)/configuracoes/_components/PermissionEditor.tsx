@@ -25,6 +25,7 @@ const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   frete: 'Frete',
   cmun: 'Tabela de municípios (CEP → IBGE)',
   incidenteResolucao: 'Resolução de reclamações (marketplace)',
+  aviso: 'Avisos',
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -40,6 +41,11 @@ const ACTION_LABELS: Record<string, string> = {
  */
 const ACTION_LABELS_POR_DOMINIO: Partial<Record<keyof typeof PERM, Record<string, string>>> = {
   incidenteResolucao: { read: 'Consultar', write: 'Executar (reembolso, devolução, mediação)' },
+  // `avisos` is `serverOwned` — the ruleset denies every client write outright,
+  // so these two boxes gate nothing and granting them changes no behaviour. They
+  // exist only because `resolvePermissions` demands one PERM bit per action.
+  // Saying so beats a cargo editor granting "Editar" and expecting an effect.
+  aviso: { read: 'Ver', write: 'Editar (sem efeito — escrita só pelo servidor)' },
 };
 
 export interface PermissionEditorProps {

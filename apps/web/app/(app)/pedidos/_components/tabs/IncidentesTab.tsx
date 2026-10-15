@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from 'react';
 import {
   Alert,
   Badge,
@@ -8,8 +8,8 @@ import {
   Card,
   Divider,
   Group,
-  Modal,
   Select,
+  SimpleGrid,
   Skeleton,
   Stack,
   Switch,
@@ -18,6 +18,7 @@ import {
   Title,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
+import { IconArrowBackUp, IconPencil, IconPlus, IconTrash } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import {
   ORIGEM_INCIDENTE,
@@ -26,13 +27,20 @@ import {
   TIPO_RESOLUCAO_LABELS,
   type Incidente,
 } from '@delfrance/schemas';
-import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
+import { epochToPickerString, pickerStringToEpoch, useServerTruthSeed } from '@delfrance/ui';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { deleteIncidente, saveIncidente } from '@delfrance/data/pedido';
 import { nowMicros } from '@delfrance/core/datetime';
+import { valuesEqual } from '@delfrance/core/equality';
 import { incidenteCollection } from '@/lib/data/incidenteCollection';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
+import { createClientIncidentePort } from '@/lib/pedidos/incidentePort';
+import {
+  IncidenteConflictError,
+  IncidenteMissingError,
+  saveIncidenteEdit,
+} from '@/lib/pedidos/saveIncidenteEdit';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
 import {
@@ -41,20 +49,17 @@ import {
   incidenteDataFromForm,
   isResolucaoLocked,
   validateIncidenteForm,
+  type CampoAutoralIncidente,
   type IncidenteFormState,
 } from './incidenteForm';
+import { ehIncidenteImportado, opcoesDeOrigem, returnSnDoIncidente } from './incidenteCanal';
+import { IncidenteConflictModal } from './IncidenteConflictModal';
 import { ReclamacaoMlPanel } from '../ReclamacaoMlPanel';
+import { ReclamacaoShopeePanel } from '../ReclamacaoShopeePanel';
 
 const tipoOptions = (Object.entries(TIPO_INCIDENTE_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
 );
-const origemOptions = [
-  { value: '', label: '(nenhuma)' },
-  ...(Object.entries(ORIGEM_INCIDENTE_LABELS) as [string, string][]).map(([value, label]) => ({
-    value,
-    label,
-  })),
-];
 const resolucaoTipoOptions = (Object.entries(TIPO_RESOLUCAO_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
 );
@@ -69,13 +74,25 @@ export interface IncidentesTabProps {
   /** Absent in create mode — there is no subcollection yet. */
   pedidoId?: string;
   /**
-   * The ML account this pedido came through, when it came through one.
+   * The marketplace account (Mercado Livre or Shopee) this pedido came through,
+   * when it came through one.
    *
-   * ⚠️ Required to reach the claim on ML. Absent for a pedido with no ML
-   * integração, which is why the panel is conditional rather than always shown.
+   * ⚠️ Required to reach the claim or the return on the channel. Absent for a
+   * pedido with no integração, which is why the panels are conditional rather
+   * than always shown.
    */
   integracaoId?: string | null;
+  /** Publishes pending add/edit/delete work to PedidoForm's shared leave guard. */
+  onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Registers the save-time callback used by PedidoForm. The persistent tab
+   * keeps this registration alive after the operator opens another tab.
+   */
+  flushRef?: MutableRefObject<IncidenteFlush | null>;
 }
+
+/** Returns false when validation, a conflict or Firestore blocks the pedido save. */
+export type IncidenteFlush = () => Promise<boolean>;
 
 /**
  * Whether this incidente is a Mercado Livre claim we can query.
@@ -97,7 +114,13 @@ function claimIdDoIncidente(inc: {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
-export function IncidentesTab({ disabled, pedidoId, integracaoId }: IncidentesTabProps) {
+export function IncidentesTab({
+  disabled,
+  pedidoId,
+  integracaoId,
+  onDirtyChange,
+  flushRef,
+}: IncidentesTabProps) {
   if (!pedidoId) {
     return (
       <Text c="dimmed" size="sm">
@@ -105,48 +128,159 @@ export function IncidentesTab({ disabled, pedidoId, integracaoId }: IncidentesTa
       </Text>
     );
   }
-  return <IncidentesManager pedidoId={pedidoId} disabled={disabled} integracaoId={integracaoId} />;
+  return (
+    <IncidentesManager
+      pedidoId={pedidoId}
+      disabled={disabled}
+      integracaoId={integracaoId}
+      onDirtyChange={onDirtyChange}
+      flushRef={flushRef}
+    />
+  );
 }
 
 function IncidentesManager({
   pedidoId,
   disabled,
   integracaoId,
+  onDirtyChange,
+  flushRef,
 }: {
   pedidoId: string;
   disabled?: boolean;
   integracaoId?: string | null;
+  onDirtyChange?: (dirty: boolean) => void;
+  flushRef?: MutableRefObject<IncidenteFlush | null>;
 }) {
   const q = useMemo(() => {
     const base = incidenteCollection.ref(getFirebaseFirestore(), { pedidoId });
     return buildQuery(base, [orderByField('timestamp', 'desc')]);
   }, [pedidoId]);
-  const { data, loading, error } = useSnapshot<Incidente>(q);
+  const { data, loading, error, fromCache } = useSnapshot<Incidente>(q);
 
   // null = form closed; { id: null } = adding; { id, base } = editing an existing doc.
+  // `base` is the CONCURRENCY BASELINE — the version the operator has actually
+  // reviewed — not "the row as it will be saved". Everything the save reads off
+  // the document comes from `live` below.
   const [editing, setEditing] = useState<{ id: string | null; base: Incidente | null } | null>(
     null,
   );
   const [form, setForm] = useState<IncidenteFormState>(EMPTY_INCIDENTE_FORM);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  // Deletes follow the editor-wide staged-deletion rule: keep the row visible,
+  // offer undo, and apply the removal only through PedidoForm's shared save.
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(() => new Set());
+  const [conflict, setConflict] = useState<{
+    /** The version the operator reviewed. Null only on the create path, which never conflicts. */
+    baseline: Incidente | null;
+    current: Incidente;
+    campos: CampoAutoralIncidente[];
+    bloqueouAgora: boolean;
+  } | null>(null);
+
+  // Read off `editing` once: an optional chain inside a dependency array reads
+  // as the whole object to the React Compiler, which then skips the component.
+  const editingId = editing?.id ?? null;
+  const editingBase = editing?.base ?? null;
+
+  /**
+   * The row being edited AS IT IS NOW, not as it was when `Editar` was clicked.
+   *
+   * `useSnapshot` keeps `data` live but `editing.base` is captured once, and
+   * every read off that capture goes stale the moment anyone else writes the
+   * document — which is routine here: the Mercado Livre claims webhook merges
+   * `resolucao` / `claimStatus` / `claimStage` / `entregue` onto this very doc,
+   * and a second operator tab edits the same fields (#1250).
+   *
+   * `null` while adding (`editing.id === null`) and when the row has been
+   * DELETED under the open form, which the save has to refuse rather than
+   * re-create.
+   */
+  const live = useMemo(
+    () => (editingId ? (data?.find((r) => r.id === editingId)?.data ?? null) : null),
+    [data, editingId],
+  );
+  const rowDeleted = editingId !== null && !loading && live === null;
 
   // The resolução is read-only once its return shipping is in progress (legacy
   // `bloquear`); the frete sub-editor itself is deferred (see incidenteForm.ts).
-  const resolucaoLocked = isResolucaoLocked(editing?.base ?? null);
-  const hasFrete = (editing?.base?.resolucao?.frete ?? null) != null;
+  // Derived from `live`, so the lock ARMS while the form is open — the fields go
+  // read-only under the operator with their typed text intact, and the guarded
+  // save refuses rather than dropping their resolução edits silently.
+  const resolucaoLocked = isResolucaoLocked(live);
+  const hasFrete = (live?.resolucao?.frete ?? null) != null;
+  // A channel importer owns `origem` and `tipo` on this row (#1525): the pedido
+  // overlay keys on exactly those two, so retyping either lifts — or forges — a
+  // marketplace block. The disabled Selects are the cosmetic half;
+  // `buildIncidentePatch` dropping both keys is the structural one. Read off the
+  // LIVE row, falling back to the baseline once it was deleted under the form.
+  const linhaEditada = live ?? editingBase;
+  const importado = linhaEditada != null && ehIncidenteImportado(linhaEditada);
+  // The STORED origem decides which marketplace origem stays offered: none on a
+  // manual row (only an importer writes one), the row's own on a legacy one.
+  const origemOptions = opcoesDeOrigem(editingBase?.origem ?? null);
+
+  // "Dirty" for the re-seed below: the form no longer matches the baseline it
+  // was seeded from. Structural (`valuesEqual`) — `formFromIncidente` returns a
+  // fresh object every call, so an identity check would report dirty always and
+  // the server-truth correction would never run.
+  const baselineDiffers = useMemo(
+    () => editingBase != null && !valuesEqual(form, formFromIncidente(editingBase)),
+    [form, editingBase],
+  );
+  // Opening a create card is itself pending work. All incidente fields are
+  // optional and `tipo` already has a valid default, so comparing a new draft
+  // with EMPTY_INCIDENTE_FORM would let the shared pedido save discard a valid
+  // default-only incidente without ever calling the flush.
+  const draftDirty = editing !== null && (editing.id === null || baselineDiffers);
+  const hasPendingChanges = draftDirty || pendingDeleteIds.size > 0;
+
+  useEffect(() => {
+    onDirtyChange?.(hasPendingChanges);
+  }, [hasPendingChanges, onDirtyChange]);
+  useEffect(
+    () => () => {
+      // Do not leave PedidoForm's shared guard armed if the whole form unmounts.
+      onDirtyChange?.(false);
+    },
+    [onDirtyChange],
+  );
+  const seedFromServerTruth = useCallback(() => {
+    if (!live || editingId === null) return;
+    setEditing({ id: editingId, base: live });
+    setForm(formFromIncidente(live));
+  }, [live, editingId]);
+
+  /**
+   * Paint the first snapshot, then correct to server truth once — the contract
+   * `ObjectView` follows, wired here because this form is hand-written.
+   *
+   * Load-bearing rather than polish: `openEdit` fires on a row that may have
+   * come from the IndexedDB cache, so without this the first SERVER emission
+   * would differ from the captured baseline and read as a concurrent edit —
+   * popping a conflict modal on a document nobody touched (#972). The form and
+   * the baseline are re-seeded in the SAME callback for exactly that reason;
+   * correcting one while the other held the cached copy is what caused it.
+   */
+  useServerTruthSeed({
+    id: editingId ?? undefined,
+    fromCache,
+    isDirty: baselineDiffers,
+    onSeed: seedFromServerTruth,
+  });
 
   function openAdd() {
     setForm(EMPTY_INCIDENTE_FORM);
     setEditing({ id: null, base: null });
     setSaveError(null);
+    setConflict(null);
   }
   function openEdit(id: string, incidente: Incidente) {
     setForm(formFromIncidente(incidente));
     setEditing({ id, base: incidente });
     setSaveError(null);
+    setConflict(null);
   }
 
   function toggleResolucao(on: boolean) {
@@ -159,82 +293,223 @@ function IncidentesManager({
     }));
   }
 
-  async function handleSave() {
-    if (!editing) return;
-    const validationError = validateIncidenteForm(form);
+  /**
+   * Write the edits.
+   *
+   * CREATE (`editing.id === null`) keeps the whole-document converter `set`:
+   * it mints the id, stamps `timestamp`, and there is no stored document to
+   * regress. UPDATE goes through the guarded path — authored keys only, inside
+   * a transaction that re-reads the doc (see `saveIncidenteEdit`).
+   *
+   * `baseline` is the version the operator reviewed. `handleForceSave` passes
+   * the one they just read in the conflict modal instead, so an override never
+   * clobbers an edit nobody has seen.
+   */
+  const commitIncidente = useCallback(
+    async (baseline: Incidente | null): Promise<boolean> => {
+      if (!editing) return false;
+      const incidenteId = editing.id;
+      // ⚠️ No fallback to a baseline-less update. Without a baseline there is
+      // nothing to compare, and a save that cannot be guarded must not happen —
+      // falling through to `incidenteDataFromForm(form, null, …)` here would
+      // write an EMPTY document over a real one. `openEdit` always sets `base`,
+      // so this is a bug guard, not a path.
+      if (incidenteId !== null && baseline === null) {
+        setSaveError('Ainda carregando a versão mais recente do incidente — tente novamente.');
+        return false;
+      }
+      setSaving(true);
+      setSaveError(null);
+      try {
+        if (incidenteId === null || baseline === null) {
+          // CREATE: the op mints the id and stamps `timestamp`, and there is no
+          // stored document for the whole-document `set` to regress.
+          await saveIncidente(createClientPedidoPort(getFirebaseFirestore()), {
+            pedidoId,
+            incidenteId: null,
+            incidente: incidenteDataFromForm(form, null, nowMicros()),
+          });
+        } else {
+          await saveIncidenteEdit(
+            createClientIncidentePort(getFirebaseFirestore(), pedidoId, incidenteId),
+            { form, baseline },
+          );
+        }
+        setConflict(null);
+        setEditing(null);
+        return true;
+      } catch (err) {
+        if (err instanceof IncidenteConflictError) {
+          // Changed remotely on a field this save writes → let the operator review
+          // the diff and decide. Never a silent overwrite (tier 3).
+          setConflict({
+            baseline,
+            current: err.current,
+            campos: err.campos,
+            bloqueouAgora: err.bloqueouAgora,
+          });
+          return false;
+        }
+        if (err instanceof IncidenteMissingError) {
+          setConflict(null);
+          setSaveError(err.message);
+          return false;
+        }
+        if (err instanceof FirebaseError) {
+          setSaveError(err.message);
+          return false;
+        }
+        throw err;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [editing, form, pedidoId],
+  );
+
+  const saveDraft = useCallback(async (): Promise<boolean> => {
+    if (!editing || !draftDirty) return true;
+    if (rowDeleted) {
+      setSaveError(new IncidenteMissingError().message);
+      return false;
+    }
+    // ⚠️ The STORED row, or the marketplace-origem rule applies its CREATE form
+    // and refuses every edit of an imported row. `null` on create, as it must be.
+    const validationError = validateIncidenteForm(form, editing.base);
     if (validationError) {
       setSaveError(validationError);
-      return;
+      return false;
     }
+    return commitIncidente(editing.base);
+  }, [commitIncidente, draftDirty, editing, form, rowDeleted]);
+
+  /**
+   * "Salvar mesmo assim": override the version the operator JUST reviewed by
+   * re-baselining on it, not by force-writing. If the doc changed AGAIN since
+   * the modal opened, the guard re-trips and the newer diff replaces it.
+   */
+  async function handleForceSave() {
+    if (!conflict) return;
+    await commitIncidente(conflict.current);
+  }
+
+  function togglePendingDelete(id: string) {
+    setSaveError(null);
+    setPendingDeleteIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const flushPending = useCallback(async (): Promise<boolean> => {
+    if (!(await saveDraft())) return false;
+    if (pendingDeleteIds.size === 0) return true;
+
     setSaving(true);
     setSaveError(null);
-    const incidente = incidenteDataFromForm(form, editing.base, nowMicros());
+    const remaining = new Set(pendingDeleteIds);
     try {
-      await saveIncidente(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId,
-        incidenteId: editing.id,
-        incidente,
-      });
-      setEditing(null);
+      for (const incidenteId of pendingDeleteIds) {
+        await deleteIncidente(createClientPedidoPort(getFirebaseFirestore()), {
+          pedidoId,
+          incidenteId,
+        });
+        remaining.delete(incidenteId);
+      }
+      setPendingDeleteIds(new Set());
+      return true;
     } catch (err) {
+      // Successfully deleted rows leave the staged set even if a later delete
+      // fails, so retrying cannot present already-committed work as pending.
+      setPendingDeleteIds(new Set(remaining));
       if (err instanceof FirebaseError) {
-        setSaveError(err.message);
-        return;
+        setSaveError(`Não foi possível excluir um incidente: ${err.message}`);
+        return false;
       }
       throw err;
     } finally {
       setSaving(false);
     }
-  }
+  }, [pendingDeleteIds, pedidoId, saveDraft]);
 
-  async function handleDelete() {
-    if (!deleteTarget) return;
-    setDeleting(true);
-    try {
-      await deleteIncidente(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId,
-        incidenteId: deleteTarget,
-      });
-      setDeleteTarget(null);
-    } finally {
-      setDeleting(false);
-    }
-  }
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = flushPending;
+    const ref = flushRef;
+    return () => {
+      ref.current = null;
+    };
+  }, [flushPending, flushRef]);
 
   const resFieldsDisabled = disabled || resolucaoLocked;
 
+  function cancelEditing() {
+    setEditing(null);
+    setConflict(null);
+    setSaveError(null);
+  }
+
   return (
-    <Stack>
-      <Group justify="space-between" align="center">
-        <Title order={3}>Incidentes</Title>
-        {!editing && (
-          <Button size="xs" onClick={openAdd} disabled={disabled}>
-            + Adicionar incidente
-          </Button>
-        )}
+    <Stack gap="lg">
+      <Group justify="space-between" align="flex-start" wrap="wrap">
+        <Stack gap={4}>
+          <Group gap="xs">
+            <Title order={3}>Incidentes</Title>
+            <Badge color="gray" variant="light">
+              {loading ? '…' : (data?.length ?? 0)}
+            </Badge>
+          </Group>
+          <Text c="dimmed" size="sm" maw={640}>
+            Inclusões, edições e exclusões marcadas serão salvas junto com o pedido.
+          </Text>
+        </Stack>
+        <Button
+          type="button"
+          leftSection={<IconPlus size={16} />}
+          onClick={openAdd}
+          disabled={disabled || editing !== null || saving}
+        >
+          Novo incidente
+        </Button>
       </Group>
 
       {editing && (
-        <Card withBorder>
-          <Stack gap="sm">
-            <Text fw={500}>{editing.id ? 'Editar incidente' : 'Novo incidente'}</Text>
-            <Group grow align="flex-start">
+        <Card withBorder padding="lg" bg="var(--mantine-color-blue-light)">
+          <Stack gap="md">
+            <Group justify="space-between" align="center">
+              <Stack gap={2}>
+                <Text fw={600}>{editing.id ? 'Editar incidente' : 'Novo incidente'}</Text>
+                <Text size="xs" c="dimmed">
+                  Conclua ou cancele esta edição antes de escolher outro incidente.
+                </Text>
+              </Stack>
+              {draftDirty && (
+                <Badge color="orange" variant="filled">
+                  Alterações não salvas
+                </Badge>
+              )}
+            </Group>
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
               <Select
                 label="Tipo"
                 data={tipoOptions}
                 value={form.tipo}
                 onChange={(v) => v && setForm((f) => ({ ...f, tipo: v }))}
                 allowDeselect={false}
-                disabled={resFieldsDisabled}
+                disabled={resFieldsDisabled || importado}
+                description={importado ? 'Definido pela importação do canal' : undefined}
               />
               <Select
                 label="Origem"
                 data={origemOptions}
                 value={form.origem}
                 onChange={(v) => setForm((f) => ({ ...f, origem: v ?? '' }))}
-                disabled={disabled}
+                disabled={disabled || importado}
+                description={importado ? 'Definida pela importação do canal' : undefined}
               />
-            </Group>
+            </SimpleGrid>
             <Textarea
               label="Motivo"
               maxLength={2000}
@@ -281,7 +556,7 @@ function IncidentesManager({
 
             {form.registrarResolucao && (
               <Stack gap="sm">
-                <Group grow align="flex-start">
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
                   <Select
                     label="Tipo de resolução"
                     placeholder="Selecione"
@@ -304,7 +579,7 @@ function IncidentesManager({
                     clearable
                     disabled={resFieldsDisabled}
                   />
-                </Group>
+                </SimpleGrid>
                 <CurrencyInput
                   label="Despesa da resolução"
                   value={form.resValor}
@@ -332,13 +607,19 @@ function IncidentesManager({
               </Stack>
             )}
 
+            {rowDeleted && (
+              <Alert color="red">
+                Este incidente foi excluído por outra pessoa enquanto você o editava. Salvar iria
+                recriá-lo.
+              </Alert>
+            )}
             {saveError && <Alert color="red">{saveError}</Alert>}
-            <Group justify="flex-end">
-              <Button variant="default" onClick={() => setEditing(null)} disabled={saving}>
+            <Group justify="space-between" align="center" wrap="wrap">
+              <Text size="xs" c="dimmed">
+                Use “Salvar alterações” no rodapé para gravar este incidente e o pedido.
+              </Text>
+              <Button type="button" variant="default" onClick={cancelEditing} disabled={saving}>
                 Cancelar
-              </Button>
-              <Button onClick={handleSave} loading={saving} disabled={disabled}>
-                Salvar
               </Button>
             </Group>
           </Stack>
@@ -346,36 +627,58 @@ function IncidentesManager({
       )}
 
       {error && <Alert color="red">{error.message}</Alert>}
+      {!editing && saveError && <Alert color="red">{saveError}</Alert>}
       {loading && <Skeleton height={64} />}
       {!loading && data && data.length === 0 && (
-        <Text c="dimmed" size="sm">
-          Nenhum incidente registrado neste pedido.
-        </Text>
+        <Card withBorder padding="lg">
+          <Stack gap={4} align="center">
+            <Text fw={500}>Nenhum incidente registrado</Text>
+            <Text c="dimmed" size="sm" ta="center">
+              Use “Novo incidente” para registrar uma ocorrência neste pedido.
+            </Text>
+          </Stack>
+        </Card>
       )}
       {!loading &&
-        data?.map(({ id, data: inc }) => (
-          <Card key={id} withBorder>
-            <Group justify="space-between" align="flex-start">
-              <Stack gap={2}>
-                <Group gap="xs">
-                  <Text fw={500}>{TIPO_INCIDENTE_LABELS[inc.tipo] ?? inc.tipo}</Text>
-                  {inc.resolucao && (
-                    <Badge color="green" variant="light">
-                      {TIPO_RESOLUCAO_LABELS[inc.resolucao.tipo] ?? 'Resolvido'}
-                    </Badge>
-                  )}
-                </Group>
-                <Text size="xs" c="dimmed">
-                  {inc.origem != null ? ORIGEM_INCIDENTE_LABELS[inc.origem] : 'Sem origem'} ·{' '}
-                  {formatMicros(inc.timestamp)}
-                </Text>
-                {inc.motivoDoIncidente && <Text size="sm">{inc.motivoDoIncidente}</Text>}
-                {inc.comentarios && (
-                  <Text size="sm" c="dimmed">
-                    {inc.comentarios}
+        data?.map(({ id, data: inc }) => {
+          const markedForDeletion = pendingDeleteIds.has(id);
+          const claimId = claimIdDoIncidente(inc);
+          const returnSn = returnSnDoIncidente(inc);
+
+          return (
+            <Card
+              key={id}
+              withBorder
+              padding="lg"
+              opacity={markedForDeletion ? 0.72 : 1}
+              bg={markedForDeletion ? 'var(--mantine-color-orange-light)' : undefined}
+            >
+              <Group justify="space-between" align="flex-start" wrap="wrap">
+                <Stack gap={4} maw={720}>
+                  <Group gap="xs">
+                    <Text fw={600}>{TIPO_INCIDENTE_LABELS[inc.tipo] ?? inc.tipo}</Text>
+                    {inc.resolucao && (
+                      <Badge color="green" variant="light">
+                        {TIPO_RESOLUCAO_LABELS[inc.resolucao.tipo] ?? 'Resolvido'}
+                      </Badge>
+                    )}
+                    {markedForDeletion && (
+                      <Badge color="orange" variant="filled">
+                        Será excluído
+                      </Badge>
+                    )}
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    {inc.origem != null ? ORIGEM_INCIDENTE_LABELS[inc.origem] : 'Sem origem'} ·{' '}
+                    {formatMicros(inc.timestamp)}
                   </Text>
-                )}
-                {/* ⚠️ The ML claim id was stored but never rendered, so an
+                  {inc.motivoDoIncidente && <Text size="sm">{inc.motivoDoIncidente}</Text>}
+                  {inc.comentarios && (
+                    <Text size="sm" c="dimmed">
+                      {inc.comentarios}
+                    </Text>
+                  )}
+                  {/* ⚠️ The ML claim id was stored but never rendered, so an
                     imported incidente was indistinguishable from a hand-typed
                     one. It is also the key the panel below queries on.
 
@@ -386,66 +689,92 @@ function IncidentesManager({
                     number"), and it would label a `site`/`troca`/`devolucao`
                     incidente as Mercado Livre. A mislabelled id is worse than an
                     unlabelled one, and the legacy export is read-tolerant
-                    territory (root `CLAUDE.md` rule 8). */}
-                {claimIdDoIncidente(inc) != null ? (
-                  <Text size="xs" c="dimmed">
-                    ML #{inc.externalId}
-                  </Text>
-                ) : (
-                  inc.externalId && (
+                    territory (root `CLAUDE.md` rule 8). The "Shopee #" prefix
+                    follows the same rule through `returnSnDoIncidente`. */}
+                  {claimId != null ? (
                     <Text size="xs" c="dimmed">
-                      Ref. externa: {inc.externalId}
+                      ML #{inc.externalId}
                     </Text>
-                  )
-                )}
-              </Stack>
-              <Group gap="xs">
-                <Button
-                  size="xs"
-                  variant="light"
-                  onClick={() => openEdit(id, inc)}
-                  disabled={disabled}
-                >
-                  Editar
-                </Button>
-                <Button
-                  size="xs"
-                  variant="light"
-                  color="red"
-                  onClick={() => setDeleteTarget(id)}
-                  disabled={disabled}
-                >
-                  Excluir
-                </Button>
+                  ) : returnSn != null ? (
+                    <Text size="xs" c="dimmed">
+                      Shopee #{returnSn}
+                    </Text>
+                  ) : (
+                    inc.externalId && (
+                      <Text size="xs" c="dimmed">
+                        Ref. externa: {inc.externalId}
+                      </Text>
+                    )
+                  )}
+                </Stack>
+                <Group gap="xs">
+                  {markedForDeletion ? (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="light"
+                      color="orange"
+                      leftSection={<IconArrowBackUp size={14} />}
+                      onClick={() => togglePendingDelete(id)}
+                      disabled={disabled || saving}
+                    >
+                      Desfazer
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="subtle"
+                        leftSection={<IconPencil size={14} />}
+                        onClick={() => openEdit(id, inc)}
+                        disabled={disabled || editing !== null || saving}
+                      >
+                        Editar
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="subtle"
+                        color="red"
+                        leftSection={<IconTrash size={14} />}
+                        onClick={() => togglePendingDelete(id)}
+                        disabled={disabled || editing !== null || saving}
+                      >
+                        Excluir
+                      </Button>
+                    </>
+                  )}
+                </Group>
               </Group>
-            </Group>
-            {(() => {
-              const claimId = claimIdDoIncidente(inc);
-              return claimId != null && integracaoId ? (
+              {!markedForDeletion && claimId != null && integracaoId ? (
                 <ReclamacaoMlPanel claimId={claimId} integracaoId={integracaoId} />
-              ) : null;
-            })()}
-          </Card>
-        ))}
+              ) : null}
+              {/* ⚠️ NOT gated on the form's `disabled`, like the ML panel: its
+                  actions act on the channel, never on this pedido document, and
+                  a read-only pedido is exactly when a return still needs an
+                  answer. Mounted per return — a pedido can carry several. */}
+              {!markedForDeletion && returnSn != null && integracaoId ? (
+                <ReclamacaoShopeePanel
+                  integracaoId={integracaoId}
+                  pedidoId={pedidoId}
+                  returnSn={returnSn}
+                />
+              ) : null}
+            </Card>
+          );
+        })}
 
-      <Modal
-        opened={deleteTarget !== null}
-        onClose={() => setDeleteTarget(null)}
-        title="Excluir incidente"
-        centered
-      >
-        <Stack>
-          <Text>Tem certeza que deseja excluir este incidente?</Text>
-          <Group justify="flex-end">
-            <Button variant="default" onClick={() => setDeleteTarget(null)} disabled={deleting}>
-              Cancelar
-            </Button>
-            <Button color="red" onClick={handleDelete} loading={deleting}>
-              Excluir
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+      <IncidenteConflictModal
+        opened={conflict !== null}
+        campos={conflict?.campos ?? []}
+        baseline={conflict?.baseline ?? null}
+        current={conflict?.current ?? null}
+        bloqueouAgora={conflict?.bloqueouAgora ?? false}
+        saving={saving}
+        onForceSave={handleForceSave}
+        onCancel={() => setConflict(null)}
+      />
     </Stack>
   );
 }

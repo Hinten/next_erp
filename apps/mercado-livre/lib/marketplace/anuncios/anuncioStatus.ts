@@ -162,7 +162,7 @@ export async function definirStatusAnuncio(
   // ⚠️ ONE indexed group query, before anything reaches ML — rule 1 above.
   const membros = await membrosDaFamilia(db, target);
   if (membros.length > 0) {
-    return await definirStatusFamilia(db, integracaoId, target, membros, statusAlvo, api, nowMs);
+    return await definirStatusFamilia(db, integracaoId, target, membros, statusAlvo, api);
   }
 
   // A family id with no member links on disk. Refuse LOUDLY — see the class.
@@ -184,7 +184,9 @@ export async function definirStatusAnuncio(
         { nowMs, extra: { ...clearFalha(), moderacoes: [] } },
       );
       return {
-        estado: estadoFromMlStatus('closed'),
+        // The 404 branch synthesises the status itself, so there is no
+        // sub_status to read — `null`, deliberately, not `[]`.
+        estado: estadoFromMlStatus('closed', null),
         status: 'closed',
         subStatus: [],
         aplicados: 0,
@@ -208,7 +210,7 @@ export async function definirStatusAnuncio(
   });
 
   return {
-    estado: estadoFromMlStatus(item.status),
+    estado: estadoFromMlStatus(item.status, item.sub_status ?? null),
     status: item.status ?? null,
     subStatus: item.sub_status ?? null,
     aplicados: 1,
@@ -243,7 +245,6 @@ async function definirStatusFamilia(
   membros: readonly MembroDaFamilia[],
   statusAlvo: string,
   api: AnuncioStatusApi,
-  nowMs: number,
 ): Promise<AnuncioStatusResultado> {
   const resultados = new Map<string, ResultadoDeMembro>();
   await runPool(membros, MEMBER_CONCURRENCY, async (membro) => {
@@ -284,6 +285,9 @@ async function definirStatusFamilia(
       moderacoes: precisaConsultarModeracao(item.status, item.sub_status) ? null : [],
       // Not learned here — this call asks for nothing but a status change.
       userProductId: null,
+      // #847: the PUT answers with ML's whole item, so its category IS a fresh
+      // reading of ML's own value — fill-only, folded into the parent's.
+      categoryId: item.category_id ?? null,
     });
     relatorio.push({
       itemId: membro.itemId,
@@ -316,7 +320,7 @@ async function definirStatusFamilia(
     // `linkHasLiveListing` → `integracoesComProduto`, the anchor pre-filter both
     // ML sweeps open with, so one member's reading reaching it here would move a
     // produto in or out of the sweeps on the strength of a sibling.
-    estado: folded.estado ?? estadoFromMlStatus(folded.status),
+    estado: folded.estado ?? estadoFromMlStatus(folded.status, folded.subStatus),
     status: folded.status,
     subStatus: folded.subStatus,
     aplicados: relatorio.filter((m) => m.aplicado).length,

@@ -3,7 +3,13 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 import { PedidoReconcileNotFoundError, reconcilePedidoEstado } from '@delfrance/data/admin';
-import { ESTADO_FRETE, STATUS_PAGAMENTO } from '@delfrance/schemas';
+import { ESTADO_FRETE, FORMA_PAGAMENTO, STATUS_PAGAMENTO } from '@delfrance/schemas';
+
+import {
+  WAIT_LABELS,
+  expectNoRowForEvent,
+  waitForTriggerThenSettle,
+} from '../testing/emulatorWaits';
 
 // Integration test — requires the firestore emulator. Drives the exported
 // `reconcilePedidoEstado` core directly (the `reconciliarPagamentoPedido`
@@ -69,66 +75,36 @@ async function waitForTrail(
   db: Firestore,
   pedidoId: string,
   minRows: number,
-  { timeoutMs = 20_000, quietMs = 2_000 } = {},
 ): Promise<Array<Record<string, unknown>>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const trail = await historicos(db, pedidoId);
-    if (trail.length >= minRows) {
-      await new Promise((r) => setTimeout(r, quietMs));
-      return historicos(db, pedidoId);
-    }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `timed out waiting for ${minRows} historicoEstadoPedido row(s); saw ${trail.length}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
+  return waitForTriggerThenSettle(
+    () => historicos(db, pedidoId),
+    (trail) => trail.length >= minRows,
+    `${minRows} historicoEstadoPedido row(s)`,
+    (trail) => `saw ${trail.length}`,
+    { label: WAIT_LABELS.estadoTrail },
+  );
 }
 
+/**
+ * ⚠️ This SETTLES before returning, where it used to return the first snapshot
+ * that contained the estado. That was a real gap, not a tidy-up: its callers
+ * assert `toHaveLength(1)` and an exact set precisely to catch the frete arm
+ * emitting a DUPLICATE row for one transition, and a duplicate landing a moment
+ * after the first was invisible to a poller with no quiet window. The assertion's
+ * stated purpose was defeated by the poller underneath it.
+ */
 async function waitForFreteRow(
   db: Firestore,
   pedidoId: string,
   estado: string,
-  timeoutMs = 20_000,
 ): Promise<Array<Record<string, unknown>>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const trail = await freteHistoricos(db, pedidoId);
-    if (trail.some((r) => r.estado === estado)) return trail;
-    if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for a '${estado}' historicoFtIni row`);
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-}
-
-/**
- * Bounded negative: assert a trail never gains a row carrying `eventId`,
- * re-reading across `windowMs`.
- *
- * Why not a single read. The trigger launches both trails' writes concurrently
- * (`Promise.all` in `registrarHistoricoPedido.ts`), so seeing the `pago` row proves
- * the trigger RAN for that CloudEvent — it does NOT prove that a (wrongly
- * emitted) frete row for the same event has finished landing. A one-shot read
- * could slip between the two `set()`s and pass in exactly the regressed case
- * this exists to catch. Re-reading across a window closes that while staying
- * event-id-keyed, so it can never be satisfied by an unrelated row, and it
- * fails on the first tick that sees one instead of after the whole window.
- */
-async function expectNoRowForEvent(
-  readTrail: () => Promise<Array<Record<string, unknown>>>,
-  eventId: string,
-  windowMs = 2_000,
-): Promise<void> {
-  const deadline = Date.now() + windowMs;
-  for (;;) {
-    const trail = await readTrail();
-    expect(trail.some((r) => r.eventId === eventId)).toBe(false);
-    if (Date.now() >= deadline) return;
-    await new Promise((r) => setTimeout(r, 250));
-  }
+  return waitForTriggerThenSettle(
+    () => freteHistoricos(db, pedidoId),
+    (trail) => trail.some((r) => r.estado === estado),
+    `a '${estado}' historicoFtIni row`,
+    (trail) => `saw ${trail.length} row(s)`,
+    { label: WAIT_LABELS.freteTrail },
+  );
 }
 
 /**
@@ -207,7 +183,7 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
       usuarioHistoricoFreteInicialOuterRef: null,
       obs: null,
     });
-  }, 60_000);
+  });
 
   // The contrast to the happy path above. The unit suite next door covers the
   // rule exhaustively against a fake; this one is the end-to-end proof, on the
@@ -266,16 +242,22 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     // read could land between them. See `expectNoRowForEvent`.
     const reconcileEventId = trail.find((r) => r.estado === 'pago')!.eventId as string;
     expect(reconcileEventId).not.toBe(seedEventId);
-    await expectNoRowForEvent(() => freteHistoricos(db, pedidoId), reconcileEventId);
+    await expectNoRowForEvent(
+      () => freteHistoricos(db, pedidoId),
+      (r) => r.eventId,
+      reconcileEventId,
+    );
 
     const freteTrail = await freteHistoricos(db, pedidoId);
     expect(freteTrail).toHaveLength(1);
     expect(freteTrail[0]!.estado).toBe(ESTADO_FRETE.empacotado);
     expect(freteTrail[0]!.eventId).toBe(seedEventId);
-    // Longer than its siblings: this one waits on TWO successive trigger
-    // deliveries (the seed's create, then the reconcile's update) rather than
-    // two rows from the same event.
-  }, 90_000);
+    // ⚠️ This test waits on TWO successive trigger deliveries (the seed's create,
+    // then the reconcile's update) rather than two rows from one event, so its
+    // budget is 2x the delivery deadline. It no longer carries its own number:
+    // `testTimeout` in vitest.storage.config.ts is derived from the longest such
+    // chain in the suite, so the helper's message always wins the race.
+  });
 
   it('two concurrent reconciles settle on one consistent estado (#308)', async () => {
     const db = getDb();
@@ -333,7 +315,107 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     expect(freteTrail.map((r) => r.estado as string).sort()).toEqual(
       [ESTADO_FRETE.despachoAutorizado, ESTADO_FRETE.iniciado].sort(),
     );
-  }, 60_000);
+  });
+
+  // #367 PR 0 — a troca's returned items count as PAID. The unit suite proves the
+  // rule against a fake; this is the same claim on a REAL document: the
+  // `itensDevolvidos` map and `ehSaida` come back from a Firestore read (a price
+  // written as `100` is stored and returned as an integer), and the credit is
+  // derived from the very `tx.get` snapshot the transaction decides on — no
+  // extra read. `valorCobrado` stays GROSS (150); the credit rides the paid side.
+  describe('a troca: the devolução credit counts as paid (#367)', () => {
+    /** A saída `iniciado`, GROSS total 150, returning one line worth 100. */
+    function trocaSeed(): Record<string, unknown> {
+      return {
+        estado: 'iniciado',
+        ehSaida: true,
+        valorCobrado: 150,
+        itensDevolvidos: {
+          origem1: { produto1: [{ precoDeVenda: 100, descontoUnitario: 0, quantidade: 1 }] },
+        },
+        freteInicial: { estado: ESTADO_FRETE.iniciado, codRastreio: null },
+      };
+    }
+
+    it('a payment of only the difference (credit 100 + aprovado 50 on 150) → pago', async () => {
+      const db = getDb();
+      const pedidoId = await seedPedido(db, trocaSeed(), [
+        {
+          valor: 50,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          forma_de_pagamento: FORMA_PAGAMENTO.pix,
+        },
+      ]);
+
+      const result = await reconcilePedidoEstado(db, { pedidoId });
+
+      expect(result).toEqual({ transition: 'pago' });
+      const pedido = (await pedidoRef(db, pedidoId).get()).data()!;
+      expect(pedido.estado).toBe('pago');
+      expect(pedido.freteInicial).toEqual({
+        estado: ESTADO_FRETE.despachoAutorizado,
+        codRastreio: null,
+      });
+      // Gross stays gross: the credit is derived, never written back.
+      expect(pedido.valorCobrado).toBe(150);
+
+      const trail = await waitForTrail(db, pedidoId, 2);
+      expect(trail.map((r) => r.estado as string).sort()).toEqual(['iniciado', 'pago'].sort());
+    });
+
+    it('⚠️ NEAR-MISS: one cent short of the difference (49.99) → aguardando, frete untouched', async () => {
+      const db = getDb();
+      const pedidoId = await seedPedido(db, trocaSeed(), [
+        {
+          valor: 49.99,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          forma_de_pagamento: FORMA_PAGAMENTO.pix,
+        },
+      ]);
+
+      const result = await reconcilePedidoEstado(db, { pedidoId });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      const pedido = (await pedidoRef(db, pedidoId).get()).data()!;
+      expect(pedido.estado).toBe('aguardandoConfirmacaoDePagamento');
+      expect(pedido.freteInicial).toEqual({ estado: ESTADO_FRETE.iniciado, codRastreio: null });
+
+      const trail = await waitForTrail(db, pedidoId, 2);
+      expect(trail.map((r) => r.estado as string).sort()).toEqual(
+        ['aguardandoConfirmacaoDePagamento', 'iniciado'].sort(),
+      );
+    });
+
+    it('a crédito loja pagamento is the returned value already registered — not counted twice', async () => {
+      // credit 100 − crédito loja 100 = 0, so only the pix counts: 49.99 of 150.
+      // Read from a real snapshot, `forma_de_pagamento` is what tells the two apart.
+      const db = getDb();
+      const pedidoId = await seedPedido(db, trocaSeed(), [
+        {
+          valor: 100,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          forma_de_pagamento: FORMA_PAGAMENTO.credito_loja,
+        },
+        {
+          valor: 49.99,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          forma_de_pagamento: FORMA_PAGAMENTO.pix,
+        },
+      ]);
+
+      const result = await reconcilePedidoEstado(db, { pedidoId });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect((await pedidoRef(db, pedidoId).get()).data()!.estado).toBe(
+        'aguardandoConfirmacaoDePagamento',
+      );
+
+      const trail = await waitForTrail(db, pedidoId, 2);
+      expect(trail.map((r) => r.estado as string).sort()).toEqual(
+        ['aguardandoConfirmacaoDePagamento', 'iniciado'].sort(),
+      );
+    });
+  });
 
   it('throws PedidoReconcileNotFoundError against a real missing pedido', async () => {
     const db = getDb();

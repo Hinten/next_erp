@@ -1,6 +1,5 @@
 import type { Filetype, TipoMensagem } from '@delfrance/schemas';
-import { FILETYPE } from '@delfrance/schemas';
-import { TIPO_MENSAGEM } from '@delfrance/schemas';
+import { FILETYPE, TIPO_MENSAGEM } from '@delfrance/schemas';
 
 /**
  * Media-kind mapping for an OUTBOUND (composer) attachment — a port of the

@@ -96,7 +96,7 @@ describe('FieldRenderer', () => {
     expect(screen.queryByRole('checkbox')).toBeNull();
   });
 
-  it('toggles a nullable object: off ⇒ null & fields hidden, on ⇒ seeded & visible', async () => {
+  it('enables a nullable object with schema defaults plus configured seed values', async () => {
     const onSubmit = vi.fn();
     const schema = z.object({
       origem: z
@@ -136,5 +136,84 @@ describe('FieldRenderer', () => {
       fireEvent.submit(container.querySelector('form')!);
     });
     expect(onSubmit).toHaveBeenCalledWith({ origem: { cep: '', estado: 'SP' } });
+  });
+
+  it('keeps a nullable object enabled when discard confirmation is cancelled', async () => {
+    const onSubmit = vi.fn();
+    const schema = z.object({
+      origem: z
+        .object({
+          cep: z.string().describe('CEP'),
+          estado: z.string().describe('Estado'),
+        })
+        .nullable()
+        .describe('Origem'),
+    });
+    const { container } = render(
+      <Harness
+        schema={schema}
+        values={{ origem: { cep: '01310100', estado: 'SP' } }}
+        fields={{ origem: { label: 'Informar origem' } }}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const sw = screen.getByLabelText('Informar origem') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(sw);
+    });
+
+    expect(
+      screen.getByRole('dialog', { name: 'Descartar dados de “Informar origem”?' }),
+    ).toBeTruthy();
+    expect(sw.checked).toBe(true);
+    expect((screen.getByLabelText('CEP') as HTMLInputElement).value).toBe('01310100');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(sw.checked).toBe(true);
+
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form')!);
+    });
+    expect(onSubmit).toHaveBeenCalledWith({ origem: { cep: '01310100', estado: 'SP' } });
+  });
+
+  it('sets a nullable object to null only after discard is confirmed', async () => {
+    const onSubmit = vi.fn();
+    const schema = z.object({
+      origem: z
+        .object({
+          cep: z.string().describe('CEP'),
+          estado: z.string().describe('Estado'),
+        })
+        .nullable()
+        .describe('Origem'),
+    });
+    const { container } = render(
+      <Harness
+        schema={schema}
+        values={{ origem: { cep: '01310100', estado: 'SP' } }}
+        fields={{ origem: { label: 'Informar origem' } }}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const sw = screen.getByLabelText('Informar origem') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(sw);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Descartar dados' }));
+    });
+
+    expect(sw.checked).toBe(false);
+    expect(screen.queryByLabelText('CEP')).toBeNull();
+    await act(async () => {
+      fireEvent.submit(container.querySelector('form')!);
+    });
+    expect(onSubmit).toHaveBeenCalledWith({ origem: null });
   });
 });

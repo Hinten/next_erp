@@ -7,7 +7,6 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
   consultarLote,
@@ -37,14 +36,22 @@ import {
  *      log written on every lote send / consult).
  *   3. If found, the previous lote's `nRec` is also in the audit log
  *      msg — call `consultarLote(prevNRec)` to fetch SEFAZ's
- *      authoritative protocol for that chave, swap the nfev4 doc's
- *      `chave` to the recovered one, and return the consult outcome.
+ *      authoritative protocol for that chave, and return the consult
+ *      outcome with the recovered chave as `chaveOverride`.
  *   4. If not found (or no chNFe marker), the note is "lost" from our
  *      side — return a patch marking estado=error with the original
  *      cStat=539 + xMotivo preserved so the operator can fix manually
  *      (download from SEFAZ portal + upload).
  *
- * NB: this does NOT touch `xml_assinado` — it still holds the locally
+ * **It writes nothing to the nfev4 doc** (#1654 §2d). The chave swap is the
+ * CALLER's to persist, in its own write of the returned patch
+ * ({@link extrasDaTrocaDeChave}), so the swap lands with the outcome or not at
+ * all: under the reconcile's and the manual verify's guarded persist, a write
+ * refused by a concurrent writer swaps nothing either. (It used to be a plain
+ * merge of its own, landing BEFORE the caller's write and outside any guard.)
+ * It does append the recovery's `consReciNFe` to the `enviNfe` audit log.
+ *
+ * NB: the swap does NOT touch `xml_assinado` — it still holds the locally
  * signed XML for OUR chave. After a successful 539 recovery the doc
  * has a mismatch (recovered chave + local signed XML for the old
  * chave); the next step in production is to fetch the authorized XML
@@ -53,13 +60,12 @@ import {
 export async function recoverFrom539(params: {
   fs: Firestore;
   bundle: Pick<PedidoBundle, 'pedidoId' | 'filialId'>;
-  nfeRef: FirebaseFirestore.DocumentReference;
   rt: NFeRuntime;
   tpEmis: TpEmis;
   outcome: SefazOutcome;
   patch: NFeStatePatch;
 }): Promise<{ patch: NFeStatePatch; chaveOverride?: string }> {
-  const { fs, bundle, nfeRef, rt, tpEmis, outcome, patch } = params;
+  const { fs, bundle, rt, tpEmis, outcome, patch } = params;
 
   const recoveredChave = outcome.chNFeFromXMotivo;
   if (!recoveredChave) {
@@ -94,17 +100,20 @@ export async function recoverFrom539(params: {
   const recoveredOutcome = outcomeFromConsReci(retRec, recoveredChave);
   const recoveredPatch = applyOutcome({ estado: patch.estado, retries: 0 }, recoveredOutcome);
 
-  // Swap chave on the nfev4 doc — done outside persistPatch (which is
-  // generic) since this only happens on 539 recovery.
-  await nfeRef.set(
-    nfev4Collection.parseMerge({
-      chave: recoveredChave,
-      ultima_modificacao: new Date().toISOString(),
-    }),
-    { merge: true },
-  );
-
   return { patch: recoveredPatch, chaveOverride: recoveredChave };
+}
+
+/**
+ * The `extras` that carry a recovered 539's chave swap in the caller's OWN
+ * write of the recovered patch (`persistPatch` / `persistPatchUnlessFinal`),
+ * or `undefined` when nothing was swapped. Never combined with the
+ * `<nfeProc>` swap (`swapAnchorForProc`): a swapped chave no longer matches
+ * our signed XML, so no proc is built for it.
+ */
+export function extrasDaTrocaDeChave(
+  chaveOverride: string | undefined,
+): { readonly chave: string } | undefined {
+  return chaveOverride != null ? { chave: chaveOverride } : undefined;
 }
 
 /**
@@ -117,12 +126,13 @@ export async function recoverFrom539(params: {
  * `null`, so `applyOutcome` keeps the estado and re-queues the doc forever.
  *
  * No-op for every non-539 outcome (returns the patch untouched), so callers can
- * funnel every outcome through it right after `applyOutcome`.
+ * funnel every outcome through it right after `applyOutcome`. Like
+ * {@link recoverFrom539} it writes nothing to the nfev4 doc: the caller persists
+ * the patch, with `extrasDaTrocaDeChave(chaveOverride)` in the same write.
  */
 export async function recover539IfNeeded(params: {
   fs: Firestore;
   bundle: Pick<PedidoBundle, 'pedidoId' | 'filialId'>;
-  nfeRef: FirebaseFirestore.DocumentReference;
   rt: NFeRuntime;
   tpEmis: TpEmis;
   outcome: SefazOutcome;

@@ -23,6 +23,12 @@ afterEach(() => {
 });
 
 describe('CORS allow-list', () => {
+  it('admits cargo/user PATCH and DELETE from the configured frontend', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const methods = preflight('http://localhost:3000').headers.get('access-control-allow-methods');
+    expect(methods).toContain('PATCH');
+    expect(methods).toContain('DELETE');
+  });
   it('allows the dev origin outside production', () => {
     vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv('ALLOWED_ADMIN_ORIGINS', '');

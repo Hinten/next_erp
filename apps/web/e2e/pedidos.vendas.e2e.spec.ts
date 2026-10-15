@@ -268,7 +268,7 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await dialog.getByLabel('Nome').fill(nome);
     await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(cpf);
     await dialog.getByLabel('E-mail', { exact: true }).fill(`${nome}@example.com`);
-    await dialog.getByLabel('Telefone', { exact: true }).fill(telefone);
+    await dialog.getByLabel('Telefone principal', { exact: true }).fill(telefone);
     await dialog.getByRole('button', { name: 'Criar', exact: true }).click();
 
     // The modal resolves and the picker locks onto the new cliente.

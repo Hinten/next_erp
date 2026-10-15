@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "probe:link-pagamento": "dotenv -e ../../.env.local -- tsx scripts/probe-link-pagamento.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {
@@ -33,6 +34,7 @@
     "esbuild": "catalog:",
     "eslint": "catalog:",
     "eslint-config-next": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

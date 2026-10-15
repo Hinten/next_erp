@@ -1,0 +1,20 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "next_cursor": "",
+    "size_chart_list": [
+      {
+        "size_chart_id": 700024641
+      },
+      {
+        "size_chart_id": 700024613
+      },
+      {
+        "size_chart_id": 700024605
+      }
+    ],
+    "total_count": 3
+  },
+  "warning": ""
+}

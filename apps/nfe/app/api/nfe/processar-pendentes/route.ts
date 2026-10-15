@@ -13,7 +13,7 @@ import { DEFAULT_STUCK_TIMEOUT_MS } from '@delfrance/integrations-nfe';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, isNFeRuntimeMisconfig } from '@/lib/nfe/runtime';
 import { runProcessarPendentes } from '@/lib/nfe/handlers/runProcessarPendentes';
 
 export const dynamic = 'force-dynamic';
@@ -49,7 +49,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     baseRt = getNFeRuntime();
   } catch (e) {
-    return authError(503, { error: e instanceof Error ? e.message : 'runtime not ready' });
+    // A misconfigured deploy (NFE_AMBIENTE / NFE_UF / TLS chain) → 503.
+    // Anything else is a bug and must surface, not hide behind a 503.
+    if (!isNFeRuntimeMisconfig(e)) throw e;
+    return authError(503, { error: e.message });
   }
 
   const result = await runProcessarPendentes({ fs: getAdminFirestore(), baseRt, params });

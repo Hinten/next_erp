@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { NFeCertError } from '@delfrance/integrations-nfe';
 
-import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, isNFeRuntimeMisconfig } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -11,7 +11,8 @@ export const runtime = 'nodejs';
  * Liveness + ambiente/cert diagnostics. The service boots WITHOUT an env cert
  * (per-filial certs), so `cert` is `null` when no `NFE_CERT_*` is configured (or
  * it's expired/invalid — an env-cert problem no longer downs the service).
- * Returns 503 only on a bad `NFE_AMBIENTE` or a missing TLS chain.
+ * Returns 503 only on a bad `NFE_AMBIENTE` / `NFE_UF` or a missing TLS chain;
+ * anything else is a bug and surfaces as a 500.
  */
 export function GET() {
   try {
@@ -38,11 +39,12 @@ export function GET() {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
+    if (!isNFeRuntimeMisconfig(err)) throw err;
     return NextResponse.json(
       {
         status: 'error',
         service: 'nfe',
-        error: err instanceof Error ? err.message : String(err),
+        error: err.message,
         timestamp: new Date().toISOString(),
       },
       { status: 503 },

@@ -10,6 +10,7 @@ import {
   FreightHttpError,
   FreightNetworkError,
   FreightReauthRequiredError,
+  FreightTimeoutError,
   FreightValidationError,
   buildCalculatePayload,
   isErroredOption,
@@ -104,6 +105,11 @@ export function MelhorEnvioFields({
         return;
       }
       if (err instanceof FreightHttpError) {
+        setError(err.message);
+        return;
+      }
+      // Before the network arm: a timeout is a subclass, and its message is the copy.
+      if (err instanceof FreightTimeoutError) {
         setError(err.message);
         return;
       }

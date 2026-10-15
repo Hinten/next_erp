@@ -1,0 +1,84 @@
+{
+  "id": 174920100019,
+  "site_id": "MLB",
+  "date_created": "2026-08-27T10:18:13.000-04:00",
+  "date_approved": "2026-08-27T10:18:14.000-04:00",
+  "money_release_date": "2026-09-25T10:18:14.000-04:00",
+  "last_modified": "2026-08-27T10:42:33.000-04:00",
+  "reason": "Estátua Leão Madeira Amadeirado",
+  "currency_id": "BRL",
+  "transaction_amount": 99.94,
+  "total_paid_amount": 99.94,
+  "shipping_cost": 0,
+  "coupon_amount": 0,
+  "coupon_id": null,
+  "status": "refunded",
+  "status_detail": "bpp_refunded",
+  "installment_amount": 0,
+  "payment_type": "account_money",
+  "payment_method_id": "account_money",
+  "marketplace": "MELI",
+  "operation_type": "regular_payment",
+  "financing_group": null,
+  "deduction_schema": null,
+  "amount_refunded": 99.94,
+  "api_version": "2",
+  "concept_id": null,
+  "concept_amount": 0,
+  "sponsor_id": null,
+  "overpaid_amount": 0,
+  "external_reference": "2000018144681452",
+  "order_id": "2000018144681452",
+  "merchant_order_id": null,
+  "tags": [],
+  "refunds": [
+    {
+      "id": 3208262541,
+      "collection_id": 174920100019,
+      "amount": 99.94,
+      "metadata": {
+        "coverage": {
+          "client_id": "1843996409054571",
+          "flow": "cancel_purchase",
+          "id": 1374473436
+        },
+        "status_detail": "bpp_refunded"
+      },
+      "source": {
+        "id": null,
+        "name": null,
+        "type": "bpp"
+      },
+      "date_created": "2026-08-27T10:42:23.000-04:00",
+      "gtw_refund_id": null,
+      "movement_id": null
+    }
+  ],
+  "deferred_period": null,
+  "status_code": null,
+  "account_money_amount": 0,
+  "transaction_order_id": null,
+  "additional_info": {},
+  "issuer_id": null,
+  "net_received_amount": 67.94,
+  "mercadopago_fee": 0,
+  "marketplace_fee": 0,
+  "discount_fee": 0,
+  "coupon_fee": 0,
+  "finance_fee": 0,
+  "released": "no",
+  "collector_id": 3616169770,
+  "payer": {
+    "id": 2310116743,
+    "email": null,
+    "phone": {
+      "area_code": null,
+      "number": null,
+      "extension": null
+    },
+    "identification": {
+      "number": null,
+      "type": null
+    }
+  }
+}

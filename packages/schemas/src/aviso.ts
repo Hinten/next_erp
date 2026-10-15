@@ -1,0 +1,1243 @@
+import { z } from 'zod';
+import type { CollectionMetadata } from './types';
+import { microsSinceEpoch } from './shared/datetime';
+
+// Mirrors `PERM.aviso` from @delfrance/auth (kept as local literals like the
+// other schema files, so this package keeps no dependency edge to @delfrance/auth).
+const PERM_AVISO_READ = 1n << 112n;
+const PERM_AVISO_WRITE = 1n << 113n;
+const PERM_AVISO_DELETE = 1n << 114n;
+
+/* -------------------------------------------------------------------------- */
+/*                                   Enums                                    */
+/* -------------------------------------------------------------------------- */
+
+export const SEVERIDADE_AVISO_LABELS = {
+  critico: 'Crítico',
+  atencao: 'Atenção',
+  informativo: 'Informativo',
+} as const;
+
+/**
+ * How loudly an aviso asks for the operator. NOT derivable from `tipo`: one
+ * Shopee `get_app_push_config` read yields `Warning` (atenção) or `Suspended`
+ * (crítico) from the same call site, and a violation is `atencao` until its
+ * `fix_deadline_time` is close.
+ *
+ * `critico` is the only tier that escalates out of the app (see
+ * `@delfrance/data/admin/avisos`), so widening it is not free: an escalation
+ * everyone learns to ignore is worse than none in a three-person team.
+ */
+export const severidadeAvisoSchema = z
+  .enum(['critico', 'atencao', 'informativo'])
+  .meta({ labels: SEVERIDADE_AVISO_LABELS });
+export type SeveridadeAviso = z.infer<typeof severidadeAvisoSchema>;
+
+/** Named members of {@link severidadeAvisoSchema} — see `delfrance/prefer-schema-enum`. */
+export const SEVERIDADE_AVISO = {
+  critico: 'critico',
+  atencao: 'atencao',
+  informativo: 'informativo',
+} as const satisfies Record<string, SeveridadeAviso>;
+
+export const CANAL_AVISO_LABELS = {
+  shopee: 'Shopee',
+  mercadoLivre: 'Mercado Livre',
+  mercadoPago: 'Mercado Pago',
+  whatsapp: 'WhatsApp',
+  melhorEnvio: 'Melhor Envio',
+  lojaIntegrada: 'Loja Integrada',
+  nfe: 'NF-e',
+  estoque: 'Estoque',
+  sistema: 'Sistema',
+} as const;
+
+/**
+ * Which subsystem raised the aviso. `sistema` covers what belongs to no channel
+ * — infrastructure, sweeps, the retention job itself.
+ */
+export const canalAvisoSchema = z
+  .enum([
+    'shopee',
+    'mercadoLivre',
+    'mercadoPago',
+    'whatsapp',
+    'melhorEnvio',
+    'lojaIntegrada',
+    'nfe',
+    'estoque',
+    'sistema',
+  ])
+  .meta({ labels: CANAL_AVISO_LABELS });
+export type CanalAviso = z.infer<typeof canalAvisoSchema>;
+
+/** Named members of {@link canalAvisoSchema} — see `delfrance/prefer-schema-enum`. */
+export const CANAL_AVISO = {
+  shopee: 'shopee',
+  mercadoLivre: 'mercadoLivre',
+  mercadoPago: 'mercadoPago',
+  whatsapp: 'whatsapp',
+  melhorEnvio: 'melhorEnvio',
+  lojaIntegrada: 'lojaIntegrada',
+  nfe: 'nfe',
+  estoque: 'estoque',
+  sistema: 'sistema',
+} as const satisfies Record<string, CanalAviso>;
+
+export const TIPO_AVISO_LABELS = {
+  shopeeAutorizacaoExpirando: 'Autorização Shopee expirando',
+  shopeeDesautorizado: 'Conta Shopee desautorizada',
+  shopeePushDegradado: 'Entrega de notificações Shopee degradada',
+  shopeePushSuspenso: 'Assinatura de notificações Shopee suspensa',
+  canalSemCredencial: 'Canal sem credencial válida',
+  nfeUploadRejeitado: 'Envio de NF-e ao canal não concluído',
+  pedidoPrecisaDecisao: 'Pedido aguardando decisão',
+  anuncioComViolacao: 'Anúncio com violação',
+  jobConcluidoComFalhas: 'Processamento concluído com falhas',
+  estoqueAcimaDoDisponivel: 'Estoque enviado acima do disponível',
+  despachoAutomaticoPendente: 'Despacho automático pendente',
+  etiquetaComPrazo: 'Etiqueta com prazo de impressão',
+  reclamacaoAguardandoVendedor: 'Reclamação aguardando o vendedor',
+  anuncioCategoriaAlterada: 'Categoria do anúncio alterada',
+  shopeeKitReceitaDivergente: 'Kit da Shopee com composição antiga',
+  anuncioForaDaSincronizacao: 'Anúncio fora da sincronização',
+  lojaIntegradaTokenExpirando: 'Token da Loja Integrada expirando',
+  lojaIntegradaReconexaoPendente: 'Token da Loja Integrada recusado',
+  lojaIntegradaImportacaoParada: 'Importação de pedidos da Loja Integrada parada',
+} as const;
+
+/**
+ * The kind of thing that happened. This is the **only** field the read-time
+ * wording map keys on, so it is a closed enum rather than free text: adding a
+ * `tipo` fails typecheck in `apps/web` until its message exists, which is what
+ * keeps a stored aviso from rendering as a blank row.
+ *
+ * ⚠️ Every member must name its **machine resolver** before it ships. The
+ * collection is `serverOwned`, so there is no operator "dismiss" button — an
+ * aviso nothing resolves stands until retention sweeps it, and "a stale reason
+ * on a healthy listing is indistinguishable from a real one".
+ *
+ * The list starts small on purpose: v1 wires no producer (the Shopee sweep needs
+ * `apps/shopee/functions/`, created in that plan's step 3), so these are the
+ * shapes the first producers will claim, not a speculative catalogue.
+ *
+ * ---
+ *
+ * **`estoqueAcimaDoDisponivel`** (Shopee step 12, #1520) — a marketplace
+ * promotion has reserved more units of a listing than the ERP actually has, and
+ * the stock we sent was clamped UP to the reservation rather than refused. The
+ * operator can fix it: end the promotion, reduce its reserved stock in the
+ * channel's own console, or restock.
+ *
+ *  - **Name is CHANNEL-NEUTRAL on purpose.** The condition is not Shopee's — any
+ *    channel that lets a promotion hold stock can produce it — and `canal`
+ *    already carries which one did. A `shopee…` prefix here would force a second
+ *    tipo, a second wording and a second resolver the first time another channel
+ *    needed the same sentence. None of the tipos before it fits:
+ *    `anuncioComViolacao` means the channel took the listing down,
+ *    `pedidoPrecisaDecisao` is per pedido, `jobConcluidoComFalhas` is per job.
+ *  - **Machine resolver** (this docblock's own rule, above): **the next send of
+ *    the same `(conta, produto)` that needed no clamp**, with
+ *    `resolucaoMotivo: 'estoque-dentro-do-disponivel'`. It reports a TRANSITION,
+ *    so a listing that quietly comes back within its reservation closes its own
+ *    aviso without anyone looking.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
+ *    — deliberately **no `janela`**. The promotion changes underneath us, so a
+ *    windowed key would make the resolver compute a key that was never created
+ *    and the row would stand until retention swept it.
+ *  - **Severity `atencao`**, never `critico`: nothing is down, and `critico`
+ *    escalates out of the app.
+ *  - **`params` are NUMBERS only** — `anuncio`, `reservado`, `disponivel`. No
+ *    provider prose, no promotion body, no produto name.
+ *
+ * ---
+ *
+ * **`nfeUploadRejeitado`** (first producer: Shopee step 14, #1522 —
+ * `apps/shopee/lib/shopee/nfe/avisoNfe.ts`) — the NF-e of a marketplace pedido
+ * did not get through to the channel: refused by it, flagged by SEFAZ behind
+ * it, not uploadable at all (an illegible or oversized XML), or not confirmed
+ * after every attempt. Which outcomes raise it is decided by the producer's
+ * own closed set, never by this enum.
+ *
+ *  - **The label says "not concluded", not "rejected"**, on purpose: several of
+ *    the reasons are not a refusal (the channel never answered, the grant
+ *    lapsed, the queue is switched off), and the per-reason `erro` fragment is
+ *    what names the cause and the remedy.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — ONE row per PEDIDO, never per NF-e document and with no `janela`: a
+ *    replacement NF-e that lands must close the row the cancelled one opened,
+ *    which a per-document key cannot do.
+ *  - **Severity `atencao`**, never `critico`: the pedido cannot ship until
+ *    someone acts, but nothing is down, and `critico` escalates out of the app.
+ *  - **`params` are exactly `pedido`** (the display number) **and `erro`** (a
+ *    lowercase pt-BR fragment with no trailing period, remedy first). Provider
+ *    text reaches `erro` only for the reasons whose meaning is not ours to know
+ *    in advance, and only after the producer's sanitizer — never an access key,
+ *    a CNPJ or the XML. The provider's own code stays in the log; `motivo`
+ *    carries the producer's kebab reason.
+ *  - **Machine resolvers** (this docblock's own rule, above), each reporting a
+ *    TRANSITION: the producer's recheck finding OUR note attached and valid
+ *    (`nfe-validada`); the order cancelled, seen at the producer's pre-read or
+ *    by the order import (`pedido-cancelado`); and the shipment written into
+ *    `ESTADOS_FRETE_REMOVE_ESTOQUE` by either caller of the channel's
+ *    frete transaction — the parcel moved, so the problem has ended
+ *    (`frete-despachado`).
+ *
+ * ---
+ *
+ * **`despachoAutomaticoPendente`** (first producer: Shopee step 15b, #1744 —
+ * `apps/shopee/lib/shopee/avisos/despachoAutomatico.ts`) — a package on a
+ * channel where the SELLER must arrange the shipment within minutes reached
+ * the automatic arrange, and the arrange did NOT happen for a reason a person
+ * must act on: the NF-e is not validated yet, or the automation cannot decide
+ * or complete the arrange by itself. Without a dispatch attempt the channel
+ * cancels the order.
+ *
+ *  - **Name is CHANNEL-NEUTRAL on purpose** (the `estoqueAcimaDoDisponivel`
+ *    rule above): the provider's own name for these channels has been renamed
+ *    once already, a `tipo` is persisted and not free to rename, and `canal`
+ *    already carries which channel raised it.
+ *  - **Machine resolvers** (this docblock's own rule, above), each reporting a
+ *    TRANSITION: the package arranged by anyone — our arrange, the operator's
+ *    checkout, the channel itself — seen by the producer or by the shipment
+ *    token either caller of the channel's frete transaction observes
+ *    (`arranjado`); the invoice cleared while the package was still waiting to
+ *    be arranged, class `nfe` only (`nfe-validada`); the shipment ended without
+ *    an arrange (`envio-encerrado`); the order cancelled (`pedido-cancelado`).
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade, janela:
+ *    classe })` with `entidade` = `<pedidoId>:<packageNumber>` — ONE row per
+ *    PACKAGE per CLASS. Per package because the arrange, its refusal and its
+ *    resolution are per package: a per-pedido row on a split order would be
+ *    closed by the first package while the second is still blocked. `janela`
+ *    is the CLASS (`nfe` | `manual`), not a time window: it is a finite pair
+ *    the resolver recomputes, so the windowed-key trap above does not apply —
+ *    and it is what makes the dangerous transition (the NF-e validated, then
+ *    OUR arrange refused) open a NEW, unread row instead of repeating one the
+ *    operator has already read. The inner `:` folds to `_`
+ *    ({@link chaveDeAviso}); a `pedidoId` is fixed-length, so the fold cannot
+ *    collide.
+ *  - **Severity by CLASS** (per call site, as {@link severidadeAvisoSchema}
+ *    allows): `nfe` ⇒ `atencao` — the routine state of a fresh order whose
+ *    NF-e is not emitted yet, and `critico` on every such order would teach the
+ *    team to ignore it; `manual` ⇒ `critico` — the automation could not arrange
+ *    and the channel cancels the order unless a person acts (the
+ *    `shopeePushSuspenso` reason: orders are lost otherwise).
+ *  - **`params` are exactly `pedido`** (the display number) **and `situacao`**
+ *    (a lowercase pt-BR fragment, remedy first, no trailing period — the
+ *    `nfeUploadRejeitado.erro` shape); `motivo` carries the producer's kebab
+ *    reason. ⚠️ No deadline param: a repeat REPLACES `params` wholesale, so a
+ *    deadline known only to the run that read the order would be erased by the
+ *    next repeat that did not read it.
+ *
+ * ---
+ *
+ * **`etiquetaComPrazo`** (first producer: Shopee step 15b, #1744 — the same
+ * module) — the shipment of a pedido on a channel with a PRINT deadline is
+ * arranged and not yet collected: the channel requires the label to be issued
+ * and printed within 1 hour of the order's creation (Shopee announcement 1573,
+ * channels 90011/90012 only — a subset of the auto-arrange channels).
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the reason above.
+ *  - **Machine resolvers**, each a TRANSITION: the shipment collected — the
+ *    frete transaction's confirmed estado at or past `postado`, never
+ *    `aguardandoPostagem` or `checkFinalizado` (`coletado`); the order
+ *    cancelled or the dispatch denied (`pedido-cancelado`). ⚠️ Nothing observes
+ *    a PRINT (the print agent answers 200 on a failed print), so the row closes
+ *    on the collection, and the wording tells the operator so.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — ONE row per PEDIDO, no `janela`: one checkout prints every package of
+ *    the pedido.
+ *  - **Severity `atencao`**: the arrange already happened, so the
+ *    no-dispatch cancellation does not apply; missing the hour costs the rider's
+ *    wait and the channel's delivery window.
+ *  - **`params` are exactly `pedido`.** No deadline param, for the reason above:
+ *    the wording states the rule ("1 hora após a criação do pedido") instead of
+ *    an instant.
+ *
+ * ---
+ *
+ * **`reclamacaoAguardandoVendedor`** (Shopee step 17, #1525 — first producer
+ * `apps/shopee/lib/shopee/devolucoes/avisoDevolucao.ts`) — a marketplace return
+ * waits for the SELLER (answer the request, answer the buyer's offer, send
+ * evidence), and the channel decides alone at its deadline (Shopee `faq 477`:
+ * the refund is issued to the buyer).
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the `estoqueAcimaDoDisponivel` reason
+ *    above. ⚠️ And never `pedidoPrecisaDecisao`: that tipo is per PEDIDO, and
+ *    step 8's sweep closes its rows — it would close a return's row too.
+ *  - **Machine resolver** (this docblock's own rule, above): the Shopee return
+ *    importer, when the return no longer waits for the seller — terminal,
+ *    accepted, or the offer/evidence answered. It reports a TRANSITION of the
+ *    importer's CONFIRMED state, never the mere arrival of a delivery.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: returnSn })`
+ *    — ONE row per RETURN (a pedido can carry several), no `janela`. The
+ *    `entidade` is the return id ALONE: it is alphanumeric
+ *    (`ehReturnSnShopee`), so the segment fold never touches it.
+ *  - **`prazo`** = the provider's NEAREST seller-facing deadline among the
+ *    pendências that hold, copied — never computed.
+ *  - **`params` are exactly `pedido`** (the provider's order id, as displayed),
+ *    **`devolucao`** (the return id) **and `pendencia`** — a
+ *    {@link PENDENCIA_RECLAMACAO} CODE, never a fragment, so a wording fix in
+ *    `mensagens.ts` is retroactive. `motivo` = the provider's raw status token.
+ *  - **Severity `atencao`**: nothing is down; a missed deadline costs one
+ *    order's refund, and `critico` escalates out of the app.
+ *  - **`relogioEvento`** = the return's provider clock in µs plus its content
+ *    revision (capped below one second), so it rises STRICTLY with every content
+ *    change — `escreverAviso` drops an EQUAL clock — and the resolve passes the
+ *    same value to `resolverAviso`, so a late, older resolve cannot close a
+ *    newer row. ⚠️ Per-return µs: never compare it with another tipo's.
+ *
+ * ---
+ *
+ * **`anuncioCategoriaAlterada`** (#847 — producer
+ * `apps/mercado-livre/lib/marketplace/anuncios/categoriaAnuncio.ts`, run by the
+ * ML functions trigger `onAnuncioCategoriaAlterada`) — Mercado Livre moved a
+ * listing to another category on its own (automatic recategorization, or a split
+ * of its category tree), while the produto's ERP category still names the OLD
+ * one. The ERP category is what selects the price list's formulas
+ * (`formulasPorCategoria` — commission, frete) and the NF-e tax rules, and it is
+ * never moved automatically, so only an operator can decide.
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the `estoqueAcimaDoDisponivel` reason
+ *    above; `canal` says which marketplace did it.
+ *  - **Raised NARROWLY**: only when the produto's ERP category is
+ *    `categorias/<the ML category the listing just left>` — the import names ERP
+ *    categories after ML's, so that is the case where the commission lever is
+ *    demonstrably stale. A curated, non-ML ERP category raises nothing. Not
+ *    raised either when ML's own `percentage_fee` is identical for both
+ *    categories at the listing's price and type — nothing to reprice — but
+ *    then the row is still RECORDED, closed as `mesma-comissao`, because the
+ *    ERP category is still stale: a closed row that no one reviewed
+ *    (`mesma-comissao`, `anuncio-encerrado`, `anuncio-desvinculado`) keeps
+ *    its `params.categoriaErpId` tracked, so a LATER move at a different
+ *    commission raises even though `anterior` no longer names it. That memory
+ *    lasts as long as the row: `sweepAvisosResolvidos` deletes it 90 days
+ *    after the close.
+ *  - **Machine resolvers** (this docblock's own rule, above), each a
+ *    TRANSITION: the produto's ERP category becomes the listing's current ML
+ *    category (`categoria-erp-alinhada` — the operator aligned it, or ML moved
+ *    the listing back); the ERP category changed to anything else
+ *    (`categoria-erp-alterada` — an operator reviewed it and chose); the fees
+ *    turned out identical on a later move (`mesma-comissao`); the listing
+ *    stopped being live (`anuncio-encerrado`) or its link was deleted
+ *    (`anuncio-desvinculado`). ⚠️ Residual: an operator who deliberately keeps
+ *    the old category while the commission differs leaves the row open — there
+ *    is no dismiss button (see `avisoMeta.serverOwned`).
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId,
+ *    janela: linkDocId })` — ONE row per LISTING LINK. A produto can carry two
+ *    listings on one conta, each its own occurrence; the link id rides in its
+ *    own segment (not concatenated into `entidade`), so the fold of one id can
+ *    never shift a boundary into the other.
+ *  - **`params`**: `anuncio` (the ML listing id), `categoriaErpId` +
+ *    `categoriaMlId` (always), `categoriaErpNome` + `categoriaMlNome` (when
+ *    resolvable), `comissaoCategoriaErpPct` + `comissaoCategoriaMlPct` (NUMBERS,
+ *    only when ML answered both — a fee preview, never a promise).
+ *  - **Severity `atencao`**: nothing is down — the listing sells — but every
+ *    sale may be priced on the wrong commission. The RAISE carries no
+ *    `relogioEvento`: ML sends no clock for a recategorization, and every
+ *    decision is re-derived from the CURRENT link and produto, so replays
+ *    converge without one. Only the `mesma-comissao` record passes one — our
+ *    own observation time, in ms — because the shared resolver seeds a
+ *    missing row only with a clock; a clockless raise is never blocked by it.
+ *
+ * ---
+ *
+ * **`shopeeKitReceitaDivergente`** (produced by step 19 (#1527), Shopee native
+ * kits) — the composition of a kit produto changed in the ERP after its native
+ * Shopee kit was created, and the kit on Shopee still carries the OLD recipe.
+ * Shopee does not let a kit's components or quantities change (a quantity
+ * change is answered 200 and silently ignored), and it derives the kit's stock
+ * itself from that frozen recipe — so the stock it shows may be wrong. The
+ * operator republishes first (if Shopee already holds the same composition, the
+ * aviso closes by itself), else recreates the kit or puts the ERP composition
+ * back. A recipe change never BLOCKS anything (Lucas, L4): this aviso is the
+ * whole signal.
+ *
+ *  - **Name is Shopee-prefixed on purpose**, unlike the channel-neutral tipos
+ *    above: the condition IS the channel's — only a Shopee native kit freezes
+ *    its composition at create — and the wording names Shopee's own remedy.
+ *  - **Key**: ONE row per (conta, KIT produto) — `chaveAvisoReceitaKitShopee`
+ *    (`receitaKitShopee.ts`), no `janela`. A family kit with three divergent
+ *    children is ONE aviso naming the three, never three avisos.
+ *  - **Severity `atencao`**: the kit still sells, and `critico` escalates out of
+ *    the app.
+ *  - **`params` are ids only** — `kit` (the kit produto), `anuncio` (the Shopee
+ *    `item_id`, or `—`), `vinculo` (the link doc id the recriar advice names, or
+ *    `—`) and `variacoes` (the divergent children, sorted, joined by `, `). No
+ *    produto name, no SKU, no provider prose.
+ *  - **`urlInterna`** = the kit produto's page, `campo: 'componentesKit'`.
+ *  - **Machine resolvers** (this docblock's own rule, above) — FIVE motivos,
+ *    `MOTIVO_RESOLUCAO_RECEITA_KIT` (`receitaKitShopee.ts`), each reached
+ *    through ONE shared open/resolve decision (`decidirAvisoDeReceitaKit`,
+ *    same module) over the CURRENT recipes, never a blind resolve:
+ *    `receita-igual-a-shopee` (the ERP recipe was edited back to what Shopee
+ *    holds), `kit-recriado` (a create arm finished — criar, recriar or
+ *    converter — or a superseded old kit was seen deleted while the new one
+ *    matches), `republicado-igual` (a republish read the kit back equal to the
+ *    ERP), `importado` (a re-import found the kit equal to the ERP) and
+ *    `sem-kit-ativo` (no native kit of that produto still sells on the conta —
+ *    deleted in Seller Centre and reverified, or removed by a recriar). The
+ *    last one is what keeps a kit that no longer exists from leaving its aviso
+ *    standing until retention.
+ *  - **`relogioEvento`** = the latest commit time, in µs, of every document the
+ *    decision read, so a decision computed from an older snapshot that lands
+ *    late is dropped as stale instead of reopening or closing a newer row.
+ *  - **Writer — step 9's kit import** (`apps/shopee`, `produtos/kitShopee.ts`):
+ *    after writing a native kit it calls `reavaliarAvisoDeReceitaKit`
+ *    (`@delfrance/data/admin/avisos`) ONCE for (conta, kit) with motivo
+ *    `importado`. Before its writes it stamps the fingerprint on the kit-model
+ *    rows it is about to merge, so the trigger its own produto writes fire
+ *    already reads the new stamp. A child whose ERP recipe differs from the
+ *    kit's while one of its rows on an active native kit carries a stamp other
+ *    than the current fingerprint (an edit this aviso tracks) is KEPT
+ *    (L10(2)): no recipe and no stamp is written for it, so the aviso stays
+ *    open and the import reports `receita-divergente`.
+ *  - **Writer — the native-kit create and republish** (`apps/shopee`,
+ *    `kits/aplicarKit.ts`'s `criarKit` and `kits/republicarKit.ts`): each calls
+ *    `reavaliarAvisoDeReceitaKit` ONCE for (conta, kit) AFTER its own stamps —
+ *    motivo `kit-recriado` once a create's completion has stamped every child
+ *    whose READ-BACK folded equal, `republicado-igual` once a republish has
+ *    re-stamped the children its read-back found equal — never a blind
+ *    resolve. A child whose read-back folds DISTINCT keeps a `null` (or its
+ *    old) stamp, so that same decision OPENS the aviso naming it. An uncertain
+ *    create (`incerto`) writes nothing at all, this decision included.
+ *  - **Writer — the recriar, the converter, the re-verify and the listing
+ *    pushes** (`apps/shopee`, `kits/recriarKit.ts`, `anuncios/reverificarAnuncio.ts`
+ *    and `anuncios/pushAnuncio.ts`): the recriar and the converter call
+ *    `reavaliarAvisoDeReceitaKit` ONCE for (conta, kit) as their last step, motivo
+ *    `kit-recriado` — a recriar whose delete did not take leaves the old kit
+ *    superseded and still selling, so its rows keep the aviso OPEN. The
+ *    re-verify (the `reverificar-anuncio` route and the `reverificar:anuncio`
+ *    CLI) and the code 16/27 push handlers call it after any write whose
+ *    resulting `estadoAnuncio` is `removido` on a link whose `kitNativo` is
+ *    `true` — through ONE shared gate, `reavaliarAvisoDeKitRemovido` — with
+ *    motivo `kit-recriado`: the decision answers `sem-kit-ativo` by itself when
+ *    no kit of the produto still sells, and `kit-recriado` only when the deleted
+ *    kit was the superseded old one and the new kit folds equal. An ordinary
+ *    listing never reaches it. No Shopee push reports a SELLER delete, so the
+ *    operator's re-verify is how a Seller-Centre deletion closes this aviso.
+ *  - **Writer — the produto trigger** (`apps/functions`): `onProdutoChanged`
+ *    calls `avisarReceitaKitShopee` (`produtos/avisoReceitaKitShopee.ts`) LAST,
+ *    behind a pure gate on the recipe fingerprint (an ordinary save reads
+ *    nothing). For every (conta, kit) the saved produto's `variashopee` rows
+ *    name, it hands the pair to `reavaliarAvisoDeReceitaKit` with motivo
+ *    `receita-igual-a-shopee` and the event time as `agoraUs` (the staleness
+ *    clock stays the decision's own) — it decides nothing itself and writes
+ *    this tipo only through that shared decision. A produto DELETE is never a
+ *    recipe change, so deleting the child that held the only divergent row
+ *    leaves the aviso open; a later re-import, republish or recriar/converter
+ *    can close it (a sibling's recipe edit re-evaluates the kit too, but with
+ *    every sibling in step it keeps the aviso open for that sibling).
+ *
+ * ---
+ *
+ * **`anuncioForaDaSincronizacao`** (#1200 — first producer
+ * `apps/mercado-livre/lib/marketplace/estoque/auditoriaNaoEnumerados.ts`, the
+ * monthly link audit) — a LIVE anúncio that no automatic stock or price sync can
+ * reach. Both senders' anchor queries enumerate family PARENTS carrying the conta
+ * (`paiId == null` plus `integracoesComProduto` containing it), so a link on a
+ * variation child, a produto whose `paiId` is neither null nor a usable id, or a
+ * link whose produto no longer exists is never enumerated — and leaves no trace:
+ * the sweep reports `completed` while that listing keeps selling at whatever stock
+ * it last had.
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the `estoqueAcimaDoDisponivel` reason
+ *    above: the gap belongs to the parent-anchored query shape, not to Mercado
+ *    Livre, and `canal` already carries which channel raised it.
+ *  - ⚠️ **The audit's FOURTH finding never raises this tipo.** A produto that
+ *    merely lost the conta from `integracoesComProduto` (class 2: a lost trigger
+ *    event, or the cutover import, which fires none) is HEALED in place — the
+ *    conta re-added under a guard that re-reads the links — and only logged. No
+ *    human is needed for it, and an aviso nobody has to act on teaches the team
+ *    to ignore the bell. {@link situacaoAnuncioForaDaSincronizacaoSchema} has no
+ *    member for it, on purpose.
+ *  - **Machine resolvers** (this docblock's own rule, above), both seen by the
+ *    producer: (1) a COMPLETED monthly walk of that conta's links that no longer
+ *    finds the produto, re-confirmed by a fresh read of that produto's links and
+ *    of the produto itself before it resolves
+ *    (`resolucaoMotivo: 'nao-encontrado-na-auditoria'`). ⚠️ A TRUNCATED walk
+ *    (page cap, time budget, a cursor that stopped advancing) resolves NOTHING:
+ *    there "not found" only means "not reached", and resolving on it would close
+ *    a real row this month and re-raise it the next — and neither does a run
+ *    whose listing of the open avisos came back past its cap. (2) The conta is no longer
+ *    an active Mercado Livre integração (`resolucaoMotivo: 'conta-inativa'`):
+ *    nothing walks its links any more, so resolver (1) can never fire for it,
+ *    and without this its rows would stand until retention. ⚠️ Both judge
+ *    MERCADO LIVRE state, so both act only on rows stamped
+ *    `canal: 'mercadoLivre'`: the next channel to produce this tipo brings its
+ *    own resolvers, and resolver (2) would otherwise close that channel's rows
+ *    every month — its conta is never an ML integração.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
+ *    — ONE row per PRODUTO, no `janela`. Every monthly walk recomputes the same
+ *    id, so a finding that persists refreshes its row instead of opening a new
+ *    one. ⚠️ The SHAPE is load-bearing: an aviso stores its conta and entidade
+ *    only in its id, so the producer reads the open avisos once per run (the
+ *    bell's own `resolvidoEm == null`) and finds its rows by PARSING the id —
+ *    exactly `<tipo>:<conta>:<produto>`, the conta segment compared whole — so
+ *    `conta` must stay the second segment, and the fold must keep every `:` out
+ *    of a segment. `entidade` is the produtoId, never the ML item id: the
+ *    route is built from it, and a produto relisted under a new item id keeps the
+ *    row the operator already knows about. The `estoqueAcimaDoDisponivel` fold
+ *    caveat applies (a dot and an underscore in a produtoId are one key).
+ *  - **Severity `atencao`**: the rest of the catalogue syncs normally, the
+ *    finding is a standing data defect seen once a month rather than an
+ *    incident, and `critico` escalates out of the app.
+ *  - **`params` are exactly `situacao`** — a
+ *    {@link SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO} CODE, never a fragment, so a
+ *    wording fix in `mensagens.ts` is retroactive — **`anuncio`** (the
+ *    lexicographically SMALLEST live ML item id the walk saw for that produto —
+ *    not the first seen, so a walk that meets the same listings in another order
+ *    recomputes the same params and writes nothing; `''` when no link names one)
+ *    **and `anuncios`** (how many live anúncios of that produto are in the
+ *    situação, a NUMBER). `motivo` = `situacao`. A repeat replaces `params`
+ *    wholesale, which is safe here: every walk recomputes all three.
+ *  - **No `relogioEvento`, ever**: this is a periodic observation by a single
+ *    scheduled writer, not an out-of-order provider event — there is no provider
+ *    clock to compare, and the dedup id alone is the race guard (tier 0). No
+ *    `prazo` either: nobody set a deadline.
+ *  - **Route**: the produto page (`ROTAS_AVISO.produto`), where the link is
+ *    re-pointed or the cadastro fixed — EXCEPT `produto-ausente`, which goes to
+ *    the conta's channel page (`ROTAS_AVISO.canalMercadoLivre`): a produto that
+ *    no longer exists has no page to open.
+ *
+ * ---
+ *
+ * **`lojaIntegradaTokenExpirando`** (Loja Integrada step 2, #1829 — producers in
+ * `apps/loja-integrada/lib/lojaIntegrada/avisos/avisos.ts`) — the conta's
+ * Personal Token nears the expiry date the operator copied from the Loja
+ * Integrada painel. The token lasts three months unless the store owner renews
+ * it there, and an unrenewed token is revoked for good.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — deliberately **no
+ *    `janela` and no `entidade`**: a new expiry date must refresh the SAME row,
+ *    never mint a second one (the Shopee authorization-expiry rule).
+ *  - **Severity `atencao`**, canal `lojaIntegrada`. In-app only.
+ *  - **`params` are exactly `loja`** (the conta name), **`dias`** (a NUMBER:
+ *    `0` on the last day, negative once the date has passed) **and `expiraEm`**
+ *    (`YYYY-MM-DD`, the São Paulo civil date). A repeat replaces them, which is
+ *    how `dias` stays current.
+ *  - **`prazo`** = the stored expiry in µs — the date copied from the painel,
+ *    never computed.
+ *  - **`relogioEvento`: none.** Clockless, like the Shopee expiry sweep: the
+ *    event is time passing, which no document write records.
+ *  - **Raised for every Loja Integrada conta holding a token, active or not**:
+ *    deactivating a conta in the ERP does not stop the token's clock.
+ *  - **Machine resolvers** (this docblock's own rule, above): a validated save
+ *    or renewal whose new date is more than 30 days away; the removal of the
+ *    token (`credencial-removida`); the daily sweep when more than 30 days
+ *    remain or the conta holds no token (`credencial-removida`), and when the
+ *    conta no longer exists as a Loja Integrada conta (`conta-removida`).
+ *
+ * ---
+ *
+ * **`lojaIntegradaReconexaoPendente`** (Loja Integrada step 2, #1829 — the same
+ * module) — Loja Integrada refused the stored token (HTTP 401 or 403) and the
+ * conta was PARKED: its flows stop until a valid token is saved.
+ *
+ *  - **Channel-specific, never `canalSemCredencial`**: the remedy differs (only
+ *    the store owner can generate or renew the token, in the painel) and so does
+ *    the consequence the sentence must state (order intake stops) — the
+ *    `shopeeDesautorizado` choice.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })`.
+ *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
+ *    in-app only.
+ *  - **`params` are exactly `loja` and `status`** (`401` | `403`).
+ *  - **`relogioEvento`** = the commit time of the credential document, in µs
+ *    (its `updateTime`, or the write's `writeTime`). Commit times on one
+ *    document rise strictly, so a late raise from a park that lost to a newer
+ *    save is dropped with no wall clock involved. ⚠️ Per-document µs: never
+ *    compare it with another tipo's.
+ *  - **Machine resolvers**: a validated save or renewal, and the removal of the
+ *    token, each clocked by its own write; the daily sweep when the conta is not
+ *    parked (clocked) or holds no token (clockless, `credencial-removida`), and
+ *    when the conta no longer exists (clockless, `conta-removida`).
+ *
+ * ---
+ *
+ * **`lojaIntegradaImportacaoParada`** (Loja Integrada step 3, #1830 — producer:
+ * the 5-minute order poller of `apps/loja-integrada`, step-3 PR 3-e) — the
+ * poller could not read a conta's changed orders, repeatedly or in a way that
+ * will not heal by itself, so orders placed in the store are not reaching the
+ * ERP through the guaranteed intake path (D13).
+ *
+ *  - **Channel-specific**: the motivos and their remedies are this poller's
+ *    own (a look-back the window sets, a window too large to drain, a filter
+ *    the platform ignored), and the consequence the sentence states is the
+ *    order intake.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
+ *    in-app only.
+ *  - **`params` are exactly `loja`** (the conta name) **and `motivo`** — a
+ *    {@link MOTIVO_IMPORTACAO_PARADA_LI} CODE, never a sentence, so a wording
+ *    fix in `mensagens.ts` is retroactive.
+ *  - **`relogioEvento`** = the µs commit time of the poll run's FIRST write to
+ *    its poll document (the lease, or the refusal record). Every write there is
+ *    preconditioned, so these clocks rise strictly across runs, and a late raise
+ *    from a run whose lease was taken over is dropped. ⚠️ Per-document µs:
+ *    never compare it with another tipo's.
+ *  - **Never raised** for a parked conta (`lojaIntegradaReconexaoPendente` says
+ *    that), an inactive conta, the read switch off, a busy lease or an absent
+ *    importer.
+ *  - **Machine resolvers**: the poller, on a clean run after a stored failure
+ *    (clocked by that run's lease); the daily expiry sweep's orphan pass when
+ *    the conta no longer exists (`conta-removida`, CLOCKED by the conta
+ *    enumeration's read time, so a conta created after that read keeps its row).
+ *    A row left open when the conta is deactivated stays open until the conta
+ *    is reactivated and polls cleanly, or is deleted (a documented residue).
+ */
+export const tipoAvisoSchema = z
+  .enum([
+    'shopeeAutorizacaoExpirando',
+    'shopeeDesautorizado',
+    'shopeePushDegradado',
+    'shopeePushSuspenso',
+    'canalSemCredencial',
+    'nfeUploadRejeitado',
+    'pedidoPrecisaDecisao',
+    'anuncioComViolacao',
+    'jobConcluidoComFalhas',
+    'estoqueAcimaDoDisponivel',
+    'despachoAutomaticoPendente',
+    'etiquetaComPrazo',
+    'reclamacaoAguardandoVendedor',
+    'anuncioCategoriaAlterada',
+    'shopeeKitReceitaDivergente',
+    'anuncioForaDaSincronizacao',
+    'lojaIntegradaTokenExpirando',
+    'lojaIntegradaReconexaoPendente',
+    'lojaIntegradaImportacaoParada',
+  ])
+  .meta({ labels: TIPO_AVISO_LABELS });
+export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
+
+/** Named members of {@link tipoAvisoSchema} — see `delfrance/prefer-schema-enum`. */
+export const TIPO_AVISO = {
+  shopeeAutorizacaoExpirando: 'shopeeAutorizacaoExpirando',
+  shopeeDesautorizado: 'shopeeDesautorizado',
+  shopeePushDegradado: 'shopeePushDegradado',
+  shopeePushSuspenso: 'shopeePushSuspenso',
+  canalSemCredencial: 'canalSemCredencial',
+  nfeUploadRejeitado: 'nfeUploadRejeitado',
+  pedidoPrecisaDecisao: 'pedidoPrecisaDecisao',
+  anuncioComViolacao: 'anuncioComViolacao',
+  jobConcluidoComFalhas: 'jobConcluidoComFalhas',
+  estoqueAcimaDoDisponivel: 'estoqueAcimaDoDisponivel',
+  despachoAutomaticoPendente: 'despachoAutomaticoPendente',
+  etiquetaComPrazo: 'etiquetaComPrazo',
+  reclamacaoAguardandoVendedor: 'reclamacaoAguardandoVendedor',
+  anuncioCategoriaAlterada: 'anuncioCategoriaAlterada',
+  shopeeKitReceitaDivergente: 'shopeeKitReceitaDivergente',
+  anuncioForaDaSincronizacao: 'anuncioForaDaSincronizacao',
+  lojaIntegradaTokenExpirando: 'lojaIntegradaTokenExpirando',
+  lojaIntegradaReconexaoPendente: 'lojaIntegradaReconexaoPendente',
+  lojaIntegradaImportacaoParada: 'lojaIntegradaImportacaoParada',
+} as const satisfies Record<string, TipoAviso>;
+
+/**
+ * What a `reclamacaoAguardandoVendedor` return waits for — the aviso's
+ * `params.pendencia`, a CODE the wording in `apps/web/lib/avisos/mensagens.ts`
+ * renders (so a wording fix is retroactive, the `precoMotivos` precedent).
+ *
+ * The three things the seller can still do before the channel decides alone:
+ * answer the return request, answer the buyer's offer, send the evidence the
+ * channel asked for. ⚠️ Arranging the reverse pickup is deliberately NOT a
+ * member in v1: when the seller must act on it is unsettled (register 242), so
+ * it is shown on the panel and raises no aviso.
+ *
+ * Stored as an aviso PARAM (`z.record(string, string | number)`), so the aviso
+ * schema itself does not validate it: a code newer than the web build reaches
+ * the reader as a plain string, and `mensagens.ts` falls back rather than
+ * printing `undefined`.
+ */
+export const pendenciaReclamacaoSchema = z.enum([
+  'responder-solicitacao',
+  'responder-proposta',
+  'enviar-evidencias',
+]);
+export type PendenciaReclamacao = z.infer<typeof pendenciaReclamacaoSchema>;
+
+/** Named members of {@link pendenciaReclamacaoSchema} — see `delfrance/prefer-schema-enum`. */
+export const PENDENCIA_RECLAMACAO = {
+  responderSolicitacao: 'responder-solicitacao',
+  responderProposta: 'responder-proposta',
+  enviarEvidencias: 'enviar-evidencias',
+} as const satisfies Record<string, PendenciaReclamacao>;
+
+/**
+ * Why the Loja Integrada order poller stopped importing a conta — the
+ * `lojaIntegradaImportacaoParada` aviso's `params.motivo`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
+ * shape: a wording fix is retroactive). The poll document's last error (step-3
+ * PR 3-e) is the same vocabulary.
+ *
+ *  - a refusal before any read: `credencial-ausente`, `credencial-invalida`
+ *    (the conta is active but its token is missing or unreadable),
+ *    `lookback-invalido` (the bootstrap look-back the window sets is not a
+ *    valid number of hours), `id-de-conta-invalido`;
+ *  - a run that could not finish: `orcamento-esgotado` (the platform answered
+ *    too slowly to drain the window), `janela-instavel` (the list changed while
+ *    it was read), `falha-transitoria` (throttling, 5xx or the network,
+ *    repeatedly), `limite-de-paginas`, `paginacao-invalida`,
+ *    `resposta-invalida`, `formato-de-data`;
+ *  - a run that refused to advance on purpose: `filtro-ignorado` (the
+ *    platform returned orders older than the filter), `janela-grande-demais`
+ *    (more changed orders than one run may read).
+ *
+ * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
+ * code newer than the web build reaches the reader as a plain string, and
+ * `mensagens.ts` falls back rather than printing `undefined`.
+ */
+export const motivoImportacaoParadaLiSchema = z.enum([
+  'credencial-ausente',
+  'credencial-invalida',
+  'lookback-invalido',
+  'id-de-conta-invalido',
+  'orcamento-esgotado',
+  'janela-instavel',
+  'falha-transitoria',
+  'limite-de-paginas',
+  'paginacao-invalida',
+  'resposta-invalida',
+  'formato-de-data',
+  'filtro-ignorado',
+  'janela-grande-demais',
+]);
+export type MotivoImportacaoParadaLi = z.infer<typeof motivoImportacaoParadaLiSchema>;
+
+/** Named members of {@link motivoImportacaoParadaLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_IMPORTACAO_PARADA_LI = {
+  credencialAusente: 'credencial-ausente',
+  credencialInvalida: 'credencial-invalida',
+  lookbackInvalido: 'lookback-invalido',
+  idDeContaInvalido: 'id-de-conta-invalido',
+  orcamentoEsgotado: 'orcamento-esgotado',
+  janelaInstavel: 'janela-instavel',
+  falhaTransitoria: 'falha-transitoria',
+  limiteDePaginas: 'limite-de-paginas',
+  paginacaoInvalida: 'paginacao-invalida',
+  respostaInvalida: 'resposta-invalida',
+  formatoDeData: 'formato-de-data',
+  filtroIgnorado: 'filtro-ignorado',
+  janelaGrandeDemais: 'janela-grande-demais',
+} as const satisfies Record<string, MotivoImportacaoParadaLi>;
+
+/**
+ * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's
+ * `params.situacao` (and its `motivo`), a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders, so a wording fix is retroactive.
+ *
+ * One member per finding a HUMAN must fix, each with its own remedy: a link on a
+ * variation child (re-point it at the family parent), a cadastro whose `paiId`
+ * is neither null nor a usable id (fix the cadastro), and a link that outlived
+ * its produto (end the anúncio, or remove the orphan link).
+ *
+ * ⚠️ Its own closed set, NOT the walk's `NAO_ENUMERADO_*` codes. Those are an
+ * `apps/mercado-livre` constant this browser-safe package cannot import, and they
+ * carry a fourth member — the produto missing the conta — that the audit HEALS
+ * and never raises, so there is deliberately no `conta-fora-do-produto` here.
+ *
+ * Stored as an aviso PARAM (`z.record(string, string | number)`), so the aviso
+ * schema itself does not validate it: a code newer than the web build reaches
+ * the reader as a plain string, and `mensagens.ts` falls back rather than
+ * printing `undefined`.
+ */
+export const situacaoAnuncioForaDaSincronizacaoSchema = z.enum([
+  'link-em-variacao',
+  'pai-id-invalido',
+  'produto-ausente',
+]);
+export type SituacaoAnuncioForaDaSincronizacao = z.infer<
+  typeof situacaoAnuncioForaDaSincronizacaoSchema
+>;
+
+/** Named members of {@link situacaoAnuncioForaDaSincronizacaoSchema} — see `delfrance/prefer-schema-enum`. */
+export const SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO = {
+  linkEmVariacao: 'link-em-variacao',
+  paiIdInvalido: 'pai-id-invalido',
+  produtoAusente: 'produto-ausente',
+} as const satisfies Record<string, SituacaoAnuncioForaDaSincronizacao>;
+
+/* -------------------------------------------------------------------------- */
+/*                              Route builders                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The in-app routes an aviso may point at, as builders rather than literals.
+ *
+ * A producer stores its route on the document (`urlInterna.rota`), which makes
+ * the aviso self-contained — the bell renders a link with no lookup. The cost is
+ * that the route FREEZES at write time: resolved avisos live 90 days, unresolved
+ * ones stand indefinitely, and the writer is a Cloud Function with no dependency
+ * edge to `apps/web`, so a route rename there is typechecked against nothing.
+ *
+ * This is the mitigation. Every producer calls a builder here instead of writing
+ * a literal, so each shape has exactly one definition — and
+ * `apps/web/lib/avisos/rotas.test.ts` walks `app/(app)/**` asserting every
+ * `padrao` below resolves to a real route directory. Without that test this is
+ * only a convention, and conventions drift *toward plausible* (#1369).
+ *
+ * `padrao` is the Next.js route pattern; `build` produces the concrete path.
+ * They are pinned against each other in `aviso.test.ts` so one cannot be edited
+ * without the other.
+ */
+export const ROTAS_AVISO = {
+  canalShopee: {
+    padrao: '/canais/shopee/[id]',
+    build: (integracaoId: string) => `/canais/shopee/${integracaoId}`,
+  },
+  canalMercadoLivre: {
+    padrao: '/canais/mercado-livre/[id]',
+    build: (integracaoId: string) => `/canais/mercado-livre/${integracaoId}`,
+  },
+  canalWhatsapp: {
+    padrao: '/canais/whatsapp/[id]',
+    build: (integracaoId: string) => `/canais/whatsapp/${integracaoId}`,
+  },
+  canalLojaIntegrada: {
+    padrao: '/canais/loja-integrada/[id]',
+    build: (integracaoId: string) => `/canais/loja-integrada/${integracaoId}`,
+  },
+  // ⚠️ `/pedidos/[id]` is NOT navigable — it is a bare directory holding
+  // `editar/` and `nfe/`, with no page of its own. The whole app links to
+  // `/pedidos/{id}/editar` (see `pedidos/_components/direcao.ts`). Caught by
+  // `apps/web/lib/avisos/rotas.test.ts`, which is what it is for.
+  pedido: {
+    padrao: '/pedidos/[id]/editar',
+    build: (pedidoId: string) => `/pedidos/${pedidoId}/editar`,
+  },
+  produto: {
+    padrao: '/produtos/[id]',
+    build: (produtoId: string) => `/produtos/${produtoId}`,
+  },
+  // ⚠️ The CHECKOUT, not `pedido`: the form's Frete tab is read-only for a marketplace
+  // pedido, while the checkout emits the NF-e, prints the DANFE and fetches the label.
+  despachoCheckout: {
+    padrao: '/despacho/checkout',
+    build: (pedidoId: string) => `/despacho/checkout?pedido=${encodeURIComponent(pedidoId)}`,
+  },
+  inicio: {
+    padrao: '/inicio',
+    build: () => '/inicio',
+  },
+} as const;
+
+export type RotaAvisoKey = keyof typeof ROTAS_AVISO;
+
+/* -------------------------------------------------------------------------- */
+/*                                  Schema                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where an aviso sends the operator inside the ERP. `campo` names the field to
+ * focus or highlight on arrival — a background listing write rejected by the
+ * channel has no open form to surface into, so the route alone is not enough to
+ * act on.
+ */
+export const urlInternaAvisoSchema = z
+  .object({
+    rota: z.string().min(1).describe('Rota'),
+    campo: z.string().nullable().default(null).describe('Campo'),
+  })
+  .passthrough();
+export type UrlInternaAviso = z.infer<typeof urlInternaAvisoSchema>;
+
+/**
+ * Aviso — `avisos`. The in-app operator notification inbox: one row per
+ * operator-actionable business event, written by the Admin SDK, read by the bell
+ * in the app shell.
+ *
+ * ## What belongs here, and what emphatically does not
+ *
+ * `avisos` carries **operator-actionable business events** — an authorization
+ * expiring, an order awaiting a decision, an NF-e upload rejected for a fixable
+ * configuration reason — where the audience is the person who can fix it and the
+ * fix is in this app.
+ *
+ * It carries **no webhook plumbing telemetry**. That distinction is not a
+ * preference: #809 proposed an ERP screen over `notificacoesMercadoLivre` and was
+ * closed `wontfix` because "it is a failures-only processing log. Whoever needs
+ * to investigate a parked notification is a dev, and devs have Cloud Logging."
+ * That reasoning still holds, and nothing here should erode it. If a parked
+ * notification means a business event was lost, raise an aviso about the
+ * **business event**, never about the parked document.
+ *
+ * ## Identity and races
+ *
+ * The document id IS the dedup key ({@link chaveDeAviso}) — deliberately not
+ * stored as a field, so an id and a field can never disagree. That makes the
+ * write idempotent by construction (root `CLAUDE.md` rule 7, tier 0): the same
+ * logical event reaching us twice from two producers (the weekly Shopee expiry
+ * sweep and Shopee's own `push 12`) merges onto one row instead of duplicating.
+ * Repeats bump {@link ocorrencias} with `FieldValue.increment`, which is tier 0
+ * again — nothing to compare, nothing to lose.
+ *
+ * `relogioEvento` is the tier-2 escape hatch for genuinely out-of-order provider
+ * events: compare stored against incoming inside a transaction, drop when not
+ * fresher, and advance it on the write that WINS.
+ */
+export const avisoSchema = z
+  .object({
+    tipo: tipoAvisoSchema.describe('Tipo'),
+    severidade: severidadeAvisoSchema.describe('Severidade'),
+    canal: canalAvisoSchema.nullable().default(null).describe('Canal'),
+    /**
+     * Values the read-time wording interpolates (`{ loja: 'Delfrance', dias: 29 }`)
+     * — **structured params, never a rendered sentence**. The pt-BR text lives in
+     * `apps/web/lib/avisos/mensagens.ts` keyed on `tipo`, so fixing a wording
+     * applies retroactively to every row already written. Same reason the Shopee
+     * plan stores `precoMotivos` as codes.
+     */
+    params: z.record(z.string(), z.union([z.string(), z.number()])).default({}),
+    /**
+     * The provider's own code for WHY, where one exists — Shopee's
+     * `authorize_type`, an NF-e upload error number, a `violation_type`. Kept
+     * separate from `tipo` because the operator ACTION differs per reason while
+     * the event class does not: five de-authorization reasons, five remedies.
+     */
+    motivo: z.string().nullable().default(null).describe('Motivo'),
+    /**
+     * Routing hint. `null` = everyone who can act, which is the normal case for
+     * machine sweeps; a uid for something genuinely personal ("your bulk price
+     * job finished with 40 failures").
+     *
+     * ⚠️ **Not a security boundary.** The generated ruleset can only express
+     * `isSuperUser() || p('d_aviso', 1)` — there is no `resource.data` hook — so
+     * every operator can read every row regardless of what this says. The bell
+     * filters on it client-side, over documents already in the local cache.
+     */
+    destinatarioUid: z.string().nullable().default(null).describe('Destinatário'),
+    urlInterna: urlInternaAvisoSchema.nullable().default(null).describe('Link interno'),
+    /**
+     * A provider-supplied external link, for what is fixable only on their site.
+     *
+     * ⚠️ Untrusted input — it arrives from a provider API. Never hand it to an
+     * `href` without {@link urlExternaSegura}.
+     */
+    urlExterna: z.string().nullable().default(null).describe('Link externo'),
+    /**
+     * A deadline the PROVIDER supplied — a violation's `fix_deadline_time`, a
+     * return's `due_date`, a `ship_by_date`. Copied, never computed: we do not
+     * know their business-day rules, and a deadline we invented is worse than
+     * none.
+     */
+    prazo: microsSinceEpoch('Prazo').nullable().default(null),
+    criadoEm: microsSinceEpoch('Criado em'),
+    atualizadoEm: microsSinceEpoch('Atualizado em'),
+    /** Starts at 1 for the first stored observation (open or resolved); each later raise increments it. */
+    ocorrencias: z.number().int().positive().default(1).describe('Ocorrências'),
+    /**
+     * The provider's event clock for the delivery that last won, in whatever unit
+     * that provider uses. ⚠️ Compare only against another value of the SAME
+     * provider: `ultimaModificacao` is µs on pedido/produto but ms on the ML
+     * links, and a cross-unit comparison is a guard that never fires.
+     */
+    relogioEvento: z.number().int().nullable().default(null),
+    /**
+     * When a machine resolved it — a **timestamp, not a boolean**, following
+     * `disputaAbertaEm`: null/not-null answers the guard, and the value
+     * additionally says how long the aviso stood, which is the only way to tell
+     * a fast fix from one nobody noticed for a week.
+     */
+    resolvidoEm: microsSinceEpoch('Resolvido em').nullable().default(null),
+    resolucaoMotivo: z.string().nullable().default(null).describe('Motivo da resolução'),
+  })
+  .passthrough();
+
+export type Aviso = z.infer<typeof avisoSchema>;
+
+export const avisoMeta: CollectionMetadata = {
+  collectionPath: 'avisos',
+  permissions: {
+    read: PERM_AVISO_READ,
+    write: PERM_AVISO_WRITE,
+    delete: PERM_AVISO_DELETE,
+  },
+  // Written exclusively through the Admin SDK (sweeps, task handlers, triggers).
+  // The generator emits `allow create, update, delete: if false` with no `su`
+  // bypass, so the write/delete bits above gate nothing — they exist because
+  // `resolvePermissions` requires one PERM bit per action.
+  //
+  // ⚠️ This also forbids an in-app "dismiss" button, deliberately: it forces
+  // every `tipo` to name its machine resolver instead of leaning on the operator
+  // to tidy up. Adding one later means `serverOwnedFields` (mutually exclusive
+  // with `serverOwned`) or an authed route on a channel backend — the latter
+  // touches no ruleset and is the cleaner upgrade.
+  serverOwned: true,
+  // The bell's query: everything unresolved, newest first, one page. Declaring it
+  // is what makes the composite index MANDATORY — `delfrance/default-query-needs-index`
+  // plus the `defaultQuery.indexes` backstop. On this Enterprise edition an
+  // unindexed listener raises no error and offers no index link; it silently
+  // full-scans and bills data scanned, and `limit` shrinks the RESULT, not the
+  // scan. A hand-rolled `onSnapshot` in a component would be invisible to both
+  // gates, which is exactly why the query lives here.
+  defaultQuery: {
+    where: [{ field: 'resolvidoEm', value: null }],
+    orderBy: [{ field: 'criadoEm', direction: 'desc' }],
+    limit: 50,
+    columns: ['severidade', 'tipo', 'canal', 'criadoEm'],
+  },
+};
+
+export const aviso = { schema: avisoSchema, meta: avisoMeta };
+
+/* -------------------------------------------------------------------------- */
+/*                         Per-user read state (bare)                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `avisosLeitura/{uid}` — one document per operator, holding what they have read.
+ *
+ * ⚠️ **Deliberately NOT a `DomainSchema` and NOT in `ALL_DOMAINS`.** A registered
+ * meta would emit `allow write: if isSuperUser() || p('d_aviso', 2)`, letting any
+ * operator overwrite anyone else's read state; and adding a stricter match block
+ * on the same path would not help, because Firestore ORs every matching `allow`
+ * — a second block WIDENS access, it cannot narrow it. So the only rule for this
+ * path is the hand-written `EXTRA_MATCH_BLOCK` in `@delfrance/rules-gen`, scoped
+ * to `request.auth.uid == uid`.
+ *
+ * That is the `grupoEconomico` shape exactly (schema outside `ALL_DOMAINS`, one
+ * extra block, a `defineCollection` handle in `apps/web`, and an allow-list entry
+ * in `collectionCoverage.test.ts`), with one difference worth knowing: that block
+ * is read-only, this one grants the client a WRITE.
+ *
+ * Read state is per `(operator, aviso)` because `avisos` is a shared inbox — a
+ * `lida` boolean on the aviso itself would mean "somebody read it", and the first
+ * operator to open the panel would silence the bell for everyone else.
+ */
+export const AVISOS_LEITURA_COLLECTION_PATH = 'avisosLeitura';
+
+export const avisosLeituraSchema = z
+  .object({
+    /** Everything created at or before this instant counts as read. */
+    ultimaVisualizacaoUs: microsSinceEpoch('Última visualização').default(0),
+    /**
+     * Avisos read individually SINCE `ultimaVisualizacaoUs`, one
+     * {@link entradaDeLeitura} per read — `<avisoId>@<criadoEm>`, the aviso id
+     * AND the version the operator saw, **never a bare id**.
+     *
+     * ⚠️ The version is the point. `escreverAviso` reopens a resolved aviso under
+     * the SAME document id with a fresh `criadoEm`, precisely so it re-alerts. A
+     * bare id would keep matching after that reopen and the problem that came
+     * back would stay silenced until somebody pressed "marcar todas"; an entry
+     * names the version it covered and stops matching the moment `criadoEm`
+     * moves. A repeat keeps `criadoEm`, so it keeps matching — which is what dedup
+     * is for.
+     *
+     * {@link marcarTodosComoLidos} advances the watermark and clears this array
+     * in the same write, so it holds only reads made since the last "marcar
+     * todas como lidas".
+     *
+     * ⚠️ That is a reset, **not a bound**: an operator who only ever marks rows
+     * individually never triggers it, and the array grows by one per individual
+     * read — roughly 1.4 years to Firestore's 1 MiB document limit at 50
+     * avisos/day. Re-reading a REOPENED aviso adds a second entry for the same id;
+     * the older one never matches again and waits for the same reset. Slow, but
+     * real, and worth stating rather than implying otherwise.
+     *
+     * Deliberately not pruned client-side. Dropping ids that have left the
+     * visible page would need a read-modify-write, and the write path uses
+     * `arrayUnion` precisely because the client SDK has no `lastUpdateTime`
+     * precondition (`apps/web/CLAUDE.md` rule 3): two tabs marking different
+     * avisos at once would start losing one of the two. Trading a slow, visible
+     * growth for a silent lost update is the wrong direction. If it ever matters,
+     * the server can prune — it has the preconditions the browser lacks.
+     */
+    lidos: z.array(z.string()).default([]),
+  })
+  .passthrough();
+
+export type AvisosLeitura = z.infer<typeof avisosLeituraSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                                Pure folds                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Firestore document-id constraints we must not violate, since {@link chaveDeAviso}
+ * output IS the id: no `/` (it would fork a subcollection path), not `.` or `..`,
+ * no leading `__`, and at most 1500 bytes.
+ */
+const SEPARADOR_CHAVE = ':';
+const MAX_BYTES_CHAVE = 1500;
+
+/**
+ * Normalize one segment of a dedup key. `/` is the dangerous one — an outerRef
+ * like `documents/usuarios/abc` would otherwise turn a document id into a nested
+ * path — but any control or reserved character is folded for the same reason.
+ *
+ * ⚠️ **{@link SEPARADOR_CHAVE} itself is in the set, and that is the whole
+ * point.** Leaving it intact would let a colon inside a segment shift the
+ * segment boundaries: `conta: 'loja:123'` and `(conta: 'loja', entidade: '123')`
+ * would join to the same string, so two unrelated operator events would collapse
+ * onto one document — one aviso lost, silently, with `ocorrencias` reading as a
+ * plausible repeat. Colons in segments are not hypothetical: a violation key is
+ * `item-9:BANNED` and an ISO instant in `janela` carries them too.
+ *
+ * ⚠️ This is an equivalence fold: two inputs differing only in folded characters
+ * produce the SAME aviso — `a/b`, `a:b` and `a_b` are one key. That is the
+ * accepted cost, and `aviso.test.ts` pins it both ways: pairs that must collapse
+ * AND near-misses that must stay distinct.
+ */
+function segmentoChave(valor: string | number): string {
+  return String(valor)
+    .replace(/[/\\.#[\]:]/g, '_')
+    .replace(/\s+/g, '_')
+    .trim();
+}
+
+export interface ChaveAvisoInput {
+  tipo: TipoAviso;
+  /** The account/integration the event belongs to, when it belongs to one. */
+  conta?: string | null;
+  /** The specific entity — an `order_sn`, an `item_id`, a `return_sn`. */
+  entidade?: string | null;
+  /**
+   * What makes two otherwise-identical events DIFFERENT occurrences rather than
+   * a repeat of one. For a recurring warning this is the window it refers to
+   * ("expiry on 2026-11-02"), NOT the delivery: the weekly sweep and Shopee's
+   * `push 12` describe the same expiry and must collapse onto one row, while the
+   * same conta in two different expiry windows must not.
+   */
+  janela?: string | null;
+}
+
+/**
+ * The dedup identity of an aviso, and its Firestore document id.
+ *
+ * Keying on `(tipo, conta, entidade, janela)` rather than on the delivery is the
+ * whole point: provider notifications are at-least-once, arrive out of order, are
+ * re-driven hours later by sweeps, and are frequently duplicated by a pull
+ * backstop covering the same event. Anything keyed on a delivery id produces one
+ * row per attempt.
+ */
+export function chaveDeAviso(input: ChaveAvisoInput): string {
+  const chave = [input.tipo, input.conta, input.entidade, input.janela]
+    .map((parte) => (parte == null || parte === '' ? '' : segmentoChave(parte)))
+    .join(SEPARADOR_CHAVE)
+    .replace(/:+$/, '');
+
+  // `TextEncoder`, not `Buffer.byteLength`: this package is reached from
+  // `apps/web`, so everything in it must be browser-safe.
+  if (new TextEncoder().encode(chave).length > MAX_BYTES_CHAVE) {
+    throw new RangeError(
+      `chaveDeAviso: chave excede ${String(MAX_BYTES_CHAVE)} bytes e não pode ser um id de documento: ${chave.slice(0, 80)}…`,
+    );
+  }
+  return chave;
+}
+
+/**
+ * The `avisosLeitura.lidos` entry recording that an operator read
+ * `avisoId` AS OF `criadoEmUs` — the version they saw, not the moment they
+ * clicked.
+ *
+ * ⚠️ **A version, never a clock reading.** `criadoEm` is stamped by a Cloud
+ * Function and the read happens in a browser, so "read at <browser now>"
+ * compared against `criadoEm` would compare two different clocks — the trap
+ * {@link marcarTodosComoLidos} documents. A client running slow would record its
+ * read "before" a reopen it had already seen, and the row it just marked would
+ * stay bold. Equality on the version the operator saw involves no clock at all.
+ *
+ * ⚠️ This is an equivalence fold — it decides when two reads are "the same" — so
+ * its scope is pinned both ways in `aviso.test.ts`. Ids CAN contain `@`
+ * ({@link chaveDeAviso} does not fold it), but `String(number)` never does, so
+ * the LAST `@` splits an entry uniquely: no two `(avisoId, criadoEm)` pairs can
+ * produce the same string.
+ */
+export function entradaDeLeitura(avisoId: string, criadoEmUs: number): string {
+  return `${avisoId}@${String(criadoEmUs)}`;
+}
+
+/**
+ * Is this aviso unread FOR THIS OPERATOR, and addressed to them at all?
+ *
+ * Pure and total so the bell, the `/inicio` list and any future consumer cannot
+ * disagree — the failure mode #1369 documents, where two copies of one rule drift
+ * toward plausible and both look right in review.
+ *
+ * An individual read covers only the VERSION it names ({@link entradaDeLeitura}):
+ * a repeat keeps `criadoEm` and stays read, a reopen moves it and reads as unread
+ * again — the re-alert `escreverAviso` promises. ⚠️ A bare id in `lidos` counts
+ * for nothing, deliberately: honouring it "for compatibility" is exactly the
+ * check that kept a reopened aviso silenced.
+ */
+export function avisoNaoLido(
+  aviso: Pick<Aviso, 'criadoEm' | 'destinatarioUid' | 'resolvidoEm'>,
+  avisoId: string,
+  leitura: AvisosLeitura | null,
+  uid: string,
+): boolean {
+  if (aviso.resolvidoEm != null) return false;
+  if (aviso.destinatarioUid != null && aviso.destinatarioUid !== uid) return false;
+  if (leitura == null) return true;
+  if (leitura.lidos.includes(entradaDeLeitura(avisoId, aviso.criadoEm))) return false;
+  return aviso.criadoEm > leitura.ultimaVisualizacaoUs;
+}
+
+/**
+ * The next read state after marking every currently-visible aviso read.
+ *
+ * ⚠️ Clearing `lidos` is not an optimisation, it is what BOUNDS the array: the
+ * watermark now covers everything those ids referred to. Advancing one without
+ * clearing the other grows the array forever; clearing without advancing marks
+ * nothing read.
+ *
+ * ⚠️ **Pass the newest `criadoEm` the operator can actually SEE — never a clock
+ * reading.** The rows are stamped by a Cloud Function and the panel runs in a
+ * browser, so a "now" taken here is a DIFFERENT clock from the one the watermark
+ * is compared against. A client running a few minutes fast would mark avisos
+ * read that have not been raised yet: they arrive already counted as read and
+ * the bell never lights for them. The newest visible `criadoEm` is also the
+ * truthful definition of "I have seen everything up to here".
+ */
+export function marcarTodosComoLidos(ateCriadoEmUs: number): AvisosLeitura {
+  return { ultimaVisualizacaoUs: ateCriadoEmUs, lidos: [] };
+}
+
+/**
+ * A stored internal route is only safe to render as a link if it is genuinely
+ * internal. Returns the route when it is, `null` otherwise.
+ *
+ * `avisos` is `serverOwned`, so only our own producers write `urlInterna` — but
+ * `rota` is built from provider-supplied ids, nothing forces a producer through
+ * {@link ROTAS_AVISO}, and a stored value outlives the code that wrote it. This
+ * makes "internal" true by construction rather than by convention, and it is the
+ * convention that drifts.
+ *
+ * ⚠️ `//evil.com` starts with `/` and is PROTOCOL-RELATIVE — a browser navigates
+ * off-site. A bare `startsWith('/')` is not the check.
+ */
+export function rotaInternaSegura(rota: string | null | undefined): string | null {
+  if (rota == null || rota === '') return null;
+  if (!rota.startsWith('/')) return null;
+  if (rota.startsWith('//')) return null;
+  return rota;
+}
+
+/**
+ * A provider-supplied URL is only safe to render as a link if it is `https:` and
+ * points somewhere we expect. Returns the URL when it passes, `null` otherwise —
+ * never throws, because a malformed link must degrade to "no button", not to a
+ * broken panel.
+ */
+export function urlExternaSegura(
+  url: string | null | undefined,
+  hostsPermitidos: ReadonlyArray<string>,
+): string | null {
+  if (url == null || url === '') return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    if (err instanceof TypeError) return null;
+    throw err;
+  }
+
+  if (parsed.protocol !== 'https:') return null;
+  const host = parsed.hostname.toLowerCase();
+  const permitido = hostsPermitidos.some(
+    (allow) => host === allow.toLowerCase() || host.endsWith(`.${allow.toLowerCase()}`),
+  );
+  return permitido ? parsed.toString() : null;
+}

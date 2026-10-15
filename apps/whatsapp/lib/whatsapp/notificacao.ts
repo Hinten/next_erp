@@ -55,10 +55,13 @@ import { getAdminBucket } from '../firebase/admin';
 import { loadWhatsappContext } from './whatsapp';
 import {
   processMessagesField,
+  type MensagensReport,
   type ProcessOutcome,
   type WhatsappProcessDeps,
 } from './processMessages';
+import type { StatusesReport } from './processStatus';
 import type { MediaCacheContext } from './media';
+import { replayVinculoWhatsapp } from './vinculoReplay';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -95,11 +98,43 @@ export const whatsappNotificationTaskSchema = z
   })
   .passthrough();
 
+/** Read `obj[key]` when `obj` is a plain object, else undefined. */
+function prop(obj: unknown, key: string): unknown {
+  return typeof obj === 'object' && obj !== null
+    ? (obj as Record<string, unknown>)[key]
+    : undefined;
+}
+
+/** `obj[key]` when it is a non-empty string, else null. */
+function stringProp(obj: unknown, key: string): string | null {
+  const v = prop(obj, key);
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** The `id` of the first element of `value[key]`, when that is an array. */
+function firstElementId(value: unknown, key: string): string | null {
+  const arr = prop(value, key);
+  return Array.isArray(arr) ? stringProp(arr[0], 'id') : null;
+}
+
 /**
  * Parse a raw Meta webhook body into one payload per `entry[].changes[]`.
  * Returns null for a body that isn't a WhatsApp webhook envelope (the receiver
  * acks it without enqueuing); an empty array when the envelope carries no
  * changes.
+ *
+ * ⚠️ The three values below are read off an `unknown` `value` with defensive
+ * accessors rather than a parsed shape, and that is the POINT rather than a
+ * regression. `webhookEnvelopeSchema` used to demand the full
+ * `valuePayloadSchema` here — validating far more than this function reads, and
+ * charging the WHOLE DELIVERY for the difference: a parse failure returned null,
+ * the route acked 200, and every change in the POST vanished with no task, no
+ * failure document and no log line. All three reads were ALREADY optional-chained
+ * (they are hints for the failure doc's id and for the logs, never inputs to
+ * processing), and the payload that leaves here is typed `value: unknown` and
+ * re-parsed against `valuePayloadSchema` by `processMessagesField` anyway. So
+ * nothing downstream lost a guarantee; the receiver only stopped rejecting
+ * deliveries on behalf of a validation someone else performs.
  */
 export function parseWebhookBody(raw: unknown): WhatsappNotificationPayload[] | null {
   const parsed = webhookEnvelopeSchema.safeParse(raw);
@@ -111,8 +146,8 @@ export function parseWebhookBody(raw: unknown): WhatsappNotificationPayload[] | 
       const value = change.value;
       out.push({
         field: change.field,
-        phoneNumberId: value.metadata?.phone_number_id ?? null,
-        messageId: value.messages?.[0]?.id ?? value.statuses?.[0]?.id ?? null,
+        phoneNumberId: stringProp(prop(value, 'metadata'), 'phone_number_id'),
+        messageId: firstElementId(value, 'messages') ?? firstElementId(value, 'statuses'),
         value,
       });
     }
@@ -139,17 +174,55 @@ export async function processChangePayload(
   payload: WhatsappNotificationPayload,
   deps: WhatsappProcessDeps = defaultWhatsappProcessDeps,
 ): Promise<ProcessOutcome> {
+  if (payload.field === 'whatsapp-vinculo-replay') {
+    const parsed = z.object({ vinculoId: z.string().min(1) }).safeParse(payload.value);
+    if (!parsed.success) return { kind: 'failed', reason: 'Replay de vínculo inválido.' };
+    return replayVinculoWhatsapp(db, parsed.data.vinculoId, deps, (id) =>
+      pipelineFor(deps).redrive(db, id, 'Vínculo resolvido; recuperar mudança original.'),
+    );
+  }
   if (payload.field === WEBHOOK_FIELD_MESSAGES) {
-    return processMessagesField(db, payload.value, deps);
+    return processMessagesField(db, payload.value, deps, payload.messageId);
   }
   console.warn('[whatsapp] campo não suportado — dropping', { field: payload.field });
-  return { kind: 'dropped', reason: `campo não suportado: ${payload.field}` };
+  return {
+    kind: 'dropped',
+    reason: `campo não suportado: ${payload.field}`,
+    detail: 'campo-nao-suportado',
+  };
 }
 
 export interface TaskResult {
-  outcome: 'done' | 'failed' | 'dropped';
+  outcome: 'done' | 'failed' | 'parked' | 'deferred' | 'dropped';
   contaId?: string;
   field?: string;
+  /**
+   * The channel's own `ProcessOutcome` discriminant, so the caller can tell an
+   * unsupported-field drop from a malformed-value drop — and both from the
+   * shared pipeline's schema-parse drop, which is a CODING BUG and carries no
+   * `result` at all.
+   */
+  kind?: ProcessOutcome['kind'];
+  /**
+   * What the change actually did. Widened to `string` deliberately: this is the
+   * log-facing shape, and `MessagesFieldOutcome` is the narrow union the
+   * PRODUCER is held to.
+   */
+  detail?: string;
+  /**
+   * What the change's `statuses[]` batch did, absent when it carried none.
+   *
+   * ⚠️ Counts, not a `detail` member: one batch can carry entries with DIFFERENT
+   * fates, which no single enum value can express. It also rides out whichever
+   * arm of the `detail` chain won, so an `echo` no longer hides applied statuses.
+   */
+  statuses?: StatusesReport;
+  /**
+   * What the change's `messages[]` batch could not read, absent when it carried
+   * none. Same contract as `statuses` above — a count, because one batch can
+   * carry entries with different fates.
+   */
+  mensagens?: MensagensReport;
 }
 
 /** Drop `undefined` (Firestore rejects it) from the replayed change value. */
@@ -203,7 +276,38 @@ function pipelineFor(deps: WhatsappProcessDeps) {
     },
     process: (db, payload) => processChangePayload(db, payload, deps),
     toDisposition: (outcome): NotificationDisposition => {
-      if (outcome.kind === 'processed') return { kind: 'resolve', label: 'processed' };
+      if (outcome.kind === 'processed') {
+        // ⚠️ The ONE asymmetry between the two element-tolerance counters, and
+        // it is deliberate: `statuses` resolves, `messages` does not.
+        //
+        // A `statuses[]` element we could not read costs nothing durable — the
+        // next callback for that wamid re-stamps `estadoEnvio` from scratch, so
+        // the information is re-derivable and persisting would only add a doc
+        // that re-fails five times before parking.
+        //
+        // A `messages[]` element we could not read is a CUSTOMER MESSAGE THAT
+        // EXISTS NOWHERE ELSE. WhatsApp has no re-fetch anchor — which is
+        // precisely why this channel, alone in the repo, carries the raw change
+        // `value` on its failure doc so the sweep can REPLAY it. Resolving here
+        // would ack and discard the body, leaving that recovery path unused in
+        // exactly the case it was built for and reducing the loss to a counter.
+        //
+        // So the change persists: `fail` re-drives it up to MAX_TENTATIVAS and
+        // then parks, keeping the body either way. A re-drive after
+        // `incomingMessageSchema` is widened is what actually recovers the
+        // message; before that it simply holds. The messages that DID parse are
+        // already written, and every id here is deterministic, so a replay
+        // converges on them instead of duplicating them.
+        const ilegiveis = outcome.mensagens?.malformados ?? 0;
+        if (ilegiveis > 0) {
+          return {
+            kind: 'fail',
+            reason: `${ilegiveis} mensagem(ns) ilegível(is) — corpo retido para replay`,
+          };
+        }
+        return { kind: 'resolve', label: 'processed' };
+      }
+      if (outcome.kind === 'parked') return { kind: 'park', reason: outcome.reason };
       if (outcome.kind === 'dropped') return { kind: 'drop', reason: outcome.reason };
       return { kind: 'fail', reason: outcome.reason };
     },
@@ -240,14 +344,28 @@ export async function handleNotificationTask(
   const r = await pipelineFor(deps).handleTask(db, data, retryCount);
   // `payload` is absent only on the schema-parse drop, where there is no field
   // to report; `result` is absent on the transient-failure path.
-  const contaId = r.result?.kind === 'processed' ? r.result.contaId : undefined;
+  //
+  // Structural `in` checks rather than `r.result?.kind === 'processed'`: all
+  // three fields ride on one arm today, and an equality narrow silently stops
+  // covering them the moment another arm gains one — whereas the `in` check keeps
+  // compiling and keeps reporting.
+  const contaId = r.result && 'contaId' in r.result ? r.result.contaId : null;
+  const detail = r.result && 'detail' in r.result ? r.result.detail : null;
+  // `statuses` is required-and-nullable on the arm, so this narrows in one step:
+  // null means the change carried no `statuses` key, never "we forgot to set it".
+  const statuses = r.result && 'statuses' in r.result ? r.result.statuses : null;
+  const mensagens = r.result && 'mensagens' in r.result ? r.result.mensagens : null;
   return {
-    // WhatsApp produces neither a `park` nor a `defer` disposition, so both
-    // arms are unreachable here — mapped defensively rather than widening this
-    // channel's public union with arms it cannot emit (mirrors Mercado Pago).
-    outcome: r.outcome === 'parked' || r.outcome === 'deferred' ? 'failed' : r.outcome,
-    ...(contaId !== undefined ? { contaId } : {}),
+    // Pending identification is parked durably and must remain distinct from a retryable failure.
+    outcome: r.outcome,
+    ...(contaId != null ? { contaId } : {}),
     ...(r.payload ? { field: r.payload.field } : {}),
+    // `kind` needs no `in` check — every arm of a discriminated union has it, so
+    // the `r.result` presence guard is the whole condition.
+    ...(r.result ? { kind: r.result.kind } : {}),
+    ...(detail != null ? { detail } : {}),
+    ...(statuses != null ? { statuses } : {}),
+    ...(mensagens != null ? { mensagens } : {}),
   };
 }
 
@@ -265,4 +383,26 @@ export function reprocessNotifications(
   deps: WhatsappProcessDeps = defaultWhatsappProcessDeps,
 ): Promise<ReprocessResult> {
   return pipelineFor(deps).reprocess(db, opts);
+}
+
+/** Durable intent precedes enqueue: the normal notification sweep covers queue outages. */
+export async function solicitarReplayVinculo(db: Firestore, id: string): Promise<void> {
+  const payload: WhatsappNotificationPayload = {
+    field: 'whatsapp-vinculo-replay',
+    phoneNumberId: null,
+    messageId: 'replay-vinculo-' + id,
+    value: { vinculoId: id },
+  };
+  await pipelineFor(defaultWhatsappProcessDeps).persistFailure(
+    db,
+    payload,
+    'Vínculo resolvido; recuperar mensagens.',
+  );
+  const { createWhatsappTaskScheduler, WhatsappTasksDisabledError } = await import('./waTasks');
+  try {
+    await createWhatsappTaskScheduler().enqueue(payload);
+  } catch (error) {
+    if (!(error instanceof WhatsappTasksDisabledError)) throw error;
+    // The durable intent is already in the existing notification sweep.
+  }
 }

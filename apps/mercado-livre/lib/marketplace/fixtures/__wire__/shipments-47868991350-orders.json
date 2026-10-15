@@ -1,0 +1,22 @@
+[
+  {
+    "order_id": "2000018144681452",
+    "pack_id": 2000014733850447,
+    "item_id": "MLB5140167173",
+    "variation_id": null,
+    "user_product_id": "MLBU4974343322",
+    "seller_id": 3616169770,
+    "requested_quantity": 2,
+    "picked_quantity": 2
+  },
+  {
+    "order_id": "2000018144679512",
+    "pack_id": 2000014733850447,
+    "item_id": "MLB5125183715",
+    "variation_id": null,
+    "user_product_id": "MLBU4903167333",
+    "seller_id": 3616169770,
+    "requested_quantity": 1,
+    "picked_quantity": 1
+  }
+]

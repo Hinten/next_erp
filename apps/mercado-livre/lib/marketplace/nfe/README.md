@@ -6,6 +6,8 @@ upload leg.
 
 - `nfeUpload.ts` — the upload itself, plus `decideNfeUploadDispatch` and
   `shouldUploadForPedido` (which `functions/src/onNfeAprovada.ts` drives).
+  `decideNfeUploadDispatch` and `extractTpAmb` live in `@delfrance/schemas`
+  (`nfeEnvioCanal.ts`, shared with Shopee) and are re-exported here unchanged.
   ⚠️ Stamps `freteInicial.estado = "error"` after an attempt through a
   monotonic **µs** watermark, so the stamp can only move forward.
 - `mlNfeUploadTasks.ts` — the task-queue scheduler. No direct test sibling;

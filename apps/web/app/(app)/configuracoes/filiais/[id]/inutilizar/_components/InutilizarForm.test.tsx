@@ -12,6 +12,7 @@ vi.mock('@/lib/firebase/client', () => ({
 }));
 vi.mock('@/lib/notifications/showErrorNotification', () => ({
   showErrorNotification: vi.fn(),
+  showCopyableNotification: vi.fn(),
 }));
 // The history list (always rendered for the fixed filial) reads these.
 vi.mock('@delfrance/data/hooks', () => ({

@@ -1,0 +1,45 @@
+{
+  "receiver": {
+    "compensations": [],
+    "fees": [],
+    "cost": 85.99,
+    "discounts": [
+      {
+        "rate": 0.26,
+        "type": "ratio",
+        "promoted_amount": 30
+      }
+    ],
+    "user_id": 3646520554,
+    "cost_details": [
+      {
+        "sender_id": 3616169770,
+        "amount": 85.99
+      }
+    ],
+    "save": 29.91,
+    "compensation": 0
+  },
+  "gross_amount": 154.2,
+  "senders": [
+    {
+      "compensations": [],
+      "charges": {
+        "charge_flex": 0
+      },
+      "fees": [],
+      "cost": 26.75,
+      "discounts": [
+        {
+          "rate": 0.3,
+          "type": "mandatory",
+          "promoted_amount": 11.46
+        }
+      ],
+      "user_id": 3616169770,
+      "save": 11.46,
+      "compensation": 0
+    }
+  ],
+  "base_exchange": null
+}

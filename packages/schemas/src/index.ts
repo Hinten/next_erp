@@ -22,9 +22,31 @@ export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
 
+// Firestore TTL policies: the one Timestamp-typed field, its retention per
+// writer, and the registry `firestore.indexes.json` must match.
+export {
+  TTL_FIELD,
+  TTL_POLICIES,
+  RETENCAO_ENVIO_PRECO_ML_DIAS,
+  RETENCAO_ENVIO_PRECO_SHOPEE_DIAS,
+  RETENCAO_HISTORICO_PEDIDO_ANOS,
+  RETENCAO_HISTORICO_PRODUTO_DIAS,
+  RETENCAO_VINCULO_WHATSAPP_DIAS,
+  expiraEmApos,
+  expiraEmAposAnos,
+  ttlExpirado,
+  ttlExpiry,
+  type TimestampLike,
+  type TtlPolicy,
+} from './shared/ttl';
+
 // The four LOCAL resilience fields shared by every failures-only inbound-webhook
 // notification collection. Exported so a NEW channel's schema can spread the same
 // block the pipeline in `@delfrance/data/admin/notifications` writes/reads blind.
+export * from './accessOperation';
+export * from './shared/accessRead';
+
+export * from './whatsappContato';
 export {
   notificacaoResilienciaStatusSchema,
   NOTIFICACAO_RESILIENCIA_STATUS,
@@ -48,6 +70,7 @@ export {
   outerRefLooseSchema,
   toOuterRef,
   toOuterRefOrNull,
+  toDocPathOrNull,
   idFromRef,
   parseRef,
   type OuterRef,
@@ -70,6 +93,13 @@ export {
   type Cliente,
   type TipoCliente,
 } from './cliente';
+
+export {
+  clienteIdentidadeSchema,
+  clienteIdentidadeTipoSchema,
+  type ClienteIdentidade,
+  type ClienteIdentidadeTipo,
+} from './clienteIdentidade';
 
 // The shared cliente-resolution DECISION (#786): telefone/e-mail are signals,
 // cpf_cnpj/idEstrangeiro are identity. Consumed by the web dedup screen and by
@@ -94,6 +124,29 @@ export {
   type ClienteMatchKey,
   type ClienteResolveFields,
 } from './clienteIdentity';
+
+export {
+  buildClienteTelefonePatch,
+  ClienteTelefoneConflitoError,
+  type ClienteTelefoneState,
+  type ClienteTelefoneChange,
+} from './clienteTelefone';
+
+// The shared "is this provider value usable, or is it a redaction?" rule.
+// Provider-neutral on purpose: every marketplace that hides buyer data outside
+// an unmask window redacts IN PLACE, so the value arrives non-empty and every
+// truthiness check passes. Sits beside the cliente-identity block because the
+// two are used together on every unattended buyer capture.
+export {
+  MOTIVO_RECUSA,
+  TIPO_DE_VALOR,
+  cpfCnpjUtilizavel,
+  motivoDaRecusa,
+  nomeUtilizavel,
+  valorUtilizavel,
+  type MotivoRecusa,
+  type TipoDeValor,
+} from './valorMascarado';
 
 export {
   endereco,
@@ -130,8 +183,14 @@ export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './cat
 export {
   ESTADO_FRETE,
   ESTADO_FRETE_LABELS,
+  // ⚠️ The two stock sets are exported because a marketplace channel has to ASK
+  // whether an estado it is about to write moves physical stock (#1515, step 7).
+  // Enumerating a channel-local copy instead is the two-copies-drift-toward-
+  // plausible shape (#1369): the copy reads correct and the shared set moves.
+  ESTADOS_FRETE_IGNORAR_REMOCAO,
   ESTADOS_FRETE_NAO_POSTADO,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
   INTEGRACAO_FRETE_LABELS,
@@ -145,6 +204,7 @@ export {
   isFreteJaPostado,
   isFreteMarketplaceOwned,
   modalidadeFreteSchema,
+  pacoteFreteSchema,
   podeAutorizarDespacho,
   reboqueSchema,
   seedFreteInicial,
@@ -158,6 +218,7 @@ export {
   type FreteDoPedido,
   type IntegracaoFrete,
   type ModalidadeFrete,
+  type PacoteFrete,
   type Reboque,
   type Transportadora,
   type Veiculo,
@@ -180,10 +241,18 @@ export {
 
 export {
   DIA_DA_SEMANA_LABELS,
+  // The per-channel facts of the conta → `int_frete` sync (#1528); the IO core
+  // that consumes them is `@delfrance/data/admin/frete` (#1369: one core).
+  VINCULO_INT_FRETE_CONTA,
+  calcularPrazoDespachoCivil,
   diaDaSemanaSchema,
   faixaCepOptionString,
   faixaDeCepSchema,
   getPrazoDespacho,
+  // The zoned binding of the SAME cut-off rule. A server surface must use this
+  // one: the ambient process zone differs across this repo's backends, so
+  // `getPrazoDespacho` answers a different day depending on which service ran it.
+  getPrazoDespachoNoFuso,
   horarioDeCorteSchema,
   intFrete,
   intFreteMeta,
@@ -192,12 +261,16 @@ export {
   tokenMelEnv,
   tokenMelEnvMeta,
   tokenMelEnvSchema,
+  type CampoBackRefIntFrete,
   type DiaDaSemana,
   type FaixaDeCep,
   type HorarioDeCorte,
   type IntFrete,
   type MapaDeIntegracoes,
+  type PartesCivis,
+  type PrazoDespachoCivil,
   type TokenMelEnv,
+  type VinculoIntFreteConta,
 } from './intFrete';
 
 // Pedido domain (pedido + pagamento + incidente + historicoEstadoPedido
@@ -345,6 +418,49 @@ export {
   type UsuarioTesteRole,
 } from './integracao';
 
+// `credenciaisLojaIntegrada` mirrors `credenciaisWhatsapp`: the admin-only,
+// default-deny Loja Integrada Personal Token store — not a DomainSchema, not in
+// ALL_DOMAINS; only its schema/meta/type and the fixed doc id are public.
+// ⚠️ Never export a combined `{ schema, meta }` object for it: `registry.test.ts`
+// fails any such export missing from ALL_DOMAINS, and registering it would make
+// the rules generator grant clients access to a live token.
+export {
+  credenciaisLojaIntegradaSchema,
+  credenciaisLojaIntegradaMeta,
+  CREDENCIAL_LOJA_INTEGRADA_DOC_ID,
+  type CredenciaisLojaIntegrada,
+} from './credenciaisLojaIntegrada';
+
+// The Loja Integrada conta wire contract — the status projection, the error
+// codes and the expiry arithmetic that `apps/loja-integrada` and `apps/web`
+// must agree on. Not a collection: no meta, nothing to register.
+export {
+  CODIGO_ERRO_LI,
+  LIMIAR_AVISO_TOKEN_LI_DIAS,
+  MAX_TOKEN_LI,
+  SITUACAO_VALIDADE_TOKEN_LI,
+  VALIDADE_TOKEN_LI_MAX_DIAS,
+  corpoRenovarValidadeLiSchema,
+  corpoSalvarCredencialLiSchema,
+  diasParaExpirarLi,
+  erroContaLojaIntegradaSchema,
+  janelaDeValidadeTokenLi,
+  respostaCredencialLojaIntegradaSchema,
+  respostaRemocaoCredencialLiSchema,
+  situacaoValidadeTokenLi,
+  situacaoValidadeTokenLiSchema,
+  statusContaLojaIntegradaSchema,
+  type CodigoErroLi,
+  type CorpoRenovarValidadeLi,
+  type CorpoSalvarCredencialLi,
+  type ErroContaLojaIntegrada,
+  type JanelaDeValidadeTokenLi,
+  type RespostaCredencialLojaIntegrada,
+  type RespostaRemocaoCredencialLi,
+  type SituacaoValidadeTokenLi,
+  type StatusContaLojaIntegrada,
+} from './contaLojaIntegrada';
+
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
 // Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
 // `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the
@@ -404,6 +520,45 @@ export {
 } from './notificacaoMercadoPago';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only Melhor
+  // Envio order-status notification backlog (#681).
+  notificacaoMelhorEnvioStatusSchema,
+  notificacaoMelhorEnvioSchema,
+  type NotificacaoMelhorEnvioStatus,
+  type NotificacaoMelhorEnvio,
+} from './notificacaoMelhorEnvio';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound Shopee push
+  // log, mirrors notificacaoMercadoPago above (Shopee master plan, step 3).
+  notificacaoShopeeStatusSchema,
+  notificacaoShopeeSchema,
+  type NotificacaoShopeeStatus,
+  type NotificacaoShopee,
+} from './notificacaoShopee';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only backlog
+  // of the Loja Integrada reads queue (master plan step 3). Bare: a combined
+  // `{ schema, meta }` export would trip `registry.test.ts`.
+  CONTA_ID_LI_REGEX,
+  DATA_MODIFICACAO_LI_REGEX,
+  NUMERO_PEDIDO_LI_REGEX,
+  ORIGEM_NOTIFICACAO_LI,
+  TIPO_TAREFA_LI,
+  camposNotificacaoLi,
+  contaIdLiSchema,
+  dataModificacaoLiSchema,
+  notificacaoLojaIntegradaSchema,
+  numeroPedidoLiSchema,
+  origemNotificacaoLiSchema,
+  tipoTarefaLiSchema,
+  type NotificacaoLojaIntegrada,
+  type OrigemNotificacaoLi,
+  type TipoTarefaLi,
+} from './notificacaoLojaIntegrada';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
@@ -426,6 +581,75 @@ export {
   backfillPedidosMercadoLivreMeta,
   type BackfillPedidosMercadoLivre,
 } from './backfillPedidosMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the flag-gated Shopee order-backfill sweep (master-plan
+  // step 4, #1512). Bare schema+meta (perms 0n), not a DomainSchema — see the
+  // NOTE at the bottom of backfillPedidosShopee.ts. ⚠️ Its clocks are
+  // MILLISECONDS, unlike the ML pair above: apps/shopee keeps µs to its one
+  // avisos module.
+  backfillPedidosShopeeSchema,
+  backfillPedidosShopeeMeta,
+  type BackfillPedidosShopee,
+} from './backfillPedidosShopee';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // state doc for the flag-gated Shopee stock-sync sweeps (master-plan step 12,
+  // #1520), twin of estoqueMercadoLivreSync below. Bare schema+meta (perms 0n),
+  // not a DomainSchema — see the NOTE at the bottom of estoqueShopeeSync.ts.
+  // ⚠️ Every stamp here is MILLISECONDS, unlike the ML twin's microseconds:
+  // apps/shopee keeps microseconds to its one avisos module.
+  modoVarreduraEstoqueSchema,
+  MODO_VARREDURA_ESTOQUE,
+  estoqueShopeeSyncSchema,
+  estoqueShopeeSyncMeta,
+  type ModoVarreduraEstoque,
+  type EstoqueShopeeSync,
+} from './estoqueShopeeSync';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the checkpoint/progress
+  // doc for the Shopee "Importar todos os anúncios" mass-import job
+  // (master-plan step 9, #1517), twin of importacaoMercadoLivre above. Bare
+  // schema+meta (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // importacaoShopee.ts. ⚠️ Every stamp here is MILLISECONDS; the only SECONDS
+  // are the two `…S` options, which are the wire's own unit.
+  importacaoShopeeStatusSchema,
+  IMPORTACAO_SHOPEE_STATUS,
+  shopeeImportStatusSchema,
+  SHOPEE_IMPORT_STATUS,
+  SHOPEE_IMPORT_STATUS_PADRAO,
+  OPCOES_IMPORTACAO_SHOPEE_PADRAO,
+  importacaoShopeeOptionsSchema,
+  shopeeImportacaoFalhaSchema,
+  importacaoShopeeSchema,
+  importacaoShopeeMeta,
+  type ImportacaoShopeeStatus,
+  type ShopeeImportStatus,
+  type ImportacaoShopeeOptions,
+  type ShopeeImportacaoFalha,
+  type ImportacaoShopee,
+} from './importacaoShopee';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the WEEKLY Shopee settlement sweep (master-plan step 6,
+  // #1514), which pages `get_escrow_list` and stamps `pagamento.liquidacao`.
+  // Bare schema+meta (perms 0n), not a DomainSchema — see the NOTE at the
+  // bottom of liquidacaoShopee.ts. ⚠️ Its clocks are MILLISECONDS like the
+  // Shopee backfill cursor above, with ONE exception that names its unit:
+  // `pendentes[].escrowReleaseTimeS` is the wire value in SECONDS.
+  liquidacaoShopeeSchema,
+  liquidacaoShopeeMeta,
+  liquidacaoPendenteSchema,
+  motivoPendenteShopeeSchema,
+  MOTIVO_PENDENTE_SHOPEE,
+  type LiquidacaoShopee,
+  type LiquidacaoPendente,
+  type MotivoPendenteShopee,
+} from './liquidacaoShopee';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
@@ -486,6 +710,24 @@ export {
 } from './relatorioEnvioPrecoMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS, and deliberately exports no
+  // `…Meta`) — the Shopee "Atualizar preços" account-wide price job (master-plan
+  // step 13, #1521), twin of envioPrecoMercadoLivre above. Its fila holds
+  // IDENTITIES, never prices, and its report binds the shared
+  // relatorioEnvioPrecoSchema. ⚠️ Every stamp here is MILLISECONDS; `expiraEm`
+  // is the TTL Date.
+  envioPrecoShopeeStatusSchema,
+  ENVIO_PRECO_SHOPEE_STATUS,
+  envioPrecoShopeeModeloSchema,
+  envioPrecoShopeeFilaItemSchema,
+  envioPrecoShopeeSchema,
+  type EnvioPrecoShopeeStatus,
+  type EnvioPrecoShopeeModelo,
+  type EnvioPrecoShopeeFilaItem,
+  type EnvioPrecoShopee,
+} from './envioPrecoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
   // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
@@ -529,6 +771,7 @@ export {
 export {
   usuario,
   usuarioSchema,
+  effectiveUsuarioPermissoes,
   usuarioMeta,
   aggregatePermissoes,
   isSuperUserBits,
@@ -604,6 +847,61 @@ export {
   type SizeChartMiss,
   type SizeChartResolution,
 } from './tabelaDeMedidasMercadoLivre';
+export {
+  mlSizeChartSyncRequestSchema,
+  type MlSizeChartSyncRequest,
+} from './tabelaDeMedidasMercadoLivre';
+
+// Shopee size charts (step 18, #1526): the stored entry, its read slice and THE
+// selection rule publish and `/medidas` both call (#1369 — one copy).
+export {
+  entradaTabelaShopeeSchema,
+  MOTIVO_ENTRADA_SHOPEE_ILEGIVEL,
+  ESTADO_LISTA_SHOPEE,
+  MOTIVO_SEM_TABELA_SHOPEE,
+  lerEntradasShopeeDaConta,
+  indiceDaEntradaShopee,
+  resolverEntradaShopee,
+  type EntradaTabelaShopee,
+  type MotivoEntradaShopeeIlegivel,
+  type EstadoListaShopee,
+  type LinhaEntradaShopee,
+  type LeituraEntradasShopee,
+  type MotivoSemTabelaShopee,
+  type ResolucaoEntradaShopee,
+} from './tabelaDeMedidasShopee';
+
+// …and the ONE projection of a `get_size_chart_detail` answer, parsed by the
+// `apps/shopee` route test and by `apps/web` alike (never mirrored).
+export {
+  SHOPEE_SIZE_CHART_INPUT_TYPE,
+  TIPO_CELULA_TABELA_SHOPEE,
+  PROBLEMA_TABELA_SHOPEE,
+  celulaTabelaShopeeSchema,
+  colunaTabelaShopeeSchema,
+  problemaTabelaShopeeSchema,
+  tabelaShopeeProjetadaSchema,
+  projetarTabelaShopee,
+  ecoDivergenteTabelaShopee,
+  type CelulaTabelaShopee,
+  type ColunaTabelaShopee,
+  type ProblemaTabelaShopee,
+  type TabelaShopeeProjetada,
+  type CelulaTabelaShopeeEntrada,
+  type ColunaTabelaShopeeEntrada,
+  type DetalheTabelaShopeeEntrada,
+} from './tabelaDeMedidasShopeeProjecao';
+
+// …and the two size-chart ROUTE envelopes, declared once: the `apps/shopee`
+// routes build their 200s against them and `apps/web` parses with them.
+export {
+  tabelaMedidasLinhaDtoSchema,
+  listaTabelasMedidasDtoSchema,
+  detalheTabelaMedidasDtoSchema,
+  type TabelaMedidasLinhaDto,
+  type ListaTabelasMedidasDto,
+  type DetalheTabelaMedidasDto,
+} from './tabelaDeMedidasShopeeDto';
 
 export {
   listaDePrecos,
@@ -626,21 +924,27 @@ export {
   finNFeOperacaoSchema,
   indPresOperacaoSchema,
   indIntermedOperacaoSchema,
-  origemProdutoImpostoSchema,
   TIPO_NFE,
   IND_PRES_OPERACAO,
   IND_INTERMED_OPERACAO,
-  ORIGEM_PRODUTO_IMPOSTO,
   TIPO_NFE_LABELS,
+  FIN_NFE_OPERACAO,
   FIN_NFE_OPERACAO_LABELS,
+  TP_NF_CREDITO,
+  TP_NF_CREDITO_LABELS,
+  TP_NF_DEBITO,
+  TP_NF_DEBITO_LABELS,
+  tpNFCreditoSchema,
+  tpNFDebitoSchema,
   IND_PRES_OPERACAO_LABELS,
   IND_INTERMED_OPERACAO_LABELS,
   type Operacao,
   type TipoNFe,
   type FinNFeOperacao,
+  type TpNFCredito,
+  type TpNFDebito,
   type IndPresOperacao,
   type IndIntermedOperacao,
-  type OrigemProdutoImposto,
 } from './operacao';
 
 export {
@@ -650,7 +954,14 @@ export {
   type MotivoIncidente,
 } from './motivoIncidente';
 
-export { filial, filialSchema, filialMeta, type Filial } from './filial';
+export {
+  filial,
+  filialSchema,
+  filialFormSchema,
+  refineFilialCnpj,
+  filialMeta,
+  type Filial,
+} from './filial';
 
 export {
   certificadoSecretoSchema,
@@ -659,6 +970,7 @@ export {
   encryptedBlobSchema,
   CERTIFICADO_SECRETO_PATH,
   CERTIFICADO_SECRETO_DOC_ID,
+  CERTIFICADO_CACHE_TTL_MS,
   type CertificadoSecreto,
   type CertificadoFilialInfo,
   type EncryptedBlob,
@@ -675,6 +987,26 @@ export {
   type Bandeira,
 } from './bandeiraCartao';
 
+export * from './simplesNacional';
+export {
+  ANEXO_SIMPLES,
+  ANEXO_SIMPLES_LABELS,
+  APURACAO_ESTADO,
+  SIMPLES_NACIONAL_CONFIG_DOC_ID,
+  anexoSimplesSchema,
+  apuracaoEstadoSchema,
+  apuracaoSimples,
+  apuracaoSimplesMeta,
+  apuracaoSimplesSchema,
+  simplesNacionalConfig,
+  simplesNacionalConfigMeta,
+  simplesNacionalConfigSchema,
+  type AnexoSimplesWire,
+  type ApuracaoEstado,
+  type ApuracaoSimples,
+  type SimplesNacionalConfig,
+} from './simplesNacionalConfig';
+
 export {
   nfe,
   nfeSchema,
@@ -684,10 +1016,32 @@ export {
   ESTADO_NFE_LABELS,
   ESTADOS_FINAIS_NFE,
   isEstadoFinalNFe,
+  nfeImprimivel,
   CHAVE_NFE_REGEX,
+  nfeTotaisSchema,
+  nfeTotaisRtcSchema,
+  type NFeTotais,
+  type NFeTotaisRtc,
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';
+
+export {
+  chaveAcessoValida,
+  decomporChaveAcesso,
+  dvChaveAcesso,
+  type ChaveAcessoDecomposta,
+} from './chaveAcesso';
+
+export {
+  extractTpAmb,
+  decideNfeUploadDispatch,
+  decideNfeUploadTransition,
+  type NfeUploadDispatch,
+  type NfeUploadTransition,
+} from './nfeEnvioCanal';
+
+export { lerItensDoProc, type ItemDoProc } from './nfeProc';
 
 export {
   nfeConfig,
@@ -731,7 +1085,6 @@ export {
   impostoProdutoSchema,
   impostoProdutoMeta,
   operacaoIdFromImpostoRef,
-  ORIGEM_PRODUTO_LABELS,
   type ImpostoProduto,
 } from './impostoProduto';
 
@@ -752,6 +1105,10 @@ export {
 // Tributary config schemas (ICMS/IPI/PIS/COFINS/ISSQN/retenção + RTC IBS/CBS/IS).
 // Single source of truth, browser-safe; the NF-e tribute engine re-exports them.
 export {
+  // Dados Gerais folds shared by storage and the imposto editor (#466).
+  nveFromScalar,
+  indEscalaFromScalar,
+  nveCarriesValue,
   // enums
   crtSchema,
   csosnSchema,
@@ -802,10 +1159,15 @@ export {
   // RTC (IBS/CBS/IS)
   configuracaoISRtcSchema,
   configuracaoIBSCBSSchema,
+  configuracaoISRtcDraftSchema,
+  configuracaoIBSCBSDraftSchema,
+  configuracaoIBSCBSDraftPersistidoSchema,
   // canonical per-item Imposto
   impostoSchema,
+  impostoPersistidoSchema,
   normalizeNCM,
   // label maps
+  ORIGEM_PRODUTO_LABELS,
   CRT_LABELS,
   CSOSN_LABELS,
   CST_ICMS_LABELS,
@@ -851,22 +1213,143 @@ export {
   type Retencao,
   type ConfiguracaoISRtc,
   type ConfiguracaoIBSCBS,
+  type ConfiguracaoISRtcDraft,
+  type ConfiguracaoIBSCBSDraft,
   type Imposto,
+  type ImpostoPersistido,
 } from './imposto/tribute';
 
 export {
-  // RTC cClassTrib/CST seed + validator (#333)
-  CCLASSTRIB_SEED,
+  // The nota's per-field operação fallback + cEAN rule, shared with the
+  // marketplaces' fiscal registration (#745).
+  camposProdutoFiscal,
+  gtinFiscal,
+  type CamposProdutoFiscal,
+  type OperacaoCamposFiscais,
+} from './imposto/camposProdutoFiscal';
+
+export {
+  // The emission rules a tax config must satisfy, as verdicts: the NF-e engine
+  // throws from them, and the web imposto editor can check them before a save
+  // (#1655).
+  CRTS_SIMPLES_NACIONAL,
+  ehCrtSimplesNacional,
+  usaIssqn,
+  SUBCONFIGS_ICMS_SN,
+  SUBCONFIG_POR_CSOSN,
+  GRUPO_XSD_FCP_ST,
+  GRUPOS_XSD_ICMSSN500,
+  GRUPOS_XSD_ICMSSN900,
+  GRUPOS_XSD_POR_SUBCONFIG,
+  vereditoIcmsSn,
+  ALIQUOTA_PIS_COFINS_LIMITE,
+  vereditoPisCofins,
+  vereditoIsRtc,
+  type CrtSimplesNacional,
+  type SubConfigIcmsSn,
+  type GrupoXsd,
+  type GrupoXsdIncompleto,
+  type IcmsSnEmitivel,
+  type VereditoIcmsSn,
+  type CstPisCofinsAliq,
+  type CstPisCofinsQtde,
+  type CstPisCofinsNT,
+  type CstPisCofinsOutr,
+  type BasePisCofinsOutr,
+  type VereditoPisCofins,
+  type VereditoIsRtc,
+} from './imposto/regrasDeEmissao';
+
+export {
+  // Those verdicts in pt-BR, behind the engine's own impostoSchema tier gate —
+  // what the web refuses to save because the NF-e engine would refuse to emit
+  // it (#1655).
+  problemasDeEmissaoDoImposto,
+  issuesDeEmissaoDasLinhas,
+  type ProblemaDeEmissao,
+} from './imposto/problemasDeEmissao';
+
+export {
+  // RTC Anexo III — cClassTrib + CST IBS/CBS tables with indicators + validator (#333)
+  CCLASSTRIB_PROVENIENCIA,
+  CCLASSTRIB_TABELA,
   CST_IBSCBS_CODES,
   CST_IBSCBS_LABELS,
+  CST_IBSCBS_TABELA,
+  IND_CCLASSTRIB,
+  IND_CST_IBSCBS,
+  TIPO_ALIQUOTA_RTC,
+  TIPO_ALIQUOTA_RTC_LABELS,
   cClassTribCodesForCst,
   cClassTribDescricao,
   cClassTribEntriesForCst,
+  cClassTribEntry,
   cstClassTribStructurallyValid,
+  cstIbsCbsEntry,
   validateCstClassTrib,
   type CClassTribEntry,
   type CstClassTribValidation,
+  type CstIbsCbsEntry,
+  type IndicadorCClassTrib,
+  type IndicadorCstIbsCbs,
+  type ProvenienciaTabelaRtc,
+  type TipoAliquotaRtc,
 } from './imposto/cclasstrib';
+
+export {
+  // NT 2025.002 document rules shared by the pedido editor and the emission pre-flight (#330)
+  REGRA_DOCUMENTO,
+  REGRAS_DOCUMENTO,
+  SEVERIDADE_VIOLACAO,
+  bloqueiaEmissao,
+  descreverViolacaoDocumento,
+  tipoAindaNaoEmitido,
+  violacoesDaOperacao,
+  violacoesDoDocumento,
+  type AjusteRtcEntrada,
+  type DfeReferenciadoEntrada,
+  type EntradaRegrasDocumento,
+  type EntradaRegrasOperacao,
+  type ItemRegrasDocumento,
+  type RegraDocumento,
+  type SeveridadeViolacao,
+  type ViolacaoDocumento,
+} from './imposto/regrasDoDocumento';
+
+export {
+  // Nota de crédito / débito (finNFe 5/6, NT 2025.002) — tipo bindings and item tax groups (#330)
+  CCLASSTRIB_DO_TP_NF_CREDITO,
+  CCLASSTRIB_DO_TP_NF_DEBITO,
+  COMPETENCIA_AAAA_MM,
+  GRUPO_AJUSTE_RTC,
+  MODO_GRUPOS_IMPOSTO,
+  cClassTribCompativelComTipo,
+  cClassTribDoTipo,
+  cClassTribVinculadoATipoDeNota,
+  grupoDeAjusteDoTipo,
+  modoGruposImposto,
+  type GrupoAjusteRtc,
+  type ModoGruposImposto,
+  type TipoNotaAjuste,
+} from './imposto/notaCreditoDebito';
+
+export {
+  // NT 2025.002 ide/emit fields beyond the tax groups — dPrevEntrega, ISUFEmit (#331)
+  ISUF_EMIT_REGEX,
+  MUNICIPIOS_SUFRAMA_EMITENTE,
+  dPrevEntregaParaEmissao,
+  somarMeses,
+} from './imposto/ideRtc';
+
+export {
+  // RTC Anexo IV — cCredPres (#333)
+  CCREDPRES_PROVENIENCIA,
+  CCREDPRES_TABELA,
+  TRIBUTO_CREDITO_PRESUMIDO,
+  cCredPresEntry,
+  type CCredPresEntry,
+  type TributoCreditoPresumido,
+} from './imposto/ccredpres';
 
 export {
   arquivo,
@@ -895,6 +1378,10 @@ export {
   productVideoPath,
   productAnexoPath,
   mediaPath,
+  whatsappArquivoId,
+  whatsappMediaPath,
+  chatArquivoId,
+  chatMediaPath,
   tabMediOriginalPath,
   ownedArquivoId,
   productArquivoId,
@@ -904,6 +1391,7 @@ export {
   isWatchedOriginal,
   parseProductMediaDir,
   parseOwnedMediaDir,
+  parseMensagemMediaDir,
   isDerivativeName,
   firebaseDownloadUrl,
   normalizeName,
@@ -913,7 +1401,16 @@ export {
   type ParsedProductMediaDir,
   type MediaOwnerCollection,
   type ParsedOwnedMediaDir,
+  type MensagemMediaKind,
+  type ParsedMensagemMediaDir,
 } from './storage/storagePaths';
+
+export {
+  MENSAGEM_ARQUIVO_REF_FIELDS,
+  extractMensagemArquivoIds,
+  mensagemArquivoRefValues,
+  type MensagemArquivoRefField,
+} from './mensagemArquivoRefs';
 
 export {
   buildFotoRefs,
@@ -931,3 +1428,62 @@ export {
   type Video,
   type VideoFormato,
 } from './storage/video';
+
+export {
+  aviso,
+  avisoSchema,
+  avisoMeta,
+  avisosLeituraSchema,
+  AVISOS_LEITURA_COLLECTION_PATH,
+  urlInternaAvisoSchema,
+  tipoAvisoSchema,
+  severidadeAvisoSchema,
+  canalAvisoSchema,
+  TIPO_AVISO,
+  TIPO_AVISO_LABELS,
+  SEVERIDADE_AVISO,
+  SEVERIDADE_AVISO_LABELS,
+  CANAL_AVISO,
+  CANAL_AVISO_LABELS,
+  ROTAS_AVISO,
+  pendenciaReclamacaoSchema,
+  PENDENCIA_RECLAMACAO,
+  motivoImportacaoParadaLiSchema,
+  MOTIVO_IMPORTACAO_PARADA_LI,
+  situacaoAnuncioForaDaSincronizacaoSchema,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
+  chaveDeAviso,
+  avisoNaoLido,
+  entradaDeLeitura,
+  marcarTodosComoLidos,
+  urlExternaSegura,
+  rotaInternaSegura,
+  type Aviso,
+  type AvisosLeitura,
+  type UrlInternaAviso,
+  type TipoAviso,
+  type SeveridadeAviso,
+  type CanalAviso,
+  type ChaveAvisoInput,
+  type RotaAvisoKey,
+  type PendenciaReclamacao,
+  type MotivoImportacaoParadaLi,
+  type SituacaoAnuncioForaDaSincronizacao,
+} from './aviso';
+export * from './shared/inicio';
+export {
+  mercadoLivreRastreioResultSchema,
+  type MercadoLivreRastreioResult,
+} from './rastreioMercadoLivre';
+
+// The ONE copy of the Shopee `return_sn` shape (step 17, #1525) — the push
+// parser, the reclamação routes and the web mount all read it. Not a collection,
+// so no `registry.ts` entry; outside `pedido/`, so no NF-e live run.
+export { RETURN_SN_SHOPEE_MAX, ehReturnSnShopee } from './devolucaoShopee';
+
+// The ONE Shopee native-kit recipe module (step 19, #1527): ERP componentesKit ⇄
+// Shopee component_list, THE recipe fold, the bounds and the L4 aviso decision —
+// the kit arms, step 9's import, the recipe trigger and the web all call it
+// (#1369). Not a collection, so no `registry.ts` entry. A star export on purpose:
+// the fold-inventory scan greps raw text, so a listed barrel would need a row.
+export * from './receitaKitShopee';

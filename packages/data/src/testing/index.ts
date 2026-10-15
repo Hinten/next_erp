@@ -27,3 +27,4 @@ export {
   type OccTransaction,
   type OccWriteKind,
 } from './occTransaction';
+export { MemoryFirestore } from './memoryFirestore';

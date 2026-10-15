@@ -14,8 +14,6 @@ function fakeScheduler() {
   return { scheduler: { enqueue } satisfies MlTaskScheduler, enqueue };
 }
 
-const HORA_US = 3_600_000_000;
-
 beforeEach(() => {
   delete process.env.MERCADO_LIVRE_TASKS_DISABLED;
   delete process.env.MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H;

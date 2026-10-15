@@ -6,6 +6,7 @@
  * realistic input without booting the generator+signer.
  */
 export const CHAVE = '35260514200166000187550010000000071000000018';
+export const ALFA_CHAVE = '352601ABCDEFGHIJKL87550010000001234567890120';
 
 export const PROCNFE_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
 <nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
@@ -179,6 +180,11 @@ export const PROCNFE_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
     </infProt>
   </protNFe>
 </nfeProc>`;
+
+/** Same authorized NF-e carrying the NT 2026.004 alphanumeric emitente/chave. */
+export const PROCNFE_ALFA_FIXTURE = PROCNFE_FIXTURE.split(CHAVE)
+  .join(ALFA_CHAVE)
+  .replaceAll('14200166000187', 'ABCDEFGHIJKL87');
 
 /**
  * Worst-case simplificado label: maximal field presence + long values — a 64-char

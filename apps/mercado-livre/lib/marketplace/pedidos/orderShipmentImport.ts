@@ -63,18 +63,10 @@
  * compare against yet" instead of crashing.
  *
  * ---- This port's adaptations ----
- *  - Legacy reads `pedido` TWICE — once OUTSIDE the transaction just to seed
- *    `novoFrete.enderecoDeEntregaPath`, and again INSIDE the transaction for
- *    the real staleness/merge decision. This port reads the pedido doc
- *    exactly ONCE, INSIDE the (only) transaction, and derives the mapper's
- *    `enderecoOuterRef` from that same tx-fresh read — the Admin SDK
- *    transaction contract this app follows (every read before the first
- *    write) makes a single read both simpler and race-free.
- *  - `resolvePrazoDespacho` is called with `fallbackUs: null` — legacy's
- *    `_getPrazoDespacho(api, shipment)` call on THIS path passes no previous
- *    value at all (unlike `orderImport.ts`'s frete step, which threads
- *    `oldFrete?.prazoDespacho` through as the fallback) — a faithfully ported
- *    per-path difference, not an oversight.
+ *  - The common SLA path still reads `pedido` only inside the transaction.
+ *    When SLA cannot answer, a lazy ordinary read supplies the stored deadline
+ *    before either legacy schedule or payment fallback is attempted. The
+ *    transaction then rechecks the value against its fresh `oldFrete`.
  *  - `mergeFreteInicial` (`./orderImport`, this PR's extension of deviation
  *    #3) replaces legacy's `oldFrete.update(novoFrete)`
  *    (`FreteDoPedido.update`, `.old/packages/pedido/lib/src/models.dart:672-708`)
@@ -82,7 +74,7 @@
  *    `mergeEstadoFretePreservando` state machine (`orderShipmentMapping.ts`),
  *    which additionally FIXES the legacy dangling-`if` regression documented
  *    in that function's own docblock, rather than reproducing it.
- *  - `resolveMercadoEnviosIntFreteOuterRef` (`./orderImport`) replaces
+ *  - `resolveMercadoEnviosIntFrete` (`./orderImport`) replaces
  *    legacy's unfiltered, force-unwrapped `MercadoEnvios` lookup with an
  *    ativo-filtered, newest-first, null-tolerant one (already an approved
  *    deviation for the order-import path; reused verbatim here).
@@ -109,7 +101,7 @@ import {
 import { coerceToMicros } from '@delfrance/core/datetime';
 import { pedidoCollection } from '@delfrance/data/admin/collections';
 
-import { loadContaBag, resolveMercadoEnviosIntFreteOuterRef } from './orderImport';
+import { loadContaBag, resolveMercadoEnviosIntFrete } from './orderImport';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { resolveShipmentOrderId } from './shipmentOrderId';
 import { resolveShipmentSellerCost } from './shipmentSellerCost';
@@ -118,7 +110,8 @@ import {
   mergeFreteInicialSeMaisNovo,
   mlShipmentToFreteInicial,
 } from './orderShipmentMapping';
-import { resolvePrazoDespacho } from './orderPrazoDespacho';
+import { resolvePrazoDespacho, selectPrazoDespachoAgainstFresh } from './orderPrazoDespacho';
+import { loadShipmentPaymentDetails } from './shipmentPayments';
 
 /* -------------------------------------------------------------------------- */
 /*                                  Contract                                  */
@@ -196,14 +189,39 @@ export async function importShipmentMercadoLivre(
   }
 
   const contaBag = await loadContaBag(db, integracaoId);
-  const integracaoFreteOuterRef = await resolveMercadoEnviosIntFreteOuterRef(db, integracaoId);
-  const prazoDespachoUs = await resolvePrazoDespacho({
+  let intFretePromise: ReturnType<typeof resolveMercadoEnviosIntFrete> | null = null;
+  const loadIntFrete = () => {
+    intFretePromise ??= resolveMercadoEnviosIntFrete(db, integracaoId);
+    return intFretePromise;
+  };
+  let storedPrazoPromise: Promise<number | null> | null = null;
+  const loadStoredPrazoUs = (): Promise<number | null> => {
+    storedPrazoPromise ??= pedidoCollection
+      .docRef(db, {}, pedidoId)
+      .get()
+      .then((snap) => {
+        if (!snap.exists) return null;
+        const pedido = pedidoCollection.parseRead(
+          snap.data() ?? {},
+          pedidoCollection.docPath({}, pedidoId),
+        );
+        return coerceToMicros(pedido.freteInicial?.prazoDespacho ?? null);
+      });
+    return storedPrazoPromise;
+  };
+  const prazoResolvido = await resolvePrazoDespacho({
     api,
     shipment,
     sellerId: contaBag.sellerUserId ?? 0,
-    // Legacy passes NO previous value on this path — see file docstring.
-    fallbackUs: null,
+    loadStoredPrazoUs,
+    loadHorarioDeCorte: async () => (await loadIntFrete())?.horarioDeCorte ?? null,
+    loadPayments: () =>
+      loadShipmentPaymentDetails(api, shippingPayments, {
+        approvedOnly: true,
+        tolerateNotFound: true,
+      }),
   });
+  const integracaoFreteOuterRef = (await loadIntFrete())?.outerRef ?? null;
   // `GET /shipments/{id}/costs` — the seller's share, replacing the `base_cost`
   // the `x-format-new` body discontinued (#957). Degrades to `null` on any
   // failure, which the merge below then reads as "keep what is stored".
@@ -252,7 +270,10 @@ export async function importShipmentMercadoLivre(
       shippingPayments,
       integracaoFreteOuterRef,
       enderecoOuterRef: pedido.enderecoFiscalOuterRef,
-      prazoDespachoUs,
+      prazoDespachoUs: selectPrazoDespachoAgainstFresh(
+        prazoResolvido,
+        coerceToMicros(oldFrete.prazoDespacho ?? null),
+      ),
       modalidadeOverride: contaBag.modalidadeFreteImportacao,
       custoSellerCost,
     });

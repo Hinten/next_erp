@@ -188,6 +188,26 @@ async function descobrirAmostra() {
     }
   }
 
+  // Q4b wants the OPPOSITE of the word above: one that DOES carry a DSL
+  // operator. A hyphen is the common one in this catalogue ("Porta-lápis"), and
+  // the DSL reads it as negation — so the raw term asks for "Porta, but NOT
+  // lápis". That is the hazard a search BOX walks into on ordinary input, and
+  // Q4b measures whether replacing the operator with a space recovers the match.
+  let palavraComOperador = null;
+  for (const r of linhas) {
+    const achada = r.nome
+      .trim()
+      .split(/\s+/)
+      .find((w) => /[-"():+~^*?]/.test(w) && w.length >= 5);
+    if (achada) {
+      // ⚠️ The id travels with it. Q4b asks whether sanitising reaches THIS
+      // document, and a bare count cannot answer that — a hyphen-free term is
+      // free to match some other produto and report a cheerful non-zero.
+      palavraComOperador = { id: r.id, palavra: achada, nome: r.nome };
+      break;
+    }
+  }
+
   // ⚠️ Q2b needs a VARIATION CHILD's sku, not a parent's. The query it models
   // matches children on purpose, so probing with a parent's SKU exercises the
   // one shape where including or excluding `paiId` makes no difference — a
@@ -216,6 +236,7 @@ async function descobrirAmostra() {
     filhoComSku,
     plural,
     palavraAcentuada,
+    palavraComOperador,
   };
 }
 
@@ -280,6 +301,34 @@ async function explicarPipeline(rotulo, pipeline) {
     console.log('  explainStats    :\n', snap.explainStats?.text ?? '(none)');
   }
   return n;
+}
+
+/**
+ * Execute a probe and return the DOCUMENT IDS it matched, not a count.
+ *
+ * ⚠️⚠️ WHY Q4 CANNOT USE {@link explicarPipeline}. Q1-Q3 ask "how many, and at
+ * what cost", and a count answers them. Q4 asks "did the term reach THIS
+ * document", and a count cannot: a truncated word is free to match some OTHER
+ * produto, and the non-zero it returns reads exactly like prefix matching
+ * working. Every Q4 verdict is therefore `ids.includes(<target>)`, never
+ * `n > 0`.
+ *
+ * No `explainOptions`, deliberately: Q4 is a capability question, and an
+ * `analyze` run costs more and prints a plan nobody reads here.
+ */
+async function idsDaBusca(rotulo, pipeline) {
+  try {
+    const snap = await pipeline.execute();
+    const ids = snap.results.map((r) => r.ref?.id ?? r.id ?? '(no id)');
+    console.log(`  ${rotulo} -> ${ids.length} result(s)`);
+    return ids;
+    // Diagnostic boundary, same contract as explicarPipeline: report and keep
+    // going, so one failing probe does not take the rest of Q4 with it.
+    // eslint-disable-next-line no-restricted-syntax -- see the note above
+  } catch (err) {
+    console.error(`  ${rotulo} -> ❌ execute failed:`, mensagemDoErro(err));
+    return null;
+  }
 }
 
 /**
@@ -354,6 +403,22 @@ async function probarTermo(rotulo, termo, fabrica, preferir = 'literal') {
   return preferir === 'analisado' ? nBruto : nFrase;
 }
 
+/**
+ * The text-search pipeline every probe here runs.
+ *
+ * ⚠️ `documentMatches` is the ONLY option, not a preference. The field-scoped
+ * form the docs show — `field('nome').matches(dsl)` — is **commented out** in
+ * both SDKs this repo installs (`@google-cloud/firestore` 8.6.0 declares
+ * `// matches(rquery…)`, and `@firebase/firestore` 4.14.1 exports no `matches`
+ * at all). So a text search here is document-wide by construction: it hits
+ * EVERY indexed search field.
+ *
+ * That is harmless only because `produtos` has exactly one, `nome` — and it
+ * stays harmless only because `firestore-text-index.test.js` asserts the
+ * produtos text indexes are exactly one on exactly `nome`. Declaring a second
+ * one would silently widen every query in this file and every query the search
+ * box issues, with nothing to catch it but that test.
+ */
 function buscaTexto(dsl) {
   return (
     db
@@ -382,6 +447,31 @@ function buscaTextoSku(dsl) {
     .pipeline()
     .collection('produtos')
     .search({ query: pipelines.documentMatches(dsl) })
+    .limit(50);
+}
+
+/**
+ * {@link buscaTexto} with an explicit `retrievalDepth`, for Q4c.
+ *
+ * ⚠️ `retrievalDepth` caps how many documents the SEARCH STAGE pulls out of the
+ * index BEFORE anything downstream runs — and downstream here is
+ * `paiId == null`, a post-filter, because `search` must be first. So the depth
+ * is spent on parents and variation CHILDREN alike, and a page of 50 parents can
+ * be starved by children that never survive the filter. That failure is silent:
+ * a short page looks exactly like a small catalogue.
+ *
+ * `undefined` leaves the option off entirely, which is what the other probes
+ * send and what the backend default (whatever it is) then applies.
+ */
+function buscaTextoComProfundidade(dsl, profundidade) {
+  return db
+    .pipeline()
+    .collection('produtos')
+    .search({
+      query: pipelines.documentMatches(dsl),
+      ...(profundidade === undefined ? {} : { retrievalDepth: profundidade }),
+    })
+    .where(pipelines.field('paiId').equal(null))
     .limit(50);
 }
 
@@ -606,9 +696,146 @@ async function main() {
     console.log('  characters in any sampled nome (a hyphen would confound it).');
   }
 
+  // === Q4a — can a PARTIALLY TYPED word match? ============================
+  //
+  // ⚠️⚠️ THE question for putting this behind the /produtos search box, and the
+  // one no CI lane can answer: pipelines do not run in the emulator.
+  //
+  // Today the box is a prefix RANGE, so "Cami" narrows to "Camiseta…" from the
+  // first letter. A TOKENIZED index matches whole tokens, and the documented DSL
+  // grammar has no wildcard — space is AND, `-` negates, quotes make a literal
+  // phrase, `field:term` scopes. Google's own text-search page does not mention
+  // prefix or wildcard matching at all, and Firebase's as-you-type article sends
+  // the raw term without addressing partial words. So this is measured, not
+  // assumed: if nothing below reaches the target, swapping REMOVES as-you-type
+  // narrowing and the box gets worse, not better.
+  const alvo = amostra.primeiro;
+  console.log(
+    `\n${'='.repeat(70)}\nQ4a PREFIX — does a PARTIALLY TYPED word match?\n${'='.repeat(70)}`,
+  );
+  console.log(`  target: "${alvo.nome}" (${alvo.id}), truncating "${primeiraPalavra}"`);
+
+  const controleQ4 = await idsDaBusca(`control  "${primeiraPalavra}"`, buscaTexto(primeiraPalavra));
+  if (controleQ4 === null) {
+    console.warn('  ⚠️  CONTROL DID NOT RUN (missing or still-building index?).');
+    console.warn('     Skipping Q4a — a miss could not be told from a query that failed.');
+  } else if (!controleQ4.includes(alvo.id)) {
+    console.warn(`  ⚠️  CONTROL FAILED: the FULL word "${primeiraPalavra}" does not return`);
+    console.warn('     its own document, so no truncation of it could mean anything.');
+    console.warn('     Skipping Q4a.');
+  } else {
+    // Both forms of every truncation: bare, and with a trailing `*`. The star is
+    // in the DSL's operator set (see semOperadorDsl), which is evidence it means
+    // SOMETHING — not evidence that it means "prefix". That is what this asks.
+    const cortes = [1, 2, 3]
+      .map((n) => primeiraPalavra.slice(0, primeiraPalavra.length - n))
+      .filter((t) => t.length >= 3);
+    if (cortes.length === 0) {
+      console.log(`  skipped: "${primeiraPalavra}" is too short to truncate to >= 3 letters.`);
+    }
+    let algumAlcancou = false;
+    for (const corte of cortes) {
+      for (const dsl of [corte, `${corte}*`]) {
+        const ids = await idsDaBusca(`  "${dsl}"`, buscaTexto(dsl));
+        if (ids === null) continue;
+        if (ids.includes(alvo.id)) {
+          algumAlcancou = true;
+          console.log(`    ✅ reached the target`);
+        } else if (ids.length > 0) {
+          // ⚠️ The reading that a count would have got wrong.
+          console.log(`    ✗ matched ${ids.length} OTHER document(s), not the target`);
+        } else {
+          console.log(`    ✗ no match`);
+        }
+      }
+    }
+    if (algumAlcancou) {
+      console.log('\n  ✅ at least one partial form reached the target. The forms that');
+      console.log('     worked are listed above — the box can keep narrowing as you type,');
+      console.log('     and the DSL builder must emit exactly that form.');
+    } else {
+      console.warn('\n  ⚠️  NO partial form reached the target, while the full word DID.');
+      console.warn('     Read as: this index does not do prefix matching. A straight swap');
+      console.warn('     would leave the box blank until a whole word is typed — worse');
+      console.warn('     than today. Keep the prefix range, or run both and merge; do not');
+      console.warn('     adopt on this result.');
+    }
+  }
+
+  // === Q4b — does SANITISING recover a term carrying a DSL operator? ======
+  console.log(
+    `\n${'='.repeat(70)}\nQ4b SANITISING — a term the DSL would misread\n${'='.repeat(70)}`,
+  );
+  if (amostra.palavraComOperador) {
+    const { id: alvoOpId, palavra: comOperador, nome: nomeOperador } = amostra.palavraComOperador;
+    // What the search box would send instead: operators become spaces. NOT
+    // quotes — measured in comoFrase, quoting also suppresses the ANALYZER, so
+    // it trades one silent failure for another.
+    const higienizado = comOperador
+      .replace(/["()+:~^*?\-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    console.log(`  target: "${nomeOperador}" (${alvoOpId})`);
+    console.log(`  raw "${comOperador}" vs sanitised "${higienizado}"`);
+    const idsRaw = await idsDaBusca(`  raw        "${comOperador}"`, buscaTexto(comOperador));
+    const idsLimpo = await idsDaBusca(`  sanitised  "${higienizado}"`, buscaTexto(higienizado));
+    const achouRaw = idsRaw?.includes(alvoOpId) ?? null;
+    const achouLimpo = idsLimpo?.includes(alvoOpId) ?? null;
+    if (achouRaw === null || achouLimpo === null) {
+      console.warn('  ⚠️  one of the two probes did not run — NO verdict.');
+    } else if (!achouLimpo) {
+      console.warn('  ⚠️  the SANITISED form did not reach the target either. Sanitising is');
+      console.warn('     then not the fix, and the DSL is not the whole story — investigate');
+      console.warn('     before shipping a sanitiser that assumes it is.');
+    } else if (achouRaw) {
+      console.log('  ✅ both reached it. This word is not a discriminating case: the raw');
+      console.log('     form was not misparsed, so it proves nothing about the hazard.');
+    } else {
+      console.log('  ✅ sanitising RECOVERED the match the raw term lost. That is the');
+      console.log('     hazard reproduced and the fix confirmed, on real catalogue data.');
+    }
+  } else {
+    console.log('  skipped: no sampled nome carries a DSL operator character.');
+    console.log('  ⚠️ Not evidence that the hazard is absent — only that this sample');
+    console.log('     cannot exercise it. Widen discovery before reading it as safe.');
+  }
+
+  // === Q4c — can retrievalDepth starve the page? ==========================
+  //
+  // `search` is first, so `paiId == null` post-filters. The depth is spent on
+  // parents and variation CHILDREN alike, and a short page then looks exactly
+  // like a small catalogue. TableView grows its LIMIT to paginate, so if depth
+  // is what binds, growing the limit fetches nothing more.
+  console.log(
+    `\n${'='.repeat(70)}\nQ4c RETRIEVAL DEPTH — what actually binds the page\n${'='.repeat(70)}`,
+  );
+  const contagens = [];
+  for (const profundidade of [undefined, 200, 1000]) {
+    const rotulo = `  retrievalDepth=${profundidade ?? '(unset)'}`;
+    const ids = await idsDaBusca(rotulo, buscaTextoComProfundidade(primeiraPalavra, profundidade));
+    contagens.push({ profundidade, n: ids?.length ?? null });
+  }
+  const validas = contagens.filter((c) => c.n !== null);
+  if (validas.length < 2) {
+    console.warn('  ⚠️  fewer than two probes ran — NO verdict on retrieval depth.');
+  } else if (new Set(validas.map((c) => c.n)).size === 1) {
+    console.log(`  all runs returned ${validas[0].n} — depth is not what binds at this`);
+    console.log("  catalogue size. ⚠️ That is a fact about TODAY'S data, not a property");
+    console.log('  of the stage: re-run it against a catalogue with more variation');
+    console.log('  children before relying on the default.');
+  } else {
+    console.warn('  ⚠️  the counts DIFFER, so retrievalDepth IS binding. Set it explicitly');
+    console.warn('     and scale it with the page limit, or "load more" silently stops');
+    console.warn('     returning rows that exist.');
+  }
+
   console.log(`\n${'='.repeat(70)}`);
   console.log('Read Q1 for cost, Q2/Q2b for what the prefix range cannot do,');
-  console.log('and Q3 for whether the default analyzer speaks Portuguese.');
+  console.log('Q3 for whether the default analyzer speaks Portuguese, and Q4 for');
+  console.log('whether the /produtos search BOX can be moved onto this at all.');
+  console.log('⚠️ Q4a is the gate. A search box that only answers complete words is');
+  console.log('   a REGRESSION against the prefix range it would replace, whatever');
+  console.log('   Q1-Q3 say — read it before writing any UI.');
   console.log('⚠️ If Q1/Q2 do not justify adopting text search, REVERT the index');
   console.log('   entry — it is not staging-scoped and would otherwise be built');
   console.log('   and maintained in production with no reader.');

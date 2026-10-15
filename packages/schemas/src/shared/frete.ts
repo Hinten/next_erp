@@ -345,7 +345,9 @@ export const INTEGRACAO_FRETE = {
  *                   quote → cart → checkout → generate → print → webhook status.
  *   - `'fetch'`   — the marketplace already generated it; the app only fetches +
  *                   prints, and status arrives via the marketplace order-sync
- *                   (NOT a freight webhook). Phase 5/6 — not implemented yet.
+ *                   (NOT a freight webhook). Live for Mercado Livre and Shopee
+ *                   (their `canFetchLabel`); the other marketplaces are not
+ *                   implemented yet.
  *   - `'generic'` — no carrier API; render a generic PDF on demand (a deferred
  *                   follow-up for motoboy / outros).
  *   - `'none'`    — nothing to print (retirada na loja / fob).
@@ -359,7 +361,8 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
  *
  * ⚠️ The **`can*` flags are the behavioral truth**. Every marketplace-owned
  * tipo (fetch category) stays ALL FALSE until its fetch flow + client route
- * exist — `mercadoLivre`'s `canFetchLabel` is the one live exception — so
+ * exist — `mercadoLivre`'s and `shopee`'s `canFetchLabel` are the two live
+ * exceptions, and `canFetchLabel` is the ONLY flag either sets — so
  * `etiquetaRowState` yields `'unsupported'` for the rest, byte-identical to
  * the previous `tipo !== 'melhorEnvios'` reject. The generic-label tipos
  * (`motoboy`/`outros`) are the other exception: `canPrint` is true for them
@@ -367,11 +370,12 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
  * buy step) — it dispatches to the on-demand generic PDF instead of the
  * Melhor Envio reprint. `labelMode` is **descriptive** (documents intended
  * Phase-5/6 marketplace behavior and today's generic/none split); it does NOT
- * drive the dispatch by itself. Do not flip a marketplace `canPrint` to true
- * until the fetch flow + its client route exist, or a marketplace pedido
- * carrying a `printLabelId` would wrongly route "Imprimir" to the Melhor
- * Envio backend. `marketplaceOwned` is behavioral — it reproduces the old
- * `MARKETPLACE_TIPOS` read-only lock on the Frete tab.
+ * drive the dispatch by itself. Do not flip a marketplace `canPrint` to true,
+ * not even once its fetch flow + client route exist — that flow IS
+ * `canFetchLabel`, and `etiquetaRowState` tests `canPrint` BEFORE it, so a
+ * marketplace pedido carrying a `printLabelId` would wrongly route "Imprimir"
+ * to the Melhor Envio backend. `marketplaceOwned` is behavioral — it
+ * reproduces the old `MARKETPLACE_TIPOS` read-only lock on the Frete tab.
  */
 export interface FreightTipoCapabilities {
   /** The importing marketplace owns the whole freight block → Frete tab read-only. */
@@ -395,7 +399,9 @@ export interface FreightTipoCapabilities {
    * Backend channel segment for the freight HTTP client (`/api/freight/<channel>/*`),
    * or `null` when the tipo has no server route (marketplace/manual/generic).
    * Only `'melhor-envio'` is non-null today; the per-channel client router that
-   * consumes this lands with provider #2.
+   * consumes this lands with provider #2. A marketplace's label route is NOT a
+   * freight channel — Shopee's `POST /api/marketplace/shopee/etiqueta` lives on
+   * its marketplace backend, so `shopee.channel` stays `null` (#1523).
    */
   readonly channel: string | null;
 }
@@ -418,9 +424,10 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'emit',
     channel: 'melhor-envio',
   },
-  // Marketplace-managed (fetch-only, read-only tab). Mercado Livre is the one
-  // live fetch provider (`canFetchLabel`); the rest are Phase-5/6 stubs, so
-  // every `can*` stays false (→ `'unsupported'` in the row action).
+  // Marketplace-managed (fetch-only, read-only tab). Mercado Livre and Shopee
+  // are the live fetch providers (`canFetchLabel`, and no other `can*`); the
+  // rest are Phase-5/6 stubs, so every `can*` stays false (→ `'unsupported'`
+  // in the row action).
   mercadoLivre: {
     marketplaceOwned: true,
     canQuote: false,
@@ -461,12 +468,18 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'fetch',
     channel: null,
   },
+  // #1523 — fetch via `apps/shopee`'s marketplace route
+  // (`POST /api/marketplace/shopee/etiqueta`). ⚠️ `canFetchLabel` is the ONE
+  // flag that flipped: `canPrint` would route a `printLabelId` to Melhor Envio
+  // (see the interface doc), `channel` is the FREIGHT route segment and this
+  // route is not one, and `canTrack` has no reader (step 7's order pushes
+  // track Shopee regardless — ML keeps `false` beside a live handler too).
   shopee: {
     marketplaceOwned: true,
     canQuote: false,
     canBuy: false,
     canPrint: false,
-    canFetchLabel: false,
+    canFetchLabel: true,
     canTrack: false,
     labelMode: 'fetch',
     channel: null,
@@ -646,6 +659,61 @@ export const volumeSchema = z
   .passthrough();
 export type Volume = z.infer<typeof volumeSchema>;
 
+/**
+ * One parcel of a marketplace shipment — the per-package diary the pedido's
+ * SINGLE `estado` / `codRastreio` / `prazoDespacho` slots are folded from.
+ *
+ * Declared here rather than beside the `pacotes` key it serves because a `const`
+ * cannot be referenced before its initializer runs, and `freteDoPedidoSchema`
+ * evaluates `z.object({…})` at module load.
+ *
+ * ⚠️ `estadoMarketplace` is the SOURCE OF TRUTH and `estado` is a PROJECTION of
+ * it. The channel re-derives `estado` from the raw token on every delivery and
+ * rewrites the row when the derivation moves, so a correction to the channel's
+ * token table retro-applies to every stored package with no wire event. Storing
+ * only the derived value would freeze a mis-mapping until the next push; storing
+ * only the raw token would make the diary unreadable without the table. Two
+ * fields, ONE fact, one direction of derivation (#1369).
+ *
+ * ⚠️ `fonte` is a FREE STRING, and must stay one. The set of sources is
+ * per-channel (Shopee's are `get_package_detail` / `get_order_detail`; a later
+ * channel's are its own), so the closed set lives in the channel's own module
+ * and `satisfies` this type — the same argument `marketplacePedidoSchema.status`
+ * makes one level up.
+ *
+ * ⚠️ NO carrier string. Channel identity is `canalId` (the provider's logistics
+ * channel id) and nothing else: Shopee renames carriers and appends a
+ * `service_code` to `shipping_carrier` on the BR channels 90021/90025/90026, so
+ * the display label is a value the provider mutates under us.
+ */
+export const pacoteFreteSchema = z
+  .object({
+    /** The provider's package identifier — the ROW IDENTITY. Never empty. */
+    numero: z.string().min(1).max(60).describe('Número do pacote'),
+    /** DERIVED from `estadoMarketplace`; never authored. */
+    estado: estadoFreteSchema.nullable().default(null).describe('Estado do pacote'),
+    /** The provider's own status token, VERBATIM — never normalized. */
+    estadoMarketplace: z
+      .string()
+      .max(120)
+      .nullable()
+      .default(null)
+      .describe('Estado no marketplace'),
+    codRastreio: z.string().max(200).nullable().default(null).describe('Código de rastreio'),
+    /** The provider's logistics channel id, as a string — NEVER the carrier name. */
+    canalId: z.string().max(60).nullable().default(null).describe('Canal logístico (ID)'),
+    prazoDespacho: microsSinceEpoch('Prazo de despacho do pacote').nullable().default(null),
+    /**
+     * The PACKAGE clock (µs) — the provider's "last time a value of this package
+     * changed". It advances ONLY on a delivery that changed a wire field of this
+     * row, never merely because we looked.
+     */
+    atualizadoEm: microsSinceEpoch('Atualizado em').nullable().default(null),
+    fonte: z.string().max(40).nullable().default(null).describe('Fonte da observação'),
+  })
+  .passthrough();
+export type PacoteFrete = z.infer<typeof pacoteFreteSchema>;
+
 /* -------------------------------------------------------------------------- */
 /*                          FreteDoPedido — main schema                       */
 /* -------------------------------------------------------------------------- */
@@ -735,6 +803,41 @@ export const freteDoPedidoSchema = z
     volumes: z.array(volumeSchema).nullable().default(null).describe('Volumes'),
     /** Tracking code (max 200 per Flutter constraint). */
     codRastreio: z.string().max(200).nullable().default(null).describe('Código de rastreio'),
+    /**
+     * Per-package shipment diary, SORTED ASCENDING by `numero`, written only by
+     * the importing marketplace channel.
+     *
+     * ⚠️ `.nullable().optional()`, NOT `.nullable().default(null)`. A default
+     * would materialise `pacotes: null` on the FIRST rewrite of every stored
+     * `freteInicial` by every writer of this block (the Mercado Livre shipment
+     * import, the Melhor Envio webhook, `pedidoReconcile`,
+     * `confirmarEntregaPedido`), because `parseMergePatch` calls `.partial()` on
+     * the TOP-LEVEL pedido schema only — this nested block is validated in full,
+     * so nested defaults do apply. And `freteInicial` is deliberately absent from
+     * both `PEDIDO_HISTORY_IGNORE_FIELDS` and `CONCURRENCY_IGNORE`, so each of
+     * those first writes would file one phantom "Sistema" audit row and raise one
+     * phantom editor conflict, over a field no operator can see — fleet-wide,
+     * once, for data that belongs to one channel.
+     *
+     * ⚠️ NOT the "it breaks the object literals" reason: that one is REFUTED.
+     * Every `FreteDoPedido` object literal in this repo spreads
+     * `seedFreteInicial()` or a `freteDoPedidoSchema.parse()`, so the key arrives
+     * through the spread and neither shape breaks a literal. The audit noise is
+     * the whole of the argument.
+     *
+     * ⚠️ Nested under `freteInicial`, so it regenerates NO ruleset:
+     * `clausesForSchema` iterates only the TOP-LEVEL properties of the pedido
+     * schema and `exprForProperty` answers `is map` for an object without
+     * recursing (`packages/rules-gen/src/constraints.ts:33-49,56-120`).
+     *
+     * ⚠️ The order is part of the value. Sorting by `numero` is what makes a
+     * replay produce a byte-identical array regardless of the order the
+     * provider's pushes arrived in.
+     *
+     * ⚠️ Never write `undefined` — the Firebase SDK rejects it. Omit the key
+     * (leaving a stored block byte-identical) or write `null`.
+     */
+    pacotes: z.array(pacoteFreteSchema).nullable().optional().describe('Pacotes'),
 
     // Costs -----------------------------------------------------------------
     valorCobrado: z.number().nullable().default(null).describe('Valor cobrado do frete'),

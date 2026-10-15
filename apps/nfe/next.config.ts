@@ -24,7 +24,24 @@ const config: NextConfig = {
   // them as externals means Next emits a plain `require()` at runtime and the
   // package resolves its own sibling files via real node_modules paths.
   // Same fix-pattern as `apps/nfe/lib/nfe/runtime.ts:resolveChainPath`.
-  serverExternalPackages: ['xmllint-wasm', 'soap', 'node-forge', 'pdfkit', 'fontkit', 'bwip-js'],
+  // `@google-cloud/firestore` is NOT in Next 16's default externals, and this
+  // app now imports its `/pipelines` subpath directly (the Simples Nacional
+  // apuração aggregate). Without this entry `db` — which comes from
+  // `firebase-admin/firestore` — and the pipeline builders reach ONE package
+  // through TWO resolution paths, Turbopack instantiates it twice, and the
+  // `instanceof` overloads inside the Pipelines API fall through to the wrong
+  // branch. It does not throw where you'd look: it dies later with
+  // `TypeError: selectables is not iterable`. See
+  // `packages/config-eslint/rules/next-firestore-external.test.js`.
+  serverExternalPackages: [
+    '@google-cloud/firestore',
+    'xmllint-wasm',
+    'soap',
+    'node-forge',
+    'pdfkit',
+    'fontkit',
+    'bwip-js',
+  ],
 };
 
 export default config;

@@ -10,6 +10,7 @@ entry points for every SEFAZ call:
 |---|---|
 | `consultarStatusServico(call, { cUF })` | NFeStatusServico4 — service availability |
 | `consultarSituacaoNFe(call, { chave })` | NfeConsultaProtocolo4 — query one NF-e by chave (the **recovery** call) |
+| `consultarSituacaoNFeComXml(call, { chave })` | The same call, also returning the reply's raw XML (`retConsSitXml`) — for `extrairEventosNFe`, which must keep SEFAZ's signed `procEventoNFe` bytes |
 | `consultarLote(call, { nRec })` | NFeRetAutorizacao4 — poll a lote by nRec (async path only) |
 | `autorizarLote(call, { idLote, NFe })` | NFeAutorizacao4 — submit a lote. **The helper computes `indSinc` from `NFe.length`** (lote=1 → 1; lote 2–50 → 0). Do not pass `indSinc` manually. |
 

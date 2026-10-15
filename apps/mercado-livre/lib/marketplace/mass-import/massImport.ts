@@ -70,7 +70,7 @@ import { type ImportDeps, importProduto } from '../importacao/import';
 import { type ImportOptions, MercadoLivreImportError } from '../importacao/importCore';
 import { refMatchesIntegracao } from '../core/linkRefs';
 import { loadMercadoLivreContext } from '../core/mercadoLivre';
-import { type Bucket } from '../core/arquivoUpload';
+import type { Bucket } from '../core/arquivoUpload';
 import { tryGetAdminBucket } from '../../firebase/admin';
 
 /**
@@ -528,6 +528,7 @@ export async function processMassImportJob(
       updatedAt: nowMs,
     });
     return stamp === 'stamped' ? 'done' : 'noop';
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- final attempt stamps the job failed; earlier attempts rethrow for the queue
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     if (retryCount < MASS_IMPORT_MAX_ATTEMPTS - 1) throw err; // let the queue retry with backoff
@@ -542,6 +543,7 @@ export async function processMassImportJob(
         finishedAt: nowMs,
         updatedAt: nowMs,
       });
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort failure stamp; must not mask the original error
     } catch (persistErr) {
       if (!(persistErr instanceof Error)) throw persistErr;
       console.error(

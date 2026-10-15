@@ -209,6 +209,36 @@ describe('resolveCnpj', () => {
     expect(await resolveCnpj(CNPJ, null)).toEqual({ ok: false, reason: 'network' });
   });
 
+  it('returns sem-base-publica for an ALPHANUMERIC CNPJ — and never calls out', async () => {
+    // ⚠️ The pair that matters is "valid but unanswerable" vs "not found", and
+    // the reason it is drawn BEFORE the fetch: `buscarCnpj` returns `null` for
+    // an alfa CNPJ, which is byte-identical to "this company does not exist".
+    // Reporting that to the operator makes them retype a correct document.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const consultaCadastro = vi.fn();
+
+    expect(await resolveCnpj('12ABC34501DE35', fakeNfe(consultaCadastro), 'filial-1')).toEqual({
+      ok: false,
+      reason: 'sem-base-publica',
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // ⚠️ And the honest part: SEFAZ Consulta Cadastro IS the registry that could
+    // answer, and it is not reached — it needs a UF, and the only UF this
+    // function ever has comes out of the public answer it just did not get.
+    expect(consultaCadastro).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ NEAR-MISS: a punctuated NUMERIC CNPJ is not mistaken for an alfa one', async () => {
+    // The gate reads the CLEANED value, so `.`/`/`/`-` must not make a numeric
+    // CNPJ look alphanumeric and skip the public lookup entirely.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(BRASILAPI_BODY));
+
+    const outcome = await resolveCnpj('14.200.166/0001-87', null);
+
+    expect(outcome.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('returns invalid-response on malformed JSON', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('<<not json>>', {

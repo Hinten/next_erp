@@ -15,6 +15,7 @@ import {
 } from '../../../lib/nfe/orchestrator';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
+const ALFA_CHAVE = '352601ABCDEFGHIJKL87550010000001234567890120';
 
 /** A compact authorized procNFe — enough to render the simplificado. */
 const PROCNFE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -33,6 +34,10 @@ const PROCNFE = `<?xml version="1.0" encoding="UTF-8"?>
     <dhRecbto>2026-05-26T15:30:12-03:00</dhRecbto><nProt>135260000000456</nProt>
     <cStat>100</cStat><xMotivo>Autorizado o uso da NF-e</xMotivo></infProt></protNFe>
 </nfeProc>`;
+
+const PROCNFE_ALFA = PROCNFE.split(CHAVE)
+  .join(ALFA_CHAVE)
+  .replaceAll('14200166000187', 'ABCDEFGHIJKL87');
 
 /** Minimal in-memory Firestore — only the single `doc().get()` the service uses. */
 function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
@@ -86,6 +91,21 @@ describe('danfeArtifactService', () => {
     expect(typeof art.body).toBe('string');
     expect(art.body as string).toContain('^XA');
     expect(art.body as string).toContain('^PW1181'); // 300 dpi
+  });
+
+  it('renders an alphanumeric chave in the ZPL artifact', async () => {
+    const fs = fakeFirestore({
+      'pedidos/PED-1/nfev4/s1': aprovadaDoc({
+        chave: ALFA_CHAVE,
+        xml_nfe_proc: PROCNFE_ALFA,
+      }),
+    });
+    const art = await danfeArtifactService(fs, 'PED-1', 's1', { format: 'zpl2' });
+
+    expect(art.contentType).toBe('text/plain; charset=utf-8');
+    expect(art.body as string).toContain(
+      '^FD>;352601>6ABCDEFGHIJKL>587550010000001234567890120^FS',
+    );
   });
 
   it('renders a cancelada NF-e (CANCELADO overlay) from its retained procNFe', async () => {

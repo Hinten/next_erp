@@ -12,7 +12,7 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
  * FaixaTaxaFixaPeso — faixa de peso com taxa fixa, embutida em
  * `FormulaCalculoPreco.faixasTaxaFixaPeso`. Mirrors o model Flutter.
  */
-export const faixaTaxaFixaPesoSchema = z.object({
+export const faixaTaxaFixaPesoSchema = z.strictObject({
   pesoMinKg: z.number(),
   pesoMaxKg: z.number(),
   taxaFixa: z.number(),
@@ -25,7 +25,7 @@ export type FaixaTaxaFixaPeso = z.infer<typeof faixaTaxaFixaPesoSchema>;
  *  M = comissão marketplace, I = imposto, F = frete, K = marketing.
  * Mirrors `FormulaCalculoPreco` em `.old/packages/produtos/lib/src/models.dart`.
  */
-export const formulaCalculoPrecoSchema = z.object({
+export const formulaCalculoPrecoSchema = z.strictObject({
   limiar: z.number(),
   formula: z.string().min(1),
   taxaFixa: z.number().default(0),
@@ -43,7 +43,7 @@ export type FormulaCalculoPreco = z.infer<typeof formulaCalculoPrecoSchema>;
  * FormulasPorCategoria — bucket de fórmulas associadas a uma categoria.
  * Mirrors `FormulasPorCategoria`.
  */
-export const formulasPorCategoriaSchema = z.object({
+export const formulasPorCategoriaSchema = z.strictObject({
   name: z.string(),
   formulasCalculoPreco: z.array(formulaCalculoPrecoSchema).nullable().optional(),
 });
@@ -60,7 +60,12 @@ export const listaDePrecosSchema = z.object({
   ativo: z.boolean().default(true),
   formulasCalculoPreco: z.array(formulaCalculoPrecoSchema).nullable().optional(),
   formulasPorCategoria: z.record(z.string(), formulasPorCategoriaSchema).nullable().optional(),
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  // `.default(null)`, never a bare `.optional()`: the TableView update-
+  // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+  // which EXCLUDES documents missing the key — so a dropped key hides the
+  // row from the staleness check, silently. Pinned by
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch().nullable().default(null),
   timestamp: millisSinceEpoch().nullable().optional(),
 });
 

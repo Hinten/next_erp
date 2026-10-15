@@ -8,9 +8,14 @@ const h = vi.hoisted(() => ({
   stored: null as Record<string, unknown> | null,
   deletes: [] as unknown[],
   sets: [] as unknown[],
+  updates: [] as Array<{ ref: unknown; data: Record<string, unknown> }>,
   /** Every `addDoc` — the `'adicional'` path, which runs no transaction. */
   adds: [] as unknown[],
   transactions: 0,
+  /** The `variacaoMercadoLivre` member refs the group query finds. */
+  membros: [] as unknown[],
+  /** How many times the member query ran — it must be OUTSIDE the transaction. */
+  groupQueries: 0,
 }));
 
 vi.mock('firebase/firestore', async (importOriginal) => {
@@ -27,14 +32,35 @@ vi.mock('firebase/firestore', async (importOriginal) => {
         delete: (ref: unknown) => {
           h.deletes.push(ref);
         },
+        update: (ref: unknown, data: Record<string, unknown>) => {
+          h.updates.push({ ref, data });
+        },
       });
     },
     addDoc: async (_ref: unknown, data: unknown) => {
       h.adds.push(data);
       return { id: `auto-${h.adds.length}` };
     },
+    getDocs: async () => {
+      h.groupQueries += 1;
+      return { docs: h.membros.map((ref) => ({ ref })) };
+    },
   };
 });
+
+// The member lookup is a collection-group query, and `groupQuery` reaches the
+// real `collectionGroup`, which rejects the `{}` stand-in this suite passes for
+// `db`. Only the three helpers `listingDraft` actually uses are stubbed; what
+// they build is irrelevant here, since `getDocs` is stubbed too.
+vi.mock('@delfrance/data', () => ({
+  buildQuery: (base: unknown, parts: unknown[]) => ({ __built: [base, parts] }),
+  groupQuery: () => ({ __group: true }),
+  whereEqual: (...parts: unknown[]) => ({ __where: parts }),
+}));
+
+vi.mock('@/lib/data/variacaoMercadoLivreLinkCollection', () => ({
+  variacaoMercadoLivreLinkCollection: { converter: {} },
+}));
 
 vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
   produtoMercadoLivreLinkCollection: {
@@ -43,8 +69,13 @@ vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
   },
 }));
 
-const { buildListingDraft, createListingDraft, draftDocId, removeListingDraft } =
-  await import('./listingDraft');
+const {
+  buildListingDraft,
+  createListingDraft,
+  descartarAnuncioRemovido,
+  draftDocId,
+  removeListing,
+} = await import('./listingDraft');
 
 const ARGS = {
   integracaoId: 'conta-1',
@@ -59,8 +90,11 @@ beforeEach(() => {
   h.stored = null;
   h.deletes = [];
   h.sets = [];
+  h.updates = [];
   h.adds = [];
   h.transactions = 0;
+  h.membros = [];
+  h.groupQueries = 0;
 });
 
 describe('buildListingDraft', () => {
@@ -164,12 +198,12 @@ describe('createListingDraft', () => {
   });
 });
 
-describe('removeListingDraft', () => {
+describe('removeListing', () => {
   it('deletes a listing that never reached Mercado Livre', async () => {
     h.exists = true;
     h.stored = { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho };
 
-    expect(await removeListingDraft({} as Firestore, 'prod-1', 'L-1')).toBe('removed');
+    expect(await removeListing({} as Firestore, 'prod-1', 'L-1')).toBe('removed');
     expect(h.deletes).toHaveLength(1);
   });
 
@@ -182,7 +216,7 @@ describe('removeListingDraft', () => {
     h.exists = true;
     h.stored = { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.publicado };
 
-    expect(await removeListingDraft({} as Firestore, 'prod-1', 'L-1')).toBe('published');
+    expect(await removeListing({} as Firestore, 'prod-1', 'L-1')).toBe('published');
     expect(h.deletes).toHaveLength(0);
   });
 
@@ -193,7 +227,7 @@ describe('removeListingDraft', () => {
     h.exists = true;
     h.stored = { id: 'MLB777' };
 
-    await removeListingDraft({} as Firestore, 'prod-1', 'L-1');
+    await removeListing({} as Firestore, 'prod-1', 'L-1');
 
     expect(h.transactions).toBe(1);
     expect(h.deletes).toHaveLength(0);
@@ -206,14 +240,195 @@ describe('removeListingDraft', () => {
     h.exists = true;
     h.stored = { id: '' };
 
-    expect(await removeListingDraft({} as Firestore, 'prod-1', 'L-1')).toBe('removed');
+    expect(await removeListing({} as Firestore, 'prod-1', 'L-1')).toBe('removed');
     expect(h.deletes).toHaveLength(1);
   });
 
   it('reports a listing that is already gone rather than failing', async () => {
     h.exists = false;
 
-    expect(await removeListingDraft({} as Firestore, 'prod-1', 'L-1')).toBe('missing');
+    expect(await removeListing({} as Firestore, 'prod-1', 'L-1')).toBe('missing');
     expect(h.deletes).toHaveLength(0);
+  });
+
+  /**
+   * #1226. The published refusal above rests entirely on "deleting would orphan
+   * a LIVE anúncio". ML removed this one, so there is nothing live to orphan —
+   * and the produto is otherwise stuck with a dead item id for ever.
+   */
+  it('deletes a listing Mercado Livre REMOVED, despite its item id', async () => {
+    h.exists = true;
+    h.stored = { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao };
+
+    expect(await removeListing({} as Firestore, 'prod-1', 'L-1')).toBe('removed');
+    expect(h.deletes).toHaveLength(1);
+  });
+
+  /**
+   * ⚠️ The near-miss that keeps the rung honest: `removidoPorModeracao` is the
+   * ONLY published estado that may be deleted. A cancelled listing still exists
+   * on ML — closed, but resolvable — and an `'E'` one is live and merely latched.
+   */
+  it('still refuses every OTHER published estado', async () => {
+    for (const estado of [
+      ESTADO_PUBLICACAO_ML.cancelado,
+      ESTADO_PUBLICACAO_ML.erro,
+      ESTADO_PUBLICACAO_ML.pausado,
+      ESTADO_PUBLICACAO_ML.emRevisao,
+    ]) {
+      h.exists = true;
+      h.stored = { id: 'MLB777', estado };
+      expect(await removeListing({} as Firestore, 'prod-1', 'L-1')).toBe('published');
+    }
+    expect(h.deletes).toHaveLength(0);
+  });
+
+  it('takes the member links with it, so none is left pointing at nothing', async () => {
+    h.exists = true;
+    h.stored = { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao };
+    h.membros = [{ id: 'M-1' }, { id: 'M-2' }];
+
+    expect(await removeListing({} as Firestore, 'prod-1', 'L-1')).toBe('removed');
+    // Two members plus the parent.
+    expect(h.deletes).toHaveLength(3);
+  });
+
+  it('does not delete the members when the parent write is refused', async () => {
+    // The guard runs first, inside the transaction, so a refusal costs nothing.
+    h.exists = true;
+    h.stored = { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.publicado };
+    h.membros = [{ id: 'M-1' }];
+
+    expect(await removeListing({} as Firestore, 'prod-1', 'L-1')).toBe('published');
+    expect(h.deletes).toHaveLength(0);
+  });
+});
+
+/* --------------------- descartarAnuncioRemovido (#1226) -------------------- */
+
+describe('descartarAnuncioRemovido', () => {
+  const REMOVIDO = {
+    id: 'MLB777',
+    estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao,
+  };
+
+  it('clears the dead ML identity and returns the listing to rascunho', async () => {
+    h.exists = true;
+    h.stored = REMOVIDO;
+
+    expect(await descartarAnuncioRemovido({} as Firestore, 'prod-1', 'L-1')).toBe('descartado');
+    const patch = h.updates[0]!.data;
+    // `id: null` is the whole point — it is what makes `assemblePublishInput`
+    // take the POST branch instead of PUTing an item ML deleted.
+    expect(patch.id).toBeNull();
+    expect(patch.estado).toBe(ESTADO_PUBLICACAO_ML.rascunho);
+    expect(patch.status).toBeNull();
+    expect(patch.sub_status).toBeNull();
+    expect(patch.userProductId).toBeNull();
+    // NULL, not `[]`: the new listing has not been moderated, and `[]` would
+    // record a verdict nobody obtained.
+    expect(patch.moderacoes).toBeNull();
+    expect(patch.errors).toEqual([]);
+    expect(patch.causas).toEqual([]);
+  });
+
+  /**
+   * ⚠️ This is the entire difference from {@link removeListing}, and the reason
+   * the action exists: a removal is usually one wrong field (the case that
+   * motivated the issue is a wrong category), while the listing's copy is hours
+   * of work. A patch that cleared any of these would make the two actions the
+   * same one with extra steps.
+   */
+  it('keeps everything the operator authored', async () => {
+    h.exists = true;
+    h.stored = REMOVIDO;
+
+    await descartarAnuncioRemovido({} as Firestore, 'prod-1', 'L-1');
+
+    const patch = h.updates[0]!.data;
+    for (const campo of [
+      'title',
+      'category_id',
+      'attributes',
+      'descricao',
+      'listing_type_id',
+      'condition',
+      'video_id',
+    ]) {
+      expect(patch).not.toHaveProperty(campo);
+    }
+    expect(h.deletes).toHaveLength(0);
+  });
+
+  it('refuses a listing that is not in the removed state', async () => {
+    // The same race the delete guards, from the other side: discarding the
+    // identity of a listing that is merely paused abandons a LIVE anúncio.
+    for (const estado of [
+      ESTADO_PUBLICACAO_ML.publicado,
+      ESTADO_PUBLICACAO_ML.pausado,
+      ESTADO_PUBLICACAO_ML.cancelado,
+      ESTADO_PUBLICACAO_ML.rascunho,
+    ]) {
+      h.exists = true;
+      h.stored = { id: 'MLB777', estado };
+      expect(await descartarAnuncioRemovido({} as Firestore, 'prod-1', 'L-1')).toBe('nao-removido');
+    }
+    expect(h.updates).toHaveLength(0);
+  });
+
+  it('decides on the TRANSACTIONAL read, not on what the caller was holding', async () => {
+    h.exists = true;
+    h.stored = { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.publicado };
+
+    await descartarAnuncioRemovido({} as Firestore, 'prod-1', 'L-1');
+
+    expect(h.transactions).toBe(1);
+    expect(h.updates).toHaveLength(0);
+  });
+
+  /**
+   * ⚠️ MARKED, never deleted — `variacoesFantasma.ts`'s precedent. The member
+   * link carries the variation's `sku` and `attribute_combinations`, which a
+   * republish would otherwise have to rebuild from nothing.
+   */
+  it('strips each member of its ML identity and keeps the rest', async () => {
+    h.exists = true;
+    h.stored = REMOVIDO;
+    h.membros = [{ id: 'M-1' }, { id: 'M-2' }];
+
+    await descartarAnuncioRemovido({} as Firestore, 'prod-1', 'L-1');
+
+    expect(h.deletes).toHaveLength(0);
+    // Two members plus the parent.
+    expect(h.updates).toHaveLength(3);
+    const membro = h.updates[0]!.data;
+    expect(membro.itemId).toBeNull();
+    expect(membro.status).toBeNull();
+    expect(membro.moderacoes).toBeNull();
+    expect(membro).not.toHaveProperty('sku');
+    expect(membro).not.toHaveProperty('attribute_combinations');
+  });
+
+  /**
+   * The Web SDK's `runTransaction` takes document reads only, so the member
+   * query cannot go inside one. Pinning it here records that as a decision
+   * rather than an oversight — the window it opens is the same one
+   * `removeListing` has always accepted.
+   */
+  it('reads the members OUTSIDE the transaction, exactly once', async () => {
+    h.exists = true;
+    h.stored = REMOVIDO;
+
+    await descartarAnuncioRemovido({} as Firestore, 'prod-1', 'L-1');
+
+    expect(h.groupQueries).toBe(1);
+    expect(h.transactions).toBe(1);
+  });
+
+  it('reports a listing that is already gone rather than failing', async () => {
+    h.exists = false;
+
+    expect(await descartarAnuncioRemovido({} as Firestore, 'prod-1', 'L-1')).toBe('missing');
+    expect(h.updates).toHaveLength(0);
   });
 });

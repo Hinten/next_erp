@@ -28,9 +28,11 @@ on:
     workflows:
       - 'CI'
       - 'CI — Freight'
+      - 'CI — Loja Integrada'
       - 'CI — Mercado Livre (Firestore emulator)'
       - 'CI — NFe'
       - 'CI — Rules'
+      - 'CI — Shopee'
       - 'CI — Storage'
     types: [completed]
     # Matches the TRIGGERING run's `head_branch`, which for a PR run is the PR's

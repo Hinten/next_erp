@@ -91,6 +91,11 @@ export interface PublishedMember {
   itemId: string;
   /** True when this run CREATED it — a description POSTs rather than PUTs. */
   created: boolean;
+  /**
+   * The member's `variacaoMercadoLivre` doc id, as just written — where the
+   * fiscal registration (#745) records this member's SKU outcome.
+   */
+  varLinkDocId: string;
 }
 
 export interface PublishUserProductResult {
@@ -148,10 +153,9 @@ export async function publishUserProductMembers(
       : await api.createItem(payload);
 
     items.push(item);
-    written.push({ produtoId: childId, itemId: item.id, created: !isUpdate });
     if (familyId == null && item.family_id != null) familyId = String(item.family_id);
 
-    await writeMemberLink(db, {
+    const varLinkDocId = await writeMemberLink(db, {
       integracaoId,
       produtoId,
       parentLinkDocId,
@@ -190,6 +194,7 @@ export async function publishUserProductMembers(
         item.user_product_id ??
         (typeof state?.raw.userProductId === 'string' ? state.raw.userProductId : null),
     });
+    written.push({ produtoId: childId, itemId: item.id, created: !isUpdate, varLinkDocId });
   }
 
   return { items, written, itemIds: written.map((w) => w.itemId), familyId };
@@ -449,7 +454,7 @@ async function writeMemberLink(
     skuPaiAtributo: boolean;
     userProductId: string | null;
   },
-): Promise<void> {
+): Promise<string> {
   const { integracaoId, produtoId, parentLinkDocId, childId, itemId, state, sku } = args;
   const docId =
     state?.varLinkDocId ?? variacaoMercadoLivreLinkCollection.newDocId(db, { produtoId: childId });
@@ -492,7 +497,7 @@ async function writeMemberLink(
       docId,
       patch,
     );
-    if (merged) return;
+    if (merged) return docId;
   }
 
   await variacaoMercadoLivreLinkCollection.set(
@@ -509,6 +514,7 @@ async function writeMemberLink(
       ...patch,
     }),
   );
+  return docId;
 }
 
 /**

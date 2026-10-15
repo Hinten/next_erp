@@ -31,14 +31,18 @@ finished**. The authoritative run is the one after Flutter stops writing.
 **Order within the window**: this is a data pass, so it goes after the index and
 rules deploys and before the functions/apps flip (ADR 0013's ordering). The
 `historicoEstoque(timestamp, parentId, depositoOuterRef)` COLLECTION_GROUP index
-should already be deployed — not for this script, which needs none, but because
-the sweep starts summing the rows this produces.
+should already be deployed — not for this script, which needs only its key index
+(below), but because the sweep starts summing the rows this produces.
 
 **Cost**: it walks _every_ `historicoEstoque` row via a collection-group scan,
 and Enterprise bills data scanned. There is no cheaper shape — the rows to
 convert are exactly "all of them", so no predicate narrows it, and filtering on
 `movimento == null` would need an index over a field no row has yet. The walk is
-paged by document key (native ordering, no index required).
+paged by document key, riding the **declared** collection-group key index
+`historicoEstoque(__name__ ASC)` (#1895, listed in `key-walks.json`). Enterprise
+has no implicit key index: without it every page re-scans the whole group (#1895
+measured an unindexed collection-group walk table-scanning all 6,342 `enderecos`
+docs on every page of 300).
 
 ## What it changes
 

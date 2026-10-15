@@ -121,6 +121,30 @@ describe('DevolucaoTab — state survives a tab switch (#473)', () => {
     expect(screen.getByText('Produto Recarregado')).toBeTruthy();
   });
 
+  // The row's visible cell and its three inputs must name the line the SAME way.
+  // `row.nome` is persisted data and is deliberately blank on a line the origin
+  // never named, so labelling the inputs from it collapses every such row in the
+  // table onto one accessible name and disagrees with what the cell shows.
+  it('labels a nameless row from the resolved name, not a shared placeholder', () => {
+    render(
+      <Host
+        initialItensDevolvidos={{
+          origin1: {
+            p1: [item({ nomeDeVenda: null, sku: 'SKU-A' })],
+            p2: [item({ produtoUid: 'p2', nomeDeVenda: null, sku: null })],
+          },
+        }}
+      />,
+    );
+
+    // Falls to the sku, then to the raw id — distinct labels, matching the cells.
+    expect(screen.getByLabelText('Quantidade devolvida de SKU-A')).toBeTruthy();
+    expect(screen.getByLabelText('Quantidade devolvida de p2')).toBeTruthy();
+    expect(screen.getByLabelText('Preço de SKU-A')).toBeTruthy();
+    expect(screen.getByLabelText('Desconto de p2')).toBeTruthy();
+    expect(screen.queryByLabelText(/de item$/)).toBeNull();
+  });
+
   it('persists an in-tab quantity edit across a tab switch', () => {
     render(<Host initialItensDevolvidos={{ origin1: { p1: [item({ quantidade: 2 })] } }} />);
     expect(screen.getAllByText(/R\$\s*20,00/).length).toBeGreaterThan(0);

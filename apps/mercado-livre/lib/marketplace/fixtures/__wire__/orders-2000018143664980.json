@@ -1,0 +1,163 @@
+{
+  "id": 2000018143664980,
+  "date_created": "2026-08-27T09:14:28.000-04:00",
+  "last_updated": "2026-08-27T09:16:00.000-04:00",
+  "date_closed": "2026-08-27T09:14:30.000-04:00",
+  "pack_id": null,
+  "fulfilled": null,
+  "buying_mode": "buy_equals_pay",
+  "shipping_cost": null,
+  "mediations": [],
+  "total_amount": 49.97,
+  "paid_amount": 62.96,
+  "order_items": [
+    {
+      "item": {
+        "id": "MLB5140167173",
+        "title": "Estátua Leão Madeira Amadeirado",
+        "category_id": "MLB186814",
+        "variation_id": null,
+        "seller_custom_field": null,
+        "variation_attributes": [
+          {
+            "name": "Cor",
+            "id": "COLOR",
+            "value_id": "3890144",
+            "value_name": "Amadeirado"
+          }
+        ],
+        "warranty": "Sem garantia",
+        "condition": "new",
+        "seller_sku": "leao123",
+        "global_price": null,
+        "net_weight": null,
+        "user_product_id": "MLBU4974343322",
+        "release_date": null,
+        "attributes": [
+          {
+            "id": "ITEM_CONDITION",
+            "values": [
+              {
+                "id": "2230284"
+              }
+            ]
+          }
+        ]
+      },
+      "quantity": 1,
+      "requested_quantity": {
+        "measure": "unit",
+        "value": 1
+      },
+      "picked_quantity": null,
+      "unit_price": 49.97,
+      "currency_id": "BRL",
+      "manufacturing_days": null,
+      "sale_fee": 8.25,
+      "listing_type_id": "gold_pro",
+      "base_exchange_rate": null,
+      "base_currency_id": null,
+      "element_id": null,
+      "discounts": null,
+      "bundle": null,
+      "compat_id": null,
+      "stock": null,
+      "kit_instance_id": null,
+      "gross_price": 49.97
+    }
+  ],
+  "currency_id": "BRL",
+  "payments": [
+    {
+      "id": 174911485053,
+      "order_id": 2000018143664980,
+      "payer_id": 3644236740,
+      "collector": {
+        "id": 3616169770
+      },
+      "card_id": 9867593438,
+      "reason": "Estátua Leão Madeira Amadeirado",
+      "site_id": "MLB",
+      "payment_method_id": "master",
+      "currency_id": "BRL",
+      "installments": 1,
+      "issuer_id": "12749",
+      "atm_transfer_reference": {
+        "transaction_id": null,
+        "company_id": null
+      },
+      "coupon_id": null,
+      "activation_uri": null,
+      "operation_type": "regular_payment",
+      "payment_type": "credit_card",
+      "available_actions": [
+        "refund"
+      ],
+      "status": "approved",
+      "status_code": null,
+      "status_detail": "accredited",
+      "transaction_amount": 49.97,
+      "transaction_amount_refunded": 0,
+      "taxes_amount": 0,
+      "shipping_cost": 12.99,
+      "coupon_amount": 0,
+      "overpaid_amount": 0,
+      "total_paid_amount": 62.96,
+      "installment_amount": 62.96,
+      "deferred_period": null,
+      "date_approved": "2026-08-27T09:14:30.000-04:00",
+      "transaction_order_id": null,
+      "date_created": "2026-08-27T09:14:29.000-04:00",
+      "date_last_modified": "2026-08-27T09:14:30.000-04:00",
+      "marketplace_fee": 0,
+      "reference_id": null,
+      "authorization_code": "301299"
+    }
+  ],
+  "shipping": {
+    "id": 47868202073
+  },
+  "status": "paid",
+  "status_detail": null,
+  "tags": [
+    "paid",
+    "not_delivered",
+    "test_order"
+  ],
+  "static_tags": [
+    "test_order"
+  ],
+  "feedback": {
+    "seller": null,
+    "buyer": null
+  },
+  "context": {
+    "channel": "marketplace",
+    "site": "MLB",
+    "flows": []
+  },
+  "seller": {
+    "id": 3616169770
+  },
+  "buyer": {
+    "id": 3644236740,
+    "nickname": "REDACTED",
+    "first_name": "REDACTED",
+    "last_name": "REDACTED",
+    "billing_info": {
+      "id": "880802100988250668"
+    }
+  },
+  "taxes": {
+    "amount": null,
+    "currency_id": null,
+    "id": null
+  },
+  "cancel_detail": null,
+  "manufacturing_ending_date": null,
+  "order_request": {
+    "change": null,
+    "return": null
+  },
+  "related_orders": null
+}

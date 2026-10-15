@@ -2,7 +2,7 @@
 
 import { ActionIcon, Popover, Select, Stack, Text } from '@mantine/core';
 import { IconSettings } from '@tabler/icons-react';
-import { type SendKey } from '@/lib/chat/sendKey';
+import type { SendKey } from '@/lib/chat/sendKey';
 
 /**
  * Composer settings popover — the "send key" preference (legacy `enviarMsg`

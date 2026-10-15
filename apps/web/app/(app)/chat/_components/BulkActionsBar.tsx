@@ -115,7 +115,7 @@ export function BulkActionsBar({
   }
 
   return (
-    <Paper withBorder p="xs" radius="sm" bg="var(--mantine-color-gray-0)">
+    <Paper withBorder p="xs" radius="sm" bg="var(--mantine-color-default-hover)">
       <Stack gap="xs">
         <Text size="xs" fw={600}>
           {count} {count === 1 ? 'selecionada' : 'selecionadas'}

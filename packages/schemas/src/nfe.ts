@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { microsSinceEpoch, millisSinceEpoch } from './shared/datetime';
+import { finNFeOperacaoSchema, tipoNFeSchema } from './operacao';
 
 // Mirror `PERM.nfe` from @delfrance/auth.
 const PERM_NFE_READ = 1n << 32n;
@@ -75,17 +76,174 @@ export function isEstadoFinalNFe(estado: EstadoNFe | null | undefined): boolean 
 }
 
 /**
- * NF-e chave de acesso: exactly 44 digits. Shared source for every place
- * that validates a chave string (pedido `chNFeReferenciadas`, UI inputs).
- * Keep byte-identical to the pattern historically inlined at those call
- * sites (`/^\d{44}$/`) — see the anchor test in `nfe.test.ts`.
+ * `true` when this NF-e counts as authorized for printing its DANFE: an
+ * `aprovada` one, or an EPEC-approved (`'p'`) one that holds its EPEC protocol
+ * (`xml_epec_proc` — the plain-paper DANFE prints the EPEC protocolo box from
+ * it). ⚠️ An EPEC registered by an earlier send of the same bytes whose reply
+ * was lost (#1675 — the Ambiente Nacional answered 485/573 to the resend) is
+ * `'p'` WITHOUT that protocol, and apps/nfe's DANFE route refuses it (422) until
+ * the pós-EPEC transmission authorizes the NF-e. That `'p'` rule is the one
+ * the browser and `danfe.ts` share. Pure.
+ *
+ * Not covered: an `aprovada` whose proc stitch was refused (a digest mismatch
+ * keeps it WITHOUT `xml_nfe_proc`) — the DANFE route refuses it too; that case
+ * predates #1675 and is decided by the route alone. A `cancelada` NF-e still
+ * prints (with its CANCELADO overlay) wherever a caller allows it.
  */
-export const CHAVE_NFE_REGEX = /^\d{44}$/;
+export function nfeImprimivel(
+  nota: Pick<NotaFiscalEletronica, 'estado' | 'xml_epec_proc'>,
+): boolean {
+  if (nota.estado === ESTADO_NFE.aprovada) return true;
+  return nota.estado === ESTADO_NFE.epecAprovado && nota.xml_epec_proc != null;
+}
+
+/**
+ * NF-e chave de acesso: 44 characters, of which positions 6–17 may be
+ * alphanumeric. Shared source for every place that validates a chave string
+ * (pedido `chNFeReferenciadas`, UI inputs, the generator's NFref guard).
+ *
+ * ⚠️ **Mirrors the XSD facet exactly** — `TChNFe` in
+ * `packages/integrations/nfe/generated/moc7.0/schemas/tiposBasico_v4.00.xsd` is
+ * `[0-9]{6}[0-9A-Z]{12}[0-9]{26}`, widened by NT 2026.004 (CNPJ Alfanumérico,
+ * RFB IN 2.229/2024). A chave is `cUF(2) + AAMM(4) + CNPJ(14) + mod(2) +
+ * série(3) + nNF(9) + tpEmis(1) + cNF(8) + DV(1)`, so the alphanumeric window is
+ * the CNPJ's 12-character BODY only: its two check digits, and everything after
+ * them, stay numeric.
+ *
+ * ⚠️ Deliberately NOT a blanket `[0-9A-Z]{44}`. The positional form is what
+ * SEFAZ publishes, and it keeps rejecting letters everywhere they are still
+ * forbidden — a looser pattern would accept a chave SEFAZ refuses, which is the
+ * failure this constant exists to prevent.
+ */
+export const CHAVE_NFE_REGEX = /^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$/;
+
+/**
+ * `<ICMSTot>` totals lifted out of the authorized XML into modeled numeric
+ * fields, plus the two `<ide>` codes that decide whether a note is revenue at
+ * all.
+ *
+ * **Why this exists.** `xml_nfe_proc` is a string, and no Firestore aggregation
+ * can parse it — that is the whole finding of #1491, and why `pedido.impostos`
+ * was retired in #1151 rather than kept. Persisting the totals is what turns
+ * "sum the last 12 months of faturamento" from a full download of every NF-e
+ * XML (which is what `apps/web/lib/nfe/export/buildCsvReport.ts` does today)
+ * into an index-covered aggregate.
+ *
+ * **Components, not just `vNF`.** `vNF` is *not* receita bruta: ICMS-ST and IPI
+ * are excluded from it by LC 123 art. 3º §1º, and `vDesc` covers unconditional
+ * discounts, which are also excluded. Storing the parts costs the same single
+ * write and means the receita-bruta definition can be refined without a second
+ * migration over the whole corpus. ⚠️ No such reduction is written yet — this
+ * block is deliberately a faithful copy of the document, never an
+ * interpretation of it, and whichever components count as receita bruta is a
+ * decision for the apuração that consumes them.
+ *
+ * ⚠️ **All-or-nothing on purpose.** Every component is required once the block
+ * is present. The apuração planned in #1491 will count unreadable notes with an
+ * `exists('totais.vNF')` probe and refuse to publish a rate while any exist —
+ * that consumer is NOT written yet, and this invariant is what will make it
+ * possible. A partially populated block would answer the probe wrongly, and
+ * Firestore's `sum()` skips missing fields **silently**, which would understate
+ * RBT12, drop the company into a lower faixa, and under-declare tax with every
+ * job still reporting success.
+ */
+/**
+ * Totais da Reforma Tributária (NT 2025.002, Grupo W03) — `<IBSCBSTot>`,
+ * `<ISTot>` e `<vNFTot>`, irmãos de `<ICMSTot>` dentro de `<total>`.
+ *
+ * ⚠️ Presente apenas quando a nota foi emitida com RTC ligado
+ * (`nfeConfig.emitirReformaTributaria`, opt-in por filial). `null` numa nota
+ * pré-RTC não é dado faltando — é a ausência correta.
+ *
+ * Capturado JUNTO com o resto, e não depois, porque é exatamente o caso que a
+ * justificativa deste bloco cita: guardar as partes custa o mesmo write e evita
+ * uma segunda migração. Toda nota emitida com RTC entre o merge disto e um
+ * "depois a gente vê" precisaria de um backfill próprio.
+ */
+export const nfeTotaisRtcSchema = z.object({
+  /** `<vBCIBSCBS>` — base de cálculo do IBS/CBS. */
+  vBCIBSCBS: z.number(),
+  /** `<gIBS><vIBS>` — IBS total (UF + Município). */
+  vIBS: z.number(),
+  /** `<gCBS><vCBS>` — CBS total. */
+  vCBS: z.number(),
+  /** `<ISTot><vIS>` — Imposto Seletivo. `<ISTot>` é omitido quando zero. */
+  vIS: z.number(),
+  /**
+   * `<vNFTot>` — `vNF` + IBS + CBS + IS. **Este** é o total da nota numa
+   * emissão RTC; `ICMSTot.vNF` fica deliberadamente sem os tributos "por fora"
+   * (regra de transição 2025–2026, RV VB01-10 Exceção 1) — ver
+   * `packages/integrations/nfe/src/tribute/total.ts`.
+   */
+  vNFTot: z.number(),
+});
+
+export type NFeTotaisRtc = z.infer<typeof nfeTotaisRtcSchema>;
+
+export const nfeTotaisSchema = z.object({
+  /** `<vProd>` — soma dos produtos, antes de desconto/frete/ST. */
+  vProd: z.number(),
+  /** `<vDesc>` — descontos incondicionais; NÃO integram a receita bruta. */
+  vDesc: z.number(),
+  /** `<vST>` — ICMS-ST retido; NÃO integra a receita bruta. */
+  vST: z.number(),
+  /** `<vIPI>` — IPI; NÃO integra a receita bruta. */
+  vIPI: z.number(),
+  /** `<vFrete>` — frete cobrado do destinatário; integra o preço da operação. */
+  vFrete: z.number(),
+  /** `<vSeg>` — seguro cobrado do destinatário; integra o preço da operação. */
+  vSeg: z.number(),
+  /** `<vOutro>` — outras despesas acessórias; integram o preço da operação. */
+  vOutro: z.number(),
+  /**
+   * `<vNF>` — total do bloco ICMS.
+   *
+   * ⚠️ **Não é necessariamente o total impresso no DANFE.** Numa nota emitida
+   * com Reforma Tributária os tributos IBS/CBS/IS vão "por fora" e o total da
+   * nota é `rtc.vNFTot`; `ICMSTot.vNF` permanece sem eles por regra de
+   * transição. Para "o valor da nota" use `rtc?.vNFTot ?? vNF`.
+   */
+  vNF: z.number(),
+  /** `<tpNF>` (B11) — 0 entrada, 1 saída. Uma entrada SUBTRAI do faturamento. */
+  tpNF: tipoNFeSchema,
+  /**
+   * `<finNFe>` (B25) — 1 normal, 2 complementar, 3 ajuste, 4 devolução, 5 nota de
+   * crédito, 6 nota de débito (the last two NT 2025.002).
+   */
+  finNFe: finNFeOperacaoSchema,
+  /**
+   * `vProd − vDesc + vFrete + vSeg + vOutro` — a receita bruta desta nota, SEM
+   * sinal, em reais. Derivado dos componentes acima no mesmo write.
+   *
+   * **Por que um derivado, contra a regra.** Guardar o que já se pode calcular
+   * normalmente é criar uma cópia que diverge. Aqui ele paga uma coisa concreta:
+   * a apuração mensal soma receita sobre uma janela de 12 meses, e um agregado
+   * de UMA soma cabe num índice de 6 campos enquanto um de CINCO precisaria de
+   * 10. Se o agregado não for coberto pelo índice ele lê os DOCUMENTOS — e um
+   * `nfev4` carrega o XML inteiro da NF-e, que no Enterprise é cobrado por dado
+   * varrido. A diferença é varrer um índice ou varrer o corpus.
+   *
+   * ⚠️ O que ele NÃO é: o imposto. A alíquota não entra aqui — ela muda todo mês
+   * e vive na apuração da competência, então o imposto continua derivado
+   * (`impostoEstimadoDaNota`). Guardar o produto dos dois é que criaria a cópia
+   * que diverge.
+   *
+   * ⚠️ Não perde informação: é redundante com os componentes, então uma mudança
+   * na definição de receita bruta o recalcula a partir deles — uma passada só de
+   * campo, nunca um novo parse de XML.
+   */
+  receitaBruta: z.number(),
+  /** Totais RTC — ver {@link nfeTotaisRtcSchema}. `null` fora de emissão RTC. */
+  rtc: nfeTotaisRtcSchema.nullable().default(null),
+});
+
+export type NFeTotais = z.infer<typeof nfeTotaisSchema>;
 
 /**
  * NotaFiscalEletronica — documento fiscal eletrônico. Subcoleção de Pedido
- * (`pedidos/{pedidoId}/nfev4` — wire name original do Flutter). Read-only na
- * UI Next; emissão fica no `apps/integrations`/Cloud Functions (Phase 5).
+ * (`pedidos/{pedidoId}/nfev4` — wire name original do Flutter). Quem escreve
+ * é o `apps/nfe` (emissão, assinatura, retorno da SEFAZ) e as suas Cloud
+ * Functions; o `apps/web` só lê.
  * Mirrors `NotaFiscalEletronica` em `.old/packages/pedido_nfe/lib/src/models.dart`.
  */
 export const nfeSchema = z.object({
@@ -125,19 +283,36 @@ export const nfeSchema = z.object({
    */
   nRec: z.string().min(1).nullable(),
   /**
-   * Bounded retry counter for the lote-pendente (cStat=105) poll loop.
-   * The state machine resets this on every non-105 outcome. Also the
-   * attempt counter the async reconciler caps at `MAX_RECONCILE_ATTEMPTS`.
+   * The async reconciler's per-doc attempt counter, capped at
+   * `MAX_RECONCILE_ATTEMPTS`: every `consReciNFe` round that leaves the doc in
+   * flight advances it by exactly one — a 105, a lote-level non-answer, a
+   * round resolved by chave (104 without our protNFe, 106, a duplicidade) —
+   * and the round that reaches the cap turns the doc into a blocking terminal
+   * `error` (#513, #1654). A final outcome resets it (`applyOutcome`); the
+   * writers that still reset it on an in-flight doc are the manual verify, a
+   * new emit lote and the sweep's consult-by-chave branch for docs without an
+   * `nRec`.
    */
   retries: z.number().int().min(0).nullable(),
   /**
    * Earliest time the async reconciler may consult this lote again — the
    * consumo-indevido gate (avoids SEFAZ rejection 656). Seeded at emit time
    * to `now + tMed` (SEFAZ's estimate), then pushed out by the per-attempt
-   * backoff (`nextConsultaDelayMs`). The Cloud Task is scheduled for this
-   * instant; the backstop sweep skips docs whose `proximaConsultaEm` is in
-   * the future. Cleared to `null` on any terminal outcome. Microseconds
-   * since epoch (the project datetime standard — see `@delfrance/core/datetime`).
+   * backoff (`nextConsultaDelayMs`), or by `RECONCILE_INDISPONIVEL_DELAY_MS`
+   * (one hour) after a receipt that answered serviço paralisado (#1654). The
+   * Cloud Task is scheduled for this instant; the backstop sweep skips docs
+   * whose `proximaConsultaEm` is in the future. Cleared to `null` on any
+   * terminal outcome. Microseconds since epoch (the project datetime
+   * standard — see `@delfrance/core/datetime`).
+   *
+   * ALSO "send in progress until" (#1675): every emit claim that is about to
+   * call SEFAZ stamps it `ENVIO_EM_CURSO_MS` ahead on the doc it sends (the
+   * persist-before-send anchor, a retransmitted crash-window anchor, a batch
+   * member's 4b anchor, a pós-EPEC transmission), and the run's own outcome
+   * write releases it. On a doc with no `nRec` that is in flight or
+   * EPEC-approved, a future value means NOBODY else may send it — an emit is
+   * answered with the in-flight doc — nor write it from a consult
+   * (`envioEmCurso` in `apps/nfe`).
    */
   proximaConsultaEm: microsSinceEpoch().nullable().default(null),
 
@@ -150,6 +325,22 @@ export const nfeSchema = z.object({
   data_autorizacao: millisSinceEpoch().nullable().default(null),
   dataContingencia: millisSinceEpoch().nullable().default(null),
   justificativaContingencia: z.string().min(15).max(255).nullable(),
+
+  /**
+   * Totais do `<ICMSTot>` (+ RTC) — ver {@link nfeTotaisSchema}. Escrito no
+   * MESMO write que persiste `xml_nfe_proc`, derivado desses próprios bytes.
+   *
+   * ⚠️ `null` em toda nota autorizada ANTES deste campo existir, e nada o
+   * preenche em produção enquanto a janela de migração não rodar (regra 8): o
+   * script é `tools/migrations/src/2026-09-nfe-totais`, e ele é a CHAVE que liga
+   * a apuração — enquanto não rodar, toda nota anterior conta em
+   * `notasIlegiveis` e nenhuma alíquota é publicada.
+   *
+   * A alíquota e o imposto rateado NÃO moram aqui ainda: os campos chegam
+   * junto do runner que os escreve, e não antes. Um campo que nada escreve é
+   * exatamente o que o #1151 acabou de remover deste repositório.
+   */
+  totais: nfeTotaisSchema.nullable().default(null),
 
   error: z.string().nullable(),
   ultima_modificacao: millisSinceEpoch().nullable().default(null),

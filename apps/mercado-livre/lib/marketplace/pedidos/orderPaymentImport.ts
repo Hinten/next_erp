@@ -45,10 +45,9 @@
  *     `dropped` rather than as work performed.
  *  5. Staleness outer guard (:1205), NULL-TOLERANT the opposite way from the
  *     shipments handler: proceed iff the stored pagamento doesn't exist yet,
- *     OR its stored `ultimaModificacao` is null, OR it's older than the
- *     incoming payment's (`mlPaymentToPagamento`'s `ultimaModificacao`, which
- *     already folds in the `last_modified ?? date_last_updated ?? nowUs`
- *     fallback chain — see `orderPaymentMapping.ts`). A stored timestamp at
+ *     OR its stored `lastProviderUpdate` is null, OR it's older than the
+ *     incoming payment's provider watermark, which folds in the
+ *     `last_modified ?? date_last_updated ?? nowUs` fallback chain. A stored watermark at
  *     least as fresh as the incoming one → `stale`, zero writes.
  *  6. Upsert at the SAME deterministic id every ML payment path uses
  *     (`makePagamentoIdMercadoLivre`, `orderIds.ts`): CREATE writes the full
@@ -388,13 +387,13 @@ export async function importPagamentoMercadoLivre(
     const existingRaw = pagamentoSnap.exists
       ? (pagamentoSnap.data() as Record<string, unknown>)
       : null;
-    const existingUltimaModificacao = existingRaw
-      ? readMicrosField(existingRaw, 'ultimaModificacao')
+    const existingLastProviderUpdate = existingRaw
+      ? readMicrosField(existingRaw, 'lastProviderUpdate')
       : null;
     const proceed =
       existingRaw == null ||
-      existingUltimaModificacao == null ||
-      existingUltimaModificacao < mapped.ultimaModificacao;
+      existingLastProviderUpdate == null ||
+      existingLastProviderUpdate < mapped.lastProviderUpdate;
     if (!proceed) {
       return { pedidoId, orderId, skipped: 'stale' };
     }

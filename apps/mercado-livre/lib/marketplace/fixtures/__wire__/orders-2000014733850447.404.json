@@ -1,0 +1,6 @@
+{
+  "cause": "",
+  "message": "Order do not exists",
+  "error": "order_not_found",
+  "status": 404
+}

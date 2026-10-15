@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  calcularPrazoDespachoCivil,
   faixaCepOptionString,
   faixaDeCepSchema,
   getPrazoDespacho,
+  getPrazoDespachoNoFuso,
   intFreteMeta,
   intFreteSchema,
   tokenMelEnvMeta,
   tokenMelEnvSchema,
+  type DiaDaSemana,
+  type HorarioDeCorte,
 } from './intFrete';
 
 /* -------------------------------------------------------------------------- */
@@ -228,6 +232,91 @@ describe('intFreteSchema — golden Flutter docs', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*          contaShopeeFreteOuterRef — the Shopee conta back-ref (#1528)       */
+/* -------------------------------------------------------------------------- */
+
+describe('intFreteSchema — contaShopeeFreteOuterRef (#1528)', () => {
+  /**
+   * A legacy `FreteShopee` doc with exactly the keys `_$FreteShopeeToJson` writes
+   * (`.old/packages/canais_de_venda/shopee/lib/src/models.g.dart:127-154`):
+   * `FreteShopee.fromConta` sets tipo / nome / ativo / the filial / the back-ref,
+   * the base constructor stamps `dataCadastro` in ms, `mapa` / `faixaCep` /
+   * `horarioDeCorte` / `enderecoDeOrigem` are `writeNotNull` and never set (so
+   * ABSENT), there is no `prazoExtra` (not a `FreteShopee` field) and no
+   * `ultimaModificacao`, and the ODM's `docId` rides along. This is the shape
+   * the window import brings in, and the sync ADOPTS it by this key.
+   */
+  const legado = {
+    tipo: 'shopee',
+    nome: 'Loja Shopee',
+    ativo: true,
+    dataCadastro: 1718000000000,
+    filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+    contaShopeeFreteOuterRef: 'documents/integracao/int-1',
+    docId: 'legacy-1',
+  };
+
+  it('T21 — parses the legacy FreteShopee golden doc, keeping the back-ref and the ODM docId', () => {
+    const parsed = intFreteSchema.parse(legado);
+
+    expect(parsed).toMatchObject(legado);
+    expect(parsed.contaShopeeFreteOuterRef).toBe('documents/integracao/int-1');
+    // The keys the legacy serializer never wrote come back defaulted, never absent.
+    expect(parsed.ultimaModificacao).toBeNull();
+    expect(parsed.prazoExtra).toBe(0);
+    expect(parsed.horarioDeCorte).toBeNull();
+    // The Mercado Livre twin is a DIFFERENT key: a Shopee doc leaves it null.
+    expect(parsed.contaMercadoLivreMercadoEnviosOuterRef).toBeNull();
+    // `.passthrough()` keeps the ODM metadata the legacy app wrote.
+    expect((parsed as Record<string, unknown>).docId).toBe('legacy-1');
+  });
+
+  it('T22 — an absent key reads back as an explicit null (a non-shopee doc, and the golden one without it)', () => {
+    const motoboy = intFreteSchema.parse({
+      tipo: 'motoboy',
+      nome: 'Motoboy Centro',
+      ativo: true,
+      filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+      dataCadastro: 1718000000000,
+    });
+    expect(motoboy.contaShopeeFreteOuterRef).toBeNull();
+    // PRESENT with null, not missing: a browser `addDoc` of the parsed value
+    // must never carry `undefined`, and the converter writes every key.
+    expect(Object.hasOwn(motoboy, 'contaShopeeFreteOuterRef')).toBe(true);
+
+    const semChave: Record<string, unknown> = { ...legado };
+    delete semChave.contaShopeeFreteOuterRef;
+    const parsed = intFreteSchema.parse(semChave);
+    expect(parsed.contaShopeeFreteOuterRef).toBeNull();
+    expect(Object.hasOwn(parsed, 'contaShopeeFreteOuterRef')).toBe(true);
+  });
+
+  it('T23 — the canonical `documents/integracao/<id>` passes; the bare `integracao/<id>` (near-miss) FAILS', () => {
+    const campo = intFreteSchema.shape.contaShopeeFreteOuterRef;
+
+    // Equal side: the canonical ref and an explicit null are both valid.
+    expect(campo.safeParse('documents/integracao/int-1').success).toBe(true);
+    expect(campo.safeParse(null).success).toBe(true);
+
+    // Near-miss: the bare `pathNoDocuments` spelling is NOT the canonical form.
+    // The sync's lookup is an equality on the canonical string, so a doc holding
+    // the bare form would never be found — the schema must not bless it either.
+    expect(campo.safeParse('integracao/int-1').success).toBe(false);
+    // A path ending on a COLLECTION is not a dereferenceable doc ref.
+    expect(campo.safeParse('documents/integracao').success).toBe(false);
+
+    const doc = intFreteSchema.safeParse({
+      ...legado,
+      contaShopeeFreteOuterRef: 'integracao/int-1',
+    });
+    expect(doc.success).toBe(false);
+    if (!doc.success) {
+      expect(doc.error.issues.map((i) => i.path)).toEqual([['contaShopeeFreteOuterRef']]);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                           faixaCepOptionString                             */
 /* -------------------------------------------------------------------------- */
 
@@ -395,5 +484,170 @@ describe('getPrazoDespacho', () => {
     );
     // 00:01 → cut-off missed; single-weekday schedule → null (quirk above).
     expect(getPrazoDespacho([semCorte], new Date(2021, 0, 4, 0, 1))).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                          getPrazoDespachoNoFuso                            */
+/*                                                                            */
+/*  The SAME rule as above, with the two zone-dependent halves named out loud  */
+/*  instead of inherited from the process. Anchors: 2021-01-04 is a Monday;    */
+/*  every instant below is written as a UTC epoch so the assertion does not    */
+/*  depend on the runner's own timezone.                                       */
+/* -------------------------------------------------------------------------- */
+
+const SAO_PAULO = 'America/Sao_Paulo';
+
+/** The Shopee fallback schedule: Mon-Fri, cut-off 14:00, posted at 00:00. */
+function corte14h(diaDaSemana: DiaDaSemana): HorarioDeCorte {
+  return {
+    diaDaSemana,
+    horaDeCorte: 14,
+    minutosDeCorte: 0,
+    prazoDePostagem: 0,
+    horaPostagem: null,
+    minutosPostagem: null,
+  };
+}
+
+const CORTE_14H_SEG_A_SEX: HorarioDeCorte[] = [
+  corte14h(1),
+  corte14h(2),
+  corte14h(3),
+  corte14h(4),
+  corte14h(5),
+];
+
+const SEGUNDA_00H_SP = Date.UTC(2021, 0, 4, 3, 0);
+const TERCA_00H_SP = Date.UTC(2021, 0, 5, 3, 0);
+const SEGUNDA_11_00H_SP = Date.UTC(2021, 0, 11, 3, 0);
+
+describe('getPrazoDespachoNoFuso', () => {
+  it('returns null for null/empty schedules', () => {
+    expect(getPrazoDespachoNoFuso(null, Date.UTC(2021, 0, 4, 16, 59), SAO_PAULO)).toBeNull();
+    expect(getPrazoDespachoNoFuso([], Date.UTC(2021, 0, 4, 16, 59), SAO_PAULO)).toBeNull();
+  });
+
+  it('a Monday at 13:59 São Paulo dispatches the SAME Monday, 00:00 São Paulo', () => {
+    // 16:59Z = 13:59 in São Paulo (UTC-3).
+    expect(
+      getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, Date.UTC(2021, 0, 4, 16, 59), SAO_PAULO),
+    ).toBe(SEGUNDA_00H_SP);
+  });
+
+  it('⚠️ NEAR-MISS: 14:00 still dispatches today (the inclusive-minute quirk) and 14:01 does not', () => {
+    expect(
+      getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, Date.UTC(2021, 0, 4, 17, 0), SAO_PAULO),
+    ).toBe(SEGUNDA_00H_SP);
+    expect(
+      getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, Date.UTC(2021, 0, 4, 17, 1), SAO_PAULO),
+    ).toBe(TERCA_00H_SP);
+  });
+
+  it('a Friday past the cut-off lands on Monday, not on Saturday', () => {
+    // Friday 2021-01-08 at 14:01 São Paulo.
+    expect(
+      getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, Date.UTC(2021, 0, 8, 17, 1), SAO_PAULO),
+    ).toBe(SEGUNDA_11_00H_SP);
+  });
+
+  it('a Saturday lands on Monday — the weekend has no entry at all', () => {
+    // Saturday 2021-01-09 at 12:00 São Paulo.
+    expect(
+      getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, Date.UTC(2021, 0, 9, 15, 0), SAO_PAULO),
+    ).toBe(SEGUNDA_11_00H_SP);
+  });
+
+  it('⚠️ NEAR-MISS: the SAME instant under timeZone "UTC" answers a DIFFERENT day — the whole reason the zone is a parameter', () => {
+    const instante = Date.UTC(2021, 0, 4, 16, 59); // 13:59 São Paulo, 16:59 UTC
+    expect(getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, instante, SAO_PAULO)).toBe(SEGUNDA_00H_SP);
+    // In UTC the cut-off has already passed, so the deadline is Tuesday 00:00 UTC.
+    expect(getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, instante, 'UTC')).toBe(
+      Date.UTC(2021, 0, 5, 0, 0),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: the WEEKDAY comes from the zone too — an instant that is Monday in UTC is Sunday in São Paulo', () => {
+    const instante = Date.UTC(2021, 0, 4, 2, 0); // Monday 02:00 UTC = Sunday 23:00 São Paulo
+    // Sunday has no entry: the scan walks to Monday the 4th.
+    expect(getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, instante, SAO_PAULO)).toBe(SEGUNDA_00H_SP);
+    // In UTC it is already Monday, before the cut-off: same calendar day, different instant.
+    expect(getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, instante, 'UTC')).toBe(
+      Date.UTC(2021, 0, 4, 0, 0),
+    );
+  });
+
+  it('carries the month overflow through the zoned path (Friday Jan 29 + 3 days = Feb 1)', () => {
+    const soSegunda = [corte14h(1)];
+    // Friday 2021-01-29 at 10:00 São Paulo → the next segunda is Feb 1.
+    expect(getPrazoDespachoNoFuso(soSegunda, Date.UTC(2021, 0, 29, 13, 0), SAO_PAULO)).toBe(
+      Date.UTC(2021, 1, 1, 3, 0),
+    );
+  });
+
+  it('⚠️ the civil core does NOT normalise the day — the Date constructor does, exactly as Dart did', () => {
+    const alvo = calcularPrazoDespachoCivil([corte14h(1)], {
+      diaDaSemana: 5,
+      ano: 2021,
+      mes: 0,
+      dia: 29,
+      hora: 10,
+      minuto: 0,
+    });
+    expect(alvo).toEqual({ ano: 2021, mes: 0, dia: 32, hora: 0, minuto: 0 });
+  });
+
+  it('⚠️ NEAR-MISS: the offset is measured at the RESULT, not at `agora` — a deadline may cross a DST transition', () => {
+    // Saturday 2021-03-13 12:00 New York (EST, UTC-5). US DST starts on the
+    // 14th, so the Monday deadline is 00:00 EDT (UTC-4) = 04:00Z. Reusing the
+    // offset that held at `agora` would answer 05:00Z.
+    const sabadoEst = Date.UTC(2021, 2, 13, 17, 0);
+    expect(getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, sabadoEst, 'America/New_York')).toBe(
+      Date.UTC(2021, 2, 15, 4, 0),
+    );
+    expect(getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, sabadoEst, 'America/New_York')).not.toBe(
+      Date.UTC(2021, 2, 15, 5, 0),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: the offset is corrected a SECOND time — a one-pass conversion lands an hour off inside a spring-forward day', () => {
+    // Sunday 2021-03-14 is the US spring-forward. A schedule posting at 03:00
+    // targets a civil time that is already EDT (UTC-4) while the FIRST offset
+    // guess is measured on the EST (UTC-5) side of the transition.
+    const domingo03h: HorarioDeCorte[] = [
+      {
+        diaDaSemana: 7,
+        horaDeCorte: 23,
+        minutosDeCorte: 59,
+        prazoDePostagem: 0,
+        horaPostagem: 3,
+        minutosPostagem: 0,
+      },
+    ];
+    const domingo01hEst = Date.UTC(2021, 2, 14, 6, 0);
+    expect(getPrazoDespachoNoFuso(domingo03h, domingo01hEst, 'America/New_York')).toBe(
+      Date.UTC(2021, 2, 14, 7, 0),
+    );
+    // One pass would answer 08:00Z, i.e. 04:00 New York — an hour past the
+    // configured posting time.
+    expect(getPrazoDespachoNoFuso(domingo03h, domingo01hEst, 'America/New_York')).not.toBe(
+      Date.UTC(2021, 2, 14, 8, 0),
+    );
+  });
+
+  it('agrees with getPrazoDespacho when the named zone IS the runner\u2019s own', () => {
+    const fusoLocal = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const instantes = [
+      Date.UTC(2021, 0, 4, 16, 59),
+      Date.UTC(2021, 0, 8, 17, 1),
+      Date.UTC(2021, 5, 16, 10, 0),
+    ];
+    for (const ms of instantes) {
+      const local = getPrazoDespacho(CORTE_14H_SEG_A_SEX, new Date(ms));
+      // A Mon-Fri schedule always resolves inside the 7-day scan — a pair of
+      // nulls would make this comparison prove nothing.
+      expect(local).not.toBeNull();
+      expect(getPrazoDespachoNoFuso(CORTE_14H_SEG_A_SEX, ms, fusoLocal)).toBe(local?.getTime());
+    }
   });
 });

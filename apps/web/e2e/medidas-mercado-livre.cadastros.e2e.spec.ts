@@ -1,9 +1,13 @@
 import { expect, test } from '@playwright/test';
+import { FieldPath } from 'firebase-admin/firestore';
+import { db } from '@delfrance/test-fixtures';
 import {
   cleanupByNamePrefix,
   cleanupMercadoLivreFixtures,
   e2ePrefix,
+  getTabMediById,
   seedMedidaMlChart,
+  seedMedidaMlDraft,
   seedMercadoLivreFixtures,
 } from './_helpers/seed-data';
 import { warmRoutes } from './helpers/warmup';
@@ -150,5 +154,98 @@ test.describe.serial('Medidas Mercado Livre tab e2e — chart manager', () => {
     // asserted: the grid comes from Mercado Livre and this suite has no
     // marketplace backend, so it never loads here. The suggestion path itself is
     // covered by the route's unit tests and by the manual staging pass.
+  });
+
+  test('stages and undoes draft removal without writing or contacting Mercado Livre', async ({
+    page,
+  }) => {
+    const fixture = await seedMedidaMlDraft(`${prefix}-undo`, conta);
+    const before = await getTabMediById(fixture.id);
+    const requests: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/marketplace/mercado-livre/')) requests.push(request.url());
+    });
+    await page.goto(`/medidas/${fixture.id}`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    const row = page.getByTestId(`ml-guia-${conta}-0`);
+    await row.getByRole('button', { name: 'Excluir' }).click();
+    await expect(row.getByText('Será excluída ao salvar')).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Editar' })).toBeDisabled();
+    expect(await getTabMediById(fixture.id)).toEqual(before);
+    await page.getByRole('tab', { name: 'Dados gerais' }).click();
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    await expect(row.getByText('Será excluída ao salvar')).toBeVisible();
+    await row.getByRole('button', { name: 'Desfazer' }).click();
+    await expect(row.getByText('Rascunho', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
+    await page.waitForURL(/\/medidas$/);
+    expect(await getTabMediById(fixture.id)).toEqual(before);
+    expect(requests).toEqual([]);
+  });
+
+  test('commits a staged draft removal through Save after switching tabs', async ({ page }) => {
+    const fixture = await seedMedidaMlDraft(`${prefix}-save`, conta);
+    const before = (await getTabMediById(fixture.id))!;
+    const requests: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/marketplace/mercado-livre/')) requests.push(request.url());
+    });
+    await page.goto(`/medidas/${fixture.id}`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    await page.getByTestId(`ml-guia-${conta}-0`).getByRole('button', { name: 'Excluir' }).click();
+    await page.getByRole('tab', { name: 'Dados gerais' }).click();
+    await page.getByRole('button', { name: 'Salvar e continuar', exact: true }).click();
+    await expect(page.getByText('Salvo.', { exact: true })).toBeVisible();
+    const after = (await getTabMediById(fixture.id))!;
+    expect(after).toEqual({
+      ...before,
+      ultimaModificacao: after.ultimaModificacao,
+      tabelasDeMedidasMercadoLivre: {
+        outra: { tabelas: [], metadata: 'sibling' },
+        [conta]: { tabelas: [], metadata: 'keep' },
+      },
+    });
+    expect(after.ultimaModificacao).toEqual(expect.any(Number));
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    await expect(page.getByTestId(`ml-guia-${conta}-0`)).toHaveCount(0);
+    expect(requests).toEqual([]);
+  });
+
+  test('keeps a changed draft and reports a persistent conflict while preserving ordinary saved edits', async ({
+    page,
+  }) => {
+    const fixture = await seedMedidaMlDraft(`${prefix}-conflict`, conta);
+    const requests: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/marketplace/mercado-livre/')) requests.push(request.url());
+    });
+    await page.goto(`/medidas/${fixture.id}`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    await page.getByTestId(`ml-guia-${conta}-0`).getByRole('button', { name: 'Excluir' }).click();
+    const changed = { ...fixture.chart, rows: [{ attributes: [{ id: 'SIZE', value_name: '1' }] }] };
+    await db()
+      .collection('tabMedi')
+      .doc(fixture.id)
+      .update(new FieldPath('tabelasDeMedidasMercadoLivre', conta, 'tabelas'), [changed]);
+    const preview = page.getByTestId(`ml-guia-pendente-${conta}-0`);
+    await expect(preview).toBeVisible();
+    await page.getByRole('tab', { name: 'Dados gerais' }).click();
+    await page.getByLabel('Descrição').fill('Edição salva');
+    await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'Os rascunhos não foram excluídos' }).first(),
+    ).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/medidas/${fixture.id}$`));
+    const after = (await getTabMediById(fixture.id))!;
+    expect(after.descricao).toBe('Edição salva');
+    expect(after.tabelasDeMedidasMercadoLivre).toMatchObject({
+      [conta]: { tabelas: [changed], metadata: 'keep' },
+    });
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    await expect(preview.getByRole('button', { name: 'Desfazer' })).toBeVisible();
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'Desfaça as exclusões pendentes' }).first(),
+    ).toBeVisible();
+    expect(requests).toEqual([]);
   });
 });

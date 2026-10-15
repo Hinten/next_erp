@@ -8,7 +8,13 @@ import {
   seedIntFreteFixtures,
 } from './_helpers/seed-data';
 import { applyTextFilter, expectRowHidden, expectRowVisible } from './helpers/table-view';
-import { clickSave, confirmDelete, fillField, selectFieldWithSearch } from './helpers/object-view';
+import {
+  clickSave,
+  confirmDelete,
+  fillField,
+  selectField,
+  selectFieldWithSearch,
+} from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -113,10 +119,11 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await page.getByRole('tab', { name: 'Faixas de CEP' }).click();
     await expect(page.getByLabel('CEP Inicial 1')).toHaveValue('01000000');
     await page.getByRole('button', { name: 'Adicionar faixa' }).click();
-    await page.getByLabel('CEP Inicial 3').fill('03000000');
-    await page.getByLabel('CEP Final 3').fill('03999999');
-    await page.getByLabel('Preço 3').fill('30');
-    await page.getByLabel('Prazo 3').fill('3');
+    await fillField(page, 'CEP Inicial 3', '03000000');
+    await fillField(page, 'CEP Final 3', '03999999');
+    await fillField(page, 'Custo 3', '0');
+    await fillField(page, 'Preço 3', '30');
+    await fillField(page, 'Prazo 3', '3');
     await clickSave(page, 'Salvar alterações');
     await page.waitForURL(/\/logistica\/motoboy$/, { timeout: 15_000 });
 
@@ -131,13 +138,10 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await expect(page.getByLabel('CEP Inicial 1')).toHaveValue('01000000');
 
     // Corrupt the row FIRST (schema-invalid CEP), then mark it for deletion —
-    // validation must ignore rows that will be stripped on save.
+    // validation must ignore rows that will be stripped on save. The trash
+    // click is deliberately immediate: rendering the inline error must not
+    // move the action out from under the pointer.
     await page.getByLabel('CEP Inicial 1').fill('1');
-    // Blur explicitly and wait for the per-row message (the inline-error fix)
-    // BEFORE clicking the trash icon: the message render shifts the layout,
-    // and a click during that shift misses the icon.
-    await page.getByLabel('CEP Inicial 1').blur();
-    await expect(page.getByText('CEP deve ter 8 dígitos')).toBeVisible();
     await page.getByRole('button', { name: 'Excluir faixa 1' }).click();
     await expect(page.getByText('Será excluída')).toBeVisible();
     // Nothing committed yet — the doc still has both rows.
@@ -184,8 +188,14 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await clickSave(page, 'Salvar alterações');
 
     await expect(page.getByText('Dia da semana duplicado')).toBeVisible({ timeout: 10_000 });
+    const horariosTab = page.getByRole('tab', { name: /Horários de corte/ });
+    await expect(horariosTab.getByRole('img', { name: 'contém campos inválidos' })).toBeVisible();
     // Save blocked — still on the edit page.
     await expect(page).toHaveURL(new RegExp(`/logistica/motoboy/${row(2)}$`));
+
+    await selectField(page, 'Dia da semana 2', 'Terça-feira');
+    await expect(page.getByText('Dia da semana duplicado')).toBeHidden();
+    await expect(horariosTab.getByRole('img', { name: 'contém campos inválidos' })).toHaveCount(0);
   });
 
   test('origin address: toggle on, CEP leads the form, fill and persist', async ({ page }) => {
@@ -221,6 +231,16 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await fillField(page, 'Número', '1000');
     await fillField(page, 'Bairro', 'Bela Vista');
     await fillField(page, 'Cidade', 'São Paulo');
+
+    await toggle.click();
+    const discardDialog = page.getByRole('dialog', {
+      name: 'Descartar dados de “Informar endereço de origem”?',
+    });
+    await expect(discardDialog).toBeVisible();
+    await discardDialog.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(toggle).toBeChecked();
+    await expect(cep).toHaveValue('01310-100');
+
     await clickSave(page, 'Salvar alterações');
     await page.waitForURL(/\/logistica\/motoboy$/, { timeout: 15_000 });
 

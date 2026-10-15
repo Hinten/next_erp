@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { microsSinceEpoch, millisSinceEpoch } from '@delfrance/schemas';
-import { extractFieldsFromSchema } from './derive';
+import { buildEmptyDefaults, extractFieldsFromSchema } from './derive';
 
 describe('extractFieldsFromSchema', () => {
   it('produces a descriptor per top-level key with default kinds', () => {
@@ -150,5 +150,25 @@ describe('extractFieldsFromSchema', () => {
     const schema = z.object({ s: z.string().default('x') });
     const f = extractFieldsFromSchema(schema)[0]!;
     expect(f.kind).toBe('string');
+  });
+});
+
+describe('buildEmptyDefaults', () => {
+  it('gives a z.null() field (a transient UI anchor) a null default, like a nullable one', () => {
+    const schema = z.object({
+      ancora: z.null().default(null),
+      talvez: z.string().nullable().default(null),
+    });
+    expect(buildEmptyDefaults(extractFieldsFromSchema(schema))).toEqual({
+      ancora: null,
+      talvez: null,
+    });
+  });
+
+  it('NEAR-MISS: a required number with no default stays ABSENT (a real validation error at submit)', () => {
+    const schema = z.object({ ancora: z.null().default(null), n: z.number() });
+    const out = buildEmptyDefaults(extractFieldsFromSchema(schema));
+    expect(out).toEqual({ ancora: null });
+    expect(Object.hasOwn(out, 'n')).toBe(false);
   });
 });

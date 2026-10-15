@@ -1,10 +1,10 @@
-import { getDoc, type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
-import type { IntFrete, IntegracaoFrete, Pedido } from '@delfrance/schemas';
+import type { Pedido } from '@delfrance/schemas';
 import type { MercadoLivreClient } from '../mercado-livre/client';
-import { dereferenceOuterRef } from '../data/dereferenceOuterRef';
+import type { ShopeeClient } from '../shopee/client';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
 import {
   ensureNfeAprovada,
@@ -12,6 +12,7 @@ import {
   type CheckoutDanfeFormat,
   type EnsureNfeResult,
 } from './nfeFlow';
+import { resolverIntFrete } from './etiqueta/intFrete';
 import { emitirOuImprimirEtiqueta } from './etiqueta/registry';
 import type { EtiquetaOutcome, EtiquetaProviderUi } from './etiqueta/types';
 import { printJob } from '../print-agent/printJob';
@@ -35,23 +36,13 @@ export interface PostSaveResult {
   etiqueta: EtiquetaOutcome | { status: 'no-integration' } | null;
 }
 
-async function resolveIntFrete(
-  db: Firestore,
-  frete: Pedido['freteInicial'],
-): Promise<{ id: string; tipo: IntegracaoFrete; data: IntFrete } | null> {
-  const ref = dereferenceOuterRef(db, frete?.integracaoFreteOuterRef);
-  if (ref === null) return null;
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return null;
-  const data = snap.data() as IntFrete;
-  return { id: snap.id, tipo: data.tipo, data };
-}
-
 export async function runCheckoutPostSave(args: {
   db: Firestore;
   nfeClient: NFeHttpClient | null;
   freightClient: FreightHttpClient | null;
   mercadoLivreClient: MercadoLivreClient | null;
+  /** Required like the provider dep it feeds — a screen must say which client it threads. */
+  shopeeClient: ShopeeClient | null;
   pedido: Pedido;
   pedidoId: string;
   formatoDanfe: CheckoutDanfeFormat;
@@ -64,6 +55,7 @@ export async function runCheckoutPostSave(args: {
     nfeClient,
     freightClient,
     mercadoLivreClient,
+    shopeeClient,
     pedido,
     pedidoId,
     formatoDanfe,
@@ -99,11 +91,13 @@ export async function runCheckoutPostSave(args: {
     }
   }
 
-  // 2. Etiqueta — resolve the frete integration, then dispatch through the registry.
+  // 2. Etiqueta — resolve the frete integration (its `int_frete` doc, or the
+  //    block's marketplace tipo alone — `resolverIntFrete`), then dispatch
+  //    through the registry.
   const frete = pedido.freteInicial;
   let etiqueta: PostSaveResult['etiqueta'] = null;
   if (frete !== null) {
-    const intFrete = await resolveIntFrete(db, frete);
+    const intFrete = await resolverIntFrete(db, frete);
     if (intFrete === null) {
       ui.notify({
         title: 'Frete',
@@ -123,6 +117,7 @@ export async function runCheckoutPostSave(args: {
           freightClient,
           nfeClient,
           mercadoLivreClient,
+          shopeeClient,
           printJob: args.printJobFn ?? printJob,
         },
         ui,

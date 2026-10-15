@@ -229,11 +229,12 @@ export function ReembolsoParcialModal({
         )}
 
         <Group justify="flex-end">
-          <Button variant="subtle" onClick={onClose} disabled={enviando}>
+          <Button type="button" variant="subtle" onClick={onClose} disabled={enviando}>
             Cancelar
           </Button>
           {opcoes.length > 0 && (
             <Button
+              type="button"
               color="red"
               disabled={bloqueado}
               loading={enviando}

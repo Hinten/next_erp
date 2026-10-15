@@ -17,7 +17,6 @@
     "./phone": "./src/phone/index.ts",
     "./region": "./src/region/index.ts",
     "./tenant": "./src/tenant/index.ts",
-    "./plugins": "./src/plugins/index.ts",
     "./marketplace": "./src/marketplace/index.ts",
     "./equality": "./src/equality/index.ts",
     "./wire": "./src/wire/index.ts"

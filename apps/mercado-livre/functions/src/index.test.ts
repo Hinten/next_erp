@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 // #778: the reprocess sweep must bind the ML app credentials + a budget that
@@ -35,8 +37,10 @@ process.env.MERCADO_LIVRE_TASKS_REGION = 'us-central1';
 // the sibling `on*Changed` tests here, which all import at the top level.
 const {
   reprocessMercadoLivreNotifications,
+  sweepMercadoLivreAnunciosNaoEnumerados,
   sweepMercadoLivreMissedFeeds,
   sweepMercadoLivrePedidosTravados,
+  sweepMercadoLivreStockReconciliacao,
 } = await import('./index');
 
 afterAll(() => {
@@ -120,5 +124,127 @@ describe('sweepMercadoLivrePedidosTravados (#1087 follow-up)', () => {
     expect(json).toContain('MERCADO_LIVRE_CLIENT_ID');
     expect(json).toContain('MERCADO_LIVRE_CLIENT_SECRET');
     expect(endpoint.timeoutSeconds).toBe(540);
+  });
+});
+
+/** The parsed `scheduleTrigger` of an `onSchedule` export — fields, never a JSON substring. */
+function gatilhoDe(fn: unknown): { schedule?: string; timeZone?: string } {
+  return endpointOf(fn).scheduleTrigger as { schedule?: string; timeZone?: string };
+}
+
+/**
+ * A FIXED-TIME cron (`M H DoM Mon DoW`) split into its fields, with the start as
+ * seconds after local midnight. Refuses anything else — a step or a list in the
+ * minute/hour fields has no single start to compare, and comparing one by
+ * accident would be a check that cannot fail.
+ */
+function cronFixo(schedule: string | undefined): {
+  inicioSeg: number;
+  diaDoMes: string;
+  mes: string;
+  diaDaSemana: string;
+} {
+  const campos = (schedule ?? '').trim().split(/\s+/);
+  expect(campos).toHaveLength(5);
+  const [minuto = '', hora = '', diaDoMes = '', mes = '', diaDaSemana = ''] = campos;
+  expect(minuto).toMatch(/^\d{1,2}$/);
+  expect(hora).toMatch(/^\d{1,2}$/);
+  return { inicioSeg: Number(hora) * 3600 + Number(minuto) * 60, diaDoMes, mes, diaDaSemana };
+}
+
+describe('sweepMercadoLivreAnunciosNaoEnumerados (#1200 — the monthly link audit)', () => {
+  it('runs at 02:30 America/Sao_Paulo on the 1st', () => {
+    // ⚠️ Parsed trigger fields, not `toContain` on the JSON blob — every schedule
+    // in this codebase is America/Sao_Paulo, and '30 2 1 * *' as a substring would
+    // also match a cron someone widened around it.
+    const trigger = gatilhoDe(sweepMercadoLivreAnunciosNaoEnumerados);
+    expect(trigger.schedule).toBe('30 2 1 * *');
+    expect(trigger.timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('binds NO ML secret — the audit makes zero ML calls — and sets timeoutSeconds to 540', () => {
+    // The trap is `sweepScheduleOptions`, which the three tiers beside it share:
+    // it binds both secrets, so reusing it for "one more stock schedule" would
+    // hand the ML app credentials to a Firestore-only function (`options.ts`).
+    const endpoint = endpointOf(sweepMercadoLivreAnunciosNaoEnumerados);
+    const json = JSON.stringify(endpoint);
+    expect(json).not.toContain('MERCADO_LIVRE_CLIENT_ID');
+    expect(json).not.toContain('MERCADO_LIVRE_CLIENT_SECRET');
+    expect(endpoint.timeoutSeconds).toBe(540);
+    // ÂNCORA: the same probe DOES see a bound secret on the reconciliação, so the
+    // two negatives above are not passing on a serialization that hides secrets.
+    expect(JSON.stringify(endpointOf(sweepMercadoLivreStockReconciliacao))).toContain(
+      'MERCADO_LIVRE_CLIENT_ID',
+    );
+  });
+
+  it('finishes before the 03:00 force-all it prepares — same day, same zone, start + timeout < its start', () => {
+    // The heal is only worth running BEFORE the full pass re-enumerates the
+    // catalogue; a run still going at 03:00 heals families the pass has already
+    // walked past, and they wait a month. So the whole window — start plus the
+    // declared timeout, the worst case of a run killed at its limit — must close
+    // before the reconciliação starts, on the SAME calendar day in the SAME zone.
+    // Both crons are parsed from the deployed endpoints, so moving either one
+    // re-checks the arithmetic instead of trusting a literal here.
+    const auditoria = gatilhoDe(sweepMercadoLivreAnunciosNaoEnumerados);
+    const reconciliacao = gatilhoDe(sweepMercadoLivreStockReconciliacao);
+    expect(auditoria.timeZone).toBe(reconciliacao.timeZone);
+
+    const a = cronFixo(auditoria.schedule);
+    const r = cronFixo(reconciliacao.schedule);
+    expect(a.diaDoMes).toBe(r.diaDoMes);
+    expect(a.mes).toBe(r.mes);
+    expect(a.diaDaSemana).toBe(r.diaDaSemana);
+
+    const timeoutSeconds = endpointOf(sweepMercadoLivreAnunciosNaoEnumerados).timeoutSeconds;
+    expect(typeof timeoutSeconds).toBe('number');
+    expect(a.inicioSeg + (timeoutSeconds as number)).toBeLessThan(r.inicioSeg);
+  });
+});
+
+/**
+ * Owner decision D2: the audit runs even with `MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED`
+ * off — that valve rations ML quota, and the audit spends none. No endpoint field
+ * can show what a HANDLER reads, so this reads the source (the
+ * `stockSendMaxAttempts.test.ts` technique: the nested functions codebase has no
+ * test runner of its own).
+ *
+ * ⚠️ Scoped to the new export's own text, never the whole file: `sweepStock.ts`
+ * legitimately names the flag in the reconciliação's handler right above it, so a
+ * whole-file scan could not tell the two apart. The slice runs from the
+ * `export const` to the `);` that closes the `onSchedule(` call at column 0.
+ */
+describe('sweepMercadoLivreAnunciosNaoEnumerados — its handler names no reconciliação valve (D2)', () => {
+  const fonte = readFileSync(join(__dirname, 'sweepStock.ts'), 'utf8');
+
+  function trechoDoExport(nome: string): string {
+    const inicio = fonte.indexOf(`export const ${nome} = onSchedule(`);
+    expect(inicio).toBeGreaterThan(-1);
+    const fim = fonte.indexOf('\n);\n', inicio);
+    expect(fim).toBeGreaterThan(inicio);
+    return fonte.slice(inicio, fim);
+  }
+
+  it('reads neither the flag constant nor its literal, and calls no shared helper that could', () => {
+    const trecho = trechoDoExport('sweepMercadoLivreAnunciosNaoEnumerados');
+    // ÂNCORA: the slice really is the audit's handler, not an empty or foreign span.
+    expect(trecho).toContain('runAuditoriaNaoEnumerados(');
+
+    expect(trecho).not.toMatch(/\bSTOCK_RECONCILIACAO_FLAG_ENV\b/);
+    expect(trecho).not.toContain('MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED');
+    // `runAndLog` drives the ML-bound tiers; routing the audit through it (or any
+    // helper defined in this file) would move a gate out of this slice's sight.
+    expect(trecho).not.toMatch(/\brunAndLog\(/);
+    expect(trecho).not.toMatch(/\bsweepScheduleOptions\(/);
+    // Cloud Scheduler does not exist in the ML backend's region (`options.ts`).
+    expect(trecho).toMatch(/region:\s*TASKS_SCHEDULER_REGION\b/);
+  });
+
+  it('ÂNCORA: the same slicing DOES see the flag in the reconciliação handler', () => {
+    // Without this the negatives above could pass on a slicer that returns the
+    // wrong span — the reconciliação is the one export known to name the flag.
+    expect(trechoDoExport('sweepMercadoLivreStockReconciliacao')).toMatch(
+      /\bSTOCK_RECONCILIACAO_FLAG_ENV\b/,
+    );
   });
 });

@@ -1,13 +1,75 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import { cClassTribEntry } from './cclasstrib';
 import {
+  CRT,
+  CSOSN,
   CSOSN_LABELS,
+  CST,
   CST_ICMS_LABELS,
   CST_PIS_COFINS_LABELS,
+  MOD_BC,
+  MOD_BCST,
+  MOD_BCST_LABELS,
+  ORIGEM,
+  ORIGEM_PRODUTO_LABELS,
+  configuracaoIBSCBSDraftSchema,
   configuracaoIBSCBSSchema,
   configuracaoICMSSchema,
   impostoSchema,
+  impostoPersistidoSchema,
+  indEscalaField,
+  indEscalaFromScalar,
+  modBCSTSchema,
+  nveField,
+  nveCarriesValue,
+  nveFromScalar,
+  origemSchema,
   taxConfigFields,
 } from './tribute';
+
+describe('origemSchema — merchandise origin shared by fiscal defaults and snapshots', () => {
+  it('preserves the named SEFAZ wire codes', () => {
+    expect(ORIGEM).toEqual({
+      nacional: '0',
+      estrangeiraImportacaoDireta: '1',
+      estrangeiraMercadoInterno: '2',
+      nacionalConteudoImportacaoAte70: '3',
+      nacionalProcessoProdutivoBasico: '4',
+      nacionalConteudoImportacaoAte40: '5',
+      estrangeiraImportacaoDiretaSemSimilar: '6',
+      estrangeiraMercadoInternoSemSimilar: '7',
+      nacionalConteudoImportacaoAcima70: '8',
+    });
+  });
+
+  it('the enum, named constants and labels cover exactly the nine wire codes', () => {
+    const members = [...origemSchema.options].sort();
+    expect(members).toEqual(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
+    expect(Object.values(ORIGEM).sort()).toEqual(members);
+    expect(Object.keys(ORIGEM_PRODUTO_LABELS).sort()).toEqual(members);
+    expect(Object.values(ORIGEM_PRODUTO_LABELS).every((label) => label.length > 0)).toBe(true);
+  });
+
+  it.each(origemSchema.options)('round-trips origin %s in both tax-object schemas', (origem) => {
+    expect(impostoSchema.parse({ origem }).origem).toBe(origem);
+    expect(impostoPersistidoSchema.parse({ origem }).origem).toBe(origem);
+  });
+
+  it.each(['9', '00', '', 0, 1, 2, 3, 4, 5, 6, 7, 8])('rejects invalid origin %j', (origem) => {
+    expect(origemSchema.safeParse(origem).success).toBe(false);
+    expect(impostoSchema.safeParse({ origem }).success).toBe(false);
+    expect(impostoPersistidoSchema.safeParse({ origem }).success).toBe(false);
+  });
+
+  it('still requires a non-null origin in a tax object', () => {
+    for (const schema of [impostoSchema, impostoPersistidoSchema]) {
+      expect(schema.safeParse({}).success).toBe(false);
+      expect(schema.safeParse({ origem: null }).success).toBe(false);
+      expect(schema.safeParse({ origem: undefined }).success).toBe(false);
+    }
+  });
+});
 
 describe('configuracaoICMSSchema — Simples Nacional', () => {
   it('round-trips a CSOSN 101 config (com crédito)', () => {
@@ -55,6 +117,105 @@ describe('configuracaoICMSSchema — Regime Normal (lossless storage, #312 defer
   });
 });
 
+// modBCST '6' = Valor da Operação (NT 2019.001 §1.6, #509). Before it existed,
+// a stored ICMS-ST config holding '6' failed every collection schema that
+// spreads `taxConfigFields`, so the imposto resolver DROPPED the whole doc and
+// the item resolved against a lower tier — a wrong NF-e with no error. The
+// value has three companions (enum, named constant, UI label) and the type
+// system enforces only one of them, so each is pinned here.
+
+describe("modBCSTSchema — '6' Valor da Operação (#509)", () => {
+  it("accepts '6'", () => {
+    expect(modBCSTSchema.parse('6')).toBe('6');
+  });
+
+  it("near-miss: still rejects '7' and the NUMBER 6", () => {
+    expect(modBCSTSchema.safeParse('7').success).toBe(false);
+    expect(modBCSTSchema.safeParse(6).success).toBe(false);
+  });
+
+  it('names it valorOperacao with the leiaute label', () => {
+    expect(MOD_BCST.valorOperacao).toBe('6');
+    expect(MOD_BCST_LABELS[MOD_BCST.valorOperacao]).toBe('6 - Valor da Operação');
+  });
+
+  // `satisfies Record<string, ModBCST>` checks each value, never that every
+  // member has a name; only the `Record<ModBCST, string>` labels are
+  // compile-enforced. A member added to the enum alone must fail HERE.
+  it('MOD_BCST and MOD_BCST_LABELS each cover exactly the enum members', () => {
+    const members = [...modBCSTSchema.options].sort();
+    expect(members).toEqual(['0', '1', '2', '3', '4', '5', '6']);
+    expect([...Object.values(MOD_BCST)].sort()).toEqual(members);
+    expect(Object.keys(MOD_BCST_LABELS).sort()).toEqual(members);
+  });
+});
+
+describe("configuracaoICMSSchema — ST groups carry modBCST '6' (#509)", () => {
+  const st = { modBCST: MOD_BCST.valorOperacao, vBCST: 1500, pICMSST: 18, vICMSST: 270 };
+
+  it.each([
+    [CSOSN.tributadaComCreditoComSt, { csosn201: { pCredSN: 1.5, vCredICMSSN: 22.5, ...st } }],
+    [CSOSN.tributadaSemCreditoComSt, { csosn202ou203: st }],
+    [CSOSN.isencaoFaixaReceitaBrutaComSt, { csosn202ou203: st }],
+    [CSOSN.outros, { csosn900: st }],
+  ])('round-trips CSOSN %s', (csosn, sub) => {
+    const cfg = { crt: CRT.simplesNacional, csosn, ...sub };
+    expect(configuracaoICMSSchema.parse(cfg)).toEqual(cfg);
+  });
+
+  it('round-trips a Regime Normal icms10 losslessly', () => {
+    const cfg = {
+      crt: CRT.regimeNormal,
+      csosn: null,
+      cst: CST.tributadaComSt,
+      icms10: { modBC: MOD_BC.valorOperacao, vBC: 1500, pICMS: 18, vICMS: 270, ...st },
+    };
+    expect(configuracaoICMSSchema.parse(cfg)).toEqual(cfg);
+  });
+});
+
+// The resolver's root cause, pinned on the schemas it actually reads through:
+// `taxConfigFields.configuracaoICMS` is the strict slot spread into
+// impostoProduto / impostoCategoria / operacao / regraImposto (a doc failing it
+// is dropped by `warnDropped` in apps/nfe/lib/nfe/imposto-resolver.ts),
+// `impostoPersistidoSchema` is the pedido-stamped snapshot, and `impostoSchema`
+// is what the cascade parses each tier with.
+describe("resolver root cause — a stored CSOSN 201 with modBCST '6' is not dropped (#509)", () => {
+  const configuracaoICMS = {
+    crt: CRT.simplesNacional,
+    csosn: CSOSN.tributadaComCreditoComSt,
+    csosn201: {
+      pCredSN: 1.5,
+      vCredICMSSN: 22.5,
+      modBCST: MOD_BCST.valorOperacao,
+      vBCST: 1500,
+      pICMSST: 18,
+      vICMSST: 270,
+    },
+  };
+  const imposto = { origem: ORIGEM.nacional, configuracaoICMS };
+
+  it('parses under taxConfigFields.configuracaoICMS', () => {
+    expect(taxConfigFields.configuracaoICMS.parse(configuracaoICMS)).toEqual(configuracaoICMS);
+  });
+
+  it('parses under impostoPersistidoSchema and impostoSchema', () => {
+    expect(impostoPersistidoSchema.parse(imposto).configuracaoICMS).toEqual(configuracaoICMS);
+    expect(impostoSchema.parse(imposto).configuracaoICMS).toEqual(configuracaoICMS);
+  });
+
+  it("near-miss: a '7' in the same slot is still rejected by all three", () => {
+    const bad = {
+      ...configuracaoICMS,
+      csosn201: { ...configuracaoICMS.csosn201, modBCST: '7' },
+    };
+    const badImposto = { ...imposto, configuracaoICMS: bad };
+    expect(taxConfigFields.configuracaoICMS.safeParse(bad).success).toBe(false);
+    expect(impostoPersistidoSchema.safeParse(badImposto).success).toBe(false);
+    expect(impostoSchema.safeParse(badImposto).success).toBe(false);
+  });
+});
+
 describe('impostoSchema — per-item Imposto', () => {
   it('parses origem + ICMS + PIS + COFINS', () => {
     const imp = {
@@ -69,11 +230,54 @@ describe('impostoSchema — per-item Imposto', () => {
     expect(parsed.configuracaoPIS?.pPIS).toBe(1.65);
   });
 
-  it('holds configuracaoIBSCBS leniently (a PARTIAL RTC blob parses verbatim)', () => {
+  it('accepts a known partial RTC draft', () => {
     const imp = { origem: '0', configuracaoIBSCBS: { CST: '000' } };
     const parsed = impostoSchema.parse(imp);
-    // z.unknown — the half-filled blob survives, the strict check is at emit.
     expect(parsed.configuracaoIBSCBS).toEqual({ CST: '000' });
+    expect(configuracaoIBSCBSDraftSchema.safeParse({ CST: '000', pCBS: null }).success).toBe(true);
+  });
+
+  it('keeps half-typed RTC values in the current fiscal tier', () => {
+    const draft = {
+      CST: '00',
+      cClassTrib: '0001',
+      vBC: -1,
+      pIBSUF: -0.1,
+      is: { CSTIS: '2', cClassTribIS: '21', pIS: -1, uTrib: '' },
+    };
+
+    expect(impostoSchema.safeParse({ origem: '0', configuracaoIBSCBS: draft }).success).toBe(true);
+    expect(
+      impostoPersistidoSchema.safeParse({ origem: '0', configuracaoIBSCBS: draft }).success,
+    ).toBe(true);
+    expect(configuracaoIBSCBSSchema.safeParse(draft).success).toBe(false);
+  });
+
+  it('rejects unknown fields in a persisted imposto snapshot', () => {
+    expect(
+      impostoPersistidoSchema.safeParse({
+        origem: '0',
+        configuracaoIBSCBS: { CST: '000', campoExtra: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      impostoPersistidoSchema.safeParse({
+        origem: '0',
+        configuracaoICMS: { crt: '1', csosn: '101', csosn101: { pCredSN: 1, extra: true } },
+      }).success,
+    ).toBe(false);
+    expect(
+      impostoPersistidoSchema.safeParse({
+        origem: '0',
+        configuracaoPISST: { compoeTotalNota: true, pPIS: 1.65, vAliqProd: null, extra: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      impostoPersistidoSchema.safeParse({
+        origem: '0',
+        configuracaoPISST: { compoeTotalNota: true, pPIS: 1.65, vAliqProd: null },
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects a non-4-digit CFOP', () => {
@@ -99,15 +303,22 @@ describe('configuracaoIBSCBSSchema — Reforma Tributária', () => {
     expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(false);
   });
 
+  it('rejects an incomplete draft at the emission boundary', () => {
+    expect(configuracaoIBSCBSDraftSchema.safeParse({ CST: '000' }).success).toBe(true);
+    expect(configuracaoIBSCBSSchema.safeParse({ CST: '000' }).success).toBe(false);
+  });
+
   // CST↔cClassTrib structural rule (#333)
   it('accepts the confirmed tributação-integral pair (000 / 000001)', () => {
     const rtc = { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 };
     expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(true);
   });
 
-  it('accepts a structurally valid code not in the vendored seed (lenient membership)', () => {
-    // 200099 is structurally valid for CST 200 but isn't seeded — must NOT be
-    // rejected (membership is a UI warning only, never an emit-time block).
+  it('accepts a structurally valid code the vendored table does not know (lenient membership)', () => {
+    // 200099 is structurally valid for CST 200 but absent from the dated
+    // snapshot — must NOT be rejected (membership is a UI warning only, never
+    // an emit-time block: SEFAZ adds codes outside the NT cycle).
+    expect(cClassTribEntry('200099')).toBeNull(); // precondition, or this proves nothing
     const rtc = { CST: '200', cClassTrib: '200099', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 };
     expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(true);
   });
@@ -141,5 +352,130 @@ describe('UI label maps', () => {
     expect(CSOSN_LABELS['101']).toContain('101');
     expect(CST_ICMS_LABELS['00']).toContain('00');
     expect(CST_PIS_COFINS_LABELS['01']).toContain('01');
+  });
+});
+
+// `NVE`/`indEscala` are the two Dados Gerais fields that are NOT scalars on the
+// wire. Their preprocess exists so a doc carrying the pre-#466 scalar this app
+// once wrote still PARSES — every reader of the tax collections drops a doc
+// that fails `safeParse`, which resolves the item against a lower cascade tier
+// with no error anywhere. So these tests pin the fold in BOTH directions: what
+// it must treat as equal, and the near-misses that must stay distinct.
+
+describe('nveFromScalar — the legacy-scalar fold', () => {
+  it('folds a non-blank scalar into a one-element list', () => {
+    expect(nveFromScalar('AB1234')).toEqual(['AB1234']);
+    expect(nveFromScalar('  AB1234  ')).toEqual(['AB1234']);
+  });
+
+  it('folds every blank spelling to null', () => {
+    expect(nveFromScalar('')).toBeNull();
+    expect(nveFromScalar('   ')).toBeNull();
+  });
+
+  it('does NOT fold two distinct codes together', () => {
+    // The scalar shape could only ever hold one code; the fold must not invent
+    // a split (a stored 'AB1234,CD5678' is ONE opaque legacy value, not two).
+    expect(nveFromScalar('AB1234,CD5678')).toEqual(['AB1234,CD5678']);
+    expect(nveFromScalar('AB1234')).not.toEqual(nveFromScalar('CD5678'));
+  });
+});
+
+describe('nveField — read tolerance without laundering', () => {
+  const schema = z.object({ NVE: nveField() });
+
+  it('accepts the real wire shape and defaults to null', () => {
+    expect(schema.parse({ NVE: ['AB1234', 'CD5678'] }).NVE).toEqual(['AB1234', 'CD5678']);
+    expect(schema.parse({}).NVE).toBeNull();
+    expect(schema.parse({ NVE: null }).NVE).toBeNull();
+  });
+
+  it('accepts a stored legacy scalar so the document still parses', () => {
+    expect(schema.parse({ NVE: 'AB1234' }).NVE).toEqual(['AB1234']);
+  });
+
+  it('still REJECTS a shape that is neither — tolerance is not laundering', () => {
+    // Coercing this to null would hide a corrupt document instead of surfacing
+    // it; only the shapes we actually wrote are tolerated.
+    expect(() => schema.parse({ NVE: 42 })).toThrow();
+    expect(() => schema.parse({ NVE: [1, 2] })).toThrow();
+  });
+});
+
+describe('indEscalaFromScalar — the legacy-scalar fold', () => {
+  it('folds every affirmative spelling to true', () => {
+    for (const v of ['S', 's', 'sim', 'Sim', 'SIM', 'true', '1', ' s ']) {
+      expect(indEscalaFromScalar(v)).toBe(true);
+    }
+  });
+
+  it('folds every negative spelling to false', () => {
+    for (const v of ['N', 'n', 'nao', 'não', 'Não', 'NAO', 'false', '0', ' n ']) {
+      expect(indEscalaFromScalar(v)).toBe(false);
+    }
+  });
+
+  // The near-misses. Each of these three is a DIFFERENT answer, and collapsing
+  // any pair is a fiscal error: `false` emits `indEscala='N'` (and makes
+  // `CNPJFab` required), `null` omits the element, `true` emits `'S'`.
+  it('keeps false, null and true distinct', () => {
+    expect(indEscalaFromScalar('N')).toBe(false);
+    expect(indEscalaFromScalar('')).toBeNull();
+    expect(indEscalaFromScalar('S')).toBe(true);
+    expect(indEscalaFromScalar('N')).not.toBe(indEscalaFromScalar(''));
+    expect(indEscalaFromScalar('')).not.toBe(indEscalaFromScalar('S'));
+  });
+
+  it('never GUESSES an unrecognised word — null, not true', () => {
+    // Regression pin on the #466 tightening: between #1305 and #466 the fold
+    // was `!/^(n|não|nao|false|0)$/i`, so anything unrecognised became `true`
+    // and silently claimed produção em escala relevante.
+    expect(indEscalaFromScalar('talvez')).toBeNull();
+    expect(indEscalaFromScalar('qualquer coisa')).toBeNull();
+    expect(indEscalaFromScalar('yes')).toBeNull();
+  });
+});
+
+describe('indEscalaField — read tolerance', () => {
+  const schema = z.object({ indEscala: indEscalaField() });
+
+  it('accepts the real wire shape and defaults to null', () => {
+    expect(schema.parse({ indEscala: true }).indEscala).toBe(true);
+    expect(schema.parse({ indEscala: false }).indEscala).toBe(false);
+    expect(schema.parse({}).indEscala).toBeNull();
+  });
+
+  it('accepts a stored legacy scalar so the document still parses', () => {
+    expect(schema.parse({ indEscala: 'S' }).indEscala).toBe(true);
+    expect(schema.parse({ indEscala: 'N' }).indEscala).toBe(false);
+  });
+
+  it('still REJECTS a shape that is neither', () => {
+    expect(() => schema.parse({ indEscala: 42 })).toThrow();
+  });
+});
+
+describe('nveCarriesValue — accepts BOTH stored shapes', () => {
+  it('is true for a populated list and for the pre-#466 scalar', () => {
+    expect(nveCarriesValue(['AB1234'])).toBe(true);
+    expect(nveCarriesValue('AB1234')).toBe(true);
+  });
+
+  it('is false for every empty spelling, in either shape', () => {
+    for (const v of [null, undefined, [], [''], ['  '], '', '   ']) {
+      expect(nveCarriesValue(v)).toBe(false);
+    }
+  });
+
+  it('is false for a shape that is neither', () => {
+    expect(nveCarriesValue(42)).toBe(false);
+    expect(nveCarriesValue({})).toBe(false);
+  });
+
+  // The whole reason it takes `unknown` rather than `string[] | null`: its two
+  // call sites run on a value that may not have been parsed at all.
+  it('does not throw on a list holding a non-string', () => {
+    expect(() => nveCarriesValue([1, 2])).not.toThrow();
+    expect(nveCarriesValue([1, 2])).toBe(false);
   });
 });

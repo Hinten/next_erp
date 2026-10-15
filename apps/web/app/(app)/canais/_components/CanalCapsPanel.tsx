@@ -15,14 +15,18 @@ import { StatusCanalBadge } from './StatusCanalBadge';
  * What a channel we have not built yet supports, straight off its
  * `MARKETPLACE_TIPO_CAPS` row (#1430).
  *
- * It replaces `PlaceholderPage`'s generic "Em construção" alert on the five
- * unbuilt channel screens. The alert said the same nothing for every one of
- * them; the row says which questions have been answered, which answers are
- * `'nao'`, and — the point of the tri-state — which nobody has asked yet.
+ * It replaces `PlaceholderPage`'s generic "Em construção" alert on the unbuilt
+ * channel screens (five when it landed; three now: Amazon, Facebook and
+ * Magalu, since Shopee and Loja Integrada got TableView screens of their own).
+ * The alert said the same nothing for every one of them; the row says which
+ * questions have been answered, which answers are `'nao'`, and — the point of
+ * the tri-state — which nobody has asked yet.
  *
- * ⚠️ `PlaceholderPage` itself is untouched: eleven pages across `/canais`,
- * `/relatorios` and `/etiquetas` share it, and `/canais/webchat` is not a
- * marketplace tipo at all, so it keeps the generic one.
+ * ⚠️ `PlaceholderPage` itself is untouched: five pages across `/relatorios` and
+ * `/etiquetas` still share it. None of them is under `/canais` any more —
+ * `/canais/webchat` was the last one, and it went with the webchat widget on
+ * 2026-09-07, so every remaining channel screen is either built or renders this
+ * panel.
  *
  * It doubles as the Phase 0 checklist in the `marketplace-integration` skill:
  * every yellow row is a question the provider's own documentation has to close

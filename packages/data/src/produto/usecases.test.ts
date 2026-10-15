@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  anexoSchema,
+  fotoSchema,
   impostoProdutoSchema,
   operacaoIdFromImpostoRef,
   produtoExtraDataSchema,
+  produtoSchema,
+  videoSchema,
+  PRODUTO_EXTRA_DATA_DOC_ID,
+  PRODUTO_SUBCOLLECTION_NAMES,
+  type Produto,
 } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
   buildChildrenComponentesKitOps,
+  buildDuplicarProdutoWriteOps,
+  ehFamiliaDeUmParaDuplicar,
   buildMembroUnicoWriteOps,
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
@@ -15,11 +24,14 @@ import {
   buildLocalizacaoOp,
   deleteProdutoCascade,
   findProdutoReferences,
+  kitStatusChangeDoSave,
   planMovimentacao,
   propagateKitStatusToChildren,
   resolveKitGuardInputs,
   saveChildrenComponentesKit,
   saveProdutoExtraData,
+  type DuplicarProdutoInput,
+  type FilhoParaDuplicar,
 } from './usecases';
 
 interface MemoryOpts {
@@ -300,6 +312,51 @@ describe('produto imposto (per-operação override)', () => {
     expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
   });
 
+  // `NVE` (a list) and `indEscala` (a boolean) are the two Dados Gerais fields
+  // that are NOT strings on the wire (#466). While the carries-info check
+  // tested them with `typeof v === 'string'`, an entry carrying only one of
+  // them read as EMPTY — so a configured doc was deleted instead of written.
+  // That is the defect that forced the revert on #1279; these pin it on the
+  // produto side, mirroring `apps/web/lib/categorias/clientPort.test.ts`.
+  it('keeps an entry whose only value is a populated NVE list', () => {
+    const ops = buildImpostoWriteOps('p1', [imp({ NVE: ['AB1234'] })], 1000);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
+  });
+
+  it.each([true, false])('keeps an entry whose only value is indEscala=%s', (v) => {
+    const ops = buildImpostoWriteOps('p1', [imp({ indEscala: v })], 1000);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
+  });
+
+  it('treats an emptied NVE as no info (deletes rather than writes a blank list)', () => {
+    expect(buildImpostoWriteOps('p1', [imp({ NVE: [] })], 1000)).toEqual([]);
+    expect(buildImpostoWriteOps('p1', [imp({ NVE: ['  '] })], 1000)).toEqual([]);
+  });
+
+  // ⚠️ Every case above goes through `impostoProdutoSchema.parse` first, so
+  // none of them can reach the shape this one does. `parseSoftRead`
+  // (`packages/data/src/zodParse.ts`) returns the RAW document whenever the
+  // parse failed for ANY unrelated reason, and on such a document `NVE` is
+  // still the pre-#466 scalar — while `impostoCarriesInfo` runs BEFORE the
+  // parse in `buildImpostoWriteOps`. A bare `Array.isArray` check reads that as
+  // empty and DELETES a configured doc. Found in review on #1507.
+  it('keeps a RAW (unparsed) entry whose only content is a legacy scalar NVE', () => {
+    const raw = {
+      ...imp({ id: 'op1' }),
+      NVE: 'AB1234' as unknown as string[], // what parseSoftRead hands back
+    };
+    expect(buildImpostoWriteOps('p1', [raw], 1000)).toMatchObject([{ type: 'set' }]);
+  });
+
+  it('still deletes a RAW entry whose legacy scalar NVE is blank', () => {
+    const raw = { ...imp({ id: 'op1' }), NVE: '   ' as unknown as string[] };
+    expect(buildImpostoWriteOps('p1', [raw], 1000)).toEqual([
+      { type: 'delete', path: 'produtos/p1/imposto/op1' },
+    ]);
+  });
+
   it('extracts the operação id from a documents/operacao/<id> ref (resolver tolerance)', () => {
     // The schema is now strict bare `operacao/<id>`, but the runtime resolver
     // still tolerates a legacy `documents/operacao/<id>` value when reading docs.
@@ -413,6 +470,99 @@ describe('kit-status child propagation (buildKitStatusChildOps)', () => {
     );
     if (ops[0]!.type !== 'update') throw new Error('expected an update op');
     expect(ops[0]!.data).toMatchObject({ ehKit: false, ehKitVirtual: false });
+  });
+});
+
+/**
+ * `kitStatusChangeDoSave` — the kit flip read from the save TRANSACTION (the doc
+ * it read + the patch it wrote), never from the form.
+ *
+ * ⚠️ The near-miss that matters: a save that did not touch the kit fields must
+ * report NO change whatever the stored status is — a form-side "new" diffed
+ * against a server-side "old" is how a stale cache paint un-kitted children.
+ */
+describe('kitStatusChangeDoSave', () => {
+  const MAPA = { c1: { quantidade: 2, limitarEstoque: true } };
+
+  it('a patch that never touches the kit fields reports no change (kit OR non-kit)', () => {
+    for (const before of [
+      { ehKit: true, ehKitVirtual: true, componentesKit: MAPA },
+      { ehKit: true, ehKitVirtual: false },
+      { ehKit: false, ehKitVirtual: false },
+    ]) {
+      const c = kitStatusChangeDoSave(before, { nome: 'x', ultimaModificacao: 1 });
+      expect(c.ehKit, JSON.stringify(before)).toBe(c.oldEhKit);
+      expect(c.ehKitVirtual, JSON.stringify(before)).toBe(c.oldEhKitVirtual);
+    }
+  });
+
+  it('un-kitting: new comes from the patch, old from the doc the transaction read', () => {
+    expect(
+      kitStatusChangeDoSave(
+        { ehKit: true, ehKitVirtual: true, componentesKit: MAPA, filhoUnicoId: 'm1' },
+        { ehKit: false, ehKitVirtual: false, componentesKit: null, componentesKitKeys: null },
+      ),
+    ).toEqual({
+      ehKit: false,
+      ehKitVirtual: false,
+      oldEhKit: true,
+      oldEhKitVirtual: true,
+      componentesKit: null,
+      membroUnicoId: 'm1',
+    });
+  });
+
+  it('becoming a kit: the sole member gets the WRITTEN map, and keeps it when the patch omits it', () => {
+    expect(
+      kitStatusChangeDoSave(
+        { ehKit: false, filhoUnicoId: 'm1' },
+        { ehKit: true, componentesKit: MAPA },
+      ),
+    ).toMatchObject({ ehKit: true, oldEhKit: false, componentesKit: MAPA, membroUnicoId: 'm1' });
+    // The map the patch did not carry is the STORED one, never a form's.
+    expect(
+      kitStatusChangeDoSave({ ehKit: false, componentesKit: MAPA }, { ehKit: true }),
+    ).toMatchObject({ componentesKit: MAPA });
+  });
+
+  it('"new" virtual is the effective pair; "old" is the stored flag as it is', () => {
+    // A stored legacy mismatch counts as virtual on the OLD side…
+    expect(
+      kitStatusChangeDoSave({ ehKit: false, ehKitVirtual: true }, { ehKitVirtual: false }),
+    ).toMatchObject({ ehKitVirtual: false, oldEhKitVirtual: true });
+    // …while the NEW side never reads a flag that «É kit» does not back.
+    expect(
+      kitStatusChangeDoSave({ ehKit: false, ehKitVirtual: false }, { ehKitVirtual: true }),
+    ).toMatchObject({ ehKitVirtual: false, oldEhKitVirtual: false });
+    expect(
+      kitStatusChangeDoSave({ ehKit: true, ehKitVirtual: false }, { ehKitVirtual: true }),
+    ).toMatchObject({ ehKitVirtual: true, oldEhKitVirtual: false });
+  });
+
+  it('strict on the stored values: a stray string, null or absent key is "not a kit"', () => {
+    expect(kitStatusChangeDoSave({ ehKit: 'true', ehKitVirtual: 'true' }, {})).toMatchObject({
+      ehKit: false,
+      ehKitVirtual: false,
+      oldEhKit: false,
+      oldEhKitVirtual: false,
+    });
+    expect(kitStatusChangeDoSave({}, { nome: 'x' })).toMatchObject({
+      ehKit: false,
+      oldEhKit: false,
+      componentesKit: null,
+      membroUnicoId: null,
+    });
+  });
+
+  it('only a plain object is a map, and only a non-empty string is a pointer', () => {
+    for (const junk of ['abc', ['c1'], 7, null]) {
+      expect(
+        kitStatusChangeDoSave({ ehKit: true, componentesKit: junk }, {}).componentesKit,
+        JSON.stringify(junk),
+      ).toBeNull();
+    }
+    expect(kitStatusChangeDoSave({ filhoUnicoId: '' }, {}).membroUnicoId).toBeNull();
+    expect(kitStatusChangeDoSave({ filhoUnicoId: 9 }, {}).membroUnicoId).toBeNull();
   });
 });
 
@@ -699,6 +849,481 @@ describe('buildKitStatusChildOps — becoming a kit', () => {
       ehKitVirtual: false,
       componentesKit: null,
       componentesKitKeys: null,
+    });
+  });
+});
+
+/**
+ * "Duplicar produto" (#556) — clone a parent + its variation children.
+ *
+ * Two axes to keep straight.
+ *
+ * (1) Which SHAPE the source is: a genuine family of one (the sole member is
+ * MIRRORED from the renamed clone, the same mechanism `buildMembroUnicoWriteOps`
+ * uses everywhere else) vs. everything else (zero children, or a real variation
+ * family — each child's own document is re-created). Getting the branch wrong is
+ * silent: a family-of-one clone built the "verbatim" way leaves the child naming
+ * the OLD, pre-rename produto, with nothing that ever fixes it later.
+ *
+ * (2) WHICH FIELDS the clone is allowed to inherit. Every exclusive-identifier
+ * case below is paired with a near-miss asserting a neighbouring field survives
+ * verbatim — a test that the exclusion APPLIES cannot show where it STOPS, and
+ * both directions fail silently: a copied `sku` sends a live ML order to
+ * `ambiguous-sku` (no stock movement), while an over-eager clear quietly drops
+ * catalog data the operator expected to keep.
+ */
+describe('buildDuplicarProdutoWriteOps', () => {
+  const produto = (overrides: Partial<Produto> = {}): Produto =>
+    produtoSchema.parse({ nome: 'Camisa Azul', ...overrides });
+
+  /** `ProdutoWriteOp` is a union and only the write arms carry `data`. */
+  const dadosDe = (op: ProdutoWriteOp | undefined): Record<string, unknown> => {
+    if (!op || op.type === 'delete') throw new Error('esperava uma escrita com dados');
+    return op.data;
+  };
+
+  /** The minimal input: a childless source with a minted SKU. */
+  const entrada = (over: Partial<DuplicarProdutoInput> = {}): DuplicarProdutoInput => ({
+    novoParentId: 'p2',
+    parentOrigem: produto(),
+    novoParentSku: 'NOVO-1',
+    filhos: [],
+    now: 5000,
+    ...over,
+  });
+
+  const filho = (over: Partial<FilhoParaDuplicar> = {}): FilhoParaDuplicar => ({
+    id: 'c1',
+    dados: produto({ nome: 'Camisa Azul - P' }),
+    novoId: 'n1',
+    novoSku: 'NOVO-2',
+    ...over,
+  });
+
+  /** Every field a clone must never inherit, set to a value that would be visible. */
+  const camposExclusivos = {
+    sku: 'CAM-1',
+    gtin: '7891234567890',
+    codPai: 'PAI-1',
+    codFornecedor: 'FORN-1',
+    publicado: true,
+    integracoesComProduto: ['int1'],
+    fotos: [fotoSchema.parse({ arquivoOuterRef: 'arquivos/f1' })],
+    videos: [videoSchema.parse({ arquivoOuterRef: 'arquivos/v1' })],
+    anexos: [anexoSchema.parse({ arquivoOuterRef: 'arquivos/a1' })],
+    fotosArquivosIds: ['f1'],
+  };
+
+  /** What a cloned document must look like once every exclusion has been applied. */
+  const semCamposExclusivos = {
+    gtin: null,
+    codPai: null,
+    codFornecedor: null,
+    publicado: false,
+    integracoesComProduto: [],
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+  };
+
+  describe('childless source', () => {
+    it('clones only the parent, with no filhoUnicoId', () => {
+      const ops = buildDuplicarProdutoWriteOps(
+        entrada({ parentOrigem: produto({ sku: 'CAM-1' }) }),
+      );
+
+      expect(ops).toHaveLength(1);
+      expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p2' });
+      expect(dadosDe(ops[0])).toMatchObject({
+        nome: 'Camisa Azul (cópia)',
+        paiId: null,
+        filhoUnicoId: null,
+        timestamp: 5000,
+        ultimaModificacao: 5000,
+      });
+    });
+  });
+
+  describe('genuine family of one', () => {
+    it('mirrors the child from the RENAMED clone, not a verbatim copy of the old child', () => {
+      const origem = produto({ sku: 'CAM-1', filhoUnicoId: 'c-antigo', custo: 10 });
+      const filhoAntigo = filho({
+        id: 'c-antigo',
+        dados: produto({ sku: 'CAM-1', custo: 10 }),
+        novoId: 'c-novo',
+      });
+
+      const ops = buildDuplicarProdutoWriteOps(
+        entrada({ parentOrigem: origem, filhos: [filhoAntigo] }),
+      );
+
+      expect(ops).toHaveLength(3);
+      expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p2' });
+      expect(ops[1]).toMatchObject({ type: 'set', path: 'produtos/c-novo' });
+      expect(ops[2]).toEqual({
+        type: 'update',
+        path: 'produtos/p2',
+        data: { filhoUnicoId: 'c-novo' },
+      });
+
+      // The mirror sources from the ALREADY-cleaned, ALREADY-renamed parent
+      // (`montarMembroUnico` reads `parentClonado`), so the child's name carries
+      // the suffix and its SKU is derived from the freshly minted one — the whole
+      // point of not cloning the old child's doc verbatim.
+      //
+      // ⚠️ The sku is DERIVED, not copied: `skuDoMembroUnico` appends
+      // `SUFIXO_MEMBRO_UNICO`, because a verbatim copy put two produto documents
+      // behind one code. Nothing in this module chooses that — the literal is
+      // asserted here rather than re-derived so this test can still fail if the
+      // derivation changes.
+      expect(dadosDe(ops[1])).toMatchObject({
+        nome: 'Camisa Azul (cópia)',
+        paiId: 'p2',
+        sku: 'NOVO-1-UN',
+      });
+    });
+
+    it('gives the mirrored member the parent’s FRESH sku, never the source sku', () => {
+      const origem = produto({ sku: 'CAM-1', gtin: '7891234567890', filhoUnicoId: 'c-antigo' });
+      const filhoAntigo = filho({
+        id: 'c-antigo',
+        dados: produto({ sku: 'CAM-1', gtin: '7891234567890' }),
+        novoId: 'c-novo',
+        // Deliberately set: the mirror must ignore it (see `FilhoParaDuplicar`).
+        novoSku: 'NAO-USADO',
+      });
+
+      const ops = buildDuplicarProdutoWriteOps(
+        entrada({ parentOrigem: origem, filhos: [filhoAntigo] }),
+      );
+
+      // Derived from the parent's FRESH sku (`NOVO-1`), never the source's.
+      expect(dadosDe(ops[1])).toMatchObject({ sku: 'NOVO-1-UN', gtin: null });
+      expect(dadosDe(ops[1]).sku).not.toBe('CAM-1');
+    });
+
+    it("leaves the parent's OWN filhoUnicoId pointed at the new child only, never the old id", () => {
+      const origem = produto({ filhoUnicoId: 'c-antigo' });
+      const filhoAntigo = filho({ id: 'c-antigo', dados: produto(), novoId: 'c-novo' });
+
+      const ops = buildDuplicarProdutoWriteOps(
+        entrada({ parentOrigem: origem, filhos: [filhoAntigo] }),
+      );
+
+      expect(dadosDe(ops[0]).filhoUnicoId).toBe(null); // overwritten by the update below
+      expect(dadosDe(ops[2])).toEqual({ filhoUnicoId: 'c-novo' });
+    });
+  });
+
+  describe('a real variation family (2+ children)', () => {
+    it('re-creates each child re-parented, with its own minted sku and no forced rename', () => {
+      const origem = produto({ filhoUnicoId: null });
+      const filhos = [
+        filho({
+          id: 'c1',
+          dados: produto({ nome: 'Camisa Azul - P', sku: 'CAM-P' }),
+          novoId: 'n1',
+          novoSku: 'NOVO-2',
+        }),
+        filho({
+          id: 'c2',
+          dados: produto({ nome: 'Camisa Azul - G', sku: 'CAM-G' }),
+          novoId: 'n2',
+          novoSku: 'NOVO-3',
+        }),
+      ];
+
+      const ops = buildDuplicarProdutoWriteOps(entrada({ parentOrigem: origem, filhos }));
+
+      expect(ops).toHaveLength(3);
+      expect(dadosDe(ops[0])).toMatchObject({ nome: 'Camisa Azul (cópia)', filhoUnicoId: null });
+      expect(ops[1]).toMatchObject({ type: 'set', path: 'produtos/n1' });
+      expect(dadosDe(ops[1])).toMatchObject({
+        nome: 'Camisa Azul - P',
+        sku: 'NOVO-2',
+        paiId: 'p2',
+      });
+      expect(ops[2]).toMatchObject({ type: 'set', path: 'produtos/n2' });
+      expect(dadosDe(ops[2])).toMatchObject({
+        nome: 'Camisa Azul - G',
+        sku: 'NOVO-3',
+        paiId: 'p2',
+      });
+    });
+  });
+
+  // ⚠️ Exactly one child is NOT sufficient — it must also be the parent's
+  // REGISTERED sole member. A produto whose `filhoUnicoId` disagrees with its
+  // actual (single) child is a data anomaly the migration (#1402) exists to
+  // find, and duplicating it must not paper over the anomaly by mirroring —
+  // it must reproduce what is actually stored, verbatim, like any other
+  // multi-child family.
+  it('does not take the mirror shortcut when filhoUnicoId disagrees with the actual child', () => {
+    const origem = produto({ filhoUnicoId: 'algum-outro-id' });
+    const f = filho({ dados: produto({ nome: 'Nome do filho', sku: 'SKU-FILHO' }) });
+
+    expect(ehFamiliaDeUmParaDuplicar(origem, [f])).toBe(false);
+
+    const ops = buildDuplicarProdutoWriteOps(entrada({ parentOrigem: origem, filhos: [f] }));
+
+    expect(ops).toHaveLength(2); // no separate `update` — filhoUnicoId is set inline
+    expect(dadosDe(ops[0])).toMatchObject({ filhoUnicoId: 'n1' });
+    expect(dadosDe(ops[1])).toMatchObject({
+      nome: 'Nome do filho',
+      sku: 'NOVO-2',
+      paiId: 'p2',
+    });
+  });
+
+  describe('exclusive fields', () => {
+    it('clears every exclusive identifier on the cloned parent and mints its sku', () => {
+      const ops = buildDuplicarProdutoWriteOps(
+        entrada({ parentOrigem: produto(camposExclusivos) }),
+      );
+
+      expect(dadosDe(ops[0])).toMatchObject({ ...semCamposExclusivos, sku: 'NOVO-1' });
+    });
+
+    it('clears them on a re-created (non-mirrored) child too, with its own minted sku', () => {
+      const origem = produto({ filhoUnicoId: null });
+      const f = filho({ dados: produto(camposExclusivos), novoSku: 'NOVO-2' });
+
+      const ops = buildDuplicarProdutoWriteOps(entrada({ parentOrigem: origem, filhos: [f] }));
+
+      expect(dadosDe(ops[1])).toMatchObject({ ...semCamposExclusivos, sku: 'NOVO-2' });
+    });
+
+    it('leaves sku null when the caller minted none (never invents one)', () => {
+      const origem = produto({ filhoUnicoId: null, sku: 'CAM-1' });
+      const f = filho({ dados: produto({ sku: null }), novoSku: null });
+
+      const ops = buildDuplicarProdutoWriteOps(
+        entrada({ parentOrigem: origem, novoParentSku: null, filhos: [f] }),
+      );
+
+      expect(dadosDe(ops[0]).sku).toBe(null);
+      expect(dadosDe(ops[1]).sku).toBe(null);
+    });
+
+    // ⚠️ The near-miss half of the exclusion: everything below is shared catalog
+    // data, not an identity, and clearing any of it would silently drop work the
+    // operator expected the copy to keep. `componentesKit` in particular names
+    // OTHER produtos on purpose — a duplicated kit assembles from the same
+    // components.
+    it('preserves the fields that are NOT exclusive, verbatim', () => {
+      const origem = produto({
+        sku: 'CAM-1',
+        custo: 42,
+        precos: { lista1: { valor: 19.9 } },
+        pesoLiquidoKg: 1.5,
+        pesoBrutoKg: 1.7,
+        alturaCm: 10,
+        larguraCm: 20,
+        profundidadeCm: 30,
+        crossdocking: 2,
+        ordem: 3,
+        categoriaProdutoOuterRef: 'documents/categorias/cat1',
+        tabelaDeMedidasModaUid: 'documents/tabMedi/tm1',
+        grupoDeVariacoesUid: ['gv1'],
+        variacoesUid: ['v1'],
+        componentesKit: { comp1: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+        componentesKitKeys: ['comp1'],
+        ehKit: true,
+        ehKitVirtual: true,
+        ehUsado: true,
+        ofereceFreteGratis: true,
+        permiteVendaSemEstoque: true,
+        propagatePriceToChildren: false,
+      });
+
+      const ops = buildDuplicarProdutoWriteOps(entrada({ parentOrigem: origem }));
+
+      expect(dadosDe(ops[0])).toMatchObject({
+        custo: 42,
+        precos: { lista1: { valor: 19.9 } },
+        pesoLiquidoKg: 1.5,
+        pesoBrutoKg: 1.7,
+        alturaCm: 10,
+        larguraCm: 20,
+        profundidadeCm: 30,
+        crossdocking: 2,
+        ordem: 3,
+        categoriaProdutoOuterRef: 'documents/categorias/cat1',
+        tabelaDeMedidasModaUid: 'documents/tabMedi/tm1',
+        grupoDeVariacoesUid: ['gv1'],
+        variacoesUid: ['v1'],
+        componentesKit: { comp1: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+        componentesKitKeys: ['comp1'],
+        ehKit: true,
+        ehKitVirtual: true,
+        ehUsado: true,
+        ofereceFreteGratis: true,
+        permiteVendaSemEstoque: true,
+        propagatePriceToChildren: false,
+      });
+    });
+
+    it('starts the clone unpublished even when the source is published', () => {
+      const origem = produto({ publicado: true, filhoUnicoId: 'c-antigo' });
+      const f = filho({ id: 'c-antigo', dados: produto({ publicado: true }), novoId: 'c-novo' });
+
+      const ops = buildDuplicarProdutoWriteOps(entrada({ parentOrigem: origem, filhos: [f] }));
+
+      // Parent AND the mirrored sole member (which reads `publicado` off the
+      // already-cleaned clone through `espelhoDoMembroUnico`).
+      expect(dadosDe(ops[0]).publicado).toBe(false);
+      expect(dadosDe(ops[1]).publicado).toBe(false);
+    });
+  });
+
+  describe('nome', () => {
+    it('keeps the (cópia) suffix when the source name is already at the 100-char cap', () => {
+      const origem = produto({ nome: 'X'.repeat(100) });
+      const ops = buildDuplicarProdutoWriteOps(entrada({ parentOrigem: origem }));
+
+      const nome = dadosDe(ops[0]).nome as string;
+      expect(nome).toHaveLength(100);
+      expect(nome.endsWith(' (cópia)')).toBe(true);
+      // ⚠️ The failure this pins: truncating the CONCATENATION returns the
+      // source name unchanged, so the two rows are indistinguishable on screen.
+      expect(nome).not.toBe('X'.repeat(100));
+    });
+  });
+
+  describe('produto-owned subdocuments', () => {
+    const extraData = produtoExtraDataSchema.parse({
+      descricao: 'Camisa de algodão',
+      marca: 'Delfrance',
+      googleMerchantData: { id: 'OFERTA-1', title: 'Camisa Azul' },
+    });
+    const imposto = impostoProdutoSchema.parse({
+      impostoOpercaoOuterRef: 'operacao/op1',
+      cfop: '5102',
+      NCM: '61091000',
+      timestamp: 111,
+    });
+
+    it('copies the extraData singleton but drops the Google Merchant offer id', () => {
+      const ops = buildDuplicarProdutoWriteOps(entrada({ parentExtraData: extraData }));
+
+      const op = ops.find((o) => o.path === `produtos/p2/extraData/${PRODUTO_EXTRA_DATA_DOC_ID}`);
+      expect(op).toMatchObject({ type: 'set' });
+      expect(dadosDe(op)).toMatchObject({
+        descricao: 'Camisa de algodão',
+        marca: 'Delfrance',
+        // The offer id is an external identifier for ONE produto; the title is
+        // operator copy and rides along.
+        googleMerchantData: expect.objectContaining({ id: null, title: 'Camisa Azul' }),
+      });
+    });
+
+    it('re-creates each imposto doc under the clone, keyed by the same operação, re-stamped', () => {
+      const ops = buildDuplicarProdutoWriteOps(entrada({ parentImpostos: [imposto] }));
+
+      const op = ops.find((o) => o.path === 'produtos/p2/imposto/op1');
+      expect(op).toMatchObject({ type: 'set' });
+      expect(dadosDe(op)).toMatchObject({
+        id: 'op1',
+        cfop: '5102',
+        NCM: '61091000',
+        // `now`, not the source's 111 — a cloned tax row must not be dated
+        // before the produto it belongs to existed.
+        timestamp: 5000,
+      });
+    });
+
+    it("copies a child's own subdocuments, in both family shapes", () => {
+      const semMirror = buildDuplicarProdutoWriteOps(
+        entrada({
+          parentOrigem: produto({ filhoUnicoId: null }),
+          filhos: [filho({ extraData, impostos: [imposto] })],
+        }),
+      );
+      expect(semMirror.map((o) => o.path)).toContain(
+        `produtos/n1/extraData/${PRODUTO_EXTRA_DATA_DOC_ID}`,
+      );
+      expect(semMirror.map((o) => o.path)).toContain('produtos/n1/imposto/op1');
+
+      const comMirror = buildDuplicarProdutoWriteOps(
+        entrada({
+          parentOrigem: produto({ filhoUnicoId: 'c1' }),
+          filhos: [filho({ extraData, impostos: [imposto] })],
+        }),
+      );
+      expect(comMirror.map((o) => o.path)).toContain(
+        `produtos/n1/extraData/${PRODUTO_EXTRA_DATA_DOC_ID}`,
+      );
+      expect(comMirror.map((o) => o.path)).toContain('produtos/n1/imposto/op1');
+    });
+
+    it('writes no subdocument when the source has none', () => {
+      const ops = buildDuplicarProdutoWriteOps(entrada());
+      expect(ops.every((o) => o.path.split('/').length === 2)).toBe(true);
+    });
+  });
+
+  /**
+   * ⚠️ The marketplace ANÚNCIOS are not produto fields — they are the produto's
+   * `PRODUTO_SUBCOLLECTION_NAMES` subcollections (`produtoMercadoLivre`,
+   * `variacaoMercadoLivre`, `prodshopee`, …), one listing doc per channel. This
+   * builder never emits one, which is the correct behaviour and is otherwise
+   * true only by accident: nothing would fail if a future edit started cloning
+   * them, and the result would be two produtos claiming the same live anúncio.
+   * The assertion is written against the shared constant so it keeps covering
+   * a channel added later.
+   */
+  describe('marketplace anúncios', () => {
+    const todasAsFormas = (): ProdutoWriteOp[][] => {
+      const extraData = produtoExtraDataSchema.parse({ descricao: 'x' });
+      const impostos = [impostoProdutoSchema.parse({ impostoOpercaoOuterRef: 'operacao/op1' })];
+      const comum = { parentExtraData: extraData, parentImpostos: impostos };
+      return [
+        buildDuplicarProdutoWriteOps(entrada(comum)),
+        buildDuplicarProdutoWriteOps(
+          entrada({
+            ...comum,
+            parentOrigem: produto({ filhoUnicoId: 'c1' }),
+            filhos: [filho({ extraData, impostos })],
+          }),
+        ),
+        buildDuplicarProdutoWriteOps(
+          entrada({
+            ...comum,
+            parentOrigem: produto({ filhoUnicoId: null }),
+            filhos: [
+              filho({ extraData, impostos }),
+              filho({ id: 'c2', novoId: 'n2', novoSku: 'NOVO-3', extraData, impostos }),
+            ],
+          }),
+        ),
+      ];
+    };
+
+    it('never writes a marketplace-link (anúncio) document', () => {
+      for (const ops of todasAsFormas()) {
+        for (const op of ops) {
+          const segmentos = op.path.split('/');
+          expect(
+            PRODUTO_SUBCOLLECTION_NAMES.some((name) => segmentos.includes(name)),
+            `${op.path} escreveu em uma subcoleção de anúncio`,
+          ).toBe(false);
+        }
+      }
+    });
+
+    it('writes only the produto doc and its own extraData/imposto subdocuments', () => {
+      const permitidas = new Set(['extraData', 'imposto']);
+      for (const ops of todasAsFormas()) {
+        for (const op of ops) {
+          const segmentos = op.path.split('/');
+          expect(segmentos[0]).toBe('produtos');
+          expect(segmentos.length === 2 || segmentos.length === 4).toBe(true);
+          if (segmentos.length === 4) {
+            expect(permitidas.has(segmentos[2]!), `subcoleção inesperada: ${op.path}`).toBe(true);
+          }
+        }
+      }
     });
   });
 });

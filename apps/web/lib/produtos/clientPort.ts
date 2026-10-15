@@ -17,8 +17,15 @@ import {
   type ProdutoSnapshot,
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
-import type { TransactionWrite } from '@delfrance/ui';
+import type {
+  TransactionWrite,
+  TransactionWriteContext,
+  TransactionDocumentGuard,
+} from '@delfrance/ui';
 import {
+  impostoProdutoSchema,
+  produtoExtraDataSchema,
+  operacaoIdFromImpostoRef,
   type ImpostoProduto,
   type ParentParaMembroUnico,
   type ProdutoExtraData,
@@ -31,8 +38,16 @@ import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
 import { PRODUTO_MARKETPLACE_SUBCOLLECTIONS } from '@/lib/data/produtoMarketplaceSubcollections';
 import { newDocId } from './docId';
 
-// A writeBatch caps at 500 operations.
-const BATCH_LIMIT = 499;
+/**
+ * A `writeBatch` caps at 500 operations, so `commit` chunks at this size.
+ *
+ * ⚠️ It is therefore also the ATOMICITY boundary, not merely a Firestore cap:
+ * `commit` awaits one batch per chunk, so a write set larger than this lands in
+ * SEVERAL independent commits and a failure on the second leaves the first
+ * applied. A caller whose ops must be all-or-nothing has to refuse a set larger
+ * than this BEFORE committing — there is no way to widen it here.
+ */
+export const BATCH_LIMIT = 499;
 
 const subcollectionHandles = new Map(
   PRODUTO_MARKETPLACE_SUBCOLLECTIONS.map((s) => [s.name, s.handle] as const),
@@ -93,13 +108,47 @@ export function buildProdutoTransactionWrites(
    * has variations.
    */
   modo: 'criar' | 'editar' = 'editar',
+  context?: TransactionWriteContext,
 ): TransactionWrite[] {
   const writes: TransactionWrite[] = [];
   const pushOp = (op: ProdutoWriteOp) => {
     const ref = refForPath(db, op.path) as DocumentReference<unknown>;
-    if (op.type === 'delete') writes.push({ type: 'delete', ref });
-    else if (op.type === 'update') writes.push({ type: 'update', ref, data: op.data });
-    else writes.push({ type: 'set', ref, data: op.data });
+    const sub = op.path.split('/')[2];
+    const guard: TransactionDocumentGuard | undefined =
+      sub === 'extraData'
+        ? {
+            baseline: modo === 'criar' ? null : context?.getBaseline(ref.path),
+            label: 'Descrição / SEO e marketing',
+            formField: 'extraData',
+            toFormValue: (current) =>
+              current === null ? null : produtoExtraDataSchema.parse(current),
+          }
+        : sub === 'imposto'
+          ? {
+              baseline: modo === 'criar' ? null : context?.getBaseline(ref.path),
+              label: `Imposto — operação ${ref.id}`,
+              formField: 'impostos',
+              toFormValue: (current, formValue) => {
+                const rows = (formValue as ImpostoProduto[] | null) ?? [];
+                const next = impostoProdutoSchema.parse(
+                  current === null
+                    ? { impostoOpercaoOuterRef: `operacao/${ref.id}` }
+                    : { ...current, id: ref.id, impostoOpercaoOuterRef: `operacao/${ref.id}` },
+                );
+                const found = rows.some(
+                  (row) => operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === ref.id,
+                );
+                return found
+                  ? rows.map((row) =>
+                      operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === ref.id ? next : row,
+                    )
+                  : [...rows, next];
+              },
+            }
+          : undefined;
+    if (op.type === 'delete') writes.push({ type: 'delete', ref, guard });
+    else if (op.type === 'update') writes.push({ type: 'update', ref, data: op.data, guard });
+    else writes.push({ type: 'set', ref, data: op.data, guard });
   };
 
   const extra = (values.extraData as ProdutoExtraData | null) ?? null;

@@ -11,6 +11,9 @@ import type {
   detEvento_e110111,
   detEvento_e110140_dest,
   detEvento_e110140,
+  TRSAKeyValueType,
+  TEvento_infEvento_infPAA_PAASignature,
+  TEvento_infEvento_infPAA,
   TEvento_infEvento,
   TEvento,
   TEnvEvento,
@@ -88,16 +91,33 @@ import type {
   TDif,
   TDevTrib,
   TRed,
-  TCIBS_gIBSUF,
-  TCIBS_gIBSMun,
-  TCIBS_gCBS,
+  TCIBS_NFe_gIBSUF,
+  TCIBS_NFe_gIBSMun,
+  TALCZFMCBS_NFe,
+  TCIBS_NFe_gCBS,
   TTribRegular,
   TTribCompraGov,
-  TCIBS,
-  TMonofasia_gMonoPadrao,
-  TMonofasia_gMonoReten,
-  TMonofasia_gMonoRet,
-  TMonofasia_gMonoDif,
+  TCIBS_NFe,
+  TMonofasia_gIBSMonoAdRem_gMonoPadrao,
+  TMonofasia_gIBSMonoAdRem_gMonoReten,
+  TMonofasia_gIBSMonoAdRem_gMonoRet,
+  TMonofasia_gIBSMonoAdRem_gpBioDiferenca,
+  TMonofasia_gIBSMonoAdRem,
+  TMonofasia_gIBSMonoAdValorem_gMonoPadrao,
+  TMonofasia_gIBSMonoAdValorem_gMonoReten,
+  TMonofasia_gIBSMonoAdValorem_gMonoRet,
+  TMonofasia_gIBSMonoAdValorem_gpBioDiferenca,
+  TMonofasia_gIBSMonoAdValorem,
+  TMonofasia_gCBSMonoAdRem_gMonoPadrao,
+  TMonofasia_gCBSMonoAdRem_gMonoReten,
+  TMonofasia_gCBSMonoAdRem_gMonoRet,
+  TMonofasia_gCBSMonoAdRem_gpBioDiferenca,
+  TMonofasia_gCBSMonoAdRem,
+  TMonofasia_gCBSMonoAdValorem_gMonoPadrao,
+  TMonofasia_gCBSMonoAdValorem_gMonoReten,
+  TMonofasia_gCBSMonoAdValorem_gMonoRet,
+  TMonofasia_gCBSMonoAdValorem_gpBioDiferenca,
+  TMonofasia_gCBSMonoAdValorem,
   TMonofasia,
   TTransfCred,
   TAjusteCompet,
@@ -153,6 +173,8 @@ import type {
   TNFe_infNFe_agropecuario_defensivo,
   TNFe_infNFe_agropecuario_guiaTransito,
   TNFe_infNFe_agropecuario,
+  TNFe_infNFe_infPAA_PAASignature,
+  TNFe_infNFe_infPAA,
   TNFe_infNFe,
   TNFe_infNFeSupl,
   TNFe,
@@ -235,6 +257,21 @@ export const detEvento_e110140Schema: z.ZodType<detEvento_e110140> = z.lazy(() =
   versao: z.string(),
 })) as z.ZodType<detEvento_e110140>;
 
+export const TRSAKeyValueTypeSchema: z.ZodType<TRSAKeyValueType> = z.lazy(() => z.object({
+  Modulus: z.string(),
+  Exponent: z.string(),
+})) as z.ZodType<TRSAKeyValueType>;
+
+export const TEvento_infEvento_infPAA_PAASignatureSchema: z.ZodType<TEvento_infEvento_infPAA_PAASignature> = z.lazy(() => z.object({
+  SignatureValue: z.string(),
+  RSAKeyValue: z.lazy(() => TRSAKeyValueTypeSchema),
+})) as z.ZodType<TEvento_infEvento_infPAA_PAASignature>;
+
+export const TEvento_infEvento_infPAASchema: z.ZodType<TEvento_infEvento_infPAA> = z.lazy(() => z.object({
+  CNPJPAA: z.string(),
+  PAASignature: z.lazy(() => TEvento_infEvento_infPAA_PAASignatureSchema),
+})) as z.ZodType<TEvento_infEvento_infPAA>;
+
 export const TEvento_infEventoSchema: z.ZodType<TEvento_infEvento> = z.lazy(() => z.object({
   cOrgao: z.enum(['11', '12', '13', '14', '15', '16', '17', '21', '22', '23', '24', '25', '26', '27', '28', '29', '31', '32', '33', '35', '41', '42', '43', '50', '51', '52', '53', '90', '91', '92']),
   tpAmb: z.enum(['1', '2']),
@@ -246,6 +283,7 @@ export const TEvento_infEventoSchema: z.ZodType<TEvento_infEvento> = z.lazy(() =
   nSeqEvento: z.string(),
   verEvento: z.string(),
   detEvento: z.string(),
+  infPAA: z.lazy(() => TEvento_infEvento_infPAASchema).optional(),
   Id: z.string(),
 })) as z.ZodType<TEvento_infEvento>;
 
@@ -297,9 +335,10 @@ export const TNFe_infNFe_ide_NFrefSchema: z.ZodType<TNFe_infNFe_ide_NFref> = z.l
 })) as z.ZodType<TNFe_infNFe_ide_NFref>;
 
 export const TCompraGovSchema: z.ZodType<TCompraGov> = z.lazy(() => z.object({
-  tpEnteGov: z.enum(['1', '2', '3', '4']),
+  tpEnteGov: z.enum(['1', '2', '3', '4', '5', '6']),
   pRedutor: z.string(),
-  tpOperGov: z.enum(['1', '2']),
+  tpOperGov: z.enum(['1', '2', '3', '4']),
+  refDFeAnt: z.array(z.string()).optional(),
 })) as z.ZodType<TCompraGov>;
 
 export const TNFe_infNFe_ide_gPagAntecipadoSchema: z.ZodType<TNFe_infNFe_ide_gPagAntecipado> = z.lazy(() => z.object({
@@ -320,17 +359,18 @@ export const TNFe_infNFe_ideSchema: z.ZodType<TNFe_infNFe_ide> = z.lazy(() => z.
   idDest: z.enum(['1', '2', '3']),
   cMunFG: z.string(),
   cMunFGIBS: z.string().optional(),
-  tpImp: z.enum(['0', '1', '2', '3', '4', '5']),
+  tpImp: z.enum(['0', '1', '2', '3', '4', '5', '6']),
   tpEmis: z.enum(['1', '2', '3', '4', '5', '6', '7', '9']),
   cDV: z.string(),
   tpAmb: z.enum(['1', '2']),
   finNFe: z.enum(['1', '2', '3', '4', '5', '6']),
   tpNFDebito: z.enum(['01', '02', '03', '04', '05', '06', '07', '08']).optional(),
-  tpNFCredito: z.enum(['01', '02', '03', '04', '05']).optional(),
+  tpNFCredito: z.enum(['01', '02', '03', '04', '05', '06']).optional(),
   indFinal: z.enum(['0', '1']),
   indPres: z.enum(['0', '1', '2', '3', '4', '5', '9']),
   indIntermed: z.enum(['0', '1']).optional(),
-  procEmi: z.enum(['0', '1', '2', '3']),
+  cIndOp: z.string().optional(),
+  procEmi: z.enum(['0', '1', '2', '3', '4']),
   verProc: z.string(),
   dhCont: z.string().optional(),
   xJust: z.string().optional(),
@@ -359,11 +399,12 @@ export const TNFe_infNFe_emitSchema: z.ZodType<TNFe_infNFe_emit> = z.lazy(() => 
   xNome: z.string(),
   xFant: z.string().optional(),
   enderEmit: z.lazy(() => TEnderEmiSchema),
-  IE: z.string(),
+  IE: z.string().optional(),
   IEST: z.string().optional(),
   IM: z.string().optional(),
   CNAE: z.string().optional(),
   CRT: z.enum(['1', '2', '3', '4']),
+  ISUFEmit: z.string().optional(),
 })) as z.ZodType<TNFe_infNFe_emit>;
 
 export const TNFe_infNFe_avulsaSchema: z.ZodType<TNFe_infNFe_avulsa> = z.lazy(() => z.object({
@@ -1122,7 +1163,7 @@ export const TISSchema: z.ZodType<TIS> = z.lazy(() => z.object({
   cClassTribIS: z.string(),
   vBCIS: z.string().optional(),
   pIS: z.string().optional(),
-  pISEspec: z.string().optional(),
+  adRemIS: z.string().optional(),
   uTrib: z.string().optional(),
   qTrib: z.string().optional(),
   vIS: z.string().optional(),
@@ -1134,6 +1175,7 @@ export const TDifSchema: z.ZodType<TDif> = z.lazy(() => z.object({
 })) as z.ZodType<TDif>;
 
 export const TDevTribSchema: z.ZodType<TDevTrib> = z.lazy(() => z.object({
+  pDevTrib: z.string().optional(),
   vDevTrib: z.string(),
 })) as z.ZodType<TDevTrib>;
 
@@ -1142,29 +1184,37 @@ export const TRedSchema: z.ZodType<TRed> = z.lazy(() => z.object({
   pAliqEfet: z.string(),
 })) as z.ZodType<TRed>;
 
-export const TCIBS_gIBSUFSchema: z.ZodType<TCIBS_gIBSUF> = z.lazy(() => z.object({
+export const TCIBS_NFe_gIBSUFSchema: z.ZodType<TCIBS_NFe_gIBSUF> = z.lazy(() => z.object({
   pIBSUF: z.string(),
   gDif: z.lazy(() => TDifSchema).optional(),
   gDevTrib: z.lazy(() => TDevTribSchema).optional(),
   gRed: z.lazy(() => TRedSchema).optional(),
   vIBSUF: z.string(),
-})) as z.ZodType<TCIBS_gIBSUF>;
+})) as z.ZodType<TCIBS_NFe_gIBSUF>;
 
-export const TCIBS_gIBSMunSchema: z.ZodType<TCIBS_gIBSMun> = z.lazy(() => z.object({
+export const TCIBS_NFe_gIBSMunSchema: z.ZodType<TCIBS_NFe_gIBSMun> = z.lazy(() => z.object({
   pIBSMun: z.string(),
   gDif: z.lazy(() => TDifSchema).optional(),
   gDevTrib: z.lazy(() => TDevTribSchema).optional(),
   gRed: z.lazy(() => TRedSchema).optional(),
   vIBSMun: z.string(),
-})) as z.ZodType<TCIBS_gIBSMun>;
+})) as z.ZodType<TCIBS_NFe_gIBSMun>;
 
-export const TCIBS_gCBSSchema: z.ZodType<TCIBS_gCBS> = z.lazy(() => z.object({
+export const TALCZFMCBS_NFeSchema: z.ZodType<TALCZFMCBS_NFe> = z.lazy(() => z.object({
+  tpALCZFMCBS: z.enum(['1', '2']),
+  nProcSuframa: z.string().optional(),
+  pAliqEfetRegCBS: z.string(),
+  vTribRegCBS: z.string(),
+})) as z.ZodType<TALCZFMCBS_NFe>;
+
+export const TCIBS_NFe_gCBSSchema: z.ZodType<TCIBS_NFe_gCBS> = z.lazy(() => z.object({
   pCBS: z.string(),
   gDif: z.lazy(() => TDifSchema).optional(),
   gDevTrib: z.lazy(() => TDevTribSchema).optional(),
   gRed: z.lazy(() => TRedSchema).optional(),
+  gALCZFMCBS: z.lazy(() => TALCZFMCBS_NFeSchema).optional(),
   vCBS: z.string(),
-})) as z.ZodType<TCIBS_gCBS>;
+})) as z.ZodType<TCIBS_NFe_gCBS>;
 
 export const TTribRegularSchema: z.ZodType<TTribRegular> = z.lazy(() => z.object({
   CSTReg: z.string(),
@@ -1186,52 +1236,136 @@ export const TTribCompraGovSchema: z.ZodType<TTribCompraGov> = z.lazy(() => z.ob
   vTribCBS: z.string(),
 })) as z.ZodType<TTribCompraGov>;
 
-export const TCIBSSchema: z.ZodType<TCIBS> = z.lazy(() => z.object({
+export const TCIBS_NFeSchema: z.ZodType<TCIBS_NFe> = z.lazy(() => z.object({
   vBC: z.string(),
-  gIBSUF: z.lazy(() => TCIBS_gIBSUFSchema),
-  gIBSMun: z.lazy(() => TCIBS_gIBSMunSchema),
+  gIBSUF: z.lazy(() => TCIBS_NFe_gIBSUFSchema),
+  gIBSMun: z.lazy(() => TCIBS_NFe_gIBSMunSchema),
   vIBS: z.string(),
-  gCBS: z.lazy(() => TCIBS_gCBSSchema),
+  gCBS: z.lazy(() => TCIBS_NFe_gCBSSchema),
   gTribRegular: z.lazy(() => TTribRegularSchema).optional(),
   gTribCompraGov: z.lazy(() => TTribCompraGovSchema).optional(),
-})) as z.ZodType<TCIBS>;
+})) as z.ZodType<TCIBS_NFe>;
 
-export const TMonofasia_gMonoPadraoSchema: z.ZodType<TMonofasia_gMonoPadrao> = z.lazy(() => z.object({
+export const TMonofasia_gIBSMonoAdRem_gMonoPadraoSchema: z.ZodType<TMonofasia_gIBSMonoAdRem_gMonoPadrao> = z.lazy(() => z.object({
   qBCMono: z.string(),
   adRemIBS: z.string(),
-  adRemCBS: z.string(),
   vIBSMono: z.string(),
-  vCBSMono: z.string(),
-})) as z.ZodType<TMonofasia_gMonoPadrao>;
+})) as z.ZodType<TMonofasia_gIBSMonoAdRem_gMonoPadrao>;
 
-export const TMonofasia_gMonoRetenSchema: z.ZodType<TMonofasia_gMonoReten> = z.lazy(() => z.object({
+export const TMonofasia_gIBSMonoAdRem_gMonoRetenSchema: z.ZodType<TMonofasia_gIBSMonoAdRem_gMonoReten> = z.lazy(() => z.object({
   qBCMonoReten: z.string(),
   adRemIBSReten: z.string(),
   vIBSMonoReten: z.string(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdRem_gMonoReten>;
+
+export const TMonofasia_gIBSMonoAdRem_gMonoRetSchema: z.ZodType<TMonofasia_gIBSMonoAdRem_gMonoRet> = z.lazy(() => z.object({
+  vIBSMonoRet: z.string(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdRem_gMonoRet>;
+
+export const TMonofasia_gIBSMonoAdRem_gpBioDiferencaSchema: z.ZodType<TMonofasia_gIBSMonoAdRem_gpBioDiferenca> = z.lazy(() => z.object({
+  qBCBioComb: z.string(),
+  vIBSDiferenca: z.string(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdRem_gpBioDiferenca>;
+
+export const TMonofasia_gIBSMonoAdRemSchema: z.ZodType<TMonofasia_gIBSMonoAdRem> = z.lazy(() => z.object({
+  gMonoPadrao: z.lazy(() => TMonofasia_gIBSMonoAdRem_gMonoPadraoSchema).optional(),
+  gMonoReten: z.lazy(() => TMonofasia_gIBSMonoAdRem_gMonoRetenSchema).optional(),
+  gMonoRet: z.lazy(() => TMonofasia_gIBSMonoAdRem_gMonoRetSchema).optional(),
+  gpBioDiferenca: z.lazy(() => TMonofasia_gIBSMonoAdRem_gpBioDiferencaSchema).optional(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdRem>;
+
+export const TMonofasia_gIBSMonoAdValorem_gMonoPadraoSchema: z.ZodType<TMonofasia_gIBSMonoAdValorem_gMonoPadrao> = z.lazy(() => z.object({
+  vBCMono: z.string(),
+  pAliqMonoUF: z.string(),
+  vIBSMonoUF: z.string(),
+  pAliqMonoMun: z.string(),
+  vIBSMonoMun: z.string(),
+  vIBSMono: z.string(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdValorem_gMonoPadrao>;
+
+export const TMonofasia_gIBSMonoAdValorem_gMonoRetenSchema: z.ZodType<TMonofasia_gIBSMonoAdValorem_gMonoReten> = z.lazy(() => z.object({
+  vBCMonoReten: z.string(),
+  pAliqMonoReten: z.string(),
+  vIBSMonoReten: z.string(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdValorem_gMonoReten>;
+
+export const TMonofasia_gIBSMonoAdValorem_gMonoRetSchema: z.ZodType<TMonofasia_gIBSMonoAdValorem_gMonoRet> = z.lazy(() => z.object({
+  vIBSMonoRet: z.string(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdValorem_gMonoRet>;
+
+export const TMonofasia_gIBSMonoAdValorem_gpBioDiferencaSchema: z.ZodType<TMonofasia_gIBSMonoAdValorem_gpBioDiferenca> = z.lazy(() => z.object({
+  qBCBioComb: z.string(),
+  vIBSDiferenca: z.string(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdValorem_gpBioDiferenca>;
+
+export const TMonofasia_gIBSMonoAdValoremSchema: z.ZodType<TMonofasia_gIBSMonoAdValorem> = z.lazy(() => z.object({
+  gMonoPadrao: z.lazy(() => TMonofasia_gIBSMonoAdValorem_gMonoPadraoSchema).optional(),
+  gMonoReten: z.lazy(() => TMonofasia_gIBSMonoAdValorem_gMonoRetenSchema).optional(),
+  gMonoRet: z.lazy(() => TMonofasia_gIBSMonoAdValorem_gMonoRetSchema).optional(),
+  gpBioDiferenca: z.lazy(() => TMonofasia_gIBSMonoAdValorem_gpBioDiferencaSchema).optional(),
+})) as z.ZodType<TMonofasia_gIBSMonoAdValorem>;
+
+export const TMonofasia_gCBSMonoAdRem_gMonoPadraoSchema: z.ZodType<TMonofasia_gCBSMonoAdRem_gMonoPadrao> = z.lazy(() => z.object({
+  qBCMono: z.string(),
+  adRemCBS: z.string(),
+  vCBSMono: z.string(),
+})) as z.ZodType<TMonofasia_gCBSMonoAdRem_gMonoPadrao>;
+
+export const TMonofasia_gCBSMonoAdRem_gMonoRetenSchema: z.ZodType<TMonofasia_gCBSMonoAdRem_gMonoReten> = z.lazy(() => z.object({
+  qBCMonoReten: z.string(),
   adRemCBSReten: z.string(),
   vCBSMonoReten: z.string(),
-})) as z.ZodType<TMonofasia_gMonoReten>;
+})) as z.ZodType<TMonofasia_gCBSMonoAdRem_gMonoReten>;
 
-export const TMonofasia_gMonoRetSchema: z.ZodType<TMonofasia_gMonoRet> = z.lazy(() => z.object({
-  qBCMonoRet: z.string(),
-  adRemIBSRet: z.string(),
-  vIBSMonoRet: z.string(),
-  adRemCBSRet: z.string(),
+export const TMonofasia_gCBSMonoAdRem_gMonoRetSchema: z.ZodType<TMonofasia_gCBSMonoAdRem_gMonoRet> = z.lazy(() => z.object({
   vCBSMonoRet: z.string(),
-})) as z.ZodType<TMonofasia_gMonoRet>;
+})) as z.ZodType<TMonofasia_gCBSMonoAdRem_gMonoRet>;
 
-export const TMonofasia_gMonoDifSchema: z.ZodType<TMonofasia_gMonoDif> = z.lazy(() => z.object({
-  pDifIBS: z.string(),
-  vIBSMonoDif: z.string(),
-  pDifCBS: z.string(),
-  vCBSMonoDif: z.string(),
-})) as z.ZodType<TMonofasia_gMonoDif>;
+export const TMonofasia_gCBSMonoAdRem_gpBioDiferencaSchema: z.ZodType<TMonofasia_gCBSMonoAdRem_gpBioDiferenca> = z.lazy(() => z.object({
+  qBCBioComb: z.string(),
+  vCBSDiferenca: z.string(),
+})) as z.ZodType<TMonofasia_gCBSMonoAdRem_gpBioDiferenca>;
+
+export const TMonofasia_gCBSMonoAdRemSchema: z.ZodType<TMonofasia_gCBSMonoAdRem> = z.lazy(() => z.object({
+  gMonoPadrao: z.lazy(() => TMonofasia_gCBSMonoAdRem_gMonoPadraoSchema).optional(),
+  gMonoReten: z.lazy(() => TMonofasia_gCBSMonoAdRem_gMonoRetenSchema).optional(),
+  gMonoRet: z.lazy(() => TMonofasia_gCBSMonoAdRem_gMonoRetSchema).optional(),
+  gpBioDiferenca: z.lazy(() => TMonofasia_gCBSMonoAdRem_gpBioDiferencaSchema).optional(),
+})) as z.ZodType<TMonofasia_gCBSMonoAdRem>;
+
+export const TMonofasia_gCBSMonoAdValorem_gMonoPadraoSchema: z.ZodType<TMonofasia_gCBSMonoAdValorem_gMonoPadrao> = z.lazy(() => z.object({
+  vBCMono: z.string(),
+  pAliqMonoCBS: z.string(),
+  vCBSMono: z.string(),
+})) as z.ZodType<TMonofasia_gCBSMonoAdValorem_gMonoPadrao>;
+
+export const TMonofasia_gCBSMonoAdValorem_gMonoRetenSchema: z.ZodType<TMonofasia_gCBSMonoAdValorem_gMonoReten> = z.lazy(() => z.object({
+  vBCMonoReten: z.string(),
+  pAliqMonoReten: z.string(),
+  vCBSMonoReten: z.string(),
+})) as z.ZodType<TMonofasia_gCBSMonoAdValorem_gMonoReten>;
+
+export const TMonofasia_gCBSMonoAdValorem_gMonoRetSchema: z.ZodType<TMonofasia_gCBSMonoAdValorem_gMonoRet> = z.lazy(() => z.object({
+  vCBSMonoRet: z.string(),
+})) as z.ZodType<TMonofasia_gCBSMonoAdValorem_gMonoRet>;
+
+export const TMonofasia_gCBSMonoAdValorem_gpBioDiferencaSchema: z.ZodType<TMonofasia_gCBSMonoAdValorem_gpBioDiferenca> = z.lazy(() => z.object({
+  qBCBioComb: z.string(),
+  vCBSDiferenca: z.string(),
+})) as z.ZodType<TMonofasia_gCBSMonoAdValorem_gpBioDiferenca>;
+
+export const TMonofasia_gCBSMonoAdValoremSchema: z.ZodType<TMonofasia_gCBSMonoAdValorem> = z.lazy(() => z.object({
+  gMonoPadrao: z.lazy(() => TMonofasia_gCBSMonoAdValorem_gMonoPadraoSchema).optional(),
+  gMonoReten: z.lazy(() => TMonofasia_gCBSMonoAdValorem_gMonoRetenSchema).optional(),
+  gMonoRet: z.lazy(() => TMonofasia_gCBSMonoAdValorem_gMonoRetSchema).optional(),
+  gpBioDiferenca: z.lazy(() => TMonofasia_gCBSMonoAdValorem_gpBioDiferencaSchema).optional(),
+})) as z.ZodType<TMonofasia_gCBSMonoAdValorem>;
 
 export const TMonofasiaSchema: z.ZodType<TMonofasia> = z.lazy(() => z.object({
-  gMonoPadrao: z.lazy(() => TMonofasia_gMonoPadraoSchema).optional(),
-  gMonoReten: z.lazy(() => TMonofasia_gMonoRetenSchema).optional(),
-  gMonoRet: z.lazy(() => TMonofasia_gMonoRetSchema).optional(),
-  gMonoDif: z.lazy(() => TMonofasia_gMonoDifSchema).optional(),
+  gIBSMonoAdRem: z.lazy(() => TMonofasia_gIBSMonoAdRemSchema).optional(),
+  gIBSMonoAdValorem: z.lazy(() => TMonofasia_gIBSMonoAdValoremSchema).optional(),
+  gCBSMonoAdRem: z.lazy(() => TMonofasia_gCBSMonoAdRemSchema).optional(),
+  gCBSMonoAdValorem: z.lazy(() => TMonofasia_gCBSMonoAdValoremSchema).optional(),
   vTotIBSMonoItem: z.string(),
   vTotCBSMonoItem: z.string(),
 })) as z.ZodType<TMonofasia>;
@@ -1275,7 +1409,7 @@ export const TTribNFeSchema: z.ZodType<TTribNFe> = z.lazy(() => z.object({
   CST: z.string(),
   cClassTrib: z.string(),
   indDoacao: z.enum(['1']).optional(),
-  gIBSCBS: z.lazy(() => TCIBSSchema).optional(),
+  gIBSCBS: z.lazy(() => TCIBS_NFeSchema).optional(),
   gIBSCBSMono: z.lazy(() => TMonofasiaSchema).optional(),
   gTransfCred: z.lazy(() => TTransfCredSchema).optional(),
   gAjusteCompet: z.lazy(() => TAjusteCompetSchema).optional(),
@@ -1646,6 +1780,16 @@ export const TNFe_infNFe_agropecuarioSchema: z.ZodType<TNFe_infNFe_agropecuario>
   guiaTransito: z.lazy(() => TNFe_infNFe_agropecuario_guiaTransitoSchema).optional(),
 })) as z.ZodType<TNFe_infNFe_agropecuario>;
 
+export const TNFe_infNFe_infPAA_PAASignatureSchema: z.ZodType<TNFe_infNFe_infPAA_PAASignature> = z.lazy(() => z.object({
+  SignatureValue: z.string(),
+  RSAKeyValue: z.lazy(() => TRSAKeyValueTypeSchema),
+})) as z.ZodType<TNFe_infNFe_infPAA_PAASignature>;
+
+export const TNFe_infNFe_infPAASchema: z.ZodType<TNFe_infNFe_infPAA> = z.lazy(() => z.object({
+  CNPJPAA: z.string(),
+  PAASignature: z.lazy(() => TNFe_infNFe_infPAA_PAASignatureSchema),
+})) as z.ZodType<TNFe_infNFe_infPAA>;
+
 export const TNFe_infNFeSchema: z.ZodType<TNFe_infNFe> = z.lazy(() => z.object({
   ide: z.lazy(() => TNFe_infNFe_ideSchema),
   emit: z.lazy(() => TNFe_infNFe_emitSchema),
@@ -1667,6 +1811,7 @@ export const TNFe_infNFeSchema: z.ZodType<TNFe_infNFe> = z.lazy(() => z.object({
   infRespTec: z.lazy(() => TInfRespTecSchema).optional(),
   infSolicNFF: z.lazy(() => TNFe_infNFe_infSolicNFFSchema).optional(),
   agropecuario: z.lazy(() => TNFe_infNFe_agropecuarioSchema).optional(),
+  infPAA: z.lazy(() => TNFe_infNFe_infPAASchema).optional(),
   versao: z.string(),
   Id: z.string(),
 })) as z.ZodType<TNFe_infNFe>;

@@ -2,9 +2,11 @@ export {
   WhatsAppClient,
   WhatsAppHttpError,
   WhatsAppNetworkError,
+  WhatsAppRecipientError,
   GRAPH_BASE,
   DEFAULT_GRAPH_API_VERSION,
   type WhatsAppClientConfig,
+  type WhatsAppRecipient,
   type SendTextInput,
   type SendMediaInput,
   type SendTemplateInput,
@@ -16,6 +18,11 @@ export {
 } from './client';
 export {
   WEBHOOK_FIELD_MESSAGES,
+  WA_STATUS_KNOWN,
+  WA_STATUS_DESCONHECIDO,
+  narrowWaStatus,
+  type WaKnownStatus,
+  type WaStatus,
   incomingMessageSchema,
   statusUpdateSchema,
   valuePayloadSchema,

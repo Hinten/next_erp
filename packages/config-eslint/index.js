@@ -12,7 +12,10 @@ import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.j
 import noEnvSecretsAccess from './rules/no-env-secrets-access.js';
 import noHardcodedGcpRegion from './rules/no-hardcoded-gcp-region.js';
 import noUnvalidatedResponse from './rules/no-unvalidated-response.js';
+import noFocusedTest from './rules/no-focused-test.js';
+import requireFirestoreDatabaseId from './rules/require-firestore-database-id.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
+import importPlugin from 'eslint-plugin-import';
 import tseslint from 'typescript-eslint';
 
 // Re-export eslint-config-prettier so every consumer can append it as the LAST
@@ -37,11 +40,18 @@ export const prettier = eslintConfigPrettier;
  * are the high-value async-correctness subset worth gating CI on.
  *
  * `registerPlugin` (default `true`) makes the block self-contained — it
- * registers the `@typescript-eslint` plugin the rules below need, so a config
- * that does NOT extend `eslint-config-next` works out of the box. Consumers
- * that DO spread `eslint-config-next` (every app in this repo) must pass
- * `registerPlugin: false`: next already registers that plugin and flat config
- * forbids defining a plugin name twice ("Cannot redefine plugin").
+ * registers the `@typescript-eslint` AND `import` plugins the rules below need,
+ * so a config that does NOT extend `eslint-config-next` works out of the box.
+ * Consumers that DO spread `eslint-config-next` (every app in this repo) must
+ * pass `registerPlugin: false`: next registers BOTH of those plugin names and
+ * flat config forbids defining one twice ("Cannot redefine plugin").
+ *
+ * ⚠️ Same version is NOT the same instance. `eslint-plugin-import` resolves to
+ * two different physical copies here — this package's peer context is
+ * `@typescript-eslint/parser`, next's is `eslint-import-resolver-typescript` —
+ * so pnpm hands out two distinct module objects for 2.32.0 and ESLint compares
+ * by identity. Dropping the guard therefore throws in all 10 Next apps rather
+ * than silently deduping.
  *
  * @param {string} tsconfigRootDir usually `import.meta.dirname`
  * @param {{ files?: string[], registerPlugin?: boolean }} [opts]
@@ -57,7 +67,9 @@ export function typeAware(
         parser: tseslint.parser,
         parserOptions: { projectService: true, tsconfigRootDir },
       },
-      ...(registerPlugin ? { plugins: { '@typescript-eslint': tseslint.plugin } } : {}),
+      ...(registerPlugin
+        ? { plugins: { '@typescript-eslint': tseslint.plugin, import: importPlugin } }
+        : {}),
       rules: {
         '@typescript-eslint/no-floating-promises': 'error',
         // checksVoidReturn.attributes:false silences only the benign JSX
@@ -93,10 +105,165 @@ export function typeAware(
         // turns that into a silent `undefined` return. Name the cases AND keep the
         // fallback; the rule is satisfied either way.
         '@typescript-eslint/switch-exhaustiveness-check': 'error',
+
+        // A dead import typechecks, lints and tests green without this. Core
+        // `no-unused-vars` is off in the base block (correct — it double-reports
+        // on TypeScript), and the TS replacement was assumed to arrive with
+        // `eslint-config-next` and never did: its FLAT export registers the
+        // plugin and the parser, but the `'@typescript-eslint/no-unused-vars'`
+        // entry lives in its `eslint-config-next/typescript` eslintrc export,
+        // which nothing here spreads. So until #1445 there was NO unused-variable
+        // detection anywhere in this repo, in either ESLint or tsc.
+        //
+        // #1442 is the worked example: it removed a block that used `useQuery`
+        // and orphaned the import. That survived `turbo run typecheck` (28/28),
+        // `turbo run lint` (30/30, zero errors) and 3013 apps/web tests, and was
+        // caught by a reviewer reading the diff — which is not a mechanism.
+        //
+        // ERROR, not a ratchet: the pre-existing hits are fixed in the PR that
+        // enables this, so there is no population to grandfather — the condition
+        // this repo states for `error` (see `no-unvalidated-response` below).
+        // ⚠️ And `warn` would gate NOTHING here: no lint script passes
+        // `--max-warnings`, so `turbo run lint` never fails on one. Only
+        // `.lintstagedrc.mjs` does, and only for files that happen to be staged.
+        //
+        // The `^_` patterns are the sanctioned escape hatch — this repo already
+        // writes `_ctx` / `_config` / `_exhaustive` by hand.
+        '@typescript-eslint/no-unused-vars': [
+          'error',
+          {
+            args: 'after-used',
+            argsIgnorePattern: '^_',
+            varsIgnorePattern: '^_',
+            caughtErrors: 'all',
+            caughtErrorsIgnorePattern: '^_',
+            destructuredArrayIgnorePattern: '^_',
+            ignoreRestSiblings: true,
+          },
+        ],
+
+        // ── Type-import hygiene ────────────────────────────────────────────
+        // ERROR for all three below, on the same grounds as `no-unused-vars`
+        // above: every pre-existing site is fixed in the PR that enables them,
+        // so there is no population to grandfather — and `warn` gates nothing
+        // in CI.
+        //
+        // All three exist because `packages/config-tsconfig/base.json` sets
+        // `verbatimModuleSyntax: true`, which every workspace inherits.
+        //
+        // That option already does the half people usually reach for
+        // `consistent-type-imports` to get: importing something that is ONLY a
+        // type without the `type` keyword is TS error 1484, and `turbo run
+        // typecheck` is green, so there are provably zero of those in the repo.
+        // tsc is the mechanism there, not ESLint.
+        //
+        // What it does NOT do is stop an import from being EMITTED. It emits
+        // import statements verbatim, so:
+        //
+        //   import { type A, type B } from './x';   // every specifier elided
+        //
+        // still leaves `import './x';` in the output — a real runtime module
+        // load that exists only because of how the import was spelled. Nothing
+        // catches it: it typechecks, lints, builds and runs. 34 such sites
+        // existed when this rule was turned on.
+        '@typescript-eslint/no-import-type-side-effects': 'error',
+
+        // Two imports of the same module in one file. Autofixable, and the 46
+        // sites this found were all accidental — a second import appended
+        // rather than merged into the existing one.
+        //
+        // ⚠️ Two sites are NOT accidental and the fixer correctly refused both:
+        // a bare side-effect `import 'x'` sitting above a named import of the
+        // same module, where the position is load-bearing. Merging is safe only
+        // when it does not MOVE the declaration, because ESM evaluates modules
+        // in the order their import declarations appear. See the ⚠️ at the top
+        // of `apps/mercado-livre/functions/src/index.ts`.
+        //
+        // ⚠️ This needs the `import` plugin, which is registered above under
+        // `registerPlugin` rather than in the base block: the base block has no
+        // plugin of its own beyond `delfrance`, and the 10 Next apps get `import`
+        // from `eslint-config-next` instead. Setting the rule here and getting
+        // the plugin from a different config object is fine — flat config merges
+        // `plugins` across every object matching a file, which is exactly how
+        // `delfrance/prefer-schema-enum` above works.
+        'import/no-duplicates': 'error',
+        // The third of the verbatimModuleSyntax family, and the one whose
+        // scope had to be cut down after measuring it.
+        //
+        // What it catches HERE is a binding that is a VALUE in TS terms — a Zod
+        // schema, a class, an enum — imported without `type` but referenced only
+        // in type positions. tsc cannot complain (the import is legal), so under
+        // verbatimModuleSyntax it is emitted and the module is loaded at runtime
+        // for nothing. `z.infer<typeof xSchema>` makes this the repo's most
+        // likely shape. 11 such sites existed.
+        //
+        // ⚠️ `disallowTypeAnnotations` is turned OFF, and that is a deliberate
+        // scope cut rather than a concession. It is a SEPARATE ban, on inline
+        // `import('./x').Foo` type annotations, and it accounted for 275 of the
+        // 286 reports — almost all in test files, where an `import()` annotation
+        // is the idiomatic way to name a type inside a `vi.mock` factory without
+        // hoisting an import above it.
+        //
+        // It has none of the justification the rest of this block rests on: an
+        // `import()` type annotation lives entirely in type space and TS erases
+        // it, so it emits NOTHING and verbatimModuleSyntax never sees it. It is
+        // also not autofixable. Enabling it would mean 275 hand-edits of working
+        // test code to buy zero runtime change — churn bought with the credibility
+        // of the two rules above, which do pay for themselves.
+        '@typescript-eslint/consistent-type-imports': [
+          'error',
+          { fixStyle: 'inline-type-imports', disallowTypeAnnotations: false },
+        ],
+
+        // An `any` silently disables every other rule in this config for the
+        // value it annotates — including the `no-unsafe-*` family this file
+        // deliberately does NOT enable, which is precisely what makes a stray
+        // `any` the hole those rules cannot be trusted around. `unknown` plus a
+        // narrowing check is the replacement, and `as unknown` is already the
+        // escape `no-unvalidated-response` sanctions for network payloads.
+        //
+        // ERROR, same condition as above: the repo had exactly nine real `any`
+        // annotations, all in one freight-br test file, and they were removed in
+        // the same PR. (Every other `: any` / `as any` in a grep is the English
+        // word "any" inside a comment.)
+        '@typescript-eslint/no-explicit-any': 'error',
       },
     },
   ];
 }
+
+/**
+ * The `no-restricted-imports` entries every workspace gets from the base block.
+ *
+ * Exported because flat config REPLACES a rule by name rather than merging it,
+ * so an app that declares its own `no-restricted-imports` silently drops these.
+ * That is not hypothetical: five backends
+ * (`apps/{integrations,melhor-envio,mercado-livre,mercado-pago,whatsapp}`) each
+ * added a `firebase-admin/firestore` restriction and, in doing so, turned the
+ * Cloud Storage ban OFF for themselves — while the base file's own comment
+ * warned about exactly that trap and only `apps/web` obeyed it. Spreading a
+ * shared const is the fix a comment could not be; it mirrors the runtime
+ * `baseRestrictedSyntax` reconstruction those same apps already do.
+ *
+ * Funnel all Cloud Storage access through the `@delfrance/storage` helpers
+ * (content-addressing, dedup, the Arquivo doc, the product-scoped path
+ * conventions). `getStorage()` for the singleton stays allowed.
+ */
+export const baseRestrictedImportPaths = [
+  {
+    name: 'firebase/storage',
+    importNames: [
+      'ref',
+      'uploadBytes',
+      'uploadBytesResumable',
+      'uploadString',
+      'getDownloadURL',
+      'deleteObject',
+    ],
+    message:
+      'Do not call the raw Storage SDK. Use the helpers from @delfrance/storage (uploadFile / uploadProductImage / uploadFromUrl) — `getStorage()` for the singleton is fine.',
+  },
+];
 
 const config = [
   {
@@ -135,40 +302,29 @@ const config = [
           'no-lossy-date-parse': noLossyDateParse,
           'no-ambient-timezone': noAmbientTimezone,
           'no-unvalidated-response': noUnvalidatedResponse,
+          'no-focused-test': noFocusedTest,
+          'require-firestore-database-id': requireFirestoreDatabaseId,
         },
       },
     },
     rules: {
       'no-console': ['warn', { allow: ['warn', 'error'] }],
+      // Off for TYPESCRIPT only. The core rule cannot see type positions, so it
+      // reports every type-only import as unused. The real gate is
+      // `@typescript-eslint/no-unused-vars` in `typeAware(...)` above, plus the
+      // JS-scoped re-enable of THIS rule at the bottom of this file. ⚠️ Do not
+      // delete either half: with this line on its own, a dead import is
+      // invisible repo-wide — which is the bug #1445 fixed.
       'no-unused-vars': 'off',
+      // tsc owns undefined-identifier detection, and it knows about types,
+      // `lib` globals and ambient declarations, which this rule does not.
       'no-undef': 'off',
       'no-empty': ['error', { allowEmptyCatch: false }],
-      // Funnel all Cloud Storage access through the @delfrance/storage helpers
-      // (content-addressing, dedup, the Arquivo doc, and the product-scoped
-      // path conventions). Ban the raw operation functions — `getStorage` for
-      // the app's Storage singleton stays allowed. Flat config REPLACES this
-      // rule when an app re-declares `no-restricted-imports` (see apps/web),
-      // so any such app must re-include this entry.
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: 'firebase/storage',
-              importNames: [
-                'ref',
-                'uploadBytes',
-                'uploadBytesResumable',
-                'uploadString',
-                'getDownloadURL',
-                'deleteObject',
-              ],
-              message:
-                'Do not call the raw Storage SDK. Use the helpers from @delfrance/storage (uploadFile / uploadProductImage / uploadFromUrl) — `getStorage()` for the singleton is fine.',
-            },
-          ],
-        },
-      ],
+      // Funnel all Cloud Storage access through the @delfrance/storage helpers.
+      // ⚠️ Flat config REPLACES this rule when an app re-declares
+      // `no-restricted-imports`, so any such app must SPREAD
+      // `baseRestrictedImportPaths` into its own `paths` — see the const above.
+      'no-restricted-imports': ['error', { paths: baseRestrictedImportPaths }],
       'no-restricted-syntax': [
         'error',
         {
@@ -331,6 +487,63 @@ const config = [
       // `as unknown` is the sanctioned escape; the rule header explains the rest,
       // including the three things it deliberately cannot catch.
       'delfrance/no-unvalidated-response': 'error',
+
+      // A committed `.only` does not fail anything — it stops the rest of its
+      // file from running while every reporter, and the CI gate in front of it,
+      // still say PASS. Playwright's `forbidOnly` defaults to FALSE and
+      // apps/web's config did not set it, so one `test.only` in any of the 62
+      // e2e specs would have taken an `E2E gate` check green over a suite that
+      // had stopped running. Vitest is safer only by an UNDECLARED upstream
+      // default (`allowOnly: !process.env.CI`), which nothing here asserts.
+      //
+      // ERROR, zero pre-existing sites: the only `.only` in the repo is the
+      // `RuleTester.itOnly = it.only` wiring, which is a reference rather than a
+      // call and so never reports. The runner flags fail the RUN; this fails the
+      // COMMIT, which is where a fix is cheapest.
+      'delfrance/no-focused-test': 'error',
+
+      // The database on this Enterprise project is named `default`, not the
+      // `(default)` sentinel a 0-/1-argument `getFirestore()` resolves — so a
+      // bare call yields a handle whose every operation fails `5 NOT_FOUND`,
+      // far from the line that made it.
+      //
+      // ERROR, zero pre-existing sites — but the convention is currently held by
+      // SEVEN copies of the same `admin.ts` across five codebases, each carrying
+      // its own prose warning. That is exactly the "these five agree" shape this
+      // repo writes guards for.
+      'delfrance/require-firestore-database-id': 'error',
+    },
+  },
+
+  // The TypeScript half of the unused-variable gate lives in `typeAware(...)`,
+  // whose `files` glob is TS-only. That silently excludes the plain-JS surface
+  // this repo actually has: every custom rule and backstop under
+  // `packages/config-eslint/rules`, `tools/deploy-env`, `packages/config-vitest`,
+  // the five `apps/*/functions/scripts/prepare-deploy.mjs` and their `build.mjs`.
+  //
+  // This is the same asymmetry that put `delfrance/no-env-secrets-access` in the
+  // base block rather than in `typeAware(...)` — see its entry above, which
+  // spells out that typeAware's scoping "would silently exclude the five
+  // prepare-deploy.mjs scripts".
+  //
+  // Scoped to JS so TypeScript keeps getting ONLY the typescript-eslint rule:
+  // the core rule double-reports on TS and misreads type-only usage, which is
+  // exactly why it is `off` in the block above.
+  {
+    files: ['**/*.{js,mjs,cjs}'],
+    rules: {
+      'no-unused-vars': [
+        'error',
+        {
+          args: 'after-used',
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrors: 'all',
+          caughtErrorsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+          ignoreRestSiblings: true,
+        },
+      ],
     },
   },
 ];

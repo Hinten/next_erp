@@ -10,6 +10,7 @@ import {
   TagsInput,
   Textarea,
   TextInput,
+  Text,
 } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import {
@@ -26,6 +27,7 @@ import {
   type ProdutoExtraData,
 } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
+import { useObjectViewTransactionDocuments } from '@delfrance/ui';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 
 /** All-defaults extra data — the rendering fallback before the field is seeded. */
@@ -74,11 +76,9 @@ export interface ExtraDataManagerProps {
  * doc write, and persisted to its subcollection ATOMICALLY with the produto doc
  * (the page's `transactionWrites` hook).
  *
- * It self-loads the singleton and seeds the transient field once it resolves,
- * re-seeding if ObjectView's produto-doc `reset` wipes the field back to null
- * (guarded by `value == null` so user edits are never clobbered). When the
- * singleton hasn't loaded yet, `value` stays null → the save simply doesn't
- * write it (no unread-copy clobber), so no readiness flag is needed.
+ * It seeds the form and concurrency baseline together from the first server
+ * snapshot. Later listener emissions cannot replace that version. Editing is
+ * disabled until this authoritative snapshot confirms the document or absence.
  */
 export function ExtraDataManager({
   produtoId,
@@ -96,19 +96,48 @@ export function ExtraDataManager({
     [db, produtoId],
   );
   const snap = useDocSnapshot(docRef);
+  const documents = useObjectViewTransactionDocuments();
 
-  // Seed the transient field from the loaded singleton. Re-runs when the
-  // produto-doc reset zeroes the field back to null (re-seeds the same doc);
-  // never seeds an EMPTY doc when the produto has none (avoids creating a
-  // stray singleton on save). Create mode has nothing to load.
+  // Seed once from server truth; subsequent snapshots cannot rebase pending
+  // edits or undo a reload/restore. Absence stays null until an operator edits.
   useEffect(() => {
     if (!produtoId) return;
     if (snap.loading) return;
+    if (
+      documents &&
+      (snap.fromCache !== false ||
+        snap.hasPendingWrites ||
+        snap.data === undefined ||
+        snap.documentPath !== docRef?.path)
+    )
+      return;
+    if (documents && docRef && documents.getBaseline(docRef.path) !== undefined) return;
+    if (documents && docRef) documents.seedBaseline(docRef.path, snap.data?.data ?? null);
     if (value != null) return;
-    if (snap.data) onChange(produtoExtraDataSchema.parse(snap.data.data));
+    const initial = snap.data ? produtoExtraDataSchema.parse(snap.data.data) : null;
+    documents?.seedFormField('extraData', initial);
+    if (initial) onChange(initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [produtoId, snap.loading, snap.data?.id, value]);
+  }, [
+    produtoId,
+    docRef?.path,
+    snap.loading,
+    snap.data?.id,
+    snap.documentPath,
+    snap.fromCache,
+    snap.hasPendingWrites,
+    value,
+  ]);
 
+  disabled =
+    disabled ||
+    Boolean(documents && produtoId && docRef && documents.getBaseline(docRef.path) === undefined);
+  if (snap.error)
+    return (
+      <Text c="red" size="sm">
+        Falha ao carregar descrição: {snap.error.message}
+      </Text>
+    );
   const v = value ?? EMPTY_EXTRA_DATA;
   const gmd = v.googleMerchantData ?? EMPTY_GOOGLE_MERCHANT;
   const tree = (errorTree ?? {}) as ExtraDataErrorTree;

@@ -93,7 +93,7 @@ describe('planejarRollupKit — the gate', () => {
   });
 
   it('does NOT enqueue when no rollup field moved — the zero-extra-reads rule', () => {
-    // The ordinary produto save: nome, preço, foto, marketplace denorm churn.
+    // The ordinary produto save: nome, preço and media/integration churn.
     expect(planejarRollupKit('p1', doc(), doc({ nome: 'novo' }))).toBeNull();
     expect(planejarRollupKit('p1', doc(), doc())).toBeNull();
   });

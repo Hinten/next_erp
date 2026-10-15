@@ -82,6 +82,54 @@ export function flattenItensDevolvidos(
   return out;
 }
 
+/** A finite number, or 0 — the fail-safe read of a field that may be a raw snapshot value. */
+function numeroOuZero(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/** A plain object (not `null`, not an array) — the only shape a bucket or an item can have. */
+function ehObjeto(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * The UNROUNDED value of the returned items: `Σ (precoDeVenda − descontoUnitario) × quantidade`
+ * over every outer bucket (origin pedido / `'NONE'`) and every inner produto list
+ * — legacy `Pedido.getAllItensDeovlvidosAsList` summed through `ItemDoPedido.totalItem`
+ * (`.old/packages/pedido/lib/src/models.dart:141-147, 3150-3161`). The ONE
+ * implementation of that sum: {@link derivePedidoTotals} rounds it into
+ * `valorDevolucao` and `coberturaDoPedido` rounds it into the devolução credit.
+ *
+ * ⚠️ Takes `unknown` on purpose: the server reconcile reads `itensDevolvidos`
+ * straight off a Firestore snapshot (the imported legacy corpus included), where
+ * nothing has been through Zod. {@link itemSubtotal} cannot be reused there — its
+ * bare `-` / `*` coerce a numeric string (`'10'` → 10) and turn a missing
+ * `quantidade` into NaN, one silently and the other loudly. So each of
+ * `precoDeVenda` / `descontoUnitario` / `quantidade` counts as 0 unless it is a
+ * finite number (a string price is 0, not 10: fail-safe, the same idiom as the
+ * `typeof d.get('valor') === 'number' ? … : 0` reads in `pedidoReconcile.ts`),
+ * and a non-object bucket, a non-array list or a non-object item is skipped.
+ * Never NaN, never throws. Iteration order is `flattenItensDevolvidos`'s, so a
+ * well-typed map yields the IDENTICAL float `derivePedidoTotals` always did.
+ */
+export function somaBrutaItensDevolvidos(itensDevolvidos: unknown): number {
+  if (!ehObjeto(itensDevolvidos)) return 0;
+  let soma = 0;
+  for (const porProduto of Object.values(itensDevolvidos)) {
+    if (!ehObjeto(porProduto)) continue;
+    for (const lista of Object.values(porProduto)) {
+      if (!Array.isArray(lista)) continue;
+      for (const item of lista) {
+        if (!ehObjeto(item)) continue;
+        const preco = numeroOuZero(item.precoDeVenda);
+        const desconto = numeroOuZero(item.descontoUnitario);
+        soma += (preco - desconto) * numeroOuZero(item.quantidade);
+      }
+    }
+  }
+  return soma;
+}
+
 /**
  * The money figures the legacy factory derived. ⚠️ Only `valorCobrado` is still
  * PERSISTED — the other five were removed from `pedidoSchema` (#796) because
@@ -106,11 +154,17 @@ export interface PedidoDerivedTotals {
 /**
  * Port of `Pedido.factory.fromItensCalculados`
  * (`.old/packages/pedido/lib/src/models.dart:3528-3668`) — derives every money
- * cache the order doc stores from its items, freight and returns. The
- * pass-through inputs the factory does NOT compute from items (`impostos`,
- * `valorComissoes`, `valorDespesasIncidentes`, `valorFretesIncidentes`) are left
- * to the caller; this owns only the item/frete/devolução-derived caches so the
- * web resolver and a future MCP agent share one implementation.
+ * cache the order doc stores from its items, freight and returns — and nothing
+ * else. The four pass-throughs the Flutter factory did NOT compute from items
+ * (`impostos`, `valorComissoes`, `valorDespesasIncidentes`,
+ * `valorFretesIncidentes`) were "left to the caller" here for as long as this
+ * port existed, and no caller ever appeared. #1151 dropped them from
+ * `pedidoSchema` outright: nothing read them, and Enterprise's Pipelines API
+ * makes the same numbers DERIVABLE from the pedido's own subcollections at
+ * read time, so persisting them buys nothing. (No such pipeline is written
+ * today — see the note on `pedidoSchema`'s totals block.)
+ * This owns the item/frete/devolução-derived caches, full stop, so the web
+ * resolver and a future MCP agent share one implementation of them.
  *
  * Every value is rounded with the canonical `roundReais`, which rounds from the
  * IEEE-754 double at 2dp — byte-parity with Flutter's `.duasCasasDecimais`
@@ -132,7 +186,7 @@ export function derivePedidoTotals(args: {
   );
 
   const devolvidos = flattenItensDevolvidos(itensDevolvidos);
-  const valorDevolucao = roundReais(devolvidos.reduce((sum, item) => sum + itemSubtotal(item), 0));
+  const valorDevolucao = roundReais(somaBrutaItensDevolvidos(itensDevolvidos));
   const valorCustoDevolvidos = roundReais(
     devolvidos.reduce((sum, item) => sum + itemCusto(item), 0),
   );

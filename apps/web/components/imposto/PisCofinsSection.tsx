@@ -9,10 +9,27 @@ export interface PisCofinsSectionProps {
   value: ImpostoConfigValue;
   onChange: (next: ImpostoConfigValue) => void;
   disabled?: boolean;
+  /**
+   * What the NF-e engine would refuse, keyed by field path
+   * (`configuracaoPIS.pPIS`, …) — the host derives it from
+   * `problemasDeEmissaoDoImposto`, the same verdicts the engine throws from.
+   */
+  errosPorCampo?: ReadonlyMap<string, string>;
 }
 
+/**
+ * The precision `pPIS`/`pCOFINS` (TDec_0302a04) and `vAliqProd` (TDec_1104v)
+ * go on the wire at. PIS-ST is never emitted, so it keeps the default.
+ */
+const CASAS_DO_WIRE = 4;
+
 /** PIS, COFINS and PIS-ST editors (Simples Nacional + back-compat PIS-ST). */
-export function PisCofinsSection({ value, onChange, disabled }: PisCofinsSectionProps) {
+export function PisCofinsSection({
+  value,
+  onChange,
+  disabled,
+  errosPorCampo,
+}: PisCofinsSectionProps) {
   const pis = (value.configuracaoPIS ?? {}) as Record<string, unknown>;
   const cofins = (value.configuracaoCOFINS ?? {}) as Record<string, unknown>;
   const pisst = (value.configuracaoPISST ?? {}) as Record<string, unknown>;
@@ -50,12 +67,16 @@ export function PisCofinsSection({ value, onChange, disabled }: PisCofinsSection
               value={(pis.pPIS as number | null) ?? null}
               onChange={(v) => patch('configuracaoPIS', pis, { pPIS: v })}
               disabled={disabled}
+              decimalScale={CASAS_DO_WIRE}
+              error={errosPorCampo?.get('configuracaoPIS.pPIS')}
             />
             <NumberField
               label="Alíquota do PIS por unidade (R$)"
               value={(pis.vAliqProd as number | null) ?? null}
               onChange={(v) => patch('configuracaoPIS', pis, { vAliqProd: v })}
               disabled={disabled}
+              decimalScale={CASAS_DO_WIRE}
+              error={errosPorCampo?.get('configuracaoPIS.vAliqProd')}
             />
           </>
         )}
@@ -83,12 +104,16 @@ export function PisCofinsSection({ value, onChange, disabled }: PisCofinsSection
               value={(cofins.pCOFINS as number | null) ?? null}
               onChange={(v) => patch('configuracaoCOFINS', cofins, { pCOFINS: v })}
               disabled={disabled}
+              decimalScale={CASAS_DO_WIRE}
+              error={errosPorCampo?.get('configuracaoCOFINS.pCOFINS')}
             />
             <NumberField
               label="Alíquota da COFINS por unidade (R$)"
               value={(cofins.vAliqProd as number | null) ?? null}
               onChange={(v) => patch('configuracaoCOFINS', cofins, { vAliqProd: v })}
               disabled={disabled}
+              decimalScale={CASAS_DO_WIRE}
+              error={errosPorCampo?.get('configuracaoCOFINS.vAliqProd')}
             />
           </>
         )}

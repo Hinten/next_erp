@@ -15,6 +15,11 @@ const PROGRAM_BUILD_TIMEOUT_MS = 30_000;
 RuleTester.afterAll = afterAll;
 RuleTester.describe = describe;
 RuleTester.it = (name, fn) => it(name, fn, PROGRAM_BUILD_TIMEOUT_MS);
+// ⚠️ The one sanctioned `it.only` CALL in the repo. `RuleTester` requires the
+// hook, and unlike the other ten rule tests this one cannot assign `it.only`
+// directly — it has to wrap it to pass the timeout above. Every other file
+// assigns the reference, which `delfrance/no-focused-test` never reports.
+// eslint-disable-next-line delfrance/no-focused-test -- RuleTester wiring, not a focused test
 RuleTester.itOnly = (name, fn) => it.only(name, fn, PROGRAM_BUILD_TIMEOUT_MS);
 
 // The rule is type-aware, so every case is linted as a real file inside a real

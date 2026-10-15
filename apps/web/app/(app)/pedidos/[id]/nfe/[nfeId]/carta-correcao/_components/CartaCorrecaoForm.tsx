@@ -18,12 +18,16 @@ import { z } from 'zod';
 import {
   NFeHttpError,
   NFeNetworkError,
+  NFeTimeoutError,
   NFeRejectedError,
   type NFeCartaCorrecaoResult,
 } from '@delfrance/integrations-nfe/http-provider';
 
 import { useNFeClient } from '@/lib/nfe/client';
-import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import {
+  showCopyableNotification,
+  showErrorNotification,
+} from '@/lib/notifications/showErrorNotification';
 
 const XCORRECAO_MIN = 15;
 const XCORRECAO_MAX = 1000;
@@ -63,6 +67,17 @@ export function CartaCorrecaoForm({ pedidoId, nfeId }: { pedidoId: string; nfeId
       setResult(res);
       form.reset(DEFAULTS);
     } catch (err) {
+      // ⚠️ #1094: before the generic arm — a timeout IS an NFeNetworkError. The
+      // outcome is unknown (the event may still be registering at SEFAZ), so a
+      // red "Falha" would invite the re-click that registers a second one.
+      if (err instanceof NFeTimeoutError) {
+        showCopyableNotification({
+          title: 'Tempo esgotado',
+          message: err.message,
+          color: 'yellow',
+        });
+        return;
+      }
       // The client throws NFeHttpError subclasses (incl. NFeRejectedError) or
       // NFeNetworkError; anything else is an unexpected bug — let it surface.
       if (!(err instanceof NFeHttpError) && !(err instanceof NFeNetworkError)) throw err;
@@ -116,7 +131,7 @@ export function CartaCorrecaoForm({ pedidoId, nfeId }: { pedidoId: string; nfeId
             <Paper withBorder p="md" radius="md" bg="var(--mantine-color-yellow-light)">
               <Group gap="xs" mb="xs">
                 <IconClockHour4 size={20} color="var(--mantine-color-yellow-8)" />
-                <Text fw={600} c="yellow.8">
+                <Text fw={600} c="yellow">
                   Carta de correção em processamento (cStat {result.cStat})
                 </Text>
               </Group>
@@ -135,7 +150,7 @@ export function CartaCorrecaoForm({ pedidoId, nfeId }: { pedidoId: string; nfeId
             <Paper withBorder p="md" radius="md" bg="var(--mantine-color-teal-light)">
               <Group gap="xs" mb="xs">
                 <IconCircleCheck size={20} color="var(--mantine-color-teal-7)" />
-                <Text fw={600} c="teal.8">
+                <Text fw={600} c="teal">
                   Carta de correção registrada (cStat {result.cStat})
                 </Text>
               </Group>

@@ -30,16 +30,20 @@ import { auditPedidoPago, type PagamentoResumo, type PagoAuditRow } from './pred
  * decision about a real order — not something a script gets to make in bulk.
  * The flag is rejected rather than ignored, so nobody can assume it worked.
  *
- * ## No index required
+ * ## One index: the document key
  *
  * The walk is a plain `orderBy(documentId())` key-order scan with the filtering
- * done in memory. That is the ONE ordering Firestore always serves without a
- * declared index. The narrower `where('estado','==','pago')` form looks cheaper
- * and is not: Firestore ENTERPRISE never throws `FAILED_PRECONDITION` for a
- * missing index — it silently full-scans and bills data scanned — and making it
- * genuinely indexed needs a NEW composite (`estado ASC, __name__ ASC`, since
- * Enterprise omits the implicit trailing `__name__`), i.e. an index deploy and a
- * build wait, for a one-off read-only report. Do not "optimize" this.
+ * done in memory, riding the DECLARED key index `pedidos(__name__ ASC)` (#1895,
+ * listed in `key-walks.json`). Enterprise has no implicit key index: without it
+ * every page re-scans the collection (staging, #1895: 1,665 index rows read per
+ * page of 300 on `pedidos`). That key index is the ONLY one this needs, and no
+ * filter index should be added. The narrower `where('estado','==','pago')` form
+ * looks cheaper and is not: Firestore ENTERPRISE never throws
+ * `FAILED_PRECONDITION` for a missing index — it silently full-scans and bills
+ * data scanned — and making it genuinely indexed needs a NEW composite
+ * (`estado ASC, __name__ ASC`, since Enterprise omits the implicit trailing
+ * `__name__`), i.e. an index deploy and a build wait, for a one-off read-only
+ * report. Do not "optimize" this.
  *
  * ## Both pagamento paths
  *

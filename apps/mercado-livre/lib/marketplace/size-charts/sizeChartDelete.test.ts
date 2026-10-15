@@ -10,64 +10,7 @@ import {
 } from './sizeChartDelete';
 import { TabelaDeMedidasNotFoundError } from './sizeChartSync';
 
-/* ----------------------------- fake Firestore ---------------------------- */
-
-type DocData = Record<string, unknown>;
-
-/** `set(…, {merge: true})` deep-merges maps — the conta-key preservation relies on it. */
-function deepMergeInto(target: DocData, patch: DocData): DocData {
-  const out = { ...target };
-  for (const [k, v] of Object.entries(patch)) {
-    const cur = out[k];
-    if (
-      v &&
-      cur &&
-      typeof v === 'object' &&
-      typeof cur === 'object' &&
-      !Array.isArray(v) &&
-      !Array.isArray(cur)
-    ) {
-      out[k] = deepMergeInto(cur as DocData, v as DocData);
-    } else {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-class FakeDb {
-  readonly cols = new Map<string, Map<string, DocData>>();
-
-  private col(path: string): Map<string, DocData> {
-    let c = this.cols.get(path);
-    if (!c) {
-      c = new Map();
-      this.cols.set(path, c);
-    }
-    return c;
-  }
-
-  seed(path: string, id: string, data: DocData): void {
-    this.col(path).set(id, data);
-  }
-
-  docs(path: string): Map<string, DocData> {
-    return this.col(path);
-  }
-
-  collection(path: string) {
-    const col = this.col(path);
-    return {
-      doc: (id: string) => ({
-        id,
-        get: async () => ({ exists: col.has(id), id, data: () => col.get(id) }),
-        set: async (data: DocData, opts?: { merge?: boolean }) => {
-          col.set(id, opts?.merge ? deepMergeInto(col.get(id) ?? {}, data) : { ...data });
-        },
-      }),
-    };
-  }
-}
+import { MemoryFirestore as FakeDb } from '@delfrance/data/testing';
 
 /* ------------------------------- fixtures -------------------------------- */
 

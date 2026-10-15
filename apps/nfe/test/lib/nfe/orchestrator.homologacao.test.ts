@@ -29,7 +29,13 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE } from '@delfrance/schemas';
+import {
+  ESTADO_ENVI_NFE_MSG,
+  ESTADO_FRETE,
+  ESTADO_NFE,
+  MODALIDADE_FRETE,
+  freteDoPedidoSchema,
+} from '@delfrance/schemas';
 import {
   assertNotConsumoIndevido,
   hasNFeCertEnv,
@@ -51,6 +57,7 @@ import {
   emitirPedidosLote,
   inutilizarNumeracao,
 } from '../../../lib/nfe/orchestrator';
+import { notasDeOrigemDe, referenciarItensDaDevolucao } from '@delfrance/data/pedido';
 import { reconcileByRecibo } from '../../../lib/nfe/orchestrator/reconcile';
 import { resolveFilialRuntime } from '../../../lib/nfe/filial-cert';
 import {
@@ -104,6 +111,16 @@ const PEDCANCEL = `${FIXTURE_PREFIX}-PED-CANCEL`;
 // Dedicated pedido for the carta de correção (CC-e) test — emitted then
 // corrected self-contained, mirroring PEDCANCEL.
 const PEDCCE = `${FIXTURE_PREFIX}-PED-CCE`;
+// #422 — delivered to ANOTHER UF than its fiscal address, and stored with
+// CANONICAL `documents/…` refs (what the app's writers store), so one emission
+// proves both the canonical-ref fix and SEFAZ accepting idDest=2 + <entrega>.
+const PEDENTREGA = `${FIXTURE_PREFIX}-PED-ENTREGA`;
+const ENDERECO_ENTREGA_ID = `${FIXTURE_PREFIX}-end-entrega`;
+// #1683 — a 2-line sale and the devolução that returns it, referencing the
+// origin PER ITEM (det/DFeReferenciado) with the Reforma Tributária OFF.
+const PEDORIGEM = `${FIXTURE_PREFIX}-PED-ORIGEM`;
+const PEDDEVOL = `${FIXTURE_PREFIX}-PED-DEVOL`;
+const OPERACAO_DEVOL_ID = `${FIXTURE_PREFIX}-op-devol`;
 
 // 10 fresh pedidos consumed by the parallel-batch test. Named with a
 // distinct `PP` infix so the cleanup loop can pick them apart from the
@@ -199,6 +216,27 @@ function enderecoDoc(): Record<string, unknown> {
   };
 }
 
+/**
+ * The #422 delivery address — Rio de Janeiro, a different UF from the SP
+ * fiscal address and the SP emitente. The recebedor is a pessoa física: a CPF
+ * is outside the NT 2026.007 LCC-RFB CNPJ checks (cStat 185/186), which a
+ * fictitious CNPJ in homologação would trip.
+ */
+function enderecoEntregaDoc(): Record<string, unknown> {
+  return {
+    logradouro: 'Rua do Ouvidor',
+    numero: '50',
+    bairro: 'Centro',
+    cep: '20010000',
+    codigoMunicipio: '3304557',
+    cidade: 'Rio de Janeiro',
+    estado: 'RJ',
+    complemento: null,
+    nome: 'Recebedor CI',
+    cpf_cnpj: '52998224725',
+  };
+}
+
 function operacaoDoc(): Record<string, unknown> {
   return {
     nome: 'Venda interna SP (CI)',
@@ -229,6 +267,43 @@ function operacaoDoc(): Record<string, unknown> {
     configuracaoPISST: null,
     infCpl: null,
     timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * The devolução de venda operação (#1683): an ENTRADA (tipo 0, finNFe 4) the
+ * filial issues for goods its own customer sent back. CFOP 1202 — intra-state,
+ * like the cliente's SP fiscal address.
+ */
+function operacaoDevolucaoDoc(): Record<string, unknown> {
+  return {
+    ...operacaoDoc(),
+    nome: 'Devolucao de venda (CI)',
+    naturezaDaOperacao: 'Devolucao de venda',
+    tipo: 0,
+    padrao: false,
+    finNFe: 4,
+    cfop: '1202',
+    cfopInterestadual: '2202',
+  };
+}
+
+/** One line of the #1683 origin/devolução pedidos (imposto stamped). */
+function itemDevolucaoCi(
+  sku: string,
+  precoDeVenda: number,
+  ordem: number,
+  cfop: '5102' | '1202',
+): Record<string, unknown> {
+  return {
+    ordem,
+    sku,
+    gtin: null,
+    nomeDeVenda: `Produto ${sku}`,
+    precoDeVenda,
+    descontoUnitario: null,
+    quantidade: 1,
+    imposto: { ...impostoCsosn102(), cfop, cfopInterestadual: cfop === '5102' ? '6102' : '2202' },
   };
 }
 
@@ -361,6 +436,40 @@ async function seedFixtures(
   await fs.collection('pedidos').doc(PEDCCE).set(pedidoDoc(PEDCCE, 117));
   await fs.doc(`pedidos/${PEDCCE}/pagamentos/pag-01`).set(pagamentoDoc(117));
 
+  // #422 — delivered in RJ, every ref in the canonical `documents/…` form.
+  await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ENTREGA_ID}`).set(enderecoEntregaDoc());
+  await fs
+    .collection('pedidos')
+    .doc(PEDENTREGA)
+    .set({
+      ...pedidoDoc(PEDENTREGA, 119),
+      clientePedidoOuterRef: `documents/clientes/${CLIENTE_ID}`,
+      operacaoPedidoOuterRef: `documents/operacao/${OPERACAO_ID}`,
+      enderecoFiscalOuterRef: `documents/clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`,
+      integracaoPedidoOuterRef: `documents/integracao/${INTEGRACAO_ID}`,
+      freteInicial: freteDoPedidoSchema.parse({
+        estado: ESTADO_FRETE.iniciado,
+        modalidade: MODALIDADE_FRETE.fob,
+        enderecoFreteOuterReference: `documents/clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ENTREGA_ID}`,
+      }),
+    });
+  await fs.doc(`pedidos/${PEDENTREGA}/pagamentos/pag-01`).set(pagamentoDoc(119));
+
+  // #1683 — the 2-line origin sale (its devolução is written by the test, once
+  // the origin's proc XML exists to reference) and the devolução operação.
+  await fs.collection('operacao').doc(OPERACAO_DEVOL_ID).set(operacaoDevolucaoDoc());
+  await fs
+    .collection('pedidos')
+    .doc(PEDORIGEM)
+    .set({
+      ...pedidoDoc(PEDORIGEM, 80),
+      itens: {
+        'P-ORIG-A': [itemDevolucaoCi('SKU-ORIG-A', 50, 1, '5102')],
+        'P-ORIG-B': [itemDevolucaoCi('SKU-ORIG-B', 30, 2, '5102')],
+      },
+    });
+  await fs.doc(`pedidos/${PEDORIGEM}/pagamentos/pag-01`).set(pagamentoDoc(80));
+
   // 10 fresh pedidos for the parallel-batch test. Each carries `imposto`
   // pre-stamped so the orchestrator's parallel `nextNumeracao` path is
   // not gated by the resolver cascade (which the prior test already
@@ -394,11 +503,23 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
     for (const r of recs.docs) await r.ref.delete();
   }
 
-  for (const pedidoId of [PED1, PED3, PED8, PEDCANCEL, PEDCCE, ...PARALLEL_PEDIDO_IDS]) {
+  for (const pedidoId of [
+    PED1,
+    PED3,
+    PED8,
+    PEDCANCEL,
+    PEDCCE,
+    PEDENTREGA,
+    PEDORIGEM,
+    PEDDEVOL,
+    ...PARALLEL_PEDIDO_IDS,
+  ]) {
     await deleteDocWithSubcoll(`pedidos/${pedidoId}`, ['nfev4', 'pagamentos']);
   }
   await deleteDocWithSubcoll(`operacao/${OPERACAO_ID}`, ['regras']);
+  await fs.doc(`operacao/${OPERACAO_DEVOL_ID}`).delete();
   await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`).delete();
+  await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ENTREGA_ID}`).delete();
   await fs.doc(`clientes/${CLIENTE_ID}`).delete();
   await deleteDocWithSubcoll(`filiais/${FILIAL_ID}`, ['nfeconfig', 'enviNfe']);
   await fs.doc(`integracao/${INTEGRACAO_ID}`).delete();
@@ -473,6 +594,11 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     await seedFixtures(fs, cert.cnpj, TEST_IE!);
     __resetNFeRuntimeForTests();
     rt = getNFeRuntime();
+    // Tripwire before any SEFAZ call: this suite must only ever talk to
+    // homologação. The vitest config pins NFE_AMBIENTE; this fails loudly if
+    // that pin (or the runtime's ambiente → tpAmb derivation) ever regresses.
+    expect(rt.ambiente).toBe('homologacao');
+    expect(rt.tpAmb).toBe('2');
     // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
     // "SEFAZ-SP HOM status gate" step runs operations.homologacao
     // immediately before this suite and short-circuits the whole job
@@ -500,6 +626,27 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     expect(result.estado).toBe(ESTADO_NFE.aprovada);
     expect(result.chave).toMatch(/^\d{44}$/);
     expect(result.reused).toBe(false);
+  }, 90_000);
+
+  it('emitirPedido delivery in another UF (#422) — canonical refs, idDest=2 + <entrega> → cStat=100', async () => {
+    // Fiscal address SP, emitente SP, goods delivered in RJ: before #422 this
+    // emitted CFOP 5102 + idDest=1 for goods leaving the state, and before the
+    // canonical-ref fix the pedido (stored like the app stores it) did not
+    // even load. SEFAZ judges idDest against <entrega>/UF (772/523), so an
+    // authorization here proves the pair is accepted together.
+    const result = await emitirPedido(fs, rt, PEDENTREGA);
+    assertNotConsumoIndevido(result, 'entrega-outra-uf/PED-ENTREGA');
+    expect(result.cStat).toBe('100');
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+
+    const nota = (await fs.doc(`pedidos/${PEDENTREGA}/nfev4/s1`).get()).data() as {
+      xml_nfe_proc?: string;
+    };
+    const xml = nota.xml_nfe_proc ?? '';
+    expect(xml).toContain('<idDest>2</idDest>');
+    expect(xml).toContain('<CFOP>6102</CFOP>');
+    expect(xml).toMatch(/<entrega><CPF>52998224725<\/CPF>.*<UF>RJ<\/UF>.*<\/entrega>/);
+    expect(/<enderDest>.*?<UF>([A-Z]{2})<\/UF>/.exec(xml)?.[1]).toBe('SP');
   }, 90_000);
 
   it('emitirPedidosLote batch of 3 — jaAprovadas mirror (PED-1 + PED-8 reused, PED-3 fresh)', async () => {
@@ -723,4 +870,60 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     expect(persisted.map((r) => r.nSeqEvento)).toEqual([1, 2]);
     expect(persisted.every((r) => r.estado === ESTADO_ENVI_NFE_MSG.concluido)).toBe(true);
   }, 120_000);
+
+  it('a devolução referencing its origin PER ITEM, with the Reforma Tributária OFF → cStat=100 (VC02-14, #1683)', async () => {
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // 1. The origin sale — two lines, SKU-ORIG-A then SKU-ORIG-B.
+    const origem = await emitirPedido(fs, rt, PEDORIGEM);
+    assertNotConsumoIndevido(origem, 'devolucao/emit-PEDORIGEM');
+    expect(origem.cStat).toBe('100');
+
+    // 2. Each returned line's reference, read from the origin's STORED proc
+    //    by the same matcher the devolução seeds run. The devolução lists the
+    //    lines in REVERSE order, so nItem 2 then 1 proves the number comes
+    //    from the XML, never from the line's position.
+    const origemNfe = (await fs.doc(`pedidos/${PEDORIGEM}/nfev4/s1`).get()).data() ?? {};
+    const linhas = [
+      { sku: 'SKU-ORIG-B', gtin: null, produtoUid: 'P-ORIG-B', precoDeVenda: 30, ordem: 1 },
+      { sku: 'SKU-ORIG-A', gtin: null, produtoUid: 'P-ORIG-A', precoDeVenda: 50, ordem: 2 },
+    ];
+    const refs = referenciarItensDaDevolucao(linhas, notasDeOrigemDe([origemNfe]));
+    expect(refs.map((r) => r?.nItem)).toEqual([2, 1]);
+    // Compared as a boolean: a failing `toBe(chave)` would print the chave —
+    // and the emitente CNPJ inside it — into a PUBLIC Actions log.
+    expect(refs.every((r) => r?.chaveAcesso === origem.chave)).toBe(true);
+
+    // 3. The devolução — an entrada, finNFe 4, no pagamento (tPag 90), no
+    //    note-level reference, filial WITHOUT the Reforma Tributária.
+    await fs
+      .collection('pedidos')
+      .doc(PEDDEVOL)
+      .set({
+        ...pedidoDoc(PEDDEVOL, 80),
+        ehSaida: false,
+        operacaoPedidoOuterRef: `operacao/${OPERACAO_DEVOL_ID}`,
+        chNFeReferenciadas: null,
+        saidasRelacionadas: [PEDORIGEM],
+        itens: {
+          'P-ORIG-B': [
+            { ...itemDevolucaoCi('SKU-ORIG-B', 30, 1, '1202'), dfeReferenciado: refs[0] },
+          ],
+          'P-ORIG-A': [
+            { ...itemDevolucaoCi('SKU-ORIG-A', 50, 2, '1202'), dfeReferenciado: refs[1] },
+          ],
+        },
+      });
+    const devolucao = await emitirPedido(fs, rt, PEDDEVOL);
+    assertNotConsumoIndevido(devolucao, 'devolucao/emit-PEDDEVOL');
+    expect(devolucao.cStat).toBe('100');
+    expect(devolucao.estado).toBe(ESTADO_NFE.aprovada);
+
+    // 4. The authorized XML references per item only — never NFref (1010).
+    const xml =
+      ((await fs.doc(`pedidos/${PEDDEVOL}/nfev4/s1`).get()).data()?.xml_nfe_proc as string) ?? '';
+    expect(xml.includes('<finNFe>4</finNFe>')).toBe(true);
+    expect(xml.includes('<NFref>')).toBe(false);
+    expect(xml.match(/<DFeReferenciado>/g)?.length ?? 0).toBe(2);
+  }, 180_000);
 });

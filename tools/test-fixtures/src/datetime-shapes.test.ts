@@ -59,11 +59,11 @@ describe('datetimeFieldsForSchema', () => {
     expect(names.has('dtImpressao')).toBe(true);
   });
 
-  it('does not surface the z.unknown() cheque passthrough as a datetime field', () => {
-    // `pagamento.cheque` is `z.unknown()`, so `bomPara` is NOT schema-declared
-    // here — it can only be found by runtime discovery.
+  it('discovers the typed cheque.bomPara as a µs datetime field', () => {
     const fields = datetimeFieldsForSchema(schemaFor('pedidos/{pedidoId}/pagamentos'));
-    expect(fields.some((f) => f.name === 'bomPara')).toBe(false);
+    expect(fields).toContainEqual(
+      expect.objectContaining({ path: 'cheque.bomPara', format: 'epoch', unit: 'us' }),
+    );
     expect(fields.some((f) => f.name === 'vencimento' && f.unit === 'us')).toBe(true);
   });
 });
@@ -84,7 +84,7 @@ describe('collectObservations', () => {
     expect(obs.some((o) => o.name === 'nome')).toBe(false);
   });
 
-  it('discovers a nested ISO string (Cheque.bomPara) even when undeclared', () => {
+  it('observes a nested ISO string (Cheque.bomPara)', () => {
     const obs = collectObservations(
       { valor: 100, cheque: { banco: '001', bomPara: '2026-05-01T00:00:00Z' } },
       interesting,
@@ -129,7 +129,7 @@ describe('buildReport / renderMarkdown (pagamentos)', () => {
     { valor: 50, cheque: { banco: '341', bomPara: '2026-05-01T00:00:00Z' } },
   ];
 
-  it('aggregates declared fields, counts absent, and discovers cheque.bomPara', () => {
+  it('aggregates declared fields, counts absent, and attributes cheque.bomPara', () => {
     const report = buildReport(path, schemaFor(path), docs);
     expect(report.sampled).toBe(2);
 
@@ -138,8 +138,10 @@ describe('buildReport / renderMarkdown (pagamentos)', () => {
     expect(vencimento?.shapeCounts.get('number')).toBe(1);
     expect(vencimento?.presentDocs).toBe(1); // absent in the second doc
 
-    const bomPara = report.discovered.find((d) => d.path === 'cheque.bomPara');
-    expect(bomPara).toMatchObject({ shape: 'iso-string', count: 1 });
+    const bomPara = report.fields.find((f) => f.path === 'cheque.bomPara');
+    expect(bomPara?.expected).toBe('number (µs-int)');
+    expect(bomPara?.shapeCounts.get('iso-string')).toBe(1);
+    expect(report.discovered).toHaveLength(0);
   });
 
   it('renders a Markdown report flagging the ISO exception', () => {
@@ -152,7 +154,7 @@ describe('buildReport / renderMarkdown (pagamentos)', () => {
     expect(md).toContain('### ISO-exception check');
     expect(md).toContain('`Cheque.bomPara`: found');
     expect(md).toContain('| `vencimento` | number (µs-int) |');
-    expect(md).toContain('| `cheque.bomPara` | iso-string |');
+    expect(md).toContain('| `cheque.bomPara` | number (µs-int) | iso-string×1, absent×1 ⚠️ |');
   });
 });
 

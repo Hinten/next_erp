@@ -473,3 +473,139 @@ describe('useEstoqueDisponivel — an aliased kit whose units sit on the parent'
     await waitFor(() => expect(result.current).toBe(10));
   });
 });
+
+/**
+ * The OTHER direction of the same fallback, and the one #1402 makes ordinary.
+ *
+ * Every test above names the PARENT in `componentesKit`, because that is what
+ * every kit in the corpus does today. The conversion rewrites those maps to name
+ * the CHILD, and `KitManager` writes new kits that way from the start — so on
+ * those `alvo === id`, the old `alvo !== id` gate matched nothing, and the whole
+ * safety net silently became dead code.
+ *
+ * The units it protects do not go away when the ids move. The conversion
+ * deliberately leaves a RESERVED remainder on the parent — a reservation is keyed
+ * on the produto the pedido LINE names — and an *entrada* booked on a parent after
+ * conversion is never swept up at all.
+ */
+describe('useEstoqueDisponivel — the kit names the child, the units are on the parent', () => {
+  const kitProduto = (componentes: Record<string, { quantidade: number }>) => ({
+    id: 'kit',
+    ehKit: true,
+    componentesKit: componentes as never,
+    paiId: null,
+    filhoUnicoId: null,
+  });
+
+  // ⚠️ `pai` MUST carry `filhoUnicoId: 'filho'`. Without it this passed for a
+  // family of MANY just as happily — reviewer-found, and the reason the near-miss
+  // below now exists: the fallback is only legitimate when the parent points back
+  // at this very child.
+  it('falls back to the PARENT row when the named child has none', async () => {
+    produtos.current = {
+      filho: { paiId: 'pai', filhoUnicoId: null },
+      pai: { paiId: null, filhoUnicoId: 'filho' },
+    };
+    estoques.current = { 'est-pai-dep1': { quantidade: 9, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ filho: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    // The child is tried first; the parent's row is the second read.
+    expect(estoqueReads.current).toEqual(['filho/est-filho-dep1', 'pai/est-pai-dep1']);
+    await waitFor(() => expect(result.current).toBe(9));
+  });
+
+  // ABSENCE, not zero — the same rule the parent-named direction obeys. A child
+  // that HAS a row is the answer whatever it reads, or a produto whose stock
+  // genuinely ran out would start reporting its parent's leftovers.
+  it('does not fall back when the child has a zero row', async () => {
+    produtos.current = {
+      filho: { paiId: 'pai', filhoUnicoId: null },
+      pai: { paiId: null, filhoUnicoId: 'filho' },
+    };
+    estoques.current = {
+      'est-filho-dep1': { quantidade: 0, quantidadeReservada: 0 },
+      'est-pai-dep1': { quantidade: 9, quantidadeReservada: 0 },
+    };
+
+    const { result } = render(kitProduto({ filho: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    expect(estoqueReads.current).toEqual(['filho/est-filho-dep1']);
+    await waitFor(() => expect(result.current).toBe(0));
+  });
+
+  /**
+   * ⛔ The near-miss the suite could not express, and the bug it caught.
+   *
+   * `unidadeVendavel` maps EVERY child to itself, so `alvo === id` holds for a
+   * variation of a family of MANY exactly as it does for a sole member. Letting
+   * those fall back has both halves of the ADR 0014 failure at once: `m` reads
+   * units that belong to `p`, `m` and `g` collectively, and because `m` and `g`
+   * are DISTINCT targets the pool division never fires — so a kit needing 1+1 of
+   * a 100-unit parent reads 100 assemblable instead of 50.
+   */
+  it('counts a variation of a family of MANY as zero, not its parent’s pool', async () => {
+    produtos.current = {
+      m: { paiId: 'camiseta', filhoUnicoId: null },
+      g: { paiId: 'camiseta', filhoUnicoId: null },
+      // The parent points at NEITHER — it is a family of many.
+      camiseta: { paiId: null, filhoUnicoId: null },
+    };
+    estoques.current = { 'est-camiseta-dep1': { quantidade: 100, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ m: { quantidade: 1 }, g: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    expect(estoqueReads.current).not.toContain('camiseta/est-camiseta-dep1');
+    await waitFor(() => expect(result.current).toBe(0));
+  });
+
+  // ...and the drift case, which the same reciprocity test covers for free: a
+  // parent whose pointer names a DIFFERENT child says nothing about this one.
+  it('refuses the fallback when the parent points at another child', async () => {
+    produtos.current = {
+      filho: { paiId: 'pai', filhoUnicoId: null },
+      pai: { paiId: null, filhoUnicoId: 'outro' },
+    };
+    estoques.current = { 'est-pai-dep1': { quantidade: 9, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ filho: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    expect(estoqueReads.current).not.toContain('pai/est-pai-dep1');
+    await waitFor(() => expect(result.current).toBe(0));
+  });
+
+  // ⚠️ The near-miss that bounds the extra read: a component with no `paiId` has
+  // no other half to ask, so it must cost exactly one read and count as 0 — not
+  // wander off to some other produto.
+  it('does not read a second row for a component that has no parent', async () => {
+    produtos.current = { avulso: { paiId: null, filhoUnicoId: null } };
+    estoques.current = {};
+
+    const { result } = render(kitProduto({ avulso: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    expect(estoqueReads.current).toEqual(['avulso/est-avulso-dep1']);
+    await waitFor(() => expect(result.current).toBe(0));
+  });
+
+  // ⚠️ A kit naming BOTH halves reads ONE pool, not two — the parent's row answers
+  // for both aliases, so the division below it stays honest. Reading two rows here
+  // would say a kit needing 1+1 of a 4-unit produto can be built four times.
+  it('reads the parent row ONCE when the kit names both halves', async () => {
+    produtos.current = {
+      pai: { paiId: null, filhoUnicoId: 'filho' },
+      filho: { paiId: 'pai', filhoUnicoId: null },
+    };
+    estoques.current = { 'est-pai-dep1': { quantidade: 4, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ pai: { quantidade: 1 }, filho: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    expect(estoqueReads.current.filter((r) => r === 'pai/est-pai-dep1')).toHaveLength(1);
+    await waitFor(() => expect(result.current).toBe(2));
+  });
+});

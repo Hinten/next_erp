@@ -11,7 +11,7 @@ import { aammFromDate, composeChave, randomCNF, NFeChaveError } from './chave';
 import { buildDetXml } from './det';
 import { buildIde, cUFFromUF, NFeIdeError } from './ide';
 import { offsetForUF } from './tz';
-import { buildDest, buildEmit } from './parties';
+import { buildDest, buildEmit, buildEntrega } from './parties';
 import { serializeFragment, type XmlValue } from '../xml';
 import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
 import { assertSafeTpAmb, tpAmbFromAmbiente } from '../safety';
@@ -77,7 +77,7 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
     ambiente: input.ambiente,
     utcOffsetMinutes,
   });
-  const emit = buildEmit(input.filial);
+  const emit = buildEmit(input.filial, input.rtc?.isufEmit);
   const dest = buildDest(
     input.cliente,
     input.enderecoDest,
@@ -90,6 +90,15 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
   const ideXml = serializeFragment('TNFe_infNFe_ide', 'ide', ide as unknown as XmlValue);
   const emitXml = serializeFragment('TNFe_infNFe_emit', 'emit', emit as unknown as XmlValue);
   const destXml = serializeFragment('TNFe_infNFe_dest', 'dest', dest as unknown as XmlValue);
+  // Grupo G — present exactly when `enderecoEntrega` is, which is also what
+  // made buildIde decide idDest from its UF (#422).
+  const entregaXml = input.enderecoEntrega
+    ? serializeFragment(
+        'TLocal',
+        'entrega',
+        buildEntrega(input.cliente, input.enderecoEntrega) as unknown as XmlValue,
+      )
+    : '';
   const detXml = input.itens.map(buildDetXml).join('');
   const cobrXml = input.cobr
     ? serializeFragment('TNFe_infNFe_cobr', 'cobr', input.cobr as unknown as XmlValue)
@@ -107,12 +116,13 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
     : '';
   const infRespTecXml = buildInfRespTecXml(input);
 
-  // XSD order under <infNFe>: ide, emit, dest, det+, total, transp,
-  // cobr?, pag, infIntermed?, infAdic?, exporta?, infRespTec?.
+  // XSD order under <infNFe>: ide, emit, dest, (retirada?), entrega?, det+,
+  // total, transp, cobr?, pag, infIntermed?, infAdic?, exporta?, infRespTec?.
   const infNFeBody =
     ideXml +
     emitXml +
     destXml +
+    entregaXml +
     detXml +
     input.totalXml +
     input.transpXml +
@@ -199,8 +209,15 @@ function escape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-export type { GeneratorInput, GeneratorItem, GeneratorOutput, TpEmis } from './types';
+export type { GeneratorInput, GeneratorItem, GeneratorOutput, GeneratorRtc, TpEmis } from './types';
+export { buildCompraGov, type CompraGovInput } from './compraGov';
 export { NFeChaveError, NFeIdeError };
+// Thrown by `generateNFe` through `buildDetXml` / `buildEmit` / `buildDest` —
+// exported so a caller can name them (apps/nfe's `FALHAS_CONHECIDAS`, #1654).
+export { NFeDetError } from './det';
+export { NFePartiesError } from './parties';
 export { cUFFromUF } from './ide';
+export { buildEntrega } from './parties';
+export { ufDestinoOperacao } from './destino';
 export { extractCNFFromChave } from './chave';
 export { datePartsInOffset, NFeTzError, offsetForCUF, offsetForUF } from './tz';

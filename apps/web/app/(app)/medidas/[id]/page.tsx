@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
@@ -18,12 +19,14 @@ import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection'
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
+import { prepararTabelasShopeeParaSalvar } from '@/lib/shopee/tabelasMedidasForm';
 import {
-  MEDIDA_EXCLUDED_FIELDS,
+  MEDIDA_EXCLUDED_FIELDS_EDITAR,
   MEDIDA_SECTIONS,
   medidaFieldOverrides,
 } from '../_components/medidaFields';
 import { MedidasMercadoLivreManager } from '../_components/MedidasMercadoLivreManager';
+import { MedidasShopeeManager } from '../_components/MedidasShopeeManager';
 
 /**
  * Edit-only schema: the aggregate plus the `mercadoLivre` UI anchor — a
@@ -35,7 +38,7 @@ const tabelaDeMedidasEditarSchema = tabelaDeMedidasSchema.extend({
   mercadoLivre: z.null().default(null),
 });
 
-const MEDIDA_SECTIONS_EDITAR = [...MEDIDA_SECTIONS, 'Mercado Livre'];
+const MEDIDA_SECTIONS_EDITAR = [...MEDIDA_SECTIONS, 'Mercado Livre', 'Shopee'];
 const MEDIDA_TRANSIENT_FIELDS_EDITAR = ['mercadoLivre'];
 
 export default function TabelaDeMedidasPage() {
@@ -43,8 +46,15 @@ export default function TabelaDeMedidasPage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.produto.write);
+  const { allowed: canDelete } = usePermission(PERM.produto.delete);
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
+  const flushDraftRemovals = useRef<(() => Promise<void>) | null>(null);
+  const [draftRemovalsDirty, setDraftRemovalsDirty] = useState(false);
+  const handleDraftRemovalsDirty = useCallback(
+    (dirty: boolean) => setDraftRemovalsDirty(dirty),
+    [],
+  );
 
   async function handleDelete(id: string) {
     await deleteDoc(tabelaDeMedidasCollection.docRef(db, {}, id));
@@ -67,19 +77,47 @@ export default function TabelaDeMedidasPage() {
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
         sections={MEDIDA_SECTIONS_EDITAR}
+        persistentSections={['Mercado Livre']}
+        extraDirty={draftRemovalsDirty}
         transientFields={MEDIDA_TRANSIENT_FIELDS_EDITAR}
-        // Marketplace maps stay out of the form; the partial-save patch never
-        // touches them, so integration-authored ML/Shopee charts are preserved.
-        excludedFields={MEDIDA_EXCLUDED_FIELDS}
+        // The ML map stays out of the form (the ML tab writes it itself), so the
+        // partial-save patch never touches it. The Shopee map is IN the form
+        // here: its tab stages picks and this save writes them (below).
+        excludedFields={MEDIDA_EXCLUDED_FIELDS_EDITAR}
         fields={{
           ...medidaFieldOverrides,
+          tabelasMedidasShopee: {
+            label: 'Shopee',
+            section: 'Shopee',
+            // Staged, never immediate (web rule 7): the tab marks a removal and
+            // this drops it, per conta, only when the tabela is saved. The
+            // save's `tx.update` replaces the whole map, and #1757's baseline
+            // guard raises the conflict modal if the stored map changed since
+            // load — no transaction of its own (root rule 7, tier 3).
+            prepareForSave: prepararTabelasShopeeParaSalvar,
+            renderInput: (p) => (
+              <MedidasShopeeManager
+                db={db}
+                value={p.value}
+                onChange={p.onChange}
+                disabled={p.disabled}
+              />
+            ),
+          },
           mercadoLivre: {
             label: 'Mercado Livre',
             section: 'Mercado Livre',
             // Self-contained tab: reads live doc state + drives the size-chart
-            // sync endpoint, decoupled from this form's save.
+            // sync endpoint. Draft removals flush after this form's save.
             renderInput: (p) => (
-              <MedidasMercadoLivreManager tabMediId={params.id} db={db} disabled={p.disabled} />
+              <MedidasMercadoLivreManager
+                key={params.id}
+                tabMediId={params.id}
+                db={db}
+                disabled={p.disabled}
+                flushRef={flushDraftRemovals}
+                onDirtyChange={handleDraftRemovalsDirty}
+              />
             ),
           },
           fotos: {
@@ -116,9 +154,10 @@ export default function TabelaDeMedidasPage() {
           return { fotosArquivosIds: ids.length > 0 ? ids : null };
         }}
         saveLabel="Salvar alterações"
+        onAfterSave={() => flushDraftRemovals.current?.()}
         canEdit={canWrite}
         readOnly={!canWrite}
-        canDelete={canWrite}
+        canDelete={canDelete}
         onDelete={handleDelete}
         onSaved={() => router.replace('/medidas')}
       />

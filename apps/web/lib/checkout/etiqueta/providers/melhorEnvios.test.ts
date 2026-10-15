@@ -17,6 +17,7 @@ function makeUi(over: Partial<EtiquetaProviderInput['ui']> = {}): EtiquetaProvid
     notify: vi.fn(),
     openUrl: vi.fn(),
     comprarEtiqueta: vi.fn(async (): Promise<ComprarEtiquetaOutcome> => ({ status: 'cancelled' })),
+    escolherEnvio: vi.fn(),
     ...over,
   };
 }
@@ -26,6 +27,7 @@ function makeInput(over: {
   formato?: 'pdf' | 'zpl2';
   freightClient?: unknown;
   ui?: EtiquetaProviderInput['ui'];
+  intFrete?: EtiquetaProviderInput['intFrete'];
 }): EtiquetaProviderInput {
   const frete = { printLabelId: null, externalOptionId: null, ...over.frete };
   return {
@@ -33,17 +35,30 @@ function makeInput(over: {
     pedido: {} as never,
     pedidoId: 'p1',
     frete: frete as never,
-    intFrete: { id: 'if1', tipo: INTEGRACAO_FRETE.melhorEnvios, data: {} as never },
+    intFrete: over.intFrete ?? {
+      fonte: 'doc',
+      id: 'if1',
+      tipo: INTEGRACAO_FRETE.melhorEnvios,
+      data: {} as never,
+    },
     formato: over.formato ?? 'pdf',
     deps: {
       freightClient: (over.freightClient ?? null) as never,
       nfeClient: null,
       mercadoLivreClient: null,
+      shopeeClient: null,
       printJob: vi.fn(),
     },
     ui: over.ui ?? makeUi(),
   };
 }
+
+const BLOCO_ME: EtiquetaProviderInput['intFrete'] = {
+  fonte: 'bloco',
+  id: null,
+  tipo: INTEGRACAO_FRETE.melhorEnvios,
+  data: null,
+};
 
 /* --------------------------------- tests ---------------------------------- */
 
@@ -147,5 +162,33 @@ describe('melhorEnviosProvider', () => {
     const input = makeInput({ frete: { printLabelId: 'lbl-1' }, freightClient: { imprimir } });
     const out = await melhorEnviosProvider.emitirOuImprimir(input);
     expect(out.status).toBe('error');
+  });
+
+  it('W6 — refuses a `bloco` integration before any I/O: no imprimir with a null account', async () => {
+    // ME routes on the int_frete ACCOUNT id; a bloco has none. Both arms that
+    // would use it (the reprint and the buy modal) must stay untouched.
+    const imprimir = vi.fn(async () => ({ url: 'https://me/label.pdf' }));
+    const comprarEtiqueta = vi.fn(
+      async (): Promise<ComprarEtiquetaOutcome> => ({ status: 'cancelled' }),
+    );
+    for (const frete of [{ printLabelId: 'lbl-1' }, { externalOptionId: 'opt-9' }]) {
+      const ui = makeUi({ comprarEtiqueta });
+      const out = await melhorEnviosProvider.emitirOuImprimir(
+        makeInput({ frete, freightClient: { imprimir }, ui, intFrete: BLOCO_ME }),
+      );
+      expect(out).toEqual({ status: 'error', message: 'Integração de frete não encontrada.' });
+      expect(ui.openUrl).not.toHaveBeenCalled();
+    }
+    expect(imprimir).not.toHaveBeenCalled();
+    expect(comprarEtiqueta).not.toHaveBeenCalled();
+  });
+
+  it('W6 — the bloco refusal comes first: no zpl2 warning, no client check', async () => {
+    const ui = makeUi();
+    const out = await melhorEnviosProvider.emitirOuImprimir(
+      makeInput({ formato: 'zpl2', freightClient: null, ui, intFrete: BLOCO_ME }),
+    );
+    expect(out).toEqual({ status: 'error', message: 'Integração de frete não encontrada.' });
+    expect(ui.notify).not.toHaveBeenCalled();
   });
 });

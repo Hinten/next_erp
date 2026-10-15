@@ -2,11 +2,11 @@
  * Route tests for POST /api/nfe/emitir. vi.mock the auth + orchestrator +
  * runtime layers so this isolates the route's contract:
  *   - 401 / 403 on auth
- *   - 400 on bad body
+ *   - 400 on bad body, and on an operator-fixable NFeOrchestratorError
  *   - 404 / 409 on orchestrator-thrown errors
  *   - 200 happy path
  *   - 422 when SEFAZ rejected
- *   - 503 if runtime can't boot
+ *   - 503 if the runtime is misconfigured; any other boot failure is rethrown
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,7 +17,13 @@ vi.mock('@/lib/nfe/auth', async (importOriginal) => {
 vi.mock('@/lib/firebase/admin', () => ({
   getAdminFirestore: vi.fn(() => ({}) as never),
 }));
-vi.mock('@/lib/nfe/runtime', () => ({ getNFeRuntime: vi.fn() }));
+// The real module's classes stay (the batch's failure table, which the
+// orchestrator now imports, names `NFeRuntimeConfigError`); only the runtime
+// itself is faked.
+vi.mock('@/lib/nfe/runtime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nfe/runtime')>();
+  return { ...actual, getNFeRuntime: vi.fn() };
+});
 vi.mock('@/lib/nfe/orchestrator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nfe/orchestrator')>();
   return { ...actual, emitirPedido: vi.fn() };
@@ -27,8 +33,14 @@ import { NextResponse } from 'next/server';
 
 import { ESTADO_NFE } from '@delfrance/schemas';
 import { verifyCaller } from '@/lib/nfe/auth';
-import { emitirPedido, NFeBlockedError, NFePedidoNotFoundError } from '@/lib/nfe/orchestrator';
-import { getNFeRuntime } from '@/lib/nfe/runtime';
+import {
+  emitirPedido,
+  NFeBlockedError,
+  NFeOrchestratorError,
+  NFePedidoNotFoundError,
+} from '@/lib/nfe/orchestrator';
+import { NFeEndpointError } from '@delfrance/integrations-nfe';
+import { getNFeRuntime, NFeRuntimeConfigError } from '@/lib/nfe/runtime';
 
 import { POST } from '../../../../../app/api/nfe/emitir/route';
 
@@ -75,13 +87,34 @@ describe('POST /api/nfe/emitir', () => {
     expect(res.status).toBe(400);
   });
 
-  it('503 when runtime fails to boot', async () => {
+  it('503 when the runtime is misconfigured (NFeRuntimeConfigError)', async () => {
     vi.mocked(getNFeRuntime).mockImplementation(() => {
-      throw new Error('NFE_CERT_PATH not set');
+      throw new NFeRuntimeConfigError("NFE_AMBIENTE must be 'producao' or 'homologacao'");
+    });
+    const res = await POST(req({ pedidoId: 'PED-1' }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({
+      error: 'NF-e runtime not ready',
+      code: "NFE_AMBIENTE must be 'producao' or 'homologacao'",
+    });
+  });
+
+  it('503 for an NFE_UF with no wired endpoints (NFeEndpointError), not an opaque 500', async () => {
+    // `getEndpoints` throws its own class for this, so a guard narrowing on
+    // NFeRuntimeConfigError alone would let a bad UF escape as a 500.
+    vi.mocked(getNFeRuntime).mockImplementation(() => {
+      throw new NFeEndpointError('XX');
     });
     const res = await POST(req({ pedidoId: 'PED-1' }));
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: 'NF-e runtime not ready' });
+  });
+
+  it('a non-config runtime failure is rethrown, never masked as 503', async () => {
+    vi.mocked(getNFeRuntime).mockImplementation(() => {
+      throw new TypeError('unexpected bug');
+    });
+    await expect(POST(req({ pedidoId: 'PED-1' }))).rejects.toThrow('unexpected bug');
   });
 
   it('404 when the pedido is missing', async () => {
@@ -94,6 +127,22 @@ describe('POST /api/nfe/emitir', () => {
     vi.mocked(emitirPedido).mockRejectedValue(new NFeBlockedError('PED-Y'));
     const res = await POST(req({ pedidoId: 'PED-Y' }));
     expect(res.status).toBe(409);
+  });
+
+  it('400 when emitirPedido throws NFeOrchestratorError, message passed through', async () => {
+    // A contract pin on the ROUTE only: the NFeOrchestratorError → 400 mapping
+    // predates #506, and the #506 fix relies on it to answer an unbuildable tax
+    // config with an operator-fixable 400 rather than the 500 below.
+    // emitirPedido is mocked and the message is a sample, so this test does NOT
+    // show that the orchestrator throws that class. The generator-input,
+    // orchestrator and emitir-pedidos-lote tests do.
+    const message =
+      "pedido 'PED-1' item 0 (produto 'P-1'): CSOSN '900': XSD sub-groups must be " +
+      'emitted complete or omitted — ICMS próprio missing: modBC';
+    vi.mocked(emitirPedido).mockRejectedValue(new NFeOrchestratorError(message));
+    const res = await POST(req({ pedidoId: 'PED-1' }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: message });
   });
 
   it('200 on cStat=103 (lote recebido)', async () => {

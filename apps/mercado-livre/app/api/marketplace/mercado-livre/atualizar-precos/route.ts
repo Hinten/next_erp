@@ -19,13 +19,17 @@
  */
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { envioPrecoMercadoLivreCollection } from '@delfrance/data/admin/collections';
+import { ENVIO_PRECO_MERCADO_LIVRE_STATUS } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
-import { PriceSyncAlreadyRunningError, startPriceSyncJob } from '@/lib/marketplace/preco/precoSync';
+import {
+  PriceSyncAlreadyRunningError,
+  finalizePriceSyncJob,
+  startPriceSyncJob,
+} from '@/lib/marketplace/preco/precoSync';
 import { createMlPriceSyncScheduler } from '@/lib/marketplace/preco/mlPriceSyncTasks';
 
 export const dynamic = 'force-dynamic';
@@ -101,6 +105,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     try {
       await createMlPriceSyncScheduler().enqueue({ jobId, integracaoId });
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- any enqueue failure stamps the job failed and answers 503; a throw orphans a running job
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Falha ao enfileirar a sincronização de preços.';
@@ -109,14 +114,20 @@ export async function POST(req: Request): Promise<NextResponse> {
       // stamp itself is guarded (same boundary shape as the webhook receiver's
       // enqueue fallback) so a concurrent Firestore outage still yields the 503
       // instead of an unhandled throw — the stamp failure is only logged.
+      //
+      // It goes through `finalizePriceSyncJob` like every other terminal stamp
+      // (#1144). Nothing can realistically have cancelled a job created three
+      // lines ago, and that is the point: the rule is "no bare `merge()` on
+      // `status`", not "guard the sites that look risky today".
       const failedAt = Date.now();
       try {
-        await envioPrecoMercadoLivreCollection.merge(db, {}, jobId, {
-          status: 'failed',
+        await finalizePriceSyncJob(db, jobId, {
+          status: ENVIO_PRECO_MERCADO_LIVRE_STATUS.failed,
           erro: message,
           finishedAt: failedAt,
           updatedAt: failedAt,
         });
+        // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort failure stamp; must not mask the original error
       } catch (stampErr) {
         if (!(stampErr instanceof Error)) throw stampErr;
         console.warn('[mercado-livre/atualizar-precos] failure-stamp falhou', {

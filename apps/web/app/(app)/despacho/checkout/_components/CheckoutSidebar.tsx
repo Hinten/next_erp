@@ -6,6 +6,7 @@ import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { Pedido } from '@delfrance/schemas';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
+import type { ShopeeClient } from '@/lib/shopee/client';
 import type { CheckoutDanfeFormat } from '@/lib/checkout/nfeFlow';
 import { NfeStatusTile } from './NfeStatusTile';
 import { FreteSummary } from './FreteSummary';
@@ -33,6 +34,7 @@ export interface CheckoutSidebarProps {
   nfeClient: NFeHttpClient | null;
   freightClient: FreightHttpClient | null;
   mercadoLivreClient: MercadoLivreClient | null;
+  shopeeClient: ShopeeClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   onFormatoDanfe: (v: CheckoutDanfeFormat) => void;
   formatoEtiqueta: 'pdf' | 'zpl2';
@@ -56,6 +58,7 @@ export function CheckoutSidebar({
   nfeClient,
   freightClient,
   mercadoLivreClient,
+  shopeeClient,
   formatoDanfe,
   onFormatoDanfe,
   formatoEtiqueta,
@@ -91,6 +94,7 @@ export function CheckoutSidebar({
         nfeClient={nfeClient}
         freightClient={freightClient}
         mercadoLivreClient={mercadoLivreClient}
+        shopeeClient={shopeeClient}
         formatoDanfe={formatoDanfe}
         formatoEtiqueta={formatoEtiqueta}
       />

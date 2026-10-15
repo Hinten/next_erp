@@ -15,7 +15,7 @@ import { localizarDecimal } from '@delfrance/core/decimal';
 
 import type { ChartCellValue, ChartRowDraft } from '@/lib/mercado-livre/chartRows';
 import { cellErrorKey } from '@/lib/mercado-livre/chartRows';
-import { type ChartColumn, type ChartColumnPart } from '@/lib/mercado-livre/chartSpec';
+import type { ChartColumn, ChartColumnPart } from '@/lib/mercado-livre/chartSpec';
 import { unitLabel } from '@/lib/mercado-livre/units';
 
 /** Width of the frozen first column, shared by the header and body cells. */

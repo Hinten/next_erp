@@ -16,6 +16,7 @@ export default function MotivoIncidentePage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
+  const { allowed: canDelete } = usePermission(PERM.pedido.delete);
   const db = getFirebaseFirestore();
 
   async function handleDelete(id: string) {
@@ -42,7 +43,7 @@ export default function MotivoIncidentePage() {
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
-        canDelete={canWrite}
+        canDelete={canDelete}
         onDelete={handleDelete}
         onSaved={() => router.replace('/motivos-incidente')}
       />

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { type MlClaimSearchParams, validateClaimSearchParams } from './claimSearch';
 import {
   MercadoLivreError,
   MercadoLivreHttpError,
@@ -30,6 +31,10 @@ import {
   type MlItem,
   type MlItemsMultiget,
   type MlItemDescription,
+  type MlCanInvoice,
+  type MlFiscalInformation,
+  type MlFiscalInformationBody,
+  type MlFiscalInformationLink,
   type MlItemPrices,
   type MlListingPrices,
   type MlMigrationLiveListing,
@@ -44,6 +49,7 @@ import {
   type MlSellerItemsScan,
   type MlSellerShippingSchedule,
   type MlShipment,
+  type MlShipmentCarrier,
   type MlShipmentCosts,
   type MlShipmentInvoice,
   type MlShipmentOrder,
@@ -66,6 +72,9 @@ import {
   categorySchema,
   domainDiscoverySchema,
   itemDescriptionSchema,
+  mlCanInvoiceSchema,
+  mlFiscalInformationLinkSchema,
+  mlFiscalInformationSchema,
   itemPricesSchema,
   itemSchema,
   ML_MULTIGET_MAX_IDS,
@@ -89,6 +98,7 @@ import {
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
   mlShipmentCostsSchema,
+  mlShipmentCarrierSchema,
   mlShipmentInvoiceSchema,
   mlShipmentOrdersSchema,
   mlShipmentPaymentsSchema,
@@ -240,6 +250,8 @@ export interface MercadoLivreApi {
   getPayment(paymentId: number | string): Promise<MlPayment>;
   /** `GET /shipments/{shipmentId}` — a shipment tied to an ML order (order import, Step 9). */
   getShipment(shipmentId: number | string): Promise<MlShipment>;
+  /** Resolve the carrier's public tracking page for one shipment. */
+  getShipmentCarrier(shipmentId: number | string): Promise<MlShipmentCarrier>;
   /**
    * `GET /shipments/{shipmentId}/payments` — the shipping-cost payments for a
    * shipment. **The endpoint returns a bare JSON array**, not a `results`
@@ -438,6 +450,35 @@ export interface MercadoLivreApi {
     plainText: string,
     opts?: { replace?: boolean },
   ): Promise<MlItemDescription>;
+  /**
+   * `POST /items/fiscal_information` — register ONE fiscal SKU with ML's
+   * Faturador (#745). The SKU is seller-scoped: a second POST for the same SKU
+   * is refused, so a caller that may be re-sending goes through
+   * {@link MercadoLivreApi.updateFiscalInformation} first.
+   */
+  createFiscalInformation(body: MlFiscalInformationBody): Promise<MlFiscalInformation>;
+  /**
+   * `PUT /items/fiscal_information/{sku}` — a FULL replace of a registered SKU
+   * (the POST body without `sku`). An unknown SKU is an `MercadoLivreHttpError`
+   * — which status ML answers it with is a settle-live item (`LIVE-TEST.md`).
+   */
+  updateFiscalInformation(
+    sku: string,
+    body: Omit<MlFiscalInformationBody, 'sku'>,
+  ): Promise<MlFiscalInformation>;
+  /**
+   * `POST /items/fiscal_information/items` — link a registered SKU to a
+   * listing. `variationId` only for a legacy `variations[]` item; `null` omits
+   * the key, which ML documents as the no-variation shape. Under User Products
+   * ML replicates the link to the item's siblings of the SAME user product.
+   */
+  linkFiscalInformationItem(link: {
+    sku: string;
+    itemId: string;
+    variationId: string | number | null;
+  }): Promise<MlFiscalInformationLink>;
+  /** `GET /can_invoice/items/{id}[/variations/{vid}]` — can the Faturador invoice it? */
+  getCanInvoice(itemId: string, variationId?: string | number | null): Promise<MlCanInvoice>;
   /** `GET /sites/MLB/domain_discovery/search?q=` — category suggestion. */
   suggestCategories(query: string, limit?: number): Promise<MlDomainDiscovery>;
   getCategory(id: string): Promise<MlCategory>;
@@ -669,13 +710,21 @@ export interface MercadoLivreApi {
    */
   getClaimExpectedResolutions(claimId: number): Promise<MlExpectedResolution[]>;
 
-  /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
-  searchClaims(params: {
-    status?: string;
-    stage?: string;
-    limit?: number;
-    offset?: number;
-  }): Promise<MlClaimSearch>;
+  /**
+   * `GET /post-purchase/v1/claims/search` — paged claims; only provided params
+   * are sent.
+   *
+   * ⚠️ **The query is validated locally first** and an invalid one throws
+   * `MercadoLivreClaimSearchParamsError` without a round trip. ML requires at
+   * least one real FILTER (`offset`/`limit`/`sort`/`range` do not count) and
+   * imposes several pairwise dependencies; see `claimSearch.ts` for the whole
+   * set and where each rule comes from.
+   *
+   * ⚠️ This signature used to accept `status | stage | limit | offset` only,
+   * which could not express a single one of ML's recommended filters. Its base
+   * recommendation is `players.user_id` + `players.role`.
+   */
+  searchClaims(params: MlClaimSearchParams): Promise<MlClaimSearch>;
   /**
    * `GET /post-purchase/v1/claims/{claimId}/attachments/{filename}/download` —
    * a claim-message attachment as raw bytes (legacy `getAttachment`,
@@ -1117,6 +1166,10 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       registrarFormatoDoEnvio(shipment);
       return shipment;
     },
+    getShipmentCarrier: (shipmentId) =>
+      request('GET', `/shipments/${shipmentId}/carrier`, mlShipmentCarrierSchema, {
+        headers: { 'x-format-new': 'true' },
+      }),
     getShipmentPayments: (shipmentId) =>
       request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema, {
         // Same mandate; this resource's body is unchanged by it (ML's own curl
@@ -1223,6 +1276,33 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         : request('POST', `/items/${id}/description`, itemDescriptionSchema, {
             body: { plain_text: plainText },
           }),
+    createFiscalInformation: (body) =>
+      request('POST', '/items/fiscal_information', mlFiscalInformationSchema, { body }),
+    // The SKU is seller-typed free text — it is a path SEGMENT here, so it is
+    // encoded; a `/` or `?` in a SKU must not re-route the call.
+    updateFiscalInformation: (sku, body) =>
+      request(
+        'PUT',
+        `/items/fiscal_information/${encodeURIComponent(sku)}`,
+        mlFiscalInformationSchema,
+        { body },
+      ),
+    linkFiscalInformationItem: ({ sku, itemId, variationId }) =>
+      request('POST', '/items/fiscal_information/items', mlFiscalInformationLinkSchema, {
+        body: {
+          sku,
+          item_id: itemId,
+          ...(variationId != null ? { variation_id: variationId } : {}),
+        },
+      }),
+    getCanInvoice: (itemId, variationId) =>
+      request(
+        'GET',
+        variationId != null
+          ? `/can_invoice/items/${itemId}/variations/${variationId}`
+          : `/can_invoice/items/${itemId}`,
+        mlCanInvoiceSchema,
+      ),
     suggestCategories: (query, limit) =>
       request('GET', '/sites/MLB/domain_discovery/search', domainDiscoverySchema, {
         query: { q: query, limit },
@@ -1384,8 +1464,15 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       ),
     getClaimReason: (reasonId) =>
       request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
-    searchClaims: (params) =>
-      request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
+    searchClaims: (params) => {
+      // ⚠️ BEFORE the request. Every rule here is one ML answers 400 to, so a
+      // round trip would only confirm what is already knowable — and an HTTP
+      // error invites a retry of a query that can never succeed.
+      validateClaimSearchParams(params);
+      return request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, {
+        query: params,
+      });
+    },
     downloadClaimAttachment,
     downloadPostSaleAttachment,
 

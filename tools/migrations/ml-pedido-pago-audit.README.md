@@ -59,9 +59,12 @@ Also on each row:
 
 ## Cost
 
-No index is needed, and none should be added. The walk is a plain
-`orderBy(documentId())` key-order scan with filtering done in memory — the one
-ordering Firestore always serves without a declared index. The narrower
+The key index is the only index this needs, and no filter index should be added.
+The walk is a plain `orderBy(documentId())` key-order scan with filtering done in
+memory, riding the **declared** key index `pedidos(__name__ ASC)` (#1895, listed
+in `key-walks.json`). Enterprise has no implicit key index: without it every page
+re-scans the collection (#1895 measured 1,665 index rows read per page of 300 on
+`pedidos`). The narrower
 `where('estado','==','pago')` form looks cheaper and is not: Firestore
 **Enterprise** never throws `FAILED_PRECONDITION` for a missing index, it
 silently full-scans and bills data scanned, and making it genuinely indexed

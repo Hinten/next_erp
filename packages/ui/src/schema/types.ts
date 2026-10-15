@@ -58,7 +58,7 @@ export interface FieldDescriptor {
 export type FilterableField = Pick<
   FieldDescriptor,
   'key' | 'kind' | 'label' | 'enumValues' | 'dateUnit'
->;
+> & { preset?: boolean };
 
 /**
  * A single column filter — the value emitted by a ColumnFilter / virtual
@@ -75,9 +75,82 @@ export type FilterableField = Pick<
  * emitting one must short-circuit (see the TableView guard) or, better, emit
  * `undefined` and drop the filter entirely.
  */
+/**
+ * Ops a column filter may carry. A superset of `PipelineFilterOp`: `between` and
+ * `isNull` are UI-ONLY ops that become real predicates at query-build time.
+ *
+ * Neither is added to `PipelineFilterOp`, and for the same reason. The data
+ * layer's op set describes what Firestore can be asked directly; `between` is a
+ * presentation of two of those and `isNull` is a presentation of one, and
+ * letting either reach `buildPipeline` would mean teaching the query builder
+ * about an operand shape it has no field for. Expansion happens in exactly one
+ * place — {@link expandColumnFilter}.
+ *
+ * ⚠️ `isNull` exists because the VALUE cannot carry the distinction on its own.
+ * `{ op: 'eq', value: null }` works on click and then dies in the URL:
+ * `encodeFilterValue` stringifies it to `"null"` and `parseFiltersFromParams`
+ * coerces by the field's `kind`, so a string column hydrates back the literal
+ * string `'null'` and a datetime column hydrates back `0`. Carrying the intent
+ * in the OP makes the round trip lossless, and — because this union widens while
+ * {@link expandColumnFilter} still returns `PipelineFilterOp` — makes every
+ * consumer that forgot about it a compile error rather than a silent no-op.
+ */
+export type ColumnFilterOp = PipelineFilterOp | 'between' | 'isNull';
+
 export interface ColumnFilterValue {
-  op: PipelineFilterOp;
+  op: ColumnFilterOp;
   value: string | number | boolean | null | ReadonlyArray<string>;
+  /**
+   * Upper bound. `between` only, and required there — the lower bound rides
+   * `value`. Anything else must leave it undefined (`isNull` included; it
+   * carries `value: null` and nothing else).
+   */
+  valueTo?: string | number | null;
+}
+
+/**
+ * The one place a `ColumnFilterValue` becomes real query predicates.
+ *
+ * `between` is the only op that expands to more than one, and it expands to an
+ * INCLUSIVE pair — `gte` lower, `lte` upper — which is what an operator means by
+ * "de X até Y" for both a date range and a value range.
+ *
+ * ⚠️ A range makes the field an inequality, so it must lead the `orderBy` or the
+ * query stops matching its composite index (silently, on Enterprise). Callers
+ * must derive a forced sort from an active range; see `TableView`.
+ *
+ * ⚠️ An incomplete range is NOT a range. A `between` whose `valueTo` never
+ * arrived degrades to the single bound it does have rather than emitting a
+ * comparison against `undefined`, which would match nothing and look like an
+ * empty result set.
+ *
+ * `isNull` expands to a single `eq null`, which Firestore answers from the
+ * index like any other equality (it is live in `produto.paiId` and
+ * `aviso.resolvidoEm`). ⚠️ It is an EQUALITY, not an inequality — so it must
+ * never be fed to `TableView`'s range-forced-sort logic, which exists to make an
+ * inequality lead the `orderBy`. Forcing a sort here would break the very
+ * composite-index match the filter rides.
+ *
+ * ⚠️ `eq null` matches a field stored as null, NOT a field that is absent.
+ * Every writer in this repo materializes its optional fields
+ * (`.nullable().default(null)`), so the gap is legacy-import corpus only.
+ */
+export function expandColumnFilter(
+  field: string,
+  v: ColumnFilterValue,
+): Array<{ field: string; op: PipelineFilterOp; value: ColumnFilterValue['value'] }> {
+  if (v.op === 'isNull') {
+    return [{ field, op: 'eq', value: null }];
+  }
+  if (v.op !== 'between') {
+    return [{ field, op: v.op, value: v.value }];
+  }
+  const lo = v.value;
+  const hi = v.valueTo;
+  const out: Array<{ field: string; op: PipelineFilterOp; value: ColumnFilterValue['value'] }> = [];
+  if (lo !== null && lo !== undefined && lo !== '') out.push({ field, op: 'gte', value: lo });
+  if (hi !== null && hi !== undefined && hi !== '') out.push({ field, op: 'lte', value: hi });
+  return out;
 }
 
 /**
@@ -141,12 +214,40 @@ export interface FieldConfig<TValue = unknown> {
    * marks items for removal in-place (see `DELETE_MARK`) and `prepareForSave`
    * (e.g. `stripMarkedForDeletion`) drops them + strips the transient marker at
    * save time, so nothing is destroyed until the user saves. Must be pure.
+   *
+   * Honoured at any depth: declared on a sub-field under `fields`, it runs for
+   * that sub-field's value (#870). A parent's transform runs BEFORE its own
+   * descendants', so the more specific config wins for its own key. On update
+   * the dirty gate is per TOP-LEVEL key — Firestore replaces a nested object
+   * wholesale, so a dirty parent normalizes ALL of its sub-fields, and a
+   * pristine parent normalizes none. A `null` parent (a nullable object whose
+   * Switch is off) is skipped, never materialized.
    */
   prepareForSave?: (value: TValue) => unknown;
   /**
    * Per-field overrides for the sub-fields of a `kind: 'object'` field.
    * Keyed by the nested key (e.g. `sede.cpf_cnpj` → `{ cpf_cnpj: {...} }`).
    * Lets callers hide/relabel address fields without flattening the schema.
+   *
+   * What a nested entry actually does: `label`, `hint`, `kind`, `options`,
+   * `hidden`, `editable` and `renderInput` are honoured by `FieldRenderer`, and
+   * `prepareForSave` by `ObjectView`'s save + resolver pipeline. `defaultValue`
+   * is honoured only when the nested entry is ITSELF a nullable
+   * `kind: 'object'` field — its one consumer repo-wide is the Switch's
+   * `seedObject`, so on a leaf it is inert. `section` and `renderCell` are
+   * top-level-only: the first groups TOP-LEVEL fields into tabs, the second
+   * belongs to `TableView`, which has no nested surface.
+   *
+   * ⚠️ One asymmetry, in the opposite direction to the one #870 fixed. When the
+   * PARENT declares a `renderInput`, `FieldRenderer` skips its nested branch
+   * entirely (`kind === 'object' && !config?.renderInput`) and never reads
+   * `fields` — the custom widget owns the whole subtree. The `prepareForSave`
+   * walk has no such gate, so under such a parent a nested transform still runs
+   * while every rendering key above is ignored. That is deliberate: the
+   * transform is about the VALUE being written, which the widget edits either
+   * way, and gating it would silently drop it — the exact failure mode this
+   * type's `prepareForSave` doc exists to rule out. Nothing in the repo pairs a
+   * parent `renderInput` with `fields` today.
    */
   fields?: Record<string, FieldConfig>;
   /**
@@ -195,6 +296,33 @@ export interface ActionConfig<T> {
    */
   maxSelection?: number;
   refreshOnComplete?: boolean;
+  /**
+   * Why THIS row cannot take the action, or `null` when it can.
+   *
+   * A refused row is dropped from the rows `run` receives, and the confirm
+   * dialog names it with this reason — so an operator who selected twelve
+   * pedidos and had two skipped is told which two and why, rather than watching
+   * the count quietly disagree with their selection.
+   *
+   * Returns the REASON, not a boolean: a boolean predicate cannot carry one, and
+   * the pair would drift. `actionDisabledReason` already uses this shape.
+   *
+   * ⚠️ May read ONLY fields listed in {@link rowEligibilityFields}. `row.data` is
+   * a Pipelines `select()` projection on the static path, so an undeclared field
+   * arrives `undefined` and the predicate refuses EVERY row while looking
+   * correct — a disabled button with a plausible tooltip. Three existing pedido
+   * actions re-read the whole document specifically to dodge this
+   * (`useDevolucaoIntegralAction`: "hiding a column strips its `dependsOn`
+   * fields, which would falsely reject every row").
+   */
+  rowIneligibleReason?: (row: SnapshotRow<T>) => string | null;
+  /**
+   * Fields {@link rowIneligibleReason} reads. Unioned into the Pipelines
+   * `select()` exactly like `VirtualColumn.dependsOn`, and with the same escape
+   * hatch: declaring a predicate WITHOUT this forces a full-document read rather
+   * than letting it run against a projection that may be missing its inputs.
+   */
+  rowEligibilityFields?: ReadonlyArray<string>;
   run: (rows: SnapshotRow<T>[]) => Promise<void> | void;
   confirm?: { title: string; message: string };
 }
@@ -249,7 +377,8 @@ export interface VirtualColumnFilter {
     /**
      * Selectable child fields. `numeric: true` coerces the term to a number for
      * the equality match (e.g. `numeracao`); leave it off for string fields
-     * like a 44-digit `chave`, which must NOT be parsed as a number.
+     * like a 44-character `chave`, which must NOT be parsed as a number —
+     * and cannot be since NT 2026.004, where positions 6-17 may hold `A-Z`.
      */
     readonly fields: ReadonlyArray<{ value: string; label: string; numeric?: boolean }>;
   };

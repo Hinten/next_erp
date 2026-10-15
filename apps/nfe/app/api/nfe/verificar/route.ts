@@ -17,7 +17,7 @@ import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import { verificarEnviNfeMsgs } from '@/lib/nfe/orchestrator/verificar';
-import { getNFeRuntime, NFeRuntimeConfigError } from '@/lib/nfe/runtime';
+import { getNFeRuntime, isNFeRuntimeMisconfig } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -60,9 +60,9 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     baseRt = getNFeRuntime();
   } catch (e) {
-    // Misconfigured runtime (bad NFE_AMBIENTE / missing TLS chain) → 503.
+    // Misconfigured runtime (bad NFE_AMBIENTE / NFE_UF / missing TLS chain) → 503.
     // Anything else is a genuine bug and must surface, not hide behind a 503.
-    if (e instanceof NFeRuntimeConfigError) {
+    if (isNFeRuntimeMisconfig(e)) {
       return authError(503, { error: e.message });
     }
     throw e;

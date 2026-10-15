@@ -16,28 +16,21 @@ function onlyDigits(value: string): string {
   return value.replace(/\D/g, '');
 }
 
-/** Strip CPF/CNPJ punctuation (`.` `/` `-` and spaces) but keep digits + letters. */
-function stripDocPunct(value: string): string {
-  return value.replace(/[.\-/\s]/g, '');
-}
-
 /**
- * Format a CPF (11 numeric digits → `000.000.000-00`) or CNPJ (14 chars →
- * `00.000.000/0000-00`). The CNPJ mask is applied **positionally**, so the
- * alphanumeric CNPJ (IN RFB 2.229/2024: 12 alphanumeric positions + 2 numeric
- * check digits) formats correctly too (`12ABC678000190 → 12.ABC.678/0001-90`).
- * Anything else (wrong length / shape) is returned unchanged.
+ * Format a CPF or a CNPJ. Re-exported from `@delfrance/core/documents` rather
+ * than reimplemented here — same as `formatTelefone` below.
+ *
+ * ⚠️ This file's copy was the CORRECT one of three: it masked the CNPJ
+ * positionally, so the alphanumeric CNPJ (RFB IN 2.229/2024) came out right,
+ * while the DANFE renderers' copy and `PedidoCells`' copy both stripped
+ * non-digits first and rendered `12ABC678000190` as an eleven-digit **CPF** —
+ * that value has exactly three letters, which is the arity that strips to a
+ * CPF-shaped lie rather than to visible garbage.
+ * Being right was not enough: nothing could tell the three apart, and a
+ * reviewer cannot diff them by eye. The shared version is the same rule with
+ * one place to read it.
  */
-export function formatCpfCnpj(raw: string): string {
-  const v = stripDocPunct(raw.trim());
-  if (/^\d{11}$/.test(v)) {
-    return `${v.slice(0, 3)}.${v.slice(3, 6)}.${v.slice(6, 9)}-${v.slice(9, 11)}`;
-  }
-  if (/^[0-9A-Za-z]{12}\d{2}$/.test(v)) {
-    return `${v.slice(0, 2)}.${v.slice(2, 5)}.${v.slice(5, 8)}/${v.slice(8, 12)}-${v.slice(12, 14)}`;
-  }
-  return raw;
-}
+export { formatCpfCnpj } from '@delfrance/core/documents';
 
 /** Format an 8-digit CEP as `00000-000`; anything else is returned unchanged. */
 export function formatCep(raw: string): string {

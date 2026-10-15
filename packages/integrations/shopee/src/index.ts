@@ -1,0 +1,109 @@
+/**
+ * Shopee channel library — platform-neutral, **fetch-only**, no Firestore.
+ *
+ * The request signature (`sign.ts`), the hosts (`hosts.ts`), the consent URL and
+ * the two token endpoints (`oauth.ts`), the two typed clients (`api.ts`), the
+ * wire schemas (`types.ts`) and the error taxonomy with its code classification
+ * (`errors.ts`) ship here. Everything stateful — the token store, the OAuth
+ * state attempts, the push receiver, the expiry sweep — is driven by the App
+ * Hosting backend `apps/shopee`, which holds the Firestore/Admin-SDK dependency.
+ *
+ * This is the ADR-0015 shape: a channel is a LIBRARY paired with an app, not a
+ * plugin implementing an ERP-orchestration contract. ⚠️ There is deliberately no
+ * `MarketplaceChannel` here and adding one back is the mistake ADR 0015 exists
+ * to prevent — `packages/integrations/shopee` was one of the five throw-only
+ * scaffolds deleted with that contract in #815, and it is back only because it
+ * now describes Shopee's WIRE PROTOCOL and nothing about this ERP. What Shopee
+ * supports is declared in `MARKETPLACE_TIPO_CAPS` (`@delfrance/schemas`), and
+ * `packages/config-eslint/rules/removed-plugin-contracts.test.js` asserts this
+ * shape.
+ *
+ * ## Non-goals — each one is somewhere else on purpose
+ *
+ *  - **No Firestore, no Admin SDK, no `@delfrance/data`.** ADR 0015.
+ *  - **No token store, no refresh scheduling, no lease.** `refreshAccessToken`
+ *    is a pure wire call; persisting the rotation, serialising it per id class,
+ *    and the weekly authorization-expiry sweep are step 2.
+ *  - **No proxy and no `undici`.** `fetch` is injected on every config, so
+ *    `apps/shopee` can compose a static-egress fetch when the IP whitelist
+ *    lands (P2 of the master plan).
+ *  - **No retry, no backoff.** `ShopeeRateLimitError` carries `kind` and
+ *    `retryAfterSeconds`; durable retry is the Cloud Tasks pipeline.
+ *  - **No merchant flows** beyond `merchantBaseString` existing.
+ *  - **No push/webhook signature verification.** That is a DIFFERENT base string
+ *    (with a `|` separator, over `callback_url` + raw body) and belongs with the
+ *    receiver in step 3.
+ *  - **No `process.env`.** Every value is a parameter; `apps/shopee/lib/shopee/env.ts`
+ *    is the one place the environment is read.
+ *  - **No `build` script.** `ci.yml`'s seven-job split relies on no `packages/*`
+ *    workspace defining one.
+ *
+ * ⚠️ `call.ts` is internal and deliberately NOT re-exported: it is the shared
+ * transport `oauth.ts` and `api.ts` are both built on, not a public surface.
+ * ⚠️ That is also why the multipart types (`ShopeeMultipartBody`,
+ * `ShopeeMultipartFile`) stay unexported from here: only `api.ts` may build a
+ * request, and the TWO uploads it builds are
+ * {@link ShopeePartnerClient.uploadImage} (step 11) and
+ * {@link ShopeeClient.uploadInvoiceDoc} (step 14).
+ *
+ * ⚠️ Step 14's additions — `uploadInvoiceDoc`, `UploadInvoiceDocParams`,
+ * `SHOPEE_UPLOAD_INVOICE_DOC_PATH`, the five `upload_invoice_doc` literals and
+ * schema in `types.ts`, and `ShopeeApiError.providerMessage` — ride the same
+ * wildcards; `test/api.test.ts` pins them at this door.
+ *
+ * ⚠️ Step 15 (the label flow) added two NEW MODULES, each with its own line
+ * below: `arquivo.ts` (the downloaded label's bytes and their sniff) and
+ * `logistica.ts` (the seven
+ * `v2.logistics.*` paths, request shapes, guards and wire constants — the
+ * operations themselves are `api.ts`'s, the response schemas `types.ts`'s).
+ * `test/api.test.ts` pins the seven operations at this door.
+ *
+ * ⚠️ Step 17 (returns, #1525) added one more NEW MODULE, with its own line below:
+ * `devolucoes.ts` — the six `v2.returns.*` paths, request shapes and guards,
+ * `SHOPEE_RETURNS_ERROR_ALIASES`, the outbound `ReturnSolution` enum and
+ * `normalizarSolucaoDeDevolucao`, the one reader of its three encodings. The
+ * operations are `api.ts`'s and the response schemas `types.ts`'s section
+ * "Returns (step 17)" — the only schemas here that STRIP (buyer data).
+ * `test/devolucoes.test.ts` pins this module at this door.
+ *
+ * ⚠️ Step 18 (size charts, #1526) added one more NEW MODULE, with its own line
+ * below: `tabelasDeMedidas.ts` — the two `v2.product.get_size_chart_*` paths,
+ * request shapes and guards (`0` refused for every id: it is the add/update
+ * DETACH sentinel), the page-size bound, the drained-cursor sentinel and
+ * `lerPaginaDeTabelasDeMedidas`, the one reader of a list page with its
+ * three-valued continuation. The operations are `api.ts`'s and the response
+ * schemas `types.ts`'s section "Size charts (step 18)"; the chart's projection
+ * is NOT here — it is `projetarTabelaShopee` in `@delfrance/schemas`.
+ * `test/tabelasDeMedidas.test.ts` pins this module at this door.
+ *
+ * ⚠️ Step 19 (native kits, #1527) added one more NEW MODULE, with its own line
+ * below: `kits.ts` — the three kit-write paths (`add_kit_item`,
+ * `update_kit_item`, `generate_kit_image`), their wire-shaped request types and
+ * guards (exactly ONE `main_component` per KIT, `component_model_id` positive or
+ * omitted, a one-row model with `quantity >= 2`, 1…10 images), the wire
+ * constants (`SHOPEE_KIT_MAX_MODELS`, `SHOPEE_KIT_IMAGE_MAX` — 10, NOT the
+ * item's 9 — and `get_kit_item_limit`'s own success alias) and
+ * `linhasDeReenvioDoKit`, the ONE copy of a live kit model's components back
+ * onto the wire. The operations are `api.ts`'s and the response schemas
+ * `types.ts`'s section "Kits — escrita (step 19)". `test/kits.test.ts` pins this
+ * module at this door.
+ *
+ * ⚠️ These eleven re-exports are WILDCARD, so every step-11 addition — the twelve
+ * operations, their wire-shaped request interfaces, the response schemas and the
+ * wire bounds — reaches `@delfrance/integrations-shopee` with no line to add
+ * here. A NEW MODULE would need one; a new export inside these eleven does not,
+ * and a test in `test/api.test.ts` pins the twelve operation names so a rename
+ * cannot silently drop one from the public surface.
+ */
+
+export * from './errors';
+export * from './types';
+export * from './hosts';
+export * from './sign';
+export * from './oauth';
+export * from './api';
+export * from './arquivo';
+export * from './logistica';
+export * from './devolucoes';
+export * from './tabelasDeMedidas';
+export * from './kits';

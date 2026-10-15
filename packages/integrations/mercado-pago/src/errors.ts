@@ -38,6 +38,29 @@ export class MercadoPagoValidationError extends MercadoPagoError {
 }
 
 /**
+ * OUR OWN outbound body failed its strict request schema (`requests.ts`), so
+ * nothing was sent. It is a bug on this side — a builder emitting a field Mercado
+ * Pago's contract does not have, a string where a number belongs, a date with a
+ * `Z` — never something the operator can fix, which is why `respond.ts` answers it
+ * with the generic 500 `MP_ERROR` (any unknown {@link MercadoPagoError} subclass).
+ *
+ * ⚠️ The MESSAGE lists field PATHS only, never a value (the #1015 discipline of
+ * {@link MercadoPagoValidationError}): the body of a preference can carry a payer's
+ * e-mail, CPF and phone, and the message is what reaches a log line. An unknown
+ * key is reported by its NAME (`notification_url`), which is code, not data.
+ */
+export class MercadoPagoRequestError extends MercadoPagoError {
+  constructor(
+    message: string,
+    /** Invalid field paths, dot-joined (`items.0.unit_price`); `(raiz)` for the body itself. */
+    readonly campos: readonly string[] = [],
+  ) {
+    super(message);
+    this.name = 'MercadoPagoRequestError';
+  }
+}
+
+/**
  * The stored grant is dead — `invalid_grant` on either the code exchange (the
  * authorization code is expired or already used) or a refresh (the refresh
  * token is expired, revoked, or already used), or a `401` from the REST API

@@ -244,6 +244,7 @@ export async function buildWhatsappHealth(
         try {
           await integracaoCollection.merge(db, {}, integracaoId, { verificado: true });
           invalidateWhatsappConta(integracaoId);
+          // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort self-heal; a write failure is not a health failure
         } catch (err) {
           // Best-effort self-heal — a write failure is not a health failure,
           // but it must leave a trace (a persistent failure here means
@@ -378,6 +379,7 @@ export async function buildWhatsappHealth(
         hint: null,
       });
     }
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- health probe: a failed check is reported as a warn item, never a crashed report
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     console.error('[whatsapp] health: consulta de conversas falhou', {
@@ -431,6 +433,7 @@ export async function buildWhatsappHealth(
           hint: null,
         });
       }
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- health probe: a failed check is reported as a warn item, never a crashed report
     } catch (err) {
       if (!(err instanceof Error)) throw err;
       console.error('[whatsapp] health: contagem de notificações falhou', {

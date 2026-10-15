@@ -65,6 +65,9 @@ topic; everything else is either a pure mapper or a resolver they share.
 - `orderCliente.ts` — cliente find-or-create plus endereço resolution.
 - `orderProdutoResolve.ts` — resolves the ERP produto (including a variation
   child) for one order line. The one order file that reaches into `importacao/`.
+  ⚠️ The **SKU rungs** are no longer here: they were promoted to
+  `@delfrance/data/admin/produtos` (#1513) so Shopee resolves lines through the
+  same fold, and this file is a thin caller of it — its own tests are unchanged.
 - `orderPrazoDespacho.ts` — computes the dispatch deadline.
 - `orderShipmentConference.ts` — pure conference of what ML will ship against
   what the pedido stores.

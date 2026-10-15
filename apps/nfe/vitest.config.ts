@@ -22,7 +22,13 @@ export default defineConfig({
     // `proxy.ts` (the CORS middleware) sits at the app root, outside both globs
     // above — name its test explicitly or it never runs.
     include: ['test/**/*.test.ts', 'functions/**/*.test.ts', 'proxy.test.ts'],
-    env: { ...envFromFiles, ...process.env },
+    // ⚠️ The two NF-e keys are pinned AFTER both spreads, on purpose: neither a
+    // repo-root `.env.local` nor the shell can point a Vitest run of this app at
+    // SEFAZ produção — `getNFeRuntime()` resolves tpAmb from `NFE_AMBIENTE`, and the
+    // transport guards honour only `NFE_ALLOW_PRODUCAO === 'true'`. A test that needs
+    // produção semantics stubs them inside the test (`vi.stubEnv`).
+    // `test/lib/nfe/test-env-pin.test.ts` proves the pin holds.
+    env: { ...envFromFiles, ...process.env, NFE_AMBIENTE: 'homologacao', NFE_ALLOW_PRODUCAO: '' },
   },
   resolve: {
     alias: {

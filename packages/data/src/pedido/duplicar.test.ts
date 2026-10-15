@@ -28,6 +28,13 @@ describe('buildDuplicarPedidoSeed', () => {
           // neither describes a line on a manually created pedido.
           ensureUniqueId: 'sha-of-the-origin-order-line',
           timestamp: 777,
+          // An item-level NF-e reference (#330) belongs to the ORIGIN's operation.
+          dfeReferenciado: {
+            chaveAcesso: '35260514200166000187550010000000071000000018',
+            nItem: 2,
+          },
+          // So do a nota de débito's IBS/CBS adjustment amounts (#330).
+          ajusteRtc: { vIBS: 10, vCBS: 90, competApur: '2026-08' },
         },
       ],
     },
@@ -39,6 +46,7 @@ describe('buildDuplicarPedidoSeed', () => {
     entradasRelacionadas: ['x'],
     saidasRelacionadas: ['y'],
     chNFeReferenciadas: ['CH1'],
+    chNFePagamentoAntecipado: ['CH2'],
     itensDevolvidos: { o0: { p1: [item('p1', 1, 25)] } },
     estoqueAplicado: { depositoId: 'd1', ehSaida: true },
     observacoesInternas: 'nota interna',
@@ -53,8 +61,10 @@ describe('buildDuplicarPedidoSeed', () => {
     dataFinalExpedicao: 888,
     foiImpresso: true,
     bloquearEmissaoNFe: true,
-    // The four legacy money pass-throughs — nothing in this app recomputes
-    // them, so an omission from the strip list lands verbatim on the copy.
+    // The four legacy money pass-throughs #1151 removed from `pedidoSchema`.
+    // Kept on the ORIGIN fixture on purpose: the migrated corpus still stores
+    // them, so this is what a real origin doc looks like and what the re-parse
+    // has to drop.
     valorComissoes: 12.5,
     valorDespesasIncidentes: 3.5,
     valorFretesIncidentes: 4.5,
@@ -120,6 +130,7 @@ describe('buildDuplicarPedidoSeed', () => {
     expect(values.timestamp).toBeNull();
     expect(values.error).toBeNull();
     expect(values.chNFeReferenciadas).toBeNull();
+    expect(values.chNFePagamentoAntecipado).toBeNull();
     expect(values.itensDevolvidos).toBeNull();
     expect(values.entradasRelacionadas).toBeNull();
     expect(values.saidasRelacionadas).toBeNull();
@@ -137,17 +148,18 @@ describe('buildDuplicarPedidoSeed', () => {
     }
   });
 
-  it('strips the four legacy money pass-throughs — nothing recomputes them', async () => {
-    // `derivePedidoTotals` owns only the six item/frete/devolução caches and
-    // leaves these to a caller that does not exist, so unlike `valorCobrado`
-    // they would survive the form resolver untouched: the origin's marketplace
-    // commission, its tax total, and incident costs whose `incidentes`
-    // subcollection this seed never clones.
+  it('drops the four legacy money pass-throughs — they are not modeled at all (#1151)', async () => {
+    // These were strip-list entries until #1151 removed them from
+    // `pedidoSchema`. They need no entry now: `pedidoSchema` has no
+    // `.passthrough()` (#462), so the re-parse drops an unmodeled origin key on
+    // its own. `not.toHaveProperty` rather than `toBeNull` is the point — a
+    // null would mean the field is still declared, and this asserts the
+    // stronger property that the seed cannot carry the key at all.
     const { values } = await seed();
-    expect(values.valorComissoes).toBeNull();
-    expect(values.valorDespesasIncidentes).toBeNull();
-    expect(values.valorFretesIncidentes).toBeNull();
-    expect(values.impostos).toBeNull();
+    expect(values).not.toHaveProperty('valorComissoes');
+    expect(values).not.toHaveProperty('valorDespesasIncidentes');
+    expect(values).not.toHaveProperty('valorFretesIncidentes');
+    expect(values).not.toHaveProperty('impostos');
   });
 
   it('strips dataFinalExpedicao and the origin bloquearEmissaoNFe', async () => {
@@ -190,6 +202,8 @@ describe('buildDuplicarPedidoSeed', () => {
     const line = itens.p1?.[0];
     expect(line?.ensureUniqueId).toBeNull();
     expect(line?.timestamp).toBeNull();
+    expect(line?.dfeReferenciado).toBeNull();
+    expect(line?.ajusteRtc).toBeNull();
     // Everything that describes WHAT is being sold survives.
     expect(line?.produtoUid).toBe('p1');
     expect(line?.quantidade).toBe(3);

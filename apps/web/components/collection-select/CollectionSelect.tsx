@@ -1,9 +1,17 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { Pill, PillsInput, Select, Stack, Text, type ComboboxData } from '@mantine/core';
+import {
+  Pill,
+  PillsInput,
+  Select,
+  Stack,
+  Text,
+  type ComboboxData,
+  type ComboboxProps,
+} from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
-import type { WhereFilterOp } from 'firebase/firestore';
+import type { Firestore, Query, WhereFilterOp } from 'firebase/firestore';
 import type { ZodObject, ZodRawShape, z } from 'zod';
 import {
   type CollectionHandle,
@@ -68,6 +76,10 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * entries cache just the label.
    */
   optionHintField?: string;
+  /** Additional exact-match search (for array fields, for example). Always bounded by its caller. */
+  extraSearchQuery?: (db: Firestore, term: string) => Query<z.infer<S>> | null;
+  /** Richer option description; receives the debounced term to identify a historical match. */
+  optionDescription?: (data: z.infer<S>, term: string) => string | undefined;
   /**
    * Per-field equality/comparison filters AND-combined onto the option query
    * (e.g. exclude kits with `[{ field: 'ehKit', op: 'eq', value: false }]`).
@@ -85,6 +97,23 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * `limit` rows.
    */
   excludeIds?: string[];
+  /**
+   * Passed through to the inner `<Select>`'s dropdown.
+   *
+   * ⚠️ The one caller that needs it is a TableView column-filter popover, and it
+   * needs `{ withinPortal: false }`. Mantine portals a dropdown by default, and
+   * inside a `Popover.Dropdown` that is fatal twice over: clicking an option
+   * reads as a click-outside and closes the popover before the pick lands, and
+   * the e2e helpers — which scope every control to
+   * `getByRole('dialog', { name: 'Filtrar <label>' })` — cannot reach a listbox
+   * that renders outside the dialog. `ColumnFilter.tsx`'s own inputs all set it
+   * for exactly these reasons.
+   *
+   * ⚠️ Deliberately NOT the default. Every other caller is a form picker inside
+   * a scrolling modal, where the portal is what keeps the dropdown from being
+   * clipped.
+   */
+  comboboxProps?: ComboboxProps;
 }
 
 /** Fallback-query operator for each comparison filter op (substring ops are pipeline-only). */
@@ -158,8 +187,11 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   limit = DEFAULT_LIMIT,
   orderBy,
   optionHintField,
+  extraSearchQuery,
+  optionDescription,
   filters,
   excludeIds,
+  comboboxProps,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -228,7 +260,18 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   // the active one receives a non-null argument.
   const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
-  const listData = (pipeline ? fromPipeline : fromQuery).data;
+  const extraQuery = useMemo(
+    () => (term && !locked ? (extraSearchQuery?.(db, term) ?? null) : null),
+    [db, term, locked, extraSearchQuery],
+  );
+  const fromExtra = useSnapshot<z.infer<S>>(extraQuery);
+  const primaryData = (pipeline ? fromPipeline : fromQuery).data;
+  const listData = useMemo(() => {
+    if (!extraQuery) return primaryData;
+    const unique = new Map((primaryData ?? []).map((row) => [row.id, row]));
+    for (const row of fromExtra.loading ? [] : (fromExtra.data ?? [])) unique.set(row.id, row);
+    return [...unique.values()];
+  }, [primaryData, extraQuery, fromExtra.data, fromExtra.loading]);
 
   // The saved value may point to a doc outside the limited list — fetch it
   // directly so its label still renders.
@@ -254,14 +297,16 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
 
   // id → hint lookup for renderOption (recents entries carry no hint).
   const optionHints = useMemo(() => {
-    if (!optionHintField) return null;
+    if (!optionHintField && !optionDescription) return null;
     const hints: Record<string, string> = {};
     for (const row of listData ?? []) {
-      const hintValue = readLabelField(row.data, optionHintField);
+      const hintValue = optionDescription
+        ? optionDescription(row.data, term)
+        : readLabelField(row.data, optionHintField!);
       if (hintValue) hints[row.id] = hintValue;
     }
     return hints;
-  }, [listData, optionHintField]);
+  }, [listData, optionHintField, optionDescription, term]);
 
   const data: ComboboxData = useMemo(() => {
     if (term !== '') {
@@ -332,13 +377,14 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     <Select
       label={label}
       description={hint}
+      comboboxProps={comboboxProps}
       data={data}
       value={selectedId}
       onChange={handleChange}
       onBlur={onBlur}
       required={required}
       disabled={disabled}
-      error={error}
+      error={error ?? fromExtra.error?.message}
       searchable
       searchValue={searchValue}
       onSearchChange={setSearchValue}

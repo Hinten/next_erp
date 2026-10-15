@@ -1,127 +1,52 @@
 'use client';
 
-import { useState } from 'react';
-import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
-import { useQuery } from '@tanstack/react-query';
+import { Text } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 
-import { usePermission } from '@/lib/auth';
+import { ConnectionPanel } from '@/components/oauth/ConnectionPanel';
+import { type MercadoPagoConta, useMercadoPagoClient } from '@/lib/mercado-pago/client';
 import {
-  MercadoPagoClientHttpError,
-  MercadoPagoClientNetworkError,
-  useMercadoPagoClient,
-} from '@/lib/mercado-pago/client';
-import { useMercadoPagoCallbackToast } from './mercadoPagoOAuthErrors';
+  MERCADO_PAGO_OAUTH_TOAST,
+  describeMercadoPagoConnectFailure,
+  describeMercadoPagoContaFailure,
+} from './mercadoPagoOAuthErrors';
 
 /**
  * Mercado Pago account panel on /pagamentos/mercado-pago/[id] — shows the
  * connection status (`/users/me`) and a Conectar / Reautenticar button that
  * kicks off the server-side OAuth flow on the mercado-pago payments backend.
  * Mounted beside the metodo_pgto editor. The browser never sees a Mercado
- * Pago access/refresh token. Mirrors `ContaMercadoLivrePanel`.
+ * Pago access/refresh token.
+ *
+ * The card itself is `ConnectionPanel` (#563), shared with Mercado Livre and
+ * Melhor Envio; everything below is this channel's configuration. The
+ * `oauth/start` route is `PERM.metodoPagamento.write`-gated, so the button is
+ * gated by the same bit — a viewer is not offered an action that will 403.
  */
 export function ContaMercadoPagoPanel({ metodoId }: { metodoId: string }) {
   const client = useMercadoPagoClient();
-  // The backend oauth/start route is PERM.metodoPagamento.write-gated — gate
-  // the button by the same bit so a viewer isn't offered an action that will
-  // 403.
-  const { allowed: canWrite } = usePermission(PERM.metodoPagamento.write);
-  const [connecting, setConnecting] = useState(false);
-
-  // Toast the OAuth callback outcome (?mp=connected|error&reason=…). Shared with
-  // the payment-method list, which the callback redirects to for the three
-  // failures that happen before a trustworthy metodoId exists.
-  useMercadoPagoCallbackToast();
-
-  const query = useQuery({
-    queryKey: ['mercado-pago-conta', metodoId],
-    queryFn: () => {
-      if (!client) throw new Error('not ready');
-      return client.conta(metodoId);
-    },
-    enabled: Boolean(client),
-    retry: false,
-  });
-
-  async function handleConnect() {
-    if (!client) return;
-    setConnecting(true);
-    try {
-      const { authorizeUrl } = await client.oauthStart(metodoId);
-      window.location.assign(authorizeUrl);
-    } catch (err) {
-      setConnecting(false);
-      if (err instanceof MercadoPagoClientHttpError) {
-        notifications.show({ color: 'red', message: err.message });
-        return;
-      }
-      if (err instanceof MercadoPagoClientNetworkError) {
-        notifications.show({ color: 'red', message: 'Falha de rede ao iniciar a conexão.' });
-        return;
-      }
-      throw err;
-    }
-  }
-
-  const connected = query.data?.connected === true;
-  const me = query.data?.me ?? null;
 
   return (
-    <Card withBorder padding="md">
-      <Stack gap="sm">
-        <Group justify="space-between">
-          <Text fw={600}>Conta Mercado Pago</Text>
-          {query.isLoading ? (
-            <Loader size="sm" />
-          ) : connected ? (
-            <Badge color="green">Conectada</Badge>
-          ) : (
-            <Badge color="gray">Não conectada</Badge>
-          )}
-        </Group>
-
-        {query.error != null && <ContaError error={query.error} />}
-
-        {connected && me && (
+    <ConnectionPanel<MercadoPagoConta>
+      title="Conta Mercado Pago"
+      contaId={metodoId}
+      client={client}
+      queryKey={['mercado-pago-conta', metodoId]}
+      toast={MERCADO_PAGO_OAUTH_TOAST}
+      permission={{
+        bit: PERM.metodoPagamento.write,
+        hint: 'Requer permissão de escrita em meios de pagamento.',
+      }}
+      describeContaFailure={describeMercadoPagoContaFailure}
+      describeConnectFailure={describeMercadoPagoConnectFailure}
+      renderConnected={(conta) =>
+        conta.me && (
           <Text size="sm">
-            {me.nickname ?? `Coletor ${me.id}`}
-            {me.email ? ` · ${me.email}` : ''}
+            {conta.me.nickname ?? `Coletor ${conta.me.id}`}
+            {conta.me.email ? ` · ${conta.me.email}` : ''}
           </Text>
-        )}
-
-        <Group align="center" gap="sm">
-          <Button
-            type="button"
-            variant={connected ? 'light' : 'filled'}
-            onClick={handleConnect}
-            loading={connecting}
-            disabled={!client || !canWrite}
-          >
-            {connected ? 'Reautenticar' : 'Conectar conta'}
-          </Button>
-          {!canWrite && (
-            <Text size="xs" c="dimmed">
-              Requer permissão de escrita em meios de pagamento.
-            </Text>
-          )}
-        </Group>
-      </Stack>
-    </Card>
-  );
-}
-
-/** Render a conta query error, keeping unknown failures generic. */
-function ContaError({ error }: { error: unknown }) {
-  const message =
-    error instanceof MercadoPagoClientHttpError
-      ? error.message
-      : error instanceof MercadoPagoClientNetworkError
-        ? 'Falha de rede ao consultar a conta.'
-        : 'Não foi possível consultar a conta.';
-  return (
-    <Alert color="yellow" variant="light">
-      {message}
-    </Alert>
+        )
+      }
+    />
   );
 }

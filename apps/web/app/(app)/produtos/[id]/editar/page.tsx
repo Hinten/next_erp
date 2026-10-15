@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -16,7 +16,9 @@ import {
   type ProdutoExtraData,
   type Video,
   buildFotoRefs,
+  camposDeKitDoPatch,
   deriveFotosArquivosIds,
+  ehKitVirtualEfetivo,
   normalizeVariacoesUid,
   parseFakePath,
   produtoPageIssues,
@@ -26,7 +28,9 @@ import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from 
 import {
   ProdutoReferencedError,
   deleteProdutoCascade,
+  kitStatusChangeDoSave,
   propagateKitStatusToChildren,
+  type KitStatusChange,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { uploadProductImage } from '@delfrance/storage';
@@ -36,6 +40,7 @@ import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { useKitNativoShopee } from '@/lib/shopee/kitNativo';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
@@ -49,10 +54,12 @@ import { KitManager, stripKitForSave } from '../../_components/KitManager';
 import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/KitVariacoesManager';
 import { ModificacoesManager } from '../../_components/ModificacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
+import { VariationPricesField } from '../../_components/VariationPricesEditor';
 import { VideoManager } from '../../_components/VideoManager';
 import {
   VariationManager,
   type ChildrenFlush,
+  type VariationPriceEdits,
   type VariationRow,
 } from '../../_components/VariationManager';
 import {
@@ -91,6 +98,7 @@ export default function EditarProdutoPage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.produto.write);
+  const { allowed: canDelete } = usePermission(PERM.produto.delete);
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
   // Client adapter for the framework-agnostic produto use-cases (kit-status
@@ -120,6 +128,7 @@ export default function EditarProdutoPage() {
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<ChildrenFlush | null>(null);
+  const variationPriceEditsRef = useRef<VariationPriceEdits | null>(null);
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
   const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
@@ -141,6 +150,8 @@ export default function EditarProdutoPage() {
   // saved children (this page component is always mounted, unlike a hidden tab).
   // Only the variation children are kept live here — not every tab's effects.
   const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
+  const [divergentVariationCount, setDivergentVariationCount] = useState(0);
+  const [variationPriceDirty, setVariationPriceDirty] = useState(false);
   const childrenQuery = useMemo(
     () => buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', params.id)]),
     [db, params.id],
@@ -156,6 +167,7 @@ export default function EditarProdutoPage() {
           nome: r.data.nome,
           sku: r.data.sku ?? '',
           variacoesUid: r.data.variacoesUid ?? [],
+          precos: r.data.precos ?? null,
           deleteMark: false,
         })),
     [childrenSnap.data],
@@ -172,10 +184,9 @@ export default function EditarProdutoPage() {
     [params.id, effectiveVariationRows],
   );
 
-  // Live snapshot of this produto: feeds the parent-kit lookup below (`paiId`)
-  // and the kit-status "old value" fallback in `onAfterSave` (precos/custo
-  // history is no longer read from it — that bookkeeping is server-owned now,
-  // see `lastSavedKitStatus` below).
+  // Live snapshot of this produto: feeds the parent-kit lookup below (`paiId`).
+  // Neither precos/custo history (server-owned now) nor the kit-status sync
+  // (read from the save transaction, see `kitPendente` below) diffs against it.
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
   // Parent kit-status (#298): when this produto is a variation child (`paiId`
@@ -189,6 +200,16 @@ export default function EditarProdutoPage() {
   );
   const paiSnap = useDocSnapshot(paiDocRef);
   const parentIsKit = paiSnap.data?.data.ehKit === true;
+
+  // Shopee native kit (step 19, #1527, L4(1)): whether the kit ROOT (`paiId ??
+  // id` — a family child's recipe is one model of its parent's listing) has an
+  // ACTIVE native-kit link. Drives the NON-BLOCKING notice in the «É kit»
+  // field. `null` until this produto's doc has loaded, so a child never reads
+  // its own (empty) links first.
+  const kitNativoShopee = useKitNativoShopee(
+    db,
+    produtoSnap.data ? (paiId ?? params.id) : null,
+  ).temKitNativo;
 
   // Kits that use THIS produto as a component (#246). Promoting this produto into
   // a kit while it's still a component creates a kit-of-kit (can corrupt stock),
@@ -220,44 +241,39 @@ export default function EditarProdutoPage() {
   const referencedByMore = referencedByAll.length > REFERENCED_BY_DISPLAY;
   // Kit-status bookkeeping (Flutter parity, `produtoTableProvider.dart:556-589`):
   // when `ehKit`/`ehKitVirtual` flips, the existing variation children are
-  // synced on save. `lastSavedKitStatus` pins the PERSISTED status once, from
-  // the first doc emit, so it can serve as the "old" value at onAfterSave time
-  // (precos/custo history had the same pinning idiom, but that bookkeeping is
-  // gone now — the `onProdutoPrecoCustoChanged` trigger diffs against the
-  // stored doc itself).
-  const lastSavedKitStatus = useRef<{ ready: boolean; ehKit: boolean; ehKitVirtual: boolean }>({
-    ready: false,
-    ehKit: false,
-    ehKitVirtual: false,
-  });
-  // Paint-then-correct, NOT gate-until-server: this ref is the "old" value
-  // `propagateKitStatusToChildren` diffs against at save time, so it must be
-  // populated the moment anything is loaded (a save that finds it unready would
-  // diff against `false` and propagate a change that never happened). The cache
-  // emission seeds it; the authoritative one corrects it, once, while it still
-  // describes the LAST SAVED state — i.e. before the operator saves.
-  const serverPinnedKitStatus = useRef(false);
-  useEffect(() => {
-    if (!produtoSnap.data) return;
-    const serverTruth = produtoSnap.fromCache === false;
-    if (lastSavedKitStatus.current.ready && !(serverTruth && !serverPinnedKitStatus.current)) {
-      return;
-    }
-    lastSavedKitStatus.current = {
-      ready: true,
-      ehKit: produtoSnap.data.data.ehKit ?? false,
-      ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
-    };
-    if (serverTruth) serverPinnedKitStatus.current = true;
-  }, [produtoSnap.data, produtoSnap.fromCache]);
+  // synced on save. The flip is read from the SAVE TRANSACTION
+  // (`kitStatusChangeDoSave` over `onAfterSave`'s `committed`), never from the
+  // form or a pinned snapshot: a form painted from a stale cache diffed against
+  // server truth used to propagate a flip the parent never made. This ref holds
+  // a propagation that FAILED, so the next save — even a "nothing changed" one —
+  // retries it: the children still reflect its `old` side.
+  const kitPendente = useRef<KitStatusChange | null>(null);
 
   // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
   // to this product and uploads are enabled.
   const fields = useMemo<Record<string, FieldConfig>>(
     () => ({
       ...produtoFieldOverrides,
-      // "É kit" with the kit-of-kit promotion warning (#246) — editar-only, since
-      // it needs the referenced-by snapshot (a new produto can't be referenced).
+      propagatePriceToChildren: {
+        ...produtoFieldOverrides.propagatePriceToChildren,
+        renderInput: (p) => (
+          <VariationPricesField
+            value={p.value !== false}
+            onChange={p.onChange}
+            disabled={p.disabled}
+            divergentChildren={divergentVariationCount}
+            rows={effectiveVariationRows}
+            listas={listas}
+            listasError={listasSnap.error?.message}
+            onPriceChange={(rowKey, listaId, valor) =>
+              variationPriceEditsRef.current?.setPrice(rowKey, listaId, valor)
+            }
+          />
+        ),
+      },
+      // "É kit" with the kit-of-kit promotion warning (#246) and the Shopee
+      // native-kit notice (step 19) — editar-only, since both need a SAVED
+      // produto (a new one can be neither referenced nor linked).
       ehKit: {
         ...produtoFieldOverrides.ehKit,
         renderInput: (p) => (
@@ -269,6 +285,7 @@ export default function EditarProdutoPage() {
             referencedByKits={referencedByKits}
             hasMore={referencedByMore}
             loading={referencedBySnap.loading}
+            kitNativoShopee={kitNativoShopee}
           />
         ),
       },
@@ -344,12 +361,16 @@ export default function EditarProdutoPage() {
             db={db}
             grupos={grupos}
             gruposError={gruposSnap.error?.message}
+            propagatePriceToChildren={produtoSnap.data?.data.propagatePriceToChildren !== false}
             value={(p.value as string[] | null) ?? null}
             onChange={p.onChange}
             onGroupsChange={(ids) => {
               groupsRef.current = ids;
             }}
             onRowsChange={setVariationRows}
+            onDivergentPriceCountChange={setDivergentVariationCount}
+            onPriceDirtyChange={setVariationPriceDirty}
+            priceEditsRef={variationPriceEditsRef}
             flushRef={flushChildrenRef}
             disabled={p.disabled}
           />
@@ -447,10 +468,13 @@ export default function EditarProdutoPage() {
       modificacoes: {
         label: SECTION_MODIFICACOES,
         section: SECTION_MODIFICACOES,
-        // Self-contained tab (like Estoque/Mercado Livre): a read-only feed of
-        // the produto's unified `historicoDeModificacoes` entries with
-        // per-field revert, decoupled from this form's save.
-        renderInput: () => <ModificacoesManager produtoId={params.id} db={db} />,
+        // Self-contained tab (like Estoque/Mercado Livre): a feed of the
+        // produto's unified `historicoDeModificacoes` entries. "Restaurar"
+        // STAGES the old value into THIS form (#660) — hence `disabled`, which
+        // hides an action a read-only viewer could never commit.
+        renderInput: (p) => (
+          <ModificacoesManager produtoId={params.id} db={db} disabled={p.disabled} />
+        ),
       },
       componentesKit: {
         label: 'Componentes do kit',
@@ -487,10 +511,14 @@ export default function EditarProdutoPage() {
       listas,
       listasSnap.error?.message,
       effectiveVariationRows,
+      divergentVariationCount,
+      produtoSnap.data?.data.filhoUnicoId,
+      produtoSnap.data?.data.propagatePriceToChildren,
       kitExcludeIds,
       referencedByKits,
       referencedByMore,
       referencedBySnap.loading,
+      kitNativoShopee,
       handleMlDirtyChange,
     ],
   );
@@ -533,10 +561,18 @@ export default function EditarProdutoPage() {
       fields={fields}
       excludedFields={PRODUTO_EXCLUDED_FIELDS}
       transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
-      // Pending Mercado Livre edits live in their own documents and their own
-      // form, so the leave-guard needs to be told about them explicitly.
-      extraDirty={mlDirty}
-      transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
+      // Pending Mercado Livre and independent-variation-price edits live
+      // outside this RHF form, so both must arm the shared leave guard.
+      extraDirty={mlDirty || variationPriceDirty}
+      transactionWrites={(id, values, context) =>
+        buildProdutoTransactionWrites(db, id, values, 'editar', context)
+      }
+      // The kit invariant re-derived INSIDE the save transaction, over the doc
+      // it read: `deriveOnSave` below compares against the FORM, so a form
+      // painted from a stale cache copy and edited before server truth arrives
+      // omits the switch-off and the stored «É kit virtual»/map survive
+      // (`camposDeKitDoPatch`'s docblock; root `CLAUDE.md` rule 7).
+      deriveTransactionPatch={camposDeKitDoPatch}
       deriveOnSave={(values) => {
         // Keep the Flutter wire shapes on every save: bare group ids sorted
         // by ordem, canonical group-major fake paths for the variants. The
@@ -578,6 +614,16 @@ export default function EditarProdutoPage() {
           // `array-contains` query (order-insensitive), and Firestore arrays
           // are order-sensitive, so an unsorted list churns dirty detection.
           componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
+          // «É kit virtual» means nothing without «É kit» (`ehKitVirtualEfetivo`,
+          // the shared predicate): turning the kit off switches it off too, the
+          // mismatch the Shopee publisher refuses (`kit-virtual-sem-kit`). This
+          // derivation only covers a form that matches the stored doc; the
+          // guarantee that the produto never stores the mismatch is
+          // `deriveTransactionPatch` above, which also heals a stored legacy one.
+          ehKitVirtual: ehKitVirtualEfetivo({
+            ehKit: values.ehKit,
+            ehKitVirtual: values.ehKitVirtual,
+          }),
           fotosArquivosIds: fotoIds.length > 0 ? fotoIds : null,
         };
       }}
@@ -606,7 +652,7 @@ export default function EditarProdutoPage() {
         }
         return issues;
       }}
-      onAfterSave={async (id, values) => {
+      onAfterSave={async (id, _values, committed) => {
         // Precos/custo history + child-precos propagation used to be recorded
         // here (client-side, diffed against `lastSavedPrecos`/`lastSavedCusto`).
         // Both are now server-owned: the `onProdutoPrecoCustoChanged` Cloud
@@ -620,35 +666,33 @@ export default function EditarProdutoPage() {
         // `produtoTableProvider.dart:556-589`): when the parent's
         // `ehKit`/`ehKitVirtual` flips, sync the EXISTING variation children —
         // a child of a non-kit can't stay a kit, so its `componentesKit` is
-        // cleared. "Old" value = the ref pinned at the first emit, else the
-        // live snapshot (so a save beating that emit still propagates).
-        const newEhKit = values.ehKit === true;
-        const newEhKitVirtual = values.ehKitVirtual === true;
-        const oldKit = lastSavedKitStatus.current.ready
-          ? lastSavedKitStatus.current
-          : {
-              ehKit: produtoSnap.data?.data.ehKit ?? false,
-              ehKitVirtual: produtoSnap.data?.data.ehKitVirtual ?? false,
-            };
-        await propagateKitStatusToChildren(port, id, {
-          ehKit: newEhKit,
-          ehKitVirtual: newEhKitVirtual,
-          oldEhKit: oldKit.ehKit,
-          oldEhKitVirtual: oldKit.ehKitVirtual,
-          // ⛔ Both of these or the propagation is the half-write it used to be:
-          // a sole member left `ehKit: true` with a null map makes
-          // `calcularAlteracoesEstoque` skip the line entirely, so the sale moves
-          // NO stock. The pointer scopes it — only the sole member mirrors the
-          // parent's map; a real variation authors its own.
-          componentesKit: (values as { componentesKit?: Record<string, unknown> | null })
-            .componentesKit,
-          membroUnicoId: produtoSnap.data?.data.filhoUnicoId ?? null,
-        });
-        lastSavedKitStatus.current = {
-          ready: true,
-          ehKit: newEhKit,
-          ehKitVirtual: newEhKitVirtual,
-        };
+        // cleared. Old and new both come from the save TRANSACTION (the doc it
+        // read and the patch it wrote — `kitStatusChangeDoSave`), so a stale
+        // form can neither invent a flip nor hide one. The sole member's map
+        // and pointer come from there too (⛔ both, or a sole member is left
+        // `ehKit: true` with a null map and a sale moves NO stock).
+        //
+        // No transaction ran (`committed` absent: the "nothing changed" path)
+        // ⇒ this save moved no kit status, so only a FAILED earlier
+        // propagation is retried. One that failed keeps its `old` side: its
+        // write never landed, so the children still reflect it.
+        const desteSave = committed?.before
+          ? kitStatusChangeDoSave(committed.before, committed.patch)
+          : null;
+        const pendente = kitPendente.current;
+        const mudanca =
+          desteSave && pendente
+            ? {
+                ...desteSave,
+                oldEhKit: pendente.oldEhKit,
+                oldEhKitVirtual: pendente.oldEhKitVirtual,
+              }
+            : (desteSave ?? pendente);
+        if (mudanca) {
+          kitPendente.current = mudanca;
+          await propagateKitStatusToChildren(port, id, mudanca);
+          kitPendente.current = null;
+        }
 
         // (The extraData singleton is now written atomically with the produto
         // doc via `transactionWrites`, not here — so a flaky connection can't
@@ -674,7 +718,7 @@ export default function EditarProdutoPage() {
       saveLabel="Salvar alterações"
       canEdit={canWrite}
       readOnly={!canWrite}
-      canDelete={canWrite}
+      canDelete={canDelete}
       onDelete={handleDelete}
       deleteConfirmMessage="O produto e suas variações serão excluídos permanentemente. Esta ação não pode ser desfeita."
       onSaved={() => router.replace('/produtos')}

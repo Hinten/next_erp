@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { Anchor, Box, Button, Group, Loader, Stack, Text } from '@mantine/core';
+import { Anchor, Button, Group, Loader, Stack, Text } from '@mantine/core';
 import { IconFile, IconPhoto } from '@tabler/icons-react';
 import type { Filetype, Mensagem } from '@delfrance/schemas';
 import { FILETYPE } from '@delfrance/schemas';

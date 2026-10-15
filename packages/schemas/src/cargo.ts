@@ -31,6 +31,8 @@ export type Cargo = z.infer<typeof cargoSchema>;
 
 export const cargoMeta: CollectionMetadata = {
   collectionPath: 'cargos',
+  // Mutation and actor authorization must precede the durable claims fan-out.
+  serverOwned: true,
   permissions: {
     read: PERM_CONFIG_READ,
     write: PERM_CONFIG_WRITE,

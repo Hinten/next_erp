@@ -22,6 +22,7 @@ export default function BandeirasCartaoPage() {
       db={getFirebaseFirestore()}
       meta={bandeiraCartaoMeta}
       rowHref={(id) => `/bandeiras-cartao/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/bandeiras-cartao/novo">
           Nova bandeira

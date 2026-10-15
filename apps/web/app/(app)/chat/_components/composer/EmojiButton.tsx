@@ -2,8 +2,7 @@
 
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
-import { useComputedColorScheme } from '@mantine/core';
-import { ActionIcon, Loader, Popover } from '@mantine/core';
+import { useComputedColorScheme, ActionIcon, Loader, Popover } from '@mantine/core';
 import { IconMoodSmile } from '@tabler/icons-react';
 
 // Lazy boundary: the emoji-mart chunk (Picker + data) loads only when the

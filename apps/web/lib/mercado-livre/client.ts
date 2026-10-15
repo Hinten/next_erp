@@ -17,8 +17,13 @@ import { useMemo } from 'react';
 import type { z } from 'zod';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
+import {
+  mercadoLivreRastreioResultSchema,
+  type MercadoLivreRastreioResult,
+} from '@delfrance/schemas';
 
 import { useAuth } from '@/lib/auth/useAuth';
+import { filenameFromDisposition } from '@/lib/http/filenameFromDisposition';
 
 import * as wire from './wire';
 import type {
@@ -34,6 +39,7 @@ import type {
   MercadoLivreChartDomain,
   MercadoLivreChartSpecs,
   MercadoLivreConta,
+  MercadoLivreEnviarDadosFiscaisResult,
   MercadoLivreEnvioEstoqueResult,
   MercadoLivreEnvioPrecoResult,
   MercadoLivreIaModelos,
@@ -121,6 +127,33 @@ export class MercadoLivreClientNetworkError extends Error {
 }
 
 /**
+ * Read a response BODY, turning a connection that dies mid-body into the same
+ * {@link MercadoLivreClientNetworkError} a failed `fetch` becomes.
+ *
+ * ⚠️ Wrapping only `fetch` is not enough: the headers can arrive and the socket
+ * still drop while the body streams, and `text()` / `blob()` then reject with a
+ * bare `TypeError` ("terminated" in Node, "network error" in Chrome). Every
+ * catch site in `apps/web` narrows to this client's classes and rethrows the
+ * rest, so unwrapped it escaped all of them — on the label path, an unhandled
+ * rejection on the `/pedidos` row and a skipped reset after "Checkout salvo".
+ *
+ * An abort WE asked for rethrows untouched: the push providers recognise
+ * Cancelar by the bare `AbortError` a cancelled body read rejects with, and a
+ * caller that aborted owns that outcome. Any error that is not a `TypeError` is
+ * not a transport failure and rethrows too. Precedent: the Shopee web client
+ * (#1748).
+ */
+async function lerCorpo<T>(ler: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  try {
+    return await ler();
+  } catch (err) {
+    if (signal?.aborted === true) throw err;
+    if (err instanceof TypeError) throw new MercadoLivreClientNetworkError(err.message, err);
+    throw err;
+  }
+}
+
+/**
  * The mercado-livre backend answered 200, but not to the question that was
  * asked — so the "success" describes work that did not happen.
  *
@@ -173,6 +206,8 @@ export type {
   MercadoLivreChartValidationError,
   MercadoLivreConselhoParcial,
   MercadoLivreConta,
+  MercadoLivreDadosFiscaisResumo,
+  MercadoLivreEnviarDadosFiscaisResult,
   MercadoLivreEnvioEstoqueListing,
   MercadoLivreEnvioEstoqueResult,
   MercadoLivreEnvioEstoqueSemEnvio,
@@ -361,6 +396,16 @@ export interface MercadoLivreClient {
     linkDocId: string;
   }): Promise<MercadoLivreReverificarResult>;
   /**
+   * (Re-)send ONE anúncio's per-SKU fiscal data to ML's Faturador without
+   * republishing it (PERM.integracao.write, #745) — after an imposto edit, say.
+   * A SKU ML refuses is DATA in the summary, never an HTTP error.
+   */
+  enviarDadosFiscais(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId: string;
+  }): Promise<MercadoLivreEnviarDadosFiscaisResult>;
+  /**
    * PAUSE or REACTIVATE listings on Mercado Livre (PERM.integracao.write).
    *
    * ⚠️ Two callers, one method, and the difference is `linkDocId`: the produto
@@ -468,6 +513,21 @@ export interface MercadoLivreClient {
     integracaoId: string;
     jobId: string;
   }): Promise<MercadoLivrePriceSyncStatus>;
+  /**
+   * Cancel a running price sync (PERM.integracao.write) — stamps the job
+   * `cancelled`, which the task handler observes at its next dispatch: an
+   * in-flight batch finishes and nothing further is scheduled.
+   *
+   * ⚠️ Unlike `cancelMassImport` this is not how a stuck job gets CLEARED — a
+   * price-sync job stops blocking `startPriceSync` on its own once it goes six
+   * hours without a checkpoint. What it buys is not waiting those six hours.
+   *
+   * A job that already finished comes back as a 409
+   * `MercadoLivreClientHttpError` with `code: 'ML_PRICE_SYNC_NOT_RUNNING'` — one
+   * letter from the start route's `ML_PRICE_SYNC_RUNNING`, and the opposite
+   * meaning; an unknown or foreign jobId 404s.
+   */
+  cancelPriceSync(input: { integracaoId: string; jobId: string }): Promise<{ status: 'cancelled' }>;
   /**
    * Push the CURRENT stock of up to 50 produtos to their ML listings, right now
    * (PERM.integracao.write) — the on-demand twin of the 15-minute sweep (#819).
@@ -706,7 +766,7 @@ export interface MercadoLivreClient {
     attributes?: Array<Record<string, unknown>>;
   }): Promise<MercadoLivreChartSpecs>;
   /**
-   * Send the tabMedi's edited chart list for one account to ML and persist
+   * Send one committed chart/version for one account to ML and persist
    * the ids (PERM.integracao.write). ML chart-validation problems come back
    * as `validationErrors` on the 200 body (partial success is DATA); only
    * infrastructure failures throw.
@@ -714,8 +774,23 @@ export interface MercadoLivreClient {
   sizeChartSync(input: {
     integracaoId: string;
     tabMediId: string;
-    tabelas: unknown[];
+    operationId: string;
+    chartIndex: number;
+    chart: import('@delfrance/schemas').MlSizeChart;
+    recoveryChartId?: string | null;
   }): Promise<MercadoLivreSyncChartsResult>;
+  sizeChartSyncStatus(input: {
+    integracaoId: string;
+    tabMediId: string;
+  }): Promise<import('./wire').MercadoLivreChartSyncStatus>;
+  sizeChartRecover(input: {
+    integracaoId: string;
+    tabMediId: string;
+    operationId: string;
+    expectedChart: import('@delfrance/schemas').MlSizeChart | null;
+    recoveryChartId: string | null;
+    confirmNoCreation: boolean;
+  }): Promise<import('./wire').MercadoLivreChartRecoveryResult>;
   /**
    * Ask a model to read the tabela's photos and fill the grid
    * (PERM.integracao.write).
@@ -788,6 +863,8 @@ export interface MercadoLivreClient {
    * `ML_INVOICE_PENDING` while the shipment hasn't received the NF-e yet).
    */
   etiqueta(pedidoId: string, formato: 'pdf' | 'zpl2'): Promise<MercadoLivreEtiquetaArtifact>;
+  /** Carrier tracking link for the persisted pedido (PERM.frete.read). */
+  rastrear(pedidoId: string): Promise<MercadoLivreRastreioResult>;
   /**
    * Manually (re)send the pedido's approved NF-e to its ML shipment
    * (PERM.pedido.write). 202 `{ enqueued: true }` means ENQUEUED, not uploaded —
@@ -821,21 +898,6 @@ export function mercadoLivreHttpFallbackMessage(status: number): string {
     return `A integração com o Mercado Livre falhou (HTTP ${String(status)}). Tente novamente em instantes.`;
   }
   return `Falha na comunicação com o Mercado Livre (HTTP ${String(status)}).`;
-}
-
-/** Pull the filename out of a `Content-Disposition` header, if present. */
-function filenameFromDisposition(header: string | null): string | null {
-  if (!header) return null;
-  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
-  if (!m?.[1]) return null;
-  try {
-    return decodeURIComponent(m[1]);
-  } catch (err) {
-    // A stray '%' in the server-sent name must not fail a byte-successful
-    // fetch — keep the undecoded filename.
-    if (err instanceof URIError) return m[1];
-    throw err;
-  }
 }
 
 export function createMercadoLivreClient(config: {
@@ -885,7 +947,7 @@ export function createMercadoLivreClient(config: {
       );
     }
 
-    const text = await res.text();
+    const text = await lerCorpo(() => res.text(), signal);
 
     if (!res.ok) {
       let parsed: unknown = null;
@@ -967,7 +1029,7 @@ export function createMercadoLivreClient(config: {
     if (!res.ok) {
       let parsed: unknown = null;
       let nonJsonBody: string | null = null;
-      const text = await res.text();
+      const text = await lerCorpo(() => res.text());
       if (text.length > 0) {
         try {
           parsed = JSON.parse(text);
@@ -996,7 +1058,7 @@ export function createMercadoLivreClient(config: {
     // printer fed a chunk of markup. The route answers PDF or ZPL and never
     // HTML, so `text/html` on a 2xx means the request did not reach it.
     if (contentType !== null && /^\s*text\/html\b/i.test(contentType)) {
-      logarCorpoNaoJson(path, res.status, await res.text());
+      logarCorpoNaoJson(path, res.status, await lerCorpo(() => res.text()));
       throw new MercadoLivreClientRespostaInvalidaError(
         `A integração com o Mercado Livre respondeu HTTP ${String(res.status)} com uma página ` +
           'HTML em vez da etiqueta — o pedido não chegou à rota esperada. Atualize a página e, ' +
@@ -1006,12 +1068,12 @@ export function createMercadoLivreClient(config: {
       );
     }
 
-    const blob = await res.blob();
+    const blob = await lerCorpo(() => res.blob());
     return {
       blob,
-      // The route names the file via Content-Disposition, but the proxy does
-      // not CORS-expose the header to the browser — tolerate its absence with
-      // a client-side fallback (nfe `fetchArtifact` precedent).
+      // The route names the file via Content-Disposition, which the proxy
+      // CORS-exposes (#1680). Keep the client-side fallback anyway: a backend
+      // deployed before that change still hides the header.
       filename:
         filenameFromDisposition(res.headers.get('content-disposition')) ?? fallback.filename,
       contentType: res.headers.get('content-type') ?? fallback.contentType,
@@ -1035,6 +1097,12 @@ export function createMercadoLivreClient(config: {
       call(
         '/api/marketplace/mercado-livre/reverificar-anuncio',
         wire.reverificarResultSchema,
+        input,
+      ),
+    enviarDadosFiscais: (input) =>
+      call(
+        '/api/marketplace/mercado-livre/dados-fiscais',
+        wire.enviarDadosFiscaisResultSchema,
         input,
       ),
     definirStatusAnuncios: ({ signal, ...input }) =>
@@ -1094,6 +1162,11 @@ export function createMercadoLivreClient(config: {
         },
         input.signal,
       ),
+    cancelPriceSync: (input) =>
+      call('/api/marketplace/mercado-livre/atualizar-precos/cancelar', wire.cancelledSchema, {
+        integracaoId: input.integracaoId,
+        jobId: input.jobId,
+      }),
     priceSyncStatus: (input) =>
       call(
         `/api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
@@ -1216,6 +1289,17 @@ export function createMercadoLivreClient(config: {
       }),
     sizeChartSync: (input) =>
       call('/api/marketplace/mercado-livre/size-charts/sync', wire.syncChartsResultSchema, input),
+    sizeChartSyncStatus: ({ integracaoId, tabMediId }) =>
+      call(
+        `/api/marketplace/mercado-livre/size-charts/sync?integracaoId=${encodeURIComponent(integracaoId)}&tabMediId=${encodeURIComponent(tabMediId)}`,
+        wire.chartSyncStatusSchema,
+      ),
+    sizeChartRecover: (input) =>
+      call(
+        '/api/marketplace/mercado-livre/size-charts/recuperar',
+        wire.chartRecoveryResultSchema,
+        input,
+      ),
     sizeChartExcluir: (input) =>
       call(
         '/api/marketplace/mercado-livre/size-charts/excluir',
@@ -1236,6 +1320,11 @@ export function createMercadoLivreClient(config: {
         formato === 'pdf'
           ? { filename: `etiqueta-${pedidoId}.pdf`, contentType: 'application/pdf' }
           : { filename: `etiqueta-${pedidoId}.zip`, contentType: 'application/zip' },
+      ),
+    rastrear: (pedidoId) =>
+      call(
+        `/api/marketplace/mercado-livre/rastreio?pedidoId=${encodeURIComponent(pedidoId)}`,
+        mercadoLivreRastreioResultSchema,
       ),
     enviarNfe: (input) =>
       call('/api/marketplace/mercado-livre/enviar-nfe', wire.enqueuedSchema, input),

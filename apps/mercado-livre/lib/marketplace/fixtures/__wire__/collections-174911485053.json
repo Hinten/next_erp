@@ -1,0 +1,72 @@
+{
+  "id": 174911485053,
+  "site_id": "MLB",
+  "date_created": "2026-08-27T09:14:29.000-04:00",
+  "date_approved": "2026-08-27T09:14:30.000-04:00",
+  "money_release_date": "2026-09-25T09:14:30.000-04:00",
+  "last_modified": "2026-08-27T09:15:42.000-04:00",
+  "reason": "Estátua Leão Madeira Amadeirado",
+  "currency_id": "BRL",
+  "transaction_amount": 49.97,
+  "total_paid_amount": 62.96,
+  "shipping_cost": 12.99,
+  "coupon_amount": 0,
+  "coupon_id": null,
+  "status": "approved",
+  "status_detail": "accredited",
+  "installment_amount": 62.96,
+  "payment_type": "credit_card",
+  "payment_method_id": "master",
+  "marketplace": "MELI",
+  "operation_type": "regular_payment",
+  "financing_group": "mlb-meli-mkt-psj-asp-30_60-2x",
+  "deduction_schema": null,
+  "amount_refunded": 0,
+  "api_version": "2",
+  "concept_id": null,
+  "concept_amount": 0,
+  "sponsor_id": null,
+  "overpaid_amount": 0,
+  "external_reference": "2000018143664980",
+  "order_id": "2000018143664980",
+  "merchant_order_id": null,
+  "tags": [],
+  "refunds": [],
+  "deferred_period": null,
+  "status_code": null,
+  "account_money_amount": 0,
+  "transaction_order_id": null,
+  "additional_info": {},
+  "cardholder": {
+    "name": "REDACTED",
+    "identification": {
+      "number": "00000000000",
+      "type": "CPF"
+    }
+  },
+  "statement_descriptor": "Mercadopago*fake",
+  "installments": 1,
+  "authorization_code": "301299",
+  "issuer_id": 12749,
+  "net_received_amount": 32.57,
+  "mercadopago_fee": 0,
+  "marketplace_fee": 0,
+  "discount_fee": 0,
+  "coupon_fee": 0,
+  "finance_fee": 0,
+  "released": "no",
+  "collector_id": 3616169770,
+  "payer": {
+    "id": 3644236740,
+    "email": null,
+    "phone": {
+      "area_code": null,
+      "number": null,
+      "extension": null
+    },
+    "identification": {
+      "number": null,
+      "type": null
+    }
+  }
+}

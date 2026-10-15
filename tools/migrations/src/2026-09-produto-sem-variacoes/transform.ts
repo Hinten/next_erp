@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 
-import { montarMembroUnico, type ParentParaMembroUnico } from '@delfrance/schemas';
+import {
+  derivarFilhoUnico,
+  montarMembroUnico,
+  type ParentParaMembroUnico,
+} from '@delfrance/schemas';
 
 import type { LinhaDeposito, ResumoEstoque } from './predicate';
 
@@ -186,6 +190,77 @@ export function movimentosDeEstoque(
  */
 export function unidadesPresasSemDeposito(linhas: readonly LinhaDeposito[]): number {
   return linhas.reduce((acc, l) => (l.depositoId == null ? acc + l.moveria : acc), 0);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                  The pointer, for a family that ALREADY exists              */
+/* -------------------------------------------------------------------------- */
+
+/** Why a family that already exists gains no pointer. Every one is reported. */
+export type MotivoSemPonteiro =
+  /** The fresh re-check found no child after all — pass 1's snapshot was stale. */
+  | 'sem-filhos'
+  /** More than one child: there is no single sellable unit to point at. */
+  | 'muitos-filhos'
+  /** ⛔ A produto whose only child is ITSELF. Corrupt, and reported. */
+  | 'filho-e-o-proprio-pai'
+  /** Already correct — the common case on a re-run. */
+  | 'ja-correto';
+
+export type PlanoDePonteiro =
+  | { tipo: 'nada'; motivo: MotivoSemPonteiro }
+  | {
+      tipo: 'estampar';
+      filhoUnicoId: string;
+      /** The value being replaced, when there was a (wrong) one. Reported as DRIFT. */
+      substituiu: string | null;
+    };
+
+/**
+ * Stamp `filhoUnicoId` on a family of one that already exists.
+ *
+ * ## ⚠️ Why this is the migration's job at all
+ *
+ * Nothing backfills the pointer. Its four writers — ML publish, the ML importer,
+ * `VariationManager` and produto creation — all fire on a WRITE, and
+ * `apps/functions` only ever reads it. So a family publish created before #1398
+ * keeps a null pointer for ever: `unidadeVendavel` resolves it to the PARENT,
+ * whose available stock publish already moved to the child, and every kit naming
+ * it reads 0. That is #1398's opening symptom, and without this arm it survives
+ * its own migration untouched.
+ *
+ * ## ⚠️ It moves NO stock, deliberately
+ *
+ * Units already sitting on such a parent stay there. Relocating them is a
+ * different operation with different arithmetic (the census sizes it as
+ * `--target residuais`), and folding it in here would make one pass responsible
+ * for two invariants. What keeps those units visible meanwhile is the reader's
+ * family fallback, not this function.
+ *
+ * @param filhos the LIVE child set, re-read rather than taken from pass 1's
+ *   snapshot. Pass 1 runs minutes before this and a variation created in the
+ *   window would make it say "one child" for a family of two — stamping a pointer
+ *   at one arbitrary variation, which is the exact drift `filhoUnicoId` exists to
+ *   avoid. Two entries are enough: the answer is only ever "exactly one or not".
+ */
+export function planejarPonteiro(args: {
+  produtoId: string;
+  filhoUnicoIdArmazenado: string | null | undefined;
+  filhos: readonly { id: string }[];
+}): PlanoDePonteiro {
+  if (args.filhos.length === 0) return { tipo: 'nada', motivo: 'sem-filhos' };
+  const derivado = derivarFilhoUnico(args.filhos);
+  if (derivado === null) return { tipo: 'nada', motivo: 'muitos-filhos' };
+  // ⛔ A produto whose `paiId` names itself. `derivarFilhoUnico` does not check
+  // this — it takes a child SET and has no parent to compare against — and a
+  // pointer to self would make every stock read resolve in a circle.
+  if (derivado === args.produtoId) return { tipo: 'nada', motivo: 'filho-e-o-proprio-pai' };
+
+  const armazenado = args.filhoUnicoIdArmazenado ?? null;
+  if (armazenado === derivado) return { tipo: 'nada', motivo: 'ja-correto' };
+  // A stored pointer that disagrees with the live child set is DRIFT, and the
+  // live set wins: `derivarFilhoUnico` is the only producer of this value.
+  return { tipo: 'estampar', filhoUnicoId: derivado, substituiu: armazenado };
 }
 
 /**

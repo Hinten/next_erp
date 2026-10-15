@@ -81,9 +81,6 @@ export const CAMPOS_VOLATEIS: ReadonlySet<string> = new Set([
   'grupoDeVariacoesUid',
   'componentesKitKeys',
   'integracoesComProduto',
-  'marketplace',
-  'marketplaceIds',
-  'statusProdutosMarketplace',
   'contaOuterRef',
   'produtoMercadoLivreOuterRef',
 ]);

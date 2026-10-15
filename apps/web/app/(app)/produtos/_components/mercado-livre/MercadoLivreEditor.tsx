@@ -33,9 +33,15 @@ import {
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
-import { createListingDraft, removeListingDraft } from '@/lib/mercado-livre/listingDraft';
+import {
+  createListingDraft,
+  descartarAnuncioRemovido,
+  removeListing,
+} from '@/lib/mercado-livre/listingDraft';
 import { DEFAULT_LISTING_TYPE } from '@/lib/mercado-livre/listingFields';
 import {
+  anuncioRemovidoPorModeracao,
+  dadosFiscaisSummary,
   estadoLabel,
   publishSummary,
   refMatchesIntegracao,
@@ -129,7 +135,9 @@ export function MercadoLivreEditor({
     [db],
   );
   const contasSnap = useSnapshot(contasQuery);
-  const contas = contasSnap.data ?? [];
+  // Memoised so `contasOrdenadas` below re-sorts only when the snapshot does;
+  // a bare `?? []` is a new array on every render.
+  const contas = useMemo(() => contasSnap.data ?? [], [contasSnap.data]);
 
   const linksQuery = useMemo(
     () => buildQuery(produtoMercadoLivreLinkCollection.ref(db, { produtoId }), [limit(MAX_LINKS)]),
@@ -273,10 +281,16 @@ export function MercadoLivreEditor({
   const [excluirAlvo, setExcluirAlvo] = useState<string | null>(null);
   /** The link doc whose delete is in flight, if any. */
   const [excluindo, setExcluindo] = useState<string | null>(null);
+  /** The link doc the operator is being asked to confirm discarding (#1226). */
+  const [descartarAlvo, setDescartarAlvo] = useState<string | null>(null);
+  /** The link doc whose descarte is in flight, if any. */
+  const [descartando, setDescartando] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
   /** The link doc whose status change is in flight, if any — single-flight. */
   const [alterandoStatus, setAlterandoStatus] = useState<string | null>(null);
+  /** The link doc whose fiscal-data send is in flight, if any (#745). */
+  const [enviandoDadosFiscais, setEnviandoDadosFiscais] = useState<string | null>(null);
   /**
    * The pause the operator is being asked to confirm, if any.
    *
@@ -537,7 +551,7 @@ export function MercadoLivreEditor({
   async function handleExcluirAnuncio(linkDocId: string) {
     setExcluindo(linkDocId);
     try {
-      const outcome = await removeListingDraft(db, produtoId, linkDocId);
+      const outcome = await removeListing(db, produtoId, linkDocId);
       setExcluirAlvo(null);
       // ⚠️ Drop the listing's 422 issues with the listing itself. `blockedIssues`
       // is keyed by link doc id and otherwise only cleared at the START of a
@@ -574,6 +588,57 @@ export function MercadoLivreEditor({
       throw err;
     } finally {
       setExcluindo(null);
+    }
+  }
+
+  /**
+   * Drop the dead Mercado Livre identity of a listing ML removed, keeping the
+   * draft (#1226).
+   *
+   * The guard lives in the transaction for the same reason the delete's does: a
+   * publish or an `items` webhook landing between the confirm opening and this
+   * call can move the listing off the removed state, and discarding then would
+   * abandon a LIVE anúncio. `'nao-removido'` is that race, caught — reported,
+   * never retried.
+   */
+  async function handleDescartarAnuncio(linkDocId: string) {
+    setDescartando(linkDocId);
+    try {
+      const outcome = await descartarAnuncioRemovido(db, produtoId, linkDocId);
+      setDescartarAlvo(null);
+      // Same reasoning as the delete's clear: the listing keeps its doc id, so a
+      // stale "Publicação bloqueada" from the refused republish would otherwise
+      // greet the operator on the draft they are about to publish — with its
+      // form fields painted red for a publish that is now a different anúncio.
+      if (outcome === 'descartado') {
+        setBlockedIssues((prev) => {
+          if (!(linkDocId in prev)) return prev;
+          const { [linkDocId]: _descartado, ...resto } = prev;
+          return resto;
+        });
+      }
+      if (outcome === 'nao-removido') {
+        notifications.show({
+          color: 'yellow',
+          message: 'O anúncio mudou de estado enquanto você confirmava — nada foi descartado.',
+        });
+        return;
+      }
+      notifications.show({
+        color: outcome === 'descartado' ? 'green' : 'yellow',
+        message:
+          outcome === 'descartado'
+            ? 'Anúncio descartado. Ajuste o que o Mercado Livre apontou e publique de novo.'
+            : 'Este anúncio já não existe.',
+      });
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        notifications.show({ color: 'red', message: err.message });
+        return;
+      }
+      throw err;
+    } finally {
+      setDescartando(null);
     }
   }
 
@@ -702,6 +767,47 @@ export function MercadoLivreEditor({
       throw err;
     } finally {
       setRechecking(null);
+    }
+  }
+
+  /**
+   * (Re-)send ONE listing's per-SKU fiscal data to ML's Faturador (#745).
+   *
+   * Every publish already does this; the button exists for the change ML never
+   * hears about otherwise — an imposto edit. A SKU ML refuses or that we skip
+   * is DATA in the answer, not an HTTP error, so the toast is yellow rather
+   * than red: the listing itself is fine, and the line names what to fix.
+   */
+  async function handleEnviarDadosFiscais(integracaoId: string, linkDocId: string) {
+    if (!client) return;
+    setEnviandoDadosFiscais(linkDocId);
+    try {
+      const { dadosFiscais } = await client.enviarDadosFiscais({
+        integracaoId,
+        produtoId,
+        linkDocId,
+      });
+      const limpo = dadosFiscais.omitidos.length === 0 && dadosFiscais.erros.length === 0;
+      notifications.show({
+        color: limpo ? 'green' : 'yellow',
+        title: 'Dados fiscais enviados ao Mercado Livre',
+        message: dadosFiscaisSummary(dadosFiscais),
+      });
+    } catch (err) {
+      if (err instanceof MercadoLivreClientHttpError) {
+        notifications.show({ color: 'red', message: err.message });
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({
+          color: 'red',
+          message: 'Não foi possível contatar o serviço do Mercado Livre.',
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setEnviandoDadosFiscais(null);
     }
   }
 
@@ -937,6 +1043,22 @@ export function MercadoLivreEditor({
   );
 
   /**
+   * Is the listing the delete modal is confirming one ML REMOVED? (#1226)
+   *
+   * The modal serves two states now and its copy differs sharply between them,
+   * so the answer comes from the live `links` snapshot rather than from what the
+   * button knew when it opened it. A listing that moves out of the removed state
+   * mid-confirm therefore reads as the ordinary draft case — and the delete's
+   * own transaction refuses it anyway.
+   */
+  const excluirAlvoRemovido = useMemo(
+    () =>
+      excluirAlvo != null &&
+      anuncioRemovidoPorModeracao(links.find((l) => l.id === excluirAlvo)?.data ?? {}),
+    [excluirAlvo, links],
+  );
+
+  /**
    * Which account opens first: the first one that already has an anúncio on this
    * produto, else the first account. Opening the tab onto a live listing beats
    * opening it onto whichever account happens to sort first and has nothing.
@@ -1042,6 +1164,8 @@ export function MercadoLivreEditor({
                   onNovoAnuncio={setNovoAnuncioConta}
                   onExcluirAnuncio={canDelete ? setExcluirAlvo : undefined}
                   excluindo={excluindo}
+                  onDescartarAnuncio={canDelete ? setDescartarAlvo : undefined}
+                  descartando={descartando}
                   onSalvarAnuncios={(cId, linkIds) => void handleSalvarAnuncios(cId, linkIds)}
                   onEnviarEstoque={(alvo, temLatch) => void handleEnviarEstoque(alvo, temLatch)}
                   onReverificar={handleReverificar}
@@ -1056,6 +1180,13 @@ export function MercadoLivreEditor({
                       : undefined
                   }
                   alterandoStatus={alterandoStatus}
+                  // Same bit the backend route enforces (#745).
+                  onEnviarDadosFiscais={
+                    client && canPublish
+                      ? (contaId, linkId) => void handleEnviarDadosFiscais(contaId, linkId)
+                      : undefined
+                  }
+                  enviandoDadosFiscais={enviandoDadosFiscais}
                   onAbrirAnuncio={(integracaoId, linkDocId) =>
                     void handleAbrirAnuncio(integracaoId, linkDocId)
                   }
@@ -1131,6 +1262,11 @@ export function MercadoLivreEditor({
               </Group>
             </Stack>
           </Modal>
+          {/* #1226: the delete now serves TWO states, so its copy can no longer
+              assert one of them. "Este anúncio nunca foi publicado" was false —
+              and reassuring — on a listing ML had removed, which is precisely
+              the case where the operator is deleting something that once
+              existed and carries member links with it. */}
           <Modal
             opened={excluirAlvo != null}
             onClose={() => setExcluirAlvo(null)}
@@ -1138,10 +1274,23 @@ export function MercadoLivreEditor({
             centered
           >
             <Stack gap="md">
-              <Text size="sm">
-                Este anúncio nunca foi publicado no Mercado Livre. Excluí-lo remove apenas o
-                rascunho deste produto.
-              </Text>
+              {excluirAlvoRemovido ? (
+                <>
+                  <Text size="sm">
+                    O Mercado Livre removeu este anúncio, então não há nada publicado para encerrar.
+                    Excluí-lo apaga o anúncio e os vínculos das suas variações neste produto.
+                  </Text>
+                  <Text size="sm" c="dimmed">
+                    Você perde o título, a categoria, os atributos e a descrição deste anúncio. Para
+                    manter tudo isso e publicar um novo, use “Descartar anúncio removido”.
+                  </Text>
+                </>
+              ) : (
+                <Text size="sm">
+                  Este anúncio nunca foi publicado no Mercado Livre. Excluí-lo remove apenas o
+                  rascunho deste produto.
+                </Text>
+              )}
               <Group justify="flex-end" gap="sm">
                 <Button
                   type="button"
@@ -1158,6 +1307,45 @@ export function MercadoLivreEditor({
                   loading={excluindo != null}
                 >
                   Excluir
+                </Button>
+              </Group>
+            </Stack>
+          </Modal>
+          {/* Confirmed like the pause and the delete, and for the same reason:
+              it is not undoable. Immediate on confirm, never staged behind
+              "Salvar alterações" — this tab writes its own documents directly. */}
+          <Modal
+            opened={descartarAlvo != null}
+            onClose={() => setDescartarAlvo(null)}
+            title="Descartar anúncio removido"
+            centered
+          >
+            <Stack gap="md">
+              <Text size="sm">
+                O anúncio volta a ser um rascunho: o vínculo com o anúncio que o Mercado Livre
+                removeu é apagado, e o título, a categoria, os atributos e a descrição continuam
+                aqui.
+              </Text>
+              <Text size="sm" c="dimmed">
+                Corrija o que o Mercado Livre apontou — normalmente a categoria — e publique de
+                novo. A publicação cria um anúncio novo, com um novo código.
+              </Text>
+              <Group justify="flex-end" gap="sm">
+                <Button
+                  type="button"
+                  variant="default"
+                  onClick={() => setDescartarAlvo(null)}
+                  disabled={descartando != null}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  color="orange"
+                  onClick={() => descartarAlvo && void handleDescartarAnuncio(descartarAlvo)}
+                  loading={descartando != null}
+                >
+                  Descartar
                 </Button>
               </Group>
             </Stack>

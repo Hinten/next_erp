@@ -1,16 +1,19 @@
 /**
  * `POST /api/marketplace/mercado-livre/size-charts/sync` — send one
- * integração's edited size charts to ML and persist the resulting ids on the
- * tabMedi doc. Body `{ integracaoId, tabMediId, tabelas: [...] }` (the
- * DESIRED chart list; the stored doc is the diff baseline). Response 200
- * `{ tabelas, validationErrors, updated }` — ML chart-validation problems are
- * DATA (partial success is normal, legacy parity), not an HTTP error; only
- * infrastructure failures map to error statuses. Requires
+ * saved chart to ML and checkpoint its confirmed IDs. Body includes account,
+ * tabela, operationId, chartIndex and the committed chart snapshot. Remote GET
+ * supplies the baseline. Validation failures are 200 data; conflict/busy/unknown
+ * outcomes are distinct 409 codes. Requires
  * `PERM.integracao.write`.
  */
 import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
-import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import { mlSizeChartSyncRequestSchema } from '@delfrance/schemas';
+import {
+  currentOperation,
+  SizeChartOperationError,
+} from '@/lib/marketplace/size-charts/sizeChartOperation';
+import { createChartApi } from '@/lib/marketplace/size-charts/sizeChartApi';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -41,37 +44,70 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
   }
-  const body = parsed as { integracaoId?: string; tabMediId?: string; tabelas?: unknown };
-  if (!body.integracaoId || !body.tabMediId || !Array.isArray(body.tabelas)) {
+  const body = parsed as { integracaoId?: string; tabMediId?: string };
+  if (
+    typeof body.integracaoId !== 'string' ||
+    !body.integracaoId ||
+    typeof body.tabMediId !== 'string' ||
+    !body.tabMediId
+  ) {
     return NextResponse.json(
-      { error: 'integracaoId, tabMediId e tabelas são obrigatórios.' },
+      { error: 'integracaoId e tabMediId são obrigatórios.' },
       { status: 400 },
     );
   }
 
   const db = getAdminFirestore();
   try {
+    const request = mlSizeChartSyncRequestSchema.parse(parsed);
     const ctx = await loadMercadoLivreContext(db, body.integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
-
+    const api = createChartApi(channelCtx.accessToken);
     const result = await syncSizeCharts(
       { db, api, integracaoId: body.integracaoId },
       body.tabMediId,
-      body.tabelas,
+      request,
     );
     return NextResponse.json(result);
   } catch (err) {
-    if (err instanceof ZodError) {
+    if (err instanceof SizeChartOperationError)
+      return NextResponse.json({ error: err.message, code: err.code }, { status: 409 });
+    if (err instanceof ZodError)
       return NextResponse.json(
-        { error: 'Formato inválido de tabelas.', issues: err.issues },
+        { error: 'Formato inválido de guia.', issues: err.issues },
         { status: 400 },
       );
-    }
-    if (err instanceof TabelaDeMedidasNotFoundError) {
+    if (err instanceof TabelaDeMedidasNotFoundError)
       return NextResponse.json({ error: err.message }, { status: 404 });
-    }
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);
     throw err;
   }
+}
+
+/** Recovery discovery is permission-gated; operational receipts remain Admin-only. */
+export async function GET(req: Request): Promise<NextResponse> {
+  const auth = await verifyCaller(req, PERM.integracao.write);
+  if ('error' in auth) return auth.error;
+  const url = new URL(req.url);
+  const tabMediId = url.searchParams.get('tabMediId');
+  const integracaoId = url.searchParams.get('integracaoId');
+  if (!tabMediId || !integracaoId)
+    return NextResponse.json(
+      { error: 'tabMediId e integracaoId são obrigatórios.' },
+      { status: 400 },
+    );
+  const op = await currentOperation(getAdminFirestore(), tabMediId, integracaoId);
+  return NextResponse.json({
+    operation:
+      op != null && op.status !== 'abandoned'
+        ? {
+            operationId: op.id,
+            chartIndex: op.chartIndex,
+            chart: op.desired,
+            projected: op.projected,
+            status: op.status,
+            kind: op.kind,
+          }
+        : null,
+  });
 }

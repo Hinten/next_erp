@@ -13,18 +13,19 @@ import {
   offsetForUF,
   UF_UTC_OFFSET_MINUTES,
 } from '../../src/generator/tz';
+import { UF_SIGLA } from '@delfrance/schemas';
 
 const SP = -180;
 
 describe('offsetForUF / UF_UTC_OFFSET_MINUTES', () => {
   it('SP/DF/RJ are -03:00, Amazonas group -04:00, Acre -05:00', () => {
-    expect(offsetForUF('SP')).toBe(-180);
-    expect(offsetForUF('DF')).toBe(-180);
-    expect(offsetForUF('RJ')).toBe(-180);
+    expect(offsetForUF(UF_SIGLA.SP)).toBe(-180);
+    expect(offsetForUF(UF_SIGLA.DF)).toBe(-180);
+    expect(offsetForUF(UF_SIGLA.RJ)).toBe(-180);
     for (const uf of ['AM', 'MT', 'MS', 'RO', 'RR'] as const) {
       expect(offsetForUF(uf)).toBe(-240);
     }
-    expect(offsetForUF('AC')).toBe(-300);
+    expect(offsetForUF(UF_SIGLA.AC)).toBe(-300);
   });
 
   it('covers every UF in the map (no undefined offsets)', () => {

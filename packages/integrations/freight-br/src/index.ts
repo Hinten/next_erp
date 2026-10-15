@@ -3,10 +3,10 @@
  *
  * The root entry is the **server-facing** Melhor Envio core (OAuth,
  * token lifecycle, API client). It's fetch-based and platform-neutral
- * but is meant to run in `apps/integrations`, which holds the OAuth
+ * but is meant to run in `apps/melhor-envio`, which holds the OAuth
  * `client_secret` and persists tokens via an injected `TokenStore`.
  *
- * The browser-safe typed client for the `apps/integrations` freight
+ * The browser-safe typed client for the `apps/melhor-envio` freight
  * routes lives at the `./http-client` subpath (imported by `apps/web`),
  * mirroring the nfe package's `./http-provider` split.
  *

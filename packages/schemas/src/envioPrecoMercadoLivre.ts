@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
+import { ttlExpiry } from './shared/ttl';
 
 /**
  * `enviosPrecoMercadoLivre` (TOP-LEVEL) — the checkpoint/progress doc for the
@@ -21,7 +22,7 @@ import { millisSinceEpoch } from './shared/datetime';
  *  - job identity/state: `integracaoId`, `status`, `baixarPreco` (the request
  *    toggle the route sanitizes from the body), `startedBy`;
  *  - the resumable cursors: `afterAnchorId` over anchor produtos and
- *    `afterLinkPath` over the conta's links (each with its own
+ *    `reconciliacaoForma` + `afterLinkPath` over the conta's links (each with its own
  *    `*Concluido` flag for the null disambiguation), plus `fila` (the drafts
  *    still to send, at most one plan page's worth, persisted after EVERY item
  *    so a retry resumes exactly where it left off);
@@ -36,8 +37,38 @@ import { millisSinceEpoch } from './shared/datetime';
  * client access and the rules generator emits no match block for it).
  */
 
-/** One price-sync job's lifecycle: `running` → `completed` | `failed`. */
-export const envioPrecoMercadoLivreStatusSchema = z.enum(['running', 'completed', 'failed']);
+/**
+ * One price-sync job's lifecycle: `running` → `completed` | `failed` |
+ * `cancelled`.
+ *
+ * `cancelled` is operator-initiated (the "Cancelar envio" action behind the job
+ * card's close button) and is written by the `atualizar-precos/cancelar` route,
+ * NOT by the task handler. `processPriceSyncJob` re-reads the job at the top of
+ * every dispatch and returns `noop` the moment the status is not `running`, so
+ * the loop stops at the next dispatch boundary and schedules nothing further.
+ *
+ * ⚠️ What it buys is DIFFERENT from the mass import's `cancelled`, and the
+ * difference is worth knowing before copying reasoning across. `startMassImportJob`
+ * blocks on a `running` job with no staleness bound, so there the cancel is the
+ * only way to unbrick the button. `startPriceSyncJob` already has one
+ * (`PRICE_SYNC_STALE_RUNNING_MS`, 6h), so here the cancel is about STOPPING work
+ * now and not making the operator wait out that bound — not about a job that
+ * would otherwise block forever.
+ *
+ * ⚠️ The route and the dispatch loop are therefore two writers of one field —
+ * five before this one, counting the stale-orphan reclaim, `failJob`, the
+ * `completed` flip, the final-attempt stamp and the start route's enqueue-failure
+ * fallback. Every terminal stamp goes through `finalizePriceSyncJob`, which
+ * re-derives "still running" from the `tx.get` snapshot; a plain `merge()` would
+ * let a dispatch finishing right after a cancel overwrite it with
+ * `completed`/`failed` (root `CLAUDE.md` rule 7).
+ */
+export const envioPrecoMercadoLivreStatusSchema = z.enum([
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+]);
 export type EnvioPrecoMercadoLivreStatus = z.infer<typeof envioPrecoMercadoLivreStatusSchema>;
 
 /** Named members of {@link envioPrecoMercadoLivreStatusSchema}. */
@@ -45,6 +76,7 @@ export const ENVIO_PRECO_MERCADO_LIVRE_STATUS = {
   running: 'running',
   completed: 'completed',
   failed: 'failed',
+  cancelled: 'cancelled',
 } as const satisfies Record<string, EnvioPrecoMercadoLivreStatus>;
 
 /**
@@ -125,7 +157,8 @@ export const envioPrecoMercadoLivreSchema = z.object({
   planejamentoConcluido: z.boolean().default(false),
   /**
    * The RECONCILIATION phase's keyset cursor (#1072) — the FULL document path
-   * of the last link read, `null` before its first page.
+   * of the last link read in the form `reconciliacaoForma` names, `null` before
+   * that form's first page.
    *
    * ⚠️ A path, not a doc id, and that is not a style choice: the phase pages a
    * COLLECTION GROUP, where `__name__` is the full path, so `startAfter` needs
@@ -133,6 +166,23 @@ export const envioPrecoMercadoLivreSchema = z.object({
    * `afterAnchorId` uses is a root-collection affordance and does not transfer.
    */
   afterLinkPath: z.string().nullable().default(null),
+  /**
+   * Which stored `contaOuterRef` form the reconciliation is walking — an index
+   * into `contaRefForms` (#1862). `afterLinkPath` is a cursor INSIDE this form:
+   * the phase reads one form at a time with `==`, because an `in` over both
+   * sorted the conta's whole remainder on every page.
+   *
+   * ⚠️ It must stay in this schema AND in the job's checkpoint patch: the schema
+   * is a bare `z.object`, so a key it does not declare is stripped on every
+   * parse, the index reads back as 0 after every handover, and the phase
+   * re-walks form 0 until `PRECO_RECON_MAX_PAGES` cuts it — form 1 never read.
+   *
+   * A job checkpointed by the old `in` walk carries no index and resumes form 0
+   * after that walk's merged cursor: every form-0 link up to that path was
+   * already read, and form 1 restarts from its beginning — so the worst case is
+   * a re-reported row, never a missed one.
+   */
+  reconciliacaoForma: z.number().int().nonnegative().default(0),
   /**
    * The reconciliation twin of `planejamentoConcluido` — its own flag rather
    * than a widened meaning for that one, so each stays single-purpose and an
@@ -213,9 +263,13 @@ export const envioPrecoMercadoLivreSchema = z.object({
    */
   relatorioCompleto: z.boolean().default(false),
   /**
-   * Drafts still queued when the job died. Written by the terminal failure stamp
+   * Drafts still queued when the job stopped short. Written by every terminal
+   * stamp that abandons a queue — the failure stamps and the operator's cancel —
    * so the CSV can say how much was never attempted, without flushing up to
-   * `PLAN_PAGE_DRAFTS_CAP` `nao-tentado` rows to say it.
+   * `PLAN_PAGE_DRAFTS_CAP` `nao-tentado` rows to say it. It rides with exactly
+   * one synthetic report row naming the cause (`JOB_INTERROMPIDO` /
+   * `JOB_CANCELADO`): the count without the row reads as an unexplained
+   * shortfall, and the row without the count cannot say how big it was.
    */
   filaRestante: z.number().int().default(0),
   /** The authed uid that clicked "Atualizar preços" (`null` when unknown). */
@@ -231,5 +285,13 @@ export const envioPrecoMercadoLivreSchema = z.object({
   finishedAt: millisSinceEpoch().nullable().default(null),
   /** Set only on `status: 'failed'` — the error that exhausted the retries. */
   erro: z.string().nullable().default(null),
+  /**
+   * TTL expiry (`./shared/ttl`): stamped once, at creation, 180 days after the
+   * run starts; its report shards a week later. The TTL deletes the two in no
+   * guaranteed order, so it is the history route — hiding a run once this has
+   * passed — that keeps a truncated CSV off the list, not the margin. Absent on
+   * runs created before the policy: those are kept.
+   */
+  expiraEm: ttlExpiry().nullable().optional(),
 });
 export type EnvioPrecoMercadoLivre = z.infer<typeof envioPrecoMercadoLivreSchema>;

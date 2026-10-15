@@ -8,6 +8,9 @@ describe('motivoIncidenteSchema', () => {
       nome: 'Atraso na entrega',
       ativo: true,
       timestamp: null,
+      // Materializes now — the update-monitor's classic `orderBy` would exclude
+      // a document missing this key.
+      ultimaModificacao: null,
     });
   });
 

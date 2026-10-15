@@ -67,6 +67,7 @@ function conversa(partial: Partial<Conversa> = {}): Conversa {
     origem: ORIGEM_CONVERSA.whatsapp,
     usarioOuterRef: null,
     clienteOuterRef: null,
+    whatsappDestino: null,
     respostaBloqueada: null,
     integracaoOuterRef: null,
     pedidoOuterRef: null,
@@ -126,6 +127,7 @@ describe('ConversaTile', () => {
     );
     const link = screen.getByRole('link');
     expect(link.getAttribute('style')).toContain('244, 67, 54');
+    expect(link.style.color).toBe('light-dark(rgb(0, 0, 0), rgb(255, 255, 255))');
   });
 
   it('shows the draft indicator when a saved draft exists', () => {

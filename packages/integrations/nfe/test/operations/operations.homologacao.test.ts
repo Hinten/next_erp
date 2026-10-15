@@ -13,7 +13,8 @@
  *   consultarStatusServico(call, { cUF: '35' })
  *     → serialize('consStatServ', {...})    (Zod once Step 2 lands)
  *     → nfeStatusServico(call, xml)
- *       → assertSafeTpAmb('2')              (safety guard)
+ *       → assertSafeTpAmbForTransport('2')  (label guard, no NODE_ENV passthrough)
+ *       → assertSafeEndpointForTransport()  (destination guard)
  *       → validateXsd('consStatServ', xml)   (XSD pre-send gate)
  *       → mTLS POST → SEFAZ-SP
  *       → validateXsd('retConsStatServ', x)  (XSD inbound gate)
@@ -35,6 +36,7 @@ import {
   warnIfCertNearExpiry,
   type NFeCertificate,
 } from '../../src/cert';
+import { logSefaz } from '../helpers/sefaz-log';
 import { getEndpoints } from '../../src/endpoints';
 import { createSefazAgent, type SefazCall } from '../../src/soap';
 import { consultarStatusServico } from '../../src/operations/index';
@@ -99,7 +101,6 @@ describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
     expect(['107', '108', '109']).toContain(result.cStat);
     expect(result.xMotivo).toBeTruthy();
     expect(result.cUF).toBe('35');
-    // eslint-disable-next-line no-console
-    console.log(`[SEFAZ-SP homologação] cStat=${result.cStat} xMotivo="${result.xMotivo}"`);
+    logSefaz('SEFAZ-SP homologação', result);
   }, 45_000);
 });

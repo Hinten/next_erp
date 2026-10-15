@@ -38,9 +38,20 @@
  *                 (`live_mode === false`) event, a non-payment topic
  *                 (`merchant_order`), or a malformed task payload (a coding/enqueue
  *                 bug — logged, no persist, no retry).
+ *
+ * Payment links (#367): after the reconcile, a payment that came in through one of
+ * our links (`pagamento.linkPagamentoId`) may have used up its quota, in which case
+ * the link is CLOSED — its Mercado Pago preference is expired so nobody can pay it
+ * again. Mercado Pago has no native "max uses", so the close is ours. It runs here
+ * (not inside the reconcile) because it calls the Mercado Pago API; the reconcile
+ * hands back the count it derived from its own reads. A transient failure of the
+ * close THROWS like any other transient failure: the queue retries, the reconcile
+ * stale-skips the redelivery but still returns the count, and the close is
+ * re-attempted — so a close that crashed is finished by the redelivery.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
+import { nowMillis } from '@delfrance/core/datetime';
 import { TIPO_INTEGRACAO_PGTO, nowMicros, type EstadoPedido } from '@delfrance/schemas';
 import {
   metodoPagamentoCollection,
@@ -65,6 +76,7 @@ import {
   type MpPayment,
 } from '@delfrance/integrations-mercado-pago';
 
+import { encerrarLinkSeCompleto } from './links/encerrarLink';
 import { loadMercadoPagoContext } from './mercadoPago';
 import { type MetodoResolution, readMetodoByCollector } from './metodoCache';
 
@@ -300,9 +312,22 @@ export type PaymentFetcher = (
 /** Reconcile seam — the transactional pedido-estado writer (injectable for tests). */
 export type PedidoReconciler = typeof reconcilePedidoFromPagamento;
 
+/**
+ * Payment-link auto-close seam (#367): expires the link's preference and marks it
+ * `concluido` once its quota of approved payments is reached. Injectable so the
+ * unit tests pass a fake; the real one is {@link encerrarLinkSeCompleto}.
+ */
+export type LinkCloser = typeof encerrarLinkSeCompleto;
+
 export interface ProcessDeps {
   fetchPayment: PaymentFetcher;
   reconcile: PedidoReconciler;
+  /**
+   * Optional: absent means the real {@link encerrarLinkSeCompleto}, so a caller
+   * that predates payment links (and every existing fake) keeps compiling. Tests
+   * that must observe or fail the close pass their own.
+   */
+  encerrarLink?: LinkCloser;
 }
 
 /**
@@ -320,7 +345,51 @@ export const fetchPaymentViaContext: PaymentFetcher = async (db, metodoId, payme
 export const defaultProcessDeps: ProcessDeps = {
   fetchPayment: fetchPaymentViaContext,
   reconcile: reconcilePedidoFromPagamento,
+  encerrarLink: encerrarLinkSeCompleto,
 };
+
+/**
+ * What the pedido reconcile ACTUALLY did — the log-facing answer to "did work
+ * happen", collapsed from `reconcilePedidoFromPagamento`'s
+ * `{ transition, skippedStale }`.
+ *
+ * The collapse is lossless: `pedidoReconcile.ts` returns
+ * `{ transition: null, skippedStale: true }` WITHOUT writing on the
+ * update-if-newer guard, and `{ transition, skippedStale: false }` otherwise —
+ * so `skippedStale` implies `transition === null` and the three cases never
+ * overlap.
+ *
+ * ⚠️ Typed as the narrow union, not `string`, ON PURPOSE — `TaskResult.detail`
+ * widens it for the log and that is the right shape there, but the widening also
+ * means renaming or dropping a member would compile everywhere in silence.
+ * Narrowing the PRODUCER makes the next such change a typecheck error here.
+ * Mirrors `HandlerOutcome` in the Mercado Livre channel.
+ *
+ * (The reconcile's third field, `aprovadosDoLink`, is NOT part of this collapse:
+ * it is an input to the payment-link close below, not something the log reports.)
+ */
+export type ReconcileOutcome = EstadoPedido | 'stale-ignorado' | 'sem-transicao';
+
+/**
+ * What the payment-link close did, for the log (#367): `encerrado` (quota reached,
+ * preference expired), `aberto` (quota not reached yet), `ja-terminal` (already
+ * closed / cancelled / a legacy link), `inexistente` (the link doc is gone) or
+ * `erro-mp` (Mercado Pago refused the expiry — the link was still marked). Derived
+ * from the closer's own return type so a new member cannot go unlogged.
+ */
+export type LinkEncerramento = Awaited<ReturnType<LinkCloser>>;
+
+/**
+ * Why a delivery was acked without processing. Low-cardinality on purpose — a
+ * `drop` persists NOTHING in either phase, so this log line is the only record
+ * the delivery ever arrived, and the free-text `reason` beside it is not
+ * filterable.
+ *
+ * `sandbox-refetch` is kept apart from `sandbox` deliberately: it means the
+ * webhook body claimed live and only the authoritative refetch disagreed, so an
+ * MP API call was already spent.
+ */
+export type DropOutcome = 'sandbox' | 'sandbox-refetch' | 'topico-nao-suportado';
 
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
@@ -328,11 +397,38 @@ export type ProcessOutcome =
       kind: 'reconciled';
       metodoId: string;
       pedidoId: string;
-      transition: EstadoPedido | null;
-      skippedStale: boolean;
+      /**
+       * ⚠️ `reconciled` is a DISPOSITION, not an assertion that work happened: a
+       * stale redelivery that wrote nothing and a payment that moved the pedido
+       * to `pago` both resolve to it. Without this field they are
+       * indistinguishable in the logs, which is exactly how a Mercado Livre
+       * listing status silently failed to update for a full day during the first
+       * live run (#1087).
+       *
+       * This REPLACES the `{ transition, skippedStale }` pair the reconcile
+       * returns — the collapse is lossless (see {@link ReconcileOutcome}), and
+       * carrying both would only invite the next reader to log the pair instead.
+       */
+      detail: ReconcileOutcome;
+      /**
+       * Present only when the payment came in through one of our payment links and
+       * the close ran: what it did. Absent for every other payment, so a plain
+       * card payment logs exactly as before.
+       */
+      linkEncerramento?: LinkEncerramento;
     }
-  | { kind: 'dropped'; reason: string } // ack, never persist
-  | { kind: 'failed'; reason: string }; // persist as `failed`, sweep re-drives
+  // ack, never persist. `metodoId` only on the post-refetch drop — the two
+  // pre-refetch ones fire before any account is resolved.
+  | { kind: 'dropped'; reason: string; detail: DropOutcome; metodoId?: string }
+  // `metodoId` rides along on every park that resolved an account before failing
+  // — it is the single most useful field for an operator triaging a parked
+  // notification, and it was being dropped on the floor while already in hand.
+  //
+  // ⚠️ No `detail` here, and that asymmetry is the rule rather than an omission:
+  // a `fail` WRITES a Firestore document carrying the whole `reason` as `erro`,
+  // so the record already exists. `done` and `dropped` persist nothing, which is
+  // why only those two need a filterable token in the log.
+  | { kind: 'failed'; reason: string; metodoId?: string }; // persist as `failed`, sweep re-drives
 
 /**
  * Process one notification payload — drop the noise, verify by refetch, map and
@@ -347,9 +443,15 @@ export async function processNotificationPayload(
   deps: ProcessDeps = defaultProcessDeps,
 ): Promise<ProcessOutcome> {
   // Silent drops (ack, never persist): a sandbox event or a non-payment topic.
-  if (payload.liveMode === false) return { kind: 'dropped', reason: 'live_mode=false (sandbox)' };
+  if (payload.liveMode === false) {
+    return { kind: 'dropped', reason: 'live_mode=false (sandbox)', detail: 'sandbox' };
+  }
   if (!isPaymentTopic(payload.topic)) {
-    return { kind: 'dropped', reason: `tópico não suportado: ${payload.topic}` };
+    return {
+      kind: 'dropped',
+      reason: `tópico não suportado: ${payload.topic}`,
+      detail: 'topico-nao-suportado',
+    };
   }
 
   const resolution = await resolveMetodoByCollector(db, payload.collectorUserId);
@@ -379,12 +481,14 @@ export async function processNotificationPayload(
       return {
         kind: 'failed',
         reason: `conta Mercado Pago desconectada (reautenticação necessária): ${err.message}`,
+        metodoId,
       };
     }
     if (err instanceof MercadoPagoHttpError && err.status === 404) {
       return {
         kind: 'failed',
         reason: `pagamento ${payload.paymentId} inexistente na API do Mercado Pago (404)`,
+        metodoId,
       };
     }
     throw err; // MercadoPagoNetworkError + other HTTP (5xx/429) + anything else — transient
@@ -392,7 +496,12 @@ export async function processNotificationPayload(
 
   // The refetched payment is authoritative for live_mode too.
   if (payment.live_mode === false) {
-    return { kind: 'dropped', reason: 'payment.live_mode=false (sandbox)' };
+    return {
+      kind: 'dropped',
+      reason: 'payment.live_mode=false (sandbox)',
+      detail: 'sandbox-refetch',
+      metodoId,
+    };
   }
 
   // Collector safety net: the refetched payment's `collector_id` is the TRUE
@@ -408,6 +517,7 @@ export async function processNotificationPayload(
     return {
       kind: 'failed',
       reason: `collector do pagamento (${paymentCollectorId}) difere da conta resolvida (user_id ${resolvedUserId})`,
+      metodoId,
     };
   }
 
@@ -415,7 +525,11 @@ export async function processNotificationPayload(
   if (!pedidoId) {
     // No pedido to attach to. Park (a later redelivery can't invent one), don't
     // retry-throw.
-    return { kind: 'failed', reason: `pagamento ${payload.paymentId} sem external_reference` };
+    return {
+      kind: 'failed',
+      reason: `pagamento ${payload.paymentId} sem external_reference`,
+      metodoId,
+    };
   }
 
   const { pagamentoId, pagamento } = mpPaymentToPagamento(payment, {
@@ -423,22 +537,49 @@ export async function processNotificationPayload(
     nowMicros: nowMicros(),
   });
 
+  let reconciled: Awaited<ReturnType<PedidoReconciler>>;
   try {
-    const { transition, skippedStale } = await deps.reconcile(db, {
-      pedidoId,
-      pagamentoId,
-      pagamento,
-    });
-    return { kind: 'reconciled', metodoId, pedidoId, transition, skippedStale };
+    reconciled = await deps.reconcile(db, { pedidoId, pagamentoId, pagamento });
   } catch (err) {
     // A pedido that no longer exists is deterministic — park it (a redelivery
     // after the pedido is created can settle it), never a retry-throw. Anything
     // else (transient Firestore) propagates.
     if (err instanceof PedidoReconcileNotFoundError) {
-      return { kind: 'failed', reason: err.message };
+      return { kind: 'failed', reason: err.message, metodoId };
     }
     throw err;
   }
+  const { transition, skippedStale, aprovadosDoLink } = reconciled;
+  // The reconcile's own outcome rides out on `detail`. Discarding it made a
+  // stale redelivery that wrote NOTHING and a real estado transition report
+  // the same thing, so the log could not say whether anything was written.
+  const detail: ReconcileOutcome = skippedStale
+    ? 'stale-ignorado'
+    : (transition ?? 'sem-transicao');
+
+  // Payment-link auto-close (#367). Deliberately OUTSIDE the try above: that
+  // catch is scoped to "the pedido does not exist", and a close failure must
+  // never be mistaken for it — it is either transient (THROW, so the queue
+  // retries) or already handled inside the closer.
+  //
+  // Gated on BOTH facts, and each does real work:
+  //  - `linkPagamentoId` — only a payment attributed to one of our links has
+  //    anything to close;
+  //  - `aprovadosDoLink != null` — the reconcile derives the count from its own
+  //    reads (`null` when the payment carries no link), so no query is spent here.
+  // It runs on a `stale-ignorado` delivery too, on purpose: that is how a close
+  // that crashed after the reconcile committed gets finished by the redelivery.
+  if (pagamento.linkPagamentoId && aprovadosDoLink != null) {
+    const linkEncerramento = await (deps.encerrarLink ?? encerrarLinkSeCompleto)(db, {
+      metodoId,
+      pedidoId,
+      linkId: pagamento.linkPagamentoId,
+      aprovados: aprovadosDoLink,
+      agoraMs: nowMillis(),
+    });
+    return { kind: 'reconciled', metodoId, pedidoId, detail, linkEncerramento };
+  }
+  return { kind: 'reconciled', metodoId, pedidoId, detail };
 }
 
 export interface TaskResult {
@@ -446,6 +587,24 @@ export interface TaskResult {
   metodoId?: string;
   pedidoId?: string;
   topic?: string;
+  /**
+   * The channel's own `ProcessOutcome` discriminant, so the caller can tell a
+   * `dropped` this channel decided on from the shared pipeline's schema-parse
+   * drop — which is a CODING BUG and carries no `result` at all.
+   */
+  kind?: ProcessOutcome['kind'];
+  /**
+   * The reconcile's own outcome. Widened to `string` deliberately: this is the
+   * log-facing shape, and `ReconcileOutcome` is the narrow union the PRODUCER is
+   * held to.
+   */
+  detail?: string;
+  /**
+   * What the payment-link close did ({@link LinkEncerramento}), widened to
+   * `string` for the same reason as `detail`. Present only for a payment that came
+   * in through one of our links.
+   */
+  linkEncerramento?: string;
 }
 /**
  * The shared pipeline, bound to this channel. Built per call so the injectable
@@ -525,14 +684,29 @@ export async function handleNotificationTask(
   const r = await pipelineFor(deps).handleTask(db, data, retryCount);
   // `payload` is absent only on the schema-parse drop, where there is no topic
   // to report; `result` is absent on the transient-failure path.
-  const reconciled = r.result?.kind === 'reconciled' ? r.result : null;
+  //
+  // Structural `in` checks rather than `r.result?.kind === 'reconciled'`:
+  // `metodoId` now rides on all THREE arms and `detail` on two, and an equality
+  // narrow silently stops covering an arm the moment another one gains the field
+  // — whereas the `in` check keeps compiling and keeps reporting.
+  const metodoId = r.result && 'metodoId' in r.result ? r.result.metodoId : null;
+  const pedidoId = r.result && 'pedidoId' in r.result ? r.result.pedidoId : null;
+  const detail = r.result && 'detail' in r.result ? r.result.detail : null;
+  const linkEncerramento =
+    r.result && 'linkEncerramento' in r.result ? (r.result.linkEncerramento ?? null) : null;
   return {
     // MP produces neither a `park` nor a `defer` disposition, so `parked` and
     // `deferred` are both unreachable here — mapped defensively rather than
     // widening this channel's public union with arms it cannot emit.
     outcome: r.outcome === 'parked' || r.outcome === 'deferred' ? 'failed' : r.outcome,
-    ...(reconciled ? { metodoId: reconciled.metodoId, pedidoId: reconciled.pedidoId } : {}),
+    ...(metodoId != null ? { metodoId } : {}),
+    ...(pedidoId != null ? { pedidoId } : {}),
     ...(r.payload ? { topic: r.payload.topic } : {}),
+    // `kind` needs no `in` check — every arm of a discriminated union has it, so
+    // the `r.result` presence guard is the whole condition.
+    ...(r.result ? { kind: r.result.kind } : {}),
+    ...(detail != null ? { detail } : {}),
+    ...(linkEncerramento != null ? { linkEncerramento } : {}),
   };
 }
 

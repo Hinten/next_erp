@@ -173,6 +173,16 @@ Sweep flags default **OFF**. Turn on only what a phase needs:
 ⚠️ `MERCADO_LIVRE_STOCK_SYNC_ENABLED` gates the sweeps **and** the send task. With it off,
 the live-test path for stock is the synchronous `/enviar-estoque` route.
 
+⚠️ It also runs the monthly link audit (§5.6), and that is a **precondition** on turning it
+on in any project: the COLLECTION_GROUP index on `produtoMercadoLivre` over
+`contaOuterRef ASC, __name__ ASC` must read **READY** first. The audit's walk rides it, and
+on Enterprise a missing index does not fail — it full-scans and bills the bytes
+(`functions/DEPLOY.md`, "The monthly link audit"). Check it with:
+
+```bash
+gcloud firestore indexes composite list --project <project-id> --database default
+```
+
 ### 1.3 IAM
 
 - [ ] App Hosting runtime SA has `roles/cloudtasks.enqueuer` **and**
@@ -449,6 +459,52 @@ closed: the other two classes remain, and turning the
 Run the step regardless; the answer is what decides whether the remaining exclusions
 are safe.
 
+### 5.6 — The monthly link audit heals one produto and raises one aviso (#1200)
+
+**Staging only.** The audit is Firestore-only — no ML call, so no test-user slot — but it
+needs `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` on the **functions** codebase and the index in
+§1.2 READY. ⚠️ That same flag also starts the stock sweeps against every active conta in
+the project: run this where only test-user contas are active.
+
+**Seed** (by hand, on the test conta, using the seller's real listings from §4 so that the
+sweep which follows a heal sends to something that exists):
+
+1. **One class-2 produto** — a family parent (`paiId: null`) holding a live
+   `produtoMercadoLivre` link on the conta (an item id, `estado` not `'c'`). Then remove
+   the conta's id from **the produto's** `integracoesComProduto`. ⚠️ Edit the produto, and
+   touch the link no further: a link write that changes whether it counts fires
+   `onProdutoMercadoLivreLinkChanged`, whose add would heal the produto before the audit
+   ever sees it.
+2. **One class-3 link** — on a different family, a live `produtoMercadoLivre` link on the
+   conta placed under a variation **child** (a produto whose `paiId` is the parent's id).
+
+**Force-run the Scheduler job** — in the Cloud Scheduler console, _Force run_ on the job
+firebase-tools created for `sweepMercadoLivreAnunciosNaoEnumerados` (in
+`MERCADO_LIVRE_TASKS_REGION`, us-east1 on staging), or:
+
+```bash
+gcloud scheduler jobs list --location=<tasks-region> --project <staging-project-id>
+gcloud scheduler jobs run <that job> --location=<tasks-region> --project <staging-project-id>
+```
+
+Then read the summary line (`[mercado-livre] auditoria de anúncios não enumerados`) in the
+function's log. The counts below assume the conta had no other drift before the seed;
+anything extra is a real finding, record it.
+
+| Check                                                                                                                                       | Result |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Run 1: `completas` equals `contas`, `naoAuditadas` is empty, `errorCount: 0`                                                                |        |
+| Run 1: `porSituacao` counts 1 `NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO` and 1 `NAO_ENUMERADO_LINK_EM_VARIACAO`                                  |        |
+| Run 1: `curados: 1`, and `amostraCurados` names `<conta>/<class-2 produto>`                                                                 |        |
+| Run 1: the class-2 produto's `integracoesComProduto` holds the conta again                                                                  |        |
+| Run 1: `avisos.criado: 1`, and NO aviso exists for the healed produto                                                                       |        |
+| Run 1: aviso `anuncioForaDaSincronizacao:<conta>:<child produto>`, `params.situacao: 'link-em-variacao'`, route `/produtos/<child produto>` |        |
+| Run 1: the bell shows it, with the produto route                                                                                            |        |
+| Fix the child link — delete it from the child (re-pointing the listing at the family parent is the real remedy)                             |        |
+| Run 2: `resolvidos: 1`, `curados: 0`, `avisos.criado: 0`                                                                                    |        |
+| Run 2: the aviso has `resolvidoEm` set and `resolucaoMotivo: 'nao-encontrado-na-auditoria'`                                                 |        |
+| The summary line of both runs, pasted here (it is what the #948 step attributes the audit's cost from)                                      |        |
+
 ---
 
 ## 7. Phase 6 — order lifecycle
@@ -611,6 +667,43 @@ mistakes are each other's mirror image.
 | 8.2a | Buyer messages on a **non-Full** order, then reply from `/chat` | no red banner; the reply is visible in the BUYER's ML inbox. `conversation_status.path` carries **no** `/conversations/` segment  |        |
 | 8.2b | Same on a **Full** order (the flow ML migrated first)           | same, with `path` carrying `/conversations/`. Confirms the agent half still works — the fix must not trade one flow for the other |        |
 | 8.2c | Reply again after ML has blocked the thread                     | 409 with ML's own reason, no bubble written                                                                                       |        |
+
+### 8.3 — Per-SKU fiscal data reaches ML's Faturador (#745)
+
+Every publish now registers each SKU with `items/fiscal_information` and links it
+to its item; "Enviar dados fiscais" on the produto's Mercado Livre tab re-sends it
+without republishing. The data is what OUR nota would say — the NF-e's own
+imposto cascade through the conta's `operacaoOuterRef` — so the conta under test
+**must have an operação of venda set**, or every SKU reports `omitido` and nothing
+is called.
+
+⚠️ **An ML refusal never fails a publish.** It lands on the SKU's link
+(`dadosFiscaisEstado: 'erro'` + ML's message) and in the publish toast; the
+listing itself is untouched. Read the link doc, not just the toast.
+
+| Row  | Step                                                                            | Assert                                                                                                                                                | Result |
+| ---- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 8.3a | Publish a SIMPLE item whose imposto resolves (Simples, CFOP 5101/5102, NCM set) | toast `Dados fiscais: 1 SKU enviado`; `GET /items/fiscal_information/{sku}` echoes our NCM / CEST / `origin_detail` / `csosn`; link `podeFaturar` set |        |
+| 8.3b | `GET /items/{id}/fiscal_information/detail` and `GET /can_invoice/items/{id}`   | the SKU is linked to the item; record `can_invoice.status` verbatim                                                                                   |        |
+| 8.3c | Publish a User-Products family                                                  | one SKU per MEMBER, each linked to the member's OWN item (not the family id)                                                                          |        |
+| 8.3d | Republish 8.3a unchanged                                                        | the `PUT` repeats, the link call does NOT (link doc already records the pair)                                                                         |        |
+| 8.3e | Edit the produto's imposto (e.g. CEST), press **Enviar dados fiscais**          | `GET /items/fiscal_information/{sku}` shows the new value                                                                                             |        |
+| 8.3f | A produto with no NCM anywhere                                                  | `omitido` with "sem NCM válido", and **no** fiscal call for that SKU                                                                                  |        |
+
+**Settle-live register** — each was written against the docs alone; record what
+ML actually does:
+
+1. **A `PUT` on a SKU ML has never seen** — the code treats a 404 **or** a 400
+   carrying `10086` as "unknown SKU" and falls back to the `POST`. Which one is it?
+2. **Re-linking an already-linked SKU ↔ item** — 201 again, or an error? (The
+   republish path skips the call when the link doc records the pair, so this only
+   bites when that record is missing.)
+3. **`measurement_unit`** — we send the imposto/operação `unidade` verbatim
+   (`UN`, `PC`, `KG`…). Which values does ML accept?
+4. **Can a TEST-USER conta register fiscal data at all?** The docs name no
+   prerequisite (PJ/IE/A1/opt-in gate ML's _issuing_, not the data), but a test
+   user is a PF account. A 403 short-circuits the run with one reason per SKU.
+5. **`title`** — we send the listing title; ML documents no length limit.
 
 ### 8.1 — Moderation reasons reach the link doc (#1087)
 
@@ -875,6 +968,26 @@ has no legacy `variations[]` listing at all, so the corpus cannot produce this f
 The UP family shape is covered instead, which is what this integration actually publishes.
 A blank row would read as "not attempted"; this was attempted.
 
+⚠️ **The run that produced these 30 bodies ABORTED, and the corpus records where
+(#1357).** Under the old error contract any status but 404 was fatal, so three calls
+killed the run rather than being written: `/packs/2000018144681452` and
+`/packs/2000018144679512` (both **400** — a pack MEMBER is a third outcome the fan-out
+never anticipated) and `/post-purchase/v1/claims/search` (**400** — it was sent with
+paging only, which ML documents as `invalid_query`). Their absence from `__wire__/` is
+the visible symptom, and it is also why a `verify:wire` pass reports "sem baseline" for
+the claims search.
+
+A permanent 4xx is now recorded as data, so **a re-capture completes and exits 0** and
+should newly produce:
+
+| File                                                                 | Why it is worth committing                                                                  |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `packs-2000018144681452.400.json`, `packs-2000018144679512.400.json` | ML's refusal for a pack member — the fact this issue had to discover by hand                |
+| `post-purchase-v1-claims-search.json`                                | now sent with `players.user_id` + `players.role=respondent`, so it should be a **200** page |
+
+⚠️ Nothing in CI can produce them — the capture needs the seller credential. The command
+is in `lib/marketplace/fixtures/README.md`; run it, then `promote:fixtures`.
+
 ### Cleanup
 
 - [ ] Delete both test listings
@@ -948,7 +1061,7 @@ inside this run** — the run's job is evidence.
 | 3.5   | "Reverificar anúncio" clears `errors`/`causas` on evidence that does not bear on them. The listing is healthy; our rejected edit is still unsent, and nothing says so                                               | the operator learns their edit never landed | #1339                  |
 | 3.1   | A size chart whose `domain_id` does not match the category's `catalog_domain` resolves to `null` **silently**, and ML answers `SIZE_GRID_ID is missing`. The ERP held both strings and discarded them               | a local refusal naming both domains         | #1381                  |
 | §9    | The `orderML` mirror is a curated legacy-parity projection, not a capture — it drops `mediations`, `fulfilled`, `cancel_detail`, `feedback`, `taxes`, `seller`, `context`                                           | a wire-faithful fixture                     | #1342                  |
-| §9    | `capture:fixtures` aborts on **every** run: `claims/search` always answers 400, and any non-404 status is fatal                                                                                                     | a permanent 4xx is data                     | #1357                  |
+| §9    | `capture:fixtures` aborts on **every** run: `claims/search` always answers 400, and any non-404 status is fatal                                                                                                     | a permanent 4xx is data                     | #1357 ◐                |
 | 4.2   | Re-import collapses every UP member's `nome` to the **family name** — 10 distinct became 1. ML returns the distinguishing member title; the importer discards it                                                    | member names survive                        | ⬜ accepted, not filed |
 | 4.2   | `snapshot-produto` compares children **positionally**, which cannot be right for a UP family: `produto.ordem` does not survive migration, so order is arbitrary. Produced 10 phantom findings                       | match by SKU                                | ⬜                     |
 | 5.x   | The stock sweep gates on the ERP `publicado` flag — server-side in S1, so an unpublished produto with a **live listing** is dropped with no skip row. #804/#1072 already removed this from the PRICE plan           | stock syncs while the listing is live       | ⬜ prompt running      |

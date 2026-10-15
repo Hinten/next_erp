@@ -151,11 +151,26 @@ export const MOD_BC_LABELS: Record<ModBC, string> = {
   '3': '3 - Valor da Operação',
 };
 
-/** modBCST — Modalidade de determinação da BC do ICMS ST. */
-export const modBCSTSchema = z.enum(['0', '1', '2', '3', '4', '5']);
+/**
+ * modBCST — Modalidade de determinação da BC do ICMS ST (N18).
+ *
+ * `'6'` (Valor da Operação) was added by NT 2019.001 (§1.6 "Criação de Novo
+ * Valor para o Campo N18" and §6 "Alteração de Leiaute", read at v1.70), and
+ * the vendored `leiauteNFe_v4.00.xsd` enumerates `0`..`6` at all eight
+ * `modBCST` sites (#509). Missing it was not a UI gap: a stored config holding
+ * `'6'` failed every collection schema that spreads `taxConfigFields`, so the
+ * imposto resolver dropped the whole doc and emitted the item against a LOWER
+ * tier — a wrong NF-e with no error.
+ */
+export const modBCSTSchema = z.enum(['0', '1', '2', '3', '4', '5', '6']);
 export type ModBCST = z.infer<typeof modBCSTSchema>;
 
-/** Named members of {@link modBCSTSchema}; names from {@link MOD_BCST_LABELS}. */
+/**
+ * Named members of {@link modBCSTSchema}; names from {@link MOD_BCST_LABELS}.
+ * ⚠️ `satisfies Record<string, ModBCST>` checks each VALUE, never that every
+ * member has a name — a new enum member must be added here by hand. The
+ * completeness guard in `tribute.test.ts` is what fails when one is not.
+ */
 export const MOD_BCST = {
   precoTabeladoOuMaximoSugerido: '0',
   listaNegativa: '1',
@@ -163,6 +178,7 @@ export const MOD_BCST = {
   listaNeutra: '3',
   margemValorAgregado: '4',
   pauta: '5',
+  valorOperacao: '6',
 } as const satisfies Record<string, ModBCST>;
 
 export const MOD_BCST_LABELS: Record<ModBCST, string> = {
@@ -172,6 +188,7 @@ export const MOD_BCST_LABELS: Record<ModBCST, string> = {
   '3': '3 - Lista Neutra (valor)',
   '4': '4 - Margem Valor Agregado (%)',
   '5': '5 - Pauta (valor)',
+  '6': '6 - Valor da Operação',
 };
 
 /**
@@ -198,18 +215,13 @@ export const MOT_DES_ICMS_LABELS: Record<string, string> = {
   '90': '90 - Solicitado pelo Fisco',
 };
 
-/** Origem da mercadoria (codegen also has this). */
+/** Origem da mercadoria — shared by operation defaults and per-item tax snapshots. */
 export const origemSchema = z.enum(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
 export type Origem = z.infer<typeof origemSchema>;
 
 /**
  * Named members of {@link origemSchema} — the SEFAZ "origem da mercadoria"
- * table. There is no label map here, so the names come straight from that table.
- *
- * `operacao.ts` declares this same concept a second time as
- * `OrigemProdutoImposto`, with an identical member set. `prefer-schema-enum`
- * tells them apart by name (it reads the schema variable off the declaration),
- * so both are enforced — but the duplication is still worth collapsing.
+ * table. Names come from {@link ORIGEM_PRODUTO_LABELS}.
  */
 export const ORIGEM = {
   nacional: '0',
@@ -222,6 +234,19 @@ export const ORIGEM = {
   estrangeiraMercadoInternoSemSimilar: '7',
   nacionalConteudoImportacaoAcima70: '8',
 } as const satisfies Record<string, Origem>;
+
+/** Origem da mercadoria (ICMS) — labels shared by both tax editors. */
+export const ORIGEM_PRODUTO_LABELS: Record<Origem, string> = {
+  '0': '0 - Nacional',
+  '1': '1 - Estrangeira - Importação direta',
+  '2': '2 - Estrangeira - Adquirida no mercado interno',
+  '3': '3 - Nacional, conteúdo de importação 40%–70%',
+  '4': '4 - Nacional, processos produtivos básicos',
+  '5': '5 - Nacional, conteúdo de importação ≤ 40%',
+  '6': '6 - Estrangeira - Importação direta, sem similar nacional',
+  '7': '7 - Estrangeira - Adquirida no mercado interno, sem similar nacional',
+  '8': '8 - Nacional, conteúdo de importação > 70%',
+};
 
 /** CST PIS / COFINS (the most common codes; full surface = ~33 codes). */
 export const cstPisCofinsSchema = z.enum([
@@ -769,13 +794,15 @@ export const configuracaoIPISchema = z.object({
 export type ConfiguracaoIPI = z.infer<typeof configuracaoIPISchema>;
 
 // ---------------------------------------------------------------------------
-// configuracaoISSQN — mirror of the Flutter class (per-item ISSQN, services)
+// configuracaoISSQN — per-item ISSQN (services)
 // ---------------------------------------------------------------------------
 
 /**
- * Mirror of the Flutter `ConfiguracaoISSQN`. Driven by the XSD `<ISSQN>` shape.
- * The XSD makes `<imposto>` carry **either** `<ICMS>` **or** `<ISSQN>`
- * (xs:choice) — the dispatcher emits `<ISSQN>` and skips `<ICMS>` when set.
+ * Driven by the XSD `<ISSQN>` shape; the legacy Flutter app had no such class
+ * and never emitted ISSQN. The XSD makes `<imposto>` carry **either** `<ICMS>`
+ * **or** `<ISSQN>` (xs:choice) — the engine's dispatcher emits `<ISSQN>` and
+ * skips `<ICMS>` when set. NF-e emission refuses an item carrying it today
+ * (no `<ISSQNtot>`, NF-e conjugada not supported — #1656).
  */
 export const configuracaoISSQNSchema = z.object({
   vBC: z.number().nonnegative(),
@@ -829,7 +856,11 @@ export type Retencao = z.infer<typeof retencaoSchema>;
 
 /**
  * RTC `IS` (Imposto Seletivo) per-item sub-config. `pIS` (ad valorem over a
- * base) OR `pISEspec` (per unit, with `qTrib`) drives the value.
+ * base) OR `pISEspec` (per unit, with `qTrib` and `uTrib`) drives the value.
+ * This strict schema runs at emission (`parseRtcConfig`); the stored field is
+ * the lenient `configuracaoIBSCBSDraftSchema`. Its refine checks only that a
+ * mode is present. The per-unit `uTrib` is decided by `vereditoIsRtc`
+ * (`regrasDeEmissao.ts`), which the engine and the web editor share.
  */
 export const configuracaoISRtcSchema = z
   .object({
@@ -886,8 +917,9 @@ export const configuracaoIBSCBSSchema = z
   // Structural rule only (NT 2025.002, RV UB13/UB14): cClassTrib's first 3
   // digits == CST. Always correct, independent of any vendored table — so it
   // is the one cross-field check enforced at emit time (`parseRtcConfig`).
-  // Table *membership* is a UI-only warning (the vendored seed is a subset),
-  // never an emit-time block. Guard on format so we don't double-report.
+  // Table *membership* is a UI-only warning (the vendored table is a dated
+  // snapshot; SEFAZ adds codes outside the NT cycle), never an emit-time
+  // block. Guard on format so we don't double-report.
   .superRefine((cfg, ctx) => {
     if (
       /^\d{3}$/.test(cfg.CST) &&
@@ -902,6 +934,44 @@ export const configuracaoIBSCBSSchema = z
     }
   });
 export type ConfiguracaoIBSCBS = z.infer<typeof configuracaoIBSCBSSchema>;
+
+/**
+ * Known, partially filled RTC fields accepted while an operator is editing a
+ * fiscal configuration. These drafts deliberately validate only the primitive
+ * value kinds, not code lengths or numeric ranges: rejecting a half-typed value
+ * here makes the imposto resolver silently fall through to a lower fiscal tier.
+ * Emission validates codes, ranges and completeness through
+ * {@link configuracaoIBSCBSSchema}, where an invalid value fails loudly. This
+ * schema narrows the former unrestricted `unknown` slot to the known key set.
+ */
+export const configuracaoISRtcDraftSchema = z.object({
+  CSTIS: z.string().optional().nullable(),
+  cClassTribIS: z.string().optional().nullable(),
+  vBCIS: z.number().optional().nullable(),
+  pIS: z.number().optional().nullable(),
+  pISEspec: z.number().optional().nullable(),
+  uTrib: z.string().optional().nullable(),
+  qTrib: z.number().optional().nullable(),
+});
+export type ConfiguracaoISRtcDraft = z.infer<typeof configuracaoISRtcDraftSchema>;
+
+export const configuracaoIBSCBSDraftSchema = z.object({
+  CST: z.string().optional().nullable(),
+  cClassTrib: z.string().optional().nullable(),
+  vBC: z.number().optional().nullable(),
+  pIBSUF: z.number().optional().nullable(),
+  pIBSMun: z.number().optional().nullable(),
+  pCBS: z.number().optional().nullable(),
+  is: configuracaoISRtcDraftSchema.optional().nullable(),
+});
+export type ConfiguracaoIBSCBSDraft = z.infer<typeof configuracaoIBSCBSDraftSchema>;
+
+/** Strict persisted counterpart of the editable RTC draft. */
+export const configuracaoIBSCBSDraftPersistidoSchema = configuracaoIBSCBSDraftSchema
+  .extend({
+    is: configuracaoISRtcDraftSchema.strict().optional().nullable(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Top-level Imposto — what `pedido.itens[i].imposto` should be
@@ -927,10 +997,10 @@ export function normalizeNCM(value: string | null | undefined): string | null {
  * `origem` + `configuracao*`; the other fields (`cfop`, `NCM`, …) are stamped so
  * the orchestrator can read everything-fiscal from one blob.
  *
- * `configuracaoIBSCBS` is held **leniently** (`z.unknown`) so a half-filled RTC
- * blob never fails the whole imposto parse — the resolver falls through to the
- * next tier on any parse failure, and RTC is opt-in per-filial. The strict shape
- * is `configuracaoIBSCBSSchema`, enforced at emit by `parseRtcConfig`.
+ * `configuracaoIBSCBS` uses the known-field draft schema so a half-filled or
+ * temporarily malformed RTC value cannot make the resolver fall through to a
+ * lower tier. The complete shape is `configuracaoIBSCBSSchema`, enforced at
+ * emit by `parseRtcConfig`.
  */
 export const impostoSchema = z.object({
   origem: origemSchema,
@@ -956,6 +1026,27 @@ export const impostoSchema = z.object({
     .nullable(),
   unidade: z.string().min(1).max(6).optional().nullable(),
   /**
+   * The remaining `det.prod` children the legacy Flutter emitter carried
+   * (`pedido_nfe_base.dart:938-947`). They are stored on every Imposto-bearing
+   * doc but were absent here, so the resolver's strip-policy parse dropped them
+   * off every resolved tier and they could never reach the XML.
+   *
+   * ⚠️ No format regexes here, unlike `cfop`/`NCM`/`CEST` above. A failed
+   * `impostoSchema` parse makes the resolver fall through to a LOWER tier
+   * silently, so a malformed `NVE` would quietly change which tax config the
+   * item gets — a wrong NF-e. Validated at emit instead, where a bad value
+   * surfaces as a loud SEFAZ rejection.
+   */
+  // `.optional().nullable()` like every sibling above: `nveWire()`'s own target
+  // is already nullable, but `delfrance/no-optional-without-nullable` reads the
+  // chain syntactically and cannot see through the preprocess — and spelling
+  // the tri-state out matches the rest of this schema anyway.
+  NVE: nveWire().optional().nullable(),
+  indEscala: indEscalaWire().optional().nullable(),
+  CNPJFab: z.string().optional().nullable(),
+  cBenef: z.string().optional().nullable(),
+  extipi: z.string().optional().nullable(),
+  /**
    * `det.prod.indTot` source — `false` = the item does NOT compose the NF-e
    * totals (`indTot='0'`; excluded from ICMSTot `vProd`/`vDesc`/`vNF`).
    * `null`/absent = composes (`'1'`, the legacy Flutter default). Stored on
@@ -970,7 +1061,7 @@ export const impostoSchema = z.object({
   configuracaoCOFINS: confCOFINSSchema.optional().nullable(),
   configuracaoIPI: configuracaoIPISchema.optional().nullable(),
   retencao: retencaoSchema.optional().nullable(),
-  configuracaoIBSCBS: z.unknown().nullable().optional(),
+  configuracaoIBSCBS: configuracaoIBSCBSDraftSchema.nullable().optional(),
 });
 export type Imposto = z.infer<typeof impostoSchema>;
 
@@ -985,17 +1076,185 @@ export type Imposto = z.infer<typeof impostoSchema>;
  * (the resolver/editor tolerate absent + null), matching the original
  * pass-through semantics. The editor only ever writes a config object or `null`,
  * never `undefined`, so this is safe for Firebase JS SDK v12.
- * `configuracaoIBSCBS` stays lenient (`z.unknown`) — a half-filled RTC blob must
- * not fail the whole imposto parse and disable the resolver fall-through; the
- * strict shape (`configuracaoIBSCBSSchema`) is enforced at emit by `parseRtcConfig`.
+ * `configuracaoIBSCBS` accepts a known-field partial draft; the complete shape
+ * (`configuracaoIBSCBSSchema`) is enforced at emit by `parseRtcConfig`.
  */
+const configuracaoICMSPersistidaSchema = configuracaoICMSSchema
+  .extend({
+    csosn101: confICMSSN101Schema.strict().optional().nullable(),
+    csosn201: confICMSSN201Schema.strict().optional().nullable(),
+    csosn202ou203: confICMSSN202ou203Schema.strict().optional().nullable(),
+    csosn500: confICMSSN500Schema.strict().optional().nullable(),
+    csosn900: confICMSSN900Schema.strict().optional().nullable(),
+    icms00: confICMS00Schema.strict().optional().nullable(),
+    icms10: confICMS10Schema.strict().optional().nullable(),
+    icms20: confICMS20Schema.strict().optional().nullable(),
+    icms30: confICMS30Schema.strict().optional().nullable(),
+    icms404150: confICMS404150Schema.strict().optional().nullable(),
+    icms51: confICMS51Schema.strict().optional().nullable(),
+    icms60: confICMS60Schema.strict().optional().nullable(),
+    icms70: confICMS70Schema.strict().optional().nullable(),
+    icms90: confICMS90Schema.strict().optional().nullable(),
+  })
+  .strict();
+
 export const taxConfigFields = {
-  configuracaoICMS: configuracaoICMSSchema.nullable().optional(),
-  configuracaoIPI: configuracaoIPISchema.nullable().optional(),
-  configuracaoPIS: confPISSchema.nullable().optional(),
-  configuracaoCOFINS: confCOFINSSchema.nullable().optional(),
-  configuracaoPISST: configuracaoPISSTSchema.nullable().optional(),
-  configuracaoISSQN: configuracaoISSQNSchema.nullable().optional(),
-  retencao: retencaoSchema.nullable().optional(),
-  configuracaoIBSCBS: z.unknown().nullable().optional(),
+  configuracaoICMS: configuracaoICMSPersistidaSchema.nullable().optional(),
+  configuracaoIPI: configuracaoIPISchema.strict().nullable().optional(),
+  configuracaoPIS: confPISSchema.strict().nullable().optional(),
+  configuracaoCOFINS: confCOFINSSchema.strict().nullable().optional(),
+  configuracaoPISST: configuracaoPISSTSchema.strict().nullable().optional(),
+  configuracaoISSQN: configuracaoISSQNSchema.strict().nullable().optional(),
+  retencao: retencaoSchema.strict().nullable().optional(),
+  configuracaoIBSCBS: configuracaoIBSCBSDraftPersistidoSchema.nullable().optional(),
 } as const;
+
+/**
+ * Recursively strict Imposto snapshot used by registered Firestore documents.
+ * The resolver intentionally keeps using {@link impostoSchema} so legacy input
+ * can still fall through to another configuration tier.
+ */
+export const impostoPersistidoSchema = impostoSchema
+  .extend({
+    configuracaoICMS: taxConfigFields.configuracaoICMS,
+    configuracaoISSQN: taxConfigFields.configuracaoISSQN,
+    configuracaoPIS: taxConfigFields.configuracaoPIS,
+    configuracaoCOFINS: taxConfigFields.configuracaoCOFINS,
+    configuracaoPISST: taxConfigFields.configuracaoPISST,
+    configuracaoIPI: taxConfigFields.configuracaoIPI,
+    retencao: taxConfigFields.retencao,
+    configuracaoIBSCBS: taxConfigFields.configuracaoIBSCBS,
+  })
+  .strict();
+export type ImpostoPersistido = z.infer<typeof impostoPersistidoSchema>;
+
+// ---------------------------------------------------------------------------
+// NVE / indEscala — the two Dados Gerais fields that are NOT scalars on the
+// wire, shared by all three tax collections so they cannot drift apart (#466).
+// ---------------------------------------------------------------------------
+
+/**
+ * The ONE scalar→`NVE` fold. Shared by the storage preprocess below and by the
+ * editor boundary (`apps/web/components/imposto`), so a stored value and a
+ * displayed value can never disagree about what a legacy string means.
+ *
+ * A non-blank string is a single NVE code; blank is "not informed".
+ */
+export function nveFromScalar(raw: string): string[] | null {
+  const trimmed = raw.trim();
+  return trimmed === '' ? null : [trimmed];
+}
+
+/** Text an operator could have typed into the pre-#466 free-text widget. */
+const IND_ESCALA_TRUE_WORDS = new Set(['s', 'sim', 'true', '1']);
+const IND_ESCALA_FALSE_WORDS = new Set(['n', 'nao', 'não', 'false', '0']);
+
+/**
+ * The ONE scalar→`indEscala` fold. See {@link nveFromScalar}.
+ *
+ * ⚠️ Both vocabularies are EXPLICIT and anything outside them is `null`, never
+ * a guess. `indEscala` decides `det.prod.indEscala` (`'S'`/`'N'`) and whether
+ * `CNPJFab` is required, so a wrong value is a fiscal error while an absent one
+ * is a legal omission (the element is `minOccurs="0"`) — silently flipping an
+ * operator's stray word to `true` is strictly worse than dropping it.
+ *
+ * ⚠️ This tightens what `regraImpostoSchema` did between #1305 and #466, where
+ * the fold was `!/^(n|não|nao|false|0)$/i` and therefore mapped *unrecognised*
+ * text to `true`. The narrow reading was already the one `MacrosTab`'s own
+ * bridge used on the way IN; #466 keeps that one and drops the other, so the
+ * two directions can no longer disagree. Near-misses that must stay distinct:
+ * `'N'`/`'Não'` → `false` (never `null`), `''` → `null` (never `false`), and
+ * `'talvez'` → `null` (never `true`).
+ */
+export function indEscalaFromScalar(raw: string): boolean | null {
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === '') return null;
+  if (IND_ESCALA_TRUE_WORDS.has(trimmed)) return true;
+  if (IND_ESCALA_FALSE_WORDS.has(trimmed)) return false;
+  return null;
+}
+
+/**
+ * True when a STORED `NVE` carries at least one code — in either shape.
+ *
+ * ⚠️ This exists because the "does this imposto entry carry anything worth
+ * persisting" checks run on the value as it came off the wire, BEFORE the
+ * schema parse: `impostoCarriesInfo` (`packages/data/src/produto/usecases.ts`)
+ * and `categoriaImpostoCarriesInfo` (`apps/web/lib/categorias/clientPort.ts`)
+ * both decide `set` vs `delete` first and parse second. `parseSoftRead`
+ * (`packages/data/src/zodParse.ts`) hands back the RAW document whenever the
+ * parse failed for ANY unrelated reason, and on such a document `NVE` is still
+ * the pre-#466 scalar — so a plain `Array.isArray` check reads it as empty and
+ * DELETES the doc. Same silent-delete shape as #1279, one door further in.
+ *
+ * Shared rather than duplicated: the two call sites are character-identical
+ * twins whose comments promise they agree, and they have drifted before.
+ */
+export function nveCarriesValue(v: unknown): boolean {
+  const list = typeof v === 'string' ? nveFromScalar(v) : v;
+  return Array.isArray(list) && list.some((c) => typeof c === 'string' && c.trim() !== '');
+}
+
+/**
+ * `det.prod.NVE` — Nomenclatura de Valor aduaneiro e Estatístico.
+ *
+ * The wire type is a LIST on every legacy Flutter tax model (`List<String>?` on
+ * `Imposto`, `ImpostoCategoria` and `RegraImposto` alike) and in the NF-e XSD
+ * (`leiauteNFe_v4.00.xsd`: `minOccurs="0" maxOccurs="8"`, each entry
+ * `[A-Z]{2}[0-9]{4}`).
+ *
+ * ⚠️ The preprocess is READ tolerance, not a convenience. Until #466 the three
+ * collection schemas typed this `z.string()`, and the shared
+ * `ImpostoConfigEditor` faithfully wrote plain strings through that shape — so
+ * an already-stored doc (staging, not just a hypothetical legacy export) can
+ * carry a scalar. A bare type swap would fail the WHOLE-DOCUMENT parse for
+ * those docs, and every reader of these collections drops a doc that fails
+ * `safeParse`, sending an item's tax calculation to the wrong cascade tier —
+ * not a loud failure, a wrong NF-e.
+ *
+ * A value that is neither a string nor a valid array is left ALONE so the parse
+ * still fails: tolerating a legacy shape is not the same as laundering garbage
+ * into `null`. No `[A-Z]{2}[0-9]{4}` regex here on purpose either — a format
+ * error must surface as a SEFAZ rejection at emit, never as a silent tier
+ * fall-through at resolve.
+ */
+export function nveWire() {
+  return z.preprocess(
+    (v) => (typeof v === 'string' ? nveFromScalar(v) : v),
+    z.array(z.string()).nullable(),
+  );
+}
+
+/**
+ * {@link nveWire} in the shape a STORED collection schema wants: an absent key
+ * materialises as `null` (root `CLAUDE.md` — a Firestore field is
+ * `.nullable().default(null)`, never bare `.optional()`). The engine blob
+ * `impostoSchema` uses `nveWire().optional()` instead, so that a resolved tier
+ * simply omits what it does not carry.
+ */
+export function nveField() {
+  return nveWire().default(null);
+}
+
+/**
+ * `det.prod.indEscala` — Indicador de Produção em escala relevante
+ * (Convênio ICMS 52/2017, cláusula 23).
+ *
+ * The wire type is a BOOLEAN on all three legacy Flutter models (`bool?`,
+ * rendered as a checkbox via `@SimpleBoolField()`); the NF-e XSD spells the
+ * same thing `'S' | 'N'`, and that conversion belongs at emit, not in storage.
+ *
+ * ⚠️ Same read-tolerance contract as {@link nveField} — see its note — folding
+ * a stored scalar through {@link indEscalaFromScalar}.
+ */
+export function indEscalaWire() {
+  return z.preprocess(
+    (v) => (typeof v === 'string' ? indEscalaFromScalar(v) : v),
+    z.boolean().nullable(),
+  );
+}
+
+/** {@link indEscalaWire} in the stored-collection shape. See {@link nveField}. */
+export function indEscalaField() {
+  return indEscalaWire().default(null);
+}

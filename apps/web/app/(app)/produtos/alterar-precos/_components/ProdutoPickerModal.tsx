@@ -165,19 +165,30 @@ export function ProdutoPickerModal({ opened, onClose, onInclude }: ProdutoPicker
 
   const trimmed = search.trim();
 
-  // A new search identity (field or term) invalidates the current window's
-  // selection — see the file-level comment on why selection never outlives
-  // the rows it was made against.
-  useEffect(() => {
-    setWindowSize(WINDOW_INITIAL);
-    setSelected(new Set());
-  }, [field, trimmed]);
+  // A new search identity (field or term) invalidates the current window and
+  // its selection — see the file-level comment on why selection never outlives
+  // the rows it was made against. The reset happens in the SAME update as the
+  // identity change, never in an effect: an effect runs after the render that
+  // already built the new query, so the first listener for a new term opened
+  // at the previous term's widened window and only then shrank — an extra
+  // billed listener per search change (#1704).
+  function changeSearch(next: { field?: SearchField; search?: string }) {
+    const nextField = next.field ?? field;
+    const nextSearch = next.search ?? search;
+    if (nextField !== field || nextSearch.trim() !== trimmed) {
+      setWindowSize(WINDOW_INITIAL);
+      setSelected(new Set());
+    }
+    if (next.field !== undefined) setField(next.field);
+    if (next.search !== undefined) setSearch(next.search);
+  }
 
   // Reset everything on close (and cancel any in-flight bulk fetch) so the
   // next open starts clean.
   useEffect(() => {
     if (opened) return;
     abortRef.current?.abort();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset-on-close, which also aborts the in-flight bulk fetch
     setSearch('');
     setField('nome');
     setWindowSize(WINDOW_INITIAL);
@@ -301,12 +312,12 @@ export function ProdutoPickerModal({ opened, onClose, onInclude }: ProdutoPicker
             label="Buscar"
             placeholder={field === 'nome' ? 'Buscar por nome…' : 'Buscar por SKU…'}
             value={search}
-            onChange={(e) => setSearch(e.currentTarget.value)}
+            onChange={(e) => changeSearch({ search: e.currentTarget.value })}
             disabled={loadingTodos}
           />
           <SegmentedControl
             value={field}
-            onChange={(value) => setField(value as SearchField)}
+            onChange={(value) => changeSearch({ field: value as SearchField })}
             disabled={loadingTodos}
             data={[
               { label: 'Nome', value: 'nome' },

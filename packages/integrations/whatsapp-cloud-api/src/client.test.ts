@@ -4,7 +4,53 @@ import {
   WhatsAppClient,
   WhatsAppHttpError,
   WhatsAppNetworkError,
+  WhatsAppRecipientError,
 } from './client';
+
+describe('WhatsAppClient BSUID recipients', () => {
+  it.each(['text', 'media', 'template'] as const)('sends %s using recipient only', async (kind) => {
+    const fetcher = fakeFetch([{ status: 200, body: { messages: [{ id: 'wamid.bsuid' }] } }]);
+    const client = new WhatsAppClient({
+      phoneNumberId: '111',
+      accessToken: 'tk',
+      fetch: fetcher as typeof fetch,
+    });
+    const recipient = 'US.13491208655302741918';
+    if (kind === 'text') await client.sendText({ recipient, text: 'Olá' });
+    else if (kind === 'media')
+      await client.sendMedia({ recipient, type: 'image', link: 'https://example.com/image.jpg' });
+    else await client.sendTemplate({ recipient, templateName: 'reabertura_conversa' });
+    const body: unknown = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body));
+    expect(body).toMatchObject({ recipient });
+    expect(body).not.toHaveProperty('to');
+  });
+
+  it.each([{ to: '5511999998888', recipient: 'BR.other' }, {}, { recipient: '' }, { to: '   ' }])(
+    'rejects ambiguous or missing recipient before making a request: %j',
+    async (recipient) => {
+      const fetcher = fakeFetch([]);
+      const client = new WhatsAppClient({
+        phoneNumberId: '111',
+        accessToken: 'tk',
+        fetch: fetcher as typeof fetch,
+      });
+      await expect(client.sendText({ ...recipient, text: 'Oi' } as never)).rejects.toBeInstanceOf(
+        WhatsAppRecipientError,
+      );
+      await expect(
+        client.sendMedia({
+          ...recipient,
+          type: 'image',
+          link: 'https://example.com/image.jpg',
+        } as never),
+      ).rejects.toBeInstanceOf(WhatsAppRecipientError);
+      await expect(
+        client.sendTemplate({ ...recipient, templateName: 'reabertura_conversa' } as never),
+      ).rejects.toBeInstanceOf(WhatsAppRecipientError);
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
+});
 
 function fakeFetch(responses: Array<{ status: number; body: unknown }>) {
   let i = 0;

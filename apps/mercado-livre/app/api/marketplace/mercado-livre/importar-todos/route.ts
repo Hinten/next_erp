@@ -80,6 +80,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     try {
       await createMlMassImportScheduler().enqueue({ jobId, integracaoId });
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- any enqueue failure stamps the job failed and answers 503; a throw orphans a running job
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Falha ao enfileirar a importação.';
       // Best-effort: mark the job failed so the status route/UI surfaces the
@@ -95,6 +96,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           finishedAt: failedAt,
           updatedAt: failedAt,
         });
+        // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort failure stamp; must not mask the original error
       } catch (stampErr) {
         if (!(stampErr instanceof Error)) throw stampErr;
         console.warn('[mercado-livre/importar-todos] failure-stamp falhou', {

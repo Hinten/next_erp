@@ -3,8 +3,9 @@
  *
  * `AdminCollectionHandle` deliberately exposes no `get`, so the
  * "read one doc by id → parsed value or null" idiom is hand-copied at a dozen
- * call sites (`massImport.ts`' `readJob`, `precoSync.ts`, both `credentialStore.ts`,
- * `filial-cert.ts`). This wraps that idiom once and puts a TTL in front of it.
+ * call sites (`massImport.ts`' `readJob`, `precoSync.ts`, both `credentialStore.ts`).
+ * This wraps that idiom once and puts a TTL in front of it. `filial-cert.ts`
+ * adopted it in #1680.
  *
  * The exclusions in `./readCache` apply unchanged — in particular this reader
  * takes a `Firestore`, never a `Transaction`, so a transactional read cannot

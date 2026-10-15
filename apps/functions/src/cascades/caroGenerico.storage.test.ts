@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { type Firestore, getFirestore } from 'firebase-admin/firestore';
+import { getFirestore } from 'firebase-admin/firestore';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CascadeTruncatedError, cascadeCaroGenerico } from '../lib/cascadeCaroGenerico';
 

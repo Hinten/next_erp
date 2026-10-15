@@ -17,8 +17,36 @@ deploys to its own Firebase App Hosting backend.
   billed to — a stranger's account. `melhorEnvioOauthState.consume` is the anchor
   that makes it single-use; it runs BEFORE the exchange and fails as `bad_state`.
 - `app/api/webhooks/melhor-envio/route.ts` — ME status webhook (HMAC-signed; no Bearer).
+- `functions/` — isolated task processor + 30-minute resilience sweep for the
+  enqueue-first notification pipeline. See `functions/DEPLOY.md`.
 - `lib/freight/*` — `loadMelhorEnvioContext`, the Firestore token store, the
   signed-state HMAC, and the error→HTTP mapper.
+  ⚠️ **Every Melhor Envio call is bounded (#1679)** — `PRAZO_ME_MS` in the
+  freight-br package; a stall is `MelhorEnvioTimeoutError`, answered
+  `504 { code: 'ME_TIMEOUT', operacao, timeoutMs }` (CODED, so the browser never
+  mistakes it for the platform's gateway 504). On `comprar` the step matters: a
+  cart-insert timeout leaves no anchor (nothing paid, the next buy starts fresh);
+  a `checkout`/`generate` timeout lands AFTER `freteInicial.printLabelId`, so the
+  money outcome is unknown and a sequential re-buy resumes from the anchor.
+  `lib/freight/prazos.test.ts` holds `DURACAO_MAXIMA_COMPRAR_MS` + 30 s under the
+  SMALLEST `timeoutSeconds` in `apphosting*.yaml` (300 s when unpinned).
+- `lib/freight/compraEtiqueta.ts` — ⚠️ **the comprar in-flight claim (#1677)**.
+  ONE buy per pedido at a time: `comprar` holds an admin-only lease at
+  `pedidos/{id}/compraEtiqueta/current` (360 s, never renewed, a corrupt or
+  far-future claim reads as none), a second concurrent request gets **423
+  `ME_COMPRA_EM_ANDAMENTO`** before any ME call, the anchor write is a
+  compare-and-set, and `checkout`/`generate` are fenced (owner + a 240 s paid
+  window from the request's arrival + the anchor). The claim is released on
+  every exit EXCEPT a paid step that failed in transit (its own timeout, a
+  dropped connection, a gateway-class 5xx — `ehDesfechoPagoIncerto`): the
+  outcome is unknown, it holds until it expires, and the answer is the same
+  coded `504 ME_TIMEOUT` the browser treats as "outcome unknown". A label PAID
+  but no longer linked to the pedido (frete re-pointed mid-buy) is a coded
+  `412 ME_ETIQUETA_DESVINCULADA` naming it — never a 200. It is NOT 409 on purpose: the browser client maps
+  any 409 it doesn't know to "reconecte a conta". The body's `printLabelId` is
+  ignored — the anchor comes from the pedido only. ADR 0011's 2026-10 addendum
+  is why a lease is allowed here at all; the tests run the REAL claim and handles
+  on `lib/freight/testing/fakeFirestore.ts` (the shared OCC engine).
 - `lib/freight/{state,oauthState}.ts` — **#1034**, thin bindings to the SHARED OAuth
   primitives in `@delfrance/data/admin/oauth-state`. `state.ts` re-exports the signed
   state (`FreightStateError` is an alias of the shared `OauthStateError`);
@@ -66,3 +94,9 @@ Firebase App Hosting, own backend (e.g. `melhor-envio-<org>`), root
 `apps/melhor-envio`. Env + secrets via the Firebase console. The OAuth
 `redirect_uri` registered in the Melhor Envio dashboard must point at this
 backend: `https://<this-app>/api/oauth/melhor-envio/callback`.
+
+The notification receiver also requires `MELHOR_ENVIO_TASKS_REGION` (or the
+shared `FUNCTIONS_REGION`). Use `MELHOR_ENVIO_TASKS_DISABLED=1` only as a
+rollout valve while enqueueing is unavailable; the fallback rows remain for
+the sweep. Index, IAM, and Functions rollout are manual and are documented in
+`functions/DEPLOY.md`.

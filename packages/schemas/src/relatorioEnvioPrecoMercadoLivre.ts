@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
+import { ttlExpiry } from './shared/ttl';
 
 /**
  * `enviosPrecoMercadoLivre/{envioId}/relatorios/{0000|0001|…}` — the COMPLETE
@@ -137,6 +138,13 @@ export const relatorioEnvioPrecoSchema = z
     /** Keyed by {@link relatorioEnvioPrecoRowKey} — identity, never outcome. */
     linhas: z.record(z.string(), linhaRelatorioEnvioPrecoSchema).default({}),
     timestamp: millisSinceEpoch('Gerado em').nullable().default(null),
+    /**
+     * TTL expiry (`./shared/ttl`) — a week after its run's, re-stamped on every
+     * shard write. ⚠️ The `relatorios` group is SHARED with
+     * `balanco/{id}/relatorios`, whose writer never stamps it: the policy is safe
+     * there only as long as that stays true.
+     */
+    expiraEm: ttlExpiry().nullable().optional(),
   })
   .passthrough();
 export type RelatorioEnvioPreco = z.infer<typeof relatorioEnvioPrecoSchema>;

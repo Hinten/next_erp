@@ -25,12 +25,14 @@
  * `ja-processado`/`ja-enviado`. Observability = Cloud Logging plus ML's own
  * `getShipmentInvoiceData`.
  *
- * Three cooperating pieces, all in this module so the queue function
- * (`mlNfeUploadTasks.ts` / `functions/`) stays transport-only:
+ * Three cooperating pieces, all reachable from this module so the queue
+ * function (`mlNfeUploadTasks.ts` / `functions/`) stays transport-only:
  *
  *  - `decideNfeUploadDispatch` — PURE dispatch for the `nfev4` Firestore
  *    trigger: the four cheap doc guards (deleted / non-aprovada / no XML /
- *    non-produção), everything else enqueues.
+ *    non-produção), everything else enqueues. It lives in
+ *    `@delfrance/schemas` (`nfeEnvioCanal.ts`, shared with Shopee's trigger)
+ *    and is re-exported below under the same name.
  *  - `shouldUploadForPedido` — the 1-read pedido-side check for a
  *    trigger/route that starts from a pedido id instead of an NF-e write.
  *  - `processNfeUploadTask` — the task handler core: FRESH reads, re-gates
@@ -47,7 +49,15 @@
 import { z } from 'zod';
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import { coerceToMicros, millisToMicros } from '@delfrance/core/datetime';
-import { ESTADO_FRETE, ESTADO_NFE, INTEGRACAO_FRETE, idFromRef } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  ESTADO_NFE,
+  INTEGRACAO_FRETE,
+  decideNfeUploadDispatch,
+  extractTpAmb,
+  idFromRef,
+  type NfeUploadDispatch,
+} from '@delfrance/schemas';
 import {
   MercadoLivreHttpError,
   MercadoLivreNetworkError,
@@ -91,59 +101,22 @@ export interface MlNfeUploadScheduler {
   enqueue(payload: NfeUploadTaskPayload): Promise<void>;
 }
 
-/* --------------------------------- tpAmb ------------------------------------ */
-
-// First <tpAmb> wins: infNFe/ide precedes protNFe in a nfeProc document, so
-// the emitter's declared ambiente is read, never the protocol echo.
-const TPAMB_REGEX = /<tpAmb>\s*([12])\s*<\/tpAmb>/;
-
-/** The first `<tpAmb>` in the XML — `'1'` produção, `'2'` homologação, else null. */
-export function extractTpAmb(xml: string): '1' | '2' | null {
-  const m = TPAMB_REGEX.exec(xml);
-  return m == null ? null : (m[1] as '1' | '2');
-}
-
-/* -------------------------------- dispatch ---------------------------------- */
-
-export type NfeUploadDispatch =
-  | { action: 'enqueue' }
-  | {
-      action: 'skip';
-      reason: 'apagada' | 'nao-aprovada' | 'xml-ausente' | 'tpamb-homologacao';
-    };
+/* ---------------------------- tpAmb + dispatch ------------------------------ */
 
 /**
- * PURE enqueue-vs-skip decision for the `nfev4` onDocumentWritten trigger.
- * `before`/`after` are the RAW snapshot data (undefined on create/delete).
+ * The first-`<tpAmb>` reader and the LEVEL dispatch ladder moved to
+ * `@delfrance/schemas` (`nfeEnvioCanal.ts`) so Shopee's trigger shares the
+ * same predicate. Re-exported rather than merely moved: `onNfeAprovada`, the
+ * `enviar-nfe` route (whose test mocks THIS module path) and
+ * `nfeUpload.test.ts` import them from here, and that test is byte-unedited,
+ * which is what proves the move changed nothing.
  *
- * Only the four cheap doc guards live here — anything that survives them
- * enqueues. There is deliberately NO write-dedup at this layer: this module
- * never writes the NF-e doc (REV 2 zero-write model), so pokes and any other
- * doc write simply re-run this cheap ladder and, at worst, enqueue a redundant
- * task. Dedup lives in the task's live shipment-status gate (the substatus
- * leaves `invoice_pending` once ML has the invoice). `before` stays in the
- * signature for the trigger call site; the decision reads `after` only.
+ * Dedup for Mercado Livre is NOT in the ladder: this module never writes the
+ * NF-e doc (REV 2 zero-write model), so any doc write re-runs the cheap ladder
+ * and, at worst, enqueues a redundant task that the live shipment-status gate
+ * resolves (the substatus leaves `invoice_pending` once ML has the invoice).
  */
-export function decideNfeUploadDispatch(
-  before: Record<string, unknown> | undefined,
-  after: Record<string, unknown> | undefined,
-): NfeUploadDispatch {
-  // (1) Deleted doc — nothing to upload.
-  if (after == null) return { action: 'skip', reason: 'apagada' };
-
-  // (2) Only an aprovada NF-e has an authorized nfeProc worth sending.
-  if (after.estado !== ESTADO_NFE.aprovada) return { action: 'skip', reason: 'nao-aprovada' };
-
-  // (3) Aprovada with no proc XML happens (legacy docs, partial writes).
-  const xml = after.xml_nfe_proc;
-  if (xml == null || typeof xml !== 'string') return { action: 'skip', reason: 'xml-ausente' };
-
-  // (4) Homologação (or unparseable) XML never reaches ML from the dispatch;
-  // the task re-checks and distinguishes '2' from unparseable.
-  if (extractTpAmb(xml) !== '1') return { action: 'skip', reason: 'tpamb-homologacao' };
-
-  return { action: 'enqueue' };
-}
+export { extractTpAmb, decideNfeUploadDispatch, type NfeUploadDispatch };
 
 /* --------------------------- pedido-side dispatch --------------------------- */
 
@@ -621,6 +594,7 @@ export async function processNfeUploadTask(
     if (err instanceof NfeUploadTransientError && err.stampFreteOnExhaust && freteCtx.hasFrete) {
       try {
         await stampFreteErro(db, pedidoId, freteCtx.shipmentId, nowUs);
+        // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort frete stamp; must not mask the primary disposition
       } catch (persistErr) {
         if (!(persistErr instanceof Error)) throw persistErr;
         console.error('[mercado-livre] nfe-upload: falha ao stampar o frete na tentativa final', {

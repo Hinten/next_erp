@@ -62,11 +62,18 @@ function log(message: string): void {
 /**
  * Page the collection by document id.
  *
- * `orderBy(FieldPath.documentId())` on a single named collection is served by
- * the base document ordering and reads exactly the page it returns — and it
- * could not be declared in `firestore.indexes.json` even if we wanted to, since
- * entries there are real field paths and Enterprise omits the implicit trailing
- * `__name__`. Same idiom as `tools/migrations/src/2026-06-pedido-pagamento-micros`.
+ * ⚠️ On Firestore Enterprise this rides the DECLARED key index `CMUN(__name__ ASC)`
+ * in `firestore.indexes.json` — Enterprise has no implicit document-key ordering.
+ * Without it each page walks another index (or the whole table) end to end and
+ * sorts in memory: #1874/#1895 measured 313 index rows read per page of 100 on
+ * `arquivos` and a full table scan per page on a collection group with no index,
+ * so ~11 pages of 1,000 would read the collection ~11 times. (This comment used to
+ * say the order "could not be declared even if we wanted to" — #1874 showed
+ * Enterprise accepts a `__name__`-only index and seeks the cursor on it.) The
+ * dump reads the legacy STANDARD project today, where the order is native, but
+ * after the cutover production is Enterprise, and seeding or re-exporting any
+ * Enterprise project walks the same way. `src/dump.indexes.test.ts` pins the
+ * pairing. Same idiom as `tools/migrations` (`key-walks.json`).
  */
 async function* pagesByDocId(
   query: Query,

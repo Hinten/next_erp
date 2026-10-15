@@ -26,6 +26,20 @@ export interface ActiveFiltersProps {
  * Playwright strict mode — splitting the column label into its own element
  * makes that locator resolve to two nodes and reds every sort spec. Nothing
  * here may render a bare column label.
+ *
+ * ⚠️ The "Limpar filtros" button below OWNS that accessible name, and it is
+ * located WITHOUT `exact` in `clientes.cadastros.e2e.spec.ts` before asserting
+ * the count drops to zero. Playwright matches names by substring, so no other
+ * control anywhere in a TableView may be named anything CONTAINING "Limpar
+ * filtros" — that spec would go ambiguous and then red, from a file it never
+ * imports. The reset control beside the mode badge is named
+ * "Limpar ordenação, filtros e busca" for exactly this reason.
+ *
+ * ⚠️ This row also does NOT cover the sort: chips come from filters + search
+ * only (`describeFilter.ts`), so a list frozen by a header click alone renders
+ * no chips and therefore no clear-all here. That is what the reset control in
+ * the toolbar is for; `onClearAll` is deliberately still the narrower
+ * `clearAll`, matching this button's own label.
  */
 export function ActiveFilters({ chips, onRemove, onClearAll }: ActiveFiltersProps) {
   if (chips.length === 0) return null;

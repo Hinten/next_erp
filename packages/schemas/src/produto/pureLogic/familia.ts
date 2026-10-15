@@ -40,9 +40,12 @@ export interface CandidatoDeFamilia {
  *
  * ## Why this is needed at all
  *
- * A sole member copies its parent's SKU verbatim
- * (`upSoleMember.ts:193,233` — and the importer writes the same shape), so a
- * produto with no variations legitimately puts **two documents behind one SKU**.
+ * A sole member USED to copy its parent's SKU verbatim, so a produto with no
+ * variations put **two documents behind one SKU** — see {@link skuDoMembroUnico},
+ * which now derives `<paiSku>-UN` instead. The collapse below still matters for
+ * every member written before that rule: their SKU is still the parent's. It is
+ * also still reachable on a CURRENT produto, because a variant whose `codigo` is
+ * null gets exactly the parent's SKU — see the scope note below.
  * Every unscoped `where('sku','==',x)` probe then reads that as two produtos:
  * the Balanço scan answers "SKU duplicado" and the Mercado Livre order resolver
  * answers `ambiguous-sku`, both about a produto that has exactly one SKU.
@@ -201,6 +204,89 @@ export interface ParentParaMembroUnico {
 /** Flutter caps a produto name at 100 (`produto.ts:45`); a child's must fit too. */
 const PRODUTO_NOME_MAX = 100;
 
+/** `produtoSchema.sku` is `z.string().max(255)` (`produto.ts:46`). */
+const PRODUTO_SKU_MAX = 255;
+
+/**
+ * What marks a sole member's sku as the family-of-one unit rather than a second
+ * produto wearing its parent's code.
+ *
+ * ⚠️ It reaches Mercado Livre. The sole member is what publish sends, so this
+ * string IS the listing's `SELLER_SKU` — deliberately, so the ERP and the wire
+ * hold ONE value and `resolveExistingChild`'s sku reuse rule keeps comparing
+ * like with like. The alternative (clean outward, suffixed inward) needs the
+ * undo at three ML boundaries, which is the two-copies-that-drift shape root
+ * `CLAUDE.md` rejects.
+ */
+export const SUFIXO_MEMBRO_UNICO = '-UN';
+
+/**
+ * The sku a sole member carries, derived from its parent's.
+ *
+ * Before this existed the member copied the parent's sku VERBATIM, so one
+ * produto put two documents behind one code: every unscoped
+ * `where('sku','==',x)` probe read that as two produtos, and the pickers — which
+ * have no `paiId` filter — showed the operator two rows identical in both nome
+ * and sku, disambiguated by a raw Firestore doc id.
+ *
+ * ⚠️ A parent with no sku yields `null`, never a bare `'-UN'`: a sku is an
+ * identity the ERP resolves produtos by, so inventing one is worse than having
+ * none.
+ *
+ * ⚠️ The base is TRIMMED, so a parent stored as `' ABC '` gives a member
+ * `'ABC-UN'`. That is deliberate — the member's sku is a fresh identity and
+ * should not carry the parent's stray whitespace — and it is the reason
+ * {@link espelhoArmazenadoDoMembro} normalises the STORED value the same way:
+ * were only one side trimmed, the three-way merge would read every such member
+ * as operator-diverged and stop propagating `sku` for good. The parent's own
+ * value is left exactly as the operator typed it; nothing here rewrites it.
+ *
+ * ⚠️ The base is TRUNCATED so the result fits `PRODUTO_SKU_MAX`. `nome` has
+ * been defensively capped here since #1398; `sku` was not, and
+ * `montarMembroUnico` is unguarded — the migration, ML publish and
+ * `buildMembroUnicoWriteOps` all write its output without a
+ * `produtoSchema.parse`, so a parent at the cap would have stored a
+ * 258-character sku with nothing complaining.
+ */
+export function skuDoMembroUnico(paiSku: string | null | undefined): string | null {
+  const base = typeof paiSku === 'string' ? paiSku.trim() : '';
+  if (base === '') return null;
+  return `${base.slice(0, PRODUTO_SKU_MAX - SUFIXO_MEMBRO_UNICO.length)}${SUFIXO_MEMBRO_UNICO}`;
+}
+
+/**
+ * The inverse: a parent's sku, given its sole member's.
+ *
+ * Written for the Mercado Livre User-Products import, whose rung 3 recovers the
+ * família parent's sku from the member's own `SELLER_SKU` — correct only because
+ * a família of one has no combos to peel. Without this, delete → re-import
+ * returns a parent at `X-UN`, whose own member then becomes `X-UN-UN`, and it
+ * compounds on every cycle.
+ *
+ * ⚠️ **Strips AT MOST ONE suffix**, which is what lets one call serve both
+ * shapes: a legacy member stored before this rule carries the parent's sku
+ * verbatim and passes through untouched.
+ *
+ * ⚠️ **The ambiguity is real and is not guarded away.** A legacy member
+ * storing `PARAFUSO-UN` (from a parent whose own sku ends in `-UN`) is
+ * byte-identical to a new member derived from parent `PARAFUSO`, so this answers
+ * `PARAFUSO` and is wrong for the legacy one. It is reachable only on an ML
+ * re-import of a família of one where rungs 1 and 2 both failed, for a parent
+ * whose sku genuinely ends in `-UN`. `familia.test.ts` pins it as a known
+ * limitation rather than hiding it behind an `endsWith` guard on the DERIVE side
+ * — that guard would silently paper over a double application instead of the
+ * split that prevents one.
+ */
+export function skuPaiDoMembroUnico(membroSku: string | null | undefined): string | null {
+  const sku = typeof membroSku === 'string' ? membroSku.trim() : '';
+  if (sku === '') return null;
+  if (!sku.endsWith(SUFIXO_MEMBRO_UNICO)) return sku;
+  const base = sku.slice(0, sku.length - SUFIXO_MEMBRO_UNICO.length);
+  // A member whose whole sku IS the suffix leaves no parent — refuse rather than
+  // answer with an empty identity.
+  return base === '' ? sku : base;
+}
+
 /**
  * The sole member's produto document, mirrored from its parent.
  *
@@ -244,6 +330,76 @@ export function montarMembroUnico(
 }
 
 /**
+ * Whether a produto really is a VIRTUAL kit: `ehKit === true && ehKitVirtual === true`,
+ * both strictly.
+ *
+ * ⚠️ `ehKitVirtual` alone is not the answer. The flag only means anything on a
+ * kit, and nothing in the schema stops a stored doc from carrying
+ * `ehKitVirtual: true` beside `ehKit: false` — `onProdutoDeleted` clears the pair
+ * only when a kit's LAST component is deleted. Reading such a doc as "virtual"
+ * would ask a channel to build a kit (Shopee's `add_kit_item`, step 19) for a
+ * produto with no recipe. So this is the ONE predicate for "virtual kit": the
+ * member mirror below calls it, and any other surface asks it rather than
+ * re-deriving the conjunction.
+ *
+ * Strict `=== true` on both: a legacy `null`, an absent key or a stray string is
+ * "not virtual".
+ */
+export function ehKitVirtualEfetivo(p: {
+  readonly ehKit?: unknown;
+  readonly ehKitVirtual?: unknown;
+}): boolean {
+  return p.ehKit === true && p.ehKitVirtual === true;
+}
+
+/**
+ * The kit fields a produto save must ADD so the document it leaves behind keeps
+ * the kit invariant — «É kit virtual» only beside «É kit», and a non-kit carries
+ * no component map. Pure; the editor runs it as `deriveTransactionPatch`, i.e.
+ * inside the save transaction, over the `tx.get` result (`current`) and the
+ * dirty patch about to be written.
+ *
+ * ⚠️ **Why the editor's `deriveOnSave` is not enough.** It derives the same
+ * values, but from the FORM, and ObjectView writes a derived key only when it
+ * differs from the form's own value. A form painted from a stale IndexedDB copy
+ * (a client transaction has no latency compensation) and dirtied before server
+ * truth arrives therefore omits it: turning «É kit» off over a stale
+ * `ehKitVirtual: false` derives `false`, sees "no change", and leaves the stored
+ * `true` in place — `{ ehKit: false, ehKitVirtual: true }`, the mismatch the
+ * Shopee publisher refuses (`kit-virtual-sem-kit`). That is the
+ * `produto-kit.cadastros` e2e flake; a second operator tab reaches the same
+ * state. Root `CLAUDE.md` rule 7: re-derive from what the transaction READ.
+ *
+ * ⚠️ **It decides on the RESULTING document** (`key in patch ? patch : current`),
+ * never on `current` alone: `saveRecord` merges `{ ...patch, ...derived }`, so
+ * only a returned key can override a patch that carries `ehKitVirtual: true`
+ * over a stored `ehKit: false` — and a patch turning «É kit» ON keeps the
+ * stored flag and map it would otherwise clear.
+ *
+ * It only ever switches OFF, so it can never mint a virtual kit or a map nobody
+ * wrote. Returns `{}` when the resulting document already holds the invariant.
+ * Strict `=== true`, like {@link ehKitVirtualEfetivo}.
+ */
+export function camposDeKitDoPatch(
+  current: Readonly<Record<string, unknown>> | null,
+  patch: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const resultante = (campo: string): unknown => (campo in patch ? patch[campo] : current?.[campo]);
+  const ehKit = resultante('ehKit');
+  const derivados: Record<string, unknown> = {};
+  if (resultante('ehKitVirtual') === true && !ehKitVirtualEfetivo({ ehKit, ehKitVirtual: true })) {
+    derivados.ehKitVirtual = false;
+  }
+  // Same rule as the editor's `deriveOnSave`: a non-kit carries no map, and the
+  // keys denorm (the delete guard's `array-contains`) goes with it.
+  if (ehKit !== true) {
+    if (resultante('componentesKit') != null) derivados.componentesKit = null;
+    if (resultante('componentesKitKeys') != null) derivados.componentesKitKeys = null;
+  }
+  return derivados;
+}
+
+/**
  * The fields a sole member MIRRORS from its parent — the create-time copy and
  * the ongoing sync are the same list, deliberately, so the two cannot drift into
  * disagreeing about what "a mirror" contains.
@@ -267,7 +423,7 @@ export function camposDeKitDoMembroUnico(
 
   return {
     ehKit,
-    ehKitVirtual: ehKit && parent.ehKitVirtual === true,
+    ehKitVirtual: ehKitVirtualEfetivo(parent),
     componentesKit: temComponentes ? componentesKit : null,
     // Sorted, order-stable: the keys feed an `array-contains` query and
     // Firestore arrays are order-sensitive.
@@ -293,22 +449,60 @@ export const CAMPOS_DE_KIT_DO_MEMBRO: readonly string[] = [
   'componentesKitKeys',
 ];
 
-export function espelhoDoMembroUnico(parent: ParentParaMembroUnico): Record<string, unknown> {
+/** Trim, and read an empty string as absent — the two skus compare normalised. */
+function skuTexto(sku: string | null | undefined): string | null {
+  const t = typeof sku === 'string' ? sku.trim() : '';
+  return t === '' ? null : t;
+}
+
+/**
+ * The mirrored fields that are a PLAIN COPY — identical whichever document they
+ * are read from. Everything derived lives in the two wrappers below.
+ */
+function camposComunsDoEspelho(p: ParentParaMembroUnico): Record<string, unknown> {
   return {
-    nome: (parent.nome ?? '').slice(0, PRODUTO_NOME_MAX),
-    sku: parent.sku ?? null,
-    codPai: parent.codPai ?? null,
-    gtin: parent.gtin ?? null,
-    publicado: parent.publicado === true,
-    ehUsado: parent.ehUsado === true,
-    ...camposDeKitDoMembroUnico(parent),
-    categoriaProdutoOuterRef: parent.categoriaProdutoOuterRef ?? null,
-    pesoLiquidoKg: parent.pesoLiquidoKg ?? null,
-    pesoBrutoKg: parent.pesoBrutoKg ?? null,
-    alturaCm: parent.alturaCm ?? null,
-    larguraCm: parent.larguraCm ?? null,
-    profundidadeCm: parent.profundidadeCm ?? null,
+    nome: (p.nome ?? '').slice(0, PRODUTO_NOME_MAX),
+    codPai: p.codPai ?? null,
+    gtin: p.gtin ?? null,
+    publicado: p.publicado === true,
+    ehUsado: p.ehUsado === true,
+    ...camposDeKitDoMembroUnico(p),
+    categoriaProdutoOuterRef: p.categoriaProdutoOuterRef ?? null,
+    pesoLiquidoKg: p.pesoLiquidoKg ?? null,
+    pesoBrutoKg: p.pesoBrutoKg ?? null,
+    alturaCm: p.alturaCm ?? null,
+    larguraCm: p.larguraCm ?? null,
+    profundidadeCm: p.profundidadeCm ?? null,
   };
+}
+
+/**
+ * What the PARENT projects onto its sole member — the value each mirrored field
+ * should hold.
+ *
+ * ⚠️ **This is no longer the same thing as "normalise a member for
+ * comparison", and keeping them one function is what breaks the mirror.** Every
+ * field used to be a plain copy, so projection and normalisation coincided and
+ * one function could serve both roles. `sku` is DERIVED, so they diverge: run
+ * this over a child already holding `X-UN` and it answers `X-UN-UN`, which
+ * {@link planejarSincronizacaoDoMembroUnico} reads as "the operator diverged
+ * this field" — and that verdict is permanent, so `sku` would never propagate
+ * again. Silent, and exactly the failure a mutation test caught here for
+ * `precos`. Use {@link espelhoArmazenadoDoMembro} for a stored member.
+ */
+export function espelhoDoMembroUnico(parent: ParentParaMembroUnico): Record<string, unknown> {
+  return { ...camposComunsDoEspelho(parent), sku: skuDoMembroUnico(parent.sku) };
+}
+
+/**
+ * How a member's STORED document is normalised before the three-way merge
+ * compares it — no derivation, because the value is already the derived one.
+ *
+ * See {@link espelhoDoMembroUnico} for why this is a second function rather than
+ * the same one.
+ */
+export function espelhoArmazenadoDoMembro(filho: ParentParaMembroUnico): Record<string, unknown> {
+  return { ...camposComunsDoEspelho(filho), sku: skuTexto(filho.sku) };
 }
 
 /**
@@ -423,7 +617,11 @@ export function planejarSincronizacaoDoMembroUnico(
 
   const antes = espelhoDoMembroUnico(paiAntes!);
   const depois = espelhoDoMembroUnico(paiDepois);
-  const atual = espelhoDoMembroUnico(filho);
+  // ⚠️ `espelhoArmazenadoDoMembro`, NOT `espelhoDoMembroUnico`: `filho` is the
+  // member's stored document, whose `sku` is already derived. Re-deriving it
+  // here appends a second suffix and every comparison below reads as an operator
+  // divergence — permanently.
+  const atual = espelhoArmazenadoDoMembro(filho);
 
   // ⛔ The kit group is decided ONCE, for all four fields together.
   //

@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { type Firestore, getFirestore } from 'firebase-admin/firestore';
+import { type Firestore, Timestamp, getFirestore } from 'firebase-admin/firestore';
+import {
+  MOTIVO_RESOLUCAO_RECEITA_KIT,
+  RETENCAO_HISTORICO_PRODUTO_DIAS,
+  chaveAvisoReceitaKitShopee,
+  chaveReceitaKitErp,
+  linhaVariacaoDeKit,
+  toOuterRef,
+} from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 
 import { recordProdutoModificationAndPropagate } from './onProdutoChanged';
@@ -246,7 +254,67 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     expect(child.precos).toEqual({ l1: { valor: 5 } }); // untouched
   });
 
-  it('a child write changing ONLY precos records no entry (echo suppressed)', async () => {
+  it('re-enabling propagation synchronizes independent child prices even when the parent map is unchanged', async () => {
+    const db = getDb();
+    const parentId = freshId('parent-reenable');
+    const childId = freshId('child-reenable');
+    const parentPrecos = { l1: { valor: 30 } };
+    await db
+      .collection('produtos')
+      .doc(parentId)
+      .set({ nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: false });
+    await db
+      .collection('produtos')
+      .doc(childId)
+      .set({ nome: 'Filho independente', paiId: parentId, precos: { l1: { valor: 5 } } });
+    await db.collection('produtos').doc(parentId).update({ propagatePriceToChildren: true });
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      parentId,
+      { nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: false },
+      { nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: true },
+      freshId('evt'),
+      EVENT_TIME_MICROS,
+    );
+
+    expect((await db.collection('produtos').doc(childId).get()).data()?.precos).toEqual(
+      parentPrecos,
+    );
+  });
+
+  it('a delayed re-enable delivery propagates the current parent map, never its stale snapshot', async () => {
+    const db = getDb();
+    const parentId = freshId('parent-delayed');
+    const childId = freshId('child-delayed');
+    const oldPrecos = { l1: { valor: 30 } };
+    const currentPrecos = { l1: { valor: 40 } };
+    await db.collection('produtos').doc(parentId).set({
+      nome: 'Pai',
+      paiId: null,
+      precos: currentPrecos,
+      propagatePriceToChildren: true,
+    });
+    await db
+      .collection('produtos')
+      .doc(childId)
+      .set({ nome: 'Filho', paiId: parentId, precos: { l1: { valor: 5 } } });
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      parentId,
+      { nome: 'Pai', paiId: null, precos: oldPrecos, propagatePriceToChildren: false },
+      { nome: 'Pai', paiId: null, precos: oldPrecos, propagatePriceToChildren: true },
+      freshId('evt-delayed'),
+      EVENT_TIME_MICROS,
+    );
+
+    expect((await db.collection('produtos').doc(childId).get()).data()?.precos).toEqual(
+      currentPrecos,
+    );
+  });
+
+  it('an Admin-SDK child write changing ONLY precos records no entry (echo suppressed)', async () => {
     const db = getDb();
     const childId = freshId('echo');
     const eventId = freshId('evt');
@@ -267,6 +335,33 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     );
 
     expect(await coreEntries(db, childId)).toHaveLength(0);
+  });
+
+  it('an authenticated child price edit records a reversible precos entry', async () => {
+    const db = getDb();
+    const childId = freshId('operator-price');
+    const eventId = freshId('evt');
+    const before = { nome: 'Variação', paiId: 'algumPai', precos: { l1: { valor: 5 } } };
+    const after = { nome: 'Variação', paiId: 'algumPai', precos: { l1: { valor: 20 } } };
+    await db.collection('produtos').doc(childId).set(after);
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      childId,
+      before,
+      after,
+      eventId,
+      EVENT_TIME_MICROS,
+      'documents/usuarios/u1',
+    );
+
+    const entries = await coreEntries(db, childId);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.data()).toMatchObject({
+      campos: ['precos'],
+      usuarioOuterRef: 'documents/usuarios/u1',
+      changes: { precos: { old: before.precos, new: after.precos } },
+    });
   });
 
   it('a child write changing nome records an entry without precos in campos', async () => {
@@ -293,6 +388,61 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     expect(entries).toHaveLength(1);
     const entry = entries[0]!.data();
     expect(entry.campos).toEqual(['nome']);
+  });
+
+  // The TTL policy on `historicoDeModificacoes` only fires on a real Timestamp —
+  // a numeric epoch is silently ignored and the row lives forever. The unit tests
+  // prove a Date is stamped; only a round trip through the SDK proves what LANDS.
+  it('stamps an ordinary entry with a Timestamp expiry the TTL policy can act on', async () => {
+    const db = getDb();
+    const produtoId = freshId('ttl');
+    const eventId = freshId('evt');
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      produtoId,
+      { nome: 'Antes', paiId: null },
+      { nome: 'Depois', paiId: null },
+      eventId,
+      EVENT_TIME_MICROS,
+    );
+
+    const stored = (
+      await db
+        .collection('produtos')
+        .doc(produtoId)
+        .collection('historicoDeModificacoes')
+        .doc(eventId)
+        .get()
+    ).get('expiraEm');
+    expect(stored).toBeInstanceOf(Timestamp);
+    expect((stored as Timestamp).toMillis()).toBe(
+      EVENT_TIME_MICROS / 1000 + RETENCAO_HISTORICO_PRODUTO_DIAS * 86_400_000,
+    );
+  });
+
+  it('stores no expiry on a price/cost entry, which is kept forever', async () => {
+    const db = getDb();
+    const produtoId = freshId('ttlkeep');
+    const eventId = freshId('evt');
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      produtoId,
+      { nome: 'P', paiId: null, custo: 10 },
+      { nome: 'P', paiId: null, custo: 12 },
+      eventId,
+      EVENT_TIME_MICROS,
+    );
+
+    const snap = await db
+      .collection('produtos')
+      .doc(produtoId)
+      .collection('historicoDeModificacoes')
+      .doc(eventId)
+      .get();
+    expect(snap.get('campos')).toEqual(['custo']);
+    expect(snap.get('expiraEm')).toBeUndefined();
   });
 
   it('is a no-op for a delete event (after undefined) — no entry, no propagation', async () => {
@@ -449,5 +599,257 @@ describe.skipIf(!EMULATED)('onProdutoChanged core — the sole member mirror (em
 
     const filho = await db.collection('produtos').doc(filhoId).get();
     expect(filho.data()?.precos).toEqual({ l1: { valor: 10 } });
+  });
+});
+
+/**
+ * The Shopee native-kit recipe aviso (step 19, #1527, L4(2)) — the trigger
+ * chained into the REAL shared decision (`reavaliarAvisoDeReceitaKit`) and the
+ * real aviso writer, over a real Firestore.
+ *
+ * The unit suites pin the gate and the wiring with the decision as a recorder;
+ * only here does a recipe edit actually open, keep or close a row. Every link and
+ * row is seeded in the shape the kit arms write — the rows through the schemas'
+ * own `linhaVariacaoDeKit`.
+ *
+ * ⚠️ The functions emulator runs the REAL `onProdutoChanged` too, so every
+ * produto `set()` here also reaches the same decision through a live delivery.
+ * That is harmless by design and is what these assertions lean on: the decision
+ * reads the CURRENT state and clocks its write by the newest commit it read, so
+ * a live delivery either agrees with the direct call or lands as a stale no-op.
+ * For the same reason nothing here asserts `ocorrencias`.
+ */
+describe.skipIf(!EMULATED)('onProdutoChanged core — the Shopee kit recipe aviso (emulator)', () => {
+  const comp = (quantidade: number) => ({ quantidade, limitarEstoque: true, timestamp: 1 });
+  /** What the kit on Shopee was created with — every row is stamped with it. */
+  const RECEITA_A = { 'comp-a': comp(2), 'comp-b': comp(1) };
+  /** The ERP edit Shopee cannot follow. */
+  const RECEITA_B = { 'comp-a': comp(3), 'comp-b': comp(1) };
+  const MODELOS = [2000458820, 2000458822] as const;
+
+  interface LinkSemeado {
+    readonly contaId: string;
+    readonly itemId: number;
+    readonly kitNativo?: boolean;
+    readonly estadoAnuncio?: string;
+    readonly substituido?: boolean;
+  }
+
+  /**
+   * A kit family K whose children all carry recipe A, and per link one
+   * kit-model row per child, stamped with A's fingerprint — the state a kit
+   * create leaves once Shopee's read-back folded equal.
+   */
+  async function semear(db: Firestore, filhos: number, links: readonly LinkSemeado[]) {
+    const kitId = freshId('kit');
+    const filhoIds = Array.from({ length: filhos }, () => freshId('c'));
+    await db.collection('produtos').doc(kitId).set({ nome: 'Kit', paiId: null, ehKit: true });
+    for (const filhoId of filhoIds) {
+      await db
+        .collection('produtos')
+        .doc(filhoId)
+        .set({ nome: 'Kit', paiId: kitId, ehKit: true, componentesKit: RECEITA_A });
+    }
+    const linkIds: string[] = [];
+    for (const link of links) {
+      const linkId = freshId('link');
+      linkIds.push(linkId);
+      await db
+        .collection('produtos')
+        .doc(kitId)
+        .collection('prodshopee')
+        .doc(linkId)
+        .set({
+          item_id: link.itemId,
+          kitNativo: link.kitNativo ?? true,
+          estadoAnuncio: link.estadoAnuncio ?? 'ativo',
+          contaProdutoShopeeOuterRef: toOuterRef(`integracao/${link.contaId}`),
+          substituidoPorLinkDocId: link.substituido === true ? freshId('link') : null,
+          substituidoEm: null,
+        });
+      for (const [i, filhoId] of filhoIds.entries()) {
+        await db
+          .collection('produtos')
+          .doc(filhoId)
+          .collection('variashopee')
+          .doc(freshId('v'))
+          .set(
+            linhaVariacaoDeKit({
+              contaRef: toOuterRef(`integracao/${link.contaId}`),
+              linkPath: toOuterRef(`produtos/${kitId}/prodshopee/${linkId}`),
+              modelId: MODELOS[i] ?? MODELOS[0],
+              tierIndex: [i],
+              modelStatus: 'NORMAL',
+              receitaKitConferida: chaveReceitaKitErp(RECEITA_A),
+            }),
+          );
+      }
+    }
+    return { kitId, filhoIds, linkIds };
+  }
+
+  const filhoCom = (kitId: string, receita: Record<string, unknown>) => ({
+    nome: 'Kit',
+    paiId: kitId,
+    ehKit: true,
+    componentesKit: receita,
+  });
+
+  /** Persist `after` (a trigger fires BECAUSE the write landed), then run the core. */
+  async function editar(db: Firestore, id: string, before: unknown, after: unknown) {
+    await db
+      .collection('produtos')
+      .doc(id)
+      .set(after as Record<string, unknown>);
+    await recordProdutoModificationAndPropagate(
+      db,
+      id,
+      before as never,
+      after as never,
+      freshId('evt'),
+      EVENT_TIME_MICROS,
+    );
+  }
+
+  async function aviso(db: Firestore, integracaoId: string, kitId: string) {
+    const snap = await db
+      .collection('avisos')
+      .doc(chaveAvisoReceitaKitShopee(integracaoId, kitId))
+      .get();
+    return snap.exists ? snap.data() : undefined;
+  }
+
+  const aberto = (a: Record<string, unknown> | undefined) =>
+    a !== undefined && a.resolvidoEm == null;
+
+  // ⛔ M157. Keyed per (conta, KIT): two divergent children of one kit are ONE
+  // aviso naming both — never one per child, which the recipe owner would be.
+  it('one aviso per (conta, kit), naming every divergent child', async () => {
+    const db = getDb();
+    const { kitId, filhoIds, linkIds } = await semear(db, 2, [
+      { contaId: 'int-1', itemId: 2500139870 },
+    ]);
+    const [c1, c2] = filhoIds as [string, string];
+    await db.collection('produtos').doc(c2).set(filhoCom(kitId, RECEITA_B));
+
+    await editar(db, c1, filhoCom(kitId, RECEITA_A), filhoCom(kitId, RECEITA_B));
+
+    const a = await aviso(db, 'int-1', kitId);
+    expect(aberto(a)).toBe(true);
+    expect(a).toMatchObject({
+      tipo: 'shopeeKitReceitaDivergente',
+      params: {
+        kit: kitId,
+        anuncio: '2500139870',
+        vinculo: linkIds[0],
+        variacoes: [c1, c2].sort().join(', '),
+      },
+    });
+    // Never keyed by the child that was saved.
+    expect(await aviso(db, 'int-1', c1)).toBeUndefined();
+  });
+
+  it('two contas selling the same kit are two avisos', async () => {
+    const db = getDb();
+    const { kitId, filhoIds } = await semear(db, 1, [
+      { contaId: 'int-1', itemId: 2500139870 },
+      { contaId: 'int-2', itemId: 2500139873 },
+    ]);
+    const [c1] = filhoIds as [string];
+
+    await editar(db, c1, filhoCom(kitId, RECEITA_A), filhoCom(kitId, RECEITA_B));
+
+    expect(aberto(await aviso(db, 'int-1', kitId))).toBe(true);
+    expect(aberto(await aviso(db, 'int-2', kitId))).toBe(true);
+  });
+
+  /**
+   * ⛔ M155. The operator edited A → B and back to A; the A → B delivery arrives
+   * LAST. Its `after` diverges from Shopee, but the produto as stored folded back,
+   * so the aviso must RESOLVE — a trigger deciding from the event would reopen a
+   * fixed problem.
+   */
+  it('a delayed delivery whose produto has since folded back RESOLVES the aviso', async () => {
+    const db = getDb();
+    const { kitId, filhoIds } = await semear(db, 1, [{ contaId: 'int-1', itemId: 2500139870 }]);
+    const [c1] = filhoIds as [string];
+    const comA = filhoCom(kitId, RECEITA_A);
+    const comB = filhoCom(kitId, RECEITA_B);
+
+    // Non-vacuous: the edit really opened it.
+    await editar(db, c1, comA, comB);
+    expect(aberto(await aviso(db, 'int-1', kitId))).toBe(true);
+
+    // The fold-back lands; then the stale A → B delivery runs against it.
+    await db.collection('produtos').doc(c1).set(comA);
+    await recordProdutoModificationAndPropagate(
+      db,
+      c1,
+      comA,
+      comB,
+      freshId('evt-atrasado'),
+      EVENT_TIME_MICROS,
+    );
+
+    const a = await aviso(db, 'int-1', kitId);
+    expect(a?.resolvidoEm).not.toBeNull();
+    expect(a?.resolucaoMotivo).toBe(MOTIVO_RESOLUCAO_RECEITA_KIT.receitaIgualAShopee);
+  });
+
+  // ⛔ M156. A kit that no longer sells cannot hold a stale recipe on Shopee.
+  it('a REMOVED native link opens nothing', async () => {
+    const db = getDb();
+    const { kitId, filhoIds } = await semear(db, 1, [
+      { contaId: 'int-1', itemId: 2500139870, estadoAnuncio: 'removido' },
+    ]);
+    const [c1] = filhoIds as [string];
+
+    await editar(db, c1, filhoCom(kitId, RECEITA_A), filhoCom(kitId, RECEITA_B));
+
+    expect(aberto(await aviso(db, 'int-1', kitId))).toBe(false);
+  });
+
+  it('a SUPERSEDED native link that reads banido opens nothing', async () => {
+    const db = getDb();
+    const { kitId, filhoIds } = await semear(db, 1, [
+      { contaId: 'int-1', itemId: 2500139870, estadoAnuncio: 'banido', substituido: true },
+    ]);
+    const [c1] = filhoIds as [string];
+
+    await editar(db, c1, filhoCom(kitId, RECEITA_A), filhoCom(kitId, RECEITA_B));
+
+    expect(aberto(await aviso(db, 'int-1', kitId))).toBe(false);
+  });
+
+  // ...and the near-miss (S2C-03): the old kit of a recriar whose delete did not
+  // take is superseded but STILL SELLS the old composition, so it keeps the aviso
+  // open — and the aviso names it, since `--link <it> --recriar` is its retry.
+  it('a SUPERSEDED native link that still sells KEEPS the aviso open', async () => {
+    const db = getDb();
+    const { kitId, filhoIds, linkIds } = await semear(db, 1, [
+      { contaId: 'int-1', itemId: 2500139870, substituido: true },
+    ]);
+    const [c1] = filhoIds as [string];
+
+    await editar(db, c1, filhoCom(kitId, RECEITA_A), filhoCom(kitId, RECEITA_B));
+
+    const a = await aviso(db, 'int-1', kitId);
+    expect(aberto(a)).toBe(true);
+    expect(a).toMatchObject({ params: { vinculo: linkIds[0] } });
+  });
+
+  // L0: every kit Lucas sells on Shopee today is an OLD-model kit — an ordinary
+  // listing, no native link. Editing one is the common case, and it must leave no
+  // row at all (not even a resolved watermark).
+  it('an old-model kit (ordinary listing, no native link) writes no aviso row at all', async () => {
+    const db = getDb();
+    const { kitId, filhoIds } = await semear(db, 1, [
+      { contaId: 'int-1', itemId: 2500139861, kitNativo: false },
+    ]);
+    const [c1] = filhoIds as [string];
+
+    await editar(db, c1, filhoCom(kitId, RECEITA_A), filhoCom(kitId, RECEITA_B));
+
+    expect(await aviso(db, 'int-1', kitId)).toBeUndefined();
   });
 });

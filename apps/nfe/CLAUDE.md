@@ -15,7 +15,10 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `xml_nfe_proc` sets `xml_assinado: null` in the **same** patch
    (`swapAnchorForProc` in `lib/nfe/orchestrator/audit.ts`) — the
    `nfeProc` embeds the signed XML, so the anchor is replaced, never
-   lost. Never clear `xml_assinado` any other way.
+   lost. Never clear `xml_assinado` any other way. That same patch carries
+   what is derived from the proc's own bytes: `totais` (#1491) and
+   `data_autorizacao`, the protocol's `dhRecbto` in ms (#1743). Each one is
+   omitted, never `null`, when it cannot be read.
 2. **No UI code.** Same shape as `apps/integrations`. The placeholder
    `page.tsx` exists only because Next requires a root route.
 3. **Auth is Bearer `idToken` from Firebase Auth — every route, no
@@ -41,6 +44,17 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    cert** — the process boots with NO env cert. The env cert (`NFE_CERT_*`) is
    OPTIONAL, built lazily by `base.envRuntime()` only as the
    `NFE_CERT_ENV_FALLBACK` cert + the `/api/health` diagnostics.
+   ⚠️ **One chain per TRANSPORT, and the contingency ones are LAZY.** The home
+   SEFAZ chain is read at build time; `rt.svc('svc-an'|'svc-rs')` and `rt.an()`
+   (the EPEC Ambiente Nacional drop-box) read
+   `ca/sefaz-{svc-an,svc-rs,an}-<ambiente>.pem` only on **first use** — so a
+   deploy or a CI job missing one boots green, passes every unit test, and
+   throws `NFeRuntimeConfigError` (ENOENT) the first time contingency is
+   actually activated. Nothing is checked in (`ca/.gitignore` ignores every
+   `sefaz-*.pem`), so each slot must be fetched explicitly:
+   `fetch:sefaz-ca --uf=AN --ambiente=homologacao`. That gap cost the
+   monthly EPEC live lane every run it ever had (#1393); the guard is
+   `packages/config-eslint/rules/sefaz-chain-fetch-coverage.test.js`.
    **Every SEFAZ call signs with the FILIAL's own A1**: orchestrator entry
    points take the base and call
    `lib/nfe/filial-cert.ts:resolveFilialRuntime(fs, baseRt, filialId)`, which
@@ -53,8 +67,16 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    (rejection 213), so a single env cert can only emit for one CNPJ — hence
    per-filial. A filial with no stored cert throws unless `NFE_CERT_ENV_FALLBACK`
    is on AND an env cert exists (then it uses the env cert — tests/dev only).
-   **Rotating a filial's cert needs an apps/nfe restart** (the decrypted cert
-   is process-cached; the upload route evicts its own instance's entry).
+   **An upload, rotation or removal reaches every instance within 15 min**
+   (`CERTIFICADO_CACHE_TTL_MS` in `@delfrance/schemas`, the TTL of the
+   `createCachedDocReader` in `filial-cert.ts`; #1680). The route evicts its own
+   instance at once; the others — and the `nfe` Functions codebase — keep
+   signing with what they had until the TTL, and the certificate screen tells
+   the operator so. An unchanged certificate is re-read per TTL but keeps its
+   decrypted key and keep-alive agent. Each verb writes the secret + the filial's `certificado` in ONE
+   `WriteBatch` (an unknown filial is a 404, never a stub doc), and the upload
+   carries a `lastUpdateTime` precondition from the read its CNPJ check used
+   (409 `FILIAL_ALTERADA`, #1680).
    Upload/remove via `POST`/`DELETE /api/nfe/certificado` (`PERM.configuracoes.write`).
    **Losing `NFE_CERT_ENC_KEY` = all stored filial certs become undecryptable**
    (re-upload required) — treat it as a secret.
@@ -66,7 +88,19 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    engine `impostoSchema`** (an invalid stamp is re-resolved and
    replaced — #398). When nothing resolves, emission fails loudly:
    `NFeMissingImpostoError` (absent) or `NFeOrchestratorError` naming the
-   bad sub-field (invalid stamp) — no silent fallback. The subcollection
+   bad sub-field (invalid stamp) — no silent fallback. An `imposto` that
+   passes `impostoSchema` but fails a build-time tribute guard (e.g. a
+   partial ICMSSN900/500 group, a draft `configuracaoIBSCBS` with RTC
+   on, or any `configuracaoISSQN` — the ERP emits no `ISSQNtot`, so the
+   NF-e conjugada is refused, #1656) is **not** re-resolved: it fails as
+   `NFeOrchestratorError` naming pedido/item/produto (400; batch errorCode
+   `'NFeOrchestratorError'`) with no número consumed (#506) — single path:
+   inside the allocation tx, generated before its first write; batch: a
+   pre-flight after prep whose verdict `runChunkAllocateTx` applies before
+   counting the member. ⚠️ Only a pedido that would GENERATE may fail on it —
+   never pre-flight in `prepareEmission`: a bloqueada / in-flight nRec /
+   EPEC-approved / crash-window nfev4 doc must return or retransmit as before,
+   whatever the live config now says. The subcollection
    names are the LEGACY Flutter wire names on purpose (#423) — the migrated
    corpus carries those names, so legacy tax config resolves natively (scope keys:
    produto = typo `impostoOpercaoOuterRef`, categoria =
@@ -91,6 +125,13 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `NODE_ENV='test'` passthrough — the transport one deliberately has none,
    because `nfe-live` runs the live homologação suites through Vitest, so a
    test escape there would disable the guard in the one job that reaches SEFAZ.
+   A third transport guard, `assertSafeEndpointForTransport`, judges the URL
+   rather than the label: a produção-only SEFAZ host is refused unless
+   `NFE_ALLOW_PRODUCAO=true`, and a `tpAmb='2'` call aimed at one is always
+   refused. ⚠️ Both NF-e `vitest.config.ts` files pin `NFE_AMBIENTE=homologacao`
+   and `NFE_ALLOW_PRODUCAO=''` AFTER the `.env`/shell spreads, so no Vitest run
+   can reach produção from a local `.env.local`; a test needing produção
+   semantics uses `vi.stubEnv` inside the test.
 9. **Never log raw error objects or cert/XML-bearing values in NF-e code
    paths; never read `NFE_CERT_*` env vars outside the unified loader.**
    Use `safeErrorShape(err)` for catch blocks and
@@ -178,7 +219,10 @@ functions/                         NESTED Cloud Functions codebase `nfe` — NOT
                                    cover it. See functions/DEPLOY.md.
   src/reconciliar.ts               reconciliarNfe (onTaskDispatched) — the queue consumer
   src/sweep.ts                     nfeReconcileSweep (onSchedule) — the backstop
-proxy.ts                           CORS for /api/nfe/* (browser callers)
+proxy.ts                           CORS for /api/nfe/* (browser callers): GET/POST/DELETE,
+                                   exposes Content-Disposition. A non-safelisted verb a route
+                                   exports (not GET/HEAD/POST) must be in Allow-Methods —
+                                   config-eslint `cors-proxy-covers-routes`
 ```
 
 ## Dev
@@ -189,10 +233,12 @@ pnpm dev                           # all apps from the repo root
 curl http://localhost:3004/api/health
 ```
 
-Port: **3004** (3000 = web, 3001 = integrations, 3002 = webchat). The
+Port: **3004** (3000 = web, 3001 = integrations, 3002 = legal). The
 homologação chain at `packages/integrations/nfe/ca/sefaz-sp-homologacao.pem`
 must exist — `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca`
-captures it on first setup.
+captures it on first setup. Exercising **contingência** needs its transport's
+own chain as well (rule 4 above) — `--uf=SVC-AN`, `--uf=SVC-RS`, and
+`--uf=AN` for EPEC.
 
 ## Async reconcile: task queue (primary) + scheduled sweep (backstop)
 
@@ -204,10 +250,71 @@ Terraform. `infra/terraform` does not exist in this repo.
 enqueues a task at `now + tMed` onto the **`reconciliarNfe` Firebase Functions
 task queue** — `onTaskDispatched` auto-provisions the queue on deploy, named
 after the function. `reconciliarNfe` consults by recibo and re-enqueues with
-backoff until terminal (capped at `MAX_RECONCILE_ATTEMPTS`; cStat 656 =
-consumo indevido is terminal and never retried — re-querying it risks a SEFAZ
-ban). The CC-e linkage re-check (`kind: 'cce-vinculo'`, cStat 136) rides the
-**same** queue, discriminated by `kind`.
+backoff until terminal. **One decision per round** (`decidirRodadaDoRecibo`,
+`orchestrator/lote-sem-protocolo.ts`, #513/#1654): our `protNFe` (strict
+chave equality) is applied when final; a 539 is recovered; a processed lote
+(104) without it, a per-NF-e verdict at LOTE level (never a final estado
+without a protocol), a 106, or a duplicidade 204/205/218/635 is resolved **by
+chave** — ONE `consSitNFe` per round (none on a 106's first round: the receipt
+may not be indexed yet), read through one recovery table
+(`classificarConsSitDeRecuperacao`): a 217 frees the número only when the
+protocol was merely missing or the receipt not found — for a duplicidade it is
+terminal (539 is facultative, the número may be held under another chave), for
+635 it means "still queued" — and a denegada is applied only for a missing
+protocol (since NT 2024.001, produção 2024-09-16, mod 55 has no denial: a
+consSit denial is a pre-2024-09-16 record whose número is held, while a doc
+refused today with 302/303/307/781 is a plain rejection and stays re-emittable —
+never add those to `STATUS_BLOQUEADORES`, #1733); 103/105/107/108/109/113/114 (or a cStat that is not TStat-shaped) say
+nothing and wait; a lote-level 656 or a refused receipt query is terminal
+(656 = consumo indevido is never retried — re-querying it risks a SEFAZ ban).
+**Every round that leaves a doc in flight advances its `retries` by exactly
+one** — an `enviando` doc is written `aguardandoResposta`, a recovered 539
+continues its own count — so a doc gets at most `MAX_RECONCILE_ATTEMPTS`
+receipt rounds and consSit calls between two operator actions; the manual
+verify, a new emit lote and the sweep's consult-by-chave branch for docs
+without an `nRec` still reset it. **Every terminal the decision makes carries a
+blocking cStat** (`terminalBloqueante`; the 539 recovery keeps its #243
+terminals, cStat 539 included): the round's own 103/104/105, else 103 — SEFAZ issued
+this receipt — with the real cStat as an xMotivo prefix, so the pedido cannot
+be re-emitted over a número SEFAZ may hold; "Verificar novamente"
+(`consultarChavePersistida`) then consults by chave through the same decision
+and table, without counting (a receipt that says nothing puts the doc back in
+flight on it, paced; a stored `rejeitada` is left as it is by that, a 656 or a
+refused receipt query — but not by a 103/105, whose lote holding the chave is
+still pending at SEFAZ), and `verificarEnviNfeMsgs` stops a run on its
+`consumoIndevido` flag, since the persisted cStat no longer shows the 656. A
+receipt answering serviço paralisado (108/109/113/114) is paced
+`RECONCILE_INDISPONIVEL_DELAY_MS` (one hour, `esperaMinimaDoRecibo`) — the
+task's re-enqueue and the doc's `proximaConsultaEm` alike, so the sweep stays
+behind the task — and the cap then rides out about ten hours of outage before
+the docs need a manual verify. **Every** write of `reconcileByRecibo` is
+guarded in its transaction on the receipt, the `retries` it was decided from
+and an in-flight estado (`PersistGuard`), so a concurrent terminal or counted
+write wins and the doc is tallied by its live estado; a recovered 539's chave
+swap rides that same write (`extrasDaTrocaDeChave` — `recover539.ts` writes
+nothing to the nfev4 doc — only its `consReciNFe` audit entry — #1654), so a refused write swaps nothing either, in the manual verify
+too. One failing doc no longer aborts the round — only for three named causes
+(rule 6): a doc deleted mid-round (`NFeDocAusenteError`, the guarded persist's
+missing-doc throw) is skipped; a transient Firestore failure
+(`isTransientGrpcError`, gRPC 4/8/10/13/14, `@delfrance/data/admin/grpcErrors`)
+leaves the doc pending, uncounted unless its by-chave round had already written
+the count before its consSit — so a doc whose Firestore failure persists
+re-enqueues with no cap, one `consReciNFe` per round; a failed SOAP call of the
+539 recovery counts the round, on THIS receipt (the 539's `[nRec:]` marker
+names the other chave's lote and never re-keys the doc). Anything else is
+rethrown. A breaker stops further consSit
+calls after a 656 or an unavailable service — per lote on the task path; across
+the sweep's lotes, a 656 per filial and an outage per filial + authorizer (home
+/ SVC-AN / SVC-RS, `autorizadorDe`). The doc ends terminal or stays counted.
+The breaker lives in a cell the CALLER owns (`DisjuntorConsSit`), written in
+place the moment a consSit answer trips it — before any further await — so a
+lote whose reconcile throws after a trip still hands it to the sweep's next
+lote. ⚠️ On the task path a throw still reaches the queue retry without it
+(the cell dies with the run); since the named causes no longer throw, that is
+left to anything else thrown after a trip — a bug, a non-transient Firestore
+error (gRPC 3/7/9) — (follow-up: a durable per-filial suspension). The
+CC-e linkage re-check (`kind: 'cce-vinculo'`, cStat 136) rides the **same**
+queue, discriminated by `kind`.
 
 Transport is `firebase-admin`'s `getFunctions().taskQueue(...).enqueue(...)`
 (`lib/nfe/tasks.ts`) — no queue path, no runner SA, no `google-auth-library`.
@@ -226,7 +333,207 @@ silently drops. Pinned twice: a load-time assert in `functions/src/index.ts`
 pre-existing stuck docs, and transmits approved EPECs once the filial leaves
 contingency. It covers both `nfev4` lotes and `cartacorrecao` records, and is
 gated per-doc by `proximaConsultaEm`, so it never consults ahead of a task's
-schedule. No `gcloud scheduler` job to wire — it deploys with the codebase.
+schedule — nor over a send in progress: every emit claim stamps the
+persist-before-send anchor with its send reservation (#1675, see "Overlapping
+emits" below), so the sweep waits it out whatever `timeoutMs` the manual route
+was given (that knob was an overlap vector). An `nfev4` doc with no
+`proximaConsultaEm` (the chave-less batch placeholder, #512's `enviando`
+dispositions — whose outcome write released the reservation —, imported legacy
+docs) waits `DEFAULT_STUCK_TIMEOUT_MS` from its last write instead (#1653); a
+`cartacorrecao` record with none is due at once. No `gcloud scheduler` job to wire — it deploys with the codebase. Its four
+per-item catches follow rule 6 through ONE table (`orchestrator/falhas.ts`,
+`descreverFalhaConhecida`, #1654): a failure of a known class — the NF-e and
+orchestrator classes, `ZodError`, the Cloud Tasks enqueue's
+`FirebaseFunctionsError` / `FirebaseAppError` / `NFeTasksEnqueueError` /
+`MissingRegionError`, a Firestore gRPC error (`'FirestoreRpcError'`) — is recorded in `errors` with its
+message and the run goes on; an unknown class is a bug and is rethrown, so the run aborts loudly
+(the scheduled function fails and the next tick retries; the manual route
+answers 500) and the lotes after it wait for that retry. A new exported error
+class fails `falhas.test.ts` until it is placed in the table or listed as never
+reaching a reporting catch. ⚠️ That backstop scans exported CLASSES only, so a
+plain Node `Error` escaping a known operation is invisible to it. A filial's
+stored key that no longer decrypts (a rotated `NFE_CERT_ENC_KEY`, a tampered
+blob) is exactly that case: it is recorded only because `resolveFilialCert`
+raises it as the `NFeCertError` it documents — as Node's plain `Error` it would
+abort every run, for every filial.
+
+**Lote reply without a receipt (#512).** An async `retEnviNFe` WITHOUT `infRec`
+carries no `nRec`, so there is nothing to consult by recibo: `processChunk`
+persists one disposition per member at emit time (`patchForLoteSemRecibo`,
+written by `persistLoteSemRecibo` through `persistPatchUnlessFinal` guarded by
+the chunk's `idLote`, so a doc a newer lote re-stamped or one that went final is
+left alone and reported `reused` with its live state, never as this run's
+outcome), enqueues **no** task and makes no SEFAZ call beyond the lote
+itself. The disposition comes from the LOTE cStat alone — a `protNFe` in that
+reply and an xMotivo `[nRec:…]` marker are both ignored. A **fresh** member's
+refusal is conclusive, because its bytes were never sent before and the número
+is free: 656 → `error`; 108/109/113/114 and every rejection (4-digit cStats
+included) → `rejeitada`, keeping SEFAZ's cStat/xMotivo; the sweep never scans
+either. A **#396 crash-window** member (retransmitted with its STORED bytes)
+stays an anchor on ANY refusal — `aguardandoResposta`, cStat recorded, no
+`nRec` — since an earlier send of those exact bytes may already be authorized
+and a `rejeitada`/`error` doc would regenerate over them; on 656 its
+`proximaConsultaEm` is pushed out 1 h (`CONSUMO_INDEVIDO_ESPERA_MS`, the
+consumo-indevido window), otherwise the default pacing applies. 103/105/106 →
+`aguardandoResposta`, paced as usual. A per-NF-e verdict (100/150, 101/151, 102,
+110/301/302) or an anomaly (104, 107, duplicidade, or a cStat that is not the
+XSD's 3–4 digits, such as an empty `<cStat/>`) at LOTE level says nothing about
+any member: the doc stays `enviando` with the cStat recorded — never `aprovada`
+without a proc, never a número-reusing `rejeitada`. These `enviando`
+dispositions carry no `proximaConsultaEm`, so the sweep's due-fallback
+(`isStuckEnviando`) picks them up once their `ultima_modificacao` is
+`DEFAULT_STUCK_TIMEOUT_MS` (5 min) old, at the next sweep tick after that
+(#1653). ⚠️ A member whose lote cStat was 103/104/105 carries a
+`STATUS_BLOQUEADORES` cStat, so both emit paths stop at `isBloqueada` before the
+#396 crash-window branch: an operator re-emit is a no-op (reported `reused`,
+"Em processamento") and only the sweep recovers it. Every in-flight disposition
+is recovered by the sweep's `consSitNFe(chave)`, once per doc when due; never
+inline, which for a 20-member lote would be the #77 fan-out.
+
+**The sync path shares it (#1654 §1).** `applyAutorizadoOutcome` (the single
+emit, and a chunk that shrank to one member) applies only OUR `protNFe` — strict
+chave equality; a protNFe for another chave is ignored with a warning — and a
+sync reply with no protocol for the chave and no `infRec` takes the SAME
+disposition through the same lote-guarded write (`persistirDisposicaoSemRecibo`),
+the stored-bytes nuance decided by `origem` (`runAllocateGenerateSignTx`'s
+`storedBytes`, `processChunk`'s `storedPaths`). So a FRESH NF-e refused with
+108/109/113/114 is `rejeitada` and `POST /emitir` answers 422, as the batch path
+has since #512, a lote-level 100/101/102 without a protocol leaves it `enviando`,
+and a 106 is no longer consulted inline. The one exception is a lote-level
+duplicidade (204/205/218/539/635): one member means no fan-out and no reply
+smeared over N, so it keeps its inline recovery — 539 and an `[nRec:]` marker as
+before, otherwise ONE `consSitNFe` read through the reconcile's recovery table
+(`classificarConsSitDeRecuperacao` keyed by `motivoPorChave`): a final answer is
+applied; "still queued" (635 + 217) or an unavailable service leaves a #396
+anchor (`aguardandoResposta`, no `nRec`, no proc, nothing enqueued); anything
+else — a protNFe for another chave included — is a blocking terminal
+(`terminalBloqueante`: 104 inside a 104 reply, else 103). OUR protNFe carrying
+a duplicidade (204/205/218/635) or a 106 reads its consSit through the same
+table — our 204 inside a 104 + consSit 217 is a blocking `error` 104, never
+`rejeitada`. Those three — and, since #1675, every other write of the run — are
+written under the same lote guard. The pós-EPEC transmission
+(`origem 'pos-epec'`) keeps its old handling byte for byte (follow-up, #1730),
+its writes owned by its claim's idLote (#1675). ⚠️ The anchors this leaves are
+recovered by the sweep's consult-by-chave branch for docs without an `nRec`,
+which is still uncounted and blind to the recovery table — a 204/635 anchor
+whose consSit later answers 217 turns `rejeitada` there (follow-up, #1717). Its
+write is guarded by the scan's read since #1675 (see below).
+
+**A batch member's failure is reported only for a known class (#1654 §3).**
+`emitirPedidosLote` files a member's failure as an `EmitError` through
+`toEmitError`, which reads the sweep's table (`descreverFalhaConhecida`,
+`orchestrator/falhas.ts`): a known class is reported by its literal code — the
+`name` it always had, except that an enqueue failure is now
+`'FirebaseFunctionsError'` (an HTTP error reply), `'FirebaseAppError'` (the
+network, a timeout, the access token) or `'NFeTasksEnqueueError'` (the
+service-account lookup the SDK leaves unwrapped: under Application Default
+Credentials each instance's first enqueue asks the metadata server, and
+`tasks.ts` converts that gaxios failure), and an Admin-SDK Firestore failure
+`'FirestoreRpcError'`, all of which used to read `'Error'`. Those enqueue
+failures — `MissingRegionError` included — stay a per-member report, since the
+enqueue runs after the send, on members already in flight on their `nRec`; so
+does `NFeConsumoIndevidoError`. Any other class is a bug and is rethrown
+(rule 6): the batch rejects, `POST /emitir-lote` answers 500,
+and every other member's report in that request is lost with it. What that
+leaves behind: at prep, ONE bug aborts all ≤50 pedidos with nothing written or
+sent; at 4b (generate/sign) the chunk's healthy fresh members are already
+unsent #396 anchors, which a re-emit retransmits with their stored bytes (or
+the sweep's consSit recovers); after the send each member's reply is audited
+before its write, so a member whose write threw is still its anchor — the
+state stays consistent, only the report is lost. ⚠️ So `apps/web` no longer
+auto-retries `emitir`/`emitirLote` on a 5xx or a network error — only on this
+app's own pre-send 503, recognised by its body `error: 'NF-e runtime not
+ready'` (`isRuntimeNotReadyBeforeSend`, `apps/web/lib/nfe/withNFeRetry.ts`),
+never by `NFeRuntimeNotReadyError` alone: the client maps every 503 to that
+class, Cloud Run's own mid-request one included. An emit re-POST is a no-op
+only for a bloqueada, `nRec`-in-flight or still-being-sent pedido (#1675), and
+`runChunkAllocateTx` / `runAllocateGenerateSignTx` REGENERATE and RE-SEND every
+`rejeitada`/`error` one, so a retried lote re-sent whatever the lost attempt had
+just seen refused. A transient 5xx on emit now reaches the operator, who
+re-clicks — the lote dialog calls the outcome of any failure but a 400/401/403
+or that 503 unknown, and points at the NF column first. ⚠️ **Deploy apps/web no later than apps/nfe**: an older web re-POSTs
+the new 500 up to three times, each re-POST re-sending the members the previous
+attempt left `rejeitada`/`error`.
+
+**Overlapping emits (#1675).** One live run per nfev4 doc. While an emit's SOAP
+call is in flight its anchor (`enviando`, chave + `xml_assinado`, no `nRec`) is
+indistinguishable from a #396 crash-window doc, so a second emit — a re-click, a
+second tab, the reprint path's 30 s deadline, the sweep racing an operator —
+used to retransmit the stored bytes over the live run, and both runs' outcome
+writes were last-writer-wins. Now:
+- **The send reservation.** Every claim that is about to call SEFAZ stamps
+  `proximaConsultaEm` at `now + ENVIO_EM_CURSO_MS` (360 s = App Hosting's 300 s
+  ceiling + 60 s; pinned by `http-client-timeout-ceiling.test.js`) on the doc it
+  sends: the single path's allocation transaction (fresh, regenerated, or a
+  crash-window retransmit), batch 4a for stored-bytes members, batch 4b's anchor
+  write, and the pós-EPEC claim. `envioEmCurso` (audit.ts) reads it — µs only,
+  never against the ms `ultima_modificacao` — on a doc with no `nRec` that is
+  `enviando`, `aguardandoResposta` or `'p'`. A hit is answered with the doc as
+  is (`reused: true`, HTTP 200; apps/web says "NF-e em processamento"), with no
+  SOAP call and no número consumed. The run's own outcome write releases it
+  (`buildPersistData` always rewrites the field); a thrown SOAP/transport error
+  releases nothing — the reservation expires, after which a crashed run's anchor
+  is a crash window again and a re-emit retransmits it (the MOC's
+  pendente-de-retorno caution: SEFAZ may still be processing). The same gate
+  holds a re-emit of a paced no-receipt `aguardandoResposta` anchor until it is
+  due — about 2 min, one hour after a 656 (the consumo-indevido wait).
+- **The idLote is the claim token.** Every write an emit run makes in answer to
+  its SEFAZ round-trip — the main sync outcome (proc swap and a recovered 539's
+  chave swap included), the async 103 hand-off, the EPEC event, the pós-EPEC
+  468 — goes through `persistPatchUnlessFinal` with `expectedIdLote`: a run that
+  outlived its reservation while another emit claimed the doc reports the live
+  doc as `reused` and writes (and enqueues) nothing. `requireInFlight` is
+  deliberately not added: an authoritative 100 still lands over a stale
+  `rejeitada`.
+- **Consult writes are owned by their read.** `consultarChavePersistida` (the
+  manual verify and the `consultarPedido` CLI) and the sweep's no-nRec consult
+  decide on a doc read BEFORE their SOAP call, so they write with
+  `expectedUpdateTime` (the snapshot's `updateTime` as read) +
+  `refuseWhileReserved`: a doc written since, or under a live send, is left
+  alone. Without it a verify that read the doc just before an emit claimed it
+  wrote 217 → `rejeitada` over the live send, and the next emit regenerated.
+- **One chave per número on the batch path.** Between the chunk transaction
+  (4a, placeholder or reuse member stamped with the chunk's idLote — reuse
+  members WITHOUT a reservation, so a failed generate never holds a
+  fix-and-resend) and 4b's anchor write, a single emit may claim the doc and
+  send its own chave for that nNF, or a consult may write a blocking terminal
+  (same idLote). 4b writes through `gravarAncoraDoLote`, a transaction that
+  re-checks every premise 4a decided on (idLote, not final, no blocking cStat,
+  no receipt in flight, no live reservation): a refused member is dropped from
+  the lote and reported with the live doc.
+- **The pós-EPEC claim.** `transmitirPosEpec` stamps its fresh idLote + the
+  reservation through `reivindicarEnvio` before sending; an operator emit and the
+  sweep can no longer both transmit one `'p'` doc.
+- **A duplicate EPEC (`disposicaoDoEpec`, epec.ts).** 485 (duplicidade de
+  numeração do EPEC, NT 2014.001 rule 3P12-10) and 573 (duplicidade de evento,
+  3P15-10) mean an EPEC is ALREADY registered. On a #396 anchor's STORED bytes it
+  is ours — an earlier send whose reply was lost — so the doc becomes `'p'`
+  WITHOUT `xml_epec_proc` (SEFAZ's cStat kept, the reason appended), never
+  `rejeitada`: a `rejeitada` regenerates over the bytes the EPEC summarises and
+  the pós-EPEC transmission then answers 467 (an orphaned EPEC). Its DANFE waits
+  for the pós-EPEC authorization (`nfeImprimivel` in `@delfrance/schemas` — the
+  rule for which `'p'` doc prints, shared by apps/web and `danfe.ts`);
+  recovering the protocol itself is #314. On FRESH bytes the EPEC on record
+  describes other data — `error`, naming the manual conciliation, and never
+  re-sent by an emit (`epecPendenteDeConciliacao`: both claim transactions skip
+  it like a bloqueada). A superseded run's registered (135/136) reply fills in
+  that protocol, fill-only and only onto the very bytes it describes
+  (`completarProtocoloEpec`). The manual verify and the `consultarPedido` CLI
+  never consult a `'p'` doc: the home SEFAZ answers 217 until the Ambiente
+  Nacional shares the EPEC (then 124, which this app does not read as
+  authorized either). Residuals: a 485 is keyed on the número, so after a
+  cross-month regenerate (new chave) a stored-bytes 485 may belong to the old
+  chave — the pós-EPEC transmission then answers 468/467 (#1730 bounds that
+  loop); and when the superseded run's 135 lands while the newer run is still
+  mid-call, the heal finds no `'p'` yet and the protocol stays only in the
+  enviNfe audit row. An in-flight `tpEmis=4` anchor that never became `'p'` is
+  still consulted at the home SEFAZ by the sweep, the manual verify and the CLI
+  (#1807).
+⚠️ Cross-slot overlaps (a re-emit after a contingency-mode switch lands in
+another `s1`/`s4`/`s6`/`s7` slot) are a separate follow-up (#1806), and so is the
+sweep consulting an in-flight EPEC anchor at the home SEFAZ (#1807). Deploy the App
+Hosting backend and `functions:nfe` in the SAME window: an old sweep transmits
+a `'p'` doc without claiming it.
 
 `POST /api/nfe/processar-pendentes` still exists, but only as a **manual/ops
 trigger** for that same core (`lib/nfe/handlers/runProcessarPendentes.ts`),

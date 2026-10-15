@@ -28,6 +28,7 @@ import {
   getSvcEndpoints,
   hasNFeCertEnv,
   loadCertificateFromEnv,
+  NFeEndpointError,
   type AnServiceUrls,
   type NFeCertificate,
   type NfeServiceUrls,
@@ -49,6 +50,18 @@ export class NFeRuntimeConfigError extends Error {
     super(message);
     this.name = 'NFeRuntimeConfigError';
   }
+}
+
+/**
+ * Every way `getNFeRuntime()` reports a misconfigured deploy: a bad
+ * `NFE_AMBIENTE` or an unreadable TLS chain (`NFeRuntimeConfigError`), and an
+ * `NFE_UF` with no wired SEFAZ endpoints — `getEndpoints` throws its own
+ * `NFeEndpointError` for that, so narrowing on `NFeRuntimeConfigError` alone
+ * turns a bad UF into an opaque 500. Routes answer both with 503; anything else
+ * is a bug and must surface.
+ */
+export function isNFeRuntimeMisconfig(e: unknown): e is NFeRuntimeConfigError | NFeEndpointError {
+  return e instanceof NFeRuntimeConfigError || e instanceof NFeEndpointError;
 }
 
 /** A contingency authorizer's resolved transport: its URLs + an mTLS agent pinned to ITS chain. */
@@ -134,6 +147,10 @@ function resolveChainPath(uf: string, ambiente: Ambiente): string {
     const pkgJsonPath = require_.resolve('@delfrance/integrations-nfe/package.json');
     const candidate = join(dirname(pkgJsonPath), 'ca', filename);
     if (existsSync(candidate)) return candidate;
+    // `require.resolve` fails with a plain `Error` (MODULE_NOT_FOUND,
+    // ERR_PACKAGE_PATH_NOT_EXPORTED, or a bundler's own shape under Turbopack),
+    // and every one of them means the same thing here: try the next strategy.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- any resolve failure falls through to the cwd walk
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     // require.resolve failures fall through to the cwd-relative walk.

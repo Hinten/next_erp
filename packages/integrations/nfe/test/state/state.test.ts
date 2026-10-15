@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
+import { type EstadoNFe, ESTADO_NFE, UF_SIGLA } from '@delfrance/schemas';
 import {
   ESTADOS_FINAIS_NFE,
   applyOutcome,
   classifyCStat,
   cStatToEstado,
+  isBloqueada,
+  isCStat,
   isEstadoFinalNFe,
   CSTAT_EPEC_DUPLICIDADE,
   CSTAT_EPEC_NAO_SINCRONIZADO,
@@ -12,11 +14,14 @@ import {
   MAX_LOTE_POLL_RETRIES,
   MAX_RECONCILE_ATTEMPTS,
   nextAction,
+  esperaMinimaDoRecibo,
   nextConsultaDelayMs,
   RECONCILE_BASE_DELAY_MS,
+  RECONCILE_INDISPONIVEL_DELAY_MS,
   RECONCILE_MAX_DELAY_MS,
   resolveTpEmis,
 } from '../../src/state/index';
+import * as barril from '../../src/index';
 
 describe('classifyCStat', () => {
   it.each([
@@ -50,9 +55,57 @@ describe('classifyCStat', () => {
     ['215', 'rejeitada-schema'],
     ['225', 'rejeitada-schema'],
     ['999', 'rejeitada'],
+    // WIDTH pins (#512): `TStat` is `[0-9]{3,4}` (tiposBasico_v4.00.xsd), and
+    // the NT 2025.002 IBS/CBS codes are 4 digits. Each row is also a NEAR-MISS
+    // of a 3-digit code it must NOT be confused with: 100/101/102/108/110/656
+    // by SUFFIX (1100…1656) and by PREFIX (1000…6560; 110 is a prefix of
+    // 1100–1110 too), and the 290–298 numeric range by magnitude (2900) — so an
+    // `endsWith`, a `startsWith`, or a range test without an upper bound reds
+    // here.
+    ['1115', 'rejeitada'],
+    ['1100', 'rejeitada'],
+    ['1101', 'rejeitada'],
+    ['1102', 'rejeitada'],
+    ['1108', 'rejeitada'],
+    ['1110', 'rejeitada'],
+    ['1656', 'rejeitada'],
+    ['1000', 'rejeitada'],
+    ['1010', 'rejeitada'],
+    ['1020', 'rejeitada'],
+    ['1080', 'rejeitada'],
+    ['6560', 'rejeitada'],
+    ['2900', 'rejeitada'],
+    // The certificate set 290–298 is EXACT strings (#329). Its edges stay
+    // distinct from their neighbours, and a leading-zero 4-digit value — a
+    // valid `TStat` shape — is not the 3-digit code it would parse to: the old
+    // `Number(cStat)` range folded '0290' onto 290.
+    ['291', 'rejeitada-certificado'],
+    ['295', 'rejeitada-certificado'],
+    ['289', 'rejeitada'],
+    ['299', 'rejeitada'],
+    ['0290', 'rejeitada'],
+    ['0298', 'rejeitada'],
+    ['0100', 'rejeitada'],
+    ['0656', 'rejeitada'],
   ] as const)('classifies %s as %s', (cStat, expected) => {
     expect(classifyCStat(cStat)).toBe(expected);
   });
+});
+
+describe('isCStat — the XSD TStat shape, [0-9]{3,4} (NT 2025.002 §5.1)', () => {
+  it.each(['000', '100', '999', '0100', '1115', '9999'])('accepts %j', (v) => {
+    expect(isCStat(v)).toBe(true);
+  });
+
+  // Near-misses of every kind a looser check would let through: wrong width,
+  // surrounding whitespace, signs/exponents a Number() parse accepts, and
+  // non-ASCII digits a \d with the `u` flag or a locale parse might accept.
+  it.each(['', '1', '10', '12345', 'abc', '10a', ' 100', '100 ', '100\n', '+100', '1e3', '١٠٠'])(
+    'rejects %j',
+    (v) => {
+      expect(isCStat(v)).toBe(false);
+    },
+  );
 });
 
 describe('cStatToEstado', () => {
@@ -76,6 +129,34 @@ describe('cStatToEstado', () => {
   });
   it('151 (cancelamento fora de prazo) → cancelada', () => {
     expect(cStatToEstado('151')).toBe(ESTADO_NFE.cancelada);
+  });
+  it('a 4-digit cStat (1115) → rejeitada (#512 width pin)', () => {
+    expect(cStatToEstado('1115')).toBe(ESTADO_NFE.rejeitada);
+  });
+});
+
+// #1733. NT 2024.001 (produção 2024-09-16, Ajuste SINIEF 43/23 — vendored at
+// `.claude/skills/nfe/references/sources/nt/2024/NT2024_001_v1_20.pdf`) removed
+// denial for mod 55: 302 (RV 5E17-40), 303 (5E17-60) and 307 (1C17-50) became
+// rejections, and the emitente's irregularity is now 781 (1C17-38). The número
+// is free, so a doc refused with one of them must stay re-emittable once the
+// cadastro is regularized. Adding any of them to STATUS_BLOQUEADORES — #1733's
+// proposed fix — would strand that pedido for good. 110 and 301 are left
+// unpinned: SEFAZ no longer produces them for mod 55, so they can only describe
+// an NF-e denied before that date, and blocking them would be harmless.
+describe('STATUS_BLOQUEADORES — a cadastro irregularity is a rejection since NT 2024.001', () => {
+  it.each(['302', '303', '307', '781'])(
+    'cStat %s → rejeitada and NOT bloqueada: the pedido stays re-emittable',
+    (cStat) => {
+      expect(cStatToEstado(cStat)).toBe(ESTADO_NFE.rejeitada);
+      expect(isBloqueada(cStat)).toBe(false);
+    },
+  );
+
+  // Near-miss: the list is not empty — an authorized NF-e and a received lote
+  // still block a re-emit.
+  it.each(['100', '103'])('cStat %s stays bloqueada', (cStat) => {
+    expect(isBloqueada(cStat)).toBe(true);
   });
 });
 
@@ -125,6 +206,9 @@ describe('nextAction', () => {
   });
   it('656 (consumo indevido) → backoff', () => {
     expect(nextAction('656', 0)).toBe('backoff');
+  });
+  it('a 4-digit cStat (1115) → done-rejected (#512 width pin)', () => {
+    expect(nextAction('1115', 0)).toBe('done-rejected');
   });
 });
 
@@ -348,26 +432,62 @@ describe('nextConsultaDelayMs', () => {
   });
 });
 
+describe('esperaMinimaDoRecibo — a paralisado receipt is paced, never polled at backoff (#1654)', () => {
+  it('RECONCILE_INDISPONIVEL_DELAY_MS is one hour — longer than any backoff step', () => {
+    expect(RECONCILE_INDISPONIVEL_DELAY_MS).toBe(3_600_000);
+    expect(RECONCILE_INDISPONIVEL_DELAY_MS).toBeGreaterThan(RECONCILE_MAX_DELAY_MS);
+  });
+
+  it.each(['108', '109', '113', '114'])(
+    'lote cStat %s (serviço paralisado) → one hour',
+    (cStat) => {
+      expect(esperaMinimaDoRecibo(cStat)).toBe(RECONCILE_INDISPONIVEL_DELAY_MS);
+    },
+  );
+
+  it.each(['104', '105', '106', '107', '103', '656', '1080', '1090', 'abc', ''])(
+    'lote cStat %s → null (the normal backoff applies)',
+    (cStat) => {
+      expect(esperaMinimaDoRecibo(cStat)).toBeNull();
+    },
+  );
+
+  it('over the whole 3/4-digit space, non-null exactly for 108/109/113/114', () => {
+    const todos = Array.from({ length: 10_000 }, (_, i) => String(i).padStart(3, '0'));
+    expect(todos.filter((c) => esperaMinimaDoRecibo(c) != null)).toEqual([
+      '108',
+      '109',
+      '113',
+      '114',
+    ]);
+  });
+
+  it('both are exported from the package barrel (apps/nfe imports them from there)', () => {
+    expect(barril.RECONCILE_INDISPONIVEL_DELAY_MS).toBe(RECONCILE_INDISPONIVEL_DELAY_MS);
+    expect(barril.esperaMinimaDoRecibo).toBe(esperaMinimaDoRecibo);
+  });
+});
+
 describe('resolveTpEmis', () => {
   it('mode none → 1 for any UF', () => {
-    expect(resolveTpEmis('SP')).toBe(1);
-    expect(resolveTpEmis('PR', 'none')).toBe(1);
+    expect(resolveTpEmis(UF_SIGLA.SP)).toBe(1);
+    expect(resolveTpEmis(UF_SIGLA.PR, 'none')).toBe(1);
   });
 
   it("mode 'svc' resolves per UF — SP (SVC-AN) → 6", () => {
-    expect(resolveTpEmis('SP', 'svc')).toBe(6);
-    expect(resolveTpEmis('MG', 'svc')).toBe(6);
+    expect(resolveTpEmis(UF_SIGLA.SP, 'svc')).toBe(6);
+    expect(resolveTpEmis(UF_SIGLA.MG, 'svc')).toBe(6);
   });
 
   it("mode 'svc' resolves per UF — PR (SVC-RS) → 7", () => {
-    expect(resolveTpEmis('PR', 'svc')).toBe(7);
-    expect(resolveTpEmis('BA', 'svc')).toBe(7);
+    expect(resolveTpEmis(UF_SIGLA.PR, 'svc')).toBe(7);
+    expect(resolveTpEmis(UF_SIGLA.BA, 'svc')).toBe(7);
   });
 
   it("mode 'epec' → 4 for ANY UF (the evento goes to the Ambiente Nacional)", () => {
-    expect(resolveTpEmis('SP', 'epec')).toBe(4);
-    expect(resolveTpEmis('PR', 'epec')).toBe(4);
-    expect(resolveTpEmis('AM', 'epec')).toBe(4);
+    expect(resolveTpEmis(UF_SIGLA.SP, 'epec')).toBe(4);
+    expect(resolveTpEmis(UF_SIGLA.PR, 'epec')).toBe(4);
+    expect(resolveTpEmis(UF_SIGLA.AM, 'epec')).toBe(4);
   });
 });
 

@@ -47,7 +47,22 @@ describe('AvisoCanaisNaoSuportados', () => {
     // cannot pass vacuously against a phrase this component never renders.
     expect(screen.getByText(/serão pulados/)).toBeTruthy();
     expect(screen.getByText(/Shopee BR/)).toBeTruthy();
+    // Shopee's Phase 0 survey says it CAN push stock; what is missing is our
+    // backend. The warning must say that, not "nobody checked".
+    expect(screen.getByText(/ainda não foi implementado/)).toBeTruthy();
+  });
+
+  it('gives an unsurveyed channel the OTHER reason, word for word', () => {
+    // The near-miss for the sentence above: same "pulado" verdict, different
+    // reason. Magalu has had no Phase 0 survey, so the honest sentence is that
+    // nobody has checked — never that Magalu cannot.
+    renderAviso(
+      [alvo(['magalu-1'])],
+      [['magalu-1', integracao({ nome: 'Magalu BR', tipo: INTEGRACAO_TIPO.magalu })]],
+    );
+    expect(screen.getByText(/Magalu BR/)).toBeTruthy();
     expect(screen.getByText(/ainda não foi verificado/)).toBeTruthy();
+    expect(screen.queryByText(/não oferece/)).toBeNull();
   });
 
   it('says nothing when every conta in the selection is supported', () => {

@@ -76,6 +76,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   // rate. No Firestore write on this path.
   try {
     await createMpTaskScheduler().enqueue(payload);
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- any enqueue failure is persisted for the sweep; a 5xx makes MP disable the webhook
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     // The enqueue path failed (IAM not granted / transport / disabled). Persist

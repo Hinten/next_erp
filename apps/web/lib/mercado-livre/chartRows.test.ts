@@ -4,6 +4,7 @@ import type { MlSizeChart, Variante } from '@delfrance/schemas';
 import type { ChartColumn } from './chartSpec';
 import {
   type ChartRowDraft,
+  adoptChartRowIds,
   cellErrorKey,
   duplicateChart,
   describeChartValidationError,
@@ -641,5 +642,53 @@ describe('validateChartName', () => {
   it('rejects an empty name and one over 60 characters', () => {
     expect(validateChartName('   ')).toMatch(/Informe/);
     expect(validateChartName('a'.repeat(61))).toMatch(/60/);
+  });
+});
+
+describe('adoptChartRowIds', () => {
+  function draft(key: string, overrides: Partial<ChartRowDraft> = {}): ChartRowDraft {
+    return {
+      key,
+      id: null,
+      varianteUid: key,
+      cells: { SIZE: { value_id: null, value_name: '01', valueList: null } },
+      deleted: false,
+      ...overrides,
+    };
+  }
+
+  it('assigns ids by submitted key while preserving cells, keys, order and staged deletion', () => {
+    const first = draft('row-01');
+    const second = draft('row-1', {
+      cells: { SIZE: { value_id: null, value_name: '90,5', valueList: null } },
+    });
+    const deleted = draft('deleted', { deleted: true });
+    const added = draft('added-after-send');
+    const current = [second, first, added, deleted];
+    const result = adoptChartRowIds(current, [first, deleted, second], {
+      rows: [{ id: 'ML-1:1' }, { id: 'ML-1:2' }],
+    });
+
+    expect(result).toEqual([
+      { ...second, id: 'ML-1:2' },
+      { ...first, id: 'ML-1:1' },
+      added,
+      deleted,
+    ]);
+    expect(result[0]?.cells).toBe(second.cells);
+    expect(result[1]?.cells).toBe(first.cells);
+    expect(current[0]?.id).toBeNull();
+    expect(result[2]).toBe(added);
+    expect(result[3]).toBe(deleted);
+  });
+
+  it('keeps the current identity when the response assigns none, and retains unchanged rows', () => {
+    const first = draft('one', { id: 'ML-1:1' });
+    const second = draft('two', { id: 'ML-1:2' });
+    const result = adoptChartRowIds([first, second], [first, second], {
+      rows: [{ id: null }, { id: 'ML-1:2' }],
+    });
+    expect(result[0]).toBe(first);
+    expect(result[1]).toBe(second);
   });
 });

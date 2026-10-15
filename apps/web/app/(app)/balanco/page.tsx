@@ -30,6 +30,7 @@ export default function BalancoPage() {
       db={getFirebaseFirestore()}
       meta={balancoMeta}
       rowHref={(id) => `/balanco/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/balanco/novo">
           Novo balanço

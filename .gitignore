@@ -77,3 +77,5 @@ dbg_trace/
 # operator dump of `node apps/mercado-livre/scripts/check-stock-indexes.mjs`
 # (hundreds of KB of staging explain plans) — read it, never commit it
 /gate-output.txt
+
+.private/

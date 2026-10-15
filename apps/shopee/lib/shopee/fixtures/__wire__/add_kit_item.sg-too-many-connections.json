@@ -1,0 +1,5 @@
+{
+  "error": "product.error_busi",
+  "message": "Failed to create product : external error: insert mtsku snapshot err; err : database error|Error 1040: Too many connections>DBGeneral: Spex error code REDACTED: AddMtskuEventSnapshot returns error, source: marketplace.listing.item.itemmanagement.mtsku.create_and_link_single_mtsku_by_mpsku_item, code: REDACTED",
+  "warning": ""
+}

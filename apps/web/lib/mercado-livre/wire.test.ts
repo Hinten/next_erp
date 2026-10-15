@@ -89,6 +89,22 @@ describe('a field the deployed backend may not send yet', () => {
 
     expect(r.itemIds).toBeUndefined();
     expect(r.orfaosEncerrados).toBeUndefined();
+    // …and one predating #745 carries no fiscal summary either.
+    expect(r.dadosFiscais).toBeUndefined();
+  });
+
+  it('⭐ reads the #745 fiscal summary when the backend sends it', () => {
+    const r = publicarResultSchema.parse({
+      itemId: 'MLB1',
+      estado: 'p',
+      permalink: null,
+      dadosFiscais: {
+        enviados: 1,
+        omitidos: [{ produtoId: 'p2', sku: null, motivo: 'sem SKU' }],
+        erros: [],
+      },
+    });
+    expect(r.dadosFiscais?.omitidos[0]?.sku).toBeNull();
   });
 
   it('⭐ fills allowedUnits with [] rather than rejecting the attribute', () => {

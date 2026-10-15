@@ -1,10 +1,30 @@
 /**
  * Typed errors raised by the browser `FreightHttpClient`. Each maps to a
- * failure shape the `apps/integrations` freight routes return; the client
+ * failure shape the `apps/melhor-envio` freight routes return; the client
  * narrows the HTTP status so callers (`apps/web`) branch on
  * `err instanceof <X>` instead of inspecting numbers. Mirrors the nfe
  * package's `http-provider/errors.ts`.
  */
+
+/**
+ * Wire `code`s the `apps/melhor-envio` routes put in their `{ error, code }`
+ * envelope and this client reads back. ONE literal for both sides: the server
+ * imports these from this browser-safe subpath, so the two cannot drift. (The
+ * older `ME_REAUTH` / `ME_LABEL_TERMINAL` predate this and are still written
+ * out on each side.)
+ */
+/** `504` — Melhor Envio itself did not answer in time (`MelhorEnvioTimeoutError`, #1679). */
+export const FREIGHT_CODIGO_ME_TIMEOUT = 'ME_TIMEOUT';
+/**
+ * `423` — another `comprar` for the same pedido holds the in-flight claim
+ * (#1677): it is still running, or a paid step of it failed without
+ * confirmation and the claim is held until it expires.
+ *
+ * Emitted by the `comprar` route's claim. Until this client grows a typed arm
+ * for it, a 423 reads as a plain `FreightServerError` carrying the route's own
+ * message — which is why it is a 423 and never a 409 (see `errorFromResponse`).
+ */
+export const FREIGHT_CODIGO_COMPRA_EM_ANDAMENTO = 'ME_COMPRA_EM_ANDAMENTO';
 
 /** Base — every HTTP-originated freight error is at least this. */
 export class FreightHttpError extends Error {
@@ -82,7 +102,54 @@ export class FreightLabelTerminalError extends FreightHttpError {
   }
 }
 
-/** 5xx — internal `apps/integrations` failure. */
+/**
+ * `423 { code: 'ME_COMPRA_EM_ANDAMENTO', leaseExpiraEmMs }` — another `comprar`
+ * for the same pedido holds the server's in-flight claim (#1677): it is still
+ * running, or a paid step of it failed without Melhor Envio's confirmation and
+ * the claim is held until it expires. The message is the route's own pt-BR copy
+ * (it already says how long to wait).
+ *
+ * ⚠️ A SUBCLASS of `FreightHttpError`, like `FreightSchemaError`: every caller
+ * that narrows on the base keeps working, and one that wants to treat it as
+ * "do not re-click" narrows on this class first.
+ */
+export class FreightCompraEmAndamentoError extends FreightHttpError {
+  /** When the holding claim expires (ms epoch), or `null` when the route did not say. */
+  public readonly leaseExpiraEmMs: number | null;
+  constructor(message: string, leaseExpiraEmMs: number | null, body: unknown) {
+    super(message, 423, body);
+    this.name = 'FreightCompraEmAndamentoError';
+    this.leaseExpiraEmMs = leaseExpiraEmMs;
+  }
+}
+
+/** `412` — a label was PAID but the pedido no longer points at it (#1677). */
+export const FREIGHT_CODIGO_ETIQUETA_DESVINCULADA = 'ME_ETIQUETA_DESVINCULADA';
+
+/**
+ * `412 { code: 'ME_ETIQUETA_DESVINCULADA', printLabelId, printUrl }` — the buy
+ * went through and the label is PAID, but the pedido's frete was re-pointed,
+ * cleared or deleted while it ran, so nothing references it. The one buy
+ * failure where a second click is guaranteed to pay twice: the pedido carries
+ * no anchor any more, so the next buy starts fresh. A caller should not leave
+ * a "Comprar" armed right next to it (the buy modal closes).
+ */
+export class FreightEtiquetaDesvinculadaError extends FreightHttpError {
+  public readonly printLabelId: string | null;
+  public readonly printUrl: string | null;
+  constructor(
+    message: string,
+    etiqueta: { readonly printLabelId: string | null; readonly printUrl: string | null },
+    body: unknown,
+  ) {
+    super(message, 412, body);
+    this.name = 'FreightEtiquetaDesvinculadaError';
+    this.printLabelId = etiqueta.printLabelId;
+    this.printUrl = etiqueta.printUrl;
+  }
+}
+
+/** 5xx — internal `apps/melhor-envio` failure. */
 export class FreightServerError extends FreightHttpError {
   constructor(message: string, status: number, body: unknown) {
     super(message, status, body);
@@ -112,9 +179,12 @@ export class FreightSchemaError extends FreightHttpError {
 }
 
 /**
- * Network-level failure — DNS, connection refused, timeout, abort. The
- * request never reached `apps/integrations`. Distinct from server errors
- * so callers can retry client-side.
+ * Network-level failure within the first seconds of a request — DNS, connection
+ * refused, a CORS refusal, a connection dropped while the body was still
+ * arriving. No complete response arrived. ⚠️ That does NOT mean the route never
+ * RAN — a connection can drop after the request left — so a caller that re-sends
+ * a buy on this error is making the same bet `FreightTimeoutError` spells out. A
+ * failure that arrives LATE is a `FreightTimeoutError`.
  */
 export class FreightNetworkError extends Error {
   public override readonly cause?: unknown;
@@ -122,5 +192,55 @@ export class FreightNetworkError extends Error {
     super(message);
     this.name = 'FreightNetworkError';
     if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/**
+ * The request's OUTCOME IS UNKNOWN (#1094): this client's own deadline expired
+ * (`origem: 'prazo'`), or the platform gateway gave up on the request
+ * (`origem: 'gateway'`) — read as a 504 no route of ours wrote when the caller
+ * can see the status, and in a cross-origin browser (where that 504 carries no
+ * CORS headers) as a network failure after the request had been in flight past
+ * `LIMIAR_FALHA_TARDIA_MS` — or the route answered that MELHOR ENVIO stopped
+ * answering it (`origem: 'provedor'`, a `504 { code: 'ME_TIMEOUT' }`, #1679),
+ * which on a buy can mean the label was paid all the same.
+ *
+ * ⚠️ Either way something may still be running it — for `'prazo'`/`'gateway'`
+ * the server (no route observes a client abort, and Cloud Run keeps processing
+ * after its own 504); for `'provedor'` Melhor Envio itself, which never learns
+ * the route stopped waiting. So the message says so, and nothing in this repo
+ * re-sends automatically on it.
+ *
+ * ⚠️ A SUBCLASS of `FreightNetworkError`, never a sibling: every freight catch
+ * site narrows on `FreightHttpError` / `FreightNetworkError` (or on
+ * `freightErrorMessage` returning `null`) and rethrows anything else, so a
+ * sibling class would land as an unhandled rejection in the checkout's
+ * `void`-ed print handlers. Code that wants the distinct copy puts a
+ * `FreightTimeoutError` arm BEFORE its `FreightNetworkError` arm.
+ */
+export class FreightTimeoutError extends FreightNetworkError {
+  public readonly origem: 'prazo' | 'gateway' | 'provedor';
+  /**
+   * The deadline that expired: ours for `'prazo'`, the route's per-call Melhor
+   * Envio deadline for `'provedor'` (when it sent one), `null` for a gateway 504
+   * (the platform's clock, which nobody reports).
+   */
+  public readonly timeoutMs: number | null;
+  /** The client method that timed out (`'comprar'`, `'conta'`, …). */
+  public readonly operacao: string;
+  constructor(
+    message: string,
+    detalhes: {
+      readonly origem: 'prazo' | 'gateway' | 'provedor';
+      readonly timeoutMs: number | null;
+      readonly operacao: string;
+    },
+    cause?: unknown,
+  ) {
+    super(message, cause);
+    this.name = 'FreightTimeoutError';
+    this.origem = detalhes.origem;
+    this.timeoutMs = detalhes.timeoutMs;
+    this.operacao = detalhes.operacao;
   }
 }

@@ -1,61 +1,27 @@
 'use client';
 
 import type { FieldConfig } from '@delfrance/ui';
-import { depositoCollection } from '@/lib/data/depositoCollection';
-import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
-import { operacaoCollection } from '@/lib/data/operacaoCollection';
-import { refRenderInput } from '@/components/collection-select/refRenderInput';
-import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
-import { CorInput } from '@/components/inputs/CorInput';
+import {
+  integracaoExcludedFields,
+  integracaoFieldsCompartilhados,
+} from '../../_components/integracaoFieldOverrides';
 
 /**
- * Field config shared by the Mercado Livre create and edit screens — the
- * shared `integracao` outer-ref selectors the later ML milestones consume:
- * filial + operações (order import), tabelas de preço (price sync) and
- * depósito (stock push). Mirrors the Balcão overrides.
+ * Field config shared by the Mercado Livre create and edit screens.
+ *
+ * The outer-ref selectors the later ML milestones consume — filial + operações
+ * (order import), tabelas de preço (price sync), depósito (stock push) — plus
+ * `cor`/`nome`/`ativo`/`padrao` now come from
+ * `integracaoFieldsCompartilhados`, the single definition every channel screen
+ * shares; `canal` is what names them "do Mercado Livre". Only the ML-only field
+ * below lives here.
  */
 export const mercadoLivreFields: Record<string, FieldConfig> = {
-  filialIntegracaoPedidoOuterRef: {
-    label: 'Filial',
-    hint: 'Filial dos pedidos importados do Mercado Livre.',
-    renderInput: filialRefRenderInput(true),
-  },
-  tabelaNormalOuterRef: {
-    label: 'Tabela de preços',
-    renderInput: refRenderInput(listaDePrecosCollection, true),
-  },
-  tabelaPromocionalOuterRef: {
-    label: 'Tabela promocional',
-    renderInput: refRenderInput(listaDePrecosCollection, false),
-  },
-  operacaoOuterRef: {
-    label: 'Operação fiscal',
-    renderInput: refRenderInput(operacaoCollection, false),
-  },
-  operacaoDevolucaoOuterRef: {
-    label: 'Operação de devolução',
-    renderInput: refRenderInput(operacaoCollection, false),
-  },
-  depositoOuterRef: {
-    label: 'Depósito',
-    hint: 'Depósito de onde o estoque é enviado ao Mercado Livre.',
-    renderInput: refRenderInput(depositoCollection, true),
-  },
+  ...integracaoFieldsCompartilhados({ canal: 'Mercado Livre' }),
   modoEnvioMercadoLivre: {
     label: 'Modo de envio',
     hint: 'Enviado em toda publicação e republicação desta conta. Vazio: não enviar o modo — o Mercado Livre aplica o padrão da conta.',
   },
-  // Surfaced now that the colour is READ somewhere: /produtos paints one badge
-  // per canal de venda with it. While this field stayed excluded, every ML
-  // conta had `cor = null` and rendered neutral grey — and ML is the channel
-  // most produtos are listed on, so the column's colour said nothing.
-  cor: {
-    hint: 'Cor de destaque do canal — usada nos badges de "Canais de venda" em /produtos.',
-    renderInput: CorInput,
-  },
-  nome: { label: 'Nome' },
-  ativo: { label: 'Ativo' },
-  padrao: { label: 'Padrão' },
 };
 
 /**
@@ -65,29 +31,11 @@ export const mercadoLivreFields: Record<string, FieldConfig> = {
  *    first slice (surfaced later by the milestone that consumes them). `cor`
  *    was in that group and has now been surfaced — /produtos consumes it.
  *  - `dataCadastro` is stamped automatically on create.
- *  - the per-channel account fields below (#289) are irrelevant here too —
- *    even `user_id`, which IS this channel's own field, is stamped by the
- *    OAuth connect flow, not hand-edited — see each field's own comment.
+ *  - every OTHER channel's flat account field (#289) is irrelevant here, and
+ *    left visible each renders as a raw number/text input.
+ *  - `user_id` IS this channel's own field, hidden anyway: it is stamped by the
+ *    OAuth connect flow (`serverOwnedFields` on `integracaoMeta`), never
+ *    hand-edited — hence the explicit `extra`, since the shared rule keeps the
+ *    owner's own fields visible.
  */
-export const mercadoLivreExcludedFields = [
-  'tipo',
-  'cpf_cnpj',
-  'idCadIntTran',
-  'modalidadeFreteImportacao',
-  'dataCadastro',
-  'ultimaModificacao',
-  'user_id', // latent leak (rendered as a raw number input) — per-channel field, hidden here, surfaced by their own channel screens/flows
-  'shop_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'main_account_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'tabelasAtacado', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'selling_partner_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'tenant_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'wa_id', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
-  'waba_id', // WhatsApp field — hidden here, surfaced by its own channel screen
-  'phoneNumberId', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
-  'numero', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
-  'verificado', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
-  'mensagem_automatica', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
-  'mensagem_inatividade', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
-  'horario_funcionamento', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
-];
+export const mercadoLivreExcludedFields = integracaoExcludedFields('mercadoLivre', ['user_id']);

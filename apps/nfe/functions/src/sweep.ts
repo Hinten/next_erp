@@ -16,7 +16,9 @@ import { getDb } from './lib/admin';
  * (CC-e `aguardandoVinculo`) records (#241) — the `scanned/recovered/stillPending`
  * counters below are the combined tally of both. Gated per-doc by
  * `proximaConsultaEm`, so it never consults ahead of a task's schedule. Per-doc
- * errors are reported, not thrown.
+ * failures of a known class are reported, not thrown; an unknown class (a bug)
+ * is rethrown by the core (rule 6, #1654), so this run fails loudly and the
+ * next tick retries.
  */
 export const nfeReconcileSweep = onSchedule(
   { schedule: '0,30 8-19 * * 1-5', timeZone: 'America/Sao_Paulo' },
@@ -36,7 +38,8 @@ export const nfeReconcileSweep = onSchedule(
         `stillPending=${result.stillPending} errors=${result.errors.length}`,
     );
     if (result.errors.length > 0) {
-      // Per-doc failures (already isolated) — log a redacted summary for ops.
+      // Per-doc failures of a known class (already isolated) — log a redacted
+      // summary for ops.
       logger.warn(
         'nfeReconcileSweep per-doc errors',
         result.errors.map((e) => ({ chave: e.chave, error: e.error })),

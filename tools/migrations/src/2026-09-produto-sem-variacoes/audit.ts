@@ -45,11 +45,14 @@ import {
  * production belongs in the coordinated cutover window (#1402 is that step).
  * The flag is REJECTED rather than ignored, so nobody can assume it worked.
  *
- * ## No index required, and deliberately so
+ * ## One index per walk — the document key — and deliberately so
  *
  * Every walk here is a plain `orderBy(documentId())` key-order scan with the
- * tests done in memory — the ONE ordering Firestore always serves without a
- * declared index.
+ * tests done in memory, riding the DECLARED key indexes `produtos(__name__ ASC)`,
+ * `pedidos(__name__ ASC)` and `balanco(__name__ ASC)` (#1895, listed in
+ * `key-walks.json`). Enterprise has no implicit key index: without one every
+ * page re-scans the whole collection (staging, #1895: 1,665 index rows read per
+ * page of 300 on `pedidos`). Those key indexes are the ONLY ones this needs.
  *
  * ⚠️ `where('paiId','==',null)` looks cheaper and is a trap. On Firestore
  * ENTERPRISE an undeclared filter never throws `FAILED_PRECONDITION` — it
@@ -103,7 +106,10 @@ const VEREDITOS_RELATADOS: ReadonlySet<VereditoProduto> = new Set<VereditoProdut
   'orfao',
 ]);
 
-/** Page any collection by document id — stable cursor, bounded memory, no index. */
+/**
+ * Page any collection by document id — stable cursor, bounded memory. Rides the
+ * collection's declared `__name__ ASC` key index (#1895, `key-walks.json`).
+ */
 async function* pagesByDocId(base: Query): AsyncGenerator<QueryDocumentSnapshot[]> {
   let cursor: QueryDocumentSnapshot | undefined;
   for (;;) {
@@ -297,8 +303,8 @@ async function contarReservasAbertas(ctx: MigrationContext): Promise<ReservasAbe
  *
  * ⚠️ An open balanço stores `estado: null` — the unstored `'aberto'`
  * (`balanco.ts:95-108`). Filtering in memory rather than with `where('estado','==',null)`
- * keeps the walk index-free and treats an ABSENT key the same as a stored null,
- * which `balancoAceitaLancamento` also does.
+ * keeps the walk on its key index alone (no filter index) and treats an ABSENT
+ * key the same as a stored null, which `balancoAceitaLancamento` also does.
  */
 async function lerDepositosEmBalanco(ctx: MigrationContext): Promise<Set<string>> {
   const depositos = new Set<string>();
@@ -392,6 +398,22 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   // exact failure this report exists to prevent.
   const conversao = { moveria: 0, ficariaNoPai: 0, naoCanonica: 0, depositoRuim: 0 };
   const residual = { produtos: 0, unidades: 0, naoCanonica: 0, depositoRuim: 0 };
+  /**
+   * Kit exposure — `referenciasDeKit` has been built for free on the pass-1 walk
+   * since this script was written, and reached only the per-row
+   * `nKitsQueReferenciam`. There was no headline, so the two questions a human
+   * actually has to answer before the window were unanswerable from the report:
+   *
+   *  - **how much of the corpus the conversion moves out from under a kit** —
+   *    every reference pointing at a produto the conversion converts is a kit map
+   *    that must be repointed, or that kit reads 0 and the ML sweep publishes 0;
+   *  - **the WORST fan-out for a single produto** — ADR 0014 measured ~2 000 kits
+   *    sharing one component on the printed-shirt catalogue, and whether the
+   *    repoint cascade can run inline or needs a queue is decided by that number
+   *    and nothing else. Guessing it either over-builds or ships a trigger that
+   *    times out mid-sweep.
+   */
+  const kits = { refsParaConverter: 0, maxPorProduto: 0, produtoMaisReferenciado: '' };
 
   for (const produto of corpus.produtos) {
     const paiId = typeof produto.paiId === 'string' && produto.paiId !== '' ? produto.paiId : null;
@@ -410,6 +432,18 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
       resumo,
     });
     porVeredito.set(veredito, (porVeredito.get(veredito) ?? 0) + 1);
+
+    // ⚠️ Counted for EVERY produto, above the `relatar` gate — the max fan-out is
+    // a property of the corpus, and a produto whose verdict earns no JSONL row can
+    // still be the one sitting in two thousand kits.
+    const nKits = corpus.referenciasDeKit.get(produto.id) ?? 0;
+    if (nKits > kits.maxPorProduto) {
+      kits.maxPorProduto = nKits;
+      kits.produtoMaisReferenciado = produto.id;
+    }
+    if (veredito === 'simples-com-estoque' || veredito === 'simples-sem-estoque') {
+      kits.refsParaConverter += nKits;
+    }
 
     const ehResiduoDeFamilia = veredito === 'ja-familia' && resumo?.temEstoque === true;
 
@@ -475,6 +509,17 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
           `existente(s) ainda guardam ${residual.unidades} unidade(s) no pai — ` +
           `${residual.naoCanonica} com linha não canônica, ${residual.depositoRuim} com depósito irreconhecível`
       : '[produto-sem-variacoes] famílias existentes NÃO foram medidas (use --target residuais)',
+  );
+  log(
+    `[produto-sem-variacoes] composições de kit que a conversão obriga a reapontar: ` +
+      `${kits.refsParaConverter} referência(s)`,
+  );
+  log(
+    kits.maxPorProduto > 0
+      ? `[produto-sem-variacoes] pior fan-out: o produto ${kits.produtoMaisReferenciado} é ` +
+          `componente de ${kits.maxPorProduto} kit(s) — é este número que decide se o reaponte ` +
+          `automático cabe inline ou precisa de fila (ADR 0014 mediu ~2000 no pior caso)`
+      : `[produto-sem-variacoes] nenhum produto é componente de kit`,
   );
   // No silent caps: say what was counted but not written out.
   log(

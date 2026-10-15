@@ -1,7 +1,7 @@
 'use client';
 
 import { forwardRef, useState } from 'react';
-import { ActionIcon, Button, Group, Modal, Stack, Text, TextInput } from '@mantine/core';
+import { ActionIcon, Button, Modal, Stack, Text, TextInput } from '@mantine/core';
 import { IconSearch } from '@tabler/icons-react';
 import type { PedidoCandidate } from '@/lib/checkout/loadPedidoCheckout';
 

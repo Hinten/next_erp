@@ -24,6 +24,7 @@ import {
   historicoFtIni,
   historicoModificacaoPedido,
   orderML,
+  linkPgtoMercadoPago,
 } from './pedido';
 import { counter } from './counter';
 import { configIa } from './configIa';
@@ -45,6 +46,7 @@ import { filial } from './filial';
 import { bandeiraCartao } from './bandeiraCartao';
 import { nfe } from './nfe';
 import { nfeConfig } from './nfeConfig';
+import { apuracaoSimples, simplesNacionalConfig } from './simplesNacionalConfig';
 import { enviNfeMsg } from './enviNfeMsg';
 import { inutNumeracao } from './inutilizacaoNumeracao';
 import { cartaCorrecao } from './cartaCorrecao';
@@ -52,6 +54,7 @@ import { impostoProduto } from './impostoProduto';
 import { impostoCategoria } from './impostoCategoria';
 import { regraImposto } from './regraImposto';
 import { arquivo } from './storage/arquivo';
+import { aviso } from './aviso';
 
 /**
  * Every DomainSchema in the package, in barrel-export order. This is the
@@ -80,6 +83,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   historicoFtIni,
   historicoModificacaoPedido,
   orderML,
+  linkPgtoMercadoPago,
   counter,
   configIa,
   conversa,
@@ -101,6 +105,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   tokenDuravel,
   notificacaoMercadoLivre,
   questionMercadoLivre,
+  aviso,
   cargo,
   cmun,
   usuario,
@@ -117,6 +122,8 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   bandeiraCartao,
   nfe,
   nfeConfig,
+  simplesNacionalConfig,
+  apuracaoSimples,
   enviNfeMsg,
   inutNumeracao,
   cartaCorrecao,

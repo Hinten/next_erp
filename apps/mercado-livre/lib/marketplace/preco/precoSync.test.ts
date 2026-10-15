@@ -28,6 +28,10 @@ import {
   PriceSyncAlreadyRunningError,
   type PriceSyncApi,
   type PriceSyncRunDeps,
+  cancelPriceSyncJob,
+  expiraEmDoEnvio,
+  expiraEmDoRelatorio,
+  finalizePriceSyncJob,
   processPriceSyncJob,
   startPriceSyncJob,
 } from './precoSync';
@@ -178,6 +182,39 @@ class FakeDb {
     };
     return b;
   }
+
+  /**
+   * Enough of `runTransaction` for `finalizePriceSyncJob` — a PASS-THROUGH, as
+   * in `massImport.test.ts`'s FakeDb: `tx.get`/`tx.set` delegate straight to the
+   * ref, with no OCC and no retry.
+   *
+   * ⚠️ So the race specs below prove the guard's LOGIC — that the decision is
+   * re-derived from a read taken inside the callback, and that the loser becomes
+   * a no-op — and NOT that Firestore's OCC would abort and retry. Reading a
+   * green run here as evidence about real contention is the mistake; what makes
+   * the logic sufficient is that the read and the write are in one transaction,
+   * which only a real Firestore can demonstrate.
+   */
+  async runTransaction<T>(
+    fn: (tx: {
+      get: (ref: { get: () => Promise<unknown> }) => Promise<unknown>;
+      set: (
+        ref: { set: (d: DocData, o?: { merge?: boolean }) => Promise<void> },
+        data: DocData,
+        opts?: { merge?: boolean },
+      ) => void;
+    }) => Promise<T>,
+  ): Promise<T> {
+    const pendentes: Array<() => Promise<void>> = [];
+    const resultado = await fn({
+      get: (ref) => ref.get(),
+      set: (ref, data, opts) => {
+        pendentes.push(() => ref.set(data, opts));
+      },
+    });
+    for (const op of pendentes) await op();
+    return resultado;
+  }
 }
 
 const asDb = (db: FakeDb) => db as unknown as Firestore;
@@ -289,7 +326,7 @@ function runDeps(
     fetchReconPage: vi.fn(async () => ({
       naoEnumerados: [],
       inspecionados: 0,
-      nextAfterLinkPath: null,
+      next: null,
     })),
     now: () => CLOCK_NOW,
     ...over,
@@ -485,7 +522,7 @@ describe('processPriceSyncJob — plan phase', () => {
     });
     expect(db.docs(linkPath('prod-MLB1')).get('lnk-MLB1')).toMatchObject({
       precoPublicado: 50,
-      estado: estadoFromMlStatus('active'),
+      estado: estadoFromMlStatus('active', []),
       status: 'active',
       sub_status: [],
       ultimaModificacao: CLOCK_NOW,
@@ -1318,7 +1355,7 @@ describe('reconciliation phase (#1072)', () => {
   const reconPage = (over: Partial<PrecoReconPage> = {}): PrecoReconPage => ({
     naoEnumerados: [],
     inspecionados: 0,
-    nextAfterLinkPath: null,
+    next: null,
     ...over,
   });
 
@@ -1382,7 +1419,7 @@ describe('reconciliation phase (#1072)', () => {
           { produtoId: 'C1', itemId: 'MLB2', code: 'NAO_ENUMERADO_LINK_EM_VARIACAO' },
         ],
         inspecionados: 7,
-        nextAfterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+        next: { forma: 0, afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1' },
       }),
     );
     const deps = runDeps(db, makeApi(), { fetchReconPage });
@@ -1390,10 +1427,16 @@ describe('reconciliation phase (#1072)', () => {
     const outcome = await processPriceSyncJob(deps, { jobId: 'r4', integracaoId: CONTA }, 0);
 
     expect(outcome).toBe('continued'); // a cursor came back → another page to walk
+    // The first page of a fresh job reads the FIRST ref form, from its start.
+    expect(fetchReconPage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forma: 0, afterLinkPath: null }),
+    );
     // Assert the PERSISTED doc, never the locals: a field missing from the
     // checkpoint merge — or from the zod schema, which strips unknown keys —
     // leaves the phase re-reading its default and re-enqueueing forever.
     const job = db.docs(JOBS_PATH).get('r4')!;
+    expect(job.reconciliacaoForma).toBe(0);
     expect(job.afterLinkPath).toBe('produtos/P1/produtoMercadoLivre/link1');
     expect(job.reconciliacaoConcluida).toBe(false);
     expect(job.reconciliacaoPaginas).toBe(1);
@@ -1407,11 +1450,40 @@ describe('reconciliation phase (#1072)', () => {
     ]);
   });
 
-  it('resumes from the persisted cursor and completes when the walk drains', async () => {
+  it('a form handover persists the NEXT form with a null path — and does not conclude', async () => {
+    // #1862: the walk drains one stored ref form, then opens the next from its
+    // start. The handover is the one checkpoint whose cursor is `null` while the
+    // walk is NOT done, so it is exactly where a `reconciliacaoForma` missing
+    // from the schema or the patch would show: it would read back as 0 and the
+    // job would re-walk the first form until the page cap.
+    process.env[FLAG] = '1';
+    const db = new FakeDb();
+    seedJob(db, 'r4b', {
+      planejamentoConcluido: true,
+      afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+      reconciliacaoPaginas: 3,
+    });
+    const fetchReconPage = vi.fn(async () =>
+      reconPage({ inspecionados: 2, next: { forma: 1, afterLinkPath: null } }),
+    );
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r4b', integracaoId: CONTA }, 0);
+
+    expect(outcome).toBe('continued');
+    const job = db.docs(JOBS_PATH).get('r4b')!;
+    expect(job.reconciliacaoForma).toBe(1);
+    expect(job.afterLinkPath).toBeNull();
+    expect(job.reconciliacaoConcluida).toBe(false);
+    expect(job.reconciliacaoPaginas).toBe(4);
+  });
+
+  it('resumes from the persisted cursor PAIR and completes when the walk drains', async () => {
     process.env[FLAG] = '1';
     const db = new FakeDb();
     seedJob(db, 'r5', {
       planejamentoConcluido: true,
+      reconciliacaoForma: 1,
       afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
       reconciliacaoPaginas: 1,
       naoEnumerados: 2,
@@ -1423,7 +1495,10 @@ describe('reconciliation phase (#1072)', () => {
 
     expect(fetchReconPage).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1' }),
+      expect.objectContaining({
+        forma: 1,
+        afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+      }),
     );
     expect(outcome).toBe('done');
     const job = db.docs(JOBS_PATH).get('r5')!;
@@ -1437,7 +1512,7 @@ describe('reconciliation phase (#1072)', () => {
     const db = new FakeDb();
     seedJob(db, 'r6', { planejamentoConcluido: true });
     const fetchReconPage = vi.fn(async () =>
-      reconPage({ nextAfterLinkPath: 'produtos/P/produtoMercadoLivre/l' }),
+      reconPage({ next: { forma: 0, afterLinkPath: 'produtos/P/produtoMercadoLivre/l' } }),
     );
     const deps = runDeps(db, makeApi(), { fetchReconPage });
 
@@ -1457,7 +1532,7 @@ describe('reconciliation phase (#1072)', () => {
       reconciliacaoPaginas: PRECO_RECON_MAX_PAGES,
     });
     const fetchReconPage = vi.fn(async () =>
-      reconPage({ nextAfterLinkPath: 'produtos/P/produtoMercadoLivre/l' }),
+      reconPage({ next: { forma: 0, afterLinkPath: 'produtos/P/produtoMercadoLivre/l' } }),
     );
     const deps = runDeps(db, makeApi(), { fetchReconPage });
 
@@ -1484,6 +1559,11 @@ describe('reconciliation phase (#1072)', () => {
     const outcome = await processPriceSyncJob(deps, { jobId: 'r8', integracaoId: CONTA }, 0);
 
     expect(fetchReconPage).toHaveBeenCalledTimes(1);
+    // …and `reconciliacaoForma` (#1862) defaults to the first ref form.
+    expect(fetchReconPage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forma: 0, afterLinkPath: null }),
+    );
     expect(outcome).toBe('done');
   });
 });
@@ -1749,5 +1829,352 @@ describe('processPriceSyncJob — the durable per-item report', () => {
       preco: 50, // intended
       precoAnterior: 90, // still what the listing carries
     });
+  });
+});
+
+/* ------------------------------ cancelPriceSyncJob ------------------------------ */
+
+describe('cancelPriceSyncJob', () => {
+  const relPath = (jobId: string) => `${JOBS_PATH}/${jobId}/relatorios`;
+
+  /** Every row across every shard of one job, keyed as stored. */
+  function linhasDe(db: FakeDb, jobId: string): Record<string, Record<string, unknown>> {
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const [, shard] of db.docs(relPath(jobId))) {
+      Object.assign(out, (shard as { linhas?: Record<string, Record<string, unknown>> }).linhas);
+    }
+    return out;
+  }
+
+  it('⭐ clears a LIVE running job, which the staleness escape would make the operator wait 6h for', async () => {
+    // The `updatedAt` here is deliberately fresh against the REAL clock —
+    // `startPriceSyncJob` reads `Date.now()` directly, and `CLOCK_NOW` is a
+    // fixed 2023 instant. Seeded stale, this test would pass on the pre-existing
+    // 6h escape alone and prove nothing about the cancel.
+    const db = new FakeDb();
+    seedJob(db, 'job-vivo', { updatedAt: Date.now() - 1000 });
+
+    await expect(
+      startPriceSyncJob(asDb(db), { integracaoId: CONTA, baixarPreco: false, startedBy: 'u' }),
+    ).rejects.toBeInstanceOf(PriceSyncAlreadyRunningError);
+
+    const outcome = await cancelPriceSyncJob(asDb(db), {
+      jobId: 'job-vivo',
+      integracaoId: CONTA,
+      now: CLOCK_NOW,
+    });
+
+    expect(outcome).toBe('stamped');
+    expect(db.docs(JOBS_PATH).get('job-vivo')).toMatchObject({
+      status: 'cancelled',
+      erro: null,
+      relatorioCompleto: false,
+      finishedAt: CLOCK_NOW,
+      updatedAt: CLOCK_NOW,
+    });
+
+    // And the button is free immediately, not six hours from now.
+    await expect(
+      startPriceSyncJob(asDb(db), { integracaoId: CONTA, baixarPreco: false, startedBy: 'u' }),
+    ).resolves.toMatchObject({ jobId: expect.any(String) });
+  });
+
+  it('refuses a terminal job, a missing job and another conta’s job', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'ja-terminado', { status: 'completed' });
+    seedJob(db, 'de-outro', { integracaoId: 'conta-B' });
+
+    await expect(
+      cancelPriceSyncJob(asDb(db), { jobId: 'ja-terminado', integracaoId: CONTA }),
+    ).resolves.toBe('not-running');
+    await expect(
+      cancelPriceSyncJob(asDb(db), { jobId: 'nao-existe', integracaoId: CONTA }),
+    ).resolves.toBe('not-found');
+    await expect(
+      cancelPriceSyncJob(asDb(db), { jobId: 'de-outro', integracaoId: CONTA }),
+    ).resolves.toBe('wrong-integracao');
+
+    // The foreign job is untouched — the ownership check refuses BEFORE writing.
+    expect(db.docs(JOBS_PATH).get('de-outro')).toMatchObject({ status: 'running' });
+  });
+
+  it('records the abandoned queue: filaRestante plus ONE JOB_CANCELADO row', async () => {
+    // Without these the CSV's completeness trailer reads "0 itens não foram
+    // tentados" on a run that dropped a full queue — the same defect the
+    // failure stamp exists to have fixed.
+    const db = new FakeDb();
+    seedJob(db, 'job-fila', { fila: [draft('MLB1'), draft('MLB2'), draft('MLB3')] });
+
+    await cancelPriceSyncJob(asDb(db), {
+      jobId: 'job-fila',
+      integracaoId: CONTA,
+      now: CLOCK_NOW,
+    });
+
+    expect(db.docs(JOBS_PATH).get('job-fila')).toMatchObject({
+      status: 'cancelled',
+      filaRestante: 3,
+      relatorioLinhas: 1,
+      relatorioShards: 1,
+    });
+    const linhas = Object.values(linhasDe(db, 'job-fila'));
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatchObject({
+      resultado: 'nao-tentado',
+      motivo: 'JOB_CANCELADO',
+      // A cancel is not a fault, so the row carries no error text — that is what
+      // distinguishes it from JOB_INTERROMPIDO at read time.
+      erro: null,
+    });
+  });
+
+  it('shards the row from the job’s OWN relatorioLinhas, not from zero', async () => {
+    // The cursor is re-derived inside the transaction; a captured one would put
+    // the row in the wrong shard and rewrite the counter backwards.
+    const db = new FakeDb();
+    seedJob(db, 'job-shard', {
+      relatorioLinhas: RELATORIO_ENVIO_PRECO_SHARD_SIZE,
+      relatorioShards: 1,
+    });
+
+    await cancelPriceSyncJob(asDb(db), { jobId: 'job-shard', integracaoId: CONTA });
+
+    expect(db.docs(JOBS_PATH).get('job-shard')).toMatchObject({
+      relatorioLinhas: RELATORIO_ENVIO_PRECO_SHARD_SIZE + 1,
+      relatorioShards: 2,
+    });
+    expect(db.docs(relPath('job-shard')).size).toBe(1);
+  });
+
+  it('⭐ a cancel landing MID-DISPATCH is not overwritten by the completion stamp', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'job-race', { planejamentoConcluido: true });
+    const api = makeApi();
+    const deps = runDeps(db, api, {
+      // Fires AFTER the dispatch's opening status read and BEFORE its terminal
+      // stamp — the exact window an unguarded merge() clobbered.
+      resolveContext: async () => {
+        await cancelPriceSyncJob(asDb(db), {
+          jobId: 'job-race',
+          integracaoId: CONTA,
+          now: CLOCK_NOW,
+        });
+        return { api: api as unknown as PriceSyncApi, tabelaNormalOuterRef: TAB_REF };
+      },
+    });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'job-race', integracaoId: CONTA }, 0);
+
+    expect(outcome).toBe('noop');
+    expect(db.docs(JOBS_PATH).get('job-race')).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('⭐ a cancel landing MID-DISPATCH stops the self-continuation too', async () => {
+    // Same seam, but with work left over, so the dispatch WOULD re-enqueue.
+    // Without the pre-enqueue re-check the cancel silently buys one more.
+    const db = new FakeDb();
+    seedJob(db, 'job-race2', { fila: [draft('MLB1')], planejamentoConcluido: false });
+    const api = makeApi();
+    const deps = runDeps(db, api, {
+      resolveContext: async () => {
+        await cancelPriceSyncJob(asDb(db), {
+          jobId: 'job-race2',
+          integracaoId: CONTA,
+          now: CLOCK_NOW,
+        });
+        return { api: api as unknown as PriceSyncApi, tabelaNormalOuterRef: TAB_REF };
+      },
+    });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'job-race2', integracaoId: CONTA }, 0);
+
+    expect(outcome).toBe('noop');
+    expect(deps.scheduler.enqueue).not.toHaveBeenCalled();
+    expect(db.docs(JOBS_PATH).get('job-race2')).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('⭐ and the other direction: a cancel arriving after `completed` is a no-op', async () => {
+    // "Whichever lands first wins" has to hold both ways, or the guard just
+    // moves the lost update rather than removing it.
+    const db = new FakeDb();
+    seedJob(db, 'job-tarde', { planejamentoConcluido: true });
+
+    const outcome = await processPriceSyncJob(
+      runDeps(db, makeApi()),
+      { jobId: 'job-tarde', integracaoId: CONTA },
+      0,
+    );
+    expect(outcome).toBe('done');
+
+    await expect(
+      cancelPriceSyncJob(asDb(db), { jobId: 'job-tarde', integracaoId: CONTA }),
+    ).resolves.toBe('not-running');
+    expect(db.docs(JOBS_PATH).get('job-tarde')).toMatchObject({
+      status: 'completed',
+      relatorioCompleto: true,
+    });
+    // And the losing cancel wrote no report row either — the whole callback is
+    // behind the same guard, not just the status field.
+    expect(db.docs(relPath('job-tarde')).size).toBe(0);
+  });
+
+  it('⭐ filaRestante never disagrees with fila, even when the cancel lands mid-drain', async () => {
+    // The cancel stamps `filaRestante` from the snapshot it read, and the
+    // in-flight dispatch then FINISHES its batch (documented behaviour, mirroring
+    // the mass import). So a cancel-time count stays frozen at N while `fila`
+    // drains to empty — and the CSV trailer, which prints
+    // `${filaRestante} itens não foram tentados`, would say that about an item it
+    // had just sent and whose row is in the same report. `checkpoint()` therefore
+    // re-derives the field on every write.
+    const db = new FakeDb();
+    seedJob(db, 'job-drena', { fila: [draft('MLB1')], planejamentoConcluido: false });
+    seedLink(db, 'MLB1');
+    const api = makeApi({ MLB1: mlItem('MLB1') });
+    const deps = runDeps(db, api, {
+      resolveContext: async () => {
+        await cancelPriceSyncJob(asDb(db), {
+          jobId: 'job-drena',
+          integracaoId: CONTA,
+          now: CLOCK_NOW,
+        });
+        return { api: api as unknown as PriceSyncApi, tabelaNormalOuterRef: TAB_REF };
+      },
+    });
+
+    await processPriceSyncJob(deps, { jobId: 'job-drena', integracaoId: CONTA }, 0);
+
+    const job = db.docs(JOBS_PATH).get('job-drena') as DocData;
+    expect(job.status).toBe('cancelled');
+    // The near-miss that makes this test mean something: the item WAS sent, so
+    // the honest remainder is 0 — not the 1 the cancel snapshot saw.
+    expect(job.enviados).toBe(1);
+    expect(job.fila).toEqual([]);
+    expect(job.filaRestante).toBe(0);
+
+    // And no row in the report is claimed un-attempted while sitting in the body.
+    const linhas = linhasDe(db, 'job-drena');
+    expect(Object.keys(linhas)).toHaveLength(2); // JOB_CANCELADO + the sent item
+    expect(Object.values(linhas).some((l) => l.motivo === 'JOB_CANCELADO')).toBe(true);
+    expect(Object.values(linhas).some((l) => l.resultado === 'enviado')).toBe(true);
+  });
+
+  it('⭐ a row-less checkpoint cannot strand the cancel row in an undeclared shard', async () => {
+    // The narrow case, and the one that loses DATA rather than just miscounting:
+    // the cancel lands with `relatorioLinhas` on an exact shard boundary, so its
+    // synthetic row opens shard 1 and `relatorioShards` becomes 2. A checkpoint
+    // carrying no rows of its own (the plan phase, when the page produced drafts
+    // but no skips) then rewrites the counters from this dispatch's local value —
+    // which never saw that increment — and declares 1 shard again. The row is
+    // still stored; the download simply never pages far enough to read it.
+    const db = new FakeDb();
+    seedJob(db, 'job-borda', {
+      relatorioLinhas: RELATORIO_ENVIO_PRECO_SHARD_SIZE,
+      relatorioShards: 1,
+      planejamentoConcluido: false,
+    });
+    const api = makeApi();
+    const deps = runDeps(db, api, {
+      // A plan page with drafts and NO skips ⇒ a checkpoint with zero pending rows.
+      fetchPage: vi.fn(async () => ({ rows: [], nextAfterAnchorId: null })),
+      resolveContext: async () => {
+        await cancelPriceSyncJob(asDb(db), {
+          jobId: 'job-borda',
+          integracaoId: CONTA,
+          now: CLOCK_NOW,
+        });
+        return { api: api as unknown as PriceSyncApi, tabelaNormalOuterRef: TAB_REF };
+      },
+    });
+
+    await processPriceSyncJob(deps, { jobId: 'job-borda', integracaoId: CONTA }, 0);
+
+    const job = db.docs(JOBS_PATH).get('job-borda') as DocData;
+    const shardIds = [...db.docs(`${JOBS_PATH}/job-borda/relatorios`).keys()];
+    const maiorShardUsado = Math.max(...shardIds.map((id) => Number(id)));
+
+    // Every shard that HOLDS a row must be inside the declared range, or the
+    // download cannot reach it.
+    expect(job.relatorioShards as number).toBeGreaterThan(maiorShardUsado);
+    expect(job.relatorioLinhas as number).toBe(RELATORIO_ENVIO_PRECO_SHARD_SIZE + 1);
+  });
+
+  it('finalizePriceSyncJob without expectIntegracaoId skips the ownership check', async () => {
+    // The dispatch loop's own stamps pass no conta — they already know whose job
+    // they are running — so the check has to be opt-in, not a silent default.
+    const db = new FakeDb();
+    seedJob(db, 'job-sem-dono', { integracaoId: 'conta-B' });
+
+    await expect(
+      finalizePriceSyncJob(asDb(db), 'job-sem-dono', {
+        status: 'failed',
+        erro: 'x',
+        finishedAt: CLOCK_NOW,
+        updatedAt: CLOCK_NOW,
+      }),
+    ).resolves.toBe('stamped');
+  });
+});
+
+// Firestore TTL policy on `enviosPrecoMercadoLivre` and `relatorios`: a run
+// expires 180 days after it starts, its shards a week later. Every stamp is
+// keyed on the run's `startedAt`, never on a clock read, so the checkpoint
+// writer, the terminal row and a retry all agree on the same instant.
+describe('TTL expiry (expiraEm)', () => {
+  const DIA_MS = 86_400_000;
+  const relPath = (jobId: string) => `${JOBS_PATH}/${jobId}/relatorios`;
+  const expiraEmDe = (doc: DocData | undefined) => (doc as { expiraEm?: unknown })?.expiraEm;
+
+  it('stamps a new run 180 days after it starts, as a Date the SDK stores as a Timestamp', async () => {
+    const db = new FakeDb();
+    const { jobId } = await startPriceSyncJob(asDb(db), {
+      integracaoId: CONTA,
+      baixarPreco: false,
+      startedBy: 'u',
+    });
+    const job = db.docs(JOBS_PATH).get(jobId) as { startedAt: number; expiraEm: unknown };
+
+    expect(job.expiraEm).toBeInstanceOf(Date);
+    expect((job.expiraEm as Date).getTime()).toBe(job.startedAt + 180 * DIA_MS);
+  });
+
+  it('stamps every checkpoint shard a week after its run, from startedAt — not the clock', async () => {
+    const db = new FakeDb();
+    // startedAt is deliberately far from CLOCK_NOW: a shard keyed on the
+    // dispatch clock instead of the run would land on a different instant.
+    const startedAt = CLOCK_NOW - 30 * DIA_MS;
+    seedJob(db, 'ttl1', {
+      fila: [draft('MLB1')],
+      planejamentoConcluido: true,
+      startedAt,
+    });
+    seedLink(db, 'MLB1');
+    const api = makeApi({ MLB1: mlItem('MLB1') });
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'ttl1', integracaoId: CONTA }, 0);
+
+    const shards = [...db.docs(relPath('ttl1')).values()];
+    expect(shards.length).toBeGreaterThan(0);
+    for (const shard of shards) {
+      expect(expiraEmDe(shard)).toBeInstanceOf(Date);
+      expect((expiraEmDe(shard) as Date).getTime()).toBe(startedAt + 187 * DIA_MS);
+    }
+  });
+
+  it('stamps the terminal cancel row’s shard the same way', async () => {
+    const db = new FakeDb();
+    const startedAt = CLOCK_NOW - 5 * DIA_MS;
+    seedJob(db, 'ttl2', { startedAt });
+
+    await cancelPriceSyncJob(asDb(db), { jobId: 'ttl2', integracaoId: CONTA });
+
+    const [shard] = [...db.docs(relPath('ttl2')).values()];
+    expect((expiraEmDe(shard) as Date).getTime()).toBe(startedAt + 187 * DIA_MS);
+  });
+
+  it('never gives a shard an expiry before its run’s', () => {
+    const startedAt = CLOCK_NOW;
+    expect(expiraEmDoRelatorio(startedAt).getTime()).toBeGreaterThan(
+      expiraEmDoEnvio(startedAt).getTime(),
+    );
   });
 });

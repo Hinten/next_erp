@@ -41,6 +41,7 @@ function makeUi(over: Partial<EtiquetaProviderInput['ui']> = {}): EtiquetaProvid
     notify: vi.fn(),
     openUrl: vi.fn(),
     comprarEtiqueta: vi.fn(),
+    escolherEnvio: vi.fn(),
     ...over,
   };
 }
@@ -58,12 +59,13 @@ function makeInput(over: {
     pedido: { numero: '1234' } as never,
     pedidoId: 'p1',
     frete: { externalId: over.externalId === undefined ? 'SHIP-1' : over.externalId } as never,
-    intFrete: { id: 'if1', tipo: INTEGRACAO_FRETE.mercadoLivre, data: {} as never },
+    intFrete: { fonte: 'doc', id: 'if1', tipo: INTEGRACAO_FRETE.mercadoLivre, data: {} as never },
     formato: over.formato ?? 'zpl2',
     deps: {
       freightClient: null,
       nfeClient: null,
       mercadoLivreClient: (over.mercadoLivreClient ?? null) as never,
+      shopeeClient: null,
       printJob: over.printJob ?? (vi.fn(async () => 'printed' as const) as never),
       sleep: over.sleep,
     },

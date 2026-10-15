@@ -65,7 +65,8 @@ describe('rulesCheckForBit', () => {
   });
 
   it('resolves metas that reuse a bit across actions by bit identity', () => {
-    // cargo/filial/usuario declare delete: PERM_CONFIG_WRITE.
+    // cargo/usuario declare delete: PERM_CONFIG_WRITE. Filial explicitly
+    // denies client delete through `permissions.delete: null` (#1626).
     expect(rulesCheckForBit(PERM.configuracoes.write)).toEqual({ claim: 'd_configuracoes', k: 2 });
     // tokenMelEnv declares read: PERM_FRETE_WRITE.
     expect(rulesCheckForBit(PERM.frete.write)).toEqual({ claim: 'd_frete', k: 2 });

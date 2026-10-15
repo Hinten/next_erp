@@ -273,7 +273,7 @@ function DimensoesPesoField({ medidas }: { medidas: MedidasDoPacote | null }) {
             : `Peso líquido ${EMPTY_VALUE}`}
         </Text>
         {faltando.length > 0 && (
-          <Text size="sm" c="orange.7">
+          <Text size="sm" c="orange">
             {`Falta preencher: ${listarEmPortugues(faltando)}`}
           </Text>
         )}
@@ -358,7 +358,7 @@ function MarcaField({
             beside the real empty marker, "—". */}
         <Text size="sm">{naoSeAplica ? 'Não se aplica' : (resolvida ?? EMPTY_VALUE)}</Text>
         {faltando && (
-          <Text size="sm" c="orange.7">
+          <Text size="sm" c="orange">
             Falta preencher: Marca
           </Text>
         )}
@@ -727,6 +727,7 @@ export function ListingForm({
   // not a derivation in the first place.
   useEffect(() => {
     if (isDirty) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- open-only follow of the re-seed, gated on isDirty; a derivation would collapse the field mid-edit
     if ((link.descricao ?? '').trim() !== '') setDescricaoOpen(true);
   }, [link.descricao, isDirty]);
 
@@ -969,6 +970,12 @@ export function ListingForm({
                 value={field.value === '' ? null : field.value}
                 onChange={field.onChange}
                 disabled={readOnly}
+                // #847: create-only on ML's side, so a published listing's
+                // category is shown, never offered — the same reason the
+                // listing type below turns read-only. It becomes editable
+                // again exactly when the next publish is a CREATE: discarding
+                // a removed listing nulls `id` and keeps the category.
+                publicado={isPublished}
                 error={fieldState.error?.message ?? erroServidor('category_id')}
               />
             )}

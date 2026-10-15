@@ -5,7 +5,7 @@ import { warmRoutes } from './helpers/warmup';
 
 /**
  * E2E for the Incidentes tab: adding an incidente writes a doc to the
- * `pedidos/{id}/incidentes` subcollection (immediate write, no main-form save).
+ * `pedidos/{id}/incidentes` subcollection through the pedido footer save.
  * Seeds a minimal pedido via the Admin SDK, then drives the UI.
  */
 test.describe.serial('Pedidos e2e — Incidentes', () => {
@@ -70,10 +70,14 @@ test.describe.serial('Pedidos e2e — Incidentes', () => {
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
     await page.getByRole('tab', { name: 'Incidentes' }).click();
-    await page.getByRole('button', { name: /Adicionar incidente/ }).click();
-    // tipo defaults to "Devolução"; fill the Motivo and save.
+    await page.getByRole('button', { name: 'Novo incidente' }).click();
+    // Tipo defaults to "Devolução". The persistent panel must retain the draft
+    // while another pedido tab is active, then the shared footer saves it.
     await page.getByRole('textbox', { name: 'Motivo', exact: true }).fill(motivo);
-    await page.getByRole('button', { name: 'Salvar', exact: true }).click();
+    await page.getByRole('tab', { name: 'Principal' }).click();
+    await page.getByRole('tab', { name: /Incidentes/ }).click();
+    await expect(page.getByRole('textbox', { name: 'Motivo', exact: true })).toHaveValue(motivo);
+    await page.getByRole('button', { name: 'Salvar e continuar editando' }).click();
 
     // The new incidente card shows the motivo. The card text is a Mantine <Text>
     // (a <p>); the editing form's Motivo <textarea> echoes the same string, so a
@@ -106,7 +110,7 @@ test.describe.serial('Pedidos e2e — Incidentes', () => {
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
     await page.getByRole('tab', { name: 'Incidentes' }).click();
-    await page.getByRole('button', { name: /Adicionar incidente/ }).click();
+    await page.getByRole('button', { name: 'Novo incidente' }).click();
     await page.getByRole('textbox', { name: 'Motivo', exact: true }).fill(motivo);
 
     // Enable the resolução section, pick a Tipo and enter a Despesa. The
@@ -119,7 +123,7 @@ test.describe.serial('Pedidos e2e — Incidentes', () => {
       .click();
     await page.getByLabel('Despesa da resolução').fill('15');
 
-    await page.getByRole('button', { name: 'Salvar', exact: true }).click();
+    await page.getByRole('button', { name: 'Salvar e continuar editando' }).click();
 
     // The card shows the green resolução badge. Scope to the tabpanel: a closed
     // Mantine Select can leave option spans in a body-level portal, and the Select

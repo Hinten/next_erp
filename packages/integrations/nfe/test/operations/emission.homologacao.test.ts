@@ -50,6 +50,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { buildHomologacaoFixture } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
+import { descreverSefaz, logSefaz } from '../helpers/sefaz-log';
 import { seedNNF } from '../helpers/homologacao-seed';
 import {
   assertCertNotExpired,
@@ -193,9 +194,18 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
       indSinc: '1',
     });
     assertNotConsumoIndevido(first, 'duplicidade/autorizarLote#1');
+    logSefaz('duplicidade lote1', first);
     const firstProt = await resolveProtocol(first, consReciCall);
     if (firstProt) assertNotConsumoIndevido(firstProt.infProt, 'duplicidade/protNFe#1');
-    expect(firstProt?.infProt.cStat).toBe('100');
+    // ⚠️ The message is not decoration. With indSinc='1' SEFAZ answers inline,
+    // so `resolveProtocol` never reaches its poll-path logging and this was the
+    // ONLY place the first protocol surfaced — as a bare cStat. cStat=181 cost a
+    // full diagnosis for exactly that reason (#1612), as `999` did in #1247 and
+    // `178` in #1471. `descreverSefaz` redacts; the repo is public.
+    expect(
+      firstProt?.infProt.cStat,
+      firstProt ? descreverSefaz('duplicidade protNFe#1', firstProt.infProt) : 'sem protNFe',
+    ).toBe('100');
     const firstNProt = firstProt!.infProt.nProt;
 
     // Throttle between identical-payload submissions.
@@ -211,8 +221,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
       indSinc: '1',
     });
     assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
-    // eslint-disable-next-line no-console
-    console.log(`[duplicidade lote2] cStat=${second.cStat} xMotivo="${second.xMotivo}"`);
+    logSefaz('duplicidade lote2', second);
     const secondProt = await resolveProtocol(second, consReciCall);
     if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
     const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
@@ -228,10 +237,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
     );
     const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
     assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
-    // eslint-disable-next-line no-console
-    console.log(
-      `[consSitNFe] cStat=${sit.cStat} xMotivo="${sit.xMotivo}" prot.cStat=${sit.protNFe?.infProt.cStat}`,
-    );
+    logSefaz('consSitNFe', { ...sit, protCStat: sit.protNFe?.infProt.cStat });
     // SEFAZ retConsSitNFe.cStat=100 means "consulta atendida"; the
     // **inner** protNFe.infProt.cStat is the actual NF-e status.
     expect(sit.chNFe).toBe(out.chave);

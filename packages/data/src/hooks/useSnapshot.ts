@@ -61,6 +61,8 @@ export interface SnapshotState<T> {
   fromCache?: boolean;
   /** Latest emission carries local writes not yet acknowledged by the server. */
   hasPendingWrites?: boolean;
+  /** Single-document emission identity, including absence; prevents reusing an old ref’s state. */
+  documentPath?: string;
 }
 
 /**
@@ -152,8 +154,8 @@ function useSnapshotRows<T>(
 }
 
 /**
- * Subscribe to a single Firestore document. Returns `data: undefined` when
- * the doc does not exist; readers should check explicitly.
+ * Subscribe to a single Firestore document. `undefined` means not yet loaded;
+ * `null` confirms absence. `documentPath` identifies the emitting reference.
  */
 export function useDocSnapshot<T>(
   ref: DocumentReference<T> | null,
@@ -177,6 +179,7 @@ export function useDocSnapshot<T>(
         const data = snap.data();
         setState({
           data: data === undefined ? null : { id: snap.id, data },
+          documentPath: snap.ref.path,
           loading: false,
           error: undefined,
           fromCache: snap.metadata.fromCache,

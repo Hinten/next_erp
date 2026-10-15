@@ -68,6 +68,17 @@ describe('faixaTaxaFixaPesoSchema', () => {
     });
     expect(out.taxaFixa).toBe(5);
   });
+
+  it('rejects unknown properties', () => {
+    expect(
+      faixaTaxaFixaPesoSchema.safeParse({
+        pesoMinKg: 0,
+        pesoMaxKg: 1,
+        taxaFixa: 5,
+        transportadora: 'x',
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('formulaCalculoPrecoSchema', () => {
@@ -88,12 +99,24 @@ describe('formulaCalculoPrecoSchema', () => {
   it('rejects empty formula', () => {
     expect(formulaCalculoPrecoSchema.safeParse({ limiar: 1, formula: '' }).success).toBe(false);
   });
+
+  it('rejects unknown properties', () => {
+    expect(
+      formulaCalculoPrecoSchema.safeParse({ limiar: 1, formula: 'C', extra: true }).success,
+    ).toBe(false);
+  });
 });
 
 describe('formulasPorCategoriaSchema', () => {
   it('requires name', () => {
     expect(formulasPorCategoriaSchema.safeParse({}).success).toBe(false);
     expect(formulasPorCategoriaSchema.parse({ name: 'Eletrônicos' }).name).toBe('Eletrônicos');
+  });
+
+  it('rejects unknown properties', () => {
+    expect(formulasPorCategoriaSchema.safeParse({ name: 'Eletrônicos', extra: true }).success).toBe(
+      false,
+    );
   });
 });
 

@@ -8,27 +8,21 @@
  * meant to converge them.
  *
  * So every path that STAMPS the id has to ask this first. It was written for the
- * claim path (`apps/mercado-livre/.../claims/claimCliente.ts`, #768) and lives
- * here because `findOrCreateCliente`'s own fill-when-absent stamp needs exactly
- * the same answer — and a second implementation of "who else owns this?" is the
- * kind of copy that reads correct while disagreeing.
+ * claim path (`apps/mercado-livre/.../claims/claimCliente.ts`, #768). The shared
+ * importer now performs its equivalent check inside its identity-index
+ * transaction; this standalone probe remains for the claim path, which does
+ * not run through `findOrCreateCliente`.
  *
  * ⚠️ Refusing is the whole contract. Merging two clientes moves pedidos,
  * conversas and endereços; that is a migration, not something an import or a
  * webhook may do on its own. A caller that gets a hit here logs the split and
  * leaves both documents alone.
  *
- * ⚠️ **It narrows the window; it does not close it.** This is a read, and both
- * callers write afterwards without a precondition covering the OTHER document —
- * `claimCliente`'s `lastUpdateTime` guards the doc being stamped, not the
- * appearance of a rival owner, and `findOrCreateCliente` merges with no
- * precondition at all. So two imports resolving the same new buyer concurrently
- * can both read "free" and both stamp. That residual is the same one
- * `findOrCreateCliente`'s blind `add` already carries (root `CLAUDE.md` rule 7,
- * tier 0 — a deterministic doc id — is the real fix, and is blocked because
- * cliente doc ids are shared with the migrated corpus). Do not read a passing
- * check here as an invariant; it removes the COMMON case, which is a pre-sale
- * question's cliente that has existed for days.
+ * ⚠️ **On the claim path it narrows the window; it does not close it.** This is
+ * a read followed by a write whose `lastUpdateTime` guards the cliente being
+ * stamped, not the appearance of a rival owner. Importers do not share that
+ * residual: their identity-index document is re-read and written in the same
+ * transaction. Do not read this standalone check as an invariant for claims.
  *
  * The SDK is never bound here — `db` arrives from the caller, which is what
  * keeps this subtree importable from a browser bundle's dependency graph without

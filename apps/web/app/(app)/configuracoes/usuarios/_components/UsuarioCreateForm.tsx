@@ -45,6 +45,7 @@ export function UsuarioCreateForm({ onSubmit, callerIsSuperUser }: UsuarioCreate
     setSubmitError(null);
     try {
       await onSubmit(values);
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- form submit boundary: every failure is shown to the operator; a rethrow is an unhandled rejection with no message
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Falha ao criar usuário.');
     }

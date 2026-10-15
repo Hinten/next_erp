@@ -27,7 +27,13 @@ import { DEFAULT_API_BASE_URL } from '@delfrance/integrations-mercado-livre';
 /** Matches `DEFAULT_USER_AGENT` in `api.ts` — the capture should look like the backend. */
 export const CAPTURE_USER_AGENT = '@delfrance/erp-next';
 
-/** How many claims `GET …/claims/search` asks for. It accepts only status/stage/limit/offset. */
+/**
+ * How many claims `GET …/claims/search` asks for. ML's documented default is 30
+ * and its maximum 100; anything larger is silently clamped to 100.
+ *
+ * ⚠️ **`offset + limit` must stay below 10000** — ML answers 400 above it. At
+ * offset 0 that is not a constraint, but it is why this is not a bigger number.
+ */
 export const CLAIM_SEARCH_LIMIT = 50;
 
 export interface CaptureTarget {
@@ -46,12 +52,26 @@ export interface CaptureIds {
   readonly shipmentIds: readonly string[];
   readonly paymentIds: readonly string[];
   readonly claimIds: readonly string[];
+  /**
+   * The connected account's ML `user_id`. Optional, and its absence is a real
+   * state rather than a caller mistake: it is stamped onto the integração only
+   * at OAuth exchange (#289), so an account connected before that backfill has
+   * none.
+   *
+   * ⚠️ Without it the claims search is **omitted from the plan**, never sent
+   * unfiltered — see {@link buildCapturePlan}.
+   */
+  readonly sellerId?: string;
 }
 
 export interface CaptureResult {
   readonly target: CaptureTarget;
   readonly status: number;
-  /** `false` only ever means 404 — every other non-2xx throws. */
+  /**
+   * `res.ok` verbatim. ⚠️ A `false` here does **not** mean 404 — every
+   * permanent 4xx is recorded now, so it can be 400, 405, 422… See
+   * {@link ehFalhaFatal} for the statuses that throw instead of landing here.
+   */
   readonly ok: boolean;
   /** The response text, verbatim. Never parsed, never re-serialised. */
   readonly body: string;
@@ -95,6 +115,45 @@ export class FixtureCaptureHttpError extends Error {
   }
 }
 
+/**
+ * Which HTTP statuses abort the run — everything else non-2xx is **data**.
+ *
+ * ⚠️ **The old rule was "not 404 ⇒ stop", and it meant this script never once
+ * exited 0** (#1357). Two calls in every plan answer **400**, both permanently:
+ *
+ *  - `/post-purchase/v1/claims/search` with paging alone. ML documents this
+ *    exactly — the endpoint needs at least one real FILTER, `offset`/`limit`/
+ *    `sort` do not count, and a paging-only request returns
+ *    `400 {"error":"invalid_query"}`. Fixed at the source below, but the plan
+ *    used to guarantee it.
+ *  - `/packs/{id}` for an order that is a pack MEMBER. The fan-out assumed two
+ *    outcomes (a standalone order 404s, a pack id 200s); a member is a third,
+ *    and it 400s.
+ *
+ * Since the search was the LAST entry in every plan, the run aborted at the end
+ * no matter how much it had captured.
+ *
+ * So the line is drawn by what the status tells us about the REST of the plan,
+ * not by how permanent it is:
+ *
+ *  - **Recorded** (400, 404, 405, 409, 410, 422, …) — a permanent, informative
+ *    answer about *this one request*. Nothing about it says the other 22 calls
+ *    are unsafe, and the answer itself is worth having on disk: a
+ *    `packs-<id>.400.json` documents a fact #1357 had to discover by hand.
+ *  - **`401` / `403`** — the grant is dead or under-scoped, so every remaining
+ *    call is equally doomed; and the body can carry credential detail (#1015),
+ *    which is why {@link FixtureCaptureHttpError} hides it.
+ *  - **`429`** — rate limited. Continuing compounds it.
+ *  - **`5xx`** — transient. Recorded as a body it would later read as "ML
+ *    returns this", which is strictly worse than having no fixture.
+ *
+ * ⚠️ Recording is only safe because {@link fixtureFileName} keeps a non-200 off
+ * the bare slug. A 400 filed as `<slug>.json` would read as the resource.
+ */
+export function ehFalhaFatal(status: number): boolean {
+  return status === 401 || status === 403 || status === 429 || status >= 500;
+}
+
 /** `/shipments/47868202073/sla` → `shipments-47868202073-sla`. */
 export function slugForPath(path: string): string {
   return path
@@ -124,12 +183,38 @@ function target(path: string, headers?: Record<string, string>): CaptureTarget {
  * SLA exception cannot be "tidied up" into the shipment group.
  *
  * ⚠️ **`--orderId` fans out to `/packs/{id}` too**, because a pack id and an order
- * id are indistinguishable from the outside. A single order 404s on `/packs`, a
- * pack id 404s on `/orders`, and a 404 is recorded rather than fatal — so one flag
- * covers both without the operator having to know which they hold.
+ * id are indistinguishable from the outside — so one flag covers both without the
+ * operator having to know which they hold.
  *
- * The claims search needs no id at all and always runs: it is how claim ids are
- * discovered on an account that may legitimately have none.
+ * ⚠️ **There are THREE outcomes, not two, and the third one used to kill the run.**
+ * The original note here said "a single order 404s on `/packs`, a pack id 404s on
+ * `/orders`". Measured against the #1087 account:
+ *
+ * | id | `/packs/{id}` |
+ * | --- | --- |
+ * | `2000018143664980` — a standalone order | **404**, recorded, exactly as designed |
+ * | `2000018144681452` — an order that IS in a pack | **400** |
+ * | `2000018144679512` — its sibling member | **400** |
+ *
+ * A pack MEMBER is neither of the two shapes anticipated, and under the old
+ * "not 404 ⇒ stop" contract each one aborted the run. Both are now recorded as
+ * `packs-<id>.400.json` — which is better than not asking, because the refusal is
+ * the evidence.
+ *
+ * ⓘ The guess could be removed instead: `pack_id` sits on the order body
+ * (`2000018144679512` and `2000018144681452` both carry `2000014733850447`;
+ * `2000018143664980` carries `null`). That was considered and left alone —
+ * deriving it needs a two-phase plan in this module AND in `verify:wire`, and it
+ * would drop the `/packs/{orderId}` slug from the plan, leaving
+ * `packs-2000018143664980.404.json` in the corpus with nothing ever re-fetching
+ * it. A fixture no verify pass reaches is a check that cannot fail.
+ *
+ * ⚠️ **The claims search runs only when the seller id is known**, and ML documents
+ * why: the endpoint requires at least one real FILTER, `offset`/`limit`/`sort`
+ * explicitly do not count, and a paging-only request answers
+ * `400 {"error":"invalid_query"}`. It used to send paging alone — so it 400'd on
+ * every run, and being the LAST plan entry it aborted every run. With no seller id
+ * the call is **omitted**: a request guaranteed to be refused discovers nothing.
  */
 export function buildCapturePlan(ids: CaptureIds): CaptureTarget[] {
   const plan: CaptureTarget[] = [];
@@ -163,11 +248,25 @@ export function buildCapturePlan(ids: CaptureIds): CaptureTarget[] {
     plan.push(target(`/post-purchase/v1/claims/${enc(id)}/messages`));
   }
 
-  plan.push({
-    slug: slugForPath('/post-purchase/v1/claims/search'),
-    path: '/post-purchase/v1/claims/search',
-    query: { limit: String(CLAIM_SEARCH_LIMIT), offset: '0' },
-  });
+  // ML's own "consultas recomendadas" base pair: scope the search to this seller
+  // and its role. Anything global is either refused or, in the `status`-only case,
+  // documented as a rate-limiting risk.
+  //
+  // ⚠️ **No `status` filter on purpose.** The one claim this corpus holds
+  // (`5567065796`) is `closed`, so `status=opened` would hide exactly the claim
+  // the capture exists to discover.
+  if (ids.sellerId != null && ids.sellerId !== '') {
+    plan.push({
+      slug: slugForPath('/post-purchase/v1/claims/search'),
+      path: '/post-purchase/v1/claims/search',
+      query: {
+        'players.user_id': ids.sellerId,
+        'players.role': 'respondent',
+        limit: String(CLAIM_SEARCH_LIMIT),
+        offset: '0',
+      },
+    });
+  }
 
   return plan;
 }
@@ -191,9 +290,11 @@ export function buildCapturePlan(ids: CaptureIds): CaptureTarget[] {
  *  - **`204 No Content`**, documented for `/shipments/{id}/items`, whose empty
  *    body under a `.json` name is a captured-nothing that reads as an answer.
  *
- * A 404 is the same rule from the other side: worth keeping (it is a real ML
- * answer, and "this account has no such claim" is a finding), never under the name
- * a complete body would take.
+ * Every recorded 4xx is the same rule from the other side: worth keeping (a real
+ * ML answer — "this account has no such claim", "you may not ask `/packs` about a
+ * pack member" — is a finding), never under the name a complete body would take.
+ * ⚠️ This is what makes {@link ehFalhaFatal}'s recording safe: a 400 under a bare
+ * `<slug>.json` would read as the resource itself.
  */
 export function fixtureFileName(result: Pick<CaptureResult, 'target' | 'status'>): string {
   return result.status === 200
@@ -204,11 +305,16 @@ export function fixtureFileName(result: Pick<CaptureResult, 'target' | 'status'>
 /**
  * One request. The two behaviours that separate a fixture from a lie:
  *
- *  1. **A 404 is DATA.** A missing claim is expected on this account, and a partial
- *     capture is useful — so it is recorded (`ok: false`) and the run continues.
- *  2. **Everything else throws.** A transient 5xx (or a 401 on a dead grant, or a
- *     429) recorded as an empty body would later read as "ML returns this", which
- *     is strictly worse than having no fixture at all.
+ *  1. **A permanent 4xx is DATA.** A missing claim 404s, a pack member 400s on
+ *     `/packs`, and both are real ML answers — recorded (`ok: false`) so the run
+ *     continues, because a partial capture is useful and the refusal itself is
+ *     evidence.
+ *  2. **A failure that says nothing about this request throws.** A transient 5xx,
+ *     a 401/403 on a dead grant, a 429 — recorded as an empty body any of them
+ *     would later read as "ML returns this", which is strictly worse than having
+ *     no fixture at all.
+ *
+ * {@link ehFalhaFatal} is where that line is drawn and why.
  *
  * There is no `catch` here on purpose: `fetch` does not throw on an HTTP status, so
  * a genuine network failure propagates untouched rather than being narrowed and
@@ -232,7 +338,7 @@ export async function captureOne(
   });
 
   const body = await res.text();
-  if (!res.ok && res.status !== 404) {
+  if (!res.ok && ehFalhaFatal(res.status)) {
     throw new FixtureCaptureHttpError(captureTarget.path, res.status, body);
   }
   return { target: captureTarget, status: res.status, ok: res.ok, body };

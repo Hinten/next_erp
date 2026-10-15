@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { clearDraft, draftKey, getDraft, hasDraft, setDraft } from './draft';
+import { preserveAliasedDraft, clearDraft, draftKey, getDraft, hasDraft, setDraft } from './draft';
 
 afterEach(() => {
   window.localStorage.clear();
@@ -40,5 +40,21 @@ describe('draft store', () => {
     setDraft('c2', 'dois');
     expect(getDraft('c1')).toBe('um');
     expect(getDraft('c2')).toBe('dois');
+  });
+});
+
+describe('conversation alias draft continuity', () => {
+  it('moves a draft to an empty canonical conversation', () => {
+    setDraft('old', 'texto antigo');
+    expect(preserveAliasedDraft('old', 'canonical')).toBe('moved');
+    expect(getDraft('canonical')).toBe('texto antigo');
+    expect(getDraft('old')).toBe('');
+  });
+  it('preserves both different drafts instead of replacing either', () => {
+    setDraft('old', 'texto antigo');
+    setDraft('canonical', 'texto atual');
+    expect(preserveAliasedDraft('old', 'canonical')).toBe('conflict');
+    expect(getDraft('old')).toBe('texto antigo');
+    expect(getDraft('canonical')).toBe('texto atual');
   });
 });

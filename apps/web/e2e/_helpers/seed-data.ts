@@ -8,9 +8,35 @@
  * `e2ePrefix()`, so a single prefix sweep cleans the whole suite without
  * tracking ids.
  */
+import { createHash } from 'node:crypto';
+import { FieldValue } from 'firebase-admin/firestore';
+import {
+  CANAL_AVISO,
+  clienteSchema,
+  ESTADO_ENVIO,
+  ESTADO_FRETE,
+  ESTADO_PEDIDO,
+  FORMA_PAGAMENTO,
+  INTEGRACAO_FRETE,
+  integracaoSchema,
+  INTEGRACAO_TIPO,
+  MODALIDADE_FRETE,
+  MODO_LINK_PAGAMENTO,
+  seedFreteInicial,
+  SEVERIDADE_AVISO,
+  STATUS_LINK_PAGAMENTO,
+  STATUS_PAGAMENTO,
+  TIPO_AVISO,
+  type MlSizeChart,
+  type Mensagem,
+  TIPO_INTEGRACAO_PGTO,
+  whatsappIdentidadeSchema,
+} from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
+import { escreverAviso, resolverAviso } from '@delfrance/data/admin/avisos';
 import { db } from '@delfrance/test-fixtures';
 import { getRunId, workerIndex } from './run-id';
+import { ETIQUETA_CORES } from '../../lib/chat/etiquetaCores';
 
 /** High Unicode code point — upper bound for a Firestore prefix range query. */
 const PREFIX_MAX = String.fromCharCode(0xffff);
@@ -115,6 +141,25 @@ export function validTestCnpj(seedDigits: string): string {
 }
 
 /**
+ * The CNPJ for seeded filial `i` — checksum-VALID, and it has to be.
+ *
+ * ⚠️ This used to be `String(10000000000000 + i)`, which is not a real CNPJ.
+ * That was harmless only while nothing validated our own emitente: #1619 put a
+ * checksum on `filialFormSchema`, and an invalid stored CNPJ then blocks
+ * saving the filial at all — so `filiais.cadastros.e2e.spec.ts`'s "edits a
+ * filial and saves" failed on the CNPJ field while editing the Nome Fantasia.
+ * A seed that cannot be saved back through the form is not a valid fixture.
+ *
+ * ⚠️ The seed passed to `validTestCnpj` must be **12 digits**: it keeps the
+ * LAST 12 characters, so a 14-digit seed loses its leading digits and every
+ * filial collapses to `0000000000xx`. `100000000000 + i` keeps the values
+ * recognisable as the old `10000000000i` family and distinct per `i`.
+ */
+export function filialSeedCnpj(i: number): string {
+  return validTestCnpj(String(100000000000 + i));
+}
+
+/**
  * The CNPJ every fixture cliente carries — run- AND worker-scoped.
  *
  * ⚠️ The worker half is what keeps the quick-create dedup spec honest, and it
@@ -172,8 +217,6 @@ export async function seedClientes(prefix: string, n: number): Promise<void> {
       observacoesInternas: null,
       timestamp: Date.now(),
       ultimaModificacao: Date.now() + i,
-      nome_embedding: null,
-      telefone_embedding: null,
       userCliente: null,
     });
   }
@@ -270,9 +313,11 @@ export async function seedMedidas(prefix: string, n: number): Promise<void> {
 /**
  * Seed exactly one `tabMedi` doc (`<prefix>-mkt`) carrying NON-empty
  * marketplace maps — a Mercado Livre chart (keyed by ML conta id) and a Shopee
- * size-chart reference (keyed by Shopee conta id). These are authored by the
- * marketplace integrations, excluded from the CRUD form, and must survive an
- * edit untouched; the returned maps let the spec assert byte-equality.
+ * size-chart reference (keyed by Shopee conta id). The ML map is written by its
+ * own tab and never enters the form; the Shopee map IS a form field now (the
+ * edit page's Shopee tab, staged and saved with the tabela), but editing any
+ * other field must not dirty it — both must survive such an edit untouched; the
+ * returned maps let the spec assert byte-equality.
  */
 export async function seedMedidaComMarketplace(prefix: string): Promise<{
   id: string;
@@ -282,6 +327,8 @@ export async function seedMedidaComMarketplace(prefix: string): Promise<{
 }> {
   const id = `${prefix}-mkt`;
   const nome = `${prefix}-mkt`;
+  // Reference-only fixture; no Storage bytes or arquivo anchor are created.
+  const photoId = `${id}_source-photo`;
   const mercadoLivre = {
     'conta-ml-1': {
       tabelas: [{ id: '1594439', nome: 'Chart A', domain_id: 'MLB-PANTS', rows: [] }],
@@ -290,17 +337,20 @@ export async function seedMedidaComMarketplace(prefix: string): Promise<{
   const shopee = {
     'conta-shopee-1': [{ categoryId: 11012, size_chart_id: 700024639, name: 'Camisetas' }],
   };
-  await db().collection('tabMedi').doc(id).set({
-    nome,
-    codigo: 'MKT-001',
-    descricao: null,
-    fotosArquivosIds: null,
-    fotos: null,
-    tabelasDeMedidasMercadoLivre: mercadoLivre,
-    tabelasMedidasShopee: shopee,
-    dataCadastro: Date.now(),
-    ultimaModificacao: null,
-  });
+  await db()
+    .collection('tabMedi')
+    .doc(id)
+    .set({
+      nome,
+      codigo: 'MKT-001',
+      descricao: null,
+      fotosArquivosIds: [photoId],
+      fotos: [{ arquivoOuterRef: `arquivos/${photoId}` }],
+      tabelasDeMedidasMercadoLivre: mercadoLivre,
+      tabelasMedidasShopee: shopee,
+      dataCadastro: Date.now(),
+      ultimaModificacao: null,
+    });
   return { id, nome, mercadoLivre, shopee };
 }
 
@@ -309,6 +359,93 @@ export async function getTabMediByName(nome: string): Promise<Record<string, unk
   const snap = await db().collection('tabMedi').where('nome', '==', nome).limit(1).get();
   const data = snap.docs[0]?.data();
   return data ? (data as Record<string, unknown>) : null;
+}
+
+/** Full data of the `tabMedi` doc `id`, or null (an Admin read — strongly consistent). */
+export async function getTabMediById(id: string): Promise<Record<string, unknown> | null> {
+  const data = (await db().collection('tabMedi').doc(id).get()).data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
+ * The Shopee conta key `seedMedidaShopee` stores BESIDE the run's own conta. No
+ * `integracao` doc carries it — it stands for a conta deleted after its pick,
+ * which the medidas editor shows as one muted line and must keep verbatim.
+ */
+export const CONTA_SHOPEE_IRMA = 'conta-shopee-irma';
+
+/**
+ * The two marketplace maps of `seedMedidaShopee`'s first doc — exported so the
+ * spec asserts against the SAME values the seed wrote, never a second copy.
+ *
+ * `tabelasMedidasShopee` is the legacy corpus shape (`{ categoryId,
+ * size_chart_id, name }`, `name` = the CATEGORY's label at pick time). The run's
+ * conta holds two picks for ONE category, so the second is the one the selection
+ * rule ignores (first match wins); the sibling key holds one pick of its own.
+ * The chart ids are Shopee's own published doc-sample ids, never a real shop's.
+ */
+export function mapasMedidaShopee(integracaoId: string): {
+  shopee: Record<string, Array<{ categoryId: number; size_chart_id: number; name: string }>>;
+  mercadoLivre: Record<string, unknown>;
+} {
+  return {
+    shopee: {
+      [integracaoId]: [
+        { categoryId: 100087, size_chart_id: 700024639, name: 'Camisetas' },
+        { categoryId: 100087, size_chart_id: 700024641, name: '(Cópia) Camisetas' },
+      ],
+      [CONTA_SHOPEE_IRMA]: [{ categoryId: 400055, size_chart_id: 700024613, name: 'Calças' }],
+    },
+    mercadoLivre: {
+      'conta-ml-1': {
+        tabelas: [{ id: '1594439', nome: 'Chart A', domain_id: 'MLB-PANTS', rows: [] }],
+      },
+    },
+  };
+}
+
+/**
+ * Seed the two `tabMedi` docs the medidas editor's **Shopee** tab spec drives,
+ * for the Shopee conta `integracaoId` (seeded by `seedShopeeFixtures`):
+ *
+ *  - `comMapa` — {@link mapasMedidaShopee}: this conta's two picks, the sibling
+ *    key's pick and a Mercado Livre map, so a save can be checked for touching
+ *    only this conta's list;
+ *  - `semMapa` — `tabelasMedidasShopee: null`, the state of every tabela nobody
+ *    has picked a Shopee chart for yet.
+ *
+ * The id IS the `nome`, so the prefix sweep removes both.
+ */
+export async function seedMedidaShopee(
+  prefix: string,
+  integracaoId: string,
+): Promise<{ comMapa: string; semMapa: string }> {
+  const comMapa = `${prefix}-shopee`;
+  const semMapa = `${prefix}-shopee-vazia`;
+  const { shopee, mercadoLivre } = mapasMedidaShopee(integracaoId);
+  const base = {
+    codigo: null,
+    descricao: null,
+    fotosArquivosIds: null,
+    fotos: null,
+    dataCadastro: Date.now(),
+    ultimaModificacao: null,
+  };
+  const batch = db().batch();
+  batch.set(db().collection('tabMedi').doc(comMapa), {
+    ...base,
+    nome: comMapa,
+    tabelasDeMedidasMercadoLivre: mercadoLivre,
+    tabelasMedidasShopee: shopee,
+  });
+  batch.set(db().collection('tabMedi').doc(semMapa), {
+    ...base,
+    nome: semMapa,
+    tabelasDeMedidasMercadoLivre: null,
+    tabelasMedidasShopee: null,
+  });
+  await batch.commit();
+  return { comMapa, semMapa };
 }
 
 /**
@@ -398,6 +535,36 @@ export async function seedMedidaMlChart(
       ultimaModificacao: null,
     });
   return { id, nome, chartNome, excluindoNome };
+}
+
+/** Isolated draft-deletion fixture; no chart in it is sent to Mercado Livre. */
+export async function seedMedidaMlDraft(prefix: string, integracaoId: string) {
+  const id = `${prefix}-draft`;
+  const chart: MlSizeChart = {
+    id: null,
+    nome: `${prefix}-rascunho`,
+    domain_id: 'MLB-T_SHIRTS',
+    rows: [{ attributes: [{ id: 'SIZE', value_name: '01' }] }],
+    legacy: { keep: true },
+  };
+  await db()
+    .collection('tabMedi')
+    .doc(id)
+    .set({
+      nome: id,
+      codigo: null,
+      descricao: 'Original',
+      fotosArquivosIds: null,
+      fotos: null,
+      tabelasDeMedidasMercadoLivre: {
+        [integracaoId]: { tabelas: [chart], metadata: 'keep' },
+        outra: { tabelas: [], metadata: 'sibling' },
+      },
+      tabelasMedidasShopee: { loja: [{ size_chart_id: 42, categoryId: 10, name: 'Legada' }] },
+      dataCadastro: Date.now(),
+      ultimaModificacao: null,
+    });
+  return { id, chart };
 }
 
 /**
@@ -618,7 +785,7 @@ export async function seedFiliais(prefix: string, n: number): Promise<void> {
       razaoSocial: `${prefix}-${pad(i)}`,
       fantasia: i % 2 === 0 ? `${prefix}-${pad(i)} fantasia` : null,
       cnae: null,
-      cnpj: String(10000000000000 + i),
+      cnpj: filialSeedCnpj(i),
       ie: String(100000000 + i),
       iest: null,
       imun: null,
@@ -675,7 +842,7 @@ async function seedIntegracaoFixtures(
       razaoSocial: `${prefix}-ref-filial`,
       fantasia: null,
       cnae: null,
-      cnpj: '99999999999999',
+      cnpj: '99999999999962',
       ie: '999999999',
       iest: null,
       imun: null,
@@ -770,6 +937,22 @@ export async function seedMercadoLivreFixtures(
   return seedIntegracaoFixtures(prefix, n, 1);
 }
 
+/** Shopee (tipo 5) fixture set — see `seedIntegracaoFixtures`. */
+export async function seedShopeeFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  return seedIntegracaoFixtures(prefix, n, 5);
+}
+
+/** Loja Integrada (tipo 3) fixture set — see `seedIntegracaoFixtures`. */
+export async function seedLojaIntegradaFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  return seedIntegracaoFixtures(prefix, n, 3);
+}
+
 /**
  * WhatsApp (tipo 6) fixture set — see `seedIntegracaoFixtures`, then patches
  * each doc with the flat WhatsApp fields (#528) the `/canais/whatsapp`
@@ -824,6 +1007,16 @@ export async function cleanupMercadoLivreFixtures(prefix: string): Promise<void>
   await cleanupIntegracaoFixtures(prefix);
 }
 
+/** Teardown for `seedShopeeFixtures`. */
+export async function cleanupShopeeFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Teardown for `seedLojaIntegradaFixtures`. */
+export async function cleanupLojaIntegradaFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
+}
+
 /** Teardown for `seedWhatsappFixtures`. */
 export async function cleanupWhatsappFixtures(prefix: string): Promise<void> {
   await cleanupIntegracaoFixtures(prefix);
@@ -867,6 +1060,8 @@ export async function seedMensagem(
     tipo?: string;
     estadoEnvio?: number;
     userId?: string | null;
+    context?: Mensagem['context'];
+    referral?: Mensagem['referral'];
   },
 ): Promise<void> {
   await db()
@@ -880,6 +1075,10 @@ export async function seedMensagem(
       conteudo: data.conteudo,
       canal: 0,
       user_id: data.userId ?? null,
+      clienteMensagemOuterRef:
+        (data.estadoEnvio ?? 7) === 7 && !data.userId
+          ? `documents/clientes/${conversaId}-cliente`
+          : null,
       mid: null,
       midGroup: null,
       resposta: null,
@@ -892,6 +1091,8 @@ export async function seedMensagem(
       anexo_url: null,
       timestamp: data.timestampMs,
       data_cadastro: data.timestampMs,
+      ...(data.context ? { context: data.context } : {}),
+      ...(data.referral ? { referral: data.referral } : {}),
     });
 }
 
@@ -916,6 +1117,72 @@ export async function seedMensagem(
  */
 const PRAZO_BACKDATE_MS = 365 * 24 * 60 * 60 * 1000;
 
+/** Fully linked local fixtures; inactive integration has no provider credential. */
+function whatsappFixtureIds(prefix: string, conversaId: string) {
+  const integracaoId = `${prefix}-chat-integracao`;
+  const clienteId = `${conversaId}-cliente`;
+  const portfolioId = `${prefix}-chat-portfolio`;
+  const bsuid = `${conversaId}-bsuid`;
+  // Test fixture wire IDs match the resolver's length-preserving JSON tuple hash.
+  const digest = (parts: string[]) =>
+    createHash('sha256').update(JSON.stringify(parts)).digest('hex');
+  return {
+    integracaoId,
+    clienteId,
+    portfolioId,
+    bsuid,
+    identidadeId: digest([portfolioId, 'bsuid', bsuid]),
+    claimId: digest([integracaoId, clienteId]),
+  };
+}
+
+function seedWhatsappFixtureBindings(
+  batch: FirebaseFirestore.WriteBatch,
+  prefix: string,
+  conversaId: string,
+  now: number,
+) {
+  const ids = whatsappFixtureIds(prefix, conversaId);
+  batch.set(
+    db().collection('integracao').doc(ids.integracaoId),
+    integracaoSchema.parse({
+      nome: ids.integracaoId,
+      tipo: INTEGRACAO_TIPO.whatsapp,
+      ativo: false,
+      portfolioId: ids.portfolioId,
+    }),
+  );
+  batch.set(
+    db().collection('clientes').doc(ids.clienteId),
+    clienteSchema.parse({ nome: ids.clienteId, telefoneGerenciado: true }),
+  );
+  batch.set(
+    db().collection('whatsappIdentidades').doc(ids.identidadeId),
+    whatsappIdentidadeSchema.parse({
+      escopo: ids.portfolioId,
+      tipo: 'bsuid',
+      valor: ids.bsuid,
+      clienteId: ids.clienteId,
+      ativa: true,
+    }),
+  );
+  batch.set(db().collection('whatsappConversas').doc(ids.claimId), {
+    integracaoId: ids.integracaoId,
+    clienteId: ids.clienteId,
+    conversaId,
+  });
+  return {
+    integracaoOuterRef: `documents/integracao/${ids.integracaoId}`,
+    clienteOuterRef: `documents/clientes/${ids.clienteId}`,
+    whatsappDestino: {
+      tipo: 'bsuid',
+      valor: ids.bsuid,
+      identidadeId: ids.identidadeId,
+      revision: 1,
+      ultimaMensagemEm: now,
+    },
+  };
+}
 export async function seedConversas(prefix: string): Promise<SeededChat> {
   const now = Date.now();
   const vermelhaId = `${prefix}-conv-vermelha`;
@@ -969,7 +1236,11 @@ export async function seedConversas(prefix: string): Promise<SeededChat> {
     base(azulId, 1, CHAT_ETIQUETA_BLUE, 1),
   ];
   const batch = db().batch();
-  for (const r of rows) batch.set(db().collection('chat').doc(r.id), r.doc);
+  for (const r of rows)
+    batch.set(db().collection('chat').doc(r.id), {
+      ...r.doc,
+      ...seedWhatsappFixtureBindings(batch, prefix, r.id, now),
+    });
   await batch.commit();
 
   await seedMensagem(vermelhaId, `${prefix}-msg-001`, {
@@ -1071,8 +1342,14 @@ export async function seedSearchMessages(
     mensagensId: null,
   });
   const batch = db().batch();
-  batch.set(db().collection('chat').doc(oldConversaId), convDoc(oldConversaId));
-  batch.set(db().collection('chat').doc(recentConversaId), convDoc(recentConversaId));
+  batch.set(db().collection('chat').doc(oldConversaId), {
+    ...convDoc(oldConversaId),
+    ...seedWhatsappFixtureBindings(batch, prefix, oldConversaId, oldTs),
+  });
+  batch.set(db().collection('chat').doc(recentConversaId), {
+    ...convDoc(recentConversaId),
+    ...seedWhatsappFixtureBindings(batch, prefix, recentConversaId, recentTs),
+  });
   await batch.commit();
 
   await seedMensagem(oldConversaId, oldMsgId, {
@@ -1121,8 +1398,123 @@ export async function cleanupConversas(prefix: string): Promise<void> {
   for (const convDoc of snap.docs) {
     const msgs = await convDoc.ref.collection('mensagem').get();
     await deleteChunked(msgs.docs.map((m) => m.ref));
+    const ids = whatsappFixtureIds(prefix, convDoc.id);
+    await deleteChunked([
+      db().collection('whatsappIdentidades').doc(ids.identidadeId),
+      db().collection('whatsappConversas').doc(ids.claimId),
+      db().collection('clientes').doc(ids.clienteId),
+    ]);
   }
   await deleteChunked(snap.docs.map((d) => d.ref));
+  await db().collection('integracao').doc(`${prefix}-chat-integracao`).delete();
+}
+
+/**
+ * Display-only fixtures for the light/dark readability matrix. All outbound
+ * messages are already sent; opening the composer never dispatches a provider
+ * message. The aviso is addressed to the ephemeral operator, so another
+ * suite's read watermark cannot make the populated bell assertion vacuous.
+ */
+export async function seedThemeReadabilityFixtures(prefix: string, operatorUid: string) {
+  const chat = await seedConversas(prefix);
+  const now = Date.now();
+  const untagged = chat.pendente;
+  const batch = db().batch();
+  batch.update(db().collection('chat').doc(untagged.id), {
+    estadoConversa: 1,
+    usuarios: [operatorUid],
+  });
+  const template = (await db().collection('chat').doc(chat.vermelha.id).get()).data()!;
+  const tagged = ETIQUETA_CORES.map((cor, index) => {
+    const id = `${prefix}-palette-${index}`;
+    batch.set(db().collection('chat').doc(id), {
+      ...template,
+      ...seedWhatsappFixtureBindings(batch, prefix, id, now),
+      nome: id,
+      cor_etiqueta: cor,
+      ultima_modificacao: now + 10 + index,
+    });
+    return { id, nome: id, cor };
+  });
+  await batch.commit();
+
+  const customerText = `${prefix} customer message`;
+  const operatorText = `${prefix} current operator reply`;
+  const otherOperatorText = `${prefix} other operator note`;
+  const quoteId = `${prefix}-quote-source`;
+  const referralHeadline = `${prefix} referral headline`;
+  const referralBody = `${prefix} referral body`;
+  await seedMensagem(untagged.id, quoteId, {
+    conteudo: customerText,
+    timestampMs: now - 30_000,
+    estadoEnvio: ESTADO_ENVIO.recebido,
+  });
+  await seedMensagem(untagged.id, `${prefix}-other-operator`, {
+    conteudo: otherOperatorText,
+    timestampMs: now - 20_000,
+    estadoEnvio: ESTADO_ENVIO.enviado,
+    userId: `${prefix}-other-operator`,
+  });
+  await seedMensagem(untagged.id, `${prefix}-current-operator`, {
+    conteudo: operatorText,
+    timestampMs: now - 10_000,
+    estadoEnvio: ESTADO_ENVIO.enviado,
+    userId: operatorUid,
+    context: { mensagemOuterRef: `documents/chat/${untagged.id}/mensagem/${quoteId}` },
+  });
+  await seedMensagem(untagged.id, `${prefix}-referral`, {
+    conteudo: `${prefix} referred customer`,
+    timestampMs: now,
+    estadoEnvio: ESTADO_ENVIO.recebido,
+    referral: { headline: referralHeadline, body: referralBody },
+  });
+
+  await seedCategorias(prefix, 3);
+  const kit = await seedKitEstoqueFixtures(prefix);
+  const stock = await seedProdutoComFilho(prefix);
+  const unmatchedId = `${prefix}-pai-filho-m`;
+  const stockChild = (await db().collection('produtos').doc(stock.childId).get()).data()!;
+  await db()
+    .collection('produtos')
+    .doc(unmatchedId)
+    .set({
+      ...stockChild,
+      nome: `${prefix}-pai M`,
+      sku: `${prefix.toUpperCase().replace(/-/g, '_')}_PAI_M`,
+      ordem: 1,
+    });
+  await seedEstoqueDoc(stock.childId, kit.depositoId, 12, 2);
+  await seedEstoqueDoc(unmatchedId, kit.depositoId, 7, 1);
+
+  const avisoId = `${prefix}-aviso`;
+  await seedAvisoUnico(avisoId, `${prefix}-shop`);
+  await db().collection('avisos').doc(avisoId).update({ destinatarioUid: operatorUid });
+  return {
+    untagged,
+    tagged,
+    customerText,
+    operatorText,
+    otherOperatorText,
+    referralHeadline,
+    referralBody,
+    kit,
+    stock: { ...stock, unmatchedId },
+    avisoId,
+  };
+}
+
+/** Prefix-scoped cleanup also works when the seed stopped part way through. */
+export async function cleanupThemeReadabilityFixtures(prefix: string): Promise<void> {
+  for (const suffix of ['kit', 'comp1', 'comp2', 'pai', 'pai-filho', 'pai-filho-m']) {
+    await cleanupProdutoEstoque(`${prefix}-${suffix}`);
+  }
+  await cleanupConversas(prefix);
+  await cleanupAvisos([`${prefix}-aviso`]);
+  await Promise.all([
+    cleanupByNamePrefix('categorias', prefix),
+    cleanupByNamePrefix('produtos', prefix),
+    cleanupByNamePrefix('depositos', prefix),
+  ]);
 }
 
 /**
@@ -1147,7 +1539,7 @@ export async function seedIntFreteFixtures(
       razaoSocial: `${prefix}-ref-filial`,
       fantasia: null,
       cnae: null,
-      cnpj: '99999999999999',
+      cnpj: '99999999999962',
       ie: '999999999',
       iest: null,
       imun: null,
@@ -1311,8 +1703,6 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     // Stamped so the fixture cliente shows in `/clientes` (default sort is
     // `ultimaModificacao desc`; Firestore skips docs missing the field).
     ultimaModificacao: clienteNow,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('operacao').doc(operacaoId), {
@@ -1404,14 +1794,10 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     componentesKitKeys: null,
     componentesKit: null,
     integracoesComProduto: [],
-    marketplaceIds: null,
-    marketplace: [],
-    statusProdutosMarketplace: null,
     fotos: null,
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   await batch.commit();
 
@@ -1535,14 +1921,10 @@ export async function seedPedidoEstoqueFixtures(prefix: string): Promise<{
     componentesKitKeys: null,
     componentesKit: null,
     integracoesComProduto: [],
-    marketplaceIds: null,
-    marketplace: [],
-    statusProdutosMarketplace: null,
     fotos: null,
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   batch.set(db().collection('pedidos').doc(pedidoId), {
     ehSaida: true,
@@ -1722,8 +2104,6 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('integracao').doc(integracaoId), {
@@ -1770,14 +2150,10 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
     componentesKitKeys: null,
     componentesKit: null,
     integracoesComProduto: [],
-    marketplaceIds: null,
-    marketplace: [],
-    statusProdutosMarketplace: null,
     fotos: null,
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   batch.set(db().collection('pedidos').doc(naoImpressoId), {
     ...pedidoBase,
@@ -1806,6 +2182,155 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
 
 /** Teardown for `seedPedidoImpressaoFixtures` (sweeps by the run prefix). */
 export async function cleanupPedidoImpressaoFixtures(prefix: string): Promise<void> {
+  await cleanupPedidoFixtures(prefix);
+}
+
+/**
+ * Fixtures for the `/pedidos` LIST FILTER suite (Canal + Cliente → Anônimo).
+ *
+ * TWO integrações and THREE saída pedidos, chosen so each filter has both a
+ * match and a non-match and so the two filters cross:
+ *
+ *   | pedido | canal | cliente |
+ *   |--------|-------|---------|
+ *   | `-001` | A     | set     |
+ *   | `-002` | B     | set     |
+ *   | `-003` | A     | **null**|
+ *
+ * `-003` is the point: `clientePedidoOuterRef: null` is what a marketplace
+ * import writes when the buyer was redacted, and it is the only state the
+ * Anônimo filter can find.
+ *
+ * ⚠️ `timestamp` and `ultimaModificacao` are stamped in µs on every doc.
+ * `/pedidos` sorts `timestamp desc`, and Firestore `orderBy` SKIPS a document
+ * missing the sort field — an unstamped fixture is invisible to the list and the
+ * spec fails with nothing on screen to explain it.
+ *
+ * ⚠️ These go in through the Admin SDK, which bypasses Zod, so every field the
+ * list reads is written explicitly rather than left to a schema default.
+ */
+export async function seedPedidoFiltroFixtures(prefix: string): Promise<{
+  clienteId: string;
+  canalAId: string;
+  canalANome: string;
+  canalBId: string;
+  canalBNome: string;
+  comClienteCanalA: string;
+  comClienteCanalB: string;
+  anonimoCanalA: string;
+}> {
+  const clienteId = `${prefix}-cli-001`;
+  const canalAId = `${prefix}-int-a`;
+  const canalBId = `${prefix}-int-b`;
+  const comClienteCanalA = `${prefix}-001`;
+  const comClienteCanalB = `${prefix}-002`;
+  const anonimoCanalA = `${prefix}-003`;
+  const now = Date.now();
+  const nowMicros = millisToMicros(now);
+
+  const pedidoBase = {
+    ehSaida: true,
+    estado: 'iniciado',
+    itens: {},
+    itensIds: [],
+    descontoTotal: 0,
+    valorCobrado: 10,
+    timestamp: nowMicros,
+    ultimaModificacao: nowMicros,
+    freteInicial: null,
+    foiImpresso: false,
+    dtImpressao: null,
+    estoqueAplicado: null,
+    dataIndisponivelEstoque: null,
+    dataRemocaoEstoque: null,
+    vendedorPedidoOuterRef: null,
+    operacaoPedidoOuterRef: null,
+    enderecoFiscalOuterRef: null,
+    listaDePrecosOuterRef: null,
+    observacoesInternas: null,
+  };
+
+  const integracaoBase = {
+    padrao: false,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: null,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro: now,
+  };
+
+  const batch = db().batch();
+  batch.set(db().collection('clientes').doc(clienteId), {
+    tipo: '1',
+    nome: clienteId,
+    cpf_cnpj: fixtureClienteCnpj(),
+    idEstrangeiro: null,
+    ie: null,
+    imun: null,
+    isUF: null,
+    email: null,
+    telefone: null,
+    observacoesInternas: null,
+    timestamp: now,
+    ultimaModificacao: now,
+    userCliente: null,
+  });
+  // Two DIFFERENT tipos, so the option labels differ by more than the nome and
+  // a locator cannot match the wrong one by accident.
+  batch.set(db().collection('integracao').doc(canalAId), {
+    ...integracaoBase,
+    tipo: 7, // balcao
+    nome: canalAId,
+  });
+  batch.set(db().collection('integracao').doc(canalBId), {
+    ...integracaoBase,
+    tipo: 1, // mercadoLivre
+    nome: canalBId,
+  });
+  batch.set(db().collection('pedidos').doc(comClienteCanalA), {
+    ...pedidoBase,
+    numero: comClienteCanalA,
+    integracaoPedidoOuterRef: `documents/integracao/${canalAId}`,
+    clientePedidoOuterRef: `documents/clientes/${clienteId}`,
+  });
+  batch.set(db().collection('pedidos').doc(comClienteCanalB), {
+    ...pedidoBase,
+    numero: comClienteCanalB,
+    integracaoPedidoOuterRef: `documents/integracao/${canalBId}`,
+    clientePedidoOuterRef: `documents/clientes/${clienteId}`,
+  });
+  batch.set(db().collection('pedidos').doc(anonimoCanalA), {
+    ...pedidoBase,
+    numero: anonimoCanalA,
+    integracaoPedidoOuterRef: `documents/integracao/${canalAId}`,
+    // ⚠️ Explicit null, not an absent key: Firestore `== null` matches a stored
+    // null and NOT a missing field, so omitting it would make the pedido
+    // invisible to the very filter under test.
+    clientePedidoOuterRef: null,
+  });
+  await batch.commit();
+
+  return {
+    clienteId,
+    canalAId,
+    canalANome: canalAId,
+    canalBId,
+    canalBNome: canalBId,
+    comClienteCanalA,
+    comClienteCanalB,
+    anonimoCanalA,
+  };
+}
+
+/** Teardown for `seedPedidoFiltroFixtures` (sweeps by the run prefix). */
+export async function cleanupPedidoFiltroFixtures(prefix: string): Promise<void> {
   await cleanupPedidoFixtures(prefix);
 }
 
@@ -2057,6 +2582,79 @@ export async function cleanupPedidoFreteFixtures(prefix: string): Promise<void> 
 }
 
 /**
+ * Fixture for the Shopee etiqueta row action (#1523, step 15): ONE pedido
+ * (`<prefix>-ped-001`) whose `freteInicial` is the block the Shopee order
+ * import writes, and nothing else — the label route it reaches is stubbed by
+ * the spec, so no conta, `int_frete` or cliente is read.
+ *
+ * What the block pins, each on purpose:
+ *   - `externalOptionIntegracao: 'shopee'` and NO `integracaoFreteOuterRef` —
+ *     a Shopee pedido has no `int_frete` document at all, so the row must reach
+ *     the provider off the block alone (`resolverIntFrete`, `fonte: 'bloco'`);
+ *   - `externalOptionId: null` — so the HoverCard opens off
+ *     `FREIGHT_TIPO_CAPS.shopee.canFetchLabel` alone, never off a stored
+ *     option id;
+ *   - `externalId: null` — what the import writes whenever the order did not
+ *     carry exactly one package; the provider must never need it (W18);
+ *   - `estado: 'error'` — step 14's stamp after an NF-e upload failure, an
+ *     estado the shared gates treat as ALREADY POSTED (`isFreteJaPostado`), so
+ *     a provider without `reimpressao: 'mesmo-documento'` would ask the
+ *     posted-risk confirm here. `error` is also stock-neutral, and it is where
+ *     a pedido whose note was re-sent still has to arrange its first label.
+ *
+ * Built through `seedFreteInicial` — the one seeder the import itself starts
+ * from — so every other key carries the importer's default. A separate helper
+ * rather than a row in `seedPedidoFreteFixtures`: that one serves three other
+ * specs, which would each seed (and fire the pedido triggers for) a document
+ * they never read.
+ */
+export async function seedPedidoEtiquetaShopeeFixtures(prefix: string): Promise<{
+  pedidoId: string;
+}> {
+  const pedidoId = `${prefix}-ped-001`;
+  const agoraUs = millisToMicros(Date.now());
+
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .set({
+      ehSaida: true,
+      estado: ESTADO_PEDIDO.pago,
+      numero: pedidoId,
+      itens: {},
+      itensIds: [],
+      descontoTotal: 0,
+      timestamp: agoraUs,
+      freteInicial: {
+        ...seedFreteInicial(MODALIDADE_FRETE.fob, true),
+        externalOptionIntegracao: INTEGRACAO_FRETE.shopee,
+        externalId: null,
+        externalOptionId: null,
+        integracaoFreteOuterRef: null,
+        estado: ESTADO_FRETE.error,
+        valorCobrado: 19.9,
+        custoCalculado: 19.9,
+        codRastreio: null,
+        ultimaModificacao: agoraUs,
+      },
+    });
+
+  return { pedidoId };
+}
+
+/**
+ * Teardown for `seedPedidoEtiquetaShopeeFixtures`. The pedido is seeded with a
+ * non-null `freteInicial`, so `onPedidoChanged` appends a `historicoFtIni` row
+ * and an opening `historicoEstadoPedido` row — both swept BEFORE the parent is
+ * deleted, which never cascades (the `cleanupPedidoFreteFixtures` order).
+ */
+export async function cleanupPedidoEtiquetaShopeeFixtures(prefix: string): Promise<void> {
+  await cleanupPedidoSubcollectionByPrefix('historicoFtIni', prefix);
+  await cleanupPedidoSubcollectionByPrefix('historicoEstadoPedido', prefix);
+  await cleanupByFieldPrefix('pedidos', 'numero', prefix);
+}
+
+/**
  * Seed a pedido (with `numero = <prefix>-NNN`) plus one NFe doc in its
  * `nfev4` subcollection at the requested estado. Returns the pair of ids so
  * the test can mutate the NFe mid-run via `db().collection(...)...update(...)`.
@@ -2118,13 +2716,19 @@ export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
  * Seed one `nfev4` doc under an EXISTING pedido — the same wire body
  * `seedPedidoWithNFe` writes (that helper couples the NF-e to its own pedido
  * seed), so a spec can attach an NF-e at any estado/chave/numeração to an
- * already-seeded pedido (e.g. an APROVADA NF-e whose chave the devolução flows
- * must carry into `chNFeReferenciadas`).
+ * already-seeded pedido (e.g. an APROVADA NF-e whose `<det>` lines the
+ * devolução flows reference per item, #1683 — pass `xmlNfeProc` for those).
  */
 export async function seedNfeForPedido(
   pedidoId: string,
   nfeId: string,
-  opts: { estado: string; chave?: string | null; numeracao?: number },
+  opts: {
+    estado: string;
+    chave?: string | null;
+    numeracao?: number;
+    /** The authorized `<nfeProc>` — what a devolução reads the origin's dets from. */
+    xmlNfeProc?: string | null;
+  },
 ): Promise<void> {
   const now = Date.now();
   await db()
@@ -2140,7 +2744,7 @@ export async function seedNfeForPedido(
       chave: opts.chave ?? null,
       idLote: null,
       infNFe: null,
-      xml_nfe_proc: null,
+      xml_nfe_proc: opts.xmlNfeProc ?? null,
       xml_epec_proc: null,
       xml_assinado: null,
       nRec: null,
@@ -2277,7 +2881,7 @@ export async function seedEnviNfeFixtures(prefix: string): Promise<{
       razaoSocial: filialId,
       fantasia: null,
       cnae: null,
-      cnpj: '77000000000101',
+      cnpj: '77000000000116',
       ie: '770000001',
       iest: null,
       imun: null,
@@ -3406,14 +4010,10 @@ function checkoutProdutoDoc(nome: string, sku: string, ehKit = false) {
     componentesKitKeys: null,
     componentesKit: null,
     integracoesComProduto: [],
-    marketplaceIds: null,
-    marketplace: [],
-    statusProdutosMarketplace: null,
     fotos: null,
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   };
 }
 
@@ -3604,8 +4204,6 @@ export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixt
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
 
@@ -3895,14 +4493,10 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
     componentesKitKeys: null,
     componentesKit: null,
     integracoesComProduto: [],
-    marketplaceIds: null,
-    marketplace: [],
-    statusProdutosMarketplace: null,
     fotos: null,
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
     ...extra,
   });
 
@@ -3920,8 +4514,6 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('integracao').doc(integracaoId), {
@@ -4008,4 +4600,426 @@ export async function cleanupPedidoAnexosFixtures(
     .delete()
     .catch(() => undefined);
   await cleanupPedidoFixtures(prefix);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Avisos — the operator notification inbox                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Seed three avisos for the bell suite: two broadcast (visible to everyone who
+ * can act) and one addressed to a DIFFERENT operator, which must never reach the
+ * signed-in user's badge.
+ *
+ * Ids are the dedup `chave` in production; here they are prefix-scoped so the
+ * sweep can find them, since an aviso has no `nome` for the shared prefix sweep
+ * to match on.
+ */
+export async function seedAvisos(prefix: string): Promise<{ ids: string[]; broadcast: string[] }> {
+  const agoraUs = millisToMicros(Date.now());
+  const base = {
+    severidade: 'atencao',
+    canal: 'shopee',
+    motivo: null,
+    urlInterna: null,
+    urlExterna: null,
+    prazo: null,
+    relogioEvento: null,
+    ocorrencias: 1,
+    resolvidoEm: null,
+    resolucaoMotivo: null,
+    atualizadoEm: agoraUs,
+  };
+
+  const broadcast = [`${prefix}-a1`, `${prefix}-a2`];
+  const docs: Array<[string, Record<string, unknown>]> = [
+    [
+      broadcast[0]!,
+      {
+        ...base,
+        tipo: 'shopeeAutorizacaoExpirando',
+        params: { loja: `${prefix}-loja`, dias: 29 },
+        destinatarioUid: null,
+        criadoEm: agoraUs,
+      },
+    ],
+    [
+      broadcast[1]!,
+      {
+        ...base,
+        tipo: 'canalSemCredencial',
+        params: { canal: `${prefix}-Shopee` },
+        destinatarioUid: null,
+        criadoEm: agoraUs + 1,
+      },
+    ],
+    [
+      `${prefix}-a3`,
+      {
+        ...base,
+        tipo: 'pedidoPrecisaDecisao',
+        params: { pedido: `${prefix}-ped`, situacao: 'cancelamento solicitado' },
+        // Addressed to somebody else: the routing hint the bell filters on.
+        destinatarioUid: `${prefix}-outro-operador`,
+        criadoEm: agoraUs + 2,
+      },
+    ],
+  ];
+
+  const batch = db().batch();
+  for (const [id, data] of docs) batch.set(db().collection('avisos').doc(id), data);
+  await batch.commit();
+
+  return { ids: docs.map(([id]) => id), broadcast };
+}
+
+export async function cleanupAvisos(ids: string[]): Promise<void> {
+  const batch = db().batch();
+  for (const id of ids) batch.delete(db().collection('avisos').doc(id));
+  await batch.commit();
+}
+
+/**
+ * Reset one operator's read state. The suite marks avisos read, and that write
+ * outlives the run — without this a second run would start with everything
+ * already read and every assertion would pass vacuously.
+ */
+export async function resetAvisosLeitura(uid: string): Promise<void> {
+  // Refuse an empty uid loudly. Firestore's own error for `.doc('')` is
+  // "Value for argument \"documentPath\" is not a valid resource path", which
+  // says nothing about WHERE the uid went missing — and that is precisely how
+  // this helper first failed, masking the real cause (an unset `E2E_SU_EMAIL`
+  // two frames up).
+  if (!uid) {
+    throw new Error(
+      'resetAvisosLeitura: empty uid. The signed-in identity in the e2e lanes is ' +
+        'the ephemeral test user from `e2eUserEmail()`, not the SU — `E2E_SU_EMAIL` ' +
+        'is only set for the `configuracoes` project.',
+    );
+  }
+  await db().collection('avisosLeitura').doc(uid).delete();
+}
+
+/**
+ * Seed ONE broadcast aviso, created `now`. Used to prove the read watermark
+ * covers what existed when it moved and nothing after it.
+ */
+export async function seedAvisoUnico(id: string, loja: string): Promise<void> {
+  const agoraUs = millisToMicros(Date.now());
+  await db()
+    .collection('avisos')
+    .doc(id)
+    .set({
+      tipo: 'shopeeAutorizacaoExpirando',
+      severidade: 'critico',
+      canal: 'shopee',
+      params: { loja, dias: 3 },
+      motivo: null,
+      destinatarioUid: null,
+      urlInterna: null,
+      urlExterna: null,
+      prazo: null,
+      criadoEm: agoraUs,
+      atualizadoEm: agoraUs,
+      ocorrencias: 1,
+      relogioEvento: null,
+      resolvidoEm: null,
+      resolucaoMotivo: null,
+    });
+}
+
+/**
+ * Raise a broadcast aviso through the REAL producer seam, `escreverAviso` — not a
+ * hand-written document. Calling it again is a repeat; calling it after
+ * {@link resolverAvisoReal} is a reopen. That is the point: the create / repeat /
+ * reopen branch, and the `criadoEm` it decides, belong to the writer, and a copy
+ * of it here would only prove the copy.
+ */
+export async function escreverAvisoReal(conta: string, loja: string): Promise<string> {
+  const { chave } = await escreverAviso(
+    db(),
+    {
+      tipo: TIPO_AVISO.shopeeAutorizacaoExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.shopee,
+      conta,
+      params: { loja, dias: 5 },
+    },
+    { increment: (by) => FieldValue.increment(by), agoraUs: millisToMicros(Date.now()) },
+  );
+  return chave;
+}
+
+/** Resolve an aviso through the real resolver — the first half of a reopen. */
+export async function resolverAvisoReal(chave: string): Promise<void> {
+  await resolverAviso(db(), chave, 'e2e', { agoraUs: millisToMicros(Date.now()) });
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Pedidos — Mercado Pago payment-link tab (#367)                            */
+/* -------------------------------------------------------------------------- */
+
+const UM_DIA_MS = 86_400_000;
+
+/**
+ * The doc id of a seeded payment link, in the shape the web mints with
+ * `newDocId()` — 20 characters of `[A-Za-z0-9]` — but deterministic, so a fixture
+ * can name it before it is written. Not derived from the prefix directly: the
+ * prefix carries hyphens, and `pagamento.linkPagamentoId` (the field that names
+ * this id on the payment side) is validated against the 20-character shape.
+ */
+function linkPagamentoDocId(prefix: string, tag: string): string {
+  return createHash('sha256').update(`${prefix}:${tag}`).digest('hex').slice(0, 20);
+}
+
+/** One seeded link — what the spec needs to find it, copy it and count on it. */
+export interface LinkPagamentoSeed {
+  /** The link's DOC id. */
+  id: string;
+  /** The checkout URL the operator copies. */
+  url: string;
+  /** What each payment on the link charges (R$). */
+  valor: number;
+  /** The link's deadline, epoch MILLISECONDS. */
+  expiraMs: number;
+}
+
+export interface LinkPagamentoFixtures {
+  pedidoId: string;
+  numero: string;
+  /** The pedido's total (R$). */
+  valorCobrado: number;
+  /** What Maria's approved, link-attributed payment brought in (R$). */
+  valorPago: number;
+  /** Still owed: total − paid (R$). */
+  restante: number;
+  /** Money sitting in OPEN traceable links — João's; the legacy link is NOT counted (R$). */
+  emLinksAbertos: number;
+  /** What a new batch may still charge: restante − emLinksAbertos (R$). */
+  disponivel: number;
+  /** The only account the picker may offer. */
+  metodoId: string;
+  metodoNome: string;
+  /** Accounts the picker must NOT offer: not enabled for links / never connected. */
+  metodoSemLinkNome: string;
+  metodoSemUsuarioNome: string;
+  links: { legado: LinkPagamentoSeed; maria: LinkPagamentoSeed; joao: LinkPagamentoSeed };
+  /** Every link doc as written, so `resetLinksPagamento` can put them back. */
+  linkDocs: Array<{ id: string; data: Record<string, unknown> }>;
+}
+
+/**
+ * Fixtures for the pedido editor's "Link Pgto" tab (`pedidos-link-pagamento.emulator`):
+ * a saída pedido of R$ 100,00 in `aguardandoConfirmacaoDePagamento`, one Mercado Pago
+ * account the picker may offer plus two it must not, and three links —
+ *
+ *  - Maria: an individual link of R$ 30,00, PAID (one approved pagamento attributed to
+ *    it through `linkPagamentoId`);
+ *  - João:  an individual link of R$ 30,00, still open;
+ *  - legado: R$ 20,00 in the six fields the legacy app wrote and nothing else (no
+ *    `modo`), so no payment can ever be attributed to it.
+ *
+ * So restante = 100 − 30 = 70, R$ 30,00 of it sits in João's open link (the legacy link
+ * is not counted), and a new batch may charge up to R$ 40,00.
+ *
+ * The pedido carries one item so the editor's Zod converter parses; the integração has
+ * no depósito, so the pedido→estoque trigger ignores it.
+ *
+ * ⚠️ Seeding the pagamento fires `onPagamentoChanged`, which appends to the pedido's
+ * `historicoDeModificacoes` asynchronously — `cleanupLinkPagamentoFixtures` sweeps it.
+ * ⚠️ `orderBy` SKIPS documents missing the field: the pagamento needs `dataCadastro` and
+ * every link needs `dataCriacao` (the legacy one included) or the tab would never list
+ * them.
+ */
+export async function seedLinkPagamentoFixtures(prefix: string): Promise<LinkPagamentoFixtures> {
+  const base = await seedPedidoFixtures(prefix);
+  const produtoId = base.produtoPath.split('/')[1]!;
+  const nowMs = Date.now();
+  const nowUs = millisToMicros(nowMs);
+
+  const pedidoId = `${prefix}-ped`;
+  const valorCobrado = 100;
+  const valorMaria = 30;
+  const valorJoao = 30;
+  const valorLegado = 20;
+
+  const metodoId = `${prefix}-mp-ok`;
+  const metodoSemLinkNome = `${prefix}-mp-sem-link`;
+  const metodoSemUsuarioNome = `${prefix}-mp-sem-usuario`;
+  const contaRef = `documents/metodo_pgto/${metodoId}`;
+
+  const pedidoRef = db().collection('pedidos').doc(pedidoId);
+  await pedidoRef.set({
+    ehSaida: true,
+    estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    numero: pedidoId,
+    integracaoPedidoOuterRef: `documents/${base.integracaoPath}`,
+    clientePedidoOuterRef: `documents/${base.clientePath}`,
+    operacaoPedidoOuterRef: `documents/${base.operacaoPath}`,
+    itens: {
+      [produtoId]: [
+        {
+          produtoUid: produtoId,
+          ordem: 1,
+          sku: base.produtoSku,
+          nomeDeVenda: base.produtoNome,
+          precoDeVenda: valorCobrado,
+          descontoUnitario: 0,
+          quantidade: 1,
+          custo: null,
+        },
+      ],
+    },
+    itensIds: [produtoId],
+    descontoTotal: 0,
+    valorCobrado,
+    timestamp: nowUs,
+  });
+
+  const metodos = db().collection('metodo_pgto');
+  const metodoBase = { tipo: TIPO_INTEGRACAO_PGTO.mercadoPago, dataCadastro: nowUs };
+  const salvarMetodo = (nome: string, hasLinkPagamento: boolean, userId: number | null) =>
+    metodos.doc(nome).set({ ...metodoBase, nome, hasLinkPagamento, user_id: userId });
+  await Promise.all([
+    salvarMetodo(metodoId, true, 900_000_101),
+    salvarMetodo(metodoSemLinkNome, false, 900_000_102),
+    salvarMetodo(metodoSemUsuarioNome, true, null),
+  ]);
+
+  const link = (tag: string, valor: number, expiraMs: number): LinkPagamentoSeed => {
+    const id = linkPagamentoDocId(prefix, tag);
+    return {
+      id,
+      url: `https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=${prefix}-${tag}`,
+      valor,
+      expiraMs,
+    };
+  };
+  const maria = link('maria', valorMaria, nowMs + 5 * UM_DIA_MS);
+  const joao = link('joao', valorJoao, nowMs + 5 * UM_DIA_MS);
+  const legado = link('legado', valorLegado, nowMs + UM_DIA_MS);
+
+  // A link written by the create flow: traceable, one payment, open.
+  const docIndividual = (
+    seed: LinkPagamentoSeed,
+    nomePagador: string,
+    ordem: number,
+    criadoMs: number,
+  ): Record<string, unknown> => ({
+    contaMercadoPagoOuterRef: contaRef,
+    valorCobrado: seed.valor,
+    link: seed.url,
+    id: `${prefix}-${nomePagador.toLowerCase()}`,
+    dataCriacao: criadoMs,
+    dataExpiracao: seed.expiraMs,
+    modo: MODO_LINK_PAGAMENTO.individual,
+    nomePagador,
+    quantidadeMaxima: 1,
+    grupoId: linkPagamentoDocId(prefix, 'grupo'),
+    ordem,
+    status: STATUS_LINK_PAGAMENTO.aberto,
+    encerradoEm: null,
+    encerradoPorOuterRef: null,
+    erroEncerramento: null,
+    criadoPorOuterRef: null,
+    tiposExcluidos: null,
+    parcelasMaximas: null,
+  });
+
+  const linkDocs = [
+    { id: maria.id, data: docIndividual(maria, 'Maria', 0, nowMs - 2 * 3_600_000) },
+    { id: joao.id, data: docIndividual(joao, 'João', 1, nowMs - 3_600_000) },
+    {
+      id: legado.id,
+      // The six fields the legacy app wrote and nothing else: no `modo`, no `status`.
+      data: {
+        contaMercadoPagoOuterRef: contaRef,
+        valorCobrado: legado.valor,
+        link: legado.url,
+        id: `${prefix}-legado`,
+        dataCriacao: nowMs - UM_DIA_MS,
+        dataExpiracao: legado.expiraMs,
+      },
+    },
+  ];
+
+  const fixtures: LinkPagamentoFixtures = {
+    pedidoId,
+    numero: pedidoId,
+    valorCobrado,
+    valorPago: valorMaria,
+    restante: valorCobrado - valorMaria,
+    emLinksAbertos: valorJoao,
+    disponivel: valorCobrado - valorMaria - valorJoao,
+    metodoId,
+    metodoNome: metodoId,
+    metodoSemLinkNome,
+    metodoSemUsuarioNome,
+    links: { legado, maria, joao },
+    linkDocs,
+  };
+
+  await resetLinksPagamento(fixtures);
+
+  // Maria's payment, attributed to her link through the link's DOC id.
+  const pagamentoId = `${prefix}-pag-maria`;
+  const pagamentoRef = pedidoRef.collection('pagamentos').doc(pagamentoId);
+  await pagamentoRef.set({
+    id: pagamentoId,
+    metodoPagamentoOuterRef: contaRef,
+    forma_de_pagamento: FORMA_PAGAMENTO.pix,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    valor: valorMaria,
+    parcelas: 1,
+    aVista: true,
+    duplicata: false,
+    cartao: null,
+    cheque: null,
+    linkPagamentoId: maria.id,
+    primeiroNomePagador: null,
+    dataAprovacao: nowUs,
+    dataCadastro: nowUs,
+    ultimaModificacao: nowUs,
+  });
+
+  return fixtures;
+}
+
+/**
+ * Put the pedido's links back to the three seeded ones: deletes every link doc — the
+ * ones a spec's fake backend wrote included — and writes the seeded docs again. Lets each
+ * test start from the same list without re-seeding the payment (which would fire the
+ * `onPagamentoChanged` trigger again).
+ */
+export async function resetLinksPagamento(fixtures: LinkPagamentoFixtures): Promise<void> {
+  const pedidoRef = db().collection('pedidos').doc(fixtures.pedidoId);
+  const colecao = pedidoRef.collection('linkPgtoMercadoPago');
+  const existentes = await colecao.get();
+  const batch = db().batch();
+  existentes.docs.forEach((d) => batch.delete(d.ref));
+  fixtures.linkDocs.forEach(({ id, data }) => batch.set(colecao.doc(id), data));
+  await batch.commit();
+}
+
+/**
+ * Teardown for `seedLinkPagamentoFixtures`. Firestore never cascades, so the pedido's
+ * subcollections go BEFORE the pedido: the links, the payment, and the three trails the
+ * triggers append to asynchronously (`historicoDeModificacoes` from `onPagamentoChanged`,
+ * `historicoEstadoPedido` / `historicoFtIni` from `onPedidoChanged`). Then the accounts
+ * (`metodo_pgto` is a shared top-level collection, swept by `nome` prefix) and the base
+ * pedido fixtures.
+ *
+ * Keyed on the prefix alone (the pedido is found by its `numero`, like the base
+ * fixtures), so it still cleans up after a `beforeAll` that died half-way.
+ */
+export async function cleanupLinkPagamentoFixtures(prefix: string): Promise<void> {
+  const subcolecoes = [
+    'linkPgtoMercadoPago',
+    'pagamentos',
+    'historicoDeModificacoes',
+    'historicoEstadoPedido',
+    'historicoFtIni',
+  ];
+  await Promise.all(subcolecoes.map((s) => cleanupPedidoSubcollectionByPrefix(s, prefix)));
+  await Promise.all([cleanupByNamePrefix('metodo_pgto', prefix), cleanupPedidoFixtures(prefix)]);
 }

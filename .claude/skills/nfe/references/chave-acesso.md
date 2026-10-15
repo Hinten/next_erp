@@ -1,9 +1,23 @@
-# Chave de Acesso (44-digit access key)
+# Chave de Acesso (44-character access key)
 
-The chave de acesso uniquely identifies an NF-e. It is **44 numeric digits**,
-formed by concatenating fields already present in the NF-e layout. Because it is
-fully derived from the NF-e's own data, it can be computed **before** the NF-e
-is sent to SEFAZ — making it the anchor for loss recovery.
+The chave de acesso uniquely identifies an NF-e. It is **44 characters**, formed
+by concatenating fields already present in the NF-e layout. Because it is fully
+derived from the NF-e's own data, it can be computed **before** the NF-e is sent
+to SEFAZ — making it the anchor for loss recovery.
+
+⚠️ **Not 44 digits.** Since NT 2026.004 (RFB IN 2.229/2024, CNPJ alfanumérico)
+positions **6–17** — the emitente CNPJ's 12-character body — may carry `A-Z`.
+The CNPJ's own two check digits and every other field stay numeric, which is
+exactly the shape of `CHAVE_NFE_REGEX` in `@delfrance/schemas`:
+
+```
+/^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$/
+```
+
+It mirrors the XSD's `TChNFe` facet. Never write a local `\d{44}`, and never
+`[0-9A-Z]{44}` either. Because the alfa window is the WHOLE CNPJ minus its DVs,
+`chave.slice(6, 20)` remains the correct way to cut the emitente CNPJ back out —
+the five consumers that do so needed no change.
 
 ## Composition (layout 4.00)
 
@@ -31,18 +45,31 @@ Total: 2+4+14+2+3+9+1+8+1 = **44**.
 
 ## Check digit (`cDV`) — módulo 11
 
-Computed over the **first 43 digits**:
+Computed over the **first 43 characters**:
 
 1. Apply weights `2,3,4,5,6,7,8,9` cycling, **right to left**.
-2. Sum each digit × its weight.
+2. Convert each character to **`ASCII − 48`** and multiply by its weight.
 3. `resto = soma mod 11`.
 4. `DV = 11 - resto`. **If `resto` is 0 or 1, `DV = 0`.**
+
+⚠️ **Step 2 is `ASCII − 48`, not `Number(c)`** — the NT 2026.004 rule, the same
+weighting `validateCNPJ` in `@delfrance/core/documents` uses. `'0'-'9'` map to
+`0-9` and `'A'-'Z'` to `17-42`, so for a numeric chave the two are identical and
+every DV computed before the alfa era is unchanged.
+
+⚠️ `Number('A')` is `NaN`, and `NaN` propagates: `soma` becomes `NaN`,
+`resto <= 1` is false, `11 - NaN` is `NaN`, and `cDV.toString()` is the literal
+string `'NaN'`. The chave then comes out **46 characters** carrying
+`<cDV>NaN</cDV>` and *nothing throws* — it is simply persisted as the document's
+anti-loss anchor. Before #1619 the digits-only guard was the only thing
+preventing that, which is why the DV had to be corrected **before** the guard
+was widened, never after.
 
 ```ts
 function calcDV(chave43: string): number {
   let soma = 0, peso = 2;
   for (let i = chave43.length - 1; i >= 0; i--) {
-    soma += Number(chave43[i]) * peso;
+    soma += (chave43.charCodeAt(i) - 48) * peso;
     peso = peso === 9 ? 2 : peso + 1;
   }
   const resto = soma % 11;
@@ -60,6 +87,6 @@ NF-e (even after a lost response) collides on the natural key.
 
 ## Use in the XML
 
-- `<infNFe Id="NFe<44-digit-chave>" versao="4.00">` — the `Id` attribute is the
+- `<infNFe Id="NFe<44-char-chave>" versao="4.00">` — the `Id` attribute is the
   literal `NFe` + the chave.
 - The signature `<Reference URI="#NFe<chave>">` points at that `Id`.

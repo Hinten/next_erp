@@ -140,9 +140,8 @@ function registro(over: Partial<UsuarioTesteMercadoLivre> = {}): UsuarioTesteMer
  * The same record as it comes BACK from the store — with the doc id holding it.
  *
  * ⚠️ Deliberately a second helper rather than a `docId` on {@link registro}:
- * `registro()` feeds the WRITE side (`put`/`create`), and the stored schema is
- * `.passthrough()`, so a fixture carrying `docId` into a write would persist a
- * document's own id as one of its fields and no assertion here would notice.
+ * `registro()` feeds the WRITE side (`put`/`create`), while `docId` is metadata
+ * attached only after a strict stored record is read.
  */
 function registrado(
   docId: string,
@@ -656,11 +655,9 @@ describe('criarUsuariosTeste — the doc id each account is stored under', () =>
     expect(result.usuarios[0]?.docId).toBe('comprador-77');
   });
 
-  it('⚠️ never lets a docId reach a WRITE — the stored schema is passthrough', async () => {
-    // `usuarioTesteMercadoLivreSchema` is `.passthrough()`, so a `docId` that
-    // reached `put`/`create` would be persisted as a record FIELD and nothing
-    // anywhere would complain. This run reuses a LISTED record (which carries
-    // one) and mints another, so both paths are exercised in one go.
+  it('⚠️ never lets the read-side docId reach a strict stored record', async () => {
+    // This run reuses a LISTED record (which carries `docId`) and mints another,
+    // so both the reuse and write paths are exercised in one go.
     const store = fakeStore();
     await store.create('comprador-77', registro({ id: 77 }));
     const { deps: d } = deps({ store });

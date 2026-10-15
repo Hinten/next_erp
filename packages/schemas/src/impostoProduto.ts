@@ -1,28 +1,12 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
 import { idRefSchema } from './shared/outerRef';
-import { taxConfigFields } from './imposto/tribute';
+import { indEscalaField, nveField, taxConfigFields } from './imposto/tribute';
 import type { CollectionMetadata } from './types';
 
 const PERM_IMPOSTO_PRODUTO_READ = 1n << 75n;
 const PERM_IMPOSTO_PRODUTO_WRITE = 1n << 76n;
 const PERM_IMPOSTO_PRODUTO_DELETE = 1n << 77n;
-
-/**
- * Origem da mercadoria (ICMS) — single-digit codes 0–8 (Flutter
- * `OrigemProdutoImposto`). Exposed for the Dados Gerais select.
- */
-export const ORIGEM_PRODUTO_LABELS: Record<string, string> = {
-  '0': '0 - Nacional',
-  '1': '1 - Estrangeira - Importação direta',
-  '2': '2 - Estrangeira - Adquirida no mercado interno',
-  '3': '3 - Nacional, conteúdo de importação 40%–70%',
-  '4': '4 - Nacional, processos produtivos básicos',
-  '5': '5 - Nacional, conteúdo de importação ≤ 40%',
-  '6': '6 - Estrangeira - Importação direta, sem similar nacional',
-  '7': '7 - Estrangeira - Adquirida no mercado interno, sem similar nacional',
-  '8': '8 - Nacional, conteúdo de importação > 70%',
-};
 
 /**
  * ImpostoProduto — subcoleção `produtos/{produtoId}/imposto/{operacaoId}`.
@@ -36,20 +20,31 @@ export const ORIGEM_PRODUTO_LABELS: Record<string, string> = {
  *   - `impostoOpercaoOuterRef` — the scope pointer, Flutter's **typo** key
  *     preserved verbatim for legacy parity: `null` = default fallback (any
  *     operação), else `operacao/<id>` (`pathNoDocuments`).
- *   - the **Dados Gerais** scalars (`origem`, `cfop`, `cfopInterestadual`,
- *     `NCM`, `NVE`, `CEST`, `indEscala`, `CNPJFab`, `cBenef`, `extipi`,
- *     `unidade`, `compoeValorTotalDaNFe`) are typed but lenient — length/format
- *     rules (NCM = 8, CEST = 7) live in `produtoPageIssues` so a slightly-off
- *     legacy doc still READS; the form enforces them on write.
+ *   - the **Dados Gerais** (`origem`, `cfop`, `cfopInterestadual`, `NCM`,
+ *     `NVE`, `CEST`, `indEscala`, `CNPJFab`, `cBenef`, `extipi`, `unidade`,
+ *     `compoeValorTotalDaNFe`) are typed but lenient — length/format rules
+ *     (NCM = 8, CEST = 7) live in `produtoPageIssues` so a slightly-off legacy
+ *     doc still READS; the form enforces them on write. ⚠️ Two of them are NOT
+ *     scalars on the wire: `NVE` is a `List<String>?` and `indEscala` a `bool?`
+ *     (`models.dart:2880`, `:2891`), shared with the sibling tax collections
+ *     through `nveField()` / `indEscalaField()` — #466.
+ *   - `cfop` is **lowercase** on this collection. Unlike `ImpostoCategoria` and
+ *     `RegraImposto`, `_$ImpostoToJson` never writes an uppercase `CFOP`, so
+ *     there is deliberately no read fallback for one here.
  *   - `timestamp` is a ms-epoch int (`dateTimeToJson`).
+ *   - the ODM meta keys (`docId`, `createTime`, `updateTime`, `readTime`) are
+ *     never persisted: `documentIdToJson` / `dateTimeToJsonNull` both return
+ *     `null` unconditionally and `writeNotNull` skips nulls, so they can never
+ *     appear on a legacy doc and need no modelling.
  *
  * The deep tribute configs (`configuracaoICMS`, `configuracaoIPI`,
  * `configuracaoPIS`, `configuracaoCOFINS`, `configuracaoPISST`,
  * `configuracaoISSQN`, `retencao`, `configuracaoIBSCBS`) are **typed**
  * (`taxConfigFields`, shared with the tribute engine via `@delfrance/schemas`)
  * rather than pass-through — there is no circular dep (schemas is a leaf, the
- * NF-e package depends on it). `configuracaoIBSCBS` (RTC) stays lenient so a
- * half-filled blob never fails the parse.
+ * NF-e package depends on it). `configuracaoIBSCBS` (RTC) restricts the key set
+ * while leaving code formats and numeric ranges to the emission boundary, so a
+ * half-typed draft never drops this tier from the resolver cascade.
  */
 export const impostoProdutoSchema = z.object({
   id: z.string().nullable().default(null),
@@ -58,9 +53,9 @@ export const impostoProdutoSchema = z.object({
   cfop: z.string().nullable().default(null),
   cfopInterestadual: z.string().nullable().default(null),
   NCM: z.string().nullable().default(null),
-  NVE: z.string().nullable().default(null),
+  NVE: nveField(),
   CEST: z.string().nullable().default(null),
-  indEscala: z.string().nullable().default(null),
+  indEscala: indEscalaField(),
   CNPJFab: z.string().nullable().default(null),
   cBenef: z.string().nullable().default(null),
   extipi: z.string().nullable().default(null),

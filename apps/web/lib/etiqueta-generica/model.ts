@@ -104,9 +104,11 @@ function toPessoa(c: Cliente | null): EtiquetaGenericaPessoa | null {
 }
 
 /**
- * Latest aprovada / EPEC-aprovada NF-e of a pedido carrying a chave — the same
- * pick as `nfeFlow.resolveAprovadaNfe`, but keeping `numeracao` for the label's
- * "NFe nº". Returns null when there's no authorized NF-e.
+ * Latest aprovada / EPEC-aprovada NF-e of a pedido carrying a chave, keeping
+ * `numeracao` for the label's "NFe nº". Returns null when there's no authorized
+ * NF-e. Unlike `nfeFlow.resolveAprovadaNfe` it does not require a printable DANFE
+ * (`nfeImprimivel`): the label only reads the número and chave, which an EPEC
+ * holds whether or not its protocol was recovered (#1675).
  */
 async function resolveLatestAprovadaNfe(
   db: Firestore,

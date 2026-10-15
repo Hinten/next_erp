@@ -1,0 +1,527 @@
+{
+  "id": "MLB7478467854",
+  "title": "Vaso Decorativo Artesanal Desenhado",
+  "family_name": "Vaso Decorativo Artesanal",
+  "family_id": 5839774037409234,
+  "user_product_id": "MLBU4897093804",
+  "category_id": "MLB1637",
+  "price": 1000.02,
+  "base_price": 1000.02,
+  "available_quantity": 1,
+  "condition": "new",
+  "status": "active",
+  "sub_status": [],
+  "listing_type_id": "gold_pro",
+  "seller_id": 3616169770,
+  "seller_custom_field": "1WXplQLpUO8hcL3xQ4D0",
+  "permalink": "https://produto.mercadolivre.com.br/MLB-7478467854-vaso-decorativo-artesanal-desenhado-_JM",
+  "date_created": "2026-08-21T16:38:36.902Z",
+  "video_id": null,
+  "tags": [
+    "test_item",
+    "good_quality_thumbnail",
+    "user_product_listing",
+    "immediate_payment",
+    "cart_eligible"
+  ],
+  "shipping": {
+    "free_shipping": true,
+    "mode": "me2",
+    "methods": [],
+    "tags": [
+      "mandatory_free_shipping"
+    ],
+    "dimensions": null,
+    "local_pick_up": false,
+    "logistic_type": "xd_drop_off",
+    "store_pick_up": false
+  },
+  "attributes": [
+    {
+      "id": "BASE_DIAMETER",
+      "name": "Diâmetro da base",
+      "value_id": null,
+      "value_name": "20 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "20 cm",
+          "struct": {
+            "number": 20,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "BRAND",
+      "name": "Marca",
+      "value_id": null,
+      "value_name": "Genérica",
+      "values": [
+        {
+          "id": null,
+          "name": "Genérica",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "HEIGHT",
+      "name": "Altura",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "IS_SUITABLE_FOR_LIVE_PLANTS",
+      "name": "É adequado para plantas naturais",
+      "value_id": "242085",
+      "value_name": "Sim",
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim",
+          "struct": null
+        }
+      ],
+      "value_type": "boolean"
+    },
+    {
+      "id": "ITEM_CONDITION",
+      "name": "Condição do item",
+      "value_id": "2230284",
+      "value_name": "Novo",
+      "values": [
+        {
+          "id": "2230284",
+          "name": "Novo",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "LENGTH",
+      "name": "Comprimento",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "MATERIAL",
+      "name": "Material",
+      "value_id": "2282603",
+      "value_name": "Cerâmica",
+      "values": [
+        {
+          "id": "2282603",
+          "name": "Cerâmica",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "MODEL",
+      "name": "Modelo",
+      "value_id": null,
+      "value_name": "Vaso",
+      "values": [
+        {
+          "id": null,
+          "name": "Vaso",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "MOUTH_DIAMETER",
+      "name": "Diâmetro da boca",
+      "value_id": null,
+      "value_name": "15 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "15 cm",
+          "struct": {
+            "number": 15,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "PATTERN_NAME",
+      "name": "Nome do desenho",
+      "value_id": null,
+      "value_name": "Desenhado",
+      "values": [
+        {
+          "id": null,
+          "name": "Desenhado",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "PRODUCT_TYPE",
+      "name": "Tipo de produto",
+      "value_id": "18945030",
+      "value_name": "Vaso",
+      "values": [
+        {
+          "id": "18945030",
+          "name": "Vaso",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "SALE_FORMAT",
+      "name": "Formato de venda",
+      "value_id": "1359391",
+      "value_name": "Unidade",
+      "values": [
+        {
+          "id": "1359391",
+          "name": "Unidade",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "SELLER_PACKAGE_HEIGHT",
+      "name": "Altura da embalagem do vendor",
+      "value_id": null,
+      "value_name": "5 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "5 cm",
+          "struct": {
+            "number": 5,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_LENGTH",
+      "name": "Comprimento da embalagem do vendor",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_WEIGHT",
+      "name": "Peso da embalagem do vendor",
+      "value_id": null,
+      "value_name": "1000 g",
+      "values": [
+        {
+          "id": null,
+          "name": "1000 g",
+          "struct": {
+            "number": 1000,
+            "unit": "g"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_WIDTH",
+      "name": "Largura da embalagem do vendor",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_SKU",
+      "name": "SKU",
+      "value_id": null,
+      "value_name": "vaso123",
+      "values": [
+        {
+          "id": null,
+          "name": "vaso123",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "STYLE",
+      "name": "Estilo",
+      "value_id": "26047777",
+      "value_name": "Clássico",
+      "values": [
+        {
+          "id": "26047777",
+          "name": "Clássico",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "UNITS_PER_PACK",
+      "name": "Unidades por kit",
+      "value_id": null,
+      "value_name": "1",
+      "values": [
+        {
+          "id": null,
+          "name": "1",
+          "struct": null
+        }
+      ],
+      "value_type": "number"
+    },
+    {
+      "id": "UNITS_PER_PACKAGE",
+      "name": "Unidades por embalagem",
+      "value_id": null,
+      "value_name": "1",
+      "values": [
+        {
+          "id": null,
+          "name": "1",
+          "struct": null
+        }
+      ],
+      "value_type": "number"
+    },
+    {
+      "id": "VOLUME_CAPACITY",
+      "name": "Capacidade em volume",
+      "value_id": null,
+      "value_name": "250 L",
+      "values": [
+        {
+          "id": null,
+          "name": "250 L",
+          "struct": {
+            "number": 250,
+            "unit": "L"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "WEIGHT",
+      "name": "Peso",
+      "value_id": null,
+      "value_name": "900 g",
+      "values": [
+        {
+          "id": null,
+          "name": "900 g",
+          "struct": {
+            "number": 900,
+            "unit": "g"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "WIDTH",
+      "name": "Largura",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "WITH_DRAINAGE_HOLES",
+      "name": "Com furos de drenagem",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "struct": null
+        }
+      ],
+      "value_type": "boolean"
+    },
+    {
+      "id": "WITH_LID",
+      "name": "Com tampa",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "struct": null
+        }
+      ],
+      "value_type": "boolean"
+    }
+  ],
+  "pictures": [
+    {
+      "id": "677273-MLB116544641159_082026",
+      "url": "http://http2.mlstatic.com/D_677273-MLB116544641159_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_677273-MLB116544641159_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    },
+    {
+      "id": "923383-MLB116544934661_082026",
+      "url": "http://http2.mlstatic.com/D_923383-MLB116544934661_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_923383-MLB116544934661_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    },
+    {
+      "id": "868302-MLB116544934683_082026",
+      "url": "http://http2.mlstatic.com/D_868302-MLB116544934683_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_868302-MLB116544934683_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    }
+  ],
+  "variations": [],
+  "site_id": "MLB",
+  "official_store_id": null,
+  "original_price": null,
+  "inventory_id": null,
+  "currency_id": "BRL",
+  "initial_quantity": 2,
+  "sold_quantity": 1,
+  "sale_terms": [],
+  "buying_mode": "buy_it_now",
+  "start_time": "2026-08-21T16:38:36.656Z",
+  "stop_time": "2046-08-16T04:00:00.000Z",
+  "end_time": "2046-08-16T04:00:00.000Z",
+  "expiration_time": "2026-11-14T13:55:26.407Z",
+  "thumbnail_id": "677273-MLB116544641159_082026",
+  "thumbnail": "http://http2.mlstatic.com/D_677273-MLB116544641159_082026-I.webp",
+  "descriptions": [],
+  "accepts_mercadopago": true,
+  "non_mercado_pago_payment_methods": [],
+  "international_delivery_mode": "none",
+  "seller_address": {
+    "comment": "REDACTED",
+    "address_line": "Rua Redacted, 0",
+    "zip_code": "00000000",
+    "city": {
+      "id": "BR-SP-27",
+      "name": "REDACTED"
+    },
+    "state": {
+      "id": "BR-SP",
+      "name": "São Paulo"
+    },
+    "country": {
+      "id": "BR",
+      "name": "Brasil"
+    },
+    "search_location": {
+      "neighborhood": {
+        "id": "TVhYQ2VudHJvVFZoWVU4T2pieUJLYjNQRHFTQ2",
+        "name": "REDACTED"
+      },
+      "city": {
+        "id": "TVhYU8OjbyBKb3PDqSBkb3MgQ2FtcG9zVFV4Q",
+        "name": "REDACTED"
+      },
+      "state": {
+        "id": "TUxCUFNBT085N2E4",
+        "name": "São Paulo"
+      }
+    },
+    "latitude": 0,
+    "longitude": 0,
+    "id": 1661311810
+  },
+  "seller_contact": null,
+  "location": {},
+  "geolocation": {
+    "latitude": 0,
+    "longitude": 0
+  },
+  "coverage_areas": [],
+  "warnings": [],
+  "listing_source": "",
+  "warranty": null,
+  "catalog_product_id": null,
+  "domain_id": "MLB-DECORATIVE_AND_FLOWER_VASES",
+  "parent_item_id": null,
+  "differential_pricing": null,
+  "deal_ids": [],
+  "automatic_relist": false,
+  "last_updated": "2026-08-26T13:55:26.475Z",
+  "health": null,
+  "catalog_listing": false,
+  "item_relations": [],
+  "channels": [
+    "marketplace"
+  ]
+}

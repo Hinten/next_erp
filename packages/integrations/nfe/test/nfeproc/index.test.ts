@@ -8,10 +8,9 @@ import {
   extractDigestValue,
   normalizeDigVal,
 } from '../../src/nfeproc';
-import type { TProtNFe } from '../../src/types/nfe-schema';
+import type { TProtNFe, TRetConsSitNFe } from '../../src/types/nfe-schema';
 import { signNFe, type NFeCertificate } from '../../src/index';
 import { parse } from '../../src/xml';
-import type { TRetConsSitNFe } from '../../src/types/nfe-schema';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';

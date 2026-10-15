@@ -9,16 +9,17 @@
  * notification arrives for ONE member, and applying it straight to the parent
  * would let any single member speak for the whole family.
  *
- * ⚠️ The transition that makes this load-bearing is `closed`. The parent's
- * `estado` feeds `linkHasLiveListing`, which drives `produtos.integracoesComProduto`
- * — the anchor pre-filter BOTH ML sweeps open with. So one member closing while
- * its siblings are still selling would drop the whole produto out of the stock and
+ * ⚠️ The transition that makes this load-bearing is a member ENDING — `closed`,
+ * or removed by ML moderation (#1226). The parent's `estado` feeds
+ * `linkHasLiveListing`, which drives `produtos.integracoesComProduto` — the
+ * anchor pre-filter BOTH ML sweeps open with. So one member ending while its
+ * siblings are still selling would drop the whole produto out of the stock and
  * price sweeps, silently: nothing errors, the produto simply stops being selected.
- * Hence the ladder below, where `closed` ranks LAST and can only win when it is
- * the only thing left.
+ * Hence the ladder below, where both terminal readings rank LAST and can only
+ * win when nothing else is left.
  *
  * ⚠️ There is NO FLOOR under "cannot conclude", and that is a deliberate bias with
- * a consequence worth naming. A family whose members were all closed BEFORE this
+ * a consequence worth naming. A family whose members were all ended BEFORE this
  * shipped stays un-concluded until every member fires another `items`
  * notification — and a closed listing that never changes again never fires one. So
  * such a family keeps its old `estado` and stays selected by the sweeps. That is
@@ -41,7 +42,7 @@
  * value stays.
  */
 
-import type { MlModeracao } from '@delfrance/schemas';
+import { type MlModeracao, moderacaoRemoveuAnuncio } from '@delfrance/schemas';
 
 import { podeEnviarEstoque } from '../estoque/bulkEstoquePlan';
 
@@ -88,8 +89,21 @@ export interface FoldedFamilyStatus {
  * evidence it is gone. `estadoFromMlStatus` maps it to `'E'`, and letting a
  * status ML has not documented yet mark a whole family cancelled would be the
  * same silent-outage shape this ladder exists to prevent.
+ *
+ * ⚠️ It reads the STATUS/SUB_STATUS PAIR, not the status alone, and that is
+ * load-bearing for exactly one combination (#1226). A listing Mercado Livre has REMOVED reads
+ * `under_review` + `forbidden` — the status alone puts it at rank 2, above the
+ * `closed` floor and, through `prefere`'s moderation rung, actively PREFERRED
+ * over an equally-ranked sibling. So a family with one removed member and one
+ * still under ordinary review would elect the removed one, stamp the terminal
+ * `estado 'rm'` on the parent and drop the produto out of both sweeps while a
+ * savable sibling remained: the identical failure the `closed` floor exists to
+ * prevent, arriving through a different door. A removed member therefore ranks
+ * at the floor too, and inherits the "all-terminal is not yet provable when a
+ * member was never observed" guard in {@link foldFamilyStatus} with it.
  */
-function rank(status: string): number {
+function rank(status: string, subStatus: string[] | null): number {
+  if (moderacaoRemoveuAnuncio(status, subStatus)) return 0;
   switch (status) {
     case 'active':
       return 4;
@@ -109,7 +123,8 @@ function rank(status: string): number {
  *
  * Two distinct null cases, both meaning "leave the parent link alone":
  *  - nothing observed at all (a family whose members predate the status fields);
- *  - every OBSERVED member is closed but at least one member was never observed.
+ *  - every OBSERVED member is terminal (closed, or removed by moderation) but at
+ *    least one member was never observed.
  *    Writing `cancelado` there would be a guess about the unobserved one, and the
  *    cost of guessing wrong is the sweep outage described above. An unobserved
  *    member is unknown, never dead.
@@ -124,7 +139,7 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
       unobserved += 1;
       continue;
     }
-    const r = rank(m.status);
+    const r = rank(m.status, m.subStatus);
     if (r > winnerRank) {
       winnerRank = r;
       winner = m;
@@ -134,7 +149,7 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
   }
 
   if (winner == null) return null; // nothing observed
-  if (winnerRank === 0 && unobserved > 0) return null; // all-closed is not yet provable
+  if (winnerRank === 0 && unobserved > 0) return null; // all-terminal is not yet provable
 
   return {
     status: winner.status!,
@@ -144,11 +159,77 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
 }
 
 /**
+ * The ML category the family's PARENT link should carry (#847), or `null` for
+ * "leave the stored one alone".
+ *
+ * Mercado Livre recategorizes listings on its own (automatic recategorization,
+ * and splits of its category tree), and under User Products each member is its
+ * own item with its own `category_id`. The parent link carries ONE category —
+ * the value the size-chart binding and every new member's `POST /items` read —
+ * so the family's answer has to be folded, exactly like its status.
+ *
+ * ⚠️ UNANIMITY, never "the latest member wins". The members of one family are
+ * delivered concurrently and in no particular order, so a last-writer rule would
+ * flip the parent between two categories on every delivery while the members
+ * disagree — and the #847 aviso trigger reads every flip as a recategorization.
+ * Members that disagree therefore leave the stored value standing.
+ *
+ * `null` entries are members whose category was never learned (every member
+ * link written before #847 carries none). They do not block, so the FIRST
+ * observed member settles a family nobody has observed yet — the same "member 0
+ * stands for the family" convention publish already uses for the parent's
+ * category.
+ *
+ * ⚠️ Only LIVE members vote, the way the status ladder ranks them: a member that
+ * ENDED (`closed`, or removed by moderation — rank 0 in {@link rank}) keeps the
+ * last category it was observed in, and nothing may ever re-observe it, because
+ * ML need not recategorize an item that no longer sells. Letting it vote under
+ * unanimity would veto every later move of the live siblings and freeze the
+ * parent on the stale category for good (#1842 review). A never-observed member
+ * (`status` null) is unknown, not dead, and still votes. Only when EVERY voter
+ * has ended does the fold fall back to all of them — there is then nothing
+ * fresher to prefer.
+ *
+ * Exact string comparison, on purpose: ML category ids are case-sensitive
+ * opaque keys (`MLB1` and `MLB12` are unrelated; `mlb1` is not an ML id).
+ */
+export function foldFamilyCategoria(votos: readonly VotoCategoria[]): string | null {
+  const comCategoria = votos.filter((v) => v.categoria != null);
+  const vivos = comCategoria.filter((v) => !encerrado(v));
+  return unanime(vivos.length > 0 ? vivos : comCategoria);
+}
+
+/** One member's say in {@link foldFamilyCategoria}: its category and its liveness. */
+export interface VotoCategoria {
+  /** `null` = never learned — not a vote at all. */
+  categoria: string | null;
+  /** `null` = never observed — unknown, so it still votes. */
+  status: string | null;
+  subStatus: string[] | null;
+}
+
+/** The SAME terminal rung the status ladder floors at — never a second definition. */
+function encerrado(v: VotoCategoria): boolean {
+  return v.status != null && rank(v.status, v.subStatus) === 0;
+}
+
+function unanime(votos: readonly VotoCategoria[]): string | null {
+  let escolhida: string | null = null;
+  for (const { categoria } of votos) {
+    if (categoria == null) continue;
+    if (escolhida == null) escolhida = categoria;
+    else if (categoria !== escolhida) return null;
+  }
+  return escolhida;
+}
+
+/**
  * Whether `desafiante` should displace `atual` among members of the SAME rank.
  * Two rungs, tried in order; the first is the one that can cost money.
  *
- * ⚠️ RUNG 1 — sendability. Not cosmetic. `rank` reads `status` alone, so two
- * `paused` members tie — but the stock gate reads the PAIR: `paused` sends only
+ * ⚠️ RUNG 1 — sendability. Not cosmetic. `rank` reads the pair only to spot a
+ * moderation REMOVAL, so two `paused` members still tie — but the stock gate
+ * reads the whole pair: `paused` sends only
  * WITH `out_of_stock`. Left to arrive-order the winner would be whichever child
  * produto sorts first by `__name__`, so the same family with the same member
  * statuses would either keep receiving stock or stop, decided by document

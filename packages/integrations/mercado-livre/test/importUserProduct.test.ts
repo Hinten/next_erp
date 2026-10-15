@@ -113,8 +113,13 @@ describe('mapUpMemberToImport', () => {
       expect(mapped.skuPai).not.toBe(mapped.member.sku);
     });
 
-    it('matches by NAME even when ML echoes an id back on it', () => {
-      // Unverifiable against the live API (no sandbox), so both shapes must work.
+    it('IGNORES an id-bearing attribute, however it is named', () => {
+      // ⚠️ This test asserted the OPPOSITE while it was unknown whether ML
+      // echoes an id back — so the match ignored `id` and accepted both shapes.
+      // Measured 2026-09-03 (`GET /items/MLB5183026663`): ML returns the
+      // characteristic `id: null`. Matching id-less only is what makes a name
+      // collision with a real ML attribute harmless, so an id-bearing entry is
+      // now deliberately NOT ours.
       const mapped = mapUpMemberToImport(
         upMemberItem({
           attributes: [
@@ -123,7 +128,9 @@ describe('mapUpMemberToImport', () => {
           ],
         }),
       );
-      expect(mapped.skuPai).toBe('SKU-CAM');
+      expect(mapped.skuPai).toBeNull();
+      // The member's own sku is unaffected.
+      expect(mapped.member.sku).toBe('SKU-CAM-P-AZUL');
     });
 
     it('never mistakes another characteristic for it', () => {

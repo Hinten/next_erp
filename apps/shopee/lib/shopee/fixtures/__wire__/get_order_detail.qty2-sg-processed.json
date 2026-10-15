@@ -1,0 +1,117 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "order_list": [
+      {
+        "actual_shipping_fee": 0,
+        "advance_package": false,
+        "booking_sn": "",
+        "buyer_cancel_reason": "",
+        "buyer_cpf_id": null,
+        "buyer_preference_for_partial_cancellation": 0,
+        "buyer_user_id": 0,
+        "buyer_username": "REDACTED",
+        "can_full_cancel_order": true,
+        "can_partial_cancel_order": false,
+        "cancel_by": "",
+        "cancel_reason": "",
+        "cod": false,
+        "create_time": 1788973351,
+        "currency": "SGD",
+        "days_to_ship": 3,
+        "edt_from": 0,
+        "edt_to": 0,
+        "estimated_shipping_fee": 1.99,
+        "fulfillment_flag": "fulfilled_by_local_seller",
+        "invoice_data": null,
+        "is_buyer_shop_collection": false,
+        "item_list": [
+          {
+            "active_qty": 2,
+            "add_on_deal": false,
+            "add_on_deal_id": 0,
+            "cancel_requested_qty": 0,
+            "cancelled_qty": 0,
+            "consultation_id": "",
+            "error_in_fetching_is_prescription_item": false,
+            "image_info": {
+              "image_url": "https://redacted.invalid/imagem"
+            },
+            "is_b2c_owned_item": false,
+            "is_prescription_item": false,
+            "item_id": 846056136,
+            "item_name": "Cotton T-shirt",
+            "item_sku": "",
+            "line_item_id": 242672551207922,
+            "main_item": false,
+            "model_discounted_price": 15,
+            "model_id": 12984093,
+            "model_name": "Black,02",
+            "model_original_price": 15,
+            "model_quantity_purchased": 2,
+            "model_sku": "123002002",
+            "order_item_id": 846056136,
+            "product_location_id": ["SGZ"],
+            "promotion_group_id": 0,
+            "promotion_id": 0,
+            "promotion_type": "",
+            "return_requested_qty": 0,
+            "returned_qty": 0,
+            "weight": 1,
+            "wholesale": false
+          }
+        ],
+        "message_to_seller": "",
+        "note": "",
+        "note_update_time": 0,
+        "order_chargeable_weight_gram": 0,
+        "order_sn": "260910KJBHUJDM",
+        "order_status": "PROCESSED",
+        "package_list": [
+          {
+            "package_number": "OFG242672552205937",
+            "group_shipment_id": null,
+            "logistics_status": "LOGISTICS_REQUEST_CREATED",
+            "shipping_carrier": "Sandbox -Standard Express LPS (Don't modify)",
+            "item_list": [
+              {
+                "item_id": 846056136,
+                "model_id": 12984093,
+                "model_quantity": 2,
+                "order_item_id": 846056136,
+                "promotion_group_id": 0,
+                "product_location_id": "SGZ"
+              }
+            ],
+            "parcel_chargeable_weight_gram": 0,
+            "allow_self_design_awb": true,
+            "logistics_channel_id": 11006,
+            "sorting_group": ""
+          }
+        ],
+        "pay_time": 1788973353,
+        "payment_info": null,
+        "payment_method": "Apple Pay",
+        "pickup_done_time": 0,
+        "recipient_address": {
+          "name": "****",
+          "phone": "****",
+          "town": "",
+          "district": "",
+          "city": "",
+          "state": "",
+          "region": "SG",
+          "zipcode": "00000000",
+          "full_address": "Rua Redacted, 0"
+        },
+        "region": "SG",
+        "reverse_shipping_fee": 0,
+        "ship_by_date": 1789405354,
+        "shipping_carrier": "Sandbox -Standard Express LPS (Don't modify)",
+        "total_amount": 31.99,
+        "update_time": 1789042568
+      }
+    ]
+  }
+}

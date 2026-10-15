@@ -127,6 +127,7 @@ export function RecalcularPrecosScreen() {
     if (appliedParamRef.current || !listaIdParam || listasSnap.fromCache !== false) return;
     appliedParamRef.current = true;
     const match = listasAtivas.find((r) => r.id === listaIdParam);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot preselect, gated on server truth (fromCache === false)
     if (match) setListaId(listaIdParam);
     else setParamInvalido(true);
   }, [listaIdParam, listasSnap.fromCache, listasAtivas]);

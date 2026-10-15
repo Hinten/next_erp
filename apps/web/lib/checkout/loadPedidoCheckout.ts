@@ -90,6 +90,8 @@ function toEngineProduto(id: string, p: Produto): EngineProduto {
     ehKit: p.ehKit,
     componentesKit: p.componentesKit,
     fotos: p.fotos,
+    // Only a MEMBER may contribute a parent-form sku to the scan index.
+    paiId: p.paiId ?? null,
   };
 }
 

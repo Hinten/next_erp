@@ -1,0 +1,10 @@
+# Public legal documents. No Firebase client configuration or credentials needed.
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  minInstances: 0
+  maxInstances: 10
+  concurrency: 80
+# Set LEGAL_CONTROLLER_NAME, LEGAL_CONTROLLER_CNPJ and LEGAL_PRIVACY_EMAIL
+# as ordinary RUNTIME environment variables in this backend's configuration.
+# They are public information. Blank values are intentionally omitted in production.

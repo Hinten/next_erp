@@ -24,6 +24,7 @@ export type {
 
 // Table primitives
 export { TableView, type TableViewProps } from './table/TableView';
+export type { TablePresetFilter } from './table/presetFilters';
 export { ColumnPicker, type ColumnPickerItem, type ColumnPickerProps } from './table/ColumnPicker';
 export { ActionBar, type ActionBarProps } from './table/ActionBar';
 export { useCollectionMonitor, type CollectionMonitorResult } from './table/useCollectionMonitor';
@@ -62,6 +63,7 @@ export { renderCell } from './table/cell-renderers';
 // Object primitives
 export {
   ObjectView,
+  type CommittedSave,
   type ObjectViewProps,
   type TransactionWrite,
   type ValidationIssue,
@@ -75,6 +77,14 @@ export {
   type ConflictField,
 } from './object/conflictFields';
 export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
+export { useObjectViewSections, type ObjectViewSections } from './object/ObjectViewSectionsContext';
+export {
+  useObjectViewTransactionDocuments,
+  useObjectViewTransactionDocumentSeed,
+  type ObjectViewTransactionDocuments,
+  type TransactionWriteContext,
+} from './object/ObjectViewTransactionDocuments';
+export { type TransactionDocumentGuard } from './object/saveRecord';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';
 export { RecordPager, type RecordPagerProps } from './object/RecordPager';
@@ -87,6 +97,7 @@ export {
   saveRecord,
   type SaveRecordInput,
   type SaveRecordResult,
+  type DeriveTransactionPatch,
 } from './object/saveRecord';
 export {
   resolveStampFields,

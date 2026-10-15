@@ -1,4 +1,4 @@
-import base, { prettier, typeAware } from '@delfrance/config-eslint';
+import base, { baseRestrictedImportPaths, prettier, typeAware } from '@delfrance/config-eslint';
 import react from '@delfrance/config-eslint/react';
 import next from 'eslint-config-next';
 
@@ -46,10 +46,14 @@ const config = [
 
       // `getFirestore` may only be called inside the admin singleton; everyone
       // else imports `getAdminFirestore` from `@/lib/firebase/admin`.
+      // ⚠️ `baseRestrictedImportPaths` FIRST: flat config replaces this rule by
+      // name, so declaring it here drops the base's Cloud Storage ban unless it
+      // is spread back in. All five backends had silently lost it.
       'no-restricted-imports': [
         'error',
         {
           paths: [
+            ...baseRestrictedImportPaths,
             {
               name: 'firebase-admin/firestore',
               importNames: ['getFirestore'],
@@ -83,6 +87,14 @@ const config = [
     // read back was written by a DIFFERENT process (the function running inside
     // the emulator), which is exactly when you want the raw bytes. Scoped to the
     // two suffixes, so production code and the offline unit tests stay covered.
+    //
+    // ⚠️ The STAGING suite (`*.staging.test.ts`) is deliberately NOT here: it
+    // writes to the shared, real staging database, which is exactly where an
+    // unvalidated raw write must stay lint-blocked. It needs no exemption — it
+    // seeds through the handles (`.set()`, or `docRef()` for the legacy shapes
+    // a schema rejects) and explains `db.pipeline().createFrom(<the production
+    // builder's projection-less half>)`, so it never names a raw
+    // `.collection()`/`.collectionGroup()`.
     files: ['**/*.firestore.test.ts', '**/*.tasks.test.ts'],
     rules: {
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],

@@ -45,7 +45,7 @@
  * minting a duplicate. See `resolveUpParentOverride` below; inert when absent.
  */
 import { createHash } from 'node:crypto';
-import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import type { Firestore } from 'firebase-admin/firestore';
 import {
   type MappedUpMember,
   type MercadoLivreApi,
@@ -63,6 +63,7 @@ import {
   PRODUTO_EXTRA_DATA_DOC_ID,
   derivarFilhoUnico,
   precisaConsultarModeracao,
+  skuPaiDoMembroUnico,
   skuPaiPorSufixo,
   toOuterRef,
 } from '@delfrance/schemas';
@@ -91,7 +92,7 @@ import { type ImportVariationChildrenResult, importVariationChildren } from './i
 import { resolveFamilySiblingIds } from './importFamily';
 import { isAlreadyExists, isFailedPrecondition } from '@delfrance/data/admin';
 import { lastSegment, refMatchesIntegracao } from '../core/linkRefs';
-import { type Bucket } from '../core/arquivoUpload';
+import type { Bucket } from '../core/arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';
 
 export interface ImportDeps {
@@ -199,6 +200,43 @@ export interface ImportResult {
   };
 }
 
+/**
+ * Rung 3's sku for a família de um: the member's `SELLER_SKU` with the
+ * sole-member suffix removed — but ONLY when a root produto actually carries the
+ * stripped value.
+ *
+ * ⛔ The evidence read is the whole point, and a plain `skuPaiDoMembroUnico`
+ * here was a bug. Stripping is a STRING transform, and rung 3's population is
+ * mostly famílias this app did NOT publish (a família we published carries the
+ * `Código de referência` characteristic, so rung 1 answers first and this never
+ * runs). For a seller whose own code simply ends in `-UN`, blind stripping
+ * returns a value no produto carries — and the resolution below matches
+ * `sku == <this value>` with `paiId == null`, so it misses the REAL parent and
+ * the re-import mints a SECOND parent produto for the same listing.
+ *
+ * Asking Firestore turns the guess into a fact: if `X` exists as a root then the
+ * member's `X-UN` was derived from it and stripping is right; if it does not,
+ * the member's sku is its own and passes through untouched. One indexed read
+ * (`produtos (sku, paiId)`), on a rung that already missed two others.
+ */
+async function skuPaiDeMembroUnicoExistente(
+  db: Firestore,
+  membroSku: string | null | undefined,
+): Promise<string | null> {
+  const bruto = typeof membroSku === 'string' ? membroSku.trim() : '';
+  if (bruto === '') return null;
+  const semSufixo = skuPaiDoMembroUnico(bruto);
+  // Nothing to strip ⇒ the member's sku IS the parent's, exactly as before #1398.
+  if (semSufixo === null || semSufixo === bruto) return bruto;
+  const snap = await produtoCollection
+    .ref(db, {})
+    .where('sku', '==', semSufixo)
+    .where('paiId', '==', null)
+    .limit(1)
+    .get();
+  return snap.empty ? bruto : semSufixo;
+}
+
 export async function importProduto(
   deps: ImportDeps,
   itemId: string,
@@ -277,8 +315,8 @@ export async function importProduto(
   // always resolves/creates the shared grupoDeVariacoes/Variante taxonomy.
   const ownsChildren = hasVariations || isUserProduct;
   // The parent-level mapped shape for a User-Products family: `mlItemId` is
-  // stamped with the FAMILY id (parity — `link.id`/`denormItemId` become the
-  // family id), everything else (nome from family_name, dims, price,
+  // stamped with the FAMILY id (`link.id` becomes the family id), everything
+  // else (nome from family_name, dims, price,
   // isUserProductModel, …) is unchanged from the plain item mapping above.
   // Simple/variations[] keep using `mapped` itself — this branch is additive,
   // never touched by those paths.
@@ -331,6 +369,13 @@ export async function importProduto(
     ? uniqueFirstSeen(taxonomia.map((t) => t.varianteFake))
     : null;
 
+  // Rung 3's evidence read (see the chain below). Only for a família of one, and
+  // only when the sku actually looks suffixed, so the ordinary path pays nothing.
+  const skuPaiDeUmMembro =
+    isUserProduct && up!.member.combos.length === 0
+      ? await skuPaiDeMembroUnicoExistente(db, mapped.sku)
+      : null;
+
   // ---- The User-Products FAMILY parent's own sku (#1400) -----------------
   // Under User Products there is no parent ML item: a família is N items sharing
   // a `family_name`, and each one's `SELLER_SKU` is the MEMBER's. So the parent's
@@ -356,10 +401,13 @@ export async function importProduto(
         taxonomia.map((t) => t.varianteCodigo),
       ) ??
       // 3. A família of ONE (#1087) — no variation attributes at all, so the
-      //    member IS the produto and its `SELLER_SKU` is the parent's too.
+      //    member IS the produto and its `SELLER_SKU` is the parent's.
       //    ⚠️ Gated on the member having no combos, never on the child count:
       //    the children are imported below, so no count exists yet here.
-      (up!.member.combos.length === 0 ? mapped.sku : null) ??
+      //    The sole-member suffix is removed only against EVIDENCE — see
+      //    `skuPaiDeMembroUnicoExistente`, which is why this rung is awaited
+      //    above rather than sitting in the `??` chain.
+      (up!.member.combos.length === 0 ? skuPaiDeUmMembro : null) ??
       // 4. Unknown. Deliberately NOT the family id.
       null)
     : null;
@@ -550,39 +598,6 @@ export async function importProduto(
     .docRef(db, { produtoId }, linkDocId)
     .set(produtoMercadoLivreLinkCollection.parse(plan.link));
 
-  // Legacy denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
-  // this repo, deleted at the decommission. Canonical note on `produtoSchema`;
-  // do not repair, do not add a reader).
-  //
-  // Runs after the produto exists (create sets it first). arrayUnion is tier 0
-  // — commutative and idempotent — which is what these two arrays need, and NOT
-  // because a second app writes them: the Flutter app is not a live writer here
-  // (rule 8). The real concurrency is ours. Three in-repo writers touch these
-  // same fields on this same produto doc — `itemsStatusSync.ts:469-475`
-  // arrayUnions them, the UP takeover in `importMigration.ts:534-550` rewrites
-  // them, and a Cloud Tasks retry or the reprocess sweep re-drives THIS import.
-  // Secondary: a migrated produto arrives carrying legacy entries for other
-  // contas, which arrayUnion likewise leaves alone. The same tier-0 argument is
-  // made honestly in `importPhotos.ts:154` and `integracoesComProduto.ts:31`.
-  // User-Products stamps
-  // `relevantData.isUserProductModel` on the PARENT's own entry too (parity —
-  // `ProdMarketplace.relevantData`, `models.dart:2333`); omitted for simple/
-  // variations[] so their denorm shape stays byte-identical.
-  //
-  // ⚠️ `integracoesComProduto` is NOT stamped here (#920) — the link `.set()`
-  // above is what puts the produto in it, via
-  // `onProdutoMercadoLivreLinkChanged`. That is the point: the array now
-  // follows the links, so an import path that forgets to stamp can no longer
-  // leave a listing invisible to both sweeps.
-  await produtoCollection.docRef(db, {}, produtoId).update({
-    marketplace: FieldValue.arrayUnion({
-      integracaoUid: integracaoId,
-      externalId: plan.denormItemId,
-      ...(isUserProduct ? { relevantData: { isUserProductModel: true } } : {}),
-    }),
-    marketplaceIds: FieldValue.arrayUnion(plan.denormItemId),
-  });
-
   // Children (#520 legacy variations[] / #521 User-Products member), run after
   // the parent's own produto/link exist (children reference the parent link's
   // outer-ref). No-op ({ total: 0, created: 0 }) for a simple listing.
@@ -705,8 +720,8 @@ export async function importProduto(
       let imported = 0;
       let created = 0;
       // Deliberately SEQUENTIAL: every sibling merges the SAME family parent
-      // (produto fill-null, PML link spread-set, denorm arrayUnion, taxonomy
-      // tx) — concurrency would only buy tx-contention retries and
+      // (produto fill-null, PML link spread-set, taxonomy tx) — concurrency
+      // would only buy tx-contention retries and
       // ALREADY_EXISTS churn on shared docs. The cap (60) bounds the worst
       // case, and a request killed mid-loop recovers by re-importing (every
       // write is idempotent/convergent).

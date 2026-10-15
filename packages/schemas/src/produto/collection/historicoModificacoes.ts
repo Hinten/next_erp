@@ -1,6 +1,7 @@
 import type { CollectionMetadata } from '../../types';
 
 export {
+  CAMPO_HISTORICO_PRECO_CUSTO,
   historicoModificacaoSchema,
   type HistoricoModificacao,
 } from '../../shared/historicoModificacoes';

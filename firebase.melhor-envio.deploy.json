@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-isolated config for the Melhor Envio notification task processor and reprocess sweep (#681). Functions only: this config cannot deploy Firestore rules, indexes or Storage.",
+  "functions": [
+    {
+      "source": ".deploy/melhor-envio-functions",
+      "codebase": "melhor-envio",
+      "runtime": "nodejs22",
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs melhor-envio",
+        "node apps/melhor-envio/functions/scripts/prepare-deploy.mjs"
+      ],
+      "ignore": ["node_modules"]
+    }
+  ]
+}

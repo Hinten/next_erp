@@ -64,6 +64,28 @@ describe('calcularMarcadores', () => {
     });
   });
 
+  it('⚠️ an open SHOPEE return (origem 5) sets devolucaoAbertaEm — and only that', () => {
+    // Shopee step 17 (#1525). `lerIncidente` narrows `origem` through
+    // `origemIncidenteSchema.safeParse`, so a union that did not admit 5 would
+    // read the row as origem null and the return would block nothing — the
+    // pedido could be finalized under an open return with no error anywhere.
+    const shopee = {
+      origem: ORIGEM_INCIDENTE.pedidoShopee,
+      tipo: TIPO_INCIDENTE.devolucao,
+      timestamp: 4_000,
+    };
+    expect(calcularMarcadores([incML(shopee)], NOW)).toEqual({
+      disputaAbertaEm: null,
+      devolucaoAbertaEm: 4_000,
+      bloqueiosLiberados: null,
+    });
+    // Closed by Shopee: the marker clears.
+    expect(
+      calcularMarcadores([incML({ ...shopee, claimStatus: STATUS_CLAIM.fechada })], NOW)
+        .devolucaoAbertaEm,
+    ).toBeNull();
+  });
+
   it('a non-marketplace incidente contributes nothing', () => {
     const out = calcularMarcadores(
       [incML({ origem: ORIGEM_INCIDENTE.troca, tipo: TIPO_INCIDENTE.devolucao })],

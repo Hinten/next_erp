@@ -45,6 +45,7 @@ const {
   uploadProductVideo,
   uploadProductAnexo,
   uploadFile,
+  uploadChatFile,
 } = await import('./upload');
 
 const db = {} as unknown as Firestore;
@@ -404,5 +405,120 @@ describe('uploadFile', () => {
     expect(result.arquivo.filepath).toBe('media');
     expect(result.arquivo.filename).toBe(`${hash}.pdf`);
     expect(result.arquivo.filetype).toBe('document');
+  });
+});
+
+describe('uploadChatFile', () => {
+  it('uses a chat-scoped id while keeping the content hash in the object path', async () => {
+    const hash = await sha512Hex(bytes);
+    const result = await uploadChatFile({
+      storage,
+      db,
+      bytes,
+      contentType: 'application/pdf',
+      originalFilename: 'contrato.pdf',
+    });
+
+    expect(result.id).toBe(`chat_${hash}`);
+    expect(result.arquivo.filepath).toBe('chat');
+    expect(result.arquivo.filename).toBe(`${hash}.pdf`);
+    expect(result.arquivo.originalFilename).toBe('contrato.pdf');
+  });
+
+  it('dedups within the chat namespace', async () => {
+    const hash = await sha512Hex(bytes);
+    const existing = {
+      filetype: 'document',
+      filepath: 'chat',
+      filename: `${hash}.pdf`,
+      url: 'https://dl/existing',
+    };
+    mocks.getDoc
+      .mockResolvedValueOnce({ exists: () => false, data: () => undefined })
+      .mockResolvedValueOnce({ exists: () => true, data: () => existing });
+
+    const result = await uploadChatFile({
+      storage,
+      db,
+      bytes,
+      contentType: 'application/pdf',
+    });
+
+    expect(result.arquivo).toEqual(existing);
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+    expect(mocks.setDoc).not.toHaveBeenCalled();
+  });
+
+  it('reuses a legacy bare-hash chat anchor without creating a second owner', async () => {
+    const hash = await sha512Hex(bytes);
+    const existing = {
+      filetype: 'document',
+      filepath: 'chat',
+      filename: `${hash}.pdf`,
+      url: 'https://dl/legacy',
+    };
+    mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => existing });
+
+    const result = await uploadChatFile({
+      storage,
+      db,
+      bytes,
+      contentType: 'application/pdf',
+    });
+
+    expect(result.id).toBe(hash);
+    expect(result.arquivo).toEqual(existing);
+    expect(mocks.setDoc).not.toHaveBeenCalled();
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+  });
+
+  it('does not confuse a generic bare-hash anchor with a legacy chat upload', async () => {
+    const hash = await sha512Hex(bytes);
+    mocks.getDoc
+      .mockResolvedValueOnce({
+        exists: () => true,
+        data: () => ({ filepath: 'media', filename: `${hash}.pdf`, url: 'https://dl/media' }),
+      })
+      .mockResolvedValueOnce({ exists: () => false, data: () => undefined });
+
+    const result = await uploadChatFile({
+      storage,
+      db,
+      bytes,
+      contentType: 'application/pdf',
+    });
+
+    expect(result.id).toBe(`chat_${hash}`);
+    expect(mocks.setDoc).toHaveBeenCalledTimes(1);
+    expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers an incomplete namespaced anchor instead of returning a broken ref', async () => {
+    const hash = await sha512Hex(bytes);
+    const incomplete = {
+      filetype: 'document',
+      filepath: 'chat',
+      filename: `${hash}.pdf`,
+      url: null,
+      uploadState: 'pending',
+    };
+    mocks.getDoc
+      .mockResolvedValueOnce({ exists: () => false, data: () => undefined })
+      .mockResolvedValueOnce({ exists: () => true, data: () => incomplete });
+
+    const result = await uploadChatFile({
+      storage,
+      db,
+      bytes,
+      contentType: 'application/pdf',
+    });
+
+    expect(result.id).toBe(`chat_${hash}`);
+    expect(result.arquivo.url).toBe(`https://dl/chat/${hash}.pdf`);
+    expect(mocks.setDoc).not.toHaveBeenCalled();
+    expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.updateDoc).toHaveBeenCalledWith(expect.anything(), {
+      url: `https://dl/chat/${hash}.pdf`,
+    });
   });
 });

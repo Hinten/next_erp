@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
 import { type QueryDocumentSnapshot, getDocs } from 'firebase/firestore';
-import { buildQuery, groupQuery, limit, orderByField, paginate } from '@delfrance/data';
-import { type Mensagem } from '@delfrance/schemas';
+import { buildQuery, groupQuery, orderByField, paginate } from '@delfrance/data';
+import type { Mensagem } from '@delfrance/schemas';
 import {
   type ConversaGroup,
   type FetchedMensagem,
@@ -67,10 +67,10 @@ export interface GlobalSearch {
  * one-shot query per page (orderBy timestamp desc, limit 300, cursor via the
  * last doc snapshot); the regex is applied CLIENT-SIDE reusing the shared thread
  * semantics (`buildSearchRegex` + `matchFetched`), so it is regex-capable,
- * case-insensitive (`iu`), and falls back to a literal search on an invalid
- * pattern. Pages are term-INDEPENDENT (they are just the newest N messages), so
- * refining the term re-matches in memory with zero extra reads; only "Buscar
- * mais antigas" (`loadMore`) fetches another bounded page.
+ * case- and accent-insensitive, and falls back to a literal search on an
+ * invalid pattern. Pages are term-INDEPENDENT (they are just the newest N
+ * messages), so refining the term re-matches in memory with zero extra reads;
+ * only "Buscar mais antigas" (`loadMore`) fetches another bounded page.
  */
 export function useGlobalSearch(term: string): GlobalSearch {
   const { regex, isLiteral } = useMemo(() => buildSearchRegex(term), [term]);

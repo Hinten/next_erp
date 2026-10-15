@@ -50,6 +50,7 @@ import {
   seedNNF,
   SEFAZ_HOM_EPEC_SERIE,
 } from '@delfrance/integrations-nfe/test-helpers/homologacao-seed';
+import { logSefaz } from '@delfrance/integrations-nfe/test-helpers/sefaz-log';
 
 import { getAdminFirestore } from '../../../lib/firebase/admin';
 import { emitirPedido } from '../../../lib/nfe/orchestrator';
@@ -338,6 +339,11 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação EPEC contingência', () 
     await seedFixtures(fs, cert.cnpj, TEST_IE!);
     __resetNFeRuntimeForTests();
     rt = getNFeRuntime();
+    // Tripwire before any SEFAZ call: this suite must only ever talk to
+    // homologação. The vitest config pins NFE_AMBIENTE; this fails loudly if
+    // that pin (or the runtime's ambiente → tpAmb derivation) ever regresses.
+    expect(rt.ambiente).toBe('homologacao');
+    expect(rt.tpAmb).toBe('2');
   }, 60_000);
 
   afterAll(async () => {
@@ -347,8 +353,7 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação EPEC contingência', () 
   it('enviarEpecParaNota — EPEC evento accepted by the AN (cStat 135/136) → estado=epecAprovado', async () => {
     const result = await emitirPedido(fs, rt, PEDIDO_ID);
     assertNotConsumoIndevido(result, 'epec/send');
-    // eslint-disable-next-line no-console
-    console.log(`[epec send] cStat=${result.cStat} xMotivo="${result.xMotivo}"`);
+    logSefaz('epec send', result);
     expect(['135', '136']).toContain(result.cStat);
     expect(result.estado).toBe(ESTADO_NFE.epecAprovado);
     expect(result.chave).toMatch(/^\d{44}$/);
@@ -367,8 +372,7 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação EPEC contingência', () 
     // path a real operator retry (or the reconcile sweep) takes.
     const result = await emitirPedido(fs, rt, PEDIDO_ID);
     assertNotConsumoIndevido(result, 'epec/pos-transmit');
-    // eslint-disable-next-line no-console
-    console.log(`[epec pós-transmissão] cStat=${result.cStat} xMotivo="${result.xMotivo}"`);
+    logSefaz('epec pós-transmissão', result);
     expect(['100', '150', '468']).toContain(result.cStat);
     if (result.cStat === '468') {
       // Home SEFAZ hasn't received the EPEC from the AN yet — expected on

@@ -12,6 +12,8 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { useNFeClient } from '@/lib/nfe/client';
 import { useFreightClient } from '@/lib/freight/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { useShopeeClient } from '@/lib/shopee/client';
+import { useEscolherEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
 import {
   showCopyableNotification,
   showErrorNotification,
@@ -67,6 +69,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
   const nfeClient = useNFeClient();
   const freightClient = useFreightClient();
   const mercadoLivreClient = useMercadoLivreClient();
+  const shopeeClient = useShopeeClient();
 
   const { state, dispatch, bumpEpoch, currentEpoch } = useCheckoutReducer();
   // Latest state for the async handlers (avoids stale closures without re-binding).
@@ -85,6 +88,10 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
 
   const confirmDialog = useConfirm();
   const comprarBridge = useComprarEtiquetaBridge(state.pedido);
+  // The Shopee pickup/drop-off question (#1523). Its element renders at the
+  // screen root below, beside the confirm — never inside another `<Modal>`
+  // (see `useConfirm`'s `element` doc for the wedge that causes).
+  const envioDialog = useEscolherEnvio();
 
   const finderRef = useRef<HTMLInputElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
@@ -188,8 +195,9 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
         }),
       openUrl: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
       comprarEtiqueta: comprarBridge.comprarEtiqueta,
+      escolherEnvio: envioDialog.escolherEnvio,
     }),
-    [confirmDialog, comprarBridge.comprarEtiqueta],
+    [confirmDialog, comprarBridge.comprarEtiqueta, envioDialog.escolherEnvio],
   );
 
   const reportPostSave = useCallback((post: PostSaveResult) => {
@@ -316,6 +324,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
           nfeClient,
           freightClient,
           mercadoLivreClient,
+          shopeeClient,
           pedido,
           pedidoId,
           formatoDanfe: snap.formatoDanfe,
@@ -345,6 +354,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
     nfeClient,
     freightClient,
     mercadoLivreClient,
+    shopeeClient,
     ui,
     confirmDialog,
     reportPostSave,
@@ -426,6 +436,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
             nfeClient={nfeClient}
             freightClient={freightClient}
             mercadoLivreClient={mercadoLivreClient}
+            shopeeClient={shopeeClient}
             formatoDanfe={state.formatoDanfe}
             onFormatoDanfe={(v) => dispatch({ type: 'format/danfe', value: v })}
             formatoEtiqueta={state.formatoEtiqueta}
@@ -437,6 +448,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
 
       {confirmDialog.element}
       {comprarBridge.element}
+      {envioDialog.element}
     </Stack>
   );
 }

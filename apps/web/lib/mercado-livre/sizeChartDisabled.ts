@@ -68,6 +68,7 @@ export const SIZE_CHART_MOTIVOS = {
   semDominio: 'Selecione o domínio.',
   salvandoRascunho: 'Salvando o rascunho…',
   enviando: 'Enviando ao Mercado Livre…',
+  recuperando: 'Recuperando o envio anterior…',
   preenchendoIa: 'Preenchendo a grade com IA…',
 } as const;
 
@@ -150,13 +151,18 @@ function motivoFor(action: SizeChartAction, input: SizeChartGateInput): string |
 }
 
 /** The controls in the size-chart editor modal. */
-export type SizeChartEditorAction = 'preencherIa' | 'cancelar' | 'salvarRascunho' | 'enviar';
+export type SizeChartEditorAction =
+  | 'preencherIa'
+  | 'cancelar'
+  | 'salvarRascunho'
+  | 'enviar'
+  | 'recuperar';
 
 export interface SizeChartEditorGateInput {
   /** `PERM.integracao.write`. */
   canWrite: boolean;
   /** Which call is in flight, if any. */
-  busy: 'draft' | 'send' | null;
+  busy: 'draft' | 'send' | 'recover' | null;
   /**
    * The AI suggestion call is in flight.
    *
@@ -209,10 +215,14 @@ function editorMotivoFor(
 ): string | null {
   // Only the two calls that reach Mercado Livre need the write bit. A draft is
   // a local Firestore write, and cancelling is not a write at all.
-  if ((action === 'preencherIa' || action === 'enviar') && !input.canWrite) {
+  if (
+    (action === 'preencherIa' || action === 'enviar' || action === 'recuperar') &&
+    !input.canWrite
+  ) {
     return SIZE_CHART_MOTIVOS.semEscrita;
   }
   if (input.busy !== null) {
+    if (input.busy === 'recover') return SIZE_CHART_MOTIVOS.recuperando;
     return input.busy === 'draft'
       ? SIZE_CHART_MOTIVOS.salvandoRascunho
       : SIZE_CHART_MOTIVOS.enviando;

@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { ESTADO_NFE } from '../../nfe';
 import { ESTADO_PEDIDO } from '../collection/pedido';
 import {
+  estadoAoGerarLinkPagamento,
   nfeFiscalEncerrada,
   pagamentoInesperado,
+  podeGerarLinkPagamento,
   podeTrocar,
   travarInclusaoProduto,
   travarPagamentoComNFe,
@@ -137,6 +139,68 @@ describe('nfeFiscalEncerrada', () => {
     for (const value of Object.values(ESTADO_NFE)) {
       if (value === ESTADO_NFE.cancelada || value === ESTADO_NFE.numeracaoInutilizada) continue;
       expect(nfeFiscalEncerrada(value)).toBe(false);
+    }
+  });
+});
+
+describe('podeGerarLinkPagamento', () => {
+  // The exact allow-list, spelled out with the constants: a plausible wrong
+  // implementation (an exclusion list, or adding emAnalise / pago) fails the
+  // exhaustive table below, not just one spot check.
+  const PERMITIDOS = new Set<string>([
+    ESTADO_PEDIDO.iniciado,
+    ESTADO_PEDIDO.carrinho,
+    ESTADO_PEDIDO.escolhendoFormaDePagamento,
+    ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    ESTADO_PEDIDO.pagamentoNaoRealizado,
+  ]);
+
+  it('is true for exactly the five "still collecting payment" estados, false for every other one', () => {
+    const todos = Object.values(ESTADO_PEDIDO);
+    expect(todos).toHaveLength(16); // a new estado must make this table a conscious choice
+    for (const estado of todos) {
+      expect(podeGerarLinkPagamento(estado), estado).toBe(PERMITIDOS.has(estado));
+    }
+    expect(todos.filter(podeGerarLinkPagamento).sort()).toEqual([...PERMITIDOS].sort());
+  });
+
+  it('refuses the settled, in-flight and cancelled estados (near-misses of the allow-list)', () => {
+    for (const estado of [
+      ESTADO_PEDIDO.pago, // already paid: a link can only overpay
+      ESTADO_PEDIDO.emAnalise, // not in the legacy set (the owner may widen it)
+      ESTADO_PEDIDO.emProcessamento,
+      ESTADO_PEDIDO.finalizado,
+      ESTADO_PEDIDO.cancelado,
+      ESTADO_PEDIDO.carrinhoAbandonado,
+      ESTADO_PEDIDO.error,
+    ]) {
+      expect(podeGerarLinkPagamento(estado), estado).toBe(false);
+    }
+  });
+});
+
+describe('estadoAoGerarLinkPagamento', () => {
+  it('flips ONLY iniciado to aguardandoConfirmacaoDePagamento', () => {
+    expect(estadoAoGerarLinkPagamento(ESTADO_PEDIDO.iniciado)).toBe(
+      ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    );
+  });
+
+  it('leaves every other estado alone, including the ones that may generate a link', () => {
+    for (const estado of Object.values(ESTADO_PEDIDO)) {
+      if (estado === ESTADO_PEDIDO.iniciado) continue;
+      expect(estadoAoGerarLinkPagamento(estado), estado).toBeNull();
+    }
+    // carrinho is the near-miss: it may generate a link but it is not iniciado.
+    expect(podeGerarLinkPagamento(ESTADO_PEDIDO.carrinho)).toBe(true);
+    expect(estadoAoGerarLinkPagamento(ESTADO_PEDIDO.carrinho)).toBeNull();
+  });
+
+  it('only ever flips from an estado that may generate a link at all', () => {
+    for (const estado of Object.values(ESTADO_PEDIDO)) {
+      if (estadoAoGerarLinkPagamento(estado) !== null) {
+        expect(podeGerarLinkPagamento(estado), estado).toBe(true);
+      }
     }
   });
 });

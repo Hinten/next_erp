@@ -8,6 +8,8 @@ import {
 } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 
+import { WAIT_LABELS, waitForTrigger, waitForTriggerThenSettle } from '../testing/emulatorWaits';
+
 /**
  * END-TO-END proof for the pedido modification history: write a real document,
  * let the REAL trigger fire, watch the row appear. Requires the functions
@@ -41,24 +43,29 @@ function historyRef(db: Firestore, pedidoId: string) {
   return db.collection('pedidos').doc(pedidoId).collection('historicoDeModificacoes');
 }
 
-/** Poll until at least `minRows` rows exist, or fail with what was actually seen. */
+/**
+ * Poll until at least `minRows` rows exist, or fail with what was actually seen.
+ *
+ * The deadline is the suite-wide one (`../testing/emulatorWaits`). This file used
+ * to carry its own 15s — the SHORTEST in the family — while measurement (#1201)
+ * showed it absorbing the LONGEST delivery tail, because Vitest happens to run it
+ * first. That was a 1.40x margin held together by luck.
+ */
 async function waitForRows(
   db: Firestore,
   pedidoId: string,
   minRows: number,
-  timeoutMs = 15_000,
+  { settle = false } = {},
 ): Promise<QueryDocumentSnapshot<DocumentData>[]> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const snap = await historyRef(db, pedidoId).get();
-    if (snap.size >= minRows) return snap.docs;
-    if (Date.now() > deadline) {
-      throw new Error(
-        `timed out waiting for ${minRows} historicoDeModificacoes row(s); saw ${snap.size}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
+  const wait = settle ? waitForTriggerThenSettle : waitForTrigger;
+  const snap = await wait(
+    () => historyRef(db, pedidoId).get(),
+    (s) => s.size >= minRows,
+    `${minRows} historicoDeModificacoes row(s)`,
+    (s) => `saw ${s.size}`,
+    { label: WAIT_LABELS.historicoDeModificacoes },
+  );
+  return snap.docs;
 }
 
 /** A minimal pedido the schema will accept on read-back. */
@@ -156,11 +163,35 @@ describe.skipIf(!EMULATED)('pedido modification history (emulator, end-to-end)',
       ultimaModificacao: 1_700_000_000_000_000,
     });
 
-    // Give the trigger the same budget a real row would need, then assert the
-    // count did NOT grow.
-    await new Promise((r) => setTimeout(r, 3_000));
-    const snap = await historyRef(db, pedidoId).get();
-    expect(snap.size).toBe(1);
+    // ⚠️ This used to be `sleep(3_000)` then a one-shot count, and that could not
+    // fail reliably: #1201 measured trigger delivery at p99 7083ms and max
+    // 10712ms, so a phantom row from a REGRESSED ignore-list would routinely land
+    // AFTER the read — the guard would go green in exactly the case it exists to
+    // catch. A longer sleep only lowers the odds; it does not make the claim
+    // provable.
+    //
+    // Instead, write a marker the trigger MUST record, and wait for it — then
+    // SETTLE before counting.
+    //
+    // ⚠️ The settle is what makes the exact count mean anything, and an earlier
+    // draft of this test got the reasoning wrong. It argued that the emulator
+    // delivers one document's events in order, so the marker's row implies the
+    // ignored write was already processed. But in-order DELIVERY is not in-order
+    // COMPLETION: the ignored write and the marker are two separate invocations
+    // running concurrently, so a regressed ignore-list row can land AFTER the
+    // marker's. A non-settling poller returns at the first snapshot with 2 rows —
+    // the create plus the marker — and the guard goes green while the phantom row
+    // is still in flight. Holding the quiet window and re-reading is what lets
+    // `toHaveLength(2)` and the `campos` assertions below actually fail.
+    await ref.update({ numero: 2, ultimaModificacao: 1_700_000_000_000_001 });
+    const rows = await waitForRows(db, pedidoId, 2, { settle: true });
+
+    expect(rows).toHaveLength(2);
+    // The second row is the marker's, NOT the estoque write-back's.
+    const campos = rows.flatMap((d) => (d.data().campos as string[] | undefined) ?? []);
+    expect(campos).toContain('numero');
+    expect(campos).not.toContain('estoqueAplicado');
+    expect(campos).not.toContain('dataRemocaoEstoque');
   });
 
   it('expands itens per line instead of storing both whole maps', async () => {

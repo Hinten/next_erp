@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { impostoProdutoSchema } from '../../impostoProduto';
+import { CRT, CSOSN, CST_PIS_COFINS, ORIGEM } from '../../imposto/tribute';
 import { produtoPageBaseSchema, produtoPageIssues, produtoPageSchema } from './pageModel';
 
 const baseProduto = { nome: 'Camiseta' };
@@ -150,6 +152,67 @@ describe('produtoPageIssues (cross-document rules)', () => {
     expect(produtoPageIssues({ estoques: [{ quantidade: 0, quantidadeReservada: 0 }] })).toEqual(
       [],
     );
+  });
+});
+
+describe('produtoPageIssues — a tax config the NF-e engine would reject (#1655)', () => {
+  // The rows exactly as the Impostos tab holds them: one per active operação,
+  // seeded through `impostoProdutoSchema` (`emptyImposto` / the stored docs).
+  const linha = (over: Record<string, unknown> = {}) =>
+    impostoProdutoSchema.parse({ impostoOpercaoOuterRef: 'operacao/op1', ...over });
+  const emptyRow = linha();
+  const icms500 = (csosn500: Record<string, unknown>) => ({
+    crt: CRT.simplesNacional,
+    csosn: CSOSN.icmsCobradoAnteriormente,
+    csosn500,
+  });
+  const parcial500 = linha({
+    origem: ORIGEM.nacional,
+    configuracaoICMS: icms500({ pST: 20 }),
+  });
+
+  it('flags a reachable row with a half-filled ICMS-ST retido group, keyed by row and field', () => {
+    expect(produtoPageIssues({ impostos: [emptyRow, parcial500] })).toContainEqual({
+      path: 'impostos.1.configuracaoICMS.csosn500.vBCSTRet',
+      message: expect.stringContaining('ICMS-ST retido'),
+    });
+  });
+
+  it('flags a CST 49 PIS config carrying both rates', () => {
+    const ambas = linha({
+      origem: ORIGEM.nacional,
+      configuracaoPIS: { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65, vAliqProd: 0.1 },
+    });
+    expect(produtoPageIssues({ impostos: [ambas] })).toContainEqual({
+      path: 'impostos.0.configuracaoPIS.pPIS',
+      message: expect.stringContaining('não as duas'),
+    });
+  });
+
+  it.each([
+    // The e2e shape: a row with CFOP + NCM and no origem is never read by
+    // the engine (it fails the impostoSchema tier gate), so it is not blocked.
+    ['the same partial row with origem null', linha({ configuracaoICMS: icms500({ pST: 20 }) })],
+    [
+      'a complete ICMS-ST retido group',
+      linha({
+        origem: ORIGEM.nacional,
+        configuracaoICMS: icms500({ vBCSTRet: 100, pST: 20, vICMSSTRet: 20 }),
+      }),
+    ],
+    [
+      'CST 49 with pPIS 0 and vAliqProd 0.5 (0 is "not configured")',
+      linha({
+        origem: ORIGEM.nacional,
+        configuracaoPIS: { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0, vAliqProd: 0.5 },
+      }),
+    ],
+  ])('does not flag %s', (_label, row) => {
+    expect(produtoPageIssues({ impostos: [emptyRow, row] })).toEqual([]);
+  });
+
+  it('does not flag an unvisited Impostos tab (impostos null — seeded lazily)', () => {
+    expect(produtoPageIssues({ impostos: null })).toEqual([]);
   });
 });
 

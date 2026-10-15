@@ -14,7 +14,12 @@ const ENTRY_BASE = {
 describe('pagamentoHistorySource', () => {
   it('has the fixed subcolecao/ignoreFields', () => {
     expect(pagamentoHistorySource.subcolecao).toBe('pagamentos');
-    expect(pagamentoHistorySource.ignoreFields).toEqual(['id', 'ultimaModificacao']);
+    expect(pagamentoHistorySource.ignoreFields).toEqual([
+      'id',
+      'ultimaModificacao',
+      'lastProviderUpdate',
+      'primeiroNomePagador',
+    ]);
   });
 
   it('is bound to the PEDIDO root — rows land under the pedido, not the pagamento', () => {
@@ -64,14 +69,23 @@ describe('pagamentoHistorySource', () => {
     expect(entry?.changes.valor).toEqual({ old: 100, new: 250 });
   });
 
-  it('writes NO row for a content-identical re-import (only the stamp moved)', () => {
-    // The ML importer does a wholesale `tx.set` and advances `ultimaModificacao`
-    // as its update-if-newer key; ignoring that stamp is what makes a repeated
-    // import silent instead of one row per poll.
+  it('writes NO row when only local/provider clocks move', () => {
     const entry = buildModificationEntry({
       ...ENTRY_BASE,
-      before: { id: 'pag1', status_pagamento: 3, valor: 100, ultimaModificacao: 1 },
-      after: { id: 'pag1', status_pagamento: 3, valor: 100, ultimaModificacao: 999 },
+      before: {
+        id: 'pag1',
+        status_pagamento: 3,
+        valor: 100,
+        ultimaModificacao: 1,
+        lastProviderUpdate: 10,
+      },
+      after: {
+        id: 'pag1',
+        status_pagamento: 3,
+        valor: 100,
+        ultimaModificacao: 999,
+        lastProviderUpdate: 20,
+      },
       ignore: pagamentoHistorySource.ignoreFields,
       path: 'pedidos/ped1/pagamentos/pag1',
       subcolecao: 'pagamentos',
@@ -98,7 +112,11 @@ describe('pagamentoHistorySource', () => {
 describe('incidenteHistorySource', () => {
   it('has the fixed subcolecao/ignoreFields and the pedido root', () => {
     expect(incidenteHistorySource.subcolecao).toBe('incidentes');
-    expect(incidenteHistorySource.ignoreFields).toEqual(['timestamp', 'ultimaModificacao']);
+    expect(incidenteHistorySource.ignoreFields).toEqual([
+      'timestamp',
+      'ultimaModificacao',
+      'relogioProvedorUs',
+    ]);
     expect(incidenteHistorySource.root).toBe(PEDIDO_HISTORY_ROOT);
     expect(incidenteHistorySource.requireParentExists).toBeFalsy();
   });
@@ -122,6 +140,58 @@ describe('incidenteHistorySource', () => {
       docId: 'inc1',
     });
     expect(entry).toBeNull();
+  });
+
+  // Shopee step 17 (#1525): the return importer advances `relogioProvedorUs` on
+  // every newer detail, content changed or not. The watermark-only advance must
+  // file NOTHING; a content change — which moves the `devolucaoShopee` block and
+  // its `revisao` — must still file exactly one row, without the watermark in it.
+  const DEVOLUCAO_ANTES = {
+    origem: 5,
+    tipo: 'returns',
+    externalId: '2609100000000001',
+    claimStatus: 'opened',
+    timestamp: 1_000_000,
+    ultimaModificacao: 1_000_000_000_000,
+    relogioProvedorUs: 1_000_000_000_000,
+    devolucaoShopee: { revisao: 1, returnSn: '2609100000000001', status: 'REQUESTED' },
+  };
+
+  it('drops a watermark-only advance of the return importer', () => {
+    const entry = buildModificationEntry({
+      ...ENTRY_BASE,
+      before: DEVOLUCAO_ANTES,
+      after: {
+        ...DEVOLUCAO_ANTES,
+        ultimaModificacao: 2_000_000_000_000,
+        relogioProvedorUs: 2_000_000_000_000,
+      },
+      ignore: incidenteHistorySource.ignoreFields,
+      path: 'pedidos/ped1/incidentes/shopee-devolucao-2609100000000001',
+      subcolecao: 'incidentes',
+      docId: 'shopee-devolucao-2609100000000001',
+    });
+    expect(entry).toBeNull();
+  });
+
+  it('still records the return content change that rides with a watermark advance', () => {
+    const entry = buildModificationEntry({
+      ...ENTRY_BASE,
+      before: DEVOLUCAO_ANTES,
+      after: {
+        ...DEVOLUCAO_ANTES,
+        claimStatus: 'closed',
+        ultimaModificacao: 2_000_000_000_000,
+        relogioProvedorUs: 2_000_000_000_000,
+        devolucaoShopee: { revisao: 2, returnSn: '2609100000000001', status: 'CLOSED' },
+      },
+      ignore: incidenteHistorySource.ignoreFields,
+      path: 'pedidos/ped1/incidentes/shopee-devolucao-2609100000000001',
+      subcolecao: 'incidentes',
+      docId: 'shopee-devolucao-2609100000000001',
+    });
+    expect(entry?.campos).toEqual(['claimStatus', 'devolucaoShopee']);
+    expect(entry?.changes).not.toHaveProperty('relogioProvedorUs');
   });
 
   it('compares resolucao wholesale — its movement carries money', () => {

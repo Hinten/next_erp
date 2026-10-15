@@ -21,9 +21,8 @@ import {
   type MlShipment,
   type MlShipmentPayment,
 } from '@delfrance/integrations-mercado-livre';
-import { ESTADO_FRETE } from '@delfrance/schemas';
+import { ESTADO_FRETE, INTEGRACAO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete, FreteDoPedido, IntegracaoFrete } from '@delfrance/schemas';
-import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 import { estadoFreteFromShipment } from './orderStatusMaps';
 
 /**

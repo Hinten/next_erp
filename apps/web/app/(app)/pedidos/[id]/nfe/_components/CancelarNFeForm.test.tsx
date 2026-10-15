@@ -2,11 +2,12 @@ import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
-import { NFeRejectedError } from '@delfrance/integrations-nfe/http-provider';
+import { NFeRejectedError, NFeTimeoutError } from '@delfrance/integrations-nfe/http-provider';
 
-const { cancelarMock, showErrorMock, notifShowMock } = vi.hoisted(() => ({
+const { cancelarMock, showErrorMock, showCopyableMock, notifShowMock } = vi.hoisted(() => ({
   cancelarMock: vi.fn(),
   showErrorMock: vi.fn(),
+  showCopyableMock: vi.fn(),
   notifShowMock: vi.fn(),
 }));
 
@@ -15,6 +16,7 @@ vi.mock('@/lib/nfe/client', () => ({
 }));
 vi.mock('@/lib/notifications/showErrorNotification', () => ({
   showErrorNotification: showErrorMock,
+  showCopyableNotification: showCopyableMock,
 }));
 vi.mock('@mantine/notifications', () => ({
   notifications: { show: notifShowMock },
@@ -68,6 +70,30 @@ describe('CancelarNFeForm', () => {
       }),
     );
     // A rejected cancelamento never reaches the pedido-cancel follow-up.
+    expect(onConcluido).not.toHaveBeenCalled();
+  });
+
+  it('a timeout is a yellow "Tempo esgotado" carrying its own copy — never a red "Falha" (#1094)', async () => {
+    // The cancelamento may still be registering at SEFAZ: a red toast invites the
+    // re-click, the yellow one tells the operator to check first.
+    const onConcluido = vi.fn();
+    const err = new NFeTimeoutError('Aguarde e confira o estado da NF-e antes de repetir.', {
+      origem: 'gateway',
+      timeoutMs: null,
+      operacao: 'cancelar',
+    });
+    cancelarMock.mockRejectedValue(err);
+    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" onCancelamentoConcluido={onConcluido} />);
+
+    fillAndConfirm();
+
+    await waitFor(() => expect(showCopyableMock).toHaveBeenCalled());
+    expect(showCopyableMock).toHaveBeenCalledWith({
+      title: 'Tempo esgotado',
+      message: 'Aguarde e confira o estado da NF-e antes de repetir.',
+      color: 'yellow',
+    });
+    expect(showErrorMock).not.toHaveBeenCalled();
     expect(onConcluido).not.toHaveBeenCalled();
   });
 

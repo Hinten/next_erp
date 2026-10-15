@@ -188,8 +188,6 @@ export interface ImportPlan {
   estoque: { docId: string; data: Record<string, unknown> } | null;
   /** The `produtoMercadoLivre` link doc (full set, spread-existing). */
   link: Record<string, unknown>;
-  /** ML item id, for the legacy `arrayUnion` denorm (applied by IO). */
-  denormItemId: string;
 }
 
 /** extraData.descricao is capped at 3000 chars (`produtoExtraDataSchema`). */
@@ -488,7 +486,6 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     extra,
     estoque,
     link,
-    denormItemId: mapped.mlItemId,
   };
 }
 
@@ -522,10 +519,9 @@ function lastSegment(ref: string): string {
  * User-Products mode (#521, `args.up`): a User-Products family member is its
  * OWN MLB item — there's no numeric ML "variation id" the way `variations[]`
  * has one. The `up` flag swaps only the `variacaoMercadoLivre` link's identity
- * fields (`itemId` set to the member's MLB id, numeric `id` never stamped) and
- * adds the legacy `relevantData.isUserProductModel` marker to the denorm
- * entry — every other field (sku, nome, precos, dims/categoria, taxonomy) is
- * assembled identically to the #520 `variations[]` path.
+ * fields (`itemId` set to the member's MLB id, numeric `id` never stamped) —
+ * every other field (sku, nome, precos, dims/categoria, taxonomy) is assembled
+ * identically to the #520 `variations[]` path.
  */
 export interface VariationChildAssembleArgs {
   mappedVariation: MappedMlVariation;
@@ -597,14 +593,6 @@ export interface VariationChildPlan {
   estoque: { docId: string; data: Record<string, unknown> } | null;
   /** The `variacaoMercadoLivre` link doc (full set, spread-existing). */
   link: Record<string, unknown>;
-  /**
-   * Legacy `marketplace`/`marketplaceIds` denorm entry (applied by IO).
-   * `relevantData` is set ONLY in User-Products mode (#521) — the parity
-   * marker (`isUserProductModel: true`) that must byte-match Flutter's
-   * `ProdMarketplace.relevantData` (`includeIfNull: false`, so it's simply
-   * absent — not `undefined` — outside UP mode).
-   */
-  denorm: { externalId: string; externalParentId: string; relevantData?: Record<string, unknown> };
 }
 
 /**
@@ -857,11 +845,6 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     produto,
     estoque,
     link,
-    denorm: {
-      externalId: mappedVariation.variationId,
-      externalParentId: parent.mlItemId,
-      ...(args.up ? { relevantData: { isUserProductModel: true } } : {}),
-    },
   };
 }
 

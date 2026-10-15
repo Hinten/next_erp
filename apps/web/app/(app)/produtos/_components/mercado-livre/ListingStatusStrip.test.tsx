@@ -153,6 +153,40 @@ describe('ListingStatusStrip', () => {
     expect(screen.getByText(/paused · out_of_stock/)).toBeDefined();
   });
 
+  /**
+   * #1226. The badge alone says "Removido pelo Mercado Livre" and no more, and
+   * the operator's next step is neither on this listing nor obvious: Republicar
+   * is disabled and Reverificar only re-confirms the removal. The line names the
+   * two controls that DO help.
+   */
+  it('says a removed listing cannot come back, and where to go instead', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao,
+      status: 'under_review',
+      sub_status: ['forbidden'],
+    });
+
+    expect(screen.getByText('Removido pelo Mercado Livre')).toBeDefined();
+    const aviso = screen.getByTestId('ml-aviso-removido');
+    expect(aviso.textContent).toContain('não pode ser reativado');
+    expect(aviso.textContent).toContain('Descartar anúncio removido');
+  });
+
+  it('shows that notice on NO other estado', () => {
+    // ⚠️ The near-miss: `emRevisao` is the same ML `status`, and a listing that
+    // is merely under review is exactly the one that must NOT be written off.
+    for (const estado of [
+      ESTADO_PUBLICACAO_ML.emRevisao,
+      ESTADO_PUBLICACAO_ML.cancelado,
+      ESTADO_PUBLICACAO_ML.pausado,
+      ESTADO_PUBLICACAO_ML.erro,
+    ]) {
+      cleanup();
+      renderStrip({ estado, status: 'under_review', sub_status: ['forbidden'] });
+      expect(screen.queryByTestId('ml-aviso-removido')).toBeNull();
+    }
+  });
+
   it('shows persisted errors under a neutral title', () => {
     // errors[] is written by publish, the price sync AND the stock sender, so
     // the title must not blame any one of them (#781).

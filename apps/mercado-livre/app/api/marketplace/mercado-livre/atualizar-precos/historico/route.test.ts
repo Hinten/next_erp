@@ -207,4 +207,25 @@ describe('GET /api/marketplace/mercado-livre/atualizar-precos/historico', () => 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ envios: [] });
   });
+
+  // The TTL deletes a run and its report shards independently, in no order and
+  // with no bound on the lag — so a run that is past its expiry but not yet
+  // deleted may already have lost its CSV. It must not be offered.
+  it('hides a run past its TTL expiry, keeps an unexpired one and one with no expiry', async () => {
+    const agora = Date.now();
+    h.get.mockResolvedValue({
+      docs: [
+        { id: 'sem-ttl', data: () => JOB },
+        { id: 'valido', data: () => ({ ...JOB, expiraEm: new Date(agora + 86_400_000) }) },
+        { id: 'expirado', data: () => ({ ...JOB, expiraEm: new Date(agora - 1) }) },
+      ],
+    });
+
+    const res = await GET(req('?integracaoId=int-1'));
+    const { envios } = (await res.json()) as { envios: Array<{ jobId: string }> };
+
+    expect(envios.map((e) => e.jobId)).toEqual(['sem-ttl', 'valido']);
+    // Read to decide, never returned.
+    expect(envios.every((e) => !('expiraEm' in e))).toBe(true);
+  });
 });

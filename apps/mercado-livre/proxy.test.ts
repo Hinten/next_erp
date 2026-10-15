@@ -90,3 +90,31 @@ describe('CORS allow-list', () => {
     ).toBeNull();
   });
 });
+
+describe('exposed headers (#1680)', () => {
+  it('exposes Content-Disposition to an allowed origin — the etiqueta ZIP keeps its real name', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+
+    const res = proxy(
+      new NextRequest(
+        'http://localhost:3006/api/marketplace/mercado-livre/etiqueta?pedidoId=P&formato=pdf',
+        { headers: { origin: 'https://app.example.com' } },
+      ),
+    ) as unknown as Response;
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    expect(res.headers.get('access-control-expose-headers')).toBe('Content-Disposition');
+  });
+
+  it('exposes nothing to an unlisted origin', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+
+    const res = proxy(
+      new NextRequest('http://localhost:3006/api/marketplace/mercado-livre/etiqueta', {
+        headers: { origin: 'https://evil.example.com' },
+      }),
+    ) as unknown as Response;
+    expect(res.headers.get('access-control-expose-headers')).toBeNull();
+  });
+});

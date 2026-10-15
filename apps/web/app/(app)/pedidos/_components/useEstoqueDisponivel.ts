@@ -287,28 +287,91 @@ export function useEstoqueDisponivel(
         }),
       );
 
-      // ⚠️ A component whose sole member has NO row at this depósito keeps its
-      // OWN. `filhoUnicoId` records that the family has exactly one child; it
-      // says NOTHING about where the units sit, and a component whose stock was
-      // lançado on the parent and never moved would otherwise count as 0 —
-      // making the whole kit read 0, which is the harm #1398 was opened on,
-      // reintroduced from the other side.
+      // ⚠️ A component whose target has NO row at this depósito falls back to the
+      // OTHER half of its family. `filhoUnicoId` records that the family has
+      // exactly one child; it says NOTHING about where the units sit, and a
+      // component whose stock was lançado on the parent and never moved would
+      // otherwise count as 0 — making the whole kit read 0, which is the harm
+      // #1398 was opened on, reintroduced from the other side.
+      //
+      // ⚠️ Which half depends on WHICH id the kit names, and both directions are
+      // live at once. This used to key on `alvo !== id`, i.e. only a kit naming
+      // the PARENT — which was every kit at the time. #1402 rewrites the corpus so
+      // the map names the CHILD, and every new kit is written that way from the
+      // start; on those `alvo === id`, so that gate matched nothing and the whole
+      // safety net became dead code. The units it protects do not go away when the
+      // ids move: the conversion deliberately leaves a RESERVED remainder on the
+      // parent, and an *entrada* booked on a parent after conversion is never
+      // swept up either.
       //
       // One extra read per such component, and only in that anomalous case.
-      // ⚠️ On ABSENCE, not on zero: when both rows hold units the sole member
-      // answers, matching what the ERP does for any parent/child split.
-      const semLinha = [
-        ...new Set(
-          [...alvoDe].filter(([id, alvo]) => alvo !== id && !porAlvo.has(alvo)).map(([id]) => id),
-        ),
-      ];
-      const porProprio = new Map<string, number>();
+      // ⚠️ On ABSENCE, not on zero: when both rows hold units the target answers,
+      // matching what the ERP does for any parent/child split.
+      const fonteDeReserva = new Map<string, string>();
+      /** Components with no row of their own that MIGHT have units on a parent. */
+      const candidatosDePai = new Map<string, string>();
+      for (const [id, alvo] of alvoDe) {
+        if (porAlvo.has(alvo)) continue;
+        if (alvo !== id) {
+          // The kit names the PARENT and its sole member has no row here, so the
+          // units are still on the parent — the id we already hold.
+          fonteDeReserva.set(id, id);
+          continue;
+        }
+        // The kit names a CHILD with no row here. Whether its parent may answer
+        // depends on the parent, so it is only a CANDIDATE until proven below.
+        const paiId = produtos.get(id)?.paiId ?? null;
+        if (paiId !== null && paiId !== '') candidatosDePai.set(id, paiId);
+      }
+
+      /**
+       * ⛔ Only a family of ONE, and the proof has to come from the PARENT.
+       *
+       * `paiId != null` is not that proof. `unidadeVendavel` maps EVERY child to
+       * itself, so `alvo === id` holds for a variation of a family of many too —
+       * and an earlier version let those through. Two siblings whose rows are
+       * absent then each read the parent's pool in full, and because they are
+       * DISTINCT targets the "one pool, divided once" logic below never fires: a
+       * kit needing 1+1 of a 100-unit parent read 100 assemblable instead of 50.
+       * Overstating availability is the direction ADR 0014 goes out of its way to
+       * avoid, and this lands on the screen where the operator picks quantities.
+       *
+       * The test is reciprocity — the parent must point back at THIS child — which
+       * is exactly what `unidadeVendavel` answers when asked about the parent, and
+       * it carries the drift guard for free.
+       *
+       * ⚠️ ONE chunked query for every candidate parent, matching the component
+       * read above, and only when some component's row was missing.
+       */
+      if (candidatosDePai.size > 0) {
+        const pais = await getDocsByIds(
+          db,
+          produtoCollection,
+          [...new Set(candidatosDePai.values())],
+          {},
+          { source: 'server' },
+        );
+        for (const [id, paiId] of candidatosDePai) {
+          const pai = pais.get(paiId);
+          if (pai && unidadeVendavel({ ...pai, id: paiId }) === id) {
+            fonteDeReserva.set(id, paiId);
+          }
+        }
+      }
+      // Read each distinct SOURCE once — a kit naming both halves of one family
+      // resolves both entries to the same parent row.
+      const lidos = new Map<string, number>();
       await Promise.all(
-        semLinha.map(async (pid) => {
-          const disp = await lerLinha(pid);
-          if (disp !== undefined) porProprio.set(pid, disp);
+        [...new Set(fonteDeReserva.values())].map(async (fonte) => {
+          const disp = await lerLinha(fonte);
+          if (disp !== undefined) lidos.set(fonte, disp);
         }),
       );
+      const porProprio = new Map<string, number>();
+      for (const [id, fonte] of fonteDeReserva) {
+        const disp = lidos.get(fonte);
+        if (disp !== undefined) porProprio.set(id, disp);
+      }
 
       // ⚠️ Two components can resolve to the SAME produto — a kit listing both a
       // family-of-one parent and its own sole member — and they then draw from
@@ -354,10 +417,13 @@ export function useEstoqueDisponivel(
       // Resolving per target fixes it and keeps the arithmetic honest: whatever
       // answered for the target is ONE pool, and both aliases divide it.
       //
-      // ⚠️ At most one fallback can answer per target, so there is nothing to
-      // choose between: `alvoDe` maps a child to itself and a parent to its child,
-      // so the only two sources for target C are C and its parent — and if C had a
-      // row, `porAlvo` would already hold it.
+      // ⚠️ Every fallback that can answer for one target answers with the SAME
+      // number, so there is nothing to choose between. `alvoDe` maps a child to
+      // itself and a parent to its child, so target C is reachable from C and from
+      // its parent P — and both now resolve to P's row (C's own row is what
+      // `porAlvo` would already hold). A kit naming both halves therefore reads one
+      // pool twice rather than two pools, which is what the division below
+      // assumes.
       const poolDoAlvo = new Map(porAlvo);
       for (const [id, alvo] of alvoDe) {
         if (poolDoAlvo.has(alvo)) continue;

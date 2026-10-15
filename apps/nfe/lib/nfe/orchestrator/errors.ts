@@ -21,6 +21,24 @@ export class NFeOrchestratorError extends Error {
   }
 }
 /**
+ * The nfev4 doc a guarded write (`persistPatchUnlessFinal` under a
+ * `PersistGuard`) was aimed at no longer exists — nothing was written, since a
+ * merge would only mint a partial doc. Its own class so a caller can skip THIS
+ * doc and go on (`reconcileByRecibo` does, #1654) without swallowing any other
+ * `NFeOrchestratorError`; a subclass of that one, so the routes still answer
+ * 400 and a batch member still reports `'NFeOrchestratorError'`.
+ */
+export class NFeDocAusenteError extends NFeOrchestratorError {
+  constructor(
+    /** The missing doc's path. */
+    public readonly path: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'NFeDocAusenteError';
+  }
+}
+/**
  * Pre-check abort: a número in the requested inutilização range belongs to an
  * already-authorized NF-e (aprovada / EPEC aprovado / cancelada). Inutilizing
  * it would be consumo indevido, so the event is never sent. The route maps

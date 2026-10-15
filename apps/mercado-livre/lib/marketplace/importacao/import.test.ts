@@ -9,9 +9,8 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 
 import { type ImportDeps, importProduto } from './import';
-import { MercadoLivreImportError } from './importCore';
 import { MAX_FAMILY_SIBLINGS } from './importFamily';
-import { type Bucket } from '../core/arquivoUpload';
+import type { Bucket } from '../core/arquivoUpload';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Supports doc get/set/update, chained where/limit/get, a collectionGroup query
@@ -382,7 +381,7 @@ describe('importProduto — guards', () => {
 });
 
 describe('importProduto — create', () => {
-  it('creates a produto (deterministic per-item id), extraData, estoque, link + denorm', async () => {
+  it('creates a produto (deterministic per-item id), extraData, estoque and link', async () => {
     const db = new FakeDb();
     const api = makeApi(SIMPLE_ITEM);
     const res = await importProduto(deps(db, api), 'MLB123');
@@ -402,8 +401,6 @@ describe('importProduto — create', () => {
     });
     const link = [...db.docs(`produtos/${pid}/produtoMercadoLivre`).values()][0]!;
     expect(link).toMatchObject({ id: 'MLB123', estado: 'p', status: 'active' });
-    // legacy denorm applied
-    expect(db.updates.some((u) => u.path === `produtos/${pid}`)).toBe(true);
   });
 
   it('two SKU-less ML items sharing a seller_custom_field create SEPARATE produtos (#2 collision fix)', async () => {
@@ -819,7 +816,7 @@ describe('importProduto — legacy variations[] listing (#520)', () => {
     ],
   };
 
-  it('imports the parent + one child produto per variation, with links/estoque/denorm', async () => {
+  it('imports the parent + one child produto per variation, with links and estoque', async () => {
     const db = new FakeDb();
     const api = makeApi(VARIATION_ITEM);
     const res = await importProduto(deps(db, api), 'MLB999');
@@ -859,13 +856,6 @@ describe('importProduto — legacy variations[] listing (#520)', () => {
       expect(estoques.size).toBe(1);
       const [, estoqueData] = [...estoques.entries()][0]!;
       expect(typeof estoqueData.quantidade).toBe('number');
-
-      // legacy denorm: the child's marketplace entry carries externalParentId
-      // (the parent's own entry never does — models.dart `ProdMarketplace` json).
-      const update = db.updates.find(
-        (u) => u.path === `produtos/${childId}` && 'marketplace' in u.patch,
-      );
-      expect(update).toBeDefined();
     }
   });
 
@@ -1531,11 +1521,6 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
   const expectedChildId = (memberId: string) =>
     `XMLB000000000000000${expectedParentLinkId}vMLB${memberId}`;
 
-  /** `FieldValue.arrayUnion(...)`'s public `elements` array — the appended entries. */
-  function arrayUnionElements(v: unknown): unknown[] {
-    return (v as { elements: unknown[] }).elements;
-  }
-
   function makeUpApi(opts: {
     items: Record<string, DocData>;
     family?: DocData | Error;
@@ -1762,6 +1747,60 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       expect(skuDoPai(db)).toBe('SKU-A');
     });
 
+    // ⛔ The ROUND TRIP, and the reason rung 3 cannot take the member's sku
+    // verbatim any more. A sole member's sku is DERIVED (`<paiSku>-UN`) and the
+    // member is what publish sends, so verbatim would return a parent at
+    // `SKU-A-UN` — whose own member is then minted `SKU-A-UN-UN`, one suffix per
+    // delete → re-import cycle, for ever. It would also stop the produto
+    // resolution below finding the EXISTING parent (that step matches
+    // `sku == <this value>` with `paiId == null`, and no root carries a suffixed
+    // sku), so the re-import would mint a SECOND parent produto.
+    it('rung 3 — strips the sole-member suffix when the parent really exists', async () => {
+      const db = new FakeDb();
+      // The EVIDENCE. `SKU-A-UN` can only be a derived member sku if some root
+      // actually carries `SKU-A`; this is that root, so stripping is provably
+      // the right reading and a delete → re-import lands back on this document.
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta', sku: 'SKU-A', paiId: null });
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attribute_combinations: [],
+            attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-A-UN' }],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('SKU-A');
+      // ...and emphatically not the member's own identity.
+      expect(skuDoPai(db)).not.toBe('SKU-A-UN');
+    });
+
+    /**
+     * ⛔ The near-miss, and the reason rung 3 pays for a read.
+     *
+     * Nothing here is a família de um of ours: no root carries `SKU-A`, so
+     * `SKU-A-UN` is simply this seller's own code — a listing that has nothing to
+     * do with #1398. Stripping it on the SHAPE of the string alone would write a
+     * parent at `SKU-A`, which the produto resolution then fails to match
+     * (`sku == 'SKU-A'`, `paiId == null` finds nothing), and the re-import mints a
+     * SECOND parent produto for a listing that already had one.
+     */
+    it('rung 3 — keeps a seller code that merely ENDS in the suffix', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attribute_combinations: [],
+            attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-A-UN' }],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('SKU-A-UN');
+    });
+
     it('SELF-HEAL — replaces a stored family id without "sobrescrever"', async () => {
       // A parent imported before #1400 carries the 16-digit família key. The
       // fill-blank rule would otherwise preserve it for ever.
@@ -1824,7 +1863,7 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     });
   });
 
-  it('imports the family parent + the called member as a child — literal parity ids, denorm, skip-stock', async () => {
+  it('imports the family parent + the called member as a child — literal parity ids and skip-stock', async () => {
     const db = new FakeDb();
     const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
     const res = await importProduto(deps(db, api), MEMBER_A_ID);
@@ -1855,17 +1894,6 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       .get(expectedParentLinkId);
     expect(parentLink).toMatchObject({ id: FAMILY_ID, isUserProductModel: true });
 
-    // parent denorm carries relevantData.isUserProductModel (parity — ProdMarketplace.relevantData).
-    const parentUpdate = db.updates.find(
-      (u) => u.path === `produtos/${expectedParentId}` && 'marketplace' in u.patch,
-    );
-    expect(parentUpdate).toBeDefined();
-    expect(arrayUnionElements(parentUpdate!.patch.marketplace)[0]).toMatchObject({
-      integracaoUid: 'conta-A',
-      externalId: FAMILY_ID,
-      relevantData: { isUserProductModel: true },
-    });
-
     // child: produto id AND link doc id are the SAME literal fixed-width string.
     const childId = expectedChildId(MEMBER_A_ID);
     expect(db.docs('produtos').get(childId)).toMatchObject({
@@ -1879,16 +1907,6 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     const childEstoques = db.docs(`produtos/${childId}/estoques`);
     expect(childEstoques.size).toBe(1);
     expect([...childEstoques.values()][0]).toMatchObject({ quantidade: 5 });
-
-    // child denorm also carries relevantData + externalParentId = family id.
-    const childUpdate = db.updates.find(
-      (u) => u.path === `produtos/${childId}` && 'marketplace' in u.patch,
-    );
-    expect(arrayUnionElements(childUpdate!.patch.marketplace)[0]).toMatchObject({
-      externalId: MEMBER_A_ID,
-      externalParentId: FAMILY_ID,
-      relevantData: { isUserProductModel: true },
-    });
   });
 
   it('a second member of the same family resolves the SAME parent via the family-id link', async () => {

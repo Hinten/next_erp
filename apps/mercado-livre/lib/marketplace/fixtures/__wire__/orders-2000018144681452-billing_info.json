@@ -1,0 +1,38 @@
+{
+  "site_id": "MLB",
+  "buyer": {
+    "cust_id": "REDACTED",
+    "billing_info": {
+      "name": "REDACTED",
+      "last_name": "REDACTED",
+      "identification": {
+        "type": "CPF",
+        "number": "00000000000"
+      },
+      "taxes": {
+        "inscriptions": {},
+        "taxpayer_type": {}
+      },
+      "address": {
+        "street_name": "Rua Redacted",
+        "street_number": "0",
+        "city_name": "REDACTED",
+        "neighborhood": "REDACTED",
+        "state": {
+          "code": "BR-PE",
+          "name": "Pernambuco"
+        },
+        "zip_code": "00000000",
+        "country_id": "BR"
+      },
+      "attributes": {
+        "new_billing_info": "True",
+        "normalized": "false",
+        "cust_type": "CO"
+      }
+    }
+  },
+  "seller": {
+    "cust_id": "REDACTED"
+  }
+}

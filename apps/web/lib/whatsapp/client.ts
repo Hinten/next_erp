@@ -22,12 +22,32 @@
  */
 import { useMemo } from 'react';
 import { z } from 'zod';
+import {
+  whatsappVinculoListaSchema,
+  whatsappVinculoDetalheSchema,
+  whatsappVinculoResultadoSchema,
+  whatsappVinculoPrevisaoSchema,
+  type WhatsappDestino,
+  type Cliente,
+  type WhatsappVinculoResumo,
+} from '@delfrance/schemas';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
 import { useAuth } from '@/lib/auth/useAuth';
 
 const DEFAULT_WHATSAPP_URL = 'http://localhost:3008';
+
+const conflictDocIdSchema = z
+  .string()
+  .min(1)
+  .max(1500)
+  .refine((id) => !id.includes('/') && id !== '.' && id !== '..');
+const vinculoConflictSchema = z.object({
+  clienteId: conflictDocIdSchema.nullable().default(null),
+  conversaId: conflictDocIdSchema.nullable().default(null),
+});
+type WhatsappVinculoConflict = z.infer<typeof vinculoConflictSchema>;
 
 /** Non-2xx response from the whatsapp backend. */
 export class WhatsappClientHttpError extends Error {
@@ -36,6 +56,8 @@ export class WhatsappClientHttpError extends Error {
     readonly status: number,
     /** Optional machine code from the backend (e.g. WA_INVALID_TOKEN). */
     readonly code: string | null,
+    /** Validated targets supplied by a conflicting manual-link decision. */
+    readonly vinculo?: WhatsappVinculoConflict,
   ) {
     super(message);
     this.name = 'WhatsappClientHttpError';
@@ -137,7 +159,41 @@ export const templateMessageSchema = z.object({
   messageId: z.string().optional(),
 });
 
+export {
+  whatsappVinculoListaSchema as whatsappVinculosSchema,
+  whatsappVinculoDetalheSchema as whatsappVinculoDetailSchema,
+  whatsappVinculoResultadoSchema as whatsappVinculoResolvidoSchema,
+} from '@delfrance/schemas';
+export const whatsappConversaAliasSchema = z.object({
+  conversaId: z.string().nullable(),
+  mensagemId: z.string().nullable(),
+});
+export type { WhatsappVinculoResumo };
+export type WhatsappVinculoDetail = z.infer<typeof whatsappVinculoDetalheSchema>;
+export type WhatsappVinculoResolvido = z.infer<typeof whatsappVinculoResultadoSchema>;
+export type WhatsappVinculoChoice =
+  | { kind: 'existing'; clienteId: string }
+  | { kind: 'create'; cliente: Cliente };
+
 export interface WhatsappClient {
+  vinculos(options?: {
+    integracaoId?: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<z.infer<typeof whatsappVinculoListaSchema>>;
+  vinculo(id: string, cursor?: string): Promise<WhatsappVinculoDetail>;
+  previsaoVinculo(
+    id: string,
+    clienteId: string,
+  ): Promise<z.infer<typeof whatsappVinculoPrevisaoSchema>>;
+  resolverVinculo(
+    id: string,
+    input: { requestId: string; revision: number; choice: WhatsappVinculoChoice },
+  ): Promise<WhatsappVinculoResolvido>;
+  conversaAlias(
+    id: string,
+    mensagemId?: string,
+  ): Promise<z.infer<typeof whatsappConversaAliasSchema>>;
   /** Connection status: the Cloud API phone-number identity or `connected: false`. */
   conta(integracaoId: string): Promise<WhatsappConta>;
   /**
@@ -165,7 +221,10 @@ export interface WhatsappClient {
    * thread picks up the new message via its live snapshot; the resolved `wamid`
    * is returned for reference.
    */
-  templateMessage(conversaId: string): Promise<{ ok: boolean; messageId?: string }>;
+  templateMessage(
+    conversaId: string,
+    snapshot: { whatsappDestino: WhatsappDestino | null; whatsappIntegracaoId: string | null },
+  ): Promise<{ ok: boolean; messageId?: string }>;
 }
 
 /**
@@ -229,10 +288,16 @@ export function createWhatsappClient(config: {
         }
       }
       const errBody = envelopeDeErro(parsed);
+      const conflict = res.status === 409 ? vinculoConflictSchema.safeParse(parsed) : null;
+      const targets =
+        conflict?.success && (conflict.data.clienteId || conflict.data.conversaId)
+          ? conflict.data
+          : undefined;
       throw new WhatsappClientHttpError(
         errBody?.error ?? `Falha na comunicação com o WhatsApp (HTTP ${String(res.status)}).`,
         res.status,
         errBody?.code ?? null,
+        targets,
       );
     }
 
@@ -268,6 +333,38 @@ export function createWhatsappClient(config: {
   }
 
   return {
+    vinculos: (options = {}) => {
+      const params = new URLSearchParams();
+      if (options.integracaoId) params.set('integracaoId', options.integracaoId);
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit) params.set('limit', String(options.limit));
+      return call('GET', `/api/whatsapp/vinculos?${params.toString()}`, whatsappVinculoListaSchema);
+    },
+    vinculo: (id, cursor) =>
+      call(
+        'GET',
+        `/api/whatsapp/vinculos/${encodeURIComponent(id)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+        whatsappVinculoDetalheSchema,
+      ),
+    previsaoVinculo: (id, clienteId) =>
+      call(
+        'GET',
+        `/api/whatsapp/vinculos/${encodeURIComponent(id)}/previsao?clienteId=${encodeURIComponent(clienteId)}`,
+        whatsappVinculoPrevisaoSchema,
+      ),
+    resolverVinculo: (id, input) =>
+      call(
+        'POST',
+        `/api/whatsapp/vinculos/${encodeURIComponent(id)}`,
+        whatsappVinculoResultadoSchema,
+        input,
+      ),
+    conversaAlias: (id, mensagemId) =>
+      call(
+        'GET',
+        `/api/whatsapp/conversas/${encodeURIComponent(id)}/alias${mensagemId ? `?mensagemId=${encodeURIComponent(mensagemId)}` : ''}`,
+        whatsappConversaAliasSchema,
+      ),
     conta: (integracaoId) =>
       call(
         'GET',
@@ -312,9 +409,10 @@ export function createWhatsappClient(config: {
         `/api/whatsapp/health?integracaoId=${encodeURIComponent(integracaoId)}`,
         healthSchema,
       ),
-    templateMessage: (conversaId) =>
+    templateMessage: (conversaId, snapshot) =>
       call('POST', '/api/whatsapp/template-message', templateMessageSchema, {
         conversaId,
+        ...snapshot,
       }),
   };
 }

@@ -53,7 +53,9 @@
 //    holds both. `mercado-livre/src/mapping/` builds outbound REQUEST payloads (as
 //    plain objects, no schema), and `freight-br/src/melhor-envio/types.ts` declares
 //    real request SCHEMAS — `dimensionsWeightSchema`, `calculateRequestSchema`,
-//    `cartInsertRequestSchema` — beside its response ones. For a request shape
+//    `cartInsertRequestSchema` — beside its response ones (and
+//    `mercado-pago/src/requests.ts` is a file of NOTHING BUT request schemas, kept
+//    apart from its tolerant `types.ts` for exactly this reason). For a request shape
 //    strictness is CORRECT: we must not coerce a stringified number on the way OUT.
 //    Those trees are still scanned deliberately — a response schema quietly added
 //    there would otherwise escape in silence, which is the worse failure — so the
@@ -104,6 +106,8 @@ const PATHSPECS = [
   ':(glob)packages/integrations/mercado-livre/src/**/*.ts',
   ':(glob)packages/integrations/mercado-pago/src/**/*.ts',
   ':(glob)packages/integrations/freight-br/src/**/*.ts',
+  ':(glob)packages/integrations/shopee/src/**/*.ts',
+  ':(glob)packages/integrations/loja-integrada/src/**/*.ts',
 ];
 
 /** Both bans in ONE spawn — `git grep` ORs its `-e` patterns. */
@@ -161,6 +165,28 @@ const ALLOWED_STRICT = {
       'REQUEST — declared value we send on shipment/calculate',
     'service: z.number(),': 'REQUEST — the carrier service id we send on the cart insert',
   },
+  // Mercado Pago (#367): `requests.ts` holds the STRICT schemas of the preference
+  // body we SEND (`z.strictObject`; `api.ts` validates it before `fetch`). It is
+  // the only file in the package where strictness is the right direction, and it
+  // is a separate file BECAUSE `types.ts` must stay response-only and tolerant.
+  // ⚠️ Each carve-out is keyed on the exact trimmed source line, and the field
+  // declarations sit on ONE short line each so Prettier never wraps them: a
+  // wrapped chain (`z\n  .number()`) would go invisible to this LINE-BASED scan
+  // and leave the entry below STALE.
+  'packages/integrations/mercado-pago/src/requests.ts': {
+    'const reaisPositivos = z.number().positive();':
+      'REQUEST — the item unit_price we SEND (refined to at most two decimals)',
+    'const inteiroDeParcelas = z.number().int().min(1).max(PARCELAS_MP_MAXIMAS);':
+      'REQUEST — payment_methods.installments, the most instalments the payer may choose',
+  },
+  // No `shopee` entry, deliberately: that package declares RESPONSE shapes only
+  // (its outbound bodies are plain objects built in `oauth.ts`, with no schema),
+  // so there is nothing there for which strictness would be the right direction.
+  // ⚠️ Step 11 kept that true: its `Shopee*Request` bodies are plain TypeScript
+  // interfaces in `api.ts`, so a Zod one would need an entry here to stay strict.
+  // No `loja-integrada` entry either, for the same reason: GET-only, response
+  // shapes only. Its first write step brings its first request body — and, if
+  // that body is a Zod schema, its first entry here.
 };
 
 /**
@@ -211,6 +237,30 @@ const KNOWN_TOLERANT_LINES = {
     'expires_in: wireNumber(),',
     'balance: wireNumber().nullable().optional(),',
     'delivery_time: wireNumber().nullable().optional(),',
+  ],
+  // Shopee. ⚠️ The anchor exists BECAUSE the package has no `ALLOWED_STRICT`
+  // entry: it declares response shapes only, so the staleness test below (which
+  // reports a carve-out whose file stopped matching) has nothing to say about
+  // it. Without these three lines a mistyped `shopee` pathspec would leave the
+  // "no bare z.number()" assertion running over an empty set, green forever.
+  'packages/integrations/shopee/src/types.ts': [
+    'expire_in: wireInt(),',
+    'shop_id: wireInt(),',
+    'auth_time: wireInt(),',
+  ],
+  // Loja Integrada. ⚠️ Same reason as Shopee: no `ALLOWED_STRICT` entry, because
+  // the package declares response shapes only (it is GET-only, so there is no
+  // request body to keep strict), and the staleness test therefore has nothing
+  // to say about it. These three lines are what keep a mistyped
+  // `loja-integrada` pathspec from leaving the "no bare z.number()" assertion
+  // running over an empty set. ⚠️ The pathspec reaches EVERY file under `src/`,
+  // not only `types.ts` — the package keeps Zod numbers out of the rest
+  // (`maxPaginas` and the `meta.next` offset are checked with
+  // `Number.isSafeInteger`), so any hit elsewhere is a real offender.
+  'packages/integrations/loja-integrada/src/types.ts': [
+    'limit: wireInt(),',
+    'offset: wireInt(),',
+    'id: wireInt(),',
   ],
 };
 

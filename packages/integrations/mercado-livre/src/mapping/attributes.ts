@@ -48,33 +48,27 @@ export function attrSku(sku: string): MlAttribute {
  * Pinned by a test asserting the literal, because every other reference goes
  * through this constant and a rename would otherwise be invisible to the suite.
  *
- * ⚠️ **It is PUBLIC** — a custom characteristic renders in the anúncio's ficha
- * técnica, so this string is read by buyers. Hence ordinary Brazilian retail
- * phrasing rather than the internal name for the value it carries. ML offers no
- * seller-settable alternative: its `hidden` tag is metadata ML *returns* for
- * attributes IT defines and appears in no request body, and the família resource
+ * ⚠️ ML offers no seller-settable alternative to a visible characteristic: its
+ * `hidden` tag is metadata ML *returns* for attributes IT defines and appears in
+ * no request body, and the família resource
  * (`PUT /user-products-families/{id}`) takes only PARENT_PK/ITEM_CONDITION —
- * *"Não são permitidos atributos custom."*
+ * *"Não são permitidos atributos custom."* Nor is there a parent slot for a
+ * `SELLER_SKU`: a User Product IS the variation, so a sku there is the member's.
  *
- * ⚠️ **It must stay DISTINCT from every ML attribute's display name**, and the
- * match is **id-AGNOSTIC**, not id-less-only: `skuPaiFromAttributes` folds
- * `a.name` and never looks at `a.id` (deliberately — ML may echo our custom
- * characteristic back WITH an id). So an ML-DEFINED attribute, which always has
- * an id, is matched too, and a collision costs TWO things:
+ * ⚠️ **Measured 2026-09-03 on `MLB5183026663`, and both halves matter:**
  *
- *  - rung 1 of the import chain reports that foreign attribute's value as the
- *    parent sku;
- *  - {@link attributesFromItem} excludes it from `link.attributes`, so the real
- *    attribute stops being republished — on SIMPLE items too, which never send
- *    this characteristic at all.
+ *  - ML echoes the characteristic back **`"id": null`** — it does not assign an
+ *    id. `skuPaiFromAttributes` relies on that to match id-LESS only, which is
+ *    what makes a name collision with an ML-defined attribute harmless.
+ *  - the listing page does **NOT** render it to buyers. ML curates which
+ *    attributes it shows: `SELLER_SKU` rides the same `attributes` array and is
+ *    not displayed either.
  *
- * ⚠️ Checked 2026-09-01 against ML's `atributos` reference and a docs search: no
- * documented attribute is displayed under this name (the near misses are
- * `Modelo` / `Modelo Alfanumérico` and GTIN's `Código universal de produto`).
- * That is NOT proof of absence — only a live authenticated sweep of
- * `GET /categories/{id}/attributes` over the categories this seller lists in can
- * establish that, and no lane may hold ML credentials. Since the value freezes
- * at first publish, run that sweep BEFORE the first deploy, not after.
+ * ⚠️ That second point is ONE observation, on one listing, in one category
+ * (`MLB-DISHES_PLATES`), on a `test_item` account — so treat "invisible" as
+ * likely rather than guaranteed, and do not put anything here that would be
+ * damaging if a category did render it. It is why the name is ordinary retail
+ * phrasing and not the internal field name.
  */
 export const ML_ATTR_SKU_PAI_NOME = 'Código de referência';
 

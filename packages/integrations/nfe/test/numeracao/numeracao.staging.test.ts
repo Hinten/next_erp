@@ -34,7 +34,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cert, deleteApp, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
-import { nfeConfigSchema, type NFeConfig } from '@delfrance/schemas';
+import {
+  type NFeConfig,
+  AMBIENTE_NFE,
+  CONTINGENCIA_MODO,
+  nfeConfigSchema,
+} from '@delfrance/schemas';
 
 import { nextIdLote, nextNumeracao, nextNumeracaoBulk } from '../../src/numeracao/index';
 import {
@@ -61,7 +66,12 @@ const SEED: NFeConfig = {
   numeracao_atual: 0,
   serie: 99, // dedicated test série so we never collide with real data
   idLote: 0,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
+  contingencia_modo: CONTINGENCIA_MODO.none,
+  contingencia_justificativa: null,
+  contingencia_dataInicio: null,
+  emitirReformaTributaria: false,
+  timestamp: null,
 };
 
 describeOrSkip('numeração — live Firestore concurrency contract', () => {

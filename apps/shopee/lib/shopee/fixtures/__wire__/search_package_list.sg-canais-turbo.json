@@ -1,0 +1,16 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "packages_list": [],
+    "pagination": {
+      "total_count": 0,
+      "more": false,
+      "next_cursor": ""
+    },
+    "sort": {
+      "sort_type": 1,
+      "ascending": true
+    }
+  }
+}

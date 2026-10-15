@@ -2,7 +2,7 @@
 
 import { Fragment, useMemo } from 'react';
 import { Text, type TextProps } from '@mantine/core';
-import { type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import type { Produto } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';

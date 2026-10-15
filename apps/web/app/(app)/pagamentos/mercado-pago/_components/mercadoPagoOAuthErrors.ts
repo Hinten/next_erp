@@ -1,5 +1,10 @@
 'use client';
 
+import type { ConnectionFailure } from '@/components/oauth/ConnectionPanel';
+import {
+  MercadoPagoClientHttpError,
+  MercadoPagoClientNetworkError,
+} from '@/lib/mercado-pago/client';
 import { useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
 
 /**
@@ -49,12 +54,50 @@ const MENSAGENS: Readonly<Record<string, string>> = {
  * the payment-method list so the two screens cannot drift apart.
  */
 export function useMercadoPagoCallbackToast(): void {
-  useOAuthCallbackToast(CONFIG);
+  useOAuthCallbackToast(MERCADO_PAGO_OAUTH_TOAST);
 }
 
-const CONFIG = {
+/**
+ * ⚠️ `mensagens` must be referentially STABLE: `useOAuthCallbackToast`
+ * destructures the config and lists `mensagens` (not the config object) among
+ * its effect dependencies, so a fresh message map per render would re-fire the
+ * notification on every render. Keeping the whole config a module-level
+ * constant is the simplest way to guarantee that. `ContaMercadoPagoPanel`
+ * hands this straight to `ConnectionPanel`'s `toast` prop.
+ */
+export const MERCADO_PAGO_OAUTH_TOAST = {
   chave: 'mp',
   sucesso: 'Conta Mercado Pago conectada.',
   tituloErro: 'Falha ao conectar a conta Mercado Pago',
   mensagens: MENSAGENS,
 } as const;
+
+/**
+ * A failed `oauth/start` click, as operator copy — or `null` when the failure is
+ * not one of this client's, which makes `ConnectionPanel` rethrow it (root
+ * `CLAUDE.md` rule 6). Same contract as `describeMassImportStartError`.
+ */
+export function describeMercadoPagoConnectFailure(err: unknown): string | null {
+  if (err instanceof MercadoPagoClientHttpError) return err.message;
+  if (err instanceof MercadoPagoClientNetworkError) return 'Falha de rede ao iniciar a conexão.';
+  return null;
+}
+
+/**
+ * A failed conta read. TOTAL — a query error state has nowhere to rethrow to.
+ *
+ * `retryable` is `false` on every arm because this channel has no retryability
+ * predicate: unlike Mercado Livre (`describeMercadoLivreFailure`, which reads
+ * the code and the status), nothing here can tell a transient backend blip from
+ * a permanent one. `RetryAlert` without an `onRetry` renders no button, which is
+ * exactly the plain yellow `Alert` this screen showed before #563.
+ */
+export function describeMercadoPagoContaFailure(err: unknown): ConnectionFailure {
+  const message =
+    err instanceof MercadoPagoClientHttpError
+      ? err.message
+      : err instanceof MercadoPagoClientNetworkError
+        ? 'Falha de rede ao consultar a conta.'
+        : 'Não foi possível consultar a conta.';
+  return { message, retryable: false };
+}

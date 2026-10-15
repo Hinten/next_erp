@@ -16,6 +16,8 @@ export const STORAGE_ROOT = {
   produtos: 'produtos',
   tabMedi: 'tabMedi',
   media: 'media',
+  whatsapp: 'whatsapp',
+  chat: 'chat',
 } as const;
 
 export const PRODUTO_SUBDIR = {
@@ -100,6 +102,50 @@ export function productAnexoPath(produtoId: string, hash: string, ext?: string |
 /** `media/<hash>[.<ext>]` — generic, non-product files. */
 export function mediaPath(hash: string, ext?: string | null): string {
   return withExt(`${STORAGE_ROOT.media}/${hash}`, ext);
+}
+
+// ── Mensagem media (globally referenced by chat/*/mensagem) ────────────────
+
+/** Deterministic Arquivo id for media downloaded from Meta. */
+export function whatsappArquivoId(mediaId: string): string {
+  return `wa_${mediaId}`;
+}
+
+/** `whatsapp/<contaId>/<mediaId>` — inbound WhatsApp media. */
+export function whatsappMediaPath(contaId: string, mediaId: string): string {
+  return `${STORAGE_ROOT.whatsapp}/${contaId}/${mediaId}`;
+}
+
+/** Chat-scoped Arquivo id for a content hash, isolated from generic uploads. */
+export function chatArquivoId(hash: string): string {
+  return `chat_${hash}`;
+}
+
+/** `chat/<hash>[.<ext>]` — an attachment uploaded from the inbox composer. */
+export function chatMediaPath(hash: string, ext?: string | null): string {
+  return withExt(`${STORAGE_ROOT.chat}/${hash}`, ext);
+}
+
+export type MensagemMediaKind = 'whatsapp' | 'chat';
+
+export type ParsedMensagemMediaDir = { kind: 'whatsapp'; contaId: string } | { kind: 'chat' };
+
+/**
+ * Parse an `Arquivo.filepath` governed by mensagem references.
+ *
+ * Inbound media stores the directory `whatsapp/<contaId>`; outbound composer
+ * attachments store `chat`. Unlike owner media, neither path identifies one
+ * owning document: the same arquivo may be referenced by messages in different
+ * conversas, so deletion requires a global `mensagem` reference check.
+ */
+export function parseMensagemMediaDir(
+  filepath: string | null | undefined,
+): ParsedMensagemMediaDir | null {
+  if (typeof filepath !== 'string') return null;
+  if (filepath === STORAGE_ROOT.chat) return { kind: 'chat' };
+  const parts = filepath.split('/');
+  if (parts.length !== 2 || parts[0] !== STORAGE_ROOT.whatsapp || !parts[1]) return null;
+  return { kind: 'whatsapp', contaId: parts[1] };
 }
 
 // ── Tabela de medidas media (owner-scoped like produtos, and resized alike) ──

@@ -7,6 +7,29 @@ stubbed `fetch`, which is the only way it can be verified at all: no CI lane may
 ever hold a real ML credential.
 
 - `fixtureCapture.ts` — `buildCapturePlan` (pure) and `captureOne`/`captureAll`.
+- `redact.ts` — path-suffix redaction, type-preserving and idempotent.
+- `piiScan.ts` — the independent two-layer check on the committed corpus.
+- `wireCorpus.ts` — the READER for `__wire__/`.
+- `__wire__/` — 30 **committed**, redacted bodies from the #1087 run.
+
+## The two directories, and why the redaction sits between them
+
+```
+capture:fixtures  →  out/fixtures/   (gitignored, RAW, byte-faithful)
+promote:fixtures  →  __wire__/       (committed, REDACTED)
+```
+
+⚠️ **The exposure is the commit, not the capture.** `out/fixtures/` is gitignored,
+so raw bodies there are exactly as exposed as before any of this existed — and
+they must stay raw, because a body that cannot distinguish "ML sent null" from
+"ML omitted it" is worthless for diagnosing a live incident. `__wire__/` is
+public, so `promote-fixtures.ts` is the single path that crosses that line and it
+is where redaction and the PII scan both run. A scan finding is **fatal and
+writes nothing** — a partial promote cannot be half-applied out of git history.
+
+⚠️ Today's corpus is ML test-user placeholders (`APRO`, CPF `12345678909`). After
+the migration the same capture points at REAL orders, which is the run this guard
+exists for.
 
 ⚠️ **Nothing here may go through `createMercadoLivreApi`.** Every typed method
 runs its response through `parseOk(res, schema)` — Zod, `api.ts:784` — so a field
@@ -31,11 +54,94 @@ indistinguishable from ML's real ones, which is the single distinction this modu
 exists to preserve. A 206 is filed as `<slug>.206.json`, a 204 as `<slug>.204.json`,
 a 404 as `<slug>.404.json`.
 
-⚠️ **A 404 is data; everything else is a failure.** A missing claim is expected on
-the test account, so a 404 is recorded and the run continues — a partial capture
-is useful. A transient 5xx (or a 401 on a dead grant, or a 429) **throws**:
-recorded as an empty body it would later read as "ML returns this", which is
-strictly worse than having no fixture.
+⚠️ **A permanent 4xx is data; a failure that says nothing about the request is
+fatal (#1357).** The rule used to be "a 404 is data, everything else is a
+failure", and it meant the script **never once exited 0**: two calls in every plan
+answer **400**, and the search that answered it sat at the END of the plan, so
+every run aborted after capturing everything.
 
-⚠️ **This folder imports nothing from the other themes and nothing imports it.**
-It is a diagnostic, not part of the channel runtime — keep it that way.
+| Live answer                    | What happens                | Why                                                                                                                                                |
+| ------------------------------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400, 404, 405, 409, 410, 422 … | **recorded**, run continues | A permanent, informative answer about _this one request_. Nothing about it says the other 22 calls are unsafe, and the refusal itself is evidence. |
+| **401 / 403**                  | throws                      | The grant is dead or under-scoped — every remaining call is equally doomed, and the body can carry credential detail (#1015).                      |
+| **429**                        | throws                      | Rate limited; continuing compounds it.                                                                                                             |
+| **5xx**                        | throws                      | Transient. Recorded as an empty body it would later read as "ML returns this", which is strictly worse than having no fixture.                     |
+
+`ehFalhaFatal` in `fixtureCapture.ts` is the one place that line is drawn, and it
+is asserted from **both** sides — a predicate tested only on what it rejects is
+satisfied by `() => true`.
+
+⚠️ Recording is safe only because the status suffix keeps a non-200 off the bare
+slug. A 400 filed as `<slug>.json` would read as the resource itself.
+
+The two measured 400s, both against the #1087 account:
+
+- **`/packs/{id}` on an order that is a pack MEMBER.** The fan-out assumed two
+  outcomes — a standalone order 404s, a pack id 200s. A member is a third.
+  `2000018143664980` (standalone) → 404 ✓; `2000018144681452` and
+  `2000018144679512` (both in pack `2000014733850447`) → **400**.
+- **`/post-purchase/v1/claims/search` with paging only.** ML documents this
+  precisely: the endpoint needs at least one real FILTER, `offset`/`limit`/`sort`
+  explicitly **do not count**, and paging alone returns
+  `400 {"error":"invalid_query"}`. The plan now sends ML's own recommended pair,
+  `players.user_id` + `players.role=respondent`, and **omits the call entirely**
+  when the integração has no stored `user_id` (#289) — a request guaranteed to be
+  refused discovers nothing. ⚠️ No `status` filter: the one claim this corpus
+  holds is `closed`, so `status=opened` would hide it.
+
+⚠️ **This folder imports nothing from the other themes, and no channel RUNTIME
+imports it.** It is a diagnostic plus a test corpus, never part of a request path
+— keep it that way.
+
+ⓘ That sentence used to end "…and nothing imports it", which stopped being true
+when `__wire__/` landed: the offline suite now reads this corpus through
+`wireCorpus.ts`, which is the entire point of committing it. The rule being
+protected was never "nothing may import this" — it was "this must not become
+channel runtime", and that still holds. A `lib/marketplace/*` module importing
+from here would be the violation; a `*.test.ts` doing so is the design.
+
+## Checking the corpus against the live API
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app verify:wire --project <id> --integracaoId <id>
+```
+
+Re-fetches exactly the endpoints the corpus was captured from — the ids come
+from the filenames (`corpusIds.ts`), so the comparison is apples-to-apples by
+construction — digests each live body and diffs the **shape** against the
+committed one. GETs only.
+
+A removal or a type change exits non-zero; an addition is reported as
+information.
+
+⚠️ **"Breakage" here means the SHAPE moved, which is not the same as a contract
+change — expect the first run to exit 1 on document lifecycle, not on drift.**
+`wireShape` is leaf-only and unions types, which is right for a census across
+many bodies and value-sensitive for a 1:1 re-fetch of the same document months
+later. All three of these are ⛔ today and none is ML changing its API:
+
+| corpus              | live now  | reported                                 |
+| ------------------- | --------- | ---------------------------------------- |
+| `date_closed: null` | populated | ⛔ `tipo-mudou` `null → string`          |
+| `resolution: null`  | an object | ⛔ `removido` + several ⓘ `resolution.*` |
+| `variations: []`    | populated | ⛔ `removido` on the container           |
+
+Claim `5567065796`, its messages and the two shipments are the ids most likely
+to have moved on since the #1087 capture, so this is the common case rather than
+a corner. A human reads the output; the encoding is deliberate. But do not read
+an exit 1 as "ML broke the contract" without checking which of the two it is. ⚠️ The live body is redacted before digesting, which is why
+`redact.ts` has to be type-preserving: comparing a raw body against the redacted
+corpus would report every personal field as a difference and bury the real one.
+
+⚠️ **Deliberately not in any CI lane.** It needs the seller credential, and the
+#1087 run measured why an automated live lane fails: two of three buyer test
+users were blocked by ML unprompted (slots capped at 10 forever), the credential
+rotates on every invocation, and ML acts on its own clock. Run it before
+trusting a fixture that has sat still for months, or whenever you have reason to
+think Mercado Livre changed something.
+
+⚠️ There is deliberately **no automated signal telling you when to run it.** #1421
+tried to build one and was closed: every route to ML's API-change feed needs a
+token we cannot store in CI — the DevCenter news page redirects to a browser
+login, the news API answers 403, and the ML MCP answers 401. See #1451, which
+records what was measured so the next attempt does not repeat it.

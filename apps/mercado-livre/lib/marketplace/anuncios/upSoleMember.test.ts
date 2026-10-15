@@ -99,9 +99,14 @@ describe('planejarMembroUnico — adoption (the produto was already published)',
     );
   });
 
-  it('keeps the human SKU on the child — it is what ML holds as SELLER_SKU', () => {
-    expect(plano().produto.sku).toBe('band123');
-    expect(plano().link.sku).toBe('band123');
+  // ⚠️ DERIVED from the parent's, not copied: a verbatim copy put two produto
+  // documents behind one code. The link records the SAME string, because
+  // `link.sku` means "what ML holds as this member's SELLER_SKU" and the member
+  // attributes are what publish sends — the parent's value would record a
+  // SELLER_SKU ML never received.
+  it('derives the child SKU, and the link records the value ML is sent', () => {
+    expect(plano().produto.sku).toBe('band123-UN');
+    expect(plano().link.sku).toBe('band123-UN');
   });
 
   it('gives the sole member NO variation taxonomy: there is nothing to vary', () => {

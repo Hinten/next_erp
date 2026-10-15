@@ -24,9 +24,12 @@ import { ghostFieldPath, planGhostKeys } from './transform';
  *     --project <staging-id> --apply    # write
  *
  * ---- Cost: this walks every produto, and Firestore Enterprise bills DATA
- * SCANNED. The walk is paged by document id — Firestore's always-available
- * native ordering, so it needs no index — and the ghost test runs in code on the
- * fetched page. There is deliberately no server-side filter: no query can ask
+ * SCANNED. The walk is paged by document id, riding the DECLARED key index
+ * `produtos(__name__ ASC)` (#1895, listed in `key-walks.json`) — Enterprise has
+ * no implicit key index, and without it every page re-scans the collection
+ * (staging, #1895: 1,665 index rows read per page of 300 on `pedidos`). That key
+ * index is the only one it needs; the ghost test runs in code on the fetched
+ * page. There is deliberately no server-side filter: no query can ask
  * "has a map key containing a slash", and inventing an indexed marker field for
  * a one-off cleanup would cost a write per produto to save a read per produto.
  */

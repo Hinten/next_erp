@@ -7,8 +7,9 @@ trigger. Those all buy "survive indefinitely without a cutover", and there **is*
 a cutover (root `CLAUDE.md` rule 8 / ADR 0013), so they pay for something already
 bought and leave permanent compat code nobody deletes.
 
-Twelve dated subfolders live under `src/` today — nine that write
-(`migrate.ts`, or `backfill.ts`) and three read-only audits (`audit.ts`). Most
+Eighteen dated subfolders live under `src/` today — fourteen that write
+(`migrate.ts`, or `backfill.ts`; `2026-09-produto-sem-variacoes` also carries an
+`audit.ts`) and four read-only audits (`audit.ts` alone). Most
 carry a runbook beside this file — `telefone-e164.README.md`,
 `historico-estoque-v2.README.md`, and so on — with the reasoning, the target
 ordering and the verification for that one job. This file is only the contract
@@ -53,6 +54,41 @@ the runbook as `<name>.README.md` here.
 pnpm --filter @delfrance/migrations migrate:<name> --project <staging-id>
 pnpm --filter @delfrance/migrations migrate:<name> --project <staging-id> --apply
 ```
+
+### Walking a whole collection: declare its key index
+
+Almost every script here pages a whole collection (or collection group) with
+`orderBy(FieldPath.documentId()).limit(PAGE_SIZE).startAfter(cursor)`. On
+Firestore **Standard** that order is native. On **Enterprise**, which is where
+these run (staging rehearsals, then the NEW project after the import), there is
+**no implicit document-key index**. Without a declared one, each page walks some
+other index — or the whole table — end to end and sorts in memory, so a walk
+costs N²/page instead of N. Nothing fails. Measured on staging, 2026-10-13
+(#1874, #1895):
+
+- `collection('pedidos')` read all 1,665 index rows on page 1 **and** the cursor
+  page, to return 300;
+- `collectionGroup('enderecos')`, which has no index at all, table-scanned all
+  6,342 documents (2.2 MiB) on every page.
+
+So a key walk needs exactly one index, and it must be declared:
+
+1. Add a row to [`key-walks.json`](key-walks.json): script, collection, and
+   `COLLECTION` or `COLLECTION_GROUP` scope.
+2. Declare `{ collectionGroup, queryScope, fields: [{ fieldPath: "__name__", order: "ASCENDING" }] }`
+   in the repo-root `firestore.indexes.json`, unless that (collection, scope)
+   already has one. `src/keyWalks.indexes.test.ts` fails until both exist, and
+   when a key-only index has no listed reader.
+3. After the index deploy, prove the planner uses it:
+   `node --env-file=../../.env.local scripts/check-key-walks.mjs --project <id>`
+   (exit 1 = a page that scans, 2 = an empty collection it couldn't plan,
+   0 = every walk seeks).
+
+Filtering stays in code on the fetched page: the key index is the only index a
+walk needs, and no filter or composite index should be added for a one-time
+script. These key indexes are **migration-only**: once the window's walks have
+run they have no reader, and #1896 deletes them after the cutover. The exception
+is `arquivos(__name__ ASC)`, which the arquivo orphan sweep keeps for good.
 
 ⚠️ **Agents never run these against production.** Staging is a rehearsal —
 dry-run counts, then a clean second pass as the idempotence check — and staging

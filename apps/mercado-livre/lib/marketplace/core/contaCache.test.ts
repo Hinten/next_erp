@@ -12,8 +12,9 @@ import {
   __setContaCacheClockForTests,
   invalidateConta,
   readConta,
-  readIntFreteOuterRefDaConta,
+  readMercadoEnviosIntFreteDaConta,
   resolveContaAtivaPorUserId,
+  type MercadoEnviosIntFreteRead,
 } from './contaCache';
 
 /**
@@ -68,11 +69,11 @@ function contaDoc(over: DocData = {}): DocData {
 }
 
 /** A `load` that records how often the (uncached) query would have run. */
-function countingResolve(result: string | null) {
+function countingResolve<T>(result: T | null) {
   const calls: number[] = [];
   return {
     calls,
-    load: async (): Promise<string | null> => {
+    load: async (): Promise<T | null> => {
       calls.push(1);
       return result;
     },
@@ -272,22 +273,40 @@ describe('resolveContaAtivaPorUserId', () => {
   });
 });
 
-describe('readIntFreteOuterRefDaConta', () => {
-  it('resolves once across repeated shipments notifications', async () => {
-    const { calls, load } = countingResolve('documents/int_frete/if-1');
+describe('readMercadoEnviosIntFreteDaConta', () => {
+  const intFrete: MercadoEnviosIntFreteRead = {
+    outerRef: 'documents/int_frete/if-1',
+    horarioDeCorte: [
+      {
+        diaDaSemana: 1,
+        horaDeCorte: 12,
+        minutosDeCorte: 30,
+        prazoDePostagem: 0,
+        horaPostagem: 18,
+        minutosPostagem: 0,
+      },
+    ],
+  };
 
-    expect(await readIntFreteOuterRefDaConta('conta-A', load)).toBe('documents/int_frete/if-1');
-    expect(await readIntFreteOuterRefDaConta('conta-A', load)).toBe('documents/int_frete/if-1');
+  it('resolves once across repeated shipments notifications', async () => {
+    const { calls, load } = countingResolve(intFrete);
+
+    expect(await readMercadoEnviosIntFreteDaConta('conta-A', load)).toEqual(intFrete);
+    expect(await readMercadoEnviosIntFreteDaConta('conta-A', load)).toEqual(intFrete);
 
     expect(calls).toHaveLength(1);
   });
 
   it('re-resolves after ttlMs', async () => {
-    const { calls, load } = countingResolve('documents/int_frete/if-1');
+    const { calls, load } = countingResolve(intFrete);
 
-    await readIntFreteOuterRefDaConta('conta-A', load);
-    now += READ_CACHE_TTL.config;
-    await readIntFreteOuterRefDaConta('conta-A', load);
+    await readMercadoEnviosIntFreteDaConta('conta-A', load);
+    now += READ_CACHE_TTL.config - 1;
+    await readMercadoEnviosIntFreteDaConta('conta-A', load);
+    expect(calls).toHaveLength(1);
+
+    now += 1;
+    await readMercadoEnviosIntFreteDaConta('conta-A', load);
 
     expect(calls).toHaveLength(2);
   });
@@ -298,21 +317,25 @@ describe('readIntFreteOuterRefDaConta', () => {
     // the etiqueta row action can no longer classify it.
     const miss = countingResolve(null);
 
-    expect(await readIntFreteOuterRefDaConta('conta-A', miss.load)).toBeNull();
-    expect(await readIntFreteOuterRefDaConta('conta-A', miss.load)).toBeNull();
+    expect(await readMercadoEnviosIntFreteDaConta('conta-A', miss.load)).toBeNull();
+    expect(await readMercadoEnviosIntFreteDaConta('conta-A', miss.load)).toBeNull();
     expect(miss.calls).toHaveLength(2);
 
     // The companion doc the #782 trigger writes is picked up immediately.
-    const hit = countingResolve('documents/int_frete/if-1');
-    expect(await readIntFreteOuterRefDaConta('conta-A', hit.load)).toBe('documents/int_frete/if-1');
+    const hit = countingResolve(intFrete);
+    expect(await readMercadoEnviosIntFreteDaConta('conta-A', hit.load)).toEqual(intFrete);
   });
 
   it('keys per conta — one account never serves another', async () => {
-    const a = countingResolve('documents/int_frete/if-a');
-    const b = countingResolve('documents/int_frete/if-b');
+    const a = countingResolve({ ...intFrete, outerRef: 'documents/int_frete/if-a' });
+    const b = countingResolve({ ...intFrete, outerRef: 'documents/int_frete/if-b' });
 
-    expect(await readIntFreteOuterRefDaConta('conta-A', a.load)).toBe('documents/int_frete/if-a');
-    expect(await readIntFreteOuterRefDaConta('conta-B', b.load)).toBe('documents/int_frete/if-b');
+    expect((await readMercadoEnviosIntFreteDaConta('conta-A', a.load))?.outerRef).toBe(
+      'documents/int_frete/if-a',
+    );
+    expect((await readMercadoEnviosIntFreteDaConta('conta-B', b.load))?.outerRef).toBe(
+      'documents/int_frete/if-b',
+    );
 
     expect(a.calls).toHaveLength(1);
     expect(b.calls).toHaveLength(1);

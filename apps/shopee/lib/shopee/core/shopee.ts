@@ -1,0 +1,210 @@
+/**
+ * Resolve an `integracao` account into a ready-to-use Shopee server context:
+ * the conta document, the partner configuration read from the environment, a
+ * fresh read of the stored credential, and the code-exchange-and-persist step
+ * the OAuth callback drives.
+ *
+ * Shaped on `apps/melhor-envio/lib/freight/melhorEnvio.ts`.
+ */
+import type { Firestore } from 'firebase-admin/firestore';
+import { integracaoCollection } from '@delfrance/data/admin/collections';
+import { INTEGRACAO_TIPO, type CredenciaisIntegracao, type Integracao } from '@delfrance/schemas';
+import {
+  type ShopeeAuthSubject,
+  type ShopeeClient,
+  type ShopeeOAuthConfig,
+  type ShopeeRefreshSubject,
+  createShopeeClient,
+  exchangeCode,
+} from '@delfrance/integrations-shopee';
+
+import { type ShopeeConfig, shopeeConfig } from '../env';
+import { invalidateShopeeConta, readConta } from './contaCache';
+import { createShopeeCredentialStore, credentialFromTokenPair } from './credentialStore';
+import {
+  ShopeeContaSemShopIdError,
+  createShopeeTokenStore,
+  getOrRefreshAccessToken,
+} from './tokenStore';
+
+/** The account doc is missing or is not a Shopee conta. Maps to HTTP 404. */
+export class ShopeeContaNotConfiguredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ShopeeContaNotConfiguredError';
+  }
+}
+
+export interface ShopeeContext {
+  readonly integracaoId: string;
+  readonly conta: Integracao;
+  readonly config: ShopeeConfig;
+  /**
+   * The stored credential, read FRESH on every call — never cached.
+   * See the cache docblock below for why.
+   */
+  readCredential(): Promise<CredenciaisIntegracao | null>;
+  /** Exchange a consent `code` and persist the resulting pair. */
+  exchangeAndPersist(code: string, subject: ShopeeAuthSubject, now?: number): Promise<void>;
+  /**
+   * A live shop-scoped access token, refreshing it when it is about to lapse.
+   *
+   * ⚠️ Throws `ShopeeContaSemShopIdError` when the stored consent was
+   * main-account-scoped. That is NOT a broken conta — the conta route's own
+   * `shopId == null` branch answers 200 with `connected: false`, echoing
+   * `mainAccountId` and the credential clock — which is why the throw lives here
+   * and never in {@link loadShopeeContext}, where it would cost every caller the
+   * whole context over a state that renders perfectly well.
+   */
+  getAccessToken(): Promise<string>;
+  /**
+   * A shop-signed client for this conta.
+   *
+   * ⚠️ The token is handed to the package as a FUNCTION, not as a string:
+   * `createShopeeClient` calls it once per shop-signed request, so a token that
+   * lapses in the middle of a batch is renewed rather than replayed dead.
+   */
+  createShopClient(): ShopeeClient;
+}
+
+/** The package's OAuth config, from ours. Kept in one place so it cannot drift. */
+function oauthConfigFrom(config: ShopeeConfig): ShopeeOAuthConfig {
+  return { partnerId: config.partnerId, partnerKey: config.partnerKey, hosts: config.hosts };
+}
+
+export async function loadShopeeContext(
+  db: Firestore,
+  integracaoId: string,
+): Promise<ShopeeContext> {
+  // The cached reader replaces the READ, not the contract — both throws below
+  // are unchanged, and a `null` stands in for `!snap.exists`. It now lives in
+  // `./contaCache`, shared with the `shop_id` resolver the push receiver and the
+  // authorization-expiry sweep use.
+  const conta = await readConta(db, integracaoId);
+  if (conta == null) {
+    throw new ShopeeContaNotConfiguredError(`Integração ${integracaoId} não encontrada.`);
+  }
+  if (conta.tipo !== INTEGRACAO_TIPO.shopee) {
+    throw new ShopeeContaNotConfiguredError(`Integração ${integracaoId} não é do tipo Shopee.`);
+  }
+
+  // Throws `ShopeeConfigError` naming the missing variable. Called here so an
+  // unconfigured backend answers 500 on OUR side rather than `error_sign` at
+  // Shopee — and, in `oauth/start`, before any state is minted.
+  const config = shopeeConfig();
+  const store = createShopeeCredentialStore(db, integracaoId);
+  const tokenStore = createShopeeTokenStore(db, integracaoId);
+
+  /**
+   * Which id class this conta's token pair is refreshed on.
+   *
+   * ⚠️ `ShopeeRefreshSubject` is NOT `ShopeeAuthSubject`: `main_account_id` is a
+   * consent-time identity and is never a refresh key, so a main-account conta
+   * has no subject here at all until the shop fan-out lands.
+   */
+  const shopIdDaConta = conta.shop_id;
+  function shopSubject(): Extract<ShopeeRefreshSubject, { kind: 'shop' }> {
+    const shopId = shopIdDaConta;
+    if (shopId == null) {
+      throw new ShopeeContaSemShopIdError(
+        `Integração ${integracaoId} está conectada por conta principal e ainda não tem uma loja (shop_id) para assinar chamadas.`,
+      );
+    }
+    return { kind: 'shop', shopId };
+  }
+
+  async function getAccessToken(): Promise<string> {
+    return getOrRefreshAccessToken({
+      store: tokenStore,
+      config: oauthConfigFrom(config),
+      subject: shopSubject(),
+      integracaoId,
+    });
+  }
+
+  return {
+    integracaoId,
+    conta,
+    config,
+
+    async readCredential(): Promise<CredenciaisIntegracao | null> {
+      return store.load();
+    },
+
+    getAccessToken,
+
+    createShopClient(): ShopeeClient {
+      // ⚠️ The subject is resolved EAGERLY, before the package sees anything.
+      // `createShopeeClient` asserts a positive-integer `shop_id` and raises
+      // `ShopeeConfigError` — a 500 reading as "the backend is misconfigured" —
+      // for what is really a legitimate main-account conta. Resolving here turns
+      // that into the 409 the panel knows how to render.
+      const subject = shopSubject();
+      return createShopeeClient({
+        partnerId: config.partnerId,
+        partnerKey: config.partnerKey,
+        hosts: config.hosts,
+        shopId: subject.shopId,
+        getAccessToken,
+        // ⚠️ The key is OMITTED when there is no override, never sent as an
+        // explicit `undefined`. Nothing enforces that today — the repo does not
+        // set `exactOptionalPropertyTypes`, and `api.ts` resolves the override
+        // with `config.paths?.getVariations === undefined`, so both spellings
+        // land on the default path. It is a convention, kept so that turning
+        // that flag on later is a compiler change and not a behaviour change.
+        // What the package DOES do with the value it receives is validate it at
+        // CONSTRUCTION: a malformed `SHOPEE_VARIATIONS_PATH` raises
+        // `ShopeeConfigError` before any call, because the path is inside the
+        // HMAC base string and a wrong one comes back as `error_sign` rather
+        // than as a 404.
+        ...(config.variationsPath !== null
+          ? { paths: { getVariations: config.variationsPath } }
+          : {}),
+      });
+    },
+
+    async exchangeAndPersist(
+      code: string,
+      subject: ShopeeAuthSubject,
+      now: number = Date.now(),
+    ): Promise<void> {
+      const pair = await exchangeCode(oauthConfigFrom(config), code, subject);
+
+      // ⚠️ ORDER IS LOAD-BEARING: the credential FIRST, the denorm second.
+      //
+      // The consent `code` is single-use, so a failure after Shopee has minted
+      // the pair costs a re-consent. If the denorm landed first and the
+      // credential write then failed, the conta would advertise a `shop_id` it
+      // has no token for — and `isFresh` above would happily serve that
+      // document from cache. The other order is recoverable: the credential
+      // exists, the denorm is retried by the next connect.
+      await store.save(credentialFromTokenPair(pair, subject, now));
+
+      // ⚠️ `mergeIfExists`, never `merge`. `merge` is an UPSERT and
+      // `parseMerge` fills no schema defaults, so a conta deleted mid-consent
+      // would be recreated as a GHOST carrying only these keys and no `tipo` —
+      // which `isFresh` would then accept forever once `shop_id` is set.
+      //
+      // ⚠️ Only the field the subject actually carries is written. Writing both
+      // (with a `null` for the absent one) would wipe a previously stored
+      // `main_account_id` on every shop-scoped reconnect — a silent loss, for
+      // no gain: the callback knows exactly one of the two.
+      const patch: Record<string, unknown> =
+        subject.kind === 'shop'
+          ? { shop_id: subject.shopId }
+          : { main_account_id: subject.mainAccountId };
+      const existia = await integracaoCollection.mergeIfExists(db, {}, integracaoId, patch);
+      if (!existia) {
+        // Logged, not thrown: the credential is already stored and the consent
+        // succeeded. Failing here would tell the operator to reconnect, which
+        // cannot fix a deleted document.
+        console.warn(
+          '[shopee/context] integração removida durante o consentimento; denormalização ignorada',
+          { integracaoId },
+        );
+      }
+
+      invalidateShopeeConta(integracaoId);
+    },
+  };
+}

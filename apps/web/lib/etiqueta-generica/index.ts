@@ -19,5 +19,6 @@ export {
   type EtiquetaGenericaLayout,
   type EtiquetaOp,
 } from './layout';
+export { EtiquetaGenericaFormatError } from './errors';
 export { renderEtiquetaGenericaPdf } from './pdf';
 export { renderEtiquetaGenericaZpl, type EtiquetaZplOptions } from './zpl2';

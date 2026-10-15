@@ -99,7 +99,10 @@ export async function cancelarNFeService(
     if (!pedidoSnap.exists) {
       throw new NFePedidoNotFoundError(pedidoId);
     }
-    const integracaoPath = refToPath(getField(pedidoSnap.data(), 'integracaoPedidoOuterRef'));
+    const integracaoPath = refToPath(
+      getField(pedidoSnap.data(), 'integracaoPedidoOuterRef'),
+      `pedido '${pedidoId}'.integracaoPedidoOuterRef`,
+    );
     if (!integracaoPath) {
       throw new NFeOrchestratorError(`pedido '${pedidoId}': integracaoPedidoOuterRef missing.`);
     }
@@ -108,7 +111,10 @@ export async function cancelarNFeService(
     if (!integracaoSnap.exists) {
       throw new NFeOrchestratorError(`integracao '${integracaoPath}' not found.`);
     }
-    const filialPath = refToPath(getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'));
+    const filialPath = refToPath(
+      getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'),
+      `integracao '${integracaoPath}'.filialIntegracaoPedidoOuterRef`,
+    );
     if (!filialPath) {
       throw new NFeOrchestratorError(
         `integracao '${integracaoPath}': filialIntegracaoPedidoOuterRef missing.`,

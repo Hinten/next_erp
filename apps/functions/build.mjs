@@ -57,7 +57,7 @@ export async function bundle(outfile) {
       'firebase-admin/*',
       'firebase-functions',
       'firebase-functions/*',
-      // The orphan-sweep candidate scan imports pipeline expression builders from
+      // The balanço aggregate imports expression builders from
       // `@google-cloud/firestore/pipelines`; keep the whole package external (it
       // ships transitively via firebase-admin + as a direct dep), never bundled.
       '@google-cloud/firestore',

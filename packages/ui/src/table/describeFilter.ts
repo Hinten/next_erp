@@ -70,6 +70,14 @@ export function describeFilter(
 
   if (options?.formatValue) return `${label}: ${options.formatValue(value)}`;
 
+  // ⚠️ Must sit ABOVE everything below it. `isNull` carries `value: null`, which
+  // the branches that follow would each answer wrongly and confidently: the
+  // `boolean` branch prints `Não` (`null !== true`), the `enum` branch prints
+  // the raw `null` through `String(value)`, and the final fallthrough prints
+  // `Cliente: null`. A column supplying `formatValue` (both /pedidos ref filters
+  // do) never reaches here; this is the phrase every other column gets.
+  if (op === 'isNull') return `${label}: (vazio)`;
+
   // Membership against a candidate list. Labels when the virtual column
   // declared its options, a bare count when it did not — a row of raw
   // Firestore ids would be worse than no chip at all.
@@ -83,6 +91,23 @@ export function describeFilter(
   if (field.kind === 'boolean') return `${label}: ${value === true ? 'Sim' : 'Não'}`;
 
   if (field.kind === 'enum') return `${label}: ${enumLabel(field, value)}`;
+
+  // A range is ONE chip, not two. Still a single text node — the rule at the
+  // top of this file — so the sort locators keep resolving to one element.
+  if (op === 'between') {
+    const fmt = (v: unknown) =>
+      field.kind === 'datetime' && typeof v === 'number'
+        ? toBrDateTime(v, field.dateUnit ?? 'us')
+        : String(v);
+    const lo = value == null ? null : fmt(value);
+    const hi = filter.valueTo == null ? null : fmt(filter.valueTo);
+    // Degrades to the bound it actually has: an incomplete range describes
+    // itself honestly rather than printing an empty end.
+    if (lo !== null && hi !== null) return `${label}: de ${lo} até ${hi}`;
+    if (lo !== null) return `${label}: a partir de ${lo}`;
+    if (hi !== null) return `${label}: até ${hi}`;
+    return label;
+  }
 
   if (field.kind === 'datetime' && typeof value === 'number') {
     const when = toBrDateTime(value, field.dateUnit ?? 'us');

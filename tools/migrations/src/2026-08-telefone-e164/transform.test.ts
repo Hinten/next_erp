@@ -67,6 +67,21 @@ describe('planTelefone', () => {
     });
   });
 
+  it('preserves explicit international context for 10/11-digit foreign numbers', () => {
+    expect(planTelefone('+1 415 555 2671', { internacional: true })).toMatchObject({
+      to: '14155552671',
+    });
+    expect(planTelefone('14155552671', { internacional: true })).toMatchObject({
+      action: 'skip',
+      reason: SKIP_REASON.alreadyNormalized,
+    });
+    expect(planTelefone('11999998888')).toMatchObject({ to: '5511999998888' });
+    expect(planTelefone('BSUID-14155552671', { internacional: true })).toMatchObject({
+      action: 'skip',
+      reason: SKIP_REASON.invalid,
+    });
+  });
+
   it('treats absent, empty and non-string as nothing to do', () => {
     for (const value of [null, undefined, '', '   ', 11999998888, {}, []]) {
       expect(planTelefone(value)).toMatchObject({ action: 'skip', reason: SKIP_REASON.empty });
@@ -103,9 +118,15 @@ describe('buildUpdate', () => {
 
 describe('resolveTargets', () => {
   it('defaults to clientes alone — the endereço family is opt-in', () => {
-    // Those feed Melhor Envio's from.phone/to.phone, and whether ME accepts a
-    // 55-prefixed value is still open.
     expect(resolveTargets([]).map((t) => t.name)).toEqual(['clientes']);
+  });
+
+  it('allows every address target now that the ME boundary emits local phones', () => {
+    expect(resolveTargets(['endereco', 'filial', 'intFrete']).map((t) => t.name)).toEqual([
+      'endereco',
+      'filial',
+      'intFrete',
+    ]);
   });
 
   it('resolves an explicit selection in the order given', () => {
@@ -120,8 +141,9 @@ describe('resolveTargets', () => {
   });
 
   it('de-duplicates — a repeated target must not scan the group twice', () => {
-    // Each target is an unindexed collection-group scan on Enterprise, billed
-    // by data scanned, so a duplicate silently doubles the bill for no work.
+    // Each target is a full collection-group scan (on its declared key index,
+    // #1895) billed by data scanned, so a duplicate silently doubles the bill
+    // for no work.
     expect(resolveTargets(['clientes', 'clientes']).map((t) => t.name)).toEqual(['clientes']);
     expect(resolveTargets(['cheque', 'clientes', 'cheque']).map((t) => t.name)).toEqual([
       'cheque',

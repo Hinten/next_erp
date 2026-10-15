@@ -1,14 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  camposDeKitDoMembroUnico,
+  camposDeKitDoPatch,
   colapsarPaiEFilhoUnico,
   derivarFilhoUnico,
   ehFamiliaDeUm,
+  ehKitVirtualEfetivo,
   CAMPOS_ESPELHADOS_COM_COMPARADOR,
+  espelhoArmazenadoDoMembro,
   espelhoDoMembroUnico,
   montarMembroUnico,
   planejarSincronizacaoDoMembroUnico,
+  skuDoMembroUnico,
+  skuPaiDoMembroUnico,
+  SUFIXO_MEMBRO_UNICO,
   unidadeVendavel,
 } from './familia';
+import { produtoSchema } from '../collection/produto';
 
 /**
  * Both halves of the fold, deliberately.
@@ -216,7 +224,9 @@ describe('montarMembroUnico', () => {
   it('mirrors the fields a sellable unit is read for', () => {
     expect(montarMembroUnico('p1', pai)).toMatchObject({
       nome: 'Bandeja Decorativa',
-      sku: 'BAN-1',
+      // ⚠️ DERIVED, not copied. A verbatim copy put two documents behind one
+      // code — see the `skuDoMembroUnico` block below.
+      sku: 'BAN-1-UN',
       codPai: 'CP',
       gtin: '789',
       publicado: true,
@@ -292,6 +302,198 @@ describe('montarMembroUnico', () => {
 });
 
 /**
+ * `ehKitVirtualEfetivo` — the ONE "virtual kit" predicate (Shopee step 19, #1527).
+ *
+ * ⚠️ The near-miss that matters is `ehKitVirtual: true` beside a NON-kit: a
+ * predicate that dropped the `ehKit` conjunct would read that stored doc as a
+ * virtual kit and ask a channel to build a kit with no recipe. So the whole
+ * truth table is pinned, strict on both sides (a legacy `null`, an absent key
+ * or a stray string is "not virtual").
+ */
+describe('ehKitVirtualEfetivo — ehKit AND ehKitVirtual, both strictly true', () => {
+  const valores: readonly unknown[] = [true, false, null, undefined, 'true', 1];
+
+  it('is true for exactly one cell of the table', () => {
+    for (const ehKit of valores) {
+      for (const ehKitVirtual of valores) {
+        const esperado = ehKit === true && ehKitVirtual === true;
+        expect(
+          ehKitVirtualEfetivo({ ehKit, ehKitVirtual }),
+          `${String(ehKit)}×${String(ehKitVirtual)}`,
+        ).toBe(esperado);
+      }
+    }
+  });
+
+  it('a virtual flag on a NON-kit is not a virtual kit', () => {
+    expect(ehKitVirtualEfetivo({ ehKit: false, ehKitVirtual: true })).toBe(false);
+    expect(ehKitVirtualEfetivo({ ehKit: null, ehKitVirtual: true })).toBe(false);
+    expect(ehKitVirtualEfetivo({ ehKitVirtual: true })).toBe(false);
+  });
+
+  it('a kit without the virtual flag is not virtual', () => {
+    expect(ehKitVirtualEfetivo({ ehKit: true, ehKitVirtual: false })).toBe(false);
+    expect(ehKitVirtualEfetivo({ ehKit: true, ehKitVirtual: null })).toBe(false);
+    expect(ehKitVirtualEfetivo({ ehKit: true })).toBe(false);
+  });
+
+  it('a kit with the virtual flag is virtual', () => {
+    expect(ehKitVirtualEfetivo({ ehKit: true, ehKitVirtual: true })).toBe(true);
+  });
+
+  // The member mirror is a caller: the child never inherits a virtual flag its
+  // parent's kit state does not back.
+  it('the member mirror applies it (behaviour unchanged)', () => {
+    expect(camposDeKitDoMembroUnico({ ehKit: false, ehKitVirtual: true })).toMatchObject({
+      ehKit: false,
+      ehKitVirtual: false,
+    });
+    expect(
+      camposDeKitDoMembroUnico({
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: { c1: { quantidade: 1 } },
+      }),
+    ).toMatchObject({ ehKit: true, ehKitVirtual: true });
+    expect(
+      camposDeKitDoMembroUnico({
+        ehKit: true,
+        ehKitVirtual: false,
+        componentesKit: { c1: { quantidade: 1 } },
+      }),
+    ).toMatchObject({ ehKit: true, ehKitVirtual: false });
+  });
+});
+
+/**
+ * `camposDeKitDoPatch` — the kit invariant re-derived INSIDE the save
+ * transaction, from the stored document (`current`) and the dirty patch.
+ *
+ * ⚠️ Both halves, deliberately: every "switches off" case has a near-miss that
+ * must come back `{}`. The one that matters most is a patch turning «É kit» ON
+ * over a stored virtual flag — a rule gated on `current` alone would clear the
+ * flag the operator is just making meaningful.
+ */
+describe('camposDeKitDoPatch — re-derives the kit invariant over the RESULTING doc', () => {
+  const MAPA = { c1: { quantidade: 2, limitarEstoque: true } };
+  const CHAVES = ['c1'];
+
+  it('the e2e flake: «É kit» off over a stale form still switches «É kit virtual» off', () => {
+    // The stale form had `ehKitVirtual: false`, so the patch omits it; the
+    // stored `true` would survive the write.
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, ehKitVirtual: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { ehKit: false, componentesKit: null, componentesKitKeys: null },
+      ),
+    ).toEqual({ ehKitVirtual: false });
+  });
+
+  it('a second writer turned «É kit» off: a patch carrying ehKitVirtual true is overridden', () => {
+    expect(
+      camposDeKitDoPatch({ ehKit: false, ehKitVirtual: false }, { ehKitVirtual: true }),
+    ).toEqual({ ehKitVirtual: false });
+  });
+
+  it('a stored legacy mismatch heals on an unrelated save', () => {
+    expect(camposDeKitDoPatch({ ehKit: false, ehKitVirtual: true }, { nome: 'x' })).toEqual({
+      ehKitVirtual: false,
+    });
+    expect(camposDeKitDoPatch({ ehKitVirtual: true }, { nome: 'x' })).toEqual({
+      ehKitVirtual: false,
+    });
+  });
+
+  it('NEAR-MISS: a virtual kit that stays a kit is left alone', () => {
+    expect(camposDeKitDoPatch({ ehKit: true, ehKitVirtual: true }, { nome: 'x' })).toEqual({});
+    expect(camposDeKitDoPatch({ ehKit: true }, { ehKitVirtual: true })).toEqual({});
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, ehKitVirtual: false, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { ehKitVirtual: true },
+      ),
+    ).toEqual({});
+  });
+
+  it('NEAR-MISS: a patch turning «É kit» ON keeps the stored flag and map (decides on the RESULT)', () => {
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: false, ehKitVirtual: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { ehKit: true },
+      ),
+    ).toEqual({});
+  });
+
+  it('NEAR-MISS: a flag that is not strictly true is not switched (nothing to switch off)', () => {
+    for (const ehKitVirtual of [false, null, undefined, 'true', 1]) {
+      expect(
+        camposDeKitDoPatch({ ehKit: false, ehKitVirtual }, { nome: 'x' }),
+        String(ehKitVirtual),
+      ).toEqual({});
+    }
+    expect(camposDeKitDoPatch({ ehKit: false }, { nome: 'x' })).toEqual({});
+  });
+
+  it('«É kit» stored as a stray string is not a kit (strict, like ehKitVirtualEfetivo)', () => {
+    expect(camposDeKitDoPatch({ ehKit: 'true', ehKitVirtual: true }, { nome: 'x' })).toEqual({
+      ehKitVirtual: false,
+    });
+  });
+
+  it('clears the component map and its keys when the result is not a kit', () => {
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { ehKit: false },
+      ),
+    ).toEqual({ componentesKit: null, componentesKitKeys: null });
+    // Legacy: a non-kit that still carries a map heals on an unrelated save.
+    expect(camposDeKitDoPatch({ ehKit: false, componentesKit: MAPA }, { nome: 'x' })).toEqual({
+      componentesKit: null,
+    });
+    expect(camposDeKitDoPatch({ componentesKitKeys: CHAVES }, { nome: 'x' })).toEqual({
+      componentesKitKeys: null,
+    });
+    // An EMPTY map is still a map on a non-kit (`deriveOnSave` writes null too).
+    expect(
+      camposDeKitDoPatch({ ehKit: false, componentesKit: {}, componentesKitKeys: [] }, {}),
+    ).toEqual({ componentesKit: null, componentesKitKeys: null });
+  });
+
+  it('NEAR-MISS: a kit keeps its map, edited or not', () => {
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { nome: 'x' },
+      ),
+    ).toEqual({});
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: true, componentesKit: MAPA, componentesKitKeys: CHAVES },
+        { componentesKit: { c2: { quantidade: 1 } }, componentesKitKeys: ['c2'] },
+      ),
+    ).toEqual({});
+  });
+
+  it('NEAR-MISS: nothing to clear when the map is already null in the result', () => {
+    expect(
+      camposDeKitDoPatch(
+        { ehKit: false, componentesKit: null, componentesKitKeys: null },
+        { nome: 'x' },
+      ),
+    ).toEqual({});
+    expect(camposDeKitDoPatch({ ehKit: false }, { nome: 'x' })).toEqual({});
+  });
+
+  it('reads the patch alone when there is no stored document (create)', () => {
+    expect(camposDeKitDoPatch(null, { ehKit: false, ehKitVirtual: true })).toEqual({
+      ehKitVirtual: false,
+    });
+    expect(camposDeKitDoPatch(null, { ehKit: true, ehKitVirtual: true })).toEqual({});
+  });
+});
+
+/**
  * Keeping the sole member in step with its parent (#1398, PR 7b).
  *
  * ⚠️ Per the equivalence-fold rule, every comparison here is asserted from BOTH
@@ -299,6 +501,145 @@ describe('montarMembroUnico', () => {
  * not mistake a stale value for a deliberate edit) and a near-miss that must
  * stay distinct. A test that the fold APPLIES cannot show where it STOPS.
  */
+/**
+ * Both directions of the fold, per the equivalence rule: a pair that must come
+ * out EQUAL, and a near-miss that must stay DISTINCT.
+ *
+ * The scope being tested is "does the suffix come off exactly once" — a test
+ * that the derivation APPLIES cannot show where it STOPS, and over-stripping
+ * hands a produto one of its own children's identities.
+ */
+describe('skuDoMembroUnico / skuPaiDoMembroUnico', () => {
+  it('derives `<paiSku>` + the suffix', () => {
+    expect(skuDoMembroUnico('CAM-BR-P')).toBe(`CAM-BR-P${SUFIXO_MEMBRO_UNICO}`);
+    expect(skuDoMembroUnico('CAM-BR-P')).toBe('CAM-BR-P-UN');
+  });
+
+  it('round-trips an ordinary sku', () => {
+    for (const sku of ['CAM-BR-P', 'ABC123', 'a-b-c', '0001']) {
+      expect(skuPaiDoMembroUnico(skuDoMembroUnico(sku))).toBe(sku);
+    }
+  });
+
+  // ⚠️ A bare '-UN' would be an identity the ERP resolves produtos by, invented
+  // out of nothing. Absent is honest; wrong is not.
+  it('gives a parent with no sku no sku at all', () => {
+    expect(skuDoMembroUnico(null)).toBeNull();
+    expect(skuDoMembroUnico(undefined)).toBeNull();
+    expect(skuDoMembroUnico('')).toBeNull();
+    expect(skuDoMembroUnico('   ')).toBeNull();
+    expect(skuPaiDoMembroUnico(null)).toBeNull();
+    expect(skuPaiDoMembroUnico('')).toBeNull();
+  });
+
+  // The near-miss that keeps the inverse honest: exactly ONE suffix comes off,
+  // however many are there.
+  it('strips at most one suffix', () => {
+    expect(skuDoMembroUnico('PARAFUSO-UN')).toBe('PARAFUSO-UN-UN');
+    expect(skuPaiDoMembroUnico('PARAFUSO-UN-UN')).toBe('PARAFUSO-UN');
+  });
+
+  // ...and a sku that never carried one passes through untouched, which is what
+  // lets ONE call serve both the legacy and the current shape.
+  it('leaves a sku that carries no suffix alone', () => {
+    expect(skuPaiDoMembroUnico('CAM-BR-P')).toBe('CAM-BR-P');
+  });
+
+  // Byte-exact, no folding — the same discipline `skuPaiPorSufixo` keeps.
+  it('keeps near-misses distinct', () => {
+    expect(skuPaiDoMembroUnico('CAM-UNI')).toBe('CAM-UNI');
+    expect(skuPaiDoMembroUnico('CAM-un')).toBe('CAM-un');
+    expect(skuPaiDoMembroUnico('CAMUN')).toBe('CAMUN');
+    expect(skuPaiDoMembroUnico('CAM-UN')).toBe('CAM');
+  });
+
+  // ⛔ The documented ambiguity, PINNED rather than hidden. A legacy member
+  // storing 'PARAFUSO-UN' verbatim — its parent's own sku ends in the suffix —
+  // is byte-identical to a current member derived from parent 'PARAFUSO', so the
+  // inverse answers 'PARAFUSO' and is wrong for the legacy one. Reachable only
+  // on an ML re-import of a família of one where rungs 1 and 2 both failed.
+  it('cannot tell a legacy member from a derived one when the parent sku ends in the suffix', () => {
+    expect(skuPaiDoMembroUnico('PARAFUSO-UN')).toBe('PARAFUSO');
+  });
+
+  // A member whose whole sku IS the suffix leaves no parent behind it.
+  it('refuses to answer with an empty identity', () => {
+    expect(skuPaiDoMembroUnico(SUFIXO_MEMBRO_UNICO)).toBe(SUFIXO_MEMBRO_UNICO);
+  });
+
+  // ⚠️ `montarMembroUnico`'s output is written WITHOUT a `produtoSchema.parse`
+  // by the migration, ML publish and `buildMembroUnicoWriteOps`, so nothing
+  // downstream would catch an over-long sku.
+  it('truncates so the derived sku still fits the schema', () => {
+    const derivado = skuDoMembroUnico('X'.repeat(255))!;
+    expect(derivado).toHaveLength(255);
+    expect(derivado.endsWith(SUFIXO_MEMBRO_UNICO)).toBe(true);
+    expect(produtoSchema.shape.sku.safeParse(derivado).success).toBe(true);
+  });
+});
+
+/**
+ * ⛔ Why the mirror is TWO functions.
+ *
+ * Every mirrored field used to be a plain copy, so "what the parent projects"
+ * and "how a stored member is normalised for comparison" coincided and one
+ * function served both. `sku` is derived, so they diverge — and collapsing them
+ * back does not fail loudly, it makes the merge report a permanent operator
+ * divergence.
+ */
+describe('espelhoDoMembroUnico vs espelhoArmazenadoDoMembro — the split', () => {
+  it('the parent PROJECTION derives the sku', () => {
+    expect(espelhoDoMembroUnico({ nome: 'Bandeja', sku: 'BAN-1' }).sku).toBe('BAN-1-UN');
+  });
+
+  it('the stored NORMALISATION does not re-derive', () => {
+    const membro = { nome: 'Bandeja', sku: 'BAN-1-UN' };
+    expect(espelhoArmazenadoDoMembro(membro).sku).toBe('BAN-1-UN');
+    // ...which is exactly what the projection would get WRONG on the same input.
+    expect(espelhoDoMembroUnico(membro).sku).toBe('BAN-1-UN-UN');
+  });
+
+  // The consequence, end to end: a member holding the derived sku is in sync, so
+  // an unrelated parent edit moves only what actually changed.
+  it('a member already holding the derived sku is IN SYNC', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { nome: 'Bandeja', sku: 'BAN-1' },
+        { nome: 'Bandeja Nova', sku: 'BAN-1' },
+        { nome: 'Bandeja', sku: 'BAN-1-UN' },
+      ),
+    ).toEqual({ nome: 'Bandeja Nova' });
+  });
+
+  it('propagates a parent sku rename as the DERIVED value', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { nome: 'Bandeja', sku: 'BAN-1' },
+        { nome: 'Bandeja', sku: 'BAN-2' },
+        { nome: 'Bandeja', sku: 'BAN-1-UN' },
+      ),
+    ).toEqual({ sku: 'BAN-2-UN' });
+  });
+
+  // ⚠️ A LEGACY member — sku copied verbatim before this rule — reads as
+  // diverged and is left alone, so it does NOT self-heal.
+  //
+  // Deliberate. The tolerant comparator that would heal it (accept the raw
+  // parent value as "in sync") also answers "unchanged" when a parent's sku is
+  // edited FROM 'X' TO 'X-UN', which silently loses a real rename. Production
+  // has no converted produtos yet and staging is re-seeded, so the population
+  // this would help is ~0 — not worth a directional comparator.
+  it('leaves a LEGACY member holding the raw parent sku alone', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { nome: 'Bandeja', sku: 'BAN-1' },
+        { nome: 'Bandeja', sku: 'BAN-2' },
+        { nome: 'Bandeja', sku: 'BAN-1' },
+      ),
+    ).toBeNull();
+  });
+});
+
 describe('planejarSincronizacaoDoMembroUnico', () => {
   const kit = (quantidade: number, limitarEstoque = true, timestamp: number | null = 1) => ({
     quantidade,
@@ -356,9 +697,12 @@ describe('planejarSincronizacaoDoMembroUnico', () => {
     const patch = planejarSincronizacaoDoMembroUnico(
       pai(),
       pai({ nome: 'Bandeja Decorativa', sku: 'BAN-2' }),
-      pai({ nome: 'nome escolhido pelo operador' }),
+      // ⚠️ The member holds the DERIVED sku, which is what a real one stores.
+      // `pai()` in this slot would model a LEGACY member, whose sku reads as
+      // diverged — pinned separately in "the split" block below.
+      pai({ nome: 'nome escolhido pelo operador', sku: 'BAN-1-UN' }),
     );
-    expect(patch).toEqual({ sku: 'BAN-2' });
+    expect(patch).toEqual({ sku: 'BAN-2-UN' });
   });
 
   // ⚠️ This IS the concurrency guard (rule 7 tier 0). Two rapid parent edits

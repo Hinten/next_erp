@@ -89,5 +89,6 @@ export function useServerTruthSeed({ id, fromCache, isDirty, onSeed }: ServerTru
     //
     // `onSeed` stays out on purpose — it is a fresh closure every render, and
     // depending on it would re-seed on any parent re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onSeed is a fresh closure every render; tracking it re-seeds on any parent render (see above)
   }, [id, fromCache, isDirty]);
 }

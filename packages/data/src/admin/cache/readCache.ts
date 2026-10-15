@@ -136,9 +136,9 @@ export interface ReadCacheOptions<V> {
    * Extra freshness check run on every HIT of a settled entry; returning `false`
    * evicts and re-reads (counted as a miss).
    *
-   * This is the repo's existing substitute for a short TTL — `filial-cert.ts`
-   * re-runs its cert-expiry assertion on every hit rather than time-bounding the
-   * entry. It converts the one real hazard of a long TTL into a check that costs
+   * A re-validation instead of a shorter TTL — `filial-cert.ts` re-runs its
+   * cert-expiry assertion on every call, on top of its 15-minute TTL (#1680).
+   * It converts the one real hazard of a long TTL into a check that costs
    * nothing in steady state: an `integracao` reader can pass
    * `(conta) => conta.user_id != null` and refuse a document that predates the
    * connect-time back-fill, on every instance rather than only the one that

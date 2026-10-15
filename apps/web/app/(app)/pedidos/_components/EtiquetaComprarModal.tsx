@@ -19,12 +19,23 @@ import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Text } from '@man
 import { useQuery } from '@tanstack/react-query';
 import { formatReais } from '@delfrance/core/money';
 import type { Pedido } from '@delfrance/schemas';
-import { type Agency, withCartAgency } from '@delfrance/integrations-freight-br/http-client';
+import {
+  type Agency,
+  FreightCompraEmAndamentoError,
+  FreightEtiquetaDesvinculadaError,
+  FreightHttpError,
+  FreightTimeoutError,
+  withCartAgency,
+} from '@delfrance/integrations-freight-br/http-client';
 
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
 import { freightErrorMessage } from '@/lib/freight/errorMessage';
-import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import { freightQueryRetry } from '@/lib/freight/queryRetry';
+import {
+  showCopyableNotification,
+  showErrorNotification,
+} from '@/lib/notifications/showErrorNotification';
 import { resolveEtiquetaCartInput } from './etiquetaActions';
 
 interface BuyResult {
@@ -82,6 +93,8 @@ export function EtiquetaComprarModal({
     queryKey: ['freightConta', intFreteId],
     enabled: opened && client != null && intFreteId != null,
     staleTime: 0,
+    // Never re-sent after a timeout (#1094) — the default single retry otherwise.
+    retry: freightQueryRetry,
     queryFn: () => client!.conta(intFreteId!),
   });
   const saldo = conta.data?.balance?.balance ?? null;
@@ -122,6 +135,10 @@ export function EtiquetaComprarModal({
       resolved?.remetente.cidade,
     ],
     enabled: agenciasEnabled,
+    // ⚠️ Not after a timeout (#1094): `agenciasSettling` below holds Comprar
+    // disabled until this settles, so a retried timeout blocked the buy for two
+    // full budgets. The default single retry otherwise.
+    retry: freightQueryRetry,
     queryFn: () =>
       client!.agencias(resolved!.intFreteId, {
         service: resolved!.payload.service,
@@ -174,6 +191,53 @@ export function EtiquetaComprarModal({
       );
       setResult({ printUrl: r.printUrl, tracking: r.tracking });
     } catch (err) {
+      // ⚠️ These outcomes are NOT a red "Falha" with Comprar re-armed — the
+      // modal closes, so there is no button left to re-click. Reopening it
+      // re-resolves the cart from the pedido; the cart query cached for THIS
+      // opening (and, in the checkout, the frozen `pedido`) may be stale:
+      //  - a timeout — our 360 s deadline, the platform's 504, or the route
+      //    saying Melhor Envio stopped answering a paid step (#1094/#1679): the
+      //    outcome is unknown, check first;
+      //  - another buy of this pedido holds the server's claim (#1677, a 423):
+      //    re-clicking only gets the same answer until it ends;
+      //  - the label was PAID but the pedido no longer points at it (#1677,
+      //    `ME_ETIQUETA_DESVINCULADA`): the next buy would start fresh and pay
+      //    AGAIN, so this one is red, stays until dismissed, and names the label;
+      //  - any other 412 — the frete changed before checkout (`ME_FRETE_ALTERADO`,
+      //    nothing paid): this opening's cart was built from the OLD frete, and
+      //    re-clicking would fresh-buy the old service. Only the claim answers
+      //    412 on `comprar`.
+      if (err instanceof FreightTimeoutError || err instanceof FreightCompraEmAndamentoError) {
+        showCopyableNotification({
+          title:
+            err instanceof FreightCompraEmAndamentoError
+              ? 'Compra de etiqueta em andamento'
+              : 'Tempo esgotado ao comprar etiqueta',
+          message: err.message,
+          color: 'yellow',
+        });
+        handleClose();
+        return;
+      }
+      if (err instanceof FreightEtiquetaDesvinculadaError) {
+        showCopyableNotification({
+          title: 'Etiqueta paga, mas não vinculada ao pedido',
+          message: err.message,
+          color: 'red',
+          autoClose: false,
+        });
+        handleClose();
+        return;
+      }
+      if (err instanceof FreightHttpError && err.status === 412) {
+        showCopyableNotification({
+          title: 'O frete do pedido mudou',
+          message: err.message,
+          color: 'yellow',
+        });
+        handleClose();
+        return;
+      }
       const msg = freightErrorMessage(err);
       if (msg === null) throw err;
       showErrorNotification({ title: 'Falha ao comprar etiqueta', message: msg });

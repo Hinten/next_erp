@@ -3,7 +3,11 @@
 import { Group, Select, Stack } from '@mantine/core';
 import { Controller } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
-import { INTEGRACAO_FRETE_LABELS, integracoesFreteSchema } from '@delfrance/schemas';
+import {
+  INTEGRACAO_FRETE_LABELS,
+  integracoesFreteSchema,
+  isFreteMarketplaceOwned,
+} from '@delfrance/schemas';
 import {
   FreteDateTimeField,
   FreteNumberField,
@@ -14,6 +18,29 @@ import {
 } from './fields';
 import { TransportadoraFields } from './TransportadoraFields';
 import { VolumesEditor } from './VolumesEditor';
+
+/**
+ * The tipos this Select offers — every freight tipo EXCEPT the
+ * marketplace-owned ones.
+ *
+ * ⚠️ The five marketplace values are deliberately absent, and their absence is
+ * load-bearing rather than cosmetic. `externalOptionIntegracao` is read as
+ * "an IMPORTER owns this block" in two places — `FreteTab` locks the whole tab
+ * read-only on it (#1515) and `pedidoReconcile` refuses to authorize dispatch on
+ * it (#702) — so an operator picking one here would be asserting ownership on
+ * the importer's behalf, and the lock it triggers REMOVES this Select from the
+ * screen: there would be no gesture left to undo it, on the tab or off it. The
+ * importer writes the value directly (`orderFreteMapping.ts` for Shopee), never
+ * through an editor.
+ *
+ * ⚠️ Nothing is hidden by this: a block already naming a marketplace never
+ * reaches `GenericFreteFields` at all — `FreteTab.renderTipoFields` hoists it to
+ * `MarketplaceReadOnly` before the generic body is considered — so the current
+ * value is always one of the options below, or null.
+ */
+const OPCOES_INTEGRACAO_OPCAO_EXTERNA = integracoesFreteSchema.options
+  .filter((value) => !isFreteMarketplaceOwned(value))
+  .map((value) => ({ value, label: INTEGRACAO_FRETE_LABELS[value] }));
 
 /**
  * Catch-all frete editor — port of `WidgetDeFreteGenerica`
@@ -45,10 +72,7 @@ export function GenericFreteFields({
           render={({ field }) => (
             <Select
               label="Integração da opção externa"
-              data={integracoesFreteSchema.options.map((value) => ({
-                value,
-                label: INTEGRACAO_FRETE_LABELS[value],
-              }))}
+              data={OPCOES_INTEGRACAO_OPCAO_EXTERNA}
               value={(field.value as string | null) ?? null}
               onChange={(v) => field.onChange(v)}
               clearable

@@ -7,7 +7,9 @@
  * fiscal-mutation path, so transport failures and unsupported UFs degrade
  * gracefully (200 with `supported:false` / `degraded:true`) instead of 5xx.
  *
- * Body (JSON, POST): `{ cnpj: <14 digits>, uf: <2 letters>, filialId: <id> }`. POST
+ * Body (JSON, POST): `{ cnpj: <14 chars>, uf: <2 letters>, filialId: <id> }` — the
+ * first 12 may be `A-Z` since NT 2026.004, which is what the schema below
+ * enforces. POST
  * (not GET) keeps the queried CNPJ out of the URL — query strings leak into access
  * logs, proxies and browser history. filialId REQUIRED in v1 — the lookup signs the
  * mTLS handshake with that filial's A1 cert.
@@ -21,15 +23,17 @@
  *   401  no/invalid token
  *   403  insufficient perm (needs PERM.fiscal.read)
  *   422  filial has no cert (NFeCertError)
- *   500  our bug (malformed request XML / parse failure)
+ *   500  our bug (malformed request XML / parse failure), or a SEFAZ reply that
+ *        fails retConsCad_v2.00.xsd (NFeXsdValidationError — #1602)
  *   503  runtime not ready
  *
- * The request `consCad` XML is hand-built and the `retConsCad` response is
- * hand-parsed in `consultarCadastro` (the consCad v2.00 XSDs aren't in the
- * codegen — issue #251). The request is still **XSD-validated before sending**
- * (`validateConsCad`) — SEFAZ rule: never POST schema-invalid XML, since
- * repeated `cStat=215/225` trips `cStat=656` (Consumo Indevido). A schema-
- * invalid request throws before the POST and surfaces here as a 500.
+ * `consultarCadastro` serializes the `ConsCad` request and parses the
+ * `retConsCad` response through the layout 2.00 codegen pack
+ * (`generated/conscad/`). Both directions are **XSD-validated**: the request
+ * before sending (`validateConsCad`) — SEFAZ rule: never POST schema-invalid XML,
+ * since repeated `cStat=215/225` trips `cStat=656` (Consumo Indevido) — and
+ * SEFAZ's reply before parsing (`validateRetConsCad`). Either failure throws
+ * `NFeXsdValidationError` and surfaces here as a 500, never the degraded 200.
  * See `packages/integrations/nfe/src/operations/index.ts:consultarCadastro`.
  */
 import { NextResponse } from 'next/server';
@@ -38,6 +42,7 @@ import { z } from 'zod';
 import {
   NFeCertError,
   NFeTransportError,
+  NFeXsdValidationError,
   consultarCadastro,
   getConsultaCadastroEndpoint,
   type ConsultaCadastroInfCad,
@@ -49,13 +54,20 @@ import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import { resolveFilialRuntime } from '@/lib/nfe/filial-cert';
-import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, isNFeRuntimeMisconfig } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const querySchema = z.object({
-  cnpj: z.string().regex(/^\d{14}$/, 'cnpj deve ter 14 dígitos'),
+  // ⚠️ `[0-9A-Z]{12}[0-9]{2}`, not `\d{14}`: RFB IN 2.229/2024. This gate stung
+  // the most of the lot, because everything BEHIND it was already alfa-correct
+  // and SEFAZ Consulta Cadastro is the only registry that can answer for an
+  // alphanumeric CNPJ at all — BrasilAPI cannot. The two check digits stay
+  // numeric, which is why this is not `[0-9A-Z]{14}`.
+  cnpj: z
+    .string()
+    .regex(/^[0-9A-Z]{12}[0-9]{2}$/, 'cnpj deve ter 14 caracteres (12 alfanuméricos + 2 dígitos)'),
   uf: z.string().regex(/^[A-Za-z]{2}$/, 'uf deve ter 2 letras'),
   // filialId is REQUIRED in v1 — the lookup signs the mTLS handshake with this
   // filial's cert, and the home-UF restriction is checked against the runtime.
@@ -110,7 +122,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     base = getNFeRuntime();
   } catch (e) {
-    return authError(503, { error: e instanceof Error ? e.message : 'runtime not ready' });
+    // A misconfigured deploy (NFE_AMBIENTE / NFE_UF / TLS chain) → 503.
+    // Anything else is a bug and must surface, not hide behind a 503.
+    if (!isNFeRuntimeMisconfig(e)) throw e;
+    return authError(503, { error: e.message });
   }
 
   // Resolve the UF endpoint FIRST — a UF that doesn't offer Consulta Cadastro
@@ -178,8 +193,21 @@ export async function POST(req: Request): Promise<NextResponse> {
         infCad: [],
       });
     }
-    // A genuine bug (our consCad XML malformed / retConsCad parse failure) —
-    // surface as 500 so it's visible, not silently swallowed as "no match".
+    if (e instanceof NFeXsdValidationError) {
+      // Schema-invalid XML on either side: our ConsCad request (rootKey
+      // 'consCad') or SEFAZ's reply ('retConsCad'). Decided in #1602: a 500, NOT
+      // the degraded 200 above — a reply that fails the XSD is not "SEFAZ
+      // unreachable", and parsing it would hand the form a plausible-looking
+      // wrong answer. The web caller already falls back to the public IE on any
+      // NFeHttpError, and the HTTP client maps this `code` to a NON-retryable
+      // NFeXsdValidationFailedError, so no client retry re-POSTs the consulta to
+      // SEFAZ. xmllint quotes the offending value; that is acceptable in Cloud
+      // Logging, which is private (see the nfe package's sefaz-log.ts).
+      safeLog('error', '[nfe/consulta-cadastro] XSD', { root: e.rootKey, errors: e.errors });
+      return authError(500, { error: e.message, code: e.name });
+    }
+    // A genuine bug (retConsCad parse failure, …) — surface as 500 so it's
+    // visible, not silently swallowed as "no match".
     safeLog('error', '[nfe/consulta-cadastro]', e);
     return authError(500, {
       error: e instanceof Error ? e.message : 'Erro interno',

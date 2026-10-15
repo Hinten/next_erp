@@ -6,12 +6,17 @@
  * incomplete report is visibly detectable.
  */
 import { ESTADO_NFE_LABELS } from '@delfrance/schemas';
+import { csvRow as sharedCsvRow, type CsvCell } from '@/lib/csv';
 
 import type { NfeReportRow } from './parseNfeReportRow';
 import type { NfeNote } from './types';
 
-/** Byte-order mark (U+FEFF) so Excel reads the file as UTF-8 (accents intact). */
-export const CSV_BOM = String.fromCharCode(0xfeff);
+export { CSV_BOM } from '@/lib/csv';
+
+/** Existing report consumers pass pt-BR decimal strings, including negative quantities. */
+export function csvRow(cells: readonly CsvCell[]): string {
+  return sharedCsvRow(cells, { numericStrings: true });
+}
 
 export const REPORT_HEADER = [
   'Série',
@@ -28,32 +33,6 @@ export const REPORT_HEADER = [
   'Desconto',
   'Total Nota',
 ] as const;
-
-type Cell = string | number | null | undefined;
-
-// A cell whose value starts with one of these can be evaluated as a formula by
-// Excel/Sheets (CSV/Excel formula injection); a genuine number — including a
-// negative total like "-5,50" — must NOT be neutralized so it stays numeric.
-const FORMULA_LEAD = /^[=+\-@\t\r]/;
-const NUMERIC = /^-?[\d.,]+$/;
-
-/** Escape one CSV cell: neutralize formula-injection leads (`=`/`+`/`-`/`@`/tab/CR
- * on non-numeric text → prefix `'`), then quote (and double inner quotes) when it
- * contains the delimiter, a quote, or a line break. */
-export function csvCell(value: Cell): string {
-  let s = value == null ? '' : String(value);
-  if (FORMULA_LEAD.test(s) && !NUMERIC.test(s)) {
-    s = `'${s}`;
-  }
-  if (s.includes(';') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-export function csvRow(cells: readonly Cell[]): string {
-  return cells.map(csvCell).join(';');
-}
 
 /** `'1234.56'` (XML, dot decimal) → `'1234,56'` (Excel pt-BR). Empty stays empty. */
 export function brNum(raw: string): string {

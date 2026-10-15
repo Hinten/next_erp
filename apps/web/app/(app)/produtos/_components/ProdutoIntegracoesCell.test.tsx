@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
-import type { Produto } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type Integracao, type Produto } from '@delfrance/schemas';
 import type { IntegracoesStatus } from '@/lib/data/useIntegracoes';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { ProdutoIntegracoesCell } from './ProdutoListCells';
@@ -76,8 +75,8 @@ describe('ProdutoIntegracoesCell', () => {
     renderCell(['i1'], [['i1', integracao({ nome: 'Azul', cor: 0x2196f3 })]]);
     const { style } = badgeRoot('Azul');
     expect(style.backgroundColor).toBe('rgb(33, 150, 243)');
-    // Dark background → near-white text, the legacy contrast rule.
-    expect(style.color).toBe('rgb(245, 245, 245)');
+    // Stored blue is bright enough that black has the readable contrast.
+    expect(style.color).toBe('rgb(0, 0, 0)');
   });
 
   it('decodes a legacy 32-bit ARGB cor to the same colour as the 24-bit form', () => {

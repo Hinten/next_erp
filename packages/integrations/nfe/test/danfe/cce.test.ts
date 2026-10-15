@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { renderCartaCorrecao } from '../../src/danfe';
 import { parseCceRetorno, parseProcNFe } from '../../src/danfe/model';
+import { extrairEventosNFe } from '../../src/eventos/index';
 import { renderCce, type CceData } from '../../src/danfe/pdf/cce';
 import { PROCNFE_FIXTURE } from './fixtures';
 import { isPdf, pageCount } from './helpers';
+import { CHAVE, procEventoNaResposta, retConsSitNFe } from '../helpers/evento-fixture';
 
 /** A minimal `retEnvEvento` reply carrying a registrada (135) CC-e retEvento. */
 const RET_ENV_EVENTO = (
@@ -73,6 +75,29 @@ describe('danfe/model parseCceRetorno', () => {
     const ret = parseCceRetorno(noEvento);
     expect(ret).toEqual({ dhRegEvento: null, nProt: null, chNFe: null });
   });
+
+  it('reads the REAL registration from a procEventoNFe recovered through a consSit (#1094 F1b)', () => {
+    const [cce] = extrairEventosNFe(
+      retConsSitNFe([
+        procEventoNaResposta(
+          {
+            tipo: 'cce',
+            nSeqEvento: 3,
+            cStat: '135',
+            xMotivo: 'Evento registrado e vinculado a NF-e',
+            nProt: '135260000000099',
+            dhRegEvento: '2026-09-22T14:15:16-03:00',
+          },
+          { xmlns: false },
+        ),
+      ]),
+    );
+    expect(parseCceRetorno(cce!.procEventoXml)).toEqual({
+      dhRegEvento: '2026-09-22T14:15:16-03:00',
+      nProt: '135260000000099',
+      chNFe: CHAVE,
+    });
+  });
 });
 
 describe('danfe renderCartaCorrecao (entry)', () => {
@@ -86,5 +111,31 @@ describe('danfe renderCartaCorrecao (entry)', () => {
     });
     expect(isPdf(pdf)).toBe(true);
     expect(pageCount(pdf)).toBe(1);
+  });
+
+  it('renders from a recovered procEventoNFe as well as from a retEnvEvento', async () => {
+    const [cce] = extrairEventosNFe(
+      retConsSitNFe([
+        procEventoNaResposta(
+          {
+            tipo: 'cce',
+            nSeqEvento: 1,
+            cStat: '135',
+            xMotivo: 'Evento registrado e vinculado a NF-e',
+            nProt: '135260000123456',
+            dhRegEvento: '2026-06-10T10:00:00-03:00',
+          },
+          { xmlns: true },
+        ),
+      ]),
+    );
+    const pdf = await renderCartaCorrecao({
+      procNFeXml: PROCNFE_FIXTURE,
+      xmlRetorno: cce!.procEventoXml,
+      xCorrecao: cce!.xCorrecao!,
+      nProt: cce!.nProt,
+      nSeqEvento: cce!.nSeqEvento,
+    });
+    expect(isPdf(pdf)).toBe(true);
   });
 });

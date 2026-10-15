@@ -5,10 +5,18 @@ import type { CollectionHandle } from '@delfrance/data';
 // `vi.mock` is hoisted, so anything its factory closes over must come from
 // `vi.hoisted`.
 const { firestoreMock } = vi.hoisted(() => {
-  const txMock = { set: vi.fn(), update: vi.fn(), delete: vi.fn() };
+  const txMock = {
+    set: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+    get: vi.fn(async (ref: { id: string }) => ({
+      exists: () => true,
+      data: (): Record<string, unknown> => (ref.id === 'sibling' ? {} : { x: 1 }),
+    })),
+  };
   const runTransactionMock = vi.fn(
-    async (_db: unknown, fn: (tx: typeof txMock) => Promise<void>) => {
-      await fn(txMock);
+    async (_db: unknown, fn: (tx: typeof txMock) => Promise<unknown>) => {
+      return await fn(txMock);
     },
   );
   const docMock = vi.fn(() => ({ id: 'NEW_ID' }));
@@ -26,13 +34,13 @@ vi.mock('firebase/firestore', () => ({
 
 import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
 
-const schema = z.object({
+const _schema = z.object({
   nome: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
   telefone: z.string().nullable().optional(),
 });
 
-function fakeCollection(): CollectionHandle<typeof schema> {
+function fakeCollection(): CollectionHandle<typeof _schema> {
   return {
     resolvePath: () => 'clientes',
     ref: () => 'COLLECTION_REF' as never,
@@ -43,12 +51,83 @@ function fakeCollection(): CollectionHandle<typeof schema> {
 }
 
 beforeEach(() => {
+  firestoreMock.txMock.get.mockReset();
   firestoreMock.txMock.set.mockReset();
   firestoreMock.txMock.update.mockReset();
   firestoreMock.txMock.delete.mockReset();
   firestoreMock.runTransactionMock.mockClear();
   firestoreMock.docMock.mockClear();
   firestoreMock.collectionMock.mockClear();
+});
+
+describe('saveRecord — transactional derivation', () => {
+  it('derives create fields with null current and returns the committed document', async () => {
+    const derive = vi.fn(() => ({ telefoneGerenciado: true }));
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'Nova' },
+      dirtyFields: {},
+      currentUserUid: 'u1',
+      deriveTransactionPatch: derive,
+    });
+    expect(derive).toHaveBeenCalledWith(null, { nome: 'Nova' });
+    expect(result.patch).toEqual({ nome: 'Nova', telefoneGerenciado: true });
+    expect(result.before).toBeNull();
+    expect(firestoreMock.txMock.set).toHaveBeenCalledWith(expect.anything(), result.patch);
+  });
+
+  it('reads current state even without a baseline and returns derived update fields', async () => {
+    const current = { nome: 'Antes', telefonesAdicionais: ['14155552671'] };
+    firestoreMock.txMock.get.mockResolvedValue({ exists: () => true, data: () => current });
+    const derive = vi.fn((fresh: Readonly<Record<string, unknown>> | null) => ({
+      telefonesAdicionais: [...(fresh?.telefonesAdicionais as string[]), '5511999998888'],
+    }));
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'existing',
+      values: { nome: 'Depois' },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      deriveTransactionPatch: derive,
+    });
+    expect(derive).toHaveBeenCalledWith(current, { nome: 'Depois' });
+    expect(result.patch).toEqual({
+      nome: 'Depois',
+      telefonesAdicionais: ['14155552671', '5511999998888'],
+    });
+    // What the save replaced: the doc the transaction read, for `onAfterSave`.
+    expect(result.before).toEqual(current);
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), result.patch);
+  });
+
+  // A derivation must be able to OVERRIDE what the form sent: the produto
+  // editor's kit rule switches a dirty `ehKitVirtual: true` off when the doc it
+  // read is no longer a kit (`camposDeKitDoPatch`), which only holds if the
+  // derived keys are merged last.
+  it('a derived key wins over the same key in the dirty patch', async () => {
+    firestoreMock.txMock.get.mockResolvedValue({
+      exists: () => true,
+      data: () => ({ ehKit: false, ehKitVirtual: false }),
+    });
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'existing',
+      values: { ehKitVirtual: true },
+      dirtyFields: { ehKitVirtual: true },
+      currentUserUid: 'u1',
+      deriveTransactionPatch: () => ({ ehKitVirtual: false }),
+    });
+    expect(result.patch).toEqual({ ehKitVirtual: false });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), {
+      ehKitVirtual: false,
+    });
+  });
 });
 
 describe('saveRecord', () => {
@@ -83,7 +162,13 @@ describe('saveRecord', () => {
       { nome: 'novo nome' },
     );
     expect(firestoreMock.txMock.set).not.toHaveBeenCalled();
-    expect(result).toEqual({ id: 'EXISTING_ID', patch: { nome: 'novo nome' } });
+    // No baseline, no sibling, no derivation ⇒ the transaction read nothing.
+    expect(result).toEqual({
+      id: 'EXISTING_ID',
+      patch: { nome: 'novo nome' },
+      documents: [],
+      before: null,
+    });
   });
 
   it('preserves explicit null in the patch (NullClearButton path)', async () => {
@@ -121,7 +206,8 @@ describe('saveRecord', () => {
 describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => {
   const sibling: TransactionWrite = {
     type: 'set',
-    ref: { id: 'sibling' } as never,
+    ref: { id: 'sibling', path: 'clientes/EXISTING_ID/extra/sibling' } as never,
+    guard: { baseline: {}, label: 'Extra', formField: 'extra', toFormValue: (data) => data },
     data: { x: 1 },
   };
 
@@ -187,7 +273,18 @@ describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => 
       values: { nome: 'novo nome' },
       dirtyFields: { nome: true },
       currentUserUid: 'u1',
-      siblingWrites: () => [{ type: 'delete', ref: { id: 'gone' } as never }],
+      siblingWrites: () => [
+        {
+          type: 'delete',
+          ref: { id: 'gone', path: 'clientes/EXISTING_ID/extra/gone' } as never,
+          guard: {
+            baseline: { x: 1 },
+            label: 'Extra',
+            formField: 'extra',
+            toFormValue: (data) => data,
+          },
+        },
+      ],
     });
     expect(firestoreMock.txMock.delete).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'gone' }),

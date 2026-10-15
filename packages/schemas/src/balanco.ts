@@ -128,8 +128,16 @@ export const balancoSchema = z
     finalizacao: finalizacaoBalancoSchema.nullable().default(null),
 
     // System fields — stamped by `saveRecord` on every write.
-    timestamp: millisSinceEpoch('Criação').nullable().optional(),
-    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
+    // ⚠️ `.default(null)`, never a bare `.optional()` — this is the list's sort
+    // key and a classic `orderBy` excludes documents missing it. See
+    // `defaultQuery.sortKeyPresence.test.ts`.
+    timestamp: millisSinceEpoch('Criação').nullable().default(null),
+    // `.default(null)`, never a bare `.optional()`: the TableView update-
+    // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+    // which EXCLUDES documents missing the key — so a dropped key hides the
+    // row from the staleness check, silently. Pinned by
+    // `defaultQuery.sortKeyPresence.test.ts`.
+    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
   })
   .passthrough();
 

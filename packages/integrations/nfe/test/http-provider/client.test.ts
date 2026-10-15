@@ -21,6 +21,8 @@ import {
   NFeRuntimeNotReadyError,
   NFeSchemaError,
   NFeServerError,
+  NFeXsdValidationFailedError,
+  isRetryableNFeHttpError,
   type NFeEmitResult,
   type NFeVerificarResult,
 } from '../../src/http-provider';
@@ -670,6 +672,37 @@ describe('createNFeHttpClient — statusServico', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NFeServerError);
     expect((err as NFeServerError).message).toContain('inacessível');
+  });
+});
+
+describe('createNFeHttpClient — consultaCadastro errors', () => {
+  it('maps an XSD-coded 500 → NFeXsdValidationFailedError, never a retryable NFeServerError (#1602)', async () => {
+    const fetch = mockFetch({
+      status: 500,
+      body: {
+        error:
+          "XSD validation failed for <retConsCad>: Element 'infCons': Missing child element(s).",
+        code: 'NFeXsdValidationError',
+      },
+    });
+    const err = await makeClient(fetch)
+      .consultaCadastro('12345678000199', 'SP', 'f1')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeXsdValidationFailedError);
+    expect(err).not.toBeInstanceOf(NFeServerError);
+    expect((err as NFeXsdValidationFailedError).status).toBe(500);
+    expect((err as NFeXsdValidationFailedError).message).toContain('<retConsCad>');
+    expect(isRetryableNFeHttpError(err)).toBe(false);
+  });
+
+  it('still maps an uncoded 500 → NFeServerError, which stays retryable', async () => {
+    // Near-miss: same status, no code — the transient bucket is unchanged.
+    const fetch = mockFetch({ status: 500, body: { error: 'boom' } });
+    const err = await makeClient(fetch)
+      .consultaCadastro('12345678000199', 'SP', 'f1')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeServerError);
+    expect(isRetryableNFeHttpError(err)).toBe(true);
   });
 });
 

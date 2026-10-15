@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { initializeApp } from 'firebase/app';
+import { getFirestore } from 'firebase/firestore';
 
 const { getDocsMock, getDocMock } = vi.hoisted(() => ({
   getDocsMock: vi.fn(),
@@ -12,7 +14,7 @@ beforeEach(() => {
   getDocMock.mockReset();
 });
 
-vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
+vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => db }));
 vi.mock('@/lib/data/clienteCollection', () => ({
   clienteCollection: {
     ref: () => ({ __ref: true }),
@@ -29,6 +31,11 @@ vi.mock('firebase/firestore', async (importActual) => {
 });
 
 import { clienteUserRefCandidates, useClienteLink } from './useClienteLink';
+
+const db = getFirestore(
+  initializeApp({ projectId: 'demo-cliente-link' }, 'cliente-link-test'),
+  'default',
+);
 
 describe('clienteUserRefCandidates', () => {
   it('returns null for an anonymous conversa (no usarioOuterRef)', () => {
@@ -95,6 +102,35 @@ describe('useClienteLink', () => {
 });
 
 describe('useClienteLink — the direct clienteOuterRef path', () => {
+  it.each(['documents/usuarios/cli9', 'a/b/clientes/cli9', 'clientes', ''])(
+    'rejects %j without a direct or legacy read',
+    (ref) => {
+      const { result } = renderHook(() => useClienteLink(ref, 'documents/usuarios/abc123'), {
+        wrapper: wrapper(),
+      });
+      expect(result.current.status).toBe('error');
+      expect(getDocMock).not.toHaveBeenCalled();
+      expect(getDocsMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not expose a cached legacy result when the direct ref becomes invalid', async () => {
+    getDocsMock.mockResolvedValueOnce({ docs: [{ id: 'cli1', data: () => ({ nome: 'Ana' }) }] });
+    const { result, rerender } = renderHook(
+      ({ ref }: { ref: string | null }) => useClienteLink(ref, 'documents/usuarios/abc123'),
+      {
+        wrapper: wrapper(),
+        initialProps: { ref: null as string | null },
+      },
+    );
+    await waitFor(() => expect(result.current.status).toBe('found'));
+    getDocsMock.mockClear();
+    rerender({ ref: 'documents/produtos/cli1' });
+    expect(result.current.status).toBe('error');
+    expect(getDocMock).not.toHaveBeenCalled();
+    expect(getDocsMock).not.toHaveBeenCalled();
+  });
+
   it('reads the cliente doc directly, with no usuarios hop and no query', async () => {
     getDocMock.mockResolvedValueOnce({
       exists: () => true,

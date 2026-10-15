@@ -5,6 +5,7 @@ import {
   FreightLabelTerminalError,
   FreightNetworkError,
   FreightReauthRequiredError,
+  FreightTimeoutError,
   FreightValidationError,
 } from '@delfrance/integrations-freight-br/http-client';
 
@@ -25,6 +26,9 @@ export function freightErrorMessage(err: unknown): string | null {
     return msgs.length > 0 ? msgs.join('; ') : err.message;
   }
   if (err instanceof FreightHttpError) return err.message;
+  // ⚠️ Before the network arm — a subclass (#1094). Its message says whether a
+  // repeat is safe (a read) or must wait for a check (a purchase).
+  if (err instanceof FreightTimeoutError) return err.message;
   if (err instanceof FreightNetworkError) return 'Falha de rede ao falar com o Melhor Envio.';
   return null;
 }

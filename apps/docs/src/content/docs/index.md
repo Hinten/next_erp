@@ -3,7 +3,7 @@ title: Delfrance
 description: Open-source ERP — Next.js rewrite of the Delfrance Flutter app.
 template: splash
 hero:
-  tagline: ERP for business process automation. Multi-tenant, plugin-based, Firebase-backed.
+  tagline: ERP for business process automation. Multi-tenant, schema-driven, Firebase-backed.
   actions:
     - text: Get started
       link: /getting-started/overview/

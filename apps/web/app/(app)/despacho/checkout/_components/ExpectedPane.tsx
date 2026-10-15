@@ -7,6 +7,7 @@ import type { Firestore } from 'firebase/firestore';
 import {
   componentProgress,
   kitEquivalents,
+  nomeDoItem,
   type EngineProduto,
   type ExpectedComponent,
   type ExpectedItem,
@@ -70,7 +71,7 @@ const ItemRow = memo(function ItemRow({
         <ProdutoFoto db={db} produto={produto} size={40} />
         <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
           <Text size="sm" truncate="end">
-            {produto?.nome ?? component.produtoId}
+            {nomeDoItem({ produtoUid: component.produtoId }, produto)}
           </Text>
           {produto?.sku && (
             <Text size="xs" c="dimmed">
@@ -99,7 +100,7 @@ const ItemRow = memo(function ItemRow({
       <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
         <Group gap={6} wrap="nowrap">
           <Text size="sm" fw={500} truncate="end">
-            {item.nomeDeVenda ?? produto?.nome ?? 'Sem nome'}
+            {nomeDoItem(item, produto)}
           </Text>
           {item.ehKit && (
             <Badge size="xs" variant="outline" color="grape">

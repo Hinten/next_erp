@@ -64,6 +64,14 @@ describe('danfe/pdf retrato (A4)', () => {
     expect(info).toContain(model.infAdic.infCpl!); // infCpl still present
   });
 
+  it('prints a devolução’s origin referenced PER ITEM (DFeReferenciado), not only NFref (#1683)', () => {
+    const withRef = { ...model, ide: { ...model.ide, refNFes: [], refDFes: [REF_CHAVE] } };
+    expect(composeInfoComplementares(withRef)).toContain(`DF-e ref. ${REF_CHAVE}`);
+    // A chave already printed as NFref is not printed twice.
+    const both = { ...model, ide: { ...model.ide, refNFes: [REF_CHAVE], refDFes: [REF_CHAVE] } };
+    expect(composeInfoComplementares(both)).not.toContain('DF-e ref.');
+  });
+
   it('paginates a max-length infCpl (5000 chars) across pages instead of clipping', async () => {
     const big = { ...model, infAdic: { infCpl: 'PALAVRA '.repeat(625), infAdFisco: null } };
     const pdf = await renderRetrato(big);

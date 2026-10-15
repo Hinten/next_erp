@@ -21,9 +21,10 @@ describe('summarizePedidoErrors', () => {
     expect(s.firstTab).toBe('principal');
   });
 
-  it('routes preview-only tab fields to the tab that shows them', () => {
-    // `estado` and `itensDevolvidos` are rendered read-only via PlaceholderTab,
-    // so an error on them must mark the right tab, not report "fora do formulário".
+  it('routes tab-owned fields to the tab that edits them', () => {
+    // `estado` (Estado/Histórico) and `itensDevolvidos` (Devolução) are edited
+    // through their tab's own controls, not a plain input, so an error on them
+    // must mark the right tab, not report "fora do formulário".
     expect(summarizePedidoErrors(['estado']).firstTab).toBe('estado');
     expect(summarizePedidoErrors(['estado']).outsideKeys).toEqual([]);
     expect(summarizePedidoErrors(['itensDevolvidos']).firstTab).toBe('devolucao');

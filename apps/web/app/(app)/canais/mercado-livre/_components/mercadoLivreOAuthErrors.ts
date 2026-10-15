@@ -1,5 +1,9 @@
 'use client';
 
+import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
+} from '@/lib/mercado-livre/client';
 import { useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
 
 /**
@@ -50,12 +54,37 @@ const MENSAGENS: Readonly<Record<string, string>> = {
  * with Melhor Envio and Mercado Pago; only this channel's wording is local.
  */
 export function useMercadoLivreCallbackToast(): void {
-  useOAuthCallbackToast(CONFIG);
+  useOAuthCallbackToast(MERCADO_LIVRE_OAUTH_TOAST);
 }
 
-const CONFIG = {
+/**
+ * ⚠️ `mensagens` must be referentially STABLE: `useOAuthCallbackToast`
+ * destructures the config and lists `mensagens` (not the config object) among
+ * its effect dependencies, so a fresh message map per render would re-fire the
+ * notification on every render. Keeping the whole config a module-level
+ * constant is the simplest way to guarantee that. `ContaMercadoLivrePanel`
+ * hands this straight to `ConnectionPanel`'s `toast` prop.
+ */
+export const MERCADO_LIVRE_OAUTH_TOAST = {
   chave: 'ml',
   sucesso: 'Conta Mercado Livre conectada.',
   tituloErro: 'Falha ao conectar a conta Mercado Livre',
   mensagens: MENSAGENS,
 } as const;
+
+/**
+ * A failed `oauth/start` click, as operator copy — or `null` when the failure is
+ * not one of this client's, which makes `ConnectionPanel` rethrow it (root
+ * `CLAUDE.md` rule 6). Same contract as `describeMassImportStartError`.
+ *
+ * ⚠️ Deliberately NOT `describeMercadoLivreFailure`. That mapper rewrites
+ * `ML_REAUTH_REQUIRED` into "Conta Mercado Livre não conectada — reconecte em
+ * Canais de venda", which is precisely the button the operator has just
+ * clicked: the connect path is where a disconnected account is EXPECTED, so the
+ * backend's own message is the useful one here.
+ */
+export function describeMercadoLivreConnectFailure(err: unknown): string | null {
+  if (err instanceof MercadoLivreClientHttpError) return err.message;
+  if (err instanceof MercadoLivreClientNetworkError) return 'Falha de rede ao iniciar a conexão.';
+  return null;
+}

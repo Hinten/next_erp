@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import type { Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import { toOuterRef } from '@delfrance/schemas';
 
@@ -105,12 +105,7 @@ class FakeDb {
             if (!col.has(docId))
               throw Object.assign(new Error('no document to update'), { code: 5 });
             self.updates.push({ path: `${path}/${docId}`, patch });
-            const current = col.get(docId) ?? {};
-            const resolved: DocData = { ...current };
-            for (const [k, v] of Object.entries(patch)) {
-              resolved[k] = resolveFieldValue(current[k], v);
-            }
-            col.set(docId, resolved);
+            col.set(docId, { ...(col.get(docId) ?? {}), ...patch });
           },
           delete: async () => {
             col.delete(docId);
@@ -176,32 +171,6 @@ function parentDocId(colPath: string): string {
   return segs[segs.length - 2] ?? '';
 }
 
-/**
- * Resolve one patch field against the CURRENT stored value — expands a real
- * `FieldValue.arrayUnion(...)` sentinel (the legacy denorm writes `import.ts`
- * performs on the SAME produto this module later prunes) into an actual
- * array-union so both writers' effects compose correctly, instead of the
- * simpler import.test.ts FakeDb which only ever inspects the raw patch object
- * and never needs the merged array itself. Dedup is by VALUE (`JSON.stringify`
- * — sufficient for these plain-data fixtures), matching real Firestore
- * `arrayUnion` semantics. Anything else is a plain overwrite.
- */
-function resolveFieldValue(existing: unknown, incoming: unknown): unknown {
-  if (incoming instanceof FieldValue) {
-    const elements = (incoming as unknown as { elements?: unknown[] }).elements;
-    if (Array.isArray(elements)) {
-      const base = Array.isArray(existing) ? existing : [];
-      const next = [...base];
-      for (const el of elements) {
-        if (!next.some((e) => JSON.stringify(e) === JSON.stringify(el))) next.push(el);
-      }
-      return next;
-    }
-    return existing; // an unsupported sentinel — not needed by this module's writes
-  }
-  return incoming;
-}
-
 const asDb = (db: FakeDb) => db as unknown as Firestore;
 
 /* --------------------------------- fixtures ------------------------------- */
@@ -241,10 +210,7 @@ function seedBaseline(db: FakeDb, opts: { withThirdChild?: boolean } = {}): void
     nome: 'Camiseta Família (legado)',
     sku: null,
     paiId: null,
-    marketplace: [{ integracaoUid: CONTA, externalId: SOURCE_ITEM_ID }],
-    marketplaceIds: [SOURCE_ITEM_ID],
     integracoesComProduto: [CONTA],
-    statusProdutosMarketplace: {},
   });
   db.seed(`produtos/${TP1}/produtoMercadoLivre`, SOURCE_PML_DOC_ID, { ...SOURCE_PML_RAW });
 
@@ -377,34 +343,13 @@ describe('handleUptinMigration — fresh migration', () => {
     expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(false);
     expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(false);
 
-    // parent denorm cleaned: the OLD (source-listing) marketplace entry is gone
-    // and stamped deleted under the MATCHED entry's own key (models.dart's
-    // `toStatusKey`) — but TP1's OWN entry for the family it now hosts (stamped
-    // by `importProduto`'s own legacy denorm write, `relevantData.isUserProductModel`)
-    // correctly SURVIVES the cleanup (a DIFFERENT externalId, no match).
     const tp1 = db.docs('produtos').get(TP1)!;
-    const marketplace = tp1.marketplace as Array<Record<string, unknown>>;
-    expect(marketplace).toHaveLength(1);
-    expect(marketplace[0]).toMatchObject({
-      integracaoUid: CONTA,
-      externalId: FAMILY_ID,
-      relevantData: { isUserProductModel: true },
-    });
-    expect(tp1.marketplaceIds).toEqual([FAMILY_ID]);
-    // Unchanged, and since #920 for a different reason: the prune no longer
-    // recomputes this array from `marketplace` (that derivation was #431 lock 2,
-    // and it wrote path-form ids no reader could match). The value here is the
-    // seeded one, passed through untouched — `onProdutoMercadoLivreLinkChanged`
-    // reacts to the source link this prune deletes in the same batch.
     expect(tp1.integracoesComProduto).toEqual([CONTA]);
-    expect(
-      (tp1.statusProdutosMarketplace as Record<string, unknown>)[`${CONTA}_${SOURCE_ITEM_ID}`],
-    ).toMatchObject({ deleted: true, error: false, enviarEstoque: false });
   });
 });
 
 describe('handleUptinMigration — partial migration', () => {
-  it('does NOT prune the source PML/denorm while a sibling variation is still unmigrated, but still deletes the processed old links', async () => {
+  it('does NOT prune the source PML while a sibling variation is still unmigrated, but still deletes the processed old links', async () => {
     const db = new FakeDb();
     seedBaseline(db, { withThirdChild: true }); // CHILD_3/OLD_LINK_3 (variation 1003) never appears in new_items
     const api = makeMigrationApi({
@@ -421,17 +366,10 @@ describe('handleUptinMigration — partial migration', () => {
     expect(db.docs(`produtos/${CHILD_1}/variacaoMercadoLivre`).has(OLD_LINK_1)).toBe(false);
     expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(false);
 
-    // NOT fully migrated → source PML + its denorm entry SURVIVE, and the
-    // still-pending sibling's old link is untouched.
+    // NOT fully migrated → source PML survives and the still-pending sibling's
+    // old link is untouched.
     expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(true);
     expect(db.docs(`produtos/${CHILD_3}/variacaoMercadoLivre`).has(OLD_LINK_3)).toBe(true);
-
-    // no prune → the SOURCE listing's own denorm entry is untouched (still
-    // present alongside the family entry `importProduto` added while importing
-    // the two covered members).
-    const tp1 = db.docs('produtos').get(TP1)!;
-    const marketplace = tp1.marketplace as Array<Record<string, unknown>>;
-    expect(marketplace).toContainEqual({ integracaoUid: CONTA, externalId: SOURCE_ITEM_ID });
   });
 });
 

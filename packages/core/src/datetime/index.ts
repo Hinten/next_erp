@@ -241,3 +241,113 @@ export function coerceToMillis(value: unknown): MillisSinceEpoch | null {
   }
   return null;
 }
+
+/* ---------------------- civil time in an explicit zone --------------------- */
+
+/*
+ * Everything below takes the IANA zone as a PARAMETER and never reads the ambient
+ * process timezone (see the timezone policy in the module docblock).
+ * `@delfrance/core` cannot import the ERP's fiscal-zone constant (`FUSO_FISCAL`, in
+ * `@delfrance/schemas`), so the caller passes it. A bad zone id makes Temporal throw
+ * a `RangeError` — a programming error, deliberately NOT swallowed here; only a
+ * malformed civil DATE, which is user input, becomes `null`.
+ */
+
+/** A civil date exactly as `Temporal.PlainDate.toString()` prints it: `YYYY-MM-DD`. */
+const DATA_CIVIL_ISO = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Parse a strict `YYYY-MM-DD` civil date, or `null` when it is not one.
+ *
+ * The regex comes FIRST because `Temporal.PlainDate.from` also accepts a full
+ * date-time string — `'2026-09-30T10:00:00'` parses and silently drops the time —
+ * and a loose `'2026-9-30'` must not be read as a date either. An impossible day
+ * (`2026-02-30`) is rejected by the ISO parser; `overflow: 'reject'` states that
+ * intent outright, so a later switch to field-based construction cannot turn it into
+ * the clamp to the last day of the month that the default `'constrain'` performs.
+ * Only the `RangeError` Temporal raises for "not a valid date" is caught; anything
+ * else is a real fault and propagates.
+ */
+function parsePlainDate(dataCivil: string): Temporal.PlainDate | null {
+  if (!DATA_CIVIL_ISO.test(dataCivil)) return null;
+  try {
+    return Temporal.PlainDate.from(dataCivil, { overflow: 'reject' });
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    return null;
+  }
+}
+
+/**
+ * Format an instant as an ISO-8601 string in `timeZone` WITH its UTC offset and
+ * millisecond precision: `YYYY-MM-DDTHH:mm:ss.SSS±HH:MM` — never `Z`, and never
+ * with a bracketed zone annotation. This is the shape Mercado Pago's Checkout Pro
+ * documents for `expiration_date_to` (`2026-09-29T23:59:59.000-03:00`).
+ *
+ * The offset is the zone's offset AT THAT INSTANT, not a constant: Brazil observed
+ * daylight saving until 2019, so `2018-12-01` is `-02:00` and `2018-06-01` is
+ * `-03:00`. Hard-coding `-03:00` would put every summer-2018 deadline an hour off.
+ *
+ * @throws RangeError when `ms` is not an integer in Temporal's range or `timeZone`
+ *   is not a known IANA zone id.
+ */
+export function formatIsoNoFuso(ms: MillisSinceEpoch, timeZone: string): string {
+  const zoned = Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(timeZone);
+  return zoned.toString({ timeZoneName: 'never', fractionalSecondDigits: 3 });
+}
+
+/**
+ * The instant, as epoch milliseconds, of `23:59:59.000` on the civil day
+ * `dataCivil` (`YYYY-MM-DD`) in `timeZone` — the "valid until the end of that day"
+ * deadline of a payment link. `null` when `dataCivil` is not a real calendar date
+ * in exactly that shape (`'2026-02-30'`, `'2026-9-30'`, `''`).
+ *
+ * Deliberately `23:59:59`, not `24:00:00` / the next midnight: the deadline must
+ * still read as the SAME civil day when it is turned back into a date
+ * ({@link dataCivilNoFuso}) or printed ({@link formatIsoNoFuso}). When the zone's
+ * clock repeats that wall time (a fall-back at midnight), the EARLIER occurrence is
+ * returned — Temporal's default `'compatible'` disambiguation — so the deadline is
+ * never later than the operator's day.
+ *
+ * @throws RangeError when `timeZone` is not a known IANA zone id.
+ */
+export function fimDoDiaNoFuso(dataCivil: string, timeZone: string): MillisSinceEpoch | null {
+  const data = parsePlainDate(dataCivil);
+  if (data === null) return null;
+  const fim = data.toPlainDateTime({ hour: 23, minute: 59, second: 59 });
+  return fim.toZonedDateTime(timeZone).epochMilliseconds;
+}
+
+/**
+ * The civil date (`YYYY-MM-DD`) an instant falls on in `timeZone`. The same instant
+ * is a different day in different zones — `2026-09-28T02:30Z` is the 28th in UTC and
+ * still the 27th in São Paulo — which is exactly why a bare `toISOString().slice(0,
+ * 10)` shows the operator the wrong day for any evening deadline.
+ *
+ * @throws RangeError when `ms` is not an integer in Temporal's range or `timeZone`
+ *   is not a known IANA zone id.
+ */
+export function dataCivilNoFuso(ms: MillisSinceEpoch, timeZone: string): string {
+  const zoned = Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(timeZone);
+  return zoned.toPlainDate().toString();
+}
+
+/**
+ * Calendar arithmetic on a civil date: `dataCivil` (`YYYY-MM-DD`) plus `dias` days
+ * (negative subtracts), as `YYYY-MM-DD`. Whole calendar days — there is no zone, so
+ * no daylight-saving day is ever 23 or 25 hours long here.
+ *
+ * `null` when `dataCivil` is malformed or not a real date, and also when the sum
+ * cannot be represented (`dias` not an integer, or a result outside Temporal's
+ * range) — a caller feeding it a form value gets `null` to render, not an exception.
+ */
+export function somarDiasCivis(dataCivil: string, dias: number): string | null {
+  const data = parsePlainDate(dataCivil);
+  if (data === null) return null;
+  try {
+    return data.add({ days: dias }).toString();
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    return null;
+  }
+}

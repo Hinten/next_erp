@@ -12,7 +12,10 @@ import { type FieldConfig, ObjectView } from '@delfrance/ui';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
-import { buildCategoriaImpostoTransactionWrites } from '@/lib/categorias/clientPort';
+import {
+  buildCategoriaImpostoTransactionWrites,
+  validarImpostosDaCategoria,
+} from '@/lib/categorias/clientPort';
 import {
   cascadeCategoriaNomeCompleto,
   listDescendantIdsForPicker,
@@ -37,6 +40,7 @@ export default function CategoriaPage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.categoria.write);
+  const { allowed: canDelete } = usePermission(PERM.categoria.delete);
   const db = getFirebaseFirestore();
   const parentBreadcrumbRef = useRef<string | null>(null);
   /** True only when deriveOnSave produced a different `nomeCompleto`. */
@@ -118,7 +122,10 @@ export default function CategoriaPage() {
         fields={fields}
         excludedFields={CATEGORIA_EXCLUDED}
         transientFields={CATEGORIA_TRANSIENT}
-        transactionWrites={(id, values) => buildCategoriaImpostoTransactionWrites(db, id, values)}
+        transactionWrites={(id, values, context) =>
+          buildCategoriaImpostoTransactionWrites(db, id, values, context)
+        }
+        validate={validarImpostosDaCategoria}
         deriveOnSave={(values) => {
           const existing = typeof values.nomeCompleto === 'string' ? values.nomeCompleto : null;
           const nomeCompleto = deriveNomeCompletoOnSave({
@@ -141,7 +148,7 @@ export default function CategoriaPage() {
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
-        canDelete={canWrite}
+        canDelete={canDelete}
         onDelete={handleDelete}
         onSaved={() => router.replace('/categorias')}
       />

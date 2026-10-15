@@ -1,16 +1,47 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useEffect } from 'react';
+import { FormProvider, useForm, type FieldValues, type UseFormReturn } from 'react-hook-form';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore, FirestoreError } from 'firebase/firestore';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import type { HistoricoModificacao } from '@delfrance/schemas';
+import type { ObjectViewTransactionDocuments } from '@delfrance/ui';
+import type { RevertPrefillBase } from '@/lib/produtos/revert';
 
 // Hoisted mocks (vi.mock factories can't close over normal consts).
 const h = vi.hoisted(() => ({
+  documents: { current: null as ObjectViewTransactionDocuments | null },
   getDocs: vi.fn(),
-  applyRevert: vi.fn(),
+  getDoc: vi.fn(),
+  buildRevertPrefill: vi.fn(
+    (_target: unknown, _base: RevertPrefillBase): { key: string; value: unknown } => ({
+      key: 'nome',
+      value: 'Antigo',
+    }),
+  ),
   checkRevert: vi.fn(),
   isRevertible: vi.fn(() => ({ ok: true, reason: null }) as { ok: boolean; reason: string | null }),
+  buildDocumentRestorePrefill: vi.fn((): { key: string; value: unknown } => ({
+    key: 'extraData',
+    value: { descricao: 'Antigo' },
+  })),
+  checkDocumentRestore: vi.fn(),
+  isDocumentRestorable: vi.fn(
+    () => ({ ok: true, reason: null }) as { ok: boolean; reason: string | null },
+  ),
+  /** Re-declared here because the module under mock is fully replaced. */
+  RevertPrefillError: class RevertPrefillError extends Error {},
+  toasts: [] as Array<{ title?: string; message?: string }>,
+  goToSection: vi.fn(),
+  sectionOfField: vi.fn((key: string): string | null => (key === 'nome' ? 'Dados gerais' : null)),
+  sections: {
+    current: null as {
+      activeSection: string | null;
+      goToSection: (s: string) => void;
+      sectionOfField: (k: string) => string | null;
+    } | null,
+  },
   snapState: {
     current: {
       data: undefined,
@@ -33,7 +64,12 @@ vi.mock('@delfrance/data/hooks', async () => {
   return { ...actual, useSnapshotWithDocs: () => h.snapState.current };
 });
 
-vi.mock('firebase/firestore', () => ({ getDocs: h.getDocs }));
+vi.mock('firebase/firestore', () => ({
+  getDocs: h.getDocs,
+  getDoc: h.getDoc,
+  getDocsFromServer: h.getDocs,
+  getDocFromServer: h.getDoc,
+}));
 vi.mock('@/lib/data/historicoModificacoesCollection', () => ({
   historicoModificacoesCollection: {
     resolvePath: () => 'produtos/p1/historicoDeModificacoes',
@@ -41,10 +77,50 @@ vi.mock('@/lib/data/historicoModificacoesCollection', () => ({
     docRef: (_db: unknown, _ctx: unknown, id: string) => ({ __marker: 'docRef', id }),
   },
 }));
+vi.mock('@mantine/notifications', () => ({
+  notifications: {
+    show: (args: { title?: string; message?: string }) =>
+      h.toasts.push({ title: args.title, message: args.message }),
+  },
+}));
+// The seeding reads' handles. Stubbed rather than built through the real
+// `defineCollection`, which the `@delfrance/data` mock above does not provide.
+vi.mock('@/lib/data/impostoProdutoCollection', () => ({
+  impostoProdutoCollection: {
+    ref: () => ({ __marker: 'impostoRef' }),
+    docRef: (_db: unknown, _ctx: unknown, id: string) => ({
+      id,
+      path: 'produtos/p1/imposto/' + id,
+    }),
+  },
+}));
+vi.mock('@/lib/data/operacaoCollection', () => ({
+  operacaoCollection: { ref: () => ({ __marker: 'operacaoRef' }) },
+}));
+vi.mock('@/lib/data/produtoExtraDataCollection', () => ({
+  produtoExtraDataCollection: {
+    docRef: (_db: unknown, ctx: unknown, id: string) => ({
+      __marker: 'extraDataRef',
+      ctx,
+      id,
+      path: 'produtos/p1/extraData/' + id,
+    }),
+  },
+}));
+// `ObjectView` publishes this in production; the tab optional-chains it, so a
+// spy is what makes the "jump to the field's tab" half of a revert assertable.
+vi.mock('@delfrance/ui', () => ({
+  useObjectViewSections: () => h.sections.current,
+  useObjectViewTransactionDocuments: () => h.documents.current,
+}));
 vi.mock('@/lib/produtos/revert', () => ({
-  applyRevert: h.applyRevert,
+  buildRevertPrefill: h.buildRevertPrefill,
   checkRevert: h.checkRevert,
   isRevertible: h.isRevertible,
+  buildDocumentRestorePrefill: h.buildDocumentRestorePrefill,
+  checkDocumentRestore: h.checkDocumentRestore,
+  isDocumentRestorable: h.isDocumentRestorable,
+  RevertPrefillError: h.RevertPrefillError,
 }));
 // The actor column reads `usuarios` behind a permission gate — a whole
 // dependency chain (auth claims, TanStack, a second collection handle) that
@@ -99,13 +175,44 @@ function setSnap(state: Partial<SnapshotState<SnapshotRow<HistoricoModificacao>[
   };
 }
 
+/**
+ * The live form the tab stages into. `ObjectView` mounts the `FormProvider` in
+ * production, so the harness does too — "Restaurar" writes into this form and
+ * nowhere else, which is the whole point of #660.
+ */
+const formRef: { current: UseFormReturn<FieldValues> | null } = { current: null };
+
+function Harness({ produtoId = 'p1', disabled }: { produtoId?: string; disabled?: boolean }) {
+  const form = useForm<FieldValues>({
+    defaultValues: { nome: 'Novo', extraData: null, impostos: null },
+  });
+  // From an effect, never during render — RHF's `form` is stable, and the
+  // React Compiler rejects a render-phase write to an outer binding.
+  useEffect(() => {
+    formRef.current = form;
+  }, [form]);
+  return (
+    <MantineTestProvider>
+      <FormProvider {...form}>
+        {/* Reading `isDirty` HERE is what subscribes the harness to it: RHF's
+            formState is a proxy that only tracks the flags a render actually
+            read, so asserting on `formRef.current.formState.isDirty` without
+            this would report a stale `false`. */}
+        <span data-testid="form-dirty">{String(form.formState.isDirty)}</span>
+        <ModificacoesManager db={db} produtoId={produtoId} disabled={disabled} />
+      </FormProvider>
+    </MantineTestProvider>
+  );
+}
+
+/** Whether the harness form holds unsaved edits, per its own subscription. */
+function formIsDirty(): boolean {
+  return screen.getByTestId('form-dirty').textContent === 'true';
+}
+
 function renderManager(entries: RawEntry[] = [], loading = false) {
   setSnap({ data: entries.map(toRow), loading });
-  return render(
-    <MantineTestProvider>
-      <ModificacoesManager db={db} produtoId="p1" />
-    </MantineTestProvider>,
-  );
+  return render(<Harness />);
 }
 
 async function expandRow(index: number) {
@@ -113,13 +220,42 @@ async function expandRow(index: number) {
   fireEvent.click(toggles[index]!);
 }
 
+beforeEach(() => {
+  h.buildRevertPrefill.mockReturnValue({ key: 'nome', value: 'Antigo' });
+  h.checkRevert.mockResolvedValue({ conflict: false, currentValue: 'Novo' });
+  h.isRevertible.mockReturnValue({ ok: true, reason: null });
+  h.buildDocumentRestorePrefill.mockReturnValue({
+    key: 'extraData',
+    value: { descricao: 'Antigo' },
+  });
+  h.checkDocumentRestore.mockResolvedValue({ conflict: false, currentData: null });
+  h.isDocumentRestorable.mockReturnValue({ ok: true, reason: null });
+  h.sectionOfField.mockImplementation((key: string) =>
+    key === 'nome' || key === 'extraData' ? 'Dados gerais' : null,
+  );
+  h.sections.current = {
+    activeSection: 'Modificações',
+    goToSection: h.goToSection,
+    sectionOfField: h.sectionOfField,
+  };
+});
+
 afterEach(() => {
   h.snapState.current = { data: undefined, loading: true, error: undefined };
+  h.documents.current = null;
   h.getDocs.mockReset();
-  h.applyRevert.mockReset();
+  h.getDoc.mockReset();
+  h.buildRevertPrefill.mockReset();
   h.checkRevert.mockReset();
   h.isRevertible.mockReset();
-  h.isRevertible.mockReturnValue({ ok: true, reason: null });
+  h.buildDocumentRestorePrefill.mockReset();
+  h.checkDocumentRestore.mockReset();
+  h.isDocumentRestorable.mockReset();
+  h.goToSection.mockReset();
+  h.sectionOfField.mockReset();
+  h.sections.current = null;
+  h.toasts.length = 0;
+  formRef.current = null;
 });
 
 // The two pagination tests seed a full live page (`PAGE_SIZE` = 50) so that
@@ -142,11 +278,7 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
         message: 'Missing or insufficient permissions.',
       } as FirestoreError,
     });
-    render(
-      <MantineTestProvider>
-        <ModificacoesManager db={db} produtoId="p1" />
-      </MantineTestProvider>,
-    );
+    render(<Harness />);
     expect(await screen.findByText(/permission-denied/)).toBeTruthy();
   });
 
@@ -234,17 +366,20 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
         ],
       });
     });
-    rerender(
-      <MantineTestProvider>
-        <ModificacoesManager db={db} produtoId="p1" />
-      </MantineTestProvider>,
-    );
+    rerender(<Harness />);
 
     expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(2);
     expect(screen.getByText(/Campos: sku/)).toBeTruthy();
   });
 
   it('never shows Restaurar on a create or delete row, even with revertible fields', async () => {
+    // The produto DOCUMENT's own delete entries (`subcolecao: null`) are
+    // permanently out of scope for "Restaurar documento" — real
+    // `isDocumentRestorable` says so; mirrored here since it's mocked.
+    h.isDocumentRestorable.mockReturnValue({
+      ok: false,
+      reason: 'Este documento não pode ser restaurado.',
+    });
     renderManager([
       {
         id: 'evt-create',
@@ -307,6 +442,410 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
     })) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(button.title).toBe('Valor muito grande para restaurar automaticamente.');
+  });
+
+  /** One revertible produto-doc edit, the shape every staging test starts from. */
+  const nomeUpdate: RawEntry = {
+    id: 'evt-update',
+    path: 'produtos/p1',
+    subcolecao: null,
+    docId: 'p1',
+    kind: 'update',
+    campos: ['nome'],
+    timestamp: 1,
+    changes: { nome: { old: 'Antigo', new: 'Novo' } },
+  };
+
+  async function clickRestaurar(field = 'nome') {
+    await expandRow(0);
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: `Restaurar ${field}` }));
+    });
+  }
+
+  function captureBaselines(baseline?: Record<string, unknown> | null) {
+    const documents = {
+      getBaseline: vi.fn((_path: string) => baseline),
+      seedBaseline: vi.fn((_path: string, data: Record<string, unknown> | null) => {
+        if (baseline === undefined) baseline = data;
+      }),
+      rebase: vi.fn((_path: string, data: Record<string, unknown> | null) => {
+        baseline = data;
+      }),
+      seedFormField: vi.fn(),
+      getFormBaseline: vi.fn(() => undefined),
+      rebaseFormField: vi.fn(),
+      clear: vi.fn(),
+      subscribe: () => () => {},
+      getVersion: () => 0,
+    } satisfies ObjectViewTransactionDocuments;
+    h.documents.current = documents;
+    return documents;
+  }
+
+  it.each([
+    { baseline: null, shouldRebase: true },
+    { baseline: undefined, shouldRebase: false },
+    { baseline: { descricao: 'Original version' }, shouldRebase: false },
+  ])(
+    'keeps an extraData field prefill bound to its server version ($baseline)',
+    async ({ baseline, shouldRebase }) => {
+      const documents = captureBaselines(baseline);
+      const recreated = { descricao: 'nova', marca: 'Server brand' };
+      h.getDoc.mockResolvedValue({ data: () => recreated });
+      h.buildRevertPrefill.mockImplementation((_target, base) => ({
+        key: 'extraData',
+        value: { ...base.extraData, descricao: 'antiga' },
+      }));
+      renderManager([
+        {
+          ...nomeUpdate,
+          subcolecao: 'extraData',
+          docId: 'singleton',
+          campos: ['descricao'],
+          changes: { descricao: { old: 'antiga', new: 'nova' } },
+        },
+      ]);
+      await clickRestaurar('descricao');
+
+      expect(formRef.current?.getValues('extraData')).toMatchObject({
+        descricao: 'antiga',
+        marca: 'Server brand',
+      });
+      expect(documents.getBaseline('produtos/p1/extraData/singleton')).toEqual(
+        baseline ?? recreated,
+      );
+      if (shouldRebase) {
+        expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', recreated);
+        expect(documents.rebaseFormField).toHaveBeenCalledWith('extraData', recreated);
+      } else {
+        expect(documents.rebase).not.toHaveBeenCalled();
+        expect(documents.rebaseFormField).not.toHaveBeenCalled();
+      }
+      expect(formIsDirty()).toBe(true);
+      expect(h.toasts.at(-1)?.message).toContain('Nada foi gravado ainda');
+    },
+  );
+
+  it('stages the old value in the FORM and writes nothing (#660)', async () => {
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+
+    // The form now holds the old value and is dirty — `ObjectView.doSave`
+    // writes only dirty keys, so without the dirty flag it would never persist.
+    expect(formRef.current?.getValues('nome')).toBe('Antigo');
+    expect(formIsDirty()).toBe(true);
+    // Nothing was written: staging is a pure form edit until "Salvar".
+    expect(h.buildRevertPrefill).toHaveBeenCalledTimes(1);
+    expect(h.getDoc).not.toHaveBeenCalled();
+  });
+
+  it('moves the operator to the tab that renders the staged field', async () => {
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+
+    expect(h.sectionOfField).toHaveBeenCalledWith('nome');
+    expect(h.goToSection).toHaveBeenCalledWith('Dados gerais');
+  });
+
+  it('stays put when the staged key has no tab of its own', async () => {
+    h.sectionOfField.mockReturnValue(null);
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+
+    expect(h.goToSection).not.toHaveBeenCalled();
+  });
+
+  it('says the value is staged, not saved — and stops saying so once the form is clean', async () => {
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+
+    expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+    expect(screen.getByText(/salve para aplicar/)).toBeTruthy();
+    expect(h.toasts.at(-1)?.title).toBe('Valor restaurado no formulário');
+
+    // A save resets the form to pristine — which is exactly when nothing is
+    // staged any more, so the notes have to go with it.
+    await act(async () => {
+      formRef.current?.reset({ nome: 'Antigo', extraData: null, impostos: null });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    });
+    expect(screen.queryByText(/salve para aplicar/)).toBeNull();
+  });
+
+  it('does not resurrect a committed note when the form goes dirty again', async () => {
+    // `staged` is only ever added to, so a form-WIDE dirty gate would hide the
+    // notes while pristine and bring every one of them back the moment the
+    // operator touches any field — telling them a revert that was already
+    // written is still unsaved. The gate has to be per-key.
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+    expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+
+    // Saved: the form resets to the persisted values and goes pristine.
+    await act(async () => {
+      formRef.current?.reset({ nome: 'Antigo', extraData: null, impostos: null });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    });
+
+    // The operator now edits something ELSE — "Salvar e continuar" keeps them
+    // on this screen, so this is the ordinary next move.
+    await act(async () => {
+      formRef.current?.setValue('sku', 'SKU-2', { shouldDirty: true });
+    });
+
+    expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    expect(screen.queryByText(/salve para aplicar/)).toBeNull();
+  });
+
+  it('drops a note when the operator types the staged field back by hand', async () => {
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+    expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+
+    // Undoing the staged edit leaves nothing staged, with no save involved.
+    await act(async () => {
+      formRef.current?.setValue('nome', 'Novo', { shouldDirty: true });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    });
+    expect(screen.queryByText(/salve para aplicar/)).toBeNull();
+  });
+
+  it('retires an extraData note too, whose dirty flag is a nested shape', async () => {
+    // `extraData` and `impostos` are ONE form key each holding a whole
+    // object/array, so RHF tracks their dirtiness as a nested structure rather
+    // than a boolean. A gate that only understood booleans would leave these
+    // notes on screen for ever.
+    h.buildRevertPrefill.mockReturnValue({
+      key: 'extraData',
+      value: { descricao: 'antiga', marca: 'M' },
+    });
+    h.sectionOfField.mockReturnValue('Descrição');
+    // The Descrição tab has not been opened, so the staging path reads the
+    // singleton itself before folding the revert into it.
+    h.getDoc.mockResolvedValue({ data: () => ({}) });
+
+    renderManager([
+      {
+        ...nomeUpdate,
+        subcolecao: 'extraData',
+        docId: 'singleton',
+        campos: ['descricao'],
+        changes: { descricao: { old: 'antiga', new: 'nova' } },
+      },
+    ]);
+    await clickRestaurar('descricao');
+    expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+
+    await act(async () => {
+      formRef.current?.reset({
+        nome: 'Novo',
+        extraData: { descricao: 'antiga', marca: 'M' },
+        impostos: null,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    });
+  });
+
+  it('warns before staging when the field moved again, then stages on confirm', async () => {
+    h.checkRevert.mockResolvedValue({ conflict: true, currentValue: 'Mais Novo' });
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+
+    // Advisory only — and more useful here than before a write was: nothing has
+    // been staged yet, so the operator can still walk away.
+    expect(await screen.findByText('Valor mudou desde a modificação')).toBeTruthy();
+    expect(h.buildRevertPrefill).not.toHaveBeenCalled();
+    expect(formIsDirty()).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Restaurar mesmo assim' }));
+    });
+    expect(formRef.current?.getValues('nome')).toBe('Antigo');
+    expect(formIsDirty()).toBe(true);
+  });
+
+  it('reports a revert that has nowhere to land instead of crashing', async () => {
+    h.buildRevertPrefill.mockImplementation(() => {
+      throw new h.RevertPrefillError('A operação deste imposto não está mais ativa');
+    });
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+
+    expect(h.toasts.at(-1)).toEqual({
+      title: 'Falha ao restaurar',
+      message: 'A operação deste imposto não está mais ativa',
+    });
+    expect(formIsDirty()).toBe(false);
+  });
+
+  it('offers no Restaurar to a viewer who could never save it', async () => {
+    setSnap({ data: [nomeUpdate].map(toRow), loading: false });
+    render(<Harness disabled />);
+    await expandRow(0);
+
+    expect(screen.queryByRole('button', { name: /^Restaurar/ })).toBeNull();
+  });
+
+  describe('Restaurar documento (#648)', () => {
+    /** A deleted `extraData` singleton — every field's `old` side, `new: null`. */
+    const extraDataDelete: RawEntry = {
+      id: 'evt-delete-extradata',
+      path: 'produtos/p1/extraData/singleton',
+      subcolecao: 'extraData',
+      docId: 'singleton',
+      kind: 'delete',
+      campos: ['descricao'],
+      timestamp: 5,
+      changes: { descricao: { old: 'Descrição antiga', new: null } },
+    };
+
+    async function clickRestaurarDocumento() {
+      await expandRow(0);
+      await act(async () => {
+        fireEvent.click(await screen.findByRole('button', { name: 'Restaurar documento' }));
+      });
+    }
+
+    beforeEach(() => {
+      // `loadPrefillBase` reads the (unloaded) extraData singleton the same way
+      // the field-level revert does — see `retires an extraData note too` above.
+      h.getDoc.mockResolvedValue({ data: () => ({}) });
+    });
+
+    it('stages the reconstructed document in the FORM and writes nothing', async () => {
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+      expect(formIsDirty()).toBe(true);
+      expect(h.buildDocumentRestorePrefill).toHaveBeenCalledTimes(1);
+      expect(h.buildDocumentRestorePrefill).toHaveBeenCalledWith(
+        expect.objectContaining({
+          produtoId: 'p1',
+          subcolecao: 'extraData',
+          docId: 'singleton',
+          changes: extraDataDelete.changes,
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('binds a staged undelete to the confirmed absent version, even if the prefill read sees a later recreation', async () => {
+      const documents = captureBaselines();
+      h.getDoc.mockResolvedValue({ data: () => ({ descricao: 'Later recreation' }) });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+      expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', null);
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+      expect(h.toasts.at(-1)?.message).toContain('Nada foi gravado ainda');
+    });
+
+    it('binds the save guard to the version explicitly confirmed in the restore dialog', async () => {
+      const documents = captureBaselines();
+      const reviewed = { descricao: 'Reviewed recreation' };
+      h.checkDocumentRestore.mockResolvedValue({ conflict: true, currentData: reviewed });
+      h.getDoc.mockResolvedValue({ data: () => ({ descricao: 'Third writer' }) });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+      expect(documents.rebase).not.toHaveBeenCalled();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Restaurar mesmo assim' }));
+      });
+      expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', reviewed);
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+    });
+
+    it('moves the operator to the tab the restored document renders in', async () => {
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(h.sectionOfField).toHaveBeenCalledWith('extraData');
+      expect(h.goToSection).toHaveBeenCalledWith('Dados gerais');
+    });
+
+    it('says the document is staged, not saved', async () => {
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+      expect(h.toasts.at(-1)?.title).toBe('Documento restaurado no formulário');
+    });
+
+    it('checks for a conflict before staging, and warns instead of overwriting', async () => {
+      h.checkDocumentRestore.mockResolvedValue({
+        conflict: true,
+        currentData: { descricao: 'Já preenchido de novo' },
+      });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(await screen.findByText('Documento já existe')).toBeTruthy();
+      expect(h.buildDocumentRestorePrefill).not.toHaveBeenCalled();
+      expect(formIsDirty()).toBe(false);
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Restaurar mesmo assim' }));
+      });
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+      expect(formIsDirty()).toBe(true);
+    });
+
+    it('shows a disabled Restaurar documento with a reason when a value is too large', async () => {
+      h.isDocumentRestorable.mockReturnValue({
+        ok: false,
+        reason: 'Um ou mais valores são grandes demais para restaurar automaticamente.',
+      });
+      renderManager([extraDataDelete]);
+      await expandRow(0);
+
+      const button = (await screen.findByRole('button', {
+        name: 'Restaurar documento',
+      })) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe(
+        'Um ou mais valores são grandes demais para restaurar automaticamente.',
+      );
+    });
+
+    it('reports a restore that has nowhere to land instead of crashing', async () => {
+      h.buildDocumentRestorePrefill.mockImplementation(() => {
+        throw new h.RevertPrefillError('A operação deste imposto não está mais ativa');
+      });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(h.toasts.at(-1)).toEqual({
+        title: 'Falha ao restaurar',
+        message: 'A operação deste imposto não está mais ativa',
+      });
+      expect(formIsDirty()).toBe(false);
+    });
+
+    it('offers no Restaurar documento to a read-only viewer', async () => {
+      setSnap({ data: [extraDataDelete].map(toRow), loading: false });
+      render(<Harness disabled />);
+      await expandRow(0);
+
+      expect(screen.queryByRole('button', { name: 'Restaurar documento' })).toBeNull();
+    });
+
+    it('never appears on an update-kind entry, only delete', async () => {
+      renderManager([{ ...extraDataDelete, kind: 'update' }]);
+      await expandRow(0);
+
+      expect(screen.queryByRole('button', { name: 'Restaurar documento' })).toBeNull();
+    });
   });
 
   it('shows an enabled Restaurar for a whitelisted update field (changes come from the stream)', async () => {
@@ -403,11 +942,7 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
     act(() => {
       setSnap({ data: afterSlide.map(toRow) });
     });
-    rerender(
-      <MantineTestProvider>
-        <ModificacoesManager db={db} produtoId="p1" />
-      </MantineTestProvider>,
-    );
+    rerender(<Harness />);
 
     // Bridge keeps the evicted live row + the load-more tail.
     const rows = await screen.findAllByTestId('modificacao-entry');
@@ -469,11 +1004,7 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
         ],
       });
     });
-    rerender(
-      <MantineTestProvider>
-        <ModificacoesManager db={db} produtoId="p2" />
-      </MantineTestProvider>,
-    );
+    rerender(<Harness produtoId="p2" />);
 
     expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(1);
     expect(screen.getByText(/Campos: nome/)).toBeTruthy();

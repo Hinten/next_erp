@@ -58,6 +58,28 @@ Ambiente Nacional. Once the event is authorized (`protocolo 891...`), the DANFE
 may be printed on plain paper. After the outage, the **full NF-e must still be
 transmitted** to the home SEFAZ — with the **same chave** as the EPEC.
 
+**A duplicate EPEC is not a rejection of the NF-e** (NT 2014.001 v1.30, §3.8 /
+§3.9). Two cStats mean an EPEC is *already registered*:
+
+- **573** — "Duplicidade de Evento", rule 3P15-10, keyed on tpEvento + chNFe +
+  nSeqEvento (the same chave already has an EPEC);
+- **485** — "Duplicidade de numeração do EPEC", rule 3P12-10, keyed on modelo +
+  UF + CNPJ/CPF + série + número (the same número already has an EPEC).
+
+Which one an identical resend earns first is not documented. When the resend
+carries the **same signed bytes** as an earlier send whose reply was lost, the
+registered EPEC is ours: keep the NF-e EPEC-approved (its protocol may be missing
+— recover it via DistDFe, or wait for the full NF-e's authorization) and never
+regenerate it. A regenerated NF-e (new dhEmi) no longer matches the EPEC, and the
+home SEFAZ then answers **467** ("Dados da NF-e divergentes do EPEC") — an
+*EPEC pendente de conciliação* (§4.3): after the deadline the AN blocks EPEC for
+the emitente (142) until the SEFAZ is contacted. On **fresh** bytes a 485/573
+means the EPEC on record describes other data — manual conciliation. A home-SEFAZ
+consSit answers **124 "EPEC Autorizado"** only once the AN has shared the EPEC
+with the UF (§5.6, §6.2: "poucos minutos"); before that it answers 217, which
+proves nothing about the EPEC. Implementation: `apps/nfe` `disposicaoDoEpec`
+(#1675).
+
 ## NF-e pendentes de retorno (the anti-loss problem)
 
 When a failure occurs, NF-e may have been transmitted with **no result

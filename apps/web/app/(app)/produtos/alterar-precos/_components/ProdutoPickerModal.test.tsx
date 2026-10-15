@@ -14,12 +14,15 @@ const { useSnapshotMock, notifShow } = vi.hoisted(() => ({
 }));
 
 vi.mock('@delfrance/data/hooks', () => ({ useSnapshot: useSnapshotMock }));
+// The query builders record what they were given, so a test can read the
+// window (`limit`) and the search term (`where`) off the query each render
+// handed `useSnapshot`.
 vi.mock('@delfrance/data', () => ({
-  buildQuery: (base: unknown) => base,
+  buildQuery: (_base: unknown, constraints: unknown[]) => ({ constraints }),
   whereEqual: () => ({}),
-  whereOp: () => ({}),
+  whereOp: (field: string, op: string, value: unknown) => ({ where: [field, op, value] }),
   orderByField: () => ({}),
-  limit: () => ({}),
+  limit: (n: number) => ({ limit: n }),
 }));
 vi.mock('firebase/firestore', () => ({ getDocs: vi.fn(), startAfter: vi.fn() }));
 vi.mock('@mantine/notifications', () => ({ notifications: { show: notifShow } }));
@@ -75,7 +78,71 @@ function isChecked(el: HTMLElement): boolean {
   return (el as HTMLInputElement).checked;
 }
 
+type RecordedQuery = {
+  constraints: Array<{ limit?: number; where?: [string, string, unknown] }>;
+} | null;
+
+/** Every query `useSnapshot` was rendered with, in order. */
+function snapshotQueries(): RecordedQuery[] {
+  return useSnapshotMock.mock.calls.map((call) => call[0] as RecordedQuery);
+}
+
+function limitOf(q: RecordedQuery): number | undefined {
+  return q?.constraints.find((c) => c.limit !== undefined)?.limit;
+}
+
+function searchesFor(q: RecordedQuery, term: string): boolean {
+  return q?.constraints.some((c) => c.where?.[2] === term) ?? false;
+}
+
 describe('ProdutoPickerModal', () => {
+  it('a new search never opens its listener at the previous search’s widened window', () => {
+    // The window reset used to run in an effect AFTER the render that built the
+    // new query, so the first listener for a new term opened at the OLD widened
+    // limit and only then shrank: an extra billed listener per search change.
+    useSnapshotMock.mockReturnValue({
+      data: Array.from({ length: 50 }, (_, i) => row(`p${i}`)),
+      loading: false,
+      error: undefined,
+    });
+    renderModal();
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+    // Anti-vacuity: the window really did widen before the search changed.
+    expect(limitOf(snapshotQueries().at(-1) ?? null)).toBe(100);
+
+    useSnapshotMock.mockClear();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Buscar' }), {
+      target: { value: 'novo' },
+    });
+
+    const limits = snapshotQueries()
+      .filter((q) => searchesFor(q, 'novo'))
+      .map(limitOf);
+    expect(limits.length).toBeGreaterThan(0);
+    expect(limits).toEqual(limits.map(() => 50));
+  });
+
+  it('clears the selection when the search term or the search field changes', () => {
+    useSnapshotMock.mockReturnValue({
+      data: [row('a'), row('b')],
+      loading: false,
+      error: undefined,
+    });
+    renderModal();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Selecionar Produto a' }));
+    expect(screen.getByText('1 selecionado(s)')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Buscar' }), {
+      target: { value: 'x' },
+    });
+    expect(screen.getByText('0 selecionado(s)')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Selecionar Produto b' }));
+    expect(screen.getByText('1 selecionado(s)')).toBeTruthy();
+    fireEvent.click(screen.getByRole('radio', { name: 'SKU' }));
+    expect(screen.getByText('0 selecionado(s)')).toBeTruthy();
+  });
+
   it('toggles a single row via its checkbox and includes only that row', () => {
     useSnapshotMock.mockReturnValue({
       data: [row('a'), row('b')],

@@ -13,7 +13,7 @@ import { reconcileMediaMarks } from './mediaMarks';
  * tabela DELETE: `after` is empty → every `before` foto ref is marked, then
  * `sweepMarkedForDeletion` deletes them after the grace (re-verifying the now-gone
  * owner holds no ref). This makes tabMedi delete-cleanup eager + emulator-testable,
- * rather than deferring to the live-only unreferenced pipeline like produto does
+ * rather than deferring to the scheduled unreferenced sweep like produto does
  * (until #136). A create carries no fotos under the save-first UX → no-op. Writes
  * touch only `arquivos`, so the trigger never re-fires itself.
  *

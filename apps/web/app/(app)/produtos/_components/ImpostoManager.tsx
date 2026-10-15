@@ -4,30 +4,32 @@ import { useEffect, useMemo, useState } from 'react';
 import { Select, Stack, Text } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import {
-  impostoProdutoSchema,
   operacaoIdFromImpostoRef,
+  problemasDeEmissaoDoImposto,
   type ImpostoProduto,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
+import {
+  useObjectViewTransactionDocuments,
+  useObjectViewTransactionDocumentSeed,
+} from '@delfrance/ui';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
-import { ImpostoConfigEditor, type ImpostoConfigValue } from '@/components/imposto';
-
-// Operações are few (fiscal operations); a bounded, name-ordered query suffices.
-const OPERACAO_LIMIT = 200;
-const IMPOSTO_LIMIT = 200;
-
-interface OperacaoRow {
-  id: string;
-  nome: string;
-  padrao: boolean;
-}
-
-/** A blank imposto entry scoped to one operação (Flutter typo wire key). */
-function emptyImposto(operacaoId: string): ImpostoProduto {
-  return impostoProdutoSchema.parse({ impostoOpercaoOuterRef: `operacao/${operacaoId}` });
-}
+import {
+  emptyImposto,
+  IMPOSTO_LIMIT,
+  montarLinhasImposto,
+  OPERACAO_LIMIT,
+  operacoesAtivas,
+  type OperacaoRow,
+} from '@/lib/produtos/impostoRows';
+import {
+  ImpostoConfigEditor,
+  OperacoesComProblemas,
+  type ImpostoConfigValue,
+  type LinhaDeOperacao,
+} from '@/components/imposto';
 
 export interface ImpostoManagerProps {
   produtoId: string | null;
@@ -68,10 +70,7 @@ export function ImpostoManager({
   );
   const operacoesSnap = useSnapshot(operacoesQuery);
   const operacoes: OperacaoRow[] = useMemo(
-    () =>
-      (operacoesSnap.data ?? [])
-        .filter((o) => o.data.ativo !== false)
-        .map((o) => ({ id: o.id, nome: o.data.nome, padrao: o.data.padrao === true })),
+    () => operacoesAtivas(operacoesSnap.data ?? []),
     [operacoesSnap.data],
   );
 
@@ -84,6 +83,7 @@ export function ImpostoManager({
     [db, produtoId],
   );
   const impostosSnap = useSnapshot(impostosQuery);
+  const documents = useObjectViewTransactionDocuments();
 
   // Seed the transient array once operações (and, in edit mode, the imposto
   // docs) have loaded — one entry per active operação merged with its saved doc.
@@ -91,19 +91,35 @@ export function ImpostoManager({
     if (value != null) return;
     if (operacoesSnap.loading) return;
     if (produtoId && impostosSnap.loading) return;
+    if (
+      documents &&
+      (operacoesSnap.fromCache !== false ||
+        operacoesSnap.hasPendingWrites ||
+        (produtoId && (impostosSnap.fromCache !== false || impostosSnap.hasPendingWrites)))
+    )
+      return;
     if (operacoes.length === 0) return;
-    const byOperacao = new Map<string, ImpostoProduto>();
-    for (const d of impostosSnap.data ?? []) {
-      const opId = operacaoIdFromImpostoRef(d.data.impostoOpercaoOuterRef);
-      // Skip a null-scoped (default-fallback) imposto — it is not a per-operação
-      // entry; leaving it out of the form keeps it untouched on save (rather than
-      // rewriting its scope to a fake `operacao/<docId>`).
-      if (!opId) continue;
-      byOperacao.set(opId, { ...d.data, id: d.id, impostoOpercaoOuterRef: `operacao/${opId}` });
-    }
-    onChange(operacoes.map((op) => byOperacao.get(op.id) ?? emptyImposto(op.id)));
+    const initial = montarLinhasImposto(operacoes, impostosSnap.data ?? []);
+    if (documents && produtoId)
+      for (const row of impostosSnap.data ?? [])
+        documents.seedBaseline(
+          impostoProdutoCollection.docRef(db, { produtoId }, row.id).path,
+          row.data,
+        );
+    documents?.seedFormField('impostos', initial);
+    onChange(initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [produtoId, operacoesSnap.loading, impostosSnap.loading, operacoes.length, value]);
+  }, [
+    produtoId,
+    operacoesSnap.loading,
+    impostosSnap.loading,
+    operacoesSnap.fromCache,
+    impostosSnap.fromCache,
+    operacoesSnap.hasPendingWrites,
+    impostosSnap.hasPendingWrites,
+    operacoes.length,
+    value,
+  ]);
 
   // The picked operação tab (default = padrão, else the first active operação).
   const defaultOperacaoId = useMemo(
@@ -116,6 +132,44 @@ export function ImpostoManager({
   const activeId = pickedId ?? defaultOperacaoId;
 
   const rows = value ?? [];
+  const hasRows = value !== null;
+  const activeRef = useMemo(
+    () =>
+      produtoId && activeId && hasRows
+        ? impostoProdutoCollection.docRef(db, { produtoId }, activeId)
+        : null,
+    [db, produtoId, activeId, hasRows],
+  );
+  const activeSeed = useObjectViewTransactionDocumentSeed(activeRef, (data) => {
+    if (!activeId) return;
+    const next = data
+      ? { ...data, id: activeId, impostoOpercaoOuterRef: `operacao/${activeId}` }
+      : emptyImposto(activeId);
+    const replace = (list: ImpostoProduto[]) =>
+      list.map((row) =>
+        operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === activeId ? next : row,
+      );
+    documents?.rebaseFormField(
+      'impostos',
+      replace((documents.getFormBaseline('impostos') as ImpostoProduto[] | undefined) ?? rows),
+    );
+    onChange(replace(rows));
+  });
+  disabled = disabled || Boolean(documents && (value === null || !activeSeed.ready));
+
+  // What the NF-e engine would refuse in EACH row (#1655): the page's save
+  // (`produtoPageIssues`) checks every seeded row, not just the one on screen.
+  const problemasPorLinha = useMemo(
+    () => (value ?? []).map((linha) => problemasDeEmissaoDoImposto(linha)),
+    [value],
+  );
+
+  if (activeSeed.error)
+    return (
+      <Text c="red" size="sm">
+        Falha ao carregar imposto: {activeSeed.error.message}
+      </Text>
+    );
 
   if (operacoesSnap.error) {
     return (
@@ -142,6 +196,14 @@ export function ImpostoManager({
 
   const v = (active ?? emptyImposto(activeId ?? '')) as ImpostoConfigValue;
 
+  const nomeDaOperacao = new Map(operacoes.map((o) => [o.id, o.nome]));
+  const linhas: LinhaDeOperacao[] = rows.flatMap((r, i) => {
+    const operacaoId = operacaoIdFromImpostoRef(r.impostoOpercaoOuterRef);
+    if (!operacaoId) return [];
+    const nome = nomeDaOperacao.get(operacaoId) ?? operacaoId;
+    return [{ operacaoId, nome, problemas: problemasPorLinha[i] ?? [] }];
+  });
+
   const handleChange = (next: ImpostoConfigValue) => {
     if (!activeId) return;
     const nextRows = [...rows];
@@ -156,6 +218,11 @@ export function ImpostoManager({
 
   return (
     <Stack>
+      {!activeSeed.ready && (
+        <Text c="dimmed" size="sm">
+          Carregando imposto do servidor…
+        </Text>
+      )}
       <Select
         label="Operação"
         description="Cada operação fiscal pode ter um imposto específico."
@@ -166,11 +233,14 @@ export function ImpostoManager({
         disabled={disabled}
       />
 
+      <OperacoesComProblemas linhas={linhas} ativa={activeId} onSelecionar={setPickedId} />
+
       <ImpostoConfigEditor
         value={v}
         onChange={handleChange}
         disabled={disabled}
         errorTree={errNode}
+        problemas={activeIndex >= 0 ? problemasPorLinha[activeIndex] : undefined}
       />
     </Stack>
   );

@@ -256,7 +256,41 @@ unifying them needs a runtime `firebase-admin/functions` import.
 7. **Functions** — `apps/<canal>/functions/src/`: the `onTaskDispatched`
    consumer (name === queue constant; `retryConfig.maxAttempts` === `TASK_MAX_ATTEMPTS`)
    and an `onSchedule('every 30 minutes')` sweep that logs `processed`/`outcomes`/
-   `errors`. Add `firebase.<canal>.deploy.json`. **Copy `src/tasksInvoker.ts`
+   `errors`.
+
+   ⭐ **The consumer's ONE `logger.info` must carry the channel's `ProcessOutcome`
+   `kind`, and a `detail` wherever a handler has an outcome worth reporting** — plus
+   the payload's own ids read off the **raw** `req.data`, which is what makes them
+   survive the schema-parse drop (there `r.payload` and `r.result` are both absent).
+   `outcome: 'done'` is a **disposition**, not a claim that work happened: an items
+   sync that found no link and one that rewrote the listing both resolve to it, and
+   on Mercado Livre that ambiguity cost a full day of the first live run (#1087 →
+   #1136, ported to the other two channels in #1137). Project them with a
+   **structural `'x' in r.result` check, never an arm enumeration** — enumerating is
+   what silently stops covering an arm that later gains the field. Use `?? null`:
+   Cloud Logging drops `undefined` keys, so a key filterable-as-absent beats a key
+   that vanishes. One call, not several — the fields land in `jsonPayload` and are
+   filterable (`jsonPayload.detail="no-link"`), so more fields beat more lines.
+   ⚠️ `detail` belongs on the `resolve`/`drop` arms and NOT on `fail`: a `fail`
+   writes a Firestore doc carrying the whole reason as `erro`, so the record already
+   exists, while `done` and `dropped` persist nothing and the log is all there is.
+   ⚠️ Never log a raw provider body — WhatsApp's change `value` carries message
+   content, so its handler narrows `req.data` to the two id keys rather than
+   spreading it.
+
+   ⭐ **A handler with an INNER per-item loop reports COUNTS beside `detail`, not
+   more `detail` members.** WhatsApp's `statuses[]` is the worked example: one
+   batch can carry entries with different fates (applied / mensagem not found /
+   refused by the forward-only matrix), which no single enum value can express,
+   and a count rides out whichever arm of the `detail` priority chain won — so it
+   needs no reshuffle of an order the tests already pin. Split the skip reasons by
+   WHO is at fault rather than lumping them: one may be working-as-designed and
+   structurally common, the other a real bug, and merged they bury the second
+   under the first's noise floor. The rule deciding what earns a log field at all
+   is **report what leaves no other trace** — a soft miss writes nothing but a
+   `console.warn`, while state that writes its own documents is already recorded.
+
+   Add `firebase.<canal>.deploy.json`. **Copy `src/tasksInvoker.ts`
    verbatim from another codebase, spread `...tasksInvokerOptions()` into the
    options, and add the `process.env.TASKS_INVOKER_SA` `define` to `build.mjs`**
    (#1133) — `packages/config-eslint/rules/tasks-invoker-inventory.test.js` reds
@@ -294,6 +328,16 @@ Cover per channel: a resolved notification persists **nothing**; each terminal
 disposition writes the right status; a transient throw re-throws below the cap
 and persists at it; the correlated-outage case re-throws the original; the sweep
 deletes/parks/bumps correctly and isolates per-doc failures.
+
+Also cover the **`kind`/`detail` contract at `handleNotificationTask`** — at minimum
+one success arm and one non-success arm, plus a set-distinctness assertion over the
+outcomes that share a disposition (that set IS the property; "detail is present" is
+not). **Mutation-prove them**: delete the field again and confirm exactly those tests
+go red while the rest stay green, or they regress silently, which is the whole
+failure mode. The log line itself is pinned one layer up in
+`functions/src/processNotification.test.ts` by spying on the package-root `logger`
+and invoking the exported function through `.run(req)` — see the three channels'
+copies.
 
 A channel with a `defer` arm additionally needs the **precondition-clears-later**
 path end to end, since that is the one #808 lost: task defers → the hot sweep

@@ -16,9 +16,11 @@ import {
   combinationsFromVariacoes,
   linkAttributesAfterPublish,
   mergeStoredCombinations,
+  precoDoPaiExigido,
   publishModeIssues,
   resolveCondition,
   resolveListingModel,
+  resolveMemberPrice,
   resolvePrice,
   resolveSkuPaiAtributo,
   sizeChartIssue,
@@ -94,9 +96,24 @@ describe('publishModeIssues', () => {
     ]);
   });
 
+  /**
+   * #1226, and THE refusal that stops the damage rather than describing it.
+   * `assemblePublishInput` derives `isUpdate` from `link.id != null`, so without
+   * this every republish is a `PUT /items/<id ML deleted>` — a call that cannot
+   * succeed, on a produto with no other way back into the catalogue.
+   */
+  it("estado 'rm' blocks the publish and names the way out", () => {
+    const issues = publishModeIssues({ ...base, estado: 'rm' });
+    expect(issues).toEqual([expect.stringContaining('removido pelo Mercado Livre')]);
+    // The remedy is an operator action, not a wait — so the message has to name
+    // it. A bare "não pode ser reativado" leaves the produto stuck.
+    expect(issues[0]).toContain('Descartar anúncio removido');
+  });
+
   it('every OTHER estado publishes normally', () => {
     // Including null (a first publish) — the block must not fire on a listing
-    // that has no state yet.
+    // that has no state yet. ⚠️ `'v'` is the near-miss: a listing merely under
+    // review is savable and must stay publishable.
     for (const estado of [null, 'r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
       expect(publishModeIssues({ ...base, estado })).toEqual([]);
     }
@@ -204,6 +221,166 @@ describe('resolvePrice', () => {
     expect(resolvePrice(produto, { id: 'lista-x', nome: 42 }, issues)).toBeNull();
     expect(issues).toEqual(['produto "Camiseta Básica" sem preço na tabela lista-x']);
   });
+
+  // The price reads through `precoDaTabela`, the reader the price sync binds.
+  // Before, publish listed the raw stored `valor`: `7.891` went up as `7.891`
+  // while `buildPrecoDrafts` sent `7.89` for the same produto.
+  const precoDe = (valor: unknown) => {
+    const issues: string[] = [];
+    const preco = resolvePrice(
+      { ...produto, precos: { 'lista-1': { valor } } as PublishProduto['precos'] },
+      { id: 'lista-1', nome: null },
+      issues,
+    );
+    return { preco, issues };
+  };
+
+  it('PAIR: a stored 7.891 publishes as 7.89 — the same centavo as a stored 7.89', () => {
+    expect(precoDe(7.891)).toEqual({ preco: 7.89, issues: [] });
+    expect(precoDe(7.89)).toEqual({ preco: 7.89, issues: [] });
+  });
+
+  it('NEAR-MISS: a stored 7.899 publishes as 7.9 — one centavo up, never folded into 7.89', () => {
+    expect(precoDe(7.899)).toEqual({ preco: 7.9, issues: [] });
+  });
+
+  it('a sub-centavo price is NO price — 0.004 rounds to 0 and blocks, naming the produto', () => {
+    // Positivity is checked AFTER rounding: a `0.004` must never reach ML.
+    expect(precoDe(0.004)).toEqual({
+      preco: null,
+      issues: ['produto "Camiseta Básica" sem preço na tabela lista-1'],
+    });
+  });
+
+  it('NEAR-MISS: 0.005 rounds UP to 0.01 and IS a price', () => {
+    expect(precoDe(0.005)).toEqual({ preco: 0.01, issues: [] });
+  });
+
+  it('a non-number valor is no price — a raw legacy "10" string is never listed as-is', () => {
+    // `parseRead` falls back to RAW data on a schema mismatch, so a legacy
+    // string can reach here despite the declared type. It used to pass
+    // `valor <= 0` and be handed to ML as a string.
+    expect(precoDe('10')).toEqual({
+      preco: null,
+      issues: ['produto "Camiseta Básica" sem preço na tabela lista-1'],
+    });
+  });
+
+  describe('exigePreco: false (#1698) — the price is read, its absence is not an issue', () => {
+    const opcional = { exigePreco: false };
+
+    it('still reads and rounds a price that exists', () => {
+      const issues: string[] = [];
+      const comPreco = { ...produto, precos: { 'lista-1': { valor: 7.891 } } };
+      expect(resolvePrice(comPreco, { id: 'lista-1', nome: null }, issues, opcional)).toBe(7.89);
+      expect(issues).toEqual([]);
+    });
+
+    it('an absent (or sub-centavo) price is null with NO issue', () => {
+      for (const precos of [null, { 'lista-1': { valor: 0.004 } }]) {
+        const issues: string[] = [];
+        expect(
+          resolvePrice({ ...produto, precos }, { id: 'lista-1', nome: null }, issues, opcional),
+        ).toBeNull();
+        expect(issues).toEqual([]);
+      }
+    });
+
+    it('NEAR-MISS: a missing price LIST is still an issue — the members rely on this one', () => {
+      const issues: string[] = [];
+      expect(resolvePrice(produto, { id: null, nome: null }, issues, opcional)).toBeNull();
+      expect(issues).toEqual(['integração sem tabela de preços (tabelaNormalOuterRef)']);
+    });
+  });
+});
+
+describe('precoDoPaiExigido (#1698)', () => {
+  const exigido = (
+    isUserProductSeller: boolean,
+    membros: number,
+    propagatePriceToChildren: boolean | null | undefined,
+  ) => precoDoPaiExigido({ isUserProductSeller, membros, propagatePriceToChildren });
+
+  it('NOT required on exactly one arm: a User-Products family whose parent stores a literal false', () => {
+    expect(exigido(true, 1, false)).toBe(false);
+    expect(exigido(true, 3, false)).toBe(false);
+  });
+
+  it.each([undefined, null, true])(
+    'NEAR-MISS: a User-Products family that propagates (flag %s) — the members carry the anchor price',
+    (flag) => {
+      expect(exigido(true, 2, flag)).toBe(true);
+    },
+  );
+
+  it('NEAR-MISS: a childless User-Products listing — the anchor IS the item', () => {
+    expect(exigido(true, 0, false)).toBe(true);
+  });
+
+  it('NEAR-MISS: a legacy family — ML takes ONE price, the anchor’s, whatever the flag', () => {
+    for (const flag of [undefined, null, true, false]) {
+      expect(exigido(false, 2, flag)).toBe(true);
+      expect(exigido(false, 0, flag)).toBe(true);
+    }
+  });
+});
+
+describe('resolveMemberPrice', () => {
+  const tabela = { id: 'lista-1', nome: null };
+  const pai = (propagatePriceToChildren: PublishProduto['propagatePriceToChildren']) => ({
+    ...produto,
+    nome: 'Camiseta',
+    precos: { 'lista-1': { valor: 50.004 } },
+    propagatePriceToChildren,
+  });
+  const membro: PublishProduto = {
+    ...produto,
+    id: 'child-1',
+    nome: 'Camiseta M',
+    precos: { 'lista-1': { valor: 60.006 } },
+  };
+
+  it('propagating (absent, null or true) — the ANCHOR price, rounded; the member map is never read', () => {
+    for (const flag of [undefined, null, true]) {
+      const issues: string[] = [];
+      expect(resolveMemberPrice({ pai: pai(flag), membro }, tabela, issues)).toBe(50);
+      expect(issues).toEqual([]);
+    }
+  });
+
+  it('NEAR-MISS: only a stored literal false gives the member its OWN price', () => {
+    const issues: string[] = [];
+    expect(resolveMemberPrice({ pai: pai(false), membro }, tabela, issues)).toBe(60.01);
+    expect(issues).toEqual([]);
+  });
+
+  it('propagating from an unpriced anchor: null, never the member map — and NO per-member issue', () => {
+    // The anchor's own `resolvePrice` names the parent once; repeating it per
+    // member would list the same fault N times.
+    const issues: string[] = [];
+    expect(
+      resolveMemberPrice({ pai: { ...pai(true), precos: null }, membro }, tabela, issues),
+    ).toBeNull();
+    expect(issues).toEqual([]);
+  });
+
+  it('own arm: an unpriced (or sub-centavo) member blocks, naming the MEMBER', () => {
+    for (const precos of [null, { 'lista-1': { valor: 0.004 } }]) {
+      const issues: string[] = [];
+      expect(
+        resolveMemberPrice({ pai: pai(false), membro: { ...membro, precos } }, tabela, issues),
+      ).toBeNull();
+      expect(issues).toEqual(['produto "Camiseta M" sem preço na tabela lista-1']);
+    }
+  });
+
+  it('no price list: null and no issue — the anchor already said so, once', () => {
+    const issues: string[] = [];
+    expect(
+      resolveMemberPrice({ pai: pai(false), membro }, { id: null, nome: null }, issues),
+    ).toBeNull();
+    expect(issues).toEqual([]);
+  });
 });
 
 describe('resolveCondition', () => {
@@ -298,17 +475,12 @@ describe('resolveSkuPaiAtributo (#1400)', () => {
     ).toEqual({ skuPai: 'SKU-PAI' });
   });
 
-  it('a SINGLE-product UP listing also gets it — deliberate, not incidental', () => {
-    // ⚠️ `publish.ts` materialises the sole member before this runs, so a
-    // childless UP produto arrives as ONE member with no itemId. The import
-    // chain does not need the characteristic there (rung 3 reads the member's
-    // own SELLER_SKU, since a família of one has no combos), so this is a
-    // public characteristic bought for one narrow case: variations added on ML
-    // instead of in the ERP, where rung 2 has no códigos to peel.
-    //
-    // Pinned so that switching to `membros.length > 1` — a legitimate choice
-    // that is uniform in both directions — is a conscious edit rather than a
-    // silent change to what buyers see.
+  it('a SINGLE-product UP listing gets it too', () => {
+    // `publish.ts` materialises the sole member before the decision runs, so a
+    // childless UP produto arrives as ONE member with no itemId and is
+    // `familiaNova`. Pinned because the member count is an obvious thing to
+    // "optimise" on, and doing so would cost the import rung 1 for a produto
+    // that later gains variations on ML rather than in the ERP.
     expect(resolveSkuPaiAtributo({ ...base, membros: [novo] })).toEqual({
       skuPai: 'SKU-PAI',
     });
@@ -1102,6 +1274,56 @@ describe('assemblePublishInput', () => {
       // nome + preço + categoria + listing type + fotos
       expect(err.issues).toHaveLength(5);
     }
+  });
+
+  describe('a User-Products family whose parent does NOT propagate (#1698)', () => {
+    const familia = {
+      ...baseArgs,
+      isUserProductSeller: true,
+      produto: { ...produto, precos: null, propagatePriceToChildren: false },
+      variations: [
+        {
+          produto: {
+            ...produto,
+            id: 'child-m',
+            nome: 'Camiseta M',
+            precos: { 'lista-1': { valor: 60 } },
+          },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+        {
+          produto: {
+            ...produto,
+            id: 'child-g',
+            nome: 'Camiseta G',
+            precos: { 'lista-1': { valor: 70 } },
+          },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+          availableQuantity: 2,
+          mlVariationId: null,
+        },
+      ],
+    };
+
+    it('publishes with an UNPRICED parent — each member at its own price', () => {
+      const input = assemblePublishInput(familia);
+      expect(input.price).toBeNull();
+      expect(input.variations?.map((v) => v.price)).toEqual([60, 70]);
+    });
+
+    it('a missing price LIST still refuses — ONE issue, not one per member, and never none', () => {
+      expect(() => assemblePublishInput({ ...familia, priceListId: null })).toThrowError(
+        MercadoLivrePublishError,
+      );
+      try {
+        assemblePublishInput({ ...familia, priceListId: null });
+      } catch (err) {
+        if (!(err instanceof MercadoLivrePublishError)) throw err;
+        expect(err.issues).toEqual(['integração sem tabela de preços (tabelaNormalOuterRef)']);
+      }
+    });
   });
 
   it('a variation with no resolvable combination blocks the publish', () => {

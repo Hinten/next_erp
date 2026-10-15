@@ -50,6 +50,8 @@ vi.mock('@mantine/notifications', async () => {
 });
 
 import { ObjectView } from './ObjectView';
+import { useObjectViewTransactionDocuments } from './ObjectViewTransactionDocuments';
+import type { TransactionDocumentGuard, TransactionDocumentConflict } from './saveRecord';
 import { RecordConflictError } from './saveRecord';
 
 const schema = z.object({
@@ -324,5 +326,171 @@ describe('ObjectView — tier-3 conflict (#824)', () => {
     expect(saveRecordMock).toHaveBeenCalledTimes(2);
     const second = saveRecordMock.mock.calls[1]![0] as { baseline?: Record<string, unknown> };
     expect(second.baseline).toBeUndefined();
+  });
+});
+
+const EXTRA_PATH = 'clientes/EXISTING/extra/singleton';
+const EXTRA_LOADED = { descricao: 'Original', marca: 'Marca' };
+const extraSchema = schema.extend({
+  extraData: z.object({ descricao: z.string(), marca: z.string() }).nullable().default(null),
+});
+const extraGuard = (
+  baseline: Record<string, unknown> | null | undefined,
+): TransactionDocumentGuard => ({
+  baseline,
+  label: 'Descrição do produto',
+  formField: 'extraData',
+  toFormValue: (data) => data,
+});
+
+function ExtraInput({ value, onChange }: { value: unknown; onChange: (next: unknown) => void }) {
+  const documents = useObjectViewTransactionDocuments();
+  React.useEffect(() => {
+    if (value !== null) return;
+    documents?.seedBaseline(EXTRA_PATH, EXTRA_LOADED);
+    documents?.seedFormField('extraData', EXTRA_LOADED);
+    onChange(EXTRA_LOADED);
+  }, [value, documents, onChange]);
+  const data = (value as typeof EXTRA_LOADED | null) ?? EXTRA_LOADED;
+  return (
+    <label>
+      Descrição
+      <input
+        value={data.descricao}
+        onChange={(e) => onChange({ ...data, descricao: e.target.value })}
+      />
+    </label>
+  );
+}
+function renderExtraView() {
+  return render(
+    <Wrap>
+      <ObjectView
+        schema={extraSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        recordId="EXISTING"
+        currentUserUid="u1"
+        transientFields={['extraData']}
+        fields={{
+          extraData: {
+            renderInput: (props) => <ExtraInput value={props.value} onChange={props.onChange} />,
+          },
+        }}
+        transactionWrites={(_id, values, context) => [
+          {
+            type: 'set',
+            ref: { path: EXTRA_PATH } as never,
+            data: values.extraData as Record<string, unknown>,
+            guard: extraGuard(context.getBaseline(EXTRA_PATH)),
+          },
+        ]}
+      />
+    </Wrap>,
+  );
+}
+function extraConflict(
+  current: Record<string, unknown> | null,
+  baseline: Record<string, unknown> | null = EXTRA_LOADED,
+): RecordConflictError {
+  const doc: TransactionDocumentConflict = {
+    path: EXTRA_PATH,
+    current,
+    fields: current === null || baseline === null ? ['@exists'] : ['descricao'],
+    guard: extraGuard(baseline),
+  };
+  return new RecordConflictError(LOADED, [], false, [doc]);
+}
+async function click(name: string) {
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name }));
+  });
+}
+
+describe('ObjectView — sibling conflicts', () => {
+  it('does not acknowledge a parent conflict when Cancel is clicked', async () => {
+    saveRecordMock.mockRejectedValue(
+      new RecordConflictError({ ...LOADED, nome: 'Remote' }, ['nome']),
+    );
+    renderView();
+    await editAndSave('Nome', 'Local');
+    await click('Cancelar');
+    await click('Salvar');
+    expect(saveRecordMock.mock.calls[1]?.[0].baseline).toEqual(LOADED);
+    expect(screen.getByText('Registro alterado')).toBeTruthy();
+  });
+
+  it('passes the sibling baseline through the third transactionWrites argument', async () => {
+    saveRecordMock.mockImplementation((input) => {
+      expect(input.siblingWrites('EXISTING')[0].guard.baseline).toEqual(EXTRA_LOADED);
+      return Promise.resolve({ id: 'EXISTING', patch: {}, documents: [] });
+    });
+    renderExtraView();
+    await editAndSave('Descrição', 'Local');
+    expect(saveRecordMock).toHaveBeenCalledOnce();
+  });
+
+  it('names the document and preserves its baseline after Cancel', async () => {
+    saveRecordMock.mockRejectedValue(extraConflict({ ...EXTRA_LOADED, descricao: 'Remote' }));
+    renderExtraView();
+    await editAndSave('Descrição', 'Local');
+    expect(screen.getByText('Descrição do produto — descricao')).toBeTruthy();
+    await click('Cancelar');
+    await click('Salvar');
+    const second = saveRecordMock.mock.calls[1]?.[0].siblingWrites('EXISTING')[0];
+    expect(second.guard.baseline).toEqual(EXTRA_LOADED);
+    expect((screen.getByLabelText('Descrição') as HTMLInputElement).value).toBe('Local');
+  });
+
+  it('reloads the contested document while retaining a dirty parent field', async () => {
+    saveRecordMock.mockRejectedValueOnce(extraConflict({ ...EXTRA_LOADED, descricao: 'Remote' }));
+    renderExtraView();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Local name' } });
+    });
+    await editAndSave('Descrição', 'Local');
+    await click('Recarregar do servidor');
+    expect((screen.getByLabelText('Descrição') as HTMLInputElement).value).toBe('Remote');
+    expect((screen.getByLabelText('Nome') as HTMLInputElement).value).toBe('Local name');
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {}, documents: [] });
+    await click('Salvar');
+    expect(saveRecordMock.mock.calls[1]?.[0].dirtyFields).toMatchObject({ nome: true });
+    expect(
+      saveRecordMock.mock.calls[1]?.[0].siblingWrites('EXISTING')[0].guard.baseline,
+    ).toMatchObject({ descricao: 'Remote' });
+  });
+
+  it('acknowledges only the reviewed document and detects another conflict on override', async () => {
+    const reviewed = { ...EXTRA_LOADED, descricao: 'Reviewed' };
+    saveRecordMock
+      .mockRejectedValueOnce(extraConflict(reviewed))
+      .mockRejectedValueOnce(
+        extraConflict({ ...EXTRA_LOADED, descricao: 'Third writer' }, reviewed),
+      );
+    renderExtraView();
+    await editAndSave('Descrição', 'Local');
+    await click('Salvar mesmo assim');
+    expect(saveRecordMock.mock.calls[1]?.[0].siblingWrites('EXISTING')[0].guard.baseline).toEqual(
+      reviewed,
+    );
+    expect(screen.getByText('Third writer')).toBeTruthy();
+  });
+
+  it('rebases committed siblings for a second save without accepting later listener data', async () => {
+    const committed = { ...EXTRA_LOADED, descricao: 'Saved' };
+    saveRecordMock.mockResolvedValueOnce({
+      id: 'EXISTING',
+      patch: {},
+      documents: [{ path: EXTRA_PATH, data: committed, guard: extraGuard(EXTRA_LOADED) }],
+    });
+    renderExtraView();
+    await editAndSaveContinue('Descrição', 'Saved');
+    saveRecordMock.mockRejectedValueOnce(
+      extraConflict({ ...committed, descricao: 'Remote' }, committed),
+    );
+    await editAndSave('Descrição', 'Second edit');
+    expect(saveRecordMock.mock.calls[1]?.[0].siblingWrites('EXISTING')[0].guard.baseline).toEqual(
+      committed,
+    );
   });
 });

@@ -1,9 +1,28 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ESTADO_NFE } from '@delfrance/schemas';
-import { NFeRejectedError, type NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
+import { ESTADO_NFE, IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
+import {
+  NFeNetworkError,
+  NFeRejectedError,
+  NFeTimeoutError,
+  type NFeHttpClient,
+} from '@delfrance/integrations-nfe/http-provider';
 
-const { getDocsMock } = vi.hoisted(() => ({ getDocsMock: vi.fn() }));
-vi.mock('firebase/firestore', () => ({ getDocs: getDocsMock }));
+import { ID_DEST, IND_IE_DEST } from '../nfe/destinatarioNFe';
+import type { CarregarContextoRejeicao, ContextoRejeicaoNFe } from '../nfe/errors';
+
+const { getDocsMock, getDocMock, loaderMock, carregadorMock } = vi.hoisted(() => {
+  const loaderMock = vi.fn<CarregarContextoRejeicao>();
+  return {
+    getDocsMock: vi.fn(),
+    getDocMock: vi.fn(),
+    loaderMock,
+    carregadorMock: vi.fn((_db: unknown) => loaderMock),
+  };
+});
+vi.mock('firebase/firestore', () => ({ getDocs: getDocsMock, getDoc: getDocMock }));
+// The Firestore-backed rejection-context loader (#852) — its own reads are
+// pinned in `contextoRejeicao.test.ts`; here only the wiring matters.
+vi.mock('../nfe/contextoRejeicao', () => ({ carregadorContextoRejeicao: carregadorMock }));
 vi.mock('@delfrance/data', () => ({
   defineCollection: () => ({
     ref: () => ({}),
@@ -23,6 +42,22 @@ const nfeDoc = (id: string, estado: string, chave: string | null, mod: number) =
   data: () => ({ estado, chave, ultima_modificacao: mod }),
 });
 const setDocs = (docs: unknown[]) => getDocsMock.mockResolvedValue({ docs });
+/** An EPEC-approved doc — with its EPEC protocol, or without (#1675: registered, not recovered). */
+const epecDoc = (id: string, chave: string, mod: number, proc: string | null) => ({
+  id,
+  data: () => ({
+    estado: ESTADO_NFE.epecAprovado,
+    chave,
+    ultima_modificacao: mod,
+    xml_epec_proc: proc,
+    filialId: 'F-1',
+  }),
+});
+/** The filial's nfeconfig as `getDoc` returns it. */
+const configDaFilial = (contingencia_modo: string) => ({
+  exists: () => true,
+  data: () => ({ contingencia_modo }),
+});
 const emitResult = (over: Record<string, unknown>) => ({
   nfeId: 'nfe-1',
   pedidoId: 'p1',
@@ -43,6 +78,13 @@ describe('resolveAprovadaNfe', () => {
     ]);
     expect(await resolveAprovadaNfe(db, 'p1')).toEqual({ nfeId: 'new', chave: 'A-NEW' });
   });
+  it('#1675 — an EPEC doc is printable only WITH its protocol', async () => {
+    setDocs([epecDoc('sem', 'E-SEM', 20, null)]);
+    expect(await resolveAprovadaNfe(db, 'p1')).toBeNull();
+    setDocs([epecDoc('com', 'E-COM', 20, '<procEventoNFe/>')]);
+    expect(await resolveAprovadaNfe(db, 'p1')).toEqual({ nfeId: 'com', chave: 'E-COM' });
+  });
+
   it('returns null with no authorized doc / no chave', async () => {
     setDocs([nfeDoc('a', ESTADO_NFE.aprovada, null, 1)]);
     expect(await resolveAprovadaNfe(db, 'p1')).toBeNull();
@@ -51,10 +93,25 @@ describe('resolveAprovadaNfe', () => {
   });
 });
 
+const XMOTIVO_805 =
+  'Rejeição: A SEFAZ do destinatário não permite Contribuinte Isento de Inscrição Estadual';
+
+/** An internal (idDest=1) NF-e sent with indIEDest=2 for a cadastro still ISENTO. */
+const CONTEXTO_805_INTERNA: ContextoRejeicaoNFe = {
+  destinatario: { idDest: ID_DEST.interna, indIEDest: IND_IE_DEST.isento, uf: 'SP' },
+  cliente: {
+    id: 'cli-805',
+    cadastro: { nome: 'ACME LTDA', tipo: TIPO_CLIENTE.pessoaJuridica, ie: IE_SENTINELA.isento },
+  },
+};
+
 describe('ensureNfeAprovada', () => {
   let client: { emitir: ReturnType<typeof vi.fn>; danfe: ReturnType<typeof vi.fn> };
   beforeEach(() => {
     getDocsMock.mockReset();
+    getDocMock.mockReset();
+    loaderMock.mockReset();
+    carregadorMock.mockClear();
     client = { emitir: vi.fn(), danfe: vi.fn() };
   });
 
@@ -80,6 +137,60 @@ describe('ensureNfeAprovada', () => {
     });
   });
 
+  it('#1675 — an EPEC registered WITHOUT its protocol while the filial is still in EPEC mode: no emit (the home SEFAZ is down), a yellow notice instead', async () => {
+    getDocsMock.mockResolvedValue({ docs: [epecDoc('s4', 'CHV', 5, null)] });
+    getDocMock.mockResolvedValue(configDaFilial('epec'));
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(client.emitir).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+    if (!r.ok && !r.pending) expect(r.notification.color).toBe('yellow');
+  });
+
+  it('near-miss: with the contingency OFF the emit IS the pós-EPEC transmission — it is called, and its aprovada prints', async () => {
+    getDocsMock.mockResolvedValue({ docs: [epecDoc('s4', 'CHV', 5, null)] });
+    getDocMock.mockResolvedValue(configDaFilial('none'));
+    client.emitir.mockResolvedValue(
+      emitResult({ nfeId: 's4', estado: ESTADO_NFE.aprovada, reused: false }),
+    );
+    expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
+      ok: true,
+      nfeId: 's4',
+      chave: 'CHV',
+      reused: false,
+    });
+    expect(client.emitir).toHaveBeenCalledTimes(1);
+  });
+
+  it('#1675 — an emit that ANSWERS EPEC-approved without a recovered protocol prints nothing: a yellow notice instead', async () => {
+    // Nothing before the emit; after it, the doc the emit wrote has no proc.
+    getDocsMock
+      .mockResolvedValueOnce({ docs: [] })
+      .mockResolvedValueOnce({ docs: [epecDoc('s4', 'CHV', 5, null)] });
+    client.emitir.mockResolvedValue(
+      emitResult({
+        estado: ESTADO_NFE.epecAprovado,
+        cStat: '573',
+        xMotivo: 'Duplicidade de Evento',
+      }),
+    );
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(r.ok).toBe(false);
+    if (!r.ok && !r.pending) expect(r.notification.color).toBe('yellow');
+  });
+
+  it('near-miss: an emit answered EPEC-approved whose doc HOLDS its protocol is ok to print', async () => {
+    getDocsMock
+      .mockResolvedValueOnce({ docs: [] })
+      .mockResolvedValueOnce({ docs: [epecDoc('s4', 'CHV', 5, '<procEventoNFe/>')] });
+    client.emitir.mockResolvedValue(emitResult({ estado: ESTADO_NFE.epecAprovado, cStat: '135' }));
+    expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
+      ok: true,
+      nfeId: 's4',
+      chave: 'CHV',
+      reused: false,
+    });
+  });
+
   it('returns pending on an async estado (enviando)', async () => {
     setDocs([]);
     client.emitir.mockResolvedValue(emitResult({ estado: ESTADO_NFE.enviando }));
@@ -99,11 +210,98 @@ describe('ensureNfeAprovada', () => {
     if (!r.ok && !r.pending) expect(r.notification.color).toBe('red');
   });
 
+  it.each([
+    [
+      'our deadline',
+      new NFeTimeoutError('t', { origem: 'prazo', timeoutMs: 1, operacao: 'emitir' }),
+    ],
+    [
+      'the gateway 504',
+      new NFeTimeoutError('t', { origem: 'gateway', timeoutMs: null, operacao: 'emitir' }),
+    ],
+  ])('a timeout (%s) is pending — the emission may still be running (#1094)', async (_n, err) => {
+    setDocs([]);
+    client.emitir.mockRejectedValue(err);
+    expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
+      ok: false,
+      pending: true,
+    });
+  });
+
+  it('a plain network error is still a failure notification (near-miss of the timeout)', async () => {
+    setDocs([]);
+    client.emitir.mockRejectedValue(new NFeNetworkError('Failed to fetch'));
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(r).toMatchObject({ ok: false, pending: false });
+  });
+
   it('maps a thrown NFeRejectedError to a notification', async () => {
     setDocs([]);
     client.emitir.mockRejectedValue(new NFeRejectedError('999', 'Rejeitado', {}));
     const r = await ensureNfeAprovada(db, asClient(client), 'p1');
     expect(r).toMatchObject({ ok: false, pending: false });
+    // Only a cStat that needs context (805) pays for the extra reads.
+    expect(loaderMock).not.toHaveBeenCalled();
+  });
+
+  it('a thrown 226 keeps the generic notification and never calls the loader', async () => {
+    setDocs([]);
+    client.emitir.mockRejectedValue(
+      new NFeRejectedError('226', 'UF inválida', { pedidoId: 'p1', nfeId: 'nfe-1' }),
+    );
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(r).toStrictEqual({
+      ok: false,
+      pending: false,
+      notification: {
+        title: 'SEFAZ rejeitou a NF-e',
+        message: 'cStat=226: UF inválida',
+        color: 'red',
+      },
+    });
+    expect(loaderMock).not.toHaveBeenCalled();
+  });
+
+  it('a thrown 805 reads the context through the db-bound loader → guidance + cadastro link', async () => {
+    setDocs([]);
+    loaderMock.mockResolvedValue(CONTEXTO_805_INTERNA);
+    client.emitir.mockRejectedValue(
+      new NFeRejectedError('805', XMOTIVO_805, {
+        pedidoId: 'p1',
+        nfeId: 'nfe-805',
+        estado: ESTADO_NFE.rejeitada,
+      }),
+    );
+
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+
+    // Bound to the SAME db handle the caller passed (identity — `db` is `{}` here).
+    expect(carregadorMock).toHaveBeenCalledOnce();
+    expect(carregadorMock.mock.calls[0]![0]).toBe(db);
+    expect(loaderMock).toHaveBeenCalledOnce();
+    expect(loaderMock).toHaveBeenCalledWith({ pedidoId: 'p1', nfeId: 'nfe-805' });
+    expect(r).toMatchObject({
+      ok: false,
+      pending: false,
+      notification: {
+        title: 'Inscrição estadual do cliente recusada pela SEFAZ',
+        color: 'red',
+        link: { href: '/clientes/cli-805', label: 'Abrir cadastro de ACME LTDA' },
+      },
+    });
+    if (!r.ok && !r.pending) {
+      expect(r.notification.message.startsWith(`cStat=805: ${XMOTIVO_805} — `)).toBe(true);
+    }
+  });
+
+  it('a loader rejection on 805 propagates out of ensureNfeAprovada (a bug, not a toast)', async () => {
+    setDocs([]);
+    const boom = new TypeError('bug no carregador');
+    loaderMock.mockRejectedValue(boom);
+    client.emitir.mockRejectedValue(
+      new NFeRejectedError('805', XMOTIVO_805, { pedidoId: 'p1', nfeId: 'nfe-805' }),
+    );
+    await expect(ensureNfeAprovada(db, asClient(client), 'p1')).rejects.toBe(boom);
   });
 
   it('rethrows an unexpected (non-NFe) error', async () => {

@@ -7,8 +7,9 @@
  * START (`quantidadesAnteriores`, from the LAZY, TICK-SHARED ledger sum),
  * applies the send policy (`deveEnviarFamilia`),
  * and enqueues the resulting `buildSendTasks` drafts onto the
- * `sendMercadoLivreStock` queue. The task payload CARRIES the quantities —
- * the send handler transmits them verbatim (estoqueSend.ts).
+ * `sendMercadoLivreStock` queue. The task payload CARRIES the quantities:
+ * attempt zero transmits them verbatim, while a real retry or pause re-enqueue
+ * refreshes them through bounded deterministic point reads (#693).
  *
  * Flag-gated OFF: runs ONLY when `MERCADO_LIVRE_STOCK_SYNC_ENABLED === '1'`
  * (`isStockSyncEnabled()`); until the flag flips the deployed functions tick,
@@ -86,6 +87,7 @@
  * RETHROWS, failing the whole tick loudly.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import { logger } from 'firebase-functions/logger';
 import { millisToMicros } from '@delfrance/core/datetime';
 import { INTEGRACAO_TIPO, idFromRef } from '@delfrance/schemas';
 import {
@@ -635,6 +637,7 @@ async function sweepConta(
       }
       const { tasks, skips } = buildSendTasks(row, quantidades, {
         integracaoId,
+        depositoId,
         sweepId,
         sweepComputedAtMs: nowMs,
         modo: modoEstoque,
@@ -753,7 +756,7 @@ export async function runStockSweep(
   deps: StockSweepDeps,
 ): Promise<StockSweepResult> {
   if (!isStockSyncEnabled()) {
-    console.info(
+    logger.info(
       `[mercado-livre] stock-sweep (${mode}) desabilitado (${STOCK_SYNC_FLAG_ENV} != '1') — no-op`,
     );
     return { enabled: false, contas: [] };
@@ -818,7 +821,7 @@ export async function runStockSweep(
       const pausedUntilUs = finiteNumber(stateRaw.pausedUntilUs);
       if (pausedUntilUs != null && pausedUntilUs > nowUs) {
         const ate = new Date(Math.floor(pausedUntilUs / 1000)).toISOString();
-        console.info(
+        logger.info(
           `[mercado-livre] stock-sweep: conta pausada por 429 até ${ate} — sweep pulado; cursor mantido`,
           { integracaoId, mode, pausedUntilUs },
         );

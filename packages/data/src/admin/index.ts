@@ -12,12 +12,20 @@ export {
 } from './deleteSubtree';
 
 export {
+  canalDecideOEstado,
   reconcilePedidoEstado,
   reconcilePedidoFromPagamento,
   PedidoReconcileNotFoundError,
 } from './pedidoReconcile';
 
-export { isAlreadyExists, isFailedPrecondition, isNotFound } from './grpcErrors';
+export {
+  isAlreadyExists,
+  isFailedPrecondition,
+  isGrpcStatusError,
+  isNotFound,
+  isTransientGrpcError,
+} from './grpcErrors';
+export { sha256Hex } from './hash';
 export {
   CodigoMunicipioNaoResolvidoError,
   resolveCodigoMunicipio,

@@ -1,6 +1,11 @@
 // Import side-effect first: registers global function options (region) before
 // any trigger is defined. Throws if FUNCTIONS_REGION is unset (see options.ts).
 import './options';
+export {
+  onAccessOperationCreated,
+  processarOperacaoAcesso,
+  recoverAccessOperations,
+} from './access/processAccessOperation';
 
 /**
  * Cloud Functions entrypoint (gen2). Firebase deploys each exported trigger.
@@ -10,6 +15,7 @@ export { reconcileProductImages } from './product-images/reconcileSweep';
 export { onArquivoDeleted } from './arquivos/onArquivoDeleted';
 export { onProdutoMediaChanged } from './arquivos/onProdutoMediaChanged';
 export { onTabMediMediaChanged } from './arquivos/onTabMediMediaChanged';
+export { onMensagemDeleted } from './arquivos/onMensagemDeleted';
 export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';
 export { onProdutoDeleted } from './produtos/onProdutoDeleted';
 export { onProdutoChanged } from './produtos/onProdutoChanged';
@@ -45,3 +51,5 @@ export {
 export { reconciliarPagamentoPedido } from './pedidos/reconciliarPagamentoPedido';
 export { liberarBloqueioIncidente } from './pedidos/liberarBloqueioIncidente';
 export { finalizarBalanco, processarBalanco } from './estoques/aplicarBalanco';
+export { sweepAvisosResolvidos } from './avisos/sweepAvisosResolvidos';
+export { consultarVendasInicio } from './inicio/consultarVendasInicio';

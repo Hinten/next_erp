@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo } from 'react';
+import { Suspense, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, Badge, Box, Group, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { ESTADO_CONVERSA_LABELS, ORIGEM_LABELS } from '@delfrance/schemas';
 import { conversaCollection } from '@/lib/data/conversaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { ConversaAliasRedirect, ConversaContinuity } from '../_components/ConversaContinuity';
 import { ChatInboxShell } from '../_components/ChatInboxShell';
 import { ConversaSidePanel } from '../_components/ConversaSidePanel';
 import { ConversaActionsMenu } from '../_components/actions/ConversaActionsMenu';
@@ -26,26 +27,34 @@ export default function ConversaDetailPage() {
     <ChatInboxShell
       activeId={params.id}
       rightPane={!loading && data ? <ConversaSidePanel conversa={data.data} /> : undefined}
+      mobileRightPane={
+        !loading && data ? <ConversaSidePanel conversa={data.data} variant="drawer" /> : undefined
+      }
     >
       <Stack style={{ flex: 1, minHeight: 0 }} gap={0}>
         {error && <Alert color="red">{error.message}</Alert>}
         {loading && <Skeleton height={64} m="md" />}
         {!loading && !data && (
-          <Alert color="yellow" m="md">
-            Conversa não encontrada.
-          </Alert>
+          <Suspense fallback={<Skeleton height={40} />}>
+            <ConversaAliasRedirect conversaId={params.id} />
+          </Suspense>
         )}
         {!loading && data && (
           <>
+            <Suspense fallback={null}>
+              <ConversaContinuity />
+            </Suspense>
             <Box
               p="md"
               style={{
-                borderBottom: '1px solid var(--mantine-color-gray-2)',
+                borderBottom: '1px solid var(--mantine-color-default-border)',
               }}
             >
               <Group justify="space-between" wrap="nowrap">
-                <Stack gap={2}>
-                  <Title order={4}>{data.data.nome}</Title>
+                <Stack gap={2} style={{ minWidth: 0 }}>
+                  <Title order={4} style={{ overflowWrap: 'anywhere' }}>
+                    {data.data.nome}
+                  </Title>
                   <Group gap="xs">
                     <Badge variant="light">{ORIGEM_LABELS[data.data.origem]}</Badge>
                     {/* The estado now surfaces read-only here — every change goes

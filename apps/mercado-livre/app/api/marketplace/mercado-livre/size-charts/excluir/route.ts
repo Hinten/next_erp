@@ -1,3 +1,4 @@
+import { SizeChartOperationError } from '@/lib/marketplace/size-charts/sizeChartOperation';
 /**
  * `POST /api/marketplace/mercado-livre/size-charts/excluir` — ask ML to remove
  * one size chart. Body `{ integracaoId, tabMediId, chartId }`. Response 200
@@ -10,7 +11,7 @@
  * Requires `PERM.integracao.write`.
  */
 import { NextResponse } from 'next/server';
-import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import { createChartApi } from '@/lib/marketplace/size-charts/sizeChartApi';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -54,7 +55,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const ctx = await loadMercadoLivreContext(db, body.integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createChartApi(channelCtx.accessToken);
 
     const result = await requestSizeChartDeletion(
       { db, api, integracaoId: body.integracaoId },
@@ -66,6 +67,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (err instanceof TabelaDeMedidasNotFoundError || err instanceof SizeChartNotFoundError) {
       return NextResponse.json({ error: err.message }, { status: 404 });
     }
+    if (err instanceof SizeChartOperationError)
+      return NextResponse.json({ error: err.message, code: err.code }, { status: 409 });
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);
     throw err;
   }

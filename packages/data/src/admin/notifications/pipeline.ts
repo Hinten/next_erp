@@ -97,6 +97,12 @@ export interface NotificationPipelineConfig<TPayload, TOutcome> {
   /** The channel's work. Deterministic outcomes RETURN; transient failures THROW. */
   process(db: Firestore, payload: TPayload): Promise<TOutcome>;
   /**
+   * When a deferred precondition has cleared, a thrown processing failure is
+   * ordinary retryable work again. Opt in to move that row back to `failed`
+   * with a fresh hot-lane budget instead of charging the daily deferred cap.
+   */
+  graduateDeferredTransientErrors?: boolean;
+  /**
    * Map the channel's outcome onto the shared disposition vocabulary. The
    * `payload` is passed too, because most channels build their operator-facing
    * `reason` from the wire fields (the seller id that matched no account, the
@@ -286,8 +292,9 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
      * What a doc that is STILL blocked becomes. In the hot lane it stays
      * `failed` until `MAX_TENTATIVAS`; in the deferred one it stays `deferred`
      * until the far longer `MAX_TENTATIVAS_DEFERRED`. Either cap ends in
-     * `parked`, and this is also the fallback for a doc whose processing threw:
-     * an unknown failure is charged to the lane the doc is already in.
+     * `parked`. A processing throw is charged to the lane the doc is already in
+     * unless the channel opts into `graduateDeferredTransientErrors`, in which
+     * case a deferred row returns to the hot lane with a fresh budget.
      */
     const stillBlocked = (tentativas: number): NotificationStatus => {
       if (lane === 'hot') return tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
@@ -319,7 +326,21 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
         if (dedupKey && seen.has(dedupKey)) continue; // dup within this run — leave it for a later one
         if (dedupKey) seen.add(dedupKey);
 
-        const result = await config.process(db, payload);
+        let result: TOutcome;
+        try {
+          result = await config.process(db, payload);
+          // This is the same generic transient boundary documented at the top
+          // of this module: channels return deterministic blockers and throw
+          // infrastructure failures.
+          // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
+        } catch (err) {
+          if (!(err instanceof Error)) throw err;
+          if (lane !== 'deferred' || !config.graduateDeferredTransientErrors) throw err;
+          await store.redrive(db, d.id, err.message);
+          outcomes.redriven = (outcomes.redriven ?? 0) + 1;
+          processed += 1;
+          continue;
+        }
         const disposition = config.toDisposition(result, payload, 'sweep');
 
         let label: string;

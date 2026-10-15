@@ -5,6 +5,13 @@ import { NextResponse, type NextRequest } from 'next/server';
 // apps/integrations apply here too. processar-pendentes is also reachable
 // from Cloud Scheduler (server-to-server, no preflight) — the matcher
 // covers it harmlessly because OPTIONS isn't issued there.
+//
+// ⚠️ Allow-Methods must list every NON-safelisted verb a route under the
+// matcher exports. `DELETE /api/nfe/certificado` was missing, so certificate
+// removal never left the browser: the preflight refused it, the fetch failed as
+// a TypeError, and the operator saw "Falha ao remover o certificado" from day one
+// (#1680). Pinned repo-wide by
+// packages/config-eslint/rules/cors-proxy-covers-routes.test.js.
 
 const DEV_ORIGIN = 'http://localhost:3000';
 
@@ -41,14 +48,21 @@ export function proxy(req: NextRequest) {
     }
     const res = new NextResponse(null, { status: 204 });
     applyCors(res.headers, allowed);
-    res.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.headers.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.headers.set('Access-Control-Allow-Headers', 'authorization, content-type');
     res.headers.set('Access-Control-Max-Age', '86400');
     return res;
   }
 
   const res = NextResponse.next();
-  if (allowed) applyCors(res.headers, allowed);
+  if (allowed) {
+    applyCors(res.headers, allowed);
+    // The DANFE / CC-e routes name their file via Content-Disposition, and a
+    // cross-origin `fetch` cannot read that header unless it is exposed — the
+    // browser silently answered `null`, so every download fell back to a
+    // generic name (#1680).
+    res.headers.set('Access-Control-Expose-Headers', 'Content-Disposition');
+  }
   return res;
 }
 

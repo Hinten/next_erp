@@ -1,17 +1,20 @@
 /**
  * Per-screen memory of a `TableView`'s view state, backed by `sessionStorage`.
  *
- * Filters and sort already round-trip through the URL query string
- * (`useTableUrlState`), which is what makes a list shareable and deep-linkable.
- * This module is the second tier: it remembers the query string a list was LAST
- * left in, so reopening that screen restores it even when the incoming URL is
- * bare — which is exactly what every "Cancelar" / `router.replace('/produtos')`
- * in a detail page produces.
+ * Filters, sort and the "Carregar mais" window already round-trip through the
+ * URL query string (`useTableUrlState`), which is what makes a list shareable,
+ * deep-linkable and survivable across browser Back. This module is the second
+ * tier: it remembers the query string a list was LAST left in, so reopening that
+ * screen restores it even when the incoming URL is bare — which is exactly what
+ * every "Cancelar" / `router.replace('/produtos')` in a detail page produces.
  *
- * Two things deliberately do NOT live in the URL and are kept here instead:
- * the "Carregar mais" page count and the scroll offset. Both are ergonomics
- * rather than identity — nobody wants `?scroll=840` in a link they paste to a
- * colleague.
+ * One thing deliberately does NOT live in the URL and is kept here instead: the
+ * scroll offset. It is ergonomics rather than identity — nobody wants
+ * `?scroll=840` in a link they paste to a colleague. The page count used to sit
+ * here for the same reason and was moved out, because it turned out to be
+ * identity after all: an operator pressing Back onto a list they had grown was
+ * dropped to one page, and no amount of remembering fixed that while the URL
+ * outranked the memory.
  *
  * ⚠️ The URL always wins. A caller consults this memory only when the incoming
  * URL carries none of the table's own keys, so a shared or hand-edited link is
@@ -28,15 +31,17 @@
 const PREFIX = 'delfrance:tableview:view:';
 
 export interface ListViewMemory {
-  /** The table's own query string (no leading `?`), e.g. `nome=contains%3Aab`. */
+  /**
+   * The table's own query string (no leading `?`), e.g. `nome=contains%3Aab`.
+   * Carries the window as `pages=` when it is above one, because
+   * `encodeTableState` is the single serializer for this string and the URL.
+   */
   qs: string;
-  /** How many pages of `pageSize` the operator had grown the window to. */
-  pages: number;
   /** `window.scrollY` when the list was last left. */
   scroll: number;
 }
 
-export const EMPTY_LIST_VIEW_MEMORY: ListViewMemory = { qs: '', pages: 1, scroll: 0 };
+export const EMPTY_LIST_VIEW_MEMORY: ListViewMemory = { qs: '', scroll: 0 };
 
 /**
  * Storage key for one table.
@@ -86,12 +91,13 @@ export function readListViewMemory(key: string): ListViewMemory | null {
     throw err;
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
-  const { qs, pages, scroll } = parsed as Record<string, unknown>;
-  if (typeof qs !== 'string' || !isCount(pages) || !isCount(scroll)) return null;
-  // `pages` is a window multiplier: 0 would mean "read nothing" and is not a
-  // state the UI can produce, so treat it as corrupt rather than obey it.
-  if (pages < 1) return null;
-  return { qs, pages, scroll };
+  const { qs, scroll } = parsed as Record<string, unknown>;
+  if (typeof qs !== 'string' || !isCount(scroll)) return null;
+  // A record written before the window moved into `qs` carries a `pages` field
+  // that nothing reads any more. Ignored rather than rejected: this lives in
+  // `sessionStorage`, so the only cost of tolerating it is that the tab the
+  // upgrade landed in keeps its remembered offset.
+  return { qs, scroll };
 }
 
 /** Persist one table's view state. A no-op on the server / when unavailable. */

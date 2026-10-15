@@ -26,6 +26,9 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   SEM_LINK: 'Este produto não tem anúncio nesta conta.',
   SEM_ITEM_ID: 'O anúncio ainda não foi publicado no Mercado Livre.',
   AGUARDANDO_MIGRACAO: 'Anúncio em migração para User Products — envio suspenso.',
+  ANUNCIO_REMOVIDO:
+    'O Mercado Livre removeu este anúncio e ele não pode ser reativado. Abra a aba Mercado ' +
+    'Livre do produto para descartá-lo e publicar um novo.',
   PRECO_NAO_ENCONTRADO:
     'O produto não tem preço na tabela normal desta conta. Preencha o preço e tente de novo.',
   FAMILIA_MUITO_GRANDE: 'A família tem variações demais para um único envio.',
@@ -40,7 +43,13 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   PRECO_NAO_ATUALIZADO:
     'O Mercado Livre aceitou o envio mas não confirmou o preço novo. Confira o anúncio.',
   CLOSED: 'O anúncio está encerrado no Mercado Livre.',
-  FORBIDDEN: 'O anúncio está em revisão e foi bloqueado pelo Mercado Livre.',
+  // ⚠️ Same state as `ANUNCIO_REMOVIDO` above, reached at SEND time instead of
+  // plan time (the stored estado had not caught up yet). ML's docs are explicit
+  // that `under_review` + `forbidden` is a REMOVAL with no remedy, so the old
+  // wording — "está em revisão e foi bloqueado" — read as something to wait out.
+  FORBIDDEN:
+    'O Mercado Livre removeu este anúncio e ele não pode ser reativado. Abra a aba Mercado ' +
+    'Livre do produto para descartá-lo e publicar um novo.',
   STATUS_desconhecido: 'O Mercado Livre não informou o status deste anúncio.',
   GET_PRODUTO_ERROR: 'Não foi possível ler o anúncio no Mercado Livre.',
   UPDATE_PRECO_ERROR: 'O Mercado Livre recusou o novo preço.',
@@ -53,10 +62,14 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   TEMPO_ESGOTADO: 'Não tentado: o tempo do envio se esgotou. Tente com menos produtos.',
   REAUTH: 'Não tentado: a conta precisa ser reconectada ao Mercado Livre.',
   ERRO_CANAL: 'O Mercado Livre não respondeu. Tente novamente.',
-  // The account-wide job's reconciliation phase (#1072). The manual push never
-  // EMITS them — it reads anchors by key, so it has no unenumerated set — but
-  // the table is the repo's registry of the price vocabulary, and a code that
-  // is not in it is a code nobody can look up.
+  // The account-wide job's reconciliation phase (#1072). Emitted by the shared
+  // link walk, `anuncios/linksNaoEnumerados.ts` (`CODIGO_NAO_ENUMERADO`, #1200),
+  // which `precoMotivos.test.ts` scans as a named FILE root — it lives outside
+  // `preco/`. The manual push never EMITS them — it reads anchors by key, so it
+  // has no unenumerated set — but the table is the repo's registry of the price
+  // vocabulary, and a code that is not in it is a code nobody can look up. (The
+  // monthly stock audit shares the walk but not this wording: it raises
+  // `anuncioForaDaSincronizacao` avisos, whose pt-BR lives with the bell.)
   NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO:
     'O anúncio está ativo, mas o produto não registra esta conta — por isso o envio em massa ' +
     'não o alcançou. Envie o preço por aqui, pela tabela de produtos.',
@@ -70,12 +83,19 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
     'O anúncio aponta para um produto que não existe mais. Refaça o vínculo ou remova o anúncio.',
   RECONCILIACAO_INCOMPLETA:
     'A conferência de anúncios não enumerados foi interrompida — o relatório está incompleto.',
-  // The account-wide job's terminal failure. ONE synthetic row stands for the
-  // whole remainder — the count rides `filaRestante` — so this message has to
-  // say that the rest was never attempted, not merely that something failed.
+  // The account-wide job's terminal stops. ONE synthetic row stands for the
+  // whole remainder — the count rides `filaRestante` — so each message has to
+  // say that the rest was never attempted, not merely that the job ended.
+  //
+  // ⚠️ Two codes rather than one wording, because the two stops are not the same
+  // news: a failure is something to investigate, a cancel is something the
+  // operator did on purpose and does not need explained back to them as a fault.
   JOB_INTERROMPIDO:
     'O envio foi interrompido antes do fim. Os itens que ainda estavam na fila não foram ' +
     'enviados — rode o envio de preços de novo para concluí-los.',
+  JOB_CANCELADO:
+    'O envio foi cancelado. Os itens que ainda estavam na fila não foram enviados — rode o ' +
+    'envio de preços de novo para concluí-los.',
 };
 
 /**

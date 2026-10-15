@@ -32,7 +32,6 @@ import {
   type BalancoTaskPayload,
   type FinalizarBalancoComando,
   type FinalizarBalancoResult,
-  type ItemTrabalhoBalanco,
 } from '@delfrance/data/balanco';
 import {
   ESTADO_BALANCO,

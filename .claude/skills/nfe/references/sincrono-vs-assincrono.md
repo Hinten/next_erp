@@ -168,12 +168,70 @@ em NT 2025.001 v1.00 para refletir essa janela.
   por UF agora **obrigatórias nacional**. Inclui validação de bandeira
   de cartão contra a tabela do Portal Nacional NF-e (cStat 443).
 
-### `indIEDest` mais rigoroso
+### `indIEDest` mais rigoroso (cStat 805)
 
-Em UFs que não permitem destinatário "Isento de IE" em operação interna
-(`idDest=1`), RV `E16a-30` (cStat 805) agora rejeita. Lista das UFs:
-AL, AM, BA, CE, DF, ES, GO, MG, MS, MT, PB, PE, RJ, RN, RS, SE, SP.
+`indIEDest=2` ("Contribuinte isento de Inscrição no Cadastro de Contribuintes
+da UF do Destinatário") é a única entrada que dispara a cStat **805** —
+"A SEFAZ do destinatário não permite Contribuinte Isento de Inscrição
+Estadual". A 805 **não é nova** (não está nos códigos da §90.1 da NT): já
+constava do MOC 7.0 em duas RVs. A NT 2025.001 (§03.3, p. 9–10) alargou a
+primeira e republica a segunda com o mesmo escopo. Motivo declarado na §02.5
+(p. 7): "praticamente todas as UF concedem IE para MEI", então sobram poucas
+UFs que aceitam o "Contribuinte Isento de Inscrição".
 
-Cliente deve consultar tabela de UFs e ajustar `indIEDest` para `1`
-(Contribuinte normal) quando o destinatário tiver IE válida em uma dessas UFs,
-mesmo que o cadastro local indique "Isento".
+| RV | MOC 7.0 — Anexo I, p. 86 | NT 2025.001 v1.03 — p. 9–10 |
+|---|---|---|
+| `E16a-30` | **Obrig.** — só interestadual (`idDest=2`), nas UFs AM, BA, CE, GO, MG, MS, MT, PA, PE, RN, SE, SP | **Obrig.** — interna **e** interestadual (`idDest=1 ou 2`), nas UFs AL, AM, BA, CE, DF, ES, GO, MG, MS, MT, PB, PE, RJ, RN, RS, SE, SP |
+| `E16a-35` | **Facult.** — interna (`idDest=1`), em UF que não permite a situação | **Mesmo escopo** (Facult., `idDest=1`) |
+
+⚠️ As duas listas **divergem**: a NT acrescenta AL, DF, ES, PB, RJ e RS e
+**não lista mais PA**. E a lista não é a regra — a Observação 1 da `E16a-30`
+diz que ela segue a "configuração da UF do Destinatário (permite ou não
+permite Contribuinte Isento de Inscrição Estadual)". Não trate nenhuma das
+duas como fonte de verdade em runtime.
+
+Histórico da `E16a-30` dentro da própria NT (Histórico de Alterações, p. 2–3):
+
+- **v1.01** (jun/2025) — "Alterada RV E16a-30, incluindo a lista de UF".
+- **v1.02** (set/2025) — elimina RJ e ES da lista (vigência imediata, "ou a RV
+  deverá ser desativada enquanto a eliminação das UF não estiver
+  implementada") e estende a RV às **operações internas**, com produção em
+  **13/10/25** (repetido na Observação 2 da RV).
+- **v1.03** (set/2025) — reinclui ES e RJ. Cronograma da versão: teste até
+  20/10/2025, produção 03/11/2025.
+
+Exceções — as mesmas quatro nas duas RVs, no MOC 7.0 e na NT:
+
+1. destaque de ICMS-ST (`vICMSST`) em pelo menos um item;
+2. ICMS-ST retido anteriormente (`vICMSSTRet`) em pelo menos um item;
+3. em produção, NF com data de emissão anterior a 01/07/2016;
+4. operação isenta (CST 40, CSOSN 103), imune ou não tributada (CST 41,
+   CSOSN 300, CSOSN 400).
+
+**As duas saídas, e a armadilha da segunda.** Ou o destinatário passa a ter a
+IE informada (`indIEDest=1` + `<IE>`), ou é declarado não contribuinte
+(`indIEDest=9`). A segunda esbarra na RV `E16a-40` (Obrig., cStat **696**,
+NT 2019.001 v1.00; MOC 7.0 Anexo I p. 86): `indIEDest=9` com `indFinal≠1`
+numa saída (`tpNF=1`) que não é exterior (`idDest≠3`) é rejeitada —
+"Operação com não contribuinte deve indicar operação com consumidor final".
+Venda a não contribuinte, portanto, só como operação de consumidor final. (A
+`5E17-12`, cStat 300 — IE informada com `indIEDest=9` e tipo de IE ≠ 3 no CCC
+— está como "Implementação futura" na v1.03, p. 13, e exige a IE no XML.)
+
+**No app:**
+
+- O operador não escolhe `indIEDest`: ele sai da escada de `buildDest`
+  (`packages/integrations/nfe/src/generator/parties.ts`). Exterior e pessoa
+  física/estrangeiro → `9`. Pessoa jurídica: `ie` que normaliza para
+  `IE_SENTINELA.isento` (`ISENTO`) → `2`, o único caminho até ele; em branco
+  ou `NAO CONTRIBUINTE` → `9`; qualquer outro valor → `1`, o único que emite
+  `<IE>`.
+- A orientação ao operador para a 805 mora em `apps/web/lib/nfe/errors.ts`
+  (`orientacaoRejeicaoNFe`) — o único lugar que mapeia cStat → texto. Ela lê
+  `idDest`, `indIEDest` e `enderDest/UF` do `xml_assinado` rejeitado
+  (`apps/web/lib/nfe/destinatarioNFe.ts`), orienta para `idDest` 1 e 2 (3 ou
+  desconhecido → texto genérico) e oferece as duas saídas acima — informar a
+  IE (o botão "Buscar dados do CNPJ" do cadastro tenta obtê-la) ou
+  `NAO CONTRIBUINTE`, com a ressalva do consumidor final. Se o cadastro já não
+  declara `ISENTO`, o texto vira só "emita a NF-e novamente".
+- Nenhuma lista de UF é hard-coded: a UF vem do XML, pelos motivos acima.

@@ -1,4 +1,5 @@
 import { FieldPath, type Query, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
+import { ORIGEM_CONVERSA } from '@delfrance/schemas';
 import {
   type MigrationContext,
   type MigrationSummary,
@@ -49,10 +50,14 @@ import {
  * DATA SCANNED, so the index is built once in memory rather than issuing a
  * `where('userCliente','in',…)` per conversa — that would be one query per
  * document and would need the `clientes(userCliente ASC)` index hit N times.
- * Both scans are paged by document key, Firestore's always-available native
- * ordering, so neither needs an index. A `where` could not narrow the `chat`
- * scan either: the documents that need changing are the ones where a field is
- * MISSING, and Firestore cannot query for the absence of a field.
+ * Both scans are paged by document key and ride the DECLARED key indexes
+ * `clientes(__name__ ASC)` and `chat(__name__ ASC)` (#1895, listed in
+ * `key-walks.json`). Enterprise has no implicit key index: without one every
+ * page re-scans the whole collection (staging, #1895: 1,665 index rows read per
+ * page of 300 on `pedidos`). Those key indexes are the ONLY ones this needs. A
+ * `where` could not narrow the `chat` scan either: the documents that need
+ * changing are the ones where a field is MISSING, and Firestore cannot query
+ * for the absence of a field.
  */
 
 const PAGE_SIZE = 300;
@@ -109,6 +114,10 @@ async function runReport(ctx: MigrationContext): Promise<MigrationSummary> {
     for (const doc of docs) {
       docsScanned += 1;
       const d = doc.data();
+      if (d.origem === ORIGEM_CONVERSA.whatsapp) {
+        conta(veredito, 'whatsapp-passe-especifico');
+        continue;
+      }
       const v = planConversaClienteRef(
         { clienteOuterRef: d.clienteOuterRef, usarioOuterRef: d.usarioOuterRef },
         indice,
@@ -158,6 +167,10 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     for (const doc of docs) {
       docsScanned += 1;
       const d = doc.data();
+      if (d.origem === ORIGEM_CONVERSA.whatsapp) {
+        ctx.sink.skip(doc.ref.path, 'origem', d.origem, 'usar migrate:whatsapp-contato-cliente');
+        continue;
+      }
       const verdict = planConversaClienteRef(
         { clienteOuterRef: d.clienteOuterRef, usarioOuterRef: d.usarioOuterRef },
         indice,

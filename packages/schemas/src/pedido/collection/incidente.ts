@@ -58,6 +58,11 @@ export const ORIGEM_INCIDENTE = {
   pedidoMercadoLivre: 2,
   troca: 3,
   devolucao: 4,
+  // A Shopee return (#1525, Shopee step 17) — the one member the legacy enum
+  // never had (it stops at 0–4 + 99, so 5 collides with no migrated row). ⚠️
+  // NOT a reuse of 2: the Incidentes tab reads origem 2 + a numeric
+  // `externalId` as a Mercado Livre claim and would mount the ML panel on it.
+  pedidoShopee: 5,
   outros: 99,
 } as const;
 
@@ -67,6 +72,7 @@ export const origemIncidenteSchema = z.union([
   z.literal(2),
   z.literal(3),
   z.literal(4),
+  z.literal(5),
   z.literal(99),
 ]);
 export type OrigemIncidente = z.infer<typeof origemIncidenteSchema>;
@@ -77,8 +83,28 @@ export const ORIGEM_INCIDENTE_LABELS: Record<OrigemIncidente, string> = {
   2: 'Pedido Mercado Livre',
   3: 'Troca',
   4: 'Devolução',
+  5: 'Pedido Shopee',
   99: 'Outros',
 };
+
+/**
+ * The origens whose incidentes are a MARKETPLACE's own claim or return — the
+ * first gate of {@link classificarIncidenteBloqueante}.
+ *
+ * An ALLOW-list, like {@link TIPOS_INCIDENTE_BLOQUEANTES}, so an origem added
+ * later defaults to non-blocking — the safe direction.
+ *
+ * ⚠️ Never `outros` (99): it is the catch-all every system diary row is written
+ * under — step 5's produto-não-vinculado rows on both channels, ML's pack and
+ * stuck-order attribution rows — and what an operator hand-picks. ⚠️ Never
+ * `troca`/`devolucao` (3/4): the ERP's OWN devolução flow
+ * (`packages/data/src/pedido/devolucao.ts`) stamps them with no `claimStatus`
+ * and no `resolucao`, so the `resolucao == null` fallback would read every one
+ * as open for ever.
+ */
+export const ORIGENS_INCIDENTE_MARKETPLACE: ReadonlySet<OrigemIncidente> = new Set<OrigemIncidente>(
+  [ORIGEM_INCIDENTE.pedidoMercadoLivre, ORIGEM_INCIDENTE.pedidoShopee],
+);
 
 /**
  * `TipoResolucao` — INT-coded enum
@@ -328,9 +354,10 @@ export interface IncidenteBloqueanteInput {
  *
  * Three conditions, all required:
  *
- * 1. **Marketplace origin.** ⚠️ Load-bearing, not a nicety. `incidenteSchema.tipo`
- *    DEFAULTS to `returns`, so without this filter every hand-written incidente
- *    an operator forgot to retype would block `finalizado`, and
+ * 1. **Marketplace origin** — {@link ORIGENS_INCIDENTE_MARKETPLACE}. ⚠️
+ *    Load-bearing, not a nicety. `incidenteSchema.tipo` DEFAULTS to `returns`,
+ *    so without this filter every hand-written incidente an operator forgot to
+ *    retype would block `finalizado`, and
  *    `trocaIncidentesBestEffort` would block on every pedido save. Widening this
  *    to operator-created incidentes is a separate decision with its own blast
  *    radius — do not slip it in.
@@ -349,7 +376,7 @@ export interface IncidenteBloqueanteInput {
 export function classificarIncidenteBloqueante(
   inc: IncidenteBloqueanteInput,
 ): 'disputa' | 'devolucao' | null {
-  if (inc.origem !== ORIGEM_INCIDENTE.pedidoMercadoLivre) return null;
+  if (inc.origem == null || !ORIGENS_INCIDENTE_MARKETPLACE.has(inc.origem)) return null;
   if (!TIPOS_INCIDENTE_BLOQUEANTES.has(inc.tipo)) return null;
   const aberto =
     inc.claimStatus != null ? inc.claimStatus === STATUS_CLAIM.aberta : inc.resolucao == null;

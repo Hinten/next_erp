@@ -6,8 +6,31 @@ import { CHAVE, PROCNFE_FIXTURE } from './fixtures';
 describe('danfe/model parseProcNFe', () => {
   const model = parseProcNFe(PROCNFE_FIXTURE);
 
-  it('strips the NFe prefix to a bare 44-digit chave', () => {
+  it('strips the NFe prefix to a bare 44-character chave', () => {
     expect(model.chave).toBe(CHAVE);
+  });
+
+  /**
+   * ⚠️ The regression this exists for: `mapModel` used to do
+   * `onlyDigits(infNFe.Id)`, meaning to drop the `NFe` prefix but also
+   * stripping every LETTER out of the chave body. Positions 6–17 carry the
+   * emitente CNPJ, alphanumeric since RFB IN 2.229/2024, so the model handed a
+   * SHORT chave to all five renderers — `formatChaveAcesso` printed it
+   * regrouped out of alignment and `code128Png` / `^BC` encoded it into the
+   * barcode of a legally reproduced fiscal document. Nothing threw, and the
+   * fixture above is all-numeric so no test could see it.
+   *
+   * The pair-and-near-miss: the alfa chave must survive intact (letters kept,
+   * 44 characters), and the `NFe` prefix must still go.
+   */
+  it('keeps the LETTERS of an alphanumeric chave', () => {
+    const alfa = '432601PC3D315K000193550010000000071000000012';
+    const alfaModel = parseProcNFe(PROCNFE_FIXTURE.split(CHAVE).join(alfa));
+
+    expect(alfaModel.chave).toBe(alfa);
+    expect(alfaModel.chave).toHaveLength(44);
+    expect(alfaModel.chave.startsWith('NFe')).toBe(false);
+    expect(alfaModel.chave.slice(6, 20)).toBe('PC3D315K000193');
   });
 
   it('flags homologação from tpAmb=2', () => {
@@ -59,6 +82,20 @@ describe('danfe/model edge cases', () => {
     const REF = '35260514200166000187550010000000061000000010';
     const xml = PROCNFE_FIXTURE.replace('</ide>', `<NFref><refNFe>${REF}</refNFe></NFref></ide>`);
     expect(parseProcNFe(xml).ide.refNFes).toContain(REF);
+    expect(parseProcNFe(xml).ide.refDFes).toEqual([]);
+  });
+
+  it('maps the per-item DFeReferenciado chaves into ide.refDFes — distinct (#1683)', () => {
+    const REF = '35260514200166000187550010000000061000000010';
+    const ref = (nItem: number) =>
+      `<DFeReferenciado><chaveAcesso>${REF}</chaveAcesso><nItem>${nItem}</nItem></DFeReferenciado></det>`;
+    // Every det of the fixture references the same nota, by a different line.
+    let n = 0;
+    const xml = PROCNFE_FIXTURE.replace(/<\/det>/g, () => ref(++n));
+    expect(n).toBeGreaterThan(0);
+    const model = parseProcNFe(xml);
+    expect(model.ide.refDFes).toEqual([REF]);
+    expect(model.ide.refNFes).toEqual([]);
   });
 
   it('unescapes XML-escaped characters in text fields', () => {

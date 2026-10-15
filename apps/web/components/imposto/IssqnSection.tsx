@@ -14,7 +14,9 @@ export interface IssqnSectionProps {
 /**
  * ISSQN editor (services). The NF-e XSD makes `<imposto>` carry **either**
  * `<ICMS>` **or** `<ISSQN>` (xs:choice) — a toggle enables/clears the whole
- * ISSQN block, and emission skips ICMS when it is set.
+ * ISSQN block. NF-e emission REFUSES an item whose imposto carries it, before
+ * a número is consumed: the ERP emits no `<ISSQNtot>` (NF-e conjugada is not
+ * supported, #1656). The switch stays so an existing config can be turned off.
  */
 export function IssqnSection({ value, onChange, disabled }: IssqnSectionProps) {
   const issqn = (value.configuracaoISSQN ?? {}) as Record<string, unknown>;
@@ -28,7 +30,7 @@ export function IssqnSection({ value, onChange, disabled }: IssqnSectionProps) {
     <Stack gap="sm">
       <Switch
         label="Tributar como serviço (ISSQN)"
-        description="Quando ligado, a NF-e emite ISSQN no lugar do ICMS para os itens."
+        description="A emissão de NF-e ainda não suporta ISSQN (NF-e conjugada): um item com esta opção ligada é recusado ao emitir, sem consumir número."
         checked={enabled}
         onChange={(e) =>
           onChange({

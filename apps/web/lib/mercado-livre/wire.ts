@@ -42,6 +42,7 @@
  * ourselves.
  */
 import { z } from 'zod';
+import { mlSizeChartSchema } from '@delfrance/schemas';
 
 import { wireInt, wireNumber } from '@delfrance/core/wire';
 
@@ -57,6 +58,20 @@ export const contaSchema = z.object({
     .nullable(),
 });
 export type MercadoLivreConta = z.infer<typeof contaSchema>;
+
+/**
+ * The per-SKU fiscal registration summary (#745) — a publish's, or the
+ * "Enviar dados fiscais" route's. A refused SKU is DATA here, never an HTTP
+ * failure: the listing itself is fine either way.
+ */
+export const dadosFiscaisResumoSchema = z.object({
+  enviados: z.number(),
+  omitidos: z.array(
+    z.object({ produtoId: z.string(), sku: z.string().nullable(), motivo: z.string() }),
+  ),
+  erros: z.array(z.object({ produtoId: z.string(), sku: z.string(), mensagem: z.string() })),
+});
+export type MercadoLivreDadosFiscaisResumo = z.infer<typeof dadosFiscaisResumoSchema>;
 
 export const publicarResultSchema = z.object({
   /** The parent link's external id — a FAMILY id under User Products (#798). */
@@ -75,8 +90,18 @@ export const publicarResultSchema = z.object({
   itemIds: z.array(z.string()).optional(),
   /** Items closed because their ERP variação no longer exists (UP only). */
   orfaosEncerrados: z.array(z.string()).optional(),
+  /**
+   * The per-SKU fiscal registration with ML's Faturador (#745). Optional for the
+   * same reason as the two above — an older deployed backend answers without it.
+   */
+  dadosFiscais: dadosFiscaisResumoSchema.optional(),
 });
 export type MercadoLivrePublicarResult = z.infer<typeof publicarResultSchema>;
+
+export const enviarDadosFiscaisResultSchema = z.object({
+  dadosFiscais: dadosFiscaisResumoSchema,
+});
+export type MercadoLivreEnviarDadosFiscaisResult = z.infer<typeof enviarDadosFiscaisResultSchema>;
 
 /** One member of a re-verified User-Products family (#1142). */
 export const reverificarMembroSchema = z.object({
@@ -164,7 +189,18 @@ export type MercadoLivrePriceSyncFailure = z.infer<typeof priceSyncFailureSchema
 
 /** Progress snapshot of a price-sync job (`GET atualizar-precos/status`). */
 export const priceSyncStatusSchema = z.object({
-  status: z.enum(['running', 'completed', 'failed']),
+  /**
+   * ⚠️ `cancelled` (#1144) reaches this schema through TWO extenders —
+   * `jobsEmAndamentoSchema` and `priceSyncHistoricoEntrySchema` — so the member
+   * is not optional politeness: a browser holding a bundle older than the
+   * backend that first stamps one rejects the whole response with
+   * `MercadoLivreClientRespostaInvalidaError`, which on the rail means the
+   * operator loses the mass-import cards too (see `naoEnumerados` below for the
+   * live instance of exactly that). Only the new cancel route can produce the
+   * value, and only this build calls it, so the residual exposure is a stale
+   * browser tab open across the deploy.
+   */
+  status: z.enum(['running', 'completed', 'failed', 'cancelled']),
   baixarPreco: z.boolean(),
   planejados: z.number(),
   enviados: z.number(),
@@ -445,7 +481,7 @@ export const relatorioEnvioPrecoPaginaSchema = z.object({
   linhas: z.array(relatorioEnvioPrecoLinhaSchema),
   /** `null` on the last page — the caller loops until it sees this. */
   proximoDepois: z.string().nullable(),
-  status: z.enum(['running', 'completed', 'failed']),
+  status: z.enum(['running', 'completed', 'failed', 'cancelled']),
   relatorioLinhas: z.number().default(0),
   relatorioShards: z.number().default(0),
   relatorioCompleto: z.boolean().default(false),
@@ -962,12 +998,41 @@ export const chartValidationErrorSchema = z.object({
 export type MercadoLivreChartValidationError = z.infer<typeof chartValidationErrorSchema>;
 
 export const syncChartsResultSchema = z.object({
+  operationId: z.string(),
+  chartIndex: z.number().int().nonnegative(),
+  status: z.enum(['pending', 'completed', 'validation', 'conflict', 'unconfirmed', 'abandoned']),
   /** The charts after the sync (ML ids written back where accepted). */
   tabelas: tabelasSchema,
   validationErrors: z.array(chartValidationErrorSchema),
   updated: z.boolean(),
 });
 export type MercadoLivreSyncChartsResult = z.infer<typeof syncChartsResultSchema>;
+export const chartSyncStatusSchema = z.object({
+  operation: z
+    .object({
+      operationId: z.string(),
+      chartIndex: z.number().int().nonnegative(),
+      chart: mlSizeChartSchema,
+      projected: mlSizeChartSchema,
+      status: z.enum([
+        'pending',
+        'completed',
+        'validation',
+        'conflict',
+        'unconfirmed',
+        'abandoned',
+      ]),
+      kind: z.enum(['sync', 'delete', 'verify']).nullable().optional(),
+    })
+    .nullable(),
+});
+export type MercadoLivreChartSyncStatus = z.infer<typeof chartSyncStatusSchema>;
+export const chartRecoveryResultSchema = z.object({
+  released: z.literal(true),
+  chartIndex: z.number().int().nonnegative(),
+  chart: mlSizeChartSchema.nullable(),
+});
+export type MercadoLivreChartRecoveryResult = z.infer<typeof chartRecoveryResultSchema>;
 
 /** `POST size-charts/excluir` — ML accepted the REMOVAL REQUEST (see the method doc). */
 export const chartDeleteResultSchema = z.object({

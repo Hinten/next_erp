@@ -31,8 +31,12 @@ import { planHistoricoV2 } from './transform';
  *
  * ---- Cost, honestly: this walks EVERY `historicoEstoque` row in the database
  * via a collection-group scan, and Firestore Enterprise bills DATA SCANNED. The
- * walk is paged by document key — Firestore's always-available native ordering,
- * so it needs no index — and every decision is made in code on the fetched page.
+ * walk is paged by document key, riding the DECLARED collection-group key index
+ * `historicoEstoque(__name__ ASC)` (#1895, listed in `key-walks.json`) —
+ * Enterprise has no implicit key index, and without it every page re-scans the
+ * whole group (staging, #1895: an unindexed collection-group walk table-scanned
+ * all 6,342 `enderecos` docs on every page of 300). That key index is the only
+ * one it needs; every decision is made in code on the fetched page.
  * There is no cheaper shape: the rows to convert are exactly "all of them", so
  * no predicate could narrow it, and a `where movimento == null` filter would
  * need an index over a field that does not exist yet on any row.

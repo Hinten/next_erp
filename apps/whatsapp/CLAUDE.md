@@ -36,7 +36,7 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
   the account-health aggregation (`lib/whatsapp/health.ts`) behind the "Saúde da
   conta" card. See the "PIN registration + account health" section below.
 - `app/api/whatsapp/template-message` — `PERM.chat.write` (bit 49). **POST**
-  `{ conversaId }` sends the standard "reabertura de conversa" template
+  `{ conversaId, whatsappDestino, whatsappIntegracaoId }` queues the standard "reabertura de conversa" template
   (`reabertura_conversa`) to a WhatsApp conversa and records it as an outbound
   `mensagem`. See the "Template message (mensagem padrão)" section below.
 - `app/api/webhooks/whatsapp` — the inbound webhook receiver (#527). **GET** is
@@ -145,10 +145,47 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
    by the WA `messageId`.
 3. **`lib/whatsapp/processMessages.ts`** — resolves the owning account by
    `wa_id == metadata.phone_number_id` (`limit 2`; 0 or >1 → failed park),
-   discovers the contact, create-or-reopens the `chat` conversa in a transaction,
-   attaches the `mensagem` (downloading + caching media), runs the daily auto-reply,
-   then `fixConversaAnonima`. All ids are DETERMINISTIC (conversa/mensagem/event/
-   auto-reply) so redeliveries + retries converge instead of forking.
+   resolves identities to clientes and reserves one canonical chat per integration +
+   cliente. Unknown/ambiguous contacts retain messages and media in administrative
+   pending records until an operator links or explicitly creates a cliente. No usuario
+   is created. Message IDs and conversation reservations make redelivery idempotent.
+   **#1137**: it also REPORTS what the change did on the outcome's `detail` — a written
+   mensagem, an idempotent redelivery, a spam skip, an outbound echo, a statuses-only
+   change, or `vazio` (neither `messages` nor `statuses`, i.e. nothing happened). That
+   value comes from `createOrUpdateMensagem`'s boolean, which used to be discarded at
+   its only call site; it is REPORTED only and must never gate the `ultima_modificacao`
+   bump (see the comment at that bump). ⚠️ `detail` names what happened to the
+   MENSAGEM, not whether anything was written at all — `upsertConversa` runs BEFORE the
+   echo/spam returns, so every value except `statuses`/`vazio` implies the conversa was
+   touched.
+   **The statuses half of that is separately reported.** `processStatuses` returns a
+   `StatusesReport` — `{ aplicados, naoEncontrados, staleIgnorados, malformados,
+   desconhecidos }` — carried out to the task log beside `detail`. The first FOUR are
+   fates and sum to `statuses.length`; `desconhecidos` is an **overlay** on whichever
+   fate the entry met (see the wire-tolerance section below). Counts rather than more `detail` members, because one
+   `statuses[]` can carry entries with DIFFERENT fates, which no single enum value can
+   express; and because they ride out whichever arm of the priority chain won, an
+   `echo` no longer hides applied statuses and a `statuses` that landed nothing no
+   longer overstates. The two skip reasons stay APART: a stale skip is working as
+   designed and structurally common (the queue dispatches 3 concurrently, so statuses
+   race), while a soft miss may be a real doc-id derivation bug — merging them buries
+   the interesting one under a permanent noise floor. ⚠️ The SWEEP recomputes the report
+   and discards it: `ReprocessResult.outcomes` is a `Record<string, number>` keyed by
+   the constant disposition label, with no room for a nested object.
+   **One residual remains, deliberately**: `redelivery` names the mensagem skip while
+   the same run may have reopened the conversa and bumped `ultima_modificacao`. It stays
+   unreported under the rule the statuses report is an instance of — *report in the log
+   what leaves no other trace*. A soft-missed status writes nothing but a `console.warn`;
+   the conversa story writes its own documents (`evento_nova`, `evento_reaberto_<wamid>`)
+   and is derivable from `detail` besides.
+   **Inbound media anchor contract:** `getAndUploadMedia` is create-first
+   and deterministic: Arquivo id `wa_<mediaId>`, Storage
+   `whatsapp/<contaId>/<mediaId>`. After the download, `createOrUpdateMensagem`
+   reads every extracted arquivo anchor inside the same transaction that writes
+   the mensagem. A missing anchor throws `WhatsappMediaAnchorMissingError`; the
+   notification remains retryable and the next delivery downloads/reuses media
+   again. This read pairs with the arquivo sweep's transactional refcount/delete,
+   preventing either race order from committing a dangling reference.
 4. **`lib/whatsapp/processStatus.ts`** — advances an OUTBOUND mensagem's
    `estadoEnvio` from a `statuses[]` entry, guarded by the exact legacy forward-only
    transition matrix + the `lastExternalUpdateDateTime` out-of-order guard, and
@@ -156,16 +193,76 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
 5. **`lib/whatsapp/waTasks.ts`** — the enqueue seam (`WHATSAPP_TASKS_DISABLED` valve
    → persist-for-the-sweep; `WHATSAPP_TASKS_REGION` → region-qualified queue path).
 
+### Wire tolerance: one bad element must never cost the delivery
+
+⚠️ **The receiver validates only the ENVELOPE.** `webhookEnvelopeSchema` keeps
+`changes[].value` as `z.unknown()`; the full `valuePayloadSchema` runs one layer
+down, in `processMessagesField`. Do **not** "tighten" it back. A Zod array fails as
+a **whole** when any element fails, so with the value schema mounted at the
+receiver a single unrecognised `statuses[].status`, a new `messages[].type`, or
+**any** non-`messages` event made `parseWebhookBody` return null — and the route
+acked `200` with **no task, no failure document and no log line**. Meta saw a 200
+and never retried, so the entire POST (every entry, every change, any customer
+message riding along) was lost with no replayable record. `parseWebhookBody` reads
+only `object`, `entry[].id`, `changes[].field` and three optional strings, so the
+strictness bought nothing. Legacy agreed: `WebhookChangeGeneric.value` is `dynamic`
+and only the `messages` change binds a metadata-bearing value type.
+
+That also un-killed `DropOutcome.'campo-nao-suportado'`: WhatsApp **Business
+Management** events (`account_update`, `phone_number_quality_update`,
+`message_template_status_update`) carry **no `messaging_product` and no
+`metadata`**, so the old envelope rejected them and the dispatcher never saw the
+field. They now enqueue — one Cloud Task each, low and non-scaling volume — and are
+dropped **with a log** in `processChangePayload`.
+
+Three rules follow, all load-bearing:
+
+1. **`statuses[].status` and `messages[].type` are plain strings on the wire**
+   (legacy typed both `String`). `status` is narrowed at the point of use by
+   `narrowWaStatus`, which keeps the literal union at both `processStatus` switches
+   so `switch-exhaustiveness-check` still covers them. The fold is **exact** — no
+   trim, no case-fold: `'Sent'` is `desconhecido`, never `'sent'`, because writing a
+   confident wrong `estadoEnvio` is worse than the honest one. `type` is read by
+   **nothing** (the mensagem tipo comes from which media key is present).
+2. **`messages[]` and `statuses[]` are element-tolerant** — `.nullable().catch(null)`
+   — and the nulls are **KEPT, not filtered**, so the consumers can count them.
+3. **Tolerance is never silent.** Every coerced or dropped element lands in
+   `StatusesReport.{malformados,desconhecidos}` or `MensagensReport.malformados`,
+   both of which ride out to the single `logger.info` in `processNotification.ts`
+   (`?? null` — Cloud Logging drops `undefined` keys). A `.filter()`, or a counter
+   that stops incrementing, converts visible data loss into invisible data loss.
+
+⚠️ **An unknown `status` NEVER writes `estadoEnvio`** — it advances only the
+`lastExternalUpdateDateTime` watermark and increments `desconhecidos`. The arm used
+to stamp `ESTADO_ENVIO.desconhecido`, whose stated reason ("rather than leaving
+`estadoEnvio` unset") cannot apply: `processStatuses` returns early when the doc does
+not exist, so the mensagem **always** has a state. The sentinel could therefore only
+*destroy* a known one — on the **normal** path, since a status Meta adds later in the
+lifecycle carries the newest timestamp and bypasses the stale guard — and nothing
+backfills `estadoEnvio`. It also moved an outbound mensagem out of
+`ESTADO_ENVIO_SAIDA`, which `mensagemEhNossa`'s unknown-origem fallback reads.
+`processStatus.ts` was the repo's **only** writer of `ESTADO_ENVIO.desconhecido`; the
+value now exists for READING legacy documents only. ⚠️ Consequence for the log:
+`aplicados` means *patched*, not *advanced* — read it together with `desconhecidos`.
+
+⚠️ **The two counters get DIFFERENT dispositions, and that asymmetry is the point.**
+A change whose `mensagens.malformados > 0` returns **`fail`**, so the raw `value` is
+persisted to `notificacoesWhatsapp` and can be re-driven after
+`incomingMessageSchema` is widened; `statuses.malformados` alone still **resolves**.
+A dropped status is re-derivable (the next callback for that wamid re-stamps
+`estadoEnvio`), while a dropped message is a customer message that **exists nowhere
+else** — this channel carries the replay body for exactly that reason, and resolving
+would leave the recovery path unused in the one case it was built for. The messages
+that DID parse are already written and every id is deterministic, so a replay
+converges rather than duplicating.
+
 ### Locating an outbound mensagem for a status callback (PR-3 contract)
 
-`processStatus` reads the DETERMINISTIC doc directly rather than a collection-group
-`mid` query: `conversaId = conversaDocId(contaId, senderId(displayPhone,
-status.recipient_id))`, `msgId = mensagemDocId(contaId, status.id)`. So the
-**outbound sender stores each sent message at
-`chat/{conversaId}/mensagem/{mensagemDocId(contaId, sendWamid)}` with
-`mid = sendWamid`** (re-anchoring the doc id to the wamid the Graph API returns) —
-this is exactly what `dispatchOutbound` does on a successful send (#529, live). A
-status whose message isn't found is logged + skipped (a soft miss, never a throw).
+`processStatus` reads the administrative integration + wamid mapping in
+`whatsappMensagens`, then updates the mapped message and event watermark
+transactionally. Phone visibility and integration display-name changes never
+change the path. The outbound sender writes this mapping when anchoring its
+message to the provider ID. Migration creates mappings for imported messages.
 
 ### Auto-reply outbound contract (#529 sender trigger)
 
@@ -183,9 +280,11 @@ estadoEnvio === ESTADO_ENVIO.salva (1)  AND  tipo not in {'e','!'}  AND  mid == 
 writes (`nova conversa`, `reaberto`) are also `salva` but carry `tipo: 'e'` (and
 error messages `tipo: '!'`), so the `tipo` clause keeps them from being sent;
 inbound customer messages are `estadoEnvio: recebido (7)` and never match. The
-`origem === 'whatsapp'` clause is the AUTHORITATIVE channel gate: `apps/webchat`
-('site' conversas) writes its own NON-null local `mid`, but a 'site' conversa is
-excluded by the origem gate regardless of its `mid` convention.
+`origem === 'whatsapp'` clause is the AUTHORITATIVE channel gate: the legacy webchat
+widget ('site' conversas) wrote its own NON-null local `mid`. That widget was never
+ported (dropped 2026-09-07), but the imported legacy corpus still holds those
+conversas, and they are excluded by the origem gate regardless of their `mid`
+convention — which is why the gate is on `origem`, not on `mid`.
 
 ### The `estaAberto` UTC-hour quirk (models.dart:288-308)
 
@@ -248,6 +347,13 @@ auto-reply through the Cloud API. Port of `_enviarMensagensWhatsapp` +
 6. **Client**: `WhatsAppClient.sendMedia({ to, type, link, caption?, replyTo? })`
    (`packages/integrations/whatsapp-cloud-api`) posts the media object by LINK,
    mirroring `sendText`. Caption is omitted for audio (Graph API ignores it there).
+7. **Composer attachment anchor**: the inbox uses
+   `uploadChatFile`, which keeps create-first/content dedup but writes Arquivo id
+   `chat_<hash>` and Storage `chat/<hash>.<ext>` (legacy `chat/<hash>` docs remain
+   readable). `persistWhatsappMensagens` reads every arquivo anchor before its
+   mensagem writes in the same client transaction. If the sweep already won, the
+   composer reports a clear retry/re-attach error and retains the draft content;
+   if the mensagem wins, the sweep transaction retries and preserves the file.
 
 ## Template message (mensagem padrão) (#PR-C4)
 
@@ -265,20 +371,12 @@ languageCode='pt_BR' })` (`packages/integrations/whatsapp-cloud-api`), mirroring
 `sendText`; the wire body carries `recipient_type: 'individual'` + `template: {
 name, language: { code } }` (byte-for-byte legacy parity).
 
-**Send-then-write (PRE-ANCHORED).** The template is sent FIRST, THEN the mensagem
-is written directly at `mensagemDocId(contaId, wamid)` carrying `mid = wamid` +
-`estadoEnvio = enviando` — the SAME re-anchored shape `dispatchOutbound` produces,
-written up front. Writing the mensagem FIRST (as a plain `salva`/`mid: null`
-text) would race the #529 `sendOutbound` trigger into a SECOND, duplicate send
-(the trigger sends any `salva` + `tipo` not in `{e,!}` + `mid == null` +
-whatsapp-origem doc). Anchoring to the wamid excludes it from that discriminator,
-and lets the #527 status pipeline (`processStatus`, keyed on `mensagemDocId(contaId,
-status.id)`) locate the delivery callback. `ALREADY_EXISTS` (gRPC 6) on the
-`create` = a redelivery already wrote the doc → treated as ok (idempotent). A
-Graph-OK but write-FAIL is logged loudly and returns **502** `WA_TEMPLATE_WRITE_FAILED`
-(the template WAS delivered — not the caller's fault). The trailing
-converter-stripped conversa bump (`ultima_modificacao`) is best-effort (a failed
-ordering bump doesn't fail the request, since the message already landed).
+**Persist before sending.** The route compares the operator's destination and
+integration snapshot against the current chat in a transaction, then creates an
+outbox record with `whatsappTemplate`. Route and trigger use the same transactional
+sender claim; only one can authorize the Graph call. The claim rechecks the active
+identity and revision. A changed destination fails explicitly without redirecting.
+The claimed recipient stays attached to a Graph request already in flight.
 
 ## PIN registration + account health
 
@@ -351,3 +449,36 @@ function/queue and MUST match its deploy region.
 Set `NEXT_PUBLIC_WHATSAPP_URL=http://localhost:3008` so apps/web targets this
 backend. Deploy of the App Hosting backend is **manual and coordinated**
 — see root `CLAUDE.md`, Critical rules.
+
+## Cliente identity, pending contacts and cutover (#1084)
+
+- `contatos.ts`: identity claims (BSUID scoped to Meta portfolio, phone scoped to integration),
+  canonical chat reservations and guarded provider transitions. `portfolioId` must
+  be configured before BSUID traffic. Historical phones never identify automatically.
+- `vinculos.ts` and `vinculoReplay.ts`: retained media/messages, atomic client+identity+chat
+  confirmation, request fingerprint, resumable replay. Manual decisions override the
+  phone ambiguity they resolved; revoked identities and later principal edits remain guarded.
+- An active BSUID already owned by cliente A cannot be transferred by the pending UI.
+  If its phone is owned by B, confirming A records the reviewed phone alias in
+  `aliasesTelefoneIgnorados` on that BSUID. The phone remains owned by B; phone-only
+  traffic still resolves to B. Other contradictory numbers require another review.
+  A pure BSUID rotation carries this explicit decision to its successor.
+- Retained messages that still cannot resolve after a manual decision can be restored
+  as history only. The write transaction checks the operator decision, revision,
+  canonical reservation and exact retained payload. It does not reactivate identities,
+  change the reply destination/window, reopen service or trigger an auto-reply.
+  `whatsappMensagens.historicoManual` preserves that restriction on later redeliveries.
+- `GET /api/whatsapp/vinculos`, `GET /api/whatsapp/vinculos/[id]` and
+  `GET /api/whatsapp/vinculos/[id]/previsao?clienteId=...` require chat.read and
+  cliente.read. The preview projects the client, canonical conversation and identity
+  conflict warning; confirmation revalidates those facts transactionally.
+  POST additionally requires chat.write, plus cliente.write to create.
+  Responses are projections; provider payloads and identity registries stay Admin-only.
+- `GET /api/whatsapp/conversas/[id]/alias` requires chat.read and preserves old chat/message links.
+- Inbound messages carry clienteMensagemOuterRef and their original whatsappIdentidadeId;
+  outbound messages retain operator authorship and a versioned whatsappDestino snapshot.
+- Real transaction tests use vitest.firestore.config.ts under the existing e2e-emulator
+  carve-out. Offline unit tests explicitly exclude *.firestore.test.ts.
+- The one-time migration is tools/migrations/whatsapp-contato-cliente.README.md.
+  Imported claims must exist before writers start. Agents never execute the production
+  migration or deploy rules/triggers. No lazy migration, no synthetic-user deletion.

@@ -1,12 +1,20 @@
-import type { DocumentData, DocumentReference, Firestore } from 'firebase-admin/firestore';
+import {
+  FieldValue,
+  type DocumentData,
+  type DocumentReference,
+  type Firestore,
+  type Timestamp,
+} from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
-import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
+import { millisToMicros, nowMicros, parseIsoToMillis } from '@delfrance/core/datetime';
 import {
   camposEspelhadosQueMudaram,
   planejarSincronizacaoDoMembroUnico,
   produtoMeta,
+  reapontarComponentesKit,
+  type ComponentesKit,
   samePrecos,
   type PrecosMap,
 } from '@delfrance/schemas';
@@ -16,6 +24,7 @@ import { getDb } from '../lib/admin';
 import { resolveUsuarioOuterRef } from '../lib/authContext';
 import { PRODUTO_HISTORY_ROOT } from '../lib/historyRoots';
 import { buildModificationEntry, recordModification } from '../lib/modificationHistory';
+import { avisarReceitaKitShopee } from './avisoReceitaKitShopee';
 import { CAMPOS_ROLLUP_KIT, planejarRollupKit, type KitRollupPayload } from './kitRollupPayload';
 import {
   createKitRollupScheduler,
@@ -43,32 +52,41 @@ export const PRODUTO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   'componentesKitKeys',
   'fotosArquivosIds',
   'integracoesComProduto',
-  'marketplace',
-  // Sibling of `marketplace` above and written by the same five stamps, but it
-  // was missing here — so the one array generated history rows while the other
-  // did not (#961). Both are legacy denorms with no query consumers; their churn
-  // is never an operator edit.
-  'marketplaceIds',
+  // ⚠️ OUTLIVES THE FIELD ON PURPOSE. `nome_embedding` was dropped from
+  // `produtoSchema`, and removing this entry with it looks obvious and is
+  // backwards: this list is what protects the SWEEP that removes the stored key.
+  //
+  // The only way to drop a stored key is `update({ nome_embedding:
+  // FieldValue.delete() })` per document, which fires this trigger across the
+  // whole catalogue. `diffDocumentFields` builds its field set from the UNION of
+  // before/after keys, so a key that disappears is a CHANGE — and
+  // `valuesEqual(null, undefined)` is false (`a === b` fails, and the
+  // object branch is gated on `a !== null`), so even the `null` every prior
+  // write from this app stored counts. Without this entry the sweep writes one
+  // `historicoDeModificacoes` row per produto, each one recording the removal of
+  // a field no operator ever set.
+  //
+  // Delete this entry only AFTER that sweep has run (see the migration issue).
   'nome_embedding',
-  'statusProdutosMarketplace',
   'timestamp',
   'ultimaModificacao',
 ];
 
 /**
- * A variation child's `precos` is server-PROPAGATED from its parent (the
- * write below) — recording it here would echo that write back as a spurious
- * "child changed" entry, and on the child's own re-fire of this trigger would
- * make `campos` non-empty for a change nobody made by hand. `after` carries
- * `paiId` on every write except a delete, where only `before` is left.
+ * A variation child's `precos` may be server-propagated or operator-authored.
+ * Admin-SDK writes have no acting user and stay ignored to suppress the
+ * propagation echo; an authenticated editor write is audited like any other
+ * human change. `after` carries `paiId` on every write except a delete, where
+ * only `before` is left.
  */
 export function produtoExtraIgnores(
   before: DocumentData | undefined,
   after: DocumentData | undefined,
+  usuarioOuterRef: string | null = null,
 ): ReadonlyArray<string> {
   const doc = after ?? before;
   const ignores: string[] = [];
-  if (doc?.paiId != null) ignores.push('precos');
+  if (doc?.paiId != null && usuarioOuterRef === null) ignores.push('precos');
   // On a KIT the weight and box are server-DERIVED — rolled up from the
   // components by `dimensoesDoKit`, pushed in by `KitManager` on save and
   // rewritten by `recalcularDimensoesKit` whenever a component changes (#1152).
@@ -249,6 +267,171 @@ export async function sincronizarMembroUnico(
 }
 
 /**
+ * How many referencing kits one pointer move may repoint inline.
+ *
+ * ⚠️ Not a round number picked for tidiness. ADR 0014 measured **~2 000 kits
+ * sharing one component** on the printed-shirt catalogue (`kitRollup.ts`), and
+ * this sweep is tier 1 — one RPC per document, because a 400-doc `WriteBatch`
+ * commits atomically and a single stale kit would fail the other 399. So the
+ * fan-out is bounded rather than assumed small: past the cap the trigger stops,
+ * says so loudly, and leaves the rest to the migration's re-runnable
+ * `--target kits` phase, which is built for exactly this shape of work.
+ *
+ * The census (`audit:produto-sem-variacoes`) reports the corpus's real worst
+ * fan-out. If it comes back near the ADR's number, the fix is the queued
+ * `recalcularDimensoesKit` shape — the paged index
+ * (`componentesKitKeys CONTAINS, __name__ ASC`) already exists — not a bigger cap.
+ */
+const LIMITE_DE_KITS_INLINE = 200;
+
+/**
+ * Repoint every kit that names `produtoId` (or the sole member it just stopped
+ * naming) at the produto that now holds the stock.
+ *
+ * ## ⚠️ Why this exists at all
+ *
+ * The #1402 migration fixes the corpus once, and deliberately SKIPS produtos
+ * that sell on Mercado Livre — publish owns those. Publish's `'adotar'` arm then
+ * converts one whenever a seller publishes it, moving its available stock onto a
+ * new sole member. A kit naming that produto was correct the day the migration
+ * ran and breaks the day the listing goes up, with no migration left to catch it:
+ * `kitEstoqueDisponivel` scores the parent 0, and the stock sweep pushes that 0
+ * to ML, so the kit stops selling.
+ *
+ * ## ⚠️ It fires on any pointer MOVE, not just null → set
+ *
+ * `VariationManager` re-derives `filhoUnicoId` from the surviving child set on
+ * every save, so adding a row and delete-marking the old sole member in ONE save
+ * moves the pointer A → B. Gating on `before == null` misses that, and then
+ * `onProdutoDeleted`'s cascade runs for A instead — whose empty-kit rule forces
+ * `ehKit: false` on any kit whose only component was A. **A kit silently stops
+ * being a kit.** So the outgoing member is swept too.
+ *
+ * ## ⚠️ `cleanupInboundKitReferences` is NOT the precedent it looks like
+ *
+ * That sweep runs the same `array-contains` query with an unguarded 400-doc
+ * batch, and gets away with it because `findProdutoReferences` BLOCKS deleting a
+ * referenced produto — so it almost always matches zero rows. This one fires
+ * precisely when references exist. Hence tier 1 per document and the cap above.
+ *
+ * ## ⚠️ No re-entry loop
+ *
+ * The sweep writes other produtos' `componentesKit`; it never writes
+ * `filhoUnicoId`. So the trigger re-fired by each of those writes sees no pointer
+ * move and exits on the pure gate. Redelivery is idempotent for the same reason
+ * the migration's phase is: `unidadeVendavel` is a fixpoint, so a second pass
+ * finds `mudou: false` and writes nothing.
+ *
+ * @returns how many kits were repointed, and how many lost their precondition.
+ */
+export async function reapontarKitsQueReferenciam(
+  db: Firestore,
+  produtoId: string,
+  before: DocumentData | undefined,
+  after: DocumentData,
+): Promise<{ reapontados: number; conflitos: number } | null> {
+  // A child never has a sole member of its own, whatever it stores.
+  if (after.paiId != null) return null;
+  const novo = typeof after.filhoUnicoId === 'string' ? after.filhoUnicoId : '';
+  if (novo === '') return null;
+  const anterior = typeof before?.filhoUnicoId === 'string' ? before.filhoUnicoId : null;
+  if (anterior === novo) return null;
+
+  // Both ids: the parent (whose stock has just moved to `novo`) and the member it
+  // stopped naming, which `onProdutoDeleted` may be about to strip out of every
+  // kit rather than repoint.
+  const alvos = [produtoId, ...(anterior !== null && anterior !== '' ? [anterior] : [])];
+  const resolver = (id: string): string => (alvos.includes(id) ? novo : id);
+
+  const porId = new Map<string, DocumentReference>();
+  const dados = new Map<string, DocumentData>();
+  const versoes = new Map<string, Timestamp>();
+  for (const alvo of alvos) {
+    const snap = await produtoCollection
+      .ref(db, {})
+      .where('componentesKitKeys', 'array-contains', alvo)
+      // ⚠️ `.select()`, because Enterprise bills DATA SCANNED (root rule 1) and
+      // this is the only field the rewrite reads. Unprojected, each match pulls
+      // the whole produto — `fotos`, the marketplace
+      // denorms — and the cap below fires AFTER the query, so the ADR 0014 ~2 000
+      // case would read 2 000 full documents just to log that it wrote nothing.
+      // `recalcularDimensoesKit` projects for exactly this reason.
+      .select('componentesKit')
+      // ⚠️ Bounds the SCAN, not just the writes. `+ 1` is what lets the cap tell
+      // "exactly at the limit" from "over it" without reading the whole tail.
+      .limit(LIMITE_DE_KITS_INLINE + 1)
+      .get();
+    for (const doc of snap.docs) {
+      // A kit cannot list itself, but be defensive — `cleanupInboundKitReferences`
+      // filters the same id for the same reason.
+      if (doc.id === produtoId) continue;
+      // ⚠️ A pointer move queries TWO ids and one kit can reference both. Keying
+      // by doc id is what makes it read and written once; a plain array here would
+      // write the same document twice and the second write would lose its own
+      // precondition against the first.
+      porId.set(doc.id, doc.ref);
+      dados.set(doc.id, doc.data() ?? {});
+      if (doc.updateTime) versoes.set(doc.id, doc.updateTime);
+    }
+  }
+
+  if (porId.size > LIMITE_DE_KITS_INLINE) {
+    logger.error(
+      `onProdutoChanged: ${produtoId} é componente de mais de ${LIMITE_DE_KITS_INLINE} kit(s) — ` +
+        `acima do limite para reaponte inline. NENHUM foi reapontado; rode ` +
+        `\`migrate:produto-sem-variacoes --target kits\` para esse produto`,
+    );
+    // ⚠️ The count is a FLOOR, not a total: the query stops at the cap + 1, so
+    // saying how many there really are would need the scan the cap exists to
+    // avoid. The census reports the true fan-out.
+    return { reapontados: 0, conflitos: porId.size };
+  }
+
+  let reapontados = 0;
+  let conflitos = 0;
+  for (const [id, ref] of porId) {
+    const plano = reapontarComponentesKit(
+      (dados.get(id) ?? {}).componentesKit as ComponentesKit | null,
+      resolver,
+    );
+    if (!plano.mudou) continue;
+    for (const colisao of plano.colisoes) {
+      if (colisao.quantidadeSomada !== null) continue;
+      // ⛔ `limitarEstoque` disagrees between the two entries, so there is no
+      // correct sum — see `reapontarComponentesKit`. Both were left alone; a human
+      // has to choose, and this is the only place that will ever say so.
+      logger.error(
+        `onProdutoChanged: kit ${id} tem componentes que colidem em ${colisao.alvo} com ` +
+          `limitarEstoque divergente (${colisao.de.join(', ')}) — ficaram como estavam`,
+      );
+    }
+    const versao = versoes.get(id);
+    const patch = {
+      componentesKit: plano.componentesKit,
+      componentesKitKeys: plano.componentesKitKeys,
+    };
+    try {
+      // ⚠️ Tier 1. The patch is derived from the document just read, and the Kit
+      // tab is a live editor surface — a blind write would silently drop an
+      // operator's whole component list.
+      await (versao ? ref.update(patch, { lastUpdateTime: versao }) : ref.update(patch));
+      reapontados += 1;
+    } catch (err) {
+      if (!isFailedPrecondition(err)) throw err;
+      conflitos += 1;
+      // Losing is safe but NOT silent: the rewrite is idempotent and
+      // `--target kits` is the reconciler, so the kit is recoverable — but nothing
+      // else would ever mention it.
+      logger.warn(
+        `onProdutoChanged: kit ${id} não reapontado (escrita concorrente venceu) — ` +
+          `ainda aponta para ${produtoId}`,
+      );
+    }
+  }
+  return { reapontados, conflitos };
+}
+
+/**
  * Fan the kit weight/box rollup out to a queue when — and only when — this write
  * actually moved one of the five derived fields on a produto that can be a kit
  * component. One enqueue, no Firestore reads: a component can sit in thousands
@@ -336,7 +519,10 @@ export async function recordProdutoModificationAndPropagate(
   const entry = buildModificationEntry({
     before,
     after,
-    ignore: [...PRODUTO_HISTORY_IGNORE_FIELDS, ...produtoExtraIgnores(before, after)],
+    ignore: [
+      ...PRODUTO_HISTORY_IGNORE_FIELDS,
+      ...produtoExtraIgnores(before, after, usuarioOuterRef),
+    ],
     path: `produtos/${produtoId}`,
     subcolecao: null,
     docId: produtoId,
@@ -350,20 +536,40 @@ export async function recordProdutoModificationAndPropagate(
   if (entry !== null) {
     await recordModification(db, PRODUTO_HISTORY_ROOT, produtoId, entry);
 
-    // Propagation is gated on the entry's `campos` — never on custo alone, a
-    // custo edit never touches a child's precos — AND on the opt-out field.
+    // Propagation is gated on a parent price change — never on custo alone, a
+    // custo edit never touches a child's precos — OR on the explicit false →
+    // true re-enable transition. The latter is the confirmed UI action that
+    // deliberately replaces each independent child map with the parent's
+    // current map, even when the parent price itself was not edited.
     // `!== false` treats a missing field (every produto written before this
-    // field existed) the same as the schema default `true`. Variation children
-    // never reach here on their own write (their `precos` diff is suppressed by
-    // `produtoExtraIgnores`, so `entry.campos` never contains it), but the
-    // `paiId == null` check stays as defense-in-depth.
-    const shouldPropagate =
-      after.paiId == null &&
-      entry.campos.includes('precos') &&
-      after.propagatePriceToChildren !== false;
-    const childWrites = shouldPropagate
-      ? await findChildrenToPropagate(db, produtoId, (after.precos as PrecosMap) ?? null)
-      : [];
+    // field existed) the same as the schema default `true`. Authenticated child
+    // price edits are now audited, so `entry.campos` may contain `precos`; the
+    // `paiId == null` guard is what keeps them out of parent propagation.
+    const priceChanged = entry.campos.includes('precos');
+    const propagationReenabled =
+      before?.propagatePriceToChildren === false && after.propagatePriceToChildren !== false;
+    let parentPrecosToPropagate: PrecosMap | undefined;
+    if (after.paiId == null && after.propagatePriceToChildren !== false) {
+      if (propagationReenabled) {
+        // A re-enable event may be delivered after a newer parent price write.
+        // Re-read the parent so every delayed delivery converges on the current
+        // map instead of restoring its stale `after.precos` snapshot. If the
+        // current policy is disabled again (or the parent is gone), do nothing.
+        const currentParent = await produtoCollection.docRef(db, {}, produtoId).get();
+        const currentData = currentParent.data();
+        if (currentParent.exists && currentData?.propagatePriceToChildren !== false) {
+          parentPrecosToPropagate = (currentData?.precos as PrecosMap) ?? null;
+        }
+      } else if (priceChanged) {
+        // Common path: this delivery is the write that set the price, so its
+        // snapshot is the target and no extra parent read is required.
+        parentPrecosToPropagate = (after.precos as PrecosMap) ?? null;
+      }
+    }
+    const childWrites =
+      parentPrecosToPropagate !== undefined
+        ? await findChildrenToPropagate(db, produtoId, parentPrecosToPropagate)
+        : [];
     if (childWrites.length > 0) {
       await commitChunked(db, childWrites);
     }
@@ -402,6 +608,45 @@ export async function recordProdutoModificationAndPropagate(
   if (membroSincronizado !== null) {
     logger.info(`onProdutoChanged: ${produtoId} → espelho do membro único ${membroSincronizado}`);
   }
+
+  // ⚠️ LAST, below the mirror, and for the same reason the mirror sits below the
+  // enqueue: this one rethrows anything that is not `FAILED_PRECONDITION` (rule
+  // 6), and a handler that does not retry must not lose the work above to a
+  // transient `UNAVAILABLE` from a query this sweep makes.
+  //
+  // It is also the only piece here that writes OTHER produtos, so running it last
+  // means every effect on THIS produto has already landed.
+  const kitsReapontados = await reapontarKitsQueReferenciam(db, produtoId, before, after);
+  if (kitsReapontados !== null && kitsReapontados.reapontados > 0) {
+    logger.info(
+      `onProdutoChanged: ${produtoId} → ${kitsReapontados.reapontados} kit(s) reapontado(s) ` +
+        `para o membro único`,
+    );
+  }
+
+  // ⚠️ LAST of all (Shopee step 19, #1527, L4(2)): a kit recipe edit opens — or a
+  // recipe edited back resolves — the Shopee native-kit aviso of every (conta,
+  // kit) this produto's `variashopee` rows name. Last for the reason the two
+  // above are: it RETHROWS (rule 6), so placed higher a transient error from its
+  // reads would cost the mirror and the repoint, which this handler never retries.
+  // And below the mirror on purpose: a família-de-um parent's recipe reaches the
+  // member through the mirror, whose own write re-fires this trigger for the
+  // member — the produto that actually holds the kit-model rows.
+  //
+  // Zero reads unless the recipe fingerprint moved (a pure gate). The aviso write
+  // is rule 7 tier 2, inside the shared decision: it is clocked by the newest
+  // commit time of every document that decision read, so a stale delivery lands
+  // as a no-op. `agoraUs` is the event time, stable across redeliveries.
+  const avisosDeKit = await avisarReceitaKitShopee(db, produtoId, before, after, {
+    agoraUs: eventTimeMicros,
+    increment: (n) => FieldValue.increment(n),
+  });
+  if (avisosDeKit !== null && avisosDeKit.reavaliados > 0) {
+    logger.info(
+      `onProdutoChanged: ${produtoId} → aviso de receita de kit Shopee reavaliado para ` +
+        `${avisosDeKit.reavaliados} par(es) conta/kit`,
+    );
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -412,8 +657,12 @@ export async function recordProdutoModificationAndPropagate(
  * The produto modification-history + propagation trigger. Fires on EVERY
  * produto write (create/update/delete); the guards above make a delete or a
  * write that changes nothing outside the ignore list a zero-write no-op —
- * only a real change writes the entry, and only a precos change (never custo
- * alone) performs the one extra read that finds children to propagate to.
+ * only a real change writes the entry. A parent precos change reads the
+ * children to propagate; re-enabling propagation first re-reads the current
+ * parent and then reads the children. A custo-only change does neither. A kit
+ * RECIPE change (`componentesKit`, as the Shopee kit fingerprint measures it)
+ * re-reads the produto and its `variashopee` rows, then re-decides the Shopee
+ * native-kit aviso per (conta, kit) — see `avisoReceitaKitShopee.ts`.
  * Targets the NAMED `default` database (gotcha #8).
  */
 export const onProdutoChanged = onDocumentWrittenWithAuthContext(
@@ -429,14 +678,14 @@ export const onProdutoChanged = onDocumentWrittenWithAuthContext(
     // redeliveries of the SAME event, so the deterministic entry doc stays
     // content-identical on retries. Stored as MICROSECONDS since epoch
     // (`microsSinceEpoch`, the repo's datetime standard).
-    const eventTimeMillis = Date.parse(event.time);
+    const eventTimeMillis = parseIsoToMillis(event.time);
     await recordProdutoModificationAndPropagate(
       getDb(),
       produtoId,
       before,
       after,
       event.id,
-      Number.isNaN(eventTimeMillis) ? nowMicros() : millisToMicros(eventTimeMillis),
+      eventTimeMillis == null ? nowMicros() : millisToMicros(eventTimeMillis),
       resolveUsuarioOuterRef(event.authType, event.authId),
     );
   },

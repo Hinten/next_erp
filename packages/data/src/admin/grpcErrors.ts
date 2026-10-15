@@ -53,3 +53,34 @@ export function isNotFound(err: unknown): boolean {
 export function isFailedPrecondition(err: unknown): boolean {
   return err instanceof Error && (err as { code?: unknown }).code === 9;
 }
+
+/**
+ * Any non-OK gRPC status — an `Error` whose `code` is an integer from 1
+ * (CANCELLED) to 16 (UNAUTHENTICATED), the shape every Admin-SDK Firestore call
+ * rejects with. For a caller that must tell "Firestore failed" apart from a bug
+ * without naming one code: a string code (a `FirebaseError`'s
+ * `'functions/…'`), a plain object carrying `code`, 0 (OK) or a number outside
+ * the gRPC space is NOT one.
+ */
+export function isGrpcStatusError(err: unknown): err is Error & { readonly code: number } {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'number' && Number.isInteger(code) && code >= 1 && code <= 16;
+}
+
+/**
+ * gRPC codes that say nothing about the request itself — retrying the same
+ * operation later may succeed: DEADLINE_EXCEEDED (4), RESOURCE_EXHAUSTED (8),
+ * ABORTED (10, transaction contention), INTERNAL (13), UNAVAILABLE (14).
+ */
+const CODIGOS_TRANSITORIOS: ReadonlySet<number> = new Set([4, 8, 10, 13, 14]);
+
+/**
+ * A {@link isGrpcStatusError} whose code is transient (4, 8, 10, 13, 14). Every
+ * other code — INVALID_ARGUMENT, NOT_FOUND, PERMISSION_DENIED,
+ * FAILED_PRECONDITION… — repeats deterministically, so a caller that isolates
+ * a transient failure must still rethrow those.
+ */
+export function isTransientGrpcError(err: unknown): boolean {
+  return isGrpcStatusError(err) && CODIGOS_TRANSITORIOS.has(err.code);
+}

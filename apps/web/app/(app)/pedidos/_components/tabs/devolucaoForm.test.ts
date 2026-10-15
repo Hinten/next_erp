@@ -57,6 +57,28 @@ describe('clonePedidoItems', () => {
   });
 });
 
+describe('the seeded `nome` is persisted data, not a display string', () => {
+  // `buildItensDevolvidos` writes `row.nome` straight back into `nomeDeVenda`,
+  // so a placeholder seeded here would be STORED as the line's sale name. The
+  // display resolves the fallback through `nomeDoItem` instead.
+  it('leaves `nome` blank when the item has no nomeDeVenda — never the produto id', () => {
+    const rows = clonePedidoItems(
+      { numero: 'PED-9', itens: { p1: [item({ nomeDeVenda: null })] } },
+      'origin1',
+    );
+    expect(rows[0]?.nome).toBe('');
+    expect(rows[0]?.produtoUid).toBe('p1');
+  });
+
+  it('round-trips a nameless line back to a null nomeDeVenda', () => {
+    const rows = clonePedidoItems(
+      { numero: 'PED-9', itens: { p1: [item({ nomeDeVenda: null })] } },
+      'origin1',
+    );
+    expect(buildItensDevolvidos(rows)?.origin1?.p1?.[0]?.nomeDeVenda).toBeNull();
+  });
+});
+
 describe('newAvulsoRow', () => {
   it('creates an empty avulso row with no produto and no cap', () => {
     const row = newAvulsoRow();

@@ -31,7 +31,7 @@ all and records the cross-theme edges. There is deliberately **no barrel
 | `size-charts/` | grades de tamanho |
 | `categorias/` | category tree & catalog metadata |
 | `nfe/` | NF-e upload to ML |
-| `frete/` | `int_frete` ⇆ ML conta sync |
+| `frete/` | `int_frete` ⇆ ML conta sync — a binding of `@delfrance/data/admin/frete` |
 
 ⚠️ Three things bind to these paths from **outside** the app and red CI on a
 move: `tools/deploy-env/preflight.mjs` (reads `estoque/bulkEstoquePlan.ts` from
@@ -41,6 +41,11 @@ disk), and the two path-keyed inventories
 The per-surface notes below stay the authority on behaviour.
 
 - `app/api/health` — uptime check (no auth).
+- `app/api/marketplace/mercado-livre/rastreio` — **#759**: `PERM.frete.read`-gated
+  carrier tracking link for a persisted pedido. Resolves the current ML shipment
+  and account, then calls `GET /shipments/{id}/carrier`; no freight writes.
+  The Frete tab and order-row action share the browser control. Unavailable
+  tracking is `409 ML_RASTREIO_INDISPONIVEL`; unsafe URLs are `502 ML_BAD_RESPONSE`.
 - `app/api/marketplace/mercado-livre/oauth/start` — **#291**: `PERM.integracao.write`-gated;
   mints a signed `state` and returns the ML consent URL (`channel.oauthFlow.start`).
   **#821**: it also RECORDS the attempt (`putOauthState`) before handing out the URL —
@@ -165,10 +170,9 @@ The per-surface notes below stay the authority on behaviour.
   buyer record says `role: 'comprador'` whether it sits at the pair's bare `comprador`
   document or an additional mint's `comprador-<mlUserId>`, so the records alone cannot
   tell "the new buyer landed beside the old one" from "it landed on top of it" from "it
-  was never created". Nothing may write `docId` back: the stored schema is
-  `.passthrough()`, so a `docId` reaching `put`/`create` is persisted silently as a
-  record field. `toRecord` is the only producer of a written record and returns a bare
-  record; the doc id is attached AFTER the write.
+  was never created". Nothing may write `docId` back: the stored schema is strict,
+  `toRecord` is the only producer of a written record and returns a bare record, and
+  the doc id is attached only AFTER a read.
   ⚠️ **`credencialRevogada` is also apps/web's CAPABILITY PROBE — never drop it, never
   make it optional.** Before the single-role mint this route ignored its body entirely,
   so a backend older than that answers a `{role}` POST by running the PAIR bootstrap:
@@ -262,11 +266,22 @@ The per-surface notes below stay the authority on behaviour.
   `players[role=respondent].available_actions` still holds a `send_message_to_*` —
   `claimActionability.ts`. A thread nobody can reply on is #817 with extra steps.
   ⚠️ It closes, it never deletes: a claim that stops being answerable keeps every
-  message it ever had and gains `respostaBloqueada` + `atendido`. That close runs
-  OUTSIDE the `ultima_modificacao` freshness gate, because ML does not reliably bump
-  `last_updated` when the actions drain away — inside the gate a dead thread would
-  keep an open composer. `estadoConversa` is operator triage state and is never
+  message it ever had and gains `respostaBloqueada` + `atendido`. The close — and
+  the REOPEN, when a send action comes back — ride the ordinary conversa update:
+  ONE transaction gated on the provider watermark `ultimaModificacaoIntegracao`
+  (ms, `claim.last_updated` and nothing else). The gate is `>=`, because ML does not
+  reliably bump `last_updated` when the actions drain away, so an equal snapshot
+  must still apply; a strictly older one is refused in BOTH directions. ⚠️ Never
+  gate it on `ultima_modificacao` again: operators write that on every rename and
+  etiqueta change, so an edited conversa looked permanently newer than the wire —
+  and the out-of-band close that used to sit outside that gate could only ever
+  close, never reopen. `estadoConversa` is operator triage state and is never
   touched by any of it.
+  ⚠️ **The incidente write is watermarked too (#1772)** — `claimIncidenteTx.ts`, one
+  transaction on `relogioProvedorUs` (µs, the field Shopee's returns already use).
+  It used to be a bare get → merge, so an OLDER snapshot landing last reopened a
+  closed claim and re-blocked despacho / NF-e / finalizar. Never gate it on
+  `ultimaModificacao`: operators stamp wall-clock µs there.
   ⚠️ **Identity is a CLIENTE** (#768). `claimUsuario.ts` — which minted a sem-auth
   `usuarios` doc per ML buyer — is deleted; `usuarios` is now only for people who can
   log in. The pedido already names the cliente, so `claimCliente.ts` does exactly one
@@ -356,7 +371,8 @@ The per-surface notes below stay the authority on behaviour.
 
 ## Testing
 
-Two suites, deliberately separated by filename:
+Four suites, deliberately separated by filename (each config includes only its
+own suffix, and `vitest.config.ts` excludes the other three):
 
 - **Offline** — `pnpm --filter @delfrance/mercado-livre-app test` (`*.test.ts`). Run by
   `ci-mercado-livre.yml` in `ML offline (unit)`, **not** by `ci.yml`: that workflow
@@ -394,10 +410,69 @@ Two suites, deliberately separated by filename:
   functions' region MUST match — a mismatch is the silent drop `mlTasks.ts` warns about,
   and it is what this test detects. Both are `MERCADO_LIVRE_TASKS_REGION` (inlined into
   the bundle), which is deliberately NOT `FUNCTIONS_REGION`: Cloud Tasks and Cloud
-  Scheduler do not exist in every region, so where they are absent the eleven queue/schedule
-  functions live one region away from the four Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
+  Scheduler do not exist in every region, so where they are absent the thirteen queue/schedule
+  functions (5 `onTaskDispatched` + 8 `onSchedule`, counted from `functions/src/index.ts`)
+  live one region away from the six Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
   token and no real secret, and executes only classic queries (the Pipelines API does not
   run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
+
+- **Staging, Enterprise** — `test:staging` (`*.staging.test.ts`, `vitest.staging.config.ts`),
+  run by the same workflow's `ML staging Enterprise queries` job with the
+  `FIREBASE_*_STAGING` secrets (`optional:not_fork`: a fork PR cannot read them, and the gate
+  names that skip); locally it reads `FIREBASE_PROJECT_ID` + `FIREBASE_SERVICE_ACCOUNT[_PATH]`
+  from the repo-root `.env.local` and skips without them — in CI `ML_STAGING_REQUIRED=1`
+  turns a missing credential into a failure, never a silent green. It exists because every
+  other suite runs Firestore as a fake or as the STANDARD-edition emulator, and the staging
+  database is ENTERPRISE: an unindexed query there full-scans and bills instead of failing, and
+  classic `explain()` is refused. `auditoriaNaoEnumerados.staging.test.ts` (#1200) drains the
+  link audit's collection-group walk — one stored ref form at a time, as the audit runs it —
+  over real `DocumentReference` cursors (every link read exactly once), checks the pre-resolve
+  re-read agrees with it, runs the tier-1 `adicionarContaSeViva` heal on a real transaction,
+  runs the run's ONE open-avisos read on real docs (open rows only, and the in-memory filter
+  keeps exactly one conta's), and judges the plan of both queries' SDK pipeline translation
+  (`db.pipeline().createFrom(…)` of the production builder's PROJECTION-LESS half —
+  `consultaDaVarreduraSemProjecao` / `consultaDosAvisosAbertosSemProjecao` — never a hand-built
+  copy) with `lib/firebase/explainPlan.mjs` — the one copy of those verdicts, shared with
+  `scripts/check-stock-indexes.mjs` and unit-tested in `explainPlan.test.ts` against REAL plans
+  captured on staging (`lib/firebase/__planos__/`). ⚠️ Never explain the projected query:
+  `createFrom` emits its `select` BEFORE the `exists(__name__)`/`sort(__name__)` stages it
+  derives, the key is dropped, and the proxy returns zero rows and no plan (measured
+  2026-10-08). ⚠️ A `contaOuterRef` push-down over an unbounded range (a bare `ranges: /`) and a
+  cursor tested per entry print the same lines as the walks they must rule out, so neither
+  passes on its shape: only on read counters under a ceiling the suite's seeded neighbours
+  provably exceed (it asserts that, too). ⚠️ "Neighbours" includes one BELOW the range: an
+  unbounded scan that stops at its Limit reads only what sorts before the ref form plus the
+  page, so page 1 of a walk of every conta's links reads inside any ceiling unless something
+  is seeded just below — the suite's conta `…-w`, three closed links per ref form. ⚠️ **Every
+  plan case asserts a PASS, and it was not always going to**: on 2026-10-08 the walk proxy's
+  `contaOuterRef in [both ref forms]` was sorted by a `MajorSort` (page 1 of an 8-link conta
+  read all 8 index rows to return 2 — every page read the conta's whole remainder), and the
+  avisos KEY RANGE the audit then read had no seekable access path (no avisos index leads with
+  `__key__`: it scanned the whole collection). Those two proxy-plan findings are why the audit
+  walks one ref form at a time (`==`, a `• Limit` that reads exactly the page) and reads the
+  open avisos once per run (`avisos(resolvidoEm)` as the closed `[null]` point, scanning exactly
+  the rows it returns — a range that ran on into the resolved history would scan the suite's
+  seeded RESOLVED row too). A red there is a regression of one of those decisions — never a
+  verdict to relax. ⚠️ A proxy PASS proves the index is READY and serves the predicate, not
+  the classic query's own plan (Query Insights confirms that after a real run). ⚠️ It **never
+  runs the full audit** (`runAuditoriaNaoEnumerados` enumerates every real staging conta and
+  resolves tipo-wide) and **never creates an `integracao`** — the conta is a bare per-run
+  string, so no real sweep can pick it up. Every id carries a per-run `e2e-ml1200-<8 hex>`
+  prefix. ⚠️ The open-avisos cases need OPEN avisos, and an open row is what the staging bell
+  reads: the suite's are addressed to a per-run `destinatarioUid` no operator has, and THAT
+  is what hides them — the bell drops a row addressed to somebody else, and on a bell holding
+  fewer than 50 open rows (staging's) they sit inside its window. Their early `criadoEm` only
+  keeps them from displacing a real row from a newest-first page (the bell's 50, Shopee pass
+  (b)'s 200). They live only for the suite's own run: `afterAll` deletes every produto
+  subtree and aviso it wrote and FAILS if anything is left — or if the stale sweep's reads
+  could not reach it — and `beforeAll` reclaims this suite's own leftovers older than 2h
+  through the CG `contaOuterRef` prefix and two `avisos(resolvidoEm)` points (`[null]`, and
+  the resolved witness's fixed sentinel), never a document-key range: neither `produtos` nor
+  `avisos` has an index LEADING with `__key__`, so on the plan proxy a key range scanned the
+  whole collection (2026-10-09). The deployed
+  `onProdutoMercadoLivreLinkChanged` trigger heals the seeded class-2 drift as soon as its
+  link lands, so the seed waits for that heal (≤30s) and undoes it before any case reads the
+  drift — a case whose precondition was rewritten says so instead of passing vacuously.
 
 ⚠️ **Not covered, so do not read a green lane as more than it is:**
 `scheduleDelaySeconds` — the emulator's dispatch loop is pure FIFO with no `scheduleTime`
@@ -406,7 +481,8 @@ receiver's 10s order-family refetch delay cannot be observed; `mlTasks.test.ts` 
 statically and the round trip uses a no-delay topic. Also uncovered: the nested
 `functions/` **Firestore triggers** (the lane loads them but drives none), composite
 **index declaration** (the emulator
-auto-creates them; that is guard C/D in `notificationGuardrails.test.ts`), Firestore
+auto-creates them; that is guard C/D in `notificationGuardrails.test.ts` — the staging suite
+observes READINESS for the #1200 audit's two queries only), Firestore
 rules (the Admin SDK bypasses them — `ci-rules.yml` owns those), the Enterprise Pipelines
 API (the emulator is Standard edition and still exposes `db.pipeline()`), and the ML API
 itself. ML has **no sandbox** and its `refresh_token` is single-use and rotating, so no
@@ -431,6 +507,50 @@ solely on kits named directly on a pedido line.
 carries the full arithmetic, the tier table, the `min(anterior, atual)` guard and
 the rejected alternatives. Check any change in this area against it.
 
+⚠️ **The monthly link audit is NOT a fourth tier — it sends nothing (#1200).**
+All three tiers enumerate through the same two anchor terms (S1: `paiId == null`
+AND `integracoesComProduto array-contains <conta>`), and a live anúncio whose
+produto falls outside them is a candidate on none of them and leaves no skip row:
+the array lost the conta (#804 class 2 — a lost trigger event; the cutover import
+fires no triggers at all), or the link sits on a variation child (class 3).
+`sweepMercadoLivreAnunciosNaoEnumerados` (02:30 on the 1st,
+`estoque/auditoriaNaoEnumerados.ts`) walks each active conta's LINKS through
+`anuncios/linksNaoEnumerados.ts` — the walk the price job's reconciliation already
+ran, now shared, one stored ref form at a time (`contaOuterRef ==`, for both consumers
+since #1862) — HEALS class 2 with the tier-1 `adicionarContaSeViva` so the
+03:00 force-all enumerates the family again, and raises one
+`anuncioForaDaSincronizacao` aviso per produto for what needs a human, resolved
+only by a later COMPLETE walk plus a fresh re-read. Its avisos come from ONE read
+per run of every open aviso (`resolvidoEm == null`, capped; a listing past the cap
+resolves nothing), filtered in memory by tipo, canal and id. Firestore-only: no ML call, no
+ML secret, gated by the master flag alone — never by `..._RECONCILIACAO_ENABLED`,
+which is an ML-quota valve. ⚠️ The force-all is a force-all for ENUMERATION only:
+`deveEnviarFamiliaCore` still skips a family with no net ERP movement since
+`lastReconciliacaoAtUs`, so what a heal actually gets re-sent, and the documented
+gaps, are in `functions/DEPLOY.md` → "The monthly link audit". Do not "fix" class 2
+by widening S1 — the two-term shape is the measured economical one (#431/#890) —
+and keep the audit's classifier and S1 together: `bulkEstoquePlan.test.ts`
+evaluates the S1 `where` actually recorded against it, so a term added to either
+reds there.
+
+⚠️ **Wherever `MERCADO_LIVRE_STOCK_SYNC_ENABLED` is on, the COLLECTION_GROUP index
+`produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)` must be READY.** The audit's
+walk rides it, and on Enterprise a missing index does not fail — it full-scans the
+collection group and bills the bytes, every month. It needs no new deploy: #1191
+declared it (`de225899e`, merged 2026-08-20) in the same commit as the
+`produtos(paiId, integracoesComProduto, __name__)` anchor composite, so any index
+deploy from a later tree carries both — but verify READY rather than assume it. The
+audit's open-avisos read rides the declared single-field `avisos(resolvidoEm ASC)`
+entry the same way (READY on staging, 2026-10-09).
+
+⚠️ **`buildSendTasks`' `'conta-fora-do-produto'` rung is BY-IDS-ONLY.** S1
+filters that same field server-side, in the execution that projects it, so no
+sweep row can reach the rung; it fires only on the manual push
+(`fetchStockFamiliesByIds` carries no anchor terms), and there it names one of
+three states — trigger lag right after a publish, every link of the conta closed or
+never published, or denorm drift (the state the audit heals). Keep both it and its
+S6 projection: dropping the projection alone silently disables the check.
+
 ## Status
 
 The channel is **code-complete** against the ML port master plan (Steps 1-14).
@@ -446,7 +566,7 @@ matters:
 
 | Topic | Disposition | Handler |
 |---|---|---|
-| `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) |
+| `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) + ML's category (#847) |
 | `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
 | `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9); since #1087 it also BOOTSTRAPS a missing pedido |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
@@ -466,6 +586,25 @@ a `user_product_seller` publishes, it silently skipped the entire future catalog
 (#1087). ML's own migration **tags** are now the only reason to defer, and each
 deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
 a sync. Do not reintroduce a link-only guard here.
+
+⚠️ **A recategorization is NOT its own topic either — it arrives on `items` (#847).**
+Mercado Livre moves listings between categories on its own ("recategorização
+automática" for items published via API, since 29/10/2025, plus splits of its category
+tree) and says so only through an ordinary `items` delivery with no field naming what
+changed. `category_id` is **create-only** on our wire (`itemPayload.ts`), so a stale
+stored value never reverts ML's change — it misleads every READER instead: the
+size-chart binding on publish (which can block it), a new UP member's `POST /items`,
+the editor's attribute grid. So `itemsStatusSync` and `reverificarAnuncio` write ML's
+`category_id` onto the link, fill-only (an omitted field never nulls a stored one). On
+a User-Products FAMILY each member's category is recorded on its own link and the
+parent takes `foldFamilyCategoria` — **unanimity, never "latest member wins"**, inside
+the same transaction as the status fold: members are delivered concurrently, and a
+last-writer rule would flip the parent on every delivery while they disagree. The
+category moves on its own evidence, even when the status fold cannot conclude.
+⚠️ **Only LIVE members vote** (the status ladder's terminal rung — `closed` or removed
+by moderation — is excluded, falling back to all when every member ended): ML need not
+recategorize an item that no longer sells, so an ended member's last-known category
+would otherwise veto every later move and freeze the parent on a stale value.
 
 ⚠️ **A moderation is NOT its own topic — it arrives on `items`.** ML publishes no
 `moderations` notification topic (checked against its topic list); a policy pause
@@ -665,9 +804,17 @@ produto shape — and since #1399 the sweep SENDS virtual kits) and
 `status-nao-enviavel` firing on a member **ML itself** paused. So `estoqueSend`
 reads the listing before any bulk PUT and completes the array with the live ids
 and quantities of the variations it is not changing
-(`estoque/variacoesReconciliacao.ts`); the payload's own numbers still ride
-verbatim, so the sweep stays the sole authority on what the stock IS. Only this
-one `kind` pays the extra `GET /items`.
+(`estoque/variacoesReconciliacao.ts`). Attempt zero still uses the payload's own
+numbers verbatim. A real Cloud Tasks retry or pause re-enqueue first refreshes
+those numbers through at most two deterministic BatchGets (#693), with no query,
+scan, depósito read or cache. The sweep carries the exact estoque document ids
+it already joined, including legacy auto-ids, plus explicit `null` locators for
+rows that were absent. A changed depósito skips; a newly participating component
+without a locator, or an ambiguous pre-snapshot task, falls back to the complete
+original stock intent so a bulk never mixes fresh and stale values. This is only
+the quantity-source fallback; the complete live `variations[]` reconciliation
+below still has no fallback. Only the legacy bulk `kind` pays the extra
+`GET /items` needed to preserve the complete live variation list.
 ⚠️ **A planner-side completeness check could NOT have covered this, and that is
 what decided where the fix lives.** A variation existing on ML with no local
 `variacaoMercadoLivre` link produces no child row at all — nothing is skipped,
@@ -843,20 +990,28 @@ membros"*) and `family_id.collision`. Famílias already live never gain it; the
 only supported retrofit is `POST /user-products-families/{family_id}/tasks`,
 which rewrites EVERY member at once and is a feature of its own.
 
-⚠️ The name (`Código de referência`) is **public** — a custom characteristic
-renders in the anúncio's ficha técnica — and **frozen** at first publish, since
-it feeds the family hash. ML offers no seller-settable alternative: the `hidden`
-tag is metadata ML *returns* for attributes IT defines and rides no request body,
-and `PUT /user-products-families/{id}` takes only PARENT_PK/ITEM_CONDITION
+⚠️ The name (`Código de referência`) is **frozen** at first publish, since it
+feeds the family hash. ML offers no seller-settable alternative: the `hidden` tag
+is metadata ML *returns* for attributes IT defines and rides no request body, and
+`PUT /user-products-families/{id}` takes only PARENT_PK/ITEM_CONDITION
 (*"Não são permitidos atributos custom"*). Nor is there a parent slot for a
 `SELLER_SKU`: a User Product IS the variation, so a sku there is the member's.
-⚠️ It must also stay distinct from every ML attribute's display name, and the
-match is **id-AGNOSTIC** — `skuPaiFromAttributes` folds `name` and never reads
-`id`, so an ML-DEFINED attribute collides too. The cost is twofold: rung 1 reads
-that attribute's value as the parent sku, AND `attributesFromItem` drops it from
-`link.attributes`, so it stops being republished — on simple items as well.
-Only a live sweep of `GET /categories/{id}/attributes` can prove absence; run it
-before the first deploy, since the name freezes then.
+
+⭐ **Measured 2026-09-03 on `MLB5183026663`, and it settled two open questions.**
+ML echoes the characteristic back **`id: null`** (it assigns no id), and the
+listing page does **not** render it to buyers — `SELLER_SKU` rides the same
+`attributes` array and is not shown either, so ML clearly curates what it
+displays. ⚠️ One listing, one category, a `test_item` account: treat "invisible"
+as likely, not guaranteed, and keep the name buyer-safe.
+
+⚠️ That first half is why `skuPaiFromAttributes` matches **id-LESS only**. It is
+the whole safety of the reader: ML's own attributes always carry an id, so a name
+collision with a real ML attribute is harmless. The match used to ignore `id`
+because nothing proved what ML returns, and that cost two things — rung 1 read a
+foreign value as the parent sku, and `attributesFromItem` dropped that attribute
+from `link.attributes` (on simple items too). Both are now impossible, so **no
+category sweep is needed**. If ML ever starts echoing an id, rung 1 stops
+matching and the sku falls through — blank, never wrong.
 
 ⚠️ **The evidence lives on the MEMBER links (`variacaoMercadoLivre.skuPaiAtributo`),
 never on the família's parent link**, and the two reasons are really one — the
@@ -879,11 +1034,12 @@ The família-wide answer is the **OR** of the members. It is written `true` only
 a publish that did not send the characteristic OMITS the key rather than storing
 `false`, because nothing here can strip the attribute from an item that has it —
 the same three-valued discipline `moderacoes` uses.
-⚠️ It is also **publicly visible** — a custom characteristic renders in the
-anúncio's ficha técnica — and how ML echoes an id-less attribute on `GET /items`
-is **unverified** (no sandbox, no lane may hold real credentials), which is
-exactly why it is an addition to the chain above and never its replacement.
-`skuPaiFromAttributes` matches by NAME and ignores any id ML may attach.
+⚠️ Rung 1 stays an ADDITION to the chain above and never its replacement, because
+it is absent from every família published before it shipped. Everything else this
+paragraph used to assert — that the characteristic is publicly visible, that ML's
+echo shape is unverified, and that the reader ignores any id — was measured and
+is **false**; the ⭐ block above is the single description of what ML does, and
+`skuPaiFromAttributes` matches **id-LESS only**.
 
 Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:
@@ -1047,6 +1203,53 @@ disposition table only so it acks instead of parking a document per delivery.
 makes it the inert fixture the notification suite keys ~20 tests on
 (`INERT_TOPIC` in `notificacao.test.ts`, pinned by its own guard) — every other
 quiet-looking topic is a handler waiting to happen.
+
+### Per-SKU fiscal data for ML's Faturador (#745)
+
+Every publish ends by registering each SKU with `items/fiscal_information` and
+linking it to its item; `POST /dados-fiscais` re-sends from the stored links.
+Reasoning: `lib/marketplace/anuncios/README.md`. The rules a change must keep:
+
+- ⚠️ **Send what OUR nota says.** The `Imposto` comes from the NF-e's own cascade
+  (`@delfrance/data/admin/imposto`) through the conta's `operacaoOuterRef`, and
+  the per-field operação fallback + cEAN rule from `camposProdutoFiscal` /
+  `gtinFiscal` (`@delfrance/schemas`). A local copy of either is the drift the
+  root `CLAUDE.md` names.
+- ⚠️ **Best-effort toward ML** — it runs last, and no ML refusal fails a publish
+  (a Firestore error or a bug still throws, rule 6); a refusal
+  is `dadosFiscaisEstado: 'erro'` on the SKU's link, a FIELD beside `errors`,
+  which it must never touch (the #781 latch reads those).
+- Simples only (`csosn`); Regime Normal's `tax_rule_id` waits for the NF-e to
+  support CRT 3. A kit is ONE `single` SKU. `origin_type` is derived from the
+  resolved CFOP, never guessed. No operação on the conta ⇒ zero calls.
+
+### ML recategorized a listing: the `anuncioCategoriaAlterada` aviso (#847)
+
+Mercado Livre moves listings between categories on its own, and the produto's ERP
+category — named after ML's by the importer (`categorias/<MLB id>`) — is what picks
+the price list's formulas (`formulasPorCategoria`: commission, frete) and the NF-e
+taxes. It is **never moved automatically**; an aviso asks a human instead.
+Logic: `lib/marketplace/anuncios/categoriaAnuncio.ts`; producer:
+`avisoCategoria.ts`; triggers: `functions/src/on{Anuncio,Produto}CategoriaAlterada.ts`.
+
+- ⚠️ **Decided on the committed LINK write, not inside the `items` sync.** Four
+  writers store ML's category on the link (the `items` sync, "Reverificar anúncio",
+  publish's echo, a re-import) and whichever runs first absorbs the change — a check
+  inside one of them misses every change another stored.
+- ⚠️ **Raised NARROWLY**: only when the produto's ERP category is still the one ML
+  just LEFT, and not when ML's `percentage_fee` is identical for both categories. A
+  curated ERP category raises nothing — there is no dismiss button, so a broad raise
+  would leave rows nothing could close. ⚠️ "Not raised" is not "forgotten": a
+  same-commission move is RECORDED as a row closed `mesma-comissao`, and a row closed
+  without review (`mesma-comissao`, `anuncio-encerrado`) keeps tracking its ERP
+  category — otherwise `A → B` (same fee) then `B → D` (different fee) raised
+  nothing, since `anterior` no longer names `A`.
+- **Closes itself** when the operator changes the produto's ERP category (the produto
+  trigger), when ML moves the listing back, or when the listing stops being live.
+  The producer re-reads the produto after writing, so it and the produto trigger
+  converge without a transaction. Enrichment (names, the new category's chain
+  created in `categorias`, the fee preview) is best-effort: an ML failure degrades
+  to ids, never loses the aviso.
 
 ## Env
 

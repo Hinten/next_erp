@@ -77,7 +77,27 @@ vi.mock('@delfrance/data/hooks', async () => {
 
 vi.mock('firebase/firestore', async () => {
   const actual = await vi.importActual<typeof import('firebase/firestore')>('firebase/firestore');
-  return { ...actual, setDoc: setDocMock, getDocs: getDocsMock };
+  return {
+    ...actual,
+    setDoc: setDocMock,
+    runTransaction: async (
+      _db: unknown,
+      callback: (tx: {
+        get: () => Promise<{ data: () => Conversa }>;
+        set: (ref: unknown, data: unknown) => void;
+      }) => Promise<void>,
+    ) => {
+      const writes: Array<[unknown, unknown]> = [];
+      await callback({
+        get: async () => ({ data: () => conversa }),
+        set: (ref, data) => {
+          writes.push([ref, data]);
+        },
+      });
+      for (const [ref, data] of writes) await setDocMock(ref, data);
+    },
+    getDocs: getDocsMock,
+  };
 });
 
 // TanStack Query provider is needed by the composer's child hooks; a throwaway
@@ -91,6 +111,14 @@ const conversa: Conversa = conversaSchema.parse({
   usuarios: ['operator-1'],
   estadoConversa: 1,
   origem: 'whatsapp',
+  integracaoOuterRef: 'documents/integracao/wa1',
+  whatsappDestino: {
+    tipo: 'telefone',
+    valor: '5511999998888',
+    identidadeId: 'wa-contact',
+    revision: 1,
+    ultimaMensagemEm: 1,
+  },
   nome: 'Cliente Teste',
 });
 
@@ -124,6 +152,8 @@ const baseMensagem: Mensagem = {
   canal: 0,
   usarioMensagemOuterRef: null,
   clienteMensagemOuterRef: null,
+  whatsappDestino: null,
+  whatsappIntegracaoId: null,
   user_id: 'operator-1',
   urlAvatar: null,
   mid: null,

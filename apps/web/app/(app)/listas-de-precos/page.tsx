@@ -37,6 +37,7 @@ export default function ListasDePrecosPage() {
       db={db}
       meta={listaDePrecosMeta}
       rowHref={(id) => `/listas-de-precos/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={
         canWrite
           ? () => (

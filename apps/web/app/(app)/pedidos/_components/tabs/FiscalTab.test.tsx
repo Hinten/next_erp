@@ -97,7 +97,7 @@ describe('FiscalTab — state survives a tab switch (#471)', () => {
     // address ref (set through EnderecoPicker's onChange).
     fireEvent.change(infCplField(), { target: { value: 'Nota de teste' } });
     fireEvent.click(screen.getByRole('checkbox', { name: /Bloquear emissão de NF-e/ }));
-    fireEvent.click(screen.getByRole('button', { name: '+ Adicionar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar chave referenciada' }));
     fireEvent.change(chaveField(), {
       target: { value: '12345678901234567890123456789012345678901234' },
     });
@@ -141,5 +141,33 @@ describe('FiscalTab — state survives a tab switch (#471)', () => {
 
     switchBackToFiscal();
     expect(chaveField().value).toBe('99999999999999999999999999999999999999999999');
+  });
+});
+
+describe('FiscalTab — NF-e de pagamento antecipado (#331)', () => {
+  /** A valid NF-e modelo 55 chave (check digit included). */
+  const NFE_55 = '35260514200166000187550010000000071000000011';
+  const campo = () =>
+    screen.getByLabelText('Chave de acesso da NF-e de pagamento antecipado') as HTMLInputElement;
+
+  it('writes the chaves onto the pedido, and removing the last one stores null', () => {
+    render(<Host />);
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar NF-e de pagamento antecipado' }));
+    fireEvent.change(campo(), { target: { value: NFE_55 } });
+    expect(formRef.getValues('chNFePagamentoAntecipado')).toEqual([NFE_55]);
+    // The note-level references are a different list, untouched.
+    expect(formRef.getValues('chNFeReferenciadas') ?? null).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Remover NF-e de pagamento antecipado' }));
+    expect(formRef.getValues('chNFePagamentoAntecipado')).toBeNull();
+  });
+
+  it('flags a chave that is not an NF-e modelo 55 (BC02)', () => {
+    render(<Host />);
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar NF-e de pagamento antecipado' }));
+    // The same chave as an NFC-e (modelo 65): the check digit no longer matches either.
+    fireEvent.change(campo(), { target: { value: `${NFE_55.slice(0, 20)}65${NFE_55.slice(22)}` } });
+    expect(
+      screen.getByText('Chave inválida: NF-e modelo 55, com dígito verificador correto'),
+    ).toBeTruthy();
   });
 });

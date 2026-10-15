@@ -7,7 +7,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { runDevolucaoDialogs, type DevolucaoDialogsInput } from './devolucaoSaveFlow';
 
 function input(
-  over: Partial<DevolucaoDialogsInput['operacao']> & { temOutraDevolucao?: boolean } = {},
+  over: Partial<DevolucaoDialogsInput['operacao']> & {
+    temOutraDevolucao?: boolean;
+    referenciasPendentes?: number;
+  } = {},
 ): DevolucaoDialogsInput {
   return {
     temOutraDevolucao: over.temOutraDevolucao ?? false,
@@ -15,6 +18,7 @@ function input(
       nome: 'nome' in over ? (over.nome ?? null) : 'Devolução de venda',
       fiscalCapable: over.fiscalCapable ?? true,
     },
+    referenciasPendentes: over.referenciasPendentes ?? 0,
   };
 }
 
@@ -98,6 +102,29 @@ describe('runDevolucaoDialogs', () => {
     const answers = await runDevolucaoDialogs(input(), fn, vi.fn());
 
     expect(answers).toEqual({ prosseguir: true, criarDevolucao: true, emitirNfe: false });
+    expect(titles()).toEqual(['Criar devolução', 'Emitir NF-e']);
+  });
+
+  it('an item without its origin reference skips dialog 3 — SEFAZ would refuse the NF-e (VC02-14, #1683)', async () => {
+    const { fn, titles } = confirmStub([true, true]);
+    const warn = vi.fn();
+
+    const answers = await runDevolucaoDialogs(input({ referenciasPendentes: 2 }), fn, warn);
+
+    expect(answers).toEqual({ prosseguir: true, criarDevolucao: true, emitirNfe: false });
+    expect(titles()).toEqual(['Criar devolução']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('2 itens da devolução estão sem a referência'),
+    );
+  });
+
+  it('NEAR-MISS: zero pending references still asks dialog 3', async () => {
+    const { fn, titles } = confirmStub([true, true]);
+
+    const answers = await runDevolucaoDialogs(input({ referenciasPendentes: 0 }), fn, vi.fn());
+
+    expect(answers.emitirNfe).toBe(true);
     expect(titles()).toEqual(['Criar devolução', 'Emitir NF-e']);
   });
 });

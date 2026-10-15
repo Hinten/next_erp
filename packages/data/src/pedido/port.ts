@@ -53,6 +53,9 @@ export interface PedidoDataPort {
     apply: (current: PedidoDocData) => Record<string, unknown>,
   ): Promise<void>;
 
+  /** Run one atomic read-then-write transaction. See {@link PedidoTransactArgs}. */
+  transact(args: PedidoTransactArgs): Promise<void>;
+
   /**
    * Apply subcollection writes (history, incidentes, pagamentos) — fire-and-
    * forget, in order. The adapter chunks into ≤499-op batches.
@@ -91,9 +94,6 @@ export interface PedidoTransactArgs {
  * µs epoch, as with {@link PedidoDocData}).
  */
 export interface PedidoDevolucaoDataPort extends PedidoDataPort {
-  /** Run one atomic read-then-write transaction. See {@link PedidoTransactArgs}. */
-  transact(args: PedidoTransactArgs): Promise<void>;
-
   /** One-shot read of a pedido doc (null when missing). */
   getPedido(pedidoId: string): Promise<PedidoDocData>;
 

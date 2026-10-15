@@ -18,6 +18,7 @@ import {
   precoPageLimit,
   precoRatePauseMin,
 } from './precoPlan';
+import { classificarLinkNaoEnumerado } from '../anuncios/linksNaoEnumerados';
 
 /* ------------------------------ fake Firestore ----------------------------- */
 // fetchPrecoPage runs CLASSIC queries only (no pipelines — the module doc's
@@ -466,6 +467,50 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
     ]);
   });
 
+  // #1226: unlike every other skip on this planner, this one is not a
+  // "not now". ML removed the listing and the id is dead for good.
+  it("estado 'rm' (removed by ML moderation) → ANUNCIO_REMOVIDO, siblings still draft", () => {
+    const res = buildPrecoDrafts(
+      familyRow({
+        links: [
+          linkRow({ estado: 'rm', status: 'under_review', sub_status: ['forbidden'] }),
+          linkRow({ linkDocId: 'link2', id: 'MLB222' }),
+        ],
+      }),
+      OPTS,
+    );
+    expect(res.skips).toEqual([
+      {
+        itemId: 'MLB111',
+        produtoId: 'PROD',
+        code: 'ANUNCIO_REMOVIDO',
+        linkDocId: 'link1',
+        precoAnterior: null,
+      },
+    ]);
+    expect(res.drafts).toEqual([
+      {
+        kind: 'item',
+        itemId: 'MLB222',
+        produtoId: 'PROD',
+        variacaoProdutoId: null,
+        linkDocId: 'link2',
+        preco: 10,
+      },
+    ]);
+  });
+
+  // The near-miss. `podeEnviarPreco` refuses this listing at SEND time either
+  // way, so omitting the rung would still send nothing — it would just spend a
+  // `GET /items` per run to rediscover what the stored estado already says, and
+  // report the generic send-time refusal instead of the one motivo naming an
+  // operator action. Assert the CODE, not the absence of a draft.
+  it("estado 'rm' is planned as its own code, not left to the send-time gate", () => {
+    const res = buildPrecoDrafts(familyRow({ links: [linkRow({ estado: 'rm' })] }), OPTS);
+    expect(res.drafts).toEqual([]);
+    expect(res.skips[0]?.code).toBe('ANUNCIO_REMOVIDO');
+  });
+
   it('the STORED status never gates the plan (fresh-GET gate at send time)', () => {
     const res = buildPrecoDrafts(
       familyRow({ links: [linkRow({ status: 'closed', sub_status: ['deleted'] })] }),
@@ -874,6 +919,76 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
     seedLink(db, 'A1', 'link1');
     const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 });
     expect(page.rows[0]!.propagatePriceToChildren).toBe(false);
+  });
+});
+
+/**
+ * #1200 — the anchor query ⇔ the link walk's classifier, BOUND.
+ *
+ * `anuncios/linksNaoEnumerados.classificarLinkNaoEnumerado` is this query's
+ * anchor predicate re-derived: the reconciliation phase reports, and the monthly
+ * stock audit heals, exactly the produtos it calls non-null. Its own suite tests
+ * it alone, which cannot notice THIS query moving — so the 24-document matrix
+ * (`paiId` × `integracoesComProduto`) is seeded here and run through the REAL
+ * `fetchPrecoPage`, whose fake applies the clauses the query actually passed
+ * (`==` is `===`, so an absent `paiId` matches no equality, exactly like
+ * Firestore). `bulkEstoquePlan.test.ts` binds the stock S1 to the same
+ * classifier over the same matrix.
+ */
+describe('fetchPrecoPage ⇔ classificarLinkNaoEnumerado — the binding (#1200)', () => {
+  const AUSENTE = Symbol('ausente');
+  const PAI_IDS: ReadonlyArray<readonly [string, unknown]> = [
+    ['null', null],
+    ["''", ''],
+    ['ausente', AUSENTE],
+    ["'X'", 'X'],
+  ];
+  const INTEGRACOES: ReadonlyArray<readonly [string, unknown]> = [
+    ['[conta]', [CONTA]],
+    ['[]', []],
+    ['ausente', AUSENTE],
+    ["['outra']", ['outra']],
+    ['[1, null, conta]', [1, null, CONTA]],
+    ["'nope'", 'nope'],
+  ];
+  // No `publicado` on purpose: it is not an anchor term (#1072), so a
+  // `publicado == true` re-added to the query drops every row here and reds the
+  // binding — independently of the "EXACTLY two terms" guard above.
+  const MATRIZ = PAI_IDS.flatMap(([pNome, paiId], p) =>
+    INTEGRACOES.map(([iNome, integracoes], i) => {
+      const doc: DocData = {};
+      if (paiId !== AUSENTE) doc.paiId = paiId;
+      if (integracoes !== AUSENTE) doc.integracoesComProduto = integracoes;
+      return { id: `P${p}-I${i}`, caso: `paiId=${pNome} · integracoesComProduto=${iNome}`, doc };
+    }),
+  );
+
+  it('classifier === null exactly where the anchor query returns the produto — all 24', async () => {
+    const db = new FakeDb();
+    for (const { id, doc } of MATRIZ) db.seed('produtos', id, doc);
+
+    const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 100 });
+    // One page held everything — a truncation must not pass for "not enumerated".
+    expect(page.nextAfterAnchorId).toBeNull();
+    const enumerados = new Set(page.rows.map((r) => r.produtoId));
+
+    const divergentes = MATRIZ.flatMap(({ id, caso, doc }) => {
+      const consultaCasa = enumerados.has(id);
+      const codigo = classificarLinkNaoEnumerado(doc, CONTA);
+      return consultaCasa === (codigo === null)
+        ? []
+        : [
+            `${caso}: consulta ${consultaCasa ? 'casa' : 'não casa'}, classificador ${String(codigo)}`,
+          ];
+    });
+
+    expect(MATRIZ).toHaveLength(24);
+    expect(divergentes).toEqual([]);
+    // Non-vacuous: exactly the two documents a sweep enumerates.
+    expect(MATRIZ.filter(({ id }) => enumerados.has(id)).map((m) => m.caso)).toEqual([
+      'paiId=null · integracoesComProduto=[conta]',
+      'paiId=null · integracoesComProduto=[1, null, conta]',
+    ]);
   });
 });
 

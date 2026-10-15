@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ESTADO_PUBLICACAO_ML,
   ML_CAUSA_CAMPO,
   ML_CAUSA_TIPO,
   campoAtributo,
@@ -8,6 +9,8 @@ import {
   produtoMercadoLivreLinkSchema,
   variacaoMercadoLivreLinkSchema,
   estadoPublicacaoMlSchema,
+  linkHasLiveListing,
+  moderacaoRemoveuAnuncio,
   precisaConsultarModeracao,
   acaoStatusAnuncio,
 } from './mercadoLivreLink';
@@ -112,10 +115,20 @@ describe('produtoMercadoLivreLinkSchema', () => {
   });
 
   it('accepts every ESTADO_PUBLICACAO short code', () => {
-    for (const code of ['r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E', 'am']) {
+    for (const code of ['r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E', 'am', 'rm']) {
       expect(estadoPublicacaoMlSchema.safeParse(code).success).toBe(true);
     }
     expect(estadoPublicacaoMlSchema.safeParse('x').success).toBe(false);
+  });
+
+  it('names every estado member on the as-const companion', () => {
+    // `prefer-schema-enum` reads the companion, so a member added to the enum
+    // and not to it is a member no call site can spell — and the rule then
+    // silently STOPS policing that value's raw literals rather than erroring.
+    // The loop above cannot catch that; only this can.
+    expect(Object.values(ESTADO_PUBLICACAO_ML).sort()).toEqual(
+      [...estadoPublicacaoMlSchema.options].sort(),
+    );
   });
 
   it('preserves unknown top-level fields and unknown keys inside attribute entries', () => {
@@ -353,6 +366,91 @@ describe('precisaConsultarModeracao', () => {
   });
 });
 
+/* ------------------------ moderacaoRemoveuAnuncio ------------------------- */
+
+/**
+ * ⚠️ The near-misses are the point of this block, not the hit. A `true` here is
+ * expensive in both directions — it drops the produto out of both ML sweeps via
+ * `linkHasLiveListing`, and it tells the operator to throw the anúncio away — so
+ * every other `under_review` sub_status has to be pinned as NOT terminal, one
+ * assertion each. Asserting only that `forbidden` fires would leave a widened
+ * predicate green.
+ */
+describe('moderacaoRemoveuAnuncio', () => {
+  it('fires for under_review + forbidden, the one state ML calls unrecoverable', () => {
+    expect(moderacaoRemoveuAnuncio('under_review', ['forbidden'])).toBe(true);
+    // Alongside others, in any position — ML sends `sub_status` as an array.
+    expect(moderacaoRemoveuAnuncio('under_review', ['held', 'forbidden'])).toBe(true);
+  });
+
+  it('does NOT fire for any other under_review sub_status — each is still savable', () => {
+    // `waiting_for_patch`: ML names the fix and editing reactivates the listing.
+    expect(moderacaoRemoveuAnuncio('under_review', ['waiting_for_patch'])).toBe(false);
+    // `held`: "Inativo. Em revisão pelo Mercado Livre" — ML has not decided yet.
+    expect(moderacaoRemoveuAnuncio('under_review', ['held'])).toBe(false);
+    // `pending_documentation`: a brand-protection report, answered with documents.
+    expect(moderacaoRemoveuAnuncio('under_review', ['pending_documentation'])).toBe(false);
+    // A fraud-risk suspension, not a removal.
+    expect(moderacaoRemoveuAnuncio('under_review', ['suspended'])).toBe(false);
+    expect(moderacaoRemoveuAnuncio('under_review', ['suspended_for_prevention'])).toBe(false);
+    // Transient; it resolves itself.
+    expect(moderacaoRemoveuAnuncio('under_review', ['picture_downloading_pending'])).toBe(false);
+    // Under review with no sub_status at all says nothing about removal.
+    expect(moderacaoRemoveuAnuncio('under_review', null)).toBe(false);
+    expect(moderacaoRemoveuAnuncio('under_review', [])).toBe(false);
+  });
+
+  /**
+   * ⚠️ The STATUS is half the predicate. `forbidden` under any other status is
+   * not the state ML documents as a removal, and reading the sub_status alone
+   * would mark listings terminal on a status ML has not settled.
+   */
+  it('does NOT fire for forbidden under another status, or for a healthy listing', () => {
+    expect(moderacaoRemoveuAnuncio('paused', ['forbidden'])).toBe(false);
+    expect(moderacaoRemoveuAnuncio('active', ['forbidden'])).toBe(false);
+    expect(moderacaoRemoveuAnuncio('active', null)).toBe(false);
+    expect(moderacaoRemoveuAnuncio('closed', ['deleted'])).toBe(false);
+    expect(moderacaoRemoveuAnuncio(null, null)).toBe(false);
+    expect(moderacaoRemoveuAnuncio(undefined, undefined)).toBe(false);
+  });
+
+  it('agrees with precisaConsultarModeracao — a removal is always worth a reason', () => {
+    // Not a tautology: the two predicates are independent, and a removal whose
+    // REASON never gets fetched leaves the operator a red badge and no text.
+    expect(precisaConsultarModeracao('under_review', ['forbidden'])).toBe(true);
+  });
+});
+
+/* ---------------------------- linkHasLiveListing --------------------------- */
+
+describe('linkHasLiveListing', () => {
+  it('counts a removed-by-moderation listing as NOT live', () => {
+    // The `integracoesComProduto` half of #1226: without this the produto stays
+    // in the anchor pre-filter both sweeps open with, for a listing ML deleted.
+    expect(
+      linkHasLiveListing({ id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao }),
+    ).toBe(false);
+    expect(linkHasLiveListing({ id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.cancelado })).toBe(false);
+  });
+
+  /**
+   * ⚠️ The other direction, and the more expensive one to get wrong: a false
+   * negative here is a SILENT stock + price outage. Only the two ML-terminal
+   * estados may answer `false`; merely-unsendable ones must stay live.
+   */
+  it('keeps every merely-unsendable estado live', () => {
+    for (const estado of [
+      ESTADO_PUBLICACAO_ML.erro,
+      ESTADO_PUBLICACAO_ML.aguardandoMigracao,
+      ESTADO_PUBLICACAO_ML.pausado,
+      ESTADO_PUBLICACAO_ML.emRevisao,
+      ESTADO_PUBLICACAO_ML.publicado,
+    ]) {
+      expect(linkHasLiveListing({ id: 'MLB1', estado })).toBe(true);
+    }
+  });
+});
+
 /* --------------------------- acaoStatusAnuncio ---------------------------- */
 
 describe('acaoStatusAnuncio', () => {
@@ -387,6 +485,22 @@ describe('acaoStatusAnuncio', () => {
   it('offers nothing while ML is mid-decision', () => {
     expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'v', status: 'under_review' })).toBeNull();
     expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'a', status: 'payment_required' })).toBeNull();
+  });
+
+  it('offers nothing once ML has REMOVED the listing (#1226)', () => {
+    expect(
+      acaoStatusAnuncio({
+        id: 'MLB1',
+        estado: 'rm',
+        status: 'under_review',
+        sub_status: ['forbidden'],
+      }),
+    ).toBeNull();
+    // ⚠️ Same shape as the cancelado rung, and load-bearing for the same reason:
+    // a stale `status: 'active'` sitting beside `estado 'rm'` must not reopen
+    // the control. The `estado` rung runs ABOVE the raw-status arm.
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'rm', status: 'active' })).toBeNull();
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'rm' })).toBeNull();
   });
 
   it('offers NOTHING while ML is mid-UPtin-migration, even with a live status', () => {

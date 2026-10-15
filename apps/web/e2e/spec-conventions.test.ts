@@ -93,3 +93,98 @@ describe('e2e spec conventions', () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * A seed/cleanup helper with no consumer is a spec that never got committed.
+ *
+ * `seedShopeeFixtures` / `cleanupShopeeFixtures` were committed while their sole
+ * importer — `canais-shopee.vendas.e2e.spec.ts` — stayed UNTRACKED (a
+ * `git commit -am` skips a new file). Nothing anywhere said so: both helpers
+ * are `export`ed, and an unused *export* trips neither
+ * `@typescript-eslint/no-unused-vars` nor `noUnusedLocals`. The
+ * `.vendas.e2e.spec.ts` suffix is the ONLY thing that routes a spec to the
+ * `E2E gate (vendas)` lane, so the lane simply had one spec fewer and reported
+ * green over a screen it never opened — the silent-pass class the whole
+ * `ci-lanes` design exists to prevent.
+ *
+ * The check runs against the CHECKED-OUT tree, which is exactly why it works:
+ * in a worktree holding the uncommitted spec it passes, and in CI — where only
+ * tracked files exist — it fails until the spec is committed. Deleting the
+ * helpers instead (a deliberately deferred spec) satisfies it just as well.
+ */
+
+/**
+ * Fixture helpers that are exported for a reason other than a spec importing
+ * them. Adding an entry means "this export is deliberately consumed by nothing
+ * in `e2e/`" — which, for a seed helper, is almost never true.
+ */
+export const ALLOWED_UNUSED_FIXTURE_HELPERS: string[] = [];
+
+/** `export async function seedFooFixtures(` / `export function cleanupFooFixtures(`. */
+const FIXTURE_HELPER_DECL = /^export\s+(?:async\s+)?function\s+((?:seed|cleanup)\w*Fixtures)\b/gm;
+
+const SEED_DATA = path.join(E2E_DIR, '_helpers', 'seed-data.ts');
+
+/** This file, excluded from its own scan — see the `consumers` comment below. */
+const SELF = fileURLToPath(import.meta.url);
+
+/** An `import … from` whose specifier ends in `seed-data`, in any relative form. */
+const IMPORTS_SEED_DATA = /from\s+['"][^'"]*\bseed-data['"]/;
+
+function tsFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return tsFiles(full);
+    return entry.isFile() && entry.name.endsWith('.ts') ? [full] : [];
+  });
+}
+
+describe('e2e fixture helpers', () => {
+  const declared = [...readFileSync(SEED_DATA, 'utf8').matchAll(FIXTURE_HELPER_DECL)]
+    .map((match) => match[1])
+    .filter((name): name is string => Boolean(name));
+
+  // Same anchor as above: a scan that finds nothing passes vacuously.
+  it('finds the exported fixture helpers it is supposed to police', () => {
+    expect(declared.length).toBeGreaterThan(10);
+  });
+
+  it('has no exported seed/cleanup helper without a consumer', () => {
+    // Two exclusions, both load-bearing. The declaring file itself, obviously —
+    // and THIS file, which names the two Shopee helpers in the docblock above
+    // and even quotes an import specifier as an example: scanning itself made
+    // the guard pass vacuously against the exact case it was written for.
+    // Requiring a real `import … from '…/seed-data'` narrows the rest, so a
+    // helper reached through another helper still counts while prose never does.
+    const consumers = tsFiles(E2E_DIR)
+      .filter(
+        (file) =>
+          path.resolve(file) !== path.resolve(SEED_DATA) &&
+          path.resolve(file) !== path.resolve(SELF),
+      )
+      .map((file) => readFileSync(file, 'utf8'))
+      .filter((source) => IMPORTS_SEED_DATA.test(source));
+
+    const orphans = declared
+      .filter((name) => !ALLOWED_UNUSED_FIXTURE_HELPERS.includes(name))
+      .filter((name) => {
+        const used = new RegExp(String.raw`\b${name}\b`);
+        return !consumers.some((source) => used.test(source));
+      });
+
+    expect(
+      orphans,
+      [
+        'These fixture helpers are exported from e2e/_helpers/seed-data.ts and',
+        'imported by nothing in e2e/ — almost always a spec that was written but',
+        'never committed (an unused EXPORT fails neither ESLint nor tsc):',
+        '',
+        ...orphans.map((name) => `  - ${name}`),
+        '',
+        'Commit the spec that uses them, or delete the helpers if the spec is',
+        'deliberately deferred. Until then the E2E lane its filename suffix',
+        'selects runs one spec fewer and still reports green.',
+      ].join('\n'),
+    ).toEqual([]);
+  });
+});

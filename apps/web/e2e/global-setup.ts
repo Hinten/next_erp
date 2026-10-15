@@ -1,4 +1,11 @@
-import { type Browser, type FullConfig, type Page, chromium, request } from '@playwright/test';
+import {
+  type Browser,
+  type BrowserContext,
+  type FullConfig,
+  type Page,
+  chromium,
+  request,
+} from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +14,10 @@ import { ensureTestUser, grantAllPerms } from '@delfrance/test-fixtures';
 import { e2eUserEmail } from './_helpers/run-id';
 import { sweepStaleE2EUsers } from './_helpers/admin-cleanup';
 import { verifyE2ENamespaceAccess } from './_helpers/verify-e2e-rules';
+import {
+  readEmulatorAccessConfig,
+  verifyEmulatorNamespaceAccess,
+} from './_helpers/verify-emulator-access';
 
 /**
  * Playwright globalSetup: prepares the staging backend once per test run.
@@ -18,7 +29,9 @@ import { verifyE2ENamespaceAccess } from './_helpers/verify-e2e-rules';
  *      bits + the tenant claim via setCustomUserClaims. globalTeardown
  *      deletes it. No shared persistent account: parallel-safe, no
  *      `E2E_USER_*` secrets, no password drift.
- *   3. Outside emulator mode, probe the DEPLOYED staging ruleset as that user
+ *   3. In emulator mode, prove authorized Core/Pipeline access and anonymous
+ *      denials on the named database through the real client SDK. Outside
+ *      emulator mode, probe the DEPLOYED staging ruleset as that user
  *      over the real REST APIs (never the Admin SDK, which bypasses rules) —
  *      write, read and delete `e2e_probe/<runId>` and abort with a clear
  *      message if denied, instead of letting a stale/wrong rules deploy
@@ -74,6 +87,9 @@ export default async function globalSetup(_config: FullConfig) {
   const emulatorMode = Boolean(
     process.env.FIREBASE_AUTH_EMULATOR_HOST ?? process.env.FIRESTORE_EMULATOR_HOST,
   );
+  // Validate every emulator target BEFORE Admin fixtures can make a request.
+  // A partial configuration must fail rather than send one service to staging.
+  if (emulatorMode) readEmulatorAccessConfig();
 
   const storageStatePath = STORAGE_STATE_PATH;
 
@@ -110,10 +126,12 @@ export default async function globalSetup(_config: FullConfig) {
   await grantAllPerms(email, { extraClaims: { grupoEconomico: 'seed' } });
 
   // Fail fast, before the browser login retry loop below burns 3 attempts,
-  // if the DEPLOYED staging ruleset doesn't grant this run's namespace. Real
-  // client REST calls only reach staging's actual rules; the emulator lane
-  // loads its own ruleset fresh every run, so there's no "deploy" to verify.
-  if (!emulatorMode) {
+  // if the configured ruleset doesn't enforce this run's client access. The
+  // emulator also proves anonymous denials and real Pipeline execution; Admin
+  // fixture success alone would bypass rules and could certify open access.
+  if (emulatorMode) {
+    await verifyEmulatorNamespaceAccess(email, password);
+  } else {
     await verifyE2ENamespaceAccess(email, password);
   }
 
@@ -194,19 +212,20 @@ async function captureAndVerifyAuth(
 }
 
 /**
- * Logs in through the UI and writes `storageState` (cookies + IndexedDB).
+ * Logs in through the UI and captures `storageState` (cookies + IndexedDB),
+ * optionally writing it to disk for the shared global setup.
  * Crucially waits for Firebase to flush the auth user to IndexedDB *before*
  * capturing — capturing earlier yields a user.json without the
  * `firebase:authUser:*` key, i.e. a session that silently fails to restore.
  */
-async function captureAuthenticatedState(
+export async function captureAuthenticatedState(
   browser: Browser,
   baseURL: string,
   email: string,
   password: string,
-  storageStatePath: string,
-): Promise<void> {
-  const context = await browser.newContext({ baseURL });
+  storageStatePath?: string,
+): Promise<Awaited<ReturnType<BrowserContext['storageState']>>> {
+  const context = await browser.newContext({ baseURL, storageState: { cookies: [], origins: [] } });
   try {
     const page = await context.newPage();
     await page.goto('/login');
@@ -219,7 +238,7 @@ async function captureAuthenticatedState(
     // Firebase SDK persists that session into IndexedDB asynchronously. Wait
     // for the write to land so the storageState capture below can't race it.
     await waitForFirebaseAuthPersisted(page);
-    await context.storageState({ path: storageStatePath, indexedDB: true });
+    return await context.storageState({ path: storageStatePath, indexedDB: true });
   } finally {
     await context.close();
   }
@@ -309,6 +328,7 @@ async function waitForServer(baseURL: string, timeoutMs = 60_000) {
     try {
       const res = await ctx.get(baseURL, { timeout: 5_000 });
       if (res.ok() || res.status() < 500) return;
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- network errors are expected while the dev server boots; keep polling
     } catch (err) {
       // Network-layer failures (ECONNREFUSED, timeout) are expected while
       // the dev server is still booting — keep polling. Anything that is

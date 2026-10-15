@@ -30,8 +30,10 @@
  * **Homologação-only, by construction**: every URL comes from
  * `getSvcEndpoints(<authorizer>, 'homologacao')` — the produção table is
  * never referenced — and every `SefazCall` carries `tpAmb: '2'` (the
- * pipeline's `assertSafeTpAmb` additionally rejects tpAmb='1' without
- * `NFE_ALLOW_PRODUCAO`). The fixture's `ambiente` is `'homologacao'`.
+ * transport's `assertSafeTpAmbForTransport` additionally rejects tpAmb='1'
+ * without `NFE_ALLOW_PRODUCAO`, NODE_ENV=test notwithstanding, and
+ * `assertSafeEndpointForTransport` refuses any produção-only host). The
+ * fixture's `ambiente` is `'homologacao'`.
  *
  * These status checks deliberately do NOT live in ci-nfe.yml's "status
  * gate" step: an SVC outage must fail only this suite, never block the
@@ -58,6 +60,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { buildHomologacaoFixture } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
+import { descreverSefaz, logSefaz } from '../helpers/sefaz-log';
 import { SEFAZ_HOM_SVC_SERIE, seedNNF } from '../helpers/homologacao-seed';
 import {
   assertCertNotExpired,
@@ -86,6 +89,10 @@ const SVC_RS_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-svc-rs-homologacao.p
 // file is absent and the 410 transport test below self-skips — loudly on
 // both sides (workflow ::warning:: + the skip in the vitest report). The
 // SVC-AN lane (SP's real contingency authorizer) never degrades.
+//
+// ⚠️ That degradation is ADVISORY-RUN ONLY. On workflow_dispatch/schedule the
+// SVC-RS fatal-run gate below turns an absent chain into a FAILURE: a run whose
+// whole purpose is to verify SVC must not report green having skipped it.
 const hasSvcRsChain = existsSync(SVC_RS_CHAIN);
 
 // Same credential posture as emission.homologacao.test.ts — see the
@@ -156,21 +163,27 @@ const isFatalRun =
   process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' ||
   process.env.GITHUB_EVENT_NAME === 'schedule';
 if (probeSvc && !svcAnReachable && !isFatalRun) {
-  // eslint-disable-next-line no-console
   console.warn(
     '::warning::SVC-AN host unreachable from this runner — skipping SVC-AN SOAP tests (advisory, #337).',
   );
 }
 if (probeSvc && !svcRsReachable && !isFatalRun) {
-  // eslint-disable-next-line no-console
   console.warn(
     '::warning::SVC-RS host unreachable from this runner — skipping the SVC-RS test (advisory, #337).',
   );
 }
 
 describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC-RS)', () => {
-  // Only reachable in CI (locally the suite skips via describeOrSkip):
-  // fail loud on missing secrets — never report green with zero coverage.
+  // Reached in CI, and locally too whenever credentials are present: fail loud
+  // on missing secrets — never report green with zero coverage.
+  //
+  // ⚠️ NOT "CI only". `vitest.config.ts` hoists the repo-root `.env.local` into
+  // `test.env`, so on a developer machine set up for live testing `hasFullCreds`
+  // is TRUE and `describeOrSkip` does NOT skip — a plain `vitest run` on this
+  // file transmits at SEFAZ homologação. (It fails at transport first if
+  // `packages/integrations/nfe/ca/` is empty, since the chains are fetched by
+  // ci-nfe.yml, not committed — but do not rely on that.) The accurate rule is
+  // the one at `describeOrSkip`: skipping needs NO credentials, not "not CI".
   beforeAll(() => {
     if (!hasFullCreds) {
       throw new Error(
@@ -193,6 +206,34 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
     ).toBe(true);
   });
 
+  // The SVC-RS half had NO such gate (#1247 gap (a)), and it is the half that
+  // needs one most: it self-skipped on BOTH scheduled runs it has ever had, and
+  // the one time it ran it was by luck (the chain fetch recovered the ICP root
+  // from a sibling bundle). Two things hid that. The `skipIf` below takes either
+  // an unreachable host or a missing chain, and the two `::warning::` emitters
+  // above are themselves suppressed by `!isFatalRun` — so on a FATAL run an
+  // absent SVC-RS produced no warning AND no failure, just a green job that had
+  // proven nothing about half of what this lane tracks. Same shape as the
+  // silent-pass class root `CLAUDE.md` is built to prevent.
+  //
+  // Split into two assertions on purpose: "SVRS is down" and "our chain-fetch
+  // step degraded" are different failures with different fixes, and the message
+  // has to say which. Both stay advisory-run-silent — this whole test is gated
+  // on `isFatalRun`, so PR/push keeps its fast skip.
+  it.skipIf(!isFatalRun)('SVC-RS is reachable from the runner (fatal-run gate)', () => {
+    expect(
+      hasSvcRsChain,
+      `SVC-RS chain absent (${SVC_RS_CHAIN}) on a FATAL run (workflow_dispatch/schedule) — ` +
+        'the ci-nfe.yml chain-refresh step degraded to a warning, so SVC-RS transport ' +
+        'cannot be proven. Re-run, or fix the chain fetch.',
+    ).toBe(true);
+    expect(
+      svcRsReachable,
+      'SVC-RS host unreachable from this runner on a FATAL run (workflow_dispatch/schedule) — ' +
+        'cannot prove SVC-RS transport. Re-run when SVRS is reachable.',
+    ).toBe(true);
+  });
+
   it.skipIf(!svcAnReachable)(
     'SVC-AN status answers for the issuer cUF (pre-flight)',
     async () => {
@@ -203,8 +244,7 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       );
       const ret = await consultarStatusServico(call, { cUF: '35' });
       assertNotConsumoIndevido(ret, 'svc-an/statusServico');
-      // eslint-disable-next-line no-console
-      console.log(`[SVC-AN status] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      logSefaz('SVC-AN status', ret);
       expect(ret.tpAmb).toBe('2');
       // 107 = operating (the permanent homologação posture); 108/109 =
       // paralisado, 113/114 = SVC em desativação — non-failure outcomes
@@ -214,7 +254,99 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
     45_000,
   );
 
-  it.skipIf(!svcAnReachable)(
+  // ⚠️ SKIPPED pending #1471 — a deliberate, TEMPORARY pause, not a deletion.
+  // Flip to `false` to restore the test exactly as it was; nothing else changes.
+  //
+  // SVC-AN rejects this emission with `cStat=178` — **NT 2026.007 §5.10, RV
+  // 12C02-10**: "Acessar LCC-RFB (Chave: UF Emitente, CNPJ Emitente)… CNPJ do
+  // Emitente não cadastrado na Receita Federal". The LCC-RFB is a national copy
+  // of the Receita Federal CNPJ register synced to each autorizadora. The rule
+  // went live in homologação on 2026-09-01; produção follows on 2026-11-03.
+  //
+  // The cause is NOT in this repo. After that date the SAME certificate and
+  // emitente are authorized by SEFAZ-SP (`cStat=100` on the ci-nfe `NFe live`
+  // lane, e.g. 2026-09-25), and EPEC through the Ambiente Nacional completed its
+  // round-trip (2026-09-03). Only SVC-AN's copy fails to list us. Nothing here
+  // can change that; the investigation — and the produção risk it carries — is
+  // #1667.
+  //
+  // ⚠️ It does NOT flap, and it is not healing on its own. An earlier version of
+  // this comment said it "demonstrably" returned `100` on its own; that was a
+  // misreading of CI. The only verified SVC-AN `100` is 2026-08-31 — the day
+  // BEFORE the rule existed. Every 2026-09-03 run once counted as a "pass" was
+  // one where the SVC suite merely did not fail: four logged `SVC-AN host
+  // unreachable` (the emission test was SKIPPED, #337), one never ran the suite,
+  // and none printed the `[SVC-AN lote]` line every attempted emission logs
+  // before its assertion. Every attempt that reached SVC-AN since the rule went
+  // live has answered 178. ⭐ So read the `[SVC-AN protNFe]` line, never the
+  // suite's pass/fail: a green suite does not mean SVC-AN authorized.
+  //
+  // 181 (RV 12E02-10) is the destinatário twin; it blocked the SEFAZ-SP suites
+  // from 2026-09-17 until the fixture's destinatário moved to a PESSOA FÍSICA
+  // (CPF, tag E03), which the rule does not reach at all (#1612). ⚠️ An official
+  // CCC test CNPJ was tried FIRST and drew 181 too — the CCC is the states'
+  // register and the RV queries the federal LCC-RFB — so do not re-try one.
+  //
+  // ⚠️ That fix does NOT reach this test, and the reason is the tag. 12E02-10
+  // reads the DESTINATÁRIO (E02) and was answered by changing who we sell to;
+  // 12C02-10 reads the EMITENTE (C02) — our own certificate's CNPJ, which no
+  // fixture edit can change. The two rejections are twins in the NT and
+  // unrelated in what it takes to clear them.
+  //
+  // ⚠️ The skip condition below stays `&& !isFatalRun`, for a narrower reason
+  // than this comment once gave. Not because the cadastro is expected to heal by
+  // itself — nothing observed says it will — but because the weekly FATAL run is
+  // the cheapest detector for the day something changes: SVC-AN's copy gaining
+  // the CNPJ, or SEFAZ amending the rule. 181 could be left behind by emitting to
+  // a tag the rule does not read; that door does not exist here, because the
+  // emitente is our own certificate. Silencing the fatal run too would leave
+  // nothing that would notice. A future `[SVC-AN protNFe] cStat=100` is NEWS.
+  //
+  // ⚠️ What the skip COSTS, stated so the next reviewer can weigh it: this is
+  // the ONLY test that proves SVC-AN AUTHORIZES, and its body also carries the
+  // consSitNFe recovery-lane assertions (the path `processar-pendentes` uses for
+  // stuck tpEmis-6 docs). On an ADVISORY run this lane therefore proves SVC-AN
+  // TRANSPORT (the status pre-flight above, `107`) and nothing about
+  // authorization. The fatal lanes keep proving both — see the posture note
+  // below, which is why the skip is not unconditional.
+  //
+  // ⚠️ ADVISORY RUNS ONLY — `&& !isFatalRun`, like every other skip in this
+  // file. An unconditional flag would also silence the two FATAL lanes
+  // (`nfe-epec-scheduled.yml`'s weekly `svc-live`, and `ci-nfe.yml`'s
+  // `workflow_dispatch` "verify SVC" path), so a run whose entire purpose is to
+  // verify SVC-AN would report green having never attempted the emission — and
+  // `report-failure` self-alerts on `failure`, so it would stop alerting too.
+  // That is #1247 gap (a) exactly, the bug this same file just gained a gate
+  // for in the SVC-RS half; shipping its inverse here would be indefensible.
+  //
+  // ⚠️ Consequence, stated plainly: the Monday `svc-live` run goes RED while
+  // SVC-AN keeps answering 178, and `report-failure` comments on the open
+  // tracker (#1500) — never close it while this holds: the lookup is `is:open`,
+  // so a closed tracker makes every Monday open a NEW issue. That is the intended
+  // trade — it is also the only remaining detector IF the cadastro ever changes,
+  // since the skip removes the `[SVC-AN protNFe]` line from every other run.
+  //
+  // ⚠️ `process.stdout.write`, NOT `console.warn`. Vitest 4's default reporter
+  // only replays intercepted `console.*` for FAILING files, so a `console.warn`
+  // here is invisible on precisely the green runs this skip creates — measured
+  // on this checkout (vitest 4.1.6, CI=true, piped stdout): console.warn 0 lines,
+  // process.stdout.write 1 line. A signal that only fires when the suite is
+  // already red is not a signal.
+  //
+  // ⚠️ When restoring the test, do NOT print a raw `xMotivo`: SEFAZ embeds the
+  // emitente's CNPJ in this rejection's text, so logging it verbatim puts that
+  // number in a public Actions log. Redact before printing.
+  const SKIP_SVC_AN_EMISSAO_1471 = true;
+  const pulandoEmissaoSvcAn = SKIP_SVC_AN_EMISSAO_1471 && !isFatalRun;
+  if (pulandoEmissaoSvcAn && process.env.CI) {
+    process.stdout.write(
+      '::warning::SVC-AN emission test is SKIPPED (#1471) — SVC-AN answers cStat=178 ' +
+        '"CNPJ do Emitente não cadastrado" while SEFAZ-SP authorizes the same issuer. ' +
+        'SVC-AN AUTHORIZATION is UNPROVEN on this run; only transport is. It still runs ' +
+        'on workflow_dispatch/schedule, where it is FATAL.\n',
+    );
+  }
+  it.skipIf(pulandoEmissaoSvcAn || !svcAnReachable)(
     'native SVC-AN emission — tpEmis=6 NF-e is AUTHORIZED (cStat=100)',
     async () => {
       const numeracao = seedNNF();
@@ -244,8 +376,7 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
         indSinc: '1',
       });
       assertNotConsumoIndevido(ret, 'svc-an/autorizarLote');
-      // eslint-disable-next-line no-console
-      console.log(`[SVC-AN lote] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      logSefaz('SVC-AN lote', ret);
 
       // SVC-AN answered sync (104 + inline protNFe) in the 2026-06-11 live
       // validation; resolveProtocol also covers a 103 → consReci fallback,
@@ -253,7 +384,35 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       const retCall = buildSvcCall(endpoints.NfeRetAutorizacao, TEST_CERT!, SVC_AN_CHAIN);
       const prot = await resolveProtocol(ret, retCall);
       if (prot) assertNotConsumoIndevido(prot.infProt, 'svc-an/protNFe');
-      expect(prot?.infProt.cStat).toBe('100');
+      // ⚠️ Log the protNFe's OWN cStat + xMotivo BEFORE asserting. The lote line
+      // above only says the BATCH was processed (104); when SEFAZ refuses the
+      // note itself the motive lives here and nowhere else, and a bare
+      // `expect(prot?.infProt.cStat).toBe('100')` discards it. That is how a
+      // rejection reached a dead end twice — cStat=999 (#1247) and the
+      // uncatalogued cStat=178 — with the one string that would have settled
+      // either never printed. `rtc.homologacao.test.ts` already learned this;
+      // same shape here.
+      // `cMsg`/`xMsg` are SEFAZ's supplementary-detail fields, absent on a normal
+      // response — `descreverSefaz` appends them only when present, which costs
+      // the usual line nothing and is exactly what an uncatalogued code needs.
+      const resposta = {
+        cStat: prot?.infProt.cStat ?? ret.cStat,
+        xMotivo: prot?.infProt.xMotivo ?? ret.xMotivo,
+        cMsg: prot?.infProt.cMsg,
+        xMsg: prot?.infProt.xMsg,
+      };
+      logSefaz('SVC-AN protNFe', resposta);
+      // The `?? ret.*` fallback also covers `prot === undefined`: resolveProtocol
+      // has four paths that return it with no explanation, and the bare optional
+      // chain turned every one into `expected undefined to be '100'`.
+      //
+      // ⚠️ The message goes through `descreverSefaz` too — a vitest assertion
+      // message lands in the CI ANNOTATION, which is as public as the log, and
+      // this is the exact rejection whose `xMotivo` carries the emitente CNPJ.
+      expect(
+        resposta.cStat,
+        `SEFAZ rejected the SVC-AN NF-e — ${descreverSefaz('SVC-AN protNFe', resposta)}`,
+      ).toBe('100');
       expect(prot?.infProt.chNFe).toBe(out.chave);
       expect(prot?.infProt.tpAmb).toBe('2');
       // The authorizer must be the SVC-AN itself, not a relay to SEFAZ-SP.
@@ -265,10 +424,9 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       const consultaCall = buildSvcCall(endpoints.NfeConsultaProtocolo, TEST_CERT!, SVC_AN_CHAIN);
       const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
       assertNotConsumoIndevido(sit, 'svc-an/consSitNFe');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[SVC-AN consSitNFe] cStat=${sit.cStat} prot.cStat=${sit.protNFe?.infProt.cStat}`,
-      );
+      // Same omission one assertion later — `xMotivo` added to match
+      // `emission.homologacao.test.ts`'s consSitNFe line.
+      logSefaz('SVC-AN consSitNFe', { ...sit, protCStat: sit.protNFe?.infProt.cStat });
       expect(sit.chNFe).toBe(out.chave);
       expect(sit.protNFe?.infProt.cStat).toBe('100');
       expect(sit.protNFe?.infProt.nProt).toBe(prot!.infProt.nProt);
@@ -288,8 +446,7 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       );
       const ret = await consultarStatusServico(call, { cUF: '35' });
       assertNotConsumoIndevido(ret, 'svc-rs/statusServico');
-      // eslint-disable-next-line no-console
-      console.log(`[SVC-RS status] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      logSefaz('SVC-RS status', ret);
       // SP is bound to SVC-AN (Ato COTEPE 39/2012), so SVC-RS answering
       // 410 "UF informada no campo cUF não é atendida pelo Web Service"
       // is the EXPECTED outcome — the round-trip itself (mTLS handshake,

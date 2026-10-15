@@ -43,11 +43,11 @@ export const ESTADO_NFE = {
   cancelada: 'c',
 } as const satisfies Record<string, EstadoNfe>;
 
-// Two enums sharing a member set. The real pair is `Origem` (imposto/tribute.ts)
-// and `OrigemProdutoImposto` (the same SEFAZ concept declared again in
-// operacao.ts), both '0'…'8'. Each still resolves through its own alias, but once
-// the checker erases that alias — a nullable field — nothing in the type says
-// which one it is, and both constants would compile in either place.
+// Two synthetic enums sharing a member set. The historical pair was `Origem`
+// (imposto/tribute.ts) and `OrigemProdutoImposto` (operacao.ts), both '0'…'8',
+// unified into one schema in #750. Keep this regression fixture: once the
+// checker erases an alias — a nullable field — the member set cannot identify
+// an enum, and both constants would compile in either place.
 export const origemSchema = z.enum(['0', '1', '2']);
 export type Origem = zod.infer<typeof origemSchema>;
 

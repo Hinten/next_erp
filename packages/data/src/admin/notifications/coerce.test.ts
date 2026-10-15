@@ -74,6 +74,25 @@ describe('asMillis', () => {
     }
   });
 
+  it('reads every offset shape providers send, µs fractions, and offset-less ISO as UTC', () => {
+    const instant = Date.UTC(2025, 2, 5, 20, 27, 20, 218);
+    expect(asMillis('2025-03-05T17:27:20.218-03:00')).toBe(instant);
+    expect(asMillis('2025-03-05T17:27:20.218-0300')).toBe(instant);
+    expect(asMillis('2025-03-05T20:27:20.218456Z')).toBe(instant);
+    // Offset-less is UTC whatever the process TZ is — `Date.parse` read it in
+    // the ambient zone (#1704, no-lossy-date-parse).
+    expect(asMillis('2025-03-05T20:27:20.218')).toBe(instant);
+  });
+
+  it('parses ISO-8601 only — engine-lenient text is no longer read as a date', () => {
+    // `Date.parse` accepted all three; none of them is an ISO instant.
+    expect(asMillis('Wed, 05 Mar 2025 20:27:20 GMT')).toBeNull();
+    expect(asMillis('2025-02-30T00:00:00Z')).toBeNull();
+    // A bare four-digit string now falls through to the numeric-string branch
+    // (epoch ms), where `Date.parse` used to read it as "January 1st of 2026".
+    expect(asMillis('2026')).toBe(2026);
+  });
+
   it('does NOT carry coerceToMillis’ µs heuristic — a µs number is not rescaled', () => {
     // The whole point of this coercer being separate: receiver semantics treat
     // any in-range finite number as millis.

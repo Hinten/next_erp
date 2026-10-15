@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { formatTelefoneInternacional } from '@delfrance/core/phone';
 import Link from 'next/link';
 import {
   ActionIcon,
@@ -8,6 +9,7 @@ import {
   Badge,
   Box,
   Divider,
+  Drawer,
   Group,
   Loader,
   Stack,
@@ -20,7 +22,7 @@ import {
   IconLayoutSidebarRightExpand,
   IconUserPlus,
 } from '@tabler/icons-react';
-import { ORIGEM_LABELS, type Conversa } from '@delfrance/schemas';
+import { ORIGEM_CONVERSA, ORIGEM_LABELS, type Conversa } from '@delfrance/schemas';
 import { argbToRgba, hasEtiqueta } from '@/lib/chat/etiquetaCores';
 import { isHttpUrl } from '@/lib/chat/safeUrl';
 import { useAutorNome } from '../_hooks/useAutorNome';
@@ -46,6 +48,19 @@ function ParticipantRow({ uid }: { uid: string }) {
 function ClienteSection({ conversa }: { conversa: Conversa }) {
   const link = useClienteLink(conversa.clienteOuterRef, conversa.usarioOuterRef);
 
+  if (
+    conversa.origem === ORIGEM_CONVERSA.whatsapp &&
+    (link.status === 'no-user' || link.status === 'not-found')
+  ) {
+    return (
+      <Stack gap={4}>
+        <Text size="sm">Contato sem vínculo resolvido.</Text>
+        <Anchor component={Link} href="/chat/vinculos-whatsapp" size="sm">
+          Vincular contato a um cliente
+        </Anchor>
+      </Stack>
+    );
+  }
   if (link.status === 'no-user') {
     return (
       <Text size="sm" c="dimmed">
@@ -66,6 +81,13 @@ function ClienteSection({ conversa }: { conversa: Conversa }) {
         <Text size="sm" fw={500} lineClamp={1}>
           {link.nome}
         </Text>
+        {conversa.origem === ORIGEM_CONVERSA.whatsapp && conversa.whatsappDestino && (
+          <Text size="xs" c="dimmed">
+            {conversa.whatsappDestino.tipo === 'telefone'
+              ? `WhatsApp: ${formatTelefoneInternacional(conversa.whatsappDestino.valor)}`
+              : 'WhatsApp com telefone não informado'}
+          </Text>
+        )}
         <Anchor component={Link} href={`/clientes/${link.clienteId}`} size="sm">
           Abrir cliente
         </Anchor>
@@ -107,16 +129,65 @@ function ClienteSection({ conversa }: { conversa: Conversa }) {
  * metadata (origem, datas, etiqueta, participantes). Collapsible; lives in the
  * `ChatInboxShell`'s reserved third pane.
  */
-export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
+export function ConversaSidePanel({
+  conversa,
+  variant = 'panel',
+}: {
+  conversa: Conversa;
+  variant?: 'panel' | 'drawer';
+}) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  if (variant === 'drawer') {
+    return (
+      <>
+        <Tooltip label="Mostrar detalhes">
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            aria-label="Mostrar detalhes"
+            onClick={() => setDrawerOpen(true)}
+          >
+            <IconLayoutSidebarRightExpand size={18} />
+          </ActionIcon>
+        </Tooltip>
+        <Drawer
+          opened={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          title="Detalhes da conversa"
+          position="right"
+          size="sm"
+        >
+          <ConversaPanelContent conversa={conversa} onClose={() => setDrawerOpen(false)} />
+        </Drawer>
+      </>
+    );
+  }
+  return <ConversaPanelContent conversa={conversa} />;
+}
+
+function ConversaPanelContent({ conversa, onClose }: { conversa: Conversa; onClose?: () => void }) {
   const [open, setOpen] = useState(true);
   const dataCadastro = formatMs(conversa.data_cadastro);
   const prazo = formatMs(conversa.prazo_resposta);
   const usuarios = conversa.usuarios ?? [];
-  const externalLinkOk = isHttpUrl(conversa.externalLink);
+  // The resolved identity is authoritative after a number change; legacy links
+  // can still point at a retired number. BSUID contacts have no public phone link.
+  const phone =
+    conversa.whatsappDestino?.tipo === 'telefone' ? conversa.whatsappDestino.valor : null;
+  const externalLink =
+    conversa.origem === ORIGEM_CONVERSA.whatsapp
+      ? phone && /^[1-9]\d{9,14}$/.test(phone)
+        ? `https://wa.me/${phone}`
+        : null
+      : conversa.externalLink;
+  const externalLinkOk = isHttpUrl(externalLink);
 
   if (!open) {
     return (
-      <Box style={{ borderLeft: '1px solid var(--mantine-color-gray-2)', paddingLeft: 8 }} py="xs">
+      <Box
+        style={{ borderLeft: '1px solid var(--mantine-color-default-border)', paddingLeft: 8 }}
+        py="xs"
+      >
         <Tooltip label="Mostrar detalhes" position="left">
           <ActionIcon
             variant="subtle"
@@ -133,11 +204,11 @@ export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
 
   return (
     <Box
-      w={PANEL_WIDTH}
+      w={onClose ? '100%' : PANEL_WIDTH}
       style={{
-        flex: `0 0 ${PANEL_WIDTH}px`,
-        borderLeft: '1px solid var(--mantine-color-gray-2)',
-        paddingLeft: 12,
+        flex: onClose ? undefined : `0 0 ${PANEL_WIDTH}px`,
+        borderLeft: onClose ? undefined : '1px solid var(--mantine-color-default-border)',
+        paddingLeft: onClose ? undefined : 12,
         overflowY: 'auto',
         minHeight: 0,
       }}
@@ -151,7 +222,7 @@ export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
             <ActionIcon
               variant="subtle"
               color="gray"
-              onClick={() => setOpen(false)}
+              onClick={onClose ?? (() => setOpen(false))}
               aria-label="Ocultar detalhes"
             >
               <IconLayoutSidebarRightCollapse size={18} />
@@ -167,7 +238,7 @@ export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
         </div>
 
         {externalLinkOk && (
-          <Anchor href={conversa.externalLink!} target="_blank" rel="noopener noreferrer" size="sm">
+          <Anchor href={externalLink!} target="_blank" rel="noopener noreferrer" size="sm">
             <Group gap={4} wrap="nowrap">
               <IconExternalLink size={14} />
               Abrir perfil externo
@@ -191,7 +262,7 @@ export function ConversaSidePanel({ conversa }: { conversa: Conversa }) {
                   height: 16,
                   borderRadius: '50%',
                   background: argbToRgba(conversa.cor_etiqueta),
-                  border: '1px solid var(--mantine-color-gray-3)',
+                  border: '1px solid var(--mantine-color-default-border)',
                 }}
               />
             </Tooltip>

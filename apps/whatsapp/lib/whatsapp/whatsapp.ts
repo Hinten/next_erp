@@ -11,7 +11,6 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
-import { integracaoCollection } from '@delfrance/data/admin/collections';
 import {
   DEFAULT_GRAPH_API_VERSION,
   GRAPH_BASE,

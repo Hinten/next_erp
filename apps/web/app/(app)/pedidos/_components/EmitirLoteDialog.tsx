@@ -12,15 +12,34 @@
  * without reaching a different terminal state.
  */
 import { useEffect, useState } from 'react';
-import { Badge, Button, Group, Loader, Modal, ScrollArea, Stack, Text } from '@mantine/core';
+import Link from 'next/link';
+import { useQuery } from '@tanstack/react-query';
+import {
+  Anchor,
+  Badge,
+  Button,
+  Group,
+  Loader,
+  Modal,
+  ScrollArea,
+  Stack,
+  Text,
+} from '@mantine/core';
 import {
   isNFeEmitError,
+  NFeAuthError,
+  NFeBadRequestError,
   type NFeBatchEmitResult,
   type NFeEmitError,
   type NFeEmitResult,
 } from '@delfrance/integrations-nfe/http-provider';
+import { ESTADO_NFE } from '@delfrance/schemas';
 
+import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
+import { carregadorContextoRejeicao } from '@/lib/nfe/contextoRejeicao';
+import { orientacaoRejeicaoNFe, rejeicaoPrecisaContexto } from '@/lib/nfe/errors';
+import { isRuntimeNotReadyBeforeSend } from '@/lib/nfe/withNFeRetry';
 
 import { BUCKET_META, BUCKET_ORDER, classifyEmitResult } from './emitirLoteBuckets';
 
@@ -34,7 +53,26 @@ type DialogState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'pending' }
   | { readonly kind: 'done'; readonly result: NFeBatchEmitResult }
-  | { readonly kind: 'error'; readonly message: string };
+  | {
+      readonly kind: 'error';
+      readonly message: string;
+      /** The lote may have reached SEFAZ — see {@link recusadoAntesDoEnvio}. */
+      readonly desfechoDesconhecido: boolean;
+    };
+
+/**
+ * `POST /emitir-lote` provably stopped before any SEFAZ contact: it refused the
+ * caller (401/403), the body or its size (400 — only its top-level checks
+ * answer 400; a member's failure is that member's report), or answered its own
+ * runtime-not-ready 503. Anything else — a 5xx, a network failure, a 503 the
+ * platform answered, a malformed 2xx — may come after some chunk already sent
+ * its lote (#1654 §3), and `withNFeRetry` no longer re-POSTs it.
+ */
+function recusadoAntesDoEnvio(e: unknown): boolean {
+  return (
+    e instanceof NFeAuthError || e instanceof NFeBadRequestError || isRuntimeNotReadyBeforeSend(e)
+  );
+}
 
 export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialogProps) {
   const client = useNFeClient();
@@ -45,12 +83,17 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
   // re-opens with a different selection), in which case we cancel
   // the in-flight request via the `cancelled` flag.
   useEffect(() => {
+    // Synchronous reset on open/close — the open-a-modal effect pattern
+    // (PrintComumDialog cites this one); the advisory set-state-in-effect rule
+    // stays 'warn' in eslint.config and is disabled locally so the
+    // --max-warnings 0 pre-commit lint passes.
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (!opened) {
       setState({ kind: 'idle' });
       return;
     }
     if (!client) {
-      setState({ kind: 'error', message: 'Você não está logado.' });
+      setState({ kind: 'error', message: 'Você não está logado.', desfechoDesconhecido: false });
       return;
     }
     if (pedidoIds.length === 0) {
@@ -59,6 +102,7 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
     }
     let cancelled = false;
     setState({ kind: 'pending' });
+    /* eslint-enable react-hooks/set-state-in-effect */
     client.emitirLote(pedidoIds).then(
       (r) => {
         if (!cancelled) setState({ kind: 'done', result: r });
@@ -68,6 +112,7 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
         setState({
           kind: 'error',
           message: e instanceof Error ? e.message : String(e),
+          desfechoDesconhecido: !recusadoAntesDoEnvio(e),
         });
       },
     );
@@ -102,16 +147,18 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
       size="lg"
     >
       <Stack>
-        {counts.map(({ bucket, label, color, count }) => (
-          <Group justify="space-between" key={bucket}>
-            <Text fw={600} c={color}>
-              {label}:
-            </Text>
-            <Text fw={600} c={color}>
-              {count}/{total}
-            </Text>
-          </Group>
-        ))}
+        {/* A failed request has no results: "0/N" would read as "none sent". */}
+        {state.kind !== 'error' &&
+          counts.map(({ bucket, label, color, count }) => (
+            <Group justify="space-between" key={bucket}>
+              <Text fw={600} c={color}>
+                {label}:
+              </Text>
+              <Text fw={600} c={color}>
+                {count}/{total}
+              </Text>
+            </Group>
+          ))}
 
         {state.kind === 'pending' && (
           <Group justify="center" mt="md">
@@ -119,11 +166,22 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
           </Group>
         )}
 
-        {state.kind === 'error' && (
-          <Text c="red" ta="center">
-            {state.message}
-          </Text>
-        )}
+        {state.kind === 'error' &&
+          (state.desfechoDesconhecido ? (
+            <Stack gap={4}>
+              <Text c="red" fw={600} ta="center">
+                O resultado do lote é desconhecido — algumas NF-e podem ter sido enviadas à SEFAZ.
+                Confira a coluna NF antes de emitir novamente.
+              </Text>
+              <Text c="dimmed" size="xs" ta="center">
+                {state.message}
+              </Text>
+            </Stack>
+          ) : (
+            <Text c="red" ta="center">
+              {state.message}
+            </Text>
+          ))}
 
         {state.kind === 'done' && results.length > 0 && (
           <ScrollArea.Autosize mah={240} mt="md">
@@ -148,22 +206,67 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
 function ResultRow({ result }: { readonly result: NFeEmitResult | NFeEmitError }) {
   const color = BUCKET_META[classifyEmitResult(result)].color;
   return (
-    <Group justify="space-between" wrap="nowrap" gap="xs">
-      <Text size="sm" fw={500} truncate maw={140}>
-        {result.pedidoId}
-      </Text>
-      <Group
-        gap="xs"
-        wrap="nowrap"
-        style={{ flexGrow: 1, minWidth: 0, justifyContent: 'flex-end' }}
-      >
-        <Badge size="sm" color={color} variant="light">
-          {isNFeEmitError(result) ? result.errorCode : result.cStat}
-        </Badge>
-        <Text size="xs" c="dimmed" truncate maw={300}>
-          {isNFeEmitError(result) ? result.errorMessage : result.xMotivo}
+    <Stack gap={2}>
+      <Group justify="space-between" wrap="nowrap" gap="xs">
+        <Text size="sm" fw={500} truncate maw={140}>
+          {result.pedidoId}
         </Text>
+        <Group
+          gap="xs"
+          wrap="nowrap"
+          style={{ flexGrow: 1, minWidth: 0, justifyContent: 'flex-end' }}
+        >
+          <Badge size="sm" color={color} variant="light">
+            {isNFeEmitError(result) ? result.errorCode : result.cStat}
+          </Badge>
+          <Text size="xs" c="dimmed" truncate maw={300}>
+            {isNFeEmitError(result) ? result.errorMessage : result.xMotivo}
+          </Text>
+        </Group>
       </Group>
-    </Group>
+      {!isNFeEmitError(result) &&
+        result.estado === ESTADO_NFE.rejeitada &&
+        rejeicaoPrecisaContexto(result.cStat) && <OrientacaoRejeicaoLote result={result} />}
+    </Stack>
+  );
+}
+
+/**
+ * The cStat 805 guidance under one lote row (#852) — the same loader and pure
+ * mapping as the toasts and the NF column. Needed HERE because a lote spanning
+ * filiais goes out as single-member sync chunks, so an 805 lands in this modal,
+ * and the NF column's HoverCard sits unreachable behind it.
+ *
+ * Batch results are already Zod-parsed (`nfeBatchEmitResultSchema`) and carry
+ * both ids, so nothing is re-validated. Renders NOTHING while loading and on a
+ * query error — the raw cStat/xMotivo row above stays either way. (The loader
+ * degrades a `FirebaseError` itself; anything it rethrows lands in the query's
+ * error state, never out of the dialog.)
+ */
+function OrientacaoRejeicaoLote({ result }: { readonly result: NFeEmitResult }) {
+  const { pedidoId, nfeId, cStat } = result;
+  const { data, isError } = useQuery({
+    queryKey: ['nfeContextoRejeicao', pedidoId, nfeId],
+    queryFn: () => carregadorContextoRejeicao(getFirebaseFirestore())({ pedidoId, nfeId }),
+    staleTime: 0,
+    // ⚠️ 0: re-emitting a rejeitada nota REUSES its nfeId, so a context cached
+    // from one run would describe the previous attempt on the next.
+    gcTime: 0,
+    retry: false,
+  });
+
+  const orientacao = orientacaoRejeicaoNFe(cStat, isError ? null : (data ?? null));
+  if (orientacao == null) return null;
+  return (
+    <Stack gap={2} pl="xs">
+      <Text size="xs" c={orientacao.cor}>
+        {orientacao.texto}
+      </Text>
+      {orientacao.link && (
+        <Anchor component={Link} href={orientacao.link.href} size="xs">
+          {orientacao.link.label}
+        </Anchor>
+      )}
+    </Stack>
   );
 }

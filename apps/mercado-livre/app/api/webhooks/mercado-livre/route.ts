@@ -125,9 +125,10 @@ const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
  * `user_id` and the outcome are what a human actually needs, and `resource` is
  * already a bare path like `/items/MLB123`.
  *
- * ⚠️ **`logger`, not `console`** — and this is the ONLY route in the repo that
- * crosses that line, so the reason is written down rather than left to look like
- * an accident. `console.x(msg, obj)` goes through Node's `util.inspect`, which
+ * ⚠️ **`logger`, not `console`** — this route was the first to cross that line,
+ * so the reason is written down rather than left to look like an accident. The
+ * app's other INFO lines (stock send / sweep, chat outbound) followed it when
+ * the pre-commit gate started enforcing `no-console` (#1704). `console.x(msg, obj)` goes through Node's `util.inspect`, which
  * wraps at a ~128-char break length; this context object is past it, so Cloud
  * Run split ONE delivery across several Cloud Logging entries and `regiao` could
  * land apart from the `topic` it belongs to. The repo's 100-odd
@@ -214,6 +215,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   let disposition: 'enfileirado' | 'persistido' = 'enfileirado';
   try {
     await createMlTaskScheduler().enqueue(payload, enqueueOpts);
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- any enqueue failure is persisted for the sweep; a 5xx makes ML disable the topic
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     // The enqueue path failed (IAM not granted / transport / disabled). Persist

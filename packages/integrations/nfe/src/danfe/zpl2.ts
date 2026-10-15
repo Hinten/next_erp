@@ -4,8 +4,9 @@
  * This is **net-new** vs. the legacy Flutter package, whose "etiqueta" was a
  * small PDF. ZPL is emitted directly so a 10×15 cm label streams to a Zebra
  * over raw TCP/USB with no rasterisation: native scalable font (`^A0N`), native
- * Code 128 (`^BCN`) of the 44-digit chave, and `^GB` boxes that mirror the PDF's
- * bordered sections. `^CI28` selects UTF-8 so the Portuguese accents survive.
+ * Code 128 (`^BCN`) of the 44-character chave, and `^GB` boxes that mirror the
+ * PDF's bordered sections. `^CI28` selects UTF-8 so the Portuguese accents
+ * survive.
  *
  * `dpi` defaults to **203** (8 dots/mm → ~800×1200 dots for 10×15 cm); pass
  * `300` for the 12 dots/mm head (~1200×1800). All layout is authored in
@@ -13,11 +14,13 @@
  *
  * Paste the output into https://labelary.com to preview before a physical run.
  */
+import { encodeChaveNfeZpl } from '../code128';
 import type { DanfeModel, DanfeEndereco } from './model';
 import {
   cutString,
   formatCep,
   formatChaveAcesso,
+  NFeDanfeFormatError,
   formatCpfCnpj,
   formatDate,
   formatMoney,
@@ -58,6 +61,14 @@ type Row =
   | { kind: 'wrap'; text: string; lines: number };
 
 export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}): string {
+  const code128 = encodeChaveNfeZpl(model.chave);
+  if (!code128) {
+    throw new NFeDanfeFormatError(
+      `A etiqueta ZPL recebeu uma chave NF-e inválida (${model.chave}); esperado: ` +
+        '6 dígitos, 12 caracteres 0-9/A-Z do corpo do CNPJ e 26 dígitos.',
+    );
+  }
+
   const dpi = opts.dpi ?? 203;
   const dpm = dpi / 25.4;
   const mm = (v: number): number => Math.round(v * dpm);
@@ -94,17 +105,21 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
   centered(y, 'DANFE SIMPLIFICADO - ETIQUETA', H_TITLE);
   y += 6;
 
-  // Centered Code 128. `^BC` defaults to subset B (one wide symbol per digit);
-  // the `>;` prefix forces **subset C** so the 44-digit chave packs two digits
-  // per symbol — half the width, and the printed width becomes deterministic.
+  // Centered Code 128. A numeric chave keeps the historical `>;` subset-C
+  // payload byte-for-byte. An NT 2026.004 chave uses the Zebra-documented
+  // C/B/C invocation sequence from `encodeChaveNfeZpl`: `>;`, `>6`, `>5`.
   // Module (narrow-bar) width scales with dpi (~0.25 mm).
   const moduleDots = Math.max(2, Math.round(0.25 * dpm));
-  const dataSymbols = Math.ceil(model.chave.length / 2);
-  // (start C + data + checksum) × 11 modules + 13-module stop pattern.
-  const barModules = (dataSymbols + 2) * 11 + 13;
-  const barWidthDots = barModules * moduleDots;
+  const barWidthDots = code128.modules * moduleDots;
   const bcX = Math.max(mm(MARGIN_MM), Math.round((widthDots - barWidthDots) / 2));
-  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD>;${model.chave}^FS`);
+  const quietDots = 10 * moduleDots;
+  if (code128.kind === 'mixed' && (bcX < quietDots || bcX + barWidthDots + quietDots > widthDots)) {
+    throw new NFeDanfeFormatError(
+      `A etiqueta ZPL não comporta a chave ${model.chave} em ${dpi} dpi com as ` +
+        'zonas de silêncio obrigatórias do Code 128.',
+    );
+  }
+  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD${code128.payload}^FS`);
   y += 12;
   centered(y, formatChaveAcesso(model.chave), H_CHAVE);
   y += 5;

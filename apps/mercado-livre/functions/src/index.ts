@@ -1,6 +1,24 @@
 // Import side-effect first: registers global function options (region) before
 // any trigger is defined. See options.ts.
-import './options';
+//
+// ⚠️ `TASKS_SCHEDULER_REGION` is pulled in HERE rather than lower down with the
+// other named imports, and the position is the whole point: ESM evaluates
+// modules in the order their import declarations appear, so a second
+// `from './options'` further down would leave this one to satisfy
+// `import/no-duplicates` by merging INTO it — moving the option registration
+// after the trigger modules and silently undoing the ordering this comment
+// exists to guarantee.
+//
+// ⚠️ This line is load-bearing even when its BINDING is not. The bare
+// `import './options';` it replaced was unremovable by construction — no
+// binding, nothing to look unused. A named import is only self-evidently
+// needed while `TASKS_SCHEDULER_REGION` has a reader, and `no-unused-vars` is
+// an error since #1448, so the day the last reference goes CI will point
+// whoever removes it straight at deleting this line. That un-registers the
+// global function options for every trigger in the file, and it is invisible:
+// the functions deploy fine, to the wrong region (#1108). If that day comes,
+// restore the bare `import './options';` — do not delete the line.
+import { TASKS_SCHEDULER_REGION } from './options';
 
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
@@ -150,9 +168,7 @@ export { onIntegracaoMercadoLivreChanged } from './onIntegracaoMercadoLivreChang
  * The two link triggers that own `produtos.integracoesComProduto` (#920) — the
  * anchor pre-filter both ML sweeps open with. They replace six hand-written
  * stamp sites and, crucially, they derive the array from the LINK
- * subcollections rather than from the sibling `marketplace` array, which is
- * what lets `marketplace` + `marketplaceIds` be retired on their own at the
- * Flutter decommission (#431 lock 2).
+ * subcollections rather than from retired sibling produto fields (#431 lock 2).
  *
  * Same "no rename-safety assertion" reasoning as the triggers above: Eventarc
  * binds a document path and neither feeds a queue. Both bind no secrets (see
@@ -162,6 +178,20 @@ export { onIntegracaoMercadoLivreChanged } from './onIntegracaoMercadoLivreChang
  */
 export { onProdutoMercadoLivreLinkChanged } from './onProdutoMercadoLivreLinkChanged';
 export { onVariacaoMercadoLivreLinkChanged } from './onVariacaoMercadoLivreLinkChanged';
+
+/**
+ * The two triggers behind the `anuncioCategoriaAlterada` aviso (#847): Mercado
+ * Livre recategorizes listings on its own, and the produto's ERP category — which
+ * picks the price formulas' commission and the NF-e taxes — is never moved
+ * automatically. The LINK trigger raises (or closes) the aviso when a listing's
+ * ML category changes; the PRODUTO trigger closes it the moment an operator
+ * changes the ERP category. Both decide from the event payload before touching
+ * Firestore. Only the link trigger binds the ML secrets: its raise path reads
+ * the new category and ML's fee preview. Same "no rename-safety assertion"
+ * reasoning as the triggers above.
+ */
+export { onAnuncioCategoriaAlterada } from './onAnuncioCategoriaAlterada';
+export { onProdutoCategoriaAlterada } from './onProdutoCategoriaAlterada';
 
 /**
  * The flag-gated stock sweeps: the 15-minute incremental tier, the 02:00 daily
@@ -179,13 +209,26 @@ export { onVariacaoMercadoLivreLinkChanged } from './onVariacaoMercadoLivreLinkC
  * rename-safety assertion is needed (the queue they feed is covered by the
  * `MERCADO_LIVRE_STOCK_SEND_QUEUE` assertion above). No-ops until
  * `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` (the coordinated cutover).
+ *
+ * The fourth, `sweepMercadoLivreAnunciosNaoEnumerados` (#1200), is NOT a tier and
+ * feeds no queue: at 02:30 on the 1st it walks each conta's LINKS rather than its
+ * produtos, re-adds the conta to a produto whose `integracoesComProduto` lost it
+ * (so the 03:00 force-all can enumerate it again) and raises ONE
+ * `anuncioForaDaSincronizacao` aviso per PRODUTO — new ones capped per conta per
+ * run — for what no sweep can reach and a human must fix. It is Firestore-only
+ * — no ML call, so it binds NO secrets (see `src/options.ts`) — and it answers
+ * to the master flag alone, never to the reconciliation's own valve: that valve
+ * rations ML quota, and the audit spends none. ⚠️ It needs the COLLECTION_GROUP index
+ * `produtoMercadoLivre(contaOuterRef, __name__)` READY wherever the master flag
+ * is on; without it every page of the walk silently full-scans the collection
+ * group. Schedule, rationale and the D4 send semantics: `./sweepStock`.
  */
 export {
   sweepMercadoLivreStock,
   sweepMercadoLivreStockDaily,
   sweepMercadoLivreStockReconciliacao,
+  sweepMercadoLivreAnunciosNaoEnumerados,
 } from './sweepStock';
-import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * Periodic backstop that pulls new/updated ML orders for each connected account

@@ -1,4 +1,4 @@
-import base, { prettier, typeAware } from '@delfrance/config-eslint';
+import base, { baseRestrictedImportPaths, prettier, typeAware } from '@delfrance/config-eslint';
 import react from '@delfrance/config-eslint/react';
 import next from 'eslint-config-next';
 
@@ -46,10 +46,14 @@ const config = [
 
       // `getFirestore` may only be called inside the admin singleton; everyone
       // else imports `getAdminFirestore` from `@/lib/firebase/admin`.
+      // ⚠️ `baseRestrictedImportPaths` FIRST: flat config replaces this rule by
+      // name, so declaring it here drops the base's Cloud Storage ban unless it
+      // is spread back in. All five backends had silently lost it.
       'no-restricted-imports': [
         'error',
         {
           paths: [
+            ...baseRestrictedImportPaths,
             {
               name: 'firebase-admin/firestore',
               importNames: ['getFirestore'],
@@ -63,8 +67,9 @@ const config = [
     },
   },
   {
-    // The admin singleton legitimately calls getFirestore.
-    files: ['lib/firebase/admin.ts'],
+    // The admin singletons legitimately call getFirestore — the app's own and
+    // the nested Cloud Functions codebase's (deployed separately).
+    files: ['lib/firebase/admin.ts', 'functions/src/lib/admin.ts'],
     rules: {
       'no-restricted-imports': 'off',
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],

@@ -92,7 +92,7 @@ export default function PagamentosListPage() {
                 </Table.Td>
               </Table.Tr>
             )}
-            {data.map(({ id, path, data: pgto }) => {
+            {data.map(({ path, data: pgto }) => {
               const pedidoId = pedidoIdFromPath(path);
               const formattedValor = formatReais(pgto.valor);
               const formaLabel = FORMA_PAGAMENTO_LABELS[pgto.forma_de_pagamento as FormaPagamento];

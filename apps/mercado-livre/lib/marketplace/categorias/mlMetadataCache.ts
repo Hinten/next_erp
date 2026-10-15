@@ -72,7 +72,10 @@ const sugestaoCache = createReadCache<readonly [string, number], unknown[]>({
   isNegative: (value) => !Array.isArray(value) || value.length === 0,
 });
 
-export function getCategoriaCached(api: MercadoLivreApi, categoryId: string): Promise<MlCategory> {
+export function getCategoriaCached(
+  api: Pick<MercadoLivreApi, 'getCategory'>,
+  categoryId: string,
+): Promise<MlCategory> {
   return categoriaCache.get([categoryId], () => api.getCategory(categoryId));
 }
 

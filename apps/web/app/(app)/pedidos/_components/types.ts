@@ -128,16 +128,13 @@ export interface PedidoFormState {
   entradasRelacionadas: string[] | null;
   saidasRelacionadas: string[] | null;
   chNFeReferenciadas: string[] | null;
+  chNFePagamentoAntecipado: string[] | null;
   itens: Record<string, ItemDoPedido[]>;
   itensIds: string[];
   itensDevolvidos: Record<string, Record<string, ItemDoPedido[]>> | null;
   freteInicial: FreteInicialFormState | null;
   valorCobrado: number | null;
   descontoTotal: number;
-  valorDespesasIncidentes: number | null;
-  valorFretesIncidentes: number | null;
-  valorComissoes: number | null;
-  impostos: number | null;
   timestamp: number | null;
   ultimaModificacao: number | null;
   dataFinalExpedicao: number | null;

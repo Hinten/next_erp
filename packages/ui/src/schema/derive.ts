@@ -177,7 +177,8 @@ export function extractFieldsFromSchema<T extends ZodRawShape>(
  * already have descriptors in hand and want to merge over caller-provided
  * defaults, so deriving from descriptors stays cheap and explicit.
  *
- *  - nullable fields → `null` (RHF treats this as "value present, equal to null")
+ *  - nullable fields, and `z.null()` fields → `null` (RHF treats this as "value
+ *    present, equal to null")
  *  - object fields → a nested defaults object (recursion) so Mantine inputs
  *    inside the fieldset start controlled
  *  - boolean → `false`
@@ -188,7 +189,12 @@ export function extractFieldsFromSchema<T extends ZodRawShape>(
 export function buildEmptyDefaults(descriptors: FieldDescriptor[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const d of descriptors) {
-    if (d.nullable) {
+    // A `z.null()` field — the transient UI anchors (`mercadoLivre: z.null().default(null)`)
+    // — can only ever hold `null`. Without a default here its key is absent from
+    // RHF's defaults while its Controller registers it as `undefined`, and RHF's
+    // `isDirty` compares key COUNTS: the first edit then leaves the form dirty
+    // for good, even after it is reverted.
+    if (d.nullable || defOf(d.zodType).type === 'null') {
       out[d.key] = null;
     } else if (d.kind === 'object') {
       out[d.key] = buildEmptyDefaults(extractFieldsFromSchema(d.zodType as ZodObject<ZodRawShape>));

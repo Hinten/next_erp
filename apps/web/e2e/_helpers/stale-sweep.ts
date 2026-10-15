@@ -23,8 +23,9 @@
  *    exactly the orphans that matter. Instead we record which run owns each
  *    concurrency group; seeing a different run id there means that run is dead
  *    (`cancel-in-progress` is the only way we are running at all), so its
- *    prefix is swept with NO age gate. Exact, and cheap — the narrow
- *    `e2e-<runId>-` prefix keeps both queries in a tight key range.
+ *    prefix is swept with NO age gate. Exact — the narrow `e2e-<runId>-`
+ *    prefix keeps both queries' RESULTS small — but not the id range's SCAN: on
+ *    Enterprise a key range is not index-bounded (see `collectCandidates`, #1874).
  *  - **Pass B, long-tail reclaim.** Broad `e2e-` prefix, age-gated. Catches
  *    local runs, force-killed runners, history predating the marker, and the
  *    `E2E-` pedidos the UI mints (which carry no run id at all, so the age gate
@@ -109,10 +110,11 @@ const RUN_MARKERS_COLLECTION = 'e2e_runMarkers';
  * One live collection the suite seeds into, and where the `e2e-` prefix lands.
  *
  * Doc ids are matched for every target regardless of `fields` — every *seeded*
- * doc is written at `col.doc(\`${prefix}-NNN\`)`, and the key index always
- * exists, so that query is both free and covers most of the volume. `fields`
- * exists for the rows created through the UI during a test, which get Firestore
- * auto-ids and carry the prefix only in their data.
+ * doc is written at `col.doc(\`${prefix}-NNN\`)`, so that query covers most of
+ * the volume. It is NOT free: see {@link collectCandidates} for what a key range
+ * costs on Enterprise. `fields` exists for the rows created through the UI
+ * during a test, which get Firestore auto-ids and carry the prefix only in their
+ * data.
  */
 export interface E2EFixtureTarget {
   readonly collection: string;
@@ -319,11 +321,24 @@ async function collectPage(
  * Every doc in `target` matching any of `prefixes`, by doc id and by declared
  * field. Returns whether collection was truncated by the budget.
  *
- * A `documentId()` range is served by the always-present key index. The field
- * ranges are served by the single-field indexes already declared for most of
- * these collections; note an implicit field `orderBy` drops docs missing that
- * field, which is why `pedidos` declares both `numero` and `observacoesInternas`
- * rather than relying on either alone.
+ * ⚠️ The `documentId()` range has no index behind it unless one is DECLARED
+ * (#1874): Firestore Enterprise creates none, not even one on the document key.
+ * Without one the planner walks some other index of the target end to end, cuts
+ * the prefix range in a residual filter and sorts in memory: on `produtos` it
+ * read 221 index rows to return 1 (staging, #1200's suite, 2026-10-09). Accepted
+ * on purpose, not overlooked: the bill lands on staging only, each pass reads
+ * each target's index ONCE (a second page — a prefix matching more than
+ * {@link PAGE_SIZE} docs — reads it again), and declaring a key index on twenty
+ * collections FOR THIS SWEEP would charge every production write for a
+ * staging-only saving. Some targets do ride one today, for other readers:
+ * `arquivos` permanently (its orphan sweep), and `pedidos`, `produtos`,
+ * `clientes`, `chat`, `integracao`, `usuarios`, `balanco` and `metodo_pgto`
+ * only until the cutover — those are the migrations' key indexes (#1895),
+ * deleted afterwards (#1896). Don't rely on them here. The field ranges are
+ * served by the single-field indexes already declared for most of these
+ * collections; note an implicit field `orderBy` drops docs missing that field,
+ * which is why `pedidos` declares both `numero` and `observacoesInternas` rather
+ * than relying on either alone.
  *
  * Both queries project as little as possible: the sweep reads nothing off a
  * candidate but its `ref` and its `createTime`, and `createTime` rides the

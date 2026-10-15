@@ -1,0 +1,190 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "product_info": {
+      "item_id": 2500139870,
+      "item_name": "Sonda kit virtual teste",
+      "item_status": "SELLER_DELETE",
+      "image": {
+        "image_id_list": ["br-11134207-7r98o-lzri4neb5vcv18"],
+        "image_url_list": ["https://example.invalid/file/redacted"],
+        "image_ratio": "1:1"
+      },
+      "long_image": {
+        "image_ratio": "3:4"
+      },
+      "category_id": 107290,
+      "item_sku": "SONDA-KIT",
+      "create_time": 1791244800,
+      "update_time": 1791244800,
+      "video_list": [],
+      "attributes": [
+        {
+          "attribute_id": 200134,
+          "original_attribute_name": "[S]Material",
+          "attribute_value_list": [
+            {
+              "value_id": 101149,
+              "original_value_name": "[S]Cotton",
+              "value_unit": ""
+            }
+          ],
+          "is_mandatory": false
+        },
+        {
+          "attribute_id": 200162,
+          "original_attribute_name": "[S]Pattern",
+          "attribute_value_list": [
+            {
+              "value_id": 101463,
+              "original_value_name": "[S]Plain",
+              "value_unit": ""
+            }
+          ],
+          "is_mandatory": false
+        },
+        {
+          "attribute_id": 200168,
+          "original_attribute_name": "[S]Sleeve Length",
+          "attribute_value_list": [
+            {
+              "value_id": 101491,
+              "original_value_name": "[S]Others",
+              "value_unit": ""
+            }
+          ],
+          "is_mandatory": false
+        },
+        {
+          "attribute_id": 200169,
+          "original_attribute_name": "[S]Style",
+          "attribute_value_list": [
+            {
+              "value_id": 101497,
+              "original_value_name": "[S]Athletic",
+              "value_unit": ""
+            }
+          ],
+          "is_mandatory": false
+        },
+        {
+          "attribute_id": 200240,
+          "original_attribute_name": "[S]Tall Fit",
+          "attribute_value_list": [
+            {
+              "value_id": 101540,
+              "original_value_name": "[S]No",
+              "value_unit": ""
+            }
+          ],
+          "is_mandatory": false
+        },
+        {
+          "attribute_id": 201004,
+          "original_attribute_name": "[S]Plus Size",
+          "attribute_value_list": [
+            {
+              "value_id": 105488,
+              "original_value_name": "[S]No",
+              "value_unit": ""
+            }
+          ],
+          "is_mandatory": false
+        },
+        {
+          "attribute_id": 200037,
+          "original_attribute_name": "[S]Region of Origin",
+          "attribute_value_list": [
+            {
+              "value_id": 106737,
+              "original_value_name": "[S]Brasil",
+              "value_unit": ""
+            }
+          ],
+          "is_mandatory": false
+        }
+      ],
+      "weight": "1",
+      "dimension": {
+        "package_length": 0,
+        "package_width": 0,
+        "package_height": 0
+      },
+      "brand_info": {
+        "brand_id": 0,
+        "original_brand_name": "NoBrand"
+      },
+      "model_list": [
+        {
+          "model_id": 2000458820,
+          "model_sku": "SONDA-KIT-M1",
+          "original_price": 45,
+          "tier_index": [0],
+          "component_list": [
+            {
+              "component_item_id": 2500139871,
+              "component_model_id": 2000458821,
+              "quantity": 2,
+              "main_component": true,
+              "component_item_name": "Cotton T-shirt",
+              "component_item_or_model_image": "br-11134207-7r98o-lzri4neb5vcv18",
+              "component_model_name": "White,02",
+              "component_item_or_model_sku": "KIT-COMP-A-M1"
+            },
+            {
+              "component_item_id": 2500139872,
+              "component_model_id": 2000458829,
+              "quantity": 1,
+              "main_component": false,
+              "component_item_name": "Sonda kit componente dois teste",
+              "component_item_or_model_image": "br-11134207-7r98o-lzri4neb5vcv18",
+              "component_model_name": "",
+              "component_item_or_model_sku": ""
+            }
+          ]
+        }
+      ],
+      "pre_order_info": {
+        "is_pre_order": false,
+        "days_to_ship": 3
+      },
+      "tier_variation_list": [
+        {
+          "name": "Kit",
+          "option_list": [
+            {
+              "option": "Kit um"
+            }
+          ]
+        }
+      ],
+      "description_type": "normal",
+      "description": "Kit de teste do sandbox criado pela sonda de kits virtuais. Nao comprar.",
+      "sync_setting": {
+        "auto_sync_dts": true
+      },
+      "logistic_info": [
+        {
+          "logistic_id": 11006,
+          "logistic_name": "Sandbox -Standard Express LPS (Don't modify)",
+          "enabled": false,
+          "size_id": 0,
+          "is_free": false,
+          "estimated_shipping_fee": 1.99,
+          "include_pickup": false
+        },
+        {
+          "logistic_id": 11007,
+          "logistic_name": "Sandbox -SPX Express (Don't modify)",
+          "enabled": false,
+          "size_id": 0,
+          "is_free": false,
+          "estimated_shipping_fee": 1.99,
+          "include_pickup": false
+        }
+      ]
+    }
+  }
+}

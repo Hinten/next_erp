@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
 import {
   Alert,
@@ -25,7 +26,7 @@ import {
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { ZodError, type z, type ZodObject, type ZodRawShape, type ZodTypeAny } from 'zod';
-import { type CollectionHandle, type PathContext } from '@delfrance/data';
+import type { CollectionHandle, PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import type { FieldConfig, FieldDescriptor } from '../schema/types';
@@ -34,14 +35,24 @@ import { ConflictModal } from './ConflictModal';
 import { buildConflictFields, labelFromShape } from './conflictFields';
 import { valuesEqual } from './diff';
 import { FieldRenderer } from './FieldRenderer';
+import { ObjectViewSectionsProvider, type ObjectViewSections } from './ObjectViewSectionsContext';
+import {
+  createTransactionDocuments,
+  ObjectViewTransactionDocumentsProvider,
+  type TransactionWriteContext,
+} from './ObjectViewTransactionDocuments';
+import { applyPrepareForSave, collectPrepareForSave } from './prepareForSave';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
 import { resolveStampFields, type StampFieldOverride } from './resolveStampFields';
 import {
   NothingChangedError,
+  MissingTransactionBaselineError,
   RecordConflictError,
   saveRecord,
+  type DeriveTransactionPatch,
   type TransactionWrite,
+  type TransactionDocumentConflict,
 } from './saveRecord';
 import { useServerTruthSeed } from './useServerTruthSeed';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
@@ -61,6 +72,17 @@ const FORM_LEVEL_ERROR_KEY = '@form';
 export interface ValidationIssue {
   path: string;
   message: string;
+}
+
+/**
+ * What the save transaction did to the main document, handed to `onAfterSave`:
+ * the document as the committing attempt READ it (`null` on a create) and the
+ * patch it WROTE over it (empty when only sibling documents were written).
+ * `{ ...before, ...patch }` is the stored document this save left behind.
+ */
+export interface CommittedSave {
+  before: Readonly<Record<string, unknown>> | null;
+  patch: Readonly<Record<string, unknown>>;
 }
 
 export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends ZodTypeAny = S> {
@@ -87,6 +109,8 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
   /** undefined ⇒ create mode. */
   recordId?: string;
   defaultValues?: Partial<z.infer<S>>;
+  /** Prepare a copy's form seed before validation; omit identities and retain input provenance. */
+  transformCopiedValues?: (source: Readonly<Record<string, unknown>>) => Record<string, unknown>;
 
   /** Hide these field keys completely (e.g. embeddings). */
   excludedFields?: string[];
@@ -115,6 +139,8 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * `undefined` (Firestore rejects it). Must be pure.
    */
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
+  /** Pure domain delta computed from the latest document inside each save attempt. */
+  deriveTransactionPatch?: DeriveTransactionPatch;
 
   /**
    * Cross-document validation run alongside the schema resolver (after each
@@ -150,7 +176,11 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * handle). Pairs with `transientFields`: those keys stay off the main doc but
    * are persisted here.
    */
-  transactionWrites?: (id: string, values: Record<string, unknown>) => TransactionWrite[];
+  transactionWrites?: (
+    id: string,
+    values: Record<string, unknown>,
+    context: TransactionWriteContext,
+  ) => TransactionWrite[];
 
   /**
    * Turn the ADR 0011 **tier 3** concurrency guard off for this screen.
@@ -220,8 +250,20 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * / `deriveOnSave`), so sibling writes can read exactly what was persisted
    * without a re-read race — e.g. the produto editor diffs `values.precos` for
    * its history records and child propagation.
+   *
+   * ⚠️ `values` is the FORM plus what the save wrote. A key the save did not
+   * write keeps the form's value, and a form painted from a stale cache copy is
+   * not what is stored. So a hook that diffs the record's state (old vs new)
+   * reads `committed` instead: the main document as the save transaction READ
+   * it (`before`) and the patch it WROTE over it. `committed` is absent when no
+   * transaction ran (the "nothing changed" path, which still calls this hook);
+   * `before` is null on a create.
    */
-  onAfterSave?: (id: string, values: Record<string, unknown>) => Promise<void> | void;
+  onAfterSave?: (
+    id: string,
+    values: Record<string, unknown>,
+    committed?: CommittedSave,
+  ) => Promise<void> | void;
   saveLabel?: string;
   /** Show a secondary "Salvar e continuar" button. Default true. */
   showSaveAndContinue?: boolean;
@@ -287,11 +329,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   pathContext = {},
   recordId,
   defaultValues,
+  transformCopiedValues,
   excludedFields = [],
   fields: fieldOverrides = {},
   sections,
   persistentSections,
   deriveOnSave,
+  deriveTransactionPatch,
   validate,
   transientFields = [],
   transactionWrites,
@@ -341,11 +385,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // Once a create-mode save lands, retain the new id so subsequent saves on
   // the same mount are treated as updates (partial patches).
   const [internalId, setInternalId] = useState<string | undefined>(recordId);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs internalId from recordId; a create-mode save keeps its new id until recordId itself changes
   useEffect(() => setInternalId(recordId), [recordId]);
 
   const docRef = useMemo(
     () => (internalId ? collection.docRef(db, pathContext, internalId) : null),
     // pathContext intentionally identity-tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathContext intentionally untracked: its {} default is a new object every render, and useDocSnapshot keys on ref identity
     [db, collection, internalId],
   );
   const docSnap = useDocSnapshot<Doc>(docRef);
@@ -359,6 +405,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const copyDocRef = useMemo(
     () => (copyFromId ? collection.docRef(db, pathContext, copyFromId) : null),
     // pathContext intentionally identity-tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathContext intentionally untracked: its {} default is a new object every render, and useDocSnapshot keys on ref identity
     [db, collection, copyFromId],
   );
   const copySnap = useDocSnapshot<Doc>(copyDocRef);
@@ -368,6 +415,15 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // get a stable initial value.
   const emptyDefaults = useMemo(() => buildEmptyDefaults(descriptors), [descriptors]);
 
+  // Every `prepareForSave` in the tree, flattened to a path list ONCE — the
+  // sub-field overrides under `FieldConfig.fields` included, which is what
+  // #870 fixed: `renderInput` had always recursed there, `prepareForSave`
+  // never did, so a nested transform typechecked and did nothing.
+  // `fieldOverrides` is identity-tracked deliberately: every call site passes
+  // a module-level const (the lint rule on inline configs is the backstop),
+  // so this walk runs once per config, not once per keystroke.
+  const preparedTransforms = useMemo(() => collectPrepareForSave(fieldOverrides), [fieldOverrides]);
+
   // Validate what will be SAVED, not the raw editor state: apply each
   // field's `prepareForSave` before delegating to zodResolver. Staged
   // deletions are the motivating case — a schema-invalid row marked with
@@ -375,18 +431,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // Note for editors: error paths therefore index the TRANSFORMED value
   // (e.g. the array with marked rows removed) — composite editors map the
   // indices back (see FaixaCepEditor).
-  // `fieldOverrides` is identity-tracked deliberately: every call site
-  // passes a module-level const (the lint rule on inline configs is the
-  // backstop).
   const resolver = useMemo<Resolver<FieldValues>>(() => {
     const base = zodResolver(schema as never) as Resolver<FieldValues>;
-    const transforms = Object.entries(fieldOverrides).filter(([, cfg]) => cfg?.prepareForSave);
-    if (transforms.length === 0 && !validate) return base;
+    if (preparedTransforms.length === 0 && !validate) return base;
     const wrapped: Resolver<FieldValues> = async (values, ctx, opts) => {
-      const prepared: Record<string, unknown> = { ...(values as Record<string, unknown>) };
-      for (const [key, cfg] of transforms) {
-        prepared[key] = cfg!.prepareForSave!(prepared[key]);
-      }
+      // Copy-on-write: `values` is RHF's live object and must not be mutated.
+      const prepared = applyPrepareForSave(values as Record<string, unknown>, preparedTransforms);
       const result = await base(prepared as FieldValues, ctx, opts);
       if (!validate) return result;
       // Merge cross-document issues at each path's first segment. A real shape
@@ -422,7 +472,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       return { ...result, errors } as typeof result;
     };
     return wrapped;
-  }, [schema, fieldOverrides, validate]);
+  }, [schema, preparedTransforms, validate]);
 
   const form = useForm<FieldValues>({
     resolver,
@@ -454,12 +504,22 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // would fire on every save and operators would learn to click through it. That
   // is not hypothetical: it is the bug #791 fixed for `lastMarketplaceUpdate`.
   const baseline = useRef<Record<string, unknown> | null>(null);
+  // A different record gets a new registry; the first create/save retains it.
+  const transactionDocuments = useMemo(createTransactionDocuments, [recordId]);
   useServerTruthSeed({
     id: docSnap.data?.id,
     fromCache: docSnap.fromCache,
     isDirty: form.formState.isDirty,
     onSeed: (serverTruth) => {
-      form.reset({ ...emptyDefaults, ...(docSnap.data?.data as FieldValues) });
+      const seeded: Record<string, unknown> = {
+        ...emptyDefaults,
+        ...(docSnap.data?.data as FieldValues),
+      };
+      for (const field of transientFields) {
+        if (transactionDocuments.getFormBaseline(field) !== undefined)
+          seeded[field] = form.getValues(field);
+      }
+      form.reset(seeded);
       // Seeded HERE, in the same callback as the form — which is exactly what
       // `useServerTruthSeed`'s contract requires, and for this reason: a form
       // corrected to server truth while the baseline still held the cached copy
@@ -486,6 +546,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
       baseline.current = null;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seeds on snapshot transitions only; defaultValues / emptyDefaults / form are read, not triggers (novo pages pass defaultValues inline)
   }, [docSnap.data?.id, docSnap.fromCache, docSnap.data?.data]);
 
   // Copy mode: once the source doc loads, seed the form with its values. The
@@ -500,8 +561,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     form.reset({
       ...emptyDefaults,
       ...(defaultValues ?? {}),
-      ...source,
+      ...(transformCopiedValues ? transformCopiedValues(source) : source),
     } as FieldValues);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seeds once per copy source; re-running on its other inputs would overwrite what the operator typed
   }, [copySnap.data?.id]);
 
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -513,6 +575,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     loaded: Record<string, unknown>;
     current: Record<string, unknown>;
     fields: string[];
+    documents: TransactionDocumentConflict[];
     continueEditing: boolean;
   } | null>(null);
   // Delete confirmation modal: the user must type "excluir" to enable the
@@ -544,13 +607,44 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
    */
   function reloadFromServer(): void {
     if (!conflict) return;
-    const keep = form.getValues() as Record<string, unknown>;
+    const keep = { ...form.getValues() } as Record<string, unknown>;
     const dirtyNow = form.formState.dirtyFields as Record<string, unknown>;
     const collided = new Set(conflict.fields);
-    form.reset({ ...emptyDefaults, ...(conflict.current as FieldValues) });
+    const defaults: Record<string, unknown> = { ...emptyDefaults, ...conflict.current };
+    for (const key of transientFields) {
+      defaults[key] =
+        transactionDocuments.getFormBaseline(key) ?? form.formState.defaultValues?.[key] ?? null;
+    }
+    try {
+      for (const doc of conflict.documents) {
+        const { formField, toFormValue } = doc.guard;
+        defaults[formField] = toFormValue(doc.current, defaults[formField]);
+        keep[formField] = toFormValue(doc.current, keep[formField]);
+      }
+    } catch (err) {
+      if (err instanceof ZodError) {
+        setSubmitError(
+          'Não foi possível recarregar: os dados do servidor são incompatíveis com o formulário.',
+        );
+        return;
+      }
+      throw err;
+    }
+    for (const doc of conflict.documents) {
+      transactionDocuments.rebase(doc.path, doc.current);
+      transactionDocuments.rebaseFormField(doc.guard.formField, defaults[doc.guard.formField]);
+    }
+    const retained = { ...defaults };
     for (const key of Object.keys(dirtyNow)) {
-      if (collided.has(key)) continue;
-      form.setValue(key, keep[key] as never, { shouldDirty: true });
+      if (!collided.has(key)) retained[key] = keep[key];
+    }
+    // Preserve loaded transient values even when their Controller was suspended.
+    for (const key of transientFields) retained[key] = keep[key];
+    baseline.current = conflict.current;
+    form.reset(defaults);
+    for (const key of Object.keys(retained)) {
+      if (!valuesEqual(defaults[key], retained[key]))
+        form.setValue(key, retained[key] as never, { shouldDirty: true });
     }
     setConflict(null);
   }
@@ -562,17 +656,21 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     // We reset the form to these transformed values on success so the UI
     // reflects what was actually persisted.
     const raw = form.getValues() as Record<string, unknown>;
-    const values: Record<string, unknown> = { ...raw };
     const isUpdate = !!internalId;
     const dirty = form.formState.dirtyFields as Record<string, unknown>;
-    for (const [key, cfg] of Object.entries(fieldOverrides)) {
-      if (!cfg?.prepareForSave) continue;
-      // Only transform fields that will actually be written — all fields on
-      // create, just the dirty ones on update — so `form.reset(values)` can't
-      // show a transformed value that never reached Firestore.
-      if (isUpdate && !dirty[key]) continue;
-      values[key] = cfg.prepareForSave(raw[key]);
-    }
+    // Only transform fields that will actually be written — all fields on
+    // create, just the dirty ones on update — so `form.reset(values)` can't
+    // show a transformed value that never reached Firestore.
+    //
+    // The gate reads the TOP-LEVEL key even for a nested transform, and that is
+    // the correct coarseness: `dirtyFields` is a DeepMap, so a parent is truthy
+    // when any descendant changed, and Firestore replaces a nested object
+    // wholesale — a dirty parent writes ALL its sub-fields, so all of them must
+    // be normalized (see `pickDirty` in ./diff).
+    const activeTransforms = isUpdate
+      ? preparedTransforms.filter((t) => dirty[t.path[0]!])
+      : preparedTransforms;
+    const values: Record<string, unknown> = applyPrepareForSave(raw, activeTransforms);
     // Record-level derivations (e.g. denormalized `variacoesIds` from the
     // already-transformed `variacoes`). Merge the derived keys into the values
     // and mark each dirty only when it changed, so a pristine update still
@@ -614,11 +712,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         // Persist transient fields (e.g. the extraData singleton) in the SAME
         // transaction as the document — the full `values` carry them; the hook
         // turns them into sibling writes keyed by the resolved record id.
-        siblingWrites: transactionWrites ? (id) => transactionWrites(id, values) : undefined,
+        siblingWrites: transactionWrites
+          ? (id) => transactionWrites(id, values, transactionDocuments)
+          : undefined,
+        deriveTransactionPatch,
         currentUserUid,
         // ADR 0011 tier 3. "Salvar mesmo assim" does NOT come through here with
         // the guard off — it comes through with `baseline.current` already
-        // re-based onto the version the modal showed (see the catch below).
+        // re-based onto the version the operator explicitly accepted.
         // The comparison therefore still runs, and that is the whole point: a
         // THIRD writer landing while the operator read the diff raises the modal
         // again instead of being silently overwritten. Skipping the check on an
@@ -634,7 +735,21 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         modifiedAtField: stampFields.modifiedAtField ?? false,
       });
       // Zero out dirty state while preserving the persisted (transformed) values.
-      form.reset(values as typeof raw);
+      const committedValues = { ...values, ...result.patch };
+      for (const doc of result.documents ?? []) {
+        transactionDocuments.rebase(doc.path, doc.data);
+        const { formField, toFormValue } = doc.guard;
+        committedValues[formField] = toFormValue(doc.data, committedValues[formField]);
+      }
+      for (const key of transientFields) {
+        if (
+          committedValues[key] != null ||
+          transactionDocuments.getFormBaseline(key) !== undefined
+        ) {
+          transactionDocuments.rebaseFormField(key, committedValues[key]);
+        }
+      }
+      form.reset(committedValues as typeof raw);
       // Re-base the tier-3 baseline onto what we just wrote: after a successful
       // save, the version the operator last knew IS this one.
       //
@@ -663,7 +778,10 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // staged child documents). Runs on BOTH save paths; a failure surfaces
       // in the form alert and skips onSaved (the record itself is saved — the
       // user can retry just the sibling step by saving again).
-      await onAfterSave?.(result.id, values);
+      await onAfterSave?.(result.id, committedValues, {
+        before: result.before ?? null,
+        patch: result.patch,
+      });
       if (continueEditing) {
         notifications.show({ color: 'green', message: 'Salvo.' });
       } else {
@@ -680,16 +798,24 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // Tier 3 — someone else changed a field this save writes. Show the diff
       // and let the operator choose; never discard what they typed. The form
       // stays dirty, so the leave-guard still protects them.
+      if (err instanceof MissingTransactionBaselineError) {
+        setSubmitError(err.message);
+        return;
+      }
       if (err instanceof RecordConflictError) {
         if (err.missing || err.current === null) {
           setSubmitError(err.message);
           return;
         }
         const loaded = baseline.current ?? {};
-        // Re-baseline onto the version being shown: whatever they decide next
-        // is judged against what they actually saw.
-        baseline.current = err.current;
-        setConflict({ loaded, current: err.current, fields: err.fields, continueEditing });
+        // Opening or cancelling a dialog does not acknowledge an overwrite.
+        setConflict({
+          loaded,
+          current: err.current,
+          fields: err.fields,
+          documents: err.documents,
+          continueEditing,
+        });
         return;
       }
       if (err instanceof NothingChangedError) {
@@ -762,7 +888,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       (map[section] ??= []).push(d);
     }
     return map;
-  }, [visibleDescriptors, fieldOverrides, sections?.join('|')]);
+  }, [visibleDescriptors, fieldOverrides, sections]);
 
   // Reverse of `grouped`: top-level field key → section name, for mapping
   // validation errors to tabs. RHF nests sub-field errors under the
@@ -808,6 +934,36 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         ? activeSection
         : firstSection
       : null;
+
+  // Published to custom `renderInput` widgets (see `ObjectViewSectionsContext`)
+  // so one that writes a SIBLING field can move the operator to the tab that
+  // renders it — otherwise the change lands in a hidden panel and reads as
+  // "nothing happened". `goToSection` ignores an unknown section rather than
+  // stranding `activeSection` on a value `effectiveSection` would discard.
+  //
+  // ⚠️ The switch is COMMITTED synchronously, and that is what makes the
+  // gesture work rather than a performance choice. `SectionTabs` hides an
+  // inactive panel with `<Activity mode="hidden">`, which unmounts every effect
+  // in it — including the subscription each RHF `Controller` registers. A
+  // `setValue` into a hidden panel therefore never reaches that field's input,
+  // and the input does NOT re-sync when its effects mount again: it re-renders
+  // from the state it held before, so the operator lands on the right tab
+  // still looking at the OLD value. Flushing here means a caller can
+  // `goToSection(...)` and then `setValue(...)`, with the target mounted and
+  // subscribed in between. Pinned by `ObjectView.sections.activity.test.tsx`,
+  // which has to render without `env="test"` to see it at all.
+  const sectionsApi = useMemo<ObjectViewSections>(
+    () => ({
+      activeSection: effectiveSection,
+      goToSection: (section) => {
+        if (!sections?.includes(section)) return;
+        flushSync(() => setActiveSection(section));
+      },
+      sectionOfField: (fieldKey) => sectionOf.get(fieldKey) ?? null,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the sections' VALUES: callers pass an inline array, and a plain `sections` dep makes the compiler drop this memo
+    [effectiveSection, sections?.join('|'), sectionOf],
+  );
 
   // Tabs containing invalid fields. Computed inline on purpose: RHF mutates
   // `formState.errors` in place, so it's not a usable memo dependency —
@@ -977,201 +1133,234 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     // read SIBLING fields live (e.g. the VariationManager generating child
     // SKUs from the parent's unsaved `sku` via `useFormContext().getValues`).
     <FormProvider {...form}>
-      <form
-        // Which Firestore snapshot the fields below were painted from. See
-        // `snapshotSource` above for the two things it does NOT mean.
-        data-snapshot-source={snapshotSource}
-        // Zod (via the resolver) owns ALL validation. Without noValidate the
-        // browser's native constraint validation intercepts the submit when
-        // any control carries the native `required` attribute (e.g. Mantine
-        // inputs with `required`): if that control is empty AND inside a
-        // hidden section tab, Chrome can't focus it, BLOCKS the submission
-        // silently ("An invalid form control with name='' is not focusable")
-        // and React's onSubmit never fires — no toast, no tab jump, nothing.
-        noValidate
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submitDefault();
-        }}
-      >
-        <Stack>
-          {(title || description) && (
-            <Stack gap={2}>
-              {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
-              {description && (
-                <Text c="dimmed" size="sm">
-                  {description}
-                </Text>
-              )}
-            </Stack>
-          )}
-
-          <Group justify="space-between">
-            {pager ? (
-              <RecordPager
-                ids={pager.ids}
-                current={pager.current}
-                onChange={pager.onChange}
-                confirmNavigation={form.formState.isDirty ? () => false : undefined}
-              />
-            ) : (
-              <span />
-            )}
-          </Group>
-
-          {copyFromId && copySnap.data && (
-            <Alert color="blue">
-              Registro pré-preenchido a partir de uma cópia. Revise os campos e clique em{' '}
-              {saveLabel} para criar um novo registro.
-            </Alert>
-          )}
-
-          {loading && (
-            <Stack>
-              <Skeleton height={42} />
-              <Skeleton height={42} />
-            </Stack>
-          )}
-
-          {!loading && loadError && <Alert color="red">{loadError.message}</Alert>}
-
-          {!loading && !loadError && notFound && (
-            <Alert color="yellow">Registro não encontrado.</Alert>
-          )}
-
-          {!loading &&
-            !blocked &&
-            (sections && sections.length > 0 ? (
-              <SectionTabs
-                sections={sections}
-                contents={Object.fromEntries(
-                  sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]),
-                )}
-                value={effectiveSection}
-                onChange={setActiveSection}
-                errorSections={errorSections}
-                persistentSections={persistentSections}
-              />
-            ) : (
-              fieldsBlock(grouped['default'] ?? visibleDescriptors)
-            ))}
-
-          {hiddenErrors.length > 0 && (
-            <Alert color="red" title="Campos inválidos fora do formulário">
-              <Stack gap="xs">
-                {hiddenErrors.map((m, i) => (
-                  <Text key={`${i}:${m}`} size="sm">
-                    {m}
-                  </Text>
-                ))}
-              </Stack>
-            </Alert>
-          )}
-
-          {submitError && <Alert color="red">{submitError}</Alert>}
-
-          <ConflictModal
-            opened={conflict !== null}
-            title="Registro alterado"
-            fields={
-              conflict
-                ? buildConflictFields(
-                    conflict.loaded,
-                    conflict.current,
-                    conflict.fields,
-                    // Every listed field is one this save writes — that is how
-                    // `saveRecord` picked them — so all of them overwrite.
-                    new Set(conflict.fields),
-                    { labelFor: (f) => labelFromShape(labelShape, f) },
-                  )
-                : []
-            }
-            saving={form.formState.isSubmitting}
-            onForceSave={() => {
-              const { continueEditing } = conflict!;
-              setConflict(null);
-              // Plain re-save. `baseline.current` was re-based onto the version
-              // shown when the conflict was caught, so the guard still runs: if
-              // nothing moved since, this commits; if a third writer landed
-              // meanwhile, the modal comes straight back with THAT version.
-              void doSave(continueEditing);
+      {/* Tab navigation, published beside the form context: a widget that
+          writes a sibling field usually has to point at where it landed. */}
+      <ObjectViewSectionsProvider value={sectionsApi}>
+        <ObjectViewTransactionDocumentsProvider value={transactionDocuments}>
+          <form
+            // Which Firestore snapshot the fields below were painted from. See
+            // `snapshotSource` above for the two things it does NOT mean.
+            data-snapshot-source={snapshotSource}
+            // Zod (via the resolver) owns ALL validation. Without noValidate the
+            // browser's native constraint validation intercepts the submit when
+            // any control carries the native `required` attribute (e.g. Mantine
+            // inputs with `required`): if that control is empty AND inside a
+            // hidden section tab, Chrome can't focus it, BLOCKS the submission
+            // silently ("An invalid form control with name='' is not focusable")
+            // and React's onSubmit never fires — no toast, no tab jump, nothing.
+            noValidate
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submitDefault();
             }}
-            onReloadFromServer={reloadFromServer}
-            onCancel={() => setConflict(null)}
-          />
-
-          <Group justify="space-between">
-            {deleteVisible && internalId && !blocked ? (
-              <Button
-                type="button"
-                color="red"
-                variant="light"
-                onClick={() => {
-                  setDeleteText('');
-                  setDeleteOpen(true);
-                }}
-              >
-                {deleteLabel}
-              </Button>
-            ) : (
-              <span />
-            )}
-            <Group>
-              {editingAllowed && !blocked && showSaveAndContinue && (
-                <Button
-                  type="button"
-                  variant="default"
-                  loading={form.formState.isSubmitting}
-                  onClick={() => void submitContinue()}
-                >
-                  Salvar e continuar
-                </Button>
+          >
+            <Stack>
+              {(title || description) && (
+                <Stack gap={2} style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                  {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
+                  {description && (
+                    <Text c="dimmed" size="sm">
+                      {description}
+                    </Text>
+                  )}
+                </Stack>
               )}
-              {editingAllowed && !blocked && (
-                <Button type="submit" loading={form.formState.isSubmitting}>
-                  {saveLabel}
-                </Button>
-              )}
-            </Group>
-          </Group>
-        </Stack>
 
-        <Modal
-          opened={deleteOpen}
-          onClose={() => setDeleteOpen(false)}
-          title="Excluir registro"
-          centered
-        >
-          <Stack>
-            <Text size="sm">{deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}</Text>
-            <TextInput
-              label='Digite "excluir" para confirmar'
-              value={deleteText}
-              onChange={(e) => setDeleteText(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && deleteConfirmed) {
-                  e.preventDefault();
-                  void confirmDelete();
+              <Group justify="space-between">
+                {pager ? (
+                  <RecordPager
+                    ids={pager.ids}
+                    current={pager.current}
+                    onChange={pager.onChange}
+                    confirmNavigation={form.formState.isDirty ? () => false : undefined}
+                  />
+                ) : (
+                  <span />
+                )}
+              </Group>
+
+              {copyFromId && copySnap.data && (
+                <Alert color="blue">
+                  Registro pré-preenchido a partir de uma cópia. Revise os campos e clique em{' '}
+                  {saveLabel} para criar um novo registro.
+                </Alert>
+              )}
+
+              {loading && (
+                <Stack>
+                  <Skeleton height={42} />
+                  <Skeleton height={42} />
+                </Stack>
+              )}
+
+              {!loading && loadError && <Alert color="red">{loadError.message}</Alert>}
+
+              {!loading && !loadError && notFound && (
+                <Alert color="yellow">Registro não encontrado.</Alert>
+              )}
+
+              {!loading &&
+                !blocked &&
+                (sections && sections.length > 0 ? (
+                  <SectionTabs
+                    sections={sections}
+                    contents={Object.fromEntries(
+                      sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]),
+                    )}
+                    value={effectiveSection}
+                    onChange={setActiveSection}
+                    errorSections={errorSections}
+                    persistentSections={persistentSections}
+                  />
+                ) : (
+                  fieldsBlock(grouped['default'] ?? visibleDescriptors)
+                ))}
+
+              {hiddenErrors.length > 0 && (
+                <Alert color="red" title="Campos inválidos fora do formulário">
+                  <Stack gap="xs">
+                    {hiddenErrors.map((m, i) => (
+                      <Text key={`${i}:${m}`} size="sm">
+                        {m}
+                      </Text>
+                    ))}
+                  </Stack>
+                </Alert>
+              )}
+
+              {submitError && <Alert color="red">{submitError}</Alert>}
+
+              <ConflictModal
+                opened={conflict !== null}
+                title="Registro alterado"
+                fields={
+                  conflict
+                    ? [
+                        ...buildConflictFields(
+                          conflict.loaded,
+                          conflict.current,
+                          conflict.fields,
+                          // Every listed field is one this save writes — that is how
+                          // `saveRecord` picked them — so all of them overwrite.
+                          new Set(conflict.fields),
+                          { labelFor: (f) => labelFromShape(labelShape, f) },
+                        ),
+                        ...conflict.documents.flatMap((doc) =>
+                          doc.fields.map((field) => ({
+                            field: `${doc.path}:${field}`,
+                            label: `${doc.guard.label} — ${field === '@exists' ? 'Existência do documento' : field}`,
+                            loaded:
+                              field === '@exists'
+                                ? doc.guard.baseline !== null
+                                : doc.guard.baseline?.[field],
+                            server:
+                              field === '@exists' ? doc.current !== null : doc.current?.[field],
+                            complex:
+                              field !== '@exists' &&
+                              (typeof doc.guard.baseline?.[field] === 'object' ||
+                                typeof doc.current?.[field] === 'object'),
+                            overwritten: true,
+                          })),
+                        ),
+                      ]
+                    : []
                 }
-              }}
-              autoFocus
-            />
-            <Group justify="flex-end">
-              <Button type="button" variant="default" onClick={() => setDeleteOpen(false)}>
-                Cancelar
-              </Button>
-              <Button
-                type="button"
-                color="red"
-                disabled={!deleteConfirmed}
-                onClick={() => void confirmDelete()}
-              >
-                {deleteLabel}
-              </Button>
-            </Group>
-          </Stack>
-        </Modal>
-      </form>
+                saving={form.formState.isSubmitting}
+                onForceSave={() => {
+                  const { continueEditing } = conflict!;
+                  // Acknowledge only the displayed collisions; keep all guards armed.
+                  if (baseline.current) {
+                    baseline.current = { ...baseline.current };
+                    for (const field of conflict!.fields)
+                      baseline.current[field] = conflict!.current[field];
+                  }
+                  for (const doc of conflict!.documents)
+                    transactionDocuments.rebase(doc.path, doc.current);
+                  setConflict(null);
+                  // Plain re-save. `baseline.current` was re-based onto the version
+                  // shown when the conflict was caught, so the guard still runs: if
+                  // nothing moved since, this commits; if a third writer landed
+                  // meanwhile, the modal comes straight back with THAT version.
+                  void doSave(continueEditing);
+                }}
+                onReloadFromServer={reloadFromServer}
+                onCancel={() => setConflict(null)}
+              />
+
+              <Group justify="space-between">
+                {deleteVisible && internalId && !blocked ? (
+                  <Button
+                    type="button"
+                    color="red"
+                    variant="light"
+                    onClick={() => {
+                      setDeleteText('');
+                      setDeleteOpen(true);
+                    }}
+                  >
+                    {deleteLabel}
+                  </Button>
+                ) : (
+                  <span />
+                )}
+                <Group>
+                  {editingAllowed && !blocked && showSaveAndContinue && (
+                    <Button
+                      type="button"
+                      variant="default"
+                      loading={form.formState.isSubmitting}
+                      onClick={() => void submitContinue()}
+                    >
+                      Salvar e continuar
+                    </Button>
+                  )}
+                  {editingAllowed && !blocked && (
+                    <Button type="submit" loading={form.formState.isSubmitting}>
+                      {saveLabel}
+                    </Button>
+                  )}
+                </Group>
+              </Group>
+            </Stack>
+
+            <Modal
+              opened={deleteOpen}
+              onClose={() => setDeleteOpen(false)}
+              title="Excluir registro"
+              centered
+            >
+              <Stack>
+                <Text size="sm">{deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}</Text>
+                <TextInput
+                  label='Digite "excluir" para confirmar'
+                  value={deleteText}
+                  onChange={(e) => setDeleteText(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && deleteConfirmed) {
+                      e.preventDefault();
+                      void confirmDelete();
+                    }
+                  }}
+                  autoFocus
+                />
+                <Group justify="flex-end">
+                  <Button type="button" variant="default" onClick={() => setDeleteOpen(false)}>
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="button"
+                    color="red"
+                    disabled={!deleteConfirmed}
+                    onClick={() => void confirmDelete()}
+                  >
+                    {deleteLabel}
+                  </Button>
+                </Group>
+              </Stack>
+            </Modal>
+          </form>
+        </ObjectViewTransactionDocumentsProvider>
+      </ObjectViewSectionsProvider>
     </FormProvider>
   );
 }

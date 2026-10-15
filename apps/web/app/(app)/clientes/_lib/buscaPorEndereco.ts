@@ -1,7 +1,9 @@
 import type { Firestore } from 'firebase/firestore';
-// Side-effect: registers `db.pipeline()` via module augmentation. Must come
-// before any use of `db.pipeline`.
-import 'firebase/firestore/pipelines';
+// This import carries a side effect as well as the three named bindings: it
+// registers `db.pipeline()` via module augmentation, so it must stay above any
+// use of `db.pipeline`. It used to be spelled as a bare `import` on its own
+// line followed by this one — the same module either way, since importing a
+// binding evaluates the module, so the two were merged.
 import { execute, or, regexContains } from 'firebase/firestore/pipelines';
 import { buildSimilarityPattern, isPipelineSupported } from '@delfrance/data/pipeline-queries';
 

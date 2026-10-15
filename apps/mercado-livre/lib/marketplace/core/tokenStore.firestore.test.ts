@@ -23,11 +23,8 @@
  * database.
  */
 import { randomUUID } from 'node:crypto';
-import type { TokenResponse } from '@delfrance/integrations-mercado-livre';
-import {
-  type MercadoLivreOAuthConfig,
-  MercadoLivreReauthRequiredError,
-} from '@delfrance/integrations-mercado-livre';
+import type { MercadoLivreOAuthConfig, TokenResponse } from '@delfrance/integrations-mercado-livre';
+import { MercadoLivreReauthRequiredError } from '@delfrance/integrations-mercado-livre';
 import type { TokenDuravel } from '@delfrance/schemas';
 import { describe, expect, it, vi } from 'vitest';
 

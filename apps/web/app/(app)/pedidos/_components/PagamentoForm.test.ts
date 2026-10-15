@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { FORMA_PAGAMENTO, STATUS_PAGAMENTO, type Pagamento } from '@delfrance/schemas';
+import { roundReais } from '@delfrance/core/money';
+import {
+  FORMA_PAGAMENTO,
+  STATUS_PAGAMENTO,
+  type Pagamento,
+  type PedidoCoberturaInput,
+} from '@delfrance/schemas';
 import {
   EMPTY_PAGAMENTO_FORM,
   buildChequeSplitPagamentos,
@@ -7,6 +13,7 @@ import {
   isChequeSplit,
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
+  pagamentoPatchFromForm,
   remainingToPay,
   sumPagamentosPagos,
   validatePagamentoForm,
@@ -151,21 +158,116 @@ describe('pagamentoDataFromForm', () => {
     expect(data).toMatchObject({ duplicata: false, aVista: true });
   });
 
-  it('preserves the passthrough metodoPagamentoOuterRef + dataCadastro from base, and nulls a stale card for a non-card forma', () => {
+  it('never copies integration fields or dates from the base projection', () => {
     const base = {
       cartao: { bandeira: 'visa' },
       cheque: null,
       metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
       dataCadastro: 42,
     } as unknown as Pagamento;
-    // forma defaults to Dinheiro → the card map is reset (forma-managed), but the
-    // out-of-band fields survive.
+    // forma defaults to Dinheiro → the form-owned card map is reset, while
+    // out-of-band fields are deliberately absent from the projection.
     const data = pagamentoDataFromForm(form({ valor: 5 }), base);
-    expect(data).toMatchObject({
+    expect(data.cartao).toBeNull();
+    expect(data).not.toHaveProperty('metodoPagamentoOuterRef');
+    expect(data).not.toHaveProperty('dataCadastro');
+  });
+});
+
+describe('pagamentoPatchFromForm', () => {
+  const baseline = {
+    forma_de_pagamento: FORMA_PAGAMENTO.dinheiro,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    valor: 10,
+    parcelas: 1,
+    descricaoPagamento: 'original',
+    vencimento: null,
+    aVista: true,
+    duplicata: false,
+    nFat: null,
+    cartao: null,
+    cheque: null,
+    marketplace: { tipo: 'shopee', orderSn: 'S1' },
+    liquidacao: { payoutAmount: 9 },
+    metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
+    lastProviderUpdate: 123,
+    // Server-stamped attribution (#367): present on the baseline so a builder that
+    // carried baseline fields forward would fail the forbidden-keys loop below.
+    linkPagamentoId: 'AbCdEfGhIjKlMnOpQrSt',
+    primeiroNomePagador: 'Maria',
+    ultimaModificacao: 456,
+    dataCadastro: 789,
+  } as unknown as Pagamento;
+
+  it('contains only edited form-owned fields', () => {
+    const patch = pagamentoPatchFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.dinheiro),
+        status: String(STATUS_PAGAMENTO.aprovado),
+        valor: 10,
+        descricao: 'alterada',
+      }),
+      baseline,
+    );
+    expect(patch).toEqual({ descricaoPagamento: 'alterada' });
+    for (const forbidden of [
+      'marketplace',
+      'liquidacao',
+      'metodoPagamentoOuterRef',
+      'lastProviderUpdate',
+      'ultimaModificacao',
+      'dataCadastro',
+      'linkPagamentoId',
+      'primeiroNomePagador',
+    ]) {
+      expect(patch).not.toHaveProperty(forbidden);
+    }
+  });
+
+  it('emits intentional resets when the payment method changes', () => {
+    const cardBaseline = {
+      ...baseline,
+      forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
+      parcelas: 3,
+      aVista: false,
+      cartao: { tpIntegra: '2', numeroCartao: '4111' },
+    } as Pagamento;
+    const patch = pagamentoPatchFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.dinheiro),
+        status: String(STATUS_PAGAMENTO.aprovado),
+        valor: 10,
+        descricao: 'original',
+      }),
+      cardBaseline,
+    );
+    expect(patch).toMatchObject({
+      forma_de_pagamento: FORMA_PAGAMENTO.dinheiro,
+      parcelas: 1,
+      aVista: true,
       cartao: null,
-      metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
-      dataCadastro: 42,
     });
+  });
+
+  it('treats cartao as one top-level block', () => {
+    const cardBaseline = {
+      ...baseline,
+      forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
+      cartao: { tpIntegra: '2', numeroCartao: '4111', cAut: 'OLD' },
+    } as Pagamento;
+    const patch = pagamentoPatchFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.cartao_credito),
+        status: String(STATUS_PAGAMENTO.aprovado),
+        valor: 10,
+        descricao: 'original',
+        numeroCartao: '4111',
+        cAut: 'NEW',
+      }),
+      cardBaseline,
+    );
+    expect(Object.keys(patch)).toContain('cartao');
+    expect(patch.cartao).toMatchObject({ numeroCartao: '4111', cAut: 'NEW' });
   });
 });
 
@@ -214,7 +316,7 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
         titular: 'Fulano',
         cpfCnpj: '12345678900',
         telefone: '11999999999',
-        bomPara: 1234,
+        bomPara: 1_700_000_000_000_000,
       }),
       null,
     );
@@ -226,7 +328,7 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
       titular: 'Fulano',
       cpf_cnpj: '12345678900',
       telefone: '5511999999999',
-      bomPara: 1234,
+      bomPara: 1_700_000_000_000_000,
     });
     expect(data.cartao).toBeNull();
   });
@@ -238,6 +340,44 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
     );
     expect(data.cartao).toBeNull();
     expect(data.cheque).toBeNull();
+  });
+
+  it('⚠️ PIX has no card group but IS card-like to the NF-e: a stored cartao SURVIVES the round trip', () => {
+    // A marketplace importer (Shopee) writes a `cartao` on a forma-17 leg:
+    // `tpIntegra '2'` + the processor's CNPJ + the authorization code. The form
+    // hides the group — there is no card DETAIL to edit — so the projection
+    // preserves the block and the patch omits it when unchanged.
+    const cartao = {
+      tpIntegra: '2',
+      bandeira: null,
+      numeroCartao: null,
+      cAut: 'AUT-PIX',
+      cnpj_instituicao: '11222333000181',
+    };
+    const base = { cartao, cheque: null } as unknown as Pagamento;
+
+    const data = pagamentoDataFromForm(
+      form({ forma: String(FORMA_PAGAMENTO.pix), valor: 31.99 }),
+      base,
+    );
+
+    expect(data.cartao).toEqual(cartao);
+    expect(data.cheque).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: switching AWAY from PIX to a non-card-like forma still clears the stored cartao', () => {
+    // The preserve rule is scoped to the NF-e's card-like set {03, 04, 17}. A
+    // switch to Dinheiro/Boleto/… is a real forma change and a stale card there
+    // would reach `<card>` on a tPag that must not carry one.
+    const base = {
+      cartao: { tpIntegra: '2', cAut: 'AUT-PIX', cnpj_instituicao: '11222333000181' },
+      cheque: null,
+    } as unknown as Pagamento;
+
+    for (const forma of [FORMA_PAGAMENTO.dinheiro, FORMA_PAGAMENTO.boleto_bancario]) {
+      const data = pagamentoDataFromForm(form({ forma: String(forma), valor: 31.99 }), base);
+      expect(data.cartao).toBeNull();
+    }
   });
 });
 
@@ -489,26 +629,130 @@ describe('remainingToPay', () => {
       { id: 'b', valor: 20, status_pagamento: STATUS_PAGAMENTO.cancelado },
     ];
     // b is cancelled → not counted; remaining = 100 − 30 = 70.
-    expect(remainingToPay(100, pagamentos, null)).toBe(70);
+    expect(remainingToPay({ valorCobrado: 100 }, pagamentos, null)).toBe(70);
     // editing 'a' → exclude it; b still excluded → remaining = full 100.
-    expect(remainingToPay(100, pagamentos, 'a')).toBe(100);
+    expect(remainingToPay({ valorCobrado: 100 }, pagamentos, 'a')).toBe(100);
   });
 
   it('never goes negative', () => {
-    expect(remainingToPay(50, [{ id: 'a', valor: 80, status_pagamento: 4 }], null)).toBe(0);
+    const pagamentos = [{ id: 'a', valor: 80, status_pagamento: 4 }];
+    expect(remainingToPay({ valorCobrado: 50 }, pagamentos, null)).toBe(0);
   });
 
   it('counts only null/aprovado toward coverage (pending does not count)', () => {
     // pendente is NOT aprovado/null → does not reduce the remaining.
     expect(
       remainingToPay(
-        100,
+        { valorCobrado: 100 },
         [{ id: 'a', valor: 40, status_pagamento: STATUS_PAGAMENTO.pendente }],
         null,
       ),
     ).toBe(100);
     // null (no status set) DOES count, matching the NFe bundle rule.
-    expect(remainingToPay(100, [{ id: 'a', valor: 40, status_pagamento: null }], null)).toBe(60);
+    const semStatus = [{ id: 'a', valor: 40, status_pagamento: null }];
+    expect(remainingToPay({ valorCobrado: 100 }, semStatus, null)).toBe(60);
+  });
+});
+
+describe('remainingToPay — troca devolução credit', () => {
+  /** A saída of `valorCobrado` whose customer takes back `devolvido` reais of goods. */
+  function troca(
+    valorCobrado: number,
+    devolvido: number,
+    extra: Partial<PedidoCoberturaInput> = {},
+  ): PedidoCoberturaInput {
+    return {
+      valorCobrado,
+      ehSaida: true,
+      itensDevolvidos: {
+        origem1: {
+          produto1: [{ precoDeVenda: devolvido, descontoUnitario: 0, quantidade: 1 }],
+        },
+      },
+      ...extra,
+    };
+  }
+  const aprovado = (id: string, valor: number, forma: number = FORMA_PAGAMENTO.pix) => ({
+    id,
+    valor,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    forma_de_pagamento: forma,
+  });
+
+  it('nets the returned items off the amount still owed', () => {
+    // 150 total − 100 of goods coming back − 20 already paid → 30 still owed.
+    expect(remainingToPay(troca(150, 100), [aprovado('a', 20)], null)).toBe(30);
+    // The credit alone, before any payment, leaves the difference.
+    expect(remainingToPay(troca(150, 100), [], null)).toBe(50);
+  });
+
+  it('paying exactly the difference owes nothing; one cent short still owes a cent', () => {
+    expect(remainingToPay(troca(150, 100), [aprovado('a', 50)], null)).toBe(0);
+    expect(remainingToPay(troca(150, 100), [aprovado('a', 49.99)], null)).toBe(0.01);
+    expect(remainingToPay(troca(150, 100), [aprovado('a', 19.99)], null)).toBe(30.01);
+  });
+
+  it('an even swap owes nothing', () => {
+    expect(remainingToPay(troca(150, 150), [], null)).toBe(0);
+  });
+
+  it('still excludes the payment being edited (the credit stays)', () => {
+    const pagamentos = [aprovado('a', 20)];
+    // Editing 'a' → its 20 no longer counts, only the credit does: 150 − 100.
+    expect(remainingToPay(troca(150, 100), pagamentos, 'a')).toBe(50);
+  });
+
+  it('an entrada ignores the returned items', () => {
+    const pagamentos = [aprovado('a', 20)];
+    // Same data as the first case, but an entrada carries no credit: 150 − 20.
+    const entrada = troca(150, 100, { ehSaida: false });
+    expect(remainingToPay(entrada, pagamentos, null)).toBe(130);
+    // Absent direction counts as a saída (the schema default) → the credit applies.
+    const semDirecao = troca(150, 100, { ehSaida: undefined });
+    expect(remainingToPay(semDirecao, pagamentos, null)).toBe(30);
+  });
+
+  it('clamps at 0 when the return is worth more than the total', () => {
+    expect(remainingToPay(troca(100, 120), [], null)).toBe(0);
+  });
+
+  it('a paying crédito loja payment replaces the credit instead of doubling it', () => {
+    const creditoLoja = FORMA_PAGAMENTO.credito_loja;
+    // Returned 100 is registered as a crédito loja payment of 100 (to emit the
+    // NF-e) + the customer pays 20 of the 50 difference: the credit is 100 − 100,
+    // paid = 120 → 30 still owed. Counting both would read 150 − 100 − 120 → 0.
+    const pagamentos = [aprovado('cl', 100, creditoLoja), aprovado('px', 20)];
+    expect(remainingToPay(troca(150, 100), pagamentos, null)).toBe(30);
+    // A partial crédito loja (40 of the 100) only reduces the credit by 40.
+    const parcial = [aprovado('cl', 40, creditoLoja)];
+    expect(remainingToPay(troca(150, 100), parcial, null)).toBe(50);
+  });
+
+  it('a non-paying crédito loja payment does not reduce the credit (near-miss)', () => {
+    const recusado = {
+      id: 'cl',
+      valor: 100,
+      status_pagamento: STATUS_PAGAMENTO.recusado,
+      forma_de_pagamento: FORMA_PAGAMENTO.credito_loja,
+    };
+    // Recusado neither pays nor eats the credit: 150 − 100 (credit) − 20 = 30.
+    expect(remainingToPay(troca(150, 100), [recusado, aprovado('px', 20)], null)).toBe(30);
+  });
+
+  it('paying exactly the shown restante closes a fractional return, one cent less does not', () => {
+    // 0.5 × R$ 1,01 = 0.505 raw: the credit is rounded once, so the restante the
+    // operator sees is payable to the cent.
+    const pedido: PedidoCoberturaInput = {
+      valorCobrado: 17.35,
+      ehSaida: true,
+      itensDevolvidos: {
+        origem1: { produto1: [{ precoDeVenda: 1.01, descontoUnitario: 0, quantidade: 0.5 }] },
+      },
+    };
+    const restante = remainingToPay(pedido, [], null);
+    expect(restante).toBeGreaterThan(0);
+    expect(remainingToPay(pedido, [aprovado('a', restante)], null)).toBe(0);
+    expect(remainingToPay(pedido, [aprovado('a', roundReais(restante - 0.01))], null)).toBe(0.01);
   });
 });
 

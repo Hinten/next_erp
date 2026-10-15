@@ -3,7 +3,8 @@
  * cartacorrecao analogue of the lote sweep in `runProcessarPendentes`. Asserts
  * the due-gate (respect a future `proximaConsultaEm`, treat null as due), the
  * payload reconstructed from the doc path, the disposition → tally mapping, and
- * per-doc error isolation. The orchestrator re-check is mocked; the scan, the
+ * per-doc error isolation — for a KNOWN failure class only (#1654, rule 6): an
+ * unknown class (a bug) rejects the sweep. The orchestrator re-check is mocked; the scan, the
  * due-gate and the path derivation run REAL against an in-memory fake that
  * supports `collectionGroup` with the `cartacorrecao/{cceId} → nfev4/{nfeId} →
  * pedidos/{pedidoId}` parent chain.
@@ -14,6 +15,7 @@ vi.mock('@/lib/nfe/orchestrator/carta-correcao', () => ({
   reconcileCartaCorrecaoVinculo: vi.fn(),
 }));
 
+import { NFeTransportError } from '@delfrance/integrations-nfe';
 import { ESTADO_ENVI_NFE_MSG } from '@delfrance/schemas';
 
 import { reconcileCartaCorrecaoVinculo } from '@/lib/nfe/orchestrator/carta-correcao';
@@ -165,9 +167,9 @@ describe('sweepCartasCorrecaoPendentes (#241)', () => {
     );
   });
 
-  it('captures a per-doc throw in errors without aborting the sweep', async () => {
+  it('captures a per-doc throw of a KNOWN class in errors without aborting the sweep', async () => {
     vi.mocked(reconcileCartaCorrecaoVinculo)
-      .mockRejectedValueOnce(new Error('SEFAZ timeout'))
+      .mockRejectedValueOnce(new NFeTransportError('SEFAZ timeout'))
       .mockResolvedValueOnce({ cStat: '135', stillPending: false, disposition: 'resolved' });
 
     const r = await sweepCartasCorrecaoPendentes({
@@ -183,7 +185,28 @@ describe('sweepCartasCorrecaoPendentes (#241)', () => {
     expect(r.scanned).toBe(2);
     expect(r.recovered).toBe(1);
     expect(r.errors).toHaveLength(1);
-    expect(r.errors[0]!.error).toContain('SEFAZ timeout');
+    expect(r.errors[0]!.error).toBe('pedidos/PED-1/nfev4/s1/cartacorrecao/cce-1: SEFAZ timeout');
     expect(r.errors[0]!.chave).toBeNull();
+  });
+
+  it('an UNKNOWN failure class (a TypeError — a bug) rejects the sweep instead of being recorded (#1654, rule 6)', async () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'nSeqEvento')");
+    vi.mocked(reconcileCartaCorrecaoVinculo)
+      .mockRejectedValueOnce(bug)
+      .mockResolvedValueOnce({ cStat: '135', stillPending: false, disposition: 'resolved' });
+
+    await expect(
+      sweepCartasCorrecaoPendentes({
+        fs: fakeFs({
+          'pedidos/PED-1/nfev4/s1/cartacorrecao/cce-1': cceDoc(),
+          'pedidos/PED-2/nfev4/s1/cartacorrecao/cce-2': cceDoc(),
+        }),
+        baseRt,
+        batchSize: 100,
+        now: NOW,
+      }),
+    ).rejects.toBe(bug);
+    // The run stopped at the bug: the second record was never re-checked.
+    expect(vi.mocked(reconcileCartaCorrecaoVinculo)).toHaveBeenCalledTimes(1);
   });
 });

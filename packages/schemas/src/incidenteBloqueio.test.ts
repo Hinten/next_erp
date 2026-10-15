@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACAO_BLOQUEADA,
   ORIGEM_INCIDENTE,
+  ORIGENS_INCIDENTE_MARKETPLACE,
   STATUS_CLAIM,
   TIPO_INCIDENTE,
   bloqueioDespachoAtivo,
@@ -10,7 +11,9 @@ import {
   bloqueioNFeAtivo,
   classificarIncidenteBloqueante,
   incidenteSchema,
+  origemIncidenteSchema,
   type IncidenteBloqueanteInput,
+  type OrigemIncidente,
 } from './pedido';
 
 /**
@@ -69,6 +72,51 @@ describe('classificarIncidenteBloqueante', () => {
         `origem ${String(origem)} must not block`,
       ).toBeNull();
     }
+  });
+
+  it('⚠️ EVERY origem has an explicit verdict — the marketplace set is exactly {2, 5}', () => {
+    // An explicit table over EVERY member of the union, not a list of the ones
+    // that must not block: a member added later with no row here fails the
+    // completeness check below, so it forces a decision instead of inheriting
+    // one. `99` is the catch-all every system diary row is written under and
+    // `3`/`4` are the ERP's own devolução flow — none of them is a claim.
+    const esperado: Record<OrigemIncidente, boolean> = {
+      0: false,
+      1: false,
+      2: true,
+      3: false,
+      4: false,
+      5: true,
+      99: false,
+    };
+    const membros = origemIncidenteSchema.options.map((o) => o.value).sort((a, b) => a - b);
+    expect(
+      Object.keys(esperado)
+        .map(Number)
+        .sort((a, b) => a - b),
+    ).toEqual(membros);
+    expect(Object.values(ORIGEM_INCIDENTE).sort((a, b) => a - b)).toEqual(membros);
+
+    for (const origem of membros) {
+      const bloqueia =
+        classificarIncidenteBloqueante(inc({ origem, tipo: TIPO_INCIDENTE.devolucao })) != null;
+      expect(bloqueia, `origem ${origem}`).toBe(esperado[origem]);
+      expect(ORIGENS_INCIDENTE_MARKETPLACE.has(origem), `set: origem ${origem}`).toBe(
+        esperado[origem],
+      );
+    }
+    expect(ORIGENS_INCIDENTE_MARKETPLACE.size).toBe(2);
+  });
+
+  it('an open Shopee return (origem 5, tipo returns) is a devolucao; closed, it stops blocking', () => {
+    // Shopee step 17 (#1525): a Shopee return is tipo `returns` for life, so it
+    // only ever produces the devolução marker — it blocks `finalizado`, never
+    // dispatch or the NF-e.
+    const shopee = { origem: ORIGEM_INCIDENTE.pedidoShopee, tipo: TIPO_INCIDENTE.devolucao };
+    expect(classificarIncidenteBloqueante(inc(shopee))).toBe('devolucao');
+    expect(
+      classificarIncidenteBloqueante(inc({ ...shopee, claimStatus: STATUS_CLAIM.fechada })),
+    ).toBeNull();
   });
 
   it("⚠️ the ERP's OWN devolução/troca incidentes never block — the exact pair `registrarIncidentesDeRetorno` writes", () => {

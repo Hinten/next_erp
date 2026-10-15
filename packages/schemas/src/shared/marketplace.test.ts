@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { INTEGRACAO_TIPO, type IntegracaoTipo } from '../integracao';
 import {
@@ -77,17 +79,122 @@ describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
     expect(amazon.assinaWebhook).toBe('desconhecido');
   });
 
-  it('keeps the two Shopee facts that ARE evidenced, and nothing else', () => {
+  it('records the full Shopee survey with implementado still false', () => {
+    // The master plan's Phase 0 caps row
+    // (`.master_plans/shopee/shopee-marketplace-integration.md` §1) answers
+    // every field — unlike Amazon above, this is NOT a partial survey, so this
+    // test asserts the whole row rather than a couple of evidenced facts plus a
+    // "the rest is unknown" pair.
     const shopee = marketplaceCapsFor(INTEGRACAO_TIPO.shopee);
 
     expect(shopee.implementado).toBe(false);
-    // Legacy carried an (disabled) HMAC verifier for Shopee pushes — #682.
+    expect(shopee.channel).toBe('shopee');
+
     expect(shopee.assinaWebhook).toBe('sim');
-    // `tabMedi.tabelasMedidasShopee` exists in the schema and holds migrated rows.
+    expect(shopee.notificacoes).toBe('push');
+    expect(shopee.auth).toBe('oauth2');
+    expect(shopee.pkce).toBe('nao');
+
+    expect(shopee.estoque).toEqual({
+      suporte: 'sim',
+      protocolo: 'por-anuncio',
+      loteMax: 50,
+      multiDeposito: 'sim',
+    });
+
+    expect(shopee.etiqueta).toBe('fetch');
+    expect(shopee.rastreio).toBe('push');
+    expect(shopee.kitVirtual).toBe('sim');
     expect(shopee.tabelaDeMedidas).toBe('sim');
-    // Everything without a citation stays unanswered.
-    expect(shopee.kitVirtual).toBe('desconhecido');
-    expect(shopee.publicarAnuncio).toBe('desconhecido');
+    expect(shopee.consolidaPacote).toBe('nao');
+    expect(shopee.perguntas).toBe('nao');
+    expect(shopee.mensagensPosVenda).toBe('nao');
+    expect(shopee.reclamacoes).toBe('sim');
+    expect(shopee.origensConversa).toEqual([]);
+
+    // ⚠️ A Shopee-specific version of the "an implemented channel has no
+    // unanswered capability" loop below (`MARKETPLACE_TIPO_CAPS — structural
+    // rules`), worded so it does NOT claim the channel is implemented:
+    // `implementado` stays false until step 22, but the SURVEY itself (unlike
+    // Amazon's, still all 'desconhecido' above) is complete, and that
+    // completeness is worth pinning on its own.
+    const naoRespondidos = CAMPOS_SUPORTE.filter((c) => shopee[c] === 'desconhecido');
+    expect(naoRespondidos).toEqual([]);
+    expect(shopee.estoque.suporte).not.toBe('desconhecido');
+    expect(shopee.estoque.protocolo).not.toBe('desconhecido');
+  });
+
+  it('records the full Loja Integrada survey with implementado still false', () => {
+    // The master plan's Phase 0 caps row
+    // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md`
+    // §1), written out WHOLE: every later step derives its gate from one of
+    // these values, so a silent edit to any of them re-plans a step.
+    expect(marketplaceCapsFor(INTEGRACAO_TIPO.lojaIntegrada)).toEqual({
+      channel: 'loja-integrada',
+      implementado: false,
+      auth: 'api-key',
+      pkce: 'nao',
+      notificacoes: 'push',
+      assinaWebhook: 'sim',
+      publicarAnuncio: 'sim',
+      importarAnuncio: 'sim',
+      variacoes: 'sim',
+      categoriasEAtributos: 'sim',
+      tabelaDeMedidas: 'nao',
+      kitVirtual: 'nao',
+      pausarAnuncio: 'sim',
+      // One PUT per CHILD produto, no batch — so no batch size either.
+      estoque: { suporte: 'sim', protocolo: 'por-anuncio', loteMax: null, multiDeposito: 'nao' },
+      enviarPreco: 'sim',
+      importarPedido: 'sim',
+      importarPagamento: 'sim',
+      consolidaPacote: 'nao',
+      // The buyer's fiscal identity is inline on the order — ML and Shopee are
+      // both 'sim' here, which is exactly why this is not "what the others did".
+      dadosFiscaisSeparados: 'nao',
+      // LI mints no label; we emit through the carrier the int_frete mapa picks.
+      etiqueta: 'emit',
+      rastreio: 'pull',
+      enviarNfe: 'sim',
+      perguntas: 'nao',
+      mensagensPosVenda: 'nao',
+      reclamacoes: 'nao',
+      origensConversa: [],
+    });
+
+    // Same completeness pin as Shopee's, worded so it does NOT claim the
+    // channel is implemented: the survey is done, the backend is not.
+    const li = marketplaceCapsFor(INTEGRACAO_TIPO.lojaIntegrada);
+    expect(CAMPOS_SUPORTE.filter((c) => li[c] === 'desconhecido')).toEqual([]);
+    expect(li.estoque.suporte).not.toBe('desconhecido');
+    expect(li.estoque.protocolo).not.toBe('desconhecido');
+  });
+
+  /**
+   * ⚠️ `assinaWebhook: 'sim'` is the same VALUE for Shopee and Loja Integrada
+   * and a different MECHANISM: Shopee signs the body with an HMAC, LI only
+   * echoes back a static secret we chose. A value cannot carry that difference,
+   * so the row's comment does — and this pins the comment, because the step-4
+   * receiver is written from it. Losing it invites an HMAC verifier for a header
+   * that is a plain Bearer token, which rejects every genuine delivery.
+   */
+  it('pins what assinaWebhook "sim" MEANS for Loja Integrada: authenticated, not signed', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'marketplace.ts'), 'utf8');
+    const inicio = fonte.indexOf('[INTEGRACAO_TIPO.lojaIntegrada]: {');
+    const fim = fonte.indexOf('[INTEGRACAO_TIPO.', inicio + 1);
+    expect(inicio, 'the Loja Integrada row is missing from marketplace.ts').toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+
+    const linha = fonte.slice(inicio, fim);
+    // The comment block between the previous field and `assinaWebhook`.
+    const comentario = linha.slice(
+      linha.indexOf("notificacoes: 'push',"),
+      linha.indexOf("assinaWebhook: 'sim',"),
+    );
+    expect(comentario).toContain('AUTHENTICATED, NOT SIGNED');
+    expect(comentario).toContain('Authorization: Bearer <token>');
+    expect(comentario).toContain('Fail CLOSED');
+    expect(comentario).toContain('Never write an HMAC verifier');
   });
 });
 

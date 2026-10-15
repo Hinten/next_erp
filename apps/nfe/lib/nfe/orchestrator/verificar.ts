@@ -22,12 +22,15 @@
  *     additionally collapses N same-lote chaves into ONE `consReciNFe` call.
  *   - **cStat=656 aborts the run**: the remaining chaves are reported as
  *     `erro` without any further SEFAZ call (re-querying after a 656 deepens
- *     the throttle hole — #77).
+ *     the throttle hole — #77). Read from `ConsultaChaveResult.consumoIndevido`,
+ *     never from the persisted cStat: a 656 on the receipt is now a BLOCKING
+ *     terminal carrying cStat 103/104 (#1654).
  *   - Per-chave errors never leak `responseBody` (raw SEFAZ reply) — only
  *     `name: message`.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { nowMicros } from '@delfrance/core/datetime';
 import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   NFeCertError,
@@ -35,16 +38,16 @@ import {
   NFeEndpointError,
   NFeTransportError,
   NFeXmlError,
-  classifyCStat,
   isEstadoFinalNFe,
   type TRetConsReciNFe,
 } from '@delfrance/integrations-nfe';
-import type { EstadoNFe } from '@delfrance/schemas';
+import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
 import { safeLog } from '../log';
 import { NFeOrchestratorError } from './errors';
+import { envioEmCurso } from './audit';
 import { consultarChavePersistida } from './consultar';
 
 /** Per-chave verification outcome tag. */
@@ -149,7 +152,11 @@ export async function verificarEnviNfeMsgs(
     // same tiebreak as consultarPedido's slot scan).
     const snap = await nfev4Collection.groupQuery(fs).where('chave', '==', chave).get();
     const chosen = snap.docs
-      .map((d) => ({ ref: d.ref, nota: nfev4Collection.parseRead(d.data(), d.ref.path) }))
+      .map((d) => ({
+        ref: d.ref,
+        nota: nfev4Collection.parseRead(d.data(), d.ref.path),
+        updateTime: d.updateTime,
+      }))
       .sort((a, b) => (b.nota.ultima_modificacao ?? 0) - (a.nota.ultima_modificacao ?? 0))[0];
     if (!chosen) {
       results.push(erroResult(chave, null, 'nenhum documento nfev4 com esta chave'));
@@ -170,21 +177,46 @@ export async function verificarEnviNfeMsgs(
       continue;
     }
 
-    // Reconciler due-gate: a FUTURE `proximaConsultaEm` (µs epoch) means the
-    // async reconciler's Cloud Task is scheduled to consult this doc's nRec —
-    // a manual consulta now would double-consult the same receipt back-to-back
-    // (SEFAZ answers cStat=656, which is terminal). Past or null → proceed:
-    // an overdue doc is exactly the stuck case this action exists for.
-    if (nota.proximaConsultaEm != null && nota.proximaConsultaEm > Date.now() * 1000) {
+    // An EPEC-approved doc is never consulted here (#1675): a consSit goes to
+    // the HOME SEFAZ, which answers 217 until the Ambiente Nacional shares the
+    // EPEC with it (then 124 "EPEC Autorizado", which this table does not read
+    // as authorized either), and a 217 would write `rejeitada` over a registered
+    // EPEC — whose next emit regenerates over the bytes it summarises. Its recovery path is the
+    // pós-EPEC transmission (an emit, or the sweep once contingency is off).
+    if (nota.estado === ESTADO_NFE.epecAprovado) {
       results.push({
         chave,
         status: 'sem-mudanca',
         estadoAnterior: nota.estado,
         estadoNovo: nota.estado,
         cStat: nota.cStat,
-        xMotivo: `consulta agendada pelo reconciliador para ${new Date(
-          nota.proximaConsultaEm / 1000,
-        ).toISOString()}`,
+        xMotivo:
+          'EPEC registrado — aguardando a transmissão da NF-e completa (pós-EPEC); ' +
+          'nenhuma consulta feita',
+        error: null,
+      });
+      continue;
+    }
+
+    // Due-gate: a FUTURE `proximaConsultaEm` (µs epoch) means either the async
+    // reconciler's Cloud Task is scheduled to consult this doc's nRec — a
+    // manual consulta now would double-consult the same receipt back-to-back
+    // (SEFAZ answers cStat=656, which is terminal) — or, on a doc with no
+    // receipt, a send is in progress / a paced retry is pending (#1675,
+    // `envioEmCurso`), whose doc only its owner may write. Past or null →
+    // proceed: an overdue doc is exactly the stuck case this action exists for.
+    const agora = nowMicros();
+    if (nota.proximaConsultaEm != null && nota.proximaConsultaEm > agora) {
+      const ate = new Date(nota.proximaConsultaEm / 1000).toISOString();
+      results.push({
+        chave,
+        status: 'sem-mudanca',
+        estadoAnterior: nota.estado,
+        estadoNovo: nota.estado,
+        cStat: nota.cStat,
+        xMotivo: envioEmCurso(nota, agora)
+          ? `envio em curso ou nova tentativa agendada até ${ate}`
+          : `consulta agendada pelo reconciliador para ${ate}`,
         error: null,
       });
       continue;
@@ -195,28 +227,49 @@ export async function verificarEnviNfeMsgs(
     const pedidoId = chosen.ref.parent.parent?.id ?? chosen.ref.path;
 
     try {
-      const { patch } = await consultarChavePersistida({
+      const { patch, consumoIndevido, recusado } = await consultarChavePersistida({
         fs,
         rt,
         filialId,
         pedidoId,
         nfeRef: chosen.ref,
         nota,
+        updateTimeLido: chosen.updateTime,
         chave,
         consReciCache,
       });
-      results.push({
-        chave,
-        status: patch.estado !== nota.estado ? 'atualizada' : 'sem-mudanca',
-        estadoAnterior: nota.estado,
-        estadoNovo: patch.estado,
-        cStat: patch.cStat,
-        xMotivo: patch.xMotivo,
-        error: null,
-      });
-      // 656 surfaces as a persisted outcome (not a thrown error) in this
-      // codebase — abort the rest of the run.
-      if (classifyCStat(patch.cStat) === 'consumo-indevido') abort656 = true;
+      results.push(
+        recusado
+          ? {
+              // #1675 — nothing was written: another run changed the doc during
+              // the consult (or a send is in progress). Report its live state
+              // without claiming this verify updated anything.
+              chave,
+              status: 'sem-mudanca',
+              estadoAnterior: nota.estado,
+              estadoNovo: patch.estado,
+              // The live doc's own — none on an anchor an emit is sending.
+              cStat: patch.cStat || null,
+              xMotivo:
+                'nada gravado — outro processo alterou este documento durante a consulta ' +
+                `(estado atual ${patch.estado}` +
+                (patch.cStat ? `, cStat ${patch.cStat}: ${patch.xMotivo})` : ')'),
+              error: null,
+            }
+          : {
+              chave,
+              status: patch.estado !== nota.estado ? 'atualizada' : 'sem-mudanca',
+              estadoAnterior: nota.estado,
+              estadoNovo: patch.estado,
+              cStat: patch.cStat,
+              xMotivo: patch.xMotivo,
+              error: null,
+            },
+      );
+      // 656 surfaces as an answer (not a thrown error) in this codebase —
+      // abort the rest of the run. The flag, not `patch.cStat`: a 656 on the
+      // receipt is persisted as a blocking terminal (cStat 103/104, #1654).
+      if (consumoIndevido) abort656 = true;
     } catch (e) {
       // Consumo indevido as a thrown error (the library shield) — same abort.
       if (e instanceof NFeConsumoIndevidoError) {

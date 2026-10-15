@@ -12,12 +12,26 @@
  * on purpose: that package's OAuth core handles the app clientSecret and must
  * never be bundled into the browser. The browser never sees a Mercado Pago
  * access/refresh token — the panel only ever reads the connected collector's
- * identity via `conta()`.
+ * identity via `conta()`, and the pedido's "Link Pgto" tab (#367) only ever
+ * receives the checkout URLs and ids that `criarLinks()` returns.
  */
 import { useMemo } from 'react';
+import { FirebaseError } from 'firebase/app';
 import { z } from 'zod';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos, wireInt } from '@delfrance/core/wire';
+import {
+  ROTA_LINK_PAGAMENTO,
+  cancelarLinkPagamentoRespostaSchema,
+  criarLinksPagamentoRespostaSchema,
+  sincronizarLinksPagamentoRespostaSchema,
+  type CancelarLinkPagamentoBody,
+  type CancelarLinkPagamentoResposta,
+  type CriarLinksPagamentoBody,
+  type CriarLinksPagamentoResposta,
+  type SincronizarLinksPagamentoBody,
+  type SincronizarLinksPagamentoResposta,
+} from '@delfrance/schemas';
 
 import { useAuth } from '@/lib/auth/useAuth';
 
@@ -30,6 +44,17 @@ export class MercadoPagoClientHttpError extends Error {
     readonly status: number,
     /** Optional machine code from the backend (e.g. MP_REAUTH_REQUIRED). */
     readonly code: string | null,
+    /**
+     * Why a `LINK_NAO_ELEGIVEL` (409) refusal happened, in the vocabulary of
+     * `MOTIVO_RECUSA_LINK` (#367). `null` on every other error — including a 409
+     * from an older backend that sends no `reason`.
+     *
+     * ⚠️ A plain `string`, not the enum: this is a browser-side read of a
+     * deployed backend that may be NEWER than this tab, so an unknown value must
+     * survive as text instead of costing the whole error. The consumer
+     * (`descreverFalhaLink`) narrows it.
+     */
+    readonly reason: string | null = null,
   ) {
     super(message);
     this.name = 'MercadoPagoClientHttpError';
@@ -59,6 +84,29 @@ export class MercadoPagoClientRespostaInvalidaError extends MercadoPagoClientHtt
   }
 }
 
+/**
+ * The signed-in session could not produce an ID token for a reason OTHER than
+ * connectivity — the refresh token was revoked (`auth/user-token-expired`, e.g.
+ * after a password change), the user was disabled, or Firebase Auth failed
+ * internally. Nothing reached the backend; retrying will not help, signing in
+ * again will.
+ *
+ * ⚠️ A SUBCLASS of `MercadoPagoClientHttpError`, shaped as the 401 the backend
+ * would have answered, for the same reason as `MercadoPagoClientRespostaInvalidaError`:
+ * the MP panel narrows to the HTTP class and shows its message, so a sibling class
+ * would land there as an unhandled rejection.
+ */
+export class MercadoPagoClientSessaoError extends MercadoPagoClientHttpError {
+  constructor(
+    /** The Firebase Auth code (`auth/user-token-expired`, …) — for logs, never shown raw. */
+    readonly authCode: string,
+    override readonly cause?: unknown,
+  ) {
+    super('Sua sessão expirou. Entre novamente para continuar.', 401, null);
+    this.name = 'MercadoPagoClientSessaoError';
+  }
+}
+
 /** Network-level failure reaching the mercado-pago backend. */
 export class MercadoPagoClientNetworkError extends Error {
   constructor(
@@ -74,7 +122,9 @@ export class MercadoPagoClientNetworkError extends Error {
  * ⚠️ Schemas rather than interfaces, and the types are inferred from them —
  * one definition, so the runtime check and the type cannot disagree. They sit
  * in this file rather than a `wire.ts` (as the ML client has) only because
- * there are two of them; the rule is the same.
+ * there are two of them; the rule is the same. The payment-link routes' request
+ * and response schemas (#367) are NOT here: they are one contract shared with
+ * `apps/mercado-pago`, declared once in `@delfrance/schemas`.
  *
  * Unknown keys pass (Zod strips by default, nothing is `.strict()`): apps/web
  * calls the DEPLOYED backend, so a newer one must not break an older tab.
@@ -99,6 +149,16 @@ export interface MercadoPagoClient {
   oauthStart(metodoId: string): Promise<{ authorizeUrl: string }>;
   /** Connection status: `/users/me` identity or `connected: false`. */
   conta(metodoId: string): Promise<MercadoPagoConta>;
+  /**
+   * Create the payment link(s) of a pedido (#367). The link ids in the body are
+   * minted by the caller, so re-sending the SAME body after a lost response
+   * replays the batch instead of creating a second one (`reaproveitado`).
+   */
+  criarLinks(body: CriarLinksPagamentoBody): Promise<CriarLinksPagamentoResposta>;
+  /** Withdraw one link of a pedido. */
+  cancelarLink(body: CancelarLinkPagamentoBody): Promise<CancelarLinkPagamentoResposta>;
+  /** Pull the pedido's payments from Mercado Pago and reconcile them. */
+  sincronizarLinks(body: SincronizarLinksPagamentoBody): Promise<SincronizarLinksPagamentoResposta>;
 }
 
 /**
@@ -112,6 +172,21 @@ function logarCorpoNaoJson(path: string, status: number, corpo: string): void {
   );
 }
 
+/**
+ * The `reason` of a refusal body (`LINK_NAO_ELEGIVEL`), which the shared
+ * `envelopeDeErro` does not carry — it is specific to the link routes.
+ *
+ * ⚠️ Read through a schema rather than a cast: the body is untrusted, and a
+ * `null` / non-string / array body must come out as "no reason", never as a
+ * value the caller then indexes a label table with.
+ */
+const motivoDoErroSchema = z.object({ reason: z.string() });
+
+function lerMotivoDoErro(parsed: unknown): string | null {
+  const leitura = motivoDoErroSchema.safeParse(parsed);
+  return leitura.success ? leitura.data.reason : null;
+}
+
 export function createMercadoPagoClient(config: {
   baseUrl: string;
   getAuthToken: () => Promise<string>;
@@ -120,16 +195,48 @@ export function createMercadoPagoClient(config: {
   const baseUrl = config.baseUrl.replace(/\/$/, '');
   const doFetch = config.fetch ?? globalThis.fetch;
 
-  async function call<S extends z.ZodType>(path: string, schema: S): Promise<z.infer<S>> {
-    const token = await config.getAuthToken();
+  async function call<S extends z.ZodType>(
+    method: 'GET' | 'POST',
+    path: string,
+    schema: S,
+    body?: unknown,
+  ): Promise<z.infer<S>> {
+    let token: string;
+    try {
+      token = await config.getAuthToken();
+    } catch (err) {
+      // `user.getIdToken()` refreshes an expiring token over the NETWORK, so an
+      // offline tab fails HERE (`auth/network-request-failed`) before any request
+      // exists. It is the same situation as a failed fetch — nothing reached the
+      // backend — and must read as one: the link tab keeps its minted ids only
+      // across a network error.
+      //
+      // ⚠️ ONLY that code. Every other Auth failure (`auth/user-token-expired`
+      // after a password change, `auth/user-disabled`, `auth/internal-error`) is
+      // not fixed by retrying, and "Sem conexão — tente de novo" would keep the
+      // operator retrying a session that has to be signed into again. Both still
+      // become one of this client's classes: a raw FirebaseError is none of them,
+      // so the caller would rethrow it as an unhandled rejection.
+      if (err instanceof FirebaseError) {
+        if (err.code === 'auth/network-request-failed') {
+          throw new MercadoPagoClientNetworkError(err.message, err);
+        }
+        throw new MercadoPagoClientSessaoError(err.code, err);
+      }
+      throw err;
+    }
     let res: Response;
     try {
       res = await doFetch(`${baseUrl}${path}`, {
-        method: 'GET',
+        method,
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: 'application/json',
+          // ⚠️ Only WITH a body: a GET that announced a JSON payload it does not
+          // carry is a malformed request some proxies reject.
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (err) {
       throw new MercadoPagoClientNetworkError(
@@ -160,6 +267,7 @@ export function createMercadoPagoClient(config: {
         errBody?.error ?? `Falha na comunicação com o Mercado Pago (HTTP ${String(res.status)}).`,
         res.status,
         errBody?.code ?? null,
+        lerMotivoDoErro(parsed),
       );
     }
 
@@ -197,14 +305,22 @@ export function createMercadoPagoClient(config: {
   return {
     oauthStart: (metodoId) =>
       call(
+        'GET',
         `/api/payments/mercado-pago/oauth/start?metodoId=${encodeURIComponent(metodoId)}`,
         authorizeUrlSchema,
       ),
     conta: (metodoId) =>
       call(
+        'GET',
         `/api/payments/mercado-pago/conta?metodoId=${encodeURIComponent(metodoId)}`,
         contaSchema,
       ),
+    criarLinks: (body) =>
+      call('POST', ROTA_LINK_PAGAMENTO.criar, criarLinksPagamentoRespostaSchema, body),
+    cancelarLink: (body) =>
+      call('POST', ROTA_LINK_PAGAMENTO.cancelar, cancelarLinkPagamentoRespostaSchema, body),
+    sincronizarLinks: (body) =>
+      call('POST', ROTA_LINK_PAGAMENTO.sincronizar, sincronizarLinksPagamentoRespostaSchema, body),
   };
 }
 

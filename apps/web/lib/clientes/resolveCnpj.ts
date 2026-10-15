@@ -33,7 +33,7 @@ export interface CnpjLookupData {
 
 export type CnpjLookupOutcome =
   | { ok: true; data: CnpjLookupData }
-  | { ok: false; reason: 'not-found' | 'network' | 'invalid-response' };
+  | { ok: false; reason: 'not-found' | 'network' | 'invalid-response' | 'sem-base-publica' };
 
 /**
  * Human-readable reason the SEFAZ Consulta Cadastro returned no usable IE, so the
@@ -53,6 +53,23 @@ export async function resolveCnpj(
   filialId?: string,
 ): Promise<CnpjLookupOutcome> {
   const clean = cleanCnpj(cnpj);
+
+  // ⚠️ An ALPHANUMERIC CNPJ (RFB IN 2.229/2024) is not a bad CNPJ — it is a CNPJ
+  // the public base cannot answer for, and the two must not read the same to the
+  // operator. `buscarCnpj` returns `null` for it, which is indistinguishable
+  // from "this company does not exist", so the distinction is drawn HERE, before
+  // the call, and named for what it is.
+  //
+  // ⚠️ The SEFAZ leg cannot stand in yet, though it is the only registry that
+  // CAN answer for an alfa CNPJ: it needs a UF, and the only UF this function
+  // ever has comes out of the public answer it just did not get. Supplying one
+  // means the caller learning the filial's UF (the `consulta-cadastro` route
+  // refuses a cross-UF lookup anyway, so the filial's own UF is the only
+  // possible value) — a route contract change, not a regex one, and out of
+  // scope here. Saying so is not.
+  if (clean !== '' && !/^\d+$/.test(clean)) {
+    return { ok: false, reason: 'sem-base-publica' };
+  }
 
   let pub: Awaited<ReturnType<typeof buscarCnpj>>;
   try {

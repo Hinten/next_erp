@@ -3,6 +3,11 @@
 Backfills `chat/{id}.clienteOuterRef` from `usarioOuterRef`, so the inbox's
 **Cliente** filter can be a single equality on one field.
 
+**WhatsApp é excluído desta passagem desde #1084.** Use
+`migrate:whatsapp-contato-cliente`, que também registra identidades, consolida
+histórico e preserva links. Esta passagem continua atendendo os outros canais;
+duas migrações não devem decidir o cliente de uma mesma conversa WhatsApp.
+
 ```bash
 # pre-flight — counts every verdict, logs no per-doc lines, writes nothing
 pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref --project <project-id> --report-only
@@ -109,7 +114,11 @@ in memory rather than issuing a `where('userCliente','in',…)` per conversa —
 that would be one query per document against a collection this pass reads in full
 anyway.
 
-Both scans page by document key (Firestore's always-available native ordering),
-so neither needs an index. A `where` could not narrow the `chat` scan either: the
-documents needing a change are the ones where a field is **missing**, and
-Firestore cannot query for the absence of a field.
+Both scans page by document key and ride the **declared** key indexes
+`clientes(__name__ ASC)` and `chat(__name__ ASC)` (#1895, listed in
+`key-walks.json`). Enterprise has no implicit key index: without one every page
+re-scans the whole collection (#1895 measured 1,665 index rows read per page of
+300 on `pedidos`). Those key indexes are the only ones this needs. A `where`
+could not narrow the `chat` scan either: the documents needing a change are the
+ones where a field is **missing**, and Firestore cannot query for the absence of
+a field.

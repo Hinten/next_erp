@@ -184,6 +184,26 @@ export class MercadoLivreReauthRequiredError extends MercadoLivreError {
   }
 }
 
+/**
+ * A `…/claims/search` query ML documents a **400** for, refused before the
+ * request is sent — see `claimSearch.ts` for the rules and their sources.
+ *
+ * ⚠️ Distinct from `MercadoLivreHttpError` because the failure is **ours**, not
+ * ML's: the query never left this process, so there is no status, no body and
+ * nothing to retry. A caller that treats it as an HTTP failure would back off
+ * and re-send the same invalid query for ever.
+ *
+ * ⚠️ It does NOT mean "inefficient". A bare `status` filter is documented as
+ * technically valid and merely costly, so it warns rather than raising this —
+ * refusing a legal call is its own defect.
+ */
+export class MercadoLivreClaimSearchParamsError extends MercadoLivreError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MercadoLivreClaimSearchParamsError';
+  }
+}
+
 /** A network-level failure reaching Mercado Livre (fetch threw). */
 export class MercadoLivreNetworkError extends MercadoLivreError {
   constructor(

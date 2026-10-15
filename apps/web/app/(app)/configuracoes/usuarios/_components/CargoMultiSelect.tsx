@@ -34,16 +34,17 @@ export function CargoMultiSelect({
   disabled = false,
 }: CargoMultiSelectProps) {
   const { claims } = useTenant();
+  const permissions = claims?.permissions;
   const callerBits = useMemo(() => {
     try {
-      return claims?.permissions ? BigInt(claims.permissions) : 0n;
+      return permissions ? BigInt(permissions) : 0n;
     } catch (err) {
       if (err instanceof SyntaxError) {
         return 0n;
       }
       throw err;
     }
-  }, [claims?.permissions]);
+  }, [permissions]);
 
   const q = useMemo(() => {
     const base = cargoCollection.ref(getFirebaseFirestore(), {});

@@ -29,6 +29,12 @@ import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
 import { parse } from '../../src/xml';
 import { NFeXsdValidationError, validateXsd } from '../../src/xsd';
 import type { GeneratorInput, GeneratorItem } from '../../src/generator/types';
+import {
+  IND_INTERMED_OPERACAO,
+  IND_PRES_OPERACAO,
+  TIPO_CLIENTE,
+  UF_SIGLA,
+} from '@delfrance/schemas';
 
 // ---------------------------------------------------------------------------
 // Sentinel fixture — every distinct, recognisable value
@@ -63,7 +69,9 @@ const SENT_FILIAL: Filial = {
   cnpj: SENT_CNPJ_EMIT,
   ie: SENT_IE_EMIT,
   iest: null,
+  isuf: null,
   imun: null,
+  ultimaModificacao: null,
   sede: {
     idExterno: null,
     logradouro: 'Rua Emit',
@@ -73,7 +81,7 @@ const SENT_FILIAL: Filial = {
     cep: SENT_CEP_EMIT,
     codigoMunicipio: SENT_CMUN_EMIT,
     cidade: 'Sao Paulo',
-    estado: 'SP',
+    estado: UF_SIGLA.SP,
     cPais: '1058',
     pais: 'BRASIL',
     nome: null,
@@ -83,11 +91,13 @@ const SENT_FILIAL: Filial = {
     imun: null,
     email: null,
     telefone: null,
+    timestamp: null,
+    ultimaModificacao: null,
   },
 };
 
 const SENT_CLIENTE: Cliente = {
-  tipo: '1',
+  tipo: TIPO_CLIENTE.pessoaJuridica,
   nome: SENT_CLIENTE_NOME,
   cpf_cnpj: SENT_CLIENTE_CNPJ,
   idEstrangeiro: null,
@@ -96,11 +106,13 @@ const SENT_CLIENTE: Cliente = {
   isUF: SENT_CLIENTE_ISUF,
   email: SENT_CLIENTE_EMAIL,
   telefone: null,
+  telefonesAdicionais: [],
+  telefoneGerenciado: false,
   observacoesInternas: null,
   timestamp: null,
-  nome_embedding: null,
-  telefone_embedding: null,
   userCliente: null,
+  idMercadoLivre: null,
+  ultimaModificacao: null,
 };
 
 const SENT_ENDERECO_DEST: Endereco = {
@@ -112,7 +124,7 @@ const SENT_ENDERECO_DEST: Endereco = {
   cep: SENT_CEP_DEST,
   codigoMunicipio: SENT_CMUN_EMIT,
   cidade: 'Sao Paulo',
-  estado: 'SP',
+  estado: UF_SIGLA.SP,
   cPais: '1058',
   pais: 'BRASIL',
   nome: null,
@@ -122,6 +134,8 @@ const SENT_ENDERECO_DEST: Endereco = {
   imun: null,
   email: null,
   telefone: null,
+  timestamp: null,
+  ultimaModificacao: null,
 };
 
 const SENT_OPERACAO: Operacao = {
@@ -137,14 +151,17 @@ const SENT_OPERACAO: Operacao = {
   movimentaIndisponivelEstoque: true,
   ehFiscal: true,
   finNFe: 1,
-  indPres: '2',
-  indIntermed: '0',
+  tpNFDebito: null,
+  tpNFCredito: null,
+  indPres: IND_PRES_OPERACAO.naoPresencialInternet,
+  indIntermed: IND_INTERMED_OPERACAO.semIntermediador,
   cfop: '5102',
   cfopInterestadual: '6102',
   NCM: null,
   CEST: null,
   unidade: null,
   infCpl: null,
+  ultimaModificacao: null,
 };
 
 const SENT_IMPOSTO_XML_A =

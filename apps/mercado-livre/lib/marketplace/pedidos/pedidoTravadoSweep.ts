@@ -496,6 +496,7 @@ export async function runPedidoTravadoSweep(
         });
       }
       contar(veredictos, aplicado);
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- per-item isolation; reported in erros[]
     } catch (err) {
       erros.push({ pedidoId, message: err instanceof Error ? err.message : String(err) });
     }

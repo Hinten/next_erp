@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ENVIO_PRECO_MERCADO_LIVRE_STATUS,
   envioPrecoFailureSchema,
   envioPrecoFilaItemSchema,
   envioPrecoMercadoLivreSchema,
@@ -31,6 +32,7 @@ describe('envioPrecoMercadoLivreSchema', () => {
       baixarPreco: false,
       afterAnchorId: null,
       planejamentoConcluido: false,
+      reconciliacaoForma: 0,
       afterLinkPath: null,
       reconciliacaoConcluida: false,
       reconciliacaoPaginas: 0,
@@ -65,6 +67,7 @@ describe('envioPrecoMercadoLivreSchema', () => {
       updatedAt: 1718003600000,
     });
     expect(parsed).toMatchObject({
+      reconciliacaoForma: 0,
       afterLinkPath: null,
       reconciliacaoConcluida: false,
       reconciliacaoPaginas: 0,
@@ -92,6 +95,27 @@ describe('envioPrecoMercadoLivreSchema', () => {
     expect(parsed.linksReconciliados).toBe(900);
     expect(parsed.afterLinkPath).toBe('produtos/P1/produtoMercadoLivre/link1');
     expect(parsed.reconciliacaoConcluida).toBe(true);
+  });
+
+  it('#1862: the reconciliation cursor is a PAIR — the form index survives a parse', () => {
+    // `envioPrecoMercadoLivreSchema` is a bare `z.object`: a key it did not
+    // declare would be stripped here, read back as form 0 after every handover,
+    // and the job would re-walk the first ref form until its page cap.
+    const parsed = envioPrecoMercadoLivreSchema.parse({
+      integracaoId: 'INT1',
+      status: 'running',
+      reconciliacaoForma: 1,
+      afterLinkPath: null,
+      startedAt: 1718003600000,
+      updatedAt: 1718003600000,
+    });
+    expect(parsed.reconciliacaoForma).toBe(1);
+    expect(parsed.afterLinkPath).toBeNull();
+    for (const ruim of [-1, 0.5]) {
+      expect(
+        envioPrecoMercadoLivreSchema.safeParse({ ...parsed, reconciliacaoForma: ruim }).success,
+      ).toBe(false);
+    }
   });
 
   it('parses a full in-progress job (mid-fila, mid-plan)', () => {
@@ -175,11 +199,21 @@ describe('envioPrecoMercadoLivreSchema', () => {
     ).toBe(false);
   });
 
-  it('only accepts running/completed/failed as status', () => {
+  it('only accepts running/completed/failed/cancelled as status', () => {
     expect(envioPrecoMercadoLivreStatusSchema.safeParse('running').success).toBe(true);
     expect(envioPrecoMercadoLivreStatusSchema.safeParse('completed').success).toBe(true);
     expect(envioPrecoMercadoLivreStatusSchema.safeParse('failed').success).toBe(true);
+    // #1144 — the operator's cancel is terminal like the other two.
+    expect(envioPrecoMercadoLivreStatusSchema.safeParse('cancelled').success).toBe(true);
     expect(envioPrecoMercadoLivreStatusSchema.safeParse('parked').success).toBe(false);
+  });
+
+  it('names every status member on the as-const companion', () => {
+    // `prefer-schema-enum` reads the companion, so a member added to the enum
+    // and not to it is a member no call site can spell.
+    expect(Object.keys(ENVIO_PRECO_MERCADO_LIVRE_STATUS).sort()).toEqual(
+      [...envioPrecoMercadoLivreStatusSchema.options].sort(),
+    );
   });
 });
 

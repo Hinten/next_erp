@@ -161,3 +161,97 @@ describe('error mapping', () => {
     await expect(c.conta('i1')).rejects.toBeInstanceOf(WhatsappClientNetworkError);
   });
 });
+
+describe('previewing the cliente and canonical conversation', () => {
+  it('encodes both ids and returns the validated preview', async () => {
+    const preview = {
+      cliente: { id: 'c 1', nome: 'Maria', cpf_cnpj: null, telefone: null },
+      conversaId: 'chat1',
+    };
+    const fetchImpl = vi.fn(async () => ok(JSON.stringify(preview)));
+    await expect(client(fetchImpl).previsaoVinculo('pending 1', 'c 1')).resolves.toEqual({
+      ...preview,
+      avisoIdentidade: null,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://localhost:3008/api/whatsapp/vinculos/pending%201/previsao?clienteId=c%201',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ Authorization: 'Bearer token' }),
+      }),
+    );
+  });
+  it('rejects an incomplete successful response instead of treating it as a new conversation', async () => {
+    await expect(
+      client(async () => ok('{}')).previsaoVinculo('pending', 'c1'),
+    ).rejects.toBeInstanceOf(WhatsappClientRespostaInvalidaError);
+  });
+});
+
+describe('manual-link conflict targets', () => {
+  it('preserves validated winning ids for preview and confirmation conflicts', async () => {
+    const response = {
+      error: 'Outro vínculo venceu.',
+      code: 'WA_VINCULO_CONFLITO',
+      clienteId: 'c1',
+      conversaId: 'chat1',
+    };
+    const c = client(async () => new Response(JSON.stringify(response), { status: 409 }));
+    await expect(c.previsaoVinculo('p1', 'c2')).rejects.toMatchObject({
+      message: 'Outro vínculo venceu.',
+      status: 409,
+      code: 'WA_VINCULO_CONFLITO',
+      vinculo: { clienteId: 'c1', conversaId: 'chat1' },
+    });
+    await expect(
+      c.resolverVinculo('p1', {
+        requestId: 'r1',
+        revision: 1,
+        choice: { kind: 'existing', clienteId: 'c2' },
+      }),
+    ).rejects.toMatchObject({
+      vinculo: { clienteId: 'c1', conversaId: 'chat1' },
+    });
+  });
+  it('retains a cliente-only conflict when no canonical conversation exists yet', async () => {
+    const c = client(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: 'Escolha o cliente vinculado.',
+            clienteId: 'c1',
+            conversaId: null,
+          }),
+          { status: 409 },
+        ),
+    );
+    await expect(c.previsaoVinculo('p1', 'c2')).rejects.toMatchObject({
+      vinculo: { clienteId: 'c1', conversaId: null },
+    });
+  });
+  it.each([
+    { clienteId: 'clientes/c1', conversaId: 'chat1' },
+    { clienteId: 'c1', conversaId: 42 },
+    { clienteId: '..', conversaId: 'chat1' },
+    {},
+  ])('does not expose malformed or absent targets: %j', async (metadata) => {
+    const c = client(
+      async () => new Response(JSON.stringify({ error: 'Conflito', ...metadata }), { status: 409 }),
+    );
+    const error = await c.previsaoVinculo('p1', 'c2').catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(WhatsappClientHttpError);
+    expect(error).toHaveProperty('message', 'Conflito');
+    expect(error).toHaveProperty('vinculo', undefined);
+  });
+  it('ignores conflict metadata on an unrelated HTTP failure', async () => {
+    const c = client(
+      async () =>
+        new Response(
+          JSON.stringify({ error: 'Sem permissão', clienteId: 'c1', conversaId: 'chat1' }),
+          { status: 403 },
+        ),
+    );
+    const error = await c.previsaoVinculo('p1', 'c2').catch((err: unknown) => err);
+    expect(error).toHaveProperty('vinculo', undefined);
+  });
+});

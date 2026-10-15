@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { add, format, formatReais, money, roundReais, subtract } from './index';
+import {
+  add,
+  centavosDeReais,
+  cotaExataReais,
+  format,
+  formatReais,
+  money,
+  ratearReais,
+  roundReais,
+  subtract,
+} from './index';
 
 describe('money', () => {
   it('rejects non-integer amounts', () => {
@@ -97,5 +107,115 @@ describe('formatReais', () => {
 
   it('pads to two decimals', () => {
     expect(formatReais(6.5)).toContain('6,50');
+  });
+});
+
+/** Σ of the parts in INTEGER cents — a float sum (`0.1 + 0.2 !== 0.3`) is never compared. */
+function somaEmCentavos(partes: readonly number[]): number {
+  return partes.reduce((acc, p) => acc + centavosDeReais(p), 0);
+}
+
+describe('ratearReais', () => {
+  it('gives the extra cents to the FIRST parts, in order, and sums exactly', () => {
+    // A "remainder on the last part" implementation returns [33.33, 33.33, 33.34].
+    expect(ratearReais(100, 3)).toEqual([33.34, 33.33, 33.33]);
+    expect(ratearReais(10, 6)).toEqual([1.67, 1.67, 1.67, 1.67, 1.66, 1.66]);
+  });
+
+  it('is a plain equal split when the cents divide evenly', () => {
+    expect(ratearReais(10, 4)).toEqual([2.5, 2.5, 2.5, 2.5]);
+    expect(ratearReais(10, 1)).toEqual([10]);
+  });
+
+  it('can return 0-value parts when the total is under partes cents', () => {
+    expect(ratearReais(0.02, 3)).toEqual([0.01, 0.01, 0]);
+    expect(ratearReais(0.05, 2)).toEqual([0.03, 0.02]);
+    expect(ratearReais(0, 2)).toEqual([0, 0]);
+  });
+
+  it('splits roundReais(total), not the raw total (6.555 is 6.55, so 655 cents)', () => {
+    const partes = ratearReais(6.555, 2);
+    expect(partes).toEqual([3.28, 3.27]);
+    // Near-miss: a half-up total (6.56 → 656 cents) would sum to 656.
+    expect(somaEmCentavos(partes)).toBe(655);
+  });
+
+  it('sums to the total in integer cents, parts never more than a cent apart', () => {
+    const totais = [
+      0, 0.01, 0.02, 0.05, 0.99, 1, 10, 33.33, 99.99, 100, 1005.55, 1005.56, 12345.67, 99999.99,
+    ];
+    for (const total of totais) {
+      for (let n = 1; n <= 12; n += 1) {
+        const partes = ratearReais(total, n);
+        const centavos = partes.map(centavosDeReais);
+        expect(partes).toHaveLength(n);
+        expect(somaEmCentavos(partes)).toBe(centavosDeReais(total));
+        expect(Math.max(...centavos) - Math.min(...centavos)).toBeLessThanOrEqual(1);
+        // non-increasing: the extra cents sit at the front
+        expect(centavos).toEqual([...centavos].sort((a, b) => b - a));
+        // every part is already a clean 2-decimal amount
+        for (const parte of partes) expect(roundReais(parte)).toBe(parte);
+      }
+    }
+  });
+
+  it('accepts the boundaries: 1 part, 50 parts, a zero total', () => {
+    expect(ratearReais(7.77, 1)).toEqual([7.77]);
+    const cinquenta = ratearReais(0.5, 50);
+    expect(cinquenta).toHaveLength(50);
+    expect(cinquenta.every((p) => p === 0.01)).toBe(true);
+  });
+
+  it('throws RangeError for a bad number of parts', () => {
+    expect(() => ratearReais(100, 0)).toThrow(RangeError);
+    expect(() => ratearReais(100, 1.5)).toThrow(RangeError);
+    expect(() => ratearReais(100, 51)).toThrow(RangeError);
+    expect(() => ratearReais(100, -1)).toThrow(RangeError);
+    expect(() => ratearReais(100, Number.NaN)).toThrow(RangeError);
+    expect(() => ratearReais(100, Number.POSITIVE_INFINITY)).toThrow(RangeError);
+  });
+
+  it('throws RangeError for a negative, non-finite or unsplittable total', () => {
+    expect(() => ratearReais(-1, 3)).toThrow(RangeError);
+    expect(() => ratearReais(-0.001, 3)).toThrow(RangeError);
+    expect(() => ratearReais(Number.NaN, 3)).toThrow(RangeError);
+    expect(() => ratearReais(Number.POSITIVE_INFINITY, 3)).toThrow(RangeError);
+    expect(() => ratearReais(Number.MAX_SAFE_INTEGER, 3)).toThrow(RangeError);
+  });
+});
+
+describe('cotaExataReais', () => {
+  it('returns the per-payment amount only when the cents divide exactly', () => {
+    expect(cotaExataReais(99, 3)).toBe(33);
+    expect(cotaExataReais(100, 4)).toBe(25);
+    expect(cotaExataReais(0.03, 3)).toBe(0.01);
+    expect(cotaExataReais(10, 1)).toBe(10);
+  });
+
+  it('returns null, never a rounded-up amount, when they do not', () => {
+    // A ceil implementation returns 33.34 here and collects 100.02.
+    expect(cotaExataReais(100, 3)).toBeNull();
+    expect(cotaExataReais(0.02, 3)).toBeNull();
+    expect(cotaExataReais(10, 6)).toBeNull();
+  });
+
+  it('is non-null exactly when ratearReais gives equal parts, and N × cota is the total', () => {
+    const totais = [0.01, 0.03, 0.06, 1, 10, 33.33, 99, 100, 1005.55, 1005.56, 99999.99];
+    for (const total of totais) {
+      for (let n = 1; n <= 12; n += 1) {
+        const cota = cotaExataReais(total, n);
+        const iguais = new Set(ratearReais(total, n)).size === 1;
+        expect(cota !== null).toBe(iguais);
+        if (cota !== null) expect(centavosDeReais(cota) * n).toBe(centavosDeReais(total));
+      }
+    }
+  });
+
+  it('throws RangeError under the same conditions as ratearReais', () => {
+    expect(() => cotaExataReais(100, 0)).toThrow(RangeError);
+    expect(() => cotaExataReais(100, 1.5)).toThrow(RangeError);
+    expect(() => cotaExataReais(100, 51)).toThrow(RangeError);
+    expect(() => cotaExataReais(Number.NaN, 3)).toThrow(RangeError);
+    expect(() => cotaExataReais(-1, 3)).toThrow(RangeError);
   });
 });

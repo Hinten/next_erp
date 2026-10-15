@@ -27,6 +27,7 @@ export * from './collection/historicoModificacoes'; // produtos/{id}/historicoDe
 export * from './collection/subcollections'; // produtos/{id}/<marketplace link docs>
 export * from './collection/mercadoLivreLink'; // typed ML link-doc write shapes (not DomainSchemas)
 export * from './collection/shopeeLink'; // typed Shopee link-doc write shapes (not DomainSchemas)
+export * from './collection/shopeeLinkVariacoes'; // typed grupoDeVariacoes.linksVariacoesShopee[] element (bare const)
 export * from './collection/amazonLink'; // typed Amazon link-doc write shapes (not DomainSchemas)
 export * from './collection/magaluLink'; // typed Magalu link-doc write shapes (not DomainSchemas)
 export * from './collection/lojaIntegradaLink'; // typed Loja Integrada link-doc write shapes (not DomainSchemas)
@@ -38,12 +39,14 @@ export * from './collection/embedded/anexo'; // produto.anexos[*]
 // === PURE LOGIC (no database) ===
 export * from './pureLogic/precoCalculo'; // price-formula engine, kit cost, precos diff
 export * from './pureLogic/variacoes'; // variation cartesian / reconstruct / reconcile helpers
-export * from './pureLogic/familia'; // parent ⇄ sole-member identity (shared by web and the ML backend)
+export * from './pureLogic/familia'; // parent ⇄ sole-member identity + ehKitVirtualEfetivo (shared by web and the backends)
 export * from './pureLogic/fotosVariacao'; // per-variant gallery resolution (own → tagged → parent)
 export * from './pureLogic/kitVariacoes'; // "Gerar Variações" kit-component matcher
 export * from './pureLogic/kitEstoque'; // kit available-stock (min over limitarEstoque components)
+export * from './pureLogic/kitUnidadeVendavel'; // repoint componentesKit at the sellable unit (#1398)
 export * from './pureLogic/dimensoes'; // box/bag estimator + the ProdutoMedidas shape it reads
 export * from './pureLogic/dimensoesKit'; // kit weight + box rollup (the ONE impl client & server share)
+export * from './pureLogic/googleMerchantFeed'; // Google Merchant complementary XML feed (#553)
 
 // === PAGE MODEL (aggregate for the screen; NOT a collection) ===
 export * from './pageModel/pageModel';

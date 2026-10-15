@@ -6,6 +6,7 @@ import type { Firestore } from 'firebase/firestore';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
+import type { ShopeeClient } from '@/lib/shopee/client';
 import type { CheckoutDanfeFormat } from '@/lib/checkout/nfeFlow';
 import { useOutrosCheckouts, type OutroCheckoutRow } from './useOutrosCheckouts';
 import { OutroCheckoutModal } from './OutroCheckoutModal';
@@ -17,6 +18,7 @@ export interface OutrosCheckoutsPaneProps {
   nfeClient: NFeHttpClient | null;
   freightClient: FreightHttpClient | null;
   mercadoLivreClient: MercadoLivreClient | null;
+  shopeeClient: ShopeeClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   formatoEtiqueta: 'pdf' | 'zpl2';
 }
@@ -35,6 +37,7 @@ export function OutrosCheckoutsPane({
   nfeClient,
   freightClient,
   mercadoLivreClient,
+  shopeeClient,
   formatoDanfe,
   formatoEtiqueta,
 }: OutrosCheckoutsPaneProps) {
@@ -88,6 +91,7 @@ export function OutrosCheckoutsPane({
         nfeClient={nfeClient}
         freightClient={freightClient}
         mercadoLivreClient={mercadoLivreClient}
+        shopeeClient={shopeeClient}
         formatoDanfe={formatoDanfe}
         formatoEtiqueta={formatoEtiqueta}
       />

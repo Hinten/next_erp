@@ -70,8 +70,11 @@ nothing. If you cannot name the loop or the fan-out that repeats it, do not cach
 
 The typed layer. `AdminCollectionHandle` deliberately has no `get`, so the
 "read one doc → parsed value or null" idiom is hand-copied all over the repo
-(`massImport.ts`' `readJob`, `precoSync.ts`, both `credentialStore.ts`,
-`filial-cert.ts`). This wraps it once, keyed by the resolved document path.
+(`massImport.ts`' `readJob`, `precoSync.ts`, both `credentialStore.ts`). This
+wraps it once, keyed by the resolved document path. `filial-cert.ts` adopted it in
+#1680 — the worked example of caching a DERIVED value (a decrypted key and its
+keep-alive agent) behind the reader: the reader owns the TTL, and the derived value
+is reused while the re-read returns the same certificate.
 
 ```ts
 // module scope — never per request
@@ -184,7 +187,7 @@ retried. Same reasoning anywhere a miss triggers a create (§1.2).
 
 `isFresh` runs on every **hit** of a present value; returning `false` evicts and
 re-reads (counted as a miss). It is the repo's existing move — `filial-cert.ts`
-re-runs its cert-expiry assertion on every hit rather than time-bounding the entry.
+re-runs its cert-expiry assertion on every hit (on top of its TTL, since #1680).
 
 Reach for it when *one field* has a tighter freshness requirement than the document
 as a whole. `isFresh: (conta) => conta.user_id != null` refuses an `integracao`

@@ -77,7 +77,8 @@ export interface PrintKitComponente {
 export interface PrintItem {
   produtoId: string | null;
   sku: string | null;
-  nome: string | null;
+  /** Always set — `nomeDoItem` is total (see `@delfrance/schemas`). */
+  nome: string;
   variacoesText: string | null;
   fotoUrl: string | null;
   quantidade: number;

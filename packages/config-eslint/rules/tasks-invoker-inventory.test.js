@@ -14,7 +14,7 @@ import { REPO_ROOT, gitGrep } from './lib/repo-scan.js';
  * region fall-through from `mlTasks.ts` and left the four copy-pasted siblings
  * alone, and because each sibling had its own test pinning its own stale
  * default, four queues aimed at a region with no Cloud Tasks and CI stayed
- * green. A per-file lint rule cannot express "these five agree"; that IS the
+ * green. A per-file lint rule cannot express "these seven agree"; that IS the
  * defect. Same shape as `runtime-deps-pinned.test.js` (six manifests must agree)
  * and `reserva-arithmetic-inventory.test.js`.
  *
@@ -31,6 +31,8 @@ import { REPO_ROOT, gitGrep } from './lib/repo-scan.js';
 
 /** Path → what the function is, so a new one has to be read, not just listed. */
 const INVENTORY = {
+  'apps/functions/src/access/processAccessOperation.ts':
+    'Access propagation, enqueued by the operation-created trigger, worker continuations and watchdog (functions runtime SA).',
   // ---- codebase `mercado-livre` (apps/mercado-livre/functions) -------------
   'apps/mercado-livre/functions/src/processNotification.ts':
     'The ML webhook notification handler. Enqueued by the receiver route AND by two onSchedule sweeps (order backfill, missed_feeds) running as the FUNCTIONS runtime SA.',
@@ -47,9 +49,29 @@ const INVENTORY = {
   'apps/mercado-pago/functions/src/processNotification.ts':
     'The Mercado Pago IPN handler. Enqueued by the receiver route only.',
 
+  // ---- codebase `melhor-envio` -------------------------------------------
+  'apps/melhor-envio/functions/src/processNotification.ts':
+    'The Melhor Envio order-status webhook handler. Enqueued by the receiver route only.',
+
+  // ---- codebase `shopee` --------------------------------------------------
+  'apps/shopee/functions/src/processNotification.ts':
+    'The Shopee push notification handler. Enqueued by the receiver route and, since step 17, the reclamacao/acao route (one synthetic code 29 after a seller action) — both under the App Hosting runtime SA — AND by the functions runtime SA: six onSchedule producers (the lost-push sweep and the order backfill, step 4; the escrow-settlement sweep, step 6; the stuck-reservation sweep, step 8; the auto-arrange sweep, step 15b; the returns sweep, step 17) and the handler ITSELF since step 7 (one synthetic code 3 when a shipment push — or, since step 17, a return push — finds no pedido, also reached by the inline re-drives of the reprocess sweep) — so two identities dispatch it.',
+  'apps/shopee/functions/src/processMassImport.ts':
+    'The Shopee mass product import ("importar todos os anuncios", master-plan step 9). Enqueued by the /importar-todos route under the App Hosting runtime SA and re-enqueued by ITSELF — for every scan/drain continuation AND for the rate-limit pause (scheduleDelaySeconds) — so two identities dispatch it.',
+  'apps/shopee/functions/src/sendStock.ts':
+    'The Shopee stock push (master-plan step 12). Enqueued by the three onSchedule stock sweeps (functions runtime SA) and self-re-enqueued on a rate-limit pause — the burst arm and the pause rung both re-enqueue onto this queue with scheduleDelaySeconds — so two identities dispatch it. The manual push (/enviar-estoque) runs IN-PROCESS and never enqueues.',
+  'apps/shopee/functions/src/processPriceSync.ts':
+    'The Shopee account-wide price job ("atualizar precos", master-plan step 13). Enqueued by the /atualizar-precos route (App Hosting runtime SA) and re-enqueued by ITSELF for every plan/drain continuation, the burst pause and the daily park (scheduleDelaySeconds) — two identities. The manual price push (/enviar-precos) runs IN-PROCESS and never enqueues.',
+  'apps/shopee/functions/src/processNfeUpload.ts':
+    'The Shopee NF-e XML upload (master-plan step 14). Enqueued by the onNfeAprovadaShopee Firestore trigger (functions runtime SA) and by the /enviar-nfe route (App Hosting runtime SA), and re-enqueued by ITSELF for the SERPRO wait on error #5, the burst pause, the daily park and the ~15-min recheck (scheduleDelaySeconds) — two identities. The enviar:nfe CLI runs the handler IN-PROCESS and enqueues nothing.',
+
   // ---- codebase `whatsapp` ------------------------------------------------
   'apps/whatsapp/functions/src/processNotification.ts':
     'The WhatsApp Cloud API notification handler. Enqueued by the receiver route only.',
+
+  // ---- codebase `loja-integrada` -------------------------------------------
+  'apps/loja-integrada/functions/src/filaLeitura.ts':
+    'The Loja Integrada reads queue (filaLeituraLojaIntegrada, order intake). Enqueued by the order poller (functions runtime SA); the App Hosting runtime SA joins in step 4 (the inbound webhook), and the credential routes only re-drive Firestore rows.',
 
   // ---- codebase `nfe` -----------------------------------------------------
   'apps/nfe/functions/src/reconciliar.ts':
@@ -64,9 +86,44 @@ const INVENTORY = {
 
 /**
  * Source only. A test may reference `onTaskDispatched` while asserting on it;
- * inventorying tests would be noise that hides a real new call site.
+ * inventorying tests would be noise that hides a real new call site. The
+ * `rules/*` exclusion also keeps out `__fixtures__/tasks-invoker/`, which only
+ * the near-miss block at the bottom scans.
  */
 const PATHSPECS = ['*.ts', ':(exclude)*.test.ts', ':(exclude)packages/config-eslint/rules/*'];
+
+/**
+ * A CALL of `onTaskDispatched`, with or without a type argument —
+ * `onTaskDispatched(`, `onTaskDispatched<Payload>(`, and the form prettier prints
+ * when the type argument does not fit on one line, with `onTaskDispatched<` and
+ * `>(` on different lines.
+ *
+ * ⚠️ The type argument is why this is a regex at all. The guard used to
+ * `git grep` the literal `onTaskDispatched(`, and a typed call —
+ * `onTaskDispatched<unknown>(`, which is what the Loja Integrada codebase first
+ * wrote (#1891/#1892) — slipped past EVERY assertion in this file at once: the
+ * UNLISTED check, the invoker spread, and the codebase discovery the floors
+ * count. It surfaced only because the same change also added its INVENTORY row
+ * and raised the floor ("STALE entry", "only 17 task files"); a typed task
+ * function added without those would have deployed with no `invoker` while
+ * this file stayed green.
+ *
+ * - `\b` in front and the `\s*` / `<` / `(` after the name are what keep
+ *   `onTaskDispatchedX(` and `myonTaskDispatched(` out: tolerating a type
+ *   argument must not widen into "any identifier containing the name". A
+ *   namespace call (`tasks.onTaskDispatched(`) still matches — `.` is a word
+ *   boundary.
+ * - `[\s\S]*?` is lazy and spans lines on purpose, so a NESTED type argument
+ *   (`<Record<K, V>>`) closes at the right `>` and a line-broken one is seen
+ *   whole. Its only failure mode is matching MORE, which reports loudly as
+ *   UNLISTED; matching less is the silent failure this regex exists to retire.
+ * - Prose (`` `onTaskDispatched` ``, `onTaskDispatched.rateLimits`) is not a
+ *   call and does not match. Comments are deliberately NOT stripped first: a
+ *   comment that spells out the literal call shape still counts, and that fails
+ *   loudly — whereas a comment stripper fooled by a `/*` inside a string literal
+ *   would drop a real call silently.
+ */
+const TASK_CALL_RE = /\bonTaskDispatched\s*(?:<[\s\S]*?>)?\s*\(/;
 
 /**
  * Non-vacuity floor. Every assertion below is driven by `taskFunctionFiles()`,
@@ -74,28 +131,66 @@ const PATHSPECS = ['*.ts', ':(exclude)*.test.ts', ':(exclude)packages/config-esl
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 9;
-const MIN_CODEBASES = 5;
+const MIN_TASK_FILES = 18;
+const MIN_CODEBASES = 8;
 
 function read(file) {
   return readFileSync(resolve(REPO_ROOT, file), 'utf8');
 }
 
 /**
- * ⚠️ Called from EIGHT assertions below (four of them via `codebaseRoots()`).
- * That is only affordable because `lib/repo-scan.js` memoizes the spawn: this
- * used to be nine `git grep --untracked` per run of this file, which on Windows
- * under the parallel suite is several seconds of pure process cost and is what
- * made the guard flake on the 5s default timeout. See that module's header.
+ * Files under `pathspecs` that merely NAME `onTaskDispatched` — the candidates
+ * `discoverTaskFiles` then decides on.
+ *
+ * Deliberately the bare identifier as a fixed string: every spelling of a call
+ * contains the name on SOME line, so this stage cannot be the one that misses a
+ * call. It also nominates every docblock that only mentions the function (~60
+ * files today), which `TASK_CALL_RE` then drops.
+ * @param {readonly string[]} pathspecs
  */
+function taskCandidateFiles(pathspecs) {
+  return gitGrep({ patterns: 'onTaskDispatched', pathspecs, mode: 'fixed' });
+}
+
+/**
+ * Files under `pathspecs` that CALL `onTaskDispatched` (see `TASK_CALL_RE`),
+ * sorted.
+ *
+ * Two stages, and the split is the fix: `git grep` is LINE-oriented, so no grep
+ * pattern can see a type argument that prettier has broken across lines
+ * (`__fixtures__/tasks-invoker/typed-call-line-broken.ts`). The call shape is
+ * therefore matched in JS over the whole file, and the grep only nominates.
+ * @param {readonly string[]} pathspecs
+ */
+function discoverTaskFiles(pathspecs) {
+  return taskCandidateFiles(pathspecs).filter((f) => TASK_CALL_RE.test(read(f)));
+}
+
+/** The files among `files` that do not spread the invoker helper into their options. */
+function missingInvokerSpread(files) {
+  return files.filter((f) => !read(f).includes('...tasksInvokerOptions()'));
+}
+
+/**
+ * ⚠️ Called from EIGHT assertions below (four of them via `codebaseRoots()`), so
+ * the answer is computed once per run of this file. `lib/repo-scan.js` already
+ * memoizes the `git grep` spawn — this used to be nine `git grep --untracked`
+ * per run, which on Windows under the parallel suite is several seconds of pure
+ * process cost and is what made the guard flake on the 5s default timeout (see
+ * that module's header) — and this memo spares re-reading the ~60 candidates.
+ * Sound for the same reason: the repo does not change while the suite runs.
+ * @type {string[] | undefined}
+ */
+let taskFiles;
 function taskFunctionFiles() {
-  return gitGrep({ patterns: 'onTaskDispatched(', pathspecs: PATHSPECS });
+  taskFiles ??= discoverTaskFiles(PATHSPECS);
+  return taskFiles;
 }
 
 /**
  * The functions codebases, DISCOVERED from the task files rather than listed.
  *
- * ⚠️ This is the whole point. Enumerating the five `build.mjs` and the five
+ * ⚠️ This is the whole point. Enumerating the seven `build.mjs` and the seven
  * `tasksInvoker.ts` would leave a SIXTH codebase checked by `INVENTORY` (its
  * task function is forced into the list, and forced to spread the helper) while
  * nothing asserted its build carries the `define`. That state passes every
@@ -166,9 +261,7 @@ describe('every onTaskDispatched declares its Cloud Tasks invoker (#1133)', () =
   });
 
   it('spreads tasksInvokerOptions() at EVERY call site', () => {
-    const missing = Object.keys(INVENTORY).filter(
-      (f) => !read(f).includes('...tasksInvokerOptions()'),
-    );
+    const missing = missingInvokerSpread(Object.keys(INVENTORY));
     expect(
       missing,
       [
@@ -275,5 +368,49 @@ describe('the invoker value reaches the bundle (#1133)', () => {
       assigning,
       `These files assign to the esbuild-defined expression: ${assigning.join(', ')}`,
     ).toEqual([]);
+  });
+});
+
+describe('discovery sees a typed call, and only a call (near-miss fixtures)', () => {
+  // The same `discoverTaskFiles` / `missingInvokerSpread` the inventory above
+  // runs, pointed at committed fixtures instead of the repo. Every real task
+  // function today is untyped, so without these nothing would notice the
+  // matcher regressing to the literal `onTaskDispatched(` — the repo scan
+  // would stay green over exactly the shape it then misses.
+  const DIR = 'packages/config-eslint/rules/__fixtures__/tasks-invoker';
+  const SPEC = [`${DIR}/*.ts`];
+  const CALLS = [
+    `${DIR}/typed-call-line-broken.ts`,
+    `${DIR}/typed-call-no-invoker.ts`,
+    `${DIR}/typed-call.ts`,
+    `${DIR}/untyped-call.ts`,
+  ];
+
+  it('discovers the typed, line-broken typed and untyped calls — and nothing else', () => {
+    expect(discoverTaskFiles(SPEC)).toEqual(CALLS);
+  });
+
+  it('keeps each call fixture naming the function ONCE, on its code line', () => {
+    // A comment that spells out the call shape counts as a call (on purpose —
+    // see TASK_CALL_RE), so a call fixture whose comment did would be
+    // discovered THROUGH THE COMMENT and keep passing with the matcher broken.
+    // That is exactly how a first draft of these fixtures passed a `[^>]*`
+    // matcher that cannot see the line-broken call.
+    for (const f of CALLS) expect(read(f).match(/onTaskDispatched/g), f).toHaveLength(1);
+  });
+
+  it('drops the near misses at the MATCHER, not by never reading them', () => {
+    // Both files name the function, so the candidate grep MUST nominate them;
+    // only the call shape may keep them out. Without this half, the exact list
+    // above would also pass if the grep stopped reaching them at all.
+    const nearMisses = [`${DIR}/comment-mention.ts`, `${DIR}/identifier-near-miss.ts`];
+    expect(taskCandidateFiles(SPEC)).toEqual(expect.arrayContaining(nearMisses));
+    for (const f of nearMisses) expect(discoverTaskFiles(SPEC)).not.toContain(f);
+  });
+
+  it('flags the typed call that does not spread the invoker', () => {
+    expect(missingInvokerSpread(discoverTaskFiles(SPEC))).toEqual([
+      `${DIR}/typed-call-no-invoker.ts`,
+    ]);
   });
 });

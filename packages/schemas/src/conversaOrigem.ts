@@ -124,7 +124,11 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     maxTamanhoAnexoBytes: CAP_25MB,
     isHtml: false,
     entradaSemAutor: false,
-    temEnvio: false, // webchat has no outbound sender in this app
+    // The webchat widget was never ported (dropped 2026-09-07), so nothing in this
+    // repo can transmit on a `site` thread. The rule stays because the imported
+    // legacy corpus contains `site` conversas the inbox still has to render — and
+    // `origem` DEFAULTS to `site` in `conversaSchema`, so this row is reachable.
+    temEnvio: false,
   },
   // limite 2000 (L1006); permiteAnexo true (default); maximoAnexos 1 (L1073);
   // formats L1089; size 25 MB (L1105); isHtml false (default).

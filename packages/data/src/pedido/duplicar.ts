@@ -24,10 +24,12 @@ import { PedidoConflictError } from './usecases';
  * → `createPedidoWithNumero`'s `tx.set({ ...values, numero })`. Whatever the
  * seed leaves in AND still models, gets written — `pedidoSchema` has no
  * `.passthrough()` (#462), so a genuinely unmodeled key on the origin (in
- * practice, one of the five money caches #796 removed from the schema) is
- * silently dropped by the re-parse rather than carried into the duplicate,
- * same as any other unmodeled key would be. That is a feature here, not a
- * gap: none of those fields describes the new pedido either.
+ * practice, one of the nine money fields #796 and #1151 removed from the
+ * schema) is silently dropped by the re-parse rather than carried into the
+ * duplicate, same as any other unmodeled key would be. That is a feature here,
+ * not a gap: none of those fields describes the new pedido either, and it is
+ * why the four #1151 removed need no strip-list entry — see the test that pins
+ * it.
  *
  * Beyond the legacy Flutter list, this strips:
  *
@@ -41,18 +43,13 @@ import { PedidoConflictError } from './usecases';
  *    {@link import('./devolucao').buildDevolucaoIntegralSeed} nulls its
  *    siblings. `CAMPOS_ESTOQUE_SYNC` is spread rather than hand-listed so the
  *    pedido→estoque sync's write set and this list cannot drift apart.
- *  - `valorComissoes`, `valorDespesasIncidentes`, `valorFretesIncidentes`,
- *    `impostos` — the four legacy money pass-throughs. `derivePedidoTotals`
- *    explicitly leaves them to the caller and NO caller exists, so unlike the
- *    six derived caches they are never recomputed: the origin's marketplace
- *    commission and tax total would land verbatim, and the two incidente
- *    totals would describe an `incidentes` subcollection this seed never
- *    clones — the exact situation that justifies stripping `itensDevolvidos`.
  *  - `dataFinalExpedicao` — deprecated, but still a µs stamp of the origin and
  *    the last top-level date the legacy list missed.
  *  - `bloquearEmissaoNFe` — operator intent scoped to the ORIGIN ("do not emit
  *    NF-e for THIS order"). Carried over it silently blocks the duplicate's
  *    emission, surfacing only as a 409 `NFeBlockedError` at emit time.
+ *  - `chNFePagamentoAntecipado` — the prepayment notas the ORIGIN settles
+ *    (#331); a duplicate carrying them would settle the same prepayment twice.
  *  - `foiImpresso` — pairs with `dtImpressao`: carrying `true` over without a
  *    real print date would mark a never-printed draft as printed.
  *
@@ -72,14 +69,11 @@ export const DUPLICAR_PEDIDO_STRIP_KEYS = [
   'dataFinalExpedicao',
   'error',
   'chNFeReferenciadas',
+  'chNFePagamentoAntecipado',
   'itensDevolvidos',
   'entradasRelacionadas',
   'saidasRelacionadas',
   'bloquearEmissaoNFe',
-  'valorComissoes',
-  'valorDespesasIncidentes',
-  'valorFretesIncidentes',
-  'impostos',
   ...CAMPOS_ESTOQUE_SYNC,
 ] as const;
 
@@ -141,9 +135,13 @@ export const FRETE_QUOTE_RESET_KEYS = [
  * Per-line keys the clone must not inherit. `ensureUniqueId` is the Mercado
  * Livre line identity (`sha256(orderId-mktplaceId-index)`, `orderIds.ts`) and
  * `timestamp` is the origin line's creation stamp — neither describes a line on
- * a manually created pedido.
+ * a manually created pedido. `dfeReferenciado` points at an item of the NF-e the
+ * ORIGIN was issued against (#330): a copy is a different operation, and a
+ * reference carried over would emit a nota claiming to adjust someone else's.
+ * `ajusteRtc` holds the IBS/CBS amounts of ONE nota de débito — the same
+ * reasoning: a copy would re-transfer or re-reverse a credit already settled.
  */
-const ITEM_STRIP_KEYS = ['ensureUniqueId', 'timestamp'] as const;
+const ITEM_STRIP_KEYS = ['ensureUniqueId', 'timestamp', 'dfeReferenciado', 'ajusteRtc'] as const;
 
 /** Clone `itens`, dropping {@link ITEM_STRIP_KEYS} from every line. */
 function cloneItens(itens: unknown): unknown {

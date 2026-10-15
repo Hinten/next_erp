@@ -425,3 +425,67 @@ describe('produto-sem-variacoes census — reservations on an imported corpus', 
     expect(linhaDoSimples(registros).nPedidosAbertosQueReservam).toBe(0);
   });
 });
+
+/**
+ * The kit-exposure headline. `referenciasDeKit` was built on the pass-1 walk from
+ * the day this script was written and reached only the per-row
+ * `nKitsQueReferenciam` — so the two numbers a human needs before the window were
+ * in the JSONL and nowhere a person reads first.
+ */
+describe('produto-sem-variacoes census — kit exposure', () => {
+  const comKeys = (id: string, chaves: string[], data: Record<string, unknown> = {}) =>
+    produto(id, { ehKit: true, componentesKitKeys: chaves, ...data });
+
+  /**
+   * ⚠️ The max is a property of the CORPUS, counted above the `relatar` gate. A
+   * produto whose verdict earns no JSONL row — a variation `filho`, a settled
+   * `ja-familia` — can still be the one sitting in two thousand kits, and that is
+   * exactly the number deciding whether the repoint cascade fits inline.
+   */
+  it('reports the worst fan-out even for a produto that gets no JSONL row', async () => {
+    const contexto = ctx({
+      cols: {
+        produtos: [
+          produto('pai'),
+          // A `filho`: reported nowhere, referenced by three kits.
+          produto('alvo', { paiId: 'pai' }),
+          comKeys('k1', ['alvo']),
+          comKeys('k2', ['alvo']),
+          comKeys('k3', ['alvo']),
+        ],
+      },
+    });
+
+    await run(contexto);
+
+    expect(linhaQueContem('pior fan-out')).toContain('alvo');
+    expect(linhaQueContem('pior fan-out')).toContain('3 kit(s)');
+  });
+
+  // ⚠️ The near-miss: a reference to a produto the conversion does NOT touch is
+  // not work the window has to do. Counting every reference would inflate the
+  // number a human sizes the kit phase from.
+  it('counts only the references pointing at a produto the conversion converts', async () => {
+    const contexto = ctx({
+      cols: {
+        produtos: [
+          produto('vaiConverter'),
+          produto('paiDeFamilia'),
+          produto('filhoDele', { paiId: 'paiDeFamilia' }),
+          comKeys('k1', ['vaiConverter']),
+          comKeys('k2', ['paiDeFamilia']),
+        ],
+      },
+    });
+
+    await run(contexto);
+
+    expect(linhaQueContem('obriga a reapontar')).toContain('1 referência(s)');
+  });
+
+  it('says so plainly when no produto is a kit component', async () => {
+    const contexto = ctx({ cols: { produtos: [produto('a')] } });
+    await run(contexto);
+    expect(linhaQueContem('nenhum produto é componente de kit')).not.toBe('');
+  });
+});

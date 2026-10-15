@@ -27,7 +27,7 @@ import { rootCertificates } from 'node:tls';
 import { HttpClient } from 'soap';
 
 import type { NFeCertificate } from '../cert';
-import { assertSafeTpAmbForTransport, type TpAmb } from '../safety';
+import { assertSafeEndpointForTransport, assertSafeTpAmbForTransport, type TpAmb } from '../safety';
 import { validateXsd, type XsdRootKey } from '../xsd';
 
 const NFE_WSDL_BASE = 'http://www.portalfiscal.inf.br/nfe/wsdl';
@@ -415,6 +415,7 @@ async function postSoapValidated(
   dadosMsg: string,
 ): Promise<PostResult> {
   assertSafeTpAmbForTransport(call.tpAmb);
+  assertSafeEndpointForTransport(call.url, call.tpAmb);
   await validateXsd(contract.requestRoot, dadosMsg);
   const result = await postSoap({
     url: call.url,
@@ -476,10 +477,11 @@ export const CONSCAD_VERSAO = '2.00';
  * `CadConsultaCadastro4 / consultaCadastro` — query a taxpayer's IE
  * registry for a CNPJ in a UF.
  *
- * The request `consCad` is XSD-validated by the caller (`consultarCadastro` →
- * `validateConsCad`) before this is invoked; the `consCad`/`retConsCad` v2.00
- * XSDs aren't in the codegen (issue #251), so this wrapper doesn't go through
- * the codegen-driven `postSoapValidated` — it builds the SOAP envelope +
+ * Both directions are XSD-validated by the caller (`consultarCadastro`): the
+ * request with `validateConsCad` before this is invoked, the response with
+ * `validateRetConsCad` before it is parsed (#1602). Layout 2.00 is not in the v4.00
+ * `XSD_BY_ROOT` registry (it is its own pack, `generated/conscad/`), so this
+ * wrapper doesn't go through `postSoapValidated` — it builds the SOAP envelope +
  * SOAPAction like the other operations, plus the **`<nfeCabecMsg>` SOAP Header**
  * (`cUF` + `versaoDados=2.00`) that the layout-2.00 message requires (omitting
  * it is a `cStat=215`). `assertSafeTpAmbForTransport` still guards produção before
@@ -493,6 +495,7 @@ export async function nfeConsultaCadastro(
   cUF: string,
 ): Promise<PostResult> {
   assertSafeTpAmbForTransport(call.tpAmb);
+  assertSafeEndpointForTransport(call.url, call.tpAmb);
   return postSoap({
     url: call.url,
     operation: 'NFeConsultaCadastro',

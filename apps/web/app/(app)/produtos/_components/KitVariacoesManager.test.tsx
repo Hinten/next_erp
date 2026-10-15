@@ -85,6 +85,7 @@ function rows(): VariationRow[] {
           nome: 'Camiseta P',
           sku: 'CAMP',
           variacoesUid: [varianteFakePath('gT', 'P')],
+          precos: null,
           deleteMark: false,
         },
       ];
@@ -180,7 +181,15 @@ describe('KitVariacoesManager', () => {
     // save 2 resolves it by `row.id` and overwrites the map the operator just
     // generated, behind a green toast.
     h.rows = [
-      { key: 'X', id: 'X', nome: 'Antiga', sku: 'ANTIGA', variacoesUid: [], deleteMark: false },
+      {
+        key: 'X',
+        id: 'X',
+        nome: 'Antiga',
+        sku: 'ANTIGA',
+        variacoesUid: [],
+        precos: null,
+        deleteMark: false,
+      },
     ];
     h.children = [{ id: 'X', data: { componentesKit: null } }];
     const { flushRef, rerender } = renderManager();
@@ -188,8 +197,24 @@ describe('KitVariacoesManager', () => {
 
     // Now X is delete-marked and the replacement row appears.
     h.rows = [
-      { key: 'X', id: 'X', nome: 'Antiga', sku: 'ANTIGA', variacoesUid: [], deleteMark: true },
-      { key: 'tmp1', id: null, nome: 'Nova', sku: 'ANTIGA', variacoesUid: [], deleteMark: false },
+      {
+        key: 'X',
+        id: 'X',
+        nome: 'Antiga',
+        sku: 'ANTIGA',
+        variacoesUid: [],
+        precos: null,
+        deleteMark: true,
+      },
+      {
+        key: 'tmp1',
+        id: null,
+        nome: 'Nova',
+        sku: 'ANTIGA',
+        variacoesUid: [],
+        precos: null,
+        deleteMark: false,
+      },
     ];
     await act(async () => rerender());
     fireEvent.click(screen.getByTestId('stage-kit')); // staged['tmp1']
@@ -202,7 +227,15 @@ describe('KitVariacoesManager', () => {
 
     // Save 2: X lives again, carrying the NEW variation. Nothing may be rewritten.
     h.rows = [
-      { key: 'X', id: 'X', nome: 'Nova', sku: 'ANTIGA', variacoesUid: [], deleteMark: false },
+      {
+        key: 'X',
+        id: 'X',
+        nome: 'Nova',
+        sku: 'ANTIGA',
+        variacoesUid: [],
+        precos: null,
+        deleteMark: false,
+      },
     ];
     await act(async () => rerender());
     await act(async () => {
