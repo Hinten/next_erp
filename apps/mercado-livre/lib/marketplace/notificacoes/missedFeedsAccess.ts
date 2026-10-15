@@ -40,6 +40,17 @@ export interface MissedFeedsAccess {
   } | null;
 }
 
+/** Shared stable enumeration; diagnostics must not assume endpoint access. */
+export async function listMissedFeedsCandidates(db: Firestore): Promise<string[]> {
+  const snap = await integracaoCollection
+    .ref(db, {})
+    .where('tipo', '==', INTEGRACAO_TIPO.mercadoLivre)
+    .where('ativo', '==', true)
+    .get();
+  // Sort in memory: retain the existing indexed (tipo, ativo) query shape.
+  return snap.docs.map((doc) => doc.id).sort();
+}
+
 export async function findMissedFeedsAccess(
   db: Firestore,
   appId: string,
@@ -48,20 +59,14 @@ export async function findMissedFeedsAccess(
   progress?: (examined: number, rejected: number) => void,
 ): Promise<MissedFeedsAccess> {
   checkBudget();
-  const snap = await integracaoCollection
-    .ref(db, {})
-    .where('tipo', '==', INTEGRACAO_TIPO.mercadoLivre)
-    .where('ativo', '==', true)
-    .get();
-  // Sort in memory: retain the existing indexed (tipo, ativo) query shape.
-  const candidates = [...snap.docs].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const candidates = await listMissedFeedsCandidates(db);
   const result: MissedFeedsAccess = { examined: 0, rejected: 0, selected: null };
-  for (const doc of candidates) {
+  for (const integracaoId of candidates) {
     checkBudget();
     result.examined += 1;
     progress?.(result.examined, result.rejected);
     try {
-      const ctx = await loadMercadoLivreContext(db, doc.id);
+      const ctx = await loadMercadoLivreContext(db, integracaoId);
       const channelCtx = await ctx.resolveChannelContext();
       checkBudget();
       const api = createMercadoLivreApi({
@@ -82,7 +87,7 @@ export async function findMissedFeedsAccess(
         offset: 0,
       });
       result.selected = {
-        integracaoId: doc.id,
+        integracaoId,
         api,
         getAccessToken: channelCtx.getAccessToken,
         firstItemsPage,

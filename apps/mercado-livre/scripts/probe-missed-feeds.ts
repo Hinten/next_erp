@@ -6,11 +6,8 @@
  * Empty pages do not prove whether unfiltered requests include items.
  */
 import { getAdminFirestore } from '../lib/firebase/admin';
-import {
-  findMissedFeedsAccess,
-  missedFeedsSites,
-} from '../lib/marketplace/notificacoes/missedFeedsAccess';
-import { probeMissedFeeds } from '../lib/marketplace/notificacoes/missedFeedsProbe';
+import { missedFeedsSites } from '../lib/marketplace/notificacoes/missedFeedsAccess';
+import { probeMissedFeedsAccounts } from '../lib/marketplace/notificacoes/missedFeedsProbe';
 import { missedFeedsErrorCode } from '../lib/marketplace/notificacoes/missedFeedsSweep';
 
 class ProbeArgumentError extends Error {}
@@ -27,13 +24,10 @@ if (!/^[1-9]\d*$/.test(appId)) throw new ProbeArgumentError('MERCADO_LIVRE_CLIEN
 const site = missedFeedsSites()[0]!;
 const deadline = performance.now() + 120_000;
 try {
-  const access = await findMissedFeedsAccess(getAdminFirestore(), appId, site, () => {
+  const result = await probeMissedFeedsAccounts(getAdminFirestore(), appId, site, () => {
     if (performance.now() >= deadline)
       throw new ProbeArgumentError('Probe discovery budget exhausted.');
   });
-  if (access.selected == null)
-    throw new ProbeArgumentError('No connected account can read the application feed.');
-  const rows = await probeMissedFeeds(appId, access.selected.getAccessToken, site);
   // eslint-disable-next-line no-console -- intentional, sanitized diagnostic output
   console.log(
     JSON.stringify(
@@ -41,16 +35,14 @@ try {
         project,
         appId,
         site,
-        selectedIntegracaoId: access.selected.integracaoId,
-        examined: access.examined,
-        rejected: access.rejected,
-        rows,
+        ...result,
         note: 'Empty pages cannot establish items coverage. No notifications were enqueued.',
       },
       null,
       2,
     ),
   );
+  if (result.selectedIntegracaoId == null) process.exitCode = 1;
 } catch (err) {
   const code = missedFeedsErrorCode(err);
   if (code == null) throw err;

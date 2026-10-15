@@ -35,7 +35,10 @@ theme were ever split.
   queries and guarded application health. Replays onto the same queue and keeps
   **no cursor**. Incomplete coverage fails the scheduled invocation.
 - `missedFeedsProbe.ts` — sanitized, read-only provider-contract diagnostic used
-  by `scripts/probe-missed-feeds.ts`; sends no tasks.
+  by `scripts/probe-missed-feeds.ts`; sends no tasks. It records all three query
+  shapes per connected candidate, including HTTP rejections, before looking for
+  an account accepted by the site-qualified items stream. A failed discovery
+  still prints the sanitized evidence and exits unsuccessfully.
 - `orderBackfill.ts` — the 15-minute order-backfill sweep; enqueues discovered
   orders onto the same pipeline.
 - `coldStartPolicy.test.ts` — no source sibling. Reads `apphosting.yaml` and

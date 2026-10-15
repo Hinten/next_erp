@@ -782,6 +782,38 @@ describe('stream coverage and health', () => {
       complete: false,
     });
   });
+  it('reports exhaustion inside the real API fetch wrapper as a budget failure', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    wireApi({});
+    const real = await vi.importActual<typeof import('@delfrance/integrations-mercado-livre')>(
+      '@delfrance/integrations-mercado-livre',
+    );
+    let elapsed = 0;
+    h.createApi.mockImplementation((config: Parameters<typeof real.createMercadoLivreApi>[0]) => {
+      // Discovery passes its checks, then the deadline expires at the HTTP boundary.
+      elapsed = MAX_SWEEP_DURATION_MS;
+      return real.createMercadoLivreApi({ ...config, retryDelayMs: () => 0 });
+    });
+    const transport = vi.spyOn(globalThis, 'fetch');
+    try {
+      const result = await runMissedFeedsSweep(db as unknown as Firestore, {
+        scheduler,
+        nowMs: NOW_MS,
+        monotonicNow: () => elapsed,
+      });
+      expect(result).toMatchObject({ complete: false, errors: ['SWEEP_TIME_BUDGET_EXHAUSTED'] });
+      expect(db.docs(HEALTH_PATH).get('app-' + APP_ID)).toMatchObject({
+        complete: false,
+        lastSuccessAtUs: null,
+        lastError: 'SWEEP_TIME_BUDGET_EXHAUSTED',
+      });
+      expect(transport).not.toHaveBeenCalled();
+    } finally {
+      transport.mockRestore();
+    }
+  });
   it('time exhaustion remains visible', async () => {
     const db = new FakeDb();
     const { scheduler } = makeScheduler();

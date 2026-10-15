@@ -1,5 +1,11 @@
 /** Read-only provider diagnostic. Summaries contain no raw bodies or headers. */
-import { MercadoLivreNetworkError } from '@delfrance/integrations-mercado-livre';
+import type { Firestore } from 'firebase-admin/firestore';
+import {
+  MercadoLivreNetworkError,
+  MercadoLivreReauthRequiredError,
+} from '@delfrance/integrations-mercado-livre';
+import { loadMercadoLivreContext, MercadoLivreContaNotConfiguredError } from '../core/mercadoLivre';
+import { listMissedFeedsCandidates } from './missedFeedsAccess';
 
 export interface MissedFeedsProbeRow {
   query: 'unfiltered' | 'items-without-site' | 'items-with-site';
@@ -14,6 +20,7 @@ export async function probeMissedFeeds(
   getAccessToken: () => Promise<string>,
   siteId = 'MLB',
   fetchImpl: typeof fetch = fetch,
+  checkBudget: () => void = () => {},
 ): Promise<MissedFeedsProbeRow[]> {
   const rows: MissedFeedsProbeRow[] = [];
   for (const query of ['unfiltered', 'items-without-site', 'items-with-site'] as const) {
@@ -22,7 +29,9 @@ export async function probeMissedFeeds(
     url.searchParams.set('limit', '5');
     if (query !== 'unfiltered') url.searchParams.set('topic', 'items');
     if (query === 'items-with-site') url.searchParams.set('site_id', siteId);
+    checkBudget();
     const token = await getAccessToken();
+    checkBudget();
     let response: Response;
     try {
       response = await fetchImpl(url, {
@@ -79,4 +88,56 @@ export async function probeMissedFeeds(
     rows.push(row);
   }
   return rows;
+}
+
+/** Capture failed query shapes too, then try the next connected credential. */
+export async function probeMissedFeedsAccounts(
+  db: Firestore,
+  appId: string,
+  siteId: string,
+  checkBudget: () => void,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{
+  examined: number;
+  rejected: number;
+  selectedIntegracaoId: string | null;
+  attempts: Array<{ integracaoId: string; rows: MissedFeedsProbeRow[] }>;
+}> {
+  checkBudget();
+  const candidates = await listMissedFeedsCandidates(db);
+  const result = {
+    examined: 0,
+    rejected: 0,
+    selectedIntegracaoId: null as string | null,
+    attempts: [] as Array<{ integracaoId: string; rows: MissedFeedsProbeRow[] }>,
+  };
+  for (const integracaoId of candidates) {
+    checkBudget();
+    result.examined += 1;
+    try {
+      const ctx = await loadMercadoLivreContext(db, integracaoId);
+      const channelCtx = await ctx.resolveChannelContext();
+      const rows = await probeMissedFeeds(
+        appId,
+        channelCtx.getAccessToken,
+        siteId,
+        fetchImpl,
+        checkBudget,
+      );
+      result.attempts.push({ integracaoId, rows });
+      const items = rows.find((row) => row.query === 'items-with-site')!;
+      if (items.status >= 200 && items.status < 300 && items.shape === 'messages-array') {
+        result.selectedIntegracaoId = integracaoId;
+        break;
+      }
+    } catch (err) {
+      if (
+        !(err instanceof MercadoLivreContaNotConfiguredError) &&
+        !(err instanceof MercadoLivreReauthRequiredError)
+      )
+        throw err;
+    }
+    result.rejected += 1;
+  }
+  return result;
 }

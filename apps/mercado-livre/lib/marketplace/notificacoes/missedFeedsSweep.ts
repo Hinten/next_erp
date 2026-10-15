@@ -87,7 +87,10 @@ export function missedFeedsErrorCode(err: unknown): string | null {
   if (err instanceof MercadoLivreReauthRequiredError)
     return err.status == null ? 'ML_REAUTH_REQUIRED' : 'ML_AUTH_' + err.status;
   if (err instanceof MercadoLivreHttpError) return 'ML_HTTP_' + err.status;
-  if (err instanceof MercadoLivreNetworkError) return 'ML_NETWORK';
+  if (err instanceof MercadoLivreNetworkError) {
+    if (err.cause instanceof MissedFeedsBudgetError) return 'SWEEP_TIME_BUDGET_EXHAUSTED';
+    return 'ML_NETWORK';
+  }
   if (err instanceof MercadoLivreValidationError) return 'ML_BAD_RESPONSE';
   if (err instanceof MercadoLivreConfigError) return 'ML_APP_CREDENTIALS_MISSING';
   if (err instanceof MissedFeedsConfigError) return 'ML_SITE_CONFIG_INVALID';

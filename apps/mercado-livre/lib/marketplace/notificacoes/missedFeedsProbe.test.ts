@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { probeMissedFeeds } from './missedFeedsProbe';
+import type { Firestore } from 'firebase-admin/firestore';
+import { MercadoLivreReauthRequiredError } from '@delfrance/integrations-mercado-livre';
+const h = vi.hoisted(() => ({ candidates: vi.fn(), loadCtx: vi.fn() }));
+vi.mock('./missedFeedsAccess', () => ({ listMissedFeedsCandidates: h.candidates }));
+vi.mock('../core/mercadoLivre', async (importActual) => ({
+  ...(await importActual<typeof import('../core/mercadoLivre')>()),
+  loadMercadoLivreContext: h.loadCtx,
+}));
+import { probeMissedFeeds, probeMissedFeedsAccounts } from './missedFeedsProbe';
 
 describe('missed-feeds provider probe', () => {
   it('compares all three query shapes and emits only sanitized summaries', async () => {
@@ -59,5 +67,58 @@ describe('missed-feeds provider probe', () => {
       vi.fn<typeof fetch>(async () => new Response(body)),
     );
     expect(rows.every((row) => row.shape === shape && row.count === null)).toBe(true);
+  });
+});
+
+
+describe('probe account discovery', () => {
+  const db = {} as Firestore;
+  function connected() {
+    return {
+      resolveChannelContext: async () => ({ getAccessToken: async () => 'SECRET_TOKEN' }),
+    };
+  }
+  it('records every HTTP rejection before selecting a later empty successful account', async () => {
+    h.candidates.mockResolvedValue(['A-disconnected', 'B-seller', 'C-owner', 'D-unused']);
+    h.loadCtx.mockReset();
+    h.loadCtx.mockImplementation(async (_db: Firestore, id: string) => {
+      if (id === 'A-disconnected')
+        throw new MercadoLivreReauthRequiredError('no_token', 'disconnected');
+      return connected();
+    });
+    const fetchMock = vi.fn<typeof fetch>();
+    for (const status of [401, 403, 401, 200, 400, 200])
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify(status === 200 ? { messages: [] } : { secret: 'SECRET' }), {
+          status,
+        }),
+      );
+    const result = await probeMissedFeedsAccounts(db, '42', 'MLB', () => {}, fetchMock);
+    expect(result).toMatchObject({ examined: 3, rejected: 2, selectedIntegracaoId: 'C-owner' });
+    expect(result.attempts.map((attempt) => attempt.rows.map((row) => row.status))).toEqual([
+      [401, 403, 401],
+      [200, 400, 200],
+    ]);
+    expect(h.loadCtx.mock.calls.map(([, id]) => id)).toEqual([
+      'A-disconnected',
+      'B-seller',
+      'C-owner',
+    ]);
+    expect(JSON.stringify(result)).not.toContain('SECRET');
+  });
+  it('returns all three contract rows when every site-qualified items request fails', async () => {
+    h.candidates.mockResolvedValue(['A']);
+    h.loadCtx.mockResolvedValue(connected());
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ message: 'rejected' }), { status: 400 }),
+    );
+    const result = await probeMissedFeedsAccounts(db, '42', 'MLB', () => {}, fetchMock);
+    expect(result.selectedIntegracaoId).toBeNull();
+    expect(result.attempts[0]?.rows.map((row) => row.query)).toEqual([
+      'unfiltered',
+      'items-without-site',
+      'items-with-site',
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
