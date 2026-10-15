@@ -1422,10 +1422,10 @@ SHOPEE_CONTA_PAUSADA` before any provider call; this command reads the state
   sender handles by re-reading the floor and retrying ONCE.
 - **In the dry run, `produtoNome` costs one extra document read per requested
   id** (up to 50, in parallel) and buys the name in every row; nothing else
-  reads it. Under `--live` it costs nothing extra — the names ride the ONE
-  masked `getAll` that resolves each REQUESTED id to its anchor
-  (`core/anchors.ts`), so a listing row reached only through a requested child
-  carries no name.
+  reads it. Under `--live` the names ride the ONE masked `getAll` that resolves
+  each REQUESTED id to its anchor (`core/anchors.ts`), plus ONE extra masked
+  `nome` read for the anchors nobody requested — so a listing row reached only
+  through a requested child carries the ANCHOR's name.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it writes
   quantities on a real marketplace, and even a dry run calls Shopee.
 
