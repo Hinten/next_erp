@@ -96,8 +96,10 @@ export const CAMPOS_CAPS: Record<CampoCaps, DescritorCampo> = {
   importarPedido: { rotulo: 'Importar pedido', ler: (c) => c.importarPedido },
   importarPagamento: { rotulo: 'Importar pagamento', ler: (c) => c.importarPagamento },
   consolidaPacote: { rotulo: 'Consolida pacote', ler: (c) => c.consolidaPacote },
+  // Not only "a separate call": Shopee and Amazon send it on the same call, but
+  // only once a status, role or whitelist gate opens. See the field docstring.
   dadosFiscaisSeparados: {
-    rotulo: 'Dados fiscais em chamada separada',
+    rotulo: 'Dados fiscais em chamada separada ou restritos',
     ler: (c) => c.dadosFiscaisSeparados,
   },
 
