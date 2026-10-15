@@ -77,6 +77,11 @@ vi.mock('@/app/(app)/clientes/[id]/_components/EnderecosSection', () => ({
 vi.mock('@/app/(app)/canais/_components/RecalcularPrecosCanalAction', () => ({
   RecalcularPrecosCanalAction: () => null,
 }));
+// The conta's connect panel reads its status through `useQuery`, which this
+// suite has no provider for.
+vi.mock('@/app/(app)/canais/amazon/_components/ContaAmazonPanel', () => ({
+  ContaAmazonPanel: () => null,
+}));
 vi.mock('@/app/(app)/canais/loja-integrada/_components/ContaLojaIntegradaPanel', () => ({
   ContaLojaIntegradaPanel: () => null,
 }));
