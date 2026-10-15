@@ -481,6 +481,31 @@ describe('(4) o envelope — R-12 a R-15', () => {
     ].sort();
     expect(cobertos).toEqual([PRODUTO, 'prod-2']);
   });
+
+  it('⚠️ (MUT-1) só o FILHO pedido ⇒ a linha nomeia a âncora COM o nome da âncora, nunca null', async () => {
+    semearProdutoELink(db);
+    db.seed('produtos/prod-filho', { nome: 'Camiseta P', paiId: PRODUTO });
+    h.enviar.mockImplementation(
+      comRemetente({
+        outcome: 'enviado',
+        motivo: null,
+        codigo: null,
+        modelos: [],
+        quantidadeEnviada: 7,
+        chamadasShopee: 1,
+        pausadoAte: null,
+      }),
+    );
+
+    const res = await POST(req(corpoValido({ produtoIds: ['prod-filho'] }), AUTORIZADO));
+    const body = (await res.json()) as EnvioEstoqueResponse;
+
+    // A null here is the web dialog's 'Produto desconhecido' for a push that worked.
+    expect(body.listings.map((l) => [l.produtoId, l.produtoNome])).toEqual([
+      [PRODUTO, `Camiseta ${PRODUTO}`],
+    ]);
+    expect(body.produtosSemEnvio).toEqual([]);
+  });
 });
 
 /* ------------------------------ R-16 … R-20 -------------------------------- */

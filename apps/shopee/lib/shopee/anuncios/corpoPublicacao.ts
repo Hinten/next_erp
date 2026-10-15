@@ -39,9 +39,22 @@ import {
   SHOPEE_UNLIST_MAX_ITEMS,
   type ShopeeItemStatusWritable,
 } from '@delfrance/integrations-shopee';
-import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from '@delfrance/schemas';
+import { ACAO_STATUS_ANUNCIO, naoDocId, type AcaoStatusAnuncio } from '@delfrance/schemas';
 
 import { MSG_BODY_INVALIDO, type LeituraCorpo } from '../produtos/corpoImportacao';
+
+/**
+ * Is this request-body value unusable as a Firestore **document id**? The
+ * mechanism is spelled out in the module docblock: `.doc()` validates the PATH
+ * and does it outside our `try`, so a separator either throws a 500 or silently
+ * addresses a document the caller had no business naming.
+ *
+ * Re-exported from `@delfrance/schemas` — the predicate's one home since the
+ * produto's Shopee tab and `lerTabelaMedidasDoProduto` started resolving the
+ * size-chart ref through `lerRefTabelaDeMedidas`, which needs it too. Every
+ * reader in this folder keeps importing it from here.
+ */
+export { naoDocId };
 
 /* -------------------------------------------------------------------------- */
 /*  Codes and messages                                                         */
@@ -122,27 +135,6 @@ function objeto(body: unknown): LeituraCorpo<Record<string, unknown>> {
     return erro(MSG_BODY_INVALIDO);
   }
   return ok(body as Record<string, unknown>);
-}
-
-/** Firestore reserves both relative-path names; either one addresses elsewhere. */
-const NOMES_RELATIVOS = new Set(['.', '..']);
-
-/**
- * Is this request-body value unusable as a Firestore **document id**?
- *
- * The mechanism is spelled out in the module docblock: `.doc()` validates the
- * PATH and does it outside our `try`, so a separator either throws a 500 or
- * silently addresses a document the caller had no business naming. TYPE-checked
- * and never truthiness-checked — a non-string that happens to be truthy sails
- * past a `!value` guard and then throws deep inside `.doc(id)`.
- *
- * ⚠️ Other apps carry their own copy of this rule. `apps/*` has no dependency
- * edge to another `apps/*` and none is possible, so a shared one would have to
- * be promoted to a package; that is a follow-up this step does not carry.
- * Nothing here asserts what any other copy does.
- */
-export function naoDocId(v: unknown): boolean {
-  return typeof v !== 'string' || v === '' || v.includes('/') || NOMES_RELATIVOS.has(v);
 }
 
 /** A REQUIRED document id. */

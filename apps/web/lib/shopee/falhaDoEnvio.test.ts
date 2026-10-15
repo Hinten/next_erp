@@ -94,6 +94,26 @@ describe('classificarFalhaDoEnvioShopee', () => {
       );
       expect(f).toMatchObject({ outcome: 'falha', pausadoAte: null });
     });
+
+    // ⚠️ NEAR MISS on the SAME status: the stock, price and status routes also
+    // answer 409 for a dead grant and for a conta with no shop id
+    // (core/respond.ts), so the pause is keyed on the CODE, never on the 409.
+    it.each([
+      ['reautenticar', CODIGO_FALHA_SHOPEE.reautenticar, 'Reconecte a conta.'],
+      ['contaSemShopId', CODIGO_FALHA_SHOPEE.contaSemShopId, 'A conta não tem loja vinculada.'],
+    ])('NEAR MISS: a 409 %s is a failure carrying its code, not a pause', (_c, code, mensagem) => {
+      const f = classificarFalhaDoEnvioShopee(
+        erroHttp(mensagem, 409, code, { pausadoAte: '2026-10-14T18:30:00Z' }),
+        undefined,
+      );
+      expect(f).toEqual({
+        tipo: 'conta',
+        outcome: 'falha',
+        motivo: code,
+        mensagem,
+        pausadoAte: null,
+      });
+    });
   });
 
   describe('F2 — a conta refusal keeps the verdict slug and the backend sentence', () => {

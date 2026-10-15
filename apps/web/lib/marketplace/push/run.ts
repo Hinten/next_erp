@@ -193,10 +193,6 @@ export async function enviarParaMarketplaces<Row extends PushRowBase>(
     rows.push(...result.rows);
     emitir();
   }
-  // The loop head only sees a cancel BEFORE a dispatch. One that lands during the
-  // last conta's call comes back as `{ rows: [] }` and would otherwise end the run
-  // as if it had finished — its produtos gone from the counts, no banner.
-  if (cancelou()) cancelado = true;
 
   // A cancel during the final dispatch has no next iteration to set the flag.
   return { rows, cancelado: cancelado || cancelou() };

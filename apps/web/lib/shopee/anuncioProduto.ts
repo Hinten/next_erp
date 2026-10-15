@@ -35,6 +35,7 @@ import {
   anuncioShopeeVivo,
   ehVinculoSubstituido,
   estadoAnuncioShopeeSchema,
+  type AcaoSugeridaPublicacaoShopee,
   type EstadoAnuncioShopee,
   type TipoAcaoSugeridaPublicacaoShopee,
 } from '@delfrance/schemas';
@@ -42,7 +43,7 @@ import {
 import {
   ShopeeClientNetworkError,
   ShopeeClientRespostaInvalidaError,
-  type ShopeeClientHttpError,
+  ShopeeClientHttpError,
   type PublicarShopeeInput,
 } from './client';
 import type { ProblemaShopee, RespostaReverificarShopee } from './wire';
@@ -194,6 +195,16 @@ export function ordenarVinculosShopee<
 export const FRASE_PRIMEIRA_PUBLICACAO_SHOPEE =
   'Primeira publicação: chega na etapa de autoria do anúncio.';
 
+/** The `importar` row's first half: what was found. */
+const FRASE_KIT_JA_EXISTE_SHOPEE =
+  'Já existe na Shopee um kit com o SKU deste produto — não crie outro.';
+
+/** The `importar` row's second half: the one door for a hit NO link holds (see below). */
+const FRASE_IMPORTACAO_EM_MASSA_SHOPEE =
+  'A importação em massa (Canais › Shopee) o vincula a este produto se ele ainda não estiver ' +
+  'vinculado a nenhum produto, se nenhum outro produto tiver o mesmo SKU e se os componentes do ' +
+  'kit já estiverem vinculados no ERP; um kit já vinculado a outro produto continua onde está.';
+
 /**
  * What the operator READS for each machine-readable next step of a refused
  * publish (`problemas[].acao`, `@delfrance/schemas`' `shopeeAcaoSugerida.ts`).
@@ -220,11 +231,7 @@ export const TEXTO_ACAO_SUGERIDA = {
     'Republique sem as opções de kit nativo — elas não se aplicam a este anúncio agora.',
   [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal]:
     'Informe qual componente é o principal do kit nativo.',
-  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar]:
-    'Já existe na Shopee um kit com o SKU deste produto — não crie outro. A importação em ' +
-    'massa (Canais › Shopee) o vincula a este produto se ele ainda não estiver vinculado a ' +
-    'nenhum produto, se nenhum outro produto tiver o mesmo SKU e se os componentes do kit já ' +
-    'estiverem vinculados no ERP; um kit já vinculado a outro produto continua onde está.',
+  [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar]: `${FRASE_KIT_JA_EXISTE_SHOPEE} ${FRASE_IMPORTACAO_EM_MASSA_SHOPEE}`,
   [TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo]:
     'Mais de um vínculo ativo responde por este produto nesta conta — escolha em qual agir: ' +
     'cada um tem o seu próprio bloco nesta aba.',
@@ -237,6 +244,37 @@ export const TEXTO_ACAO_SUGERIDA = {
  */
 const FRASE_REPUBLICAR_SEM_VINCULO =
   'O vínculo não foi indicado: use "Republicar" no bloco do anúncio ativo desta conta.';
+
+/**
+ * The SUPERSEDED link a `vinculo-substituido` row is about, when it is NOT the
+ * block the row is shown in — or `null` (the row is about the block itself, or
+ * a server older than `substituidoLinkDocId` did not say).
+ *
+ * The dispatcher raises the refusal about the link that was sent; a kit
+ * create's duplicate scan raises it about K's OLD kit, superseded but still
+ * live, while the outcome is filed under the link that was SENT. Wording that
+ * row as "este anúncio foi substituído" would call the live current kit
+ * superseded. ONE predicate, so the copy ({@link textoDoProblemaShopee}) and
+ * the row's button cannot disagree about which link the row names.
+ */
+export function vinculoSubstituidoAlheio(
+  acao: AcaoSugeridaPublicacaoShopee | null,
+  linkDoBloco: string | undefined,
+): string | null {
+  if (acao?.tipo !== TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar) return null;
+  const sobre = acao.substituidoLinkDocId ?? null;
+  return sobre === null || linkDoBloco === undefined || sobre === linkDoBloco ? null : sobre;
+}
+
+/** A `vinculo-substituido` row about ANOTHER link ({@link vinculoSubstituidoAlheio}). */
+function textoDoSubstituidoAlheio(antigo: string, novo: string | null): string {
+  return (
+    `O kit nativo antigo do vínculo ${antigo}` +
+    (novo === null ? ' foi substituído' : ` foi substituído pelo vínculo ${novo}`) +
+    ', mas ainda está na Shopee com o mesmo SKU e bloqueia esta ação — exclua-o no Seller ' +
+    'Centre, ou use "Recriar kit" nele para tentar excluí-lo de novo.'
+  );
+}
 
 /**
  * A sentence written for a TERMINAL: a `--flag`, a `<verbo>:anuncio` script
@@ -270,10 +308,13 @@ export const FRASE_RECUSA_SEM_PASSO_SHOPEE =
  *    {@link FRASE_RECUSA_SEM_PASSO_SHOPEE}.
  *
  * `motivo` is optional only so a caller holding a bare `{ mensagem, acao }`
- * still compiles; every 422 row carries one.
+ * still compiles; every 422 row carries one. `linkDoBloco` is the link the row
+ * is SHOWN under: a `vinculo-substituido` row about another link is worded as
+ * such ({@link vinculoSubstituidoAlheio}).
  */
 export function textoDoProblemaShopee(
   p: Pick<ProblemaShopee, 'mensagem' | 'acao'> & { readonly motivo?: string },
+  linkDoBloco?: string,
 ): string {
   const { acao } = p;
   const doMotivo = p.motivo === undefined ? null : textoProprio(TEXTO_MOTIVO_KIT, p.motivo);
@@ -285,18 +326,104 @@ export function textoDoProblemaShopee(
   switch (acao.tipo) {
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar:
       return `${base} Vínculo: ${acao.linkDocId}.`;
-    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar:
+    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar: {
+      const antigo = vinculoSubstituidoAlheio(acao, linkDoBloco);
+      if (antigo !== null) return textoDoSubstituidoAlheio(antigo, acao.linkDocId);
       return acao.linkDocId === null
         ? `${base} ${FRASE_REPUBLICAR_SEM_VINCULO}`
         : `${base} Vínculo: ${acao.linkDocId}.`;
+    }
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar:
-      return `${base} Anúncio(s) na Shopee: ${acao.itemIds.map(String).join(', ')}.`;
+      return textoDoImportar(acao.itemIds, acao.vinculados);
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo:
       return `${base} Vínculos: ${acao.linkDocIds.join(', ')}.`;
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit:
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal:
       return base;
   }
+}
+
+/**
+ * The `importar` row. A hit a link ALREADY holds is skipped by the mass import
+ * (it imports only the listings no link names), so pointing it there sends the
+ * operator to a whole-conta job that changes nothing: such a hit names its
+ * produto instead, and when every hit is held the mass-import sentence goes.
+ * `vinculados` absent or `null` (a server older than the field) words every id
+ * alike, as before.
+ */
+function textoDoImportar(
+  itemIds: readonly number[],
+  vinculados: readonly { readonly itemId: number; readonly produtoId: string }[] | null | undefined,
+): string {
+  const ids = (lista: readonly number[]) => lista.map(String).join(', ');
+  if (vinculados == null) {
+    return `${TEXTO_ACAO_SUGERIDA[TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar]} Anúncio(s) na Shopee: ${ids(itemIds)}.`;
+  }
+  const donoDe = new Map(vinculados.map((v) => [v.itemId, v.produtoId]));
+  const livres = itemIds.filter((id) => !donoDe.has(id));
+  const partes = [FRASE_KIT_JA_EXISTE_SHOPEE];
+  if (livres.length > 0) {
+    partes.push(
+      FRASE_IMPORTACAO_EM_MASSA_SHOPEE,
+      `Anúncio(s) na Shopee sem vínculo: ${ids(livres)}.`,
+    );
+  }
+  for (const id of itemIds) {
+    const produtoId = donoDe.get(id);
+    if (produtoId === undefined) continue;
+    partes.push(
+      `O anúncio ${String(id)} já está vinculado ao produto ${produtoId} — a importação não o ` +
+        'muda; confira o SKU desse produto.',
+    );
+  }
+  return partes.join(' ');
+}
+
+/**
+ * Where in the publish sequence a mid-publish refusal LANDED, in the operator's
+ * words — `detalhes.etapa` of a 422 `SHOPEE_PUBLISH_REJECTED`, which is
+ * apps/shopee's closed `EtapaPublicacao` (`errosPublicacao.ts`).
+ *
+ * ⚠️ A PLACE, never a channel STATE: what exists on Shopee after a refusal
+ * depends on the ARM as well (a recriar creates the new kit before it deletes
+ * the old one, so a refused `add_kit_item` leaves the old kit live), and only
+ * the server knows the arm. So the label claims nothing beyond what the step
+ * alone settles.
+ */
+const ROTULO_ETAPA_PUBLICACAO_SHOPEE: Readonly<Record<string, string>> = {
+  fotos: 'envio das fotos',
+  add_item: 'criação do anúncio — a Shopee não criou o anúncio',
+  update_item: 'atualização do anúncio',
+  init_tier_variation: 'criação das variações',
+  update_tier_variation: 'atualização das variações',
+  add_model: 'criação dos modelos',
+  update_model: 'atualização dos modelos',
+  get_model_list: 'leitura dos modelos',
+  relistagem: 'reativação do anúncio',
+  'leitura-de-volta': 'conferência do anúncio depois da publicação',
+  add_kit_item: 'criação do kit — a Shopee não criou o kit',
+  update_kit_item: 'atualização do kit',
+  delete_item: 'exclusão do kit antigo',
+};
+
+/** An etapa this build does not know — the raw code is never printed. */
+const ROTULO_ETAPA_DESCONHECIDA_SHOPEE = 'uma etapa que esta tela ainda não descreve';
+
+/**
+ * The sentence a mid-publish refusal opens with: where it landed
+ * ({@link ROTULO_ETAPA_PUBLICACAO_SHOPEE}, an own-property lookup with a neutral
+ * fallback), and the caution the CLI gives for the same case — earlier writes
+ * may have landed, so the listing is read back before anything is repeated.
+ */
+export function textoDaEtapaShopee(etapa: string): string {
+  const rotulo =
+    (Object.hasOwn(ROTULO_ETAPA_PUBLICACAO_SHOPEE, etapa)
+      ? ROTULO_ETAPA_PUBLICACAO_SHOPEE[etapa]
+      : undefined) ?? ROTULO_ETAPA_DESCONHECIDA_SHOPEE;
+  return (
+    `Recusada na etapa: ${rotulo}. Escritas anteriores podem já ter chegado à Shopee — use ` +
+    '"Reverificar" antes de repetir.'
+  );
 }
 
 /** The toast a re-verify answers with: what the ERP did with Shopee's reading. */
@@ -491,8 +618,7 @@ export function esperaDoKitIncerto(aguardarMs: number | undefined): number {
  *    a body this build cannot read: whatever it did, it did;
  *  - a 5xx — the route failed or was cut (App Hosting's 180 s ceiling answers
  *    504) after a write it may already have made; except 501, a deployment fact,
- *    and a 502 whose `kind` is a Shopee rate limit (`burst` / `daily`, the
- *    client's own `kind` contract): a rate-limited call was refused, not run.
+ *    and a rate-limited 502 ({@link limiteNaCriacaoDeKit}).
  *
  * Everything else — a 4xx, a 422's `problemas` — is a definite answer.
  */
@@ -501,9 +627,36 @@ export function criacaoDeKitIncerta(
 ): boolean {
   if (err instanceof ShopeeClientNetworkError) return true;
   if (err instanceof ShopeeClientRespostaInvalidaError) return true;
-  if (err.status === 502) return err.kind !== 'burst' && err.kind !== 'daily';
+  if (err.status === 502) return !limiteNaCriacaoDeKit(err);
   return err.status >= 500 && err.status !== 501;
 }
+
+/**
+ * A 502 whose `kind` is a Shopee rate limit (`burst` / `daily`, the client's
+ * own `kind` contract) — DEFINITE for a kit create, though not because nothing
+ * ran: the 502 does not say WHICH call was limited, and one after a successful
+ * `add_kit_item` (the read-back, a recriar's re-read) reaches the tab the same
+ * way. It is definite because no wait is needed either way: the create writes
+ * the new kit's link BEFORE any call that can hit the limit
+ * (`aplicarKit.ts`'s `garantirKitNovo`), so the identical re-send reaches
+ * `completar`, never a second `add_kit_item`. The kit may already exist, which
+ * {@link FRASE_LIMITE_NA_CRIACAO_DE_KIT} says.
+ */
+export function limiteNaCriacaoDeKit(
+  err: ShopeeClientHttpError | ShopeeClientNetworkError,
+): boolean {
+  return (
+    err instanceof ShopeeClientHttpError &&
+    !(err instanceof ShopeeClientRespostaInvalidaError) &&
+    err.status === 502 &&
+    (err.kind === 'burst' || err.kind === 'daily')
+  );
+}
+
+/** What a rate-limited kit create reads — the kit may already exist ({@link limiteNaCriacaoDeKit}). */
+export const FRASE_LIMITE_NA_CRIACAO_DE_KIT =
+  'A Shopee limitou as consultas. O kit novo pode já ter sido criado — confira os anúncios desta ' +
+  'conta; repetir a mesma ação em alguns minutos conclui sem criar outro kit.';
 
 /**
  * A kit create the server could not confirm, kept for the identical re-send:
@@ -518,9 +671,11 @@ export interface IncertoKitShopee {
 
 /**
  * {@link IncertoKitShopee} as stored — parsed on every read: a stored value is
- * never trusted as typed. A body the route would refuse (400) is not a re-send,
- * so it reads as nothing: both arm flags at once, or a recriar naming no link
- * (the cross-field rules of `PublicarShopeeInput`).
+ * never trusted as typed. It states THIS tab's re-send precondition (what
+ * `enviarKit` would send as a kit create): a value with no link, or not exactly
+ * one arm flag, reads as nothing. Nothing here restates the route's rules —
+ * anything else the route refuses comes back as its own 400, a definite answer
+ * that clears the store.
  */
 const incertoKitShopeeSchema = z.object({
   ate: z.number().finite(),
@@ -528,15 +683,15 @@ const incertoKitShopeeSchema = z.object({
     .object({
       integracaoId: z.string().min(1),
       produtoId: z.string().min(1),
-      linkDocId: z.string().min(1).optional(),
+      linkDocId: z.string().min(1),
       status: z.enum(['NORMAL', 'UNLIST']).optional(),
       categoryId: z.number().int().positive().optional(),
       principal: z.string().min(1).optional(),
       recriar: z.literal(true).optional(),
       converterEmKit: z.literal(true).optional(),
     })
-    .refine((c) => !(c.recriar === true && c.converterEmKit === true))
-    .refine((c) => c.recriar !== true || c.linkDocId !== undefined),
+    // Exactly ONE arm: `enviarKit` sends nothing for a body with neither.
+    .refine((c) => (c.recriar === true) !== (c.converterEmKit === true)),
 });
 
 /** The `sessionStorage` key of one produto's uncertain kit create on one conta. */

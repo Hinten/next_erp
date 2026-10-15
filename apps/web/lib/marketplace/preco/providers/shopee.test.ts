@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 
-import { ShopeeClientHttpError } from '@/lib/shopee/client';
+import { ShopeeClientHttpError, ShopeeClientNetworkError } from '@/lib/shopee/client';
 import { CODIGO_FALHA_SHOPEE } from '@/lib/shopee/erros';
 import {
   DETALHES_ERRO_SHOPEE_VAZIOS,
@@ -214,6 +214,34 @@ describe('shopeePriceProvider', () => {
     expect(res.rows.map((r) => [r.key, r.outcome, r.motivo, r.mensagem])).toEqual([
       ['anchor-1:int-1:-', 'falha', 'regiao-nao-br', 'A loja não é do Brasil.'],
       ['p2:int-1:-', 'falha', 'regiao-nao-br', 'A loja não é do Brasil.'],
+    ]);
+  });
+
+  it('a cancel mid-flight is NO rows — the run reports it', async () => {
+    const controller = new AbortController();
+    const enviarPrecos = vi.fn<EnviarPrecos>().mockImplementation(() => {
+      controller.abort();
+      return Promise.reject(
+        new ShopeeClientNetworkError('aborted', new DOMException('aborted', 'AbortError')),
+      );
+    });
+    // Two produtos, so a mutant that answers one row per produto shows up too.
+    const res = await shopeePriceProvider.enviarPreco(
+      input(enviarPrecos, { produtoIds: ['anchor-1', 'p2'], signal: controller.signal }),
+    );
+    expect(res).toEqual({ rows: [], pausadoAte: null });
+  });
+
+  it('NEAR MISS: the same network error with nobody cancelling is a "rede" failure row per produto', async () => {
+    const enviarPrecos = vi
+      .fn<EnviarPrecos>()
+      .mockRejectedValue(new ShopeeClientNetworkError('Failed to fetch'));
+    const res = await shopeePriceProvider.enviarPreco(
+      input(enviarPrecos, { produtoIds: ['anchor-1', 'p2'] }),
+    );
+    expect(res.rows.map((r) => [r.produtoId, r.outcome, r.motivo, r.mensagem])).toEqual([
+      ['anchor-1', 'falha', 'rede', 'Não foi possível contatar o serviço da Shopee.'],
+      ['p2', 'falha', 'rede', 'Não foi possível contatar o serviço da Shopee.'],
     ]);
   });
 
