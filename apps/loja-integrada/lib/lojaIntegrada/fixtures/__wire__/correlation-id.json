@@ -1,0 +1,43 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/categoria/",
+    "query": [
+      [
+        "limit",
+        "1"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 324,
+    "corpo": {
+      "meta": {
+        "limit": 1,
+        "offset": 0,
+        "total_count": 15,
+        "previous": null,
+        "next": "/api/v1/categoria?limit=1&offset=1"
+      },
+      "objects": [
+        {
+          "id": 23948630,
+          "id_externo": null,
+          "categoria_pai": null,
+          "descricao": "",
+          "nome": "REDACTED",
+          "resource_uri": "REDACTED",
+          "seo": "REDACTED",
+          "url": "https://redacted.invalid/"
+        }
+      ]
+    }
+  }
+}

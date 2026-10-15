@@ -32,7 +32,9 @@ this script turns them into committed fixtures under
 # What would be written: request lines, classes, leaf tables, findings. Writes nothing.
 pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-capturas" --dry-run
 
-# Write the fixtures (all pairs, or only some with --so).
+# Write the fixtures (all pairs, or only some with --so). A raw pair the corpus excludes
+# (__wire__/README.md, "Excluded on purpose") is written back by a run without --so:
+# delete it from the folder first, or name only the pairs wanted with --so.
 pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-capturas"
 pnpm --filter @delfrance/loja-integrada-app sanitizar --entrada "$HOME/li-capturas" --so c1-pedido-busca
 

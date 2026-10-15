@@ -3,11 +3,21 @@
  * against the fake.
  */
 import { describe, expect, it } from 'vitest';
+import { escreverAviso } from '@delfrance/data/admin/avisos';
+import {
+  CANAL_AVISO,
+  MOTIVO_IMPORTACAO_PARADA_LI,
+  ROTAS_AVISO,
+  SEVERIDADE_AVISO,
+  TIPO_AVISO,
+} from '@delfrance/schemas';
 
 import {
+  agoraUsDe,
   avisarExpiracaoToken,
   avisarReconexaoPendente,
   chaveExpiracao,
+  chaveImportacaoParada,
   chaveReconexao,
   relogioDoDocumentoUs,
 } from '../avisos/avisos';
@@ -38,6 +48,26 @@ function sweep(db: FakeDb, logger = loggerEspiao().logger) {
 
 function aviso(db: FakeDb, chave: string) {
   return db.ler(caminhoAviso(chave));
+}
+
+/**
+ * An open import-stopped row, as the order poller raises it (step-3 PR 3-e):
+ * written through the REAL `escreverAviso`, clocked by `relogioUs`.
+ */
+function avisarImportacaoParada(db: FakeDb, integracaoId: string, relogioUs: number) {
+  return escreverAviso(
+    asDb(db),
+    {
+      tipo: TIPO_AVISO.lojaIntegradaImportacaoParada,
+      conta: integracaoId,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: integracaoId, motivo: MOTIVO_IMPORTACAO_PARADA_LI.falhaTransitoria },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build(integracaoId), campo: null },
+      relogioEvento: relogioUs,
+    },
+    { increment, agoraUs: agoraUsDe({ nowMs: AGORA_MS - DIA_MS }) },
+  );
 }
 
 describe('pass (a): the expiry threshold', () => {
@@ -320,6 +350,49 @@ describe('pass (b): open rows of contas that no longer exist', () => {
     expect(r2.contas).toBe(2);
     expect(r2.estacionadas).toBe(1);
     expect(aviso(db, chaveReconexao('nova'))?.resolvidoEm).toBeNull();
+  });
+
+  it('the step-3 import-stopped row: a LISTED conta’s stays open, an unlisted one’s is resolved CLOCKED', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(60) });
+    await avisarImportacaoParada(db, 'viva', 5);
+    await avisarImportacaoParada(db, 'apagada', 6);
+
+    const r = await sweep(db);
+    expect(r.orfaos.resolvidos).toBe(1);
+    // The poller's row of a live conta is the poller's business, never this pass's.
+    expect(aviso(db, chaveImportacaoParada('viva'))).toMatchObject({
+      resolvidoEm: null,
+      relogioEvento: 5,
+    });
+    // A gone conta's row is closed, stamped with the conta list's read time.
+    const fechado = aviso(db, chaveImportacaoParada('apagada'));
+    expect(fechado).toMatchObject({ resolucaoMotivo: 'conta-removida' });
+    expect(fechado?.resolvidoEm).not.toBeNull();
+    expect(Number(fechado?.relogioEvento)).toBeGreaterThan(6);
+  });
+
+  it('⚠️ an import-stopped row raised AFTER the list was read (a brand-new conta) stays open', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(20) });
+    // Pass (a)'s raise on `viva` is the write the new conta lands right before.
+    let relogioDaCorrida = 0;
+    db.antesDaProximaEscrita(caminhoAviso(chaveExpiracao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Loja Nova' });
+      const carimbo = seedCredencial(db, 'nova');
+      relogioDaCorrida = relogioDoDocumentoUs(carimbo);
+      await avisarImportacaoParada(db, 'nova', relogioDaCorrida);
+    });
+
+    const r = await sweep(db);
+    expect(r.contas).toBe(1);
+    expect(r.orfaos.resolvidos).toBe(0);
+    expect(aviso(db, chaveImportacaoParada('nova'))).toMatchObject({
+      resolvidoEm: null,
+      relogioEvento: relogioDaCorrida,
+    });
   });
 
   it('a page boundary on an orphan it just RESOLVED: paging continues past it', async () => {

@@ -1693,9 +1693,11 @@ of them a secret:
 - **`SHOPEE_TASKS_REGION`** — must equal the `FUNCTIONS_REGION` inlined into the
   functions bundle. No default: an unset value THROWS on the first enqueue
   rather than resolving to `us-central1` and dropping the task behind a 204
-  (#1108). `apphosting.yaml` ships it blank on purpose until step 22 deploys the
-  codebase — blank reads as unset, so today the enqueue throws and the sweep
-  drains, which is loud and lossless.
+  (#1108). `apphosting.yaml` deliberately has NO row for it — set it in each
+  project's console once that project's functions codebase is deployed. Unset,
+  the enqueue throws and the sweep drains, which is loud and lossless. ⚠️ Never
+  a `value: ''` row: App Hosting rejects the whole manifest
+  (`fah/invalid-apphosting-yaml`) before the build starts.
 - **`SHOPEE_TASKS_DISABLED`** — `'1'` puts the channel in sweep-only mode: the
   enqueue throws, the receiver persists each push as `failed`, and the 30-minute
   reprocess sweep drains it. Never a silent drop, and never a 5xx. The lost-push
