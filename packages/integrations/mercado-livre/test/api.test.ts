@@ -1524,21 +1524,20 @@ describe('createMercadoLivreApi — User-Products migration (#441)', () => {
 });
 
 describe('createMercadoLivreApi — rejected access tokens', () => {
-  const requests: Array<{
+  type RejectionRequest = {
     name: string;
     send: (api: MercadoLivreApi) => Promise<unknown>;
-  }> = [
+  };
+
+  const picture = {
+    filename: 'photo.jpg',
+    contentType: 'image/jpeg',
+    data: new Uint8Array([1]),
+  };
+  const requests: RejectionRequest[] = [
     { name: 'JSON GET', send: (api) => api.getMe() },
     { name: 'JSON POST', send: (api) => api.createItem({ title: 'Example' }) },
-    {
-      name: 'multipart upload',
-      send: (api) =>
-        api.uploadPicture({
-          filename: 'photo.jpg',
-          contentType: 'image/jpeg',
-          data: new Uint8Array([1]),
-        }),
-    },
+    { name: 'multipart upload', send: (api) => api.uploadPicture(picture) },
     {
       name: 'XML upload',
       send: (api) => api.sendShipmentInvoiceData(123, '<nfeProc/>'),
@@ -1571,28 +1570,28 @@ describe('createMercadoLivreApi — rejected access tokens', () => {
     expect(readBody).toHaveBeenCalledTimes(1);
   });
 
-  it.each([{ error: 'invalid_token' }, { message: 'invalid_token' }])(
-    'recognizes the exact invalid_token code in %j',
-    async (body) => {
-      const onAccessTokenRejected = vi.fn();
-      const api = createMercadoLivreApi(
-        cfg(vi.fn(async () => jsonResponse(body, 401)), { onAccessTokenRejected }),
-      );
+  const tokenErrors = [{ error: 'invalid_token' }, { message: 'invalid_token' }];
 
-      await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+  it.each(tokenErrors)('recognizes exact invalid_token (%j)', async (body) => {
+    const fetchMock = vi.fn(async () => jsonResponse(body, 401));
+    const onAccessTokenRejected = vi.fn();
+    const api = createMercadoLivreApi(cfg(fetchMock, { onAccessTokenRejected }));
 
-      expect(onAccessTokenRejected).toHaveBeenCalledExactlyOnceWith('live-token');
-    },
-  );
+    await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
 
-  it.each([
+    expect(onAccessTokenRejected).toHaveBeenCalledExactlyOnceWith('live-token');
+  });
+
+  const otherErrors = [
     { error: 'unauthorized', message: 'Missing permission' },
     { error: 'identity_validation_pending' },
     { message: 'invalid_token: expired' },
     { error: 'INVALID_TOKEN' },
     { error_description: 'invalid_token' },
     { message: 'invalid token' },
-  ])('keeps unrelated or non-exact 401 errors unchanged (%j)', async (body) => {
+  ];
+
+  it.each(otherErrors)('keeps other 401 responses unchanged (%j)', async (body) => {
     const fetchMock = vi.fn(async () => jsonResponse(body, 401));
     const onAccessTokenRejected = vi.fn();
     const api = createMercadoLivreApi(cfg(fetchMock, { onAccessTokenRejected }));
@@ -1645,10 +1644,9 @@ describe('createMercadoLivreApi — rejected access tokens', () => {
     const onAccessTokenRejected = vi.fn(() => {
       accessToken = 'new-token';
     });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse({ message: 'invalid_token' }, 401))
-      .mockResolvedValueOnce(jsonResponse(USER));
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ message: 'invalid_token' }, 401));
+    fetchMock.mockResolvedValueOnce(jsonResponse(USER));
     const api = createMercadoLivreApi(cfg(fetchMock, { getAccessToken, onAccessTokenRejected }));
 
     await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
