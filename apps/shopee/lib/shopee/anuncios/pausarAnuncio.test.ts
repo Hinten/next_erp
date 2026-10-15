@@ -1280,6 +1280,9 @@ describe('definirStatusAnunciosShopee — um FILHO pedido resolve na âncora (#1
 
     expect(fake.unlists[0]?.item_list).toEqual([{ item_id: ITEM_A, unlist: true }]);
     expect(res.listings.map((l) => [l.produtoId, l.outcome])).toEqual([[PRODUTO_A, 'enviado']]);
+    // MUT-1: the anchor nobody requested still carries its OWN name — never null
+    // (the web dialog's 'Produto desconhecido') and never the child's.
+    expect(res.listings[0]?.produtoNome).toBe('Produto prod-a');
     expect(res.produtosSemAnuncio).toEqual([]);
     expect(patchesDoLink(db, PRODUTO_A)).toHaveLength(1);
     expect(res.solicitados).toBe(1);

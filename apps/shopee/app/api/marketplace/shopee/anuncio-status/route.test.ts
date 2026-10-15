@@ -315,6 +315,24 @@ describe('(6) uma recusa por anúncio é DADO', () => {
     expect(corpo.listings).toHaveLength(0);
     expect(corpo.produtosSemAnuncio[0]?.produtoId).toBe(PRODUTO);
   });
+
+  it('⚠️ (MUT-1) só o FILHO pedido ⇒ a linha nomeia a âncora COM o nome da âncora, nunca null', async () => {
+    // The pre-check refuses a link with no `item_id`, so no Shopee call is needed
+    // to get the anchor's row back.
+    semearProdutoELink(db, PRODUTO, { item_id: null });
+    db.seed('produtos/prod-filho', { nome: 'Camiseta P', paiId: PRODUTO });
+
+    const res = await POST(req(corpoValido({ produtoIds: ['prod-filho'] }), AUTORIZADO));
+
+    expect(res.status).toBe(200);
+    const corpo = (await res.json()) as AnuncioStatusResponse;
+    // A null here is the web dialog's 'Produto desconhecido' for the listing it moved.
+    expect(corpo.listings.map((l) => [l.produtoId, l.produtoNome])).toEqual([
+      [PRODUTO, `Camiseta ${PRODUTO}`],
+    ]);
+    expect(corpo.produtosSemAnuncio).toEqual([]);
+    expect(h.unlistItem).not.toHaveBeenCalled();
+  });
 });
 
 describe('(7) a cota DIÁRIA da Shopee', () => {
