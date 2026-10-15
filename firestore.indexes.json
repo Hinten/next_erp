@@ -120,6 +120,24 @@
       ]
     },
     {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "selling_partner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ativo",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesShopee",
       "queryScope": "COLLECTION",
       "fields": [
