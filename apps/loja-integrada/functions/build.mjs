@@ -11,12 +11,10 @@ import { loadBuildEnv, requireBuildRegion } from '../../../tools/deploy-env/buil
 // apps/mercado-pago/functions/build.mjs — no on-disk data assets, so
 // prepare-deploy.mjs is just bundle + minimal package.json + node_modules junction.
 //
-// Only two values are defined, FUNCTIONS_REGION and TASKS_INVOKER_SA. There is
-// no FIREBASE_DATABASE_ID define on purpose: this codebase has no Firestore
-// trigger, and a trigger's `database:` binding is the only thing that reads the
-// database id during codebase analysis (`src/lib/admin.ts` reads it at runtime).
-// The day a trigger arrives, the define AND the `inlined` list of this
-// codebase's row in tools/deploy-env/preflight.mjs must gain it together.
+// Three values are defined: FUNCTIONS_REGION, FIREBASE_DATABASE_ID and
+// TASKS_INVOKER_SA. The define AND the `inlined` list of this codebase's row in
+// tools/deploy-env/preflight.mjs move together — preflight.test.js fails a
+// one-sided edit in either direction.
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 
 export async function bundle(outfile) {
@@ -29,6 +27,23 @@ export async function bundle(outfile) {
   // stops the build rather than inlining a region nobody chose — see
   // requireBuildRegion.
   const region = requireBuildRegion('FUNCTIONS_REGION');
+  // The Firestore database the conta trigger binds to
+  // (src/onIntegracaoLojaIntegradaChanged.ts, master-plan step 20, the codebase's
+  // first Firestore trigger) — the repo's NAMED `default` database, never the
+  // `(default)` sentinel.
+  //
+  // ⚠️ What this define does NOT do: change the answer for an UNSET variable.
+  // The trigger's own `?? 'default'` already resolves that to `default`, exactly
+  // as `src/lib/admin.ts` reads the same variable at runtime for `getDb()`. What
+  // it does: `||` also turns a BLANK export into `default`, which `??` would
+  // pass through as an empty database id, and it makes the preflight table print
+  // the value the build baked. The binding itself is pinned offline by
+  // src/index.test.ts (exactly `'default'` on the analysed endpoint, plus a
+  // source assertion over this line).
+  //
+  // ⚠️ `|| 'default'`, not `requireBuildRegion` — an unset value has a correct
+  // answer here, where an unset region does not.
+  const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
   // Service accounts allowed to enqueue AND dispatch this codebase's task
   // functions, comma-separated. Inlined for the same reason as the region above
   // — `onTaskDispatched`'s `invoker` option is read during Firebase's codebase
@@ -53,6 +68,7 @@ export async function bundle(outfile) {
     external: ['firebase-admin', 'firebase-admin/*', 'firebase-functions', 'firebase-functions/*'],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId),
       'process.env.TASKS_INVOKER_SA': JSON.stringify(tasksInvoker),
     },
     // ESM output has no `require`, but bundled CommonJS deps may call it

@@ -196,16 +196,21 @@ const CODEBASES = {
     // wired as a real predeploy hook while still earning its keep offline
     // through `bundle-inlining.test.js`, which builds every CODEBASES
     // `build.mjs` and proves the region actually reaches the bundle. Same MP
-    // shape: one region, inherited by the task/schedule functions through
-    // `setGlobalOptions`.
+    // shape: one region, inherited by every function of the codebase — the
+    // task, schedule and Firestore triggers alike — through `setGlobalOptions`.
     deployConfig: 'firebase.loja-integrada.deploy.json',
     buildScript: 'apps/loja-integrada/functions/build.mjs',
     deployDoc: 'apps/loja-integrada/functions/DEPLOY.md',
-    // No FIREBASE_DATABASE_ID: this codebase has no Firestore trigger, which is
-    // the only thing that reads the database id during codebase analysis. The
-    // day one arrives, `build.mjs` defines it AND this list gains it — the
-    // `lists EVERY build.mjs default` test fails the one-sided edit.
-    inlined: { FUNCTIONS_REGION: null },
+    // FIREBASE_DATABASE_ID arrived with master-plan step 20, which gave this
+    // codebase its FIRST Firestore trigger (`onIntegracaoLojaIntegradaChanged`,
+    // bound to the named `default` database). The trigger's own `?? 'default'`
+    // already resolves an UNSET variable correctly, so the define changes no
+    // value there; `build.mjs` builds it with `||`, which also turns a BLANK
+    // export into `default`, and listing it here is what makes this table print
+    // the value the build bakes. The `lists EVERY build.mjs default` test fails
+    // a define this list omits, and the drift test a listed key the build does
+    // not define.
+    inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
     tasksRegionVar: 'FUNCTIONS_REGION',
     // ⚠️ `null` until the App Hosting enqueuer exists (step 4). In step 3 only
     // the functions themselves enqueue (the order poller), so there is no
