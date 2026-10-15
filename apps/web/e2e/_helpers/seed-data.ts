@@ -954,6 +954,40 @@ export async function seedLojaIntegradaFixtures(
 }
 
 /**
+ * The SP-API models' sandbox placeholder for a seller id — never a real seller.
+ * The value the Amazon OAuth callback would write, shaped like one.
+ */
+const SELLING_PARTNER_ID_E2E = 'AXXXXXXXXXXXXX';
+
+/**
+ * Amazon (tipo 8) fixture set — see `seedIntegracaoFixtures` — whose FIRST conta
+ * is bound to a seller. Its writer is the OAuth callback, through the Admin SDK
+ * (the form shows it read-only), so the seed writes it the same way, never
+ * through the UI.
+ */
+export async function seedAmazonFixtures(
+  prefix: string,
+  n: number,
+): Promise<{
+  filialId: string;
+  listaId: string;
+  depositoId: string;
+  contaComVendedorId: string;
+  sellingPartnerId: string;
+}> {
+  if (n < 1) {
+    throw new Error('seedAmazonFixtures: n must be >= 1 — the first conta carries the seller');
+  }
+  const refs = await seedIntegracaoFixtures(prefix, n, 8);
+  const contaComVendedorId = `${prefix}-${pad(1)}`;
+  await db()
+    .collection('integracao')
+    .doc(contaComVendedorId)
+    .update({ selling_partner_id: SELLING_PARTNER_ID_E2E });
+  return { ...refs, contaComVendedorId, sellingPartnerId: SELLING_PARTNER_ID_E2E };
+}
+
+/**
  * WhatsApp (tipo 6) fixture set — see `seedIntegracaoFixtures`, then patches
  * each doc with the flat WhatsApp fields (#528) the `/canais/whatsapp`
  * screen reads: `numero` (the TableView column) and `wa_id`/`phoneNumberId`
@@ -1015,6 +1049,17 @@ export async function cleanupShopeeFixtures(prefix: string): Promise<void> {
 /** Teardown for `seedLojaIntegradaFixtures`. */
 export async function cleanupLojaIntegradaFixtures(prefix: string): Promise<void> {
   await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Teardown for `seedAmazonFixtures`. */
+export async function cleanupAmazonFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Full data of the `integracao` doc `id`, or null (an Admin read — strongly consistent). */
+export async function getIntegracaoById(id: string): Promise<Record<string, unknown> | null> {
+  const data = (await db().collection('integracao').doc(id).get()).data();
+  return data ? (data as Record<string, unknown>) : null;
 }
 
 /** Teardown for `seedWhatsappFixtures`. */
