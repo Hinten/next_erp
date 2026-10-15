@@ -362,7 +362,9 @@ function ExtraInput({ value, onChange }: { value: unknown; onChange: (next: unkn
     </label>
   );
 }
-function renderExtraView() {
+function renderExtraView(
+  validate?: React.ComponentProps<typeof ObjectView<typeof extraSchema>>['validate'],
+) {
   return render(
     <Wrap>
       <ObjectView
@@ -371,6 +373,7 @@ function renderExtraView() {
         db={{} as never}
         recordId="EXISTING"
         currentUserUid="u1"
+        validate={validate}
         transientFields={['extraData']}
         fields={{
           extraData: {
@@ -427,6 +430,27 @@ describe('ObjectView — sibling conflicts', () => {
     });
     renderExtraView();
     await editAndSave('Descrição', 'Local');
+    expect(saveRecordMock).toHaveBeenCalledOnce();
+  });
+
+  it('hands validate() the same sibling baselines transactionWrites reads', async () => {
+    // A transient field seeded from a sibling doc is judged against what the
+    // save would write, which only the registry's baseline can answer.
+    const visto: unknown[] = [];
+    renderExtraView((values, context) => {
+      const baseline = context.getBaseline(EXTRA_PATH);
+      visto.push(baseline);
+      const descricao = (values.extraData as { descricao?: unknown } | null)?.descricao;
+      return baseline != null && descricao !== baseline.descricao && descricao === 'Proibida'
+        ? [{ path: 'extraData', message: 'Descrição proibida' }]
+        : [];
+    });
+    saveRecordMock.mockResolvedValue({ id: 'EXISTING', patch: {}, documents: [] });
+    await editAndSave('Descrição', 'Proibida');
+    expect(visto.at(-1)).toEqual(EXTRA_LOADED);
+    expect(saveRecordMock).not.toHaveBeenCalled();
+    expect(notifyShow).toHaveBeenCalledWith(expect.objectContaining({ color: 'red' }));
+    await editAndSave('Descrição', 'Permitida');
     expect(saveRecordMock).toHaveBeenCalledOnce();
   });
 

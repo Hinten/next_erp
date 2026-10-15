@@ -296,6 +296,8 @@ const ROTULO = 'Frete da conta';
 const commits = () => h.occ.txLog.filter((e) => e.phase === 'commit').length;
 const mapaGuardado = () => h.docs.get(FRETE_PATH)!.mapa as Doc[];
 const conflito = () => screen.queryByText('Registro alterado');
+/** Every path a committed transaction wrote, in order. */
+const escritas: string[] = [];
 
 beforeEach(() => {
   h.permissoes =
@@ -307,6 +309,7 @@ beforeEach(() => {
   h.servicos.mockClear();
   h.leiturasAlvos = 0;
   h.replace.mockReset();
+  escritas.length = 0;
   h.alvos = [
     { id: 'moto-1', data: { tipo: 'motoboy', nome: 'Moto Centro', ativo: true } },
     { id: 'moto-2', data: { tipo: 'motoboy', nome: 'Moto Norte', ativo: true } },
@@ -315,6 +318,7 @@ beforeEach(() => {
   semear(FRETE_PATH, frete());
   h.occ = new OccEngine({
     applyWrite: (kind, path, data) => {
+      escritas.push(path);
       const prev = h.docs.get(path) ?? {};
       h.docs.set(path, kind === 'update' ? { ...prev, ...structuredClone(data) } : data);
     },
@@ -721,6 +725,111 @@ describe('/canais/loja-integrada/[id] — Horário de Corte', () => {
     await salvar();
     expect(screen.getAllByText('Dia da semana duplicado').length).toBeGreaterThan(0);
     expect(commits()).toBe(0);
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA]);
+  });
+});
+
+/** Type `valor` into the cut-off hour of horário row `linha` (1-based). */
+async function digitarCorte(linha: number, valor: string) {
+  await act(async () => {
+    fireEvent.change(screen.getAllByLabelText(`Corte (h) ${linha}`)[0]!, {
+      target: { value: valor },
+    });
+  });
+}
+
+const abaHorario = () => screen.getByRole('tab', { name: /Horário de Corte/ });
+const RECUSA_NA_ABA_HORARIO = 'Corrija os campos inválidos na aba "Horário de Corte".';
+
+describe('/canais/loja-integrada/[id] — a stored horário is validated only once the operator changes it', () => {
+  // The imported corpus carries rows these schemas do not model (root CLAUDE.md
+  // rule 8). A horário nobody touched is not this save's to judge: it is not
+  // written, so it must not refuse a save of the conta either.
+  it.each([
+    ['a weekday stored twice', [SEGUNDA, SEGUNDA]],
+    ['a cut-off hour out of range', [{ ...SEGUNDA, horaDeCorte: 30 }]],
+    ['a weekday stored as text', [{ ...SEGUNDA, diaDaSemana: 'segunda' }]],
+    ['a value that is not a list', { 1: SEGUNDA }],
+    // The tab is mounted from page load: an editor that crashed on these would
+    // take the whole conta screen down with it.
+    ['rows that are not objects', [null, 'texto', SEGUNDA]],
+  ])('untouched, %s does not block a conta-only save, and is not written', async (_c, horario) => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: horario }));
+    await renderPage();
+    await renomearConta('Conta renomeada');
+    await salvar();
+    expect(commits()).toBe(1);
+    expect(h.docs.get(CONTA_PATH)?.nome).toBe('Conta renomeada');
+    expect(escritas).toEqual([CONTA_PATH]);
+    expect(h.docs.get(FRETE_PATH)).toEqual(frete({ horarioDeCorte: horario }));
+    expect(h.toasts).toEqual(['Salvo.']);
+  });
+
+  it('untouched, a weekday stored twice does not block a mapa edit, which writes only the mapa', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA, SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Mapeamento do Frete');
+    await escolherDestino(0, 'Moto Norte (Motoboy)');
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([FRETE_PATH]);
+    expect(mapaGuardado()[0]?.integracaoUid).toBe('moto-2');
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA, SEGUNDA]);
+  });
+
+  it('an edit undone before saving is no edit: no error, and the freight doc is not written', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA, SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Horário de Corte');
+    await digitarCorte(1, '15');
+    await digitarCorte(1, '16');
+    await renomearConta('Conta renomeada');
+    await salvar();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([CONTA_PATH]);
+    expect(screen.queryByText('Dia da semana duplicado')).toBeNull();
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA, SEGUNDA]);
+  });
+
+  it('an edit that removes the stored duplicate saves it', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA, SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Horário de Corte');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Excluir horário 2' }));
+    });
+    await salvar();
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([FRETE_PATH]);
+    expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA]);
+  });
+
+  it('an edit that LEAVES the stored duplicate is refused, and the refusal lands on the Horário tab', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA, SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Horário de Corte');
+    await digitarCorte(1, '15');
+    // Saved from ANOTHER tab: the form must jump back and say why.
+    await renomearConta('Conta renomeada');
+    await salvar();
+    expect(commits()).toBe(0);
+    expect(escritas).toEqual([]);
+    expect(abaHorario().getAttribute('aria-selected')).toBe('true');
+    expect(h.toasts).toEqual([RECUSA_NA_ABA_HORARIO]);
+    expect(screen.getAllByText('Dia da semana duplicado').length).toBeGreaterThan(0);
+  });
+
+  it('an out-of-range cut-off hour typed by the operator is refused', async () => {
+    semear(FRETE_PATH, frete({ horarioDeCorte: [SEGUNDA] }));
+    await renderPage();
+    await abrirAba('Horário de Corte');
+    await digitarCorte(1, '30');
+    await salvar();
+    expect(commits()).toBe(0);
+    expect(escritas).toEqual([]);
+    expect(h.toasts).toEqual([RECUSA_NA_ABA_HORARIO]);
     expect(h.docs.get(FRETE_PATH)?.horarioDeCorte).toEqual([SEGUNDA]);
   });
 });

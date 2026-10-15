@@ -1,11 +1,12 @@
 import type { DocumentReference, Firestore } from 'firebase/firestore';
 import { valuesEqual } from '@delfrance/core';
-import { INTEGRACAO_FRETE, TIPOS_ALVO_MAPA_FRETE_LI } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE, TIPOS_ALVO_MAPA_FRETE_LI, intFreteSchema } from '@delfrance/schemas';
 import type {
   TransactionDocumentGuard,
   TransactionFormProjection,
   TransactionWrite,
   TransactionWriteContext,
+  ValidationIssue,
 } from '@delfrance/ui';
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
 
@@ -202,10 +203,89 @@ export function escritasFreteDaContaLi(
   values: Readonly<Record<string, unknown>>,
   context: TransactionWriteContext,
 ): TransactionWrite[] {
-  if (intFreteId === null) return [];
+  const alteracoes = alteracoesDoFreteDaContaLi(db, intFreteId, values, context);
+  if (alteracoes === null) return [];
+  const { ref, baseline, data } = alteracoes;
+  const guard: TransactionDocumentGuard = {
+    baseline,
+    label: ROTULO_FRETE_DA_CONTA_LI,
+    ...projecaoDoFreteDaContaLi(CAMPO_MAPA_FRETE_LI, data, baseline),
+    extraFormFields: [projecaoDoFreteDaContaLi(CAMPO_HORARIO_CORTE_LI, data, baseline)],
+  };
+  return [{ type: 'update', ref: ref as DocumentReference<unknown>, data, guard }];
+}
+
+/**
+ * The page model's check of the two freight tabs: the freight schema's own
+ * `horarioDeCorte` rule (one row per weekday, hours in range) — run on the
+ * horário ONLY when this save would write it, i.e. exactly when
+ * {@link escritasFreteDaContaLi} would put it in its update.
+ *
+ * ⚠️ An untouched horário is never judged. It is seeded verbatim from the
+ * stored doc, and the imported corpus carries values these schemas do not
+ * model (root `CLAUDE.md` rule 8): a weekday stored twice, an out-of-range
+ * hour, a value that is not a list. Such a value is not written by this save,
+ * so refusing it would block renaming the conta, or rotating its token, over a
+ * tab the operator never opened. Once the operator changes the horário the
+ * whole list is written, so the whole list must then pass — "changed" is
+ * {@link alteracoesDoFreteDaContaLi}'s decision, never a second comparison.
+ *
+ * `values` is what `ObjectView` validates: the form with every
+ * `prepareForSave` applied (staged deletions dropped, an emptied list as
+ * `null`). For a pristine horário that is the seeded value itself, save for a
+ * stored `[]`, which arrives as `null` — "changed", and valid, so nothing is
+ * refused that the save would not write.
+ *
+ * `mapa` is never checked: the editor only replaces one row's target through
+ * {@link aplicarAlvoLi}, so every other row is written back as stored.
+ *
+ * Issues are keyed under {@link CAMPO_HORARIO_CORTE_LI}, so `ObjectView` shows
+ * them on the "Horário de Corte" tab, switches to it, and names it in its
+ * refusal toast.
+ */
+export function problemasDoFreteDaContaLi(
+  db: Firestore,
+  intFreteId: string | null,
+  values: Readonly<Record<string, unknown>>,
+  context: TransactionWriteContext,
+): ValidationIssue[] {
+  const alteracoes = alteracoesDoFreteDaContaLi(db, intFreteId, values, context);
+  if (alteracoes === null || !('horarioDeCorte' in alteracoes.data)) return [];
+  const resultado = intFreteSchema.shape.horarioDeCorte.safeParse(alteracoes.data.horarioDeCorte);
+  if (resultado.success) return [];
+  return resultado.error.issues.map((issue) => ({
+    path: [CAMPO_HORARIO_CORTE_LI, ...issue.path.map(String)].join('.'),
+    message: issue.message,
+  }));
+}
+
+/**
+ * THE decision behind both {@link escritasFreteDaContaLi} and
+ * {@link problemasDoFreteDaContaLi}: which freight fields this save writes, and
+ * the doc and baseline they are written under — or `null` when it writes none.
+ *
+ * - **No doc ⇒ `null`**: no `intFreteId`, or a baseline that confirmed the doc
+ *   ABSENT (`null`). The browser never creates it.
+ * - **Seeded (`baseline` is the doc)**: a field is written only when its form
+ *   value differs from the baseline's (`valuesEqual`), so a conta-only save, or
+ *   an edit undone before saving, leaves it alone.
+ * - **Not seeded yet (`undefined`)**: a field is written when it is non-null;
+ *   `saveRecord` then refuses the whole save (see `escritasFreteDaContaLi`).
+ */
+function alteracoesDoFreteDaContaLi(
+  db: Firestore,
+  intFreteId: string | null,
+  values: Readonly<Record<string, unknown>>,
+  context: TransactionWriteContext,
+): {
+  readonly ref: ReturnType<typeof intFreteCollection.docRef>;
+  readonly baseline: Readonly<Record<string, unknown>> | undefined;
+  readonly data: Record<string, unknown>;
+} | null {
+  if (intFreteId === null) return null;
   const ref = intFreteCollection.docRef(db, {}, intFreteId);
   const baseline = context.getBaseline(ref.path);
-  if (baseline === null) return [];
+  if (baseline === null) return null;
   const mapa = values[CAMPO_MAPA_FRETE_LI] ?? null;
   const horario = values[CAMPO_HORARIO_CORTE_LI] ?? null;
   const data: Record<string, unknown> = {};
@@ -216,14 +296,8 @@ export function escritasFreteDaContaLi(
     if (!valuesEqual(mapa, baseline.mapa ?? null)) data.mapa = mapa;
     if (!valuesEqual(horario, baseline.horarioDeCorte ?? null)) data.horarioDeCorte = horario;
   }
-  if (Object.keys(data).length === 0) return [];
-  const guard: TransactionDocumentGuard = {
-    baseline,
-    label: ROTULO_FRETE_DA_CONTA_LI,
-    ...projecaoDoFreteDaContaLi(CAMPO_MAPA_FRETE_LI, data, baseline),
-    extraFormFields: [projecaoDoFreteDaContaLi(CAMPO_HORARIO_CORTE_LI, data, baseline)],
-  };
-  return [{ type: 'update', ref: ref as DocumentReference<unknown>, data, guard }];
+  if (Object.keys(data).length === 0) return null;
+  return { ref, baseline, data };
 }
 
 /** The freight doc's field each transient form field shows. */

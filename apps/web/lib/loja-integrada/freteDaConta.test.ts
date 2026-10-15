@@ -47,6 +47,7 @@ const {
   CAMPO_MAPA_FRETE_LI,
   aplicarAlvoLi,
   escritasFreteDaContaLi,
+  problemasDoFreteDaContaLi,
   rotuloServicoMelhorEnvioLi,
   valoresDoFreteDaContaLi,
 } = await import('./freteDaConta');
@@ -321,6 +322,81 @@ describe('escritasFreteDaContaLi — the conta save’s sibling write', () => {
     // Carried with an UNDEFINED baseline, which `saveRecord` refuses outright.
     expect(write?.guard).toBeDefined();
     expect(write?.guard?.baseline).toBeUndefined();
+  });
+});
+
+describe('problemasDoFreteDaContaLi — the horário rule runs only on what the save writes', () => {
+  const SEGUNDA = HORARIO[0]!;
+  const duplicado = [SEGUNDA, SEGUNDA];
+
+  /** The form as seeded from `horario`, with the mapa untouched. */
+  function semeado(horario: unknown) {
+    const baseline: Doc = { tipo: 'lojaIntegrada', mapa: [LINHA_A], horarioDeCorte: horario };
+    return {
+      contexto: contexto(baseline),
+      valores: (atual: unknown, mapa: unknown = [LINHA_A]) => ({
+        [CAMPO_MAPA_FRETE_LI]: mapa,
+        [CAMPO_HORARIO_CORTE_LI]: atual,
+      }),
+    };
+  }
+
+  it.each([
+    ['a weekday stored twice', duplicado],
+    ['a cut-off hour out of range', [{ ...SEGUNDA, horaDeCorte: 30 }]],
+    ['a weekday stored as text', [{ ...SEGUNDA, diaDaSemana: 'segunda' }]],
+    ['a value that is not a list', { 1: SEGUNDA }],
+  ])('an untouched stored horário is never judged: %s', (_c, horario) => {
+    const { contexto: ctx, valores } = semeado(horario);
+    // A structurally equal COPY, as the form holds it — never the same reference.
+    expect(problemasDoFreteDaContaLi(db, FRETE, valores(structuredClone(horario)), ctx)).toEqual(
+      [],
+    );
+    // …not even when the save writes the OTHER tab.
+    expect(
+      problemasDoFreteDaContaLi(db, FRETE, valores(structuredClone(horario), []), ctx),
+    ).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: one changed hour in a list that keeps its duplicate is judged WHOLE', () => {
+    const { contexto: ctx, valores } = semeado(duplicado);
+    const editado = [{ ...SEGUNDA, horaDeCorte: 15 }, SEGUNDA];
+    expect(problemasDoFreteDaContaLi(db, FRETE, valores(editado), ctx)).toEqual([
+      { path: `${CAMPO_HORARIO_CORTE_LI}.1.diaDaSemana`, message: 'Dia da semana duplicado' },
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: an out-of-range hour the operator typed is refused, keyed under the tab’s field', () => {
+    const { contexto: ctx, valores } = semeado(HORARIO);
+    const problemas = problemasDoFreteDaContaLi(
+      db,
+      FRETE,
+      valores([{ ...SEGUNDA, horaDeCorte: 30 }]),
+      ctx,
+    );
+    expect(problemas.map((p) => p.path)).toEqual([`${CAMPO_HORARIO_CORTE_LI}.0.horaDeCorte`]);
+  });
+
+  it('an edit that removes the duplicate passes', () => {
+    const { contexto: ctx, valores } = semeado(duplicado);
+    expect(problemasDoFreteDaContaLi(db, FRETE, valores([SEGUNDA]), ctx)).toEqual([]);
+  });
+
+  it('"changed" is the WRITE’s decision: judged exactly when escritasFreteDaContaLi writes it', () => {
+    const { contexto: ctx, valores } = semeado(duplicado);
+    for (const atual of [structuredClone(duplicado), [{ ...SEGUNDA, horaDeCorte: 15 }, SEGUNDA]]) {
+      const escreve = escritasFreteDaContaLi(db, FRETE, valores(atual), ctx).some(
+        (w) => w.type !== 'delete' && 'horarioDeCorte' in w.data,
+      );
+      const julgado = problemasDoFreteDaContaLi(db, FRETE, valores(atual), ctx).length > 0;
+      expect(julgado).toBe(escreve);
+    }
+  });
+
+  it('no doc, or no write, ⇒ nothing to judge', () => {
+    const editado = { [CAMPO_MAPA_FRETE_LI]: null, [CAMPO_HORARIO_CORTE_LI]: duplicado };
+    expect(problemasDoFreteDaContaLi(db, null, editado, contexto(null))).toEqual([]);
+    expect(problemasDoFreteDaContaLi(db, FRETE, editado, contexto(null))).toEqual([]);
   });
 });
 

@@ -20,9 +20,11 @@ export interface HorarioCorteManagerProps extends FieldRenderProps {
  * `HorarioCorteEditor` the `/logistica` screens use (staged row deletion
  * included).
  *
- * The rows are validated by the page model with the freight schema's own
- * `horarioDeCorte` rule, so a duplicated weekday shows inline here and blocks
- * the save. Editable only with BOTH the conta's write permission and
+ * The rows get the freight schema's own `horarioDeCorte` rule from the page
+ * (`problemasDoFreteDaContaLi`) once the operator CHANGES them: a duplicated
+ * weekday then shows here and blocks the save, while a stored list nobody
+ * touched — imported shapes included — never blocks a save of the conta.
+ * Editable only with BOTH the conta's write permission and
  * `PERM.frete.write`, and only once the doc is loaded from the server; the
  * conta's "Salvar" writes the change (see `escritasFreteDaContaLi`).
  */

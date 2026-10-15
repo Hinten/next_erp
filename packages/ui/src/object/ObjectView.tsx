@@ -153,8 +153,19 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * `section` in `fields`). The hook reads what's about to be saved plus any
    * page-held state the closure captures (e.g. subcollection editors), so the
    * whole page model can validate in one place. Must be pure; a real shape
-   * error on a key always wins over a cross-document one. */
-  validate?: (values: Record<string, unknown>) => readonly ValidationIssue[];
+   * error on a key always wins over a cross-document one.
+   *
+   * `context` is the SAME read-only registry `transactionWrites` receives, so a
+   * rule about a transient field can ask what the save would do with it — e.g.
+   * judge a value seeded from a sibling document only when it differs from the
+   * baseline it was seeded from, the comparison that decides whether it is
+   * written at all. A value nobody changed is not written, so a rule that
+   * refused it would block the save over data the save never touches.
+   */
+  validate?: (
+    values: Record<string, unknown>,
+    context: TransactionWriteContext,
+  ) => readonly ValidationIssue[];
 
   /**
    * Top-level form keys that are validated + rendered like any field but are
@@ -426,6 +437,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // so this walk runs once per config, not once per keystroke.
   const preparedTransforms = useMemo(() => collectPrepareForSave(fieldOverrides), [fieldOverrides]);
 
+  // The sibling-document registry (see `transactionWrites`): created here,
+  // ahead of the resolver, because `validate` reads it too. A different record
+  // gets a new registry; the first create/save retains it.
+  const transactionDocuments = useMemo(createTransactionDocuments, [recordId]);
+
   // Validate what will be SAVED, not the raw editor state: apply each
   // field's `prepareForSave` before delegating to zodResolver. Staged
   // deletions are the motivating case — a schema-invalid row marked with
@@ -444,7 +460,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // Merge cross-document issues at each path's first segment. A real shape
       // error already on that key wins (don't clobber); otherwise the issue
       // blocks the save and routes to the key's tab via the section map.
-      const issues = validate(prepared);
+      const issues = validate(prepared, transactionDocuments);
       if (issues.length === 0) return result;
       const errors: Record<string, unknown> = { ...(result.errors as Record<string, unknown>) };
       const rootMessages: string[] = [];
@@ -474,7 +490,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       return { ...result, errors } as typeof result;
     };
     return wrapped;
-  }, [schema, preparedTransforms, validate]);
+  }, [schema, preparedTransforms, validate, transactionDocuments]);
 
   const form = useForm<FieldValues>({
     resolver,
@@ -506,8 +522,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // would fire on every save and operators would learn to click through it. That
   // is not hypothetical: it is the bug #791 fixed for `lastMarketplaceUpdate`.
   const baseline = useRef<Record<string, unknown> | null>(null);
-  // A different record gets a new registry; the first create/save retains it.
-  const transactionDocuments = useMemo(createTransactionDocuments, [recordId]);
   useServerTruthSeed({
     id: docSnap.data?.id,
     fromCache: docSnap.fromCache,

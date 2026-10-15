@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DELETE_MARK, type FieldRenderProps } from '@delfrance/ui';
 import { faixaDeCepSchema } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
@@ -141,5 +141,26 @@ describe('HorarioCorteEditor', () => {
     expect(screen.getByLabelText('Dia da semana 1').getAttribute('aria-invalid')).not.toBe('true');
     expect(screen.getByLabelText('Dia da semana 3').getAttribute('aria-invalid')).toBe('true');
     expect(screen.getByText('Dia da semana duplicado')).toBeTruthy();
+  });
+
+  it('a stored row that is not an object reads as an empty row, kept verbatim until edited', () => {
+    const onChange = vi.fn();
+    render(
+      <MantineTestProvider>
+        <HorarioCorteEditor
+          name="horarioDeCorte"
+          label="Horários de corte"
+          value={[null, 'texto', { diaDaSemana: 2 }]}
+          onChange={onChange}
+          onBlur={() => undefined}
+          descriptor={{} as FieldRenderProps['descriptor']}
+        />
+      </MantineTestProvider>,
+    );
+    expect(screen.getAllByLabelText(/^Dia da semana \d$/)).toHaveLength(3);
+    expect((screen.getAllByLabelText('Corte (h) 1')[0] as HTMLInputElement).value).toBe('');
+    fireEvent.change(screen.getAllByLabelText('Corte (h) 1')[0]!, { target: { value: '15' } });
+    // The edited row becomes a row; the other unmodelled one is left as stored.
+    expect(onChange).toHaveBeenLastCalledWith([{ horaDeCorte: 15 }, 'texto', { diaDaSemana: 2 }]);
   });
 });

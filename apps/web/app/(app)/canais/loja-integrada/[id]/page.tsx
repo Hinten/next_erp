@@ -1,14 +1,14 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { deleteDoc } from 'firebase/firestore';
 import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
-import { intFreteSchema, integracaoSchema } from '@delfrance/schemas';
-import { type FieldConfig, ObjectView } from '@delfrance/ui';
+import { integracaoSchema } from '@delfrance/schemas';
+import { type FieldConfig, ObjectView, type TransactionWriteContext } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
@@ -16,6 +16,7 @@ import {
   CAMPO_HORARIO_CORTE_LI,
   CAMPO_MAPA_FRETE_LI,
   escritasFreteDaContaLi,
+  problemasDoFreteDaContaLi,
 } from '@/lib/loja-integrada/freteDaConta';
 import { intFreteFields } from '@/app/(app)/logistica/_components/intFreteFields';
 import { RecalcularPrecosCanalAction } from '../../_components/RecalcularPrecosCanalAction';
@@ -42,19 +43,24 @@ const CAMPOS_TRANSIENTES = [CAMPO_MAPA_FRETE_LI, CAMPO_HORARIO_CORTE_LI];
 
 /**
  * The page model: the conta plus its freight doc's `mapa` and `horarioDeCorte`,
- * as two TRANSIENT keys — validated and rendered here, never written to the
- * `integracao` doc; the save writes them to the freight doc instead.
+ * as two TRANSIENT keys — rendered here, never written to the `integracao` doc;
+ * the save writes them to the freight doc instead.
  *
- * - `freteMapa` is validated by nothing: it is the stored array RAW, a corpus row
- *   failing the row schema included, and the editor only ever replaces one
- *   row's target fields. Validating it would let an untouched legacy row block
- *   every save of the conta.
- * - `freteHorarioDeCorte` uses the freight schema's own rule (one row per
- *   weekday), so a duplicate shows inline on its tab.
+ * Neither is validated by the SCHEMA: both are the stored values RAW, corpus
+ * shapes these schemas do not model included, and the schema resolver runs on
+ * every save of the conta — so a strict rule there would let an untouched
+ * stored value block renaming the conta over a tab nobody opened.
+ *
+ * - `freteMapa` is validated by nothing: the editor only ever replaces one
+ *   row's target fields.
+ * - `freteHorarioDeCorte` gets the freight schema's own rule (one row per
+ *   weekday, hours in range) from `problemasDoFreteDaContaLi`, ONLY when the
+ *   save would write it — the operator changed it — and the refusal shows on
+ *   its tab.
  */
 const contaLojaIntegradaPaginaSchema = integracaoSchema.extend({
   [CAMPO_MAPA_FRETE_LI]: z.unknown().nullable().default(null).describe('Mapeamento do frete'),
-  [CAMPO_HORARIO_CORTE_LI]: intFreteSchema.shape.horarioDeCorte,
+  [CAMPO_HORARIO_CORTE_LI]: z.unknown().nullable().default(null).describe('Horários de corte'),
 });
 
 export default function ContaLojaIntegradaPage() {
@@ -94,6 +100,14 @@ export default function ContaLojaIntegradaPage() {
       },
     }),
     [db, frete],
+  );
+
+  // The horário's rule, run only when this save would write it (see the page
+  // model above); the same doc and baseline the save's sibling write uses.
+  const validate = useCallback(
+    (values: Record<string, unknown>, context: TransactionWriteContext) =>
+      problemasDoFreteDaContaLi(db, intFreteId, values, context),
+    [db, intFreteId],
   );
 
   async function handleDelete(id: string) {
@@ -136,6 +150,7 @@ export default function ContaLojaIntegradaPage() {
         excludedFields={lojaIntegradaExcludedFields}
         fields={fields}
         transientFields={CAMPOS_TRANSIENTES}
+        validate={validate}
         transactionWrites={(_id, values, context) =>
           escritasFreteDaContaLi(db, intFreteId, values, context)
         }
