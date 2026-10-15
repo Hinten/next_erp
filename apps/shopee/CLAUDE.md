@@ -1947,7 +1947,7 @@ across **every** active conta by default, `--integracao <id>` to scope it to one
 the fifth (step 9) imports ONE named anúncio through the real step-9 path —
 the dry run prints the PLAN, `--live` writes it; the sixth (step 11) plans the
 publication of ONE produto; and the seventh (step 12) plans the stock push for
-up to 50 named produtos, `--produto` repeated, one flag per anchor; the eighth
+up to 50 named produtos, `--produto` repeated, one flag per produto or variação; the eighth
 (step 13) does the same for prices (`--baixar-preco` allows a decrease); and
 the ninth (step 14) uploads the approved NF-e of up to 50 pedidos in process,
 enqueuing nothing — each pedido proves its own conta; the tenth (step 15)

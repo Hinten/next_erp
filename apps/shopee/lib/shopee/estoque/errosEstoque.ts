@@ -216,16 +216,12 @@ export const MENSAGEM_POR_MOTIVO: Record<MotivoEstoqueShopee, string> = {
     'Já recusado com o anúncio exatamente neste estado. O ERP não repete a mesma chamada até o anúncio mudar — use "reenviar mesmo com erro" para forçar.',
   'task-excede-limite':
     'O anúncio tem mais modelos do que cabem em uma chamada, e a sobra foi dividida em outra parte. Nenhuma quantidade se perde; esta linha existe só para a divisão ficar visível.',
-  // ⚠️ Only a MISSING document lands here: the requested one, or — since step
-  // 21 the manual push resolves a variation child ONE `paiId` hop first
-  // (`core/anchors.ts`) — the anchor a child's `paiId` names. That second case
-  // is reported under the child's own id, which does exist, so there the
-  // sentence's "não foi encontrado" is slightly off — the defect is a dangling
-  // `paiId`, not a mistyped id. A child whose anchor exists is pushed through the
-  // anchor's row; the `enviar:estoque` DRY RUN still reads ids as typed, so a
-  // child there plans `conta-fora-do-produto` or `sem-link`. A sentence adding
-  // "or it is not the family's anchor" sends the operator after a cause this
-  // motivo never has.
+  // ⚠️ Only a MISSING document lands here — the requested produto's own, or
+  // the anchor a variation child's `paiId` names. A child that EXISTS is
+  // resolved to its anchor before any family read, in both modes of the manual
+  // push (`planejarEnvioEstoque.ts`), so "it is not the family's anchor" is
+  // never a cause of this motivo; a sentence adding it would send the operator
+  // after a cause this motivo never has.
   'produto-nao-encontrado':
     'O produto pedido não foi encontrado no ERP. Confira o identificador enviado; nada foi buscado na Shopee por ele.',
   // ---- conta side ----
