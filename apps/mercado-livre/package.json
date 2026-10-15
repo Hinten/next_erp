@@ -9,7 +9,7 @@
     "start": "dotenv -e ../../.env.local -- next start --port 3006",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/ci-format-1292.mjs && vitest run",
     "test:firestore": "vitest run --config vitest.firestore.config.ts",
     "test:tasks": "vitest run --config vitest.tasks.config.ts",
     "test:staging": "vitest run --config vitest.staging.config.ts",
