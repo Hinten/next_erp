@@ -3,8 +3,8 @@
  * (#1528) — and the composite index each row's lookup rides.
  *
  * The constant is consumed by ONE IO core (`@delfrance/data/admin/frete`, #1369), so
- * a wrong row here is wrong for every caller at once: the Shopee trigger, the
- * Mercado Livre binding and the window pass. Nothing else pins it — the core's own
+ * a wrong row here is wrong for every caller at once: the Shopee and Loja Integrada
+ * triggers, the Mercado Livre binding and the window passes. Nothing else pins it — the core's own
  * suite drives a fake database that has no index concept, and
  * `defaultQuery.indexes.test.ts` only sees `meta.defaultQuery`.
  */
@@ -25,11 +25,15 @@ const backRefsDoSchema = (): string[] =>
     .sort();
 
 /**
- * The anchor: the back-refs that exist TODAY. It keeps every walk below from
- * passing vacuously (an emptied constant or schema would otherwise "match"), and a
- * third channel's field must be added here on purpose.
+ * The anchor: the back-refs that exist TODAY, sorted. It keeps every walk below
+ * from passing vacuously (an emptied constant or schema would otherwise "match"),
+ * and a fourth channel's field must be added here on purpose.
  */
-const ANCORA = ['contaMercadoLivreMercadoEnviosOuterRef', 'contaShopeeFreteOuterRef'];
+const ANCORA = [
+  'contaLojaIntegradaEnviosOuterRef',
+  'contaMercadoLivreMercadoEnviosOuterRef',
+  'contaShopeeFreteOuterRef',
+];
 
 /* -------------------------------------------------------------------------- */
 /*                         T24 — the constant's rows                          */
@@ -56,6 +60,13 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
         campoBackRef: 'contaShopeeFreteOuterRef',
         rotuloLog: '[shopee]',
         prefixoDocId: 'shopee',
+      },
+      lojaIntegrada: {
+        tipoConta: 3,
+        tipoFrete: 'lojaIntegrada',
+        campoBackRef: 'contaLojaIntegradaEnviosOuterRef',
+        rotuloLog: '[loja-integrada]',
+        prefixoDocId: 'lojaIntegrada',
       },
     });
   });
@@ -93,11 +104,23 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
     }
   });
 
-  it('both channels mint deterministic document IDs (#1888)', () => {
+  it('every channel mints deterministic doc ids (`<prefixo>-<integracaoId>`, #1888, #1826)', () => {
     expect(VINCULO_INT_FRETE_CONTA.shopee.prefixoDocId).toBe('shopee');
     expect(`${VINCULO_INT_FRETE_CONTA.shopee.prefixoDocId}-int-1`).toBe('shopee-int-1');
     expect(VINCULO_INT_FRETE_CONTA.mercadoLivre.prefixoDocId).toBe('mercadoLivre');
     expect(`${VINCULO_INT_FRETE_CONTA.mercadoLivre.prefixoDocId}-int-1`).toBe('mercadoLivre-int-1');
+    expect(VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId).toBe('lojaIntegrada');
+    expect(`${VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId}-int-1`).toBe(
+      'lojaIntegrada-int-1',
+    );
+    // Near-miss: the prefix is the freight tipo's exact spelling — never lowercased.
+    expect(`${VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId}-int-1`).not.toBe(
+      'lojaintegrada-int-1',
+    );
+    // Two prefixed rows never share a prefix — their deterministic ids would collide.
+    const prefixos = LINHAS.flatMap(([, l]) => (l.prefixoDocId == null ? [] : [l.prefixoDocId]));
+    expect(prefixos).toHaveLength(LINHAS.length);
+    expect(new Set(prefixos).size).toBe(prefixos.length);
   });
 });
 
@@ -125,10 +148,10 @@ describe('firestore.indexes.json — one int_frete lookup index per row (T25)', 
   // Enterprise an undeclared composite does not throw and offers no index link —
   // the lookup silently full-scans `int_frete` and is billed by data scanned
   // (root rule 1). The sync's 2-equality query and the order importer's
-  // `apenasAtivo` variant (3 equalities; Mercado Livre only today) both ride its
-  // prefix; no query orders, because the newest-`dataCadastro` tie-break is
-  // client-side. The 4-field shape is kept identical to the Mercado Livre twin
-  // (#782).
+  // `apenasAtivo` variant (3 equalities; Mercado Livre today, Loja Integrada's
+  // step-5 importer next) both ride its prefix; no query orders, because the
+  // newest-`dataCadastro` tie-break is client-side (`escolherIntFreteMaisNovo`).
+  // The 4-field shape is kept identical to the Mercado Livre twin (#782).
   const formaEsperada = (campo: string): CampoDeIndice[] => [
     { fieldPath: 'tipo', order: 'ASCENDING' },
     { fieldPath: campo, order: 'ASCENDING' },
@@ -152,7 +175,7 @@ describe('firestore.indexes.json — one int_frete lookup index per row (T25)', 
     }
   });
 
-  it('anchor: the back-refs the int_frete indexes cover are exactly today’s two, and exactly the rows’', () => {
+  it('anchor: the back-refs the int_frete indexes cover are exactly today’s three, and exactly the rows’', () => {
     const cobertos = declarados()
       .filter((i) => i.collectionGroup === 'int_frete')
       .map((i) => i.fields?.[1]?.fieldPath)

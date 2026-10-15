@@ -246,6 +246,9 @@ export {
   VINCULO_INT_FRETE_CONTA,
   calcularPrazoDespachoCivil,
   diaDaSemanaSchema,
+  // THE pick among a conta's `int_frete` docs — shared by the sync core and the
+  // browser, which cannot import the core's admin entry (#1369, #1826).
+  escolherIntFreteMaisNovo,
   faixaCepOptionString,
   faixaDeCepSchema,
   getPrazoDespacho,
@@ -262,6 +265,7 @@ export {
   tokenMelEnvMeta,
   tokenMelEnvSchema,
   type CampoBackRefIntFrete,
+  type CandidatoIntFrete,
   type DiaDaSemana,
   type FaixaDeCep,
   type HorarioDeCorte,
@@ -1500,3 +1504,11 @@ export { RETURN_SN_SHOPEE_MAX, ehReturnSnShopee } from './devolucaoShopee';
 // (#1369). Not a collection, so no `registry.ts` entry. A star export on purpose:
 // the fold-inventory scan greps raw text, so a listed barrel would need a row.
 export * from './receitaKitShopee';
+
+// The Loja Integrada freight `mapa` rules (step 20, #1826): the shipping-method
+// key, the "mapped" target id, the raw presence read, the appended row and the
+// target tipos — the importer, the conta screen and the window pass all call
+// them (#1369). Not a collection, so no `registry.ts` entry. A star export on
+// purpose: the fold-inventory scan greps raw text, so a listed barrel would need
+// a row.
+export * from './mapaFreteLojaIntegrada';
