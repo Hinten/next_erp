@@ -2,27 +2,47 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryFirestore } from '@delfrance/data/testing';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
-  MercadoLivreHttpError, MercadoLivreReauthRequiredError, MercadoLivreNetworkError,
-  MercadoLivreValidationError, type MercadoLivreApi, type MlMissedFeed, type MlMissedFeeds,
+  MercadoLivreHttpError,
+  MercadoLivreReauthRequiredError,
+  MercadoLivreNetworkError,
+  MercadoLivreValidationError,
+  type MercadoLivreApi,
+  type MlMissedFeed,
+  type MlMissedFeeds,
 } from '@delfrance/integrations-mercado-livre';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
-import { integracaoCollection, missedFeedsMercadoLivreCollection } from '@delfrance/data/admin/collections';
+import {
+  integracaoCollection,
+  missedFeedsMercadoLivreCollection,
+} from '@delfrance/data/admin/collections';
 import { MlTasksDisabledError, type MlTaskScheduler } from './mlTasks';
 
 const h = vi.hoisted(() => ({ loadCtx: vi.fn(), createApi: vi.fn() }));
 vi.mock('../core/mercadoLivre', async (importActual) => ({
-  ...await importActual<typeof import('../core/mercadoLivre')>(), loadMercadoLivreContext: h.loadCtx,
+  ...(await importActual<typeof import('../core/mercadoLivre')>()),
+  loadMercadoLivreContext: h.loadCtx,
 }));
 vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => ({
-  ...await importActual<typeof import('@delfrance/integrations-mercado-livre')>(), createMercadoLivreApi: h.createApi,
+  ...(await importActual<typeof import('@delfrance/integrations-mercado-livre')>()),
+  createMercadoLivreApi: h.createApi,
 }));
 import {
-  APP_ID_INVALIDO_ERROR, MAX_PAGES_PER_TICK, MISSED_FEEDS_FLAG_ENV,
-  MISSED_FEEDS_RETENTION_HOURS, PAGE_LIMIT, MAX_SWEEP_DURATION_MS,
-  runMissedFeedsSweep, recordMissedFeedsHealth,
+  APP_ID_INVALIDO_ERROR,
+  MAX_PAGES_PER_TICK,
+  MISSED_FEEDS_FLAG_ENV,
+  MISSED_FEEDS_RETENTION_HOURS,
+  PAGE_LIMIT,
+  MAX_SWEEP_DURATION_MS,
+  runMissedFeedsSweep,
+  recordMissedFeedsHealth,
 } from './missedFeedsSweep';
 import { missedFeedsSites } from './missedFeedsAccess';
-import { KNOWN_TOPICS, handleNotificationTask, reprocessNotifications, shouldEnqueueTopic } from './notificacao';
+import {
+  KNOWN_TOPICS,
+  handleNotificationTask,
+  reprocessNotifications,
+  shouldEnqueueTopic,
+} from './notificacao';
 
 type DocData = Record<string, unknown>;
 type OpKind = 'get' | 'set';
@@ -65,13 +85,19 @@ class FakeDb {
   /** Every query built this tick — lets a test assert the enumeration shape. */
   readonly queries: FakeQuery[] = [];
   private autoN = 0;
-  async runTransaction<T>(fn: (tx: {
-    get: (ref: FakeDocRef) => Promise<FakeSnap>;
-    set: (ref: FakeDocRef, data: DocData) => void;
-  }) => Promise<T>): Promise<T> {
-    return fn({ get: (ref) => ref.get(), set: (ref, data) => { ref.set(data); } });
+  async runTransaction<T>(
+    fn: (tx: {
+      get: (ref: FakeDocRef) => Promise<FakeSnap>;
+      set: (ref: FakeDocRef, data: DocData) => void;
+    }) => Promise<T>,
+  ): Promise<T> {
+    return fn({
+      get: (ref) => ref.get(),
+      set: (ref, data) => {
+        ref.set(data);
+      },
+    });
   }
-
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -204,7 +230,6 @@ function page(messages: MlMissedFeed[]): MlMissedFeeds {
   return { messages } as MlMissedFeeds;
 }
 
-
 type FeedParams = Parameters<MercadoLivreApi['getMissedFeeds']>[0];
 type ResponsePlan = Record<string, MlMissedFeeds[] | Error>;
 function wireApi(pagesByConta: Record<string, MlMissedFeeds[]>, streams: ResponsePlan = {}) {
@@ -223,16 +248,25 @@ function wireApi(pagesByConta: Record<string, MlMissedFeeds[]>, streams: Respons
     const token = vi.fn<() => Promise<string>>(async () => 'tok-' + id);
     tokens.set(id, token);
     configCandidates.set(token, id);
-    return { integracaoId: id, conta: {}, store: {},
-      resolveChannelContext: async () => ({ accessToken: 'STALE-SNAPSHOT', getAccessToken: token, account: {} }),
+    return {
+      integracaoId: id,
+      conta: {},
+      store: {},
+      resolveChannelContext: async () => ({
+        accessToken: 'STALE-SNAPSHOT',
+        getAccessToken: token,
+        account: {},
+      }),
     };
   });
-  h.createApi.mockImplementation(({ getAccessToken }: { getAccessToken: () => Promise<string> }) => ({
-    getMissedFeeds: async (params: FeedParams) => {
-      await getAccessToken();
-      return getMissedFeeds(configCandidates.get(getAccessToken)!, params);
-    },
-  }));
+  h.createApi.mockImplementation(
+    ({ getAccessToken }: { getAccessToken: () => Promise<string> }) => ({
+      getMissedFeeds: async (params: FeedParams) => {
+        await getAccessToken();
+        return getMissedFeeds(configCandidates.get(getAccessToken)!, params);
+      },
+    }),
+  );
   return { getMissedFeeds, tokens };
 }
 function run(db: FakeDb, scheduler: MlTaskScheduler) {
@@ -242,79 +276,138 @@ beforeEach(() => {
   vi.stubEnv(MISSED_FEEDS_FLAG_ENV, '1');
   vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', APP_ID);
   vi.stubEnv('MERCADO_LIVRE_MISSED_FEEDS_SITE_IDS', '');
-  h.loadCtx.mockReset(); h.createApi.mockReset();
-  vi.useFakeTimers(); vi.setSystemTime(NOW_MS + 12 * 3600_000);
+  h.loadCtx.mockReset();
+  h.createApi.mockReset();
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW_MS + 12 * 3600_000);
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 
 describe('automatic application-feed access (#1292)', () => {
   it.each(['', '0', 'true', 'yes'])('flag %o reads and writes nothing', async (flag) => {
     vi.stubEnv(MISSED_FEEDS_FLAG_ENV, flag);
-    const db = new FakeDb(); const { scheduler, enqueue } = makeScheduler();
+    const db = new FakeDb();
+    const { scheduler, enqueue } = makeScheduler();
     expect(await run(db, scheduler)).toMatchObject({ enabled: false, complete: false });
-    expect(db.opLog).toEqual([]); expect(enqueue).not.toHaveBeenCalled();
+    expect(db.opLog).toEqual([]);
+    expect(enqueue).not.toHaveBeenCalled();
     expect(h.loadCtx).not.toHaveBeenCalled();
   });
   it.each(['', '0', 'abc', '12x'])('invalid app ID %o fails once at app level', async (appId) => {
     vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', appId);
-    const db = new FakeDb(); const { scheduler } = makeScheduler();
+    const db = new FakeDb();
+    const { scheduler } = makeScheduler();
     const result = await run(db, scheduler);
-    expect(result).toMatchObject({ configured: false, complete: false, errors: [APP_ID_INVALIDO_ERROR] });
+    expect(result).toMatchObject({
+      configured: false,
+      complete: false,
+      errors: [APP_ID_INVALIDO_ERROR],
+    });
     expect(h.loadCtx).not.toHaveBeenCalled();
     expect(db.docs(HEALTH_PATH).get('app-unconfigured')?.complete).toBe(false);
   });
   it('skips disconnected candidates and seller rejections, selects stably, and stops', async () => {
     const db = new FakeDb();
-    for (const id of ['D-unused', 'C-owner', 'B-seller', 'A-disconnected']) seedConta(db, id, SELLER);
+    for (const id of ['D-unused', 'C-owner', 'B-seller', 'A-disconnected'])
+      seedConta(db, id, SELLER);
     db.seed(INTEGRACAO_PATH, '0-off', { tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: false });
     db.seed(INTEGRACAO_PATH, '0-other', { tipo: 'other', ativo: true });
     const { scheduler } = makeScheduler();
-    const { getMissedFeeds } = wireApi({}, {
-      'B-seller/items/MLB': new MercadoLivreReauthRequiredError('refresh_failed', 'owner only', 401, { message: 'owner only' }),
-    });
+    const { getMissedFeeds } = wireApi(
+      {},
+      {
+        'B-seller/items/MLB': new MercadoLivreReauthRequiredError(
+          'refresh_failed',
+          'owner only',
+          401,
+          { message: 'owner only' },
+        ),
+      },
+    );
     const connected = h.loadCtx.getMockImplementation()!;
     h.loadCtx.mockImplementation(async (db: Firestore, id: string) => {
-      if (id === 'A-disconnected') throw new MercadoLivreReauthRequiredError('no_token', 'disconnected');
+      if (id === 'A-disconnected')
+        throw new MercadoLivreReauthRequiredError('no_token', 'disconnected');
       return connected(db, id);
     });
     const result = await run(db, scheduler);
-    expect(h.loadCtx.mock.calls.map((call) => call[1])).toEqual(['A-disconnected', 'B-seller', 'C-owner']);
-    expect(result).toMatchObject({ selectedIntegracaoId: 'C-owner', examined: 3, rejected: 2, complete: true });
-    expect(getMissedFeeds.mock.calls.map((call) => call[0])).toEqual(['B-seller', 'C-owner', 'C-owner']);
+    expect(h.loadCtx.mock.calls.map((call) => call[1])).toEqual([
+      'A-disconnected',
+      'B-seller',
+      'C-owner',
+    ]);
+    expect(result).toMatchObject({
+      selectedIntegracaoId: 'C-owner',
+      examined: 3,
+      rejected: 2,
+      complete: true,
+    });
+    expect(getMissedFeeds.mock.calls.map((call) => call[0])).toEqual([
+      'B-seller',
+      'C-owner',
+      'C-owner',
+    ]);
     expect(db.queries[0]!.clauses.map(([field]) => field)).toEqual(['tipo', 'ativo']);
     // Rejections only write app health; no credential or integration is mutated.
-    expect(db.opLog.filter((op) => op.op === 'set').map((op) => op.path)).toEqual([HEALTH_PATH + '/app-' + APP_ID]);
+    expect(db.opLog.filter((op) => op.op === 'set').map((op) => op.path)).toEqual([
+      HEALTH_PATH + '/app-' + APP_ID,
+    ]);
   });
   it('accepts an empty first page, reuses it, and ignores additional accounts', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); seedConta(db, 'INT-B', SELLER + 1);
-    const { scheduler } = makeScheduler(); const { getMissedFeeds, tokens } = wireApi({});
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    seedConta(db, 'INT-B', SELLER + 1);
+    const { scheduler } = makeScheduler();
+    const { getMissedFeeds, tokens } = wireApi({});
     const result = await run(db, scheduler);
-    expect(result.complete).toBe(true); expect(result.examined).toBe(1);
+    expect(result.complete).toBe(true);
+    expect(result.examined).toBe(1);
     expect(getMissedFeeds).toHaveBeenCalledTimes(2);
-    expect(getMissedFeeds).toHaveBeenNthCalledWith(1, 'INT-A', { appId: APP_ID, topic: 'items', siteId: 'MLB', limit: PAGE_LIMIT, offset: 0 });
+    expect(getMissedFeeds).toHaveBeenNthCalledWith(1, 'INT-A', {
+      appId: APP_ID,
+      topic: 'items',
+      siteId: 'MLB',
+      limit: PAGE_LIMIT,
+      offset: 0,
+    });
     expect(tokens.get('INT-A')).toHaveBeenCalledTimes(2);
-    expect(h.createApi).toHaveBeenCalledWith(expect.objectContaining({ getAccessToken: tokens.get('INT-A') }));
+    expect(h.createApi).toHaveBeenCalledWith(
+      expect.objectContaining({ getAccessToken: tokens.get('INT-A') }),
+    );
   });
   it('uses the refreshable callback again after an enqueue rather than the token snapshot', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER);
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
     const { scheduler, enqueue } = makeScheduler();
     const entry = feed({ topic: 'items', resource: '/items/MLB1' });
     const { tokens } = wireApi({}, { 'INT-A/items/MLB': [page([entry]), page([])] });
-    enqueue.mockImplementation(async () => { tokens.get('INT-A')!.mockResolvedValue('refreshed-token'); });
+    enqueue.mockImplementation(async () => {
+      tokens.get('INT-A')!.mockResolvedValue('refreshed-token');
+    });
     expect((await run(db, scheduler)).complete).toBe(true);
     const token = tokens.get('INT-A')!;
     expect(token).toHaveBeenCalledTimes(3);
     expect(await token.mock.results.at(-1)?.value).toBe('refreshed-token');
   });
   it('reports no access instead of a healthy empty feed', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER);
-    const { scheduler } = makeScheduler(); wireApi({}, {
-      'INT-A/items/MLB': new MercadoLivreHttpError('forbidden', 403, null),
-    });
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    wireApi(
+      {},
+      {
+        'INT-A/items/MLB': new MercadoLivreHttpError('forbidden', 403, null),
+      },
+    );
     const result = await run(db, scheduler);
-    expect(result.complete).toBe(false); expect(result.errors[0]).toContain('NO_FEED_ACCESS');
+    expect(result.complete).toBe(false);
+    expect(result.errors[0]).toContain('NO_FEED_ACCESS');
     expect(db.docs(HEALTH_PATH).get('app-' + APP_ID)?.lastSuccessAtUs).toBeNull();
   });
   it.each([
@@ -323,8 +416,11 @@ describe('automatic application-feed access (#1292)', () => {
     new MercadoLivreNetworkError('private-body'),
     new MercadoLivreValidationError('private-body', []),
   ])('does not mistake provider failure for an absent authenticated account: %s', async (error) => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); seedConta(db, 'INT-B', SELLER + 1);
-    const { scheduler } = makeScheduler(); wireApi({}, { 'INT-A/items/MLB': error });
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    seedConta(db, 'INT-B', SELLER + 1);
+    const { scheduler } = makeScheduler();
+    wireApi({}, { 'INT-A/items/MLB': error });
     const result = await run(db, scheduler);
     expect(result.complete).toBe(false);
     expect(result.errors.join()).not.toContain('NO_FEED_ACCESS');
@@ -333,8 +429,10 @@ describe('automatic application-feed access (#1292)', () => {
     expect(result.examined).toBe(1);
   });
   it('propagates unexpected exceptions', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER);
-    const { scheduler } = makeScheduler(); wireApi({}, { 'INT-A/items/MLB': new TypeError('bug') });
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    wireApi({}, { 'INT-A/items/MLB': new TypeError('bug') });
     await expect(run(db, scheduler)).rejects.toThrow('bug');
   });
 });
@@ -560,89 +658,172 @@ describe('runMissedFeedsSweep — entry normalization', () => {
   });
 });
 
-
 describe('stream coverage and health', () => {
   it('deduplicates within and across item sites, pages and the unfiltered feed', async () => {
     vi.stubEnv('MERCADO_LIVRE_MISSED_FEEDS_SITE_IDS', 'MLB,MLA');
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER);
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
     const { scheduler, enqueue } = makeScheduler();
     const entry = feed({ topic: 'items', resource: '/items/MLB1' });
-    wireApi({ 'INT-A': [page([entry])] }, {
-      'INT-A/items/MLB': [page([entry, entry]), page([entry]), page([])],
-      'INT-A/items/MLA': [page([entry]), page([])],
-    });
+    wireApi(
+      { 'INT-A': [page([entry])] },
+      {
+        'INT-A/items/MLB': [page([entry, entry]), page([entry]), page([])],
+        'INT-A/items/MLA': [page([entry]), page([])],
+      },
+    );
     const result = await run(db, scheduler);
-    expect(result.complete).toBe(true); expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(result.complete).toBe(true);
+    expect(enqueue).toHaveBeenCalledTimes(1);
     expect(result.streams.map((stream) => stream.enqueued)).toEqual([1, 0, 0]);
   });
   it('keeps no-ID entries with distinct sent dates distinct', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler, enqueue } = makeScheduler();
-    wireApi({ 'INT-A': [page([feed({ _id: null }), feed({ _id: null }), feed({ _id: null, sent: '2026-08-11T08:00:00Z' })])] });
-    await run(db, scheduler); expect(enqueue).toHaveBeenCalledTimes(2);
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler, enqueue } = makeScheduler();
+    wireApi({
+      'INT-A': [
+        page([
+          feed({ _id: null }),
+          feed({ _id: null }),
+          feed({ _id: null, sent: '2026-08-11T08:00:00Z' }),
+        ]),
+      ],
+    });
+    await run(db, scheduler);
+    expect(enqueue).toHaveBeenCalledTimes(2);
   });
   it('advances offsets by actual page lengths and waits for an empty page', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler } = makeScheduler();
-    const { getMissedFeeds } = wireApi({ 'INT-A': [page([feed({ _id: 'a' }), feed({ _id: 'b' })]), page([feed({ _id: 'c' })]), page([])] });
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    const { getMissedFeeds } = wireApi({
+      'INT-A': [
+        page([feed({ _id: 'a' }), feed({ _id: 'b' })]),
+        page([feed({ _id: 'c' })]),
+        page([]),
+      ],
+    });
     const result = await run(db, scheduler);
-    expect(getMissedFeeds.mock.calls.filter(([, params]) => params.topic == null).map(([, params]) => params.offset)).toEqual([0, 2, 3]);
+    expect(
+      getMissedFeeds.mock.calls
+        .filter(([, params]) => params.topic == null)
+        .map(([, params]) => params.offset),
+    ).toEqual([0, 2, 3]);
     expect(result.streams[1]).toMatchObject({ pages: 3, found: 3, complete: true });
   });
   it('uses topic streams only for an explicit missing-site 400', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler } = makeScheduler();
-    const { getMissedFeeds } = wireApi({}, { 'INT-A/all/-': new MercadoLivreHttpError('site_id required', 400, { message: 'site_id is required' }) });
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    const { getMissedFeeds } = wireApi(
+      {},
+      {
+        'INT-A/all/-': new MercadoLivreHttpError('site_id required', 400, {
+          message: 'site_id is required',
+        }),
+      },
+    );
     const result = await run(db, scheduler);
     expect(result).toMatchObject({ complete: true, queryMode: 'topics' });
-    expect(result.streams.map((stream) => stream.topic).sort()).toEqual([...KNOWN_TOPICS].filter(shouldEnqueueTopic).sort());
-    expect(getMissedFeeds.mock.calls.filter(([, params]) => params.topic === 'items')).toHaveLength(1);
+    expect(result.streams.map((stream) => stream.topic).sort()).toEqual(
+      [...KNOWN_TOPICS].filter(shouldEnqueueTopic).sort(),
+    );
+    expect(getMissedFeeds.mock.calls.filter(([, params]) => params.topic === 'items')).toHaveLength(
+      1,
+    );
   });
   it('does not hide unrelated unfiltered 400s behind a topic fallback', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler } = makeScheduler();
-    wireApi({}, { 'INT-A/all/-': new MercadoLivreHttpError('bad app id', 400, { message: 'bad app id' }) });
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    wireApi(
+      {},
+      { 'INT-A/all/-': new MercadoLivreHttpError('bad app id', 400, { message: 'bad app id' }) },
+    );
     expect(await run(db, scheduler)).toMatchObject({ complete: false, errors: ['ML_HTTP_400'] });
   });
   it('continues other sites after an expected stream failure', async () => {
     vi.stubEnv('MERCADO_LIVRE_MISSED_FEEDS_SITE_IDS', 'MLB,MLA,MLM');
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler } = makeScheduler();
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
     wireApi({}, { 'INT-A/items/MLA': new MercadoLivreHttpError('boom', 500, null) });
     const result = await run(db, scheduler);
     expect(result.complete).toBe(false);
-    expect(result.streams.map((stream) => [stream.siteId, stream.complete])).toEqual([['MLB', true], ['MLA', false], ['MLM', true], [null, true]]);
+    expect(result.streams.map((stream) => [stream.siteId, stream.complete])).toEqual([
+      ['MLB', true],
+      ['MLA', false],
+      ['MLM', true],
+      [null, true],
+    ]);
   });
   it('page exhaustion is incomplete and cannot advance last success', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler } = makeScheduler();
-    db.seed(HEALTH_PATH, 'app-' + APP_ID, { lastSweepAtUs: NOW_US - 2000, lastSuccessAtUs: NOW_US - 2000 });
-    wireApi({ 'INT-A': Array.from({ length: MAX_PAGES_PER_TICK }, (_, i) => page([feed({ _id: 'f-' + i })])) });
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    db.seed(HEALTH_PATH, 'app-' + APP_ID, {
+      lastSweepAtUs: NOW_US - 2000,
+      lastSuccessAtUs: NOW_US - 2000,
+    });
+    wireApi({
+      'INT-A': Array.from({ length: MAX_PAGES_PER_TICK }, (_, i) =>
+        page([feed({ _id: 'f-' + i })]),
+      ),
+    });
     const result = await run(db, scheduler);
     expect(result).toMatchObject({ complete: false });
     expect(result.streams[1]).toMatchObject({ truncated: true, error: 'PAGE_BUDGET_EXHAUSTED' });
-    expect(db.docs(HEALTH_PATH).get('app-' + APP_ID)).toMatchObject({ lastSweepAtUs: NOW_US, lastSuccessAtUs: NOW_US - 2000, lastTruncated: true, complete: false });
+    expect(db.docs(HEALTH_PATH).get('app-' + APP_ID)).toMatchObject({
+      lastSweepAtUs: NOW_US,
+      lastSuccessAtUs: NOW_US - 2000,
+      lastTruncated: true,
+      complete: false,
+    });
   });
   it('time exhaustion remains visible', async () => {
-    const db = new FakeDb(); const { scheduler } = makeScheduler();
+    const db = new FakeDb();
+    const { scheduler } = makeScheduler();
     const clock = vi.fn().mockReturnValueOnce(0).mockReturnValue(MAX_SWEEP_DURATION_MS);
-    const result = await runMissedFeedsSweep(db as unknown as Firestore, { scheduler, nowMs: NOW_MS, monotonicNow: clock });
+    const result = await runMissedFeedsSweep(db as unknown as Firestore, {
+      scheduler,
+      nowMs: NOW_MS,
+      monotonicNow: clock,
+    });
     expect(result).toMatchObject({ complete: false, errors: ['SWEEP_TIME_BUDGET_EXHAUSTED'] });
   });
   it('enqueue failure remains retryable in another stream and does not lose a dedup key', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler, enqueue } = makeScheduler();
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler, enqueue } = makeScheduler();
     const entry = feed({ topic: 'items', resource: '/items/MLB1' });
     wireApi({ 'INT-A': [page([entry])] }, { 'INT-A/items/MLB': [page([entry])] });
     enqueue.mockRejectedValueOnce(new MlTasksDisabledError());
     const result = await run(db, scheduler);
-    expect(result.complete).toBe(false); expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(result.complete).toBe(false);
+    expect(enqueue).toHaveBeenCalledTimes(2);
     expect(result.streams[1]?.enqueued).toBe(1);
   });
   it('older or equal attempts cannot replace newer health', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler } = makeScheduler(); wireApi({});
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    wireApi({});
     const result = await run(db, scheduler);
     const health = structuredClone(db.docs(HEALTH_PATH).get('app-' + APP_ID));
-    result.complete = false; result.errors = ['older-failure'];
-    expect(await recordMissedFeedsHealth(db as unknown as Firestore, result, NOW_US - 1)).toBe(false);
+    result.complete = false;
+    result.errors = ['older-failure'];
+    expect(await recordMissedFeedsHealth(db as unknown as Firestore, result, NOW_US - 1)).toBe(
+      false,
+    );
     expect(await recordMissedFeedsHealth(db as unknown as Firestore, result, NOW_US)).toBe(false);
     expect(db.docs(HEALTH_PATH).get('app-' + APP_ID)).toEqual(health);
   });
   it('rechecks the attempt watermark after an OCC retry', async () => {
-    const db = new FakeDb(); seedConta(db, 'INT-A', SELLER); const { scheduler } = makeScheduler(); wireApi({});
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler } = makeScheduler();
+    wireApi({});
     const result = await run(db, scheduler);
     const memory = new MemoryFirestore();
     let injected = false;
@@ -652,9 +833,14 @@ describe('stream coverage and health', () => {
       await recordMissedFeedsHealth(memory as unknown as Firestore, result, NOW_US + 1000);
     };
     const older = { ...result, complete: false, errors: ['older-failure'] };
-    expect(await recordMissedFeedsHealth(memory as unknown as Firestore, older, NOW_US)).toBe(false);
+    expect(await recordMissedFeedsHealth(memory as unknown as Firestore, older, NOW_US)).toBe(
+      false,
+    );
     expect(memory.docs(HEALTH_PATH).get('app-' + APP_ID)).toMatchObject({
-      complete: true, lastSweepAtUs: NOW_US + 1000, lastSuccessAtUs: NOW_US + 1000, lastError: null,
+      complete: true,
+      lastSweepAtUs: NOW_US + 1000,
+      lastSuccessAtUs: NOW_US + 1000,
+      lastError: null,
     });
   });
   it('validates sites and retains the daily retention invariant', () => {

@@ -121,11 +121,16 @@ describe('createMercadoLivreApi — missed feeds (#812)', () => {
   });
 
   it('preserves an owner-only 401 without claiming the seller credential was revoked', async () => {
-    const body = { message: 'You must be the owner of the app to retrieve the messages.', error: 'unauthorized', status: 401 };
+    const body = {
+      message: 'You must be the owner of the app to retrieve the messages.',
+      error: 'unauthorized',
+      status: 401,
+    };
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(body, 401));
     const api = createMercadoLivreApi(cfg(fetchMock));
-    await expect(api.getMissedFeeds({ appId: '42', topic: 'items', siteId: 'MLB' }))
-      .rejects.toMatchObject({ status: 401, body });
+    await expect(
+      api.getMissedFeeds({ appId: '42', topic: 'items', siteId: 'MLB' }),
+    ).rejects.toMatchObject({ status: 401, body });
   });
 
   it('defaults messages to [] when ML omits the array entirely', async () => {

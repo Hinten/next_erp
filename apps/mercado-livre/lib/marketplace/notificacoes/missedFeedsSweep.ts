@@ -25,10 +25,18 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import { MercadoLivreConfigError } from '../core/mercadoLivre';
 import { type MlTaskScheduler, MlTasksDisabledError } from './mlTasks';
-import { isKnownTopic, KNOWN_TOPICS, parseNotificationBody, shouldEnqueueTopic } from './notificacao';
 import {
-  findMissedFeedsAccess, isMissedFeedsSiteRequired, missedFeedsSites,
-  MissedFeedsConfigError, PAGE_LIMIT,
+  isKnownTopic,
+  KNOWN_TOPICS,
+  parseNotificationBody,
+  shouldEnqueueTopic,
+} from './notificacao';
+import {
+  findMissedFeedsAccess,
+  isMissedFeedsSiteRequired,
+  missedFeedsSites,
+  MissedFeedsConfigError,
+  PAGE_LIMIT,
 } from './missedFeedsAccess';
 export { PAGE_LIMIT } from './missedFeedsAccess';
 
@@ -41,10 +49,16 @@ export const APP_ID_INVALIDO_ERROR = 'MERCADO_LIVRE_CLIENT_ID ausente ou inváli
 export const NO_ACCESS_ERROR = 'NO_FEED_ACCESS: connect an application-owner account';
 
 export class MissedFeedsBudgetError extends Error {
-  constructor() { super('SWEEP_TIME_BUDGET_EXHAUSTED'); this.name = 'MissedFeedsBudgetError'; }
+  constructor() {
+    super('SWEEP_TIME_BUDGET_EXHAUSTED');
+    this.name = 'MissedFeedsBudgetError';
+  }
 }
 export class MissedFeedsIncompleteError extends Error {
-  constructor() { super('Mercado Livre missed-feeds coverage is incomplete; inspect app health.'); this.name = 'MissedFeedsIncompleteError'; }
+  constructor() {
+    super('Mercado Livre missed-feeds coverage is incomplete; inspect app health.');
+    this.name = 'MissedFeedsIncompleteError';
+  }
 }
 export interface MissedFeedsDeps {
   scheduler: MlTaskScheduler;
@@ -70,7 +84,8 @@ export interface MissedFeedsSweepResult {
 
 /** Codes only: error messages/bodies may contain callback URLs or credentials. */
 export function missedFeedsErrorCode(err: unknown): string | null {
-  if (err instanceof MercadoLivreReauthRequiredError) return err.status == null ? 'ML_REAUTH_REQUIRED' : 'ML_AUTH_' + err.status;
+  if (err instanceof MercadoLivreReauthRequiredError)
+    return err.status == null ? 'ML_REAUTH_REQUIRED' : 'ML_AUTH_' + err.status;
   if (err instanceof MercadoLivreHttpError) return 'ML_HTTP_' + err.status;
   if (err instanceof MercadoLivreNetworkError) return 'ML_NETWORK';
   if (err instanceof MercadoLivreValidationError) return 'ML_BAD_RESPONSE';
@@ -147,17 +162,37 @@ interface TickState {
 }
 function bump(counter: Record<string, number>, key: string): void {
   const previous = Object.hasOwn(counter, key) ? counter[key]! : 0;
-  Object.defineProperty(counter, key, { value: previous + 1, enumerable: true, writable: true, configurable: true });
+  Object.defineProperty(counter, key, {
+    value: previous + 1,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
 }
 function streamResult(topic: string | null, siteId: string | null): MissedFeedsStream {
-  return { topic, siteId, found: 0, novos: 0, enqueued: 0,
-    skippedTopic: 0, skippedIgnorado: 0, skippedInvalid: 0,
-    pages: 0, complete: false, truncated: false, error: null };
+  return {
+    topic,
+    siteId,
+    found: 0,
+    novos: 0,
+    enqueued: 0,
+    skippedTopic: 0,
+    skippedIgnorado: 0,
+    skippedInvalid: 0,
+    pages: 0,
+    complete: false,
+    truncated: false,
+    error: null,
+  };
 }
 
 async function drainStream(
-  api: MercadoLivreApi, appId: string, stream: MissedFeedsStream,
-  scheduler: MlTaskScheduler, tick: TickState, checkBudget: () => void,
+  api: MercadoLivreApi,
+  appId: string,
+  stream: MissedFeedsStream,
+  scheduler: MlTaskScheduler,
+  tick: TickState,
+  checkBudget: () => void,
   firstPage?: MlMissedFeeds,
 ): Promise<void> {
   let offset = 0;
@@ -165,13 +200,21 @@ async function drainStream(
   try {
     for (;;) {
       checkBudget();
-      const page = pending ?? await api.getMissedFeeds({
-        appId, topic: stream.topic ?? undefined, siteId: stream.siteId ?? undefined,
-        limit: PAGE_LIMIT, offset,
-      });
+      const page =
+        pending ??
+        (await api.getMissedFeeds({
+          appId,
+          topic: stream.topic ?? undefined,
+          siteId: stream.siteId ?? undefined,
+          limit: PAGE_LIMIT,
+          offset,
+        }));
       pending = undefined;
       stream.pages += 1;
-      if (page.messages.length === 0) { stream.complete = true; return; }
+      if (page.messages.length === 0) {
+        stream.complete = true;
+        return;
+      }
       stream.found += page.messages.length;
       for (const entry of page.messages) {
         checkBudget();
@@ -191,7 +234,10 @@ async function drainStream(
         } else {
           const payload = parseNotificationBody(toWire(entry));
           if (payload == null) stream.skippedInvalid += 1;
-          else { await scheduler.enqueue(payload); stream.enqueued += 1; }
+          else {
+            await scheduler.enqueue(payload);
+            stream.enqueued += 1;
+          }
         }
         tick.vistos.add(key);
         stream.novos += 1;
@@ -212,42 +258,73 @@ async function drainStream(
 
 /** Monotonic attempt watermark (µs); all provider I/O is outside the callback. */
 export async function recordMissedFeedsHealth(
-  db: Firestore, result: MissedFeedsSweepResult, nowUs: number,
+  db: Firestore,
+  result: MissedFeedsSweepResult,
+  nowUs: number,
 ): Promise<boolean> {
-  const ref = missedFeedsMercadoLivreCollection.docRef(db, {}, 'app-' + (result.appId ?? 'unconfigured'));
+  const ref = missedFeedsMercadoLivreCollection.docRef(
+    db,
+    {},
+    'app-' + (result.appId ?? 'unconfigured'),
+  );
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const previous = snap.data();
-    if (typeof previous?.lastSweepAtUs === 'number' && previous.lastSweepAtUs >= nowUs) return false;
-    const sum = (key: 'found' | 'enqueued' | 'skippedTopic' | 'skippedIgnorado' | 'skippedInvalid') =>
-      result.streams.reduce((total, stream) => total + stream[key], 0);
-    tx.set(ref, missedFeedsMercadoLivreCollection.parse({
-      appId: result.appId, selectedIntegracaoId: result.selectedIntegracaoId,
-      lastSweepAtUs: nowUs,
-      lastSuccessAtUs: result.complete ? nowUs : previous?.lastSuccessAtUs ?? null,
-      complete: result.complete,
-      lastError: result.errors.length > 0 ? result.errors.join('; ') : null,
-      lastFoundCount: sum('found'), lastEnqueuedCount: sum('enqueued'),
-      lastSkippedCount: sum('skippedTopic') + sum('skippedIgnorado') + sum('skippedInvalid'),
-      lastTruncated: result.streams.some((stream) => stream.truncated), streams: result.streams,
-    }));
+    if (typeof previous?.lastSweepAtUs === 'number' && previous.lastSweepAtUs >= nowUs)
+      return false;
+    const sum = (
+      key: 'found' | 'enqueued' | 'skippedTopic' | 'skippedIgnorado' | 'skippedInvalid',
+    ) => result.streams.reduce((total, stream) => total + stream[key], 0);
+    tx.set(
+      ref,
+      missedFeedsMercadoLivreCollection.parse({
+        appId: result.appId,
+        selectedIntegracaoId: result.selectedIntegracaoId,
+        lastSweepAtUs: nowUs,
+        lastSuccessAtUs: result.complete ? nowUs : (previous?.lastSuccessAtUs ?? null),
+        complete: result.complete,
+        lastError: result.errors.length > 0 ? result.errors.join('; ') : null,
+        lastFoundCount: sum('found'),
+        lastEnqueuedCount: sum('enqueued'),
+        lastSkippedCount: sum('skippedTopic') + sum('skippedIgnorado') + sum('skippedInvalid'),
+        lastTruncated: result.streams.some((stream) => stream.truncated),
+        streams: result.streams,
+      }),
+    );
     return true;
   });
 }
 
 export async function runMissedFeedsSweep(
-  db: Firestore, deps: MissedFeedsDeps,
+  db: Firestore,
+  deps: MissedFeedsDeps,
 ): Promise<MissedFeedsSweepResult> {
   const result: MissedFeedsSweepResult = {
-    enabled: process.env[MISSED_FEEDS_FLAG_ENV] === '1', configured: false,
-    appId: null, complete: false, selectedIntegracaoId: null, examined: 0, rejected: 0,
-    queryMode: null, streams: [], errors: [], topicosPulados: {}, httpCodes: {}, healthRecorded: false,
+    enabled: process.env[MISSED_FEEDS_FLAG_ENV] === '1',
+    configured: false,
+    appId: null,
+    complete: false,
+    selectedIntegracaoId: null,
+    examined: 0,
+    rejected: 0,
+    queryMode: null,
+    streams: [],
+    errors: [],
+    topicosPulados: {},
+    httpCodes: {},
+    healthRecorded: false,
   };
   if (!result.enabled) return result;
   const clock = deps.monotonicNow ?? (() => performance.now());
   const deadline = clock() + MAX_SWEEP_DURATION_MS;
-  const checkBudget = () => { if (clock() >= deadline) throw new MissedFeedsBudgetError(); };
-  const tick: TickState = { vistos: new Set(), topicosPulados: result.topicosPulados, httpCodes: result.httpCodes };
+  const checkBudget = () => {
+    if (clock() >= deadline) throw new MissedFeedsBudgetError();
+  };
+  const tick: TickState = {
+    vistos: new Set(),
+    topicosPulados: result.topicosPulados,
+    httpCodes: result.httpCodes,
+  };
   const appId = (process.env.MERCADO_LIVRE_CLIENT_ID ?? '').trim();
   if (!/^[1-9]\d*$/.test(appId)) result.errors.push(APP_ID_INVALIDO_ERROR);
   else {
@@ -255,10 +332,16 @@ export async function runMissedFeedsSweep(
     try {
       const sites = missedFeedsSites();
       result.configured = true;
-      const access = await findMissedFeedsAccess(db, appId, sites[0]!, checkBudget, (examined, rejected) => {
-        result.examined = examined;
-        result.rejected = rejected;
-      });
+      const access = await findMissedFeedsAccess(
+        db,
+        appId,
+        sites[0]!,
+        checkBudget,
+        (examined, rejected) => {
+          result.examined = examined;
+          result.rejected = rejected;
+        },
+      );
       result.examined = access.examined;
       result.rejected = access.rejected;
       if (access.selected == null) result.errors.push(NO_ACCESS_ERROR);
@@ -270,8 +353,15 @@ export async function runMissedFeedsSweep(
         for (const site of sites) {
           const stream = streamResult('items', site);
           result.streams.push(stream);
-          await drainStream(api, appId, stream, deps.scheduler, tick, checkBudget,
-            site === sites[0] ? firstItemsPage : undefined);
+          await drainStream(
+            api,
+            appId,
+            stream,
+            deps.scheduler,
+            tick,
+            checkBudget,
+            site === sites[0] ? firstItemsPage : undefined,
+          );
         }
         let globalPage: MlMissedFeeds | undefined;
         const globalStream = streamResult(null, null);
@@ -291,19 +381,37 @@ export async function runMissedFeedsSweep(
         }
         if (globalPage != null) {
           result.streams.push(globalStream);
-          await drainStream(api, appId, globalStream, deps.scheduler, tick, checkBudget, globalPage);
+          await drainStream(
+            api,
+            appId,
+            globalStream,
+            deps.scheduler,
+            tick,
+            checkBudget,
+            globalPage,
+          );
         } else {
-          const topics = [...KNOWN_TOPICS].filter((topic) => topic !== 'items' && shouldEnqueueTopic(topic)).sort();
+          const topics = [...KNOWN_TOPICS]
+            .filter((topic) => topic !== 'items' && shouldEnqueueTopic(topic))
+            .sort();
           for (const topic of topics) {
             const stream = streamResult(topic, null);
             result.streams.push(stream);
             await drainStream(api, appId, stream, deps.scheduler, tick, checkBudget);
           }
         }
-        for (const stream of result.streams) if (!stream.complete) {
-          result.errors.push((stream.topic ?? 'all') + '/' + (stream.siteId ?? '-') + ': ' + (stream.error ?? 'INCOMPLETE'));
-        }
-        result.complete = result.errors.length === 0 && result.streams.every((stream) => stream.complete);
+        for (const stream of result.streams)
+          if (!stream.complete) {
+            result.errors.push(
+              (stream.topic ?? 'all') +
+                '/' +
+                (stream.siteId ?? '-') +
+                ': ' +
+                (stream.error ?? 'INCOMPLETE'),
+            );
+          }
+        result.complete =
+          result.errors.length === 0 && result.streams.every((stream) => stream.complete);
       }
     } catch (err) {
       const code = missedFeedsErrorCode(err);

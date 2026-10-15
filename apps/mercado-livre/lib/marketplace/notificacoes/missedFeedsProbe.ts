@@ -10,7 +10,9 @@ export interface MissedFeedsProbeRow {
 }
 
 export async function probeMissedFeeds(
-  appId: string, getAccessToken: () => Promise<string>, siteId = 'MLB',
+  appId: string,
+  getAccessToken: () => Promise<string>,
+  siteId = 'MLB',
   fetchImpl: typeof fetch = fetch,
 ): Promise<MissedFeedsProbeRow[]> {
   const rows: MissedFeedsProbeRow[] = [];
@@ -24,17 +26,24 @@ export async function probeMissedFeeds(
     let response: Response;
     try {
       response = await fetchImpl(url, {
-        headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(30_000),
+        headers: { Authorization: 'Bearer ' + token },
+        signal: AbortSignal.timeout(30_000),
       });
     } catch (err) {
       throw new MercadoLivreNetworkError('Missed-feeds probe transport failed.', err);
     }
-    const row: MissedFeedsProbeRow = { query, status: response.status,
-      shape: 'invalid-json', count: null, topics: {} };
+    const row: MissedFeedsProbeRow = {
+      query,
+      status: response.status,
+      shape: 'invalid-json',
+      count: null,
+      topics: {},
+    };
     const text = await response.text();
     let body: unknown;
-    try { body = JSON.parse(text); }
-    catch (err) {
+    try {
+      body = JSON.parse(text);
+    } catch (err) {
       if (!(err instanceof SyntaxError)) throw err;
       rows.push(row);
       continue;
@@ -48,12 +57,22 @@ export async function probeMissedFeeds(
         row.shape = 'messages-array';
         row.count = messages.length;
         for (const message of messages as unknown[]) {
-          const topic = message != null && typeof message === 'object'
-            ? (message as Record<string, unknown>).topic : null;
+          const topic =
+            message != null && typeof message === 'object'
+              ? (message as Record<string, unknown>).topic
+              : null;
           // A malformed field must not smuggle arbitrary provider content into logs.
-          const key = typeof topic === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(topic) ? topic : '(invalid)';
+          const key =
+            typeof topic === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(topic)
+              ? topic
+              : '(invalid)';
           const previous = Object.hasOwn(row.topics, key) ? row.topics[key]! : 0;
-          Object.defineProperty(row.topics, key, { value: previous + 1, enumerable: true, writable: true, configurable: true });
+          Object.defineProperty(row.topics, key, {
+            value: previous + 1,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
         }
       }
     }

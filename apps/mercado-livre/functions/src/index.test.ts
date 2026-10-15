@@ -31,11 +31,14 @@ process.env.MERCADO_LIVRE_TASKS_REGION = 'us-central1';
 
 const missedFeeds = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../../lib/marketplace/notificacoes/missedFeedsSweep', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../lib/marketplace/notificacoes/missedFeedsSweep')>(),
+  ...(await importOriginal<typeof import('../../lib/marketplace/notificacoes/missedFeedsSweep')>()),
   runMissedFeedsSweep: missedFeeds.run,
 }));
 vi.mock('./lib/admin', () => ({ getDb: () => ({}) }));
-afterEach(() => { vi.restoreAllMocks(); missedFeeds.run.mockReset(); });
+afterEach(() => {
+  vi.restoreAllMocks();
+  missedFeeds.run.mockReset();
+});
 
 // ⚠️ Keep this import at the TOP LEVEL — do NOT move it into a `beforeAll`.
 // `./index` is the heaviest module in this codebase (firebase-functions v2 plus
@@ -76,13 +79,22 @@ describe('reprocessMercadoLivreNotifications (#778)', () => {
 });
 
 describe('sweepMercadoLivreMissedFeeds (#812)', () => {
-  const invoke = () => (sweepMercadoLivreMissedFeeds as unknown as {
-    run: (event: Record<string, unknown>) => Promise<void>;
-  }).run({});
+  const invoke = () =>
+    (
+      sweepMercadoLivreMissedFeeds as unknown as {
+        run: (event: Record<string, unknown>) => Promise<void>;
+      }
+    ).run({});
 
   it('fails incomplete coverage and logs the application-level outcome', async () => {
-    const result = { enabled: true, configured: true, complete: false,
-      appId: '42', selectedIntegracaoId: null, errors: ['NO_FEED_ACCESS'] };
+    const result = {
+      enabled: true,
+      configured: true,
+      complete: false,
+      appId: '42',
+      selectedIntegracaoId: null,
+      errors: ['NO_FEED_ACCESS'],
+    };
     missedFeeds.run.mockResolvedValue(result);
     const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     await expect(invoke()).rejects.toThrow('coverage is incomplete');
@@ -93,7 +105,10 @@ describe('sweepMercadoLivreMissedFeeds (#812)', () => {
     const log = vi.spyOn(logger, 'info').mockImplementation(() => {});
     missedFeeds.run.mockResolvedValue({ enabled: true, complete: true, appId: '42' });
     await expect(invoke()).resolves.toBeUndefined();
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('complete'), expect.objectContaining({ complete: true }));
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('complete'),
+      expect.objectContaining({ complete: true }),
+    );
     missedFeeds.run.mockResolvedValue({ enabled: false, complete: false });
     await expect(invoke()).resolves.toBeUndefined();
   });

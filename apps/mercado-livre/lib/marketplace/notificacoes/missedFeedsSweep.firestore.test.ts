@@ -5,9 +5,21 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { recordMissedFeedsHealth, type MissedFeedsSweepResult } from './missedFeedsSweep';
 
 function result(appId: string, complete: boolean): MissedFeedsSweepResult {
-  return { enabled: true, configured: true, appId, complete, selectedIntegracaoId: 'diagnostic-only',
-    examined: 1, rejected: 0, queryMode: 'unfiltered', streams: [],
-    errors: complete ? [] : ['ML_HTTP_500'], topicosPulados: {}, httpCodes: {}, healthRecorded: false };
+  return {
+    enabled: true,
+    configured: true,
+    appId,
+    complete,
+    selectedIntegracaoId: 'diagnostic-only',
+    examined: 1,
+    rejected: 0,
+    queryMode: 'unfiltered',
+    streams: [],
+    errors: complete ? [] : ['ML_HTTP_500'],
+    topicosPulados: {},
+    httpCodes: {},
+    healthRecorded: false,
+  };
 }
 
 describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('app missed-feeds health (Firestore)', () => {
@@ -23,10 +35,18 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('app missed-feeds health (
         recordMissedFeedsHealth(db, result(appId, false), 1_700_000_000_002_000),
       ]);
       const health = (await ref.get()).data();
-      expect(health).toMatchObject({ lastSweepAtUs: 1_700_000_000_002_000, complete: false, lastError: 'ML_HTTP_500' });
+      expect(health).toMatchObject({
+        lastSweepAtUs: 1_700_000_000_002_000,
+        complete: false,
+        lastError: 'ML_HTTP_500',
+      });
       expect([1_700_000_000_000_000, 1_700_000_000_001_000]).toContain(health?.lastSuccessAtUs);
-      expect(await recordMissedFeedsHealth(db, result(appId, true), 1_700_000_000_001_000)).toBe(false);
+      expect(await recordMissedFeedsHealth(db, result(appId, true), 1_700_000_000_001_000)).toBe(
+        false,
+      );
       expect((await ref.get()).data()).toEqual(health);
-    } finally { await ref.delete(); }
+    } finally {
+      await ref.delete();
+    }
   });
 });

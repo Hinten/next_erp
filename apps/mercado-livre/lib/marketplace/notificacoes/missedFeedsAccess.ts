@@ -9,10 +9,7 @@ import {
   type MercadoLivreApi,
   type MlMissedFeeds,
 } from '@delfrance/integrations-mercado-livre';
-import {
-  loadMercadoLivreContext,
-  MercadoLivreContaNotConfiguredError,
-} from '../core/mercadoLivre';
+import { loadMercadoLivreContext, MercadoLivreContaNotConfiguredError } from '../core/mercadoLivre';
 
 export const PAGE_LIMIT = 50;
 export const MISSED_FEEDS_SITES_ENV = 'MERCADO_LIVRE_MISSED_FEEDS_SITE_IDS';
@@ -51,11 +48,13 @@ export async function findMissedFeedsAccess(
   progress?: (examined: number, rejected: number) => void,
 ): Promise<MissedFeedsAccess> {
   checkBudget();
-  const snap = await integracaoCollection.ref(db, {})
+  const snap = await integracaoCollection
+    .ref(db, {})
     .where('tipo', '==', INTEGRACAO_TIPO.mercadoLivre)
-    .where('ativo', '==', true).get();
+    .where('ativo', '==', true)
+    .get();
   // Sort in memory: retain the existing indexed (tipo, ativo) query shape.
-  const candidates = [...snap.docs].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const candidates = [...snap.docs].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const result: MissedFeedsAccess = { examined: 0, rejected: 0, selected: null };
   for (const doc of candidates) {
     checkBudget();
@@ -75,16 +74,27 @@ export async function findMissedFeedsAccess(
         },
       });
       const firstItemsPage = await api.getMissedFeeds({
-        appId, topic: 'items', siteId, limit: PAGE_LIMIT, offset: 0,
+        appId,
+        topic: 'items',
+        siteId,
+        limit: PAGE_LIMIT,
+        offset: 0,
       });
-      result.selected = { integracaoId: doc.id, api, getAccessToken: channelCtx.getAccessToken, firstItemsPage };
+      result.selected = {
+        integracaoId: doc.id,
+        api,
+        getAccessToken: channelCtx.getAccessToken,
+        firstItemsPage,
+      };
       return result;
     } catch (err) {
       // A seller's owner-only rejection says nothing about its seller grant.
       // Never revoke it, and never retry the full feed for every seller.
-      if (err instanceof MercadoLivreContaNotConfiguredError ||
-          err instanceof MercadoLivreReauthRequiredError ||
-          (err instanceof MercadoLivreHttpError && (err.status === 401 || err.status === 403))) {
+      if (
+        err instanceof MercadoLivreContaNotConfiguredError ||
+        err instanceof MercadoLivreReauthRequiredError ||
+        (err instanceof MercadoLivreHttpError && (err.status === 401 || err.status === 403))
+      ) {
         result.rejected += 1;
         progress?.(result.examined, result.rejected);
         continue;
@@ -102,6 +112,9 @@ export function isMissedFeedsSiteRequired(err: unknown): boolean {
   if (err.body == null || typeof err.body !== 'object') return false;
   const body = err.body as Record<string, unknown>;
   const message = [body.message, body.error, body.error_description]
-    .filter((value): value is string => typeof value === 'string').join(' ');
-  return /site[_ -]?id/i.test(message) && /required|missing|obrigat|requer|must|inform/i.test(message);
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  return (
+    /site[_ -]?id/i.test(message) && /required|missing|obrigat|requer|must|inform/i.test(message)
+  );
 }
