@@ -1,0 +1,36 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/pedido/search/",
+    "query": [
+      [
+        "limit",
+        "1"
+      ],
+      [
+        "since_atualizado",
+        "2026-10-15T00%3A00%3A00"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 100,
+    "corpo": {
+      "meta": {
+        "limit": 1,
+        "next": null,
+        "offset": 0,
+        "previous": null,
+        "total_count": 0
+      },
+      "objects": []
+    }
+  }
+}

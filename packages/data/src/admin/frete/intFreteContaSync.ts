@@ -1,73 +1,40 @@
 /**
- * The `int_frete` ⇆ marketplace-conta (`integracao`) sync — ONE core for every channel (#1369).
+ * The `int_frete` ⇆ marketplace-conta (`integracao`) reconciliation — one core for every channel
+ * (#1369, #1888): Mercado Livre (#782), Shopee (#1528) and Loja Integrada (#1826). The
+ * per-channel facts live in `VINCULO_INT_FRETE_CONTA`, and nothing here knows a channel by name.
+ * Neither does the doc chooser: the newest-`dataCadastro` pick is `escolherIntFreteMaisNovo`
+ * (`@delfrance/schemas`), so a browser surface that must name the same doc calls the same copy.
  *
- * A marketplace conta owns a freight doc in `int_frete`, tied to it by a back-reference holding
- * `documents/integracao/<id>`. The legacy Flutter app maintained that doc from the conta screen,
- * upserting it on every save; the new stack saves the conta through a plain `ObjectView` with no
- * companion write, so a Firestore trigger per channel keeps it in step instead. Mercado Livre did
- * it first (#782, `apps/mercado-livre/lib/marketplace/frete/intFreteSync.ts`, now a binding of
- * this module); Shopee step 20 (#1528) is the second channel, and the per-channel facts — the two
- * tipo enums, the back-ref key, the log prefix, the deterministic-id prefix — are ONE pure row
- * each in `VINCULO_INT_FRETE_CONTA` (`@delfrance/schemas`). Nothing here knows a channel by name.
+ * The caller passes only the conta ID. One transaction re-reads the current conta and freight
+ * record, and the pure `planejarIntFreteDaConta` decides from those snapshots. Rule 7 class A:
+ * a replay, retry or out-of-order event converges to current state; an account write between
+ * read and commit conflicts and re-runs the callback. `ultimaModificacao` uses the conta
+ * snapshot's `readTime` in ms for display, never as a watermark or a reconciliation guard.
  *
- * ---- One pure planner, two drivers ----
- * {@link SyncIntFreteConta.planejarIntFreteDaConta} makes every create / patch / deactivate
- * decision. Two drivers apply it, and the window pass (`tools/migrations`) runs it over a scan:
+ * Existing canonical records, then tolerant legacy back-references when configured, are adopted
+ * before checking the deterministic path. A new record targets `<prefixoDocId>-<integracaoId>`
+ * for Mercado Livre, Shopee and Loja Integrada alike (rule 7 tier 0), so concurrent first
+ * reconciliations contend on one path even without lookup-query range protection. Equal
+ * `dataCadastro` values select the lexically lower record ID, preserving the deliberate policy
+ * confirmed for #1888.
  *
- *  - **Shopee — state-driven** (`reconciliarIntFreteDaConta`). The caller passes the conta ID and
- *    nothing else. Inside ONE `db.runTransaction` the conta is re-read through `tx.get`, the doc
- *    is looked up through `tx.get` (plus the deterministic id on a miss), and the planner decides
- *    from those snapshots alone. Rule 7 class **A**: nothing captured outside reaches the write,
- *    so there is no event clock and no watermark — a replayed, retried or out-of-order event
- *    converges to the conta as it stands at commit, and a conta write landing between the read
- *    and the commit puts the conta in the conflict set, so the attempt re-runs. A create targets
- *    `<prefixoDocId>-<integracaoId>` (rule 7 tier 0): two concurrent first reconciles contend on
- *    ONE path, and the loser aborts or fails ALREADY_EXISTS, whose Eventarc retry then patches.
- *    `ultimaModificacao` is stamped with the conta read's `readTime` (ms) — display only, since
- *    nothing on this path reads it as a guard.
- *  - **Mercado Livre — event-driven** (`sincronizarIntFreteDaConta` / `desativarIntFreteDaConta`),
- *    behaviour-identical to the pre-#1528 ML module (its `it` blocks are byte-unedited; only the
- *    FakeDb gained `tx.update`). The mirrored fields come from the event's `after`, OUTSIDE the
- *    callback (class **B**); the named guard is the **ms** watermark {@link docMaisNovoQueEvento}
- *    on the callback's own `tx.get` — stored strictly newer than the event ⇒ `obsoleto`, zero
- *    writes; equal proceeds. ⚠️ Its known gaps
- *    are characterised in `intFreteContaSync.test.ts` and filed as ONE follow-up, #1888 (move ML
- *    onto the state-driven driver): a NEWER event whose diff is empty writes nothing, so it never
- *    advances the watermark and an older retry applied afterwards wins; and a random-id create
- *    relies on Firestore protecting the lookup query's range against a concurrent insert.
+ * Updates use `tx.update` for only differing mirrored fields, plus the display stamp. Operator
+ * configuration (`mapa`, `faixaCep`, `horarioDeCorte`, `enderecoDeOrigem`) survives updates and
+ * deactivation. Creates write the full schema-parsed document with configuration defaults.
  *
- * A patch or a deactivation writes through `tx.update`, of the keys that moved only (out of the
- * ones `montarCamposIntFrete` builds: the mirrored fields plus `tipo` and the back-ref) and the
- * `ultimaModificacao` stamp — on a doc the same transaction just read, so `update` ≡ a
- * merge-`set`, minus the silent upsert. A create (`tx.create`) writes the full schema-parsed doc.
+ * Parity with the legacy `fromConta` set: `nome`, `ativo`, the filial ref (rebased from
+ * `filialIntegracaoPedidoOuterRef`) and the conta back-ref. `dataCadastro` additionally mirrors
+ * the conta's registration date instead of the legacy save-time stamp. Account deletion or a
+ * change of channel deactivates the freight record; it never deletes or renames it, because
+ * historical orders retain `integracaoFreteOuterRef` references to that record.
  *
- * ---- Parity notes vs `.old/` ----
- *  - Mirrored fields are the legacy `fromConta` set (Mercado Livre:
- *    `.old/packages/canais_de_venda/mercado_livre/lib/src/models.dart:332-339`; Shopee:
- *    `.old/packages/canais_de_venda/shopee/lib/src/models.dart:176-183`): `nome`, `ativo`, the
- *    filial ref (rebased `filialIntegracaoPedidoOuterRef` → `filialIntegracaoFreteOuterRef`) and
- *    the conta back-ref — plus `dataCadastro`, see below.
- *  - `mapa` / `faixaCep` / `horarioDeCorte` / `enderecoDeOrigem` are NEVER written by a patch or a
- *    deactivation. That is the legacy null-preserving generated `update()` (`other.x ?? this.x`),
- *    and it is how a hand-configured endereço de origem survives a conta re-save. A create writes
- *    them at the schema defaults (`null`; likewise `prazoExtra` 0, `client_id` / `client_secret`
- *    null) — there is nothing to preserve yet. Nothing here ever deletes.
- *  - **Divergence — `dataCadastro`**: the legacy re-stamped it to `now` on every conta save
- *    (incidental: `fromConta` defaulted it to `DateTime.now()`), which made a "registration date"
- *    meaningless and the newest-first tie-break unstable. Here it MIRRORS the conta's own
- *    `dataCadastro`; `ultimaModificacao` carries the modification time.
- *  - **Divergence — delete**: the legacy orphaned the freight doc. Here a deleted conta (or one
- *    whose `tipo` moved away) DEACTIVATES it — never deletes it, because live pedidos hold
- *    `integracaoFreteOuterRef` pointing at it, and deleting it would blank the Frete tab and the
- *    etiqueta action on historical orders.
- *
- * Firestore types are imported as TYPES only (`adminBundleSafety.test.ts`): the caller hands in
- * its own `db`.
+ * Firestore imports are types only (`adminBundleSafety.test.ts`); the caller supplies its own db.
  */
 import type { DocumentData, Firestore, Query, Transaction } from 'firebase-admin/firestore';
 import { coerceToMillis } from '@delfrance/core/datetime';
 import {
   INTEGRACAO_TIPO_LABELS,
+  escolherIntFreteMaisNovo,
   toOuterRef,
   toOuterRefOrNull,
   type VinculoIntFreteConta,
@@ -89,16 +56,9 @@ export const CAMPOS_SINCRONIZADOS = [
   'dataCadastro',
 ] as const;
 
-/** What one sync / deactivate / reconcile call did — logged as one structured line by the trigger. */
+/** What one reconciliation did — logged as one structured line by the trigger. */
 export interface DisposicaoIntFrete {
-  action:
-    | 'criado'
-    | 'atualizado'
-    | 'inalterado'
-    | 'desativado'
-    | 'incompleto'
-    | 'nao-encontrado'
-    | 'obsoleto';
+  action: 'criado' | 'atualizado' | 'inalterado' | 'desativado' | 'incompleto' | 'nao-encontrado';
   intFreteId?: string;
   /** Field names actually written (create/update only). */
   campos?: string[];
@@ -115,7 +75,7 @@ export interface IntFreteEncontrado {
   data: Record<string, unknown>;
 }
 
-/** The pure decision. `id: null` on `criar` ⇒ a random id (no `prefixoDocId`, Mercado Livre). */
+/** The pure decision. `id: null` on `criar` ⇒ a random ID for a binding without `prefixoDocId`. */
 export type PlanoIntFrete =
   | { acao: 'criar'; id: string | null; campos: Record<string, unknown> }
   | { acao: 'atualizar'; id: string; patch: Record<string, unknown> }
@@ -123,27 +83,6 @@ export type PlanoIntFrete =
   | { acao: 'inalterado'; id: string }
   | { acao: 'incompleto'; faltando: string[] }
   | { acao: 'nao-encontrado' };
-
-/**
- * Mercado Livre only. True when the STORED freight doc is strictly newer than the event being
- * applied — somebody wrote it after this event happened, so replaying the event would roll that
- * change back. The caller must then do nothing.
- *
- * Eventarc is at-least-once AND unordered: a redelivery carries the ORIGINAL `event.time`, and it
- * can land long after a newer conta write has already synced. The other writer of the doc is the
- * `/logistica` editor — a human edit at T2 must survive a stale event from T1.
- *
- * Equal stamps PROCEED: same instant, and the write is idempotent (the field diff reduces it to a
- * no-op anyway). Only `>` blocks.
- *
- * `coerceToMillis` on the stored side because `ultimaModificacao` is tolerant on read — a legacy
- * doc may carry an ISO string or µs where the schema says ms, and comparing those raw against an
- * ms event stamp would silently mis-order them. Both sides are MILLISECONDS.
- */
-export function docMaisNovoQueEvento(data: Record<string, unknown>, eventTimeMs: number): boolean {
-  const armazenado = coerceToMillis(data.ultimaModificacao);
-  return armazenado != null && armazenado > eventTimeMs;
-}
 
 /**
  * Every key of `campos` whose value differs (`!==`) from the stored one — the patch. Pure.
@@ -168,10 +107,10 @@ export interface OpcoesSyncIntFrete {
   /**
    * Mercado Livre only (`refMatchesIntegracao`): enables the tolerant fallback scan for a doc
    * whose back-ref is stored in a non-canonical form. Absent ⇒ the lookup never scans: the Shopee
-   * trigger reads only the two-equality query and the deterministic id. The window pass
-   * (`tools/migrations/src/2026-10-shopee-int-frete/backfill.ts`) does read the channel's whole
-   * `tipo ==` population — once, by design — and REPORTS a non-canonical ref instead of matching
-   * it, refusing to create beside it.
+   * and Loja Integrada bindings read only the two-equality query and the deterministic id. The
+   * window adoption pass both channels bind (`tools/migrations/src/intFreteAdocao/executar.ts`)
+   * does read the channel's whole `tipo ==` population — once, by design — and REPORTS a
+   * non-canonical ref instead of matching it, refusing to create beside it.
    */
   readonly refTolerante?: (ref: unknown, integracaoId: string) => boolean;
 }
@@ -194,7 +133,7 @@ export interface SyncIntFreteConta {
   /** The lookup's two equalities, in memory: `raw.tipo === tipoFrete && raw[campoBackRef] === canonical`. */
   ehDocDaConta(raw: Record<string, unknown>, integracaoId: string): boolean;
   /**
-   * Pure twin of the lookup the drivers run: the `ehDocDaConta` matches, newest `dataCadastro`
+   * Pure twin of the reconciliation lookup: the `ehDocDaConta` matches, newest `dataCadastro`
    * (an equal one ⇒ the lowest id); else (only with `refTolerante`) the tolerant matches of this
    * `tipoFrete`; else (only with `prefixoDocId`) the doc at the deterministic id. The window pass
    * chooses with it.
@@ -225,8 +164,8 @@ export interface SyncIntFreteConta {
   ): PlanoIntFrete;
   /**
    * This conta's freight doc: the newest `dataCadastro`, and on an equal `dataCadastro` the
-   * lexically LOWEST doc id — explicit in `maisNovoPorDataCadastro`, so the pick does not depend
-   * on the order a query returns its docs in.
+   * lexically LOWEST doc id — explicit in `escolherIntFreteMaisNovo` (`@delfrance/schemas`), so
+   * the pick does not depend on the order a query returns its docs in.
    *
    * ⚠️ That is NOT the legacy tie-break, and there was no single legacy rule. Legacy Mercado Livre
    * ran `orderBy__dataCadastro(false).first()` (`ascending: false` ⇒ DESC, and Firestore orders
@@ -241,9 +180,9 @@ export interface SyncIntFreteConta {
    * `StructuredQuery.orderBy` reference), and this query orders by nothing. On an equal
    * `dataCadastro` the ML pick therefore depended on the query plan; it is now deterministically
    * the lowest id. That is a deliberate determinism change, not a no-op — parity with the legacy
-   * highest id is #1888's call.
+   * highest ID was considered for #1888; the lower-ID policy was retained.
    *
-   * ⚠️ `apenasAtivo` defaults to **false**, and every sync driver must keep it that way:
+   * ⚠️ `apenasAtivo` defaults to **false**, and reconciliation must keep it that way:
    * filtering `ativo == true` would make re-enabling a deactivated conta find nothing and CREATE
    * A DUPLICATE instead of re-activating the existing doc. Only an importer (which wants a live
    * config) passes `true` — the legacy split, where the writer's lookup had no `ativo` filter.
@@ -259,72 +198,8 @@ export interface SyncIntFreteConta {
     integracaoId: string,
     opts?: { apenasAtivo?: boolean; tx?: Transaction },
   ): Promise<IntFreteEncontrado | null>;
-  /** Shopee: state-driven, class A. Re-reads the conta through `tx.get`; takes no conta, no clock. */
+  /** State-driven, class A: re-reads the conta through `tx.get`; takes no conta or event clock. */
   reconciliarIntFreteDaConta(db: Firestore, integracaoId: string): Promise<DisposicaoIntFrete>;
-  /**
-   * Mercado Livre: event-driven, class B. Creates the doc when absent, otherwise patches ONLY the
-   * mirrored fields that differ — so a conta write that moved nothing relevant (and a replay of
-   * an already-applied event) writes nothing, and `dataCadastro` never churns. `obsoleto` when
-   * the stored doc is newer than `eventTimeMs`.
-   */
-  sincronizarIntFreteDaConta(
-    db: Firestore,
-    integracaoId: string,
-    conta: ContaBruta,
-    eventTimeMs: number,
-  ): Promise<DisposicaoIntFrete>;
-  /**
-   * Mercado Livre: flip this conta's freight doc inactive (the conta was deleted, or its `tipo`
-   * edited away). Never deletes; `dataCadastro` is not touched — deactivating is not
-   * re-registering. `obsoleto` when the stored doc is newer than `eventTimeMs`.
-   */
-  desativarIntFreteDaConta(
-    db: Firestore,
-    integracaoId: string,
-    eventTimeMs: number,
-  ): Promise<DisposicaoIntFrete>;
-  /**
-   * Mercado Livre: true only when `integracao/{id}` is confirmed absent RIGHT NOW. A redelivery
-   * replays the ORIGINAL CloudEvent, so without this a delete event arriving after the conta was
-   * re-created would deactivate a live freight doc. Existence only — a conta present under another
-   * tipo reads `false` (a known ML gap, closed by moving ML onto the state-driven driver, #1888).
-   */
-  contaRealmenteExcluida(db: Firestore, integracaoId: string): Promise<boolean>;
-}
-
-/**
- * The newest `dataCadastro` among the candidates that pass `filtro`; on an equal `dataCadastro`
- * the lexically LOWER doc id wins — a plain `<` on the ids (UTF-16 order, which agrees with
- * Firestore's `__name__` order for the ASCII ids every writer here produces).
- *
- * The tie is explicit so the pick never depends on the order the candidates arrive in: the
- * drivers' lookup (over a query result) and the window pass's chooser (over its own scan) must
- * name the SAME doc, and the window pass reports that choice as `escolhido` / `duplicados`.
- * Before, a tie kept the first doc seen. That is the lowest id only where an unordered result
- * comes back in ascending `__name__` (Standard); Enterprise guarantees no order for a query
- * without `orderBy`, so the drivers' tie pick depended on the query plan and is now always the
- * lowest id — a deliberate determinism change (see `buscarIntFreteDaConta`), not a no-op.
- */
-function maisNovoPorDataCadastro(
-  candidatos: ReadonlyArray<IntFreteEncontrado>,
-  filtro?: (raw: Record<string, unknown>) => boolean,
-): IntFreteEncontrado | null {
-  let melhor: IntFreteEncontrado | null = null;
-  let melhorData = -Infinity;
-  for (const candidato of candidatos) {
-    if (filtro && !filtro(candidato.data)) continue;
-    const dataCadastro =
-      typeof candidato.data.dataCadastro === 'number' ? candidato.data.dataCadastro : 0;
-    if (
-      melhor == null ||
-      dataCadastro > melhorData ||
-      (dataCadastro === melhorData && candidato.id < melhor.id)
-    ) {
-      melhor = candidato;
-      melhorData = dataCadastro;
-    }
-  }
-  return melhor;
 }
 
 function comoEncontrados(
@@ -448,10 +323,10 @@ export function intFreteContaSync(
     docs: ReadonlyArray<IntFreteEncontrado>,
     integracaoId: string,
   ): IntFreteEncontrado | null => {
-    const direto = maisNovoPorDataCadastro(docs, (raw) => ehDocDaConta(raw, integracaoId));
+    const direto = escolherIntFreteMaisNovo(docs, (raw) => ehDocDaConta(raw, integracaoId));
     if (direto != null) return direto;
     if (refTolerante != null) {
-      const tolerante = maisNovoPorDataCadastro(
+      const tolerante = escolherIntFreteMaisNovo(
         docs,
         (raw) => raw.tipo === tipoFrete && refTolerante(raw[campoBackRef], integracaoId),
       );
@@ -481,7 +356,7 @@ export function intFreteContaSync(
     if (opts.apenasAtivo === true) q = q.where('ativo', '==', true);
 
     const snap = await ler(q);
-    const direto = maisNovoPorDataCadastro(comoEncontrados(snap.docs));
+    const direto = escolherIntFreteMaisNovo(comoEncontrados(snap.docs));
     if (direto != null || refTolerante == null) return direto;
 
     // Fallback (Mercado Livre only): a doc whose back-ref is stored in a non-canonical form (bare
@@ -492,7 +367,7 @@ export function intFreteContaSync(
     let scan: Query = intFreteCollection.ref(db, {}).where('tipo', '==', tipoFrete);
     if (opts.apenasAtivo === true) scan = scan.where('ativo', '==', true);
     const scanSnap = await ler(scan);
-    const tolerante = maisNovoPorDataCadastro(comoEncontrados(scanSnap.docs), (raw) =>
+    const tolerante = escolherIntFreteMaisNovo(comoEncontrados(scanSnap.docs), (raw) =>
       refTolerante(raw[campoBackRef], integracaoId),
     );
     if (tolerante != null) {
@@ -579,7 +454,7 @@ export function intFreteContaSync(
     }
   };
 
-  /* -------------------------------- drivers ------------------------------- */
+  /* ----------------------------- reconciliation --------------------------- */
 
   const reconciliarIntFreteDaConta = (
     db: Firestore,
@@ -599,49 +474,6 @@ export function intFreteContaSync(
       );
     });
 
-  const sincronizarIntFreteDaConta = (
-    db: Firestore,
-    integracaoId: string,
-    conta: ContaBruta,
-    eventTimeMs: number,
-  ): Promise<DisposicaoIntFrete> => {
-    const alvo = montarCamposIntFrete(integracaoId, conta);
-    return db.runTransaction(async (tx) => {
-      const existente = await localizarNoTx(db, tx, integracaoId);
-      if (existente != null && docMaisNovoQueEvento(existente.data, eventTimeMs)) {
-        return { action: 'obsoleto', intFreteId: existente.id };
-      }
-      return aplicarPlano(
-        db,
-        tx,
-        integracaoId,
-        planejarSincronizacao(integracaoId, existente, alvo),
-        eventTimeMs,
-      );
-    });
-  };
-
-  const desativarIntFreteDaConta = (
-    db: Firestore,
-    integracaoId: string,
-    eventTimeMs: number,
-  ): Promise<DisposicaoIntFrete> =>
-    db.runTransaction(async (tx) => {
-      const existente = await localizarNoTx(db, tx, integracaoId);
-      if (existente == null) return { action: 'nao-encontrado' };
-      // A freight doc re-activated AFTER this event happened outranks it — deactivating now would
-      // undo that newer decision with no event left to redo it.
-      if (docMaisNovoQueEvento(existente.data, eventTimeMs)) {
-        return { action: 'obsoleto', intFreteId: existente.id };
-      }
-      return aplicarPlano(db, tx, integracaoId, planejarDesativacao(existente), eventTimeMs);
-    });
-
-  const contaRealmenteExcluida = async (db: Firestore, integracaoId: string): Promise<boolean> => {
-    const snap = await integracaoCollection.docRef(db, {}, integracaoId).get();
-    return !snap.exists;
-  };
-
   return {
     vinculo,
     ehConta,
@@ -654,8 +486,5 @@ export function intFreteContaSync(
     planejarIntFreteDaConta,
     buscarIntFreteDaConta,
     reconciliarIntFreteDaConta,
-    sincronizarIntFreteDaConta,
-    desativarIntFreteDaConta,
-    contaRealmenteExcluida,
   };
 }

@@ -1,0 +1,209 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-10-14",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/situacao/",
+    "query": [
+      [
+        "limit",
+        "100"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "configuracao",
+    "forma": "json",
+    "bytes": 3518,
+    "corpo": {
+      "meta": {
+        "limit": 100,
+        "next": null,
+        "offset": 0,
+        "previous": null,
+        "total_count": 16
+      },
+      "objects": [
+        {
+          "aprovado": false,
+          "cancelado": false,
+          "codigo": "aguardando_pagamento",
+          "final": false,
+          "id": 2,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/2"
+        },
+        {
+          "aprovado": false,
+          "cancelado": true,
+          "codigo": "cancelamento_solicitado",
+          "final": false,
+          "id": 1019,
+          "nome": "REDACTED",
+          "notificar_comprador": false,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/1019"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "em_producao",
+          "final": false,
+          "id": 17,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/17"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "faturado",
+          "final": false,
+          "id": 1018,
+          "nome": "REDACTED",
+          "notificar_comprador": false,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/1018"
+        },
+        {
+          "aprovado": false,
+          "cancelado": true,
+          "codigo": "pagamento_devolvido",
+          "final": true,
+          "id": 7,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/7"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "pagamento_devolvido_sem_retorno",
+          "final": true,
+          "id": 1020,
+          "nome": "REDACTED",
+          "notificar_comprador": false,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/1020"
+        },
+        {
+          "aprovado": false,
+          "cancelado": false,
+          "codigo": "pagamento_em_analise",
+          "final": false,
+          "id": 3,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/3"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "pedido_chargeback",
+          "final": true,
+          "id": 16,
+          "nome": "REDACTED",
+          "notificar_comprador": false,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/16"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "pagamento_em_disputa",
+          "final": false,
+          "id": 6,
+          "nome": "REDACTED",
+          "notificar_comprador": false,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/6"
+        },
+        {
+          "aprovado": false,
+          "cancelado": true,
+          "codigo": "pedido_cancelado",
+          "final": true,
+          "id": 8,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/8"
+        },
+        {
+          "aprovado": false,
+          "cancelado": false,
+          "codigo": "pedido_efetuado",
+          "final": false,
+          "id": 9,
+          "nome": "REDACTED",
+          "notificar_comprador": false,
+          "padrao": true,
+          "resource_uri": "/api/v1/situacao/9"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "pedido_em_separacao",
+          "final": false,
+          "id": 15,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/15"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "pedido_entregue",
+          "final": true,
+          "id": 14,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/14"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "pedido_enviado",
+          "final": true,
+          "id": 11,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/11"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "pedido_pago",
+          "final": false,
+          "id": 4,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/4"
+        },
+        {
+          "aprovado": true,
+          "cancelado": false,
+          "codigo": "pronto_para_retirada",
+          "final": true,
+          "id": 13,
+          "nome": "REDACTED",
+          "notificar_comprador": true,
+          "padrao": false,
+          "resource_uri": "/api/v1/situacao/13"
+        }
+      ]
+    }
+  }
+}

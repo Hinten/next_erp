@@ -38,9 +38,8 @@ import { getDb } from './lib/admin';
  *
  * Master plan step 3 wires the notification pipeline: ONE reads queue
  * (`filaLeituraLojaIntegrada`, ./filaLeitura) dispatching on the task's `tipo`,
- * the 30-minute reprocess sweep over both lanes, and the daily token-expiry
- * sweep. The 5-minute order poller — the queue's first producer — arrives with
- * its own change.
+ * the 5-minute order poller that is its first producer (./pollPedidos), the
+ * 30-minute reprocess sweep over both lanes, and the daily token-expiry sweep.
  *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
@@ -65,6 +64,9 @@ if (!(FILA_LEITURA_LI in filaLeitura)) {
 
 /** The ONE reads queue (rate-limited to one dispatch at a time, retry with backoff). */
 export { filaLeituraLojaIntegrada } from './filaLeitura';
+
+/** The 5-minute order poller: the queue's first producer (./pollPedidos). */
+export { pollLojaIntegradaPedidos } from './pollPedidos';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:
