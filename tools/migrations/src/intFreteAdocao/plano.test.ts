@@ -56,12 +56,13 @@ describe('adocaoIntFrete — what it binds', () => {
   });
 
   it('refuses a row with no prefixoDocId: the pass rests on the deterministic-id fallback', () => {
-    // Mercado Livre creates at a random id, so every applied `criar` would read as a divergence
-    // and the non-canonical-ref verdict would have no deterministic doc to reason about.
-    expect(() =>
-      adocaoIntFrete(intFreteContaSync(VINCULO_INT_FRETE_CONTA.mercadoLivre), {
-        runbook: 'x.md',
-      }),
-    ).toThrow(/prefixoDocId/);
+    // A row without one creates at a random id, so every applied `criar` would read as a
+    // divergence and the non-canonical-ref verdict would have no deterministic doc to reason
+    // about. Every production row carries one since #1921 (Mercado Livre included), so the
+    // refused row is the Shopee row with its prefix taken away.
+    const { prefixoDocId: _semPrefixo, ...semPrefixo } = VINCULO_INT_FRETE_CONTA.shopee;
+    expect(() => adocaoIntFrete(intFreteContaSync(semPrefixo), { runbook: 'x.md' })).toThrow(
+      /prefixoDocId/,
+    );
   });
 });
