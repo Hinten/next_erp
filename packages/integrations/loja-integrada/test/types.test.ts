@@ -76,6 +76,48 @@ describe('number tolerance', () => {
   });
 });
 
+describe('an empty total_count', () => {
+  const { total_count: _omitido, ...semTotal } = categoriaPagina1.meta;
+  const comTotal = (total_count: unknown) => liMetaSchema.safeParse({ ...semTotal, total_count });
+
+  it("`''` reads as null — never 0, which would announce an empty window", () => {
+    const r = comTotal('');
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.total_count).toBeNull();
+  });
+
+  it.each([['abc'], ['   '], [' '], ['2.5'], [2.5], ['1,5']])(
+    'near-miss: %j is still refused, at meta.total_count',
+    (total) => {
+      const r = comTotal(total);
+      expect(r.success).toBe(false);
+      if (!r.success) expect(r.error.issues.map((i) => i.path)).toEqual([['total_count']]);
+    },
+  );
+
+  it('null and an absent key are unchanged', () => {
+    const nulo = comTotal(null);
+    expect(nulo.success).toBe(true);
+    if (nulo.success) expect(nulo.data.total_count).toBeNull();
+    const ausente = liMetaSchema.safeParse(semTotal);
+    expect(ausente.success).toBe(true);
+    if (ausente.success) expect(ausente.data.total_count).toBeUndefined();
+  });
+
+  it.each([[7], ['7'], [0], ['0']])('%j still reads as a number', (total) => {
+    const r = comTotal(total);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.total_count).toBe(Number(total));
+  });
+
+  it('near-miss: the REQUIRED leaves keep refusing an empty string', () => {
+    expect(liMetaSchema.safeParse({ ...categoriaPagina1.meta, offset: '' }).success).toBe(false);
+    expect(liCategoriaSchema.safeParse({ ...categoriaPagina1.objects[0], id: '' }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('passthrough', () => {
   it('unknown keys survive on the meta, the envelope and the row', () => {
     const r = envelopeCategoria.parse({
