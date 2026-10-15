@@ -8,13 +8,15 @@ import {
   enviarPrecoParaMarketplaces,
 } from './enviarPrecoRun';
 import { mercadoLivrePriceProvider } from './providers/mercadoLivre';
+import { shopeePriceProvider } from './providers/shopee';
+import { suportePrecoDoCanal } from './registry';
 
 /**
  * The orchestration itself (dedup, the single chunked read, the whole-selection
  * dispatch, the cancel checks, the per-conta row keys) lives in `../push/run.ts`
  * and is pinned by `../estoque/enviarEstoqueRun.test.ts` against the same code
  * path. What is worth pinning HERE is only what this binding decides: the
- * price-shaped row and the option it threads through.
+ * price-shaped row, the option it threads through, and its own `suportado`.
  */
 
 const db = {} as Firestore;
@@ -128,5 +130,68 @@ describe('enviarPrecoParaMarketplaces', () => {
         precoAnterior: null,
       }),
     ]);
+  });
+
+  /**
+   * This binding's OWN `suportado` closure, which the rows-first argument in
+   * `../caps/registriesAlinhadas.test.ts` relies on (#1529): Shopee's provider is
+   * registered while its verdict is still `canal-nao-implementado`, so a closure
+   * that asked "is a provider registered?" would hand the Shopee conta the WHOLE
+   * selection and the placeholder would add a row for a produto that never named
+   * it. Written to survive the step-22 flip (#1530).
+   */
+  it('hands the Shopee conta the whole selection only when the verdict says supported', async () => {
+    const lerIntegracoes = vi
+      .fn()
+      .mockResolvedValue(
+        new Map([
+          ...contas(),
+          ['shopee-1', { nome: 'Shopee BR', tipo: INTEGRACAO_TIPO.shopee, ativo: true }],
+        ]),
+      );
+    const ml = vi
+      .spyOn(mercadoLivrePriceProvider, 'enviarPreco')
+      .mockResolvedValue({ rows: [], pausadoAte: null });
+    // Reached only after the flip; one row per produto it was handed.
+    const shopee = vi
+      .spyOn(shopeePriceProvider, 'enviarPreco')
+      .mockImplementation(({ integracao, produtoIds }) =>
+        Promise.resolve({
+          pausadoAte: null,
+          rows: produtoIds.map((produtoId) => ({
+            key: `${produtoId}:${integracao.id}:-`,
+            produtoId,
+            produtoNome: null,
+            integracaoId: integracao.id,
+            integracaoNome: integracao.nome,
+            anuncioId: null,
+            linkDocId: null,
+            outcome: 'pulado' as const,
+            motivo: 'sem-link',
+            mensagem: 'Sem anúncio.',
+            preco: null,
+            precoAnterior: null,
+          })),
+        }),
+      );
+
+    try {
+      const res = await run(
+        [
+          alvo({ produtoId: 'p1' }),
+          alvo({ produtoId: 'p2', integracoesComProduto: ['ml-1', 'shopee-1'] }),
+        ],
+        { baixarPreco: false },
+        lerIntegracoes,
+      );
+
+      const shopeeRows = res.rows.filter((r) => r.integracaoId === 'shopee-1');
+      expect(shopeeRows.map((r) => r.produtoId)).toEqual(
+        suportePrecoDoCanal(INTEGRACAO_TIPO.shopee).suportado ? ['p1', 'p2'] : ['p2'],
+      );
+    } finally {
+      ml.mockRestore();
+      shopee.mockRestore();
+    }
   });
 });
