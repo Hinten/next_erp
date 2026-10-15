@@ -141,7 +141,7 @@ describe('verifyCaller', () => {
     );
   });
 
-  it.each(['app/invalid-credential', 'ENOENT'])('rethrows a duck-typed %s failure', async (code) => {
+  it.each(['app/invalid-credential', 'ENOENT'])('rethrows a duck-typed %s error', async (code) => {
     const failure = Object.assign(new Error('impostor'), { code });
     h.verifyIdToken.mockRejectedValue(failure);
     await expect(verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED)).rejects.toBe(failure);

@@ -27,7 +27,7 @@ export function authError(status: number, body: ErrorBody): NextResponse {
 }
 
 const verifyCallerCore = createCallerVerifier({
-  getAdminAuth,
+  getAdminAuth: () => getAdminAuth(),
   authErrorType: FirebaseAuthError,
   appErrorType: FirebaseAppError,
   logPrefix: 'nfe/auth',
