@@ -68,7 +68,7 @@ describe('tasksInvokerOptions (#1133)', () => {
   });
 
   it('drops a BLANK member from a list rather than passing it through', () => {
-    // `filter(Boolean)` is load-bearing, not tidiness. firebase-functions@7.3.2
+    // `filter(Boolean)` is load-bearing, not tidiness. firebase-functions@7.4.0
     // ACCEPTS a blank member — `convertInvoker(['', 'a@…'])` returns it verbatim,
     // because its guard `find((inv) => inv.length === 0)` yields `''`, which is
     // falsy, leaving the "Must be a non-empty string" branch unreachable. So a

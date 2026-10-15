@@ -90,7 +90,7 @@ cloud install resolves cleanly and runs no build.
 `apps/functions/package.json` (not `^` ranges): a range installs whatever is newest
 at deploy time, which is a version no CI lane ever tested — `firebase-functions@7.3.2`
 moved `express` 4→5 in a _patch_ release exactly that way. Bump them together with
-`pnpm-workspace.yaml`'s catalog and the other four artifact manifests;
+`pnpm-workspace.yaml`'s catalog and the other seven artifact manifests;
 `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails on any drift.
 
 `prepare-deploy.mjs` also junctions the workspace's `node_modules` into
