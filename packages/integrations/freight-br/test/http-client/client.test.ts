@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mockFetch } from '../_helpers/mockFetch';
 import { createFreightHttpClient } from '../../src/http-client/client';
@@ -77,6 +77,28 @@ describe('FreightHttpClient happy paths', () => {
     expect(u.searchParams.get('state')).toBe('RS');
     expect(u.searchParams.get('city')).toBe('Caxias do Sul');
   });
+
+  it("servicos GETs the account's services with Bearer and returns them", async () => {
+    const body = {
+      servicos: [
+        { id: 1, name: 'Econômico', company: { id: 1, name: 'Transportadora A' } },
+        { id: 3, name: 'Expresso', company: { id: 2, name: 'Transportadora B' } },
+      ],
+    };
+    const fetchMock = mockFetch(async () => new Response(JSON.stringify(body), { status: 200 }));
+
+    const out = await client(fetchMock).servicos('int 1&x=y');
+
+    expect(out).toEqual(body);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    const u = new URL(String(url));
+    expect(u.pathname).toBe('/api/freight/melhor-envio/servicos');
+    // Encoded, so an odd id reaches the route as ONE param — never a second one.
+    expect(u.searchParams.get('intFreteId')).toBe('int 1&x=y');
+    expect([...u.searchParams.keys()]).toEqual(['intFreteId']);
+    expect(init?.method).toBe('GET');
+    expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer id-token');
+  });
 });
 
 describe('FreightHttpClient error mapping', () => {
@@ -106,6 +128,43 @@ describe('FreightHttpClient error mapping', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(FreightValidationError);
     expect((err as FreightValidationError).errors['to.postal_code']).toEqual(['obrigatório']);
+  });
+
+  describe('servicos when the route is absent', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("an older backend's HTML 404 is FreightNotFoundError — the caller's feature probe", async () => {
+      // The browser calls the DEPLOYED backend, and one that predates the route
+      // answers with the framework's not-found PAGE, not our JSON envelope.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const fetchMock = mockFetch(
+        async () =>
+          new Response('<!DOCTYPE html><html>404: This page could not be found.</html>', {
+            status: 404,
+            headers: { 'content-type': 'text/html' },
+          }),
+      );
+
+      const err = await client(fetchMock)
+        .servicos('int-1')
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(FreightNotFoundError);
+    });
+
+    it('near-miss: an account that needs reconnecting stays FreightReauthRequiredError', async () => {
+      const body = { error: 'Conta não conectada.', code: 'ME_REAUTH', reason: 'no_token' };
+      const fetchMock = mockFetch(async () => new Response(JSON.stringify(body), { status: 409 }));
+
+      const err = await client(fetchMock)
+        .servicos('int-1')
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(FreightReauthRequiredError);
+      expect(err).not.toBeInstanceOf(FreightNotFoundError);
+    });
   });
 
   it('wraps a fetch network failure in FreightNetworkError', async () => {

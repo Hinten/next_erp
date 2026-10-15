@@ -1,15 +1,11 @@
 import { logger } from 'firebase-functions';
 import { FUNCTIONS_REGION } from './options';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
-import { parseIsoToMillis } from '@delfrance/core/datetime';
 import { integracaoMeta } from '@delfrance/schemas';
 
 import {
-  contaRealmenteExcluida,
-  desativarIntFreteDaConta,
-  ehContaMercadoLivre,
-  mudouCampoSincronizado,
-  sincronizarIntFreteDaConta,
+  deveReconciliar,
+  reconciliarIntFreteDaConta,
 } from '../../lib/marketplace/frete/intFreteSync';
 import {
   redriveDeferredForUserId,
@@ -23,7 +19,8 @@ import { getDb } from './lib/admin';
  *
  *  1. **`int_frete` sync (#782)** — keeps the account's Mercado Envios freight
  *     config doc in step with the conta: created on connect, re-synced on edit,
- *     deactivated on delete.
+ *     deactivated on delete or a type change away from ML. Every relevant delivery
+ *     reconciles from the current conta inside the transaction (#1888).
  *  2. **Deferred-notification re-drive (#808)** — when a write makes the conta
  *     RESOLVABLE for an ML seller id, pulls every notification that has been
  *     waiting on that seller back into the hot sweep lane, so a backlog imports
@@ -39,7 +36,7 @@ import { getDb } from './lib/admin';
  * rendered the editable generic block while the etiqueta row action vanished.
  *
  * ONE trigger, not two: `onDocumentWritten` already fires on a delete, so a separate
- * `onDocumentDeleted` would only ever double-handle it. The delete arm lives below.
+ * `onDocumentDeleted` would only ever double-handle it. One reconciler handles every branch.
  *
  * ⚠️ Targets the repo's NAMED `default` Firestore database (root gotcha); an
  * `onDocument*` that omits `database` binds to `(default)` and NEVER fires. The id is
@@ -47,11 +44,11 @@ import { getDb } from './lib/admin';
  *
  * `retry: true` → Eventarc at-least-once, for TRANSIENT Firestore failures. A
  * redelivery replays the ORIGINAL CloudEvent (the same stale before/after snapshots,
- * not the current doc), which is safe on all three arms: the create/update arm diffs
- * the desired fields against what is stored and writes nothing when they already
- * match, the delete arm re-checks that the conta is really gone before touching
- * anything, and the re-drive arm writes fixed values to documents a replay no longer
- * finds (they left the deferred lane the first time round).
+ * not the current doc). The payload decides only whether reconciliation is worth a read:
+ * the freight write uses the current conta and freight snapshots from one transaction.
+ * Account edits inside its read/commit window force a retry; repeated delivery becomes a
+ * no-op once mirrored fields agree. The re-drive writes fixed values to documents a
+ * replay no longer finds (they left the deferred lane the first time round).
  *
  * ⚠️ ORDER MATTERS between responsibilities 1 and 2, and it is load-bearing rather
  * than cosmetic: the int_frete sync runs FIRST because it is the one with no
@@ -88,57 +85,10 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
     const after = event.data?.after.exists
       ? (event.data.after.data() as Record<string, unknown>)
       : null;
-    // `data` comes from the event, never `Date.now()` — a redelivery must reproduce
-    // the original stamp (`registrarHistoricoPedido.ts`'s rule).
-    const eventTimeMs = parseIsoToMillis(event.time) ?? Date.now();
-
-    // ---- delete arm --------------------------------------------------------
-    if (after == null) {
-      if (!ehContaMercadoLivre(before)) return; // any other channel: 0 reads, 0 writes
-      // The guard: a replayed/out-of-order delete event must not deactivate a freight
-      // doc whose conta has since come back. See `contaRealmenteExcluida`.
-      if (!(await contaRealmenteExcluida(getDb(), integracaoId))) {
-        logger.info(
-          '[mercado-livre] onIntegracaoMercadoLivreChanged delete ignorado — a conta existe novamente',
-          { integracaoId },
-        );
-        return;
-      }
-      const disposicao = await desativarIntFreteDaConta(getDb(), integracaoId, eventTimeMs);
-      logger.info('[mercado-livre] onIntegracaoMercadoLivreChanged delete', {
-        integracaoId,
-        ...disposicao,
-      });
-      return;
-    }
-
-    // ---- tipo edited AWAY from Mercado Livre -------------------------------
-    // Pathological but cheap to handle: leaving the freight doc live would keep an
-    // orphaned marketplace integration selectable, the same trap the `ativo` case has.
-    if (!ehContaMercadoLivre(after)) {
-      if (!ehContaMercadoLivre(before)) return; // never was ours: 0 reads, 0 writes
-      const disposicao = await desativarIntFreteDaConta(getDb(), integracaoId, eventTimeMs);
-      logger.info('[mercado-livre] onIntegracaoMercadoLivreChanged tipo alterado', {
-        integracaoId,
-        ...disposicao,
-      });
-      return;
-    }
-
-    // ---- create / update arm (#782, the PRIMARY responsibility) -------------
-    // Skip-if-unchanged: token refreshes and `user_id` stamps move none of the
-    // mirrored fields, so they cost nothing. A create (`before == null`) always syncs.
-    //
-    // A positive gate rather than an early `return`, so the #808 arm below still
-    // runs for the writes this one skips — a `user_id` stamp being exactly such a
-    // write, and exactly the one that arm exists for.
-    if (before == null || mudouCampoSincronizado(before, after)) {
-      const disposicao = await sincronizarIntFreteDaConta(
-        getDb(),
-        integracaoId,
-        after,
-        eventTimeMs,
-      );
+    // Payload-only cost gate; the transaction re-reads the current conta and freight doc.
+    // Keep the gate positive so a user_id stamp still reaches the independent re-drive arm.
+    if (deveReconciliar(before, after)) {
+      const disposicao = await reconciliarIntFreteDaConta(getDb(), integracaoId);
       logger.info('[mercado-livre] onIntegracaoMercadoLivreChanged', {
         integracaoId,
         ...disposicao,

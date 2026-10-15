@@ -8,7 +8,7 @@ description: >-
   `protect-main` ruleset, or when deciding what should trigger a lane. Covers
   the `changes` scope job and `.github/scripts/e2e-affected.mjs` (--roots,
   --self, --only-paths, --kind), the unskippable `gate` job and its
-  required/optional guard manifest, the sixteen pinnable check names, the
+  required/optional guard manifest, the seventeen pinnable check names, the
   `ci-lane-gates.test.js` backstop, and the three GitHub behaviours that make
   naive CI silently green — a non-matching `paths:` publishing no check at all,
   a `skipped` job satisfying a required check, and check-run names carrying no
@@ -46,7 +46,7 @@ Everything here exists because of these. None is obvious, all three bite.
    repo-wide — three lanes once published an identical
    `Lint / typecheck / unit / build (offline)`.
 
-## The sixteen pinnable checks
+## The seventeen pinnable checks
 
 | lane | gate | roots |
 | --- | --- | --- |
@@ -59,6 +59,7 @@ Everything here exists because of these. None is obvious, all three bite.
 | ci-storage | `CI gate (storage)` | `storage`, `functions` |
 | ci-rules | `CI gate (rules)` | `rules-gen` |
 | ci-shopee | `CI gate (shopee)` | `shopee-app` |
+| ci-loja-integrada | `CI gate (loja-integrada)` | `loja-integrada-app` |
 | ci.yml | `CI typecheck` | — (full graph) |
 | ci.yml | `CI lint` | — (full graph) |
 | ci.yml | `CI format check` | — (whole repo) |

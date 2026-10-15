@@ -70,7 +70,7 @@ let cacheClock: () => number = Date.now;
  *
  * The repeat: `app/api/freight/melhor-envio/calculate/route.ts` re-reads it on
  * every quote — one per freight recalculation in the pedido form, so an operator
- * adjusting a package weight issues a burst of identical reads. Seven more
+ * adjusting a package weight issues a burst of identical reads. Eight more
  * routes read it once each.
  *
  * ⚠️ None of the three forbidden cases applies, and this is the cleanest
