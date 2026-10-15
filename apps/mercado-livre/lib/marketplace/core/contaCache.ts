@@ -13,10 +13,11 @@
  * absolute read volume in the app, and where single-flight alone already wins.
  *
  * ⚠️ Cache the PARSED DOCUMENT, never the `MercadoLivreContext`. That object
- * closes over `db` and a live `TokenDuravelStore`, and the token must stay
- * uncached — ML refresh tokens are single-use and rotate, so a cached read turns
- * a survivable race into `invalid_grant`. The cacheable seam is the `.get()`,
- * which is the loader's only I/O.
+ * closes over `db` and a live `TokenDuravelStore`. The store separately caches
+ * only usable access tokens + expiry with a short TTL and expiry checks on every
+ * use. Refresh credentials and refresh-decision/recovery queries remain uncached:
+ * ML refresh tokens rotate, so those reads must observe the newest document.
+ * This cache's seam is only the conta `.get()`, the loader's config I/O.
  *
  * ⚠️ None of the three forbidden cases applies. No `tx.get` — every entry point
  * takes a `Firestore`, and the transactional `int_frete` lookups in

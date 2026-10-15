@@ -97,6 +97,7 @@ describe('createMercadoLivreApi — missed feeds (#812)', () => {
     // default in the wrapper cannot silently pin ML's defaults to ours.
     const url = firstUrl(fetchMock);
     expect(url.searchParams.has('topic')).toBe(false);
+    expect(url.searchParams.has('site_id')).toBe(false);
     expect(url.searchParams.has('limit')).toBe(false);
     expect(url.searchParams.has('offset')).toBe(false);
   });
@@ -108,6 +109,30 @@ describe('createMercadoLivreApi — missed feeds (#812)', () => {
     await api.getMissedFeeds({ appId: '42', topic: 'orders_v2' });
 
     expect(firstUrl(fetchMock).searchParams.get('topic')).toBe('orders_v2');
+  });
+
+  it('sends site_id for items and preserves topic and paging', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ messages: [] }));
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await api.getMissedFeeds({ appId: '42', topic: 'items', siteId: 'MLB', limit: 50, offset: 3 });
+    expect(firstUrl(fetchMock).searchParams.get('site_id')).toBe('MLB');
+    expect(firstUrl(fetchMock).searchParams.get('topic')).toBe('items');
+    expect(firstUrl(fetchMock).searchParams.get('offset')).toBe('3');
+  });
+
+  it('preserves an owner-only 401 without claiming the seller credential was revoked', async () => {
+    const body = {
+      message: 'You must be the owner of the app to retrieve the messages.',
+      error: 'unauthorized',
+      status: 401,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(body, 401));
+    const onAccessTokenRejected = vi.fn();
+    const api = createMercadoLivreApi(cfg(fetchMock, { onAccessTokenRejected }));
+    await expect(
+      api.getMissedFeeds({ appId: '42', topic: 'items', siteId: 'MLB' }),
+    ).rejects.toMatchObject({ status: 401, body });
+    expect(onAccessTokenRejected).not.toHaveBeenCalled();
   });
 
   it('defaults messages to [] when ML omits the array entirely', async () => {

@@ -102,7 +102,10 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     const ctx = await loadMercadoLivreContext(db, integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createMercadoLivreApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     return NextResponse.json(await resolverReclamacaoMercadoLivre({ api }, pedido));
   } catch (err) {

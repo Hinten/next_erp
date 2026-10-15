@@ -228,7 +228,10 @@ async function sweepConta(
   // from the conta the enumeration already fetched rather than re-reading it.
   const ctx = buildMercadoLivreContext(db, integracaoId, conta);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
 
   // (c) Page through the window, oldest-first, enqueuing every order.
   let offset = 0;
