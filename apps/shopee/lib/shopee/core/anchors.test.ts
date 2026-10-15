@@ -6,7 +6,7 @@ import { anchorDoProduto, conferirContabilidadePorAnchor, resolverAnchorsShopee 
 /**
  * `core/anchors.ts` (#1529, step 21 — reconcile §4 S5, S6). The stock and status
  * suites pin what each push DOES with a resolved child; this one pins the rule,
- * the one batch read and the accounting on their own.
+ * the batch reads and the accounting on their own.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -92,7 +92,7 @@ describe('anchorDoProduto — a regra de um salto', () => {
 /*  the one batch read                                                        */
 /* -------------------------------------------------------------------------- */
 
-describe('resolverAnchorsShopee — UMA leitura em lote, mascarada', () => {
+describe('resolverAnchorsShopee — UMA leitura em lote mascarada (+ o rótulo da âncora não pedida)', () => {
   it('lê os pedidos DEDUPLICADOS em UM getAll mascarado em nome + paiId, nada além', async () => {
     const db = new FakeDbComLote();
     db.seed(`produtos/${ANCORA}`, { nome: 'Camiseta', paiId: null, precos: { x: 1 } });
@@ -137,7 +137,7 @@ describe('resolverAnchorsShopee — UMA leitura em lote, mascarada', () => {
     expect(r.anchorIds).toEqual([ANCORA]);
   });
 
-  it('um filho cujo paiId nomeia um documento AUSENTE ainda resolve nele — um salto, sem segunda leitura', async () => {
+  it('um filho cujo paiId nomeia um documento AUSENTE ainda resolve nele — um salto; o rótulo não acha nada', async () => {
     const db = new FakeDbComLote();
     db.seed(`produtos/${FILHO}`, { nome: 'Órfão', paiId: 'prod-pai-apagado' });
 
@@ -145,7 +145,42 @@ describe('resolverAnchorsShopee — UMA leitura em lote, mascarada', () => {
 
     expect(r.anchorDe.get(FILHO)).toBe('prod-pai-apagado');
     expect(r.anchorIds).toEqual(['prod-pai-apagado']);
-    expect(db.leiturasEmLote).toHaveLength(1);
+    // The label read finds no document: no entry, never an invented name.
+    expect(db.leiturasEmLote[1]).toEqual({ ids: ['prod-pai-apagado'], campos: ['nome'] });
+    expect(r.nomeDe.has('prod-pai-apagado')).toBe(false);
+  });
+
+  it('⚠️ (MUT-1) [filho] sozinho ⇒ a âncora NÃO pedida ganha o próprio nome, num getAll mascarado só em nome', async () => {
+    const db = new FakeDbComLote();
+    // The anchor is itself a child: the label read must not take that second hop.
+    db.seed(`produtos/${ANCORA}`, { nome: 'Camiseta', paiId: 'prod-avo', sku: 'CAM' });
+    db.seed(`produtos/${FILHO}`, { nome: 'Camiseta P', paiId: ANCORA });
+
+    const r = await resolverAnchorsShopee(asDb(db), [FILHO]);
+
+    expect(db.leiturasEmLote).toEqual([
+      { ids: [FILHO], campos: ['nome', 'paiId'] },
+      { ids: [ANCORA], campos: ['nome'] },
+    ]);
+    expect(r.anchorIds).toEqual([ANCORA]);
+    expect(r.anchorDe.get(FILHO)).toBe(ANCORA);
+    // The rows name the ANCHOR, so they carry the anchor's name — not null, and
+    // not the child's.
+    expect([...r.nomeDe]).toEqual([
+      [FILHO, 'Camiseta P'],
+      [ANCORA, 'Camiseta'],
+    ]);
+  });
+
+  it('(MUT-1) o rótulo da âncora não pedida segue a mesma regra: um nome em branco é null', async () => {
+    const db = new FakeDbComLote();
+    db.seed(`produtos/${ANCORA}`, { nome: '  ', paiId: null });
+    db.seed(`produtos/${FILHO}`, { nome: 'Camiseta P', paiId: ANCORA });
+
+    const r = await resolverAnchorsShopee(asDb(db), [FILHO]);
+
+    expect(r.nomeDe.get(ANCORA)).toBeNull();
+    expect(r.nomeDe.has(ANCORA)).toBe(true);
   });
 
   it('um nome em branco é AUSÊNCIA (null), nunca um rótulo vazio', async () => {
