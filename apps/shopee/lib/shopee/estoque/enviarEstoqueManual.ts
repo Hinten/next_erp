@@ -20,16 +20,23 @@
  *    place for the sent quantity to drift.
  *
  * ⚠️ **The rungs this module does NOT run.** `conta-fora-do-produto`, `sem-link`
- * and the whole per-link send gate belong to {@link montarTarefasDeEstoqueShopee};
+ * and the whole per-link send gate belong to `montarTarefasDeEstoqueShopee`;
  * the five conta gates belong to the sweep. Re-deriving any of them here would
  * be a second copy of a decision that already has a home, and the copies drift
- * toward plausible. What this module owns is the RESOLUTION and the ACCOUNTING:
- * each requested id is resolved ONCE to its family anchor
- * ({@link resolverAnchorsShopee}, one masked batch read, plus a masked `nome`
- * read for an anchor nobody requested) — a variation child is pushed through its
- * anchor's listing, under the anchor's name — and every requested produto leaves
- * in exactly one place: its own `produtosSemEnvio` entry, or the rows of the anchor
- * it resolved to ({@link conferirContabilidadePorAnchor}).
+ * toward plausible.
+ *
+ * ⚠️ **Nor does it plan.** The resolve-and-plan prefix — each requested id
+ * resolved ONCE to its family anchor, the families read over the ANCHORS, the
+ * planner per anchor and every "no listing" verdict — is
+ * {@link planejarEnvioEstoqueShopee} (`planejarEnvioEstoque.ts`), the SAME
+ * write-free call the `enviar:estoque` dry run makes, so the rehearsal previews
+ * exactly what this module sends (review of PR #1948: the dry run used to read
+ * a variation child as its own anchor and print "nothing to send" while this
+ * path pushed the whole family). A variation child is pushed through its
+ * anchor's listing, under the anchor's name. What this module owns is the SEND
+ * and the ACCOUNTING: every requested produto leaves in exactly one place — its
+ * own `produtosSemEnvio` entry, or the rows of the anchor it resolved to
+ * ({@link conferirContabilidadePorAnchor}).
  *
  * ⚠️ **The retry ladder is load-bearing, not ceremony.** `retryCount: 0` on a
  * single call lets a transient refusal escape with nothing recorded; a single
@@ -59,7 +66,7 @@ import {
 import { idFromRef } from '@delfrance/schemas';
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
-import { conferirContabilidadePorAnchor, resolverAnchorsShopee } from '../core/anchors';
+import { conferirContabilidadePorAnchor } from '../core/anchors';
 import { executarEmPool } from '../core/pool';
 import {
   ENVIO_MANUAL_MAX_TENTATIVAS,
@@ -86,15 +93,13 @@ import {
   processShopeeStockSendTask,
   type ResultadoEnvioEstoqueShopee,
 } from './enviarEstoque';
-import { buscarFamiliasShopeePorIds, type BuscarFamiliasShopeePorIds } from './descobertaEstoque';
+import type { BuscarFamiliasShopeePorIds } from './descobertaEstoque';
 import { lerEstadoEstoque } from './estadoEstoque';
-import {
-  montarTarefasDeEstoqueShopee,
-  type PuloDeEstoque,
-  type TarefaDeEstoqueShopee,
-} from './planoEstoque';
-import { quantidadesDaFamiliaShopee } from './quantidadeEstoque';
+import { planejarEnvioEstoqueShopee, type EnvioEstoqueSemEnvio } from './planejarEnvioEstoque';
+import type { PuloDeEstoque, TarefaDeEstoqueShopee } from './planoEstoque';
 import type { AgendadorEstoqueShopee } from './shopeeStockTasks';
+
+export type { EnvioEstoqueSemEnvio };
 
 /** Seconds to milliseconds, in one named place. */
 const MS_POR_SEGUNDO = 1_000;
@@ -155,15 +160,6 @@ export interface EnvioEstoqueListing {
    * so the web provider is the ML one with the canal literal swapped.
    */
   readonly rearme: null;
-}
-
-/** A requested produto that produced no listing at all, and why. */
-export interface EnvioEstoqueSemEnvio {
-  /** The REQUESTED id, verbatim — a child whose anchor has no listing stays a child here. */
-  readonly produtoId: string;
-  readonly produtoNome: string | null;
-  readonly motivo: string;
-  readonly mensagem: string;
 }
 
 export interface EnvioEstoqueResponse {
@@ -283,7 +279,10 @@ export interface DepsEnvioManual {
   readonly client: ShopeeClient;
   /** The avisos counter sentinel, built by the caller that owns the admin import. */
   readonly increment: (by: number) => unknown;
-  /** Injectable purely so tests never go near the real pipeline. */
+  /**
+   * Injectable purely so tests never go near the real pipeline. Threaded,
+   * untouched, into {@link planejarEnvioEstoqueShopee}.
+   */
   readonly buscarFamilias?: BuscarFamiliasShopeePorIds;
   /** Injectable purely so tests never go near the real handler. */
   readonly enviarTarefa?: typeof processShopeeStockSendTask;
@@ -479,17 +478,6 @@ function linhaBase(
   };
 }
 
-/**
- * The two planner rungs that mean "this produto has no listing on this conta at
- * all". They are the ONLY skips that belong in `produtosSemEnvio` rather than in
- * a listing row, and both return from the planner immediately — so a plan that
- * consists of exactly one of them and no task is the whole family's verdict.
- */
-const MOTIVOS_SEM_LISTAGEM: ReadonlySet<MotivoEstoqueShopee> = new Set<MotivoEstoqueShopee>([
-  MOTIVO_ESTOQUE_SHOPEE.contaForaDoProduto,
-  MOTIVO_ESTOQUE_SHOPEE.semLink,
-]);
-
 /** The prefix of every accounting violation this run can raise. */
 const TAG_CONTABILIDADE = 'envio manual de estoque';
 
@@ -525,7 +513,6 @@ export async function enviarEstoqueManualShopee(
   args: ArgsEnvioManual,
   deps: DepsEnvioManual,
 ): Promise<EnvioEstoqueResponse> {
-  const buscarFamilias = deps.buscarFamilias ?? buscarFamiliasShopeePorIds;
   const enviarTarefa = deps.enviarTarefa ?? processShopeeStockSendTask;
 
   const solicitados = [...new Set(args.produtoIds)];
@@ -569,86 +556,31 @@ export async function enviarEstoqueManualShopee(
     );
   }
 
-  // --- each requested id → its family anchor: ONE masked batch read, one hop
-  // (plus a masked `nome` read for an anchor nobody requested, for its rows).
-  const resolvidos = await resolverAnchorsShopee(db, solicitados);
-  const nomeDe = (produtoId: string): string | null => resolvidos.nomeDe.get(produtoId) ?? null;
-
-  // Filled per anchor, emitted in REQUEST order below.
-  const semEnvioPorId = new Map<string, EnvioEstoqueSemEnvio>();
-  const semEnvio = (produtoId: string, motivo: MotivoEstoqueShopee, mensagem: string): void => {
-    semEnvioPorId.set(produtoId, { produtoId, produtoNome: nomeDe(produtoId), motivo, mensagem });
-  };
-  const pedidosDoAnchor = (anchorId: string): string[] =>
-    solicitados.filter((id) => resolvidos.anchorDe.get(id) === anchorId);
-
-  for (const produtoId of resolvidos.naoEncontrados) {
-    semEnvio(
-      produtoId,
-      MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado,
-      MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado],
-    );
-  }
-
-  // A selection whose every id is missing reads no family at all — the by-ids
-  // reader refuses an empty list.
-  const rows =
-    resolvidos.anchorIds.length === 0
-      ? []
-      : await buscarFamilias(db, {
-          integracaoId: args.integracaoId,
-          depositoId,
-          produtoIds: resolvidos.anchorIds,
-        });
-  const rowPorAnchor = new Map(rows.map((r) => [r.anchorId, r]));
-
-  // The plan, per ANCHOR in first-seen request order — so the envelope's rows
-  // come back in the order the operator selected them however the pool
-  // interleaves the sends, and a child and its own anchor are ONE family.
-  const entradas: Entrada[] = [];
-  for (const anchorId of resolvidos.anchorIds) {
-    const row = rowPorAnchor.get(anchorId);
-    if (row === undefined) {
-      // No row: the anchor document does not exist — the requested id itself
-      // vanished between the two reads, or a child's `paiId` names a missing
-      // produto. Reported under each requested id that resolved here.
-      for (const produtoId of pedidosDoAnchor(anchorId)) {
-        semEnvio(
-          produtoId,
-          MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado,
-          MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado],
-        );
-      }
-      continue;
-    }
-
-    const plano = montarTarefasDeEstoqueShopee(row, quantidadesDaFamiliaShopee(row), {
+  // --- the WRITE-FREE plan: each requested id → its family anchor, the
+  // families read over the ANCHORS, the planner per anchor and every "no
+  // listing" verdict. The SAME call the `enviar:estoque` dry run makes, so the
+  // rehearsal previews exactly what is sent below (`planejarEnvioEstoque.ts`).
+  const planejado = await planejarEnvioEstoqueShopee(
+    db,
+    {
       integracaoId: args.integracaoId,
-      // Deterministic and self-describing in the send handler's own log lines.
-      sweepId: `manual-${args.integracaoId}-${String(deps.nowMs)}`,
-      // Manual quantities are computed NOW, so the handler reads an age of ~0.
-      sweepComputadoEmMs: deps.nowMs,
-      nowMs: deps.nowMs,
-      ignorarRecusa: args.reenviarComErro,
-    });
+      depositoId,
+      produtoIds: solicitados,
+      reenviarComErro: args.reenviarComErro,
+    },
+    { nowMs: deps.nowMs, buscarFamilias: deps.buscarFamilias },
+  );
+  const nomeDe = (produtoId: string): string | null => planejado.nomeDe.get(produtoId) ?? null;
 
-    const semListagem =
-      plano.tarefas.length === 0 &&
-      plano.pulos.length > 0 &&
-      plano.pulos.every((p) => MOTIVOS_SEM_LISTAGEM.has(p.motivo));
-    if (semListagem) {
-      // ⚠️ The motivo and the sentence are the PLANNER's, never re-derived here
-      // — the whole family's verdict, under each requested id that resolved to
-      // it (a child stays a child in this list).
-      const primeiro = plano.pulos[0];
-      if (primeiro !== undefined) {
-        for (const produtoId of pedidosDoAnchor(anchorId)) {
-          semEnvio(produtoId, primeiro.motivo, primeiro.mensagem);
-        }
-      }
-      continue;
-    }
-
+  // The rows, per ANCHOR in first-seen request order — so the envelope's rows
+  // come back in the order the operator selected them however the pool
+  // interleaves the sends, and a child and its own anchor are ONE family. A
+  // family with no listing at all emits no row: its requested ids are already
+  // in `planejado.produtosSemEnvio`.
+  const entradas: Entrada[] = [];
+  for (const familia of planejado.familias) {
+    if (familia.semListagem !== null || familia.plano === null) continue;
+    const { anchorId, plano } = familia;
     for (const pulo of plano.pulos) {
       entradas.push({
         produtoId: anchorId,
@@ -779,15 +711,12 @@ export async function enviarEstoqueManualShopee(
   for (const linha of resolvidas) {
     if (linha !== null) listings.push(linha);
   }
-  for (const produtoId of solicitados) {
-    const s = semEnvioPorId.get(produtoId);
-    if (s !== undefined) produtosSemEnvio.push(s);
-  }
+  produtosSemEnvio.push(...planejado.produtosSemEnvio);
 
   conferirContabilidadePorAnchor(
     TAG_CONTABILIDADE,
     solicitados,
-    resolvidos.anchorDe,
+    planejado.anchorDe,
     new Set(listings.map((l) => l.produtoId)),
     produtosSemEnvio.map((s) => s.produtoId),
   );
@@ -796,7 +725,7 @@ export async function enviarEstoqueManualShopee(
     args.integracaoId,
     deps.contaNome,
     solicitados.length,
-    rows.length,
+    planejado.familiasLidas,
     listings,
     produtosSemEnvio,
     pausadoAte,

@@ -100,7 +100,10 @@ export const shopeePriceProvider: PricePushProvider = {
           mensagem: l.mensagem,
           preco: l.preco,
           precoAnterior: l.precoAnterior,
-          variacao: l.variacaoSku ?? l.variacaoNome ?? null,
+          // A blank SKU is common, not an edge case: the ERP's variation generator
+          // writes `sku: ''` for every child of a parent with no SKU, so `??`
+          // (which only falls through on null) would print no label at all.
+          variacao: l.variacaoSku?.trim() || l.variacaoNome?.trim() || null,
         }),
       );
       // A produto that produced no listing at all still gets a row, under the id
