@@ -3,8 +3,10 @@
 import { Alert, Button, Group, List, Stack, Text } from '@mantine/core';
 import { parseIsoToMillis } from '@delfrance/core/datetime';
 import {
+  ACAO_STATUS_ANUNCIO,
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  podeMoverAnuncioShopee,
 } from '@delfrance/schemas';
 
 import {
@@ -14,6 +16,7 @@ import {
   textoDaEtapaShopee,
   textoDoAvisoKit,
   textoDoProblemaShopee,
+  vinculoSubstituidoAlheio,
 } from '@/lib/shopee/anuncioProduto';
 import type {
   AnuncioStatusShopee,
@@ -324,9 +327,12 @@ interface PassoShopee {
  * The buttons a kit 200's avisos ask for, one per distinct step:
  *
  *  - `receita-divergente` → recriar the kit the run addressed (`linkDocId`);
- *  - `kit-novo-inativo` → reactivate the NEW kit (`linkDocId`), then recriar
- *    the OLD one (`antecessor.linkDocId`) — the old kit is deleted only once
- *    the new one is live;
+ *  - `kit-novo-inativo` → reactivate the NEW kit (`linkDocId`) — only when
+ *    `podeMoverAnuncioShopee` allows it on the kit's reading, the predicate the
+ *    block's own Reativar and the route's pre-check use (a banned kit is never
+ *    relisted, one under review is Shopee's to change) — then recriar the OLD
+ *    one (`antecessor.linkDocId`): the old kit is deleted only once the new one
+ *    is live;
  *  - `kit-antigo-nao-excluido` → re-verify the OLD listing (`antecessor`);
  *  - every other code is text: its next step is in the ERP or Seller Centre,
  *    or (`kit-alvo-mais-novo`) the body does not say which kit is the old one.
@@ -350,7 +356,11 @@ function passosDoAvisoKit(
   for (const { codigo } of kit.avisos) {
     if (codigo === 'receita-divergente' && novo !== null) juntar(recriar(novo));
     if (codigo === 'kit-novo-inativo') {
-      if (novo !== null) {
+      const reativavel = podeMoverAnuncioShopee(
+        { item_id: kit.itemId, estadoAnuncio: kit.estadoAnuncio },
+        ACAO_STATUS_ANUNCIO.reativar,
+      ).pode;
+      if (novo !== null && reativavel) {
         juntar({
           rotulo: `Reativar o kit novo (vínculo ${novo})`,
           agir: () => acoes.reativar(contaId, novo),
@@ -398,8 +408,12 @@ function BotaoDoPasso({
  * The publish 422: one row per refusal. A row with an `acao` reads the tab's
  * copy and offers the next step on the link the `acao` names:
  *
- *  - `republicar` with a link → "Republicar o vínculo <id>" on THAT link (the
- *    successor of a superseded listing is not the block the refusal sits in);
+ *  - `republicar` with a link → "Republicar o vínculo <id>" on THAT link, the
+ *    successor — when the row is about the block itself (the dispatcher's
+ *    case). A row about ANOTHER superseded link (a kit create's duplicate scan
+ *    found K's old kit still live, `vinculoSubstituidoAlheio`) offers "Recriar
+ *    o kit do vínculo <antigo>" instead, the retry of its delete: republishing
+ *    the successor — often the very block — cannot clear it;
  *  - `sem-opcoes-de-kit` → a republish of this link, with no kit option;
  *  - `recriar` → the Recriar confirmation for the link the `acao` names (a
  *    removed native kit is not necessarily the block the refusal sits in);
@@ -436,7 +450,7 @@ function DesfechoRecusado({
         ) : (
           desfecho.problemas.map((p, i) => (
             <Stack key={i} gap={4} data-testid={`shopee-problema-${linkDocId}-${String(i)}`}>
-              <Text size="sm">{textoDoProblemaShopee(p)}</Text>
+              <Text size="sm">{textoDoProblemaShopee(p, linkDocId)}</Text>
               <BotaoDoProblema
                 contaId={contaId}
                 linkDocId={linkDocId}
@@ -468,7 +482,17 @@ function BotaoDoProblema({
   const { acao } = problema;
   if (acao === null || !acoes.permitidas) return null;
   let passo: PassoShopee;
-  if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar && acao.linkDocId !== null) {
+  const antigo = vinculoSubstituidoAlheio(acao, linkDocId);
+  if (antigo !== null) {
+    passo = {
+      rotulo: `Recriar o kit do vínculo ${antigo}`,
+      agir: () => acoes.abrirKit(contaId, antigo, 'recriar'),
+      criaKit: true,
+    };
+  } else if (
+    acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar &&
+    acao.linkDocId !== null
+  ) {
     const alvo = acao.linkDocId;
     passo = {
       rotulo: `Republicar o vínculo ${alvo}`,

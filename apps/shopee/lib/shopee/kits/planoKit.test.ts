@@ -590,8 +590,13 @@ describe('decidirKitNovo — "garanta que o kit novo existe" (L9, R-14)', () => 
     expect(problemas[0]?.mensagem).toContain('link-velho');
     expect(problemas[0]?.mensagem).toContain('--link link-novo');
     expect(problemas[0]?.mensagem).not.toContain('importe-o');
-    // K1 (step 21): the republish targets the SUCCESSOR, never the superseded link.
-    expect(problemas[0]?.acao).toEqual({ tipo: T.republicar, linkDocId: 'link-novo' });
+    // K1 (step 21): the republish targets the SUCCESSOR, never the superseded link —
+    // which rides beside it as the row's SUBJECT (the scan's, not the request's).
+    expect(problemas[0]?.acao).toStrictEqual({
+      tipo: T.republicar,
+      linkDocId: 'link-novo',
+      substituidoLinkDocId: 'link-velho',
+    });
   });
 
   it('M180 — substituído próprio + estrangeiro, nas DUAS ordens da lista ⇒ UMA recusa com os dois', () => {
@@ -1356,12 +1361,17 @@ describe('step 21 (K1/K2) — o `acao` de cada recusa que nomeia um comando de C
         itemId: KIT_2,
         novoLinkDocId: 'link-novo',
       }).acao,
-    ).toEqual({ tipo: T.republicar, linkDocId: 'link-novo' });
-    // ⛔ QUASE-PAR: sem sucessor conhecido ⇒ republicar SEM vínculo — nunca o substituído.
+    ).toStrictEqual({
+      tipo: T.republicar,
+      linkDocId: 'link-novo',
+      substituidoLinkDocId: 'link-velho',
+    });
+    // ⛔ QUASE-PAR: sem sucessor conhecido ⇒ republicar SEM vínculo — nunca o substituído
+    // (que continua nomeado como o ASSUNTO da recusa).
     expect(
       problemaVinculoSubstituido({ linkDocId: 'link-velho', itemId: null, novoLinkDocId: null })
         .acao,
-    ).toEqual({ tipo: T.republicar, linkDocId: null });
+    ).toStrictEqual({ tipo: T.republicar, linkDocId: null, substituidoLinkDocId: 'link-velho' });
     expect(problemaKitRemovido({ itemId: KIT, linkDocId: 'link-kit' }).acao).toEqual({
       tipo: T.recriar,
       linkDocId: 'link-kit',

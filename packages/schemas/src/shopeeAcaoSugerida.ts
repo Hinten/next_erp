@@ -52,7 +52,12 @@ export const TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE = {
  *
  * - `recriar` — "Recriar kit" on `linkDocId`, the link the refusal is about;
  * - `republicar` — republish `linkDocId`; `null` means a publish that names no
- *   link at all;
+ *   link at all. `substituidoLinkDocId` (a `vinculo-substituido` row) names the
+ *   SUPERSEDED link the refusal is ABOUT: the dispatcher's is the link that was
+ *   sent, but a kit create's duplicate scan raises it about ANOTHER link (K's
+ *   old kit, still live), so the reader must not call the sent link
+ *   superseded. Absent from a server older than the field (and `null` = not
+ *   reported);
  * - `sem-opcoes-de-kit` — republish WITHOUT the kit options (recriar/converter);
  * - `informar-principal` — the request must name the kit's principal;
  * - `importar` — the kit already exists on Shopee as `itemIds` (at least one):
@@ -72,6 +77,7 @@ export const acaoSugeridaPublicacaoShopeeSchema = z.discriminatedUnion('tipo', [
   z.object({
     tipo: z.literal(TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar),
     linkDocId: z.string().min(1).nullable(),
+    substituidoLinkDocId: z.string().min(1).nullable().optional(),
   }),
   z.object({ tipo: z.literal(TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit) }),
   z.object({ tipo: z.literal(TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal) }),

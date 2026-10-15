@@ -26,11 +26,13 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoShopeeLinkCollection } from '@/lib/data/produtoShopeeLinkCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import {
+  FRASE_LIMITE_NA_CRIACAO_DE_KIT,
   criacaoDeKitIncerta,
   esperaDoKitIncerto,
   formatarInstanteShopee,
   gravarIncerto,
   lerIncerto,
+  limiteNaCriacaoDeKit,
   resumoDaReverificacaoShopee,
   type IncertoKitShopee,
 } from '@/lib/shopee/anuncioProduto';
@@ -84,15 +86,22 @@ import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeMod
  * the two kit CREATE arms: `add_kit_item` is not idempotent.
  *
  * A recriar / converter that ends without a definite answer — the 202, a
- * network error, a 2xx it cannot read, a 5xx that is not a rate limit
+ * network error, a 2xx it cannot read, a 5xx other than a rate-limited 502
  * (`criacaoDeKitIncerta`) — may still have created the kit. It is UNCERTAIN,
  * never "falhou": the conta's kit buttons wait out `aguardarMs` (or the schemas'
  * `AGUARDAR_KIT_INCERTO_SHOPEE_MS`), after which "Repetir" re-sends the
  * IDENTICAL body — the only safe re-send, since a plain publish would reach a
- * different arm. The wait is kept in this tab's `sessionStorage`
- * (`lerIncerto` / `gravarIncerto`), so a reload keeps it; a blocked store keeps
- * it for this page only. What no browser lock covers — a second tab, a second
- * operator, the CLI — is the server-lease follow-up's (#1912).
+ * different arm. (A rate-limited 502 is definite — the kit's link is written
+ * before any call that can hit the limit, so a re-send resumes it — but the
+ * kit may already exist, and the outcome says so: `limiteNaCriacaoDeKit`.)
+ *
+ * The wait is kept in this tab's `sessionStorage` (`lerIncerto` /
+ * `gravarIncerto`) and written AHEAD: a provisional wait is stored before the
+ * request leaves and the answer replaces it, so a reload — or the page left and
+ * re-opened — WHILE the request is in flight finds the conta still waiting
+ * instead of an enabled "Converter". A blocked store keeps it for this page
+ * only. What no browser lock covers — a second tab, a second operator, the CLI —
+ * is the server-lease follow-up's (#1912).
  *
  * ## Which conta a link belongs to
  *
@@ -217,6 +226,11 @@ function desfechoDaFalha(
           (ate === null ? '.' : ` — até ${ate}.`),
       };
     }
+  }
+  // Definite, but NOT "nothing ran": the limited call may follow a successful
+  // `add_kit_item` (`limiteNaCriacaoDeKit`).
+  if (armaDoPedido(pedido) !== null && limiteNaCriacaoDeKit(err)) {
+    return { tipo: 'falha', mensagem: FRASE_LIMITE_NA_CRIACAO_DE_KIT };
   }
   return {
     tipo: 'falha',
@@ -457,11 +471,13 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   const [incertos, setIncertos] = useState<ReadonlyMap<string, IncertoNaPagina | null>>(
     () => new Map(),
   );
-  // The store can change only through `gravarIncerto` below (`sessionStorage`
-  // belongs to this browser tab), so reading it once per conta set is enough.
-  const armazenados = useMemo(
-    () => new Map((contasSnap.data ?? []).map((c) => [c.id, lerIncerto(c.id, produtoId)])),
-    [contasSnap.data, produtoId],
+  // Read on EVERY render (one `getItem` per conta), never memoised: another
+  // instance of this editor in the same browser tab — the page left and
+  // re-opened while a kit create was in flight — writes the same keys when ITS
+  // answer lands, and this one must see that on its next render (the wait
+  // timer below re-renders it, at the latest, when the stored `ate` ends).
+  const armazenados = new Map(
+    (contasSnap.data ?? []).map((c) => [c.id, lerIncerto(c.id, produtoId)] as const),
   );
   function incertoGuardado(contaId: string): IncertoNaPagina | null {
     if (incertos.has(contaId)) return incertos.get(contaId) ?? null;
@@ -472,18 +488,23 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   // The clock an uncertain create's wait is read against. It ticks ONCE, when
   // the earliest pending wait ends — nothing re-renders every second.
   const [relogio, setRelogio] = useState(() => Date.now());
-  const proximoFim = useMemo(() => {
-    const ates: number[] = [];
-    for (const [contaId, lido] of armazenados) {
-      if (!incertos.has(contaId) && lido !== null) ates.push(lido.ate);
-    }
-    for (const i of incertos.values()) if (i !== null) ates.push(i.ate);
-    const pendentes = ates.filter((ate) => ate > relogio);
-    return pendentes.length === 0 ? null : Math.min(...pendentes);
-  }, [armazenados, incertos, relogio]);
+  const ates: number[] = [];
+  for (const [contaId, lido] of armazenados) {
+    if (!incertos.has(contaId) && lido !== null) ates.push(lido.ate);
+  }
+  for (const i of incertos.values()) if (i !== null) ates.push(i.ate);
+  const pendentes = ates.filter((ate) => ate > relogio);
+  const proximoFim = pendentes.length === 0 ? null : Math.min(...pendentes);
   useEffect(() => {
     if (proximoFim === null) return;
-    const espera = setTimeout(() => setRelogio(Date.now()), Math.max(0, proximoFim - Date.now()));
+    // ⚠️ `Math.max`: the timer runs on a monotonic clock and `Date.now()` is the
+    // wall clock, which can be slewed back during the wait. A tick that landed
+    // BEFORE the deadline it was armed for would leave `proximoFim` unchanged —
+    // and with it this effect, so nothing would ever tick again.
+    const espera = setTimeout(
+      () => setRelogio(Math.max(Date.now(), proximoFim)),
+      Math.max(0, proximoFim - Date.now()),
+    );
     return () => clearTimeout(espera);
   }, [proximoFim]);
 
@@ -513,10 +534,23 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
     const arma = armaDoPedido(corpo);
     const linkDocId = corpo.linkDocId;
     if (arma === null || linkDocId === undefined) return;
+    // What the conta reads NOW — what a send that never left restores.
+    const anterior = incertoGuardado(contaId);
     void executar(
       linkDocId,
       arma,
       async (c) => {
+        // ⚠️ WRITE AHEAD (rule 7): the provisional wait reaches the store BEFORE
+        // the request leaves — the lock is a ref and dies with this instance, and
+        // `publicar` takes no signal, so a reload mid-flight leaves the server
+        // running. Every answer below replaces it. This page keeps reading
+        // `anterior` (its own state wins over the store): its spinner, not the
+        // uncertain alert, says a create is in flight.
+        setIncertos((prev) => new Map(prev).set(contaId, anterior));
+        gravarIncerto(contaId, produtoId, {
+          ate: Date.now() + esperaDoKitIncerto(undefined),
+          corpo,
+        });
         let resposta: Awaited<ReturnType<ShopeeClient['publicar']>>;
         try {
           resposta = await c.publicar(corpo);
@@ -531,7 +565,18 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
               return null;
             }
             limparIncerto(contaId);
+          } else if (err instanceof FirebaseError) {
+            // A failed ID-token refresh sent NOTHING (`getAuthToken()` runs
+            // before the request): the store goes back to what the conta read
+            // before the click. Rethrown, it is `executar`'s definite outcome.
+            gravarIncerto(
+              contaId,
+              produtoId,
+              anterior === null ? null : { ate: anterior.ate, corpo: anterior.corpo },
+            );
           }
+          // Anything else is not ours (rule 6): the provisional wait stands in
+          // the store — the safe direction, whatever the request did.
           throw err;
         }
         if (resposta.tipo === 'kit' && resposta.desfecho === 'incerto') {

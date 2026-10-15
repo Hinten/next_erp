@@ -35,6 +35,7 @@ import {
   anuncioShopeeVivo,
   ehVinculoSubstituido,
   estadoAnuncioShopeeSchema,
+  type AcaoSugeridaPublicacaoShopee,
   type EstadoAnuncioShopee,
   type TipoAcaoSugeridaPublicacaoShopee,
 } from '@delfrance/schemas';
@@ -42,7 +43,7 @@ import {
 import {
   ShopeeClientNetworkError,
   ShopeeClientRespostaInvalidaError,
-  type ShopeeClientHttpError,
+  ShopeeClientHttpError,
   type PublicarShopeeInput,
 } from './client';
 import type { ProblemaShopee, RespostaReverificarShopee } from './wire';
@@ -245,6 +246,37 @@ const FRASE_REPUBLICAR_SEM_VINCULO =
   'O vínculo não foi indicado: use "Republicar" no bloco do anúncio ativo desta conta.';
 
 /**
+ * The SUPERSEDED link a `vinculo-substituido` row is about, when it is NOT the
+ * block the row is shown in — or `null` (the row is about the block itself, or
+ * a server older than `substituidoLinkDocId` did not say).
+ *
+ * The dispatcher raises the refusal about the link that was sent; a kit
+ * create's duplicate scan raises it about K's OLD kit, superseded but still
+ * live, while the outcome is filed under the link that was SENT. Wording that
+ * row as "este anúncio foi substituído" would call the live current kit
+ * superseded. ONE predicate, so the copy ({@link textoDoProblemaShopee}) and
+ * the row's button cannot disagree about which link the row names.
+ */
+export function vinculoSubstituidoAlheio(
+  acao: AcaoSugeridaPublicacaoShopee | null,
+  linkDoBloco: string | undefined,
+): string | null {
+  if (acao?.tipo !== TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar) return null;
+  const sobre = acao.substituidoLinkDocId ?? null;
+  return sobre === null || linkDoBloco === undefined || sobre === linkDoBloco ? null : sobre;
+}
+
+/** A `vinculo-substituido` row about ANOTHER link ({@link vinculoSubstituidoAlheio}). */
+function textoDoSubstituidoAlheio(antigo: string, novo: string | null): string {
+  return (
+    `O kit nativo antigo do vínculo ${antigo}` +
+    (novo === null ? ' foi substituído' : ` foi substituído pelo vínculo ${novo}`) +
+    ', mas ainda está na Shopee com o mesmo SKU e bloqueia esta ação — exclua-o no Seller ' +
+    'Centre, ou use "Recriar kit" nele para tentar excluí-lo de novo.'
+  );
+}
+
+/**
  * A sentence written for a TERMINAL: a `--flag`, a `<verbo>:anuncio` script
  * name, or the word "comando". The server-side pin (`exigirAcaoSeHaComando` in
  * the kit suites) guarantees such a refusal also carries an `acao`; this is the
@@ -276,10 +308,13 @@ export const FRASE_RECUSA_SEM_PASSO_SHOPEE =
  *    {@link FRASE_RECUSA_SEM_PASSO_SHOPEE}.
  *
  * `motivo` is optional only so a caller holding a bare `{ mensagem, acao }`
- * still compiles; every 422 row carries one.
+ * still compiles; every 422 row carries one. `linkDoBloco` is the link the row
+ * is SHOWN under: a `vinculo-substituido` row about another link is worded as
+ * such ({@link vinculoSubstituidoAlheio}).
  */
 export function textoDoProblemaShopee(
   p: Pick<ProblemaShopee, 'mensagem' | 'acao'> & { readonly motivo?: string },
+  linkDoBloco?: string,
 ): string {
   const { acao } = p;
   const doMotivo = p.motivo === undefined ? null : textoProprio(TEXTO_MOTIVO_KIT, p.motivo);
@@ -291,10 +326,13 @@ export function textoDoProblemaShopee(
   switch (acao.tipo) {
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar:
       return `${base} Vínculo: ${acao.linkDocId}.`;
-    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar:
+    case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar: {
+      const antigo = vinculoSubstituidoAlheio(acao, linkDoBloco);
+      if (antigo !== null) return textoDoSubstituidoAlheio(antigo, acao.linkDocId);
       return acao.linkDocId === null
         ? `${base} ${FRASE_REPUBLICAR_SEM_VINCULO}`
         : `${base} Vínculo: ${acao.linkDocId}.`;
+    }
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar:
       return textoDoImportar(acao.itemIds, acao.vinculados);
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo:
@@ -580,8 +618,7 @@ export function esperaDoKitIncerto(aguardarMs: number | undefined): number {
  *    a body this build cannot read: whatever it did, it did;
  *  - a 5xx — the route failed or was cut (App Hosting's 180 s ceiling answers
  *    504) after a write it may already have made; except 501, a deployment fact,
- *    and a 502 whose `kind` is a Shopee rate limit (`burst` / `daily`, the
- *    client's own `kind` contract): a rate-limited call was refused, not run.
+ *    and a rate-limited 502 ({@link limiteNaCriacaoDeKit}).
  *
  * Everything else — a 4xx, a 422's `problemas` — is a definite answer.
  */
@@ -590,9 +627,36 @@ export function criacaoDeKitIncerta(
 ): boolean {
   if (err instanceof ShopeeClientNetworkError) return true;
   if (err instanceof ShopeeClientRespostaInvalidaError) return true;
-  if (err.status === 502) return err.kind !== 'burst' && err.kind !== 'daily';
+  if (err.status === 502) return !limiteNaCriacaoDeKit(err);
   return err.status >= 500 && err.status !== 501;
 }
+
+/**
+ * A 502 whose `kind` is a Shopee rate limit (`burst` / `daily`, the client's
+ * own `kind` contract) — DEFINITE for a kit create, though not because nothing
+ * ran: the 502 does not say WHICH call was limited, and one after a successful
+ * `add_kit_item` (the read-back, a recriar's re-read) reaches the tab the same
+ * way. It is definite because no wait is needed either way: the create writes
+ * the new kit's link BEFORE any call that can hit the limit
+ * (`aplicarKit.ts`'s `garantirKitNovo`), so the identical re-send reaches
+ * `completar`, never a second `add_kit_item`. The kit may already exist, which
+ * {@link FRASE_LIMITE_NA_CRIACAO_DE_KIT} says.
+ */
+export function limiteNaCriacaoDeKit(
+  err: ShopeeClientHttpError | ShopeeClientNetworkError,
+): boolean {
+  return (
+    err instanceof ShopeeClientHttpError &&
+    !(err instanceof ShopeeClientRespostaInvalidaError) &&
+    err.status === 502 &&
+    (err.kind === 'burst' || err.kind === 'daily')
+  );
+}
+
+/** What a rate-limited kit create reads — the kit may already exist ({@link limiteNaCriacaoDeKit}). */
+export const FRASE_LIMITE_NA_CRIACAO_DE_KIT =
+  'A Shopee limitou as consultas. O kit novo pode já ter sido criado — confira os anúncios desta ' +
+  'conta; repetir a mesma ação em alguns minutos conclui sem criar outro kit.';
 
 /**
  * A kit create the server could not confirm, kept for the identical re-send:
@@ -607,9 +671,11 @@ export interface IncertoKitShopee {
 
 /**
  * {@link IncertoKitShopee} as stored — parsed on every read: a stored value is
- * never trusted as typed. A body the route would refuse (400) is not a re-send,
- * so it reads as nothing: both arm flags at once, or a recriar naming no link
- * (the cross-field rules of `PublicarShopeeInput`).
+ * never trusted as typed. It states THIS tab's re-send precondition (what
+ * `enviarKit` would send as a kit create): a value with no link, or not exactly
+ * one arm flag, reads as nothing. Nothing here restates the route's rules —
+ * anything else the route refuses comes back as its own 400, a definite answer
+ * that clears the store.
  */
 const incertoKitShopeeSchema = z.object({
   ate: z.number().finite(),
@@ -617,15 +683,15 @@ const incertoKitShopeeSchema = z.object({
     .object({
       integracaoId: z.string().min(1),
       produtoId: z.string().min(1),
-      linkDocId: z.string().min(1).optional(),
+      linkDocId: z.string().min(1),
       status: z.enum(['NORMAL', 'UNLIST']).optional(),
       categoryId: z.number().int().positive().optional(),
       principal: z.string().min(1).optional(),
       recriar: z.literal(true).optional(),
       converterEmKit: z.literal(true).optional(),
     })
-    .refine((c) => !(c.recriar === true && c.converterEmKit === true))
-    .refine((c) => c.recriar !== true || c.linkDocId !== undefined),
+    // Exactly ONE arm: `enviarKit` sends nothing for a body with neither.
+    .refine((c) => (c.recriar === true) !== (c.converterEmKit === true)),
 });
 
 /** The `sessionStorage` key of one produto's uncertain kit create on one conta. */
