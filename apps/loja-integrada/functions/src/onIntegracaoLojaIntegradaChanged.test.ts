@@ -209,6 +209,20 @@ describe('onIntegracaoLojaIntegradaChanged — what reaches the reconcile', () =
     esperarUmaReconciliacao();
   });
 
+  it('builds NO binding of its own while handling events — every one reconciles through the module-load binding', async () => {
+    // The binding test above reads `vinculos` before any event ran, and this file's mock hands
+    // EVERY binding the same reconcile spy — so a second binding built INSIDE the handler (another
+    // channel's row, or `{ refTolerante: true }`) would pass every call assertion here. Only the
+    // binding count after real events can see it.
+    await run(null, conta());
+    await run(conta(), conta({ nome: 'Outro nome' }));
+    await run(conta(), conta({ tipo: INTEGRACAO_TIPO.shopee }));
+    await run(conta(), null);
+
+    expect(core.reconciliar).toHaveBeenCalledTimes(4);
+    expect(core.vinculos).toEqual([[VINCULO_INT_FRETE_CONTA.lojaIntegrada]]);
+  });
+
   it.each([
     ['nome', { nome: 'Outro nome' }],
     ['ativo', { ativo: false }],
