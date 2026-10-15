@@ -17,10 +17,10 @@
  *
  * ## Numbers
  *
- * ⚠️ This file and `pedidoTipos.ts` are the only ones under `src/` that use Zod
- * for numbers, and every one goes through `wireInt()` / `wireNumber()` from
- * `@delfrance/core/wire`: a serializer that quotes ONE field must not cost the
- * whole page (#1087).
+ * ⚠️ This file, `pedidoTipos.ts` and `vazio.ts` are the only ones under `src/`
+ * that use Zod for numbers, and every one goes through `wireInt()` /
+ * `wireNumber()` from `@delfrance/core/wire`: a serializer that quotes ONE
+ * field must not cost the whole page (#1087).
  * Enforced by
  * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`,
  * which scans every file under `src/` and anchors on three lines of this file.
@@ -30,30 +30,7 @@
 import { wireInt } from '@delfrance/core/wire';
 import { z } from 'zod';
 
-/**
- * An OPTIONAL leaf that also reads an exact `''` as `null`. The provider writes
- * `''` for "nothing" on other leaves of this API (the sanitized captures carry
- * it on text fields), and `wireInt()` alone refuses it — `.nullable()` does not
- * help, since `''` is not `null` — so one empty optional number would cost the
- * whole page.
- *
- *  - Only the exact `''`. A whitespace-only string is still handed to the
- *    schema and refused: the captures hold none, and a blank the provider
- *    never sends is a drift worth seeing.
- *  - A non-empty string that is not one integer (`'abc'`, `'2.5'`) is still
- *    refused by `wireInt()`.
- *  - A REQUIRED leaf never gets it (`limit`, `offset`, a row's `id` or
- *    `numero`), so an empty one is refused at its own path.
- *
- * ⚠️ The `.optional()` sits OUTSIDE the preprocess, so an absent key never
- * reaches it and stays `undefined`.
- */
-function vazioComoNulo<T extends z.ZodType>(schema: T) {
-  return z.preprocess((v) => (v === '' ? null : v), schema.nullable()).optional();
-}
-
-/** {@link vazioComoNulo} over `wireInt()`: an optional count or id. */
-const inteiroOpcional = () => vazioComoNulo(wireInt());
+import { inteiroOpcional } from './vazio';
 
 /**
  * Tastypie's `meta` block.
@@ -63,9 +40,10 @@ const inteiroOpcional = () => vazioComoNulo(wireInt());
  * `next` / `previous` are RELATIVE paths under `/api/v1/…`, never followed
  * verbatim — `paginacao.ts` takes only their query string.
  *
- * `total_count` absent, `null` and `''` are one outcome: no total announced.
- * ⚠️ Never `0` for `''` — a total of zero claims an EMPTY window, which is a
- * statement the provider did not make.
+ * `total_count` absent, `null` and `''` are one outcome: no total announced
+ * (`inteiroOpcional()`, `vazio.ts`) — never `0`. `limit` and `offset` are
+ * required, and so are a row's `id` and `numero` below: an empty one is refused
+ * at its own path.
  */
 export const liMetaSchema = z
   .object({
