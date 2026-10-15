@@ -70,7 +70,6 @@ describe('missed-feeds provider probe', () => {
   });
 });
 
-
 describe('probe account discovery', () => {
   const db = {} as Firestore;
   function connected() {
