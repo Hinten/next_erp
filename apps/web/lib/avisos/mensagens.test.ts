@@ -824,3 +824,296 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaImportacaoParada', () => {
     expect(mensagem.runbook).toContain('registro da varredura de pedidos');
   });
 });
+
+/**
+ * The four Amazon tipos (step 2), rendered with the params their producers
+ * write (`apps/amazon/lib/amazon/avisos/avisos.ts`, step 2 PR b):
+ *
+ * - reconexão `{ loja, status }` — `status` a NUMBER, the LWA code in `motivo`;
+ * - reautorização `{ loja, dias, expiraEm }` — `dias` a NUMBER of São Paulo
+ *   civil days, `expiraEm` a `YYYY-MM-DD` civil date;
+ * - app-secret expiry `{ dias, expiraEm }`, BOTH absent when the date is
+ *   unrecorded;
+ * - app-secret refusal `{}`, the LWA code in `motivo`.
+ */
+const REAUTORIZE_AMAZON =
+  'Reautorize pelo painel de conexão da conta, no ERP — o botão de reautorizar do Seller ' +
+  'Central não é suportado.';
+
+describe('MENSAGENS_POR_TIPO.amazonReconexaoPendente', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonReconexaoPendente];
+  const PARADA = 'A integração desta conta fica parada até ela ser reautorizada.';
+
+  it('renders the conta and the HTTP status in their slots', () => {
+    for (const status of [400, 401, 403]) {
+      expect(mensagem.corpo({ loja: 'Conta A', status }), String(status)).toBe(
+        `A Amazon recusou a autorização da conta Conta A (HTTP ${String(status)}). ${PARADA} ` +
+          REAUTORIZE_AMAZON,
+      );
+    }
+  });
+
+  it('renders `{}` with the placeholder and no status clause, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(`A Amazon recusou a autorização da conta —. ${PARADA} ${REAUTORIZE_AMAZON}`);
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('HTTP');
+  });
+
+  it('treats an empty status like a missing one: no "(HTTP —)" clause', () => {
+    expect(mensagem.corpo({ loja: 'Conta A', status: '' })).toBe(
+      `A Amazon recusou a autorização da conta Conta A. ${PARADA} ${REAUTORIZE_AMAZON}`,
+    );
+  });
+
+  it('points at the ERP, never at Seller Central’s own reauthorize button', () => {
+    const corpo = mensagem.corpo({ loja: 'Conta A', status: 400 });
+    expect(corpo).toContain('no ERP');
+    expect(corpo).toContain('Seller Central não é suportado');
+  });
+
+  it('renders the producer plano as stored', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonReconexaoPendente,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: 'Conta A', status: 400 },
+      motivo: 'invalid_grant',
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(aviso.canal).toBe(CANAL_AVISO.amazon);
+    expect(aviso.urlInterna?.rota).toBe('/canais/amazon/int-1');
+    expect(mensagem.corpo(aviso.params)).toBe(
+      `A Amazon recusou a autorização da conta Conta A (HTTP 400). ${PARADA} ${REAUTORIZE_AMAZON}`,
+    );
+  });
+
+  it('is titled like its label and carries no runbook — the connect panel is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonReconexaoPendente);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.amazonReautorizacaoExpirando', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonReautorizacaoExpirando];
+  const LOJA = 'Conta A';
+
+  it('renders the conta, the days and the date (DD/MM/AAAA) in their slots', () => {
+    expect(mensagem.corpo({ loja: LOJA, dias: 30, expiraEm: '2027-10-15' })).toBe(
+      `A autorização da Amazon da conta ${LOJA} vence em 30 dia(s) (15/10/2027). ` +
+        REAUTORIZE_AMAZON,
+    );
+  });
+
+  it('says "vence hoje" at zero days, and keeps one day apart from it', () => {
+    expect(mensagem.corpo({ loja: LOJA, dias: 0, expiraEm: '2027-10-15' })).toBe(
+      `A autorização da Amazon da conta ${LOJA} vence hoje (15/10/2027). ${REAUTORIZE_AMAZON}`,
+    );
+    expect(mensagem.corpo({ loja: LOJA, dias: 1, expiraEm: '2027-10-15' })).toBe(
+      `A autorização da Amazon da conta ${LOJA} vence em 1 dia(s) (15/10/2027). ` +
+        REAUTORIZE_AMAZON,
+    );
+  });
+
+  it('says the 365 days have passed at negative days — never "vence em -1 dia(s)"', () => {
+    for (const dias of [-1, -30]) {
+      const corpo = mensagem.corpo({ loja: LOJA, dias, expiraEm: '2027-10-15' });
+      expect(corpo, String(dias)).toBe(
+        `O prazo de 365 dias da autorização da Amazon da conta ${LOJA} já passou (15/10/2027), ` +
+          `e a Amazon pode recusá-la a qualquer momento. ${REAUTORIZE_AMAZON}`,
+      );
+      expect(corpo, String(dias)).not.toContain(String(dias));
+    }
+  });
+
+  it('formats the date by splitting the string — no time-zone shift to the day before', () => {
+    // `new Date('2027-01-01')` is UTC midnight: rendered in São Paulo it would
+    // read 31/12/2026. The split cannot move a day.
+    expect(mensagem.corpo({ loja: LOJA, dias: 5, expiraEm: '2027-01-01' })).toContain(
+      '(01/01/2027)',
+    );
+  });
+
+  it('omits a missing or malformed date rather than printing it raw', () => {
+    for (const expiraEm of [undefined, '2027-10-1', '15/10/2027', 20271015, '']) {
+      const corpo = mensagem.corpo({
+        loja: LOJA,
+        dias: 12,
+        ...(expiraEm === undefined ? {} : { expiraEm }),
+      });
+      expect(corpo, String(expiraEm)).toBe(
+        `A autorização da Amazon da conta ${LOJA} vence em 12 dia(s). ${REAUTORIZE_AMAZON}`,
+      );
+    }
+  });
+
+  it('renders `{}` with the placeholders, never "undefined" or "NaN"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(
+      `A autorização da Amazon da conta — vence em — dia(s). ${REAUTORIZE_AMAZON}`,
+    );
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('NaN');
+  });
+
+  it('renders the producer plano as stored, with the date on the `prazo` field', () => {
+    const prazoUs = AGORA_US + 29 * 86_400_000_000;
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonReautorizacaoExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: LOJA, dias: 29, expiraEm: '2025-11-07' },
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      prazo: prazoUs,
+    });
+    expect(aviso.prazo).toBe(prazoUs);
+    expect(aviso.relogioEvento).toBeNull();
+    expect(mensagem.corpo(aviso.params)).toBe(
+      `A autorização da Amazon da conta ${LOJA} vence em 29 dia(s) (07/11/2025). ` +
+        REAUTORIZE_AMAZON,
+    );
+  });
+
+  it('is titled like its label and carries no runbook — the connect panel is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonReautorizacaoExpirando);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.amazonSegredoLwaExpirando', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonSegredoLwaExpirando];
+  const PARA = 'Sem a troca, a integração de todas as contas Amazon para.';
+  const SEM_DATA =
+    'A data de vencimento do segredo do aplicativo da Amazon (client secret do LWA) não está ' +
+    'registrada, ou o valor registrado não é uma data válida no formato AAAA-MM-DD, então o ' +
+    'ERP não consegue avisar antes de ele vencer. Quando ele vence, a integração de todas as ' +
+    'contas Amazon para.';
+
+  it('renders the days and the date (DD/MM/AAAA) in their slots', () => {
+    expect(mensagem.corpo({ dias: 30, expiraEm: '2027-04-13' })).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence em 30 dia(s) (13/04/2027). ${PARA}`,
+    );
+  });
+
+  it('says "vence hoje" at zero days', () => {
+    expect(mensagem.corpo({ dias: 0, expiraEm: '2027-04-13' })).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence hoje (13/04/2027). ${PARA}`,
+    );
+  });
+
+  it('says the recorded date has passed at negative days — and names both explanations', () => {
+    for (const dias of [-1, -10]) {
+      const corpo = mensagem.corpo({ dias, expiraEm: '2027-04-13' });
+      expect(corpo, String(dias)).toBe(
+        'A data registrada para o vencimento do segredo do aplicativo da Amazon já passou ' +
+          '(13/04/2027). Se o segredo não foi trocado, a Amazon passa a recusá-lo e a integração ' +
+          'de todas as contas Amazon para; se foi, falta registrar a nova data.',
+      );
+      expect(corpo, String(dias)).not.toContain(String(dias));
+    }
+  });
+
+  it('has its OWN sentence when the date is unrecorded or invalid — `{}` is both cases', () => {
+    // The producer raises the aviso with NEITHER param when
+    // `AMAZON_LWA_SEGREDO_EXPIRA_EM` is unset or invalid: the sentence must say
+    // the deadline is unknown, never print "vence em — dia(s)" — and, since the
+    // two causes look the same here, it must name BOTH, so an operator whose
+    // value is merely mis-typed is not told that nothing is recorded.
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(SEM_DATA);
+    expect(corpo).toContain('não está registrada');
+    expect(corpo).toContain('não é uma data válida no formato AAAA-MM-DD');
+    expect(corpo).not.toContain('—');
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('NaN');
+  });
+
+  it('near-miss: only ONE param absent is not "unrecorded" — the known-date sentence keeps the other', () => {
+    expect(mensagem.corpo({ dias: 12 })).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence em 12 dia(s). ${PARA}`,
+    );
+    expect(mensagem.corpo({ expiraEm: '2027-04-13' })).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence em — dia(s) (13/04/2027). ${PARA}`,
+    );
+  });
+
+  it('renders both producer planos as stored: the dated one and the unrecorded one', () => {
+    const comData = comoArmazenado({
+      tipo: TIPO_AVISO.amazonSegredoLwaExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      params: { dias: 20, expiraEm: '2025-10-29' },
+      urlInterna: { rota: ROTAS_AVISO.canalAmazonLista.build(), campo: null },
+      prazo: AGORA_US + 20 * 86_400_000_000,
+    });
+    expect(comData.urlInterna?.rota).toBe('/canais/amazon');
+    expect(mensagem.corpo(comData.params)).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence em 20 dia(s) (29/10/2025). ${PARA}`,
+    );
+    const semData = comoArmazenado({
+      tipo: TIPO_AVISO.amazonSegredoLwaExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      urlInterna: { rota: ROTAS_AVISO.canalAmazonLista.build(), campo: null },
+    });
+    expect(semData.prazo).toBeNull();
+    expect(mensagem.corpo(semData.params)).toBe(SEM_DATA);
+  });
+
+  it('is titled like its label, with a runbook: the fix is a deploy, not an in-app action', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonSegredoLwaExpirando);
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_SECRET');
+    expect(mensagem.runbook).toContain('AMAZON_LWA_SEGREDO_EXPIRA_EM');
+    expect(mensagem.runbook).toContain('MESMA implantação');
+  });
+
+  it('runbook: recording the CURRENT secret’s date comes before — and without — rotating', () => {
+    // The no-date body covers an unset AND a mis-typed value; rotating is the
+    // riskiest step on this channel, so the runbook must first offer the fix
+    // that needs no new secret.
+    const runbook = mensagem.runbook ?? '';
+    const registrar = runbook.indexOf('segredo ATUAL');
+    const gerar = runbook.indexOf('gere um novo client secret');
+    expect(registrar).toBeGreaterThan(-1);
+    expect(runbook).toContain('sem gerar outro segredo');
+    expect(gerar).toBeGreaterThan(registrar);
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.amazonSegredoLwaRecusado', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonSegredoLwaRecusado];
+  const CORPO =
+    'A Amazon recusou as credenciais do aplicativo (client secret do LWA). Nenhuma conta Amazon ' +
+    'consegue renovar o acesso até isso ser corrigido — as contas não precisam ser reconectadas.';
+
+  it('renders one fixed sentence — the tipo has no params', () => {
+    expect(mensagem.corpo({})).toBe(CORPO);
+    expect(mensagem.corpo({ loja: 'ignorado', status: 401 })).toBe(CORPO);
+  });
+
+  it('renders the producer plano as stored', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonSegredoLwaRecusado,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      motivo: 'invalid_client',
+      urlInterna: { rota: ROTAS_AVISO.canalAmazonLista.build(), campo: null },
+    });
+    expect(aviso.params).toEqual({});
+    expect(aviso.relogioEvento).toBeNull();
+    expect(mensagem.corpo(aviso.params)).toBe(CORPO);
+  });
+
+  it('is titled like its label, with a runbook naming the two variables to check', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonSegredoLwaRecusado);
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_ID');
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_SECRET');
+  });
+
+  it('runbook: says where each half lives — only the secret is in Secret Manager', () => {
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_ID (variável de ambiente do backend)');
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_SECRET (Secret Manager)');
+    expect(mensagem.runbook).not.toContain('AMAZON_LWA_CLIENT_ID e AMAZON_LWA_CLIENT_SECRET');
+  });
+});

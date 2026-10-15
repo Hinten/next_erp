@@ -428,6 +428,25 @@ no match block and Firestore default-denies them — they are Admin-SDK-only. It
 `integracao` permissions. Each `produtos` doc also carries the seven
 marketplace-link subcollections (loose pass-through, written by Flutter).
 
+Two `integracao` fields are **server-owned** (`integracaoMeta.serverOwnedFields`):
+`user_id` (Mercado Livre) and `selling_partner_id` (Amazon). Both are a webhook
+routing key, so the generated rules let a client create them only as `null` (or
+omit them) and never update them — superuser included. `selling_partner_id` is
+written only by the Amazon OAuth callback (`apps/amazon`) through the Admin SDK,
+and step 3's routing finds a conta by `tipo == amazon && selling_partner_id == X &&
+ativo == true` (index `integracao (tipo, selling_partner_id, ativo)`).
+
+An Amazon conta keeps its Login with Amazon tokens in the generic `credenciais`
+store, at the fixed doc id `integracao/{id}/credenciais/current`, typed by
+`credenciaisAmazonSchema` (`packages/schemas/src/credenciaisAmazon.ts`). That is a
+**shape, not a collection**: it adds no meta and no `ALL_DOMAINS` entry, so the
+rules are unchanged. It extends the generic OAuth trio (`access_token`,
+`refresh_token`, `expirationDate` in ms) with `autorizadoEmMs` (ms — our callback's
+code-exchange start, the clock of the 365-day reauthorization), `acessoRef` (which
+refresh token minted the stored access token) and `reconexaoPendente` (the park:
+`desdeMs`, `status`, `codigoLwa`, `refCredencial`), and it is **strict** — a
+hand-added key makes the document read as corrupt.
+
 ⚠️ The legacy Mercado Livre token stores `token6h` and `tokenDuravel` are the one
 exception to that deny-all posture. They **are** registered, on the `integracao`
 permission bits, because the legacy Flutter client writes them from its OAuth
@@ -474,6 +493,8 @@ erDiagram
     int tipo "marketplace channel enum"
     string nome
     bool ativo
+    int user_id "server-owned (Mercado Livre)"
+    string selling_partner_id "server-owned (Amazon)"
   }
 ```
 

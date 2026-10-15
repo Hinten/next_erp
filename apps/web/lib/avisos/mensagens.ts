@@ -226,6 +226,72 @@ function corpoExpiracaoLojaIntegrada(params: Aviso['params']): string {
   );
 }
 
+/**
+ * Onde uma conta Amazon é reautorizada: no ERP. ⚠️ Nunca no Seller Central — o
+ * botão de reautorizar de lá abre uma página de login que este ERP não atende,
+ * então a frase diz para não usá-lo. E sem nomear o rótulo do botão do painel,
+ * que muda com o estado da conexão.
+ */
+const REAUTORIZE_AMAZON =
+  'Reautorize pelo painel de conexão da conta, no ERP — o botão de reautorizar do Seller ' +
+  'Central não é suportado.';
+
+/**
+ * A frase da autorização da Amazon que se aproxima dos 365 dias. `dias` é um
+ * NÚMERO de dias civis (São Paulo): `0` no próprio dia, negativo depois dele —
+ * cada um com sua frase, porque "vence em 0 dia(s)" e "vence em -3 dia(s)" seriam
+ * lidos como erro do sistema. Qualquer outro valor cai na frase futura com o
+ * marcador, nunca em "undefined".
+ */
+function corpoReautorizacaoAmazon(params: Aviso['params']): string {
+  const loja = p(params, 'loja');
+  const data = dataCivilBr(params.expiraEm);
+  const quando = data === null ? '' : ` (${data})`;
+  const dias = params.dias;
+  if (typeof dias === 'number' && dias < 0) {
+    return (
+      `O prazo de 365 dias da autorização da Amazon da conta ${loja} já passou${quando}, e a ` +
+      `Amazon pode recusá-la a qualquer momento. ${REAUTORIZE_AMAZON}`
+    );
+  }
+  const prazo = dias === 0 ? 'vence hoje' : `vence em ${p(params, 'dias')} dia(s)`;
+  return `A autorização da Amazon da conta ${loja} ${prazo}${quando}. ${REAUTORIZE_AMAZON}`;
+}
+
+/**
+ * A frase do vencimento do segredo do aplicativo da Amazon. ⚠️ `dias` e
+ * `expiraEm` AUSENTES (os dois) quer dizer que a data não está registrada OU
+ * que o valor registrado não é uma data válida — o produtor não distingue os
+ * dois casos e levanta o aviso mesmo assim, e a frase nomeia as duas causas e
+ * diz que o prazo é desconhecido em vez de imprimir marcadores. `0` e negativo
+ * têm frases próprias, como na autorização da conta.
+ */
+function corpoSegredoLwaExpirandoAmazon(params: Aviso['params']): string {
+  if (params.dias === undefined && params.expiraEm === undefined) {
+    return (
+      'A data de vencimento do segredo do aplicativo da Amazon (client secret do LWA) não está ' +
+      'registrada, ou o valor registrado não é uma data válida no formato AAAA-MM-DD, então o ' +
+      'ERP não consegue avisar antes de ele vencer. Quando ele vence, a integração de todas as ' +
+      'contas Amazon para.'
+    );
+  }
+  const data = dataCivilBr(params.expiraEm);
+  const quando = data === null ? '' : ` (${data})`;
+  const dias = params.dias;
+  if (typeof dias === 'number' && dias < 0) {
+    return (
+      `A data registrada para o vencimento do segredo do aplicativo da Amazon já passou${quando}. ` +
+      'Se o segredo não foi trocado, a Amazon passa a recusá-lo e a integração de todas as ' +
+      'contas Amazon para; se foi, falta registrar a nova data.'
+    );
+  }
+  const prazo = dias === 0 ? 'vence hoje' : `vence em ${p(params, 'dias')} dia(s)`;
+  return (
+    `O segredo do aplicativo da Amazon (client secret do LWA) ${prazo}${quando}. ` +
+    'Sem a troca, a integração de todas as contas Amazon para.'
+  );
+}
+
 export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   [TIPO_AVISO.shopeeAutorizacaoExpirando]: {
     titulo: 'Autorização Shopee expirando',
@@ -419,6 +485,55 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'Se o motivo for o token, salve um token válido na conta. Nos demais casos, um ' +
       'desenvolvedor confere o registro da varredura de pedidos; quando há pedidos alterados ' +
       'demais, reiniciar o cursor da conta faz a leitura recomeçar pelo período inicial de busca.',
+  },
+  // Sem `runbook` nos dois avisos por CONTA da Amazon: o conserto está no app —
+  // uma nova autorização pelo painel de conexão da conta (o link do aviso).
+  [TIPO_AVISO.amazonReconexaoPendente]: {
+    titulo: 'Autorização da Amazon recusada',
+    corpo: (params) => {
+      // `p()` decide o que é "ausente" (sem a chave OU ''), então a cláusula e o
+      // marcador nunca discordam: sem status, a cláusula inteira some.
+      const status = p(params, 'status', '');
+      return (
+        `A Amazon recusou a autorização da conta ${p(params, 'loja')}` +
+        `${status === '' ? '' : ` (HTTP ${status})`}. ` +
+        `A integração desta conta fica parada até ela ser reautorizada. ${REAUTORIZE_AMAZON}`
+      );
+    },
+  },
+  [TIPO_AVISO.amazonReautorizacaoExpirando]: {
+    titulo: 'Autorização da Amazon expirando',
+    corpo: corpoReautorizacaoAmazon,
+  },
+  // Os dois avisos do APLICATIVO (um por canal, não por conta) têm `runbook`: o
+  // conserto é uma implantação — o segredo vive no Secret Manager, fora do app.
+  [TIPO_AVISO.amazonSegredoLwaExpirando]: {
+    titulo: 'Segredo do aplicativo da Amazon expirando',
+    corpo: corpoSegredoLwaExpirandoAmazon,
+    // Dois ramos, e registrar vem ANTES de trocar: quando só falta a data (ou
+    // ela está em outro formato), gerar um segredo novo seria o passo mais
+    // arriscado do canal para um conserto que não precisa dele.
+    runbook:
+      'Se a data não está registrada, ou não está no formato AAAA-MM-DD, grave em ' +
+      'AMAZON_LWA_SEGREDO_EXPIRA_EM a data de vencimento do segredo ATUAL, como AAAA-MM-DD — sem ' +
+      'gerar outro segredo. Se o segredo está perto de vencer (ou já venceu), gere um novo client ' +
+      'secret para o aplicativo no portal de desenvolvedor da Amazon e, na MESMA implantação, ' +
+      'grave-o em AMAZON_LWA_CLIENT_SECRET (Secret Manager) de todos os backends da Amazon e ' +
+      'registre a nova data de vencimento em AMAZON_LWA_SEGREDO_EXPIRA_EM (AAAA-MM-DD). O ' +
+      'segredo antigo pode deixar de valer assim que o novo é gerado.',
+  },
+  [TIPO_AVISO.amazonSegredoLwaRecusado]: {
+    titulo: 'Segredo do aplicativo da Amazon recusado',
+    corpo: () =>
+      'A Amazon recusou as credenciais do aplicativo (client secret do LWA). Nenhuma conta ' +
+      'Amazon consegue renovar o acesso até isso ser corrigido — as contas não precisam ser ' +
+      'reconectadas.',
+    runbook:
+      'Confira se AMAZON_LWA_CLIENT_ID (variável de ambiente do backend) e ' +
+      'AMAZON_LWA_CLIENT_SECRET (Secret Manager) de todos os backends da Amazon são o par atual ' +
+      'do aplicativo no portal de desenvolvedor da Amazon — um segredo vencido, ou trocado no ' +
+      'portal sem atualizar o Secret Manager, dá exatamente isto. Corrija e reimplante; o aviso ' +
+      'se encerra sozinho na próxima troca de token aceita.',
   },
 };
 
