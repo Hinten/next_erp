@@ -146,7 +146,19 @@ still be fixed. Only the context loader refuses those.
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor is 0 until the first fixture PR raises it.
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (18), so a fixture that
+  disappears fails it.
+- ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
+  identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
+  until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw
+  pair first, or regenerate with `--so` naming only the pairs wanted. The shipped state is
+  covered without it: `pedido-pix` and `pedido-cartao` (`situacao.codigo`
+  `pedido_enviado`, a tracking code under `envios`) and `historico-pedido-enviado`.
+- Kept on review of the first corpus (2026-10-14), not leaks: a 14-digit window INSIDE a
+  longer SKU that passes the CNPJ check (the scan tests whole values; any one window passes
+  by chance about 1% of the time, and the sibling variant's window fails), LI's own
+  numeric ids (the importer's join keys), `meta.total_count` (the kept numeros already
+  show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it).
 - `estrutura.test.ts` proves the sanitizer's import closure reaches no network or process
   module, no package client, no `firebase-admin`/`@delfrance/data`, no credential module,
   no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;
@@ -214,6 +226,41 @@ still be fixed. Only the context loader refuses those.
   (env whole, the importer from the seam table per run). `index.ts` exports only triggers:
   any other runtime export there reads as a Cloud Function name.
 
+## Order poller (step 3)
+
+- `pedidos/pollPedidos.ts` runs one tick and one conta's run; `dataLi.ts`, `janelaPoll.ts`
+  and `orcamentoPoll.ts` are its pure date, window and budget layer. The root
+  `functions/src/pollPedidos.ts` (`pollLojaIntegradaPedidos`, `*/5`, 300 s) binds every
+  dependency: `importadorPresente = importadorPedidoLi() !== null`, the parsed look-back.
+- Two gates, each with ZERO reads: the empty importer seam (until step 5), then the read
+  switch. Contas run one after another, the list ROTATED by the tick's 5-minute slot
+  (`ordemDoTickLi`), so a `sem-tempo` conta runs first on a later tick instead of
+  starving behind the same ones forever. Containment per conta is a gRPC error, or a
+  hand-edited poll document that no longer parses (`documento-invalido`, a WARNING,
+  nothing written), ONLY.
+- `pollPedidosLojaIntegrada/{id}` is written only under preconditions: the lease
+  (`create`, or `update` once expired), the refusal record (never while the lease is held,
+  never a cursor), and the final write on the lease's `writeTime`, re-derived from ONE
+  re-read when it loses. The cursor is the platform's naive text; arithmetic is zone-free.
+  `pedidos/pollPedidos.firestore.test.ts` proves the fake's precondition model on the
+  emulator (two lease takers → one wins; a deleted document fails the stamp with 9).
+- The aviso `lojaIntegradaImportacaoParada` is clocked by the run's FIRST write to that
+  document, and resolved only when the stored `falhasSeguidas` was above 0. So it is
+  RAISED only after the write that stored its count landed (an open aviso always has a
+  count above 0 behind it), and a retried final write resets a count only while it is
+  still the one the lease read. The re-bootstrap runbook DELETES the `cursor` field and
+  never the document (`functions/DEPLOY.md`): a fresh document would never resolve an
+  open aviso.
+- A conta parked mid-drain keeps its stored `vistos` (the run's additions are dropped, so
+  they are re-enqueued once the token is back).
+- The row schema was written from the public document's two examples and is now
+  CONFIRMED by the owner's C1 captures (`__wire__/pedido-search-*`): every row passes it,
+  `data_modificacao` arrives already canonical, the filtered search lists nothing below
+  its bound (so `filtroIgnoradoLi` stays false), and the `%3A` capture is byte for byte
+  the query the poller sends. Pinned by `pedidos/capturasBusca.test.ts`. ⚠️ The rows come
+  ordered by `numero`, NOT by `data_modificacao`; the poller deliberately assumes no
+  order (the cursor is the max stamp over the whole drain).
+
 ## CI (step 3)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
@@ -232,12 +279,14 @@ still be fixed. Only the context loader refuses those.
   `FUNCTIONS_REGION` = `LOJA_INTEGRADA_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
   `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `LOJA_INTEGRADA_CHAMADAS=off`.
   A region mismatch is the silent drop of #1108: the poll times out instead of failing.
+  On Windows the Firestore JVM can outlive `emulators:exec` and keep 8085: stop it after.
 - D17 holds in the lane through TWO layers. The job env sets `LOJA_INTEGRADA_CHAMADAS: 'off'`
   (the functions emulator inherits it; the setup's fetch kill-switch reaches only the vitest
   process), and `vitest.tasks.setup.ts` refuses to start when the shell has it `on` or an
-  artifact `.env*` file (selected by an anchored name, never a prefix) names it. A suite
-  must stop at the switch: this lane never turns it on, and a context past the switch is
-  not testable here.
+  artifact `.env*` file (selected by an anchored name, never a prefix) names it. A
+  DISPATCHED function must stop at the switch: this lane never turns it on in the
+  environment. Only code running in the vitest process may pass a context, and only with
+  `ambiente` `on` as a PARAMETER and a scripted `deps.fetch` (`pedidos/pollPedidos.tasks.test.ts`).
 - A new `*.tasks.test.ts` / `*.firestore.test.ts` joins the same job and check name. Its
   `beforeEach` wipes what it reads (one shared emulator, files run serially), and a drop
   is proved by a LATER sentinel row, never by polling for an absence.

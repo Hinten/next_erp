@@ -28,8 +28,10 @@ import { getAdminApp } from './lib/admin';
  * ⚠️ The argument MUST stay an object literal of STATIC `process.env.X` reads:
  * esbuild's `define` substitutes the member expression and nothing else, so a
  * computed argument leaves `FUNCTIONS_REGION` a live read that is `undefined`
- * after a deploy (`tools/deploy-env/bundle-inlining.test.js`; `agendador.test.ts`
- * pins the shape until this root is in the bundle).
+ * after a deploy. The bundle contains this root since the order poller imports
+ * it, so `tools/deploy-env/bundle-inlining.test.js` proves the inlining on the
+ * BUILT bundle; `agendador.test.ts` pins the same shape at the source, where the
+ * failure names this file.
  */
 export function regiaoDaFilaLi(): string {
   return requireRegion({
