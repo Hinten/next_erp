@@ -4,6 +4,7 @@ import {
   docIdSchema,
   idFromRef,
   idRefSchema,
+  naoDocId,
   outerRefLooseSchema,
   outerRefSchema,
   parseRef,
@@ -135,5 +136,19 @@ describe('outerRef helpers', () => {
       collection: 'enderecos',
       id: 'E1',
     });
+  });
+});
+
+describe('naoDocId', () => {
+  it('refuses what `.doc(id)` cannot address — by TYPE, never by truthiness', () => {
+    for (const ruim of ['', 'a/b', 'a/b/c', '.', '..', undefined, null, 42, ['x'], { id: 'x' }]) {
+      expect(naoDocId(ruim), String(ruim)).toBe(true);
+    }
+  });
+
+  it('NEAR-MISS: a dotted or long id is still a document id', () => {
+    for (const bom of ['tab-1', 'a.b', '...', 'XMLB0000vMLBMLB5125183715', ' ']) {
+      expect(naoDocId(bom), bom).toBe(false);
+    }
   });
 });

@@ -66,11 +66,18 @@
  * the CHILD, never on `produtoId` (that is the anchor every model shares), and a
  * request whose rows name no child reads nothing.
  *
+ * ⚠️ The join is BEST EFFORT: it runs after every price and stamp has landed,
+ * so a gRPC-coded Firestore failure of that read is logged and the rows answer
+ * `variacaoNome` / `variacaoSku: null` — it never fails a push that already
+ * went out (a 500 there paints every row of the conta `falha` on the web).
+ *
  * ## Errors
  *
  * `ShopeeEnvioPrecoGuardError` FIRST, at its derived status (it extends the
  * package's base, and the generic arm would answer it as a generic failure); then
- * `isShopeeError` ⇒ `shopeeErrorResponse`; anything else rethrows (rule 6).
+ * `isShopeeError` ⇒ `shopeeErrorResponse`; anything else rethrows (rule 6). The
+ * one failure the route itself CONTAINS is rung 15's: a gRPC-coded error of the
+ * label read degrades to `null` labels; any other class from it still rethrows.
  */
 import { NextResponse } from 'next/server';
 
@@ -82,6 +89,7 @@ import {
   MSG_SELECAO_INVALIDA,
   naoDocId,
 } from '@/lib/shopee/anuncios/corpoPublicacao';
+import { isGrpcCodedError } from '@/lib/shopee/core/containment';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
 import { SHOPEE_ENVIO_PRECO_MAX_PRODUTOS } from '@/lib/shopee/precos/constantesPreco';
 import { enviarPrecoManualShopee } from '@/lib/shopee/precos/enviarPrecoManual';
@@ -189,10 +197,28 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
 
     // Rung 15: the per-model label — the CHILD's name and SKU, batched by id.
-    const nomesDasVariacoes = await lerNomesDosProdutos(
-      db,
-      resposta.listings.flatMap((l) => (l.variacaoProdutoId === null ? [] : [l.variacaoProdutoId])),
-    );
+    // ⚠️ BEST EFFORT: every price and stamp has already landed, so a Firestore
+    // failure of this display-only read answers the run's rows UNLABELLED,
+    // never a 500 for prices that are live on Shopee.
+    let nomesDasVariacoes: Awaited<ReturnType<typeof lerNomesDosProdutos>> = new Map();
+    try {
+      nomesDasVariacoes = await lerNomesDosProdutos(
+        db,
+        resposta.listings.flatMap((l) =>
+          l.variacaoProdutoId === null ? [] : [l.variacaoProdutoId],
+        ),
+      );
+    } catch (err) {
+      // Rule 6: only the Admin SDK's gRPC-coded failure degrades; a bug rethrows.
+      if (!isGrpcCodedError(err)) throw err;
+      console.warn(
+        `${TAG_LOG}: rótulos das variações indisponíveis; linhas sem variacaoNome/variacaoSku`,
+        {
+          integracaoId,
+          codigo: (err as Error & { code: number }).code,
+        },
+      );
+    }
     const variacao = (variacaoProdutoId: string | null) =>
       variacaoProdutoId === null ? undefined : nomesDasVariacoes.get(variacaoProdutoId);
 

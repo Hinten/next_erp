@@ -80,8 +80,10 @@ export const shopeeAnuncioStatusProvider: AnuncioStatusProvider = {
       const rows: AnuncioStatusRow[] = res.listings.map((l) =>
         linha({
           produtoId: l.produtoId,
-          // The backend names the FAMILY anchor; prefer its own label when the
-          // selection was a variation child the operator will not recognise.
+          // The backend names the FAMILY anchor, with the anchor's own name even
+          // when only a variation child was selected. `nomePorProdutoId` is keyed
+          // by the SELECTION, so this fallback only covers a selected anchor whose
+          // stored name is blank — it can never name an anchor reached via a child.
           produtoNome: l.produtoNome ?? input.nomePorProdutoId.get(l.produtoId) ?? null,
           anuncioId: l.anuncioId,
           linkDocId: l.linkDocId,

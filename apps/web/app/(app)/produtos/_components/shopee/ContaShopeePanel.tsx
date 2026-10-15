@@ -36,6 +36,8 @@ export interface ContaShopee {
 export type TabelaMedidasDoProduto =
   | { readonly estado: 'sem-tabela' }
   | { readonly estado: 'carregando' }
+  /** The ref names no `tabMedi` document (`lerRefTabelaDeMedidas`) — nothing was read. */
+  | { readonly estado: 'ref-invalida'; readonly ref: string }
   | { readonly estado: 'ausente'; readonly id: string }
   | {
       readonly estado: 'tabela';

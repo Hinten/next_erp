@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { useQueryClient } from '@tanstack/react-query';
 import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Stack, Text } from '@mantine/core';
@@ -12,7 +13,7 @@ import {
   ACAO_STATUS_ANUNCIO,
   INTEGRACAO_TIPO,
   idDoRef,
-  idFromRef,
+  lerRefTabelaDeMedidas,
   vinculoShopeeEhDaConta,
   type AcaoStatusAnuncio,
 } from '@delfrance/schemas';
@@ -25,11 +26,13 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoShopeeLinkCollection } from '@/lib/data/produtoShopeeLinkCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import {
+  FRASE_LIMITE_NA_CRIACAO_DE_KIT,
   criacaoDeKitIncerta,
   esperaDoKitIncerto,
   formatarInstanteShopee,
   gravarIncerto,
   lerIncerto,
+  limiteNaCriacaoDeKit,
   resumoDaReverificacaoShopee,
   type IncertoKitShopee,
 } from '@/lib/shopee/anuncioProduto';
@@ -57,13 +60,13 @@ import {
 } from './ContaShopeePanel';
 import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
 import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeModal';
-import { textoPreenchido } from './campos';
 
 /**
  * The produto editor's **Shopee** tab (step 21-3, #1529): one tab per Shopee
  * conta, each holding every listing that conta has on this produto — its state,
- * the refusals Shopee or the ERP stored on it, the violations, the size chart a
- * publish would send, the storefront link, the native kit (its badge, the ERP
+ * the refusals Shopee or the ERP stored on it, the violations, the template
+ * entry the produto's tabela de medidas holds for it (never what a publish
+ * sent — residual 7), the storefront link, the native kit (its badge, the ERP
  * recipe and its warnings), on demand its models, and the actions on it: pause
  * / reactivate, re-verify, republish, recriar / converter em kit nativo.
  *
@@ -83,15 +86,22 @@ import { textoPreenchido } from './campos';
  * the two kit CREATE arms: `add_kit_item` is not idempotent.
  *
  * A recriar / converter that ends without a definite answer — the 202, a
- * network error, a 2xx it cannot read, a 5xx that is not a rate limit
+ * network error, a 2xx it cannot read, a 5xx other than a rate-limited 502
  * (`criacaoDeKitIncerta`) — may still have created the kit. It is UNCERTAIN,
  * never "falhou": the conta's kit buttons wait out `aguardarMs` (or the schemas'
  * `AGUARDAR_KIT_INCERTO_SHOPEE_MS`), after which "Repetir" re-sends the
  * IDENTICAL body — the only safe re-send, since a plain publish would reach a
- * different arm. The wait is kept in this tab's `sessionStorage`
- * (`lerIncerto` / `gravarIncerto`), so a reload keeps it; a blocked store keeps
- * it for this page only. What no browser lock covers — a second tab, a second
- * operator, the CLI — is the server-lease follow-up's (#1912).
+ * different arm. (A rate-limited 502 is definite — the kit's link is written
+ * before any call that can hit the limit, so a re-send resumes it — but the
+ * kit may already exist, and the outcome says so: `limiteNaCriacaoDeKit`.)
+ *
+ * The wait is kept in this tab's `sessionStorage` (`lerIncerto` /
+ * `gravarIncerto`) and written AHEAD: a provisional wait is stored before the
+ * request leaves and the answer replaces it, so a reload — or the page left and
+ * re-opened — WHILE the request is in flight finds the conta still waiting
+ * instead of an enabled "Converter". A blocked store keeps it for this page
+ * only. What no browser lock covers — a second tab, a second operator, the CLI —
+ * is the server-lease follow-up's (#1912).
  *
  * ## Which conta a link belongs to
  *
@@ -217,6 +227,11 @@ function desfechoDaFalha(
       };
     }
   }
+  // Definite, but NOT "nothing ran": the limited call may follow a successful
+  // `add_kit_item` (`limiteNaCriacaoDeKit`).
+  if (armaDoPedido(pedido) !== null && limiteNaCriacaoDeKit(err)) {
+    return { tipo: 'falha', mensagem: FRASE_LIMITE_NA_CRIACAO_DE_KIT };
+  }
   return {
     tipo: 'falha',
     mensagem: descreverFalhaShopee(err, { desconhecido: 'Falha ao falar com a Shopee.' }).mensagem,
@@ -238,7 +253,12 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   const produto = produtoSnap.data?.data;
   // A variation child carries no listing of its own — its MODEL lives on the
   // parent's listing — so the tab sends the operator there and reads nothing.
-  const paiId = textoPreenchido(produto?.paiId);
+  // ⚠️ "Child" is the publish dispatcher's test (`publicarShopee.ts`: any
+  // non-empty string), NOT a trim: the tab's Republicar reaches that gate, so a
+  // whitespace-only `paiId` the dispatcher refuses as `produto-e-filho` must
+  // not be offered as a root here either. `''` is a root for every rule.
+  const paiBruto: unknown = produto?.paiId;
+  const paiId = typeof paiBruto === 'string' && paiBruto !== '' ? paiBruto : null;
   const ehRaiz = produtoSnap.data !== undefined && paiId === null;
 
   const contasQuery = useMemo(
@@ -263,12 +283,14 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   );
   const linksSnap = useSnapshot(linksQuery);
 
-  // The produto's tabela de medidas, read by its id the way the Mercado Livre
-  // editor reads it: each listing block says which Shopee template entry it
-  // holds for that listing's conta and category. Memoised for the reason
-  // `produtoDocRef` is.
-  const tabelaId = textoPreenchido(produto?.tabelaDeMedidasModaUid);
-  const tabelaDocId = tabelaId === null ? null : textoPreenchido(idFromRef(tabelaId));
+  // The produto's tabela de medidas: each listing block says which Shopee
+  // template entry it holds for that listing's conta and category. The ref is
+  // resolved by `lerRefTabelaDeMedidas` — the rule the Shopee publish resolves
+  // it with — so a ref into another collection reads NOTHING here, as it reads
+  // nothing there. Memoised for the reason `produtoDocRef` is.
+  const tabelaModaUid: unknown = produto?.tabelaDeMedidasModaUid;
+  const refTabela = useMemo(() => lerRefTabelaDeMedidas(tabelaModaUid), [tabelaModaUid]);
+  const tabelaDocId = refTabela.tipo === 'tabela' ? refTabela.id : null;
   const tabelaDocRef = useMemo(
     () =>
       ehRaiz && tabelaDocId !== null ? tabelaDeMedidasCollection.docRef(db, {}, tabelaDocId) : null,
@@ -276,16 +298,17 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   );
   const tabelaSnap = useDocSnapshot(tabelaDocRef);
   const tabelaMedidas = useMemo<TabelaMedidasDoProduto>(() => {
-    if (tabelaDocId === null) return { estado: 'sem-tabela' };
+    if (refTabela.tipo === 'sem-tabela') return { estado: 'sem-tabela' };
+    if (refTabela.tipo === 'ref-invalida') return { estado: 'ref-invalida', ref: refTabela.ref };
     if (tabelaSnap.data === undefined) return { estado: 'carregando' };
-    if (tabelaSnap.data === null) return { estado: 'ausente', id: tabelaDocId };
+    if (tabelaSnap.data === null) return { estado: 'ausente', id: refTabela.id };
     return {
       estado: 'tabela',
-      id: tabelaDocId,
+      id: refTabela.id,
       nome: tabelaSnap.data.data.nome,
       entradasShopee: tabelaSnap.data.data.tabelasMedidasShopee,
     };
-  }, [tabelaDocId, tabelaSnap.data]);
+  }, [refTabela, tabelaSnap.data]);
 
   // R2: which listings have their "Variações" open, by link doc id.
   const [modelosAbertos, setModelosAbertos] = useState<ReadonlySet<string>>(() => new Set());
@@ -337,8 +360,9 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
    * Run ONE write on ONE link: take the lock (a write already in flight from
    * this tab makes this a no-op), clear the link's last outcome, record what
    * came back. A failure is narrowed by the client's two classes and becomes
-   * the link's outcome — a refused kit create remembering its `pedido`; anything
-   * else is not ours and rethrows (root rule 6).
+   * the link's outcome — a refused kit create remembering its `pedido`; so does
+   * a `FirebaseError` (below); anything else is not ours and rethrows (root
+   * rule 6).
    */
   async function executar(
     linkDocId: string,
@@ -355,6 +379,14 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
     } catch (err) {
       if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
         registrarDesfecho(linkDocId, desfechoDaFalha(err, pedido));
+        return;
+      }
+      // ⚠️ A failed ID-token refresh: `getAuthToken()` is awaited OUTSIDE the
+      // client's try (`client.ts`), so it is none of the client's classes, and
+      // rethrown from these `void`-ed handlers it would end a confirmed pause in
+      // silence. Nothing was sent, so it is a definite answer — never uncertain.
+      if (err instanceof FirebaseError) {
+        registrarDesfecho(linkDocId, { tipo: 'falha', mensagem: err.message });
         return;
       }
       throw err;
@@ -439,11 +471,13 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   const [incertos, setIncertos] = useState<ReadonlyMap<string, IncertoNaPagina | null>>(
     () => new Map(),
   );
-  // The store can change only through `gravarIncerto` below (`sessionStorage`
-  // belongs to this browser tab), so reading it once per conta set is enough.
-  const armazenados = useMemo(
-    () => new Map((contasSnap.data ?? []).map((c) => [c.id, lerIncerto(c.id, produtoId)])),
-    [contasSnap.data, produtoId],
+  // Read on EVERY render (one `getItem` per conta), never memoised: another
+  // instance of this editor in the same browser tab — the page left and
+  // re-opened while a kit create was in flight — writes the same keys when ITS
+  // answer lands, and this one must see that on its next render (the wait
+  // timer below re-renders it, at the latest, when the stored `ate` ends).
+  const armazenados = new Map(
+    (contasSnap.data ?? []).map((c) => [c.id, lerIncerto(c.id, produtoId)] as const),
   );
   function incertoGuardado(contaId: string): IncertoNaPagina | null {
     if (incertos.has(contaId)) return incertos.get(contaId) ?? null;
@@ -454,18 +488,23 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   // The clock an uncertain create's wait is read against. It ticks ONCE, when
   // the earliest pending wait ends — nothing re-renders every second.
   const [relogio, setRelogio] = useState(() => Date.now());
-  const proximoFim = useMemo(() => {
-    const ates: number[] = [];
-    for (const [contaId, lido] of armazenados) {
-      if (!incertos.has(contaId) && lido !== null) ates.push(lido.ate);
-    }
-    for (const i of incertos.values()) if (i !== null) ates.push(i.ate);
-    const pendentes = ates.filter((ate) => ate > relogio);
-    return pendentes.length === 0 ? null : Math.min(...pendentes);
-  }, [armazenados, incertos, relogio]);
+  const ates: number[] = [];
+  for (const [contaId, lido] of armazenados) {
+    if (!incertos.has(contaId) && lido !== null) ates.push(lido.ate);
+  }
+  for (const i of incertos.values()) if (i !== null) ates.push(i.ate);
+  const pendentes = ates.filter((ate) => ate > relogio);
+  const proximoFim = pendentes.length === 0 ? null : Math.min(...pendentes);
   useEffect(() => {
     if (proximoFim === null) return;
-    const espera = setTimeout(() => setRelogio(Date.now()), Math.max(0, proximoFim - Date.now()));
+    // ⚠️ `Math.max`: the timer runs on a monotonic clock and `Date.now()` is the
+    // wall clock, which can be slewed back during the wait. A tick that landed
+    // BEFORE the deadline it was armed for would leave `proximoFim` unchanged —
+    // and with it this effect, so nothing would ever tick again.
+    const espera = setTimeout(
+      () => setRelogio(Math.max(Date.now(), proximoFim)),
+      Math.max(0, proximoFim - Date.now()),
+    );
     return () => clearTimeout(espera);
   }, [proximoFim]);
 
@@ -495,10 +534,23 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
     const arma = armaDoPedido(corpo);
     const linkDocId = corpo.linkDocId;
     if (arma === null || linkDocId === undefined) return;
+    // What the conta reads NOW — what a send that never left restores.
+    const anterior = incertoGuardado(contaId);
     void executar(
       linkDocId,
       arma,
       async (c) => {
+        // ⚠️ WRITE AHEAD (rule 7): the provisional wait reaches the store BEFORE
+        // the request leaves — the lock is a ref and dies with this instance, and
+        // `publicar` takes no signal, so a reload mid-flight leaves the server
+        // running. Every answer below replaces it. This page keeps reading
+        // `anterior` (its own state wins over the store): its spinner, not the
+        // uncertain alert, says a create is in flight.
+        setIncertos((prev) => new Map(prev).set(contaId, anterior));
+        gravarIncerto(contaId, produtoId, {
+          ate: Date.now() + esperaDoKitIncerto(undefined),
+          corpo,
+        });
         let resposta: Awaited<ReturnType<ShopeeClient['publicar']>>;
         try {
           resposta = await c.publicar(corpo);
@@ -513,7 +565,18 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
               return null;
             }
             limparIncerto(contaId);
+          } else if (err instanceof FirebaseError) {
+            // A failed ID-token refresh sent NOTHING (`getAuthToken()` runs
+            // before the request): the store goes back to what the conta read
+            // before the click. Rethrown, it is `executar`'s definite outcome.
+            gravarIncerto(
+              contaId,
+              produtoId,
+              anterior === null ? null : { ate: anterior.ate, corpo: anterior.corpo },
+            );
           }
+          // Anything else is not ours (rule 6): the provisional wait stands in
+          // the store — the safe direction, whatever the request did.
           throw err;
         }
         if (resposta.tipo === 'kit' && resposta.desfecho === 'incerto') {

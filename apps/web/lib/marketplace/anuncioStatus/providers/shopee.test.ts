@@ -107,8 +107,9 @@ describe('shopeeAnuncioStatusProvider', () => {
 
   it('P3 — a child resolved to its anchor AND a produto with no listing both reach the report', async () => {
     // RT1 (the backend's T1): selecting ONE child moves its family's listing,
-    // whose row names the ANCHOR; a produto with no listing is reported under the
-    // id the operator asked for.
+    // whose row names the ANCHOR with the anchor's own name (`core/anchors.ts`
+    // reads it for an anchor nobody requested, MUT-1); a produto with no listing
+    // is reported under the id the operator asked for.
     const definirStatusAnuncios = vi.fn<DefinirStatusAnuncios>().mockResolvedValue(
       envelope({
         listings: [listing({ produtoId: 'anchor-1', produtoNome: 'Camiseta' })],
@@ -123,11 +124,31 @@ describe('shopeeAnuncioStatusProvider', () => {
       }),
     );
     const res = await shopeeAnuncioStatusProvider.definirStatus(
-      input(definirStatusAnuncios, { produtoIds: ['child-1', 'p2'] }),
+      input(definirStatusAnuncios, {
+        produtoIds: ['child-1', 'p2'],
+        nomePorProdutoId: new Map([
+          ['child-1', 'Camiseta Azul P'],
+          ['p2', 'Boné'],
+        ]),
+      }),
     );
-    expect(res.rows.map((r) => [r.produtoId, r.outcome, r.motivo])).toEqual([
-      ['anchor-1', 'enviado', null],
-      ['p2', 'pulado', 'sem-anuncio'],
+    // The anchor's name passes through — never the child's label, never null.
+    expect(res.rows.map((r) => [r.produtoId, r.produtoNome, r.outcome, r.motivo])).toEqual([
+      ['anchor-1', 'Camiseta', 'enviado', null],
+      ['p2', 'Boné', 'pulado', 'sem-anuncio'],
+    ]);
+  });
+
+  it('P3b — a SELECTED anchor with a blank stored name (backend null) takes the selection label', async () => {
+    // The fallback's only job: `nomePorProdutoId` is keyed by the selection.
+    const definirStatusAnuncios = vi
+      .fn<DefinirStatusAnuncios>()
+      .mockResolvedValue(envelope({ listings: [listing({ produtoId: 'p1', produtoNome: null })] }));
+    const res = await shopeeAnuncioStatusProvider.definirStatus(
+      input(definirStatusAnuncios, { nomePorProdutoId: new Map([['p1', 'Camiseta da tabela']]) }),
+    );
+    expect(res.rows.map((r) => [r.produtoId, r.produtoNome])).toEqual([
+      ['p1', 'Camiseta da tabela'],
     ]);
   });
 

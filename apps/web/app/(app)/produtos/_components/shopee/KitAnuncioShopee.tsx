@@ -39,10 +39,17 @@ export function recriavel(link: ProdutoShopeeLink): boolean {
 }
 
 /**
- * Whether "Converter em kit nativo" applies: a LIVE ordinary listing
- * (`anuncioShopeeVivo`, not superseded, not a native kit) of a produto whose
- * stored `ehKit` is on — a pre-filter of the server's own refusals
- * (`converter-sem-kit`, `ja-e-kit-nativo`), never a second judge of them.
+ * Whether "Converter em kit nativo" applies: an ordinary (`kitNativo !== true`),
+ * non-superseded, non-removed link with an addressable `item_id`
+ * (`anuncioShopeeVivo`) of a produto whose stored `ehKit` is on.
+ *
+ * On the NAMED link the tab always sends, it pre-empts the dispatcher's
+ * refusals `converter-sem-kit` (the produto is not a kit),
+ * `converter-sem-anuncio-comum` (a native or removed link) and
+ * `vinculo-substituido` (a superseded link). `ja-e-kit-nativo` answers only an
+ * UNNAMED converter, which the tab never sends. The `item_id` rung is the tab's
+ * OWN deliberate restriction (no first publish of a draft in this step, Q4):
+ * the server would convert a draft link, and here it gets no button.
  */
 export function convertivel(link: ProdutoShopeeLink, produtoEhKit: boolean): boolean {
   return (
@@ -61,8 +68,8 @@ export function convertivel(link: ProdutoShopeeLink, produtoEhKit: boolean): boo
  * the editor's confirmation — and the uncertain create of this link, if one is
  * pending, with its "Repetir".
  *
- * ⚠️ The warnings NEVER disable a button: the publish re-decides each against
- * the real Shopee addresses. What disables the create arms is a write in flight
+ * ⚠️ The warnings NEVER disable a button (the publish refuses on them itself,
+ * before any Shopee write). What disables the create arms is a write in flight
  * from this tab, or an uncertain create of this conta whose wait is not over —
  * a second `add_kit_item` before Shopee lists the first is a second kit.
  */
@@ -142,6 +149,18 @@ export function KitAnuncioShopee({
 }
 
 /**
+ * What "Repetir" does — true for EVERY way the tab marks a create uncertain:
+ * the server's 202 (nothing was written) and the browser-side endings (a
+ * network error, a 5xx, the 180 s App Hosting cut, an unreadable 2xx), after
+ * which the server may have finished — then the identical re-send resumes the
+ * linked kit (`completar`) or refuses on the superseded listing.
+ */
+const FRASE_REPETIR_KIT =
+  'o ERP envia exatamente o mesmo pedido e não cria um segundo kit: se o kit já foi criado e ' +
+  'vinculado, ele conclui o que faltou (ou avisa que o anúncio já foi substituído); se o kit ' +
+  'existe na Shopee sem vínculo, recusa e indica importá-lo; senão, cria o kit.';
+
+/**
  * A kit create the server could not confirm (`data-testid="shopee-kit-incerto-<contaId>"`):
  * what may have happened, until when to wait, and "Repetir" — the IDENTICAL
  * body, offered only once the wait is over. Exported so the conta panel can show
@@ -168,8 +187,8 @@ export function IncertoDoKit({
         <Text size="sm">
           A resposta não confirmou se o kit foi criado.{' '}
           {incerto.pendente
-            ? `Aguarde${ate === null ? '' : ` até ${ate}`} e use "Repetir": o ERP envia exatamente o mesmo pedido — se o kit existir, ele recusa e indica importá-lo; senão, cria o kit.`
-            : 'Use "Repetir": o ERP envia exatamente o mesmo pedido — se o kit existir, ele recusa e indica importá-lo; senão, cria o kit.'}
+            ? `Aguarde${ate === null ? '' : ` até ${ate}`} e use "Repetir": ${FRASE_REPETIR_KIT}`
+            : `Use "Repetir": ${FRASE_REPETIR_KIT}`}
         </Text>
         {incerto.fraseShopee !== null && (
           <Text size="sm" c="dimmed">
@@ -278,7 +297,7 @@ export function ComposicaoKitShopee({ receita }: { receita: ReceitaKitShopee }) 
         <Alert
           color="yellow"
           variant="light"
-          title="A Shopee deve recusar esta composição"
+          title="O ERP não publica esta composição"
           data-testid="shopee-receita-kit-avisos"
         >
           <List size="sm" spacing={2}>
@@ -289,7 +308,8 @@ export function ComposicaoKitShopee({ receita }: { receita: ReceitaKitShopee }) 
             ))}
           </List>
           <Text size="xs" c="dimmed" mt={4}>
-            Um aviso, não um bloqueio: a publicação confere de novo com os anúncios da Shopee.
+            Este aviso não desativa o botão — ao recriar ou converter, o ERP recusa antes de criar
+            qualquer coisa na Shopee.
           </Text>
         </Alert>
       )}

@@ -111,6 +111,39 @@ describe('useAtualizarPrecosShopeeAction', () => {
     expect(result.current.state.reatados.has('job-vivo')).toBe(true);
   });
 
+  it('NEAR MISS — a second attach ADDS to the attached set; the first card keeps its note', async () => {
+    // One conta per start (`maxSelection: 1`), so accumulation only shows across
+    // two consecutive starts — each one a busy start on its own conta.
+    h.clientRef.current = shopeeClientFalso({
+      startPriceSync: vi.fn(async ({ integracaoId }) => {
+        throw new ShopeeClientHttpError(
+          'Já existe uma atualização de preços em andamento para esta conta.',
+          409,
+          'SHOPEE_PRICE_SYNC_RUNNING',
+          null,
+          null,
+          { ...DETALHES_ERRO_SHOPEE_VAZIOS, jobId: `job-${integracaoId}` },
+        );
+      }),
+    });
+    const { result } = renderHook(() => useAtualizarPrecosShopeeAction());
+
+    for (const r of [row('a', 'Conta A'), row('b', 'Conta B')]) {
+      act(() => {
+        void result.current.action.run([r]);
+      });
+      await act(async () => {
+        await result.current.state.start();
+      });
+    }
+
+    expect(result.current.state.entries).toEqual([
+      { kind: 'started', conta: { id: 'a', nome: 'Conta A' }, jobId: 'job-a' },
+      { kind: 'started', conta: { id: 'b', nome: 'Conta B' }, jobId: 'job-b' },
+    ]);
+    expect([...result.current.state.reatados].sort()).toEqual(['job-a', 'job-b']);
+  });
+
   it('NEAR MISS — a quota pause carrying a jobId is NOT a run to attach to', async () => {
     h.clientRef.current = shopeeClientFalso({
       startPriceSync: vi.fn(async () => {
