@@ -1,6 +1,10 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { ACAO_STATUS_ANUNCIO, ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
-import type { AnuncioStatusShopee } from '../lib/shopee/wire';
+import {
+  ACAO_STATUS_ANUNCIO,
+  ESTADO_ANUNCIO_SHOPEE,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+} from '@delfrance/schemas';
+import type { AnuncioStatusShopee, ProblemaShopee } from '../lib/shopee/wire';
 import {
   SHOPEE_E2E_ITEM_ATIVO,
   SHOPEE_E2E_SHOP_ID,
@@ -16,12 +20,15 @@ import { warmRoutes } from './helpers/warmup';
 /**
  * End-to-end coverage for the produto editor's **Shopee** tab (step 21-3,
  * #1529): the state of each EXISTING listing, read live from its
- * `produtos/<id>/prodshopee` link document, and the actions on it.
+ * `produtos/<id>/prodshopee` link document, and the actions on it — the
+ * native-kit ones included (the confirmed Recriar on a removed kit, and a
+ * refused publish worded by its motivo and its `acao`, never by the CLI
+ * sentence the server writes beside them).
  *
  * The apps/shopee backend does NOT run in this suite. Every route under
  * `/api/marketplace/shopee/` is intercepted on the PATHNAME (any host the
  * build's `NEXT_PUBLIC_SHOPEE_URL` names) and RECORDED with its body: a route
- * in {@link ROTAS_COM_STUB} answers the body the real route builds; any other
+ * in {@link rotasComStub} answers the body the real route builds; any other
  * is answered 404, recorded in `semStub` and never forwarded — and each test
  * asserts that list is empty. What a real pause does on Shopee is the route's
  * own suite's to prove; this proves what the browser SENDS and what it SHOWS.
@@ -37,6 +44,9 @@ const PREFIXO_ROTAS = '/api/marketplace/shopee/';
 
 /** The pause run's per-listing sentence this spec answers with — rendered verbatim. */
 const MENSAGEM_PAUSA_STUB = 'Anúncio pausado na Shopee (resposta do e2e).';
+
+/** CLI copy — a flag, a `<verbo>:anuncio` script name or the word "comando" — never reaches the page. */
+const TEXTO_DE_TERMINAL = /(^|\s)--[a-z]|:anuncio|comando/i;
 
 type Resposta = { readonly status: number; readonly corpo: unknown };
 
@@ -88,9 +98,55 @@ function respostaDoStatus(corpo: Record<string, unknown> | null): AnuncioStatusS
   };
 }
 
+/**
+ * The publish route's 422 for a refusal decided BEFORE any Shopee write — the
+ * keys `core/respond.ts`'s blocked arm builds by name. Two rows, each worded for
+ * the CLI as the server words them: a removed native kit whose next step is a
+ * structured `acao` (recriar, on the link it names), and an `instabilidade-shopee`
+ * with no `acao`, which the tab words by its MOTIVO.
+ */
+function recusaDaPublicacao(
+  corpo: Record<string, unknown> | null,
+  kitRemovido: string,
+): Record<string, unknown> {
+  const produtoId = typeof corpo?.produtoId === 'string' ? corpo.produtoId : '';
+  const problemas: ProblemaShopee[] = [
+    {
+      campo: 'linkDocId',
+      motivo: 'listagem-removida',
+      mensagem:
+        `o kit do vínculo ${kitRemovido} foi removido na Shopee — publique com --link ` +
+        `${kitRemovido} --recriar (publicar:anuncio)`,
+      acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar, linkDocId: kitRemovido },
+    },
+    {
+      campo: null,
+      motivo: 'instabilidade-shopee',
+      mensagem:
+        'a Shopee respondeu com instabilidade; a operação pode ter sido feita — rode ' +
+        'exatamente o mesmo comando de novo daqui a 4 minutos',
+      acao: null,
+    },
+  ];
+  return {
+    error: `Publicação bloqueada no produto ${produtoId}: ${String(problemas.length)} problema(s)`,
+    code: 'SHOPEE_PUBLISH_BLOCKED',
+    motivo: 'listagem-removida',
+    produtoId,
+    itemId: SHOPEE_E2E_ITEM_ATIVO,
+    problemas,
+  };
+}
+
 /** The apps/shopee routes this spec answers, by path under {@link PREFIXO_ROTAS}. */
-const ROTAS_COM_STUB: ReadonlyMap<string, (corpo: Record<string, unknown> | null) => Resposta> =
-  new Map([['anuncio-status', (corpo) => ({ status: 200, corpo: respostaDoStatus(corpo) })]]);
+function rotasComStub(
+  kitRemovido: string,
+): ReadonlyMap<string, (corpo: Record<string, unknown> | null) => Resposta> {
+  return new Map([
+    ['anuncio-status', (corpo) => ({ status: 200, corpo: respostaDoStatus(corpo) })],
+    ['publicar', (corpo) => ({ status: 422, corpo: recusaDaPublicacao(corpo, kitRemovido) })],
+  ]);
+}
 
 interface StubsShopee {
   /** Every Shopee backend call the page made, in order. */
@@ -105,8 +161,9 @@ interface StubsShopee {
  * real requests land here. A route registered AFTER this one takes precedence
  * (Playwright tries the newest handler first) — how test 6 cuts one route off.
  */
-async function instalarStubsShopee(page: Page): Promise<StubsShopee> {
+async function instalarStubsShopee(page: Page, kitRemovido: string): Promise<StubsShopee> {
   const stubs: StubsShopee = { chamadas: [], semStub: [] };
+  const rotas = rotasComStub(kitRemovido);
   await page.route(
     (url) => url.pathname.startsWith(PREFIXO_ROTAS),
     async (route) => {
@@ -115,7 +172,7 @@ async function instalarStubsShopee(page: Page): Promise<StubsShopee> {
       const rota = url.pathname.slice(PREFIXO_ROTAS.length);
       const corpo = corpoDaChamada(pedido.postData());
       stubs.chamadas.push({ metodo: pedido.method(), rota, corpo });
-      let resposta = ROTAS_COM_STUB.get(rota)?.(corpo) ?? null;
+      let resposta = rotas.get(rota)?.(corpo) ?? null;
       if (resposta === null) {
         stubs.semStub.push(`${pedido.method()} ${url.pathname}`);
         resposta = {
@@ -134,7 +191,7 @@ async function instalarStubsShopee(page: Page): Promise<StubsShopee> {
   return stubs;
 }
 
-test.describe.serial('Produto Shopee tab e2e — listing state and actions', () => {
+test.describe.serial('Produto Shopee tab e2e — listing state, actions and the native kit', () => {
   const prefix = e2ePrefix('shpaba');
   const conta = `${prefix}-001`;
   // Deterministic (mirrors `seedProdutoShopeeVinculado`) so afterAll can always
@@ -180,7 +237,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state and actions', () 
   }
 
   test("shows each listing's state from its link document", async ({ page }) => {
-    const stubs = await instalarStubsShopee(page);
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
     await page.goto(`/produtos/${produtoId}/editar`);
     const painel = await abrirConta(page, conta);
 
@@ -219,7 +276,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state and actions', () 
   });
 
   test('pauses one listing by its link, after a confirmation', async ({ page }) => {
-    const stubs = await instalarStubsShopee(page);
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
     await page.goto(`/produtos/${produtoId}/editar`);
     const painel = await abrirConta(page, conta);
 
@@ -251,7 +308,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state and actions', () 
   test('shows no Publicar on a draft link, only where a first publish will come from', async ({
     page,
   }) => {
-    const stubs = await instalarStubsShopee(page);
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
     await page.goto(`/produtos/${produtoId}/editar`);
     const painel = await abrirConta(page, conta);
 
@@ -271,10 +328,67 @@ test.describe.serial('Produto Shopee tab e2e — listing state and actions', () 
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
+  test('offers Recriar instead of Pausar on a removed native kit', async ({ page }) => {
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    // Positive first: the removed kit's block rendered, with its kit badge and
+    // the one create arm that applies to it.
+    const removido = painel.getByTestId(`shopee-anuncio-${links.kitRemovido}`);
+    await expect(removido.getByText('Removido', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(removido.getByText('Kit nativo (inativo)', { exact: true })).toBeVisible();
+    const recriar = removido.getByRole('button', { name: 'Recriar kit', exact: true });
+    await expect(recriar).toBeVisible();
+    await expect(removido.getByRole('button', { name: 'Pausar anúncio' })).toHaveCount(0);
+    await expect(removido.getByRole('button', { name: 'Reativar anúncio' })).toHaveCount(0);
+
+    // A create makes a NEW kit on Shopee: it is confirmed first, and a cancel sends nothing.
+    await recriar.click();
+    const dialogo = page.getByRole('dialog', { name: 'Recriar kit nativo' });
+    await expect(dialogo).toBeVisible();
+    await expect(dialogo.getByText(/já foi excluído na Shopee/)).toBeVisible();
+    await dialogo.getByRole('button', { name: 'Cancelar' }).click();
+    await expect(dialogo).toHaveCount(0);
+    expect(stubs.chamadas).toEqual([]);
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test('renders a blocked publish by motivo without terminal commands', async ({ page }) => {
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    const ativo = painel.getByTestId(`shopee-anuncio-${links.ativo}`);
+    await ativo.getByRole('button', { name: 'Republicar', exact: true }).click({ timeout: 30_000 });
+
+    const desfecho = ativo.getByTestId(`shopee-desfecho-${links.ativo}`);
+    await expect(
+      desfecho.getByText('Publicação bloqueada — nada foi enviado à Shopee'),
+    ).toBeVisible({ timeout: 30_000 });
+    // The row with an acao: its button acts on the link the acao NAMES.
+    await expect(
+      desfecho.getByRole('button', { name: `Recriar o kit do vínculo ${links.kitRemovido}` }),
+    ).toBeVisible();
+    // The row without one is worded by its motivo, never by its CLI sentence.
+    await expect(desfecho.getByText(/A Shopee respondeu com instabilidade/)).toBeVisible();
+    // Scoped to the conta's panel: the page's inline scripts are not the tab's copy.
+    await expect(painel.getByText(TEXTO_DE_TERMINAL)).toHaveCount(0);
+
+    expect(stubs.chamadas).toEqual([
+      {
+        metodo: 'POST',
+        rota: 'publicar',
+        corpo: { integracaoId: conta, produtoId, linkDocId: links.ativo },
+      },
+    ]);
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
   test('keeps the listing state and says so when the shopee service is unreachable', async ({
     page,
   }) => {
-    const stubs = await instalarStubsShopee(page);
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
     // Registered AFTER the stubs, so it wins for this one route: the re-verify
     // fails at the network.
     await page.route(

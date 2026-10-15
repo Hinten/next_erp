@@ -20,8 +20,16 @@
  * ({@link resumoDaReverificacaoShopee}). ⚠️ None of it is ever a command line:
  * the server's refusal sentences are written for the CLI (`--link`,
  * `--recriar`, `importar:anuncio`), and the operator here has buttons.
+ *
+ * The third part (PR 8) is the NATIVE KIT: the copy of a kit refusal's motivo
+ * ({@link TEXTO_MOTIVO_KIT}) and of a kit run's avisos ({@link textoDoAvisoKit}),
+ * which failures leave a kit create UNCERTAIN ({@link criacaoDeKitIncerta}), and
+ * the per-tab store that keeps that uncertainty across a reload
+ * ({@link lerIncerto} / {@link gravarIncerto}).
  */
+import { z } from 'zod';
 import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   FUSO_FISCAL,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   anuncioShopeeVivo,
@@ -31,6 +39,12 @@ import {
   type TipoAcaoSugeridaPublicacaoShopee,
 } from '@delfrance/schemas';
 
+import {
+  ShopeeClientNetworkError,
+  ShopeeClientRespostaInvalidaError,
+  type ShopeeClientHttpError,
+  type PublicarShopeeInput,
+} from './client';
 import type { ProblemaShopee, RespostaReverificarShopee } from './wire';
 
 /**
@@ -246,19 +260,28 @@ export const FRASE_RECUSA_SEM_PASSO_SHOPEE =
 /**
  * The operator copy of ONE refusal row of a 422.
  *
+ *  - A `motivo` the tab words itself ({@link TEXTO_MOTIVO_KIT}) reads that copy
+ *    first — with or without an `acao`; the `acao`'s ids still follow it.
  *  - WITH an `acao`: {@link TEXTO_ACAO_SUGERIDA} plus the ids the `acao` names.
  *    ⚠️ The server's `mensagem` is NEVER shown for such a row — it is the CLI's
  *    sentence, and the next step it describes is a button here.
  *  - Without one (the step-11 refusals, mechanism sentences): the `mensagem` —
  *    unless it reads as a terminal instruction, which becomes
  *    {@link FRASE_RECUSA_SEM_PASSO_SHOPEE}.
+ *
+ * `motivo` is optional only so a caller holding a bare `{ mensagem, acao }`
+ * still compiles; every 422 row carries one.
  */
-export function textoDoProblemaShopee(p: Pick<ProblemaShopee, 'mensagem' | 'acao'>): string {
+export function textoDoProblemaShopee(
+  p: Pick<ProblemaShopee, 'mensagem' | 'acao'> & { readonly motivo?: string },
+): string {
   const { acao } = p;
+  const doMotivo = p.motivo === undefined ? null : textoProprio(TEXTO_MOTIVO_KIT, p.motivo);
   if (acao === null) {
+    if (doMotivo !== null) return doMotivo;
     return ehFraseDeTerminal(p.mensagem) ? FRASE_RECUSA_SEM_PASSO_SHOPEE : p.mensagem;
   }
-  const base = TEXTO_ACAO_SUGERIDA[acao.tipo];
+  const base = doMotivo ?? TEXTO_ACAO_SUGERIDA[acao.tipo];
   switch (acao.tipo) {
     case TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar:
       return `${base} Vínculo: ${acao.linkDocId}.`;
@@ -326,4 +349,267 @@ export function resumoDaReverificacaoShopee(
         : null,
   ].filter((t): t is string => t !== null);
   return { cor, titulo, mensagem: [frase, ...extras].join(' ') };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                         PR 8 — the native kit                               */
+/* -------------------------------------------------------------------------- */
+
+/** `mapa[chave]` only when `chave` is the map's OWN key — `'constructor'` never reaches the prototype. */
+function textoProprio(mapa: Readonly<Record<string, string>>, chave: string): string | null {
+  return Object.hasOwn(mapa, chave) ? (mapa[chave] ?? null) : null;
+}
+
+/** The wait before a kit create the server could not confirm is repeated, in whole minutes. */
+const MINUTOS_DE_ESPERA_DO_KIT = Math.ceil(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000);
+
+/**
+ * The tab's OWN copy for the refusal motivos of the native-kit arms and of the
+ * publish dispatcher — read FIRST by {@link textoDoProblemaShopee}, before the
+ * generic {@link TEXTO_ACAO_SUGERIDA}, because one `acao` serves several
+ * motivos that ask for different things (`informar-principal` is both "this
+ * principal is not usable" and "this kit needs one").
+ *
+ * Keyed by the 422 row's `motivo`, a FREE string on the wire: the vocabulary is
+ * apps/shopee's (`anuncios/errosPublicacao.ts`), which the browser cannot import,
+ * and it is deliberately not a schemas enum in this step (reconcile fact 5). A
+ * motivo this map lacks falls back to the `acao` copy, then to the sentence.
+ *
+ * ⚠️ Only motivos the kit arms or the dispatcher produce. A motivo the ordinary
+ * listing's publish shares (`listagem-removida`, `preco-fora-da-faixa`) keeps
+ * the server's mechanism sentence there, so it is not in this map.
+ *
+ * ⚠️ `instabilidade-shopee` is the one row here with NO `acao`: its server
+ * sentence tells the CLI to re-run "o mesmo comando" (reconcile fact 14), and
+ * the operator here re-reads the listing instead. Its minutes are the schemas'
+ * `AGUARDAR_KIT_INCERTO_SHOPEE_MS` — the one copy both server sentences read.
+ */
+export const TEXTO_MOTIVO_KIT: Readonly<Record<string, string>> = {
+  'instabilidade-shopee':
+    'A Shopee respondeu com instabilidade, e a operação pode ter sido feita mesmo assim. ' +
+    `Aguarde ${String(MINUTOS_DE_ESPERA_DO_KIT)} minutos e use "Reverificar" antes de publicar ` +
+    'de novo.',
+  'vinculo-substituido':
+    'Este anúncio foi substituído por outro vínculo e o ERP não publica mais nele — republique ' +
+    'o vínculo que o substituiu. Se ele ainda estiver vendendo na Shopee, exclua-o no Seller ' +
+    'Centre.',
+  'ja-e-kit-nativo':
+    'Este produto já é kit nativo nesta conta e não tem anúncio comum para converter — ' +
+    'republique o kit.',
+  'opcao-de-kit-em-anuncio-comum':
+    'Recriar, converter e o componente principal só valem para um kit nativo — republique este ' +
+    'anúncio sem essas opções.',
+  'recriacao-sem-diferenca':
+    'Recriar não mudaria nada: o kit na Shopee já tem a composição e o componente principal do ' +
+    'ERP. Para trocar o principal, recrie escolhendo outro.',
+  'principal-invalido':
+    'O componente escolhido como principal não serve para este kit: ele não faz parte da ' +
+    'composição ou não tem anúncio utilizável nesta conta da Shopee — escolha outro.',
+  'principal-obrigatorio':
+    'Os componentes deste kit estão em mais de um anúncio da Shopee — escolha o componente ' +
+    'principal: a Shopee copia dele a categoria, os atributos e a marca, e não deixa trocá-lo ' +
+    'depois.',
+};
+
+/**
+ * What the operator reads for each warning a native-kit run lists in its 200
+ * (`avisos[].codigo`) — the twelve codes of apps/shopee's
+ * `kits/resultadoKit.ts` `CodigoAvisoKit`. The 200 carries `{ codigo,
+ * produtoId }` only, never the server's sentence (which is CLI text), so each
+ * entry says the mechanism and the next step in the tab's own terms.
+ *
+ * ⚠️ A FREE string on the wire: a code a newer backend adds reads
+ * {@link textoDoAvisoKit}'s neutral fallback, never `undefined` (reconcile §9
+ * K6; moving the vocabulary to schemas rides the DTO follow-up, #1913).
+ */
+export const TEXTO_AVISO_KIT: Readonly<Record<string, string>> = {
+  'receita-divergente':
+    'A composição de uma variação mudou no ERP, mas a Shopee não deixa alterar a de um kit: ele ' +
+    'continua com a receita antiga. Para levar a nova, use "Recriar kit".',
+  'receita-nao-publicavel':
+    'A composição de uma variação no ERP não pode ir para a Shopee — o kit continua com a ' +
+    'receita atual. Corrija o componente ou a composição no ERP.',
+  'principal-diferente':
+    'O componente principal escolhido não é o do kit na Shopee, que não deixa trocá-lo: o atual ' +
+    'foi mantido. Para trocar o principal, use "Recriar kit" escolhendo o novo.',
+  'componente-nao-limita-estoque':
+    'Um componente está com «Limita estoque» desligado: a Shopee conta todos os componentes, ' +
+    'então pode mostrar MENOS kits do que o ERP (nunca mais).',
+  'receita-espelho-divergente':
+    'A composição do kit difere da composição da sua variação única; foi usada a da variação.',
+  'modelo-sem-filho':
+    'Um modelo do kit na Shopee não corresponde a nenhuma variação do ERP — nenhum vínculo foi ' +
+    'gravado para ele.',
+  'variacao-nao-anexada':
+    'Uma variação do ERP não foi anexada ao kit na Shopee. Confira a composição dela e publique ' +
+    'de novo.',
+  'kit-antigo-nao-excluido':
+    'O kit novo foi criado, mas o antigo não foi excluído na Shopee: enquanto existir, ele ' +
+    'continua vendendo com a composição antiga. Exclua-o no Seller Centre e use "Reverificar" ' +
+    'no vínculo dele — ou "Recriar kit" nele, para tentar a exclusão de novo.',
+  'kit-novo-inativo':
+    'O kit novo ainda não está ativo na Shopee, e o antigo só é excluído quando ele estiver. ' +
+    'Quando o novo estiver ativo — reative-o se estiver pausado; banido, corrija a violação no ' +
+    'Seller Centre e aguarde a revisão —, use "Recriar kit" de novo no vínculo antigo.',
+  'kit-novo-divergente':
+    'O kit novo não está igual à composição do ERP, e o antigo não foi excluído. Se faltar uma ' +
+    'variação, republique o kit novo; se a composição mudou depois, exclua um dos dois no Seller ' +
+    'Centre e use "Reverificar".',
+  'kit-alvo-mais-novo':
+    'O kit que seria substituído não é mais antigo que o kit novo, então nada foi excluído. ' +
+    'Confira qual dos dois é o antigo e use "Recriar kit" nele.',
+  'sku-do-kit-nao-enviado':
+    'O SKU do kit no ERP está vazio ou tem espaços nas pontas; a publicação manteve o SKU que ' +
+    'está na Shopee. Corrija o SKU no ERP.',
+};
+
+/** The copy of ONE kit aviso code — {@link TEXTO_AVISO_KIT}'s own entry, or a neutral line naming the code. */
+export function textoDoAvisoKit(codigo: string): string {
+  return textoProprio(TEXTO_AVISO_KIT, codigo) ?? `Aviso da Shopee (${codigo}).`;
+}
+
+/**
+ * How long the tab waits before it offers to repeat an UNCERTAIN kit create:
+ * the 202's own `aguardarMs`, or — when the body carried none (an older
+ * backend, a network error that never produced a body) — the schemas'
+ * `AGUARDAR_KIT_INCERTO_SHOPEE_MS`, never a copy of that number.
+ */
+export function esperaDoKitIncerto(aguardarMs: number | undefined): number {
+  return aguardarMs ?? AGUARDAR_KIT_INCERTO_SHOPEE_MS;
+}
+
+/**
+ * Whether a FAILED native-kit create (recriar / converter) may still have
+ * created the kit on Shopee — so the tab must call it UNCERTAIN, never
+ * "falhou", and wait before the identical re-send. `add_kit_item` is not
+ * idempotent: an operator told "falhou" re-clicks, and the second click is a
+ * second kit.
+ *
+ *  - a {@link ShopeeClientNetworkError} — the request may have arrived and the
+ *    answer was lost (an abort is one too: its `cause` is the `DOMException`);
+ *  - a {@link ShopeeClientRespostaInvalidaError} — the backend ANSWERED 2xx with
+ *    a body this build cannot read: whatever it did, it did;
+ *  - a 5xx — the route failed or was cut (App Hosting's 180 s ceiling answers
+ *    504) after a write it may already have made; except 501, a deployment fact,
+ *    and a 502 whose `kind` is a Shopee rate limit (`burst` / `daily`, the
+ *    client's own `kind` contract): a rate-limited call was refused, not run.
+ *
+ * Everything else — a 4xx, a 422's `problemas` — is a definite answer.
+ */
+export function criacaoDeKitIncerta(
+  err: ShopeeClientHttpError | ShopeeClientNetworkError,
+): boolean {
+  if (err instanceof ShopeeClientNetworkError) return true;
+  if (err instanceof ShopeeClientRespostaInvalidaError) return true;
+  if (err.status === 502) return err.kind !== 'burst' && err.kind !== 'daily';
+  return err.status >= 500 && err.status !== 501;
+}
+
+/**
+ * A kit create the server could not confirm, kept for the identical re-send:
+ * `ate` — the ms instant from which "Repetir" is offered — and `corpo`, the
+ * EXACT input that was sent (a plain publish after a recriar or a converter
+ * would reach a DIFFERENT arm, so only this body is a re-send).
+ */
+export interface IncertoKitShopee {
+  readonly ate: number;
+  readonly corpo: PublicarShopeeInput;
+}
+
+/**
+ * {@link IncertoKitShopee} as stored — parsed on every read: a stored value is
+ * never trusted as typed. A body the route would refuse (400) is not a re-send,
+ * so it reads as nothing: both arm flags at once, or a recriar naming no link
+ * (the cross-field rules of `PublicarShopeeInput`).
+ */
+const incertoKitShopeeSchema = z.object({
+  ate: z.number().finite(),
+  corpo: z
+    .object({
+      integracaoId: z.string().min(1),
+      produtoId: z.string().min(1),
+      linkDocId: z.string().min(1).optional(),
+      status: z.enum(['NORMAL', 'UNLIST']).optional(),
+      categoryId: z.number().int().positive().optional(),
+      principal: z.string().min(1).optional(),
+      recriar: z.literal(true).optional(),
+      converterEmKit: z.literal(true).optional(),
+    })
+    .refine((c) => !(c.recriar === true && c.converterEmKit === true))
+    .refine((c) => c.recriar !== true || c.linkDocId !== undefined),
+});
+
+/** The `sessionStorage` key of one produto's uncertain kit create on one conta. */
+export function chaveIncerto(integracaoId: string, produtoId: string): string {
+  return `delfrance:shopee:kit-incerto:${integracaoId}:${produtoId}`;
+}
+
+/**
+ * This tab's `sessionStorage`, or `null` where there is none to use: no window
+ * (a server render), or a store the browser blocks — reading the property
+ * itself throws a `SecurityError` there.
+ */
+function armazenamentoDaAba(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage;
+  } catch (err) {
+    if (err instanceof DOMException) return null;
+    throw err;
+  }
+}
+
+/**
+ * The stored uncertain create of `produtoId` on `integracaoId`, or `null` —
+ * nothing stored, a blocked store, a value that is not JSON or not the shape,
+ * or one stored under this key for ANOTHER conta or produto. Survives a reload
+ * of the same browser tab (`sessionStorage`), never reaches another tab.
+ */
+export function lerIncerto(integracaoId: string, produtoId: string): IncertoKitShopee | null {
+  const armazenamento = armazenamentoDaAba();
+  if (armazenamento === null) return null;
+  let bruto: string | null;
+  try {
+    bruto = armazenamento.getItem(chaveIncerto(integracaoId, produtoId));
+  } catch (err) {
+    if (err instanceof DOMException) return null;
+    throw err;
+  }
+  if (bruto === null) return null;
+  let json: unknown;
+  try {
+    json = JSON.parse(bruto);
+  } catch (err) {
+    if (err instanceof SyntaxError) return null;
+    throw err;
+  }
+  const lido = incertoKitShopeeSchema.safeParse(json);
+  if (!lido.success) return null;
+  const { corpo } = lido.data;
+  if (corpo.integracaoId !== integracaoId || corpo.produtoId !== produtoId) return null;
+  return lido.data;
+}
+
+/**
+ * Store (or, with `null`, forget) the uncertain create of `produtoId` on
+ * `integracaoId`. `false` when the store could not take it — blocked, or full
+ * (`QuotaExceededError`): the caller's in-memory wait still holds for this
+ * page, only a reload loses it.
+ */
+export function gravarIncerto(
+  integracaoId: string,
+  produtoId: string,
+  incerto: IncertoKitShopee | null,
+): boolean {
+  const armazenamento = armazenamentoDaAba();
+  if (armazenamento === null) return false;
+  const chave = chaveIncerto(integracaoId, produtoId);
+  try {
+    if (incerto === null) armazenamento.removeItem(chave);
+    else armazenamento.setItem(chave, JSON.stringify(incerto));
+    return true;
+  } catch (err) {
+    if (err instanceof DOMException) return false;
+    throw err;
+  }
 }

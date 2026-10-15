@@ -12,11 +12,31 @@ import {
 import {
   FRASE_PRIMEIRA_PUBLICACAO_SHOPEE,
   itemIdDoAnuncioShopee,
+  type IncertoKitShopee,
 } from '@/lib/shopee/anuncioProduto';
 import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
 
+/** The two native-kit CREATE arms of a publish — each makes a NEW kit on Shopee. */
+export type ArmaKitShopee = 'recriar' | 'converter';
+
 /** The writes a listing block can start — each one an apps/shopee route. */
-export type AcaoDoAnuncioShopee = 'pausar' | 'reativar' | 'reverificar' | 'publicar';
+export type AcaoDoAnuncioShopee =
+  | 'pausar'
+  | 'reativar'
+  | 'reverificar'
+  | 'publicar'
+  | ArmaKitShopee;
+
+/**
+ * A kit create the server could not confirm, as the tab shows it: the stored
+ * wait and body, whether the wait is still running, and Shopee's own refusal
+ * sentence when the 202 carried one (this page only — a reload keeps the wait,
+ * not the sentence).
+ */
+export interface IncertoKitNaTela extends IncertoKitShopee {
+  readonly pendente: boolean;
+  readonly fraseShopee: string | null;
+}
 
 /**
  * What the editor hands every listing block about the actions. The STATE lives
@@ -40,6 +60,24 @@ export interface AcoesShopee {
   readonly reverificar: (contaId: string, linkDocId: string) => void;
   /** A publish of an EXISTING link, naming it — never a kit option. */
   readonly republicar: (contaId: string, linkDocId: string) => void;
+  /**
+   * Opens the native-kit confirmation of one link — recriar or converter; the
+   * editor sends on confirm. `focarPrincipal` puts the cursor on the principal
+   * pick (a refusal that asked for one).
+   */
+  readonly abrirKit: (
+    contaId: string,
+    linkDocId: string,
+    arma: ArmaKitShopee,
+    focarPrincipal?: boolean,
+  ) => void;
+  /** The conta's uncertain kit create from THIS browser tab, or `null`. */
+  readonly incertoDe: (contaId: string) => IncertoKitNaTela | null;
+  /** Re-sends the uncertain create's IDENTICAL body — once its wait is over. */
+  readonly repetirKit: (contaId: string) => void;
+  /** Whether the link's kit block shows its composition (R2: the editor keeps it). */
+  readonly kitAberto: (linkDocId: string) => boolean;
+  readonly alternarKit: (linkDocId: string) => void;
 }
 
 export interface AcoesAnuncioShopeeProps {
@@ -65,7 +103,8 @@ export interface AcoesAnuncioShopeeProps {
  *    offered in this step, and the row says where it will come from.
  *
  * The native-kit arms (recriar, converter, the principal) are not here — they
- * carry their own single-flight and uncertain-outcome rules.
+ * sit in the block's kit section (`KitAnuncioShopee`), with the uncertain
+ * outcome a create can end in.
  */
 export function AcoesAnuncioShopee({ contaId, linkDocId, link, acoes }: AcoesAnuncioShopeeProps) {
   // `== null`: a raw (unparsed) draft may lack the key altogether.

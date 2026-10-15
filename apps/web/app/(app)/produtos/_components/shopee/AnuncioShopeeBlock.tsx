@@ -7,6 +7,7 @@ import type { ProdutoShopeeLink } from '@delfrance/schemas';
 import { AcoesAnuncioShopee, type AcoesShopee } from './AcoesAnuncioShopee';
 import type { ContaShopee, TabelaMedidasDoProduto } from './ContaShopeePanel';
 import { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
+import { KitAnuncioShopee } from './KitAnuncioShopee';
 import { ModelosAnuncioShopee } from './ModelosAnuncioShopee';
 import { RecusasAnuncioShopee } from './RecusasAnuncioShopee';
 import { StatusAnuncioShopee } from './StatusAnuncioShopee';
@@ -25,6 +26,8 @@ export interface AnuncioShopeeBlockProps {
   agoraMs: number;
   modelosAberto: boolean;
   onAlternarModelos: (linkDocId: string) => void;
+  /** The produto's STORED `ehKit` — the kit section shows on every link of a kit. */
+  produtoEhKit: boolean;
   /** The actions' state and handlers — owned by the editor (its rule R2). */
   acoes: AcoesShopee;
 }
@@ -32,8 +35,9 @@ export interface AnuncioShopeeBlockProps {
 /**
  * One Shopee listing (`data-testid="shopee-anuncio-<linkDocId>"`), top to
  * bottom: its state, what was refused on it, what Shopee says is wrong with it,
- * the size chart a publish would send, on demand its models — then the outcome
- * of the last action on it, and the action row.
+ * the size chart a publish would send, the kit section (a native kit, or any
+ * listing of a kit produto), on demand its models — then the outcome of the
+ * last action on it, and the action row.
  *
  * Every value shown comes from the live link document (or, for the models, a
  * one-shot read): an action calls an apps/shopee route, and the block repaints
@@ -52,6 +56,7 @@ export function AnuncioShopeeBlock({
   agoraMs,
   modelosAberto,
   onAlternarModelos,
+  produtoEhKit,
   acoes,
 }: AnuncioShopeeBlockProps) {
   const desfecho = acoes.desfechoDe(linkDocId);
@@ -69,6 +74,15 @@ export function AnuncioShopeeBlock({
           tabelaMedidas={tabelaMedidas}
           contaId={contaDoAnuncioLegivel ? conta.id : null}
           categoryId={link.category_id}
+        />
+        <KitAnuncioShopee
+          db={db}
+          produtoId={produtoId}
+          contaId={conta.id}
+          linkDocId={linkDocId}
+          link={link}
+          produtoEhKit={produtoEhKit}
+          acoes={acoes}
         />
         <ModelosAnuncioShopee
           db={db}

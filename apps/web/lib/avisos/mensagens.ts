@@ -91,18 +91,16 @@ function frasePendencia(valor: Aviso['params'][string] | undefined): string {
 }
 
 /**
- * The recriar clause of `shopeeKitReceitaDivergente`: the runnable command when
- * the aviso names the link, and otherwise where to get it. `--recriar` refuses
- * to run without `--link`, so a `—` (the builder's "no link") or an absent
- * param must never print `--link — --recriar`. The republish the sentence
- * already asks for FIRST prints that `--link` for a kit it reads divergent.
+ * The recriar clause of `shopeeKitReceitaDivergente`: the tab's "Recriar kit" on
+ * the named link when the aviso names it, and otherwise the link the republish
+ * will name. Never a command line — the operator acts in the produto's Shopee
+ * tab (#1529).
  */
 function fraseRecriarKit(params: Aviso['params']): string {
   const vinculo = p(params, 'vinculo');
   return vinculo === '—'
-    ? 'recrie o kit com o --link que a republicação indicar (o --recriar exige o vínculo do kit ' +
-        'antigo, e este aviso não o identificou)'
-    : `recrie o kit (publicar:anuncio --link ${vinculo} --recriar)`;
+    ? 'use "Recriar kit" no anúncio que a republicação indicar'
+    : `use "Recriar kit" no anúncio do vínculo ${vinculo}`;
 }
 
 /**
@@ -307,19 +305,19 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'e das variações, e recalcule o preço. O aviso se encerra quando a categoria do ' +
       'produto for alterada.',
   },
-  // Sem `runbook`: o conserto é a rota/CLI de publicação hoje (um botão no passo
-  // 21). ⚠️ "Republique PRIMEIRO" é a ação segura: um reapontamento do mapa (#1450)
-  // muda a impressão digital da receita sem mudar a receita na Shopee, e o
-  // `--recriar` exclui um anúncio que está vendendo. Por isso a frase nomeia o
-  // `--link` do vínculo — um `--recriar` sem ele não diz qual kit trocar — e,
-  // sem vínculo conhecido, não imprime comando nenhum (`fraseRecriarKit`).
+  // Sem `runbook`: o conserto é a aba Shopee do produto (passo 21, #1529). ⚠️
+  // "Republique PRIMEIRO" é a ação segura: um reapontamento do mapa (#1450) muda a
+  // impressão digital da receita sem mudar a receita na Shopee, e recriar exclui
+  // um anúncio que está vendendo. Por isso a frase nomeia o vínculo — recriar sem
+  // ele não diz qual kit trocar — e, sem vínculo conhecido, manda ao anúncio que a
+  // republicação indicar (`fraseRecriarKit`).
   [TIPO_AVISO.shopeeKitReceitaDivergente]: {
     titulo: 'Kit da Shopee com composição antiga',
     corpo: (params) =>
       `A composição das variações ${p(params, 'variacoes')} do kit ${p(params, 'kit')} mudou no ERP, mas o kit ` +
       `${p(params, 'anuncio')} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
-      'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
-      '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+      'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Use "Republicar" no anúncio, ' +
+      'na aba Shopee do produto: se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
       `Senão, ${fraseRecriarKit(params)} ou volte a composição ao que está na Shopee.`,
   },
   // Sem `runbook`: o conserto está no app — o cadastro do produto (para onde o aviso

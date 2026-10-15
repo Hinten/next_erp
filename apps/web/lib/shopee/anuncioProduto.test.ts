@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   estadoAnuncioShopeeSchema,
@@ -12,15 +13,29 @@ import {
   FRASE_RECUSA_SEM_PASSO_SHOPEE,
   ROTULO_ESTADO_ANUNCIO_SHOPEE,
   TEXTO_ACAO_SUGERIDA,
+  TEXTO_AVISO_KIT,
+  TEXTO_MOTIVO_KIT,
+  chaveIncerto,
+  criacaoDeKitIncerta,
   ehFraseDeTerminal,
+  esperaDoKitIncerto,
   estadoAnuncioShopeeLido,
   formatarInstanteShopee,
+  gravarIncerto,
   itemIdDoAnuncioShopee,
+  lerIncerto,
   ordenarVinculosShopee,
   resumoDaReverificacaoShopee,
+  textoDoAvisoKit,
   textoDoProblemaShopee,
   urlDoAnuncioShopee,
+  type IncertoKitShopee,
 } from './anuncioProduto';
+import {
+  ShopeeClientHttpError,
+  ShopeeClientNetworkError,
+  ShopeeClientRespostaInvalidaError,
+} from './client';
 import type { RespostaReverificarShopee } from './wire';
 
 /**
@@ -32,6 +47,10 @@ import type { RespostaReverificarShopee } from './wire';
  * PR 7: the copy of the actions — `TEXTO_ACAO_SUGERIDA`, the one reader of a
  * refusal row (`textoDoProblemaShopee`) and the re-verify toast. Lens 8: no
  * string the tab renders may carry CLI text.
+ *
+ * PR 8: the native kit — `TEXTO_MOTIVO_KIT` / `TEXTO_AVISO_KIT` (T5m), which
+ * failures leave a kit create UNCERTAIN (`criacaoDeKitIncerta`, with its
+ * near-misses), the wait (T5l) and the per-tab store of an uncertain create.
  */
 
 /** CLI copy, by the server-side pin's own shape plus the word "comando" (lens 8). */
@@ -343,5 +362,231 @@ describe('resumoDaReverificacaoShopee', () => {
     expect(resumoDaReverificacaoShopee(r({ avisoReceitaKit: 'nada' })).mensagem).toBe(
       'O ERP atualizou o anúncio com o que a Shopee informa agora.',
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                         PR 8 — the native kit                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The twelve codes of apps/shopee's `kits/resultadoKit.ts` `CodigoAvisoKit` —
+ * the vocabulary a kit 200's `avisos[].codigo` carries (reconcile fact 4).
+ * Copied here because the browser cannot import apps/shopee and the vocabulary
+ * is deliberately not a schemas enum in this step (fact 5); a code added there
+ * reaches the tab as `textoDoAvisoKit`'s neutral fallback.
+ */
+const CODIGOS_AVISO_KIT = [
+  'receita-divergente',
+  'receita-nao-publicavel',
+  'principal-diferente',
+  'componente-nao-limita-estoque',
+  'receita-espelho-divergente',
+  'modelo-sem-filho',
+  'variacao-nao-anexada',
+  'kit-antigo-nao-excluido',
+  'kit-novo-inativo',
+  'kit-novo-divergente',
+  'kit-alvo-mais-novo',
+  'sku-do-kit-nao-enviado',
+];
+
+describe('TEXTO_AVISO_KIT / textoDoAvisoKit (T5m)', () => {
+  it('words each of the twelve codes a kit run reports, and nothing else', () => {
+    expect(Object.keys(TEXTO_AVISO_KIT).sort()).toEqual([...CODIGOS_AVISO_KIT].sort());
+    for (const codigo of CODIGOS_AVISO_KIT) {
+      expect(textoDoAvisoKit(codigo)).toBe(TEXTO_AVISO_KIT[codigo]);
+    }
+  });
+
+  it('never carries CLI text (lens 8)', () => {
+    for (const texto of Object.values(TEXTO_AVISO_KIT))
+      expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
+  });
+
+  it('reads a code this build does not know as a neutral line naming it — never undefined', () => {
+    expect(textoDoAvisoKit('kit-codigo-novo')).toBe('Aviso da Shopee (kit-codigo-novo).');
+    expect(textoDoAvisoKit('')).toBe('Aviso da Shopee ().');
+  });
+
+  it('NEAR-MISS: a prototype member is not a code — the lookup is own-property only', () => {
+    for (const codigo of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(textoDoAvisoKit(codigo)).toBe(`Aviso da Shopee (${codigo}).`);
+    }
+  });
+});
+
+describe('TEXTO_MOTIVO_KIT (T5m)', () => {
+  it('words instabilidade-shopee itself, with the schemas’ wait, and no row carries CLI text', () => {
+    const instabilidade = TEXTO_MOTIVO_KIT['instabilidade-shopee'];
+    expect(instabilidade).toBeDefined();
+    expect(instabilidade).toContain(`${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos`);
+    for (const texto of Object.values(TEXTO_MOTIVO_KIT))
+      expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
+  });
+
+  it('is read FIRST by textoDoProblemaShopee — with or without an acao — and the acao ids still follow', () => {
+    const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
+    const CLI = 'rode exatamente o mesmo comando de novo daqui a 4 minutos';
+    expect(
+      textoDoProblemaShopee({ motivo: 'instabilidade-shopee', mensagem: CLI, acao: null }),
+    ).toBe(TEXTO_MOTIVO_KIT['instabilidade-shopee']);
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'principal-obrigatorio',
+        mensagem: 'informe o componente principal (--principal)',
+        acao: { tipo: T.informarPrincipal },
+      }),
+    ).toBe(TEXTO_MOTIVO_KIT['principal-obrigatorio']);
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'vinculo-substituido',
+        mensagem: 'publique sem --link (ou com --link L2)',
+        acao: { tipo: T.republicar, linkDocId: 'L2' },
+      }),
+    ).toBe(`${TEXTO_MOTIVO_KIT['vinculo-substituido'] ?? '?'} Vínculo: L2.`);
+  });
+
+  it('NEAR-MISS: a motivo the map lacks — or a prototype member — falls back to the acao copy, then the sentence', () => {
+    const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'listagem-removida',
+        mensagem: 'o kit foi removido — use --recriar',
+        acao: { tipo: T.recriar, linkDocId: 'L1' },
+      }),
+    ).toBe(`${TEXTO_ACAO_SUGERIDA[T.recriar]} Vínculo: L1.`);
+    expect(
+      textoDoProblemaShopee({
+        motivo: 'constructor',
+        mensagem: 'A categoria não aceita este atributo.',
+        acao: null,
+      }),
+    ).toBe('A categoria não aceita este atributo.');
+  });
+});
+
+describe('criacaoDeKitIncerta — a failed kit create that may still have created the kit', () => {
+  const http = (status: number, kind: string | null = null) =>
+    new ShopeeClientHttpError('falha', status, 'SHOPEE_HTTP_ERROR', null, kind);
+
+  it('calls a lost answer uncertain: a network error, an abort, a 2xx it cannot read', () => {
+    expect(criacaoDeKitIncerta(new ShopeeClientNetworkError('Failed to fetch'))).toBe(true);
+    expect(
+      criacaoDeKitIncerta(
+        new ShopeeClientNetworkError('aborted', new DOMException('aborted', 'AbortError')),
+      ),
+    ).toBe(true);
+    expect(criacaoDeKitIncerta(new ShopeeClientRespostaInvalidaError('ruim', 200, ['x']))).toBe(
+      true,
+    );
+  });
+
+  it('calls a 503, a 504 and a 502 that is not a rate limit uncertain', () => {
+    for (const err of [http(503), http(504), http(500), http(502), http(502, 'transient')]) {
+      expect(criacaoDeKitIncerta(err)).toBe(true);
+    }
+  });
+
+  it('NEAR-MISS: a rate-limited 502 (burst / daily) and every 4xx are DEFINITE — nothing ran', () => {
+    for (const err of [
+      http(502, 'burst'),
+      http(502, 'daily'),
+      http(501),
+      http(400),
+      http(404),
+      http(409),
+      http(422),
+    ]) {
+      expect(criacaoDeKitIncerta(err)).toBe(false);
+    }
+  });
+});
+
+describe('esperaDoKitIncerto (T5l)', () => {
+  it('waits the 202’s own aguardarMs, and the schemas’ constant when the body carried none', () => {
+    expect(esperaDoKitIncerto(60_000)).toBe(60_000);
+    expect(esperaDoKitIncerto(undefined)).toBe(AGUARDAR_KIT_INCERTO_SHOPEE_MS);
+  });
+});
+
+describe('the uncertain-create store (lerIncerto / gravarIncerto)', () => {
+  const INCERTO: IncertoKitShopee = {
+    ate: 1_790_000_000_000,
+    corpo: {
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L1',
+      recriar: true,
+      principal: 'c2',
+    },
+  };
+
+  beforeEach(() => window.sessionStorage.clear());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('keys one produto’s create on one conta', () => {
+    expect(chaveIncerto('int-1', 'prod-1')).toBe('delfrance:shopee:kit-incerto:int-1:prod-1');
+  });
+
+  it('round-trips the exact body, and forgets it on null', () => {
+    expect(gravarIncerto('int-1', 'prod-1', INCERTO)).toBe(true);
+    expect(lerIncerto('int-1', 'prod-1')).toStrictEqual(INCERTO);
+    // Another conta, another produto: nothing.
+    expect(lerIncerto('int-2', 'prod-1')).toBeNull();
+    expect(lerIncerto('int-1', 'prod-2')).toBeNull();
+    expect(gravarIncerto('int-1', 'prod-1', null)).toBe(true);
+    expect(window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1'))).toBeNull();
+    expect(lerIncerto('int-1', 'prod-1')).toBeNull();
+  });
+
+  it('reads a stored value that is not JSON, not the shape, or names another conta as nothing', () => {
+    const chave = chaveIncerto('int-1', 'prod-1');
+    window.sessionStorage.setItem(chave, '{nao-e-json');
+    expect(lerIncerto('int-1', 'prod-1')).toBeNull();
+    window.sessionStorage.setItem(chave, JSON.stringify({ ate: 'amanhã', corpo: {} }));
+    expect(lerIncerto('int-1', 'prod-1')).toBeNull();
+    // Bodies the route refuses (400) are never re-sent: `recriar: false` (the flag is
+    // `true` or absent), both arm flags at once, a recriar naming no link.
+    for (const corpo of [
+      { ...INCERTO.corpo, recriar: false },
+      { ...INCERTO.corpo, converterEmKit: true },
+      { integracaoId: 'int-1', produtoId: 'prod-1', recriar: true },
+    ]) {
+      window.sessionStorage.setItem(chave, JSON.stringify({ ...INCERTO, corpo }));
+      expect(lerIncerto('int-1', 'prod-1')).toBeNull();
+    }
+    window.sessionStorage.setItem(
+      chave,
+      JSON.stringify({ ...INCERTO, corpo: { ...INCERTO.corpo, integracaoId: 'int-9' } }),
+    );
+    expect(lerIncerto('int-1', 'prod-1')).toBeNull();
+  });
+
+  it('degrades a blocked store to "nothing stored" and a full one to false — never a throw', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('cheio', 'QuotaExceededError');
+    });
+    expect(gravarIncerto('int-1', 'prod-1', INCERTO)).toBe(false);
+    vi.restoreAllMocks();
+
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('bloqueado', 'SecurityError');
+    });
+    expect(lerIncerto('int-1', 'prod-1')).toBeNull();
+    vi.restoreAllMocks();
+
+    vi.spyOn(window, 'sessionStorage', 'get').mockImplementation(() => {
+      throw new DOMException('bloqueado', 'SecurityError');
+    });
+    expect(lerIncerto('int-1', 'prod-1')).toBeNull();
+    expect(gravarIncerto('int-1', 'prod-1', INCERTO)).toBe(false);
+  });
+
+  it('NEAR-MISS: an error that is not the store’s own is not swallowed (rule 6)', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new TypeError('bug');
+    });
+    expect(() => lerIncerto('int-1', 'prod-1')).toThrow(TypeError);
   });
 });

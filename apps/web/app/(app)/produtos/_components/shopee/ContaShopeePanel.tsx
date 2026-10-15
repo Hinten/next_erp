@@ -8,6 +8,8 @@ import type { ProdutoShopeeLink } from '@delfrance/schemas';
 import { ordenarVinculosShopee } from '@/lib/shopee/anuncioProduto';
 import type { AcoesShopee } from './AcoesAnuncioShopee';
 import { AnuncioShopeeBlock } from './AnuncioShopeeBlock';
+import { AvisoReceitaKitShopee } from './AvisoReceitaKitShopee';
+import { IncertoDoKit } from './KitAnuncioShopee';
 
 /** One `prodshopee` row as the live snapshot hands it over (possibly the RAW doc — see `campos.ts`). */
 export interface VinculoShopee {
@@ -54,6 +56,8 @@ export interface ContaShopeePanelProps {
   agoraMs: number;
   modelosAbertos: ReadonlySet<string>;
   onAlternarModelos: (linkDocId: string) => void;
+  /** The produto's STORED `ehKit`. */
+  produtoEhKit: boolean;
   /** The actions — `permitidas: false` on a tab whose conta the query did not return. */
   acoes: AcoesShopee;
 }
@@ -62,6 +66,11 @@ export interface ContaShopeePanelProps {
  * One Shopee conta's listings on this produto, in `ordenarVinculosShopee` order
  * (live, then superseded, then removed or never published). Presentational: the
  * editor owns every piece of state (its rule R2).
+ *
+ * Above the listings: the conta's open "kit with an old composition" aviso (only
+ * for a conta holding a native-kit link), and an uncertain kit create whose link
+ * this conta no longer lists — it still blocks the kit buttons, so it is never
+ * left unexplained.
  */
 export function ContaShopeePanel({
   db,
@@ -73,9 +82,14 @@ export function ContaShopeePanel({
   agoraMs,
   modelosAbertos,
   onAlternarModelos,
+  produtoEhKit,
   acoes,
 }: ContaShopeePanelProps) {
   const ordenados = useMemo(() => ordenarVinculosShopee(vinculos), [vinculos]);
+  const temKitNativo = vinculos.some((v) => v.data.kitNativo === true);
+  const incerto = acoes.incertoDe(conta.id);
+  const incertoSemBloco =
+    incerto !== null && !vinculos.some((v) => v.id === incerto.corpo.linkDocId) ? incerto : null;
 
   return (
     <Card withBorder padding="md" data-testid={`shopee-conta-${conta.id}`}>
@@ -97,6 +111,14 @@ export function ContaShopeePanel({
           </Text>
         )}
 
+        {conta.encontrada && temKitNativo && (
+          <AvisoReceitaKitShopee db={db} contaId={conta.id} produtoId={produtoId} />
+        )}
+
+        {incertoSemBloco !== null && (
+          <IncertoDoKit contaId={conta.id} incerto={incertoSemBloco} acoes={acoes} />
+        )}
+
         {ordenados.length === 0 && (
           <Text size="sm" c="dimmed">
             Este produto não tem anúncio nesta conta.
@@ -116,6 +138,7 @@ export function ContaShopeePanel({
             agoraMs={agoraMs}
             modelosAberto={modelosAbertos.has(v.id)}
             onAlternarModelos={onAlternarModelos}
+            produtoEhKit={produtoEhKit}
             acoes={acoes}
           />
         ))}

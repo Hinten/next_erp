@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -6,20 +6,30 @@ import type { Firestore } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import {
   ACAO_STATUS_ANUNCIO,
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
   INTEGRACAO_TIPO,
   SHOPEE_MODEL_STATUS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  TIPO_AVISO,
+  chaveAvisoReceitaKitShopee,
 } from '@delfrance/schemas';
 import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
   type ShopeeClient,
 } from '@/lib/shopee/client';
+import {
+  TEXTO_ACAO_SUGERIDA,
+  TEXTO_AVISO_KIT,
+  TEXTO_MOTIVO_KIT,
+  chaveIncerto,
+} from '@/lib/shopee/anuncioProduto';
 import { CODIGO_FALHA_SHOPEE } from '@/lib/shopee/erros';
 import {
   DETALHES_ERRO_SHOPEE_VAZIOS,
   type AnuncioStatusShopee,
+  type KitPublicadoShopee,
   type ProblemaShopee,
   type RespostaPublicarShopee,
   type RespostaReverificarShopee,
@@ -38,6 +48,12 @@ import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
  * client is `shopeeClientFalso` holding only the methods a test expects, so a
  * call to any other route rejects naming itself; the error classes stay REAL
  * (the module is mocked with `importOriginal` spread) for the `instanceof`s.
+ *
+ * PR 8 adds the native kit (T5 (f), (g), (h) Recriar, (i), (j), (l), (m)): the
+ * kit badge, the recipe preview over the children's `paiId ==` shape and the
+ * component names by id, the open aviso by its deterministic id, the create
+ * arms under the ONE lock, and the uncertain create with its stored wait — the
+ * REAL `sessionStorage` of jsdom, cleared before every test.
  */
 
 interface Linha {
@@ -62,6 +78,13 @@ const h = vi.hoisted(() => ({
   /** What `useShopeeClient` hands the editor (`null` = no signed-in user yet). */
   client: null as ShopeeClient | null,
   notify: vi.fn(),
+  /** The `shopeeKitReceitaDivergente` aviso doc, by its deterministic id (`null` = none). */
+  aviso: null as Record<string, unknown> | null,
+  /** Every aviso doc id the tab subscribed to. */
+  avisosLidos: new Set<string>(),
+  /** Component produto id → `nome`, for the recipe's one-shot name read. */
+  nomes: new Map<string, string>(),
+  getDocsByIds: vi.fn(),
 }));
 
 vi.mock('@/lib/shopee/client', async (importOriginal) => {
@@ -85,9 +108,10 @@ vi.mock('@delfrance/data/hooks', () => ({
       q.__col === 'integracao' ? h.contas : q.__col === 'prodshopee' ? h.links : h.filhos;
     return { data, loading: h.carregando, error: undefined };
   },
-  useDocSnapshot: (ref: { __doc?: string } | null) => {
+  useDocSnapshot: (ref: { __doc?: string; id?: string } | null) => {
     if (ref === null) return { data: undefined, loading: false, error: undefined };
-    const data = ref.__doc === 'produto' ? h.produto : h.tabMedi;
+    if (ref.__doc === 'aviso') h.avisosLidos.add(ref.id ?? '?');
+    const data = ref.__doc === 'produto' ? h.produto : ref.__doc === 'aviso' ? h.aviso : h.tabMedi;
     return {
       data: data === null ? null : { id: ref.__doc ?? '?', data },
       loading: false,
@@ -127,6 +151,12 @@ vi.mock('@/lib/data/variacaoShopeeLinkCollection', () => ({
 vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
   tabelaDeMedidasCollection: { docRef: () => ({ __doc: 'tabMedi' }) },
 }));
+vi.mock('@/lib/data/avisoCollection', () => ({
+  avisoCollection: {
+    docRef: (_db: unknown, _ctx: unknown, id: string) => ({ __doc: 'aviso', id }),
+  },
+}));
+vi.mock('@/lib/data/getDocsByIds', () => ({ getDocsByIds: h.getDocsByIds }));
 
 const { ShopeeEditor } = await import('./ShopeeEditor');
 
@@ -183,6 +213,15 @@ beforeEach(() => {
   h.getDocs.mockImplementation(async (q: { produtoId: string }) => ({
     docs: (h.varLinks.get(q.produtoId) ?? []).map((v) => ({ id: v.id, data: () => v.data })),
   }));
+  h.aviso = null;
+  h.avisosLidos = new Set();
+  h.nomes = new Map();
+  h.getDocsByIds.mockReset();
+  h.getDocsByIds.mockImplementation(
+    async (_db: unknown, _handle: unknown, ids: readonly string[]) =>
+      new Map(ids.filter((id) => h.nomes.has(id)).map((id) => [id, { nome: h.nomes.get(id) }])),
+  );
+  window.sessionStorage.clear();
 });
 
 describe('ShopeeEditor — which conta a link belongs to', () => {
@@ -842,7 +881,8 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
         acao: { tipo: TIPO.importar, itemIds: [1000009] },
       },
       {
-        // No `acao`, but written for the CLI: the backstop replaces it.
+        // No `acao`, but written for the CLI: the tab's own motivo copy
+        // replaces it (PR 8, `TEXTO_MOTIVO_KIT`; the terminal backstop stands behind).
         campo: null,
         motivo: 'instabilidade-shopee',
         mensagem:
@@ -870,9 +910,12 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
     const desfecho = await waitFor(() => screen.getByTestId('shopee-desfecho-L1'));
     const d = within(desfecho);
     expect(d.getByText('Publicação bloqueada — nada foi enviado à Shopee')).toBeDefined();
-    expect(d.getByText(/sem as opções de kit\. Vínculo: L2\.$/)).toBeDefined();
+    // The motivo's own copy (PR 8), then the id the `acao` names.
+    expect(
+      d.getByText(`${TEXTO_MOTIVO_KIT['vinculo-substituido'] ?? '?'} Vínculo: L2.`),
+    ).toBeDefined();
     expect(d.getByText(/Anúncio\(s\) na Shopee: 1000009\.$/)).toBeDefined();
-    expect(d.getByText(/Esta recusa não traz um próximo passo/)).toBeDefined();
+    expect(d.getByText(TEXTO_MOTIVO_KIT['instabilidade-shopee'] ?? '?')).toBeDefined();
     expect(d.getByText('A categoria 100087 não aceita este atributo.')).toBeDefined();
     // The server's CLI sentences never reach the page — not as a row, not anywhere.
     expect(document.body.textContent).not.toMatch(TEXTO_DE_TERMINAL);
@@ -1055,5 +1098,646 @@ describe('ShopeeEditor — who may act', () => {
     expect(within(bloco('L9')).getByText('Ativo')).toBeDefined();
     expect(semBotao('L9', 'Republicar')).toBeNull();
     expect(semBotao('L9', 'Pausar anúncio')).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                         PR 8 — the native kit                               */
+/* -------------------------------------------------------------------------- */
+
+/** A kit produto (`ehKit`) with two sellable units — f2's lone component of quantity 1 is a warning. */
+function comKit() {
+  h.produto = { nome: 'Kit Camiseta', paiId: null, ehKit: true };
+  h.filhos = [
+    {
+      id: 'f2',
+      data: {
+        nome: 'Kit G',
+        paiId: 'prod-1',
+        ordem: 1,
+        componentesKit: { c2: { quantidade: 1 } },
+      },
+    },
+    {
+      id: 'f1',
+      data: {
+        nome: 'Kit P',
+        paiId: 'prod-1',
+        ordem: 0,
+        componentesKit: { c1: { quantidade: 2 }, c2: { quantidade: 1 } },
+      },
+    },
+  ];
+  h.nomes = new Map([
+    ['c1', 'Camiseta'],
+    ['c2', 'Boné'],
+  ]);
+}
+
+const linkKit = (id = 'L-kit', extra: Record<string, unknown> = {}) =>
+  link(id, { item_id: 1000002, kitNativo: true, ...extra });
+
+/** A native-kit run's 200 — shaped like `publicar/route.ts`'s kit body. */
+function kitPublicado(extra: Partial<KitPublicadoShopee> = {}): RespostaPublicarShopee {
+  return {
+    tipo: 'kit',
+    arma: 'kit-recriar',
+    desfecho: 'criado',
+    itemId: 1000005,
+    linkDocId: 'L-kit-novo',
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    itemStatus: 'NORMAL',
+    kitNativo: true,
+    modelos: { vinculados: 2, anexados: 2, semFilho: 0 },
+    antecessor: { itemId: 1000002, linkDocId: 'L-kit', excluido: true, substituido: true },
+    avisos: [],
+    avisosResolvidos: 0,
+    recusa: null,
+    ...extra,
+  };
+}
+
+/** The 202: the server could not tell whether `add_kit_item` ran. */
+function kitIncerto(extra: Partial<KitPublicadoShopee> = {}): RespostaPublicarShopee {
+  return kitPublicado({
+    desfecho: 'incerto',
+    itemId: null,
+    linkDocId: null,
+    estadoAnuncio: null,
+    itemStatus: null,
+    kitNativo: null,
+    antecessor: null,
+    recusa: { codigo: 'error_server', fraseShopee: 'System busy.', motivo: null },
+    ...extra,
+  });
+}
+
+const kitDe = (linkDocId: string) => within(screen.getByTestId(`shopee-kit-${linkDocId}`));
+const incertoDaConta = () => screen.getByTestId('shopee-kit-incerto-int-1');
+
+/** Opens the kit confirmation from the block's button and confirms it. */
+function confirmarKit(linkDocId: string, botaoDoBloco: string, titulo: string) {
+  fireEvent.click(kitDe(linkDocId).getByRole('button', { name: botaoDoBloco }));
+  const dialogo = screen.getByRole('dialog', { name: titulo });
+  fireEvent.click(within(dialogo).getByRole('button', { name: botaoDoBloco }));
+}
+
+/** Lets the client's promise and every state update it causes land (fake timers: no waitFor). */
+async function assentar() {
+  for (let i = 0; i < 6; i += 1) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+}
+
+const AGORA = Date.UTC(2026, 9, 15, 15, 0, 0);
+
+describe('ShopeeEditor — the native kit: badge, recipe and aviso', () => {
+  it('badges a live native kit "Kit nativo" and a removed one "Kit nativo (inativo)" — and an ordinary listing of an ordinary produto has no kit section', () => {
+    h.links = [
+      linkKit('L-kit'),
+      linkKit('L-kit-rem', { item_id: 1000003, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }),
+      link('L-comum', { item_id: 1000004 }),
+    ];
+    renderEditor();
+    expect(within(bloco('L-kit')).getByText('Kit nativo')).toBeDefined();
+    expect(within(bloco('L-kit-rem')).getByText('Kit nativo (inativo)')).toBeDefined();
+    expect(within(bloco('L-kit-rem')).queryByText('Kit nativo')).toBeNull();
+    expect(within(bloco('L-comum')).getByText('Ativo')).toBeDefined();
+    expect(within(bloco('L-comum')).queryByText(/Kit nativo/)).toBeNull();
+    expect(screen.queryByTestId('shopee-kit-L-comum')).toBeNull();
+  });
+
+  it('reads the recipe only once "Ver composição" opens: each unit’s components by name, and structure warnings that disable nothing', async () => {
+    comEscrita();
+    comKit();
+    h.links = [linkKit('L-kit')];
+    renderEditor();
+    // Collapsed: neither the children nor the names are read.
+    expect(kitDe('L-kit').getByRole('button', { name: 'Ver composição' })).toBeDefined();
+    expect(h.consultas.has('produtos')).toBe(false);
+    expect(h.getDocsByIds).not.toHaveBeenCalled();
+
+    fireEvent.click(kitDe('L-kit').getByRole('button', { name: 'Ver composição' }));
+    const receita = within(screen.getByTestId('shopee-receita-kit'));
+    expect(h.consultas.has('produtos')).toBe(true);
+    // Units in `ordem` order, each component by its name once the one-shot read lands.
+    await waitFor(() =>
+      expect(receita.getByText('2 × Camiseta (c1); 1 × Boné (c2)')).toBeDefined(),
+    );
+    expect(receita.getAllByRole('row').map((r) => r.textContent)).toEqual([
+      'VariaçãoComponentes',
+      'Kit P2 × Camiseta (c1); 1 × Boné (c2)',
+      'Kit G1 × Boné (c2)',
+    ]);
+    // ONE name read for the distinct components, by id.
+    expect(h.getDocsByIds).toHaveBeenCalledTimes(1);
+    expect(h.getDocsByIds.mock.calls[0]?.[2]).toEqual(['c1', 'c2']);
+    // The schemas adapter's warning, worded for the operator…
+    expect(
+      within(screen.getByTestId('shopee-receita-kit-avisos')).getByText(
+        /A variação Kit G tem um único componente com quantidade 1/,
+      ),
+    ).toBeDefined();
+    // …and never a reason to disable a button.
+    expect(
+      kitDe('L-kit').getByRole('button', { name: 'Recriar kit' }).hasAttribute('disabled'),
+    ).toBe(false);
+  });
+
+  it('warns that a kit with NO variation cannot be published yet — the saved children, never the form', async () => {
+    comEscrita();
+    comKit();
+    h.filhos = [];
+    h.links = [linkKit('L-kit')];
+    renderEditor();
+    fireEvent.click(kitDe('L-kit').getByRole('button', { name: 'Ver composição' }));
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('shopee-receita-kit-avisos')).getByText(
+          /O kit não tem variação vendável/,
+        ),
+      ).toBeDefined(),
+    );
+    expect(h.getDocsByIds).not.toHaveBeenCalled();
+  });
+
+  it('shows the conta’s OPEN kit-recipe aviso, read by its deterministic id, in the inbox’s own words', () => {
+    h.permitidos = new Set([PERM.integracao.read, PERM.aviso.read]);
+    h.links = [linkKit('L-kit')];
+    const aberto = {
+      tipo: TIPO_AVISO.shopeeKitReceitaDivergente,
+      params: { kit: 'prod-1', anuncio: '1000002', vinculo: 'L-kit', variacoes: 'f1' },
+      resolvidoEm: null,
+    };
+    h.aviso = aberto;
+    const { unmount } = renderEditor();
+    expect(h.avisosLidos).toEqual(new Set([chaveAvisoReceitaKitShopee('int-1', 'prod-1')]));
+    const aviso = within(screen.getByTestId('shopee-aviso-receita-int-1'));
+    expect(aviso.getByText(/use "Recriar kit" no anúncio do vínculo L-kit/)).toBeDefined();
+    expect(aviso.getByText(/na aba Shopee do produto/)).toBeDefined();
+    unmount();
+
+    // A resolved one is history: not shown.
+    h.aviso = { ...aberto, resolvidoEm: 1_790_000_000_000_000 };
+    const { unmount: desmontar } = renderEditor();
+    expect(screen.queryByTestId('shopee-aviso-receita-int-1')).toBeNull();
+    desmontar();
+
+    // A conta with no native-kit link reads no aviso at all.
+    h.avisosLidos = new Set();
+    h.links = [link('L-comum')];
+    renderEditor();
+    expect(within(bloco('L-comum')).getByText('Ativo')).toBeDefined();
+    expect(h.avisosLidos.size).toBe(0);
+  });
+});
+
+describe('ShopeeEditor — recriar / converter em kit nativo', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('(f) Recriar sends {recriar, linkDocId, principal} after a confirmation; Converter sends {converterEmKit} — never both', async () => {
+    comEscrita();
+    comKit();
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockResolvedValueOnce(kitPublicado())
+      .mockResolvedValueOnce(
+        kitPublicado({
+          arma: 'kit-converter',
+          linkDocId: 'L-kit-2',
+          antecessor: { itemId: 1000001, linkDocId: 'L-comum', excluido: false, substituido: true },
+        }),
+      );
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [linkKit('L-kit'), link('L-comum', { item_id: 1000001 })];
+    renderEditor();
+    // Each arm only where it applies: a native kit recreates, an ordinary listing of a kit converts.
+    expect(kitDe('L-kit').queryByRole('button', { name: 'Converter em kit nativo' })).toBeNull();
+    expect(kitDe('L-comum').queryByRole('button', { name: 'Recriar kit' })).toBeNull();
+
+    fireEvent.click(kitDe('L-kit').getByRole('button', { name: 'Recriar kit' }));
+    const dialogo = within(screen.getByRole('dialog', { name: 'Recriar kit nativo' }));
+    // A create makes a NEW kit on Shopee: nothing is sent before the confirmation.
+    expect(publicar).not.toHaveBeenCalled();
+    expect(
+      dialogo.getByText(/só é excluído na Shopee depois que o novo estiver ativo/),
+    ).toBeDefined();
+    fireEvent.click(dialogo.getByRole('combobox', { name: 'Componente principal' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Boné (c2)' }));
+    fireEvent.click(dialogo.getByRole('button', { name: 'Recriar kit' }));
+
+    await waitFor(() =>
+      expect(within(bloco('L-kit')).getByText('Kit nativo criado na Shopee')).toBeDefined(),
+    );
+    expect(publicar.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-kit',
+      recriar: true,
+      principal: 'c2',
+    });
+    expect(
+      within(bloco('L-kit')).getByText('Kit novo: vínculo L-kit-novo (anúncio 1000005 na Shopee).'),
+    ).toBeDefined();
+    expect(
+      within(bloco('L-kit')).getByText(
+        'O anúncio anterior (vínculo L-kit) foi excluído na Shopee.',
+      ),
+    ).toBeDefined();
+
+    // No principal picked for this link: the ERP chooses, and no key is sent.
+    confirmarKit('L-comum', 'Converter em kit nativo', 'Converter em kit nativo');
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(2));
+    expect(publicar.mock.calls[1]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-comum',
+      converterEmKit: true,
+    });
+    for (const [corpo] of publicar.mock.calls) {
+      expect(corpo.recriar === true && corpo.converterEmKit === true).toBe(false);
+    }
+  });
+
+  it('offers no Converter on a produto that is not a kit — the server’s own pre-filter', () => {
+    comEscrita();
+    h.links = [link('L-comum')];
+    renderEditor();
+    expect(within(bloco('L-comum')).getByRole('button', { name: 'Republicar' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Converter em kit nativo' })).toBeNull();
+  });
+
+  it('(g) two clicks that land before a re-render send ONE kit create, and every write button waits for it', async () => {
+    comEscrita();
+    comKit();
+    let soltar: (r: RespostaPublicarShopee) => void = () => undefined;
+    const publicar = vi.fn<ShopeeClient['publicar']>(
+      () =>
+        new Promise((resolve) => {
+          soltar = resolve;
+        }),
+    );
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [linkKit('L-kit'), link('L-comum', { item_id: 1000001 })];
+    renderEditor();
+
+    fireEvent.click(kitDe('L-kit').getByRole('button', { name: 'Recriar kit' }));
+    const confirmar = within(screen.getByRole('dialog', { name: 'Recriar kit nativo' })).getByRole(
+      'button',
+      { name: 'Recriar kit' },
+    );
+    // Both handlers run against the SAME render — a state-only lock reads `emVoo === null` twice.
+    act(() => {
+      confirmar.click();
+      confirmar.click();
+    });
+    expect(publicar).toHaveBeenCalledTimes(1);
+    for (const nome of ['Republicar', 'Reverificar', 'Pausar anúncio']) {
+      expect(botao('L-comum', nome).hasAttribute('disabled')).toBe(true);
+    }
+    expect(
+      kitDe('L-comum')
+        .getByRole('button', { name: 'Converter em kit nativo' })
+        .hasAttribute('disabled'),
+    ).toBe(true);
+
+    act(() => soltar(kitPublicado()));
+    await waitFor(() =>
+      expect(botao('L-comum', 'Republicar').hasAttribute('disabled')).toBe(false),
+    );
+    expect(publicar).toHaveBeenCalledTimes(1);
+    expect(within(bloco('L-kit')).getByText('Kit nativo criado na Shopee')).toBeDefined();
+  });
+
+  it('(h) a 422 whose acao is recriar opens the Recriar confirmation on the link it NAMES — and no terminal text renders', async () => {
+    comEscrita();
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(
+        recusa422([
+          {
+            campo: 'linkDocId',
+            motivo: 'listagem-removida',
+            mensagem:
+              'o kit 1000002 foi removido na Shopee — publique com --link L2 --recriar para criar ' +
+              'um kit novo (publicar:anuncio)',
+            acao: { tipo: TIPO.recriar, linkDocId: 'L2' },
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(kitPublicado({ antecessor: null, linkDocId: 'L-kit-novo' }));
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [
+      link('L1'),
+      linkKit('L2', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido, item_id: 1000002 }),
+    ];
+    renderEditor();
+
+    fireEvent.click(botao('L1', 'Republicar'));
+    const desfecho = within(await waitFor(() => screen.getByTestId('shopee-desfecho-L1')));
+    expect(desfecho.getByText(`${TEXTO_ACAO_SUGERIDA[TIPO.recriar]} Vínculo: L2.`)).toBeDefined();
+    expect(document.body.textContent).not.toMatch(TEXTO_DE_TERMINAL);
+
+    fireEvent.click(desfecho.getByRole('button', { name: 'Recriar o kit do vínculo L2' }));
+    const dialogo = within(screen.getByRole('dialog', { name: 'Recriar kit nativo' }));
+    // The modal speaks of L2 — the removed kit the acao named, not the block the row sits in.
+    expect(
+      dialogo.getByText(/O kit antigo \(vínculo L2\) já foi excluído na Shopee/),
+    ).toBeDefined();
+    fireEvent.click(dialogo.getByRole('button', { name: 'Recriar kit' }));
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(2));
+    expect(publicar.mock.calls[1]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L2',
+      recriar: true,
+    });
+    await waitFor(() =>
+      expect(within(bloco('L2')).getByText('Kit nativo criado na Shopee')).toBeDefined(),
+    );
+  });
+
+  it('an informar-principal refusal of a recriar re-opens the SAME arm on the same link with the pick — NEAR-MISS: after a plain republish it offers none', async () => {
+    comEscrita();
+    comKit();
+    const principalObrigatorio: ProblemaShopee = {
+      campo: 'principal',
+      motivo: 'principal-obrigatorio',
+      mensagem: 'o kit tem componentes de mais de um anúncio da Shopee — informe (--principal)',
+      acao: { tipo: TIPO.informarPrincipal },
+    };
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(recusa422([principalObrigatorio]))
+      .mockResolvedValueOnce(kitPublicado())
+      .mockRejectedValueOnce(recusa422([principalObrigatorio]));
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [linkKit('L-kit')];
+    renderEditor();
+
+    confirmarKit('L-kit', 'Recriar kit', 'Recriar kit nativo');
+    const desfecho = within(await waitFor(() => screen.getByTestId('shopee-desfecho-L-kit')));
+    expect(desfecho.getByText(TEXTO_MOTIVO_KIT['principal-obrigatorio'] ?? '?')).toBeDefined();
+    fireEvent.click(desfecho.getByRole('button', { name: 'Escolher o componente principal' }));
+    const dialogo = within(screen.getByRole('dialog', { name: 'Recriar kit nativo' }));
+    fireEvent.click(dialogo.getByRole('combobox', { name: 'Componente principal' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Camiseta (c1)' }));
+    fireEvent.click(dialogo.getByRole('button', { name: 'Recriar kit' }));
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(2));
+    expect(publicar.mock.calls[1]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-kit',
+      recriar: true,
+      principal: 'c1',
+    });
+
+    // The same refusal answering a plain republish: there is no kit arm to re-open.
+    await waitFor(() =>
+      expect(within(bloco('L-kit')).getByText('Kit nativo criado na Shopee')).toBeDefined(),
+    );
+    fireEvent.click(botao('L-kit', 'Republicar'));
+    const outra = within(await waitFor(() => screen.getByTestId('shopee-problema-L-kit-0')));
+    expect(outra.getByText(TEXTO_MOTIVO_KIT['principal-obrigatorio'] ?? '?')).toBeDefined();
+    expect(outra.queryByRole('button')).toBeNull();
+  });
+
+  it('(i) a 202 is UNCERTAIN: Repetir waits aguardarMs, then re-sends the IDENTICAL body — never "falhou"', async () => {
+    vi.useFakeTimers({ now: AGORA });
+    comEscrita();
+    comKit();
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockResolvedValueOnce(kitIncerto({ aguardarMs: 60_000 }))
+      .mockResolvedValueOnce(kitPublicado());
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [linkKit('L-kit')];
+    renderEditor();
+
+    confirmarKit('L-kit', 'Recriar kit', 'Recriar kit nativo');
+    await assentar();
+    const incerto = within(incertoDaConta());
+    expect(incerto.getByText('A Shopee pode ter criado o kit')).toBeDefined();
+    expect(incerto.getByText('A Shopee respondeu: System busy.')).toBeDefined();
+    // Not an outcome of the link and never a failure: the kit may exist.
+    expect(screen.queryByTestId('shopee-desfecho-L-kit')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/falhou/i);
+    const repetir = () => incerto.getByRole('button', { name: 'Repetir' });
+    expect(repetir().hasAttribute('disabled')).toBe(true);
+    // A second create would be a second kit: the arm waits too.
+    expect(
+      kitDe('L-kit').getByRole('button', { name: 'Recriar kit' }).hasAttribute('disabled'),
+    ).toBe(true);
+    // The wait and the body are kept for this browser tab.
+    const guardado: unknown = JSON.parse(
+      window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1')) ?? 'null',
+    );
+    expect(guardado).toStrictEqual({ ate: AGORA + 60_000, corpo: publicar.mock.calls[0]?.[0] });
+
+    act(() => {
+      vi.advanceTimersByTime(59_999);
+    });
+    expect(repetir().hasAttribute('disabled')).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(repetir().hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(repetir());
+    await assentar();
+    expect(publicar).toHaveBeenCalledTimes(2);
+    expect(publicar.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-kit',
+      recriar: true,
+    });
+    // IDENTICAL: a plain publish here would reach a different arm.
+    expect(publicar.mock.calls[1]?.[0]).toStrictEqual(publicar.mock.calls[0]?.[0]);
+    expect(within(bloco('L-kit')).getByText('Kit nativo criado na Shopee')).toBeDefined();
+    // Answered: the wait is over, here and in the store.
+    expect(screen.queryByTestId('shopee-kit-incerto-int-1')).toBeNull();
+    expect(window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1'))).toBeNull();
+  });
+
+  it('(l) a 202 WITHOUT aguardarMs waits the schemas’ AGUARDAR_KIT_INCERTO_SHOPEE_MS', async () => {
+    vi.useFakeTimers({ now: AGORA });
+    comEscrita();
+    comKit();
+    h.client = shopeeClientFalso({ publicar: async () => kitIncerto() });
+    h.links = [linkKit('L-kit')];
+    renderEditor();
+    confirmarKit('L-kit', 'Recriar kit', 'Recriar kit nativo');
+    await assentar();
+    const repetir = () => within(incertoDaConta()).getByRole('button', { name: 'Repetir' });
+    act(() => {
+      vi.advanceTimersByTime(AGUARDAR_KIT_INCERTO_SHOPEE_MS - 1);
+    });
+    expect(repetir().hasAttribute('disabled')).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(repetir().hasAttribute('disabled')).toBe(false);
+  });
+
+  it('(j) a network error, a 503 or a 504 on a create is UNCERTAIN — never the failure copy', async () => {
+    for (const falha of [
+      new ShopeeClientNetworkError('Failed to fetch', new TypeError('x')),
+      new ShopeeClientHttpError('indisponível', 503, 'SHOPEE_UNAVAILABLE'),
+      new ShopeeClientHttpError('tempo esgotado', 504, null),
+    ]) {
+      window.sessionStorage.clear();
+      comEscrita();
+      comKit();
+      h.client = shopeeClientFalso({ publicar: () => Promise.reject(falha) });
+      h.links = [linkKit('L-kit')];
+      const { unmount } = renderEditor();
+      confirmarKit('L-kit', 'Recriar kit', 'Recriar kit nativo');
+      await waitFor(() => expect(incertoDaConta()).toBeDefined());
+      expect(screen.queryByTestId('shopee-desfecho-L-kit')).toBeNull();
+      expect(screen.queryByText('Não foi possível contatar a integração com a Shopee.')).toBeNull();
+      const guardado = JSON.parse(
+        window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1')) ?? 'null',
+      ) as { ate: number } | null;
+      // No body carried a wait: the schemas’ constant, from the moment it failed.
+      expect(guardado?.ate).toBeGreaterThan(Date.now() + AGUARDAR_KIT_INCERTO_SHOPEE_MS - 60_000);
+      unmount();
+    }
+  });
+
+  it('NEAR-MISS: a rate-limited 502 on a create is a DEFINITE refusal — the failure copy, no wait', async () => {
+    comEscrita();
+    comKit();
+    h.client = shopeeClientFalso({
+      publicar: () =>
+        Promise.reject(
+          new ShopeeClientHttpError('limite', 502, 'SHOPEE_HTTP_ERROR', null, 'burst'),
+        ),
+    });
+    h.links = [linkKit('L-kit')];
+    renderEditor();
+    confirmarKit('L-kit', 'Recriar kit', 'Recriar kit nativo');
+    await waitFor(() => expect(screen.getByTestId('shopee-desfecho-L-kit')).toBeDefined());
+    expect(screen.queryByTestId('shopee-kit-incerto-int-1')).toBeNull();
+    expect(window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1'))).toBeNull();
+    expect(
+      kitDe('L-kit').getByRole('button', { name: 'Recriar kit' }).hasAttribute('disabled'),
+    ).toBe(false);
+  });
+
+  it('keeps an uncertain create across a reload of the tab, and a DEFINITE answer to its Repetir ends it', async () => {
+    vi.useFakeTimers({ now: AGORA });
+    comEscrita();
+    comKit();
+    const corpo = {
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-kit',
+      recriar: true as const,
+      principal: 'c2',
+    };
+    window.sessionStorage.setItem(
+      chaveIncerto('int-1', 'prod-1'),
+      JSON.stringify({ ate: AGORA + 30_000, corpo }),
+    );
+    const publicar = vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(
+      recusa422([
+        {
+          campo: 'sku',
+          motivo: 'kit-ja-existe-na-shopee',
+          mensagem:
+            'já existe na Shopee um kit com o SKU deste produto — importe-o (importar:anuncio)',
+          acao: { tipo: TIPO.importar, itemIds: [1000005] },
+        },
+      ]),
+    );
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [linkKit('L-kit')];
+    renderEditor();
+
+    // A fresh page found it in the store: the wait holds, and so does the arm.
+    const repetir = () => within(incertoDaConta()).getByRole('button', { name: 'Repetir' });
+    expect(repetir().hasAttribute('disabled')).toBe(true);
+    expect(
+      kitDe('L-kit').getByRole('button', { name: 'Recriar kit' }).hasAttribute('disabled'),
+    ).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+    fireEvent.click(repetir());
+    await assentar();
+    // The stored body, verbatim — the principal included.
+    expect(publicar.mock.calls[0]?.[0]).toStrictEqual(corpo);
+    // The server read the shop and said "the kit exists": the uncertainty is over.
+    expect(screen.queryByTestId('shopee-kit-incerto-int-1')).toBeNull();
+    expect(window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1'))).toBeNull();
+    expect(
+      within(screen.getByTestId('shopee-desfecho-L-kit')).getByText(
+        /Anúncio\(s\) na Shopee: 1000005/,
+      ),
+    ).toBeDefined();
+  });
+
+  it('ignores a stored value that is not a body it may re-send', () => {
+    comEscrita();
+    comKit();
+    window.sessionStorage.setItem(chaveIncerto('int-1', 'prod-1'), '{corrompido');
+    h.links = [linkKit('L-kit')];
+    renderEditor();
+    expect(screen.queryByTestId('shopee-kit-incerto-int-1')).toBeNull();
+    expect(
+      kitDe('L-kit').getByRole('button', { name: 'Recriar kit' }).hasAttribute('disabled'),
+    ).toBe(false);
+  });
+
+  it('(m) a kit 200 words each aviso by its code — an unknown one and "constructor" read the neutral line — with buttons on the links the BODY names', async () => {
+    comEscrita();
+    comKit();
+    const reverificarAnuncio = vi.fn<ShopeeClient['reverificarAnuncio']>(async () =>
+      reverificado(),
+    );
+    h.client = shopeeClientFalso({
+      publicar: async () =>
+        kitPublicado({
+          antecessor: { itemId: 1000002, linkDocId: 'L-kit', excluido: false, substituido: true },
+          avisos: [
+            { codigo: 'kit-antigo-nao-excluido', produtoId: null },
+            { codigo: 'kit-codigo-novo', produtoId: 'f1' },
+            { codigo: 'constructor', produtoId: null },
+          ],
+        }),
+      reverificarAnuncio,
+    });
+    h.links = [linkKit('L-kit'), linkKit('L-kit-novo', { item_id: 1000005 })];
+    renderEditor();
+    confirmarKit('L-kit', 'Recriar kit', 'Recriar kit nativo');
+
+    const avisos = within(await waitFor(() => screen.getByTestId('shopee-kit-avisos')));
+    expect(avisos.getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      TEXTO_AVISO_KIT['kit-antigo-nao-excluido'],
+      'Aviso da Shopee (kit-codigo-novo). (produto f1)',
+      'Aviso da Shopee (constructor).',
+    ]);
+    expect(document.body.textContent).not.toMatch(TEXTO_DE_TERMINAL);
+    expect(
+      within(bloco('L-kit')).getByText(
+        'O anúncio anterior (vínculo L-kit) foi marcado como substituído e ainda pode estar ' +
+          'vendendo na Shopee.',
+      ),
+    ).toBeDefined();
+    // The old kit's re-verify, on the link the body names.
+    fireEvent.click(
+      within(bloco('L-kit')).getByRole('button', { name: 'Reverificar o vínculo L-kit' }),
+    );
+    await waitFor(() => expect(reverificarAnuncio).toHaveBeenCalledTimes(1));
+    expect(reverificarAnuncio.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-kit',
+    });
   });
 });
