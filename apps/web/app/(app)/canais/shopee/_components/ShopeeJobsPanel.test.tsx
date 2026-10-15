@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type ReactNode, useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ENVIO_PRECO_SHOPEE_STATUS, IMPORTACAO_SHOPEE_STATUS } from '@delfrance/schemas';
 
@@ -260,6 +260,160 @@ describe('ShopeeJobsPanel', () => {
     expect(screen.getByText('Fila fechada (MissingRegionError).')).not.toBeNull();
     await waitFor(() => {
       expect(guardados()).toEqual([{ flow: 'importacao', conta: CONTA_A, jobId: 'job-vivo' }]);
+    });
+  });
+
+  it('⭐ a FAILED start beside a remembered running job shows both cards — and the job stays remembered', async () => {
+    guardar([{ flow: 'importacao', conta: CONTA_A, jobId: 'job-vivo' }]);
+    const c = setClient();
+    renderPainel({
+      importacao: fluxo([
+        {
+          kind: 'error',
+          conta: CONTA_A,
+          color: 'red',
+          message: 'Falha de rede ao iniciar a importação.',
+        },
+      ]),
+    });
+
+    expect(screen.getByText('Falha de rede ao iniciar a importação.')).not.toBeNull();
+    expect(await screen.findByText(/40 encontrados/)).not.toBeNull();
+    expect(c.massImportStatus).toHaveBeenCalledWith({ integracaoId: 'int-1', jobId: 'job-vivo' });
+    await waitFor(() => {
+      expect(guardados()).toEqual([{ flow: 'importacao', conta: CONTA_A, jobId: 'job-vivo' }]);
+    });
+  });
+
+  describe('a failed start after a start THIS session (stateful ledger)', () => {
+    const FALHA_DE_REDE = 'Falha de rede ao iniciar a importação.';
+    type Ledger = { trocar: (e: readonly ContaJobOutcome[]) => void };
+    type Falha = Extract<ContaJobOutcome, { kind: 'error' }>;
+
+    /**
+     * The hook's ledger keeps ONE entry per conta, so a failed re-start
+     * REPLACES the started one there: only the panel can still know the job.
+     */
+    function renderComLedger({
+      flow = 'importacao',
+      status = IMPORTACAO,
+    }: { flow?: 'importacao' | 'precos'; status?: MassImportStatusShopee } = {}) {
+      const c = setClient();
+      c.massImportStatus.mockResolvedValue(status);
+      const ledger: Ledger = { trocar: () => {} };
+      function Harness() {
+        const [entries, setEntries] = useState<readonly ContaJobOutcome[]>([
+          { kind: 'started', conta: CONTA_A, jobId: 'job-i' },
+        ]);
+        ledger.trocar = setEntries;
+        const comLedger = {
+          entries,
+          reatados: new Set<string>(),
+          dismiss: (contaId: string) =>
+            setEntries((cur) => cur.filter((e) => e.conta.id !== contaId)),
+        };
+        return (
+          <ShopeeJobsPanel
+            collapsed={false}
+            selecionadas={[]}
+            importacao={flow === 'importacao' ? comLedger : fluxo()}
+            precos={flow === 'precos' ? comLedger : fluxo()}
+          />
+        );
+      }
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <MantineTestProvider>
+          <QueryClientProvider client={qc}>
+            <Harness />
+          </QueryClientProvider>
+        </MantineTestProvider>,
+      );
+      return { c, ledger };
+    }
+
+    async function falharORestart(
+      ledger: Ledger,
+      {
+        flow = 'importacao',
+        color = 'red',
+        message = FALHA_DE_REDE,
+      }: { flow?: 'importacao' | 'precos'; color?: Falha['color']; message?: string } = {},
+    ) {
+      await waitFor(() => {
+        expect(guardados()).toEqual([{ flow, conta: CONTA_A, jobId: 'job-i' }]);
+      });
+      act(() => {
+        ledger.trocar([{ kind: 'error', conta: CONTA_A, color, message }]);
+      });
+      expect(screen.getByText(message)).not.toBeNull();
+    }
+
+    it('keeps the started job’s card and its stored id', async () => {
+      const { c, ledger } = renderComLedger();
+      expect(await screen.findByText(/40 encontrados/)).not.toBeNull();
+
+      await falharORestart(ledger);
+
+      expect(screen.getByText(/40 encontrados/)).not.toBeNull();
+      expect(c.massImportStatus).toHaveBeenCalledWith({ integracaoId: 'int-1', jobId: 'job-i' });
+      await waitFor(() => {
+        expect(guardados()).toEqual([{ flow: 'importacao', conta: CONTA_A, jobId: 'job-i' }]);
+      });
+    });
+
+    it('price flow: the quota card of a re-click keeps the PARKED run’s card beside it', async () => {
+      // The route answers the quota pause before its running-job check, and a
+      // parked run sits on that very pause — so this re-click never attaches.
+      const quota =
+        'A cota de chamadas da Shopee está esgotada até 15/10 00:00 — tente depois disso.';
+      const { c, ledger } = renderComLedger({ flow: 'precos' });
+      expect(await screen.findByText(/7 \/ 30 enviados/)).not.toBeNull();
+
+      await falharORestart(ledger, { flow: 'precos', color: 'yellow', message: quota });
+
+      expect(screen.getByText(/7 \/ 30 enviados/)).not.toBeNull();
+      expect(c.priceSyncStatus).toHaveBeenCalledWith({ integracaoId: 'int-1', jobId: 'job-i' });
+      await waitFor(() => {
+        expect(guardados()).toEqual([{ flow: 'precos', conta: CONTA_A, jobId: 'job-i' }]);
+      });
+    });
+
+    it('dismissing the FAILURE leaves the job card (and the job remembered)', async () => {
+      const { ledger } = renderComLedger();
+      await screen.findByText(/40 encontrados/);
+      await falharORestart(ledger);
+
+      // Same flow, same conta ⇒ same X label; the failure renders first.
+      const [xDaFalha] = screen.getAllByLabelText('Dispensar Importação em massa de Loja A');
+      fireEvent.click(xDaFalha!);
+
+      await waitFor(() => {
+        expect(screen.queryByText(FALHA_DE_REDE)).toBeNull();
+      });
+      expect(screen.getByText(/40 encontrados/)).not.toBeNull();
+      expect(guardados()).toEqual([{ flow: 'importacao', conta: CONTA_A, jobId: 'job-i' }]);
+    });
+
+    it('dismissing the JOB leaves the failure card, and forgets the job', async () => {
+      // Terminal ⇒ the job card's X dismisses directly (nothing to cancel).
+      const { ledger } = renderComLedger({
+        status: { ...IMPORTACAO, status: IMPORTACAO_SHOPEE_STATUS.completed },
+      });
+      await screen.findByText('Importação concluída.');
+      await falharORestart(ledger);
+
+      const xs = screen.getAllByLabelText('Dispensar Importação em massa de Loja A');
+      expect(xs).toHaveLength(2);
+      fireEvent.click(xs[1]!);
+
+      await waitFor(() => {
+        expect(screen.queryByText('Importação concluída.')).toBeNull();
+      });
+      expect(screen.getByText(FALHA_DE_REDE)).not.toBeNull();
+      await waitFor(() => {
+        expect(guardados()).toBeNull();
+      });
     });
   });
 

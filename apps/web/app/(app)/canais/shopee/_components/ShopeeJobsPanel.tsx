@@ -18,14 +18,21 @@
  * cost. The price of that choice is that a job started ELSEWHERE shows up only
  * once this operator clicks start (import) or opens the Histórico (price).
  *
- * Three rules the merge depends on:
- *  - **One card per (flow, conta), newest intent wins.** A start this session
- *    wins over a remembered job; "Acompanhar" replaces both.
+ * Four rules the merge depends on:
+ *  - **One JOB card per (flow, conta), newest intent wins.** A start this
+ *    session wins over a remembered job; "Acompanhar" replaces both.
+ *  - **A failed start shows BESIDE that job card, never instead of it.** The
+ *    hooks' ledger keeps one entry per conta, so a failed re-start (a network
+ *    error, the 503 of a closed queue, the quota pause a parked price job sits
+ *    on) REPLACES the started entry there — which is why every started job is
+ *    also folded into the remembered ones. Without that, the failure took the
+ *    running job's card, its Cancel and its stored id with it.
  *  - **Terminal cards stay until dismissed** — deliberately unlike Mercado Livre:
  *    the mass import has no Histórico, so a reload would otherwise be the end of
  *    its result.
- *  - **Dismissing forgets the job** for that (flow, conta), in this tab and in
- *    `sessionStorage`; nothing re-adds it except a new start or "Acompanhar".
+ *  - **Dismissing a job card forgets the job** for that (flow, conta), in this
+ *    tab and in `sessionStorage`; nothing re-adds it except a new start or
+ *    "Acompanhar". Dismissing a failed start's card forgets only the failure.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Anchor, Badge, Stack } from '@mantine/core';
@@ -134,6 +141,15 @@ export function ShopeeJobsPanel({
     [entradasImportacao, reatadosImportacao, entradasPrecos, reatadosPrecos, rastreados],
   );
 
+  // Remember every job started this session, so a LATER failed start for the
+  // same (flow, conta) — which replaces it in the ledger — cannot drop it.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- folding the ledger's starts into the remembered jobs; returns `cur` when nothing is new, so it converges
+    setRastreados((cur) =>
+      lembrarIniciados(cur, { importacao: entradasImportacao, precos: entradasPrecos }),
+    );
+  }, [entradasImportacao, entradasPrecos]);
+
   // Persist exactly the cards that poll a job. Keyed on the SERIALISED list, so
   // a render that changed nothing writes nothing.
   const serializados = JSON.stringify(
@@ -151,12 +167,16 @@ export function ShopeeJobsPanel({
     [dismissImportacao, dismissPrecos],
   );
 
-  const dispensar = useCallback(
+  const dispensarJob = useCallback(
     (flow: FluxoJobShopee, contaId: string) => {
-      esquecerDoLedger(flow, contaId);
+      const entradas = flow === 'importacao' ? entradasImportacao : entradasPrecos;
+      // A failure in the ledger is the card BESIDE this one, dismissed on its own.
+      if (entradas.find((e) => e.conta.id === contaId)?.kind !== 'error') {
+        esquecerDoLedger(flow, contaId);
+      }
       setRastreados((cur) => semChave(cur, chave(flow, contaId)));
     },
-    [esquecerDoLedger],
+    [entradasImportacao, entradasPrecos, esquecerDoLedger],
   );
 
   const acompanhar = useCallback(
@@ -193,7 +213,8 @@ export function ShopeeJobsPanel({
             flowLabel={ROTULO_DO_FLUXO[c.flow]}
             color={c.color}
             message={c.message}
-            onDismiss={() => dispensar(c.flow, c.conta.id)}
+            // Only the failure: the job card beside it (if any) stays.
+            onDismiss={() => esquecerDoLedger(c.flow, c.conta.id)}
           />
         ) : c.flow === 'importacao' ? (
           <ImportacaoShopeeJobCard
@@ -203,7 +224,7 @@ export function ShopeeJobsPanel({
             conta={c.conta}
             jobId={c.jobId}
             reatado={c.reatado}
-            onDismiss={() => dispensar('importacao', c.conta.id)}
+            onDismiss={() => dispensarJob('importacao', c.conta.id)}
           />
         ) : (
           <EnvioPrecoShopeeJobCard
@@ -211,7 +232,7 @@ export function ShopeeJobsPanel({
             conta={c.conta}
             jobId={c.jobId}
             reatado={c.reatado}
-            onDismiss={() => dispensar('precos', c.conta.id)}
+            onDismiss={() => dispensarJob('precos', c.conta.id)}
           />
         ),
       )}
@@ -257,9 +278,10 @@ function LinkDoHistorico({
 }
 
 /**
- * One card per (flow, conta) with something to show, in a stable order: the
- * contas this session started first, then the remembered ones; per conta, the
- * import before the price update.
+ * One job card per (flow, conta) with a job to show — plus, before it, the card
+ * of a failed start for that (flow, conta) — in a stable order: the contas this
+ * session started first, then the remembered ones; per conta, the import before
+ * the price update.
  */
 function montarCartoes({
   importacao,
@@ -292,14 +314,37 @@ function montarCartoes({
           color: iniciado.color,
           message: iniciado.message,
         });
-        continue;
       }
-      const jobId = iniciado?.jobId ?? rastreados.get(chave(flow, contaId))?.jobId;
+      // Only a STARTED entry shadows the remembered job: a failure falls through.
+      const jobId =
+        (iniciado?.kind === 'started' ? iniciado.jobId : undefined) ??
+        rastreados.get(chave(flow, contaId))?.jobId;
       if (jobId === undefined) continue;
       cartoes.push({ kind: 'job', flow, conta, jobId, reatado: reatados.has(jobId) });
     }
   }
   return cartoes;
+}
+
+/**
+ * The remembered jobs with every STARTED ledger entry folded in, newest winning.
+ * Returns `cur` itself when nothing is new, so the effect that calls it settles.
+ */
+function lembrarIniciados(
+  cur: ReadonlyMap<string, JobRastreadoShopee>,
+  entradas: Readonly<Record<FluxoJobShopee, readonly ContaJobOutcome[]>>,
+): ReadonlyMap<string, JobRastreadoShopee> {
+  let proximo: Map<string, JobRastreadoShopee> | null = null;
+  for (const flow of FLUXOS) {
+    for (const e of entradas[flow]) {
+      if (e.kind !== 'started') continue;
+      const k = chave(flow, e.conta.id);
+      if (cur.get(k)?.jobId === e.jobId) continue;
+      proximo ??= new Map(cur);
+      proximo.set(k, { flow, conta: e.conta, jobId: e.jobId });
+    }
+  }
+  return proximo ?? cur;
 }
 
 function porChave(jobs: readonly JobRastreadoShopee[]): ReadonlyMap<string, JobRastreadoShopee> {
