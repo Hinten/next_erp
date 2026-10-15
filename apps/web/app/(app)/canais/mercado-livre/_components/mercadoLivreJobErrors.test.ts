@@ -16,7 +16,8 @@ describe('ERROS_DO_CLIENTE_ML', () => {
   it('names the two ML client classes and the [mercado-livre] console tag', () => {
     // The shared `JobCardShell` logs a failed cancel to the console unless it is
     // one of these classes, under this tag. Before #1529 the shell hard-coded
-    // exactly these; no panel test spies on the console, so this is the pin.
+    // exactly these; `MercadoLivreJobsPanel.test.tsx` has no console spy, so
+    // this is the pin.
     expect(ERROS_DO_CLIENTE_ML.tagLog).toBe('[mercado-livre]');
     expect(ERROS_DO_CLIENTE_ML.classes).toEqual([
       MercadoLivreClientHttpError,

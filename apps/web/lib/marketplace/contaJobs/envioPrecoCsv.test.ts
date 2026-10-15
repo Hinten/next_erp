@@ -215,9 +215,10 @@ describe('envioPrecoCsvFilename', () => {
 
 describe('MAX_PAGINAS_RELATORIO_PRECO', () => {
   it('stays at the 100 pages Mercado Livre’s download looped over before #1529', () => {
-    // Both channels' download hooks compare against the SYMBOL, so a lowered cap
-    // would truncate every long report (with the trailer saying so) while their
-    // tests stayed green. The literal is the pin.
+    // Mercado Livre's download hook compares against the SYMBOL, so a lowered cap
+    // would truncate every long report (with the trailer saying so) while its
+    // tests stayed green: `useBaixarRelatorioPreco.test.ts` fetches at most two
+    // pages. The literal is the pin.
     expect(MAX_PAGINAS_RELATORIO_PRECO).toBe(100);
   });
 });

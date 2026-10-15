@@ -66,11 +66,16 @@ unchanged. Where a moved piece still named Mercado Livre it was parameterised
 instead — `ErrosDoCliente` for the two hard-coded client classes, `AmostraDeJob`
 for ML's skip type, a plain `status: string` in the CSV resumo, and the page cap
 exported as `MAX_PAGINAS_RELATORIO_PRECO` — and each keeps Mercado Livre's
-output byte-identical. Two of the four are pinned by ML tests the move left
-unedited: `AmostraDeJob` by `PriceSyncHistoricoModal.test.tsx` and
-`MercadoLivreJobsPanel.test.tsx`, the resumo `status` by
-`envioPrecoCsv.test.ts`. The other two had no test before the move — no ML test
-spies on the console, and the download hook's test never reaches the cap — so
-they got pins of their own: `ERROS_DO_CLIENTE_ML`'s tag and two classes in
+output byte-identical. Only `AmostraDeJob` is asserted by an ML test the move
+left unedited: `PriceSyncHistoricoModal.test.tsx` opens "Ver detalhes" and finds
+ML's skip and failure codes in the retyped list. The list's "+N mais" maths, its
+`mensagem` line and its `—` fallback are pinned on neutral entries in
+`components/contaJobs/JobCardShell.test.tsx`. The resumo `status` is a
+type-only widening of a value the trailer only interpolates, through the same
+template as before; `envioPrecoCsv.canais.test.ts` asserts the interpolated
+`"failed"`, which the moved `envioPrecoCsv.test.ts` never checks. The other two
+had no test before the move — `MercadoLivreJobsPanel.test.tsx` has no console
+spy, and `useBaixarRelatorioPreco.test.ts` never reaches the cap — so they got
+pins of their own: `ERROS_DO_CLIENTE_ML`'s tag and two classes in
 `mercadoLivreJobErrors.test.ts`, and the literal `100` in
 `envioPrecoCsv.test.ts`.
