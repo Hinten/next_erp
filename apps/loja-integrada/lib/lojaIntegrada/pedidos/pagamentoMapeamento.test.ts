@@ -25,7 +25,7 @@ import {
 } from './pagamentoMapeamento';
 
 const AGORA_US = 1_800_000_000_000_000;
-const WATERMARK_US = dataLiParaMicros('2026-10-13T16:30:32.540836')!;
+const WATERMARK_US = dataLiParaMicros('2026-03-10T15:20:10.123456')!;
 const NENHUMA: DataDoHistoricoLi = { derivavel: true, us: null };
 
 const pag = (campos: Record<string, unknown>): PedidoPagamentoLi =>
@@ -35,8 +35,8 @@ function pedido(pagamentos: Record<string, unknown>[]): PedidoLi {
   return liPedidoSchema.parse({
     numero: 165,
     situacao: { codigo: 'pedido_pago' },
-    data_modificacao: '2026-10-13T16:30:32.540836',
-    data_criacao: '2026-10-12T13:05:35.483040',
+    data_modificacao: '2026-03-10T15:20:10.123456',
+    data_criacao: '2026-03-09T11:00:00.654321',
     pagamentos,
   });
 }
@@ -178,12 +178,10 @@ describe('the card block and the instalments', () => {
   it('⚠️ `parcelamento: {}` ⇒ 1, à vista; 3 instalments ⇒ 3, not à vista; 0 ⇒ 1', () => {
     expect(parcelasLi(pag({ parcelamento: {} }))).toEqual({ parcelas: 1, aVista: true });
     expect(parcelasLi(pag({}))).toEqual({ parcelas: 1, aVista: true });
-    expect(parcelasLi(pag({ parcelamento: { numero_parcelas: 3, valor_parcela: 69.84 } }))).toEqual(
-      {
-        parcelas: 3,
-        aVista: false,
-      },
-    );
+    expect(parcelasLi(pag({ parcelamento: { numero_parcelas: 4, valor_parcela: 25 } }))).toEqual({
+      parcelas: 4,
+      aVista: false,
+    });
     expect(parcelasLi(pag({ parcelamento: { numero_parcelas: 0 } }))).toEqual({
       parcelas: 1,
       aVista: true,
@@ -246,7 +244,7 @@ describe('the mapping', () => {
       marketplace: null,
       lastProviderUpdate: WATERMARK_US,
       ultimaModificacao: AGORA_US,
-      dataCadastro: dataLiParaMicros('2026-10-12T13:05:35.483040'),
+      dataCadastro: dataLiParaMicros('2026-03-09T11:00:00.654321'),
     });
     expect(doc.status_pagamento).not.toBeNull();
   });

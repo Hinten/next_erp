@@ -46,7 +46,7 @@ const C: Record<number, string> = {
 const c = (id: number): string => C[id] ?? `codigo-${String(id)}`;
 
 /** The stamp of row `i`: one minute apart, from 10:00. */
-const data = (i: number) => `2026-10-05T10:${String(i).padStart(2, '0')}:00.000000`;
+const data = (i: number) => `2026-03-02T10:${String(i).padStart(2, '0')}:00.000000`;
 
 function linha(
   id: number,
@@ -234,7 +234,7 @@ describe('strict and degraded: a hole retries twice, then imports with its dates
   });
 
   it('an unreadable row date, or a row of another order, is dropped and makes every date underivable', () => {
-    const ilegivel = { ...linha(102, 2, 8, 4), data: '2026-10-05 10:02:00' };
+    const ilegivel = { ...linha(102, 2, 8, 4), data: '2026-03-02 10:02:00' };
     expect(ler(8, [...cadeia(9, 2, 4), ilegivel])).toEqual({
       ok: false,
       lacunas: [LACUNA_HISTORICO_LI.dataIlegivel, LACUNA_HISTORICO_LI.codigoAusente],

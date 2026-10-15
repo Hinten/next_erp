@@ -23,7 +23,7 @@ import {
 
 const CONTA = 'CONTA1';
 const AGORA_US = 1_900_000_000_000_000;
-const STAMP = '2026-10-13T16:30:32.540836';
+const STAMP = '2026-03-10T15:20:10.123456';
 const WATERMARK_US = dataLiParaMicros(STAMP)!;
 const ENDERECO = 'documents/clientes/c1/enderecos/e1';
 
@@ -32,11 +32,11 @@ function wire(campos: Record<string, unknown> = {}): PedidoLi {
     id: 0,
     numero: 165,
     situacao: { codigo: 'pedido_pago' },
-    data_criacao: '2026-10-12T13:05:35.483040',
+    data_criacao: '2026-03-09T11:00:00.654321',
     data_modificacao: STAMP,
-    valor_total: '266.63',
-    valor_subtotal: '239.89',
-    valor_envio: '26.74',
+    valor_total: '161.50',
+    valor_subtotal: '149.90',
+    valor_envio: '11.60',
     valor_desconto: '0.00',
     itens: [
       {
@@ -44,8 +44,8 @@ function wire(campos: Record<string, unknown> = {}): PedidoLi {
         linha: 1,
         sku: '123456789012345',
         quantidade: '1.000',
-        preco_venda: '49.9900',
-        preco_subtotal: '49.9900',
+        preco_venda: '39.9000',
+        preco_subtotal: '39.9000',
         produto: '/api/v1/produto/10',
       },
       {
@@ -53,8 +53,8 @@ function wire(campos: Record<string, unknown> = {}): PedidoLi {
         linha: 2,
         sku: '12345678901234',
         quantidade: '1.000',
-        preco_venda: '189.9000',
-        preco_subtotal: '189.9000',
+        preco_venda: '110.0000',
+        preco_subtotal: '110.0000',
         produto: '/api/v1/produto/11',
       },
     ],
@@ -63,12 +63,12 @@ function wire(campos: Record<string, unknown> = {}): PedidoLi {
         id: 555,
         objeto: null,
         prazo: 9,
-        valor: '26.74',
-        data_criacao: '2026-10-12T13:05:35.507698',
+        valor: '11.60',
+        data_criacao: '2026-03-09T11:00:01.000001',
         forma_envio: { id: 141909, code: 'PAC', nome: 'Correios', tipo: 'PAC' },
       },
     ],
-    pagamentos: [{ id: 9, valor: '266.63', pagamento_tipo: 'bankInvoice' }],
+    pagamentos: [{ id: 9, valor: '161.50', pagamento_tipo: 'bankInvoice' }],
     ...campos,
   });
 }
@@ -101,7 +101,7 @@ function mapeado(p: PedidoLi = wire(), o: Opcoes = {}): PedidoMapeadoLi {
       deliberado: false,
     },
     horarioDeCorteConta: null,
-    dataAprovacaoUs: dataLiParaMicros('2026-10-12T14:00:00'),
+    dataAprovacaoUs: dataLiParaMicros('2026-03-09T14:00:00'),
     enderecoFiscalOuterRef,
   });
   return mapearPedidoLi({
@@ -144,10 +144,10 @@ describe('the pedido fields', () => {
       operacaoPedidoOuterRef: 'documents/operacoes/op1',
       clientePedidoOuterRef: 'documents/clientes/c1',
       enderecoFiscalOuterRef: ENDERECO,
-      valorCobrado: 266.63,
+      valorCobrado: 161.5,
       descontoTotal: 0,
       error: null,
-      timestamp: dataLiParaMicros('2026-10-12T13:05:35.483040'),
+      timestamp: dataLiParaMicros('2026-03-09T11:00:00.654321'),
       lastMarketplaceUpdate: WATERMARK_US,
       ultimaModificacao: AGORA_US - 10,
       marketplace: null,
@@ -193,9 +193,9 @@ describe('the watermark (tier 2, µs)', () => {
   });
 
   it('EQUAL pair: `X` ≡ `X.000000` — the same stamp, no write', () => {
-    const inteiro = dataLiParaMicros('2026-10-13T16:30:32')!;
+    const inteiro = dataLiParaMicros('2026-03-10T15:20:10')!;
     const s = { ...armazenado(), lastMarketplaceUpdate: inteiro };
-    const m = mapeado(wire(), { watermarkUs: dataLiParaMicros('2026-10-13T16:30:32.000000')! });
+    const m = mapeado(wire(), { watermarkUs: dataLiParaMicros('2026-03-10T15:20:10.000000')! });
     expect(montarEscritaPedidoLi(s, m, AGORA_US).tipo).toBe('sem-mudanca');
   });
 
@@ -343,7 +343,7 @@ describe('the update groups', () => {
   it('NOT frozen: LI’s money is re-taken', () => {
     const s = { ...criado(), valorCobrado: 200 };
     expect(patch(montarEscritaPedidoLi(s, mapeado(), AGORA_US))).toMatchObject({
-      valorCobrado: 266.63,
+      valorCobrado: 161.5,
     });
   });
 

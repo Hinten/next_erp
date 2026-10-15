@@ -68,7 +68,7 @@ function rotear(decisao: DecisaoMapaLi, dados: Record<string, unknown> | null = 
 
 describe('the modalidade: CIF whenever the order carries freight', () => {
   it('freight > 0 on a conta set to FOB ⇒ CIF, and the override is reported (one WARNING)', () => {
-    expect(modalidadeFreteLi(26.74, MODALIDADE_FRETE.fob)).toEqual({
+    expect(modalidadeFreteLi(11.6, MODALIDADE_FRETE.fob)).toEqual({
       modalidade: MODALIDADE_FRETE.cif,
       sobrescrita: true,
     });
@@ -141,8 +141,8 @@ describe('the routing decision from the mapa', () => {
   });
 
   it('a pickup method (tipo null) still has a key', () => {
-    const pickup = { id: 12015, code: 'retirar_pessoalmente', nome: 'Retirar', tipo: null };
-    expect(decidir([linha('12015---retirar_pessoalmente', 'loja-1')], pickup)).toMatchObject({
+    const pickup = { id: 9001, code: 'retirar_pessoalmente', nome: 'Retirar', tipo: null };
+    expect(decidir([linha('9001---retirar_pessoalmente', 'loja-1')], pickup)).toMatchObject({
       tipo: 'mapeado',
       alvoId: 'loja-1',
     });
@@ -308,10 +308,10 @@ describe('the aviso key is the digest of the full key', () => {
 });
 
 describe('the dispatch deadline: set on the pago rung only, from the approval', () => {
-  /** A Tuesday, 2026-10-13 09:00 in São Paulo. */
-  const terca9h = dataLiParaMicros('2026-10-13T09:00:00');
+  /** A Tuesday, 2026-03-03 09:00 in São Paulo. */
+  const terca9h = dataLiParaMicros('2026-03-03T09:00:00');
   /** The same Tuesday at 15:00. */
-  const terca15h = dataLiParaMicros('2026-10-13T15:00:00');
+  const terca15h = dataLiParaMicros('2026-03-03T15:00:00');
 
   it('the noon rule: before noon ⇒ the same day; after ⇒ the next business day', () => {
     const cedo = prazoDespachoLiUs(null, terca9h);
@@ -351,15 +351,15 @@ describe('the block', () => {
     return liPedidoSchema.parse({
       numero: 1,
       situacao: { codigo: 'pedido_pago' },
-      data_modificacao: '2026-10-13T10:00:00',
-      valor_envio: '26.74',
+      data_modificacao: '2026-03-03T10:00:00',
+      valor_envio: '11.60',
       envios: [
         {
           id: 555,
           objeto: null,
           prazo: 9,
-          valor: '26.74',
-          data_criacao: '2026-10-12T13:05:35.507698',
+          valor: '11.60',
+          data_criacao: '2026-03-02T11:00:01.000001',
           forma_envio: PAC,
           ...envio,
         },
@@ -377,7 +377,7 @@ describe('the block', () => {
 
   function mapear(
     p: PedidoLi,
-    aprovado: number | null = dataLiParaMicros('2026-10-13T09:00:00'),
+    aprovado: number | null = dataLiParaMicros('2026-03-03T09:00:00'),
   ): FreteMapeadoLi {
     const r = mapearFreteLi({
       pedido: p,
@@ -393,14 +393,14 @@ describe('the block', () => {
 
   it('maps envios[0]: id, raw forma_envio, null integração, rounded value, dates, the fiscal endereço', () => {
     const m = mapear(pedido());
-    const criado = dataLiParaMicros('2026-10-12T13:05:35.507698') ?? 0;
+    const criado = dataLiParaMicros('2026-03-02T11:00:01.000001') ?? 0;
     expect(m.base).toMatchObject({
       externalId: '555',
       externalOptionData: PAC,
       externalOptionIntegracao: null,
       integracaoFreteOuterRef: REF_LI,
       modalidade: MODALIDADE_FRETE.cif,
-      valorCobrado: 26.74,
+      valorCobrado: 11.6,
       codRastreio: null,
       timestamp: criado,
       dataPrevisaoEntrega: criado + 9 * 86_400 * 1_000_000,
@@ -478,15 +478,15 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
   const pedidoPago = liPedidoSchema.parse({
     numero: 1,
     situacao: { codigo: 'pedido_pago' },
-    data_modificacao: '2026-10-13T10:00:00',
-    valor_envio: '26.74',
+    data_modificacao: '2026-03-03T10:00:00',
+    valor_envio: '11.60',
     envios: [
       {
         id: 555,
         objeto: 'AB123456789BR',
         prazo: 9,
-        valor: '26.74',
-        data_criacao: '2026-10-12T13:05:35',
+        valor: '11.60',
+        data_criacao: '2026-03-02T11:00:01',
         forma_envio: PAC,
       },
     ],
@@ -501,7 +501,7 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
       deliberado: false,
     },
     horarioDeCorteConta: null,
-    dataAprovacaoUs: dataLiParaMicros('2026-10-13T09:00:00'),
+    dataAprovacaoUs: dataLiParaMicros('2026-03-03T09:00:00'),
     enderecoFiscalOuterRef: 'documents/clientes/c1/enderecos/e1',
   })!;
 
@@ -545,7 +545,7 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
 
   it('NOT frozen: the money is refreshed from Loja Integrada', () => {
     const r = mesclarFreteLi(armazenado, m, { congelado: false, estadoPedido: ESTADO_PEDIDO.pago });
-    expect(r?.bloco.valorCobrado).toBe(26.74);
+    expect(r?.bloco.valorCobrado).toBe(11.6);
     expect(r?.campos).toContain('valorCobrado');
   });
 

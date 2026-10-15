@@ -206,7 +206,7 @@ describe('the unit discount and the subtotal reconciliation', () => {
     expect(descontoUnitarioLi(2, 10, 18)).toBe(1);
     // A subtotal above q·pv is NOT adjusted.
     expect(descontoUnitarioLi(2, 10, 21)).toBe(0);
-    expect(descontoUnitarioLi(1, 189.9, 189.9)).toBe(0);
+    expect(descontoUnitarioLi(1, 59.9, 59.9)).toBe(0);
     expect(descontoUnitarioLi(0, 10, 0)).toBe(0);
     expect(descontoUnitarioLi(2, 10, null)).toBe(0);
   });

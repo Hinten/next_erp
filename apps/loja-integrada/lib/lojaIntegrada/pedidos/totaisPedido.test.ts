@@ -177,14 +177,14 @@ describe('synthetic orders', () => {
   const base = {
     numero: 165,
     situacao: { codigo: 'pedido_pago' },
-    data_criacao: '2026-10-12T13:05:35',
-    data_modificacao: '2026-10-13T16:30:32',
+    data_criacao: '2026-03-09T11:00:00',
+    data_modificacao: '2026-03-10T15:20:10',
     envios: [
       {
         id: 1,
         valor: '10.00',
         prazo: 5,
-        data_criacao: '2026-10-12T13:05:35',
+        data_criacao: '2026-03-09T11:00:00',
         forma_envio: { id: 1, code: 'PAC' },
       },
     ],
