@@ -26,12 +26,16 @@
  *
  * ## An empty string is the provider's "nothing"
  *
- * Every optional number, count and nested object reads an exact `''` as
+ * Every optional number, count, id and nested object reads an exact `''` as
  * `null` (`vazioComoNulo` and its two numeric forms below, where the reason is
  * written). A text leaf keeps its `''`: it already parses, and the mapper
- * decides what an empty text means. The required set, and the three ids the
- * import keys a write on (`itens[].id`, `envios[].id`, `pagamentos[].id`),
- * stay strict: an empty identity is refused at its own path.
+ * decides what an empty text means. Only the required set stays strict.
+ *
+ * That includes the three ids the import keys a write on (`itens[].id`,
+ * `envios[].id`, `pagamentos[].id`): absent, `null` and `''` all arrive as "no
+ * id", one outcome, and this schema does not decide what a missing key costs.
+ * The importer does, in one place, before its first write; it never builds a
+ * key out of a missing id (`String(null)` is the key `'null'`).
  *
  * ## Passthrough
  *
@@ -61,10 +65,11 @@
  * which scans every file under `src/`. Two deliberate exceptions, each stated
  * at its field:
  *
- *  - `itens[].preco_custo` is `z.unknown()`: its value is not reliably numeric,
- *    and one unreadable cost must never cost the order (the mapper reads it with
- *    `parseWireDecimal`, which answers `null`). `numeroOpcional()` does not
- *    subsume it: it reads `''` as `null` but refuses free text;
+ *  - `itens[].preco_custo` is `z.unknown()`: the sanitized captures FAKE the
+ *    cost (keeping only its JSON type, a string), so its real form is not
+ *    evidenced, and one unreadable cost must never cost the order. The mapper
+ *    reads it with `parseWireDecimal`, which answers `null`. `numeroOpcional()`
+ *    would not do: it reads `''` as `null` but refuses a non-numeric string;
  *  - `envios[].forma_envio.id` is kept RAW (string or number): step 20's
  *    shipping-method key builder (`mapaFreteLojaIntegrada.ts` in
  *    `@delfrance/schemas`) is the authority on that id's form, and a coercion
@@ -112,18 +117,19 @@ const texto = () => z.string().nullable().optional();
  *    schema, so a numeric leaf refuses it: the captures hold none, and a blank
  *    the provider never sends is a drift worth seeing.
  *  - A non-empty string that is not one number (`'abc'`, a pt-BR comma) is
- *    still refused by `wireNumber()` / `wireInt()`. This is not `z.unknown()`:
- *    `preco_custo` keeps that, because its captured value is free TEXT, which
- *    this helper would refuse.
+ *    still refused by `wireNumber()` / `wireInt()`. This is not `z.unknown()`,
+ *    which `preco_custo` keeps because its real form is not evidenced (the
+ *    sanitized captures fake it).
  *  - A REQUIRED leaf never gets it — the order `numero`, the `situacao`, a
- *    history row's `id` and `numero`, the produto identity `id` — and neither
- *    does an id the import KEYS a write on (`itens[].id`, `envios[].id`,
- *    `pagamentos[].id`). An empty identity is a broken identity, not an absent
- *    one — the plan's step 6 already refuses a bad payment id — so it is
- *    refused at its own path rather than read as an absent id the importer
- *    would replace by some fallback.
+ *    history row's `id` and `numero`, the produto identity `id` — so an empty
+ *    one is refused at its own path.
+ *  - An id the import KEYS a write on (`itens[].id`, `envios[].id`,
+ *    `pagamentos[].id`) DOES get it, on purpose: it is optional, so `null` and
+ *    an absent key already reach the importer, and refusing only the third
+ *    spelling of the same "no id" would decide one absence in two places. The
+ *    importer refuses a missing key in one place, before its first write.
  *  - The three lists (`lista`) are part of the required set and keep refusing
- *    a string, `''` included.
+ *    a string, `''` included; so does a list entry, which is an object.
  *
  * ⚠️ The `.optional()` sits OUTSIDE the preprocess, so an absent key never
  * reaches it and stays `undefined`.
@@ -135,7 +141,7 @@ function vazioComoNulo<T extends z.ZodType>(schema: T) {
 /** {@link vazioComoNulo} over `wireNumber()`: an optional amount, weight or size. */
 const numeroOpcional = () => vazioComoNulo(wireNumber());
 
-/** {@link vazioComoNulo} over `wireInt()`: an optional count, or an id nothing keys on. */
+/** {@link vazioComoNulo} over `wireInt()`: an optional count or id. */
 const inteiroOpcional = () => vazioComoNulo(wireInt());
 
 /**
@@ -184,8 +190,8 @@ export const liProdutoDoItemSchema = z.union([
 /** One order line. */
 export const liPedidoItemSchema = z
   .object({
-    /** The line's write key (`ensureUniqueId`): an empty one is refused, never `null`. */
-    id: wireInt().nullable().optional(),
+    /** The line's write key (`ensureUniqueId`). A missing one is the importer's to refuse. */
+    id: inteiroOpcional(),
     linha: inteiroOpcional(),
     sku: texto(),
     nome: texto(),
@@ -197,10 +203,11 @@ export const liPedidoItemSchema = z
     preco_subtotal: numeroOpcional(),
     /**
      * ⚠️ `z.unknown()`, NOT `numeroOpcional()`: that one reads `''` as `null`
-     * but still refuses a non-numeric string, and the captured cost IS free
-     * text, so it would fail the whole order. The mapper reads it with
-     * `parseWireDecimal`. The `.optional()` is load-bearing: Zod 4 rejects an
-     * ABSENT key under a bare `z.unknown()`.
+     * but still refuses a non-numeric string. The sanitized captures FAKE the
+     * cost, so its real form is not evidenced, and `z.unknown()` keeps the order
+     * whatever form it takes. The mapper reads it with `parseWireDecimal`. The
+     * `.optional()` is load-bearing: Zod 4 rejects an ABSENT key under a bare
+     * `z.unknown()`.
      */
     preco_custo: z.unknown().optional(),
     /**
@@ -238,8 +245,8 @@ export const liFormaEnvioSchema = z
 /** One shipment of an order. `prazo` is in days. */
 export const liPedidoEnvioSchema = z
   .object({
-    /** The freight block's `externalId`: an empty one is refused, never `null`. */
-    id: wireInt().nullable().optional(),
+    /** The freight block's `externalId`. A missing one is the importer's to refuse. */
+    id: inteiroOpcional(),
     objeto: texto(),
     link_rastreio: texto(),
     prazo: inteiroOpcional(),
@@ -278,8 +285,8 @@ export const liParcelamentoSchema = z
  */
 export const liPedidoPagamentoSchema = z
   .object({
-    /** The pagamento doc's key (step 6): an empty one is refused, never `null`. */
-    id: wireInt().nullable().optional(),
+    /** The pagamento doc's key (step 6). A missing one is the importer's to refuse. */
+    id: inteiroOpcional(),
     valor: numeroOpcional(),
     valor_pago: numeroOpcional(),
     pagamento_tipo: texto(),
@@ -335,7 +342,12 @@ export const liEnderecoEntregaSchema = z
  *
  * `id_anymarket` is read for presence only (one of the hub guard's markers),
  * so its `''` reads as `null`: the provider's "nothing" must never look like a
- * marker, which would keep an ordinary order out as a hub one. The order's own `id_externo` is NOT a hub marker — a store-side ERP may stamp
+ * marker, which would keep an ordinary order out as a hub one. ⚠️ The webhook
+ * receiver's hub hint (step 4) reads the RAW body, so it must read this leaf
+ * through this same schema (`liPedidoSchema.shape.id_anymarket`) rather than
+ * restate "present", or `''` would be a marker there and nothing here.
+ *
+ * The order's own `id_externo` is NOT a hub marker — a store-side ERP may stamp
  * it through the platform's API on an ordinary storefront order — and nothing
  * reads it, so it is not declared: `.passthrough()` keeps it, whatever its
  * shape.

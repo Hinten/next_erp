@@ -17,7 +17,9 @@
  *    payments with two, quantities and weights with three;
  *  - one instalment value is a JSON NUMBER (the card order), and the instalment
  *    plan is `{}` on the other payment forms;
- *  - `preco_custo` is a non-numeric string;
+ *  - `preco_custo` is a string. The captures FAKE the cost (the sanitizer keeps
+ *    only its JSON type), so its real form is not evidenced; a non-numeric one
+ *    here is the case the schema must survive, not a claim about the provider;
  *  - `sku` is 14 to 17 digits, quoted;
  *  - `itens[].produto` is a string; the shipping method of a pickup has
  *    `tipo: null`;

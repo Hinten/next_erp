@@ -737,7 +737,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Receiver** `app/api/webhooks/loja-integrada/[contaId]/pedido/route.ts`:
   1. The conta comes from the **URL path**, followed by one uncached credential read.
   2. **Secret unset ⇒ 503. Header missing, or not `Bearer <secret>` ⇒ 401.** The compare is `timingSafeEqual` on equal-length buffers, and a length mismatch counts as a mismatch.
-  3. The body is bounded (e.g. 256 KB). Only `numero`, `data_modificacao` and a boolean `hubHint` (`marketplace_info`/`id_anymarket` present) are parsed.
+  3. The body is bounded (e.g. 256 KB). Only `numero`, `data_modificacao` and a boolean `hubHint` (`marketplace_info`/`id_anymarket` present) are parsed. "Present" is neither absent, `null` nor `''`, the rule step 5's schema applies: `id_anymarket` is read through that same leaf (`liPedidoSchema.shape.id_anymarket`, which reads `''` as `null`), never restated, and the receiver's tests pin `id_anymarket: ''` as no hint.
   4. Enqueue `{contaId, numero, dataModificacaoUs, origem: 'webhook', hubHint}` and answer 200 (LI's expected ack is undocumented).
   5. If the enqueue fails → `persistNotificationFailure` → still 200.
 
@@ -769,11 +769,12 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - `buscarProdutoPorIdExternoLi` → `GET /v1/produto/{id}/?id_externo=1`, the line fallback.
   - Each one only reads, and each goes through the step-3 context, so nothing runs while the read switch is off (D17). The id is checked to be a positive safe integer before any path is built.
   - **The required set is minimal**, because a schema refusal parks the task for good: `numero`, `situacao.codigo` (a plain string, never an enum), `data_modificacao`, and `itens`/`envios`/`pagamentos` as arrays (absent or `null` ⇒ `[]`). Everything else is optional and passthrough.
+  - **An exact `''` is the provider's "nothing"**: an optional number, count, id or nested object reads it as `null` (a refusal would park the whole order for one empty leaf); a text leaf keeps its `''`; the required set still refuses it at its own path. This includes the three ids a write is keyed on (`itens[].id`, `envios[].id`, `pagamentos[].id`), so absent, `null` and `''` arrive as ONE "no id", and the importer decides what that costs, in one place (import step 1).
   - Money goes through `wireNumber()`: line prices carry four decimals, totals two, quantities three, and one instalment value arrived as a JSON number. `preco_custo` stays unparsed, because one unreadable cost must never fail the order. `forma_envio.id` stays raw, so step 20's key decides its form.
   - The GET carries a top-level `id`. It is never a key: the path, every resource URI and the pedido id use the `numero`.
   - **Paging:** `meta.next` forwards only `offset` plus the caller's own keys. A captured order search answers a `next` with an undocumented extra key.
 - **One import, in order.** Every deterministic refusal comes before the first write.
-  1. **Detail GET.** `String(corpo.numero)` must equal the task's numero, and the stamp must read. The notification's own stamp never decides.
+  1. **Detail GET.** `String(corpo.numero)` must equal the task's numero, and the stamp must read. The notification's own stamp never decides. Every key the import writes from must be present too: each line's `id`, `envios[0].id` and each pagamento's `id` (absent, `null` and `''` read alike in the wire schema). A missing one is refused here, in this one place, and no key is ever built out of it: `String(null)` is the key `'null'`.
   2. **History GET**, normalised.
      - Strict on queue attempts 0 and 1: a detail codigo other than `pedido_efetuado` (9) absent from the history (it has no creation row), or a broken chain, retries.
      - Degraded from attempt 2 and in the sweep: decide from what was read, set an underivable date to null, log a WARNING.
@@ -918,7 +919,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **5-r** (optional): refreshes two fixture leaves.
 - **Verification:**
   - **5-a:**
-    - the wire schemas over bodies in the captures' shape;
+    - the wire schemas over bodies in the captures' shape, and over the committed captures themselves (`pedidos/capturasPedido.test.ts`): every body parses, and `''` at any leaf is refused only on the required set;
     - the paging drop of an unknown `next` key;
     - `microsDeDataHoraNoFuso`: `X` ≡ `X.000000`, +1 µs, São Paulo vs UTC 3 h apart, a DST gap, an offset or `Z` refused;
     - the situação table, pinned row by row and against C3: one row per codigo, the capture set equals `aprovado: true`, the paid set is that set minus 6, 16 and 1020;
