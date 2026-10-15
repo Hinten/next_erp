@@ -45,7 +45,9 @@ const TODOS_OS_TIPOS = Object.values(INTEGRACAO_TIPO);
  * (caps) with `true` (a provider) — the FIRST bullet above. It is safe here, unlike
  * the case that bullet warns about, for one structural reason: `vereditoCanal`
  * answers `canal-nao-implementado` BEFORE it consults any provider map, so every
- * caller — the dialogs' warning, the runs' `suportado`, `resolve*` — still reports
+ * caller — the dialogs' warning, the runs' `suportado` (pinned with a Shopee conta
+ * in `../estoque/enviarEstoqueRun.test.ts`, `../preco/enviarPrecoRun.test.ts` and
+ * `../anuncioStatus/pausarAnunciosRun.test.ts`), `resolve*` — still reports
  * Shopee as not built and hands it the placeholder. The provider is unreachable,
  * not offered: nothing 4xx's, and the table does not lie (the survey says Shopee
  * CAN; the row says WE have not shipped it — both true).

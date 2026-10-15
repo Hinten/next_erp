@@ -83,13 +83,13 @@ precisely so registering a real channel never means editing the placeholder.
 ## Where the tests are
 
 `run.ts` is pinned by `../estoque/enviarEstoqueRun.test.ts` — dedup, the
-whole-selection dispatch, the per-conta row keys, the two cancel checks before a
-dispatch. It runs against the shared code path through the estoque binding, so it
-is not duplicated under `../preco/`; that suite pins only what the price binding
-itself decides.
+whole-selection dispatch, the per-conta row keys and every cancel check, including
+a cancel during the only, final or middle conta's dispatch (#1914). It runs
+against the shared code path through the estoque binding, so it is not duplicated
+under `../preco/`; that suite pins only what the price binding itself decides.
 
-The one case pinned directly, in `run.test.ts`, is the cancel that lands DURING
-the last conta's dispatch: a provider answers an abort with `{ rows: [] }` and
-relies on the run to report it, so the run checks the signal once more after the
-loop (#1529, Q5(b)). It needs a dispatch that aborts mid-call, which is simpler to
-inject into the orchestrator than to fake through a provider.
+A cancel that lands DURING the last conta's dispatch has no next loop iteration to
+see it: a provider answers an abort with `{ rows: [] }` and relies on the run to
+report it, so the run's return re-reads the signal (`cancelado || cancelou()`).
+`run.test.ts` (#1529, R1) pins that same check against the orchestrator directly,
+beside the estoque binding's #1914 cases.

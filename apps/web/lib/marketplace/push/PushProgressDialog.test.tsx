@@ -153,7 +153,7 @@ describe('PushProgressDialog — cancellation', () => {
         reenviarComErro,
         {
           db: {} as Firestore,
-          deps: { mercadoLivre },
+          deps: { mercadoLivre, shopee: null },
           lerIntegracoes: async () =>
             new Map([['c1', { nome: 'Loja ML', tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: true }]]),
           signal,
