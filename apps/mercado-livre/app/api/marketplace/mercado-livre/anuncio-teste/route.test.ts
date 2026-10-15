@@ -63,7 +63,13 @@ beforeEach(() => {
   __resetAllReadCaches();
   erro = vi.spyOn(console, 'error').mockImplementation(() => {});
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
-  h.resolveChannelContext.mockResolvedValue({ integracaoId: 'i', accessToken: 'AT', account: {} });
+  h.resolveChannelContext.mockResolvedValue({
+    integracaoId: 'i',
+    accessToken: 'AT',
+    getAccessToken: async () => 'AT',
+    invalidateAccessToken: vi.fn(),
+    account: {},
+  });
   h.loadCtx.mockResolvedValue({ resolveChannelContext: h.resolveChannelContext });
   h.listSiteCategories.mockResolvedValue([
     { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },

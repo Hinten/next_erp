@@ -357,7 +357,7 @@ emulator → the real `onTaskDispatched` → a real Firestore write.
 bug that would have blocked us —
 [firebase-admin-node#2725](https://github.com/firebase/firebase-admin-node/issues/2725),
 where the emulator 404'd `locations/<region>/functions/<name>` — was **closed
-2024-10-11 and fixed in firebase-admin 12.7.0**. This repo pins 14.2.0. So the
+2024-10-11 and fixed in firebase-admin 12.7.0**. This repo pins 14.5.0. So the
 region-qualified name every `{ml,mp,wa}Tasks.ts` uses is **both** the
 production-correct and the emulator-correct form; no seam or bare-name variant
 is needed.

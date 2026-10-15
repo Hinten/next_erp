@@ -253,7 +253,7 @@ async function main(): Promise<void> {
 
   await captureAll(
     plan,
-    { fetchImpl: globalThis.fetch, accessToken: channelCtx.accessToken },
+    { fetchImpl: globalThis.fetch, getAccessToken: channelCtx.getAccessToken },
     (r) => {
       const entrada = gravar(r);
       manifesto.push(entrada);

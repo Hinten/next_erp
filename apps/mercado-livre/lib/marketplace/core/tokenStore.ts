@@ -26,8 +26,7 @@
  * failures. Firestore only ever performs plain reads/writes here.
  *
  * Reads always take the newest token by `expires_in`, spanning both the
- * Flutter-written docs and this app's `current` doc, so whichever app refreshed
- * last is the one everyone uses.
+ * Flutter-written docs and this app's `current` doc, so migrated legacy rows and current credentials resolve through one query.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { tokenDuravelCollection } from '@delfrance/data/admin/collections';
@@ -110,7 +109,16 @@ export interface TokenDuravelStore {
   deleteAll(): Promise<number>;
 }
 
-export function createTokenDuravelStore(db: Firestore, integracaoId: string): TokenDuravelStore {
+export interface TokenDuravelStoreOptions {
+  /** Evict derived access tokens after a credential changes in this process. */
+  readonly onCredentialsChanged?: () => void;
+}
+
+export function createTokenDuravelStore(
+  db: Firestore,
+  integracaoId: string,
+  opts: TokenDuravelStoreOptions = {},
+): TokenDuravelStore {
   const ctx = { integracaoId };
   const coll = tokenDuravelCollection.ref(db, ctx);
 
@@ -134,6 +142,7 @@ export function createTokenDuravelStore(db: Firestore, integracaoId: string): To
       await tokenDuravelCollection
         .docRef(db, ctx, CURRENT_DOC_ID)
         .set(tokenDuravelCollection.parse(fresh));
+      opts.onCredentialsChanged?.();
       return fresh;
     },
     async deleteAll(): Promise<number> {
@@ -141,18 +150,24 @@ export function createTokenDuravelStore(db: Firestore, integracaoId: string): To
       // lineage, and a Flutter-written auto-id left behind is a live credential.
       // `select()` keeps this to document names — the token bodies are never
       // materialized just to delete them.
-      const snap = await coll.select().get();
-      if (snap.empty) return 0;
-      // Chunked because a Firestore batch caps at 500 writes. Flutter appends an
-      // auto-id doc per connect and never prunes, so the count is unbounded in
-      // principle — and a partial delete here is precisely the outcome this
-      // function exists to prevent.
-      for (let i = 0; i < snap.docs.length; i += DELETE_BATCH_SIZE) {
-        const batch = db.batch();
-        for (const doc of snap.docs.slice(i, i + DELETE_BATCH_SIZE)) batch.delete(doc.ref);
-        await batch.commit();
+      // Fence both existing loads and reads that race a partial deletion.
+      opts.onCredentialsChanged?.();
+      try {
+        const snap = await coll.select().get();
+        if (snap.empty) return 0;
+        // Chunked because a Firestore batch caps at 500 writes. Flutter appends an
+        // auto-id doc per connect and never prunes, so the count is unbounded in
+        // principle — and a partial delete here is precisely the outcome this
+        // function exists to prevent.
+        for (let i = 0; i < snap.docs.length; i += DELETE_BATCH_SIZE) {
+          const batch = db.batch();
+          for (const doc of snap.docs.slice(i, i + DELETE_BATCH_SIZE)) batch.delete(doc.ref);
+          await batch.commit();
+        }
+        return snap.size;
+      } finally {
+        opts.onCredentialsChanged?.();
       }
-      return snap.size;
     },
   };
 }
@@ -169,6 +184,17 @@ export interface GetOrRefreshOpts {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
+/** Derived credential fields; refresh tokens never cross this boundary. */
+export interface AccessTokenWithExpiry {
+  readonly accessToken: string;
+  /** Absolute milliseconds since epoch, including the durable expiry guard. */
+  readonly expiresAt: number;
+}
+
+function accessTokenWithExpiry(token: TokenDuravel): AccessTokenWithExpiry {
+  return { accessToken: token.access_token, expiresAt: token.expires_in };
+}
+
 /**
  * The live access token for a connected account: the newest valid one, or a
  * freshly refreshed one. Concurrency-safe per the module docstring. Throws
@@ -180,13 +206,22 @@ export async function getOrRefreshAccessToken(
   config: MercadoLivreOAuthConfig,
   opts: GetOrRefreshOpts = {},
 ): Promise<string> {
+  return (await getOrRefreshAccessTokenWithExpiry(store, config, opts)).accessToken;
+}
+
+/** The same uncached refresh algorithm, projecting only safe-to-cache fields. */
+export async function getOrRefreshAccessTokenWithExpiry(
+  store: TokenDuravelStore,
+  config: MercadoLivreOAuthConfig,
+  opts: GetOrRefreshOpts = {},
+): Promise<AccessTokenWithExpiry> {
   const now = opts.now ?? Date.now();
   const cutoff = now + (opts.skewMs ?? REFRESH_SKEW_MS);
   const refresh = opts.refresh ?? refreshAccessToken;
   const sleep = opts.sleep ?? defaultSleep;
 
   const valid = await store.loadValid(cutoff);
-  if (valid) return valid.access_token;
+  if (valid) return accessTokenWithExpiry(valid);
 
   const latest = await store.loadLatest();
   if (!latest) {
@@ -197,15 +232,15 @@ export async function getOrRefreshAccessToken(
   }
   // A concurrent refresh may have landed between the fast path and this read —
   // honor it instead of POSTing again.
-  if (latest.expires_in > cutoff) return latest.access_token;
+  if (latest.expires_in > cutoff) return accessTokenWithExpiry(latest);
 
   try {
     const resp = await refresh(config, latest.refresh_token);
     const fresh = tokenDuravelFromResponse(resp, now);
     await store.save(fresh);
-    return fresh.access_token;
+    return accessTokenWithExpiry(fresh);
   } catch (err) {
-    // We lost the single-use race: another refresh (this app or Flutter) already
+    // We lost the single-use race: another instance of this app already
     // rotated the token, so our POST got invalid_grant / an HTTP error. The
     // winner just wrote a fresh token — re-read and use it. Only re-raise when
     // there is genuinely no valid credential.
@@ -216,10 +251,10 @@ export async function getOrRefreshAccessToken(
       // cutoff stays the PRE-POST value: conservative (the winner's token must
       // clear the full skew measured from the original `now`) and deterministic.
       const winner = await store.loadValid(cutoff);
-      if (winner) return winner.access_token;
+      if (winner) return accessTokenWithExpiry(winner);
       await sleep(LOSER_REREAD_DELAY_MS);
       const late = await store.loadValid(cutoff);
-      if (late) return late.access_token;
+      if (late) return accessTokenWithExpiry(late);
     }
     throw err;
   }

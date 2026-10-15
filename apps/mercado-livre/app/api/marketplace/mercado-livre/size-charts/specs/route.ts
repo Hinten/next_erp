@@ -49,7 +49,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const ctx = await loadMercadoLivreContext(getAdminFirestore(), body.integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createMercadoLivreApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     const specs = Array.isArray(body.attributes)
       ? await api.getGridTechnicalSpecs(body.domainId, body.attributes)

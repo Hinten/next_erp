@@ -255,6 +255,7 @@ function wireApi(pagesByConta: Record<string, MlMissedFeeds[]>, streams: Respons
       resolveChannelContext: async () => ({
         accessToken: 'STALE-SNAPSHOT',
         getAccessToken: token,
+        invalidateAccessToken: vi.fn(),
         account: {},
       }),
     };

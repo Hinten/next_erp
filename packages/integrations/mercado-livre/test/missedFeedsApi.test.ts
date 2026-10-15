@@ -127,10 +127,12 @@ describe('createMercadoLivreApi — missed feeds (#812)', () => {
       status: 401,
     };
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(body, 401));
-    const api = createMercadoLivreApi(cfg(fetchMock));
+    const onAccessTokenRejected = vi.fn();
+    const api = createMercadoLivreApi(cfg(fetchMock, { onAccessTokenRejected }));
     await expect(
       api.getMissedFeeds({ appId: '42', topic: 'items', siteId: 'MLB' }),
     ).rejects.toMatchObject({ status: 401, body });
+    expect(onAccessTokenRejected).not.toHaveBeenCalled();
   });
 
   it('defaults messages to [] when ML omits the array entirely', async () => {

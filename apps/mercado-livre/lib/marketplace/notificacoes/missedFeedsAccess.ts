@@ -66,6 +66,7 @@ export async function findMissedFeedsAccess(
       checkBudget();
       const api = createMercadoLivreApi({
         getAccessToken: channelCtx.getAccessToken,
+        onAccessTokenRejected: channelCtx.invalidateAccessToken,
         // Each HTTP read is bounded too: a stalled provider must leave time
         // to persist incomplete health before the 540-second function limit.
         fetch: (input, init) => {

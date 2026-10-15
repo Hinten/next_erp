@@ -80,6 +80,14 @@ vi.mock('@/app/(app)/canais/_components/RecalcularPrecosCanalAction', () => ({
 vi.mock('@/app/(app)/canais/loja-integrada/_components/ContaLojaIntegradaPanel', () => ({
   ContaLojaIntegradaPanel: () => null,
 }));
+// The conta's two freight tabs (step 20): their pickers and the Melhor Envio
+// service list run through `useQuery`, which this suite has no provider for.
+vi.mock('@/app/(app)/canais/loja-integrada/_components/MapaFreteManager', () => ({
+  MapaFreteManager: () => null,
+}));
+vi.mock('@/app/(app)/canais/loja-integrada/_components/HorarioCorteManager', () => ({
+  HorarioCorteManager: () => null,
+}));
 vi.mock('@/app/(app)/canais/mercado-livre/_components/ContaMercadoLivrePanel', () => ({
   ContaMercadoLivrePanel: () => null,
 }));
