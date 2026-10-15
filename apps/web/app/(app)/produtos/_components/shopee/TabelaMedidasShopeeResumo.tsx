@@ -53,6 +53,14 @@ export function TabelaMedidasShopeeResumo({
       </Text>
     );
   }
+  if (tabelaMedidas.estado === 'ref-invalida') {
+    return (
+      <Text size="sm" c="dimmed">
+        Tabela de medidas: o produto aponta para algo que não é uma tabela de medidas (
+        {tabelaMedidas.ref}).
+      </Text>
+    );
+  }
   if (tabelaMedidas.estado === 'ausente') {
     return (
       <Text size="sm" c="dimmed">

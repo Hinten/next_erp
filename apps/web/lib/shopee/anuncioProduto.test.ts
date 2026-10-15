@@ -17,6 +17,7 @@ import {
   TEXTO_MOTIVO_KIT,
   chaveIncerto,
   criacaoDeKitIncerta,
+  limiteNaCriacaoDeKit,
   ehFraseDeTerminal,
   esperaDoKitIncerto,
   estadoAnuncioShopeeLido,
@@ -26,9 +27,11 @@ import {
   lerIncerto,
   ordenarVinculosShopee,
   resumoDaReverificacaoShopee,
+  textoDaEtapaShopee,
   textoDoAvisoKit,
   textoDoProblemaShopee,
   urlDoAnuncioShopee,
+  vinculoSubstituidoAlheio,
   type IncertoKitShopee,
 } from './anuncioProduto';
 import {
@@ -280,6 +283,88 @@ describe('textoDoProblemaShopee', () => {
     for (const t of [recriar, importar, escolher]) expect(t).not.toMatch(TEXTO_DE_TERMINAL);
   });
 
+  it('an `importar` hit a link already holds names its produto, never the mass import (R5-08)', () => {
+    const MASSA = 'importação em massa';
+    // One held, one free, in the same row: worded APART.
+    const misto = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: {
+        tipo: T.importar,
+        itemIds: [1000009, 1000010],
+        vinculados: [{ itemId: 1000010, produtoId: 'prod-2' }],
+      },
+    });
+    expect(misto).toContain(MASSA);
+    expect(misto).toContain('Anúncio(s) na Shopee sem vínculo: 1000009.');
+    expect(misto).toContain(
+      'O anúncio 1000010 já está vinculado ao produto prod-2 — a importação não o muda; confira o SKU desse produto.',
+    );
+    expect(misto).not.toContain('O anúncio 1000009');
+
+    // Every hit held: the mass-import sentence goes — it cannot help any of them.
+    const todos = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: {
+        tipo: T.importar,
+        itemIds: [1000010],
+        vinculados: [{ itemId: 1000010, produtoId: 'prod-2' }],
+      },
+    });
+    expect(todos).not.toContain(MASSA);
+    expect(todos).toContain('Já existe na Shopee um kit com o SKU deste produto — não crie outro.');
+    expect(todos).toContain('O anúncio 1000010 já está vinculado ao produto prod-2');
+
+    // The server reported NONE held: every id is a mass-import candidate.
+    const nenhum = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: { tipo: T.importar, itemIds: [1000009], vinculados: [] },
+    });
+    expect(nenhum).toBe(
+      `${TEXTO_ACAO_SUGERIDA[T.importar]} Anúncio(s) na Shopee sem vínculo: 1000009.`,
+    );
+    for (const t of [misto, todos, nenhum]) expect(t).not.toMatch(TEXTO_DE_TERMINAL);
+  });
+
+  it('NEAR-MISS: an `importar` from a server that does not report `vinculados` reads as before', () => {
+    for (const vinculados of [undefined, null]) {
+      expect(
+        textoDoProblemaShopee({
+          mensagem: CLI,
+          acao: { tipo: T.importar, itemIds: [1000009, 1000010], vinculados },
+        }),
+      ).toBe(`${TEXTO_ACAO_SUGERIDA[T.importar]} Anúncio(s) na Shopee: 1000009, 1000010.`);
+    }
+  });
+
+  it('a vinculo-substituido row about ANOTHER link names it; about the block, or unreported, reads as before (R5-01)', () => {
+    const acao = { tipo: T.republicar, linkDocId: 'L-kit', substituidoLinkDocId: 'L-velho' };
+    const linha = { motivo: 'vinculo-substituido', mensagem: CLI, acao };
+    expect(vinculoSubstituidoAlheio(acao, 'L-kit')).toBe('L-velho');
+    const alheio = textoDoProblemaShopee(linha, 'L-kit');
+    expect(alheio).toContain(
+      'O kit nativo antigo do vínculo L-velho foi substituído pelo vínculo L-kit',
+    );
+    expect(alheio).not.toContain('Este anúncio');
+    expect(alheio).not.toMatch(TEXTO_DE_TERMINAL);
+    // No successor known: the old link is still named.
+    expect(
+      textoDoProblemaShopee({ ...linha, acao: { ...acao, linkDocId: null } }, 'L-kit'),
+    ).toContain('O kit nativo antigo do vínculo L-velho foi substituído, mas');
+    // NEAR-MISSES — the row is about the block, the server did not say, or no block was given.
+    const proprio = `${TEXTO_MOTIVO_KIT['vinculo-substituido']} Vínculo: L-kit.`;
+    expect(vinculoSubstituidoAlheio(acao, 'L-velho')).toBeNull();
+    expect(textoDoProblemaShopee(linha, 'L-velho')).toBe(proprio);
+    for (const semAssunto of [
+      { tipo: T.republicar, linkDocId: 'L-kit' },
+      { ...acao, substituidoLinkDocId: null },
+    ]) {
+      expect(vinculoSubstituidoAlheio(semAssunto, 'L-kit')).toBeNull();
+      expect(textoDoProblemaShopee({ ...linha, acao: semAssunto }, 'L-kit')).toBe(proprio);
+    }
+    expect(textoDoProblemaShopee(linha)).toBe(proprio);
+    expect(vinculoSubstituidoAlheio({ tipo: T.recriar, linkDocId: 'L-velho' }, 'L-kit')).toBeNull();
+  });
+
   it('a republish names its link, or says there is none — never offering a publish with no link', () => {
     expect(
       textoDoProblemaShopee({ mensagem: CLI, acao: { tipo: T.republicar, linkDocId: 'L2' } }),
@@ -299,6 +384,50 @@ describe('textoDoProblemaShopee', () => {
     expect(
       textoDoProblemaShopee({ mensagem: 'rode exatamente o mesmo comando de novo', acao: null }),
     ).toBe(FRASE_RECUSA_SEM_PASSO_SHOPEE);
+  });
+});
+
+describe('textoDaEtapaShopee', () => {
+  /** apps/shopee's `EtapaPublicacao` (`errosPublicacao.ts`), all thirteen. */
+  const ETAPAS = [
+    'fotos',
+    'add_item',
+    'update_item',
+    'init_tier_variation',
+    'update_tier_variation',
+    'add_model',
+    'update_model',
+    'get_model_list',
+    'relistagem',
+    'leitura-de-volta',
+    'add_kit_item',
+    'update_kit_item',
+    'delete_item',
+  ];
+  const DESCONHECIDA = 'uma etapa que esta tela ainda não descreve';
+
+  it('labels every step the server names, and never prints the raw code', () => {
+    for (const etapa of ETAPAS) {
+      const texto = textoDaEtapaShopee(etapa);
+      expect(texto, etapa).toMatch(/^Recusada na etapa: .+\. Escritas anteriores/);
+      // `fotos` is a pt-BR word as well as a code; every other code is a slug.
+      if (etapa !== 'fotos') expect(texto, etapa).not.toContain(etapa);
+      expect(texto, etapa).not.toContain(DESCONHECIDA);
+      expect(texto, etapa).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
+  it('says a refused create created nothing — the one fact the step alone settles', () => {
+    expect(textoDaEtapaShopee('add_kit_item')).toContain('a Shopee não criou o kit');
+    expect(textoDaEtapaShopee('add_item')).toContain('a Shopee não criou o anúncio');
+  });
+
+  it('NEAR-MISS: an unknown step, or an inherited property name, gets the neutral label', () => {
+    for (const etapa of ['etapa_nova', 'toString', '__proto__', 'constructor', '']) {
+      const texto = textoDaEtapaShopee(etapa);
+      expect(texto, etapa).toContain(DESCONHECIDA);
+      expect(texto, etapa).not.toContain('undefined');
+    }
   });
 });
 
@@ -488,7 +617,7 @@ describe('criacaoDeKitIncerta — a failed kit create that may still have create
     }
   });
 
-  it('NEAR-MISS: a rate-limited 502 (burst / daily) and every 4xx are DEFINITE — nothing ran', () => {
+  it('NEAR-MISS: a rate-limited 502 (burst / daily) and every 4xx are DEFINITE', () => {
     for (const err of [
       http(502, 'burst'),
       http(502, 'daily'),
@@ -499,6 +628,21 @@ describe('criacaoDeKitIncerta — a failed kit create that may still have create
       http(422),
     ]) {
       expect(criacaoDeKitIncerta(err)).toBe(false);
+    }
+  });
+
+  it('limiteNaCriacaoDeKit: only a 502 whose kind is a rate limit', () => {
+    expect(limiteNaCriacaoDeKit(http(502, 'burst'))).toBe(true);
+    expect(limiteNaCriacaoDeKit(http(502, 'daily'))).toBe(true);
+    // NEAR-MISSES: the same kind on another status, another kind on a 502, a network error.
+    for (const err of [
+      http(503, 'burst'),
+      http(429, 'daily'),
+      http(502, 'transient'),
+      http(502),
+      new ShopeeClientNetworkError('Failed to fetch'),
+    ]) {
+      expect(limiteNaCriacaoDeKit(err)).toBe(false);
     }
   });
 });
@@ -532,7 +676,8 @@ describe('the uncertain-create store (lerIncerto / gravarIncerto)', () => {
   it('round-trips the exact body, and forgets it on null', () => {
     expect(gravarIncerto('int-1', 'prod-1', INCERTO)).toBe(true);
     expect(lerIncerto('int-1', 'prod-1')).toStrictEqual(INCERTO);
-    // Another conta, another produto: nothing.
+    // Another conta, another produto: nothing (key misses — the identity check on
+    // the stored body is pinned below).
     expect(lerIncerto('int-2', 'prod-1')).toBeNull();
     expect(lerIncerto('int-1', 'prod-2')).toBeNull();
     expect(gravarIncerto('int-1', 'prod-1', null)).toBe(true);
@@ -540,18 +685,27 @@ describe('the uncertain-create store (lerIncerto / gravarIncerto)', () => {
     expect(lerIncerto('int-1', 'prod-1')).toBeNull();
   });
 
-  it('reads a stored value that is not JSON, not the shape, or names another conta as nothing', () => {
+  it('reads a stored value that is not JSON, not the shape, or names another conta or produto as nothing', () => {
     const chave = chaveIncerto('int-1', 'prod-1');
     window.sessionStorage.setItem(chave, '{nao-e-json');
     expect(lerIncerto('int-1', 'prod-1')).toBeNull();
     window.sessionStorage.setItem(chave, JSON.stringify({ ate: 'amanhã', corpo: {} }));
     expect(lerIncerto('int-1', 'prod-1')).toBeNull();
-    // Bodies the route refuses (400) are never re-sent: `recriar: false` (the flag is
-    // `true` or absent), both arm flags at once, a recriar naming no link.
+    // Not THIS tab's kit re-send: `recriar: false` (the schema takes the flag as
+    // `true` or absent — the route itself would accept a `false`), both arm flags
+    // at once, neither, a create naming no link (either arm), an empty link, and
+    // a status no kit create carries.
+    const semLink = { integracaoId: 'int-1', produtoId: 'prod-1' };
     for (const corpo of [
       { ...INCERTO.corpo, recriar: false },
       { ...INCERTO.corpo, converterEmKit: true },
-      { integracaoId: 'int-1', produtoId: 'prod-1', recriar: true },
+      { integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'L1' },
+      { ...semLink, recriar: true },
+      { ...semLink, converterEmKit: true },
+      { ...INCERTO.corpo, linkDocId: '' },
+      { ...INCERTO.corpo, status: 'BANNED' },
+      // Stored under int-1:prod-1 but naming ANOTHER produto (the identity's second half).
+      { ...INCERTO.corpo, produtoId: 'prod-9' },
     ]) {
       window.sessionStorage.setItem(chave, JSON.stringify({ ...INCERTO, corpo }));
       expect(lerIncerto('int-1', 'prod-1')).toBeNull();

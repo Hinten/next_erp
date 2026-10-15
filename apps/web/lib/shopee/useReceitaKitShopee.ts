@@ -36,8 +36,10 @@
  * Each recipe is parsed by `componentesKitSchema` — the parse the publish's
  * context applies — and the warnings are `problemasDeEstruturaDaReceitaErp`
  * (`@delfrance/schemas`), the composition over the publish's own structural
- * check. WARNINGS ONLY: the publish re-decides each one against the real Shopee
- * addresses, so no caller may disable a button on them.
+ * check. WARNINGS ONLY, so no caller may disable a button on them: when one
+ * warns, the publish refuses BEFORE any Shopee write (three are decided on the
+ * ERP data alone; only `kit-componente-unico-quantidade` depends on the real
+ * Shopee addresses, and the preview under-warns it, never over-warns).
  */
 
 import { useMemo } from 'react';

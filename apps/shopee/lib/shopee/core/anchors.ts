@@ -31,6 +31,12 @@ import { naoDocId } from '../anuncios/corpoPublicacao';
 /** The two produto fields the resolution reads — and the only two it may read. */
 const CAMPOS_DA_RESOLUCAO = ['nome', 'paiId'] as const;
 
+/**
+ * The ONE field the label read takes. No `paiId`, so that read can never become
+ * a second hop.
+ */
+const CAMPOS_DO_ROTULO = ['nome'] as const;
+
 export interface AnchorsShopee {
   /** Anchor ids, deduped, in first-seen request order. */
   anchorIds: string[];
@@ -40,10 +46,11 @@ export interface AnchorsShopee {
    */
   anchorDe: Map<string, string>;
   /**
-   * Requested id → its stored `nome`, `null` when that is not a usable string.
-   * Keyed by the REQUESTED id: an anchor nobody requested has no entry, so its
-   * rows carry `produtoNome: null` — the resolution reads no second batch for a
-   * label.
+   * Id → its stored `nome`, `null` when that is not a usable string: every
+   * requested id, AND every anchor a requested id resolved to. The anchor's rows
+   * carry the ANCHOR's name, so a selection of only a variation child still names
+   * the listing it moved (the price push's `nomeDoAnchor` precedent,
+   * `precos/enviarPrecoManual.ts`). An id with no document has no entry.
    */
   nomeDe: Map<string, string | null>;
   /** Requested ids with no produto document, in request order. */
@@ -73,7 +80,9 @@ function nomeUtilizavel(dados: Record<string, unknown>): string | null {
 /**
  * Resolve each requested id to its family anchor with ONE masked batch key read
  * (`getAll(…, { fieldMask: ['nome', 'paiId'] })`) — a key read, so there is no
- * index to ride and none to miss (root `CLAUDE.md` rule 1).
+ * index to ride and none to miss (root `CLAUDE.md` rule 1). Only when an anchor
+ * was not itself requested, ONE more masked key read fetches those anchors'
+ * `nome` for their rows (`fieldMask: ['nome']`: a label, never a second hop).
  *
  * Exactly ONE hop. A two-deep `paiId` chain is pathological: the hop lands on a
  * produto that is itself a child, whose family read finds no listing, and the
@@ -117,6 +126,25 @@ export async function resolverAnchorsShopee(
     if (!vistos.has(anchor)) {
       vistos.add(anchor);
       resolvidos.anchorIds.push(anchor);
+    }
+  }
+
+  // The label read: only the anchors nobody requested, whose name the first
+  // batch never saw. A dangling `paiId` simply finds no document — no entry.
+  const foiPedido = new Set(pedidos);
+  const anchorsNaoPedidos = resolvidos.anchorIds.filter((a) => !foiPedido.has(a));
+  if (anchorsNaoPedidos.length > 0) {
+    const rotulos = await db.getAll(
+      ...anchorsNaoPedidos.map((id) => produtoCollection.docRef(db, {}, id)),
+      { fieldMask: [...CAMPOS_DO_ROTULO] },
+    );
+    for (const snap of rotulos) {
+      if (snap.exists) {
+        resolvidos.nomeDe.set(
+          snap.id,
+          nomeUtilizavel((snap.data() ?? {}) as Record<string, unknown>),
+        );
+      }
     }
   }
   return resolvidos;

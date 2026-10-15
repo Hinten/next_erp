@@ -363,6 +363,9 @@ describe('enviarEstoqueManualShopee — um FILHO pedido resolve na âncora (#152
     expect(lidos).toEqual([[ANCORA]]);
     expect(chamadas.map((c) => c.tarefa.produtoId)).toEqual([ANCORA]);
     expect(res.listings.map((l) => [l.produtoId, l.outcome])).toEqual([[ANCORA, 'enviado']]);
+    // MUT-1: the anchor nobody requested still carries its OWN name — never null
+    // (the web dialog's 'Produto desconhecido') and never the child's.
+    expect(res.listings[0]?.produtoNome).toBe('Camiseta');
     expect(res.produtosSemEnvio).toEqual([]);
     expect(res.solicitados).toBe(1);
     expect(res.familias).toBe(1);
