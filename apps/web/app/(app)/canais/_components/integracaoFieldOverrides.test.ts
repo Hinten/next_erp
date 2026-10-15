@@ -391,8 +391,8 @@ describe('validarIntermediador', () => {
     expect(paths({ idCadIntTran: 'seller–123' })).toEqual(['idCadIntTran']);
     expect(paths({ idCadIntTran: 'loja “A”' })).toEqual(['idCadIntTran']);
     expect(paths({ idCadIntTran: 'ab😀' })).toEqual(['idCadIntTran']);
-    expect(paths({ idCadIntTran: 'ab' })).toEqual(['idCadIntTran']);
-    expect(paths({ idCadIntTran: 'a	b' })).toEqual(['idCadIntTran']);
+    expect(paths({ idCadIntTran: 'a\u0007b' })).toEqual(['idCadIntTran']);
+    expect(paths({ idCadIntTran: 'a\tb' })).toEqual(['idCadIntTran']);
     // Accepted: Latin-1 letters and inner spaces.
     expect(paths({ idCadIntTran: 'Loja São José' })).toEqual([]);
     // ⚠️ The near-miss pair at the top of the range: ÿ (U+00FF) passes,
