@@ -9,9 +9,10 @@ import type { PushAlvo, PushRowBase } from './types';
  * The cancel the loop head cannot see (#1529, Q5(b)).
  *
  * The rest of `run.ts` is pinned through the estoque binding
- * (`../estoque/enviarEstoqueRun.test.ts`); this file drives the orchestrator
- * directly, because the case needs a dispatch that aborts the run WHILE it is in
- * flight and answers the way a provider answers an abort — `{ rows: [] }`.
+ * (`../estoque/enviarEstoqueRun.test.ts`, which also drives this case through a
+ * provider spy, #1914); this file pins the return's `cancelado || cancelou()`
+ * against the orchestrator directly, with a dispatch that aborts the run WHILE it
+ * is in flight and answers the way a provider answers an abort — `{ rows: [] }`.
  */
 
 const db = {} as Firestore;
