@@ -98,11 +98,20 @@ Documented at the top of the module, because each failure mode is silent:
   clobber whatever landed in between. The sharpest instance is the Mercado Livre
   importer, which *creates* the produto when its SKU lookup misses — a cached miss
   manufactures a duplicate produto.
-- **OAuth credentials / tokens.** The `tokenDuravel` store's "one wins" refresh depends
-  on always reading the newest document, and races cross-process across every
-  instance and every scheduled sweep. ML refresh tokens are single-use and
-  rotate, so a cached read resurrects a rotated-out token and converts a survivable
-  race into a hard `invalid_grant`.
+- **OAuth refresh credentials and refresh-decision queries.** The `tokenDuravel`
+  store's "one wins" refresh depends on freshly reading the newest document,
+  re-checking before refresh and recovering a winner from another process. ML
+  refresh tokens rotate, so none of those reads or credentials may be cached.
+
+  **Access-token-only exception (#996).** A cache may hold only a usable access
+  token and its absolute expiry. The short `READ_CACHE_TTL.volatile` (60 s) bounds
+  cross-instance staleness, while the existing expiry safety margin is checked on
+  every use. Expiry evicts the entry before the normal fresh read/refresh flow;
+  provider rejection evicts only the exact token used. Conditional
+  `invalidate(key, predicate)` examines settled entries only, preserving a newer
+  token or a pending replacement when an older HTTP request fails late. Local
+  single-flight, uncached failures/absence and every fresh refresh-race read remain
+  mandatory. Cached access-token results never supply refresh credentials.
 
 ## Consequences
 

@@ -12,14 +12,34 @@ import type { CollectionHandle, PathContext } from '@delfrance/data';
 import { isEmpty, pickDirty, valuesEqual } from './diff';
 import type { DocumentBaseline } from './ObjectViewTransactionDocuments';
 
-export interface TransactionDocumentGuard {
+/** How one form field shows a guarded document. */
+export interface TransactionFormProjection {
+  formField: string;
+  /** Pure adapter; array rows must be selected by stable document identity. */
+  toFormValue: (current: DocumentBaseline, formValue: unknown) => unknown;
+}
+
+export interface TransactionDocumentGuard extends TransactionFormProjection {
   /** null means server-confirmed absence; undefined means not yet loaded. */
   baseline: DocumentBaseline | undefined;
   label: string;
-  formField: string;
   ignoreFields?: ReadonlySet<string>;
-  /** Pure adapter; array rows must be selected by stable document identity. */
-  toFormValue: (current: DocumentBaseline, formValue: unknown) => unknown;
+  /**
+   * More form fields that show this SAME document, for a document whose fields
+   * several form fields edit. A rebase moves the baseline of the WHOLE
+   * document (a commit to what was stored, "Recarregar do servidor" to the
+   * server's version), so every field showing it must move with it: a field
+   * left behind keeps a value its rebased baseline no longer matches, and the
+   * next save reads that difference as an edit — writing the stale value back
+   * over a change this save never guarded. Each one is projected exactly as
+   * `formField` is.
+   */
+  extraFormFields?: readonly TransactionFormProjection[];
+}
+
+/** Every form field a guard's document is shown in: `formField` first. */
+export function formProjections(guard: TransactionDocumentGuard): TransactionFormProjection[] {
+  return [guard, ...(guard.extraFormFields ?? [])];
 }
 
 export interface TransactionDocumentConflict {
@@ -203,6 +223,31 @@ const ALWAYS_IGNORED = ['ultimaModificacao', 'timestamp', 'dataCadastro', 'lastM
 
 function siblingIgnored(guard: TransactionDocumentGuard): Set<string> {
   return new Set(['id', ...ALWAYS_IGNORED, ...(guard.ignoreFields ?? [])]);
+}
+
+/**
+ * The baseline a "Salvar mesmo assim" acknowledges for a contested sibling: the
+ * loaded one, with ONLY the fields the modal showed moved to the server's
+ * version — what the parent document's override does for its own fields.
+ *
+ * Taking the whole server copy would also accept every change the modal did NOT
+ * show (a field this save does not write is never compared, so never listed),
+ * and a form field still holding its old value would then read as an edit on
+ * the next save and silently write it back. A deletion or a creation (`@exists`)
+ * replaces the document, so it takes the server's copy whole.
+ */
+export function acknowledgedSiblingBaseline(
+  conflict: TransactionDocumentConflict,
+): DocumentBaseline {
+  const loaded = conflict.guard.baseline;
+  if (loaded == null || conflict.current === null || conflict.fields.includes('@exists'))
+    return conflict.current;
+  const next: Record<string, unknown> = { ...loaded };
+  for (const field of conflict.fields) {
+    if (field in conflict.current) next[field] = conflict.current[field];
+    else delete next[field];
+  }
+  return next;
 }
 
 /** Full replacements/deletes compare every field, including removed keys. */

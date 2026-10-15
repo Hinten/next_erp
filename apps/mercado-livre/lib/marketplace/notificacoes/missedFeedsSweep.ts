@@ -346,7 +346,10 @@ async function sweepConta(
   // Account context → live ML API (the exact chain every consumer uses).
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
-  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const api = createMercadoLivreApi({
+    getAccessToken: channelCtx.getAccessToken,
+    onAccessTokenRejected: channelCtx.invalidateAccessToken,
+  });
 
   let offset = 0;
   let pages = 0;

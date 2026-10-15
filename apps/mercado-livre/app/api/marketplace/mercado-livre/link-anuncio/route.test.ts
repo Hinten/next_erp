@@ -72,7 +72,11 @@ function seedLink(data: Record<string, unknown> | null): void {
 beforeEach(() => {
   vi.clearAllMocks();
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
-  h.resolveChannelContext.mockResolvedValue({ accessToken: 'AT' });
+  h.resolveChannelContext.mockResolvedValue({
+    accessToken: 'AT',
+    getAccessToken: async () => 'AT',
+    invalidateAccessToken: vi.fn(),
+  });
   h.loadCtx.mockResolvedValue({
     // The família branch searches items under the conta's own ML id.
     conta: { user_id: SELLER },

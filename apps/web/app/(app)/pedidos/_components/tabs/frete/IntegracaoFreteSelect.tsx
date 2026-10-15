@@ -5,7 +5,7 @@ import { Select } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { getDocs, type Firestore } from 'firebase/firestore';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
-import { INTEGRACAO_FRETE_LABELS } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE_LABELS, isFreteMarketplaceOwned } from '@delfrance/schemas';
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
 
 function tipoLabel(tipo: string | null | undefined): string {
@@ -17,9 +17,9 @@ export interface IntegracaoFreteSelectProps {
   /** Currently selected `int_frete` doc id (derived from the outer ref). */
   value: string | null;
   /**
-   * Resolved current doc when it isn't in the active list (inactive or
-   * deleted integração) — keeps the stored selection visible, like the
-   * legacy dropdown kept the ref on the doc.
+   * Resolved current doc when it isn't in the selectable list (marketplace-owned,
+   * inactive or deleted integração) — keeps the stored selection visible, like
+   * the legacy dropdown kept the ref on the doc.
    */
   currentFallback?: { id: string; nome: string; tipo: string } | null;
   onChange: (id: string | null) => void;
@@ -31,6 +31,8 @@ export interface IntegracaoFreteSelectProps {
  * "Integração de Frete" dropdown — one-shot load of
  * `int_frete where ativo == true orderBy nome`, the same query the legacy
  * widget ran (`.old/lib/pedido/widgets/frete_inicial_widget.dart:221-224`).
+ * Marketplace-owned integrations are excluded from manual selection to avoid
+ * locking the Frete tab; stored selections remain visible via currentFallback.
  * Labels mirror `IntegracaoFrete.toString`: `nome (tipo)`.
  */
 export function IntegracaoFreteSelect({
@@ -56,10 +58,12 @@ export function IntegracaoFreteSelect({
   });
 
   const data = useMemo(() => {
-    const rows = (list.data ?? []).map((r) => ({
-      value: r.id,
-      label: `${r.data.nome} (${tipoLabel(r.data.tipo)})`,
-    }));
+    const rows = (list.data ?? [])
+      .filter((r) => !isFreteMarketplaceOwned(r.data.tipo))
+      .map((r) => ({
+        value: r.id,
+        label: `${r.data.nome} (${tipoLabel(r.data.tipo)})`,
+      }));
     if (value && currentFallback && !rows.some((r) => r.value === value)) {
       rows.unshift({
         value: currentFallback.id,

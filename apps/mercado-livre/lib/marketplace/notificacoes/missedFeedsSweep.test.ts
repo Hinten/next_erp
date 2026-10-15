@@ -255,7 +255,13 @@ function wireApi(pagesByConta: Record<string, MlMissedFeeds[]>): {
       store: {},
       resolveChannelContext: async () => {
         current = integracaoId;
-        return { integracaoId, accessToken: `tok-${integracaoId}`, account: {} };
+        return {
+          integracaoId,
+          accessToken: `tok-${integracaoId}`,
+          getAccessToken: async () => `tok-${integracaoId}`,
+          invalidateAccessToken: vi.fn(),
+          account: {},
+        };
       },
       exchangeAndPersist: async () => {},
     };
