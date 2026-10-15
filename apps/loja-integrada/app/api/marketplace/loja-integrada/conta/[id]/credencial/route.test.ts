@@ -28,6 +28,10 @@ import { MENSAGEM_CORPO_NAO_JSON } from '@/lib/lojaIntegrada/core/respond';
 import { CHAMADAS_ENV_LI } from '@/lib/lojaIntegrada/core/valvulas';
 import { FakeDb, asDb, grpc, increment } from '@/lib/lojaIntegrada/testing/fakeDb';
 import {
+  COLECAO_NOTIFICACOES_LI,
+  seedNotificacaoLi,
+} from '@/lib/lojaIntegrada/testing/notificacoes';
+import {
   AGORA_MS,
   DIA_MS,
   TOKEN_A,
@@ -940,5 +944,192 @@ describe('structure', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
     expect(fonte.split('validarPersonalToken(').length - 1).toBe(1);
     expect(fonte).not.toContain('estacionamento');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              PUT — the re-drive of the conta's deferred notifications         */
+/* -------------------------------------------------------------------------- */
+
+describe('PUT …/credencial — re-drives this conta’s DEFERRED notifications (best effort)', () => {
+  /** Queries the re-drive made on the failures collection. */
+  const consultasDeRedrive = () =>
+    db.consultas.filter((c) => c.colecao === COLECAO_NOTIFICACOES_LI);
+
+  /** One row per status for this conta, plus a deferred row of ANOTHER conta. */
+  function seedLinhas() {
+    return {
+      a: seedNotificacaoLi(db, ID, '1', 'deferred', { tentativas: 4 }),
+      b: seedNotificacaoLi(db, ID, '2', 'deferred', { tentativas: 1 }),
+      parado: seedNotificacaoLi(db, ID, '3', 'parked'),
+      falho: seedNotificacaoLi(db, ID, '4', 'failed', { tentativas: 2 }),
+      outra: seedNotificacaoLi(db, OUTRA, '1', 'deferred', { tentativas: 4 }),
+    };
+  }
+
+  it('a success moves ONLY this conta’s deferred rows to the hot lane, each with exactly one write', async () => {
+    aceitarTudo();
+    const c = seedLinhas();
+    const antes = { parado: db.ler(c.parado), falho: db.ler(c.falho), outra: db.ler(c.outra) };
+
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+    expect(res.status).toBe(200);
+    expect(db.ler(CAMINHO)?.personalToken).toBe(TOKEN_A);
+    for (const caminho of [c.a, c.b]) {
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: 0, processedAt: 0 });
+      expect(String(db.ler(caminho)?.erro)).toContain(ID);
+      expect(db.escritasEm(caminho).map((e) => e.verbo)).toEqual(['update']);
+    }
+    // Near-misses: another conta's deferred row, and this conta's parked and
+    // failed ones, are not touched — not even written.
+    expect(db.ler(c.parado)).toEqual(antes.parado);
+    expect(db.ler(c.falho)).toEqual(antes.falho);
+    expect(db.ler(c.outra)).toEqual(antes.outra);
+    for (const caminho of [c.parado, c.falho, c.outra]) {
+      expect(db.escritasEm(caminho)).toEqual([]);
+    }
+    // ONE query, through the (status, contaId) shape of the declared index.
+    expect(consultasDeRedrive()).toHaveLength(1);
+    expect(consultasDeRedrive()[0]).toMatchObject({
+      filtros: [
+        ['status', '==', 'deferred'],
+        ['contaId', '==', ID],
+      ],
+    });
+  });
+
+  it('a save with nothing deferred re-drives nothing and answers 200', async () => {
+    aceitarTudo();
+    const falho = seedNotificacaoLi(db, ID, '4', 'failed');
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+    expect(res.status).toBe(200);
+    expect(consultasDeRedrive()).toHaveLength(1);
+    expect(db.escritasEm(falho)).toEqual([]);
+  });
+
+  it.each([
+    ['UNAVAILABLE (14)', 14],
+    ['FAILED_PRECONDITION (9)', 9],
+  ])(
+    'a gRPC failure of the re-drive (%s) is logged by code and the answer stays 200 — the token WAS saved',
+    async (_nome, codigo) => {
+      aceitarTudo();
+      const c = seedLinhas();
+      db.falharConsulta(COLECAO_NOTIFICACOES_LI, grpc(codigo, 'falha de teste'));
+
+      const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+      expect(res.status).toBe(200);
+      respostaCredencialLojaIntegradaSchema.parse(await corpoDe(res));
+      expect(db.ler(CAMINHO)?.personalToken).toBe(TOKEN_A);
+      // Nothing moved: the daily deferred sweep is the backstop.
+      expect(db.ler(c.a)).toMatchObject({ status: 'deferred', tentativas: 4 });
+      const avisos = console$
+        .argumentos()
+        .filter((a) => String(a[0]).includes('re-drive após salvar o token falhou'));
+      expect(avisos).toHaveLength(1);
+      expect(avisos[0]?.[1]).toEqual({ contaId: ID, code: codigo });
+      expect(textoDe(console$.argumentos())).not.toContain(TOKEN_A);
+    },
+  );
+
+  it('near-miss: an error that is NOT a gRPC status is rethrown, never swallowed (rule 6)', async () => {
+    aceitarTudo();
+    seedLinhas();
+    const bug = new RangeError('um defeito, não o Firestore');
+    db.falharConsulta(COLECAO_NOTIFICACOES_LI, bug);
+    await expect(
+      salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null }),
+    ).rejects.toBe(bug);
+  });
+
+  it('a refusal re-drives nothing: 409, 422, 503, 499 and 404 leave the deferred rows and the collection alone', async () => {
+    const c = seedLinhas();
+    const intactas = () => ({
+      a: db.ler(c.a),
+      b: db.ler(c.b),
+      outra: db.ler(c.outra),
+    });
+    const antes = intactas();
+    const corpo = { token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null };
+
+    // 422: Loja Integrada refuses the token.
+    stubFetch(() => respostaJson(401, { error: 'x' }));
+    expect((await salvar(corpo)).status).toBe(422);
+
+    // 503: the read switch is off.
+    vi.stubEnv(CHAMADAS_ENV_LI, undefined);
+    expect((await salvar(corpo)).status).toBe(503);
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+
+    // 499: the caller went away while the token was being validated.
+    const controller = new AbortController();
+    stubFetch((_url, init) => {
+      controller.abort(new Error('o navegador desistiu'));
+      return Promise.reject(init.signal?.reason);
+    });
+    expect((await salvar(corpo, { sinal: controller.signal })).status).toBe(499);
+
+    // 404: no such conta.
+    aceitarTudo();
+    expect((await salvar(corpo, { id: 'nao-existe' })).status).toBe(404);
+
+    // 409: a stale version (a credential exists, the panel saw none).
+    seedCredencial(db, ID);
+    expect((await salvar(corpo)).status).toBe(409);
+
+    expect(consultasDeRedrive()).toEqual([]);
+    expect(intactas()).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  // A failure AT or AFTER the credential write must not re-drive either: the
+  // re-drive belongs after the write, the conta re-check and the avisos.
+  it('a write that loses its race (409) re-drives nothing — the parked token was not replaced', async () => {
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    aceitarTudo();
+    const carimbo = seedCredencial(db, ID, { personalToken: TOKEN_B });
+    db.antesDaProximaEscrita(CAMINHO, () => {
+      db.seed(CAMINHO, credencialDoc({ personalToken: TOKEN_B, tokenAtualizadoEmMs: 7 }));
+    });
+
+    const res = await salvar({
+      token: TOKEN_A,
+      expiraEm: EXPIRA_LONGE,
+      versaoEsperada: relogioDoDocumentoUs(carimbo),
+    });
+
+    expect(res.status).toBe(409);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  it('a conta deleted while the token was validated (404, write undone) re-drives nothing', async () => {
+    const c = seedLinhas();
+    const antes = { a: db.ler(c.a), b: db.ler(c.b) };
+    aceitarTudo();
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      await integracaoCollection.docRef(asDb(db), {}, ID).delete();
+    });
+
+    const res = await salvar({ token: TOKEN_A, expiraEm: EXPIRA_LONGE, versaoEsperada: null });
+
+    expect(res.status).toBe(404);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect({ a: db.ler(c.a), b: db.ler(c.b) }).toEqual(antes);
+    expect(db.escritas.filter((e) => e.caminho.startsWith(COLECAO_NOTIFICACOES_LI))).toEqual([]);
+  });
+
+  it('DELETE does not re-drive: there is no token to retry with', async () => {
+    const c = seedLinhas();
+    seedCredencial(db, ID);
+    const antes = db.ler(c.a);
+    expect((await remover()).status).toBe(200);
+    expect(consultasDeRedrive()).toEqual([]);
+    expect(db.ler(c.a)).toEqual(antes);
+    expect(db.escritasEm(c.a)).toEqual([]);
   });
 });

@@ -146,7 +146,19 @@ still be fixed. Only the context loader refuses those.
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor is 0 until the first fixture PR raises it.
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (18), so a fixture that
+  disappears fails it.
+- ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
+  identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
+  until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw
+  pair first, or regenerate with `--so` naming only the pairs wanted. The shipped state is
+  covered without it: `pedido-pix` and `pedido-cartao` (`situacao.codigo`
+  `pedido_enviado`, a tracking code under `envios`) and `historico-pedido-enviado`.
+- Kept on review of the first corpus (2026-10-14), not leaks: a 14-digit window INSIDE a
+  longer SKU that passes the CNPJ check (the scan tests whole values; any one window passes
+  by chance about 1% of the time, and the sibling variant's window fails), LI's own
+  numeric ids (the importer's join keys), `meta.total_count` (the kept numeros already
+  show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it).
 - `estrutura.test.ts` proves the sanitizer's import closure reaches no network or process
   module, no package client, no `firebase-admin`/`@delfrance/data`, no credential module,
   no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;
@@ -169,18 +181,121 @@ still be fixed. Only the context loader refuses those.
 - The read switch `LOJA_INTEGRADA_CHAMADAS` (D17): only the exact `on` lets this code call
   Loja Integrada. Both credential `PUT`s check it right after the id, before the body is
   read: otherwise 503 `LI_CHAMADAS_DESLIGADAS` and one `chamada-bloqueada` line, with zero
-  fetches. The `DELETE` makes no call and is not gated. Step 3's context loader checks it
-  too. It stays unset everywhere (locally and in staging too) until the window sets it.
+  fetches. The `DELETE` makes no call and is not gated. The context loader checks it FIRST,
+  before any Firestore read (`deps.ambiente` is required). It stays unset everywhere
+  (locally and in staging too) until the window sets it.
 - The names live in the root `.env.example` (blank) and as comment rows in
   `apphosting.yaml`, never `env:` rows; `valvulas.test.ts` pins both.
 
+## Notification pipeline (step 3)
+
+- `notificacoes/notificacao.ts` binds the shared failures-only core to
+  `notificacoesLojaIntegrada` (bare schema, ids only, unknown keys stripped). ONE reads
+  queue, `filaLeituraLojaIntegrada` (= the function name), dispatching on `tipo`.
+- A run: the context (switch, conta, credential), then the importer SEAM
+  (`DESTINO_TIPO_LI`, empty until step 5 ⇒ `importador-ausente` PARKS). Only the functions
+  roots read `importadorPedidoLi()`; `lib` takes `deps.importador`.
+- Classifier: the app refusals (switch off, inactive, token missing/corrupt, parked)
+  DEFER; conta gone DROPS; `LiAuthError` parks the conta (`tratarFalhaDeAutenticacao`) and
+  defers, or rethrows when the 401 was for an older token; 404 parks; a non-transient
+  HTTP/schema/paging/Zod refusal parks (class and status only); 429, 5xx, network,
+  `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base.
+- A parked conta DEFERS, never drops (#808): daily re-drive for 7 days,
+  `graduateDeferredTransientErrors`, and on a token save or renewal the routes' best-effort
+  `redriveAposSalvarTokenLi` (`(status, contaId)` index; a gRPC failure is logged, the 200
+  stays). Accepted residue (Q4): a re-drive between the deferred sweep's read and its mark
+  is overwritten — one more day, or parked on the 7th pass. It moves only rows already
+  `deferred`, so a task's create or a hot-sweep migration that found the park before it and
+  writes after it waits up to one more day (`tentativas` 0). Reverse: the re-drive's write
+  has no precondition, so a park landing between its query and its write is reset to
+  `failed`/0/0 — one extra attempt, then a re-park or an import. Its writes go 20 at a
+  time (`CONCORRENCIA_REDRIVE_LI`): the routes await it inside the ceiling `prazos.test.ts`
+  budgets.
+- The pacer (`core/ritmo.ts`): 2 000 ms before EVERY call through a context, in the getter,
+  outside the request deadline.
+- Doc id `<conta>:<numero>:<origem>:<stamp digits | ->`, built from schema-validated parts
+  (no doc-id guard); the stamp is in it, so a parked row never swallows a later change.
+- Never write `onTaskDispatched(` in `lib/`: triggers live in `functions/`.
+- The producer `notificacoes/agendador.ts` is pure (the queue is a parameter): exactly
+  `LOJA_INTEGRADA_TASKS_DISABLED=1` → `LiTarefasDesligadasError`; a transient Cloud Tasks
+  failure (REST, STRING codes; `functions/*` only WITH an `httpResponse`) →
+  `LiTarefasTransitoriasError`; anything else rethrown untouched. The payload goes ALONE (no
+  task id, no `uri`). Each root reads the env and binds the queue (`functions/src/agendador.ts`;
+  App Hosting from step 4). Fake failures with `testing/falhaDeEnfileiramento.ts`.
+- The functions roots bind every read run's deps in ONE place, `functions/src/depsLeitura.ts`
+  (env whole, the importer from the seam table per run). `index.ts` exports only triggers:
+  any other runtime export there reads as a Cloud Function name.
+
+## Order poller (step 3)
+
+- `pedidos/pollPedidos.ts` runs one tick and one conta's run; `dataLi.ts`, `janelaPoll.ts`
+  and `orcamentoPoll.ts` are its pure date, window and budget layer. The root
+  `functions/src/pollPedidos.ts` (`pollLojaIntegradaPedidos`, `*/5`, 300 s) binds every
+  dependency: `importadorPresente = importadorPedidoLi() !== null`, the parsed look-back.
+- Two gates, each with ZERO reads: the empty importer seam (until step 5), then the read
+  switch. Contas run one after another, the list ROTATED by the tick's 5-minute slot
+  (`ordemDoTickLi`), so a `sem-tempo` conta runs first on a later tick instead of
+  starving behind the same ones forever. Containment per conta is a gRPC error, or a
+  hand-edited poll document that no longer parses (`documento-invalido`, a WARNING,
+  nothing written), ONLY.
+- `pollPedidosLojaIntegrada/{id}` is written only under preconditions: the lease
+  (`create`, or `update` once expired), the refusal record (never while the lease is held,
+  never a cursor), and the final write on the lease's `writeTime`, re-derived from ONE
+  re-read when it loses. The cursor is the platform's naive text; arithmetic is zone-free.
+  `pedidos/pollPedidos.firestore.test.ts` proves the fake's precondition model on the
+  emulator (two lease takers → one wins; a deleted document fails the stamp with 9).
+- The aviso `lojaIntegradaImportacaoParada` is clocked by the run's FIRST write to that
+  document, and resolved only when the stored `falhasSeguidas` was above 0. So it is
+  RAISED only after the write that stored its count landed (an open aviso always has a
+  count above 0 behind it), and a retried final write resets a count only while it is
+  still the one the lease read. The re-bootstrap runbook DELETES the `cursor` field and
+  never the document (`functions/DEPLOY.md`): a fresh document would never resolve an
+  open aviso.
+- A conta parked mid-drain keeps its stored `vistos` (the run's additions are dropped, so
+  they are re-enqueued once the token is back).
+- The row schema was written from the public document's two examples and is now
+  CONFIRMED by the owner's C1 captures (`__wire__/pedido-search-*`): every row passes it,
+  `data_modificacao` arrives already canonical, the filtered search lists nothing below
+  its bound (so `filtroIgnoradoLi` stays false), and the `%3A` capture is byte for byte
+  the query the poller sends. Pinned by `pedidos/capturasBusca.test.ts`. ⚠️ The rows come
+  ordered by `numero`, NOT by `data_modificacao`; the poller deliberately assumes no
+  order (the cursor is the max stamp over the whole drain).
+
+## CI (step 3)
+
+- Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
+  of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;
+  `vitest.tasks.config.ts` (`pnpm test:tasks`) includes exactly those two. A file matching
+  neither glob runs in NO job. Both configs cover the nested `functions/` codebase, and
+  `eslint.config.mjs` lints the emulator suites (raw refs allowed in those two suffixes).
+- The emulator suites run only in `.github/workflows/ci-loja-integrada.yml`: ONE job,
+  `Loja Integrada Cloud Tasks round trip`, behind the pinnable `CI gate (loja-integrada)`.
+  No `ci.yml` exclusion, so a skipped lane loses only the round trip. Editing the workflow
+  → the `ci-lanes` skill.
+- The job: `prepare-deploy.mjs`, then `firebase emulators:exec --config
+  firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085/5004/9501;
+  that file sits ONE DOT from `firebase.loja-integrada.deploy.json`, the only one that
+  deploys), then `pnpm test:tasks`. Run it locally the same way (JDK 21) with
+  `FUNCTIONS_REGION` = `LOJA_INTEGRADA_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
+  `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `LOJA_INTEGRADA_CHAMADAS=off`.
+  A region mismatch is the silent drop of #1108: the poll times out instead of failing.
+  On Windows the Firestore JVM can outlive `emulators:exec` and keep 8085: stop it after.
+- D17 holds in the lane through TWO layers. The job env sets `LOJA_INTEGRADA_CHAMADAS: 'off'`
+  (the functions emulator inherits it; the setup's fetch kill-switch reaches only the vitest
+  process), and `vitest.tasks.setup.ts` refuses to start when the shell has it `on` or an
+  artifact `.env*` file (selected by an anchored name, never a prefix) names it. A
+  DISPATCHED function must stop at the switch: this lane never turns it on in the
+  environment. Only code running in the vitest process may pass a context, and only with
+  `ambiente` `on` as a PARAMETER and a scripted `deps.fetch` (`pedidos/pollPedidos.tasks.test.ts`).
+- A new `*.tasks.test.ts` / `*.firestore.test.ts` joins the same job and check name. Its
+  `beforeEach` wipes what it reads (one shared emulator, files run serially), and a drop
+  is proved by a LATER sentinel row, never by polling for an absence.
+- The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
+  `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, or that the
+  emulator honours `maxConcurrentDispatches`.
+
 ## Config
 
-- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`: emulator
-  suites need their own lane — **none exists yet** (planned for step 3), so the change
-  that adds the first such suite must add its lane too, or it runs nowhere while every
-  check stays green. `eslint.config.mjs` still lints them. Both already cover the nested
-  `functions/` codebase.
 - The Firestore database id is `default`: `lib/firebase/admin.ts` passes it explicitly.
   `ALLOWED_ADMIN_ORIGINS` is REQUIRED in production (see `apphosting.yaml`).
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.

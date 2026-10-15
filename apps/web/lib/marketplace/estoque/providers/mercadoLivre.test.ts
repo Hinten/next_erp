@@ -3,6 +3,7 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
+  createMercadoLivreClient,
   type MercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 
@@ -40,6 +41,39 @@ const envelope = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('mercadoLivreStockProvider', () => {
+  it('cancels the real client while fetch is pending without inventing failure rows', async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const fetchImpl = vi.fn<typeof globalThis.fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true },
+          );
+          started();
+        }),
+    );
+    const client = createMercadoLivreClient({
+      baseUrl: 'http://localhost:3006',
+      getAuthToken: async () => 'token',
+      fetch: fetchImpl,
+    });
+    const pending = mercadoLivreStockProvider.enviarEstoque(
+      input(client.enviarEstoque, { signal: controller.signal }),
+    );
+
+    await fetchStarted;
+    expect(fetchImpl.mock.calls[0]![1]?.signal).toBe(controller.signal);
+    controller.abort();
+
+    await expect(pending).resolves.toEqual({ rows: [], pausadoAte: null });
+  });
+
   it('maps every listing through, one row each', async () => {
     // A produto can carry SEVERAL anúncios on one conta (#781) — the row unit is
     // the listing, so two listings must never collapse into one row.
@@ -116,25 +150,47 @@ describe('mercadoLivreStockProvider', () => {
     });
   });
 
-  it('reports a conta-level HTTP refusal per produto', async () => {
+  it.each([false, true])('preserves HTTP refusals even when aborted=%s', async (aborted) => {
+    const controller = new AbortController();
+    if (aborted) controller.abort();
     const enviarEstoque = vi
       .fn()
       .mockRejectedValue(new MercadoLivreClientHttpError('conta pausada', 409, 'ML_CONTA_PAUSADA'));
-    const res = await mercadoLivreStockProvider.enviarEstoque(input(enviarEstoque));
-    expect(res.rows[0]).toMatchObject({ outcome: 'falha', motivo: 'ML_CONTA_PAUSADA' });
-  });
-
-  it('uses the exact network copy the produto ML-tab e2e pins', async () => {
-    const enviarEstoque = vi.fn().mockRejectedValue(new MercadoLivreClientNetworkError('offline'));
-    const res = await mercadoLivreStockProvider.enviarEstoque(input(enviarEstoque));
-    expect(res.rows[0]!.mensagem).toBe('Não foi possível contatar o serviço do Mercado Livre.');
-  });
-
-  it('rethrows an unknown error instead of swallowing it (repo rule 6)', async () => {
-    const enviarEstoque = vi.fn().mockRejectedValue(new TypeError('boom'));
-    await expect(mercadoLivreStockProvider.enviarEstoque(input(enviarEstoque))).rejects.toThrow(
-      TypeError,
+    const res = await mercadoLivreStockProvider.enviarEstoque(
+      input(enviarEstoque, { signal: controller.signal }),
     );
+    expect(res.rows[0]).toMatchObject({
+      outcome: 'falha',
+      motivo: 'ML_CONTA_PAUSADA',
+      mensagem: 'conta pausada',
+    });
+  });
+
+  it('keeps a genuine network failure as a row while the signal is active', async () => {
+    const enviarEstoque = vi.fn().mockRejectedValue(new MercadoLivreClientNetworkError('offline'));
+    const signal = new AbortController().signal;
+    const res = await mercadoLivreStockProvider.enviarEstoque(input(enviarEstoque, { signal }));
+    expect(res.rows[0]).toMatchObject({
+      outcome: 'falha',
+      motivo: 'rede',
+      mensagem: 'Não foi possível contatar o serviço do Mercado Livre.',
+    });
+  });
+
+  it('treats a raw AbortError as a clean cancel', async () => {
+    const enviarEstoque = vi.fn().mockRejectedValue(new DOMException('aborted', 'AbortError'));
+    const res = await mercadoLivreStockProvider.enviarEstoque(input(enviarEstoque));
+    expect(res).toEqual({ rows: [], pausadoAte: null });
+  });
+
+  it.each([false, true])('rethrows unknown errors even when aborted=%s', async (aborted) => {
+    const controller = new AbortController();
+    if (aborted) controller.abort();
+    const error = new TypeError('boom');
+    const enviarEstoque = vi.fn().mockRejectedValue(error);
+    await expect(
+      mercadoLivreStockProvider.enviarEstoque(input(enviarEstoque, { signal: controller.signal })),
+    ).rejects.toBe(error);
   });
 
   it('degrades to an error row when logged out, with zero fetches', async () => {

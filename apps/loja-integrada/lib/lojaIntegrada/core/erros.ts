@@ -131,3 +131,21 @@ export class LiEstacionamentoEmConflitoError extends LiAppError {
     this.tentativas = tentativas;
   }
 }
+
+/**
+ * The read switch (`LOJA_INTEGRADA_CHAMADAS`, `core/valvulas.ts`) is not exactly
+ * `on`: the context loader refuses before any Firestore read and before a client
+ * exists, so nothing was sent to Loja Integrada (D17: mock only until the window
+ * sets the switch). A precondition outside this code — a step-3 task DEFERS on
+ * it — and on a route the 503 `LI_CHAMADAS_DESLIGADAS`.
+ */
+export class LiChamadasDesligadasError extends LiAppError {
+  constructor(integracaoId: string) {
+    super(
+      `As chamadas à Loja Integrada estão desligadas neste backend (conta ${integracaoId}). ` +
+        'Nada foi enviado à Loja Integrada.',
+      integracaoId,
+    );
+    this.name = 'LiChamadasDesligadasError';
+  }
+}

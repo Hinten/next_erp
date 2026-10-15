@@ -246,6 +246,9 @@ export {
   VINCULO_INT_FRETE_CONTA,
   calcularPrazoDespachoCivil,
   diaDaSemanaSchema,
+  // THE pick among a conta's `int_frete` docs — shared by the sync core and the
+  // browser, which cannot import the core's admin entry (#1369, #1826).
+  escolherIntFreteMaisNovo,
   faixaCepOptionString,
   faixaDeCepSchema,
   getPrazoDespacho,
@@ -262,6 +265,7 @@ export {
   tokenMelEnvMeta,
   tokenMelEnvSchema,
   type CampoBackRefIntFrete,
+  type CandidatoIntFrete,
   type DiaDaSemana,
   type FaixaDeCep,
   type HorarioDeCorte,
@@ -536,6 +540,40 @@ export {
   type NotificacaoShopeeStatus,
   type NotificacaoShopee,
 } from './notificacaoShopee';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only backlog
+  // of the Loja Integrada reads queue (master plan step 3). Bare: a combined
+  // `{ schema, meta }` export would trip `registry.test.ts`.
+  CONTA_ID_LI_REGEX,
+  DATA_MODIFICACAO_LI_REGEX,
+  NUMERO_PEDIDO_LI_REGEX,
+  ORIGEM_NOTIFICACAO_LI,
+  TIPO_TAREFA_LI,
+  camposNotificacaoLi,
+  contaIdLiSchema,
+  dataModificacaoLiSchema,
+  notificacaoLojaIntegradaSchema,
+  numeroPedidoLiSchema,
+  origemNotificacaoLiSchema,
+  tipoTarefaLiSchema,
+  type NotificacaoLojaIntegrada,
+  type OrigemNotificacaoLi,
+  type TipoTarefaLi,
+} from './notificacaoLojaIntegrada';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta cursor,
+  // lease and dedup state of the Loja Integrada order poller (master plan
+  // step 3, PR 3-e). Bare: no Meta, never a combined `{ schema, meta }`.
+  CURSOR_POLL_LI_REGEX,
+  MARCA_DATA_ILEGIVEL_LI,
+  cursorPollLiSchema,
+  pollPedidosLojaIntegradaSchema,
+  vistoPollLiSchema,
+  type PollPedidosLojaIntegrada,
+  type VistoPollLi,
+} from './pollPedidosLojaIntegrada';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
@@ -1427,6 +1465,8 @@ export {
   ROTAS_AVISO,
   pendenciaReclamacaoSchema,
   PENDENCIA_RECLAMACAO,
+  motivoImportacaoParadaLiSchema,
+  MOTIVO_IMPORTACAO_PARADA_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1444,6 +1484,7 @@ export {
   type ChaveAvisoInput,
   type RotaAvisoKey,
   type PendenciaReclamacao,
+  type MotivoImportacaoParadaLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1463,3 +1504,11 @@ export { RETURN_SN_SHOPEE_MAX, ehReturnSnShopee } from './devolucaoShopee';
 // (#1369). Not a collection, so no `registry.ts` entry. A star export on purpose:
 // the fold-inventory scan greps raw text, so a listed barrel would need a row.
 export * from './receitaKitShopee';
+
+// The Loja Integrada freight `mapa` rules (step 20, #1826): the shipping-method
+// key, the "mapped" target id, the raw presence read, the appended row and the
+// target tipos — the importer, the conta screen and the window pass all call
+// them (#1369). Not a collection, so no `registry.ts` entry. A star export on
+// purpose: the fold-inventory scan greps raw text, so a listed barrel would need
+// a row.
+export * from './mapaFreteLojaIntegrada';

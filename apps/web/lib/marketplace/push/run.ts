@@ -189,5 +189,6 @@ export async function enviarParaMarketplaces<Row extends PushRowBase>(
     emitir();
   }
 
-  return { rows, cancelado };
+  // A cancel during the final dispatch has no next iteration to set the flag.
+  return { rows, cancelado: cancelado || cancelou() };
 }

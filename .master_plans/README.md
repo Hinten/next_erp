@@ -17,3 +17,4 @@ live in the gitignored `.private/` folder, which is copied into every worktree.
 |---|---|---|
 | Shopee marketplace integration | [`shopee/shopee-marketplace-integration.md`](shopee/shopee-marketplace-integration.md) | Phases 0–2 done (2026-09-03); issues not opened yet |
 | Loja Integrada marketplace integration | [`loja-integrada/loja-integrada-marketplace-integration.md`](loja-integrada/loja-integrada-marketplace-integration.md) | Phases 0–2 done (2026-10-07); plan PR #1811, tracker #1812, step issues #1813–#1830 |
+| Amazon (SP-API) marketplace integration | [`amazon/amazon-marketplace-integration.md`](amazon/amazon-marketplace-integration.md) | Phases 0–2 done (2026-10-14); awaiting review; tracker and step issues not opened yet |

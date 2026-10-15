@@ -14,6 +14,7 @@ export {
   type FreightImprimirResult,
   type FreightOAuthStartResult,
   type FreightRastrearResult,
+  type FreightServicosResult,
 } from './client';
 
 export {
@@ -46,6 +47,7 @@ export type {
   Company,
   DimensionsWeight,
   Me,
+  ShipmentService,
 } from '../melhor-envio/types';
 export { isErroredOption, parseMePrice } from '../melhor-envio/types';
 
