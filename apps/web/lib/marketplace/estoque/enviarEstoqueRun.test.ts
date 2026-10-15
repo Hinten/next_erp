@@ -4,6 +4,7 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 
 import { type EnviarEstoqueAlvo, enviarEstoqueParaMarketplaces } from './enviarEstoqueRun';
 import { mercadoLivreStockProvider } from './providers/mercadoLivre';
+import type { StockPushChannelResult, StockPushRow } from './types';
 
 const db = {} as Firestore;
 
@@ -161,5 +162,73 @@ describe('enviarEstoqueParaMarketplaces', () => {
     expect(spy).not.toHaveBeenCalled();
     expect(res.cancelado).toBe(true);
     spy.mockRestore();
+  });
+
+  it.each([
+    { posicao: 'only', contaIds: ['ml-1'], cancelarEm: 'ml-1' },
+    { posicao: 'final', contaIds: ['ml-1', 'ml-2'], cancelarEm: 'ml-2' },
+    { posicao: 'middle', contaIds: ['ml-1', 'ml-2', 'ml-3'], cancelarEm: 'ml-2' },
+  ])('cancels the $posicao account and keeps completed rows', async ({ contaIds, cancelarEm }) => {
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+    const lerIntegracoes = vi
+      .fn()
+      .mockResolvedValue(
+        new Map(
+          contaIds.map((id) => [id, { nome: id, tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: true }]),
+        ),
+      );
+    let avisarInicio!: () => void;
+    const iniciado = new Promise<void>((resolve) => {
+      avisarInicio = resolve;
+    });
+    const concluidas: StockPushRow[] = [];
+    const spy = vi
+      .spyOn(mercadoLivreStockProvider, 'enviarEstoque')
+      .mockImplementation(({ integracao, signal }) => {
+        expect(signal).toBe(controller.signal);
+        if (integracao.id === cancelarEm) {
+          return new Promise<StockPushChannelResult>((resolve) => {
+            signal!.addEventListener('abort', () => resolve({ rows: [], pausadoAte: null }), {
+              once: true,
+            });
+            avisarInicio();
+          });
+        }
+        const row: StockPushRow = {
+          key: `p1:${integracao.id}:MLB1`,
+          produtoId: 'p1',
+          produtoNome: 'Camiseta',
+          integracaoId: integracao.id,
+          integracaoNome: integracao.nome,
+          anuncioId: 'MLB1',
+          linkDocId: 'l1',
+          outcome: 'enviado',
+          motivo: null,
+          mensagem: 'Estoque enviado.',
+          quantidade: 7,
+        };
+        concluidas.push(row);
+        return Promise.resolve({ rows: [row], pausadoAte: null });
+      });
+
+    try {
+      const pendente = run(
+        [alvo({ integracoesComProduto: contaIds })],
+        lerIntegracoes,
+        onProgress,
+        controller.signal,
+      );
+      await iniciado;
+      controller.abort();
+
+      expect(await pendente).toEqual({ rows: concluidas, cancelado: true });
+      expect(spy.mock.calls.map(([input]) => input.integracao.id)).toEqual(
+        contaIds.slice(0, contaIds.indexOf(cancelarEm) + 1),
+      );
+      expect(onProgress).toHaveBeenLastCalledWith(concluidas);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

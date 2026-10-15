@@ -69,6 +69,10 @@ const INVENTORY = {
   'apps/whatsapp/functions/src/processNotification.ts':
     'The WhatsApp Cloud API notification handler. Enqueued by the receiver route only.',
 
+  // ---- codebase `loja-integrada` -------------------------------------------
+  'apps/loja-integrada/functions/src/filaLeitura.ts':
+    'The Loja Integrada reads queue (filaLeituraLojaIntegrada, order intake). Enqueued by the order poller (functions runtime SA); the App Hosting runtime SA joins in step 4 (the inbound webhook), and the credential routes only re-drive Firestore rows.',
+
   // ---- codebase `nfe` -----------------------------------------------------
   'apps/nfe/functions/src/reconciliar.ts':
     'The async SEFAZ reconciler. Enqueued by three apps/nfe routes AND re-enqueued by itself while cStat=105 / CC-e 136.',
@@ -127,8 +131,8 @@ const TASK_CALL_RE = /\bonTaskDispatched\s*(?:<[\s\S]*?>)?\s*\(/;
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 17;
-const MIN_CODEBASES = 7;
+const MIN_TASK_FILES = 18;
+const MIN_CODEBASES = 8;
 
 function read(file) {
   return readFileSync(resolve(REPO_ROOT, file), 'utf8');

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CAMINHO_VALIDACAO, URL_BASE_LI, validarPersonalToken } from '../src/api';
+import type { ChamadaLi } from '../src/client';
 import * as barril from '../src/index';
 import { PRAZO_LI_MS } from '../src/prazos';
 import {
@@ -222,6 +223,63 @@ describe('what is rethrown', () => {
         }),
       ),
     ).rejects.toBe(propria);
+  });
+});
+
+describe('onChamada — the validating GET is observable', () => {
+  it('the observer receives exactly ONE event, labelled with the candidate ref', async () => {
+    const eventos: ChamadaLi[] = [];
+    const v = await validarPersonalToken({
+      token: TOKEN,
+      fetch: mockFetch(() => json(categoriaPagina1)),
+      gerarCorrelationId: () => CORRELACAO,
+      onChamada: (e) => eventos.push(e),
+    });
+    expect(v.veredito).toBe('aceito');
+    expect(eventos).toHaveLength(1);
+    expect(eventos[0]).toMatchObject({
+      operacao: 'validarPersonalToken',
+      metodo: 'GET',
+      caminho: CAMINHO_VALIDACAO,
+      query: [['limit', '1']],
+      refCredencial: 'candidato',
+      correlationId: CORRELACAO,
+      enviouCorrelationId: false,
+      status: 200,
+      resultado: 'ok',
+    });
+  });
+
+  it('a refusal is observed too, and the event never carries the token', async () => {
+    const eventos: ChamadaLi[] = [];
+    await validarPersonalToken({
+      token: TOKEN,
+      fetch: mockFetch(() => texto(`{"detail": "token ${TOKEN} recusado"}`, 401)),
+      onChamada: (e) => eventos.push(e),
+    });
+    expect(eventos.map((e) => e.resultado)).toEqual(['auth']);
+    expect(JSON.stringify(eventos)).not.toContain(TOKEN);
+  });
+
+  it('near-miss: an invalido token sends nothing, so nothing is observed', async () => {
+    const eventos: ChamadaLi[] = [];
+    const f = mockFetch(() => json(categoriaPagina1));
+    const v = await validarPersonalToken({
+      token: `${TOKEN}\n`,
+      fetch: f,
+      onChamada: (e) => eventos.push(e),
+    });
+    expect(v.veredito).toBe('invalido');
+    expect(f).not.toHaveBeenCalled();
+    expect(eventos).toEqual([]);
+  });
+
+  it('with no observer: no event, no error — the option is additive', async () => {
+    const v = await validarPersonalToken({
+      token: TOKEN,
+      fetch: mockFetch(() => json(categoriaPagina1)),
+    });
+    expect(v.veredito).toBe('aceito');
   });
 });
 

@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:tasks": "vitest run --config vitest.tasks.config.ts",
+    "sanitizar": "tsx scripts/sanitizar.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {
@@ -19,6 +21,7 @@
     "@delfrance/integrations-loja-integrada": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "firebase-admin": "catalog:",
+    "firebase-functions": "catalog:",
     "next": "16.2.6",
     "react": "catalog:",
     "react-dom": "catalog:",
@@ -27,9 +30,11 @@
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
+    "@delfrance/deploy-env": "workspace:*",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "esbuild": "catalog:",
     "eslint": "catalog:",
     "eslint-config-next": "catalog:",
     "typescript": "catalog:",

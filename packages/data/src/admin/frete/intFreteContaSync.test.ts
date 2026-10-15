@@ -16,7 +16,6 @@ import {
 } from '../../testing';
 import {
   diffCamposIntFrete,
-  docMaisNovoQueEvento,
   intFreteContaSync,
   type DisposicaoIntFrete,
   type IntFreteEncontrado,
@@ -294,9 +293,8 @@ const lojaIntegrada = intFreteContaSync(V.lojaIntegrada);
 const ml = intFreteContaSync(V.mercadoLivre, { refTolerante: refToleranteDeTeste });
 
 /**
- * The three bindings, each through the driver it runs in production: Shopee and Loja Integrada
- * write the conta and RECONCILE (state-driven); Mercado Livre hands the event's conta to its
- * event-driven pair.
+ * Every production binding — Shopee, Loja Integrada and Mercado Livre — writes the account and
+ * reconciles its current state through the ONE `reconciliarIntFreteDaConta` (#1888, #1826).
  */
 interface Cenario {
   nome: string;
@@ -338,18 +336,16 @@ const CENARIOS: Cenario[] = [
     },
   },
   {
-    nome: 'mercadoLivre — sync pair',
+    nome: 'mercadoLivre — reconcile',
     vinculo: V.mercadoLivre,
     sync: ml,
     outro: V.shopee,
-    carimbo: EVENT_MS,
+    carimbo: RELOGIO_MS,
     avisoIncompleto:
       '[mercado-livre] conta Mercado Livre sem dados suficientes para criar o int_frete',
     aplicar: async (host, conta) => {
       await host.escreverConta(ID, conta);
-      return conta != null && ml.ehConta(conta)
-        ? ml.sincronizarIntFreteDaConta(asDb(host), ID, conta, EVENT_MS)
-        : ml.desativarIntFreteDaConta(asDb(host), ID, EVENT_MS);
+      return ml.reconciliarIntFreteDaConta(asDb(host), ID);
     },
   },
 ];
@@ -397,18 +393,38 @@ describe('diffCamposIntFrete', () => {
 
 /* --------------------------- every binding (T1–T19) ----------------------- */
 
+/** The rows of `VINCULO_INT_FRETE_CONTA`, named by `int_frete.tipo` and sorted. */
+const TIPOS_DE_TODA_LINHA = Object.values(V)
+  .map((v) => v.tipoFrete)
+  .sort();
+
+describe('CENARIOS — the parameterised suite covers every binding', () => {
+  // `describe.each(CENARIOS)` below carries every reconcile test (T1–T9, T11–T13, T15–T20,
+  // T52–T54, T56, T57) for each channel. A row dropped here, or a new channel's row never
+  // added, silently removes that channel's whole suite while every test left still passes, so
+  // the table is pinned to the schema's rows rather than to a count.
+  it('has exactly one scenario per VINCULO_INT_FRETE_CONTA row', () => {
+    expect(CENARIOS.map((c) => c.vinculo.tipoFrete).sort()).toEqual(TIPOS_DE_TODA_LINHA);
+  });
+
+  it.each(CENARIOS)(
+    '$nome: its sync is built for its own row, and its near-miss is another channel',
+    (c) => {
+      expect(c.sync.vinculo).toBe(c.vinculo);
+      expect(c.outro.tipoFrete).not.toBe(c.vinculo.tipoFrete);
+    },
+  );
+});
+
 describe.each(CENARIOS)('$nome', (c) => {
   const conta = (over: DocData = {}) => contaDe(c.vinculo, over);
   const doc = (over: DocData = {}) => docDe(c.vinculo, over);
-  /** The deterministic id a prefixed row creates at; any other id for a row without a prefix. */
-  const idDeterministico = `${c.vinculo.prefixoDocId ?? 'sem-prefixo'}-${ID}`;
 
   it('T1 creates the doc mirroring the conta, with the schema defaults filled in', async () => {
     const host = new Host();
     const d = await c.aplicar(host, conta());
     expect(d.action).toBe('criado');
-    if (c.vinculo.prefixoDocId != null) expect(d.intFreteId).toBe(idDeterministico);
-    else expect(d.intFreteId).toMatch(/^auto-\d+$/);
+    expect(d.intFreteId).toBe(`${c.vinculo.prefixoDocId}-${ID}`);
     expect(host.colecao('int_frete').size).toBe(1);
     const criado = host.intFrete(d.intFreteId!)!;
     expect(criado).toMatchObject({
@@ -647,12 +663,16 @@ describe.each(CENARIOS)('$nome', (c) => {
   });
 
   it('T16 every path completes with all its reads before its write (the engine throws otherwise)', async () => {
-    // create — for a prefixed row the lookup MISSES, so the deterministic-id read runs too
+    // Create: both lookups miss, so the deterministic-ID read runs too.
     const criar = new Host();
     await expect(c.aplicar(criar, conta())).resolves.toMatchObject({ action: 'criado' });
     if (c.vinculo.prefixoDocId != null) {
       expect(criar.leituras).toEqual(
-        expect.arrayContaining([`integracao/${ID}`, 'int_frete', `int_frete/${idDeterministico}`]),
+        expect.arrayContaining([
+          `integracao/${ID}`,
+          'int_frete',
+          `int_frete/${c.vinculo.prefixoDocId}-${ID}`,
+        ]),
       );
     }
     // patch
@@ -758,7 +778,7 @@ describe.each(CENARIOS)('$nome', (c) => {
       [
         'det-id with altered ref',
         conta(),
-        [[idDeterministico, doc({ [c.vinculo.campoBackRef]: null })]],
+        [[`${c.vinculo.prefixoDocId}-${ID}`, doc({ [c.vinculo.campoBackRef]: null })]],
       ],
     ];
     for (const [caso, contaFixture, docs, esperado] of fixtures) {
@@ -780,9 +800,9 @@ describe.each(CENARIOS)('$nome', (c) => {
 
   it('T56 adopt-and-patch leaves a multi-row legacy `mapa` and the `horarioDeCorte` deep-equal to what was seeded', async () => {
     // The Loja Integrada `EnviosLojaIntegrada` shape (#1826): a mapped row, an unmapped row
-    // carrying a key the schema does not model, and a row with no `idOriginal`. The sync must
-    // never write `mapa` or `horarioDeCorte` on a patch — the mapa helper appends to it and the
-    // conta screen edits it, and neither may lose a row to a conta save.
+    // carrying a key the schema does not model, and a row with no `idOriginal`. The reconcile
+    // must never write `mapa` or `horarioDeCorte` on a patch — the mapa helper appends to it and
+    // the conta screen edits it, and neither may lose a row to a conta save.
     const mapa = [
       {
         nomeOriginal: 'Gateway Teste - PAC',
@@ -910,17 +930,36 @@ describe('T10 a bare `integracao/<id>` back-ref', () => {
   const bare = (vinculo: VinculoIntFreteConta) =>
     docDe(vinculo, { [vinculo.campoBackRef]: `integracao/${ID}` });
 
-  it('Shopee: NOT found (no tolerant scan without refTolerante) ⇒ created at shopee-int-1', async () => {
-    const host = new Host();
-    host.seed('int_frete', 'legacy-bare', bare(V.shopee));
-    await host.escreverConta(ID, contaDe(V.shopee));
-    expect(await shopee.buscarIntFreteDaConta(asDb(host), ID)).toBeNull();
-    expect(shopee.escolherIntFreteDaConta(docsComo(host), ID)).toBeNull();
-    const d = await shopee.reconciliarIntFreteDaConta(asDb(host), ID);
-    expect(d).toMatchObject({ action: 'criado', intFreteId: `shopee-${ID}` });
-    expect(host.intFrete('legacy-bare')!.contaShopeeFreteOuterRef).toBe(`integracao/${ID}`);
-    expect(console.warn).not.toHaveBeenCalled();
+  /** Every binding built WITHOUT `refTolerante` — Mercado Livre is the only one with it. */
+  const SEM_REF_TOLERANTE = [
+    ['Shopee', V.shopee, shopee],
+    ['Loja Integrada', V.lojaIntegrada, lojaIntegrada],
+  ] as const;
+
+  it('the non-tolerant table plus Mercado Livre covers every VINCULO_INT_FRETE_CONTA row', () => {
+    expect(
+      [
+        ...SEM_REF_TOLERANTE.map(([, vinculo]) => vinculo.tipoFrete),
+        V.mercadoLivre.tipoFrete,
+      ].sort(),
+    ).toEqual(TIPOS_DE_TODA_LINHA);
+    for (const [, vinculo, sync] of SEM_REF_TOLERANTE) expect(sync.vinculo).toBe(vinculo);
   });
+
+  it.each(SEM_REF_TOLERANTE)(
+    '%s: NOT found (no tolerant scan without refTolerante) ⇒ created at the deterministic id',
+    async (_canal, vinculo, sync) => {
+      const host = new Host();
+      host.seed('int_frete', 'legacy-bare', bare(vinculo));
+      await host.escreverConta(ID, contaDe(vinculo));
+      expect(await sync.buscarIntFreteDaConta(asDb(host), ID)).toBeNull();
+      expect(sync.escolherIntFreteDaConta(docsComo(host), ID)).toBeNull();
+      const d = await sync.reconciliarIntFreteDaConta(asDb(host), ID);
+      expect(d).toMatchObject({ action: 'criado', intFreteId: `${vinculo.prefixoDocId}-${ID}` });
+      expect(host.intFrete('legacy-bare')![vinculo.campoBackRef]).toBe(`integracao/${ID}`);
+      expect(console.warn).not.toHaveBeenCalled();
+    },
+  );
 
   it('Mercado Livre: found by the tolerant scan, warned about, and canonicalised', async () => {
     const host = new Host();
@@ -933,12 +972,8 @@ describe('T10 a bare `integracao/<id>` back-ref', () => {
       { integracaoId: ID, intFreteId: 'legacy-bare' },
     );
     expect(ml.escolherIntFreteDaConta(docsComo(host), ID)).toMatchObject({ id: 'legacy-bare' });
-    const d = await ml.sincronizarIntFreteDaConta(
-      asDb(host),
-      ID,
-      contaDe(V.mercadoLivre),
-      EVENT_MS,
-    );
+    await host.escreverConta(ID, contaDe(V.mercadoLivre));
+    const d = await ml.reconciliarIntFreteDaConta(asDb(host), ID);
     expect(d).toEqual({
       action: 'atualizado',
       intFreteId: 'legacy-bare',
@@ -947,297 +982,228 @@ describe('T10 a bare `integracao/<id>` back-ref', () => {
     expect(host.colecao('int_frete').size).toBe(1);
     expect(host.intFrete('legacy-bare')!.contaMercadoLivreMercadoEnviosOuterRef).toBe(CANONICO);
   });
-});
-
-describe('T11 Mercado Livre watermark (ms, strictly newer ⇒ obsoleto)', () => {
-  it('docMaisNovoQueEvento — the pure compare', () => {
-    expect(docMaisNovoQueEvento({ ultimaModificacao: EVENT_MS + 1 }, EVENT_MS)).toBe(true);
-    expect(docMaisNovoQueEvento({ ultimaModificacao: EVENT_MS }, EVENT_MS)).toBe(false);
-    expect(docMaisNovoQueEvento({ ultimaModificacao: EVENT_MS - 1 }, EVENT_MS)).toBe(false);
-    expect(docMaisNovoQueEvento({}, EVENT_MS)).toBe(false);
-    expect(
-      docMaisNovoQueEvento(
-        { ultimaModificacao: new Date(EVENT_MS + 1000).toISOString() },
-        EVENT_MS,
-      ),
-    ).toBe(true);
-    expect(docMaisNovoQueEvento({ ultimaModificacao: (EVENT_MS + 1) * 1000 }, EVENT_MS)).toBe(true);
-  });
 
   it.each([
-    ['newer', 'obsoleto', EVENT_MS + 3_600_000],
-    ['an ISO string newer', 'obsoleto', new Date(EVENT_MS + 3_600_000).toISOString()],
-    ['equal', 'atualizado', EVENT_MS],
-    ['older', 'atualizado', EVENT_MS - 1],
-    ['absent', 'atualizado', undefined],
-  ])('stored %s ⇒ %s', async (_caso, esperado, ultimaModificacao) => {
-    const host = new Host();
-    host.seed(
-      'int_frete',
-      'if-1',
-      docDe(V.mercadoLivre, {
-        nome: 'Escolhido a mão',
-        ...(ultimaModificacao === undefined ? {} : { ultimaModificacao }),
-      }),
-    );
-    const d = await ml.sincronizarIntFreteDaConta(
-      asDb(host),
-      ID,
-      contaDe(V.mercadoLivre),
-      EVENT_MS,
-    );
-    expect(d.action).toBe(esperado);
-    if (esperado === 'obsoleto') {
-      expect(host.escritasIntFrete()).toBe(0);
-      expect(host.intFrete('if-1')!.nome).toBe('Escolhido a mão');
-    } else {
-      expect(host.intFrete('if-1')!.nome).toBe('Loja Teste');
-    }
-  });
+    ['a', 'b'],
+    ['b', 'a'],
+  ])(
+    'Mercado Livre adopts the lower-ID bare-reference legacy record before deterministic fallback (%s, %s)',
+    async (first, second) => {
+      const host = new Host();
+      for (const id of [first, second]) host.seed('int_frete', id, bare(V.mercadoLivre));
+      const deterministic = `mercadoLivre-${ID}`;
+      const corrupted = docDe(V.mercadoLivre, { contaMercadoLivreMercadoEnviosOuterRef: null });
+      host.seed('int_frete', deterministic, corrupted);
+      expect(ml.escolherIntFreteDaConta(docsComo(host), ID)?.id).toBe('a');
+      expect((await ml.buscarIntFreteDaConta(asDb(host), ID))?.id).toBe('a');
+      await host.escreverConta(ID, contaDe(V.mercadoLivre));
+      expect(await ml.reconciliarIntFreteDaConta(asDb(host), ID)).toMatchObject({
+        action: 'atualizado',
+        intFreteId: 'a',
+        campos: ['contaMercadoLivreMercadoEnviosOuterRef'],
+      });
+      expect(host.intFrete('a')!.contaMercadoLivreMercadoEnviosOuterRef).toBe(CANONICO);
+      expect(host.intFrete('b')!.contaMercadoLivreMercadoEnviosOuterRef).toBe(`integracao/${ID}`);
+      expect(host.intFrete(deterministic)).toStrictEqual(corrupted);
+      expect(host.colecao('int_frete').size).toBe(3);
+    },
+  );
 });
 
-describe('T12 Mercado Livre stale deactivate', () => {
-  it('a doc re-activated after the delete event survives it — obsoleto, zero writes', async () => {
+describe.each(CENARIOS)('$nome — T11 timestamps are display metadata', (c) => {
+  it.each([
+    ['newer', EVENT_MS + 3_600_000],
+    ['an ISO string newer', new Date(EVENT_MS + 3_600_000).toISOString()],
+    ['equal', RELOGIO_MS],
+    ['older', RELOGIO_MS - 1],
+    ['absent', undefined],
+  ])('stored %s never blocks an account-authoritative patch', async (_caso, ultimaModificacao) => {
     const host = new Host();
-    host.seed('int_frete', 'if-1', docDe(V.mercadoLivre, { ultimaModificacao: EVENT_MS + 1 }));
-    expect(await ml.desativarIntFreteDaConta(asDb(host), ID, EVENT_MS)).toEqual({
-      action: 'obsoleto',
-      intFreteId: 'if-1',
+    host.seed('int_frete', 'if-1', {
+      ...docDe(c.vinculo, { nome: 'Manual mirrored value' }),
+      ...CONFIG_HUMANA,
+      ...(ultimaModificacao === undefined ? {} : { ultimaModificacao }),
     });
-    expect(host.intFrete('if-1')!.ativo).toBe(true);
-    expect(host.escritasIntFrete()).toBe(0);
+    expect(await c.aplicar(host, contaDe(c.vinculo))).toEqual({
+      action: 'atualizado',
+      intFreteId: 'if-1',
+      campos: ['nome'],
+    });
+    expect(host.intFrete('if-1')).toMatchObject({
+      nome: 'Loja Teste',
+      ultimaModificacao: RELOGIO_MS,
+    });
+    expect(host.intFrete('if-1')!.mapa).toStrictEqual(CONFIG_HUMANA.mapa);
   });
 });
 
-/**
- * The state-driven bindings — every row with a deterministic id, each through
- * `reconciliarIntFreteDaConta` — for the reconcile-only tests (T13, T17, T52, T53).
- */
-interface Reconciliado {
-  nome: string;
-  vinculo: VinculoIntFreteConta & { readonly prefixoDocId: string };
-  sync: SyncIntFreteConta;
-  /** Another channel's row — the tipo a conta is edited away to. */
-  outro: VinculoIntFreteConta;
-}
-
-const RECONCILIADOS: Reconciliado[] = [
-  { nome: 'shopee', vinculo: V.shopee, sync: shopee, outro: V.mercadoLivre },
-  { nome: 'lojaIntegrada', vinculo: V.lojaIntegrada, sync: lojaIntegrada, outro: V.shopee },
-];
-
-const idDeterministicoDe = (r: Reconciliado): string => `${r.vinculo.prefixoDocId}-${ID}`;
-
-describe.each(RECONCILIADOS)('T13 race — two first $nome reconciles of one conta', (r) => {
+describe.each(CENARIOS)('$nome — T13 concurrent first reconciliations', (c) => {
   it.each([
     ['with query-range protection', false],
-    ['WITHOUT query-range protection (the deterministic id alone holds)', true],
-  ])('%s: ONE doc, one abort, both resolve', async (_caso, semProtecao) => {
+    ['WITHOUT query-range protection (the deterministic ID alone holds)', true],
+  ])('%s: one document, one abort, both resolve', async (_caso, semProtecao) => {
     const host = new Host();
     host.semProtecaoDeFantasma = semProtecao;
-    await host.escreverConta(ID, contaDe(r.vinculo));
-    const reconciliar = () => r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
+    await host.escreverConta(ID, contaDe(c.vinculo));
+    const reconciliar = () => c.sync.reconciliarIntFreteDaConta(asDb(host), ID);
     const [a, b] = await emCorrida(host, reconciliar, reconciliar);
-    expect(a.status).toBe('fulfilled');
-    expect(b.status).toBe('fulfilled');
-    const acoes = [a, b].map((x) => (x as PromiseFulfilledResult<DisposicaoIntFrete>).value.action);
+    expect([a.status, b.status]).toEqual(['fulfilled', 'fulfilled']);
+    const acoes = [a, b].map((r) => (r as PromiseFulfilledResult<DisposicaoIntFrete>).value.action);
     expect(acoes.sort()).toEqual(['criado', 'inalterado']);
-    expect([...host.colecao('int_frete').keys()]).toEqual([idDeterministicoDe(r)]);
+    expect([...host.colecao('int_frete').keys()]).toEqual([`${c.vinculo.prefixoDocId}-${ID}`]);
     expect(host.occ.txLog.filter((e) => e.phase === 'abort')).toHaveLength(1);
   });
 });
 
-describe('T14 race, Mercado Livre — characterization', () => {
-  // Documents V21: a random-id create depends on Firestore protecting the lookup QUERY's range
-  // against a concurrent insert (unverified on Enterprise). The follow-up moves ML onto the
-  // deterministic-id driver, which does not.
-  it.each([
-    ['with query-range protection ⇒ one doc', false, 1],
-    ['WITHOUT query-range protection ⇒ TWO docs', true, 2],
-  ])('%s', async (_caso, semProtecao, esperados) => {
+describe.each(CENARIOS)('$nome — T15 reconciliations around an account write A → B', (c) => {
+  function preparar(): Host {
     const host = new Host();
-    host.semProtecaoDeFantasma = semProtecao;
-    const sincronizar = () =>
-      ml.sincronizarIntFreteDaConta(asDb(host), ID, contaDe(V.mercadoLivre), EVENT_MS);
-    const resultados = await emCorrida(host, sincronizar, sincronizar);
-    expect(resultados.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
-    expect(host.colecao('int_frete').size).toBe(esperados);
+    host.seed('integracao', ID, contaDe(c.vinculo, { nome: 'A' }));
+    host.seed('int_frete', 'if-1', {
+      ...docDe(c.vinculo, { nome: 'Original' }),
+      ...CONFIG_HUMANA,
+    });
+    return host;
+  }
+  const reconciliar = (host: Host) => c.sync.reconciliarIntFreteDaConta(asDb(host), ID);
+
+  it('R1 commits before the write, R2 after ⇒ B', async () => {
+    const host = preparar();
+    await reconciliar(host);
+    await host.escreverConta(ID, contaDe(c.vinculo, { nome: 'B' }));
+    await reconciliar(host);
+    expect(host.intFrete('if-1')!.nome).toBe('B');
+  });
+
+  it('R1 reads A, the account changes, R2 commits B ⇒ R1 re-reads and writes nothing', async () => {
+    const host = preparar();
+    const r1Leu = deferred();
+    const liberarR1 = deferred();
+    host.occ.beforeCommit = async (ctx) => {
+      if (ctx.attempt === 1 && escreveNome('A')(ctx)) {
+        r1Leu.resolve();
+        await liberarR1.promise;
+      }
+    };
+    const p1 = reconciliar(host);
+    await r1Leu.promise;
+    await host.escreverConta(ID, contaDe(c.vinculo, { nome: 'B' }));
+    const d2 = await reconciliar(host);
+    liberarR1.resolve();
+    const d1 = await p1;
+    expect(d2).toMatchObject({ action: 'atualizado', campos: ['nome'] });
+    expect(d1).toEqual({ action: 'inalterado', intFreteId: 'if-1' });
+    expect(host.intFrete('if-1')!.nome).toBe('B');
+    expect(host.intFrete('if-1')!.mapa).toStrictEqual(CONFIG_HUMANA.mapa);
+  });
+
+  it('both read, R1 retries and commits B first ⇒ R2 re-reads and writes nothing', async () => {
+    const host = preparar();
+    const r1Leu = deferred();
+    const liberarR1 = deferred();
+    const r2Leu = deferred();
+    const liberarR2 = deferred();
+    host.occ.beforeCommit = async (ctx) => {
+      if (ctx.attempt !== 1) return;
+      if (escreveNome('A')(ctx)) {
+        r1Leu.resolve();
+        await liberarR1.promise;
+      } else if (escreveNome('B')(ctx)) {
+        r2Leu.resolve();
+        await liberarR2.promise;
+      }
+    };
+    const p1 = reconciliar(host);
+    await r1Leu.promise;
+    await host.escreverConta(ID, contaDe(c.vinculo, { nome: 'B' }));
+    const p2 = reconciliar(host);
+    await r2Leu.promise;
+    liberarR1.resolve();
+    expect(await p1).toMatchObject({ action: 'atualizado', campos: ['nome'] });
+    liberarR2.resolve();
+    expect(await p2).toEqual({ action: 'inalterado', intFreteId: 'if-1' });
+    expect(host.intFrete('if-1')!.nome).toBe('B');
   });
 });
 
-describe('T15 patch races', () => {
-  it.each([
-    ['E1 commits first', 'A'],
-    ['E2 commits first', 'B'],
-  ])(
-    'Mercado Livre E1 (nome A) vs E2 (nome B, later) — %s ⇒ B, mapa intact',
-    async (_caso, primeiro) => {
-      const host = new Host();
-      host.seed('int_frete', 'if-1', {
-        ...docDe(V.mercadoLivre, { nome: 'Original' }),
-        ...CONFIG_HUMANA,
-      });
-      const [e1, e2] = await emCorrida(
-        host,
-        () =>
-          ml.sincronizarIntFreteDaConta(
-            asDb(host),
-            ID,
-            contaDe(V.mercadoLivre, { nome: 'A' }),
-            EVENT_MS,
-          ),
-        () =>
-          ml.sincronizarIntFreteDaConta(
-            asDb(host),
-            ID,
-            contaDe(V.mercadoLivre, { nome: 'B' }),
-            EVENT_MS + 1000,
-          ),
-        escreveNome(primeiro),
-      );
-      expect([e1.status, e2.status]).toEqual(['fulfilled', 'fulfilled']);
-      expect(host.intFrete('if-1')!.nome).toBe('B');
-      expect(host.intFrete('if-1')!.mapa).toStrictEqual(CONFIG_HUMANA.mapa);
-    },
-  );
-
-  describe('Shopee: two reconciles around a conta write A → B', () => {
-    function preparar(): Host {
-      const host = new Host();
-      host.seed('integracao', ID, contaDe(V.shopee, { nome: 'A' }));
-      host.seed('int_frete', 'if-1', {
-        ...docDe(V.shopee, { nome: 'Original' }),
-        ...CONFIG_HUMANA,
-      });
-      return host;
-    }
-    const reconciliar = (host: Host) => shopee.reconciliarIntFreteDaConta(asDb(host), ID);
-
-    it('R1 commits before the write, R2 after ⇒ B', async () => {
-      const host = preparar();
-      await reconciliar(host);
-      await host.escreverConta(ID, contaDe(V.shopee, { nome: 'B' }));
-      await reconciliar(host);
-      expect(host.intFrete('if-1')!.nome).toBe('B');
+describe.each(CENARIOS)('$nome — T17 deterministic-path fallback', (c) => {
+  it('repairs the altered back-ref and type instead of creating a second record', async () => {
+    const host = new Host();
+    const id = `${c.vinculo.prefixoDocId}-${ID}`;
+    host.seed(
+      'int_frete',
+      id,
+      docDe(c.vinculo, { tipo: 'outros', [c.vinculo.campoBackRef]: null }),
+    );
+    await host.escreverConta(ID, contaDe(c.vinculo));
+    expect(await c.sync.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
+      action: 'atualizado',
+      intFreteId: id,
+      campos: ['tipo', c.vinculo.campoBackRef],
     });
-
-    it('R1 read A, the conta moves, R2 reads B and commits first ⇒ R1 re-reads and writes nothing', async () => {
-      const host = preparar();
-      const r1Leu = deferred();
-      const liberarR1 = deferred();
-      host.occ.beforeCommit = async (ctx) => {
-        if (ctx.attempt === 1 && escreveNome('A')(ctx)) {
-          r1Leu.resolve();
-          await liberarR1.promise;
-        }
-      };
-      const p1 = reconciliar(host);
-      await r1Leu.promise;
-      await host.escreverConta(ID, contaDe(V.shopee, { nome: 'B' }));
-      const d2 = await reconciliar(host);
-      liberarR1.resolve();
-      const d1 = await p1;
-      expect(d2).toMatchObject({ action: 'atualizado', campos: ['nome'] });
-      expect(d1).toEqual({ action: 'inalterado', intFreteId: 'if-1' });
-      expect(host.intFrete('if-1')!.nome).toBe('B');
-      expect(host.intFrete('if-1')!.mapa).toStrictEqual(CONFIG_HUMANA.mapa);
+    expect(host.colecao('int_frete').size).toBe(1);
+    expect(host.intFrete(id)).toMatchObject({
+      tipo: c.vinculo.tipoFrete,
+      [c.vinculo.campoBackRef]: CANONICO,
     });
+  });
 
-    it('both read, R1 commits first (after its retry reads B) ⇒ R2 re-reads and writes nothing', async () => {
-      const host = preparar();
-      const r1Leu = deferred();
-      const liberarR1 = deferred();
-      const r2Leu = deferred();
-      const liberarR2 = deferred();
-      host.occ.beforeCommit = async (ctx) => {
-        if (ctx.attempt !== 1) return;
-        if (escreveNome('A')(ctx)) {
-          r1Leu.resolve();
-          await liberarR1.promise;
-        } else if (escreveNome('B')(ctx)) {
-          r2Leu.resolve();
-          await liberarR2.promise;
-        }
-      };
-      const p1 = reconciliar(host);
-      await r1Leu.promise;
-      await host.escreverConta(ID, contaDe(V.shopee, { nome: 'B' }));
-      const p2 = reconciliar(host);
-      await r2Leu.promise;
-      liberarR1.resolve();
-      expect(await p1).toMatchObject({ action: 'atualizado', campos: ['nome'] });
-      liberarR2.resolve();
-      expect(await p2).toEqual({ action: 'inalterado', intFreteId: 'if-1' });
-      expect(host.intFrete('if-1')!.nome).toBe('B');
+  it('adopts a canonical legacy record before an altered deterministic-path record', async () => {
+    const host = new Host();
+    const id = `${c.vinculo.prefixoDocId}-${ID}`;
+    const atDeterministicPath = docDe(c.vinculo, { [c.vinculo.campoBackRef]: null });
+    host.seed('int_frete', id, atDeterministicPath);
+    host.seed('int_frete', 'legacy-1', docDe(c.vinculo, { nome: 'Old' }));
+    expect(await c.aplicar(host, contaDe(c.vinculo))).toMatchObject({
+      action: 'atualizado',
+      intFreteId: 'legacy-1',
     });
+    expect(host.intFrete(id)).toStrictEqual(atDeterministicPath);
+    expect(host.colecao('int_frete').size).toBe(2);
   });
 });
 
-describe.each(RECONCILIADOS)(
-  'T17 $nome: the query misses but the deterministic-id doc exists',
-  (r) => {
-    it('patches its back-ref and tipo back; still one doc', async () => {
-      const host = new Host();
-      host.seed(
-        'int_frete',
-        idDeterministicoDe(r),
-        docDe(r.vinculo, { tipo: 'outros', [r.vinculo.campoBackRef]: null }),
-      );
-      await host.escreverConta(ID, contaDe(r.vinculo));
-      expect(await r.sync.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
-        action: 'atualizado',
-        intFreteId: idDeterministicoDe(r),
-        campos: ['tipo', r.vinculo.campoBackRef],
-      });
-      expect(host.colecao('int_frete').size).toBe(1);
-      expect(host.intFrete(idDeterministicoDe(r))).toMatchObject({
-        tipo: r.vinculo.tipoFrete,
-        [r.vinculo.campoBackRef]: CANONICO,
-      });
-    });
-  },
-);
-
-describe('T20 / T20b — a conta present under ANOTHER tipo', () => {
-  it('T20 Mercado Livre `contaRealmenteExcluida` checks existence only (characterization)', async () => {
+describe.each(CENARIOS)('$nome — T20 delete replay after account recreation', (c) => {
+  it('recreation under another type deactivates the original channel’s freight record', async () => {
     const host = new Host();
-    expect(await ml.contaRealmenteExcluida(asDb(host), ID)).toBe(true);
-    await host.escreverConta(ID, contaDe(V.mercadoLivre));
-    expect(await ml.contaRealmenteExcluida(asDb(host), ID)).toBe(false);
-    // The ML gap the follow-up closes: present as a SHOPEE conta still reads "not deleted".
-    await host.escreverConta(ID, contaDe(V.shopee));
-    expect(await ml.contaRealmenteExcluida(asDb(host), ID)).toBe(false);
-  });
-
-  it('T20b Shopee reconcile: the conta re-created as Mercado Livre deactivates the Shopee doc (K1-F5)', async () => {
-    const host = new Host();
-    host.seed('int_frete', `shopee-${ID}`, docDe(V.shopee));
-    await host.escreverConta(ID, contaDe(V.mercadoLivre));
-    expect(await shopee.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
+    host.seed('int_frete', 'if-1', { ...docDe(c.vinculo), ...CONFIG_HUMANA });
+    await host.escreverConta(ID, contaDe(c.outro));
+    expect(await c.sync.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
       action: 'desativado',
-      intFreteId: `shopee-${ID}`,
+      intFreteId: 'if-1',
       campos: ['ativo'],
     });
-    expect(host.intFrete(`shopee-${ID}`)!.ativo).toBe(false);
+    expect(host.intFrete('if-1')!.ativo).toBe(false);
+    expect(host.intFrete('if-1')!.mapa).toStrictEqual(CONFIG_HUMANA.mapa);
   });
+
+  it.each([true, false])(
+    'recreation under the same type preserves/restores the record (ativo=%s)',
+    async (ativo) => {
+      const host = new Host();
+      host.seed('int_frete', 'if-1', docDe(c.vinculo, { ativo }));
+      await host.escreverConta(ID, contaDe(c.vinculo));
+      expect((await c.sync.reconciliarIntFreteDaConta(asDb(host), ID)).action).toBe(
+        ativo ? 'inalterado' : 'atualizado',
+      );
+      expect(host.intFrete('if-1')!.ativo).toBe(true);
+      expect(host.colecao('int_frete').size).toBe(1);
+    },
+  );
 });
 
-describe.each(RECONCILIADOS)('T52 $nome reconcile is order-free (K1-F1)', (r) => {
-  const conta = (over: DocData = {}) => contaDe(r.vinculo, over);
+describe.each(CENARIOS)('$nome — T52 reconciliation is order-free', (c) => {
+  const conta = (over: DocData = {}) => contaDe(c.vinculo, over);
   const SEQUENCIAS: Array<{
     nome: string;
     inicial: DocData | null;
     escritas: Array<DocData | null>;
   }> = [
+    { nome: 'ativo off → on', inicial: conta(), escritas: [conta({ ativo: false }), conta()] },
     {
-      nome: 'ativo off → on',
+      nome: 'tipo away → back without mirrored field changes',
       inicial: conta(),
-      escritas: [conta({ ativo: false }), conta({ ativo: true })],
-    },
-    {
-      nome: 'tipo away → back',
-      inicial: conta(),
-      escritas: [conta({ tipo: r.outro.tipoConta }), conta()],
+      escritas: [conta({ tipo: c.outro.tipoConta }), conta()],
     },
     { nome: 'ativo on, then delete', inicial: conta({ ativo: false }), escritas: [conta(), null] },
     {
@@ -1246,7 +1212,7 @@ describe.each(RECONCILIADOS)('T52 $nome reconcile is order-free (K1-F1)', (r) =>
       escritas: [conta({ nome: 'X' }), conta({ nome: 'Y' }), conta({ nome: 'X' })],
     },
     {
-      nome: 'window pass vs a restoring live write',
+      nome: 'window pass vs a restoring account write',
       inicial: conta({ nome: 'Y' }),
       escritas: [conta({ nome: 'X' }), conta({ nome: 'Y' })],
     },
@@ -1255,16 +1221,16 @@ describe.each(RECONCILIADOS)('T52 $nome reconcile is order-free (K1-F1)', (r) =>
 
   function espelha(host: Host, final: DocData | null): void {
     const docs = [...host.colecao('int_frete').values()];
-    if (final == null || final.tipo !== r.vinculo.tipoConta) {
+    if (final == null || final.tipo !== c.vinculo.tipoConta) {
       expect(docs.every((d) => d.ativo === false)).toBe(true);
       return;
     }
     expect(docs).toHaveLength(1);
     expect(docs[0]).toMatchObject({
-      tipo: r.vinculo.tipoFrete,
+      tipo: c.vinculo.tipoFrete,
       nome: final.nome,
       ativo: final.ativo ?? true,
-      [r.vinculo.campoBackRef]: CANONICO,
+      [c.vinculo.campoBackRef]: CANONICO,
       filialIntegracaoFreteOuterRef: FILIAL,
       dataCadastro: CADASTRO,
     });
@@ -1274,7 +1240,7 @@ describe.each(RECONCILIADOS)('T52 $nome reconcile is order-free (K1-F1)', (r) =>
     const host = new Host();
     if (inicial != null) {
       await host.escreverConta(ID, inicial);
-      await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
+      await c.sync.reconciliarIntFreteDaConta(asDb(host), ID);
     }
     return host;
   }
@@ -1287,7 +1253,7 @@ describe.each(RECONCILIADOS)('T52 $nome reconcile is order-free (K1-F1)', (r) =>
       const final = escritas[escritas.length - 1] ?? null;
       for (let evento = 0; evento < escritas.length; evento += 1) {
         const antes = host.escritasIntFrete();
-        await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
+        await c.sync.reconciliarIntFreteDaConta(asDb(host), ID);
         espelha(host, final);
         if (evento > 0) expect(host.escritasIntFrete()).toBe(antes);
       }
@@ -1300,63 +1266,63 @@ describe.each(RECONCILIADOS)('T52 $nome reconcile is order-free (K1-F1)', (r) =>
       const host = await partindoDe(inicial);
       for (const escrita of escritas) {
         await host.escreverConta(ID, escrita);
-        await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
+        await c.sync.reconciliarIntFreteDaConta(asDb(host), ID);
       }
       const final = escritas[escritas.length - 1] ?? null;
       espelha(host, final);
       const antes = host.escritasIntFrete();
-      await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
+      await c.sync.reconciliarIntFreteDaConta(asDb(host), ID);
       expect(host.escritasIntFrete()).toBe(antes);
       espelha(host, final);
     },
   );
 });
 
-describe.each(RECONCILIADOS)('T53 $nome: the conta is in the reconcile read set', (r) => {
-  it('a conta write landing between the read and the commit aborts the attempt; the retry writes B', async () => {
+describe.each(CENARIOS)('$nome — T53 account snapshot and readTime belong to the retry', (c) => {
+  it('an intervening account write aborts the attempt; the retry writes B and its own readTime', async () => {
     const host = new Host();
-    host.seed('integracao', ID, contaDe(r.vinculo, { nome: 'A' }));
-    host.seed('int_frete', idDeterministicoDe(r), docDe(r.vinculo, { nome: 'Original' }));
+    host.seed('integracao', ID, contaDe(c.vinculo, { nome: 'A' }));
+    host.seed('int_frete', 'if-1', docDe(c.vinculo, { nome: 'Original' }));
     let escreveu = false;
     host.occ.beforeCommit = async (ctx) => {
       if (escreveu || !escreveNome('A')(ctx)) return;
       escreveu = true;
-      await host.escreverConta(ID, contaDe(r.vinculo, { nome: 'B' }));
+      await host.escreverConta(ID, contaDe(c.vinculo, { nome: 'B' }));
+      host.relogioMs = RELOGIO_MS + 1000;
     };
-    const d = await r.sync.reconciliarIntFreteDaConta(asDb(host), ID);
-    expect(d).toEqual({
+    expect(await c.sync.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
       action: 'atualizado',
-      intFreteId: idDeterministicoDe(r),
+      intFreteId: 'if-1',
       campos: ['nome'],
     });
-    expect(host.intFrete(idDeterministicoDe(r))!.nome).toBe('B');
+    expect(host.intFrete('if-1')).toMatchObject({
+      nome: 'B',
+      ultimaModificacao: RELOGIO_MS + 1000,
+    });
     expect(host.occ.txLog.filter((e) => e.phase === 'abort')).toEqual([
       expect.objectContaining({ conflictPath: `integracao/${ID}` }),
     ]);
   });
 });
 
-describe('T55 Mercado Livre no-op hole — characterization (K1-F1 for ML)', () => {
-  it('a NEWER event with an empty diff stamps nothing, so an OLDER retry afterwards still wins', async () => {
-    // Pinned so the ML follow-up (move ML onto the state-driven driver) flips it deliberately.
+describe('T55 Mercado Livre no-op followed by an older event replay (#1888)', () => {
+  it('preserves current fields with zero writes, without advancing a watermark', async () => {
     const host = new Host();
-    const t0 = EVENT_MS - 10_000;
+    const t0 = RELOGIO_MS - 10_000;
+    host.seed('integracao', ID, contaDe(V.mercadoLivre, { nome: 'Atual' }));
     host.seed('int_frete', 'if-1', docDe(V.mercadoLivre, { nome: 'Atual', ultimaModificacao: t0 }));
-    const e2 = await ml.sincronizarIntFreteDaConta(
-      asDb(host),
-      ID,
-      contaDe(V.mercadoLivre, { nome: 'Atual' }),
-      EVENT_MS,
-    );
-    expect(e2).toEqual({ action: 'inalterado', intFreteId: 'if-1' });
+    // The newer no-op and older replay both carry only the account ID into reconciliation.
+    expect(await ml.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
+      action: 'inalterado',
+      intFreteId: 'if-1',
+    });
     expect(host.intFrete('if-1')!.ultimaModificacao).toBe(t0);
-    const e1 = await ml.sincronizarIntFreteDaConta(
-      asDb(host),
-      ID,
-      contaDe(V.mercadoLivre, { nome: 'Antigo' }),
-      EVENT_MS - 5_000,
-    );
-    expect(e1).toEqual({ action: 'atualizado', intFreteId: 'if-1', campos: ['nome'] });
-    expect(host.intFrete('if-1')!.nome).toBe('Antigo');
+    host.relogioMs += 5000;
+    expect(await ml.reconciliarIntFreteDaConta(asDb(host), ID)).toEqual({
+      action: 'inalterado',
+      intFreteId: 'if-1',
+    });
+    expect(host.intFrete('if-1')).toMatchObject({ nome: 'Atual', ultimaModificacao: t0 });
+    expect(host.escritasIntFrete()).toBe(0);
   });
 });

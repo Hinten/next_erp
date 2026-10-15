@@ -425,4 +425,14 @@ describe('notification connect re-drive indexes (D)', () => {
       expect.arrayContaining(['notificacoesMercadoLivre:user_id', 'notificacoesShopee:shop_id']),
     );
   });
+
+  it('detects the Loja Integrada token-save re-drive too (master plan step 3)', () => {
+    // `redrivePedidosAdiadosDaConta` pulls a conta's deferred rows back when a
+    // token is saved; its `(status, contaId)` composite is what the guard above
+    // holds. Pinned so a rename of the field, or of the query's shape, cannot
+    // quietly leave the LI index unchecked.
+    expect(redrivers.map((r) => `${handlePaths.get(r.handleName)}:${r.field}`)).toContain(
+      'notificacoesLojaIntegrada:contaId',
+    );
+  });
 });
