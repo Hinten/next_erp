@@ -178,6 +178,22 @@ describe('liPedidoSchema: the required set is minimal', () => {
     expect(liPedidoSchema.parse({ ...MINIMO, id_anymarket: null }).id_anymarket).toBeNull();
   });
 
+  it('an empty buyer and an empty delivery address parse — a pickup order may carry no CEP', () => {
+    const p = liPedidoSchema.parse({ ...MINIMO, cliente: {}, endereco_entrega: {} });
+    expect(p.cliente).toEqual({});
+    expect(p.endereco_entrega).toEqual({});
+    const nulos = liPedidoSchema.parse({
+      ...MINIMO,
+      endereco_entrega: { cep: null, estado: null },
+    });
+    expect(nulos.endereco_entrega?.cep).toBeNull();
+  });
+
+  it('a fractional quantity (three decimals on the wire) is kept, never refused as a non-integer', () => {
+    const p = liPedidoSchema.parse({ ...MINIMO, itens: [{ id: 1, quantidade: '1.500' }] });
+    expect(p.itens[0]?.quantidade).toBe(1.5);
+  });
+
   it('an empty line, shipment and payment parse — every leaf inside them is optional', () => {
     const p = liPedidoSchema.parse({ ...MINIMO, itens: [{}], envios: [{}], pagamentos: [{}] });
     expect(p.itens).toHaveLength(1);
@@ -208,6 +224,13 @@ describe('liSituacaoSchema', () => {
     expect(s.codigo).toBe('pedido_enviado');
     expect(s.id).toBe(11);
     expect(s).toHaveProperty('final', true);
+  });
+
+  it('a quoted situação id is read as a number — a diagnostic leaf must never park the order', () => {
+    expect(liSituacaoSchema.parse({ codigo: 'pedido_pago', id: '4' }).id).toBe(4);
+    expect(
+      liPedidoSchema.parse({ ...MINIMO, situacao: { codigo: 'pedido_pago', id: '4' } }).situacao.id,
+    ).toBe(4);
   });
 
   it('near-miss: a numeric codigo is refused — codigo is text, never a number', () => {

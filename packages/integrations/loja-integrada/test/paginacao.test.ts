@@ -358,6 +358,27 @@ describe('the offset must advance', () => {
     expect(err).toMatchObject({ motivo: 'offset-nao-avanca', paginas: 1 });
     expect(f).toHaveBeenCalledTimes(1);
   });
+
+  // The page-2 "equal" case above is caught by BOTH halves at once. Here only
+  // the meta.offset half sees it: past the offset sent (0), equal to the page's
+  // own meta.offset — re-reading the page just yielded.
+  it("a next EQUAL to the page's own meta.offset fails, even when it is past the offset sent", async () => {
+    const f = sequencia(pagina(20, '/api/v1/categoria?offset=20', [1]), pagina(20, null, [2]));
+    const err = await falha(coletar(categorias(f)));
+    expect(err).toBeInstanceOf(LiPaginacaoError);
+    expect(err).toMatchObject({ motivo: 'offset-nao-avanca', paginas: 1 });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  // A caller with no `offset` was served Tastypie's first page, offset 0: a next
+  // back at 0 is the same page again, whatever meta.offset claims.
+  it('a caller without an offset counts as offset 0: a next of offset=0 never passes', async () => {
+    const f = sequencia(pagina(-20, '/api/v1/categoria?offset=0', [1]), pagina(0, null, [2]));
+    const err = await falha(coletar(categorias(f)));
+    expect(err).toBeInstanceOf(LiPaginacaoError);
+    expect(err).toMatchObject({ motivo: 'offset-nao-avanca', paginas: 1 });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('the page cap', () => {

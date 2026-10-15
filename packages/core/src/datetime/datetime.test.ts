@@ -407,6 +407,14 @@ describe('microsDeDataHoraNoFuso', () => {
     expect(microsDeDataHoraNoFuso(texto, SAO_PAULO)).toBeNull();
   });
 
+  it('refuses the ISO extended-year spelling that Temporal itself would accept', () => {
+    // `+002026-…` IS 2026 to Temporal, so only the anchored shape check keeps a
+    // non-contract spelling out; without the `^` the regex would match its
+    // `2026-…` tail and the stamp would be read.
+    expect(microsDeDataHoraNoFuso('+002026-10-14T10:00:00', 'UTC')).toBeNull();
+    expect(microsDeDataHoraNoFuso('2026-10-14T10:00:00', 'UTC')).toBe(us(2026, 9, 14, 10));
+  });
+
   it('NEAR-MISS: the leap-second refusal does not reach a real `:59`', () => {
     expect(microsDeDataHoraNoFuso('2026-12-31T23:59:59', 'UTC')).toBe(us(2026, 11, 31, 23, 59, 59));
   });
