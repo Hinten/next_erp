@@ -337,7 +337,7 @@ function importar(
   const formaEnvio = pedido.envios[0]?.forma_envio;
   const decisaoMapa = decidirMapaLi({
     intFreteLiId: INT_FRETE_LI,
-    registro: { resultado: 'registrada', mapa: [] },
+    registro: { resultado: 'registrada', mapa: [], lidoEmUs: null },
     formaEnvio,
   });
   const roteamento = rotearFreteLi({
@@ -635,7 +635,7 @@ describe('PR 5-b: freight on the captures', () => {
       const mapa = [{ ...linha, integracaoUid: 'me-1', targetData: { id: 2 } }];
       const decisao = decidirMapaLi({
         intFreteLiId: INT_FRETE_LI,
-        registro: { resultado: 'ja-presente', mapa },
+        registro: { resultado: 'ja-presente', mapa, lidoEmUs: null },
         formaEnvio: forma,
       });
       expect(decisao.tipo, nome).toBe('mapeado');

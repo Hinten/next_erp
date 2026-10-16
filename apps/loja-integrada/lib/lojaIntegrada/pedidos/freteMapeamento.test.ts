@@ -49,7 +49,11 @@ function linha(idOriginal: string, uid: string | null, targetData: unknown = nul
   };
 }
 
-const registro = (mapa: unknown[] | null): RegistroDoMapaLi => ({ resultado: 'ja-presente', mapa });
+const registro = (mapa: unknown[] | null): RegistroDoMapaLi => ({
+  resultado: 'ja-presente',
+  mapa,
+  lidoEmUs: null,
+});
 
 function decidir(mapa: unknown[] | null, formaEnvio: unknown = PAC): DecisaoMapaLi {
   return decidirMapaLi({ intFreteLiId: INT_FRETE_LI, registro: registro(mapa), formaEnvio });
@@ -156,21 +160,21 @@ describe('the routing decision from the mapa', () => {
     expect(
       decidirMapaLi({
         intFreteLiId: INT_FRETE_LI,
-        registro: { resultado: 'sem-int-frete', mapa: null },
+        registro: { resultado: 'sem-int-frete', mapa: null, lidoEmUs: null },
         formaEnvio: PAC,
       }).tipo,
     ).toBe('sem-int-frete');
     expect(
       decidirMapaLi({
         intFreteLiId: INT_FRETE_LI,
-        registro: { resultado: 'chave-invalida', mapa: null },
+        registro: { resultado: 'chave-invalida', mapa: null, lidoEmUs: null },
         formaEnvio: { ...PAC, id: '0141909' },
       }),
     ).toEqual({ tipo: 'sem-chave' });
     expect(
       decidirMapaLi({
         intFreteLiId: INT_FRETE_LI,
-        registro: { resultado: 'mapa-invalido', mapa: null },
+        registro: { resultado: 'mapa-invalido', mapa: null, lidoEmUs: null },
         formaEnvio: PAC,
       }),
     ).toEqual({ tipo: 'mapa-invalido', chave: '141909---PAC' });
