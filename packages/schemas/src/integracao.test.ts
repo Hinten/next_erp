@@ -553,11 +553,12 @@ describe('integracao metas', () => {
     ]);
   });
 
-  it('makes user_id server-owned — it is the webhook routing key (#821/T4)', () => {
-    // `resolveIntegracaoByUserId` finds an account by this field, so a client
-    // able to write it could repoint another seller's notification stream. Its
-    // only legitimate writer is the OAuth exchange, via the Admin SDK.
-    expect(integracaoMeta.serverOwnedFields).toEqual(['user_id']);
+  it('makes the webhook routing keys server-owned — user_id (#821/T4) and selling_partner_id (Amazon)', () => {
+    // `resolveIntegracaoByUserId` finds an account by `user_id`, and Amazon's
+    // step-3 routing finds its conta by `selling_partner_id`, so a client able
+    // to write either could repoint another seller's notification stream. Their
+    // only legitimate writers are the OAuth exchanges, via the Admin SDK.
+    expect(integracaoMeta.serverOwnedFields).toEqual(['user_id', 'selling_partner_id']);
   });
 
   it('credenciaisIntegracaoMeta targets the subcollection', () => {
