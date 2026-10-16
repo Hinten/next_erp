@@ -103,7 +103,7 @@ export function estadoAnuncioShopeeLido(estado: unknown): EstadoAnuncioShopee | 
 
 /**
  * Date and time of a stored MILLISECONDS stamp, in São Paulo — or `null` when the
- * value is not a finite number.
+ * value is not a finite number, or is one no `Date` can hold.
  *
  * ⚠️ An EXPLICIT zone: the same stamp reads the same on every operator's
  * machine — the rule `falhaDoEnvio.ts` follows for the quota pause's end.
@@ -113,8 +113,17 @@ const FORMATO_INSTANTE = new Intl.DateTimeFormat('pt-BR', {
   dateStyle: 'short',
   timeStyle: 'short',
 });
+/**
+ * The largest |ms| an ECMAScript time value may hold (±100,000,000 days from
+ * the epoch, ECMA-262 § 21.4.1.1). Finite is NOT enough: past it
+ * `Intl.DateTimeFormat#format` THROWS a `RangeError` — and this helper runs
+ * while rendering the status, refusal, violation and model rows, so one such
+ * stored stamp would take the whole tab down instead of reading as "no date".
+ */
+const MAIOR_INSTANTE_MS = 8.64e15;
 export function formatarInstanteShopee(ms: unknown): string | null {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return null;
+  if (Math.abs(ms) > MAIOR_INSTANTE_MS) return null;
   return FORMATO_INSTANTE.format(ms);
 }
 

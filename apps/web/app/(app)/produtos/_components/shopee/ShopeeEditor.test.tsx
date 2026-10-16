@@ -54,12 +54,18 @@ const h = vi.hoisted(() => ({
   filhos: [] as Linha[],
   /** `variashopee` rows per child produto id. */
   varLinks: new Map<string, Linha[]>(),
+  /**
+   * EVERY `integracao` document by id — what a by-id read finds. `contas` is
+   * only the page the bounded live query returned.
+   */
+  contasPorId: new Map<string, Record<string, unknown>>(),
   produto: { nome: 'Camiseta', paiId: null } as Record<string, unknown> | null,
   tabMedi: null as Record<string, unknown> | null,
   /** The snapshot hooks' `loading` — a re-listen keeps `data` (R1). */
   carregando: false,
   permitidos: new Set<bigint>(),
   getDocs: vi.fn(),
+  getDoc: vi.fn(),
   /** Every collection a live query was opened on — what the tab chose to READ. */
   consultas: new Set<string>(),
   /** What `useShopeeClient` hands the editor (`null` = no signed-in user yet). */
@@ -76,9 +82,13 @@ vi.mock('@/lib/shopee/client', async (importOriginal) => {
 vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notify } }));
 
 vi.mock('@delfrance/data', () => ({
-  // ⚠️ PASSES THE BASE THROUGH so a query is told apart by what it was built on.
-  buildQuery: (base: unknown) => base,
-  limit: () => ({}),
+  // ⚠️ KEEPS THE BASE'S TAGS so a query is told apart by what it was built on —
+  // and carries its `limit`, which the `getDocs` double honours.
+  buildQuery: (base: object, constraints: readonly { __limit?: number }[] = []) => {
+    const n = constraints.find((c) => c.__limit !== undefined)?.__limit;
+    return n === undefined ? base : { ...base, __limit: n };
+  },
+  limit: (n: number) => ({ __limit: n }),
   whereEqual: () => ({}),
 }));
 
@@ -104,13 +114,17 @@ vi.mock('@delfrance/data/hooks', () => ({
 vi.mock('firebase/firestore', async (importOriginal) => ({
   ...(await importOriginal<typeof import('firebase/firestore')>()),
   getDocs: h.getDocs,
+  getDoc: h.getDoc,
 }));
 
 vi.mock('@/lib/auth', () => ({
   usePermission: (bit: bigint) => ({ allowed: h.permitidos.has(bit), loading: false }),
 }));
 vi.mock('@/lib/data/integracaoCollection', () => ({
-  integracaoCollection: { ref: () => ({ __col: 'integracao' }) },
+  integracaoCollection: {
+    ref: () => ({ __col: 'integracao' }),
+    docRef: (_db: unknown, _ctx: unknown, id: string) => ({ __doc: 'integracao', id }),
+  },
 }));
 vi.mock('@/lib/data/produtoCollection', () => ({
   produtoCollection: {
@@ -139,6 +153,7 @@ vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
 }));
 
 const { ShopeeEditor } = await import('./ShopeeEditor');
+const { MAX_MODELOS_POR_FILHO } = await import('./ModelosAnuncioShopee');
 
 const conta = (id: string, nome: string, extra: Record<string, unknown> = {}): Linha => ({
   id,
@@ -182,6 +197,7 @@ beforeEach(() => {
   h.links = [];
   h.filhos = [];
   h.varLinks = new Map();
+  h.contasPorId = new Map();
   h.produto = { nome: 'Camiseta', paiId: null };
   h.tabMedi = null;
   h.carregando = false;
@@ -191,8 +207,15 @@ beforeEach(() => {
   h.client = shopeeClientFalso();
   h.notify.mockReset();
   h.getDocs.mockReset();
-  h.getDocs.mockImplementation(async (q: { produtoId: string }) => ({
-    docs: (h.varLinks.get(q.produtoId) ?? []).map((v) => ({ id: v.id, data: () => v.data })),
+  h.getDocs.mockImplementation(async (q: { produtoId: string; __limit?: number }) => ({
+    docs: (h.varLinks.get(q.produtoId) ?? [])
+      .slice(0, q.__limit ?? Number.POSITIVE_INFINITY)
+      .map((v) => ({ id: v.id, data: () => v.data })),
+  }));
+  h.getDoc.mockReset();
+  h.getDoc.mockImplementation(async (ref: { id: string }) => ({
+    id: ref.id,
+    data: () => h.contasPorId.get(ref.id),
   }));
 });
 
@@ -217,11 +240,13 @@ describe('ShopeeEditor — which conta a link belongs to', () => {
     expect(screen.queryByRole('tab', { name: /não encontrada/ })).toBeNull();
   });
 
-  it('(b) gives a conta the query did not return a tab of its own — the link is shown, never dropped', () => {
+  it('(b) gives a conta with no document a tab of its own — the link is shown, never dropped', async () => {
     h.links = [link('L9', { contaProdutoShopeeOuterRef: 'documents/integracao/int-9' })];
     renderEditor();
 
-    const orfa = screen.getByRole('tab', { name: /Conta int-9 \(não encontrada\)/ });
+    const orfa = await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ });
+    // Called missing only after its by-id read said so.
+    expect(h.getDoc).toHaveBeenCalledWith(expect.objectContaining({ id: 'int-9' }));
     // It holds the only listing, so it opens first.
     expect(orfa.getAttribute('aria-selected')).toBe('true');
     expect(blocosDe('int-9')).toEqual(['L9']);
@@ -233,7 +258,7 @@ describe('ShopeeEditor — which conta a link belongs to', () => {
     ).toBeDefined();
   });
 
-  it('puts the links whose conta ref names no id in a LAST tab of their own', () => {
+  it('puts the links whose conta ref names no id in a LAST tab of their own', async () => {
     h.produto = { nome: 'Camiseta', paiId: null, tabelaDeMedidasModaUid: 'documents/tabMedi/tm-1' };
     h.tabMedi = { nome: 'Camisetas adulto', tabelasMedidasShopee: {} };
     h.links = [
@@ -242,6 +267,7 @@ describe('ShopeeEditor — which conta a link belongs to', () => {
       link('L9', { contaProdutoShopeeOuterRef: 'documents/integracao/int-9' }),
     ];
     renderEditor();
+    await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ });
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
       'Loja ASem anúncio',
       'Conta int-9 (não encontrada)1 anúncio(s)',
@@ -250,6 +276,111 @@ describe('ShopeeEditor — which conta a link belongs to', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Sem conta legível/ }));
     expect(blocosDe('__sem_conta__')).toEqual(['L-sem']);
     expect(within(bloco('L-sem')).getByText(/sem conta legível, nenhum modelo/)).toBeDefined();
+  });
+
+  it('reads a conta past the bounded query BY ID and shows its link under it — never "não encontrada" — while a conta with no document still is', async () => {
+    // `int-77` exists but sits past the query's page (`h.contas` is the page).
+    h.contasPorId.set('int-1', conta('int-1', 'Loja A').data);
+    h.contasPorId.set('int-77', conta('int-77', 'Loja Z', { shop_id: 555 }).data);
+    h.links = [
+      link('L1'),
+      link('L77', { contaProdutoShopeeOuterRef: 'integracao/int-77', item_id: 1000077 }),
+      // NEAR-MISS: no document at all — the one honest "não encontrada".
+      link('L9', { contaProdutoShopeeOuterRef: 'documents/integracao/int-9', item_id: 1000009 }),
+    ];
+    renderEditor();
+
+    await screen.findByRole('tab', { name: /Loja Z/ });
+    await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ });
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'Loja A1 anúncio(s)',
+      'Loja Z1 anúncio(s)',
+      'Conta int-9 (não encontrada)1 anúncio(s)',
+    ]);
+    expect(screen.queryByRole('tab', { name: /int-77/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: /Loja Z/ }));
+    expect(blocosDe('int-77')).toEqual(['L77']);
+    // Its real shop_id: the storefront link is built, and nothing says it is missing.
+    expect(
+      within(bloco('L77')).getByRole('link', { name: 'Ver na Shopee' }).getAttribute('href'),
+    ).toBe('https://shopee.com.br/product/555/1000077');
+    expect(within(painel('int-77')).queryByText(/não está cadastrada/)).toBeNull();
+
+    // By id, and only the ids the page lacks — never `int-1`, never a query.
+    expect(h.getDoc.mock.calls.map(([ref]) => (ref as { id: string }).id).sort()).toEqual([
+      'int-77',
+      'int-9',
+    ]);
+    expect([...h.consultas].sort()).toEqual(['integracao', 'prodshopee']);
+  });
+
+  it('NEAR-MISS: a by-id document of ANOTHER channel is no Shopee conta — "não encontrada", as the query would say', async () => {
+    // The query filters `tipo == shopee`; the by-id read must not count what it would not.
+    h.contasPorId.set(
+      'int-ml',
+      conta('int-ml', 'Conta do Mercado Livre', { tipo: INTEGRACAO_TIPO.mercadoLivre }).data,
+    );
+    h.links = [link('L-ml', { contaProdutoShopeeOuterRef: 'integracao/int-ml' })];
+    renderEditor();
+
+    await screen.findByRole('tab', { name: /Conta int-ml \(não encontrada\)/ });
+    expect(h.getDoc).toHaveBeenCalledWith(expect.objectContaining({ id: 'int-ml' }));
+    expect(screen.queryByRole('tab', { name: /Mercado Livre/ })).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: /int-ml/ }));
+    expect(within(bloco('L-ml')).queryByRole('link', { name: 'Ver na Shopee' })).toBeNull();
+  });
+
+  it('reads no id no document can carry, and calls it "não encontrada" without a read', async () => {
+    h.links = [
+      link('L-rel', { contaProdutoShopeeOuterRef: 'documents/integracao/..' }),
+      link('L-res', { item_id: 1000002, contaProdutoShopeeOuterRef: 'integracao/__x__' }),
+    ];
+    renderEditor();
+    expect(screen.getByRole('tab', { name: /Conta \.\. \(não encontrada\)/ })).toBeDefined();
+    expect(screen.getByRole('tab', { name: /Conta __x__ \(não encontrada\)/ })).toBeDefined();
+    expect(h.getDoc).not.toHaveBeenCalled();
+  });
+
+  it('keeps the selected conta while a newly named off-page conta is read, and says "carregando", never "não encontrada"', async () => {
+    h.contas = [conta('int-1', 'Loja A'), conta('int-2', 'Loja B')];
+    h.contasPorId.set('int-77', conta('int-77', 'Loja Z').data);
+    h.links = [
+      link('L1'),
+      link('L2', { contaProdutoShopeeOuterRef: 'integracao/int-2' }),
+      link('L77', { item_id: 1000077, contaProdutoShopeeOuterRef: 'integracao/int-77' }),
+    ];
+    const { rerender } = renderEditor();
+    await screen.findByRole('tab', { name: /Loja Z/ });
+    fireEvent.click(screen.getByRole('tab', { name: /Loja B/ }));
+
+    // A listing on a SECOND conta past the page lands while the tab is open; the
+    // re-read of the id set hangs.
+    const pendentes = new Map<string, (dados: Record<string, unknown>) => void>();
+    h.getDoc.mockImplementation(
+      (ref: { id: string }) =>
+        new Promise((resolve) => {
+          pendentes.set(ref.id, (dados) => resolve({ id: ref.id, data: () => dados }));
+        }),
+    );
+    h.links = [
+      ...h.links,
+      link('L88', { item_id: 1000088, contaProdutoShopeeOuterRef: 'integracao/int-88' }),
+    ];
+    rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} />);
+
+    expect(screen.getByRole('tab', { name: /Loja B/ }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: /Conta int-88 \(carregando…\)/ })).toBeDefined();
+    // The conta already read keeps its name while the new set is read.
+    expect(screen.getByRole('tab', { name: /Loja Z/ })).toBeDefined();
+    expect(screen.queryByRole('tab', { name: /não encontrada/ })).toBeNull();
+
+    await waitFor(() => expect([...pendentes.keys()].sort()).toEqual(['int-77', 'int-88']));
+    pendentes.get('int-77')!(conta('int-77', 'Loja Z').data);
+    pendentes.get('int-88')!(conta('int-88', 'Loja C').data);
+    await screen.findByRole('tab', { name: /Loja C/ });
+    expect(screen.getByRole('tab', { name: /Loja B/ }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByRole('tab', { name: /carregando/ })).toBeNull();
   });
 
   it('badges a conta with no listing "Sem anúncio"', () => {
@@ -689,6 +820,78 @@ describe('ShopeeEditor — the models, read only on demand', () => {
       'Recusado (error_estoque_empate)',
       formatReais(29.9),
     ]);
+  });
+});
+
+describe('ShopeeEditor — the models read never answers from a truncated page', () => {
+  const L1 = 'documents/produtos/prod-1/prodshopee/L1';
+  /** `n` rows of OTHER listings, ids sorting before `v-zz` (the key order a real read returns). */
+  const deOutros = (n: number): Linha[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `v-${String(i).padStart(4, '0')}`,
+      data: {
+        produtoShopeeOuterRef: `documents/produtos/prod-1/prodshopee/L-outro-${String(i)}`,
+        model_id: 3000000 + i,
+      },
+    }));
+  const doL1 = (modelId: number): Linha => ({
+    id: 'v-zz',
+    data: { produtoShopeeOuterRef: L1, model_id: modelId },
+  });
+
+  async function abrirModelosDeL1() {
+    renderEditor();
+    fireEvent.click(within(bloco('L1')).getByRole('button', { name: 'Ver variações' }));
+    return within(await waitFor(() => screen.getByTestId('shopee-modelos-L1')));
+  }
+
+  beforeEach(() => {
+    h.links = [link('L1')];
+  });
+
+  it('shows THIS listing’s model even when other listings’ rows fill the first 50 — the old bound', async () => {
+    h.filhos = [{ id: 'f1', data: { nome: 'Camiseta P', paiId: 'prod-1' } }];
+    h.varLinks.set('f1', [...deOutros(60), doL1(2000001)]);
+    const t = await abrirModelosDeL1();
+    expect(t.getByText('2000001')).toBeDefined();
+    expect(screen.queryByTestId('shopee-modelos-truncado-L1')).toBeNull();
+    // One read per child, by its path — not one per page.
+    expect(h.getDocs).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a child’s read stopped at the bound — beside the rows it did find', async () => {
+    h.filhos = [
+      { id: 'f1', data: { nome: 'Camiseta P', paiId: 'prod-1' } },
+      { id: 'f2', data: { nome: 'Camiseta M', paiId: 'prod-1' } },
+    ];
+    // f1: past the bound, this listing's row beyond what is read.
+    h.varLinks.set('f1', [...deOutros(MAX_MODELOS_POR_FILHO + 1), doL1(2000001)]);
+    h.varLinks.set('f2', [doL1(2000002)]);
+    const t = await abrirModelosDeL1();
+    expect(t.getByText('2000002')).toBeDefined();
+    const aviso = screen.getByTestId('shopee-modelos-truncado-L1');
+    expect(aviso.textContent).toContain(`mais de ${String(MAX_MODELOS_POR_FILHO)} registros`);
+    expect(aviso.textContent).toContain('Camiseta P');
+    expect(aviso.textContent).not.toContain('Camiseta M');
+  });
+
+  it('never answers "no linked variation" from a read that stopped at the bound', async () => {
+    h.filhos = [{ id: 'f1', data: { nome: 'Camiseta P', paiId: 'prod-1' } }];
+    h.varLinks.set('f1', [...deOutros(MAX_MODELOS_POR_FILHO + 1), doL1(2000001)]);
+    const t = await abrirModelosDeL1();
+    expect(screen.getByTestId('shopee-modelos-truncado-L1')).toBeDefined();
+    expect(t.queryByText(/Nenhuma variação deste produto está vinculada/)).toBeNull();
+    expect(t.getByText('Nenhuma das variações lidas está vinculada a este anúncio.')).toBeDefined();
+  });
+
+  it('NEAR-MISS: exactly the bound is a COMPLETE read — no notice, and "none linked" is the truth', async () => {
+    h.filhos = [{ id: 'f1', data: { nome: 'Camiseta P', paiId: 'prod-1' } }];
+    h.varLinks.set('f1', deOutros(MAX_MODELOS_POR_FILHO));
+    const t = await abrirModelosDeL1();
+    expect(screen.queryByTestId('shopee-modelos-truncado-L1')).toBeNull();
+    expect(
+      t.getByText('Nenhuma variação deste produto está vinculada a este anúncio.'),
+    ).toBeDefined();
   });
 });
 

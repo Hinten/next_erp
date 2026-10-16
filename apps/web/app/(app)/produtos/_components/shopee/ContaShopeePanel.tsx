@@ -22,8 +22,13 @@ export interface ContaShopee {
   /** The conta's `shop_id`, unvalidated — the storefront URL checks it. */
   readonly shopId: unknown;
   readonly ativo: boolean;
-  /** `false` for a tab built from a link's conta ref alone (the conta doc was not returned). */
+  /** `false` for a tab built from a link's conta ref alone (no conta doc to show). */
   readonly encontrada: boolean;
+  /**
+   * `true` while that conta's by-id read has not answered — the tab must not
+   * call it missing yet. Always `false` when `encontrada`.
+   */
+  readonly carregando: boolean;
 }
 
 /**
@@ -93,9 +98,11 @@ export function ContaShopeePanel({
 
         {!conta.encontrada && (
           <Text size="sm" c="dimmed">
-            {contaDoAnuncioLegivel
-              ? 'Estes anúncios apontam para uma conta Shopee que não está cadastrada (ou que você não pode ver).'
-              : 'Estes anúncios não indicam uma conta Shopee legível.'}
+            {conta.carregando
+              ? 'Carregando a conta Shopee destes anúncios…'
+              : contaDoAnuncioLegivel
+                ? 'Estes anúncios apontam para uma conta Shopee que não está cadastrada (ou que você não pode ver).'
+                : 'Estes anúncios não indicam uma conta Shopee legível.'}
           </Text>
         )}
 
