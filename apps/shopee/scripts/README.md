@@ -1240,14 +1240,26 @@ deliberate and observable instead of arriving on an HTTP call nobody was
 watching.
 
 It is also the only place the whole PLAN is printed. The dry run stops one step
-short of the sender — `buscarFamiliasShopeePorIds` →
-`quantidadesDaFamiliaShopee` → `montarTarefasDeEstoqueShopee` plus one
+short of the sender — `planejarEnvioEstoqueShopee` (resolve each id to its
+family anchor → `buscarFamiliasShopeePorIds` over the anchors →
+`quantidadesDaFamiliaShopee` → `montarTarefasDeEstoqueShopee`) plus one
 `get_item_promotion` for the floor column — and renders exactly the tasks the
-live path would enqueue. That is not a re-implementation: it is the live path's
-own planner, minus the writer, and the two branches load **different modules**
-(`lib/shopee/estoque/enviarEstoqueCli.ts:19-30`), so the dry run cannot reach a
-sender even by accident. The reasoning behind every line it prints is
-`lib/shopee/estoque/README.md`.
+live path would send. That is not a re-implementation: `planejarEnvioEstoqueShopee`
+is the live path's own write-free prefix, the ONE call both modes make, and the
+two branches load **different modules** (`lib/shopee/estoque/enviarEstoqueCli.ts`'s
+header), so the dry run cannot reach a sender even by accident. The reasoning
+behind every line it prints is `lib/shopee/estoque/README.md`.
+
+⚠️ **Both modes resolve a variação to its family anchor, and plan the family the
+same way.** Before the review of PR #1948 the dry run kept its own prefix and
+read the ids as typed: a variação was planned as its OWN anchor — no conta, no
+listing link — so the rehearsal printed `conta-fora-do-produto` and "nothing
+would be sent", while `--live`, which resolves the anchor, pushed the whole
+family's stock through the anchor's listing. The divergence ran in the direction
+that writes. Now a variação requested on its own prints its anchor's listing,
+with a `via variação` line naming it; a variação whose anchor has no listing
+prints its OWN id with `âncora=<anchorId>`; and a variação beside its own anchor
+is ONE family, one `update_stock` — exactly what `--live` sends.
 
 ### 13.1 Environment
 
@@ -1283,7 +1295,7 @@ pnpm --filter @delfrance/shopee-app enviar:estoque --integracao int-1 --produto 
 
 ```
 --integracao <id>     obrigatório — o documento da integração Shopee.
---produto <id>        obrigatório e REPETÍVEL — o produto ÂNCORA da família.
+--produto <id>        obrigatório e REPETÍVEL — a âncora OU uma variação.
 --reenviar-com-erro   ignora a impressão digital da última recusa, e SÓ ela.
 --dry-run             É O PADRÃO.
 --live                a única forma de enviar.
@@ -1295,7 +1307,7 @@ pnpm --filter @delfrance/shopee-app enviar:estoque --integracao int-1 --produto 
 | flag                  | meaning                                                                                                                                                                             |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--integracao <id>`   | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                      |
-| `--produto <id>`      | **required and REPEATABLE** — the family **ANCHOR**, never a variação. ⚠️ **No comma-separated form**, because a comma is a legal character in a document id. Deduped in flag order |
+| `--produto <id>`      | **required and REPEATABLE** — an anchor or a **variação**, resolved to its anchor in both modes. ⚠️ **No comma-separated form**: a comma is legal in an id. Deduped, in flag order. |
 | `--reenviar-com-erro` | bypasses the per-link **skip set** and NOTHING else. A removed, banned, in-review, native-kit or id-less listing still refuses with it on                                           |
 | `--dry-run`           | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                  |
 | `--live`              | the only opt-in to a real quantity write                                                                                                                                            |
@@ -1312,15 +1324,15 @@ error, the wrong sentence for a human who typed one flag too many.
 ⚠️ A bare `--` is refused, and no command in this file carries one (see the note
 at the top).
 
-**What the dry run calls, and what it can never call.** It reads
-`produtoCollection.docRef(…).get()` once per requested id (for the name),
-`buscarFamiliasShopeePorIds`, `quantidadesDaFamiliaShopee`,
-`montarTarefasDeEstoqueShopee`, `lerEstadoEstoque`, and
-`client.getItemPromotion` chunked at `SHOPEE_ITEM_PROMOTION_MAX_IDS`. It never
-reaches `enviarEstoqueManualShopee`, `processShopeeStockSendTask`,
+**What the dry run calls, and what it can never call.** Firestore:
+`lerEstadoEstoque`, then `planejarEnvioEstoqueShopee` — one masked `getAll` of
+the requested produtos (`nome`, `paiId`), one more for the names of anchors
+nobody requested, and `buscarFamiliasShopeePorIds` over the deduped ANCHORS.
+Shopee: `client.getItemPromotion` chunked at `SHOPEE_ITEM_PROMOTION_MAX_IDS`. It
+never reaches `enviarEstoqueManualShopee`, `processShopeeStockSendTask`,
 `update_stock`, any scheduler or any Firestore write — the sender module is not
-even imported on that path, and a test over the script's raw text is what keeps
-it that way.
+even imported on that path, a test over the script's raw text keeps it that way,
+and `planejarEnvioEstoque.test.ts` pins the planning module's exact import list.
 
 ### 13.3 What to read in the output
 
@@ -1330,16 +1342,16 @@ into an issue. Keep it that way if you extend it.
 
 | line                                                | what it tells you                                                                                                                                                                                                                                             |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `integração` / `solicitados` / `famílias lidas`     | what you asked for and how many family rows discovery returned. `famílias lidas` below `solicitados` means an anchor came back with no row — it is reported as a skip, never dropped silently.                                                                |
+| `integração` / `solicitados` / `famílias lidas`     | what you asked for and how many family rows discovery returned — `--live`'s own two numbers. A variação sharing its anchor's family, or an anchor with no row (reported as a skip, never dropped), puts `famílias lidas` below `solicitados`.                 |
 | `anúncios no plano` / `modelos no plano`            | how many `update_stock` calls a live run would make, and how many models ride in them. One call per **listing**, never per model.                                                                                                                             |
 | `orçamento da task`                                 | the encoded-body budget and the warning threshold. A listing above the warning prints `⚠️ acima do aviso` on its own `tamanho` line; at 50 models a real payload is ~6 KiB against 80 KiB, so this is a drift backstop, not a bound.                          |
-| `### anúncio i/N — <produtoId>`                     | one block per planned listing: `produto` (with its name), `anúncio` (the `item_id`), `vínculo` (the `prodshopee` document), `estado`, `kit nativo` and `parte P/T`.                                                                                           |
+| `### anúncio i/N — <produtoId>`                     | one block per planned listing, under the family ANCHOR: `produto` (with its name), `via variação` (the variações you asked for that resolved here), `anúncio` (`item_id`), `vínculo` (the `prodshopee` doc), `estado`, `kit nativo`, `parte P/T`.             |
 | `parte 1/1`                                         | the normal case. `1/2` means the listing's models exceeded the wire's 50-model ceiling and were split across two tasks — possible only on drifted link data, and safe, because a partial `stock_list` leaves the omitted models untouched.                    |
 | `modelos (N)` — the table                           | `model_id · produto · qtd · envia · piso · banda · clampeado`. ⚠️ `qtd` is the planner's **unclamped** number and `envia` is what would actually go — read them as a pair. `model_id 0` is the no-model listing, a real id, never "no model".                 |
 | `piso` / `clampeado: piso`                          | the reserved floor `get_item_promotion` reported for that model. `clampeado: piso` means **Shopee has promised more units than you hold** and the send would be raised to the floor — the thing this column exists to show.                                   |
 | `banda` — always `—` today                          | the category's `stock_limit.max`. **Nothing resolves a band on this path**, deliberately: filling it would cost one `get_item_limit` per listing. The column is the seam a future band read plugs into, so `clampeado` can only say `piso` or `nenhum` today. |
 | `kit <produtoId> — a conta que produz a quantidade` | for an ERP kit, one line per component (`disponivel`, `por kit`, `limita`) and then `min =`. This is the whole arithmetic behind the number, printed rather than asserted.                                                                                    |
-| `### pulos (N) — não seriam enviados`               | one line per refusal or annotation: produto, anúncio, motivo slug, the rendered pt-BR message, and `model=` / `modelos=` when the line is about one model or about a chunk.                                                                                   |
+| `### pulos (N) — não seriam enviados`               | one line per refusal or annotation: produto, anúncio, motivo slug, the pt-BR message, `model=` / `modelos=`. A produto with no listing at all keeps the id you TYPED, plus `âncora=<anchorId>` for a variação (`--live`'s `produtos sem envio`).              |
 | `### totais por motivo`                             | the same skips folded by motivo, each marked `recusa` or `aviso`. ⚠️ `clampado-na-reserva` is an **aviso**, not a `recusa` — counting `motivo !== null` as a failure reports every clamped send as one.                                                       |
 
 ⚠️ **A dry run cannot tell you what Shopee currently shows.** It prints what the
@@ -1414,8 +1426,10 @@ SHOPEE_CONTA_PAUSADA` before any provider call; this command reads the state
 - **The plan is PROVISIONAL about the floor.** `get_item_promotion` is read once,
   before the send; a promotion that starts between the two answers a refusal the
   sender handles by re-reading the floor and retrying ONCE.
-- **`produtoNome` costs one extra document read per requested id** (up to 50, in
-  parallel). It buys the name in every row; nothing else reads it.
+- **`produtoNome` costs no extra read per id.** The names come from the anchor
+  resolution's masked batch read — the same one `--live` makes — plus one more
+  masked read for anchors nobody requested, so a listing reached through a
+  variação still carries the ANCHOR's name.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it writes
   quantities on a real marketplace, and even a dry run calls Shopee.
 
@@ -1492,7 +1506,7 @@ pnpm --filter @delfrance/shopee-app enviar:precos --integracao int-1 --produto p
 | flag                | meaning                                                                                                                                                                                                                       |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--integracao <id>` | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                                                                |
-| `--produto <id>`    | **required and REPEATABLE**. Unlike `enviar:estoque`, a **variação** is accepted: it resolves to its family anchor, and a variação beside its own anchor is ONE family. ⚠️ **No comma-separated form**. Deduped in flag order |
+| `--produto <id>`    | **required and REPEATABLE**. As in `enviar:estoque`, a **variação** is accepted: it resolves to its family anchor, and a variação beside its own anchor is ONE family. ⚠️ **No comma-separated form**. Deduped, in flag order |
 | `--baixar-preco`    | turns the decrease guard OFF. Without it a lower price — and a listing whose current price Shopee does not report — is SKIPPED. ⚠️ It takes no value: `--baixar-preco=false` is REFUSED, never read as "present"              |
 | `--dry-run`         | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                                                            |
 | `--live`            | the only opt-in to a real price write                                                                                                                                                                                         |

@@ -182,6 +182,18 @@ export const MAX_ID_CAD_INT_TRAN = 60;
 export const MIN_ID_CAD_INT_TRAN = 2;
 
 /**
+ * The XSD's `TString` pattern, verbatim (`tiposBasico_v4.00.xsd`:
+ * `[!-ÿ]{1}[ -ÿ]{0,}[!-ÿ]{1}|[!-ÿ]{1}`): U+0021–U+00FF at both edges and
+ * U+0020–U+00FF inside. Latin-1 letters (`ç`, `ã`) pass; an en dash, a curly
+ * quote, an emoji or a control character does not, and `buildInfIntermed`
+ * copies the stored value into `<idCadIntTran>` unchanged — so without this
+ * check such a value saves cleanly and fails the pre-send XSD gate. Matched on
+ * UTF-16 code units (no `u` flag): an emoji's surrogate halves are above
+ * U+00FF, so it is refused too.
+ */
+export const PADRAO_TSTRING = /^(?:[!-ÿ][ -ÿ]*[!-ÿ]|[!-ÿ])$/;
+
+/**
  * Plain text input for `idCadIntTran`, capped at `MAX_ID_CAD_INT_TRAN`. The
  * default `ObjectView` string input has no length cap, so a 61st character
  * would only surface as a validation error on save; here it is never typed.
@@ -270,7 +282,7 @@ export function integracaoFieldsIntermediador(): Record<string, FieldConfig> {
  *   only that the value is truthy — would hand it to the XSD's `TCnpj` at
  *   emission.
  * - `idCadIntTran` must have at least `MIN_ID_CAD_INT_TRAN` characters once
- *   trimmed.
+ *   trimmed, and match the XSD's `TString` (`PADRAO_TSTRING`).
  *
  * Form-only on purpose, like `filialFormSchema`'s checksum: the read schema
  * stays tolerant of whatever a migrated conta carries. The trade-off is the
@@ -294,6 +306,13 @@ export function validarIntermediador(values: Record<string, unknown>): Validatio
       issues.push({
         path: 'idCadIntTran',
         message: `O identificador tem no mínimo ${MIN_ID_CAD_INT_TRAN} caracteres.`,
+      });
+    } else if (aparado !== '' && !PADRAO_TSTRING.test(aparado)) {
+      issues.push({
+        path: 'idCadIntTran',
+        message:
+          'O identificador tem um caractere que a NF-e não aceita (travessão, aspas ' +
+          'curvas, emoji ou caractere de controle). Digite-o sem esses caracteres.',
       });
     }
   }

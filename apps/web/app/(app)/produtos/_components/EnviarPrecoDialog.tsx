@@ -4,6 +4,7 @@ import { Checkbox, Stack } from '@mantine/core';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { useShopeeClient } from '@/lib/shopee/client';
 import { AvisoCanaisNaoSuportados } from '@/lib/marketplace/caps/AvisoCanaisNaoSuportados';
 import { PushProgressDialog } from '@/lib/marketplace/push/PushProgressDialog';
 import {
@@ -11,6 +12,7 @@ import {
   type EnviarPrecoOpcoes,
   enviarPrecoParaMarketplaces,
 } from '@/lib/marketplace/preco/enviarPrecoRun';
+import { detalheLinhaPreco } from '@/lib/marketplace/preco/detalheLinhaPreco';
 import { suportePrecoDoCanal } from '@/lib/marketplace/preco/registry';
 import type { PricePushRow } from '@/lib/marketplace/preco/types';
 
@@ -31,6 +33,7 @@ export interface EnviarPrecoDialogProps {
 
 export function EnviarPrecoDialog({ opened, alvos, onClose }: EnviarPrecoDialogProps) {
   const mercadoLivre = useMercadoLivreClient();
+  const shopee = useShopeeClient();
   // The same shared `['integracoes']` entry `/produtos` already holds — this
   // resolves the selection's conta ids to a tipo at no extra read.
   const { byId, status } = useIntegracoes(getFirebaseFirestore());
@@ -90,8 +93,9 @@ export function EnviarPrecoDialog({ opened, alvos, onClose }: EnviarPrecoDialogP
             label="Incluir produtos ocultos"
             description={
               'Deixe marcado para enviar o preço mesmo quando o produto estiver oculto ' +
-              '(não publicado) no ERP, desde que o anúncio esteja ativo no Mercado Livre. ' +
-              'Desmarque para pular esses produtos.'
+              '(não publicado) no ERP, desde que o anúncio esteja ativo. Desmarcar só vale ' +
+              'para o Mercado Livre: a Shopee envia o preço de todo anúncio ativo, oculto ou ' +
+              'não no ERP.'
             }
             checked={opcoes.incluirNaoPublicados}
             onChange={(e) => definir({ ...opcoes, incluirNaoPublicados: e.currentTarget.checked })}
@@ -102,18 +106,13 @@ export function EnviarPrecoDialog({ opened, alvos, onClose }: EnviarPrecoDialogP
         enviarPrecoParaMarketplaces(
           alvos,
           opcoes,
-          { db: getFirebaseFirestore(), deps: { mercadoLivre }, signal },
+          { db: getFirebaseFirestore(), deps: { mercadoLivre, shopee }, signal },
           onProgress,
         )
       }
-      // The old→new price is the one thing an operator checks after a price
-      // push, and the backend's `mensagem` already carries it on a success —
-      // this adds it to the subtitle for the rows where it did NOT change.
-      detalheLinha={(row) =>
-        row.outcome !== 'enviado' && row.precoAnterior != null
-          ? ` · anúncio a ${String(row.precoAnterior)}`
-          : null
-      }
+      // The model a per-model row is about, and the listing's price on the rows
+      // where it did NOT change — see `detalheLinhaPreco`.
+      detalheLinha={detalheLinhaPreco}
     />
   );
 }

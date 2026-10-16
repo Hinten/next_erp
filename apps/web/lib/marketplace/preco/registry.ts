@@ -4,6 +4,7 @@ import { type VereditoCanal, vereditoCanal } from '@/lib/marketplace/caps/suport
 
 import { buildProviderMap } from '../push/types';
 import { mercadoLivrePriceProvider } from './providers/mercadoLivre';
+import { shopeePriceProvider } from './providers/shopee';
 import { criarUnsupportedChannelPriceProvider } from './providers/unsupportedChannel';
 import type { PricePushChannelResult, PricePushInput, PricePushProvider } from './types';
 
@@ -18,7 +19,7 @@ import type { PricePushChannelResult, PricePushInput, PricePushProvider } from '
  * The twin of `lib/marketplace/estoque/registry.ts`, down to the gate.
  */
 export const PROVIDERS: Readonly<Partial<Record<IntegracaoTipo, PricePushProvider>>> =
-  buildProviderMap([mercadoLivrePriceProvider], 'Price push');
+  buildProviderMap([mercadoLivrePriceProvider, shopeePriceProvider], 'Price push');
 
 /**
  * What `MARKETPLACE_TIPO_CAPS` says about sending prices to this channel, and --

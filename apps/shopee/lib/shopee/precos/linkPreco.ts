@@ -43,13 +43,12 @@
  *
  * ## ⚠️ The model rows self-expire — there are ZERO clearing writes on a child
  *
- * A model's refusal is compared against its OWN success stamp on the SAME
- * `variashopee` doc: a reader shows it only while
- * `precoRecusaEm >= (precoEnviadoEm ?? 0)` (the schema's docblock pins that
- * rule). Every accepted send of the model stamps a fresh `precoEnviadoEm`, so a
- * stale refusal vanishes the moment the model is next accepted, and no child
- * write here ever carries a `null`. Unlike step 12's stock rows, the comparison
- * is NOT against the parent's stamp.
+ * A reader shows a model's refusal only while `recusaPrecoDoModeloShopeeLegivel`
+ * (`@delfrance/schemas`) says so: `precoRecusaEm` at or after BOTH its own
+ * `precoEnviadoEm` on the SAME `variashopee` doc AND the item's. Every accepted
+ * send of the model stamps a fresh `precoEnviadoEm`, and every clean item send
+ * stamps the item's, so a stale refusal vanishes at whichever comes first, and
+ * no child write here ever carries a `null`.
  *
  * ## ⚠️ Every patch is FLAT, and every write is `mergeIfExists`
  *
@@ -91,8 +90,9 @@
  * item's refusal fields are cleared by a `null` write rather than expired by a
  * stamp, so a refusal that lands AFTER a newer clean clear stands beside the
  * newer `precoEnviadoEm`. The step-21 reader therefore shows the item's refusal
- * only while `precoRecusaEm >= (precoEnviadoEm ?? 0)` — the model rows' rule
- * (above), which survives this race where the `null` clear does not.
+ * only while `precoRecusaEm >= (precoEnviadoEm ?? 0)` — the model rows'
+ * own-stamp half (above), which survives this race where the `null` clear does
+ * not.
  *
  * ## Clock-free, framework-free
  *
