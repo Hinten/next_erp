@@ -1,0 +1,28 @@
+# Firebase App Hosting backend config for apps/amazon.
+# API-only service for the Amazon (SP-API) marketplace channel. Step 1 of the
+# master plan ships only the bare scaffold (`GET /api/health`); the connect
+# route, the push receiver, the Firestore access and the backstop poll arrive in
+# later steps.
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 20
+  # Deliberately 0. Orders arrive by push (master plan D4: SQS → EventBridge
+  # Pipe → API destination → the receiver), the SQS queue's retention and its
+  # DLQ hold every message not yet delivered, and the 15-minute `searchOrders`
+  # backstop (step 4) is the guaranteed path. So a cold start that misses the
+  # API destination's 5-second timeout costs a redelivery, never correctness.
+  # Step 3, which adds the receiver, re-checks this.
+  minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
+  concurrency: 80
+# No `timeoutSeconds` — the platform default is what the later timeout-ceiling
+# test compares against.
+#
+# No `runConfig.vpcAccess` — this channel needs no static egress IP: the LWA
+# token exchange is authorized by the app's client credentials, and an SP-API
+# call by its LWA access token alone (no AWS IAM or SigV4 since 2023-10-02,
+# master plan step 1).
+#
+# No `env:` block and no variables listed: nothing here reads the environment
+# yet. The step that adds the first route documents and declares every variable
+# it reads, here, in the same change (master plan §4.iii item 4).
