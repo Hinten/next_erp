@@ -40,7 +40,7 @@
  *
  * | outcome | task | hot sweep | deferred sweep |
  * | --- | --- | --- | --- |
- * | `importado` | resolve | delete | delete |
+ * | `importado`, `sem-mudanca`, `obsoleto`, `hub`, `situacao-desconhecida` (step 5) | resolve | delete | delete |
  * | `conta-inexistente` | drop | delete | delete |
  * | `adiado/<motivo>` | defer | migrate to `deferred`, `tentativas` 0 | stays deferred; parks at 7 |
  * | `pedido-inexistente` | park | park | park |
@@ -98,6 +98,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { ZodError, z } from 'zod';
+import type { ViaCepClient } from '@delfrance/core/cep';
 import { notificacaoLojaIntegradaCollection } from '@delfrance/data/admin/collections';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import {
@@ -237,11 +238,26 @@ export type MotivoAdiamentoLi = (typeof MOTIVO_ADIAMENTO_LI)[keyof typeof MOTIVO
 export type ClasseRecusaLi = 'LiHttpError' | 'LiSchemaError' | 'LiPaginacaoError' | 'ZodError';
 
 /**
- * What the importer returns. Step 3 declares only the success kind; step 5 adds
- * `sem-mudanca`, `hub` and `situacao-desconhecida`, and {@link toDispositionLi}
- * stops compiling until each is mapped.
+ * What the importer returns (step 5, `pedidos/importarPedido.ts`) — every kind a
+ * deterministic SUCCESS, so each one resolves:
+ *
+ *  - `importado` — a batch wrote the pedido and/or its pagamentos;
+ *  - `sem-mudanca` — the order already says everything the pedido holds;
+ *  - `obsoleto` — the stored watermark is strictly newer: NOTHING was written;
+ *  - `hub` — a hub-marked order (D5): no pedido, no pagamento, an aviso;
+ *  - `situacao-desconhecida` — a codigo the shared table does not know: the
+ *    order was imported (or left unchanged) with the importer's error text and
+ *    an aviso.
+ *
+ * A kind added later stops {@link toDispositionLi} from compiling until it is
+ * mapped.
  */
-export type ResultadoImportacaoLi = { readonly kind: 'importado' };
+export type ResultadoImportacaoLi =
+  | { readonly kind: 'importado' }
+  | { readonly kind: 'sem-mudanca' }
+  | { readonly kind: 'obsoleto' }
+  | { readonly kind: 'hub' }
+  | { readonly kind: 'situacao-desconhecida' };
 
 export type ResultadoNotificacaoLi =
   | ResultadoImportacaoLi
@@ -255,11 +271,40 @@ export type ResultadoNotificacaoLi =
     }
   | { readonly kind: 'importador-ausente' };
 
+/** What the importer's own log lines go to: ids and counts only, never a value. */
+export interface LoggerImportadorLi {
+  warn(msg: string, meta?: Record<string, unknown>): void;
+  info?(msg: string, meta?: Record<string, unknown>): void;
+}
+
+/**
+ * What one import needs besides the db, the context and the payload — bound by
+ * {@link processarNotificacaoLi} from this run's {@link DepsTarefaLi}, so the
+ * queue and the sweep hand the importer the same runtime.
+ */
+export interface DepsImportadorLi {
+  /** Now, in MILLISECONDS — read ONCE per import (the importer converts it, through `dataLi.ts`). */
+  readonly agoraMs: () => number;
+  /** `(...e) => FieldValue.arrayUnion(...e)`: the freight `mapa` registration. */
+  readonly arrayUnion: (...elementos: unknown[]) => unknown;
+  /** `(by) => FieldValue.increment(by)`: the avisos' counter. */
+  readonly increment: (by: number) => unknown;
+  readonly logger?: LoggerImportadorLi;
+  /** The CEP recovery of an endereço whose estado is unknown. */
+  readonly viaCep: ViaCepClient;
+  /**
+   * The Cloud Tasks attempt (0-based), or `null` in a sweep run: the situação
+   * history is read STRICTLY on attempts 0 and 1 only (`modoHistoricoLi`).
+   */
+  readonly tentativa: number | null;
+}
+
 /** The step-5 importer: one order, re-fetched through the context's (paced) client. */
 export type ImportadorPedidoLi = (
   db: Firestore,
   contexto: ContextoLojaIntegrada,
   payload: PayloadNotificacaoLi,
+  deps: DepsImportadorLi,
 ) => Promise<ResultadoImportacaoLi>;
 
 /**
@@ -293,6 +338,10 @@ function motivoDaRecusa(classe: ClasseRecusaLi, status: number | null): string {
 export function toDispositionLi(r: ResultadoNotificacaoLi): NotificationDisposition {
   switch (r.kind) {
     case 'importado':
+    case 'sem-mudanca':
+    case 'obsoleto':
+    case 'hub':
+    case 'situacao-desconhecida':
       return { kind: 'resolve', label: r.kind };
     case 'conta-inexistente':
       return { kind: 'drop', reason: r.kind, label: r.kind };
@@ -431,12 +480,34 @@ export interface DepsTarefaLi extends TratarFalhaDeps {
   readonly ambiente: AmbienteLi;
   /** The importer seam: {@link importadorPedidoLi} in the roots, a fake in tests. */
   readonly importador: ImportadorPedidoLi | null;
+  /** `(...e) => FieldValue.arrayUnion(...e)` in the roots, the fake's sentinel in tests. */
+  readonly arrayUnion: (...elementos: unknown[]) => unknown;
+  /** The importer's CEP recovery: `createViaCepClient()` in the roots, a fake in tests. */
+  readonly viaCep: ViaCepClient;
+  /** The importer's log lines (ids and counts only); `logger` above is the park's. */
+  readonly logger?: LoggerImportadorLi;
   /** The sleep the pacer uses: `setTimeout` in the roots, a recording fake in tests. */
   readonly esperar: (ms: number) => Promise<void>;
   /** The flow, the Cloud Tasks attempt and task id (`null` in a sweep), a test sink. */
   readonly registro: RegistroTarefaLi;
   /** Test seam, forwarded to the context's client. */
   readonly fetch?: typeof globalThis.fetch;
+}
+
+/**
+ * The importer's deps for this run, from the run's own: the same clock, the
+ * same sentinels, and the Cloud Tasks attempt off `registro` (`null` in a sweep,
+ * whose `registro` carries none).
+ */
+export function depsDoImportadorLi(deps: DepsTarefaLi): DepsImportadorLi {
+  return {
+    agoraMs: deps.agoraMs,
+    arrayUnion: deps.arrayUnion,
+    increment: deps.increment,
+    logger: deps.logger,
+    viaCep: deps.viaCep,
+    tentativa: deps.registro.tentativa ?? null,
+  };
 }
 
 /**
@@ -457,7 +528,7 @@ export async function processarNotificacaoLi(
       fetch: deps.fetch,
     });
     if (deps.importador === null) return { kind: 'importador-ausente' };
-    return await deps.importador(db, contexto, payload);
+    return await deps.importador(db, contexto, payload, depsDoImportadorLi(deps));
   } catch (err) {
     const desfecho = await classificarFalhaLi(db, err, contexto, deps);
     if (desfecho === null) throw err;

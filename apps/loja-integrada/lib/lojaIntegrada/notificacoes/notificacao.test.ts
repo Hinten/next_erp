@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ZodError, z } from 'zod';
+import type { ViaCepClient } from '@delfrance/core/cep';
 import { notificacaoLojaIntegradaCollection } from '@delfrance/data/admin/collections';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { MAX_TENTATIVAS, MAX_TENTATIVAS_DEFERRED } from '@delfrance/data/admin/notifications';
@@ -39,7 +40,7 @@ import {
   LiCredencialInvalidaError,
   LiEstacionamentoEmConflitoError,
 } from '../core/erros';
-import { type DocData, FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
+import { type DocData, FakeDb, arrayUnion, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   AGORA_MS,
   AMBIENTE_LIGADO,
@@ -56,6 +57,7 @@ import {
 import {
   DESTINO_TIPO_LI,
   FILA_LEITURA_LI,
+  type DepsImportadorLi,
   type DepsTarefaLi,
   type ImportadorPedidoLi,
   CONCORRENCIA_REDRIVE_LI,
@@ -66,6 +68,7 @@ import {
   camposDoRegistroDaTarefaLi,
   classificarFalhaLi,
   dedupKeyLi,
+  depsDoImportadorLi,
   docIdNotificacaoLi,
   importadorPedidoLi,
   persistirFalhaNotificacaoLi,
@@ -122,11 +125,21 @@ afterEach(() => {
   chamadasDeRede.length = 0;
 });
 
+/** The importer's CEP recovery: no test of the pipeline reaches it, and a call fails it. */
+const viaCepProibido: ViaCepClient = {
+  buscarCep: (cep) => {
+    chamadasDeRede.push(`viacep:${cep}`);
+    return Promise.reject(new Error('teste: nenhuma consulta de CEP é permitida'));
+  },
+};
+
 function depsTarefa(over: Partial<DepsTarefaLi> = {}): DepsTarefaLi {
   return {
     ambiente: AMBIENTE_LIGADO,
     importador: null,
     increment,
+    arrayUnion,
+    viaCep: viaCepProibido,
     agoraMs: () => AGORA_MS,
     esperar: () => Promise.resolve(),
     logger: loggerEspiao().logger,
@@ -288,6 +301,11 @@ describe('the dedup key — the ORDER, whatever stamp or origin', () => {
 describe('toDispositionLi — total, phase-independent', () => {
   const casos: readonly [ResultadoNotificacaoLi, ReturnType<typeof toDispositionLi>][] = [
     [{ kind: 'importado' }, { kind: 'resolve', label: 'importado' }],
+    // The step-5 importer's other successes: each resolves, labelled by its kind.
+    [{ kind: 'sem-mudanca' }, { kind: 'resolve', label: 'sem-mudanca' }],
+    [{ kind: 'obsoleto' }, { kind: 'resolve', label: 'obsoleto' }],
+    [{ kind: 'hub' }, { kind: 'resolve', label: 'hub' }],
+    [{ kind: 'situacao-desconhecida' }, { kind: 'resolve', label: 'situacao-desconhecida' }],
     [
       { kind: 'conta-inexistente' },
       { kind: 'drop', reason: 'conta-inexistente', label: 'conta-inexistente' },
@@ -336,6 +354,38 @@ describe('toDispositionLi — total, phase-independent', () => {
     for (const motivo of Object.values(MOTIVO_ADIAMENTO_LI)) {
       expect(toDispositionLi({ kind: 'adiado', motivo }).kind, motivo).toBe('defer');
     }
+  });
+});
+
+describe('the importer’s deps — bound from the run’s own', () => {
+  it('the same clock and sentinels, the CEP client, and the attempt off `registro`', async () => {
+    const db = new FakeDb();
+    contaSaudavel(db);
+    let recebidos: DepsImportadorLi | null = null;
+    const importador: ImportadorPedidoLi = (_db, _ctx, _p, deps) => {
+      recebidos = deps;
+      return Promise.resolve({ kind: 'sem-mudanca' });
+    };
+    const base = depsTarefa({ importador });
+    const r = await processarNotificacaoLi(asDb(db), pedido(), {
+      ...base,
+      registro: { ...base.registro, tentativa: 2 },
+    });
+    expect(r).toEqual({ kind: 'sem-mudanca' });
+    expect(recebidos).toEqual({
+      agoraMs: base.agoraMs,
+      arrayUnion: base.arrayUnion,
+      increment: base.increment,
+      logger: base.logger,
+      viaCep: base.viaCep,
+      tentativa: 2,
+    });
+  });
+
+  it('a sweep run carries no attempt: `tentativa` is null (the history is read degraded)', () => {
+    const base = depsTarefa();
+    expect(depsDoImportadorLi({ ...base, registro: { fluxo: 'intake' } }).tentativa).toBeNull();
+    expect(depsDoImportadorLi({ ...base, registro: { tentativa: 0 } }).tentativa).toBe(0);
   });
 });
 
