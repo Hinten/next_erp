@@ -634,6 +634,22 @@ describe('config', () => {
     expect(db.operacoes).toBe(0);
   });
 
+  it('a MALFORMED WEB_APP_URL → sem-web before verify/consume; the attempt survives the fix', async () => {
+    // A bare host used to pass the config and fail only inside
+    // `redirecionarParaWeb` — AFTER the state was consumed and the one-shot
+    // code exchanged. Now it stops at step 1, and the very same attempt still
+    // connects once the variable is corrected.
+    seedConta(db, ID);
+    const { state } = await iniciar();
+    const r = montar(undefined, {
+      ambiente: { ...AMBIENTE_LIGADO, WEB_APP_URL: 'erp.example.com' },
+    });
+    expect(await tratarCallbackAmazon(query(state), r.deps)).toEqual({ tipo: 'sem-web' });
+    expect(estado.consumos).toHaveLength(0);
+    expect(r.chamadas).toHaveLength(0);
+    expect(await tratarCallbackAmazon(query(state), montar().deps)).toEqual(CONECTADO);
+  });
+
   it('another key unset → LIST config, naming keys and never values', async () => {
     const r = montar(undefined, {
       ambiente: { ...AMBIENTE_LIGADO, AMAZON_OAUTH_STATE_SECRET: '' },
