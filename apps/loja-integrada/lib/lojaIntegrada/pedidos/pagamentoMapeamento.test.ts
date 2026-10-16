@@ -26,6 +26,7 @@ import {
   mapearPagamentosLi,
   montarEscritaPagamentoLi,
   parcelasLi,
+  type EscritaPagamentoLi,
   type PagamentoMapeadoLi,
 } from './pagamentoMapeamento';
 
@@ -583,6 +584,16 @@ describe('⚠️ why the pagamentos and the pedido commit in ONE batch (module h
     return e.corpo;
   }
 
+  /** The stored document once `escrita` has landed on `doc` (or `doc` itself when it writes nothing). */
+  function depois(
+    doc: Readonly<Record<string, unknown>>,
+    escrita: EscritaPagamentoLi,
+  ): Readonly<Record<string, unknown>> {
+    if (escrita.tipo === 'atualizar') return { ...doc, ...escrita.patch };
+    if (escrita.tipo === 'criar') return escrita.corpo;
+    return doc;
+  }
+
   it('a refund status decided from a stale snapshot S is NOT undone by re-deciding from the fresh S′', () => {
     const armazenado = aprovado();
     expect(armazenado.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
@@ -599,13 +610,21 @@ describe('⚠️ why the pagamentos and the pedido commit in ONE batch (module h
     // S′: the stock sync applied the removal in between ⇒ the keep-both arm.
     const [deSLinha] = mapear(linhas, decisao(REMOVIDO), datas);
     expect(deSLinha!.statusAtualizacao).toEqual({ tipo: 'manter' });
-    // Re-deciding over what S wrote writes NOTHING: the refund stays beside a kept `pago`.
-    expect(
-      montarEscritaPagamentoLi({ ...armazenado, ...escritaS.patch }, deSLinha!, AGORA_US),
-    ).toEqual({ tipo: 'sem-mudanca' });
-    // NEAR-MISS: when S's write never landed (the batch aborted), S′ keeps `aprovado`.
-    expect(montarEscritaPagamentoLi(armazenado, deSLinha!, AGORA_US)).toEqual({
-      tipo: 'sem-mudanca',
-    });
+
+    // The OLD order: S's write landed, then S′ was decided over it. That
+    // writes nothing, so the refund stays beside a kept `pago`.
+    const comS = depois(armazenado, escritaS);
+    const fimRegravando = depois(comS, montarEscritaPagamentoLi(comS, deSLinha!, AGORA_US));
+    expect(fimRegravando.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(fimRegravando.dataCancelamento).toBe(canceladoUs);
+
+    // NEAR-MISS, the batch: S's write never landed (the pedido's precondition
+    // aborted it), and the retry decides S′ over the document as it was.
+    const fimDoLote = depois(armazenado, montarEscritaPagamentoLi(armazenado, deSLinha!, AGORA_US));
+    expect(fimDoLote.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(fimDoLote.dataCancelamento).toBeNull();
+
+    // The two end states must stay distinct: only the batch keeps `aprovado`.
+    expect(fimDoLote.status_pagamento).not.toBe(fimRegravando.status_pagamento);
   });
 });

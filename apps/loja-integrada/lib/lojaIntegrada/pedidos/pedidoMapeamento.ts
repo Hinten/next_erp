@@ -33,9 +33,10 @@
  * read through `microsArmazenadoLi`, and a migrated pedido's first new observation
  * re-applies, which the window rehearsal verifies. A stored stamp strictly
  * newer ⇒ `obsoleto`, with nothing written; equal or older ⇒ the patch is
- * built, and an EMPTY patch writes nothing (`sem-mudanca`) — so an equal-stamp
- * redelivery that binds a newly linked line still applies. The accepted value
- * is written, never a max.
+ * built — so an equal-stamp redelivery that binds a newly linked line still
+ * applies — and an EMPTY patch writes nothing (`sem-mudanca`), except the
+ * precondition carrier of import step 10 when a pagamento write is in the
+ * batch (above). The accepted value is written, never a max.
  *
  * ## The update groups (the Shopee freeze split)
  *

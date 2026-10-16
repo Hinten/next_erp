@@ -76,18 +76,25 @@
  *    When its own patch is empty (`sem-mudanca`) but a pagamento write is in
  *    the batch, the batch still carries that precondition, on an update that
  *    re-writes the stored `lastMarketplaceUpdate` exactly as read (the raw
- *    value, never its µs reading): a write that changes nothing keeps the
- *    document's update time;
+ *    value, never its µs reading). That carrier changes nothing, and so keeps
+ *    the document's update time, only when the value round-trips unchanged:
+ *    the SDK encodes every safe-integer number as an integer, so a watermark
+ *    stored as a double comes back re-typed and may count as a change (the
+ *    update time moves, the triggers fire). The precondition holds either
+ *    way; 5-c's emulator suite pins both cases;
  *  - each pagamento, from {@link montarEscritaPagamentoLi} against its own
  *    read: `criar` → `create`, `atualizar` → `update(patch, { lastUpdateTime:
  *    <that snapshot's updateTime> })`; `obsoleto` and `sem-mudanca` add no
  *    write. An empty batch is not committed.
  *
  * The commit is all or nothing. A lost precondition anywhere —
- * `FAILED_PRECONDITION` (9; a document removed since its read answers 9 too,
- * because the stamp replaces the SDK's `exists` check) or `ALREADY_EXISTS`
- * (6) — writes NOTHING, and the retry re-reads `S′` and every pagamento and
- * re-derives every write from them (at most 3 attempts). So a payment status
+ * `FAILED_PRECONDITION` (9), `NOT_FOUND` (5) or `ALREADY_EXISTS` (6) — writes
+ * NOTHING, and the retry re-reads `S′` and every pagamento and re-derives
+ * every write from them (at most 3 attempts). A document removed since its
+ * read answers 9 on the emulator, because the stamp replaces the SDK's
+ * `exists` check (`pollPedidos.firestore.test.ts` pins it for a single
+ * update); the server's code is not in the SDK, so a 5 is re-read the same
+ * way, as the credential park does (`APP/CLAUDE.md`). So a payment status
  * decided from a stale snapshot is never stored, and a crash can no longer
  * leave the pagamentos written without the pedido. A commit the SDK retried
  * after it had in fact landed fails its own preconditions the same way, and

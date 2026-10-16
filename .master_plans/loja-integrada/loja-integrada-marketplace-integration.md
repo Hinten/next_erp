@@ -773,7 +773,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - Money goes through `wireNumber()`: line prices carry four decimals, totals two, quantities three, and one instalment value arrived as a JSON number. `preco_custo` stays unparsed, because one unreadable cost must never fail the order. `forma_envio.id` stays raw, so step 20's key decides its form.
   - The GET carries a top-level `id`. It is never a key: the path, every resource URI and the pedido id use the `numero`.
   - **Paging:** `meta.next` forwards only `offset` plus the caller's own keys. A captured order search answers a `next` with an undocumented extra key.
-- **One import, in order.** Every deterministic refusal comes before the first write.
+- **One import, in order.** Every deterministic refusal comes before the first pedido or pagamento write.
   1. **Detail GET.** `String(corpo.numero)` must equal the task's numero, and the stamp must read. The notification's own stamp never decides. Every key the import writes from must be present too: each line's `id`, `envios[0].id` and each pagamento's `id` (absent, `null` and `''` read alike in the wire schema). A missing one is refused here, in this one place, and no key is ever built out of it: `String(null)` is the key `'null'`.
   2. **History GET**, normalised.
      - Strict on queue attempts 0 and 1: a detail codigo other than `pedido_efetuado` (9) absent from the history (it has no creation row), or a broken chain, retries.
@@ -784,12 +784,12 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   5. **Resolve the produtos** (reads only).
   6. **Freight:** `buscarIntFreteDaConta(…, { apenasAtivo: true })`, step 20's `registrarFormaEnvioNoMapaLi`, the routing decision, and one read of the target by id.
   7. **Cliente and endereço**, only while the pedido has no refs.
-  8. **Build and parse the whole pedido write** before any pagamento is decided. A `ZodError` here parks with zero writes.
+  8. **Build and parse the whole pedido write** before any pagamento is decided. A `ZodError` here parks with no pedido or pagamento write (steps 6 and 7 may already have written the mapa row, the cliente and the endereço).
   9. **Pagamentos** (step 6), **decided but not written:** read each one, decide it from the same pedido snapshot, and parse it.
   10. **One atomic `WriteBatch`: the pedido and every pagamento,** each write under its own precondition:
-      - the pedido `create`, or `update(patch, { lastUpdateTime })` against the snapshot read in 3. When its own patch is empty but a pagamento write is in the batch, the precondition rides on a write of the stored watermark exactly as read, which changes nothing;
+      - the pedido `create`, or `update(patch, { lastUpdateTime })` against the snapshot read in 3. When its own patch is empty but a pagamento write is in the batch, the precondition rides on a write of the stored watermark exactly as read. That write changes nothing only when the value round-trips unchanged: the SDK encodes a safe-integer number as an integer, so a watermark stored as a double comes back re-typed and may move the update time. The precondition holds either way;
       - each pagamento `create`, or `update(…, { lastUpdateTime })` against its own read.
-      - A lost precondition (`FAILED_PRECONDITION` or `ALREADY_EXISTS`) aborts the whole batch, so nothing is written. The retry re-reads the pedido and every pagamento and re-derives every write from them, at most 3 times. So no pagamento is ever written without its pedido, or decided from a stale snapshot.
+      - A lost precondition (`FAILED_PRECONDITION`, `NOT_FOUND` or `ALREADY_EXISTS`) aborts the whole batch, so nothing is written. The retry re-reads the pedido and every pagamento and re-derives every write from them, at most 3 times. So no pagamento is ever written without its pedido, or decided from a stale snapshot. The emulator answers a document removed since its read with `FAILED_PRECONDITION`; the server's code is not pinned, so `NOT_FOUND` is re-read the same way.
   11. **Avisos and incidentes**, on `importado` and `sem-mudanca` alike, never on `obsoleto`. A retry after a crash between 10 and 11 still writes them.
 - **Pedido fields:**
   - id = the deterministic digest (§3); `numero = String(numero)`; `integracaoPedidoOuterRef = 'documents/integracao/<contaId>'`; `operacaoPedidoOuterRef` from the conta.
@@ -800,7 +800,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Watermark:** The incoming stamp is LI's naive time, converted once by `dataLiParaMicros`. A stored stamp may come from another writer, in another unit or zone; it is read through `coerceToMicros`, and a migrated pedido's first new observation re-applies, which the window rehearsal verifies.
   - The field is `lastMarketplaceUpdate`, in **µs**. `dataLiParaMicros` (`apps/loja-integrada/lib/lojaIntegrada/pedidos/dataLi.ts`) wraps the core's `microsDeDataHoraNoFuso`, which reads a naive stamp in an explicit zone.
   - **Null direction:** a missing stored value ⇒ proceed (a first import, or a migrated pedido without the stamp).
-  - The incoming stamp is accepted when it is `>=` the stored one. An EQUAL stamp still builds its patch, and an empty patch writes nothing (`sem-mudanca`). So an equal-stamp redelivery that binds a newly linked line still applies.
+  - The incoming stamp is accepted when it is `>=` the stored one. An EQUAL stamp still builds its patch, so an equal-stamp redelivery that binds a newly linked line still applies. An empty patch writes nothing (`sem-mudanca`), except the precondition carrier of import step 10 when a pagamento write is in the batch.
   - The accepted value is written, never a `max`; it advances on the write that wins.
   - **The zone is settled before the first live import.** Stored watermarks keep the zone they were converted in, so a later change of `FUSO_DATAS_LI` is a window step (shift or clear the stored LI `lastMarketplaceUpdate` and `lastProviderUpdate`), never a code edit alone. Moved east, every change within the zone difference of the last import would answer `obsoleto` and be dropped; only a westward move is safe without it.
 - **The situação table** (`packages/schemas/src/situacaoPedidoLojaIntegrada.ts`, `SITUACOES_LI`). Estado and payment status come from the situação codigo through one shared table, never from the situação flags.
@@ -933,7 +933,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     - the situação table, pinned row by row and against C3: one row per codigo, the capture set equals `aprovado: true`, the paid set is that set minus 6, 16 and 1020;
     - its near-misses: 3 is not `em_processo_aprovacao`; 16 is neither `estornado` nor `em_disputa`; 1019 is not `cancelado`; an unknown codigo is `null`.
   - **5-b:** capture tests on the order, history and payment-catalogue fixtures, plus near-miss pairs for the watermark, the codigo, the history, the refund after a removal, the forma, the money, the modalidade, the cliente, the endereço, the freight, the aviso key, the freeze and the ladder.
-  - **5-c:** the importer against fakes and the emulator: precondition losses (any one aborts the whole batch, on the emulator too), `obsoleto` with zero writes, the pre-write parse, a crash before and after the batch, and the step-7 loop.
+  - **5-c:** the importer against fakes and the emulator: precondition losses (any one aborts the whole batch, on the emulator too), `obsoleto` with zero writes, the pre-write parse, a crash before and after the batch, and the step-7 loop. On the emulator also: the code a batch answers for a document removed since its read, and the empty-patch carrier keeping the pedido's update time when its watermark round-trips, beside what it does to one stored as a double.
   - The `orderIds.test.ts` vectors (§3).
   - **Live import is first seen at the window.**
 - **Timing:** after step 3 (its producer) and step 20 (the mapa helper and the `int_frete` doc it reads).
