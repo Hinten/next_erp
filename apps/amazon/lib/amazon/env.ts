@@ -96,9 +96,30 @@ function faltandoEm(ambiente: AmbienteAmazon, chaves: readonly string[]): string
   return chaves.filter((c) => valor(ambiente, c) === null);
 }
 
-/** The connect-flow configuration (start and callback), or the missing key names. */
+/**
+ * Is `raw` a usable `WEB_APP_URL` — an absolute `http:`/`https:` URL that
+ * `redirecionarParaWeb` can build a redirect on?
+ *
+ * ⚠️ Checked BEFORE any irreversible work, not at redirect time. The callback
+ * consumes the single-use state and spends the 5-minute code before it
+ * redirects, so a value that only failed inside `new URL(...)` there (a bare
+ * host such as `erp.example.com`) would leave the operator on a 500 with the
+ * one-shot authorization already burnt. Raw, never trimmed (like every key).
+ */
+export function webAppUrlValida(raw: string): boolean {
+  if (!URL.canParse(raw)) return false;
+  const url = new URL(raw);
+  return (url.protocol === 'https:' || url.protocol === 'http:') && url.host !== '';
+}
+
+/**
+ * The connect-flow configuration (start and callback), or the key names that
+ * are missing — or, for `WEB_APP_URL`, present but unusable (`webAppUrlValida`).
+ */
 export function lerConfigAmazon(ambiente: AmbienteAmazon): ConfigAmazon | ConfigAmazonIncompleta {
   const faltando = faltandoEm(ambiente, CHAVES_CONFIG_AMAZON);
+  const web = valor(ambiente, WEB_APP_URL_ENV);
+  if (web !== null && !webAppUrlValida(web)) faltando.push(WEB_APP_URL_ENV);
   if (faltando.length > 0) return { completa: false, faltando };
   return {
     completa: true,
@@ -149,9 +170,15 @@ export function chavesLwaRecusadas(aplicacao: AplicacaoLwaAmazon): readonly stri
   return recusadas;
 }
 
-/** `WEB_APP_URL` alone, or `null` — the callback's one answer that cannot be a redirect. */
+/**
+ * `WEB_APP_URL` alone, or `null` when it is unset, blank or not a usable
+ * absolute http(s) URL (`webAppUrlValida`) — the callback's one answer that
+ * cannot be a redirect, given at its step 1, before the state is verified or
+ * consumed and before the code is exchanged.
+ */
 export function lerWebAppUrl(ambiente: AmbienteAmazon): string | null {
-  return valor(ambiente, WEB_APP_URL_ENV);
+  const web = valor(ambiente, WEB_APP_URL_ENV);
+  return web !== null && webAppUrlValida(web) ? web : null;
 }
 
 /** A civil date, exactly: four digits, two, two. */

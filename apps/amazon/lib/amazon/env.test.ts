@@ -7,6 +7,7 @@ import {
   lerConfigAmazon,
   lerSegredoExpiraEm,
   lerWebAppUrl,
+  webAppUrlValida,
 } from './env';
 import { AMBIENTE_LIGADO, CLIENT_SECRET, REDIRECT_URI, STATE_SECRET } from './testing/fixtures';
 
@@ -128,6 +129,43 @@ describe('lerWebAppUrl', () => {
     expect(lerWebAppUrl({ WEB_APP_URL: 'https://app.example' })).toBe('https://app.example');
     expect(lerWebAppUrl({ WEB_APP_URL: ' ' })).toBeNull();
     expect(lerWebAppUrl({})).toBeNull();
+  });
+
+  it('answers null for a present but unusable value, so the callback stops at step 1', () => {
+    expect(lerWebAppUrl({ WEB_APP_URL: 'erp.example.com' })).toBeNull();
+    expect(lerWebAppUrl({ WEB_APP_URL: 'ftp://erp.example.com' })).toBeNull();
+  });
+});
+
+describe('webAppUrlValida', () => {
+  it.each([
+    'https://erp.example.com',
+    'https://erp.example.com/',
+    'http://localhost:3000',
+    'https://erp.example.com/base',
+  ])('accepts the absolute http(s) URL %s', (url) => {
+    expect(webAppUrlValida(url)).toBe(true);
+  });
+
+  it.each([
+    ['a bare host', 'erp.example.com'],
+    ['a relative path', '/canais'],
+    ['another scheme', 'ftp://erp.example.com'],
+    ['javascript:', 'javascript:alert(1)'],
+    ['a scheme with no host', 'https://'],
+  ])('refuses %s', (_c, url) => {
+    expect(webAppUrlValida(url)).toBe(false);
+  });
+
+  it('lerConfigAmazon reports an unusable WEB_APP_URL by NAME, like a missing one', () => {
+    // ⚠️ The near-miss pair: the same environment with a usable URL is complete.
+    expect(lerConfigAmazon({ ...AMBIENTE_LIGADO, WEB_APP_URL: 'erp.example.com' })).toEqual({
+      completa: false,
+      faltando: ['WEB_APP_URL'],
+    });
+    expect(
+      lerConfigAmazon({ ...AMBIENTE_LIGADO, WEB_APP_URL: 'https://erp.example.com' }).completa,
+    ).toBe(true);
   });
 });
 
