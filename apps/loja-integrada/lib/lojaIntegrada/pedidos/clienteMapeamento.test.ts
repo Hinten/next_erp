@@ -131,8 +131,22 @@ describe('the buyer is the fiscal identity, from cliente.* only', () => {
     expect(documentoDoClienteLi(cliente({ cnpj: '12ABC34501DE36' }))).toBeNull();
   });
 
-  it('⚠️ NEAR-MISS: a present but INVALID CNPJ never falls back to the CPF', () => {
-    expect(documentoDoClienteLi(cliente({ cnpj: '11222333000180', cpf: CPF }))).toBeNull();
+  it('a present but INVALID CNPJ falls back to a valid CPF: a PF order, named by `nome`', () => {
+    expect(documentoDoClienteLi(cliente({ cnpj: '11222333000180', cpf: CPF }))).toBe(CPF);
+    const r = clienteDoPedidoLi(
+      cliente({ cnpj: '11222333000180', cpf: CPF, razao_social: 'Empresa Exemplo Ltda' }),
+    );
+    expect(r.campos).toMatchObject({
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Fulana de Tal',
+      cpf_cnpj: CPF,
+    });
+    expect(r.identidadeForte).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: the fallback needs a VALID CPF; a valid CNPJ still wins over a valid CPF', () => {
+    expect(documentoDoClienteLi(cliente({ cnpj: '11222333000180', cpf: CPF_INVALIDO }))).toBeNull();
+    expect(documentoDoClienteLi(cliente({ cnpj: CNPJ, cpf: CPF }))).toBe(CNPJ);
   });
 
   it('EQUAL pair: an empty cnpj is nothing, so the CPF decides (as with no cnpj at all)', () => {
