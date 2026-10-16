@@ -501,8 +501,13 @@ export function problemaVinculoSubstituido(a: {
       'se ele ainda estiver ativo na Shopee, exclua-o no Seller Centre (para um kit antigo cuja ' +
       'exclusão falhou, --recriar com este --link tenta excluí-lo de novo)',
     // The link that REPLACED it (`null` = publish naming no link at all) —
-    // never the superseded link the refusal is about.
-    { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar, linkDocId: a.novoLinkDocId },
+    // never the superseded link the refusal is about, which rides beside it:
+    // the duplicate scan raises this about a link the request did NOT name.
+    {
+      tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar,
+      linkDocId: a.novoLinkDocId,
+      substituidoLinkDocId: a.linkDocId,
+    },
   );
 }
 

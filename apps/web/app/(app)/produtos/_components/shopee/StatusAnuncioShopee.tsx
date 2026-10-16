@@ -4,6 +4,7 @@ import { Anchor, Badge, Group, SimpleGrid, Stack, Text } from '@mantine/core';
 import { formatReais } from '@delfrance/core/money';
 import {
   ESTADO_ANUNCIO_SHOPEE,
+  ehKitNativoAtivo,
   ehVinculoSubstituido,
   type ProdutoShopeeLink,
 } from '@delfrance/schemas';
@@ -31,6 +32,11 @@ export interface StatusAnuncioShopeeProps {
  * read-only facts the senders stamped (ids, dates, the last stock and price
  * sent). Rendered with `ListingField` — plain text, never a labelled control.
  *
+ * The kit badge is the schemas' `ehKitNativoAtivo` — THE live-native-kit
+ * predicate the publish dispatcher and the editor's pre-save notice share: "Kit
+ * nativo" when it holds, "Kit nativo (inativo)" for a link Shopee reported as a
+ * kit that is removed, superseded or names no listing (never a web copy, #1369).
+ *
  * ⚠️ `estadoAnuncio: null` reads "Não verificado", never a dead state: it means
  * NEVER FOLDED (every link step 9 imported), which is not evidence of anything —
  * the same reading `anuncioShopeeVivo` and `podeMoverAnuncioShopee` give it.
@@ -57,6 +63,17 @@ export function StatusAnuncioShopee({ link, shopId }: StatusAnuncioShopeeProps) 
           <Badge color="grape" variant="light">
             Substituído
           </Badge>
+        )}
+        {ehKitNativoAtivo(link) ? (
+          <Badge color="grape" variant="filled">
+            Kit nativo
+          </Badge>
+        ) : (
+          link.kitNativo === true && (
+            <Badge color="gray" variant="outline">
+              Kit nativo (inativo)
+            </Badge>
+          )
         )}
         {url !== null && (
           <Anchor href={url} target="_blank" rel="noopener noreferrer" size="sm">

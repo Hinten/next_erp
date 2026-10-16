@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { FirebaseError } from 'firebase/app';
 import { getDoc, type Firestore } from 'firebase/firestore';
@@ -28,19 +28,33 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoShopeeLinkCollection } from '@/lib/data/produtoShopeeLinkCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import {
+  FRASE_LIMITE_NA_CRIACAO_DE_KIT,
+  criacaoDeKitIncerta,
+  esperaDoKitIncerto,
   formatarInstanteShopee,
+  gravarIncerto,
   itemIdDoAnuncioShopee,
+  lerIncerto,
+  limiteNaCriacaoDeKit,
   resumoDaReverificacaoShopee,
+  type IncertoKitShopee,
 } from '@/lib/shopee/anuncioProduto';
 import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
   useShopeeClient,
+  type PublicarShopeeInput,
   type ShopeeClient,
 } from '@/lib/shopee/client';
 import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee } from '@/lib/shopee/erros';
+import { useReceitaKitShopee } from '@/lib/shopee/useReceitaKitShopee';
 import { ContaTabs, type ContaTabItem } from '../marketplace/ContaTabs';
-import type { AcaoDoAnuncioShopee, AcoesShopee } from './AcoesAnuncioShopee';
+import type {
+  AcaoDoAnuncioShopee,
+  AcoesShopee,
+  ArmaKitShopee,
+  IncertoKitNaTela,
+} from './AcoesAnuncioShopee';
 import {
   ContaShopeePanel,
   type ContaShopee,
@@ -49,22 +63,49 @@ import {
 } from './ContaShopeePanel';
 import { textoPreenchido } from './campos';
 import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
+import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeModal';
 
 /**
  * The produto editor's **Shopee** tab (step 21-3, #1529): one tab per Shopee
  * conta, each holding every listing that conta has on this produto — its state,
  * the refusals Shopee or the ERP stored on it, the violations, the template
  * entry the produto's tabela de medidas holds for it (never what a publish
- * sent — residual 7), the storefront link, on demand its models, and the
- * actions on it: pause / reactivate, re-verify, republish.
+ * sent — residual 7), the storefront link, the native kit (its badge, the ERP
+ * recipe and its warnings), on demand its models, and the actions on it: pause
+ * / reactivate, re-verify, republish, recriar / converter em kit nativo.
  *
  * NO CLIENT WRITE. Every listing document is written by apps/shopee — publish,
  * the import, the stock and price senders, pause/re-list, the re-verify and the
  * listing pushes — so the link docs are read LIVE: the tab repaints from the
  * same snapshot those writers land in. An action here calls the apps/shopee
  * route DIRECTLY (`useShopeeClient`), never the registry rows, which stay
- * shadowed until the step-22 flip (#1530, decision D1). One write from this
- * tab at a time: every write button is disabled while one is in flight.
+ * shadowed until the step-22 flip (#1530, decision D1).
+ *
+ * ## One write at a time, and a kit create that may have happened
+ *
+ * Every write runs through `executar`, which holds a `useRef` lock set
+ * SYNCHRONOUSLY before its first `await` and released in `finally` — two clicks
+ * landing before a re-render (a double click on a confirm) send ONE request —
+ * and every write button is disabled while it is held. That matters most for
+ * the two kit CREATE arms: `add_kit_item` is not idempotent.
+ *
+ * A recriar / converter that ends without a definite answer — the 202, a
+ * network error, a 2xx it cannot read, a 5xx other than a rate-limited 502
+ * (`criacaoDeKitIncerta`) — may still have created the kit. It is UNCERTAIN,
+ * never "falhou": the conta's kit buttons wait out `aguardarMs` (or the schemas'
+ * `AGUARDAR_KIT_INCERTO_SHOPEE_MS`), after which "Repetir" re-sends the
+ * IDENTICAL body — the only safe re-send, since a plain publish would reach a
+ * different arm. (A rate-limited 502 is definite — the kit's link is written
+ * before any call that can hit the limit, so a re-send resumes it — but the
+ * kit may already exist, and the outcome says so: `limiteNaCriacaoDeKit`.)
+ *
+ * The wait is kept in this tab's `sessionStorage` (`lerIncerto` /
+ * `gravarIncerto`) and written AHEAD: a provisional wait is stored before the
+ * request leaves and the answer replaces it, so a reload — or the page left and
+ * re-opened — WHILE the request is in flight finds the conta still waiting
+ * instead of an enabled "Converter". A blocked store keeps it for this page
+ * only. What no browser lock covers — a second tab, a second operator, the CLI —
+ * is the server-lease follow-up's (#1912).
  *
  * ## Which conta a link belongs to
  *
@@ -93,10 +134,11 @@ import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
  *    so a re-show never unmounts `ContaTabs` — which would lose the selected
  *    conta — or the listing blocks.
  *  - **R2 — every piece of UI state lives HERE, keyed by link doc id**
- *    (`modelosAbertos`, `desfechos`, the write in flight, the pause being
- *    confirmed), never inside a block: React keeps a hidden Activity's state,
- *    and one map at the top survives anything a child's remount could throw
- *    away — an in-flight handler's `setState` lands here normally.
+ *    (`modelosAbertos`, `kitAbertos`, `desfechos`, the write in flight, the
+ *    pause and the kit create being confirmed, the principal picked) or by
+ *    conta (`incertos`), never inside a block: React keeps a hidden Activity's
+ *    state, and one map at the top survives anything a child's remount could
+ *    throw away — an in-flight handler's `setState` lands here normally.
  */
 
 /**
@@ -181,17 +223,33 @@ interface AlvoDaPausa {
   readonly linkDocId: string;
 }
 
+/**
+ * An uncertain kit create as this page holds it: the stored wait and body, plus
+ * Shopee's refusal sentence when the 202 carried one (never stored — a reload
+ * keeps the wait, not the sentence).
+ */
+type IncertoNaPagina = IncertoKitShopee & { readonly fraseShopee: string | null };
+
 /** A link that is not (or no longer) this conta's — the 404s of publish and re-verify. */
 const MENSAGEM_VINCULO_FORA_DA_CONTA =
   'Este vínculo não pertence mais a esta conta — a lista foi atualizada.';
 
+/** Which kit create arm a publish input is, or `null` for any other publish. */
+function armaDoPedido(pedido: PublicarShopeeInput | undefined): ArmaKitShopee | null {
+  if (pedido?.recriar === true) return 'recriar';
+  if (pedido?.converterEmKit === true) return 'converter';
+  return null;
+}
+
 /**
  * A failed action, worded for the operator. The publish 422s keep their rows
- * (each with its `acao`); the link-addressing codes get the tab's own sentence;
+ * (each with its `acao`) and, after a kit create arm, which arm on which link
+ * was refused; the link-addressing codes get the tab's own sentence;
  * everything else is `descreverFalhaShopee`, the channel's one ladder.
  */
 function desfechoDaFalha(
   err: ShopeeClientHttpError | ShopeeClientNetworkError,
+  pedido: PublicarShopeeInput | undefined,
 ): DesfechoAcaoShopee {
   if (err instanceof ShopeeClientHttpError) {
     const { code, detalhes } = err;
@@ -199,12 +257,17 @@ function desfechoDaFalha(
       code === CODIGO_FALHA_SHOPEE.publicacaoBloqueada ||
       code === CODIGO_FALHA_SHOPEE.publicacaoRecusada
     ) {
+      const arma = armaDoPedido(pedido);
       return {
         tipo: 'recusado',
         antesDaShopee: code === CODIGO_FALHA_SHOPEE.publicacaoBloqueada,
         etapa: detalhes.etapa,
         problemas: detalhes.problemas ?? [],
         mensagem: err.message,
+        pedidoKit:
+          arma === null || pedido?.linkDocId === undefined
+            ? null
+            : { arma, linkDocId: pedido.linkDocId },
       };
     }
     if (
@@ -226,6 +289,11 @@ function desfechoDaFalha(
           (ate === null ? '.' : ` — até ${ate}.`),
       };
     }
+  }
+  // Definite, but NOT "nothing ran": the limited call may follow a successful
+  // `add_kit_item` (`limiteNaCriacaoDeKit`).
+  if (armaDoPedido(pedido) !== null && limiteNaCriacaoDeKit(err)) {
+    return { tipo: 'falha', mensagem: FRASE_LIMITE_NA_CRIACAO_DE_KIT };
   }
   return {
     tipo: 'falha',
@@ -359,6 +427,12 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
     () => new Map(),
   );
   const [alvoDaPausa, setAlvoDaPausa] = useState<AlvoDaPausa | null>(null);
+  /**
+   * THE single-flight lock: set synchronously before the first `await`, so a
+   * second click that lands before React re-renders (both handlers reading the
+   * same stale `emVoo`) finds it held. `emVoo` only paints the buttons.
+   */
+  const travaRef = useRef(false);
 
   const registrarDesfecho = useCallback((linkDocId: string, d: DesfechoAcaoShopee | null) => {
     setDesfechos((prev) => {
@@ -370,25 +444,28 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   }, []);
 
   /**
-   * Run ONE write on ONE link: clear its last outcome, hold the in-flight flag
-   * (every write button is disabled while it is set), record what came back.
-   * A failure is narrowed by the client's two classes and becomes the link's
-   * outcome; so does a `FirebaseError` (below); anything else is not ours and
-   * rethrows (root rule 6).
+   * Run ONE write on ONE link: take the lock (a write already in flight from
+   * this tab makes this a no-op), clear the link's last outcome, record what
+   * came back. A failure is narrowed by the client's two classes and becomes
+   * the link's outcome — a refused kit create remembering its `pedido`; so does
+   * a `FirebaseError` (below); anything else is not ours and rethrows (root
+   * rule 6).
    */
   async function executar(
     linkDocId: string,
     acao: AcaoDoAnuncioShopee,
     tarefa: (c: ShopeeClient) => Promise<DesfechoAcaoShopee | null>,
+    pedido?: PublicarShopeeInput,
   ) {
-    if (client === null || emVoo !== null) return;
+    if (client === null || travaRef.current) return;
+    travaRef.current = true;
     setEmVoo({ linkDocId, acao });
     registrarDesfecho(linkDocId, null);
     try {
       registrarDesfecho(linkDocId, await tarefa(client));
     } catch (err) {
       if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
-        registrarDesfecho(linkDocId, desfechoDaFalha(err));
+        registrarDesfecho(linkDocId, desfechoDaFalha(err, pedido));
         return;
       }
       // ⚠️ A failed ID-token refresh: `getAuthToken()` is awaited OUTSIDE the
@@ -401,13 +478,18 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
       }
       throw err;
     } finally {
+      travaRef.current = false;
       setEmVoo(null);
     }
   }
 
-  /** Each listing's models are re-read after a write that can change them (the prefix of every key). */
+  /**
+   * Re-read what a publish can change: each listing's models (the prefix of
+   * every key) and the produto editor's live-native-kit notice.
+   */
   function invalidarModelos() {
     void queryClient.invalidateQueries({ queryKey: ['shopee-modelos', produtoId] });
+    void queryClient.invalidateQueries({ queryKey: ['shopee-kit-nativo'] });
   }
 
   /**
@@ -451,11 +533,196 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
     });
   }
 
+  // ---- The native kit (PR 8): recriar / converter, and an uncertain create. --
+  // R2: which kit sections show their composition, the create being confirmed
+  // and the principal picked for each link.
+  const [kitAbertos, setKitAbertos] = useState<ReadonlySet<string>>(() => new Set());
+  const alternarKit = useCallback((linkDocId: string) => {
+    setKitAbertos((prev) => {
+      const next = new Set(prev);
+      if (next.has(linkDocId)) next.delete(linkDocId);
+      else next.add(linkDocId);
+      return next;
+    });
+  }, []);
+  const [alvoDoKit, setAlvoDoKit] = useState<AlvoDoKitShopee | null>(null);
+  const [principais, setPrincipais] = useState<ReadonlyMap<string, string | null>>(() => new Map());
+  // The recipe the confirmation previews — read only while it is open.
+  const receitaDoKit = useReceitaKitShopee({ db, produtoId, enabled: alvoDoKit !== null });
+
+  /**
+   * R2, by conta: the uncertain kit create THIS page recorded — `null` once it
+   * was answered here. A conta this page has not touched reads the tab's store
+   * instead ({@link armazenados}), which is what a reload finds.
+   */
+  const [incertos, setIncertos] = useState<ReadonlyMap<string, IncertoNaPagina | null>>(
+    () => new Map(),
+  );
+  // Read on EVERY render (one `getItem` per conta), never memoised: another
+  // instance of this editor in the same browser tab — the page left and
+  // re-opened while a kit create was in flight — writes the same keys when ITS
+  // answer lands, and this one must see that on its next render (the wait
+  // timer below re-renders it, at the latest, when the stored `ate` ends).
+  const armazenados = new Map(
+    (contasSnap.data ?? []).map((c) => [c.id, lerIncerto(c.id, produtoId)] as const),
+  );
+  function incertoGuardado(contaId: string): IncertoNaPagina | null {
+    if (incertos.has(contaId)) return incertos.get(contaId) ?? null;
+    const lido = armazenados.get(contaId) ?? null;
+    return lido === null ? null : { ...lido, fraseShopee: null };
+  }
+
+  // The clock an uncertain create's wait is read against. It ticks ONCE, when
+  // the earliest pending wait ends — nothing re-renders every second.
+  const [relogio, setRelogio] = useState(() => Date.now());
+  const ates: number[] = [];
+  for (const [contaId, lido] of armazenados) {
+    if (!incertos.has(contaId) && lido !== null) ates.push(lido.ate);
+  }
+  for (const i of incertos.values()) if (i !== null) ates.push(i.ate);
+  const pendentes = ates.filter((ate) => ate > relogio);
+  const proximoFim = pendentes.length === 0 ? null : Math.min(...pendentes);
+  useEffect(() => {
+    if (proximoFim === null) return;
+    // ⚠️ `Math.max`: the timer runs on a monotonic clock and `Date.now()` is the
+    // wall clock, which can be slewed back during the wait. A tick that landed
+    // BEFORE the deadline it was armed for would leave `proximoFim` unchanged —
+    // and with it this effect, so nothing would ever tick again.
+    const espera = setTimeout(
+      () => setRelogio(Math.max(Date.now(), proximoFim)),
+      Math.max(0, proximoFim - Date.now()),
+    );
+    return () => clearTimeout(espera);
+  }, [proximoFim]);
+
+  function marcarIncerto(contaId: string, incerto: IncertoKitShopee, fraseShopee: string | null) {
+    // A store that refuses it (blocked, full) leaves the wait in memory: it still
+    // holds for this page — only a reload loses it.
+    gravarIncerto(contaId, produtoId, incerto);
+    setIncertos((prev) => new Map(prev).set(contaId, { ...incerto, fraseShopee }));
+  }
+  function limparIncerto(contaId: string) {
+    gravarIncerto(contaId, produtoId, null);
+    setIncertos((prev) => new Map(prev).set(contaId, null));
+  }
+
+  /**
+   * Send ONE native-kit create — the confirmation's and "Repetir"'s — under the
+   * lock. It ends in exactly one of three ways:
+   *
+   *  - UNCERTAIN (the 202, or a failure `criacaoDeKitIncerta` cannot rule out):
+   *    the conta waits, the body is kept for the identical re-send, and no
+   *    "falhou" is ever shown — the kit may exist;
+   *  - a definite refusal: the link's outcome, as any other failure (a refused
+   *    create also answers an earlier uncertainty — the server read the shop);
+   *  - the 200: the link's outcome, and the uncertainty is over.
+   */
+  function enviarKit(contaId: string, corpo: PublicarShopeeInput) {
+    const arma = armaDoPedido(corpo);
+    const linkDocId = corpo.linkDocId;
+    if (arma === null || linkDocId === undefined) return;
+    // What the conta reads NOW — what a send that never left restores.
+    const anterior = incertoGuardado(contaId);
+    void executar(
+      linkDocId,
+      arma,
+      async (c) => {
+        // ⚠️ WRITE AHEAD (rule 7): the provisional wait reaches the store BEFORE
+        // the request leaves — the lock is a ref and dies with this instance, and
+        // `publicar` takes no signal, so a reload mid-flight leaves the server
+        // running. Every answer below replaces it. This page keeps reading
+        // `anterior` (its own state wins over the store): its spinner, not the
+        // uncertain alert, says a create is in flight.
+        setIncertos((prev) => new Map(prev).set(contaId, anterior));
+        gravarIncerto(contaId, produtoId, {
+          ate: Date.now() + esperaDoKitIncerto(undefined),
+          corpo,
+        });
+        let resposta: Awaited<ReturnType<ShopeeClient['publicar']>>;
+        try {
+          resposta = await c.publicar(corpo);
+        } catch (err) {
+          if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
+            if (criacaoDeKitIncerta(err)) {
+              marcarIncerto(
+                contaId,
+                { ate: Date.now() + esperaDoKitIncerto(undefined), corpo },
+                null,
+              );
+              return null;
+            }
+            limparIncerto(contaId);
+          } else if (err instanceof FirebaseError) {
+            // A failed ID-token refresh sent NOTHING (`getAuthToken()` runs
+            // before the request): the store goes back to what the conta read
+            // before the click. Rethrown, it is `executar`'s definite outcome.
+            gravarIncerto(
+              contaId,
+              produtoId,
+              anterior === null ? null : { ate: anterior.ate, corpo: anterior.corpo },
+            );
+          }
+          // Anything else is not ours (rule 6): the provisional wait stands in
+          // the store — the safe direction, whatever the request did.
+          throw err;
+        }
+        if (resposta.tipo === 'kit' && resposta.desfecho === 'incerto') {
+          marcarIncerto(
+            contaId,
+            { ate: Date.now() + esperaDoKitIncerto(resposta.aguardarMs), corpo },
+            resposta.recusa?.fraseShopee ?? null,
+          );
+          return null;
+        }
+        limparIncerto(contaId);
+        invalidarModelos();
+        return { tipo: 'publicado', resposta };
+      },
+      corpo,
+    );
+  }
+
+  /** The confirmation's send: the arm's flag, the link, and the principal only when one was picked. */
+  function confirmarKit() {
+    if (alvoDoKit === null) return;
+    const { contaId, linkDocId, arma } = alvoDoKit;
+    const principal = principais.get(linkDocId) ?? null;
+    setAlvoDoKit(null);
+    enviarKit(contaId, {
+      integracaoId: contaId,
+      produtoId,
+      linkDocId,
+      // Exactly ONE arm flag: the route refuses both together (400).
+      ...(arma === 'recriar' ? { recriar: true as const } : { converterEmKit: true as const }),
+      ...(principal === null ? {} : { principal }),
+    });
+  }
+
+  /** The conta's uncertain create as the buttons read it: still waiting while `relogio` is before `ate`. */
+  function incertoNaTela(contaId: string): IncertoKitNaTela | null {
+    const incerto = incertoGuardado(contaId);
+    return incerto === null ? null : { ...incerto, pendente: incerto.ate > relogio };
+  }
+
+  /**
+   * "Repetir": the stored body, VERBATIM — never rebuilt from what the tab shows
+   * now — and only once the wait the button shows is over.
+   */
+  function repetirKit(contaId: string) {
+    const incerto = incertoNaTela(contaId);
+    if (incerto === null || incerto.pendente) return;
+    enviarKit(contaId, incerto.corpo);
+  }
+
+  // Read in THIS render as a plain value: the handlers below hold the lock ref.
+  const bloqueadas = disabled === true || client === null || emVoo !== null;
+
   /**
    * The loaded links whose `item_id` can address a Shopee listing — what
    * `AcoesShopee.enderecavel` answers from. The live snapshot, so a link
-   * rewritten while a refusal row or the pause confirmation is on screen loses
-   * its button there too.
+   * rewritten while a refusal row, a kit aviso's step, or the pause or kit
+   * confirmation is on screen loses its button there too. (The one button that
+   * sends a link id without asking is "Repetir" — see `IncertoDoKit`.)
    */
   const enderecaveis = useMemo(
     () =>
@@ -466,10 +733,9 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
       ),
     [linksSnap.data],
   );
-
   const acoes: AcoesShopee = {
     permitidas: !escritaCarregando && podeEscrever,
-    bloqueadas: disabled === true || client === null || emVoo !== null,
+    bloqueadas,
     emVoo,
     desfechoDe: (linkDocId) => desfechos.get(linkDocId) ?? null,
     enderecavel: (linkDocId) => enderecaveis.has(linkDocId),
@@ -478,6 +744,12 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
       definirStatus(contaId, linkDocId, ACAO_STATUS_ANUNCIO.reativar),
     reverificar,
     republicar,
+    abrirKit: (contaId, linkDocId, arma, focarPrincipal = false) =>
+      setAlvoDoKit({ contaId, linkDocId, arma, focarPrincipal }),
+    incertoDe: incertoNaTela,
+    repetirKit,
+    kitAberto: (linkDocId) => kitAbertos.has(linkDocId),
+    alternarKit,
   };
   /** A tab built from a link's conta ref alone names no conta the operator can act on. */
   const semAcoes: AcoesShopee = { ...acoes, permitidas: false };
@@ -651,6 +923,7 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
               agoraMs={agoraMs}
               modelosAbertos={modelosAbertos}
               onAlternarModelos={alternarModelos}
+              produtoEhKit={produto?.ehKit === true}
               acoes={aba.conta.encontrada ? acoes : semAcoes}
             />
           );
@@ -678,10 +951,10 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
               type="button"
               color="orange"
               // The link may have been rewritten since "Pausar anúncio" opened this.
+              // The plain Set, never `acoes.enderecavel`: `acoes` carries the
+              // handlers that hold the lock ref, which a render must not read.
               disabled={
-                acoes.bloqueadas ||
-                alvoDaPausa === null ||
-                !acoes.enderecavel(alvoDaPausa.linkDocId)
+                bloqueadas || alvoDaPausa === null || !enderecaveis.has(alvoDaPausa.linkDocId)
               }
               onClick={() => {
                 if (alvoDaPausa === null) return;
@@ -698,6 +971,32 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
           </Group>
         </Stack>
       </Modal>
+      {/* A kit create makes a NEW listing on Shopee, so it is confirmed — with
+          the recipe it will send and the principal pick. */}
+      <KitNativoShopeeModal
+        alvo={alvoDoKit}
+        link={
+          alvoDoKit === null
+            ? null
+            : (linksSnap.data.find((l) => l.id === alvoDoKit.linkDocId)?.data ?? null)
+        }
+        receita={receitaDoKit}
+        principal={alvoDoKit === null ? null : (principais.get(alvoDoKit.linkDocId) ?? null)}
+        onPrincipal={(principal) => {
+          if (alvoDoKit === null) return;
+          setPrincipais((prev) => new Map(prev).set(alvoDoKit.linkDocId, principal));
+        }}
+        // The link may have been rewritten since the arm opened this — the
+        // plain Set again, for the pause confirmation's reason.
+        bloqueado={
+          bloqueadas ||
+          (alvoDoKit !== null &&
+            ((incertoNaTela(alvoDoKit.contaId)?.pendente ?? false) ||
+              !enderecaveis.has(alvoDoKit.linkDocId)))
+        }
+        onConfirmar={confirmarKit}
+        onFechar={() => setAlvoDoKit(null)}
+      />
     </Stack>
   );
 }

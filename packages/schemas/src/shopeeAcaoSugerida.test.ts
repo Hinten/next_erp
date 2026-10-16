@@ -97,6 +97,26 @@ describe('each member’s payload is checked, not just its tag', () => {
     }
   });
 
+  it('`republicar` may name the SUPERSEDED link the row is about — and an older server may omit it', () => {
+    const tipo = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar;
+    const comAssunto = { tipo, linkDocId: 'link-2', substituidoLinkDocId: 'link-1' };
+    expect(acaoSugeridaPublicacaoShopeeSchema.parse(comAssunto)).toStrictEqual(comAssunto);
+    for (const substituidoLinkDocId of [undefined, null]) {
+      expect(
+        acaoSugeridaPublicacaoShopeeSchema.safeParse({
+          tipo,
+          linkDocId: 'link-2',
+          substituidoLinkDocId,
+        }).success,
+      ).toBe(true);
+    }
+    // NEAR-MISS: an empty subject names no link.
+    expect(
+      acaoSugeridaPublicacaoShopeeSchema.safeParse({ ...comAssunto, substituidoLinkDocId: '' })
+        .success,
+    ).toBe(false);
+  });
+
   it('⭐ `escolher-vinculo` needs TWO links — one is not a choice; two is', () => {
     const tipo = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo;
     expect(

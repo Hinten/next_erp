@@ -656,8 +656,12 @@ describe('step 21 (K1) — o `acao` EXATO de cada recusa do despacho', () => {
   it('vinculo-substituido ⇒ republicar o SUCESSOR, nunca o vínculo pedido', () => {
     const vinculos = [nativo('a-velho', KIT_1, substituidoPor('b-novo')), nativo('b-novo', KIT_2)];
     const p = recusa(despachar(KIT_EFETIVO, vinculos, { linkDocId: 'a-velho' }));
-    expect(p.acao).toEqual({ tipo: T.republicar, linkDocId: 'b-novo' });
-    expect(p.acao).not.toEqual({ tipo: T.republicar, linkDocId: 'a-velho' });
+    // The subject is the link that was SENT, here — the dispatcher's own-link case.
+    expect(p.acao).toStrictEqual({
+      tipo: T.republicar,
+      linkDocId: 'b-novo',
+      substituidoLinkDocId: 'a-velho',
+    });
   });
 
   it('vinculos-ambiguos ⇒ escolher-vinculo com os vivos na ordem da FRASE', () => {

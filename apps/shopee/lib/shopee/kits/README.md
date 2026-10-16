@@ -700,11 +700,8 @@ Step 19 also amended four rows of the master plan's earlier steps (reconcile
   the remaining notes of the legacy critique (E4 §4.10).
 - **Run a model sync on a push.** A push 16/27 for the old listing folds the
   status only.
-- **Build the web parts.** Deferred to step 21 / #1432:
-  - the kit badge;
-  - the recriar and converter buttons;
-  - the principal pick;
-  - the composition preview;
-  - the bulk-registry rows.
-
-  Step 19's web is only the `ehKitVirtual` fix and the pre-save notice (O-9).
+- **Build the web parts.** Built in step 21 (#1529) as the produto's Shopee tab
+  (`apps/web/app/(app)/produtos/_components/shopee/`): the kit badge, the
+  recriar and converter buttons, the principal pick and the composition
+  preview; the bulk-registry rows are live from the step-22 flip. Step 19's own
+  web was only the `ehKitVirtual` fix and the pre-save notice (O-9).
