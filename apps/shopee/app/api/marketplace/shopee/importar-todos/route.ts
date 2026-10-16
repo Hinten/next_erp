@@ -23,7 +23,8 @@
  * ## Outcomes
  *
  * 202 `{jobId}` · 400 body inválido · 404 conta inexistente ou de outro tipo ·
- * 409 `SHOPEE_MASS_IMPORT_RUNNING` · 503
+ * 409 `SHOPEE_MASS_IMPORT_RUNNING` + the running job's `jobId` (the web
+ * attaches to it — polls and can cancel it) · 503
  * `SHOPEE_MASS_IMPORT_ENQUEUE_FAILED` (valve, or a genuine enqueue outage with
  * the fresh job stamped `failed`).
  */
@@ -55,6 +56,13 @@ export const runtime = 'nodejs';
 
 /** The code both 503 arms carry — from the operator's side the action is the same. */
 const CODIGO_ENQUEUE_FALHOU = 'SHOPEE_MASS_IMPORT_ENQUEUE_FAILED';
+
+/**
+ * The operator's sentence for a conta that already has a running import. Never
+ * the error's `message`: that one names the integração id, for the logs.
+ */
+export const MSG_IMPORTACAO_EM_ANDAMENTO =
+  'Já existe uma importação em massa em andamento para esta conta.';
 
 /**
  * A class name, never a message and never a payload: it is persisted in the
@@ -100,8 +108,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     // extends `ShopeeError` but `respond.ts` does not know it, so the generic
     // arm would report a perfectly ordinary "already running" as a 500 outage.
     if (err instanceof ShopeeImportacaoEmAndamentoError) {
+      // The running job's id, so the web attaches to it instead of a dead button.
       return NextResponse.json(
-        { error: err.message, code: 'SHOPEE_MASS_IMPORT_RUNNING' },
+        {
+          error: MSG_IMPORTACAO_EM_ANDAMENTO,
+          code: 'SHOPEE_MASS_IMPORT_RUNNING',
+          jobId: err.jobId,
+        },
         { status: 409 },
       );
     }
