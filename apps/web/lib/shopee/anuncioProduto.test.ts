@@ -121,6 +121,22 @@ describe('formatarInstanteShopee', () => {
     expect(formatarInstanteShopee('1790823600000')).toBeNull();
     expect(formatarInstanteShopee(Number.POSITIVE_INFINITY)).toBeNull();
   });
+
+  it('answers null — never throws — for a finite stamp outside the ECMAScript time range', () => {
+    // `Intl.DateTimeFormat#format` throws a RangeError past ±8.64e15: one such
+    // stored stamp would crash the whole tab mid-render.
+    expect(() => formatarInstanteShopee(8.64e15 + 1)).not.toThrow();
+    expect(formatarInstanteShopee(8.64e15 + 1)).toBeNull();
+    expect(formatarInstanteShopee(-8.64e15 - 1)).toBeNull();
+    expect(formatarInstanteShopee(Number.MAX_VALUE)).toBeNull();
+  });
+
+  it('NEAR-MISS: still formats the range’s own edges', () => {
+    // +275760-09-13T00:00Z (São Paulo, UTC−3) and its mirror — the last
+    // instants a Date can hold. The bound is inclusive.
+    expect(formatarInstanteShopee(8.64e15)).toBe('12/09/275760, 21:00');
+    expect(formatarInstanteShopee(-8.64e15)).not.toBeNull();
+  });
 });
 
 describe('ordenarVinculosShopee', () => {
