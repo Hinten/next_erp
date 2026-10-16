@@ -1,22 +1,42 @@
 import { describe, expect, it } from 'vitest';
-import { ESTADO_ANUNCIO_SHOPEE, estadoAnuncioShopeeSchema } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  estadoAnuncioShopeeSchema,
+  tipoAcaoSugeridaPublicacaoShopeeSchema,
+} from '@delfrance/schemas';
 
 import {
   COR_ESTADO_ANUNCIO_SHOPEE,
+  FRASE_PRIMEIRA_PUBLICACAO_SHOPEE,
+  FRASE_RECUSA_SEM_PASSO_SHOPEE,
   ROTULO_ESTADO_ANUNCIO_SHOPEE,
+  TEXTO_ACAO_SUGERIDA,
+  ehFraseDeTerminal,
   estadoAnuncioShopeeLido,
   formatarInstanteShopee,
   itemIdDoAnuncioShopee,
   ordenarVinculosShopee,
+  resumoDaReverificacaoShopee,
+  textoDaEtapaShopee,
+  textoDoProblemaShopee,
   urlDoAnuncioShopee,
 } from './anuncioProduto';
+import type { RespostaReverificarShopee } from './wire';
 
 /**
  * T6 (reconcile §4, PR 6): the tab's pure display helpers — the storefront URL,
  * the label maps and the order one conta's links are listed in. The order's
  * "live" is `anuncioShopeeVivo` from `@delfrance/schemas` (K1-m2), so the
  * near-misses below are chosen where a plausible web copy would disagree with it.
+ *
+ * PR 7: the copy of the actions — `TEXTO_ACAO_SUGERIDA`, the one reader of a
+ * refusal row (`textoDoProblemaShopee`) and the re-verify toast. Lens 8: no
+ * string the tab renders may carry CLI text.
  */
+
+/** CLI copy, by the server-side pin's own shape plus the word "comando" (lens 8). */
+const TEXTO_DE_TERMINAL = /(^|\s)--[a-z]|:anuncio|comando/i;
 
 describe('urlDoAnuncioShopee', () => {
   it('builds the storefront page from two positive safe integers', () => {
@@ -182,5 +202,260 @@ describe('ordenarVinculosShopee', () => {
     const saida = ordenarVinculosShopee(entrada);
     expect(saida).not.toBe(entrada);
     expect(ids(entrada)).toEqual(['b', 'a']);
+  });
+});
+
+describe('TEXTO_ACAO_SUGERIDA', () => {
+  it('names every tipo of the shared vocabulary, and nothing else', () => {
+    expect(Object.keys(TEXTO_ACAO_SUGERIDA).sort()).toEqual(
+      [...tipoAcaoSugeridaPublicacaoShopeeSchema.options].sort(),
+    );
+  });
+
+  it('never carries CLI text (lens 8)', () => {
+    for (const texto of [
+      ...Object.values(TEXTO_ACAO_SUGERIDA),
+      FRASE_PRIMEIRA_PUBLICACAO_SHOPEE,
+      FRASE_RECUSA_SEM_PASSO_SHOPEE,
+    ]) {
+      expect(texto).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
+  it('words the import as a condition, never a promise (residual 24)', () => {
+    const importar = TEXTO_ACAO_SUGERIDA[TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar];
+    expect(importar).toContain('importação em massa');
+    expect(importar).toContain('se ele ainda não estiver vinculado a nenhum produto');
+    expect(importar).toContain('se nenhum outro produto tiver o mesmo SKU');
+  });
+});
+
+describe('ehFraseDeTerminal', () => {
+  it('flags a flag, a script name and the word "comando"', () => {
+    expect(ehFraseDeTerminal('publique sem --link')).toBe(true);
+    expect(ehFraseDeTerminal('--recriar no início')).toBe(true);
+    expect(ehFraseDeTerminal('rode publicar:anuncio de novo')).toBe(true);
+    expect(ehFraseDeTerminal('rode exatamente o mesmo comando de novo')).toBe(true);
+    expect(ehFraseDeTerminal('Comandos do terminal')).toBe(true);
+  });
+
+  it('leaves a mechanism sentence alone (NEAR-MISSES)', () => {
+    // A slug is hyphenated, never double-dashed after a space.
+    expect(ehFraseDeTerminal('motivo kit-ja-existe-na-shopee')).toBe(false);
+    // An em dash is prose; "anúncio" without the colon is a word.
+    expect(ehFraseDeTerminal('o anúncio — ele foi removido')).toBe(false);
+    expect(ehFraseDeTerminal('anuncio removido')).toBe(false);
+    // "comando" only as a word.
+    expect(ehFraseDeTerminal('o comandante da loja')).toBe(false);
+  });
+});
+
+describe('textoDoProblemaShopee', () => {
+  const T = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
+  const CLI = 'publique com --link L1 --recriar (importar:anuncio)';
+
+  it('never shows the server sentence for a row WITH an acao — the ids come from the acao', () => {
+    const recriar = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: { tipo: T.recriar, linkDocId: 'L1' },
+    });
+    expect(recriar).toBe(`${TEXTO_ACAO_SUGERIDA[T.recriar]} Vínculo: L1.`);
+    const importar = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: { tipo: T.importar, itemIds: [1000009, 1000010] },
+    });
+    expect(importar).toBe(
+      `${TEXTO_ACAO_SUGERIDA[T.importar]} Anúncio(s) na Shopee: 1000009, 1000010.`,
+    );
+    const escolher = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: { tipo: T.escolherVinculo, linkDocIds: ['L1', 'L2'] },
+    });
+    expect(escolher).toBe(`${TEXTO_ACAO_SUGERIDA[T.escolherVinculo]} Vínculos: L1, L2.`);
+    for (const acao of [{ tipo: T.semOpcoesDeKit }, { tipo: T.informarPrincipal }] as const) {
+      expect(textoDoProblemaShopee({ mensagem: CLI, acao })).toBe(TEXTO_ACAO_SUGERIDA[acao.tipo]);
+    }
+    for (const t of [recriar, importar, escolher]) expect(t).not.toMatch(TEXTO_DE_TERMINAL);
+  });
+
+  it('an `importar` hit a link already holds names its produto, never the mass import (R5-08)', () => {
+    const MASSA = 'importação em massa';
+    // One held, one free, in the same row: worded APART.
+    const misto = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: {
+        tipo: T.importar,
+        itemIds: [1000009, 1000010],
+        vinculados: [{ itemId: 1000010, produtoId: 'prod-2' }],
+      },
+    });
+    expect(misto).toContain(MASSA);
+    expect(misto).toContain('Anúncio(s) na Shopee sem vínculo: 1000009.');
+    expect(misto).toContain(
+      'O anúncio 1000010 já está vinculado ao produto prod-2 — a importação não o muda; confira o SKU desse produto.',
+    );
+    expect(misto).not.toContain('O anúncio 1000009');
+
+    // Every hit held: the mass-import sentence goes — it cannot help any of them.
+    const todos = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: {
+        tipo: T.importar,
+        itemIds: [1000010],
+        vinculados: [{ itemId: 1000010, produtoId: 'prod-2' }],
+      },
+    });
+    expect(todos).not.toContain(MASSA);
+    expect(todos).toContain('Já existe na Shopee um kit com o SKU deste produto — não crie outro.');
+    expect(todos).toContain('O anúncio 1000010 já está vinculado ao produto prod-2');
+
+    // The server reported NONE held: every id is a mass-import candidate.
+    const nenhum = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: { tipo: T.importar, itemIds: [1000009], vinculados: [] },
+    });
+    expect(nenhum).toBe(
+      `${TEXTO_ACAO_SUGERIDA[T.importar]} Anúncio(s) na Shopee sem vínculo: 1000009.`,
+    );
+    for (const t of [misto, todos, nenhum]) expect(t).not.toMatch(TEXTO_DE_TERMINAL);
+  });
+
+  it('NEAR-MISS: an `importar` from a server that does not report `vinculados` reads as before', () => {
+    for (const vinculados of [undefined, null]) {
+      expect(
+        textoDoProblemaShopee({
+          mensagem: CLI,
+          acao: { tipo: T.importar, itemIds: [1000009, 1000010], vinculados },
+        }),
+      ).toBe(`${TEXTO_ACAO_SUGERIDA[T.importar]} Anúncio(s) na Shopee: 1000009, 1000010.`);
+    }
+  });
+
+  it('a republish names its link, or says there is none — never offering a publish with no link', () => {
+    expect(
+      textoDoProblemaShopee({ mensagem: CLI, acao: { tipo: T.republicar, linkDocId: 'L2' } }),
+    ).toBe(`${TEXTO_ACAO_SUGERIDA[T.republicar]} Vínculo: L2.`);
+    const semVinculo = textoDoProblemaShopee({
+      mensagem: CLI,
+      acao: { tipo: T.republicar, linkDocId: null },
+    });
+    expect(semVinculo).toContain('O vínculo não foi indicado');
+    expect(semVinculo).not.toContain('Vínculo:');
+  });
+
+  it('shows a row WITHOUT an acao as it is, unless the sentence was written for a terminal', () => {
+    expect(
+      textoDoProblemaShopee({ mensagem: 'A categoria não aceita este atributo.', acao: null }),
+    ).toBe('A categoria não aceita este atributo.');
+    expect(
+      textoDoProblemaShopee({ mensagem: 'rode exatamente o mesmo comando de novo', acao: null }),
+    ).toBe(FRASE_RECUSA_SEM_PASSO_SHOPEE);
+  });
+});
+
+describe('textoDaEtapaShopee', () => {
+  /** apps/shopee's `EtapaPublicacao` (`errosPublicacao.ts`), all thirteen. */
+  const ETAPAS = [
+    'fotos',
+    'add_item',
+    'update_item',
+    'init_tier_variation',
+    'update_tier_variation',
+    'add_model',
+    'update_model',
+    'get_model_list',
+    'relistagem',
+    'leitura-de-volta',
+    'add_kit_item',
+    'update_kit_item',
+    'delete_item',
+  ];
+  const DESCONHECIDA = 'uma etapa que esta tela ainda não descreve';
+
+  it('labels every step the server names, and never prints the raw code', () => {
+    for (const etapa of ETAPAS) {
+      const texto = textoDaEtapaShopee(etapa);
+      expect(texto, etapa).toMatch(/^Recusada na etapa: .+\. Escritas anteriores/);
+      // `fotos` is a pt-BR word as well as a code; every other code is a slug.
+      if (etapa !== 'fotos') expect(texto, etapa).not.toContain(etapa);
+      expect(texto, etapa).not.toContain(DESCONHECIDA);
+      expect(texto, etapa).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
+  it('says a refused create created nothing — the one fact the step alone settles', () => {
+    expect(textoDaEtapaShopee('add_kit_item')).toContain('a Shopee não criou o kit');
+    expect(textoDaEtapaShopee('add_item')).toContain('a Shopee não criou o anúncio');
+  });
+
+  it('NEAR-MISS: an unknown step, or an inherited property name, gets the neutral label', () => {
+    for (const etapa of ['etapa_nova', 'toString', '__proto__', 'constructor', '']) {
+      const texto = textoDaEtapaShopee(etapa);
+      expect(texto, etapa).toContain(DESCONHECIDA);
+      expect(texto, etapa).not.toContain('undefined');
+    }
+  });
+});
+
+describe('resumoDaReverificacaoShopee', () => {
+  const r = (extra: Partial<RespostaReverificarShopee> = {}): RespostaReverificarShopee => ({
+    acao: 'atualizado',
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    itemStatus: 'NORMAL',
+    deboost: false,
+    violacoes: [],
+    violacoesLidas: true,
+    modelos: null,
+    avisoResolvido: false,
+    avisoReceitaKit: null,
+    ...extra,
+  });
+
+  it('keys the toast on the route’s acao, and titles it with the state the ERP now holds', () => {
+    expect(resumoDaReverificacaoShopee(r())).toEqual({
+      cor: 'green',
+      titulo: 'Anúncio reverificado — Ativo',
+      mensagem: 'O ERP atualizou o anúncio com o que a Shopee informa agora.',
+    });
+    expect(resumoDaReverificacaoShopee(r({ acao: 'ignorado-sem-mudanca' })).mensagem).toBe(
+      'Nada mudou desde a última leitura.',
+    );
+    const removido = resumoDaReverificacaoShopee(
+      r({ acao: 'removido', estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }),
+    );
+    expect(removido.cor).toBe('orange');
+    expect(removido.titulo).toBe('Anúncio reverificado — Removido');
+  });
+
+  it('answers a value this build does not know with the neutral sentence, never a crash', () => {
+    expect(resumoDaReverificacaoShopee(r({ acao: 'novo-desfecho' })).mensagem).toBe(
+      'A Shopee respondeu à reverificação.',
+    );
+    // NEAR-MISS: a prototype member is not one of the three.
+    expect(resumoDaReverificacaoShopee(r({ acao: 'constructor' })).mensagem).toBe(
+      'A Shopee respondeu à reverificação.',
+    );
+  });
+
+  it('adds what else the run found: deboost, unread violations, models gone, the kit aviso', () => {
+    const tudo = resumoDaReverificacaoShopee(
+      r({
+        deboost: true,
+        violacoesLidas: false,
+        modelos: { total: 3, atualizados: 1, ausentes: 2 },
+        avisoReceitaKit: 'resolvido',
+      }),
+    );
+    expect(tudo.mensagem).toBe(
+      'O ERP atualizou o anúncio com o que a Shopee informa agora. Ele está rebaixado na busca. ' +
+        'As violações não puderam ser lidas agora — as mostradas são as guardadas. ' +
+        '2 variação(ões) não estão mais na Shopee. O aviso de composição do kit foi resolvido.',
+    );
+    expect(resumoDaReverificacaoShopee(r({ avisoReceitaKit: 'aberto' })).mensagem).toContain(
+      'continua aberto',
+    );
+    expect(resumoDaReverificacaoShopee(r({ avisoReceitaKit: 'nada' })).mensagem).toBe(
+      'O ERP atualizou o anúncio com o que a Shopee informa agora.',
+    );
   });
 });

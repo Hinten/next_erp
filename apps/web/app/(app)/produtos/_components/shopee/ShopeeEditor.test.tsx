@@ -1,13 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { ESTADO_ANUNCIO_SHOPEE, INTEGRACAO_TIPO, SHOPEE_MODEL_STATUS } from '@delfrance/schemas';
+import {
+  ACAO_STATUS_ANUNCIO,
+  ESTADO_ANUNCIO_SHOPEE,
+  INTEGRACAO_TIPO,
+  SHOPEE_MODEL_STATUS,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+} from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
+import {
+  ShopeeClientHttpError,
+  ShopeeClientNetworkError,
+  type ShopeeClient,
+} from '@/lib/shopee/client';
+import { CODIGO_FALHA_SHOPEE } from '@/lib/shopee/erros';
 import { formatarInstanteShopee } from '@/lib/shopee/anuncioProduto';
+import {
+  DETALHES_ERRO_SHOPEE_VAZIOS,
+  type AnuncioStatusShopee,
+  type ProblemaShopee,
+  type RespostaPublicarShopee,
+  type RespostaReverificarShopee,
+} from '@/lib/shopee/wire';
 import { MantineTestProvider } from '@/lib/testing/mantine';
+import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
 
 /**
  * T5 (a)–(c) (reconcile §4, PR 6) and the read-only block: the Shopee tab over
@@ -15,6 +36,11 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
  * the one-shot `getDocs` of the models — and told apart by WHAT IT WAS BUILT ON
  * (the `MercadoLivreEditor` harness's tagging, never call order). Every rule
  * the tab displays by is the REAL `@delfrance/schemas` function.
+ *
+ * PR 7 adds the actions (T5 (c) button half, (d), (e), (h), (k), (n)): the
+ * client is `shopeeClientFalso` holding only the methods a test expects, so a
+ * call to any other route rejects naming itself; the error classes stay REAL
+ * (the module is mocked with `importOriginal` spread) for the `instanceof`s.
  */
 
 interface Linha {
@@ -42,9 +68,18 @@ const h = vi.hoisted(() => ({
   getDoc: vi.fn(),
   /** Every collection a live query was opened on — what the tab chose to READ. */
   consultas: new Set<string>(),
+  /** What `useShopeeClient` hands the editor (`null` = no signed-in user yet). */
+  client: null as ShopeeClient | null,
+  notify: vi.fn(),
   /** Every `tabMedi` doc id the tab built a ref to — WHICH tabela it chose to read. */
   tabMediIds: [] as string[],
 }));
+
+vi.mock('@/lib/shopee/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/shopee/client')>();
+  return { ...actual, useShopeeClient: () => h.client };
+});
+vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notify } }));
 
 vi.mock('@delfrance/data', () => ({
   // ⚠️ KEEPS THE BASE'S TAGS so a query is told apart by what it was built on —
@@ -137,14 +172,16 @@ const link = (id: string, extra: Record<string, unknown> = {}): Linha => ({
   },
 });
 
-function renderEditor() {
+function renderEditor(props: { disabled?: boolean } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MantineTestProvider>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
     </MantineTestProvider>
   );
-  return render(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} />, { wrapper });
+  return render(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} {...props} />, {
+    wrapper,
+  });
 }
 
 const bloco = (linkDocId: string) => screen.getByTestId(`shopee-anuncio-${linkDocId}`);
@@ -167,6 +204,8 @@ beforeEach(() => {
   h.consultas = new Set();
   h.tabMediIds = [];
   h.permitidos = new Set([PERM.integracao.read]);
+  h.client = shopeeClientFalso();
+  h.notify.mockReset();
   h.getDocs.mockReset();
   h.getDocs.mockImplementation(async (q: { produtoId: string; __limit?: number }) => ({
     docs: (h.varLinks.get(q.produtoId) ?? [])
@@ -912,5 +951,718 @@ describe('ShopeeEditor — a non-persistent section (rule R1)', () => {
     rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} />);
     expect(screen.getByRole('tab', { name: /Loja B/ }).getAttribute('aria-selected')).toBe('true');
     expect(within(painel('int-2')).getByTestId('shopee-anuncio-L2')).toBeDefined();
+  });
+
+  it('(k) keeps the selected conta AND a refused publish’s rows while a re-listen is loading (R1 + R2)', async () => {
+    comEscrita();
+    h.contas = [conta('int-1', 'Loja A'), conta('int-2', 'Loja B')];
+    h.links = [link('L1'), link('L2', { contaProdutoShopeeOuterRef: 'integracao/int-2' })];
+    h.client = shopeeClientFalso({
+      publicar: () =>
+        Promise.reject(
+          recusa422([
+            {
+              campo: null,
+              motivo: 'categoria-invalida',
+              mensagem: 'A categoria 100087 não aceita este atributo.',
+              acao: null,
+            },
+          ]),
+        ),
+    });
+    const { rerender } = renderEditor();
+    fireEvent.click(screen.getByRole('tab', { name: /Loja B/ }));
+    fireEvent.click(botao('L2', 'Republicar'));
+    await waitFor(() =>
+      expect(
+        within(bloco('L2')).getByText('A categoria 100087 não aceita este atributo.'),
+      ).toBeDefined(),
+    );
+
+    h.carregando = true;
+    rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} />);
+    expect(screen.getByRole('tab', { name: /Loja B/ }).getAttribute('aria-selected')).toBe('true');
+    expect(
+      within(bloco('L2')).getByText('A categoria 100087 não aceita este atributo.'),
+    ).toBeDefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    PR 7 — the actions on an existing link                   */
+/* -------------------------------------------------------------------------- */
+
+const TIPO = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE;
+
+/** The operator holds `integracao.write` — every action route's bit. */
+function comEscrita() {
+  h.permitidos = new Set([PERM.integracao.read, PERM.integracao.write]);
+}
+
+const botao = (linkDocId: string, nome: string) =>
+  within(bloco(linkDocId)).getByRole('button', { name: nome });
+const semBotao = (linkDocId: string, nome: string | RegExp) =>
+  within(bloco(linkDocId)).queryByRole('button', { name: nome });
+
+/** Every button a block's action row can hold — what a never-folded live link shows. */
+const BOTOES_DO_BLOCO = ['Republicar', 'Reverificar', 'Pausar anúncio', 'Reativar anúncio'];
+const FRASE_RASCUNHO = 'Primeira publicação: chega na etapa de autoria do anúncio.';
+const FRASE_ITEM_ID_INVALIDO =
+  'O código do anúncio guardado neste vínculo é inválido — nenhuma ação disponível.';
+
+/** The pause/reactivate run's 200, for ONE listing — shaped like `anuncio-status/route.ts`'s. */
+function respostaStatus(
+  linkDocId: string,
+  mensagem: string,
+  extra: Partial<AnuncioStatusShopee> = {},
+): AnuncioStatusShopee {
+  return {
+    canal: 'shopee',
+    integracaoId: 'int-1',
+    acao: ACAO_STATUS_ANUNCIO.pausar,
+    listings: [
+      {
+        produtoId: 'prod-1',
+        produtoNome: 'Camiseta',
+        anuncioId: '1000002',
+        linkDocId,
+        outcome: 'enviado',
+        motivo: null,
+        mensagem,
+        statusFinal: 'UNLIST',
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado,
+      },
+    ],
+    produtosSemAnuncio: [],
+    pausadoAte: null,
+    ...extra,
+  };
+}
+
+/** An ordinary listing's republish 200. */
+const ITEM_REPUBLICADO: RespostaPublicarShopee = {
+  tipo: 'item',
+  itemId: 1000001,
+  estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+  itemStatus: 'NORMAL',
+  modelos: { total: 0, criados: 0, atualizados: 0, semFilho: 0 },
+  fotos: { reutilizadas: 3, enviadas: 1, falhas: 0 },
+  avisoShopee: null,
+  taxInfoOmitido: null,
+  tabelaDeMedidas: {
+    sizeChartId: 700024639,
+    fonte: 'modelo',
+    motivo: null,
+    fotoOmitida: null,
+    avisoObrigatoria: false,
+  },
+};
+
+function reverificado(extra: Partial<RespostaReverificarShopee> = {}): RespostaReverificarShopee {
+  return {
+    acao: 'atualizado',
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    itemStatus: 'NORMAL',
+    deboost: false,
+    violacoes: [],
+    violacoesLidas: true,
+    modelos: null,
+    avisoResolvido: false,
+    avisoReceitaKit: null,
+    ...extra,
+  };
+}
+
+/** A publish 422 the client built from the body (its `detalhes.problemas`). */
+function recusa422(
+  problemas: ProblemaShopee[],
+  code: string = CODIGO_FALHA_SHOPEE.publicacaoBloqueada,
+): ShopeeClientHttpError {
+  return new ShopeeClientHttpError(
+    `Publicação bloqueada no produto prod-1: ${String(problemas.length)} problema(s)`,
+    422,
+    code,
+    null,
+    null,
+    { ...DETALHES_ERRO_SHOPEE_VAZIOS, problemas },
+  );
+}
+
+/** CLI copy — a flag, a script name or the word — must never reach the page (lens 8). */
+const TEXTO_DE_TERMINAL = /(^|\s)--[a-z]|:anuncio|comando/i;
+
+describe('ShopeeEditor — pause and reactivate (podeMoverAnuncioShopee)', () => {
+  it('(c) offers Pausar on a never-folded listing (estadoAnuncio null) and no status control on a removed one', () => {
+    comEscrita();
+    h.links = [
+      link('L-nulo', { estadoAnuncio: null }),
+      link('L-removido', { item_id: 1000002, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }),
+    ];
+    renderEditor();
+    // A missing reading is not evidence of anything: movable BOTH ways.
+    expect(botao('L-nulo', 'Pausar anúncio')).toBeDefined();
+    expect(botao('L-nulo', 'Reativar anúncio')).toBeDefined();
+    // Positive first: the removed block rendered.
+    expect(within(bloco('L-removido')).getByText('Removido')).toBeDefined();
+    expect(semBotao('L-removido', 'Pausar anúncio')).toBeNull();
+    expect(semBotao('L-removido', 'Reativar anúncio')).toBeNull();
+  });
+
+  it('(d) confirms a pause, then sends it for THAT listing, named by its link id', async () => {
+    comEscrita();
+    const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>(async () =>
+      respostaStatus('L2', 'Anúncio pausado na Shopee.'),
+    );
+    h.client = shopeeClientFalso({ definirStatusAnuncios });
+    h.links = [link('L1'), link('L2', { item_id: 1000002 })];
+    renderEditor();
+
+    fireEvent.click(botao('L2', 'Pausar anúncio'));
+    const dialogo = screen.getByRole('dialog', { name: 'Pausar anúncio' });
+    // A pause stops a live sale: nothing is sent before the confirmation.
+    expect(definirStatusAnuncios).not.toHaveBeenCalled();
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Pausar' }));
+
+    await waitFor(() =>
+      expect(within(bloco('L2')).getByText('Anúncio pausado na Shopee.')).toBeDefined(),
+    );
+    expect(definirStatusAnuncios).toHaveBeenCalledTimes(1);
+    expect(definirStatusAnuncios.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoIds: ['prod-1'],
+      acao: ACAO_STATUS_ANUNCIO.pausar,
+      linkDocId: 'L2',
+    });
+    expect(within(bloco('L1')).queryByText('Anúncio pausado na Shopee.')).toBeNull();
+  });
+
+  it('a failed ID-token refresh ends a confirmed pause WITH an outcome, never in silence', async () => {
+    comEscrita();
+    // `getAuthToken()` runs outside the client's try: the rejection is the raw
+    // Firebase Auth error, none of the client's classes — and nothing was sent.
+    const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>(() =>
+      Promise.reject(
+        new FirebaseError('auth/network-request-failed', 'Falha ao renovar a sessão.'),
+      ),
+    );
+    h.client = shopeeClientFalso({ definirStatusAnuncios });
+    h.links = [link('L1')];
+    renderEditor();
+
+    fireEvent.click(botao('L1', 'Pausar anúncio'));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Pausar anúncio' })).getByRole('button', {
+        name: 'Pausar',
+      }),
+    );
+
+    const desfecho = await waitFor(() => screen.getByTestId('shopee-desfecho-L1'));
+    expect(within(desfecho).getByText('Falha ao renovar a sessão.')).toBeDefined();
+    expect(definirStatusAnuncios).toHaveBeenCalledTimes(1);
+    // The lock is released: the operator can try again.
+    expect(botao('L1', 'Pausar anúncio').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('a pause confirmation cannot send once its link was rewritten with an id no listing has', () => {
+    comEscrita();
+    const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>();
+    h.client = shopeeClientFalso({ definirStatusAnuncios });
+    h.links = [link('L1')];
+    const { rerender } = renderEditor();
+    fireEvent.click(botao('L1', 'Pausar anúncio'));
+    const confirmar = () =>
+      within(screen.getByRole('dialog', { name: 'Pausar anúncio' })).getByRole('button', {
+        name: 'Pausar',
+      });
+    // NEAR-MISS first: as opened, on an addressable link, the confirmation can send.
+    expect(confirmar().hasAttribute('disabled')).toBe(false);
+
+    // The live snapshot repaints while the dialog is open.
+    h.links = [link('L1', { item_id: 1.5 })];
+    rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} />);
+    expect(confirmar().hasAttribute('disabled')).toBe(true);
+    fireEvent.click(confirmar());
+    expect(definirStatusAnuncios).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing when the pause is cancelled', () => {
+    comEscrita();
+    const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>();
+    h.client = shopeeClientFalso({ definirStatusAnuncios });
+    h.links = [link('L1')];
+    renderEditor();
+    fireEvent.click(botao('L1', 'Pausar anúncio'));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Pausar anúncio' })).getByRole('button', {
+        name: 'Cancelar',
+      }),
+    );
+    expect(screen.queryByRole('dialog', { name: 'Pausar anúncio' })).toBeNull();
+    expect(definirStatusAnuncios).not.toHaveBeenCalled();
+  });
+
+  it('reactivates a paused listing at once, and says until when the daily quota stopped the run', async () => {
+    comEscrita();
+    const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>(async () =>
+      respostaStatus('L-pausado', 'A Shopee ainda não reativou o anúncio.', {
+        acao: ACAO_STATUS_ANUNCIO.reativar,
+        // 03:00Z is São Paulo's midnight.
+        pausadoAte: '2026-10-15T03:00:00.000Z',
+      }),
+    );
+    h.client = shopeeClientFalso({ definirStatusAnuncios });
+    h.links = [
+      link('L-pausado', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado, pausadoPeloErp: true }),
+    ];
+    renderEditor();
+    expect(semBotao('L-pausado', 'Pausar anúncio')).toBeNull();
+    fireEvent.click(botao('L-pausado', 'Reativar anúncio'));
+
+    await waitFor(() =>
+      expect(
+        within(bloco('L-pausado')).getByText(
+          'Cota diária da Shopee esgotada até 15/10/2026, 00:00.',
+        ),
+      ).toBeDefined(),
+    );
+    expect(
+      within(bloco('L-pausado')).getByText('A Shopee ainda não reativou o anúncio.'),
+    ).toBeDefined();
+    expect(definirStatusAnuncios.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoIds: ['prod-1'],
+      acao: ACAO_STATUS_ANUNCIO.reativar,
+      linkDocId: 'L-pausado',
+    });
+  });
+});
+
+describe('ShopeeEditor — republish an existing link, never a first publish', () => {
+  it('(e) republishes a live listing by its link with no kit option, and offers none on a superseded or removed one', async () => {
+    comEscrita();
+    const publicar = vi.fn<ShopeeClient['publicar']>(async () => ITEM_REPUBLICADO);
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [
+      link('L-vivo'),
+      link('L-subst', { item_id: 1000002, substituidoPorLinkDocId: 'L-vivo' }),
+      link('L-removido', { item_id: 1000003, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }),
+    ];
+    renderEditor();
+
+    // Positive first, then the absence: each block rendered its state.
+    expect(within(bloco('L-subst')).getByText(/Substituído pelo vínculo L-vivo/)).toBeDefined();
+    expect(semBotao('L-subst', 'Republicar')).toBeNull();
+    // A superseded kit whose delete did not take is still worth re-reading.
+    expect(botao('L-subst', 'Reverificar')).toBeDefined();
+    expect(within(bloco('L-removido')).getByText('Removido')).toBeDefined();
+    expect(semBotao('L-removido', 'Republicar')).toBeNull();
+
+    fireEvent.click(botao('L-vivo', 'Republicar'));
+    await waitFor(() =>
+      expect(within(bloco('L-vivo')).getByText('Anúncio republicado na Shopee')).toBeDefined(),
+    );
+    // EXACTLY the three keys: no `recriar`, no `converterEmKit`, no `principal`
+    // (the T5 (f) half this PR owns — the kit arms are not on this button).
+    expect(publicar.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-vivo',
+    });
+    expect(
+      within(bloco('L-vivo')).getByText('Tabela de medidas: modelo #700024639.'),
+    ).toBeDefined();
+  });
+
+  it('(n) offers no Publicar on a draft link — with or without a category — and says where a first publish comes from', () => {
+    comEscrita();
+    h.links = [
+      link('L-rasc', { item_id: null, estadoAnuncio: null, category_id: null }),
+      link('L-rasc-cat', { item_id: null, estadoAnuncio: null, category_id: 100087 }),
+      link('L-pub', { item_id: 1000003 }),
+    ];
+    renderEditor();
+    for (const id of ['L-rasc', 'L-rasc-cat']) {
+      expect(
+        within(bloco(id)).getByText('Primeira publicação: chega na etapa de autoria do anúncio.'),
+      ).toBeDefined();
+      expect(semBotao(id, /Publicar/)).toBeNull();
+      expect(semBotao(id, 'Pausar anúncio')).toBeNull();
+      expect(semBotao(id, 'Reverificar')).toBeNull();
+    }
+    expect(botao('L-pub', 'Republicar')).toBeDefined();
+    expect(
+      within(bloco('L-pub')).queryByText(
+        'Primeira publicação: chega na etapa de autoria do anúncio.',
+      ),
+    ).toBeNull();
+  });
+
+  it('NEAR-MISS: an item id that is present but addresses no listing (0, a quoted number) gets no button at all', () => {
+    comEscrita();
+    // A parsed link can carry 0 (`z.number().int()`), and a soft-read hands the
+    // raw document over, so a stringified id reaches the block as it is.
+    h.links = [
+      link('L-zero', { item_id: 0, estadoAnuncio: null }),
+      link('L-texto', { item_id: '1000001', estadoAnuncio: null }),
+    ];
+    renderEditor();
+    for (const id of ['L-zero', 'L-texto']) {
+      // Positive first: the block rendered, as an unpublished listing.
+      expect(within(bloco(id)).getByText('Não publicado')).toBeDefined();
+      expect(within(bloco(id)).getByText(FRASE_ITEM_ID_INVALIDO)).toBeDefined();
+      expect(semBotao(id, 'Reverificar'), id).toBeNull();
+      expect(semBotao(id, /Publicar/), id).toBeNull();
+      expect(semBotao(id, 'Pausar anúncio'), id).toBeNull();
+      expect(semBotao(id, 'Reativar anúncio'), id).toBeNull();
+    }
+  });
+
+  it('offers NO button on an id the schemas predicates pass but no listing has (a fraction, 2^53, a negative), and says so — never as a draft', () => {
+    comEscrita();
+    // Never folded and not superseded: `podeMoverAnuncioShopee` (both ways) and
+    // `anuncioShopeeVivo` test `isFinite` only, so for the first two ids every
+    // one of them says yes — the block's own gate is what refuses.
+    h.links = [
+      link('L-fracao', { item_id: 1.5, estadoAnuncio: null }),
+      link('L-2e53', { item_id: 2 ** 53, estadoAnuncio: null }),
+      link('L-negativo', { item_id: -1000001, estadoAnuncio: null }),
+    ];
+    renderEditor();
+    for (const id of ['L-fracao', 'L-2e53', 'L-negativo']) {
+      // Positive first: the block rendered, and says why it offers nothing.
+      expect(within(bloco(id)).getByText('Não publicado')).toBeDefined();
+      expect(within(bloco(id)).getByText(FRASE_ITEM_ID_INVALIDO)).toBeDefined();
+      // It is not a draft: no first publish is promised.
+      expect(within(bloco(id)).queryByText(FRASE_RASCUNHO)).toBeNull();
+      for (const nome of BOTOES_DO_BLOCO) expect(semBotao(id, nome), `${id} ${nome}`).toBeNull();
+    }
+  });
+
+  it('NEAR-MISS: the ids that DO address a listing — up to Number.MAX_SAFE_INTEGER — get every button', () => {
+    comEscrita();
+    h.links = [
+      link('L-comum', { item_id: 1000001, estadoAnuncio: null }),
+      link('L-maximo', { item_id: Number.MAX_SAFE_INTEGER, estadoAnuncio: null }),
+    ];
+    renderEditor();
+    for (const id of ['L-comum', 'L-maximo']) {
+      for (const nome of BOTOES_DO_BLOCO) expect(botao(id, nome), `${id} ${nome}`).toBeDefined();
+      expect(within(bloco(id)).queryByText(FRASE_ITEM_ID_INVALIDO)).toBeNull();
+    }
+  });
+
+  it('(h) renders a refused publish by its acao — the button acts on the link the acao names — and never a terminal sentence', async () => {
+    comEscrita();
+    const problemas: ProblemaShopee[] = [
+      {
+        campo: 'linkDocId',
+        motivo: 'vinculo-substituido',
+        mensagem:
+          'vínculo L1 (item 1000001): este anúncio foi substituído pelo kit nativo L2 e não é ' +
+          'mais publicado pelo ERP — publique sem --link (ou com --link L2)',
+        acao: { tipo: TIPO.republicar, linkDocId: 'L2' },
+      },
+      {
+        campo: 'sku',
+        motivo: 'kit-ja-existe-na-shopee',
+        mensagem:
+          'já existe na Shopee um kit com o SKU deste produto (item 1000009) — importe-o ' +
+          '(importar:anuncio) em vez de criar outro',
+        acao: { tipo: TIPO.importar, itemIds: [1000009] },
+      },
+      {
+        // No `acao`, but written for the CLI: the backstop replaces it.
+        campo: null,
+        motivo: 'instabilidade-shopee',
+        mensagem:
+          "a Shopee respondeu com instabilidade ('Too many connections'); a operação pode ter " +
+          'sido feita — rode exatamente o mesmo comando de novo daqui a 4 minutos',
+        acao: null,
+      },
+      {
+        // A mechanism sentence with no next step: shown as it is.
+        campo: 'category_id',
+        motivo: 'categoria-invalida',
+        mensagem: 'A categoria 100087 não aceita este atributo.',
+        acao: null,
+      },
+    ];
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(recusa422(problemas))
+      .mockResolvedValueOnce(ITEM_REPUBLICADO);
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [link('L1'), link('L2', { item_id: 1000002, kitNativo: true })];
+    renderEditor();
+
+    fireEvent.click(botao('L1', 'Republicar'));
+    const desfecho = await waitFor(() => screen.getByTestId('shopee-desfecho-L1'));
+    const d = within(desfecho);
+    expect(d.getByText('Publicação bloqueada — nada foi enviado à Shopee')).toBeDefined();
+    expect(d.getByText(/sem as opções de kit\. Vínculo: L2\.$/)).toBeDefined();
+    expect(d.getByText(/Anúncio\(s\) na Shopee: 1000009\.$/)).toBeDefined();
+    expect(d.getByText(/Esta recusa não traz um próximo passo/)).toBeDefined();
+    expect(d.getByText('A categoria 100087 não aceita este atributo.')).toBeDefined();
+    // The server's CLI sentences never reach the page — not as a row, not anywhere.
+    expect(document.body.textContent).not.toMatch(TEXTO_DE_TERMINAL);
+    // `importar` points elsewhere: text, no button.
+    expect(d.queryByRole('button', { name: /importa/i })).toBeNull();
+
+    // The `republicar` button names the SUCCESSOR, never the block it sits in.
+    fireEvent.click(d.getByRole('button', { name: 'Republicar o vínculo L2' }));
+    await waitFor(() =>
+      expect(within(bloco('L2')).getByText('Anúncio republicado na Shopee')).toBeDefined(),
+    );
+    expect(publicar).toHaveBeenCalledTimes(2);
+    expect(publicar.mock.calls[1]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L2',
+    });
+  });
+
+  it('offers a refusal row’s button only on a LOADED link whose id addresses a listing — the row still names the rest', async () => {
+    comEscrita();
+    const sucessor = (linkDocId: string): ProblemaShopee => ({
+      campo: 'linkDocId',
+      motivo: 'vinculo-substituido',
+      mensagem: `substituído pelo kit nativo ${linkDocId}`,
+      acao: { tipo: TIPO.republicar, linkDocId },
+    });
+    const problemas: ProblemaShopee[] = [
+      // A loaded link whose stored id is a fraction: `anuncioShopeeVivo` passes it.
+      sucessor('L-fracao'),
+      // A link this tab never loaded: its outcome would land in no block on screen.
+      sucessor('L-fora'),
+      // NEAR-MISS: a loaded, addressable successor keeps its button.
+      sucessor('L2'),
+      {
+        campo: 'principal',
+        motivo: 'opcao-de-kit-em-anuncio-comum',
+        mensagem: 'só valem para kit nativo',
+        acao: { tipo: TIPO.semOpcoesDeKit },
+      },
+    ];
+    const publicar = vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(recusa422(problemas));
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [
+      link('L1'),
+      link('L2', { item_id: 1000002 }),
+      link('L-fracao', { item_id: 1.5, estadoAnuncio: null }),
+    ];
+    const { rerender } = renderEditor();
+
+    fireEvent.click(botao('L1', 'Republicar'));
+    const d = within(await waitFor(() => screen.getByTestId('shopee-desfecho-L1')));
+    // Positive first: every row is there, naming its link.
+    expect(d.getByText(/Vínculo: L-fracao\.$/)).toBeDefined();
+    expect(d.getByText(/Vínculo: L-fora\.$/)).toBeDefined();
+    expect(d.getByRole('button', { name: 'Republicar o vínculo L2' })).toBeDefined();
+    expect(d.getByRole('button', { name: 'Republicar sem as opções de kit' })).toBeDefined();
+    expect(d.queryByRole('button', { name: 'Republicar o vínculo L-fracao' })).toBeNull();
+    expect(d.queryByRole('button', { name: 'Republicar o vínculo L-fora' })).toBeNull();
+
+    // The block's OWN link rewritten with an id no listing has: the outcome
+    // stays, its "republish this link" button goes — the other link's stays.
+    h.links = [
+      link('L1', { item_id: 1.5 }),
+      link('L2', { item_id: 1000002 }),
+      link('L-fracao', { item_id: 1.5, estadoAnuncio: null }),
+    ];
+    rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} />);
+    const depois = within(screen.getByTestId('shopee-desfecho-L1'));
+    expect(depois.getByRole('button', { name: 'Republicar o vínculo L2' })).toBeDefined();
+    expect(depois.queryByRole('button', { name: 'Republicar sem as opções de kit' })).toBeNull();
+    expect(publicar).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['init_tier_variation', 'criação das variações'],
+    ['add_kit_item', 'criação do kit — a Shopee não criou o kit'],
+    // NEAR-MISS: a step this build does not know is never printed as its code.
+    ['etapa_nova_do_servidor', 'uma etapa que esta tela ainda não descreve'],
+  ])(
+    'says WHERE a mid-publish refusal landed (%s), never the raw step code as a channel state',
+    async (etapa, rotulo) => {
+      comEscrita();
+      const recusa = recusa422(
+        [
+          {
+            campo: 'model_list',
+            motivo: 'modelo-recusado',
+            mensagem: 'Modelo recusado.',
+            acao: null,
+          },
+        ],
+        CODIGO_FALHA_SHOPEE.publicacaoRecusada,
+      );
+      const comEtapa = new ShopeeClientHttpError(recusa.message, 422, recusa.code, null, null, {
+        ...recusa.detalhes,
+        etapa,
+      });
+      h.client = shopeeClientFalso({ publicar: () => Promise.reject(comEtapa) });
+      h.links = [link('L1')];
+      renderEditor();
+      fireEvent.click(botao('L1', 'Republicar'));
+      await waitFor(() =>
+        expect(within(bloco('L1')).getByText('A Shopee recusou a publicação')).toBeDefined(),
+      );
+      expect(
+        within(bloco('L1')).getByText(
+          `Recusada na etapa: ${rotulo}. Escritas anteriores podem já ter chegado à Shopee — use "Reverificar" antes de repetir.`,
+        ),
+      ).toBeDefined();
+      expect(within(bloco('L1')).queryByText(new RegExp(etapa))).toBeNull();
+      expect(within(bloco('L1')).queryByText(/Na Shopee agora/)).toBeNull();
+    },
+  );
+});
+
+describe('ShopeeEditor — re-verify, and one write at a time', () => {
+  it('disables every write button while one write is in flight, and says what the re-verify found', async () => {
+    comEscrita();
+    let soltar: (r: RespostaReverificarShopee) => void = () => undefined;
+    const reverificarAnuncio = vi.fn<ShopeeClient['reverificarAnuncio']>(
+      () =>
+        new Promise((resolve) => {
+          soltar = resolve;
+        }),
+    );
+    h.client = shopeeClientFalso({ reverificarAnuncio });
+    // L2 never folded (`estadoAnuncio: null`): it shows BOTH status buttons, so
+    // Reativar is held to the one-write rule too.
+    h.links = [link('L1'), link('L2', { item_id: 1000002, estadoAnuncio: null })];
+    renderEditor();
+
+    fireEvent.click(botao('L1', 'Reverificar'));
+    const escrita = {
+      L1: ['Republicar', 'Reverificar', 'Pausar anúncio'],
+      L2: ['Republicar', 'Reverificar', 'Pausar anúncio', 'Reativar anúncio'],
+    };
+    for (const [id, nomes] of Object.entries(escrita)) {
+      for (const nome of nomes) expect(botao(id, nome).hasAttribute('disabled'), nome).toBe(true);
+    }
+    // The spinner sits on the ONE button in flight — that listing, that action.
+    expect(botao('L1', 'Reverificar').hasAttribute('data-loading')).toBe(true);
+    expect(botao('L2', 'Reverificar').hasAttribute('data-loading')).toBe(false);
+    expect(botao('L1', 'Pausar anúncio').hasAttribute('data-loading')).toBe(false);
+    expect(reverificarAnuncio.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L1',
+    });
+
+    await act(async () => {
+      soltar(reverificado({ deboost: true }));
+      await Promise.resolve();
+    });
+    for (const [id, nomes] of Object.entries(escrita)) {
+      for (const nome of nomes) expect(botao(id, nome).hasAttribute('disabled'), nome).toBe(false);
+    }
+    expect(h.notify).toHaveBeenCalledWith({
+      color: 'green',
+      title: 'Anúncio reverificado — Ativo',
+      message:
+        'O ERP atualizou o anúncio com o que a Shopee informa agora. Ele está rebaixado na busca.',
+    });
+  });
+
+  it('re-reads the open models after a re-verify, and toasts a removal', async () => {
+    comEscrita();
+    h.links = [link('L1')];
+    h.filhos = [{ id: 'f1', data: { nome: 'Camiseta P', paiId: 'prod-1' } }];
+    h.varLinks.set('f1', [
+      {
+        id: 'v-l1',
+        data: {
+          produtoShopeeOuterRef: 'documents/produtos/prod-1/prodshopee/L1',
+          model_id: 2000001,
+        },
+      },
+    ]);
+    h.client = shopeeClientFalso({
+      reverificarAnuncio: async () =>
+        reverificado({ acao: 'removido', estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }),
+    });
+    renderEditor();
+    fireEvent.click(within(bloco('L1')).getByRole('button', { name: 'Ver variações' }));
+    await waitFor(() => screen.getByTestId('shopee-modelos-L1'));
+    expect(h.getDocs).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(botao('L1', 'Reverificar'));
+    await waitFor(() => expect(h.getDocs).toHaveBeenCalledTimes(2));
+    expect(h.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ color: 'orange', title: 'Anúncio reverificado — Removido' }),
+    );
+  });
+
+  it('says the shopee service is unreachable in the block, and a link the conta no longer holds', async () => {
+    comEscrita();
+    h.client = shopeeClientFalso({
+      reverificarAnuncio: () =>
+        Promise.reject(new ShopeeClientNetworkError('Failed to fetch', new TypeError('x'))),
+      publicar: () =>
+        Promise.reject(
+          new ShopeeClientHttpError(
+            'Nenhum anúncio desta conta.',
+            404,
+            CODIGO_FALHA_SHOPEE.anuncioNaoEncontrado,
+          ),
+        ),
+    });
+    h.links = [link('L1'), link('L2', { item_id: 1000002 })];
+    renderEditor();
+
+    fireEvent.click(botao('L1', 'Reverificar'));
+    await waitFor(() =>
+      expect(
+        within(bloco('L1')).getByText('Não foi possível contatar a integração com a Shopee.'),
+      ).toBeDefined(),
+    );
+    expect(h.notify).not.toHaveBeenCalled();
+
+    fireEvent.click(botao('L2', 'Republicar'));
+    await waitFor(() =>
+      expect(
+        within(bloco('L2')).getByText(
+          'Este vínculo não pertence mais a esta conta — a lista foi atualizada.',
+        ),
+      ).toBeDefined(),
+    );
+  });
+});
+
+describe('ShopeeEditor — who may act', () => {
+  it('renders no action without integracao.write', () => {
+    h.links = [link('L1')];
+    renderEditor();
+    expect(within(bloco('L1')).getByText('Ativo')).toBeDefined();
+    for (const nome of ['Republicar', 'Reverificar', 'Pausar anúncio', 'Reativar anúncio']) {
+      expect(semBotao('L1', nome)).toBeNull();
+    }
+  });
+
+  it('disables every action on a read-only form, and while there is no client', () => {
+    comEscrita();
+    h.links = [link('L1'), link('L-nulo', { item_id: 1000002, estadoAnuncio: null })];
+    const { unmount } = renderEditor({ disabled: true });
+    expect(botao('L1', 'Republicar').hasAttribute('disabled')).toBe(true);
+    expect(botao('L1', 'Pausar anúncio').hasAttribute('disabled')).toBe(true);
+    // A click on an enabled Reativar here WOULD send: `executar` does not read `disabled`.
+    expect(botao('L-nulo', 'Reativar anúncio').hasAttribute('disabled')).toBe(true);
+    unmount();
+
+    h.client = null;
+    renderEditor();
+    expect(botao('L1', 'Reverificar').hasAttribute('disabled')).toBe(true);
+  });
+
+  it('offers no action on a conta the query did not return', () => {
+    comEscrita();
+    h.links = [link('L9', { contaProdutoShopeeOuterRef: 'documents/integracao/int-9' })];
+    renderEditor();
+    expect(within(bloco('L9')).getByText('Ativo')).toBeDefined();
+    expect(semBotao('L9', 'Republicar')).toBeNull();
+    expect(semBotao('L9', 'Pausar anúncio')).toBeNull();
   });
 });

@@ -56,7 +56,11 @@ export const TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE = {
  * - `sem-opcoes-de-kit` — republish WITHOUT the kit options (recriar/converter);
  * - `informar-principal` — the request must name the kit's principal;
  * - `importar` — the kit already exists on Shopee as `itemIds` (at least one):
- *   import it instead of creating another;
+ *   import it instead of creating another. `vinculados` names the hits a link
+ *   of some produto ALREADY holds, each with that produto: the mass import
+ *   skips a listing a link names, so for those the next step is the owning
+ *   produto, never the import. Absent from a server older than the field (and
+ *   `null` = not reported) — the reader then words every id alike;
  * - `escolher-vinculo` — several links qualify: the operator picks one of
  *   `linkDocIds` (at least two, or there was nothing to choose).
  */
@@ -74,6 +78,10 @@ export const acaoSugeridaPublicacaoShopeeSchema = z.discriminatedUnion('tipo', [
   z.object({
     tipo: z.literal(TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar),
     itemIds: z.array(z.number().int().positive()).min(1),
+    vinculados: z
+      .array(z.object({ itemId: z.number().int().positive(), produtoId: z.string().min(1) }))
+      .nullable()
+      .optional(),
   }),
   z.object({
     tipo: z.literal(TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo),

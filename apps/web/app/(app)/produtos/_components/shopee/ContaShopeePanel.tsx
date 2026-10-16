@@ -6,6 +6,7 @@ import { Badge, Card, Group, Stack, Text } from '@mantine/core';
 import type { ProdutoShopeeLink } from '@delfrance/schemas';
 
 import { ordenarVinculosShopee } from '@/lib/shopee/anuncioProduto';
+import type { AcoesShopee } from './AcoesAnuncioShopee';
 import { AnuncioShopeeBlock } from './AnuncioShopeeBlock';
 
 /** One `prodshopee` row as the live snapshot hands it over (possibly the RAW doc — see `campos.ts`). */
@@ -60,6 +61,8 @@ export interface ContaShopeePanelProps {
   agoraMs: number;
   modelosAbertos: ReadonlySet<string>;
   onAlternarModelos: (linkDocId: string) => void;
+  /** The actions — `permitidas: false` on a tab whose conta the query did not return. */
+  acoes: AcoesShopee;
 }
 
 /**
@@ -77,6 +80,7 @@ export function ContaShopeePanel({
   agoraMs,
   modelosAbertos,
   onAlternarModelos,
+  acoes,
 }: ContaShopeePanelProps) {
   const ordenados = useMemo(() => ordenarVinculosShopee(vinculos), [vinculos]);
 
@@ -121,6 +125,7 @@ export function ContaShopeePanel({
             agoraMs={agoraMs}
             modelosAberto={modelosAbertos.has(v.id)}
             onAlternarModelos={onAlternarModelos}
+            acoes={acoes}
           />
         ))}
       </Stack>

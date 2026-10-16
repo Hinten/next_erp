@@ -544,8 +544,16 @@ function problemaKitJaExiste(achados: readonly AchadoKitPorSku[]): ProblemaDeBlo
     MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee,
     `já existe na Shopee um kit com o SKU deste produto (item ${ids}) — importe-o ` +
       `(importar:anuncio) em vez de criar outro${vinculados}`,
-    // Every hit, in the sentence's order; the one caller hands over 1+.
-    { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar, itemIds: achados.map((a) => a.itemId) },
+    // Every hit, in the sentence's order; the one caller hands over 1+. The
+    // hits a link already holds carry their produto, as the sentence does: the
+    // mass import skips them, so the web must not point them at it.
+    {
+      tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
+      itemIds: achados.map((a) => a.itemId),
+      vinculados: achados.flatMap((a) =>
+        a.vinculo === null ? [] : [{ itemId: a.itemId, produtoId: a.vinculo.produtoId }],
+      ),
+    },
   );
 }
 
