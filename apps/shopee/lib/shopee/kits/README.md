@@ -266,8 +266,9 @@ after a kit write-back #2 (which clears it), or a stale step-11 value on a conve
 OLD link. Why not stamp: the seam gives the kit arms exactly one link writer (`vinculosKit.ts`,
 values READ from Shopee — #2, the `removido` fold, the post-delete read), and a stamp is the
 first write of a value Shopee did not report, on a link #2 guards against leaving `removido`
-(R1-RT7-05). It belongs with the step-21 panel that will read it — which then needs both the
-stamp here and the clear that #2 already does.
+(R1-RT7-05). It belongs with the kit `falhaPublicacao` follow-up (#1915). Step 21's tab already
+reads the field, so until then a kit refusal shows only in the 422, and the link keeps whatever
+the field held before.
 
 | state found                                                   | arises from                                 | the next plain publish does                                 |
 | ------------------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------------- |

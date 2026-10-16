@@ -177,10 +177,12 @@ describe('MENSAGEM_POR_MOTIVO', () => {
   });
 
   it('8b — ⛔ `produto-nao-encontrado` promete SÓ o que o caminho faz: o documento não existe', () => {
-    // O leitor por ids do envio manual não aplica predicado de âncora, então o
-    // id de uma VARIAÇÃO volta como linha e o planejador a recusa por outro
-    // motivo (`conta-fora-do-produto` ou `sem-link` — `enviarEstoqueCli.test.ts`
-    // fixa isso no planejador real). Uma versão anterior desta frase acrescentava
+    // Só a simulação do CLI (`enviar:estoque`, dry run) lê os ids como digitados,
+    // sem predicado de âncora: lá o id de uma VARIAÇÃO volta como linha e o
+    // planejador a recusa por outro motivo (`conta-fora-do-produto` ou `sem-link`
+    // — `enviarEstoqueCli.test.ts` fixa isso no planejador real). Desde o step 21
+    // a rota e o `--live` resolvem o filho até a âncora (`core/anchors.ts`), e só
+    // um documento AUSENTE cai aqui. Uma versão anterior desta frase acrescentava
     // "ou não é o produto âncora da família", e mandava o operador procurar uma
     // causa que este motivo nunca tem.
     const frase = MENSAGEM_POR_MOTIVO['produto-nao-encontrado'];

@@ -83,7 +83,8 @@
  *
  * A Shopee listing is the whole family (`unlist_item` is per item), and the
  * link hangs off the family anchor. So each requested id is resolved ONCE to its
- * anchor (`core/anchors.ts`, one masked batch read): pausing a selected child
+ * anchor (`core/anchors.ts`, one masked batch read, plus a masked `nome` read for
+ * an anchor nobody requested): pausing a selected child
  * pauses its family's listing, a child and its own anchor move ONE listing once,
  * rows name the ANCHOR (with the anchor's own `nome`, even when only the child
  * was selected), and `produtosSemAnuncio` names the REQUESTED id. Every
