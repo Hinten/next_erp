@@ -58,10 +58,12 @@ export interface AcoesShopee {
   /**
    * Whether the editor's live links hold `linkDocId` with an `item_id` that can
    * address a Shopee listing (`itemIdDoAnuncioShopee`). A button that sends a
-   * link id it does not hold in hand asks this first: a refusal row names links
-   * other than its block's, and the pause confirmation outlives the click that
-   * opened it. A link the tab did not load answers `false` — its outcome would
-   * land in a block that is not on screen.
+   * link id it does not hold in hand asks this first: a refusal row and a kit
+   * aviso name links other than their block's, and the pause and kit
+   * confirmations outlive the click that opened them (the editor's own render
+   * reads the same Set directly). A link the tab did not load answers `false` —
+   * its outcome would land in a block that is not on screen. The one exception
+   * is "Repetir", the identical re-send of an uncertain kit create.
    */
   readonly enderecavel: (linkDocId: string) => boolean;
   /** Opens the pause confirmation; the editor sends on confirm. */

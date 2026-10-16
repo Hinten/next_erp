@@ -720,8 +720,9 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
   /**
    * The loaded links whose `item_id` can address a Shopee listing — what
    * `AcoesShopee.enderecavel` answers from. The live snapshot, so a link
-   * rewritten while a refusal row or the pause confirmation is on screen loses
-   * its button there too.
+   * rewritten while a refusal row, a kit aviso's step, or the pause or kit
+   * confirmation is on screen loses its button there too. (The one button that
+   * sends a link id without asking is "Repetir" — see `IncertoDoKit`.)
    */
   const enderecaveis = useMemo(
     () =>
@@ -985,9 +986,13 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
           if (alvoDoKit === null) return;
           setPrincipais((prev) => new Map(prev).set(alvoDoKit.linkDocId, principal));
         }}
+        // The link may have been rewritten since the arm opened this — the
+        // plain Set again, for the pause confirmation's reason.
         bloqueado={
           bloqueadas ||
-          (alvoDoKit !== null && (incertoNaTela(alvoDoKit.contaId)?.pendente ?? false))
+          (alvoDoKit !== null &&
+            ((incertoNaTela(alvoDoKit.contaId)?.pendente ?? false) ||
+              !enderecaveis.has(alvoDoKit.linkDocId)))
         }
         onConfirmar={confirmarKit}
         onFechar={() => setAlvoDoKit(null)}

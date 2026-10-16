@@ -66,13 +66,16 @@ function idEnderecavel(v: unknown): v is number {
  * value that is not a positive safe integer.
  *
  * ⚠️ Also the tab's ADDRESSING gate: no button that sends a link id is offered
- * for a link this answers `null` for (`AcoesAnuncioShopee`, the refusal rows'
- * buttons, the pause confirmation — through `AcoesShopee.enderecavel`). It is
- * STRICTER than the schemas' `podeMoverAnuncioShopee` and `anuncioShopeeVivo`,
- * which test `isFinite` — a fraction (`1.5`) or an id past 2^53 passes them, and
- * no such number can address a Shopee listing. Those two stay as they are (they
- * are apps/shopee's batch filters) and decide, among ADDRESSABLE links, which
- * ones may move or be republished.
+ * for a link this answers `null` for (`AcoesAnuncioShopee`, the kit arms'
+ * `recriavel` / `convertivel`, and — through `AcoesShopee.enderecavel` — the
+ * refusal rows' and kit avisos' buttons and the pause and kit confirmations).
+ * The one deliberate exception is "Repetir", which re-sends a body that already
+ * passed it (`IncertoDoKit`). It is STRICTER than the schemas'
+ * `podeMoverAnuncioShopee` and `anuncioShopeeVivo`, which test `isFinite` — a
+ * fraction (`1.5`) or an id past 2^53 passes them, and no such number can
+ * address a Shopee listing. Those two stay as they are (they are apps/shopee's
+ * batch filters) and decide, among ADDRESSABLE links, which ones may move, be
+ * republished or be converted.
  */
 export function itemIdDoAnuncioShopee(itemId: unknown): number | null {
   return idEnderecavel(itemId) ? itemId : null;

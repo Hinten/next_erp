@@ -24,7 +24,12 @@ export interface KitNativoShopeeModalProps {
   /** The principal picked for this link (R2: the editor keeps it), `null` = let the ERP choose. */
   principal: string | null;
   onPrincipal: (principal: string | null) => void;
-  /** Every write button is disabled (one write at a time, a read-only form, an uncertain create waiting). */
+  /**
+   * The confirm is disabled: every write button is (one write at a time, a
+   * read-only form, an uncertain create waiting), or the link it names is no
+   * longer a loaded link whose `item_id` addresses a listing — the live
+   * snapshot can rewrite it while this is open.
+   */
   bloqueado: boolean;
   onConfirmar: () => void;
   onFechar: () => void;
@@ -48,7 +53,9 @@ const CONFIRMAR = {
  * reads every unclear ending as UNCERTAIN.
  *
  * ⚠️ The warnings are shown, never enforced: the confirm button is disabled
- * only by {@link KitNativoShopeeModalProps.bloqueado}.
+ * only by {@link KitNativoShopeeModalProps.bloqueado} — which also holds once
+ * the named link stops addressing a listing, so every kit create the tab sends
+ * from here names an addressable link.
  */
 export function KitNativoShopeeModal({
   alvo,
