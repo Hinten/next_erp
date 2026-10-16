@@ -108,9 +108,9 @@ export interface OpcoesSyncIntFrete {
    * Mercado Livre only (`refMatchesIntegracao`): enables the tolerant fallback scan for a doc
    * whose back-ref is stored in a non-canonical form. Absent ⇒ the lookup never scans: the Shopee
    * and Loja Integrada bindings read only the two-equality query and the deterministic id. The
-   * Shopee window pass (`tools/migrations/src/2026-10-shopee-int-frete/backfill.ts`) does read the
-   * channel's whole `tipo ==` population — once, by design — and REPORTS a non-canonical ref
-   * instead of matching it, refusing to create beside it.
+   * window adoption pass both channels bind (`tools/migrations/src/intFreteAdocao/executar.ts`)
+   * does read the channel's whole `tipo ==` population — once, by design — and REPORTS a
+   * non-canonical ref instead of matching it, refusing to create beside it.
    */
   readonly refTolerante?: (ref: unknown, integracaoId: string) => boolean;
 }

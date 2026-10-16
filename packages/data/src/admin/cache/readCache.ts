@@ -32,14 +32,13 @@
  *    cautionary shape: it CREATES the produto when the SKU lookup misses, so a
  *    cached miss manufactures a duplicate produto.
  *
- * 3. **OAuth credentials / tokens.** `apps/mercado-livre/lib/marketplace/core/tokenStore.ts`
- *    picks the newest valid token by query, and its three reads are load-bearing
- *    precisely *because* they are fresh: the re-check honours a refresh that
- *    landed mid-flight, and the loser fallback exists to observe a write another
- *    process — a concurrent function instance, a Cloud Tasks retry — made
- *    microseconds earlier. ML
- *    refresh tokens are single-use and rotate, so a cached read resurrects a
- *    rotated-out token and turns a survivable race into `invalid_grant`.
+ * 3. **OAuth refresh credentials and refresh-decision queries.** The Mercado
+ *    Livre token store must freshly read the newest token before refreshing,
+ *    re-checking or recovering a refresh race. Refresh tokens rotate and must
+ *    never be cached. A narrow exception caches ONLY a usable access token and
+ *    its absolute expiry, with a short TTL, expiry validation on every use and
+ *    invalidation when ML rejects that exact token. No cached value may feed a
+ *    refresh request or replace its fresh Firestore reads.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *
@@ -106,8 +105,13 @@ export interface ReadCache<K extends CacheKey, V> {
    * and at most once concurrently (in-flight dedup).
    */
   get(key: K, load: () => Promise<V>): Promise<V>;
-  /** Drop one key — call this after writing the document it caches. */
-  invalidate(key: K): void;
+  /**
+   * Drop one key — call this after writing the document it caches.
+   * With a predicate, drop only a matching SETTLED value; pending loads stay.
+   * This lets a late rejection invalidate the value it used without evicting a
+   * newer value or the load that is already replacing it.
+   */
+  invalidate(key: K, predicate?: (value: V) => boolean): void;
   /** Drop every entry. Counters are cumulative and survive. */
   clear(): void;
   stats(): ReadCacheStats;
@@ -353,8 +357,13 @@ export function createReadCache<K extends CacheKey, V>(opts: ReadCacheOptions<V>
       return promise;
     },
 
-    invalidate(key) {
-      entries.delete(cacheKeyOf(key));
+    invalidate(key, predicate) {
+      const encoded = cacheKeyOf(key);
+      if (predicate != null) {
+        const entry = entries.get(encoded);
+        if (entry?.settled == null || !predicate(entry.settled.value)) return;
+      }
+      entries.delete(encoded);
     },
 
     clear() {

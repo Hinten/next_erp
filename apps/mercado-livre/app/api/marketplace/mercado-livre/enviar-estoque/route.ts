@@ -141,7 +141,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
 
     const channelCtx = await ctx.resolveChannelContext(nowMs);
-    const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+    const api = createMercadoLivreApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     const resposta = await enviarEstoqueManual(
       db,

@@ -55,7 +55,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const ctx = await loadMercadoLivreContext(db, body.integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
-    const api = createChartApi(channelCtx.accessToken);
+    const api = createChartApi({
+      getAccessToken: channelCtx.getAccessToken,
+      onAccessTokenRejected: channelCtx.invalidateAccessToken,
+    });
 
     const result = await requestSizeChartDeletion(
       { db, api, integracaoId: body.integracaoId },

@@ -75,7 +75,11 @@ beforeEach(() => {
   h.verifyCaller.mockResolvedValue({ caller: { uid: 'u1', permissions: '0xff' } });
   h.loadCtx.mockResolvedValue({
     conta: { depositoOuterRef: 'documents/depositos/D1', nome: 'Loja' },
-    resolveChannelContext: vi.fn().mockResolvedValue({ accessToken: 'tok' }),
+    resolveChannelContext: vi.fn().mockResolvedValue({
+      accessToken: 'tok',
+      getAccessToken: async () => 'tok',
+      invalidateAccessToken: vi.fn(),
+    }),
   });
   h.createApi.mockReturnValue({ getItem: vi.fn(), getMe: vi.fn() });
   h.syncDocRef.mockReturnValue({ get: vi.fn().mockResolvedValue({ data: () => ({}) }) });

@@ -22,6 +22,18 @@ export function rowFieldError(errorTree: unknown, index: number, key: string): s
   return messageOf((row as Record<string, unknown>)[key]);
 }
 
+/**
+ * Message for the ROW itself — `errorTree[index]`'s own message. The schema
+ * raises it when it refuses a stored row as a whole (`null` or text where an
+ * object belongs), so it has no key to hang on, and {@link rowFieldError} and
+ * {@link rootError} both miss it. A row whose issues sit on its keys carries no
+ * message of its own, so this never repeats one of theirs.
+ */
+export function rowError(errorTree: unknown, index: number): string | undefined {
+  if (index < 0 || errorTree == null || typeof errorTree !== 'object') return undefined;
+  return messageOf((errorTree as Record<number, unknown>)[index]);
+}
+
 /** Message for `errorTree[key]` (embedded-object editors). */
 export function childFieldError(errorTree: unknown, key: string): string | undefined {
   if (errorTree == null || typeof errorTree !== 'object') return undefined;

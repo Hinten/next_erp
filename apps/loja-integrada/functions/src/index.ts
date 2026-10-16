@@ -41,6 +41,11 @@ import { getDb } from './lib/admin';
  * the 5-minute order poller that is its first producer (./pollPedidos), the
  * 30-minute reprocess sweep over both lanes, and the daily token-expiry sweep.
  *
+ * Master plan step 20 adds the codebase's FIRST Firestore trigger,
+ * `onIntegracaoLojaIntegradaChanged` (./onIntegracaoLojaIntegradaChanged): it
+ * keeps each Loja Integrada conta's `int_frete` doc in step with the conta,
+ * through the shared core, and makes no Loja Integrada call.
+ *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
  * named, never a wildcard. `index.test.ts` pins every trigger's options and
@@ -67,6 +72,12 @@ export { filaLeituraLojaIntegrada } from './filaLeitura';
 
 /** The 5-minute order poller: the queue's first producer (./pollPedidos). */
 export { pollLojaIntegradaPedidos } from './pollPedidos';
+
+/**
+ * The conta trigger: each Loja Integrada conta's `int_frete` doc follows the
+ * conta (master plan step 20, ./onIntegracaoLojaIntegradaChanged).
+ */
+export { onIntegracaoLojaIntegradaChanged } from './onIntegracaoLojaIntegradaChanged';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:
