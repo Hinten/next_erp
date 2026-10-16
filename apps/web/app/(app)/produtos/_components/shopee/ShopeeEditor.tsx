@@ -27,7 +27,11 @@ import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoShopeeLinkCollection } from '@/lib/data/produtoShopeeLinkCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
-import { formatarInstanteShopee, resumoDaReverificacaoShopee } from '@/lib/shopee/anuncioProduto';
+import {
+  formatarInstanteShopee,
+  itemIdDoAnuncioShopee,
+  resumoDaReverificacaoShopee,
+} from '@/lib/shopee/anuncioProduto';
 import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
@@ -447,11 +451,28 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
     });
   }
 
+  /**
+   * The loaded links whose `item_id` can address a Shopee listing — what
+   * `AcoesShopee.enderecavel` answers from. The live snapshot, so a link
+   * rewritten while a refusal row or the pause confirmation is on screen loses
+   * its button there too.
+   */
+  const enderecaveis = useMemo(
+    () =>
+      new Set(
+        (linksSnap.data ?? [])
+          .filter((l) => itemIdDoAnuncioShopee(l.data.item_id) !== null)
+          .map((l) => l.id),
+      ),
+    [linksSnap.data],
+  );
+
   const acoes: AcoesShopee = {
     permitidas: !escritaCarregando && podeEscrever,
     bloqueadas: disabled === true || client === null || emVoo !== null,
     emVoo,
     desfechoDe: (linkDocId) => desfechos.get(linkDocId) ?? null,
+    enderecavel: (linkDocId) => enderecaveis.has(linkDocId),
     pedirPausa: (contaId, linkDocId) => setAlvoDaPausa({ contaId, linkDocId }),
     reativar: (contaId, linkDocId) =>
       definirStatus(contaId, linkDocId, ACAO_STATUS_ANUNCIO.reativar),
@@ -656,7 +677,12 @@ export function ShopeeEditor({ produtoId, db, disabled }: ShopeeEditorProps) {
             <Button
               type="button"
               color="orange"
-              disabled={acoes.bloqueadas}
+              // The link may have been rewritten since "Pausar anúncio" opened this.
+              disabled={
+                acoes.bloqueadas ||
+                alvoDaPausa === null ||
+                !acoes.enderecavel(alvoDaPausa.linkDocId)
+              }
               onClick={() => {
                 if (alvoDaPausa === null) return;
                 setAlvoDaPausa(null);

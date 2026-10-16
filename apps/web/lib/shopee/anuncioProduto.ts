@@ -48,8 +48,16 @@ function idEnderecavel(v: unknown): v is number {
 /**
  * The listing's Shopee `item_id` as the tab prints it, or `null` for a link that
  * names no listing — a draft never published (`item_id: null`), or a stored
- * value that is not a positive safe integer. Display only: which links the
- * actions may address is the schemas' `podeMoverAnuncioShopee`.
+ * value that is not a positive safe integer.
+ *
+ * ⚠️ Also the tab's ADDRESSING gate: no button that sends a link id is offered
+ * for a link this answers `null` for (`AcoesAnuncioShopee`, the refusal rows'
+ * buttons, the pause confirmation — through `AcoesShopee.enderecavel`). It is
+ * STRICTER than the schemas' `podeMoverAnuncioShopee` and `anuncioShopeeVivo`,
+ * which test `isFinite` — a fraction (`1.5`) or an id past 2^53 passes them, and
+ * no such number can address a Shopee listing. Those two stay as they are (they
+ * are apps/shopee's batch filters) and decide, among ADDRESSABLE links, which
+ * ones may move or be republished.
  */
 export function itemIdDoAnuncioShopee(itemId: unknown): number | null {
   return idEnderecavel(itemId) ? itemId : null;
@@ -188,6 +196,16 @@ export function ordenarVinculosShopee<
  */
 export const FRASE_PRIMEIRA_PUBLICACAO_SHOPEE =
   'Primeira publicação: chega na etapa de autoria do anúncio.';
+
+/**
+ * What a link whose stored `item_id` is present but addresses no listing (`0`, a
+ * negative, a fraction, past 2^53, a quoted number — a malformed or migrated
+ * row) shows where its buttons would be. ⚠️ Never
+ * {@link FRASE_PRIMEIRA_PUBLICACAO_SHOPEE}: the link is not a draft, so a first
+ * publish is not what it is waiting for.
+ */
+export const FRASE_ITEM_ID_INVALIDO_SHOPEE =
+  'O código do anúncio guardado neste vínculo é inválido — nenhuma ação disponível.';
 
 /** The `importar` row's first half: what was found. */
 const FRASE_KIT_JA_EXISTE_SHOPEE =

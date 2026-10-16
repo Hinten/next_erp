@@ -1004,6 +1004,12 @@ const botao = (linkDocId: string, nome: string) =>
 const semBotao = (linkDocId: string, nome: string | RegExp) =>
   within(bloco(linkDocId)).queryByRole('button', { name: nome });
 
+/** Every button a block's action row can hold — what a never-folded live link shows. */
+const BOTOES_DO_BLOCO = ['Republicar', 'Reverificar', 'Pausar anúncio', 'Reativar anúncio'];
+const FRASE_RASCUNHO = 'Primeira publicação: chega na etapa de autoria do anúncio.';
+const FRASE_ITEM_ID_INVALIDO =
+  'O código do anúncio guardado neste vínculo é inválido — nenhuma ação disponível.';
+
 /** The pause/reactivate run's 200, for ONE listing — shaped like `anuncio-status/route.ts`'s. */
 function respostaStatus(
   linkDocId: string,
@@ -1157,6 +1163,28 @@ describe('ShopeeEditor — pause and reactivate (podeMoverAnuncioShopee)', () =>
     expect(botao('L1', 'Pausar anúncio').hasAttribute('disabled')).toBe(false);
   });
 
+  it('a pause confirmation cannot send once its link was rewritten with an id no listing has', () => {
+    comEscrita();
+    const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>();
+    h.client = shopeeClientFalso({ definirStatusAnuncios });
+    h.links = [link('L1')];
+    const { rerender } = renderEditor();
+    fireEvent.click(botao('L1', 'Pausar anúncio'));
+    const confirmar = () =>
+      within(screen.getByRole('dialog', { name: 'Pausar anúncio' })).getByRole('button', {
+        name: 'Pausar',
+      });
+    // NEAR-MISS first: as opened, on an addressable link, the confirmation can send.
+    expect(confirmar().hasAttribute('disabled')).toBe(false);
+
+    // The live snapshot repaints while the dialog is open.
+    h.links = [link('L1', { item_id: 1.5 })];
+    rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} />);
+    expect(confirmar().hasAttribute('disabled')).toBe(true);
+    fireEvent.click(confirmar());
+    expect(definirStatusAnuncios).not.toHaveBeenCalled();
+  });
+
   it('sends nothing when the pause is cancelled', () => {
     comEscrita();
     const definirStatusAnuncios = vi.fn<ShopeeClient['definirStatusAnuncios']>();
@@ -1281,10 +1309,45 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
     for (const id of ['L-zero', 'L-texto']) {
       // Positive first: the block rendered, as an unpublished listing.
       expect(within(bloco(id)).getByText('Não publicado')).toBeDefined();
+      expect(within(bloco(id)).getByText(FRASE_ITEM_ID_INVALIDO)).toBeDefined();
       expect(semBotao(id, 'Reverificar'), id).toBeNull();
       expect(semBotao(id, /Publicar/), id).toBeNull();
       expect(semBotao(id, 'Pausar anúncio'), id).toBeNull();
       expect(semBotao(id, 'Reativar anúncio'), id).toBeNull();
+    }
+  });
+
+  it('offers NO button on an id the schemas predicates pass but no listing has (a fraction, 2^53, a negative), and says so — never as a draft', () => {
+    comEscrita();
+    // Never folded and not superseded: `podeMoverAnuncioShopee` (both ways) and
+    // `anuncioShopeeVivo` test `isFinite` only, so for the first two ids every
+    // one of them says yes — the block's own gate is what refuses.
+    h.links = [
+      link('L-fracao', { item_id: 1.5, estadoAnuncio: null }),
+      link('L-2e53', { item_id: 2 ** 53, estadoAnuncio: null }),
+      link('L-negativo', { item_id: -1000001, estadoAnuncio: null }),
+    ];
+    renderEditor();
+    for (const id of ['L-fracao', 'L-2e53', 'L-negativo']) {
+      // Positive first: the block rendered, and says why it offers nothing.
+      expect(within(bloco(id)).getByText('Não publicado')).toBeDefined();
+      expect(within(bloco(id)).getByText(FRASE_ITEM_ID_INVALIDO)).toBeDefined();
+      // It is not a draft: no first publish is promised.
+      expect(within(bloco(id)).queryByText(FRASE_RASCUNHO)).toBeNull();
+      for (const nome of BOTOES_DO_BLOCO) expect(semBotao(id, nome), `${id} ${nome}`).toBeNull();
+    }
+  });
+
+  it('NEAR-MISS: the ids that DO address a listing — up to Number.MAX_SAFE_INTEGER — get every button', () => {
+    comEscrita();
+    h.links = [
+      link('L-comum', { item_id: 1000001, estadoAnuncio: null }),
+      link('L-maximo', { item_id: Number.MAX_SAFE_INTEGER, estadoAnuncio: null }),
+    ];
+    renderEditor();
+    for (const id of ['L-comum', 'L-maximo']) {
+      for (const nome of BOTOES_DO_BLOCO) expect(botao(id, nome), `${id} ${nome}`).toBeDefined();
+      expect(within(bloco(id)).queryByText(FRASE_ITEM_ID_INVALIDO)).toBeNull();
     }
   });
 
@@ -1356,6 +1419,61 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
       produtoId: 'prod-1',
       linkDocId: 'L2',
     });
+  });
+
+  it('offers a refusal row’s button only on a LOADED link whose id addresses a listing — the row still names the rest', async () => {
+    comEscrita();
+    const sucessor = (linkDocId: string): ProblemaShopee => ({
+      campo: 'linkDocId',
+      motivo: 'vinculo-substituido',
+      mensagem: `substituído pelo kit nativo ${linkDocId}`,
+      acao: { tipo: TIPO.republicar, linkDocId },
+    });
+    const problemas: ProblemaShopee[] = [
+      // A loaded link whose stored id is a fraction: `anuncioShopeeVivo` passes it.
+      sucessor('L-fracao'),
+      // A link this tab never loaded: its outcome would land in no block on screen.
+      sucessor('L-fora'),
+      // NEAR-MISS: a loaded, addressable successor keeps its button.
+      sucessor('L2'),
+      {
+        campo: 'principal',
+        motivo: 'opcao-de-kit-em-anuncio-comum',
+        mensagem: 'só valem para kit nativo',
+        acao: { tipo: TIPO.semOpcoesDeKit },
+      },
+    ];
+    const publicar = vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(recusa422(problemas));
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [
+      link('L1'),
+      link('L2', { item_id: 1000002 }),
+      link('L-fracao', { item_id: 1.5, estadoAnuncio: null }),
+    ];
+    const { rerender } = renderEditor();
+
+    fireEvent.click(botao('L1', 'Republicar'));
+    const d = within(await waitFor(() => screen.getByTestId('shopee-desfecho-L1')));
+    // Positive first: every row is there, naming its link.
+    expect(d.getByText(/Vínculo: L-fracao\.$/)).toBeDefined();
+    expect(d.getByText(/Vínculo: L-fora\.$/)).toBeDefined();
+    expect(d.getByRole('button', { name: 'Republicar o vínculo L2' })).toBeDefined();
+    expect(d.getByRole('button', { name: 'Republicar sem as opções de kit' })).toBeDefined();
+    expect(d.queryByRole('button', { name: 'Republicar o vínculo L-fracao' })).toBeNull();
+    expect(d.queryByRole('button', { name: 'Republicar o vínculo L-fora' })).toBeNull();
+
+    // The block's OWN link rewritten with an id no listing has: the outcome
+    // stays, its "republish this link" button goes — the other link's stays.
+    h.links = [
+      link('L1', { item_id: 1.5 }),
+      link('L2', { item_id: 1000002 }),
+      link('L-fracao', { item_id: 1.5, estadoAnuncio: null }),
+    ];
+    rerender(<ShopeeEditor produtoId="prod-1" db={{} as Firestore} />);
+    const depois = within(screen.getByTestId('shopee-desfecho-L1'));
+    expect(depois.getByRole('button', { name: 'Republicar o vínculo L2' })).toBeDefined();
+    expect(depois.queryByRole('button', { name: 'Republicar sem as opções de kit' })).toBeNull();
+    expect(publicar).toHaveBeenCalledTimes(1);
   });
 
   it.each([

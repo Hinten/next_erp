@@ -241,6 +241,12 @@ function DesfechoKit({ kit }: { kit: KitPublicadoShopee }) {
  *  - `sem-opcoes-de-kit` → a republish of this link, with no kit option;
  *  - every other `tipo` is text: the native-kit arms are not part of this row
  *    of buttons, and an `importar` / `escolher-vinculo` points elsewhere.
+ *
+ * ⚠️ A button renders only for a target `AcoesShopee.enderecavel` holds — a
+ * loaded link whose `item_id` can address a listing, the gate every block's own
+ * buttons pass (`AcoesAnuncioShopee`). The `acao` names a link by id alone (a
+ * successor comes from a stored `substituidoPorLinkDocId`), so the tab checks
+ * the link it would send; without a button the row's text still names it.
  */
 function DesfechoRecusado({
   contaId,
@@ -304,6 +310,7 @@ function BotaoDoProblema({
   } else {
     return null;
   }
+  if (!acoes.enderecavel(alvo)) return null;
   return (
     <Group>
       <Button
