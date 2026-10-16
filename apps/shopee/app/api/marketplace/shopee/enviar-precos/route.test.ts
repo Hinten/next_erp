@@ -35,7 +35,7 @@ import {
   ShopeeEnvioPrecoGuardError,
 } from '@/lib/shopee/precos/errosPreco';
 import type { FamiliaDePreco, ItemDePreco } from '@/lib/shopee/precos/planoPreco';
-import { type DocData, FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
+import { type DocData, FakeDb, asDb, grpc } from '@/lib/shopee/testing/fakeDb';
 
 /**
  * `POST /api/marketplace/shopee/enviar-precos` (#1521, step 13; reconcile
@@ -786,6 +786,140 @@ describe('(4) o envelope — R-12 a R-16', () => {
     expect(deps?.contaNome).toBe('Loja teste');
     expect(typeof deps?.agora).toBe('function');
     expect(typeof deps?.esperar).toBe('function');
+  });
+});
+
+/* --------------------------- K8 — the per-model label ---------------------- */
+
+describe('(4b) o rótulo por modelo — K8 (#1529)', () => {
+  const FILHO_SUMIDO = 'prod-1-g';
+
+  /** One envelope, three rows: two models of one listing and a no-model listing. */
+  function respostaComModelos(): EnvioPrecoResponse {
+    const linha = (variacaoProdutoId: string | null, anuncioId: string) => ({
+      produtoId: ANCORA,
+      produtoNome: 'Camiseta',
+      variacaoProdutoId,
+      anuncioId,
+      linkDocId: LINK,
+      outcome: 'enviado' as const,
+      motivo: null,
+      mensagem: 'ok',
+      preco: 15,
+      precoAnterior: 10,
+      variacoes: null,
+      codigo: null,
+    });
+    return {
+      canal: 'shopee',
+      integracaoId: INT,
+      contaNome: 'Loja teste',
+      solicitados: 1,
+      familias: 1,
+      resumo: { enviados: 3, pulados: 0, falhas: 0, naoTentados: 0 },
+      listings: [
+        linha(FILHO, String(ITEM_ID)),
+        linha(FILHO_SUMIDO, String(ITEM_ID)),
+        linha(null, String(ITEM_ID + 1)),
+      ],
+      produtosSemEnvio: [],
+      pausadoAte: null,
+    };
+  }
+
+  it('⚠️ (K8) uma linha de MODELO traz o nome e o sku do FILHO; uma sem modelo, ambos null; as chaves são as declaradas', async () => {
+    db.seed(`produtos/${ANCORA}`, { nome: 'Camiseta', sku: 'CAM', paiId: null });
+    db.seed(`produtos/${FILHO}`, { nome: 'Camiseta P', sku: 'CAM-P', paiId: ANCORA });
+    h.enviar.mockResolvedValue(respostaComModelos());
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { listings: Record<string, unknown>[] };
+    expect(body.listings.map((l) => [l.variacaoProdutoId, l.variacaoNome, l.variacaoSku])).toEqual([
+      [FILHO, 'Camiseta P', 'CAM-P'],
+      // A child gone between the run and the join reads blank, never a failure.
+      [FILHO_SUMIDO, null, null],
+      // No model ⇒ no child ⇒ no label — never the ANCHOR's name.
+      [null, null, null],
+    ]);
+    for (const l of body.listings) {
+      expect(Object.keys(l).sort()).toEqual([...CHAVES_DA_LISTAGEM_PRECO].sort());
+    }
+    // The join reads the CHILDREN, never the anchor every model shares.
+    expect(db.caminhos).toContain(`produtos/${FILHO}`);
+    expect(db.caminhos).not.toContain(`produtos/${ANCORA}`);
+  });
+
+  /**
+   * `getAll` that rejects ONLY the label join's read — its `['nome', 'sku']`
+   * mask — so the run's own masked base reads (`['nome', 'paiId']`) still land.
+   */
+  class FakeDbComRotuloFalhando extends FakeDbComLote {
+    erroDoRotulo: unknown = null;
+    override getAll(...args: unknown[]) {
+      const ultimo = args[args.length - 1];
+      const mascara =
+        typeof ultimo === 'object' && ultimo !== null && 'fieldMask' in ultimo
+          ? (ultimo as { fieldMask: string[] }).fieldMask
+          : null;
+      if (mascara?.join(',') === 'nome,sku') return Promise.reject(this.erroDoRotulo);
+      return super.getAll(...args);
+    }
+  }
+
+  function dbComRotuloFalhando(erro: unknown): FakeDbComRotuloFalhando {
+    const falhando = new FakeDbComRotuloFalhando();
+    falhando.erroDoRotulo = erro;
+    falhando.seed(`produtos/${FILHO}`, { nome: 'Camiseta P', sku: 'CAM-P', paiId: ANCORA });
+    h.db.atual = asDb(falhando);
+    return falhando;
+  }
+
+  it('⚠️ (R3-4/R7-3) o rótulo FALHA depois do envio (gRPC 14) ⇒ 200 com as linhas do envio intactas e rótulos null, e o LOG diz', async () => {
+    dbComRotuloFalhando(grpc(14, 'UNAVAILABLE'));
+    h.enviar.mockResolvedValue(respostaComModelos());
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+
+    // Every price already went out: the push answers its rows, never a 500.
+    expect(res.status).toBe(200);
+    expect(h.enviar).toHaveBeenCalledTimes(1);
+    const body = (await res.json()) as {
+      resumo: Record<string, number>;
+      listings: Record<string, unknown>[];
+    };
+    expect(body.resumo).toEqual({ enviados: 3, pulados: 0, falhas: 0, naoTentados: 0 });
+    expect(
+      body.listings.map((l) => [l.variacaoProdutoId, l.outcome, l.variacaoNome, l.variacaoSku]),
+    ).toEqual([
+      [FILHO, 'enviado', null, null],
+      [FILHO_SUMIDO, 'enviado', null, null],
+      [null, 'enviado', null, null],
+    ]);
+    for (const l of body.listings) {
+      expect(Object.keys(l).sort()).toEqual([...CHAVES_DA_LISTAGEM_PRECO].sort());
+    }
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('rótulos das variações indisponíveis'),
+      { integracaoId: INT, codigo: 14 },
+    );
+  });
+
+  it('⚠️ (R3-4/R7-3) QUASE-IGUAL: um TypeError da MESMA leitura de rótulo SOBE (rule 6 — só o gRPC degrada)', async () => {
+    const bug = new TypeError('bug de programação no rótulo');
+    dbComRotuloFalhando(bug);
+    h.enviar.mockResolvedValue(respostaComModelos());
+
+    await expect(POST(req(corpoValido(), AUTORIZADO))).rejects.toBe(bug);
+  });
+
+  it('(R3-4/R7-3) QUASE-IGUAL: um código fora da faixa gRPC (17) na leitura de rótulo também SOBE', async () => {
+    const foraDaFaixa = grpc(17, 'fora da faixa');
+    dbComRotuloFalhando(foraDaFaixa);
+    h.enviar.mockResolvedValue(respostaComModelos());
+
+    await expect(POST(req(corpoValido(), AUTORIZADO))).rejects.toBe(foraDaFaixa);
   });
 });
 

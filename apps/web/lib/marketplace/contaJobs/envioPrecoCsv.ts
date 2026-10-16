@@ -13,12 +13,43 @@
  * detectable rather than silently short — the same discipline as the NF-e
  * report's trailer and as `RECONCILIACAO_INCOMPLETA`. When the run did not cover
  * everything the trailer says so in words, not just in numbers.
+ *
+ * Channel-neutral (#1529): Mercado Livre and Shopee store the SAME relatório row
+ * (`linhaRelatorioEnvioPrecoSchema`), so both channels' downloads build through
+ * this one module rather than two copies free to drift on the trailer.
  */
-import type {
-  MercadoLivreRelatorioEnvioPrecoLinha,
-  MercadoLivreRelatorioEnvioPrecoPagina,
-} from '@/lib/mercado-livre/client';
+import { ENVIO_PRECO_RESULTADO, type LinhaRelatorioEnvioPreco } from '@delfrance/schemas';
 import { CSV_BOM, csvRow } from '@/lib/nfe/export/csv';
+
+/**
+ * Bound on the download loop. A report past this is truncated AND SAYS SO in the
+ * trailer — a silent cap is the failure this whole area keeps guarding against.
+ */
+export const MAX_PAGINAS_RELATORIO_PRECO = 100;
+
+/**
+ * One CSV row: the stored row's columns (`linhaRelatorioEnvioPrecoSchema`, shared
+ * by both channels) plus the three every relatório route JOINS or RENDERS at
+ * read time. Both channels' wire rows are assignable — the stored columns this
+ * builder never reads (`linkDocId`, `variacoes`) are left out on purpose, so a
+ * page that omits them still builds.
+ */
+export type LinhaEnvioPrecoCsv = Pick<
+  LinhaRelatorioEnvioPreco,
+  | 'produtoId'
+  | 'variacaoProdutoId'
+  | 'anuncioId'
+  | 'resultado'
+  | 'fase'
+  | 'motivo'
+  | 'erro'
+  | 'preco'
+  | 'precoAnterior'
+> & {
+  readonly produtoNome: string | null;
+  readonly sku: string | null;
+  readonly mensagem: string | null;
+};
 
 /**
  * ⚠️ `Intl.NumberFormat`, NOT `centsToBr`. These prices are REAIS (the job
@@ -35,14 +66,14 @@ function brMoney(value: number | null): string {
   return value === null ? '' : BR_MONEY.format(value);
 }
 
-const RESULTADO_LABEL: Record<MercadoLivreRelatorioEnvioPrecoLinha['resultado'], string> = {
+const RESULTADO_LABEL: Record<LinhaEnvioPrecoCsv['resultado'], string> = {
   enviado: 'Enviado',
   pulado: 'Pulado',
   falha: 'Falha',
   'nao-tentado': 'Não tentado',
 };
 
-const FASE_LABEL: Record<MercadoLivreRelatorioEnvioPrecoLinha['fase'], string> = {
+const FASE_LABEL: Record<LinhaEnvioPrecoCsv['fase'], string> = {
   plano: 'Planejamento',
   envio: 'Envio',
   reconciliacao: 'Conferência',
@@ -65,17 +96,14 @@ export const ENVIO_PRECO_CSV_HEADER = [
 ] as const;
 
 /** Ordered so the rows a human acts on come first, then by SKU (nulls last). */
-const ORDEM: Record<MercadoLivreRelatorioEnvioPrecoLinha['resultado'], number> = {
+const ORDEM: Record<LinhaEnvioPrecoCsv['resultado'], number> = {
   falha: 0,
   'nao-tentado': 1,
   pulado: 2,
   enviado: 3,
 };
 
-function comparar(
-  a: MercadoLivreRelatorioEnvioPrecoLinha,
-  b: MercadoLivreRelatorioEnvioPrecoLinha,
-): number {
+function comparar(a: LinhaEnvioPrecoCsv, b: LinhaEnvioPrecoCsv): number {
   const porResultado = ORDEM[a.resultado] - ORDEM[b.resultado];
   if (porResultado !== 0) return porResultado;
   if (a.sku === null && b.sku === null) return 0;
@@ -85,26 +113,31 @@ function comparar(
 }
 
 /**
- * The job-level facts the trailer needs — DERIVED from the relatório page rather
- * than re-spelled, because that page is literally where every one of them comes
- * from (`useBaixarRelatorioPreco` passes them straight through).
+ * The job-level facts the trailer needs. A channel's download hook passes them
+ * straight through from its own wire (`useBaixarRelatorioPreco`: the relatório
+ * page), never re-counting them from the rows.
  *
- * ⚠️ It used to hand-spell them, and the `status` union carried a comment saying
- * it "has to track the schema". That is the root `CLAUDE.md` smell: a comment
- * asserting what another copy does, which reads correct right up until the two
- * disagree. `cancelled` (#1144) was remembered here, and the next member would
- * have been a coin flip. `Pick` makes the compiler carry the rule instead — and
- * a status the wire can return is now, by construction, a status the trailer can
- * print.
+ * ⚠️ It used to hand-spell the `status` union, with a comment saying it "has to
+ * track the schema". That is the root `CLAUDE.md` smell: a comment asserting what
+ * another copy does, which reads correct right up until the two disagree.
+ * `cancelled` (#1144) was remembered here, and the next member would have been a
+ * coin flip. The trailer only ever INTERPOLATES `status`, so it is a plain
+ * `string`: any status either channel's wire returns is printable by
+ * construction, and there is no union left to drift.
  */
-export type EnvioPrecoCsvResumo = Pick<
-  MercadoLivreRelatorioEnvioPrecoPagina,
-  'status' | 'relatorioCompleto' | 'filaRestante' | 'planejados' | 'enviados' | 'pulados' | 'falhas'
->;
+export interface EnvioPrecoCsvResumo {
+  readonly status: string;
+  readonly relatorioCompleto: boolean;
+  readonly filaRestante: number;
+  readonly planejados: number;
+  readonly enviados: number;
+  readonly pulados: number;
+  readonly falhas: number;
+}
 
 /** Build the whole CSV text. Pure — the caller hands it to `saveBlob`. */
 export function buildEnvioPrecoCsv(
-  linhas: readonly MercadoLivreRelatorioEnvioPrecoLinha[],
+  linhas: readonly LinhaEnvioPrecoCsv[],
   resumo: EnvioPrecoCsvResumo,
   opts: { truncado?: boolean } = {},
 ): string {
@@ -127,7 +160,7 @@ export function buildEnvioPrecoCsv(
       // send has both — listing at 90, intended 50 — so the unconditional version
       // printed a -40,00 movement for a listing that never moved, which is the
       // exact false claim this report exists to prevent.
-      l.resultado === 'enviado' && l.preco !== null && l.precoAnterior !== null
+      l.resultado === ENVIO_PRECO_RESULTADO.enviado && l.preco !== null && l.precoAnterior !== null
         ? brMoney(l.preco - l.precoAnterior)
         : '',
       l.motivo ?? '',

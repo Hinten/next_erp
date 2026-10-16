@@ -79,7 +79,7 @@ import { AtributosAiModal } from './AtributosAiModal';
 import { ATRIBUTOS_LOAD_FAILED_MESSAGE, AtributosSection } from './AtributosSection';
 import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
-import { EMPTY_VALUE, ListingField, textOr } from './ListingField';
+import { EMPTY_VALUE, ListingField, textOr } from '../marketplace/ListingField';
 
 /** ML metadata barely moves; a half-hour is generous and still bounded. */
 const METADATA_STALE_MS = 30 * 60 * 1000;

@@ -4,6 +4,7 @@ import { type VereditoCanal, vereditoCanal } from '@/lib/marketplace/caps/suport
 
 import { buildProviderMap } from '../push/types';
 import { mercadoLivreStockProvider } from './providers/mercadoLivre';
+import { shopeeStockProvider } from './providers/shopee';
 import { criarUnsupportedChannelStockProvider } from './providers/unsupportedChannel';
 import type { StockPushChannelResult, StockPushInput, StockPushProvider } from './types';
 
@@ -18,7 +19,7 @@ import type { StockPushChannelResult, StockPushInput, StockPushProvider } from '
  * Modelled on `lib/checkout/etiqueta/registry.ts`.
  */
 export const PROVIDERS: Readonly<Partial<Record<IntegracaoTipo, StockPushProvider>>> =
-  buildProviderMap([mercadoLivreStockProvider], 'Stock push');
+  buildProviderMap([mercadoLivreStockProvider, shopeeStockProvider], 'Stock push');
 
 /**
  * What `MARKETPLACE_TIPO_CAPS` says about sending stock to this channel, and --

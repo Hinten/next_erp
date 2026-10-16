@@ -10,7 +10,11 @@ import {
   shopeeLogisticsChannelSchema,
   type ShopeeCategoria,
 } from '@delfrance/integrations-shopee';
-import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
+import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
+  ESTADO_ANUNCIO_SHOPEE,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+} from '@delfrance/schemas';
 
 import {
   ETAPA_PUBLICACAO,
@@ -776,7 +780,7 @@ describe('passo 19 — os braços de kit pela rota', () => {
 
     expect(res.status).toBe(202);
     const corpo = (await res.json()) as Record<string, unknown>;
-    expect(Object.keys(corpo).sort()).toEqual([...CHAVES_DO_KIT, 'mensagem'].sort());
+    expect(Object.keys(corpo).sort()).toEqual([...CHAVES_DO_KIT, 'mensagem', 'aguardarMs'].sort());
     expect(corpo).toMatchObject({
       desfecho: 'incerto',
       itemId: null,
@@ -789,6 +793,12 @@ describe('passo 19 — os braços de kit pela rota', () => {
       mensagem: MENSAGEM_KIT_INCERTO,
       comando,
     });
+    // K4 (step 21): the wait the web holds its identical re-send for — the
+    // schemas' ONE copy, which the sentence beside it interpolates too.
+    expect(corpo.aguardarMs).toBe(AGUARDAR_KIT_INCERTO_SHOPEE_MS);
+    expect(MENSAGEM_KIT_INCERTO).toContain(
+      `aguarde ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos`,
+    );
   });
 
   it('(M147, quase-par) um kit CRIADO é 200 sem `mensagem` — o 202 é só do incerto', async () => {
@@ -798,7 +808,10 @@ describe('passo 19 — os braços de kit pela rota', () => {
     const res = await POST(req(corpoValido({ produtoId: KIT }), AUTORIZADO));
 
     expect(res.status).toBe(200);
-    expect('mensagem' in ((await res.json()) as object)).toBe(false);
+    const corpo = (await res.json()) as object;
+    expect('mensagem' in corpo).toBe(false);
+    // ...and no wait either: `aguardarMs` is the 202's alone.
+    expect('aguardarMs' in corpo).toBe(false);
   });
 
   it('(cut-note #12) um add_kit_item RECUSADO (nao-criado) ⇒ o REJECTED do respond, etapa add_kit_item, shopeeCode VERBATIM', async () => {
@@ -840,12 +853,44 @@ describe('passo 19 — os braços de kit pela rota', () => {
     await expect(res.json()).resolves.toMatchObject({
       code: 'SHOPEE_PUBLISH_BLOCKED',
       motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcaoDeKitEmAnuncioComum,
-      problemas: [{ campo: 'principal' }],
+      // K3 (step 21): the refusal's `acao` rides the 422 verbatim.
+      problemas: [
+        { campo: 'principal', acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit } },
+      ],
     });
     expect(h.publicar).not.toHaveBeenCalled();
     expect(h.publicarKit).not.toHaveBeenCalled();
     expect(h.getCategory).not.toHaveBeenCalled();
     expect(h.getChannelList).not.toHaveBeenCalled();
+    expect(db.writes).toHaveLength(0);
+  });
+
+  it('(K3, step 21) o `acao` de uma recusa chega ao 422 VERBATIM — com o vínculo que ele nomeia', async () => {
+    semearKit();
+    db.seed(`produtos/${KIT}/prodshopee/${VINCULO_KIT}`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: KIT_ITEM,
+      kitNativo: true,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+    });
+
+    const res = await POST(
+      req(corpoValido({ produtoId: KIT, linkDocId: VINCULO_KIT }), AUTORIZADO),
+    );
+
+    expect(res.status).toBe(422);
+    const corpo = (await res.json()) as {
+      code: string;
+      problemas: { motivo: string; acao?: unknown }[];
+    };
+    expect(corpo.code).toBe('SHOPEE_PUBLISH_BLOCKED');
+    expect(corpo.problemas).toHaveLength(1);
+    expect(corpo.problemas[0]?.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida);
+    expect(corpo.problemas[0]?.acao).toEqual({
+      tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar,
+      linkDocId: VINCULO_KIT,
+    });
+    expect(h.publicarKit).not.toHaveBeenCalled();
     expect(db.writes).toHaveLength(0);
   });
 

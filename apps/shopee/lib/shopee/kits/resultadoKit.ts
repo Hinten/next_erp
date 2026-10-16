@@ -25,10 +25,11 @@ import {
   type ShopeeKitItem,
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
-import type {
-  EnderecoShopeeDoComponente,
-  EstadoAnuncioShopee,
-  ResolucaoComponenteKit,
+import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
+  type EnderecoShopeeDoComponente,
+  type EstadoAnuncioShopee,
+  type ResolucaoComponenteKit,
 } from '@delfrance/schemas';
 
 import type { PublicarAnuncioDeps } from '../anuncios/publicarAnuncio';
@@ -304,11 +305,14 @@ export interface ContextoKit {
  * L10-R2: the "importe-o" promise holds only while no OTHER run has linked a kit
  * to this produto — once one has, the same command is `kit-atualizar` (or a
  * converter refusal), which scans nothing (L10(4)), so the sentence says so
- * instead of lying. 4 minutes = the route ceiling (`timeoutSeconds: 180`,
- * `apps/shopee/apphosting.yaml`) + 60 s over the ~9 s listing latency.
+ * instead of lying. The wait is `AGUARDAR_KIT_INCERTO_SHOPEE_MS` (`@delfrance/schemas`,
+ * step 21): the route ceiling (`timeoutSeconds: 180`, `apps/shopee/apphosting.yaml`)
+ * + 60 s over the ~9 s listing latency — ONE copy (#1369), which this sentence,
+ * the `instabilidade-shopee` refusal (`./recusaKit.ts`) and the 202's `aguardarMs`
+ * all read, and which the produto's Shopee tab waits out before it re-sends.
  */
 export const MENSAGEM_KIT_INCERTO =
-  'a Shopee pode ter criado o kit — aguarde 4 minutos e rode exatamente este comando de novo: se o kit existir, o ' +
+  `a Shopee pode ter criado o kit — aguarde ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos e rode exatamente este comando de novo: se o kit existir, o ` +
   'ERP recusa com «já existe na Shopee — importe-o» e importar:anuncio o liga a este produto; senão, o ERP o cria. ' +
   'Se outra execução tiver vinculado um kit a este produto nesse meio-tempo, o comando não procura mais pelo SKU: ' +
   'um kit duplicado só aparece num próximo --recriar';
