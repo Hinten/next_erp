@@ -250,3 +250,45 @@ describe('shopeeQueryRetry — reads only, and never a 502', () => {
     expect(shopeeQueryRetry(0, err)).toBe(false);
   });
 });
+
+describe('CODIGO_FALHA_SHOPEE — the step-21 vocabulary (#1529)', () => {
+  // The ONE place these strings are spelled on the web side. Each is the string
+  // `apps/shopee` emits (its `lib/shopee/**` constants and the route literals);
+  // a typo here would make every branch on it silently dead, so the table pins
+  // the spelling rather than trusting it.
+  it.each([
+    ['contaPausada', 'SHOPEE_CONTA_PAUSADA'],
+    ['selecaoExcedeLimite', 'SHOPEE_SELECAO_EXCEDE_LIMITE'],
+    ['contaSemDeposito', 'SHOPEE_CONTA_SEM_DEPOSITO'],
+    ['contaSemTabelaNormal', 'SHOPEE_CONTA_SEM_TABELA_NORMAL'],
+    ['precoContaRecusada', 'SHOPEE_PRECO_CONTA_RECUSADA'],
+    ['publicacaoBloqueada', 'SHOPEE_PUBLISH_BLOCKED'],
+    ['publicacaoRecusada', 'SHOPEE_PUBLISH_REJECTED'],
+    ['anuncioNaoEncontrado', 'SHOPEE_ANUNCIO_NAO_ENCONTRADO'],
+    ['anuncioNaoPublicado', 'SHOPEE_ANUNCIO_NAO_PUBLICADO'],
+    ['anuncioSemVinculo', 'SHOPEE_ANUNCIO_SEM_VINCULO'],
+    ['importacaoEmAndamento', 'SHOPEE_MASS_IMPORT_RUNNING'],
+    ['importacaoNaoEmAndamento', 'SHOPEE_MASS_IMPORT_NOT_RUNNING'],
+    ['importacaoNaoEnfileirada', 'SHOPEE_MASS_IMPORT_ENQUEUE_FAILED'],
+    ['envioPrecoEmAndamento', 'SHOPEE_PRICE_SYNC_RUNNING'],
+    ['envioPrecoNaoEmAndamento', 'SHOPEE_PRICE_SYNC_NOT_RUNNING'],
+    ['envioPrecoNaoEnfileirado', 'SHOPEE_PRICE_SYNC_ENQUEUE_FAILED'],
+  ] as const)('%s is `%s`', (chave, codigo) => {
+    expect(CODIGO_FALHA_SHOPEE[chave]).toBe(codigo);
+  });
+
+  it('no two keys share a string — a branch on one can never match another', () => {
+    const valores = Object.values(CODIGO_FALHA_SHOPEE);
+    expect(new Set(valores).size).toBe(valores.length);
+  });
+
+  it('the new codes get no copy of their own here — the backend’s sentence, not repeatable', () => {
+    // Their callers word their own copy; this module's behaviour is unchanged.
+    expect(
+      descreverFalhaShopee(
+        http(409, CODIGO_FALHA_SHOPEE.contaPausada, null, 'Conta pausada até amanhã.'),
+        OPTS,
+      ),
+    ).toEqual({ mensagem: 'Conta pausada até amanhã.', repetivel: false });
+  });
+});

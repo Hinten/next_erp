@@ -12,6 +12,8 @@ turn and fell through silently for anything else.
 - `registry.ts` — `PROVIDERS`, `resolvePricePushProvider`, and the shared entry
   point `enviarPrecoParaIntegracao` (which runs the `ativo === false` gate).
 - `enviarPrecoRun.ts` — the thin binding onto `../push/run.ts`.
+- `detalheLinhaPreco.ts` — the dialog row's trailing detail (the model a
+  per-model row is about, and the listing price on a row that did not change).
 - `providers/*` — one file per channel.
 
 ## Why this is not the account-wide job
@@ -45,15 +47,19 @@ progress dialog or the produtos page.
 
 0. **A row in `MARKETPLACE_TIPO_CAPS`** (`packages/schemas/src/shared/marketplace.ts`) answering `enviarPreco` — `'desconhecido'` until somebody reads the provider's documentation, never a guessed `'nao'`.
 1. **A backend route** `POST /api/marketplace/<canal>/enviar-precos` in
-   `apps/<canal>`, returning the same envelope
-   `{ listings[], produtosSemEnvio[], pausadoAte }` that
-   `apps/mercado-livre/lib/marketplace/preco/precoManual.ts` documents. Nothing in
-   that envelope is Mercado-Livre-specific by design (`anuncioId`, not `itemId`).
+   `apps/<canal>`, returning `{ listings[], produtosSemEnvio[], pausadoAte }` —
+   the per-listing extras are the channel's own (Shopee answers per-MODEL rows,
+   each with its own `codigo` and the model's `variacaoNome` / `variacaoSku`,
+   which its provider turns into the row's `variacao` label), and its provider
+   maps them. Each channel owns its envelope schema in `lib/<canal>/wire.ts`.
+   Nothing in that envelope is Mercado-Livre-specific by design (`anuncioId`, not
+   `itemId`).
 2. **`providers/<canal>.ts`** exporting a `PricePushProvider`:
    - `tipos` — the `IntegracaoTipo` values it claims. Each tipo may be claimed
      by exactly one provider; the registry throws at module load on a conflict.
    - `enviarPreco(input)` — issue I/O through `input.deps.<canal>` (add the
-     client to `PushDeps`), forward `input.signal` to `fetch`, and map the
+     client to `PushDeps` as a REQUIRED field, threaded through every `deps`
+     literal the compiler lists), forward `input.signal` to `fetch`, and map the
      envelope onto `PricePushRow[]`. Narrow every `catch` to that client's error
      classes and `throw err` for anything else — no generic catch (repo rule 6).
      Never throw for a per-listing failure: return it as a `falha` row.
@@ -64,6 +70,11 @@ progress dialog or the produtos page.
 Once a channel is registered here, the produtos table's one click sends that
 produto's price to it alongside every other registered channel — which is what
 the legacy did and what #804 asks to restore.
+
+⚠️ `incluirNaoPublicados` is a Mercado Livre rung. Shopee's provider ignores it
+(pinned both ways in its test): its route has no such rung, and refusing to price
+a live listing because the ERP hides the produto is the direction #1072 / #1087
+removed. The dialog's checkbox says which channel it governs.
 
 ## The caps row is what decides, not the provider file (#1430)
 
@@ -91,4 +102,6 @@ rule 8).
 ⚠️ `caps/registriesAlinhadas.test.ts` asserts the table and this registry agree
 for **every** tipo. If a channel legitimately lands in the middle — backend
 shipped, this screen not wired yet — say so there with a named exception; do not
-delete the assertion.
+delete the assertion. Shopee is that exception today, the other way round: its
+provider row landed in step 21 (#1529) ahead of its caps flip (#1530), and is
+unreachable until then.

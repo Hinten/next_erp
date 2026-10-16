@@ -55,7 +55,7 @@ import {
 import type { ListingSaveFn } from './ListingForm';
 import { ContaPanel } from './ContaPanel';
 import type { MotivoReverificacao } from './ListingStatusStrip';
-import { ContaTabs } from './ContaTabs';
+import { ContaTabs } from '../marketplace/ContaTabs';
 import { NovoAnuncioModal } from './NovoAnuncioModal';
 
 /**
@@ -946,7 +946,8 @@ export function MercadoLivreEditor({
         produtoIds: [produtoId],
         nomePorProdutoId: new Map(),
         reenviarComErro: temLatched,
-        deps: { mercadoLivre: client },
+        // This tab dispatches only to its own Mercado Livre conta.
+        deps: { mercadoLivre: client, shopee: null },
       });
       setStockResultByLink((prev) => {
         const next = { ...prev };
@@ -1121,6 +1122,7 @@ export function MercadoLivreEditor({
           <ContaTabs
             items={tabItems}
             defaultId={contaInicial}
+            testIdPrefix="ml"
             renderPanel={(contaId) => {
               const conta = contasPorId.get(contaId);
               if (!conta) return null;

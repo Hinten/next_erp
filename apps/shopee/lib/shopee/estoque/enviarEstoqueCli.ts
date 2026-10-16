@@ -18,11 +18,17 @@
  *
  * ## The two modes, and why the dry run cannot send by accident
  *
- * **`--dry-run` (the DEFAULT)** reads the families, computes the quantities and
- * runs the PLANNER, then reads each planned listing's promotion so the `piso`
- * column is real. It is structurally incapable of sending: the planner path
- * reaches no sender at all — `montarTarefasDeEstoqueShopee` returns data, and
- * the only thing in this channel that calls `update_stock` is
+ * **`--dry-run` (the DEFAULT)** calls `planejarEnvioEstoqueShopee` — the SAME
+ * write-free resolve-and-plan prefix `enviarEstoqueManualShopee` sends from:
+ * each id resolved to its family anchor, the families read over the anchors, the
+ * planner per anchor — then reads each planned listing's promotion so the `piso`
+ * column is real, and renders the result through {@link montarPlanoDoEnsaio}. A
+ * variation child is therefore planned as its ANCHOR's family, exactly as
+ * `--live` would send it, and the plan says which anchor it resolved to
+ * (`via variação` on the listing, `âncora=` on a "no listing" line). It is
+ * structurally incapable of sending: `planejarEnvioEstoque.ts` imports no
+ * sender, scheduler or link writer (its test reads it as text), and the only
+ * thing in this channel that calls `update_stock` is
  * `processShopeeStockSendTask`, which lives behind `enviarEstoqueManualShopee`.
  *
  * **`--live`** calls `enviarEstoqueManualShopee` exactly as the route does —
@@ -82,6 +88,7 @@ import type {
   EnvioEstoqueResponse,
   EnvioEstoqueSemEnvio,
 } from './enviarEstoqueManual';
+import type { PlanejamentoEnvioEstoqueShopee, VereditoSemListagem } from './planejarEnvioEstoque';
 import {
   MENSAGEM_POR_MOTIVO,
   MOTIVO_ESTOQUE_SHOPEE,
@@ -125,10 +132,11 @@ Envia o estoque ATUAL de produtos escolhidos a mão para os anúncios da Shopee.
 
 Obrigatórios
   --integracao <id>    documento da integração Shopee (ex.: int-1)
-  --produto <id>       o produto ÂNCORA da família (nunca uma variação). REPITA
-                       a flag para cada produto: não existe lista separada por
-                       vírgula, porque a vírgula é um caractere legal num id de
-                       documento.
+  --produto <id>       um produto da família — a âncora ou uma variação (a
+                       variação resolve para a sua âncora, no dry-run e no
+                       --live). REPITA a flag para cada produto: não existe
+                       lista separada por vírgula, porque a vírgula é um
+                       caractere legal num id de documento.
 
 Opções
   --reenviar-com-erro  ignora a impressão digital da última recusa — e SÓ ela.
@@ -157,7 +165,10 @@ Ver apps/shopee/scripts/README.md.
 
 export interface ArgsEnviarEstoque {
   readonly integracaoId: string;
-  /** DEDUPED, in the order the flags were given. Never empty. */
+  /**
+   * DEDUPED, in the order the flags were given. Never empty. Anchors or
+   * variation children — both modes resolve each to its anchor.
+   */
   readonly produtoIds: readonly string[];
   /** Bypasses the per-link skip set and NOTHING else. */
   readonly reenviarComErro: boolean;
@@ -376,6 +387,11 @@ export interface ListagemDoPlano {
   /** The family ANCHOR — the produto that owns the `prodshopee` link. */
   readonly produtoId: string;
   readonly produtoNome: string | null;
+  /**
+   * The REQUESTED variation ids that resolved to this anchor, in request order
+   * — never the anchor itself. Empty when only the anchor was asked for.
+   */
+  readonly variacoesPedidas: readonly string[];
   readonly anuncioId: string;
   readonly linkDocId: string;
   /** The stored `estadoAnuncio`, or `null` when the link carries none. */
@@ -395,6 +411,12 @@ export interface ListagemDoPlano {
 export interface PuloDoPlano {
   readonly produtoId: string;
   readonly produtoNome: string | null;
+  /**
+   * On a "no listing" line, the anchor the REQUESTED id resolved to when that is
+   * not the id itself — a variation child, whose family's verdict this is.
+   * `null` on every other line.
+   */
+  readonly ancoraId: string | null;
   readonly anuncioId: string | null;
   readonly modelId: number | null;
   readonly modelosAfetados: number | null;
@@ -427,14 +449,42 @@ export interface PlanoDeEnvioEstoque {
   readonly avisoBytes: number;
 }
 
-/** One requested produto, with whatever discovery and the planner answered for it. */
-export interface EntradaDoPlano {
+/** One requested produto an entry answers for, under its OWN name. */
+export interface PedidoDoPlano {
   readonly produtoId: string;
   readonly produtoNome: string | null;
-  /** `null` when discovery returned no family for this requested anchor. */
+}
+
+/**
+ * One family of the plan, with whatever discovery and the planner answered for
+ * it — or one requested id with no produto document at all.
+ *
+ * {@link entradasDoPlanejamento} builds these from `planejarEnvioEstoqueShopee`,
+ * one per ANCHOR: a child and its own anchor are ONE entry, as they are one
+ * family in `--live`.
+ */
+export interface EntradaDoPlano {
+  /** The family ANCHOR — or, for an id with no document, that requested id. */
+  readonly produtoId: string;
+  /** The ANCHOR's own name: what its listing rows carry. */
+  readonly produtoNome: string | null;
+  /** `null` when discovery returned no family for this anchor. */
   readonly row: LinhaDeFamiliaShopee | null;
   /** `null` exactly when {@link row} is. */
   readonly plano: ResultadoDoPlanoShopee | null;
+  /**
+   * The REQUESTED ids this entry answers for, in request order — a variation
+   * child among them when it resolved to this anchor. Absent ⇒ the entry
+   * answers for {@link produtoId} alone.
+   */
+  readonly pedidos?: readonly PedidoDoPlano[];
+  /**
+   * The family's "no listing at all" verdict (`FamiliaPlanejada.semListagem`):
+   * when set, the entry prints ONE line per pedido, under the PEDIDO's id and
+   * name, and no listing. Absent or `null` with no row ⇒
+   * `produto-nao-encontrado`.
+   */
+  readonly semListagem?: VereditoSemListagem | null;
 }
 
 export interface OpcoesDoPlano {
@@ -515,14 +565,21 @@ function modelosDaTarefa(
   });
 }
 
+/** The verdict an entry with no family row gets when nobody handed it one. */
+const PRODUTO_NAO_ENCONTRADO: VereditoSemListagem = {
+  motivo: MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado,
+  mensagem: MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado],
+};
+
 /**
  * Build the whole dry-run plan from data the script gathered. PURE.
  *
  * ⚠️ It decides nothing the planner already decided: every `motivo` and every
- * `mensagem` below is the one `montarTarefasDeEstoqueShopee` produced, and the
- * only line this function raises on its own is `produto-nao-encontrado`, for a
- * requested anchor discovery did not return — rendered through the same lookup
- * table, so there is still exactly one copy of the wording.
+ * `mensagem` below is the one `montarTarefasDeEstoqueShopee` produced, or the
+ * "no listing" verdict `planejarEnvioEstoqueShopee` handed over. The only line
+ * this function raises on its own is `produto-nao-encontrado`, for an entry
+ * with no family row and no verdict — rendered through the same lookup table,
+ * so there is still exactly one copy of the wording.
  */
 export function montarPlanoDeEnvio(
   entradas: readonly EntradaDoPlano[],
@@ -531,28 +588,45 @@ export function montarPlanoDeEnvio(
   const listagens: ListagemDoPlano[] = [];
   const pulos: PuloDoPlano[] = [];
   let familias = 0;
+  let solicitados = 0;
 
   for (const entrada of entradas) {
-    if (entrada.row === null || entrada.plano === null) {
-      const motivo = MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado;
-      pulos.push({
-        produtoId: entrada.produtoId,
-        produtoNome: entrada.produtoNome,
-        anuncioId: null,
-        modelId: null,
-        modelosAfetados: null,
-        motivo,
-        mensagem: MENSAGEM_POR_MOTIVO[motivo],
-        recusa: ehRecusa(motivo),
-      });
+    const pedidos: readonly PedidoDoPlano[] = entrada.pedidos ?? [
+      { produtoId: entrada.produtoId, produtoNome: entrada.produtoNome },
+    ];
+    solicitados += pedidos.length;
+    const { row, plano } = entrada;
+    if (row !== null && plano !== null) familias += 1;
+
+    const semListagem = entrada.semListagem ?? null;
+    if (semListagem !== null || row === null || plano === null) {
+      // The family reaches NO listing: one line per REQUESTED id, under its own
+      // id and name — the `--live` envelope's `produtosSemEnvio`, row for row.
+      const veredito = semListagem ?? PRODUTO_NAO_ENCONTRADO;
+      for (const pedido of pedidos) {
+        pulos.push({
+          produtoId: pedido.produtoId,
+          produtoNome: pedido.produtoNome,
+          ancoraId: pedido.produtoId === entrada.produtoId ? null : entrada.produtoId,
+          anuncioId: null,
+          modelId: null,
+          modelosAfetados: null,
+          motivo: veredito.motivo,
+          mensagem: veredito.mensagem,
+          recusa: ehRecusa(veredito.motivo),
+        });
+      }
       continue;
     }
-    familias += 1;
+    const variacoesPedidas = pedidos
+      .map((p) => p.produtoId)
+      .filter((produtoId) => produtoId !== entrada.produtoId);
 
-    for (const pulo of entrada.plano.pulos) {
+    for (const pulo of plano.pulos) {
       pulos.push({
         produtoId: pulo.produtoId,
         produtoNome: entrada.produtoNome,
+        ancoraId: null,
         anuncioId: pulo.itemId === null ? null : String(pulo.itemId),
         modelId: pulo.modelId,
         modelosAfetados: pulo.modelosAfetados,
@@ -562,9 +636,9 @@ export function montarPlanoDeEnvio(
       });
     }
 
-    const membros: readonly MembroDaFamilia[] = [entrada.row.anchor, ...entrada.row.children];
-    for (const tarefa of entrada.plano.tarefas) {
-      const link = linkDoDocId(entrada.row, tarefa.linkDocId);
+    const membros: readonly MembroDaFamilia[] = [row.anchor, ...row.children];
+    for (const tarefa of plano.tarefas) {
+      const link = linkDoDocId(row, tarefa.linkDocId);
       const modelos = modelosDaTarefa(tarefa, opcoes);
       const naTarefa = new Set(modelos.map((m) => m.produtoId));
       const kits: DobraDeKitDoPlano[] = [];
@@ -576,6 +650,7 @@ export function montarPlanoDeEnvio(
       listagens.push({
         produtoId: tarefa.produtoId,
         produtoNome: entrada.produtoNome,
+        variacoesPedidas,
         anuncioId: String(tarefa.itemId),
         linkDocId: tarefa.linkDocId,
         estadoAnuncio: link === undefined ? null : texto(link.estadoAnuncio),
@@ -604,7 +679,7 @@ export function montarPlanoDeEnvio(
 
   return {
     integracaoId: opcoes.integracaoId,
-    solicitados: entradas.length,
+    solicitados,
     familias,
     listagens,
     pulos,
@@ -613,6 +688,71 @@ export function montarPlanoDeEnvio(
     orcamentoBytes: STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
     avisoBytes: STOCK_TASK_ENCODED_BODY_WARN_BYTES,
   };
+}
+
+/**
+ * The shared plan, as the dry run's entries. PURE — a TRANSLATION of
+ * `planejarEnvioEstoqueShopee`'s answer, deciding nothing of its own.
+ *
+ * ONE entry per family ANCHOR, in first-seen request order, carrying every
+ * requested id that resolved to it — so a child and its own anchor plan ONE
+ * family, as `--live` sends one — plus one entry per requested id with no
+ * produto document, at its place in the request.
+ */
+export function entradasDoPlanejamento(
+  planejado: PlanejamentoEnvioEstoqueShopee,
+): EntradaDoPlano[] {
+  const nomeDe = (produtoId: string): string | null => planejado.nomeDe.get(produtoId) ?? null;
+  const familiaPorAnchor = new Map(planejado.familias.map((f) => [f.anchorId, f]));
+  const vistos = new Set<string>();
+  const entradas: EntradaDoPlano[] = [];
+
+  for (const produtoId of planejado.solicitados) {
+    const anchorId = planejado.anchorDe.get(produtoId);
+    const familia = anchorId === undefined ? undefined : familiaPorAnchor.get(anchorId);
+    if (familia === undefined) {
+      // No produto document: the shared plan's `produto-nao-encontrado`.
+      entradas.push({ produtoId, produtoNome: nomeDe(produtoId), row: null, plano: null });
+      continue;
+    }
+    if (vistos.has(familia.anchorId)) continue;
+    vistos.add(familia.anchorId);
+    entradas.push({
+      produtoId: familia.anchorId,
+      produtoNome: familia.anchorNome,
+      row: familia.row,
+      plano: familia.plano,
+      pedidos: familia.pedidos.map((id) => ({ produtoId: id, produtoNome: nomeDe(id) })),
+      semListagem: familia.semListagem,
+    });
+  }
+  return entradas;
+}
+
+/**
+ * The `item_id`s whose promotion floor the dry run reads — the listings the
+ * shared plan would actually send, deduped. A family with no listing plans no
+ * task, so it costs no read.
+ */
+export function anunciosParaPiso(planejado: PlanejamentoEnvioEstoqueShopee): number[] {
+  return [
+    ...new Set(
+      planejado.familias.flatMap((f) =>
+        f.semListagem === null && f.plano !== null ? f.plano.tarefas.map((t) => t.itemId) : [],
+      ),
+    ),
+  ];
+}
+
+/**
+ * The dry-run plan for the shared plan — {@link entradasDoPlanejamento}, then
+ * {@link montarPlanoDeEnvio}. What the script renders.
+ */
+export function montarPlanoDoEnsaio(
+  planejado: PlanejamentoEnvioEstoqueShopee,
+  opcoes: OpcoesDoPlano,
+): PlanoDeEnvioEstoque {
+  return montarPlanoDeEnvio(entradasDoPlanejamento(planejado), opcoes);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -702,6 +842,10 @@ export function renderizarPlanoDeEnvio(plano: PlanoDeEnvioEstoque): string[] {
   plano.listagens.forEach((l, i) => {
     linhas.push(`### anúncio ${String(i + 1)}/${String(plano.listagens.length)} — ${l.produtoId}`);
     linhas.push(rotulo('produto ', `${l.produtoId} (${l.produtoNome ?? 'sem nome'})`));
+    if (l.variacoesPedidas.length > 0) {
+      // A child request planned as its anchor's family — say so, by id.
+      linhas.push(rotulo('via variação ', l.variacoesPedidas.join(', ')));
+    }
     linhas.push(rotulo('anúncio ', l.anuncioId));
     linhas.push(rotulo('vínculo ', l.linkDocId));
     linhas.push(rotulo('estado ', l.estadoAnuncio ?? TRACO));
@@ -757,7 +901,13 @@ export function renderizarPlanoDeEnvio(plano: PlanoDeEnvioEstoque): string[] {
       plano.pulos.map((p) => {
         const alvo = p.modelId === null ? '' : ` model=${String(p.modelId)}`;
         const quantos = p.modelosAfetados === null ? '' : ` modelos=${String(p.modelosAfetados)}`;
-        return [p.produtoId, p.anuncioId ?? TRACO, p.motivo, `${p.mensagem}${alvo}${quantos}`];
+        const ancora = p.ancoraId === null ? '' : ` âncora=${p.ancoraId}`;
+        return [
+          p.produtoId,
+          p.anuncioId ?? TRACO,
+          p.motivo,
+          `${p.mensagem}${alvo}${quantos}${ancora}`,
+        ];
       }),
     ),
   );
@@ -792,6 +942,7 @@ export function resumoDoPlano(plano: PlanoDeEnvioEstoque): Record<string, unknow
     listagens: plano.listagens.map((l) => ({
       produtoId: l.produtoId,
       produtoNome: l.produtoNome,
+      variacoesPedidas: [...l.variacoesPedidas],
       anuncioId: l.anuncioId,
       linkDocId: l.linkDocId,
       estadoAnuncio: l.estadoAnuncio,
@@ -822,6 +973,7 @@ export function resumoDoPlano(plano: PlanoDeEnvioEstoque): Record<string, unknow
     pulos: plano.pulos.map((p) => ({
       produtoId: p.produtoId,
       produtoNome: p.produtoNome,
+      ancoraId: p.ancoraId,
       anuncioId: p.anuncioId,
       modelId: p.modelId,
       modelosAfetados: p.modelosAfetados,

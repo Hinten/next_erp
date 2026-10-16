@@ -24,8 +24,10 @@ the run; so does this. Read `../push/README.md` for what is shared and what
 each operation deliberately keeps.
 
 `enviarEstoqueRun.test.ts` is where the SHARED orchestrator is pinned — dedup,
-the whole-selection dispatch, the per-conta row keys, both cancel checks. It is
-not duplicated under `../preco/`.
+the whole-selection dispatch, the per-conta row keys and every cancel check,
+including a cancel during the only, final or middle conta's dispatch (#1914).
+`../push/run.test.ts` (#1529, R1) pins the same post-loop check against the
+orchestrator directly. It is not duplicated under `../preco/`.
 
 ## Why the ROW unit is the listing, not the produto
 
@@ -46,20 +48,24 @@ can produce: "Integração desativada" and the unsupported-channel notice.
 ## Adding a channel
 
 Four things. You never touch the registry's gates, the orchestrator, the
-progress dialog, the produtos page or the produto ML tab.
+progress dialog or the produtos page, and the produto ML tab only for its one
+`deps` line.
 
 0. **A row in `MARKETPLACE_TIPO_CAPS`** (`packages/schemas/src/shared/marketplace.ts`) answering `estoque.suporte` — `'desconhecido'` until somebody reads the provider's documentation, never a guessed `'nao'`. The action is gated on it, so a channel whose row still says `'desconhecido'` reports itself as unresearched no matter what code exists.
 1. **A backend route** `POST /api/marketplace/<canal>/enviar-estoque` in
-   `apps/<canal>`, returning the same envelope
-   `{ listings[], produtosSemEnvio[], pausadoAte }` that
-   `apps/mercado-livre/lib/marketplace/estoque/estoqueManual.ts` documents. Nothing in
-   that envelope is Mercado-Livre-specific by design (`anuncioId`, not
+   `apps/<canal>`, returning `{ listings[], produtosSemEnvio[], pausadoAte }` —
+   the per-listing extras are the channel's own (Shopee's `variacoes` is a
+   per-model ARRAY where Mercado Livre's is a count), and its provider maps
+   them. Each channel owns its envelope schema in `lib/<canal>/wire.ts`. Nothing
+   in that envelope is Mercado-Livre-specific by design (`anuncioId`, not
    `itemId`).
 2. **`providers/<canal>.ts`** exporting a `StockPushProvider`:
    - `tipos` — the `IntegracaoTipo` values it claims. Each tipo may be claimed
      by exactly one provider; the registry throws at module load on a conflict.
    - `enviarEstoque(input)` — issue I/O through `input.deps.<canal>` (add the
-     client to `StockPushDeps`), forward `input.signal` to `fetch`, and map the
+     client to `PushDeps` as a REQUIRED field — the compiler then lists every
+     `deps` literal to thread it through: the three dialogs, the produto ML
+     tab's one line, and the tests), forward `input.signal` to `fetch`, and map the
      envelope onto `StockPushRow[]`. Narrow every `catch` to that client's error
      classes and `throw err` for anything else — no generic catch (repo rule 6).
      Never throw for a per-listing failure: return it as a `falha` row.
@@ -98,4 +104,6 @@ rule 8).
 ⚠️ `caps/registriesAlinhadas.test.ts` asserts the table and this registry agree
 for **every** tipo. If a channel legitimately lands in the middle — backend
 shipped, this screen not wired yet — say so there with a named exception; do not
-delete the assertion.
+delete the assertion. Shopee is that exception today, the other way round: its
+provider row landed in step 21 (#1529) ahead of its caps flip (#1530), and is
+unreachable until then.

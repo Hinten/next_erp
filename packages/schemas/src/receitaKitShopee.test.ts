@@ -18,6 +18,7 @@ import {
   mesmoEnderecoDeComponente,
   modeloDoComponenteKit,
   principalDoKitShopee,
+  problemasDeEstruturaDaReceitaErp,
   problemasDeEstruturaDoKit,
   type EnderecoShopeeDoComponente,
   type LinhaComponenteKitShopee,
@@ -825,6 +826,113 @@ describe('problemasDeEstruturaDoKit — the local structural bounds', () => {
       ['kit-componente-unico-quantidade', 'filho-0'],
       ['kit-sem-componentes', 'filho-1'],
     ]);
+  });
+});
+
+describe('problemasDeEstruturaDaReceitaErp — the ERP-recipe preview (step 21, L9)', () => {
+  /** An ERP recipe as the produto stores it. */
+  const receita = (
+    entradas: Record<string, number>,
+  ): Record<string, { readonly quantidade: number }> =>
+    Object.fromEntries(Object.entries(entradas).map(([id, quantidade]) => [id, { quantidade }]));
+
+  it('⚠️ equals problemasDeEstruturaDoKit on the REAL merge case: 2 ERP components → 1 address, qty 1 each', () => {
+    // A wrapper and its sellable member resolving to ONE Shopee address: the
+    // real projection sums them into one row of 2, the synthetic one keeps two
+    // rows of 1 — and both warn NOTHING. That is the proof's merge clause.
+    const componentesKit = receita({ 'comp-wrapper': 1, 'comp-membro': 1 });
+    const real = problemasDeEstruturaDoKit({
+      modelos: [
+        {
+          filhoId: 'k',
+          linhas: componentesShopeeDoKit(
+            componentesKit,
+            new Map([
+              ['comp-wrapper', ok(B)],
+              ['comp-membro', ok(B)],
+            ]),
+          ).linhas,
+        },
+      ],
+      faixaDeComponentes: null,
+    });
+    expect(real).toEqual([]);
+    expect(problemasDeEstruturaDaReceitaErp([{ filhoId: 'k', componentesKit }])).toEqual(real);
+  });
+
+  it('flags ONE component of quantity 1 — the same row the real resolution flags', () => {
+    const componentesKit = receita({ 'comp-a': 1 });
+    const esperado = problemasDeEstruturaDoKit({
+      modelos: [
+        {
+          filhoId: 'k',
+          linhas: componentesShopeeDoKit(componentesKit, new Map([['comp-a', ok(A1)]])).linhas,
+        },
+      ],
+      faixaDeComponentes: null,
+    });
+    expect(esperado).toEqual([
+      {
+        motivo: 'kit-componente-unico-quantidade',
+        filhoId: 'k',
+        detalhe: '1 componente, quantidade 1',
+      },
+    ]);
+    expect(problemasDeEstruturaDaReceitaErp([{ filhoId: 'k', componentesKit }])).toEqual(esperado);
+    // NEAR-MISS: one component of quantity 2 is a valid kit.
+    expect(
+      problemasDeEstruturaDaReceitaErp([
+        { filhoId: 'k', componentesKit: receita({ 'comp-a': 2 }) },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('⚠️ residual 8: two ERP rows `1 + 0` stay TWO synthetic rows — it under-warns, never merges', () => {
+    // A synthetic map that merged distinct components (every key onto one
+    // address) would read one row of 1 here and warn; the composition keeps each
+    // distinct produtoId on its own address, so it does not.
+    expect(
+      problemasDeEstruturaDaReceitaErp([
+        { filhoId: 'k', componentesKit: receita({ 'comp-a': 1, 'comp-b': 0 }) },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('answers the kit-level and the empty-recipe verdicts — per unit, kit-level first', () => {
+    expect(problemasDeEstruturaDaReceitaErp([])).toEqual([
+      { motivo: 'kit-sem-unidade-vendavel', filhoId: null, detalhe: '0 variações' },
+    ]);
+    const dez = Array.from({ length: 10 }, (_, i) => ({
+      filhoId: `filho-${String(i)}`,
+      componentesKit: receita({ 'comp-a': 1, 'comp-b': 1 }),
+    }));
+    expect(problemasDeEstruturaDaReceitaErp(dez)).toEqual([
+      { motivo: 'kit-variacoes-demais', filhoId: null, detalhe: '10 variações; máximo 9' },
+    ]);
+    expect(
+      problemasDeEstruturaDaReceitaErp([
+        { filhoId: 'filho-1', componentesKit: null },
+        { filhoId: 'filho-2', componentesKit: {} },
+        { filhoId: 'filho-3', componentesKit: receita({ 'comp-a': 3 }) },
+      ]).map((p) => [p.motivo, p.filhoId]),
+    ).toEqual([
+      ['kit-sem-componentes', 'filho-1'],
+      ['kit-sem-componentes', 'filho-2'],
+    ]);
+  });
+
+  it('⚠️ never answers componentes-fora-da-faixa — no band is served to a preview', () => {
+    // Thirty components on one model is far outside any served band; the
+    // preview still says nothing about it, because only Shopee's limits can.
+    const trinta = Object.fromEntries(
+      Array.from({ length: 30 }, (_, i) => [`comp-${String(i)}`, 1]),
+    );
+    const resposta = problemasDeEstruturaDaReceitaErp([
+      { filhoId: 'k', componentesKit: receita(trinta) },
+      { filhoId: 'k2', componentesKit: receita({ 'comp-a': 1 }) },
+    ]);
+    expect(resposta.map((p) => p.motivo)).toEqual(['kit-componente-unico-quantidade']);
+    expect(resposta.some((p) => (p.motivo as string) === 'componentes-fora-da-faixa')).toBe(false);
   });
 });
 
