@@ -2,14 +2,17 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
-import type { Firestore } from 'firebase/firestore';
+import { getDoc, type Firestore } from 'firebase/firestore';
+import { keepPreviousData, skipToken, useQuery } from '@tanstack/react-query';
 import { Alert, Anchor, Badge, Group, Loader, Stack, Text } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import {
   INTEGRACAO_TIPO,
   idDoRef,
   lerRefTabelaDeMedidas,
+  naoDocId,
   vinculoShopeeEhDaConta,
+  type Integracao,
 } from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
@@ -26,6 +29,7 @@ import {
   type TabelaMedidasDoProduto,
   type VinculoShopee,
 } from './ContaShopeePanel';
+import { textoPreenchido } from './campos';
 
 /**
  * The produto editor's **Shopee** tab (step 21-3, #1529): one tab per Shopee
@@ -47,8 +51,16 @@ import {
  * `vinculoShopeeEhDaConta` (`@delfrance/schemas`), the fold the stock and price
  * planners attribute a link with — so the two stored encodings of one conta ref
  * (`documents/integracao/X`, `integracao/X`) land in the SAME tab here exactly
- * as they do there. A link whose conta the query did not return still gets a
- * tab of its own ("Conta … (não encontrada)"): an orphan is shown, never dropped.
+ * as they do there.
+ *
+ * The contas query is BOUNDED (`MAX_CONTAS`, unordered) while the links are not
+ * bounded by it, so a conta a link names that the query did not return is read
+ * BY ID — one document lookup each, never a new query shape (root `CLAUDE.md`
+ * rule 1) — and gets its real tab: name, `shop_id`, storefront link. Only a conta
+ * whose document does NOT exist (or whose id no document can carry) gets
+ * "Conta … (não encontrada)" ("carregando…" while its read is in flight): an
+ * orphan is shown, never dropped, and never called missing when it is merely
+ * past the bound (#1951 review).
  *
  * ## The two rules a non-persistent section needs
  *
@@ -66,7 +78,11 @@ import {
  *    remount could throw away.
  */
 
-/** How many Shopee contas the tab strip shows — the `/medidas` Shopee tab's bound. */
+/**
+ * How many Shopee contas the live query returns — the `/medidas` Shopee tab's
+ * bound. A conta past it that HOLDS a listing here is still shown: it is read by
+ * id (`lerContasPorId`). Only a conta past it with no listing gets no tab.
+ */
 const MAX_CONTAS = 50;
 
 /**
@@ -83,6 +99,53 @@ const MAX_LINKS = MAX_CONTAS * 4;
  * a document id of the `__…__` form, so no real conta can collide with it.
  */
 const CHAVE_SEM_CONTA = '__sem_conta__';
+
+/** Firestore reserves every `__…__` id, so no conta can carry one — and none is read. */
+const ID_RESERVADO = /^__.*__$/;
+
+/** Can a conta with this id exist at all? If not, "não encontrada" is the truth and nothing is read. */
+function idDeContaLegivel(id: string): boolean {
+  return !naoDocId(id) && !ID_RESERVADO.test(id);
+}
+
+/** One `integracao` document as a tab — the same mapping for the query's rows and the by-id reads. */
+function contaShopeeDoDoc(id: string, dados: Integracao): ContaShopee {
+  return {
+    id,
+    // A soft-read hands over the RAW document when it does not parse.
+    nome: textoPreenchido(dados.nome) ?? `Conta ${id}`,
+    shopId: dados.shop_id,
+    ativo: dados.ativo !== false,
+    encontrada: true,
+    carregando: false,
+  };
+}
+
+/**
+ * The contas the links name that the live query did NOT return, read BY ID —
+ * `getDoc` on each document, no query. `null` = no SHOPEE conta has that id: the
+ * document does not exist, or it is another channel's `integracao` — the
+ * query's own `tipo` filter, applied to the one document, so a by-id read never
+ * counts a conta the query would not.
+ *
+ * No `catch`: a failed read (offline with nothing cached, a permission change)
+ * fails the whole lookup, and the tab shows the error instead of calling a conta
+ * it could not read "não encontrada".
+ */
+async function lerContasPorId(
+  db: Firestore,
+  ids: readonly string[],
+): Promise<ReadonlyMap<string, ContaShopee | null>> {
+  const lidas = await Promise.all(
+    ids.map(async (id) => {
+      const snap = await getDoc(integracaoCollection.docRef(db, {}, id));
+      const dados = snap.data();
+      const ehShopee = dados !== undefined && dados.tipo === INTEGRACAO_TIPO.shopee;
+      return [id, ehShopee ? contaShopeeDoDoc(id, dados) : null] as const;
+    }),
+  );
+  return new Map(lidas);
+}
 
 export interface ShopeeEditorProps {
   produtoId: string;
@@ -136,6 +199,30 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
   );
   const linksSnap = useSnapshot(linksQuery);
 
+  // The conta ids the links name that the bounded contas query did not return —
+  // sorted, so the lookup's key is the SET. Read only once both snapshots are in.
+  const contasDaPagina = contasSnap.data;
+  const vinculosLidos = linksSnap.data;
+  const contaIdsFora = useMemo<readonly string[]>(() => {
+    if (contasDaPagina === undefined || vinculosLidos === undefined) return [];
+    const naPagina = new Set(contasDaPagina.map((c) => c.id));
+    const ids = new Set<string>();
+    for (const l of vinculosLidos) {
+      const id = idDoRef(l.data.contaProdutoShopeeOuterRef);
+      if (id !== null && !naPagina.has(id) && idDeContaLegivel(id)) ids.add(id);
+    }
+    return [...ids].sort();
+  }, [contasDaPagina, vinculosLidos]);
+  const contasForaQuery = useQuery({
+    queryKey: ['shopee-contas-por-id', contaIdsFora],
+    queryFn: contaIdsFora.length === 0 ? skipToken : () => lerContasPorId(db, contaIdsFora),
+    // A new id arriving while the tab is open changes the key: the contas already
+    // read keep their names (and tab places) while the new set is read, and only
+    // the new id reads "carregando…".
+    placeholderData: keepPreviousData,
+  });
+  const contasFora = contasForaQuery.data;
+
   // The produto's tabela de medidas: each listing block says which Shopee
   // template entry it holds for that listing's conta and category. The ref is
   // resolved by `lerRefTabelaDeMedidas` — the rule the Shopee publish resolves
@@ -180,26 +267,26 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
   // open, which is the cheap direction for a notice.
   const [agoraMs] = useState(() => Date.now());
 
-  /** The contas, by name — a client-side sort over ≤ `MAX_CONTAS` rows leaves the live query untouched. */
-  const contas = useMemo<ContaShopee[]>(
-    () =>
-      [...(contasSnap.data ?? [])]
-        .sort((a, b) => a.data.nome.localeCompare(b.data.nome, 'pt-BR'))
-        .map((c) => ({
-          id: c.id,
-          nome: c.data.nome,
-          shopId: c.data.shop_id,
-          ativo: c.data.ativo !== false,
-          encontrada: true,
-        })),
-    [contasSnap.data],
-  );
+  /**
+   * The contas, by name: the query's rows plus the ones read by id — a
+   * client-side sort over ≤ `MAX_CONTAS` (+ the by-id few) rows leaves the live
+   * query untouched.
+   */
+  const contas = useMemo<ContaShopee[]>(() => {
+    const daPagina = (contasDaPagina ?? []).map((c) => contaShopeeDoDoc(c.id, c.data));
+    // Only the ids still wanted: a placeholder answer may hold one no link names now.
+    const lidasPorId = contaIdsFora.flatMap((id) => {
+      const conta = contasFora?.get(id);
+      return conta ? [conta] : [];
+    });
+    return [...daPagina, ...lidasPorId].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+  }, [contasDaPagina, contaIdsFora, contasFora]);
 
   /**
-   * Every tab, with its links: the contas the query returned (in name order),
-   * then one tab per conta id a link names that the query did NOT return, then
-   * the links whose conta ref is unreadable. Nothing a snapshot holds is left
-   * without a tab.
+   * Every tab, with its links: the contas (in name order), then one tab per
+   * conta id a link names that has no conta document — or whose by-id read is
+   * still in flight — then the links whose conta ref is unreadable. Nothing a
+   * snapshot holds is left without a tab.
    */
   const abas = useMemo(() => {
     const links: VinculoShopee[] = linksSnap.data ?? [];
@@ -221,19 +308,27 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
     const orfasOrdenadas = [...orfas].sort(([a], [b]) => ultimaSemConta(a) - ultimaSemConta(b));
     for (const [contaId, vinculos] of orfasOrdenadas) {
       const semConta = contaId === CHAVE_SEM_CONTA;
+      // Its by-id read has not answered yet: never called missing before it
+      // says so. Same tab id either way, so the selection survives the answer.
+      const lendo = !semConta && idDeContaLegivel(contaId) && !(contasFora?.has(contaId) ?? false);
       saida.push({
         conta: {
           id: contaId,
-          nome: semConta ? 'Sem conta legível' : `Conta ${contaId} (não encontrada)`,
+          nome: semConta
+            ? 'Sem conta legível'
+            : lendo
+              ? `Conta ${contaId} (carregando…)`
+              : `Conta ${contaId} (não encontrada)`,
           shopId: null,
           ativo: false,
           encontrada: false,
+          carregando: lendo,
         },
         vinculos,
       });
     }
     return saida;
-  }, [contas, linksSnap.data]);
+  }, [contas, linksSnap.data, contasFora]);
 
   const tabItems = useMemo<ContaTabItem[]>(
     () =>
@@ -286,7 +381,7 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
     );
   }
 
-  const erro = contasSnap.error ?? linksSnap.error;
+  const erro = contasSnap.error ?? linksSnap.error ?? contasForaQuery.error;
   if (erro) {
     return (
       <Alert color="red" variant="light">
@@ -296,6 +391,9 @@ export function ShopeeEditor({ produtoId, db }: ShopeeEditorProps) {
   }
 
   // R1: `data === undefined` — a re-listen after a hidden spell keeps `data`.
+  // ⚠️ The by-id lookup gates NOTHING: its key changes whenever a link names a
+  // new off-page conta, and a spinner there would unmount `ContaTabs` (losing
+  // the selected conta) on a data change. Its pending ids read "carregando…".
   if (contasSnap.data === undefined || linksSnap.data === undefined) return <Carregando />;
 
   if (abas.length === 0) {
