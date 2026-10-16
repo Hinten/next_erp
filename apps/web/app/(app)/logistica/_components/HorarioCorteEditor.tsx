@@ -12,9 +12,9 @@ import {
   Text,
 } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
-import { DIA_DA_SEMANA_LABELS, type DiaDaSemana } from '@delfrance/schemas';
+import { DIA_DA_SEMANA_LABELS, diaDaSemanaSchema, type DiaDaSemana } from '@delfrance/schemas';
 import { DELETE_MARK, type FieldRenderProps } from '@delfrance/ui';
-import { rootError, rowFieldError, validatedIndices } from './editorErrors';
+import { rootError, rowError, rowFieldError, validatedIndices } from './editorErrors';
 
 /**
  * Editable rows of `intFrete.horarioDeCorte` — the cut-off schedule
@@ -40,6 +40,18 @@ const EMPTY_ROW: HorarioRow = {
   horaPostagem: null,
   minutosPostagem: null,
 };
+
+/**
+ * The weekday the Select shows: the stored one when the schema accepts it,
+ * otherwise NONE (absent, `null`, the text `'1'`, an out-of-range 9). Never a
+ * Monday fallback — an edit saves the row as stored, so a fallback showed a
+ * weekday the row did not have, and Select fires no change for the value it
+ * already shows, so picking that Monday could never save it. Empty, the cell
+ * carries the schema's own "required" message and any pick is a change.
+ */
+function diaExibido(dia: unknown): string | null {
+  return diaDaSemanaSchema.safeParse(dia).success ? String(dia) : null;
+}
 
 const DIA_OPTIONS = (Object.entries(DIA_DA_SEMANA_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
@@ -123,57 +135,66 @@ export function HorarioCorteEditor({
           const row = camposDe(stored);
           const marked = row[DELETE_MARK] === true;
           const errIdx = errIndices[i] ?? -1;
+          const erroDaLinha = rowError(errorTree, errIdx);
           return (
-            <Group key={i} align="flex-start" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
-              <Select
-                label="Dia da semana"
-                aria-label={`Dia da semana ${i + 1}`}
-                data={DIA_OPTIONS}
-                value={String(row.diaDaSemana ?? 1)}
-                onChange={(v) => {
-                  if (v) patchRow(i, { diaDaSemana: Number(v) as DiaDaSemana });
-                }}
-                onBlur={onBlur}
-                disabled={disabled || marked}
-                error={rowFieldError(errorTree, errIdx, 'diaDaSemana')}
-                allowDeselect={false}
-                w={150}
-              />
-              {numberCell(i, errIdx, marked, 'horaDeCorte', 'Corte (h)', 23)}
-              {numberCell(i, errIdx, marked, 'minutosDeCorte', 'Corte (min)', 59)}
-              {numberCell(i, errIdx, marked, 'prazoDePostagem', 'Dias úteis', 31)}
-              {numberCell(i, errIdx, marked, 'horaPostagem', 'Postagem (h)', 23)}
-              {numberCell(i, errIdx, marked, 'minutosPostagem', 'Postagem (min)', 59)}
-              <Box pt={25}>
-                {marked ? (
-                  <Group gap={4} wrap="nowrap">
-                    <Text size="xs" c="red" fw={500}>
-                      Será excluído
-                    </Text>
+            <Stack key={i} gap={4}>
+              <Group align="flex-start" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
+                <Select
+                  label="Dia da semana"
+                  aria-label={`Dia da semana ${i + 1}`}
+                  data={DIA_OPTIONS}
+                  value={diaExibido(row.diaDaSemana)}
+                  placeholder="Selecione"
+                  onChange={(v) => {
+                    if (v) patchRow(i, { diaDaSemana: Number(v) as DiaDaSemana });
+                  }}
+                  onBlur={onBlur}
+                  disabled={disabled || marked}
+                  error={rowFieldError(errorTree, errIdx, 'diaDaSemana')}
+                  allowDeselect={false}
+                  w={150}
+                />
+                {numberCell(i, errIdx, marked, 'horaDeCorte', 'Corte (h)', 23)}
+                {numberCell(i, errIdx, marked, 'minutosDeCorte', 'Corte (min)', 59)}
+                {numberCell(i, errIdx, marked, 'prazoDePostagem', 'Dias úteis', 31)}
+                {numberCell(i, errIdx, marked, 'horaPostagem', 'Postagem (h)', 23)}
+                {numberCell(i, errIdx, marked, 'minutosPostagem', 'Postagem (min)', 59)}
+                <Box pt={25}>
+                  {marked ? (
+                    <Group gap={4} wrap="nowrap">
+                      <Text size="xs" c="red" fw={500}>
+                        Será excluído
+                      </Text>
+                      <ActionIcon
+                        type="button"
+                        variant="subtle"
+                        aria-label={`Desfazer exclusão do horário ${i + 1}`}
+                        onClick={() => patchRow(i, { [DELETE_MARK]: false })}
+                        disabled={disabled}
+                      >
+                        <IconArrowBackUp size={16} />
+                      </ActionIcon>
+                    </Group>
+                  ) : (
                     <ActionIcon
                       type="button"
                       variant="subtle"
-                      aria-label={`Desfazer exclusão do horário ${i + 1}`}
-                      onClick={() => patchRow(i, { [DELETE_MARK]: false })}
+                      color="red"
+                      aria-label={`Excluir horário ${i + 1}`}
+                      onClick={() => patchRow(i, { [DELETE_MARK]: true })}
                       disabled={disabled}
                     >
-                      <IconArrowBackUp size={16} />
+                      <IconTrash size={16} />
                     </ActionIcon>
-                  </Group>
-                ) : (
-                  <ActionIcon
-                    type="button"
-                    variant="subtle"
-                    color="red"
-                    aria-label={`Excluir horário ${i + 1}`}
-                    onClick={() => patchRow(i, { [DELETE_MARK]: true })}
-                    disabled={disabled}
-                  >
-                    <IconTrash size={16} />
-                  </ActionIcon>
-                )}
-              </Box>
-            </Group>
+                  )}
+                </Box>
+              </Group>
+              {erroDaLinha && (
+                <Text size="xs" c="red">
+                  {erroDaLinha}
+                </Text>
+              )}
+            </Stack>
           );
         })}
         {rootError(errorTree, error) && (

@@ -5,6 +5,7 @@ import { ACAO_STATUS_ANUNCIO } from '@delfrance/schemas';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { useShopeeClient } from '@/lib/shopee/client';
 import { AvisoCanaisNaoSuportados } from '@/lib/marketplace/caps/AvisoCanaisNaoSuportados';
 import { PushProgressDialog } from '@/lib/marketplace/push/PushProgressDialog';
 import {
@@ -28,6 +29,7 @@ export interface PausarAnunciosDialogProps {
 
 export function PausarAnunciosDialog({ opened, alvos, onClose }: PausarAnunciosDialogProps) {
   const mercadoLivre = useMercadoLivreClient();
+  const shopee = useShopeeClient();
   // The same shared `['integracoes']` entry `/produtos` already holds — this
   // resolves the selection's conta ids to a tipo at no extra read.
   const { byId, status } = useIntegracoes(getFirebaseFirestore());
@@ -55,13 +57,16 @@ export function PausarAnunciosDialog({ opened, alvos, onClose }: PausarAnunciosD
             Os anúncios de {alvos.length} produto(s) deixam de vender nos canais em que estão
             publicados. As variações publicadas como família são pausadas junto.
           </Text>
-          {/* ⚠️ The behaviour that makes this warning necessary: publish sends
-              `status: 'active'` on every update, so an ordinary save reactivates
-              a listing paused here. Kept deliberately (legacy parity), which
-              makes saying so part of shipping the action. */}
+          {/* ⚠️ The behaviour that makes this warning necessary: Mercado Livre's
+              publish sends `status: 'active'` on every update, so an ordinary
+              save reactivates a listing paused here. Kept deliberately (legacy
+              parity), which makes saying so part of shipping the action.
+              Shopee is the opposite: an update never carries `item_status`, so
+              a paused listing stays paused until someone reactivates it. */}
           <Text size="sm" c="dimmed" mt="xs">
-            Salvar ou republicar um anúncio depois o reativa no Mercado Livre. Anúncios já pausados
-            ou encerrados são ignorados.
+            No Mercado Livre, salvar ou republicar um anúncio depois o reativa; na Shopee,
+            republicar não reativa — use Reativar na aba Shopee do produto. Anúncios já pausados ou
+            encerrados são ignorados.
           </Text>
         </>
       }
@@ -78,7 +83,7 @@ export function PausarAnunciosDialog({ opened, alvos, onClose }: PausarAnunciosD
         definirStatusParaMarketplaces(
           alvos,
           ACAO_STATUS_ANUNCIO.pausar,
-          { db: getFirebaseFirestore(), deps: { mercadoLivre }, signal },
+          { db: getFirebaseFirestore(), deps: { mercadoLivre, shopee }, signal },
           onProgress,
         )
       }

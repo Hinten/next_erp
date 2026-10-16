@@ -67,19 +67,21 @@ describe('vereditoCanal / capsPermitem — against the real table', () => {
   });
 
   /**
-   * ⚠️ The near-miss, and the reason it is no longer hypothetical: the Shopee,
-   * Loja Integrada and Amazon Phase 0 surveys answered these three `'sim'` while
-   * `implementado` stays false until each backend ships. Same verdict for the
-   * operator (the action cannot run), a DIFFERENT reason — and the two must not
-   * collapse, because "nobody checked" invites a survey and "not built here"
-   * invites a build.
+   * ⚠️ The near-miss, and the reason it is no longer hypothetical: the Loja
+   * Integrada and Amazon Phase 0 surveys answered these three `'sim'` while
+   * `implementado` stays false until each backend ships. Same verdict for the operator (the
+   * action cannot run), a DIFFERENT reason — and the two must not collapse,
+   * because "nobody checked" invites a survey and "not built here" invites a
+   * build.
+   *
+   * Shopee's twin of this state is pinned in `registriesAlinhadas.test.ts`, where
+   * it reds at Shopee's step-22 flip. Loja Integrada and Amazon each flip
+   * `implementado` at their own step 22; whichever flips LAST re-points this
+   * example. The arm itself is
+   * pinned table-free above ("motivoDaCapacidade — the precedence, exhaustively").
    */
   it.each(acoes)('a SURVEYED but unbuilt channel says "not built" for %s', (acao) => {
-    for (const tipo of [
-      INTEGRACAO_TIPO.shopee,
-      INTEGRACAO_TIPO.lojaIntegrada,
-      INTEGRACAO_TIPO.amazon,
-    ]) {
+    for (const tipo of [INTEGRACAO_TIPO.lojaIntegrada, INTEGRACAO_TIPO.amazon]) {
       expect(vereditoCanal(acao, tipo, COM_ML), `tipo ${tipo}`).toEqual({
         suportado: false,
         motivo: 'canal-nao-implementado',

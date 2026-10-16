@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { INTEGRACAO_TIPO, type IntegracaoTipo } from '@delfrance/schemas';
 
-import type { MotivoNaoSuportado } from '@/lib/marketplace/caps/suporteCanal';
+import { type MotivoNaoSuportado, capsPermitem } from '@/lib/marketplace/caps/suporteCanal';
 import { definirStatusParaIntegracao, resolveAnuncioStatusProvider } from './registry';
+import { shopeeAnuncioStatusProvider } from './providers/shopee';
 import type { AnuncioStatusInput } from './types';
 
 const input = (over: Partial<AnuncioStatusInput> = {}): AnuncioStatusInput => ({
@@ -10,12 +11,12 @@ const input = (over: Partial<AnuncioStatusInput> = {}): AnuncioStatusInput => ({
   produtoIds: ['p1', 'p2'],
   nomePorProdutoId: new Map([['p1', 'Camiseta']]),
   acao: 'pausar',
-  deps: { mercadoLivre: null },
+  deps: { mercadoLivre: null, shopee: null },
   ...over,
 });
 
 /**
- * Every tipo that is NOT Mercado Livre, with the reason the caps table gives.
+ * Every tipo with NO provider row, with the reason the caps table gives.
  *
  * Written out rather than derived: a test that loops the constant it validates
  * passes for any content. The coverage assertion below is what keeps it
@@ -31,12 +32,16 @@ const NAO_SUPORTADOS: ReadonlyArray<readonly [IntegracaoTipo, MotivoNaoSuportado
   // claim #815 undid.
   [INTEGRACAO_TIPO.facebook, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.magalu, 'canal-nao-pesquisado'],
-  // ⚠️ Shopee, Loja Integrada and Amazon are the near-miss of the lines above,
-  // and the only tipos on the other side of them: their Phase 0 surveys
-  // answered this capability `'sim'`, so the honest reason is that WE have not
-  // built the channel — not that nobody has looked. Each flips to supported
-  // when its `implementado` does.
-  [INTEGRACAO_TIPO.shopee, 'canal-nao-implementado'],
+  // ⚠️ Loja Integrada and Amazon are the near-miss of the lines above, and the
+  // only tipos on the other side of them: their Phase 0 surveys answered this
+  // capability `'sim'`, so the honest reason is that WE have not built the
+  // channel — not that nobody has looked. Shopee left this table in step 21
+  // (#1529): it has a provider row, pinned below against the caps. Each flips
+  // `implementado` at its own step 22
+  // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`,
+  // `.master_plans/amazon/amazon-marketplace-integration.md` step 22); whichever
+  // channel flips LAST re-points this example. The arm itself is pinned
+  // table-free in `suporteCanal.test.ts:16-25`.
   [INTEGRACAO_TIPO.lojaIntegrada, 'canal-nao-implementado'],
   [INTEGRACAO_TIPO.amazon, 'canal-nao-implementado'],
 ];
@@ -48,9 +53,22 @@ describe('resolveAnuncioStatusProvider', () => {
     );
   });
 
-  it('the table above covers every tipo that is not Mercado Livre', () => {
+  it('routes Shopee to its provider exactly when the caps clear it (#1529 → #1530)', () => {
+    // True on BOTH sides of the step-22 flip: today the caps say "not built" and
+    // the placeholder answers; after it, the real provider does. Red only if
+    // `resolve` ever bypasses the caps.
+    expect(
+      resolveAnuncioStatusProvider(INTEGRACAO_TIPO.shopee) === shopeeAnuncioStatusProvider,
+    ).toBe(capsPermitem('anuncioStatus', INTEGRACAO_TIPO.shopee));
+  });
+
+  it('the table above covers every tipo with no provider row', () => {
     expect(new Set(NAO_SUPORTADOS.map(([tipo]) => tipo))).toEqual(
-      new Set(Object.values(INTEGRACAO_TIPO).filter((t) => t !== INTEGRACAO_TIPO.mercadoLivre)),
+      new Set(
+        Object.values(INTEGRACAO_TIPO).filter(
+          (t) => t !== INTEGRACAO_TIPO.mercadoLivre && t !== INTEGRACAO_TIPO.shopee,
+        ),
+      ),
     );
   });
 
@@ -70,17 +88,26 @@ describe('resolveAnuncioStatusProvider', () => {
   );
 
   it('explains itself per produto, naming the conta and the reason', async () => {
-    const res = await resolveAnuncioStatusProvider(INTEGRACAO_TIPO.shopee).definirStatus(
+    const res = await resolveAnuncioStatusProvider(INTEGRACAO_TIPO.lojaIntegrada).definirStatus(
       input({
-        integracao: { id: 'c2', nome: 'Shopee', tipo: INTEGRACAO_TIPO.shopee, ativo: true },
+        integracao: {
+          id: 'c2',
+          nome: 'Loja Integrada',
+          tipo: INTEGRACAO_TIPO.lojaIntegrada,
+          ativo: true,
+        },
       }),
     );
     expect(res.rows).toHaveLength(2);
-    expect(res.rows[0]!.mensagem).toContain('Shopee');
+    expect(res.rows[0]!.mensagem).toContain('Loja Integrada');
     expect(res.rows[0]!.mensagem).toContain('pausa de anúncios');
-    // ⚠️ Unbuilt, NOT "the provider cannot" — Shopee's survey answered
-    // `pausarAnuncio` `'sim'` (unlist_item), and reading an unbuilt channel as a
-    // refusal is the claim the tri-state exists to prevent.
+    // ⚠️ Unbuilt, NOT "the provider cannot" — Loja Integrada's survey answered
+    // `pausarAnuncio` `'sim'` (`ativo` on the full-body PUT), and reading an
+    // unbuilt channel as a refusal is the claim the tri-state exists to prevent.
+    // Loja Integrada flips `implementado` at ITS step 22
+    // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`);
+    // whichever channel flips second re-points this example. The arm itself is
+    // pinned table-free in `suporteCanal.test.ts:16-25`.
     expect(res.rows[0]!.motivo).toBe('canal-nao-implementado');
   });
 

@@ -205,31 +205,11 @@ export function agendadoParaMsDe(segundos: number | null | undefined): number | 
 }
 
 /**
- * Is this stored `prodshopee` document a listing the ERP should still treat as
- * ALIVE? The predicate the `onProdutoShopeeLinkChanged` trigger scans survivors
- * with (S12).
- *
- * ⚠️ **Total and non-throwing over an UNVALIDATED document.** It is handed a
- * raw Firestore snapshot body — a migrated Flutter row, a half-written one, a
- * `null` — and it must answer a boolean for every one of them. A throw here
- * would abort a trigger whose whole job is to keep `integracoesComProduto`
- * honest.
- *
- * ⚠️ **An absent or `null` `estadoAnuncio` reads as VIVO.** `null` means NEVER
- * FOLDED — every link step 9 imported is one — and it is not evidence of
- * anything. The asymmetry is `integracoesComProduto.ts`'s verbatim: a false
- * positive costs one skipped sweep row, a false negative is a silent stock and
- * price outage. When in doubt, over-include.
- *
- * The `item_id` test is `typeof === 'number'` and `> 0`, so a link that has
- * never been published (`item_id: null`) is not a survivor. ⚠️ A STRINGIFIED id
- * therefore reads as NOT alive; the field is a typed `z.number().int()` and
- * nothing in this repo writes it as a string, but a corpus row that did would
- * take the false-negative direction — recorded rather than guessed around.
+ * `anuncioShopeeVivo` — the "is this stored listing still ALIVE?" predicate the
+ * `onProdutoShopeeLinkChanged` trigger scans survivors with (S12) — MOVED
+ * verbatim, docblock and all, to `@delfrance/schemas`
+ * (`produto/collection/shopeeLinkLeitura.ts`) in step 21 (#1529): the
+ * produto's Shopee tab orders its links by the SAME "vivo" the denorm trigger
+ * uses, never a browser copy. Re-exported here so its importers did not change.
  */
-export function anuncioShopeeVivo(link: Record<string, unknown> | null): boolean {
-  if (link === null) return false;
-  const itemId = link.item_id;
-  if (typeof itemId !== 'number' || !Number.isFinite(itemId) || itemId <= 0) return false;
-  return link.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido;
-}
+export { anuncioShopeeVivo } from '@delfrance/schemas';
