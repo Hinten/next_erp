@@ -29,6 +29,7 @@ components in `apps/web/components/contaJobs/`:
    that channel's client, narrowing on its own error classes. Return `null` for
    anything else — root `CLAUDE.md` rule 6.
    Mercado Livre's lives in `canais/mercado-livre/_components/mercadoLivreJobErrors.ts`.
+   Shopee's (#1529) in `canais/shopee/_components/shopeeJobErrors.ts`, with `ERROS_DO_CLIENTE_SHOPEE`.
 2. In the action hook: `const fan = useContaJobFan(describe<Job>StartError);`
    then `await fan.run(contas, (contaId) => client.start<Job>(contaId))`.
 3. Render `fan.entries` with `components/contaJobs/*`, passing the channel's
