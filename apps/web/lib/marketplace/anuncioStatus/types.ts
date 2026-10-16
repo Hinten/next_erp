@@ -31,12 +31,15 @@ export type AnuncioStatusOutcome = PushOutcome;
  */
 export interface AnuncioStatusRow extends PushRowBase {
   /**
-   * What ML REPORTS for the listing after the write — never the status that was
-   * requested. A reactivate ML answered `paused` + `out_of_stock` for arrives
-   * here as `paused`, and the row must read that way.
+   * What the channel REPORTS for the listing after the write — never the status
+   * that was requested. A reactivate ML answered `paused` + `out_of_stock` for
+   * arrives here as `paused`, and the row must read that way.
    */
   statusFinal: string | null;
-  /** Member tally for a User-Products family; null for a simple listing. */
+  /**
+   * Member tally for a Mercado Livre User-Products family; null for a simple
+   * listing, and always null on Shopee, whose models move with their item.
+   */
   membros: { total: number; aplicados: number } | null;
 }
 
@@ -52,7 +55,7 @@ export type AnuncioStatusDeps = PushDeps;
 
 export interface AnuncioStatusInput {
   integracao: AnuncioStatusIntegracao;
-  /** Family anchors (or any produto — the backend resolves to the anchor). */
+  /** Family anchors or variation children — every registered channel's backend resolves a child one `paiId` hop to its anchor, and its rows name the ANCHOR. */
   produtoIds: readonly string[];
   /** Names for the report, so a skip row can still say which produto it was. */
   nomePorProdutoId: ReadonlyMap<string, string>;

@@ -567,9 +567,10 @@ export const produtoShopeeLinkSchema = z
      * are null or absent compares `null === null` twice (after the fold) and
      * latches the listing FOR EVER, since neither half can ever move to lift it.
      *
-     * ⚠️ `pularPorRecusaAnterior` in `apps/shopee/lib/shopee/estoque/podeEnviarEstoque.ts`
-     * is the implementation this block DESCRIBES — never the other way round. When
-     * the two disagree, the code is the rule and this text is the defect.
+     * ⚠️ `pularPorRecusaAnterior` (`./shopeeLinkLeitura.ts`, re-exported by
+     * `apps/shopee/lib/shopee/estoque/podeEnviarEstoque.ts`) is the implementation
+     * this block DESCRIBES — never the other way round. When the two disagree, the
+     * code is the rule and this text is the defect.
      *
      * ⚠️ `||` between the two mechanisms, **`&&` between the two fingerprint
      * halves — either one moving LIFTS the skip.** That is the whole design:
@@ -670,10 +671,11 @@ export const produtoShopeeLinkSchema = z
      * {@link precoEnviadoEm} alone.
      *
      * ⚠️ A reader shows the item's refusal only while
-     * `precoRecusaEm >= (precoEnviadoEm ?? 0)`. The clean send's `null` clear
-     * is not enough on its own: a refusal whose write-back lands AFTER a newer
-     * clean clear stands beside the newer {@link precoEnviadoEm}, and the stamp
-     * comparison — the model rows' rule — is what hides it.
+     * `recusaPrecoDoAnuncioShopeeLegivel` says so (`./shopeeLinkLeitura.ts`:
+     * `precoRecusaEm >= precoEnviadoEm`, a tie shows it). The clean send's
+     * `null` clear is not enough on its own: a refusal whose write-back lands
+     * AFTER a newer clean clear stands beside the newer {@link precoEnviadoEm},
+     * and the stamp comparison is what hides it.
      */
     precoRecusaEm: z.number().int().nullable().default(null),
     /**
@@ -763,7 +765,8 @@ export const variacaoShopeeLinkSchema = z
     // ⚠️ **ZERO clearing writes.** Clearing on success would cost one update per
     // model per send, on every listing, several times an hour. Instead the row
     // SELF-EXPIRES by comparison: a reader shows it only while
-    // `estoqueRecusaEm >= (parent.estoqueEnviadoEm ?? 0)`. Because a PARTIAL
+    // `recusaEstoqueDoModeloShopeeLegivel` says so (`estoqueRecusaEm >=
+    // parent.estoqueEnviadoEm`, `./shopeeLinkLeitura.ts`). Because a PARTIAL
     // send never stamps the parent's `estoqueEnviadoEm`, a current diagnosis
     // stays visible and a stale one vanishes the moment the item next syncs
     // cleanly — at the cost of no second writer at all.
@@ -781,12 +784,13 @@ export const variacaoShopeeLinkSchema = z
     // ONE writer (the price sender) and the same rule-7 tier as the six on
     // {@link produtoShopeeLinkSchema}, whose block states both.
     //
-    // ⚠️ Unlike the stock pair above, a model's refusal is compared against its
-    // OWN success stamp, on this SAME doc: each model gets its own success pair
-    // on every accepted send, so a reader shows the refusal only while
-    // `precoRecusaEm >= (precoEnviadoEm ?? 0)`. It self-expires the moment the
-    // model is next accepted, with **ZERO clearing writes** on the child — the
-    // only clearer in the price sync is the item doc's clean-send patch.
+    // ⚠️ A model's refusal is compared against its OWN success stamp AND the
+    // LISTING's: a reader shows it only while `recusaPrecoDoModeloShopeeLegivel`
+    // says so (`./shopeeLinkLeitura.ts` — `precoRecusaEm` at or after both this doc's
+    // and the parent's `precoEnviadoEm`; a tie shows it). It self-expires the moment
+    // the model is next accepted OR the item next syncs cleanly, with **ZERO
+    // clearing writes** on the child — the only clearer in the price sync is the item
+    // doc's clean-send patch.
 
     /**
      * The price THIS ERP sent and Shopee accepted for this MODEL (`roundReais`'d,

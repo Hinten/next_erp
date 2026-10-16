@@ -578,9 +578,10 @@ an agent.
 ⚠️ **A Firestore import fires no trigger.** A `prodshopee` document that arrives
 in the cutover import — the legacy corpus carries them — therefore leaves its
 produto's `integracoesComProduto` untouched until something WRITES that link
-again. Surfaced here, not acted on and not a TODO: the Shopee row is not
-rendered until step 21/22, so nothing is owed before then, and the decision of
-whether the badge needs a backfill belongs to the window.
+again. Surfaced here, not acted on and not a TODO: since step 21 that array
+decides which Shopee contas the produtos table's pushes call
+(`apps/web/lib/marketplace/push/run.ts`); its completeness on the imported
+corpus is a migration-window question (#1910), never an agent's run.
 
 ### The push arm: codes 16 and 27
 
@@ -634,6 +635,9 @@ comes back as `pausadoAte` — the next 00:00 UTC+8, pure arithmetic on
 `deps.nowMs`, never an ambient timezone — while a BURST limit propagates.
 ⚠️ The bound and the single-produto rule are refused by the ROUTE, because the
 orchestrator's assertion is a `ShopeeConfigError` and that class maps to 500.
+A requested variation child is resolved to its anchor first
+(`core/anchors.ts`), so pausing a child pauses the family's listing;
+`produtosSemAnuncio` names the requested id.
 
 `reverificarAnuncio` answers what the listing really is: it keeps the stored
 `violations` when the pull refuses, marks a vanished model and never deletes one,

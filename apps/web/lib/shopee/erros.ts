@@ -20,11 +20,16 @@
 import { ShopeeClientHttpError, ShopeeClientNetworkError } from './client';
 
 /**
- * The backend codes this module gives their own copy. The strings are the
- * routes' (`apps/shopee/app/api/marketplace/shopee/{tabela-medidas,taxonomia}/…`
- * and `lib/shopee/core/respond.ts`); a caller that must BRANCH on one — the
- * manager offering "Trocar" on a stale template — reads it through
- * {@link codigoDaFalhaShopee} and this constant, never a retyped literal.
+ * The backend codes a caller BRANCHES on. The strings are the routes'
+ * (`apps/shopee/app/api/marketplace/shopee/**` and `lib/shopee/core/respond.ts`);
+ * a caller that must branch on one — the manager offering "Trocar" on a stale
+ * template, a push dialog reading a paused conta, a job card attaching to the
+ * run already in progress — reads it through {@link codigoDaFalhaShopee} and
+ * this constant, never a retyped literal.
+ *
+ * The first six get their own copy in {@link descreverFalhaShopee}; the step-21
+ * block below (#1529) is the vocabulary of the pushes, the listing actions and
+ * the two jobs, whose callers word their own copy.
  */
 export const CODIGO_FALHA_SHOPEE = {
   tabelaMedidasInexistente: 'SHOPEE_TABELA_MEDIDAS_INEXISTENTE',
@@ -33,6 +38,31 @@ export const CODIGO_FALHA_SHOPEE = {
   reautenticar: 'SHOPEE_REAUTH_REQUIRED',
   contaSemShopId: 'SHOPEE_CONTA_SEM_SHOP_ID',
   respostaInvalida: 'RESPOSTA_INVALIDA',
+  // ---- Step 21 (#1529): the pushes, the listing actions and the two jobs. ----
+  /** 409 — the conta is paused on Shopee's daily quota (`detalhes.pausadoAte`). */
+  contaPausada: 'SHOPEE_CONTA_PAUSADA',
+  /** 400 — more produtos than one push takes (`detalhes.limite` / `solicitados`). */
+  selecaoExcedeLimite: 'SHOPEE_SELECAO_EXCEDE_LIMITE',
+  contaSemDeposito: 'SHOPEE_CONTA_SEM_DEPOSITO',
+  contaSemTabelaNormal: 'SHOPEE_CONTA_SEM_TABELA_NORMAL',
+  /** 422 — the conta cannot take a price push (`detalhes.motivo` / `regiao`). */
+  precoContaRecusada: 'SHOPEE_PRECO_CONTA_RECUSADA',
+  /** 422 — refused BEFORE any Shopee write (`detalhes.problemas`). */
+  publicacaoBloqueada: 'SHOPEE_PUBLISH_BLOCKED',
+  /** 422 — Shopee refused a write mid-publish (`detalhes.etapa`, `detalhes.problemas`). */
+  publicacaoRecusada: 'SHOPEE_PUBLISH_REJECTED',
+  anuncioNaoEncontrado: 'SHOPEE_ANUNCIO_NAO_ENCONTRADO',
+  /** 409 — the link exists but was never published (`detalhes.linkDocId`). */
+  anuncioNaoPublicado: 'SHOPEE_ANUNCIO_NAO_PUBLICADO',
+  anuncioSemVinculo: 'SHOPEE_ANUNCIO_SEM_VINCULO',
+  /** 409 — a mass import is already running (`detalhes.jobId`, when sent). */
+  importacaoEmAndamento: 'SHOPEE_MASS_IMPORT_RUNNING',
+  importacaoNaoEmAndamento: 'SHOPEE_MASS_IMPORT_NOT_RUNNING',
+  importacaoNaoEnfileirada: 'SHOPEE_MASS_IMPORT_ENQUEUE_FAILED',
+  /** 409 — a price update is already running (`detalhes.jobId`, when sent). */
+  envioPrecoEmAndamento: 'SHOPEE_PRICE_SYNC_RUNNING',
+  envioPrecoNaoEmAndamento: 'SHOPEE_PRICE_SYNC_NOT_RUNNING',
+  envioPrecoNaoEnfileirado: 'SHOPEE_PRICE_SYNC_ENQUEUE_FAILED',
 } as const satisfies Record<string, string>;
 
 /** Shopee's two rate-limit classes, as the backend's 502 body names them in `kind`. */

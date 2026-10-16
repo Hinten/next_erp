@@ -275,10 +275,22 @@ export interface EnvioPrecoResponse {
 }
 
 /**
+ * The two row keys the ROUTE adds after the run (#1529, step 21): the `nome` /
+ * `sku` of the row's {@link EnvioPrecoListing.variacaoProdutoId} — `null` when
+ * the row has none — joined through `lerNomesDosProdutos`
+ * (`./nomesDosProdutos.ts`), so the models of one listing are told apart. The
+ * run itself reads no child's name: these keys are on the WIRE row, never on
+ * {@link EnvioPrecoListing}.
+ */
+export const CHAVES_DO_NOME_DA_VARIACAO_PRECO = ['variacaoNome', 'variacaoSku'] as const;
+
+/**
  * The key sets, declared as DATA — FOUR levels. The route builds its body BY
  * NAME at every level and the tests compare `Object.keys().sort()` against
  * these, so a key added upstream cannot leave the building unannounced (the
  * per-model row is the level that carries Shopee's own words in `codigo`).
+ * The listing level is the WIRE row: the run's twelve keys plus the route's
+ * {@link CHAVES_DO_NOME_DA_VARIACAO_PRECO}.
  */
 export const CHAVES_DO_ENVELOPE_PRECO = [
   'canal',
@@ -307,6 +319,7 @@ export const CHAVES_DA_LISTAGEM_PRECO = [
   'precoAnterior',
   'variacoes',
   'codigo',
+  ...CHAVES_DO_NOME_DA_VARIACAO_PRECO,
 ] as const;
 
 export const CHAVES_SEM_ENVIO_PRECO = ['produtoId', 'produtoNome', 'motivo', 'mensagem'] as const;

@@ -14,8 +14,13 @@
  * step 15 fetches a pedido's shipping LABEL, since step 17 reads a return's
  * live state and runs one seller action on it, and since step 18 browses a
  * conta's category tree, its item bands and its size-chart templates (four
- * reads, for the `/medidas` Shopee tab). Every one is answered by `apps/shopee`
- * over an authenticated cross-origin call (its `proxy.ts` allows exactly
+ * reads, for the `/medidas` Shopee tab). Since step 21 it also runs the three
+ * on-demand pushes (stock, price, pause/reactivate), publishes and re-verifies
+ * ONE listing, and starts / polls / cancels the two account-wide jobs (the mass
+ * import and the price update) — thirteen methods, named exactly like
+ * `lib/mercado-livre/client.ts`'s so a shared component types against either
+ * client structurally. Every one is answered by `apps/shopee` over an
+ * authenticated cross-origin call (its `proxy.ts` allows exactly
  * `/api/marketplace/*`).
  *
  * ⚠️ This client retries NOTHING. Whether a failed READ is re-attempted is the
@@ -31,6 +36,7 @@
  */
 import { useMemo } from 'react';
 import type { z } from 'zod';
+import type { AcaoStatusAnuncio, importacaoShopeeOptionsSchema } from '@delfrance/schemas';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
@@ -39,20 +45,45 @@ import { filenameFromDisposition } from '@/lib/http/filenameFromDisposition';
 
 import {
   ACAO_RECLAMACAO_SHOPEE,
+  DETALHES_ERRO_SHOPEE_VAZIOS,
+  anuncioStatusShopeeSchema,
+  canceladoShopeeSchema,
   detalheTabelaMedidasDtoSchema,
+  detalhesErroShopeeSchema,
+  envioEstoqueManualShopeeSchema,
+  envioPrecoManualShopeeSchema,
+  jobIdShopeeSchema,
   listaTabelasMedidasDtoSchema,
+  massImportStatusShopeeSchema,
   oauthStartResponseSchema,
+  priceSyncHistoricoShopeeSchema,
+  priceSyncRelatorioPaginaShopeeSchema,
+  priceSyncStatusShopeeSchema,
   respostaCategoriasShopeeSchema,
   respostaLimitesShopeeSchema,
+  respostaPublicarShopeeSchema,
+  respostaReverificarShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
   shopeeReclamacaoAcaoRespostaSchema,
   shopeeReclamacaoEstadoSchema,
+  type AnuncioStatusShopee,
+  type CanceladoShopee,
   type DetalheTabelaMedidasDto,
+  type DetalhesErroShopee,
+  type EnvioEstoqueManualShopee,
+  type EnvioPrecoManualShopee,
   type EscolhaDeEnvio,
+  type JobIdShopee,
   type ListaTabelasMedidasDto,
+  type MassImportStatusShopee,
+  type PriceSyncHistoricoShopee,
+  type PriceSyncRelatorioPaginaShopee,
+  type PriceSyncStatusShopee,
   type RespostaCategoriasShopee,
   type RespostaLimitesShopee,
+  type RespostaPublicarShopee,
+  type RespostaReverificarShopee,
   type ShopeeContaStatus,
   type ShopeeEtiquetaPendente,
   type ShopeeOauthStart,
@@ -88,6 +119,17 @@ export class ShopeeClientHttpError extends Error {
      * BOTH a 502, and only `kind` tells "wait" from "this will never work".
      */
     readonly kind: string | null = null,
+    /**
+     * The extras the error body carried beyond `{ error, code }` — the pause's
+     * `pausadoAte`, an oversize selection's `limite`/`solicitados`, a publish
+     * refusal's `problemas` (each with its `acao`), the running job's `jobId`,
+     * … — each read tolerantly (`detalhesErroShopeeSchema`): a key the body
+     * lacks, or carries malformed, is `null` here and never costs the error.
+     *
+     * ⚠️ The ONE place these live. There are no top-level `jobId` / `pausadoAte`
+     * fields on this class — a caller reads `err.detalhes.jobId`.
+     */
+    readonly detalhes: DetalhesErroShopee = DETALHES_ERRO_SHOPEE_VAZIOS,
   ) {
     super(message);
     this.name = 'ShopeeClientHttpError';
@@ -258,6 +300,29 @@ export type ReclamacaoAcaoShopeeInput =
       solucaoExibida: SolucaoDevolucaoShopee | null;
     });
 
+/**
+ * One publish of an EXISTING link (`POST …/publicar`, step 21). Each optional key
+ * is OMITTED from the body when absent — never sent as `null`.
+ *
+ * - `linkDocId` — WHICH of the conta's links (a produto may hold more than one);
+ * - `status` — the listing status asked for (`SHOPEE_ITEM_STATUS_WRITABLE`'s two
+ *   values, mirrored here because that package must never reach a browser);
+ * - `categoryId` — used only when the resolved link has no category;
+ * - `principal` — the native kit's principal produto;
+ * - `recriar` / `converterEmKit` — the two kit arms. ⚠️ The route refuses both
+ *   together, and `recriar` without `linkDocId` (400 each).
+ */
+export interface PublicarShopeeInput {
+  integracaoId: string;
+  produtoId: string;
+  linkDocId?: string;
+  status?: 'NORMAL' | 'UNLIST';
+  categoryId?: number;
+  principal?: string;
+  recriar?: true;
+  converterEmKit?: true;
+}
+
 export interface ShopeeClient {
   /** Mint the Shopee consent URL for an `integracao` conta (PERM.integracao.write). */
   oauthStart(integracaoId: string): Promise<ShopeeOauthStart>;
@@ -338,6 +403,153 @@ export interface ShopeeClient {
     integracaoId: string;
     sizeChartId: number;
   }): Promise<DetalheTabelaMedidasDto>;
+
+  // ---- Step 21 (#1529): the pushes, the listing actions and the two jobs. ----
+  // Named exactly like `MercadoLivreClient`'s methods (`lib/mercado-livre/client.ts`).
+
+  /**
+   * Push the CURRENT stock of up to 50 produtos to their Shopee listings, right
+   * now (PERM.integracao.write). SYNCHRONOUS: one row per LISTING.
+   *
+   * Per-listing failure is DATA — a valid request answers 200 even when every
+   * listing failed — so only conta-level refusals throw
+   * {@link ShopeeClientHttpError}: 400 `SHOPEE_SELECAO_EXCEDE_LIMITE`
+   * (`detalhes.limite` / `solicitados`), 400 `SHOPEE_CONTA_SEM_DEPOSITO`, 409
+   * `SHOPEE_CONTA_PAUSADA` (`detalhes.pausadoAte`).
+   *
+   * ⚠️ An abort through `signal` surfaces as a {@link ShopeeClientNetworkError}
+   * whose `cause` is the `DOMException` while the request is in flight, and as
+   * the `DOMException` itself during the body read — read `signal.aborted` to
+   * tell your own cancel apart. The server may still finish the push.
+   */
+  enviarEstoque(input: {
+    integracaoId: string;
+    produtoIds: string[];
+    /** Default false. */
+    reenviarComErro?: boolean;
+    signal?: AbortSignal;
+  }): Promise<EnvioEstoqueManualShopee>;
+  /**
+   * Push the CURRENT price of up to 50 produtos to their Shopee listings, right
+   * now (PERM.integracao.write) — one row per MODEL. Per-row failure is DATA;
+   * conta-level refusals throw (400 `SHOPEE_SELECAO_EXCEDE_LIMITE`, 400
+   * `SHOPEE_CONTA_SEM_TABELA_NORMAL`, 409 `SHOPEE_CONTA_PAUSADA`, 422
+   * `SHOPEE_PRECO_CONTA_RECUSADA` with `detalhes.motivo` / `regiao`).
+   *
+   * `baixarPreco` (default false) lets the send LOWER a price. ⚠️ There is NO
+   * `incluirNaoPublicados` here: the Shopee route never reads it, so the client
+   * never sends it.
+   *
+   * The abort convention is {@link enviarEstoque}'s.
+   */
+  enviarPrecos(input: {
+    integracaoId: string;
+    produtoIds: string[];
+    baixarPreco?: boolean;
+    signal?: AbortSignal;
+  }): Promise<EnvioPrecoManualShopee>;
+  /**
+   * PAUSE or REACTIVATE listings on Shopee (PERM.integracao.write).
+   *
+   * ⚠️ Two callers, one method, and the difference is `linkDocId`: the produto
+   * tab names ONE listing (and then `produtoIds` must hold exactly that
+   * produto), while the produtos table omits it and the run covers every
+   * listing the selection holds on that conta. Per-listing refusal is DATA.
+   *
+   * The abort convention is {@link enviarEstoque}'s.
+   */
+  definirStatusAnuncios(input: {
+    integracaoId: string;
+    produtoIds: string[];
+    acao: AcaoStatusAnuncio;
+    linkDocId?: string;
+    signal?: AbortSignal;
+  }): Promise<AnuncioStatusShopee>;
+  /**
+   * Publish an EXISTING link — an ordinary listing or a native kit
+   * (PERM.integracao.write). The answer is tagged: `tipo: 'item'` or
+   * `tipo: 'kit'`, and a kit whose `desfecho` is `incerto` is the 202 — the
+   * caller waits `aguardarMs` and re-sends the IDENTICAL input.
+   *
+   * A refusal before any Shopee write is a 422 `SHOPEE_PUBLISH_BLOCKED`, one
+   * after is a 422 `SHOPEE_PUBLISH_REJECTED` (`detalhes.etapa`); both carry
+   * `detalhes.problemas`, each with its machine-readable `acao`. 404
+   * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the conta holds no such link.
+   *
+   * ⚠️ **No `signal`, on purpose.** Creating a kit is not idempotent: an abort
+   * would turn a publish the server goes on to finish into an "unknown" the
+   * operator re-clicks.
+   */
+  publicar(input: PublicarShopeeInput): Promise<RespostaPublicarShopee>;
+  /**
+   * Re-read ONE listing from Shopee and reconcile its link (PERM.integracao.write).
+   * A listing Shopee no longer has comes back 200 `removido`. 404
+   * `SHOPEE_ANUNCIO_SEM_VINCULO` when this conta holds no link for the produto;
+   * 409 `SHOPEE_ANUNCIO_NAO_PUBLICADO` (`detalhes.linkDocId`) when the link was
+   * never published.
+   */
+  reverificarAnuncio(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId?: string;
+  }): Promise<RespostaReverificarShopee>;
+  /**
+   * Start the mass import ("Importar todos os anúncios") for the conta
+   * (PERM.integracao.write) — 202 `{ jobId }`; poll with
+   * {@link massImportStatus}. One already running is a 409
+   * `SHOPEE_MASS_IMPORT_RUNNING` (its id, when the backend sends it, in
+   * `detalhes.jobId`); a closed queue is a 503 `SHOPEE_MASS_IMPORT_ENQUEUE_FAILED`.
+   */
+  startMassImport(input: {
+    integracaoId: string;
+    /** Each option absent ⇒ the backend's default. */
+    options?: z.input<typeof importacaoShopeeOptionsSchema>;
+  }): Promise<JobIdShopee>;
+  /** Poll a mass-import job (PERM.integracao.read). 404s on an unknown or foreign jobId. */
+  massImportStatus(input: { integracaoId: string; jobId: string }): Promise<MassImportStatusShopee>;
+  /**
+   * Cancel a running mass import (PERM.integracao.write). One that already
+   * finished is a 409 `SHOPEE_MASS_IMPORT_NOT_RUNNING`.
+   */
+  cancelMassImport(input: { integracaoId: string; jobId: string }): Promise<CanceladoShopee>;
+  /**
+   * Start the account-wide price update ("Atualizar preços")
+   * (PERM.integracao.write) — 202 `{ jobId }`; poll with {@link priceSyncStatus}.
+   * One already running is a 409 `SHOPEE_PRICE_SYNC_RUNNING` (`detalhes.jobId`
+   * when sent); a closed queue is a 503 `SHOPEE_PRICE_SYNC_ENQUEUE_FAILED`.
+   */
+  startPriceSync(input: {
+    integracaoId: string;
+    /** Default false — a price DECREASE is skipped unless opted in. */
+    baixarPreco?: boolean;
+  }): Promise<JobIdShopee>;
+  /** Poll a price-update job (PERM.integracao.write). 404s on an unknown or foreign jobId. */
+  priceSyncStatus(input: { integracaoId: string; jobId: string }): Promise<PriceSyncStatusShopee>;
+  /**
+   * Cancel a running price update (PERM.integracao.write). One that already
+   * finished is a 409 `SHOPEE_PRICE_SYNC_NOT_RUNNING` — one word from the start
+   * route's `SHOPEE_PRICE_SYNC_RUNNING`, and the opposite meaning.
+   */
+  cancelPriceSync(input: { integracaoId: string; jobId: string }): Promise<CanceladoShopee>;
+  /**
+   * The conta's PAST price updates, newest first (PERM.integracao.write).
+   * `limite` (1..50) is REFUSED out of range rather than clamped; absent ⇒ the
+   * route's default.
+   */
+  priceSyncHistorico(input: {
+    integracaoId: string;
+    limite?: number;
+  }): Promise<PriceSyncHistoricoShopee>;
+  /**
+   * One PAGE of a run's complete per-model report (PERM.integracao.write), for the
+   * CSV. Loop on `proximoDepois` until it is `null`; `depois` is the previous
+   * page's `proximoDepois`.
+   */
+  priceSyncRelatorio(input: {
+    integracaoId: string;
+    jobId: string;
+    depois?: string | null;
+  }): Promise<PriceSyncRelatorioPaginaShopee>;
 }
 
 /** The label route. */
@@ -352,6 +564,23 @@ const CATEGORIAS_PATH = '/api/marketplace/shopee/taxonomia/categorias';
 const LIMITES_PATH = '/api/marketplace/shopee/taxonomia/limites';
 const TABELA_MEDIDAS_LISTA_PATH = '/api/marketplace/shopee/tabela-medidas/lista';
 const TABELA_MEDIDAS_DETALHE_PATH = '/api/marketplace/shopee/tabela-medidas/detalhe';
+
+/** The three on-demand pushes, the publish and the re-verify (#1529, step 21). */
+const ENVIAR_ESTOQUE_PATH = '/api/marketplace/shopee/enviar-estoque';
+const ENVIAR_PRECOS_PATH = '/api/marketplace/shopee/enviar-precos';
+const ANUNCIO_STATUS_PATH = '/api/marketplace/shopee/anuncio-status';
+const PUBLICAR_PATH = '/api/marketplace/shopee/publicar';
+const REVERIFICAR_ANUNCIO_PATH = '/api/marketplace/shopee/reverificar-anuncio';
+
+/** The two account-wide jobs (#1529, step 21): the mass import and the price update. */
+const IMPORTAR_TODOS_PATH = '/api/marketplace/shopee/importar-todos';
+const IMPORTAR_TODOS_STATUS_PATH = '/api/marketplace/shopee/importar-todos/status';
+const IMPORTAR_TODOS_CANCELAR_PATH = '/api/marketplace/shopee/importar-todos/cancelar';
+const ATUALIZAR_PRECOS_PATH = '/api/marketplace/shopee/atualizar-precos';
+const ATUALIZAR_PRECOS_STATUS_PATH = '/api/marketplace/shopee/atualizar-precos/status';
+const ATUALIZAR_PRECOS_CANCELAR_PATH = '/api/marketplace/shopee/atualizar-precos/cancelar';
+const ATUALIZAR_PRECOS_HISTORICO_PATH = '/api/marketplace/shopee/atualizar-precos/historico';
+const ATUALIZAR_PRECOS_RELATORIO_PATH = '/api/marketplace/shopee/atualizar-precos/relatorio';
 
 /**
  * A query string from named parameters, each value percent-encoded and an
@@ -385,8 +614,10 @@ function logarCorpoNaoJson(path: string, status: number, corpo: string): void {
  * `apps/shopee/lib/shopee/etiqueta/respostaEtiqueta.ts`); its `shopeeCode`, when
  * a string, is carried on the error WITHOUT touching the message — and so is
  * the `SHOPEE_HTTP_ERROR` body's `kind` (step 18: the rate-limit copy reads
- * it). Every other key of a body (`motivo`, `nfe`, `tentarApos`,
- * `upstreamStatus`, `sizeChartId`) is tolerated and ignored here.
+ * it). Since step 21 the extras a caller acts on (`pausadoAte`, `limite`,
+ * `problemas`, `jobId`, …) ride on `detalhes`, read by ONE tolerant schema from
+ * the same parsed body. Every other key (`nfe`, `tentarApos`, `upstreamStatus`,
+ * `sizeChartId`) is tolerated and ignored here.
  */
 function erroHttp(path: string, res: Response, text: string): ShopeeClientHttpError {
   let parsed: unknown = null;
@@ -410,7 +641,19 @@ function erroHttp(path: string, res: Response, text: string): ShopeeClientHttpEr
     errBody?.code ?? null,
     textoDoCorpo(parsed, 'shopeeCode'),
     textoDoCorpo(parsed, 'kind'),
+    detalhesDoCorpo(parsed),
   );
+}
+
+/**
+ * The error body's extras, each field read on its own (`detalhesErroShopeeSchema`
+ * catches per field). Only a body that is not an OBJECT at all — no body, an
+ * array, a scalar, a non-JSON page — falls back to "every extra absent": the
+ * error must always construct.
+ */
+function detalhesDoCorpo(parsed: unknown): DetalhesErroShopee {
+  const leitura = detalhesErroShopeeSchema.safeParse(parsed ?? {});
+  return leitura.success ? leitura.data : DETALHES_ERRO_SHOPEE_VAZIOS;
 }
 
 /**
@@ -542,6 +785,25 @@ function corpoDaReclamacao(p: ReclamacaoAcaoShopeeInput): Record<string, unknown
   }
 }
 
+/**
+ * The publish body, rebuilt BY NAME: the two ids, then each optional key only
+ * when it is not `undefined` — OMITTED, never `null`-filled, so the body says
+ * exactly what the caller chose and nothing else. A caller object carrying one
+ * more field never reaches the route.
+ */
+function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
+  return {
+    integracaoId: p.integracaoId,
+    produtoId: p.produtoId,
+    ...(p.linkDocId === undefined ? {} : { linkDocId: p.linkDocId }),
+    ...(p.status === undefined ? {} : { status: p.status }),
+    ...(p.categoryId === undefined ? {} : { categoryId: p.categoryId }),
+    ...(p.principal === undefined ? {} : { principal: p.principal }),
+    ...(p.recriar === undefined ? {} : { recriar: p.recriar }),
+    ...(p.converterEmKit === undefined ? {} : { converterEmKit: p.converterEmKit }),
+  };
+}
+
 export function createShopeeClient(config: {
   baseUrl: string;
   getAuthToken: () => Promise<string>;
@@ -557,11 +819,18 @@ export function createShopeeClient(config: {
    * a `FirebaseError`, not a transport failure, and the caller narrows it on
    * its own (the returns panel does, so an irreversible confirm never ends in
    * silence). Wrapping it here would relabel it a network error.
+   *
+   * `signal` is only FORWARDED (the three pushes take one). The abort keeps the
+   * client's one convention, `etiqueta`'s: in flight it is a
+   * {@link ShopeeClientNetworkError} whose `cause` is the `DOMException`, during
+   * the body read the `DOMException` itself — the caller tells its own cancel
+   * apart by `signal.aborted`, which covers both.
    */
   async function call<S extends z.ZodType>(
     path: string,
     schema: S,
     body?: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<z.infer<S>> {
     const token = await config.getAuthToken();
     let res: Response;
@@ -573,13 +842,14 @@ export function createShopeeClient(config: {
           Accept: 'application/json',
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
+        ...(signal === undefined ? {} : { signal }),
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (err) {
       throw new ShopeeClientNetworkError(err instanceof Error ? err.message : 'fetch falhou', err);
     }
 
-    const text = await lerCorpo(() => res.text());
+    const text = await lerCorpo(() => res.text(), signal);
     if (!res.ok) throw erroHttp(path, res, text);
     return lerCorpoJson(path, res.status, text, schema);
   }
@@ -757,6 +1027,107 @@ export function createShopeeClient(config: {
           sizeChartId: input.sizeChartId,
         })}`,
         detalheTabelaMedidasDtoSchema,
+      ),
+    // Step 21: every POST body rebuilt BY NAME (an absent optional key OMITTED,
+    // a caller's stray key never forwarded); every GET's parameters through
+    // `consulta()`. Only the three pushes forward a `signal`.
+    enviarEstoque: (input) =>
+      call(
+        ENVIAR_ESTOQUE_PATH,
+        envioEstoqueManualShopeeSchema,
+        {
+          integracaoId: input.integracaoId,
+          produtoIds: input.produtoIds,
+          reenviarComErro: input.reenviarComErro ?? false,
+        },
+        input.signal,
+      ),
+    enviarPrecos: (input) =>
+      call(
+        ENVIAR_PRECOS_PATH,
+        envioPrecoManualShopeeSchema,
+        {
+          integracaoId: input.integracaoId,
+          produtoIds: input.produtoIds,
+          // ⚠️ `?? false`, and NO `incluirNaoPublicados` — the Shopee route reads
+          // only `baixarPreco` (Mercado Livre's client sends both).
+          baixarPreco: input.baixarPreco ?? false,
+        },
+        input.signal,
+      ),
+    definirStatusAnuncios: (input) =>
+      call(
+        ANUNCIO_STATUS_PATH,
+        anuncioStatusShopeeSchema,
+        {
+          integracaoId: input.integracaoId,
+          produtoIds: input.produtoIds,
+          acao: input.acao,
+          ...(input.linkDocId ? { linkDocId: input.linkDocId } : {}),
+        },
+        input.signal,
+      ),
+    publicar: (input) =>
+      call(PUBLICAR_PATH, respostaPublicarShopeeSchema, corpoDaPublicacao(input)),
+    reverificarAnuncio: (input) =>
+      call(REVERIFICAR_ANUNCIO_PATH, respostaReverificarShopeeSchema, {
+        integracaoId: input.integracaoId,
+        produtoId: input.produtoId,
+        ...(input.linkDocId ? { linkDocId: input.linkDocId } : {}),
+      }),
+    startMassImport: (input) =>
+      call(IMPORTAR_TODOS_PATH, jobIdShopeeSchema, {
+        integracaoId: input.integracaoId,
+        // `options: null` is a 400 on the route — absent means the defaults.
+        ...(input.options === undefined ? {} : { options: input.options }),
+      }),
+    massImportStatus: (input) =>
+      call(
+        `${IMPORTAR_TODOS_STATUS_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          jobId: input.jobId,
+        })}`,
+        massImportStatusShopeeSchema,
+      ),
+    cancelMassImport: (input) =>
+      call(IMPORTAR_TODOS_CANCELAR_PATH, canceladoShopeeSchema, {
+        integracaoId: input.integracaoId,
+        jobId: input.jobId,
+      }),
+    startPriceSync: (input) =>
+      call(ATUALIZAR_PRECOS_PATH, jobIdShopeeSchema, {
+        integracaoId: input.integracaoId,
+        baixarPreco: input.baixarPreco ?? false,
+      }),
+    priceSyncStatus: (input) =>
+      call(
+        `${ATUALIZAR_PRECOS_STATUS_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          jobId: input.jobId,
+        })}`,
+        priceSyncStatusShopeeSchema,
+      ),
+    cancelPriceSync: (input) =>
+      call(ATUALIZAR_PRECOS_CANCELAR_PATH, canceladoShopeeSchema, {
+        integracaoId: input.integracaoId,
+        jobId: input.jobId,
+      }),
+    priceSyncHistorico: (input) =>
+      call(
+        `${ATUALIZAR_PRECOS_HISTORICO_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          limite: input.limite,
+        })}`,
+        priceSyncHistoricoShopeeSchema,
+      ),
+    priceSyncRelatorio: (input) =>
+      call(
+        `${ATUALIZAR_PRECOS_RELATORIO_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          jobId: input.jobId,
+          depois: input.depois ?? undefined,
+        })}`,
+        priceSyncRelatorioPaginaShopeeSchema,
       ),
   };
 }

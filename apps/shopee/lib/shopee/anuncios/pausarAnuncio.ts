@@ -79,8 +79,19 @@
  * `@delfrance/data/admin/collections` handle, and nothing here opens a
  * multi-document atomic write.
  *
- * **Cost**: 2 Firestore reads per requested produto (the produto document for
- * its name, the `prodshopee` subcollection for its link), ≤ 1 write per accepted
+ * ## A requested CHILD resolves to its ANCHOR (#1529, step 21)
+ *
+ * A Shopee listing is the whole family (`unlist_item` is per item), and the
+ * link hangs off the family anchor. So each requested id is resolved ONCE to its
+ * anchor (`core/anchors.ts`, one masked batch read): pausing a selected child
+ * pauses its family's listing, a child and its own anchor move ONE listing once,
+ * rows name the ANCHOR (with the anchor's own `nome`, even when only the child
+ * was selected), and `produtosSemAnuncio` names the REQUESTED id. Every
+ * requested id leaves in exactly one of the two, asserted per anchor.
+ *
+ * **Cost**: 1 masked batch read of the requested produtos (`nome`, `paiId`), plus
+ * 1 masked `nome` read of the anchors nobody requested (only when there is one), 1
+ * `prodshopee` subcollection read per distinct anchor, ≤ 1 write per accepted
  * link, and ≤ 2 + N Shopee calls where N is the number of entries the re-list
  * door had to retry one by one.
  */
@@ -103,14 +114,18 @@ import {
   type AcaoStatusAnuncio,
   type EstadoAnuncioShopee,
 } from '@delfrance/schemas';
-import { produtoCollection, produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
+import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 
+import { conferirContabilidadePorAnchor, resolverAnchorsShopee } from '../core/anchors';
 import { loadShopeeContext } from '../core/shopee';
 import { itemStatusDe, montarItemLido, type ItemLido } from '../produtos/itemLido';
 import { itemStatusDeLink } from '../produtos/mapeamento';
 import { RELIST_PRIMEIRO } from './constantesAnuncio';
 import { resolverLinkVivoPorProduto, type LinkDeAnuncio } from './linkAnuncio';
 import { agendadoParaMsDe, estadoDoAnuncio } from './statusAnuncio';
+
+/** The one log tag of this module — the run's info line and its accounting violations. */
+const TAG_LOG = '[shopee/anuncios] status de anúncios';
 
 /* -------------------------------------------------------------------------- */
 /*                               the envelope                                  */
@@ -119,6 +134,10 @@ import { agendadoParaMsDe, estadoDoAnuncio } from './statusAnuncio';
 export type AnuncioStatusOutcome = 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
 
 export interface AnuncioStatusListing {
+  /**
+   * The family ANCHOR that owns the listing — the requested id itself, or the
+   * anchor a requested variation child resolved to (`core/anchors.ts`).
+   */
   readonly produtoId: string;
   readonly produtoNome: string | null;
   /** `String(item_id)`, or `null` when this produto was never published. */
@@ -151,6 +170,7 @@ export interface AnuncioStatusListing {
 }
 
 export interface AnuncioStatusSemAnuncio {
+  /** The REQUESTED id, verbatim — a child whose anchor has no listing stays a child here. */
   readonly produtoId: string;
   readonly produtoNome: string | null;
   readonly motivo: string;
@@ -165,8 +185,8 @@ export interface AnuncioStatusResponse {
   readonly solicitados: number;
   /**
    * Listings discovered. ⚠️ The ML envelope calls this "families"; Shopee has
-   * none, and one produto resolves to at most ONE link here, so it is the count
-   * of produtos that had an anúncio in this conta.
+   * none, and one ANCHOR resolves to at most ONE link here, so it is the count
+   * of distinct family anchors that had an anúncio in this conta.
    */
   readonly familias: number;
   readonly resumo: {
@@ -188,7 +208,8 @@ export interface AnuncioStatusInput {
   /**
    * Narrows the run to ONE listing — the produto tab's per-anúncio button. Only
    * meaningful with a single produtoId; the route enforces that and
-   * {@link definirStatusAnunciosShopee} asserts it.
+   * {@link definirStatusAnunciosShopee} asserts it, on the REQUEST. The link is
+   * then looked up among the `prodshopee` documents of that id's ANCHOR.
    */
   readonly linkDocId?: string | null;
 }
@@ -571,14 +592,6 @@ async function clienteShopee(
   return ctx.createShopClient();
 }
 
-/** One masked point read. A blank stored name is an absence, never an empty label. */
-async function nomeDoProduto(db: Firestore, produtoId: string): Promise<string | null> {
-  const snap = await produtoCollection.docRef(db, {}, produtoId).get();
-  const raw = (snap.data() ?? {}) as Record<string, unknown>;
-  const nome = raw.nome;
-  return typeof nome === 'string' && nome.trim() !== '' ? nome : null;
-}
-
 /** The stored `item_status`, for a row that never reached a read-back. */
 function statusArmazenado(link: LinkDeAnuncio): string | null {
   const bruto = link.raw.item_status;
@@ -670,27 +683,50 @@ export async function definirStatusAnunciosShopee(
   const produtosSemAnuncio: AnuncioStatusSemAnuncio[] = [];
   const alvos: AlvoDeStatus[] = [];
 
-  // ---- Step 1: resolve serially, order preserved.
+  // ---- Step 1: each requested id → its family ANCHOR (#1529): ONE masked batch
+  // read, one hop (plus a masked `nome` read for an anchor nobody requested, so
+  // its row carries its name). A Shopee listing IS the family — `unlist_item` is
+  // per item — so a requested variation child moves its anchor's listing, and a
+  // child and its own anchor are ONE listing, moved once.
+  const resolvidos = await resolverAnchorsShopee(db, solicitados);
+  const nomeDe = (produtoId: string): string | null => resolvidos.nomeDe.get(produtoId) ?? null;
+
+  // Filled per anchor, emitted in REQUEST order below; always the REQUESTED id.
+  const semAnuncioPorId = new Map<string, AnuncioStatusSemAnuncio>();
+  const semAnuncio = (produtoId: string): void => {
+    semAnuncioPorId.set(produtoId, {
+      produtoId,
+      produtoNome: nomeDe(produtoId),
+      motivo: MOTIVO_STATUS_ANUNCIO.semAnuncio,
+      mensagem:
+        linkDocId !== null
+          ? 'Anúncio não encontrado neste produto para esta conta Shopee.'
+          : mensagemDeMotivo(MOTIVO_STATUS_ANUNCIO.semAnuncio),
+    });
+  };
+  // A requested id with no produto document has no listing to move either.
+  for (const produtoId of resolvidos.naoEncontrados) semAnuncio(produtoId);
+
+  // Then each anchor's link, serially, in first-seen request order.
   // ⚠️ The TIERED resolver (step 19, R-12(b)): with no `linkDocId`, a produto's
   // ACTIVE native kit wins over the ordinary listing it superseded, so pausing
   // "this produto" pauses the listing that sells. Never the publish resolver,
-  // whose lexical pick could land on the superseded or removed listing.
-  for (const produtoId of solicitados) {
-    const produtoNome = await nomeDoProduto(db, produtoId);
-    const link = await resolverLinkVivoPorProduto(db, entrada.integracaoId, produtoId, linkDocId);
+  // whose lexical pick could land on the superseded or removed listing. A
+  // `linkDocId` narrows on the ANCHOR's `prodshopee` — the one-produto rule
+  // above was checked on the REQUEST.
+  for (const anchorId of resolvidos.anchorIds) {
+    const link = await resolverLinkVivoPorProduto(db, entrada.integracaoId, anchorId, linkDocId);
     if (link === null) {
-      produtosSemAnuncio.push({
-        produtoId,
-        produtoNome,
-        motivo: MOTIVO_STATUS_ANUNCIO.semAnuncio,
-        mensagem:
-          linkDocId !== null
-            ? 'Anúncio não encontrado neste produto para esta conta Shopee.'
-            : mensagemDeMotivo(MOTIVO_STATUS_ANUNCIO.semAnuncio),
-      });
+      for (const produtoId of solicitados) {
+        if (resolvidos.anchorDe.get(produtoId) === anchorId) semAnuncio(produtoId);
+      }
       continue;
     }
-    alvos.push({ link, produtoNome });
+    alvos.push({ link, produtoNome: nomeDe(anchorId) });
+  }
+  for (const produtoId of solicitados) {
+    const s = semAnuncioPorId.get(produtoId);
+    if (s !== undefined) produtosSemAnuncio.push(s);
   }
 
   // ---- Step 2: the pre-check, from the STORED reading. No Shopee call.
@@ -833,6 +869,14 @@ export async function definirStatusAnunciosShopee(
     listings.push(linhaSemChamada(alvo, 'nao-tentado', MOTIVO_STATUS_ANUNCIO.naoTentado));
   }
 
+  conferirContabilidadePorAnchor(
+    TAG_LOG,
+    solicitados,
+    resolvidos.anchorDe,
+    new Set(listings.map((l) => l.produtoId)),
+    produtosSemAnuncio.map((s) => s.produtoId),
+  );
+
   const resumo = {
     aplicados: listings.filter((l) => l.outcome === 'enviado').length,
     pulados: listings.filter((l) => l.outcome === 'pulado').length,
@@ -843,7 +887,7 @@ export async function definirStatusAnunciosShopee(
   // ONE line per run. Ids, counts, enum tokens and booleans only — never a
   // Shopee body, never provider prose, never a URL.
   // eslint-disable-next-line no-console -- expected on every healthy run; a warn nobody can act on is what hides the real ones
-  console.info('[shopee/anuncios] status de anúncios', {
+  console.info(TAG_LOG, {
     integracaoId: entrada.integracaoId,
     acao: entrada.acao,
     solicitados: solicitados.length,
