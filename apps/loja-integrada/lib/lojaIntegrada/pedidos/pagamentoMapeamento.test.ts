@@ -24,7 +24,6 @@ import {
   cartaoLi,
   formaPagamentoLi,
   mapearPagamentosLi,
-  mesmaDecisaoDePagamentoLi,
   montarEscritaPagamentoLi,
   parcelasLi,
   type PagamentoMapeadoLi,
@@ -561,61 +560,52 @@ describe('the update overlay', () => {
   });
 });
 
-describe('mesmaDecisaoDePagamentoLi: when a lost pedido precondition must re-write the payments', () => {
-  const aprovado = STATUS_PAGAMENTO.aprovado;
-  const estornado = STATUS_PAGAMENTO.estornado;
+describe('⚠️ why the pagamentos and the pedido commit in ONE batch (module header, "Rule 7")', () => {
+  const linhas = [{ id: 1, valor: '100.00', pagamento_tipo: 'bankInvoice' }];
+  const canceladoUs = WATERMARK_US - 500;
+  const datas = {
+    aprovacao: NENHUMA,
+    cancelamento: { derivavel: true, us: canceladoUs },
+  } as const;
+  /** 1020, captured, against a stored `pago`: the stock removal applied or not. */
+  const decisao = (estoqueAplicado: unknown) =>
+    decidirEstadoLi({
+      armazenado: { estado: 'pago', estoqueAplicado },
+      codigo: 'pagamento_devolvido_sem_retorno',
+      capturado: true,
+    }).statusPagamento;
+  const REMOVIDO = { depositoId: 'd', ehSaida: true, removido: { p: 1 } };
 
-  it('EQUAL pair: the same creation status and the same update (status/status, manter/manter)', () => {
-    expect(
-      mesmaDecisaoDePagamentoLi(
-        { criacao: estornado, atualizacao: { tipo: 'status', status: estornado } },
-        { criacao: estornado, atualizacao: { tipo: 'status', status: estornado } },
-      ),
-    ).toBe(true);
-    expect(
-      mesmaDecisaoDePagamentoLi(
-        { criacao: estornado, atualizacao: { tipo: 'manter' } },
-        { criacao: estornado, atualizacao: { tipo: 'manter' } },
-      ),
-    ).toBe(true);
-  });
+  /** The payment as an earlier import stored it: `aprovado`, at the same stamp. */
+  function aprovado(): Readonly<Record<string, unknown>> {
+    const e = montarEscritaPagamentoLi(null, mapear(linhas)[0]!, AGORA_US - 1);
+    if (e.tipo !== 'criar') throw new Error('expected a create');
+    return e.corpo;
+  }
 
-  it('⚠️ NEAR-MISS: a removal applied in between (refund status → kept) is ANOTHER decision; so is another status or creation', () => {
-    expect(
-      mesmaDecisaoDePagamentoLi(
-        { criacao: estornado, atualizacao: { tipo: 'status', status: estornado } },
-        { criacao: estornado, atualizacao: { tipo: 'manter' } },
-      ),
-    ).toBe(false);
-    expect(
-      mesmaDecisaoDePagamentoLi(
-        { criacao: aprovado, atualizacao: { tipo: 'status', status: aprovado } },
-        { criacao: aprovado, atualizacao: { tipo: 'status', status: estornado } },
-      ),
-    ).toBe(false);
-    expect(
-      mesmaDecisaoDePagamentoLi(
-        { criacao: aprovado, atualizacao: { tipo: 'manter' } },
-        { criacao: estornado, atualizacao: { tipo: 'manter' } },
-      ),
-    ).toBe(false);
-  });
+  it('a refund status decided from a stale snapshot S is NOT undone by re-deciding from the fresh S′', () => {
+    const armazenado = aprovado();
+    expect(armazenado.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
 
-  it('end to end: S without the removal and S′ with it decide 1020 differently', () => {
-    const decidir = (estoqueAplicado: unknown) =>
-      decidirEstadoLi({
-        armazenado: { estado: 'pago', estoqueAplicado },
-        codigo: 'pagamento_devolvido_sem_retorno',
-        capturado: true,
-      }).statusPagamento;
-    const s = decidir(null);
-    const sLinha = decidir({ depositoId: 'd', ehSaida: true, removido: { p: 1 } });
-    expect(mesmaDecisaoDePagamentoLi(s, sLinha)).toBe(false);
+    // S: the removal not applied yet ⇒ the refund status and its date.
+    const [deS] = mapear(linhas, decisao(null), datas);
+    const escritaS = montarEscritaPagamentoLi(armazenado, deS!, AGORA_US);
+    if (escritaS.tipo !== 'atualizar') throw new Error('expected an update');
+    expect(escritaS.patch).toMatchObject({
+      status_pagamento: STATUS_PAGAMENTO.estornado,
+      dataCancelamento: canceladoUs,
+    });
+
+    // S′: the stock sync applied the removal in between ⇒ the keep-both arm.
+    const [deSLinha] = mapear(linhas, decisao(REMOVIDO), datas);
+    expect(deSLinha!.statusAtualizacao).toEqual({ tipo: 'manter' });
+    // Re-deciding over what S wrote writes NOTHING: the refund stays beside a kept `pago`.
     expect(
-      mesmaDecisaoDePagamentoLi(
-        sLinha,
-        decidir({ depositoId: 'd', ehSaida: true, removido: { q: 2 } }),
-      ),
-    ).toBe(true);
+      montarEscritaPagamentoLi({ ...armazenado, ...escritaS.patch }, deSLinha!, AGORA_US),
+    ).toEqual({ tipo: 'sem-mudanca' });
+    // NEAR-MISS: when S's write never landed (the batch aborted), S′ keeps `aprovado`.
+    expect(montarEscritaPagamentoLi(armazenado, deSLinha!, AGORA_US)).toEqual({
+      tipo: 'sem-mudanca',
+    });
   });
 });

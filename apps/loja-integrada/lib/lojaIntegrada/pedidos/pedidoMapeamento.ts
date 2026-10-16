@@ -6,13 +6,14 @@
  *
  * PURE: no Firestore, no clock (`nowUs` is a parameter). The importer reads the
  * snapshot, hands its raw data here, and writes what comes back — a create, or
- * an update under a `lastUpdateTime` precondition. On a lost precondition it
- * re-reads and calls this again: every group is re-derived from the snapshot it
- * is handed, and nothing decided against an older one is re-applied. ⚠️ That
- * includes the PAGAMENTOS, written before the pedido from the decision this
- * returns: when the re-derived `decisao.statusPagamento` differs from the one
- * they were written with (`mesmaDecisaoDePagamentoLi`), the importer writes
- * them again before retrying the pedido (`pagamentoMapeamento.ts`, "Rule 7").
+ * an update under a `lastUpdateTime` precondition — in ONE atomic `WriteBatch`
+ * with the PAGAMENTOS, whose statuses come from the `decisao` this returns
+ * (`pagamentoMapeamento.ts`, "Rule 7"). A lost precondition, the pedido's or
+ * any pagamento's, aborts the whole batch; the importer re-reads and calls this
+ * again: every group is re-derived from the snapshot it is handed, and nothing
+ * decided against an older one is ever stored. ⚠️ A `sem-mudanca` here still
+ * owes the batch the pedido's precondition whenever a pagamento write is in it
+ * (that module says on which write).
  *
  * ## The fields
  *

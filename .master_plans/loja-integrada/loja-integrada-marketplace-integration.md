@@ -784,9 +784,13 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   5. **Resolve the produtos** (reads only).
   6. **Freight:** `buscarIntFreteDaConta(…, { apenasAtivo: true })`, step 20's `registrarFormaEnvioNoMapaLi`, the routing decision, and one read of the target by id.
   7. **Cliente and endereço**, only while the pedido has no refs.
-  8. **Build and parse the whole pedido write** before any pagamento write. A `ZodError` here parks with zero writes, so no pagamento is ever left under a missing pedido.
-  9. **Pagamentos** (step 6), **then the pedido.**
-  10. **Avisos and incidentes**, on `importado` and `sem-mudanca` alike, never on `obsoleto`. A retry after a crash between 9 and 10 still writes them.
+  8. **Build and parse the whole pedido write** before any pagamento is decided. A `ZodError` here parks with zero writes.
+  9. **Pagamentos** (step 6), **decided but not written:** read each one, decide it from the same pedido snapshot, and parse it.
+  10. **One atomic `WriteBatch`: the pedido and every pagamento,** each write under its own precondition:
+      - the pedido `create`, or `update(patch, { lastUpdateTime })` against the snapshot read in 3. When its own patch is empty but a pagamento write is in the batch, the precondition rides on a write of the stored watermark exactly as read, which changes nothing;
+      - each pagamento `create`, or `update(…, { lastUpdateTime })` against its own read.
+      - A lost precondition (`FAILED_PRECONDITION` or `ALREADY_EXISTS`) aborts the whole batch, so nothing is written. The retry re-reads the pedido and every pagamento and re-derives every write from them, at most 3 times. So no pagamento is ever written without its pedido, or decided from a stale snapshot.
+  11. **Avisos and incidentes**, on `importado` and `sem-mudanca` alike, never on `obsoleto`. A retry after a crash between 10 and 11 still writes them.
 - **Pedido fields:**
   - id = the deterministic digest (§3); `numero = String(numero)`; `integracaoPedidoOuterRef = 'documents/integracao/<contaId>'`; `operacaoPedidoOuterRef` from the conta.
   - `valorCobrado = valor_total`; `descontoTotal = valor_desconto` plus the positive line residual (Items below).
@@ -911,7 +915,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - the situação table and step 20's mapa helpers.
 - **Rule 7:** no transaction. The app's structure test bans the call, and step 20 set the precedent.
   - **Tier 0:** deterministic ids and `create`.
-  - **Tier 1:** the pedido `update(patch, { lastUpdateTime })` against the snapshot just read. A lost precondition re-derives every group from a fresh read, at most 3 times. The pagamentos' statuses come from the same pedido snapshot, so when the re-derived payment decision differs (`mesmaDecisaoDePagamentoLi`), every pagamento is written again with it before the pedido is retried.
+  - **Tier 1:** the pedido `update(patch, { lastUpdateTime })` against the snapshot just read, and each pagamento's against its own read, all in ONE atomic batch (import step 10). The pagamentos' statuses come from the same pedido snapshot, so a lost precondition anywhere aborts every write, and the retry re-derives every group from fresh reads, at most 3 times. Re-writing the pagamentos after a lost pedido precondition would not do: on the "keep both" arm the fresh decision keeps the stored status, which writes nothing, so a refund status written from the stale snapshot would stay beside a kept `pago`.
   - **Tier 2:** the µs watermark.
   - **Why that is enough:** imports are serialised by the reads queue (`maxConcurrentDispatches: 1`), every other writer only fails our precondition, and an operator's save conflicts through `saveRecord`. No inventory line.
 - **Dry-run/valve:** none (no LI write).
@@ -929,7 +933,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     - the situação table, pinned row by row and against C3: one row per codigo, the capture set equals `aprovado: true`, the paid set is that set minus 6, 16 and 1020;
     - its near-misses: 3 is not `em_processo_aprovacao`; 16 is neither `estornado` nor `em_disputa`; 1019 is not `cancelado`; an unknown codigo is `null`.
   - **5-b:** capture tests on the order, history and payment-catalogue fixtures, plus near-miss pairs for the watermark, the codigo, the history, the refund after a removal, the forma, the money, the modalidade, the cliente, the endereço, the freight, the aviso key, the freeze and the ladder.
-  - **5-c:** the importer against fakes and the emulator: precondition losses, `obsoleto` with zero writes, the pre-write parse, a crash between writes, and the step-7 loop.
+  - **5-c:** the importer against fakes and the emulator: precondition losses (any one aborts the whole batch, on the emulator too), `obsoleto` with zero writes, the pre-write parse, a crash before and after the batch, and the step-7 loop.
   - The `orderIds.test.ts` vectors (§3).
   - **Live import is first seen at the window.**
 - **Timing:** after step 3 (its producer) and step 20 (the mapa helper and the `int_frete` doc it reads).
@@ -958,10 +962,10 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - The spec has no fee, net, interest or settlement field, so none is derived.
 - **Firestore:** `pedidos/{id}/pagamentos/{digest}`. **Indexes:** none (writes by id). **Rulesets:** none. **Env:** none.
 - **Seam:** `@delfrance/core/wire`, `roundReais`, the situação table.
-- **Rule 7:** tiers 0, 1 and 2, as in step 5. Each pagamento has its own read and its own preconditioned write, at most 3 attempts.
+- **Rule 7:** tiers 0, 1 and 2, as in step 5. Each pagamento has its own read and its own preconditioned write, inside step 5's one atomic batch with the pedido (at most 3 attempts, for the whole batch).
   - **The watermark is `lastProviderUpdate`**, in µs: the order's LI clock. It is never `ultimaModificacao`, which is the ERP's own clock and must not be compared with a provider's.
   - A missing stored value ⇒ proceed; `>=`; an empty patch writes nothing.
-  - Pagamentos are written **before** the pedido. A crash after them leaves the pedido's watermark un-advanced, and the redelivery converges.
+  - Pagamentos are written **with** the pedido, in one commit: a lost precondition or a crash leaves both unwritten, and the redelivery converges.
   - **Overlay on update:** `valor`, `status_pagamento`, `lastProviderUpdate`, `ultimaModificacao`, `dataAprovacao` and `dataCancelamento`.
     - `dataCancelamento` follows the status: overlaid only when the status is written or already at the target, never while it is kept.
     - The forma, `parcelas` and `aVista` are overlaid only from a known, non-99 forma: an incoming 99 never overwrites a stored forma.

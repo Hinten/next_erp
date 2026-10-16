@@ -604,11 +604,11 @@ export interface EntradaDecisaoEstadoLi {
  * a payment status is kept (a new payment is created `pendente`).
  *
  * ⚠️ The payment statuses are derived from the SAME stored pedido as the estado
- * (its estado and its applied removal). The importer writes the pagamentos
- * before the pedido; when the pedido's precondition is lost and this decision
- * is re-derived from the newer snapshot, a `statusPagamento` that changed means
- * the pagamentos must be written again with it before the pedido is retried
- * (`mesmaDecisaoDePagamentoLi`, `pagamentoMapeamento.ts`).
+ * (its estado and its applied removal), so the importer commits the pagamentos
+ * in ONE atomic batch with the pedido, under the pedido's precondition: a
+ * snapshot changed since its read (the stock sync applied the removal, say)
+ * aborts every write of the batch, and the retry re-derives this decision from
+ * the fresh one (`pagamentoMapeamento.ts`, "Rule 7").
  */
 export function decidirEstadoLi(entrada: EntradaDecisaoEstadoLi): DecisaoEstadoLi {
   const { armazenado, codigo, capturado } = entrada;

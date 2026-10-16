@@ -63,20 +63,38 @@
  * operator's status). So a payment kept `aprovado` never shows a cancellation
  * date, and a resurrected one drops its old date with its dead status.
  *
- * ## ⚠️ Rule 7: the status is derived from the PEDIDO snapshot (for 5-c)
+ * ## ⚠️ Rule 7: ONE atomic batch with the pedido (for 5-c)
  *
  * `statusCriacao` / `statusAtualizacao` come from the step-5 decision, which
- * reads the stored PEDIDO (its estado and its applied stock removal) — not this
- * document. A pagamento's own precondition retry re-reads only the pagamento,
- * so it re-applies that decision verbatim, and the pagamentos are written
- * BEFORE the pedido. So when the pedido's precondition is lost and the
- * decision is re-derived from the newer snapshot S′, compare it with the one
- * the pagamentos were written with ({@link mesmaDecisaoDePagamentoLi}); when
- * it differs (the stock sync applied the removal in between, say, turning a
- * refund into the keep-both arm), map and write EVERY pagamento again — each
- * re-read — with S′'s decision before retrying the pedido. Otherwise a
- * `estornado` payment is left beside a kept `pago`: the exact pair the
- * keep-both arm exists to prevent.
+ * reads the stored PEDIDO (its estado and its applied stock removal), not this
+ * document. A pagamento write is therefore only as fresh as the pedido
+ * snapshot `S` it was decided from, so the importer commits every pagamento
+ * write in ONE `WriteBatch` with the pedido write, each under its own
+ * precondition:
+ *
+ *  - the pedido: `create`, or `update(patch, { lastUpdateTime: S.updateTime })`.
+ *    When its own patch is empty (`sem-mudanca`) but a pagamento write is in
+ *    the batch, the batch still carries that precondition, on an update that
+ *    re-writes the stored `lastMarketplaceUpdate` exactly as read (the raw
+ *    value, never its µs reading): a write that changes nothing keeps the
+ *    document's update time;
+ *  - each pagamento, from {@link montarEscritaPagamentoLi} against its own
+ *    read: `criar` → `create`, `atualizar` → `update(patch, { lastUpdateTime:
+ *    <that snapshot's updateTime> })`; `obsoleto` and `sem-mudanca` add no
+ *    write. An empty batch is not committed.
+ *
+ * The commit is all or nothing. A lost precondition anywhere —
+ * `FAILED_PRECONDITION` (9; a document removed since its read answers 9 too,
+ * because the stamp replaces the SDK's `exists` check) or `ALREADY_EXISTS`
+ * (6) — writes NOTHING, and the retry re-reads `S′` and every pagamento and
+ * re-derives every write from them (at most 3 attempts). So a payment status
+ * decided from a stale snapshot is never stored, and a crash can no longer
+ * leave the pagamentos written without the pedido. A commit the SDK retried
+ * after it had in fact landed fails its own preconditions the same way, and
+ * the retry re-derives from what it wrote. Re-writing the pagamentos after a
+ * lost pedido precondition cannot replace the batch: on the keep-both arm `S′`
+ * decides `manter`, which writes nothing, so a refund status written from `S`
+ * would stay beside a kept `pago`.
  */
 import { roundReais } from '@delfrance/core/money';
 import type { PedidoLi, PedidoPagamentoLi } from '@delfrance/integrations-loja-integrada';
@@ -205,20 +223,6 @@ export function parcelasLi(pagamento: PedidoPagamentoLi): {
 export interface DecisaoPagamentoLi {
   readonly criacao: StatusPagamento;
   readonly atualizacao: AlvoStatusPagamentoLi;
-}
-
-/**
- * Whether two payment decisions write the same thing — the 5-c retry's test
- * (module header, "Rule 7"). Equal: the same creation status and the same
- * update (two `manter`s, or the same target status). Distinct: `manter` vs any
- * status, two different statuses, two different creation statuses.
- */
-export function mesmaDecisaoDePagamentoLi(a: DecisaoPagamentoLi, b: DecisaoPagamentoLi): boolean {
-  if (a.criacao !== b.criacao) return false;
-  if (a.atualizacao.tipo === 'manter' || b.atualizacao.tipo === 'manter') {
-    return a.atualizacao.tipo === b.atualizacao.tipo;
-  }
-  return a.atualizacao.status === b.atualizacao.status;
 }
 
 /** The statuses a cancellation date belongs to: a reversal or a cancellation. */
