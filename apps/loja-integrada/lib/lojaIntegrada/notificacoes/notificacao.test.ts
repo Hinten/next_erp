@@ -40,6 +40,8 @@ import {
   LiCredencialInvalidaError,
   LiEstacionamentoEmConflitoError,
 } from '../core/erros';
+import { LiPedidoEmConflitoError } from '../pedidos/escritaPedido';
+import { LiHistoricoIncompletoError } from '../pedidos/importarPedido';
 import { type DocData, FakeDb, arrayUnion, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   AGORA_MS,
@@ -464,6 +466,15 @@ describe('classificarFalhaLi — the table, in order', () => {
       throttle(),
       new LiTimeoutError({ ...REQ, prazoMs: 20_000 }, new Error('abortado')),
       new LiNetworkError(REQ, new TypeError('fetch failed')),
+    ]) {
+      expect(await classificar(err), err.name).toBeNull();
+    }
+  });
+
+  it('the importer’s two retry errors — persistent batch contention, a history hole in strict mode — are null: the task retries, never parks', async () => {
+    for (const err of [
+      new LiPedidoEmConflitoError('pedido-x', 3),
+      new LiHistoricoIncompletoError(ID, 1, ['codigo-ausente']),
     ]) {
       expect(await classificar(err), err.name).toBeNull();
     }

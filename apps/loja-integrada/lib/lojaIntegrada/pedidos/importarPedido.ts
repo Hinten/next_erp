@@ -14,16 +14,20 @@
  * `freteMapeamento.ts`, `pagamentoMapeamento.ts`, `orderIdsLi.ts` — and this
  * module only reads, calls them, and writes what they answer, in this order:
  *
- *  1. **The detail GET.** The answer must name the numero asked for, its stamp
- *     must read (`dataLiParaMicros`), and every key a write is built from must
- *     be present — each line's `id`, `envios[0].id`, each payment's `id` (a
- *     positive one) — checked HERE, in one place (`exigirChaveDeEscritaLi`,
- *     `exigirIdPagamentoLi`), so no key is ever built out of a missing one
- *     (`String(null)` is the key `'null'`). The money refusals of the line and
- *     payment mappers are asked here too (a line with no quantity or price, a
- *     payment with no `valor`): their verdict depends on nothing read later.
- *     Each is a `LiSchemaError`, which parks. The notification's own stamp
- *     never decides anything.
+ *  1. **The detail GET.** The answer must name the numero asked for and its
+ *     stamp must read (`dataLiParaMicros`) — {@link conferirDetalheLi}. The
+ *     rest of step 1 waits for the hub guard (a hub's order is never keyed, so
+ *     a foreign payment shape on it must not park it as a schema problem), and
+ *     still runs before the first write (step 6):
+ *     {@link conferirEscritasDoDetalheLi} — every key a write is built from is
+ *     present and names ONE write: each line's `id` (distinct), `envios[0].id`,
+ *     each payment's `id` (positive, distinct) — checked in one place
+ *     (`exigirChaveDeEscritaLi`, `exigirIdPagamentoLi`), so no key is ever
+ *     built out of a missing one (`String(null)` is the key `'null'`) — and the
+ *     money refusals of the line and payment mappers (a line with no quantity
+ *     or price, a payment with no `valor`), whose verdict depends on nothing
+ *     read later. Each is a `LiSchemaError`, which parks. The notification's
+ *     own stamp never decides anything.
  *  2. **The history GET**, read by `lerHistoricoLi`: STRICT on the queue's
  *     attempts 0 and 1 (a hole throws {@link LiHistoricoIncompletoError}: the
  *     task retries), degraded from attempt 2 and in every sweep run (a WARNING,
@@ -33,6 +37,7 @@
  *     `obsoleto`, with ZERO writes of any kind (avisos included).
  *  4. **The hub guard** (D5): a hub marker ⇒ `hub` — no pedido, no pagamento,
  *     the `lojaIntegradaPedidoHub` aviso (raised; resolved on a dead sale).
+ *     Then the rest of step 1, for every other order.
  *  5. **The produtos** (`vinculoProdutoLi.ts`), reads only; a line the
  *     `id_externo` fallback cannot name is left unbound, never the order.
  *  6. **The freight:** the conta's Loja Integrada `int_frete`
@@ -143,6 +148,8 @@ import {
 } from './orderIdsLi';
 import { mapearPagamentosLi, type PagamentoMapeadoLi } from './pagamentoMapeamento';
 import {
+  idsDasLinhasLi,
+  itensGuardadosLi,
   linhasJaVinculadasLi,
   mapearPedidoLi,
   watermarkArmazenadoMaisNovoLi,
@@ -219,38 +226,71 @@ const DECISAO_SEM_EFEITO = {
   atualizacao: { tipo: 'manter' },
 } as const;
 
+function recusaDoDetalhe(resposta: RespostaDoDetalheLi, campos: readonly string[]): LiSchemaError {
+  return new LiSchemaError({ ...resposta, motivo: 'formato', campos });
+}
+
 /**
- * Import step 1's refusals (module header), or the watermark in µs. Every one
- * is a `LiSchemaError` naming field paths, never a value.
+ * Import step 1, first half (module header): the answer names the numero asked
+ * for and its stamp reads — the watermark in µs. Everything else of the order
+ * may still be a hub's (step 4), so nothing more is refused yet.
+ *
+ * @throws {LiSchemaError} naming the field path, never a value.
  */
 export function conferirDetalheLi(
   pedido: PedidoLi,
   numeroPedido: string,
+  resposta: RespostaDoDetalheLi,
+): number {
+  if (String(pedido.numero) !== numeroPedido) throw recusaDoDetalhe(resposta, ['numero']);
+  const watermarkUs = dataLiParaMicros(pedido.data_modificacao);
+  if (watermarkUs === null) throw recusaDoDetalhe(resposta, ['data_modificacao']);
+  return watermarkUs;
+}
+
+/**
+ * Import step 1, second half (module header), for an order past the hub guard
+ * and before its first write: every key a write is built from is present AND
+ * names one write only, and the mappers' own money refusals pass.
+ *
+ * Two lines with one id would be one `ensureUniqueId` — the second taking the
+ * first's produto — and two payments with one id one document written twice in
+ * the batch, which loses its own precondition on every attempt: a retry that
+ * never ends instead of a deterministic refusal.
+ *
+ * @throws {LiSchemaError} naming the field path, never a value.
+ */
+export function conferirEscritasDoDetalheLi(
+  pedido: PedidoLi,
   contaId: string,
   resposta: RespostaDoDetalheLi,
+  watermarkUs: number,
   nowUs: number,
-): number {
-  const recusar = (campos: readonly string[]) =>
-    new LiSchemaError({ ...resposta, motivo: 'formato', campos });
-  if (String(pedido.numero) !== numeroPedido) throw recusar(['numero']);
-  const watermarkUs = dataLiParaMicros(pedido.data_modificacao);
-  if (watermarkUs === null) throw recusar(['data_modificacao']);
-
+): void {
   // The write keys, in ONE place — an explicit `== null` inside each helper.
-  for (const item of pedido.itens)
-    exigirChaveDeEscritaLi(item.id, CAMPO_DE_CHAVE_LI.item, resposta);
+  const linhas = new Set<number>();
+  for (const item of pedido.itens) {
+    const id = exigirChaveDeEscritaLi(item.id, CAMPO_DE_CHAVE_LI.item, resposta);
+    if (linhas.has(id)) throw recusaDoDetalhe(resposta, [CAMPO_DE_CHAVE_LI.item]);
+    linhas.add(id);
+  }
   const envio = pedido.envios[0];
   if (envio !== undefined) exigirChaveDeEscritaLi(envio.id, CAMPO_DE_CHAVE_LI.envio, resposta);
-  for (const p of pedido.pagamentos) exigirIdPagamentoLi(p.id, resposta);
+  const pagamentosVistos = new Set<number>();
+  for (const p of pedido.pagamentos) {
+    const id = exigirIdPagamentoLi(p.id, resposta);
+    if (pagamentosVistos.has(id)) throw recusaDoDetalhe(resposta, [CAMPO_DE_CHAVE_LI.pagamento]);
+    pagamentosVistos.add(id);
+  }
 
   // The mappers' own money refusals: neither depends on anything read later.
-  const linhas = mapearItensLi({
+  const mapeadas = mapearItensLi({
     itens: pedido.itens,
     valorSubtotal: pedido.valor_subtotal,
     resolucoes: new Map(),
     nowUs,
   });
-  if (!linhas.ok) throw recusar(linhas.campos);
+  if (!mapeadas.ok) throw recusaDoDetalhe(resposta, mapeadas.campos);
   const pagamentos = mapearPagamentosLi({
     contaId,
     pedido,
@@ -259,8 +299,7 @@ export function conferirDetalheLi(
     dataCancelamento: { derivavel: false },
     watermarkUs,
   });
-  if (!pagamentos.ok) throw recusar(pagamentos.campos);
-  return watermarkUs;
+  if (!pagamentos.ok) throw recusaDoDetalhe(resposta, pagamentos.campos);
 }
 
 /** The operator-facing store name: the conta's `nome`, else its id. */
@@ -458,22 +497,17 @@ export async function importarPedidoLi(
   const nowUs = microsDeMillisLi(nowMs);
   const log = { integracaoId, numero: payload.numero };
 
-  // 1. The detail.
+  // 1. The detail: its numero and its stamp (the rest after the hub guard).
   const resposta = await buscarPedidoLi(cliente, payload.numero);
   const pedido = resposta.dados;
-  const watermarkUs = conferirDetalheLi(
-    pedido,
-    payload.numero,
-    integracaoId,
-    {
-      operacao: OPERACAO_DETALHE_LI,
-      caminho: `/v1/pedido/${payload.numero}/`,
-      correlationId: resposta.correlationId,
-      refCredencial: resposta.refCredencial,
-      status: resposta.status,
-    },
-    nowUs,
-  );
+  const doDetalhe: RespostaDoDetalheLi = {
+    operacao: OPERACAO_DETALHE_LI,
+    caminho: `/v1/pedido/${payload.numero}/`,
+    correlationId: resposta.correlationId,
+    refCredencial: resposta.refCredencial,
+    status: resposta.status,
+  };
+  const watermarkUs = conferirDetalheLi(pedido, payload.numero, doDetalhe);
 
   // 2. The history.
   const historico = await listarHistoricoSituacaoLi(cliente, pedido.numero);
@@ -520,6 +554,9 @@ export async function importarPedidoLi(
     deps.logger?.warn(`${ROTULO_LOG} pedido com marca de hub; não importado`, log);
     return { kind: 'hub' };
   }
+
+  // 1, second half: the write keys and the money, refused before the first write (step 6).
+  conferirEscritasDoDetalheLi(pedido, integracaoId, doDetalhe, watermarkUs, nowUs);
 
   // 5. The produtos.
   const resolvedor = criarResolvedorDeLinhasLi(db, integracaoId, cliente);
@@ -619,8 +656,13 @@ export async function importarPedidoLi(
   registrarFormasDesconhecidasLi(deps, log, mapearPagamentos(decisao.statusPagamento));
 
   // 11. The incidentes, then the avisos — on `importado` and `sem-mudanca` alike.
+  // A line incidente names a line the pedido HOLDS once the winning attempt
+  // landed: a frozen pedido does not take a line Loja Integrada added later.
+  const itensGuardados = itensGuardadosLi(gravacao.armazenado, gravacao.escrita);
+  const guardadas = idsDasLinhasLi(itensGuardados);
   const linhasSemProduto: LinhaSemProdutoLi[] = itens.itens.flatMap((item) => {
-    const r = item.ensureUniqueId === null ? undefined : resolucoes.get(item.ensureUniqueId);
+    if (item.ensureUniqueId === null || !guardadas.has(item.ensureUniqueId)) return [];
+    const r = resolucoes.get(item.ensureUniqueId);
     return item.produtoUid === null && r !== undefined && r.produtoId === null
       ? [{ item, via: r.via }]
       : [];
@@ -630,7 +672,7 @@ export async function importarPedidoLi(
     pedidoId,
     numero: String(pedido.numero),
     linhasSemProduto,
-    jaVinculadas: linhasJaVinculadasLi(gravacao.armazenado?.itens),
+    jaVinculadas: linhasJaVinculadasLi(itensGuardados),
     multiEnvio: blocoFinal?.multiEnvio ?? false,
     clienteSemIdentidade: partes.semIdentidade,
     totaisDivergentes:

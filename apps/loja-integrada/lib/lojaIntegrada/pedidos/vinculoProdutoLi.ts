@@ -9,11 +9,15 @@
  * The line's reference form comes from `itensMapeamento.ts` (`formaDoProdutoLi`):
  *
  *  1. **`id-li`** (a resource URI with no query) — the Loja Integrada produto id
- *     ⇒ the link docs ({@link vinculoDoProdutoLi}). One owner binds, after the
- *     hop below; more than one owner is AMBIGUOUS and ends the cascade unbound.
+ *     ⇒ the link docs ({@link vinculoDoProdutoLi}). One EXISTING owner binds,
+ *     after the hop below; more than one existing owner is AMBIGUOUS and ends
+ *     the cascade unbound; none (no link, or only gone owners) falls through.
  *  2. **`produto_pai`** — the parent's Loja Integrada id ⇒ the same lookup. Its
  *     owner is the ERP PARENT, handed to the SKU rungs as `paiId` and never
  *     bound, so a variation line can never bind a parent that owns no stock.
+ *     This rung reads no produto: a lookup that is not exactly ONE owner scopes
+ *     nothing (`paiId` null), and the unscoped SKU rung — with its own
+ *     ambiguity guard — decides.
  *  3. **The SKU rungs** — `resolverProdutoPorSku` in `@delfrance/data/admin/produtos`,
  *     the stage every channel ends on. Its three guards (the kit guard, the
  *     família-de-um hop, the `limit(2)` ambiguity detector) exist exactly once:
@@ -41,8 +45,10 @@
  * stock), anything else answers itself. `paiId` IS projected — this read is by
  * id, not through a `paiId == null` query — so a child owner answers itself
  * whatever stale `filhoUnicoId` it carries. An owner that no longer exists (a
- * link left behind by a produto delete) is NO hit: binding a produto that is
- * gone would move stock nowhere.
+ * link left behind by a produto delete, which only the migrated corpus can
+ * hold: a delete here is refused while link docs exist) is NO hit, and counts
+ * toward no ambiguity: binding a produto that is gone would move stock nowhere,
+ * and a leftover beside ONE live owner says nothing against it.
  *
  * ## The query
  *
@@ -236,10 +242,18 @@ export function criarResolvedorDeLinhasLi(
     via: ViaProdutoLi,
   ): Promise<ResolucaoProdutoLi | null> => {
     const v = await vinculo(idLi);
-    if (v.tipo === 'ambiguo') return { produtoId: null, via: 'vinculo-ambiguo', idLi };
     if (v.tipo === 'nenhum') return null;
-    const produtoId = await unidade(v.donoId);
-    return produtoId === null ? null : { produtoId, via, idLi };
+    // A gone owner is no hit (module header) — dropped BEFORE the owners are
+    // counted, so a link left under a deleted produto never makes a live one
+    // ambiguous. One read per owner, memoised, at most LIMITE_VINCULOS_LI.
+    const unidades: string[] = [];
+    for (const donoId of v.tipo === 'um' ? [v.donoId] : v.donoIds) {
+      const u = await unidade(donoId);
+      if (u !== null) unidades.push(u);
+    }
+    if (unidades.length === 0) return null;
+    if (unidades.length > 1) return { produtoId: null, via: 'vinculo-ambiguo', idLi };
+    return { produtoId: unidades[0]!, via, idLi };
   };
 
   return {

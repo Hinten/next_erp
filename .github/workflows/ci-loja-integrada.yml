@@ -13,7 +13,7 @@ name: CI — Loja Integrada
 # behind its own gate. A skip of this lane therefore loses only the emulator
 # round trip, never the unit suites.
 #
-# ONE job, five suite files today:
+# ONE job, six suite files today:
 #   - `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts` — the round
 #     trip below;
 #   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/pollPedidos.tasks.test.ts` —
@@ -27,7 +27,11 @@ name: CI — Loja Integrada
 #     — the conta trigger (step 20): a write to `integracao` → the real deployed
 #     `onDocumentWritten` → the shared `int_frete` core → a created, patched,
 #     deactivated or adopted `int_frete` doc, read back raw. It is the first
-#     real-Firestore run of that core.
+#     real-Firestore run of that core;
+#   - `apps/loja-integrada/lib/lojaIntegrada/pedidos/importarPedido.firestore.test.ts`
+#     — the order import (steps 5–6) in-process against the real Firestore: the
+#     ONE batch of the pedido and its pagamentos, its preconditions, and the
+#     real cliente, endereço, link-doc and `mapa` writes.
 # ⚠️ The trigger fires on EVERY suite's `integracao` writes, not only its own:
 # the functions emulator loads the whole codebase. The rules that keep the files
 # apart (unique conta ids, the step-3 suites' incomplete seeds, the trigger

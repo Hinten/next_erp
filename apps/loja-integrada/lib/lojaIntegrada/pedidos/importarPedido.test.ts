@@ -23,7 +23,11 @@ import {
   findOrCreateCliente,
   type FindOrCreateClienteResult,
 } from '@delfrance/data/admin/clientes';
-import { LiSchemaError } from '@delfrance/integrations-loja-integrada';
+import {
+  LiHttpError,
+  LiNotFoundError,
+  LiSchemaError,
+} from '@delfrance/integrations-loja-integrada';
 import {
   ESTADO_FRETE,
   ESTADO_PEDIDO,
@@ -463,9 +467,19 @@ describe('import step 1: every refusal before any write', () => {
       { pagamentos: [{ ...pagamentoPadrao(), valor: '' }] },
       'pagamentos[].valor',
     ],
+    [
+      'two lines with ONE id (one key, two lines)',
+      { itens: [linhaPadrao(), { ...linhaPadrao(), linha: 2 }] },
+      'itens[].id',
+    ],
+    [
+      'two payments with ONE id (one document, two writes)',
+      { pagamentos: [pagamentoPadrao(), { ...pagamentoPadrao(), valor: '1.00' }] },
+      'pagamentos[].id',
+    ],
     ['another numero', { numero: NUMERO_LI + 1 }, 'numero'],
     ['an unreadable stamp', { data_modificacao: '2027-01-10 12:00:00' }, 'data_modificacao'],
-  ])('%s ⇒ LiSchemaError naming %s, and zero writes', async (_nome, over, campo) => {
+  ])('%s ⇒ a LiSchemaError naming its field, and zero writes', async (_nome, over, campo) => {
     const db = novoDb();
     const c = cena(over as DocData);
     const antes = db.escritas.length;
@@ -542,7 +556,37 @@ describe('the hub guard (D5)', () => {
     expect(aviso?.params).toEqual({ loja: 'Loja de teste', pedido: String(NUMERO_LI) });
   });
 
-  it('a hub order in a dead-sale codigo ⇒ hub, the aviso RESOLVED; the next clean import resolves it too', async () => {
+  it('a raised hub row is RESOLVED by the next import WITHOUT a marker, at its newer stamp — which imports the order', async () => {
+    const db = novoDb();
+    const c = cena({ id_anymarket: 77 });
+    expect((await importar(db, c)).r).toEqual({ kind: 'hub' });
+    const caminho = caminhoAvisoDoPedido(TIPO_AVISO.lojaIntegradaPedidoHub);
+    expect(db.ler(caminho)).toMatchObject({ resolvidoEm: null, relogioEvento: WATERMARK_2H });
+
+    c.detalhe = pedidoLiBruto({ data_modificacao: carimboLi(3) });
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(db.ler(CAMINHO_PEDIDO)).toBeDefined();
+    const aviso = db.ler(caminho)!;
+    expect(aviso.resolvidoEm).not.toBeNull();
+    expect(aviso.resolucaoMotivo).toBe('sem-marca-de-hub');
+    expect(aviso.relogioEvento).toBe(dataLiParaMicros(carimboLi(3)));
+  });
+
+  it('near-miss: a late OLDER marker-free import cannot close a raised hub row (equal stamp: a no-op)', async () => {
+    const db = novoDb();
+    const c = cena({ id_anymarket: 77, data_modificacao: carimboLi(3) });
+    await importar(db, c);
+    // The same order, marker-free, at an OLDER stamp: nothing stored to call it obsoleto, so it
+    // imports — and its clocked resolve is stale against the raise.
+    c.detalhe = pedidoLiBruto({ data_modificacao: carimboLi(2) });
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(db.ler(caminhoAvisoDoPedido(TIPO_AVISO.lojaIntegradaPedidoHub))).toMatchObject({
+      resolvidoEm: null,
+      relogioEvento: dataLiParaMicros(carimboLi(3)),
+    });
+  });
+
+  it('a hub order in a dead-sale codigo ⇒ hub, the aviso RESOLVED (nothing is left to import)', async () => {
     const db = novoDb();
     const c = cena({ id_anymarket: 77 });
     await importar(db, c);
@@ -559,11 +603,56 @@ describe('the hub guard (D5)', () => {
     expect(escritasDoPedido(db)).toEqual([]);
   });
 
+  it.each([
+    ['a payment id of 0', { id: 0 }],
+    ['a payment with no id', { id: null }],
+    ['a payment with no valor', { valor: '' }],
+  ])(
+    '⚠️ a hub order whose payment carries %s ⇒ hub (the aviso), never a schema park: no key is built for it',
+    async (_nome, over) => {
+      const db = novoDb();
+      const { r } = await importar(
+        db,
+        cena({
+          pagamentos: [
+            { ...pagamentoPadrao(), forma_pagamento: { codigo: 'PAGAMENTOEXTERNO' }, ...over },
+          ],
+        }),
+      );
+      expect(r).toEqual({ kind: 'hub' });
+      expect(escritasDoPedido(db)).toEqual([]);
+      expect(
+        db.ler(caminhoAvisoDoPedido(TIPO_AVISO.lojaIntegradaPedidoHub))?.resolvidoEm,
+      ).toBeNull();
+    },
+  );
+
+  it('near-miss: the same payment WITHOUT a hub marker is refused before any write', async () => {
+    const db = novoDb();
+    const antes = db.escritas.length;
+    const err: unknown = await importar(
+      db,
+      cena({ pagamentos: [{ ...pagamentoPadrao(), id: 0 }] }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LiSchemaError);
+    expect(db.escritas.length).toBe(antes);
+  });
+
+  it('near-miss: an empty-text `id_anymarket` is the provider’s “nothing”, read through the wire schema ⇒ imported, no hub row raised', async () => {
+    const db = novoDb();
+    expect((await importar(db, cena({ id_anymarket: '' }))).r).toEqual({ kind: 'importado' });
+    expect(db.ler(CAMINHO_PEDIDO)).toBeDefined();
+    expect(
+      db.ler(caminhoAvisoDoPedido(TIPO_AVISO.lojaIntegradaPedidoHub))?.resolvidoEm,
+    ).not.toBeNull();
+  });
+
   it('the markers, pinned both ways', () => {
     const base = pedidoLiBruto();
     const ler = (over: DocData) =>
       ehPedidoDeHubLi(
-        // The wire schema reads `''` as null: the provider's "nothing" is no marker.
+        // The predicate over an ALREADY-parsed order (no wire schema here): `''` is pinned end to
+        // end below, where the schema reads it as null.
         JSON.parse(JSON.stringify({ ...base, ...over })) as Parameters<typeof ehPedidoDeHubLi>[0],
       );
     expect(ler({ id_anymarket: null })).toBe(false);
@@ -624,6 +713,37 @@ describe('the cliente and the endereço (import step 7)', () => {
     });
     await importar(db, c);
     expect(mockCliente).toHaveBeenCalledTimes(1);
+  });
+
+  it('⚠️ another writer links ANOTHER cliente between the read and the batch ⇒ the retry keeps it, and never pairs it with the endereço stored under ours', async () => {
+    const db = novoDb();
+    // A first import with no identity: the pedido holds no refs.
+    await importar(db, cena());
+    expect(db.ler(CAMINHO_PEDIDO)?.clientePedidoOuterRef).toBeNull();
+    mockCliente.mockClear();
+
+    // Now the buyer has a document: step 7 resolves OUR cliente and stores the endereço under it.
+    const c = cena({
+      cliente: { id: 1, nome: 'C', cpf: CPF_VALIDO_LI },
+      data_modificacao: carimboLi(3),
+    });
+    const outro = 'documents/clientes/cliente-de-outro-escritor';
+    let ligou = false;
+    db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
+      ligou = true;
+      await refPedido(db).update({ clientePedidoOuterRef: outro });
+    });
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(ligou).toBe(true);
+    expect(mockCliente).toHaveBeenCalledTimes(1);
+    // Our endereço WAS stored (step 7 ran against S), under our cliente.
+    expect(db.idsEm(`clientes/${CLIENTE_ID}/enderecos`)).toHaveLength(1);
+
+    const pedido = db.ler(CAMINHO_PEDIDO)!;
+    expect(pedido.clientePedidoOuterRef).toBe(outro);
+    // Re-derived from S′: the endereço belongs to another person, so neither ref takes it.
+    expect(pedido.enderecoFiscalOuterRef).toBeNull();
+    expect((pedido.freteInicial as DocData).enderecoFreteOuterReference).toBeNull();
   });
 
   it('an unknown estado ⇒ the CEP recovery, through the injected client', async () => {
@@ -780,8 +900,85 @@ describe('the produto resolution (import step 5)', () => {
       ],
     });
     c.produtos.set('321', () => ({ status: 503, corpo: { erro: 'x' } }));
-    await expect(importar(db, c)).rejects.toThrow();
+    const { fetch, urls } = plataformaLi(roteiroDe(c));
+    const contexto = await loadLojaIntegradaContext(asDb(db), CONTA, {
+      ambiente: AMBIENTE_LIGADO,
+      ritmo: ritmoFalso().ritmo,
+      registro: { escrever: gravadorDeLog().escrever },
+      fetch,
+    });
+    const err: unknown = await importarPedidoLi(asDb(db), contexto, payload(), {
+      agoraMs: () => AGORA_MS,
+      arrayUnion,
+      increment,
+      viaCep: viaCepFalso,
+      tentativa: 0,
+    }).catch((e: unknown) => e);
+    // THE produto GET's own 503 — not a scripted 500 for a route nobody expected.
+    expect(err).toBeInstanceOf(LiHttpError);
+    expect(err).not.toBeInstanceOf(LiNotFoundError);
+    expect((err as LiHttpError).status).toBe(503);
+    expect(urls.some((u) => new URL(u).pathname === '/v1/produto/321/')).toBe(true);
     expect(escritasDoPedido(db)).toEqual([]);
+  });
+
+  /** The order with a SECOND line Loja Integrada added later (unbound: no link, no SKU match). */
+  function comLinhaNova(horas: number): DocData {
+    return pedidoLiBruto({
+      data_modificacao: carimboLi(horas),
+      itens: [
+        linhaPadrao(),
+        {
+          ...linhaPadrao(),
+          id: ID_ITEM_LI + 1,
+          linha: 2,
+          sku: 'sku-sem-produto',
+          quantidade: '1.000',
+          preco_venda: '10.0000',
+          preco_subtotal: '10.0000',
+          produto: '/api/v1/produto/7999',
+          produto_pai: null,
+        },
+      ],
+      valor_subtotal: '110.00',
+      valor_total: '124.80',
+      pagamentos: [{ ...pagamentoPadrao(), valor: '124.80', valor_pago: '124.80' }],
+    });
+  }
+  const ID_LINHA_NOVA = String(ID_ITEM_LI + 1);
+
+  it('⚠️ a FROZEN pedido does not take a line Loja Integrada added later: no incidente asks to bind a line it does not hold', async () => {
+    const db = novoDb();
+    const c = cena();
+    await importar(db, c);
+    await refPedido(db).update({ hasUserInteraction: true });
+
+    c.detalhe = comLinhaNova(3);
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    const ids = Object.values(db.ler(CAMINHO_PEDIDO)?.itens as Record<string, DocData[]>)
+      .flat()
+      .map((l) => l.ensureUniqueId);
+    expect(ids).toEqual([String(ID_ITEM_LI)]);
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).not.toContain(
+      idIncidenteLinhaLi(ID_LINHA_NOVA),
+    );
+    // The line the pedido DOES hold, still unbound, keeps its incidente.
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).toContain(
+      idIncidenteLinhaLi(String(ID_ITEM_LI)),
+    );
+  });
+
+  it('near-miss: the same added line on a pedido NOT frozen is stored, and its incidente raised', async () => {
+    const db = novoDb();
+    const c = cena();
+    await importar(db, c);
+    c.detalhe = comLinhaNova(3);
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    const ids = Object.values(db.ler(CAMINHO_PEDIDO)?.itens as Record<string, DocData[]>)
+      .flat()
+      .map((l) => l.ensureUniqueId);
+    expect(ids).toEqual([String(ID_ITEM_LI), ID_LINHA_NOVA]);
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).toContain(idIncidenteLinhaLi(ID_LINHA_NOVA));
   });
 
   it('a stored line already bound raises no incidente on a later unbound import', async () => {
@@ -937,19 +1134,29 @@ describe('rule 7: ONE batch, re-derived whole on every lost precondition', () =>
     expect(depois.valorCobrado).toBe(antes.valorCobrado);
   });
 
-  it('one lost precondition ⇒ the retry re-reads S′ and lands: the other writer’s field survives', async () => {
+  it('one lost precondition ⇒ the retry re-reads S′ and RE-DERIVES from it: an operator’s freeze that landed mid-import keeps its money', async () => {
     const db = novoDb();
     const c = cena();
     await importar(db, c);
-    c.detalhe = pedidoLiBruto({ data_modificacao: carimboLi(5) });
+    // New Loja Integrada money: a patch decided from S writes `valorCobrado`.
+    c.detalhe = pedidoLiBruto({ data_modificacao: carimboLi(5), valor_total: '120.00' });
+    let editou = false;
     db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
-      await refPedido(db).update({ outroEscritor: 1 });
+      editou = true;
+      await refPedido(db).update({ hasUserInteraction: true, valorCobrado: 99.9 });
     });
+    const leiturasAntes = db.leituras.filter((l) => l === CAMINHO_PEDIDO).length;
     expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(editou).toBe(true);
+    // S, then S′: the batch decided from S aborted, and the retry read again.
+    expect(db.leituras.filter((l) => l === CAMINHO_PEDIDO).length - leiturasAntes).toBe(2);
     expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
-      outroEscritor: 1,
+      hasUserInteraction: true,
+      valorCobrado: 99.9,
       lastMarketplaceUpdate: dataLiParaMicros(carimboLi(5)),
     });
+    // No write carrying the S-based money ever landed.
+    expect(db.escritasEm(CAMINHO_PEDIDO).some((e) => e.dados?.valorCobrado === 120)).toBe(false);
   });
 
   it('an operator’s money edit (hasUserInteraction) survives the next Loja Integrada change', async () => {
@@ -1016,15 +1223,42 @@ describe('rule 7: ONE batch, re-derived whole on every lost precondition', () =>
 });
 
 describe('a crash between the batch and the avisos is healed by the retry', () => {
-  it('the aviso write fails after the batch landed ⇒ the retry is sem-mudanca and still writes the aviso and the incidentes', async () => {
+  it('the FIRST write after the batch fails (an incidente) ⇒ neither incidentes nor avisos landed; the sem-mudanca retry writes both', async () => {
+    const db = novoDb();
+    const c = cena({ situacao: { codigo: 'codigo_novo', id: 999 } });
+    c.historico = [linhaHistoricoLi(1, carimboLi(0, 100), 'codigo_novo', 'pedido_efetuado')];
+    const linha = caminhoIncidente(idIncidenteLinhaLi(String(ID_ITEM_LI)));
+    const aviso = caminhoAvisoDoPedido(TIPO_AVISO.lojaIntegradaSituacaoDesconhecida);
+    db.falharEscrita(linha, grpc(14, 'UNAVAILABLE'));
+    await expect(importar(db, c)).rejects.toMatchObject({ code: 14 });
+    // The batch landed; nothing of step 11 did.
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.error);
+    expect(db.ler(CAMINHO_PAGAMENTO)).toBeDefined();
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).toEqual([]);
+    expect(db.ler(aviso)).toBeUndefined();
+
+    db.falharEscrita(linha, null);
+    const antes = db.escritas.length;
+    expect((await importar(db, c)).r).toEqual({ kind: 'situacao-desconhecida' });
+    expect(db.escritas.slice(antes).filter((e) => e.lote !== undefined)).toEqual([]);
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).toContain(
+      idIncidenteLinhaLi(String(ID_ITEM_LI)),
+    );
+    expect(db.ler(aviso)).toMatchObject({ resolvidoEm: null, relogioEvento: WATERMARK_2H });
+  });
+
+  it('the aviso write fails after the batch and the incidentes landed ⇒ the sem-mudanca retry still raises the aviso', async () => {
     const db = novoDb();
     const c = cena({ situacao: { codigo: 'codigo_novo', id: 999 } });
     c.historico = [linhaHistoricoLi(1, carimboLi(0, 100), 'codigo_novo', 'pedido_efetuado')];
     const chave = caminhoAvisoDoPedido(TIPO_AVISO.lojaIntegradaSituacaoDesconhecida);
     db.falharEscrita(chave, grpc(14, 'UNAVAILABLE'));
     await expect(importar(db, c)).rejects.toMatchObject({ code: 14 });
-    // The batch landed; the aviso did not.
+    // The batch and the incidentes landed (step 11 writes them first); the aviso did not.
     expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.error);
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).toContain(
+      idIncidenteLinhaLi(String(ID_ITEM_LI)),
+    );
     expect(db.ler(chave)).toBeUndefined();
 
     db.falharEscrita(chave, null);

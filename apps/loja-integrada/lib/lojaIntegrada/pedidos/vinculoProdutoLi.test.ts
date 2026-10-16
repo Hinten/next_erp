@@ -171,8 +171,33 @@ describe('the cascade', () => {
     expect(r).toEqual({ produtoId: 'por-sku', via: 'sku-root', idLi: '7001' });
   });
 
+  it('(1) ONE live owner beside a link left under a GONE produto binds the live one: a gone owner counts nowhere', async () => {
+    const db = new FakeDb();
+    seedProduto(db, 'raiz', { filhoUnicoId: 'membro' });
+    seedVinculo(db, 'raiz', 'a', { contaLojaIntegrada: `documents/integracao/${CONTA}`, id: 7001 });
+    seedVinculo(db, 'sumiu', 'b', { contaLojaIntegrada: `integracao/${CONTA}`, id: 7001 });
+    const { cliente } = clienteFalso();
+    expect(await criarResolvedorDeLinhasLi(asDb(db), CONTA, cliente).resolver(ref())).toEqual({
+      produtoId: 'membro',
+      via: 'vinculo-li',
+      idLi: '7001',
+    });
+
+    // Near-miss: two gone owners are no hit at all — the SKU rungs decide.
+    const vazio = new FakeDb();
+    seedVinculo(vazio, 'sumiu-1', 'a', { contaLojaIntegrada: `integracao/${CONTA}`, id: 7001 });
+    seedVinculo(vazio, 'sumiu-2', 'b', { contaLojaIntegrada: `integracao/${CONTA}`, id: 7001 });
+    seedProduto(vazio, 'por-sku', { sku: 'S-1' });
+    expect(
+      await criarResolvedorDeLinhasLi(asDb(vazio), CONTA, cliente).resolver(ref({ sku: 'S-1' })),
+    ).toEqual({ produtoId: 'por-sku', via: 'sku-root', idLi: '7001' });
+  });
+
   it('(1) an ambiguous link ends the cascade unbound — no SKU rung binds it', async () => {
     const db = new FakeDb();
+    // Two EXISTING owners (a gone one counts toward no ambiguity — above).
+    seedProduto(db, 'p1', { paiId: 'x' });
+    seedProduto(db, 'p2', { paiId: 'x' });
     seedVinculo(db, 'p1', 'a', { contaLojaIntegrada: `documents/integracao/${CONTA}`, id: 7001 });
     seedVinculo(db, 'p2', 'b', { contaLojaIntegrada: `documents/integracao/${CONTA}`, id: 7001 });
     seedProduto(db, 'por-sku', { sku: 'S-1' });

@@ -484,7 +484,11 @@ export interface DepsTarefaLi extends TratarFalhaDeps {
   readonly arrayUnion: (...elementos: unknown[]) => unknown;
   /** The importer's CEP recovery: `createViaCepClient()` in the roots, a fake in tests. */
   readonly viaCep: ViaCepClient;
-  /** The importer's log lines (ids and counts only); `logger` above is the park's. */
+  /**
+   * The run's ONE logger — `TratarFalhaDeps.logger` re-declared with an
+   * optional `info`, never a second sink: the park's lines and the importer's
+   * (ids and counts only) both go to it.
+   */
   readonly logger?: LoggerImportadorLi;
   /** The sleep the pacer uses: `setTimeout` in the roots, a recording fake in tests. */
   readonly esperar: (ms: number) => Promise<void>;

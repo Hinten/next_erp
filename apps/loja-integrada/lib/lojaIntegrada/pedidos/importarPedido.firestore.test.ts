@@ -7,31 +7,42 @@
  * (D17) and the setup's kill-switch stands behind it.
  *
  * What runs for real here: the context, the package client, the mappers, the
- * SKU rungs, the link-doc collection-group query, step 20's `mapa` helper, the
- * real `findOrCreateCliente` (the multi-document read-and-write API the offline
- * fake does not model) and `ensureEndereco`, the ONE `WriteBatch` of the pedido
- * and its pagamentos with its per-write preconditions, the avisos and the
- * incidentes.
+ * SKU rungs, the link-doc collection-group query, the conta's Loja Integrada
+ * `int_frete` lookup and step 20's `mapa` helper (its union under
+ * `lastUpdateTime`), the read of a mapped target by id and the freight aviso
+ * clocked by it, the real `findOrCreateCliente` (the multi-document
+ * read-and-write API the offline fake does not model) and `ensureEndereco`, the
+ * ONE `WriteBatch` of the pedido and its pagamentos with its per-write
+ * preconditions, the avisos and the incidentes.
  *
  * What it proves that the offline suite cannot:
  *  - the batch is atomic on the server: one commit time for the pedido and its
  *    pagamento, and a lost pedido precondition writes NO pagamento;
- *  - two importers interleaved past their reads converge on the newer stamp;
- *  - an operator's write between the read and the batch survives;
- *  - a crash before and after the batch converges on the retry;
+ *  - two importers interleaved past their reads converge on the newer stamp
+ *    (contending on the `mapa` row too);
+ *  - an operator's write between the read and the batch survives: the batch
+ *    decided from the older snapshot would have overwritten it;
+ *  - a crash before the batch — the `mapa` row, the cliente and the endereço
+ *    already written, the batch not — and one after it each converge on the
+ *    retry;
+ *  - the freight routing: an unmapped key registered in the `mapa`, a mapped
+ *    active target routed with its service id, an inactive one raising the
+ *    aviso at the target read's time;
  *  - the code a batch answers for a document removed since its read under
- *    `lastUpdateTime`, and what the empty-patch CARRIER does to the pedido's
- *    update time — for a watermark that round-trips and for one stored as a
- *    double (both pinned as the emulator answers them);
+ *    `lastUpdateTime`; that the CARRIER's precondition holds on a stale
+ *    snapshot although its own write would change nothing; and what the carrier
+ *    does to the pedido's update time — for a watermark that round-trips and
+ *    for one stored as a double (both pinned as the emulator answers them);
  *  - the link lookup finds both stored ref forms through the real query;
  *  - the step-7 loop moves only the clocks.
  *
  * ⚠️ The conta is seeded ONCE (an `integracao` write fires the conta trigger in
  * the functions emulator): no filial and no `dataCadastro`, so the core plans it
- * `incompleto` and only reads, and its seeded `int_frete` doc mirrors the conta,
- * so nothing is patched. Its id is no other suite's. Each `beforeEach` deletes
- * what this file reads; `afterAll` removes the freight doc BEFORE the conta, so
- * the delete trigger finds nothing to deactivate.
+ * `incompleto` and only reads; its `int_frete` doc, seeded in every
+ * `beforeEach`, mirrors the conta (tipo, `ativo`, the canonical back-ref, the
+ * `nome`), so a trigger run finds nothing to patch. Its id is no other suite's.
+ * Each `beforeEach` deletes what this file reads; `afterAll` removes the freight
+ * docs BEFORE the conta, so the delete trigger finds nothing to deactivate.
  */
 import { env } from 'node:process';
 import {
@@ -63,6 +74,7 @@ import { loadLojaIntegradaContext } from '../core/contexto';
 import type { DepsImportadorLi, PayloadNotificacaoLi } from '../notificacoes/notificacao';
 import { AMBIENTE_LIGADO, credencialDoc, gravadorDeLog, ritmoFalso } from '../testing/fixtures';
 import {
+  CHAVE_FORMA_ENVIO_LI,
   CPF_VALIDO_LI,
   ID_ITEM_LI,
   ID_PAGAMENTO_LI,
@@ -75,7 +87,8 @@ import {
   plataformaLi,
   type RespostaRoteirizadaLi,
 } from '../testing/pedidosLi';
-import { chaveDoAvisoDoPedidoLi } from './avisosPedidoLi';
+import { relogioDoDocumentoUs } from '../avisos/avisos';
+import { chaveDoAvisoDeFreteLi, chaveDoAvisoDoPedidoLi } from './avisosPedidoLi';
 import { dataLiParaMicros } from './dataLi';
 import { __limparRegistrosUnicosParaTestes, importarPedidoLi } from './importarPedido';
 import { ID_INCIDENTE_LI, idIncidenteLinhaLi } from './incidentesPedidoLi';
@@ -88,6 +101,10 @@ const CONTA = 'conta-li-importador-ci';
 const PEDIDO_ID = idPedidoLi(CONTA, NUMERO_LI);
 const PAGAMENTO_ID = idPagamentoLi(CONTA, ID_PAGAMENTO_LI);
 const INT_FRETE_LI = `lojaIntegrada-${CONTA}`;
+/** The conta's `nome`: the seeded `int_frete` mirrors it (header). */
+const NOME_CONTA = 'Loja de teste do importador';
+/** A Melhor Envio target the `mapa` row can name, no other suite's. */
+const ALVO_ME = 'me-alvo-importador-ci';
 /** 2027-01-15T15:00:00Z. */
 const AGORA_MS = Date.UTC(2027, 0, 15, 15, 0, 0);
 
@@ -134,6 +151,7 @@ function linhaComIdExterno(): DocumentData {
 async function importar(
   c: Cena,
   over: Partial<DepsImportadorLi> = {},
+  banco: Firestore = db(),
 ): Promise<Awaited<ReturnType<typeof importarPedidoLi>>> {
   const { fetch } = plataformaLi({
     pedidos: new Map([[NUMERO_LI, () => c.detalhe]]),
@@ -147,7 +165,7 @@ async function importar(
     fetch,
     registro: { escrever: gravadorDeLog().escrever },
   });
-  return importarPedidoLi(db(), contexto, payload(), {
+  return importarPedidoLi(banco, contexto, payload(), {
     agoraMs: () => AGORA_MS,
     arrayUnion: (...e: unknown[]) => FieldValue.arrayUnion(...e),
     increment: (by: number) => FieldValue.increment(by),
@@ -177,11 +195,67 @@ function updateTimeDe(snap: { readonly updateTime?: Timestamp }): Timestamp {
   return snap.updateTime;
 }
 
+const refFrete = (): DocumentReference => db().collection('int_frete').doc(INT_FRETE_LI);
+
 async function limpar(): Promise<void> {
   for (const colecao of ['pedidos', 'produtos', 'avisos', 'clientes', 'clienteIdentidades']) {
     await db().recursiveDelete(db().collection(colecao));
   }
-  await db().collection('int_frete').doc(INT_FRETE_LI).delete();
+  await refFrete().delete();
+  await db().collection('int_frete').doc(ALVO_ME).delete();
+}
+
+/** The conta's Loja Integrada `int_frete`, mirroring the conta (header), its `mapa` as given. */
+async function semearIntFrete(mapa: DocumentData[] = []): Promise<void> {
+  await refFrete().set({
+    tipo: 'lojaIntegrada',
+    nome: NOME_CONTA,
+    ativo: true,
+    contaLojaIntegradaEnviosOuterRef: `documents/integracao/${CONTA}`,
+    mapa,
+    horarioDeCorte: null,
+  });
+}
+
+/** A `mapa` row mapping the synthetic shipping method to the Melhor Envio target. */
+function linhaMapeada(): DocumentData {
+  return {
+    nomeOriginal: 'Gateway de teste - Transportadora',
+    idOriginal: CHAVE_FORMA_ENVIO_LI,
+    observacao: 'Origem: Pedido 1',
+    nomeTarget: null,
+    targetData: { id: 2 },
+    integracaoUid: ALVO_ME,
+    targetTipoIntegracao: 'melhorEnvios',
+  };
+}
+
+/**
+ * The real Firestore, except that its NEXT batch commit rejects with `erro` —
+ * the process dying right before the batch lands, after every earlier write.
+ * Every other member is the real one, bound to it.
+ */
+function comLoteQueCai(real: Firestore, erro: Error): Firestore {
+  let caiu = false;
+  const ligado = (alvo: object, prop: string | symbol): unknown => {
+    const valor: unknown = Reflect.get(alvo, prop, alvo);
+    return typeof valor === 'function' ? (valor as (...a: unknown[]) => unknown).bind(alvo) : valor;
+  };
+  return new Proxy(real, {
+    get(alvo, prop) {
+      if (prop !== 'batch') return ligado(alvo, prop);
+      return () => {
+        const lote = alvo.batch();
+        if (caiu) return lote;
+        caiu = true;
+        return new Proxy(lote, {
+          get(l, p) {
+            return p === 'commit' ? () => Promise.reject(erro) : ligado(l, p);
+          },
+        });
+      };
+    },
+  });
 }
 
 describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', () => {
@@ -189,7 +263,7 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     await limpar();
     await refConta().set({
       tipo: INTEGRACAO_TIPO.lojaIntegrada,
-      nome: 'Loja de teste do importador',
+      nome: NOME_CONTA,
       ativo: true,
       operacaoOuterRef: 'documents/operacoes/op-1',
       modalidadeFreteImportacao: null,
@@ -201,6 +275,7 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     __resetAllReadCaches();
     __limparRegistrosUnicosParaTestes();
     await limpar();
+    await semearIntFrete();
   });
 
   afterEach(() => {
@@ -281,7 +356,13 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
   it('an operator’s write between the read and the batch survives: the batch re-derives from it (frozen money kept)', async () => {
     const c = cena();
     await importar(c);
-    c.detalhe = pedidoLiBruto({ data_modificacao: carimboLi(5), itens: [linhaComIdExterno()] });
+    // New Loja Integrada money: a batch decided from the OLD snapshot would write `valorCobrado`
+    // over the operator's edit; only the abort and the re-derive from the frozen S′ keep it.
+    c.detalhe = pedidoLiBruto({
+      data_modificacao: carimboLi(5),
+      valor_total: '120.00',
+      itens: [linhaComIdExterno()],
+    });
     let editou = false;
     c.antesDoProduto = async () => {
       if (editou) return;
@@ -289,6 +370,7 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
       await refPedido().update({ hasUserInteraction: true, valorCobrado: 99.9 });
     };
     expect(await importar(c)).toEqual({ kind: 'importado' });
+    expect(editou).toBe(true);
     expect((await refPedido().get()).data()).toMatchObject({
       hasUserInteraction: true,
       valorCobrado: 99.9,
@@ -341,6 +423,35 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     expect(await importar(c)).toEqual({ kind: 'importado' });
     expect((await refPedido().get()).exists).toBe(true);
     expect((await refPagamento().get()).exists).toBe(true);
+  });
+
+  it('a crash RIGHT BEFORE the batch — the mapa row, the cliente and the endereço already written — converges on the retry, with no twin', async () => {
+    const c = cena({ cliente: { id: 1, nome: 'Comprador de Teste', cpf: CPF_VALIDO_LI } });
+    const caiu = new Error('teste: o processo caiu antes do lote');
+    await expect(importar(c, {}, comLoteQueCai(db(), caiu))).rejects.toBe(caiu);
+    // Every write of steps 6 and 7 landed; the batch did not.
+    expect((await refPedido().get()).exists).toBe(false);
+    expect((await refPagamento().get()).exists).toBe(false);
+    const mapa = (await refFrete().get()).data()?.mapa as DocumentData[];
+    expect(mapa.map((l) => l.idOriginal)).toEqual([CHAVE_FORMA_ENVIO_LI]);
+    const clientes = await db().collection('clientes').get();
+    expect(clientes.size).toBe(1);
+    const clienteDoc = clientes.docs[0]!;
+    const enderecos = await clienteDoc.ref.collection('enderecos').get();
+    expect(enderecos.size).toBe(1);
+
+    __resetAllReadCaches();
+    expect(await importar(c)).toEqual({ kind: 'importado' });
+    const pedido = (await refPedido().get()).data()!;
+    expect((await refPagamento().get()).exists).toBe(true);
+    // The SAME cliente and endereço, and the mapa row once: each earlier write was idempotent.
+    expect(pedido.clientePedidoOuterRef).toBe(`documents/clientes/${clienteDoc.id}`);
+    expect(pedido.enderecoFiscalOuterRef).toBe(
+      `documents/clientes/${clienteDoc.id}/enderecos/${enderecos.docs[0]!.id}`,
+    );
+    expect((await db().collection('clientes').get()).size).toBe(1);
+    expect((await clienteDoc.ref.collection('enderecos').get()).size).toBe(1);
+    expect(((await refFrete().get()).data()?.mapa as DocumentData[]).length).toBe(1);
   });
 
   it('a crash AFTER the batch (before the avisos) is healed: the retry is sem-mudanca and writes them', async () => {
@@ -430,6 +541,76 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
 
     // What the emulator answers, pinned. Nothing in the import relies on either.
     expect({ intMantem, doubleMantem }).toEqual({ intMantem: true, doubleMantem: false });
+  });
+
+  it('PIN: the CARRIER’s precondition holds on a STALE snapshot although its own write changes nothing — 9, and the pagamento it carries is not written', async () => {
+    const c = cena();
+    await importar(c);
+    await refPagamento().delete();
+    const lido = await refPedido().get();
+    // Another writer changes the pedido after our read.
+    await refPedido().update({ outroEscritor: 1 });
+    const lote = db().batch();
+    lote.update(
+      refPedido(),
+      { lastMarketplaceUpdate: lido.data()?.lastMarketplaceUpdate as number },
+      { lastUpdateTime: updateTimeDe(lido) },
+    );
+    lote.create(refPagamento(), { valor: 1 });
+    const err: unknown = await lote.commit().catch((e: unknown) => e);
+    expect(isGrpcStatusError(err)).toBe(true);
+    expect((err as { code: number }).code).toBe(9);
+    expect((await refPagamento().get()).exists).toBe(false);
+  });
+
+  it('the freight routing: an unmapped key registered in the mapa, resolved at the int_frete read; a mapped active target routed with its service id', async () => {
+    const avisoFrete = db()
+      .collection('avisos')
+      .doc(chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI));
+    // (1) Unmapped: the union lands, the pedido rides the conta's own Loja Integrada doc.
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    const mapa = (await refFrete().get()).data()?.mapa as DocumentData[];
+    expect(mapa.map((l) => l.idOriginal)).toEqual([CHAVE_FORMA_ENVIO_LI]);
+    expect(
+      ((await refPedido().get()).data()?.freteInicial as DocumentData).integracaoFreteOuterRef,
+    ).toBe(`documents/int_frete/${INT_FRETE_LI}`);
+    const resolvido = (await avisoFrete.get()).data();
+    expect(resolvido?.resolvidoEm).not.toBeNull();
+    expect(typeof resolvido?.relogioEvento).toBe('number');
+
+    // (2) Mapped to an ACTIVE Melhor Envio target: routed, the service id beside it.
+    await limpar();
+    await semearIntFrete([linhaMapeada()]);
+    const alvo = db().collection('int_frete').doc(ALVO_ME);
+    await alvo.set({ tipo: 'melhorEnvios', ativo: true });
+    const escritoEm = relogioDoDocumentoUs(updateTimeDe(await alvo.get()));
+    __resetAllReadCaches();
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()?.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/${ALVO_ME}`,
+      externalOptionId: '2',
+    });
+    const aviso = (await avisoFrete.get()).data();
+    expect(aviso?.resolvidoEm).not.toBeNull();
+    // Clocked by the TARGET read: never before the target's own last write.
+    expect(aviso?.relogioEvento as number).toBeGreaterThanOrEqual(escritoEm);
+  });
+
+  it('the freight routing: a mapped INACTIVE target ⇒ the conta’s own doc, and the aviso RAISED at the target read', async () => {
+    await semearIntFrete([linhaMapeada()]);
+    const alvo = db().collection('int_frete').doc(ALVO_ME);
+    await alvo.set({ tipo: 'melhorEnvios', ativo: false });
+    const escritoEm = relogioDoDocumentoUs(updateTimeDe(await alvo.get()));
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()?.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/${INT_FRETE_LI}`,
+      externalOptionId: null,
+    });
+    const aviso = (
+      await db().collection('avisos').doc(chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)).get()
+    ).data();
+    expect(aviso).toMatchObject({ resolvidoEm: null, motivo: 'alvo-inativo' });
+    expect(aviso?.relogioEvento as number).toBeGreaterThanOrEqual(escritoEm);
   });
 
   it('the real findOrCreateCliente and ensureEndereco: the buyer’s cliente, the recipient’s name on the endereço', async () => {

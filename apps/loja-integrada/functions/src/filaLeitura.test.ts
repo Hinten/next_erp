@@ -209,6 +209,20 @@ describe('a `pedido` task', () => {
     expect(incremento).toBeInstanceOf(FieldValue);
     expect((incremento as FieldValue).isEqual(FieldValue.increment(3))).toBe(true);
 
+    // The importer's `mapa` union: the union sentinel itself, every element passed through.
+    const uniao = deps?.arrayUnion('x', 'y');
+    expect(uniao).toBeInstanceOf(FieldValue);
+    expect((uniao as FieldValue).isEqual(FieldValue.arrayUnion('x', 'y'))).toBe(true);
+    // NEAR-MISS: never the removal sentinel, and never a dropped element.
+    expect((uniao as FieldValue).isEqual(FieldValue.arrayRemove('x', 'y'))).toBe(false);
+    expect((uniao as FieldValue).isEqual(FieldValue.arrayUnion('x'))).toBe(false);
+
+    // ONE process-wide CEP client: its memo and in-flight dedup span every run.
+    await rodar({ data: pedido(), retryCount: 0, id: 'tarefa-3' });
+    const outra = vi.mocked(notificacao.tratarTarefaLeituraLi).mock.calls[1]?.[3];
+    expect(deps?.viaCep).toBeDefined();
+    expect(outra?.viaCep).toBe(deps?.viaCep);
+
     // The pacer's sleep really waits the interval it is given.
     vi.useFakeTimers();
     try {

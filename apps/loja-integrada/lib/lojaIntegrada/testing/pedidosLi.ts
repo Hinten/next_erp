@@ -28,14 +28,14 @@ export const ID_PRODUTO_PAI_LI = 7000;
 /** The line's SKU — text that only LOOKS numeric (14 digits). */
 export const SKU_LI = '12345678901234';
 
-/** The shipping method's two key parts, and the key step 20 builds of them. */
+/** The shipping method's two key parts (invented, neutral), and the key step 20 builds of them. */
 export const FORMA_ENVIO_LI = {
-  id: 59360,
-  code: 'Correios-2',
+  id: 4242,
+  code: 'TRANSP-1',
   nome: 'Gateway de teste',
   tipo: 'Transportadora',
 } as const;
-export const CHAVE_FORMA_ENVIO_LI = '59360---Correios-2';
+export const CHAVE_FORMA_ENVIO_LI = '4242---TRANSP-1';
 
 /** A check-digit-valid CPF, the textbook example (never a person's). */
 export const CPF_VALIDO_LI = '529.982.247-25';
@@ -121,7 +121,8 @@ export function pedidoLiBruto(over: DocData = {}): DocData {
         valor: '114.80',
         valor_pago: '114.80',
         pagamento_tipo: 'instantPayment',
-        forma_pagamento: { id: 72, codigo: 'proxy-pagali-v2-pix', nome: 'PIX' },
+        // The codigo is the provider's vocabulary token the forma table maps; the id is invented.
+        forma_pagamento: { id: 1, codigo: 'proxy-pagali-v2-pix', nome: 'PIX' },
         parcelamento: {},
         bandeira: null,
         authorization_code: null,

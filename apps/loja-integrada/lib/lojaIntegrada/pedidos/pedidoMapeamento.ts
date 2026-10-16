@@ -206,6 +206,15 @@ export function linhasJaVinculadasLi(bruto: unknown): ReadonlySet<string> {
   );
 }
 
+/**
+ * The `ensureUniqueId` of every line a raw `itens` map holds, read by the same
+ * reading the merge uses; empty when `itens` is absent or not a map of lists.
+ */
+export function idsDasLinhasLi(bruto: unknown): ReadonlySet<string> {
+  const linhas = linhasArmazenadas(bruto) ?? [];
+  return new Set(linhas.flatMap((l) => (l.ensureUniqueId === null ? [] : [l.ensureUniqueId])));
+}
+
 /** `Record<produtoUid | 'NONE', item[]>` and its `itensIds`. */
 function agrupar(linhas: readonly { produtoUid: string | null; item: unknown }[]): {
   itens: Record<string, unknown[]>;
@@ -389,6 +398,22 @@ export function watermarkArmazenadoMaisNovoLi(
 ): number | null {
   const armazenadoUs = microsArmazenadoLi(armazenado.lastMarketplaceUpdate);
   return armazenadoUs !== null && watermarkUs < armazenadoUs ? armazenadoUs : null;
+}
+
+/**
+ * The raw `itens` the pedido holds once `escrita` lands against `armazenado`:
+ * the created body's, the patch's when it rewrote them, else the snapshot's (a
+ * FROZEN pedido takes no line, and an unchanged merge writes none). What the
+ * pedido holds is what an unbound-line incidente may name — never the incoming
+ * lines, some of which a frozen pedido did not take.
+ */
+export function itensGuardadosLi(
+  armazenado: Readonly<Record<string, unknown>> | null,
+  escrita: Exclude<EscritaPedidoLi, { tipo: 'obsoleto' }>,
+): unknown {
+  if (escrita.tipo === 'criar') return escrita.corpo.itens;
+  if (escrita.tipo === 'atualizar' && 'itens' in escrita.patch) return escrita.patch.itens;
+  return armazenado?.itens;
 }
 
 /**

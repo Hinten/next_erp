@@ -282,6 +282,18 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
     expect(depsQuente?.registro).toEqual({ fluxo: 'intake', tentativa: null, idTarefa: null });
     // The environment passed WHOLE and live — the context reads the switch.
     expect(depsQuente?.ambiente).toBe(process.env);
+
+    // The importer's `mapa` union: the union sentinel, every element passed through.
+    const uniao = depsQuente?.arrayUnion('x', 'y');
+    expect(uniao).toBeInstanceOf(FieldValue);
+    expect((uniao as FieldValue).isEqual(FieldValue.arrayUnion('x', 'y'))).toBe(true);
+    expect((uniao as FieldValue).isEqual(FieldValue.arrayRemove('x', 'y'))).toBe(false);
+
+    // ONE process-wide CEP client across runs (its memo and in-flight dedup).
+    await rodarAgendamento(reprocessLojaIntegradaNotifications);
+    const proxima = quente.mock.calls[1]?.[2];
+    expect(depsQuente?.viaCep).toBeDefined();
+    expect(proxima?.viaCep).toBe(depsQuente?.viaCep);
   });
 
   it('binds the importer from the REAL seam table, read per run', async () => {

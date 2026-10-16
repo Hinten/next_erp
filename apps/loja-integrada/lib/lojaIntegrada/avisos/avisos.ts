@@ -296,8 +296,11 @@ function contaDaChaveComRelogio(
  *    next sweep re-raises it if the conta turns out to exist.
  *  - A clocked-tipo id no producer here could have computed has no write to
  *    race, so it is resolved clockless too.
- *  - An order-import row (step 5) is resolved clockless: its conta is gone, so
- *    no import of it can run again to race the resolve.
+ *  - An order-import row (step 5) is resolved clockless: its clock is the
+ *    order's Loja Integrada stamp, a domain `relogioListaUs` can never be
+ *    compared with. The sweep therefore hands this only rows last written NO
+ *    LATER than the enumeration's read: a row written after it may belong to a
+ *    conta created after the list was read (`conta/expiracaoSweep.ts`).
  */
 export function resolverAvisoDeContaRemovida(
   db: Firestore,

@@ -708,15 +708,18 @@ export const TIPO_AVISO_LABELS = {
  *  - **Route**: the conta page, whose "Mapeamento do Frete" tab holds the row.
  *  - **Machine resolver**: the next import of an order with that key whose
  *    routing raises no aviso — routed to its target, mapped to `fob` or
- *    `outros`, unmapped, or finding no Loja Integrada `int_frete` for the conta
- *    (a method with no usable key has no row to resolve) — clocked as above.
- *    ⚠️ NEVER clockless: the reprocess sweep runs inline beside the serial
- *    queue, so an import that read the `mapa` before the operator re-mapped the
- *    key could otherwise close the row a newer target read had just raised.
+ *    `outros`, or unmapped (a method with no usable key has no row to resolve)
+ *    — clocked as above. ⚠️ NEVER clockless: the reprocess sweep runs inline
+ *    beside the serial queue, so an import that read the `mapa` before the
+ *    operator re-mapped the key could otherwise close the row a newer target
+ *    read had just raised. So an import that finds NO Loja Integrada
+ *    `int_frete` for the conta reads nothing by id, has no clock, and leaves
+ *    the row alone.
  *    Residue, accepted: one observation spans two reads and carries the newer
  *    one's clock, so a raise whose `mapa` read predates a concurrent re-map
- *    stands until the key's next import; a key no later order uses stands until
- *    retention.
+ *    stands until the key's next import; a row whose conta has lost its Loja
+ *    Integrada `int_frete` stands until an import routes the key again; a key
+ *    no later order uses stands until retention.
  */
 export const tipoAvisoSchema = z
   .enum([

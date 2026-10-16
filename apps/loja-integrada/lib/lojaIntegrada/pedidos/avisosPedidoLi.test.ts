@@ -18,6 +18,7 @@ import { sha256Hex } from '@delfrance/data/admin';
 
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { AGORA_MS } from '../testing/fixtures';
+import { CHAVE_FORMA_ENVIO_LI } from '../testing/pedidosLi';
 import {
   MOTIVO_RESOLUCAO_PEDIDO_LI,
   chaveDoAvisoDeFreteLi,
@@ -59,7 +60,7 @@ describe('the keys', () => {
   });
 
   it('the freight key is the digest of the FULL method key: equal keys one row, a near-miss another', () => {
-    const chave = '59360---Correios-2';
+    const chave = CHAVE_FORMA_ENVIO_LI;
     expect(chaveDoAvisoDeFreteLi(CONTA, chave)).toBe(
       chaveDeAviso({
         tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
@@ -164,7 +165,7 @@ describe('the hub tipo', () => {
 });
 
 describe('the freight tipo', () => {
-  const chave = '59360---Correios-2';
+  const chave = CHAVE_FORMA_ENVIO_LI;
   const caminhoFrete = `avisos/${chaveDoAvisoDeFreteLi(CONTA, chave)}`;
 
   it('raised with the motivo code, the row’s name and the raw key; resolved later at a newer read', async () => {

@@ -53,12 +53,18 @@
  * (no index can express them), and a row whose id is not one of the LISTED
  * contas' chaves — for the four order-import tipos of step 5, which hold many
  * rows per conta, whose id does not start with a listed conta's key prefix
- * (`prefixoDaContaNoAvisoLi`) — is resolved as `conta-removida` (an order-import
- * row clockless: no import of a gone conta runs again) — an expiry row clockless; a
- * reconexão row and a step-3 import-stopped row CLOCKED by the conta
- * enumeration's `readTime` (`resolverAvisoDeContaRemovida`): a conta created
- * after that list was read, and then parked or failing to import, raised at a
- * later clock and is left open for the next tick, which lists it. Rows of
+ * (`prefixoDaContaNoAvisoLi`) — is resolved as `conta-removida`: an expiry row
+ * clockless; a reconexão row and a step-3 import-stopped row CLOCKED by the
+ * conta enumeration's `readTime` (`resolverAvisoDeContaRemovida`): a conta
+ * created after that list was read, and then parked or failing to import,
+ * raised at a later clock and is left open for the next tick, which lists it.
+ * An order-import row is clocked by the ORDER's Loja Integrada stamp, which
+ * the enumeration's `readTime` can never be compared with, so it is resolved
+ * clockless — and only when its document was last written NO LATER than that
+ * `readTime`. A row written after it may belong to a conta created after the
+ * list was read, and is left for the next tick, which lists that conta: a
+ * clockless close keeps the row's clock, so an equal-stamp re-raise of an order
+ * whose stamp never moves again would be dropped behind it for good. Rows of
  * existing contas are never touched here: the expiry and reconexão rows are
  * pass (a)'s, and the import-stopped row belongs to the order poller (step-3
  * PR 3-e), so its chave is in the existing set too — otherwise this pass would
@@ -96,6 +102,7 @@ import {
   chaveReconexao,
   prefixoDaContaNoAvisoLi,
   prefixoDoAvisoDePedidoLi,
+  relogioDoDocumentoUs,
   resolverAvisoDeContaRemovida,
   resolverExpiracaoToken,
   resolverReconexaoPendente,
@@ -333,6 +340,9 @@ export async function sweepLojaIntegradaTokenExpiry(
       if (chavesExistentes.has(doc.id)) continue;
       const prefixo = prefixoDoAvisoDePedidoLi(row.tipo, doc.id);
       if (prefixo !== null && prefixosExistentes.has(prefixo)) continue;
+      // An order-import row written AFTER the list was read may belong to a conta created after
+      // it: the next tick, which lists that conta, decides (module header).
+      if (prefixo !== null && relogioDoDocumentoUs(doc.updateTime) > listaLidaEmUs) continue;
       try {
         if (await resolverAvisoDeContaRemovida(db, doc.id, listaLidaEmUs, avisoDeps)) {
           orfaosResolvidos += 1;
