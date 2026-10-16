@@ -778,9 +778,9 @@ function planejarEstoque(args: {
 /**
  * One listing → the PARENT produto's write.
  *
- * ⚠️ Never writes `integracoesComProduto` (no Shopee link trigger
- * exists; the recorded cost is a missing badge in `/produtos` until steps
- * 11/12), `permiteVendaSemEstoque` (slated for removal),
+ * ⚠️ Never writes `integracoesComProduto` (the `onProdutoShopeeLinkChanged`
+ * trigger derives it from the link this import writes; a write here would race
+ * it), `permiteVendaSemEstoque` (slated for removal),
  * `ofereceFreteGratis` (the legacy derived it from `logistic_info.every(is_free)`
  * and its own exporter rebuilt that block with `is_free: false`, so the value
  * round-trips to a lie) or `tabelaDeMedidasModaUid` (the read-back

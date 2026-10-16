@@ -28,6 +28,7 @@ import {
   type ShopeeUpdateKitItemRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   chaveAvisoReceitaKitShopee,
   chaveReceitaKitErp,
   importacaoShopeeOptionsSchema,
@@ -711,6 +712,7 @@ describe('publicarKitShopee — kit-criar de ponta a ponta', () => {
         campo: 'principal',
         motivo: MOTIVO_PUBLICACAO_BLOQUEADA.principalInvalido,
         mensagem: 'o componente principal fantasma não faz parte da composição do kit',
+        acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal },
       },
     ]);
     expect(loja.ops).not.toContain('add_kit_item');

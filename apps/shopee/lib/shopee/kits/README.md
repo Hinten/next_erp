@@ -526,6 +526,12 @@ write that is not idempotent (PR #1866 review).
 The verbatim `providerMessage` of an `incerto` is `console.warn`ed with ids only;
 that is how registers 281 and 287 get settled.
 
+Every refusal whose sentence names a CLI flag also carries a structured `acao`
+(`@delfrance/schemas` `shopeeAcaoSugerida.ts`) — the web maps it to a button and
+never parses the sentence; the 202 carries `aguardarMs`
+(`AGUARDAR_KIT_INCERTO_SHOPEE_MS`, the one copy, which both wait sentences
+interpolate).
+
 ### What the other steps do with a native kit
 
 | step     | what it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

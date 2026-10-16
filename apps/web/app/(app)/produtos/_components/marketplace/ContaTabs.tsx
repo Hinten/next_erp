@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react';
 import { Group, ScrollArea, Skeleton, Stack, Tabs, Text } from '@mantine/core';
 
 /**
- * One Mercado Livre account's tab.
+ * One marketplace account's tab.
  *
  * `id` and `label` are separate on purpose: the tab's VALUE has to be the
  * integração doc id, which is unique and stable, while its LABEL is
@@ -26,10 +26,20 @@ export interface ContaTabsProps {
   renderPanel: (contaId: string) => ReactNode;
   /** Which tab opens first; falls back to the first item. */
   defaultId?: string | null;
+  /**
+   * The channel's testid prefix (`ml`, `shopee`): an unopened panel's
+   * placeholder is `` `${testIdPrefix}-conta-placeholder-${contaId}` ``.
+   *
+   * Required, not defaulted to `ml`: a default would let a second channel's
+   * placeholders answer to the first channel's testids.
+   */
+  testIdPrefix: string;
 }
 
 /**
- * Account tabs inside the produto editor's **Mercado Livre** tab.
+ * Account tabs inside a produto editor's marketplace tab — `MercadoLivreEditor`
+ * (**Mercado Livre**) and `ShopeeEditor` (**Shopee**), one tab per account of
+ * that channel.
  *
  * ## Lazy to open, then permanently mounted
  *
@@ -71,7 +81,7 @@ export interface ContaTabsProps {
  * `SectionTabs` its behaviour is identical under `MantineProvider env="test"`
  * and its tests need no bare-provider carve-out.
  */
-export function ContaTabs({ items, renderPanel, defaultId }: ContaTabsProps) {
+export function ContaTabs({ items, renderPanel, defaultId, testIdPrefix }: ContaTabsProps) {
   const first = defaultId ?? items[0]?.id ?? null;
   const [active, setActive] = useState<string | null>(first);
   const [opened, setOpened] = useState<ReadonlySet<string>>(
@@ -101,7 +111,7 @@ export function ContaTabs({ items, renderPanel, defaultId }: ContaTabsProps) {
 
   function handleChange(next: string | null): void {
     setActive(next);
-    // ⚠️ The latch, and unlike `MercadoLivreTab`'s it needs no
+    // ⚠️ The latch, and unlike `AbaDeCanal`'s it needs no
     // `react-hooks/set-state-in-effect` disable: there the signal is a context
     // value from an ancestor, so only an effect can observe it. Here the click
     // IS the signal.
@@ -152,7 +162,7 @@ export function ContaTabs({ items, renderPanel, defaultId }: ContaTabsProps) {
           {deveRenderizar(item.id) ? (
             renderPanel(item.id)
           ) : (
-            <ContaTabPlaceholder contaId={item.id} />
+            <ContaTabPlaceholder contaId={item.id} testIdPrefix={testIdPrefix} />
           )}
         </Tabs.Panel>
       ))}
@@ -161,9 +171,9 @@ export function ContaTabs({ items, renderPanel, defaultId }: ContaTabsProps) {
 }
 
 /** What an unopened account's panel holds — never seen unless its tab is clicked. */
-function ContaTabPlaceholder({ contaId }: { contaId: string }) {
+function ContaTabPlaceholder({ contaId, testIdPrefix }: { contaId: string; testIdPrefix: string }) {
   return (
-    <Stack gap="xs" data-testid={`ml-conta-placeholder-${contaId}`}>
+    <Stack gap="xs" data-testid={`${testIdPrefix}-conta-placeholder-${contaId}`}>
       <Skeleton height={28} width="40%" radius="sm" />
       <Skeleton height={96} radius="sm" />
     </Stack>
