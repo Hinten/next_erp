@@ -421,6 +421,12 @@ function BotaoDoPasso({
  *    the principal pick — only after a recriar / converter (a plain republish
  *    never sends a principal, so it has nothing to re-open);
  *  - `importar` / `escolher-vinculo` → text: they point elsewhere.
+ *
+ * ⚠️ A button renders only for a target `AcoesShopee.enderecavel` holds — a
+ * loaded link whose `item_id` can address a listing, the gate every block's own
+ * buttons pass (`AcoesAnuncioShopee`). The `acao` names a link by id alone (a
+ * successor comes from a stored `substituidoPorLinkDocId`), so the tab checks
+ * the link it would send; without a button the row's text still names it.
  */
 function DesfechoRecusado({
   contaId,
@@ -482,8 +488,11 @@ function BotaoDoProblema({
   const { acao } = problema;
   if (acao === null || !acoes.permitidas) return null;
   let passo: PassoShopee;
+  // The link the step would send — every one of them addresses a listing.
+  let alvo: string;
   const antigo = vinculoSubstituidoAlheio(acao, linkDocId);
   if (antigo !== null) {
+    alvo = antigo;
     passo = {
       rotulo: `Recriar o kit do vínculo ${antigo}`,
       agir: () => acoes.abrirKit(contaId, antigo, 'recriar'),
@@ -493,29 +502,33 @@ function BotaoDoProblema({
     acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar &&
     acao.linkDocId !== null
   ) {
-    const alvo = acao.linkDocId;
+    const republicado = acao.linkDocId;
+    alvo = republicado;
     passo = {
-      rotulo: `Republicar o vínculo ${alvo}`,
-      agir: () => acoes.republicar(contaId, alvo),
+      rotulo: `Republicar o vínculo ${republicado}`,
+      agir: () => acoes.republicar(contaId, republicado),
       criaKit: false,
     };
   } else if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit) {
+    alvo = linkDocId;
     passo = {
       rotulo: 'Republicar sem as opções de kit',
       agir: () => acoes.republicar(contaId, linkDocId),
       criaKit: false,
     };
   } else if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar) {
-    const alvo = acao.linkDocId;
+    const recriado = acao.linkDocId;
+    alvo = recriado;
     passo = {
-      rotulo: `Recriar o kit do vínculo ${alvo}`,
-      agir: () => acoes.abrirKit(contaId, alvo, 'recriar'),
+      rotulo: `Recriar o kit do vínculo ${recriado}`,
+      agir: () => acoes.abrirKit(contaId, recriado, 'recriar'),
       criaKit: true,
     };
   } else if (
     acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal &&
     pedidoKit !== null
   ) {
+    alvo = pedidoKit.linkDocId;
     passo = {
       rotulo: 'Escolher o componente principal',
       agir: () => acoes.abrirKit(contaId, pedidoKit.linkDocId, pedidoKit.arma, true),
@@ -524,6 +537,7 @@ function BotaoDoProblema({
   } else {
     return null;
   }
+  if (!acoes.enderecavel(alvo)) return null;
   return (
     <Group>
       <BotaoDoPasso contaId={contaId} passo={passo} acoes={acoes} />
