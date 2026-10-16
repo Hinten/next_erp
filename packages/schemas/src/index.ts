@@ -73,6 +73,7 @@ export {
   toDocPathOrNull,
   idFromRef,
   parseRef,
+  naoDocId,
   type OuterRef,
   type IdRef,
   type DocId,
@@ -873,6 +874,8 @@ export {
   tabelaDeMedidas,
   tabelaDeMedidasSchema,
   tabelaDeMedidasMeta,
+  lerRefTabelaDeMedidas,
+  type RefTabelaDeMedidas,
   type TabelaDeMedidas,
 } from './tabelaDeMedidas';
 
