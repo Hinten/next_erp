@@ -19,6 +19,8 @@ import {
 /** Synthetic documents with valid check digits (the textbook examples). */
 const CPF = '52998224725';
 const CNPJ = '11222333000181';
+/** The Receita's own alphanumeric example (IN RFB 2.229/2024): letters in the 12 root+order positions. */
+const CNPJ_ALFANUMERICO = '12ABC34501DE35';
 /** Eleven digits that fail the check — the shape every captured buyer has. */
 const CPF_INVALIDO = '12345678900';
 
@@ -110,6 +112,23 @@ describe('the buyer is the fiscal identity, from cliente.* only', () => {
     expect(r.campos.cpf_cnpj).toBeNull();
     expect(r.campos.tipo).toBeNull();
     expect(r.identidadeForte).toBe(false);
+  });
+
+  it('EQUAL pair: an ALPHANUMERIC CNPJ (IN RFB 2.229/2024) is a PJ document, formatted or not, any case', () => {
+    expect(validateCNPJ(CNPJ_ALFANUMERICO)).toBe(true);
+    for (const cnpj of [CNPJ_ALFANUMERICO, '12.ABC.345/01DE-35', '12abc34501de35']) {
+      const r = clienteDoPedidoLi(cliente({ cnpj, razao_social: 'Empresa Exemplo Ltda' }));
+      expect(r.campos).toMatchObject({
+        tipo: TIPO_CLIENTE.pessoaJuridica,
+        cpf_cnpj: CNPJ_ALFANUMERICO,
+      });
+      expect(r.identidadeForte).toBe(true);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: an alphanumeric CNPJ with a wrong check digit is NO document', () => {
+    expect(validateCNPJ('12ABC34501DE36')).toBe(false);
+    expect(documentoDoClienteLi(cliente({ cnpj: '12ABC34501DE36' }))).toBeNull();
   });
 
   it('⚠️ NEAR-MISS: a present but INVALID CNPJ never falls back to the CPF', () => {
