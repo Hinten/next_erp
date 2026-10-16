@@ -36,16 +36,18 @@ const NAO_SUPORTADOS: ReadonlyArray<readonly [IntegracaoTipo, MotivoNaoSuportado
   // claim #815 undid.
   [INTEGRACAO_TIPO.facebook, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.magalu, 'canal-nao-pesquisado'],
-  [INTEGRACAO_TIPO.amazon, 'canal-nao-pesquisado'],
-  // ⚠️ Loja Integrada is the near-miss of the lines above, and the only tipo on
-  // the other side of them: its Phase 0 survey answered this capability `'sim'`,
-  // so the honest reason is that WE have not built the channel — not that nobody
-  // has looked. Shopee left this table in step 21 (#1529): it has a provider row,
-  // pinned below against the caps. Loja Integrada flips `implementado` at ITS step 22
-  // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`);
-  // whichever channel flips second re-points this example. The arm itself is
-  // pinned table-free in `suporteCanal.test.ts:16-25`.
+  // ⚠️ Loja Integrada and Amazon are the near-miss of the lines above, and the
+  // only tipos on the other side of them: their Phase 0 surveys answered this
+  // capability `'sim'`, so the honest reason is that WE have not built the
+  // channel — not that nobody has looked. Shopee left this table in step 21
+  // (#1529): it has a provider row, pinned below against the caps. Each flips
+  // `implementado` at its own step 22
+  // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`,
+  // `.master_plans/amazon/amazon-marketplace-integration.md` step 22); whichever
+  // channel flips LAST re-points this example. The arm itself is pinned
+  // table-free in `suporteCanal.test.ts:16-25`.
   [INTEGRACAO_TIPO.lojaIntegrada, 'canal-nao-implementado'],
+  [INTEGRACAO_TIPO.amazon, 'canal-nao-implementado'],
 ];
 
 describe('resolvePricePushProvider', () => {
