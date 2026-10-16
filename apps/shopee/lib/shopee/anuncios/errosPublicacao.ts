@@ -70,6 +70,7 @@
  * a member is cheap; renaming one orphans every row already written.
  */
 import { ShopeeError } from '@delfrance/integrations-shopee';
+import type { AcaoSugeridaPublicacaoShopee } from '@delfrance/schemas';
 
 import { MAX_MENSAGEM_PROBLEMA } from './constantesAnuncio';
 
@@ -428,6 +429,15 @@ export interface ProblemaPublicacao {
   readonly motivo: MotivoProblemaPublicacao;
   /** At most {@link MAX_MENSAGEM_PROBLEMA} characters — normalised by the classes. */
   readonly mensagem: string;
+  /**
+   * The machine-readable NEXT STEP (step 21, #1529), for the web: present on
+   * every kit/dispatcher refusal whose `mensagem` names a CLI flag or command,
+   * ABSENT everywhere else — never `undefined`-valued, so a body or a stored row
+   * without it is byte-identical to before. The CLI keeps printing `mensagem`;
+   * the produto's Shopee tab maps this to a button and never parses the
+   * sentence. It rides the 422 because both constructors spread each entry.
+   */
+  readonly acao?: AcaoSugeridaPublicacaoShopee;
 }
 
 /**

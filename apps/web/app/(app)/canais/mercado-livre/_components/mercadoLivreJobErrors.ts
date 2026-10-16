@@ -20,6 +20,19 @@ import {
 } from '@/lib/mercado-livre/client';
 import { mercadoLivreErrorMessage } from '@/lib/mercado-livre/errors';
 import type { JobErrorDescription } from '@/lib/marketplace/contaJobs/types';
+import type { ErrosDoCliente } from '@/components/contaJobs/JobCardShell';
+
+/**
+ * The Mercado Livre client's own classes, handed to the shared `JobCardShell`
+ * with every cancel: a cancel that fails with one of them is already described
+ * by `describe*CancelError` below, and anything else also reaches the console
+ * under `[mercado-livre]` — the same two classes and the same tag the shell
+ * hard-coded before it was shared (#1529).
+ */
+export const ERROS_DO_CLIENTE_ML: ErrosDoCliente = {
+  tagLog: '[mercado-livre]',
+  classes: [MercadoLivreClientHttpError, MercadoLivreClientNetworkError],
+};
 
 /**
  * `POST /importar-todos` failures. `ML_MASS_IMPORT_RUNNING` is yellow, not red:

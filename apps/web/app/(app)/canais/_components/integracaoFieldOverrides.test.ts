@@ -12,6 +12,7 @@ import {
   type CanalComCampos,
   MAX_ID_CAD_INT_TRAN,
   MIN_ID_CAD_INT_TRAN,
+  PADRAO_TSTRING,
   aparaIdCadIntTran,
   integracaoCamposDeSistema,
   integracaoExcludedFields,
@@ -383,6 +384,22 @@ describe('validarIntermediador', () => {
     expect(paths({ idCadIntTran: 'x'.repeat(MAX_ID_CAD_INT_TRAN) })).toEqual([]);
     expect(paths({ idCadIntTran: null })).toEqual([]);
     expect(paths({ idCadIntTran: '' })).toEqual([]);
+  });
+
+  it('holds idCadIntTran to the XSD TString character range', () => {
+    // Refused: above U+00FF (en dash, curly quote, emoji) and control characters.
+    expect(paths({ idCadIntTran: 'seller–123' })).toEqual(['idCadIntTran']);
+    expect(paths({ idCadIntTran: 'loja “A”' })).toEqual(['idCadIntTran']);
+    expect(paths({ idCadIntTran: 'ab😀' })).toEqual(['idCadIntTran']);
+    expect(paths({ idCadIntTran: 'a\u0007b' })).toEqual(['idCadIntTran']);
+    expect(paths({ idCadIntTran: 'a\tb' })).toEqual(['idCadIntTran']);
+    // Accepted: Latin-1 letters and inner spaces.
+    expect(paths({ idCadIntTran: 'Loja São José' })).toEqual([]);
+    // ⚠️ The near-miss pair at the top of the range: ÿ (U+00FF) passes,
+    // Ā (U+0100) does not — the boundary is the XSD's, not "ASCII".
+    expect(paths({ idCadIntTran: 'abÿ' })).toEqual([]);
+    expect(paths({ idCadIntTran: 'abĀ' })).toEqual(['idCadIntTran']);
+    expect(PADRAO_TSTRING.test('ab')).toBe(true);
   });
 
   it('reports both fields at once, each at its own path', () => {
