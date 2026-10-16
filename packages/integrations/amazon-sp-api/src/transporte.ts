@@ -84,6 +84,27 @@ export function contemSegredo(texto: string, segredos: readonly string[]): boole
 }
 
 /**
+ * An absolute `https:` URL with no fragment and no userinfo [MD5110: the
+ * redirect URI may not carry a fragment]. Visible ASCII only.
+ *
+ * Shared by the two places the redirect URI travels: the code exchange's form
+ * body (`lwa.ts`) and the consent URL's query (`consentimento.ts`). One check,
+ * so the URI the consent sends and the URI the exchange repeats can never be
+ * held to different rules — Amazon compares them byte for byte.
+ */
+export function redirectUriValido(uri: unknown): uri is string {
+  if (!ehAsciiVisivel(uri) || uri.includes('#')) return false;
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch (err) {
+    if (err instanceof TypeError) return false;
+    throw err;
+  }
+  return url.protocol === 'https:' && url.username === '' && url.password === '';
+}
+
+/**
  * `x-amzn-RequestId`, kept only when it is a plain id (letters, digits, `.`,
  * `_`, `:`, `-`, at most 128) that contains no secret. It rides errors, and an
  * error must never carry free text from a response.

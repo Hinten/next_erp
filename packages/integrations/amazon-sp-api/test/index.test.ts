@@ -20,6 +20,8 @@ describe('the barrel', () => {
       'trocarCodigoAutorizacao',
       'lerLimiteTaxa',
       'lerCodigoErroLwa',
+      'montarUrlConsentimento',
+      'credencialLwaValida',
     ] as const) {
       expect(typeof barril[nome], nome).toBe('function');
     }
@@ -53,6 +55,7 @@ describe('the barrel', () => {
       'ehAsciiVisivel',
       'contemSegredo',
       'lerRequestIdAmazon',
+      'redirectUriValido',
     ]) {
       expect(exportados, interno).not.toContain(interno);
     }

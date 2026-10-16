@@ -211,6 +211,8 @@ describe('the class hierarchy', () => {
       'user-agent',
       'credencial-lwa',
       'redirect-uri',
+      'application-id',
+      'state',
     ];
     for (const motivo of motivos) {
       const err = new AmazonConfigError(motivo, { operacao: 'op', refCredencial: null });
