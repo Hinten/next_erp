@@ -33,7 +33,8 @@ import {
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
-import { ContaJobErrorCard, MassImportJobCard, PriceSyncJobCard } from './MercadoLivreJobCards';
+import { ContaJobErrorCard } from '@/components/contaJobs/JobCardShell';
+import { MassImportJobCard, PriceSyncJobCard } from './MercadoLivreJobCards';
 import { PriceSyncHistoricoModal } from './PriceSyncHistoricoModal';
 import type { ContaJobOutcome, ContaRef } from '@/lib/marketplace/contaJobs/types';
 

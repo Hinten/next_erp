@@ -7,7 +7,7 @@
  */
 import { Button, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
 
-import { ContasSelecionadas } from './MassImportDialog';
+import { ContasSelecionadas } from '@/components/contaJobs/ContasSelecionadas';
 import type { PriceSyncActionState } from './usePriceSyncAction';
 
 export function PriceSyncDialog({ state }: { state: PriceSyncActionState }) {

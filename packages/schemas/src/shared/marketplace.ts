@@ -54,8 +54,20 @@ export type EstoqueProtocolo =
 
 export interface EstoqueCapabilities {
   readonly suporte: Suporte;
+  /**
+   * ⚠️ A channel that offers BOTH a per-listing write and a feed (Amazon: one
+   * patch per SKU for sale-driven deltas, `JSON_LISTINGS_FEED` for bulk pushes)
+   * records the FEED here — the protocol that needs machinery no other channel
+   * has (a submission record plus a result poll) — and documents the
+   * per-listing path in its row comment. Which path a given push takes is the
+   * stock step's decision, not this table's: nothing selects a fan-out from
+   * this field.
+   */
   readonly protocolo: EstoqueProtocolo;
-  /** Max SKUs per call/feed. `null` when not applicable or not yet known. */
+  /**
+   * Max SKUs per call — or, for `'feed-assincrono'`, messages per feed
+   * document. `null` when not applicable or not yet known.
+   */
   readonly loteMax: number | null;
   /** Per-depósito / per-warehouse stock rather than one pooled quantity. */
   readonly multiDeposito: Suporte;
@@ -63,7 +75,13 @@ export interface EstoqueCapabilities {
 
 export interface MarketplaceCapabilities {
   /* ---- facts about THIS repo — exact, never 'desconhecido' ---- */
-  /** Backend segment for `/api/marketplace/<channel>/*`, or `null` with no app. */
+  /**
+   * Backend segment for `/api/marketplace/<channel>/*`. Set once the channel's
+   * master plan names its backend — the Shopee, Loja Integrada and Amazon rows
+   * name theirs BEFORE the app exists — and `null` while no plan does.
+   * ⚠️ Whether that backend EXISTS is {@link implementado}, never this field:
+   * read `channel` only behind `implementado` (as `StatusCanalBadge` does).
+   */
   readonly channel: string | null;
   /** Is there a deployed `apps/<channel>` backend today? */
   readonly implementado: boolean;
