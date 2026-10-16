@@ -24,10 +24,11 @@
  *       batch, the PRECONDITION CARRIER: an update that re-writes the stored
  *       `lastMarketplaceUpdate` exactly as read (the raw value, never its µs
  *       reading) under the same precondition. The pagamento statuses were
- *       decided from `S`, so they must not land if `S` changed. A carrier that
- *       round-trips the stored value unchanged changes nothing; a watermark
- *       stored as a double comes back re-typed as an integer (the SDK encodes
- *       every safe-integer number as one), which may count as a change — the
+ *       decided from `S`, so they must not land if `S` changed. On the emulator
+ *       (`importarPedido.firestore.test.ts` pins both): a carrier that
+ *       round-trips the stored value unchanged KEEPS the pedido's update time;
+ *       a watermark stored as a double comes back re-typed as an integer (the
+ *       SDK encodes every safe-integer number as one), which IS a change — the
  *       update time moves and the triggers see a write. Nothing here relies on
  *       either: no later step reads the pedido's update time;
  *     - each pagamento `create`, or `update(patch, { lastUpdateTime: <its own
@@ -44,9 +45,10 @@
  * retries). So no pagamento is ever written without its pedido, or decided from
  * a stale snapshot: on the "keep both" arm `S′` decides `manter`, which writes
  * nothing, and a refund status decided from `S` never reaches the store. A
- * document removed since its read answers 9 on the emulator (the stamp replaces
- * the SDK's `exists` check); the server's code is not pinned, so 5 is re-read
- * the same way. A commit the SDK retried after it had in fact landed fails its
+ * batch whose update names a document removed since its read answers 9 on the
+ * emulator, and writes none of its other writes (the stamp replaces the SDK's
+ * `exists` check; pinned in the emulator suite); the server's code is not
+ * pinned, so 5 is re-read the same way. A commit the SDK retried after it had in fact landed fails its
  * own preconditions the same way, and the retry re-derives from what it wrote.
  *
  * The cliente, the endereço, the `mapa` row and the produto resolution (steps

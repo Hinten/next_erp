@@ -54,7 +54,10 @@ still be fixed. Only the context loader refuses those.
   non-test source file for it and would demand a class for a site that does not exist.
   The test fake models `lastUpdateTime` preconditions only — and as the server applies
   them: the stamp replaces the SDK's `exists` check, so a removed document fails it with
-  `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5).
+  `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5). Its `batch()` (the order import's ONE
+  commit of a pedido and its pagamentos) is all or nothing under the same rules, plus 6 for
+  a `create` on an existing doc; the emulator suite `pedidos/importarPedido.firestore.test.ts`
+  pins the server's answers.
 
 ## Layout rules
 
