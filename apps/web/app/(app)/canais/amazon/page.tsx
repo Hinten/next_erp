@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { deleteDoc } from 'firebase/firestore';
 import { Alert, Badge, Button } from '@mantine/core';
@@ -14,13 +15,16 @@ import { TableView } from '@delfrance/ui';
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { AmazonCallbackToast } from './_components/AmazonCallbackToast';
 
 /**
  * `/canais/amazon`: the Amazon contas list (master plan step 21-conta).
  *
  * This screen replaced the static `CanalCapsPanel` placeholder; the panel
  * component itself stays for the channels with no screen yet (its own docblock
- * keeps that list).
+ * keeps that list). The connection itself lives on each conta's page
+ * (`ContaAmazonPanel`); this list only toasts the callback failures that land
+ * here.
  */
 export default function CanalAmazonPage() {
   const db = getFirebaseFirestore();
@@ -35,17 +39,26 @@ export default function CanalAmazonPage() {
   // ordering (and its Firestore index); `queryParams` binds the slice.
   return (
     <>
+      {/* The OAuth callback redirects HERE for the two failures that happen
+          before a trustworthy conta id exists (config / bad_state). Behind
+          Suspense because the hook reads useSearchParams — without a boundary
+          the production build refuses to prerender this static route. */}
+      <Suspense fallback={null}>
+        <AmazonCallbackToast />
+      </Suspense>
+
       {/*
-        Registering a conta is all this screen does today, and an operator has
-        no way to tell a channel that is merely quiet from one that is not wired
-        up yet. Saying it here is cheaper than the support ticket that starts
-        with "the Amazon orders never arrived".
+        Registering and connecting a conta is all this channel does today, and
+        an operator has no way to tell a channel that is merely quiet from one
+        that is not wired up yet. Saying it here is cheaper than the support
+        ticket that starts with "the Amazon orders never arrived".
       */}
       <Alert color="blue" title="O que esta tela faz hoje" mb="md">
-        Esta tela cadastra a conta da Amazon, e só isso. A conexão com a Amazon (a autorização do
-        vendedor) é feita na virada do sistema; até lá nada é sincronizado automaticamente com a
-        Amazon, em nenhuma direção. Importar pedidos, enviar estoque, enviar preço e enviar NF-e
-        chegam em passos seguintes da integração.
+        Esta tela cadastra a conta da Amazon e, na página de cada conta, faz a conexão com a Amazon
+        (a autorização do vendedor) — e só isso. As chamadas à Amazon ficam desligadas até a virada
+        do sistema: até lá a conexão não pode ser concluída e nada é sincronizado automaticamente
+        com a Amazon, em nenhuma direção. Importar pedidos, enviar estoque, enviar preço e enviar
+        NF-e chegam em passos seguintes da integração.
       </Alert>
 
       <TableView<typeof integracaoSchema>
