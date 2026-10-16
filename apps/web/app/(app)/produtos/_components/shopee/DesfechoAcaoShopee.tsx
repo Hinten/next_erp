@@ -236,7 +236,8 @@ const ROTULO_DESFECHO_KIT = {
  *
  * The next step an aviso asks for is a button ({@link passosDoAvisoKit}), on
  * the link the BODY names — the new kit's `linkDocId` or the replaced
- * listing's `antecessor.linkDocId` — never the block the outcome sits in.
+ * listing's `antecessor.linkDocId` — never the block the outcome sits in, and
+ * only while the tab holds that link loaded and addressable.
  *
  * The uncertain outcome here only says to wait and re-verify: it is the plain
  * republish's (which never reaches a create arm, so no identical re-send is
@@ -314,6 +315,13 @@ function DesfechoKit({
 /** One next step a refusal row or a kit aviso offers, already bound to its link. */
 interface PassoShopee {
   readonly rotulo: string;
+  /**
+   * The link the step sends, or whose kit confirmation it opens. ⚠️ Its button
+   * renders only while `AcoesShopee.enderecavel(alvo)` holds — a loaded link
+   * whose `item_id` addresses a listing: every step names its link by id alone,
+   * and the outcome it sits in outlives a rewrite of that link.
+   */
+  readonly alvo: string;
   readonly agir: () => void;
   /**
    * A native-kit CREATE (recriar / converter): it also waits out this conta's
@@ -336,6 +344,13 @@ interface PassoShopee {
  *  - `kit-antigo-nao-excluido` → re-verify the OLD listing (`antecessor`);
  *  - every other code is text: its next step is in the ERP or Seller Centre,
  *    or (`kit-alvo-mais-novo`) the body does not say which kit is the old one.
+ *
+ * ⚠️ Each step is offered only on a link `AcoesShopee.enderecavel` holds
+ * ({@link PassoShopee.alvo}). The BODY's ids are no stand-in: `kit-novo-inativo`'s
+ * predicate reads the body's `itemId`, a wire `z.number().int()` that already
+ * refuses a fraction or 2^53 — but the outcome stays on screen after the
+ * snapshot rewrites `novo`, and a link the tab has not loaded would put the
+ * step's own outcome in no visible block.
  */
 function passosDoAvisoKit(
   kit: KitPublicadoShopee,
@@ -344,10 +359,11 @@ function passosDoAvisoKit(
 ): readonly PassoShopee[] {
   const passos = new Map<string, PassoShopee>();
   const juntar = (p: PassoShopee) => {
-    if (!passos.has(p.rotulo)) passos.set(p.rotulo, p);
+    if (acoes.enderecavel(p.alvo) && !passos.has(p.rotulo)) passos.set(p.rotulo, p);
   };
   const recriar = (alvo: string): PassoShopee => ({
     rotulo: `Recriar o kit do vínculo ${alvo}`,
+    alvo,
     agir: () => acoes.abrirKit(contaId, alvo, 'recriar'),
     criaKit: true,
   });
@@ -363,6 +379,7 @@ function passosDoAvisoKit(
       if (novo !== null && reativavel) {
         juntar({
           rotulo: `Reativar o kit novo (vínculo ${novo})`,
+          alvo: novo,
           agir: () => acoes.reativar(contaId, novo),
           criaKit: false,
         });
@@ -372,6 +389,7 @@ function passosDoAvisoKit(
     if (codigo === 'kit-antigo-nao-excluido' && antigo !== null) {
       juntar({
         rotulo: `Reverificar o vínculo ${antigo}`,
+        alvo: antigo,
         agir: () => acoes.reverificar(contaId, antigo),
         criaKit: false,
       });
@@ -421,6 +439,16 @@ function BotaoDoPasso({
  *    the principal pick — only after a recriar / converter (a plain republish
  *    never sends a principal, so it has nothing to re-open);
  *  - `importar` / `escolher-vinculo` → text: they point elsewhere.
+ *
+ * ⚠️ A button renders only for a target `AcoesShopee.enderecavel` holds — a
+ * loaded link whose `item_id` can address a listing, the gate every block's own
+ * buttons pass (`AcoesAnuncioShopee`, and the kit arms' `recriavel` /
+ * `convertivel`). Every branch's target is a link id alone — the `acao`'s (a
+ * successor from a stored `substituidoPorLinkDocId`, a removed kit, a superseded
+ * old kit) or, for `sem-opcoes-de-kit` and `informar-principal`, the refused
+ * request's own — and the outcome outlives a rewrite of that link, so the tab
+ * checks the link it would send; without a button the row's text stays. A kit
+ * step only opens the confirmation, whose confirm checks the same again.
  */
 function DesfechoRecusado({
   contaId,
@@ -481,52 +509,66 @@ function BotaoDoProblema({
 }) {
   const { acao } = problema;
   if (acao === null || !acoes.permitidas) return null;
-  let passo: PassoShopee;
-  const antigo = vinculoSubstituidoAlheio(acao, linkDocId);
-  if (antigo !== null) {
-    passo = {
-      rotulo: `Recriar o kit do vínculo ${antigo}`,
-      agir: () => acoes.abrirKit(contaId, antigo, 'recriar'),
-      criaKit: true,
-    };
-  } else if (
-    acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar &&
-    acao.linkDocId !== null
-  ) {
-    const alvo = acao.linkDocId;
-    passo = {
-      rotulo: `Republicar o vínculo ${alvo}`,
-      agir: () => acoes.republicar(contaId, alvo),
-      criaKit: false,
-    };
-  } else if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit) {
-    passo = {
-      rotulo: 'Republicar sem as opções de kit',
-      agir: () => acoes.republicar(contaId, linkDocId),
-      criaKit: false,
-    };
-  } else if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar) {
-    const alvo = acao.linkDocId;
-    passo = {
-      rotulo: `Recriar o kit do vínculo ${alvo}`,
-      agir: () => acoes.abrirKit(contaId, alvo, 'recriar'),
-      criaKit: true,
-    };
-  } else if (
-    acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal &&
-    pedidoKit !== null
-  ) {
-    passo = {
-      rotulo: 'Escolher o componente principal',
-      agir: () => acoes.abrirKit(contaId, pedidoKit.linkDocId, pedidoKit.arma, true),
-      criaKit: true,
-    };
-  } else {
-    return null;
-  }
+  const passo = passoDoProblema(contaId, linkDocId, acao, pedidoKit, acoes);
+  // The docblock's ⚠️: the link the step would send must still address a listing.
+  if (passo === null || !acoes.enderecavel(passo.alvo)) return null;
   return (
     <Group>
       <BotaoDoPasso contaId={contaId} passo={passo} acoes={acoes} />
     </Group>
   );
+}
+
+/** The step a refusal row's `acao` asks for ({@link DesfechoRecusado}'s list), or `null` for a text-only row. */
+function passoDoProblema(
+  contaId: string,
+  linkDocId: string,
+  acao: NonNullable<ProblemaShopee['acao']>,
+  pedidoKit: Extract<DesfechoAcaoShopee, { tipo: 'recusado' }>['pedidoKit'],
+  acoes: AcoesShopee,
+): PassoShopee | null {
+  const antigo = vinculoSubstituidoAlheio(acao, linkDocId);
+  if (antigo !== null) {
+    return {
+      rotulo: `Recriar o kit do vínculo ${antigo}`,
+      alvo: antigo,
+      agir: () => acoes.abrirKit(contaId, antigo, 'recriar'),
+      criaKit: true,
+    };
+  }
+  if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar && acao.linkDocId !== null) {
+    const republicado = acao.linkDocId;
+    return {
+      rotulo: `Republicar o vínculo ${republicado}`,
+      alvo: republicado,
+      agir: () => acoes.republicar(contaId, republicado),
+      criaKit: false,
+    };
+  }
+  if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit) {
+    return {
+      rotulo: 'Republicar sem as opções de kit',
+      alvo: linkDocId,
+      agir: () => acoes.republicar(contaId, linkDocId),
+      criaKit: false,
+    };
+  }
+  if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.recriar) {
+    const recriado = acao.linkDocId;
+    return {
+      rotulo: `Recriar o kit do vínculo ${recriado}`,
+      alvo: recriado,
+      agir: () => acoes.abrirKit(contaId, recriado, 'recriar'),
+      criaKit: true,
+    };
+  }
+  if (acao.tipo === TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal && pedidoKit !== null) {
+    return {
+      rotulo: 'Escolher o componente principal',
+      alvo: pedidoKit.linkDocId,
+      agir: () => acoes.abrirKit(contaId, pedidoKit.linkDocId, pedidoKit.arma, true),
+      criaKit: true,
+    };
+  }
+  return null;
 }

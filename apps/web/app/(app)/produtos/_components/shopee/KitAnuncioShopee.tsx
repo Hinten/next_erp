@@ -40,8 +40,15 @@ export function recriavel(link: ProdutoShopeeLink): boolean {
 
 /**
  * Whether "Converter em kit nativo" applies: an ordinary (`kitNativo !== true`),
- * non-superseded, non-removed link with an addressable `item_id`
- * (`anuncioShopeeVivo`) of a produto whose stored `ehKit` is on.
+ * non-superseded, non-removed (`anuncioShopeeVivo`) link with an ADDRESSABLE
+ * `item_id` (`itemIdDoAnuncioShopee`, a positive safe integer — the gate
+ * `recriavel` and every listing button pass) of a produto whose stored `ehKit`
+ * is on.
+ *
+ * ⚠️ `anuncioShopeeVivo` alone is NOT the `item_id` rung: it tests `isFinite`,
+ * so a malformed row's `1.5` or `2 ** 53` passes it, and no such number can
+ * address a Shopee listing. It stays apps/shopee's sweep filter and answers
+ * only the "removed" rung here.
  *
  * On the NAMED link the tab always sends, it pre-empts the dispatcher's
  * refusals `converter-sem-kit` (the produto is not a kit),
@@ -49,12 +56,14 @@ export function recriavel(link: ProdutoShopeeLink): boolean {
  * `vinculo-substituido` (a superseded link). `ja-e-kit-nativo` answers only an
  * UNNAMED converter, which the tab never sends. The `item_id` rung is the tab's
  * OWN deliberate restriction (no first publish of a draft in this step, Q4):
- * the server would convert a draft link, and here it gets no button.
+ * the server would convert a draft link, and here it gets no button — nor does
+ * a link whose stored id is present but addresses no listing.
  */
 export function convertivel(link: ProdutoShopeeLink, produtoEhKit: boolean): boolean {
   return (
     produtoEhKit &&
     link.kitNativo !== true &&
+    itemIdDoAnuncioShopee(link.item_id) !== null &&
     anuncioShopeeVivo(link) &&
     !ehVinculoSubstituido(link)
   );
@@ -165,6 +174,15 @@ const FRASE_REPETIR_KIT =
  * what may have happened, until when to wait, and "Repetir" — the IDENTICAL
  * body, offered only once the wait is over. Exported so the conta panel can show
  * it when the link it names is no longer listed.
+ *
+ * ⚠️ Deliberately NOT behind `AcoesShopee.enderecavel`, the gate every other
+ * button that sends a link id passes. The body left once, from a kit
+ * confirmation that held a loaded, addressable link; the way back from an
+ * uncertain create is that EXACT request (apps/shopee `kits/README`: the
+ * command the 202 prints), which the server answers by reading the shop —
+ * resume, refuse "importe-o", or create. Re-deciding it on a later snapshot
+ * would strand the uncertainty, and the conta panel shows this alert precisely
+ * when the link the body names is no longer listed.
  */
 export function IncertoDoKit({
   contaId,
