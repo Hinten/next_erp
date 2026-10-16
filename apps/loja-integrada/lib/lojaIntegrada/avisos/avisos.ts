@@ -1,8 +1,10 @@
 /**
- * The producers and resolvers of the three Loja Integrada avisos —
+ * The producers and resolvers of the three per-conta Loja Integrada avisos —
  * `lojaIntegradaTokenExpirando`, `lojaIntegradaReconexaoPendente` and (step 3)
  * `lojaIntegradaImportacaoParada`, raised and resolved by the order poller
- * (`pedidos/pollPedidos.ts`) — and the µs boundary of this app.
+ * (`pedidos/pollPedidos.ts`) — the channel's tipo list the sweep's orphan pass
+ * reads (the four order-import tipos of step 5 included; their producer is
+ * `pedidos/avisosPedidoLi.ts`), and the µs boundary of this app.
  *
  * ## ⚠️ The ONE module in `apps/loja-integrada` that speaks MICROSECONDS
  *
@@ -71,6 +73,7 @@ import {
   TIPO_AVISO,
   chaveDeAviso,
   diasParaExpirarLi,
+  type TipoAviso,
 } from '@delfrance/schemas';
 
 /** The motivos every machine resolution of these three tipos is stamped with. */
@@ -203,15 +206,52 @@ export function resolverExpiracaoToken(
 }
 
 /**
- * The three tipos of this channel — what the sweep's orphan pass filters on.
+ * The four order-import tipos (step 5, producer `pedidos/avisosPedidoLi.ts`):
+ * MANY rows per conta — one per pedido, or one per shipping-method key — so a
+ * row belongs to a conta by its key PREFIX ({@link prefixoDaContaNoAvisoLi}),
+ * never by one chave per conta.
+ */
+export const TIPOS_AVISO_PEDIDO_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
+  TIPO_AVISO.lojaIntegradaSituacaoDesconhecida,
+  TIPO_AVISO.lojaIntegradaPedidoContestado,
+  TIPO_AVISO.lojaIntegradaPedidoHub,
+  TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+]);
+
+/**
+ * The seven tipos of this channel — what the sweep's orphan pass filters on.
  * `lojaIntegradaImportacaoParada` (step 3) is listed beside the two step-2 tipos
- * this module raises, so a gone conta's import-stopped row is closed too.
+ * this module raises, and the four order-import tipos (step 5) beside them, so a
+ * gone conta's rows of every tipo are closed too.
  */
 export const TIPOS_AVISO_LI: ReadonlySet<string> = new Set([
   TIPO_AVISO.lojaIntegradaTokenExpirando,
   TIPO_AVISO.lojaIntegradaReconexaoPendente,
   TIPO_AVISO.lojaIntegradaImportacaoParada,
+  ...TIPOS_AVISO_PEDIDO_LI,
 ]);
+
+/**
+ * The conta part of an order-import row's key: `chaveDeAviso({ tipo, conta })`,
+ * which every such row's id starts with, followed by `:` and its entity (a
+ * pedido id or a key digest, neither carrying a `:`). RECOMPUTED for a listed
+ * conta and compared whole, never split out of a row's id — the key fold could
+ * map two conta ids onto one segment, and a split would hand back the wrong one.
+ */
+export function prefixoDaContaNoAvisoLi(tipo: TipoAviso, integracaoId: string): string {
+  return chaveDeAviso({ tipo, conta: integracaoId });
+}
+
+/**
+ * The part of an order-import row's id before its entity (everything before the
+ * LAST `:`), to look up among the listed contas' {@link prefixoDaContaNoAvisoLi}
+ * — or `null` for a row of any other tipo, or an id with no entity.
+ */
+export function prefixoDoAvisoDePedidoLi(tipo: string, chave: string): string | null {
+  if (!(TIPOS_AVISO_PEDIDO_LI as ReadonlySet<string>).has(tipo)) return null;
+  const fim = chave.lastIndexOf(':');
+  return fim > 0 ? chave.slice(0, fim) : null;
+}
 
 /** The CLOCKED tipos of the orphan pass: their rows are raised at a document's commit time. */
 type TipoComRelogioLi =
@@ -242,7 +282,7 @@ function contaDaChaveComRelogio(
 }
 
 /**
- * Close an open row of any of the three tipos BY ITS DOCUMENT ID as
+ * Close an open row of any of the seven tipos BY ITS DOCUMENT ID as
  * `conta-removida` — the sweep's orphan pass, for a conta that no longer exists
  * as a Loja Integrada conta. The id IS the chave the producers computed
  * (`chaveDeAviso` is the document id).
@@ -256,6 +296,8 @@ function contaDaChaveComRelogio(
  *    next sweep re-raises it if the conta turns out to exist.
  *  - A clocked-tipo id no producer here could have computed has no write to
  *    race, so it is resolved clockless too.
+ *  - An order-import row (step 5) is resolved clockless: its conta is gone, so
+ *    no import of it can run again to race the resolve.
  */
 export function resolverAvisoDeContaRemovida(
   db: Firestore,

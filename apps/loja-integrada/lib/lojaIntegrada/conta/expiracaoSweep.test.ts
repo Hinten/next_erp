@@ -373,6 +373,60 @@ describe('pass (b): open rows of contas that no longer exist', () => {
     expect(Number(fechado?.relogioEvento)).toBeGreaterThan(6);
   });
 
+  it('⚠️ the order-import tipos (many rows per conta): a LISTED conta’s rows stay open, an unlisted one’s are resolved', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(60) });
+    const pedidoAviso = (conta: string, pedidoId: string) =>
+      escreverAviso(
+        asDb(db),
+        {
+          tipo: TIPO_AVISO.lojaIntegradaSituacaoDesconhecida,
+          conta,
+          entidade: pedidoId,
+          severidade: SEVERIDADE_AVISO.atencao,
+          canal: CANAL_AVISO.lojaIntegrada,
+          params: { loja: conta, pedido: '1', codigo: 'x' },
+          urlInterna: { rota: ROTAS_AVISO.pedido.build(pedidoId), campo: null },
+          relogioEvento: 7,
+        },
+        { increment, agoraUs: agoraUsDe({ nowMs: AGORA_MS - DIA_MS }) },
+      );
+    const freteAviso = (conta: string) =>
+      escreverAviso(
+        asDb(db),
+        {
+          tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+          conta,
+          entidade: 'a'.repeat(64),
+          severidade: SEVERIDADE_AVISO.atencao,
+          canal: CANAL_AVISO.lojaIntegrada,
+          params: { loja: conta, formaEnvio: 'x', chave: '1---X', motivo: 'alvo-ausente' },
+          urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build(conta), campo: null },
+          relogioEvento: 7,
+        },
+        { increment, agoraUs: agoraUsDe({ nowMs: AGORA_MS - DIA_MS }) },
+      );
+    const vivos = [
+      (await pedidoAviso('viva', 'p-1')).chave,
+      (await pedidoAviso('viva', 'p-2')).chave,
+      (await freteAviso('viva')).chave,
+    ];
+    // A conta id that EXTENDS the live one is another conta: its prefix differs.
+    const orfaos = [
+      (await pedidoAviso('apagada', 'p-3')).chave,
+      (await pedidoAviso('viva2', 'p-4')).chave,
+      (await freteAviso('apagada')).chave,
+    ];
+
+    const r = await sweep(db);
+    expect(r.orfaos.resolvidos).toBe(orfaos.length);
+    for (const chave of vivos) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
+    for (const chave of orfaos) {
+      expect(aviso(db, chave), chave).toMatchObject({ resolucaoMotivo: 'conta-removida' });
+    }
+  });
+
   it('⚠️ an import-stopped row raised AFTER the list was read (a brand-new conta) stays open', async () => {
     const db = new FakeDb();
     seedConta(db, 'viva');

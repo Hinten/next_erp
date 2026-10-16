@@ -326,6 +326,11 @@ describe('the import-stopped tipo (step 3) in the orphan pass', () => {
         TIPO_AVISO.lojaIntegradaTokenExpirando,
         TIPO_AVISO.lojaIntegradaReconexaoPendente,
         TIPO_AVISO.lojaIntegradaImportacaoParada,
+        // The four order-import tipos (step 5): matched by key PREFIX in the orphan pass.
+        TIPO_AVISO.lojaIntegradaSituacaoDesconhecida,
+        TIPO_AVISO.lojaIntegradaPedidoContestado,
+        TIPO_AVISO.lojaIntegradaPedidoHub,
+        TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
       ].sort(),
     );
     const { chave } = await raise(new FakeDb(), 1_000);
