@@ -5,7 +5,18 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import { CAMPOS_CAPS, CanalCapsPanel } from './CanalCapsPanel';
 
-function renderPanel(tipo: IntegracaoTipo = INTEGRACAO_TIPO.shopee, titulo = 'Shopee') {
+/**
+ * The default fixture is a SURVEYED but UNBUILT channel — Loja Integrada (it was
+ * Shopee until step 21, #1529, registered Shopee's push rows ahead of its flip).
+ * Loja Integrada flips `implementado` at ITS step 22
+ * (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`);
+ * whichever channel flips second re-points this example. The arm itself is pinned
+ * table-free in `lib/marketplace/caps/suporteCanal.test.ts:16-25`.
+ */
+function renderPanel(
+  tipo: IntegracaoTipo = INTEGRACAO_TIPO.lojaIntegrada,
+  titulo = 'Loja Integrada',
+) {
   return render(
     <MantineTestProvider>
       <CanalCapsPanel tipo={tipo} titulo={titulo} descricao={`Integração com a ${titulo}.`} />
@@ -16,7 +27,7 @@ function renderPanel(tipo: IntegracaoTipo = INTEGRACAO_TIPO.shopee, titulo = 'Sh
 describe('CanalCapsPanel', () => {
   it('renders the channel row instead of a generic "em construção" message', () => {
     renderPanel();
-    expect(screen.getByText('Shopee')).toBeTruthy();
+    expect(screen.getByText('Loja Integrada')).toBeTruthy();
     expect(screen.getByText('não implementado')).toBeTruthy();
     // A capability from each group, so a dropped group is visible.
     expect(screen.getByText('Publicar anúncio')).toBeTruthy();
@@ -39,7 +50,7 @@ describe('CanalCapsPanel', () => {
    */
   it('renders every capability the row carries, with none left ungrouped', () => {
     renderPanel();
-    const caps = marketplaceCapsFor(INTEGRACAO_TIPO.shopee);
+    const caps = marketplaceCapsFor(INTEGRACAO_TIPO.lojaIntegrada);
     const esperados = [
       ...Object.keys(caps).filter(
         (k) => k !== 'channel' && k !== 'implementado' && k !== 'estoque',
@@ -74,10 +85,11 @@ describe('CanalCapsPanel', () => {
   });
 
   it('renders a SURVEYED but unbuilt channel with no yellow left, and both answers', () => {
-    // The near-miss of the test above: Shopee is unbuilt (`implementado: false`,
-    // so the yellow alert still shows) yet fully surveyed, so not one capability
-    // may render as "não pesquisado" — and both a real "sim" (`publicarAnuncio`)
-    // and a real "não" (`perguntas`) have to be on screen.
+    // The near-miss of the test above: Loja Integrada is unbuilt (`implementado:
+    // false`, so the yellow alert still shows) yet fully surveyed, so not one
+    // capability may render as "não pesquisado" — and both a real "sim"
+    // (`publicarAnuncio`) and a real "não" (`kitVirtual`, `tabelaDeMedidas`) have
+    // to be on screen.
     renderPanel();
     expect(screen.queryByText('não pesquisado')).toBeNull();
     expect(screen.getAllByText('sim').length).toBeGreaterThan(0);

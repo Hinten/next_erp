@@ -10,7 +10,7 @@ import {
 } from '@delfrance/integrations-shopee';
 import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
 
-import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { type DocData, FakeDb, asDb, increment } from '../testing/fakeDb';
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import {
   ENVIO_MANUAL_MAX_TENTATIVAS,
@@ -56,6 +56,42 @@ const MODEL_ID = 2000458802;
 const AGORA_MS = 1_760_000_000_000;
 
 const CONTA: Readonly<Record<string, unknown>> = { depositoOuterRef: DEPOSITO, nome: 'Loja teste' };
+
+/**
+ * The shared double plus the ONE Admin-SDK read it does not model —
+ * `Firestore.getAll(...refs, { fieldMask })`, with a real mask — which the
+ * anchor resolution (`core/anchors.ts`) makes. Extended HERE (the price suites'
+ * rule), never in `testing/fakeDb.ts`.
+ */
+class FakeDbComLote extends FakeDb {
+  getAll(...args: unknown[]) {
+    const ultimo = args[args.length - 1];
+    const opcoes =
+      typeof ultimo === 'object' && ultimo !== null && 'fieldMask' in ultimo
+        ? (ultimo as { fieldMask: string[] })
+        : null;
+    const refs = (opcoes === null ? args : args.slice(0, -1)) as {
+      id: string;
+      get: () => Promise<{ exists: boolean; data: () => DocData | undefined }>;
+    }[];
+    return Promise.all(
+      refs.map(async (ref) => {
+        const snap = await ref.get();
+        const dados = snap.data();
+        return {
+          id: ref.id,
+          exists: snap.exists,
+          data: () => {
+            if (!snap.exists || dados === undefined || opcoes === null) return dados;
+            const saida: DocData = {};
+            for (const c of opcoes.fieldMask) if (Object.hasOwn(dados, c)) saida[c] = dados[c];
+            return saida;
+          },
+        };
+      }),
+    );
+  }
+}
 
 function membro(produtoId: string, quantidade: number) {
   return {
@@ -176,7 +212,7 @@ afterEach(() => {
 
 describe('enviarEstoqueManualShopee — a contabilidade', () => {
   it('1 — todo id pedido cai em EXATAMENTE uma lista, numa mistura achado/não-achado/outra-conta', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-2', 'prod-3']);
     const { deps } = montarDeps(
       db,
@@ -204,7 +240,7 @@ describe('enviarEstoqueManualShopee — a contabilidade', () => {
   });
 
   it('2 — PAR: o mesmo id pedido duas vezes é UM produto (a dobra do conjunto)', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps, chamadas } = montarDeps(db, [familia('prod-1')], () =>
       Promise.resolve(resultadoEnviado()),
@@ -221,7 +257,7 @@ describe('enviarEstoqueManualShopee — a contabilidade', () => {
   });
 
   it('3 — QUASE-PAR: "prod-1" e "prod-1 " são produtos DISTINTOS, nada é fundido', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-1 ']);
     const { deps } = montarDeps(db, [familia('prod-1')], () => Promise.resolve(resultadoEnviado()));
 
@@ -236,7 +272,7 @@ describe('enviarEstoqueManualShopee — a contabilidade', () => {
   });
 
   it('4 — o depósito é derivado da conta e chega ao leitor por ids', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const vistos: string[] = [];
     const { deps } = montarDeps(db, [familia('prod-1')], () => Promise.resolve(resultadoEnviado()));
@@ -258,7 +294,7 @@ describe('enviarEstoqueManualShopee — a contabilidade', () => {
   });
 
   it('5 — uma conta sem depósito recusa com a classe de guarda, antes de qualquer leitura', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     const { deps, chamadas } = montarDeps(db, [familia('prod-1')], () =>
       Promise.resolve(resultadoEnviado()),
     );
@@ -274,7 +310,7 @@ describe('enviarEstoqueManualShopee — a contabilidade', () => {
   });
 
   it('6 — acima do limite de produtos a classe é de CONFIGURAÇÃO (a rota recusa antes)', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     const ids = Array.from({ length: 51 }, (_v, i) => `prod-${String(i)}`);
     const { deps } = montarDeps(db, [], () => Promise.resolve(resultadoEnviado()));
 
@@ -288,11 +324,159 @@ describe('enviarEstoqueManualShopee — a contabilidade', () => {
   });
 });
 
+/* --------------------------- child → anchor (S1–S4) ------------------------ */
+
+describe('enviarEstoqueManualShopee — um FILHO pedido resolve na âncora (#1529, S1–S4)', () => {
+  const ANCORA = 'prod-1';
+  const FILHO = 'prod-1-p';
+
+  function semearFamilia(db: FakeDb): void {
+    db.seed(`produtos/${ANCORA}`, { nome: 'Camiseta', paiId: null });
+    db.seed(`produtos/${FILHO}`, { nome: 'Camiseta P', paiId: ANCORA });
+  }
+
+  /** `montarDeps`, recording every id list the by-ids reader is handed. */
+  function comLeitor(db: FakeDb, rows: readonly LinhaDeFamiliaShopee[]) {
+    const lidos: (readonly string[])[] = [];
+    const m = montarDeps(db, rows, () => Promise.resolve(resultadoEnviado()));
+    const deps: DepsEnvioManual = {
+      ...m.deps,
+      buscarFamilias: (_db, args) => {
+        lidos.push(args.produtoIds);
+        return Promise.resolve(rows.filter((r) => args.produtoIds.includes(r.anchorId)));
+      },
+    };
+    return { deps, chamadas: m.chamadas, lidos };
+  }
+
+  it('⚠️ (S1) [filho] ⇒ a família é lida pela ÂNCORA, a linha nomeia a âncora e nada fica sem envio', async () => {
+    const db = new FakeDbComLote();
+    semearFamilia(db);
+    const { deps, chamadas, lidos } = comLeitor(db, [familia(ANCORA)]);
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: [FILHO], reenviarComErro: false },
+      deps,
+    );
+
+    expect(lidos).toEqual([[ANCORA]]);
+    expect(chamadas.map((c) => c.tarefa.produtoId)).toEqual([ANCORA]);
+    expect(res.listings.map((l) => [l.produtoId, l.outcome])).toEqual([[ANCORA, 'enviado']]);
+    // MUT-1: the anchor nobody requested still carries its OWN name — never null
+    // (the web dialog's 'Produto desconhecido') and never the child's.
+    expect(res.listings[0]?.produtoNome).toBe('Camiseta');
+    expect(res.produtosSemEnvio).toEqual([]);
+    expect(res.solicitados).toBe(1);
+    expect(res.familias).toBe(1);
+  });
+
+  it('⚠️ (S2) [filho, âncora] ⇒ UMA família, UM envio por vínculo — a dedução vem DEPOIS da resolução', async () => {
+    const db = new FakeDbComLote();
+    semearFamilia(db);
+    const { deps, chamadas, lidos } = comLeitor(db, [familia(ANCORA)]);
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: [FILHO, ANCORA], reenviarComErro: false },
+      deps,
+    );
+
+    expect(lidos).toEqual([[ANCORA]]);
+    expect(chamadas).toHaveLength(1);
+    expect(res.listings).toHaveLength(1);
+    // The row is the ANCHOR's, with the anchor's own name — never the child's.
+    expect(res.listings[0]).toMatchObject({ produtoId: ANCORA, produtoNome: 'Camiseta' });
+    expect(res.solicitados).toBe(2);
+    expect(res.familias).toBe(1);
+  });
+
+  it('⚠️ (S3) [filho] cuja âncora não tem anúncio nesta conta ⇒ produtosSemEnvio nomeia o FILHO, com o motivo do planejador', async () => {
+    const db = new FakeDbComLote();
+    semearFamilia(db);
+    const { deps, chamadas } = comLeitor(db, [familia(ANCORA, { conta: 'int-outra' })]);
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: [FILHO], reenviarComErro: false },
+      deps,
+    );
+
+    expect(chamadas).toHaveLength(0);
+    expect(res.listings).toEqual([]);
+    expect(res.produtosSemEnvio).toEqual([
+      {
+        produtoId: FILHO,
+        produtoNome: 'Camiseta P',
+        motivo: MOTIVO_ESTOQUE_SHOPEE.contaForaDoProduto,
+        mensagem: MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.contaForaDoProduto],
+      },
+    ]);
+  });
+
+  it('(S3) o veredito da família vale para CADA id pedido que resolveu nela, na ordem do pedido', async () => {
+    const db = new FakeDbComLote();
+    semearFamilia(db);
+    db.seed('produtos/prod-2', { nome: 'Outra', paiId: null });
+    const { deps } = comLeitor(db, [
+      familia(ANCORA, { conta: 'int-outra' }),
+      familia('prod-2', { conta: 'int-outra' }),
+    ]);
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: [ANCORA, 'prod-2', FILHO], reenviarComErro: false },
+      deps,
+    );
+
+    expect(res.produtosSemEnvio.map((p) => p.produtoId)).toEqual([ANCORA, 'prod-2', FILHO]);
+  });
+
+  it('⚠️ (S4) um filho cujo paiId nomeia um documento AUSENTE ⇒ produto-nao-encontrado para o FILHO, nunca um sumiço', async () => {
+    const db = new FakeDbComLote();
+    db.seed(`produtos/${FILHO}`, { nome: 'Camiseta P', paiId: 'prod-pai-apagado' });
+    const { deps, chamadas, lidos } = comLeitor(db, []);
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: [FILHO], reenviarComErro: false },
+      deps,
+    );
+
+    expect(lidos).toEqual([['prod-pai-apagado']]);
+    expect(chamadas).toHaveLength(0);
+    expect(res.produtosSemEnvio).toEqual([
+      {
+        produtoId: FILHO,
+        produtoNome: 'Camiseta P',
+        motivo: MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado,
+        mensagem: MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado],
+      },
+    ]);
+  });
+
+  it('uma seleção só de ids AUSENTES não chama o leitor por ids (ele recusa uma lista vazia)', async () => {
+    const db = new FakeDbComLote();
+    const { deps, lidos } = comLeitor(db, []);
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: ['prod-fantasma'], reenviarComErro: false },
+      deps,
+    );
+
+    expect(lidos).toEqual([]);
+    expect(res.produtosSemEnvio.map((p) => [p.produtoId, p.motivo])).toEqual([
+      ['prod-fantasma', MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado],
+    ]);
+  });
+});
+
 /* -------------------------------- the ladder ------------------------------- */
 
 describe('enviarEstoqueManualShopee — a escada', () => {
   it('7 — a ÚLTIMA tentativa mapeia no teto da fila menos um e as anteriores em 0', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     let n = 0;
     const { deps, chamadas, esperas } = montarDeps(db, [familia('prod-1')], () => {
@@ -313,7 +497,7 @@ describe('enviarEstoqueManualShopee — a escada', () => {
   });
 
   it('8 — nunca passa de ENVIO_MANUAL_MAX_TENTATIVAS, e o erro do canal vira uma FALHA', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps, chamadas } = montarDeps(db, [familia('prod-1')], () =>
       Promise.reject(new ShopeeError('recusa persistente')),
@@ -331,7 +515,7 @@ describe('enviarEstoqueManualShopee — a escada', () => {
   });
 
   it('9 — o envio manual IGNORA a válvula de sincronização', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps, chamadas } = montarDeps(db, [familia('prod-1')], () =>
       Promise.resolve(resultadoEnviado()),
@@ -347,7 +531,7 @@ describe('enviarEstoqueManualShopee — a escada', () => {
   });
 
   it('10 — um erro de CONFIGURAÇÃO não é contido: sobe para a rota responder 500', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps } = montarDeps(db, [familia('prod-1')], () =>
       Promise.reject(new ShopeeConfigError('corpo malformado que NÓS montamos')),
@@ -371,7 +555,7 @@ describe('enviarEstoqueManualShopee — a escada', () => {
     // Largura 1: com duas esteiras a segunda linha já passou da guarda antes da
     // primeira lançar, e o que se mede aqui é a guarda, não o escalonamento.
     vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '1');
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-2', 'prod-3']);
     const { deps, chamadas } = montarDeps(
       db,
@@ -414,7 +598,7 @@ describe('enviarEstoqueManualShopee — a escada', () => {
     // curto-circuitam) e `allSettled` (o pool espera as esteiras antes de
     // propagar), de modo que o teste pode afirmar o que NÃO rodou.
     vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '2');
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     const ids = ['prod-1', 'prod-2', 'prod-3', 'prod-4', 'prod-5', 'prod-6'];
     semear(db, ids);
     const { deps, chamadas } = montarDeps(
@@ -458,7 +642,7 @@ describe('enviarEstoqueManualShopee — a escada', () => {
     // que, no empurrão manual, ele é uma linha `falha`/`reauth` e as demais
     // continuam. Sem este par, o teste 11 lê como "todo reauth para a corrida",
     // que é falso na superfície que mais importa.
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-2']);
     const { deps, chamadas } = montarDeps(db, [familia('prod-1'), familia('prod-2')], () =>
       Promise.resolve(
@@ -491,7 +675,7 @@ describe('enviarEstoqueManualShopee — a escada', () => {
 
 describe('enviarEstoqueManualShopee — o prazo', () => {
   it('12 — o prazo corre no relógio DECORRIDO injetado', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     let leituras = 0;
     const { deps, chamadas } = montarDeps(db, [familia('prod-1')], () =>
@@ -518,7 +702,7 @@ describe('enviarEstoqueManualShopee — o prazo', () => {
   });
 
   it('13 — QUASE-MISS: um nowMs injetado NO PASSADO não estoura o prazo', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps, chamadas } = montarDeps(db, [familia('prod-1')], () =>
       Promise.resolve(resultadoEnviado()),
@@ -564,7 +748,7 @@ describe('concorrenciaEnvioManual', () => {
 
 describe('enviarEstoqueManualShopee — os limites de taxa', () => {
   it('17 — uma RAJADA aborta o resto como nao-tentado/conta-pausada e carimba pausadoAte', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-2']);
     db.seed(`estoqueShopeeSync/${INT}`, { pausadoAte: AGORA_MS + 300_000 });
     const { deps, chamadas } = montarDeps(db, [familia('prod-1'), familia('prod-2')], () =>
@@ -612,7 +796,7 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
    * fosse epoch, a troca passaria despercebida — por isso ele não é.
    */
   function rajadaQueEscapa(retryAfterSeconds?: number) {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-2']);
     let decorrido = 0;
     const montado = montarDeps(
@@ -684,7 +868,7 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
   });
 
   it('18 — a COTA DIÁRIA usa a virada importada, não o cabeçalho', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps } = montarDeps(db, [familia('prod-1')], () =>
       Promise.reject(
@@ -717,7 +901,7 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
     // slug (`conta-pausada`) respondia 200 com `pausadoAte: null` enquanto o
     // documento de estado que esta mesma chamada acabara de escrever dizia que
     // a conta está bloqueada até a virada da cota.
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     db.seed(`estoqueShopeeSync/${INT}`, { pausadoAte: null, pauseCount: 0 });
     const cliente = {
@@ -753,7 +937,7 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
     // O mesmo veredito do remetente, agora com a costura injetada para poder
     // CONTAR as tentativas. Largura 1 para que a segunda linha veja o aborto.
     vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '1');
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-2']);
     const { deps, chamadas } = montarDeps(db, [familia('prod-1'), familia('prod-2')], () =>
       Promise.resolve(
@@ -787,7 +971,7 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
     // (`ShopeeTasksDisabledError`) o erro atravessa tudo sem classificação: nem
     // uma é `ShopeeError`, então ele sairia pelo `throw err` do pool e a corrida
     // inteira REJEITARIA em vez de devolver a linha.
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     db.seed(`estoqueShopeeSync/${INT}`, { pausadoAte: AGORA_MS + 600_000, pauseCount: 1 });
     const { deps } = montarDeps(db, [familia('prod-1')], () => Promise.resolve(resultadoEnviado()));
@@ -804,7 +988,7 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
   });
 
   it('19 — a válvula de filas fechada vira nao-tentado/conta-pausada e aborta', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps } = montarDeps(db, [familia('prod-1')], () =>
       Promise.resolve(
@@ -840,7 +1024,7 @@ describe('enviarEstoqueManualShopee — reenviarComErro', () => {
   };
 
   it('20 — desligado, a impressão digital da recusa anterior PULA o anúncio', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps, chamadas } = montarDeps(db, [familia('prod-1', { link: linkRecusado })], () =>
       Promise.resolve(resultadoEnviado()),
@@ -857,7 +1041,7 @@ describe('enviarEstoqueManualShopee — reenviarComErro', () => {
   });
 
   it('21 — ligado, o mesmo anúncio É enviado (a opção chega ao planejador)', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps, chamadas } = montarDeps(db, [familia('prod-1', { link: linkRecusado })], () =>
       Promise.resolve(resultadoEnviado()),
@@ -874,7 +1058,7 @@ describe('enviarEstoqueManualShopee — reenviarComErro', () => {
   });
 
   it('22 — mesmo ligado, um anúncio REMOVIDO continua recusando', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1']);
     const { deps, chamadas } = montarDeps(
       db,
@@ -958,7 +1142,7 @@ describe('paraOutcomeDeEnvio', () => {
 
 describe('enviarEstoqueManualShopee — o envelope', () => {
   async function envelopeCompleto() {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-2']);
     const { deps } = montarDeps(db, [familia('prod-1')], () =>
       Promise.resolve(
@@ -1018,7 +1202,7 @@ describe('enviarEstoqueManualShopee — o envelope', () => {
     // motivo em mãos. Sem ela as três linhas eram: um envio limpo (motivo
     // nulo), um pulo (a mensagem é do planejador) e um produto não encontrado
     // (uma consulta direta ao mapa), e nenhuma delas enxerga a função.
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     semear(db, ['prod-1', 'prod-2', 'prod-3', 'prod-4']);
     const { deps } = montarDeps(
       db,
@@ -1070,7 +1254,7 @@ describe('enviarEstoqueManualShopee — o envelope', () => {
   });
 
   it('31 — o nome do produto vem do documento, e um produto sem nome lê null', async () => {
-    const db = new FakeDb();
+    const db = new FakeDbComLote();
     db.seed('produtos/prod-1', { nome: 'Camiseta prod-1', paiId: null });
     db.seed('produtos/prod-2', { nome: '   ', paiId: null });
     const { deps } = montarDeps(db, [familia('prod-1')], () => Promise.resolve(resultadoEnviado()));

@@ -93,7 +93,8 @@ Four helpers were **promoted** out of other folders rather than copied, each
 with its source module's tests byte-unedited as the proof nothing moved:
 `core/pool.ts` (`executarEmPool`), `core/vinculosShopee.ts` (`idDoRef`,
 `varLinksDoAnuncio`, `modelosUtilizaveis` — the three folds that say which
-models belong to which listing), `produtos/mapeamento.ts`'s
+models belong to which listing; since step 21 the first two live in
+`@delfrance/schemas` and that module re-exports them), `produtos/mapeamento.ts`'s
 `precoDePrateleiraDe` (§4) and `estoque/contaEstoque.ts`'s
 `lerInfoDaLojaShopee` (§5). Two more live in `@delfrance/schemas` so a second
 channel can bind them: `precoDaTabela` and `mesmoPrecoEmReais` (§3).
@@ -586,10 +587,11 @@ only caller; nothing here writes `item_status` or `estadoAnuncio`.
 - **A child's refusal self-expires.** A reader shows it only while
   `precoRecusaEm >= (precoEnviadoEm ?? 0)` on the SAME `variashopee` doc, so the
   model's next accepted send hides it, and no child write ever carries a
-  `null`. ⚠️ **Open item (D-7, step 21):** a model refused in a partial send
-  that later reads `preco-igual` keeps its refusal legible while the item reads
-  clean; whether the reader should also anchor on the parent's `precoEnviadoEm`
-  is the web step's call.
+  `null`. ⚠️ **Settled in step 21 (register 177):**
+  `recusaPrecoDoModeloShopeeLegivel` (`@delfrance/schemas`) also anchors on the
+  LISTING's `precoEnviadoEm`, which only a clean send stamps — so a model
+  refused in a partial send that later reads `preco-igual` stops showing its
+  refusal once the item syncs cleanly. A tie shows the refusal.
 - **Written by NOTHING:** `preco-igual`, a promotion or slash-price lock, an
   echo mismatch, a skip, a pause, a fatal, a rethrow. ⚠️ Above all
   `preco-igual`: `precoEnviado` means "the price THIS ERP sent", and an equal
@@ -607,8 +609,8 @@ newer send of 12 already did) stands for as long as the price holds. ⚠️ The
 item's refusal fields are cleared by a `null` write, not expired by a stamp, so
 a refusal that lands after a newer clean clear stands beside the newer
 `precoEnviadoEm`: step 21's reader must show the item's refusal only while
-`precoRecusaEm >= (precoEnviadoEm ?? 0)` — the child rows' rule above, which
-survives this race where the `null` clear does not. The accepted residual
+`precoRecusaEm >= (precoEnviadoEm ?? 0)` — the child rows' own-stamp half
+above, which survives this race where the `null` clear does not. The accepted residual
 (register 147): a crash between an accepted write and its write-back replays as
 `preco-igual`, writes no success stamp for it, and under-reports at most that
 one item.
@@ -1069,13 +1071,13 @@ gate. In short:
   send, under-reported), 148 (the no-model comparand's one-request window,
   §1 — including a guard-bypassing DECREASE), 156 (the start race), 161 (a
   parked job holds the slot), 163 (a produto whose `integracoesComProduto` lags
-  is never enumerated by the job; the manual push is the exit).
-- **Questions and follow-ups with no owner yet**: 177 (the refusal-reader rule
-  `precoRecusaEm >= (precoEnviadoEm ?? 0)`, for the item as well as the child,
-  and whether a child should also anchor on its parent — step 21's call), 178
-  (step 11's tier mapper refusing an UPDATE for a price it does not send — a
-  question for Lucas), 179 (a throttle whose body is `response: {}` loses
-  `Retry-After` in the transport's partial), 180 (Mercado Livre's two price
+  is never enumerated by the job; the manual push is the exit), 177 (the
+  refusal-reader rule — settled in step 21: `shopeeLinkLeitura.ts`, `>=`, a
+  model also anchors on the item).
+- **Questions and follow-ups with no owner yet**: 178 (step 11's tier mapper
+  refusing an UPDATE for a price it does not send — a question for Lucas), 179
+  (a throttle whose body is `response: {}` loses `Retry-After` in the
+  transport's partial), 180 (Mercado Livre's two price
   comparisons still hand-rolled rather than bound to `mesmoPrecoEmReais`), and
   151's remainder (`ci-mercado-livre.yml`'s push paths still miss its own
   price-job schemas and `shared/ttl.ts`).

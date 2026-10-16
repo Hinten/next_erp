@@ -40,6 +40,7 @@ import {
   ACAO_STATUS_ANUNCIO,
   ESTADO_ANUNCIO_SHOPEE,
   MOTIVO_RESOLUCAO_RECEITA_KIT,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   chaveAvisoReceitaKitShopee,
   chaveReceitaKitErp,
   ehKitNativoAtivo,
@@ -83,9 +84,11 @@ import {
   avisoKitNovoInativo,
   divergenciaDoKitNovo,
   nadaARecriar,
+  problemaRecriacaoSemDiferenca,
   recriarKit,
 } from './recriarKit';
 import type { AvisoKit, KitDeps, ResultadoPublicacaoKit } from './resultadoKit';
+import { exigirAcaoEmTodas } from './testing/exigirAcao';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures — role ids only (s19-ctx). Never a real partner, shop or item.     */
@@ -814,6 +817,10 @@ function escritasNaLoja(loja: Loja, desde = 0): string[] {
     .filter((o) => o === 'add_kit_item' || o === 'update_kit_item' || o === 'delete_item');
 }
 
+/**
+ * The refusal a run threw — and K2 (step 21) on every refusal this suite
+ * produces: a sentence that names a CLI flag or command must carry an `acao`.
+ */
 async function recusaDe(p: Promise<unknown>): Promise<ShopeePublishBlockedError> {
   const erro = await p.then(
     () => {
@@ -822,7 +829,9 @@ async function recusaDe(p: Promise<unknown>): Promise<ShopeePublishBlockedError>
     (e: unknown) => e,
   );
   expect(erro).toBeInstanceOf(ShopeePublishBlockedError);
-  return erro as ShopeePublishBlockedError;
+  const recusa = erro as ShopeePublishBlockedError;
+  exigirAcaoEmTodas(recusa.problemas);
+  return recusa;
 }
 
 async function falhaDe(p: Promise<unknown>): Promise<unknown> {
@@ -1042,6 +1051,22 @@ describe('recriarKit — cria o NOVO primeiro, depois exclui o antigo (L4(4))', 
 /*  (2) step 0 — the safety net (M128, M173)                                   */
 /* ========================================================================== */
 
+describe('step 21 (K1) — problemaRecriacaoSemDiferenca carrega o `acao` EXATO', () => {
+  it('sem-opcoes-de-kit, ao lado da frase da CLI, que fica intacta', () => {
+    const p = problemaRecriacaoSemDiferenca(KIT_1);
+    expect(p).toEqual({
+      campo: 'recriar',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.recriacaoSemDiferenca,
+      mensagem:
+        `o kit ${String(KIT_1)} na Shopee já tem a composição do ERP e o mesmo componente ` +
+        'principal — não há o que recriar; publique sem --recriar (para trocar o principal, ' +
+        'informe --principal)',
+      acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit },
+    });
+    exigirAcaoEmTodas([p]);
+  });
+});
+
 describe('(M128) passo 0 — a rede de segurança `recriacao-sem-diferenca`', () => {
   it('um kit VIVO igual ao ERP (forma, receita, sem --principal, sem outro vínculo vivo) ⇒ recusa, ZERO escrita na Shopee — e a decisão do aviso ainda roda', async () => {
     const db = new FakeDb();
@@ -1058,6 +1083,11 @@ describe('(M128) passo 0 — a rede de segurança `recriacao-sem-diferenca`', ()
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.recriacaoSemDiferenca]);
     expect(erro.problemas[0]).toMatchObject({ campo: 'recriar' });
     expect(erro.problemas[0]?.mensagem).toContain(String(KIT_1));
+    // K1 (step 21): the web's next step is a plain republish, without the kit options —
+    // and it rides the thrown error verbatim (the 422 spreads it, K3).
+    expect(erro.problemas[0]?.acao).toEqual({
+      tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit,
+    });
     expect(escritasNaLoja(loja, desde)).toEqual([]);
     expect(loja.ops.slice(desde)).not.toContain('add_kit_item');
     expect(avisoAberto(db)).toBe(false);

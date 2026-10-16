@@ -116,16 +116,28 @@ const ok = (headers: Record<string, string> = {}) =>
   mockFetch(() => json(participacoes200, 200, headers));
 
 describe('headers', () => {
-  it('sends exactly x-amz-access-token, user-agent and accept — no Authorization, no SigV4', async () => {
+  it('sends exactly x-amz-access-token, x-amz-date, user-agent and accept — no Authorization, no SigV4', async () => {
     const f = ok();
     await cliente(f).c.get(pedido());
     const { headers } = requisicao(f);
-    expect([...headers.keys()].sort()).toEqual(['accept', 'user-agent', 'x-amz-access-token']);
+    expect([...headers.keys()].sort()).toEqual([
+      'accept',
+      'user-agent',
+      'x-amz-access-token',
+      'x-amz-date',
+    ]);
     expect(headers.get('x-amz-access-token')).toBe(ACCESS_TOKEN);
     expect(headers.get('accept')).toBe('application/json');
     expect(headers.has('authorization')).toBe(false);
     expect(headers.has('content-type')).toBe(false);
-    expect(headers.has('x-amz-date')).toBe(false);
+    // ISO-8601 basic UTC from the injected clock (`agora: () => 1_000`).
+    expect(headers.get('x-amz-date')).toBe('19700101T000001Z');
+  });
+
+  it('formats x-amz-date like the docs\x27 example, from the injected clock, in UTC', async () => {
+    const f = ok();
+    await cliente(f, { agora: () => Date.UTC(2019, 3, 30, 12, 36, 0, 789) }).c.get(pedido());
+    expect(requisicao(f).headers.get('x-amz-date')).toBe('20190430T123600Z');
   });
 
   it("sends the caller's user-agent verbatim", async () => {

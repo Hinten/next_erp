@@ -93,9 +93,11 @@
  */
 import {
   ESTADO_ANUNCIO_SHOPEE,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   ehKitNativoAtivo,
   ehKitVirtualEfetivo,
   ehVinculoSubstituido,
+  type AcaoSugeridaPublicacaoShopee,
 } from '@delfrance/schemas';
 
 import {
@@ -142,12 +144,22 @@ export type ResultadoDoDespacho =
 /*                         The five dispatcher refusals                        */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * One dispatcher refusal. `acao` (step 21, #1529) is the web's next step for a
+ * sentence that names a CLI flag; ABSENT, never `undefined`, when none is given.
+ */
 function bloqueio(
   campo: string | null,
   motivo: MotivoPublicacaoBloqueada,
   mensagem: string,
+  acao?: AcaoSugeridaPublicacaoShopee,
 ): ProblemaDeBloqueio {
-  return { campo, motivo, mensagem: limitarMensagemProblema(mensagem) };
+  return {
+    campo,
+    motivo,
+    mensagem: limitarMensagemProblema(mensagem),
+    ...(acao === undefined ? {} : { acao }),
+  };
 }
 
 function problemaKitVirtualSemKit(produtoId: string): ProblemaDeBloqueio {
@@ -182,6 +194,7 @@ function problemaJaEKitNativo(linkDocId: string): ProblemaDeBloqueio {
     MOTIVO_PUBLICACAO_BLOQUEADA.jaEKitNativo,
     `o produto já é kit nativo nesta conta (vínculo ${linkDocId}) e não tem anúncio comum ativo ` +
       'para converter — publique sem --converter-em-kit',
+    { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar, linkDocId },
   );
 }
 
@@ -192,6 +205,7 @@ function problemaOpcaoDeKitEmAnuncioComum(
     campo,
     MOTIVO_PUBLICACAO_BLOQUEADA.opcaoDeKitEmAnuncioComum,
     '--principal, --recriar e --converter-em-kit só valem para kit nativo',
+    { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.semOpcoesDeKit },
   );
 }
 

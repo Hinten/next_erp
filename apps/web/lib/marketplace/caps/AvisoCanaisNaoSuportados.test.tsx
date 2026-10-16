@@ -40,15 +40,19 @@ function renderAviso(
 describe('AvisoCanaisNaoSuportados', () => {
   it('names each unsupported conta and the reason', () => {
     renderAviso(
-      [alvo(['shopee-1'])],
-      [['shopee-1', integracao({ nome: 'Shopee BR', tipo: INTEGRACAO_TIPO.shopee })]],
+      [alvo(['li-1'])],
+      [['li-1', integracao({ nome: 'Loja Integrada BR', tipo: INTEGRACAO_TIPO.lojaIntegrada })]],
     );
     // The title the absence assertions below key off — asserted here so they
     // cannot pass vacuously against a phrase this component never renders.
     expect(screen.getByText(/serão pulados/)).toBeTruthy();
-    expect(screen.getByText(/Shopee BR/)).toBeTruthy();
-    // Shopee's Phase 0 survey says it CAN push stock; what is missing is our
-    // backend. The warning must say that, not "nobody checked".
+    expect(screen.getByText(/Loja Integrada BR/)).toBeTruthy();
+    // Loja Integrada's Phase 0 survey says it CAN push stock; what is missing is
+    // our backend. The warning must say that, not "nobody checked". Loja
+    // Integrada flips `implementado` at ITS step 22
+    // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`);
+    // whichever channel flips second re-points this example. The arm itself is
+    // pinned table-free in `suporteCanal.test.ts:16-25`.
     expect(screen.getByText(/ainda não foi implementado/)).toBeTruthy();
   });
 
@@ -74,25 +78,26 @@ describe('AvisoCanaisNaoSuportados', () => {
   });
 
   it('lists one line per conta, not one per tipo', () => {
-    // Two Shopee accounts are two things the operator has to act on, and the
-    // conta name is the only handle they have on either.
+    // Two Loja Integrada accounts are two things the operator has to act on, and
+    // the conta name is the only handle they have on either. (An unbuilt channel
+    // — see the first test for why it is Loja Integrada.)
     renderAviso(
       [alvo(['s1', 's2'])],
       [
-        ['s1', integracao({ nome: 'Shopee BR', tipo: INTEGRACAO_TIPO.shopee })],
-        ['s2', integracao({ nome: 'Shopee SP', tipo: INTEGRACAO_TIPO.shopee })],
+        ['s1', integracao({ nome: 'Loja Integrada BR', tipo: INTEGRACAO_TIPO.lojaIntegrada })],
+        ['s2', integracao({ nome: 'Loja Integrada SP', tipo: INTEGRACAO_TIPO.lojaIntegrada })],
       ],
     );
-    expect(screen.getByText(/Shopee BR/)).toBeTruthy();
-    expect(screen.getByText(/Shopee SP/)).toBeTruthy();
+    expect(screen.getByText(/Loja Integrada BR/)).toBeTruthy();
+    expect(screen.getByText(/Loja Integrada SP/)).toBeTruthy();
   });
 
   it('dedupes a conta named by several selected produtos', () => {
     renderAviso(
       [alvo(['s1']), { ...alvo(['s1']), produtoId: 'p2' }],
-      [['s1', integracao({ nome: 'Shopee BR', tipo: INTEGRACAO_TIPO.shopee })]],
+      [['s1', integracao({ nome: 'Loja Integrada BR', tipo: INTEGRACAO_TIPO.lojaIntegrada })]],
     );
-    expect(screen.getAllByText(/Shopee BR/)).toHaveLength(1);
+    expect(screen.getAllByText(/Loja Integrada BR/)).toHaveLength(1);
   });
 
   /**
