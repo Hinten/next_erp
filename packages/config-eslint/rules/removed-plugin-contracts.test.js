@@ -348,15 +348,17 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     expect(read(CORE_BARREL)).toMatch(/export \* from '\.\/money';/);
   });
 
-  it('the three remaining throw-only channel scaffolds stay deleted', () => {
+  it('the two remaining throw-only channel scaffolds stay deleted', () => {
     // They existed only to typecheck against the removed contract, and had no
     // importer anywhere. Recreating one is how the contract comes back.
     //
-    // ⚠️ `shopee` and `loja-integrada` LEFT this list, and only this list. Each
-    // is a real package again — `shopee`: fetch-only signing/hosts/wire
-    // schemas/typed errors for the Shopee Open Platform, paired with
-    // `apps/shopee`; `loja-integrada`: a fetch-only, GET-only client with typed
-    // errors and paging, paired with `apps/loja-integrada` — which is the
+    // ⚠️ `shopee`, `loja-integrada` and `amazon-sp-api` LEFT this list, and only
+    // this list. Each is a real package again — `shopee`: fetch-only
+    // signing/hosts/wire schemas/typed errors for the Shopee Open Platform,
+    // paired with `apps/shopee`; `loja-integrada`: a fetch-only, GET-only client
+    // with typed errors and paging, paired with `apps/loja-integrada`;
+    // `amazon-sp-api`: the two Login with Amazon token exchanges and a GET-only
+    // SP-API client with typed errors, paired with `apps/amazon` — which is the
     // ADR-0015 shape, the opposite of the throw-only scaffold that was deleted.
     // Shrinking the list alone would have reopened the hole this guard exists
     // for, so the shape they graduated INTO is asserted by the sibling test below.
@@ -365,7 +367,7 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     // leave an empty `node_modules/` behind in an existing checkout, which would
     // make a directory check red locally and green on a fresh CI clone — the
     // worst kind of guard. `package.json` is what makes it a package.
-    for (const pkg of ['magalu', 'amazon-sp-api', 'facebook']) {
+    for (const pkg of ['magalu', 'facebook']) {
       expect(
         existsSync(resolve(repoRoot, `packages/integrations/${pkg}/package.json`)),
         `packages/integrations/${pkg} was recreated — see ADR 0015`,
@@ -373,7 +375,7 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     }
   });
 
-  it.each(['shopee', 'loja-integrada'])(
+  it.each(['shopee', 'loja-integrada', 'amazon-sp-api'])(
     'the re-created %s package is a library, not a channel plugin',
     (pkg) => {
       // The replacement for the rows these packages left in the list above. A
