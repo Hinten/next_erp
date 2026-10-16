@@ -10,12 +10,13 @@
  *
  * ## The fiscal identity is the BUYER, read from `cliente.*` only
  *
- *  - **Document:** `cliente.cnpj` when it carries anything, else `cliente.cpf`
- *    — punctuation stripped, check digits validated, and the CNPJ field must
- *    hold a CNPJ (14) and the CPF field a CPF (11); anything else is NO
- *    document. A CNPJ field that is present but invalid does NOT fall back to
- *    the CPF: which of the two the buyer meant is a fiscal fact this mapper
- *    will not guess.
+ *  - **Document:** a VALID `cliente.cnpj` first, else a VALID `cliente.cpf` —
+ *    punctuation stripped, check digits validated (the alphanumeric CNPJ
+ *    included), and the CNPJ field must hold a CNPJ (14) and the CPF field a
+ *    CPF (11); neither valid is NO document. A CNPJ field that is present but
+ *    invalid FALLS BACK to a valid CPF (the owner's decision, 2026-10-16): the
+ *    order is then a PF one, named by `nome`, never by the `razao_social` the
+ *    invalid CNPJ came with.
  *  - **`tipo`:** PJ for a valid CNPJ, PF for a valid CPF, `null` without one.
  *  - **`nome`:** for PJ the `razao_social`, else (or when it is unusable) the
  *    `nome`; a masked or placeholder value (`nomeUtilizavel`) is dropped. The
@@ -95,10 +96,8 @@ function emailUtilizavel(valor: unknown): string | null {
 /** The buyer's document (module header): the canonical CPF or CNPJ, or `null`. */
 export function documentoDoClienteLi(cliente: ClienteLi | null | undefined): string | null {
   if (cliente == null) return null;
-  if (valorUtilizavel(cliente.cnpj) !== null) {
-    const cnpj = cpfCnpjUtilizavel(cliente.cnpj);
-    return cnpj !== null && cnpj.length === COMPRIMENTO_CNPJ ? cnpj : null;
-  }
+  const cnpj = cpfCnpjUtilizavel(cliente.cnpj);
+  if (cnpj !== null && cnpj.length === COMPRIMENTO_CNPJ) return cnpj;
   const cpf = cpfCnpjUtilizavel(cliente.cpf);
   return cpf !== null && cpf.length === COMPRIMENTO_CPF ? cpf : null;
 }

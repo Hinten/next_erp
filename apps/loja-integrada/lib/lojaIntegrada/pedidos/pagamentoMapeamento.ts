@@ -415,6 +415,16 @@ export function montarEscritaPagamentoLi(
   ) {
     patch.cartao = mapeado.cartao;
   }
+  // A payment that STAYS a 99 needs its description (the NF-e's `xPag` for tPag 99):
+  // fill-once, like the card block, so a migrated 99 without one is repaired by a
+  // re-import while an operator's own text is kept.
+  if (
+    formaFinal === FORMA_PAGAMENTO.outros &&
+    vazioArmazenadoLi(armazenado.descricaoPagamento) &&
+    mapeado.forma.descricaoPagamento !== null
+  ) {
+    patch.descricaoPagamento = mapeado.forma.descricaoPagamento;
+  }
 
   if (vazioArmazenadoLi(armazenado.id)) patch.id = mapeado.id;
   if (vazioArmazenadoLi(armazenado.dataCadastro) && mapeado.dataCadastroUs !== null) {

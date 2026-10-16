@@ -375,6 +375,46 @@ describe('the update overlay', () => {
       tipo: 'atualizar',
       patch: { forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario },
     });
+    // A KNOWN forma needs no 99 description: none is written.
+    expect(e.tipo === 'atualizar' && 'descricaoPagamento' in e.patch).toBe(false);
+  });
+
+  describe('a payment that stays a 99 gets its description fill-once (the NF-e xPag)', () => {
+    const outros = base({
+      forma: {
+        forma: FORMA_PAGAMENTO.outros,
+        origem: 'outros',
+        codigo: 'x',
+        descricaoPagamento: 'Loja Integrada: x',
+      },
+      parcelas: 1,
+      aVista: true,
+      cartao: null,
+    });
+
+    it.each([
+      ['null', null],
+      ['an empty string', ''],
+      ['absent', undefined],
+    ])('EQUAL: a stored 99 whose description is %s ⇒ the description is filled', (_, vazio) => {
+      const doc = armazenado({ forma_de_pagamento: 99, parcelas: 1, aVista: true });
+      if (vazio === undefined) delete (doc as Record<string, unknown>).descricaoPagamento;
+      else (doc as Record<string, unknown>).descricaoPagamento = vazio;
+      expect(montarEscritaPagamentoLi(doc, outros, AGORA_US)).toMatchObject({
+        tipo: 'atualizar',
+        patch: { descricaoPagamento: 'Loja Integrada: x' },
+      });
+    });
+
+    it('⚠️ NEAR-MISS: an operator’s description on a stored 99 is kept', () => {
+      const doc = armazenado({
+        forma_de_pagamento: 99,
+        parcelas: 1,
+        aVista: true,
+        descricaoPagamento: 'Vale-presente da loja',
+      });
+      expect(montarEscritaPagamentoLi(doc, outros, AGORA_US)).toEqual({ tipo: 'sem-mudanca' });
+    });
   });
 
   it('the card block is fill-once: added when missing, an operator’s kept', () => {
