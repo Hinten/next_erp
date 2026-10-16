@@ -123,17 +123,22 @@ function ehHostAmazon(url: string): boolean {
 }
 
 /**
- * The D11 belt, for one page: abort every request to Seller Central, and record
- * every request to an Amazon host. The caller asserts the record EMPTY — an
+ * The D11 belt, for one page: ABORT every request to an Amazon host — the very
+ * set `ehHostAmazon` recognizes, any scheme, any Seller Central region, any
+ * subdomain — and record each one. The caller asserts the record EMPTY: an
  * aborted request still fires `request`, so a regressed consent URL fails the
- * case instead of passing quietly. MUST run BEFORE `page.goto`.
+ * case instead of passing quietly, and it never reaches Amazon on the way.
+ * MUST run BEFORE `page.goto`.
  */
 async function instalarCintoAmazon(page: Page): Promise<string[]> {
   const amazon: string[] = [];
   page.on('request', (req) => {
     if (ehHostAmazon(req.url())) amazon.push(req.url());
   });
-  await page.route('https://sellercentral.amazon.com.br/**', (route) => route.abort());
+  await page.route(
+    (url) => ehHostAmazon(url.href),
+    (route) => route.abort(),
+  );
   return amazon;
 }
 
