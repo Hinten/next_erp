@@ -31,13 +31,30 @@
  *    {@link canonicaDoCursorLi} lifts one to a canonical stamp (`.000000`)
  *    before it is compared with a stamp.
  *
- * ## The zone: America/Sao_Paulo, INFERRED and unconfirmed
+ * ## The zone: America/Sao_Paulo, settled from the spec and the captures
  *
- * The platform writes every stamp without an offset and documents no zone, and
- * no capture proves which one it is. The order import reads them in
- * {@link FUSO_DATAS_LI} (`America/Sao_Paulo`): a Brazilian storefront's local
- * wall time is the inference, not a measurement. Two things keep a wrong
- * inference cheap, and neither depends on it:
+ * The platform writes every REST stamp without an offset, and its docs name no
+ * zone. The order import reads them in {@link FUSO_DATAS_LI}
+ * (`America/Sao_Paulo`, tz-aware). Three independent lines place them in
+ * Brasília civil time, and none points to UTC:
+ *
+ *  - the v1 API is Django-Tastypie (`meta.limit`/`offset`/`total_count`,
+ *    `resource_uri`, `campo__gte` filters), whose default serializer prints a
+ *    datetime naive in the server's ONE `TIME_ZONE` and reads a naive filter
+ *    value in that same zone, so stamps and `since_atualizado` share one
+ *    constant zone;
+ *  - the spec's own order-webhook example (tag "Webhook Pedidos") renders the
+ *    same records' nested stamps at `-03:00` beside top-level `Z` instants that
+ *    agree with them (order `2024-12-11T21:09:38.888Z`, its envio
+ *    `18:09:39.352574-03:00`): the platform's data layer runs at UTC−3;
+ *  - the committed captures (29 orders, two stores, 2026-09/10): read in São
+ *    Paulo, creations fall 06:54–23:23 with a night gap and in-store pickup
+ *    marks 09:36–16:22; read as UTC, a fifth of the orders would land at
+ *    03:54–06:59 local, none after 20:23, and staff would start at 06:36.
+ *
+ * No capture pairs a naive stamp with an absolute clock, so this is strong
+ * evidence, not a measurement. Two things keep a wrong zone cheap, and neither
+ * depends on it:
  *
  *  - the POLLER never turns a text into an instant. {@link msIngenuoDeDataLi}
  *    reads the naive fields as if they were UTC, purely to do arithmetic on
@@ -87,10 +104,11 @@ import {
 import { CURSOR_POLL_LI_REGEX, DATA_MODIFICACAO_LI_REGEX } from '@delfrance/schemas';
 
 /**
- * The zone the order import reads Loja Integrada's naive stamps in — INFERRED,
- * unconfirmed (module header). Settle it before the first live import:
- * changing it afterwards needs the stored-watermark pass the module header
- * describes, never an edit of this line alone.
+ * The zone the order import reads Loja Integrada's naive stamps in — Brasília
+ * civil time, settled from the spec's webhook example and the committed
+ * captures (module header). Changing it after the first live import needs the
+ * stored-watermark pass the module header describes, never an edit of this
+ * line alone.
  */
 export const FUSO_DATAS_LI = 'America/Sao_Paulo';
 
