@@ -669,6 +669,149 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
   });
 });
 
+describe('⚠️ an order with NO endereço: its freight amount, never a carrier route', () => {
+  const ENDERECO = 'documents/clientes/c1/enderecos/e1';
+  const REF_ME = 'documents/int_frete/me-1';
+  const pedidoPago = liPedidoSchema.parse({
+    numero: 1,
+    situacao: { codigo: 'pedido_pago' },
+    data_modificacao: '2026-03-03T10:00:00',
+    valor_envio: '11.60',
+    envios: [
+      {
+        id: 555,
+        objeto: 'AB123456789BR',
+        prazo: 9,
+        valor: '11.60',
+        data_criacao: '2026-03-02T11:00:01',
+        forma_envio: PAC,
+      },
+    ],
+  });
+  const ROTA_ME: RoteamentoFreteLi = {
+    integracaoFreteOuterRef: REF_ME,
+    externalOptionId: '2',
+    aviso: null,
+    deliberado: false,
+  };
+  /** Every field a label is quoted or bought from, empty. */
+  const SEM_ROTA = {
+    integracaoFreteOuterRef: null,
+    externalOptionId: null,
+    externalOptionIntegracao: null,
+    externalOptionData: null,
+  } as const;
+  const CAMPOS_DA_ROTA = Object.keys(SEM_ROTA);
+
+  function mapear(endereco: string | null): FreteMapeadoLi {
+    const r = mapearFreteLi({
+      pedido: pedidoPago,
+      modalidadeConta: MODALIDADE_FRETE.fob,
+      roteamento: ROTA_ME,
+      horarioDeCorteConta: null,
+      dataAprovacaoUs: dataLiParaMicros('2026-03-03T09:00:00'),
+      enderecoFiscalOuterRef: endereco,
+    });
+    if (r === null) throw new Error('expected a block');
+    return r;
+  }
+
+  /** The block minus the route and its destination. */
+  function semRotaNemDestino(bloco: Readonly<Record<string, unknown>>): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(bloco).filter(
+        ([k]) => !CAMPOS_DA_ROTA.includes(k) && k !== 'enderecoFreteOuterReference',
+      ),
+    );
+  }
+
+  it('EQUAL: no endereço ⇒ the route is empty, and the amount, the modalidade and every other field are the block an endereço gets', () => {
+    const sem = mapear(null);
+    const com = mapear(ENDERECO);
+    expect(sem.base).toMatchObject({ ...SEM_ROTA, enderecoFreteOuterReference: null });
+    expect(sem.base.valorCobrado).toBe(11.6);
+    expect(sem.base.modalidade).toBe(MODALIDADE_FRETE.cif);
+    expect(semRotaNemDestino(sem.base)).toEqual(semRotaNemDestino(com.base));
+    expect(sem.prazoDespachoSePagoUs).toBe(com.prazoDespachoSePagoUs);
+    expect(sem.modalidadeSobrescrita).toBe(true);
+    // A create still parses, with the freight estado and the tracking code.
+    const criado = freteDeCriacaoLi(sem, ESTADO_PEDIDO.pago);
+    expect(freteDoPedidoSchema.safeParse(criado).success).toBe(true);
+    expect(criado).toMatchObject({
+      ...SEM_ROTA,
+      valorCobrado: 11.6,
+      codRastreio: 'AB123456789BR',
+      estado: ESTADO_FRETE.aguardandoPostagem,
+    });
+  });
+
+  it('NEAR-MISS: an endereço present ⇒ the route as routed', () => {
+    expect(mapear(ENDERECO).base).toMatchObject({
+      integracaoFreteOuterRef: REF_ME,
+      externalOptionId: '2',
+      externalOptionIntegracao: null,
+      externalOptionData: PAC,
+      enderecoFreteOuterReference: ENDERECO,
+    });
+  });
+
+  it('a STORED route (an operator’s, or an earlier import’s) and no endereço now ⇒ never cleared nor overwritten, frozen or not', () => {
+    const doOperador = {
+      integracaoFreteOuterRef: 'documents/int_frete/me-9',
+      externalOptionId: '7',
+      externalOptionIntegracao: null,
+      externalOptionData: { id: 7, nome: 'Escolha do operador' },
+    };
+    const daImportacao = {
+      integracaoFreteOuterRef: REF_ME,
+      externalOptionId: '2',
+      externalOptionIntegracao: null,
+      externalOptionData: { ...PAC, nome: 'Correios (antes)' },
+    };
+    for (const rota of [doOperador, daImportacao]) {
+      const armazenado = { ...freteDeCriacaoLi(mapear(null), ESTADO_PEDIDO.pago), ...rota };
+      for (const congelado of [false, true]) {
+        const r = mesclarFreteLi(armazenado, mapear(null), {
+          congelado,
+          estadoPedido: ESTADO_PEDIDO.pago,
+        });
+        const rotulo = `${rota.externalOptionId} congelado=${String(congelado)}`;
+        expect(r?.bloco ?? armazenado, rotulo).toMatchObject(rota);
+        for (const campo of CAMPOS_DA_ROTA) expect(r?.campos ?? [], rotulo).not.toContain(campo);
+      }
+    }
+  });
+
+  it('a stored EMPTY route and the endereço present now ⇒ the route filled, the block as a create writes it', () => {
+    const vazio = freteDeCriacaoLi(mapear(null), ESTADO_PEDIDO.pago);
+    const r = mesclarFreteLi(vazio, mapear(ENDERECO), {
+      congelado: false,
+      estadoPedido: ESTADO_PEDIDO.pago,
+    });
+    expect(r?.bloco).toEqual(freteDeCriacaoLi(mapear(ENDERECO), ESTADO_PEDIDO.pago));
+    // FROZEN: the refs fill outside the freeze; the raw method stays in the frozen group.
+    const f = mesclarFreteLi(vazio, mapear(ENDERECO), {
+      congelado: true,
+      estadoPedido: ESTADO_PEDIDO.pago,
+    });
+    expect(f?.bloco).toMatchObject({
+      integracaoFreteOuterRef: REF_ME,
+      externalOptionId: '2',
+      enderecoFreteOuterReference: ENDERECO,
+      externalOptionData: null,
+    });
+  });
+
+  it('an ABSENT block and no endereço ⇒ seeded with the amount and no route', () => {
+    const r = mesclarFreteLi(null, mapear(null), {
+      congelado: false,
+      estadoPedido: ESTADO_PEDIDO.pago,
+    });
+    expect(r?.campos).toEqual(['*']);
+    expect(r?.bloco).toMatchObject({ ...SEM_ROTA, valorCobrado: 11.6 });
+  });
+});
+
 describe('mesmoValorJsonLi: strict structural equality', () => {
   it('EQUAL pair: the same keys in another order', () => {
     expect(mesmoValorJsonLi({ a: 1, b: { c: [1, 2] } }, { b: { c: [1, 2] }, a: 1 })).toBe(true);

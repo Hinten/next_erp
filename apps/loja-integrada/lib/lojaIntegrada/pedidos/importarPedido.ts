@@ -43,7 +43,14 @@
  *  6. **The freight:** the conta's Loja Integrada `int_frete`
  *     (`buscarIntFreteDaConta`, active only, through the app's one binding),
  *     step 20's `mapa` registration with `envios[0]`, the routing decision, and
- *     one read of the mapped target by id.
+ *     one read of the mapped target by id. ⚠️ An order without an endereço
+ *     gets its freight amount but no carrier route, so no label is bought to an
+ *     unknown address (`freteMapeamento.ts`, "No endereço, no route"): the
+ *     route is decided per attempt from the endereço the pedido will carry
+ *     (`mapearPedido`, re-derived from `S′`), so a lost precondition never
+ *     leaves a route beside another person's endereço — or beside none. A route
+ *     already stored is never cleared; an empty one fills once an import finds
+ *     the endereço. The registration and the aviso run either way.
  *  7. **The cliente and the endereço**, only while `S` holds no refs. A buyer
  *     with no strong identity and no match imports without either, plus an
  *     incidente.

@@ -27,7 +27,9 @@
  *    retry;
  *  - the freight routing: an unmapped key registered in the `mapa`, a mapped
  *    active target routed with its service id, an inactive one raising the
- *    aviso at the target read's time;
+ *    aviso at the target read's time — and an order without an endereço
+ *    taking its freight amount but no carrier route until a later import
+ *    brings the endereço and fills it;
  *  - the code a batch answers for a document removed since its read under
  *    `lastUpdateTime`; that the CARRIER's precondition holds on a stale
  *    snapshot although its own write would change nothing; and what the carrier
@@ -107,6 +109,8 @@ const NOME_CONTA = 'Loja de teste do importador';
 const ALVO_ME = 'me-alvo-importador-ci';
 /** 2027-01-15T15:00:00Z. */
 const AGORA_MS = Date.UTC(2027, 0, 15, 15, 0, 0);
+/** A buyer with a check-digit-valid document: a cliente, and the endereço a route needs. */
+const COMPRADOR_COM_CPF = { id: 1, nome: 'Comprador de Teste', cpf: CPF_VALIDO_LI };
 
 function db(): Firestore {
   return getAdminFirestore();
@@ -563,20 +567,40 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     expect((await refPagamento().get()).exists).toBe(false);
   });
 
-  it('the freight routing: an unmapped key registered in the mapa, resolved at the int_frete read; a mapped active target routed with its service id', async () => {
+  it('the freight routing: an unmapped key registered in the mapa, resolved at the int_frete read — no endereço, no route; the endereço later fills it; a mapped active target routed with its service id', async () => {
     const avisoFrete = db()
       .collection('avisos')
       .doc(chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI));
-    // (1) Unmapped: the union lands, the pedido rides the conta's own Loja Integrada doc.
+    // (1) Unmapped, and a buyer with no document (no cliente, no endereço): the union lands
+    // and the aviso is decided, but the pedido gets its freight amount and NO carrier route.
     expect(await importar(cena())).toEqual({ kind: 'importado' });
     const mapa = (await refFrete().get()).data()?.mapa as DocumentData[];
     expect(mapa.map((l) => l.idOriginal)).toEqual([CHAVE_FORMA_ENVIO_LI]);
-    expect(
-      ((await refPedido().get()).data()?.freteInicial as DocumentData).integracaoFreteOuterRef,
-    ).toBe(`documents/int_frete/${INT_FRETE_LI}`);
+    expect((await refPedido().get()).data()?.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: null,
+      externalOptionId: null,
+      externalOptionIntegracao: null,
+      externalOptionData: null,
+      enderecoFreteOuterReference: null,
+      valorCobrado: 14.8,
+      modalidade: MODALIDADE_FRETE.cif,
+    });
     const resolvido = (await avisoFrete.get()).data();
     expect(resolvido?.resolvidoEm).not.toBeNull();
     expect(typeof resolvido?.relogioEvento).toBe('number');
+
+    // (1b) The same order later, with the buyer's document: the endereço lands, and the
+    // EMPTY route fills — the pedido now rides the conta's own Loja Integrada doc.
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) })),
+    ).toEqual({ kind: 'importado' });
+    const comEndereco = (await refPedido().get()).data()!;
+    expect(comEndereco.enderecoFiscalOuterRef).toMatch(/^documents\/clientes\/[^/]+\/enderecos\//);
+    expect(comEndereco.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/${INT_FRETE_LI}`,
+      enderecoFreteOuterReference: comEndereco.enderecoFiscalOuterRef,
+    });
 
     // (2) Mapped to an ACTIVE Melhor Envio target: routed, the service id beside it.
     await limpar();
@@ -585,7 +609,7 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     await alvo.set({ tipo: 'melhorEnvios', ativo: true });
     const escritoEm = relogioDoDocumentoUs(updateTimeDe(await alvo.get()));
     __resetAllReadCaches();
-    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    expect(await importar(cena({ cliente: COMPRADOR_COM_CPF }))).toEqual({ kind: 'importado' });
     expect((await refPedido().get()).data()?.freteInicial).toMatchObject({
       integracaoFreteOuterRef: `documents/int_frete/${ALVO_ME}`,
       externalOptionId: '2',
@@ -601,7 +625,7 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     const alvo = db().collection('int_frete').doc(ALVO_ME);
     await alvo.set({ tipo: 'melhorEnvios', ativo: false });
     const escritoEm = relogioDoDocumentoUs(updateTimeDe(await alvo.get()));
-    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    expect(await importar(cena({ cliente: COMPRADOR_COM_CPF }))).toEqual({ kind: 'importado' });
     expect((await refPedido().get()).data()?.freteInicial).toMatchObject({
       integracaoFreteOuterRef: `documents/int_frete/${INT_FRETE_LI}`,
       externalOptionId: null,

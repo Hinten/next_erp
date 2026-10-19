@@ -876,7 +876,8 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     | Unmapped, or a method with no usable key | the conta's LI doc | none |
     | No LI `int_frete` for the conta | null | none |
 
-  - **In every case:**
+  - **No endereço, no route** (decided 2026-10-19): an order without an endereço gets its freight amount but no carrier route, so no label is bought to an unknown address. When the pedido ends up with no `enderecoFiscalOuterRef` (no valid document, no usable CEP, no cliente), the block keeps `valorCobrado`, the modalidade and every other field, while `integracaoFreteOuterRef`, `externalOptionId`, `externalOptionIntegracao` and `externalOptionData` are null. The mapa registration, the routing and its aviso still run: they are about the conta's configuration. A route already stored (an operator's, or an earlier import's) is never cleared or overwritten; a later import that finds the endereço fills an empty route through the fill-once rules below. Until then the operator sets the endereço and the route by hand.
+  - **In every case** (the route fields aside, above):
     - `externalId = String(envios[0].id)`; `externalOptionData = forma_envio` (GET shape); `externalOptionIntegracao = null` (step 15 decides it);
     - `valorCobrado` = the order's freight, `roundReais(valor_envio ?? envios[0].valor)`: the same value the modalidade reads, so the two never disagree. A shipment `valor` that contradicts `valor_envio` raises `li-totais-divergentes`; `dataPrevisaoEntrega = data_criacao + prazo` days;
     - `codRastreio = objeto`, with `''` → null;

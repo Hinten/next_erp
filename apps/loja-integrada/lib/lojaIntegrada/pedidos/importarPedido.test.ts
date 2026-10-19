@@ -101,6 +101,9 @@ const CLIENTE_ID = 'cliente-li-1';
 
 const WATERMARK_2H = dataLiParaMicros(carimboLi(2))!;
 
+/** A buyer with a check-digit-valid document: a cliente, and the endereço under it. */
+const COMPRADOR_COM_CPF = { id: 1, nome: 'Comprador de Teste', cpf: CPF_VALIDO_LI };
+
 function caminhoIncidente(id: string): string {
   return `${CAMINHO_PEDIDO}/incidentes/${id}`;
 }
@@ -717,6 +720,9 @@ describe('the cliente and the endereço (import step 7)', () => {
 
   it('⚠️ another writer links ANOTHER cliente between the read and the batch ⇒ the retry keeps it, and never pairs it with the endereço stored under ours', async () => {
     const db = novoDb();
+    // The method maps to an active Melhor Envio target: only an endereço lets the route land.
+    seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
+    db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
     // A first import with no identity: the pedido holds no refs.
     await importar(db, cena());
     expect(db.ler(CAMINHO_PEDIDO)?.clientePedidoOuterRef).toBeNull();
@@ -741,9 +747,16 @@ describe('the cliente and the endereço (import step 7)', () => {
 
     const pedido = db.ler(CAMINHO_PEDIDO)!;
     expect(pedido.clientePedidoOuterRef).toBe(outro);
-    // Re-derived from S′: the endereço belongs to another person, so neither ref takes it.
+    // Re-derived from S′: the endereço belongs to another person, so neither ref takes it —
+    // and with no endereço the freight keeps its amount but takes no carrier route.
     expect(pedido.enderecoFiscalOuterRef).toBeNull();
-    expect((pedido.freteInicial as DocData).enderecoFreteOuterReference).toBeNull();
+    expect(pedido.freteInicial).toMatchObject({
+      enderecoFreteOuterReference: null,
+      integracaoFreteOuterRef: null,
+      externalOptionId: null,
+      externalOptionData: null,
+      valorCobrado: 14.8,
+    });
   });
 
   it('an unknown estado ⇒ the CEP recovery, through the injected client', async () => {
@@ -1006,7 +1019,8 @@ describe('the freight routing and its aviso (import step 6)', () => {
     const db = novoDb();
     seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
     db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
-    await importar(db, cena());
+    // A buyer with an endereço: an order without one takes no route (below).
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
     expect(db.ler(CAMINHO_PEDIDO)?.freteInicial).toMatchObject({
       integracaoFreteOuterRef: 'documents/int_frete/me-1',
       externalOptionId: '2',
@@ -1020,7 +1034,7 @@ describe('the freight routing and its aviso (import step 6)', () => {
     const db = novoDb();
     seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
     db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: false });
-    await importar(db, cena());
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
     expect(db.ler(CAMINHO_PEDIDO)?.freteInicial).toMatchObject({
       integracaoFreteOuterRef: `documents/int_frete/lojaIntegrada-${CONTA}`,
       externalOptionId: null,
@@ -1041,7 +1055,7 @@ describe('the freight routing and its aviso (import step 6)', () => {
   it('an unmapped method ⇒ registered in the mapa, the conta’s LI doc, the aviso resolved clocked by the int_frete read', async () => {
     const db = novoDb();
     seedIntFrete(db);
-    await importar(db, cena());
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
     const mapa = db.ler(CAMINHO_INT_FRETE)?.mapa as DocData[];
     expect(mapa.map((l) => l.idOriginal)).toEqual([CHAVE_FORMA_ENVIO_LI]);
     expect(db.ler(CAMINHO_PEDIDO)?.freteInicial).toMatchObject({
@@ -1065,6 +1079,109 @@ describe('the freight routing and its aviso (import step 6)', () => {
     expect(JSON.stringify(primeiro.avisosDeLog)).toContain('CIF');
     const segundo = await importar(db, cena({ data_modificacao: carimboLi(3) }));
     expect(JSON.stringify(segundo.avisosDeLog)).not.toContain('CIF');
+  });
+});
+
+describe('⚠️ an order without an endereço: its freight amount, never a carrier route', () => {
+  /** Every field a label is quoted or bought from, empty. */
+  const SEM_ROTA = {
+    integracaoFreteOuterRef: null,
+    externalOptionId: null,
+    externalOptionIntegracao: null,
+    externalOptionData: null,
+  } as const;
+  const ROTA_ME = {
+    integracaoFreteOuterRef: 'documents/int_frete/me-1',
+    externalOptionId: '2',
+    externalOptionIntegracao: null,
+    externalOptionData: { ...FORMA_ENVIO_LI },
+  } as const;
+
+  /** The conta's int_frete mapping the method to an ACTIVE Melhor Envio target. */
+  function dbComAlvo(): FakeDb {
+    const db = novoDb();
+    seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
+    db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
+    return db;
+  }
+  function frete(db: FakeDb): DocData {
+    return db.ler(CAMINHO_PEDIDO)?.freteInicial as DocData;
+  }
+
+  it('EQUAL: no cliente and no endereço ⇒ the amount, the modalidade and the rest of the block, no route — and the mapa registration still runs', async () => {
+    const db = novoDb();
+    seedIntFrete(db);
+    expect((await importar(db, cena())).r).toEqual({ kind: 'importado' });
+    expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef).toBeNull();
+    expect(frete(db)).toMatchObject({
+      ...SEM_ROTA,
+      enderecoFreteOuterReference: null,
+      valorCobrado: 14.8,
+      modalidade: MODALIDADE_FRETE.cif,
+      externalId: '801',
+      estado: ESTADO_FRETE.despachoAutorizado,
+    });
+    expect(typeof frete(db).prazoDespacho).toBe('number');
+    // The key is registered all the same (step 20), and its aviso decided.
+    const mapa = db.ler(CAMINHO_INT_FRETE)?.mapa as DocData[];
+    expect(mapa.map((l) => l.idOriginal)).toEqual([CHAVE_FORMA_ENVIO_LI]);
+    expect(
+      db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`)?.resolvidoEm,
+    ).not.toBeNull();
+    // The amount is kept, so the totals still add up.
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).not.toContain(
+      ID_INCIDENTE_LI.totaisDivergentes,
+    );
+  });
+
+  it('NEAR-MISS: the same order mapped to an active Melhor Envio target — no endereço ⇒ no route; the buyer’s endereço ⇒ the route', async () => {
+    const sem = dbComAlvo();
+    await importar(sem, cena());
+    expect(frete(sem)).toMatchObject({ ...SEM_ROTA, valorCobrado: 14.8 });
+
+    const com = dbComAlvo();
+    await importar(com, cena({ cliente: COMPRADOR_COM_CPF }));
+    const endereco = com.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef as string;
+    expect(endereco).toMatch(/^documents\/clientes\//);
+    expect(frete(com)).toMatchObject({
+      ...ROTA_ME,
+      enderecoFreteOuterReference: endereco,
+      valorCobrado: 14.8,
+    });
+  });
+
+  it('a route STORED by an operator, and still no endereço ⇒ the route is never cleared nor overwritten', async () => {
+    const db = dbComAlvo();
+    await importar(db, cena());
+    const doOperador = {
+      integracaoFreteOuterRef: 'documents/int_frete/me-9',
+      externalOptionId: '7',
+      externalOptionIntegracao: null,
+      externalOptionData: { id: 7, nome: 'Escolha do operador' },
+    };
+    await refPedido(db).update({ freteInicial: { ...frete(db), ...doOperador } });
+
+    // New Loja Integrada freight money at a newer stamp: the merge runs (not frozen).
+    const c = cena({
+      data_modificacao: carimboLi(3),
+      valor_envio: '20.00',
+      valor_total: '120.00',
+      envios: [{ ...envioPadrao(), valor: '20.00' }],
+      pagamentos: [{ ...pagamentoPadrao(), valor: '120.00', valor_pago: '120.00' }],
+    });
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(frete(db)).toMatchObject({ ...doOperador, valorCobrado: 20 });
+  });
+
+  it('a stored EMPTY route and the endereço present now ⇒ the route is filled as on a create', async () => {
+    const db = dbComAlvo();
+    await importar(db, cena());
+    expect(frete(db)).toMatchObject(SEM_ROTA);
+
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) }));
+    const endereco = db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef as string;
+    expect(endereco).toMatch(/^documents\/clientes\//);
+    expect(frete(db)).toMatchObject({ ...ROTA_ME, enderecoFreteOuterReference: endereco });
   });
 });
 

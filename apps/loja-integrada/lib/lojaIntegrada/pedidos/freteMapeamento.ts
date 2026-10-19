@@ -54,7 +54,8 @@
  * (above, rounded),
  * `timestamp` and `dataPrevisaoEntrega` (+ `prazo` days) from the shipment's
  * creation stamp, `codRastreio` the tracking code (`''` is none), and
- * `enderecoFreteOuterReference` the fiscal endereço.
+ * `enderecoFreteOuterReference` the fiscal endereço — whose absence withholds
+ * the route (below).
  *
  * `prazoDespacho` is set only on the `pago` rung: a dispatch deadline counts
  * from the approval. It is the conta's `horarioDeCorte` applied to the approval
@@ -69,6 +70,26 @@
  * Freight estado on CREATE: `aguardandoPostagem` only with a tracking code AND
  * the pedido at `pago`; `despachoAutorizado` at `pago` without one; otherwise
  * `iniciado`.
+ *
+ * ## No endereço, no route (owner decision, 2026-10-19)
+ *
+ * An order without an endereço gets its freight amount but no carrier route,
+ * so no label is bought to an unknown address. With `enderecoFiscalOuterRef`
+ * `null` the block keeps `valorCobrado`, the modalidade and every other field,
+ * while the four fields a label is quoted or bought from —
+ * `integracaoFreteOuterRef`, `externalOptionId`, `externalOptionIntegracao`
+ * and `externalOptionData` — are `null`; with no `int_frete` ref the label
+ * action resolves no carrier tipo at all. `externalId` stays: it names Loja
+ * Integrada's shipment, and no label flow reads it without a route. The
+ * routing itself, the `mapa` registration and the aviso still run: they are
+ * about the conta's configuration, not this pedido's destination. The
+ * operator sets the endereço and the route by hand.
+ *
+ * The update needs nothing of its own: an absent incoming value never
+ * overwrites a stored one, so a route already stored (an operator's, or an
+ * earlier import's) is never cleared; and the route fields are fill-once, so
+ * the first import that finds the endereço fills an empty route (the raw
+ * `externalOptionData` refreshes in the frozen group, as below).
  *
  * ## The update: two groups, the Shopee freeze split
  *
@@ -431,6 +452,10 @@ export interface EntradaFreteLi {
   readonly horarioDeCorteConta: unknown;
   /** The approval date from the history (µs), or `null` when none or not derivable. */
   readonly dataAprovacaoUs: number | null;
+  /**
+   * The endereço the pedido will carry after this write, or `null` — which
+   * withholds the carrier route (module header, "No endereço, no route").
+   */
   readonly enderecoFiscalOuterRef: string | null;
 }
 
@@ -462,13 +487,15 @@ export function mapearFreteLi(entrada: EntradaFreteLi): FreteMapeadoLi | null {
   const { modalidade, sobrescrita } = modalidadeFreteLi(valorFrete ?? 0, entrada.modalidadeConta);
   const criadoUs = dataLiParaMicros(envio.data_criacao);
   const forma = envio.forma_envio;
+  // No endereço ⇒ no carrier route (module header, "No endereço, no route").
+  const comRota = entrada.enderecoFiscalOuterRef !== null;
   const base: FreteDoPedido = {
     ...seedFreteInicial(modalidade, true),
     externalId: envio.id == null ? null : String(envio.id),
-    externalOptionId: roteamento.externalOptionId,
+    externalOptionId: comRota ? roteamento.externalOptionId : null,
     externalOptionIntegracao: null,
-    externalOptionData: forma == null ? null : { ...forma },
-    integracaoFreteOuterRef: roteamento.integracaoFreteOuterRef,
+    externalOptionData: comRota && forma != null ? { ...forma } : null,
+    integracaoFreteOuterRef: comRota ? roteamento.integracaoFreteOuterRef : null,
     estado: ESTADO_FRETE.iniciado,
     valorCobrado: valorFrete,
     codRastreio: codRastreioLi(envio.objeto),
