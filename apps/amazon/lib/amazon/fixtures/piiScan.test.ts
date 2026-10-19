@@ -283,4 +283,20 @@ describe('free text (--verificar)', () => {
   it('string escapes are decoded so an embedded line break does not glue words', () => {
     expect(tiposNaLinhaAmazon('"nota": "Termo Ficticio\\nZeta"', lista)).toEqual(['nome-de-loja']);
   });
+
+  // ★ A doc's capitals for emphasis read as the `A…` id shape (#1985's review hit
+  // one in the root `.env.example`).
+  it.each(['AUTHORITATIVE', 'AUTHORIZATION', 'ADMINISTRATOR', 'AUTHENTICATION'])(
+    'an all-letter run (%s) is a word in prose, but still an id in a capture',
+    (palavra) => {
+      expect(tiposNaLinhaAmazon(`# The ${palavra} copy lives here.`, lista)).toEqual([]);
+      // Near-miss on the other side: the same run in a capture fails closed.
+      expect(tiposDoTextoAmazon(palavra, null)).toContain('id-de-conta');
+    },
+  );
+
+  it('near-miss: one digit makes the run an id again, in prose too', () => {
+    expect(tiposNaLinhaAmazon('# copied AUTH0RITATIVE here', lista)).toEqual(['id-de-conta']);
+    expect(tiposNaLinhaAmazon('# copied AZXCVBNMASDFG1 here', lista)).toEqual(['id-de-conta']);
+  });
 });
