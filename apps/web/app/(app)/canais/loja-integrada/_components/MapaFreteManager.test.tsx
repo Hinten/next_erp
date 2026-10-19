@@ -258,6 +258,37 @@ describe('MapaFreteManager — edits', () => {
     expect(screen.getByText('servico:me-conta:7:Transportadora — Expresso')).toBeTruthy();
   });
 
+  it("EQUAL pair: a stored service `'7'` shows the SAME service as `7` (the shared service reader)", () => {
+    renderManager([
+      linha(1, {
+        integracaoUid: 'me-conta',
+        targetTipoIntegracao: 'melhorEnvios',
+        targetData: { id: '7', name: 'Expresso' },
+        nomeTarget: 'Transportadora — Expresso',
+      }),
+    ]);
+    expect(screen.getByText('servico:me-conta:7:Transportadora — Expresso')).toBeTruthy();
+  });
+
+  it("⚠️ NEAR-MISS: a stored service `'07'` or `0` shows NO service — the importer would not route by it either", () => {
+    renderManager([
+      linha(1, {
+        integracaoUid: 'me-conta',
+        targetTipoIntegracao: 'melhorEnvios',
+        targetData: { id: '07' },
+        nomeTarget: 'Transportadora — Expresso',
+      }),
+      linha(2, {
+        integracaoUid: 'me-conta',
+        targetTipoIntegracao: 'melhorEnvios',
+        targetData: { id: 0 },
+        nomeTarget: 'Transportadora — Zero',
+      }),
+    ]);
+    expect(screen.getByText('servico:me-conta:nenhum:Transportadora — Expresso')).toBeTruthy();
+    expect(screen.getByText('servico:me-conta:nenhum:Transportadora — Zero')).toBeTruthy();
+  });
+
   it('a row with no identifier is read-only', () => {
     renderManager([linha(1, { idOriginal: null })]);
     expect(destino(0)?.disabled).toBe(true);
