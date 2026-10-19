@@ -828,6 +828,55 @@ describe('the cliente and the endereço (import step 7)', () => {
     );
   });
 
+  it('a transient failure of the cliente step is NOT “no identity”: it rethrows, and nothing of the pedido is written', async () => {
+    const db = novoDb();
+    mockCliente.mockRejectedValueOnce(grpc(14, 'UNAVAILABLE'));
+    const err: unknown = await importar(db, cena({ cliente: COMPRADOR_COM_CPF })).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toMatchObject({ code: 14 });
+    expect(escritasDoPedido(db)).toEqual([]);
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).toEqual([]);
+  });
+
+  it('a buyer whose CNPJ is invalid but whose CPF is valid ⇒ the cliente BY THE CPF: the mapper’s fallback reaches the cliente step', async () => {
+    const db = novoDb();
+    const c = cena({
+      cliente: {
+        ...COMPRADOR_COM_CPF,
+        razao_social: 'Empresa de Teste',
+        // One check digit off: no CNPJ at all.
+        cnpj: '11.222.333/0001-80',
+      },
+    });
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(mockCliente).toHaveBeenCalledTimes(1);
+    expect(mockCliente.mock.calls[0]?.[1].fields).toMatchObject({
+      cpf_cnpj: '52998224725',
+      nome: 'Comprador de Teste',
+    });
+    expect(db.ler(CAMINHO_PEDIDO)?.clientePedidoOuterRef).toBe(`documents/clientes/${CLIENTE_ID}`);
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).not.toContain(
+      ID_INCIDENTE_LI.clienteSemIdentidade,
+    );
+  });
+
+  it('near-miss: the same buyer with a VALID CNPJ ⇒ the cliente by the CNPJ, named by its razão social', async () => {
+    const db = novoDb();
+    const c = cena({
+      cliente: {
+        ...COMPRADOR_COM_CPF,
+        razao_social: 'Empresa de Teste',
+        cnpj: '11.222.333/0001-81',
+      },
+    });
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(mockCliente.mock.calls[0]?.[1].fields).toMatchObject({
+      cpf_cnpj: '11222333000181',
+      nome: 'Empresa de Teste',
+    });
+  });
+
   it('an unknown estado ⇒ the CEP recovery, through the injected client', async () => {
     const db = novoDb();
     const c = cena({
@@ -1405,6 +1454,67 @@ describe('rule 7: ONE batch, re-derived whole on every lost precondition', () =>
       lastMarketplaceUpdate: WATERMARK_2H,
     });
     expect(db.ler(CAMINHO_PAGAMENTO)?.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+  });
+
+  it('another writer changes the PAGAMENTO between its read and the batch ⇒ the batch aborts, the retry RE-READS it, and both writes survive', async () => {
+    const db = novoDb();
+    const c = cena();
+    await importar(db, c);
+    c.detalhe = pedidoLiBruto({ data_modificacao: carimboLi(5) });
+    let escreveu = false;
+    db.antesDaProximaEscrita(CAMINHO_PAGAMENTO, async () => {
+      escreveu = true;
+      await pagamentoCollection
+        .docRef(asDb(db), { pedidoId: PEDIDO_ID }, PAGAMENTO_ID)
+        .update({ outroEscritor: 1 });
+    });
+    const leiturasAntes = db.leituras.filter((l) => l === CAMINHO_PAGAMENTO).length;
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(escreveu).toBe(true);
+    // Read once per attempt: the retry decided from the pagamento as the other writer left it.
+    expect(db.leituras.filter((l) => l === CAMINHO_PAGAMENTO).length - leiturasAntes).toBe(2);
+    expect(db.ler(CAMINHO_PAGAMENTO)).toMatchObject({
+      outroEscritor: 1,
+      lastProviderUpdate: dataLiParaMicros(carimboLi(5)),
+    });
+  });
+
+  it('a NEWER import lands between the read and the batch ⇒ the retry is obsoleto: nothing of ours is written, avisos and incidentes included', async () => {
+    const db = novoDb();
+    await importar(db, cena());
+    const maisNovo = dataLiParaMicros(carimboLi(5))!;
+    db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
+      await refPedido(db).update({ lastMarketplaceUpdate: maisNovo });
+    });
+    const antes = db.escritas.length;
+    expect((await importar(db, cena({ data_modificacao: carimboLi(3) }))).r).toEqual({
+      kind: 'obsoleto',
+    });
+    // Only the other writer's write landed.
+    expect(db.escritas.slice(antes).map((e) => e.caminho)).toEqual([CAMINHO_PEDIDO]);
+    expect(db.ler(CAMINHO_PEDIDO)?.lastMarketplaceUpdate).toBe(maisNovo);
+  });
+
+  it('a commit that answers NOT_FOUND (5) is a lost race too: re-read, re-derive, land', async () => {
+    const db = novoDb();
+    db.antesDaProximaEscrita(CAMINHO_PEDIDO, () => {
+      throw grpc(5, 'NOT_FOUND');
+    });
+    expect((await importar(db, cena())).r).toEqual({ kind: 'importado' });
+    expect(db.leituras.filter((l) => l === CAMINHO_PEDIDO)).toHaveLength(2);
+    expect(db.ler(CAMINHO_PAGAMENTO)).toBeDefined();
+  });
+
+  it('near-miss: a commit that fails for any OTHER reason is no lost race — it rethrows at once, unretried, and nothing landed', async () => {
+    const db = novoDb();
+    db.antesDaProximaEscrita(CAMINHO_PEDIDO, () => {
+      throw grpc(14, 'UNAVAILABLE');
+    });
+    const err: unknown = await importar(db, cena()).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 14 });
+    expect(err).not.toBeInstanceOf(LiPedidoEmConflitoError);
+    expect(db.leituras.filter((l) => l === CAMINHO_PEDIDO)).toHaveLength(1);
+    expect(escritasDoPedido(db)).toEqual([]);
   });
 });
 
