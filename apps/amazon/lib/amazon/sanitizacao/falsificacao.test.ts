@@ -94,21 +94,27 @@ describe('the keyed id faker', () => {
     expect(Number(chave.charAt(43))).toBe(dvDaChaveNfe(chave.slice(0, 43)));
   });
 
-  it('no fake is ever DV-valid or trips the regex layer (property, 10k inputs over every class)', () => {
-    const f = criarFalsificadorAmazon(SAL_A);
-    const classes = Object.keys(FORMATO_FALSO_POR_CLASSE) as ClasseFalsaAmazon[];
-    let n = 0;
-    for (let i = 0; i < 10_000; i++) {
-      const classe = classes[i % classes.length] ?? 'pedido';
-      const valor =
-        classe === 'itemPedido' ? String(10_000_000_000_000 + i * 7919) : `v-${String(i)}`;
-      const falso = f(classe, valor);
-      expect(falsoInaceitavel(falso)).toBe(false);
-      expect(digitosVerificados(falso)).toBeNull();
-      n += 1;
-    }
-    expect(n).toBe(10_000);
-  });
+  // About 0.5 s here; CI runs every workspace's suite at once and has taken 10×
+  // that on a sibling matrix (#1985), so the timeout is headroom, not a budget.
+  it(
+    'no fake is ever DV-valid or trips the regex layer (property, 10k inputs over every class)',
+    { timeout: 30_000 },
+    () => {
+      const f = criarFalsificadorAmazon(SAL_A);
+      const classes = Object.keys(FORMATO_FALSO_POR_CLASSE) as ClasseFalsaAmazon[];
+      let n = 0;
+      for (let i = 0; i < 10_000; i++) {
+        const classe = classes[i % classes.length] ?? 'pedido';
+        const valor =
+          classe === 'itemPedido' ? String(10_000_000_000_000 + i * 7919) : `v-${String(i)}`;
+        const falso = f(classe, valor);
+        expect(falsoInaceitavel(falso)).toBe(false);
+        expect(digitosVerificados(falso)).toBeNull();
+        n += 1;
+      }
+      expect(n).toBe(10_000);
+    },
+  );
 
   it('a candidate that IS a document is refused, and the all-zero fallback never is', () => {
     // DV-valid documents, made at run time (`documentos.ts`), never committed.
