@@ -30,6 +30,10 @@
  *    aviso at the target read's time — and an order without an endereço
  *    taking its freight amount but no carrier route until a later import
  *    brings the endereço and fills it;
+ *  - a stored endereço of ANOTHER cliente on a pedido without one: the real
+ *    `findOrCreateCliente` resolves the buyer, and the import still fills no
+ *    cliente beside it, routes nothing to it and raises the incidente — while
+ *    the same endereço moved under the buyer's own cliente takes both;
  *  - the code a batch answers for a document removed since its read under
  *    `lastUpdateTime`; that the CARRIER's precondition holds on a stale
  *    snapshot although its own write would change nothing; and what the carrier
@@ -668,6 +672,61 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     await refPedido().update({ clientePedidoOuterRef: null, enderecoFiscalOuterRef: null });
     await importar(outro);
     expect((await refPedido().get()).data()?.clientePedidoOuterRef).toBe(clienteRef);
+  });
+
+  it('never a cliente beside another cliente’s endereço: a stored endereço of ANOTHER owner keeps the pedido without cliente and route, plus the incidente; one under the buyer’s own cliente takes both', async () => {
+    // An identity-less first import: no refs, no route.
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    // Another writer stores an endereço under ANOTHER cliente; the pedido still has none.
+    const deOutro = 'documents/clientes/cliente-de-outra-pessoa-ci/enderecos/end-a';
+    await refPedido().update({ enderecoFiscalOuterRef: deOutro });
+
+    // (1) The buyer now has a document: the real findOrCreateCliente resolves it — to
+    // another cliente than the endereço's owner, so nothing is paired.
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) })),
+    ).toEqual({ kind: 'importado' });
+    let pedido = (await refPedido().get()).data()!;
+    expect(pedido.clientePedidoOuterRef).toBeNull();
+    expect(pedido.enderecoFiscalOuterRef).toBe(deOutro);
+    expect(pedido.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: null,
+      externalOptionId: null,
+      externalOptionData: null,
+      enderecoFreteOuterReference: null,
+      valorCobrado: 14.8,
+      modalidade: MODALIDADE_FRETE.cif,
+    });
+    const incidente = await refPedido()
+      .collection('incidentes')
+      .doc(ID_INCIDENTE_LI.enderecoDeOutroCliente)
+      .get();
+    expect(incidente.data()).toMatchObject({
+      subtipo: 'li-endereco-de-outro-cliente',
+      resolucao: null,
+    });
+    // The buyer's cliente exists (the step ran for real), with no endereço stored under it.
+    const clientes = await db().collection('clientes').get();
+    expect(clientes.docs.map((d) => d.data().cpf_cnpj)).toEqual(['52998224725']);
+    const comprador = clientes.docs[0]!;
+    expect((await comprador.ref.collection('enderecos').get()).empty).toBe(true);
+
+    // (2) The endereço is moved under the BUYER's own cliente: the next import fills the
+    // cliente beside it and routes the freight to it.
+    const doComprador = `documents/clientes/${comprador.id}/enderecos/end-b`;
+    await refPedido().update({ enderecoFiscalOuterRef: doComprador });
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(4) })),
+    ).toEqual({ kind: 'importado' });
+    pedido = (await refPedido().get()).data()!;
+    expect(pedido.clientePedidoOuterRef).toBe(`documents/clientes/${comprador.id}`);
+    expect(pedido.enderecoFiscalOuterRef).toBe(doComprador);
+    expect(pedido.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/${INT_FRETE_LI}`,
+      enderecoFreteOuterReference: doComprador,
+    });
   });
 
   it('the link lookup finds BOTH stored forms of the conta ref through the real collection-group query', async () => {

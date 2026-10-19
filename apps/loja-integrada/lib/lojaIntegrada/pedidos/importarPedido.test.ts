@@ -83,6 +83,7 @@ import { LiPedidoEmConflitoError, MAX_TENTATIVAS_ESCRITA_PEDIDO_LI } from './esc
 import {
   LiHistoricoIncompletoError,
   __limparRegistrosUnicosParaTestes,
+  clienteDoEnderecoLi,
   ehPedidoDeHubLi,
   importarPedidoLi,
   vendaEncerradaLi,
@@ -1200,32 +1201,32 @@ describe('the freight routing and its aviso (import step 6)', () => {
   });
 });
 
+/** Every field a label is quoted or bought from, empty. */
+const SEM_ROTA = {
+  integracaoFreteOuterRef: null,
+  externalOptionId: null,
+  externalOptionIntegracao: null,
+  externalOptionData: null,
+} as const;
+const ROTA_ME = {
+  integracaoFreteOuterRef: 'documents/int_frete/me-1',
+  externalOptionId: '2',
+  externalOptionIntegracao: null,
+  externalOptionData: { ...FORMA_ENVIO_LI },
+} as const;
+
+/** The conta's int_frete mapping the method to an ACTIVE Melhor Envio target. */
+function dbComAlvo(): FakeDb {
+  const db = novoDb();
+  seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
+  db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
+  return db;
+}
+function frete(db: FakeDb): DocData {
+  return db.ler(CAMINHO_PEDIDO)?.freteInicial as DocData;
+}
+
 describe('⚠️ an order without an endereço: its freight amount, never a carrier route', () => {
-  /** Every field a label is quoted or bought from, empty. */
-  const SEM_ROTA = {
-    integracaoFreteOuterRef: null,
-    externalOptionId: null,
-    externalOptionIntegracao: null,
-    externalOptionData: null,
-  } as const;
-  const ROTA_ME = {
-    integracaoFreteOuterRef: 'documents/int_frete/me-1',
-    externalOptionId: '2',
-    externalOptionIntegracao: null,
-    externalOptionData: { ...FORMA_ENVIO_LI },
-  } as const;
-
-  /** The conta's int_frete mapping the method to an ACTIVE Melhor Envio target. */
-  function dbComAlvo(): FakeDb {
-    const db = novoDb();
-    seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
-    db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
-    return db;
-  }
-  function frete(db: FakeDb): DocData {
-    return db.ler(CAMINHO_PEDIDO)?.freteInicial as DocData;
-  }
-
   it('EQUAL: no cliente and no endereço ⇒ the amount, the modalidade and the rest of the block, no route — and the mapa registration still runs', async () => {
     const db = novoDb();
     seedIntFrete(db);
@@ -1300,6 +1301,222 @@ describe('⚠️ an order without an endereço: its freight amount, never a carr
     const endereco = db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef as string;
     expect(endereco).toMatch(/^documents\/clientes\//);
     expect(frete(db)).toMatchObject({ ...ROTA_ME, enderecoFreteOuterReference: endereco });
+  });
+});
+
+describe('⚠️ a stored endereço and no stored cliente: never paired with another cliente', () => {
+  /** An endereço stored under a cliente that is NOT the one the buyer resolves to. */
+  const ENDERECO_DE_OUTRO = 'documents/clientes/cliente-de-outra-pessoa/enderecos/end-a';
+  /** An endereço stored under the cliente the buyer DOES resolve to (`CLIENTE_ID`). */
+  const ENDERECO_DO_COMPRADOR = `documents/clientes/${CLIENTE_ID}/enderecos/end-b`;
+  const CLIENTE_DO_COMPRADOR = `documents/clientes/${CLIENTE_ID}`;
+  const COMPRADOR_NOVO = { cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) };
+
+  /**
+   * A pedido with NO refs and an empty route (an identity-less first import,
+   * its "sem cliente" incidente removed so each test sees only its own), then
+   * `over` written by another writer — `clientePedidoOuterRef` stays null
+   * unless `over` sets it.
+   */
+  async function pedidoArmazenado(over: DocData): Promise<FakeDb> {
+    const db = dbComAlvo();
+    await importar(db, cena());
+    expect(frete(db)).toMatchObject(SEM_ROTA);
+    await incidenteCollection
+      .docRef(asDb(db), { pedidoId: PEDIDO_ID }, ID_INCIDENTE_LI.clienteSemIdentidade)
+      .delete();
+    if (Object.keys(over).length > 0) await refPedido(db).update(over);
+    mockCliente.mockClear();
+    return db;
+  }
+
+  function incidentes(db: FakeDb): string[] {
+    return db.idsEm(`${CAMINHO_PEDIDO}/incidentes`);
+  }
+
+  /** The fail-safe state: no cliente filled, the stored endereço kept, no route, the incidente. */
+  function esperarEnderecoDeOutro(db: FakeDb, endereco: unknown): void {
+    const pedido = db.ler(CAMINHO_PEDIDO)!;
+    expect(pedido.clientePedidoOuterRef).toBeNull();
+    expect(pedido.enderecoFiscalOuterRef).toEqual(endereco);
+    expect(frete(db)).toMatchObject({
+      ...SEM_ROTA,
+      enderecoFreteOuterReference: null,
+      valorCobrado: 14.8,
+      modalidade: MODALIDADE_FRETE.cif,
+    });
+    expect(incidentes(db)).toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
+    expect(db.ler(caminhoIncidente(ID_INCIDENTE_LI.enderecoDeOutroCliente))).toMatchObject({
+      subtipo: SUBTIPO_INCIDENTE_LI.enderecoDeOutroCliente,
+      tipo: 'o',
+      origem: 99,
+      resolucao: null,
+    });
+  }
+
+  it('REPRO: a buyer resolving to ANOTHER cliente ⇒ the cliente is NOT filled over the endereço, which is kept, takes no route, and raises the incidente', async () => {
+    const db = await pedidoArmazenado({ enderecoFiscalOuterRef: ENDERECO_DE_OUTRO });
+    const { r, avisosDeLog } = await importar(db, cena(COMPRADOR_NOVO));
+    expect(r).toEqual({ kind: 'importado' });
+    esperarEnderecoDeOutro(db, ENDERECO_DE_OUTRO);
+    // The buyer IS resolved (only that tells the owner apart) — but no endereço is stored
+    // under it while one is stored on the pedido, and no "sem cliente" incidente is raised.
+    expect(mockCliente).toHaveBeenCalledTimes(1);
+    expect(db.idsEm(`clientes/${CLIENTE_ID}/enderecos`)).toEqual([]);
+    expect(incidentes(db)).not.toContain(ID_INCIDENTE_LI.clienteSemIdentidade);
+    expect(JSON.stringify(avisosDeLog)).toContain('outro dono');
+    // The message names no buyer datum.
+    const motivo = db.ler(caminhoIncidente(ID_INCIDENTE_LI.enderecoDeOutroCliente))
+      ?.motivoDoIncidente as string;
+    expect(motivo).toContain(String(NUMERO_LI));
+    expect(motivo).not.toContain('cliente-de-outra-pessoa');
+  });
+
+  it.each([
+    ['canonical', ENDERECO_DO_COMPRADOR],
+    ['bare', `clientes/${CLIENTE_ID}/enderecos/end-b`],
+  ])(
+    'EQUAL: the stored endereço is the resolved cliente’s own (%s form) ⇒ the cliente filled, the endereço kept and routed, no incidente',
+    async (_forma, endereco) => {
+      const db = await pedidoArmazenado({ enderecoFiscalOuterRef: endereco });
+      expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+      const pedido = db.ler(CAMINHO_PEDIDO)!;
+      expect(pedido.clientePedidoOuterRef).toBe(CLIENTE_DO_COMPRADOR);
+      // Kept exactly as stored; the freight block takes its canonical form.
+      expect(pedido.enderecoFiscalOuterRef).toBe(endereco);
+      expect(frete(db)).toMatchObject({
+        ...ROTA_ME,
+        enderecoFreteOuterReference: ENDERECO_DO_COMPRADOR,
+      });
+      expect(incidentes(db)).not.toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
+      // Never replaced: no second endereço under the cliente.
+      expect(db.idsEm(`clientes/${CLIENTE_ID}/enderecos`)).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['a longer cliente id', `documents/clientes/${CLIENTE_ID}x/enderecos/end-b`],
+    ['a prefix of the cliente id', 'documents/clientes/cliente-li/enderecos/end-b'],
+  ])('NEAR-MISS: an owner one character away (%s) is ANOTHER cliente', async (_caso, endereco) => {
+    const db = await pedidoArmazenado({ enderecoFiscalOuterRef: endereco });
+    expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+    esperarEnderecoDeOutro(db, endereco);
+  });
+
+  it.each([
+    ['the cliente ref itself, not an endereço', CLIENTE_DO_COMPRADOR],
+    ['another collection', `documents/fornecedores/${CLIENTE_ID}/enderecos/end-b`],
+    ['a path nested below the endereço', `${ENDERECO_DO_COMPRADOR}/historico/h-1`],
+    ['text that is no path', 'endereco-sem-caminho'],
+    ['blank text (a value somebody wrote)', ' '],
+    ['a number', 42],
+    ['a map', { clienteId: CLIENTE_ID }],
+  ])(
+    'an UNREADABLE stored endereço (%s) is never the resolved cliente’s: treated as another owner',
+    async (_caso, endereco) => {
+      const db = await pedidoArmazenado({ enderecoFiscalOuterRef: endereco });
+      expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+      esperarEnderecoDeOutro(db, endereco);
+    },
+  );
+
+  it('a route an operator STORED beside the foreign endereço is never cleared: only no NEW route is filled', async () => {
+    const doOperador = {
+      integracaoFreteOuterRef: 'documents/int_frete/me-9',
+      externalOptionId: '7',
+      externalOptionIntegracao: null,
+      externalOptionData: { id: 7, nome: 'Escolha do operador' },
+    };
+    const db = await pedidoArmazenado({ enderecoFiscalOuterRef: ENDERECO_DE_OUTRO });
+    await refPedido(db).update({ freteInicial: { ...frete(db), ...doOperador } });
+    expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+    expect(db.ler(CAMINHO_PEDIDO)?.clientePedidoOuterRef).toBeNull();
+    expect(frete(db)).toMatchObject({ ...doOperador, enderecoFreteOuterReference: null });
+    expect(incidentes(db)).toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
+  });
+
+  it('no strong identity and a stored endereço ⇒ nothing to pair it with: no route, and both incidentes', async () => {
+    const db = await pedidoArmazenado({ enderecoFiscalOuterRef: ENDERECO_DO_COMPRADOR });
+    expect((await importar(db, cena({ data_modificacao: carimboLi(3) }))).r).toEqual({
+      kind: 'importado',
+    });
+    esperarEnderecoDeOutro(db, ENDERECO_DO_COMPRADOR);
+    expect(incidentes(db)).toContain(ID_INCIDENTE_LI.clienteSemIdentidade);
+  });
+
+  it('NEAR-MISS: a stored cliente is never replaced nor second-guessed — its own endereço routes as before, with no cliente step and no incidente', async () => {
+    const outro = 'documents/clientes/cliente-de-outra-pessoa';
+    const db = await pedidoArmazenado({
+      clientePedidoOuterRef: outro,
+      enderecoFiscalOuterRef: ENDERECO_DE_OUTRO,
+    });
+    expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+    expect(mockCliente).not.toHaveBeenCalled();
+    const pedido = db.ler(CAMINHO_PEDIDO)!;
+    expect(pedido.clientePedidoOuterRef).toBe(outro);
+    expect(pedido.enderecoFiscalOuterRef).toBe(ENDERECO_DE_OUTRO);
+    expect(frete(db)).toMatchObject({ ...ROTA_ME, enderecoFreteOuterReference: ENDERECO_DE_OUTRO });
+    expect(incidentes(db)).not.toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
+  });
+
+  it('a cliente linked by hand and NO endereço ⇒ the order’s endereço is stored under THAT cliente and routed (owner decision)', async () => {
+    const aMao = 'cliente-ligado-a-mao';
+    const db = await pedidoArmazenado({ clientePedidoOuterRef: `documents/clientes/${aMao}` });
+    expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+    expect(mockCliente).not.toHaveBeenCalled();
+    const endereco = db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef as string;
+    expect(endereco).toMatch(new RegExp(`^documents/clientes/${aMao}/enderecos/[0-9a-f]{40}$`));
+    expect(frete(db)).toMatchObject({ ...ROTA_ME, enderecoFreteOuterReference: endereco });
+    expect(incidentes(db)).not.toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
+  });
+
+  describe('rule 7: the pairing is re-derived from S′ on the retry', () => {
+    /** Another writer lands `over` on the pedido right before our first batch. */
+    function escritorAntesDoLote(db: FakeDb, over: DocData): { readonly escreveu: () => boolean } {
+      let escreveu = false;
+      db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
+        escreveu = true;
+        await refPedido(db).update(over);
+      });
+      return { escreveu: () => escreveu };
+    }
+
+    it('⚠️ another writer stores an endereço of ANOTHER cliente between the read and the batch ⇒ the retry fills no cliente, routes nothing, raises the incidente', async () => {
+      const db = await pedidoArmazenado({});
+      const escritor = escritorAntesDoLote(db, { enderecoFiscalOuterRef: ENDERECO_DE_OUTRO });
+      expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+      expect(escritor.escreveu()).toBe(true);
+      // Step 7 ran against S (no endereço): ours was stored under the buyer's cliente…
+      expect(db.idsEm(`clientes/${CLIENTE_ID}/enderecos`)).toHaveLength(1);
+      // …and S′ decided: neither our cliente nor our endereço over the other writer's.
+      esperarEnderecoDeOutro(db, ENDERECO_DE_OUTRO);
+    });
+
+    it('NEAR-MISS: the other writer’s endereço is under the buyer’s OWN cliente ⇒ the retry fills the cliente beside it and routes to it', async () => {
+      const db = await pedidoArmazenado({});
+      escritorAntesDoLote(db, { enderecoFiscalOuterRef: ENDERECO_DO_COMPRADOR });
+      expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+      const pedido = db.ler(CAMINHO_PEDIDO)!;
+      expect(pedido.clientePedidoOuterRef).toBe(CLIENTE_DO_COMPRADOR);
+      expect(pedido.enderecoFiscalOuterRef).toBe(ENDERECO_DO_COMPRADOR);
+      expect(frete(db)).toMatchObject({
+        ...ROTA_ME,
+        enderecoFreteOuterReference: ENDERECO_DO_COMPRADOR,
+      });
+      expect(incidentes(db)).not.toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
+    });
+
+    it('the foreign endereço is CLEARED between the read and the batch ⇒ S′ holds none: the cliente is filled, no route (no endereço), and NO incidente', async () => {
+      const db = await pedidoArmazenado({ enderecoFiscalOuterRef: ENDERECO_DE_OUTRO });
+      escritorAntesDoLote(db, { enderecoFiscalOuterRef: null });
+      expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+      const pedido = db.ler(CAMINHO_PEDIDO)!;
+      expect(pedido.clientePedidoOuterRef).toBe(CLIENTE_DO_COMPRADOR);
+      // Step 7 saw S's endereço and stored none; the next import stores the buyer's.
+      expect(pedido.enderecoFiscalOuterRef).toBeNull();
+      expect(frete(db)).toMatchObject({ ...SEM_ROTA, enderecoFreteOuterReference: null });
+      expect(incidentes(db)).not.toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
+    });
   });
 });
 
@@ -1663,6 +1880,38 @@ describe('the step-7 loop: a tracking write-back re-imported at a newer stamp', 
     expect(depois.estado).toBe(antes.estado);
     expect(depois.freteInicial).toEqual(antes.freteInicial);
     expect(depois.itens).toEqual(antes.itens);
+  });
+});
+
+describe('clienteDoEnderecoLi: the owner of a stored endereço ref, read tolerantly', () => {
+  it.each([
+    ['canonical', 'documents/clientes/c-1/enderecos/e-1'],
+    ['bare', 'clientes/c-1/enderecos/e-1'],
+    ['doubled slashes', 'documents//clientes/c-1//enderecos/e-1'],
+  ])('EQUAL: the %s form names the cliente `documents/clientes/c-1`', (_forma, ref) => {
+    expect(clienteDoEnderecoLi(ref)).toBe('documents/clientes/c-1');
+  });
+
+  it('NEAR-MISS: one character more in the cliente id is another owner', () => {
+    expect(clienteDoEnderecoLi('documents/clientes/c-12/enderecos/e-1')).toBe(
+      'documents/clientes/c-12',
+    );
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['null', null],
+    ['empty text', ''],
+    ['a number', 7],
+    ['a map', { clienteId: 'c-1' }],
+    ['a cliente ref', 'documents/clientes/c-1'],
+    ['a collection path', 'documents/clientes/c-1/enderecos'],
+    ['another root collection', 'documents/fornecedores/c-1/enderecos/e-1'],
+    ['another subcollection', 'documents/clientes/c-1/contatos/e-1'],
+    ['nested below an endereço', 'documents/clientes/c-1/enderecos/e-1/historico/h-1'],
+    ['nested above the cliente', 'documents/lojas/l-1/clientes/c-1/enderecos/e-1'],
+  ])('UNREADABLE (%s) ⇒ no owner, which matches no cliente', (_caso, ref) => {
+    expect(clienteDoEnderecoLi(ref)).toBeNull();
   });
 });
 

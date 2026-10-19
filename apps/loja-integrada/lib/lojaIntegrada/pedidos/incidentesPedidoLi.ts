@@ -10,6 +10,10 @@
  *    drives the freight block, the rest are not imported (never expected);
  *  - `li-cliente-sem-identidade` — the buyer has no valid document and matches
  *    no cliente, so the pedido has no cliente and no endereço;
+ *  - `li-endereco-de-outro-cliente` — the pedido holds an endereço and no
+ *    cliente, and that endereço is not stored under the cliente this import
+ *    resolved (or its owner cannot be read): the import links no cliente over
+ *    it and routes no freight to it (`importarPedido.ts`, step 7);
  *  - `li-totais-divergentes` — the lines, the discount and the freight do not
  *    add up to the order's total (the line residual, the shipment value, or the
  *    stored totals check of `pedidoMapeamento.ts`). Reported, never adjusted.
@@ -43,6 +47,7 @@ export const SUBTIPO_INCIDENTE_LI = {
   produtoNaoVinculado: 'li-produto-nao-vinculado',
   multiEnvio: 'li-multi-envio',
   clienteSemIdentidade: 'li-cliente-sem-identidade',
+  enderecoDeOutroCliente: 'li-endereco-de-outro-cliente',
   totaisDivergentes: 'li-totais-divergentes',
 } as const;
 
@@ -55,6 +60,7 @@ export function idIncidenteLinhaLi(ensureUniqueId: string): string {
 export const ID_INCIDENTE_LI = {
   multiEnvio: 'li-multi-envio',
   clienteSemIdentidade: 'li-cliente-sem-identidade',
+  enderecoDeOutroCliente: 'li-endereco-de-outro-cliente',
   totaisDivergentes: 'li-totais-divergentes',
 } as const;
 
@@ -77,6 +83,8 @@ export interface IncidentesDoPedidoLi {
   readonly jaVinculadas: ReadonlySet<string>;
   readonly multiEnvio: boolean;
   readonly clienteSemIdentidade: boolean;
+  /** The stored endereço is not the cliente's this import resolved (module header). */
+  readonly enderecoDeOutroCliente: boolean;
   readonly totaisDivergentes: boolean;
   /** The importer's ONE clock read, µs. */
   readonly nowUs: number;
@@ -118,6 +126,11 @@ const MOTIVOS = {
     `[Loja Integrada] O comprador do pedido ${numero} não tem CPF ou CNPJ válido e não ` +
     'corresponde a nenhum cliente do ERP, então o pedido ficou sem cliente e sem endereço. ' +
     'Vincule o cliente manualmente no pedido.',
+  enderecoDeOutroCliente: (numero: string) =>
+    `[Loja Integrada] O pedido ${numero} já tem um endereço fiscal que pertence a outro cliente ` +
+    '(ou cujo cliente não pôde ser identificado). Para que nenhuma NF-e ou etiqueta use o ' +
+    'endereço de outra pessoa, a importação não vinculou cliente ao pedido nem definiu a ' +
+    'transportadora do frete. Confira o cliente e o endereço do pedido.',
   totaisDivergentes: (numero: string) =>
     `[Loja Integrada] Os itens, o desconto e o frete do pedido ${numero} não somam o total ` +
     'da Loja Integrada. Nada foi ajustado; confira os valores antes de emitir a NF-e.',
@@ -148,6 +161,7 @@ export async function registrarIncidentesDoPedidoLi(
   for (const [chave, ativo] of [
     ['multiEnvio', entrada.multiEnvio],
     ['clienteSemIdentidade', entrada.clienteSemIdentidade],
+    ['enderecoDeOutroCliente', entrada.enderecoDeOutroCliente],
     ['totaisDivergentes', entrada.totaisDivergentes],
   ] as const) {
     if (!ativo) continue;

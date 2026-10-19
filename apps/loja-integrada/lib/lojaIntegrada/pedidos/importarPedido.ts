@@ -48,13 +48,32 @@
  *     unknown address (`freteMapeamento.ts`, "No endereço, no route"): the
  *     route is decided per attempt from the endereço the pedido will carry
  *     (`mapearPedido`, re-derived from `S′`), so a lost precondition never
- *     leaves a route beside another person's endereço — or beside none. A route
- *     already stored is never cleared; an empty one fills once an import finds
- *     the endereço. The registration and the aviso run either way.
- *  7. **The cliente and the endereço**, only while `S` holds no refs. A buyer
- *     with no strong identity and no match imports without either, plus an
- *     incidente — raised at step 11 only while the pedido the winning attempt
- *     kept still holds no cliente (another writer may have linked one).
+ *     leaves a route beside another person's endereço — or beside none; an
+ *     endereço step 7 cannot pair with the pedido's cliente counts as none. A
+ *     route already stored is never cleared; an empty one fills once an import
+ *     finds the endereço. The registration and the aviso run either way.
+ *  7. **The cliente and the endereço**, each only while `S` holds none: the
+ *     cliente step while `S` has no cliente, the endereço step while it has no
+ *     endereço and a cliente is known (stored, or just resolved — an endereço
+ *     is always stored UNDER the cliente the pedido will carry, one an operator
+ *     linked by hand included). A buyer with no strong identity and no match
+ *     imports without either, plus an incidente — raised at step 11 only while
+ *     the pedido the winning attempt kept still holds no cliente (another
+ *     writer may have linked one).
+ *     ⚠️ **Never a cliente beside another cliente's endereço**
+ *     ({@link parClienteEnderecoLi}). An endereço path names its owner
+ *     (`clientes/{id}/enderecos/{id}`, read by {@link clienteDoEnderecoLi}).
+ *     When the snapshot holds an endereço but no cliente, the cliente step 7
+ *     resolved is filled only when it IS that owner. Another owner — or one the
+ *     stored value does not let us read, or no cliente resolved at all — fails
+ *     safe: no cliente is filled, the stored endereço is kept (never replaced
+ *     nor deleted), it routes no freight (the block keeps its amount, as for a
+ *     pedido without an endereço; a stored route is still never cleared), and
+ *     the `li-endereco-de-outro-cliente` incidente asks the operator to check
+ *     both. A stored cliente is never replaced nor second-guessed. The pairing
+ *     is decided against each attempt's snapshot and the winning one, never
+ *     against `S` alone, so another writer's endereço landing between the read
+ *     and the batch is judged by its own owner.
  *  8–10. **The pedido and its pagamentos, in ONE atomic batch**
  *     (`escritaPedido.ts`, whose header is the rule-7 contract): every write
  *     parsed before the batch, each under its own precondition; a lost one
@@ -100,11 +119,13 @@ import {
 } from '@delfrance/integrations-loja-integrada';
 import {
   STATUS_PAGAMENTO,
+  idFromRef,
   parseRef,
   recoverEnderecoFromCep,
   toOuterRef,
   toOuterRefOrNull,
   type ModalidadeFrete,
+  type OuterRef,
 } from '@delfrance/schemas';
 
 import { relogioDoDocumentoUs } from '../avisos/avisos';
@@ -395,7 +416,7 @@ async function resolverFreteLi(
 }
 
 /** Step 7's result. */
-interface ClienteResolvidoLi {
+export interface ClienteResolvidoLi {
   /** The cliente THIS run resolved (`null`: none ran, or no identity). */
   readonly clienteRef: string | null;
   /** The endereço THIS run stored, under the cliente it belongs to. */
@@ -416,6 +437,101 @@ function idDoCliente(ref: string): string | null {
   if (canonica === null) return null;
   const { collection, id } = parseRef(canonica);
   return collection === 'clientes' && id !== '' ? id : null;
+}
+
+/**
+ * The canonical ref of the cliente an endereço ref is stored under
+ * (`clientes/{clienteId}/enderecos/{id}`, in either stored form), or `null`
+ * when the value names no cliente's endereço — an owner nobody can read, which
+ * matches NO cliente (step 7).
+ */
+export function clienteDoEnderecoLi(ref: unknown): OuterRef | null {
+  const endereco = toOuterRefOrNull(ref);
+  if (endereco === null) return null;
+  // `documents/<collection>/<id>/…`: the first document id is the candidate owner.
+  const clienteId = endereco.split('/')[2] ?? '';
+  const enderecoId = idFromRef(endereco);
+  if (clienteId === '' || enderecoId === '') return null;
+  // Rebuilt through the collections' own paths: any other shape is no cliente's endereço.
+  if (toOuterRef(enderecoCollection.docPath({ clienteId }, enderecoId)) !== endereco) return null;
+  return toOuterRef(clienteCollection.docPath({}, clienteId));
+}
+
+/** The refs the pedido carries against ONE snapshot (step 7), and the endereço a label may use. */
+export interface ParClienteEnderecoLi {
+  /** The cliente ref this import may FILL (fill-once: a stored one always wins). */
+  readonly clientePedidoOuterRef: string | null;
+  /** The endereço ref this import may FILL (fill-once: a stored one always wins). */
+  readonly enderecoFiscalOuterRef: string | null;
+  /** The endereço the freight may route to, or `null`: no carrier route (`freteMapeamento.ts`). */
+  readonly enderecoDaRota: string | null;
+  /**
+   * The snapshot holds an endereço and no cliente, and that endereço is not
+   * stored under the cliente this import resolved (or its owner cannot be
+   * read): the `li-endereco-de-outro-cliente` incidente.
+   */
+  readonly enderecoDeOutroCliente: boolean;
+}
+
+/**
+ * Step 7's pairing against one snapshot (module header): the cliente and the
+ * endereço the pedido will carry may never belong to two different clientes.
+ * PURE, and asked of EVERY attempt's snapshot and of the winning one — nothing
+ * here is captured before the batch loop.
+ *
+ *  - A stored cliente is never replaced, nor second-guessed: the endereço is
+ *    the stored one, else the one step 7 stored under THAT cliente.
+ *  - Nothing stored: the cliente step 7 resolved, and the endereço it stored
+ *    under that same cliente.
+ *  - A stored endereço and NO stored cliente: the resolved cliente is filled
+ *    only when it is the endereço's owner. Otherwise — another owner, an owner
+ *    the ref does not let us read, or no cliente resolved — nothing is filled,
+ *    the stored endereço stays (never replaced) but routes no freight, exactly
+ *    as a pedido without an endereço, and the operator gets an incidente.
+ */
+export function parClienteEnderecoLi(
+  armazenado: PedidoArmazenadoLi | null,
+  resolvido: Pick<ClienteResolvidoLi, 'clienteRef' | 'endereco'>,
+): ParClienteEnderecoLi {
+  const clienteArm = refArmazenada(armazenado?.clientePedidoOuterRef);
+  const enderecoArm = refArmazenada(armazenado?.enderecoFiscalOuterRef);
+  /** Step 7's endereço, only beside the cliente it was stored under. */
+  const enderecoResolvidoDe = (cliente: string | null): string | null =>
+    cliente !== null && resolvido.endereco?.clienteRef === cliente ? resolvido.endereco.ref : null;
+
+  if (clienteArm !== null || enderecoArm === null) {
+    const cliente = clienteArm === null ? resolvido.clienteRef : (clienteArm ?? null);
+    const endereco = enderecoArm !== null ? (enderecoArm ?? null) : enderecoResolvidoDe(cliente);
+    return {
+      clientePedidoOuterRef: cliente,
+      enderecoFiscalOuterRef: endereco,
+      enderecoDaRota: endereco,
+      enderecoDeOutroCliente: false,
+    };
+  }
+
+  // A stored endereço (possibly unreadable: `undefined`) and no stored cliente.
+  const dono = clienteDoEnderecoLi(enderecoArm);
+  const doClienteResolvido =
+    dono !== null &&
+    resolvido.clienteRef !== null &&
+    toOuterRefOrNull(resolvido.clienteRef) === dono;
+  if (doClienteResolvido) {
+    // Read in either stored form; the freight block takes the canonical one its schema accepts.
+    const canonico = toOuterRefOrNull(enderecoArm);
+    return {
+      clientePedidoOuterRef: resolvido.clienteRef,
+      enderecoFiscalOuterRef: canonico,
+      enderecoDaRota: canonico,
+      enderecoDeOutroCliente: false,
+    };
+  }
+  return {
+    clientePedidoOuterRef: null,
+    enderecoFiscalOuterRef: null,
+    enderecoDaRota: null,
+    enderecoDeOutroCliente: true,
+  };
 }
 
 async function resolverClienteEEnderecoLi(
@@ -597,17 +713,13 @@ export async function importarPedidoLi(
   const dataAprovacaoUs = h.dataAprovacao.derivavel ? h.dataAprovacao.us : null;
   const modalidadeConta: ModalidadeFrete | null = conta.modalidadeFreteImportacao ?? null;
 
-  /** The order's fields against one snapshot: the refs it already holds win (fill-once). */
+  /**
+   * The order's fields against one snapshot: the refs it already holds win
+   * (fill-once), and the cliente and the endereço are paired against THAT
+   * snapshot (`parClienteEnderecoLi`) — never against `S` alone.
+   */
   const mapearPedido = (arm: PedidoArmazenadoLi | null): PedidoMapeadoLi => {
-    const clienteArm = refArmazenada(arm?.clientePedidoOuterRef);
-    const clienteEfetivo = clienteArm === null ? partes.clienteRef : (clienteArm ?? null);
-    const enderecoArm = refArmazenada(arm?.enderecoFiscalOuterRef);
-    const enderecoEfetivo =
-      enderecoArm !== null
-        ? (enderecoArm ?? null)
-        : partes.endereco !== null && partes.endereco.clienteRef === clienteEfetivo
-          ? partes.endereco.ref
-          : null;
+    const par = parClienteEnderecoLi(arm, partes);
     const blocoFrete =
       frete === null
         ? null
@@ -617,7 +729,7 @@ export async function importarPedidoLi(
             roteamento: frete.roteamento,
             horarioDeCorteConta: frete.horarioDeCorte,
             dataAprovacaoUs,
-            enderecoFiscalOuterRef: enderecoEfetivo,
+            enderecoFiscalOuterRef: par.enderecoDaRota,
           });
     return mapearPedidoLi({
       contaId: integracaoId,
@@ -628,8 +740,8 @@ export async function importarPedidoLi(
       itens: itens.itens,
       descontoExtra: itens.descontoExtra,
       frete: blocoFrete,
-      clientePedidoOuterRef: clienteEfetivo,
-      enderecoFiscalOuterRef: enderecoEfetivo,
+      clientePedidoOuterRef: par.clientePedidoOuterRef,
+      enderecoFiscalOuterRef: par.enderecoFiscalOuterRef,
     });
   };
   const mapearPagamentos = (
@@ -660,6 +772,14 @@ export async function importarPedidoLi(
   if (gravacao.tipo === 'obsoleto') return { kind: 'obsoleto' };
   const { decisao } = gravacao.escrita;
   const mapeadoFinal = mapearPedido(gravacao.armazenado);
+  // The pairing the WINNING attempt decided from (its snapshot), for the incidente.
+  const parFinal = parClienteEnderecoLi(gravacao.armazenado, partes);
+  if (parFinal.enderecoDeOutroCliente) {
+    deps.logger?.warn(
+      `${ROTULO_LOG} endereço gravado sem cliente e de outro dono; nenhum cliente vinculado, frete sem rota`,
+      log,
+    );
+  }
   registrarDecisoesLi(deps, log, gravacao, mapeadoFinal);
   registrarFormasDesconhecidasLi(deps, log, mapearPagamentos(decisao.statusPagamento));
 
@@ -686,6 +806,7 @@ export async function importarPedidoLi(
     // another writer linked meanwhile is no pedido "without a cliente".
     clienteSemIdentidade:
       partes.semIdentidade && mapeadoFinal.preencherUmaVez.clientePedidoOuterRef === null,
+    enderecoDeOutroCliente: parFinal.enderecoDeOutroCliente,
     totaisDivergentes:
       itens.divergente ||
       (blocoFinal?.valorDivergente ?? false) ||

@@ -50,6 +50,7 @@ function entrada(over: Partial<IncidentesDoPedidoLi> = {}): IncidentesDoPedidoLi
     jaVinculadas: new Set(),
     multiEnvio: false,
     clienteSemIdentidade: false,
+    enderecoDeOutroCliente: false,
     totaisDivergentes: false,
     nowUs: AGORA_US,
     ...over,
@@ -63,13 +64,19 @@ describe('the incidentes of one import', () => {
     const db = new FakeDb();
     const criados = await registrarIncidentesDoPedidoLi(
       asDb(db),
-      entrada({ multiEnvio: true, clienteSemIdentidade: true, totaisDivergentes: true }),
+      entrada({
+        multiEnvio: true,
+        clienteSemIdentidade: true,
+        enderecoDeOutroCliente: true,
+        totaisDivergentes: true,
+      }),
     );
     expect(criados.sort()).toEqual(
       [
         idIncidenteLinhaLi('501'),
         ID_INCIDENTE_LI.multiEnvio,
         ID_INCIDENTE_LI.clienteSemIdentidade,
+        ID_INCIDENTE_LI.enderecoDeOutroCliente,
         ID_INCIDENTE_LI.totaisDivergentes,
       ].sort(),
     );
@@ -80,11 +87,17 @@ describe('the incidentes of one import', () => {
       resolucao: null,
     });
     expect(db.ler(caminho(ID_INCIDENTE_LI.multiEnvio))?.subtipo).toBe('li-multi-envio');
+    expect(db.ler(caminho(ID_INCIDENTE_LI.enderecoDeOutroCliente))?.subtipo).toBe(
+      'li-endereco-de-outro-cliente',
+    );
   });
 
   it('never blocks: tipo and origem are both outros, which both gates refuse', async () => {
     const db = new FakeDb();
-    await registrarIncidentesDoPedidoLi(asDb(db), entrada({ totaisDivergentes: true }));
+    await registrarIncidentesDoPedidoLi(
+      asDb(db),
+      entrada({ enderecoDeOutroCliente: true, totaisDivergentes: true }),
+    );
     for (const id of db.idsEm(`pedidos/${PEDIDO}/incidentes`)) {
       const row = db.ler(caminho(id))!;
       expect(row.tipo).toBe(TIPO_INCIDENTE.outros);

@@ -783,7 +783,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   4. **Hub guard** ⇒ `hub`: no pedido and no pagamento.
   5. **Resolve the produtos** (reads only).
   6. **Freight:** `buscarIntFreteDaConta(…, { apenasAtivo: true })`, step 20's `registrarFormaEnvioNoMapaLi`, the routing decision, and one read of the target by id.
-  7. **Cliente and endereço**, only while the pedido has no refs.
+  7. **Cliente and endereço**, each only while the pedido has none, and never a cliente beside another cliente's endereço (below).
   8. **Build and parse the whole pedido write** before any pagamento is decided. A `ZodError` here parks with no pedido or pagamento write (steps 6 and 7 may already have written the mapa row, the cliente and the endereço).
   9. **Pagamentos** (step 6), **decided but not written:** read each one, decide it from the same pedido snapshot, and parse it.
   10. **One atomic `WriteBatch`: the pedido and every pagamento,** each write under its own precondition:
@@ -846,7 +846,12 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **Endereço:**
     - `endereco_entrega` maps to `rawEnderecoInputSchema`; `pais` counts only as a two-letter code other than `BR`.
     - `buildEnderecoForcado` builds it. An unknown estado is recovered through ViaCEP and stored either way; no CEP ⇒ no endereço, retried on later runs.
-    - `ensureEndereco` stores it, tier 0. **cMun is not resolved at import.**
+    - `ensureEndereco` stores it, tier 0, under the cliente the pedido will carry: the one stored on the pedido (an operator's hand link included), else the one just resolved. **cMun is not resolved at import.**
+  - **Never a cliente beside another cliente's endereço.** An endereço lives at `clientes/{clienteId}/enderecos/{id}`, so a stored endereço names its owner, read from the ref in either stored form. When the pedido holds an endereço but no cliente, the resolved cliente is filled only when it is that owner. Otherwise (another owner, an owner the stored value does not let us read, or no cliente resolved) the import fails safe:
+    - no cliente is filled, and the stored endereço is kept (an operator's endereço or cliente is never replaced or deleted);
+    - the endereço routes no freight: the block keeps its amount and modalidade with no carrier route, exactly as an order without an endereço (a stored route is still never cleared);
+    - a non-blocking incidente `li-endereco-de-outro-cliente` asks the operator to check the cliente and the endereço.
+    - A stored cliente is never replaced or second-guessed. The pairing is decided against the snapshot each batch attempt writes against, so an endereço another writer stores between the read and the batch is judged by its own owner.
   - **Recipient:** the endereço's `nome` is `endereco_entrega.razao_social` when its `cnpj` is a valid CNPJ, else `nome` (the buyer's rule), so the label names whoever receives. Its document and phone stay null, and `clienteRecebedorOuterReference` stays null.
 - **Items:**
   - `ensureUniqueId = String(item.id)`. `sku` stays text end to end (14 to 17 digits).
@@ -876,7 +881,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     | Unmapped, or a method with no usable key | the conta's LI doc | none |
     | No LI `int_frete` for the conta | null | none |
 
-  - **No endereço, no route** (decided 2026-10-19): an order without an endereço gets its freight amount but no carrier route, so no label is bought to an unknown address. When the pedido ends up with no `enderecoFiscalOuterRef` (no valid document, no usable CEP, no cliente), the block keeps `valorCobrado`, the modalidade and every other field, while `integracaoFreteOuterRef`, `externalOptionId`, `externalOptionIntegracao` and `externalOptionData` are null. The mapa registration, the routing and its aviso still run: they are about the conta's configuration. A route already stored (an operator's, or an earlier import's) is never cleared or overwritten; a later import that finds the endereço fills an empty route through the fill-once rules below. Until then the operator sets the endereço and the route by hand.
+  - **No endereço, no route** (decided 2026-10-19): an order without an endereço gets its freight amount but no carrier route, so no label is bought to an unknown address. When the pedido ends up with no `enderecoFiscalOuterRef` (no valid document, no usable CEP, no cliente), the block keeps `valorCobrado`, the modalidade and every other field, while `integracaoFreteOuterRef`, `externalOptionId`, `externalOptionIntegracao` and `externalOptionData` are null. A stored endereço the import cannot pair with the pedido's cliente counts as none here (Cliente/endereço above). The mapa registration, the routing and its aviso still run: they are about the conta's configuration. A route already stored (an operator's, or an earlier import's) is never cleared or overwritten; a later import that finds the endereço fills an empty route through the fill-once rules below. Until then the operator sets the endereço and the route by hand.
   - **In every case** (the route fields aside, above):
     - `externalId = String(envios[0].id)`; `externalOptionData = forma_envio` (GET shape); `externalOptionIntegracao = null` (step 15 decides it);
     - `valorCobrado` = the order's freight, `roundReais(valor_envio ?? envios[0].valor)`: the same value the modalidade reads, so the two never disagree. A shipment `valor` that contradicts `valor_envio` raises `li-totais-divergentes`; `dataPrevisaoEntrega = data_criacao + prazo` days;
@@ -900,7 +905,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     - `lojaIntegradaPedidoContestado`, whose wording says dispatch is NOT blocked;
     - `lojaIntegradaPedidoHub`;
     - `lojaIntegradaFreteNaoSuportado`, keyed by the digest of the full shipping-method key, because the aviso key fold would merge two methods.
-  - **Non-blocking incidentes** at deterministic ids (`TIPO_INCIDENTE.outros`): unmatched lines, multi-envio, buyers without an identity, and divergent totals.
+  - **Non-blocking incidentes** at deterministic ids (`TIPO_INCIDENTE.outros`): unmatched lines, multi-envio, buyers without an identity, a stored endereço the import cannot pair with the pedido's cliente, and divergent totals.
 - **Firestore:**
   - Writes `pedidos`, `pagamentos` (step 6), `clientes`, `enderecos`, `incidentes`, `avisos` and `int_frete.mapa` (via step 20).
   - **Indexes:** collection group `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` (new, pinned in `produtoLojaIntegrada.indexes.test.ts`); `int_frete` needs no index of its own (see below); the SKU fallback reuses `produtos (sku ASC)` / `(sku ASC, paiId ASC)`.
