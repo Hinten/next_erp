@@ -11,6 +11,10 @@
 //   node amazon-doc.mjs sandbox <operationId> [model] # the x-amzn-api-sandbox cases
 //   node amazon-doc.mjs notif <SchemaName>          # schemas/notifications/<SchemaName>.json
 //   node amazon-doc.mjs folhas [--saida <file>]     # the step-2b leaf inventory (paths + types only)
+//   node amazon-doc.mjs exemplo <operationId> <model> <n> --saida <abs> --nome <nome>
+//                                                   # ONE sandbox case as a capture pair (2b-b)
+//   node amazon-doc.mjs notif-exemplo <SchemaName> <n> --saida <abs> --nome <nome>
+//                                                   # ONE notification example as a capture pair
 //   node amazon-doc.mjs refresh                     # drop the cache
 //
 // `model` is a key from `models`; without it every registered model is searched.
@@ -23,7 +27,7 @@
 
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const RAW = 'https://raw.githubusercontent.com/amzn/selling-partner-api-models/main/';
@@ -455,21 +459,134 @@ async function cmdFolhas(args) {
   else process.stdout.write(texto);
 }
 
+// ---------------------------------------------------------------------------
+// exemplo / notif-exemplo: ONE model example as a capture pair (step-2b plan,
+// PR 2b-b) — `<nome>.json` (the example body) + `<nome>.txt` (the sidecar,
+// `credencial: modelo-sandbox`, `papeis: nao-se-aplica`) — for the capture
+// sanitizer's starting corpus. A model example is public documentation, never
+// production data; the sanitizer still fakes its ids on the way in. The pair is
+// written OUTSIDE every git checkout (refused otherwise), like an owner capture.
+// ---------------------------------------------------------------------------
+
+const NOME_DE_CAPTURA = /^[a-z0-9-]{1,40}$/;
+
+/** `--saida <abs folder>` and `--nome <capture name>`, both required. */
+function destinoDoExemplo(args, comando) {
+  const valor = (flag) => {
+    const i = args.indexOf(flag);
+    const v = i === -1 ? undefined : args[i + 1];
+    if (!v || v.startsWith('--')) throw new Error(`${comando}: ${flag} is required`);
+    return v;
+  };
+  const saida = valor('--saida');
+  const nome = valor('--nome');
+  if (!isAbsolute(saida)) throw new Error(`${comando}: --saida must be an absolute folder`);
+  if (!NOME_DE_CAPTURA.test(nome)) throw new Error(`${comando}: --nome is a-z, 0-9 and -, at most 40`);
+  let pasta = resolve(saida);
+  for (;;) {
+    if (existsSync(join(pasta, '.git'))) {
+      throw new Error(`${comando}: --saida is inside a git checkout; write the pair outside every checkout`);
+    }
+    const acima = dirname(pasta);
+    if (acima === pasta) break;
+    pasta = acima;
+  }
+  mkdirSync(saida, { recursive: true });
+  return { saida, nome };
+}
+
+function escreverPar({ saida, nome }, corpo, linha1) {
+  const data = new Date().toISOString().slice(0, 10);
+  writeFileSync(join(saida, `${nome}.json`), JSON.stringify(corpo));
+  writeFileSync(
+    join(saida, `${nome}.txt`),
+    `${linha1}\ncredencial: modelo-sandbox\npapeis: nao-se-aplica\ndata: ${data}\n`,
+  );
+  console.log(`${nome}: ${linha1}`);
+}
+
+/** A parameter definition, through `#/parameters/X` when it is a reference. */
+function parametro(spec, p) {
+  const prefixo = '#/parameters/';
+  if (typeof p?.$ref === 'string' && p.$ref.startsWith(prefixo)) {
+    return spec.parameters?.[p.$ref.slice(prefixo.length)] ?? null;
+  }
+  return p;
+}
+
+/** Every sandbox case of an operation, in response-code order, static then dynamic. */
+function casosDoSandbox(op) {
+  const casos = [];
+  for (const [codigo, r] of Object.entries(op.responses ?? {})) {
+    const sb = r?.['x-amzn-api-sandbox'];
+    for (const tipo of ['static', 'dynamic']) {
+      for (const caso of sb?.[tipo] ?? []) casos.push({ codigo, caso });
+    }
+  }
+  return casos;
+}
+
+/** exemplo <operationId> <model> <n> --saida <abs> --nome <nome>: the n-th sandbox case (0-based). */
+async function cmdExemplo(operationId, modelKey, n, args) {
+  if (!operationId || !modelKey || !/^\d+$/.test(n ?? '')) {
+    throw new Error('exemplo: usage: exemplo <operationId> <model> <n> --saida <abs> --nome <nome>');
+  }
+  const destino = destinoDoExemplo(args, 'exemplo');
+  const { spec, path, method, op, item } = await findOperation(operationId, modelKey);
+  const casos = casosDoSandbox(op);
+  const escolhido = casos[Number(n)];
+  if (!escolhido) throw new Error(`exemplo: ${operationId} has ${casos.length} sandbox case(s)`);
+  const valores = escolhido.caso?.request?.parameters ?? {};
+  const definicoes = [...(item.parameters ?? []), ...(op.parameters ?? [])]
+    .map((p) => parametro(spec, p))
+    .filter((p) => p && typeof p.name === 'string');
+  const emLista = (v) => (Array.isArray(v) ? v.map((x) => encodeURIComponent(String(x))).join(',') : encodeURIComponent(String(v)));
+  let caminho = path;
+  const query = [];
+  for (const def of definicoes) {
+    if (!Object.hasOwn(valores, def.name)) continue;
+    const v = valores[def.name]?.value;
+    if (def.in === 'path') caminho = caminho.replace(`{${def.name}}`, encodeURIComponent(String(v)));
+    else if (def.in === 'query') query.push(`${encodeURIComponent(def.name)}=${emLista(v)}`);
+  }
+  if (/\{[^}]+\}/.test(caminho)) throw new Error('exemplo: a path parameter has no value in that case');
+  const url = query.length === 0 ? caminho : `${caminho}?${query.join('&')}`;
+  escreverPar(destino, escolhido.caso?.response ?? {}, `${method.toUpperCase()} ${url} ${escolhido.codigo}`);
+}
+
+/** Notification schemas the sanitizer accepts, by their pseudo-line's type. */
+const NOTIFICACOES_EXEMPLO = { OrderChangeNotification: 'ORDER_CHANGE' };
+
+/** notif-exemplo <SchemaName> <n> --saida <abs> --nome <nome>: the schema's n-th example, as an SQS message body. */
+async function cmdNotifExemplo(schema, n, args) {
+  const tipo = NOTIFICACOES_EXEMPLO[schema];
+  if (!tipo || !/^\d+$/.test(n ?? '')) {
+    throw new Error(`notif-exemplo: usage: notif-exemplo <${Object.keys(NOTIFICACOES_EXEMPLO).join('|')}> <n> --saida <abs> --nome <nome>`);
+  }
+  const destino = destinoDoExemplo(args, 'notif-exemplo');
+  const json = await load(`schemas/notifications/${schema}.json`);
+  const exemplo = (json.examples ?? [])[Number(n)];
+  if (exemplo === undefined) throw new Error(`notif-exemplo: ${schema} has ${(json.examples ?? []).length} example(s)`);
+  escreverPar(destino, exemplo, `NOTIFICACAO ${tipo} sqs`);
+}
+
 const [cmd, a, b] = process.argv.slice(2);
 try {
   if (cmd === 'models') for (const [k, p] of Object.entries(MODELS)) console.log(`${k.padEnd(14)} ${p}`);
   else if (cmd === 'folhas') await cmdFolhas(process.argv.slice(3));
+  else if (cmd === 'exemplo') await cmdExemplo(a, b, process.argv[5], process.argv.slice(6));
+  else if (cmd === 'notif-exemplo') await cmdNotifExemplo(a, b, process.argv.slice(5));
   else if (cmd === 'op' && a) await cmdOp(a, b);
   else if (cmd === 'def' && a) await cmdDef(a, b);
   else if (cmd === 'sandbox' && a) await cmdSandbox(a, b);
   else if (cmd === 'notif' && a) await cmdNotif(a);
   else if (cmd === 'refresh') rmSync(CACHE, { recursive: true, force: true });
   else {
-    console.error('usage: node amazon-doc.mjs models | op <operationId> [model] | def <Definition> [model] | sandbox <operationId> [model] | notif <SchemaName> | folhas [--saida <file>] | refresh');
+    console.error('usage: node amazon-doc.mjs models | op <operationId> [model] | def <Definition> [model] | sandbox <operationId> [model] | notif <SchemaName> | folhas [--saida <file>] | exemplo <operationId> <model> <n> --saida <abs> --nome <nome> | notif-exemplo <SchemaName> <n> --saida <abs> --nome <nome> | refresh');
     process.exitCode = 2;
   }
 } catch (err) {
-  if (err instanceof Error && /HTTP|not found|unknown model|^folhas:|usage:|cannot spell/.test(err.message)) {
+  if (err instanceof Error && /HTTP|not found|unknown model|^folhas:|^exemplo:|^notif-exemplo:|usage:|cannot spell/.test(err.message)) {
     console.error(err.message);
     process.exitCode = 1;
   } else {

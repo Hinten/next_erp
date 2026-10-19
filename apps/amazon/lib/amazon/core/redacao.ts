@@ -606,6 +606,62 @@ export function placeholderDeDocumento(v: string): string {
   return '0'.repeat(v.length);
 }
 
+/**
+ * The `rotulo` values a FIXTURE keeps, compared exactly. `rotulo` admits any
+ * short free text, and two of its leaves echo what the SELLER typed:
+ * `packages.*.carrier` and `packages.*.shippingService` on a self-shipped order
+ * (a courier's name under "Other"). The log profile keeps any `rotulo`; the
+ * public profile keeps only this closed vocabulary — Amazon's marketplace names
+ * (the public marketplace-id set), card brands, and the carriers and services
+ * of BR and of the models' own examples. Any other value is faked AND counted,
+ * so the sanitizer reports it (`rotulo-fora-do-vocabulario`) for the owner to
+ * review: a real carrier is one reviewed line here, a person never is.
+ */
+export const ROTULOS_DA_FIXTURE_AMAZON: ReadonlySet<string> = new Set([
+  // salesChannel.marketplaceName
+  'Amazon.com',
+  'Amazon.ca',
+  'Amazon.com.mx',
+  'Amazon.com.br',
+  'Amazon.in',
+  'Amazon.co.uk',
+  'Amazon.de',
+  'Amazon.co.jp',
+  'Amazon.com.tr',
+  // payment.paymentExecutions.*.cardBrand ("for example, Visa or Mastercard")
+  'Visa',
+  'Mastercard',
+  'MasterCard',
+  'Elo',
+  'American Express',
+  'Hipercard',
+  'Diners Club',
+  // packages.*.carrier
+  'Correios',
+  'Jadlog',
+  'Total Express',
+  'Loggi',
+  'Azul Cargo Express',
+  'Amazon Logistics',
+  'UPS',
+  'DPD',
+  'Royal Mail',
+  // packages.*.shippingService
+  'SEDEX',
+  'PAC',
+  'UPS Ground',
+  'DPD Next Day Delivery',
+  'Royal Mail Tracked 48',
+]);
+
+/**
+ * Whether the `fixture` profile keeps this `rotulo` as is: a vocabulary value,
+ * or the profile's own fake (a fixpoint, so re-redaction is idempotent).
+ */
+export function rotuloMantidoNaFixtureAmazon(v: string): boolean {
+  return ROTULOS_DA_FIXTURE_AMAZON.has(v) || v === FALSO_AMAZON.texto;
+}
+
 /** The keys whose refused value keeps its document SHAPE in a fixture. */
 const CHAVES_DE_DOCUMENTO: ReadonlySet<string> = new Set(['taxregistrationnumber', 'acquirerid']);
 
@@ -974,6 +1030,37 @@ export const TABELAS_AMAZON = {
     true,
   ),
 } as const satisfies Record<string, TabelaRedacaoAmazon>;
+
+/** One `OrderScheduleDetails` of the bulk REQUEST, and its `PackageDetails`. */
+const PEDIDO_DO_BULK = 'orderScheduleDetailsList.*';
+const PACOTE_DO_BULK = `${PEDIDO_DO_BULK}.packageDetails`;
+
+/**
+ * REQUEST-body tables, keyed by template name: a capture's optional
+ * `<nome>.req.json` (step 2b-b; C3 is `copia-do-legado` only) goes through
+ * {@link redigirRequisicaoParaFixture}, never through a table of its own. Only
+ * the Easy Ship bulk request (`CreateScheduledPackagesRequest`, easyShip
+ * 2022-03-23) has one. `packageIdentifier` and `orderItemSerialNumbers` are
+ * denied keys; anything the table does not name is faked.
+ */
+export const TABELAS_REQUISICAO_AMAZON: Readonly<Record<string, TabelaRedacaoAmazon>> = {
+  createScheduledPackageBulk: tabela(
+    'createScheduledPackageBulk:requisicao',
+    [
+      ['marketplaceId', 'idMarketplace'],
+      ['labelFormat', 'enumSnake'],
+      [`${PACOTE_DO_BULK}.packageTimeSlot.startTime`, 'dataIso'],
+      [`${PACOTE_DO_BULK}.packageTimeSlot.endTime`, 'dataIso'],
+      [`${PACOTE_DO_BULK}.packageTimeSlot.handoverMethod`, 'enumSnake'],
+    ],
+    [],
+    [
+      [`${PEDIDO_DO_BULK}.amazonOrderId`, 'pedidoAmazon', 'pedido'],
+      [`${PACOTE_DO_BULK}.packageItems.*.orderItemId`, 'itemPedido', 'itemPedido'],
+      [`${PACOTE_DO_BULK}.packageTimeSlot.slotId`, 'opaco', 'slot'],
+    ],
+  ),
+};
 
 /* -------------------------------------------------------------------------- */
 /*                         Denied subtrees and keys                            */
@@ -1578,7 +1665,9 @@ function sellerIdRedigido(v: unknown, chave: string, prof: number, ctx: Percurso
  * A kept string still passes the regex layer, in BOTH profiles: `log` masks the
  * hit in place; `fixture` fakes the whole value (a committed fixture is never
  * laxer than a log line) and counts the hit — a value the table keeps but the
- * profile had to fake is a FINDING for the sanitizer.
+ * profile had to fake is a FINDING for the sanitizer. A `rotulo` outside
+ * {@link ROTULOS_DA_FIXTURE_AMAZON} is faked and counted the same way, in the
+ * `fixture` profile only.
  */
 function manter(
   v: string | number | boolean,
@@ -1590,7 +1679,12 @@ function manter(
   const m = mascararTexto(v, { digitos: !ISENTOS_DE_DIGITOS.has(predicado) });
   ctx.mascarados += m.mascarados;
   if (ctx.perfil === 'log') return m.texto;
-  return m.mascarados === 0 ? v : falso(chave, v);
+  if (m.mascarados > 0) return falso(chave, v);
+  if (predicado === 'rotulo' && !rotuloMantidoNaFixtureAmazon(v)) {
+    ctx.mascarados += 1;
+    return falso(chave, v);
+  }
+  return v;
 }
 
 function folha2xx(
@@ -1906,6 +2000,63 @@ export function redigirCorpo(
 ): CorpoParaLogAmazon | CorpoParaFixtureAmazon {
   if (perfil === 'log') return corpoParaLog(e, o as OpcoesLogAmazon);
   return corpoParaFixture(e, o as OpcoesFixtureAmazon);
+}
+
+/** A captured REQUEST body (`<nome>.req.json`): its path and method pick the table. */
+export interface EntradaRequisicaoAmazon {
+  readonly caminho: string;
+  readonly metodo: string;
+  readonly corpo: string;
+}
+
+/**
+ * A REQUEST body through the `fixture` profile (step 2b-b): the same walk as a
+ * 2xx response, with the template's request table
+ * ({@link TABELAS_REQUISICAO_AMAZON}). Only a `POST` to a template that has one
+ * is accepted; anything else is refused `sem-tabela`. No `log` profile: the
+ * logger never sees a request body.
+ */
+export function redigirRequisicaoParaFixture(
+  e: EntradaRequisicaoAmazon,
+  o: OpcoesFixtureAmazon,
+): CorpoParaFixtureAmazon {
+  const m = modeloDoCaminho(e.caminho);
+  const t =
+    e.metodo === 'POST' && m !== null && Object.hasOwn(TABELAS_REQUISICAO_AMAZON, m.nome)
+      ? (TABELAS_REQUISICAO_AMAZON[m.nome] ?? null)
+      : null;
+  if (t === null) return { ok: false, motivo: 'sem-tabela' };
+  const analise = analisar(e.corpo, LIMITE_ANALISE_BYTES.fixture);
+  const bytes = bytesUtf8(e.corpo);
+  switch (analise.forma) {
+    case 'vazio':
+      return {
+        ok: true,
+        politica: 'estrutural',
+        forma: 'vazio',
+        bytes,
+        corpo: null,
+        mascarados: 0,
+      };
+    case 'grande':
+      return { ok: false, motivo: 'grande-demais' };
+    case 'profundo':
+      return { ok: false, motivo: 'profundo-demais' };
+    case 'texto':
+      return { ok: false, motivo: 'nao-json' };
+    case 'json': {
+      const ctx = percurso('fixture', t, false, o.falsificador);
+      const corpo = percorrer2xx(analise.valor, '', null, 0, ctx);
+      return {
+        ok: true,
+        politica: 'estrutural',
+        forma: 'json',
+        bytes,
+        corpo,
+        mascarados: ctx.mascarados,
+      };
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */

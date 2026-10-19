@@ -58,3 +58,7 @@ apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/
 # The Amazon spec leaf inventory is GENERATED (`amazon-doc.mjs folhas`, one leaf
 # per line): the generator owns those bytes, so a regeneration diffs leaf by leaf.
 apps/amazon/lib/amazon/testing/especificacaoFolhas.json
+
+# Sanitized Amazon fixtures: `sanitizar` writes them with `JSON.stringify(v, null, 2)`,
+# and a re-run over an unchanged capture must write identical bytes.
+apps/amazon/lib/amazon/fixtures/__wire__/

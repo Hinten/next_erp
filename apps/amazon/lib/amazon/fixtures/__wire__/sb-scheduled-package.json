@@ -1,0 +1,57 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-10-19",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "GET",
+    "caminho": "/easyShip/2022-03-23/package",
+    "query": [
+      [
+        "amazonOrderId",
+        "000-0000000-8397448"
+      ],
+      [
+        "marketplaceId",
+        "A21TJRUUN4KGV"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 396,
+    "corpo": {
+      "scheduledPackageId": {
+        "amazonOrderId": "000-0000000-8397448",
+        "packageId": "PKG-Z90349bf9"
+      },
+      "packageDimensions": {
+        "length": 12,
+        "width": 12,
+        "height": 12,
+        "unit": "cm"
+      },
+      "packageWeight": {
+        "value": 23,
+        "unit": "g"
+      },
+      "packageTimeSlot": {
+        "slotId": "SLOT-Z73f5c152",
+        "startTime": "2022-03-09T10:00:00+09:00",
+        "endTime": "2022-03-10T10:00:00+09:00"
+      },
+      "packageStatus": "Scheduled"
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

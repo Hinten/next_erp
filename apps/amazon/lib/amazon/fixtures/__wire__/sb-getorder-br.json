@@ -1,0 +1,154 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-10-19",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "GET",
+    "caminho": "/orders/2026-01-01/orders/000-0000000-2412538",
+    "query": [
+      [
+        "includedData",
+        "BUYER,RECIPIENT,PROCEEDS,EXPENSE,PROMOTION,CANCELLATION,FULFILLMENT,PACKAGES"
+      ]
+    ],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 2102,
+    "corpo": {
+      "order": {
+        "orderId": "000-0000000-2412538",
+        "orderAliases": [
+          {
+            "aliasId": "ALIAS-Z9de42153",
+            "aliasType": "SELLER_ORDER_ID"
+          }
+        ],
+        "createdTime": "2024-12-24T20:30:00Z",
+        "lastUpdatedTime": "2024-12-25T08:15:00Z",
+        "programs": [
+          "PRIME"
+        ],
+        "salesChannel": {
+          "channelName": "AMAZON",
+          "marketplaceId": "A2Q3Y263D00KWC",
+          "marketplaceName": "Amazon.com.br"
+        },
+        "buyer": {
+          "buyerName": "REDACTED",
+          "buyerEmail": "redacted@example.invalid"
+        },
+        "recipient": {
+          "deliveryAddress": {
+            "name": "REDACTED",
+            "addressLine1": "REDACTED",
+            "addressLine2": "REDACTED",
+            "addressLine3": "",
+            "city": "REDACTED",
+            "districtOrCounty": "",
+            "stateOrRegion": "REDACTED",
+            "municipality": "",
+            "postalCode": "00000-000",
+            "countryCode": "REDACTED",
+            "phone": "+00 00 0000-0000",
+            "extendedFields": {
+              "streetName": "REDACTED",
+              "streetNumber": "REDACTED",
+              "complement": "REDACTED",
+              "neighborhood": "REDACTED"
+            },
+            "addressType": "REDACTED"
+          }
+        },
+        "proceeds": {
+          "grandTotal": {
+            "amount": "299.90",
+            "currencyCode": "BRL"
+          }
+        },
+        "fulfillment": {
+          "fulfillmentStatus": "UNSHIPPED",
+          "fulfilledBy": "MERCHANT",
+          "fulfillmentServiceLevel": "STANDARD",
+          "shipByWindow": {
+            "earliestDateTime": "2024-12-26T00:00:00Z",
+            "latestDateTime": "2024-12-27T23:59:59Z"
+          },
+          "deliverByWindow": {
+            "earliestDateTime": "2024-12-28T00:00:00Z",
+            "latestDateTime": "2024-12-31T23:59:59Z"
+          },
+          "labelPrintingWindow": {
+            "earliestDateTime": "2024-12-26T17:00:00Z"
+          }
+        },
+        "orderItems": [
+          {
+            "orderItemId": "00000253581152",
+            "quantityOrdered": 1,
+            "product": {
+              "asin": "B0ZZAB24FD",
+              "title": "REDACTED",
+              "sellerSku": "SKU-Z3b3175ec",
+              "condition": {
+                "conditionType": "NEW",
+                "conditionSubtype": "NEW",
+                "conditionNote": ""
+              },
+              "price": {
+                "unitPrice": {
+                  "amount": "299.90",
+                  "currencyCode": "BRL"
+                }
+              }
+            },
+            "proceeds": {
+              "proceedsTotal": {
+                "amount": "299.90",
+                "currencyCode": "BRL"
+              },
+              "breakdowns": [
+                {
+                  "type": "ITEM",
+                  "subtotal": {
+                    "amount": "299.90",
+                    "currencyCode": "BRL"
+                  }
+                }
+              ]
+            },
+            "promotion": {
+              "breakdowns": [
+                {
+                  "promotionId": "PROMO-Z9d5e2260"
+                }
+              ]
+            },
+            "fulfillment": {
+              "quantityFulfilled": 0,
+              "quantityUnfulfilled": 1,
+              "packing": {
+                "giftOption": {
+                  "giftMessage": "REDACTED",
+                  "giftWrapLevel": "REDACTED"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}
