@@ -54,7 +54,8 @@
  * The cliente, the endereço, the `mapa` row and the produto resolution (steps
  * 5–7) are NOT redone: their results reach every attempt through `mapearPedido`,
  * whose refs the fill-once group keeps only while `S′` holds none — and which
- * pairs the cliente with the endereço against `S′` itself, never against `S`.
+ * pairs the cliente with its stored endereços (fiscal and delivery) against `S′`
+ * itself, never against `S`.
  */
 import type {
   DocumentReference,

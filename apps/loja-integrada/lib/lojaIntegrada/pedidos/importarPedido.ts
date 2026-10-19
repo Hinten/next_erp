@@ -48,32 +48,35 @@
  *     unknown address (`freteMapeamento.ts`, "No endereço, no route"): the
  *     route is decided per attempt from the endereço the pedido will carry
  *     (`mapearPedido`, re-derived from `S′`), so a lost precondition never
- *     leaves a route beside another person's endereço — or beside none; an
- *     endereço step 7 cannot pair with the pedido's cliente counts as none. A
- *     route already stored is never cleared; an empty one fills once an import
- *     finds the endereço. The registration and the aviso run either way.
+ *     leaves a route beside another person's endereço — or beside none; a
+ *     pedido whose stored endereços step 7 cannot pair with its cliente counts
+ *     as one without an endereço. A route already stored is never cleared; an
+ *     empty one fills once an import finds the endereço. The registration and
+ *     the aviso run either way.
  *  7. **The cliente and the endereço**, each only while `S` holds none: the
  *     cliente step while `S` has no cliente, the endereço step while it has no
- *     endereço and a cliente is known (stored, or just resolved — an endereço
- *     is always stored UNDER the cliente the pedido will carry, one an operator
- *     linked by hand included). A buyer with no strong identity and no match
- *     imports without either, plus an incidente — raised at step 11 only while
- *     the pedido the winning attempt kept still holds no cliente (another
+ *     endereço and a readable cliente is known (stored, or just resolved — an
+ *     endereço is always stored UNDER the cliente the pedido will carry, one an
+ *     operator linked by hand included). A buyer with no strong identity and no
+ *     match imports without either, plus an incidente — raised at step 11 only
+ *     while the pedido the winning attempt kept still holds no cliente (another
  *     writer may have linked one).
  *     ⚠️ **Never a cliente beside another cliente's endereço**
  *     ({@link parClienteEnderecoLi}). An endereço path names its owner
- *     (`clientes/{id}/enderecos/{id}`, read by {@link clienteDoEnderecoLi}).
- *     When the snapshot holds an endereço but no cliente, the cliente step 7
- *     resolved is filled only when it IS that owner. Another owner — or one the
- *     stored value does not let us read, or no cliente resolved at all — fails
- *     safe: no cliente is filled, the stored endereço is kept (never replaced
- *     nor deleted), it routes no freight (the block keeps its amount, as for a
- *     pedido without an endereço; a stored route is still never cleared), and
- *     the `li-endereco-de-outro-cliente` incidente asks the operator to check
- *     both. A stored cliente is never replaced nor second-guessed. The pairing
- *     is decided against each attempt's snapshot and the winning one, never
- *     against `S` alone, so another writer's endereço landing between the read
- *     and the batch is judged by its own owner.
+ *     (`clientes/{id}/enderecos/{id}`, read by {@link clienteDoEnderecoLi};
+ *     the cliente by {@link clienteCanonicoLi}). The cliente the pedido carries
+ *     is the stored one — never replaced — else the one step 7 resolved, and
+ *     EVERY endereço the pedido stores must be that cliente's: the fiscal one,
+ *     and the freight block's delivery one, which is where a label ships (the
+ *     web save checks the same two). One that is not — another owner, an owner
+ *     or a stored cliente nobody can read, or no cliente at all — fails safe:
+ *     no cliente is filled over it, nothing stored is replaced or deleted, no
+ *     carrier route is filled (the block keeps its amount, as for a pedido
+ *     without an endereço; a stored route is still never cleared), and the
+ *     `li-endereco-de-outro-cliente` incidente names each endereço and why.
+ *     The pairing is decided against each attempt's snapshot and the winning
+ *     one, never against `S` alone, so another writer's cliente or endereço
+ *     landing between the read and the batch is judged as it stands.
  *  8–10. **The pedido and its pagamentos, in ONE atomic batch**
  *     (`escritaPedido.ts`, whose header is the rule-7 contract): every write
  *     parsed before the batch, each under its own precondition; a lost one
@@ -120,7 +123,6 @@ import {
 import {
   STATUS_PAGAMENTO,
   idFromRef,
-  parseRef,
   recoverEnderecoFromCep,
   toOuterRef,
   toOuterRefOrNull,
@@ -166,7 +168,12 @@ import {
   type AlvoLidoLi,
   type RoteamentoFreteLi,
 } from './freteMapeamento';
-import { registrarIncidentesDoPedidoLi, type LinhaSemProdutoLi } from './incidentesPedidoLi';
+import {
+  registrarIncidentesDoPedidoLi,
+  type EnderecoNaoPareadoLi,
+  type LinhaSemProdutoLi,
+  type UsoEnderecoLi,
+} from './incidentesPedidoLi';
 import { mapearItensLi, referenciasDeProdutoLi, type ResolucaoLinhaLi } from './itensMapeamento';
 import {
   CAMPO_DE_CHAVE_LI,
@@ -419,8 +426,8 @@ async function resolverFreteLi(
 export interface ClienteResolvidoLi {
   /** The cliente THIS run resolved (`null`: none ran, or no identity). */
   readonly clienteRef: string | null;
-  /** The endereço THIS run stored, under the cliente it belongs to. */
-  readonly endereco: { readonly clienteRef: string; readonly ref: string } | null;
+  /** The endereço THIS run stored (canonical), under the cliente its path names. */
+  readonly endereco: { readonly ref: string } | null;
   /** The buyer had no strong identity and matched no cliente. */
   readonly semIdentidade: boolean;
 }
@@ -431,12 +438,27 @@ function refArmazenada(valor: unknown): string | null | undefined {
   return typeof valor === 'string' ? valor : undefined;
 }
 
-/** The cliente id a cliente ref names, or `null`. */
-function idDoCliente(ref: string): string | null {
+/** The freight block's stored delivery endereço (the one a label ships to), raw. */
+function entregaArmazenada(armazenado: PedidoArmazenadoLi | null): unknown {
+  const frete = armazenado?.freteInicial;
+  return typeof frete === 'object' && frete !== null && !Array.isArray(frete)
+    ? (frete as Readonly<Record<string, unknown>>).enderecoFreteOuterReference
+    : null;
+}
+
+/**
+ * The canonical ref of a stored cliente ref (`clientes/{id}`, in either stored
+ * form), or `null` when the value names no cliente — one nobody can read,
+ * which owns NO endereço (step 7).
+ */
+export function clienteCanonicoLi(ref: unknown): OuterRef | null {
   const canonica = toOuterRefOrNull(ref);
   if (canonica === null) return null;
-  const { collection, id } = parseRef(canonica);
-  return collection === 'clientes' && id !== '' ? id : null;
+  const clienteId = idFromRef(canonica);
+  if (clienteId === '') return null;
+  // Rebuilt through the collection's own path: any other shape is no cliente.
+  const doCliente = toOuterRef(clienteCollection.docPath({}, clienteId));
+  return doCliente === canonica ? doCliente : null;
 }
 
 /**
@@ -466,71 +488,88 @@ export interface ParClienteEnderecoLi {
   /** The endereço the freight may route to, or `null`: no carrier route (`freteMapeamento.ts`). */
   readonly enderecoDaRota: string | null;
   /**
-   * The snapshot holds an endereço and no cliente, and that endereço is not
-   * stored under the cliente this import resolved (or its owner cannot be
-   * read): the `li-endereco-de-outro-cliente` incidente.
+   * A stored endereço (fiscal or delivery) that does not pair with the cliente
+   * the pedido carries: the `li-endereco-de-outro-cliente` incidente.
    */
-  readonly enderecoDeOutroCliente: boolean;
+  readonly enderecoNaoPareado: EnderecoNaoPareadoLi | null;
 }
 
 /**
- * Step 7's pairing against one snapshot (module header): the cliente and the
- * endereço the pedido will carry may never belong to two different clientes.
- * PURE, and asked of EVERY attempt's snapshot and of the winning one — nothing
- * here is captured before the batch loop.
+ * Step 7's pairing against one snapshot (module header): an endereço the
+ * pedido stores — the fiscal one, or the freight block's delivery one, which
+ * is where a label ships — and the cliente it carries may never belong to two
+ * different clientes. PURE, and asked of EVERY attempt's snapshot and of the
+ * winning one — nothing here is captured before the batch loop.
  *
- *  - A stored cliente is never replaced, nor second-guessed: the endereço is
- *    the stored one, else the one step 7 stored under THAT cliente.
- *  - Nothing stored: the cliente step 7 resolved, and the endereço it stored
- *    under that same cliente.
- *  - A stored endereço and NO stored cliente: the resolved cliente is filled
- *    only when it is the endereço's owner. Otherwise — another owner, an owner
- *    the ref does not let us read, or no cliente resolved — nothing is filled,
- *    the stored endereço stays (never replaced) but routes no freight, exactly
- *    as a pedido without an endereço, and the operator gets an incidente.
+ * The cliente the pedido carries is the stored one (never replaced), else the
+ * one step 7 resolved. Each stored endereço must be stored under THAT cliente,
+ * read through {@link clienteDoEnderecoLi} and {@link clienteCanonicoLi}; a
+ * value either reader cannot read matches nothing. When every stored endereço
+ * pairs: the cliente, the stored fiscal endereço or else the one step 7 stored
+ * under that cliente, and a route to it in canonical form (the freight
+ * schema's). When one does not — another owner, an owner or a cliente nobody
+ * can read, or no cliente at all — the import fails SAFE: no cliente is filled
+ * over it, nothing stored is replaced, no carrier route is filled (exactly as
+ * a pedido without an endereço; a stored route is still never cleared), and
+ * the operator gets the incidente. The one thing still filled is step 7's
+ * fiscal endereço beside a STORED cliente: it is stored under that cliente, so
+ * it pairs.
  */
 export function parClienteEnderecoLi(
   armazenado: PedidoArmazenadoLi | null,
   resolvido: Pick<ClienteResolvidoLi, 'clienteRef' | 'endereco'>,
 ): ParClienteEnderecoLi {
   const clienteArm = refArmazenada(armazenado?.clientePedidoOuterRef);
-  const enderecoArm = refArmazenada(armazenado?.enderecoFiscalOuterRef);
-  /** Step 7's endereço, only beside the cliente it was stored under. */
-  const enderecoResolvidoDe = (cliente: string | null): string | null =>
-    cliente !== null && resolvido.endereco?.clienteRef === cliente ? resolvido.endereco.ref : null;
+  const fiscalArm = refArmazenada(armazenado?.enderecoFiscalOuterRef);
+  const entregaArm = refArmazenada(entregaArmazenada(armazenado));
 
-  if (clienteArm !== null || enderecoArm === null) {
-    const cliente = clienteArm === null ? resolvido.clienteRef : (clienteArm ?? null);
-    const endereco = enderecoArm !== null ? (enderecoArm ?? null) : enderecoResolvidoDe(cliente);
+  // The cliente the pedido carries: the stored one, else the one step 7 resolved.
+  const clienteGuardado = clienteArm !== null;
+  const cliente = clienteGuardado ? (clienteArm ?? null) : resolvido.clienteRef;
+  const clienteLido = clienteCanonicoLi(cliente);
+  /** An endereço is the carried cliente's only when both are read and its path names that cliente. */
+  const doCliente = (endereco: unknown): boolean =>
+    clienteLido !== null && clienteDoEnderecoLi(endereco) === clienteLido;
+  /** Step 7's endereço, only beside the cliente its path names. */
+  const enderecoResolvido =
+    resolvido.endereco !== null && doCliente(resolvido.endereco.ref)
+      ? resolvido.endereco.ref
+      : null;
+
+  const guardados: [UsoEnderecoLi, string | undefined][] = [];
+  if (fiscalArm !== null) guardados.push(['fiscal', fiscalArm]);
+  if (entregaArm !== null) guardados.push(['entrega', entregaArm]);
+  const naoPareados = guardados.filter(([, endereco]) => !doCliente(endereco));
+
+  if (naoPareados.length === 0) {
+    // Every stored endereço pairs; the route goes to the fiscal one in canonical form.
+    const fiscal = fiscalArm !== null ? toOuterRefOrNull(fiscalArm) : enderecoResolvido;
     return {
       clientePedidoOuterRef: cliente,
-      enderecoFiscalOuterRef: endereco,
-      enderecoDaRota: endereco,
-      enderecoDeOutroCliente: false,
-    };
-  }
-
-  // A stored endereço (possibly unreadable: `undefined`) and no stored cliente.
-  const dono = clienteDoEnderecoLi(enderecoArm);
-  const doClienteResolvido =
-    dono !== null &&
-    resolvido.clienteRef !== null &&
-    toOuterRefOrNull(resolvido.clienteRef) === dono;
-  if (doClienteResolvido) {
-    // Read in either stored form; the freight block takes the canonical one its schema accepts.
-    const canonico = toOuterRefOrNull(enderecoArm);
-    return {
-      clientePedidoOuterRef: resolvido.clienteRef,
-      enderecoFiscalOuterRef: canonico,
-      enderecoDaRota: canonico,
-      enderecoDeOutroCliente: false,
+      enderecoFiscalOuterRef: fiscal,
+      enderecoDaRota: fiscal,
+      enderecoNaoPareado: null,
     };
   }
   return {
-    clientePedidoOuterRef: null,
-    enderecoFiscalOuterRef: null,
+    // Fill-once keeps the stored cliente; none is filled over another cliente's endereço.
+    clientePedidoOuterRef: clienteGuardado ? cliente : null,
+    enderecoFiscalOuterRef: fiscalArm !== null || !clienteGuardado ? null : enderecoResolvido,
     enderecoDaRota: null,
-    enderecoDeOutroCliente: true,
+    enderecoNaoPareado: {
+      cliente:
+        clienteLido !== null
+          ? clienteGuardado
+            ? 'armazenado'
+            : 'resolvido'
+          : clienteGuardado
+            ? 'ilegivel'
+            : 'ausente',
+      enderecos: naoPareados.map(([uso, endereco]) => ({
+        uso,
+        donoLegivel: clienteDoEnderecoLi(endereco) !== null,
+      })),
+    },
   };
 }
 
@@ -565,15 +604,14 @@ async function resolverClienteEEnderecoLi(
     }
   }
 
-  // The endereço: while none is stored, under the cliente the pedido will carry.
+  // The endereço: while none is stored, under the cliente the pedido will carry — one
+  // whose ref reads as a cliente (an unreadable stored one owns no endereço).
   let endereco: ClienteResolvidoLi['endereco'] = null;
-  const clienteDoEndereco = clienteArmazenado === null ? clienteRef : (clienteArmazenado ?? null);
-  const clienteId = clienteDoEndereco === null ? null : idDoCliente(clienteDoEndereco);
-  if (
-    refArmazenada(armazenado?.enderecoFiscalOuterRef) === null &&
-    clienteDoEndereco !== null &&
-    clienteId !== null
-  ) {
+  const clienteDoEndereco = clienteCanonicoLi(
+    clienteArmazenado === null ? clienteRef : clienteArmazenado,
+  );
+  if (refArmazenada(armazenado?.enderecoFiscalOuterRef) === null && clienteDoEndereco !== null) {
+    const clienteId = idFromRef(clienteDoEndereco);
     const outcome = enderecoDoPedidoLi(pedido.endereco_entrega);
     if (outcome.kind === 'sem-cep') {
       deps.logger?.warn(`${ROTULO_LOG} endereço sem CEP; pedido sem endereço fiscal por ora`, log);
@@ -591,10 +629,7 @@ async function resolverClienteEEnderecoLi(
         clienteId,
         comRecebedorLi(campos, pedido.endereco_entrega),
       );
-      endereco = {
-        clienteRef: clienteDoEndereco,
-        ref: toOuterRef(enderecoCollection.docPath({ clienteId }, enderecoId)),
-      };
+      endereco = { ref: toOuterRef(enderecoCollection.docPath({ clienteId }, enderecoId)) };
     }
   }
   return { clienteRef, endereco, semIdentidade };
@@ -774,10 +809,17 @@ export async function importarPedidoLi(
   const mapeadoFinal = mapearPedido(gravacao.armazenado);
   // The pairing the WINNING attempt decided from (its snapshot), for the incidente.
   const parFinal = parClienteEnderecoLi(gravacao.armazenado, partes);
-  if (parFinal.enderecoDeOutroCliente) {
+  const naoPareado = parFinal.enderecoNaoPareado;
+  if (naoPareado !== null) {
     deps.logger?.warn(
-      `${ROTULO_LOG} endereço gravado sem cliente e de outro dono; nenhum cliente vinculado, frete sem rota`,
-      log,
+      `${ROTULO_LOG} endereço do pedido de outro dono ou ilegível; nenhum cliente vinculado a ele, frete sem rota`,
+      {
+        ...log,
+        cliente: naoPareado.cliente,
+        enderecos: naoPareado.enderecos.map(
+          (e) => `${e.uso}:${e.donoLegivel ? 'outro' : 'ilegivel'}`,
+        ),
+      },
     );
   }
   registrarDecisoesLi(deps, log, gravacao, mapeadoFinal);
@@ -805,8 +847,14 @@ export async function importarPedidoLi(
     // Step 7 decided from S; the pedido holds what the WINNING attempt kept — a cliente
     // another writer linked meanwhile is no pedido "without a cliente".
     clienteSemIdentidade:
-      partes.semIdentidade && mapeadoFinal.preencherUmaVez.clientePedidoOuterRef === null,
-    enderecoDeOutroCliente: parFinal.enderecoDeOutroCliente,
+      partes.semIdentidade && mapeadoFinal.preencherUmaVez.clientePedidoOuterRef === null
+        ? {
+            comEndereco:
+              refArmazenada(gravacao.armazenado?.enderecoFiscalOuterRef) !== null ||
+              parFinal.enderecoFiscalOuterRef !== null,
+          }
+        : null,
+    enderecoNaoPareado: naoPareado,
     totaisDivergentes:
       itens.divergente ||
       (blocoFinal?.valorDivergente ?? false) ||

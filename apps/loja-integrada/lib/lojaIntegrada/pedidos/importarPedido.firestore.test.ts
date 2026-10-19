@@ -33,7 +33,9 @@
  *  - a stored endereço of ANOTHER cliente on a pedido without one: the real
  *    `findOrCreateCliente` resolves the buyer, and the import still fills no
  *    cliente beside it, routes nothing to it and raises the incidente — while
- *    the same endereço moved under the buyer's own cliente takes both;
+ *    the same endereço moved under the buyer's own cliente takes both; and a
+ *    STORED cliente whose delivery endereço (read from the real nested map) is
+ *    another cliente's takes no route until it is its own;
  *  - the code a batch answers for a document removed since its read under
  *    `lastUpdateTime`; that the CARRIER's precondition holds on a stale
  *    snapshot although its own write would change nothing; and what the carrier
@@ -726,6 +728,56 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     expect(pedido.freteInicial).toMatchObject({
       integracaoFreteOuterRef: `documents/int_frete/${INT_FRETE_LI}`,
       enderecoFreteOuterReference: doComprador,
+    });
+  });
+
+  it('a STORED cliente beside its own fiscal endereço and a DELIVERY endereço of another cliente (read from the real nested map) ⇒ no route, both kept, the incidente; the delivery moved under the cliente ⇒ routed', async () => {
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    const cliente = 'documents/clientes/cliente-ligado-ci';
+    const fiscal = `${cliente}/enderecos/end-fiscal`;
+    const deOutro = 'documents/clientes/cliente-de-outra-pessoa-ci/enderecos/end-entrega';
+    await refPedido().update({
+      clientePedidoOuterRef: cliente,
+      enderecoFiscalOuterRef: fiscal,
+      'freteInicial.enderecoFreteOuterReference': deOutro,
+    });
+
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) })),
+    ).toEqual({ kind: 'importado' });
+    let pedido = (await refPedido().get()).data()!;
+    expect(pedido.clientePedidoOuterRef).toBe(cliente);
+    expect(pedido.enderecoFiscalOuterRef).toBe(fiscal);
+    expect(pedido.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: null,
+      externalOptionId: null,
+      externalOptionData: null,
+      enderecoFreteOuterReference: deOutro,
+      valorCobrado: 14.8,
+    });
+    const incidente = await refPedido()
+      .collection('incidentes')
+      .doc(ID_INCIDENTE_LI.enderecoDeOutroCliente)
+      .get();
+    expect(incidente.data()?.motivoDoIncidente).toContain(
+      'o endereço de entrega é de outro cliente, e não do cliente do pedido',
+    );
+    // The stored cliente: no cliente step ran, so no buyer cliente was created.
+    expect((await db().collection('clientes').get()).empty).toBe(true);
+
+    // The delivery endereço moved under the pedido's own cliente: the empty route fills.
+    await refPedido().update({
+      'freteInicial.enderecoFreteOuterReference': `${cliente}/enderecos/end-entrega`,
+    });
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(4) })),
+    ).toEqual({ kind: 'importado' });
+    pedido = (await refPedido().get()).data()!;
+    expect(pedido.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/${INT_FRETE_LI}`,
+      enderecoFreteOuterReference: `${cliente}/enderecos/end-entrega`,
     });
   });
 

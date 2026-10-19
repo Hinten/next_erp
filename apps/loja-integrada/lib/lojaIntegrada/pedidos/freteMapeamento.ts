@@ -84,9 +84,11 @@
  * routing itself, the `mapa` registration and the aviso still run: they are
  * about the conta's configuration, not this pedido's destination. The
  * operator sets the endereço and the route by hand. The importer hands `null`
- * as well for a stored endereço it cannot pair with the pedido's cliente (one
- * stored under another cliente, or whose owner it cannot read —
- * `importarPedido.ts`, step 7): that endereço is no destination for a label.
+ * as well when an endereço the pedido stores — the fiscal one, or this block's
+ * delivery `enderecoFreteOuterReference`, where a label ships — does not pair
+ * with the pedido's cliente (stored under another cliente, or an owner or a
+ * cliente it cannot read — `importarPedido.ts`, step 7): no label may be
+ * bought to it.
  *
  * The update needs nothing of its own: an absent incoming value never
  * overwrites a stored one, so a route already stored (an operator's, or an
@@ -457,9 +459,9 @@ export interface EntradaFreteLi {
   readonly dataAprovacaoUs: number | null;
   /**
    * The endereço the pedido will carry after this write, or `null` — which
-   * withholds the carrier route (module header, "No endereço, no route"). An
-   * endereço the importer cannot pair with the pedido's cliente arrives as
-   * `null` too.
+   * withholds the carrier route (module header, "No endereço, no route"). A
+   * pedido whose stored fiscal or delivery endereço the importer cannot pair
+   * with its cliente arrives as `null` too.
    */
   readonly enderecoFiscalOuterRef: string | null;
 }
