@@ -477,40 +477,50 @@ describe('the call log (step 2b): both package calls get the logger observer', (
       if (err instanceof Error) expect(err.name.startsWith('Amazon'), caso).toBe(true);
     };
 
-    it('site 2, the SP-API client: every body × status REACHES the request and its line', async () => {
-      for (const status of statuses) {
-        for (const corpo of corpos) {
-          const caso = `${String(status)} ${corpo.slice(0, 12)}`;
-          // A fresh stored token: no refresh, so the matrix hits the REQUEST itself.
-          const { err, chamadas } = await umaChamada({}, (c) =>
-            c.url === URL_TOKEN_LWA ? tokenDeAcesso() : new Response(corpo, { status }),
-          );
-          comoOPacote(err, caso);
-          // Anti-vacuity: the request was sent and the observer wrote ITS line.
-          expect(
-            chamadas.filter((l) => l.destino === 'sp-api' && l.status === status),
-            caso,
-          ).toHaveLength(1);
+    // Each matrix took about 1 s on the CI runner, beside two others that hit the
+    // 5 s default there (#1985); the timeout is CI headroom, not a budget.
+    it(
+      'site 2, the SP-API client: every body × status REACHES the request and its line',
+      { timeout: 30_000 },
+      async () => {
+        for (const status of statuses) {
+          for (const corpo of corpos) {
+            const caso = `${String(status)} ${corpo.slice(0, 12)}`;
+            // A fresh stored token: no refresh, so the matrix hits the REQUEST itself.
+            const { err, chamadas } = await umaChamada({}, (c) =>
+              c.url === URL_TOKEN_LWA ? tokenDeAcesso() : new Response(corpo, { status }),
+            );
+            comoOPacote(err, caso);
+            // Anti-vacuity: the request was sent and the observer wrote ITS line.
+            expect(
+              chamadas.filter((l) => l.destino === 'sp-api' && l.status === status),
+              caso,
+            ).toHaveLength(1);
+          }
         }
-      }
-    });
+      },
+    );
 
-    it('site 1, the LWA refresh: every body × status reaches the refresh and its line', async () => {
-      for (const status of statuses) {
-        for (const corpo of corpos) {
-          const caso = `${String(status)} ${corpo.slice(0, 12)}`;
-          const { err, chamadas } = await umaChamada({ expirationDate: agora }, (c) =>
-            c.url === URL_TOKEN_LWA
-              ? new Response(corpo, { status })
-              : respostaJson(200, { payload: [] }),
-          );
-          comoOPacote(err, caso);
-          expect(
-            chamadas.filter((l) => l.destino === 'lwa' && l.status === status),
-            caso,
-          ).toHaveLength(1);
+    it(
+      'site 1, the LWA refresh: every body × status reaches the refresh and its line',
+      { timeout: 30_000 },
+      async () => {
+        for (const status of statuses) {
+          for (const corpo of corpos) {
+            const caso = `${String(status)} ${corpo.slice(0, 12)}`;
+            const { err, chamadas } = await umaChamada({ expirationDate: agora }, (c) =>
+              c.url === URL_TOKEN_LWA
+                ? new Response(corpo, { status })
+                : respostaJson(200, { payload: [] }),
+            );
+            comoOPacote(err, caso);
+            expect(
+              chamadas.filter((l) => l.destino === 'lwa' && l.status === status),
+              caso,
+            ).toHaveLength(1);
+          }
         }
-      }
-    });
+      },
+    );
   });
 });
