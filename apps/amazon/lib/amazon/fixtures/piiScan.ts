@@ -264,12 +264,32 @@ export const MARKETPLACES_PUBLICOS_AMAZON: ReadonlySet<string> = new Set([
 const algum = (re: RegExp, t: string, aceito: (m: string) => boolean) =>
   [...t.matchAll(re)].some((m) => !aceito(m[0]));
 
+/**
+ * Where a text comes from. In `prosa` (a doc, a PR body: `--verificar`) an
+ * all-letter `A…` run is an English word written in capitals (AUTHORITATIVE,
+ * AUTHORIZATION, ADMINISTRATOR), never an id. A `captura` (a capture's key, leaf
+ * or request line, and every committed fixture through `piiScan`) keeps the
+ * strict shape: a random id of that length has no digit about once in 60, and
+ * there it must fail closed. The owner's own seller id is on the denylist either way.
+ */
+type OrigemDoTextoAmazon = 'captura' | 'prosa';
+const SO_LETRAS = /^[A-Z]+$/;
+
 /** The Amazon-id kinds of `t`: each shape outside its fake range (or the public set). */
-function tiposDeIdAmazon(t: string): TipoAchadoAmazon[] {
+function tiposDeIdAmazon(t: string, origem: OrigemDoTextoAmazon): TipoAchadoAmazon[] {
   const tipos: TipoAchadoAmazon[] = [];
   if (algum(PEDIDO_AMAZON, t, (m) => FORMATO_FALSO_PEDIDO.test(m))) tipos.push('pedido-amazon');
   if (algum(ASIN_B0, t, (m) => FORMATO_FALSO_ASIN.test(m))) tipos.push('asin');
-  if (algum(ID_A, t, (m) => m === SELLER_ID_FALSO || MARKETPLACES_PUBLICOS_AMAZON.has(m))) {
+  if (
+    algum(
+      ID_A,
+      t,
+      (m) =>
+        m === SELLER_ID_FALSO ||
+        MARKETPLACES_PUBLICOS_AMAZON.has(m) ||
+        (origem === 'prosa' && SO_LETRAS.test(m)),
+    )
+  ) {
     tipos.push('id-de-conta');
   }
   if (algum(ID_APLICACAO, t, (m) => FORMATO_FALSO_APLICACAO.test(m))) tipos.push('id-de-aplicacao');
@@ -293,7 +313,7 @@ export function tiposDoTextoAmazon(
     const digitos = digitosVerificados(forma);
     if (digitos !== null) tipos.add(digitos);
     if (ENDERECO.test(forma)) tipos.add('endereco');
-    for (const t of tiposDeIdAmazon(forma)) tipos.add(t);
+    for (const t of tiposDeIdAmazon(forma, 'captura')) tipos.add(t);
   }
   if (lista !== null && contemNomeDeLoja(s, lista)) tipos.add('nome-de-loja');
   return [...tipos];
@@ -314,7 +334,7 @@ export function rotuloDeChave(chave: string, lista: ListaDeNomesAmazon | null): 
   const tipos = tiposMascaradosAmazon(chave, { digitos: true });
   if (tipos.length > 0) return tipos.map(etiquetaDe).join('');
   if (!CHAVE_CONFORME.test(chave)) return '<chave>';
-  if (tiposDeIdAmazon(chave).length > 0) return '<chave>';
+  if (tiposDeIdAmazon(chave, 'captura').length > 0) return '<chave>';
   if (lista !== null && contemNomeDeLoja(chave, lista)) return '<chave>';
   return chave;
 }
@@ -587,7 +607,8 @@ function semEscapesDeString(t: string): string {
  * The kinds one line of a doc, a fixture or a PR-body draft trips: the listed
  * terms and every pattern of layer 2 (bare 11/14 digits only with valid check
  * digits), on the line as written and percent-decoded — and, when it holds a
- * backslash, with its string escapes decoded too. The mandated fakes are skipped.
+ * backslash, with its string escapes decoded too. The mandated fakes are skipped,
+ * and an all-letter `A…` run is a word here (`OrigemDoTextoAmazon`, `prosa`).
  */
 export function tiposNaLinhaAmazon(linha: string, lista: ListaDeNomesAmazon): TipoAchadoAmazon[] {
   const tipos = new Set<TipoAchadoAmazon>();
@@ -597,7 +618,7 @@ export function tiposNaLinhaAmazon(linha: string, lista: ListaDeNomesAmazon): Ti
       const limpa = semFalsosConhecidosAmazon(forma);
       for (const t of tiposMascaradosAmazon(limpa, { digitos: true })) tipos.add(t);
       if (ENDERECO.test(limpa)) tipos.add('endereco');
-      for (const t of tiposDeIdAmazon(limpa)) tipos.add(t);
+      for (const t of tiposDeIdAmazon(limpa, 'prosa')) tipos.add(t);
     }
     if (contemNomeDeLoja(leitura, lista)) tipos.add('nome-de-loja');
   }
