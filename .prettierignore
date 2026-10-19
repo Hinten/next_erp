@@ -9,6 +9,8 @@
 **/playwright-report/
 **/test-results/
 **/e2e/.auth/
+**/cdk.out/
+**/cdk.context.json
 
 # Dependencies & lockfile
 **/node_modules/

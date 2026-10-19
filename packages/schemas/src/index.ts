@@ -527,6 +527,17 @@ export {
   type StatusContaAmazon,
 } from './contaAmazon';
 
+// The Amazon relay ⇄ receiver wire contract (step 3): the key header, the
+// input-template wrapper and the receiver path that `infra/amazon-relay` (the
+// CDK app) and the `apps/amazon` receiver must agree on. Pure constants, not a
+// collection: no meta, nothing to register.
+export {
+  CABECALHO_CHAVE_RELAY_AMAZON,
+  CAMINHO_RECEPTOR_AMAZON,
+  CAMPO_CORPO_RELAY_AMAZON,
+  MODELO_ENTRADA_RELAY_AMAZON,
+} from './relayAmazon';
+
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
 // Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
 // `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the
