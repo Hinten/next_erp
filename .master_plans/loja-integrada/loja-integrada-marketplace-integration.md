@@ -920,11 +920,11 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **Tier 2:** the µs watermark.
   - **Why that is enough:** imports are serialised by the reads queue (`maxConcurrentDispatches: 1`), every other writer only fails our precondition, and an operator's save conflicts through `saveRecord`. No inventory line.
 - **Dry-run/valve:** none (no LI write).
-- **PR split:**
-  - **5-a**, on `main`: the wire schemas and GETs, the paging fix, the situação table, the zone helper, the aviso tipos and their wording, the index, and this text.
-  - **5-b:** the pure mappers and the capture tests.
-  - **5-c:** the importer.
-  - **5-d:** fills the step-3 seam, flips its pins, and updates the docs.
+- **Build (step plan approved 2026-10-14, four PRs; steps 5 and 6 together):**
+  - **5-a** (#1959, merged), on `main`: the wire schemas and GETs, the paging fix, the situação table, the zone helper, the aviso tipos and their wording, the index, and this text.
+  - **5-b** (#1979), on `main` once step 20 merged: the pure mappers (pedido, items, cliente and endereço, freight, pagamentos, the estado verdict, the ids) and the capture tests. It settles the zone of LI's naive stamps as America/Sao_Paulo, and an invalid CNPJ falls back to a valid CPF.
+  - **5-c** (#1990), on 5-b: the importer. The pedido and its pagamentos commit in ONE atomic `WriteBatch`; an order without an endereço gets its freight amount but no carrier route; the emulator suite pins the batch.
+  - **5-d**, on 5-c: fills the step-3 seam with the importer, so the reads queue, both sweeps and the poller run it; flips the step-3 pins (a dispatched task now stops at the read switch, never at `importador-ausente`; the poller passes its importer gate and stops at the switch with zero reads); updates the app docs and `DEPLOY.md`. The read switch stays unset everywhere, so nothing calls LI before the window (D17).
   - **5-r** (optional): refreshes two fixture leaves.
 - **Verification:**
   - **5-a:**
@@ -935,6 +935,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
     - its near-misses: 3 is not `em_processo_aprovacao`; 16 is neither `estornado` nor `em_disputa`; 1019 is not `cancelado`; an unknown codigo is `null`.
   - **5-b:** capture tests on the order, history and payment-catalogue fixtures, plus near-miss pairs for the watermark, the codigo, the history, the refund after a removal, the forma, the money, the modalidade, the cliente, the endereço, the freight, the aviso key, the freeze and the ladder.
   - **5-c:** the importer against fakes and the emulator: precondition losses (any one aborts the whole batch, on the emulator too), `obsoleto` with zero writes, the pre-write parse, a crash before and after the batch, and the step-7 loop. On the emulator also: the code a batch answers for a document removed since its read, and the empty-patch carrier keeping the pedido's update time when its watermark round-trips, beside what it does to one stored as a double.
+  - **5-d:** the step-3 pins flip: the seam holds the importer; a dispatched task with the switch unset defers before any read; the poller passes its importer gate and stops at the switch with zero reads, offline and on the emulator lane (whose poller run binds the gate from the real seam); `toDispositionLi` stays exhaustive over every importer outcome.
   - The `orderIds.test.ts` vectors (§3).
   - **Live import is first seen at the window.**
 - **Timing:** after step 3 (its producer) and step 20 (the mapa helper and the `int_frete` doc it reads).
@@ -950,6 +951,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 
 - **Gate:** `importarPagamento: 'sim'`. **Trigger:** the same Cloud Task as step 5 (no extra LI call). **Docs:** `spec GET /v1/pedido/{pedido_id}`, `spec GET /v1/pagamento`.
 - **Wire:** none beyond step 5's GETs.
+- **Build:** inside step 5's PRs, never a PR of its own: the pagamento mapper in 5-b (#1979), its writes in 5-c's one atomic batch with the pedido (#1990), and the wiring in 5-d.
 - **Mapping:** one `pedidos/{id}/pagamentos/{sha256("integracao/<contaId>-<pagamentos[].id>")}` per `pagamentos[]` entry. Iterate, never take `[0]`. A non-positive or unsafe `pagamentos[].id` is a schema refusal.
   - **`valor = roundReais(valor)`, never `valor_pago`.** `valor_pago` is a copy of the amount due: the captures show it equal to `valor` on an order still awaiting payment.
   - **Forma: `pagamento_tipo` first** (`instantPayment` → 17, `creditCard` → 3, `bankInvoice` → 15). Without it, the exact codigo table (§3). Else 99, with the raw codigo in the description.
@@ -1328,7 +1330,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
   - **How (2026-10-14):** the tabs are the conta `ObjectView`'s own `sections`, over two transient form fields rendered by `renderInput` managers. One "Salvar" commits the conta and its freight doc together: the freight doc is a guarded sibling write (`transactionWrites`) whose baseline is seeded once from server truth, and a later listener emission never moves it. When only a freight tab changed, only the freight doc is written. Both tabs need the conta's write permission and `PERM.frete.write`.
   - **Which doc:** the importer's pick, `escolherIntFreteMaisNovo` with `ativo === true`, over a listener on the 20-a index's equality prefix that reads the docs' raw data (no converter; see the shared chooser above); an inactive-only conta shows a badge, several docs show a warning. **The browser never creates the doc.**
   - **Rows are never added or removed** in the editor. A row is mapped to one of `TIPOS_ALVO_MAPA_FRETE_LI` (melhorEnvios, motoboy, retiradaNaLoja, fob, outros) or cleared ("Nenhum": `integracaoUid` null, target tipo `outros`). A Melhor Envio target also needs a service, listed by a new `apps/melhor-envio` route, `/api/freight/melhor-envio/servicos`, through the freight client. If the route answers 404 (an older backend) the select degrades: it keeps the stored service visible and blocks picking a new one.
-  - **Targets:** import routes only melhorEnvios, motoboy and retiradaNaLoja targets (step 5). fob and outros remain selectable for label-time routing; at import they raise the step-5 aviso without failing.
+  - **Targets:** import routes only melhorEnvios, motoboy and retiradaNaLoja targets (step 5). fob and outros remain selectable for label-time routing; at import an order mapped to one routes to the conta's LI doc, without an aviso (a deliberate mapping; step 15 routes it at label time).
 - **PRs (2026-10-14):** 20-a the schemas, the chooser, the index, the core's LI coverage, the `/logistica` exclusion and this text; 20-b the window pass; 20-c the Melhor Envio service list; 20-d the conta-screen tabs; 20-e the mapa helper; 20-f the trigger and its plumbing. 20-a and 20-c are based on `main`; 20-b and 20-d on 20-a, retargeted to `main` once it merges; 20-e (based on `main` once the step-3 stack merged) and 20-f (on 20-e) need the app's functions codebase and its emulator lane.
 - **Timing:** before step 5, which reads the doc and calls the helper.
 - **Does NOT:** register anything at LI; write sync logic, a watermark or an event clock of its own; edit `packages/schemas/src/shared/frete.ts`, `packages/schemas/src/integracao.ts` or `FREIGHT_TIPO_CAPS` (step 15); regenerate a ruleset; offer `mapa` row add or delete in the UI.
@@ -1451,8 +1453,8 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 6. **Step 3** (#1830): poller + pipeline + queues (+ tasks emulator config).
 7. **Step 20** (#1826): int_frete sync + mapa helper (step 5's freight mapping depends on it).
 8. **Steps 5 + 6** (#1817, #1818): order/payment import in four PRs.
-   - **5-a**, on `main`: wire schemas and GETs, the paging fix, the situação table, the zone helper, the aviso tipos, the index and the step text.
-   - Then, stacked on step 20's last PR: **5-b** (pure mappers and capture tests) → **5-c** (the importer) → **5-d** (wiring and docs).
+   - **5-a** (#1959, merged), on `main`: wire schemas and GETs, the paging fix, the situação table, the zone helper, the aviso tipos, the index and the step text.
+   - Then, on `main` once step 20 merged: **5-b** (#1979: pure mappers and capture tests) → **5-c** (#1990: the importer) → **5-d** (wiring and docs: the seam filled, the pins flipped).
    - An optional **5-r** refreshes two fixture leaves.
    - The estado table is frozen on the §1.2 item 14 capture (C3).
 9. **Step 15** (#1825): label routing + checkout re-check + `FREIGHT_TIPO_CAPS`.

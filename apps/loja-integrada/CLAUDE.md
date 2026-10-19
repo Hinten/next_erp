@@ -210,8 +210,9 @@ still be fixed. Only the context loader refuses those.
   `notificacoesLojaIntegrada` (bare schema, ids only, unknown keys stripped). ONE reads
   queue, `filaLeituraLojaIntegrada` (= the function name), dispatching on `tipo`.
 - A run: the context (switch, conta, credential), then the importer SEAM
-  (`DESTINO_TIPO_LI`, empty until step 5 ⇒ `importador-ausente` PARKS). Only the functions
-  roots read `importadorPedidoLi()`; `lib` takes `deps.importador`.
+  (`DESTINO_TIPO_LI`, filled in step 5 with `importarPedidoLi`; an empty one ⇒
+  `importador-ausente` PARKS). Only the functions roots read `importadorPedidoLi()`; `lib`
+  takes `deps.importador`.
 - Classifier: the app refusals (switch off, inactive, token missing/corrupt, parked)
   DEFER; conta gone DROPS; `LiAuthError` parks the conta (`tratarFalhaDeAutenticacao`) and
   defers, or rethrows when the 401 was for an older token; 404 parks; a non-transient
@@ -249,10 +250,11 @@ still be fixed. Only the context loader refuses those.
   and `orcamentoPoll.ts` are its pure date, window and budget layer. The root
   `functions/src/pollPedidos.ts` (`pollLojaIntegradaPedidos`, `*/5`, 300 s) binds every
   dependency: `importadorPresente = importadorPedidoLi() !== null`, the parsed look-back.
-- Two gates, each with ZERO reads: the empty importer seam (until step 5), then the read
-  switch. Contas run one after another, the list ROTATED by the tick's 5-minute slot
-  (`ordemDoTickLi`), so a `sem-tempo` conta runs first on a later tick instead of
-  starving behind the same ones forever. Containment per conta is a gRPC error, or a
+- Two gates, each with ZERO reads: the importer seam (filled in step 5, so a tick passes
+  it), then the read switch (unset until the window, so every tick stops there). Contas
+  run one after another, the list ROTATED by the tick's 5-minute slot (`ordemDoTickLi`),
+  so a `sem-tempo` conta runs first on a later tick instead of starving behind the same
+  ones forever. Containment per conta is a gRPC error, or a
   hand-edited poll document that no longer parses (`documento-invalido`, a WARNING,
   nothing written), ONLY.
 - `pollPedidosLojaIntegrada/{id}` is written only under preconditions: the lease
@@ -301,6 +303,31 @@ still be fixed. Only the context loader refuses those.
   `ZodError` would park the task), never merge-`set`s (that would resurrect a removed doc), and
   logs ids only. `deps.arrayUnion` is `FieldValue.arrayUnion` in production, the fake's
   sentinel in tests.
+
+## Order import (steps 5–6)
+
+- `pedidos/importarPedido.ts` fills the step-3 seam: the queue and both sweeps run it, the
+  poller passes its importer gate. The context still refuses first while the read switch
+  is off, so a run DEFERS before any read and nothing calls Loja Integrada (D17). Every
+  rule lives in the pure mappers beside it.
+- One run: the detail, the paged situação history (strict on queue attempts 0–1, degraded
+  after), the pedido snapshot, the hub guard, produtos, freight, cliente and endereço, then
+  ONE atomic `WriteBatch`: the pedido and every pagamento, each under its own precondition.
+  A lost one aborts the whole batch; up to 3 attempts re-derive from fresh reads, then
+  `LiPedidoEmConflitoError` retries the task. Every deterministic refusal comes first.
+- Every importer outcome RESOLVES: `importado`, `sem-mudanca`, `obsoleto` (a strictly newer
+  stored stamp: it writes NOTHING, avisos included), `hub` (no pedido or pagamento, an
+  aviso), `situacao-desconhecida`. Schema and Zod refusals park; a history hole on attempts
+  0–1 retries.
+- Estado and payment status come from the situação codigo through one shared table, never
+  from the situação flags. The stamp is LI's naive time, read once by `dataLiParaMicros`
+  in the settled zone (Layout rules).
+- The buyer is the fiscal identity: a valid CNPJ, else a valid CPF (an invalid CNPJ falls
+  back to it), never the recipient's document. No endereço ⇒ the freight amount and
+  modalidade but no carrier route; a stored route is never cleared.
+- Avisos and incidentes run after the batch, on `importado` and `sem-mudanca` alike, so a
+  retry after a crash still writes them.
+- The emulator suite `pedidos/importarPedido.firestore.test.ts` (CI below) pins the batch.
 
 ## CI (steps 3 and 20)
 

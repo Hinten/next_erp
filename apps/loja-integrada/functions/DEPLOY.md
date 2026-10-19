@@ -21,22 +21,28 @@ is a **migration-window** step (root `CLAUDE.md` rule 8, ADR 0013): the
 production data has not moved, the legacy app is still the sole writer of the
 real orders, and nothing here may read or write them first.
 
-Two switches keep it harmless even if it were deployed early, and both stay
-exactly as they are until the window:
+ONE switch keeps the order flow harmless even if it were deployed early, and it
+stays exactly as it is until the window:
 
 - **The read switch `LOJA_INTEGRADA_CHAMADAS` stays UNSET.** Only the exact `on`
   lets this code call Loja Integrada at all; the context loader refuses before
   any Firestore read and before it builds a client. There is no sandbox on the
   platform's side and the origin is fixed, so a call is always a live one (D17).
-- **The importer seam is empty.** The reads queue's task has no importer yet
-  (master-plan step 5), so a task parks as `importador-ausente` and the order
-  poller refuses to run while the seam is empty. Nothing in this codebase turns
-  a notification into a `pedido` before step 5.
 
-⚠️ **The conta trigger stands outside both switches.**
+⚠️ **The importer seam is FILLED (master-plan step 5), so the switch is the only
+gate left.** The reads queue's task and both sweeps run the order import, which
+writes `pedidos`, their `pagamentos`, `clientes`, `enderecos`, incidentes,
+avisos and the `int_frete` `mapa`; the order poller passes its importer gate.
+With the switch unset every one of those runs stops at the context first: a
+task DEFERS (`adiado/chamadas-desligadas`) before any Firestore read, and a
+poller tick stops at the switch with zero reads. So nothing in this codebase
+turns a notification into a `pedido` until the window sets the switch — and
+once it does, the queued and deferred notifications drain into the import.
+
+⚠️ **The conta trigger stands outside the switch.**
 `onIntegracaoLojaIntegradaChanged` (master-plan step 20) makes no Loja Integrada
-call, so the read switch does not gate it, and it imports nothing, so the empty
-seam does not either. Deployed into a project, it writes that project's
+call, so the read switch does not gate it, and it is not a reads-queue run, so
+the importer does not either. Deployed into a project, it writes that project's
 `int_frete` on every Loja Integrada conta save that moves a mirrored field —
 create, patch or deactivate. That is why this deploy waits for the window's
 `int_frete` adoption pass (Prerequisites below).
@@ -64,14 +70,27 @@ create, patch or deactivate. That is why this deploy waits for the window's
   binding.
 - **The `int_frete` index READY, and the adoption pass run, before this
   deploy.** The trigger's lookup rides
-  `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)`;
-  on Enterprise a missing index does not fail, it full-scans and bills the scan.
+  `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)`,
+  and so does the order import's freight read (its equality prefix, active docs
+  only); on Enterprise a missing index does not fail, it full-scans and bills the
+  scan.
   And an import fires no trigger, so the window's adoption pass
   (`tools/migrations/li-int-frete.README.md`, master plan §5 item 11) must have
   run and its dry run report zero `duplicados`, `nao-canonico` and
   `compartilhado` rows first: the trigger has no tolerant scan, so a conta's
   first save would otherwise create `lojaIntegrada-<integracaoId>` beside a
-  migrated doc whose back-ref is not canonical.
+  migrated doc whose back-ref is not canonical. The order import reads the same
+  doc to route freight, so before that pass an imported order finds none and is
+  left unrouted (#1960 tracks the pass).
+- **The order import's link index READY before this deploy.** Resolving an
+  order line to its ERP produto queries the collection group
+  `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` with every stored form
+  of the conta reference; without it Enterprise full-scans every produto's link
+  docs on each line, and bills the scan.
+- **`apps/web` in the same rollout or before.** The import raises four aviso
+  tipos (`lojaIntegradaSituacaoDesconhecida`, `lojaIntegradaPedidoContestado`,
+  `lojaIntegradaPedidoHub`, `lojaIntegradaFreteNaoSuportado`); a web build older
+  than them has no wording for those rows.
 - **Region match.** The functions enqueue onto the queue in their own region. The
   enqueuer resolves it from `LOJA_INTEGRADA_TASKS_REGION ?? FUNCTIONS_REGION`,
   and there is **no default** — an unset value THROWS on the first enqueue rather
@@ -127,7 +146,7 @@ are local builds; neither deploys anything.
 | `filaLeituraLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | The ONE reads queue of the channel (order intake now; the import-job and reconcile reads join it later). The body dispatches on the task's `tipo`: `pedido` runs one notification through the pipeline, any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, `retryConfig` 3 attempts with 60 s → 300 s backoff and one doubling, `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesLojaIntegrada` only on retry-exhaustion, park or defer.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `reprocessLojaIntegradaNotifications` | `onSchedule('*/30 * * * *')`           | The backstop, draining BOTH lanes on one tick (`limit 10` each): `failed` notifications older than the hot window, then the deferred lane (a parked conta, an inactive conta, a missing credential, the switch off). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`. `America/Sao_Paulo`, `timeoutSeconds 540`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `sweepLojaIntegradaTokenExpiry`       | `onSchedule('30 6 * * *')`             | The DAILY token-expiry sweep: raises the expiry and reconnection avisos at the 30-day horizon, resolves them once a new date or credential lands, and closes the orphaned rows of contas that no longer exist. Reads only the stored credential — **no Loja Integrada call**, so the read switch does not gate it. `America/Sao_Paulo`, `timeoutSeconds 120`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `pollLojaIntegradaPedidos`            | `onSchedule('*/5 * * * *')`            | The 5-minute order poller, behind TWO gates that each stop a tick with zero reads: the importer seam (empty until master-plan step 5) and the read switch. Per active conta, one after another, starting from a different conta each tick (220 s per tick, at most 100 s per conta): a single-flight lease and a durable cursor on `pollPedidosLojaIntegrada/{id}`, `GET /v1/pedido/search/` paced at the reads interval (at most 20 pages), one synthetic notification per changed order onto the reads queue (persisted `failed` instead in sweep-only mode). A refusal or a stuck window is counted on the same document and raises the `critico` aviso `lojaIntegradaImportacaoParada`. Reads `LOJA_INTEGRADA_POLL_LOOKBACK_H`. `America/Sao_Paulo`, `timeoutSeconds 300`.                                                                                                                                                                                                                                                                                                                                                             |
+| `pollLojaIntegradaPedidos`            | `onSchedule('*/5 * * * *')`            | The 5-minute order poller, behind TWO gates that each stop a tick with zero reads: the importer seam (filled in master-plan step 5, so it passes) and the read switch. Per active conta, one after another, starting from a different conta each tick (220 s per tick, at most 100 s per conta): a single-flight lease and a durable cursor on `pollPedidosLojaIntegrada/{id}`, `GET /v1/pedido/search/` paced at the reads interval (at most 20 pages), one synthetic notification per changed order onto the reads queue (persisted `failed` instead in sweep-only mode). A refusal or a stuck window is counted on the same document and raises the `critico` aviso `lojaIntegradaImportacaoParada`. Reads `LOJA_INTEGRADA_POLL_LOOKBACK_H`. `America/Sao_Paulo`, `timeoutSeconds 300`.                                                                                                                                                                                                                                                                                                                                                 |
 | `onIntegracaoLojaIntegradaChanged`    | `onDocumentWritten` (Firestore)        | Master-plan step 20 — the codebase's FIRST Firestore trigger, on `integracao/{integracaoId}`. Keeps each Loja Integrada conta's `int_frete` doc (tipo `lojaIntegrada`) in step with the conta through the shared core `@delfrance/data/admin/frete`: adopt the migrated doc by `contaLojaIntegradaEnviosOuterRef`, else create `lojaIntegrada-<integracaoId>`; patch only the mirrored fields that moved (`nome`, `ativo`, the filial, `dataCadastro`), never `mapa` or `horarioDeCorte`; deactivate, never delete, once the conta is gone or no longer Loja Integrada. State-driven: the core re-reads the conta itself, so a replayed or out-of-order delivery cannot roll anything back. EVERY channel's conta write reaches it, and it returns with ZERO reads unless the conta is, or was, Loja Integrada and the write moved a mirrored field (or the tipo, or created or deleted the conta). Logs the conta id and the action with field names, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing), no Loja Integrada call. No per-function `region:`. |
 
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
@@ -445,8 +464,9 @@ flipped:
    `roles/iam.serviceAccountUser` for each of them (grant 2, which no deploy
    makes).
 3. The Firestore index `notificacoesLojaIntegrada (status, processedAt)` and
-   `(status, contaId)` are READY, and so is
+   `(status, contaId)` are READY, and so are
    `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)`
+   and the collection group `produtolojaintegrada (contaLojaIntegrada, id)`
    (checked before the deploy, see Prerequisites): on Enterprise a missing index
    does not fail, it full-scans and bills the scan.
 4. The console lists `onIntegracaoLojaIntegradaChanged` as a Firestore trigger on
@@ -467,8 +487,8 @@ flipped:
    mirrored field writes nothing by design, and right after the adoption pass's
    `--apply` every adopted doc is already in step.
 
-5. The first poller tick (once the importer seam is filled in step 5 and the
-   read switch is on) asks for orders modified since a moment AT OR BEFORE the
+5. The first poller tick (once the read switch is on; the importer seam is
+   filled since step 5) asks for orders modified since a moment AT OR BEFORE the
    legacy app's last import — a later start would leave a gap — every active
    conta has a `pollPedidosLojaIntegrada` document, and no
    `lojaIntegradaImportacaoParada` aviso is open.
