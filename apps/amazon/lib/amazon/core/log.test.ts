@@ -559,36 +559,44 @@ describe('★ totality: the observer never throws (the code exchange runs it aft
   ] as const;
   const statuses = [200, 302, 400, 401, 403, 404, 429, 500, 503, null];
 
-  it('over bodies × resultado × status × destino (a non-throwing logger)', () => {
-    let linhas = 0;
-    const logger = {
-      info: () => {
-        linhas += 1;
-      },
-      warn: () => {
-        linhas += 1;
-      },
-      error: () => {
-        linhas += 1;
-      },
-    };
-    const observar = criarObservadorAmazon({ logger, conta: CONTA, fluxo: 'oauth-callback' });
-    let n = 0;
-    for (const corpo of corpos) {
-      for (const resultado of resultados) {
-        for (const status of statuses) {
-          for (const destino of ['sp-api', 'lwa'] as const) {
-            expect(() => {
-              observar(eventoDeChamada({ corpo, resultado, status, destino }));
-            }).not.toThrow();
-            n += 1;
+  // ⚠️ 2,400 observations, ~140 of them walking a 1 MiB body: about 4 s on a
+  // workstation but 42 s on the CI runner, where turbo runs every workspace's
+  // suite at once (#1985). The timeout is CI headroom, not a budget: the cost
+  // of one walk is pinned on CPU time below.
+  it(
+    'over bodies × resultado × status × destino (a non-throwing logger)',
+    { timeout: 120_000 },
+    () => {
+      let linhas = 0;
+      const logger = {
+        info: () => {
+          linhas += 1;
+        },
+        warn: () => {
+          linhas += 1;
+        },
+        error: () => {
+          linhas += 1;
+        },
+      };
+      const observar = criarObservadorAmazon({ logger, conta: CONTA, fluxo: 'oauth-callback' });
+      let n = 0;
+      for (const corpo of corpos) {
+        for (const resultado of resultados) {
+          for (const status of statuses) {
+            for (const destino of ['sp-api', 'lwa'] as const) {
+              expect(() => {
+                observar(eventoDeChamada({ corpo, resultado, status, destino }));
+              }).not.toThrow();
+              n += 1;
+            }
           }
         }
       }
-    }
-    expect(linhas).toBe(n);
-    expect(Object.prototype).not.toHaveProperty('polui');
-  });
+      expect(linhas).toBe(n);
+      expect(Object.prototype).not.toHaveProperty('polui');
+    },
+  );
 
   it('a path that is not a string (cast at run time) — a null-prototype object, a throwing toString — never throws, and logs as unknown', () => {
     const caminhos: unknown[] = [
@@ -655,6 +663,8 @@ describe('★ totality: the observer never throws (the code exchange runs it aft
       return `{"orders":[${partes.join(',')}]}`;
     }
 
+    // The 1 s is the plan's CPU budget and holds on the CI runner; only the wall
+    // clock (building the page, a shared core) needs headroom there (#1985).
     it.each([
       ['~170k keys', (i: number) => ({ a: i, b: 1, c: 2, d: 3, e: 4 })],
       [
@@ -664,7 +674,7 @@ describe('★ totality: the observer never throws (the code exchange runs it aft
           orderItems: [{ product: { sellerSku: `SKU-${String(i)}` }, quantityOrdered: 1 }],
         }),
       ],
-    ])('%s', (_c, item) => {
+    ])('%s', { timeout: 30_000 }, (_c, item) => {
       const corpo = pagina(item);
       expect(bytesUtf8(corpo)).toBeLessThanOrEqual(LIMITE_ANALISE_BYTES.log);
       const inicio = process.cpuUsage();

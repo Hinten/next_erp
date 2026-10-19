@@ -904,19 +904,37 @@ describe('the regex layer, per leaf, on decoded strings', () => {
     }
   });
 
-  it('linear: 1 MiB of "@" with no domain is scanned in under 1 s', () => {
+  // What these catch is a quadratic scan or a backtracking regex: on 1 MiB that
+  // costs minutes, so a 5 s bound still fails it by orders of magnitude. CPU
+  // time, not wall clock: the CI runner shares its cores with every other
+  // workspace's suite, and a 1 s wall-clock bound read 1.45 s there (#1985).
+  const LIMITE_CPU_LINEAR_MS = 5_000;
+  function cpuMs(f: () => void): number {
+    const inicio = process.cpuUsage();
+    f();
+    const cpu = process.cpuUsage(inicio);
+    return (cpu.user + cpu.system) / 1000;
+  }
+
+  it('linear: 1 MiB of "@" with no domain is scanned in linear time', { timeout: 30_000 }, () => {
     const t = '@'.repeat(1024 * 1024);
-    const inicio = performance.now();
-    expect(mascararTexto(t, { digitos: true }).mascarados).toBe(0);
-    expect(performance.now() - inicio).toBeLessThan(1000);
+    const ms = cpuMs(() => {
+      expect(mascararTexto(t, { digitos: true }).mascarados).toBe(0);
+    });
+    expect(ms).toBeLessThan(LIMITE_CPU_LINEAR_MS);
   });
 
-  it('linear: 1 MiB of "http://" with no query is scanned in under 1 s', () => {
-    const t = 'http://'.repeat(150_000);
-    const inicio = performance.now();
-    expect(mascararTexto(t, { digitos: true }).mascarados).toBe(0);
-    expect(performance.now() - inicio).toBeLessThan(1000);
-  });
+  it(
+    'linear: 1 MiB of "http://" with no query is scanned in linear time',
+    { timeout: 30_000 },
+    () => {
+      const t = 'http://'.repeat(150_000);
+      const ms = cpuMs(() => {
+        expect(mascararTexto(t, { digitos: true }).mascarados).toBe(0);
+      });
+      expect(ms).toBeLessThan(LIMITE_CPU_LINEAR_MS);
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1414,41 +1432,47 @@ describe('mechanics', () => {
     expect(placeholderDeDocumento(pontuarCnpj(CNPJ))).not.toBe(placeholderDeDocumento(CNPJ));
   });
 
-  it('totality: the redactor never throws, in either profile, over the hostile bodies', () => {
-    const hostis = [
-      `{"a":"${'x'.repeat(LIMITE_ANALISE_BYTES.log)}"}`,
-      '['.repeat(10_000) + ']'.repeat(10_000),
-      '{"a":"\\ud800\\udfff\\ud800"}',
-      '𐀀�',
-      '{"n":1e400,"m":-0,"g":12345678901234567890}',
-      '{"__proto__":{"x":1},"constructor":{"prototype":1}}',
-      '"escalar"',
-      '',
-      'null',
-      '[]',
-      '{}',
-    ];
-    const caminhos = [
-      GET_ORDER,
-      SEARCH,
-      RDT,
-      DESCONHECIDO,
-      NOTIFICACAO_ORDER_CHANGE,
-      BULK,
-      PACOTE,
-      '',
-      'x',
-    ];
-    for (const corpo of hostis) {
-      for (const caminho of caminhos) {
-        for (const status of [200, 204, 302, 400, 401, 404, 429, 500, null]) {
-          expect(() => log(caminho, status, corpo)).not.toThrow();
-          expect(() => fixture(caminho, status, corpo)).not.toThrow();
-          expect(() => redigirCaminhoEQuery(caminho, [['%zz', '%E0%A4%A']], 'log')).not.toThrow();
+  // ⚠️ About 3 s on a workstation but 25 s on the CI runner, where turbo runs
+  // every workspace's suite at once (#1985): the timeout is CI headroom.
+  it(
+    'totality: the redactor never throws, in either profile, over the hostile bodies',
+    { timeout: 120_000 },
+    () => {
+      const hostis = [
+        `{"a":"${'x'.repeat(LIMITE_ANALISE_BYTES.log)}"}`,
+        '['.repeat(10_000) + ']'.repeat(10_000),
+        '{"a":"\\ud800\\udfff\\ud800"}',
+        '𐀀�',
+        '{"n":1e400,"m":-0,"g":12345678901234567890}',
+        '{"__proto__":{"x":1},"constructor":{"prototype":1}}',
+        '"escalar"',
+        '',
+        'null',
+        '[]',
+        '{}',
+      ];
+      const caminhos = [
+        GET_ORDER,
+        SEARCH,
+        RDT,
+        DESCONHECIDO,
+        NOTIFICACAO_ORDER_CHANGE,
+        BULK,
+        PACOTE,
+        '',
+        'x',
+      ];
+      for (const corpo of hostis) {
+        for (const caminho of caminhos) {
+          for (const status of [200, 204, 302, 400, 401, 404, 429, 500, null]) {
+            expect(() => log(caminho, status, corpo)).not.toThrow();
+            expect(() => fixture(caminho, status, corpo)).not.toThrow();
+            expect(() => redigirCaminhoEQuery(caminho, [['%zz', '%E0%A4%A']], 'log')).not.toThrow();
+          }
         }
       }
-    }
-  });
+    },
+  );
 
   it('an own __proto__ key is just a key in the output', () => {
     const s = logJson(DESCONHECIDO, 200, JSON.parse('{"__proto__":{"x":1}}') as unknown);
