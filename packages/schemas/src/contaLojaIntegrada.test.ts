@@ -252,6 +252,38 @@ describe('CODIGO_ERRO_LI', () => {
     expect(CODIGO_ERRO_LI.chamadasDesligadas).toBe('LI_CHAMADAS_DESLIGADAS');
     expect(CODIGO_ERRO_LI.chamadasDesligadas).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
   });
+
+  it('the pedidos routes’ codes are pinned to their wire strings (step 15, #1825)', () => {
+    // The web's two decision tables key on these strings — a block, a confirm or a
+    // retry each — so a rename here changes what an operator is allowed to do.
+    expect({
+      pedidoNaoEncontrado: CODIGO_ERRO_LI.pedidoNaoEncontrado,
+      pedidoAusenteNaLoja: CODIGO_ERRO_LI.pedidoAusenteNaLoja,
+      pedidoDivergente: CODIGO_ERRO_LI.pedidoDivergente,
+      limiteDeChamadas: CODIGO_ERRO_LI.limiteDeChamadas,
+      tempoEsgotadoLoja: CODIGO_ERRO_LI.tempoEsgotadoLoja,
+      lojaIndisponivel: CODIGO_ERRO_LI.lojaIndisponivel,
+      rotaEmConflito: CODIGO_ERRO_LI.rotaEmConflito,
+    }).toEqual({
+      pedidoNaoEncontrado: 'LI_PEDIDO_NAO_ENCONTRADO',
+      pedidoAusenteNaLoja: 'LI_PEDIDO_AUSENTE_NA_LOJA',
+      pedidoDivergente: 'LI_PEDIDO_DIVERGENTE',
+      limiteDeChamadas: 'LI_LIMITE_DE_CHAMADAS',
+      tempoEsgotadoLoja: 'LI_TEMPO_ESGOTADO_LOJA',
+      lojaIndisponivel: 'LI_LOJA_INDISPONIVEL',
+      rotaEmConflito: 'LI_ROTA_EM_CONFLITO',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: the three 503s stay distinct — a retry, a retry, and "off until the cutover"', () => {
+    const tresCodigos = [
+      CODIGO_ERRO_LI.rotaEmConflito,
+      CODIGO_ERRO_LI.limiteDeChamadas,
+      CODIGO_ERRO_LI.chamadasDesligadas,
+    ];
+    expect(new Set(tresCodigos).size).toBe(3);
+    expect(CODIGO_ERRO_LI.rotaEmConflito).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
+  });
 });
 
 describe('barrel', () => {

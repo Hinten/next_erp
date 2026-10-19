@@ -1554,6 +1554,7 @@ export * from './mapaFreteLojaIntegrada';
 // that route. Not collections, so no `registry.ts` entry; outside `pedido/` and
 // `shared/frete.ts`, so no NF-e live run. Star exports, for the same raw-text
 // reason as above.
+export * from './conferenciaPagamentoLojaIntegrada';
 export * from './rotaEtiquetaLojaIntegrada';
 export * from './faseRetirada';
 
