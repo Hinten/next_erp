@@ -222,6 +222,20 @@
       ]
     },
     {
+      "collectionGroup": "notificacoesAmazon",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesWhatsapp",
       "queryScope": "COLLECTION",
       "fields": [

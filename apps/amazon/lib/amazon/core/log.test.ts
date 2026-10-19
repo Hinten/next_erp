@@ -369,6 +369,22 @@ describe('registrarEventoAmazon', () => {
     expect(linhas[0]?.nivel).toBe('info');
   });
 
+  it.each(['tarefa', 'varredura'] as const)(
+    'step 3 adds `%s`: written as given, with its envelope',
+    (evento) => {
+      const { logger, linhas } = loggerEspiao();
+      registrarEventoAmazon(logger, evento, 'INFO', 'm', { x: 1 }, { fluxo: 'intake' });
+      expect(linhas[0]?.meta).toEqual({ x: 1, evento, fluxo: 'intake' });
+    },
+  );
+
+  it('an evento outside the closed set is <invalido> (near-miss of the two step-3 names)', () => {
+    const { logger, linhas } = loggerEspiao();
+    registrarEventoAmazon(logger, 'tarefas' as never, 'INFO', 'm', {});
+    registrarEventoAmazon(logger, 'notificacao' as never, 'INFO', 'm', {});
+    expect(linhas.map((l) => l.meta?.evento)).toEqual([INVALIDO, INVALIDO]);
+  });
+
   it('is never a call line: a cast `chamada` becomes <invalido>, and a trechoCorpo campo is dropped', () => {
     const { logger, linhas } = loggerEspiao();
     registrarEventoAmazon(logger, 'chamada' as never, 'INFO', 'm', {

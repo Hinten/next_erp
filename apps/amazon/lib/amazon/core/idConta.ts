@@ -2,7 +2,13 @@
  * The conta-id grammar, in ONE light module: the routes, the callback, the
  * logger's envelope (`log.ts`) and step 2b's canary lists (`valvulas.ts`) all
  * check an id with it. `core/contas.ts` imports it back and re-exports it, so
- * there is exactly one copy and it cannot drift.
+ * this app holds one copy.
+ *
+ * ⚠️ The grammar is restated ONCE outside the app, as `CONTA_ID_AMAZON_REGEX` in
+ * `packages/schemas/src/notificacaoAmazon.ts` (the task payload's `contaId`): a
+ * package cannot import an app, and this module imports nothing.
+ * `notificacoes/notificacao.test.ts` pins the two sources and flags equal, so a
+ * change here must change both.
  *
  * No import at all: `contas.ts` reaches the collections handle and Firestore,
  * and the logger's closure must not (`estrutura.test.ts`).

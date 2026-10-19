@@ -431,6 +431,56 @@ function mensagensLogadas(arquivo: string, texto: string): string[] {
   return achados;
 }
 
+/* ------------------------ step 3: the seller id, the SDK ------------------------ */
+
+/**
+ * The seller id under each of its five spellings: ours (`sellerId`), the stored
+ * field (`selling_partner_id`), the push's (`SellerId`), and the local the OAuth
+ * callback and the vínculo code name it by (`sellingPartnerId`,
+ * `SellingPartnerId`). The `\b` keeps a longer name (`sellingPartnerIdValido`,
+ * `contasPorSellingPartnerId`) out.
+ */
+const NOME_DE_SELLER_ID =
+  /\b(?:sellerId|SellerId|selling_partner_id|sellingPartnerId|SellingPartnerId)\b/;
+
+/**
+ * Logger calls whose argument list names the seller id (step 3): a seller id is
+ * never logged — by value, by key, or as a word in the message. The
+ * `.message` scan's shape: every way a line is written, read to the matching
+ * `)`, an unbalanced call to the end of the text (fail closed).
+ */
+function sellersLogados(arquivo: string, texto: string): string[] {
+  const achados: string[] = [];
+  for (const m of texto.matchAll(CHAMADA_DE_LOG)) {
+    const abre = m.index + m[0].length - 1;
+    const fim = fimDaChamada(texto, abre);
+    const argumentos = texto.slice(abre, fim === -1 ? texto.length : fim + 1);
+    if (NOME_DE_SELLER_ID.test(argumentos))
+      achados.push(`${arquivo}: ${m[0]} at ${String(m.index)}`);
+  }
+  return achados;
+}
+
+/** The ONE production module under `lib/amazon` that may import the Cloud Tasks SDK. */
+const IMPORTADOR_DO_SDK_DE_TAREFAS = 'notificacoes/agendador.ts';
+
+/**
+ * Of `fontes` (paths relative to `lib/amazon`, with their text), the PRODUCTION
+ * files that import `firebase-admin/functions` (type-only included: fail
+ * closed). Tests and `testing/**` are exempt — `testing/falhaDeEnfileiramento.ts`
+ * must build the SDK's own classes.
+ */
+function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])[]): string[] {
+  return fontes
+    .filter(([caminho]) => !ehTeste(caminho) && !caminho.startsWith('testing/'))
+    .filter(([, texto]) => especificadores(texto).includes('firebase-admin/functions'))
+    .map(([caminho]) => caminho)
+    .sort();
+}
+
+/** A CALL of the Admin SDK's `getFunctions` (comments aside): only a composition root binds the queue. */
+const chamaGetFunctions = (texto: string) => /\bgetFunctions\s*\(/.test(semComentarios(texto));
+
 /* -------------------------------- the pinned lines -------------------------------- */
 
 const INVENTARIO = 'apps/amazon/lib/amazon/testing/especificacaoFolhas.json';
@@ -464,9 +514,13 @@ describe('lib/amazon layout', () => {
         'core/log.ts',
         'core/redacao.ts',
         'core/refCredencial.ts',
+        'core/renovacaoUnica.ts',
         'core/respond.ts',
         'core/valvulas.ts',
+        'notificacoes/agendador.ts',
+        'notificacoes/notificacao.ts',
         'testing/documentos.ts',
+        'testing/falhaDeEnfileiramento.ts',
         'testing/fakeDb.ts',
         'testing/fakeOauthState.ts',
         'testing/fixtures.ts',
@@ -645,6 +699,48 @@ describe('the step-2b logger guards', () => {
     expect(linhas('.prettierignore')).toContain(LINHA_INVENTARIO_PRETTIER);
     expect(linhas('.gitattributes')).toContain(LINHA_INVENTARIO_ATRIBUTOS);
     expect(existsSync(join(RAIZ_REPO, INVENTARIO))).toBe(true);
+  });
+});
+
+describe('the step-3 intake guards', () => {
+  const fontesDeProducao = () =>
+    [...arquivosTs(RAIZ_LIB), ...arquivosTs(join(RAIZ_APP, 'app'))].filter((p) => !ehTeste(p));
+
+  it('no seller id inside the arguments of a logger call, under lib/amazon and app/', () => {
+    const fontes = fontesDeProducao();
+    const achados = fontes.flatMap((p) => sellersLogados(relApp(p), readFileSync(p, 'utf8')));
+    expect(achados).toEqual([]);
+    // Anti-vacuity: the scan reads the intake's own logger calls, and the intake
+    // really does handle the seller id beside them.
+    const intake = readFileSync(join(RAIZ_LIB, 'notificacoes', 'notificacao.ts'), 'utf8');
+    expect([...intake.matchAll(CHAMADA_DE_LOG)].map((m) => m[0])).toEqual(
+      expect.arrayContaining(['registrarEventoAmazon(', 'registrarChamadaBloqueadaAmazon(']),
+    );
+    expect(NOME_DE_SELLER_ID.test(intake)).toBe(true);
+  });
+
+  it(`among PRODUCTION files under lib/amazon, only ${IMPORTADOR_DO_SDK_DE_TAREFAS} imports firebase-admin/functions`, () => {
+    const fontes = arquivosTs(RAIZ_LIB).map((p) => [rel(p), readFileSync(p, 'utf8')] as const);
+    expect(importadoresDoSdkDeTarefas(fontes)).toEqual([IMPORTADOR_DO_SDK_DE_TAREFAS]);
+    // Anti-vacuity: the test double that builds the SDK's classes is seen, and exempt.
+    expect(
+      fontes.some(
+        ([c, t]) =>
+          c === 'testing/falhaDeEnfileiramento.ts' &&
+          especificadores(t).includes('firebase-admin/functions'),
+      ),
+    ).toBe(true);
+  });
+
+  it('no file under lib/amazon calls getFunctions(, and the app has no caller yet (3-c and 3-d add the two roots)', () => {
+    const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
+    expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
+    // The exact list of composition roots, app-wide: empty in 3-b; then
+    // `lib/firebase/filaLeitura.ts` (3-c) and `functions/src/agendador.ts` (3-d).
+    // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
+    const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
+    expect(app.length).toBeGreaterThan(40);
+    expect(app.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(relApp)).toEqual([]);
   });
 });
 
@@ -896,6 +992,70 @@ describe('the guards, on synthetic source', () => {
         "const m = err.message;\nlogger.warn('a mensagem (message) não', {});",
       ),
     ).toEqual([]);
+  });
+
+  it('a seller id in a logger call is flagged — by value, by key, in the message, under all five spellings', () => {
+    for (const fonte of [
+      "logger.warn('m', { s: p.sellerId });",
+      "logger.info('m', { selling_partner_id: conta.selling_partner_id });",
+      "deps.logger?.error('m', { SellerId });",
+      "registrarEventoAmazon(logger, 'tarefa', 'ERROR', 'm', { v: payload.sellerId }, {});",
+      'registrarChamadaBloqueadaAmazon(logger, { rota: sellerId, valor });',
+      'LOGGER_STDOUT_AMAZON.info(`sellerId ${x}`);',
+      "logger.info('m', { a: f(')' }, sellerId",
+      "logger.warn('m', { integracaoId, vendedor: sellingPartnerId });",
+      "logger.error('m', { s: SellingPartnerId });",
+    ]) {
+      expect(sellersLogados('x.ts', fonte), fonte).toHaveLength(1);
+    }
+  });
+
+  it('near-miss: the seller id OUTSIDE a logger call, or a longer word, is not flagged', () => {
+    expect(
+      sellersLogados(
+        'x.ts',
+        "const ids = await contasPorSellingPartnerId(db, payload.sellerId);\nlogger.error('m', { contas: ids.join(',') });",
+      ),
+    ).toEqual([]);
+    expect(sellersLogados('x.ts', "logger.info('m', { sellerIdade: 1, vendedor: 'x' });")).toEqual(
+      [],
+    );
+    // A longer name holding a spelling, inside a logger call's arguments.
+    expect(
+      sellersLogados(
+        'x.ts',
+        "logger.warn('m', { valido: sellingPartnerIdValido(x), n: contasPorSellingPartnerId(db, x).length });",
+      ),
+    ).toEqual([]);
+  });
+
+  it('the SDK import guard flags another production file, and exempts tests and testing/', () => {
+    const sdk = "import { FirebaseFunctionsError } from 'firebase-admin/functions';";
+    expect(
+      importadoresDoSdkDeTarefas([
+        [IMPORTADOR_DO_SDK_DE_TAREFAS, sdk],
+        ['notificacoes/receptor.ts', "import type { TaskQueue } from 'firebase-admin/functions';"],
+        ['pedidos/poll.ts', "const m = await import('firebase-admin/functions');"],
+      ]),
+    ).toEqual([IMPORTADOR_DO_SDK_DE_TAREFAS, 'notificacoes/receptor.ts', 'pedidos/poll.ts'].sort());
+    expect(
+      importadoresDoSdkDeTarefas([
+        [IMPORTADOR_DO_SDK_DE_TAREFAS, sdk],
+        ['testing/falhaDeEnfileiramento.ts', sdk],
+        ['notificacoes/agendador.test.ts', sdk],
+        ['notificacoes/receptor.ts', "import { ehFalhaDoSdkDeTarefasAmazon } from './agendador';"],
+        ['core/x.ts', "import { FirebaseAppError } from 'firebase-admin/app';"],
+      ]),
+    ).toEqual([IMPORTADOR_DO_SDK_DE_TAREFAS]);
+  });
+
+  it('getFunctions( is found in code and ignored in a comment or inside a longer name', () => {
+    expect(chamaGetFunctions('const f = getFunctions(app).taskQueue(x);')).toBe(true);
+    expect(chamaGetFunctions('export const g = () => getFunctions (app);')).toBe(true);
+    expect(chamaGetFunctions('// nothing here calls getFunctions(\nconst x = 1;')).toBe(false);
+    expect(chamaGetFunctions('/** see getFunctions(app) */ const y = 2;')).toBe(false);
+    // Lowercase on purpose: only the leading `\b` rejects it.
+    expect(chamaGetFunctions('const z = forgetFunctions(app);')).toBe(false);
   });
 
   it('`console.` is found in code and ignored in a comment', () => {

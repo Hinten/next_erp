@@ -5,7 +5,11 @@
  * collection handles, as the app does.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { avisoCollection, integracaoCollection } from '@delfrance/data/admin/collections';
+import {
+  avisoCollection,
+  integracaoCollection,
+  notificacaoAmazonCollection,
+} from '@delfrance/data/admin/collections';
 
 import { FakeDb, asDb, increment } from './fakeDb';
 
@@ -129,8 +133,11 @@ describe('queries — only the three indexed shapes', () => {
     await expect(q.get()).rejects.toThrow(/fora dos índices/);
   });
 
-  it('refuses any operator but ==', () => {
+  it('refuses any operator but == and <, and a < with a bound that is not a number', () => {
     expect(() => contas().where('tipo', '>', 1)).toThrow(/operador/);
+    expect(() => contas().where('tipo', '<=', 1)).toThrow(/operador/);
+    expect(() => contas().where('tipo', '<', '1')).toThrow(/numérico/);
+    expect(() => contas().where('tipo', '<', null)).toThrow(/numérico/);
   });
 
   it('orderBy drops a doc LACKING the field and keeps a null; startAfter seeks by values', async () => {
@@ -150,5 +157,90 @@ describe('queries — only the three indexed shapes', () => {
     if (cursor === undefined) throw new Error('sem cursor');
     const p2 = await base.startAfter(cursor).get();
     expect(p2.docs.map((d) => d.id)).toEqual(['b']);
+  });
+});
+
+describe('step 3: the shared notification store’s exact calls on notificacoesAmazon', () => {
+  const notif = (id: string) => notificacaoAmazonCollection.docRef(asDb(db), {}, id);
+  const notificacoes = () => notificacaoAmazonCollection.ref(asDb(db), {});
+  const N = 'notificacoesAmazon/n1';
+
+  it('a merge-set UPSERTS flat fields, keeps the rest, and is logged as `mescla`', async () => {
+    db.seed(N, { tipo: 'pedido', status: 'failed', tentativas: 1 });
+    await notif('n1').set({ status: 'deferred', tentativas: 0 }, { merge: true });
+    expect(db.ler(N)).toEqual({ tipo: 'pedido', status: 'deferred', tentativas: 0 });
+    // An upsert, as on the server: a row deleted meanwhile comes back as the patch alone.
+    db.apagar(N);
+    await notif('n1').set({ status: 'parked' }, { merge: true });
+    expect(db.ler(N)).toEqual({ status: 'parked' });
+    expect(db.escritasEm(N).map((e) => e.verbo)).toEqual(['mescla', 'mescla']);
+  });
+
+  it('near-miss: a merge-set OUTSIDE notificacoesAmazon, another option, or a map value throws', () => {
+    expect(() => ref('a').set({ x: 1 }, { merge: true })).toThrow(/merge/);
+    expect(() => notif('n1').set({ x: 1 }, { mergeFields: ['x'] })).toThrow(/merge/);
+    expect(() => notif('n1').set({ x: 1 }, { merge: false })).toThrow(/merge/);
+    expect(() => notif('n1').set({ x: { y: 1 } }, { merge: true })).toThrow(/primitivo/);
+    expect(() => notif('n1').set({ x: increment(1) }, { merge: true })).toThrow(/primitivo/);
+    expect(db.ler(N)).toBeUndefined();
+  });
+
+  it('the redrive is update(): 5 on a removed row, never a ghost', async () => {
+    expect(await codigoDe(notif('n1').update({ status: 'failed' }))).toBe(5);
+    expect(db.ler(N)).toBeUndefined();
+  });
+
+  it('runs the lane query: == status, NUMERIC < processedAt, ordered ascending, capped', async () => {
+    db.seed('notificacoesAmazon/c', { status: 'failed', processedAt: 30 });
+    db.seed('notificacoesAmazon/a', { status: 'failed', processedAt: 10 });
+    db.seed('notificacoesAmazon/b', { status: 'failed', processedAt: 20 });
+    db.seed('notificacoesAmazon/d', { status: 'failed', processedAt: 99 });
+    db.seed('notificacoesAmazon/e', { status: 'deferred', processedAt: 1 });
+    // A null, a string and a missing processedAt never match a numeric bound.
+    db.seed('notificacoesAmazon/f', { status: 'failed', processedAt: null });
+    db.seed('notificacoesAmazon/g', { status: 'failed', processedAt: '1' });
+    db.seed('notificacoesAmazon/h', { status: 'failed' });
+    const snap = await notificacoes()
+      .where('status', '==', 'failed')
+      .where('processedAt', '<', 50)
+      .orderBy('processedAt')
+      .limit(2)
+      .get();
+    expect(snap.docs.map((d) => d.id)).toEqual(['a', 'b']);
+    expect(db.consultas.at(-1)).toEqual({
+      colecao: 'notificacoesAmazon',
+      filtros: [
+        ['status', 'failed'],
+        ['processedAt <', 50],
+      ],
+      ordens: [['processedAt', 'asc']],
+      limite: 2,
+      apos: null,
+    });
+  });
+
+  it.each<[string, (q: ReturnType<typeof notificacoes>) => { get: () => Promise<unknown> }]>([
+    [
+      'the range without the status equality',
+      (q) => q.where('processedAt', '<', 1).orderBy('processedAt'),
+    ],
+    [
+      'the lane query unordered',
+      (q) => q.where('status', '==', 'failed').where('processedAt', '<', 1),
+    ],
+    [
+      'the range on another field',
+      (q) => q.where('status', '==', 'failed').where('tentativas', '<', 1).orderBy('tentativas'),
+    ],
+    [
+      'the lane shape on another collection',
+      () =>
+        contas()
+          .where('status', '==', 'failed')
+          .where('processedAt', '<', 1)
+          .orderBy('processedAt'),
+    ],
+  ])('REFUSES %s (not the declared composite)', async (_c, montar) => {
+    await expect(montar(notificacoes()).get()).rejects.toThrow(/fora dos índices/);
   });
 });

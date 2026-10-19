@@ -538,6 +538,31 @@ export {
   MODELO_ENTRADA_RELAY_AMAZON,
 } from './relayAmazon';
 
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only backlog of
+// the Amazon reads queue (master plan step 3, PR 3-b): an ids-only task payload
+// (push | poll) and its stripped failure document. Bare: a combined
+// `{ schema, meta }` export would trip `registry.test.ts`.
+export {
+  CONTA_ID_AMAZON_REGEX,
+  NOTIFICATION_ID_AMAZON_REGEX,
+  ORIGEM_NOTIFICACAO_AMAZON,
+  PEDIDO_AMAZON_REGEX,
+  TIPO_TAREFA_AMAZON,
+  camposNotificacaoAmazon,
+  contaIdAmazonSchema,
+  notificacaoAmazonSchema,
+  notificationIdAmazonSchema,
+  origemNotificacaoAmazonSchema,
+  pedidoAmazonSchema,
+  sellerIdAmazonSchema,
+  tarefaAmazonSchema,
+  tipoTarefaAmazonSchema,
+  type NotificacaoAmazon,
+  type OrigemNotificacaoAmazon,
+  type TarefaAmazon,
+  type TipoTarefaAmazon,
+} from './notificacaoAmazon';
+
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
 // Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
 // `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the
