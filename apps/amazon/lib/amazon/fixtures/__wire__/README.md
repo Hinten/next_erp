@@ -8,7 +8,7 @@ sanitizer.
 
 - No code in this repository calls Amazon before the cutover (master plan D11). A fixture is
   either an Amazon model's own `x-amzn-api-sandbox` example (`credencial: modelo-sandbox`) or
-  a read-only response the owner captured himself, kept outside every repository checkout and
+  a read-only response the owner captured by hand, kept outside every repository checkout and
   converted offline by the sanitizer.
 - The six `sb-*` fixtures are the starting corpus: model-sandbox examples written by
   `amazon-doc.mjs exemplo` / `notif-exemplo` into a folder outside the checkout, then run

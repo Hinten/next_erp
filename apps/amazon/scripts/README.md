@@ -1,7 +1,7 @@
 # `sanitizar`: the offline capture sanitizer
 
 No code in this repository calls Amazon before the cutover (master plan D11, "mock only").
-When a step needs a real response, the owner captures it himself, keeps it **outside every
+When a step needs a real response, the owner captures it by hand, keeps it **outside every
 repository checkout**, and this script turns it into a committed fixture under
 `lib/amazon/fixtures/__wire__/`.
 
@@ -53,7 +53,7 @@ pnpm --filter @delfrance/amazon-app sanitizar --entrada "$HOME/amazon-capturas" 
 
 ## Who runs it
 
-An agent may run it on the owner's captures once he says they are in place, and reads
+An agent may run it on the owner's captures once the owner says they are in place, and reads
 **only its output and the sanitized fixtures**. An agent never opens a raw capture by any
 other means: no `cat`, no editor, no file-reading tool. This repository is public, so a
 pushed branch is published: the owner sees the fixtures (or their diff) before any push.
