@@ -310,26 +310,29 @@ still be fixed. Only the context loader refuses those.
   poller passes its importer gate. The context still refuses first while the read switch
   is off, so a run DEFERS before any read and nothing calls Loja Integrada (D17). Every
   rule lives in the pure mappers beside it.
-- One run: the detail, the paged situação history (strict on queue attempts 0–1, degraded
-  after), the pedido snapshot, the hub guard, produtos, freight, cliente and endereço, then
-  ONE atomic `WriteBatch`: the pedido and every pagamento, each under its own precondition.
-  A lost one aborts the whole batch; up to 3 attempts re-derive from fresh reads, then
-  `LiPedidoEmConflitoError` retries the task. Every deterministic refusal comes first.
-- Every importer outcome RESOLVES: `importado`, `sem-mudanca`, `obsoleto` (a strictly newer
-  stored stamp: it writes NOTHING, avisos included), `hub` (no pedido or pagamento, an
-  aviso), `situacao-desconhecida`. Schema and Zod refusals park; a history hole on attempts
-  0–1 retries.
+- One run: the detail, the paged situação history (strict on queue attempts 0–1, so a hole
+  retries; degraded from attempt 2 and in every sweep run), the pedido snapshot, the hub
+  guard, produtos, freight, cliente and endereço, then ONE atomic `WriteBatch`: the pedido
+  and every pagamento, each under its own precondition. A lost one aborts the whole batch;
+  up to 3 attempts re-derive from fresh reads, then `LiPedidoEmConflitoError` retries the
+  task. Every deterministic refusal comes before the batch (the `mapa` row, cliente and
+  endereço may already be written; each is idempotent).
+- Every importer outcome RESOLVES: `importado`, `sem-mudanca`, `obsoleto` (a newer stored
+  stamp: NO write, avisos included), `hub` (no pedido or pagamento, an aviso),
+  `situacao-desconhecida`. Schema and Zod refusals park.
 - Estado and payment status come from the situação codigo through one shared table, never
-  from the situação flags. The stamp is LI's naive time, read once by `dataLiParaMicros`
-  in the settled zone (Layout rules).
-- The buyer is the fiscal identity: a valid CNPJ, else a valid CPF (an invalid CNPJ falls
-  back to it), never the recipient's document. No endereço ⇒ the freight amount and
-  modalidade but no carrier route; a stored route is never cleared.
+  from the situação flags. The incoming stamp is LI's naive time, converted once by
+  `dataLiParaMicros` (Layout rules). A stored stamp may come from another writer, in
+  another unit or zone; it is read through `coerceToMicros`, and a migrated pedido's first
+  new observation re-applies, which the window rehearsal verifies.
+- The buyer is the fiscal identity: a valid CNPJ, else a valid CPF, never the recipient's
+  document. No endereço ⇒ the freight amount and modalidade but no carrier route; a stored
+  route is never cleared.
 - Avisos and incidentes run after the batch, on `importado` and `sem-mudanca` alike, so a
   retry after a crash still writes them.
 - The emulator suite `pedidos/importarPedido.firestore.test.ts` (CI below) pins the batch.
 
-## CI (steps 3 and 20)
+## CI (steps 3, 5 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;

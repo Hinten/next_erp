@@ -54,6 +54,12 @@
  * The cliente, the endereço, the `mapa` row and the produto resolution (steps
  * 5–7) are NOT redone: their results reach every attempt through `mapearPedido`,
  * whose refs the fill-once group keeps only while `S′` holds none.
+ *
+ * A second importer of the same order is always plausible: the reads queue runs
+ * one dispatch at a time, but the reprocess sweep runs this import INLINE,
+ * outside the queue, so a sweep row and a queued task may overlap. Nothing here
+ * relies on them taking turns: the loser's batch fails its preconditions and
+ * re-derives (`importarPedido.firestore.test.ts`, two interleaved importers).
  */
 import type {
   DocumentReference,

@@ -37,7 +37,12 @@ With the switch unset every one of those runs stops at the context first: a
 task DEFERS (`adiado/chamadas-desligadas`) before any Firestore read, and a
 poller tick stops at the switch with zero reads. So nothing in this codebase
 turns a notification into a `pedido` until the window sets the switch — and
-once it does, the queued and deferred notifications drain into the import.
+once it does, the poller's next tick enqueues the changed orders into the
+import, and any `deferred` row still within its 7 daily passes drains with
+them. A `parked` row is terminal: no lane re-drives it. None should be an
+`importador-ausente` park: that needed the switch on while the seam was empty,
+the switch stays unset until the window, and the poller never enqueued with
+the seam empty.
 
 ⚠️ **The conta trigger stands outside the switch.**
 `onIntegracaoLojaIntegradaChanged` (master-plan step 20) makes no Loja Integrada
@@ -87,10 +92,12 @@ create, patch or deactivate. That is why this deploy waits for the window's
   `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` with every stored form
   of the conta reference; without it Enterprise full-scans every produto's link
   docs on each line, and bills the scan.
-- **`apps/web` in the same rollout or before.** The import raises four aviso
+- **`apps/web` deployed before the read switch is set** (master plan §5 item 1;
+  §5 item 5 rolls it out after this codebase). The import raises four aviso
   tipos (`lojaIntegradaSituacaoDesconhecida`, `lojaIntegradaPedidoContestado`,
-  `lojaIntegradaPedidoHub`, `lojaIntegradaFreteNaoSuportado`); a web build older
-  than them has no wording for those rows.
+  `lojaIntegradaPedidoHub`, `lojaIntegradaFreteNaoSuportado`), and only a run
+  past the switch imports; a web build older than them has no wording for those
+  rows.
 - **Region match.** The functions enqueue onto the queue in their own region. The
   enqueuer resolves it from `LOJA_INTEGRADA_TASKS_REGION ?? FUNCTIONS_REGION`,
   and there is **no default** — an unset value THROWS on the first enqueue rather

@@ -12,6 +12,10 @@
  * three give up), `obsoleto` writes nothing of any kind, a refusal comes before
  * any pedido or pagamento write, and a crash between the batch and the avisos
  * is healed by the retry.
+ *
+ * The last block runs the import as the step-3 pipeline WIRES it (PR 5-d): the
+ * seam the roots read, the run's attempt reaching the history mode, the
+ * classifier and the disposition — not the importer called by hand.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
@@ -48,7 +52,15 @@ import {
 } from '@delfrance/schemas';
 
 import { loadLojaIntegradaContext } from '../core/contexto';
-import type { DepsImportadorLi, PayloadNotificacaoLi } from '../notificacoes/notificacao';
+import {
+  TASK_MAX_ATTEMPTS,
+  type DepsImportadorLi,
+  type DepsTarefaLi,
+  type PayloadNotificacaoLi,
+  importadorPedidoLi,
+  reprocessarNotificacoesLi,
+  tratarTarefaLeituraLi,
+} from '../notificacoes/notificacao';
 import { FakeDb, arrayUnion, asDb, grpc, increment, type DocData } from '../testing/fakeDb';
 import {
   AGORA_MS,
@@ -59,6 +71,7 @@ import {
   ritmoFalso,
   seedCredencial,
 } from '../testing/fixtures';
+import { COLECAO_NOTIFICACOES_LI, seedNotificacaoLi } from '../testing/notificacoes';
 import {
   CHAVE_FORMA_ENVIO_LI,
   CPF_VALIDO_LI,
@@ -1686,5 +1699,117 @@ describe('the units: no conversion outside dataLi.ts', () => {
 
   it('the synthetic method is the key the helpers build', () => {
     expect(`${String(FORMA_ENVIO_LI.id)}---${FORMA_ENVIO_LI.code}`).toBe(CHAVE_FORMA_ENVIO_LI);
+  });
+});
+
+describe('the wired seam (PR 5-d): the pipeline runs the REAL import, the run attempt deciding the history mode', () => {
+  /**
+   * A run's deps as the functions roots bind them — the seam read from the
+   * table, the attempt on `registro` (`null` in a sweep) — with the read switch
+   * ON as a PARAMETER (never the process environment) and the scripted
+   * platform as the context's `fetch`.
+   */
+  function depsDaRun(
+    c: Cena,
+    tentativa: number | null,
+  ): { readonly deps: DepsTarefaLi; readonly urls: string[] } {
+    const { fetch, urls } = plataformaLi(roteiroDe(c));
+    const deps: DepsTarefaLi = {
+      ambiente: AMBIENTE_LIGADO,
+      importador: importadorPedidoLi(),
+      increment,
+      arrayUnion,
+      viaCep: viaCepFalso,
+      agoraMs: () => AGORA_MS,
+      esperar: () => Promise.resolve(),
+      logger: loggerEspiao().logger,
+      registro: {
+        fluxo: 'intake',
+        tentativa,
+        idTarefa: tentativa === null ? null : `tarefa-${String(tentativa)}`,
+        escrever: gravadorDeLog().escrever,
+      },
+      fetch,
+    };
+    return { deps, urls };
+  }
+
+  /** The detail says paid; the history never reaches it. */
+  function comLacuna(): Cena {
+    const c = cena();
+    c.historico = [
+      linhaHistoricoLi(1, carimboLi(0, 100), 'aguardando_pagamento', 'pedido_efetuado'),
+    ];
+    return c;
+  }
+
+  it('a task resolves `done`/`importado`: the pedido and its pagamento written, no notification row', async () => {
+    const db = novoDb();
+    const { deps, urls } = depsDaRun(cena(), 0);
+
+    const r = await tratarTarefaLeituraLi(asDb(db), payload(), 0, deps);
+
+    expect(r).toEqual({ outcome: 'done', kind: 'importado', detail: 'importado' });
+    // The import itself ran: a stand-in that answered `importado` writes none of this.
+    expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+      estado: ESTADO_PEDIDO.pago,
+      lastMarketplaceUpdate: WATERMARK_2H,
+    });
+    expect(db.ler(CAMINHO_PAGAMENTO)).toMatchObject({
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+      valor: 114.8,
+    });
+    expect(db.idsEm(COLECAO_NOTIFICACOES_LI)).toEqual([]);
+    expect(urls.map((u) => new URL(u).pathname)).toEqual([
+      '/v1/pedido/9001/',
+      '/v1/situacao_historico/search/',
+    ]);
+  });
+
+  it.each([0, 1])(
+    'a history hole on attempt %i RETHROWS for the queue to retry: nothing written, no row',
+    async (tentativa) => {
+      const db = novoDb();
+      const { deps } = depsDaRun(comLacuna(), tentativa);
+
+      await expect(
+        tratarTarefaLeituraLi(asDb(db), payload(), tentativa, deps),
+      ).rejects.toBeInstanceOf(LiHistoricoIncompletoError);
+
+      expect(db.ler(CAMINHO_PEDIDO)).toBeUndefined();
+      expect(db.ler(CAMINHO_PAGAMENTO)).toBeUndefined();
+      expect(db.idsEm(COLECAO_NOTIFICACOES_LI)).toEqual([]);
+    },
+  );
+
+  it('the same hole on the LAST attempt imports DEGRADED — never persisted `failed`', async () => {
+    const ultima = TASK_MAX_ATTEMPTS - 1;
+    // The last attempt is the one a strict read would turn into a `failed` row;
+    // the degraded read must import instead.
+    expect(ultima).toBe(2);
+    const db = novoDb();
+    const { deps } = depsDaRun(comLacuna(), ultima);
+
+    const r = await tratarTarefaLeituraLi(asDb(db), payload(), ultima, deps);
+
+    expect(r).toEqual({ outcome: 'done', kind: 'importado', detail: 'importado' });
+    expect(db.ler(CAMINHO_PAGAMENTO)?.dataAprovacao).toBeNull();
+    expect(db.idsEm(COLECAO_NOTIFICACOES_LI)).toEqual([]);
+  });
+
+  it('the hot sweep runs it INLINE with no attempt, so degraded: a failed row with a hole imports and is deleted', async () => {
+    const db = novoDb();
+    const linha = seedNotificacaoLi(db, CONTA, String(NUMERO_LI), 'failed', {
+      dataModificacaoLi: carimboLi(2),
+    });
+    const { deps } = depsDaRun(comLacuna(), null);
+
+    const r = await reprocessarNotificacoesLi(asDb(db), { limit: 10, now: AGORA_MS }, deps);
+
+    expect(r.errors).toEqual([]);
+    expect(r.processed).toBe(1);
+    expect(db.ler(linha)).toBeUndefined();
+    expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({ estado: ESTADO_PEDIDO.pago });
+    expect(db.ler(CAMINHO_PAGAMENTO)?.dataAprovacao).toBeNull();
   });
 });

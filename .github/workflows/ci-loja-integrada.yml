@@ -112,7 +112,8 @@ name: CI — Loja Integrada
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
 #     exposes db.pipeline(), so feature-probing answers yes then fails at
 #     execution. Nothing in this codebase builds a pipeline query.
-#   - The importer, or any call to Loja Integrada. By design — see the switch above.
+#   - The DISPATCHED importer, or any call to Loja Integrada. By design — see the
+#     switch above. (The importer itself runs in process, importarPedido.firestore.test.ts.)
 #   - Eventarc's ORDERING and REDELIVERY. The emulator delivers each write to
 #     `onIntegracaoLojaIntegradaChanged` once; that a replayed or out-of-order
 #     event converges is argued by the core being state-driven and covered by

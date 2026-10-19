@@ -299,8 +299,8 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
 
   it('binds the importer from the REAL seam table, read per run', async () => {
     // A sentinel the seam hands back: the root must pass exactly it. A root that
-    // hard-coded `null` (or cached the table at load) would pass this test's
-    // sibling and fail this one.
+    // hard-coded the order import (or cached the table at load) would pass this
+    // test's sibling and fail this one.
     const sentinela: ImportadorPedidoLi = () => Promise.resolve({ kind: 'importado' });
     vi.mocked(notificacao.importadorPedidoLi).mockReturnValueOnce(sentinela);
 

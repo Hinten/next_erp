@@ -24,9 +24,10 @@
  * the dispatched function wrote, not about the absence of one.
  *
  * Since step 5 the dispatched bundle carries the order import in its seam, so
- * the switch is the ONLY thing between a task and a platform call: the run that
- * once parked as `importador-ausente` past the switch would now import. Case 1
- * is that boundary, observed from outside.
+ * the switch is the ONLY gate between a task and a platform call: past it, a
+ * run with a credential now imports instead of parking as `importador-ausente`.
+ * With the switch unset it defers exactly as it did before step 5, and case 1
+ * tells the switch apart from a conta or credential read (below).
  *
  * Why the conta is seeded (case 1). The seed makes the reason discriminating:
  * were the switch checked AFTER the conta read, the same run would answer
@@ -212,9 +213,9 @@ describe.skipIf(!EMULATED || !TASKS)(
         dataModificacaoLi: STAMP,
         // ⚠️ `deferred`, not `parked` and not `failed`. `failed` would mean the
         // run THREW (and the last attempt persisted it): the queue hop worked
-        // but the dispatched bundle raised instead of refusing. `parked`, or
-        // no row at all (a resolved import), would mean the run got PAST the
-        // switch and into the order import, which calls the platform.
+        // but the dispatched bundle raised instead of refusing. `deferred` alone
+        // does not name the switch — past it, this conta (no credential) would
+        // defer too; the reason below does.
         status: NOTIFICACAO_RESILIENCIA_STATUS.deferred,
         tentativas: 0,
         // The reason names the switch. `adiado/credencial-ausente` here would

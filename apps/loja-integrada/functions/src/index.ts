@@ -136,10 +136,12 @@ function registrarRaia(
  * reconnection"), and a sum would hide a growing deferred backlog inside a
  * healthy `processed`.
  *
- * 540 s: up to twenty rows processed SEQUENTIALLY, each of which may make a
- * paced Loja Integrada round trip (2 000 ms before every call) once the read
- * switch is on (the importer is bound since step 5) — the gen2 60 s default
- * cannot absorb that.
+ * 540 s: up to twenty rows processed SEQUENTIALLY once the read switch is on,
+ * and each import (bound since step 5) makes ≥ 2 paced calls — the detail and
+ * the history pages, plus one per line that falls back to `id_externo` — with
+ * 2 000 ms before each: ≥ 80 s of pacing alone for twenty rows, which the gen2
+ * 60 s default cannot absorb. A sweep the timeout cuts short loses nothing:
+ * the rows it never reached stay unmarked and re-run on the next tick.
  */
 export const reprocessLojaIntegradaNotifications = onSchedule(
   {
