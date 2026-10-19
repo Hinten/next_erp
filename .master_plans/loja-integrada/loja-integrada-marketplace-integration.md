@@ -250,7 +250,7 @@ A completeness critic then reconciled the verdicts. Each contradiction was settl
 - **`filhos` is documented in examples only** (spec GET /v1/produto, spec GET /v1/produto/{produto_id}, POST/PUT examples), not in the list-item schema. The importer discovers families through it. Children as list rows is a probe (§1.2 item 19).
 - **`boleto_url` / `pix_code` appear in the spec only on the `PUT /v1/pedido/{pedido_id}` echo.** The captures show them on GET too (§1.2 item 18). They are optional, never required, and never persisted.
 - **The 05/10/2026 discontinuation** (help 931152, modified 2026-09-22) reads as: the store's own credential is now the Personal Token, and the "chave de aplicação" now identifies only integrators/partner apps (help 5360466). D3 picks the Personal Token. The live legacy integration moved to Personal Tokens on 2026-10-07, so the announcement no longer threatens it (§0).
-- **Freight model:** `etiqueta: 'emit'`. `FREIGHT_TIPO_CAPS.lojaIntegrada` (`marketplaceOwned: true`, `labelMode: 'fetch'`) is a placeholder that contradicts the evidence; it changes in step 15.
+- **Freight model:** `etiqueta: 'emit'`. `FREIGHT_TIPO_CAPS.lojaIntegrada` (`marketplaceOwned: true`, `labelMode: 'fetch'`) is a placeholder that contradicts the evidence. Step 15 turns it into a router (`labelMode: 'roteado'`, every `can*` false), and a cross-table test pairs the two tables (`etiqueta: 'emit'` ⇔ `labelMode: 'roteado'`).
 - **`forma_envio` key mismatch** (`code` on GET, `codigo` on the webhook). This reinforces "re-fetch, never map the body"; the `int_frete.mapa` key is built from the GET shape.
 - **Stock arithmetic** is not settled by the docs (gap 5). It is decided in the step-12 plan.
 - **Enviali units** (cm per the tag, "mm" in one prose table) are moot under D6.
@@ -304,7 +304,7 @@ What this does **not** settle: the legacy's writes use its own payloads, so part
 | D3 | **Credential:** Personal Token per store, `Authorization: Basic <token>`. No partner key is requested (a design choice; partner keys are IP-bound and LI does not process store-owner requests for them, help 5360466) ⇒ no IP allow-list ⇒ no static egress. Expiry entered by the operator, aviso ahead, park on 401/403 ("reconexão pendente"). Token in an admin-only credential store. **The new integration never reuses the legacy client's key.** | Steps 0–2. No VPC/NAT/proxy work, subject to the Step-0 gate. |
 | D4 | **Testing:** no demo store ⇒ no live writes before cutover. Read-only redacted probes; mock fixtures from the official examples plus redacted captures; a strong structured logger; every write flow behind an OFF valve with a DRY-RUN diff; valves flip ON in the window; read-back GET after every real write. | Step 2b (logger, valves, canary allow-list); §4.26 write inventory; every write step's "Dry-run/valve" bullet; §5 items 3 and 8. |
 | D5 | **Hub:** LI is only the storefront; no marketplace orders are injected via LI's hub. A cheap skip-and-flag guard for `marketplace_info` / `id_anymarket` stays as a safety net. | Step 5's hub guard. |
-| D6 | **Labels:** Melhor Envio through the ERP, routed by `int_frete.mapa` (LI shipping method → target carrier) plus a per-pedido override `integracaoTargetOuterRef`. Enviali is NOT used. | Steps 15 and 20. |
+| D6 | **Labels:** Melhor Envio through the ERP, routed by `int_frete.mapa` (LI shipping method → target carrier) plus a per-pedido override `integracaoTargetOuterRef`. The override is written by step 15's "Escolher transportadora…" picker on `/pedidos`, in the same guarded write that routes the pedido; a stored one is honoured before the mapa. Enviali is NOT used. | Steps 15 and 20. |
 | D7 | **Status write-back:** tracking code (`PUT /v1/pedido_envio/{envios[i].id}`) plus situação `pedido_enviado` / `pedido_entregue` / `pronto_para_retirada`. `pedido_enviado` is set on posting whether or not a tracking code exists. Never write a situação onto an order whose current LI situação is refunded/cancelled/chargeback/dispute (7, 8, 16, 6, 1020): the API enforces no transitions, and any write to 11/13/14 may e-mail the buyer (§1.2 item 15). | Step 7. The orchestrator adds `cancelamento_solicitado` (1019) to the guard, giving the never-write-onto set {6, 7, 8, 16, 1019, 1020} (vetoable; see the orchestrator calls below). |
 | D8 | **NF-e upload to LI: NO.** `enviarNfe` stays `'sim'` as a provider fact. | Step 14 dropped. |
 | D9 | **Stock flags:** keep sending `gerenciado=true`, `situacao_em_estoque=0`, `situacao_sem_estoque=-1` (parity; the products are configured that way). Reviewer's caution: this overwrites per-product lead-time settings in LI by design. | Step 12 sends the full 4-field body. |
@@ -323,7 +323,7 @@ What this does **not** settle: the legacy's writes use its own payloads, so part
 - **The product webhook is not used.** The ERP is the catalogue master, and LI-side drift is caught by the daily reconcile.
 - **`custo` keeps being sent on price PUTs** (parity), to be confirmed in the step-13 plan (§7 q1).
 - **Poll bootstrap is a configurable look-back** (idempotent by deterministic ids) instead of copying the legacy `pedManager` history. The window sizes it from the newest legacy `lastTimeStamp` (§5 item 7).
-- **`cancelamento_solicitado` (1019) joins D7's never-write-onto set**, making it {6, 7, 8, 16, 1019, 1020}. The spec flags 1019 `cancelado: true`, and step 15 already refuses a label for it. Without it, a posting could write `pedido_enviado` over a buyer's cancellation request and e-mail the buyer (step 7).
+- **`cancelamento_solicitado` (1019) joins D7's never-write-onto set**, making it {6, 7, 8, 16, 1019, 1020}. The spec flags 1019 `cancelado: true`, and step 15 refuses the checkout and a Melhor Envio label buy for it: 1019 is outside `CODIGOS_LI_PAGO`, and a pedido imported at 1019 (`processandoCancelamento`) also fails the ERP's own `pago` gate. Without it, a posting could write `pedido_enviado` over a buyer's cancellation request and e-mail the buyer (step 7).
 
 **Design under D4 (part of the plan, not an optional extra; Lucas may still veto at PR review):** the write valves carry a canary allow-list, and each write kind's first real write targets a canary (§4.26). Without it, "canary-first" is impossible with one env valve per flow. If vetoed, §5 item 8 becomes "first write is fleet-wide", and that must be stated in the window runbook.
 
@@ -354,7 +354,7 @@ What this does **not** settle: the legacy's writes use its own payloads, so part
 - `produtos/{id}/estoques/{autoId}` (`depositoOuterRef`, `quantidade`, `quantidadeReservada`, …) is already modelled by `estoque.ts`.
 - Orders: `pedidos/{digest}` + `pedidos/{digest}/pagamentos/{digest}` + `clientes/{id}/enderecos/{id}`.
   - On the pedido, `freteInicial.externalId` = the LI envio id and `externalOptionData` = the raw `forma_envio` JSON (GET shape).
-  - **Where `freteInicial` points:** a migrated pedido whose shipping method was already mapped at import points `freteInicial` at the TARGET `int_frete` (e.g. `melhorEnvios`, with `externalOptionId = targetData.id`). It goes through that provider and needs no change. Only unmapped pedidos carry the `lojaIntegrada` `int_frete` and need step 15's resolver.
+  - **Where `freteInicial` points:** a migrated pedido whose shipping method was already mapped at import points `freteInicial` at the TARGET `int_frete` (e.g. `melhorEnvios`, with `externalOptionId = targetData.id`). It goes through that provider and needs no routing (step 15's paid re-check still applies to it). Every other imported pedido points at the conta's `lojaIntegrada` `int_frete` doc (a method with no mapping, one mapped on purpose to `fob`/`outros`, or one whose mapped target was refused at import), and step 15 routes it before its label. The tipo is that DOC's: the block's `externalOptionIntegracao` stays `null`. A pedido without a delivery address carries no ref at all.
 
 **The three deterministic ids.** Reproduce them byte for byte, and pin them in an `orderIds.test.ts` that asserts near-misses unequal. Both preimage numbers are spec example values: numero `165` (spec GET /v1/pedido/{pedido_id}) and pagamento id `69291176` (`pagamentos[].id` in the same example).
 
@@ -401,7 +401,7 @@ A missing payment id is an error in the new code. **Never** normalise the pagame
     - a Melhor Envio target sets `externalOptionId = targetData.id` and points `freteInicial` at the target `int_frete`;
     - motoboy/retirada set the target without an option.
   - Any other target degrades gracefully: an aviso, no failure.
-  - **Label-time resolution** (step 15) lets the per-pedido `integracaoTargetOuterRef` override the mapa. Step 20 registers each full key; which row decides at label time is the step-15 plan's decision.
+  - **Label-time resolution** (step 15) matches the mapa by the same FULL key, never by the id part: the same id under another code is another method. An operator's per-pedido choice, then a stored `integracaoTargetOuterRef`, come before the mapa; an override that names no usable target refuses and never falls back to the mapa.
 - **Dispatch deadline** **[ERP rule]**: from the freight doc's `horarioDeCorte` when present. Otherwise a business-day noon cutoff in America/Sao_Paulo: before 12:00 on a weekday → same day; otherwise the next business day; Friday afternoon and weekends → Monday.
 - **Price/stock rules:**
   - The normal price list → `cheio`; the promotional list (> 0) → `promocional`, else clear (D10) **[ERP rule]**.
@@ -411,7 +411,7 @@ A missing payment id is an error in the new code. **Never** normalise the pagame
   - Kit quantity is ERP-computed: the min over limiting components of ⌊disponível/qtd⌋ **[ERP rule, ADR 0014]**.
   - One ERP parent ↔ exactly one LI parent per conta **[ERP rule]**.
   - Publishing requires every variante of every child to be linked to an LI grade option **[ERP rule]**.
-- **Checkout paid re-check** **[ERP rule]**: before a label is bought for an LI pedido, a live read of the LI situação must show a paid codigo that has not been reverted (step 15).
+- **Checkout paid re-check** **[ERP rule]**: before the checkout commits and before a Melhor Envio label is bought for an LI pedido, a live read must show its current codigo in `CODIGOS_LI_PAGO`; a reprint or a generic label outside that set needs an acknowledged risk (step 15). Every reversal codigo is outside that set, so no history read is needed.
 
 **Other legacy-code findings are kept in the operator's private notes; only the rules above are ported.**
 
@@ -1011,7 +1011,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - A retried task after success performs zero PUTs.
   - Out-of-order `entregue`/`postado` produces no regression.
   - **The live write is first done on a canary pedido at the window** (§5 item 8); fixtures cannot confirm the e-mail behaviour (§1.2 item 15).
-- **Timing:** after step 15, whose postings create the history docs, and after step 2b's valves.
+- **Timing:** after step 15 and after step 2b's valves. The history docs come from the Melhor Envio webhook's postings, which reach a pedido because step 15 re-points its `freteInicial` at the Melhor Envio target. Generic and motoboy labels post nothing. A pickup routed at label time reaches `aguardandoRetirada` through the checkout's shared phase-2 rule, which the routing route applies too.
 - **Does NOT:** write `faturado`, paid or cancelled situações; upload NF-e (D8); use Enviali tracking.
 
 ### Step 8: DROPPED (template stuck-reservation release; see §4.i)
@@ -1221,38 +1221,67 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 
 `enviarNfe: 'sim'` is a provider fact (`spec POST/PUT /v1/integration/pedido/nf`: metadata + URLs, `sale_number` = numero, `account_key` in the multipart body). Nothing is built.
 
-### Step 15: Labels: `int_frete.mapa` routing + checkout paid re-check + `FREIGHT_TIPO_CAPS.lojaIntegrada`
+### Step 15: Labels: `int_frete.mapa` routing + paid re-check + `FREIGHT_TIPO_CAPS.lojaIntegrada`
 
-- **Gate:** `etiqueta: 'emit'` + D6. **Trigger:** HTTP (the `/pedidos` etiqueta row action and checkout). **Docs:** `spec GET /v1/situacao/pedido/{pedido_id}`; the `freight-integrations` skill, step 5.
+The step plan was approved on 2026-10-19 (D15). This section is its public summary.
+
+- **Gate:** `etiqueta: 'emit'` + D6. **Trigger:** HTTP: the `/pedidos` etiqueta row action, the checkout and its post-save, the checkout reprint, and the Melhor Envio buy modal. **Docs:** `spec GET /v1/pedido/{pedido_id}` (the order detail, live-proven and captured, C5); the `freight-integrations` skill.
 - **Which pedidos this touches:**
-  - A pedido whose `freteInicial` resolves to a non-`lojaIntegrada` `int_frete` (e.g. `melhorEnvios`) uses that provider directly. That covers every migrated pedido whose method was already mapped at import, and new pedidos mapped at import (step 5). They need no change.
-  - Only pedidos whose `freteInicial` carries tipo `lojaIntegrada` (unmapped at import) go through the resolver below.
-  - Today the repo has no mapa / `integracaoTargetOuterRef` resolution in the etiqueta path; `integracaoTargetOuterRef` appears only in `packages/data/src/pedido/duplicar.ts` and a seed fixture. This step builds it.
-- **Target resolution at label time** (`apps/web/lib/checkout/etiqueta`), in order:
-  1. `freteInicial.integracaoTargetOuterRef` (the per-pedido override).
-  2. Otherwise, a conta `int_frete.mapa` entry whose `integracaoUid` is set. Step 20 registers each full `'<id>---<code>'` key, so the same id can hold several rows. Which row decides at label time (the full key, the id part before `---` matched against `String(externalOptionData.id)`, or both in a fixed order) is the step-15 plan's decision. Import-time matching uses the full key (step 5).
-  3. Otherwise, abort with "sem mapeamento" ("Este frete não possui mapeamento com transportadora.").
-  - The resolved target dispatches exactly like a first-class carrier: Melhor Envio buy/print with `externalOptionId` from `targetData.id`, or the generic label for motoboy/retirada/outros.
-- **`FREIGHT_TIPO_CAPS.lojaIntegrada` must change.** Today it has `marketplaceOwned: true`, all `can*` false and `labelMode: 'fetch'`, which makes the Frete tab read-only and routes the etiqueta to `unsupportedMarketplace`. That is wrong for LI: LI mints nothing, the operator must be able to pick or override the target carrier, and the row state must come from the **resolved target's** caps. What changes, in one change:
-  - `marketplaceOwned` → false.
-  - `labelMode` → a non-`'fetch'` value. The exact value, or an explicit "router" notion in `etiquetaRowState`, is the step-15 plan's call.
-  - `lojaIntegrada` leaves `unsupportedMarketplace.ts` in the same change, and a routing provider is registered.
-  - `frete.test.ts` (which pins LI among the five marketplace-owned tipos) and `registry.test.ts` change together.
-  - **The freight-integrations skill's step 5 checklist governs the change:** caps flip, provider + registry row, client threading, UI capability, row-action branch and drift guard, all landed together.
-- **Checkout paid re-check:** `GET /api/marketplace/loja-integrada/pedidos/[numero]/situacao?conta=` → `GET /v1/situacao/pedido/{numero}`.
-  - Paid ⇔ codigo ∈ {pedido_pago, faturado, em_producao, pedido_em_separacao, pedido_enviado, pronto_para_retirada, pedido_entregue}.
-  - Contested, refunded (incl. 1020), cancelled or 1019 ⇒ refuse.
-  - An LI error lets the operator continue only after an explicit confirmation (parity).
-- **Firestore:** reads `pedidos`, `int_frete`. **Indexes:** none new. `resolverIntFrete` reads the pedido's `integracaoFreteOuterRef` with one `getDoc`, not a query. Any back-ref lookup uses the equality prefix of step 20's 4-field `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)` index (2026-10-13, #1528). **Rulesets:** none (`FREIGHT_TIPO_CAPS` is not a Meta; checked). **Env:** none.
-- **Seam:** `lib/checkout/etiqueta/types.ts` (injected clients and UI capabilities), `resolverIntFrete`.
-- **Rule 7:** none new; the ME purchase follows the freight domain's own guards.
-- **Dry-run/valve:** none toward LI (read-only).
+  - **Routing.** A pedido whose `freteInicial.integracaoFreteOuterRef` names a label target (one of `TIPOS_ALVO_MAPA_FRETE_LI`: `melhorEnvios`, `motoboy`, `retiradaNaLoja`, `fob`, `outros`) is already routed, at import (step 5) or in the migrated corpus, and dispatches as that target's tipo does on any pedido.
+  - Every other pedido of an imported order points at its conta's `lojaIntegrada` `int_frete` doc: a method with no mapping, a method mapped on purpose to `fob`/`outros`, or one whose mapped target the import refused with an aviso. The tipo is that DOC's; the block's `externalOptionIntegracao` stays `null`. Only these are routed by this step. A pedido without a delivery address carries no ref at all, and `resolverIntFrete` is not widened to reach it.
+  - **The paid re-check** covers every imported LI pedido, routed or not.
+  - **`integracaoTargetOuterRef`** (D6's per-pedido override) is carried by `packages/data/src/pedido/duplicar.ts`, `packages/schemas/src/shared/frete.ts`, the pedido form's freight types and errors, `apps/web/lib/checkout/etiqueta/README.md` and tests, but nothing resolves it in the etiqueta path today. This step resolves it, and its picker writes it.
+- **Route resolution: ONE pure resolver** in `packages/schemas/src/mapaFreteLojaIntegrada.ts` (step 20's module). The routing route and the web's read-only preview both call it, so they never decide differently. In order:
+  1. The operator's choice from the "Escolher transportadora…" picker, when there is one.
+  2. Otherwise a stored `integracaoTargetOuterRef` that names an `int_frete` doc (the bare form ≡ the `documents/` form). An override that names anything else, or a target that is absent, inactive or not a label target, refuses `override-invalido`. It never falls back to the mapa; the picker replaces it.
+  3. Otherwise the conta's `mapa` row under the FULL `'<id>---<code>'` key of `externalOptionData` (`chaveFormaEnvioLi`, as at import), mapped when its `integracaoUid` names a target. The same id under another code is another method, never a match. An absent or `null` `mapa` reads as empty; a present one that is not a list refuses `mapa-invalido`. No row, or a row naming no target, refuses `sem-mapeamento` ("sem mapeamento"); the picker can still route the pedido.
+  - The target, read by id, must exist, be active (an absent `ativo` reads as active) and be a label target (`POLITICA_ALVO_ETIQUETA_LI`; `fob` and `outros` print the generic label).
+  - A Melhor Envio target needs a service: the row's `targetData.id` for a mapped target (read by `idServicoMelhorEnvioLi`: `3` ≡ `'3'`; `'03'` is none). A hand-picked or override target takes a stored `externalOptionId` only beside its own ref, else the method's own row service only when that row's target is itself Melhor Envio. Otherwise it refuses `alvo-sem-servico`.
+  - No delivery address refuses `sem-endereco`, unless the target is a pickup (`alvoDispensaEnderecoLi`).
+- **Materialisation: `PUT /api/marketplace/loja-integrada/pedidos/[pedidoId]/rota-etiqueta`** on `apps/loja-integrada`, behind `PERM.frete.write` (the Melhor Envio buy route's own permission). Contract: `packages/schemas/src/rotaEtiquetaLojaIntegrada.ts`.
+  - The body is `{escolha: <int_frete id> | null}` (strict). The answer is `roteado` or `ja-roteado`, with the target `{id, tipo, nome}` and the routing fields after the call, or `recusado` with a motivo code. It never carries the target document.
+  - It reads, by id through Admin: the pedido, the doc its ref names, the target, and for a hand-picked Melhor Envio target the method's row target. A ref that already names a label target answers `ja-roteado` and writes nothing, whatever the choice.
+  - It refuses unless the pedido is `pago`, has no bought label (`printLabelId == null`) and ships something (modalidade ≠ `'9'`), and unless the Loja Integrada doc is active and its back-ref names the pedido's own conta (`doc-li-divergente`; the bare and `documents/` forms are the same conta).
+  - The write re-points `freteInicial.integracaoFreteOuterRef` at the target and sets `externalOptionId` (the Melhor Envio service, else `null`). An operator's choice also writes `integracaoTargetOuterRef`. A pickup target whose freight is already `checkFinalizado` moves to `aguardandoRetirada`: the checkout's phase-2 rule, shared as `avancaParaRetirada` (`packages/schemas/src/faseRetirada.ts`), which phase 2 calls too.
+  - That is the shape a pedido routed at import already has, so every Melhor Envio and generic path, and the Melhor Envio webhook (which takes the account from that ref), runs unchanged.
+  - It never writes `valorCobrado`, the cost fields, `externalOptionData`, `externalOptionIntegracao`, `codRastreio`, `ultimaModificacao` or anything outside `freteInicial`. It makes no Loja Integrada call and reads no switch, so it works on staging.
+  - Materialisation is lazy: the operator's action or the checkout. There is no bulk re-point.
+- **`FREIGHT_TIPO_CAPS.lojaIntegrada` becomes a router**, in ONE change, because `registry.test.ts` reds any half of it:
+  - `marketplaceOwned: false`, every `can*` false, `channel: null`, and a new `FreightLabelMode` member `'roteado'`. A cross-table test pairs it with `MARKETPLACE_TIPO_CAPS.lojaIntegrada.etiqueta` (`'emit'` ⇔ `'roteado'`, `'fetch'` ⇔ `'fetch'`).
+  - A router provider is registered. It calls the routing route through the Loja Integrada web client, then delegates to the target's own provider. `lojaIntegrada` leaves `unsupportedMarketplace.ts`.
+  - The drift guard gains a rule: `labelMode: 'roteado'` ⇔ the router provider, and a router tipo is never marketplace-owned and sets no `can*`.
+  - The `/pedidos` row gains a `'rotear'` action for a pedido still on its Loja Integrada doc: "Definir transportadora" (the mapa, or a stored override) and "Escolher transportadora…" (the per-pedido picker over the active label targets, with the mapa's target preselected; D6). It routes only; the label stays a separate click. The page keeps the routed frete per pedido, so the next hover shows the target's action whatever the list transport.
+  - The manual freight pickers exclude the router tipo. For a pedido still on its Loja Integrada doc the Frete tab shows a read-only router panel; its header and picker follow the estado lock like any pedido's, so a duplicate in an editable estado can be pointed elsewhere.
+  - The checkout routes and prints in one go, without a choice.
+- **Paid re-check: `GET /api/marketplace/loja-integrada/pedidos/[pedidoId]/pagamento`** on `apps/loja-integrada`, behind `PERM.pedido.read`. Contract: `packages/schemas/src/conferenciaPagamentoLojaIntegrada.ts`; codes in `CODIGO_ERRO_LI`.
+  - ERP reads first. The pedido by id, then its identity: the conta from `integracaoPedidoOuterRef` and the canonical `numero` must hash to the pedido's own id (`preimagemPedidoLi`). Otherwise it answers `{aplicavel: false}` with zero Loja Integrada calls (a duplicate, a devolução, a manual pedido).
+  - Only then the context loader (the read switch, the park, the 2 s pacer) and ONE `GET /v1/pedido/{numero}` (`buscarPedidoLi`). A different `numero`, or a different shipment id than the pedido's `externalId`, answers `pedidoDivergente`.
+  - The verdict is by the codigo alone: `CODIGOS_LI_PAGO` (`packages/schemas/src/situacaoPedidoLojaIntegrada.ts`) ⇒ `pago`; another known codigo ⇒ `nao-pago`; an unknown one ⇒ `desconhecido`. Never the situação flags. Every reversal codigo is outside that set, so no history read is needed.
+  - When the live read cannot run (the switch is off, the conta is parked, a throttle, a timeout, an outage), the ERP's own mirror answers: an open `lojaIntegradaPedidoContestado` aviso for the pedido, read by id, ⇒ `contestado`; otherwise the coded error. A live answer, when there is one, wins over the mirror.
+  - The answer carries the verdict, the codigo and their source, never the order body.
+  - The web recognises an imported pedido by the same preimage, hashed in the browser, so Mercado Livre, Shopee, duplicate and manual pedidos never call the route.
+- **Where the re-check gates:**
+  - **Hard gates** refuse: the checkout save, after its last confirm and before the checkout transaction (which removes stock, before the NF-e and the label); and the Melhor Envio buy, at the Comprar click. `nao-pago`, `desconhecido`, `contestado`, a numero or shipment mismatch and a Loja Integrada 404 refuse there.
+  - **Soft gates** warn: every Melhor Envio reprint and every generic label. A verdict outside the authorised set shows a warning whose "Continuar" is enabled only after "Estou ciente do risco" is ticked.
+  - **Unverifiable** answers ask a cause-specific "continuar?" confirm at every gate: configuration (the switch is off, the conta is parked, inactive or has no token, an older backend, no client) or transient (a throttle, a 5xx, a timeout, the network). A soft gate never asks more than a hard one. The route logs every unverifiable answer with its cause, and the checkout records who saved it.
+  - A `pago` from the checkout rides that checkout's chain and is reused at its later gates when under 120 s old by the browser's own clock. Nothing else is cached.
+  - The `lojaIntegradaPedidoContestado` aviso's wording names the two refused actions and the two acknowledged ones.
+- **Firestore:** reads `pedidos`, `int_frete`, `integracao`, `avisos` and the credential store, all by id. Writes one guarded pedido update (the routing route) and nothing else. **Indexes:** none new: every read is by id, and the picker reuses step 20's targets query over `int_frete (tipo, nome)`. **Rulesets:** none (`FREIGHT_TIPO_CAPS` is not a Meta, and both routes read and write through Admin). **Env:** none new; `LOJA_INTEGRADA_CHAMADAS` gains the payment route as a reader. The routing route reads none.
+- **Seam:** the resolver and guards in `packages/schemas/src/mapaFreteLojaIntegrada.ts`; the two wire contracts; `lib/checkout/etiqueta/types.ts`, which gains a REQUIRED `lojaIntegradaClient` dep, a REQUIRED `confirmarCiente` ui member and an optional carried verdict. `resolverIntFrete` does not change.
+- **Rule 7:**
+  - The routing write is **tier 1**: `update({ freteInicial }, { lastUpdateTime })` against the attempt's own read, with every guard re-derived from that read. On `FAILED_PRECONDITION` or `NOT_FOUND` it re-reads and re-decides, at most 3 attempts, then answers 503 `rotaEmConflito`. The block is written back as read with only the routing keys replaced, so an unmodelled key survives. There is no transaction and no Loja Integrada call, so no `firestore-transaction-inventory` row. It loses cleanly to the importer, a Melhor Envio buy, another tab, an editor save and a reversal import.
+  - The re-check is a check-then-act across a network call. The residual is a reversal in the seconds between the check and the commit, the buy or the print. It is named, and the checkout transaction's own `pago` guard still holds.
+- **Dry-run/valve:** none toward Loja Integrada (read-only). The one live read sits behind the read switch; while it is off the route answers from the ERP mirror or `503 LI_CHAMADAS_DESLIGADAS`, with zero calls (D17).
+- **PRs:** 15-a the schemas (the resolver and guards, both contracts, the preimage, the retirada rule, the codes, this text); 15-r the routing route; 15-b0 the web pieces the flip does not need (the client methods and their threading, the soft gates, the checkout bridge, phase 2 on the shared retirada rule, the page's routed-frete map and picker); 15-b the caps flip; 15-d the hard gates; 15-e the importer onto the shared evaluator; 15-c the payment route. Only 15-b touches an NF-e live path (`packages/schemas/src/shared/frete.ts`).
 - **Verification:**
-  - Routing table: a non-`lojaIntegrada` `int_frete` is used directly; override wins; a mapa match (by the key precedence the step-15 plan picks) with `integracaoUid` set, including two rows under one id with different codes; an entry with `integracaoUid` unset does not match; no match aborts with "sem mapeamento".
-  - Paid re-check table, including 1019, 1020 and an LI error.
-  - Live re-check at the window.
-- **Timing:** after step 5 (the `freteInicial` it routes) and step 20 (the mapa); before step 7 (its postings feed the write-back).
-- **Does NOT:** Enviali (D6); fetch any LI label (none exists); rewrite migrated pedidos that already point at a target `int_frete`.
+  - The resolver from both sides: the full key vs the same id under another code; the uid forms; service `3` ≡ `'3'` vs `'03'`; an absent `ativo` vs `false`; a bare vs a `documents/` override vs another collection (never a fallback); a hand-picked Melhor Envio target with a Melhor Envio row vs a motoboy row; the back-ref forms vs another conta; a pickup vs a motoboy target without an address; the retirada rule from `checkFinalizado` only.
+  - The routing route on the app fake (one stamped write per attempt, an unmodelled key survives, every guard refuses with zero writes, a lost race re-decides, 403 without `frete.write`, no `fetch`) and on the emulator (a stale stamp lands nothing).
+  - The re-check table over all 16 codigos, 1019 and 1020 included; identity before the switch; the mirror only when the live read cannot run; both gate tables total over the error codes.
+  - e2e: the soft gate on a row reprint; the router on `/pedidos` with a list filter active; the hard gates at checkout, with exactly one payment call in the whole chain.
+  - Live at the window (§5 item 9).
+- **Window:** `apps/loja-integrada` (both routes) deploys before `apps/web` (§5 item 5). Before the window, the owner runs a read-only census (end of §5).
+- **Timing:** after step 5 (the `freteInicial` it routes) and step 20 (the mapa); before step 7, whose postings reach a pedido through the routed target (see step 7's Timing).
+- **Does NOT:** write to Loja Integrada; fetch a Loja Integrada label (none exists); use Enviali (D6); set `externalOptionIntegracao` (it stays `null` on Loja Integrada blocks); widen `resolverIntFrete`; re-point an already-routed pedido or the corpus in bulk; chain a buy from the routing click; change `ORIGENS_INCIDENTE_MARKETPLACE` (the NF-e half of a dispute stays with step 12).
 
 ### Steps 16–19: DROPPED (see §4.24)
 
@@ -1334,7 +1363,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 - **Produto LI tab + "Enviar"** (step 11): **no `MercadoLivreTab` fork.** The LI tab is a thin LI-specific component over shared primitives. Whether anything is extracted is decided in the step-21 plan, with the second channel's needs in hand.
 - **The variation linker** on `grupoDeVariacoes` (step 10) and **the import screen** (step 9) are new LI-specific surfaces, with their job cards via `contaJobs` (`useContaJobFan`, a `describe<Job>StartError` beside the client).
 - **Row/bulk actions:** one provider file plus one `PROVIDERS` row in `lib/marketplace/{estoque,preco,anuncioStatus}/registry.ts`. `caps/registriesAlinhadas.test.ts` requires them before `implementado` flips.
-- **Frete tab:** the target selector (`integracaoTargetOuterRef`) for LI pedidos (step 15).
+- **Per-pedido carrier choice** (`integracaoTargetOuterRef`): step 15's "Escolher transportadora…" picker in the `/pedidos` row action. The Frete tab cannot carry it: the estado lock disables the tab outside the cart estados, and LI pedidos import at `pago`.
 - ⚠️ **`apps/web` calls the DEPLOYED backend, even in local dev.** `call<T>()` already validates its response against a schema (the earlier note that it casts is stale), but each web PR still names the backend version it needs, and the UI tolerates an older backend: it feature-probes, never assumes. The Loja Integrada client also refuses to send from an `https:` page to a plain `http:` base URL, because the PUT body carries the store's token.
 - **Firestore:** `integracao` via the existing Meta.
   - **Indexes:** the TableView update-monitor query on `integracao` with `tipo == 3` reuses `integracao (tipo ASC, nome ASC)` / `(tipo ASC, dataCadastro DESC)`, whichever the meta's `defaultQuery` orders by. This is verified by `defaultQuery.indexes.test.ts` in the step-21 PR.
@@ -1377,7 +1406,10 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 | Stock deltas | per changed SKU: PUT + read-back GET (+1 GET under reservation model A); assumes ≤ 200 SKU movements/day across all channels, to be measured | 400–600 |
 | Price deltas | per child: GET + PUT + read-back GET (3); rare | ≤ 50 |
 | Daily reconcile | estoque + preço list pages (500 rows: 25 + 25 at `limit` 20, 5 + 5 at 100), diff PUTs, list read-back | 60–110 |
-| **Steady total** | | **≈ 1,000–1,400/day ≈ 45–60/h ≈ 1 % of the bucket** |
+| Paid re-check (step 15) | one `GET /v1/pedido/{numero}` per LI checkout, plus one per Melhor Envio buy, reprint or generic label not covered by a `pago` carried from that checkout (under 120 s); outside the queues, through the context's 2 s pacer. The routing route calls nothing | ~20–60 |
+| **Steady total** | | **≈ 1,050–1,450/day ≈ 45–60/h ≈ 1 % of the bucket** |
+
+The 2 s pacer of the paid re-check is a sleep before each request, not a shared rate limiter: concurrent checkouts are not serialised against each other. At D12's ~20 orders/day per store they stay far under 100/min.
 
 **Queues (decided; the reads queue's numbers confirmed by the step-3 plan):** two Cloud Tasks queues, shared by both stores, **each with `maxConcurrentDispatches: 1`**. Step 3 ships only the reads queue; the writes queue ships with its first producer, step 7.
 - **Pacing:** a pacer waits **2,000 ms before every LI call** made through a context (inside the credential getter, outside the 20 s request deadline). Because each queue runs one task at a time, N calls take at least N × the interval across task boundaries, with no shared state.
@@ -1510,6 +1542,9 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
      - the console lists `onIntegracaoLojaIntegradaChanged` as a Firestore trigger on database `default`, and `gcloud eventarc triggers list --project <new>` shows its trigger (event type `google.cloud.firestore.document.v1.written`) filtered to database `default` and the `integracao/*` path;
      - a mirrored field change reaches the doc: rename one conta and rename it back, then confirm that its `int_frete` doc's `nome` followed and its `ultimaModificacao` moved, or find the `[loja-integrada] onIntegracaoLojaIntegradaChanged` log line with action `atualizado`. A conta save that touches no mirrored field writes nothing, by design, and right after item 11's `--apply` every adopted doc is already in sync, so a plain save proves nothing.
    - **`apps/melhor-envio` App Hosting before `apps/web`** (step 20's service list, `/api/freight/melhor-envio/servicos`): a preference, not a hard order. The conta screen's service select feature-probes the route, so with `apps/web` first a new Melhor Envio target cannot be picked until the route rolls out, and nothing breaks.
+   - **`apps/loja-integrada` App Hosting before `apps/web`** (step 15's two routes, `…/pedidos/[pedidoId]/rota-etiqueta` and `…/pedidos/[pedidoId]/pagamento`, in one rollout):
+     - **required for label routing:** until the backend serves `rota-etiqueta`, every LI pedido still on its conta's Loja Integrada doc refuses "Definir transportadora" and prints no label at checkout. Nothing is written wrong;
+     - **a preference for the paid re-check:** the web reads a missing `pagamento` route as "não verificável" and asks the operator to confirm.
    - **Why the timing:** on Enterprise a missing index full-scans and bills instead of failing; an enqueue against a queue that does not exist yet is dropped while the route answers 200; `apps/web` calls the deployed backend.
    - **Rulesets deployed:** those regenerated by steps 9, 10, 12 and 13 (if a collection was added). Steps 2, 3, 5, 6 and 20 regenerate none: step 2's credential subcollection and step 3's collections (`notificacoesLojaIntegrada`, `pollPedidosLojaIntegrada`) are bare and default-denied, which `gen:rules:check` verifies; steps 5 and 6 add only aviso enums, which never reach the generator, and write no new pedido or pagamento field; step 20's back-ref is a schema field on `int_frete`, which is not in the validator whitelist.
   - **Env at rollout (step 2):** the `apps/loja-integrada` rollout must set `ALLOWED_ADMIN_ORIGINS` (without it the backend allows no origin and every browser call fails CORS), and the `apps/web` rollout must set `NEXT_PUBLIC_LOJA_INTEGRADA_URL` to an `https:` origin (without it the credential panel stays disabled and says the backend is not configured).
@@ -1554,7 +1589,8 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
      - the formas come out as 15, 17 or 3, and a pix payment carries a `cartao` block;
      - an order with freight has modalidade `'0'`;
      - `enderecoFreteOuterReference` is set;
-     - an unmatched line raises an incidente.
+     - an unmatched line raises an incidente;
+     - **the paid re-check (step 15):** on the first real LI checkout after the read switch flips (no order is checked out just for the test), the `[loja-integrada]` log shows a 2xx `chamada` line for `buscarPedido` under `fluxo: conferencia-pagamento`, and the checkout proceeds without a confirm. If no checkout happens that day, watch the next one.
    - **Why:** fixtures cannot prove the NEW code's live read path. The legacy's live use of Personal Tokens (§1.3) proves the endpoints and the credential, not this code.
 10. **Revoke the legacy app's Personal Tokens.**
    - **Phase:** Phase 4, after the legacy app is switched off **and** after the new integration's first calls succeed with its own tokens (item 1).
@@ -1566,6 +1602,12 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Action:** the one-shot `tools/migrations` script written in step 20's PR, in the shape of Shopee's `migrate:shopee-int-frete` (#1889): dry run → `--apply` → dry run again. It plans through the trigger's own zero-option binding, `intFreteContaSync(VINCULO_INT_FRETE_CONTA.lojaIntegrada)` with no `refTolerante`, and applies through that binding's `reconciliarIntFreteDaConta`. It adopts the imported `EnviosLojaIntegrada` docs, creates the missing ones at `<prefixoDocId>-<integracaoId>`, and deactivates the orphans. It STOPS on duplicates, non-canonical back-refs and a doc two contas claim: `--apply` refuses before its first write while any is left, and a person resolves each one, never by deleting a doc.
    - **Verify:** before the functions deploy, a dry run reports zero `duplicados`, `nao-canonico` and `compartilhado` rows. The dry run after `--apply` reports zero contas with a planned write (the idempotence check).
    - **Why the timing:** an import fires no trigger, so no imported conta reaches `onIntegracaoLojaIntegradaChanged`. The binding has no tolerant scan, so a migrated doc whose back-ref is not canonical is invisible to the lookup. That conta's first save after the deploy would create `<prefixoDocId>-<integracaoId>` beside it with a null `mapa`, and step 5 would then import every order unmapped while the operator's mapping sits on the doc nothing reads. Not earlier: until the switch the legacy app is the sole live writer of these docs (it appends to `mapa` on import), so an earlier run is superseded.
+
+**Before the window: a read-only census (step 15; an owner task, not a #1208 phase step).** On the legacy project, counts only, nothing written:
+- (a) LI pedidos whose `freteInicial` ref is the conta's Loja Integrada doc **and** that carry a `printLabelId`;
+- (b) LI pedidos with a non-null `integracaoTargetOuterRef`, split by the tipo of the doc it names;
+- (c) LI pedidos on the Loja Integrada doc in open estados, and among them those whose doc is inactive or names another conta;
+- (d) the unmapped `mapa` rows per conta (step 20's dry-run audit).
 
 ---
 
