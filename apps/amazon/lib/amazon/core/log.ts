@@ -93,14 +93,20 @@ export interface LoggerAmazon {
   error(mensagem: string, campos?: CamposLogAmazon): void;
 }
 
-/** What a line is about. Step 2b-c adds `'valvula'`. */
-export type EventoAmazon = 'chamada' | 'chamada-bloqueada';
+/**
+ * What a line is about: a call, a call the read switch refused, or a write
+ * valve read at the start of a run (`valvulas.ts`).
+ */
+export type EventoAmazon = 'chamada' | 'chamada-bloqueada' | 'valvula';
 
 /** What a NON-call line is about: `chamada` is written by the observer alone. */
 export type EventoAvulsoAmazon = Exclude<EventoAmazon, 'chamada'>;
 
 /** Every {@link EventoAvulsoAmazon}, at run time (a new member fails to compile until listed). */
-const EVENTOS_AVULSOS: Readonly<Record<EventoAvulsoAmazon, true>> = { 'chamada-bloqueada': true };
+const EVENTOS_AVULSOS: Readonly<Record<EventoAvulsoAmazon, true>> = {
+  'chamada-bloqueada': true,
+  valvula: true,
+};
 
 /** The body excerpt's cap, in UTF-8 bytes, applied AFTER the regex layer. */
 export const MAX_TRECHO_CORPO_BYTES = 2048;
@@ -475,7 +481,7 @@ const CHAVES_DO_ENVELOPE: ReadonlySet<string> = new Set([
 const CAMPO_DO_TRECHO = 'trechoCorpo';
 
 /**
- * Any other event line (a call the read switch refused; 2b-c's valve read). Its
+ * Any other event line (a call the read switch refused; a write valve read). Its
  * envelope — `evento`, then each of `conta`, `fluxo`, `tentativa`, `idTarefa`,
  * `idNotificacao` the caller GAVE, through the same grammars as a call line —
  * is written LAST, and a campo holding an envelope name is dropped, so no campo

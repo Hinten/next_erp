@@ -24,7 +24,7 @@ runConfig:
 # call by its LWA access token alone (no AWS IAM or SigV4 since 2023-10-02,
 # master plan step 1).
 #
-# Environment this backend reads (step 2). None of it gets an `env:` row below,
+# Environment this backend reads (steps 2 and 2b). None of it gets an `env:` row below,
 # on purpose: COMMENT ROWS ONLY, so nothing baked into the manifest can override
 # a console value during the window, and the list stays here so the next step
 # that reads a variable declares it in the same change:
@@ -69,6 +69,24 @@ runConfig:
 #                                runs in the nested functions codebase (step 3),
 #                                which reads it from its own deploy env. Listed so
 #                                nobody sets it here expecting an effect.
+#
+# The write valves and canary lists (`lib/amazon/core/valvulas.ts`, step 2b). No
+# write flow reads them yet. Every one stays UNSET until the migration window
+# opens its flow (master plan §5, W8: `dry-run`, then a canary list, then `on`,
+# then `*`), and each is set ALIKE on both surfaces (this console and the
+# functions codebase), or the two disagree about what is written:
+#
+#   AMAZON_MODO_ESTOQUE          The stock valve. Only the exact `on` writes and
+#                                only the exact `dry-run` diffs; anything else is off.
+#   AMAZON_MODO_PRECO            The price valve. Same polarity.
+#   AMAZON_MODO_NFE              The NF-e upload valve. Same polarity.
+#   AMAZON_MODO_AGENDAMENTO      The Easy Ship scheduling and label valve. Same polarity.
+#   AMAZON_CANARIO_ESTOQUE       The stock canary list: unset means NO target, exactly
+#                                `*` means every target (and the only feed), else
+#                                `<contaId>:<sku>` entries joined by `,`, no spaces.
+#   AMAZON_CANARIO_PRECO         The price canary list. Same form as stock.
+#   AMAZON_CANARIO_NFE           The NF-e canary list: `<contaId>:<orderId>` entries.
+#   AMAZON_CANARIO_AGENDAMENTO   The scheduling canary list. Same form as the NF-e.
 #
 # The two Secret Manager values are NOT committed anywhere: the root secrets
 # template lists their names blank, and the rollout that creates the backend

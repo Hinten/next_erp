@@ -29,7 +29,7 @@
  *    query, the credential ref and the full response text, and only the logger
  *    redacts them;
  *  - (step 2b) no `.message` inside a logger call (any `.info|warn|error(`, or
- *    either non-call line writer), no `console.` anywhere, no `catch` in the
+ *    any non-call line writer), no `console.` anywhere, no `catch` in the
  *    logger or the redactor (they are total by construction), and only the
  *    logger writes a `trechoCorpo` campo;
  *  - (step 2b) the generated leaf inventory keeps its `.prettierignore` and
@@ -407,11 +407,12 @@ function violacoesDoSeam(arquivo: string, texto: string): string[] {
 /**
  * Every way a line is written here: ANY `.info(` / `.warn(` / `.error(` call —
  * on `logger`, `LOGGER_STDOUT_AMAZON`, `deps.logger?`, or the object
- * `warnNaoTipado(…)` returns — plus the two non-call line writers. Fail closed:
- * a receiver of another name is still a logger call to this scan.
+ * `warnNaoTipado(…)` returns — plus the three non-call line writers (the valve's
+ * run-start line takes an envelope a caller fills). Fail closed: a receiver of
+ * another name is still a logger call to this scan.
  */
 const CHAMADA_DE_LOG =
-  /(?:\.(?:info|warn|error)|\b(?:registrarEventoAmazon|registrarChamadaBloqueadaAmazon))\(/g;
+  /(?:\.(?:info|warn|error)|\b(?:registrarEventoAmazon|registrarChamadaBloqueadaAmazon|registrarValvulaAmazon))\(/g;
 
 /**
  * Logger calls whose argument list reads a `.message` (an `AmazonError` message
@@ -604,7 +605,11 @@ describe('the step-2b logger guards', () => {
     );
     expect(chamadas.length).toBeGreaterThanOrEqual(15);
     expect(chamadas).toEqual(
-      expect.arrayContaining(['registrarEventoAmazon(', 'registrarChamadaBloqueadaAmazon(']),
+      expect.arrayContaining([
+        'registrarEventoAmazon(',
+        'registrarChamadaBloqueadaAmazon(',
+        'registrarValvulaAmazon(',
+      ]),
     );
   });
 
@@ -725,6 +730,26 @@ describe('the guards, on synthetic source', () => {
       }),
     );
     expect(fecho.externos.filter(proibidoNoFecho)).toEqual(['@delfrance/data/admin']);
+  });
+
+  it('import closure: valvulas.ts → idConta.ts and log.ts is accepted (the conta grammar, light)', () => {
+    const fecho = fechoDeImportacoes(
+      ['core/valvulas.ts'],
+      leitor({
+        'core/valvulas.ts':
+          "import type { AmbienteAmazon } from '../env';\nimport { idDeContaValido } from './idConta';\nimport { registrarEventoAmazon } from './log';",
+        'env.ts': "import { somarDiasCivis } from '@delfrance/core/datetime';",
+        'core/idConta.ts': 'export const y = 1;',
+        'core/log.ts': "import { idDeContaValido } from './idConta';",
+      }),
+    );
+    expect(fecho.arquivos).toEqual([
+      'core/idConta.ts',
+      'core/log.ts',
+      'core/valvulas.ts',
+      'env.ts',
+    ]);
+    expect(fecho.externos.filter(proibidoNoFecho)).toEqual([]);
   });
 
   it("import closure: valvulas.ts → contas.ts is flagged, through Firestore's handle", () => {
@@ -851,6 +876,7 @@ describe('the guards, on synthetic source', () => {
     for (const fonte of [
       "registrarEventoAmazon(logger, 'chamada-bloqueada', 'INFO', 'm', { e: err.message });",
       'registrarChamadaBloqueadaAmazon(logger, { rota: err.message, valor });',
+      'registrarValvulaAmazon(logger, valvula, { idTarefa: err.message });',
       "warnNaoTipado(deps.logger).warn('m', { e: err.message });",
       "registro.error('m', { e: err.message });",
     ]) {
