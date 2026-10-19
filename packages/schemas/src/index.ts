@@ -1542,10 +1542,20 @@ export * from './receitaKitShopee';
 // The Loja Integrada freight `mapa` rules (step 20, #1826): the shipping-method
 // key, the "mapped" target id, the raw presence read, the appended row and the
 // target tipos — the importer, the conta screen and the window pass all call
-// them (#1369). Not a collection, so no `registry.ts` entry. A star export on
+// them (#1369). Since step 15 (#1825) also the label half of the route resolver
+// and its guards. Not a collection, so no `registry.ts` entry. A star export on
 // purpose: the fold-inventory scan greps raw text, so a listed barrel would need
 // a row.
 export * from './mapaFreteLojaIntegrada';
+
+// The Loja Integrada label step (step 15, #1825): the paid re-check's verdict,
+// wire contract, situação labels and order-id preimage; the label routing route's
+// wire contract; and the checkout's retirada hand-off rule, shared by phase 2 and
+// that route. Not collections, so no `registry.ts` entry; outside `pedido/` and
+// `shared/frete.ts`, so no NF-e live run. Star exports, for the same raw-text
+// reason as above.
+export * from './rotaEtiquetaLojaIntegrada';
+export * from './faseRetirada';
 
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row
