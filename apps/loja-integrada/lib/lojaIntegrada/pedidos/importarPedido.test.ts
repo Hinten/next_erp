@@ -17,7 +17,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 import type { ViaCepClient } from '@delfrance/core/cep';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { pagamentoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
+import {
+  incidenteCollection,
+  pagamentoCollection,
+  pedidoCollection,
+} from '@delfrance/data/admin/collections';
 import {
   ClienteSemIdentidadeForteError,
   findOrCreateCliente,
@@ -483,13 +487,27 @@ describe('import step 1: every refusal before any write', () => {
     ['another numero', { numero: NUMERO_LI + 1 }, 'numero'],
     ['an unreadable stamp', { data_modificacao: '2027-01-10 12:00:00' }, 'data_modificacao'],
   ])('%s ⇒ a LiSchemaError naming its field, and zero writes', async (_nome, over, campo) => {
-    const db = novoDb();
-    const c = cena(over as DocData);
+    // Steps 6 and 7 WOULD write here (the mapa row, the cliente, the endereço — the near-miss
+    // below): the refusal must come before them, not merely before the batch.
+    const db = dbQueEscreveAntesDoLote();
+    const c = cena({ cliente: COMPRADOR_COM_CPF, ...(over as DocData) });
     const antes = db.escritas.length;
     const err: unknown = await importar(db, c).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(LiSchemaError);
     expect((err as LiSchemaError).campos).toContain(campo);
     expect(db.escritas.length).toBe(antes);
+    expect(mockCliente).not.toHaveBeenCalled();
+    expect(db.ler(CAMINHO_INT_FRETE)?.mapa).toEqual([]);
+  });
+
+  it('near-miss: the same fixture with a valid order writes the mapa row, resolves the cliente and stores the endereço', async () => {
+    const db = dbQueEscreveAntesDoLote();
+    expect((await importar(db, cena({ cliente: COMPRADOR_COM_CPF }))).r).toEqual({
+      kind: 'importado',
+    });
+    expect(mockCliente).toHaveBeenCalledTimes(1);
+    expect((db.ler(CAMINHO_INT_FRETE)?.mapa as DocData[]).length).toBe(1);
+    expect(db.idsEm(`clientes/${CLIENTE_ID}/enderecos`)).toHaveLength(1);
   });
 
   it('a pedido body the schema refuses (a conta operação that is not a ref) ⇒ ZodError, zero pedido and zero pagamento', async () => {
@@ -502,6 +520,13 @@ describe('import step 1: every refusal before any write', () => {
     expect(escritasDoPedido(db)).toEqual([]);
   });
 });
+
+/** A conta with its Loja Integrada int_frete: an import with a documented buyer writes at steps 6 and 7. */
+function dbQueEscreveAntesDoLote(): FakeDb {
+  const db = novoDb();
+  seedIntFrete(db);
+  return db;
+}
 
 function linhaPadrao(): DocData {
   return (pedidoLiBruto().itens as DocData[])[0]!;
@@ -631,14 +656,15 @@ describe('the hub guard (D5)', () => {
   );
 
   it('near-miss: the same payment WITHOUT a hub marker is refused before any write', async () => {
-    const db = novoDb();
+    const db = dbQueEscreveAntesDoLote();
     const antes = db.escritas.length;
     const err: unknown = await importar(
       db,
-      cena({ pagamentos: [{ ...pagamentoPadrao(), id: 0 }] }),
+      cena({ cliente: COMPRADOR_COM_CPF, pagamentos: [{ ...pagamentoPadrao(), id: 0 }] }),
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(LiSchemaError);
     expect(db.escritas.length).toBe(antes);
+    expect(mockCliente).not.toHaveBeenCalled();
   });
 
   it('near-miss: an empty-text `id_anymarket` is the provider’s “nothing”, read through the wire schema ⇒ imported, no hub row raised', async () => {
@@ -757,6 +783,49 @@ describe('the cliente and the endereço (import step 7)', () => {
       externalOptionData: null,
       valorCobrado: 14.8,
     });
+  });
+
+  /** The pedido without its identity incidente (a migrated pedido never had one). */
+  async function semIncidenteDeIdentidade(db: FakeDb): Promise<void> {
+    await incidenteCollection
+      .docRef(asDb(db), { pedidoId: PEDIDO_ID }, ID_INCIDENTE_LI.clienteSemIdentidade)
+      .delete();
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).not.toContain(
+      ID_INCIDENTE_LI.clienteSemIdentidade,
+    );
+  }
+
+  it('⚠️ an identity-less buyer while another writer links a cliente between the read and the batch ⇒ NO “sem cliente” incidente on a pedido that holds one', async () => {
+    const db = novoDb();
+    await importar(db, cena());
+    await semIncidenteDeIdentidade(db);
+    const outro = 'documents/clientes/cliente-de-outro-escritor';
+    let ligou = false;
+    db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
+      ligou = true;
+      await refPedido(db).update({ clientePedidoOuterRef: outro });
+    });
+    expect((await importar(db, cena({ data_modificacao: carimboLi(3) }))).r).toEqual({
+      kind: 'importado',
+    });
+    expect(ligou).toBe(true);
+    expect(db.ler(CAMINHO_PEDIDO)?.clientePedidoOuterRef).toBe(outro);
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).not.toContain(
+      ID_INCIDENTE_LI.clienteSemIdentidade,
+    );
+  });
+
+  it('near-miss: the same identity-less import with no concurrent link ⇒ the incidente is raised', async () => {
+    const db = novoDb();
+    await importar(db, cena());
+    await semIncidenteDeIdentidade(db);
+    expect((await importar(db, cena({ data_modificacao: carimboLi(3) }))).r).toEqual({
+      kind: 'importado',
+    });
+    expect(db.ler(CAMINHO_PEDIDO)?.clientePedidoOuterRef).toBeNull();
+    expect(db.idsEm(`${CAMINHO_PEDIDO}/incidentes`)).toContain(
+      ID_INCIDENTE_LI.clienteSemIdentidade,
+    );
   });
 
   it('an unknown estado ⇒ the CEP recovery, through the injected client', async () => {

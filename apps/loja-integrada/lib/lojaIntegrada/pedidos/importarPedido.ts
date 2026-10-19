@@ -53,7 +53,8 @@
  *     the endereço. The registration and the aviso run either way.
  *  7. **The cliente and the endereço**, only while `S` holds no refs. A buyer
  *     with no strong identity and no match imports without either, plus an
- *     incidente.
+ *     incidente — raised at step 11 only while the pedido the winning attempt
+ *     kept still holds no cliente (another writer may have linked one).
  *  8–10. **The pedido and its pagamentos, in ONE atomic batch**
  *     (`escritaPedido.ts`, whose header is the rule-7 contract): every write
  *     parsed before the batch, each under its own precondition; a lost one
@@ -681,7 +682,10 @@ export async function importarPedidoLi(
     linhasSemProduto,
     jaVinculadas: linhasJaVinculadasLi(itensGuardados),
     multiEnvio: blocoFinal?.multiEnvio ?? false,
-    clienteSemIdentidade: partes.semIdentidade,
+    // Step 7 decided from S; the pedido holds what the WINNING attempt kept — a cliente
+    // another writer linked meanwhile is no pedido "without a cliente".
+    clienteSemIdentidade:
+      partes.semIdentidade && mapeadoFinal.preencherUmaVez.clientePedidoOuterRef === null,
     totaisDivergentes:
       itens.divergente ||
       (blocoFinal?.valorDivergente ?? false) ||
