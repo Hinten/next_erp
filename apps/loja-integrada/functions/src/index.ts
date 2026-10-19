@@ -138,7 +138,8 @@ function registrarRaia(
  *
  * 540 s: up to twenty rows processed SEQUENTIALLY, each of which may make a
  * paced Loja Integrada round trip (2 000 ms before every call) once the read
- * switch and the importer are on — the gen2 60 s default cannot absorb that.
+ * switch is on (the importer is bound since step 5) — the gen2 60 s default
+ * cannot absorb that.
  */
 export const reprocessLojaIntegradaNotifications = onSchedule(
   {

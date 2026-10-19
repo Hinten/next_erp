@@ -18,9 +18,11 @@ import {
  *   loader ONCE, as its first statement, for the read switch only. `lib/` never
  *   names the process environment itself (`estrutura.test.ts`).
  * - `importador`: the step-5 seam, read from the table HERE, per run — never
- *   cached at module load and never hard-coded. Step 5 fills
- *   `DESTINO_TIPO_LI.pedido` and both roots pick it up with no edit of their own;
- *   until then it is `null`, and a run parks as `importador-ausente`.
+ *   cached at module load and never hard-coded. Step 5 filled
+ *   `DESTINO_TIPO_LI.pedido` with the order import and both roots picked it up
+ *   with no edit of their own. The read switch still stops every run before it
+ *   (the context refuses first), so nothing calls Loja Integrada until the
+ *   window sets it.
  * - `increment`: a tier-0 `FieldValue`, for the reconexão aviso's counter, so two
  *   producers landing together cannot lose each other's bump.
  * - `esperar`: the pacer's sleep (2 000 ms before every Loja Integrada call).

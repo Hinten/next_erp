@@ -41,7 +41,7 @@ import {
   LiEstacionamentoEmConflitoError,
 } from '../core/erros';
 import { LiPedidoEmConflitoError } from '../pedidos/escritaPedido';
-import { LiHistoricoIncompletoError } from '../pedidos/importarPedido';
+import { LiHistoricoIncompletoError, importarPedidoLi } from '../pedidos/importarPedido';
 import { type DocData, FakeDb, arrayUnion, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   AGORA_MS,
@@ -66,6 +66,7 @@ import {
   LIMITE_REDRIVE_LI,
   MOTIVO_ADIAMENTO_LI,
   type PayloadNotificacaoLi,
+  type ResultadoImportacaoLi,
   type ResultadoNotificacaoLi,
   camposDoRegistroDaTarefaLi,
   classificarFalhaLi,
@@ -220,10 +221,32 @@ async function refAtual(db: FakeDb, id = ID): Promise<string> {
 /* -------------------------------------------------------------------------- */
 
 describe('the queue and the importer seam', () => {
-  it('the reads queue is named for its function, and the seam is EMPTY in step 3', () => {
+  it('the reads queue is named for its function, and the seam holds the step-5 order import', () => {
     expect(FILA_LEITURA_LI).toBe('filaLeituraLojaIntegrada');
-    expect(DESTINO_TIPO_LI).toEqual({ pedido: null });
-    expect(importadorPedidoLi()).toBeNull();
+    // One `tipo`, filled: the order import itself, never a wrapper or a stand-in.
+    expect(Object.keys(DESTINO_TIPO_LI)).toEqual([TIPO_TAREFA_LI.pedido]);
+    expect(DESTINO_TIPO_LI[TIPO_TAREFA_LI.pedido]).toBe(importarPedidoLi);
+    expect(importadorPedidoLi()).toBe(importarPedidoLi);
+  });
+
+  it('D17: with the seam FILLED, a run whose switch is not exactly `on` still defers before any read — the importer never starts', async () => {
+    const db = new FakeDb();
+    contaSaudavel(db);
+    // The roots' own binding, not a fake: the seam as the functions hand it over.
+    const deps = depsTarefa({ ambiente: {}, importador: importadorPedidoLi() });
+    expect(deps.importador).toBe(importarPedidoLi);
+
+    const r = await tratarTarefaLeituraLi(asDb(db), pedido(), 0, deps);
+
+    expect(r).toEqual({ outcome: 'deferred', kind: 'adiado', detail: null });
+    // The importer's first act is a detail GET, then a pedido read: neither ran.
+    expect(db.leituras).toEqual([]);
+    expect(db.consultas).toEqual([]);
+    expect(db.escritas.map((e) => [e.verbo, e.caminho])).toEqual([['create', caminhoDe(pedido())]]);
+    expect(db.ler(caminhoDe(pedido()))).toMatchObject({
+      status: 'deferred',
+      erro: 'adiado/chamadas-desligadas',
+    });
   });
 });
 
@@ -300,6 +323,35 @@ describe('the dedup key — the ORDER, whatever stamp or origin', () => {
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Every outcome kind and the disposition it must map to — a MAPPED type over
+ * the union, so a kind added later (above all a new importer outcome) fails to
+ * compile here until it is listed, and a kind removed fails as an excess key.
+ */
+const DISPOSICAO_DE_CADA_KIND: {
+  readonly [K in ResultadoNotificacaoLi['kind']]: ReturnType<typeof toDispositionLi>['kind'];
+} = {
+  importado: 'resolve',
+  'sem-mudanca': 'resolve',
+  obsoleto: 'resolve',
+  hub: 'resolve',
+  'situacao-desconhecida': 'resolve',
+  'conta-inexistente': 'drop',
+  adiado: 'defer',
+  'pedido-inexistente': 'park',
+  'recusa-deterministica': 'park',
+  'importador-ausente': 'park',
+};
+
+/** Every kind the importer itself returns — exhaustive by the same mapped-type rule. */
+const KINDS_DO_IMPORTADOR: { readonly [K in ResultadoImportacaoLi['kind']]: K } = {
+  importado: 'importado',
+  'sem-mudanca': 'sem-mudanca',
+  obsoleto: 'obsoleto',
+  hub: 'hub',
+  'situacao-desconhecida': 'situacao-desconhecida',
+};
+
 describe('toDispositionLi — total, phase-independent', () => {
   const casos: readonly [ResultadoNotificacaoLi, ReturnType<typeof toDispositionLi>][] = [
     [{ kind: 'importado' }, { kind: 'resolve', label: 'importado' }],
@@ -336,7 +388,23 @@ describe('toDispositionLi — total, phase-independent', () => {
     expect(toDispositionLi(resultado)).toEqual(esperado);
   });
 
-  it('has no `default` arm — a kind step 5 adds must fail to compile until it is mapped', () => {
+  it('the table above names EVERY outcome kind — checked against a list the compiler holds exhaustive', () => {
+    // A kind added to the union fails to compile in `DISPOSICAO_DE_CADA_KIND`
+    // until it is listed; this test then fails until `casos` exercises it.
+    expect(new Set(casos.map(([r]) => r.kind))).toEqual(
+      new Set(Object.keys(DISPOSICAO_DE_CADA_KIND)),
+    );
+    for (const [r, d] of casos) expect(d.kind, r.kind).toBe(DISPOSICAO_DE_CADA_KIND[r.kind]);
+  });
+
+  it.each(Object.values(KINDS_DO_IMPORTADOR))(
+    'the importer outcome %s RESOLVES — every one is a deterministic success',
+    (kind) => {
+      expect(toDispositionLi({ kind })).toEqual({ kind: 'resolve', label: kind });
+    },
+  );
+
+  it('has no `default` arm — a kind added later must fail to compile until it is mapped', () => {
     // CRLF-safe: a Windows checkout may hold the source with `\r\n`.
     const fonte = readFileSync(
       fileURLToPath(new URL('./notificacao.ts', import.meta.url)),
@@ -1142,7 +1210,8 @@ describe('the reverse window: a park landing between the re-drive’s query and 
   it('is reset to the hot lane — one extra attempt, then parked again; never a loss', async () => {
     const db = new FakeDb();
     contaSaudavel(db);
-    // Step 3: the importer seam is empty, so a healthy conta's row PARKS (`importador-ausente`).
+    // No importer injected (the library's `null`), so a healthy conta's row PARKS
+    // (`importador-ausente`): the park this window is about.
     const deps = depsTarefa();
     const caminho = seedNotificacao(db, pedido(), { status: 'deferred', tentativas: 2 });
     db.antesDaProximaEscrita(caminho, async () => {

@@ -11,15 +11,22 @@
  * order (D13), so nothing here maps a body. The shapes are
  * `packages/schemas/src/notificacaoLojaIntegrada.ts`.
  *
- * ## The task makes NO Loja Integrada call in step 3
+ * ## The importer seam
  *
- * The importer is a SEAM ({@link DESTINO_TIPO_LI}), empty until step 5 fills it.
- * The `LIB` functions take it as a required dependency (`deps.importador`), and
+ * The importer is a SEAM ({@link DESTINO_TIPO_LI}), filled in step 5 with the
+ * order import (`pedidos/importarPedido.ts`, {@link importarPedidoLi}). The
+ * `LIB` functions take it as a required dependency (`deps.importador`), and
  * only the functions codebase's composition roots read the table
- * ({@link importadorPedidoLi}) — so a test injects a fake importer, and step 5
- * fills the table without editing the task or the poller. With the seam empty
- * the outcome is `importador-ausente`, which PARKS: nothing could ever process
- * it, so it must not spend retries.
+ * ({@link importadorPedidoLi}) — so a test injects a fake importer, and filling
+ * the table edited neither the task nor the poller. An importer that is absent
+ * (a test's `null`, or a `tipo` no step has filled) answers
+ * `importador-ausente`, which PARKS: nothing could ever process it, so it must
+ * not spend retries.
+ *
+ * ⚠️ Filling the seam made nothing call Loja Integrada (D17): every run loads
+ * its context FIRST, and the context refuses unless the read switch is exactly
+ * `on` — so until the window a run DEFERS (`adiado/chamadas-desligadas`) before
+ * any Firestore read, and the importer never starts.
  *
  * ## The order of one run ({@link processarNotificacaoLi})
  *
@@ -40,7 +47,7 @@
  *
  * | outcome | task | hot sweep | deferred sweep |
  * | --- | --- | --- | --- |
- * | `importado`, `sem-mudanca`, `obsoleto`, `hub`, `situacao-desconhecida` (step 5) | resolve | delete | delete |
+ * | `importado`, `sem-mudanca`, `obsoleto`, `hub`, `situacao-desconhecida` (the importer) | resolve | delete | delete |
  * | `conta-inexistente` | drop | delete | delete |
  * | `adiado/<motivo>` | defer | migrate to `deferred`, `tentativas` 0 | stays deferred; parks at 7 |
  * | `pedido-inexistente` | park | park | park |
@@ -73,9 +80,10 @@
  * And the REVERSE direction: the re-drive's own write carries no precondition
  * (the shared store's `redrive`, never reordered here — plan section 4), so a
  * PARK that lands between the re-drive's query and its write of that row (the
- * deferred sweep's 7th pass, an `importador-ausente` park once the conta reads
- * clean, or a hot-sweep park of a row graduated in between) is reset to the hot
- * lane as `failed`/0/0. It costs one extra attempt, which parks again or imports.
+ * deferred sweep's 7th pass, a park the import answers once the conta reads
+ * clean — `pedido-inexistente`, a deterministic refusal —, or a hot-sweep park
+ * of a row graduated in between) is reset to the hot lane as `failed`/0/0. It
+ * costs one extra attempt, which parks again or imports.
  * The window runs from the query to that row's write round — at most
  * `ceil(LIMITE_REDRIVE_LI / CONCORRENCIA_REDRIVE_LI)` rounds, since the writes go
  * {@link CONCORRENCIA_REDRIVE_LI} at a time. If it ever matters: condition each
@@ -140,6 +148,7 @@ import { type TratarFalhaDeps, tratarFalhaDeAutenticacao } from '../core/estacio
 import type { OpcoesObservadorLi } from '../core/log';
 import { ritmoDeLeituraLi } from '../core/ritmo';
 import type { AmbienteLi } from '../core/valvulas';
+import { importarPedidoLi } from '../pedidos/importarPedido';
 
 // The retry caps are the SHARED pipeline's — re-exported so this module stays
 // the one import site for the channel's callers.
@@ -308,19 +317,23 @@ export type ImportadorPedidoLi = (
 ) => Promise<ResultadoImportacaoLi>;
 
 /**
- * The importer SEAM, keyed by task `tipo`. Empty in step 3: step 5 fills
- * `pedido`, and the functions codebase's roots pick it up through
- * {@link importadorPedidoLi} with no edit of their own.
+ * The importer SEAM, keyed by task `tipo`. Step 5 filled `pedido` with the
+ * order import, {@link importarPedidoLi} — a function DECLARATION, so the
+ * binding is initialised before any module body runs and this table never
+ * reads it uninitialised, whatever order the modules load in. The functions
+ * codebase's roots pick it up through {@link importadorPedidoLi} with no edit of
+ * their own.
  *
  * ⚠️ A typed TABLE, never `const X: T | null = null`: TypeScript narrows such a
- * constant to `null` at every use, which would make step 5's non-null branch
- * `never` and fail to compile the day it is filled.
+ * constant at every use. The value type stays nullable, so a `tipo` a later step
+ * adds may start empty, and the roots and the poller's importer gate keep
+ * reading the table rather than assuming it is full.
  */
 export const DESTINO_TIPO_LI: Readonly<Record<TipoTarefaLi, ImportadorPedidoLi | null>> = {
-  [TIPO_TAREFA_LI.pedido]: null,
+  [TIPO_TAREFA_LI.pedido]: importarPedidoLi,
 };
 
-/** The pedido importer, or `null` while the seam is empty. Read ONLY by composition roots. */
+/** The pedido importer, or `null` for an empty seam. Read ONLY by composition roots. */
 export function importadorPedidoLi(): ImportadorPedidoLi | null {
   return DESTINO_TIPO_LI[TIPO_TAREFA_LI.pedido];
 }
