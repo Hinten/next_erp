@@ -21,7 +21,7 @@
  * body and a log line.
  */
 import { somarDiasCivis } from '@delfrance/core/datetime';
-import { credencialLwaValida } from '@delfrance/integrations-amazon-sp-api';
+import { applicationIdValido, credencialLwaValida } from '@delfrance/integrations-amazon-sp-api';
 
 /** The process environment, as the entry point passes it in. */
 export type AmbienteAmazon = Readonly<Record<string, string | undefined>>;
@@ -40,6 +40,30 @@ export const STATE_SECRET_ENV = 'AMAZON_OAUTH_STATE_SECRET';
 export const WEB_APP_URL_ENV = 'WEB_APP_URL';
 /** The current LWA client secret's recorded expiry, `YYYY-MM-DD` (São Paulo). */
 export const SEGREDO_EXPIRA_EM_ENV = 'AMAZON_LWA_SEGREDO_EXPIRA_EM';
+/**
+ * The push receiver's relay secret (Secret Manager): what the AWS relay's
+ * `API_KEY` Connection sends in `CABECALHO_CHAVE_RELAY_AMAZON`. The SAME value
+ * lives in AWS Secrets Manager (W1).
+ */
+export const RELAY_SECRET_ENV = 'AMAZON_RELAY_SECRET';
+/**
+ * The PREVIOUS relay secret, set only during a rotation (Secret Manager): both
+ * are accepted until the Connection is known to send the new one
+ * (`infra/amazon-relay/README.md`, Operations).
+ */
+export const RELAY_PREVIOUS_SECRET_ENV = 'AMAZON_RELAY_PREVIOUS_SECRET';
+/**
+ * The region of the reads queue (`filaLeituraAmazon`). Read by the App Hosting
+ * composition root (`lib/firebase/filaLeitura.ts`) as a static member read of the
+ * process environment, never through this module; named here so a refusal can
+ * report it.
+ */
+export const TASKS_REGION_ENV = 'AMAZON_TASKS_REGION';
+
+/** The shortest relay secret the receiver accepts (step-3 plan §3 decision 36). */
+export const MIN_SEGREDO_RELAY = 32;
+/** The longest one: a bound on the input, far above `openssl rand -hex 32`'s 64 characters. */
+export const MAX_SEGREDO_RELAY = 512;
 
 /**
  * What the OAuth start and the callback need, all of it: the start route checks
@@ -208,4 +232,78 @@ export function lerSegredoExpiraEm(
   // `2026-02-30` and `2026-13-01`, not just a malformed string.
   if (!DATA_CIVIL.test(bruto) || somarDiasCivis(bruto, 0) === null) return { tipo: 'invalida' };
   return { tipo: 'valida', dataCivil: bruto };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     The push receiver (step 3, PR 3-c)                     */
+/* -------------------------------------------------------------------------- */
+
+const SEGREDO_RELAY = new RegExp(
+  `^[\\x21-\\x7E]{${String(MIN_SEGREDO_RELAY)},${String(MAX_SEGREDO_RELAY)}}$`,
+);
+
+/**
+ * Is `valor` a relay secret the receiver can use: {@link MIN_SEGREDO_RELAY} to
+ * {@link MAX_SEGREDO_RELAY} characters of VISIBLE ASCII, never trimmed?
+ *
+ * ⚠️ A trailing newline or space from a Secret Manager paste can never equal
+ * what the Connection sends (its `ApiKeyValue` takes no control character), so
+ * accepting it as "configured" would turn every delivery into a 401 — the
+ * answer that may auto-disable the pipe. And the 401 path is public and
+ * unthrottled, so a short secret is a guessable one (§3 decision 36).
+ */
+export function segredoRelayUtilizavel(valor: unknown): valor is string {
+  return typeof valor === 'string' && SEGREDO_RELAY.test(valor);
+}
+
+/**
+ * The receiver's configuration keys that are missing or unusable, by NAME only,
+ * in a fixed order — empty when the receiver can run:
+ *
+ *  - {@link RELAY_SECRET_ENV}: unset, blank, or not {@link segredoRelayUtilizavel};
+ *  - {@link RELAY_PREVIOUS_SECRET_ENV}: set (non-blank) but not usable — unset
+ *    or blank is simply "no rotation in progress";
+ *  - {@link APPLICATION_ID_ENV}: unset, blank, or refused by the package's own
+ *    `applicationIdValido` (the predicate the OAuth start refuses with).
+ *
+ * The region is the composition root's (it reads the environment statically) and
+ * is checked by the receiver itself.
+ */
+export function chavesDoReceptorRecusadas(ambiente: AmbienteAmazon): readonly string[] {
+  const recusadas: string[] = [];
+  if (!segredoRelayUtilizavel(ambiente[RELAY_SECRET_ENV])) recusadas.push(RELAY_SECRET_ENV);
+  const anterior = valor(ambiente, RELAY_PREVIOUS_SECRET_ENV);
+  if (anterior !== null && !segredoRelayUtilizavel(anterior)) {
+    recusadas.push(RELAY_PREVIOUS_SECRET_ENV);
+  }
+  const applicationId = valor(ambiente, APPLICATION_ID_ENV);
+  if (applicationId === null || !applicationIdValido(applicationId)) {
+    recusadas.push(APPLICATION_ID_ENV);
+  }
+  return recusadas;
+}
+
+/** The receiver's configuration, once {@link chavesDoReceptorRecusadas} found nothing to refuse. */
+export interface ConfigReceptorAmazon {
+  readonly completa: true;
+  /** The current relay secret, raw. */
+  readonly segredoAtual: string;
+  /** The previous one during a rotation, raw; `null` when unset or blank. */
+  readonly segredoAnterior: string | null;
+  /** Our `AMAZON_APPLICATION_ID`, raw: a notification's `ApplicationId` must equal it exactly. */
+  readonly applicationId: string;
+}
+
+/** The receiver's configuration, or the refused key NAMES ({@link chavesDoReceptorRecusadas}). */
+export function lerConfigDoReceptorAmazon(
+  ambiente: AmbienteAmazon,
+): ConfigReceptorAmazon | ConfigAmazonIncompleta {
+  const recusadas = chavesDoReceptorRecusadas(ambiente);
+  if (recusadas.length > 0) return { completa: false, faltando: recusadas };
+  return {
+    completa: true,
+    segredoAtual: presente(ambiente, RELAY_SECRET_ENV),
+    segredoAnterior: valor(ambiente, RELAY_PREVIOUS_SECRET_ENV),
+    applicationId: presente(ambiente, APPLICATION_ID_ENV),
+  };
 }

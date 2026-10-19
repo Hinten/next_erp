@@ -4,6 +4,7 @@ import {
   MAX_APPLICATION_ID,
   URL_CONSENTIMENTO_BR,
   VERSAO_CONSENTIMENTO_RASCUNHO,
+  applicationIdValido,
   montarUrlConsentimento,
 } from '../src/consentimento';
 import { AmazonConfigError, AmazonError } from '../src/errors';
@@ -119,5 +120,37 @@ describe('montarUrlConsentimento', () => {
 
   it('a refusal is an AmazonError like every other config refusal', () => {
     expect(recusa({ state: '' })).toBeInstanceOf(AmazonError);
+  });
+});
+
+describe('applicationIdValido — the one predicate the consent URL and the receiver share', () => {
+  it.each([
+    ['the placeholder id', APPLICATION_ID],
+    ['exactly the maximum length', 'a'.repeat(MAX_APPLICATION_ID)],
+    ['one character', 'a'],
+  ])('accepts %s', (_c, valor) => {
+    expect(applicationIdValido(valor)).toBe(true);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['with a space', 'amzn1.sp.solution.0000 0000'],
+    ['with a trailing space', `${APPLICATION_ID} `],
+    ['with a trailing line break', `${APPLICATION_ID}\n`],
+    ['non-ASCII', 'amzn1.sp.solução'],
+    ['too long', 'a'.repeat(MAX_APPLICATION_ID + 1)],
+    ['not a string', 42],
+    ['null', null],
+  ])('refuses %s', (_c, valor) => {
+    expect(applicationIdValido(valor)).toBe(false);
+  });
+
+  it('montarUrlConsentimento refuses exactly what the predicate refuses', () => {
+    for (const valor of ['', `${APPLICATION_ID} `, 'a'.repeat(MAX_APPLICATION_ID + 1)]) {
+      expect(applicationIdValido(valor)).toBe(false);
+      expect(recusa({ applicationId: valor }).motivo).toBe('application-id');
+    }
+    expect(applicationIdValido(APPLICATION_ID)).toBe(true);
+    expect(() => montar({ applicationId: APPLICATION_ID })).not.toThrow();
   });
 });

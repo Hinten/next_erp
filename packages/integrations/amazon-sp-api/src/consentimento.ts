@@ -44,6 +44,19 @@ export const MAX_APPLICATION_ID = 200;
 /** The operation name a refusal reports. */
 const OPERACAO = 'montarUrlConsentimento';
 
+/**
+ * Is `valor` an `application_id` this package accepts: visible ASCII, at least
+ * one character and at most {@link MAX_APPLICATION_ID}, never trimmed?
+ *
+ * The ONE predicate for it: {@link montarUrlConsentimento} refuses with it, and
+ * the app's push receiver refuses its own configured id with it too (step 3), so
+ * the receiver can never compare notifications against an id the OAuth start
+ * would refuse.
+ */
+export function applicationIdValido(valor: unknown): valor is string {
+  return ehAsciiVisivel(valor) && valor.length <= MAX_APPLICATION_ID;
+}
+
 export interface OpcoesUrlConsentimento {
   /** The app's Solution Provider Portal id, raw. */
   readonly applicationId: string;
@@ -66,7 +79,7 @@ export interface OpcoesUrlConsentimento {
  */
 export function montarUrlConsentimento(opts: OpcoesUrlConsentimento): string {
   const { applicationId, state, redirectUri } = opts;
-  if (!ehAsciiVisivel(applicationId) || applicationId.length > MAX_APPLICATION_ID) {
+  if (!applicationIdValido(applicationId)) {
     throw new AmazonConfigError('application-id', { operacao: OPERACAO, refCredencial: null });
   }
   if (!ehAsciiVisivel(state)) {

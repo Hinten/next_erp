@@ -39,6 +39,9 @@ export const ACCESS_TOKEN_A = 'tok|TESTE-acesso-AAAA-sintetico-naoreal-03';
 export const ACCESS_TOKEN_B = 'tok|TESTE-acesso-BBBB-sintetico-naoreal-04';
 export const ACCESS_TOKEN_NOVO = 'tok|TESTE-acesso-NOVO-sintetico-naoreal-05';
 export const CODIGO = 'cod|TESTE-codigo-sintetico-naoreal-06';
+/** Two relay secrets of the receiver (step 3): 32+ visible-ASCII characters, synthetic. */
+export const SEGREDO_RELAY = 'relay|TESTE-segredo-sintetico-naoreal-09';
+export const SEGREDO_RELAY_ANTERIOR = 'relay|TESTE-anterior-sintetico-naoreal-10';
 
 /** 2027-01-15T15:00:00Z — noon in São Paulo. */
 export const AGORA_MS = Date.UTC(2027, 0, 15, 15, 0, 0);
@@ -302,6 +305,8 @@ export const SEGREDOS = [
   ACCESS_TOKEN_B,
   ACCESS_TOKEN_NOVO,
   CODIGO,
+  SEGREDO_RELAY,
+  SEGREDO_RELAY_ANTERIOR,
 ] as const;
 
 /* -------------------------------------------------------------------------- */
@@ -454,4 +459,45 @@ export function falsificadorDeTeste(): FalsificadorAmazon & { readonly chamadas:
   return Object.defineProperty(f, 'chamadas', { get: () => n }) as FalsificadorAmazon & {
     readonly chamadas: number;
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       The receiver's body stream spy                       */
+/* -------------------------------------------------------------------------- */
+
+/** A body stream that counts what was pulled from it, and whether it was cancelled. */
+export interface FluxoEspiao {
+  readonly stream: ReadableStream<Uint8Array>;
+  /** How many chunks were PULLED (handed to a reader): 0 = the body was never read. */
+  readonly puxados: () => number;
+  readonly cancelado: () => boolean;
+}
+
+/**
+ * A pull-driven stream over `partes` (`highWaterMark: 0`, so nothing is pulled
+ * before a reader asks): the receiver's "the body was never read" and "the read
+ * stopped at the bound" assertions count its pulls.
+ */
+export function fluxoEspiao(partes: readonly (string | Uint8Array)[]): FluxoEspiao {
+  let puxados = 0;
+  let cancelado = false;
+  const codificador = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controle) {
+        const parte = partes[puxados];
+        if (parte === undefined) {
+          controle.close();
+          return;
+        }
+        puxados += 1;
+        controle.enqueue(typeof parte === 'string' ? codificador.encode(parte) : parte);
+      },
+      cancel() {
+        cancelado = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, puxados: () => puxados, cancelado: () => cancelado };
 }

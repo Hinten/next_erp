@@ -2,18 +2,24 @@
 # API-only service for the Amazon (SP-API) marketplace channel. Step 1 of the
 # master plan shipped the bare scaffold (`GET /api/health`); step 2 adds the
 # Firebase Admin init, the CORS proxy, the conta status route, the OAuth start
-# route and the public OAuth callback. The push receiver, the Firestore-backed
-# flows and the backstop poll arrive in later steps.
+# route and the public OAuth callback. Step 3 adds the public push receiver
+# (`POST /api/webhooks/amazon`, called by the AWS relay), which enqueues onto the
+# nested functions codebase's reads queue. The Firestore-backed flows and the
+# backstop poll arrive in later steps.
 runConfig:
   cpu: 1
   memoryMiB: 512
   maxInstances: 20
-  # Deliberately 0. Orders arrive by push (master plan D4: SQS → EventBridge
-  # Pipe → API destination → the receiver), the SQS queue's retention and its
-  # DLQ hold every message not yet delivered, and the 15-minute `searchOrders`
-  # backstop (step 4) is the guaranteed path. So a cold start that misses the
-  # API destination's 5-second timeout costs a redelivery, never correctness.
-  # Step 3, which adds the receiver, re-checks this.
+  # Deliberately 0 (step-3 plan §3 decision 16, re-checked with the receiver).
+  # Orders arrive by push (master plan D4: SQS → EventBridge Pipe → API
+  # destination → the receiver), the SQS queue's retention and its DLQ hold
+  # every message not yet delivered, and the 15-minute `searchOrders` backstop
+  # (step 4) is the guaranteed path. The WARM path is bounded inside the API
+  # destination's 5-second timeout (a 2-s enqueue and a 1.5-s persist deadline,
+  # `lib/amazon/prazos.test.ts`); only a cold start can miss it, which costs one
+  # retried delivery (a duplicate the importer absorbs), never correctness, at
+  # about 250 deliveries a day. Revisit after the go-live from the pipe's
+  # failed-delivery count.
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
 # No `timeoutSeconds` — the platform default is what
@@ -24,7 +30,7 @@ runConfig:
 # call by its LWA access token alone (no AWS IAM or SigV4 since 2023-10-02,
 # master plan step 1).
 #
-# Environment this backend reads (steps 2 and 2b). None of it gets an `env:` row below,
+# Environment this backend reads (steps 2, 2b and 3). None of it gets an `env:` row below,
 # on purpose: COMMENT ROWS ONLY, so nothing baked into the manifest can override
 # a console value during the window, and the list stays here so the next step
 # that reads a variable declares it in the same change:
@@ -65,6 +71,25 @@ runConfig:
 #                                and the callback redirect with `integracao_desligada`
 #                                without consuming the attempt. Set it on BOTH
 #                                surfaces (this console and the functions codebase).
+#   AMAZON_RELAY_SECRET          Secret Manager. The push receiver's relay key: what
+#                                the AWS relay sends in `x-erp-relay-key` (the SAME
+#                                value lives in AWS Secrets Manager). 32 to 512
+#                                visible-ASCII characters; anything else, a trailing
+#                                newline included, makes the receiver answer 503.
+#   AMAZON_RELAY_PREVIOUS_SECRET Secret Manager, ONLY during a rotation: the old relay
+#                                key, accepted beside the new one until the relay is
+#                                confirmed sending the new one; then unset
+#                                (`infra/amazon-relay/README.md`). Each instance logs
+#                                one WARNING while it is set.
+#   AMAZON_TASKS_REGION          Console value. The region of the reads queue
+#                                (`filaLeituraAmazon`), equal to the functions
+#                                codebase's FUNCTIONS_REGION. Falls back to
+#                                FUNCTIONS_REGION; with neither set the receiver
+#                                answers 503. NO default: a wrong region drops the
+#                                task silently (#1108).
+#   AMAZON_TASKS_DISABLED        OPTIONAL sweep-only valve: exactly `1` makes the
+#                                receiver persist each push as `failed` for the
+#                                reprocess sweep instead of enqueuing.
 #   AMAZON_LWA_SEGREDO_EXPIRA_EM NOT read by this backend: the daily expiry sweep
 #                                runs in the nested functions codebase (step 3),
 #                                which reads it from its own deploy env. Listed so
@@ -88,7 +113,7 @@ runConfig:
 #   AMAZON_CANARIO_NFE           The NF-e canary list: `<contaId>:<orderId>` entries.
 #   AMAZON_CANARIO_AGENDAMENTO   The scheduling canary list. Same form as the NF-e.
 #
-# The two Secret Manager values are NOT committed anywhere: the root secrets
+# The Secret Manager values are NOT committed anywhere: the root secrets
 # template lists their names blank, and the rollout that creates the backend
 # grants it access to them (window item W1).
 #

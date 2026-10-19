@@ -84,6 +84,15 @@ export interface OpcoesAgendadorAmazon {
 const REGIAO = /^[a-z][a-z0-9-]{0,62}$/;
 
 /**
+ * Can `regiao` name the queue's region ({@link caminhoDaFilaAmazon} accepts it)?
+ * The receiver checks it with its configuration, BEFORE reading a body, so a
+ * malformed region answers 503 instead of failing every enqueue.
+ */
+export function regiaoDaFilaValidaAmazon(regiao: string): boolean {
+  return REGIAO.test(regiao);
+}
+
+/**
  * The region-qualified path of the reads queue. MANDATORY: without the
  * `locations/{region}/functions/` prefix the Admin SDK targets its own default
  * region and the task is silently dropped (#1108).
@@ -92,7 +101,7 @@ const REGIAO = /^[a-z][a-z0-9-]{0,62}$/;
  *   another path, and an empty one a well-formed path to nowhere.
  */
 export function caminhoDaFilaAmazon(regiao: string): string {
-  if (!REGIAO.test(regiao)) {
+  if (!regiaoDaFilaValidaAmazon(regiao)) {
     throw new TypeError('caminhoDaFilaAmazon: região fora da gramática (minúsculas, dígitos, -)');
   }
   return `locations/${regiao}/functions/${FILA_LEITURA_AMAZON}`;
@@ -182,23 +191,63 @@ export function ehFalhaDoSdkDeTarefasAmazon(
  * anyway.
  */
 export class AmazonTarefasTransitoriasError extends Error {
-  readonly classe: 'FirebaseFunctionsError' | 'FirebaseAppError';
+  /**
+   * The SDK class that failed — or `prazo`: the PRODUCER's own deadline answered
+   * first while the enqueue kept running (the receiver's race, step-3 plan §3
+   * decision 32; {@link AmazonTarefasTransitoriasError.porPrazo}).
+   */
+  readonly classe: 'FirebaseFunctionsError' | 'FirebaseAppError' | 'prazo';
+  /** The SDK code (`functions/…`, `app/…`), or `prazo`. */
   readonly codigo: string;
-  /** The status Cloud Tasks answered; `null` when no response arrived (a socket failure). */
+  /** The status Cloud Tasks answered; `null` when no response arrived (a socket failure, a deadline). */
   readonly httpStatus: number | null;
 
   constructor(
-    classe: 'FirebaseFunctionsError' | 'FirebaseAppError',
+    classe: 'FirebaseFunctionsError' | 'FirebaseAppError' | 'prazo',
     codigo: string,
     httpStatus: number | null,
   ) {
     const status = httpStatus === null ? '' : `, HTTP ${String(httpStatus)}`;
-    super(`enqueue no Cloud Tasks falhou de forma transitória (${classe} ${codigo}${status})`);
+    super(
+      classe === 'prazo'
+        ? 'enqueue no Cloud Tasks não terminou dentro do prazo do produtor'
+        : `enqueue no Cloud Tasks falhou de forma transitória (${classe} ${codigo}${status})`,
+    );
     this.name = 'AmazonTarefasTransitoriasError';
     this.classe = classe;
     this.codigo = codigo;
     this.httpStatus = httpStatus;
   }
+
+  /**
+   * The enqueue lost the producer's deadline race. It may still land later: a
+   * duplicate beside the persisted document, which the importer absorbs.
+   */
+  static porPrazo(): AmazonTarefasTransitoriasError {
+    return new AmazonTarefasTransitoriasError('prazo', 'prazo', null);
+  }
+}
+
+/** Every enqueue failure a producer CONTAINS (persists for the sweep) instead of rethrowing. */
+export type FalhaDeEnfileiramentoAmazon =
+  | AmazonTarefasDesligadasError
+  | AmazonTarefasTransitoriasError
+  | FirebaseFunctionsError
+  | FirebaseAppError;
+
+/**
+ * `<classe>[/<codigo>]` of a contained enqueue failure: what a producer writes
+ * after `enfileiramento/` on the failure document and in its log line. The
+ * class and the code ONLY — never the SDK's message, which can quote a
+ * response body.
+ */
+export function descreverFalhaDeEnfileiramentoAmazon(err: FalhaDeEnfileiramentoAmazon): string {
+  if (err instanceof AmazonTarefasDesligadasError) return 'AmazonTarefasDesligadasError';
+  if (err instanceof AmazonTarefasTransitoriasError) {
+    return `AmazonTarefasTransitoriasError/${err.codigo}`;
+  }
+  if (err instanceof FirebaseFunctionsError) return `FirebaseFunctionsError/${err.code}`;
+  return `FirebaseAppError/${err.code}`;
 }
 
 /**

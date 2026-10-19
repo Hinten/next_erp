@@ -527,7 +527,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
   - `CI gate (amazon)` registered in `ci-lane-gates.test.js` and `main-red-alert.yml`;
   - the lane and pinnable-check counts and the rule-4 emulator carve-out updated in root `CLAUDE.md`.
 - **Firestore:** `notificacoesAmazon`; index `(status ASC, processedAt ASC)`; both rulesets regenerated (a new bare collection).
-- **Env:** `AMAZON_RELAY_KEY` (secret), `AMAZON_APPLICATION_ID`, `AMAZON_TASKS_DISABLED`, `AMAZON_TASKS_REGION`.
+- **Env:** `AMAZON_RELAY_SECRET` (secret; plus the optional `AMAZON_RELAY_PREVIOUS_SECRET` during a rotation), `AMAZON_APPLICATION_ID`, `AMAZON_TASKS_DISABLED`, `AMAZON_TASKS_REGION`. *(Amended in step 3, PR 3-c: renamed from `AMAZON_RELAY_KEY` so the `_SECRET` suffix puts it in `.env.secrets.example`; step-3 plan §3 decision 13.)*
 - **Rule 7:** the receiver writes nothing on the happy path; idempotency is the importer's (deterministic ids).
 - **Verification:**
   - a 503/401/200 table;
@@ -901,7 +901,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 
 1. **W1: secrets + redirect URI.**
    - **Phase:** 0.
-   - **Action:** in the new project's Secret Manager, put the LWA client id and secret, `AMAZON_RELAY_KEY` and `AMAZON_OAUTH_STATE_SECRET`. Register the new redirect URI (custom domain) on the app.
+   - **Action:** in the new project's Secret Manager, put the LWA client id and secret, `AMAZON_RELAY_SECRET` (the same value also goes to AWS Secrets Manager for the relay; `AMAZON_RELAY_PREVIOUS_SECRET` only during a rotation) and `AMAZON_OAUTH_STATE_SECRET`. Register the new redirect URI (custom domain) on the app.
    - **Verify:** the routes boot.
    - **Why:** the backend cannot start without them, and the redirect URI must exist before W5.
 2. **W2: the AWS relay stack.**

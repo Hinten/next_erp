@@ -18,6 +18,7 @@ import {
   respostaIdInvalido,
   respostaJson,
   respostaSemWebAppUrl,
+  respostaVazia,
 } from './respond';
 
 function cabecalhosOk(res: Response): void {
@@ -42,6 +43,16 @@ describe('the headers', () => {
       redirecionarParaWeb('https://app.example', '/canais/amazon', { amazon: 'connected' }),
     );
     cabecalhosOk(comCabecalhosAmazon(new Response(null, { status: 401 })));
+    cabecalhosOk(respostaVazia(200));
+  });
+});
+
+describe('respostaVazia (the push receiver’s every answer)', () => {
+  it.each([200, 401, 500, 503])('%i: that status, an EMPTY body, both headers', async (status) => {
+    const res = respostaVazia(status);
+    expect(res.status).toBe(status);
+    cabecalhosOk(res);
+    expect(await res.text()).toBe('');
   });
 });
 

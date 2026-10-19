@@ -27,8 +27,10 @@ import {
   type FilaLeituraAmazon,
   caminhoDaFilaAmazon,
   criarAgendadorAmazon,
+  descreverFalhaDeEnfileiramentoAmazon,
   ehFalhaDoSdkDeTarefasAmazon,
   enfileirarNomeandoFalhaTransitoriaAmazon,
+  regiaoDaFilaValidaAmazon,
 } from './agendador';
 import { FILA_LEITURA_AMAZON, type PayloadNotificacaoAmazon } from './notificacao';
 
@@ -85,8 +87,14 @@ describe('caminhoDaFilaAmazon — the region-qualified queue path', () => {
     'refuses the region %j: never another path, never a path to nowhere',
     (regiao) => {
       expect(() => caminhoDaFilaAmazon(regiao)).toThrow(TypeError);
+      expect(regiaoDaFilaValidaAmazon(regiao)).toBe(false);
     },
   );
+
+  it('regiaoDaFilaValidaAmazon accepts exactly what the path accepts', () => {
+    expect(regiaoDaFilaValidaAmazon('xx-regiao1')).toBe(true);
+    expect(() => caminhoDaFilaAmazon('xx-regiao1')).not.toThrow();
+  });
 });
 
 describe('criarAgendadorAmazon — the valve', () => {
@@ -431,5 +439,39 @@ describe('criarAgendadorAmazon — the real producer runs the classifier', () =>
         criarAgendadorAmazon({ fila: resolver, desligado: false }).enfileirar(PAYLOAD),
       ),
     ).toBe(sdk);
+  });
+});
+
+describe('the producer’s deadline and the description a producer persists (3-c)', () => {
+  it('porPrazo is a transient named `prazo`, with no status and no SDK text', () => {
+    const err = AmazonTarefasTransitoriasError.porPrazo();
+    expect(err).toBeInstanceOf(AmazonTarefasTransitoriasError);
+    expect([err.classe, err.codigo, err.httpStatus]).toEqual(['prazo', 'prazo', null]);
+    expect(err.message).toBe('enqueue no Cloud Tasks não terminou dentro do prazo do produtor');
+    expect(err.cause).toBeUndefined();
+  });
+
+  it('descreverFalhaDeEnfileiramentoAmazon: class and code, never a message', async () => {
+    const transitoria = await rejeicaoDoTransporte(falhaDoFunctions('unknown-error', 503)).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(transitoria).toBeInstanceOf(AmazonTarefasTransitoriasError);
+    if (!(transitoria instanceof AmazonTarefasTransitoriasError)) return;
+    const casos: [Parameters<typeof descreverFalhaDeEnfileiramentoAmazon>[0], string][] = [
+      [new AmazonTarefasDesligadasError(), 'AmazonTarefasDesligadasError'],
+      [transitoria, 'AmazonTarefasTransitoriasError/functions/unknown-error'],
+      [AmazonTarefasTransitoriasError.porPrazo(), 'AmazonTarefasTransitoriasError/prazo'],
+      [
+        falhaDoFunctions('permission-denied', 403),
+        'FirebaseFunctionsError/functions/permission-denied',
+      ],
+      [falhaDoApp('invalid-credential'), 'FirebaseAppError/app/invalid-credential'],
+    ];
+    for (const [err, esperado] of casos) {
+      const texto = descreverFalhaDeEnfileiramentoAmazon(err);
+      expect(texto).toBe(esperado);
+      expect(texto).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+    }
   });
 });

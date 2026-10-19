@@ -9,7 +9,7 @@ What ships here:
 | Module             | Holds                                                                                               |
 | ------------------ | --------------------------------------------------------------------------------------------------- |
 | `lwa.ts`           | `URL_TOKEN_LWA`, `trocarRefreshToken`, `trocarCodigoAutorizacao` and `credencialLwaValida`          |
-| `consentimento.ts` | `URL_CONSENTIMENTO_BR`, `montarUrlConsentimento`: the Seller Central consent URL, built, never sent |
+| `consentimento.ts` | `URL_CONSENTIMENTO_BR`, `montarUrlConsentimento` (a consent URL, never sent), `applicationIdValido` |
 | `client.ts`        | `URL_BASE_SP_API`, `MARKETPLACE_ID_BR`, `criarClienteSpApi`: GET-only, redirects never followed     |
 | `prazos.ts`        | `PRAZO_AMAZON_MS`, the per-call deadline keyed on the operation class                               |
 | `types.ts`         | The LWA token response, the LWA error body and the SP-API `errors[]` envelope — nothing else        |
@@ -66,6 +66,10 @@ leg, is what the legacy integration used live. That Amazon honours an explicit
 An unusable value is refused with `AmazonConfigError` — `'application-id'` (empty,
 over 200 characters or outside visible ASCII), `'state'` (empty or outside visible
 ASCII) or `'redirect-uri'` — whose message never echoes the value.
+
+`applicationIdValido` is the predicate `montarUrlConsentimento` refuses the
+`application_id` with. It is exported so the app's push receiver refuses exactly the
+same configured application ids (`AMAZON_APPLICATION_ID`) as the OAuth start.
 
 ## Errors
 

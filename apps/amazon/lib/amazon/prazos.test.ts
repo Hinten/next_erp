@@ -4,6 +4,11 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PRAZO_AMAZON_MS } from '@delfrance/integrations-amazon-sp-api';
 
+import {
+  PRAZO_ENFILEIRAMENTO_RECEPTOR_MS,
+  PRAZO_PERSISTENCIA_RECEPTOR_MS,
+} from './notificacoes/receptor';
+
 /**
  * The OAuth routes must fit inside this backend's request ceiling.
  *
@@ -90,6 +95,20 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     }
   });
 
+  it('the push receiver (route and body) makes ZERO Amazon calls of any kind', () => {
+    for (const arquivo of [
+      'app/api/webhooks/amazon/route.ts',
+      'lib/amazon/notificacoes/receptor.ts',
+      'lib/amazon/notificacoes/envelope.ts',
+      'lib/amazon/notificacoes/corpo.ts',
+    ]) {
+      const fonte = ler(arquivo);
+      expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(0);
+      expect(contar(fonte, 'trocarRefreshToken('), arquivo).toBe(0);
+      expect(fonte, arquivo).not.toMatch(/loadAmazonContext|criarClienteSpApi|fetch\(/);
+    }
+  });
+
   it('the reader parses a pin, ignores a comment, and fails closed on an unreadable one', () => {
     expect(pinsDeTimeout(['runConfig:\n  timeoutSeconds: 60 # curto\n'])).toEqual({
       pinados: [60],
@@ -104,5 +123,36 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     ]);
     // A pin this small is exactly what this test exists to reject.
     expect(PRAZO_AMAZON_MS.lwa + MARGEM_MS).toBeGreaterThan(30 * 1000);
+  });
+});
+
+/**
+ * The push receiver must answer inside the AWS API destination's 5-second
+ * timeout on the WARM path (step-3 plan §3 decision 32): past it the pipe
+ * counts a failure and retries, and after `maxReceiveCount` deliveries a
+ * notification that was already durably persisted lands in the DLQ.
+ *
+ * enqueue deadline + persist deadline + 500 ms (auth, the bounded body, the
+ * parse) + a 1-s margin must not exceed 5 000 ms. A cold start is outside this
+ * budget on purpose (`minInstances: 0`, §3 decision 16).
+ */
+const TIMEOUT_API_DESTINATION_MS = 5000;
+const ORCAMENTO_AUTENTICACAO_E_CORPO_MS = 500;
+const MARGEM_RECEPTOR_MS = 1000;
+
+describe('the push receiver fits the API destination’s 5-s timeout', () => {
+  it('enqueue + persist deadlines + 500 ms + a 1-s margin ≤ 5 000 ms', () => {
+    expect(PRAZO_ENFILEIRAMENTO_RECEPTOR_MS).toBeGreaterThan(0);
+    expect(PRAZO_PERSISTENCIA_RECEPTOR_MS).toBeGreaterThan(0);
+    expect(
+      PRAZO_ENFILEIRAMENTO_RECEPTOR_MS +
+        PRAZO_PERSISTENCIA_RECEPTOR_MS +
+        ORCAMENTO_AUTENTICACAO_E_CORPO_MS +
+        MARGEM_RECEPTOR_MS,
+    ).toBeLessThanOrEqual(TIMEOUT_API_DESTINATION_MS);
+  });
+
+  it('the enqueue deadline is below the SDK’s own retry ladder (≥ 7 s on 503s), so the race can win', () => {
+    expect(PRAZO_ENFILEIRAMENTO_RECEPTOR_MS).toBeLessThan(7000);
   });
 });
