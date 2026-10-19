@@ -20,46 +20,18 @@
  *
  * The environment is a PARAMETER, like everywhere under `lib/amazon`.
  *
- * ⚠️ Step 2b adds the write valves and the canary lists to THIS file, beside the
- * switch; step 2 ships the switch alone.
+ * ⚠️ Step 2b-c adds the write valves and the canary lists to THIS file, beside
+ * the switch. The logger is `log.ts`; this file only writes the switch's
+ * blocked-call line through it.
  */
 import type { AmbienteAmazon } from '../env';
+import { type LoggerAmazon, registrarEventoAmazon } from './log';
 
 /** The read switch's variable. */
 export const CHAMADAS_ENV_AMAZON = 'AMAZON_CHAMADAS';
 
 /** The one value that switches calls on. Exactly this, nothing trimmed. */
 export const CHAMADAS_LIGADAS = 'on';
-
-/**
- * A minimal logger: what this step's modules write through. Step 2b brings the
- * structured logger; until then a route hands in {@link LOGGER_STDOUT_AMAZON}
- * and a test hands in a spy.
- */
-export interface LoggerAmazon {
-  info(msg: string, meta?: Record<string, unknown>): void;
-  warn(msg: string, meta?: Record<string, unknown>): void;
-  error(msg: string, meta?: Record<string, unknown>): void;
-}
-
-/**
- * One JSON line per call on stdout — the shape Cloud Logging reads `severity`
- * and `message` from — behind {@link LoggerAmazon}. `meta` is spread FIRST, so
- * it can never overwrite the two fields. Callers pass ids, names, codes and
- * classifications only (every module here documents what its lines carry).
- */
-function linha(severity: 'INFO' | 'WARNING' | 'ERROR') {
-  return (msg: string, meta?: Record<string, unknown>): void => {
-    process.stdout.write(`${JSON.stringify({ ...meta, severity, message: msg })}\n`);
-  };
-}
-
-/** The production sink the routes hand in until step 2b's logger arrives. */
-export const LOGGER_STDOUT_AMAZON: LoggerAmazon = {
-  info: linha('INFO'),
-  warn: linha('WARNING'),
-  error: linha('ERROR'),
-};
 
 /** Whether this code may call Amazon at all: only the exact `on`. Pure. */
 export function lerChaveDeChamadasAmazon(ambiente: AmbienteAmazon): boolean {
@@ -93,13 +65,11 @@ export function registrarChamadaBloqueadaAmazon(
   entrada: { readonly rota: string; readonly valor: string | undefined },
 ): void {
   const classe = classificarValorDeChamadas(entrada.valor);
-  const meta = {
-    evento: 'chamada-bloqueada',
-    rota: entrada.rota,
-    chave: CHAMADAS_ENV_AMAZON,
-    valor: classe,
-  };
-  const mensagem = '[amazon] chamada-bloqueada: AMAZON_CHAMADAS não é exatamente "on"';
-  if (classe === 'outro') logger.warn(mensagem, meta);
-  else logger.info(mensagem, meta);
+  registrarEventoAmazon(
+    logger,
+    'chamada-bloqueada',
+    classe === 'outro' ? 'WARNING' : 'INFO',
+    '[amazon] chamada-bloqueada: AMAZON_CHAMADAS não é exatamente "on"',
+    { rota: entrada.rota, chave: CHAMADAS_ENV_AMAZON, valor: classe },
+  );
 }

@@ -201,7 +201,8 @@ describe('pass (a) — the credential states', () => {
     credencialComDias('b', 5);
     const { r, linhas } = varrer();
     const res = await r;
-    expect(res.erros).toEqual([expect.objectContaining({ etapa: 'conta', id: 'a' })]);
+    // The CLASS name, never the message (step 3 logs this result; §3 decision 23).
+    expect(res.erros).toEqual([{ etapa: 'conta', id: 'a', erro: 'CredencialAmazonInvalidaError' }]);
     expect(reautorizacao('b')?.resolvidoEm).toBeNull();
     expect(linhas.some((l) => l.meta?.integracaoId === 'a')).toBe(true);
   });

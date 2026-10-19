@@ -76,7 +76,8 @@ import {
 import { type ContaAmazonResumo, listarContasAmazon } from '../core/contas';
 import { lerCredencialComLeitura } from '../core/credentialStore';
 import { CredencialAmazonInvalidaError } from '../core/erros';
-import { type LoggerAmazon, lerChaveDeChamadasAmazon } from '../core/valvulas';
+import type { LoggerAmazon } from '../core/log';
+import { lerChaveDeChamadasAmazon } from '../core/valvulas';
 import { type AmbienteAmazon, lerSegredoExpiraEm } from '../env';
 
 /** Open avisos read per page in pass (b). */
@@ -99,6 +100,11 @@ export interface ExpiracaoSweepAmazonErro {
   readonly etapa: 'conta' | 'orfaos' | 'segredo';
   /** The conta id (a), the aviso id or `consulta` (b), or `segredo` (c). */
   readonly id: string;
+  /**
+   * The error's CLASS name, never its message: step 3 logs this result, and an
+   * `AmazonError` message embeds the request path, which can carry a seller id
+   * (step-2b plan §3 decision 23).
+   */
   readonly erro: string;
 }
 
@@ -241,7 +247,7 @@ export async function sweepAmazonExpiracoes(
       }
     } catch (err) {
       if (!contido(err)) throw err;
-      erros.push({ etapa: 'conta', id: integracaoId, erro: err.message });
+      erros.push({ etapa: 'conta', id: integracaoId, erro: err.name });
       logger.warn('[amazon/expiracao] conta contida após falha', {
         integracaoId,
         erro: err.name,
@@ -277,7 +283,7 @@ export async function sweepAmazonExpiracoes(
       docs = snap.docs;
     } catch (err) {
       if (!isGrpcStatusError(err)) throw err;
-      erros.push({ etapa: 'orfaos', id: 'consulta', erro: err.message });
+      erros.push({ etapa: 'orfaos', id: 'consulta', erro: err.name });
       logger.warn('[amazon/expiracao] consulta de avisos abertos falhou', { code: err.code });
       break;
     }
@@ -295,7 +301,7 @@ export async function sweepAmazonExpiracoes(
         }
       } catch (err) {
         if (!isGrpcStatusError(err)) throw err;
-        erros.push({ etapa: 'orfaos', id: doc.id, erro: err.message });
+        erros.push({ etapa: 'orfaos', id: doc.id, erro: err.name });
         logger.warn('[amazon/expiracao] aviso órfão contido após falha', {
           chave: doc.id,
           code: err.code,
@@ -367,7 +373,7 @@ async function passoDoSegredo(
     return { acao: 'resolvido', dias, fechou };
   } catch (err) {
     if (!isGrpcStatusError(err)) throw err;
-    erros.push({ etapa: 'segredo', id: 'segredo', erro: err.message });
+    erros.push({ etapa: 'segredo', id: 'segredo', erro: err.name });
     deps.logger.warn('[amazon/expiracao] aviso do segredo contido após falha', { code: err.code });
     return { acao: 'falhou' };
   }

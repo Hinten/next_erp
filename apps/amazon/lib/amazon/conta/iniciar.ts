@@ -36,9 +36,9 @@ import {
   ConfigAmazonAusenteError,
   ContaAmazonNaoEncontradaError,
 } from '../core/erros';
+import type { LoggerAmazon } from '../core/log';
 import {
   CHAMADAS_ENV_AMAZON,
-  type LoggerAmazon,
   lerChaveDeChamadasAmazon,
   registrarChamadaBloqueadaAmazon,
 } from '../core/valvulas';

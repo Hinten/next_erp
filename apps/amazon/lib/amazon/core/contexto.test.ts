@@ -21,6 +21,8 @@ import {
   caminhoCredencial,
   erroLwa,
   espiaoDeFetch,
+  espiarStdout,
+  linhasDeChamada,
   loggerEspiao,
   refDe,
   respostaJson,
@@ -32,6 +34,7 @@ import { AGENTE_USUARIO_AMAZON } from './agente';
 import { __setRelogioDoCacheParaTestes } from './contaCache';
 import { MARGEM_RENOVACAO_ACESSO_MS, type ContextoAmazonDeps, loadAmazonContext } from './contexto';
 import { removerCredencial, salvarConsentimento } from './credentialStore';
+import { LOGGER_STDOUT_AMAZON } from './log';
 import {
   ChamadasAmazonDesligadasError,
   ConfigAmazonAusenteError,
@@ -342,5 +345,172 @@ describe('the access getter — the credential is re-read on EVERY request', () 
     const ctx = await loadAmazonContext(asDb(db), ID, d);
     await ctx.obterAcesso();
     expect(db.ler(caminhoAviso(chaveSegredoRecusado()))?.resolucaoMotivo).toBe('troca-aceita');
+  });
+});
+
+describe('the call log (step 2b): both package calls get the logger observer', () => {
+  const pedidoSp = {
+    operacao: 'getMarketplaceParticipations',
+    caminho: CAMINHO_SP,
+    schema: z.unknown(),
+  };
+
+  it('one line per SENT request, labelled with the loader conta and the registro', async () => {
+    contaConectada();
+    seedCredencial(db, ID);
+    const { d, linhas } = deps({ registro: { fluxo: 'intake', tentativa: 2 } }, () =>
+      respostaJson(200, { payload: [] }),
+    );
+    const ctx = await loadAmazonContext(asDb(db), ID, d);
+    await ctx.cliente.get(pedidoSp);
+    await ctx.cliente.get(pedidoSp);
+    const chamadas = linhasDeChamada(linhas);
+    expect(chamadas).toHaveLength(2);
+    expect(chamadas[0]).toMatchObject({
+      conta: ID,
+      fluxo: 'intake',
+      tentativa: 2,
+      destino: 'sp-api',
+      credencial: 'lwa-acesso',
+      versaoCredencial: AUTORIZADO_EM_MS,
+      status: 200,
+      resultado: 'ok',
+    });
+  });
+
+  it('a stale token gives TWO lines: the refresh, then the request — in that order', async () => {
+    contaConectada();
+    seedCredencial(db, ID, { expirationDate: agora });
+    const { d, linhas } = deps({}, (c) =>
+      c.url === URL_TOKEN_LWA ? tokenDeAcesso() : respostaJson(200, { payload: [] }),
+    );
+    const ctx = await loadAmazonContext(asDb(db), ID, d);
+    await ctx.cliente.get(pedidoSp);
+    const chamadas = linhasDeChamada(linhas);
+    expect(chamadas.map((l) => [l.destino, l.credencial])).toEqual([
+      ['lwa', 'lwa-refresh'],
+      ['sp-api', 'lwa-acesso'],
+    ]);
+    expect(chamadas[0]).toMatchObject({ trechoCorpo: null, corpoBytes: null, conta: ID });
+  });
+
+  it('★ a registro carrying conta (cast at run time) cannot relabel EITHER line: the loader id is written last', async () => {
+    contaConectada();
+    seedCredencial(db, ID, { expirationDate: agora });
+    const registro = { conta: 'outra', fluxo: 'intake' } as never;
+    const { d, linhas } = deps({ registro }, (c) =>
+      c.url === URL_TOKEN_LWA ? tokenDeAcesso() : respostaJson(200, { payload: [] }),
+    );
+    const ctx = await loadAmazonContext(asDb(db), ID, d);
+    await ctx.cliente.get(pedidoSp);
+    const chamadas = linhasDeChamada(linhas);
+    expect(chamadas).toHaveLength(2);
+    for (const l of chamadas) expect(l).toMatchObject({ conta: ID, fluxo: 'intake' });
+  });
+
+  it('nothing sent, nothing logged: the switch off writes the blocked line only', async () => {
+    contaConectada();
+    seedCredencial(db, ID);
+    const { d, linhas } = deps({ ambiente: AMBIENTE_DESLIGADO });
+    await expect(loadAmazonContext(asDb(db), ID, d)).rejects.toBeInstanceOf(
+      ChamadasAmazonDesligadasError,
+    );
+    expect(linhasDeChamada(linhas)).toHaveLength(0);
+  });
+
+  it.each([200, 401, 403, 500])(
+    'real-stdout hygiene: an SP-API %i echoing the access token (whole, URL-encoded, a fragment) leaves none of them on stdout',
+    async (status) => {
+      contaConectada();
+      seedCredencial(db, ID);
+      const fragmento = ACCESS_TOKEN_A.slice(4, 20);
+      const corpo = {
+        payload: [{ eco: ACCESS_TOKEN_A }, { eco: encodeURIComponent(ACCESS_TOKEN_A) }],
+        errors: [{ code: 'Unauthorized', message: `token ${fragmento}`, details: ACCESS_TOKEN_A }],
+      };
+      const out = espiarStdout();
+      const { d } = deps({ logger: LOGGER_STDOUT_AMAZON }, () => respostaJson(status, corpo));
+      const ctx = await loadAmazonContext(asDb(db), ID, d);
+      await ctx.cliente.get(pedidoSp).catch((e: unknown) => e);
+      const linhasOut = out.linhas();
+      out.restaurar();
+      expect(linhasOut.length).toBeGreaterThan(0);
+      const texto = linhasOut.join('\n');
+      for (const p of [ACCESS_TOKEN_A, encodeURIComponent(ACCESS_TOKEN_A), fragmento, REF_ATUAL]) {
+        expect(texto, p).not.toContain(p);
+      }
+    },
+  );
+
+  describe('★ totality through BOTH real call sites: no response the fake can send makes the observer throw', () => {
+    const corpos = [
+      '',
+      'null',
+      '"escalar"',
+      '<html>',
+      `${'['.repeat(10_000)}${']'.repeat(10_000)}`,
+      '{"__proto__":{"x":1}}',
+      '{"n":1e400,"g":12345678901234567890}',
+      '{"a":"\\ud800"}',
+      '\ud800',
+      JSON.stringify({ payload: [{ eco: ACCESS_TOKEN_A, n: 1 }], errors: [{ code: 'x' }] }),
+    ];
+    const statuses = [200, 302, 400, 401, 403, 404, 429, 500];
+
+    /** One request through the real loader; its call lines (spy logger: it never throws). */
+    async function umaChamada(
+      credencial: Parameters<typeof seedCredencial>[2],
+      responder: Parameters<typeof espiaoDeFetch>[0],
+    ) {
+      __resetAllReadCaches();
+      db = new FakeDb();
+      contaConectada();
+      seedCredencial(db, ID, credencial);
+      const { d, linhas } = deps({}, responder);
+      const ctx = await loadAmazonContext(asDb(db), ID, d);
+      const err = await ctx.cliente.get(pedidoSp).catch((e: unknown) => e);
+      return { err, chamadas: linhasDeChamada(linhas) };
+    }
+
+    // Whatever failed, it failed as the PACKAGE classified it — never as a logger error.
+    const comoOPacote = (err: unknown, caso: string) => {
+      if (err instanceof Error) expect(err.name.startsWith('Amazon'), caso).toBe(true);
+    };
+
+    it('site 2, the SP-API client: every body × status REACHES the request and its line', async () => {
+      for (const status of statuses) {
+        for (const corpo of corpos) {
+          const caso = `${String(status)} ${corpo.slice(0, 12)}`;
+          // A fresh stored token: no refresh, so the matrix hits the REQUEST itself.
+          const { err, chamadas } = await umaChamada({}, (c) =>
+            c.url === URL_TOKEN_LWA ? tokenDeAcesso() : new Response(corpo, { status }),
+          );
+          comoOPacote(err, caso);
+          // Anti-vacuity: the request was sent and the observer wrote ITS line.
+          expect(
+            chamadas.filter((l) => l.destino === 'sp-api' && l.status === status),
+            caso,
+          ).toHaveLength(1);
+        }
+      }
+    });
+
+    it('site 1, the LWA refresh: every body × status reaches the refresh and its line', async () => {
+      for (const status of statuses) {
+        for (const corpo of corpos) {
+          const caso = `${String(status)} ${corpo.slice(0, 12)}`;
+          const { err, chamadas } = await umaChamada({ expirationDate: agora }, (c) =>
+            c.url === URL_TOKEN_LWA
+              ? new Response(corpo, { status })
+              : respostaJson(200, { payload: [] }),
+          );
+          comoOPacote(err, caso);
+          expect(
+            chamadas.filter((l) => l.destino === 'lwa' && l.status === status),
+            caso,
+          ).toHaveLength(1);
+        }
+      }
+    });
   });
 });

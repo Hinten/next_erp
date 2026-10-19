@@ -82,6 +82,8 @@ import {
   reautorizarAteAmazon,
 } from '@delfrance/schemas';
 
+import { type LoggerAmazon, warnNaoTipado } from '../core/log';
+
 /** The motivos every machine resolution of these tipos is stamped with. */
 export const MOTIVO_AVISO_AMAZON = {
   /** A consent stored a new grant just now (the callback). */
@@ -123,7 +125,12 @@ export interface AvisoDepsAmazon {
   readonly increment: (by: number) => unknown;
   /** Now, in MILLISECONDS. Converted to µs at the seam, never before. */
   readonly nowMs: number;
-  readonly logger?: { warn: (msg: string, meta?: Record<string, unknown>) => void };
+  /**
+   * The app's logger, `warn` only, primitive campos only. `escreverAviso`
+   * (`packages/data`) calls it untyped, which is why the sink re-checks every
+   * campo at run time (`camposSeguros`, `core/log.ts`).
+   */
+  readonly logger?: Pick<LoggerAmazon, 'warn'>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -175,12 +182,21 @@ export function chaveSegredoRecusado(): string {
   return chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaRecusado });
 }
 
+/**
+ * The shared writer's deps. Its `logger` is typed `Record<string, unknown>` and
+ * logs a Firestore message untyped, so the app's `warn` crosses into it only
+ * through `warnNaoTipado`, which narrows every campo at run time.
+ */
 function depsDeEscrita(deps: AvisoDepsAmazon): {
   increment: (by: number) => unknown;
   agoraUs: number;
-  logger?: { warn: (msg: string, meta?: Record<string, unknown>) => void };
+  logger?: ReturnType<typeof warnNaoTipado>;
 } {
-  return { increment: deps.increment, agoraUs: agoraUsDe(deps), logger: deps.logger };
+  return {
+    increment: deps.increment,
+    agoraUs: agoraUsDe(deps),
+    logger: deps.logger === undefined ? undefined : warnNaoTipado(deps.logger),
+  };
 }
 
 function urlDaConta(integracaoId: string): { rota: string; campo: null } {

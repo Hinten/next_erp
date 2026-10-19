@@ -4,12 +4,7 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { relogioDoDocumentoUs } from '../avisos/avisos';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { SPID_A, SPID_B, caminhoConta, seedConta } from '../testing/fixtures';
-import {
-  contasPorSellingPartnerId,
-  idDeContaValido,
-  lerContaAmazon,
-  listarContasAmazon,
-} from './contas';
+import { contasPorSellingPartnerId, lerContaAmazon, listarContasAmazon } from './contas';
 
 let db: FakeDb;
 
@@ -17,25 +12,7 @@ beforeEach(() => {
   db = new FakeDb();
 });
 
-describe('idDeContaValido', () => {
-  it.each(['abc', 'AbC_09-x', 'a'.repeat(128), 'Xy3kP0q9RZ2LmNbV7tWc'])('accepts %j', (id) => {
-    expect(idDeContaValido(id)).toBe(true);
-  });
-
-  it.each([
-    ['empty', ''],
-    ['a slash', 'a/b'],
-    ['a dot', 'a.b'],
-    ['dot-dot', '..'],
-    ['a space', 'a b'],
-    ['too long', 'a'.repeat(129)],
-    ['non-ASCII', 'conta-é'],
-    ['a number', 123],
-    ['undefined', undefined],
-  ])('refuses %s', (_c, id) => {
-    expect(idDeContaValido(id)).toBe(false);
-  });
-});
+// `idDeContaValido` moved to `idConta.ts`; its table is `idConta.test.ts`.
 
 describe('lerContaAmazon', () => {
   it('reads an Amazon conta uncached, with its updateTime', async () => {

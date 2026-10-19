@@ -66,6 +66,7 @@ import {
 } from '../avisos/avisos';
 import { docCredencial, lerCredencial } from './credentialStore';
 import { EstacionamentoAmazonEmConflitoError } from './erros';
+import type { LoggerAmazon } from './log';
 import { refDaCredencial } from './refCredencial';
 
 /** Read-decide-write attempts before giving up. */
@@ -233,7 +234,8 @@ export async function estacionarConta(
 export interface TratarFalhaDeps extends EstacionamentoDeps {
   /** `(by) => FieldValue.increment(by)`, for the avisos. */
   readonly increment: (by: number) => unknown;
-  readonly logger?: { warn: (msg: string, meta?: Record<string, unknown>) => void };
+  /** The app's logger, `warn` only, primitive campos only. */
+  readonly logger?: Pick<LoggerAmazon, 'warn'>;
 }
 
 export interface ResultadoTratamento {

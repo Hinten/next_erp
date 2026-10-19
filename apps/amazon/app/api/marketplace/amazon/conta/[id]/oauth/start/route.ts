@@ -34,7 +34,7 @@ import {
   respostaIdInvalido,
   respostaJson,
 } from '@/lib/amazon/core/respond';
-import { LOGGER_STDOUT_AMAZON } from '@/lib/amazon/core/valvulas';
+import { LOGGER_STDOUT_AMAZON } from '@/lib/amazon/core/log';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
