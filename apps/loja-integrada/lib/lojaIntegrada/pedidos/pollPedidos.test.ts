@@ -304,6 +304,27 @@ describe('the gates: ZERO reads before them', () => {
     });
   });
 
+  it('BOTH gates closed → the importer gate answers first: its INFO line, never a chamada-bloqueada one', async () => {
+    // The header's order (1, then 2): with no importer the switch is never
+    // consulted, so the tick names the gate that would still stop it once the
+    // window sets the switch.
+    const h = montar();
+    contaPronta(h);
+
+    const r = await h.tick({ importadorPresente: false, ambiente: {} });
+
+    expect(r).toEqual({ portao: 'importador-ausente', contas: [] });
+    expect(h.fake.leituras).toEqual([]);
+    expect(h.fake.consultas).toEqual([]);
+    expect(h.fake.escritas).toEqual([]);
+    expect(h.urls).toEqual([]);
+    expect(h.gravador.linhas).toHaveLength(1);
+    expect(h.gravador.linhas[0]).toMatchObject({
+      severidade: 'INFO',
+      campos: { evento: 'poll', conta: null, fluxo: 'poll', desfecho: 'importador-ausente' },
+    });
+  });
+
   it.each([
     ['on␠', 'on '],
     ['ON', 'ON'],
