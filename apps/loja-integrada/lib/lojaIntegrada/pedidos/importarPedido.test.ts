@@ -1578,18 +1578,26 @@ describe('⚠️ never a cliente beside another cliente’s endereço (step 7): 
       },
     );
 
-    it('NEAR-MISS: an unreadable stored cliente and NO endereço ⇒ nothing to pair: no endereço stored, no route, no incidente', async () => {
-      const cliente = { id: 'cliente-ligado' };
-      const db = await pedidoArmazenado({ clientePedidoOuterRef: cliente });
-      expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
-      expect(mockCliente).not.toHaveBeenCalled();
-      const pedido = db.ler(CAMINHO_PEDIDO)!;
-      expect(pedido.clientePedidoOuterRef).toEqual(cliente);
-      expect(pedido.enderecoFiscalOuterRef).toBeNull();
-      expect(db.idsEm('clientes/cliente-ligado/enderecos')).toEqual([]);
-      expect(frete(db)).toMatchObject(SEM_ROTA);
-      expect(incidentes(db)).not.toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
-    });
+    it.each([
+      ['a map', { id: 'cliente-ligado' }],
+      // Text whose last id a lenient read would take for `clientes/cliente-ligado`.
+      ['another collection', 'documents/fornecedores/cliente-ligado'],
+      ['a cliente nested below another document', 'documents/lojas/l-1/clientes/cliente-ligado'],
+    ])(
+      'NEAR-MISS: an unreadable stored cliente (%s) and NO endereço ⇒ nothing to pair: no endereço stored under any cliente, no route, no incidente',
+      async (_caso, cliente) => {
+        const db = await pedidoArmazenado({ clientePedidoOuterRef: cliente });
+        expect((await importar(db, cena(COMPRADOR_NOVO))).r).toEqual({ kind: 'importado' });
+        expect(mockCliente).not.toHaveBeenCalled();
+        const pedido = db.ler(CAMINHO_PEDIDO)!;
+        expect(pedido.clientePedidoOuterRef).toEqual(cliente);
+        expect(pedido.enderecoFiscalOuterRef).toBeNull();
+        // The endereço step never stores one under a cliente path the ref does not name.
+        expect(db.idsEm('clientes/cliente-ligado/enderecos')).toEqual([]);
+        expect(frete(db)).toMatchObject(SEM_ROTA);
+        expect(incidentes(db)).not.toContain(ID_INCIDENTE_LI.enderecoDeOutroCliente);
+      },
+    );
 
     it('a route an operator STORED beside the mismatched pair is never cleared', async () => {
       const doOperador = {
