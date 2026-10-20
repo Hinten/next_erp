@@ -64,23 +64,25 @@
  *     and 2026-10-20; `pedidoPagoSemEndereco.ts`): a paid codigo, a shipment,
  *     a delivery block that is absent or whose CEP is absent, `null`, `''` or
  *     blank, no pickup route, and a pedido `S` that stores no endereço ⇒
- *     {@link LiPedidoPagoSemEnderecoError}, BEFORE step 7. ⚠️ A present but
- *     INVALID CEP is not refused — the customer typed it, and waiting never
- *     fixes it: the builder reads no endereço from it, so step 7 stores none
- *     and the order imports without an endereço (its freight amount, no
- *     carrier route), like an unpaid one. The step-3 classifier answers `null` for it, so the run rethrows and
- *     the queue's backoff, then the hot sweep, retry it — the platform may fill
- *     the address. Step 6's registration and freight aviso are the only writes
- *     a refused attempt leaves. ⚠️ Rule 7: the last clause reads a snapshot, so
- *     the batch asks it again of EVERY attempt's (`mapearPedido`): an endereço
- *     another writer cleared since `S` refuses there, with no write. When the
- *     shared pipeline parks the row at its cap — its signal for a thrown
- *     failure parked, no counter of ours — `onRetriesExhausted` logs an ERROR
- *     line and raises the open `lojaIntegradaPedidoPagoSemEndereco` aviso,
- *     clocked by the order's stamp; step 11 of any later import that gets past
- *     this check resolves it. An unpaid order, a pickup, an order with no
- *     shipment, an invalid CEP, or a pedido that already stores an endereço
- *     imports as before.
+ *     {@link LiPedidoPagoSemEnderecoError}, BEFORE step 7. The step-3
+ *     classifier answers `null` for that error, so the run rethrows and the
+ *     queue's backoff, then the hot sweep, retry the refused order — the
+ *     platform may fill the address. Step 6's registration and freight aviso
+ *     are the only writes a refused attempt leaves. ⚠️ Rule 7: the last clause
+ *     reads a snapshot, so the batch asks it again of EVERY attempt's
+ *     (`mapearPedido`): an endereço another writer cleared since `S` refuses
+ *     there, with no write. When the shared pipeline parks the row at its
+ *     cap — its signal for a thrown failure parked, no counter of ours —
+ *     `onRetriesExhausted` logs an ERROR line and raises the open
+ *     `lojaIntegradaPedidoPagoSemEndereco` aviso, clocked by the order's
+ *     stamp; step 11 of any later import that gets past this check resolves
+ *     it. An unpaid order, a pickup, an order with no shipment, an invalid
+ *     CEP, or a pedido that already stores an endereço imports as before.
+ *     ⚠️ A present but INVALID CEP is not refused — the customer typed it,
+ *     and waiting never fixes it: the builder reads no endereço from it, so
+ *     step 7 stores none and the order imports without an endereço (its
+ *     freight amount, no carrier route), like an unpaid one. Being past this
+ *     check, such an import also resolves an open aviso of that order.
  *  7. **The cliente and the endereço**, each only while `S` holds none: the
  *     cliente step while `S` has no cliente, the endereço step while it has no
  *     endereço and a readable cliente is known (stored, or just resolved — an

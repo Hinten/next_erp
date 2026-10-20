@@ -606,13 +606,20 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
     // essa alteração traga o pedido de volta à importação é o ESPERADO, ainda não observado
     // (nenhuma captura mostra a edição do endereço mudando a data de modificação do pedido),
     // por isso a frase diz "deve" e dá a saída para quando não trouxer. A retirada precisa
-    // estar ATIVA: uma inativa não dispensa o endereço.
+    // estar ATIVA: uma inativa não dispensa o endereço. O aviso se encerra com QUALQUER
+    // importação do pedido que passe da checagem de CEP — inclusive uma com um CEP que o
+    // montador de endereço não lê, que entra sem endereço e sem rota —, então o encerramento
+    // não prova que deu certo: a frase manda conferir o endereço no pedido.
     runbook:
       'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
       'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
       'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
-      'e depois altere o pedido no painel. Se o aviso continuar aberto depois da alteração, ' +
-      'peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
+      'e depois altere o pedido no painel. O aviso também se encerra quando o pedido entra com ' +
+      'um CEP que o ERP não consegue ler, e então ele entra sem endereço, sem o qual não há ' +
+      'como comprar a etiqueta. Por isso, quando o aviso se encerrar, confira no ERP se o ' +
+      'pedido ficou com o endereço de entrega (o de retirada na loja não precisa dele); se não ' +
+      'ficou, corrija o CEP no painel. Se o aviso continuar aberto depois da alteração, peça a ' +
+      'um desenvolvedor que confira a notificação estacionada desse pedido.',
   },
 };
 

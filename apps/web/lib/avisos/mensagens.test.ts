@@ -1127,14 +1127,20 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
     expect(mensagem.corpo(aviso.params)).toContain('O pedido 165 da loja Conta A está pago');
   });
 
-  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, and a fallback when the edit does not bring it back', () => {
+  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, a closed aviso is CHECKED for an endereço (an unreadable CEP closes it too), and a fallback when the edit does not bring it back', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco);
     expect(mensagem.runbook).toBe(
       'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
         'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
         'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
-        'e depois altere o pedido no painel. Se o aviso continuar aberto depois da alteração, ' +
-        'peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
+        'e depois altere o pedido no painel. O aviso também se encerra quando o pedido entra com ' +
+        'um CEP que o ERP não consegue ler, e então ele entra sem endereço, sem o qual não há ' +
+        'como comprar a etiqueta. Por isso, quando o aviso se encerrar, confira no ERP se o ' +
+        'pedido ficou com o endereço de entrega (o de retirada na loja não precisa dele); se não ' +
+        'ficou, corrija o CEP no painel. Se o aviso continuar aberto depois da alteração, peça a ' +
+        'um desenvolvedor que confira a notificação estacionada desse pedido.',
     );
+    // The aviso closing is NOT the sign that it worked: the runbook says what to check.
+    expect(mensagem.runbook).toContain('confira no ERP se o pedido ficou com o endereço');
   });
 });

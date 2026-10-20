@@ -16,6 +16,7 @@ import {
   SEVERIDADE_AVISO,
   TIPO_AVISO,
   codigoSituacaoLiSchema,
+  valorUtilizavel,
 } from '@delfrance/schemas';
 
 import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
@@ -97,6 +98,18 @@ describe('entregaSemCepLi: the delivery block carries NO CEP at all (owner decis
       expect(enderecoDoPedidoLi(endereco({ cep })).kind, cep).toBe('sem-cep');
       // …and still not "no CEP": the scope is the CEP's ABSENCE, never its quality.
       expect(entregaSemCepLi(endereco({ cep })), cep).toBe(false);
+    }
+  });
+
+  it('⚠️ NEAR-MISS (deliberate): the `-` placeholder and a masked value, which the shared `valorUtilizavel` reads as absent, are present (invalid) CEPs here', () => {
+    for (const cep of ['-', ' - ', '*****-***']) {
+      // The shared absence reader would call each of them "nothing was sent"…
+      expect(valorUtilizavel(cep), cep).toBeNull();
+      // …the builder reads no endereço from any of them…
+      expect(enderecoDoPedidoLi(endereco({ cep })).kind, cep).toBe('sem-cep');
+      // …and the rule, narrower on purpose (the owner decision's set), still sees a CEP.
+      expect(entregaSemCepLi(endereco({ cep })), cep).toBe(false);
+      expect(decidir({ enderecoEntrega: endereco({ cep }) }), cep).toBe(false);
     }
   });
 

@@ -47,7 +47,11 @@
  * notification — but with the same clock: the stamp of the order that exhausted
  * run read. So the import that later finds the address (a newer stamp)
  * resolves it, and a late exhaustion of an older observation is dropped by
- * the seed every resolve leaves behind.
+ * the seed every resolve leaves behind. ⚠️ "Reaches the avisos" includes an
+ * import whose CEP the endereço builder cannot read: it is past the no-CEP
+ * check, so it resolves the row while the pedido stays without an endereço or
+ * a carrier route, and nothing else is raised. The web runbook therefore asks
+ * the operator to check the pedido's endereço once the row closes.
  *
  * Every write goes through `escreverAviso` / `resolverAviso`
  * (`@delfrance/data/admin/avisos`), with "now" converted in `avisos/avisos.ts`
