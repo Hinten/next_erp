@@ -22,8 +22,8 @@ import { naoDocId, toOuterRef, toOuterRefOrNull, type OuterRef } from './shared/
  *
  * Since step 15 (#1825) it also holds the LABEL half of the route resolver: which target a pedido
  * still pointing at its conta's Loja Integrada `int_frete` doc is printed through, the pure guards
- * that the routing route and the web's read-only preview both apply, and the one reader of a
- * Melhor Envio service id. See "The label route" below.
+ * written for the routing route and the web's read-only preview to apply alike, and the one
+ * reader of a Melhor Envio service id. See "The label route" below.
  *
  * Pure and total: no clock, no network, no Firestore, and no input throws — a malformed value
  * reads as `null` ("not a key", "not mapped"), never as an exception. The importer parks a task on
@@ -223,9 +223,9 @@ function tipoAlvoOuNull(tipo: unknown): TipoAlvoMapaFreteLi | null {
  * A pedido imported from Loja Integrada points `freteInicial.integracaoFreteOuterRef` either at a
  * label TARGET (one of {@link TIPOS_ALVO_MAPA_FRETE_LI}, routed at import) or at its conta's Loja
  * Integrada `int_frete` doc (unmapped, deliberately mapped to `fob`/`outros`, or routed by an
- * aviso). Only the second needs routing before a label: the routing route re-points the ref at
- * the target this section resolves, and the web's read-only preview asks the same questions with
- * the same functions, so the two can never answer differently.
+ * aviso). Only the second needs routing before a label: the routing route is to re-point the ref
+ * at the target this section resolves, and the web's read-only preview to ask the same questions
+ * with the same functions, so the two can never answer differently.
  *
  * The sequence, for one pedido:
  *
@@ -243,9 +243,11 @@ function tipoAlvoOuNull(tipo: unknown): TipoAlvoMapaFreteLi | null {
 
 /**
  * The Melhor Envio service id a `mapa` row's `targetData` names (`targetData.id`), as its canonical
- * decimal — or `null` when there is none. {@link inteiroPositivoCanonicoLi} over `targetData.id`:
- * the importer, the conta screen's service select and the label route read it through THIS
- * function, so a service stored as `3` and one stored as `'3'` are the same service everywhere.
+ * decimal — or `null` when there is none. {@link inteiroPositivoCanonicoLi} over `targetData.id`.
+ * It is the ONE service reader for every surface: the conta screen's service select reads it,
+ * the label route resolves through it ({@link decidirLinhaDoMapaLi}), and the order importer is
+ * to move its own copy onto it (master plan step 15) — so a service stored as `3` and one stored
+ * as `'3'` are the same service everywhere.
  *
  * Equal: `{id: 3}` ≡ `{id: '3'}` → `'3'`. Distinct (`null`): `'03'`, `'3.0'`, `0`, `'1e3'`, an
  * absent `id`, a `targetData` that is not a plain object.
@@ -265,8 +267,14 @@ export type LinhaDoMapaLi =
   | {
       readonly tipo: 'mapeado';
       readonly chave: string;
-      /** The target `int_frete` doc id ({@link idDoAlvoDoMapaLi}). */
-      readonly alvoId: string;
+      /**
+       * The target `int_frete` doc id ({@link idDoAlvoDoMapaLi}) — always one a document can have.
+       * `null` when the row's uid names a target no document can be (its last segment is `.` or
+       * `..`): the row IS mapped, and its target is ABSENT — judge it `alvo-ausente`
+       * ({@link avaliarAlvoDoMapaLi} over `null`) without a read. The type makes every caller
+       * handle it, so none can hand such an id to a document read.
+       */
+      readonly alvoId: string | null;
       /** The row's display name, when it is a string. */
       readonly nomeOriginal: string | null;
       /** The row's Melhor Envio service ({@link idServicoMelhorEnvioLi}), or `null`. */
@@ -281,8 +289,13 @@ export type LinhaDoMapaLi =
  *   another method, so it is `nao-mapeado` here even when its sibling row is mapped.
  * - An absent or `null` `mapa` reads as an EMPTY one (`nao-mapeado`), as the registration does; a
  *   `mapa` that is present and not a list is `mapa-invalido`.
+ *   ⚠️ So pass the doc's RAW `mapa`. A caller holding a reader that has already turned a non-list
+ *   `mapa` into `null` must answer `mapa-invalido` itself BEFORE calling this, or the corrupted
+ *   `mapa` reads here as an empty one.
  * - The row is found raw ({@link entradaDoMapaPorChaveLi}, the first match) and "mapped" is its
  *   `integracaoUid` ({@link idDoAlvoDoMapaLi}) — never its `targetTipoIntegracao`.
+ * - A mapped target id no document can have (`.`, `..`) comes back as `alvoId: null` — see
+ *   {@link LinhaDoMapaLi}. This is the one place that filter lives.
  */
 export function decidirLinhaDoMapaLi(mapa: unknown, formaEnvio: unknown): LinhaDoMapaLi {
   const chave = chaveFormaEnvioLi(formaEnvio);
@@ -296,7 +309,7 @@ export function decidirLinhaDoMapaLi(mapa: unknown, formaEnvio: unknown): LinhaD
   return {
     tipo: 'mapeado',
     chave,
-    alvoId,
+    alvoId: naoDocId(alvoId) ? null : alvoId,
     nomeOriginal: typeof linha.nomeOriginal === 'string' ? linha.nomeOriginal : null,
     idServico: idServicoMelhorEnvioLi(linha.targetData),
   };
@@ -453,16 +466,26 @@ export function classificarDocDoFreteLi(docLido: unknown): DocDoFreteLi {
 }
 
 /**
+ * Whether a raw `printLabelId` names a bought label: a NON-EMPTY string — the Melhor Envio buy's
+ * own reading of the field (`ancoraDe` in `apps/melhor-envio/lib/freight/compraEtiqueta.ts`), so
+ * the guard below never refuses a pedido the buy itself calls label-free. `null`, absent, `''`
+ * and a non-string name none.
+ */
+function etiquetaComprada(printLabelId: unknown): boolean {
+  return typeof printLabelId === 'string' && printLabelId.length > 0;
+}
+
+/**
  * The pedido guard, on the RAW pedido, in this order: `estado === 'pago'` (the checkout's own
  * gate: a cart, a cancellation in progress and every voided estado are refused), then no label
- * bought (`freteInicial.printLabelId == null`), then a pedido that ships something
- * (`freteInicial.modalidade !== '9'`). `null` when it passes.
+ * bought (`freteInicial.printLabelId` is not a non-empty string), then a pedido that ships
+ * something (`freteInicial.modalidade !== '9'`). `null` when it passes.
  */
 export function recusaDoPedidoParaRotaLi(pedidoLido: unknown): MotivoRotaEtiquetaLi | null {
   const pedido = comoObjeto(pedidoLido);
   if (pedido?.estado !== ESTADO_PEDIDO.pago) return MOTIVO_ROTA_ETIQUETA_LI.estadoNaoPago;
   const frete = comoObjeto(pedido.freteInicial);
-  if (frete?.printLabelId != null) return MOTIVO_ROTA_ETIQUETA_LI.etiquetaJaComprada;
+  if (etiquetaComprada(frete?.printLabelId)) return MOTIVO_ROTA_ETIQUETA_LI.etiquetaJaComprada;
   if (frete?.modalidade === MODALIDADE_FRETE.semTransporte) return MOTIVO_ROTA_ETIQUETA_LI.semFrete;
   return null;
 }
@@ -473,10 +496,18 @@ export function recusaDoPedidoParaRotaLi(pedidoLido: unknown): MotivoRotaEtiquet
  * own conta (`integracaoPedidoOuterRef`). The mapa of a superseded doc, or of another conta's, is
  * not the mapa the import reads.
  *
- * The two refs are compared after {@link toOuterRefOrNull} on both sides, so a bare form and its
- * `documents/` form are the same conta. Equal: `'integracao/c'` ≡ `'documents/integracao/c'`.
- * Distinct: `'integracao/c2'`; an unreadable ref on either side (`null`, `''`, an odd path) never
- * matches anything.
+ * The two sides are read DIFFERENTLY, on purpose:
+ *
+ * - the PEDIDO's ref names the conta, and is read tolerantly through {@link toOuterRefOrNull}, so
+ *   its bare form and its `documents/` form are the same conta;
+ * - the DOC's back-ref is compared EXACTLY against that canonical `documents/integracao/<id>`,
+ *   as the conta sync's own `ehDocDaConta` (`@delfrance/data/admin/frete`) compares it. The
+ *   import finds a conta's doc by that exact value, so a doc whose back-ref is in any other form
+ *   is a doc the import never reads — routing by its mapa would route by a mapa nobody edits.
+ *
+ * Equal: the pedido's `'integracao/c'` ≡ `'documents/integracao/c'`. Distinct: `'integracao/c2'`;
+ * a doc back-ref `'integracao/c'` (not canonical); an unreadable ref on either side (`null`, `''`,
+ * an odd path) never matches anything.
  */
 export function recusaDoDocLiParaRotaLi(
   docLi: unknown,
@@ -484,9 +515,8 @@ export function recusaDoDocLiParaRotaLi(
 ): MotivoRotaEtiquetaLi | null {
   const dados = comoObjeto(docLi);
   if (dados === null || dados.ativo === false) return MOTIVO_ROTA_ETIQUETA_LI.docLiDivergente;
-  const daConta = toOuterRefOrNull(dados.contaLojaIntegradaEnviosOuterRef);
   const doPedido = toOuterRefOrNull(integracaoPedidoOuterRef);
-  if (daConta === null || doPedido === null || daConta !== doPedido) {
+  if (doPedido === null || dados.contaLojaIntegradaEnviosOuterRef !== doPedido) {
     return MOTIVO_ROTA_ETIQUETA_LI.docLiDivergente;
   }
   return null;
@@ -559,8 +589,8 @@ function alvoDoOverride(raw: unknown): string | null {
  *
  * For 1 and 2 the plan also names the method's own row target (`lerLinha`): a hand-picked Melhor
  * Envio target takes its service from that row only when the row's target is itself Melhor Envio
- * ({@link concluirRotaEtiquetaLi}). A row target id that is not a usable doc id is never read: as
- * the target it is `alvo-ausente`, as `lerLinha` it is `null`.
+ * ({@link concluirRotaEtiquetaLi}). A row target no document can be ({@link decidirLinhaDoMapaLi}'s
+ * `alvoId: null`) is never read: as the target it is `alvo-ausente`, as `lerLinha` it is `null`.
  */
 export function planejarRotaEtiquetaLi(
   frete: unknown,
@@ -570,7 +600,12 @@ export function planejarRotaEtiquetaLi(
   const bloco = comoObjeto(frete) ?? {};
   const linha = decidirLinhaDoMapaLi(mapaDoDocLi, bloco.externalOptionData);
   const temEndereco = toOuterRefOrNull(bloco.enderecoFreteOuterReference) !== null;
-  const doMapa = linha.tipo === 'mapeado' && !naoDocId(linha.alvoId) ? linha : null;
+  // `alvoId: null` (a target no document can be) is never read: as the target it is
+  // `alvo-ausente`, as `lerLinha` it is `null`.
+  const doMapa =
+    linha.tipo === 'mapeado' && linha.alvoId !== null
+      ? { alvoId: linha.alvoId, idServico: linha.idServico }
+      : null;
 
   const manual = (origem: 'escolha' | 'override', alvoId: string): PlanoRotaEtiquetaLi => ({
     tipo: 'ler',

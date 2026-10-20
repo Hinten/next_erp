@@ -46,9 +46,10 @@ function textoOuNull(valor: unknown): string | null {
 
 /**
  * The stored Melhor Envio service id of a row (`targetData.id`), or `null` — read through the
- * shared `idServicoMelhorEnvioLi`, the reader the importer and the label route use, so a service
- * stored as `3` and one stored as `'3'` show the same service here, and a value they would not
- * route by (`'03'`, `0`) shows none. Display only: the write path stores the picked service as is.
+ * shared `idServicoMelhorEnvioLi`, the one service reader the label route resolves through (and
+ * the order importer is to move onto), so a service stored as `3` and one stored as `'3'` show
+ * the same service here, and a value it does not read (`'03'`, `0`) shows none. Display only: the
+ * write path stores the picked service as is.
  */
 function servicoArmazenado(linha: Readonly<Record<string, unknown>>): number | null {
   const id = idServicoMelhorEnvioLi(linha.targetData);

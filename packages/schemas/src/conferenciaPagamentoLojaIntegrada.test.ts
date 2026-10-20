@@ -155,9 +155,10 @@ describe('preimagemPedidoLi — the deterministic pedido id’s preimage', () =>
 
   it('⚠️ NEAR-MISS: the other channels’ spellings, another conta and another numero stay DISTINCT', () => {
     const id = sha256(preimagemPedidoLi('CONTA1', '165') ?? '');
-    expect(id).not.toBe(sha256('CONTA1-165')); // the Shopee spelling
-    expect(id).not.toBe(sha256('/documents/integracao/CONTA1-165')); // the Mercado Livre shape
-    expect(id).not.toBe(sha256('lojaIntegrada/CONTA1-165'));
+    expect(id).not.toBe(sha256('mercadoLivreCONTA1-165')); // the Mercado Livre pedido spelling
+    expect(id).not.toBe(sha256('CONTA1-165')); // the Shopee pedido spelling
+    expect(id).not.toBe(sha256('/documents/integracao/CONTA1-165')); // Mercado Livre's pagamento shape
+    expect(id).not.toBe(sha256('lojaIntegrada/CONTA1-165')); // a separator variant of this one
     expect(id).not.toBe(sha256('documents/integracao/CONTA1-165'));
     expect(preimagemPedidoLi('CONTA2', '165')).not.toBe(preimagemPedidoLi('CONTA1', '165'));
     expect(preimagemPedidoLi('CONTA1', '1650')).not.toBe(preimagemPedidoLi('CONTA1', '165'));
@@ -211,6 +212,75 @@ describe('respostaConferenciaPagamentoLiSchema — the wire contract', () => {
       endereco_entrega: { logradouro: 'REDACTED' },
     });
     expect(Object.keys(resposta).sort()).toEqual(Object.keys(VIVA).sort());
+  });
+
+  it('parses every live verdict the codigo can give: `pago`, `nao-pago` and `desconhecido`', () => {
+    for (const [veredito, codigo] of [
+      [VEREDITO_PAGAMENTO_LI.pago, CODIGO_SITUACAO_LI.pedidoPago],
+      [VEREDITO_PAGAMENTO_LI.naoPago, CODIGO_SITUACAO_LI.pedidoCancelado],
+      [VEREDITO_PAGAMENTO_LI.desconhecido, 'codigo_novo'],
+    ] as const) {
+      const viva = { ...VIVA, veredito, codigo, motivoContestacao: null };
+      expect(respostaConferenciaPagamentoLiSchema.parse(viva), veredito).toEqual(viva);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: the ERP mirror only ever answers `contestado` — a mirror saying `pago` (or any other verdict) is refused', () => {
+    // The mirror is the fallback when Loja Integrada cannot be read: a `pago` from
+    // it would authorise a checkout and a label buy that nothing verified.
+    for (const veredito of [
+      VEREDITO_PAGAMENTO_LI.pago,
+      VEREDITO_PAGAMENTO_LI.naoPago,
+      VEREDITO_PAGAMENTO_LI.desconhecido,
+    ]) {
+      expect(
+        respostaConferenciaPagamentoLiSchema.safeParse({ ...ESPELHO, veredito }).success,
+        veredito,
+      ).toBe(false);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a live answer never says `contestado`, and always carries its codigo and its time', () => {
+    for (const quebra of [
+      { veredito: VEREDITO_PAGAMENTO_LI.contestado },
+      { codigo: null },
+      { conferidoEmMs: null },
+      { codigo: 6 },
+    ]) {
+      expect(
+        respostaConferenciaPagamentoLiSchema.safeParse({ ...VIVA, ...quebra }).success,
+        JSON.stringify(quebra),
+      ).toBe(false);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a mirror answer carries no codigo, no live time and no correlation id', () => {
+    for (const quebra of [
+      { codigo: CODIGO_SITUACAO_LI.pedidoPago },
+      { conferidoEmMs: 1_760_000_000_000 },
+      { correlationId: 'corr-1' },
+    ]) {
+      expect(
+        respostaConferenciaPagamentoLiSchema.safeParse({ ...ESPELHO, ...quebra }).success,
+        JSON.stringify(quebra),
+      ).toBe(false);
+    }
+  });
+
+  it('⭐ a contested motivo a newer backend adds still parses, verdict intact — only its phrase is lost', () => {
+    // The backend deploys before the web: a strict motivo would fail the WHOLE
+    // answer in an older browser, which reads an unparseable answer as
+    // "unverifiable" and asks a confirm — turning a block into a click-through.
+    const espelho = respostaConferenciaPagamentoLiSchema.parse({
+      ...ESPELHO,
+      motivoContestacao: 'motivo-novo',
+    });
+    expect(espelho).toEqual({ ...ESPELHO, motivoContestacao: null });
+    const viva = respostaConferenciaPagamentoLiSchema.parse({
+      ...VIVA,
+      motivoContestacao: 'motivo-novo',
+    });
+    expect(viva).toEqual({ ...VIVA, motivoContestacao: null });
   });
 
   it('refuses an unknown verdict, an unknown fonte and a missing `aplicavel`', () => {

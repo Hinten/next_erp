@@ -68,13 +68,16 @@ const alvoRotaEtiquetaLiSchema = z.object({
  *
  * - `externalOptionId`: the Melhor Envio service for a Melhor Envio target, else `null`.
  * - `integracaoTargetOuterRef`: the per-pedido override, when one is stored or was just chosen.
- * - `estado`: the freight estado; `null` when the stored one is not a known estado.
+ * - `estado`: the freight estado; `null` when the stored one is not a known estado — on BOTH
+ *   ends: the route sends `null` for one it does not know, and a reader reads an estado it does
+ *   not know (one a newer backend added) as `null` too, so the backend, which deploys first,
+ *   never fails the whole answer in an older browser after its write already landed.
  */
 const rotaEtiquetaLiSchema = z.object({
   integracaoFreteOuterRef: outerRefSchema,
   externalOptionId: z.string().nullable(),
   integracaoTargetOuterRef: outerRefSchema.nullable(),
-  estado: estadoFreteSchema.nullable(),
+  estado: estadoFreteSchema.nullable().catch(null),
 });
 
 /**

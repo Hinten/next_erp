@@ -455,6 +455,21 @@ describe('decidirLinhaDoMapaLi — the row a shipping method maps to', () => {
     }
   });
 
+  it('⚠️ NEAR-MISS: a uid whose last segment is `.` or `..` is MAPPED to a target no document can be — `alvoId: null`, never an id to read', () => {
+    // Every caller judges `alvoId: null` as an absent target, without a read: the
+    // filter lives HERE, so no caller can hand `..` to a document read.
+    for (const integracaoUid of ['..', '.', 'int_frete/..', 'documents/int_frete/.']) {
+      const linha = linhaMapa({ integracaoUid, targetData: { id: 3 } });
+      expect(decidirLinhaDoMapaLi([linha], FORMA), integracaoUid).toEqual({
+        tipo: 'mapeado',
+        chave: CHAVE,
+        alvoId: null,
+        nomeOriginal: 'Gateway Teste - PAC',
+        idServico: '3',
+      });
+    }
+  });
+
   it('EQUAL pair: an absent or null mapa reads as an EMPTY one ⇒ `nao-mapeado`', () => {
     for (const mapa of [undefined, null, []]) {
       expect(decidirLinhaDoMapaLi(mapa, FORMA), JSON.stringify(mapa)).toEqual({
@@ -657,6 +672,21 @@ describe('recusaDoPedidoParaRotaLi — the pedido guard', () => {
     ).toBeNull();
   });
 
+  it('EQUAL pair: an EMPTY `printLabelId` names no label, as the Melhor Envio buy reads it — ⚠️ NEAR-MISS: any non-empty id is a bought label', () => {
+    // The buy's own anchor reads a label id as a NON-EMPTY string; a guard that
+    // read `''` as bought would refuse a pedido the buy itself calls label-free.
+    for (const printLabelId of ['', null, undefined, 123]) {
+      expect(recusaDoPedidoParaRotaLi(pedido({}, { printLabelId })), String(printLabelId)).toBe(
+        null,
+      );
+    }
+    for (const printLabelId of ['ord-1', ' ', '0']) {
+      expect(recusaDoPedidoParaRotaLi(pedido({}, { printLabelId })), printLabelId).toBe(
+        MOTIVO_ROTA_ETIQUETA_LI.etiquetaJaComprada,
+      );
+    }
+  });
+
   it('modalidade `9` ships nothing ⇒ `sem-frete`', () => {
     expect(
       recusaDoPedidoParaRotaLi(pedido({}, { modalidade: MODALIDADE_FRETE.semTransporte })),
@@ -685,11 +715,10 @@ describe('recusaDoDocLiParaRotaLi — the Loja Integrada doc guard', () => {
     ...over,
   });
 
-  it('EQUAL pair: back-ref `integracao/c` ≡ `documents/integracao/c` (either side)', () => {
+  it("EQUAL pair: the pedido's conta ref `integracao/c` ≡ `documents/integracao/c`", () => {
     expect(recusaDoDocLiParaRotaLi(doc(), 'integracao/c')).toBeNull();
     expect(recusaDoDocLiParaRotaLi(doc(), 'documents/integracao/c')).toBeNull();
-    const bare = doc({ contaLojaIntegradaEnviosOuterRef: 'integracao/c' });
-    expect(recusaDoDocLiParaRotaLi(bare, 'documents/integracao/c')).toBeNull();
+    expect(recusaDoDocLiParaRotaLi(doc(), '/documents/integracao/c')).toBeNull();
   });
 
   it('⚠️ NEAR-MISS: back-ref `integracao/c2`, or `ativo: false` ⇒ `doc-li-divergente`', () => {
@@ -701,8 +730,22 @@ describe('recusaDoDocLiParaRotaLi — the Loja Integrada doc guard', () => {
     );
   });
 
+  it("⚠️ NEAR-MISS: the DOC's back-ref is compared EXACTLY — a bare `integracao/c` is a doc the import's lookup never finds ⇒ `doc-li-divergente`", () => {
+    for (const backRef of ['integracao/c', '/documents/integracao/c', 'documents/integracao/c/']) {
+      const docFora = doc({ contaLojaIntegradaEnviosOuterRef: backRef });
+      for (const doPedido of ['integracao/c', 'documents/integracao/c']) {
+        expect(recusaDoDocLiParaRotaLi(docFora, doPedido), `${backRef} × ${doPedido}`).toBe(
+          MOTIVO_ROTA_ETIQUETA_LI.docLiDivergente,
+        );
+      }
+    }
+  });
+
   it('an absent `ativo` reads as active', () => {
-    const semAtivo = { tipo: 'lojaIntegrada', contaLojaIntegradaEnviosOuterRef: 'integracao/c' };
+    const semAtivo = {
+      tipo: 'lojaIntegrada',
+      contaLojaIntegradaEnviosOuterRef: 'documents/integracao/c',
+    };
     expect(recusaDoDocLiParaRotaLi(semAtivo, 'integracao/c')).toBeNull();
   });
 

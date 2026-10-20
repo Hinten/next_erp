@@ -18,8 +18,9 @@ import {
  * checkout commits and before a Melhor Envio label is bought, the order's CURRENT Loja Integrada
  * situação must be a paid one; a reprint or a generic label outside it needs an acknowledged risk.
  *
- * ONE copy for every surface (#1369): `apps/loja-integrada`'s `GET …/pedidos/[pedidoId]/pagamento`
- * route builds its answer with these, and `apps/web`'s gates parse it and decide from it.
+ * ONE copy for every surface (#1369), written for both ends of master plan step 15:
+ * `apps/loja-integrada`'s `GET …/pedidos/[pedidoId]/pagamento` route is to build its answer with
+ * these, and `apps/web`'s gates to parse it and decide from it.
  *
  * Pure and total: no clock, no network, no Firestore; a malformed value answers `null` or
  * `desconhecido`, never an exception.
@@ -69,21 +70,36 @@ export const MOTIVO_CONFERENCIA_NAO_APLICAVEL_LI = {
 } as const;
 
 /**
+ * A contested motivo as the answer carries it, read TOLERANTLY: a motivo this build does not know
+ * (one a newer backend added) reads as `null`, never as a parse failure. The backend deploys
+ * before the web, and the web reads an answer that does not parse as "unverifiable" — a confirm
+ * the operator can click through — so a strict motivo would turn a newer backend's BLOCK into a
+ * click-through in an older browser. Display only: the verdict never depends on it. The same
+ * convention as the aviso, which stores the motivo as a plain-string param.
+ */
+const motivoContestacaoTolerante = motivoPedidoContestadoLiSchema.nullable().catch(null);
+
+/**
  * What `GET /api/marketplace/loja-integrada/pedidos/[pedidoId]/pagamento` answers with 200.
  *
  * - `{aplicavel: false, motivo}` — the pedido is not an imported Loja Integrada order, so only the
  *   ERP's local gates apply. `motivo` is a {@link MOTIVO_CONFERENCIA_NAO_APLICAVEL_LI} code, as a
  *   plain string so a motivo a newer backend adds still parses in an older browser.
- * - `{aplicavel: true, …}`:
- *   - `veredito` — see {@link vereditoPagamentoLiSchema};
- *   - `codigo` — the situação codigo Loja Integrada answered, verbatim; `null` for a mirror
- *     answer (`fonte: 'erp'`);
- *   - `fonte` — `loja` (a live read) or `erp` (the contested mirror);
- *   - `motivoContestacao` — the contested aviso's motivo for a mirror answer, else the codigo's
- *     own (`SITUACOES_LI[codigo].motivoContestacao`) or `null`;
+ * - `{aplicavel: true, fonte: 'loja', …}` — a LIVE read:
+ *   - `veredito` — `pago`, `nao-pago` or `desconhecido` ({@link veredictoDoCodigoLi}), never
+ *     `contestado`;
+ *   - `codigo` — the situação codigo Loja Integrada answered, verbatim;
+ *   - `motivoContestacao` — the codigo's own (`SITUACOES_LI[codigo].motivoContestacao`) or `null`;
  *   - `conferidoEmMs` — when the live read answered (ms, server clock, display only: a client
- *     reusing a verdict measures its age with its own clock); `null` for a mirror answer;
- *   - `correlationId` — the live call's id, to find it in the logs; `null` for a mirror answer.
+ *     reusing a verdict measures its age with its own clock);
+ *   - `correlationId` — the live call's id, to find it in the logs, or `null`.
+ * - `{aplicavel: true, fonte: 'erp', …}` — the ERP's contested MIRROR, when the live read could
+ *   not run: `veredito` is ALWAYS `contestado`, `motivoContestacao` the open aviso's, and
+ *   `codigo`, `conferidoEmMs` and `correlationId` are `null` (nothing was read live).
+ *
+ * The two `aplicavel: true` arms are split on `fonte` so the impossible states do not parse: a
+ * mirror saying `pago` would authorise a checkout and a label buy that nothing verified. Every
+ * `motivoContestacao` is read tolerantly ({@link motivoContestacaoTolerante}).
  *
  * Every failure is the error envelope (`erroContaLojaIntegradaSchema`) with a `CODIGO_ERRO_LI`
  * code. NON-strict on purpose: unknown keys are stripped, so nothing else from Loja Integrada's
@@ -94,15 +110,26 @@ export const respostaConferenciaPagamentoLiSchema = z.discriminatedUnion('aplica
     aplicavel: z.literal(false),
     motivo: z.string().min(1),
   }),
-  z.object({
-    aplicavel: z.literal(true),
-    veredito: vereditoPagamentoLiSchema,
-    codigo: z.string().nullable(),
-    fonte: fonteConferenciaPagamentoLiSchema,
-    motivoContestacao: motivoPedidoContestadoLiSchema.nullable(),
-    conferidoEmMs: z.number().int().nullable(),
-    correlationId: z.string().nullable(),
-  }),
+  z.discriminatedUnion('fonte', [
+    z.object({
+      aplicavel: z.literal(true),
+      fonte: z.literal(FONTE_CONFERENCIA_PAGAMENTO_LI.loja),
+      veredito: vereditoPagamentoLiSchema.exclude([VEREDITO_PAGAMENTO_LI.contestado]),
+      codigo: z.string(),
+      motivoContestacao: motivoContestacaoTolerante,
+      conferidoEmMs: z.number().int(),
+      correlationId: z.string().nullable(),
+    }),
+    z.object({
+      aplicavel: z.literal(true),
+      fonte: z.literal(FONTE_CONFERENCIA_PAGAMENTO_LI.erp),
+      veredito: z.literal(VEREDITO_PAGAMENTO_LI.contestado),
+      codigo: z.null(),
+      motivoContestacao: motivoContestacaoTolerante,
+      conferidoEmMs: z.null(),
+      correlationId: z.null(),
+    }),
+  ]),
 ]);
 export type RespostaConferenciaPagamentoLi = z.infer<typeof respostaConferenciaPagamentoLiSchema>;
 
@@ -182,8 +209,11 @@ export function contaIdDoPedidoLi(integracaoPedidoOuterRef: unknown): string | n
 
 /**
  * The preimage of an imported Loja Integrada pedido's deterministic id —
- * `` `lojaIntegrada${contaId}-${numero}` ``, hashed with sha256 (lowercase hex) by the importer and
- * by the web's identity check alike — or `null` when no imported pedido can carry these values.
+ * `` `lojaIntegrada${contaId}-${numero}` ``, whose sha256 (lowercase hex) IS that id — or `null`
+ * when no imported pedido can carry these values. Written as the one home of that string (master
+ * plan step 15): the web's identity check and the paid re-check route are to hash it, and the
+ * order importer is to move its own template onto it; until then the two are pinned by the same
+ * vector.
  *
  * - `contaId` must be a usable document id (the `integracao` doc id, never a store id).
  * - `numero` goes through `inteiroPositivoCanonicoLi`: a positive safe integer or its canonical
@@ -192,8 +222,9 @@ export function contaIdDoPedidoLi(integracaoPedidoOuterRef: unknown): string | n
  *
  * ⚠️ The corpus's pedido ids are digests of EXACTLY this string: the vector
  * `('CONTA1', '165')` ⇒ `lojaIntegradaCONTA1-165` is pinned in the test, and nothing makes the
- * template literal safe to reformat. No `documents/`, no `/` after the channel name (the other
- * channels' spellings differ, on purpose).
+ * template literal safe to reformat. No `documents/`, no `/` after the channel name: the other
+ * channels' pedido spellings (`mercadoLivre<conta>-<id>`, Shopee's bare `<conta>-<id>`) differ on
+ * purpose.
  */
 export function preimagemPedidoLi(contaId: unknown, numero: unknown): string | null {
   if (typeof contaId !== 'string' || naoDocId(contaId)) return null;

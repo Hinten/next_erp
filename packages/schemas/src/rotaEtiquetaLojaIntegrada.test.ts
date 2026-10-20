@@ -127,6 +127,21 @@ describe('respostaRotaEtiquetaLiSchema — the three answers', () => {
     ).toBe(true);
   });
 
+  it('⭐ a freight estado a newer backend adds reads as `null` — the routing answer still parses', () => {
+    // The backend deploys before the web: a strict estado would fail the WHOLE
+    // answer in an older browser, after the route had already written the pedido.
+    const resposta = respostaRotaEtiquetaLiSchema.parse({
+      tipo: TIPO_RESPOSTA_ROTA_ETIQUETA_LI.roteado,
+      alvo: ALVO,
+      rota: { ...ROTA, estado: 'um-estado-novo' },
+    });
+    expect(resposta).toEqual({
+      tipo: TIPO_RESPOSTA_ROTA_ETIQUETA_LI.roteado,
+      alvo: ALVO,
+      rota: { ...ROTA, estado: null },
+    });
+  });
+
   it('an unknown answer tipo is refused', () => {
     expect(respostaRotaEtiquetaLiSchema.safeParse({ tipo: 'outro', motivo: 'x' }).success).toBe(
       false,

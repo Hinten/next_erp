@@ -15,8 +15,9 @@ import { ESTADO_FRETE, INTEGRACAO_FRETE } from './shared/frete';
  * handled by a marketplace shipment) must never be dragged back to `aguardandoRetirada`, and a
  * pedido not checked out yet has nothing to hand off.
  *
- * ONE copy for two callers (#1369): the checkout's phase 2 in `apps/web`, inside its transaction,
- * and the Loja Integrada label routing route, which re-points a pedido at a pickup target after its
+ * Written as the ONE copy for two callers (#1369, master plan step 15): the checkout's phase 2 in
+ * `apps/web`, inside its transaction, is to move its inline rule onto it, and the Loja Integrada
+ * label routing route is to call it when it re-points a pedido at a pickup target after its
  * checkout. `apps/loja-integrada` cannot import `apps/web`, so the rule lives here or twice.
  *
  * Pure and total: both arguments are RAW values compared exactly (no trim, no case fold); anything
