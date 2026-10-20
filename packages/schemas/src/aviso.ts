@@ -47,6 +47,7 @@ export const CANAL_AVISO_LABELS = {
   whatsapp: 'WhatsApp',
   melhorEnvio: 'Melhor Envio',
   lojaIntegrada: 'Loja Integrada',
+  amazon: 'Amazon',
   nfe: 'NF-e',
   estoque: 'Estoque',
   sistema: 'Sistema',
@@ -64,6 +65,7 @@ export const canalAvisoSchema = z
     'whatsapp',
     'melhorEnvio',
     'lojaIntegrada',
+    'amazon',
     'nfe',
     'estoque',
     'sistema',
@@ -79,6 +81,7 @@ export const CANAL_AVISO = {
   whatsapp: 'whatsapp',
   melhorEnvio: 'melhorEnvio',
   lojaIntegrada: 'lojaIntegrada',
+  amazon: 'amazon',
   nfe: 'nfe',
   estoque: 'estoque',
   sistema: 'sistema',
@@ -108,6 +111,10 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaPedidoContestado: 'Pedido da Loja Integrada contestado',
   lojaIntegradaPedidoHub: 'Pedido da Loja Integrada vindo de um hub',
   lojaIntegradaFreteNaoSuportado: 'Forma de envio da Loja Integrada sem frete utilizável',
+  amazonReconexaoPendente: 'Autorização da Amazon recusada',
+  amazonReautorizacaoExpirando: 'Autorização da Amazon expirando',
+  amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
+  amazonSegredoLwaRecusado: 'Segredo do aplicativo da Amazon recusado',
 } as const;
 
 /**
@@ -717,6 +724,122 @@ export const TIPO_AVISO_LABELS = {
  *    one's clock, so a raise whose `mapa` read predates a concurrent re-map
  *    stands until the key's next import; a key no later order uses stands until
  *    retention.
+ *
+ * ---
+ *
+ * **`amazonReconexaoPendente`** (Amazon step 2, #1926 — producers in
+ * `apps/amazon/lib/amazon/avisos/avisos.ts`) — the Login with Amazon (LWA)
+ * token endpoint refused the conta's CURRENT refresh token (`invalid_grant`, or
+ * a 401/403 with no LWA code) and the conta was PARKED: its flows stop until an
+ * operator reconnects it.
+ *
+ *  - **Channel-specific, never `canalSemCredencial`**: the remedy is the
+ *    channel's own — a new consent through the conta's connect panel in the
+ *    ERP; Seller Central's own reauthorize button is not supported — the
+ *    `lojaIntegradaReconexaoPendente` choice.
+ *  - **Never raised for an app-secret refusal** (`invalid_client`,
+ *    `unauthorized_client`): that is `amazonSegredoLwaRecusado`, which parks
+ *    nothing.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })`.
+ *  - **Severity `critico`**, canal `amazon`, raised WITHOUT escalation: in-app
+ *    only.
+ *  - **`params` are exactly `loja`** (the conta name) **and `status`** (the
+ *    refusing HTTP status, a NUMBER); `motivo` = the LWA code (`invalid_grant`),
+ *    or `null` when the refusal carried none.
+ *  - **`relogioEvento`** = the commit time of the credential document, in µs
+ *    (the park's `writeTime`, or the document's `updateTime`). Commit times on
+ *    one document rise strictly, so a late raise from a park that lost to a
+ *    newer consent is dropped with no wall clock involved. ⚠️ Per-document µs:
+ *    never compare it with another tipo's.
+ *  - **Machine resolvers**: a consent (the OAuth callback, clocked by its
+ *    credential write's `writeTime`); the daily sweep when the conta is not
+ *    parked (clocked by the document's `updateTime`) or holds no credential
+ *    (clocked by the snapshot's `readTime` — ⚠️ never clockless, or a park
+ *    committed after that read would lose its open row for good); and the
+ *    sweep's orphan pass when the conta no longer exists as an Amazon conta.
+ *
+ * ---
+ *
+ * **`amazonReautorizacaoExpirando`** (Amazon step 2, #1926 — the same module) —
+ * the seller's authorization of the app nears its 365-day limit
+ * (`reautorizarAteAmazon`, in `contaAmazon.ts`: São Paulo civil days from OUR
+ * callback's code exchange). Past it, Amazon refuses the conta's refresh token.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — deliberately **no
+ *    `janela`**: a reconnect moves the date, and the new date must refresh the
+ *    SAME row, never mint a second one (the Shopee authorization-expiry rule).
+ *  - **Severity `atencao`**, canal `amazon`. In-app only.
+ *  - **`params` are exactly `loja`** (the conta name), **`dias`** (a NUMBER of
+ *    São Paulo civil days: `0` on the date, negative once it has passed) **and
+ *    `expiraEm`** (`YYYY-MM-DD`, the São Paulo civil date). A repeat replaces
+ *    them, which is how `dias` stays current.
+ *  - **`prazo`** = that date, in µs. ⚠️ The one COMPUTED deadline among the
+ *    `prazo`s: nothing this integration reads from Amazon carries the expiry,
+ *    only the documented rule, so the producer applies the rule to our own
+ *    authorization clock. Calendar days only — no business-day rule to guess.
+ *  - **`relogioEvento`: none.** Clockless, like the Shopee expiry sweep: the
+ *    event is time passing, which no document write records.
+ *  - **Raised for every Amazon conta holding a credential, active or not**:
+ *    deactivating a conta in the ERP does not stop Amazon's clock.
+ *  - **Machine resolvers**: a consent (the new date is 365 days away); the daily
+ *    sweep when more than 30 days remain or the conta holds no credential; and
+ *    the sweep's orphan pass when the conta no longer exists.
+ *
+ * ---
+ *
+ * **`amazonSegredoLwaExpirando`** (Amazon step 2, #1926 — the same module) — the
+ * APPLICATION's LWA client secret nears the rotation deadline the operator
+ * recorded (`AMAZON_LWA_SEGREDO_EXPIRA_EM`, a São Paulo `YYYY-MM-DD`, set at the
+ * same rollout that installs each new secret). Amazon expires the secret on a
+ * 180-day rotation, and an expired secret stops every conta's exchanges.
+ *
+ *  - **Per APPLICATION, not per conta**: the secret is the app's. Key
+ *    `chaveDeAviso({ tipo })` — ONE row for the whole channel, no `conta`.
+ *  - **Severity `atencao`**, canal `amazon`. In-app only.
+ *  - **`params` are `dias` and `expiraEm`**, the shapes of
+ *    `amazonReautorizacaoExpirando` — **both ABSENT when the date is unrecorded
+ *    or invalid**: the aviso is still raised then, saying the deadline is
+ *    unknown, because an unknown deadline is the riskier state.
+ *  - **`prazo`** = the recorded date, in µs (copied from the environment, never
+ *    computed); `null` when unrecorded.
+ *  - **`relogioEvento`: none** (clockless: time passing).
+ *  - **Route**: the conta LIST (`ROTAS_AVISO.canalAmazonLista`): no conta page
+ *    owns it. The remedy is a deploy (the wording's `runbook`), not an in-app
+ *    action.
+ *  - **Evaluated only while the read switch is `on`** (`AMAZON_CHAMADAS`):
+ *    before the cutover the legacy app owns the secret, and its deadline is
+ *    tracked by hand.
+ *  - **Machine resolver**: the daily sweep when more than 30 days remain.
+ *    A row left open when the read switch goes back off (an incident or a
+ *    rollback) is neither refreshed nor resolved — the sweep skips the secret
+ *    while the switch is off — so its `dias` stays frozen at the last sweep's
+ *    value until the switch is `on` again and the sweep re-evaluates it (a
+ *    documented residue).
+ *
+ * ---
+ *
+ * **`amazonSegredoLwaRecusado`** (Amazon step 2, #1926 — the same module) — the
+ * LWA token endpoint refused OUR application's credentials (`invalid_client` or
+ * `unauthorized_client`): a wrong, expired or rotated client secret, or a client
+ * id that does not match it. Every conta's exchange fails the same way until the
+ * secret is fixed.
+ *
+ *  - **Never parks**: the fault is the application's, not a seller's. Parking
+ *    would stop every conta for a fix that needs no reconnect, and staying
+ *    silent would hide an outage — which is why this tipo exists.
+ *  - **Per APPLICATION**: key `chaveDeAviso({ tipo })`, no `conta`.
+ *  - **Severity `critico`**, canal `amazon`, raised WITHOUT escalation: in-app
+ *    only.
+ *  - **`params`: none.** `motivo` = the LWA code (`invalid_client` |
+ *    `unauthorized_client`).
+ *  - **`relogioEvento`: none** — deliberately clockless: the refusal repeats on
+ *    every exchange, so a lost race in either direction heals at the next one.
+ *  - **Route**: the conta LIST (`ROTAS_AVISO.canalAmazonLista`).
+ *  - **Machine resolver**: any successful LWA exchange — the callback's code
+ *    exchange or an access-token refresh: the secret just worked. No exchange
+ *    happens while the read switch is off or while no Amazon conta exists, so
+ *    a row raised before either stays open until the next accepted exchange (a
+ *    documented residue: without an exchange the refusal cannot be re-checked).
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -743,6 +866,10 @@ export const tipoAvisoSchema = z
     'lojaIntegradaPedidoContestado',
     'lojaIntegradaPedidoHub',
     'lojaIntegradaFreteNaoSuportado',
+    'amazonReconexaoPendente',
+    'amazonReautorizacaoExpirando',
+    'amazonSegredoLwaExpirando',
+    'amazonSegredoLwaRecusado',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -772,6 +899,10 @@ export const TIPO_AVISO = {
   lojaIntegradaPedidoContestado: 'lojaIntegradaPedidoContestado',
   lojaIntegradaPedidoHub: 'lojaIntegradaPedidoHub',
   lojaIntegradaFreteNaoSuportado: 'lojaIntegradaFreteNaoSuportado',
+  amazonReconexaoPendente: 'amazonReconexaoPendente',
+  amazonReautorizacaoExpirando: 'amazonReautorizacaoExpirando',
+  amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
+  amazonSegredoLwaRecusado: 'amazonSegredoLwaRecusado',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -1002,6 +1133,16 @@ export const ROTAS_AVISO = {
   canalLojaIntegrada: {
     padrao: '/canais/loja-integrada/[id]',
     build: (integracaoId: string) => `/canais/loja-integrada/${integracaoId}`,
+  },
+  canalAmazon: {
+    padrao: '/canais/amazon/[id]',
+    build: (integracaoId: string) => `/canais/amazon/${integracaoId}`,
+  },
+  // The conta LIST, for the two per-APPLICATION Amazon avisos (the LWA app
+  // secret): they belong to no conta, so there is no `[id]` page to open.
+  canalAmazonLista: {
+    padrao: '/canais/amazon',
+    build: () => '/canais/amazon',
   },
   // ⚠️ `/pedidos/[id]` is NOT navigable — it is a bare directory holding
   // `editar/` and `nfe/`, with no page of its own. The whole app links to
