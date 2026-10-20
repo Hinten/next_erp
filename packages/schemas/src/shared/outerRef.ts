@@ -120,6 +120,16 @@ export function idFromRef(raw: string): string {
   return segs[segs.length - 1] ?? '';
 }
 
+/**
+ * Nullable ID extraction over untrusted input. Like {@link idFromRef}, accepts
+ * bare IDs and paths of any depth, ignoring empty separators and the leading
+ * `documents` marker. Preserves case and whitespace; this is NOT document-path
+ * validation (use {@link toDocPathOrNull} when a complete path is required).
+ */
+export function idFromRefOrNull(raw: unknown): string | null {
+  return typeof raw === 'string' ? idFromRef(raw) || null : null;
+}
+
 /** The collection (segment before the id) and id of any ref form. */
 export function parseRef(raw: string): { collection: string; id: string } {
   const segs = segments(raw);

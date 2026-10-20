@@ -44,7 +44,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { FirebaseError } from 'firebase/app';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SnapshotRow } from '@delfrance/data/hooks';
-import type { Pedido } from '@delfrance/schemas';
+import { idFromRefOrNull, type Pedido } from '@delfrance/schemas';
 
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getDocsByIds } from '@/lib/data/getDocsByIds';
@@ -117,12 +117,6 @@ export function intFreteTipoQueryKey(path: string): readonly unknown[] {
   return ['intFreteTipo', path];
 }
 
-/** `clientes/abc` → `abc`. Returns null for anything that is not a doc path. */
-function idFromPath(path: string): string | null {
-  const id = path.split('/').pop();
-  return id && id.length > 0 ? id : null;
-}
-
 interface Target {
   readonly path: string;
   readonly id: string;
@@ -140,7 +134,7 @@ export function collectRowReadTargets(
   for (const row of rows) {
     const clientePath = toRefPath(row.data.clientePedidoOuterRef);
     if (clientePath) {
-      const id = idFromPath(clientePath);
+      const id = idFromRefOrNull(clientePath);
       if (id) clientes.set(clientePath, { path: clientePath, id });
     }
   }

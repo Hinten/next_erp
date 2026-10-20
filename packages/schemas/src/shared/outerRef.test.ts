@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   docIdSchema,
   idFromRef,
+  idFromRefOrNull,
   idRefSchema,
   naoDocId,
   outerRefLooseSchema,
@@ -127,6 +128,50 @@ describe('outerRef helpers', () => {
     expect(idFromRef('documents/clientes/C1')).toBe('C1');
     expect(idFromRef('clientes/C1')).toBe('C1');
     expect(idFromRef('documents/clientes/C1/enderecos/E1')).toBe('E1');
+  });
+
+  it('nullable extraction retains bare IDs and tolerant path forms', () => {
+    for (const raw of [
+      'C1',
+      'clientes/C1',
+      'documents/clientes/C1',
+      '//documents//clientes//C1//',
+      'documents/clientes/P1/enderecos/C1',
+      'not/a/document/C1',
+    ]) {
+      expect(idFromRefOrNull(raw), raw).toBe('C1');
+    }
+  });
+
+  it('nullable extraction returns null only for nonstrings or missing segments', () => {
+    for (const raw of [
+      null,
+      undefined,
+      42,
+      true,
+      {},
+      [],
+      { path: 'clientes/C1' },
+      '',
+      '/',
+      '///',
+      'documents',
+      '/documents//',
+    ]) {
+      expect(idFromRefOrNull(raw), String(raw)).toBeNull();
+    }
+    expect(idFromRef('')).toBe('');
+    expect(idFromRef('documents')).toBe('');
+  });
+
+  it('ID extraction preserves distinct IDs, case, whitespace and numeric spelling', () => {
+    for (const id of ['C1', 'c1', ' C1 ', '01', '1', ' ']) {
+      expect(idFromRefOrNull(`documents/clientes/${id}`)).toBe(id);
+    }
+    const distinct = ['C1', 'c1', ' C1 ', '01', '1'].map(idFromRefOrNull);
+    expect(new Set(distinct).size).toBe(distinct.length);
+    // It extracts only an ID: full-path identity belongs to toDocPathOrNull.
+    expect(idFromRefOrNull('clientes/C1')).toBe(idFromRefOrNull('fornecedores/C1'));
   });
 
   it('parseRef returns the owning collection and id', () => {

@@ -762,6 +762,27 @@ describe('cancelarNFeService', () => {
     expect(writes.some((w) => w.path.startsWith('filiais/F-1/enviNfe/'))).toBe(false);
   });
 
+  it.each([
+    ['integracao/I-1', 'filiais/F-1'],
+    ['documents/integracao/I-1', 'documents/filiais/F-1'],
+    ['documents/integracao/I-1', 'filiais/F-1'],
+    ['integracao/I-1', 'documents/filiais/F-1'],
+  ])('audits a legacy NF-e under the filial resolved from %s / %s', async (contaRef, filialRef) => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
+    docs['pedidos/PED-1']!.integracaoPedidoOuterRef = contaRef;
+    docs['integracao/I-1']!.filialIntegracaoPedidoOuterRef = filialRef;
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+
+    const result = await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
+
+    expect(result.estado).toBe(ESTADO_NFE.cancelada);
+    expect(writes.filter((w) => w.path.startsWith('filiais/')).map((w) => w.path)).toEqual([
+      expect.stringMatching(/^filiais\/F-1\/enviNfe\/[^/]+$/),
+    ]);
+    expect(cancelarNFe).toHaveBeenCalledOnce();
+  });
+
   it('legacy doc without filialId + pedido gone → NFePedidoNotFoundError (→ 404)', async () => {
     const events: string[] = [];
     // No `filialId` on the doc AND the pedido doc is absent → the legacy fallback
