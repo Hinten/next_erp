@@ -46,6 +46,12 @@ export function rotuloAlvoFreteLi(alvo: AlvoFreteLi): string {
  * The targets the "Destino" select offers and the stored targets it must still
  * name.
  *
+ * ONE query for every Loja Integrada target picker: the conta screen's
+ * "Mapeamento do Frete" tab and the `/pedidos` "Escolher transportadora…"
+ * picker (master plan step 15) read the same list, under the same key, so the
+ * two can never offer different targets — which is why it lives in
+ * `lib/loja-integrada` and not beside either screen.
+ *
  * - `alvos`: `int_frete where tipo in TIPOS_ALVO_MAPA_FRETE_LI orderBy nome`
  *   (rides `int_frete (tipo, nome)`), one-shot, active and inactive alike — the
  *   select offers the active ones and labels a stored inactive one.

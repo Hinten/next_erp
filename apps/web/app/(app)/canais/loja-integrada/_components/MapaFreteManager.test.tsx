@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { PERM } from '@delfrance/auth';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { ServicoMelhorEnvioSelectProps } from './ServicoMelhorEnvioSelect';
-import type { AlvoFreteLi } from './useAlvosMapaFreteLi';
+import type { AlvoFreteLi } from '@/lib/loja-integrada/useAlvosMapaFreteLi';
 import type { FreteDaContaLi } from './useFreteDaContaLi';
 
 /**
@@ -29,8 +29,8 @@ vi.mock('./useFreteDaContaLi', async (importActual) => ({
   ...(await importActual<typeof import('./useFreteDaContaLi')>()),
   useSemearFreteDaContaLi: () => ({ ready: h.pronto, error: null }),
 }));
-vi.mock('./useAlvosMapaFreteLi', async (importActual) => ({
-  ...(await importActual<typeof import('./useAlvosMapaFreteLi')>()),
+vi.mock('@/lib/loja-integrada/useAlvosMapaFreteLi', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/loja-integrada/useAlvosMapaFreteLi')>()),
   useAlvosMapaFreteLi: () => ({
     alvos: h.alvos,
     armazenados: h.armazenados,

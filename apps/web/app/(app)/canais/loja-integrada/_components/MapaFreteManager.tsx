@@ -15,7 +15,11 @@ import {
 } from '@/lib/loja-integrada/freteDaConta';
 import { FreteDaContaLiAviso } from './FreteDaContaLiAviso';
 import { ServicoMelhorEnvioSelect } from './ServicoMelhorEnvioSelect';
-import { rotuloAlvoFreteLi, useAlvosMapaFreteLi, type AlvoFreteLi } from './useAlvosMapaFreteLi';
+import {
+  rotuloAlvoFreteLi,
+  useAlvosMapaFreteLi,
+  type AlvoFreteLi,
+} from '@/lib/loja-integrada/useAlvosMapaFreteLi';
 import { intFreteIdDe, useSemearFreteDaContaLi, type FreteDaContaLi } from './useFreteDaContaLi';
 
 /** The "Nenhum" option — clears a row's mapping. */
