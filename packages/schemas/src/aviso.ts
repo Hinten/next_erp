@@ -757,6 +757,11 @@ export const TIPO_AVISO_LABELS = {
  *    CEP check — a CEP arrived, the order is no longer paid, or its
  *    shipping method now maps to a pickup — clocked by its stamp, so a late
  *    import of an older observation can neither close nor reopen the row.
+ *    ⚠️ A CEP the endereço builder cannot read gets past the check too: that
+ *    import closes the row while the pedido stays without an endereço or a
+ *    carrier route, and raises nothing else. So a closed row is not proof the
+ *    address arrived; the runbook tells the operator to check the pedido's
+ *    endereço once the row closes.
  *    ⚠️ UNVERIFIED (D17: no capture shows it): that filling the address in the
  *    painel bumps the order's modification stamp, so the poller picks the
  *    order up again. The parked row is terminal, so if it does not, nothing

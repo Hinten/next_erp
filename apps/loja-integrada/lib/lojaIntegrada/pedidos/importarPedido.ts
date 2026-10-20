@@ -79,7 +79,8 @@
  *     ⚠️ A present but INVALID CEP is not refused — the customer typed it,
  *     and waiting never fixes it: the builder reads no endereço from it, so
  *     step 7 stores none and the order imports without an endereço (its
- *     freight amount, no carrier route), like an unpaid one.
+ *     freight amount, no carrier route), like an unpaid one. Being past this
+ *     check, such an import also resolves an open aviso of that order.
  *  7. **The cliente and the endereço**, each only while `S` holds none: the
  *     cliente step while `S` has no cliente, the endereço step while it has no
  *     endereço and a readable cliente is known (stored, or just resolved — an

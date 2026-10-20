@@ -1753,6 +1753,43 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
     expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).not.toBeNull();
   });
 
+  it('⚠️ pinned: a later import with an INVALID CEP closes the aviso too, while the pedido stays without an endereço or a route and nothing stays open — a closed row is no proof the address arrived (the runbook says to check)', async () => {
+    const db = dbComAlvo();
+    await avisarPedidoPagoSemEnderecoLi(
+      asDb(db),
+      {
+        integracaoId: CONTA,
+        lojaNome: 'Loja de teste',
+        pedidoId: PEDIDO_ID,
+        numero: String(NUMERO_LI),
+        relogioUs: WATERMARK_2H,
+      },
+      { increment, nowMs: AGORA_MS },
+    );
+    expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).toBeNull();
+
+    // The operator typed a CEP the builder cannot read: past the no-CEP check, so it imports.
+    const invalido = { ...(pedidoLiBruto().endereco_entrega as DocData), cep: '0131010' };
+    const r = await importar(
+      db,
+      pagoSemEndereco({ endereco_entrega: invalido, data_modificacao: carimboLi(3) }),
+    );
+    expect(r.r).toEqual({ kind: 'importado' });
+    expect(db.ler(CAMINHO_AVISO_PAGO)).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
+    });
+    expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).not.toBeNull();
+    expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+      estado: ESTADO_PEDIDO.pago,
+      enderecoFiscalOuterRef: null,
+    });
+    expect(frete(db)).toMatchObject({ ...SEM_ROTA, enderecoFreteOuterReference: null });
+    const avisosAbertos = [
+      ...new Set(db.escritas.map((e) => e.caminho).filter((c) => c.startsWith('avisos/'))),
+    ].filter((caminho) => db.ler(caminho)?.resolvidoEm === null);
+    expect(avisosAbertos).toEqual([]);
+  });
+
   it('pinned (paid ≠ estado pago): the order moved to a DISPUTE while refused imports with no address and no route, its contestado row raised, and the paid-without-address row resolved', async () => {
     const db = dbComAlvo();
     await expect(importar(db, pagoSemEndereco())).rejects.toBeInstanceOf(
