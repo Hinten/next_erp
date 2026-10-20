@@ -59,6 +59,30 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   park and the package through `./notificacao` and `../env`; no receiver path calls them, and the
   happy path makes no Amazon call and no Firestore operation (`receptor.test.ts`, `prazos.test.ts`).
 
+## Functions codebase (step 3)
+
+- `functions/` is the nested Cloud Functions codebase `amazon` (NOT a workspace member: this
+  app's tsconfig, `eslint .` and vitest cover it). `build.mjs` esbuild-bundles `src/index.ts`
+  (externals: `firebase-admin*`, `firebase-functions*`; defines `FUNCTIONS_REGION` with no
+  default, `FIREBASE_DATABASE_ID`, `TASKS_INVOKER_SA`); `scripts/prepare-deploy.mjs` writes
+  `.deploy/amazon-functions`. `firebase.amazon.deploy.json` ships INERT: the deploy is W9, by a
+  person, never an agent. `functions/DEPLOY.md` has the prerequisites, the commented-out runtime
+  env and the IAM.
+- `src/index.ts` imports `./options` FIRST and ALONE and exports ONLY triggers:
+  `filaLeituraAmazon` (the reads queue, = `FILA_LEITURA_AMAZON`, asserted at load),
+  `reprocessAmazonNotifications` (both lanes, logged separately) and `sweepAmazonExpirations`
+  (the step-2 expiry body, daily, NO secret). `index.test.ts` pins every option off `__endpoint`.
+- ONE logger there too: every line is `registrarEventoAmazon(LOGGER_STDOUT_AMAZON, …)` — never
+  `firebase-functions`' `logger` (Loja Integrada's root uses it; do not copy that), never
+  `console.`, never an error message (a failed sweep row by document id only). The package
+  errors reach the task wrapper's own "Unhandled error" log only through the pipeline's
+  sanitizing boundary (`FalhaTarefaAmazonError`). `estrutura.test.ts` widens the `.message`,
+  seller-id, `trechoCorpo`, `testing/` and conta-cache scans to `functions/src`.
+- The two composition roots of the queue, `lib/firebase/filaLeitura.ts` (App Hosting, the
+  receiver) and `functions/src/agendador.ts` (the step-4 poll), are the app's only `getFunctions(`
+  callers; each reads the region as an object literal of STATIC `process.env` reads (esbuild's
+  `define`). `src/tasksInvoker.ts` stays byte-identical to every other codebase's copy.
+
 ## Layout
 
 - `lib/amazon/` is Next-free except `core/respond.ts`, never imports the `@/`
@@ -144,8 +168,8 @@ Read by this backend: `AMAZON_LWA_CLIENT_ID`, `AMAZON_APPLICATION_ID`,
 `AMAZON_OAUTH_REDIRECT_URI`, `WEB_APP_URL`, `ALLOWED_ADMIN_ORIGINS`,
 `AMAZON_CHAMADAS`, `FIREBASE_PROJECT_ID` / `FIREBASE_DATABASE_ID` (optional), and
 the Secret Manager pair `AMAZON_LWA_CLIENT_SECRET` / `AMAZON_OAUTH_STATE_SECRET`.
-`AMAZON_LWA_SEGREDO_EXPIRA_EM` is read only by the sweep, which runs in the
-functions codebase from step 3. The receiver (step 3) adds the Secret Manager pair
+`AMAZON_LWA_SEGREDO_EXPIRA_EM` is read only by the expiry sweep, which runs in the
+functions codebase (`sweepAmazonExpirations`). The receiver (step 3) adds the Secret Manager pair
 `AMAZON_RELAY_SECRET` / `AMAZON_RELAY_PREVIOUS_SECRET` (the second only during a
 rotation; each 32–512 visible ASCII, else 503) and, in `lib/firebase/filaLeitura.ts`,
 `AMAZON_TASKS_REGION` (falls back to `FUNCTIONS_REGION`, no default, else 503; trimmed
@@ -159,7 +183,7 @@ no `env:` block.
 - Eight names, all BLANK in the root `.env.example` and COMMENT rows in `apphosting.yaml`
   (never an `env:` row: a baked `off` could override a console flip):
   `AMAZON_MODO_{ESTOQUE,PRECO,NFE,AGENDAMENTO}` and `AMAZON_CANARIO_{ESTOQUE,PRECO,NFE,AGENDAMENTO}`.
-  Step 3's functions env declares the same eight when that codebase is created.
+  The functions codebase's `DEPLOY.md` declares the same eight, commented out.
 - A valve is `off | dry-run | on`: only the exact `on` writes, only the exact `dry-run` diffs,
   anything else is off (nothing trimmed or folded; an unrecognised value logs a WARNING). A
   write also needs `AMAZON_CHAMADAS=on`.
