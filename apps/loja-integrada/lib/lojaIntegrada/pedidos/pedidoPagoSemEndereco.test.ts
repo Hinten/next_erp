@@ -185,7 +185,10 @@ describe('sinalizarPedidoPagoSemEnderecoLi: the LOUD failure once the retries ra
   it('NEAR-MISS: any OTHER error parked at the cap is not ours — no line, no aviso, nothing written', async () => {
     const db = new FakeDb();
     const l = logger();
-    for (const err of [new Error('ainda sem endereço'), new TypeError('x')]) {
+    // Narrowed by the CLASS, never by the shape: an error that merely carries
+    // the same `pedido` field is somebody else's.
+    const mesmoFormato = Object.assign(new Error('ainda sem endereço'), { pedido: doAviso() });
+    for (const err of [new Error('ainda sem endereço'), new TypeError('x'), mesmoFormato]) {
       const r = await sinalizarPedidoPagoSemEnderecoLi(asDb(db), err, {
         increment,
         agoraMs: () => AGORA_MS,
