@@ -23,9 +23,23 @@ const DENY_LINES = [...DENIED, ...DENIED.map((path) => `**/${path}`)].map(
   (path) => `${JSON.stringify(path)} = "deny"`,
 );
 const RUNTIME_LINES = ['":minimal" = "read"', '":tmpdir" = "write"', '":slash_tmp" = "write"'];
-const WORKSPACE_LINES = [
+const HISTORICAL_WORKSPACE_LINES = [
   '"." = "write"',
   ...['.git', '.codex', '.agents', '.aws'].map((path) => `${JSON.stringify(path)} = "read"`),
+];
+const DEPENDENCY_WORKSPACE_LINES = [
+  ...HISTORICAL_WORKSPACE_LINES,
+  '".codex/node_modules" = "write"',
+];
+const WORKSPACE_LINES = [...DEPENDENCY_WORKSPACE_LINES, '".codex/.turbo" = "write"'];
+const NETWORK_LINES = ['enabled = true', 'allow_local_binding = true'];
+const REGISTRY_LINES = ['"registry.npmjs.org" = "allow"'];
+const SHELL_ENV_LINES = [
+  'npm_config_cache = "out/codex-sandbox-cache/npm"',
+  'pnpm_config_store_dir = "out/codex-sandbox-cache/pnpm-store"',
+  'pnpm_config_cache_dir = "out/codex-sandbox-cache/pnpm-cache"',
+  'pnpm_config_state_dir = "out/codex-sandbox-cache/state"',
+  'TURBO_TELEMETRY_DISABLED = "1"',
 ];
 
 export class RepairError extends Error {}
@@ -33,7 +47,7 @@ export const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 // Ignore header-looking lines inside TOML strings. Reject unfamiliar syntax in
 // permission tables rather than attempting to rewrite arbitrary TOML.
-function tables(source) {
+export function tables(source) {
   const result = [];
   let multiline = null;
   let offset = 0;
@@ -59,6 +73,7 @@ function tables(source) {
         else if (line[i] === quote) quote = null;
       } else if (line[i] === '#') break;
       else if (line.startsWith('"""', i) || line.startsWith("'''", i)) {
+        if (result.length) result.at(-1).hasMultiline = true;
         multiline = line.slice(i, i + 3);
         i += 2;
       } else if (line[i] === '"' || line[i] === "'") quote = line[i];
@@ -83,17 +98,19 @@ function signature(lines) {
 }
 
 export function planConfigRepair(source) {
-  const sections = tables(source).filter(
+  const allTables = tables(source);
+  const sections = allTables.filter(
     (table) => table.name === PROFILE || table.name.startsWith(`${PROFILE}.`),
   );
   if (sections.length === 0) return { status: 'missing-profile' };
   const byName = new Map(sections.map((table) => [table.name, table]));
   const names = [PROFILE, `${PROFILE}.filesystem`, `${PROFILE}.filesystem.":workspace_roots"`];
   const network = `${PROFILE}.network`;
+  const domains = `${network}.domains`;
   if (
     byName.size !== sections.length ||
     names.some((name) => !byName.has(name)) ||
-    sections.some((table) => ![...names, network].includes(table.name))
+    sections.some((table) => ![...names, network, domains].includes(table.name))
   ) {
     return { status: 'custom-profile' };
   }
@@ -105,54 +122,144 @@ export function planConfigRepair(source) {
   const fs = lines(names[1]);
   const workspace = lines(names[2]);
   const matches = (actual, expected) => signature(actual) === signature(expected);
-  if (
+  const currentWorkspace = matches(workspace, [...WORKSPACE_LINES, ...DENY_LINES]);
+  const historicalWorkspace = matches(workspace, [...HISTORICAL_WORKSPACE_LINES, ...DENY_LINES]);
+  const dependencyWorkspace = matches(workspace, [...DEPENDENCY_WORKSPACE_LINES, ...DENY_LINES]);
+  const minimal =
     parent.length === 0 &&
     matches(fs, [...RUNTIME_LINES, 'glob_scan_max_depth = 8']) &&
-    matches(workspace, [...WORKSPACE_LINES, ...DENY_LINES]) &&
+    (currentWorkspace || historicalWorkspace || dependencyWorkspace);
+  const legacy =
+    matches(parent, ['extends = ":workspace"']) &&
+    matches(fs, ['glob_scan_max_depth = 8']) &&
+    matches(workspace, DENY_LINES) &&
+    !byName.has(network) &&
+    !byName.has(domains);
+  const offline =
+    minimal &&
     byName.has(network) &&
-    matches(lines(network), ['enabled = false'])
-  )
-    return { status: 'already-fixed' };
-  if (
-    !matches(parent, ['extends = ":workspace"']) ||
-    !matches(fs, ['glob_scan_max_depth = 8']) ||
-    !matches(workspace, DENY_LINES) ||
-    byName.has(network)
-  )
-    return { status: 'custom-profile' };
+    matches(lines(network), ['enabled = false']) &&
+    !byName.has(domains);
+  const registry =
+    minimal &&
+    byName.has(network) &&
+    matches(lines(network), NETWORK_LINES) &&
+    byName.has(domains) &&
+    matches(lines(domains), REGISTRY_LINES);
+  if (!legacy && !offline && !registry) return { status: 'custom-profile' };
 
   const newline = source.includes('\r\n') ? '\r\n' : '\n';
-  let replacement = source;
-  const edits = [
-    {
-      start: byName.get(names[1]).bodyStart,
-      end: byName.get(names[1]).bodyStart,
-      text: RUNTIME_LINES.join(newline) + newline,
-    },
-    {
+  const edits = [];
+  const ensureDefaults = (name, required) => {
+    const aliases = allTables.filter((table) => table.name.replace(/["'\s]/g, '') === name);
+    if (aliases.length > 1 || aliases.some((table) => table.name !== name)) return false;
+    const table = aliases[0];
+    // Defaults must be actual assignments, never assignment-looking lines
+    // inside a multiline value. Leave unfamiliar table bodies for review.
+    if (table?.hasMultiline) return false;
+    if (!table) {
+      // Inline or dotted definitions would conflict with a new table. Report
+      // them as custom instead of attempting to parse arbitrary TOML.
+      const parentName = name.split('.')[0];
+      const preamble = source.slice(0, allTables[0]?.start ?? source.length);
+      if (new RegExp(`^\\s*${parentName}\\s*[.=]`, 'm').test(preamble)) return false;
+      if (name.includes('.')) {
+        const parentTable = allTables.find((candidate) => candidate.name === parentName);
+        if (
+          parentTable &&
+          /^\s*set\s*[.=]/m.test(source.slice(parentTable.bodyStart, parentTable.end))
+        )
+          return false;
+      }
+      const insert = allTables[0]?.start ?? source.length;
+      edits.push({
+        start: insert,
+        end: insert,
+        text: `${newline}[${name}]${newline}${required.join(newline)}${newline}`,
+      });
+      return true;
+    }
+    const body = source.slice(table.bodyStart, table.end);
+    const missing = [];
+    for (const expected of required) {
+      const [key, value] = expected.split(' = ');
+      const assignments = [
+        ...body.matchAll(new RegExp(`^\\s*(?:${key}|"${key}"|'${key}')\\s*=([^\\r\\n]*)`, 'gm')),
+      ];
+      if (assignments.length > 1) return false;
+      if (assignments.length && assignments[0][1].trim().replace(/\s+#.*$/, '') !== value) {
+        return false;
+      }
+      if (!assignments.length) missing.push(expected);
+    }
+    if (missing.length) {
+      edits.push({
+        start: table.bodyStart,
+        end: table.bodyStart,
+        text: missing.join(newline) + newline,
+      });
+    }
+    return true;
+  };
+  if (
+    !ensureDefaults('features', ['network_proxy = true']) ||
+    !ensureDefaults('shell_environment_policy.set', SHELL_ENV_LINES)
+  )
+    return { status: 'custom-profile' };
+  if (historicalWorkspace || dependencyWorkspace) {
+    edits.push({
       start: byName.get(names[2]).bodyStart,
       end: byName.get(names[2]).bodyStart,
-      text: WORKSPACE_LINES.join(newline) + newline,
-    },
-  ];
-  const parentTable = byName.get(PROFILE);
-  const extendsMatch = source
-    .slice(parentTable.bodyStart, parentTable.end)
-    .match(/^[^\S\r\n]*extends[^\S\r\n]*=[^\S\r\n]*":workspace"[^\S\r\n]*\r?\n?/m);
-  edits.push({
-    start: parentTable.bodyStart + extendsMatch.index,
-    end: parentTable.bodyStart + extendsMatch.index + extendsMatch[0].length,
-    text: '',
-  });
-  const workspaceTable = byName.get(names[2]);
-  const body = source.slice(workspaceTable.bodyStart, workspaceTable.end);
-  const lastAssignment = [...body.matchAll(/^[^\r\n#]*=\s*"deny"[^\S\r\n]*\r?\n?/gm)].at(-1);
-  const insert = workspaceTable.bodyStart + lastAssignment.index + lastAssignment[0].length;
-  edits.push({
-    start: insert,
-    end: insert,
-    text: `${newline}[${network}]${newline}enabled = false${newline}`,
-  });
+      text:
+        (historicalWorkspace ? '".codex/node_modules" = "write"' + newline : '') +
+        '".codex/.turbo" = "write"' +
+        newline,
+    });
+  }
+  if (legacy) {
+    edits.push(
+      {
+        start: byName.get(names[1]).bodyStart,
+        end: byName.get(names[1]).bodyStart,
+        text: RUNTIME_LINES.join(newline) + newline,
+      },
+      {
+        start: byName.get(names[2]).bodyStart,
+        end: byName.get(names[2]).bodyStart,
+        text: WORKSPACE_LINES.join(newline) + newline,
+      },
+    );
+    const parentTable = byName.get(PROFILE);
+    const extendsMatch = source
+      .slice(parentTable.bodyStart, parentTable.end)
+      .match(/^[^\S\r\n]*extends[^\S\r\n]*=[^\S\r\n]*":workspace"[^\S\r\n]*\r?\n?/m);
+    edits.push({
+      start: parentTable.bodyStart + extendsMatch.index,
+      end: parentTable.bodyStart + extendsMatch.index + extendsMatch[0].length,
+      text: '',
+    });
+    const workspaceTable = byName.get(names[2]);
+    const body = source.slice(workspaceTable.bodyStart, workspaceTable.end);
+    const lastAssignment = [...body.matchAll(/^[^\r\n#]*=\s*"deny"[^\S\r\n]*\r?\n?/gm)].at(-1);
+    const insert = workspaceTable.bodyStart + lastAssignment.index + lastAssignment[0].length;
+    edits.push({
+      start: insert,
+      end: insert,
+      text: `${newline}[${network}]${newline}${NETWORK_LINES.join(newline)}${newline}${newline}[${domains}]${newline}${REGISTRY_LINES.join(newline)}${newline}`,
+    });
+  } else if (offline) {
+    const table = byName.get(network);
+    const assignment = source
+      .slice(table.bodyStart, table.end)
+      .match(/^\s*enabled\s*=\s*false[^\S\r\n]*\r?\n?/m);
+    edits.push({
+      start: table.bodyStart + assignment.index,
+      end: table.bodyStart + assignment.index + assignment[0].length,
+      text: `${NETWORK_LINES.join(newline)}${newline}${newline}[${domains}]${newline}${REGISTRY_LINES.join(newline)}${newline}`,
+    });
+  }
+  if (!edits.length) return { status: 'already-fixed' };
+  let replacement = source;
   for (const edit of edits.sort((a, b) => b.start - a.start)) {
     replacement = replacement.slice(0, edit.start) + edit.text + replacement.slice(edit.end);
   }

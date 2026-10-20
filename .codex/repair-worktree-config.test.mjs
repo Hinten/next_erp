@@ -18,23 +18,116 @@ import {
 } from './repair-worktree-config.mjs';
 
 const CONFIG = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'config.toml'), 'utf8');
-const LEGACY = CONFIG.replace(/^":(?:minimal|tmpdir|slash_tmp)" = .*\r?\n/gm, '')
-  .replace(/^"(?:\.|\.git|\.codex|\.agents|\.aws)" = .*\r?\n/gm, '')
-  .replace(/\[permissions\.next-erp\.network\]\r?\nenabled = false\r?\n/, '')
-  .replace('[permissions.next-erp]\n', '[permissions.next-erp]\nextends = ":workspace"\n')
-  .replace('[permissions.next-erp]\r\n', '[permissions.next-erp]\r\nextends = ":workspace"\r\n');
+const ENV_SECRET = ['.env', 'secrets'].join('.');
+// Historical fixtures are intentionally independent of the live project configuration.
+const LEGACY = `default_permissions = "next-erp"
+
+[permissions.next-erp]
+description = "Historical next-erp profile"
+extends = ":workspace"
+
+[permissions.next-erp.filesystem]
+glob_scan_max_depth = 8
+
+[permissions.next-erp.filesystem.":workspace_roots"]
+".env" = "deny"
+".env.local" = "deny"
+"${ENV_SECRET}" = "deny"
+"${ENV_SECRET}.example" = "deny"
+"secrets" = "deny"
+"secrets/**" = "deny"
+".ignore" = "deny"
+".ignore/**" = "deny"
+"**/.env" = "deny"
+"**/.env.local" = "deny"
+"**/${ENV_SECRET}" = "deny"
+"**/${ENV_SECRET}.example" = "deny"
+"**/secrets" = "deny"
+"**/secrets/**" = "deny"
+"**/.ignore" = "deny"
+"**/.ignore/**" = "deny"
+
+[mcp_servers.playwright]
+command = "node"
+args = ["node_modules/@playwright/mcp/cli.js"]
+`;
+const MINIMAL_OFFLINE = `default_permissions = "next-erp"
+
+[permissions.next-erp]
+description = "Historical next-erp profile"
+
+[permissions.next-erp.filesystem]
+":minimal" = "read"
+":tmpdir" = "write"
+":slash_tmp" = "write"
+glob_scan_max_depth = 8
+
+[permissions.next-erp.filesystem.":workspace_roots"]
+"." = "write"
+".git" = "read"
+".codex" = "read"
+".agents" = "read"
+".aws" = "read"
+".env" = "deny"
+".env.local" = "deny"
+"${ENV_SECRET}" = "deny"
+"${ENV_SECRET}.example" = "deny"
+"secrets" = "deny"
+"secrets/**" = "deny"
+".ignore" = "deny"
+".ignore/**" = "deny"
+"**/.env" = "deny"
+"**/.env.local" = "deny"
+"**/${ENV_SECRET}" = "deny"
+"**/${ENV_SECRET}.example" = "deny"
+"**/secrets" = "deny"
+"**/secrets/**" = "deny"
+"**/.ignore" = "deny"
+"**/.ignore/**" = "deny"
+
+[permissions.next-erp.network]
+enabled = false
+
+[mcp_servers.playwright]
+command = "node"
+args = ["node_modules/@playwright/mcp/cli.js"]
+`;
+const MINIMAL_REGISTRY = MINIMAL_OFFLINE.replace(
+  '[permissions.next-erp]',
+  `[features]
+network_proxy = true
+
+[shell_environment_policy.set]
+npm_config_cache = "out/codex-sandbox-cache/npm"
+pnpm_config_store_dir = "out/codex-sandbox-cache/pnpm-store"
+pnpm_config_cache_dir = "out/codex-sandbox-cache/pnpm-cache"
+pnpm_config_state_dir = "out/codex-sandbox-cache/state"
+
+[permissions.next-erp]`,
+).replace(
+  'enabled = false',
+  `enabled = true
+allow_local_binding = true
+
+[permissions.next-erp.network.domains]
+"registry.npmjs.org" = "allow"`,
+);
+const MINIMAL_DEPENDENCIES = MINIMAL_REGISTRY.replace(
+  '".codex" = "read"',
+  '".codex" = "read"\n".codex/node_modules" = "write"',
+);
 const roots = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(configSource = LEGACY) {
   const directory = mkdtempSync(join(tmpdir(), 'next-erp-config-test-'));
   roots.push(directory);
   const repoRoot = join(directory, 'repo');
   mkdirSync(join(repoRoot, '.codex'), { recursive: true });
   const config = join(repoRoot, '.codex', 'config.toml');
-  writeFileSync(config, LEGACY);
+  writeFileSync(config, configSource);
   const git = (args) => execFileSync('git', ['-C', repoRoot, ...args], { stdio: 'pipe' });
   git(['init', '-q', '-b', 'fixture']);
   git(['add', '.codex/config.toml']);
@@ -58,11 +151,145 @@ function checkedWriter(path, expectedHash, replacement) {
 }
 
 describe('conservative configuration repair', () => {
-  it('recognizes the original and fixed profiles and is idempotent', () => {
-    const plan = planConfigRepair(LEGACY);
-    equal(plan.status, 'repairable');
-    equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+  it('recognizes historical profiles and the current profile idempotently', () => {
+    for (const historical of [LEGACY, MINIMAL_OFFLINE, MINIMAL_REGISTRY, MINIMAL_DEPENDENCIES]) {
+      const plan = planConfigRepair(historical);
+      equal(plan.status, 'repairable');
+      equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+      match(plan.replacement, /network_proxy\s*=\s*true/);
+      match(plan.replacement, /allow_local_binding\s*=\s*true/);
+      match(plan.replacement, /"registry\.npmjs\.org"\s*=\s*"allow"/);
+      match(plan.replacement, /TURBO_TELEMETRY_DISABLED\s*=\s*"1"/);
+      for (const [key, directory] of [
+        ['npm_config_cache', 'npm'],
+        ['pnpm_config_store_dir', 'pnpm-store'],
+        ['pnpm_config_cache_dir', 'pnpm-cache'],
+        ['pnpm_config_state_dir', 'state'],
+      ]) {
+        match(
+          plan.replacement,
+          new RegExp(key + '\\s*=\\s*"out/codex-sandbox-cache/' + directory + '"'),
+        );
+      }
+    }
     equal(planConfigRepair(CONFIG).status, 'already-fixed');
+  });
+
+  it('upgrades the registry profile with generated-directory writes and preserves every other setting', () => {
+    const source = MINIMAL_REGISTRY.replace(
+      'network_proxy = true',
+      'network_proxy = true\nfast_mode = false',
+    ).replace(
+      'npm_config_cache = "out/codex-sandbox-cache/npm"',
+      'CUSTOM_FLAG = "keep me"\nnpm_config_cache = "out/codex-sandbox-cache/npm"',
+    );
+    const plan = planConfigRepair(source);
+    equal(plan.status, 'repairable');
+    equal(
+      plan.replacement,
+      source
+        .replace(
+          '[permissions.next-erp.filesystem.":workspace_roots"]\n',
+          '[permissions.next-erp.filesystem.":workspace_roots"]\n".codex/node_modules" = "write"\n".codex/.turbo" = "write"\n',
+        )
+        .replace(
+          '[shell_environment_policy.set]\n',
+          '[shell_environment_policy.set]\nTURBO_TELEMETRY_DISABLED = "1"\n',
+        ),
+    );
+    equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+  });
+
+  it('adds only task-log writes and telemetry opt-out to the dependency-enabled profile', () => {
+    const plan = planConfigRepair(MINIMAL_DEPENDENCIES);
+    equal(plan.status, 'repairable');
+    equal(
+      plan.replacement,
+      MINIMAL_DEPENDENCIES.replace(
+        '[permissions.next-erp.filesystem.":workspace_roots"]\n',
+        '[permissions.next-erp.filesystem.":workspace_roots"]\n".codex/.turbo" = "write"\n',
+      ).replace(
+        '[shell_environment_policy.set]\n',
+        '[shell_environment_policy.set]\nTURBO_TELEMETRY_DISABLED = "1"\n',
+      ),
+    );
+    equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+  });
+
+  it('refuses custom dependency or metadata grants in the previous registry profile', () => {
+    for (const extra of [
+      '".codex/node_modules" = "read"',
+      '".codex/rules" = "write"',
+      '".codex/**" = "write"',
+      '".codex/.turbo" = "read"',
+      '".codex/.turbo/**" = "write"',
+    ]) {
+      const source = MINIMAL_REGISTRY.replace('".codex" = "read"', '".codex" = "read"\n' + extra);
+      deepStrictEqual(planConfigRepair(source), { status: 'custom-profile' });
+    }
+    deepStrictEqual(
+      planConfigRepair(MINIMAL_REGISTRY.replace('".codex" = "read"', '".codex" = "write"')),
+      { status: 'custom-profile' },
+    );
+  });
+
+  it('refuses a conflicting telemetry choice instead of silently replacing it', () => {
+    const source = MINIMAL_DEPENDENCIES.replace(
+      '[shell_environment_policy.set]\n',
+      '[shell_environment_policy.set]\nTURBO_TELEMETRY_DISABLED = "0"\n',
+    );
+    deepStrictEqual(planConfigRepair(source), { status: 'custom-profile' });
+  });
+
+  it('preserves quoted telemetry keys and refuses conflicting or duplicate aliases', () => {
+    for (const key of ['"TURBO_TELEMETRY_DISABLED"', "'TURBO_TELEMETRY_DISABLED'"]) {
+      const source = MINIMAL_DEPENDENCIES.replace(
+        '[shell_environment_policy.set]\n',
+        '[shell_environment_policy.set]\n' + key + ' = "1"\n',
+      );
+      const plan = planConfigRepair(source);
+      equal(plan.status, 'repairable');
+      equal(
+        plan.replacement,
+        source.replace(
+          '[permissions.next-erp.filesystem.":workspace_roots"]\n',
+          '[permissions.next-erp.filesystem.":workspace_roots"]\n".codex/.turbo" = "write"\n',
+        ),
+      );
+      equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+      deepStrictEqual(planConfigRepair(source.replace(key + ' = "1"', key + ' = "0"')), {
+        status: 'custom-profile',
+      });
+      deepStrictEqual(
+        planConfigRepair(
+          source.replace(key + ' = "1"', key + ' = "1"\nTURBO_TELEMETRY_DISABLED = "1"'),
+        ),
+        { status: 'custom-profile' },
+      );
+    }
+  });
+
+  it('refuses assignment-looking defaults inside multiline environment values', () => {
+    for (const delimiter of ['"""', "'''"]) {
+      const source = CONFIG.replace('TURBO_TELEMETRY_DISABLED = "1"\n', '').replace(
+        '[shell_environment_policy.set]\n',
+        '[shell_environment_policy.set]\nSYNTHETIC = ' +
+          delimiter +
+          '\nTURBO_TELEMETRY_DISABLED = "1"\n' +
+          delimiter +
+          '\n',
+      );
+      deepStrictEqual(planConfigRepair(source), { status: 'custom-profile' });
+    }
+  });
+
+  it('keeps multiline values in unrelated tables outside the defaults check', () => {
+    const suffix = '\n[unrelated]\nvalue = """\nTURBO_TELEMETRY_DISABLED = "0"\n"""\n';
+    const source = MINIMAL_DEPENDENCIES + suffix;
+    const plan = planConfigRepair(source);
+    equal(plan.status, 'repairable');
+    equal(plan.replacement.slice(-suffix.length), suffix);
+    equal(planConfigRepair(plan.replacement).status, 'already-fixed');
   });
 
   it('preserves everything outside the permissions, including multiline strings', () => {
@@ -105,12 +332,80 @@ describe('conservative configuration repair', () => {
       (s) => s + '\n[permissions.next-erp.workspace_roots]\n"C:/extra" = true\n',
     ],
     ['duplicate table', (s) => s + '\n[permissions.next-erp]\nextends = ":workspace"\n'],
-    ['changed fixed network policy', () => CONFIG.replace('enabled = false', 'enabled = true')],
+    [
+      'incomplete network policy',
+      () => MINIMAL_OFFLINE.replace('enabled = false', 'enabled = true'),
+    ],
+    [
+      'changed loopback policy',
+      () => CONFIG.replace('allow_local_binding = true', 'allow_local_binding = false'),
+    ],
+    ['disabled proxy', () => CONFIG.replace('network_proxy = true', 'network_proxy = false')],
+    [
+      'custom cache location',
+      () => CONFIG.replace('out/codex-sandbox-cache/pnpm-store', 'C:/custom-store'),
+    ],
+    [
+      'additional registry domain',
+      () =>
+        CONFIG.replace(
+          '"registry.npmjs.org" = "allow"',
+          '"registry.npmjs.org" = "allow"\n"*" = "allow"',
+        ),
+    ],
+    [
+      'duplicate feature table',
+      (s) => s + '\n[features]\nnetwork_proxy = true\n[features]\nother = true\n',
+    ],
+    [
+      'duplicate environment table',
+      (s) =>
+        s +
+        '\n[shell_environment_policy.set]\nLANG = "en"\n[shell_environment_policy.set]\nOTHER = "keep"\n',
+    ],
   ]) {
     it(`refuses ${name}`, () => {
       deepStrictEqual(planConfigRepair(change(LEGACY)), { status: 'custom-profile' });
     });
   }
+
+  it('preserves unrelated feature and environment settings while adding missing defaults', () => {
+    const featurePrefix = '[features]\nfast_mode = false\n\n';
+    const environmentPrefix =
+      '[shell_environment_policy.set]\nLANG = "en_US.UTF-8"\nCUSTOM_FLAG = "keep me"\n\n';
+    const plan = planConfigRepair(featurePrefix + environmentPrefix + MINIMAL_OFFLINE);
+    equal(plan.status, 'repairable');
+    match(plan.replacement, /fast_mode = false/);
+    match(plan.replacement, /LANG = "en_US.UTF-8"/);
+    match(plan.replacement, /CUSTOM_FLAG = "keep me"/);
+    equal((plan.replacement.match(/^\[features\]$/gm) ?? []).length, 1);
+    equal((plan.replacement.match(/^\[shell_environment_policy\.set\]$/gm) ?? []).length, 1);
+    equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+  });
+
+  it('preserves explicit compatible proxy and partial cache settings without duplicates', () => {
+    const prefix =
+      '[features]\nnetwork_proxy = true\nfast_mode = false\n\n' +
+      '[shell_environment_policy.set]\nnpm_config_cache = "out/codex-sandbox-cache/npm"\nCUSTOM_FLAG = "keep me"\n\n';
+    const plan = planConfigRepair(prefix + LEGACY);
+    equal(plan.status, 'repairable');
+    equal((plan.replacement.match(/^network_proxy\s*=/gm) ?? []).length, 1);
+    equal((plan.replacement.match(/^npm_config_cache\s*=/gm) ?? []).length, 1);
+    match(plan.replacement, /fast_mode = false/);
+    match(plan.replacement, /CUSTOM_FLAG = "keep me"/);
+    equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+  });
+
+  it('refuses conflicting defaults before changing an otherwise historical profile', () => {
+    for (const prefix of [
+      '[features]\nnetwork_proxy = false\n\n',
+      '[shell_environment_policy.set]\npnpm_config_store_dir = "C:/custom-store"\n\n',
+    ]) {
+      for (const historical of [LEGACY, MINIMAL_OFFLINE]) {
+        deepStrictEqual(planConfigRepair(prefix + historical), { status: 'custom-profile' });
+      }
+    }
+  });
 
   it('reports a missing profile and leaves unrelated configuration alone', () => {
     deepStrictEqual(planConfigRepair('[other]\nvalue = true\n'), { status: 'missing-profile' });
@@ -184,6 +479,26 @@ describe('worktree discovery and recovery', () => {
         .status,
       'already-restored',
     );
+  });
+
+  it('backs up and restores the historical minimal offline profile', () => {
+    const f = fixture(MINIMAL_OFFLINE);
+    const report = repairWorktrees({
+      repoRoot: f.repoRoot,
+      worktrees: [f.repoRoot],
+      apply: true,
+      writer: checkedWriter,
+    });
+    equal(report.records[0].status, 'repaired');
+    equal(planConfigRepair(readFileSync(f.config, 'utf8')).status, 'already-fixed');
+    const manifest = JSON.parse(readFileSync(report.manifest, 'utf8'));
+    equal(readFileSync(manifest.records[0].backupPath, 'utf8'), MINIMAL_OFFLINE);
+    equal(
+      restoreManifest(report.manifest, { repoRoot: f.repoRoot, writer: checkedWriter }).records[0]
+        .status,
+      'restored',
+    );
+    equal(readFileSync(f.config, 'utf8'), MINIMAL_OFFLINE);
   });
 
   it('publishes a backup before a write and refuses a concurrent edit', () => {
