@@ -67,6 +67,38 @@ function run(partial: Partial<GenerateKitVariacoesInput>) {
 }
 
 describe('generateKitForVariacoes', () => {
+  it('does not select a component variation by a shared empty or slash-only ID', () => {
+    for (const invalid of ['', '/', '///', 'documents']) {
+      const r = run({
+        componentes: [comp('cA')],
+        kitVariacoes: [{ id: 'kit', variacoesUid: [invalid] }],
+        componentVariacoesByComponentId: {
+          cA: [
+            { id: 'invalid-child', variacoesUid: [invalid] },
+            { id: 'valid-child', variacoesUid: [fp('gT', 'M')] },
+          ],
+        },
+      });
+      expect(r.porFilho, invalid).toEqual({});
+      expect(r.errors, invalid).toHaveLength(1);
+    }
+  });
+
+  it('drops missing IDs without changing valid overlap or choosing a near miss', () => {
+    const r = run({
+      componentes: [comp('cA')],
+      kitVariacoes: [{ id: 'kit', variacoesUid: ['/', fp('gT', 'P')] }],
+      componentVariacoesByComponentId: {
+        cA: [
+          { id: 'near-miss', variacoesUid: ['/', fp('gT', 'P2')] },
+          { id: 'matched', variacoesUid: [fp('gT', 'P')] },
+        ],
+      },
+    });
+    expect(Object.keys(r.porFilho.kit!)).toEqual(['matched']);
+    expect(r.errors).toEqual([]);
+  });
+
   it('returns empty when there are no kit variations', () => {
     const r = run({ componentes: [comp('cA')] });
     expect(r).toEqual({ porFilho: {}, warnings: [], errors: [] });

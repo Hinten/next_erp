@@ -72,6 +72,7 @@ export {
   toOuterRefOrNull,
   toDocPathOrNull,
   idFromRef,
+  idFromRefOrNull,
   parseRef,
   naoDocId,
   type OuterRef,
@@ -350,6 +351,7 @@ export {
 export {
   integracao,
   integracaoSchema,
+  refMatchesIntegracao,
   integracaoMeta,
   integracaoTipoSchema,
   INTEGRACAO_TIPO,

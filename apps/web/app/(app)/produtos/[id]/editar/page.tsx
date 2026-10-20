@@ -19,6 +19,7 @@ import {
   camposDeKitDoPatch,
   deriveFotosArquivosIds,
   ehKitVirtualEfetivo,
+  idFromRefOrNull,
   normalizeVariacoesUid,
   parseFakePath,
   produtoPageIssues,
@@ -593,9 +594,9 @@ export default function EditarProdutoPage() {
         const uids = (values.variacoesUid as string[] | null) ?? [];
         const implied = [
           ...new Set([
-            ...((values.grupoDeVariacoesUid as string[] | null) ?? []).map(
-              (u) => u.split('/').pop()!,
-            ),
+            ...((values.grupoDeVariacoesUid as string[] | null) ?? [])
+              .map(idFromRefOrNull)
+              .filter((id): id is string => id !== null),
             ...uids
               .map((u) => parseFakePath(u)?.grupoId)
               .filter((g): g is string => g !== undefined),
