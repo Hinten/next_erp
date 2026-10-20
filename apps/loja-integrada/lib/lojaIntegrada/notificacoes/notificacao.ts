@@ -63,7 +63,8 @@
  * that one kind of park ({@link criarPipelineLi} binds it to
  * {@link sinalizarEsgotamentoLi}); a RETURNED park is the outcome's own record
  * and signals nothing. A parked row is terminal and holds an order nobody
- * imported, so every such park is an ERROR line here:
+ * imported, so every park of a failure the RUN threw (the shared `process`,
+ * {@link processarNotificacaoLi}) is an ERROR line here:
  *  - the importer's paid-without-address refusal
  *    (`pedidos/pedidoPagoSemEndereco.ts`): its own ERROR line with ids only,
  *    then the open `lojaIntegradaPedidoPagoSemEndereco` aviso;
@@ -72,6 +73,16 @@
  *    never its message — and no aviso; the row's `erro` stays the record.
  *    That includes a paid order whose LAST run met a transient after earlier
  *    address refusals (the residue `pedidoPagoSemEndereco.ts` names).
+ *
+ * ⚠️ Not every thrown park: the core signals only a throw from `process`. A
+ * row that no longer REHYDRATES (the strict `fromDoc`, {@link configLi})
+ * throws before any run, so it parks at the same cap with no payload to hand
+ * over — no ERROR line, no aviso — and it too holds an order nobody imported.
+ * A store write that failed after the run returned (the resolve's delete)
+ * parks the same silent way, though that run did its work. Each shows only as
+ * the row's document id in the sweep's per-doc failures WARNING
+ * (`functions/src/index.ts`), logged on every failed pass, and the row's
+ * `erro` is the record.
  *
  * ⚠️ A PARKED CONTA DEFERS — it never drops. Tasks enqueued before a token died
  * are already behind the poller's cursor, so dropping them would lose those
@@ -613,7 +624,8 @@ function configLi(
     dedupKeyOf: dedupKeyLi,
     toDocFields: camposDoDocumentoLi,
     // STRICT, from the raw document: a row that no longer parses throws, and
-    // the sweep's per-row boundary marks it (parking it at the cap).
+    // the sweep's per-row boundary marks it (parking it at the cap, with NO
+    // exhaustion signal: only its document id in the WARNING — module header).
     fromDoc: (_parsed, raw) => tarefaLeituraLiSchema.parse(raw),
     process: processar,
     toDisposition: (resultado) => toDispositionLi(resultado),
@@ -640,7 +652,8 @@ export function criarPipelineLi(deps: DepsTarefaLi) {
  * A thrown failure the hot (or a non-graduating deferred) sweep just PARKED at
  * its cap (module header): the paid-without-address refusal's own loud signal,
  * else one generic ERROR line — ids and the error's class only, never its
- * message — so no parked order goes unnoticed. A failed aviso write rethrows;
+ * message — so no order whose run threw parks unnoticed. (A row that fails to
+ * rehydrate never reaches here: module header.) A failed aviso write rethrows;
  * the shared core contains it.
  */
 export async function sinalizarEsgotamentoLi(

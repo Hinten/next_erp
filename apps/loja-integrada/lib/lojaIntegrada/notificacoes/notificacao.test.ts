@@ -946,6 +946,23 @@ describe('the full disposition matrix', () => {
       expect(db.ler(caminhoAviso)).toBeUndefined();
     });
 
+    it('⚠️ NEAR-MISS: a row that no longer REHYDRATES parks at the same cap with NO ERROR line — only its document id in the sweep’s errors', async () => {
+      // The core signals a throw from `process` only; the strict `fromDoc` throws first,
+      // so the importer never runs and nothing is handed to `sinalizarEsgotamentoLi`.
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const caminho = seedNotificacao(db, pedido(), {
+        tentativas: MAX_TENTATIVAS - 1,
+        origem: 'desconhecida',
+      });
+      const s = await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, throttle()));
+      expect(db.ler(caminho)).toMatchObject({ status: 'parked', tentativas: MAX_TENTATIVAS });
+      expect(s.errors.map((e) => e.docId)).toEqual([docIdNotificacaoLi(pedido())]);
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
+    });
+
     it('NEAR-MISS: below the cap a transient failure stays silent — the generic line is the PARK’s alone', async () => {
       const db = new FakeDb();
       contaSaudavel(db);
