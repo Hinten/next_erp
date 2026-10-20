@@ -18,15 +18,17 @@
  *  - **a shipment**: the order carries one (`envios[0]`). Without one there is
  *    no freight block, so nothing a label could be bought for;
  *  - **no CEP at all** ({@link entregaSemCepLi}): no delivery block, or its
- *    `cep` absent, `null`, the empty text `''` or whitespace only (decided
- *    here: it carries nothing either). Nothing else is asked of the block —
- *    not a street, a número or a bairro. ⚠️ Deliberately NARROWER than the
- *    shared absence reader `valorUtilizavel` (`@delfrance/schemas`), which
- *    also reads the `'-'` placeholder and a masked (`*`) value as absent: the
- *    owner decision names absent, `null`, `''` and blank only, so a `'-'` or
- *    a `*` in the CEP is text in the field — a present, INVALID CEP (below),
- *    pinned as such by the tests. Reading `'-'` as absent instead would
- *    refuse and retry that order like one with no CEP.
+ *    `cep` absent, `null`, the empty text `''`, whitespace only (decided
+ *    here: it carries nothing either), or the `'-'` placeholder for "nothing
+ *    was sent", bare or padded (owner decision, 2026-10-20) — exactly the
+ *    shared absence reader's `ausente` verdict (`motivoDaRecusa`,
+ *    `@delfrance/schemas`). Nothing else is asked of the block — not a
+ *    street, a número or a bairro. ⚠️ Only that verdict: the same reader
+ *    also folds a MASKED value (an `*` anywhere) into "unusable"
+ *    (`valorUtilizavel` answers `null` for both), but a redaction is text in
+ *    the field — a present, INVALID CEP (below), pinned as such by the tests.
+ *    Reading a mask as absent would refuse and retry that order like one
+ *    with no CEP.
  *    ⚠️ A PRESENT but INVALID CEP (owner decision, 2026-10-20) is NOT refused,
  *    although the endereço builder reads none from it (`sem-cep`, so step 7
  *    stores no endereço): the store lets the customer type one, and waiting
@@ -103,7 +105,7 @@
  * no aviso is raised — nothing records that the earlier runs were refusals.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { CODIGOS_LI_PAGO } from '@delfrance/schemas';
+import { CODIGOS_LI_PAGO, MOTIVO_RECUSA, TIPO_DE_VALOR, motivoDaRecusa } from '@delfrance/schemas';
 
 import { avisarPedidoPagoSemEnderecoLi, type PedidoDoAvisoLi } from './avisosPedidoLi';
 import type { EnderecoEntregaLi } from './clienteMapeamento';
@@ -116,18 +118,18 @@ const ROTULO_LOG = '[loja-integrada/importacao]';
 /* -------------------------------------------------------------------------- */
 
 /**
- * The delivery block carries NO CEP at all: no block, or a `cep` absent,
- * `null`, `''` or whitespace only (module header). Any other text is a CEP —
+ * The delivery block carries NO CEP at all: no block, or a `cep` the shared
+ * reader calls ABSENT — absent, `null`, `''`, whitespace only, or the `'-'`
+ * placeholder, bare or padded (module header). Any other text is a CEP —
  * valid or not, which is the endereço builder's question, never this one's.
- * Pinned by `pedidoPagoSemEndereco.test.ts`: EQUAL `null`/`''`/`'   '` (no
- * CEP), and the NEAR-MISS `'00000'`/`'abc'`/`'-'`, which the builder reads no
- * endereço from and which still are CEPs here. ⚠️ Not `valorUtilizavel`: that
- * reader also takes the `'-'` placeholder and a masked value for absence,
- * which this rule deliberately does not (module header).
+ * Pinned by `pedidoPagoSemEndereco.test.ts`: EQUAL `null`/`''`/`'   '`/`'-'`/
+ * `' - '` (no CEP), and the NEAR-MISS `'00000'`/`'abc'`/`'--'`/`'*****-***'`,
+ * which the builder reads no endereço from and which still are CEPs here.
+ * ⚠️ The `ausente` verdict only, never `valorUtilizavel`'s `null`: that one
+ * also covers a masked value, which this rule reads as a present CEP.
  */
 export function entregaSemCepLi(endereco: EnderecoEntregaLi | null | undefined): boolean {
-  const cep = endereco?.cep;
-  return cep === null || cep === undefined || cep.trim() === '';
+  return motivoDaRecusa(endereco?.cep, TIPO_DE_VALOR.texto) === MOTIVO_RECUSA.ausente;
 }
 
 /** The stored pedido fields the rule reads — raw, as the snapshot holds them. */

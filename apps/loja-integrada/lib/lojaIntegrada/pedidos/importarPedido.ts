@@ -60,8 +60,9 @@
  *     configuration, not this pedido.
  *  6b. **A PAID order carrying NO CEP at all** (owner decisions, 2026-10-19
  *     and 2026-10-20; `pedidoPagoSemEndereco.ts`): a paid codigo, a shipment,
- *     a delivery block that is absent or whose CEP is absent, `null`, `''` or
- *     blank, no pickup route, and a pedido `S` that stores no endereço ⇒
+ *     a delivery block that is absent or whose CEP is absent, `null`, `''`,
+ *     blank or the `-` placeholder, no pickup route, and a pedido `S` that
+ *     stores no endereço ⇒
  *     {@link LiPedidoPagoSemEnderecoError}, BEFORE step 7. The step-3
  *     classifier answers `null` for that error, so the run rethrows and the
  *     queue's backoff, then the hot sweep, retry the refused order — the

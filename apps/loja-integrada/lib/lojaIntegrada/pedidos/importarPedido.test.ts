@@ -1581,13 +1581,15 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
     expect(db.ler(CAMINHO_PEDIDO)).toBeUndefined();
   });
 
-  it('EQUAL: an EMPTY block, or a CEP null, empty or BLANK (whitespace carries nothing), carries no CEP either', async () => {
+  it('EQUAL: an EMPTY block, or a CEP null, empty, BLANK (whitespace carries nothing) or the `-` placeholder, bare or padded (owner decision, 2026-10-20), carries no CEP either', async () => {
     const vazio = { ...(pedidoLiBruto().endereco_entrega as DocData) };
     for (const endereco_entrega of [
       {},
       { ...vazio, cep: null },
       { ...vazio, cep: '' },
       { ...vazio, cep: '   ' },
+      { ...vazio, cep: '-' },
+      { ...vazio, cep: ' - ' },
     ]) {
       const db = novoDb();
       await expect(
@@ -1598,12 +1600,12 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
     }
   });
 
-  it('⚠️ NEAR-MISS (owner decision, 2026-10-20): an INVALID non-empty CEP is never refused — the paid order imports as one without an endereço: the amount and the modalidade, no route, no endereço', async () => {
+  it('⚠️ NEAR-MISS (owner decision, 2026-10-20): an INVALID non-empty CEP — a MASKED one and the placeholder’s near-miss `--` included — is never refused: the paid order imports as one without an endereço: the amount and the modalidade, no route, no endereço', async () => {
     const comCep = (cep: string): DocData => ({
       ...(pedidoLiBruto().endereco_entrega as DocData),
       cep,
     });
-    for (const cep of ['00000', 'abc', '0131-010', '013101000']) {
+    for (const cep of ['00000', 'abc', '0131-010', '013101000', '*****-***', '--']) {
       const db = dbComAlvo();
       const r = await importar(db, pagoSemEndereco({ endereco_entrega: comCep(cep) }));
       expect(r.r, cep).toEqual({ kind: 'importado' });

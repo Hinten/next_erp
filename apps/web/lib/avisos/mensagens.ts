@@ -591,9 +591,10 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   },
   // Crítico: uma venda PAGA que não entrou no ERP é uma venda que ninguém despacha. O
   // aviso só sobe quando as novas tentativas acabaram (a fila e a varredura), por isso a
-  // frase diz que a importação parou. Só um pedido SEM CEP nenhum (ausente, vazio ou em
-  // branco) é recusado: um CEP inválido, digitado pelo cliente, não se conserta esperando,
-  // e esse pedido entra sem endereço — por isso a frase nunca fala em CEP "válido".
+  // frase diz que a importação parou. Só um pedido SEM CEP nenhum (ausente, vazio, em
+  // branco ou só o traço "-") é recusado: um CEP inválido, digitado pelo cliente, não se
+  // conserta esperando, e esse pedido entra sem endereço — por isso a frase nunca fala em
+  // CEP "válido".
   [TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco]: {
     titulo: 'Pedido pago da Loja Integrada sem endereço',
     corpo: (params) =>
