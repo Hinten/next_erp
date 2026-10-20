@@ -171,8 +171,12 @@ export function leaseOf(cred: CredencialArmazenada): RefreshLease | null {
   const owner = cred.refreshLeaseOwner;
   const expiraEm = cred.refreshLeaseExpiraEm;
   if (typeof owner !== 'string' || owner.length === 0) return null;
-  if (typeof expiraEm !== 'number' || !Number.isFinite(expiraEm)) return null;
-  return { owner, expiraEm };
+  const ms =
+    typeof expiraEm === 'object' && expiraEm !== null && 'toMillis' in expiraEm
+      ? (expiraEm as { toMillis(): number }).toMillis()
+      : expiraEm;
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return null;
+  return { owner, expiraEm: ms };
 }
 
 /**
