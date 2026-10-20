@@ -315,7 +315,7 @@ region at deploy time.
 
 The order is load-bearing.
 
-1. **Functions first**, all five codebases. That deploy is what provisions the
+1. **Functions first**, all eight codebases. That deploy is what provisions the
    Cloud Tasks queues. Point a receiver at the new project before its queue
    exists and every enqueue fails into the persist-for-the-sweep fallback — the
    `*_TASKS_DISABLED=1` valves exist for exactly this gap.

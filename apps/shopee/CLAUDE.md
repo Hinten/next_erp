@@ -2,7 +2,7 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–20 (16 deferred) of
+Runs on `:3009` in dev. Steps 1–22 (16 deferred) of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
 conta status, the access-token refresh, the cached taxonomy reads, the inbound
 push receiver with its Cloud Tasks queue, nested functions codebase, weekly
@@ -1965,10 +1965,9 @@ Firebase console / Secret Manager. The nested Cloud Functions codebase
 three IAM roles the receiver needs before it can enqueue. Since step 20 it
 holds **twenty** functions: twelve `onSchedule`s, five queues and three
 Firestore triggers.
-`firebase.shopee.deploy.json` shipped with step 3 and is **inert**: a config file
-deploys nothing, running it is a manual coordinated human step (root CLAUDE.md
-rule 8), and the ROLLOUT — plus `firebase.shopee.json`, `vpcAccess`, the real
-`SHOPEE_TASKS_REGION` and flipping `implementado` — is still step 22 / #1530.
+`firebase.shopee.deploy.json` is **inert**: a config file deploys nothing, and
+running it is a manual coordinated human step (root CLAUDE.md rule 8) — the
+production rollout is a migration-window step (#1998).
 
 ⚠️ An **ERP System** Shopee app has no console "Authorize" button, so
 `oauth/start` (or the script above) is the only way to reach the consent page,
@@ -1977,6 +1976,5 @@ and the redirect URL's **domain** is registered per app in the Shopee console �
 
 ⚠️ **Static egress is a prerequisite, not a step here.** Shopee's IP allow-list
 (master plan P2, option D: a VPC connector, a subnet, a firewall rule, a reserved
-IP and a proxy VM) is migration-window infrastructure (root CLAUDE.md rule 8) —
-see #1208 when that window is scheduled. `apphosting.yaml` carries no
-`vpcAccess`, deliberately.
+IP and a proxy VM) is migration-window infrastructure (root CLAUDE.md rule 8,
+#1531); `apphosting.yaml` gains no `vpcAccess` before it exists.
