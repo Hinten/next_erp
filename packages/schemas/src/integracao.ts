@@ -321,6 +321,14 @@ export const integracaoSchema = z.object({
   /**
    * Amazon — `ContaAmazon.selling_partner_id` (string?), the SP-API seller
    * id.
+   *
+   * SERVER-OWNED (`integracaoMeta.serverOwnedFields`), like `user_id` above.
+   * Its only writer is the Amazon OAuth callback (`apps/amazon`), through the
+   * rules-bypassing Admin SDK, and it is step 3's notification ROUTING KEY: an
+   * inbound event finds its conta by `tipo == amazon && selling_partner_id ==
+   * X && ativo == true` (index `integracao (tipo, selling_partner_id, ativo)`).
+   * A client may create it only as `null` (or omit it), and a client update
+   * must never touch it — set, change, clear or delete — superuser included.
    */
   selling_partner_id: z.string().nullable().default(null),
   /**
@@ -446,7 +454,7 @@ export const integracaoMeta: CollectionMetadata = {
   // only became load-bearing in the new architecture.
   // ⛔ Do NOT extend this to WhatsApp's `wa_id`/`phoneNumberId`: those are
   // operator-entered in the browser (see `whatsappFieldOverrides.tsx`).
-  serverOwnedFields: ['user_id'],
+  serverOwnedFields: ['user_id', 'selling_partner_id'],
   // Deleting a channel account frees its OAuth credential subcollections,
   // mirroring `int_frete` → `tokenMelEnv`. WhatsApp's permanent-token store
   // (`credenciaisWhatsapp`) is a separate subcollection (distinct schema —
