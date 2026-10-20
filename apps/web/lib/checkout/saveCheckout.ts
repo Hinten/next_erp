@@ -2,6 +2,8 @@ import { getDoc, runTransaction, type Firestore } from 'firebase/firestore';
 import {
   ESTADO_PEDIDO,
   ESTADO_FRETE,
+  INTEGRACAO_FRETE,
+  avancaParaRetirada,
   bloqueioDespachoAtivo,
   checkCompleteness,
   checkoutFretePedidoSchema,
@@ -373,19 +375,24 @@ export async function salvarCheckoutTransacao(
     tx.update(pedidoRef, { 'freteInicial.estado': ESTADO_CHECK_FINALIZADO });
   });
 
-  // Phase 2 — retiradaNaLoja only, and ONLY because phase 1 committed.
-  const retirada = await isRetiradaNaLoja(db, pedidoId);
+  // Phase 2 — the pickup hand-off, and ONLY because phase 1 committed. The rule
+  // is the shared `avancaParaRetirada` (`@delfrance/schemas`), the one the Loja
+  // Integrada routing route applies when it re-points a checked-out pedido at a
+  // pickup target — one copy, so the two can never disagree (B9).
+  const tipoAlvo = await tipoDoIntFreteDoPedido(db, pedidoId);
+  const retirada = tipoAlvo === INTEGRACAO_FRETE.retiradaNaLoja;
   if (retirada) {
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(pedidoRef);
       if (!snap.exists()) return; // vanished between phases — nothing to advance
-      // Only advance from the estado phase 1 just wrote. `retirada` was decided
+      // Only advance from the estado phase 1 just wrote. `tipoAlvo` was decided
       // by two NON-transactional reads above, and this write used to be
       // unconditional — so anything that moved the frete forward in the gap (an
       // operator marking it delivered, a marketplace shipment handler) was
       // dragged BACK to `aguardandoRetirada`. Phase 1 re-checks every gate
-      // against its own snapshot; phase 2 has to do the same (ADR 0011 trap 1).
-      if (snap.data().freteInicial?.estado !== ESTADO_CHECK_FINALIZADO) return;
+      // against its own snapshot; phase 2 has to do the same (ADR 0011 trap 1):
+      // the estado comes from `tx.get`, never from outside the transaction.
+      if (!avancaParaRetirada(snap.data().freteInicial?.estado, tipoAlvo)) return;
       tx.update(pedidoRef, { 'freteInicial.estado': ESTADO_AGUARDANDO_RETIRADA });
     });
   }
@@ -393,13 +400,16 @@ export async function salvarCheckoutTransacao(
   return { checkoutId, retirada };
 }
 
-/** Whether the pedido's freight integration is retiradaNaLoja (drives the phase-2 estado). */
-async function isRetiradaNaLoja(db: Firestore, pedidoId: string): Promise<boolean> {
+/**
+ * The RAW `tipo` of the pedido's freight integration (drives the phase-2
+ * estado), or `null` when the pedido, its ref or the doc is missing.
+ */
+async function tipoDoIntFreteDoPedido(db: Firestore, pedidoId: string): Promise<unknown> {
   const snap = await getDoc(pedidoCollection.docRef(db, {}, pedidoId));
-  if (!snap.exists()) return false;
+  if (!snap.exists()) return null;
   const ref = dereferenceOuterRef(db, snap.data().freteInicial?.integracaoFreteOuterRef);
-  if (ref === null) return false;
+  if (ref === null) return null;
   const intSnap = await getDoc(ref);
-  if (!intSnap.exists()) return false;
-  return (intSnap.data() as { tipo?: unknown }).tipo === 'retiradaNaLoja';
+  if (!intSnap.exists()) return null;
+  return (intSnap.data() as { tipo?: unknown }).tipo ?? null;
 }
