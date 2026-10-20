@@ -41,6 +41,7 @@ import {
   MODALIDADE_FRETE,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   ORIGEM_NOTIFICACAO_LI,
   STATUS_PAGAMENTO,
   TIPO_AVISO,
@@ -1528,6 +1529,37 @@ describe('⚠️ a PAID order without a usable delivery address retries, then fa
     expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.pago);
   });
 
+  it('NEAR-MISS: a NEWER writer that cleared the endereço between the read and the batch ⇒ the retry is `obsoleto`, never a refusal of an observation the pedido already outran', async () => {
+    const db = novoDb();
+    await importar(db, aguardando({ endereco_entrega: pedidoLiBruto().endereco_entrega }));
+    const maisNovo = dataLiParaMicros(carimboLi(5))!;
+    db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
+      await refPedido(db).update({
+        lastMarketplaceUpdate: maisNovo,
+        enderecoFiscalOuterRef: null,
+        freteInicial: { ...frete(db), enderecoFreteOuterReference: null },
+      });
+    });
+    const r = await importar(db, pagoSemEndereco({ data_modificacao: carimboLi(3) }));
+    expect(r.r).toEqual({ kind: 'obsoleto' });
+    expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+      lastMarketplaceUpdate: maisNovo,
+      estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    });
+  });
+
+  it('NEAR-MISS: a method NAMED like a pickup but mapped to a carrier is refused — the exemption is the routed target’s tipo, never the name', async () => {
+    const db = dbMapeadoPara(INTEGRACAO_FRETE.motoboy);
+    const retiradaNoNome = { ...FORMA_ENVIO_LI, nome: 'Retirada na loja', tipo: 'Retirada' };
+    await expect(
+      importar(
+        db,
+        pagoSemEndereco({ envios: [{ ...envioPadrao(), forma_envio: retiradaNoNome }] }),
+      ),
+    ).rejects.toBeInstanceOf(LiPedidoPagoSemEnderecoError);
+    expect(db.ler(CAMINHO_PEDIDO)).toBeUndefined();
+  });
+
   it('EQUAL: an EMPTY block or one without a CEP the builder reads are no address either', async () => {
     const vazio = { ...(pedidoLiBruto().endereco_entrega as DocData) };
     for (const endereco_entrega of [{}, { ...vazio, cep: null }, { ...vazio, cep: '' }]) {
@@ -1882,6 +1914,34 @@ describe('⚠️ a reversal landing on a pedido whose label was BOUGHT: the appr
       motivo: 'chargeback',
       resolvidoEm: null,
     });
+  });
+
+  it('EQUAL: EVERY reversal rung on a labelled pedido raises the aviso with its own motivo — the cancellation and each refund codigo (7, 16, 1020), with or without a removal applied', async () => {
+    for (const [codigo, id, motivo] of [
+      ['pedido_cancelado', 8, MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado],
+      ['pagamento_devolvido', 7, MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvido],
+      ['pedido_chargeback', 16, MOTIVO_REVERSAO_COM_ETIQUETA_LI.chargeback],
+      [
+        'pagamento_devolvido_sem_retorno',
+        1020,
+        MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvidoSemRetorno,
+      ],
+    ] as const) {
+      for (const removido of [false, true]) {
+        const db = await pagoComEtiqueta();
+        if (removido) {
+          await refPedido(db).update({
+            estoqueAplicado: { depositoId: 'd1', ehSaida: true, removido: { 'p-x': 2 } },
+          });
+        }
+        await importar(db, revertido(codigo, id));
+        expect(db.ler(CAMINHO_AVISO_REVERSAO), `${codigo}/${String(removido)}`).toMatchObject({
+          motivo,
+          params: { motivo },
+          resolvidoEm: null,
+        });
+      }
+    }
   });
 
   it('rule 7: a label bought BETWEEN the read and the batch is seen — the verdict is the WINNING attempt’s snapshot, never S', async () => {
