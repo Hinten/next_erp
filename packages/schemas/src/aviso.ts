@@ -726,11 +726,13 @@ export const TIPO_AVISO_LABELS = {
  * ---
  *
  * **`lojaIntegradaPedidoPagoSemEndereco`** (Loja Integrada step 5, PR 5-c,
- * owner decision 2026-10-19) — a PAID Loja Integrada order (a codigo the label
- * step's paid re-check accepts) with a shipment arrived with no usable
- * delivery address (none, or none with a CEP the endereço builder reads — the
- * importer's own criterion for storing an endereço), is not a pickup, and the
- * pedido holds no endereço of its own. Such an import is REFUSED with a
+ * owner decisions 2026-10-19 and 2026-10-20) — a PAID Loja Integrada order (a
+ * codigo the label step's paid re-check accepts) with a shipment arrived
+ * carrying NO CEP at all (no delivery block, or a CEP absent, empty or blank),
+ * is not a pickup, and the pedido holds no endereço of its own. A present but
+ * INVALID CEP is never this tipo: the customer typed it and waiting never
+ * fixes it, so that order imports without an endereço (its freight amount, no
+ * carrier route) and raises nothing here. Such an import is REFUSED with a
  * retryable error — the platform may still fill the address — so the queue's
  * backoff and the reprocess sweep retry it; this row is raised only when those
  * attempts RAN OUT, from the notification pipeline's signal for a thrown
@@ -752,7 +754,7 @@ export const TIPO_AVISO_LABELS = {
  *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`): on a first
  *    import there is no pedido page to open.
  *  - **Machine resolver**: the next import of that order that gets past the
- *    address check — the address arrived, the order is no longer paid, or its
+ *    CEP check — a CEP arrived, the order is no longer paid, or its
  *    shipping method now maps to a pickup — clocked by its stamp, so a late
  *    import of an older observation can neither close nor reopen the row.
  *    ⚠️ UNVERIFIED (D17: no capture shows it): that filling the address in the

@@ -1415,7 +1415,7 @@ describe('⚠️ a re-import that replaces the stored method keeps the keys Loja
   });
 });
 
-describe('⚠️ a PAID order without a usable delivery address retries, then fails LOUDLY (owner decision, 2026-10-19)', () => {
+describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner decisions, 2026-10-19 and 2026-10-20)', () => {
   const CAMINHO_AVISO_PAGO = `avisos/${chaveDoAvisoDoPedidoLi(
     TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
     CONTA,
@@ -1581,15 +1581,79 @@ describe('⚠️ a PAID order without a usable delivery address retries, then fa
     expect(db.ler(CAMINHO_PEDIDO)).toBeUndefined();
   });
 
-  it('EQUAL: an EMPTY block or one without a CEP the builder reads are no address either', async () => {
+  it('EQUAL: an EMPTY block, or a CEP null, empty or BLANK (whitespace carries nothing), carries no CEP either', async () => {
     const vazio = { ...(pedidoLiBruto().endereco_entrega as DocData) };
-    for (const endereco_entrega of [{}, { ...vazio, cep: null }, { ...vazio, cep: '' }]) {
+    for (const endereco_entrega of [
+      {},
+      { ...vazio, cep: null },
+      { ...vazio, cep: '' },
+      { ...vazio, cep: '   ' },
+    ]) {
       const db = novoDb();
       await expect(
         importar(db, pagoSemEndereco({ endereco_entrega })),
         JSON.stringify(endereco_entrega),
       ).rejects.toBeInstanceOf(LiPedidoPagoSemEnderecoError);
       expect(db.ler(CAMINHO_PEDIDO)).toBeUndefined();
+    }
+  });
+
+  it('⚠️ NEAR-MISS (owner decision, 2026-10-20): an INVALID non-empty CEP is never refused — the paid order imports as one without an endereço: the amount and the modalidade, no route, no endereço', async () => {
+    const comCep = (cep: string): DocData => ({
+      ...(pedidoLiBruto().endereco_entrega as DocData),
+      cep,
+    });
+    for (const cep of ['00000', 'abc', '0131-010', '013101000']) {
+      const db = dbComAlvo();
+      const r = await importar(db, pagoSemEndereco({ endereco_entrega: comCep(cep) }));
+      expect(r.r, cep).toEqual({ kind: 'importado' });
+      // The cliente is resolved as for any order; no endereço is built, so no CEP lookup.
+      expect(db.ler(CAMINHO_PEDIDO), cep).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        clientePedidoOuterRef: `documents/clientes/${CLIENTE_ID}`,
+        enderecoFiscalOuterRef: null,
+      });
+      expect(frete(db), cep).toMatchObject({
+        ...SEM_ROTA,
+        enderecoFreteOuterReference: null,
+        valorCobrado: 14.8,
+        modalidade: MODALIDADE_FRETE.cif,
+      });
+      expect(
+        db.escritas.some((e) => e.caminho.includes('/enderecos/')),
+        cep,
+      ).toBe(false);
+      expect(viaCepChamadas, cep).toEqual([]);
+    }
+  });
+
+  it('⚠️ ORDER OF ARRIVAL: an INVALID-CEP order gets the SAME pedido first seen paid as first seen unpaid then paid — no endereço, no route', async () => {
+    const invalido = { ...(pedidoLiBruto().endereco_entrega as DocData), cep: '00000' };
+    const pagoPrimeiro = dbComAlvo();
+    expect(
+      (await importar(pagoPrimeiro, pagoSemEndereco({ endereco_entrega: invalido }))).r,
+    ).toEqual({ kind: 'importado' });
+
+    const aguardandoPrimeiro = dbComAlvo();
+    await importar(aguardandoPrimeiro, aguardando({ endereco_entrega: invalido }));
+    expect(
+      (
+        await importar(
+          aguardandoPrimeiro,
+          pagoSemEndereco({ endereco_entrega: invalido, data_modificacao: carimboLi(3) }),
+        )
+      ).r,
+    ).toEqual({ kind: 'importado' });
+
+    for (const [nome, db] of [
+      ['pago primeiro', pagoPrimeiro],
+      ['aguardando primeiro', aguardandoPrimeiro],
+    ] as const) {
+      expect(db.ler(CAMINHO_PEDIDO), nome).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        enderecoFiscalOuterRef: null,
+      });
+      expect(frete(db), nome).toMatchObject({ ...SEM_ROTA, enderecoFreteOuterReference: null });
     }
   });
 

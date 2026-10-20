@@ -1,9 +1,10 @@
 /**
- * A PAID Loja Integrada order with no usable delivery address (owner decision,
- * 2026-10-19): the pure verdict (what "usable" means, and who is exempt), the
- * retryable error the import throws, and the LOUD signal the notification
- * pipeline's exhaustion hook runs — an ERROR line with ids only, then the open
- * aviso — against `testing/fakeDb.ts` and the real `escreverAviso`.
+ * A PAID Loja Integrada order that carries NO CEP at all (owner decisions,
+ * 2026-10-19 and 2026-10-20): the pure verdict (what "no CEP" means, and who is
+ * exempt), the retryable error the import throws, and the LOUD signal the
+ * notification pipeline's exhaustion hook runs — an ERROR line with ids only,
+ * then the open aviso — against `testing/fakeDb.ts` and the real
+ * `escreverAviso`.
  */
 import { format, inspect } from 'node:util';
 
@@ -21,10 +22,10 @@ import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { AGORA_MS } from '../testing/fixtures';
 import { pedidoLiBruto } from '../testing/pedidosLi';
 import { chaveDoAvisoDoPedidoLi, type PedidoDoAvisoLi } from './avisosPedidoLi';
-import type { EnderecoEntregaLi } from './clienteMapeamento';
+import { enderecoDoPedidoLi, type EnderecoEntregaLi } from './clienteMapeamento';
 import {
   LiPedidoPagoSemEnderecoError,
-  enderecoEntregaUtilizavelLi,
+  entregaSemCepLi,
   pedidoPagoSemEnderecoLi,
   sinalizarPedidoPagoSemEnderecoLi,
 } from './pedidoPagoSemEndereco';
@@ -61,42 +62,63 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('enderecoEntregaUtilizavelLi: a CEP the endereço builder reads — exactly when step 7 stores an endereço', () => {
-  it('EQUAL: the fixture block, a punctuated CEP, a one-letter street the builder completes', () => {
-    expect(enderecoEntregaUtilizavelLi(endereco())).toBe(true);
-    expect(enderecoEntregaUtilizavelLi(endereco({ cep: '01310100' }))).toBe(true);
-    expect(enderecoEntregaUtilizavelLi(endereco({ endereco: 'A' }))).toBe(true);
-    // Nothing else is asked of it: no número, bairro or cidade still ships.
+/** Blank texts: whitespace only, which carries nothing (decided and pinned here). */
+const CEPS_EM_BRANCO = [' ', '   ', '\t', ' \n ', '\u00a0'];
+
+/**
+ * Present but INVALID CEPs, as a customer may type them into the store: the
+ * endereço builder reads none of them (`sem-cep`), and waiting fixes none.
+ */
+const CEPS_INVALIDOS = ['00000', 'abc', '0131-010', '013101000', 'sem cep', '-'];
+
+describe('entregaSemCepLi: the delivery block carries NO CEP at all (owner decision, 2026-10-20)', () => {
+  it('EQUAL: no block, an empty block, and a CEP absent, null or empty ⇒ no CEP', () => {
+    expect(entregaSemCepLi(null)).toBe(true);
+    expect(entregaSemCepLi(undefined)).toBe(true);
+    expect(entregaSemCepLi({} as EnderecoEntregaLi)).toBe(true);
+    const semChave: Record<string, unknown> = { ...endereco() };
+    delete semChave.cep;
+    expect('cep' in semChave).toBe(false);
+    expect(entregaSemCepLi(semChave as EnderecoEntregaLi)).toBe(true);
+    for (const cep of [null, undefined, '']) {
+      expect(entregaSemCepLi(endereco({ cep })), String(cep)).toBe(true);
+    }
+  });
+
+  it('⚠️ EQUAL (decided): a whitespace-only CEP is no CEP either — it carries nothing', () => {
+    for (const cep of CEPS_EM_BRANCO) {
+      expect(entregaSemCepLi(endereco({ cep })), JSON.stringify(cep)).toBe(true);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: an INVALID non-empty CEP is a CEP — the builder reads none of them, and the rule still says one is there', () => {
+    for (const cep of CEPS_INVALIDOS) {
+      // The builder's own verdict: no endereço from it…
+      expect(enderecoDoPedidoLi(endereco({ cep })).kind, cep).toBe('sem-cep');
+      // …and still not "no CEP": the scope is the CEP's ABSENCE, never its quality.
+      expect(entregaSemCepLi(endereco({ cep })), cep).toBe(false);
+    }
+  });
+
+  it('NEAR-MISS: a valid CEP — bare or punctuated, with or without a street — is a CEP', () => {
+    expect(entregaSemCepLi(endereco())).toBe(false);
+    expect(entregaSemCepLi(endereco({ cep: '01310100' }))).toBe(false);
+    expect(entregaSemCepLi(endereco({ cep: ' 01310-100 ' }))).toBe(false);
+    expect(entregaSemCepLi(endereco({ endereco: null }))).toBe(false);
     expect(
-      enderecoEntregaUtilizavelLi(
-        endereco({ numero: null, bairro: null, cidade: null, estado: null }),
-      ),
-    ).toBe(true);
-  });
-
-  it('⚠️ EQUAL: a CEP with NO street is usable too — the builder fills its placeholder and step 7 stores that endereço, so a CEP-only order is treated alike whichever observation arrives first', () => {
-    for (const rua of [null, '', '   ', 'NAO INFORMADO']) {
-      expect(enderecoEntregaUtilizavelLi(endereco({ endereco: rua })), String(rua)).toBe(true);
-    }
-    // An UF the builder cannot read is still an endereço step 7 stores (after its CEP lookup).
-    expect(enderecoEntregaUtilizavelLi(endereco({ endereco: null, estado: 'Zz' }))).toBe(true);
-  });
-
-  it('NEAR-MISS: absent, empty, or no CEP the builder can read ⇒ not usable', () => {
-    expect(enderecoEntregaUtilizavelLi(null)).toBe(false);
-    expect(enderecoEntregaUtilizavelLi(undefined)).toBe(false);
-    expect(enderecoEntregaUtilizavelLi({} as EnderecoEntregaLi)).toBe(false);
-    for (const cep of [null, '', '   ', '0131-010', 'sem cep']) {
-      expect(enderecoEntregaUtilizavelLi(endereco({ cep })), String(cep)).toBe(false);
-    }
+      entregaSemCepLi(endereco({ endereco: null, numero: null, bairro: null, cidade: null })),
+    ).toBe(false);
   });
 });
 
 describe('pedidoPagoSemEnderecoLi: who is refused', () => {
-  it('EQUAL: every PAID codigo with no usable address, no pickup and no stored endereço ⇒ refused', () => {
+  it('EQUAL: every PAID codigo carrying no CEP, no pickup and no stored endereço ⇒ refused', () => {
     expect(CODIGOS_LI_PAGO.size).toBe(7);
     for (const codigo of CODIGOS_LI_PAGO) expect(decidir({ codigo }), codigo).toBe(true);
-    expect(decidir({ enderecoEntrega: endereco({ cep: null }) })).toBe(true);
+    expect(decidir({ enderecoEntrega: {} as EnderecoEntregaLi })).toBe(true);
+    for (const cep of [null, undefined, '', ...CEPS_EM_BRANCO]) {
+      expect(decidir({ enderecoEntrega: endereco({ cep }) }), JSON.stringify(cep)).toBe(true);
+    }
     // An EMPTY stored ref is no endereço.
     expect(
       decidir({
@@ -106,6 +128,19 @@ describe('pedidoPagoSemEnderecoLi: who is refused', () => {
         },
       }),
     ).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS (owner decision, 2026-10-20): an INVALID non-empty CEP is never refused — waiting never fixes what the customer typed', () => {
+    for (const cep of CEPS_INVALIDOS) {
+      expect(decidir({ enderecoEntrega: endereco({ cep }) }), cep).toBe(false);
+      // Not even with no street, number or district: the CEP is what is asked about.
+      expect(
+        decidir({
+          enderecoEntrega: endereco({ cep, endereco: null, numero: null, bairro: null }),
+        }),
+        cep,
+      ).toBe(false);
+    }
   });
 
   it('NEAR-MISS: every codigo that is not paid imports as before — the dispute and a request to cancel included', () => {
@@ -118,8 +153,9 @@ describe('pedidoPagoSemEnderecoLi: who is refused', () => {
     }
   });
 
-  it('NEAR-MISS: a usable address, a PICKUP route, NO shipment, or an endereço the pedido already stores ⇒ not refused', () => {
+  it('NEAR-MISS: a valid CEP, a PICKUP route, NO shipment, or an endereço the pedido already stores ⇒ not refused', () => {
     expect(decidir({ enderecoEntrega: endereco() })).toBe(false);
+    expect(decidir({ enderecoEntrega: endereco({ endereco: null }) })).toBe(false);
     expect(decidir({ dispensaEndereco: true })).toBe(false);
     // No shipment: no freight block, so nothing a label could be bought for.
     expect(decidir({ temEnvio: false })).toBe(false);
