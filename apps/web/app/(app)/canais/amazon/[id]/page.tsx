@@ -13,6 +13,7 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { RecalcularPrecosCanalAction } from '../../_components/RecalcularPrecosCanalAction';
 import { validarIntermediador } from '../../_components/integracaoFieldOverrides';
 import { amazonExcludedFields, amazonFields } from '../_components/amazonFieldOverrides';
+import { ContaAmazonPanel } from '../_components/ContaAmazonPanel';
 
 export default function ContaAmazonPage() {
   const params = useParams<{ id: string }>();
@@ -41,11 +42,11 @@ export default function ContaAmazonPage() {
         </Group>
       </Group>
 
-      {/* SLOT — the Amazon connection panel (step 2, PR c) mounts HERE: above
-          the form and always visible, so the reconnection and reauthorization
-          avisos' deep link lands on it, and with `key={params.id}`, because a
-          param-only A->B navigation must remount its per-conta state and Next
-          reuses the component across a param change. */}
+      {/* The connection panel sits above the form and is always visible, so the
+          reconnection and reauthorization avisos' deep link lands on it.
+          `key={params.id}`: a param-only A->B navigation must remount its
+          per-conta state, and Next reuses the component across a param change. */}
+      <ContaAmazonPanel key={params.id} integracaoId={params.id} />
 
       <ObjectView
         schema={integracaoSchema}
