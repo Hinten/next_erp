@@ -209,13 +209,16 @@ Alert on both ERROR lines:
 - `[loja-integrada/importacao] pedido PAGO sem endereço de entrega: tentativas esgotadas, notificação estacionada`
   (`integracaoId`, `numero`, `pedidoId`): a PAID order with a shipment still
   carried NO CEP at all on its last run — no delivery block, or a CEP absent,
-  empty or blank (master-plan step 5). It also raises the `critico` aviso
-  `lojaIntegradaPedidoPagoSemEndereco` on the conta page; a later import of
-  that order that gets past the check (a CEP arrived, the order is no longer
-  paid, it now routes to a pickup, or the pedido now stores an endereço)
-  resolves it. A pickup order is exempt and imports without one. A present but
-  INVALID CEP never reaches this line: the order imports without an endereço
-  or a carrier route, as an unpaid order without one does.
+  empty, blank or the `-` placeholder (master-plan step 5). It also raises the
+  `critico` aviso `lojaIntegradaPedidoPagoSemEndereco` on the conta page. A
+  later import of that order resolves it only when the pedido ends up with a
+  delivery endereço (one it already stores, never overwritten, or one the
+  import writes from a readable CEP), a pickup route, or no longer paid; any
+  other import leaves it open. A pickup order is exempt and imports without
+  one. A present but INVALID CEP (a masked one included) never reaches this
+  line: the order imports without an endereço or a carrier route, as an unpaid
+  order without one does — and it keeps an open aviso of that order OPEN, so
+  the address is still the operator's to fix.
 - `[loja-integrada] notificação estacionada: tentativas esgotadas, pedido não importado`
   (`integracaoId`, `numero`, `origem`, `classe`): any other thrown failure — a
   429, a 5xx, a timeout, gRPC. No aviso: the row's `erro` is the record.

@@ -323,11 +323,12 @@ still be fixed. Only the context loader refuses those.
   and endereço, then ONE atomic `WriteBatch` (the pedido and every pagamento, each under
   its own precondition; a lost one re-derives all, 3 attempts, then a retry).
 - A4: a PAID order with a shipment, NO CEP at all (no delivery block, or a `cep` absent,
-  `null`, `''` or blank) and no stored endereço throws `LiPedidoPagoSemEnderecoError`
-  before step 7; a pickup is exempt. It retries, and the pipeline's park at its cap logs
-  an ERROR line (ids only) and raises the `critico` `lojaIntegradaPedidoPagoSemEndereco`;
-  a later import resolves it. A present but INVALID CEP is never refused (the customer
-  typed it; waiting never fixes it): it imports without an endereço or a carrier route.
+  `null`, `''`, blank or `-`) and no stored endereço throws `LiPedidoPagoSemEnderecoError`
+  before step 7; a pickup is exempt. It retries; the park at the cap logs an ERROR line
+  (ids only) and raises the `critico` `lojaIntegradaPedidoPagoSemEndereco`, which an
+  import resolves only once the winning snapshot leaves the pedido a delivery endereço, a
+  pickup route or no longer paid. A present but INVALID CEP (a masked one too) is never
+  refused: it imports with no endereço or route and keeps the aviso open.
 - The buyer is the fiscal identity (a valid CNPJ, else CPF). Never a cliente beside
   another cliente's endereço: each stored endereço must be the pedido's cliente's, judged
   per attempt, else nothing is filled over it and an incidente. No endereço (pickup
