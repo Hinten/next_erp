@@ -156,10 +156,13 @@ describe('preimagemPedidoLi — the deterministic pedido id’s preimage', () =>
   it('⚠️ NEAR-MISS: the other channels’ spellings, another conta and another numero stay DISTINCT', () => {
     const id = sha256(preimagemPedidoLi('CONTA1', '165') ?? '');
     expect(id).not.toBe(sha256('CONTA1-165')); // the Shopee spelling
+    expect(id).not.toBe(sha256('/documents/integracao/CONTA1-165')); // the Mercado Livre shape
     expect(id).not.toBe(sha256('lojaIntegrada/CONTA1-165'));
     expect(id).not.toBe(sha256('documents/integracao/CONTA1-165'));
     expect(preimagemPedidoLi('CONTA2', '165')).not.toBe(preimagemPedidoLi('CONTA1', '165'));
     expect(preimagemPedidoLi('CONTA1', '1650')).not.toBe(preimagemPedidoLi('CONTA1', '165'));
+    // The separator keeps `CONTA1` + `65` apart from `CONTA` + `165`.
+    expect(preimagemPedidoLi('CONTA1', '65')).not.toBe(preimagemPedidoLi('CONTA', '165'));
   });
 });
 
