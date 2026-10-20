@@ -729,16 +729,16 @@ export const TIPO_AVISO_LABELS = {
  * owner decisions 2026-10-19 and 2026-10-20) — a PAID Loja Integrada order (a
  * codigo the label step's paid re-check accepts) with a shipment arrived
  * carrying NO CEP at all (no delivery block, or a CEP absent, empty or blank),
- * is not a pickup, and the pedido holds no endereço of its own. A present but
- * INVALID CEP is never this tipo: the customer typed it and waiting never
- * fixes it, so that order imports without an endereço (its freight amount, no
- * carrier route) and raises nothing here. Such an import is REFUSED with a
- * retryable error — the platform may still fill the address — so the queue's
- * backoff and the reprocess sweep retry it; this row is raised only when those
- * attempts RAN OUT, from the notification pipeline's signal for a thrown
- * failure parked at its cap, beside an ERROR log line. Nothing of that order
- * was written: no pedido (or no update of it), no pagamento, no cliente, no
- * endereço.
+ * is not a pickup, and the pedido holds no endereço of its own. Such an import
+ * is REFUSED with a retryable error — the platform may still fill the address
+ * — so the queue's backoff and the reprocess sweep retry it; this row is
+ * raised only when those attempts RAN OUT, from the notification pipeline's
+ * signal for a thrown failure parked at its cap, beside an ERROR log line.
+ * Nothing of a refused order was written: no pedido (or no update of it), no
+ * pagamento, no cliente, no endereço. A present but INVALID CEP is never this
+ * tipo: the customer typed it and waiting never fixes it, so that order is not
+ * refused — it imports without an endereço (its freight amount, no carrier
+ * route) and raises nothing here.
  *
  *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
  *    in-app only, like the other two critical tipos of this channel. A paid
