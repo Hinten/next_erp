@@ -70,6 +70,7 @@ import {
   criarEmissor,
   ehAsciiVisivel,
   enviar,
+  redirectUriValido,
   refValida,
   resolverFetch,
   userAgentValido,
@@ -217,6 +218,24 @@ export async function trocarCodigoAutorizacao(
   return { ...t.token, refreshToken: t.refreshToken };
 }
 
+/**
+ * The rule behind `AmazonConfigError('credencial-lwa')`, as a predicate: a
+ * client id, client secret, refresh token or authorization code is usable only
+ * when it is visible ASCII — at least one character, with no space, tab, line
+ * break, control character or non-ASCII anywhere, and never trimmed.
+ *
+ * Both exchanges apply exactly this to every such value before anything is
+ * sent. It is exported so a caller can refuse a value BEFORE spending something
+ * irreversible on it: `apps/amazon`'s OAuth start checks the app's pair before a
+ * consent begins (a trailing newline from a Secret Manager paste would otherwise
+ * surface only after the seller consented), and its callback checks the code
+ * before consuming the single-use state. One predicate, so the early check and
+ * the exchange can never disagree.
+ */
+export function credencialLwaValida(valor: unknown): valor is string {
+  return ehAsciiVisivel(valor);
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                  Internals                                 */
 /* -------------------------------------------------------------------------- */
@@ -234,7 +253,7 @@ function validarComum(
     throw new AmazonConfigError('user-agent', { operacao, refCredencial: null });
   }
   const { clientId, clientSecret } = opts.aplicacao;
-  if (![clientId, clientSecret, ...credenciaisDaConcessao].every(ehAsciiVisivel)) {
+  if (![clientId, clientSecret, ...credenciaisDaConcessao].every(credencialLwaValida)) {
     throw new AmazonConfigError('credencial-lwa', { operacao, refCredencial: null });
   }
 }
@@ -246,23 +265,6 @@ function validarRefEAgente(opts: OpcoesTrocaLwa, operacao: string, segredos: str
   if (contemSegredo(opts.userAgent, segredos)) {
     throw new AmazonConfigError('user-agent', { operacao, refCredencial: opts.ref });
   }
-}
-
-/**
- * An absolute `https:` URL with no fragment and no userinfo [MD5110: the
- * redirect URI may not carry a fragment]. Visible ASCII only — it travels in
- * the form body, never anywhere it could be echoed.
- */
-function redirectUriValido(uri: unknown): uri is string {
-  if (!ehAsciiVisivel(uri) || uri.includes('#')) return false;
-  let url: URL;
-  try {
-    url = new URL(uri);
-  } catch (err) {
-    if (err instanceof TypeError) return false;
-    throw err;
-  }
-  return url.protocol === 'https:' && url.username === '' && url.password === '';
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   type CodigoErroLwa,
 } from '../src/errors';
 import {
+  credencialLwaValida,
   type OpcoesTrocaCodigo,
   type OpcoesTrocaRefreshToken,
   trocarCodigoAutorizacao,
@@ -498,6 +499,36 @@ describe('config errors — nothing is sent', () => {
     );
     expect((err as AmazonConfigError).motivo).toBe('credencial-lwa');
     expect(f).not.toHaveBeenCalled();
+  });
+
+  // `credencialLwaValida` is what `apps/amazon` checks BEFORE a consent starts and
+  // before the single-use state is consumed, so it must be the exchange's OWN rule:
+  // what it refuses, the exchange refuses with nothing sent; what it accepts, the
+  // exchange sends. Both directions, or the early check could drift either way.
+  it.each(ruins)(
+    'credencialLwaValida refuses a value with %s — and so does the exchange',
+    async (_c, s) => {
+      expect(credencialLwaValida(s)).toBe(false);
+      const f = mockFetch(() => json(tokenRefresh200));
+      const err = await falha(codigo(f, { aplicacao: { clientId: s, clientSecret: s } }).p);
+      expect((err as AmazonConfigError).motivo).toBe('credencial-lwa');
+      expect(f).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['the fixture client secret', CLIENT_SECRET],
+    ['the fixture code (with its `|`)', CODIGO_AUTORIZACAO],
+    ['interior visible punctuation', 'a|b~c!d{e}'],
+  ])('near-miss: credencialLwaValida accepts %s — and the exchange sends it', async (_c, s) => {
+    expect(credencialLwaValida(s)).toBe(true);
+    const f = mockFetch(() => json(tokenRefresh200));
+    await codigo(f, { aplicacao: { clientId: CLIENT_ID, clientSecret: s }, codigo: s }).p;
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it('credencialLwaValida refuses anything that is not a string', () => {
+    for (const v of [undefined, null, 1, {}, ['x']]) expect(credencialLwaValida(v)).toBe(false);
   });
 
   it.each([

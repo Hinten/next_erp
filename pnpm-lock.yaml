@@ -173,6 +173,24 @@ importers:
 
   apps/amazon:
     dependencies:
+      '@delfrance/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@delfrance/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      '@delfrance/integrations-amazon-sp-api':
+        specifier: workspace:*
+        version: link:../../packages/integrations/amazon-sp-api
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      firebase-admin:
+        specifier: 'catalog:'
+        version: 14.5.0
       next:
         specifier: 16.2.6
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -182,6 +200,9 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
         specifier: workspace:*
