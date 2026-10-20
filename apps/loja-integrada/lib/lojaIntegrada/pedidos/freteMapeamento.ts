@@ -161,12 +161,21 @@
  * block and an empty refill have nothing stored to keep, so they write the raw
  * method. A frozen non-empty method is not written at all (above).
  *
+ * ⚠️ One exception to "any key the incoming method carries": a key ANOTHER
+ * writer owns ({@link CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI}, the label
+ * purchase's `agency`) keeps its stored value even when the incoming method
+ * carries one of the same name. The wire schema is passthrough, so nothing
+ * stops Loja Integrada sending such a key; letting it win would overwrite the
+ * label's agency on every re-import after each purchase. With no agency
+ * stored, the incoming method is written as it comes, as a create writes it.
+ *
  * So a tracking write-back that bumps the order's stamp re-imports as no
  * freight change at all, an agency beside the method included, and a
  * re-import that changes the method keeps the agency the next purchase
- * pre-fills. The keys kept are read from the snapshot each batch attempt
- * decides from, so a purchase landing between the read and the write costs
- * the batch its precondition, and the retry keeps what it then reads.
+ * pre-fills, whatever the incoming method carries. The keys kept are read
+ * from the snapshot each batch attempt decides from, so a purchase landing
+ * between the read and the write costs the batch its precondition, and the
+ * retry keeps what it then reads.
  * Residue, accepted: an undeclared key the wire once carried and then stopped
  * sending reads as another writer's and is kept; no capture shows one.
  */
@@ -638,13 +647,26 @@ export const CHAVES_FORMA_ENVIO_LI: ReadonlySet<string> = new Set(
 );
 
 /**
+ * The keys of `externalOptionData` ANOTHER writer owns, whose stored value an
+ * incoming method never replaces, even one carrying the same name: the
+ * Melhor Envio label purchase's `agency` (`finalizarCompraEtiqueta` in
+ * `apps/melhor-envio`), which the next purchase pre-fills. The wire schema is
+ * passthrough, so a key Loja Integrada ever sent under that name would
+ * otherwise win, and every re-import would flip it back. Disjoint from
+ * {@link CHAVES_FORMA_ENVIO_LI} (pinned by a test).
+ */
+export const CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI: ReadonlySet<string> = new Set(['agency']);
+
+/**
  * The method an update writes: the incoming `forma_envio` verbatim, plus every
  * key of the STORED method that Loja Integrada does not own — neither declared
  * ({@link CHAVES_FORMA_ENVIO_LI}) nor carried by the incoming method — with its
- * value untouched. A stored method that is not a map has no keys to keep.
- * Kept: a label purchase's `agency`, an operator's own key. Replaced: a
- * declared field (dropped with the old method when the new one lacks it) and
- * any key the incoming method carries.
+ * value untouched, and, over the incoming method, every stored key another
+ * writer owns ({@link CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI}). A stored method
+ * that is not a map has no keys to keep. Kept: a label purchase's `agency`
+ * (always, while one is stored), an operator's own key. Replaced: a declared
+ * field (dropped with the old method when the new one lacks it) and any other
+ * key the incoming method carries.
  */
 export function formaEnvioMescladaLi(
   armazenado: unknown,
@@ -655,7 +677,11 @@ export function formaEnvioMescladaLi(
     return metodo;
   }
   for (const [chave, valor] of Object.entries(armazenado)) {
-    if (CHAVES_FORMA_ENVIO_LI.has(chave) || Object.prototype.hasOwnProperty.call(novo, chave)) {
+    const deOutroEscritor = CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI.has(chave);
+    if (
+      !deOutroEscritor &&
+      (CHAVES_FORMA_ENVIO_LI.has(chave) || Object.prototype.hasOwnProperty.call(novo, chave))
+    ) {
       continue;
     }
     metodo[chave] = valor;

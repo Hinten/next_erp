@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import type { RegistroDoMapaLi } from '../frete/mapaFrete';
 import { dataLiParaMicros } from './dataLi';
 import {
+  CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI,
   CHAVES_FORMA_ENVIO_LI,
   HORARIO_DE_CORTE_PADRAO_LI,
   codRastreioLi,
@@ -859,6 +860,32 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
       const semTipo = { id: 141909, code: 'SEDEX', nome: 'Correios', extra: 'agora' };
       const r = mesclarFreteLi(antigo, mapearPagoCom(semTipo), NAO_CONGELADO);
       expect(r?.bloco.externalOptionData).toEqual({ ...semTipo, agency: 42 });
+    });
+
+    it('the keys another writer owns: the label purchase’s agency, never one of the wire set’s declared fields', () => {
+      expect([...CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI]).toEqual(['agency']);
+      for (const chave of CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI) {
+        expect(CHAVES_FORMA_ENVIO_LI.has(chave), chave).toBe(false);
+      }
+    });
+
+    it('⚠️ NEAR-MISS (a name collision): an incoming method that ALSO carries an `agency` never overwrites the stored one ⇒ the label’s agency kept', () => {
+      // The passthrough wire schema keeps any key Loja Integrada sends; one named like the
+      // label flow's would otherwise win, and every later re-import would flip it back.
+      const r = mesclarFreteLi(comAgencia, mapearPagoCom({ ...SEDEX, agency: 7 }), NAO_CONGELADO);
+      expect(r?.bloco.externalOptionData).toEqual({ ...SEDEX, agency: 42 });
+    });
+
+    it('EQUAL: the same method re-imported carrying an `agency` of its own beside a stored one ⇒ no change at all', () => {
+      expect(
+        mesclarFreteLi(comAgencia, mapearPagoCom({ ...PAC, agency: 7 }), NAO_CONGELADO),
+      ).toBeNull();
+    });
+
+    it('NEAR-MISS: with NO agency stored, the incoming method’s `agency` is written as the raw method carries it', () => {
+      const semAgencia = { ...comAgencia, externalOptionData: PAC };
+      const r = mesclarFreteLi(semAgencia, mapearPagoCom({ ...SEDEX, agency: 7 }), NAO_CONGELADO);
+      expect(r?.bloco.externalOptionData).toEqual({ ...SEDEX, agency: 7 });
     });
 
     it('EQUAL: an operator’s own key beside the method survives a replace, its value untouched', () => {
