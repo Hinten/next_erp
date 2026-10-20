@@ -18,9 +18,15 @@
  *  - **a shipment**: the order carries one (`envios[0]`). Without one there is
  *    no freight block, so nothing a label could be bought for;
  *  - **no CEP at all** ({@link entregaSemCepLi}): no delivery block, or its
- *    `cep` absent, `null`, the empty text `''` (what the repo reads as nothing)
- *    or whitespace only (decided here: it carries nothing either). Nothing else
- *    is asked of the block — not a street, a número or a bairro.
+ *    `cep` absent, `null`, the empty text `''` or whitespace only (decided
+ *    here: it carries nothing either). Nothing else is asked of the block —
+ *    not a street, a número or a bairro. ⚠️ Deliberately NARROWER than the
+ *    shared absence reader `valorUtilizavel` (`@delfrance/schemas`), which
+ *    also reads the `'-'` placeholder and a masked (`*`) value as absent: the
+ *    owner decision names absent, `null`, `''` and blank only, so a `'-'` or
+ *    a `*` in the CEP is text in the field — a present, INVALID CEP (below),
+ *    pinned as such by the tests. Reading `'-'` as absent instead would
+ *    refuse and retry that order like one with no CEP.
  *    ⚠️ A PRESENT but INVALID CEP (owner decision, 2026-10-20) is NOT refused,
  *    although the endereço builder reads none from it (`sem-cep`, so step 7
  *    stores no endereço): the store lets the customer type one, and waiting
@@ -114,8 +120,10 @@ const ROTULO_LOG = '[loja-integrada/importacao]';
  * `null`, `''` or whitespace only (module header). Any other text is a CEP —
  * valid or not, which is the endereço builder's question, never this one's.
  * Pinned by `pedidoPagoSemEndereco.test.ts`: EQUAL `null`/`''`/`'   '` (no
- * CEP), and the NEAR-MISS `'00000'`/`'abc'`, which the builder reads no
- * endereço from and which still are CEPs here.
+ * CEP), and the NEAR-MISS `'00000'`/`'abc'`/`'-'`, which the builder reads no
+ * endereço from and which still are CEPs here. ⚠️ Not `valorUtilizavel`: that
+ * reader also takes the `'-'` placeholder and a masked value for absence,
+ * which this rule deliberately does not (module header).
  */
 export function entregaSemCepLi(endereco: EnderecoEntregaLi | null | undefined): boolean {
   const cep = endereco?.cep;
