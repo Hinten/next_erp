@@ -14,8 +14,10 @@
  * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order's retries ran out without an address (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | any import that reaches the avisos |
  * | `lojaIntegradaReversaoComEtiqueta` | the pedido id | the order's stamp | a reversal codigo on a pedido that holds a bought label | any import that raises none |
  *
- * The last one is `critico` and routes to the conta page (on a first import
- * there is no pedido page); every other one is `atencao`.
+ * `lojaIntegradaPedidoPagoSemEndereco` is the one `critico` tipo; every other
+ * one is `atencao`. It and `lojaIntegradaPedidoHub` open on the conta page (on
+ * a first import there is no pedido page), and so does the freight tipo (it
+ * is about the conta's `mapa`); the rest open on the pedido.
  *
  * ## The clocks (root `CLAUDE.md` rule 7, tier 2)
  *
@@ -72,7 +74,7 @@ import {
 import { agoraUsDe, type AvisoDepsLi } from '../avisos/avisos';
 import { entidadeAvisoFreteLi, type AvisoFreteLi } from './freteMapeamento';
 
-/** The motivos the machine resolutions of the four tipos are stamped with. */
+/** The motivos the machine resolutions of this module's tipos are stamped with. */
 export const MOTIVO_RESOLUCAO_PEDIDO_LI = {
   /** The order came back with a codigo the shared table knows. */
   situacaoConhecida: 'situacao-conhecida',
@@ -99,7 +101,7 @@ export interface PedidoDoAvisoLi {
   readonly pedidoId: string;
   /** The order's numero, as text. */
   readonly numero: string;
-  /** The order's Loja Integrada stamp, µs: the three order-clocked tipos' clock. */
+  /** The order's Loja Integrada stamp, µs: every order-clocked tipo's clock (module header). */
   readonly relogioUs: number;
 }
 

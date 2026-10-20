@@ -536,8 +536,9 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'desenvolvedor confere o registro da varredura de pedidos; quando há pedidos alterados ' +
       'demais, reiniciar o cursor da conta faz a leitura recomeçar pelo período inicial de busca.',
   },
-  // Os quatro tipos da importação de pedidos (passos 5 e 6). Todos `atencao`: cada um
-  // fala de UM pedido ou UMA forma de envio, e a entrada de pedidos segue funcionando.
+  // Os tipos da importação de pedidos (passos 5 e 6), até o fim deste mapa. Todos
+  // `atencao` — cada um fala de UM pedido ou UMA forma de envio, e a entrada de pedidos
+  // segue funcionando —, exceto `lojaIntegradaPedidoPagoSemEndereco`, `critico`.
   [TIPO_AVISO.lojaIntegradaSituacaoDesconhecida]: {
     titulo: 'Situação desconhecida em pedido da Loja Integrada',
     corpo: (params) =>
@@ -590,22 +591,27 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   },
   // Crítico: uma venda PAGA que não entrou no ERP é uma venda que ninguém despacha. O
   // aviso só sobe quando as novas tentativas acabaram (a fila e a varredura), por isso a
-  // frase diz que a importação parou — e quem a retoma é uma alteração no painel.
+  // frase diz que a importação parou. "Utilizável" é o que o importador grava como
+  // endereço: um CEP válido (um CEP sem logradouro ainda é endereço).
   [TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco]: {
     titulo: 'Pedido pago da Loja Integrada sem endereço',
     corpo: (params) =>
       `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} está pago na Loja ` +
-      'Integrada, mas chegou sem um endereço de entrega utilizável (CEP e logradouro) e por ' +
-      'isso não entrou no ERP — nem o pedido, nem a atualização dele: sem endereço não há como ' +
-      'comprar a etiqueta. A importação tentou de novo por algumas horas e parou. O aviso se ' +
-      'encerra quando o pedido for importado.',
-    // O conserto está FORA do app: o endereço é preenchido no painel da Loja Integrada, e
-    // só uma alteração do pedido lá o traz de volta à importação.
+      'Integrada, mas chegou sem um endereço de entrega com CEP válido e por isso não entrou ' +
+      'no ERP — nem o pedido, nem a atualização dele: sem endereço não há como comprar a ' +
+      'etiqueta. A importação tentou de novo por algumas horas e parou. O aviso se encerra ' +
+      'quando o pedido for importado.',
+    // O conserto está FORA do app: o endereço é preenchido no painel da Loja Integrada. Que
+    // essa alteração traga o pedido de volta à importação é o ESPERADO, ainda não observado
+    // (nenhuma captura mostra a edição do endereço mudando a data de modificação do pedido),
+    // por isso a frase diz "deve" e dá a saída para quando não trouxer. A retirada precisa
+    // estar ATIVA: uma inativa não dispensa o endereço.
     runbook:
-      'Preencha o endereço de entrega do pedido no painel da Loja Integrada: a alteração faz o ' +
-      'pedido voltar à importação. Se ele for de retirada na loja, mapeie antes a forma de ' +
-      'envio dele para retirada na loja na aba Mapeamento do Frete da conta e depois altere o ' +
-      'pedido no painel.',
+      'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
+      'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
+      'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
+      'e depois altere o pedido no painel. Se o aviso continuar aberto depois da alteração, ' +
+      'peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
   },
 };
 

@@ -39,6 +39,8 @@ import {
   INTEGRACAO_FRETE,
   INTEGRACAO_TIPO,
   MODALIDADE_FRETE,
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  MOTIVO_PEDIDO_CONTESTADO_LI,
   ORIGEM_NOTIFICACAO_LI,
   STATUS_PAGAMENTO,
   TIPO_AVISO,
@@ -1348,6 +1350,30 @@ describe('⚠️ an order without an endereço: its freight amount, never a carr
     });
   });
 
+  it('⚠️ NEAR-MISS: an operator RE-ROUTED the pedido on the pedido screen (which writes the method null) ⇒ the next import leaves the method empty beside the operator’s ref', async () => {
+    const db = dbComAlvo();
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+    expect(frete(db)).toMatchObject(ROTA_ME);
+    // What the Frete tab saves on a change of integração that had a quote.
+    await refPedido(db).update({
+      hasUserInteraction: true,
+      freteInicial: {
+        ...frete(db),
+        integracaoFreteOuterRef: 'documents/int_frete/motoboy-1',
+        externalOptionId: null,
+        externalOptionIntegracao: null,
+        externalOptionData: null,
+      },
+    });
+
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) }));
+    expect(frete(db)).toMatchObject({
+      integracaoFreteOuterRef: 'documents/int_frete/motoboy-1',
+      externalOptionId: null,
+      externalOptionData: null,
+    });
+  });
+
   it('NEAR-MISS: a frozen pedido whose raw method an earlier import STORED keeps it, though Loja Integrada now sends another', async () => {
     const db = dbComAlvo();
     await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
@@ -1394,7 +1420,7 @@ describe('⚠️ a PAID order without a usable delivery address retries, then fa
     return db;
   }
 
-  it('EQUAL: no endereco_entrega ⇒ the retryable error; the ONLY write is the mapa registration — no cliente, endereço, pedido, pagamento, incidente or aviso', async () => {
+  it('EQUAL: no endereco_entrega ⇒ the retryable error; the ONLY writes are about the conta’s configuration (the mapa registration, the freight aviso) — no cliente, endereço, pedido, pagamento, incidente or order aviso', async () => {
     const db = novoDb();
     seedIntFrete(db);
     const erro = await importar(db, pagoSemEndereco()).catch((e: unknown) => e);
@@ -1406,18 +1432,105 @@ describe('⚠️ a PAID order without a usable delivery address retries, then fa
       numero: String(NUMERO_LI),
       relogioUs: WATERMARK_2H,
     });
-    expect(db.escritas.map((e) => e.caminho)).toEqual([CAMINHO_INT_FRETE]);
+    expect(db.escritas.map((e) => e.caminho)).toEqual([
+      CAMINHO_INT_FRETE,
+      `avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`,
+    ]);
     expect(mockCliente).not.toHaveBeenCalled();
   });
 
-  it('EQUAL: an EMPTY block, one without a CEP, or one without a street are no address either', async () => {
+  it('⚠️ a refused order still gets the FREIGHT aviso its routing decided: mapped to an INACTIVE pickup, the operator learns why it does not route', async () => {
+    const db = novoDb();
+    seedIntFrete(db, {
+      mapa: [{ ...linhaMapeada('alvo-1', null), targetTipoIntegracao: 'retiradaNaLoja' }],
+    });
+    db.seed('int_frete/alvo-1', { tipo: INTEGRACAO_FRETE.retiradaNaLoja, ativo: false });
+    await expect(importar(db, pagoSemEndereco())).rejects.toBeInstanceOf(
+      LiPedidoPagoSemEnderecoError,
+    );
+    expect(db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`)).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+      motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo,
+      resolvidoEm: null,
+    });
+    expect(db.ler(CAMINHO_PEDIDO)).toBeUndefined();
+  });
+
+  it('EXEMPT: a paid order with NO shipment and no address imports — no freight block, nothing to label', async () => {
+    const db = novoDb();
+    seedIntFrete(db);
+    const r = await importar(db, pagoSemEndereco({ envios: [] }));
+    expect(r.r).toEqual({ kind: 'importado' });
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.pago);
+    expect(db.ler(CAMINHO_PEDIDO)?.freteInicial ?? null).toBeNull();
+  });
+
+  it('⚠️ ORDER OF ARRIVAL: a CEP-only order (no street) gets the SAME pedido first seen paid as first seen unpaid then paid — the builder’s endereço and the carrier route', async () => {
+    const soCep = {
+      ...(pedidoLiBruto().endereco_entrega as DocData),
+      endereco: null,
+    };
+    const pagoPrimeiro = dbComAlvo();
+    expect((await importar(pagoPrimeiro, pagoSemEndereco({ endereco_entrega: soCep }))).r).toEqual({
+      kind: 'importado',
+    });
+
+    const aguardandoPrimeiro = dbComAlvo();
+    await importar(aguardandoPrimeiro, aguardando({ endereco_entrega: soCep }));
+    await importar(
+      aguardandoPrimeiro,
+      pagoSemEndereco({ endereco_entrega: soCep, data_modificacao: carimboLi(3) }),
+    );
+
+    for (const [nome, db] of [
+      ['pago primeiro', pagoPrimeiro],
+      ['aguardando primeiro', aguardandoPrimeiro],
+    ] as const) {
+      const endereco = db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef as string;
+      expect(endereco, nome).toMatch(/^documents\/clientes\//);
+      expect(db.ler(CAMINHO_PEDIDO)?.estado, nome).toBe(ESTADO_PEDIDO.pago);
+      expect(frete(db), nome).toMatchObject({ ...ROTA_ME, enderecoFreteOuterReference: endereco });
+    }
+  });
+
+  it('⚠️ rule 7: the stored endereço CLEARED between the read and the batch ⇒ the retry re-asks and refuses; the paid update never lands without an address', async () => {
+    const db = novoDb();
+    await importar(db, aguardando({ endereco_entrega: pedidoLiBruto().endereco_entrega }));
+    expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef).toMatch(/^documents\/clientes\//);
+    const c = pagoSemEndereco({
+      data_modificacao: carimboLi(3),
+      // A line that makes the import call Loja Integrada after it read the pedido.
+      itens: [
+        { ...linhaPadrao(), produto: '/api/v1/produto/321/?id_externo=1', produto_pai: null },
+      ],
+    });
+    let limpou = false;
+    c.antesDoProduto = async () => {
+      if (limpou) return;
+      limpou = true;
+      await refPedido(db).update({
+        enderecoFiscalOuterRef: null,
+        freteInicial: { ...frete(db), enderecoFreteOuterReference: null },
+      });
+    };
+    await expect(importar(db, c)).rejects.toBeInstanceOf(LiPedidoPagoSemEnderecoError);
+    expect(limpou).toBe(true);
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento);
+  });
+
+  it('NEAR-MISS: a lost precondition that leaves the stored endereço in place ⇒ the retry lands the paid update as before', async () => {
+    // The re-check is asked of each attempt's snapshot, and this one still holds it.
+    const db = novoDb();
+    await importar(db, aguardando({ endereco_entrega: pedidoLiBruto().endereco_entrega }));
+    escritorAntesDeCadaLote(db, 1);
+    const r = await importar(db, pagoSemEndereco({ data_modificacao: carimboLi(3) }));
+    expect(r.r).toEqual({ kind: 'importado' });
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.pago);
+  });
+
+  it('EQUAL: an EMPTY block or one without a CEP the builder reads are no address either', async () => {
     const vazio = { ...(pedidoLiBruto().endereco_entrega as DocData) };
-    for (const endereco_entrega of [
-      {},
-      { ...vazio, cep: null },
-      { ...vazio, cep: '' },
-      { ...vazio, endereco: null },
-    ]) {
+    for (const endereco_entrega of [{}, { ...vazio, cep: null }, { ...vazio, cep: '' }]) {
       const db = novoDb();
       await expect(
         importar(db, pagoSemEndereco({ endereco_entrega })),
@@ -1523,6 +1636,47 @@ describe('⚠️ a PAID order without a usable delivery address retries, then fa
     expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).not.toBeNull();
   });
 
+  it('pinned (paid ≠ estado pago): the order moved to a DISPUTE while refused imports with no address and no route, its contestado row raised, and the paid-without-address row resolved', async () => {
+    const db = dbComAlvo();
+    await expect(importar(db, pagoSemEndereco())).rejects.toBeInstanceOf(
+      LiPedidoPagoSemEnderecoError,
+    );
+    await avisarPedidoPagoSemEnderecoLi(
+      asDb(db),
+      {
+        integracaoId: CONTA,
+        lojaNome: 'Loja de teste',
+        pedidoId: PEDIDO_ID,
+        numero: String(NUMERO_LI),
+        relogioUs: WATERMARK_2H,
+      },
+      { increment, nowMs: AGORA_MS },
+    );
+
+    const disputa: Cena = {
+      ...pagoSemEndereco({
+        situacao: { codigo: 'pagamento_em_disputa', id: 6 },
+        data_modificacao: carimboLi(4),
+      }),
+      historico: [
+        ...historicoPagoLi(),
+        linhaHistoricoLi(3, carimboLi(3), 'pagamento_em_disputa', 'pedido_pago'),
+      ],
+    };
+    expect((await importar(db, disputa)).r).toEqual({ kind: 'importado' });
+    // The table's estado for a dispute is `pago`; the label step refuses a contested codigo.
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.pago);
+    expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef).toBeNull();
+    expect(frete(db)).toMatchObject(SEM_ROTA);
+    expect(db.ler(caminhoAvisoDoPedido(TIPO_AVISO.lojaIntegradaPedidoContestado))).toMatchObject({
+      motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
+      resolvidoEm: null,
+    });
+    expect(db.ler(CAMINHO_AVISO_PAGO)).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
+    });
+  });
+
   describe('through the REAL notification pipeline (the queue and the hot sweep)', () => {
     const payloadTarefa = payload({ dataModificacaoLi: carimboLi(2) });
     const caminhoNotificacao = `notificacoesLojaIntegrada/${docIdNotificacaoLi(payloadTarefa)}`;
@@ -1623,21 +1777,32 @@ describe('⚠️ a PAID order without a usable delivery address retries, then fa
       expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).not.toBeNull();
     });
 
-    it('NEAR-MISS: another error parked at the same cap raises no aviso and logs no ERROR line', async () => {
+    it('residue, pinned: four address refusals, then a TRANSIENT failure on the run that parks ⇒ the generic ERROR line (ids only), but no aviso — the parking error is not ours', async () => {
       const db = novoDb();
       const erros: unknown[][] = [];
-      // A detail that answers 503 every time: transient, parked at the cap, not ours.
+      // The previous runs refused the address; this one meets a 503 on the detail.
+      const anterior = new LiPedidoPagoSemEnderecoError({
+        integracaoId: CONTA,
+        lojaNome: 'Loja de teste',
+        pedidoId: PEDIDO_ID,
+        numero: String(NUMERO_LI),
+        relogioUs: WATERMARK_2H,
+      });
       const c: Cena = { ...pagoSemEndereco(), detalhe: { status: 503, corpo: { erro: 'x' } } };
       db.seed(caminhoNotificacao, {
         ...payloadTarefa,
         status: 'failed',
         tentativas: MAX_TENTATIVAS - 1,
-        erro: null,
+        erro: anterior.message,
         processedAt: 0,
       });
       await reprocessarNotificacoesLi(asDb(db), {}, depsTarefaLi(c, null, erros));
       expect(db.ler(caminhoNotificacao)).toMatchObject({ status: 'parked' });
-      expect(erros).toEqual([]);
+      expect(erros).toHaveLength(1);
+      expect(String(erros[0]![0])).toContain('estacionada');
+      expect(String(erros[0]![0])).not.toContain('sem endereço');
+      expect(erros[0]![1]).toMatchObject({ integracaoId: CONTA, numero: String(NUMERO_LI) });
+      expect(JSON.stringify(erros)).not.toContain('Loja de teste');
       expect(db.ler(CAMINHO_AVISO_PAGO)).toBeUndefined();
     });
   });

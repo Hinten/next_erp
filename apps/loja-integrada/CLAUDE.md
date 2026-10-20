@@ -216,7 +216,11 @@ still be fixed. Only the context loader refuses those.
   DEFER; conta gone DROPS; `LiAuthError` parks the conta (`tratarFalhaDeAutenticacao`) and
   defers, or rethrows when the 401 was for an older token; 404 parks; a non-transient
   HTTP/schema/paging/Zod refusal parks (class and status only); 429, 5xx, network,
-  `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base.
+  `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base. The importer's
+  `LiPedidoPagoSemEnderecoError` (a paid order without an address, step 5) is `null` too:
+  retried, never parked by the table. `criarPipelineLi` binds the shared `onRetriesExhausted`
+  (a THROWN failure parked at the cap) to `sinalizarEsgotamentoLi`: that error's ERROR line
+  plus the critico aviso, any other class one generic ERROR line (ids and the class only).
 - A parked conta DEFERS, never drops (#808): daily re-drive for 7 days,
   `graduateDeferredTransientErrors`, and on a token save or renewal the routes' best-effort
   `redriveAposSalvarTokenLi` (`(status, contaId)` index; a gRPC failure is logged, the 200

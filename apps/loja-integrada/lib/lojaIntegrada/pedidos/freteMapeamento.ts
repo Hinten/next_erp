@@ -94,17 +94,18 @@
  * target DOCUMENT's tipo) ships nothing to an address, so it is kept without
  * an endereço — `enderecoFreteOuterReference` then stays `null`. And which
  * orders reach this rule at all changed the same day: a PAID order with no
- * usable delivery address is REFUSED before any write and retried
- * (`pedidoPagoSemEndereco.ts`), so "no endereço" here is an unpaid order, a
- * paid one whose pedido already stores an endereço, or one whose buyer has no
- * document (no cliente, so no endereço is stored).
+ * delivery address the endereço builder can read (no CEP) is REFUSED before
+ * the pedido is written and retried (`pedidoPagoSemEndereco.ts`), so "no
+ * endereço" here is an unpaid order, a paid one whose pedido already stores
+ * an endereço, or one whose buyer has no document (no cliente, so no endereço
+ * is stored).
  *
  * The update needs nothing of its own: an absent incoming value never
  * overwrites a stored one, so a route already stored (an operator's, or an
  * earlier import's) is never cleared; and the route fields are fill-once, so
  * the first import that finds the endereço fills an empty route (the raw
  * `externalOptionData` refreshes in the frozen group, and an EMPTY one refills
- * even on a frozen pedido — below).
+ * even on a frozen pedido beside the route it belongs to — below).
  *
  * ## The update: two groups, the Shopee freeze split
  *
@@ -126,10 +127,19 @@
  *    absent incoming value never overwrites a stored one.
  *    ⚠️ One exception (owner decision, 2026-10-19): an EMPTY stored
  *    `externalOptionData` (`vazioArmazenadoLi`: `null`, absent or `''`) is
- *    refilled even under the freeze. No operator writes an empty method — it is
- *    what an import without a route left — and keeping it frozen would leave a
- *    pedido routed to the conta's own Loja Integrada doc without the key its
- *    label is routed by, forever after any operator save. A NON-empty stored
+ *    refilled even under the freeze — but only BESIDE ITS ROUTE, under the
+ *    same condition as `externalOptionId` above: in the merge that fills
+ *    `integracaoFreteOuterRef`, or when the stored ref already names the
+ *    routed target. Keeping it frozen there would leave a pedido routed to the
+ *    conta's own Loja Integrada doc without the key its label is routed by,
+ *    forever after any operator save. ⚠️ The decision's premise ("a null there
+ *    was never set by an operator") is FALSE in general: the pedido screen
+ *    writes `externalOptionData: null` itself, on a change of integração that
+ *    had a quote and on clearing the quote. Beside a ref the operator moved to
+ *    another target that null is the operator's and stays; beside the routed
+ *    target it refills, exactly as `externalOptionId` always did. (An operator
+ *    can neither pick the conta's own Loja Integrada doc — the select offers no
+ *    marketplace tipo — nor edit a block routed to it.) A NON-empty stored
  *    method (another one, or an empty map) stays frozen; so do an empty
  *    `valorCobrado` and `dataPrevisaoEntrega`.
  *
@@ -674,8 +684,10 @@ export function mesclarFreteLi(
   for (const campo of CAMPOS_FRETE_CONGELAVEIS_LI) {
     const valor = mapeado.base[campo];
     if (valor === null || valor === undefined) continue;
-    // Frozen: only an EMPTY raw method refills — an import left it so, never an operator.
-    const refazVazio = campo === 'externalOptionData' && vazioArmazenadoLi(atual[campo]);
+    // Frozen: only an EMPTY raw method refills, and only beside ITS route (`opcaoDoAlvo`) —
+    // beside a ref an operator chose, an empty method may be the operator's own clear.
+    const refazVazio =
+      campo === 'externalOptionData' && opcaoDoAlvo && vazioArmazenadoLi(atual[campo]);
     if (contexto.congelado && !refazVazio) continue;
     if (!mesmoValorJsonLi(atual[campo], valor)) {
       bloco[campo] = valor;

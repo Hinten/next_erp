@@ -727,14 +727,16 @@ export const TIPO_AVISO_LABELS = {
  *
  * **`lojaIntegradaPedidoPagoSemEndereco`** (Loja Integrada step 5, PR 5-c,
  * owner decision 2026-10-19) — a PAID Loja Integrada order (a codigo the label
- * step's paid re-check accepts) arrived with no usable delivery address, is not
- * a pickup, and the pedido holds no endereço of its own. Such an import is
- * REFUSED with a retryable error — the platform may still fill the address —
- * so the queue's backoff and the reprocess sweep retry it; this row is raised
- * only when those attempts RAN OUT, from the notification pipeline's one
- * "attempts exhausted" signal (the sweep's park at its cap), beside an ERROR
- * log line. Nothing of that order was written: no pedido (or no update of it),
- * no pagamento, no cliente, no endereço.
+ * step's paid re-check accepts) with a shipment arrived with no usable
+ * delivery address (none, or none with a CEP the endereço builder reads — the
+ * importer's own criterion for storing an endereço), is not a pickup, and the
+ * pedido holds no endereço of its own. Such an import is REFUSED with a
+ * retryable error — the platform may still fill the address — so the queue's
+ * backoff and the reprocess sweep retry it; this row is raised only when those
+ * attempts RAN OUT, from the notification pipeline's signal for a thrown
+ * failure parked at its cap, beside an ERROR log line. Nothing of that order
+ * was written: no pedido (or no update of it), no pagamento, no cliente, no
+ * endereço.
  *
  *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
  *    in-app only, like the other two critical tipos of this channel. A paid
@@ -752,10 +754,13 @@ export const TIPO_AVISO_LABELS = {
  *  - **Machine resolver**: the next import of that order that gets past the
  *    address check — the address arrived, the order is no longer paid, or its
  *    shipping method now maps to a pickup — clocked by its stamp, so a late
- *    import of an older observation can neither close nor reopen the row. A
- *    row exists only while its order is re-importable, and the address being
- *    filled in the painel is itself a change the poller picks up. Residue,
- *    accepted: an order nobody edits again keeps its row until retention.
+ *    import of an older observation can neither close nor reopen the row.
+ *    ⚠️ UNVERIFIED (D17: no capture shows it): that filling the address in the
+ *    painel bumps the order's modification stamp, so the poller picks the
+ *    order up again. The parked row is terminal, so if it does not, nothing
+ *    re-imports the order; the wording says "should" and names the fallback (a
+ *    developer checks the parked notification). Residue, accepted: an order
+ *    nobody edits again keeps its row until retention.
  *
  * ---
  *

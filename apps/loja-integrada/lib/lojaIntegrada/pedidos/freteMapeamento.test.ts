@@ -719,10 +719,11 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
   });
 
   describe('⚠️ an EMPTY stored externalOptionData is refilled even under the freeze (owner decision, 2026-10-19)', () => {
-    // An operator never writes an empty method: one stored empty is an import's
-    // "no route yet", and keeping it frozen leaves the pedido without the key its
-    // label is routed by, forever after any operator save.
-    it('EQUAL: frozen, stored `null`, absent or `""` ⇒ the raw method is written, and named in the campos', () => {
+    // Beside its own route a method stored empty is an import's "no route yet", and
+    // keeping it frozen leaves the pedido without the key its label is routed by,
+    // forever after any operator save. Beside a ref an operator moved, it may be the
+    // operator's own clear (the pedido screen writes null) — the near-miss below.
+    it('EQUAL: frozen, stored `null`, absent or `""` (the ref empty, filled by this merge) ⇒ the raw method is written, and named in the campos', () => {
       for (const vazio of [null, undefined, '']) {
         const bloco: Record<string, unknown> = { ...armazenado, externalOptionData: vazio };
         if (vazio === undefined) delete bloco.externalOptionData;
@@ -741,6 +742,56 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
         expect(r?.bloco.externalOptionData, JSON.stringify(valor)).toEqual(valor);
         expect(r?.campos ?? [], JSON.stringify(valor)).not.toContain('externalOptionData');
       }
+    });
+
+    it('EQUAL: frozen, the stored ref names the ROUTED target (either stored form) ⇒ the empty method refills beside it', () => {
+      for (const ref of ['documents/int_frete/me-1', 'int_frete/me-1']) {
+        const bloco = { ...armazenado, integracaoFreteOuterRef: ref, externalOptionData: null };
+        const r = mesclarFreteLi(bloco, m, { congelado: true, estadoPedido: ESTADO_PEDIDO.pago });
+        expect(r?.bloco.externalOptionData, ref).toEqual(PAC);
+        expect(r?.bloco.integracaoFreteOuterRef, ref).toBe(ref);
+      }
+    });
+
+    it('⚠️ NEAR-MISS: frozen, the stored ref names ANOTHER target — an operator re-routed it, and the web cleared the method — ⇒ the empty method stays empty', () => {
+      // The pedido screen writes `externalOptionData: null` itself: on a change of
+      // integração that had a quote, and on clearing the quote. A null beside a ref
+      // the import did not route is an operator's, never "no route yet".
+      for (const ref of ['documents/int_frete/motoboy-1', 'documents/int_frete/me-12']) {
+        const bloco = {
+          ...armazenado,
+          integracaoFreteOuterRef: ref,
+          externalOptionId: null,
+          externalOptionData: null,
+        };
+        const r = mesclarFreteLi(bloco, m, { congelado: true, estadoPedido: ESTADO_PEDIDO.pago });
+        expect(r?.bloco.externalOptionData ?? null, ref).toBeNull();
+        expect(r?.bloco.externalOptionId ?? null, ref).toBeNull();
+        expect(r?.campos ?? [], ref).not.toContain('externalOptionData');
+      }
+    });
+
+    it('NEAR-MISS: frozen, NO routed target (the conta has no Loja Integrada int_frete) ⇒ nothing to refill beside', () => {
+      const semRota = mapearFreteLi({
+        pedido: pedidoPago,
+        modalidadeConta: null,
+        roteamento: {
+          integracaoFreteOuterRef: null,
+          externalOptionId: null,
+          aviso: null,
+          deliberado: false,
+          dispensaEndereco: false,
+        },
+        horarioDeCorteConta: null,
+        dataAprovacaoUs: null,
+        enderecoFiscalOuterRef: 'documents/clientes/c1/enderecos/e1',
+      })!;
+      expect(semRota.base.externalOptionData).toEqual(PAC);
+      const r = mesclarFreteLi({ ...armazenado, externalOptionData: null }, semRota, {
+        congelado: true,
+        estadoPedido: ESTADO_PEDIDO.pago,
+      });
+      expect(r?.bloco.externalOptionData ?? null).toBeNull();
     });
 
     it('NEAR-MISS: the refill is externalOptionData’s alone — a frozen `null` valorCobrado or dataPrevisaoEntrega stays null', () => {
@@ -912,7 +963,7 @@ describe('⚠️ an order with NO endereço: its freight amount, never a carrier
     });
     expect(r?.bloco).toEqual(freteDeCriacaoLi(mapear(ENDERECO), ESTADO_PEDIDO.pago));
     // FROZEN: the refs fill outside the freeze, and the EMPTY raw method is
-    // refilled too — an import left it empty, never an operator.
+    // refilled too — beside the very route this merge fills.
     const f = mesclarFreteLi(vazio, mapear(ENDERECO), {
       congelado: true,
       estadoPedido: ESTADO_PEDIDO.pago,

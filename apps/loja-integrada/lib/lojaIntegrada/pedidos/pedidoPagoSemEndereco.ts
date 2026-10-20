@@ -8,19 +8,25 @@
  *
  * ## Who is refused ({@link pedidoPagoSemEnderecoLi}, PURE)
  *
- * All four hold:
+ * All five hold:
  *  - **paid**: the order's codigo is one the label step's paid re-check accepts
  *    (`CODIGOS_LI_PAGO`, exact). A dispute, a cancellation request, an awaiting
  *    payment or a reversal is not: those import as before (the freight amount,
- *    no carrier route — `freteMapeamento.ts`);
+ *    no carrier route — `freteMapeamento.ts`). A dispute's estado is `pago`, but
+ *    its codigo is contested, which the label step refuses on its own; refusing
+ *    its import as well would hold back the contestado aviso the dispute raises;
+ *  - **a shipment**: the order carries one (`envios[0]`). Without one there is
+ *    no freight block, so nothing a label could be bought for;
  *  - **no usable address** ({@link enderecoEntregaUtilizavelLi}): the delivery
- *    block, read by the SAME endereço builder the import stores an endereço
- *    with (`enderecoDoPedidoLi` → `buildEnderecoForcado`), yields a CEP and a
- *    street. Absent, empty, no CEP the builder can read (`sem-cep`), or a
- *    street it had to fill with its own placeholder
- *    (`ENDERECO_FALLBACKS.logradouro`) is no address: a label to a CEP with no
- *    street is a label to an unknown address. Nothing else is asked of it —
- *    no número, bairro or cidade stops a label;
+ *    block yields NO endereço through the SAME builder step 7 stores one with
+ *    (`enderecoDoPedidoLi` → `buildEnderecoForcado`): absent, empty, or no CEP
+ *    the builder can read (`sem-cep`). Exactly step 7's criterion, so one order
+ *    meets the same rule whichever of its observations arrives first: a CEP
+ *    with no street is an endereço there (the builder fills its placeholder,
+ *    and for an unreadable UF step 7's CEP lookup may fill the street too), so
+ *    it is one here — the unpaid observation would have stored it and given it
+ *    a carrier route, and the paid one that follows passes as "the pedido
+ *    stores an endereço". Nothing else is asked of the block;
  *  - **not a pickup**: the routing did not send the order to an active
  *    `retiradaNaLoja` target (`RoteamentoFreteLi.dispensaEndereco`, read from
  *    the target DOCUMENT's tipo) — a pickup ships nothing, imports normally and
@@ -36,14 +42,19 @@
  * cliente, and no endereço is stored) is not this rule's: it imports without a
  * route, plus its incidente, as before.
  *
- * ## When the import refuses (`importarPedido.ts`, step 6b)
+ * ## When the import refuses (`importarPedido.ts`, step 6b, and again per batch attempt)
  *
  * After the freight routing — the pickup verdict needs the target read — and
- * BEFORE the cliente and the endereço (step 7), the batch and the avisos. So
- * the only write a refused attempt leaves is step 20's `mapa` registration of
- * the shipping method (idempotent, about the conta's configuration, and the
- * very row an operator maps to a pickup), never a cliente, an endereço, a
- * pedido, a pagamento, an incidente or an aviso.
+ * BEFORE the cliente and the endereço (step 7), the batch and the order's
+ * avisos. So a refused attempt leaves only what step 6 writes about the
+ * conta's configuration: the `mapa` registration of the shipping method
+ * (idempotent, and the very row an operator maps to a pickup) and the freight
+ * aviso its routing decided — never a cliente, an endereço, a pedido, a
+ * pagamento, an incidente or an order aviso. ⚠️ Root rule 7: the last clause
+ * reads the pedido snapshot, so the batch re-asks it of EVERY attempt's
+ * snapshot (`mapearPedido`): another writer clearing the stored endereço
+ * between the read and the batch makes the retry refuse, never land the paid
+ * update without an address.
  *
  * ## The error, and the attempts
  *
@@ -51,12 +62,18 @@
  * never about a conta — so the step-3 classifier answers `null` for it and the
  * run RETHROWS: the queue's attempts 0 and 1 back off, the last one persists
  * the row `failed`, and the hot sweep re-drives it hourly. NO second counter is
- * kept: the shared pipeline's own park at `MAX_TENTATIVAS` is the "attempts
- * exhausted" moment, and it calls `onRetriesExhausted`
- * (`@delfrance/data/admin/notifications`), which this channel binds to
- * {@link sinalizarPedidoPagoSemEnderecoLi} (`notificacoes/notificacao.ts`). A
- * deferred row graduates back to the hot lane with a fresh budget on a throw
+ * kept: the shared pipeline's own park of a thrown failure at `MAX_TENTATIVAS`
+ * is the "attempts exhausted" moment, and it calls `onRetriesExhausted`
+ * (`@delfrance/data/admin/notifications`), which this channel binds
+ * (`notificacoes/notificacao.ts`, `sinalizarEsgotamentoLi`) to
+ * {@link sinalizarPedidoPagoSemEnderecoLi}. A deferred row graduates back to
+ * the hot lane with a fresh budget on a throw
  * (`graduateDeferredTransientErrors`), so it reaches the same park.
+ *
+ * ⚠️ The runtime logs every rethrow (`onTaskDispatched`'s "Unhandled error",
+ * which inspects the error's enumerable fields), so the error's PUBLIC fields
+ * are ids and the clock only; the store name the aviso needs sits in a private
+ * field behind a getter, which no inspection prints.
  *
  * ## The loud signal ({@link sinalizarPedidoPagoSemEnderecoLi})
  *
@@ -66,9 +83,15 @@
  * failed. Then the aviso, clocked by the order's stamp as the exhausted run
  * read it, so the import that later finds the address (a newer stamp) resolves
  * it and a late older exhaustion cannot reopen a row a newer import resolved.
+ *
+ * Residue, accepted: the signal narrows on the error of the run that PARKED.
+ * Address refusals followed by a transient failure on that last run (a 429, a
+ * 5xx, a Firestore deadline) park the row with that transient's error: the
+ * channel's generic ERROR line for a parked notification names the order, but
+ * no aviso is raised — nothing records that the earlier runs were refusals.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { CODIGOS_LI_PAGO, ENDERECO_FALLBACKS } from '@delfrance/schemas';
+import { CODIGOS_LI_PAGO } from '@delfrance/schemas';
 
 import { avisarPedidoPagoSemEnderecoLi, type PedidoDoAvisoLi } from './avisosPedidoLi';
 import { enderecoDoPedidoLi, type EnderecoEntregaLi } from './clienteMapeamento';
@@ -81,15 +104,13 @@ const ROTULO_LOG = '[loja-integrada/importacao]';
 /* -------------------------------------------------------------------------- */
 
 /**
- * A delivery block a label can ship to: a CEP and a street, as the endereço
- * builder reads them (module header).
+ * A delivery block step 7 would store an endereço from: a CEP the endereço
+ * builder reads (module header).
  */
 export function enderecoEntregaUtilizavelLi(
   endereco: EnderecoEntregaLi | null | undefined,
 ): boolean {
-  const outcome = enderecoDoPedidoLi(endereco);
-  if (outcome.kind === 'sem-cep') return false;
-  return outcome.fields.logradouro !== ENDERECO_FALLBACKS.logradouro;
+  return enderecoDoPedidoLi(endereco).kind !== 'sem-cep';
 }
 
 /** The stored pedido fields the rule reads — raw, as the snapshot holds them. */
@@ -113,9 +134,11 @@ export interface EntradaPedidoPagoSemEnderecoLi {
   readonly codigo: string;
   /** The detail's `endereco_entrega`. */
   readonly enderecoEntrega: EnderecoEntregaLi | null | undefined;
+  /** The order carries a shipment (`envios[0]`). */
+  readonly temEnvio: boolean;
   /** The routing went to an active pickup target (`RoteamentoFreteLi.dispensaEndereco`). */
   readonly dispensaEndereco: boolean;
-  /** The pedido snapshot the import read (step 3), raw; `null` when there is none. */
+  /** The pedido snapshot the decision reads, raw; `null` when there is none. */
   readonly armazenado: PedidoArmazenadoEnderecoLi | null;
 }
 
@@ -123,6 +146,7 @@ export interface EntradaPedidoPagoSemEnderecoLi {
 export function pedidoPagoSemEnderecoLi(entrada: EntradaPedidoPagoSemEnderecoLi): boolean {
   return (
     CODIGOS_LI_PAGO.has(entrada.codigo) &&
+    entrada.temEnvio &&
     !entrada.dispensaEndereco &&
     !enderecoEntregaUtilizavelLi(entrada.enderecoEntrega) &&
     !armazenaEnderecoLi(entrada.armazenado)
@@ -136,12 +160,16 @@ export function pedidoPagoSemEnderecoLi(entrada: EntradaPedidoPagoSemEnderecoLi)
 /**
  * A paid order without a usable delivery address (module header): the task
  * rethrows it — the step-3 classifier answers `null` — and the queue and the
- * sweep retry. It carries the order as its avisos name it, so the exhaustion
- * signal needs no read; its MESSAGE names ids only (it is the parked row's
- * `erro`), never the store name.
+ * sweep retry. Its public fields and its MESSAGE (the parked row's `erro`) name
+ * ids only; the order as its avisos name it — the store name included — is
+ * {@link pedido}, a getter over a private field, so the runtime's log of a
+ * rethrow never prints it (module header).
  */
 export class LiPedidoPagoSemEnderecoError extends Error {
-  readonly pedido: PedidoDoAvisoLi;
+  readonly integracaoId: string;
+  readonly pedidoId: string;
+  readonly numero: string;
+  readonly #pedido: PedidoDoAvisoLi;
 
   constructor(pedido: PedidoDoAvisoLi) {
     super(
@@ -149,7 +177,15 @@ export class LiPedidoPagoSemEnderecoError extends Error {
         'sem endereço de entrega utilizável; a tarefa tenta de novo.',
     );
     this.name = 'LiPedidoPagoSemEnderecoError';
-    this.pedido = pedido;
+    this.integracaoId = pedido.integracaoId;
+    this.pedidoId = pedido.pedidoId;
+    this.numero = pedido.numero;
+    this.#pedido = pedido;
+  }
+
+  /** The order as its avisos name it: what the exhaustion signal needs, with no read. */
+  get pedido(): PedidoDoAvisoLi {
+    return this.#pedido;
   }
 }
 

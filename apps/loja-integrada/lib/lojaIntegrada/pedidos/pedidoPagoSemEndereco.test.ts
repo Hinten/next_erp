@@ -5,6 +5,8 @@
  * pipeline's exhaustion hook runs — an ERROR line with ids only, then the open
  * aviso — against `testing/fakeDb.ts` and the real `escreverAviso`.
  */
+import { format, inspect } from 'node:util';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CANAL_AVISO,
@@ -44,6 +46,7 @@ function decidir(over: Partial<Parameters<typeof pedidoPagoSemEnderecoLi>[0]> = 
   return pedidoPagoSemEnderecoLi({
     codigo: PAGO,
     enderecoEntrega: null,
+    temEnvio: true,
     dispensaEndereco: false,
     armazenado: null,
     ...over,
@@ -58,7 +61,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('enderecoEntregaUtilizavelLi: a CEP AND a street, read by the endereço builder', () => {
+describe('enderecoEntregaUtilizavelLi: a CEP the endereço builder reads — exactly when step 7 stores an endereço', () => {
   it('EQUAL: the fixture block, a punctuated CEP, a one-letter street the builder completes', () => {
     expect(enderecoEntregaUtilizavelLi(endereco())).toBe(true);
     expect(enderecoEntregaUtilizavelLi(endereco({ cep: '01310100' }))).toBe(true);
@@ -71,18 +74,21 @@ describe('enderecoEntregaUtilizavelLi: a CEP AND a street, read by the endereço
     ).toBe(true);
   });
 
-  it('NEAR-MISS: absent, empty, no usable CEP, or no street ⇒ not usable', () => {
+  it('⚠️ EQUAL: a CEP with NO street is usable too — the builder fills its placeholder and step 7 stores that endereço, so a CEP-only order is treated alike whichever observation arrives first', () => {
+    for (const rua of [null, '', '   ', 'NAO INFORMADO']) {
+      expect(enderecoEntregaUtilizavelLi(endereco({ endereco: rua })), String(rua)).toBe(true);
+    }
+    // An UF the builder cannot read is still an endereço step 7 stores (after its CEP lookup).
+    expect(enderecoEntregaUtilizavelLi(endereco({ endereco: null, estado: 'Zz' }))).toBe(true);
+  });
+
+  it('NEAR-MISS: absent, empty, or no CEP the builder can read ⇒ not usable', () => {
     expect(enderecoEntregaUtilizavelLi(null)).toBe(false);
     expect(enderecoEntregaUtilizavelLi(undefined)).toBe(false);
     expect(enderecoEntregaUtilizavelLi({} as EnderecoEntregaLi)).toBe(false);
     for (const cep of [null, '', '   ', '0131-010', 'sem cep']) {
       expect(enderecoEntregaUtilizavelLi(endereco({ cep })), String(cep)).toBe(false);
     }
-    for (const rua of [null, '', '   ']) {
-      expect(enderecoEntregaUtilizavelLi(endereco({ endereco: rua })), String(rua)).toBe(false);
-    }
-    // The builder's own placeholder is no street either.
-    expect(enderecoEntregaUtilizavelLi(endereco({ endereco: 'NAO INFORMADO' }))).toBe(false);
   });
 });
 
@@ -112,9 +118,11 @@ describe('pedidoPagoSemEnderecoLi: who is refused', () => {
     }
   });
 
-  it('NEAR-MISS: a usable address, a PICKUP route, or an endereço the pedido already stores ⇒ not refused', () => {
+  it('NEAR-MISS: a usable address, a PICKUP route, NO shipment, or an endereço the pedido already stores ⇒ not refused', () => {
     expect(decidir({ enderecoEntrega: endereco() })).toBe(false);
     expect(decidir({ dispensaEndereco: true })).toBe(false);
+    // No shipment: no freight block, so nothing a label could be bought for.
+    expect(decidir({ temEnvio: false })).toBe(false);
     expect(
       decidir({ armazenado: { enderecoFiscalOuterRef: 'documents/clientes/c1/enderecos/e1' } }),
     ).toBe(false);
@@ -134,9 +142,21 @@ describe('LiPedidoPagoSemEnderecoError', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe('LiPedidoPagoSemEnderecoError');
     expect(err.pedido).toEqual(doAviso(1_234));
+    expect(err).toMatchObject({ integracaoId: CONTA, pedidoId: 'pedido-1', numero: '9001' });
     expect(err.message).toContain(CONTA);
     expect(err.message).toContain('9001');
     expect(err.message).not.toContain(LOJA);
+  });
+
+  it('⚠️ the store name never reaches a log: the runtime’s `Unhandled error` line inspects the error, and the name is no enumerable field of it', () => {
+    const err = new LiPedidoPagoSemEnderecoError(doAviso());
+    // What `onTaskDispatched` logs for a rethrow on the queue's attempts 0 and 1.
+    expect(format('Unhandled error', err)).not.toContain(LOJA);
+    expect(inspect(err, { depth: 10 })).not.toContain(LOJA);
+    expect(JSON.stringify(err)).not.toContain(LOJA);
+    expect(Object.keys(err)).not.toContain('pedido');
+    // The ids still are, so the line names the order.
+    expect(format('Unhandled error', err)).toContain('pedido-1');
   });
 });
 

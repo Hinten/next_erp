@@ -860,15 +860,45 @@ describe('the full disposition matrix', () => {
       });
     });
 
-    it('NEAR-MISS: another transient error parked at the same cap — no line, no aviso', async () => {
+    it('NEAR-MISS: another transient error parked at the same cap — ONE generic ERROR line (ids and the class only), no aviso', async () => {
       const db = new FakeDb();
       contaSaudavel(db);
       const erros: unknown[][] = [];
       const caminho = seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 1 });
       await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, throttle()));
       expect(db.ler(caminho)).toMatchObject({ status: 'parked' });
-      expect(erros).toEqual([]);
+      expect(erros).toHaveLength(1);
+      expect(String(erros[0]![0])).toContain('estacionada');
+      expect(erros[0]![1]).toEqual({
+        integracaoId: pedido().contaId,
+        numero: pedido().numero,
+        origem: pedido().origem,
+        classe: 'LiThrottleError',
+      });
       expect(db.ler(caminhoAviso)).toBeUndefined();
+    });
+
+    it('NEAR-MISS: below the cap a transient failure stays silent — the generic line is the PARK’s alone', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const caminho = seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 2 });
+      await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, throttle()));
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed' });
+      expect(erros).toEqual([]);
+    });
+
+    it('a RETURNED park at the cap (a deterministic refusal) is the row’s own record — no generic line', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 1 });
+      await reprocessarNotificacoesLi(
+        asDb(db),
+        {},
+        comErros(erros, new LiNotFoundError({ ...REQ, status: 404 })),
+      );
+      expect(erros).toEqual([]);
     });
 
     it('the DEFERRED lane graduates it back to the hot lane — fresh budget, nothing signalled', async () => {

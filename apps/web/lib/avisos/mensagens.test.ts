@@ -1098,9 +1098,9 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
   it('says the PAID order did not reach the ERP, why, that retrying stopped, and how it closes', () => {
     expect(mensagem.corpo({ loja: 'Conta A', pedido: '165' })).toBe(
       'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem um endereço de ' +
-        'entrega utilizável (CEP e logradouro) e por isso não entrou no ERP — nem o pedido, nem ' +
-        'a atualização dele: sem endereço não há como comprar a etiqueta. A importação tentou de ' +
-        'novo por algumas horas e parou. O aviso se encerra quando o pedido for importado.',
+        'entrega com CEP válido e por isso não entrou no ERP — nem o pedido, nem a atualização ' +
+        'dele: sem endereço não há como comprar a etiqueta. A importação tentou de novo por ' +
+        'algumas horas e parou. O aviso se encerra quando o pedido for importado.',
     );
   });
 
@@ -1124,13 +1124,14 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
     expect(mensagem.corpo(aviso.params)).toContain('O pedido 165 da loja Conta A está pago');
   });
 
-  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, and a pickup is mapped', () => {
+  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, and a fallback when the edit does not bring it back', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco);
     expect(mensagem.runbook).toBe(
-      'Preencha o endereço de entrega do pedido no painel da Loja Integrada: a alteração faz o ' +
-        'pedido voltar à importação. Se ele for de retirada na loja, mapeie antes a forma de ' +
-        'envio dele para retirada na loja na aba Mapeamento do Frete da conta e depois altere o ' +
-        'pedido no painel.',
+      'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
+        'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
+        'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
+        'e depois altere o pedido no painel. Se o aviso continuar aberto depois da alteração, ' +
+        'peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
     );
   });
 });

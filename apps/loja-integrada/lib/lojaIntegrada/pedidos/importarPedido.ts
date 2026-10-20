@@ -53,21 +53,28 @@
  *     endereço — or beside none; a pedido whose stored endereços step 7 cannot
  *     pair with its cliente counts as one without an endereço. A route already
  *     stored is never cleared; an empty one fills once an import finds the
- *     endereço. The registration and the aviso run either way.
+ *     endereço. The registration and the freight aviso
+ *     (`lojaIntegradaFreteNaoSuportado`, clocked by this routing read) run
+ *     HERE, on every attempt that routed — one refused at 6b, or one whose
+ *     batch fails later, included — because they are about the conta's
+ *     configuration, not this pedido.
  *  6b. **A PAID order with no usable delivery address** (owner decision,
- *     2026-10-19; `pedidoPagoSemEndereco.ts`): a paid codigo, a delivery block
- *     with no CEP or no street, no pickup route, and a pedido `S` that stores
- *     no endereço ⇒ {@link LiPedidoPagoSemEnderecoError}, BEFORE step 7. The
- *     step-3 classifier answers `null` for it, so the run rethrows and the
- *     queue's backoff, then the hot sweep, retry it — the platform may fill
- *     the address. The `mapa` registration of step 6 is the only write a
- *     refused attempt leaves. When the shared pipeline parks the row at its cap
- *     — its one "attempts exhausted" moment, no counter of ours — its
- *     `onRetriesExhausted` signal logs an ERROR line and raises the open
- *     `lojaIntegradaPedidoPagoSemEndereco` aviso, clocked by the order's
- *     stamp; step 11 of any later import that gets past this check resolves
- *     it. An unpaid order, a pickup, or a pedido that already stores an
- *     endereço imports as before.
+ *     2026-10-19; `pedidoPagoSemEndereco.ts`): a paid codigo, a shipment, a
+ *     delivery block with no CEP the endereço builder reads (exactly when step
+ *     7 would store no endereço), no pickup route, and a pedido `S` that
+ *     stores no endereço ⇒ {@link LiPedidoPagoSemEnderecoError}, BEFORE step
+ *     7. The step-3 classifier answers `null` for it, so the run rethrows and
+ *     the queue's backoff, then the hot sweep, retry it — the platform may fill
+ *     the address. Step 6's registration and freight aviso are the only writes
+ *     a refused attempt leaves. ⚠️ Rule 7: the last clause reads a snapshot, so
+ *     the batch asks it again of EVERY attempt's (`mapearPedido`): an endereço
+ *     another writer cleared since `S` refuses there, with no write. When the
+ *     shared pipeline parks the row at its cap — its signal for a thrown
+ *     failure parked, no counter of ours — `onRetriesExhausted` logs an ERROR
+ *     line and raises the open `lojaIntegradaPedidoPagoSemEndereco` aviso,
+ *     clocked by the order's stamp; step 11 of any later import that gets past
+ *     this check resolves it. An unpaid order, a pickup, an order with no
+ *     shipment, or a pedido that already stores an endereço imports as before.
  *  7. **The cliente and the endereço**, each only while `S` holds none: the
  *     cliente step while `S` has no cliente, the endereço step while it has no
  *     endereço and a readable cliente is known (stored, or just resolved — an
@@ -97,9 +104,10 @@
  *     parsed before the batch, each under its own precondition; a lost one
  *     aborts the whole batch, and the retry re-reads `S′` and every pagamento
  *     and re-derives everything (at most 3 attempts). Steps 5–7 are not redone.
- *  11. **The incidentes and the avisos** (`incidentesPedidoLi.ts`,
- *     `avisosPedidoLi.ts`), on `importado` and `sem-mudanca` alike — never on
- *     `obsoleto` — so a retry after a crash between 10 and 11 still writes them.
+ *  11. **The incidentes and the order's avisos** (`incidentesPedidoLi.ts`,
+ *     `avisosPedidoLi.ts`; the freight aviso ran at step 6), on `importado` and
+ *     `sem-mudanca` alike — never on `obsoleto` — so a retry after a crash
+ *     between 10 and 11 still writes them.
  *     The paid-without-address row resolves here on every such import.
  *     ⚠️ **A reversal on a pedido whose label was bought** (owner decision A7,
  *     2026-10-19): when the order's codigo is one of the four reversal rungs
@@ -116,10 +124,10 @@
  *     import; the label step's paid re-check (master plan step 15) is the
  *     guard on that side, refusing a label for an order that is not paid.
  *
- * Steps 6 and 7 may write (the `mapa` row, the cliente, the endereço) before a
- * refusal at step 8 — step 6 alone before the one at 6b; each of those writes
- * is idempotent and safe to repeat, and no pagamento is ever written without
- * its pedido.
+ * Steps 6 and 7 may write (the `mapa` row and the freight aviso, the cliente,
+ * the endereço) before a refusal at step 8 — step 6 alone before the one at
+ * 6b; each of those writes is idempotent (the aviso clocked) and safe to
+ * repeat, and no pagamento is ever written without its pedido.
  *
  * ## Units
  *
@@ -774,18 +782,33 @@ export async function importarPedidoLi(
     resolucoes.set(referencia.ensureUniqueId, await resolvedor.resolver(referencia));
   }
 
-  // 6. The freight.
+  // 6. The freight — and its aviso, about the conta's configuration and clocked by this
+  // routing read, so it runs on every attempt that routed: a refused one (6b) included.
   const frete = await resolverFreteLi(db, contexto, pedido, deps);
+  if (frete !== null && frete.roteamento.aviso !== null) {
+    await sincronizarAvisoDeFreteLi(
+      db,
+      {
+        integracaoId,
+        lojaNome: doAviso.lojaNome,
+        aviso: frete.roteamento.aviso,
+        relogioUs: frete.relogioUs,
+      },
+      depsDoAviso,
+    );
+  }
 
-  // 6b. A PAID order with no usable delivery address: refused, and retried (A4).
-  if (
+  // 6b. A PAID order with no usable delivery address: refused, and retried (A4). Asked
+  // of S here, and again of every batch attempt's snapshot (`mapearPedido`, rule 7).
+  const recusarSemEndereco = (arm: PedidoArmazenadoLi | null): boolean =>
     pedidoPagoSemEnderecoLi({
       codigo: pedido.situacao.codigo,
       enderecoEntrega: pedido.endereco_entrega,
+      temEnvio: pedido.envios[0] !== undefined,
       dispensaEndereco: frete?.roteamento.dispensaEndereco ?? false,
-      armazenado,
-    })
-  ) {
+      armazenado: arm,
+    });
+  if (recusarSemEndereco(armazenado)) {
     deps.logger?.warn(`${ROTULO_LOG} pedido pago sem endereço de entrega; tenta de novo`, log);
     throw new LiPedidoPagoSemEnderecoError(doAviso);
   }
@@ -816,6 +839,11 @@ export async function importarPedidoLi(
    * snapshot (`parClienteEnderecoLi`) — never against `S` alone.
    */
   const mapearPedido = (arm: PedidoArmazenadoLi | null): PedidoMapeadoLi => {
+    // 6b against THIS snapshot: an endereço another writer cleared since S refuses the
+    // paid update (the batch aborts with no write) — unless the snapshot is newer than
+    // the order, which the batch answers `obsoleto` for.
+    const maisNovo = arm !== null && watermarkArmazenadoMaisNovoLi(arm, watermarkUs) !== null;
+    if (!maisNovo && recusarSemEndereco(arm)) throw new LiPedidoPagoSemEnderecoError(doAviso);
     const par = parClienteEnderecoLi(arm, partes);
     const blocoFrete =
       frete === null
@@ -944,18 +972,6 @@ export async function importarPedidoLi(
     },
     depsDoAviso,
   );
-  if (frete !== null && frete.roteamento.aviso !== null) {
-    await sincronizarAvisoDeFreteLi(
-      db,
-      {
-        integracaoId,
-        lojaNome: doAviso.lojaNome,
-        aviso: frete.roteamento.aviso,
-        relogioUs: frete.relogioUs,
-      },
-      depsDoAviso,
-    );
-  }
 
   if (decisao.situacaoDesconhecida !== null) return { kind: 'situacao-desconhecida' };
   return { kind: gravacao.tipo === 'gravado' ? 'importado' : 'sem-mudanca' };

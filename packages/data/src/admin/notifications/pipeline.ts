@@ -19,8 +19,9 @@
  * 3. SWEEP      `reprocess` runs inside `onSchedule`. It re-drives every
  *               `failed` doc older than the window — an outage may have cleared
  *               — deleting on resolution and parking at the retry cap. A THROW
- *               parked there is the pipeline's one "attempts exhausted" moment,
- *               which a channel can hear (`onRetriesExhausted`).
+ *               parked there is the one park a channel can hear
+ *               (`onRetriesExhausted`); a RETURNED `fail` or `defer` parked at
+ *               its cap is silent (config docblock).
  * 3b. SLOW LANE `reprocessDeferred`, from the SAME scheduled function, does the
  *               same over `deferred` docs on a DAILY window and a far longer cap
  *               (#808). A `defer` is not a failure: it says a precondition
@@ -105,14 +106,21 @@ export interface NotificationPipelineConfig<TPayload, TOutcome> {
    */
   graduateDeferredTransientErrors?: boolean;
   /**
-   * The pipeline's ONE "attempts exhausted" signal: called when a THROWN
-   * `process` failure has spent the last retry of the lane the row is in and
-   * the sweep has just PARKED it (`MAX_TENTATIVAS` in the hot lane,
+   * The signal for ONE kind of exhausted retry — a THROWN `process` failure:
+   * called when such a failure has spent the last retry of the lane the row is
+   * in and the sweep has just PARKED it (`MAX_TENTATIVAS` in the hot lane,
    * `MAX_TENTATIVAS_DEFERRED` in a deferred lane that does not graduate). A
-   * channel that must fail LOUDLY once retrying stops — an aviso, an ERROR line
-   * — hooks here instead of keeping a second attempt counter, which would drift
-   * from this one. Narrow `err` on the channel's own class (root rule 6): the
-   * signal fires for every thrown failure that parks.
+   * channel that must fail LOUDLY when a retried failure stops — an aviso, an
+   * ERROR line — hooks here instead of keeping a second attempt counter, which
+   * would drift from this one. Narrow `err` on the channel's own class (root
+   * rule 6): the signal fires for every thrown failure that parks, and for
+   * nothing else.
+   *
+   * ⚠️ It does NOT cover every exhausted retry: a RETURNED `fail` parked at
+   * `MAX_TENTATIVAS`, and a RETURNED `defer` parked at
+   * `MAX_TENTATIVAS_DEFERRED`, park silently — the outcome is the channel's own
+   * verdict and its row's `erro` the record. A channel that needs those loud
+   * too must say so from its `process`/`toDisposition`, not from here.
    *
    * Exactly when, and only then:
    *  - after the park mark LANDED: a mark that fails leaves the row unparked,
@@ -433,7 +441,7 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
           if (!(markErr instanceof Error)) throw markErr;
         }
         errors.push({ docId: d.id, message: err.message });
-        // The "attempts exhausted" signal (config docblock): a THROW from
+        // The thrown-failure park signal (config docblock): a THROW from
         // `process` that this run just PARKED — nothing else.
         if (
           marcado &&
