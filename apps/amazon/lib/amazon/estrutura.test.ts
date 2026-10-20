@@ -679,6 +679,7 @@ describe('lib/amazon layout', () => {
         'testing/fakeDb.ts',
         'testing/fakeOauthState.ts',
         'testing/fixtures.ts',
+        'testing/guardaDaLaneDeTarefas.ts',
         'testing/sandboxBr.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
@@ -766,6 +767,87 @@ describe('lib/amazon layout', () => {
     const config = readFileSync(join(RAIZ_APP, 'vitest.config.ts'), 'utf8');
     expect(config).toContain("'{app,lib,functions}/**/*.test.ts'");
     expect(config).toContain("'proxy.test.ts'");
+  });
+
+  // PR 3-e. The two configs PARTITION the app's tests by suffix, and a drift is
+  // silent both ways: an emulator suite the offline config collects skips for
+  // lack of its emulator host and reports green in `CI test`, and one neither
+  // config collects runs nowhere. The emulator config runs only in ci-amazon.yml.
+  // An app-wide directory walk (like the getFunctions( scan): CI headroom, not a budget.
+  it(
+    'the emulator config collects exactly the two emulator suffixes, and the offline config excludes them',
+    { timeout: 30_000 },
+    () => {
+      const offline = readFileSync(join(RAIZ_APP, 'vitest.config.ts'), 'utf8');
+      const emulador = readFileSync(join(RAIZ_APP, 'vitest.tasks.config.ts'), 'utf8');
+      const includes = [...emulador.matchAll(/\binclude:\s*\[([^\]]*)\]/g)];
+      expect(includes).toHaveLength(1);
+      // The quoted entries, whole: a glob holds commas inside its braces.
+      const globs = [...(includes[0]?.[1] ?? '').matchAll(/'([^']*)'/g)].map((m) => m[1]);
+      expect(globs).toEqual([
+        '{app,lib,functions}/**/*.{tasks,firestore}.test.ts',
+        '*.{tasks,firestore}.test.ts',
+      ]);
+      expect(emulador).toContain("setupFiles: ['./vitest.tasks.setup.ts']");
+      expect(emulador).toContain('fileParallelism: false');
+      // Unanchored on purpose (the config says why): a root-level suite too.
+      expect(offline).toContain("'**/*.firestore.test.ts'");
+      expect(offline).toContain("'**/*.tasks.test.ts'");
+      const pacote = JSON.parse(readFileSync(join(RAIZ_APP, 'package.json'), 'utf8')) as {
+        scripts: Record<string, string>;
+      };
+      expect(pacote.scripts['test:tasks']).toBe('vitest run --config vitest.tasks.config.ts');
+      // Every emulator suite on disk sits where that include collects it — and
+      // the scan found the three this PR adds (anti-vacuity).
+      const suites = arquivosTs(RAIZ_APP)
+        .map(relApp)
+        .filter((p) => /\.(tasks|firestore)\.test\.ts$/.test(p));
+      expect(suites).toEqual(
+        expect.arrayContaining([
+          'app/api/webhooks/amazon/route.tasks.test.ts',
+          'functions/src/filaLeitura.tasks.test.ts',
+          'lib/amazon/notificacoes/notificacao.firestore.test.ts',
+        ]),
+      );
+      for (const suite of suites) {
+        expect(/^(?:app|lib|functions)\//.test(suite) || !suite.includes('/'), suite).toBe(true);
+      }
+    },
+  );
+
+  // PR 3-e, D11's second layer. The setup only ever runs inside the lane, so a
+  // refusal deleted from it fails nothing anywhere: pin that it CALLS both
+  // (their behaviour is `testing/guardaDaLaneDeTarefas.test.ts`'s) and throws
+  // on each answer, outside any comment.
+  it('the emulator setup runs both D11 refusals and throws on them', () => {
+    const setup = semComentarios(readFileSync(join(RAIZ_APP, 'vitest.tasks.setup.ts'), 'utf8'));
+    // The printer re-quotes string literals, so the module specifier is matched either way.
+    expect(setup).toMatch(/from ['"]\.\/lib\/amazon\/testing\/guardaDaLaneDeTarefas['"]/);
+    expect(setup).toMatch(
+      /if \(chamadasLigadasNoAmbiente\(process\.env\)\) \{\s*throw new Error\(/,
+    );
+    expect(setup).toMatch(
+      /const (\w+) = envsDoArtefatoQueNomeiamAChave\(\);\s*if \(\1\.length > 0\) \{\s*throw new Error\(/,
+    );
+    // …and the fetch kill-switch replaces the global fetch, in this process.
+    expect(setup).toMatch(/globalThis\.fetch = \(async \(/);
+  });
+
+  // PR 3-e. The same argument for the two fail-loud gates: the lane always has
+  // both emulator hosts, so neither gate ever fires there, and deleting one
+  // fails nothing anywhere — while it is all that keeps a lane missing an
+  // emulator from skipping every suite and exiting 0 on a `required` row.
+  it('the emulator setup throws without either emulator host under CI or REQUIRE_EMULATOR', () => {
+    const setup = semComentarios(readFileSync(join(RAIZ_APP, 'vitest.tasks.setup.ts'), 'utf8'));
+    expect(setup).toMatch(
+      /export const EMULATED = Boolean\(process\.env\.FIRESTORE_EMULATOR_HOST\);/,
+    );
+    expect(setup).toMatch(
+      /if \(!EMULATED && \(process\.env\.CI \|\| process\.env\.REQUIRE_EMULATOR\)\) \{\s*throw new Error\(/,
+    );
+    expect(setup).toMatch(
+      /if \(!process\.env\.CLOUD_TASKS_EMULATOR_HOST && \(process\.env\.CI \|\| process\.env\.REQUIRE_EMULATOR\)\) \{\s*throw new Error\(/,
+    );
   });
 });
 

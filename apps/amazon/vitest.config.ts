@@ -32,9 +32,9 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       '**/.next/**',
-      // Same trap, and it is listed BEFORE any such suite exists: a
-      // `*.firestore.test.ts` landing later would otherwise be collected here
-      // and skip green.
+      // Same trap for the Firestore-only emulator suites: a
+      // `*.firestore.test.ts` would otherwise be collected here and skip green.
+      // Both suffixes run in `vitest.tasks.config.ts` (ci-amazon.yml) instead.
       '**/*.firestore.test.ts',
       '**/*.tasks.test.ts',
     ],
