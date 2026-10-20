@@ -1719,6 +1719,30 @@ describe('⚠️ a reversal landing on a pedido whose label was BOUGHT: the appr
     });
   });
 
+  it('rule 7: a label bought BETWEEN the read and the batch is seen — the verdict is the WINNING attempt’s snapshot, never S', async () => {
+    const db = await pagoComEtiqueta(null);
+    const c = revertido('pedido_cancelado', 8);
+    // A line that makes the import call Loja Integrada after it read the pedido.
+    c.detalhe = {
+      ...(c.detalhe as DocData),
+      itens: [
+        { ...linhaPadrao(), produto: '/api/v1/produto/321/?id_externo=1', produto_pai: null },
+      ],
+    };
+    let comprou = false;
+    c.antesDoProduto = async () => {
+      if (comprou) return;
+      comprou = true;
+      await refPedido(db).update({
+        freteInicial: { ...frete(db), printLabelId: 'etiqueta-tardia' },
+      });
+    };
+    await importar(db, c);
+    expect(comprou).toBe(true);
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    expect(aberto(db)).toBe(true);
+  });
+
   it('NEAR-MISS: a cancellation REQUEST (1019) on a labelled pedido is no reversal — no open aviso', async () => {
     const db = await pagoComEtiqueta();
     await importar(db, revertido('cancelamento_solicitado', 1019));
