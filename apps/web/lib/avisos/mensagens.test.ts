@@ -1095,14 +1095,17 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaReversaoComEtiqueta', () => {
 describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco];
 
-  it('says the PAID order did not reach the ERP, why (NO CEP at all — never an invalid one, which imports), that retrying stopped, and how it closes', () => {
+  it('says the PAID order did not reach the ERP, why (NO CEP at all — never an invalid one, which imports), that retrying stopped, and that it closes only once the pedido has its delivery endereço', () => {
     const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165' });
     expect(corpo).toBe(
       'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem CEP no ' +
         'endereço de entrega e por isso não entrou no ERP — nem o pedido, nem a atualização ' +
         'dele: sem endereço não há como comprar a etiqueta. A importação tentou de novo por ' +
-        'algumas horas e parou. O aviso se encerra quando o pedido for importado.',
+        'algumas horas e parou. O aviso se encerra quando o pedido estiver no ERP com o ' +
+        'endereço de entrega.',
     );
+    // Owner decision, 2026-10-20: an import alone no longer closes it (an invalid CEP keeps it open).
+    expect(corpo).not.toContain('quando o pedido for importado');
     // Owner decision, 2026-10-20: an invalid CEP is not refused, so the wording never blames one.
     expect(corpo).not.toContain('válido');
   });
@@ -1127,20 +1130,22 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
     expect(mensagem.corpo(aviso.params)).toContain('O pedido 165 da loja Conta A está pago');
   });
 
-  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, a closed aviso is CHECKED for an endereço (an unreadable CEP closes it too), and a fallback when the edit does not bring it back', () => {
+  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, the aviso stays OPEN until the pedido has its delivery endereço (owner decision, 2026-10-20), and while it stays open: check the CEP has 8 digits, then a developer', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco);
     expect(mensagem.runbook).toBe(
       'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
         'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
         'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
-        'e depois altere o pedido no painel. O aviso também se encerra quando o pedido entra com ' +
-        'um CEP que o ERP não consegue ler, e então ele entra sem endereço, sem o qual não há ' +
-        'como comprar a etiqueta. Por isso, quando o aviso se encerrar, confira no ERP se o ' +
-        'pedido ficou com o endereço de entrega (o de retirada na loja não precisa dele); se não ' +
-        'ficou, corrija o CEP no painel. Se o aviso continuar aberto depois da alteração, peça a ' +
-        'um desenvolvedor que confira a notificação estacionada desse pedido.',
+        'e depois altere o pedido no painel. O aviso fica aberto até o pedido ter o endereço de ' +
+        'entrega (o de retirada na loja não precisa dele). Se o aviso continuar aberto depois da ' +
+        'alteração, confira no painel se o CEP tem 8 dígitos; se tiver, peça a um desenvolvedor ' +
+        'que confira a notificação estacionada desse pedido.',
     );
-    // The aviso closing is NOT the sign that it worked: the runbook says what to check.
-    expect(mensagem.runbook).toContain('confira no ERP se o pedido ficou com o endereço');
+    // An unreadable CEP no longer closes the aviso, so the runbook no longer says it does.
+    expect(mensagem.runbook).not.toContain('não consegue ler');
+    expect(mensagem.runbook).not.toContain('quando o aviso se encerrar');
+    expect(mensagem.runbook).toContain(
+      'O aviso fica aberto até o pedido ter o endereço de entrega',
+    );
   });
 });
