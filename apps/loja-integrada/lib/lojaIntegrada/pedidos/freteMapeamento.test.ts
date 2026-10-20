@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import type { RegistroDoMapaLi } from '../frete/mapaFrete';
 import { dataLiParaMicros } from './dataLi';
 import {
+  CHAVES_FORMA_ENVIO_LI,
   HORARIO_DE_CORTE_PADRAO_LI,
   codRastreioLi,
   decidirMapaLi,
@@ -573,36 +574,44 @@ describe('the block', () => {
 });
 
 describe('the update merge: tracking outside the freeze, money inside it', () => {
-  const pedidoPago = liPedidoSchema.parse({
-    numero: 1,
-    situacao: { codigo: 'pedido_pago' },
-    data_modificacao: '2026-03-03T10:00:00',
-    valor_envio: '11.60',
-    envios: [
-      {
-        id: 555,
-        objeto: 'AB123456789BR',
-        prazo: 9,
-        valor: '11.60',
-        data_criacao: '2026-03-02T11:00:01',
-        forma_envio: PAC,
+  /** The paid order, shipped by `formaEnvio`. */
+  function pedidoPagoCom(formaEnvio: unknown): PedidoLi {
+    return liPedidoSchema.parse({
+      numero: 1,
+      situacao: { codigo: 'pedido_pago' },
+      data_modificacao: '2026-03-03T10:00:00',
+      valor_envio: '11.60',
+      envios: [
+        {
+          id: 555,
+          objeto: 'AB123456789BR',
+          prazo: 9,
+          valor: '11.60',
+          data_criacao: '2026-03-02T11:00:01',
+          forma_envio: formaEnvio,
+        },
+      ],
+    });
+  }
+  const pedidoPago = pedidoPagoCom(PAC);
+  /** The paid order's block, routed to an active Melhor Envio target. */
+  function mapearPagoCom(formaEnvio: unknown): FreteMapeadoLi {
+    return mapearFreteLi({
+      pedido: pedidoPagoCom(formaEnvio),
+      modalidadeConta: null,
+      roteamento: {
+        integracaoFreteOuterRef: 'documents/int_frete/me-1',
+        externalOptionId: '2',
+        aviso: null,
+        deliberado: false,
+        dispensaEndereco: false,
       },
-    ],
-  });
-  const m = mapearFreteLi({
-    pedido: pedidoPago,
-    modalidadeConta: null,
-    roteamento: {
-      integracaoFreteOuterRef: 'documents/int_frete/me-1',
-      externalOptionId: '2',
-      aviso: null,
-      deliberado: false,
-      dispensaEndereco: false,
-    },
-    horarioDeCorteConta: null,
-    dataAprovacaoUs: dataLiParaMicros('2026-03-03T09:00:00'),
-    enderecoFiscalOuterRef: 'documents/clientes/c1/enderecos/e1',
-  })!;
+      horarioDeCorteConta: null,
+      dataAprovacaoUs: dataLiParaMicros('2026-03-03T09:00:00'),
+      enderecoFiscalOuterRef: 'documents/clientes/c1/enderecos/e1',
+    })!;
+  }
+  const m = mapearPagoCom(PAC);
 
   /** A stored block from an unpaid first import, then edited by an operator. */
   const armazenado = {
@@ -806,6 +815,96 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
       expect(r?.bloco.dataPrevisaoEntrega ?? null).toBeNull();
       expect(r?.campos ?? []).not.toContain('valorCobrado');
       expect(r?.campos ?? []).not.toContain('dataPrevisaoEntrega');
+    });
+  });
+
+  describe('⚠️ a method REPLACED keeps the stored keys Loja Integrada does not own (the Melhor Envio agency)', () => {
+    // A Melhor Envio label purchase writes `externalOptionData.agency`, and the next
+    // purchase pre-fills its agency from it; the method around it is Loja Integrada's.
+    const SEDEX = { id: 141909, code: 'SEDEX', nome: 'Correios', tipo: 'SEDEX' };
+    const NAO_CONGELADO = { congelado: false, estadoPedido: ESTADO_PEDIDO.pago } as const;
+    /** The block a create stored, after a label purchase wrote its agency beside the method. */
+    const comAgencia = {
+      ...freteDeCriacaoLi(m, ESTADO_PEDIDO.pago),
+      externalOptionData: { ...PAC, agency: 42 },
+    };
+
+    it('the wire set is the shipping method’s declared fields', () => {
+      expect([...CHAVES_FORMA_ENVIO_LI].sort()).toEqual(['code', 'id', 'nome', 'tipo']);
+    });
+
+    it('EQUAL: NOT frozen, the method CHANGED beside a stored agency ⇒ the new method is written AND the agency kept', () => {
+      const r = mesclarFreteLi(comAgencia, mapearPagoCom(SEDEX), NAO_CONGELADO);
+      expect(r?.bloco.externalOptionData).toEqual({ ...SEDEX, agency: 42 });
+      expect(r?.campos).toContain('externalOptionData');
+    });
+
+    it('EQUAL: the step-7 loop beside a stored agency — the same method re-imported ⇒ no change at all', () => {
+      const postado = {
+        ...comAgencia,
+        estado: ESTADO_FRETE.postado,
+        // Firestore may return the map's keys in another order.
+        externalOptionData: { agency: 42, tipo: 'PAC', nome: 'Correios', code: 'PAC', id: 141909 },
+      };
+      expect(mesclarFreteLi(postado, m, NAO_CONGELADO)).toBeNull();
+    });
+
+    it('⚠️ NEAR-MISS: a stored key IN the wire set is the old method’s ⇒ replaced by the new value, or dropped when the new method lacks it', () => {
+      // `nome` stored otherwise ⇒ the new nome; `tipo` absent from the new method ⇒
+      // gone with the old one; an undeclared key the new method carries ⇒ its new value.
+      const antigo = {
+        ...comAgencia,
+        externalOptionData: { ...PAC, nome: 'Correios (antes)', extra: 'antes', agency: 42 },
+      };
+      const semTipo = { id: 141909, code: 'SEDEX', nome: 'Correios', extra: 'agora' };
+      const r = mesclarFreteLi(antigo, mapearPagoCom(semTipo), NAO_CONGELADO);
+      expect(r?.bloco.externalOptionData).toEqual({ ...semTipo, agency: 42 });
+    });
+
+    it('EQUAL: an operator’s own key beside the method survives a replace, its value untouched', () => {
+      const doOperador = { observacaoDoOperador: { texto: 'Conferir a agência', em: 7 } };
+      const armazenado = {
+        ...comAgencia,
+        externalOptionData: { ...PAC, ...doOperador },
+      };
+      const r = mesclarFreteLi(armazenado, mapearPagoCom(SEDEX), NAO_CONGELADO);
+      expect(r?.bloco.externalOptionData).toEqual({ ...SEDEX, ...doOperador });
+    });
+
+    it('NEAR-MISS: a stored method that is not a map (a text, a list) has no keys to keep ⇒ exactly the new method', () => {
+      for (const valor of ['Correios', [7]]) {
+        const r = mesclarFreteLi(
+          { ...comAgencia, externalOptionData: valor },
+          mapearPagoCom(SEDEX),
+          NAO_CONGELADO,
+        );
+        expect(r?.bloco.externalOptionData, JSON.stringify(valor)).toEqual(SEDEX);
+      }
+    });
+
+    it('a create, a seeded block and the empty refill have nothing stored to keep ⇒ exactly the raw method', () => {
+      const novo = mapearPagoCom(SEDEX);
+      expect(freteDeCriacaoLi(novo, ESTADO_PEDIDO.pago).externalOptionData).toEqual(SEDEX);
+      expect(mesclarFreteLi(undefined, novo, NAO_CONGELADO)?.bloco.externalOptionData).toEqual(
+        SEDEX,
+      );
+      const vazio = { ...comAgencia, externalOptionData: null };
+      for (const congelado of [false, true]) {
+        const r = mesclarFreteLi(vazio, novo, { congelado, estadoPedido: ESTADO_PEDIDO.pago });
+        expect(r?.bloco.externalOptionData, String(congelado)).toEqual(SEDEX);
+      }
+    });
+
+    it('NEAR-MISS: FROZEN, a stored method with an agency ⇒ kept whole, the new method not written', () => {
+      const r = mesclarFreteLi(comAgencia, mapearPagoCom(SEDEX), {
+        congelado: true,
+        estadoPedido: ESTADO_PEDIDO.pago,
+      });
+      expect(r?.bloco.externalOptionData ?? comAgencia.externalOptionData).toEqual({
+        ...PAC,
+        agency: 42,
+      });
+      expect(r?.campos ?? []).not.toContain('externalOptionData');
     });
   });
 });

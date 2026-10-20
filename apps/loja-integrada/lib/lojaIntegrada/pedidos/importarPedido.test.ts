@@ -1394,6 +1394,27 @@ describe('⚠️ an order without an endereço: its freight amount, never a carr
   });
 });
 
+describe('⚠️ a re-import that replaces the stored method keeps the keys Loja Integrada does not own', () => {
+  it('EQUAL: a label purchase’s agency beside the method survives a re-import that REPLACES the method (not frozen)', async () => {
+    const db = dbComAlvo();
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+    expect(frete(db)).toMatchObject(ROTA_ME);
+    // What a Melhor Envio label purchase leaves: the agency beside the method.
+    await refPedido(db).update({
+      freteInicial: { ...frete(db), externalOptionData: { ...FORMA_ENVIO_LI, agency: 42 } },
+    });
+
+    const outra = { ...FORMA_ENVIO_LI, nome: 'Gateway de teste (renomeado)' };
+    const c = cena({
+      cliente: COMPRADOR_COM_CPF,
+      data_modificacao: carimboLi(3),
+      envios: [{ ...envioPadrao(), forma_envio: outra }],
+    });
+    expect((await importar(db, c)).r).toEqual({ kind: 'importado' });
+    expect(frete(db).externalOptionData).toEqual({ ...outra, agency: 42 });
+  });
+});
+
 describe('⚠️ a PAID order without a usable delivery address retries, then fails LOUDLY (owner decision, 2026-10-19)', () => {
   const CAMINHO_AVISO_PAGO = `avisos/${chaveDoAvisoDoPedidoLi(
     TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
