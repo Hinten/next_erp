@@ -22,8 +22,8 @@ import { naoDocId, toOuterRef, toOuterRefOrNull, type OuterRef } from './shared/
  *
  * Since step 15 (#1825) it also holds the LABEL half of the route resolver: which target a pedido
  * still pointing at its conta's Loja Integrada `int_frete` doc is printed through, the pure guards
- * written for the routing route and the web's read-only preview to apply alike, and the one
- * reader of a Melhor Envio service id. See "The label route" below.
+ * written for the routing route and the web's read-only preview to apply alike, the one reader of
+ * an `int_frete` ref and the one reader of a Melhor Envio service id. See "The label route" below.
  *
  * Pure and total: no clock, no network, no Firestore, and no input throws — a malformed value
  * reads as `null` ("not a key", "not mapped"), never as an exception. The importer parks a task on
@@ -229,8 +229,9 @@ function tipoAlvoOuNull(tipo: unknown): TipoAlvoMapaFreteLi | null {
  *
  * The sequence, for one pedido:
  *
- *  1. {@link classificarDocDoFreteLi} on the doc the ref names: a target ⇒ already routed; the
- *     Loja Integrada doc ⇒ go on; anything else ⇒ `sem-rota-li`.
+ *  1. {@link idIntFreteDaRefLi} on the ref — one naming no `int_frete` doc ⇒ `sem-rota-li`, with
+ *     no read — then {@link classificarDocDoFreteLi} on the doc it names: a target ⇒ already
+ *     routed; the Loja Integrada doc ⇒ go on; anything else ⇒ `sem-rota-li`.
  *  2. {@link recusaDoDocLiParaRotaLi} on that doc, against the pedido's own conta.
  *  3. {@link recusaDoPedidoParaRotaLi} on the pedido.
  *  4. {@link planejarRotaEtiquetaLi} names the doc(s) to read; {@link concluirRotaEtiquetaLi}
@@ -551,8 +552,8 @@ export type PlanoRotaEtiquetaLi =
       readonly idServicoDaLinha: string | null;
       /**
        * `escolha` / `override` only: the stored `externalOptionId`, when the stored
-       * `integracaoFreteOuterRef` ALREADY names this target (the option belongs to its ref). Never
-       * true for a pedido still on its Loja Integrada doc.
+       * `integracaoFreteOuterRef` ALREADY names this target, as {@link idIntFreteDaRefLi} reads it
+       * (the option belongs to its ref). Never true for a pedido still on its Loja Integrada doc.
        */
       readonly idServicoArmazenado: string | null;
       /** The pedido carries a readable `enderecoFreteOuterReference`. */
@@ -564,12 +565,38 @@ function refIntFrete(id: string): OuterRef {
   return toOuterRef(`int_frete/${id}`);
 }
 
-/** The `int_frete` doc id a stored `integracaoTargetOuterRef` names, or `null` when it names none. */
-function alvoDoOverride(raw: unknown): string | null {
-  const ref = toOuterRefOrNull(raw);
-  const prefixo = 'documents/int_frete/';
-  if (ref === null || !ref.startsWith(prefixo)) return null;
-  const id = ref.slice(prefixo.length);
+/** The canonical form of a ref to a doc directly under the top-level `int_frete` collection. */
+const PREFIXO_REF_INT_FRETE = 'documents/int_frete/';
+
+/**
+ * The `int_frete` doc id a stored REF names, or `null` when it names none — the ONE reader of an
+ * `int_frete` ref on the label route. {@link planejarRotaEtiquetaLi} reads a stored override
+ * (`integracaoTargetOuterRef`), and the stored `integracaoFreteOuterRef` beside it, through it;
+ * the routing route and the web's read-only preview are to read the pedido's
+ * `integracaoFreteOuterRef` through it before any read. So the three can never disagree on which
+ * doc a ref names, and a ref naming none is never read at all. The inverse of the ref a route
+ * writes (`integracaoFreteOuterRef` in {@link ConclusaoRotaEtiquetaLi}).
+ *
+ * The ref is canonicalised by `toOuterRefOrNull` (its bare `int_frete/<id>` form and its
+ * `documents/` form are one ref), then it must name a doc DIRECTLY under the top-level
+ * `int_frete` collection, under an id a document can have ({@link naoDocId}). The id is returned
+ * verbatim: never trimmed, never case-folded.
+ *
+ * Equal: `'int_frete/abc'` ≡ `'documents/int_frete/abc'` ≡ `'/documents/int_frete/abc'` ≡
+ * `'documents/int_frete/abc/'` → `'abc'`. Distinct: `'int_frete/abcd'` and `'int_frete/ abc'` are
+ * other ids; `null` for another collection (`'integracao/abc'`, `'int_frete_x/abc'`), a nested doc
+ * (`'int_frete/abc/sub/x'`, `'clientes/c/int_frete/abc'`), an id of `.` or `..`, the bare
+ * collection (`'int_frete'`), `''` and a non-string (an object carrying a `path` included). ⚠️ A
+ * NAKED id (`'abc'`) is not a ref and names NO doc here, unlike a `mapa` row's `integracaoUid`
+ * ({@link idDoAlvoDoMapaLi}, a different field): no other reader of these ref fields resolves one
+ * — the label host's dereference canonicalises through the same `toOuterRefOrNull`, which refuses
+ * it — so naming a doc for it would let the route answer "already routed" for a pedido no label
+ * path can print. Never throws.
+ */
+export function idIntFreteDaRefLi(ref: unknown): string | null {
+  const canonica = toOuterRefOrNull(ref);
+  if (canonica === null || !canonica.startsWith(PREFIXO_REF_INT_FRETE)) return null;
+  const id = canonica.slice(PREFIXO_REF_INT_FRETE.length);
   return naoDocId(id) ? null : id;
 }
 
@@ -581,9 +608,10 @@ function alvoDoOverride(raw: unknown): string | null {
  *  1. **`escolha`** (the per-pedido picker) ⇒ read that target (`origem: 'escolha'`). An escolha
  *     that is not a usable doc id ⇒ `override-invalido`.
  *  2. **A stored override** — `integracaoTargetOuterRef` not `null` / absent ⇒ read the
- *     `int_frete` doc it names (`origem: 'override'`), bare or `documents/` form alike. A ref that
- *     names anything else (another collection, a sub-path, `''`) ⇒ `override-invalido`, and the
- *     mapa is NOT consulted: an operator's choice is never silently replaced.
+ *     `int_frete` doc it names ({@link idIntFreteDaRefLi}: bare or `documents/` form alike;
+ *     `origem: 'override'`). A ref that names anything else (another collection, a sub-path, a
+ *     naked id, `''`) ⇒ `override-invalido`, and the mapa is NOT consulted: an operator's choice is
+ *     never silently replaced.
  *  3. **The mapa** ({@link decidirLinhaDoMapaLi} over `externalOptionData`) ⇒ read the row's
  *     target (`origem: 'mapa'`), or refuse `sem-chave` / `mapa-invalido` / `sem-mapeamento`.
  *
@@ -614,7 +642,7 @@ export function planejarRotaEtiquetaLi(
     lerLinha: doMapa?.alvoId ?? null,
     idServicoDaLinha: doMapa?.idServico ?? null,
     idServicoArmazenado:
-      toOuterRefOrNull(bloco.integracaoFreteOuterRef) === refIntFrete(alvoId)
+      idIntFreteDaRefLi(bloco.integracaoFreteOuterRef) === alvoId
         ? inteiroPositivoCanonicoLi(bloco.externalOptionId)
         : null,
     temEndereco,
@@ -627,7 +655,7 @@ export function planejarRotaEtiquetaLi(
   }
   const override = bloco.integracaoTargetOuterRef;
   if (override !== null && override !== undefined) {
-    const alvoId = alvoDoOverride(override);
+    const alvoId = idIntFreteDaRefLi(override);
     return alvoId === null
       ? { tipo: 'recusa', motivo: MOTIVO_ROTA_ETIQUETA_LI.overrideInvalido }
       : manual('override', alvoId);

@@ -19,6 +19,7 @@ import {
   decidirLinhaDoMapaLi,
   entradaDoMapaPorChaveLi,
   idDoAlvoDoMapaLi,
+  idIntFreteDaRefLi,
   idServicoMelhorEnvioLi,
   inteiroPositivoCanonicoLi,
   montarEntradaDoMapaLi,
@@ -630,6 +631,76 @@ describe('avaliarAlvoDoMapaLi — a target read by id, against a policy', () => 
 });
 
 /* -------------------------------------------------------------------------- */
+/*                              idIntFreteDaRefLi                             */
+/* -------------------------------------------------------------------------- */
+
+describe('idIntFreteDaRefLi — the one `int_frete` ref reader', () => {
+  it('EQUAL pair: `int_frete/<id>` ≡ `documents/int_frete/<id>` name the SAME doc', () => {
+    for (const ref of [
+      'int_frete/abc',
+      'documents/int_frete/abc',
+      '/documents/int_frete/abc',
+      'documents/int_frete/abc/',
+    ]) {
+      expect(idIntFreteDaRefLi(ref), ref).toBe('abc');
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a longer or padded id is ANOTHER doc — the id is never trimmed', () => {
+    expect(idIntFreteDaRefLi('int_frete/abcd')).toBe('abcd');
+    expect(idIntFreteDaRefLi('int_frete/ abc')).toBe(' abc');
+    expect(idIntFreteDaRefLi('documents/int_frete/ABC')).toBe('ABC');
+  });
+
+  it('⚠️ NEAR-MISS: another collection, a nested doc, `.`/`..` and an empty ref name NO doc', () => {
+    for (const ref of [
+      'integracao/abc',
+      'documents/integracao/abc',
+      // A collection name as long as `int_frete`: only the prefix check refuses it.
+      'enderecos/abc',
+      'int_frete_x/abc',
+      'documents/clientes/c/int_frete/abc',
+      'int_frete/abc/sub/x',
+      'documents/int_frete/abc/sub/x',
+      'int_frete/.',
+      'documents/int_frete/..',
+      'int_frete',
+      'documents/int_frete/',
+      ' documents/int_frete/abc',
+      '',
+      '/',
+    ]) {
+      expect(idIntFreteDaRefLi(ref), ref).toBeNull();
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a NAKED id is not a ref — it names no doc, unlike a mapa row’s `integracaoUid`', () => {
+    expect(idIntFreteDaRefLi('abc')).toBeNull();
+    expect(idDoAlvoDoMapaLi('abc')).toBe('abc');
+  });
+
+  it('a non-string names no doc — an object carrying a `path` included', () => {
+    for (const ref of [null, undefined, 5, true, { path: 'int_frete/abc' }, ['int_frete', 'abc']]) {
+      expect(idIntFreteDaRefLi(ref), JSON.stringify(ref)).toBeNull();
+    }
+  });
+
+  it('reads back the ref a route writes as its own target id', () => {
+    for (const escolha of ['moto-1', 'a.b', '__x__']) {
+      const plano = planejarRotaEtiquetaLi(
+        { externalOptionData: { ...FORMA }, enderecoFreteOuterReference: 'documents/e/1' },
+        [],
+        escolha,
+      );
+      const rota = concluirRotaEtiquetaLi(plano, { tipo: 'motoboy' }, null);
+      expect(rota.tipo === 'rota' ? idIntFreteDaRefLi(rota.integracaoFreteOuterRef) : null).toBe(
+        escolha,
+      );
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                                 The guards                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -950,6 +1021,8 @@ describe('planejarRotaEtiquetaLi + concluirRotaEtiquetaLi — the label route', 
       'documents/integracao/x',
       'int_frete/x/sub/y',
       'int_frete',
+      // A naked id is not a ref, even one naming a real target (`idIntFreteDaRefLi`).
+      'moto-1',
       '',
       5,
     ]) {
@@ -1172,6 +1245,7 @@ describe('barrel — the label route', () => {
     expect(barrel.recusaDoDocLiParaRotaLi).toBe(recusaDoDocLiParaRotaLi);
     expect(barrel.recusaDoPedidoParaRotaLi).toBe(recusaDoPedidoParaRotaLi);
     expect(barrel.idServicoMelhorEnvioLi).toBe(idServicoMelhorEnvioLi);
+    expect(barrel.idIntFreteDaRefLi).toBe(idIntFreteDaRefLi);
     expect(barrel.MOTIVO_ROTA_ETIQUETA_LI).toBe(MOTIVO_ROTA_ETIQUETA_LI);
   });
 });
