@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
+import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
@@ -362,6 +362,37 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
         });
       }
     } finally {
+      stdout.restaurar();
+    }
+  });
+
+  it('D17: with the switch off, a deferred row’s LAST pass parks through the real pipeline, and the bound exhaustion signal stays silent — no ERROR line, no aviso', async () => {
+    const stdout = espiarStdout();
+    const erro = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const erroConsole = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const adiada = seedNotificacaoLi(fake, 'conta-li-1', '1003', 'deferred', {
+        tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+      });
+
+      await rodarAgendamento(reprocessLojaIntegradaNotifications);
+
+      // The switch refused before any conta read: a RETURNED defer, parked at
+      // the deferred cap, whose `erro` is the record.
+      expect(fake.ler(adiada)).toMatchObject({
+        status: 'parked',
+        tentativas: MAX_TENTATIVAS_DEFERRED,
+        erro: 'adiado/chamadas-desligadas',
+      });
+      expect(fake.leituras.filter((c) => !c.startsWith('notificacoesLojaIntegrada/'))).toEqual([]);
+      // `onRetriesExhausted` is bound (step 5, A4), but it answers a THROWN
+      // park only: neither ERROR line, and the one write is the park's mark.
+      expect(erro).not.toHaveBeenCalled();
+      expect(erroConsole).not.toHaveBeenCalled();
+      expect(fake.escritas.map((e) => e.caminho)).toEqual([adiada]);
+    } finally {
+      erro.mockRestore();
+      erroConsole.mockRestore();
       stdout.restaurar();
     }
   });
