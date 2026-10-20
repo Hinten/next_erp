@@ -10,7 +10,7 @@ import type { PayloadNotificacaoAmazon } from '../../lib/amazon/notificacoes/not
 
 /**
  * The functions codebase's COMPOSITION ROOT of the reads-queue producer (the
- * step-4 poll's, from PR 4-b): what it reads from the environment (the valve,
+ * step-4 poll's, `./pollPedidos`): what it reads from the environment (the valve,
  * the region) and what it hands the Admin SDK (the region-qualified queue path,
  * the payload alone).
  *
@@ -18,9 +18,9 @@ import type { PayloadNotificacaoAmazon } from '../../lib/amazon/notificacoes/not
  * error CLASSES stay real (the pure producer narrows on them). No network is
  * reachable: the queue is a recording fake.
  *
- * ⚠️ Nothing imports this root before 4-b, so esbuild leaves it out of the
- * bundle and `tools/deploy-env/bundle-inlining.test.js` cannot check its
- * inlining: the SOURCE-SHAPE pin below stands in until then.
+ * The poll makes this root reachable from `src/index.ts`, so
+ * `tools/deploy-env/bundle-inlining.test.js` checks its inlining on the BUILT
+ * bundle; the SOURCE-SHAPE pin below stays as the failure that names this file.
  */
 const h = vi.hoisted(() => ({
   enqueue: vi.fn((..._args: unknown[]): Promise<void> => Promise.resolve()),
@@ -132,8 +132,8 @@ describe('the queue path', () => {
     // esbuild's `define` substitutes a static member expression and nothing
     // else: a computed argument (`requireRegion(candidatos)`, an env indexed by
     // name) leaves FUNCTIONS_REGION a live read, `undefined` after a deploy.
-    // `bundle-inlining.test.js` proves this on the BUILT bundle only once the
-    // poll (4-b) makes this root reachable; until then this pin is the guard.
+    // `bundle-inlining.test.js` proves this on the BUILT bundle (the poll makes
+    // this root reachable); this pin fails first, naming the file.
     const fonte = readFileSync(
       fileURLToPath(new URL('./agendador.ts', import.meta.url)),
       'utf8',

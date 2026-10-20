@@ -13,7 +13,7 @@ name: CI — Amazon
 # they live in their own lane behind their own gate. A skip of this lane
 # therefore loses only the emulator suites, never the unit suites.
 #
-# ONE job, three suite files today:
+# ONE job, five suite files today:
 #   - `apps/amazon/app/api/webhooks/amazon/route.tasks.test.ts` — the push
 #     receiver's round trip below, plus a foreign application id, a duplicated
 #     NotificationId and the sweep-only valve;
@@ -22,7 +22,12 @@ name: CI — Amazon
 #     own producer root and the same dispatched function;
 #   - `apps/amazon/lib/amazon/notificacoes/notificacao.firestore.test.ts` — the
 #     two sweep lanes on the real SDK, and `importado ⇒ resolve` run IN THE
-#     VITEST PROCESS against the real Firestore emulator (below).
+#     VITEST PROCESS against the real Firestore emulator (below);
+#   - `apps/amazon/lib/amazon/pedidos/pollPedidos.firestore.test.ts` — the
+#     backstop poll's lease and preconditions on the real Firestore (step 4);
+#   - `apps/amazon/functions/src/pollPedidos.tasks.test.ts` — a poll tick in the
+#     vitest process through the functions-root producer, the queue and the
+#     same dispatched function (step 4).
 # Adding a file with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it
 # to THIS job — no new job, no new check name, no new row in the gate manifest.
 # Both suffixes share one config on purpose (`vitest.tasks.config.ts`).
@@ -60,7 +65,8 @@ name: CI — Amazon
 # process may build a context past the switch, and only with `ambiente` `on`
 # passed as an object literal PARAMETER: the resolve case of
 # `notificacao.firestore.test.ts` does exactly that, with a fake importer and a
-# fetch that refuses and counts (step-3 plan §3 decision 37). The fetch
+# fetch that refuses and counts (step-3 plan §3 decision 37), and so do the two
+# poll suites, with `searchOrders` served by a scripted fetch. The fetch
 # kill-switch above still guards that process.
 #
 # ⚠️ The suites are disjoint BY GLOB. `apps/amazon/vitest.config.ts` EXCLUDES
@@ -73,12 +79,12 @@ name: CI — Amazon
 # ⚠️ What this lane does NOT prove, so nobody reads its green as more than it is:
 #   - That Cloud Scheduler fires. The functions emulator logs every `onSchedule`
 #     trigger as "ignored because the pubsub emulator does not exist or is not
-#     running", so this lane loads the codebase's two schedules (the 30-minute
-#     reprocess sweep and the daily expiry sweep) and never runs them. The
-#     sweep BODIES run here in the vitest process (`notificacao.firestore.test.ts`)
-#     and in the unit suites; their trigger OPTIONS — cron, timeZone,
-#     timeoutSeconds, secrets — are pinned off `__endpoint` in
-#     apps/amazon/functions/src/index.test.ts.
+#     running", so this lane loads the codebase's three schedules (the 15-minute
+#     backstop poll, the 30-minute reprocess sweep and the daily expiry sweep) and
+#     never runs them. Their BODIES run here in the vitest process
+#     (`notificacao.firestore.test.ts`, the two poll suites) and in the unit
+#     suites; their trigger OPTIONS — cron, timeZone, timeoutSeconds, secrets —
+#     are pinned off `__endpoint` in apps/amazon/functions/src/index.test.ts.
 #   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
 #     emulator — dispatch is pure FIFO (firebase-tools#8254, open). The reads
 #     queue sets none; a producer that adds one must not assert it here.

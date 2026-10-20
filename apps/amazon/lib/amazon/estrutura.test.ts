@@ -1099,6 +1099,7 @@ describe('the step-3 functions codebase guards (3-d)', () => {
         'functions/src/index.ts',
         'functions/src/lib/admin.ts',
         'functions/src/options.ts',
+        'functions/src/pollPedidos.ts',
         'functions/src/tasksInvoker.ts',
       ]),
     );

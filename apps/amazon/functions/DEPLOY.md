@@ -25,11 +25,13 @@ exactly as they are until the window:
 
 - **The read switch `AMAZON_CHAMADAS` stays UNSET.** Only the exact `on` lets this
   code call Amazon at all (D11); the intake task and the reprocess sweep defer
-  before any Firestore read, and the context loader refuses before it builds a
-  client.
+  before any Firestore read, the backstop poll stops before any Firestore
+  operation (so no poll document, and no bootstrap anchor, exists before the
+  window), and the context loader refuses before it builds a client.
 - **The importer seam is empty.** The reads queue's task has no importer yet
   (master-plan step 5), so a run that gets past the switch defers as
-  `importador-ausente`. Nothing in this codebase turns a notification into a
+  `importador-ausente`, and every poll tick stops at its importer gate with ZERO
+  Firestore operations. Nothing in this codebase turns a notification into a
   `pedido` before step 5.
 
 ⚠️ **The expiry sweep stands outside both switches.** `sweepAmazonExpirations`
@@ -42,11 +44,11 @@ pass waits for the switch).
 
 - `pnpm install` at the repo root (the junction needs `apps/amazon/node_modules`).
 - **`AMAZON_LWA_CLIENT_SECRET` exists in the project's Secret Manager** (window
-  item W1, before this deploy). `filaLeituraAmazon` and
-  `reprocessAmazonNotifications` declare it as `secrets:`, and **a declared
-  secret that is missing fails the WHOLE deploy**, every function of the
-  codebase included. `sweepAmazonExpirations` declares none: it never calls
-  Amazon.
+  item W1, before this deploy). `filaLeituraAmazon`,
+  `reprocessAmazonNotifications` and `pollAmazonOrders` declare it as
+  `secrets:`, and **a declared secret that is missing fails the WHOLE deploy**,
+  every function of the codebase included. `sweepAmazonExpirations` declares
+  none: it never calls Amazon.
 - **Region match: `FUNCTIONS_REGION` equals `AMAZON_TASKS_REGION`.** The queue is
   created WITH its function, by this deploy, in `FUNCTIONS_REGION` and nowhere
   else. Every enqueuer resolves the queue from `AMAZON_TASKS_REGION`, falling
@@ -112,8 +114,8 @@ are local builds; neither deploys anything.
   `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 0.5 }`, `retryConfig` 3
   attempts with 10 s → 300 s backoff and up to three doublings, `timeoutSeconds 120`,
   `secrets: AMAZON_LWA_CLIENT_SECRET`. Persists to `notificacoesAmazon` only on
-  retry-exhaustion, park or defer. Enqueued by the App Hosting push receiver; the step-4 poll
-  joins it.
+  retry-exhaustion, park or defer. Enqueued by the App Hosting push receiver and by the
+  backstop poll (`pollAmazonOrders`, below).
 - **`reprocessAmazonNotifications`** — `onSchedule('10,40 * * * *')`. The backstop, draining
   BOTH lanes on one tick (`limit 10` each): `failed` notifications older than the hot window,
   then the deferred lane (the read switch off, an unknown seller, a parked or inactive conta, a
@@ -125,7 +127,21 @@ are local builds; neither deploys anything.
   them once a new grant lands, closes the orphaned rows of contas that no longer exist, and —
   only while `AMAZON_CHAMADAS=on` — warns about the app's LWA client secret from
   `AMAZON_LWA_SEGREDO_EXPIRA_EM`. Reads only the stored credential — **no Amazon call**, so
-  **no `secrets:`**. `America/Sao_Paulo`, `timeoutSeconds 120`.
+  **no `secrets:`**. `America/Sao_Paulo`, `timeoutSeconds 120`. Its orphan pass also closes a
+  deleted conta's open `amazonImportacaoParada` row (clocked by the conta list's read time, so
+  a conta created after that read keeps its row).
+- **`pollAmazonOrders`** — `onSchedule('7,22,37,52 * * * *')`. The 15-minute BACKSTOP POLL
+  (master plan step 4): per active, connected conta, `searchOrders` from the conta's durable
+  cursor in `pollPedidosAmazon/{contaId}` (at most 5 pages a run), and ONE synthetic
+  `origem: 'poll'` notification per changed order onto `filaLeituraAmazon` (ids only; the
+  task re-fetches the order). Runs inline in its own schedule, so sweep-only mode
+  (`AMAZON_TASKS_DISABLED=1`) persists each notification `failed` for the reprocess sweep
+  instead. Two gates with ZERO Firestore operations: the empty importer seam (until step 5)
+  and the read switch. Raises `amazonImportacaoParada` on a counted failure at its threshold
+  and resolves it on the next clean run. `America/Sao_Paulo`, `timeoutSeconds 300` (above
+  the 240-s tick budget, below the 360-s lease, itself below the 15-minute interval),
+  `retryCount 0`, `secrets: AMAZON_LWA_CLIENT_SECRET`. ⚠️ It is the queue's SECOND enqueuer:
+  the functions runtime SA needs the same three IAM grants as the receiver's (below).
 
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
 and names the queue after the function, so renaming `filaLeituraAmazon` creates
@@ -136,8 +152,10 @@ key to the `FILA_LEITURA_AMAZON` constant every enqueuer targets.
 ⚠️ **One logger.** Every line is one JSON line on stdout through
 `LOGGER_STDOUT_AMAZON` (`severity` + `message`): one `evento: 'tarefa'` line per
 dispatch, one `evento: 'varredura'` line per sweep lane (and one per expiry
-run). No line carries a seller id, a token or an error message; a failed sweep
-row is named by its document id only (the row holds the reason).
+run), and per poll tick one `evento: 'poll'` line per conta run plus ONE summary
+line (`[amazon] poll de pedidos`, the counters flattened). No line carries a
+seller id, a token or an error message; a failed sweep row is named by its
+document id only (the row holds the reason).
 
 ### Durability & the residual loss window
 
@@ -179,7 +197,9 @@ below stays COMMENTED OUT until the window:**
 # ⚠️ Leave it COMMENTED OUT. Setting it is a migration-window decision (W5),
 # made by a person after the legacy integration stops polling (W4). ⚠️ The
 # functions env BAKES AT DEPLOY: flipping it takes a functions REDEPLOY as well
-# as the App Hosting rollout, or the task and the sweep stay switched off.
+# as the App Hosting rollout, or the task, the sweeps and the poll stay switched
+# off. ⚠️ Once it is on, the backstop poll is the FIRST intake as soon as OAuth
+# stores a conta's credential, so the legacy order poll must be paused first (W4).
 # AMAZON_CHAMADAS=on
 
 # The LWA client id (both surfaces): the pair the context loader reads for a
@@ -203,6 +223,19 @@ below stays COMMENTED OUT until the window:**
 # date (an unknown deadline is the riskier state).
 # AMAZON_LWA_SEGREDO_EXPIRA_EM=
 
+# The backstop poll's LOOK-BACK, in HOURS (functions only: App Hosting reads it
+# nowhere). It is read ONLY when a conta's poll document has no cursor — the
+# conta's first tick, or a re-bootstrap (below) — and anchors that cursor at
+# now − H. Unset or blank = 24. Otherwise 1–4 plain digits, no leading zero, no
+# sign, no space, at most 720; anything else REFUSES that conta's bootstrap
+# (`lookback-invalido`, aviso at once) rather than guessing a window. ⚠️ Sized
+# and set by a person in the window (W7), BEFORE the first tick that finds the
+# conta connected, and kept narrow: every re-listed migrated order runs step 5's
+# exact-match check (D17). Changing it after a conta's first LEASE (its first
+# tick past the context, seller and look-back refusals, whether that run then
+# succeeds or fails) does nothing for that conta: re-bootstrap it (below).
+# AMAZON_POLL_LOOKBACK_H=
+
 # ---- The WRITE VALVES and CANARY LISTS (both surfaces; read from the write
 # engine onward). Nothing in this codebase reads one yet. A valve is
 # off | dry-run | on: only the exact `on` writes, only the exact `dry-run`
@@ -224,6 +257,41 @@ below stays COMMENTED OUT until the window:**
 whether a firing does any work. Changing one is therefore a redeploy, not a code
 change.
 
+### Re-bootstrapping a conta's poll (W7)
+
+A conta's cursor is anchored ONCE, by the first lease of its poll document, at
+now − `AMAZON_POLL_LOOKBACK_H`, whatever that run's outcome; it then only moves
+forward. To re-anchor it (a look-back that was wrong, a window to re-list), a
+person edits `pollPedidosAmazon/{contaId}` in the console, in this order:
+
+1. If H changes, set it in `.env.deploy`, redeploy the functions and WAIT for
+   the deploy to finish: the env bakes at deploy, and a tick before it lands
+   anchors at the OLD H.
+2. Take a manual lease, `execucaoId` FIRST: set `execucaoId` to `w7-manual`,
+   then `emExecucaoAteMs` to now + 30 minutes in epoch milliseconds
+   (`Date.now() + 1800000` in a browser console). Every tick then skips the
+   conta (`lease-ocupado`), and a run already in flight writes nothing (its
+   final write re-reads a lease it no longer owns: `lease perdido`).
+3. Wait at least 6 minutes (past the poll's 300-s timeout and 360-s lease, so
+   every run that started before step 2 has ended), then re-read: both fields
+   still hold your values. If either changed, a run wrote in between; start
+   again at step 2.
+4. Delete the three FIELDS `cursorMs`, `pendente` and `vistos`. Never delete
+   the DOCUMENT: its failure counter stays. Deleting `cursorMs` alone would keep
+   a `pendente` drain and a `vistos` set from the old window.
+5. Release: set `emExecucaoAteMs` to 0 (or let it expire). The next lease
+   replaces the marker.
+6. Verify after the next tick: `cursorMs` is back, between that tick's time − H
+   and about that tick's time − 5 minutes (the anchor, or a drain's capped
+   advance from it). Still absent means that tick was refused before its lease
+   (the conta's poll line and the import-stopped aviso say why); the anchor
+   lands with the first tick past those refusals.
+
+Why a lease and not a check that none is held: a run that took the lease
+before your edit re-derives its final write from a re-read, so over a
+cursorless document it writes its OLD window back. Only a lease it no longer
+owns makes it write nothing.
+
 `prepare-deploy.mjs` copies the file into the artifact **as `.env`** after the
 wipe, and firebase-tools applies it at deploy. For values that belong to ONE
 project, name the file `.env.deploy.<project-id>`: it lands as
@@ -242,8 +310,9 @@ Two identities enqueue onto `filaLeituraAmazon`:
 
 - the **App Hosting runtime service account** — the push receiver
   (`POST /api/webhooks/amazon`), from step 3;
-- the **functions runtime service account** — the backstop poll, from step 4
-  (PR 4-b), by default the project's Compute Engine default service account.
+- the **functions runtime service account** — the backstop poll
+  (`pollAmazonOrders`, through `src/agendador.ts`), by default the project's
+  Compute Engine default service account.
 
 **Every** enqueuing identity needs **three** grants:
 
@@ -263,7 +332,8 @@ gcloud tasks queues add-iam-policy-binding filaLeituraAmazon \
 # the caller IS that account.
 # ⚠ THE DEPLOY NEVER APPLIES THIS ONE: TASKS_INVOKER_SA covers grants 1 and 3
 # only. Without it every enqueue fails `permission-denied`, which the producer
-# rethrows untouched (the receiver persists it `failed` with an ERROR line).
+# rethrows untouched (the receiver persists it `failed` with an ERROR line; the
+# poll stops the conta's drain as `fila-indisponivel` and raises its aviso).
 gcloud iam service-accounts add-iam-policy-binding <enqueuing-sa> \
   --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \
@@ -303,9 +373,9 @@ firebase deploy --only functions:amazon \
 
 ⚠️ **The list is AUTHORITATIVE: name every enqueuer, comma-separated.** A deploy
 **replaces** the members of both bindings, so an identity left out **loses** the
-role. Name the functions runtime SA from the FIRST deploy, even before the
-step-4 poll ships: a later deploy that adds it is a deploy that could forget the
-receiver's.
+role. Name BOTH from the FIRST deploy: the functions runtime SA is the backstop
+poll's identity, and a list that names only one enqueuer leaves the other's
+enqueues failing `permission-denied`.
 
 ⚠️ **Unset ⇒ the deploy is refused.** The preflight aborts on a missing
 `TASKS_INVOKER_SA` (a bare `node build.mjs` only warns and omits `invoker`).
@@ -370,7 +440,7 @@ Do these in the window, in this order, after the deploy and before any switch is
 flipped:
 
 1. Cloud Tasks lists the queue `filaLeituraAmazon` with concurrency 1 and 0.5
-   dispatches per second, and Cloud Scheduler lists the two schedule functions.
+   dispatches per second, and Cloud Scheduler lists the three schedule functions.
 2. `gcloud run services get-iam-policy filaLeituraAmazon` and
    `gcloud tasks queues get-iam-policy filaLeituraAmazon` both name every identity
    in `TASKS_INVOKER_SA`, and each enqueuing identity holds
@@ -378,3 +448,6 @@ flipped:
 3. The Firestore index `notificacoesAmazon (status, processedAt)` is READY.
 4. A reprocess tick logs two `evento: 'varredura'` lines (`lane: hot` and
    `lane: deferred`), and the first expiry run logs one.
+5. A poll tick logs its summary line `[amazon] poll de pedidos` with
+   `portao: importador-ausente` (before step 5) or `chamadas-desligadas`, and
+   `pollPedidosAmazon` holds no document: neither gate reads or writes Firestore.

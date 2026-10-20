@@ -75,7 +75,7 @@ const INVENTORY = {
 
   // ---- codebase `amazon` --------------------------------------------------
   'apps/amazon/functions/src/filaLeitura.ts':
-    'The Amazon reads queue (filaLeituraAmazon, order intake). Enqueued by the push receiver route (App Hosting runtime SA); the functions runtime SA joins in step 4 (the backstop poll, through functions/src/agendador.ts). The reprocess sweep re-drives rows inline and never enqueues.',
+    'The Amazon reads queue (filaLeituraAmazon, order intake). Enqueued by the push receiver route (App Hosting runtime SA) and by the 15-minute backstop poll pollAmazonOrders (functions runtime SA, through functions/src/agendador.ts). The reprocess sweep re-drives rows inline and never enqueues.',
 
   // ---- codebase `nfe` -----------------------------------------------------
   'apps/nfe/functions/src/reconciliar.ts':

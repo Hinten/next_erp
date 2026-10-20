@@ -874,10 +874,13 @@ export const TIPO_AVISO_LABELS = {
  *    an app-secret refusal (`amazonSegredoLwaRecusado`), an inactive or
  *    unconnected conta, the read switch off, a busy lease or an absent
  *    importer.
- *  - **Machine resolver**: the poll, on a clean run after a stored failure,
- *    clocked by that run's lease. ⚠️ The expiry sweep's orphan pass does NOT
- *    list this tipo yet: a row left open when the conta is deleted (or
- *    deactivated) stays open until retention (a documented residue).
+ *  - **Machine resolvers**: the poll, on a clean run after a stored failure
+ *    (clocked by that run's lease); the daily expiry sweep's orphan pass when
+ *    the conta no longer exists (`conta-removida`, CLOCKED by the conta
+ *    enumeration's read time, so a conta created after that read keeps its
+ *    row). A row left open when the conta is deactivated stays open until the
+ *    conta is reactivated and polls cleanly, or is deleted (a documented
+ *    residue: the enumeration lists inactive contas, and the poll skips them).
  */
 export const tipoAvisoSchema = z
   .enum([

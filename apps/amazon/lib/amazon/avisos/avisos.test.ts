@@ -121,10 +121,14 @@ describe('the keys', () => {
         TIPO_AVISO.amazonImportacaoParada,
       ].sort(),
     );
-    // Not the import-stopped tipo: the orphan pass would close live contas' rows (avisos.ts).
-    expect(TIPOS_AVISO_AMAZON_POR_CONTA.has(TIPO_AVISO.amazonImportacaoParada)).toBe(false);
+    // The orphan pass's tipos: every PER-CONTA one, the import-stopped row
+    // included (PR 4-b) — and never a per-app one, whose key names no conta.
     expect([...TIPOS_AVISO_AMAZON_POR_CONTA].sort()).toEqual(
-      [TIPO_AVISO.amazonReconexaoPendente, TIPO_AVISO.amazonReautorizacaoExpirando].sort(),
+      [
+        TIPO_AVISO.amazonReconexaoPendente,
+        TIPO_AVISO.amazonReautorizacaoExpirando,
+        TIPO_AVISO.amazonImportacaoParada,
+      ].sort(),
     );
   });
 });
@@ -321,6 +325,75 @@ describe('resolverAvisoDeContaRemovida', () => {
     expect(await resolverAvisoDeContaRemovida(asDb(db), chaveReconexao(ID), 300, deps())).toBe(
       true,
     );
+  });
+
+  it('★ an import-stopped row is closed CLOCKED by the list readTime; a later run keeps its row (PR 4-b)', async () => {
+    // A run whose lease committed at 200 µs raised it; the list was read at 100:
+    // a conta created after the list was read keeps its open row…
+    await levantarImportacaoParadaAmazon(
+      asDb(db),
+      {
+        integracaoId: ID,
+        lojaNome: 'X',
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.credencialAusente,
+        commit: { seconds: 0, nanoseconds: 200_000 },
+      },
+      deps(),
+    );
+    expect(
+      await resolverAvisoDeContaRemovida(asDb(db), chaveImportacaoParada(ID), 100, deps()),
+    ).toBe(false);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))?.resolvidoEm).toBeNull();
+    // …while a raise OLDER than the read (a run before the deletion) IS closed.
+    expect(
+      await resolverAvisoDeContaRemovida(asDb(db), chaveImportacaoParada(ID), 300, deps()),
+    ).toBe(true);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      resolucaoMotivo: 'conta-removida',
+      relogioEvento: 300,
+    });
+  });
+
+  it('an import-stopped orphan with no row SEEDS a resolved one with the list clock and no name', async () => {
+    expect(
+      await resolverAvisoDeContaRemovida(asDb(db), chaveImportacaoParada(ID), 400, deps()),
+    ).toBe(false);
+    const doc = db.ler(caminhoAviso(chaveImportacaoParada(ID)));
+    expect(doc).toMatchObject({
+      tipo: TIPO_AVISO.amazonImportacaoParada,
+      canal: CANAL_AVISO.amazon,
+      urlInterna: { rota: `/canais/amazon/${ID}`, campo: null },
+      relogioEvento: 400,
+      resolucaoMotivo: 'conta-removida',
+    });
+    // The conta is gone: the seed names no store.
+    expect((doc?.params as { loja?: unknown } | undefined)?.loja).toBeUndefined();
+    // A raise from a poll run before the read cannot reopen it…
+    const { resultado } = await levantarImportacaoParadaAmazon(
+      asDb(db),
+      {
+        integracaoId: ID,
+        lojaNome: 'X',
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.falhaTransitoria,
+        commit: { seconds: 0, nanoseconds: 399_000 },
+      },
+      deps(),
+    );
+    expect(resultado).toBe('ignorado');
+  });
+
+  it('the import-stopped orphan resolve ALWAYS hands resolverAviso the list clock; a key no producer computes, none', async () => {
+    await resolverAvisoDeContaRemovida(asDb(db), chaveImportacaoParada(ID), 7, deps());
+    // NEAR-MISS: the tipo prefix with an empty conta is no key `chaveImportacaoParada` makes.
+    await resolverAvisoDeContaRemovida(
+      asDb(db),
+      `${TIPO_AVISO.amazonImportacaoParada}:`,
+      7,
+      deps(),
+    );
+    const [clocked, semConta] = h.resolverAviso.mock.calls;
+    expect((clocked?.[4] as { relogioEvento?: unknown } | undefined)?.relogioEvento).toBe(7);
+    expect(semConta?.[4]).toBeUndefined();
   });
 
   it('a reauthorization row is closed clockless', async () => {
