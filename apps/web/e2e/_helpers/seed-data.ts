@@ -1149,6 +1149,7 @@ export async function seedLojaIntegradaFreteFixtures(
     contaMercadoLivreMercadoEnviosOuterRef: null,
     contaShopeeFreteOuterRef: null,
     contaLojaIntegradaEnviosOuterRef: null,
+    contaAmazonContaFreteAmazonOuterRef: null,
     enderecoDeOrigem: null,
     dataCadastro,
     ultimaModificacao: dataCadastro,

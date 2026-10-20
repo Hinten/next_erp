@@ -3,8 +3,8 @@
  * (#1528) — and the composite index each row's lookup rides.
  *
  * The constant is consumed by ONE IO core (`@delfrance/data/admin/frete`, #1369), so
- * a wrong row here is wrong for every caller at once: the Shopee and Loja Integrada
- * triggers, the Mercado Livre binding and the window passes. Nothing else pins it — the core's own
+ * a wrong row here is wrong for every caller at once: the Shopee, Loja Integrada and
+ * Amazon (#1930) triggers, the Mercado Livre binding and the window passes. Nothing else pins it — the core's own
  * suite drives a fake database that has no index concept, and
  * `defaultQuery.indexes.test.ts` only sees `meta.defaultQuery`.
  */
@@ -27,9 +27,10 @@ const backRefsDoSchema = (): string[] =>
 /**
  * The anchor: the back-refs that exist TODAY, sorted. It keeps every walk below
  * from passing vacuously (an emptied constant or schema would otherwise "match"),
- * and a fourth channel's field must be added here on purpose.
+ * and a fifth channel's field must be added here on purpose.
  */
 const ANCORA = [
+  'contaAmazonContaFreteAmazonOuterRef',
   'contaLojaIntegradaEnviosOuterRef',
   'contaMercadoLivreMercadoEnviosOuterRef',
   'contaShopeeFreteOuterRef',
@@ -68,6 +69,13 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
         rotuloLog: '[loja-integrada]',
         prefixoDocId: 'lojaIntegrada',
       },
+      amazon: {
+        tipoConta: 8,
+        tipoFrete: 'amz',
+        campoBackRef: 'contaAmazonContaFreteAmazonOuterRef',
+        rotuloLog: '[amazon]',
+        prefixoDocId: 'amz',
+      },
     });
   });
 
@@ -104,7 +112,7 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
     }
   });
 
-  it('every channel mints deterministic doc ids (`<prefixo>-<integracaoId>`, #1888, #1826)', () => {
+  it('every channel mints deterministic doc ids (`<prefixo>-<integracaoId>`, #1888, #1826, #1930)', () => {
     expect(VINCULO_INT_FRETE_CONTA.shopee.prefixoDocId).toBe('shopee');
     expect(`${VINCULO_INT_FRETE_CONTA.shopee.prefixoDocId}-int-1`).toBe('shopee-int-1');
     expect(VINCULO_INT_FRETE_CONTA.mercadoLivre.prefixoDocId).toBe('mercadoLivre');
@@ -117,6 +125,12 @@ describe('VINCULO_INT_FRETE_CONTA — the per-channel rows (T24)', () => {
     expect(`${VINCULO_INT_FRETE_CONTA.lojaIntegrada.prefixoDocId}-int-1`).not.toBe(
       'lojaintegrada-int-1',
     );
+    // Amazon's freight tipo is `'amz'` on disk, so its id is `amz-<id>` — never the conta-tipo
+    // key's spelling (`amazon-`), and never upper-cased.
+    expect(VINCULO_INT_FRETE_CONTA.amazon.prefixoDocId).toBe('amz');
+    expect(`${VINCULO_INT_FRETE_CONTA.amazon.prefixoDocId}-int-1`).toBe('amz-int-1');
+    expect(`${VINCULO_INT_FRETE_CONTA.amazon.prefixoDocId}-int-1`).not.toBe('amazon-int-1');
+    expect(`${VINCULO_INT_FRETE_CONTA.amazon.prefixoDocId}-int-1`).not.toBe('AMZ-int-1');
     // Two prefixed rows never share a prefix — their deterministic ids would collide.
     const prefixos = LINHAS.flatMap(([, l]) => (l.prefixoDocId == null ? [] : [l.prefixoDocId]));
     expect(prefixos).toHaveLength(LINHAS.length);
@@ -148,8 +162,8 @@ describe('firestore.indexes.json — one int_frete lookup index per row (T25)', 
   // Enterprise an undeclared composite does not throw and offers no index link —
   // the lookup silently full-scans `int_frete` and is billed by data scanned
   // (root rule 1). The sync's 2-equality query and the order importer's
-  // `apenasAtivo` variant (3 equalities; Mercado Livre today, Loja Integrada's
-  // step-5 importer next) both ride its prefix; no query orders, because the
+  // `apenasAtivo` variant (3 equalities; Mercado Livre today, the Loja Integrada
+  // and Amazon step-5 importers next) both ride its prefix; no query orders, because the
   // newest-`dataCadastro` tie-break is client-side (`escolherIntFreteMaisNovo`).
   // The 4-field shape is kept identical to the Mercado Livre twin (#782).
   const formaEsperada = (campo: string): CampoDeIndice[] => [
@@ -175,7 +189,7 @@ describe('firestore.indexes.json — one int_frete lookup index per row (T25)', 
     }
   });
 
-  it('anchor: the back-refs the int_frete indexes cover are exactly today’s three, and exactly the rows’', () => {
+  it('anchor: the back-refs the int_frete indexes cover are exactly today’s four, and exactly the rows’', () => {
     const cobertos = declarados()
       .filter((i) => i.collectionGroup === 'int_frete')
       .map((i) => i.fields?.[1]?.fieldPath)

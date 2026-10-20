@@ -290,11 +290,13 @@ const refToleranteDeTeste = (ref: unknown, integracaoId: string): boolean =>
 
 const shopee = intFreteContaSync(V.shopee);
 const lojaIntegrada = intFreteContaSync(V.lojaIntegrada);
+const amazon = intFreteContaSync(V.amazon);
 const ml = intFreteContaSync(V.mercadoLivre, { refTolerante: refToleranteDeTeste });
 
 /**
- * Every production binding — Shopee, Loja Integrada and Mercado Livre — writes the account and
- * reconciles its current state through the ONE `reconciliarIntFreteDaConta` (#1888, #1826).
+ * Every production binding — Shopee, Loja Integrada, Amazon and Mercado Livre — writes the account
+ * and reconciles its current state through the ONE `reconciliarIntFreteDaConta` (#1888, #1826,
+ * #1930).
  */
 interface Cenario {
   nome: string;
@@ -333,6 +335,18 @@ const CENARIOS: Cenario[] = [
     aplicar: async (host, conta) => {
       await host.escreverConta(ID, conta);
       return lojaIntegrada.reconciliarIntFreteDaConta(asDb(host), ID);
+    },
+  },
+  {
+    nome: 'amazon — reconcile',
+    vinculo: V.amazon,
+    sync: amazon,
+    outro: V.shopee,
+    carimbo: RELOGIO_MS,
+    avisoIncompleto: '[amazon] conta Amazon sem dados suficientes para criar o int_frete',
+    aplicar: async (host, conta) => {
+      await host.escreverConta(ID, conta);
+      return amazon.reconciliarIntFreteDaConta(asDb(host), ID);
     },
   },
   {
@@ -934,6 +948,7 @@ describe('T10 a bare `integracao/<id>` back-ref', () => {
   const SEM_REF_TOLERANTE = [
     ['Shopee', V.shopee, shopee],
     ['Loja Integrada', V.lojaIntegrada, lojaIntegrada],
+    ['Amazon', V.amazon, amazon],
   ] as const;
 
   it('the non-tolerant table plus Mercado Livre covers every VINCULO_INT_FRETE_CONTA row', () => {

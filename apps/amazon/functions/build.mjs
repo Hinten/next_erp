@@ -28,17 +28,25 @@ export async function bundle(outfile) {
   // variable stops the build rather than inlining a region nobody chose — see
   // requireBuildRegion.
   const region = requireBuildRegion('FUNCTIONS_REGION');
-  // The Firestore database `getDb()` (src/lib/admin.ts) opens — the repo's
-  // NAMED `default` database, never the `(default)` sentinel, which fails every
-  // operation with `5 NOT_FOUND`.
+  // The Firestore database `getDb()` (src/lib/admin.ts) opens AND the conta
+  // trigger binds to (src/onIntegracaoAmazonChanged.ts, master-plan step 20, the
+  // codebase's first Firestore trigger) — the repo's NAMED `default` database,
+  // never the `(default)` sentinel, which fails every operation with
+  // `5 NOT_FOUND` (and a trigger bound to it deploys fine and never fires).
   //
   // ⚠️ What this define does NOT do: change the answer for an UNSET variable.
-  // `admin.ts`'s own `?? 'default'` already resolves that to `default`. What it
-  // does: `||` also turns a BLANK export into `default` (under `??` a blank
-  // reaches `getFirestore` as `''`), and it makes the preflight table print the
-  // value the build baked. This codebase has no Firestore trigger, so nothing
-  // binds the database at codebase analysis; the define is here so the bundle
-  // and the table agree, and so a first trigger (a later step) inherits it.
+  // The trigger's own `?? 'default'` already resolves that to `default`, the
+  // same way `admin.ts` reads the variable for `getDb()`. What it does: `||`
+  // also turns a BLANK export into `default` — under `??` a blank reaches
+  // firebase-functions as `''`, which it binds as `(default)` (its
+  // `database || '(default)'`), the never-fires case — and it makes the
+  // preflight table print the value the build baked. And it replaces EVERY read
+  // of the variable in the bundle, `admin.ts`'s included: unbundled (the tests)
+  // both read the environment, but deployed, the trigger's binding and `getDb()`
+  // share this one build-time value, and a runtime override reaches neither.
+  // The binding itself is pinned offline by src/index.test.ts (exactly
+  // `'default'` on the analysed endpoint, plus a source assertion over this
+  // line).
   //
   // ⚠️ `|| 'default'`, not `requireBuildRegion` — an unset value has a correct
   // answer here, where an unset region does not.

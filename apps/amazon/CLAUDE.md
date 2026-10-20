@@ -67,18 +67,25 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   default, `FIREBASE_DATABASE_ID`, `TASKS_INVOKER_SA`); `scripts/prepare-deploy.mjs` writes
   `.deploy/amazon-functions`. `firebase.amazon.deploy.json` ships INERT: the deploy is W9, by a
   person, never an agent. `functions/DEPLOY.md` has the prerequisites, the commented-out runtime
-  env and the IAM.
+  env and the IAM. ⚠️ The conta trigger `onIntegracaoAmazonChanged` stands outside both INERT
+  switches: it makes no Amazon call and imports no importer, so deployed into a project it writes
+  that project's `int_frete` on any Amazon conta save that moves a mirrored field. It deploys
+  only after W12 (`functions/DEPLOY.md`).
 - `src/index.ts` imports `./options` FIRST and ALONE and exports ONLY triggers:
   `filaLeituraAmazon` (the reads queue, = `FILA_LEITURA_AMAZON`, asserted at load),
   `reprocessAmazonNotifications` (both lanes, logged separately), `sweepAmazonExpirations`
-  (the step-2 expiry body, daily, NO secret) and `pollAmazonOrders` (the step-4 backstop poll,
-  `src/pollPedidos.ts`). `index.test.ts` pins every option off `__endpoint`.
+  (the step-2 expiry body, daily, NO secret), `pollAmazonOrders` (the step-4 backstop poll,
+  `src/pollPedidos.ts`) and `onIntegracaoAmazonChanged` (the step-20 conta trigger, NO secret).
+  `index.test.ts` pins every option off `__endpoint`, in three families (schedules, queues,
+  Firestore triggers), each exhaustive.
 - ONE logger there too: every line is `registrarEventoAmazon(LOGGER_STDOUT_AMAZON, …)` — never
   `firebase-functions`' `logger` (Loja Integrada's root uses it; do not copy that), never
   `console.`, never an error message (a failed sweep row by document id only). The package
   errors reach the task wrapper's own "Unhandled error" log only through the pipeline's
   sanitizing boundary (`FalhaTarefaAmazonError`). `estrutura.test.ts` widens the `.message`,
-  seller-id, `trechoCorpo`, `testing/` and conta-cache scans to `functions/src`.
+  seller-id, `trechoCorpo`, `testing/` and conta-cache scans to `functions/src`. (The one
+  declared exception is the shared core's warning on `incompleto`, from `packages/data`; see
+  "int_frete binding (step 20)".)
 - The two composition roots of the queue, `lib/firebase/filaLeitura.ts` (App Hosting, the
   receiver) and `functions/src/agendador.ts` (the step-4 poll), are the app's only `getFunctions(`
   callers; each reads the region as an object literal of STATIC `process.env` reads (esbuild's
@@ -153,6 +160,33 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   lease is held, then delete": a run already holding it re-derives its OLD cursor back over a
   cursorless doc. Changing H after a conta's first LEASE (whatever that run's outcome) does
   nothing for it.
+
+## int_frete binding (step 20)
+
+- The ONE binding is `lib/amazon/frete/intFrete.ts`: `syncIntFreteAmazon`, the shared core
+  (`@delfrance/data/admin/frete`) bound to `VINCULO_INT_FRETE_CONTA.amazon` with ZERO options
+  (no tolerant scan). Never build a second one: the trigger, step 5's importer and the window
+  pass (W12) must all name the same doc. Freight tipo `amz` (never `amazon`); a new doc is
+  `amz-<integracaoId>`; a migrated one (64-hex id) is adopted by `contaAmazonContaFreteAmazonOuterRef`.
+- `functions/src/onIntegracaoAmazonChanged.ts`: `deveReconciliar(before, after)` is a COST
+  filter (zero reads for any write that is not, and was not, an Amazon conta, or moves no
+  mirrored field); the reconcile takes the conta id ONLY — never a snapshot or an event clock.
+  One `evento: 'int-frete'` line per reconcile (field NAMES joined, never a value or the
+  `nome`; WARNING on `incompleto`). No `try`/`catch`: Firestore/Zod errors reach the Eventarc
+  retry.
+- Step 5's importer reads the conta's freight doc with
+  `syncIntFreteAmazon.buscarIntFreteDaConta(db, contaId, { apenasAtivo: true })` over RAW bodies,
+  never cached (its answer feeds a write). Reconciliation never filters `ativo`.
+- ⚠️ The declared departure from the one-logger rule: on `incompleto` the core also writes its
+  own unstructured stderr warning (`[amazon] conta Amazon sem dados suficientes para criar o
+  int_frete`, the conta id and field names only), from `packages/data`, where
+  `estrutura.test.ts` cannot see it. One `incompleto` event therefore produces two WARNING
+  lines. Routing it through an injectable logger is a core change for four channels.
+- D11 by construction: `estrutura.test.ts` walks the trigger's whole import closure (type edges
+  included) and pins it file by file; it may import the SP-API package as TYPES only.
+- Emulator suites: the trigger fires on EVERY suite's `integracao` writes. A suite that seeds a
+  COMPLETE Amazon conta (filial + `dataCadastro` + `nome`) becomes a trigger suite and must
+  await the trigger's last write (`vitest.tasks.config.ts` has the three rules).
 
 ## Layout
 
@@ -295,6 +329,8 @@ no `env:` block.
 | Poll lease (step 4) | 1 | `create`, or once EXPIRED `update(…, { lastUpdateTime })`; that update also anchors a cursorless doc (W7) |
 | Poll final write (step 4) | 1 | `update(…, { lastUpdateTime: <lease writeTime> })`; on 9/5 re-read ONCE and RE-DERIVE (max cursor, merged `vistos`, our `pendente` only if `===` on its two scalars; no fold) |
 | Conta cache | — | per-instance invalidate after the callback, by the intake task before a poll's `vendedor-mudou` drop (then a reload), and by the poll before each conta's run; others bounded by TTL + `isFresh` |
+| `int_frete/amz-<id>` create (step 20) | 0 (inside the core's class-A reconcile) | `tx.create` at `amz-<id>`. On a miss, the lookup `tx.get`s that id inside the transaction, so a concurrent first reconcile conflicts (ABORTED, retried by the SDK) and re-derives `inalterado`. A stray ALREADY_EXISTS is NOT retried by the SDK: the trigger then rides the Eventarc retry (`retry: true`), and `--apply` stops and is simply re-run (idempotent) |
+| `int_frete` mirror patch and deactivate (step 20) | A (the core's) | the shared core's ONE reconcile transaction (inventoried in `packages/data`): every input from its own `tx.get`s, no event clock, never a delete; this app adds no site |
 
 This app adds **zero** multi-document atomic-write sites.
 
