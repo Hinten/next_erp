@@ -8,11 +8,10 @@ import {
   TIPO_RESPOSTA_ROTA_ETIQUETA_LI,
   classificarDocDoFreteLi,
   concluirRotaEtiquetaLi,
-  naoDocId,
+  idIntFreteDaRefLi,
   planejarRotaEtiquetaLi,
   recusaDoDocLiParaRotaLi,
   recusaDoPedidoParaRotaLi,
-  toOuterRefOrNull,
   type MotivoRotaEtiquetaLi,
   type Pedido,
   type RespostaRotaEtiquetaLi,
@@ -245,15 +244,6 @@ const recusa = (motivo: MotivoRotaEtiquetaLi): PrevisaoRotaEtiquetaLi => ({
   mensagem: MENSAGEM_MOTIVO_ROTA_ETIQUETA_LI[motivo],
 });
 
-/** The `int_frete` doc id a ref names (either form), or `null` when it names none. */
-function idDoIntFrete(ref: unknown): string | null {
-  const canonica = toOuterRefOrNull(ref);
-  const prefixo = 'documents/int_frete/';
-  if (canonica === null || !canonica.startsWith(prefixo)) return null;
-  const id = canonica.slice(prefixo.length);
-  return naoDocId(id) ? null : id;
-}
-
 function comoObjeto(valor: unknown): Readonly<Record<string, unknown>> | null {
   return typeof valor === 'object' && valor !== null && !Array.isArray(valor)
     ? (valor as Record<string, unknown>)
@@ -264,8 +254,10 @@ function comoObjeto(valor: unknown): Readonly<Record<string, unknown>> | null {
  * {@link preverRotaEtiquetaLi} over any reader — the route's order (§4.3 of the
  * step plan), with every decision taken by the shared pure functions:
  *
- *  1. the doc the pedido's ref names (`classificarDocDoFreteLi`): a target ⇒
- *     `ja-roteado`; neither a target nor the Loja Integrada doc ⇒ `sem-rota-li`;
+ *  1. the doc the pedido's ref names (`idIntFreteDaRefLi`, the planner's own
+ *     `int_frete` ref reader — a ref naming none is `sem-rota-li` with no
+ *     read — then `classificarDocDoFreteLi`): a target ⇒ `ja-roteado`;
+ *     neither a target nor the Loja Integrada doc ⇒ `sem-rota-li`;
  *  2. the Loja Integrada doc guard (`recusaDoDocLiParaRotaLi`);
  *  3. the pedido guard (`recusaDoPedidoParaRotaLi`);
  *  4. the plan (`planejarRotaEtiquetaLi`, over the doc's RAW `mapa`), the
@@ -279,7 +271,7 @@ export async function preverRotaEtiquetaLiCom(
   pedido: PedidoParaRotaLi,
 ): Promise<PrevisaoRotaEtiquetaLi> {
   const frete = comoObjeto(pedido.freteInicial);
-  const idDoFrete = idDoIntFrete(frete?.integracaoFreteOuterRef);
+  const idDoFrete = idIntFreteDaRefLi(frete?.integracaoFreteOuterRef);
   if (idDoFrete === null) return recusa(MOTIVO_ROTA_ETIQUETA_LI.semRotaLi);
   const docDoFrete = await ler(idDoFrete);
 
