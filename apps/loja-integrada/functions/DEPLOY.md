@@ -197,20 +197,23 @@ A notification is durable once it is either (a) processed, or (b) persisted as
 
 ### A parked notification logs ERROR
 
-A THROWN failure that the reprocess sweep parks at its cap (`MAX_TENTATIVAS`, 5
-hot passes, so no sooner than about five hours after the queue's last attempt)
-is terminal: no lane re-drives it, and it holds an order nobody imported. So
+A failure the RUN threw (the import, or the context it loads first) that the
+reprocess sweep parks at its cap (`MAX_TENTATIVAS`, 5 hot passes, so no sooner
+than about five hours after the queue's last attempt) is terminal: no lane
+re-drives it, and it holds an order nobody imported. So
 `reprocessLojaIntegradaNotifications` logs ONE line at ERROR severity for each
 such park — ids only, never a store name, a buyer's datum or the error's
 message — and the row's document id joins the sweep's per-doc failures WARNING.
-Alert on both lines:
+Alert on both ERROR lines:
 
 - `[loja-integrada/importacao] pedido PAGO sem endereço de entrega: tentativas esgotadas, notificação estacionada`
   (`integracaoId`, `numero`, `pedidoId`): a PAID order with a shipment still
   had no usable delivery address on its last run (master-plan step 5). It also
   raises the `critico` aviso `lojaIntegradaPedidoPagoSemEndereco` on the conta
-  page; a later import of that order that finds an address resolves it. A
-  pickup order is exempt and imports without one.
+  page; a later import of that order that gets past the check (an address
+  arrived, the order is no longer paid, it now routes to a pickup, or the
+  pedido now stores an endereço) resolves it. A pickup order is exempt and
+  imports without one.
 - `[loja-integrada] notificação estacionada: tentativas esgotadas, pedido não importado`
   (`integracaoId`, `numero`, `origem`, `classe`): any other thrown failure — a
   429, a 5xx, a timeout, gRPC. No aviso: the row's `erro` is the record.
@@ -222,6 +225,17 @@ retries a signal: if the aviso write fails, the shared core adds
 park — a deterministic refusal, or the deferred lane's 7th pass — logs neither
 line. That includes every row before the window: with the read switch unset a
 run defers at the context, so neither line can appear until the switch is set.
+
+⚠️ Not every THROWN park gets an ERROR line either: the shared core signals
+only a failure the run threw. A row that no longer parses as a task (the
+strict rehydration) throws BEFORE any run, so it parks at its lane's cap with
+neither line nor aviso — and it too holds an order nobody imported. A store
+write that fails after the run returned parks the same silent way. Both show
+only as the row's document id in
+`[loja-integrada] reprocess sweep (quente) had per-doc failures` (or `(adiada)`
+for the deferred lane; WARNING, `docIds`), which the sweep logs on every pass
+that met a failure. Alert on that WARNING too: a document id that repeats
+across passes is a row on its way to a silent park; read its `erro`.
 
 ## Runtime env
 

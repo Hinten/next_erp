@@ -23,8 +23,18 @@ import {
  *   with no edit of their own. The read switch still stops every run before it
  *   (the context refuses first), so nothing calls Loja Integrada until the
  *   window sets it.
- * - `increment`: a tier-0 `FieldValue`, for the reconexão aviso's counter, so two
- *   producers landing together cannot lose each other's bump.
+ * - `increment`: a tier-0 `FieldValue`, for every aviso counter a run bumps — the
+ *   reconexão aviso's, the importer's avisos (`depsDoImportadorLi`), and
+ *   the paid-without-address aviso the sweep raises when it parks a row
+ *   (`sinalizarEsgotamentoLi`) — so two producers landing together cannot lose
+ *   each other's bump.
+ * - `agoraMs`: the one clock, in ms — every "now" a run reads: the importer's
+ *   (once per import), the avisos' and a conta park's.
+ * - `logger`: the run's one sink (`firebase-functions/v2`), ids and counts only.
+ *   It also carries the ERROR lines the sweep logs for a notification it parks
+ *   — the paid-without-address line and the generic one
+ *   (`sinalizarEsgotamentoLi`, through `logger.error`; DEPLOY.md, "A parked
+ *   notification logs ERROR").
  * - `esperar`: the pacer's sleep (2 000 ms before every Loja Integrada call).
  * - `arrayUnion`: a tier-1 `FieldValue`, for the step-5 importer's freight `mapa`
  *   registration (step 20's helper), so the stored rows are never rewritten.
