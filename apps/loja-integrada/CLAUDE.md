@@ -219,8 +219,10 @@ still be fixed. Only the context loader refuses those.
   `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base. The importer's
   `LiPedidoPagoSemEnderecoError` (a paid order without an address, step 5) is `null` too:
   retried, never parked by the table. `criarPipelineLi` binds the shared `onRetriesExhausted`
-  (a THROWN failure parked at the cap) to `sinalizarEsgotamentoLi`: that error's ERROR line
-  plus the critico aviso, any other class one generic ERROR line (ids and the class only).
+  (a failure the RUN threw, parked at the cap) to `sinalizarEsgotamentoLi`: that error's ERROR
+  line plus the critico aviso, any other class one generic ERROR line (ids and the class only).
+  A row that fails to rehydrate (the strict `fromDoc`) parks with neither: only its doc id in
+  the sweep's per-doc failures WARNING.
 - A parked conta DEFERS, never drops (#808): daily re-drive for 7 days,
   `graduateDeferredTransientErrors`, and on a token save or renewal the routes' best-effort
   `redriveAposSalvarTokenLi` (`(status, contaId)` index; a gRPC failure is logged, the 200
