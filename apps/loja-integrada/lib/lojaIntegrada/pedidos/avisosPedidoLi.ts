@@ -11,7 +11,7 @@
  * | `lojaIntegradaPedidoContestado` | the pedido id | the order's stamp | the decision names a motivo | any import that raises none |
  * | `lojaIntegradaPedidoHub` | the pedido id | the order's stamp | a hub marker, on a live sale | no marker, or a dead sale |
  * | `lojaIntegradaFreteNaoSuportado` | `sha256Hex(chave)` | the routing read's `readTime` | the routing says so | the routing says so |
- * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order's retries ran out without an address (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | any import that reaches the avisos |
+ * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order carrying no CEP ran out of retries (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | any import that reaches the avisos |
  * | `lojaIntegradaReversaoComEtiqueta` | the pedido id | the order's stamp | a reversal codigo on a pedido that holds a bought label | any import that raises none |
  *
  * `lojaIntegradaPedidoPagoSemEndereco` is the one `critico` tipo; every other
@@ -303,7 +303,7 @@ export async function sincronizarAvisosDoPedidoLi(
 }
 
 /**
- * Raise "a PAID order's retries ran out without a delivery address" — called
+ * Raise "a PAID order's retries ran out without a CEP to deliver to" — called
  * only by the notification pipeline's exhaustion signal
  * (`pedidoPagoSemEndereco.ts`), never by an import: an import that would raise
  * it throws instead, so the queue and the sweep retry first. Clocked by the

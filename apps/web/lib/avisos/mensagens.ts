@@ -591,16 +591,17 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   },
   // Crítico: uma venda PAGA que não entrou no ERP é uma venda que ninguém despacha. O
   // aviso só sobe quando as novas tentativas acabaram (a fila e a varredura), por isso a
-  // frase diz que a importação parou. "Utilizável" é o que o importador grava como
-  // endereço: um CEP válido (um CEP sem logradouro ainda é endereço).
+  // frase diz que a importação parou. Só um pedido SEM CEP nenhum (ausente, vazio ou em
+  // branco) é recusado: um CEP inválido, digitado pelo cliente, não se conserta esperando,
+  // e esse pedido entra sem endereço — por isso a frase nunca fala em CEP "válido".
   [TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco]: {
     titulo: 'Pedido pago da Loja Integrada sem endereço',
     corpo: (params) =>
       `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} está pago na Loja ` +
-      'Integrada, mas chegou sem um endereço de entrega com CEP válido e por isso não entrou ' +
-      'no ERP — nem o pedido, nem a atualização dele: sem endereço não há como comprar a ' +
-      'etiqueta. A importação tentou de novo por algumas horas e parou. O aviso se encerra ' +
-      'quando o pedido for importado.',
+      'Integrada, mas chegou sem CEP no endereço de entrega e por isso não entrou no ERP — ' +
+      'nem o pedido, nem a atualização dele: sem endereço não há como comprar a etiqueta. A ' +
+      'importação tentou de novo por algumas horas e parou. O aviso se encerra quando o ' +
+      'pedido for importado.',
     // O conserto está FORA do app: o endereço é preenchido no painel da Loja Integrada. Que
     // essa alteração traga o pedido de volta à importação é o ESPERADO, ainda não observado
     // (nenhuma captura mostra a edição do endereço mudando a data de modificação do pedido),

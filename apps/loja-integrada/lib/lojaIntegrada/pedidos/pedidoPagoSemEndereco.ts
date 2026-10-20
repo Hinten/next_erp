@@ -1,10 +1,10 @@
 /**
- * A PAID Loja Integrada order with no usable delivery address (owner decision,
- * 2026-10-19): REFUSED with a retryable error, retried by the queue's backoff
- * and the 30-minute reprocess sweep (the platform may still fill the address),
- * and — once those attempts RAN OUT — failed LOUDLY: an ERROR log line and an
- * open `lojaIntegradaPedidoPagoSemEndereco` aviso, with the notification
- * parked for investigation.
+ * A PAID Loja Integrada order that carries NO CEP at all (owner decisions,
+ * 2026-10-19 and 2026-10-20): REFUSED with a retryable error, retried by the
+ * queue's backoff and the 30-minute reprocess sweep (the platform may still
+ * fill the address), and — once those attempts RAN OUT — failed LOUDLY: an
+ * ERROR log line and an open `lojaIntegradaPedidoPagoSemEndereco` aviso, with
+ * the notification parked for investigation.
  *
  * ## Who is refused ({@link pedidoPagoSemEnderecoLi}, PURE)
  *
@@ -17,16 +17,22 @@
  *    its import as well would hold back the contestado aviso the dispute raises;
  *  - **a shipment**: the order carries one (`envios[0]`). Without one there is
  *    no freight block, so nothing a label could be bought for;
- *  - **no usable address** ({@link enderecoEntregaUtilizavelLi}): the delivery
- *    block yields NO endereço through the SAME builder step 7 stores one with
- *    (`enderecoDoPedidoLi` → `buildEnderecoForcado`): absent, empty, or no CEP
- *    the builder can read (`sem-cep`). Exactly step 7's criterion, so one order
- *    meets the same rule whichever of its observations arrives first: a CEP
- *    with no street is an endereço there (the builder fills its placeholder,
- *    and for an unreadable UF step 7's CEP lookup may fill the street too), so
- *    it is one here — the unpaid observation would have stored it and given it
- *    a carrier route, and the paid one that follows passes as "the pedido
- *    stores an endereço". Nothing else is asked of the block;
+ *  - **no CEP at all** ({@link entregaSemCepLi}): no delivery block, or its
+ *    `cep` absent, `null`, the empty text `''` (what the repo reads as nothing)
+ *    or whitespace only (decided here: it carries nothing either). Nothing else
+ *    is asked of the block — not a street, a número or a bairro.
+ *    ⚠️ A PRESENT but INVALID CEP (owner decision, 2026-10-20) is NOT refused,
+ *    although the endereço builder reads none from it (`sem-cep`, so step 7
+ *    stores no endereço): the store lets the customer type one, and waiting
+ *    never fixes it, so retrying would only hold a paid sale back for hours to
+ *    raise the same aviso. Such an order imports as any order without an
+ *    endereço does — the freight amount and the modalidade, no carrier route
+ *    (`freteMapeamento.ts`, "No endereço, no route"), no endereço stored. The
+ *    scope is the CEP's ABSENCE, never its quality, and that keeps the rule
+ *    order-independent: whichever of an order's observations arrives first,
+ *    one with no CEP is refused once paid, one with an invalid CEP imports
+ *    without an endereço, and one with a valid CEP — a street or not — passes
+ *    here and gets the builder's endereço wherever step 7 stores one;
  *  - **not a pickup**: the routing did not send the order to an active
  *    `retiradaNaLoja` target (`RoteamentoFreteLi.dispensaEndereco`, read from
  *    the target DOCUMENT's tipo) — a pickup ships nothing, imports normally and
@@ -38,8 +44,8 @@
  *    paid estado for nothing; whether that endereço pairs with the cliente is
  *    step 7's question (`importarPedido.ts`), unchanged.
  *
- * An order that HAS a usable address but whose buyer has no document (so no
- * cliente, and no endereço is stored) is not this rule's: it imports without a
+ * An order that HAS a CEP but whose buyer has no document (so no cliente, and
+ * no endereço is stored) is not this rule's either: it imports without a
  * route, plus its incidente, as before.
  *
  * ## When the import refuses (`importarPedido.ts`, step 6b, and again per batch attempt)
@@ -94,7 +100,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { CODIGOS_LI_PAGO } from '@delfrance/schemas';
 
 import { avisarPedidoPagoSemEnderecoLi, type PedidoDoAvisoLi } from './avisosPedidoLi';
-import { enderecoDoPedidoLi, type EnderecoEntregaLi } from './clienteMapeamento';
+import type { EnderecoEntregaLi } from './clienteMapeamento';
 import { vazioArmazenadoLi } from './vazioArmazenado';
 
 const ROTULO_LOG = '[loja-integrada/importacao]';
@@ -104,13 +110,16 @@ const ROTULO_LOG = '[loja-integrada/importacao]';
 /* -------------------------------------------------------------------------- */
 
 /**
- * A delivery block step 7 would store an endereço from: a CEP the endereço
- * builder reads (module header).
+ * The delivery block carries NO CEP at all: no block, or a `cep` absent,
+ * `null`, `''` or whitespace only (module header). Any other text is a CEP —
+ * valid or not, which is the endereço builder's question, never this one's.
+ * Pinned by `pedidoPagoSemEndereco.test.ts`: EQUAL `null`/`''`/`'   '` (no
+ * CEP), and the NEAR-MISS `'00000'`/`'abc'`, which the builder reads no
+ * endereço from and which still are CEPs here.
  */
-export function enderecoEntregaUtilizavelLi(
-  endereco: EnderecoEntregaLi | null | undefined,
-): boolean {
-  return enderecoDoPedidoLi(endereco).kind !== 'sem-cep';
+export function entregaSemCepLi(endereco: EnderecoEntregaLi | null | undefined): boolean {
+  const cep = endereco?.cep;
+  return cep === null || cep === undefined || cep.trim() === '';
 }
 
 /** The stored pedido fields the rule reads — raw, as the snapshot holds them. */
@@ -148,7 +157,7 @@ export function pedidoPagoSemEnderecoLi(entrada: EntradaPedidoPagoSemEnderecoLi)
     CODIGOS_LI_PAGO.has(entrada.codigo) &&
     entrada.temEnvio &&
     !entrada.dispensaEndereco &&
-    !enderecoEntregaUtilizavelLi(entrada.enderecoEntrega) &&
+    entregaSemCepLi(entrada.enderecoEntrega) &&
     !armazenaEnderecoLi(entrada.armazenado)
   );
 }
@@ -158,7 +167,7 @@ export function pedidoPagoSemEnderecoLi(entrada: EntradaPedidoPagoSemEnderecoLi)
 /* -------------------------------------------------------------------------- */
 
 /**
- * A paid order without a usable delivery address (module header): the task
+ * A paid order carrying no CEP at all (module header): the task
  * rethrows it — the step-3 classifier answers `null` — and the queue and the
  * sweep retry. Its public fields and its MESSAGE (the parked row's `erro`) name
  * ids only; the order as its avisos name it — the store name included — is
@@ -174,7 +183,7 @@ export class LiPedidoPagoSemEnderecoError extends Error {
   constructor(pedido: PedidoDoAvisoLi) {
     super(
       `O pedido ${pedido.numero} da conta ${pedido.integracaoId} da Loja Integrada está pago e ` +
-        'sem endereço de entrega utilizável; a tarefa tenta de novo.',
+        'sem CEP no endereço de entrega; a tarefa tenta de novo.',
     );
     this.name = 'LiPedidoPagoSemEnderecoError';
     this.integracaoId = pedido.integracaoId;

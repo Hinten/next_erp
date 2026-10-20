@@ -1095,13 +1095,16 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaReversaoComEtiqueta', () => {
 describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco];
 
-  it('says the PAID order did not reach the ERP, why, that retrying stopped, and how it closes', () => {
-    expect(mensagem.corpo({ loja: 'Conta A', pedido: '165' })).toBe(
-      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem um endereço de ' +
-        'entrega com CEP válido e por isso não entrou no ERP — nem o pedido, nem a atualização ' +
+  it('says the PAID order did not reach the ERP, why (NO CEP at all — never an invalid one, which imports), that retrying stopped, and how it closes', () => {
+    const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165' });
+    expect(corpo).toBe(
+      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem CEP no ' +
+        'endereço de entrega e por isso não entrou no ERP — nem o pedido, nem a atualização ' +
         'dele: sem endereço não há como comprar a etiqueta. A importação tentou de novo por ' +
         'algumas horas e parou. O aviso se encerra quando o pedido for importado.',
     );
+    // Owner decision, 2026-10-20: an invalid CEP is not refused, so the wording never blames one.
+    expect(corpo).not.toContain('válido');
   });
 
   it('renders `{}` with placeholders, never "undefined"', () => {

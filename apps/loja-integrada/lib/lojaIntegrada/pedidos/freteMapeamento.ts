@@ -93,12 +93,13 @@
  * `retiradaNaLoja` target (`RoteamentoFreteLi.dispensaEndereco`, read from the
  * target DOCUMENT's tipo) ships nothing to an address, so it is kept without
  * an endereço — `enderecoFreteOuterReference` then stays `null`. And which
- * orders reach this rule at all changed the same day: a PAID order with no
- * delivery address the endereço builder can read (no CEP) is REFUSED before
- * the pedido is written and retried (`pedidoPagoSemEndereco.ts`), so "no
- * endereço" here is an unpaid order, a paid one whose pedido already stores
- * an endereço, or one whose buyer has no document (no cliente, so no endereço
- * is stored).
+ * orders reach this rule at all changed the same day: a PAID order carrying
+ * NO CEP at all (none, `''` or blank) is REFUSED before the pedido is written
+ * and retried (`pedidoPagoSemEndereco.ts`), so "no endereço" here is an
+ * unpaid order, a paid one with a present but INVALID CEP (owner decision,
+ * 2026-10-20: the customer typed it, and waiting never fixes it), a paid one
+ * whose pedido already stores an endereço, or one whose buyer has no document
+ * (no cliente, so no endereço is stored).
  *
  * The update needs nothing of its own: an absent incoming value never
  * overwrites a stored one, so a route already stored (an operator's, or an

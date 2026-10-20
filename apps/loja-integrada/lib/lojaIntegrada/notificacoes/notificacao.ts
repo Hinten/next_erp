@@ -54,7 +54,7 @@
  * | `recusa-deterministica/<classe>[/<status>]` | park | park | park |
  * | `importador-ausente` | park | park | park |
  * | thrown (429, 5xx, network, timeout, our config, gRPC, unknown) | queue backoff, then `failed` | `failed`, parks at 5 with an ERROR line | GRADUATES to the hot lane |
- * | thrown `LiPedidoPagoSemEnderecoError` (step 5: a paid order, no usable address) | the same | the same, and the park at 5 FAILS LOUDLY (its own line and an aviso) | the same |
+ * | thrown `LiPedidoPagoSemEnderecoError` (step 5: a paid order carrying no CEP at all) | the same | the same, and the park at 5 FAILS LOUDLY (its own line and an aviso) | the same |
  *
  * ## Attempts exhausted: the one loud failure
  *
@@ -515,7 +515,7 @@ export async function classificarFalhaLi(
   if (err instanceof LiPaginacaoError) return recusa('LiPaginacaoError', null);
   if (err instanceof ZodError) return recusa('ZodError', null);
 
-  // A paid order without a usable address is RETRIED, never parked by this
+  // A paid order carrying no CEP at all is RETRIED, never parked by this
   // table: the platform may fill the address, and the pipeline's own park at
   // its cap is what fails it loudly (`onRetriesExhausted`, below).
   if (err instanceof LiPedidoPagoSemEnderecoError) return null;
