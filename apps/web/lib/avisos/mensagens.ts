@@ -1,17 +1,20 @@
 import {
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   PENDENCIA_RECLAMACAO,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   motivoFreteNaoSuportadoLiSchema,
+  motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
   motivoPedidoContestadoLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
   type MotivoFreteNaoSuportadoLi,
+  type MotivoImportacaoParadaAmazon,
   type MotivoImportacaoParadaLi,
   type MotivoPedidoContestadoLi,
   type PendenciaReclamacao,
@@ -371,6 +374,50 @@ function corpoSegredoLwaExpirandoAmazon(params: Aviso['params']): string {
   );
 }
 
+/**
+ * pt-BR do motivo de uma importação de pedidos da Amazon parada — TOTAL sobre o
+ * código (`params.motivo`, um {@link MOTIVO_IMPORTACAO_PARADA_AMAZON}). O produtor
+ * (a varredura de pedidos de reserva, a cada 15 minutos) grava o CÓDIGO, nunca a
+ * frase.
+ */
+const FRASE_MOTIVO_IMPORTACAO_PARADA_AMAZON: Record<MotivoImportacaoParadaAmazon, string> = {
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.idDeContaInvalido]:
+    'o id desta conta não é aceito pela varredura de pedidos',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.credencialAusente]:
+    'a conta está conectada, mas não tem credencial salva — reconecte-a',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.credencialInvalida]:
+    'a credencial salva da conta está ilegível — reconecte-a',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.vendedorDuplicado]:
+    'mais de uma conta ativa do ERP está ligada ao mesmo vendedor da Amazon, e nenhuma delas é ' +
+    'lida para não importar cada pedido duas vezes',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.vendedorInvalido]:
+    'o vendedor da Amazon gravado nesta conta não é um identificador válido — reconecte-a',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.lookbackInvalido]:
+    'o período inicial de busca de pedidos está configurado com um valor inválido',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.semPermissao]:
+    'a Amazon negou acesso à lista de pedidos mesmo com um token renovado (falta permissão de ' +
+    'pedidos ao aplicativo ou à autorização da conta)',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.limiteDeTaxa]:
+    'a Amazon limitou seguidamente as requisições da lista de pedidos',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.requisicaoRecusada]:
+    'a Amazon recusou a busca de pedidos que o ERP montou',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.falhaTransitoria]:
+    'a Amazon falhou seguidamente (erro no servidor, rede ou tempo esgotado)',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.respostaInvalida]: 'a Amazon respondeu fora do formato esperado',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.filaIndisponivel]:
+    'a fila de importação do ERP recusou os pedidos, como acontece numa implantação incompleta',
+  [MOTIVO_IMPORTACAO_PARADA_AMAZON.orcamentoEsgotado]:
+    'a varredura ficou sem tempo antes de ler todos os pedidos alterados',
+};
+
+/** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */
+function fraseMotivoImportacaoParadaAmazon(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoImportacaoParadaAmazonSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_MOTIVO_IMPORTACAO_PARADA_AMAZON[codigo.data]
+    : 'confira o registro da varredura de pedidos';
+}
+
 export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   [TIPO_AVISO.shopeeAutorizacaoExpirando]: {
     titulo: 'Autorização Shopee expirando',
@@ -656,6 +703,27 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'do aplicativo no portal de desenvolvedor da Amazon — um segredo vencido, ou trocado no ' +
       'portal sem atualizar o Secret Manager, dá exatamente isto. Corrija e reimplante; o aviso ' +
       'se encerra sozinho na próxima troca de token aceita.',
+  },
+  // Crítico: a varredura de reserva (a cada 15 minutos) é o caminho GARANTIDO de
+  // entrada de pedidos da Amazon; as notificações podem seguir chegando, mas o que
+  // elas perderem não entra. Uma conta PARADA, ou o segredo do aplicativo recusado,
+  // nunca levantam este aviso — falam os avisos próprios deles.
+  [TIPO_AVISO.amazonImportacaoParada]: {
+    titulo: 'Importação de pedidos da Amazon parada',
+    corpo: (params) =>
+      `A varredura de pedidos da Amazon parou para a conta ${p(params, 'loja')}: ` +
+      `${fraseMotivoImportacaoParadaAmazon(params.motivo)}. Pedidos cuja notificação da Amazon ` +
+      'não chegar ficam fora do ERP enquanto isso não se resolver.',
+    // A credencial e o vendedor gravado têm conserto no app (o painel da conta); o
+    // vendedor duplicado, nos cadastros das contas; o resto é implantação ou registro
+    // da varredura.
+    runbook:
+      'Se o motivo for a credencial ou o vendedor gravado na conta, reconecte a conta pelo painel ' +
+      'de conexão da conta, no ERP. Se duas contas ativas estiverem ligadas ao mesmo vendedor, ' +
+      'desative a que sobra. Se faltar permissão, confira os papéis do aplicativo no portal de ' +
+      'desenvolvedor da Amazon e reautorize a conta. Nos demais casos, um desenvolvedor confere o ' +
+      'registro da varredura de pedidos (o período inicial de busca é AMAZON_POLL_LOOKBACK_H, no ' +
+      'ambiente das funções).',
   },
 };
 

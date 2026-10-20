@@ -6,6 +6,7 @@ import {
   CANAL_AVISO,
   CANAL_AVISO_LABELS,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   PENDENCIA_RECLAMACAO,
@@ -22,6 +23,7 @@ import {
   entradaDeLeitura,
   marcarTodosComoLidos,
   motivoFreteNaoSuportadoLiSchema,
+  motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
   motivoPedidoContestadoLiSchema,
   pendenciaReclamacaoSchema,
@@ -230,6 +232,7 @@ describe('TIPO_AVISO_LABELS', () => {
       'amazonReautorizacaoExpirando',
       'amazonSegredoLwaExpirando',
       'amazonSegredoLwaRecusado',
+      'amazonImportacaoParada',
     ]) {
       const inicio = FONTE.indexOf(`**\`${tipo}\`**`);
       expect(inicio, tipo).toBeGreaterThan(-1);
@@ -269,6 +272,77 @@ describe('TIPO_AVISO_LABELS', () => {
     expect(segredo.params).toEqual({});
     expect(segredo.prazo).toBeNull();
     expect(segredo.urlInterna?.rota).toBe('/canais/amazon');
+  });
+});
+
+describe('amazonImportacaoParada (Amazon step 4)', () => {
+  it('names and labels the tipo; near-miss spellings are other tipos', () => {
+    expect(TIPO_AVISO.amazonImportacaoParada).toBe('amazonImportacaoParada');
+    expect(TIPO_AVISO_LABELS.amazonImportacaoParada).toBe('Importação de pedidos da Amazon parada');
+    for (const quase of [
+      'amazonImportacaoParado',
+      'AmazonImportacaoParada',
+      'amazonImportacaoPausada',
+      'lojaIntegradaImportacaoParada ',
+    ]) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses the producer plano as stored: critico, the conta route, a µs clock', () => {
+    const parsed = umAviso({
+      tipo: TIPO_AVISO.amazonImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: 'Conta A', motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.vendedorDuplicado },
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(parsed).toMatchObject({
+      tipo: 'amazonImportacaoParada',
+      severidade: 'critico',
+      canal: 'amazon',
+      params: { loja: 'Conta A', motivo: 'vendedor-duplicado' },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(parsed.urlInterna?.rota).toBe('/canais/amazon/int-1');
+  });
+
+  it('keys one row per conta, apart from every other Amazon tipo and from Loja Integrada’s', () => {
+    const chave = (tipo: TipoAviso, conta: string) => chaveDeAviso({ tipo, conta });
+    expect(chave(TIPO_AVISO.amazonImportacaoParada, 'int-1')).toBe('amazonImportacaoParada:int-1');
+    const chaves = [
+      chave(TIPO_AVISO.amazonImportacaoParada, 'int-1'),
+      chave(TIPO_AVISO.amazonImportacaoParada, 'int-2'),
+      chave(TIPO_AVISO.amazonReconexaoPendente, 'int-1'),
+      chave(TIPO_AVISO.lojaIntegradaImportacaoParada, 'int-1'),
+    ];
+    expect(new Set(chaves).size).toBe(chaves.length);
+  });
+});
+
+describe('MOTIVO_IMPORTACAO_PARADA_AMAZON', () => {
+  it('keeps the named-member constant in step with the enum, member for member', () => {
+    expect(Object.values(MOTIVO_IMPORTACAO_PARADA_AMAZON).sort()).toEqual(
+      [...motivoImportacaoParadaAmazonSchema.options].sort(),
+    );
+    expect(motivoImportacaoParadaAmazonSchema.options).toHaveLength(13);
+  });
+
+  it('near-miss: the UNCOUNTED outcomes are not motivos — they never raise this aviso', () => {
+    for (const quase of [
+      'conta-parada',
+      'segredo-recusado',
+      'paginacao-expirada',
+      'chamadas-desligadas',
+      'lease-ocupado',
+      'Limite-de-taxa',
+      // Loja Integrada's own motivos are not Amazon's.
+      'janela-instavel',
+      'filtro-ignorado',
+    ]) {
+      expect(motivoImportacaoParadaAmazonSchema.safeParse(quase).success, quase).toBe(false);
+    }
   });
 });
 

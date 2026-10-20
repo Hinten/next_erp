@@ -115,6 +115,7 @@ export const TIPO_AVISO_LABELS = {
   amazonReautorizacaoExpirando: 'Autorização da Amazon expirando',
   amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
   amazonSegredoLwaRecusado: 'Segredo do aplicativo da Amazon recusado',
+  amazonImportacaoParada: 'Importação de pedidos da Amazon parada',
 } as const;
 
 /**
@@ -840,6 +841,43 @@ export const TIPO_AVISO_LABELS = {
  *    happens while the read switch is off or while no Amazon conta exists, so
  *    a row raised before either stays open until the next accepted exchange (a
  *    documented residue: without an exchange the refusal cannot be re-checked).
+ *
+ * ---
+ *
+ * **`amazonImportacaoParada`** (Amazon step 4, #1929 — producer: the 15-minute
+ * backstop poll of `apps/amazon`, `lib/amazon/pedidos/pollPedidos.ts`) — the
+ * poll could not list a conta's changed orders, repeatedly or in a way that
+ * will not heal by itself. The push path may still deliver orders, but the poll
+ * is the GUARANTEED intake path: whatever push misses no longer reaches the
+ * ERP.
+ *
+ *  - **Channel-specific**: the motivos and their remedies are this poll's own
+ *    (a missing order-role grant, two contas on one seller, a look-back the
+ *    window sets), the `lojaIntegradaImportacaoParada` choice.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalAmazon`), where the reconnect
+ *    panel lives; per conta, unlike the two per-app tipos routed to the list.
+ *  - **Severity `critico`**, canal `amazon`, raised WITHOUT escalation: in-app
+ *    only.
+ *  - **`params` are exactly `loja`** (the conta name) **and `motivo`** — a
+ *    {@link MOTIVO_IMPORTACAO_PARADA_AMAZON} CODE, never a sentence, so a
+ *    wording fix in `mensagens.ts` is retroactive.
+ *  - **`relogioEvento`** = the µs commit time of the poll run's FIRST write to
+ *    its poll document (the lease, or the refusal record). Every write there is
+ *    preconditioned, so these clocks rise strictly across runs, and a late raise
+ *    from a run whose lease was taken over is dropped. ⚠️ Per-document µs:
+ *    never compare it with another tipo's.
+ *  - **Raised only once the write that stored its count LANDED**, at a per-motivo
+ *    threshold of consecutive counted failures (1 for what never heals by
+ *    itself, 2 for a malformed answer, 4 — one hour — for what may).
+ *  - **Never raised** for a parked conta (`amazonReconexaoPendente` says that),
+ *    an app-secret refusal (`amazonSegredoLwaRecusado`), an inactive or
+ *    unconnected conta, the read switch off, a busy lease or an absent
+ *    importer.
+ *  - **Machine resolver**: the poll, on a clean run after a stored failure,
+ *    clocked by that run's lease. ⚠️ The expiry sweep's orphan pass does NOT
+ *    list this tipo yet: a row left open when the conta is deleted (or
+ *    deactivated) stays open until retention (a documented residue).
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -870,6 +908,7 @@ export const tipoAvisoSchema = z
     'amazonReautorizacaoExpirando',
     'amazonSegredoLwaExpirando',
     'amazonSegredoLwaRecusado',
+    'amazonImportacaoParada',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -903,6 +942,7 @@ export const TIPO_AVISO = {
   amazonReautorizacaoExpirando: 'amazonReautorizacaoExpirando',
   amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
   amazonSegredoLwaRecusado: 'amazonSegredoLwaRecusado',
+  amazonImportacaoParada: 'amazonImportacaoParada',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -992,6 +1032,72 @@ export const MOTIVO_IMPORTACAO_PARADA_LI = {
   filtroIgnorado: 'filtro-ignorado',
   janelaGrandeDemais: 'janela-grande-demais',
 } as const satisfies Record<string, MotivoImportacaoParadaLi>;
+
+/**
+ * Why the Amazon backstop poll stopped importing a conta — the
+ * `amazonImportacaoParada` aviso's `params.motivo`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
+ * shape: a wording fix is retroactive), and the poll document's `ultimoErro`
+ * (`pollPedidosAmazon.ts`). Only COUNTED failures are members:
+ *
+ *  - a refusal before any read: `id-de-conta-invalido`, `credencial-ausente`,
+ *    `credencial-invalida` (the conta is connected but its credential is
+ *    missing or unreadable), `vendedor-duplicado` (two active contas hold one
+ *    seller: neither is polled, or every order would import twice),
+ *    `vendedor-invalido` (the seller id stored on the conta is outside its
+ *    grammar — the callback never writes one, so a hand edit or a legacy row;
+ *    a reconnect rewrites it),
+ *    `lookback-invalido` (the bootstrap look-back the window sets is not a valid
+ *    number of hours);
+ *  - an answer from Amazon: `sem-permissao` (a 401/403 that a forced token
+ *    refresh did not cure — a role grant), `limite-de-taxa` (429),
+ *    `requisicao-recusada` (a 4xx on a request this poll built),
+ *    `falha-transitoria` (5xx, network, timeout), `resposta-invalida` (a page or
+ *    a row outside its shape);
+ *  - this side: `fila-indisponivel` (the reads queue refused the enqueue the way
+ *    a broken deploy does), `orcamento-esgotado` (the run's deadline arrived
+ *    mid-drain).
+ *
+ * ⚠️ NOT members, on purpose: a parked conta, an app-secret refusal and an
+ * expired pagination token — none is counted, so none can raise this aviso.
+ *
+ * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
+ * code newer than the web build reaches the reader as a plain string, and
+ * `mensagens.ts` falls back rather than printing `undefined`.
+ */
+export const motivoImportacaoParadaAmazonSchema = z.enum([
+  'id-de-conta-invalido',
+  'credencial-ausente',
+  'credencial-invalida',
+  'vendedor-duplicado',
+  'vendedor-invalido',
+  'lookback-invalido',
+  'sem-permissao',
+  'limite-de-taxa',
+  'requisicao-recusada',
+  'falha-transitoria',
+  'resposta-invalida',
+  'fila-indisponivel',
+  'orcamento-esgotado',
+]);
+export type MotivoImportacaoParadaAmazon = z.infer<typeof motivoImportacaoParadaAmazonSchema>;
+
+/** Named members of {@link motivoImportacaoParadaAmazonSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_IMPORTACAO_PARADA_AMAZON = {
+  idDeContaInvalido: 'id-de-conta-invalido',
+  credencialAusente: 'credencial-ausente',
+  credencialInvalida: 'credencial-invalida',
+  vendedorDuplicado: 'vendedor-duplicado',
+  vendedorInvalido: 'vendedor-invalido',
+  lookbackInvalido: 'lookback-invalido',
+  semPermissao: 'sem-permissao',
+  limiteDeTaxa: 'limite-de-taxa',
+  requisicaoRecusada: 'requisicao-recusada',
+  falhaTransitoria: 'falha-transitoria',
+  respostaInvalida: 'resposta-invalida',
+  filaIndisponivel: 'fila-indisponivel',
+  orcamentoEsgotado: 'orcamento-esgotado',
+} as const satisfies Record<string, MotivoImportacaoParadaAmazon>;
 
 /**
  * Why a Loja Integrada order is contested — the `lojaIntegradaPedidoContestado`

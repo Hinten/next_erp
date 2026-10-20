@@ -97,8 +97,8 @@ export interface LoggerAmazon {
  * What a line is about: a call, a call the read switch refused, a write valve
  * read at the start of a run (`valvulas.ts`), a reads-queue task (step 3: its
  * one dispatch line, and the intake's own refusals), a reprocess sweep lane
- * (step 3) or a push delivery at the receiver (step 3: one line per delivery).
- * Step 4's poll adds `poll`.
+ * (step 3), a push delivery at the receiver (step 3: one line per delivery) or
+ * the backstop poll (step 4: one line per conta run, and the tick's gate).
  */
 export type EventoAmazon =
   | 'chamada'
@@ -106,7 +106,8 @@ export type EventoAmazon =
   | 'valvula'
   | 'tarefa'
   | 'varredura'
-  | 'notificacao';
+  | 'notificacao'
+  | 'poll';
 
 /** What a NON-call line is about: `chamada` is written by the observer alone. */
 export type EventoAvulsoAmazon = Exclude<EventoAmazon, 'chamada'>;
@@ -118,6 +119,7 @@ const EVENTOS_AVULSOS: Readonly<Record<EventoAvulsoAmazon, true>> = {
   tarefa: true,
   varredura: true,
   notificacao: true,
+  poll: true,
 };
 
 /** The body excerpt's cap, in UTF-8 bytes, applied AFTER the regex layer. */

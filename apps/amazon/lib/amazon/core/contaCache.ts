@@ -27,6 +27,10 @@
  *    writing the seller id, and the intake task calls it before deciding a
  *    poll's irreversible `vendedor-mudou` drop, then reloads the context
  *    (`notificacoes/notificacao.ts`): a stale copy never drops a current poll.
+ *    The backstop poll (step 4, `pedidos/pollPedidos.ts`) calls it before each
+ *    conta's run: the seller its payloads carry, and its duplicate-seller
+ *    check, must never come from a copy a reconnect left stale (a 15-minute
+ *    tick would find the entry expired anyway).
  *
  * `sampleEvery: 0` — the built-in sampler logs through `console.warn`, the wrong
  * severity for a metric.

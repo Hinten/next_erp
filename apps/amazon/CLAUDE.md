@@ -123,8 +123,9 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   alias, and never reads `process.env`: the environment is a PARAMETER
   (`env.ts`), so step 3's functions bundle can import it. `estrutura.test.ts`
   pins all of it.
-- `lib/amazon/avisos/avisos.ts` is the ONLY module that speaks microseconds
-  (three conversion sites, counted by its test).
+- `lib/amazon/avisos/avisos.ts` is the ONLY module that converts a clock to microseconds
+  (three conversion sites, counted by its test). The poll's order stamps are µs read
+  straight from Amazon's ISO text (`pedidos/janelaPoll.ts`), never a converted clock.
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.
@@ -252,7 +253,11 @@ no `env:` block.
 | Avisos | seam | `escreverAviso` / `resolverAviso`; the reconexão row always clocked (µs) |
 | Receiver, happy path | — | no write (the enqueue is the whole effect) |
 | Receiver failure persist | 0 | the shared core's `create` on the deterministic `push:<NotificationId>`; ALREADY_EXISTS = already durable |
-| Conta cache | — | per-instance invalidate after the callback, and by the intake task before a poll's `vendedor-mudou` drop (then a reload); others bounded by TTL + `isFresh` |
+| Poll failure persist (step 4) | 0 | the same core `create` on `poll:<conta>:<orderId>:<µs>`; ALREADY_EXISTS = already durable |
+| Poll refusal record (step 4) | 1 | `create`, or `update(…, { lastUpdateTime })` never while a lease is held; never the cursor or the lease |
+| Poll lease (step 4) | 1 | `create`, or once EXPIRED `update(…, { lastUpdateTime })`; that update also anchors a cursorless doc (W7) |
+| Poll final write (step 4) | 1 | `update(…, { lastUpdateTime: <lease writeTime> })`; on 9/5 re-read ONCE and RE-DERIVE (max cursor, merged `vistos`, our `pendente` only if `===` on its two scalars; no fold) |
+| Conta cache | — | per-instance invalidate after the callback, by the intake task before a poll's `vendedor-mudou` drop (then a reload), and by the poll before each conta's run; others bounded by TTL + `isFresh` |
 
 This app adds **zero** multi-document atomic-write sites.
 

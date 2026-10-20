@@ -378,12 +378,19 @@ describe('registrarEventoAmazon', () => {
     },
   );
 
-  it('an evento outside the closed set is <invalido> (near-misses of the step-3 names, and step 4’s)', () => {
+  it('step 4 adds `poll`: written as given, with its envelope', () => {
+    const { logger, linhas } = loggerEspiao();
+    registrarEventoAmazon(logger, 'poll', 'INFO', 'm', { x: 1 }, { conta: CONTA, fluxo: 'poll' });
+    expect(linhas[0]?.meta).toEqual({ x: 1, evento: 'poll', conta: CONTA, fluxo: 'poll' });
+  });
+
+  it('an evento outside the closed set is <invalido> (near-misses of the step-3 and step-4 names)', () => {
     const { logger, linhas } = loggerEspiao();
     registrarEventoAmazon(logger, 'tarefas' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'notificacoes' as never, 'INFO', 'm', {});
-    registrarEventoAmazon(logger, 'poll' as never, 'INFO', 'm', {});
-    expect(linhas.map((l) => l.meta?.evento)).toEqual([INVALIDO, INVALIDO, INVALIDO]);
+    registrarEventoAmazon(logger, 'polls' as never, 'INFO', 'm', {});
+    registrarEventoAmazon(logger, 'pollPedidos' as never, 'INFO', 'm', {});
+    expect(linhas.map((l) => l.meta?.evento)).toEqual([INVALIDO, INVALIDO, INVALIDO, INVALIDO]);
   });
 
   it('is never a call line: a cast `chamada` becomes <invalido>, and a trechoCorpo campo is dropped', () => {

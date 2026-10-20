@@ -674,6 +674,18 @@ export {
 } from './pollPedidosLojaIntegrada';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta cursor,
+  // resumable drain, dedup and lease state of the Amazon backstop poll (master
+  // plan step 4, PR 4-a). Bare: no Meta, never a combined `{ schema, meta }`.
+  LAST_UPDATED_AFTER_POLL_AMAZON_REGEX,
+  MARKETPLACE_IDS_POLL_AMAZON_REGEX,
+  pendentePollAmazonSchema,
+  pollPedidosAmazonSchema,
+  type PendentePollAmazon,
+  type PollPedidosAmazon,
+} from './pollPedidosAmazon';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
@@ -1567,6 +1579,8 @@ export {
   PENDENCIA_RECLAMACAO,
   motivoImportacaoParadaLiSchema,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  motivoImportacaoParadaAmazonSchema,
+  MOTIVO_IMPORTACAO_PARADA_AMAZON,
   motivoPedidoContestadoLiSchema,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   motivoFreteNaoSuportadoLiSchema,
@@ -1589,6 +1603,7 @@ export {
   type RotaAvisoKey,
   type PendenciaReclamacao,
   type MotivoImportacaoParadaLi,
+  type MotivoImportacaoParadaAmazon,
   type MotivoPedidoContestadoLi,
   type MotivoFreteNaoSuportadoLi,
   type SituacaoAnuncioForaDaSincronizacao,
