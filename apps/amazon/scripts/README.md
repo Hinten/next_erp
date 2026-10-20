@@ -70,7 +70,13 @@ pushed branch is published: the owner sees the fixtures (or their diff) before a
   the application id, AWS account ids and ARNs, the receiver host), `#` for comments, UTF-8,
   at least 4 letters or digits per term. Seed it from the private identifiers list. The
   sanitizer refuses to run without it, refuses any fixture where a listed term survives, and
-  never prints a term. It never enters the repository.
+  never prints a term. It never enters the repository. A term is matched as a substring, case
+  and accents ignored and any run of separators read as one space, inside a longer word too
+  (`silva` is found in `silvana` and in `silva123`). A term of several words is also found
+  with its separators removed (`loja exemplo` finds `lojaexemplo` in a host), but a one-word
+  term is not found split by a separator (`lojaexemplo` misses `Loja Exemplo`): list a name
+  of several words with its spaces. When a term refuses a value that is not the name, list a
+  more specific term instead (the full name rather than one common word).
 - `.sal-sanitizador` is created by the first run that converts pairs (32 random bytes; a dry
   run or a refused run too, and the output then says so). It keys every fake, so the same
   capture always gives the same fixture; delete it together with the captures.
@@ -113,13 +119,17 @@ a regular UTF-8 file.
     lacks the buyer's data, so the fixture records it.
   - `data:` (optional, else the body file's modification date in UTC) and `limite-taxa:`
     (optional, the `x-amzn-RateLimit-Limit` header's value).
+  - The method on line 1 must be one the operation is captured under: `GET` for the orders
+    and the invoice status, `POST` for the invoice submission and the Easy Ship bulk, `GET` or
+    `POST` for the Easy Ship package. Any other is refused (`metodo-da-operacao`).
   - **Never a header line.** Any other line refuses the pair, and so does a host other than
     the SP-API one (LWA, S3, a pre-signed URL), a query key that names a credential, a query
     value that is a URL, a `/documents` or token path, or an operation whose redaction table
     does not exist yet.
 
-- `<nome>.req.json` (optional, POST bulk only): the request body.
-- `<nome>.zip.txt` (optional, POST bulk only): the label zip's listing, one `<bytes> <name>`
+- `<nome>.req.json` (optional, Easy Ship bulk only): the request body. Beside any other
+  operation, a POST included, either attachment refuses the pair (`anexo-indevido`).
+- `<nome>.zip.txt` (optional, Easy Ship bulk only): the label zip's listing, one `<bytes> <name>`
   per line. Names are shape-faked (only a label or document extension such as `.zpl` or
   `.pdf` is kept) and sizes kept. **Never the zip itself.** Raw `unzip -l` output (its
   header, dates and totals) is refused line by line, so convert it where the zip lives,
