@@ -13,6 +13,7 @@ import {
 } from '@delfrance/schemas';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { fraseDosCanaisImplementados } from './_components/canaisImplementados';
 import { StatusCanalBadge } from './_components/StatusCanalBadge';
 
 export default function CanaisListPage() {
@@ -34,7 +35,7 @@ export default function CanaisListPage() {
         Cada canal tem seu próprio backend (<Code mx={4}>apps/&lt;canal&gt;</Code>) com as rotas de
         OAuth, o receptor de webhooks e os Cloud Functions da sincronização contínua. Esta tela é a
         visão consolidada das integrações já cadastradas no Firestore. O que cada canal suporta está
-        declarado em <Code>MARKETPLACE_TIPO_CAPS</Code>; hoje só o Mercado Livre está implementado.
+        declarado em <Code>MARKETPLACE_TIPO_CAPS</Code>; {fraseDosCanaisImplementados()}
       </Alert>
 
       {error && <Alert color="red">{error.message}</Alert>}

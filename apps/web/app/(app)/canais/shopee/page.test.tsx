@@ -13,8 +13,6 @@ import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
  */
 const h = vi.hoisted(() => ({
   permissoes: { write: true, delete: true },
-  /** `undefined` ⇒ the real caps row. */
-  implementado: undefined as boolean | undefined,
   tableViewProps: null as null | Record<string, unknown>,
 }));
 
@@ -33,16 +31,6 @@ vi.mock('@/lib/shopee/client', async (importOriginal) => {
   return { ...actual, useShopeeClient: () => shopeeClientFalso() };
 });
 vi.mock('./_components/ShopeeCallbackToast', () => ({ ShopeeCallbackToast: () => null }));
-vi.mock('@delfrance/schemas', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@delfrance/schemas')>();
-  return {
-    ...actual,
-    marketplaceCapsFor: (tipo: Parameters<typeof actual.marketplaceCapsFor>[0]) => {
-      const caps = actual.marketplaceCapsFor(tipo);
-      return h.implementado === undefined ? caps : { ...caps, implementado: h.implementado };
-    },
-  };
-});
 vi.mock('@delfrance/ui', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/ui')>();
   return {
@@ -80,7 +68,6 @@ const FRASE_PRODUTOS =
 
 beforeEach(() => {
   h.permissoes = { write: true, delete: true };
-  h.implementado = undefined;
   h.tableViewProps = null;
 });
 
@@ -112,17 +99,6 @@ describe('/canais/shopee', () => {
       ),
     ).not.toBeNull();
     expect(screen.queryByText(/ainda não estão ligados neste canal/)).toBeNull();
-  });
-
-  it('names the /produtos actions as not serving Shopee for exactly as long as the caps row says so', () => {
-    h.implementado = false;
-    renderPage();
-    expect(screen.getByText(FRASE_PRODUTOS)).not.toBeNull();
-  });
-
-  it('drops that sentence by itself once the channel flips (#1530)', () => {
-    h.implementado = true;
-    renderPage();
     expect(screen.queryByText(FRASE_PRODUTOS)).toBeNull();
   });
 });

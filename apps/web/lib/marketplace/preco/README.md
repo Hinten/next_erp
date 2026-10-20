@@ -102,6 +102,4 @@ rule 8).
 ⚠️ `caps/registriesAlinhadas.test.ts` asserts the table and this registry agree
 for **every** tipo. If a channel legitimately lands in the middle — backend
 shipped, this screen not wired yet — say so there with a named exception; do not
-delete the assertion. Shopee is that exception today, the other way round: its
-provider row landed in step 21 (#1529) ahead of its caps flip (#1530), and is
-unreachable until then.
+delete the assertion.
