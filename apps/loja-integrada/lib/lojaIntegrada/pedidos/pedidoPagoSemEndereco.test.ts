@@ -30,6 +30,7 @@ import { enderecoDoPedidoLi, type EnderecoEntregaLi } from './clienteMapeamento'
 import {
   LiPedidoPagoSemEnderecoError,
   entregaSemCepLi,
+  pedidoPagoSegueSemEnderecoLi,
   pedidoPagoSemEnderecoLi,
   sinalizarPedidoPagoSemEnderecoLi,
 } from './pedidoPagoSemEndereco';
@@ -207,6 +208,80 @@ describe('pedidoPagoSemEnderecoLi: who is refused', () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe('pedidoPagoSegueSemEnderecoLi: the aviso stays OPEN while the pedido has no delivery endereço (owner decision, 2026-10-20)', () => {
+  const DO_CLIENTE = 'documents/clientes/c1/enderecos/e1';
+
+  function segue(over: Partial<Parameters<typeof pedidoPagoSegueSemEnderecoLi>[0]> = {}): boolean {
+    return pedidoPagoSegueSemEnderecoLi({
+      codigo: PAGO,
+      temEnvio: true,
+      dispensaEndereco: false,
+      armazenado: null,
+      enderecoGravado: null,
+      ...over,
+    });
+  }
+
+  it('EQUAL: every PAID codigo, a shipment, no pickup, no endereço stored and none written ⇒ left OPEN — the invalid-CEP import is this case', () => {
+    for (const codigo of CODIGOS_LI_PAGO) expect(segue({ codigo }), codigo).toBe(true);
+    // An EMPTY stored ref, or an empty written one, is no endereço.
+    expect(
+      segue({
+        armazenado: {
+          enderecoFiscalOuterRef: '',
+          freteInicial: { enderecoFreteOuterReference: null },
+        },
+        enderecoGravado: '',
+      }),
+    ).toBe(true);
+  });
+
+  it('NEAR-MISS: an endereço the pedido already STORES — fiscal or delivery — closes it', () => {
+    expect(segue({ armazenado: { enderecoFiscalOuterRef: DO_CLIENTE } })).toBe(false);
+    expect(
+      segue({ armazenado: { freteInicial: { enderecoFreteOuterReference: DO_CLIENTE } } }),
+    ).toBe(false);
+  });
+
+  it('NEAR-MISS: an endereço THIS import writes closes it', () => {
+    expect(segue({ enderecoGravado: DO_CLIENTE })).toBe(false);
+  });
+
+  it('NEAR-MISS: a PICKUP (it needs no endereço), NO shipment (nothing to deliver) or a codigo no longer PAID closes it', () => {
+    expect(segue({ dispensaEndereco: true })).toBe(false);
+    expect(segue({ temEnvio: false })).toBe(false);
+    for (const codigo of codigoSituacaoLiSchema.options) {
+      if (CODIGOS_LI_PAGO.has(codigo)) continue;
+      expect(segue({ codigo }), codigo).toBe(false);
+    }
+    expect(segue({ codigo: 'Pedido_Pago' })).toBe(false);
+  });
+
+  it('the refusal is exactly this rule plus "no CEP", over every combination: the CEP is the only clause the two do not share', () => {
+    const armazenados = [
+      null,
+      { enderecoFiscalOuterRef: DO_CLIENTE },
+      { freteInicial: { enderecoFreteOuterReference: DO_CLIENTE } },
+    ];
+    const entregas = [null, endereco({ cep: '-' }), endereco({ cep: '00000' }), endereco()];
+    for (const codigo of codigoSituacaoLiSchema.options) {
+      for (const temEnvio of [true, false]) {
+        for (const dispensaEndereco of [true, false]) {
+          for (const armazenado of armazenados) {
+            const base = { codigo, temEnvio, dispensaEndereco, armazenado };
+            for (const enderecoEntrega of entregas) {
+              expect(
+                decidir({ ...base, enderecoEntrega }),
+                JSON.stringify({ ...base, cep: enderecoEntrega?.cep ?? null }),
+              ).toBe(segue(base) && entregaSemCepLi(enderecoEntrega));
+            }
+          }
+        }
+      }
+    }
   });
 });
 

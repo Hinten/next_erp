@@ -35,12 +35,14 @@
  *    never fixes it, so retrying would only hold a paid sale back for hours to
  *    raise the same aviso. Such an order imports as any order without an
  *    endereço does — the freight amount and the modalidade, no carrier route
- *    (`freteMapeamento.ts`, "No endereço, no route"), no endereço stored. The
- *    scope is the CEP's ABSENCE, never its quality, and that keeps the rule
- *    order-independent: whichever of an order's observations arrives first,
- *    one with no CEP is refused once paid, one with an invalid CEP imports
- *    without an endereço, and one with a valid CEP — a street or not — passes
- *    here and gets the builder's endereço wherever step 7 stores one;
+ *    (`freteMapeamento.ts`, "No endereço, no route"), no endereço stored —
+ *    and it leaves an open aviso of that order OPEN (below, "When an import
+ *    closes the aviso"). The scope is the CEP's ABSENCE, never its quality,
+ *    and that keeps the rule order-independent: whichever of an order's
+ *    observations arrives first, one with no CEP is refused once paid, one
+ *    with an invalid CEP imports without an endereço, and one with a valid
+ *    CEP — a street or not — passes here and gets the builder's endereço
+ *    wherever step 7 stores one;
  *  - **not a pickup**: the routing did not send the order to an active
  *    `retiradaNaLoja` target (`RoteamentoFreteLi.dispensaEndereco`, read from
  *    the target DOCUMENT's tipo) — a pickup ships nothing, imports normally and
@@ -103,6 +105,23 @@
  * 5xx, a Firestore deadline) park the row with that transient's error: the
  * channel's generic ERROR line for a parked notification names the order, but
  * no aviso is raised — nothing records that the earlier runs were refusals.
+ *
+ * ## When an import closes the aviso ({@link pedidoPagoSegueSemEnderecoLi}, PURE)
+ *
+ * Owner decision, 2026-10-20: only once the pedido, as the WINNING attempt
+ * leaves it, no longer waits for a delivery endereço — it stores one (one it
+ * already held, never overwritten: the ref is fill-once; or the one this
+ * import wrote), its route is a pickup, it carries no shipment, or the order
+ * is no longer paid. Then step 11 resolves the row (`avisosPedidoLi.ts`,
+ * clocked by the order's stamp). Otherwise the resolve is SKIPPED and an open
+ * row stays open — above all for a paid order that comes back with a present
+ * but INVALID CEP onto a pedido that stores none: it imports with no endereço
+ * and no route, and the operator still has an address to fix. A skip seeds no
+ * row either: the pedido still waits, so a raise of that state stays correct.
+ * The verdict is the refusal minus its CEP clause (the two share
+ * `pagoAguardandoEnderecoLi`, so they cannot drift), asked of the snapshot
+ * the WINNING attempt decided from (root rule 7): an endereço another writer
+ * stored or cleared between the read and the batch is judged as it stands.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { CODIGOS_LI_PAGO, MOTIVO_RECUSA, TIPO_DE_VALOR, motivoDaRecusa } from '@delfrance/schemas';
@@ -148,11 +167,10 @@ function armazenaEnderecoLi(armazenado: PedidoArmazenadoEnderecoLi | null): bool
   );
 }
 
-export interface EntradaPedidoPagoSemEnderecoLi {
+/** What both verdicts read of the order and the pedido — everything but the CEP. */
+export interface PedidoPagoAguardandoEnderecoLi {
   /** The detail's `situacao.codigo`, verbatim. */
   readonly codigo: string;
-  /** The detail's `endereco_entrega`. */
-  readonly enderecoEntrega: EnderecoEntregaLi | null | undefined;
   /** The order carries a shipment (`envios[0]`). */
   readonly temEnvio: boolean;
   /** The routing went to an active pickup target (`RoteamentoFreteLi.dispensaEndereco`). */
@@ -161,15 +179,50 @@ export interface EntradaPedidoPagoSemEnderecoLi {
   readonly armazenado: PedidoArmazenadoEnderecoLi | null;
 }
 
+/**
+ * A paid shipment, not a pickup, on a pedido that stores no endereço: the
+ * clauses the refusal and the aviso's "still open" verdict SHARE, in one place
+ * so the two never drift (module header).
+ */
+function pagoAguardandoEnderecoLi(e: PedidoPagoAguardandoEnderecoLi): boolean {
+  return (
+    CODIGOS_LI_PAGO.has(e.codigo) &&
+    e.temEnvio &&
+    !e.dispensaEndereco &&
+    !armazenaEnderecoLi(e.armazenado)
+  );
+}
+
+export interface EntradaPedidoPagoSemEnderecoLi extends PedidoPagoAguardandoEnderecoLi {
+  /** The detail's `endereco_entrega`. */
+  readonly enderecoEntrega: EnderecoEntregaLi | null | undefined;
+}
+
 /** The import must refuse, and retry, this order (module header). */
 export function pedidoPagoSemEnderecoLi(entrada: EntradaPedidoPagoSemEnderecoLi): boolean {
-  return (
-    CODIGOS_LI_PAGO.has(entrada.codigo) &&
-    entrada.temEnvio &&
-    !entrada.dispensaEndereco &&
-    entregaSemCepLi(entrada.enderecoEntrega) &&
-    !armazenaEnderecoLi(entrada.armazenado)
-  );
+  return pagoAguardandoEnderecoLi(entrada) && entregaSemCepLi(entrada.enderecoEntrega);
+}
+
+export interface EntradaPedidoPagoSegueSemEnderecoLi extends PedidoPagoAguardandoEnderecoLi {
+  /**
+   * The endereço ref the WINNING write fills (the fill-once
+   * `enderecoFiscalOuterRef` it carries), or `null`: it writes none.
+   */
+  readonly enderecoGravado: string | null;
+}
+
+/**
+ * After the winning write, the pedido is STILL a paid shipment with no
+ * endereço and no pickup route: an import leaves an open
+ * `lojaIntegradaPedidoPagoSemEndereco` row as it stands (module header,
+ * "Resolved"). `armazenado` is the snapshot the WINNING attempt decided from,
+ * never `S`. The CEP is not asked: an invalid one is how such an import gets
+ * here at all.
+ */
+export function pedidoPagoSegueSemEnderecoLi(
+  entrada: EntradaPedidoPagoSegueSemEnderecoLi,
+): boolean {
+  return pagoAguardandoEnderecoLi(entrada) && vazioArmazenadoLi(entrada.enderecoGravado);
 }
 
 /* -------------------------------------------------------------------------- */

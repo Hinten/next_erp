@@ -50,8 +50,10 @@
  *    hot sweep (owner decision A4): the shared store's real mark keeps the row
  *    `failed` below the cap and PARKS it at the cap, and only then the
  *    exhaustion signal logs its ERROR line and raises the real aviso — with
- *    nothing of the pedido or a cliente written — and a later import that
- *    finds the address closes it.
+ *    nothing of the pedido or a cliente written; a later import with a CEP
+ *    the builder cannot read imports the pedido with no endereço and leaves
+ *    the aviso OPEN (owner decision, 2026-10-20), and the next one that
+ *    finds the address stores the endereço and closes it.
  *
  * ⚠️ The conta is seeded ONCE (an `integracao` write fires the conta trigger in
  * the functions emulator): no filial and no `dataCadastro`, so the core plans it
@@ -929,7 +931,7 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     });
   });
 
-  it('A4 on the REAL pipeline: a paid order without an address swept to the cap — the real row PARKED, the ERROR line, the open aviso, nothing of the pedido; the address later imports and resolves it', async () => {
+  it('A4 on the REAL pipeline: a paid order without an address swept to the cap — the real row PARKED, the ERROR line, the open aviso, nothing of the pedido; an invalid CEP later imports and keeps it OPEN, and the address then resolves it', async () => {
     const p = payload();
     const linha = db().collection(NOTIFICACOES).doc(docIdNotificacaoLi(p));
     const avisoPago = db()
@@ -1011,12 +1013,40 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     const mapa = (await refFrete().get()).data()?.mapa as DocumentData[];
     expect(mapa.map((l) => l.idOriginal)).toEqual([CHAVE_FORMA_ENVIO_LI]);
 
-    // The address is filled in the painel: a newer change imports, and closes the row.
+    // A CEP the builder cannot read: the pedido imports with no endereço and no route, and
+    // the aviso stays OPEN — the winning snapshot holds no endereço (owner decision, 2026-10-20).
+    __resetAllReadCaches();
+    const invalido = { ...(pedidoLiBruto().endereco_entrega as DocumentData), cep: '0131010' };
+    expect(
+      await importar(
+        cena({
+          cliente: COMPRADOR_COM_CPF,
+          endereco_entrega: invalido,
+          data_modificacao: carimboLi(3),
+        }),
+      ),
+    ).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()).toMatchObject({
+      estado: ESTADO_PEDIDO.pago,
+      enderecoFiscalOuterRef: null,
+    });
+    expect((await avisoPago.get()).data()).toMatchObject({
+      relogioEvento: dataLiParaMicros(carimboLi(2)),
+      resolvidoEm: null,
+    });
+
+    // The address is fixed in the painel: a newer change stores the endereço, and closes the row.
     __resetAllReadCaches();
     expect(
-      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) })),
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(4) })),
     ).toEqual({ kind: 'importado' });
     expect((await refPedido().get()).data()?.estado).toBe(ESTADO_PEDIDO.pago);
+    expect((await refPedido().get()).data()?.enderecoFiscalOuterRef).toMatch(
+      /^documents\/clientes\//,
+    );
+    expect((await avisoPago.get()).data()).toMatchObject({
+      relogioEvento: dataLiParaMicros(carimboLi(4)),
+    });
     expect((await avisoPago.get()).data()?.resolvidoEm).not.toBeNull();
   });
 });

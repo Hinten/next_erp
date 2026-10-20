@@ -74,14 +74,15 @@
  *     cap — its signal for a thrown failure parked, no counter of ours —
  *     `onRetriesExhausted` logs an ERROR line and raises the open
  *     `lojaIntegradaPedidoPagoSemEndereco` aviso, clocked by the order's
- *     stamp; step 11 of any later import that gets past this check resolves
- *     it. An unpaid order, a pickup, an order with no shipment, an invalid
- *     CEP, or a pedido that already stores an endereço imports as before.
+ *     stamp; step 11 resolves it (below). An unpaid order, a pickup, an order
+ *     with no shipment, an invalid CEP, or a pedido that already stores an
+ *     endereço imports as before.
  *     ⚠️ A present but INVALID CEP is not refused — the customer typed it,
  *     and waiting never fixes it: the builder reads no endereço from it, so
  *     step 7 stores none and the order imports without an endereço (its
- *     freight amount, no carrier route), like an unpaid one. Being past this
- *     check, such an import also resolves an open aviso of that order.
+ *     freight amount, no carrier route), like an unpaid one. Such an import
+ *     leaves an open aviso of that order OPEN (step 11): the pedido still
+ *     has no address to ship to.
  *  7. **The cliente and the endereço**, each only while `S` holds none: the
  *     cliente step while `S` has no cliente, the endereço step while it has no
  *     endereço and a readable cliente is known (stored, or just resolved — an
@@ -115,7 +116,13 @@
  *     `avisosPedidoLi.ts`; the freight aviso ran at step 6), on `importado` and
  *     `sem-mudanca` alike — never on `obsoleto` — so a retry after a crash
  *     between 10 and 11 still writes them.
- *     The paid-without-address row resolves here on every such import.
+ *     The paid-without-address row resolves here only when the pedido, as
+ *     the WINNING attempt leaves it — its snapshot and its fill-once
+ *     endereço, never `S` (rule 7) — no longer waits for a delivery endereço
+ *     (`pedidoPagoSegueSemEnderecoLi`: one stored or written, a pickup route,
+ *     no shipment, or no longer paid; owner decision, 2026-10-20). Otherwise
+ *     the resolve is skipped, and an open row stays open: no endereço stored
+ *     is ever overwritten to close it.
  *     ⚠️ **A reversal on a pedido whose label was bought** (owner decision A7,
  *     2026-10-19): when the order's codigo is one of the four reversal rungs
  *     (`motivoReversaoLi`: cancelled, refunded, charged back, refunded without
@@ -230,7 +237,12 @@ import {
   type RespostaDoDetalheLi,
 } from './orderIdsLi';
 import { mapearPagamentosLi, type PagamentoMapeadoLi } from './pagamentoMapeamento';
-import { LiPedidoPagoSemEnderecoError, pedidoPagoSemEnderecoLi } from './pedidoPagoSemEndereco';
+import {
+  LiPedidoPagoSemEnderecoError,
+  pedidoPagoSegueSemEnderecoLi,
+  pedidoPagoSemEnderecoLi,
+  type PedidoPagoAguardandoEnderecoLi,
+} from './pedidoPagoSemEndereco';
 import {
   idsDasLinhasLi,
   itensGuardadosLi,
@@ -810,13 +822,17 @@ export async function importarPedidoLi(
 
   // 6b. A PAID order carrying no CEP at all: refused, and retried (A4). Asked of S here,
   // and again of every batch attempt's snapshot (`mapearPedido`, rule 7).
+  /** What A4's two verdicts read of the order and of one pedido snapshot, the CEP aside. */
+  const aguardandoEndereco = (arm: PedidoArmazenadoLi | null): PedidoPagoAguardandoEnderecoLi => ({
+    codigo: pedido.situacao.codigo,
+    temEnvio: pedido.envios[0] !== undefined,
+    dispensaEndereco: frete?.roteamento.dispensaEndereco ?? false,
+    armazenado: arm,
+  });
   const recusarSemEndereco = (arm: PedidoArmazenadoLi | null): boolean =>
     pedidoPagoSemEnderecoLi({
-      codigo: pedido.situacao.codigo,
+      ...aguardandoEndereco(arm),
       enderecoEntrega: pedido.endereco_entrega,
-      temEnvio: pedido.envios[0] !== undefined,
-      dispensaEndereco: frete?.roteamento.dispensaEndereco ?? false,
-      armazenado: arm,
     });
   if (recusarSemEndereco(armazenado)) {
     deps.logger?.warn(`${ROTULO_LOG} pedido pago sem endereço de entrega; tenta de novo`, log);
@@ -972,6 +988,13 @@ export async function importarPedidoLi(
       motivo: reversaoComEtiqueta,
     });
   }
+  // The paid-without-address row closes only once the pedido the WINNING attempt leaves no
+  // longer waits for a delivery endereço (owner decision, 2026-10-20; rule 7: its snapshot
+  // and its fill, never S) — an invalid CEP imports without one and leaves the row open.
+  const pagoSegueSemEndereco = pedidoPagoSegueSemEnderecoLi({
+    ...aguardandoEndereco(gravacao.armazenado),
+    enderecoGravado: mapeadoFinal.preencherUmaVez.enderecoFiscalOuterRef,
+  });
   await sincronizarAvisosDoPedidoLi(
     db,
     doAviso,
@@ -979,6 +1002,7 @@ export async function importarPedidoLi(
       situacaoDesconhecida: decisao.situacaoDesconhecida,
       contestacao: decisao.contestacao,
       reversaoComEtiqueta,
+      pagoSegueSemEndereco,
     },
     depsDoAviso,
   );
