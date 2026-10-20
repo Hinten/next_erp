@@ -463,7 +463,7 @@ export function createShopeeTokenStore(
                 ultimaFalhaRefresh: { em: nowMs, codigo: falha.codigo, terminal: true },
               }
             : { ...LEASE_LIMPO };
-        tx.update(docRef(), credenciaisIntegracaoCollection.parseMerge(patch));
+        tx.set(docRef(), credenciaisIntegracaoCollection.parseMerge(patch), { merge: true });
         return { kind: 'liberado' };
       });
     },
