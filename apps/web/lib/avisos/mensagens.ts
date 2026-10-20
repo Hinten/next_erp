@@ -2,18 +2,21 @@ import {
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaLiSchema,
   motivoPedidoContestadoLiSchema,
+  motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
   type MotivoFreteNaoSuportadoLi,
   type MotivoImportacaoParadaLi,
   type MotivoPedidoContestadoLi,
+  type MotivoReversaoComEtiquetaLi,
   type PendenciaReclamacao,
   type SituacaoAnuncioForaDaSincronizacao,
   type TipoAviso,
@@ -187,6 +190,40 @@ function corpoPedidoContestadoLi(params: Aviso['params']): string {
     `${abertura} O ERP manteve o estado e o pagamento do pedido, porque a mercadoria pode não ` +
     'ter voltado: confira a devolução e ajuste o pedido e o estoque se for o caso. Essa situação ' +
     'é final na Loja Integrada, então o aviso só se encerra se ela for mudada no painel da loja.'
+  );
+}
+
+/**
+ * pt-BR da reversão que a Loja Integrada aplicou a um pedido com etiqueta já
+ * comprada — TOTAL sobre o código (`params.motivo`, um
+ * {@link MOTIVO_REVERSAO_COM_ETIQUETA_LI}). O produtor (o importador de
+ * pedidos) grava o CÓDIGO, nunca a frase.
+ */
+const FRASE_MOTIVO_REVERSAO_COM_ETIQUETA_LI: Record<MotivoReversaoComEtiquetaLi, string> = {
+  [MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado]: 'cancelado',
+  [MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvido]: 'estornado, com o pagamento devolvido ao comprador',
+  [MOTIVO_REVERSAO_COM_ETIQUETA_LI.chargeback]:
+    'contestado pelo comprador junto ao emissor do cartão (chargeback)',
+  [MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvidoSemRetorno]: 'estornado sem o retorno da mercadoria',
+};
+
+/**
+ * O corpo do aviso de reversão com etiqueta comprada. ⚠️ Diz que o ERP NÃO
+ * cancela a etiqueta nem a NF-e — é por isso que o aviso existe — e que a
+ * situação é final lá, porque é por isso que ele não some sozinho. Um código
+ * mais novo que esta tela, uma chave herdada (`'toString'`) ou um param
+ * ausente caem no texto neutro ("revertido"), nunca em "undefined".
+ */
+function corpoReversaoComEtiquetaLi(params: Aviso['params']): string {
+  const codigo = motivoReversaoComEtiquetaLiSchema.safeParse(params.motivo);
+  const como = codigo.success ? FRASE_MOTIVO_REVERSAO_COM_ETIQUETA_LI[codigo.data] : 'revertido';
+  return (
+    `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} foi ${como} na Loja Integrada ` +
+    'depois que a etiqueta dele já tinha sido comprada. O ERP aplicou a situação ao pedido como ' +
+    'de costume, mas não cancela a etiqueta nem a NF-e: cancele a etiqueta no Melhor Envio e a ' +
+    'NF-e do pedido, se ela já foi emitida, antes que o pacote seja despachado. Essa situação é ' +
+    'final na Loja Integrada, então o aviso só se encerra se o pedido for reaberto no painel da ' +
+    'loja.'
   );
 }
 
@@ -541,6 +578,15 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'conferido de novo na hora da etiqueta. Revise o mapeamento na aba Mapeamento do Frete da ' +
       'conta; o aviso se encerra quando um pedido com essa forma de envio for importado depois ' +
       'da correção.',
+  },
+  [TIPO_AVISO.lojaIntegradaReversaoComEtiqueta]: {
+    titulo: 'Pedido da Loja Integrada revertido com etiqueta comprada',
+    corpo: corpoReversaoComEtiquetaLi,
+    // Os dois cancelamentos ficam fora desta tela: a etiqueta no Melhor Envio, a NF-e
+    // no fluxo da NF-e.
+    runbook:
+      'Cancele a etiqueta no painel do Melhor Envio. Se a NF-e do pedido já foi emitida, ' +
+      'cancele-a pelo ERP dentro do prazo de cancelamento da SEFAZ.',
   },
   // Crítico: uma venda PAGA que não entrou no ERP é uma venda que ninguém despacha. O
   // aviso só sobe quando as novas tentativas acabaram (a fila e a varredura), por isso a

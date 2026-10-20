@@ -43,6 +43,9 @@
  *    for one stored as a double (both pinned as the emulator answers them);
  *  - the link lookup finds both stored ref forms through the real query;
  *  - the step-7 loop moves only the clocks;
+ *  - a cancellation on a pedido whose `freteInicial.printLabelId` was written
+ *    the way the Melhor Envio purchase writes it (a DOT PATH into the nested
+ *    block) raises the reversal-after-the-label aviso (owner decision A7);
  *  - a PAID order without an address through the REAL notification pipeline's
  *    hot sweep (owner decision A4): the shared store's real mark keeps the row
  *    `failed` below the cap and PARKS it at the cap, and only then the
@@ -887,6 +890,43 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
       semRelogios(pagamentoAntes, ['lastProviderUpdate', 'ultimaModificacao']),
     );
     expect(pagamentoDepois.lastProviderUpdate).toBe(dataLiParaMicros(carimboLi(8)));
+  });
+
+  it('A7: a cancellation landing after the Melhor Envio purchase’s own DOT-PATH write of printLabelId ⇒ the reversal and the open aviso; the same without a label raises none', async () => {
+    const avisoReversao = db()
+      .collection('avisos')
+      .doc(chaveDoAvisoDoPedidoLi(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta, CONTA, PEDIDO_ID));
+    const cancelado = (): Cena => ({
+      ...cena({ situacao: { codigo: 'pedido_cancelado', id: 8 }, data_modificacao: carimboLi(5) }),
+      historico: [
+        ...historicoPagoLi(),
+        linhaHistoricoLi(3, carimboLi(4), 'pedido_cancelado', 'pedido_pago'),
+      ],
+    });
+
+    // Without a label: the reversal, and no open row.
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    __resetAllReadCaches();
+    expect(await importar(cancelado())).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()?.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    const semEtiqueta = (await avisoReversao.get()).data();
+    expect(semEtiqueta === undefined || semEtiqueta.resolvidoEm !== null).toBe(true);
+
+    // With a label, written the way the purchase writes it (a dot path into the block).
+    await limpar();
+    await semearIntFrete();
+    __resetAllReadCaches();
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    await refPedido().update({ 'freteInicial.printLabelId': 'etiqueta-ci-1' });
+    __resetAllReadCaches();
+    expect(await importar(cancelado())).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()?.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    expect((await avisoReversao.get()).data()).toMatchObject({
+      motivo: 'cancelado',
+      params: { loja: NOME_CONTA, pedido: String(NUMERO_LI), motivo: 'cancelado' },
+      relogioEvento: dataLiParaMicros(carimboLi(5)),
+      resolvidoEm: null,
+    });
   });
 
   it('A4 on the REAL pipeline: a paid order without an address swept to the cap — the real row PARKED, the ERROR line, the open aviso, nothing of the pedido; the address later imports and resolves it', async () => {

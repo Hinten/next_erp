@@ -12,6 +12,7 @@
  * | `lojaIntegradaPedidoHub` | the pedido id | the order's stamp | a hub marker, on a live sale | no marker, or a dead sale |
  * | `lojaIntegradaFreteNaoSuportado` | `sha256Hex(chave)` | the routing read's `readTime` | the routing says so | the routing says so |
  * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order's retries ran out without an address (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | any import that reaches the avisos |
+ * | `lojaIntegradaReversaoComEtiqueta` | the pedido id | the order's stamp | a reversal codigo on a pedido that holds a bought label | any import that raises none |
  *
  * The last one is `critico` and routes to the conta page (on a first import
  * there is no pedido page); every other one is `atencao`.
@@ -65,6 +66,7 @@ import {
   TIPO_AVISO,
   chaveDeAviso,
   type MotivoPedidoContestadoLi,
+  type MotivoReversaoComEtiquetaLi,
 } from '@delfrance/schemas';
 
 import { agoraUsDe, type AvisoDepsLi } from '../avisos/avisos';
@@ -84,6 +86,8 @@ export const MOTIVO_RESOLUCAO_PEDIDO_LI = {
   freteRoteado: 'frete-roteado',
   /** An import got past the paid-without-address check: the order reached the ERP. */
   pedidoImportado: 'pedido-importado',
+  /** An import whose order is no reversal, or whose pedido holds no bought label. */
+  semReversaoComEtiqueta: 'sem-reversao-com-etiqueta',
 } as const;
 
 /** One order, as its avisos name it. */
@@ -110,7 +114,8 @@ type TipoDoPedido =
   | typeof TIPO_AVISO.lojaIntegradaSituacaoDesconhecida
   | typeof TIPO_AVISO.lojaIntegradaPedidoContestado
   | typeof TIPO_AVISO.lojaIntegradaPedidoHub
-  | typeof TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco;
+  | typeof TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco
+  | typeof TIPO_AVISO.lojaIntegradaReversaoComEtiqueta;
 
 /** The order-keyed tipos whose row opens on the conta page: no pedido page may exist. */
 const TIPOS_NA_CONTA: ReadonlySet<TipoDoPedido> = new Set<TipoDoPedido>([
@@ -197,14 +202,16 @@ export interface DecisaoDosAvisosLi {
   readonly situacaoDesconhecida: string | null;
   /** The contestation motivo, or `null` (resolve). */
   readonly contestacao: MotivoPedidoContestadoLi | null;
+  /** The reversal that landed on a pedido with a bought label, or `null` (resolve). */
+  readonly reversaoComEtiqueta: MotivoReversaoComEtiquetaLi | null;
 }
 
 /**
  * The order-clocked tipos of an import that got past the hub guard
- * (`importado` or `sem-mudanca`): the situação and the contestation follow the
- * decision, the hub row resolves (the order carries no marker), and so does
- * the paid-without-address row (the order got past that check and reached the
- * ERP).
+ * (`importado` or `sem-mudanca`): the situação, the contestation and the
+ * reversal-after-the-label follow the decision, the hub row resolves (the
+ * order carries no marker), and so does the paid-without-address row (the
+ * order got past that check and reached the ERP).
  */
 export async function sincronizarAvisosDoPedidoLi(
   db: Firestore,
@@ -216,6 +223,7 @@ export async function sincronizarAvisosDoPedidoLi(
   readonly contestado: EfeitoAvisoLi;
   readonly hub: EfeitoAvisoLi;
   readonly pagoSemEndereco: EfeitoAvisoLi;
+  readonly reversaoComEtiqueta: EfeitoAvisoLi;
 }> {
   const relogio = pedido.relogioUs;
 
@@ -268,7 +276,28 @@ export async function sincronizarAvisosDoPedidoLi(
     relogio,
     deps,
   );
-  return { situacao, contestado, hub, pagoSemEndereco };
+
+  const baseReversao = baseDoPedido(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta, pedido);
+  const reversaoComEtiqueta =
+    decisao.reversaoComEtiqueta === null
+      ? await resolver(
+          db,
+          baseReversao,
+          MOTIVO_RESOLUCAO_PEDIDO_LI.semReversaoComEtiqueta,
+          relogio,
+          deps,
+        )
+      : await levantar(
+          db,
+          {
+            ...baseReversao,
+            params: { ...baseReversao.params, motivo: decisao.reversaoComEtiqueta },
+            motivo: decisao.reversaoComEtiqueta,
+            relogioEvento: relogio,
+          },
+          deps,
+        );
+  return { situacao, contestado, hub, pagoSemEndereco, reversaoComEtiqueta };
 }
 
 /**

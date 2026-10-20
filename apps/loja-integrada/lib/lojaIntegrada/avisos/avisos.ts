@@ -219,6 +219,7 @@ export const TIPOS_AVISO_PEDIDO_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>(
   TIPO_AVISO.lojaIntegradaPedidoHub,
   TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
   TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+  TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
 ]);
 
 /**

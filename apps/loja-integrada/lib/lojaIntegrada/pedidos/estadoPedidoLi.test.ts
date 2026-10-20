@@ -3,6 +3,7 @@ import type { SituacaoHistoricoLinhaLi } from '@delfrance/integrations-loja-inte
 import {
   ESTADO_PEDIDO,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   STATUS_PAGAMENTO,
   alvoDeCriacaoLi,
   codigoSituacaoLiSchema,
@@ -25,6 +26,7 @@ import {
   estadoLiAplicavel,
   lerHistoricoLi,
   modoHistoricoLi,
+  motivoReversaoLi,
   remocaoAplicadaLi,
   statusPagamentoLiAplicavel,
   type LeituraHistoricoLi,
@@ -796,5 +798,32 @@ describe('the payment-status ladder', () => {
     expect(
       statusPagamentoLiAplicavel(STATUS_PAGAMENTO.aprovado, para(STATUS_PAGAMENTO.aprovado)),
     ).toEqual({ escrever: false, motivo: MOTIVO_STATUS_LI.semMudanca });
+  });
+});
+
+describe('motivoReversaoLi: the four reversal codigos, and nothing else (owner decision A7)', () => {
+  it('EQUAL: 8, 7, 16 and 1020 each name their reversal', () => {
+    expect(motivoReversaoLi('pedido_cancelado')).toBe(MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado);
+    expect(motivoReversaoLi('pagamento_devolvido')).toBe(MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvido);
+    expect(motivoReversaoLi('pedido_chargeback')).toBe(MOTIVO_REVERSAO_COM_ETIQUETA_LI.chargeback);
+    expect(motivoReversaoLi('pagamento_devolvido_sem_retorno')).toBe(
+      MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvidoSemRetorno,
+    );
+  });
+
+  it('NEAR-MISS: every other codigo of the catalogue — a cancellation REQUEST and a dispute included — is none; codigos are exact', () => {
+    const reversoes = new Set([
+      'pedido_cancelado',
+      'pagamento_devolvido',
+      'pedido_chargeback',
+      'pagamento_devolvido_sem_retorno',
+    ]);
+    for (const codigo of codigoSituacaoLiSchema.options) {
+      if (reversoes.has(codigo)) continue;
+      expect(motivoReversaoLi(codigo), codigo).toBeNull();
+    }
+    for (const codigo of ['Pedido_Cancelado', 'pedido_cancelado ', 'toString', '']) {
+      expect(motivoReversaoLi(codigo), codigo).toBeNull();
+    }
   });
 });

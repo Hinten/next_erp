@@ -10,9 +10,11 @@ import {
   CANAL_AVISO,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
   chaveDeAviso,
+  type MotivoReversaoComEtiquetaLi,
 } from '@delfrance/schemas';
 import { sha256Hex } from '@delfrance/data/admin';
 
@@ -86,7 +88,11 @@ describe('the three order-clocked tipos', () => {
     const r = await sincronizarAvisosDoPedidoLi(
       asDb(db),
       pedido(1_000),
-      { situacaoDesconhecida: 'codigo_novo', contestacao: MOTIVO_PEDIDO_CONTESTADO_LI.disputa },
+      {
+        situacaoDesconhecida: 'codigo_novo',
+        contestacao: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
+        reversaoComEtiqueta: null,
+      },
       deps,
     );
     expect(r.situacao).toEqual({ acao: 'levantado', resultado: 'criado' });
@@ -115,8 +121,12 @@ describe('the three order-clocked tipos', () => {
 
   it('a newer known observation resolves; a LATE older raise cannot reopen it; an older resolve cannot close a newer raise', async () => {
     const db = new FakeDb();
-    const semNada = { situacaoDesconhecida: null, contestacao: null };
-    const desconhecida = { situacaoDesconhecida: 'codigo_novo', contestacao: null };
+    const semNada = { situacaoDesconhecida: null, contestacao: null, reversaoComEtiqueta: null };
+    const desconhecida = {
+      situacaoDesconhecida: 'codigo_novo',
+      contestacao: null,
+      reversaoComEtiqueta: null,
+    };
     await sincronizarAvisosDoPedidoLi(asDb(db), pedido(1_000), desconhecida, deps);
     const fechou = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(2_000), semNada, deps);
     expect(fechou.situacao).toEqual({ acao: 'resolvido', fechou: true });
@@ -135,7 +145,11 @@ describe('the three order-clocked tipos', () => {
 
   it('an EQUAL clock is a no-op once stored (the retry after a crash between the batch and the avisos)', async () => {
     const db = new FakeDb();
-    const desconhecida = { situacaoDesconhecida: 'codigo_novo', contestacao: null };
+    const desconhecida = {
+      situacaoDesconhecida: 'codigo_novo',
+      contestacao: null,
+      reversaoComEtiqueta: null,
+    };
     await sincronizarAvisosDoPedidoLi(asDb(db), pedido(1_000), desconhecida, deps);
     const escritas = db.escritas.length;
     const r = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(1_000), desconhecida, deps);
@@ -260,7 +274,7 @@ describe('the paid-without-address tipo (owner decision, 2026-10-19)', () => {
     CONTA,
     'pedido-1',
   )}`;
-  const semNada = { situacaoDesconhecida: null, contestacao: null };
+  const semNada = { situacaoDesconhecida: null, contestacao: null, reversaoComEtiqueta: null };
 
   it('raised CRITICO at the conta page with exactly the params the wording reads, clocked by the order', async () => {
     const db = new FakeDb();
@@ -306,5 +320,75 @@ describe('the paid-without-address tipo (owner decision, 2026-10-19)', () => {
       resultado: 'ignorado',
     });
     expect(outro.ler(caminhoPago)?.resolvidoEm).not.toBeNull();
+  });
+});
+
+describe('the reversal-after-the-label tipo (owner decision A7, 2026-10-19)', () => {
+  const caminhoReversao = `avisos/${chaveDoAvisoDoPedidoLi(
+    TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
+    CONTA,
+    'pedido-1',
+  )}`;
+  const decisao = (reversaoComEtiqueta: MotivoReversaoComEtiquetaLi | null) => ({
+    situacaoDesconhecida: null,
+    contestacao: null,
+    reversaoComEtiqueta,
+  });
+
+  it('a motivo RAISES it — atencao, the pedido page, exactly loja, pedido and motivo — beside the contestado row', async () => {
+    const db = new FakeDb();
+    const r = await sincronizarAvisosDoPedidoLi(
+      asDb(db),
+      pedido(1_000),
+      {
+        situacaoDesconhecida: null,
+        contestacao: MOTIVO_PEDIDO_CONTESTADO_LI.chargeback,
+        reversaoComEtiqueta: MOTIVO_REVERSAO_COM_ETIQUETA_LI.chargeback,
+      },
+      deps,
+    );
+    expect(r.reversaoComEtiqueta).toEqual({ acao: 'levantado', resultado: 'criado' });
+    expect(db.ler(caminhoReversao)).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      motivo: 'chargeback',
+      relogioEvento: 1_000,
+      urlInterna: { rota: '/pedidos/pedido-1/editar', campo: null },
+      resolvidoEm: null,
+    });
+    expect(db.ler(caminhoReversao)?.params).toEqual({
+      loja: 'Loja X',
+      pedido: '9001',
+      motivo: 'chargeback',
+    });
+    // The refund's own row is a different one, and stands too.
+    expect(db.ler(caminho(TIPO_AVISO.lojaIntegradaPedidoContestado))?.resolvidoEm).toBeNull();
+  });
+
+  it('NEAR-MISS: no motivo ⇒ RESOLVED (clocked) — never an open row', async () => {
+    const db = new FakeDb();
+    const r = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(1_000), decisao(null), deps);
+    expect(r.reversaoComEtiqueta).toEqual({ acao: 'resolvido', fechou: false });
+    expect(db.ler(caminhoReversao)).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_PEDIDO_LI.semReversaoComEtiqueta,
+      relogioEvento: 1_000,
+    });
+    expect(db.ler(caminhoReversao)?.resolvidoEm).not.toBeNull();
+  });
+
+  it('a newer import without it closes the row; a late OLDER one can neither close nor reopen it', async () => {
+    const db = new FakeDb();
+    const cancelado = decisao(MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado);
+    await sincronizarAvisosDoPedidoLi(asDb(db), pedido(2_000), cancelado, deps);
+    const velho = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(1_500), decisao(null), deps);
+    expect(velho.reversaoComEtiqueta).toEqual({ acao: 'resolvido', fechou: false });
+    expect(db.ler(caminhoReversao)?.resolvidoEm).toBeNull();
+
+    const novo = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(3_000), decisao(null), deps);
+    expect(novo.reversaoComEtiqueta).toEqual({ acao: 'resolvido', fechou: true });
+    const tardio = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(2_500), cancelado, deps);
+    expect(tardio.reversaoComEtiqueta).toEqual({ acao: 'levantado', resultado: 'ignorado' });
+    expect(db.ler(caminhoReversao)?.resolvidoEm).not.toBeNull();
   });
 });

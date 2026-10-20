@@ -1643,6 +1643,117 @@ describe('⚠️ a PAID order without a usable delivery address retries, then fa
   });
 });
 
+describe('⚠️ a reversal landing on a pedido whose label was BOUGHT: the approved estado AND an aviso (owner decision A7, 2026-10-19)', () => {
+  const CAMINHO_AVISO_REVERSAO = `avisos/${chaveDoAvisoDoPedidoLi(
+    TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
+    CONTA,
+    PEDIDO_ID,
+  )}`;
+  /** The order at `codigo`, reached from paid at a newer stamp. */
+  function revertido(codigo: string, id: number, horas = 5): Cena {
+    return {
+      ...cena({ situacao: { codigo, id }, data_modificacao: carimboLi(horas) }),
+      historico: [
+        ...historicoPagoLi(),
+        linhaHistoricoLi(3, carimboLi(horas - 1), codigo, 'pedido_pago'),
+      ],
+    };
+  }
+  /** A paid pedido, then a label bought on it (the Melhor Envio purchase's own write). */
+  async function pagoComEtiqueta(printLabelId: string | null = 'etiqueta-1'): Promise<FakeDb> {
+    const db = novoDb();
+    await importar(db, cena());
+    await refPedido(db).update({ freteInicial: { ...frete(db), printLabelId } });
+    return db;
+  }
+  const aberto = (db: FakeDb): boolean => {
+    const linha = db.ler(CAMINHO_AVISO_REVERSAO);
+    return linha !== undefined && linha.resolvidoEm === null;
+  };
+
+  it('EQUAL: a cancellation (8) ⇒ the approved reversal of the estado, AND the open aviso naming it', async () => {
+    const db = await pagoComEtiqueta();
+    const { r, avisosDeLog } = await importar(db, revertido('pedido_cancelado', 8));
+    expect(r).toEqual({ kind: 'importado' });
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    expect(db.ler(CAMINHO_AVISO_REVERSAO)).toMatchObject({
+      motivo: 'cancelado',
+      params: { loja: 'Loja de teste', pedido: String(NUMERO_LI), motivo: 'cancelado' },
+      relogioEvento: dataLiParaMicros(carimboLi(5)),
+      resolvidoEm: null,
+    });
+    // One WARNING, ids and the code only — never the label id.
+    const linha = avisosDeLog.find((l) => String(l[0]).includes('etiqueta comprada'));
+    expect(linha?.[1]).toEqual({
+      integracaoId: CONTA,
+      numero: String(NUMERO_LI),
+      motivo: 'cancelado',
+    });
+  });
+
+  it('NEAR-MISS: the same cancellation on a pedido with NO label (null or "") ⇒ the same estado, and no open aviso', async () => {
+    for (const printLabelId of [null, '']) {
+      const db = await pagoComEtiqueta(printLabelId);
+      await importar(db, revertido('pedido_cancelado', 8));
+      expect(db.ler(CAMINHO_PEDIDO)?.estado, String(printLabelId)).toBe(
+        ESTADO_PEDIDO.estornadoIntegralmente,
+      );
+      expect(aberto(db), String(printLabelId)).toBe(false);
+    }
+  });
+
+  it('EQUAL: a refund after an applied removal keeps both (the approved arm), raises the contestado row AND this one', async () => {
+    const db = await pagoComEtiqueta();
+    await refPedido(db).update({
+      estoqueAplicado: { depositoId: 'd1', ehSaida: true, removido: { 'p-x': 2 } },
+    });
+    await importar(db, revertido('pedido_chargeback', 16));
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.pago);
+    expect(db.ler(caminhoAvisoDoPedido(TIPO_AVISO.lojaIntegradaPedidoContestado))).toMatchObject({
+      motivo: 'chargeback',
+      resolvidoEm: null,
+    });
+    expect(db.ler(CAMINHO_AVISO_REVERSAO)).toMatchObject({
+      motivo: 'chargeback',
+      resolvidoEm: null,
+    });
+  });
+
+  it('NEAR-MISS: a cancellation REQUEST (1019) on a labelled pedido is no reversal — no open aviso', async () => {
+    const db = await pagoComEtiqueta();
+    await importar(db, revertido('cancelamento_solicitado', 1019));
+    expect(db.ler(CAMINHO_PEDIDO)?.estado).toBe(ESTADO_PEDIDO.processandoCancelamento);
+    expect(aberto(db)).toBe(false);
+  });
+
+  it('the row closes when Loja Integrada reopens the sale (a newer stamp); a late OLDER import cannot close it', async () => {
+    const db = await pagoComEtiqueta();
+    await importar(db, revertido('pedido_cancelado', 8, 5));
+    expect(aberto(db)).toBe(true);
+
+    // An older observation than the pedido holds is `obsoleto`: it writes nothing, the row included.
+    expect((await importar(db, cena({ data_modificacao: carimboLi(3) }))).r).toEqual({
+      kind: 'obsoleto',
+    });
+    expect(aberto(db)).toBe(true);
+
+    // Reopened in the painel, later: the sale is live again, and the row resolves.
+    const reaberto: Cena = {
+      ...cena({ data_modificacao: carimboLi(7) }),
+      historico: [
+        ...historicoPagoLi(),
+        linhaHistoricoLi(3, carimboLi(4), 'pedido_cancelado', 'pedido_pago'),
+        linhaHistoricoLi(4, carimboLi(6), 'pedido_pago', 'pedido_cancelado'),
+      ],
+    };
+    await importar(db, reaberto);
+    expect(db.ler(CAMINHO_AVISO_REVERSAO)).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_PEDIDO_LI.semReversaoComEtiqueta,
+    });
+    expect(aberto(db)).toBe(false);
+  });
+});
+
 describe('⚠️ never a cliente beside another cliente’s endereço (step 7): fiscal and delivery', () => {
   /** An endereço stored under a cliente that is NOT the one the buyer resolves to. */
   const ENDERECO_DE_OUTRO = 'documents/clientes/cliente-de-outra-pessoa/enderecos/end-a';

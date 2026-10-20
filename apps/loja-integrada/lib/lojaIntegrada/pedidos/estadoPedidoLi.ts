@@ -54,6 +54,7 @@ import {
   CODIGO_SITUACAO_LI,
   ESTADO_PEDIDO,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   STATUS_PAGAMENTO,
   alvoDeCriacaoLi,
   estadoPedidoSchema,
@@ -62,6 +63,7 @@ import {
   statusPagamentoSchema,
   type EstadoPedido,
   type MotivoPedidoContestadoLi,
+  type MotivoReversaoComEtiquetaLi,
   type SituacaoLi,
   type StatusPagamento,
 } from '@delfrance/schemas';
@@ -74,13 +76,37 @@ import { dataLiParaMicros, lerDataLi } from './dataLi';
 /*                                the history                                  */
 /* -------------------------------------------------------------------------- */
 
-/** The codigos whose row DATES a cancellation: the four reversal rungs. */
-const CODIGOS_REVERSAO: ReadonlySet<string> = new Set<string>([
-  CODIGO_SITUACAO_LI.pagamentoDevolvido,
-  CODIGO_SITUACAO_LI.pedidoCancelado,
-  CODIGO_SITUACAO_LI.pedidoChargeback,
-  CODIGO_SITUACAO_LI.pagamentoDevolvidoSemRetorno,
+/**
+ * The four reversal rungs, each with the `lojaIntegradaReversaoComEtiqueta`
+ * motivo that names it. Their rows DATE a cancellation (below), and a reversal
+ * landing on a pedido whose label was bought raises that aviso
+ * (`importarPedido.ts`, step 11).
+ */
+const MOTIVO_POR_REVERSAO: ReadonlyMap<string, MotivoReversaoComEtiquetaLi> = new Map<
+  string,
+  MotivoReversaoComEtiquetaLi
+>([
+  [CODIGO_SITUACAO_LI.pedidoCancelado, MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado],
+  [CODIGO_SITUACAO_LI.pagamentoDevolvido, MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvido],
+  [CODIGO_SITUACAO_LI.pedidoChargeback, MOTIVO_REVERSAO_COM_ETIQUETA_LI.chargeback],
+  [
+    CODIGO_SITUACAO_LI.pagamentoDevolvidoSemRetorno,
+    MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvidoSemRetorno,
+  ],
 ]);
+
+/** The codigos whose row DATES a cancellation: the four reversal rungs. */
+const CODIGOS_REVERSAO: ReadonlySet<string> = new Set<string>(MOTIVO_POR_REVERSAO.keys());
+
+/**
+ * The reversal a codigo is — `cancelado`, `devolvido`, `chargeback` or
+ * `devolvido-sem-retorno` — or `null` for every other codigo: a cancellation
+ * REQUEST (1019) and a dispute (6) are no reversal. EXACT, like every codigo
+ * comparison here.
+ */
+export function motivoReversaoLi(codigo: string): MotivoReversaoComEtiquetaLi | null {
+  return MOTIVO_POR_REVERSAO.get(codigo) ?? null;
+}
 
 /** How the history is read: refusing holes, or deciding around them. */
 export type ModoHistoricoLi = 'estrito' | 'degradado';

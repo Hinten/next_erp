@@ -332,6 +332,7 @@ describe('the import-stopped tipo (step 3) in the orphan pass', () => {
         TIPO_AVISO.lojaIntegradaPedidoHub,
         TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
         TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+        TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
       ].sort(),
     );
     const { chave } = await raise(new FakeDb(), 1_000);

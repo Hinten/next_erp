@@ -101,6 +101,20 @@
  *     `avisosPedidoLi.ts`), on `importado` and `sem-mudanca` alike — never on
  *     `obsoleto` — so a retry after a crash between 10 and 11 still writes them.
  *     The paid-without-address row resolves here on every such import.
+ *     ⚠️ **A reversal on a pedido whose label was bought** (owner decision A7,
+ *     2026-10-19): when the order's codigo is one of the four reversal rungs
+ *     (`motivoReversaoLi`: cancelled, refunded, charged back, refunded without
+ *     return) and the snapshot the WINNING attempt decided from holds a
+ *     non-empty `freteInicial.printLabelId`, the
+ *     `lojaIntegradaReversaoComEtiqueta` aviso is raised (plus a WARNING with
+ *     ids and the code), telling the operator to cancel the Melhor Envio label
+ *     and the NF-e. The estado is exactly the table's — the reversal, which
+ *     the stock sync restocks, for a cancellation; the "keep both" arm and its
+ *     contestado row for a refund after an applied removal — nothing here
+ *     changes it. Every other import resolves the row, clocked. Residue: a
+ *     label bought between that snapshot and these avisos is not seen by this
+ *     import; the label step's paid re-check (master plan step 15) is the
+ *     guard on that side, refusing a label for an order that is not paid.
  *
  * Steps 6 and 7 may write (the `mapa` row, the cliente, the endereço) before a
  * refusal at step 8 — step 6 alone before the one at 6b; each of those writes
@@ -175,6 +189,7 @@ import {
   alvoEstadoLi,
   lerHistoricoLi,
   modoHistoricoLi,
+  motivoReversaoLi,
   type LacunaHistoricoLi,
   type LeituraHistoricoLi,
 } from './estadoPedidoLi';
@@ -462,6 +477,21 @@ function entregaArmazenada(armazenado: PedidoArmazenadoLi | null): unknown {
   return typeof frete === 'object' && frete !== null && !Array.isArray(frete)
     ? (frete as Readonly<Record<string, unknown>>).enderecoFreteOuterReference
     : null;
+}
+
+/**
+ * The pedido holds a BOUGHT label: its freight block's `printLabelId` is
+ * stored and not empty (`vazioArmazenadoLi`) — the Melhor Envio purchase's own
+ * write, which this import never makes nor clears.
+ */
+function etiquetaCompradaLi(armazenado: PedidoArmazenadoLi | null): boolean {
+  const frete = armazenado?.freteInicial;
+  return (
+    typeof frete === 'object' &&
+    frete !== null &&
+    !Array.isArray(frete) &&
+    !vazioArmazenadoLi((frete as Readonly<Record<string, unknown>>).printLabelId)
+  );
 }
 
 /**
@@ -893,10 +923,25 @@ export async function importarPedidoLi(
       gravacao.escrita.totaisDivergentes,
     nowUs,
   });
+  // A reversal on a pedido whose label was bought, read from the snapshot the WINNING
+  // attempt decided from (the import never writes `printLabelId`) — A7.
+  const reversaoComEtiqueta = etiquetaCompradaLi(gravacao.armazenado)
+    ? motivoReversaoLi(pedido.situacao.codigo)
+    : null;
+  if (reversaoComEtiqueta !== null) {
+    deps.logger?.warn(`${ROTULO_LOG} reversão em pedido com etiqueta comprada; aviso levantado`, {
+      ...log,
+      motivo: reversaoComEtiqueta,
+    });
+  }
   await sincronizarAvisosDoPedidoLi(
     db,
     doAviso,
-    { situacaoDesconhecida: decisao.situacaoDesconhecida, contestacao: decisao.contestacao },
+    {
+      situacaoDesconhecida: decisao.situacaoDesconhecida,
+      contestacao: decisao.contestacao,
+      reversaoComEtiqueta,
+    },
     depsDoAviso,
   );
   if (frete !== null && frete.roteamento.aviso !== null) {
