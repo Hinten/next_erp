@@ -667,6 +667,46 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
     expect(r?.campos).toEqual(['*']);
     expect(r?.bloco.estado).toBe(ESTADO_FRETE.aguardandoPostagem);
   });
+
+  describe('⚠️ an EMPTY stored externalOptionData is refilled even under the freeze (owner decision, 2026-10-19)', () => {
+    // An operator never writes an empty method: one stored empty is an import's
+    // "no route yet", and keeping it frozen leaves the pedido without the key its
+    // label is routed by, forever after any operator save.
+    it('EQUAL: frozen, stored `null`, absent or `""` ⇒ the raw method is written, and named in the campos', () => {
+      for (const vazio of [null, undefined, '']) {
+        const bloco: Record<string, unknown> = { ...armazenado, externalOptionData: vazio };
+        if (vazio === undefined) delete bloco.externalOptionData;
+        const r = mesclarFreteLi(bloco, m, { congelado: true, estadoPedido: ESTADO_PEDIDO.pago });
+        expect(r?.bloco.externalOptionData, String(vazio)).toEqual(PAC);
+        expect(r?.campos, String(vazio)).toContain('externalOptionData');
+        // The rest of the frozen group stays the operator's.
+        expect(r?.bloco.valorCobrado, String(vazio)).toBe(30);
+      }
+    });
+
+    it('NEAR-MISS: frozen, a NON-empty stored method (another one, or an empty map) ⇒ kept, not named', () => {
+      for (const valor of [{ id: 7, nome: 'Outra forma' }, {}]) {
+        const bloco = { ...armazenado, externalOptionData: valor };
+        const r = mesclarFreteLi(bloco, m, { congelado: true, estadoPedido: ESTADO_PEDIDO.pago });
+        expect(r?.bloco.externalOptionData, JSON.stringify(valor)).toEqual(valor);
+        expect(r?.campos ?? [], JSON.stringify(valor)).not.toContain('externalOptionData');
+      }
+    });
+
+    it('NEAR-MISS: the refill is externalOptionData’s alone — a frozen `null` valorCobrado or dataPrevisaoEntrega stays null', () => {
+      const bloco = {
+        ...armazenado,
+        externalOptionData: PAC,
+        valorCobrado: null,
+        dataPrevisaoEntrega: null,
+      };
+      const r = mesclarFreteLi(bloco, m, { congelado: true, estadoPedido: ESTADO_PEDIDO.pago });
+      expect(r?.bloco.valorCobrado ?? null).toBeNull();
+      expect(r?.bloco.dataPrevisaoEntrega ?? null).toBeNull();
+      expect(r?.campos ?? []).not.toContain('valorCobrado');
+      expect(r?.campos ?? []).not.toContain('dataPrevisaoEntrega');
+    });
+  });
 });
 
 describe('⚠️ an order with NO endereço: its freight amount, never a carrier route', () => {
@@ -789,7 +829,8 @@ describe('⚠️ an order with NO endereço: its freight amount, never a carrier
       estadoPedido: ESTADO_PEDIDO.pago,
     });
     expect(r?.bloco).toEqual(freteDeCriacaoLi(mapear(ENDERECO), ESTADO_PEDIDO.pago));
-    // FROZEN: the refs fill outside the freeze; the raw method stays in the frozen group.
+    // FROZEN: the refs fill outside the freeze, and the EMPTY raw method is
+    // refilled too — an import left it empty, never an operator.
     const f = mesclarFreteLi(vazio, mapear(ENDERECO), {
       congelado: true,
       estadoPedido: ESTADO_PEDIDO.pago,
@@ -798,7 +839,7 @@ describe('⚠️ an order with NO endereço: its freight amount, never a carrier
       integracaoFreteOuterRef: REF_ME,
       externalOptionId: '2',
       enderecoFreteOuterReference: ENDERECO,
-      externalOptionData: null,
+      externalOptionData: PAC,
     });
   });
 

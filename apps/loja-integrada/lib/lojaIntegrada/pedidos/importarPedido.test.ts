@@ -1311,6 +1311,44 @@ describe('⚠️ an order without an endereço: its freight amount, never a carr
     expect(endereco).toMatch(/^documents\/clientes\//);
     expect(frete(db)).toMatchObject({ ...ROTA_ME, enderecoFreteOuterReference: endereco });
   });
+
+  it('⚠️ the same, after an operator SAVED the pedido (frozen) ⇒ the route AND the empty raw method fill; the operator’s money stays', async () => {
+    const db = dbComAlvo();
+    await importar(db, cena());
+    expect(frete(db)).toMatchObject(SEM_ROTA);
+    // Any operator save freezes the pedido — here a money edit on the block.
+    await refPedido(db).update({
+      hasUserInteraction: true,
+      freteInicial: { ...frete(db), valorCobrado: 30 },
+    });
+
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) }));
+    const endereco = db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef as string;
+    expect(endereco).toMatch(/^documents\/clientes\//);
+    expect(frete(db)).toMatchObject({
+      ...ROTA_ME,
+      enderecoFreteOuterReference: endereco,
+      valorCobrado: 30,
+    });
+  });
+
+  it('NEAR-MISS: a frozen pedido whose raw method an earlier import STORED keeps it, though Loja Integrada now sends another', async () => {
+    const db = dbComAlvo();
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+    expect(frete(db).externalOptionData).toEqual({ ...FORMA_ENVIO_LI });
+    await refPedido(db).update({ hasUserInteraction: true });
+
+    const outra = { ...FORMA_ENVIO_LI, nome: 'Gateway de teste (renomeado)' };
+    await importar(
+      db,
+      cena({
+        cliente: COMPRADOR_COM_CPF,
+        data_modificacao: carimboLi(3),
+        envios: [{ ...envioPadrao(), forma_envio: outra }],
+      }),
+    );
+    expect(frete(db).externalOptionData).toEqual({ ...FORMA_ENVIO_LI });
+  });
 });
 
 describe('⚠️ never a cliente beside another cliente’s endereço (step 7): fiscal and delivery', () => {

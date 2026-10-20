@@ -94,7 +94,8 @@
  * overwrites a stored one, so a route already stored (an operator's, or an
  * earlier import's) is never cleared; and the route fields are fill-once, so
  * the first import that finds the endereço fills an empty route (the raw
- * `externalOptionData` refreshes in the frozen group, as below).
+ * `externalOptionData` refreshes in the frozen group, and an EMPTY one refills
+ * even on a frozen pedido — below).
  *
  * ## The update: two groups, the Shopee freeze split
  *
@@ -114,6 +115,14 @@
  *    `externalOptionData`, `dataPrevisaoEntrega`, and seeding an absent block,
  *    so an operator's money edit survives the next Loja Integrada change. An
  *    absent incoming value never overwrites a stored one.
+ *    ⚠️ One exception (owner decision, 2026-10-19): an EMPTY stored
+ *    `externalOptionData` (`vazioArmazenadoLi`: `null`, absent or `''`) is
+ *    refilled even under the freeze. No operator writes an empty method — it is
+ *    what an import without a route left — and keeping it frozen would leave a
+ *    pedido routed to the conta's own Loja Integrada doc without the key its
+ *    label is routed by, forever after any operator save. A NON-empty stored
+ *    method (another one, or an empty map) stays frozen; so do an empty
+ *    `valorCobrado` and `dataPrevisaoEntrega`.
  *
  * Nothing else is touched on update: the freight estado past `iniciado`
  * belongs to the label flow, and a tracking write-back that bumps the order's
@@ -642,14 +651,15 @@ export function mesclarFreteLi(
     campos.push('estado');
   }
 
-  if (!contexto.congelado) {
-    for (const campo of CAMPOS_FRETE_CONGELAVEIS_LI) {
-      const valor = mapeado.base[campo];
-      if (valor === null || valor === undefined) continue;
-      if (!mesmoValorJsonLi(atual[campo], valor)) {
-        bloco[campo] = valor;
-        campos.push(campo);
-      }
+  for (const campo of CAMPOS_FRETE_CONGELAVEIS_LI) {
+    const valor = mapeado.base[campo];
+    if (valor === null || valor === undefined) continue;
+    // Frozen: only an EMPTY raw method refills — an import left it so, never an operator.
+    const refazVazio = campo === 'externalOptionData' && vazioArmazenadoLi(atual[campo]);
+    if (contexto.congelado && !refazVazio) continue;
+    if (!mesmoValorJsonLi(atual[campo], valor)) {
+      bloco[campo] = valor;
+      campos.push(campo);
     }
   }
 

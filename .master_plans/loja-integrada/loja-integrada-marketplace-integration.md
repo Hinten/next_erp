@@ -897,7 +897,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **Always:** the estado, through the table and the ladder, and our own error text.
   - **Fill-once:** the refs, `numero`, `timestamp` and the operação.
   - **Freight outside the freeze:** fill-once tracking, deadline and refs, and the paid promotion.
-  - **Frozen while `hasUserInteraction`:** items (append-only), `valorCobrado`, `descontoTotal`, the freight money and data, and seeding an absent block.
+  - **Frozen while `hasUserInteraction`:** items (append-only), `valorCobrado`, `descontoTotal`, the freight money and data, and seeding an absent block. One exception (decided 2026-10-19): an EMPTY stored `externalOptionData` is refilled even on a frozen pedido. No operator writes an empty shipping method; an import without a route left it so, and keeping it frozen would leave the pedido without the key its label is routed by after any operator save. A non-empty stored method stays frozen.
   - So an operator's money edit survives the next LI change, and one operator save never blinds tracking.
 - **Avisos and incidentes:**
   - **Four aviso tipos**, each with a machine resolver and documented on `tipoAvisoSchema` (`aviso.ts`):
