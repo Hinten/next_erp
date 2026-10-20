@@ -184,7 +184,16 @@ async function instalarStubsShopee(page: Page, linkAtivo: string): Promise<Stubs
   return stubs;
 }
 
-test.describe.serial('Produtos — the bulk actions reach a Shopee conta', () => {
+test.describe('Produtos — the bulk actions reach a Shopee conta', () => {
+  // ⚠️ `default`, NOT `serial`: every test here is independent (each installs its
+  // own stubs, and nothing it does writes the seed), so a red one must not SKIP
+  // the rest — under `serial` one failing push hid every action after it. The
+  // group still runs in order in ONE worker (one seed on a green run) and is
+  // never split by `--shard`; after a failure Playwright restarts the worker,
+  // which re-runs `beforeAll` under a fresh `w<index>` prefix while the old
+  // worker's `afterAll` sweeps its own fixtures.
+  test.describe.configure({ mode: 'default' });
+
   const prefix = e2ePrefix('shpmassa');
   const conta = `${prefix}-001`;
   // Deterministic (mirrors `seedProdutoShopeeVinculado`) so afterAll can always
@@ -262,8 +271,39 @@ test.describe.serial('Produtos — the bulk actions reach a Shopee conta', () =>
     );
     await expect(dialogo.getByText('Enviados 1 · Pulados 0 · Falhas 0')).toBeVisible();
     await expect(dialogo.getByText(NAO_IMPLEMENTADO)).toHaveCount(0);
+    // `baixarPreco` is TRUE: the dialog ticks 'Permitir baixar preços' by default.
     // ⚠️ The near-miss: `incluirNaoPublicados` is Mercado Livre's, and the Shopee
     // client rebuilds the body by name — so the key is ABSENT, not false.
+    expect(stubs.chamadas).toEqual([
+      {
+        metodo: 'POST',
+        rota: 'enviar-precos',
+        corpo: { integracaoId: conta, produtoIds: [produtoId], baixarPreco: true },
+      },
+    ]);
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test("sends baixarPreco false to the Shopee conta once 'Permitir baixar preços' is unticked", async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(page, linkAtivo);
+    await abrirAcao(page, 'Enviar preços');
+    const dialogo = page.getByRole('dialog', { name: 'Enviando preços para os marketplaces' });
+    await expect(dialogo).toBeVisible();
+    // ⚠️ The near-miss of the test above: the option is FORWARDED, never a
+    // constant — the tick is the one thing that changes, and the body follows it.
+    const baixarPreco = dialogo.getByLabel('Permitir baixar preços');
+    await expect(baixarPreco).toBeChecked();
+    await baixarPreco.uncheck();
+    await expect(baixarPreco).not.toBeChecked();
+    expect(stubs.chamadas).toEqual([]);
+    await dialogo.getByRole('button', { name: 'Enviar preços' }).click();
+
+    await expect(dialogo.getByTestId(`envio-preco-row-${chaveDaLinha}`)).toContainText(
+      MENSAGEM_PRECO,
+      { timeout: 30_000 },
+    );
     expect(stubs.chamadas).toEqual([
       {
         metodo: 'POST',

@@ -79,8 +79,9 @@ import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeMod
  * listing pushes — so the link docs are read LIVE: the tab repaints from the
  * same snapshot those writers land in. An action here names ONE listing and
  * calls the apps/shopee route DIRECTLY (`useShopeeClient`), never the registry
- * rows — those are the /produtos selection-wide pushes (the Mercado Livre tab
- * does the same).
+ * rows — those back the /produtos selection-wide pushes (the Mercado Livre tab's
+ * per-listing actions do the same; its per-conta stock push goes through
+ * `enviarEstoqueParaIntegracao`).
  *
  * ## One write at a time, and a kit create that may have happened
  *
