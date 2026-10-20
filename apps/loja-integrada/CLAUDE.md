@@ -12,6 +12,7 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   (`/api/webhooks/loja-integrada/…`, step 4) stays OUTSIDE the proxy matcher.
 - The platform is called only through `@delfrance/integrations-loja-integrada`,
   never with a raw `fetch` here. No write to the platform before the cutover (D4).
+- Step 15 (label routing): the second route family, `pedidos/[pedidoId]/…` (below).
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -34,6 +35,38 @@ still be fixed. Only the context loader refuses those.
   → 499. A save re-reads the conta after writing and undoes the write on a 404.
 - The aviso step runs after the write landed: a TRANSIENT gRPC failure there is logged and
   the answer stays 200 (`semDerrubarAEscrita` in `avisos/avisos.ts`); anything else throws.
+
+## Routes (`/api/marketplace/loja-integrada/pedidos/[pedidoId]…`, step 15)
+
+`PUT …/rota-etiqueta` (`PERM.frete.write`, the Melhor Envio buy's own permission: whoever can
+buy a label can route one; pedido write is not needed) re-points a pedido that still names its
+conta's Loja Integrada `int_frete` doc at the label target the conta's `mapa`, a stored override
+or the operator's `escolha` resolves. The work is `lib/lojaIntegrada/pedidos/rotaEtiqueta.ts`.
+
+- **No call to Loja Integrada, and none of its machinery.** No package client, no credential,
+  no context loader, no pacer, no read switch: routing works while the switch is off (D17).
+  `estrutura.test.ts` walks the route file's run-time import closure (the `@/` modules too,
+  type-only imports set aside) and fails on any of them or on a `fetch` call; the route suite
+  stubs `fetch` to throw and trips on the package, the context loader or the switch loading.
+- **The decisions are shared.** The ref reader, the guards, the plan and the conclusion are
+  `packages/schemas/src/mapaFreteLojaIntegrada.ts`'s, called in the order the web's read-only
+  preview calls them, over RAW reads by id (at most four, never cached). Never a local copy.
+  The wire contract (strict body, non-strict answer, codes) is
+  `packages/schemas/src/rotaEtiquetaLojaIntegrada.ts` and `CODIGO_ERRO_LI`; every answer is
+  built through it, so the target document (which may hold credentials) never rides along.
+- **One tier-1 write per attempt** (root rule 7): `update({ freteInicial: B },
+  { lastUpdateTime })` against the attempt's own pedido read. `B` is the RAW stored block with
+  only the routing keys replaced (`integracaoFreteOuterRef`, `externalOptionId`, the escolha's
+  `integracaoTargetOuterRef`, the retirada hand-off's `estado`), never re-parsed, so unmodelled
+  keys and Timestamps survive (`rotaEtiqueta.firestore.test.ts`). A 9 or 5 re-reads and
+  re-decides everything, at most 3 attempts, then 503 `LI_ROTA_EM_CONFLITO`. No multi-document
+  atomic write, and so no transaction-inventory row.
+- **Refusals are decisions** (200 `recusado`, with a motivo); the envelope carries only 400
+  (id, then body), 401/403, 404 `LI_PEDIDO_NAO_ENCONTRADO` and 503. An already-routed pedido
+  answers `ja-roteado` and writes nothing, whatever the escolha.
+- A refusal or a conflict logs ONE line with ids only (the pedido, the motivo, the attempts),
+  never an endereço, a name or a document. No ruleset, index or env change: the write goes
+  through Admin, and every read is by id.
 
 ## Store and writes
 
