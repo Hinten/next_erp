@@ -1026,3 +1026,51 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaFreteNaoSuportado', () => {
     expect(mensagem.runbook).toBeUndefined();
   });
 });
+
+/**
+ * The paid-order-without-an-address tipo (step 5, owner decision 2026-10-19),
+ * rendered with the params its producer (the notification pipeline's exhaustion
+ * signal) writes: `{ loja, pedido }`.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco];
+
+  it('says the PAID order did not reach the ERP, why, that retrying stopped, and how it closes', () => {
+    expect(mensagem.corpo({ loja: 'Conta A', pedido: '165' })).toBe(
+      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem um endereço de ' +
+        'entrega utilizável (CEP e logradouro) e por isso não entrou no ERP — nem o pedido, nem ' +
+        'a atualização dele: sem endereço não há como comprar a etiqueta. A importação tentou de ' +
+        'novo por algumas horas e parou. O aviso se encerra quando o pedido for importado.',
+    );
+  });
+
+  it('renders `{}` with placeholders, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toContain('O pedido — da loja —');
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('renders the producer plano as stored: critico, routed to the conta page', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165' },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_789_000_000_000_001,
+    });
+    expect(aviso.severidade).toBe(SEVERIDADE_AVISO.critico);
+    expect(aviso.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(mensagem.corpo(aviso.params)).toContain('O pedido 165 da loja Conta A está pago');
+  });
+
+  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, and a pickup is mapped', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco);
+    expect(mensagem.runbook).toBe(
+      'Preencha o endereço de entrega do pedido no painel da Loja Integrada: a alteração faz o ' +
+        'pedido voltar à importação. Se ele for de retirada na loja, mapeie antes a forma de ' +
+        'envio dele para retirada na loja na aba Mapeamento do Frete da conta e depois altere o ' +
+        'pedido no painel.',
+    );
+  });
+});

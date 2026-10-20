@@ -310,6 +310,54 @@ describe('the four Loja Integrada order-import tipos (steps 5–6)', () => {
   });
 });
 
+describe('lojaIntegradaPedidoPagoSemEndereco: a paid order whose retries ran out without an address', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('is a tipo, named and labelled', () => {
+    expect(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco).toBe(
+      'lojaIntegradaPedidoPagoSemEndereco',
+    );
+    expect(tipoAvisoSchema.safeParse('lojaIntegradaPedidoPagoSemEndereco').success).toBe(true);
+    expect(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco).toBe(
+      'Pedido pago da Loja Integrada sem endereço',
+    );
+  });
+
+  it('near-miss: a near spelling is no tipo', () => {
+    for (const quase of ['lojaIntegradaPedidoSemEndereco', 'lojaIntegradaPedidoPagoSemEndereço']) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('one row per pedido of the conta, apart from the other order-keyed tipos', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO], conta: string) =>
+      chaveDeAviso({ tipo, conta, entidade: PEDIDO_ID });
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, 'int-1')).toBe(
+      `lojaIntegradaPedidoPagoSemEndereco:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, 'int-1')).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoHub, 'int-1'),
+    );
+  });
+
+  it('parses as stored: critico, the conta page, an order clock', () => {
+    const aviso = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165' },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    expect(aviso).toMatchObject({
+      tipo: 'lojaIntegradaPedidoPagoSemEndereco',
+      severidade: 'critico',
+      params: { loja: 'Conta A', pedido: '165' },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+  });
+});
+
 describe('MOTIVO_PEDIDO_CONTESTADO_LI', () => {
   it('keeps the named-member constant in step with the enum, member for member', () => {
     expect(Object.values(MOTIVO_PEDIDO_CONTESTADO_LI).sort()).toEqual(

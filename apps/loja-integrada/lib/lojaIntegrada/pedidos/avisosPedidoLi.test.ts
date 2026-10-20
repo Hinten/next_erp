@@ -21,6 +21,7 @@ import { AGORA_MS } from '../testing/fixtures';
 import { CHAVE_FORMA_ENVIO_LI } from '../testing/pedidosLi';
 import {
   MOTIVO_RESOLUCAO_PEDIDO_LI,
+  avisarPedidoPagoSemEnderecoLi,
   chaveDoAvisoDeFreteLi,
   chaveDoAvisoDoPedidoLi,
   sincronizarAvisoDeFreteLi,
@@ -250,5 +251,60 @@ describe('the freight tipo', () => {
     ).toEqual({ acao: 'nenhum' });
     expect(db.escritas.length).toBe(escritas);
     expect(db.ler(caminhoFrete)?.resolvidoEm).toBeNull();
+  });
+});
+
+describe('the paid-without-address tipo (owner decision, 2026-10-19)', () => {
+  const caminhoPago = `avisos/${chaveDoAvisoDoPedidoLi(
+    TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+    CONTA,
+    'pedido-1',
+  )}`;
+  const semNada = { situacaoDesconhecida: null, contestacao: null };
+
+  it('raised CRITICO at the conta page with exactly the params the wording reads, clocked by the order', async () => {
+    const db = new FakeDb();
+    expect(await avisarPedidoPagoSemEnderecoLi(asDb(db), pedido(1_000), deps)).toEqual({
+      acao: 'levantado',
+      resultado: 'criado',
+    });
+    expect(db.ler(caminhoPago)).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      relogioEvento: 1_000,
+      urlInterna: { rota: `/canais/loja-integrada/${CONTA}`, campo: null },
+      resolvidoEm: null,
+    });
+    expect(db.ler(caminhoPago)?.params).toEqual({ loja: 'Loja X', pedido: '9001' });
+  });
+
+  it('EVERY import that reaches the avisos resolves it — a newer one closes the row', async () => {
+    const db = new FakeDb();
+    await avisarPedidoPagoSemEnderecoLi(asDb(db), pedido(1_000), deps);
+    const r = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(2_000), semNada, deps);
+    expect(r.pagoSemEndereco).toEqual({ acao: 'resolvido', fechou: true });
+    expect(db.ler(caminhoPago)).toMatchObject({
+      resolucaoMotivo: MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
+      relogioEvento: 2_000,
+    });
+  });
+
+  it('NEAR-MISS: a late OLDER import cannot close a raised row; a late OLDER exhaustion cannot reopen a resolved one', async () => {
+    const db = new FakeDb();
+    await avisarPedidoPagoSemEnderecoLi(asDb(db), pedido(2_000), deps);
+    const velho = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(1_500), semNada, deps);
+    expect(velho.pagoSemEndereco).toEqual({ acao: 'resolvido', fechou: false });
+    expect(db.ler(caminhoPago)?.resolvidoEm).toBeNull();
+
+    // The other way round: the newer import resolved (seeding the row), then an
+    // older run's exhaustion lands.
+    const outro = new FakeDb();
+    await sincronizarAvisosDoPedidoLi(asDb(outro), pedido(3_000), semNada, deps);
+    expect(await avisarPedidoPagoSemEnderecoLi(asDb(outro), pedido(2_500), deps)).toEqual({
+      acao: 'levantado',
+      resultado: 'ignorado',
+    });
+    expect(outro.ler(caminhoPago)?.resolvidoEm).not.toBeNull();
   });
 });

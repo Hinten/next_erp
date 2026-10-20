@@ -42,7 +42,13 @@
  *    does to the pedido's update time — for a watermark that round-trips and
  *    for one stored as a double (both pinned as the emulator answers them);
  *  - the link lookup finds both stored ref forms through the real query;
- *  - the step-7 loop moves only the clocks.
+ *  - the step-7 loop moves only the clocks;
+ *  - a PAID order without an address through the REAL notification pipeline's
+ *    hot sweep (owner decision A4): the shared store's real mark keeps the row
+ *    `failed` below the cap and PARKS it at the cap, and only then the
+ *    exhaustion signal logs its ERROR line and raises the real aviso — with
+ *    nothing of the pedido or a cliente written — and a later import that
+ *    finds the address closes it.
  *
  * ⚠️ The conta is seeded ONCE (an `integracao` write fires the conta trigger in
  * the functions emulator): no filial and no `dataCadastro`, so the core plans it
@@ -79,7 +85,14 @@ import {
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
 import { loadLojaIntegradaContext } from '../core/contexto';
-import type { DepsImportadorLi, PayloadNotificacaoLi } from '../notificacoes/notificacao';
+import {
+  MAX_TENTATIVAS,
+  docIdNotificacaoLi,
+  reprocessarNotificacoesLi,
+  type DepsImportadorLi,
+  type DepsTarefaLi,
+  type PayloadNotificacaoLi,
+} from '../notificacoes/notificacao';
 import { AMBIENTE_LIGADO, credencialDoc, gravadorDeLog, ritmoFalso } from '../testing/fixtures';
 import {
   CHAVE_FORMA_ENVIO_LI,
@@ -121,6 +134,9 @@ const COMPRADOR_COM_CPF = { id: 1, nome: 'Comprador de Teste', cpf: CPF_VALIDO_L
 function db(): Firestore {
   return getAdminFirestore();
 }
+
+/** The reads queue's failures-only store: the A4 case seeds and sweeps one row of it. */
+const NOTIFICACOES = 'notificacoesLojaIntegrada';
 
 const refPedido = (): DocumentReference => db().collection('pedidos').doc(PEDIDO_ID);
 const refPagamento = (): DocumentReference =>
@@ -208,7 +224,14 @@ function updateTimeDe(snap: { readonly updateTime?: Timestamp }): Timestamp {
 const refFrete = (): DocumentReference => db().collection('int_frete').doc(INT_FRETE_LI);
 
 async function limpar(): Promise<void> {
-  for (const colecao of ['pedidos', 'produtos', 'avisos', 'clientes', 'clienteIdentidades']) {
+  for (const colecao of [
+    'pedidos',
+    'produtos',
+    'avisos',
+    'clientes',
+    'clienteIdentidades',
+    NOTIFICACOES,
+  ]) {
     await db().recursiveDelete(db().collection(colecao));
   }
   await refFrete().delete();
@@ -864,5 +887,96 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
       semRelogios(pagamentoAntes, ['lastProviderUpdate', 'ultimaModificacao']),
     );
     expect(pagamentoDepois.lastProviderUpdate).toBe(dataLiParaMicros(carimboLi(8)));
+  });
+
+  it('A4 on the REAL pipeline: a paid order without an address swept to the cap — the real row PARKED, the ERROR line, the open aviso, nothing of the pedido; the address later imports and resolves it', async () => {
+    const p = payload();
+    const linha = db().collection(NOTIFICACOES).doc(docIdNotificacaoLi(p));
+    const avisoPago = db()
+      .collection('avisos')
+      .doc(chaveDoAvisoDoPedidoLi(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, CONTA, PEDIDO_ID));
+    const erros: unknown[][] = [];
+    const semEndereco = cena({ cliente: COMPRADOR_COM_CPF, endereco_entrega: null });
+    const { fetch } = plataformaLi({
+      pedidos: new Map([[NUMERO_LI, () => semEndereco.detalhe]]),
+      historicos: new Map([[NUMERO_LI, () => semEndereco.historico]]),
+    });
+    const deps: DepsTarefaLi = {
+      ambiente: AMBIENTE_LIGADO,
+      importador: importarPedidoLi,
+      increment: (by: number) => FieldValue.increment(by),
+      arrayUnion: (...e: unknown[]) => FieldValue.arrayUnion(...e),
+      viaCep,
+      agoraMs: () => AGORA_MS,
+      esperar: () => Promise.resolve(),
+      logger: {
+        warn: () => undefined,
+        info: () => undefined,
+        error: (msg, meta) => {
+          erros.push([msg, meta]);
+        },
+      },
+      registro: {
+        fluxo: 'intake',
+        tentativa: null,
+        idTarefa: null,
+        escrever: gravadorDeLog().escrever,
+      },
+      fetch,
+    };
+    // As the queue's last attempt leaves it, one hot sweep short of the cap.
+    await linha.set({
+      ...p,
+      status: 'failed',
+      tentativas: MAX_TENTATIVAS - 2,
+      erro: 'a última tentativa da fila',
+      processedAt: 0,
+    });
+
+    // Below the cap: the real mark keeps it failed, and nothing is signalled.
+    await reprocessarNotificacoesLi(db(), {}, deps);
+    expect((await linha.get()).data()).toMatchObject({
+      status: 'failed',
+      tentativas: MAX_TENTATIVAS - 1,
+    });
+    expect(erros).toEqual([]);
+    expect((await avisoPago.get()).exists).toBe(false);
+
+    // The cap: parked by the shared store, THEN the signal — the line and the aviso.
+    __resetAllReadCaches();
+    await linha.update({ processedAt: 0 });
+    const varredura = await reprocessarNotificacoesLi(db(), {}, deps);
+    expect(varredura.errors.map((e) => e.docId)).toEqual([linha.id]);
+    expect((await linha.get()).data()).toMatchObject({
+      status: 'parked',
+      tentativas: MAX_TENTATIVAS,
+    });
+    expect((await linha.get()).data()?.erro).toContain(String(NUMERO_LI));
+    expect(erros).toHaveLength(1);
+    expect(erros[0]![1]).toEqual({
+      integracaoId: CONTA,
+      numero: String(NUMERO_LI),
+      pedidoId: PEDIDO_ID,
+    });
+    expect((await avisoPago.get()).data()).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: 'critico',
+      params: { loja: NOME_CONTA, pedido: String(NUMERO_LI) },
+      relogioEvento: dataLiParaMicros(carimboLi(2)),
+      resolvidoEm: null,
+    });
+    // Nothing of the order: no pedido, no cliente; the mapa row is the one write.
+    expect((await refPedido().get()).exists).toBe(false);
+    expect((await db().collection('clientes').get()).size).toBe(0);
+    const mapa = (await refFrete().get()).data()?.mapa as DocumentData[];
+    expect(mapa.map((l) => l.idOriginal)).toEqual([CHAVE_FORMA_ENVIO_LI]);
+
+    // The address is filled in the painel: a newer change imports, and closes the row.
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) })),
+    ).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()?.estado).toBe(ESTADO_PEDIDO.pago);
+    expect((await avisoPago.get()).data()?.resolvidoEm).not.toBeNull();
   });
 });

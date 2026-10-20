@@ -3,7 +3,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 
 import { defineAdminCollection } from '../defineAdminCollection';
-import { defineNotificationPipeline } from './pipeline';
+import { type NotificationPipelineConfig, defineNotificationPipeline } from './pipeline';
 import {
   MAX_TENTATIVAS,
   MAX_TENTATIVAS_DEFERRED,
@@ -34,6 +34,7 @@ class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly failCreateIds = new Set<string>();
   readonly failMarkIds = new Set<string>();
+  readonly failDeleteIds = new Set<string>();
   private autoN = 0;
 
   private col(path: string): Map<string, DocData> {
@@ -99,6 +100,9 @@ class FakeDb {
             col.set(docId, { ...current, ...data });
           },
           delete: async () => {
+            if (self.failDeleteIds.has(docId)) {
+              throw Object.assign(new Error('delete unavailable'), { code: 14 });
+            }
             col.delete(docId);
           },
         };
@@ -154,6 +158,7 @@ function buildPipeline(
     payload: TestPayload,
     phase: 'task' | 'sweep',
   ) => NotificationDisposition,
+  extra: Partial<NotificationPipelineConfig<TestPayload, TestOutcome>> = {},
 ) {
   return defineNotificationPipeline<TestPayload, TestOutcome>({
     channel: 'teste',
@@ -175,6 +180,8 @@ function buildPipeline(
         if (o.kind === 'unsupported') return { kind: 'park', reason: 'não suportado' };
         return { kind: 'fail', reason: 'sem conta ativa' };
       }),
+    // Last: a test's override (a throwing `fromDoc`, the exhaustion signal) wins.
+    ...extra,
   });
 }
 
@@ -487,6 +494,255 @@ describe('reprocess (the durable-cursor sweep)', () => {
     const res = await pipeline.reprocess(asDb(db), { now: NOW, limit: 2 });
 
     expect(res.processed).toBe(2);
+  });
+});
+
+/* ------------------- the retries-exhausted signal (park) ------------------- */
+// The ONE moment a channel learns that a THROWN failure spent the whole retry
+// budget: the sweep's park at the cap. Nothing else in the pipeline counts
+// attempts, so a channel that must fail loudly at exhaustion hooks HERE rather
+// than keeping a second counter.
+
+describe('onRetriesExhausted — a thrown failure parked at the cap', () => {
+  const NOW = 1_700_000_000_000;
+  const OLD = NOW - 2 * 60 * 60 * 1000;
+  const OLD_DEFERRED = NOW - 2 * ONE_DAY_MS;
+
+  function seed(id: string, over: Record<string, unknown> = {}): void {
+    db.seed(NOTIF, id, {
+      id,
+      resource: `/orders/${id}`,
+      status: 'failed',
+      tentativas: 0,
+      erro: 'boom',
+      processedAt: OLD,
+      ...over,
+    });
+  }
+
+  /** Records each call with the doc's status AT the call: the park must already have landed. */
+  function espiao(): {
+    readonly onRetriesExhausted: NonNullable<
+      NotificationPipelineConfig<TestPayload, TestOutcome>['onRetriesExhausted']
+    >;
+    readonly chamadas: Array<{ payload: TestPayload; err: Error; status: unknown }>;
+  } {
+    const chamadas: Array<{ payload: TestPayload; err: Error; status: unknown }> = [];
+    return {
+      chamadas,
+      onRetriesExhausted: async (_db, payload, err) => {
+        chamadas.push({ payload, err, status: db.docs(NOTIF).get(payload.id ?? '')?.status });
+      },
+    };
+  }
+
+  it('EQUAL: the throw that parks the row calls it ONCE, with the payload and the ORIGINAL error, after the park', async () => {
+    seed('N1', { tentativas: MAX_TENTATIVAS - 1 });
+    const erro = new Error('ainda sem endereço');
+    const s = espiao();
+    const pipeline = buildPipeline(
+      async () => {
+        throw erro;
+      },
+      undefined,
+      { onRetriesExhausted: s.onRetriesExhausted },
+    );
+
+    const res = await pipeline.reprocess(asDb(db), { now: NOW });
+
+    expect(s.chamadas).toHaveLength(1);
+    expect(s.chamadas[0]!.payload).toEqual({ id: 'N1', resource: '/orders/N1' });
+    expect(s.chamadas[0]!.err).toBe(erro);
+    expect(s.chamadas[0]!.status).toBe('parked');
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({
+      status: 'parked',
+      tentativas: MAX_TENTATIVAS,
+      erro: 'ainda sem endereço',
+    });
+    // The processing failure is still reported as before.
+    expect(res.errors).toEqual([{ docId: 'N1', message: 'ainda sem endereço' }]);
+  });
+
+  it('NEAR-MISS: one attempt below the cap the row stays failed, and nothing is signalled', async () => {
+    seed('N1', { tentativas: MAX_TENTATIVAS - 2 });
+    const s = espiao();
+    const pipeline = buildPipeline(
+      async () => {
+        throw new Error('ainda sem endereço');
+      },
+      undefined,
+      { onRetriesExhausted: s.onRetriesExhausted },
+    );
+
+    await pipeline.reprocess(asDb(db), { now: NOW });
+
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({
+      status: 'failed',
+      tentativas: MAX_TENTATIVAS - 1,
+    });
+    expect(s.chamadas).toEqual([]);
+  });
+
+  it('NEAR-MISS: a RETURNED park or fail at the cap is the channel’s own verdict — no signal', async () => {
+    seed('N1', { tentativas: MAX_TENTATIVAS - 1 });
+    seed('N2', { tentativas: MAX_TENTATIVAS - 1 });
+    const s = espiao();
+    const pipeline = buildPipeline(
+      async (_db, p) => ({ kind: p.id === 'N1' ? 'unsupported' : 'no-account' }),
+      undefined,
+      { onRetriesExhausted: s.onRetriesExhausted },
+    );
+
+    const res = await pipeline.reprocess(asDb(db), { now: NOW });
+
+    expect(res.outcomes.parked).toBe(2);
+    expect(s.chamadas).toEqual([]);
+  });
+
+  it('NEAR-MISS: a failure AFTER `process` returned (the resolve’s delete) is no processing failure — no signal', async () => {
+    seed('N1', { tentativas: MAX_TENTATIVAS - 1 });
+    db.failDeleteIds.add('N1');
+    const s = espiao();
+    const pipeline = buildPipeline(async () => ({ kind: 'ok' }), undefined, {
+      onRetriesExhausted: s.onRetriesExhausted,
+    });
+
+    const res = await pipeline.reprocess(asDb(db), { now: NOW });
+
+    expect(res.errors).toEqual([{ docId: 'N1', message: 'delete unavailable' }]);
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'parked' });
+    expect(s.chamadas).toEqual([]);
+  });
+
+  it('NEAR-MISS: a REHYDRATION failure at the cap parks with no payload to hand over — no signal', async () => {
+    seed('N1', { tentativas: MAX_TENTATIVAS - 1 });
+    const s = espiao();
+    const pipeline = buildPipeline(async () => ({ kind: 'ok' }), undefined, {
+      fromDoc: () => {
+        throw new Error('rehydration exploded');
+      },
+      onRetriesExhausted: s.onRetriesExhausted,
+    });
+
+    await pipeline.reprocess(asDb(db), { now: NOW });
+
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'parked' });
+    expect(s.chamadas).toEqual([]);
+  });
+
+  it('a park mark that FAILS leaves the row unparked, so nothing is signalled — the next run parks and signals', async () => {
+    seed('N1', { tentativas: MAX_TENTATIVAS - 1 });
+    db.failMarkIds.add('N1');
+    const s = espiao();
+    const pipeline = buildPipeline(
+      async () => {
+        throw new Error('ainda sem endereço');
+      },
+      undefined,
+      { onRetriesExhausted: s.onRetriesExhausted },
+    );
+
+    await pipeline.reprocess(asDb(db), { now: NOW });
+    expect(s.chamadas).toEqual([]);
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'failed' });
+
+    db.failMarkIds.delete('N1');
+    await pipeline.reprocess(asDb(db), { now: NOW });
+    expect(s.chamadas).toHaveLength(1);
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'parked' });
+  });
+
+  it('a signal that THROWS is contained: the row stays parked, the failure is reported and logged, the next doc still runs', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    seed('N1', { tentativas: MAX_TENTATIVAS - 1 });
+    seed('N2', { processedAt: OLD + 1 });
+    const pipeline = buildPipeline(
+      async (_db, p) => {
+        if (p.id === 'N1') throw new Error('ainda sem endereço');
+        return { kind: 'ok' };
+      },
+      undefined,
+      {
+        onRetriesExhausted: async () => {
+          throw new Error('aviso indisponível');
+        },
+      },
+    );
+
+    const res = await pipeline.reprocess(asDb(db), { now: NOW });
+
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'parked' });
+    expect(db.docs(NOTIF).has('N2')).toBe(false);
+    expect(res.errors).toEqual([
+      { docId: 'N1', message: 'ainda sem endereço' },
+      { docId: 'N1', message: 'onRetriesExhausted: aviso indisponível' },
+    ]);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(consoleError.mock.calls[0])).toContain('N1');
+  });
+
+  it('a NON-Error thrown by the signal propagates — a coding bug, not an outage', async () => {
+    seed('N1', { tentativas: MAX_TENTATIVAS - 1 });
+    const pipeline = buildPipeline(
+      async () => {
+        throw new Error('ainda sem endereço');
+      },
+      undefined,
+      {
+        onRetriesExhausted: () => Promise.reject('não é um Error'),
+      },
+    );
+
+    await expect(pipeline.reprocess(asDb(db), { now: NOW })).rejects.toBe('não é um Error');
+  });
+
+  it('the DEFERRED lane: a throw parked at the deferred cap signals; with graduation the row is re-driven and nothing signals', async () => {
+    const deferring = (o: TestOutcome): NotificationDisposition =>
+      o.kind === 'ok' ? { kind: 'resolve' } : { kind: 'defer', reason: 'ainda não' };
+    const lancar = async (): Promise<TestOutcome> => {
+      throw new Error('ainda sem endereço');
+    };
+
+    seed('N1', {
+      status: 'deferred',
+      tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+      processedAt: OLD_DEFERRED,
+    });
+    const s = espiao();
+    await buildPipeline(lancar, deferring, {
+      onRetriesExhausted: s.onRetriesExhausted,
+    }).reprocessDeferred(asDb(db), { now: NOW });
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'parked' });
+    expect(s.chamadas).toHaveLength(1);
+
+    seed('N2', {
+      status: 'deferred',
+      tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+      processedAt: OLD_DEFERRED,
+    });
+    const g = espiao();
+    await buildPipeline(lancar, deferring, {
+      graduateDeferredTransientErrors: true,
+      onRetriesExhausted: g.onRetriesExhausted,
+    }).reprocessDeferred(asDb(db), { now: NOW });
+    expect(db.docs(NOTIF).get('N2')).toMatchObject({ status: 'failed', tentativas: 0 });
+    expect(g.chamadas).toEqual([]);
+  });
+
+  it('the TASK never parks a throw — even its final attempt persists `failed`, and nothing is signalled', async () => {
+    const s = espiao();
+    const pipeline = buildPipeline(
+      async () => {
+        throw new Error('ainda sem endereço');
+      },
+      undefined,
+      { onRetriesExhausted: s.onRetriesExhausted },
+    );
+
+    const r = await pipeline.handleTask(asDb(db), payloadOf(), TASK_MAX_ATTEMPTS - 1);
+
+    expect(r.outcome).toBe('failed');
+    expect(s.chamadas).toEqual([]);
   });
 });
 

@@ -55,7 +55,7 @@
  * `timestamp` and `dataPrevisaoEntrega` (+ `prazo` days) from the shipment's
  * creation stamp, `codRastreio` the tracking code (`''` is none), and
  * `enderecoFreteOuterReference` the fiscal endereço — whose absence withholds
- * the route (below).
+ * a carrier route, never a pickup's (below).
  *
  * `prazoDespacho` is set only on the `pago` rung: a dispatch deadline counts
  * from the approval. It is the conta's `horarioDeCorte` applied to the approval
@@ -83,12 +83,21 @@
  * Integrada's shipment, and no label flow reads it without a route. The
  * routing itself, the `mapa` registration and the aviso still run: they are
  * about the conta's configuration, not this pedido's destination. The
- * operator sets the endereço and the route by hand. The importer hands `null`
- * as well when an endereço the pedido stores — the fiscal one, or this block's
- * delivery `enderecoFreteOuterReference`, where a label ships — does not pair
- * with the pedido's cliente (stored under another cliente, or an owner or a
- * cliente it cannot read — `importarPedido.ts`, step 7): no label may be
- * bought to it.
+ * importer hands `null` as well when an endereço the pedido stores — the
+ * fiscal one, or this block's delivery `enderecoFreteOuterReference`, where a
+ * label ships — does not pair with the pedido's cliente (stored under another
+ * cliente, or an owner or a cliente it cannot read — `importarPedido.ts`,
+ * step 7): no label may be bought to it.
+ *
+ * ⚠️ A PICKUP is exempt (owner decision, 2026-10-19): a route to an active
+ * `retiradaNaLoja` target (`RoteamentoFreteLi.dispensaEndereco`, read from the
+ * target DOCUMENT's tipo) ships nothing to an address, so it is kept without
+ * an endereço — `enderecoFreteOuterReference` then stays `null`. And which
+ * orders reach this rule at all changed the same day: a PAID order with no
+ * usable delivery address is REFUSED before any write and retried
+ * (`pedidoPagoSemEndereco.ts`), so "no endereço" here is an unpaid order, a
+ * paid one whose pedido already stores an endereço, or one whose buyer has no
+ * document (no cliente, so no endereço is stored).
  *
  * The update needs nothing of its own: an absent incoming value never
  * overwrites a stored one, so a route already stored (an operator's, or an
@@ -311,6 +320,14 @@ export interface RoteamentoFreteLi {
   readonly aviso: AvisoFreteLi | null;
   /** Mapped to `fob` or `outros`: routed to the conta's doc on purpose (an INFO log). */
   readonly deliberado: boolean;
+  /**
+   * Routed to an active `retiradaNaLoja` target — decided from the target
+   * DOCUMENT's tipo, never from the row's `targetTipoIntegracao`: a pickup
+   * ships nothing to an address, so its route needs no endereço (module
+   * header, "No endereço, no route"), and a paid order on it is never refused
+   * for lacking one (`pedidoPagoSemEndereco.ts`).
+   */
+  readonly dispensaEndereco: boolean;
 }
 
 export interface EntradaRoteamentoLi {
@@ -334,6 +351,7 @@ export function rotearFreteLi(entrada: EntradaRoteamentoLi): RoteamentoFreteLi {
     externalOptionId: null,
     aviso,
     deliberado,
+    dispensaEndereco: false,
   });
 
   switch (decisao.tipo) {
@@ -343,6 +361,7 @@ export function rotearFreteLi(entrada: EntradaRoteamentoLi): RoteamentoFreteLi {
         externalOptionId: null,
         aviso: decisao.chave === null ? null : { tipo: 'resolver', chave: decisao.chave },
         deliberado: false,
+        dispensaEndereco: false,
       };
     case 'sem-chave':
       return naConta(null);
@@ -373,6 +392,7 @@ export function rotearFreteLi(entrada: EntradaRoteamentoLi): RoteamentoFreteLi {
     externalOptionId: tipo === INTEGRACAO_FRETE.melhorEnvios ? decisao.idServico : null,
     aviso: { tipo: 'resolver', chave: decisao.chave },
     deliberado: false,
+    dispensaEndereco: tipo === INTEGRACAO_FRETE.retiradaNaLoja,
   };
 }
 
@@ -468,9 +488,9 @@ export interface EntradaFreteLi {
   readonly dataAprovacaoUs: number | null;
   /**
    * The endereço the pedido will carry after this write, or `null` — which
-   * withholds the carrier route (module header, "No endereço, no route"). A
-   * pedido whose stored fiscal or delivery endereço the importer cannot pair
-   * with its cliente arrives as `null` too.
+   * withholds the carrier route unless it is a pickup (module header, "No
+   * endereço, no route"). A pedido whose stored fiscal or delivery endereço
+   * the importer cannot pair with its cliente arrives as `null` too.
    */
   readonly enderecoFiscalOuterRef: string | null;
 }
@@ -503,8 +523,8 @@ export function mapearFreteLi(entrada: EntradaFreteLi): FreteMapeadoLi | null {
   const { modalidade, sobrescrita } = modalidadeFreteLi(valorFrete ?? 0, entrada.modalidadeConta);
   const criadoUs = dataLiParaMicros(envio.data_criacao);
   const forma = envio.forma_envio;
-  // No endereço ⇒ no carrier route (module header, "No endereço, no route").
-  const comRota = entrada.enderecoFiscalOuterRef !== null;
+  // No endereço ⇒ no carrier route — a pickup needs none (module header, "No endereço, no route").
+  const comRota = entrada.enderecoFiscalOuterRef !== null || roteamento.dispensaEndereco;
   const base: FreteDoPedido = {
     ...seedFreteInicial(modalidade, true),
     externalId: envio.id == null ? null : String(envio.id),

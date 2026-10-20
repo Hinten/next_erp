@@ -18,7 +18,9 @@
  *               FINAL attempt is it persisted (a throw there would drop it).
  * 3. SWEEP      `reprocess` runs inside `onSchedule`. It re-drives every
  *               `failed` doc older than the window — an outage may have cleared
- *               — deleting on resolution and parking at the retry cap.
+ *               — deleting on resolution and parking at the retry cap. A THROW
+ *               parked there is the pipeline's one "attempts exhausted" moment,
+ *               which a channel can hear (`onRetriesExhausted`).
  * 3b. SLOW LANE `reprocessDeferred`, from the SAME scheduled function, does the
  *               same over `deferred` docs on a DAILY window and a far longer cap
  *               (#808). A `defer` is not a failure: it says a precondition
@@ -102,6 +104,32 @@ export interface NotificationPipelineConfig<TPayload, TOutcome> {
    * with a fresh hot-lane budget instead of charging the daily deferred cap.
    */
   graduateDeferredTransientErrors?: boolean;
+  /**
+   * The pipeline's ONE "attempts exhausted" signal: called when a THROWN
+   * `process` failure has spent the last retry of the lane the row is in and
+   * the sweep has just PARKED it (`MAX_TENTATIVAS` in the hot lane,
+   * `MAX_TENTATIVAS_DEFERRED` in a deferred lane that does not graduate). A
+   * channel that must fail LOUDLY once retrying stops — an aviso, an ERROR line
+   * — hooks here instead of keeping a second attempt counter, which would drift
+   * from this one. Narrow `err` on the channel's own class (root rule 6): the
+   * signal fires for every thrown failure that parks.
+   *
+   * Exactly when, and only then:
+   *  - after the park mark LANDED: a mark that fails leaves the row unparked,
+   *    and the run that does park it signals then — so a call means "parked";
+   *  - only for a throw from `process`. A RETURNED `park` or `fail` is the
+   *    channel's own verdict, a failure after `process` returned (the resolve's
+   *    delete) is not the work's, and a row that fails to rehydrate has no
+   *    payload to hand over;
+   *  - never from the task: its final attempt persists `failed`, never `parked`.
+   *
+   * A signal that throws an `Error` is CONTAINED like any per-row failure — the
+   * row stays parked, the failure joins `errors` and is logged — so it never
+   * aborts the sweep; a non-`Error` throw propagates (a coding bug). ⚠️ The
+   * row is terminal by then, so a signal that failed is never retried: do the
+   * part that cannot fail (the log line) first.
+   */
+  onRetriesExhausted?(db: Firestore, payload: TPayload, err: Error): Promise<void>;
   /**
    * Map the channel's outcome onto the shared disposition vocabulary. The
    * `payload` is passed too, because most channels build their operator-facing
@@ -316,10 +344,15 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
       // throwing on a schema mismatch — but `fromDoc` is CHANNEL-supplied and
       // this is generic infrastructure, so it is not ours to assume total.
       let tentativas = (typeof raw.tentativas === 'number' ? raw.tentativas : 0) + 1;
+      // What the exhaustion signal needs, set only once each is known: the
+      // payload once rehydrated, and the error only when `process` threw it.
+      let payloadLido: { readonly payload: TPayload } | null = null;
+      let falhaDoProcesso: unknown = null;
 
       try {
         const parsedDoc = collection.parseRead(raw, collection.docPath({}, d.id));
         const payload = config.fromDoc(parsedDoc, raw);
+        payloadLido = { payload };
         tentativas = ((parsedDoc as { tentativas?: number }).tentativas ?? 0) + 1;
 
         const dedupKey = config.dedupKeyOf(payload);
@@ -335,7 +368,10 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
           // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
         } catch (err) {
           if (!(err instanceof Error)) throw err;
-          if (lane !== 'deferred' || !config.graduateDeferredTransientErrors) throw err;
+          if (lane !== 'deferred' || !config.graduateDeferredTransientErrors) {
+            falhaDoProcesso = err;
+            throw err;
+          }
           await store.redrive(db, d.id, err.message);
           outcomes.redriven = (outcomes.redriven ?? 0) + 1;
           processed += 1;
@@ -385,8 +421,11 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
         // fails, collect and move on. Non-Error throws still propagate — they
         // are coding bugs, not outages.
         if (!(err instanceof Error)) throw err;
+        const status = stillBlocked(tentativas);
+        let marcado = false;
         try {
-          await store.mark(db, d.id, stillBlocked(tentativas), tentativas, err.message, now);
+          await store.mark(db, d.id, status, tentativas, err.message, now);
+          marcado = true;
           // This doc is lost to the run either way; the only job here is to stop
           // a second failure from masking the first one we are about to report.
           // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
@@ -394,9 +433,47 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
           if (!(markErr instanceof Error)) throw markErr;
         }
         errors.push({ docId: d.id, message: err.message });
+        // The "attempts exhausted" signal (config docblock): a THROW from
+        // `process` that this run just PARKED — nothing else.
+        if (
+          marcado &&
+          status === 'parked' &&
+          err === falhaDoProcesso &&
+          payloadLido !== null &&
+          config.onRetriesExhausted !== undefined
+        ) {
+          await sinalizarEsgotado(db, d.id, payloadLido.payload, err, errors);
+        }
       }
     }
 
     return { processed, outcomes, errors };
+  }
+
+  /**
+   * Run the channel's exhaustion signal for one parked row, CONTAINED: an
+   * `Error` it throws joins `errors` and is logged (the row is terminal, so
+   * nothing retries it), never aborting the sweep; a non-`Error` propagates.
+   */
+  async function sinalizarEsgotado(
+    db: Firestore,
+    docId: string,
+    payload: TPayload,
+    err: Error,
+    errors: Array<{ docId: string; message: string }>,
+  ): Promise<void> {
+    try {
+      await config.onRetriesExhausted?.(db, payload, err);
+      // The same generic boundary as the sweep's own catch (module header).
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
+    } catch (sinalErr) {
+      if (!(sinalErr instanceof Error)) throw sinalErr;
+      console.error(`[${channel}] retries-exhausted signal FAILED for a parked notification`, {
+        docId,
+        cause: err.message,
+        signalError: sinalErr.message,
+      });
+      errors.push({ docId, message: `onRetriesExhausted: ${sinalErr.message}` });
+    }
   }
 }

@@ -47,6 +47,17 @@
  * | `recusa-deterministica/<classe>[/<status>]` | park | park | park |
  * | `importador-ausente` | park | park | park |
  * | thrown (429, 5xx, network, timeout, our config, gRPC, unknown) | queue backoff, then `failed` | `failed`, parks at 5 | GRADUATES to the hot lane |
+ * | thrown `LiPedidoPagoSemEnderecoError` (step 5: a paid order, no usable address) | the same | the same, and the park at 5 FAILS LOUDLY | the same |
+ *
+ * ## Attempts exhausted: the one loud failure
+ *
+ * Nothing here counts attempts. The shared pipeline parks a thrown failure at
+ * its cap and calls `onRetriesExhausted` once the park landed — the ONE
+ * "attempts exhausted" signal ({@link criarPipelineLi} binds it). Only the
+ * importer's paid-without-address refusal answers it
+ * (`pedidos/pedidoPagoSemEndereco.ts`): an ERROR line with ids only, then the
+ * open `lojaIntegradaPedidoPagoSemEndereco` aviso. Every other error parked at
+ * the cap stays as quiet as before — its row's `erro` is the record.
  *
  * ⚠️ A PARKED CONTA DEFERS — it never drops. Tasks enqueued before a token died
  * are already behind the poller's cursor, so dropping them would lose those
@@ -140,6 +151,10 @@ import { type TratarFalhaDeps, tratarFalhaDeAutenticacao } from '../core/estacio
 import type { OpcoesObservadorLi } from '../core/log';
 import { ritmoDeLeituraLi } from '../core/ritmo';
 import type { AmbienteLi } from '../core/valvulas';
+import {
+  LiPedidoPagoSemEnderecoError,
+  sinalizarPedidoPagoSemEnderecoLi,
+} from '../pedidos/pedidoPagoSemEndereco';
 
 // The retry caps are the SHARED pipeline's — re-exported so this module stays
 // the one import site for the channel's callers.
@@ -275,6 +290,12 @@ export type ResultadoNotificacaoLi =
 export interface LoggerImportadorLi {
   warn(msg: string, meta?: Record<string, unknown>): void;
   info?(msg: string, meta?: Record<string, unknown>): void;
+  /**
+   * The ERROR line of a paid order whose retries ran out without an address
+   * (`pedidos/pedidoPagoSemEndereco.ts`); without it that line goes to
+   * `console.error`, which is ERROR severity too.
+   */
+  error?(msg: string, meta?: Record<string, unknown>): void;
 }
 
 /**
@@ -463,6 +484,11 @@ export async function classificarFalhaLi(
   if (err instanceof LiPaginacaoError) return recusa('LiPaginacaoError', null);
   if (err instanceof ZodError) return recusa('ZodError', null);
 
+  // A paid order without a usable address is RETRIED, never parked by this
+  // table: the platform may fill the address, and the pipeline's own park at
+  // its cap is what fails it loudly (`onRetriesExhausted`, below).
+  if (err instanceof LiPedidoPagoSemEnderecoError) return null;
+
   // Network and timeout, `LiConfigError`, the park's contention, gRPC, anything
   // unknown: rethrown by the caller.
   return null;
@@ -554,8 +580,17 @@ function processoIndisponivel(): Promise<ResultadoNotificacaoLi> {
  */
 function configLi(
   processar: (db: Firestore, payload: PayloadNotificacaoLi) => Promise<ResultadoNotificacaoLi>,
+  aoEsgotar?: (db: Firestore, err: Error) => Promise<void>,
 ): NotificationPipelineConfig<PayloadNotificacaoLi, ResultadoNotificacaoLi> {
   return {
+    // The pipeline's one "attempts exhausted" moment (module header); absent on
+    // the storage-only pipeline, which never sweeps.
+    ...(aoEsgotar === undefined
+      ? {}
+      : {
+          onRetriesExhausted: (db: Firestore, _p: PayloadNotificacaoLi, err: Error) =>
+            aoEsgotar(db, err),
+        }),
     channel: CANAL_LOG_LI,
     collection: notificacaoLojaIntegradaCollection,
     taskSchema: tarefaLeituraLiSchema,
@@ -578,7 +613,18 @@ function configLi(
  * reaches the logger: the shared `process(db, payload)` carries neither.
  */
 export function criarPipelineLi(deps: DepsTarefaLi) {
-  return defineNotificationPipeline(configLi((db, p) => processarNotificacaoLi(db, p, deps)));
+  return defineNotificationPipeline(
+    configLi(
+      (db, p) => processarNotificacaoLi(db, p, deps),
+      async (db, err) => {
+        await sinalizarPedidoPagoSemEnderecoLi(db, err, {
+          increment: deps.increment,
+          agoraMs: deps.agoraMs,
+          logger: deps.logger,
+        });
+      },
+    ),
+  );
 }
 
 /** Persist and re-drive only — the writes that need no `process`. */

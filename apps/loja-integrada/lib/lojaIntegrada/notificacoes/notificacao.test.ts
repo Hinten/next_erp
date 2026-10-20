@@ -24,7 +24,7 @@ import {
   LiThrottleError,
   LiTimeoutError,
 } from '@delfrance/integrations-loja-integrada';
-import { ORIGEM_NOTIFICACAO_LI, TIPO_TAREFA_LI } from '@delfrance/schemas';
+import { ORIGEM_NOTIFICACAO_LI, TIPO_AVISO, TIPO_TAREFA_LI } from '@delfrance/schemas';
 
 import { chaveReconexao } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
@@ -40,8 +40,10 @@ import {
   LiCredencialInvalidaError,
   LiEstacionamentoEmConflitoError,
 } from '../core/erros';
+import { chaveDoAvisoDoPedidoLi } from '../pedidos/avisosPedidoLi';
 import { LiPedidoEmConflitoError } from '../pedidos/escritaPedido';
 import { LiHistoricoIncompletoError } from '../pedidos/importarPedido';
+import { LiPedidoPagoSemEnderecoError } from '../pedidos/pedidoPagoSemEndereco';
 import { type DocData, FakeDb, arrayUnion, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   AGORA_MS,
@@ -471,10 +473,17 @@ describe('classificarFalhaLi — the table, in order', () => {
     }
   });
 
-  it('the importer’s two retry errors — persistent batch contention, a history hole in strict mode — are null: the task retries, never parks', async () => {
+  it('the importer’s three retry errors — persistent batch contention, a history hole in strict mode, a paid order without an address — are null: the task retries, never parks', async () => {
     for (const err of [
       new LiPedidoEmConflitoError('pedido-x', 3),
       new LiHistoricoIncompletoError(ID, 1, ['codigo-ausente']),
+      new LiPedidoPagoSemEnderecoError({
+        integracaoId: ID,
+        lojaNome: 'Loja',
+        pedidoId: 'pedido-x',
+        numero: '1234',
+        relogioUs: 1,
+      }),
     ]) {
       expect(await classificar(err), err.name).toBeNull();
     }
@@ -782,6 +791,99 @@ describe('the full disposition matrix', () => {
       db.seed(caminho, { ...db.ler(caminho), tentativas: MAX_TENTATIVAS - 1, processedAt: 0 });
       await reprocessarNotificacoesLi(asDb(db), {}, deps());
       expect(db.ler(caminho)).toMatchObject({ status: 'parked', tentativas: MAX_TENTATIVAS });
+    });
+  });
+
+  describe('a PAID order without an address (the importer’s retryable refusal)', () => {
+    const PEDIDO = {
+      integracaoId: ID,
+      lojaNome: 'Loja de Nome Sensível',
+      pedidoId: 'pedido-sem-endereco',
+      numero: '1234',
+      relogioUs: 7_000,
+    };
+    const caminhoAviso = `avisos/${chaveDoAvisoDoPedidoLi(
+      TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      ID,
+      PEDIDO.pedidoId,
+    )}`;
+    function comErros(erros: unknown[][], err: unknown) {
+      return depsTarefa({
+        importador: falhaCom(err),
+        logger: {
+          warn: () => undefined,
+          error: (msg, meta) => {
+            erros.push([msg, meta]);
+          },
+        },
+      });
+    }
+
+    it('in the task: rethrown for the queue, persisted failed on the last attempt — no aviso yet', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const err = new LiPedidoPagoSemEnderecoError(PEDIDO);
+      await expect(tratarTarefaLeituraLi(asDb(db), pedido(), 0, comErros(erros, err))).rejects.toBe(
+        err,
+      );
+      const r = await tratarTarefaLeituraLi(asDb(db), pedido(), 2, comErros(erros, err));
+      expect(r.outcome).toBe('failed');
+      expect(db.ler(caminhoDe(pedido()))).toMatchObject({ status: 'failed', tentativas: 0 });
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
+    });
+
+    it('in the HOT sweep: failed below the cap; AT the cap parked, ONE ERROR line with ids only, the open aviso', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const err = new LiPedidoPagoSemEnderecoError(PEDIDO);
+      const caminho = seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 2 });
+      await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, err));
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: MAX_TENTATIVAS - 1 });
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
+
+      db.seed(caminho, { ...db.ler(caminho), processedAt: 0 });
+      const s = await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, err));
+      expect(db.ler(caminho)).toMatchObject({ status: 'parked', tentativas: MAX_TENTATIVAS });
+      expect(s.errors.map((e) => e.docId)).toEqual([docIdNotificacaoLi(pedido())]);
+      expect(erros).toHaveLength(1);
+      expect(erros[0]![1]).toEqual({ integracaoId: ID, numero: '1234', pedidoId: PEDIDO.pedidoId });
+      expect(JSON.stringify(erros)).not.toContain(PEDIDO.lojaNome);
+      expect(db.ler(caminhoAviso)).toMatchObject({
+        tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+        params: { loja: PEDIDO.lojaNome, pedido: '1234' },
+        relogioEvento: 7_000,
+        resolvidoEm: null,
+      });
+    });
+
+    it('NEAR-MISS: another transient error parked at the same cap — no line, no aviso', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const caminho = seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 1 });
+      await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, throttle()));
+      expect(db.ler(caminho)).toMatchObject({ status: 'parked' });
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
+    });
+
+    it('the DEFERRED lane graduates it back to the hot lane — fresh budget, nothing signalled', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const err = new LiPedidoPagoSemEnderecoError(PEDIDO);
+      const caminho = seedNotificacao(db, pedido(), {
+        status: 'deferred',
+        tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+      });
+      await reprocessarAdiadasLi(asDb(db), {}, comErros(erros, err));
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: 0 });
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
     });
   });
 });

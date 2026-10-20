@@ -542,6 +542,25 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'conta; o aviso se encerra quando um pedido com essa forma de envio for importado depois ' +
       'da correção.',
   },
+  // Crítico: uma venda PAGA que não entrou no ERP é uma venda que ninguém despacha. O
+  // aviso só sobe quando as novas tentativas acabaram (a fila e a varredura), por isso a
+  // frase diz que a importação parou — e quem a retoma é uma alteração no painel.
+  [TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco]: {
+    titulo: 'Pedido pago da Loja Integrada sem endereço',
+    corpo: (params) =>
+      `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} está pago na Loja ` +
+      'Integrada, mas chegou sem um endereço de entrega utilizável (CEP e logradouro) e por ' +
+      'isso não entrou no ERP — nem o pedido, nem a atualização dele: sem endereço não há como ' +
+      'comprar a etiqueta. A importação tentou de novo por algumas horas e parou. O aviso se ' +
+      'encerra quando o pedido for importado.',
+    // O conserto está FORA do app: o endereço é preenchido no painel da Loja Integrada, e
+    // só uma alteração do pedido lá o traz de volta à importação.
+    runbook:
+      'Preencha o endereço de entrega do pedido no painel da Loja Integrada: a alteração faz o ' +
+      'pedido voltar à importação. Se ele for de retirada na loja, mapeie antes a forma de ' +
+      'envio dele para retirada na loja na aba Mapeamento do Frete da conta e depois altere o ' +
+      'pedido no painel.',
+  },
 };
 
 /**

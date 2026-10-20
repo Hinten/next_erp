@@ -1,8 +1,9 @@
 /**
- * The four avisos of the order import (master plan step 5, PR 5-c, import step
- * 11), each raised AND resolved by a named machine resolver — the contract of
- * each tipo is documented on `tipoAvisoSchema` (`packages/schemas/src/aviso.ts`),
- * and this module is its producer:
+ * The avisos of the order import (master plan step 5, PR 5-c, import step 11,
+ * and the pipeline's exhaustion signal), each raised AND resolved by a named
+ * machine resolver — the contract of each tipo is documented on
+ * `tipoAvisoSchema` (`packages/schemas/src/aviso.ts`), and this module is its
+ * producer:
  *
  * | Tipo | Key (`entidade`) | Clock | Raised when | Resolved when |
  * |---|---|---|---|---|
@@ -10,10 +11,14 @@
  * | `lojaIntegradaPedidoContestado` | the pedido id | the order's stamp | the decision names a motivo | any import that raises none |
  * | `lojaIntegradaPedidoHub` | the pedido id | the order's stamp | a hub marker, on a live sale | no marker, or a dead sale |
  * | `lojaIntegradaFreteNaoSuportado` | `sha256Hex(chave)` | the routing read's `readTime` | the routing says so | the routing says so |
+ * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order's retries ran out without an address (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | any import that reaches the avisos |
+ *
+ * The last one is `critico` and routes to the conta page (on a first import
+ * there is no pedido page); every other one is `atencao`.
  *
  * ## The clocks (root `CLAUDE.md` rule 7, tier 2)
  *
- * The three order-clocked tipos carry the order's Loja Integrada stamp in µs,
+ * The order-clocked tipos carry the order's Loja Integrada stamp in µs,
  * as the import converted it (`dataLiParaMicros`): `escreverAviso` drops a
  * raise whose clock is `<=` the stored one, and a clocked `resolverAviso`
  * stamps its clock — seeding a RESOLVED row when none exists — so a late import
@@ -34,11 +39,17 @@
  * nothing was read by id) the aviso is left alone: a raised row then stands
  * until the key's next routed import, never closed by a guess.
  *
+ * The paid-without-address tipo is raised at a different MOMENT — by the
+ * notification pipeline's exhaustion signal, after the sweep parked the
+ * notification — but with the same clock: the stamp of the order that exhausted
+ * run read. So the import that later finds the address (a newer stamp)
+ * resolves it, and a late exhaustion of an older observation is dropped by
+ * the seed every resolve leaves behind.
+ *
  * Every write goes through `escreverAviso` / `resolverAviso`
  * (`@delfrance/data/admin/avisos`), with "now" converted in `avisos/avisos.ts`
  * (`agoraUsDe`). Structured params only — the wording lives in
- * `apps/web/lib/avisos/mensagens.ts`. Severity `atencao`, canal
- * `lojaIntegrada`, in-app only.
+ * `apps/web/lib/avisos/mensagens.ts`. Canal `lojaIntegrada`, in-app only.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -71,6 +82,8 @@ export const MOTIVO_RESOLUCAO_PEDIDO_LI = {
   vendaEncerrada: 'venda-encerrada',
   /** The key's routing raised no aviso. */
   freteRoteado: 'frete-roteado',
+  /** An import got past the paid-without-address check: the order reached the ERP. */
+  pedidoImportado: 'pedido-importado',
 } as const;
 
 /** One order, as its avisos name it. */
@@ -96,7 +109,14 @@ export type EfeitoAvisoLi =
 type TipoDoPedido =
   | typeof TIPO_AVISO.lojaIntegradaSituacaoDesconhecida
   | typeof TIPO_AVISO.lojaIntegradaPedidoContestado
-  | typeof TIPO_AVISO.lojaIntegradaPedidoHub;
+  | typeof TIPO_AVISO.lojaIntegradaPedidoHub
+  | typeof TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco;
+
+/** The order-keyed tipos whose row opens on the conta page: no pedido page may exist. */
+const TIPOS_NA_CONTA: ReadonlySet<TipoDoPedido> = new Set<TipoDoPedido>([
+  TIPO_AVISO.lojaIntegradaPedidoHub,
+  TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+]);
 
 /** The key of an order-keyed tipo: one row per pedido of the conta. */
 export function chaveDoAvisoDoPedidoLi(
@@ -130,13 +150,14 @@ function baseDoPedido(tipo: TipoDoPedido, p: PedidoDoAvisoLi): Omit<PlanoAviso, 
     tipo,
     conta: p.integracaoId,
     entidade: p.pedidoId,
-    severidade: SEVERIDADE_AVISO.atencao,
+    // A paid sale that never reached the ERP is critical; the rest is about one order.
+    severidade:
+      tipo === TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco
+        ? SEVERIDADE_AVISO.critico
+        : SEVERIDADE_AVISO.atencao,
     canal: CANAL_AVISO.lojaIntegrada,
     params: { loja: p.lojaNome, pedido: p.numero },
-    urlInterna:
-      tipo === TIPO_AVISO.lojaIntegradaPedidoHub
-        ? rotaDaConta(p.integracaoId)
-        : rotaDoPedido(p.pedidoId),
+    urlInterna: TIPOS_NA_CONTA.has(tipo) ? rotaDaConta(p.integracaoId) : rotaDoPedido(p.pedidoId),
   };
 }
 
@@ -179,9 +200,11 @@ export interface DecisaoDosAvisosLi {
 }
 
 /**
- * The three order-clocked tipos of an import that got past the hub guard
+ * The order-clocked tipos of an import that got past the hub guard
  * (`importado` or `sem-mudanca`): the situação and the contestation follow the
- * decision, and the hub row resolves (the order carries no marker).
+ * decision, the hub row resolves (the order carries no marker), and so does
+ * the paid-without-address row (the order got past that check and reached the
+ * ERP).
  */
 export async function sincronizarAvisosDoPedidoLi(
   db: Firestore,
@@ -192,6 +215,7 @@ export async function sincronizarAvisosDoPedidoLi(
   readonly situacao: EfeitoAvisoLi;
   readonly contestado: EfeitoAvisoLi;
   readonly hub: EfeitoAvisoLi;
+  readonly pagoSemEndereco: EfeitoAvisoLi;
 }> {
   const relogio = pedido.relogioUs;
 
@@ -237,7 +261,36 @@ export async function sincronizarAvisosDoPedidoLi(
     relogio,
     deps,
   );
-  return { situacao, contestado, hub };
+  const pagoSemEndereco = await resolver(
+    db,
+    baseDoPedido(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, pedido),
+    MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
+    relogio,
+    deps,
+  );
+  return { situacao, contestado, hub, pagoSemEndereco };
+}
+
+/**
+ * Raise "a PAID order's retries ran out without a delivery address" — called
+ * only by the notification pipeline's exhaustion signal
+ * (`pedidoPagoSemEndereco.ts`), never by an import: an import that would raise
+ * it throws instead, so the queue and the sweep retry first. Clocked by the
+ * order's stamp as the exhausted run read it (module header).
+ */
+export function avisarPedidoPagoSemEnderecoLi(
+  db: Firestore,
+  pedido: PedidoDoAvisoLi,
+  deps: AvisoDepsLi,
+): Promise<EfeitoAvisoLi> {
+  return levantar(
+    db,
+    {
+      ...baseDoPedido(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, pedido),
+      relogioEvento: pedido.relogioUs,
+    },
+    deps,
+  );
 }
 
 /**

@@ -192,6 +192,7 @@ describe('the routing, after the target read', () => {
       externalOptionId: '2',
       aviso: { tipo: 'resolver', chave: '141909---PAC' },
       deliberado: false,
+      dispensaEndereco: false,
     });
   });
 
@@ -205,6 +206,49 @@ describe('the routing, after the target read', () => {
     }
   });
 
+  it('⚠️ the PICKUP verdict (`dispensaEndereco`) is the TARGET DOC’s tipo: an active retirada ⇒ true', () => {
+    expect(rotear(semServico, { tipo: INTEGRACAO_FRETE.retiradaNaLoja, ativo: true })).toEqual({
+      integracaoFreteOuterRef: 'documents/int_frete/me-1',
+      externalOptionId: null,
+      aviso: { tipo: 'resolver', chave: '141909---PAC' },
+      deliberado: false,
+      dispensaEndereco: true,
+    });
+    // The row's own targetTipoIntegracao never decides: a row saying Melhor Envio
+    // whose target DOC is a retirada is a pickup.
+    const rotuloMe = decidir([
+      { ...linha('141909---PAC', 'me-1', null), targetTipoIntegracao: 'melhorEnvios' },
+    ]);
+    expect(
+      rotear(rotuloMe, { tipo: INTEGRACAO_FRETE.retiradaNaLoja, ativo: true }).dispensaEndereco,
+    ).toBe(true);
+  });
+
+  it('NEAR-MISS: every other routed or fallback target needs an endereço — dispensaEndereco is false', () => {
+    // Routed carriers: a label ships to an address.
+    for (const tipo of [INTEGRACAO_FRETE.motoboy, INTEGRACAO_FRETE.melhorEnvios]) {
+      expect(rotear(mapeadoMe, { tipo, ativo: true }).dispensaEndereco, tipo).toBe(false);
+    }
+    // A row LABELLED retirada whose target doc is a motoboy is no pickup.
+    const rotuloRetirada = decidir([
+      { ...linha('141909---PAC', 'me-1', null), targetTipoIntegracao: 'retiradaNaLoja' },
+    ]);
+    expect(
+      rotear(rotuloRetirada, { tipo: INTEGRACAO_FRETE.motoboy, ativo: true }).dispensaEndereco,
+    ).toBe(false);
+    // An INACTIVE or missing retirada target routes to the conta's LI doc: no pickup either.
+    expect(
+      rotear(semServico, { tipo: INTEGRACAO_FRETE.retiradaNaLoja, ativo: false }).dispensaEndereco,
+    ).toBe(false);
+    expect(rotear(semServico, null).dispensaEndereco).toBe(false);
+    // fob/outros (deliberate), unmapped, no key, no LI doc.
+    expect(rotear(semServico, { tipo: INTEGRACAO_FRETE.fob, ativo: true }).dispensaEndereco).toBe(
+      false,
+    );
+    expect(rotear({ tipo: 'nao-mapeado', chave: 'k' }).dispensaEndereco).toBe(false);
+    expect(rotear({ tipo: 'sem-chave' }).dispensaEndereco).toBe(false);
+  });
+
   it('⚠️ a fob (or outros) target ⇒ the conta’s LI doc, NO aviso (deliberate)', () => {
     for (const tipo of [INTEGRACAO_FRETE.fob, INTEGRACAO_FRETE.outros]) {
       expect(rotear(semServico, { tipo, ativo: true })).toEqual({
@@ -212,6 +256,7 @@ describe('the routing, after the target read', () => {
         externalOptionId: null,
         aviso: { tipo: 'resolver', chave: '141909---PAC' },
         deliberado: true,
+        dispensaEndereco: false,
       });
     }
   });
@@ -227,6 +272,7 @@ describe('the routing, after the target read', () => {
         formaEnvio: 'Correios - PAC',
       },
       deliberado: false,
+      dispensaEndereco: false,
     });
   });
 
@@ -263,6 +309,7 @@ describe('the routing, after the target read', () => {
       externalOptionId: null,
       aviso: { tipo: 'resolver', chave: 'k' },
       deliberado: false,
+      dispensaEndereco: false,
     });
     expect(rotear({ tipo: 'mapa-invalido', chave: 'k' }).aviso).toEqual({
       tipo: 'resolver',
@@ -283,6 +330,7 @@ describe('the routing, after the target read', () => {
       externalOptionId: null,
       aviso: { tipo: 'resolver', chave: 'k' },
       deliberado: false,
+      dispensaEndereco: false,
     });
   });
 });
@@ -393,6 +441,7 @@ describe('the block', () => {
     externalOptionId: null,
     aviso: null,
     deliberado: false,
+    dispensaEndereco: false,
   };
 
   function mapear(
@@ -548,6 +597,7 @@ describe('the update merge: tracking outside the freeze, money inside it', () =>
       externalOptionId: '2',
       aviso: null,
       deliberado: false,
+      dispensaEndereco: false,
     },
     horarioDeCorteConta: null,
     dataAprovacaoUs: dataLiParaMicros('2026-03-03T09:00:00'),
@@ -733,6 +783,7 @@ describe('⚠️ an order with NO endereço: its freight amount, never a carrier
     externalOptionId: '2',
     aviso: null,
     deliberado: false,
+    dispensaEndereco: false,
   };
   /** Every field a label is quoted or bought from, empty. */
   const SEM_ROTA = {
@@ -755,6 +806,37 @@ describe('⚠️ an order with NO endereço: its freight amount, never a carrier
     if (r === null) throw new Error('expected a block');
     return r;
   }
+
+  it('⚠️ a PICKUP route needs no endereço: a retirada target with no endereço KEEPS its route (owner decision, 2026-10-19)', () => {
+    const REF_RETIRADA = 'documents/int_frete/retirada-1';
+    const r = mapearFreteLi({
+      pedido: pedidoPago,
+      modalidadeConta: MODALIDADE_FRETE.fob,
+      roteamento: {
+        integracaoFreteOuterRef: REF_RETIRADA,
+        externalOptionId: null,
+        aviso: null,
+        deliberado: false,
+        dispensaEndereco: true,
+      },
+      horarioDeCorteConta: null,
+      dataAprovacaoUs: dataLiParaMicros('2026-03-03T09:00:00'),
+      enderecoFiscalOuterRef: null,
+    });
+    expect(r?.base).toMatchObject({
+      integracaoFreteOuterRef: REF_RETIRADA,
+      externalOptionId: null,
+      externalOptionIntegracao: null,
+      externalOptionData: PAC,
+      // No destination: nothing ships to an address.
+      enderecoFreteOuterReference: null,
+      valorCobrado: 11.6,
+    });
+  });
+
+  it('NEAR-MISS: the same order on a carrier route (dispensaEndereco false) and no endereço ⇒ no route', () => {
+    expect(mapear(null).base).toMatchObject(SEM_ROTA);
+  });
 
   /** The block minus the route and its destination. */
   function semRotaNemDestino(bloco: Readonly<Record<string, unknown>>): Record<string, unknown> {

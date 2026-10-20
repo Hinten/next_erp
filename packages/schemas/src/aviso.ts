@@ -108,6 +108,7 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaPedidoContestado: 'Pedido da Loja Integrada contestado',
   lojaIntegradaPedidoHub: 'Pedido da Loja Integrada vindo de um hub',
   lojaIntegradaFreteNaoSuportado: 'Forma de envio da Loja Integrada sem frete utilizável',
+  lojaIntegradaPedidoPagoSemEndereco: 'Pedido pago da Loja Integrada sem endereço',
 } as const;
 
 /**
@@ -720,6 +721,40 @@ export const TIPO_AVISO_LABELS = {
  *    stands until the key's next import; a row whose conta has lost its Loja
  *    Integrada `int_frete` stands until an import routes the key again; a key
  *    no later order uses stands until retention.
+ *
+ * ---
+ *
+ * **`lojaIntegradaPedidoPagoSemEndereco`** (Loja Integrada step 5, PR 5-c,
+ * owner decision 2026-10-19) — a PAID Loja Integrada order (a codigo the label
+ * step's paid re-check accepts) arrived with no usable delivery address, is not
+ * a pickup, and the pedido holds no endereço of its own. Such an import is
+ * REFUSED with a retryable error — the platform may still fill the address —
+ * so the queue's backoff and the reprocess sweep retry it; this row is raised
+ * only when those attempts RAN OUT, from the notification pipeline's one
+ * "attempts exhausted" signal (the sweep's park at its cap), beside an ERROR
+ * log line. Nothing of that order was written: no pedido (or no update of it),
+ * no pagamento, no cliente, no endereço.
+ *
+ *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
+ *    in-app only, like the other two critical tipos of this channel. A paid
+ *    sale nobody imported is one nobody ships.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido; `pedidoId` is the deterministic digest (the pedido
+ *    may not exist yet).
+ *  - **`params` are exactly `loja` and `pedido`** (the order's numero, as
+ *    text).
+ *  - **`relogioEvento`** = the order's modification stamp in µs, as the
+ *    exhausted run's import converted it — per-order µs, the clock of the
+ *    order-keyed tipos above: never compare it with another tipo's.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`): on a first
+ *    import there is no pedido page to open.
+ *  - **Machine resolver**: the next import of that order that gets past the
+ *    address check — the address arrived, the order is no longer paid, or its
+ *    shipping method now maps to a pickup — clocked by its stamp, so a late
+ *    import of an older observation can neither close nor reopen the row. A
+ *    row exists only while its order is re-importable, and the address being
+ *    filled in the painel is itself a change the poller picks up. Residue,
+ *    accepted: an order nobody edits again keeps its row until retention.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -746,6 +781,7 @@ export const tipoAvisoSchema = z
     'lojaIntegradaPedidoContestado',
     'lojaIntegradaPedidoHub',
     'lojaIntegradaFreteNaoSuportado',
+    'lojaIntegradaPedidoPagoSemEndereco',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -775,6 +811,7 @@ export const TIPO_AVISO = {
   lojaIntegradaPedidoContestado: 'lojaIntegradaPedidoContestado',
   lojaIntegradaPedidoHub: 'lojaIntegradaPedidoHub',
   lojaIntegradaFreteNaoSuportado: 'lojaIntegradaFreteNaoSuportado',
+  lojaIntegradaPedidoPagoSemEndereco: 'lojaIntegradaPedidoPagoSemEndereco',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
