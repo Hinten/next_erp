@@ -9,20 +9,22 @@ name: CI — Shopee
 # promise that the owning lane runs them"). What `ci.yml` CANNOT run are the
 # suites below: they need a JDK, a pinned firebase-tools, a built functions
 # artifact and three emulators, which is why they live in their own lane behind
-# their own gate. Step 22 (#1530) may move the offline job in here when it adds
-# the Firestore-only emulator job; until then the smaller blast radius wins.
+# their own gate. Step 22 (#1530) folded the Firestore-only suites into THIS job
+# (the Loja Integrada shape) instead of adding one, so the offline job stays in
+# `ci.yml` and the smaller blast radius stands.
 #
-# ⚠️ ONE job, EIGHT suite files (16 tests) since step 17: the receiver round
+# ⚠️ ONE job, NINE suite files (26 tests) since step 22: the receiver round
 # trip (`app/api/webhooks/shopee/route.tasks.test.ts`, 3), the mass-import one
 # (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2), the push-16 one
 # (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1), the stock one
 # (`lib/shopee/estoque/enviarEstoque.tasks.test.ts`, 1), the price-job one
 # (`lib/shopee/precos/atualizarPrecos.tasks.test.ts`, 3), the NF-e one
 # (`lib/shopee/nfe/enviarNfe.tasks.test.ts`, 1), the auto-arrange one
-# (`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts`, 1) and the returns one
-# (`lib/shopee/devolucoes/devolucao.tasks.test.ts`, 4). Adding a file with
-# the `.tasks.test.ts` suffix adds it to THIS job — no new job, no new check
-# name, no new row in the gate manifest.
+# (`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts`, 1), the returns one
+# (`lib/shopee/devolucoes/devolucao.tasks.test.ts`, 4) and the leased token
+# refresh (`lib/shopee/core/tokenStore.firestore.test.ts`, 10). Adding a file
+# with the `.tasks.test.ts` OR `.firestore.test.ts` suffix adds it to THIS job —
+# no new job, no new check name, no new row in the gate manifest.
 #
 # What the single job proves, with nothing mocked:
 #
@@ -76,6 +78,15 @@ name: CI — Shopee
 #     → the nfeUploadRejeitado aviso + `freteInicial.estado: error` through the
 #       class-C stamp transaction, `pacotes` and the rest of the block kept
 #
+# and, since step 22 (#1530), ONE suite with no queue at all — the Loja
+# Integrada fold puts `*.firestore.test.ts` in this job's config:
+#
+#   lib/shopee/core/tokenStore.firestore.test.ts   the leased refresh's three
+#     transactions on the emulator's REAL engine, in THIS process, with the
+#     provider call injected: two callers spend the refresh token once, a
+#     crashed refresher's lease is taken over at its TTL, a consent beats an
+#     in-flight refresh, and a terminal stamp replaces the stored map.
+#
 # ⚠️ That second path is NOT a push delivery, and neither are the third, the
 # fourth and the fifth. The wrong-tipo conta, the unmapped shop, the over-sized
 # task, the plan-time skips and the keyless proc are all chosen for the same
@@ -102,10 +113,10 @@ name: CI — Shopee
 # would leave the runner.
 #
 # ⚠️ The suites are disjoint BY GLOB. `apps/shopee/vitest.config.ts` EXCLUDES
-# `**/*.tasks.test.ts` (and `**/*.firestore.test.ts`, listed before that lane
-# exists) and `vitest.tasks.config.ts` includes only the first suffix — so a file
-# matching NO glob runs in NO job at all. Read both `include`/`exclude` comments
-# before touching either.
+# `**/*.tasks.test.ts` and `**/*.firestore.test.ts`; `vitest.tasks.config.ts`
+# INCLUDES both. A file matching neither runs in NO job, and
+# `packages/config-eslint/rules/vitest-config-partition.test.js` says so in
+# `CI test`. Read both `include`/`exclude` comments before touching either.
 #
 # ⚠️ What this lane does NOT prove, so nobody reads its green as more than it is:
 #   - Composite INDEX DECLARATION. The emulator auto-creates every composite, and
@@ -195,6 +206,9 @@ on:
       # break this lane's functions bundle.
       - 'packages/data/src/admin/avisos/**'
       - 'packages/data/src/admin/defineAdminCollection.ts'
+      # Step 22: `parseForWrite`/`parseMergePatch`/`parseSoftRead` behind every
+      # handle's `set`/`parseMerge`/`parseRead` — the file the line above imports.
+      - 'packages/data/src/zodParse.ts'
       - 'packages/data/src/admin/grpcErrors.ts'
       # Step 5 (the order → pedido import) reaches all of these: the cliente and
       # endereço writers it shares with Mercado Livre, the SKU cascade promoted

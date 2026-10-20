@@ -24,9 +24,8 @@ per-queue enqueuer grants finished clean. All fourteen functions landed, with
 the stock valve `SHOPEE_STOCK_SYNC_ENABLED` off.
 **Production is a separate project and has never received this codebase.** What
 master-plan **step 22 (#1530)** still owns is the production ROLLOUT:
-`firebase.shopee.json` (the Firestore-only emulator config) and the second lane
-job, `apphosting.yaml`'s `vpcAccess` and the real `SHOPEE_TASKS_REGION` value,
-and flipping `implementado`.
+`apphosting.yaml`'s `vpcAccess` and the real `SHOPEE_TASKS_REGION` value, and
+flipping `implementado`.
 
 Nothing here is blocked on that rollout: until the queue exists the receiver
 falls back to persisting each push as `failed` and the 30-minute sweep drains it,

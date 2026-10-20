@@ -1776,20 +1776,12 @@ read by nothing.
 ## CI
 
 `ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
-behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
-runs `*.tasks.test.ts` against firestore + functions + tasks emulators
-(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 17 that job runs
-**eight suite FILES and sixteen tests**
-(`app/api/webhooks/shopee/route.tasks.test.ts` ×3,
-`lib/shopee/produtos/importacaoMassa.tasks.test.ts` ×2,
-`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts` ×1,
-`lib/shopee/estoque/enviarEstoque.tasks.test.ts` ×1,
-`lib/shopee/precos/atualizarPrecos.tasks.test.ts` ×3,
-`lib/shopee/nfe/enviarNfe.tasks.test.ts` ×1,
-`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts` ×1,
-`lib/shopee/devolucoes/devolucao.tasks.test.ts` ×4) — still one job, still
-one check name, no new gate-manifest row. The lane's header carries the same
-pair of numbers.
+behind the unskippable `CI gate (shopee)` — a REQUIRED check on `protect-main`
+since 2026-10-19, so a red round trip blocks the merge. It builds the functions
+artifact and runs `*.tasks.test.ts` and `*.firestore.test.ts` against firestore +
+functions + tasks emulators (`firebase.shopee.tasks.json`, ports 8084/5003/9500).
+The lane's header lists every suite file and what each hop proves; a new file
+with either suffix joins THIS job — no new job, check name or gate-manifest row.
 
 Five **push deliveries** go through the receiver hop: an unknown push code
 (→ `parked`); since step 5 a **code 3**, since step 7 a **code 4**, since
@@ -1840,6 +1832,8 @@ scheduler sets `scheduleDelaySeconds` there, the emulator ignores it
 `importacaoMassa.test.ts`. The same holds for step 14's SERPRO wait and
 recheck delay, pinned offline in the `nfe/` suites. ⚠️ The emulator dispatches in FILE order with
 `fileParallelism: false`; each file's `beforeEach` wipe is the ONLY isolation.
+The functions emulator also loads the codebase's three Firestore triggers;
+`vitest.tasks.config.ts`'s header says how a suite seeds around them.
 
 ⚠️ The lane's `push: paths:` grew with step 5 (`packages/schemas/src/pedido/**`,
 the cliente/endereço/`intFrete` schemas, `packages/data/src/admin/{clientes,produtos,enderecos}/**`
@@ -1868,7 +1862,8 @@ reuses and `shared/ttl.ts`. **Step 14 grew it by exactly two** —
 `packages/schemas/src/nfe.ts` (`ESTADO_NFE`, `CHAVE_NFE_REGEX`, the trigger's
 `nfeMeta`). **Step 17 grew it by exactly one** —
 `packages/schemas/src/devolucaoShopee.ts` (`ehReturnSnShopee`); **step 20** by
-`packages/data/src/admin/frete/**` — for a closure of **52** entries today.
+`packages/data/src/admin/frete/**`, **step 22** by `packages/data/src/zodParse.ts`
+— for a closure of **53** entries today.
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 
@@ -1878,11 +1873,11 @@ in `CI test` — unfiltered, no `if:`. So a skip here loses the emulator round t
 and nothing else. Do not add a `ci.yml` filter for this workspace without moving
 the offline job into this lane in the same commit; an exclusion is a promise.
 
-⚠️ **The suites are disjoint BY GLOB.** `vitest.config.ts` excludes
-`**/*.tasks.test.ts` and `**/*.firestore.test.ts`; `vitest.tasks.config.ts`
-includes only the first. A file matching NEITHER runs in NO job. The
-`*.firestore.test.ts` half is listed before that lane exists — it is step 22's
-(#1530) — precisely so nobody has to remember it then.
+⚠️ **The suites are disjoint BY GLOB, and a test pins it.** `vitest.config.ts`
+excludes `**/*.tasks.test.ts` and `**/*.firestore.test.ts`;
+`vitest.tasks.config.ts` includes both (Loja Integrada's fold: no second emulator
+config, job or check). `packages/config-eslint/rules/vitest-config-partition.test.js`
+reds a file matching no config, or two.
 
 The lane is offline by construction: `vitest.tasks.setup.ts` throws when
 `FIRESTORE_EMULATOR_HOST` or `CLOUD_TASKS_EMULATOR_HOST` is missing under
