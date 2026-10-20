@@ -283,6 +283,15 @@ describe('respostaConferenciaPagamentoLiSchema — the wire contract', () => {
     expect(viva).toEqual({ ...VIVA, motivoContestacao: null });
   });
 
+  it('refuses `aplicavel: false` without a motivo, or with an empty one', () => {
+    for (const corpo of [{ aplicavel: false }, { aplicavel: false, motivo: '' }]) {
+      expect(
+        respostaConferenciaPagamentoLiSchema.safeParse(corpo).success,
+        JSON.stringify(corpo),
+      ).toBe(false);
+    }
+  });
+
   it('refuses an unknown verdict, an unknown fonte and a missing `aplicavel`', () => {
     expect(
       respostaConferenciaPagamentoLiSchema.safeParse({ ...VIVA, veredito: 'talvez' }).success,

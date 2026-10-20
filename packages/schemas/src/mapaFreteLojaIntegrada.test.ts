@@ -496,6 +496,16 @@ describe('decidirLinhaDoMapaLi — the row a shipping method maps to', () => {
     }
   });
 
+  it('a row `nomeOriginal` that is not a string is no name — `null`, never the raw value', () => {
+    for (const nomeOriginal of [5, { nome: 'x' }, null, undefined]) {
+      const linha = linhaMapa({ integracaoUid: 'me-1', nomeOriginal });
+      const decisao = decidirLinhaDoMapaLi([linha], FORMA);
+      expect(decisao.tipo === 'mapeado' ? decisao.nomeOriginal : 'x', String(nomeOriginal)).toBe(
+        null,
+      );
+    }
+  });
+
   it('never reads `targetTipoIntegracao`: a uid decides, and the service comes from `targetData`', () => {
     const semUid = linhaMapa({ targetTipoIntegracao: 'melhorEnvios', targetData: { id: 3 } });
     expect(decidirLinhaDoMapaLi([semUid], FORMA).tipo).toBe('nao-mapeado');
@@ -544,6 +554,15 @@ describe('avaliarAlvoDoMapaLi — a target read by id, against a policy', () => 
   it('⚠️ NEAR-MISS: `ativo: false` ⇒ `alvo-inativo`, before the tipo is looked at', () => {
     for (const tipo of ['motoboy', 'shopee']) {
       expect(avaliarAlvoDoMapaLi({ tipo, ativo: false }, '3', ETIQUETA), tipo).toEqual({
+        tipo: 'invalido',
+        motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo,
+      });
+    }
+  });
+
+  it('⚠️ NEAR-MISS: an INACTIVE target is `alvo-inativo` even when its tipo is deliberate — inactive is judged before deliberate', () => {
+    for (const tipo of ['fob', 'outros']) {
+      expect(avaliarAlvoDoMapaLi({ tipo, ativo: false }, null, COM_DELIBERADOS), tipo).toEqual({
         tipo: 'invalido',
         motivo: MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo,
       });
@@ -941,6 +960,15 @@ describe('planejarRotaEtiquetaLi + concluirRotaEtiquetaLi — the label route', 
     }
   });
 
+  it('⚠️ NEAR-MISS: an override naming a sub-path or a `..` id is refused by the PLAN — no document is ever read for it', () => {
+    for (const ref of ['int_frete/x/sub/y', 'documents/int_frete/x/sub/y', 'int_frete/..']) {
+      expect(
+        planejarRotaEtiquetaLi(frete({ integracaoTargetOuterRef: ref }), [linhaPara('moto-1')]),
+        ref,
+      ).toEqual(recusa(MOTIVO_ROTA_ETIQUETA_LI.overrideInvalido));
+    }
+  });
+
   it('an override naming an absent, inactive or unsupported target ⇒ `override-invalido` (never the mapa)', () => {
     const mapa = [linhaPara('moto-1')];
     for (const alvo of [undefined, { tipo: 'motoboy', ativo: false }, { tipo: 'shopee' }]) {
@@ -1037,6 +1065,24 @@ describe('planejarRotaEtiquetaLi + concluirRotaEtiquetaLi — the label route', 
     expect(naRefDoDocLi.tipo === 'rota' ? naRefDoDocLi.externalOptionId : null).toBe('3');
   });
 
+  it("EQUAL pair: a stored `externalOptionId` `7` ≡ `'7'` beside its own ref — ⚠️ NEAR-MISS: a stored `'07'` is NO service, so the row's applies", () => {
+    const comArmazenado = (externalOptionId: unknown) =>
+      rotear(
+        frete({ integracaoFreteOuterRef: 'documents/int_frete/me-2', externalOptionId }),
+        [linhaPara('me-1', { id: 3 })],
+        { 'me-1': ME, 'me-2': ME },
+        'me-2',
+      );
+    for (const armazenado of [7, '7']) {
+      const rota = comArmazenado(armazenado);
+      expect(rota.tipo === 'rota' ? rota.externalOptionId : null, String(armazenado)).toBe('7');
+    }
+    for (const armazenado of ['07', '7.0', 0]) {
+      const rota = comArmazenado(armazenado);
+      expect(rota.tipo === 'rota' ? rota.externalOptionId : null, String(armazenado)).toBe('3');
+    }
+  });
+
   /* ------------------------------- endereço ------------------------------- */
 
   it('EQUAL pair: no endereço + a `retiradaNaLoja` target ⇒ routed', () => {
@@ -1059,6 +1105,15 @@ describe('planejarRotaEtiquetaLi + concluirRotaEtiquetaLi — the label route', 
         'me-1': ME,
       }),
     ).toEqual(recusa(MOTIVO_ROTA_ETIQUETA_LI.semEndereco));
+  });
+
+  it('⚠️ NEAR-MISS: an EMPTY or unreadable endereço ref is no address — a motoboy target ⇒ `sem-endereco`', () => {
+    for (const enderecoFreteOuterReference of ['', 'clientes', 'documents/clientes', 5]) {
+      expect(
+        rotear(frete({ enderecoFreteOuterReference }), [linhaPara('moto-1')], { 'moto-1': MOTO }),
+        String(enderecoFreteOuterReference),
+      ).toEqual(recusa(MOTIVO_ROTA_ETIQUETA_LI.semEndereco));
+    }
   });
 
   it('the endereço is judged AFTER the target: a failing target refuses with its own motivo', () => {
