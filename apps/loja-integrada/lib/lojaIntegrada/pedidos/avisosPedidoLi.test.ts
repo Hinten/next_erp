@@ -92,6 +92,7 @@ describe('the three order-clocked tipos', () => {
         situacaoDesconhecida: 'codigo_novo',
         contestacao: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
         reversaoComEtiqueta: null,
+        pagoSegueSemEndereco: false,
       },
       deps,
     );
@@ -121,11 +122,17 @@ describe('the three order-clocked tipos', () => {
 
   it('a newer known observation resolves; a LATE older raise cannot reopen it; an older resolve cannot close a newer raise', async () => {
     const db = new FakeDb();
-    const semNada = { situacaoDesconhecida: null, contestacao: null, reversaoComEtiqueta: null };
+    const semNada = {
+      situacaoDesconhecida: null,
+      contestacao: null,
+      reversaoComEtiqueta: null,
+      pagoSegueSemEndereco: false,
+    };
     const desconhecida = {
       situacaoDesconhecida: 'codigo_novo',
       contestacao: null,
       reversaoComEtiqueta: null,
+      pagoSegueSemEndereco: false,
     };
     await sincronizarAvisosDoPedidoLi(asDb(db), pedido(1_000), desconhecida, deps);
     const fechou = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(2_000), semNada, deps);
@@ -149,6 +156,7 @@ describe('the three order-clocked tipos', () => {
       situacaoDesconhecida: 'codigo_novo',
       contestacao: null,
       reversaoComEtiqueta: null,
+      pagoSegueSemEndereco: false,
     };
     await sincronizarAvisosDoPedidoLi(asDb(db), pedido(1_000), desconhecida, deps);
     const escritas = db.escritas.length;
@@ -274,7 +282,12 @@ describe('the paid-without-address tipo (owner decision, 2026-10-19)', () => {
     CONTA,
     'pedido-1',
   )}`;
-  const semNada = { situacaoDesconhecida: null, contestacao: null, reversaoComEtiqueta: null };
+  const semNada = {
+    situacaoDesconhecida: null,
+    contestacao: null,
+    reversaoComEtiqueta: null,
+    pagoSegueSemEndereco: false,
+  };
 
   it('raised CRITICO at the conta page with exactly the params the wording reads, clocked by the order', async () => {
     const db = new FakeDb();
@@ -293,7 +306,7 @@ describe('the paid-without-address tipo (owner decision, 2026-10-19)', () => {
     expect(db.ler(caminhoPago)?.params).toEqual({ loja: 'Loja X', pedido: '9001' });
   });
 
-  it('EVERY import that reaches the avisos resolves it — a newer one closes the row', async () => {
+  it('an import that leaves the pedido WITH an endereço (or a pickup, or no longer paid) resolves it — a newer one closes the row', async () => {
     const db = new FakeDb();
     await avisarPedidoPagoSemEnderecoLi(asDb(db), pedido(1_000), deps);
     const r = await sincronizarAvisosDoPedidoLi(asDb(db), pedido(2_000), semNada, deps);
@@ -301,6 +314,41 @@ describe('the paid-without-address tipo (owner decision, 2026-10-19)', () => {
     expect(db.ler(caminhoPago)).toMatchObject({
       resolucaoMotivo: MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
       relogioEvento: 2_000,
+    });
+  });
+
+  it('⚠️ EQUAL (owner decision, 2026-10-20): an import that leaves the pedido still WITHOUT an endereço leaves the row OPEN — no write to it, whatever the clock', async () => {
+    const db = new FakeDb();
+    await avisarPedidoPagoSemEnderecoLi(asDb(db), pedido(1_000), deps);
+    const antes = db.ler(caminhoPago);
+    const escritas = db.escritas.filter((e) => e.caminho === caminhoPago).length;
+    const r = await sincronizarAvisosDoPedidoLi(
+      asDb(db),
+      pedido(2_000),
+      { ...semNada, pagoSegueSemEndereco: true },
+      deps,
+    );
+    expect(r.pagoSemEndereco).toEqual({ acao: 'nenhum' });
+    expect(db.escritas.filter((e) => e.caminho === caminhoPago)).toHaveLength(escritas);
+    expect(db.ler(caminhoPago)).toEqual(antes);
+    expect(db.ler(caminhoPago)?.resolvidoEm).toBeNull();
+    // The other order tipos still follow the decision.
+    expect(r.hub).toEqual({ acao: 'resolvido', fechou: false });
+  });
+
+  it('NEAR-MISS: with no row at all, an import still without an endereço seeds NOTHING — a later exhaustion of that same state may still raise it', async () => {
+    const db = new FakeDb();
+    const r = await sincronizarAvisosDoPedidoLi(
+      asDb(db),
+      pedido(2_000),
+      { ...semNada, pagoSegueSemEndereco: true },
+      deps,
+    );
+    expect(r.pagoSemEndereco).toEqual({ acao: 'nenhum' });
+    expect(db.ler(caminhoPago)).toBeUndefined();
+    expect(await avisarPedidoPagoSemEnderecoLi(asDb(db), pedido(1_500), deps)).toEqual({
+      acao: 'levantado',
+      resultado: 'criado',
     });
   });
 
@@ -333,6 +381,7 @@ describe('the reversal-after-the-label tipo (owner decision A7, 2026-10-19)', ()
     situacaoDesconhecida: null,
     contestacao: null,
     reversaoComEtiqueta,
+    pagoSegueSemEndereco: false,
   });
 
   it('a motivo RAISES it — atencao, the pedido page, exactly loja, pedido and motivo — beside the contestado row', async () => {
@@ -344,6 +393,7 @@ describe('the reversal-after-the-label tipo (owner decision A7, 2026-10-19)', ()
         situacaoDesconhecida: null,
         contestacao: MOTIVO_PEDIDO_CONTESTADO_LI.chargeback,
         reversaoComEtiqueta: MOTIVO_REVERSAO_COM_ETIQUETA_LI.chargeback,
+        pagoSegueSemEndereco: false,
       },
       deps,
     );

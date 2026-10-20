@@ -1587,13 +1587,15 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
     expect(db.ler(CAMINHO_PEDIDO)).toBeUndefined();
   });
 
-  it('EQUAL: an EMPTY block, or a CEP null, empty or BLANK (whitespace carries nothing), carries no CEP either', async () => {
+  it('EQUAL: an EMPTY block, or a CEP null, empty, BLANK (whitespace carries nothing) or the `-` placeholder, bare or padded (owner decision, 2026-10-20), carries no CEP either', async () => {
     const vazio = { ...(pedidoLiBruto().endereco_entrega as DocData) };
     for (const endereco_entrega of [
       {},
       { ...vazio, cep: null },
       { ...vazio, cep: '' },
       { ...vazio, cep: '   ' },
+      { ...vazio, cep: '-' },
+      { ...vazio, cep: ' - ' },
     ]) {
       const db = novoDb();
       await expect(
@@ -1604,12 +1606,12 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
     }
   });
 
-  it('⚠️ NEAR-MISS (owner decision, 2026-10-20): an INVALID non-empty CEP is never refused — the paid order imports as one without an endereço: the amount and the modalidade, no route, no endereço', async () => {
+  it('⚠️ NEAR-MISS (owner decision, 2026-10-20): an INVALID non-empty CEP — a MASKED one and the placeholder’s near-miss `--` included — is never refused: the paid order imports as one without an endereço: the amount and the modalidade, no route, no endereço', async () => {
     const comCep = (cep: string): DocData => ({
       ...(pedidoLiBruto().endereco_entrega as DocData),
       cep,
     });
-    for (const cep of ['00000', 'abc', '0131-010', '013101000']) {
+    for (const cep of ['00000', 'abc', '0131-010', '013101000', '*****-***', '--']) {
       const db = dbComAlvo();
       const r = await importar(db, pagoSemEndereco({ endereco_entrega: comCep(cep) }));
       expect(r.r, cep).toEqual({ kind: 'importado' });
@@ -1759,41 +1761,173 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
     expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).not.toBeNull();
   });
 
-  it('⚠️ pinned: a later import with an INVALID CEP closes the aviso too, while the pedido stays without an endereço or a route and nothing stays open — a closed row is no proof the address arrived (the runbook says to check)', async () => {
-    const db = dbComAlvo();
-    await avisarPedidoPagoSemEnderecoLi(
-      asDb(db),
-      {
-        integracaoId: CONTA,
-        lojaNome: 'Loja de teste',
-        pedidoId: PEDIDO_ID,
-        numero: String(NUMERO_LI),
-        relogioUs: WATERMARK_2H,
-      },
-      { increment, nowMs: AGORA_MS },
-    );
-    expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).toBeNull();
+  describe('⚠️ an INVALID CEP keeps the aviso OPEN; it closes only once the pedido has its delivery endereço, a pickup route, or is no longer paid (owner decision, 2026-10-20)', () => {
+    const INVALIDO = { ...(pedidoLiBruto().endereco_entrega as DocData), cep: '0131010' };
+    /** An endereço an operator linked by hand, stored under the pedido's cliente. */
+    const DO_OPERADOR = `documents/clientes/${CLIENTE_ID}/enderecos/do-operador`;
 
-    // The operator typed a CEP the builder cannot read: past the no-CEP check, so it imports.
-    const invalido = { ...(pedidoLiBruto().endereco_entrega as DocData), cep: '0131010' };
-    const r = await importar(
-      db,
-      pagoSemEndereco({ endereco_entrega: invalido, data_modificacao: carimboLi(3) }),
-    );
-    expect(r.r).toEqual({ kind: 'importado' });
-    expect(db.ler(CAMINHO_AVISO_PAGO)).toMatchObject({
-      resolucaoMotivo: MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
+    async function levantarAvisoPago(db: FakeDb): Promise<void> {
+      await avisarPedidoPagoSemEnderecoLi(
+        asDb(db),
+        {
+          integracaoId: CONTA,
+          lojaNome: 'Loja de teste',
+          pedidoId: PEDIDO_ID,
+          numero: String(NUMERO_LI),
+          relogioUs: WATERMARK_2H,
+        },
+        { increment, nowMs: AGORA_MS },
+      );
+      expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).toBeNull();
+    }
+    function escritasDoAvisoPago(db: FakeDb): number {
+      return db.escritas.filter((e) => e.caminho === CAMINHO_AVISO_PAGO).length;
+    }
+    function resolvido(db: FakeDb): void {
+      expect(db.ler(CAMINHO_AVISO_PAGO)).toMatchObject({
+        resolucaoMotivo: MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
+        relogioEvento: dataLiParaMicros(carimboLi(3)),
+      });
+      expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).not.toBeNull();
+    }
+
+    it('EQUAL: a later import with an INVALID CEP and no stored endereço imports (no endereço, no route) and leaves the aviso OPEN — not one write to it', async () => {
+      const db = dbComAlvo();
+      await levantarAvisoPago(db);
+      const antes = db.ler(CAMINHO_AVISO_PAGO);
+      const escritas = escritasDoAvisoPago(db);
+
+      // The customer typed a CEP the builder cannot read: past the no-CEP check, so it imports.
+      const r = await importar(
+        db,
+        pagoSemEndereco({ endereco_entrega: INVALIDO, data_modificacao: carimboLi(3) }),
+      );
+      expect(r.r).toEqual({ kind: 'importado' });
+      expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        enderecoFiscalOuterRef: null,
+      });
+      expect(frete(db)).toMatchObject({ ...SEM_ROTA, enderecoFreteOuterReference: null });
+      expect(escritasDoAvisoPago(db)).toBe(escritas);
+      expect(db.ler(CAMINHO_AVISO_PAGO)).toEqual(antes);
     });
-    expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).not.toBeNull();
-    expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
-      estado: ESTADO_PEDIDO.pago,
-      enderecoFiscalOuterRef: null,
+
+    it('EQUAL: the same import with no row yet raises nothing and seeds nothing — the import is no raiser', async () => {
+      const db = dbComAlvo();
+      const r = await importar(
+        db,
+        pagoSemEndereco({ endereco_entrega: INVALIDO, data_modificacao: carimboLi(3) }),
+      );
+      expect(r.r).toEqual({ kind: 'importado' });
+      expect(db.ler(CAMINHO_AVISO_PAGO)).toBeUndefined();
     });
-    expect(frete(db)).toMatchObject({ ...SEM_ROTA, enderecoFreteOuterReference: null });
-    const avisosAbertos = [
-      ...new Set(db.escritas.map((e) => e.caminho).filter((c) => c.startsWith('avisos/'))),
-    ].filter((caminho) => db.ler(caminho)?.resolvidoEm === null);
-    expect(avisosAbertos).toEqual([]);
+
+    it('NEAR-MISS: an INVALID CEP on a pedido that already STORES an endereço resolves the aviso — and that endereço is not overwritten', async () => {
+      const db = dbComAlvo();
+      await importar(db, aguardando({ data_modificacao: carimboLi(1) }));
+      await refPedido(db).update({ enderecoFiscalOuterRef: DO_OPERADOR });
+      await levantarAvisoPago(db);
+
+      const r = await importar(
+        db,
+        pagoSemEndereco({ endereco_entrega: INVALIDO, data_modificacao: carimboLi(3) }),
+      );
+      expect(r.r).toEqual({ kind: 'importado' });
+      resolvido(db);
+      expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        enderecoFiscalOuterRef: DO_OPERADOR,
+      });
+      expect(
+        db.escritas.some((e) => e.caminho.includes('/enderecos/')),
+        'no endereço written',
+      ).toBe(false);
+    });
+
+    it('NEAR-MISS: a VALID CEP resolves it — this import writes the endereço', async () => {
+      const db = dbComAlvo();
+      await levantarAvisoPago(db);
+      const r = await importar(
+        db,
+        cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) }),
+      );
+      expect(r.r).toEqual({ kind: 'importado' });
+      resolvido(db);
+      expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef).toMatch(/^documents\/clientes\//);
+    });
+
+    it('NEAR-MISS: a PICKUP resolves it with no endereço at all — no CEP or an invalid one', async () => {
+      for (const endereco_entrega of [null, INVALIDO]) {
+        const db = dbMapeadoPara(INTEGRACAO_FRETE.retiradaNaLoja);
+        await levantarAvisoPago(db);
+        const r = await importar(
+          db,
+          pagoSemEndereco({ endereco_entrega, data_modificacao: carimboLi(3) }),
+        );
+        expect(r.r, JSON.stringify(endereco_entrega)).toEqual({ kind: 'importado' });
+        resolvido(db);
+        expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef ?? null).toBeNull();
+      }
+    });
+
+    it('NEAR-MISS: an order NO LONGER PAID (a dispute) with an invalid CEP resolves it', async () => {
+      const db = dbComAlvo();
+      await levantarAvisoPago(db);
+      const disputa: Cena = {
+        ...pagoSemEndereco({
+          endereco_entrega: INVALIDO,
+          situacao: { codigo: 'pagamento_em_disputa', id: 6 },
+          data_modificacao: carimboLi(3),
+        }),
+        historico: [
+          ...historicoPagoLi(),
+          linhaHistoricoLi(3, carimboLi(2, 500), 'pagamento_em_disputa', 'pedido_pago'),
+        ],
+      };
+      expect((await importar(db, disputa)).r).toEqual({ kind: 'importado' });
+      resolvido(db);
+      expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef).toBeNull();
+    });
+
+    it('⚠️ rule 7: an endereço another writer STORED between the read and the batch resolves it — the WINNING attempt’s snapshot decides, never S', async () => {
+      const db = dbComAlvo();
+      await importar(db, aguardando({ data_modificacao: carimboLi(1) }));
+      await levantarAvisoPago(db);
+      // S holds no endereço; the operator links one right before the first batch.
+      db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
+        await refPedido(db).update({ enderecoFiscalOuterRef: DO_OPERADOR });
+      });
+      const r = await importar(
+        db,
+        pagoSemEndereco({ endereco_entrega: INVALIDO, data_modificacao: carimboLi(3) }),
+      );
+      expect(r.r).toEqual({ kind: 'importado' });
+      resolvido(db);
+      expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef).toBe(DO_OPERADOR);
+    });
+
+    it('⚠️ rule 7: an endereço another writer CLEARED between the read and the batch keeps it OPEN — the WINNING attempt’s snapshot decides, never S', async () => {
+      const db = dbComAlvo();
+      await importar(db, aguardando({ data_modificacao: carimboLi(1) }));
+      await refPedido(db).update({ enderecoFiscalOuterRef: DO_OPERADOR });
+      await levantarAvisoPago(db);
+      const escritas = escritasDoAvisoPago(db);
+      // S holds the endereço; another writer clears it right before the first batch.
+      db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
+        await refPedido(db).update({ enderecoFiscalOuterRef: null });
+      });
+      const r = await importar(
+        db,
+        pagoSemEndereco({ endereco_entrega: INVALIDO, data_modificacao: carimboLi(3) }),
+      );
+      expect(r.r).toEqual({ kind: 'importado' });
+      expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        enderecoFiscalOuterRef: null,
+      });
+      expect(escritasDoAvisoPago(db)).toBe(escritas);
+      expect(db.ler(CAMINHO_AVISO_PAGO)?.resolvidoEm).toBeNull();
+    });
   });
 
   it('pinned (paid ≠ estado pago): the order moved to a DISPUTE while refused imports with no address and no route, its contestado row raised, and the paid-without-address row resolved', async () => {

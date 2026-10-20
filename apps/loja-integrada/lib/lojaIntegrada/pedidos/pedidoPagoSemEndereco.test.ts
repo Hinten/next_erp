@@ -13,9 +13,12 @@ import {
   CANAL_AVISO,
   CODIGOS_LI_PAGO,
   CODIGO_SITUACAO_LI,
+  MOTIVO_RECUSA,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
+  TIPO_DE_VALOR,
   codigoSituacaoLiSchema,
+  motivoDaRecusa,
   valorUtilizavel,
 } from '@delfrance/schemas';
 
@@ -27,6 +30,7 @@ import { enderecoDoPedidoLi, type EnderecoEntregaLi } from './clienteMapeamento'
 import {
   LiPedidoPagoSemEnderecoError,
   entregaSemCepLi,
+  pedidoPagoSegueSemEnderecoLi,
   pedidoPagoSemEnderecoLi,
   sinalizarPedidoPagoSemEnderecoLi,
 } from './pedidoPagoSemEndereco';
@@ -67,10 +71,21 @@ afterEach(() => {
 const CEPS_EM_BRANCO = [' ', '   ', '\t', ' \n ', '\u00a0'];
 
 /**
+ * The `-` placeholder for "nothing was sent", bare or padded (owner decision,
+ * 2026-10-20): no CEP — the shared absence reader's `ausente` verdict.
+ */
+const CEPS_TRACO = ['-', ' - ', '\t-\n'];
+
+/**
  * Present but INVALID CEPs, as a customer may type them into the store: the
  * endereço builder reads none of them (`sem-cep`), and waiting fixes none.
+ * `'--'` and `'- -'` are the placeholder's near-misses: not the placeholder,
+ * so text in the field.
  */
-const CEPS_INVALIDOS = ['00000', 'abc', '0131-010', '013101000', 'sem cep', '-'];
+const CEPS_INVALIDOS = ['00000', 'abc', '0131-010', '013101000', 'sem cep', '--', '- -'];
+
+/** MASKED CEPs: a redaction is text in the field — a present, invalid CEP here. */
+const CEPS_MASCARADOS = ['*****-***', '*****', '01310-***'];
 
 describe('entregaSemCepLi: the delivery block carries NO CEP at all (owner decision, 2026-10-20)', () => {
   it('EQUAL: no block, an empty block, and a CEP absent, null or empty ⇒ no CEP', () => {
@@ -101,13 +116,24 @@ describe('entregaSemCepLi: the delivery block carries NO CEP at all (owner decis
     }
   });
 
-  it('⚠️ NEAR-MISS (deliberate): the `-` placeholder and a masked value, which the shared `valorUtilizavel` reads as absent, are present (invalid) CEPs here', () => {
-    for (const cep of ['-', ' - ', '*****-***']) {
-      // The shared absence reader would call each of them "nothing was sent"…
+  it('⚠️ EQUAL (owner decision, 2026-10-20): the `-` placeholder, bare or padded, is no CEP — the shared absence reader’s `ausente` verdict', () => {
+    for (const cep of CEPS_TRACO) {
+      // The shared reader: "nothing was sent" — absence, not a redaction.
+      expect(motivoDaRecusa(cep, TIPO_DE_VALOR.texto), JSON.stringify(cep)).toBe(
+        MOTIVO_RECUSA.ausente,
+      );
+      expect(entregaSemCepLi(endereco({ cep })), JSON.stringify(cep)).toBe(true);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a MASKED value is a present (invalid) CEP — the shared reader also folds a mask into "unusable", and that half is no absence here', () => {
+    for (const cep of CEPS_MASCARADOS) {
+      // The shared reader calls it unusable, as a redaction — never "nothing was sent"…
       expect(valorUtilizavel(cep), cep).toBeNull();
-      // …the builder reads no endereço from any of them…
+      expect(motivoDaRecusa(cep, TIPO_DE_VALOR.texto), cep).toBe(MOTIVO_RECUSA.mascarado);
+      // …the builder reads no endereço from it…
       expect(enderecoDoPedidoLi(endereco({ cep })).kind, cep).toBe('sem-cep');
-      // …and the rule, narrower on purpose (the owner decision's set), still sees a CEP.
+      // …and the rule still sees a CEP: an invalid one, imported with no endereço.
       expect(entregaSemCepLi(endereco({ cep })), cep).toBe(false);
       expect(decidir({ enderecoEntrega: endereco({ cep }) }), cep).toBe(false);
     }
@@ -129,7 +155,7 @@ describe('pedidoPagoSemEnderecoLi: who is refused', () => {
     expect(CODIGOS_LI_PAGO.size).toBe(7);
     for (const codigo of CODIGOS_LI_PAGO) expect(decidir({ codigo }), codigo).toBe(true);
     expect(decidir({ enderecoEntrega: {} as EnderecoEntregaLi })).toBe(true);
-    for (const cep of [null, undefined, '', ...CEPS_EM_BRANCO]) {
+    for (const cep of [null, undefined, '', ...CEPS_EM_BRANCO, ...CEPS_TRACO]) {
       expect(decidir({ enderecoEntrega: endereco({ cep }) }), JSON.stringify(cep)).toBe(true);
     }
     // An EMPTY stored ref is no endereço.
@@ -144,7 +170,7 @@ describe('pedidoPagoSemEnderecoLi: who is refused', () => {
   });
 
   it('⚠️ NEAR-MISS (owner decision, 2026-10-20): an INVALID non-empty CEP is never refused — waiting never fixes what the customer typed', () => {
-    for (const cep of CEPS_INVALIDOS) {
+    for (const cep of [...CEPS_INVALIDOS, ...CEPS_MASCARADOS]) {
       expect(decidir({ enderecoEntrega: endereco({ cep }) }), cep).toBe(false);
       // Not even with no street, number or district: the CEP is what is asked about.
       expect(
@@ -182,6 +208,80 @@ describe('pedidoPagoSemEnderecoLi: who is refused', () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe('pedidoPagoSegueSemEnderecoLi: the aviso stays OPEN while the pedido has no delivery endereço (owner decision, 2026-10-20)', () => {
+  const DO_CLIENTE = 'documents/clientes/c1/enderecos/e1';
+
+  function segue(over: Partial<Parameters<typeof pedidoPagoSegueSemEnderecoLi>[0]> = {}): boolean {
+    return pedidoPagoSegueSemEnderecoLi({
+      codigo: PAGO,
+      temEnvio: true,
+      dispensaEndereco: false,
+      armazenado: null,
+      enderecoGravado: null,
+      ...over,
+    });
+  }
+
+  it('EQUAL: every PAID codigo, a shipment, no pickup, no endereço stored and none written ⇒ left OPEN — the invalid-CEP import is this case', () => {
+    for (const codigo of CODIGOS_LI_PAGO) expect(segue({ codigo }), codigo).toBe(true);
+    // An EMPTY stored ref, or an empty written one, is no endereço.
+    expect(
+      segue({
+        armazenado: {
+          enderecoFiscalOuterRef: '',
+          freteInicial: { enderecoFreteOuterReference: null },
+        },
+        enderecoGravado: '',
+      }),
+    ).toBe(true);
+  });
+
+  it('NEAR-MISS: an endereço the pedido already STORES — fiscal or delivery — closes it', () => {
+    expect(segue({ armazenado: { enderecoFiscalOuterRef: DO_CLIENTE } })).toBe(false);
+    expect(
+      segue({ armazenado: { freteInicial: { enderecoFreteOuterReference: DO_CLIENTE } } }),
+    ).toBe(false);
+  });
+
+  it('NEAR-MISS: an endereço THIS import writes closes it', () => {
+    expect(segue({ enderecoGravado: DO_CLIENTE })).toBe(false);
+  });
+
+  it('NEAR-MISS: a PICKUP (it needs no endereço), NO shipment (nothing to deliver) or a codigo no longer PAID closes it', () => {
+    expect(segue({ dispensaEndereco: true })).toBe(false);
+    expect(segue({ temEnvio: false })).toBe(false);
+    for (const codigo of codigoSituacaoLiSchema.options) {
+      if (CODIGOS_LI_PAGO.has(codigo)) continue;
+      expect(segue({ codigo }), codigo).toBe(false);
+    }
+    expect(segue({ codigo: 'Pedido_Pago' })).toBe(false);
+  });
+
+  it('the refusal is exactly this rule plus "no CEP", over every combination: the CEP is the only clause the two do not share', () => {
+    const armazenados = [
+      null,
+      { enderecoFiscalOuterRef: DO_CLIENTE },
+      { freteInicial: { enderecoFreteOuterReference: DO_CLIENTE } },
+    ];
+    const entregas = [null, endereco({ cep: '-' }), endereco({ cep: '00000' }), endereco()];
+    for (const codigo of codigoSituacaoLiSchema.options) {
+      for (const temEnvio of [true, false]) {
+        for (const dispensaEndereco of [true, false]) {
+          for (const armazenado of armazenados) {
+            const base = { codigo, temEnvio, dispensaEndereco, armazenado };
+            for (const enderecoEntrega of entregas) {
+              expect(
+                decidir({ ...base, enderecoEntrega }),
+                JSON.stringify({ ...base, cep: enderecoEntrega?.cep ?? null }),
+              ).toBe(segue(base) && entregaSemCepLi(enderecoEntrega));
+            }
+          }
+        }
+      }
+    }
   });
 });
 

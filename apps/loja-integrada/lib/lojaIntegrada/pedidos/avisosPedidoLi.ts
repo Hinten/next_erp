@@ -11,7 +11,7 @@
  * | `lojaIntegradaPedidoContestado` | the pedido id | the order's stamp | the decision names a motivo | any import that raises none |
  * | `lojaIntegradaPedidoHub` | the pedido id | the order's stamp | a hub marker, on a live sale | no marker, or a dead sale |
  * | `lojaIntegradaFreteNaoSuportado` | `sha256Hex(chave)` | the routing read's `readTime` | the routing says so | the routing says so |
- * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order carrying no CEP ran out of retries (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | any import that reaches the avisos |
+ * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order carrying no CEP ran out of retries (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | an import after which the pedido has a delivery endereço or a pickup route, or is no longer paid |
  * | `lojaIntegradaReversaoComEtiqueta` | the pedido id | the order's stamp | a reversal codigo on a pedido that holds a bought label | any import that raises none |
  *
  * `lojaIntegradaPedidoPagoSemEndereco` is the one `critico` tipo; every other
@@ -47,11 +47,14 @@
  * notification — but with the same clock: the stamp of the order that exhausted
  * run read. So the import that later finds the address (a newer stamp)
  * resolves it, and a late exhaustion of an older observation is dropped by
- * the seed every resolve leaves behind. ⚠️ "Reaches the avisos" includes an
- * import whose CEP the endereço builder cannot read: it is past the no-CEP
- * check, so it resolves the row while the pedido stays without an endereço or
- * a carrier route, and nothing else is raised. The web runbook therefore asks
- * the operator to check the pedido's endereço once the row closes.
+ * the seed every resolve leaves behind. ⚠️ Owner decision, 2026-10-20: an
+ * import resolves it ONLY when the pedido, as the winning attempt leaves it,
+ * no longer waits for a delivery endereço (`pedidoPagoSegueSemEnderecoLi`:
+ * it stores one or this import wrote one, its route is a pickup, it carries
+ * no shipment, or the order is no longer paid). An import whose CEP the
+ * endereço builder cannot read gets past the no-CEP check but stores no
+ * endereço, so it SKIPS the resolve — no write, no seed — and an open row
+ * stays open until the address is fixed.
  *
  * Every write goes through `escreverAviso` / `resolverAviso`
  * (`@delfrance/data/admin/avisos`), with "now" converted in `avisos/avisos.ts`
@@ -90,7 +93,10 @@ export const MOTIVO_RESOLUCAO_PEDIDO_LI = {
   vendaEncerrada: 'venda-encerrada',
   /** The key's routing raised no aviso. */
   freteRoteado: 'frete-roteado',
-  /** An import got past the paid-without-address check: the order reached the ERP. */
+  /**
+   * An import after which the pedido no longer waits for a delivery endereço:
+   * it has one, its route is a pickup, or the order is no longer paid.
+   */
   pedidoImportado: 'pedido-importado',
   /** An import whose order is no reversal, or whose pedido holds no bought label. */
   semReversaoComEtiqueta: 'sem-reversao-com-etiqueta',
@@ -113,7 +119,11 @@ export interface PedidoDoAvisoLi {
 export type EfeitoAvisoLi =
   | { readonly acao: 'levantado'; readonly resultado: ResultadoAviso }
   | { readonly acao: 'resolvido'; readonly fechou: boolean }
-  /** No clock to act on (the freight tipo only — module header). */
+  /**
+   * Nothing written: the freight tipo with no clock to act on, or the
+   * paid-without-address tipo while the pedido still waits for an endereço
+   * (module header).
+   */
   | { readonly acao: 'nenhum' };
 
 type TipoDoPedido =
@@ -210,14 +220,21 @@ export interface DecisaoDosAvisosLi {
   readonly contestacao: MotivoPedidoContestadoLi | null;
   /** The reversal that landed on a pedido with a bought label, or `null` (resolve). */
   readonly reversaoComEtiqueta: MotivoReversaoComEtiquetaLi | null;
+  /**
+   * The pedido, as the WINNING attempt leaves it, still waits for a delivery
+   * endereço (`pedidoPagoSegueSemEnderecoLi`): the paid-without-address row is
+   * left as it stands — never resolved, never seeded. `false`: resolve.
+   */
+  readonly pagoSegueSemEndereco: boolean;
 }
 
 /**
  * The order-clocked tipos of an import that got past the hub guard
  * (`importado` or `sem-mudanca`): the situação, the contestation and the
  * reversal-after-the-label follow the decision, the hub row resolves (the
- * order carries no marker), and so does the paid-without-address row (the
- * order got past that check and reached the ERP).
+ * order carries no marker), and so does the paid-without-address row — unless
+ * the pedido still waits for a delivery endereço, which leaves it as it stands
+ * (module header).
  */
 export async function sincronizarAvisosDoPedidoLi(
   db: Firestore,
@@ -275,13 +292,15 @@ export async function sincronizarAvisosDoPedidoLi(
     relogio,
     deps,
   );
-  const pagoSemEndereco = await resolver(
-    db,
-    baseDoPedido(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, pedido),
-    MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
-    relogio,
-    deps,
-  );
+  const pagoSemEndereco: EfeitoAvisoLi = decisao.pagoSegueSemEndereco
+    ? { acao: 'nenhum' }
+    : await resolver(
+        db,
+        baseDoPedido(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, pedido),
+        MOTIVO_RESOLUCAO_PEDIDO_LI.pedidoImportado,
+        relogio,
+        deps,
+      );
 
   const baseReversao = baseDoPedido(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta, pedido);
   const reversaoComEtiqueta =

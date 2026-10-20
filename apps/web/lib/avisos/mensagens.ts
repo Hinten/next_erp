@@ -591,9 +591,10 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   },
   // Crítico: uma venda PAGA que não entrou no ERP é uma venda que ninguém despacha. O
   // aviso só sobe quando as novas tentativas acabaram (a fila e a varredura), por isso a
-  // frase diz que a importação parou. Só um pedido SEM CEP nenhum (ausente, vazio ou em
-  // branco) é recusado: um CEP inválido, digitado pelo cliente, não se conserta esperando,
-  // e esse pedido entra sem endereço — por isso a frase nunca fala em CEP "válido".
+  // frase diz que a importação parou. Só um pedido SEM CEP nenhum (ausente, vazio, em
+  // branco ou só o traço "-") é recusado: um CEP inválido, digitado pelo cliente, não se
+  // conserta esperando, e esse pedido entra sem endereço — por isso a frase nunca fala em
+  // CEP "válido".
   [TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco]: {
     titulo: 'Pedido pago da Loja Integrada sem endereço',
     corpo: (params) =>
@@ -601,25 +602,24 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'Integrada, mas chegou sem CEP no endereço de entrega e por isso não entrou no ERP — ' +
       'nem o pedido, nem a atualização dele: sem endereço não há como comprar a etiqueta. A ' +
       'importação tentou de novo por algumas horas e parou. O aviso se encerra quando o ' +
-      'pedido for importado.',
+      'pedido estiver no ERP com o endereço de entrega.',
     // O conserto está FORA do app: o endereço é preenchido no painel da Loja Integrada. Que
     // essa alteração traga o pedido de volta à importação é o ESPERADO, ainda não observado
     // (nenhuma captura mostra a edição do endereço mudando a data de modificação do pedido),
     // por isso a frase diz "deve" e dá a saída para quando não trouxer. A retirada precisa
-    // estar ATIVA: uma inativa não dispensa o endereço. O aviso se encerra com QUALQUER
-    // importação do pedido que passe da checagem de CEP — inclusive uma com um CEP que o
-    // montador de endereço não lê, que entra sem endereço e sem rota —, então o encerramento
-    // não prova que deu certo: a frase manda conferir o endereço no pedido.
+    // estar ATIVA: uma inativa não dispensa o endereço. O aviso só se encerra quando o pedido
+    // fica com o endereço de entrega (já guardado, ou gravado pela importação), vira retirada
+    // na loja ou deixa de estar pago (decisão de 2026-10-20): um CEP que o montador de
+    // endereço não lê entra sem endereço e mantém o aviso aberto — daí a conferência dos 8
+    // dígitos antes de chamar um desenvolvedor.
     runbook:
       'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
       'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
       'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
-      'e depois altere o pedido no painel. O aviso também se encerra quando o pedido entra com ' +
-      'um CEP que o ERP não consegue ler, e então ele entra sem endereço, sem o qual não há ' +
-      'como comprar a etiqueta. Por isso, quando o aviso se encerrar, confira no ERP se o ' +
-      'pedido ficou com o endereço de entrega (o de retirada na loja não precisa dele); se não ' +
-      'ficou, corrija o CEP no painel. Se o aviso continuar aberto depois da alteração, peça a ' +
-      'um desenvolvedor que confira a notificação estacionada desse pedido.',
+      'e depois altere o pedido no painel. O aviso fica aberto até o pedido ter o endereço de ' +
+      'entrega (o de retirada na loja não precisa dele). Se o aviso continuar aberto depois da ' +
+      'alteração, confira no painel se o CEP tem 8 dígitos; se tiver, peça a um desenvolvedor ' +
+      'que confira a notificação estacionada desse pedido.',
   },
 };
 
