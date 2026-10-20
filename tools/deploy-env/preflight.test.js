@@ -326,6 +326,7 @@ describe('the backend cross-check note', () => {
     ['mercado-pago', 'MERCADO_PAGO_TASKS_REGION'],
     ['whatsapp', 'WHATSAPP_TASKS_REGION'],
     ['nfe', 'NFE_TASKS_REGION'],
+    ['shopee', 'SHOPEE_TASKS_REGION'],
   ])('%s gets a note naming the backend variable and its manifest', (codebase, backendVar) => {
     // ⚠️ Assert the NOTE, not just the table entry. An earlier version of these
     // tests checked `CODEBASES[x].backendVar` only, and reverting the function to
@@ -338,6 +339,32 @@ describe('the backend cross-check note', () => {
     expect(note).toContain(CODEBASES[codebase].backendManifest);
     expect(note).toContain('us-east1');
     expect(CODEBASES[codebase].backendManifest).toMatch(/apphosting\.yaml$/);
+  });
+
+  it('sends shopee to the console, never to its manifest — which has no row for it', () => {
+    // apps/shopee/apphosting.yaml keeps SHOPEE_TASKS_REGION out on purpose: a
+    // value there reaches EVERY project's backend, and unset is the safe state
+    // (the enqueue throws, the sweep drains). A note telling the operator to add
+    // the row would undo that the moment it was obeyed — and the manifest is read
+    // here too, so the note and the file cannot disagree silently.
+    const note = crossCheckNote('shopee', 'us-east1');
+    const manifest = CODEBASES.shopee.backendManifest;
+
+    expect(note).toContain("THIS project's App Hosting console");
+    expect(note).toContain(`never in ${manifest}`);
+    expect(note).not.toContain(`Set it in ${manifest}`);
+    expect(readFileSync(resolve(REPO_ROOT, manifest), 'utf8')).not.toMatch(
+      /^\s*-\s*variable:\s*SHOPEE_TASKS_REGION\s*$/m,
+    );
+  });
+
+  it('keeps the manifest wording where the manifest does hold the row', () => {
+    // The near-miss: mercado-livre's manifest CARRIES its region row, so the
+    // console-only branch must not leak into the other codebases' notes.
+    const note = crossCheckNote('mercado-livre', 'us-east1');
+
+    expect(note).toContain('Set it in apps/mercado-livre/apphosting.yaml (or the console)');
+    expect(note).not.toContain('never in');
   });
 
   it('has no backend note for storage, which no backend enqueues', () => {

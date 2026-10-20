@@ -12,7 +12,7 @@ from `apps/mercado-livre/functions`.
 > push rules. No config in this channel declares a `firestore`/`storage` block,
 > so none of them can.
 
-## ⚠️ Deployed to STAGING (2026-09-24); never to production
+## ⚠️ Deployed to STAGING (2026-09-24, 2026-10-15); never to production
 
 `firebase.shopee.deploy.json` shipped in step 3 (#1511). A config file deploys
 nothing on its own, and the deploy itself stays a manual, coordinated human step
@@ -21,11 +21,15 @@ nothing on its own, and the deploy itself stays a manual, coordinated human step
 documented below, beside the `TASKS_INVOKER_SA` sections (**the first deploy of
 a NEW queue crashes on the enqueuer binding**), and the re-run after the
 per-queue enqueuer grants finished clean. All fourteen functions landed, with
-the stock valve `SHOPEE_STOCK_SYNC_ENABLED` off.
-**Production is a separate project and has never received this codebase.** What
-master-plan **step 22 (#1530)** still owns is the production ROLLOUT:
-`apphosting.yaml`'s `vpcAccess` and the real `SHOPEE_TASKS_REGION` value, and
-flipping `implementado`.
+the stock valve `SHOPEE_STOCK_SYNC_ENABLED` off. The Shopee rollout of
+2026-10-15 brought staging to all **twenty** functions and five queues, with
+`SHOPEE_SANDBOX=1` in the functions env and `SHOPEE_TASKS_REGION` on the staging
+backend's console.
+**Production is a separate project and has never received this codebase.** Its
+first deploy — this codebase, the IAM below, the backend's console env (the real
+`SHOPEE_TASKS_REGION`; `SHOPEE_SANDBOX` UNSET) and the valves under "Runtime
+env" — is a migration-window operation (#1998, a phase step of #1208), never an
+agent's and never part of a PR. Static egress (`vpcAccess`) is #1531.
 
 Nothing here is blocked on that rollout: until the queue exists the receiver
 falls back to persisting each push as `failed` and the 30-minute sweep drains it,
@@ -62,7 +66,7 @@ the bundle, proven before the first deploy.
   ⚠️ `apps/shopee/apphosting.yaml` deliberately has **no** row for it: unset,
   the enqueue throws and the sweep drains — loud and lossless — rather than
   aiming at a queue that is not there. Set it in the project's App Hosting
-  console once this codebase is deployed there (production: step 22 / #1530).
+  console once this codebase is deployed there (production: #1998).
   Never as a `value: ''` row — App Hosting rejects the whole manifest
   (`fah/invalid-apphosting-yaml`) before the build starts.
 - **One-time IAM** (see below) — required before the callback URL cutover
@@ -592,7 +596,7 @@ that belong to ONE project, name the file `.env.deploy.<project-id>`: it lands
 as `.env.<project-id>`, which firebase-tools applies only for that `--project`.
 Both can coexist; firebase-tools layers the project-specific file over `.env`.
 
-⚠️ The allowlist is anchored and shared by all five `prepare-deploy.mjs` scripts
+⚠️ The allowlist is anchored and shared by all eight `prepare-deploy.mjs` scripts
 (`tools/deploy-env/env-files.mjs`). Exactly two source names are copied —
 `.env.deploy` and `.env.deploy.<project-id>`. A **`.env.secrets*` fails the
 hook**, and so does a bare `.env` (with a rename instruction): everything that
@@ -801,12 +805,11 @@ deploy re-applies `TASKS_INVOKER_SA` authoritatively and finishes clean. For thi
 codebase a first deploy means up to FIVE queues (`processShopeeNotification`,
 `processShopeeMassImport`, `sendShopeeStock`, `processShopeePriceSync`,
 `processShopeeNfeUpload`) × each identity in the list; a later deploy that adds
-a queue pays it for that queue only. ⚠️ **So the next STAGING deploy pays it
-for the queues staging does not hold yet** — the price queue (step 13) and the
-NF-e queue (step 14); the other three have existed there since 2026-09-24 —
-**and production's first deploy pays it for all FIVE**: production is a
-separate project, so its first deploy hits this for every queue — put the
-grants in the window's runbook. ⚠️ The NF-e queue and its trigger land in the
+a queue pays it for that queue only. Staging has held all five since the
+2026-10-15 rollout (the price and NF-e queues were its new ones), so ⚠️
+**production's first deploy is the one that pays it for all FIVE**: production
+is a separate project, so its first deploy hits this for every queue — the
+grants are rows of the window's runbook (#1998). ⚠️ The NF-e queue and its trigger land in the
 SAME `firebase deploy`, which cannot order them: until the workaround above has
 run, the trigger can be live while its queue has no enqueuer binding, and a
 fire whose enqueue fails throws, so `retry: true` asks Eventarc to redeliver it
@@ -862,9 +865,10 @@ The prose above already told you to list the functions SA "because a handler
 that re-enqueues makes it one". Nine schedules now do (the six above onto the
 notification queue, the three stock sweeps onto `sendShopeeStock`), the
 reprocess sweep through the step-7 arm it re-drives, and all five queue
-handlers. ⚠️ Granting this on PRODUCTION is **step 22's action** (#1530)
-— this codebase has reached only staging (once, on 2026-09-24), and an agent
-never runs it (root `CLAUDE.md` rule 8). The failure it prevents is silent in
+handlers. ⚠️ Granting this on PRODUCTION is a **migration-window step**
+(#1998) — this codebase has reached only staging (2026-09-24 and 2026-10-15),
+and an agent never runs it (root `CLAUDE.md` rule 8). The failure it prevents is
+silent in
 the worst direction: the enqueue succeeds, Cloud Tasks dispatches with an OIDC
 token the service refuses (`403 run.routes.invoke`), and no failure document is
 written anywhere — a lost-push tick would then CONFIRM a page whose entries
@@ -1158,19 +1162,19 @@ enablement does bite there, is the same shape as the Eventarc one — enable the
 APIs, re-run the same deploy — and the failure is again per-function, so the
 three stock sweeps and the stock queue can refuse while everything else lands.
 
-⚠️ **The fourth queue (step 13) has reached no project yet.**
-`processShopeePriceSync` was not part of the 2026-09-24 staging deploy. Its
-first staging deploy creates one new queue and pays the firebase-tools 15.28.2
-enqueuer workaround for that queue alone; production's first deploy pays it for
-all five (the IAM section above). And the price job's rehearsal will be the
-first time a ROUTE-started Shopee job crosses a real queue — step 9's
-`importar-todos` has no staging record — which is what finally proves the App
-Hosting identity's first enqueue: the tasks lane runs against an emulated queue
-that no IAM layer touches. Both are a human's, in a coordinated window, and
-**never run by an agent** (root `CLAUDE.md` rule 8).
+⚠️ **The fourth queue (step 13) reached staging on 2026-10-15, production not
+yet.** `processShopeePriceSync` was not part of the 2026-09-24 deploy; the
+2026-10-15 one created it, and production's first deploy pays the
+firebase-tools 15.28.2 enqueuer workaround for all five (the IAM section above).
+The price job's first staging run is also the first time a ROUTE-started Shopee
+job crosses a real queue — step 9's `importar-todos` has no staging record —
+which is what finally proves the App Hosting identity's first enqueue: the
+tasks lane runs against an emulated queue that no IAM layer touches. Both are a
+human's, and **never run by an agent** (root `CLAUDE.md` rule 8).
 
-⚠️ **The fifth queue and the second trigger (step 14) have reached no project
-yet either.** `processShopeeNfeUpload` and `onNfeAprovadaShopee` land in ONE
+⚠️ **The fifth queue and the second trigger (step 14) reached staging on
+2026-10-15, production not yet.** `processShopeeNfeUpload` and
+`onNfeAprovadaShopee` land in ONE
 deploy, which pays the 15.28.2 enqueuer workaround for the NF-e queue (IAM
 section above). Deploy order: this codebase — the queue and the trigger in ONE
 deploy, which cannot order them (harmless today, as the IAM section says) —
@@ -1179,7 +1183,8 @@ then the App Hosting backend (the `/enviar-nfe` route), then the web (the
 construction — staging emits homologação notes (`tpAmb 2`), which the shared
 predicate never sends — so a staging deploy proves the wiring, never an upload.
 
-⚠️ **Step 15b's eleventh schedule has reached no project yet.**
+⚠️ **Step 15b's eleventh schedule reached staging on 2026-10-15, production not
+yet.**
 `sweepShopeeAutoArrange` adds one Cloud Scheduler job and no queue — it
 enqueues onto `processShopeeNotification`, which exists — so its first deploy
 pays no enqueuer workaround, and on production it rides the Cloud Scheduler
@@ -1214,7 +1219,8 @@ Shopee call (bounded only by #1094) can outlive the next tick's start — the
 cost is a duplicate enqueue, absorbed by Shopee's own guard
 (`is_shipment_arranged`, `package_already_shipped`).
 
-⚠️ **Step 17's twelfth schedule has reached no project yet.**
+⚠️ **Step 17's twelfth schedule reached staging on 2026-10-15, production not
+yet.**
 `sweepShopeeReturns` adds one Cloud Scheduler job and no queue — it enqueues
 onto `processShopeeNotification`, which exists — so its first deploy pays no
 enqueuer workaround, and on production it rides the same Cloud Scheduler fact
@@ -1235,7 +1241,8 @@ grant is not skipped (unlike step 15b's) — four refresh attempts a day per
 such conta, logged as a contained conta failure.
 
 ⚠️ **Step 20's deploy order.** `onIntegracaoShopeeChanged` adds no queue, no
-schedule and no env var, and it has reached no project yet. What it needs is
+schedule and no env var; it reached staging on 2026-10-15, production not yet.
+What it needs is
 ORDER:
 
 - the `int_frete (tipo, contaShopeeFreteOuterRef, ativo, dataCadastro DESC)`
