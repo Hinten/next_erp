@@ -4,7 +4,13 @@ import { useMemo } from 'react';
 import { getDoc, getDocs, type Firestore } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
-import { INTEGRACAO_FRETE_LABELS, TIPOS_ALVO_MAPA_FRETE_LI } from '@delfrance/schemas';
+import {
+  INTEGRACAO_FRETE_LABELS,
+  MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  POLITICA_ALVO_ETIQUETA_LI,
+  TIPOS_ALVO_MAPA_FRETE_LI,
+  avaliarAlvoDoMapaLi,
+} from '@delfrance/schemas';
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
 
 /**
@@ -23,9 +29,33 @@ export interface AlvoFreteLi {
   readonly ativo: boolean;
   /** Its tipo is one a Loja Integrada row may be mapped to. */
   readonly suportado: boolean;
+  /**
+   * The Loja Integrada label ROUTE would accept it as a target — decided by the
+   * route's own evaluator ({@link aceitoPelaRotaDeEtiqueta}), so a picker that
+   * offers by it never offers what the route refuses, nor hides what it takes.
+   * Not the same question as `ativo`: the route reads an ABSENT `ativo` (a
+   * migrated doc) as active, where `ativo` above is the stored flag exactly.
+   */
+  readonly roteavel: boolean;
 }
 
-function comoAlvo(id: string, raw: Readonly<Record<string, unknown>>): AlvoFreteLi {
+/**
+ * Whether the label routing route accepts this RAW target doc: its own
+ * evaluator (`avaliarAlvoDoMapaLi` under `POLITICA_ALVO_ETIQUETA_LI`), the
+ * Melhor Envio SERVICE aside — a hand-picked Melhor Envio target takes its
+ * service from the method's own mapa row, which the route checks itself.
+ */
+function aceitoPelaRotaDeEtiqueta(raw: Readonly<Record<string, unknown>>): boolean {
+  const avaliacao = avaliarAlvoDoMapaLi(raw, null, POLITICA_ALVO_ETIQUETA_LI);
+  return (
+    avaliacao.tipo === 'valido' ||
+    (avaliacao.tipo === 'invalido' &&
+      avaliacao.motivo === MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoSemServico)
+  );
+}
+
+/** One target doc, as both pickers read it (exported for its tests). */
+export function alvoFreteLiDoDoc(id: string, raw: Readonly<Record<string, unknown>>): AlvoFreteLi {
   const tipo = typeof raw.tipo === 'string' ? raw.tipo : '';
   return {
     id,
@@ -33,6 +63,7 @@ function comoAlvo(id: string, raw: Readonly<Record<string, unknown>>): AlvoFrete
     tipo,
     ativo: raw.ativo === true,
     suportado: (TIPOS_ALVO_MAPA_FRETE_LI as readonly string[]).includes(tipo),
+    roteavel: aceitoPelaRotaDeEtiqueta(raw),
   };
 }
 
@@ -86,7 +117,7 @@ export function useAlvosMapaFreteLi(
           limit(LIMITE_ALVOS),
         ]),
       );
-      return snap.docs.map((d) => comoAlvo(d.id, d.data()));
+      return snap.docs.map((d) => alvoFreteLiDoDoc(d.id, d.data()));
     },
   });
 
@@ -104,7 +135,7 @@ export function useAlvosMapaFreteLi(
         faltando.map(async (id) => {
           const snap = await getDoc(intFreteCollection.docRef(db, {}, id).withConverter(null));
           const raw = snap.data();
-          return [id, raw === undefined ? null : comoAlvo(id, raw)] as const;
+          return [id, raw === undefined ? null : alvoFreteLiDoDoc(id, raw)] as const;
         }),
       ),
   });

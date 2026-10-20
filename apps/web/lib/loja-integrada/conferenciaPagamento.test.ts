@@ -82,6 +82,7 @@ const NAO_APLICAVEL: RespostaConferenciaPagamentoLi = {
 
 const resposta = (r: RespostaConferenciaPagamentoLi, recebidoEm = 0): ConferenciaPagamentoLi => ({
   tipo: 'resposta',
+  pedidoId: ID_LI,
   resposta: r,
   recebidoEm,
 });
@@ -339,11 +340,12 @@ describe('conferirPagamentoLi — every way the call ends, as data', () => {
     return conferirPagamentoLi(client, ID_LI);
   };
 
-  it('stamps the answer with the CLIENT clock it arrived at', async () => {
+  it('stamps the answer with the pedido it was asked for and the CLIENT clock it arrived at', async () => {
     const client = lojaIntegradaClientFalso({ conferirPagamento: async () => PAGO });
 
     await expect(conferirPagamentoLi(client, ID_LI, { agora: () => 1234 })).resolves.toEqual({
       tipo: 'resposta',
+      pedidoId: ID_LI,
       resposta: PAGO,
       recebidoEm: 1234,
     });
@@ -438,7 +440,9 @@ describe('conferirAntesDeImprimirLi — the soft gate (A2)', () => {
     expect(s.confirmRisk).not.toHaveBeenCalled();
     expect(s.confirmarCiente.mock.calls[0]).toEqual([
       {
-        titulo: 'Pagamento não confirmado na Loja Integrada',
+        // The title names the pedido: on /pedidos the question queues behind
+        // other pedidos' and opens seconds after the click.
+        titulo: 'Pedido 165 — Pagamento não confirmado na Loja Integrada',
         mensagem:
           'A Loja Integrada mostra este pedido como "Pagamento em disputa", não como pago. ' +
           'Imprimir a etiqueta deste pedido pode levar ao despacho de um pedido que não deveria ' +
@@ -480,6 +484,25 @@ describe('conferirAntesDeImprimirLi — the soft gate (A2)', () => {
     expect(s.confirmRisk.mock.calls[0]?.[0]).toContain('a chave de chamadas está desligada');
   });
 
+  it('both questions name their pedido — a queued question is never answered for the wrong order', async () => {
+    const naoPago = cenario(async () => NAO_PAGO);
+    await conferirAntesDeImprimirLi({ ...naoPago.args, pedido: { ...PEDIDO_LI, numero: 165 } });
+    expect(naoPago.confirmarCiente.mock.calls[0]?.[0].titulo).toBe(
+      'Pedido 165 — Pagamento não confirmado na Loja Integrada',
+    );
+
+    const desligado = cenario(() =>
+      Promise.reject(new LojaIntegradaClientHttpError('x', 503, CODIGO_ERRO_LI.chamadasDesligadas)),
+    );
+    await conferirAntesDeImprimirLi(desligado.args);
+    expect(desligado.confirmRisk.mock.calls[0]?.[0]).toBe(
+      `Pedido 165: ${mensagemConfirmacaoConferenciaLi({
+        classe: 'configuracao',
+        causa: 'a chave de chamadas está desligada',
+      })}`,
+    );
+  });
+
   it('no client is the configuration confirm, with no call', async () => {
     const s = cenario(async () => PAGO);
 
@@ -508,8 +531,13 @@ describe('conferirAntesDeImprimirLi — the soft gate (A2)', () => {
   });
 
   describe('a `pago` carried along the checkout chain', () => {
-    const carregada = (veredito: RespostaConferenciaPagamentoLi, recebidoEm: number) => ({
+    const carregada = (
+      veredito: RespostaConferenciaPagamentoLi,
+      recebidoEm: number,
+      pedidoId: string = ID_LI,
+    ) => ({
       tipo: 'resposta' as const,
+      pedidoId,
       resposta: veredito,
       recebidoEm,
     });
@@ -552,6 +580,21 @@ describe('conferirAntesDeImprimirLi — the soft gate (A2)', () => {
       });
 
       expect(s.conferirPagamento).toHaveBeenCalledTimes(1);
+    });
+
+    it('⚠️ NEAR-MISS: a `pago` carried for ANOTHER pedido is never reused — one call, for THIS one', async () => {
+      const s = cenario(async () => NAO_PAGO);
+      const outroPedido = sha256(`lojaIntegrada${CONTA}-166`);
+
+      await conferirAntesDeImprimirLi({
+        ...s.args,
+        conferenciaLi: carregada(PAGO, 0, outroPedido),
+        agora: () => 10_000,
+      });
+
+      expect(s.conferirPagamento).toHaveBeenCalledTimes(1);
+      expect(s.conferirPagamento).toHaveBeenCalledWith(ID_LI, undefined);
+      expect(s.confirmarCiente).toHaveBeenCalledTimes(1);
     });
 
     it('⚠️ NEAR-MISS: only a `pago` is carried — a fresh `nao-pago` or a not-applicable answer is asked again', async () => {

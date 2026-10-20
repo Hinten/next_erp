@@ -99,7 +99,11 @@ test.describe
     const conferencia = await stubConferenciaPagamentoLi(page, PAGAMENTO_EM_DISPUTA);
     await clicarEtiquetaPdf(page);
 
-    const aviso = page.getByRole('dialog', { name: TITULO_DO_AVISO });
+    // The warning names THIS pedido: on /pedidos it can queue behind another's.
+    const aviso = page.getByRole('dialog', {
+      name: `Pedido ${fixtures!.numero} — ${TITULO_DO_AVISO}`,
+      exact: true,
+    });
     await expect(aviso).toBeVisible({ timeout: 30_000 });
     await expect(aviso.getByText(/Pagamento em disputa/)).toBeVisible();
     const continuar = aviso.getByRole('button', { name: 'Continuar', exact: true });

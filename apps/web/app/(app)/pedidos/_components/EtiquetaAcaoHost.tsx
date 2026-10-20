@@ -24,7 +24,7 @@
  *     which action is running, and `executar` refuses a second run for a
  *     pedido that already has one;
  *   - the ROUTED-FRETE map keyed by `pedidoId` — `registrarRota(pedidoId,
- *     frete)` keeps the freight a routing call just wrote, and
+ *     registro)` keeps the route a routing call just wrote, and
  *     `rotaConhecida(pedidoId)` hands it to the row's next mount.
  * All three questions go through ONE queue (below).
  *
@@ -45,7 +45,16 @@
  * keep showing the pre-routing freight for the rest of the page's life. The
  * row's HoverCard remounts on every hover, so a route the row itself
  * remembered would be forgotten on the next mouse move. The host outlives
- * both; the row reads `rotaConhecida(pedidoId) ?? pedido.freteInicial`.
+ * both; the row reads its freight through {@link freteComRotaConhecida}.
+ *
+ * ⚠️ A registration stands in for the list ONLY while the list copy is stale —
+ * while it still holds the ref the route superseded (`refAnterior`). On the
+ * live transport the list catches up, and later writes keep arriving (a label
+ * bought right after routing writes `printLabelId`): a registration that won
+ * for the rest of the page's life would hide them, and the row would offer
+ * "Comprar etiqueta" again over a bought label. So it keeps the ROUTING FIELDS
+ * only, laid over the LIVE list copy, and the list wins whole the moment its
+ * ref moves on.
  *
  * Rejected (R-f): Mantine `keepMounted` on the HoverCard — it would mount every
  * row's `EtiquetaRowAction`, each with its own `int_frete` query. Rejected
@@ -61,7 +70,7 @@ import {
   useState,
 } from 'react';
 import type { ReactNode } from 'react';
-import type { FreteDoPedido } from '@delfrance/schemas';
+import type { FreteDoPedido, RespostaRotaEtiquetaLi } from '@delfrance/schemas';
 
 import { useEscolherEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
 import {
@@ -83,6 +92,46 @@ export type EtiquetaAcaoChave =
   | 'generico-pdf'
   /** The Loja Integrada routing call ("Definir transportadora" / "Escolher transportadora…"). */
   | 'rotear';
+
+/** The routing fields a Loja Integrada routing call answered (`resposta.rota`). */
+export type RotaDoPedidoLi = Extract<RespostaRotaEtiquetaLi, { tipo: 'roteado' }>['rota'];
+
+/** What a routing call registered for one pedido. */
+export interface RotaRegistrada {
+  /**
+   * The `integracaoFreteOuterRef` the row's freight held when it asked — the
+   * value the route superseded. The registration stands in for the list ONLY
+   * while the list copy still holds exactly this value.
+   */
+  readonly refAnterior: FreteDoPedido['integracaoFreteOuterRef'];
+  /** The routing fields the route answered, as written or as found. */
+  readonly rota: RotaDoPedidoLi;
+}
+
+/**
+ * The freight a row shows: the LIST's copy, with a registered route's routing
+ * fields laid over it while that copy is still the one the route superseded
+ * (its `integracaoFreteOuterRef` exactly the registration's `refAnterior`).
+ * Once the list's ref moves on — it caught up with the route, or anything
+ * re-pointed the pedido since — the list copy wins WHOLE, so no later write is
+ * ever hidden. An estado the route did not know (`null` on the wire) keeps the
+ * list's.
+ */
+export function freteComRotaConhecida(
+  freteDaLista: FreteDoPedido | null,
+  registro: RotaRegistrada | null,
+): FreteDoPedido | null {
+  if (registro === null || freteDaLista === null) return freteDaLista;
+  if (freteDaLista.integracaoFreteOuterRef !== registro.refAnterior) return freteDaLista;
+  const { rota } = registro;
+  return {
+    ...freteDaLista,
+    integracaoFreteOuterRef: rota.integracaoFreteOuterRef,
+    externalOptionId: rota.externalOptionId,
+    integracaoTargetOuterRef: rota.integracaoTargetOuterRef,
+    estado: rota.estado ?? freteDaLista.estado,
+  };
+}
 
 export interface EtiquetaAcaoContextValue {
   /**
@@ -108,16 +157,18 @@ export interface EtiquetaAcaoContextValue {
    */
   executar(pedidoId: string, chave: EtiquetaAcaoChave, fn: () => Promise<void>): Promise<void>;
   /**
-   * The freight a routing call registered for this pedido, or `null` when none
-   * did — the row reads `rotaConhecida(pedidoId) ?? pedido.freteInicial`.
+   * The route a routing call registered for this pedido, or `null` when none
+   * did — the row reads `freteComRotaConhecida(pedido.freteInicial,
+   * rotaConhecida(pedidoId))`.
    */
-  rotaConhecida(pedidoId: string): FreteDoPedido | null;
+  rotaConhecida(pedidoId: string): RotaRegistrada | null;
   /**
-   * Keep the freight a routing call just wrote (the pedido's `freteInicial`
-   * with the route's answer spread over it) for the rest of the page's life.
-   * The LATEST registration for a pedido wins.
+   * Keep the route a routing call just wrote — the ref it superseded and the
+   * routing fields it answered — for the rest of the page's life. The LATEST
+   * registration for a pedido wins; it only ever stands in for a STALE list
+   * copy ({@link freteComRotaConhecida}).
    */
-  registrarRota(pedidoId: string, frete: FreteDoPedido): void;
+  registrarRota(pedidoId: string, registro: RotaRegistrada): void;
 }
 
 export const EtiquetaAcaoContext = createContext<EtiquetaAcaoContextValue | null>(null);
@@ -144,9 +195,9 @@ export function useEtiquetaAcaoValor(): { valor: EtiquetaAcaoContextValue; eleme
   // cannot both pass); the state is the RENDER copy.
   const emVooRef = useRef(new Map<string, EtiquetaAcaoChave>());
   const [emVoo, setEmVoo] = useState<ReadonlyMap<string, EtiquetaAcaoChave>>(() => new Map());
-  // The routed freight per pedido (see the module doc). State, so a row that
+  // The registered route per pedido (see the module doc). State, so a row that
   // is still mounted repaints the moment its route is registered.
-  const [rotas, setRotas] = useState<ReadonlyMap<string, FreteDoPedido>>(() => new Map());
+  const [rotas, setRotas] = useState<ReadonlyMap<string, RotaRegistrada>>(() => new Map());
 
   // The question FIFO (see the module doc): the tail of the chain, which never
   // rejects, so one failed question cannot wedge every later one.
@@ -206,8 +257,8 @@ export function useEtiquetaAcaoValor(): { valor: EtiquetaAcaoContextValue; eleme
       enfileirar<RespostaDeTransportadora>(() => abrirEscolherTransportadora(pergunta), null),
     [enfileirar, abrirEscolherTransportadora],
   );
-  const registrarRota = useCallback((pedidoId: string, frete: FreteDoPedido) => {
-    setRotas((atual) => new Map(atual).set(pedidoId, frete));
+  const registrarRota = useCallback((pedidoId: string, registro: RotaRegistrada) => {
+    setRotas((atual) => new Map(atual).set(pedidoId, registro));
   }, []);
 
   const executar = useCallback(

@@ -76,7 +76,7 @@ vi.mock('@delfrance/schemas', async () => {
   };
 });
 
-import { EtiquetaAcaoHost, useEtiquetaAcao } from './EtiquetaAcaoHost';
+import { EtiquetaAcaoHost, useEtiquetaAcao, type RotaRegistrada } from './EtiquetaAcaoHost';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 
 const SHOPEE_CLIENT = { __shopee: true };
@@ -135,17 +135,16 @@ function PaginaComHost({ pedido, pedidoId = 'p1' }: { pedido: Pedido; pedidoId?:
  * Stands in for the routing click (15-b): registers a routed freight with the
  * host, the way the `'rotear'` branch will after the route answers.
  */
-const rotaParaRegistrar = { frete: null as unknown };
+const rotaParaRegistrar = { registro: null as RotaRegistrada | null };
 function RegistrarRota({ pedidoId }: { pedidoId: string }) {
   const host = useEtiquetaAcao();
   return (
     <button
-      onClick={() =>
-        host?.registrarRota(
-          pedidoId,
-          rotaParaRegistrar.frete as NonNullable<Pedido['freteInicial']>,
-        )
-      }
+      onClick={() => {
+        if (rotaParaRegistrar.registro !== null) {
+          host?.registrarRota(pedidoId, rotaParaRegistrar.registro);
+        }
+      }}
     >
       registrar rota
     </button>
@@ -169,7 +168,7 @@ beforeEach(() => {
   clientes.ml = null;
   clientes.shopee = SHOPEE_CLIENT;
   clientes.li = null;
-  rotaParaRegistrar.frete = null;
+  rotaParaRegistrar.registro = null;
   emitirMock.mockResolvedValue({ status: 'printed' } satisfies EtiquetaOutcome);
 });
 
@@ -478,11 +477,50 @@ describe('EtiquetaRowAction — a rota que o host guarda (B14)', () => {
     docsPorId({
       'li-doc': { tipo: INTEGRACAO_FRETE.lojaIntegrada },
       'if-motoboy': { tipo: INTEGRACAO_FRETE.motoboy },
+      'if-me': { tipo: INTEGRACAO_FRETE.melhorEnvios },
     });
-    rotaParaRegistrar.frete = {
-      ...PEDIDO_NO_DOC_LI.freteInicial,
-      integracaoFreteOuterRef: 'documents/int_frete/if-motoboy',
+    rotaParaRegistrar.registro = {
+      refAnterior: 'documents/int_frete/li-doc',
+      rota: {
+        integracaoFreteOuterRef: 'documents/int_frete/if-motoboy',
+        externalOptionId: null,
+        integracaoTargetOuterRef: null,
+        estado: null,
+      },
     };
+  });
+
+  it('⚠️ NEAR-MISS: once the LIST catches up, its newer copy wins — a label bought after routing shows the reprint, never the buy again', async () => {
+    rotaParaRegistrar.registro = {
+      refAnterior: 'documents/int_frete/li-doc',
+      rota: {
+        integracaoFreteOuterRef: 'documents/int_frete/if-me',
+        externalOptionId: '1',
+        integracaoTargetOuterRef: null,
+        estado: null,
+      },
+    };
+    const view = renderComHost(PEDIDO_NO_DOC_LI);
+    expect(await screen.findByText(/ainda não suportada/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('registrar rota'));
+    expect(await screen.findByRole('button', { name: 'Comprar etiqueta' })).toBeTruthy();
+
+    // The live list delivers the pedido as the buy left it: routed, with a label.
+    const comprado = pedidoCom({
+      integracaoFreteOuterRef: 'documents/int_frete/if-me',
+      externalOptionId: '1',
+      printLabelId: 'lbl-1',
+      estado: ESTADO_FRETE.iniciado,
+    });
+    view.rerender(
+      <Providers>
+        <PaginaComHost pedido={comprado} />
+      </Providers>,
+    );
+
+    expect(await screen.findByRole('button', { name: 'Imprimir etiqueta' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Comprar etiqueta' })).toBeNull();
   });
 
   it("⭐ after the HoverCard remounts, the row reads the host's routed freight — its target's action, and the registry gets THAT freight", async () => {
@@ -553,7 +591,9 @@ describe('EtiquetaRowAction — a conferência de pagamento antes de imprimir (A
     renderComHost(PEDIDO_ME_LI, ID_LI);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Imprimir etiqueta' }));
-    expect(await screen.findByText('Pagamento não confirmado na Loja Integrada')).toBeTruthy();
+    expect(
+      await screen.findByText('Pedido 165 — Pagamento não confirmado na Loja Integrada'),
+    ).toBeTruthy();
     const continuar = screen.getByRole<HTMLButtonElement>('button', { name: 'Continuar' });
     expect(continuar.disabled).toBe(true);
     expect(s.imprimir).not.toHaveBeenCalled();
@@ -584,7 +624,7 @@ describe('EtiquetaRowAction — a conferência de pagamento antes de imprimir (A
     fireEvent.click(await screen.findByRole('button', { name: 'Imprimir etiqueta' }));
 
     await waitFor(() => expect(s.imprimir).toHaveBeenCalledTimes(1));
-    expect(screen.queryByText('Pagamento não confirmado na Loja Integrada')).toBeNull();
+    expect(screen.queryByText(/Pagamento não confirmado na Loja Integrada/)).toBeNull();
   });
 
   it('a pedido that is not an imported order (another id) never calls the backend', async () => {

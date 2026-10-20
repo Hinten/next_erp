@@ -133,6 +133,11 @@ export type FalhaConferenciaPagamentoLi =
 export type ConferenciaPagamentoLi =
   | {
       readonly tipo: 'resposta';
+      /**
+       * The pedido the answer is ABOUT — the id the call was made for. A carried
+       * verdict is reused for this pedido only, never for a neighbour's label.
+       */
+      readonly pedidoId: string;
       readonly resposta: RespostaConferenciaPagamentoLi;
       /** `performance.now()` when the answer arrived — the age a carried `pago` is judged by. */
       readonly recebidoEm: number;
@@ -188,7 +193,7 @@ export async function conferirPagamentoLi(
       pedidoId,
       opcoes.sinal === undefined ? undefined : { sinal: opcoes.sinal },
     );
-    return { tipo: 'resposta', resposta, recebidoEm: agora() };
+    return { tipo: 'resposta', pedidoId, resposta, recebidoEm: agora() };
   } catch (err) {
     const falha = falhaDoErro(err);
     if (falha === null) throw err;
@@ -197,17 +202,21 @@ export async function conferirPagamentoLi(
 }
 
 /**
- * Whether a carried verdict stands in for a new call: a LIVE-or-mirror answer
- * whose verdict is `pago` (only a live read can say it), received less than
+ * Whether a carried verdict stands in for a new call for `pedidoId`: an answer
+ * about THAT pedido (its id compared exactly — a verdict carried into another
+ * pedido's input is that other order's, never this one's) whose verdict is
+ * `pago` (only a live read can say it), received less than
  * {@link VALIDADE_CONFERENCIA_LI_MS} ago by `agora` — the same monotonic clock
  * that stamped it. Anything else (a `nao-pago`, an `aplicavel: false`, an
- * answer from the future) is asked again.
+ * answer from the future, another pedido's answer) is asked again.
  */
 export function conferenciaLiReaproveitavel(
   carregada: ConferenciaLiCarregada | null | undefined,
+  pedidoId: string,
   agora: number,
 ): boolean {
   if (carregada == null) return false;
+  if (carregada.pedidoId !== pedidoId) return false;
   const r = carregada.resposta;
   if (!r.aplicavel || r.veredito !== VEREDITO_PAGAMENTO_LI.pago) return false;
   const idade = agora - carregada.recebidoEm;
@@ -508,13 +517,29 @@ const FRASE_DO_ATO: Readonly<Record<AtoImpressaoLi, string>> = {
     'Imprimir a etiqueta deste pedido pode levar ao despacho de um pedido que não deveria sair.',
 };
 
-/** The acknowledged-risk warning of a soft gate (the dialog adds "Estou ciente do risco"). */
+/**
+ * How a soft gate's questions name their pedido: its `numero` — canonical for
+ * every pedido the identity check lets through — else its id. Display only.
+ */
+function rotuloDoPedidoLi(pedidoId: string, numero: unknown): string {
+  if (typeof numero === 'number') return String(numero);
+  return typeof numero === 'string' && numero.trim() !== '' ? numero : pedidoId;
+}
+
+/**
+ * The acknowledged-risk warning of a soft gate (the dialog adds "Estou ciente
+ * do risco"). Its title NAMES the pedido (`pedidoRotulo`): on `/pedidos` every
+ * question goes through the page host's one FIFO and opens seconds after the
+ * click, behind other pedidos' — a bare title let the operator acknowledge the
+ * risk for an order other than the one meant (the host's #1523 Q2-F1 rule).
+ */
 export function avisoCienteConferenciaLi(
   linha: string,
   ato: AtoImpressaoLi,
+  pedidoRotulo: string,
 ): { readonly titulo: string; readonly mensagem: string } {
   return {
-    titulo: 'Pagamento não confirmado na Loja Integrada',
+    titulo: `Pedido ${pedidoRotulo} — Pagamento não confirmado na Loja Integrada`,
     mensagem:
       `${linha} ${FRASE_DO_ATO[ato]} ` +
       'Você pode continuar, mas o pedido pode não estar liberado para despacho.',
@@ -537,6 +562,9 @@ export function avisoCienteConferenciaLi(
  *       ticks "Estou ciente do risco"; Cancelar ⇒ `cancelado`;
  *     - `confirmar` ⇒ `ui.confirmRisk` with the A1 copy, never the checkbox.
  *
+ * Both questions name the pedido (its `numero`): the checkbox in its title, the
+ * A1 confirm — whose title is the caller's — at the head of its message.
+ *
  * Never on a Melhor Envio BUY (the buy modal's hard gate owns it), on Rastrear,
  * or on a click that prints nothing.
  */
@@ -551,19 +579,24 @@ export async function conferirAntesDeImprimirLi(args: {
 }): Promise<'prosseguir' | 'cancelado'> {
   const agora = args.agora ?? (() => performance.now());
   if (!(await ehPedidoImportadoDaLojaIntegrada(args.pedidoId, args.pedido))) return 'prosseguir';
-  if (conferenciaLiReaproveitavel(args.conferenciaLi, agora())) return 'prosseguir';
+  if (conferenciaLiReaproveitavel(args.conferenciaLi, args.pedidoId, agora())) return 'prosseguir';
 
   const desfecho = await conferirPagamentoLi(args.client, args.pedidoId, { agora });
   const decisao = decidirConferenciaImpressaoLi(desfecho);
+  const rotulo = rotuloDoPedidoLi(args.pedidoId, args.pedido.numero);
   switch (decisao.acao) {
     case 'imprimir':
       return 'prosseguir';
     case 'ciente':
-      return (await args.ui.confirmarCiente(avisoCienteConferenciaLi(decisao.linha, args.ato)))
+      return (await args.ui.confirmarCiente(
+        avisoCienteConferenciaLi(decisao.linha, args.ato, rotulo),
+      ))
         ? 'prosseguir'
         : 'cancelado';
     case 'confirmar':
-      return (await args.ui.confirmRisk(mensagemConfirmacaoConferenciaLi(decisao)))
+      return (await args.ui.confirmRisk(
+        `Pedido ${rotulo}: ${mensagemConfirmacaoConferenciaLi(decisao)}`,
+      ))
         ? 'prosseguir'
         : 'cancelado';
   }

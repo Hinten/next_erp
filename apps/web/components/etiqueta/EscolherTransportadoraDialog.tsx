@@ -8,9 +8,10 @@
  * render ONCE per view. The answer is an `int_frete` doc id, or `null` when the
  * operator cancels.
  *
- * Only an ACTIVE target of a supported tipo is offered (`AlvoFreteLi.ativo` and
- * `.suportado`, from the shared targets query): the route refuses anything
- * else, so offering it would only buy a refusal. The conta mapa's own target is
+ * Only a target the label route ACCEPTS is offered (`AlvoFreteLi.roteavel`,
+ * from the shared targets query, decided by the route's own evaluator): the
+ * route refuses anything else, so offering it would only buy a refusal, and
+ * hiding one it accepts would leave no way to pick it. The conta mapa's own target is
  * preselected when it is among them; otherwise nothing is — the dialog never
  * guesses.
  *
@@ -42,9 +43,14 @@ export interface UseEscolherTransportadoraResult {
   element: ReactNode;
 }
 
-/** The targets the question may offer: active, and of a tipo the route routes to. */
+/**
+ * The targets the question may offer: exactly those the label route accepts
+ * (`AlvoFreteLi.roteavel`, the route's own evaluator) — never step 20's
+ * `ativo` display flag, which reads a migrated doc with no stored `ativo` as
+ * inactive while the route reads it as active.
+ */
 export function alvosOferecidos(alvos: readonly AlvoFreteLi[]): readonly AlvoFreteLi[] {
-  return alvos.filter((a) => a.ativo && a.suportado);
+  return alvos.filter((a) => a.roteavel);
 }
 
 function tituloDaPergunta(p: PerguntaDeTransportadora): string {

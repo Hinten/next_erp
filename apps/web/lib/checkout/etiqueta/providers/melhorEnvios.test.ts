@@ -299,7 +299,12 @@ describe('melhorEnviosProvider — the Loja Integrada soft gate (A2)', () => {
 
   it("the BUY branch forwards the chain's carried verdict to the modal", async () => {
     const s = cenario({ externalOptionId: '1' }, 'pago', false);
-    const conferenciaLi = { tipo: 'resposta' as const, resposta: resposta('pago'), recebidoEm: 7 };
+    const conferenciaLi = {
+      tipo: 'resposta' as const,
+      pedidoId: ID_LI,
+      resposta: resposta('pago'),
+      recebidoEm: 7,
+    };
 
     await melhorEnviosProvider.emitirOuImprimir({ ...s.input, conferenciaLi });
 

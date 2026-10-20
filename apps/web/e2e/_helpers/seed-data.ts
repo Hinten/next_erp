@@ -2844,7 +2844,8 @@ export function idPedidoLojaIntegradaE2e(contaId: string, numero: string): strin
  * ({@link idPedidoLojaIntegradaE2e}), with the `numero` and the conta ref the id
  * is derived from: that identity is what makes the row run the paid re-check at
  * all. Its `numero` cannot carry the prefix ({@link numeroPedidoLiE2e}), so its
- * teardown deletes it BY ID.
+ * teardown deletes it BY ID, and the prefix rides `observacoesInternas` for the
+ * stale sweep ({@link corpoPedidoConferenciaLiE2e}).
  *
  * The conta's own Loja Integrada freight doc is written FIRST, at the server
  * core's deterministic id with the canonical back-ref (the
@@ -2906,50 +2907,82 @@ export async function seedPedidoEtiquetaConferenciaLiFixtures(prefix: string): P
   await db()
     .collection('pedidos')
     .doc(pedidoId)
-    .set({
-      ehSaida: true,
-      estado: ESTADO_PEDIDO.pago,
-      numero,
-      itens: {},
-      itensIds: [],
-      descontoTotal: 0,
-      timestamp: millisToMicros(Date.now()),
-      clientePedidoOuterRef: `documents/clientes/${frete.clienteId}`,
-      integracaoPedidoOuterRef: `documents/integracao/${contaId}`,
-      freteInicial: {
-        externalId: null,
-        externalOptionId: null,
-        externalOptionIntegracao: null,
-        // The shipping method the store sent — the conta mapa's key.
-        externalOptionData: { id: 1001, code: 'A' },
-        estado: ESTADO_FRETE.iniciado,
-        // Routed at import: the Motoboy target, not the conta's freight doc.
-        integracaoFreteOuterRef: `documents/int_frete/${frete.motoboyId}`,
-        modalidade: MODALIDADE_FRETE.cif,
-        codRastreio: null,
-        valorCobrado: 15,
-        custoCalculado: null,
-        custoFinal: null,
-        ehReverso: false,
-        prazoExtra: 0,
-        prazoDespacho: null,
-        dataEntrega: null,
-        dataPrevisaoEntrega: null,
-        valor_assegurado: null,
-        transportadora: null,
-        veiculo: null,
-        reboques: null,
-        vagao: null,
-        balsa: null,
-        volumes: null,
-        integracao_path: null,
-        clienteRecebedorOuterReference: null,
-        enderecoFreteOuterReference: `documents/${frete.enderecoPath}`,
-        ultimaModificacao: null,
-      },
-    });
+    .set(
+      corpoPedidoConferenciaLiE2e({
+        prefix,
+        numero,
+        contaId,
+        clienteId: frete.clienteId,
+        motoboyId: frete.motoboyId,
+        enderecoPath: frete.enderecoPath,
+      }),
+    );
 
   return { frete, contaId, pedidoId, numero };
+}
+
+/**
+ * The body of {@link seedPedidoEtiquetaConferenciaLiFixtures}'s pedido: `pago`,
+ * imported from `contaId` as order `numero`, routed at import to the Motoboy
+ * target.
+ *
+ * ⚠️ Its id (a sha256) and its `numero` (a bare integer) carry no prefix, so
+ * the stale sweep could reach it by neither — and `cancel-in-progress` kills a
+ * run before its afterAll, the dominant orphan source. So the prefix rides
+ * `observacoesInternas`, a field the sweep queries for pedidos and one neither
+ * the identity (conta ref + numero) nor the label reads.
+ */
+export function corpoPedidoConferenciaLiE2e(p: {
+  readonly prefix: string;
+  readonly numero: string;
+  readonly contaId: string;
+  readonly clienteId: string;
+  readonly motoboyId: string;
+  readonly enderecoPath: string;
+}): Record<string, unknown> {
+  return {
+    ehSaida: true,
+    estado: ESTADO_PEDIDO.pago,
+    numero: p.numero,
+    observacoesInternas: `${p.prefix} conferência de pagamento Loja Integrada`,
+    itens: {},
+    itensIds: [],
+    descontoTotal: 0,
+    timestamp: millisToMicros(Date.now()),
+    clientePedidoOuterRef: `documents/clientes/${p.clienteId}`,
+    integracaoPedidoOuterRef: `documents/integracao/${p.contaId}`,
+    freteInicial: {
+      externalId: null,
+      externalOptionId: null,
+      externalOptionIntegracao: null,
+      // The shipping method the store sent — the conta mapa's key.
+      externalOptionData: { id: 1001, code: 'A' },
+      estado: ESTADO_FRETE.iniciado,
+      // Routed at import: the Motoboy target, not the conta's freight doc.
+      integracaoFreteOuterRef: `documents/int_frete/${p.motoboyId}`,
+      modalidade: MODALIDADE_FRETE.cif,
+      codRastreio: null,
+      valorCobrado: 15,
+      custoCalculado: null,
+      custoFinal: null,
+      ehReverso: false,
+      prazoExtra: 0,
+      prazoDespacho: null,
+      dataEntrega: null,
+      dataPrevisaoEntrega: null,
+      valor_assegurado: null,
+      transportadora: null,
+      veiculo: null,
+      reboques: null,
+      vagao: null,
+      balsa: null,
+      volumes: null,
+      integracao_path: null,
+      clienteRecebedorOuterReference: null,
+      enderecoFreteOuterReference: `documents/${p.enderecoPath}`,
+      ultimaModificacao: null,
+    },
+  };
 }
 
 /**

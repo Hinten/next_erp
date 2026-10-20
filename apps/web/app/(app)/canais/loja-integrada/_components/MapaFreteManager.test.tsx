@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { PERM } from '@delfrance/auth';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { ServicoMelhorEnvioSelectProps } from './ServicoMelhorEnvioSelect';
-import type { AlvoFreteLi } from '@/lib/loja-integrada/useAlvosMapaFreteLi';
+import { alvoFreteLiDoDoc, type AlvoFreteLi } from '@/lib/loja-integrada/useAlvosMapaFreteLi';
 import type { FreteDaContaLi } from './useFreteDaContaLi';
 
 /**
@@ -57,13 +57,9 @@ const { MapaFreteManager } = await import('./MapaFreteManager');
 
 type Doc = Record<string, unknown>;
 
-const alvo = (id: string, nome: string, tipo: string, ativo = true): AlvoFreteLi => ({
-  id,
-  nome,
-  tipo,
-  ativo,
-  suportado: ['melhorEnvios', 'motoboy', 'retiradaNaLoja', 'fob', 'outros'].includes(tipo),
-});
+// The shared query's own projection, so a test target carries every flag it would.
+const alvo = (id: string, nome: string, tipo: string, ativo = true): AlvoFreteLi =>
+  alvoFreteLiDoDoc(id, { nome, tipo, ativo });
 const MOTO = alvo('moto-1', 'Moto Centro', 'motoboy');
 const ME = alvo('me-conta', 'Conta ME', 'melhorEnvios');
 

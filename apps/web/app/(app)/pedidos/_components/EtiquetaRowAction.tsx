@@ -19,9 +19,9 @@
  * (`EtiquetaAcaoHost`), not here: this component is unmounted by the HoverCard
  * on the first mouse move, and a flow it owned would die with it. So does the
  * freight a Loja Integrada routing call wrote (master plan step 15): the row
- * reads `host.rotaConhecida(pedidoId) ?? pedido.freteInicial`, so a routed
- * pedido shows its target's action on the next hover whatever the list
- * transport delivered.
+ * reads `freteComRotaConhecida(pedido.freteInicial, host.rotaConhecida(pedidoId))`,
+ * so a routed pedido shows its target's action on the next hover whatever the
+ * list transport delivered — and the list's own copy again once it catches up.
  *
  * The Loja Integrada paid re-check's SOFT gate runs before every print this row
  * makes: inside the registry for the generic label, and here, before the Melhor
@@ -62,7 +62,12 @@ import { useShopeeClient } from '@/lib/shopee/client';
 import { etiquetaMismatch, etiquetaRowState } from './etiquetaActions';
 import { EtiquetaComprarModal } from './EtiquetaComprarModal';
 import { MercadoLivreRastrearAction } from './MercadoLivreRastrearAction';
-import { useEtiquetaAcao, useEtiquetaAcaoValor, type EtiquetaAcaoChave } from './EtiquetaAcaoHost';
+import {
+  freteComRotaConhecida,
+  useEtiquetaAcao,
+  useEtiquetaAcaoValor,
+  type EtiquetaAcaoChave,
+} from './EtiquetaAcaoHost';
 
 export function EtiquetaRowAction({
   pedido: pedidoDaLista,
@@ -84,15 +89,18 @@ export function EtiquetaRowAction({
   const acao = host ?? local.valor;
   const dialogosLocais = host === null ? local.elementos : null;
 
-  // The freight a routing call registered wins over the list's copy, which the
-  // route's write may never reach (see `EtiquetaAcaoHost`). Every action below
-  // reads THIS pedido, so the buy modal and the providers see the same freight.
+  // A route a routing call registered stands in for the list's copy while that
+  // copy is still stale — the route's write may never reach it (see
+  // `EtiquetaAcaoHost`) — and the list wins again the moment it catches up.
+  // Every action below reads THIS pedido, so the buy modal and the providers
+  // see the same freight.
   const rotaConhecida = acao.rotaConhecida(pedidoId);
-  const pedido = useMemo(
-    () =>
-      rotaConhecida === null ? pedidoDaLista : { ...pedidoDaLista, freteInicial: rotaConhecida },
-    [pedidoDaLista, rotaConhecida],
-  );
+  const pedido = useMemo(() => {
+    const frete = freteComRotaConhecida(pedidoDaLista.freteInicial, rotaConhecida);
+    return frete === pedidoDaLista.freteInicial
+      ? pedidoDaLista
+      : { ...pedidoDaLista, freteInicial: frete };
+  }, [pedidoDaLista, rotaConhecida]);
   const frete = pedido.freteInicial;
   const blocoTipo = frete?.externalOptionIntegracao ?? null;
 

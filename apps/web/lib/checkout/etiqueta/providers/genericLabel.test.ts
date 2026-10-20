@@ -348,6 +348,7 @@ describe('genericLabelProvider — the Loja Integrada soft gate (A2)', () => {
       ...s.input,
       conferenciaLi: {
         tipo: 'resposta' as const,
+        pedidoId: ID_LI,
         resposta: resposta('pago'),
         recebidoEm: performance.now(),
       },

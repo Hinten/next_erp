@@ -2,7 +2,6 @@ import { getDoc, runTransaction, type Firestore } from 'firebase/firestore';
 import {
   ESTADO_PEDIDO,
   ESTADO_FRETE,
-  INTEGRACAO_FRETE,
   avancaParaRetirada,
   bloqueioDespachoAtivo,
   checkCompleteness,
@@ -378,9 +377,13 @@ export async function salvarCheckoutTransacao(
   // Phase 2 — the pickup hand-off, and ONLY because phase 1 committed. The rule
   // is the shared `avancaParaRetirada` (`@delfrance/schemas`), the one the Loja
   // Integrada routing route applies when it re-points a checked-out pedido at a
-  // pickup target — one copy, so the two can never disagree (B9).
+  // pickup target — one copy, so the two can never disagree (B9). BOTH halves
+  // go through it: whether to open the transaction at all (from the estado
+  // phase 1 just committed) and the re-check inside it (from `tx.get`). A local
+  // `tipoAlvo === retiradaNaLoja` here would keep today's predicate after the
+  // shared rule changes, and phase 2 would silently stop running.
   const tipoAlvo = await tipoDoIntFreteDoPedido(db, pedidoId);
-  const retirada = tipoAlvo === INTEGRACAO_FRETE.retiradaNaLoja;
+  const retirada = avancaParaRetirada(ESTADO_CHECK_FINALIZADO, tipoAlvo);
   if (retirada) {
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(pedidoRef);
@@ -402,7 +405,9 @@ export async function salvarCheckoutTransacao(
 
 /**
  * The RAW `tipo` of the pedido's freight integration (drives the phase-2
- * estado), or `null` when the pedido, its ref or the doc is missing.
+ * estado), or `null` when the pedido, its ref or the doc is missing. (It was
+ * `isRetiradaNaLoja`, a boolean, until the decision moved to the shared rule;
+ * `saveCheckout.race.test.ts` still names it by that name.)
  */
 async function tipoDoIntFreteDoPedido(db: Firestore, pedidoId: string): Promise<unknown> {
   const snap = await getDoc(pedidoCollection.docRef(db, {}, pedidoId));

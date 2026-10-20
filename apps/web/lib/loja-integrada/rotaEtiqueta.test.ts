@@ -6,6 +6,7 @@ import {
   ESTADO_PEDIDO,
   INTEGRACAO_FRETE,
   MOTIVO_ROTA_ETIQUETA_LI,
+  planejarRotaEtiquetaLi,
   type RespostaRotaEtiquetaLi,
 } from '@delfrance/schemas';
 
@@ -391,6 +392,41 @@ describe('preverRotaEtiquetaLiCom — the route’s questions, asked read-only',
         String(ref),
       ).toBe(true);
       expect(lidos, String(ref)).not.toContain('x');
+    }
+  });
+
+  it('⭐ the freight-ref reader agrees, form for form, with the shared planner’s own `int_frete` ref reader', async () => {
+    // Two copies of one rule (#1369): `idDoIntFrete` here, and the private
+    // reader `planejarRotaEtiquetaLi` applies to a stored override in
+    // `@delfrance/schemas`. Until one exported reader serves both, this table
+    // is what keeps them from drifting: every form either names the SAME doc
+    // in both, or none in both.
+    const refs: readonly unknown[] = [
+      `documents/int_frete/${DOC_LI_ID}`,
+      `int_frete/${DOC_LI_ID}`,
+      `/documents/int_frete/${DOC_LI_ID}`,
+      DOC_LI_ID,
+      'documents/clientes/x',
+      `documents/int_frete/${DOC_LI_ID}/sub/x`,
+      'documents/int_frete/',
+      'documents/int_frete/.',
+      'documents/int_frete/..',
+      'documents/int_frete/__x__',
+      ' documents/int_frete/x',
+      '',
+      42,
+      { path: `int_frete/${DOC_LI_ID}` },
+    ];
+    for (const ref of refs) {
+      const plano = planejarRotaEtiquetaLi({ integracaoTargetOuterRef: ref }, null, null);
+      const doPlanejador = plano.tipo === 'ler' ? plano.alvoId : null;
+
+      lidos = [];
+      await preverRotaEtiquetaLiCom(
+        ler(),
+        pedidoNoDocLi({ id: 141910, code: 'MOTO' }, { integracaoFreteOuterRef: ref }),
+      );
+      expect(lidos[0] ?? null, JSON.stringify(ref)).toBe(doPlanejador);
     }
   });
 
