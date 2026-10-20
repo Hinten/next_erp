@@ -3,7 +3,7 @@
  * `lojaIntegradaTokenExpirando`, `lojaIntegradaReconexaoPendente` and (step 3)
  * `lojaIntegradaImportacaoParada`, raised and resolved by the order poller
  * (`pedidos/pollPedidos.ts`) — the channel's tipo list the sweep's orphan pass
- * reads (the four order-import tipos of step 5 included; their producer is
+ * reads (the order-import tipos of step 5 included; their producer is
  * `pedidos/avisosPedidoLi.ts`), and the µs boundary of this app.
  *
  * ## ⚠️ The ONE module in `apps/loja-integrada` that speaks MICROSECONDS
@@ -206,22 +206,26 @@ export function resolverExpiracaoToken(
 }
 
 /**
- * The four order-import tipos (step 5, producer `pedidos/avisosPedidoLi.ts`):
- * MANY rows per conta — one per pedido, or one per shipping-method key — so a
- * row belongs to a conta by its key PREFIX ({@link prefixoDaContaNoAvisoLi}),
- * never by one chave per conta.
+ * The order-import tipos (step 5, producer `pedidos/avisosPedidoLi.ts`): MANY
+ * rows per conta — one per pedido, or one per shipping-method key — so a row
+ * belongs to a conta by its key PREFIX ({@link prefixoDaContaNoAvisoLi}), never
+ * by one chave per conta. The paid-without-address tipo is raised by the
+ * notification pipeline's exhaustion signal rather than by an import, but it
+ * is keyed per pedido like the rest, so it is one of them.
  */
 export const TIPOS_AVISO_PEDIDO_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
   TIPO_AVISO.lojaIntegradaSituacaoDesconhecida,
   TIPO_AVISO.lojaIntegradaPedidoContestado,
   TIPO_AVISO.lojaIntegradaPedidoHub,
   TIPO_AVISO.lojaIntegradaFreteNaoSuportado,
+  TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+  TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
 ]);
 
 /**
- * The seven tipos of this channel — what the sweep's orphan pass filters on.
+ * Every tipo of this channel — what the sweep's orphan pass filters on.
  * `lojaIntegradaImportacaoParada` (step 3) is listed beside the two step-2 tipos
- * this module raises, and the four order-import tipos (step 5) beside them, so a
+ * this module raises, and the order-import tipos (step 5) beside them, so a
  * gone conta's rows of every tipo are closed too.
  */
 export const TIPOS_AVISO_LI: ReadonlySet<string> = new Set([
@@ -282,7 +286,7 @@ function contaDaChaveComRelogio(
 }
 
 /**
- * Close an open row of any of the seven tipos BY ITS DOCUMENT ID as
+ * Close an open row of any tipo of this channel BY ITS DOCUMENT ID as
  * `conta-removida` — the sweep's orphan pass, for a conta that no longer exists
  * as a Loja Integrada conta. The id IS the chave the producers computed
  * (`chaveDeAviso` is the document id).

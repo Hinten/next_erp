@@ -47,28 +47,89 @@
  *     step 20's `mapa` registration with `envios[0]`, the routing decision, and
  *     one read of the mapped target by id. ⚠️ An order without an endereço
  *     gets its freight amount but no carrier route, so no label is bought to an
- *     unknown address (`freteMapeamento.ts`, "No endereço, no route"): the
- *     route is decided per attempt from the endereço the pedido will carry
- *     (`mapearPedido`, re-derived from `S′`), so a lost precondition never
- *     leaves a route beside another person's endereço — or beside none. A route
- *     already stored is never cleared; an empty one fills once an import finds
- *     the endereço. The registration and the aviso run either way.
- *  7. **The cliente and the endereço**, only while `S` holds no refs. A buyer
- *     with no strong identity and no match imports without either, plus an
- *     incidente — raised at step 11 only while the pedido the winning attempt
- *     kept still holds no cliente (another writer may have linked one).
+ *     unknown address (`freteMapeamento.ts`, "No endereço, no route") — except
+ *     a PICKUP (an active `retiradaNaLoja` target), which ships to nobody's
+ *     address and keeps its route: the route is decided per attempt from the
+ *     endereço the pedido will carry (`mapearPedido`, re-derived from `S′`), so
+ *     a lost precondition never leaves a route beside another person's
+ *     endereço — or beside none; a pedido whose stored endereços step 7 cannot
+ *     pair with its cliente counts as one without an endereço. A route already
+ *     stored is never cleared; an empty one fills once an import finds the
+ *     endereço. The registration and the freight aviso
+ *     (`lojaIntegradaFreteNaoSuportado`, clocked by this routing read) run
+ *     HERE, on every attempt that routed — one refused at 6b, or one whose
+ *     batch fails later, included — because they are about the conta's
+ *     configuration, not this pedido.
+ *  6b. **A PAID order with no usable delivery address** (owner decision,
+ *     2026-10-19; `pedidoPagoSemEndereco.ts`): a paid codigo, a shipment, a
+ *     delivery block with no CEP the endereço builder reads (exactly when step
+ *     7 would store no endereço), no pickup route, and a pedido `S` that
+ *     stores no endereço ⇒ {@link LiPedidoPagoSemEnderecoError}, BEFORE step
+ *     7. The step-3 classifier answers `null` for it, so the run rethrows and
+ *     the queue's backoff, then the hot sweep, retry it — the platform may fill
+ *     the address. Step 6's registration and freight aviso are the only writes
+ *     a refused attempt leaves. ⚠️ Rule 7: the last clause reads a snapshot, so
+ *     the batch asks it again of EVERY attempt's (`mapearPedido`): an endereço
+ *     another writer cleared since `S` refuses there, with no write. When the
+ *     shared pipeline parks the row at its cap — its signal for a thrown
+ *     failure parked, no counter of ours — `onRetriesExhausted` logs an ERROR
+ *     line and raises the open `lojaIntegradaPedidoPagoSemEndereco` aviso,
+ *     clocked by the order's stamp; step 11 of any later import that gets past
+ *     this check resolves it. An unpaid order, a pickup, an order with no
+ *     shipment, or a pedido that already stores an endereço imports as before.
+ *  7. **The cliente and the endereço**, each only while `S` holds none: the
+ *     cliente step while `S` has no cliente, the endereço step while it has no
+ *     endereço and a readable cliente is known (stored, or just resolved — an
+ *     endereço is always stored UNDER the cliente the pedido will carry, one an
+ *     operator linked by hand included). A buyer with no strong identity and no
+ *     match imports without either, plus an incidente — raised at step 11 only
+ *     while the pedido the winning attempt kept still holds no cliente (another
+ *     writer may have linked one).
+ *     ⚠️ **Never a cliente beside another cliente's endereço**
+ *     ({@link parClienteEnderecoLi}). An endereço path names its owner
+ *     (`clientes/{id}/enderecos/{id}`, read by {@link clienteDoEnderecoLi};
+ *     the cliente by {@link clienteCanonicoLi}). The cliente the pedido carries
+ *     is the stored one — never replaced — else the one step 7 resolved, and
+ *     EVERY endereço the pedido stores must be that cliente's: the fiscal one,
+ *     and the freight block's delivery one, which is where a label ships (the
+ *     web save checks the same two). One that is not — another owner, an owner
+ *     or a stored cliente nobody can read, or no cliente at all — fails safe:
+ *     no cliente is filled over it, nothing stored is replaced or deleted, no
+ *     carrier route is filled (the block keeps its amount, as for a pedido
+ *     without an endereço; a stored route is still never cleared), and the
+ *     `li-endereco-de-outro-cliente` incidente names each endereço and why.
+ *     The pairing is decided against each attempt's snapshot and the winning
+ *     one, never against `S` alone, so another writer's cliente or endereço
+ *     landing between the read and the batch is judged as it stands.
  *  8–10. **The pedido and its pagamentos, in ONE atomic batch**
  *     (`escritaPedido.ts`, whose header is the rule-7 contract): every write
  *     parsed before the batch, each under its own precondition; a lost one
  *     aborts the whole batch, and the retry re-reads `S′` and every pagamento
  *     and re-derives everything (at most 3 attempts). Steps 5–7 are not redone.
- *  11. **The incidentes and the avisos** (`incidentesPedidoLi.ts`,
- *     `avisosPedidoLi.ts`), on `importado` and `sem-mudanca` alike — never on
- *     `obsoleto` — so a retry after a crash between 10 and 11 still writes them.
+ *  11. **The incidentes and the order's avisos** (`incidentesPedidoLi.ts`,
+ *     `avisosPedidoLi.ts`; the freight aviso ran at step 6), on `importado` and
+ *     `sem-mudanca` alike — never on `obsoleto` — so a retry after a crash
+ *     between 10 and 11 still writes them.
+ *     The paid-without-address row resolves here on every such import.
+ *     ⚠️ **A reversal on a pedido whose label was bought** (owner decision A7,
+ *     2026-10-19): when the order's codigo is one of the four reversal rungs
+ *     (`motivoReversaoLi`: cancelled, refunded, charged back, refunded without
+ *     return) and the snapshot the WINNING attempt decided from holds a
+ *     non-empty `freteInicial.printLabelId`, the
+ *     `lojaIntegradaReversaoComEtiqueta` aviso is raised (plus a WARNING with
+ *     ids and the code), telling the operator to cancel the Melhor Envio label
+ *     and the NF-e. The estado is exactly the table's — the reversal, which
+ *     the stock sync restocks, for a cancellation; the "keep both" arm and its
+ *     contestado row for a refund after an applied removal — nothing here
+ *     changes it. Every other import resolves the row, clocked. Residue: a
+ *     label bought between that snapshot and these avisos is not seen by this
+ *     import; the label step's paid re-check (master plan step 15) is the
+ *     guard on that side, refusing a label for an order that is not paid.
  *
- * Steps 6 and 7 may write (the `mapa` row, the cliente, the endereço) before a
- * refusal at step 8; each of those writes is idempotent and safe to repeat, and
- * no pagamento is ever written without its pedido.
+ * Steps 6 and 7 may write (the `mapa` row and the freight aviso, the cliente,
+ * the endereço) before a refusal at step 8 — step 6 alone before the one at
+ * 6b; each of those writes is idempotent (the aviso clocked) and safe to
+ * repeat, and no pagamento is ever written without its pedido.
  *
  * ## Units
  *
@@ -102,11 +163,12 @@ import {
 } from '@delfrance/integrations-loja-integrada';
 import {
   STATUS_PAGAMENTO,
-  parseRef,
+  idFromRef,
   recoverEnderecoFromCep,
   toOuterRef,
   toOuterRefOrNull,
   type ModalidadeFrete,
+  type OuterRef,
 } from '@delfrance/schemas';
 
 import { relogioDoDocumentoUs } from '../avisos/avisos';
@@ -137,6 +199,7 @@ import {
   alvoEstadoLi,
   lerHistoricoLi,
   modoHistoricoLi,
+  motivoReversaoLi,
   type LacunaHistoricoLi,
   type LeituraHistoricoLi,
 } from './estadoPedidoLi';
@@ -147,7 +210,12 @@ import {
   type AlvoLidoLi,
   type RoteamentoFreteLi,
 } from './freteMapeamento';
-import { registrarIncidentesDoPedidoLi, type LinhaSemProdutoLi } from './incidentesPedidoLi';
+import {
+  registrarIncidentesDoPedidoLi,
+  type EnderecoNaoPareadoLi,
+  type LinhaSemProdutoLi,
+  type UsoEnderecoLi,
+} from './incidentesPedidoLi';
 import { mapearItensLi, referenciasDeProdutoLi, type ResolucaoLinhaLi } from './itensMapeamento';
 import {
   CAMPO_DE_CHAVE_LI,
@@ -157,6 +225,7 @@ import {
   type RespostaDoDetalheLi,
 } from './orderIdsLi';
 import { mapearPagamentosLi, type PagamentoMapeadoLi } from './pagamentoMapeamento';
+import { LiPedidoPagoSemEnderecoError, pedidoPagoSemEnderecoLi } from './pedidoPagoSemEndereco';
 import {
   idsDasLinhasLi,
   itensGuardadosLi,
@@ -397,11 +466,11 @@ async function resolverFreteLi(
 }
 
 /** Step 7's result. */
-interface ClienteResolvidoLi {
+export interface ClienteResolvidoLi {
   /** The cliente THIS run resolved (`null`: none ran, or no identity). */
   readonly clienteRef: string | null;
-  /** The endereço THIS run stored, under the cliente it belongs to. */
-  readonly endereco: { readonly clienteRef: string; readonly ref: string } | null;
+  /** The endereço THIS run stored (canonical), under the cliente its path names. */
+  readonly endereco: { readonly ref: string } | null;
   /** The buyer had no strong identity and matched no cliente. */
   readonly semIdentidade: boolean;
 }
@@ -412,12 +481,154 @@ function refArmazenada(valor: unknown): string | null | undefined {
   return typeof valor === 'string' ? valor : undefined;
 }
 
-/** The cliente id a cliente ref names, or `null`. */
-function idDoCliente(ref: string): string | null {
+/** The freight block's stored delivery endereço (the one a label ships to), raw. */
+function entregaArmazenada(armazenado: PedidoArmazenadoLi | null): unknown {
+  const frete = armazenado?.freteInicial;
+  return typeof frete === 'object' && frete !== null && !Array.isArray(frete)
+    ? (frete as Readonly<Record<string, unknown>>).enderecoFreteOuterReference
+    : null;
+}
+
+/**
+ * The pedido holds a BOUGHT label: its freight block's `printLabelId` is
+ * stored and not empty (`vazioArmazenadoLi`) — the Melhor Envio purchase's own
+ * write, which this import never makes nor clears.
+ */
+function etiquetaCompradaLi(armazenado: PedidoArmazenadoLi | null): boolean {
+  const frete = armazenado?.freteInicial;
+  return (
+    typeof frete === 'object' &&
+    frete !== null &&
+    !Array.isArray(frete) &&
+    !vazioArmazenadoLi((frete as Readonly<Record<string, unknown>>).printLabelId)
+  );
+}
+
+/**
+ * The canonical ref of a stored cliente ref (`clientes/{id}`, in either stored
+ * form), or `null` when the value names no cliente — one nobody can read,
+ * which owns NO endereço (step 7).
+ */
+export function clienteCanonicoLi(ref: unknown): OuterRef | null {
   const canonica = toOuterRefOrNull(ref);
   if (canonica === null) return null;
-  const { collection, id } = parseRef(canonica);
-  return collection === 'clientes' && id !== '' ? id : null;
+  const clienteId = idFromRef(canonica);
+  if (clienteId === '') return null;
+  // Rebuilt through the collection's own path: any other shape is no cliente.
+  const doCliente = toOuterRef(clienteCollection.docPath({}, clienteId));
+  return doCliente === canonica ? doCliente : null;
+}
+
+/**
+ * The canonical ref of the cliente an endereço ref is stored under
+ * (`clientes/{clienteId}/enderecos/{id}`, in either stored form), or `null`
+ * when the value names no cliente's endereço — an owner nobody can read, which
+ * matches NO cliente (step 7).
+ */
+export function clienteDoEnderecoLi(ref: unknown): OuterRef | null {
+  const endereco = toOuterRefOrNull(ref);
+  if (endereco === null) return null;
+  // `documents/<collection>/<id>/…`: the first document id is the candidate owner.
+  const clienteId = endereco.split('/')[2] ?? '';
+  const enderecoId = idFromRef(endereco);
+  if (clienteId === '' || enderecoId === '') return null;
+  // Rebuilt through the collections' own paths: any other shape is no cliente's endereço.
+  if (toOuterRef(enderecoCollection.docPath({ clienteId }, enderecoId)) !== endereco) return null;
+  return toOuterRef(clienteCollection.docPath({}, clienteId));
+}
+
+/** The refs the pedido carries against ONE snapshot (step 7), and the endereço a label may use. */
+export interface ParClienteEnderecoLi {
+  /** The cliente ref this import may FILL (fill-once: a stored one always wins). */
+  readonly clientePedidoOuterRef: string | null;
+  /** The endereço ref this import may FILL (fill-once: a stored one always wins). */
+  readonly enderecoFiscalOuterRef: string | null;
+  /** The endereço the freight may route to, or `null`: no carrier route (`freteMapeamento.ts`). */
+  readonly enderecoDaRota: string | null;
+  /**
+   * A stored endereço (fiscal or delivery) that does not pair with the cliente
+   * the pedido carries: the `li-endereco-de-outro-cliente` incidente.
+   */
+  readonly enderecoNaoPareado: EnderecoNaoPareadoLi | null;
+}
+
+/**
+ * Step 7's pairing against one snapshot (module header): an endereço the
+ * pedido stores — the fiscal one, or the freight block's delivery one, which
+ * is where a label ships — and the cliente it carries may never belong to two
+ * different clientes. PURE, and asked of EVERY attempt's snapshot and of the
+ * winning one — nothing here is captured before the batch loop.
+ *
+ * The cliente the pedido carries is the stored one (never replaced), else the
+ * one step 7 resolved. Each stored endereço must be stored under THAT cliente,
+ * read through {@link clienteDoEnderecoLi} and {@link clienteCanonicoLi}; a
+ * value either reader cannot read matches nothing. When every stored endereço
+ * pairs: the cliente, the stored fiscal endereço or else the one step 7 stored
+ * under that cliente, and a route to it in canonical form (the freight
+ * schema's). When one does not — another owner, an owner or a cliente nobody
+ * can read, or no cliente at all — the import fails SAFE: no cliente is filled
+ * over it, nothing stored is replaced, no carrier route is filled (exactly as
+ * a pedido without an endereço; a stored route is still never cleared), and
+ * the operator gets the incidente. The one thing still filled is step 7's
+ * fiscal endereço beside a STORED cliente: it is stored under that cliente, so
+ * it pairs.
+ */
+export function parClienteEnderecoLi(
+  armazenado: PedidoArmazenadoLi | null,
+  resolvido: Pick<ClienteResolvidoLi, 'clienteRef' | 'endereco'>,
+): ParClienteEnderecoLi {
+  const clienteArm = refArmazenada(armazenado?.clientePedidoOuterRef);
+  const fiscalArm = refArmazenada(armazenado?.enderecoFiscalOuterRef);
+  const entregaArm = refArmazenada(entregaArmazenada(armazenado));
+
+  // The cliente the pedido carries: the stored one, else the one step 7 resolved.
+  const clienteGuardado = clienteArm !== null;
+  const cliente = clienteGuardado ? (clienteArm ?? null) : resolvido.clienteRef;
+  const clienteLido = clienteCanonicoLi(cliente);
+  /** An endereço is the carried cliente's only when both are read and its path names that cliente. */
+  const doCliente = (endereco: unknown): boolean =>
+    clienteLido !== null && clienteDoEnderecoLi(endereco) === clienteLido;
+  /** Step 7's endereço, only beside the cliente its path names. */
+  const enderecoResolvido =
+    resolvido.endereco !== null && doCliente(resolvido.endereco.ref)
+      ? resolvido.endereco.ref
+      : null;
+
+  const guardados: [UsoEnderecoLi, string | undefined][] = [];
+  if (fiscalArm !== null) guardados.push(['fiscal', fiscalArm]);
+  if (entregaArm !== null) guardados.push(['entrega', entregaArm]);
+  const naoPareados = guardados.filter(([, endereco]) => !doCliente(endereco));
+
+  if (naoPareados.length === 0) {
+    // Every stored endereço pairs; the route goes to the fiscal one in canonical form.
+    const fiscal = fiscalArm !== null ? toOuterRefOrNull(fiscalArm) : enderecoResolvido;
+    return {
+      clientePedidoOuterRef: cliente,
+      enderecoFiscalOuterRef: fiscal,
+      enderecoDaRota: fiscal,
+      enderecoNaoPareado: null,
+    };
+  }
+  return {
+    // Fill-once keeps the stored cliente; none is filled over another cliente's endereço.
+    clientePedidoOuterRef: clienteGuardado ? cliente : null,
+    enderecoFiscalOuterRef: fiscalArm !== null || !clienteGuardado ? null : enderecoResolvido,
+    enderecoDaRota: null,
+    enderecoNaoPareado: {
+      cliente:
+        clienteLido !== null
+          ? clienteGuardado
+            ? 'armazenado'
+            : 'resolvido'
+          : clienteGuardado
+            ? 'ilegivel'
+            : 'ausente',
+      enderecos: naoPareados.map(([uso, endereco]) => ({
+        uso,
+        donoLegivel: clienteDoEnderecoLi(endereco) !== null,
+      })),
+    },
+  };
 }
 
 async function resolverClienteEEnderecoLi(
@@ -451,15 +662,14 @@ async function resolverClienteEEnderecoLi(
     }
   }
 
-  // The endereço: while none is stored, under the cliente the pedido will carry.
+  // The endereço: while none is stored, under the cliente the pedido will carry — one
+  // whose ref reads as a cliente (an unreadable stored one owns no endereço).
   let endereco: ClienteResolvidoLi['endereco'] = null;
-  const clienteDoEndereco = clienteArmazenado === null ? clienteRef : (clienteArmazenado ?? null);
-  const clienteId = clienteDoEndereco === null ? null : idDoCliente(clienteDoEndereco);
-  if (
-    refArmazenada(armazenado?.enderecoFiscalOuterRef) === null &&
-    clienteDoEndereco !== null &&
-    clienteId !== null
-  ) {
+  const clienteDoEndereco = clienteCanonicoLi(
+    clienteArmazenado === null ? clienteRef : clienteArmazenado,
+  );
+  if (refArmazenada(armazenado?.enderecoFiscalOuterRef) === null && clienteDoEndereco !== null) {
+    const clienteId = idFromRef(clienteDoEndereco);
     const outcome = enderecoDoPedidoLi(pedido.endereco_entrega);
     if (outcome.kind === 'sem-cep') {
       deps.logger?.warn(`${ROTULO_LOG} endereço sem CEP; pedido sem endereço fiscal por ora`, log);
@@ -477,10 +687,7 @@ async function resolverClienteEEnderecoLi(
         clienteId,
         comRecebedorLi(campos, pedido.endereco_entrega),
       );
-      endereco = {
-        clienteRef: clienteDoEndereco,
-        ref: toOuterRef(enderecoCollection.docPath({ clienteId }, enderecoId)),
-      };
+      endereco = { ref: toOuterRef(enderecoCollection.docPath({ clienteId }, enderecoId)) };
     }
   }
   return { clienteRef, endereco, semIdentidade };
@@ -493,8 +700,9 @@ async function resolverClienteEEnderecoLi(
 /**
  * One Loja Integrada order, start to finish (module header). Deterministic
  * outcomes RETURN; a refusal throws its class for the step-3 classifier
- * (`LiSchemaError` and `ZodError` park, {@link LiHistoricoIncompletoError} and
- * `LiPedidoEmConflitoError` retry, anything transient rethrows).
+ * (`LiSchemaError` and `ZodError` park; {@link LiHistoricoIncompletoError},
+ * `LiPedidoEmConflitoError` and {@link LiPedidoPagoSemEnderecoError} retry;
+ * anything transient rethrows).
  */
 export async function importarPedidoLi(
   db: Firestore,
@@ -576,8 +784,36 @@ export async function importarPedidoLi(
     resolucoes.set(referencia.ensureUniqueId, await resolvedor.resolver(referencia));
   }
 
-  // 6. The freight.
+  // 6. The freight — and its aviso, about the conta's configuration and clocked by this
+  // routing read, so it runs on every attempt that routed: a refused one (6b) included.
   const frete = await resolverFreteLi(db, contexto, pedido, deps);
+  if (frete !== null && frete.roteamento.aviso !== null) {
+    await sincronizarAvisoDeFreteLi(
+      db,
+      {
+        integracaoId,
+        lojaNome: doAviso.lojaNome,
+        aviso: frete.roteamento.aviso,
+        relogioUs: frete.relogioUs,
+      },
+      depsDoAviso,
+    );
+  }
+
+  // 6b. A PAID order with no usable delivery address: refused, and retried (A4). Asked
+  // of S here, and again of every batch attempt's snapshot (`mapearPedido`, rule 7).
+  const recusarSemEndereco = (arm: PedidoArmazenadoLi | null): boolean =>
+    pedidoPagoSemEnderecoLi({
+      codigo: pedido.situacao.codigo,
+      enderecoEntrega: pedido.endereco_entrega,
+      temEnvio: pedido.envios[0] !== undefined,
+      dispensaEndereco: frete?.roteamento.dispensaEndereco ?? false,
+      armazenado: arm,
+    });
+  if (recusarSemEndereco(armazenado)) {
+    deps.logger?.warn(`${ROTULO_LOG} pedido pago sem endereço de entrega; tenta de novo`, log);
+    throw new LiPedidoPagoSemEnderecoError(doAviso);
+  }
 
   // 7. The cliente and the endereço.
   const partes = await resolverClienteEEnderecoLi(db, armazenado, pedido, nowMs, deps, log);
@@ -599,17 +835,18 @@ export async function importarPedidoLi(
   const dataAprovacaoUs = h.dataAprovacao.derivavel ? h.dataAprovacao.us : null;
   const modalidadeConta: ModalidadeFrete | null = conta.modalidadeFreteImportacao ?? null;
 
-  /** The order's fields against one snapshot: the refs it already holds win (fill-once). */
+  /**
+   * The order's fields against one snapshot: the refs it already holds win
+   * (fill-once), and the cliente and the endereço are paired against THAT
+   * snapshot (`parClienteEnderecoLi`) — never against `S` alone.
+   */
   const mapearPedido = (arm: PedidoArmazenadoLi | null): PedidoMapeadoLi => {
-    const clienteArm = refArmazenada(arm?.clientePedidoOuterRef);
-    const clienteEfetivo = clienteArm === null ? partes.clienteRef : (clienteArm ?? null);
-    const enderecoArm = refArmazenada(arm?.enderecoFiscalOuterRef);
-    const enderecoEfetivo =
-      enderecoArm !== null
-        ? (enderecoArm ?? null)
-        : partes.endereco !== null && partes.endereco.clienteRef === clienteEfetivo
-          ? partes.endereco.ref
-          : null;
+    // 6b against THIS snapshot: an endereço another writer cleared since S refuses the
+    // paid update (the batch aborts with no write) — unless the snapshot is newer than
+    // the order, which the batch answers `obsoleto` for.
+    const maisNovo = arm !== null && watermarkArmazenadoMaisNovoLi(arm, watermarkUs) !== null;
+    if (!maisNovo && recusarSemEndereco(arm)) throw new LiPedidoPagoSemEnderecoError(doAviso);
+    const par = parClienteEnderecoLi(arm, partes);
     const blocoFrete =
       frete === null
         ? null
@@ -619,7 +856,7 @@ export async function importarPedidoLi(
             roteamento: frete.roteamento,
             horarioDeCorteConta: frete.horarioDeCorte,
             dataAprovacaoUs,
-            enderecoFiscalOuterRef: enderecoEfetivo,
+            enderecoFiscalOuterRef: par.enderecoDaRota,
           });
     return mapearPedidoLi({
       contaId: integracaoId,
@@ -630,8 +867,8 @@ export async function importarPedidoLi(
       itens: itens.itens,
       descontoExtra: itens.descontoExtra,
       frete: blocoFrete,
-      clientePedidoOuterRef: clienteEfetivo,
-      enderecoFiscalOuterRef: enderecoEfetivo,
+      clientePedidoOuterRef: par.clientePedidoOuterRef,
+      enderecoFiscalOuterRef: par.enderecoFiscalOuterRef,
     });
   };
   const mapearPagamentos = (
@@ -662,6 +899,21 @@ export async function importarPedidoLi(
   if (gravacao.tipo === 'obsoleto') return { kind: 'obsoleto' };
   const { decisao } = gravacao.escrita;
   const mapeadoFinal = mapearPedido(gravacao.armazenado);
+  // The pairing the WINNING attempt decided from (its snapshot), for the incidente.
+  const parFinal = parClienteEnderecoLi(gravacao.armazenado, partes);
+  const naoPareado = parFinal.enderecoNaoPareado;
+  if (naoPareado !== null) {
+    deps.logger?.warn(
+      `${ROTULO_LOG} endereço do pedido de outro dono ou ilegível; nenhum cliente vinculado a ele, frete sem rota`,
+      {
+        ...log,
+        cliente: naoPareado.cliente,
+        enderecos: naoPareado.enderecos.map(
+          (e) => `${e.uso}:${e.donoLegivel ? 'outro' : 'ilegivel'}`,
+        ),
+      },
+    );
+  }
   registrarDecisoesLi(deps, log, gravacao, mapeadoFinal);
   registrarFormasDesconhecidasLi(deps, log, mapearPagamentos(decisao.statusPagamento));
 
@@ -687,31 +939,41 @@ export async function importarPedidoLi(
     // Step 7 decided from S; the pedido holds what the WINNING attempt kept — a cliente
     // another writer linked meanwhile is no pedido "without a cliente".
     clienteSemIdentidade:
-      partes.semIdentidade && mapeadoFinal.preencherUmaVez.clientePedidoOuterRef === null,
+      partes.semIdentidade && mapeadoFinal.preencherUmaVez.clientePedidoOuterRef === null
+        ? {
+            comEndereco:
+              refArmazenada(gravacao.armazenado?.enderecoFiscalOuterRef) !== null ||
+              parFinal.enderecoFiscalOuterRef !== null,
+          }
+        : null,
+    enderecoNaoPareado: naoPareado,
     totaisDivergentes:
       itens.divergente ||
       (blocoFinal?.valorDivergente ?? false) ||
       gravacao.escrita.totaisDivergentes,
     nowUs,
   });
+  // A reversal on a pedido whose label was bought, read from the snapshot the WINNING
+  // attempt decided from (the import never writes `printLabelId`) — A7.
+  const reversaoComEtiqueta = etiquetaCompradaLi(gravacao.armazenado)
+    ? motivoReversaoLi(pedido.situacao.codigo)
+    : null;
+  if (reversaoComEtiqueta !== null) {
+    deps.logger?.warn(`${ROTULO_LOG} reversão em pedido com etiqueta comprada; aviso levantado`, {
+      ...log,
+      motivo: reversaoComEtiqueta,
+    });
+  }
   await sincronizarAvisosDoPedidoLi(
     db,
     doAviso,
-    { situacaoDesconhecida: decisao.situacaoDesconhecida, contestacao: decisao.contestacao },
+    {
+      situacaoDesconhecida: decisao.situacaoDesconhecida,
+      contestacao: decisao.contestacao,
+      reversaoComEtiqueta,
+    },
     depsDoAviso,
   );
-  if (frete !== null && frete.roteamento.aviso !== null) {
-    await sincronizarAvisoDeFreteLi(
-      db,
-      {
-        integracaoId,
-        lojaNome: doAviso.lojaNome,
-        aviso: frete.roteamento.aviso,
-        relogioUs: frete.relogioUs,
-      },
-      depsDoAviso,
-    );
-  }
 
   if (decisao.situacaoDesconhecida !== null) return { kind: 'situacao-desconhecida' };
   return { kind: gravacao.tipo === 'gravado' ? 'importado' : 'sem-mudanca' };

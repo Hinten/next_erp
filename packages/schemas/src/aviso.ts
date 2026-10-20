@@ -108,6 +108,8 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaPedidoContestado: 'Pedido da Loja Integrada contestado',
   lojaIntegradaPedidoHub: 'Pedido da Loja Integrada vindo de um hub',
   lojaIntegradaFreteNaoSuportado: 'Forma de envio da Loja Integrada sem frete utilizável',
+  lojaIntegradaPedidoPagoSemEndereco: 'Pedido pago da Loja Integrada sem endereço',
+  lojaIntegradaReversaoComEtiqueta: 'Pedido da Loja Integrada revertido com etiqueta comprada',
 } as const;
 
 /**
@@ -720,6 +722,76 @@ export const TIPO_AVISO_LABELS = {
  *    stands until the key's next import; a row whose conta has lost its Loja
  *    Integrada `int_frete` stands until an import routes the key again; a key
  *    no later order uses stands until retention.
+ *
+ * ---
+ *
+ * **`lojaIntegradaPedidoPagoSemEndereco`** (Loja Integrada step 5, PR 5-c,
+ * owner decision 2026-10-19) — a PAID Loja Integrada order (a codigo the label
+ * step's paid re-check accepts) with a shipment arrived with no usable
+ * delivery address (none, or none with a CEP the endereço builder reads — the
+ * importer's own criterion for storing an endereço), is not a pickup, and the
+ * pedido holds no endereço of its own. Such an import is REFUSED with a
+ * retryable error — the platform may still fill the address — so the queue's
+ * backoff and the reprocess sweep retry it; this row is raised only when those
+ * attempts RAN OUT, from the notification pipeline's signal for a thrown
+ * failure parked at its cap, beside an ERROR log line. Nothing of that order
+ * was written: no pedido (or no update of it), no pagamento, no cliente, no
+ * endereço.
+ *
+ *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
+ *    in-app only, like the other two critical tipos of this channel. A paid
+ *    sale nobody imported is one nobody ships.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido; `pedidoId` is the deterministic digest (the pedido
+ *    may not exist yet).
+ *  - **`params` are exactly `loja` and `pedido`** (the order's numero, as
+ *    text).
+ *  - **`relogioEvento`** = the order's modification stamp in µs, as the
+ *    exhausted run's import converted it — per-order µs, the clock of the
+ *    order-keyed tipos above: never compare it with another tipo's.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`): on a first
+ *    import there is no pedido page to open.
+ *  - **Machine resolver**: the next import of that order that gets past the
+ *    address check — the address arrived, the order is no longer paid, or its
+ *    shipping method now maps to a pickup — clocked by its stamp, so a late
+ *    import of an older observation can neither close nor reopen the row.
+ *    ⚠️ UNVERIFIED (D17: no capture shows it): that filling the address in the
+ *    painel bumps the order's modification stamp, so the poller picks the
+ *    order up again. The parked row is terminal, so if it does not, nothing
+ *    re-imports the order; the wording says "should" and names the fallback (a
+ *    developer checks the parked notification). Residue, accepted: an order
+ *    nobody edits again keeps its row until retention.
+ *
+ * ---
+ *
+ * **`lojaIntegradaReversaoComEtiqueta`** (Loja Integrada step 5, PR 5-c, owner
+ * decision 2026-10-19) — Loja Integrada REVERSED an order (a cancellation, a
+ * refund, a chargeback or a refund without return) whose pedido already holds
+ * a bought label (`freteInicial.printLabelId`). The import applies the
+ * situação exactly as the table says — the reversal (and the stock sync's
+ * restock) for a cancellation, the "keep both" arm with the contestado row for
+ * a refund after an applied removal — and neither the label nor an NF-e is
+ * cancelled by it: this row tells the operator to cancel both before the
+ * parcel ships.
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: it is about
+ *    one order, and the intake keeps running.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — one row per pedido, apart from the `lojaIntegradaPedidoContestado` row
+ *    the same refund may raise.
+ *  - **`params` are exactly `loja`, `pedido` and `motivo`** — a
+ *    {@link MOTIVO_REVERSAO_COM_ETIQUETA_LI} CODE naming the reversal, never a
+ *    sentence. `motivo` (the field) carries the same code.
+ *  - **`relogioEvento`**: the order's modification stamp in µs, per-order like
+ *    the order-keyed tipos above.
+ *  - **Route**: the pedido (`ROTAS_AVISO.pedido`), where the label is.
+ *  - **Machine resolver**: ANY later import of that order that does not raise
+ *    this tipo — the platform reopened the sale, or the pedido no longer holds
+ *    a label — clocked by its stamp (an `obsoleto` import writes nothing).
+ *    Residue, accepted and said in the wording: the reversal codigos are FINAL
+ *    in Loja Integrada, so a row usually stands until retention unless the
+ *    situação is changed in the painel; no import observes the label being
+ *    cancelled.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -746,6 +818,8 @@ export const tipoAvisoSchema = z
     'lojaIntegradaPedidoContestado',
     'lojaIntegradaPedidoHub',
     'lojaIntegradaFreteNaoSuportado',
+    'lojaIntegradaPedidoPagoSemEndereco',
+    'lojaIntegradaReversaoComEtiqueta',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -775,6 +849,8 @@ export const TIPO_AVISO = {
   lojaIntegradaPedidoContestado: 'lojaIntegradaPedidoContestado',
   lojaIntegradaPedidoHub: 'lojaIntegradaPedidoHub',
   lojaIntegradaFreteNaoSuportado: 'lojaIntegradaFreteNaoSuportado',
+  lojaIntegradaPedidoPagoSemEndereco: 'lojaIntegradaPedidoPagoSemEndereco',
+  lojaIntegradaReversaoComEtiqueta: 'lojaIntegradaReversaoComEtiqueta',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -899,6 +975,38 @@ export const MOTIVO_PEDIDO_CONTESTADO_LI = {
   devolvido: 'devolvido',
   devolvidoSemRetorno: 'devolvido-sem-retorno',
 } as const satisfies Record<string, MotivoPedidoContestadoLi>;
+
+/**
+ * Which reversal landed on a Loja Integrada pedido whose label was already
+ * bought — the `lojaIntegradaReversaoComEtiqueta` aviso's `params.motivo`, a
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. One member
+ * per reversal codigo of `situacaoPedidoLojaIntegrada.ts`'s table:
+ *
+ *  - `cancelado` — `pedido_cancelado`;
+ *  - `devolvido` — `pagamento_devolvido`;
+ *  - `chargeback` — `pedido_chargeback`;
+ *  - `devolvido-sem-retorno` — `pagamento_devolvido_sem_retorno`.
+ *
+ * A cancellation REQUEST (`cancelamento_solicitado`) and a dispute
+ * (`pagamento_em_disputa`) are no reversal: neither has a member. Stored as an
+ * aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoReversaoComEtiquetaLiSchema = z.enum([
+  'cancelado',
+  'devolvido',
+  'chargeback',
+  'devolvido-sem-retorno',
+]);
+export type MotivoReversaoComEtiquetaLi = z.infer<typeof motivoReversaoComEtiquetaLiSchema>;
+
+/** Named members of {@link motivoReversaoComEtiquetaLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_REVERSAO_COM_ETIQUETA_LI = {
+  cancelado: 'cancelado',
+  devolvido: 'devolvido',
+  chargeback: 'chargeback',
+  devolvidoSemRetorno: 'devolvido-sem-retorno',
+} as const satisfies Record<string, MotivoReversaoComEtiquetaLi>;
 
 /**
  * Why a mapped Loja Integrada shipping method cannot route an order — the

@@ -30,13 +30,28 @@
  *    aviso at the target read's time — and an order without an endereço
  *    taking its freight amount but no carrier route until a later import
  *    brings the endereço and fills it;
+ *  - a stored endereço of ANOTHER cliente on a pedido without one: the real
+ *    `findOrCreateCliente` resolves the buyer, and the import still fills no
+ *    cliente beside it, routes nothing to it and raises the incidente — while
+ *    the same endereço moved under the buyer's own cliente takes both; and a
+ *    STORED cliente whose delivery endereço (read from the real nested map) is
+ *    another cliente's takes no route until it is its own;
  *  - the code a batch answers for a document removed since its read under
  *    `lastUpdateTime`; that the CARRIER's precondition holds on a stale
  *    snapshot although its own write would change nothing; and what the carrier
  *    does to the pedido's update time — for a watermark that round-trips and
  *    for one stored as a double (both pinned as the emulator answers them);
  *  - the link lookup finds both stored ref forms through the real query;
- *  - the step-7 loop moves only the clocks.
+ *  - the step-7 loop moves only the clocks;
+ *  - a cancellation on a pedido whose `freteInicial.printLabelId` was written
+ *    the way the Melhor Envio purchase writes it (a DOT PATH into the nested
+ *    block) raises the reversal-after-the-label aviso (owner decision A7);
+ *  - a PAID order without an address through the REAL notification pipeline's
+ *    hot sweep (owner decision A4): the shared store's real mark keeps the row
+ *    `failed` below the cap and PARKS it at the cap, and only then the
+ *    exhaustion signal logs its ERROR line and raises the real aviso — with
+ *    nothing of the pedido or a cliente written — and a later import that
+ *    finds the address closes it.
  *
  * ⚠️ The conta is seeded ONCE (an `integracao` write fires the conta trigger in
  * the functions emulator): no filial and no `dataCadastro`, so the core plans it
@@ -73,7 +88,14 @@ import {
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
 import { loadLojaIntegradaContext } from '../core/contexto';
-import type { DepsImportadorLi, PayloadNotificacaoLi } from '../notificacoes/notificacao';
+import {
+  MAX_TENTATIVAS,
+  docIdNotificacaoLi,
+  reprocessarNotificacoesLi,
+  type DepsImportadorLi,
+  type DepsTarefaLi,
+  type PayloadNotificacaoLi,
+} from '../notificacoes/notificacao';
 import { AMBIENTE_LIGADO, credencialDoc, gravadorDeLog, ritmoFalso } from '../testing/fixtures';
 import {
   CHAVE_FORMA_ENVIO_LI,
@@ -115,6 +137,9 @@ const COMPRADOR_COM_CPF = { id: 1, nome: 'Comprador de Teste', cpf: CPF_VALIDO_L
 function db(): Firestore {
   return getAdminFirestore();
 }
+
+/** The reads queue's failures-only store: the A4 case seeds and sweeps one row of it. */
+const NOTIFICACOES = 'notificacoesLojaIntegrada';
 
 const refPedido = (): DocumentReference => db().collection('pedidos').doc(PEDIDO_ID);
 const refPagamento = (): DocumentReference =>
@@ -202,7 +227,14 @@ function updateTimeDe(snap: { readonly updateTime?: Timestamp }): Timestamp {
 const refFrete = (): DocumentReference => db().collection('int_frete').doc(INT_FRETE_LI);
 
 async function limpar(): Promise<void> {
-  for (const colecao of ['pedidos', 'produtos', 'avisos', 'clientes', 'clienteIdentidades']) {
+  for (const colecao of [
+    'pedidos',
+    'produtos',
+    'avisos',
+    'clientes',
+    'clienteIdentidades',
+    NOTIFICACOES,
+  ]) {
     await db().recursiveDelete(db().collection(colecao));
   }
   await refFrete().delete();
@@ -670,6 +702,111 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     expect((await refPedido().get()).data()?.clientePedidoOuterRef).toBe(clienteRef);
   });
 
+  it('never a cliente beside another cliente’s endereço: a stored endereço of ANOTHER owner keeps the pedido without cliente and route, plus the incidente; one under the buyer’s own cliente takes both', async () => {
+    // An identity-less first import: no refs, no route.
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    // Another writer stores an endereço under ANOTHER cliente; the pedido still has none.
+    const deOutro = 'documents/clientes/cliente-de-outra-pessoa-ci/enderecos/end-a';
+    await refPedido().update({ enderecoFiscalOuterRef: deOutro });
+
+    // (1) The buyer now has a document: the real findOrCreateCliente resolves it — to
+    // another cliente than the endereço's owner, so nothing is paired.
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) })),
+    ).toEqual({ kind: 'importado' });
+    let pedido = (await refPedido().get()).data()!;
+    expect(pedido.clientePedidoOuterRef).toBeNull();
+    expect(pedido.enderecoFiscalOuterRef).toBe(deOutro);
+    expect(pedido.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: null,
+      externalOptionId: null,
+      externalOptionData: null,
+      enderecoFreteOuterReference: null,
+      valorCobrado: 14.8,
+      modalidade: MODALIDADE_FRETE.cif,
+    });
+    const incidente = await refPedido()
+      .collection('incidentes')
+      .doc(ID_INCIDENTE_LI.enderecoDeOutroCliente)
+      .get();
+    expect(incidente.data()).toMatchObject({
+      subtipo: 'li-endereco-de-outro-cliente',
+      resolucao: null,
+    });
+    // The buyer's cliente exists (the step ran for real), with no endereço stored under it.
+    const clientes = await db().collection('clientes').get();
+    expect(clientes.docs.map((d) => d.data().cpf_cnpj)).toEqual(['52998224725']);
+    const comprador = clientes.docs[0]!;
+    expect((await comprador.ref.collection('enderecos').get()).empty).toBe(true);
+
+    // (2) The endereço is moved under the BUYER's own cliente: the next import fills the
+    // cliente beside it and routes the freight to it.
+    const doComprador = `documents/clientes/${comprador.id}/enderecos/end-b`;
+    await refPedido().update({ enderecoFiscalOuterRef: doComprador });
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(4) })),
+    ).toEqual({ kind: 'importado' });
+    pedido = (await refPedido().get()).data()!;
+    expect(pedido.clientePedidoOuterRef).toBe(`documents/clientes/${comprador.id}`);
+    expect(pedido.enderecoFiscalOuterRef).toBe(doComprador);
+    expect(pedido.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/${INT_FRETE_LI}`,
+      enderecoFreteOuterReference: doComprador,
+    });
+  });
+
+  it('a STORED cliente beside its own fiscal endereço and a DELIVERY endereço of another cliente (read from the real nested map) ⇒ no route, both kept, the incidente; the delivery moved under the cliente ⇒ routed', async () => {
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    const cliente = 'documents/clientes/cliente-ligado-ci';
+    const fiscal = `${cliente}/enderecos/end-fiscal`;
+    const deOutro = 'documents/clientes/cliente-de-outra-pessoa-ci/enderecos/end-entrega';
+    await refPedido().update({
+      clientePedidoOuterRef: cliente,
+      enderecoFiscalOuterRef: fiscal,
+      'freteInicial.enderecoFreteOuterReference': deOutro,
+    });
+
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) })),
+    ).toEqual({ kind: 'importado' });
+    let pedido = (await refPedido().get()).data()!;
+    expect(pedido.clientePedidoOuterRef).toBe(cliente);
+    expect(pedido.enderecoFiscalOuterRef).toBe(fiscal);
+    expect(pedido.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: null,
+      externalOptionId: null,
+      externalOptionData: null,
+      enderecoFreteOuterReference: deOutro,
+      valorCobrado: 14.8,
+    });
+    const incidente = await refPedido()
+      .collection('incidentes')
+      .doc(ID_INCIDENTE_LI.enderecoDeOutroCliente)
+      .get();
+    expect(incidente.data()?.motivoDoIncidente).toContain(
+      'o endereço de entrega é de outro cliente, e não do cliente do pedido',
+    );
+    // The stored cliente: no cliente step ran, so no buyer cliente was created.
+    expect((await db().collection('clientes').get()).empty).toBe(true);
+
+    // The delivery endereço moved under the pedido's own cliente: the empty route fills.
+    await refPedido().update({
+      'freteInicial.enderecoFreteOuterReference': `${cliente}/enderecos/end-entrega`,
+    });
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(4) })),
+    ).toEqual({ kind: 'importado' });
+    pedido = (await refPedido().get()).data()!;
+    expect(pedido.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/${INT_FRETE_LI}`,
+      enderecoFreteOuterReference: `${cliente}/enderecos/end-entrega`,
+    });
+  });
+
   it('the link lookup finds BOTH stored forms of the conta ref through the real collection-group query', async () => {
     const produtos = db().collection('produtos');
     await produtos.doc('p-canonico').set({ sku: 'sku-a', paiId: 'pai-x' });
@@ -753,5 +890,133 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
       semRelogios(pagamentoAntes, ['lastProviderUpdate', 'ultimaModificacao']),
     );
     expect(pagamentoDepois.lastProviderUpdate).toBe(dataLiParaMicros(carimboLi(8)));
+  });
+
+  it('A7: a cancellation landing after the Melhor Envio purchase’s own DOT-PATH write of printLabelId ⇒ the reversal and the open aviso; the same without a label raises none', async () => {
+    const avisoReversao = db()
+      .collection('avisos')
+      .doc(chaveDoAvisoDoPedidoLi(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta, CONTA, PEDIDO_ID));
+    const cancelado = (): Cena => ({
+      ...cena({ situacao: { codigo: 'pedido_cancelado', id: 8 }, data_modificacao: carimboLi(5) }),
+      historico: [
+        ...historicoPagoLi(),
+        linhaHistoricoLi(3, carimboLi(4), 'pedido_cancelado', 'pedido_pago'),
+      ],
+    });
+
+    // Without a label: the reversal, and no open row.
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    __resetAllReadCaches();
+    expect(await importar(cancelado())).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()?.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    const semEtiqueta = (await avisoReversao.get()).data();
+    expect(semEtiqueta === undefined || semEtiqueta.resolvidoEm !== null).toBe(true);
+
+    // With a label, written the way the purchase writes it (a dot path into the block).
+    await limpar();
+    await semearIntFrete();
+    __resetAllReadCaches();
+    expect(await importar(cena())).toEqual({ kind: 'importado' });
+    await refPedido().update({ 'freteInicial.printLabelId': 'etiqueta-ci-1' });
+    __resetAllReadCaches();
+    expect(await importar(cancelado())).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()?.estado).toBe(ESTADO_PEDIDO.estornadoIntegralmente);
+    expect((await avisoReversao.get()).data()).toMatchObject({
+      motivo: 'cancelado',
+      params: { loja: NOME_CONTA, pedido: String(NUMERO_LI), motivo: 'cancelado' },
+      relogioEvento: dataLiParaMicros(carimboLi(5)),
+      resolvidoEm: null,
+    });
+  });
+
+  it('A4 on the REAL pipeline: a paid order without an address swept to the cap — the real row PARKED, the ERROR line, the open aviso, nothing of the pedido; the address later imports and resolves it', async () => {
+    const p = payload();
+    const linha = db().collection(NOTIFICACOES).doc(docIdNotificacaoLi(p));
+    const avisoPago = db()
+      .collection('avisos')
+      .doc(chaveDoAvisoDoPedidoLi(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, CONTA, PEDIDO_ID));
+    const erros: unknown[][] = [];
+    const semEndereco = cena({ cliente: COMPRADOR_COM_CPF, endereco_entrega: null });
+    const { fetch } = plataformaLi({
+      pedidos: new Map([[NUMERO_LI, () => semEndereco.detalhe]]),
+      historicos: new Map([[NUMERO_LI, () => semEndereco.historico]]),
+    });
+    const deps: DepsTarefaLi = {
+      ambiente: AMBIENTE_LIGADO,
+      importador: importarPedidoLi,
+      increment: (by: number) => FieldValue.increment(by),
+      arrayUnion: (...e: unknown[]) => FieldValue.arrayUnion(...e),
+      viaCep,
+      agoraMs: () => AGORA_MS,
+      esperar: () => Promise.resolve(),
+      logger: {
+        warn: () => undefined,
+        info: () => undefined,
+        error: (msg, meta) => {
+          erros.push([msg, meta]);
+        },
+      },
+      registro: {
+        fluxo: 'intake',
+        tentativa: null,
+        idTarefa: null,
+        escrever: gravadorDeLog().escrever,
+      },
+      fetch,
+    };
+    // As the queue's last attempt leaves it, one hot sweep short of the cap.
+    await linha.set({
+      ...p,
+      status: 'failed',
+      tentativas: MAX_TENTATIVAS - 2,
+      erro: 'a última tentativa da fila',
+      processedAt: 0,
+    });
+
+    // Below the cap: the real mark keeps it failed, and nothing is signalled.
+    await reprocessarNotificacoesLi(db(), {}, deps);
+    expect((await linha.get()).data()).toMatchObject({
+      status: 'failed',
+      tentativas: MAX_TENTATIVAS - 1,
+    });
+    expect(erros).toEqual([]);
+    expect((await avisoPago.get()).exists).toBe(false);
+
+    // The cap: parked by the shared store, THEN the signal — the line and the aviso.
+    __resetAllReadCaches();
+    await linha.update({ processedAt: 0 });
+    const varredura = await reprocessarNotificacoesLi(db(), {}, deps);
+    expect(varredura.errors.map((e) => e.docId)).toEqual([linha.id]);
+    expect((await linha.get()).data()).toMatchObject({
+      status: 'parked',
+      tentativas: MAX_TENTATIVAS,
+    });
+    expect((await linha.get()).data()?.erro).toContain(String(NUMERO_LI));
+    expect(erros).toHaveLength(1);
+    expect(erros[0]![1]).toEqual({
+      integracaoId: CONTA,
+      numero: String(NUMERO_LI),
+      pedidoId: PEDIDO_ID,
+    });
+    expect((await avisoPago.get()).data()).toMatchObject({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: 'critico',
+      params: { loja: NOME_CONTA, pedido: String(NUMERO_LI) },
+      relogioEvento: dataLiParaMicros(carimboLi(2)),
+      resolvidoEm: null,
+    });
+    // Nothing of the order: no pedido, no cliente; the mapa row is the one write.
+    expect((await refPedido().get()).exists).toBe(false);
+    expect((await db().collection('clientes').get()).size).toBe(0);
+    const mapa = (await refFrete().get()).data()?.mapa as DocumentData[];
+    expect(mapa.map((l) => l.idOriginal)).toEqual([CHAVE_FORMA_ENVIO_LI]);
+
+    // The address is filled in the painel: a newer change imports, and closes the row.
+    __resetAllReadCaches();
+    expect(
+      await importar(cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) })),
+    ).toEqual({ kind: 'importado' });
+    expect((await refPedido().get()).data()?.estado).toBe(ESTADO_PEDIDO.pago);
+    expect((await avisoPago.get()).data()?.resolvidoEm).not.toBeNull();
   });
 });

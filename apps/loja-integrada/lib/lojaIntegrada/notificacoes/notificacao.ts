@@ -53,7 +53,25 @@
  * | `pedido-inexistente` | park | park | park |
  * | `recusa-deterministica/<classe>[/<status>]` | park | park | park |
  * | `importador-ausente` | park | park | park |
- * | thrown (429, 5xx, network, timeout, our config, gRPC, unknown) | queue backoff, then `failed` | `failed`, parks at 5 | GRADUATES to the hot lane |
+ * | thrown (429, 5xx, network, timeout, our config, gRPC, unknown) | queue backoff, then `failed` | `failed`, parks at 5 with an ERROR line | GRADUATES to the hot lane |
+ * | thrown `LiPedidoPagoSemEnderecoError` (step 5: a paid order, no usable address) | the same | the same, and the park at 5 FAILS LOUDLY (its own line and an aviso) | the same |
+ *
+ * ## Attempts exhausted: the one loud failure
+ *
+ * Nothing here counts attempts. The shared pipeline parks a THROWN failure at
+ * its cap and calls `onRetriesExhausted` once the park landed — its signal for
+ * that one kind of park ({@link criarPipelineLi} binds it to
+ * {@link sinalizarEsgotamentoLi}); a RETURNED park is the outcome's own record
+ * and signals nothing. A parked row is terminal and holds an order nobody
+ * imported, so every such park is an ERROR line here:
+ *  - the importer's paid-without-address refusal
+ *    (`pedidos/pedidoPagoSemEndereco.ts`): its own ERROR line with ids only,
+ *    then the open `lojaIntegradaPedidoPagoSemEndereco` aviso;
+ *  - any other thrown failure (a 429, a 5xx, a timeout, gRPC…): one generic
+ *    ERROR line — the conta, the numero, the origin and the error's CLASS,
+ *    never its message — and no aviso; the row's `erro` stays the record.
+ *    That includes a paid order whose LAST run met a transient after earlier
+ *    address refusals (the residue `pedidoPagoSemEndereco.ts` names).
  *
  * ⚠️ A PARKED CONTA DEFERS — it never drops. Tasks enqueued before a token died
  * are already behind the poller's cursor, so dropping them would lose those
@@ -149,6 +167,10 @@ import type { OpcoesObservadorLi } from '../core/log';
 import { ritmoDeLeituraLi } from '../core/ritmo';
 import type { AmbienteLi } from '../core/valvulas';
 import { importarPedidoLi } from '../pedidos/importarPedido';
+import {
+  LiPedidoPagoSemEnderecoError,
+  sinalizarPedidoPagoSemEnderecoLi,
+} from '../pedidos/pedidoPagoSemEndereco';
 
 // The retry caps are the SHARED pipeline's — re-exported so this module stays
 // the one import site for the channel's callers.
@@ -284,6 +306,12 @@ export type ResultadoNotificacaoLi =
 export interface LoggerImportadorLi {
   warn(msg: string, meta?: Record<string, unknown>): void;
   info?(msg: string, meta?: Record<string, unknown>): void;
+  /**
+   * The ERROR line of a paid order whose retries ran out without an address
+   * (`pedidos/pedidoPagoSemEndereco.ts`); without it that line goes to
+   * `console.error`, which is ERROR severity too.
+   */
+  error?(msg: string, meta?: Record<string, unknown>): void;
 }
 
 /**
@@ -476,6 +504,11 @@ export async function classificarFalhaLi(
   if (err instanceof LiPaginacaoError) return recusa('LiPaginacaoError', null);
   if (err instanceof ZodError) return recusa('ZodError', null);
 
+  // A paid order without a usable address is RETRIED, never parked by this
+  // table: the platform may fill the address, and the pipeline's own park at
+  // its cap is what fails it loudly (`onRetriesExhausted`, below).
+  if (err instanceof LiPedidoPagoSemEnderecoError) return null;
+
   // Network and timeout, `LiConfigError`, the park's contention, gRPC, anything
   // unknown: rethrown by the caller.
   return null;
@@ -567,8 +600,12 @@ function processoIndisponivel(): Promise<ResultadoNotificacaoLi> {
  */
 function configLi(
   processar: (db: Firestore, payload: PayloadNotificacaoLi) => Promise<ResultadoNotificacaoLi>,
+  aoEsgotar?: (db: Firestore, payload: PayloadNotificacaoLi, err: Error) => Promise<void>,
 ): NotificationPipelineConfig<PayloadNotificacaoLi, ResultadoNotificacaoLi> {
   return {
+    // The pipeline's signal for a thrown failure it parked at the cap (module
+    // header); absent on the storage-only pipeline, which never sweeps.
+    ...(aoEsgotar === undefined ? {} : { onRetriesExhausted: aoEsgotar }),
     channel: CANAL_LOG_LI,
     collection: notificacaoLojaIntegradaCollection,
     taskSchema: tarefaLeituraLiSchema,
@@ -591,7 +628,42 @@ function configLi(
  * reaches the logger: the shared `process(db, payload)` carries neither.
  */
 export function criarPipelineLi(deps: DepsTarefaLi) {
-  return defineNotificationPipeline(configLi((db, p) => processarNotificacaoLi(db, p, deps)));
+  return defineNotificationPipeline(
+    configLi(
+      (db, p) => processarNotificacaoLi(db, p, deps),
+      (db, p, err) => sinalizarEsgotamentoLi(db, p, err, deps),
+    ),
+  );
+}
+
+/**
+ * A thrown failure the hot (or a non-graduating deferred) sweep just PARKED at
+ * its cap (module header): the paid-without-address refusal's own loud signal,
+ * else one generic ERROR line — ids and the error's class only, never its
+ * message — so no parked order goes unnoticed. A failed aviso write rethrows;
+ * the shared core contains it.
+ */
+export async function sinalizarEsgotamentoLi(
+  db: Firestore,
+  payload: PayloadNotificacaoLi,
+  err: Error,
+  deps: Pick<DepsTarefaLi, 'increment' | 'agoraMs' | 'logger'>,
+): Promise<void> {
+  const doPedido = await sinalizarPedidoPagoSemEnderecoLi(db, err, {
+    increment: deps.increment,
+    agoraMs: deps.agoraMs,
+    logger: deps.logger,
+  });
+  if (doPedido) return;
+  const linha = `[${CANAL_LOG_LI}] notificação estacionada: tentativas esgotadas, pedido não importado`;
+  const ids = {
+    integracaoId: payload.contaId,
+    numero: payload.numero,
+    origem: payload.origem,
+    classe: err.name,
+  };
+  if (deps.logger?.error === undefined) console.error(linha, ids);
+  else deps.logger.error(linha, ids);
 }
 
 /** Persist and re-drive only — the writes that need no `process`. */

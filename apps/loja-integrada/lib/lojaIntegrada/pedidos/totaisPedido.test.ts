@@ -82,6 +82,7 @@ function importar(pedido: PedidoLi, modalidadeConta = MODALIDADE_FRETE.fob) {
       externalOptionId: null,
       aviso: null,
       deliberado: false,
+      dispensaEndereco: false,
     },
     horarioDeCorteConta: null,
     dataAprovacaoUs: null,

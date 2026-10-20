@@ -49,9 +49,9 @@
  * `criadoEm desc` — the collection's declared `(resolvidoEm ASC, criadoEm DESC)`
  * composite, no new index — at {@link PAGINA_AVISOS_ABERTOS} rows a page and at
  * most {@link MAX_PAGINAS_AVISOS_ABERTOS} pages, with a `truncado` flag. The
- * canal and the channel's seven tipos (`TIPOS_AVISO_LI`) are filtered in CODE
+ * canal and every tipo of the channel (`TIPOS_AVISO_LI`) are filtered in CODE
  * (no index can express them), and a row whose id is not one of the LISTED
- * contas' chaves — for the four order-import tipos of step 5, which hold many
+ * contas' chaves — for the order-import tipos of step 5, which hold many
  * rows per conta, whose id does not start with a listed conta's key prefix
  * (`prefixoDaContaNoAvisoLi`) — is resolved as `conta-removida`: an expiry row
  * clockless; a reconexão row and a step-3 import-stopped row CLOCKED by the

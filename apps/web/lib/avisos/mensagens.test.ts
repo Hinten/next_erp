@@ -4,6 +4,7 @@ import {
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -15,6 +16,7 @@ import {
   motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaLiSchema,
   motivoPedidoContestadoLiSchema,
+  motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type SituacaoAnuncioForaDaSincronizacao,
@@ -1024,5 +1026,112 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaFreteNaoSuportado', () => {
   it('is titled like its label and carries no runbook — the mapping tab is the fix', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaFreteNaoSuportado);
     expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+/**
+ * The reversal-after-the-label tipo (step 5, owner decision 2026-10-19),
+ * rendered with the params its producer (the importer) writes:
+ * `{ loja, pedido, motivo }`, `motivo` a `MOTIVO_REVERSAO_COM_ETIQUETA_LI` CODE.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaReversaoComEtiqueta', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaReversaoComEtiqueta];
+  const ACAO =
+    'O ERP aplicou a situação ao pedido como de costume, mas não cancela a etiqueta nem a ' +
+    'NF-e: cancele a etiqueta no Melhor Envio e a NF-e do pedido, se ela já foi emitida, antes ' +
+    'que o pacote seja despachado.';
+  const FIM =
+    'Essa situação é final na Loja Integrada, então o aviso só se encerra se o pedido for ' +
+    'reaberto no painel da loja.';
+
+  it('a cancellation: the phrase, what to cancel, and why it does not close by itself', () => {
+    expect(
+      mensagem.corpo({
+        loja: 'Conta A',
+        pedido: '165',
+        motivo: MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado,
+      }),
+    ).toBe(
+      'O pedido 165 da loja Conta A foi cancelado na Loja Integrada depois que a etiqueta dele ' +
+        `já tinha sido comprada. ${ACAO} ${FIM}`,
+    );
+  });
+
+  it('is TOTAL over the motivo codes: each its own phrase, never the fallback', () => {
+    const frases = new Set<string>();
+    for (const motivo of motivoReversaoComEtiquetaLiSchema.options) {
+      const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
+      expect(corpo, motivo).not.toContain('foi revertido');
+      expect(corpo, motivo).toContain(ACAO);
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoReversaoComEtiquetaLiSchema.options.length);
+  });
+
+  it('a code newer than this build, an inherited key or a missing motivo falls back to the neutral phrase', () => {
+    for (const motivo of ['motivo-do-futuro', 'toString', '', 7]) {
+      expect(mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo }), String(motivo)).toBe(
+        'O pedido 165 da loja Conta A foi revertido na Loja Integrada depois que a etiqueta dele ' +
+          `já tinha sido comprada. ${ACAO} ${FIM}`,
+      );
+    }
+    expect(mensagem.corpo({})).not.toContain('undefined');
+  });
+
+  it('is titled like its label, with a runbook naming both cancellations', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaReversaoComEtiqueta);
+    expect(mensagem.runbook).toBe(
+      'Cancele a etiqueta no painel do Melhor Envio. Se a NF-e do pedido já foi emitida, ' +
+        'cancele-a pelo ERP dentro do prazo de cancelamento da SEFAZ.',
+    );
+  });
+});
+
+/**
+ * The paid-order-without-an-address tipo (step 5, owner decision 2026-10-19),
+ * rendered with the params its producer (the notification pipeline's exhaustion
+ * signal) writes: `{ loja, pedido }`.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco];
+
+  it('says the PAID order did not reach the ERP, why, that retrying stopped, and how it closes', () => {
+    expect(mensagem.corpo({ loja: 'Conta A', pedido: '165' })).toBe(
+      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem um endereço de ' +
+        'entrega com CEP válido e por isso não entrou no ERP — nem o pedido, nem a atualização ' +
+        'dele: sem endereço não há como comprar a etiqueta. A importação tentou de novo por ' +
+        'algumas horas e parou. O aviso se encerra quando o pedido for importado.',
+    );
+  });
+
+  it('renders `{}` with placeholders, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toContain('O pedido — da loja —');
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('renders the producer plano as stored: critico, routed to the conta page', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165' },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_789_000_000_000_001,
+    });
+    expect(aviso.severidade).toBe(SEVERIDADE_AVISO.critico);
+    expect(aviso.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(mensagem.corpo(aviso.params)).toContain('O pedido 165 da loja Conta A está pago');
+  });
+
+  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, and a fallback when the edit does not bring it back', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco);
+    expect(mensagem.runbook).toBe(
+      'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
+        'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
+        'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
+        'e depois altere o pedido no painel. Se o aviso continuar aberto depois da alteração, ' +
+        'peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
+    );
   });
 });

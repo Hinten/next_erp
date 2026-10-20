@@ -9,7 +9,15 @@
  *  - `li-multi-envio` — the order carries more than one shipment: the first one
  *    drives the freight block, the rest are not imported (never expected);
  *  - `li-cliente-sem-identidade` — the buyer has no valid document and matches
- *    no cliente, so the pedido has no cliente and no endereço;
+ *    no cliente, so the pedido has no cliente (and no endereço, unless one was
+ *    already stored — the text says which);
+ *  - `li-endereco-de-outro-cliente` — an endereço the pedido stores (the fiscal
+ *    one, or the freight block's delivery one) is not stored under the cliente
+ *    the pedido carries — the stored one, else the one this import resolved —
+ *    or one of the two cannot be read: the import links no cliente over it and
+ *    fills no carrier route (`importarPedido.ts`, step 7). The text names each
+ *    endereço and its reason, and says a cliente was withheld only when one
+ *    was;
  *  - `li-totais-divergentes` — the lines, the discount and the freight do not
  *    add up to the order's total (the line residual, the shipment value, or the
  *    stored totals check of `pedidoMapeamento.ts`). Reported, never adjusted.
@@ -43,6 +51,7 @@ export const SUBTIPO_INCIDENTE_LI = {
   produtoNaoVinculado: 'li-produto-nao-vinculado',
   multiEnvio: 'li-multi-envio',
   clienteSemIdentidade: 'li-cliente-sem-identidade',
+  enderecoDeOutroCliente: 'li-endereco-de-outro-cliente',
   totaisDivergentes: 'li-totais-divergentes',
 } as const;
 
@@ -55,6 +64,7 @@ export function idIncidenteLinhaLi(ensureUniqueId: string): string {
 export const ID_INCIDENTE_LI = {
   multiEnvio: 'li-multi-envio',
   clienteSemIdentidade: 'li-cliente-sem-identidade',
+  enderecoDeOutroCliente: 'li-endereco-de-outro-cliente',
   totaisDivergentes: 'li-totais-divergentes',
 } as const;
 
@@ -63,6 +73,27 @@ export interface LinhaSemProdutoLi {
   readonly item: ItemDoPedido;
   /** Why no rung bound it. */
   readonly via: FalhaProdutoLi;
+}
+
+/** One of the pedido's two endereços: the fiscal one, or the freight block's delivery one. */
+export type UsoEnderecoLi = 'fiscal' | 'entrega';
+
+/**
+ * The cliente the pedido's stored endereços were compared against: the one it
+ * already holds (`armazenado`), the one this import resolved while none was
+ * stored (`resolvido`) — or why there was none to compare with: no cliente
+ * at all (`ausente`), or a stored value that names no cliente (`ilegivel`).
+ */
+export type ClienteComparadoLi = 'armazenado' | 'resolvido' | 'ausente' | 'ilegivel';
+
+/**
+ * The stored endereços that do not pair with the pedido's cliente
+ * (`importarPedido.ts`, step 7), fiscal first.
+ */
+export interface EnderecoNaoPareadoLi {
+  readonly cliente: ClienteComparadoLi;
+  /** `donoLegivel: false` — the stored value names no cliente's endereço. */
+  readonly enderecos: readonly { readonly uso: UsoEnderecoLi; readonly donoLegivel: boolean }[];
 }
 
 export interface IncidentesDoPedidoLi {
@@ -76,7 +107,10 @@ export interface IncidentesDoPedidoLi {
    */
   readonly jaVinculadas: ReadonlySet<string>;
   readonly multiEnvio: boolean;
-  readonly clienteSemIdentidade: boolean;
+  /** The pedido kept no cliente for a buyer with no identity; `comEndereco` — it holds an endereço. */
+  readonly clienteSemIdentidade: { readonly comEndereco: boolean } | null;
+  /** A stored endereço that does not pair with the pedido's cliente (module header). */
+  readonly enderecoNaoPareado: EnderecoNaoPareadoLi | null;
   readonly totaisDivergentes: boolean;
   /** The importer's ONE clock read, µs. */
   readonly nowUs: number;
@@ -110,14 +144,56 @@ function motivoDaLinha(linha: LinhaSemProdutoLi): string {
   );
 }
 
+const NOME_DO_ENDERECO: Readonly<Record<UsoEnderecoLi, string>> = {
+  fiscal: 'o endereço fiscal',
+  entrega: 'o endereço de entrega',
+};
+
+/**
+ * The operator-facing text of an endereço that does not pair (module header):
+ * only what is TRUE of this pedido — "another cliente" only for an owner that
+ * was read, and "the cliente was not linked" only when the import withheld one.
+ */
+function motivoDoEnderecoNaoPareado(numero: string, n: EnderecoNaoPareadoLi): string {
+  const nomes = n.enderecos.map((e) => NOME_DO_ENDERECO[e.uso]);
+  let porque: string;
+  if (n.cliente === 'ausente' || n.cliente === 'ilegivel') {
+    const semCliente =
+      n.cliente === 'ausente'
+        ? 'o pedido está sem cliente'
+        : 'o cliente do pedido não pôde ser identificado';
+    porque = `${semCliente}, então não foi possível conferir a quem pertence ${nomes.join(' e ')}.`;
+  } else {
+    const deQuem = n.cliente === 'armazenado' ? 'do cliente do pedido' : 'do cliente do comprador';
+    porque =
+      n.enderecos
+        .map((e) =>
+          e.donoLegivel
+            ? `${NOME_DO_ENDERECO[e.uso]} é de outro cliente, e não ${deQuem}`
+            : `não foi possível identificar de qual cliente é ${NOME_DO_ENDERECO[e.uso]}`,
+        )
+        .join('; ') + '.';
+  }
+  const consequencia =
+    n.cliente === 'resolvido'
+      ? 'Para que nenhuma NF-e ou etiqueta use o endereço de outra pessoa, a importação não ' +
+        'vinculou o cliente do comprador ao pedido nem definiu a transportadora do frete.'
+      : 'Para que nenhuma etiqueta seja comprada para um endereço que pode ser de outra pessoa, ' +
+        'a importação não definiu a transportadora do frete.';
+  return (
+    `[Loja Integrada] Pedido ${numero}: ${porque} ${consequencia} ` +
+    'Confira o cliente e os endereços do pedido antes de emitir a NF-e ou a etiqueta.'
+  );
+}
+
 const MOTIVOS = {
   multiEnvio: (numero: string) =>
     `[Loja Integrada] O pedido ${numero} tem mais de um envio. Só o primeiro foi importado no ` +
     'frete do pedido; confira os demais no painel da Loja Integrada.',
-  clienteSemIdentidade: (numero: string) =>
+  clienteSemIdentidade: (numero: string, comEndereco: boolean) =>
     `[Loja Integrada] O comprador do pedido ${numero} não tem CPF ou CNPJ válido e não ` +
-    'corresponde a nenhum cliente do ERP, então o pedido ficou sem cliente e sem endereço. ' +
-    'Vincule o cliente manualmente no pedido.',
+    'corresponde a nenhum cliente do ERP, então o pedido ficou sem cliente' +
+    `${comEndereco ? '' : ' e sem endereço'}. Vincule o cliente manualmente no pedido.`,
   totaisDivergentes: (numero: string) =>
     `[Loja Integrada] Os itens, o desconto e o frete do pedido ${numero} não somam o total ` +
     'da Loja Integrada. Nada foi ajustado; confira os valores antes de emitir a NF-e.',
@@ -145,16 +221,26 @@ export async function registrarIncidentesDoPedidoLi(
       externalId: item.mktplaceId,
     });
   }
-  for (const [chave, ativo] of [
-    ['multiEnvio', entrada.multiEnvio],
-    ['clienteSemIdentidade', entrada.clienteSemIdentidade],
-    ['totaisDivergentes', entrada.totaisDivergentes],
+  const { clienteSemIdentidade, enderecoNaoPareado } = entrada;
+  for (const [chave, motivo] of [
+    ['multiEnvio', entrada.multiEnvio ? MOTIVOS.multiEnvio(numero) : null],
+    [
+      'clienteSemIdentidade',
+      clienteSemIdentidade === null
+        ? null
+        : MOTIVOS.clienteSemIdentidade(numero, clienteSemIdentidade.comEndereco),
+    ],
+    [
+      'enderecoDeOutroCliente',
+      enderecoNaoPareado === null ? null : motivoDoEnderecoNaoPareado(numero, enderecoNaoPareado),
+    ],
+    ['totaisDivergentes', entrada.totaisDivergentes ? MOTIVOS.totaisDivergentes(numero) : null],
   ] as const) {
-    if (!ativo) continue;
+    if (motivo === null) continue;
     planos.push({
       id: ID_INCIDENTE_LI[chave],
       subtipo: SUBTIPO_INCIDENTE_LI[chave],
-      motivo: MOTIVOS[chave](numero),
+      motivo,
       externalId: null,
     });
   }

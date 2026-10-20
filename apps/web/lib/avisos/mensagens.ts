@@ -2,18 +2,21 @@ import {
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaLiSchema,
   motivoPedidoContestadoLiSchema,
+  motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
   type MotivoFreteNaoSuportadoLi,
   type MotivoImportacaoParadaLi,
   type MotivoPedidoContestadoLi,
+  type MotivoReversaoComEtiquetaLi,
   type PendenciaReclamacao,
   type SituacaoAnuncioForaDaSincronizacao,
   type TipoAviso,
@@ -187,6 +190,40 @@ function corpoPedidoContestadoLi(params: Aviso['params']): string {
     `${abertura} O ERP manteve o estado e o pagamento do pedido, porque a mercadoria pode não ` +
     'ter voltado: confira a devolução e ajuste o pedido e o estoque se for o caso. Essa situação ' +
     'é final na Loja Integrada, então o aviso só se encerra se ela for mudada no painel da loja.'
+  );
+}
+
+/**
+ * pt-BR da reversão que a Loja Integrada aplicou a um pedido com etiqueta já
+ * comprada — TOTAL sobre o código (`params.motivo`, um
+ * {@link MOTIVO_REVERSAO_COM_ETIQUETA_LI}). O produtor (o importador de
+ * pedidos) grava o CÓDIGO, nunca a frase.
+ */
+const FRASE_MOTIVO_REVERSAO_COM_ETIQUETA_LI: Record<MotivoReversaoComEtiquetaLi, string> = {
+  [MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado]: 'cancelado',
+  [MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvido]: 'estornado, com o pagamento devolvido ao comprador',
+  [MOTIVO_REVERSAO_COM_ETIQUETA_LI.chargeback]:
+    'contestado pelo comprador junto ao emissor do cartão (chargeback)',
+  [MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvidoSemRetorno]: 'estornado sem o retorno da mercadoria',
+};
+
+/**
+ * O corpo do aviso de reversão com etiqueta comprada. ⚠️ Diz que o ERP NÃO
+ * cancela a etiqueta nem a NF-e — é por isso que o aviso existe — e que a
+ * situação é final lá, porque é por isso que ele não some sozinho. Um código
+ * mais novo que esta tela, uma chave herdada (`'toString'`) ou um param
+ * ausente caem no texto neutro ("revertido"), nunca em "undefined".
+ */
+function corpoReversaoComEtiquetaLi(params: Aviso['params']): string {
+  const codigo = motivoReversaoComEtiquetaLiSchema.safeParse(params.motivo);
+  const como = codigo.success ? FRASE_MOTIVO_REVERSAO_COM_ETIQUETA_LI[codigo.data] : 'revertido';
+  return (
+    `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} foi ${como} na Loja Integrada ` +
+    'depois que a etiqueta dele já tinha sido comprada. O ERP aplicou a situação ao pedido como ' +
+    'de costume, mas não cancela a etiqueta nem a NF-e: cancele a etiqueta no Melhor Envio e a ' +
+    'NF-e do pedido, se ela já foi emitida, antes que o pacote seja despachado. Essa situação é ' +
+    'final na Loja Integrada, então o aviso só se encerra se o pedido for reaberto no painel da ' +
+    'loja.'
   );
 }
 
@@ -499,8 +536,9 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'desenvolvedor confere o registro da varredura de pedidos; quando há pedidos alterados ' +
       'demais, reiniciar o cursor da conta faz a leitura recomeçar pelo período inicial de busca.',
   },
-  // Os quatro tipos da importação de pedidos (passos 5 e 6). Todos `atencao`: cada um
-  // fala de UM pedido ou UMA forma de envio, e a entrada de pedidos segue funcionando.
+  // Os tipos da importação de pedidos (passos 5 e 6), até o fim deste mapa. Todos
+  // `atencao` — cada um fala de UM pedido ou UMA forma de envio, e a entrada de pedidos
+  // segue funcionando —, exceto `lojaIntegradaPedidoPagoSemEndereco`, `critico`.
   [TIPO_AVISO.lojaIntegradaSituacaoDesconhecida]: {
     titulo: 'Situação desconhecida em pedido da Loja Integrada',
     corpo: (params) =>
@@ -541,6 +579,39 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'conferido de novo na hora da etiqueta. Revise o mapeamento na aba Mapeamento do Frete da ' +
       'conta; o aviso se encerra quando um pedido com essa forma de envio for importado depois ' +
       'da correção.',
+  },
+  [TIPO_AVISO.lojaIntegradaReversaoComEtiqueta]: {
+    titulo: 'Pedido da Loja Integrada revertido com etiqueta comprada',
+    corpo: corpoReversaoComEtiquetaLi,
+    // Os dois cancelamentos ficam fora desta tela: a etiqueta no Melhor Envio, a NF-e
+    // no fluxo da NF-e.
+    runbook:
+      'Cancele a etiqueta no painel do Melhor Envio. Se a NF-e do pedido já foi emitida, ' +
+      'cancele-a pelo ERP dentro do prazo de cancelamento da SEFAZ.',
+  },
+  // Crítico: uma venda PAGA que não entrou no ERP é uma venda que ninguém despacha. O
+  // aviso só sobe quando as novas tentativas acabaram (a fila e a varredura), por isso a
+  // frase diz que a importação parou. "Utilizável" é o que o importador grava como
+  // endereço: um CEP válido (um CEP sem logradouro ainda é endereço).
+  [TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco]: {
+    titulo: 'Pedido pago da Loja Integrada sem endereço',
+    corpo: (params) =>
+      `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} está pago na Loja ` +
+      'Integrada, mas chegou sem um endereço de entrega com CEP válido e por isso não entrou ' +
+      'no ERP — nem o pedido, nem a atualização dele: sem endereço não há como comprar a ' +
+      'etiqueta. A importação tentou de novo por algumas horas e parou. O aviso se encerra ' +
+      'quando o pedido for importado.',
+    // O conserto está FORA do app: o endereço é preenchido no painel da Loja Integrada. Que
+    // essa alteração traga o pedido de volta à importação é o ESPERADO, ainda não observado
+    // (nenhuma captura mostra a edição do endereço mudando a data de modificação do pedido),
+    // por isso a frase diz "deve" e dá a saída para quando não trouxer. A retirada precisa
+    // estar ATIVA: uma inativa não dispensa o endereço.
+    runbook:
+      'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
+      'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
+      'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
+      'e depois altere o pedido no painel. Se o aviso continuar aberto depois da alteração, ' +
+      'peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
   },
 };
 
