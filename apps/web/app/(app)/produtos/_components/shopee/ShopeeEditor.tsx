@@ -77,9 +77,11 @@ import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeMod
  * NO CLIENT WRITE. Every listing document is written by apps/shopee — publish,
  * the import, the stock and price senders, pause/re-list, the re-verify and the
  * listing pushes — so the link docs are read LIVE: the tab repaints from the
- * same snapshot those writers land in. An action here calls the apps/shopee
- * route DIRECTLY (`useShopeeClient`), never the registry rows, which stay
- * shadowed until the step-22 flip (#1530, decision D1).
+ * same snapshot those writers land in. An action here names ONE listing and
+ * calls the apps/shopee route DIRECTLY (`useShopeeClient`), never the registry
+ * rows — those back the /produtos selection-wide pushes (the Mercado Livre tab's
+ * per-listing actions do the same; its per-conta stock push goes through
+ * `enviarEstoqueParaIntegracao`).
  *
  * ## One write at a time, and a kit create that may have happened
  *

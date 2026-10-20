@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { INTEGRACAO_TIPO, type IntegracaoTipo } from '@delfrance/schemas';
 
-import { type MotivoNaoSuportado, capsPermitem } from '@/lib/marketplace/caps/suporteCanal';
+import type { MotivoNaoSuportado } from '@/lib/marketplace/caps/suporteCanal';
 import { definirStatusParaIntegracao, resolveAnuncioStatusProvider } from './registry';
 import { shopeeAnuncioStatusProvider } from './providers/shopee';
 import type { AnuncioStatusInput } from './types';
@@ -36,8 +36,8 @@ const NAO_SUPORTADOS: ReadonlyArray<readonly [IntegracaoTipo, MotivoNaoSuportado
   // only tipos on the other side of them: their Phase 0 surveys answered this
   // capability `'sim'`, so the honest reason is that WE have not built the
   // channel — not that nobody has looked. Shopee left this table in step 21
-  // (#1529): it has a provider row, pinned below against the caps. Each flips
-  // `implementado` at its own step 22
+  // (#1529) and flipped at step 22 (#1530): it has a provider row, pinned below.
+  // Each flips `implementado` at its own step 22
   // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`,
   // `.master_plans/amazon/amazon-marketplace-integration.md` step 22); whichever
   // channel flips LAST re-points this example. The arm itself is pinned
@@ -53,13 +53,8 @@ describe('resolveAnuncioStatusProvider', () => {
     );
   });
 
-  it('routes Shopee to its provider exactly when the caps clear it (#1529 → #1530)', () => {
-    // True on BOTH sides of the step-22 flip: today the caps say "not built" and
-    // the placeholder answers; after it, the real provider does. Red only if
-    // `resolve` ever bypasses the caps.
-    expect(
-      resolveAnuncioStatusProvider(INTEGRACAO_TIPO.shopee) === shopeeAnuncioStatusProvider,
-    ).toBe(capsPermitem('anuncioStatus', INTEGRACAO_TIPO.shopee));
+  it('routes Shopee to its provider', () => {
+    expect(resolveAnuncioStatusProvider(INTEGRACAO_TIPO.shopee)).toBe(shopeeAnuncioStatusProvider);
   });
 
   it('the table above covers every tipo with no provider row', () => {

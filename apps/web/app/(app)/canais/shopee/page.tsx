@@ -10,7 +10,6 @@ import {
   type Integracao,
   integracaoMeta,
   integracaoSchema,
-  marketplaceCapsFor,
 } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { usePermission } from '@/lib/auth';
@@ -49,11 +48,6 @@ export default function CanalShopeePage() {
   const importacao = useImportarTodosShopeeAction();
   const precos = useAtualizarPrecosShopeeAction();
   const [selecionadas, setSelecionadas] = useState<readonly ContaRef[]>([]);
-  // While the Shopee caps row says `implementado: false`, the /produtos row
-  // actions answer `canal-nao-implementado` for every Shopee conta
-  // (`lib/marketplace/caps/suporteCanal.ts`). The Alert says so for exactly as
-  // long as that is true: the step-22 flip (#1530) drops the sentence by itself.
-  const linhasDeProdutosLigadas = marketplaceCapsFor(INTEGRACAO_TIPO.shopee).implementado;
 
   // The `integracao` collection holds every channel type; the Shopee screen is
   // one slice. `integracaoMeta.defaultQuery` declares the `tipo` param + `nome`
@@ -80,9 +74,6 @@ export default function CanalShopeePage() {
         inicia duas tarefas longas: importar todos os anúncios e atualizar os preços. O andamento de
         cada uma aparece no painel ao lado da lista; uma tarefa que o servidor não conseguir iniciar
         mostra ali o motivo.
-        {linhasDeProdutosLigadas
-          ? null
-          : ' Enviar estoque, enviar preços e pausar ou reativar anúncios pela lista de produtos ainda não atendem a Shopee.'}
       </Alert>
 
       <TableView<typeof integracaoSchema>

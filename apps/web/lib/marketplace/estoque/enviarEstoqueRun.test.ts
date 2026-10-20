@@ -5,7 +5,6 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { type EnviarEstoqueAlvo, enviarEstoqueParaMarketplaces } from './enviarEstoqueRun';
 import { mercadoLivreStockProvider } from './providers/mercadoLivre';
 import { shopeeStockProvider } from './providers/shopee';
-import { suporteEstoqueDoCanal } from './registry';
 import type { StockPushChannelResult, StockPushRow } from './types';
 
 const db = {} as Firestore;
@@ -241,17 +240,12 @@ describe('enviarEstoqueParaMarketplaces', () => {
   });
 
   /**
-   * The run's OWN `suportado` closure (`enviarEstoqueRun.ts`), which the rows-first
-   * argument in `../caps/registriesAlinhadas.test.ts` relies on (#1529): Shopee's
-   * provider is registered while its verdict is still `canal-nao-implementado`, so
-   * a closure that asked "is a provider registered?" (what it used to be,
-   * `../caps/suporteCanal.ts`) would hand the Shopee conta the WHOLE selection and
-   * the placeholder would add a row for a produto that never named it.
-   *
-   * Written to survive the step-22 flip (#1530): once the verdict says supported,
-   * the conta gets the whole selection and the real provider answers instead.
+   * The run's OWN `suportado` closure (`enviarEstoqueRun.ts`): Shopee — built,
+   * with a provider — is handed the whole selection, including a produto that
+   * never named its conta. The unbuilt arm (only the produtos that name the
+   * conta) is the Loja Integrada test above.
    */
-  it('hands the Shopee conta the whole selection only when the verdict says supported', async () => {
+  it('hands the Shopee conta the WHOLE selection, like Mercado Livre', async () => {
     const lerIntegracoes = vi
       .fn()
       .mockResolvedValue(
@@ -260,7 +254,7 @@ describe('enviarEstoqueParaMarketplaces', () => {
     const ml = vi
       .spyOn(mercadoLivreStockProvider, 'enviarEstoque')
       .mockResolvedValue({ rows: [], pausadoAte: null });
-    // Reached only after the flip; one row per produto it was handed.
+    // One row per produto it was handed.
     const shopee = vi
       .spyOn(shopeeStockProvider, 'enviarEstoque')
       .mockImplementation(({ integracao, produtoIds }) =>
@@ -292,9 +286,7 @@ describe('enviarEstoqueParaMarketplaces', () => {
       );
 
       const shopeeRows = res.rows.filter((r) => r.integracaoId === 'shopee-1');
-      expect(shopeeRows.map((r) => r.produtoId)).toEqual(
-        suporteEstoqueDoCanal(INTEGRACAO_TIPO.shopee).suportado ? ['p1', 'p2'] : ['p2'],
-      );
+      expect(shopeeRows.map((r) => r.produtoId)).toEqual(['p1', 'p2']);
     } finally {
       ml.mockRestore();
       shopee.mockRestore();

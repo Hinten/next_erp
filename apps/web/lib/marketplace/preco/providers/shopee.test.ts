@@ -171,6 +171,18 @@ describe('shopeePriceProvider', () => {
     expect(enviarPrecos.mock.calls[0]![0]).not.toHaveProperty('incluirNaoPublicados');
   });
 
+  it('P6b — baixarPreco reaches the client AS GIVEN, both ways', async () => {
+    // P6 alone asks only `false`, so a provider that hard-coded `false` would
+    // pass it: both directions must arrive untouched, or a "never lower" run
+    // lowers prices (or a "lower" run silently refuses to).
+    const comBaixa = vi.fn<EnviarPrecos>().mockResolvedValue(envelope());
+    const semBaixa = vi.fn<EnviarPrecos>().mockResolvedValue(envelope());
+    await shopeePriceProvider.enviarPreco(input(comBaixa, { baixarPreco: true }));
+    await shopeePriceProvider.enviarPreco(input(semBaixa, { baixarPreco: false }));
+    expect(comBaixa.mock.calls.map(([args]) => args.baixarPreco)).toStrictEqual([true]);
+    expect(semBaixa.mock.calls.map(([args]) => args.baixarPreco)).toStrictEqual([false]);
+  });
+
   it('P7 — incluirNaoPublicados is IGNORED both ways: identical calls, identical rows', async () => {
     const resposta = envelope({ listings: [modelo()] });
     const comOcultos = vi.fn<EnviarPrecos>().mockResolvedValue(resposta);
