@@ -58,9 +58,10 @@ or the operator's `escolha` resolves. The work is `lib/lojaIntegrada/pedidos/rot
   { lastUpdateTime })` against the attempt's own pedido read. `B` is the RAW stored block with
   only the routing keys replaced (`integracaoFreteOuterRef`, `externalOptionId`, the escolha's
   `integracaoTargetOuterRef`, the retirada hand-off's `estado`), never re-parsed, so unmodelled
-  keys and Timestamps survive (`rotaEtiqueta.firestore.test.ts`). A 9 or 5 re-reads and
-  re-decides everything, at most 3 attempts, then 503 `LI_ROTA_EM_CONFLITO`. No multi-document
-  atomic write, and so no transaction-inventory row.
+  keys and Timestamps survive with the same values (`rotaEtiqueta.firestore.test.ts`); only an
+  integral double sibling changes wire type, re-encoded by the SDK as the equal integer. A 9 or 5
+  re-reads and re-decides everything, at most 3 attempts, then 503 `LI_ROTA_EM_CONFLITO`. No
+  transaction (the multi-document read-and-write API), so no transaction-inventory row.
 - **Refusals are decisions** (200 `recusado`, with a motivo); the envelope carries only 400
   (id, then body), 401/403, 404 `LI_PEDIDO_NAO_ENCONTRADO` and 503. An already-routed pedido
   answers `ja-roteado` and writes nothing, whatever the escolha.

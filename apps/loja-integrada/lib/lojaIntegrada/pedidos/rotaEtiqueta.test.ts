@@ -2,8 +2,8 @@
  * The label routing route's core (master plan step 15, #1825), against `testing/fakeDb.ts`, which
  * models the `lastUpdateTime` precondition as the server applies it (a stale stamp, and a removed
  * document, both fail 9). `rotaEtiqueta.firestore.test.ts` proves on the emulator what the fake
- * cannot: the server's own 9 on a stale stamp, and a whole-block update keeping an unmodelled key
- * and a nested Timestamp byte for byte.
+ * cannot: the server's own 9 on a stale stamp, and a whole-block update keeping an unmodelled key,
+ * a nested sub-millisecond Timestamp and the value of an integral double sibling.
  *
  * Every document is spelled out here, never built through the code under test, so a change to what
  * the route writes is a visible diff. `fetch` is stubbed to THROW for the whole file: the route
@@ -237,6 +237,63 @@ describe('rotearEtiquetaLi — a route through the mapa', () => {
     expect(await rotear(db)).toMatchObject({ resposta: { tipo: 'roteado' } });
     expect(db.escritasEm(CAMINHO)).toHaveLength(1);
   });
+
+  it('EQUAL pair: a numeric forma id and its decimal string decide the same row — the stored method is written back as it was', async () => {
+    const formaTexto = { ...PAC, id: '141909' };
+    semear(db, { pedido: pedido({}, { externalOptionData: formaTexto }) });
+
+    expect(await rotear(db)).toMatchObject({
+      resposta: {
+        tipo: 'roteado',
+        alvo: { id: ME, tipo: 'melhorEnvios' },
+        rota: { integracaoFreteOuterRef: refAlvo(ME), externalOptionId: '3' },
+      },
+    });
+    expect(db.escritasEm(CAMINHO).map((e) => e.dados)).toEqual([
+      {
+        freteInicial: frete({
+          externalOptionData: formaTexto,
+          integracaoFreteOuterRef: refAlvo(ME),
+          externalOptionId: '3',
+        }),
+      },
+    ]);
+  });
+
+  it.each([
+    ['an object', {}],
+    ['a string', 'corrompido'],
+  ])(
+    '⚠️ NEAR-MISS: a PRESENT Loja Integrada mapa that is %s, not a list ⇒ mapa-invalido, never sem-mapeamento — the doc’s RAW mapa reaches the planner',
+    async (_caso, mapa) => {
+      semear(db, { docLi: docLi({ mapa }) });
+
+      expect(await rotear(db)).toEqual({
+        tipo: 'resposta',
+        tentativas: 1,
+        resposta: { tipo: 'recusado', motivo: 'mapa-invalido' },
+      });
+      expect(db.escritas).toEqual([]);
+      expect(db.leituras).toEqual([CAMINHO, CAMINHO_DOC_LI]);
+    },
+  );
+
+  it.each([
+    ['absent', undefined],
+    ['null', null],
+  ])(
+    'EQUAL pair: a Loja Integrada mapa that is %s reads as an EMPTY one ⇒ sem-mapeamento',
+    async (_caso, mapa) => {
+      const doc = docLi({ mapa: null });
+      if (mapa === undefined) delete doc.mapa;
+      semear(db, { docLi: doc });
+
+      expect(await rotear(db)).toMatchObject({
+        resposta: { tipo: 'recusado', motivo: 'sem-mapeamento' },
+      });
+      expect(db.escritas).toEqual([]);
+    },
+  );
 });
 
 describe('rotearEtiquetaLi — every guard refuses with ZERO writes', () => {
@@ -419,6 +476,106 @@ describe('rotearEtiquetaLi — a pedido that is not on its Loja Integrada doc', 
     expect(await rotear(db)).toMatchObject({ resposta: { tipo: 'ja-roteado' } });
     expect(db.escritas).toEqual([]);
   });
+
+  /** A pedido already routed to the Melhor Envio target, with these freight fields. */
+  async function jaRoteadoComMe(over: DocData): Promise<unknown> {
+    semear(db, { pedido: pedido({}, { integracaoFreteOuterRef: refAlvo(ME), ...over }) });
+    const r = await rotear(db);
+    expect(db.escritas).toEqual([]);
+    if (r.tipo !== 'resposta' || r.resposta.tipo !== 'ja-roteado') {
+      throw new Error('esperava ja-roteado');
+    }
+    return r.resposta.rota;
+  }
+
+  it('EQUAL pair: already routed with the service stored as the NUMBER 3 or the STRING 3 ⇒ the answer carries the string `3` either way — the doc’s service is never dropped', async () => {
+    expect(await jaRoteadoComMe({ externalOptionId: 3 })).toMatchObject({
+      externalOptionId: '3',
+    });
+    db = new FakeDb();
+    expect(await jaRoteadoComMe({ externalOptionId: '3' })).toMatchObject({
+      externalOptionId: '3',
+    });
+  });
+
+  it.each([
+    ['a fraction', 1.5, null],
+    ['zero', 0, null],
+    ['a negative number', -1, null],
+    ['an unsafe integer', 2 ** 53, null],
+    ['a boolean', true, null],
+    ['a string with a leading zero, kept VERBATIM', '03', '03'],
+  ])(
+    '⚠️ NEAR-MISS: already routed with %s stored as the option ⇒ the answer’s option is %j — a number renders only when it is a positive safe integer, a string is never canonicalised',
+    async (_caso, armazenado, esperado) => {
+      expect(await jaRoteadoComMe({ externalOptionId: armazenado })).toMatchObject({
+        externalOptionId: esperado,
+      });
+    },
+  );
+
+  it('EQUAL pair: already routed with a stored override in its bare form ⇒ the answer names it canonical, read by the planner’s own int_frete ref reader', async () => {
+    expect(
+      await jaRoteadoComMe({ integracaoTargetOuterRef: `int_frete/${MOTOBOY}` }),
+    ).toMatchObject({ integracaoTargetOuterRef: refAlvo(MOTOBOY) });
+  });
+
+  it.each([
+    ['another collection', `integracao/${MOTOBOY}`],
+    ['a nested doc', `int_frete/${MOTOBOY}/sub/x`],
+    ['a naked id', MOTOBOY],
+    ['an empty string', ''],
+  ])(
+    '⚠️ NEAR-MISS: already routed with a stored override naming %s ⇒ the answer’s override is null — it names no int_frete doc, as the planner reads it',
+    async (_caso, override) => {
+      expect(await jaRoteadoComMe({ integracaoTargetOuterRef: override })).toMatchObject({
+        integracaoTargetOuterRef: null,
+      });
+    },
+  );
+});
+
+describe('rotearEtiquetaLi — the questions are asked in the preview’s order', () => {
+  it('a routed pedido answers ja-roteado BEFORE any pedido guard — with a bought label, modalidade 9 and a finalizado estado, nothing written', async () => {
+    semear(db, {
+      pedido: pedido(
+        { estado: 'finalizado' },
+        {
+          integracaoFreteOuterRef: `int_frete/${MOTOBOY}`,
+          printLabelId: 'etiqueta-1',
+          modalidade: '9',
+        },
+      ),
+    });
+
+    expect(await rotear(db)).toEqual({
+      tipo: 'resposta',
+      tentativas: 1,
+      resposta: {
+        tipo: 'ja-roteado',
+        alvo: { id: MOTOBOY, tipo: 'motoboy', nome: 'Motoboy da loja' },
+        rota: {
+          integracaoFreteOuterRef: refAlvo(MOTOBOY),
+          externalOptionId: null,
+          integracaoTargetOuterRef: null,
+          estado: 'iniciado',
+        },
+      },
+    });
+    expect(db.escritas).toEqual([]);
+    expect(db.leituras).toEqual([CAMINHO, `int_frete/${MOTOBOY}`]);
+  });
+
+  it('the Loja Integrada doc guard comes BEFORE the pedido guard — a carrinho pedido on an inactive doc ⇒ doc-li-divergente, never estado-nao-pago', async () => {
+    semear(db, { pedido: pedido({ estado: 'carrinho' }), docLi: docLi({ ativo: false }) });
+
+    expect(await rotear(db)).toEqual({
+      tipo: 'resposta',
+      tentativas: 1,
+      resposta: { tipo: 'recusado', motivo: 'doc-li-divergente' },
+    });
+    expect(db.escritas).toEqual([]);
+  });
 });
 
 describe('rotearEtiquetaLi — the operator’s choice and the stored override', () => {
@@ -554,6 +711,44 @@ describe('rotearEtiquetaLi — a lost race re-reads and re-decides, never re-app
     // Only the concurrent write landed: the pedido still names its Loja Integrada doc.
     expect(db.escritasEm(CAMINHO).map((e) => e.dados)).toEqual([{ freteInicial: comEtiqueta }]);
     expect(db.ler(CAMINHO)?.freteInicial).toEqual(comEtiqueta);
+  });
+
+  it('a still-routable change between our read and our write ⇒ 9 ⇒ the second attempt routes from ITS OWN read and stamp: the concurrent values survive, only our routing keys change', async () => {
+    semear(db);
+    // An editor save (or an import refill) lands meanwhile: a new charge and another method.
+    const editado = frete({ valorCobrado: 30, externalOptionData: MOTO });
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      await refPedido(db).update({ freteInicial: editado });
+    });
+
+    expect(await rotear(db)).toEqual({
+      tipo: 'resposta',
+      tentativas: 2,
+      resposta: {
+        tipo: 'roteado',
+        // The method the SECOND read names (motoboy), never the first read's (Melhor Envio).
+        alvo: { id: MOTOBOY, tipo: 'motoboy', nome: 'Motoboy da loja' },
+        rota: {
+          integracaoFreteOuterRef: refAlvo(MOTOBOY),
+          externalOptionId: null,
+          integracaoTargetOuterRef: null,
+          estado: 'iniciado',
+        },
+      },
+    });
+    const nosso = frete({
+      valorCobrado: 30,
+      externalOptionData: MOTO,
+      integracaoFreteOuterRef: refAlvo(MOTOBOY),
+      externalOptionId: null,
+    });
+    // The concurrent write, then ours — the block of the second read, landed under its stamp.
+    expect(db.escritasEm(CAMINHO).map((e) => e.dados)).toEqual([
+      { freteInicial: editado },
+      { freteInicial: nosso },
+    ]);
+    expect(db.ler(CAMINHO)?.freteInicial).toEqual(nosso);
+    expect(db.leituras.filter((c) => c === CAMINHO)).toHaveLength(2);
   });
 
   it.each([null, ME])(

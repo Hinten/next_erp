@@ -195,6 +195,17 @@ describe('PUT …/pedidos/[pedidoId]/rota-etiqueta — the caller', () => {
     },
   );
 
+  it('⚠️ NEAR-MISS: a dotted id that is not exactly `.` or `..` IS a document id — `a.b` passes the 400 and answers 404 after reading it', async () => {
+    const res = await put('a.b');
+
+    expect(res.status).toBe(404);
+    expect(erroContaLojaIntegradaSchema.parse(await corpoDe(res))).toMatchObject({
+      code: CODIGO_ERRO_LI.pedidoNaoEncontrado,
+    });
+    expect(db.leituras).toEqual(['pedidos/a.b']);
+    expect(db.escritas).toEqual([]);
+  });
+
   it('400 LI_CORPO_INVALIDO for a body that is not JSON: a FIXED sentence, before any read', async () => {
     semear(db);
 

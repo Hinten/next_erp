@@ -41,7 +41,11 @@
  *    `estado: aguardandoRetirada` when the shared retirada rule says so (a checked-out pedido
  *    routed to a pickup). Never re-parsed: a migrated block's unmodelled keys and Timestamps are
  *    written back as read (`rotaEtiqueta.firestore.test.ts` pins it on the emulator). Under the
- *    stamp a whole-block update and a dotted one write the same document.
+ *    stamp a whole-block update and a dotted one write the same VALUES, though not always the same
+ *    wire types: the SDK re-encodes every safe-integer number as an integer, so an untouched
+ *    sibling stored as an integral double (a migrated `30.0`) comes back as the integer `30`, equal
+ *    in every comparison and query (Firestore compares numbers numerically); an integer beyond
+ *    2^53 is read, and so written back, lossily (a dotted update would leave both untouched).
  *  - Never written: `valorCobrado`, the cost fields, `externalOptionData` (the mapa key),
  *    `externalOptionIntegracao`, `codRastreio`, `ultimaModificacao`, any field outside the block.
  *  - `FAILED_PRECONDITION` (9) or `NOT_FOUND` (5): something wrote the pedido after our read — the
@@ -52,14 +56,15 @@
  *  - At most {@link MAX_TENTATIVAS_ROTA_ETIQUETA_LI} attempts, then
  *    {@link LiRotaEtiquetaEmConflitoError} (503 `rotaEmConflito`): persistent contention on one
  *    pedido is something to surface, and the caller may retry.
- *  - No multi-document atomic write, and no call outside the ERP between the read and the write.
- *    The `int_frete` reads are configuration, outside the precondition: a mapa edit or a target
- *    deactivation that lands meanwhile orders after this route ("route, then edit"), exactly as it
- *    does for a pedido routed at import.
+ *  - No transaction (the multi-document read-and-write API), so no transaction-inventory row, and
+ *    no call outside the ERP between the read and the write. The `int_frete` reads are
+ *    configuration, outside the precondition: a mapa edit or a target deactivation that lands
+ *    meanwhile orders after this route ("route, then edit"), exactly as it does for a pedido
+ *    routed at import.
  *
- * ⚠️ This module must never name the Admin SDK's multi-document atomic-write call — not even in a
- * comment (`estrutura.test.ts`; `firestore-transaction-inventory.test.js` would demand a class for
- * a site that does not exist).
+ * ⚠️ This module must never name the Admin SDK's call for that API — not even in a comment
+ * (`estrutura.test.ts`; `firestore-transaction-inventory.test.js` would demand a class for a site
+ * that does not exist).
  *
  * ## What it never does (D17)
  *
@@ -80,11 +85,11 @@ import {
   concluirRotaEtiquetaLi,
   estadoFreteSchema,
   idIntFreteDaRefLi,
+  inteiroPositivoCanonicoLi,
   planejarRotaEtiquetaLi,
   recusaDoDocLiParaRotaLi,
   recusaDoPedidoParaRotaLi,
   toOuterRef,
-  toOuterRefOrNull,
   type EstadoFrete,
   type MotivoRotaEtiquetaLi,
   type OuterRef,
@@ -175,19 +180,37 @@ function estadoOuNull(valor: unknown): EstadoFrete | null {
   return lido.success ? lido.data : null;
 }
 
+/** `documents/int_frete/<id>`: the canonical ref of an `int_frete` doc id. */
+function refIntFrete(id: string): OuterRef {
+  return toOuterRef(`int_frete/${id}`);
+}
+
+/**
+ * A stored option in the wire's type: a string VERBATIM (never canonicalised); a number only when
+ * it is a positive safe integer, as its decimal (`inteiroPositivoCanonicoLi`, the reading the
+ * planner gives a stored service) — so a service a migrated block holds as `3` reaches the caller
+ * as `'3'` instead of being dropped; anything else `null`.
+ */
+function opcaoDoBloco(valor: unknown): string | null {
+  return typeof valor === 'string' ? valor : inteiroPositivoCanonicoLi(valor);
+}
+
 /**
  * The routing fields of a block, for the answer — as written (`roteado`) or as found
- * (`ja-roteado`): the freight ref canonical (the caller passes it), the stored option when it is
- * a string, the stored override canonical (or `null` when it names no document), the estado.
+ * (`ja-roteado`): the freight ref canonical (the caller passes it), the stored option
+ * ({@link opcaoDoBloco}), the stored override as the `int_frete` doc it names, read through the
+ * planner's own ref reader (`idIntFreteDaRefLi`: canonical, or `null` when it names no `int_frete`
+ * doc), and the estado (`null` when the schema does not know it).
  */
 function camposDaRota(
   bloco: Readonly<Record<string, unknown>>,
   integracaoFreteOuterRef: OuterRef,
 ): CamposDaRota {
+  const idDoOverride = idIntFreteDaRefLi(bloco.integracaoTargetOuterRef);
   return {
     integracaoFreteOuterRef,
-    externalOptionId: typeof bloco.externalOptionId === 'string' ? bloco.externalOptionId : null,
-    integracaoTargetOuterRef: toOuterRefOrNull(bloco.integracaoTargetOuterRef),
+    externalOptionId: opcaoDoBloco(bloco.externalOptionId),
+    integracaoTargetOuterRef: idDoOverride === null ? null : refIntFrete(idDoOverride),
     estado: estadoOuNull(bloco.estado),
   };
 }
@@ -211,7 +234,7 @@ async function decidir(db: Firestore, pedidoId: string, escolha: string | null):
       resposta: {
         tipo: TIPO_RESPOSTA_ROTA_ETIQUETA_LI.jaRoteado,
         alvo: alvoDaRota(idDoFrete, classe.tipoAlvo, docDoFrete),
-        rota: camposDaRota(frete, toOuterRef(`int_frete/${idDoFrete}`)),
+        rota: camposDaRota(frete, refIntFrete(idDoFrete)),
       },
     };
   }

@@ -9,8 +9,14 @@
  *  - a stale stamp answers 9 and lands NOTHING — the raw primitive, and the route's own write when
  *    a concurrent writer (a label bought meanwhile) lands between its read and its write: the
  *    server refuses it, the re-read refuses the route, and the concurrent write is all there is;
- *  - the whole-block `freteInicial` update keeps an unmodelled key and a nested `Timestamp` byte for
- *    byte: the block is written back as read, never re-parsed, so a migrated block survives.
+ *  - the whole-block `freteInicial` update keeps an unmodelled key, and a nested `Timestamp` to the
+ *    MICROSECOND — Firestore's own precision (it truncates nanoseconds on write) — with a
+ *    sub-millisecond instant, so a round trip through `Date` would show: the block is written back
+ *    as read, never re-parsed, so a migrated block survives;
+ *  - what it does NOT keep, stated rather than hidden: the WIRE TYPE of an integral double. The
+ *    SDK encodes every safe-integer number as an integer, so a sibling stored as the double `1.0`
+ *    comes back as the integer `1` — the same value, equal in every comparison and query. The
+ *    suite seeds a real double (an `increment` of two halves) and pins both halves of that.
  *
  * ⚠️ It seeds only `pedidos` and `int_frete` docs, under ids no other suite uses, and never an
  * `integracao` doc: the conta trigger the functions emulator loads never fires for this file. Its
@@ -20,6 +26,8 @@ import { env } from 'node:process';
 import {
   type DocumentData,
   type DocumentReference,
+  type DocumentSnapshot,
+  FieldValue,
   type Firestore,
   Timestamp,
   type WriteResult,
@@ -46,7 +54,11 @@ const IDS = {
 } as const;
 const CONTA_REF = 'documents/integracao/conta-li-rota-ci';
 const MOTO = { id: 777, code: 'MOTO', nome: 'Entrega local', tipo: 'Motoboy' } as const;
-const SELECAO = Timestamp.fromMillis(1_800_000_000_123);
+/**
+ * A SUB-millisecond instant at Firestore's precision (µs; the server truncates nanoseconds): a
+ * round trip through `Date` (ms) would lose its 456 µs.
+ */
+const SELECAO = new Timestamp(1_800_000_000, 123_456_000);
 
 function db(): Firestore {
   return getAdminFirestore();
@@ -126,6 +138,24 @@ function carimbo(snap: { readonly updateTime?: Timestamp; readonly ref: Document
     throw new Error(`teste: ${snap.ref.path} não existe — não há updateTime`);
   }
   return snap.updateTime;
+}
+
+/**
+ * The wire type a stored value carries (`integerValue`, `doubleValue`, …), read from the snapshot's
+ * raw proto — the one thing a decoded JS number cannot show. `protoField` is the SDK's own
+ * accessor (internal, but present on every snapshot of the pinned SDK); its absence fails loudly.
+ */
+function tipoNoFio(snap: DocumentSnapshot, campo: string): string | null {
+  const leitor: unknown = Reflect.get(snap, 'protoField');
+  if (typeof leitor !== 'function') {
+    throw new Error('teste: o snapshot do SDK não expõe mais protoField — reescreva esta prova');
+  }
+  const proto: unknown = (leitor as (c: string) => unknown).call(snap, campo);
+  if (typeof proto !== 'object' || proto === null) return null;
+  const valueType: unknown = Reflect.get(proto, 'valueType');
+  if (typeof valueType === 'string') return valueType;
+  const chaves = Object.keys(proto).filter((k) => k.endsWith('Value'));
+  return chaves.length === 1 ? (chaves[0] ?? null) : null;
 }
 
 /** A property of a real SDK object, methods bound to it (they read private state off `this`). */
@@ -245,9 +275,15 @@ describe.skipIf(!EMULATED)('the label routing route on real Firestore', () => {
     expect(freteSalvo).toEqual(comEtiqueta);
   });
 
-  it('the whole-block update keeps an unmodelled key and a nested Timestamp byte for byte — only the routing keys change', async () => {
+  it('the whole-block update keeps an unmodelled key, a nested sub-millisecond Timestamp and an integral double’s VALUE — only the routing keys change', async () => {
     const ref = refPedido(IDS.pedidoBloco);
-    await ref.set(pedido(blocoMigrado()));
+    await ref.set(pedido(blocoMigrado({ peso: 0.5 })));
+    // A REAL integral double: the SDK writes a safe integer as an integer, but the server sums two
+    // doubles into a double.
+    await ref.update({ 'freteInicial.peso': FieldValue.increment(0.5) });
+    const semeado = await ref.get();
+    expect(semeado.get('freteInicial.peso')).toBe(1);
+    expect(tipoNoFio(semeado, 'freteInicial.peso')).toBe('doubleValue');
 
     const r = await rotearEtiquetaLi({ db: db() }, IDS.pedidoBloco, null);
 
@@ -257,10 +293,11 @@ describe.skipIf(!EMULATED)('the label routing route on real Firestore', () => {
     });
     const salvo = await ref.get();
     expect(salvo.get('freteInicial')).toEqual(
-      blocoMigrado({ integracaoFreteOuterRef: `documents/int_frete/${IDS.motoboy}` }),
+      blocoMigrado({ integracaoFreteOuterRef: `documents/int_frete/${IDS.motoboy}`, peso: 1 }),
     );
     // A Timestamp is still a Timestamp — at the top of the block and nested in an unmodelled map —
-    // with the same instant to the nanosecond, never a re-serialised map or a number.
+    // with the same instant to the microsecond (sub-millisecond digits included), never a
+    // re-serialised map, a number or a millisecond round trip.
     for (const caminho of [
       'freteInicial.selecionadoEm',
       'freteInicial.chaveNaoModelada.selecionadoEm',
@@ -268,7 +305,11 @@ describe.skipIf(!EMULATED)('the label routing route on real Firestore', () => {
       const valor: unknown = salvo.get(caminho);
       expect(valor, caminho).toBeInstanceOf(Timestamp);
       expect((valor as Timestamp).isEqual(SELECAO), caminho).toBe(true);
+      expect((valor as Timestamp).nanoseconds, caminho).toBe(123_456_000);
     }
+    // The integral double keeps its VALUE; its wire type is the SDK's integer (module header).
+    expect(salvo.get('freteInicial.peso')).toBe(1);
+    expect(tipoNoFio(salvo, 'freteInicial.peso')).toBe('integerValue');
     // Nothing outside the block moved.
     expect(salvo.get('ultimaModificacao')).toBe(1_800_000_000_000_000);
     expect(salvo.get('estado')).toBe('pago');
