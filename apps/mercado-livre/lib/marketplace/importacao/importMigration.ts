@@ -100,7 +100,7 @@ import {
 
 import { type ImportDeps, importProduto } from './import';
 import { type ImportOptions, MercadoLivreImportError } from './importCore';
-import { refMatchesIntegracao } from '../core/linkRefs';
+import { parsePmlOuterRef, refMatchesIntegracao } from '../core/linkRefs';
 
 /** Every import side-effect OFF (#441) — the migration only converges existing
  * ERP data onto the new listing ids; it never (re)writes stock/price/photos/
@@ -410,20 +410,4 @@ function asNumericVariationId(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === 'string' && /^-?\d+$/.test(v)) return Number(v);
   return null;
-}
-
-/**
- * Parse a canonical `documents/produtos/<produtoId>/produtoMercadoLivre/<linkId>`
- * outer-ref into its produto + link doc ids — a local copy of `import.ts`'s
- * private `parsePmlOuterRef` (same 6-liner; duplicated rather than exported to
- * avoid a cross-module coupling for one tiny parser, matching this folder's
- * existing convention of small local duplicates — e.g. `importVariations.ts`'s
- * own `sha256`).
- */
-function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | null {
-  const segs = ref.split('/').filter(Boolean);
-  const i = segs.indexOf('produtos');
-  if (i === -1 || i + 3 >= segs.length) return null;
-  if (segs[i + 2] !== 'produtoMercadoLivre') return null;
-  return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
 }

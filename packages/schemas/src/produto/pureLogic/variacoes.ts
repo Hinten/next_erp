@@ -1,4 +1,5 @@
 import type { GrupoDeVariacoes, Variante } from '../../grupoDeVariacoes';
+import { idFromRefOrNull } from '../../shared/outerRef';
 
 /**
  * Pure helpers for product variations — the Cartesian child-product
@@ -74,7 +75,7 @@ export function sortGruposByOrdem(grupos: GrupoComId[]): GrupoComId[] {
  */
 export function sortGrupoUids(uids: string[], grupos: GrupoComId[]): string[] {
   const byId = grupoById(grupos);
-  const bare = [...new Set(uids.map((u) => u.split('/').pop()!).filter((u) => u.length > 0))];
+  const bare = [...new Set(uids.map(idFromRefOrNull).filter((id) => id !== null))];
   return bare.sort((a, b) => {
     const oa = byId.get(a)?.data.ordem ?? Infinity;
     const ob = byId.get(b)?.data.ordem ?? Infinity;

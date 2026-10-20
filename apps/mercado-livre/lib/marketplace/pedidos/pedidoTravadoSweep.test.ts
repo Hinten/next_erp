@@ -619,6 +619,13 @@ describe('constants and bounds', () => {
     expect(integracaoIdDoPedido({ integracaoPedidoOuterRef: '' })).toBeNull();
   });
 
+  it.each(['/', '///', 'documents', null, 42])(
+    'ignores an integração ref without an id: %s',
+    (integracaoPedidoOuterRef) => {
+      expect(integracaoIdDoPedido({ integracaoPedidoOuterRef })).toBeNull();
+    },
+  );
+
   it('a fresh pedido is never a candidate', async () => {
     const db = new FakeDb();
     seedPedidoTravado(db, 'ped-novo', { timestamp: NOW_US - 1 * DIA_US });

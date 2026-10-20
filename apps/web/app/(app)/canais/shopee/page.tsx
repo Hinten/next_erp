@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense } from 'react';
+import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { deleteDoc } from 'firebase/firestore';
 import { Alert, Badge, Button } from '@mantine/core';
@@ -10,15 +10,26 @@ import {
   type Integracao,
   integracaoMeta,
   integracaoSchema,
+  marketplaceCapsFor,
 } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { type ContaRef, contaRefFromRow } from '@/lib/marketplace/contaJobs/types';
+import { AtualizarPrecosShopeeDialog } from './_components/AtualizarPrecosShopeeDialog';
+import { ImportarTodosShopeeDialog } from './_components/ImportarTodosShopeeDialog';
 import { ShopeeCallbackToast } from './_components/ShopeeCallbackToast';
+import { ShopeeJobsPanel } from './_components/ShopeeJobsPanel';
+import { useAtualizarPrecosShopeeAction } from './_components/useAtualizarPrecosShopeeAction';
+import { useImportarTodosShopeeAction } from './_components/useImportarTodosShopeeAction';
 
 /**
- * `/canais/shopee` — the Shopee accounts list.
+ * `/canais/shopee` — the Shopee accounts list, and the two account-wide jobs
+ * (#1529, step 21-5): "Importar todos os anúncios" and "Atualizar preços",
+ * started for the selected conta from the action rail, with their progress
+ * cards under the buttons (`_components/ShopeeJobsPanel.tsx`). Mercado Livre's
+ * page is the reference shape.
  *
  * This screen replaced the static `CanalCapsPanel` placeholder the moment the
  * channel gained a real backend (`apps/shopee`, master-plan step 1). The panel
@@ -27,12 +38,22 @@ import { ShopeeCallbackToast } from './_components/ShopeeCallbackToast';
  */
 export default function CanalShopeePage() {
   const db = getFirebaseFirestore();
-  // The delete is PERM.integracao.delete-gated by the Firestore rules;
-  // `ActionConfig` has no `hidden` flag, so gating means filtering the array
-  // (same shape as /canais/whatsapp and /canais/mercado-livre). `usePermission`
-  // reports `false` while claims resolve, so the button appears a beat after
-  // mount.
+  // Both jobs — and the three price-job reads the rail makes (status, Histórico,
+  // relatório) — are PERM.integracao.write-gated on the backend; the delete is
+  // PERM.integracao.delete-gated by the Firestore rules. `ActionConfig` has no
+  // `hidden` flag, so gating means filtering the array (same shape as
+  // /canais/mercado-livre). `usePermission` reports `false` while claims
+  // resolve, so the buttons appear a beat after mount.
+  const { allowed: canWrite } = usePermission(PERM.integracao.write);
   const { allowed: canDelete } = usePermission(PERM.integracao.delete);
+  const importacao = useImportarTodosShopeeAction();
+  const precos = useAtualizarPrecosShopeeAction();
+  const [selecionadas, setSelecionadas] = useState<readonly ContaRef[]>([]);
+  // While the Shopee caps row says `implementado: false`, the /produtos row
+  // actions answer `canal-nao-implementado` for every Shopee conta
+  // (`lib/marketplace/caps/suporteCanal.ts`). The Alert says so for exactly as
+  // long as that is true: the step-22 flip (#1530) drops the sentence by itself.
+  const linhasDeProdutosLigadas = marketplaceCapsFor(INTEGRACAO_TIPO.shopee).implementado;
 
   // The `integracao` collection holds every channel type; the Shopee screen is
   // one slice. `integracaoMeta.defaultQuery` declares the `tipo` param + `nome`
@@ -48,16 +69,20 @@ export default function CanalShopeePage() {
       </Suspense>
 
       {/*
-        Step 1 of the integration ships the connection and nothing else, and an
-        operator has no way to tell a channel that is merely quiet from one that
-        is not wired up yet. Saying it here is cheaper than the support ticket
-        that starts with "the Shopee orders never arrived".
+        What THIS screen does, as code — never a claim about what is deployed,
+        which rots the day the deployment changes. A job the backend cannot start
+        (its queue unreachable, say) still gets a card carrying the backend's own
+        sentence, so the operator learns why from the screen instead of from a
+        button that seems to do nothing.
       */}
-      <Alert color="blue" title="O que esta tela faz hoje" mb="md">
-        Esta tela cadastra a conta e faz a conexão OAuth com a Shopee — e só isso. Importar
-        anúncios, importar pedidos, enviar estoque, enviar preço, emitir etiqueta e enviar NF-e
-        ainda não estão ligados neste canal; cada um chega em um passo seguinte da integração. Até
-        lá nada é sincronizado automaticamente com a Shopee, em nenhuma direção.
+      <Alert color="blue" title="O que esta tela faz" mb="md">
+        Esta tela cadastra a conta, faz a conexão OAuth com a Shopee e, para a conta selecionada,
+        inicia duas tarefas longas: importar todos os anúncios e atualizar os preços. O andamento de
+        cada uma aparece no painel ao lado da lista; uma tarefa que o servidor não conseguir iniciar
+        mostra ali o motivo.
+        {linhasDeProdutosLigadas
+          ? null
+          : ' Enviar estoque, enviar preços e pausar ou reativar anúncios pela lista de produtos ainda não atendem a Shopee.'}
       </Alert>
 
       <TableView<typeof integracaoSchema>
@@ -106,8 +131,29 @@ export default function CanalShopeePage() {
           shop_id: { label: 'Shop ID' },
         }}
         selectable
-        actions={
-          canDelete
+        onSelectionChange={(rows) => setSelecionadas(rows.map(contaRefFromRow))}
+        // The two jobs run for MINUTES and their progress has to stay on screen
+        // while the operator keeps working the table — the rail can host it, the
+        // top ActionBar cannot (#816). 300px keeps the job cards legible.
+        actionsPanel={{ width: 300 }}
+        // ⚠️ The whole jobs panel — cards, Histórico, "Acompanhar" — only for
+        // `canWrite`: every price-job read is a `.write` route, so a read-only
+        // viewer would get a rail of 403s, for jobs they cannot start anyway.
+        renderActionsPanelExtra={
+          canWrite
+            ? ({ collapsed }) => (
+                <ShopeeJobsPanel
+                  collapsed={collapsed}
+                  selecionadas={selecionadas}
+                  importacao={importacao.state}
+                  precos={precos.state}
+                />
+              )
+            : undefined
+        }
+        actions={[
+          ...(canWrite ? [importacao.action, precos.action] : []),
+          ...(canDelete
             ? [
                 {
                   id: 'delete',
@@ -131,9 +177,14 @@ export default function CanalShopeePage() {
                   },
                 },
               ]
-            : []
-        }
+            : []),
+        ]}
       />
+
+      {/* Portalled — their position in the tree is irrelevant, but they must
+          stay mounted unconditionally: the actions open them. */}
+      <ImportarTodosShopeeDialog state={importacao.state} />
+      <AtualizarPrecosShopeeDialog state={precos.state} />
     </>
   );
 }

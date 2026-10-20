@@ -139,6 +139,21 @@ afterEach(() => {
 });
 
 describe('PhotoManager fullscreen viewer', () => {
+  it('resolves canonical refs for both the thumbnail and the original viewer', () => {
+    seedSnaps(['A']);
+    renderManager([
+      {
+        ...foto('A'),
+        arquivoOuterRef: 'documents/arquivos/origA',
+        arquivo200pxOuterRef: 'documents/arquivos/derivA',
+      },
+    ]);
+
+    expect(screen.getByRole('img').getAttribute('src')).toBe('https://cdn/derivA-200.jpg');
+    fireEvent.click(screen.getByRole('button', { name: 'Ampliar foto 1' }));
+    expect(viewerImage().getAttribute('src')).toBe('https://cdn/origA-full.jpg');
+  });
+
   it('opens the ORIGINAL photo, not the 200px thumbnail the card shows', () => {
     seedSnaps(['A', 'B', 'C']);
     renderManager([foto('A'), foto('B'), foto('C')]);

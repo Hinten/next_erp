@@ -495,38 +495,41 @@ describe('the producer planos as stored', () => {
  * copied literal.
  *
  * ⚠️ M30: the order of the advice is the safety property. A #1450 repoint of the
- * map flips the ERP fingerprint while Shopee's recipe is unchanged, and
- * `--recriar` deletes a LIVE listing — so the sentence must say "republish
- * FIRST", and its recriar must name the link (`--link {vinculo} --recriar`),
- * never a bare `--recriar`.
+ * map flips the ERP fingerprint while Shopee's recipe is unchanged, and a
+ * recriar deletes a LIVE listing — so the sentence must say "Republicar" FIRST,
+ * and its "Recriar kit" must name the link, never a bare "recrie". Since step 21
+ * (#1529, T11) both are buttons of the produto's Shopee tab: the sentence names
+ * them, never a command line.
  */
 describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.shopeeKitReceitaDivergente];
   const KIT = 'k1';
   const ITEM_ID = 2500139870;
   const VINCULO = 'l-kit-1';
+  /** CLI copy — a script name, a flag or the word — never reaches the inbox (lens 8). */
+  const TEXTO_DE_TERMINAL = /publicar:anuncio|(^|\s)--[a-z]|comando/i;
 
   const corpoEsperado = (kit: string, anuncio: string, vinculo: string, variacoes: string) =>
     `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
     `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
-    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
-    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
-    `Senão, recrie o kit (publicar:anuncio --link ${vinculo} --recriar) ou volte a composição ao que ` +
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Use "Republicar" no anúncio, ' +
+    'na aba Shopee do produto: se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    `Senão, use "Recriar kit" no anúncio do vínculo ${vinculo} ou volte a composição ao que ` +
     'está na Shopee.';
 
   /**
    * The same sentence when the aviso names NO link (the builder's `—`, or the
-   * param absent): a `--recriar` refuses to run without `--link`, so the reader
-   * prints no command with a dangling `--link —` — it sends the operator to the
-   * `--link` the republish (already the first step) prints for a divergent kit.
+   * param absent): it never prints a dangling "vínculo —" — it sends the
+   * operator to the link the republish (already the first step) names for a
+   * divergent kit.
    */
   const corpoSemVinculoEsperado = (kit: string, anuncio: string, variacoes: string) =>
     `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
     `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
-    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
-    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
-    'Senão, recrie o kit com o --link que a republicação indicar (o --recriar exige o vínculo do kit ' +
-    'antigo, e este aviso não o identificou) ou volte a composição ao que está na Shopee.';
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Use "Republicar" no anúncio, ' +
+    'na aba Shopee do produto: se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    'Senão, use "Recriar kit" no anúncio que a republicação indicar ou volte a composição ao que ' +
+    'está na Shopee.';
 
   it('renders the sentence verbatim with every param', () => {
     expect(
@@ -534,26 +537,38 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     ).toBe(corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'));
   });
 
+  it('T11 — names the tab’s buttons, never a command line, with or without a link', () => {
+    const casos: Record<string, string>[] = [
+      { kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' },
+      { kit: KIT, anuncio: '1', vinculo: '—', variacoes: 'c1' },
+      {},
+    ];
+    for (const params of casos) {
+      const corpo = mensagem.corpo(params);
+      expect(corpo).toContain('na aba Shopee do produto');
+      expect(corpo).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
   it('M30 — tells the operator to republish FIRST, before any recriar', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
-    expect(corpo).toContain('Republique o kit primeiro');
+    expect(corpo).toContain('Use "Republicar" no anúncio');
     expect(corpo).toContain('este aviso se resolve sozinho');
-    expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(corpo.indexOf('recrie o kit'));
+    expect(corpo.indexOf('Republicar')).toBeGreaterThan(-1);
+    expect(corpo.indexOf('Republicar')).toBeLessThan(corpo.indexOf('Recriar kit'));
   });
 
-  it('M30 — the recriar names its link: `--link {vinculo} --recriar`, never a bare `--recriar`', () => {
+  it('M30 — the recriar names its link, and there is exactly one recriar', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
-    expect(corpo).toContain(`publicar:anuncio --link ${VINCULO} --recriar`);
-    // Every `--recriar` in the sentence is the one the link precedes.
-    const ocorrencias = [...corpo.matchAll(/--recriar/g)];
-    expect(ocorrencias).toHaveLength(1);
-    expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
+    expect(corpo).toContain('no anúncio do vínculo ' + VINCULO);
+    expect([...corpo.matchAll(/Recriar kit/g)]).toHaveLength(1);
   });
 
-  it('renders `{}` with the placeholder in every slot, never "undefined" — and no link-less command', () => {
+  it('renders `{}` with the placeholder in every slot, never "undefined" — and no dangling link', () => {
     const corpo = mensagem.corpo({});
     expect(corpo).toBe(corpoSemVinculoEsperado('—', '—', '—'));
     expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('vínculo —');
   });
 
   it('renders what the ONE builder writes, each param in its slot (writer → reader)', () => {
@@ -566,13 +581,15 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     });
     const aviso = comoArmazenado(plano);
     expect(aviso.tipo).toBe(TIPO_AVISO.shopeeKitReceitaDivergente);
+    // ⚠️ Still the Kit field (residual 23): the aviso opens the produto one tab
+    // from the Shopee tab its copy names — a persisted producer field.
     expect(aviso.urlInterna).toEqual({ rota: `/produtos/${KIT}`, campo: 'componentesKit' });
     expect(mensagem.corpo(aviso.params)).toBe(
       corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'),
     );
   });
 
-  it('renders the builder’s `—` for an unknown item and link without a dangling flag value', () => {
+  it('renders the builder’s `—` for an unknown item and link without a dangling reference', () => {
     const plano = avisoReceitaKitShopee({
       integracaoId: 'int-1',
       kitProdutoId: KIT,
@@ -584,9 +601,10 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     expect(corpo).toBe(corpoSemVinculoEsperado(KIT, '—', 'c1'));
     expect(corpo).not.toContain('undefined');
     expect(corpo).not.toContain('null');
+    expect(corpo).not.toContain('vínculo —');
   });
 
-  it('M30 — a link the aviso does not know prints NO `--link —` command: `--recriar` requires `--link`', () => {
+  it('M30 — a link the aviso does not know prints NO "vínculo —": it points to the link the republish names', () => {
     // The builder's `—`, an absent param and an empty one all mean "no link".
     const semVinculo: Record<string, string>[] = [
       { kit: KIT, anuncio: '1', vinculo: '—', variacoes: 'c1' },
@@ -596,24 +614,20 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     for (const params of semVinculo) {
       const corpo = mensagem.corpo(params);
       expect(corpo).toBe(corpoSemVinculoEsperado(KIT, '1', 'c1'));
-      expect(corpo).not.toMatch(/--link\s+—/);
-      expect(corpo).not.toMatch(/publicar:anuncio --link/);
-      expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
-      expect([...corpo.matchAll(/--recriar/g)]).toHaveLength(1);
-      // Still republish FIRST — the republish is what prints the `--link`.
-      expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(
-        corpo.indexOf('recrie o kit'),
-      );
+      expect(corpo).not.toMatch(/vínculo\s+—/);
+      expect([...corpo.matchAll(/Recriar kit/g)]).toHaveLength(1);
+      // Still republish FIRST — the republish is what names the link.
+      expect(corpo.indexOf('Republicar')).toBeLessThan(corpo.indexOf('Recriar kit'));
     }
   });
 
-  it('NEAR-MISS: a KNOWN link keeps the runnable command, byte-for-byte', () => {
+  it('NEAR-MISS: a KNOWN link keeps naming it, byte-for-byte', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
     expect(corpo).toBe(corpoEsperado(KIT, '1', VINCULO, 'c1'));
     expect(corpo).not.toBe(corpoSemVinculoEsperado(KIT, '1', 'c1'));
   });
 
-  it('is titled like its label and carries no runbook — the publish route/CLI is the fix', () => {
+  it('is titled like its label and carries no runbook — the produto’s Shopee tab is the fix', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.shopeeKitReceitaDivergente);
     expect(mensagem.runbook).toBeUndefined();
   });

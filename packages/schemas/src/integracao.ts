@@ -8,6 +8,17 @@ const PERM_INTEGRACAO_WRITE = 1n << 57n;
 const PERM_INTEGRACAO_DELETE = 1n << 58n;
 
 /**
+ * Legacy account-reference matching shared by listing readers and writers.
+ * Accepts the bare path and any path ending in `/integracao/<id>`, including
+ * the canonical `documents/` encoding. This deliberately preserves suffix
+ * matching; it is not a full document-path validator.
+ */
+export function refMatchesIntegracao(ref: unknown, integracaoId: string): boolean {
+  if (typeof ref !== 'string') return false;
+  return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
+}
+
+/**
  * INTEGRACAO_PEDIDO — int-coded marketplace channel id, mirroring
  * `packages/global/lib/src/constantes.dart`. Stored on disk as the
  * integer.

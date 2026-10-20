@@ -20,6 +20,9 @@ import {
   INTEGRACAO_FRETE,
   integracaoSchema,
   INTEGRACAO_TIPO,
+  ESTADO_ANUNCIO_SHOPEE,
+  produtoShopeeLinkSchema,
+  SHOPEE_ITEM_STATUS,
   MODALIDADE_FRETE,
   MODO_LINK_PAGAMENTO,
   seedFreteInicial,
@@ -3802,6 +3805,127 @@ export async function seedProdutoMlFamilia(
   }
   await batch.commit();
   return { produtoId, familyId, membros: membros.map((m) => ({ itemId: m.itemId, cor: m.cor })) };
+}
+
+/**
+ * Fixture ids of the Shopee produto suite — never a real shop or listing. The
+ * shop id is what the storefront link is built from, so the spec asserts it.
+ */
+export const SHOPEE_E2E_SHOP_ID = 987654;
+export const SHOPEE_E2E_ITEM_ATIVO = 1000001;
+export const SHOPEE_E2E_ITEM_KIT_REMOVIDO = 1000002;
+
+/**
+ * Seed one plain produto holding THREE Shopee listing links on one conta, in
+ * the `prodshopee` shape apps/shopee writes (parsed through the one write
+ * schema, `produtoShopeeLinkSchema`, so a fixture cannot drift from it), so the
+ * produto editor's Shopee tab has each reading to render with no apps/shopee
+ * running:
+ *
+ *  - `ativo` — live and deboosted, with one deboost violation and a CURRENT
+ *    price refusal (its refusal stamp is newer than its clean-send stamp);
+ *  - `kitRemovido` — a native kit Shopee removed (`removido`, `SELLER_DELETE`);
+ *  - `rascunho` — a draft never published (`item_id: null`, no category).
+ *
+ * Also stamps the conta's `shop_id` with {@link SHOPEE_E2E_SHOP_ID}: the
+ * fixture conta `seedShopeeFixtures` writes carries none, and without it no
+ * storefront link can be built.
+ *
+ * Every id is deterministic (`${prefix}-prod`, `${prefix}-ativo`, …) so
+ * `afterAll` can sweep the link subcollection even when `beforeAll` dies
+ * mid-way. ⚠️ A seeded `prodshopee` fires the staging link trigger, which only
+ * stamps the produto's `integracoesComProduto` (it never calls Shopee); the
+ * produto carries no kit recipe, so no recipe aviso is opened for it.
+ */
+export async function seedProdutoShopeeVinculado(
+  prefix: string,
+  integracaoId: string,
+): Promise<{
+  produtoId: string;
+  links: { ativo: string; kitRemovido: string; rascunho: string };
+}> {
+  const produtoId = `${prefix}-prod`;
+  const links = {
+    ativo: `${prefix}-ativo`,
+    kitRemovido: `${prefix}-kit-removido`,
+    rascunho: `${prefix}-rascunho`,
+  };
+  const now = Date.now();
+  const contaRef = `documents/integracao/${integracaoId}`;
+  const batch = db().batch();
+  batch.update(db().collection('integracao').doc(integracaoId), { shop_id: SHOPEE_E2E_SHOP_ID });
+  batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: now,
+    nome: produtoId,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_SHP`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+    integracoesComProduto: [integracaoId],
+  });
+  const linksCol = db().collection('produtos').doc(produtoId).collection('prodshopee');
+  batch.set(
+    linksCol.doc(links.ativo),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: contaRef,
+      item_name: `${prefix}-ativo`,
+      item_id: SHOPEE_E2E_ITEM_ATIVO,
+      category_id: 100087,
+      item_status: SHOPEE_ITEM_STATUS.normal,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      deboost: true,
+      publicadoEm: now - 86_400_000,
+      violacoesLidasEm: now,
+      violations: [
+        {
+          kind: 'deboost',
+          violation_type: 'Imagem de baixa qualidade (e2e)',
+          violation_reason: 'A foto principal semeada pelo e2e está desfocada.',
+          suggestion: 'Envie uma foto nítida.',
+          fix_deadline_time: now + 7 * 86_400_000,
+          update_time: now,
+          suggested_category: null,
+          days_to_fix: null,
+        },
+      ],
+      precoEnviadoEm: now - 3_600_000,
+      precoRecusaEm: now,
+      precoRecusaCodigo: 'erp:fixture-e2e',
+      precoRecusaMotivo: 'fixture-e2e',
+      precoRecusaMensagem: 'Recusa de preço semeada pelo e2e.',
+    }),
+  );
+  batch.set(
+    linksCol.doc(links.kitRemovido),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: contaRef,
+      item_name: `${prefix}-kit`,
+      item_id: SHOPEE_E2E_ITEM_KIT_REMOVIDO,
+      category_id: 100087,
+      item_status: SHOPEE_ITEM_STATUS.sellerDelete,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      kitNativo: true,
+      publicadoEm: now - 2 * 86_400_000,
+    }),
+  );
+  batch.set(
+    linksCol.doc(links.rascunho),
+    produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: contaRef,
+      item_name: `${prefix}-rascunho`,
+      item_id: null,
+      category_id: null,
+    }),
+  );
+  await batch.commit();
+  return { produtoId, links };
 }
 
 /**

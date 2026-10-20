@@ -266,8 +266,9 @@ after a kit write-back #2 (which clears it), or a stale step-11 value on a conve
 OLD link. Why not stamp: the seam gives the kit arms exactly one link writer (`vinculosKit.ts`,
 values READ from Shopee — #2, the `removido` fold, the post-delete read), and a stamp is the
 first write of a value Shopee did not report, on a link #2 guards against leaving `removido`
-(R1-RT7-05). It belongs with the step-21 panel that will read it — which then needs both the
-stamp here and the clear that #2 already does.
+(R1-RT7-05). It belongs with the kit `falhaPublicacao` follow-up (#1915). Step 21's tab already
+reads the field, so until then a kit refusal shows only in the 422, and the link keeps whatever
+the field held before.
 
 | state found                                                   | arises from                                 | the next plain publish does                                 |
 | ------------------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------------- |
@@ -700,11 +701,8 @@ Step 19 also amended four rows of the master plan's earlier steps (reconcile
   the remaining notes of the legacy critique (E4 §4.10).
 - **Run a model sync on a push.** A push 16/27 for the old listing folds the
   status only.
-- **Build the web parts.** Deferred to step 21 / #1432:
-  - the kit badge;
-  - the recriar and converter buttons;
-  - the principal pick;
-  - the composition preview;
-  - the bulk-registry rows.
-
-  Step 19's web is only the `ehKitVirtual` fix and the pre-save notice (O-9).
+- **Build the web parts.** Built in step 21 (#1529) as the produto's Shopee tab
+  (`apps/web/app/(app)/produtos/_components/shopee/`): the kit badge, the
+  recriar and converter buttons, the principal pick and the composition
+  preview; the bulk-registry rows are live from the step-22 flip. Step 19's own
+  web was only the `ehKitVirtual` fix and the pre-save notice (O-9).

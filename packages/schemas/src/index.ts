@@ -72,7 +72,9 @@ export {
   toOuterRefOrNull,
   toDocPathOrNull,
   idFromRef,
+  idFromRefOrNull,
   parseRef,
+  naoDocId,
   type OuterRef,
   type IdRef,
   type DocId,
@@ -349,6 +351,7 @@ export {
 export {
   integracao,
   integracaoSchema,
+  refMatchesIntegracao,
   integracaoMeta,
   integracaoTipoSchema,
   INTEGRACAO_TIPO,
@@ -912,6 +915,8 @@ export {
   tabelaDeMedidas,
   tabelaDeMedidasSchema,
   tabelaDeMedidasMeta,
+  lerRefTabelaDeMedidas,
+  type RefTabelaDeMedidas,
   type TabelaDeMedidas,
 } from './tabelaDeMedidas';
 

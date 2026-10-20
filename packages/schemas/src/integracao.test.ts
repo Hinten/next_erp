@@ -11,6 +11,7 @@ import {
   encodeHorarioMs,
   integracaoMeta,
   integracaoSchema,
+  refMatchesIntegracao,
   MODO_ENVIO_MERCADO_LIVRE,
   MODO_ENVIO_MERCADO_LIVRE_LABELS,
   modoEnvioMercadoLivreSchema,
@@ -25,6 +26,36 @@ import {
   usuarioTesteRoleSchema,
 } from './integracao';
 import { ALL_DOMAINS } from './registry';
+
+describe('refMatchesIntegracao', () => {
+  it('preserves canonical, bare and legacy suffix matching', () => {
+    for (const ref of [
+      'integracao/account-1',
+      'documents/integracao/account-1',
+      'unrelated/root/integracao/account-1',
+    ]) {
+      expect(refMatchesIntegracao(ref, 'account-1'), ref).toBe(true);
+    }
+  });
+
+  it('keeps different IDs, case, whitespace and missing values distinct', () => {
+    for (const ref of [
+      null,
+      undefined,
+      42,
+      {},
+      '',
+      '/',
+      'integracao/account-10',
+      'integracao/ACCOUNT-1',
+      'integracao/account-1 ',
+      'integracao/account-1/child',
+      'other/account-1',
+    ]) {
+      expect(refMatchesIntegracao(ref, 'account-1'), String(ref)).toBe(false);
+    }
+  });
+});
 
 /* -------------------------------------------------------------------------- */
 /*                          CredenciaisIntegracao                             */

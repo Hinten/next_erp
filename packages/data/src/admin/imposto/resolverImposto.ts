@@ -37,6 +37,7 @@
  * inputs change.
  */
 import {
+  idFromRefOrNull,
   impostoSchema,
   normalizeNCM,
   type Imposto,
@@ -180,9 +181,9 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
     const ncm = candidateNcm ?? normalizeNCM(parseNCM(produto));
     for (const regra of deps.bundle.regrasImposto) {
       const matches =
-        regra.produtos.some((p) => trailingSegment(p) === produtoUid) ||
+        regra.produtos.some((p) => idFromRefOrNull(p) === produtoUid) ||
         (categoriaUid != null &&
-          regra.categorias.some((c) => trailingSegment(c) === categoriaUid)) ||
+          regra.categorias.some((c) => idFromRefOrNull(c) === categoriaUid)) ||
         (ncm != null && regra.ncms.some((n) => normalizeNCM(n) === ncm));
       if (!matches) continue;
       // Legacy `regras` docs carry an UPPERCASE `CFOP` — fold it into the
@@ -249,23 +250,9 @@ function pickByOperacao<T>(
   const exact = docs.find((d) => {
     const ref = scopeOf(d);
     if (ref == null) return false;
-    return trailingSegment(ref) === operacaoId;
+    return idFromRefOrNull(ref) === operacaoId;
   });
   return exact ?? docs.find((d) => scopeOf(d) == null);
-}
-
-/**
- * Last non-empty segment of a path-or-id — `documents/produtos/p1`,
- * `produtos/p1` and `p1` all yield `p1`. The legacy Flutter writers stored
- * ids in all three shapes (#398), so every id comparison in the cascade
- * goes through here.
- */
-function trailingSegment(pathOrId: string): string | null {
-  const seg = pathOrId
-    .replace(/^\/+|\/+$/g, '')
-    .split('/')
-    .pop();
-  return seg != null && seg.length > 0 ? seg : null;
 }
 
 /** First zod issue as a `path message` fragment for single-line logs. */
@@ -289,11 +276,11 @@ function parseCategoriaUid(produto: Record<string, unknown> | null): string | nu
   if (!produto) return null;
   const ref = produto.categoriaProdutoOuterRef;
   if (typeof ref === 'string') {
-    return ref.split('/').pop() ?? null;
+    return idFromRefOrNull(ref);
   }
   if (ref && typeof ref === 'object' && 'path' in ref) {
     const p = (ref as { path?: unknown }).path;
-    return typeof p === 'string' ? (p.split('/').pop() ?? null) : null;
+    return idFromRefOrNull(p);
   }
   return null;
 }

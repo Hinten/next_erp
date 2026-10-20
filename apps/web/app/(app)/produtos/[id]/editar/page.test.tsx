@@ -55,6 +55,8 @@ const h = vi.hoisted(() => ({
   propagacoes: [] as Record<string, unknown>[],
   /** How many of the next propagations the stubbed use-case fails. */
   falhasDePropagacao: 0,
+  /** The props the page handed the (stubbed) Shopee tab, last render. */
+  shopeeTab: null as Record<string, unknown> | null,
 }));
 
 vi.mock('@delfrance/ui', async (importOriginal) => ({
@@ -104,6 +106,12 @@ vi.mock('@delfrance/data/produto', async (importOriginal) => ({
     return [];
   },
 }));
+vi.mock('../../_components/shopee/ShopeeTab', () => ({
+  ShopeeTab: (props: Record<string, unknown>) => {
+    h.shopeeTab = props;
+    return <div data-testid="shopee-tab-stub" />;
+  },
+}));
 vi.mock('@/lib/shopee/kitNativo', () => ({
   useKitNativoShopee: (_db: unknown, raiz: string | null) => {
     h.raizes.push(raiz);
@@ -117,6 +125,7 @@ const db = getFirestore(
 );
 
 import EditarProdutoPage from './page';
+import { SECTION_SHOPEE } from '../../_components/produtoFields';
 
 function montar(): void {
   h.captured = null;
@@ -155,6 +164,7 @@ beforeEach(() => {
   h.temKitNativo = false;
   h.propagacoes.length = 0;
   h.falhasDePropagacao = 0;
+  h.shopeeTab = null;
 });
 
 describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19, O-8, M159)', () => {
@@ -383,5 +393,31 @@ describe('produtos/[id]/editar — the Shopee native-kit notice (step 19, R-v, M
     montar();
     renderEhKit(true);
     expect(aviso()).toBeNull();
+  });
+});
+
+describe('produtos/[id]/editar — the Shopee tab (step 21, #1529)', () => {
+  it('renders the read-only tab for THIS produto, with no flush and no dirty reporter', () => {
+    montar();
+    const shopee = capturado().fields?.shopee;
+    expect(shopee?.section).toBe(SECTION_SHOPEE);
+    const renderInput = shopee?.renderInput;
+    if (!renderInput) throw new Error('the page gives the Shopee tab no input');
+    const props: FieldRenderProps = {
+      name: 'shopee',
+      label: 'Shopee',
+      value: null,
+      onChange: vi.fn(),
+      onBlur: vi.fn(),
+      descriptor: {} as FieldRenderProps['descriptor'],
+      disabled: true,
+    };
+    render(<MantineTestProvider>{renderInput(props) as ReactNode}</MantineTestProvider>);
+    expect(screen.getByTestId('shopee-tab-stub')).toBeDefined();
+    expect(h.shopeeTab).toMatchObject({ produtoId: 'p1', disabled: true });
+    // It holds no drafts: a flush or a dirty reporter here would be a fourth
+    // registration the persistent-section backstop does not know about.
+    expect(h.shopeeTab).not.toHaveProperty('flushRef');
+    expect(h.shopeeTab).not.toHaveProperty('onDirtyChange');
   });
 });
