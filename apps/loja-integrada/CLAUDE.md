@@ -311,30 +311,31 @@ still be fixed. Only the context loader refuses those.
 ## Order import (steps 5–6)
 
 - `pedidos/importarPedido.ts` fills the step-3 seam: the queue and both sweeps run it, the
-  poller passes its importer gate. The context still refuses first while the read switch
-  is off, so a run DEFERS before any read and nothing calls Loja Integrada (D17). Every
-  rule lives in the pure mappers beside it.
-- One run: the detail, the paged situação history (strict on queue attempts 0–1, so a hole
-  retries; degraded from attempt 2 and in every sweep run), the pedido snapshot, the hub
-  guard, produtos, freight, cliente and endereço, then ONE atomic `WriteBatch`: the pedido
-  and every pagamento, each under its own precondition. A lost one aborts the whole batch;
-  up to 3 attempts re-derive from fresh reads, then `LiPedidoEmConflitoError` retries the
-  task. Every deterministic refusal comes before the batch (the `mapa` row, cliente and
-  endereço may already be written; each is idempotent).
-- Every importer outcome RESOLVES: `importado`, `sem-mudanca`, `obsoleto` (a newer stored
-  stamp: NO write, avisos included), `hub` (no pedido or pagamento, an aviso),
-  `situacao-desconhecida`. Schema and Zod refusals park.
-- Estado and payment status come from the situação codigo through one shared table, never
-  from the situação flags. The incoming stamp is LI's naive time, converted once by
-  `dataLiParaMicros` (Layout rules). A stored stamp may come from another writer, in
-  another unit or zone; it is read through `coerceToMicros`, and a migrated pedido's first
-  new observation re-applies, which the window rehearsal verifies.
-- The buyer is the fiscal identity: a valid CNPJ, else a valid CPF, never the recipient's
-  document. No endereço ⇒ the freight amount and modalidade but no carrier route; a stored
-  route is never cleared.
-- Avisos and incidentes run after the batch, on `importado` and `sem-mudanca` alike, so a
-  retry after a crash still writes them.
-- The emulator suite `pedidos/importarPedido.firestore.test.ts` (CI below) pins the batch.
+  poller passes its importer gate. The context refuses first while the read switch is
+  off, so a run DEFERS before any read and reaches no import path, A4 included (D17).
+  Every rule lives in the pure mappers beside it.
+- One run: the detail, the situação history (strict on queue attempts 0–1), the pedido
+  snapshot, the hub guard, produtos, freight (its `mapa` row and the
+  `lojaIntegradaFreteNaoSuportado` sync run HERE, on every attempt that routed), cliente
+  and endereço, then ONE atomic `WriteBatch` (the pedido and every pagamento, each under
+  its own precondition; a lost one re-derives all, 3 attempts, then a retry).
+- A4: a PAID order with a shipment, no usable address and no stored endereço throws
+  `LiPedidoPagoSemEnderecoError` before step 7; a pickup is exempt. It retries, and the
+  pipeline's park at its cap logs an ERROR line (ids only) and raises the `critico`
+  `lojaIntegradaPedidoPagoSemEndereco`; a later import resolves it.
+- The buyer is the fiscal identity (a valid CNPJ, else CPF). Never a cliente beside
+  another cliente's endereço: each stored endereço must be the pedido's cliente's, judged
+  per attempt, else nothing is filled over it and an incidente. No endereço (pickup
+  aside) ⇒ no carrier route; a stored route is never cleared.
+- Every importer outcome RESOLVES; `obsoleto` (a newer stored stamp) writes NOTHING;
+  schema and Zod refusals park. Estado and payment status come from the situação codigo
+  through one shared table; a stored stamp is read through `coerceToMicros`.
+- Six aviso tipos (`avisosPedidoLi.ts`): situação desconhecida, contestado, hub, frete não
+  suportado, pago sem endereço and A7's `lojaIntegradaReversaoComEtiqueta` (a reversal on
+  a pedido with a bought label). Order avisos and incidentes run after the batch, on
+  `importado` and `sem-mudanca`, so a retry after a crash still writes them.
+- A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
+- `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
 
 ## CI (steps 3, 5 and 20)
 

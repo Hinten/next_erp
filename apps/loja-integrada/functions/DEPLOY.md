@@ -93,10 +93,13 @@ create, patch or deactivate. That is why this deploy waits for the window's
   of the conta reference; without it Enterprise full-scans every produto's link
   docs on each line, and bills the scan.
 - **`apps/web` deployed before the read switch is set** (master plan §5 item 1;
-  §5 item 5 rolls it out after this codebase). The import raises four aviso
+  §5 item 5 rolls it out after this codebase). The order import owns six aviso
   tipos (`lojaIntegradaSituacaoDesconhecida`, `lojaIntegradaPedidoContestado`,
-  `lojaIntegradaPedidoHub`, `lojaIntegradaFreteNaoSuportado`), and only a run
-  past the switch imports; a web build older than them has no wording for those
+  `lojaIntegradaPedidoHub`, `lojaIntegradaFreteNaoSuportado`,
+  `lojaIntegradaReversaoComEtiqueta`, and the `critico`
+  `lojaIntegradaPedidoPagoSemEndereco`, which the reprocess sweep raises when
+  it parks — see "A parked notification logs ERROR" below), and only a run past
+  the switch imports; a web build older than them has no wording for those
   rows.
 - **Region match.** The functions enqueue onto the queue in their own region. The
   enqueuer resolves it from `LOJA_INTEGRADA_TASKS_REGION ?? FUNCTIONS_REGION`,
@@ -191,6 +194,34 @@ A notification is durable once it is either (a) processed, or (b) persisted as
   the conta's deferred rows back into the hot lane. A token restored after the
   7th pass finds those rows parked. The 30-day expiry aviso and the critical
   reconnection aviso both come before that loss.
+
+### A parked notification logs ERROR
+
+A THROWN failure that the reprocess sweep parks at its cap (`MAX_TENTATIVAS`, 5
+hot passes, so no sooner than about five hours after the queue's last attempt)
+is terminal: no lane re-drives it, and it holds an order nobody imported. So
+`reprocessLojaIntegradaNotifications` logs ONE line at ERROR severity for each
+such park — ids only, never a store name, a buyer's datum or the error's
+message — and the row's document id joins the sweep's per-doc failures WARNING.
+Alert on both lines:
+
+- `[loja-integrada/importacao] pedido PAGO sem endereço de entrega: tentativas esgotadas, notificação estacionada`
+  (`integracaoId`, `numero`, `pedidoId`): a PAID order with a shipment still
+  had no usable delivery address on its last run (master-plan step 5). It also
+  raises the `critico` aviso `lojaIntegradaPedidoPagoSemEndereco` on the conta
+  page; a later import of that order that finds an address resolves it. A
+  pickup order is exempt and imports without one.
+- `[loja-integrada] notificação estacionada: tentativas esgotadas, pedido não importado`
+  (`integracaoId`, `numero`, `origem`, `classe`): any other thrown failure — a
+  429, a 5xx, a timeout, gRPC. No aviso: the row's `erro` is the record.
+
+The line is written before the aviso, because the row is terminal and nothing
+retries a signal: if the aviso write fails, the shared core adds
+`[loja-integrada] retries-exhausted signal FAILED for a parked notification`
+(ERROR, with the document id), and the first line is what is left. A RETURNED
+park — a deterministic refusal, or the deferred lane's 7th pass — logs neither
+line. That includes every row before the window: with the read switch unset a
+run defers at the context, so neither line can appear until the switch is set.
 
 ## Runtime env
 
