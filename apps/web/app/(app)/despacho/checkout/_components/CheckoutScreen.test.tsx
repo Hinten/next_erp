@@ -20,6 +20,7 @@ import type { PostSaveResult } from '@/lib/checkout/postSave';
  */
 const h = vi.hoisted(() => ({
   SHOPEE_SENTINEL: { __sentinela: 'shopee' },
+  LI_SENTINEL: { __sentinela: 'loja-integrada' },
   runCheckoutPostSave: vi.fn(),
   getDoc: vi.fn(),
   /** Every props object the "Outros Checkouts" reprint modal is rendered with. */
@@ -38,6 +39,7 @@ vi.mock('@/lib/nfe/client', () => ({ useNFeClient: () => null }));
 vi.mock('@/lib/freight/client', () => ({ useFreightClient: () => null }));
 vi.mock('@/lib/mercado-livre/client', () => ({ useMercadoLivreClient: () => null }));
 vi.mock('@/lib/shopee/client', () => ({ useShopeeClient: () => h.SHOPEE_SENTINEL }));
+vi.mock('@/lib/loja-integrada/client', () => ({ useLojaIntegradaClient: () => h.LI_SENTINEL }));
 vi.mock('@/lib/data/pedidoCollection', () => ({
   pedidoCollection: { docRef: () => ({ __ref: true }) },
 }));
@@ -177,5 +179,49 @@ describe('CheckoutScreen — the reprint pane and the pickup question (#1523)', 
     await waitFor(() => expect(resposta).toBeNull());
     // The post-save returned, so the screen reset for the next pedido.
     await waitFor(() => expect(screen.queryByRole('button', { name: /Salvar/ })).toBeNull());
+  });
+});
+
+describe('CheckoutScreen — the Loja Integrada paid re-check (step 15)', () => {
+  it('Salvar hands runCheckoutPostSave the screen useLojaIntegradaClient()', async () => {
+    renderTela();
+    await salvar();
+
+    await waitFor(() => expect(h.runCheckoutPostSave).toHaveBeenCalledTimes(1));
+    expect(h.runCheckoutPostSave).toHaveBeenCalledWith(
+      expect.objectContaining({ lojaIntegradaClient: h.LI_SENTINEL }),
+    );
+  });
+
+  it('the reprint modal gets the SAME client — screen → sidebar → pane → modal', async () => {
+    renderTela();
+    await waitFor(() => expect(h.outroCheckoutModal).toHaveBeenCalled());
+    for (const [props] of h.outroCheckoutModal.mock.calls) {
+      expect(props).toEqual(expect.objectContaining({ lojaIntegradaClient: h.LI_SENTINEL }));
+    }
+  });
+
+  it("the post-save's `confirmarCiente` keeps Continuar disabled until the tick, ON the screen", async () => {
+    let resposta: unknown = 'pendente';
+    h.runCheckoutPostSave.mockImplementation(async (args: { ui: EtiquetaProviderUi }) => {
+      resposta = await args.ui.confirmarCiente({
+        titulo: 'Pagamento não confirmado na Loja Integrada',
+        mensagem: 'Imprimir a etiqueta deste pedido pode levar ao despacho.',
+      });
+      return { nfe: { ok: true }, danfe: null, etiqueta: null } as unknown as PostSaveResult;
+    });
+    renderTela();
+    await salvar();
+
+    const dialogo = await screen.findByRole('dialog');
+    const continuar = within(dialogo).getByRole<HTMLButtonElement>('button', {
+      name: 'Continuar',
+    });
+    expect(continuar.disabled).toBe(true);
+    fireEvent.click(within(dialogo).getByRole('checkbox', { name: 'Estou ciente do risco' }));
+    expect(continuar.disabled).toBe(false);
+    fireEvent.click(continuar);
+
+    await waitFor(() => expect(resposta).toBe(true));
   });
 });

@@ -7,6 +7,7 @@ import type { Firestore } from 'firebase/firestore';
 import { MODALIDADE_FRETE } from '@delfrance/schemas';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
+import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import type { ShopeeClient } from '@/lib/shopee/client';
 import { useEscolherEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
@@ -161,6 +162,7 @@ export interface OutroCheckoutModalProps {
   freightClient: FreightHttpClient | null;
   mercadoLivreClient: MercadoLivreClient | null;
   shopeeClient: ShopeeClient | null;
+  lojaIntegradaClient: LojaIntegradaClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   formatoEtiqueta: 'pdf' | 'zpl2';
 }
@@ -184,6 +186,7 @@ export function OutroCheckoutModal({
   freightClient,
   mercadoLivreClient,
   shopeeClient,
+  lojaIntegradaClient,
   formatoDanfe,
   formatoEtiqueta,
 }: OutroCheckoutModalProps) {
@@ -222,6 +225,17 @@ export function OutroCheckoutModal({
       // the same package twice, and a pedido whose first print stopped at this
       // question can only be finished by asking it again — here or on the row.
       escolherEnvio: envio.escolherEnvio,
+      // The Loja Integrada soft gate's acknowledged risk — a reprint is exactly
+      // where it asks.
+      confirmarCiente: ({ titulo, mensagem }) =>
+        confirm.confirm({
+          title: titulo,
+          message: mensagem,
+          confirmLabel: 'Continuar',
+          cancelLabel: 'Cancelar',
+          danger: true,
+          ciencia: true,
+        }),
     }),
     [confirm, envio.escolherEnvio],
   );
@@ -246,6 +260,7 @@ export function OutroCheckoutModal({
         nfeClient,
         mercadoLivreClient,
         shopeeClient,
+        lojaIntegradaClient,
         formato: formatoEtiqueta,
         ui,
       });
@@ -258,6 +273,7 @@ export function OutroCheckoutModal({
     nfeClient,
     mercadoLivreClient,
     shopeeClient,
+    lojaIntegradaClient,
     formatoEtiqueta,
     ui,
     printInFlight,

@@ -31,6 +31,7 @@ const ui = {
   openUrl: vi.fn(),
   comprarEtiqueta: vi.fn(),
   escolherEnvio: vi.fn(),
+  confirmarCiente: vi.fn(),
 };
 const pedidoWith = (frete: unknown) => ({ freteInicial: frete }) as unknown as Pedido;
 
@@ -61,6 +62,7 @@ describe('runCheckoutPostSave', () => {
       freightClient: null,
       mercadoLivreClient: mlClient,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       pedido: pedidoWith({ integracaoFreteOuterRef: 'documents/int_frete/if-1', modalidade: '0' }),
       pedidoId: 'p1',
       formatoDanfe: 'simplificadoPdf',
@@ -97,6 +99,7 @@ describe('runCheckoutPostSave', () => {
       freightClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       pedido: pedidoWith({ integracaoFreteOuterRef: null, modalidade: '0' }),
       pedidoId: 'p1',
       formatoDanfe: 'retrato',
@@ -116,6 +119,7 @@ describe('runCheckoutPostSave', () => {
       freightClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       pedido: pedidoWith(null),
       pedidoId: 'p1',
       formatoDanfe: 'retrato',
@@ -136,6 +140,7 @@ describe('runCheckoutPostSave', () => {
     derefMock.mockReturnValue(null);
     emitirEtiquetaMock.mockResolvedValue({ status: 'printed' });
     const shopeeClient = { __shopee: true } as never;
+    const lojaIntegradaClient = { __lojaIntegrada: true } as never;
 
     const r = await runCheckoutPostSave({
       db,
@@ -143,6 +148,7 @@ describe('runCheckoutPostSave', () => {
       freightClient: null,
       mercadoLivreClient: null,
       shopeeClient,
+      lojaIntegradaClient,
       pedido: pedidoWith({
         integracaoFreteOuterRef: null,
         externalOptionIntegracao: 'shopee',
@@ -161,6 +167,9 @@ describe('runCheckoutPostSave', () => {
     expect(input.intFrete).toEqual({ fonte: 'bloco', id: null, tipo: 'shopee', data: null });
     // The Shopee client threads through to the provider deps untouched.
     expect(input.deps.shopeeClient).toBe(shopeeClient);
+    // …and so does the Loja Integrada one, which the soft gates ask (step 15).
+    expect(input.deps.lojaIntegradaClient).toBe(lojaIntegradaClient);
+    expect(input.ui.confirmarCiente).toBe(ui.confirmarCiente);
   });
 
   it('a NON-marketplace block with no ref stays no-integration (the rule never widens it)', async () => {
@@ -172,6 +181,7 @@ describe('runCheckoutPostSave', () => {
       freightClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       pedido: pedidoWith({
         integracaoFreteOuterRef: null,
         externalOptionIntegracao: 'melhorEnvios',

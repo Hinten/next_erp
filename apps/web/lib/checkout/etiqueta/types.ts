@@ -3,6 +3,8 @@ import type { FreteDoPedido, IntFrete, IntegracaoFrete, Pedido } from '@delfranc
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 
+import type { ConferenciaLiCarregada } from '@/lib/loja-integrada/conferenciaPagamento';
+import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import type { printJob } from '@/lib/print-agent/printJob';
 import type { ShopeeClient } from '@/lib/shopee/client';
@@ -24,10 +26,19 @@ import type { EnderecoDeColeta } from '@/lib/shopee/wire';
  *
  * The provider is **pure of UI**: every side effect it can't do itself — a
  * confirm dialog, a toast, opening a URL, driving the ME buy modal, asking how
- * a Shopee package ships — is an
+ * a Shopee package ships, asking the operator to acknowledge a risk — is an
  * injected `ui.*` callback, mirroring how `nfeFlow.ts` keeps the flow logic
  * testable with fakes. Firebase reads/writes go through the injected `db` +
  * `deps` clients, never a module singleton.
+ *
+ * Two members serve the Loja Integrada paid re-check (master plan step 15),
+ * and both are REQUIRED for the reason `shopeeClient` and `escolherEnvio` are —
+ * an optional member compiles at a site that forgot it:
+ *   - `deps.lojaIntegradaClient` — the client of the `apps/loja-integrada`
+ *     backend the soft gates (`lib/loja-integrada/conferenciaPagamento.ts`)
+ *     ask, and the label router will route through;
+ *   - `ui.confirmarCiente` — the acknowledged-risk question a soft gate asks
+ *     when the order's paid status is not confirmed.
  */
 
 /** A toast the provider asks the UI to show (Mantine `notifications.show` shape). */
@@ -51,6 +62,12 @@ export interface ComprarEtiquetaInput {
   readonly frete: FreteDoPedido;
   /** True when the frete is already posted → the modal shows the risk ack. */
   readonly needsPostedConfirm: boolean;
+  /**
+   * A Loja Integrada paid verdict carried from earlier in the same chain (the
+   * checkout's pre-save check), so the buy's own check can reuse a recent
+   * `pago` instead of asking again. Absent everywhere else.
+   */
+  readonly conferenciaLi?: ConferenciaLiCarregada;
 }
 
 /**
@@ -103,6 +120,17 @@ export interface EtiquetaProviderUi {
   }): Promise<
     { modo: 'pickup'; enderecoId: string; horarioId: string | null } | { modo: 'dropoff' } | null
   >;
+  /**
+   * Warn about a risk the operator may take knowingly (a Loja Integrada order
+   * whose paid status is not confirmed, before a reprint or a generic label):
+   * the dialog shows a "Estou ciente do risco" checkbox, and its Continuar stays
+   * disabled until it is ticked. `true` = ticked and continued; `false` =
+   * cancelled.
+   *
+   * ⚠️ REQUIRED, not optional: an optional member would let a screen forget it
+   * and still compile, and that screen's reprint would then never ask.
+   */
+  confirmarCiente(p: { titulo: string; mensagem: string }): Promise<boolean>;
 }
 
 /** The clients + print helper a provider issues its network / device I/O through. */
@@ -120,6 +148,13 @@ export interface EtiquetaProviderDeps {
    * indisponível" on every Shopee label.
    */
   readonly shopeeClient: ShopeeClient | null;
+  /**
+   * The `apps/loja-integrada` backend client (master plan step 15): the paid
+   * re-check the soft gates ask before a reprint or a generic label. `null`
+   * while logged out or when the build cannot reach the backend safely — a
+   * gate then asks the "não verificável" confirm. REQUIRED like `shopeeClient`.
+   */
+  readonly lojaIntegradaClient: LojaIntegradaClient | null;
   /** Local print-agent bridge (falls back to a browser download). */
   readonly printJob: typeof printJob;
   /** Injectable wait (the ML invoice-pending retry); providers default to a real `setTimeout`. */
@@ -179,6 +214,12 @@ export interface EtiquetaProviderInput {
   readonly formato: 'pdf' | 'zpl2';
   readonly deps: EtiquetaProviderDeps;
   readonly ui: EtiquetaProviderUi;
+  /**
+   * A Loja Integrada paid verdict carried from earlier in the same checkout
+   * chain: a `pago` received under 120 s ago (client clock) spares the soft
+   * gates a second call. Absent outside a checkout chain.
+   */
+  readonly conferenciaLi?: ConferenciaLiCarregada;
 }
 
 /**

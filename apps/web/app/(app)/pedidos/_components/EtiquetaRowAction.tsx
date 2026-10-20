@@ -17,7 +17,16 @@
  *
  * ⚠️ The dialogs and the in-flight flag live in the PAGE host
  * (`EtiquetaAcaoHost`), not here: this component is unmounted by the HoverCard
- * on the first mouse move, and a flow it owned would die with it.
+ * on the first mouse move, and a flow it owned would die with it. So does the
+ * freight a Loja Integrada routing call wrote (master plan step 15): the row
+ * reads `host.rotaConhecida(pedidoId) ?? pedido.freteInicial`, so a routed
+ * pedido shows its target's action on the next hover whatever the list
+ * transport delivered.
+ *
+ * The Loja Integrada paid re-check's SOFT gate runs before every print this row
+ * makes: inside the registry for the generic label, and here, before the Melhor
+ * Envio reprint (`onImprimir`), which calls the freight client directly.
+ * Rastrear and the buy never run it here — the buy modal owns its own check.
  */
 import { useMemo, useState } from 'react';
 import { Button, Stack, Text } from '@mantine/core';
@@ -38,6 +47,8 @@ import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
 import { freightErrorMessage } from '@/lib/freight/errorMessage';
+import { useLojaIntegradaClient } from '@/lib/loja-integrada/client';
+import { conferirAntesDeImprimirLi } from '@/lib/loja-integrada/conferenciaPagamento';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 import {
   showCopyableNotification,
@@ -53,11 +64,35 @@ import { EtiquetaComprarModal } from './EtiquetaComprarModal';
 import { MercadoLivreRastrearAction } from './MercadoLivreRastrearAction';
 import { useEtiquetaAcao, useEtiquetaAcaoValor, type EtiquetaAcaoChave } from './EtiquetaAcaoHost';
 
-export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedidoId: string }) {
+export function EtiquetaRowAction({
+  pedido: pedidoDaLista,
+  pedidoId,
+}: {
+  pedido: Pedido;
+  pedidoId: string;
+}) {
   const db = getFirebaseFirestore();
   const client = useFreightClient();
   const mlClient = useMercadoLivreClient();
   const shopeeClient = useShopeeClient();
+  const lojaIntegradaClient = useLojaIntegradaClient();
+
+  // The page host when there is one; otherwise this row's own instance, whose
+  // dialogs it then renders itself (hooks stay unconditional).
+  const host = useEtiquetaAcao();
+  const local = useEtiquetaAcaoValor();
+  const acao = host ?? local.valor;
+  const dialogosLocais = host === null ? local.elementos : null;
+
+  // The freight a routing call registered wins over the list's copy, which the
+  // route's write may never reach (see `EtiquetaAcaoHost`). Every action below
+  // reads THIS pedido, so the buy modal and the providers see the same freight.
+  const rotaConhecida = acao.rotaConhecida(pedidoId);
+  const pedido = useMemo(
+    () =>
+      rotaConhecida === null ? pedidoDaLista : { ...pedidoDaLista, freteInicial: rotaConhecida },
+    [pedidoDaLista, rotaConhecida],
+  );
   const frete = pedido.freteInicial;
   const blocoTipo = frete?.externalOptionIntegracao ?? null;
 
@@ -82,12 +117,6 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
   });
   const tipo = tipoDeDespacho(docTipo, blocoTipo);
 
-  // The page host when there is one; otherwise this row's own instance, whose
-  // dialogs it then renders itself (hooks stay unconditional).
-  const host = useEtiquetaAcao();
-  const local = useEtiquetaAcaoValor();
-  const acao = host ?? local.valor;
-  const dialogosLocais = host === null ? local.elementos : null;
   const emAndamento = acao.emAndamento(pedidoId);
   const [comprarOpen, setComprarOpen] = useState(false);
 
@@ -120,6 +149,29 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
   // Legacy pre-print confirm: a reverse label on a saída (or a non-reverse one
   // on an entrada) is usually a mistake — ask before printing.
   const mismatch = etiquetaMismatch(frete?.ehReverso, pedido.ehSaida);
+
+  /**
+   * The two risk questions every print path asks through the host: the A1
+   * "Continuar?" confirm, and the acknowledged-risk warning with its required
+   * "Estou ciente do risco" tick.
+   */
+  const perguntasDeRisco: Pick<EtiquetaProviderUi, 'confirmRisk' | 'confirmarCiente'> = {
+    confirmRisk: (msg) =>
+      acao.confirm({
+        title: 'Atenção',
+        message: msg,
+        confirmLabel: 'Continuar',
+        cancelLabel: 'Cancelar',
+      }),
+    confirmarCiente: ({ titulo, mensagem }) =>
+      acao.confirm({
+        title: titulo,
+        message: mensagem,
+        confirmLabel: 'Continuar',
+        cancelLabel: 'Cancelar',
+        ciencia: true,
+      }),
+  };
 
   /** Run the direction-mismatch confirm; true = proceed (or no mismatch). */
   async function confirmMismatch(): Promise<boolean> {
@@ -181,13 +233,7 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
         return;
       }
       const ui: EtiquetaProviderUi = {
-        confirmRisk: (msg) =>
-          acao.confirm({
-            title: 'Atenção',
-            message: msg,
-            confirmLabel: 'Continuar',
-            cancelLabel: 'Cancelar',
-          }),
+        ...perguntasDeRisco,
         notify: (n) =>
           showCopyableNotification({
             title: n.title,
@@ -219,6 +265,7 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
           nfeClient: null,
           mercadoLivreClient: mlClient,
           shopeeClient,
+          lojaIntegradaClient,
           printJob,
         },
         ui,
@@ -365,9 +412,19 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     );
   }
 
-  // Gate the print behind the direction-mismatch confirm when needed.
+  // Gate the print behind the direction-mismatch confirm when needed, then the
+  // Loja Integrada soft gate: this reprint calls the freight client directly,
+  // so it never passes through the provider that would otherwise ask.
   async function onImprimir() {
     if (!(await confirmMismatch())) return;
+    const conferencia = await conferirAntesDeImprimirLi({
+      client: lojaIntegradaClient,
+      pedidoId,
+      pedido,
+      ui: perguntasDeRisco,
+      ato: 'reimpressao',
+    });
+    if (conferencia === 'cancelado') return;
     await run('imprimir');
   }
 
