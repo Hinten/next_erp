@@ -32,7 +32,9 @@
 //
 // ⚠️ Every ANCESTOR workspace's configs are matched, not just the nearest: a
 // future `apps/x/functions/vitest.config.ts` beside a parent config whose include
-// still reaches `functions/**` would put the file in two configs.
+// still reaches `functions/**` would put the file in two configs. No config
+// directory nests inside another today, so only `alvosDoConfig`'s synthetic case
+// can tell that apart from a nearest-only scan.
 //
 // ⚠️ ENV ISOLATION. Loading a config runs its code. `loadRepoRootEnv`
 // (`@delfrance/config-vitest/env`) would read the repo-root `.env` and
@@ -43,8 +45,9 @@
 // and the restore; the empty `envDir` leaves nothing observable to pin.
 //
 // Test files OUTSIDE every vitest workspace (`.claude/hooks`, `.codex`) are not
-// vitest's at all: they must sit in a pnpm workspace whose `test` script is
-// `node --test`, or they too run nowhere.
+// vitest's at all: they must sit in a pnpm workspace whose `test` script is a
+// `node --test` whose OWN patterns reach them, or they too run nowhere —
+// `node --test *.test.mjs` never runs `lib/x.test.mjs` or `x.test.ts`.
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -107,6 +110,22 @@ const ROTAS = {
 const OPT_OUT = 'DELFRANCE_VITEST_CONFIG_SCAN';
 
 /**
+ * What a bare `node --test` (no file argument) runs: Node's own default
+ * patterns, the JavaScript half ONLY. From Node 22.18 / 23.6 type stripping is on
+ * by default and the defaults also take `*.test.{cts,mts,ts}` and friends — but
+ * `engines.node` is `>=22`, and a pattern that some supported Node does NOT run
+ * is a silent pass, so a `.ts` file under a bare `node --test` reds here instead.
+ */
+const NODE_TEST_PADRAO = [
+  '**/*.test.{cjs,mjs,js}',
+  '**/*-test.{cjs,mjs,js}',
+  '**/*_test.{cjs,mjs,js}',
+  '**/test-*.{cjs,mjs,js}',
+  '**/test.{cjs,mjs,js}',
+  '**/test/**/*.{cjs,mjs,js}',
+];
+
+/**
  * Synthetic paths matched through the SAME matcher, beside the real files. Each
  * pins a verdict a vacuous matcher could not produce: one that answered "true"
  * for everything fails the first, one that answered "false" fails the other two.
@@ -139,6 +158,97 @@ export function ancestrais(file, dirs) {
 }
 
 /**
+ * Each config → the files the scan must ASK it about: every file under its
+ * directory, so a file is matched against EVERY ancestor workspace's configs,
+ * never only the nearest one's (the header's ⚠️).
+ * @param {readonly string[]} configs
+ * @param {readonly string[]} files
+ * @returns {Map<string, string[]>}
+ */
+export function alvosDoConfig(configs, files) {
+  return new Map(
+    configs.map((c) => {
+      const d = dirDe(c);
+      return [c, files.filter((f) => d === '.' || f.startsWith(`${d}/`))];
+    }),
+  );
+}
+
+/** `a{b,c}d` → `abd`, `acd` — innermost first, so nesting expands too. */
+function expandirChaves(/** @type {string} */ glob) {
+  const m = /\{([^{}]*)\}/.exec(glob);
+  if (m === null) return [glob];
+  const [antes, depois] = [glob.slice(0, m.index), glob.slice(m.index + m[0].length)];
+  return m[1].split(',').flatMap((alt) => expandirChaves(`${antes}${alt}${depois}`));
+}
+
+/**
+ * One brace-free glob → an anchored RegExp, or `null` when it uses syntax this
+ * reader does not model (`[…]`, `!`, extglob `(…)`), which then reaches NOTHING
+ * — a false refusal is loud, a false "it runs" is the silent pass. NODE's glob
+ * semantics: `*` and `?` never cross `/` nor match a leading `.` (the shell's
+ * agree), and a whole `**` segment crosses any number of non-hidden
+ * directories, none included. ⚠️ That `**` is Node's ONLY — POSIX `sh` has no
+ * globstar, so {@link nodeTestCobre} rewrites an UNQUOTED pattern's `**` to `*`
+ * before it gets here. (A trailing `**` is read as `*`: stricter, so loud.)
+ */
+function globParaRe(/** @type {string} */ glob) {
+  if (/[[\]()!{}]/.test(glob)) return null;
+  let re = '';
+  for (let i = 0; i < glob.length; i += 1) {
+    const oculto = i === 0 || glob[i - 1] === '/' ? '(?!\\.)' : '';
+    if (oculto !== '' && glob.startsWith('**/', i)) {
+      re += '(?:(?!\\.)[^/]+/)*';
+      i += 2;
+    } else if (glob[i] === '*') re += `${oculto}[^/]*`;
+    else if (glob[i] === '?') re += `${oculto}[^/]`;
+    else re += glob[i].replace(/[.+^$|\\]/, '\\$&');
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/**
+ * Does the `test` script `script` — run, as pnpm runs it, from the package
+ * directory — reach the file at package-relative `rel`? Only a PLAIN
+ * `node --test [--flags] [patterns]` is read: its patterns, or Node's defaults
+ * ({@link NODE_TEST_PADRAO}) when it names none. Anything else — another
+ * command, a shell operator, a glob syntax {@link globParaRe} does not model —
+ * answers `false`, so the check refuses what it cannot read rather than waving
+ * it through. ⚠️ A flag's SEPARATE value (`--test-reporter spec`) reads as a
+ * pattern that matches nothing; write `--flag=value`.
+ *
+ * ⚠️ QUOTING decides whose glob a pattern is. pnpm runs the script through
+ * `sh -c` on the ubuntu runner, so an UNQUOTED pattern is the shell's glob
+ * first, and POSIX `sh` has no globstar: its `**` is a plain `*`, ONE directory.
+ * Measured (the pinning test spells the commands — a block comment cannot):
+ * unquoted, it ran `sub/x.test.mjs` and neither `a.test.mjs` nor
+ * `sub/deep/a.test.mjs`; QUOTED, the pattern reaches Node intact and Node's `**`
+ * ran all three. So an unquoted `**` reads as `*` — never
+ * wider: when the shell's glob matches NOTHING it passes the pattern through
+ * literally and Node globs it fully after all (also measured), so the real run
+ * is a superset of this reading, which can therefore only refuse loudly. That
+ * fallback is why the reading must not follow it: one file landing one
+ * directory down flips the run from "every depth" to "that depth only".
+ * @param {string} script
+ * @param {string} rel
+ */
+export function nodeTestCobre(script, rel) {
+  const m = /^node --test(?:\s+(.*))?$/s.exec(script);
+  if (m === null || /[;&|<>`$]/.test(script)) return false;
+  const padroes = (m[1] ?? '')
+    .split(/\s+/)
+    .filter((t) => t !== '' && !t.startsWith('-'))
+    .map((t) => {
+      const aspas = /^(['"])(.*)\1$/.exec(t);
+      const glob = aspas === null ? t.replace(/\*{2,}/g, '*') : aspas[2];
+      return glob.replace(/^\.\//, '');
+    });
+  return (padroes.length > 0 ? padroes : NODE_TEST_PADRAO)
+    .flatMap(expandirChaves)
+    .some((g) => globParaRe(g)?.test(rel) === true);
+}
+
+/**
  * The config a file in a ROUTED workspace must land in, or `null` when the
  * workspace has no row (single-config workspaces are checked by count alone).
  * @param {string} file
@@ -161,7 +271,9 @@ export function configEsperado(file, dono, configs, rotas) {
 /**
  * Every partition violation, grouped. PURE: membership and the `node --test`
  * lookup arrive as arguments, so the near misses are tested without mutating a
- * real config or committing a stray file.
+ * real config or committing a stray file. These tests cover THIS function's
+ * side of them; the lookup's own refusal arms ({@link foraDoVitestReal},
+ * {@link nodeTestCobre}) are tested beside it.
  *
  * @param {{
  *   testes: readonly string[],
@@ -274,19 +386,28 @@ function globsDoWorkspace() {
   return [...bloco.matchAll(/-\s*['"]?([^'"\n]+?)['"]?\s*$/gm)].map((m) => m[1]);
 }
 
+/** @typedef {{ scripts?: { test?: unknown } }} Pacote */
+
+/** The disk reader {@link foraDoVitestReal} uses unless a test injects one. */
+const lerPacoteDoDisco = (/** @type {string} */ pj) =>
+  /** @type {Pacote} */ (JSON.parse(readFileSync(path.join(REPO_ROOT, pj), 'utf8')));
+
 /**
  * Why a test file OUTSIDE every vitest workspace runs nowhere — or `null` when
- * its nearest `package.json` is a pnpm workspace whose `test` is `node --test`.
+ * its nearest `package.json` is a pnpm workspace whose `test` is a `node --test`
+ * that reaches it ({@link nodeTestCobre}). The reader is injectable so every
+ * refusal arm is tested against its accepted near miss without touching disk.
  * @param {ReadonlySet<string>} pacotes tracked `package.json` paths
- * @param {readonly string[]} globs
+ * @param {readonly string[]} globs `pnpm-workspace.yaml`'s `packages:`
+ * @param {(pj: string) => Pacote} [lerPacote]
  */
-function foraDoVitestReal(pacotes, globs) {
+export function foraDoVitestReal(pacotes, globs, lerPacote = lerPacoteDoDisco) {
   return (/** @type {string} */ file) => {
     let dir = path.posix.dirname(file);
     for (;;) {
       const pj = dir === '.' ? 'package.json' : `${dir}/package.json`;
       if (pacotes.has(pj)) {
-        const test = JSON.parse(readFileSync(path.join(REPO_ROOT, pj), 'utf8')).scripts?.test;
+        const test = lerPacote(pj).scripts?.test;
         const membro = globs.some((g) =>
           g.endsWith('/*') ? path.posix.dirname(dir) === g.slice(0, -2) : dir === g,
         );
@@ -294,6 +415,10 @@ function foraDoVitestReal(pacotes, globs) {
           return `${pj} is not a pnpm workspace (pnpm-workspace.yaml), so turbo never runs it`;
         if (typeof test !== 'string' || !/^node --test(\s|$)/.test(test)) {
           return `no vitest config, and ${pj}'s test script is ${JSON.stringify(test ?? null)}, not \`node --test\``;
+        }
+        const rel = dir === '.' ? file : file.slice(dir.length + 1);
+        if (!nodeTestCobre(test, rel)) {
+          return `${pj}'s test script ${JSON.stringify(test)} does not reach ${rel}: \`node --test\` runs only what its own patterns match`;
         }
         return null;
       }
@@ -396,6 +521,137 @@ describe('the pure partition core — near misses with synthetic inputs', () => 
     expect(r.zero).toEqual([]);
   });
 
+  it('asks EVERY ancestor workspace’s config about a file, never only the nearest', () => {
+    // The real tree cannot pin this: no config directory nests inside another
+    // there, so a nearest-only scan would leave every real verdict unchanged.
+    const alvos = alvosDoConfig(
+      ['vitest.config.ts', 'apps/b/vitest.config.ts', 'apps/b/sub/vitest.config.ts'],
+      ['apps/b/sub/q.test.ts', 'apps/b/z.test.ts', 'apps/bb/w.test.ts'],
+    );
+    expect(Object.fromEntries(alvos)).toEqual({
+      // A root config reaches everything…
+      'vitest.config.ts': ['apps/b/sub/q.test.ts', 'apps/b/z.test.ts', 'apps/bb/w.test.ts'],
+      // …the PAIR: the nested file is asked of its parent AND of its own config…
+      'apps/b/vitest.config.ts': ['apps/b/sub/q.test.ts', 'apps/b/z.test.ts'],
+      // …NEAR MISSES: the parent's own file is not the child's, and `apps/bb`
+      // shares `apps/b`'s prefix without being under it.
+      'apps/b/sub/vitest.config.ts': ['apps/b/sub/q.test.ts'],
+    });
+  });
+
+  it('refuses each outside-vitest file for its OWN reason, beside the near miss it accepts', () => {
+    /** @type {Record<string, Pacote>} */
+    const disco = {
+      '.codex/package.json': { scripts: { test: 'node --test *.test.mjs' } },
+      'tools/novo/package.json': { scripts: { test: 'node --test' } },
+      'tools/novo/aninhado/package.json': { scripts: { test: 'node --test' } },
+      'tools/velho/package.json': { scripts: { test: 'vitest run' } },
+      'tools/quase/package.json': { scripts: { test: 'node --testx' } },
+      'tools/sem/package.json': {},
+      'scratch/package.json': { scripts: { test: 'node --test' } },
+    };
+    const fora = foraDoVitestReal(new Set(Object.keys(disco)), ['.codex', 'tools/*'], (pj) => {
+      const p = disco[pj];
+      if (p === undefined) throw new Error(`read ${pj}, which pacotes does not list`);
+      return p;
+    });
+    const naoNode = (/** @type {string} */ pj, /** @type {string} */ test) =>
+      `no vitest config, and ${pj}'s test script is ${test}, not \`node --test\``;
+
+    // Accepted: a member whose `node --test` patterns reach the file — and a
+    // file two levels down walks up to ITS package (the bare defaults reach it).
+    expect(fora('.codex/a.test.mjs')).toBeNull();
+    expect(fora('tools/novo/a.test.mjs')).toBeNull();
+    expect(fora('tools/novo/fundo/a.test.mjs')).toBeNull();
+
+    // Not a workspace: same script as the accepted `tools/novo`, but outside the
+    // globs — and `tools/*` is ONE level, so a package nested in a member is not one.
+    expect(fora('scratch/a.test.mjs')).toBe(
+      'scratch/package.json is not a pnpm workspace (pnpm-workspace.yaml), so turbo never runs it',
+    );
+    expect(fora('tools/novo/aninhado/a.test.mjs')).toBe(
+      'tools/novo/aninhado/package.json is not a pnpm workspace (pnpm-workspace.yaml), so turbo never runs it',
+    );
+
+    // Not `node --test`: another runner, a lookalike prefix, no script at all.
+    expect(fora('tools/velho/a.test.mjs')).toBe(
+      naoNode('tools/velho/package.json', '"vitest run"'),
+    );
+    expect(fora('tools/quase/a.test.mjs')).toBe(
+      naoNode('tools/quase/package.json', '"node --testx"'),
+    );
+    expect(fora('tools/sem/a.test.mjs')).toBe(naoNode('tools/sem/package.json', 'null'));
+
+    // `node --test` that does not reach it: the accepted `.codex/a.test.mjs`
+    // one directory down, and with another extension.
+    const naoAlcanca = (/** @type {string} */ rel) =>
+      `.codex/package.json's test script "node --test *.test.mjs" does not reach ${rel}: \`node --test\` runs only what its own patterns match`;
+    expect(fora('.codex/lib/a.test.mjs')).toBe(naoAlcanca('lib/a.test.mjs'));
+    expect(fora('.codex/a.test.ts')).toBe(naoAlcanca('a.test.ts'));
+
+    // No package.json anywhere above (`pacotes` lists no root one here).
+    expect(fora('orfao/a.test.mjs')).toBe('no vitest config and no package.json above it');
+  });
+
+  it('reads a `node --test` script’s own patterns, and refuses what it cannot read', () => {
+    const cobre = (/** @type {string} */ script, /** @type {readonly string[]} */ rels) =>
+      rels.map((rel) => nodeTestCobre(script, rel));
+    // `*` stays in its directory, keeps its extension and skips hidden files.
+    expect(
+      cobre('node --test *.test.mjs', ['a.test.mjs', 'sub/a.test.mjs', 'a.test.ts', '.a.test.mjs']),
+    ).toEqual([true, false, false, false]);
+    // Quoted (Node globs it itself) and `./`-prefixed patterns read the same.
+    expect(cobre('node --test "*.test.mjs"', ['a.test.mjs', 'sub/a.test.mjs'])).toEqual([
+      true,
+      false,
+    ]);
+    expect(cobre("node --test './*.test.mjs'", ['a.test.mjs'])).toEqual([true]);
+    // `**` is Node's globstar only when QUOTED. Measured from a package holding
+    // all five files below: `sh -c "node --test '**/*.test.mjs'"` ran the first
+    // three (any depth, none included, never a hidden directory), while
+    // `sh -c 'node --test **/*.test.mjs'` ran `sub/x.test.mjs` alone — POSIX sh
+    // has no globstar, so the unquoted `**` is `*`, exactly one directory.
+    const rels = [
+      'a.test.mjs',
+      'sub/x.test.mjs',
+      'sub/deep/a.test.mjs',
+      '.oculto/a.test.mjs',
+      'sub/.h/a.test.mjs',
+    ];
+    expect(cobre("node --test '**/*.test.mjs'", rels)).toEqual([true, true, true, false, false]);
+    expect(cobre('node --test "**/*.test.mjs"', rels)).toEqual([true, true, true, false, false]);
+    expect(cobre('node --test **/*.test.mjs', rels)).toEqual([false, true, false, false, false]);
+    // A literal names one file; braces expand.
+    expect(cobre('node --test a.test.mjs', ['a.test.mjs', 'b.test.mjs'])).toEqual([true, false]);
+    expect(cobre('node --test *.test.{mjs,cjs}', ['a.test.cjs', 'a.test.js'])).toEqual([
+      true,
+      false,
+    ]);
+    // No pattern (flags do not count) → Node's defaults, the JS half only.
+    expect(
+      cobre('node --test --test-reporter=spec', [
+        'lib/a.test.mjs',
+        'lib/a-test.js',
+        'lib/a_test.cjs',
+        'lib/test-a.mjs',
+        'lib/test.js',
+        'test/helper.js',
+        'lib/a.test.ts',
+        'lib/helper.js',
+        '.hid/a.test.mjs',
+      ]),
+    ).toEqual([true, true, true, true, true, true, false, false, false]);
+    // Refused: another command, a lookalike, a shell operator, unmodelled syntax.
+    expect(
+      [
+        'vitest run',
+        'node --testx',
+        'node --test *.test.mjs && echo ok',
+        'node --test [ab].test.mjs',
+      ].map((s) => nodeTestCobre(s, 'a.test.mjs')),
+    ).toEqual([false, false, false, false]);
+  });
+
   it('reds a multi-config workspace with no ROTAS row, a stale row and a routed config that is gone', () => {
     // NEAR MISS: `apps/b` and `apps/b/sub` are two DIRECTORIES of one config
     // each — nested workspaces, not a split — so they need no row.
@@ -439,10 +695,7 @@ describe('the real tree, through vitest’s own matcher', () => {
 
     envAntes = { ...process.env };
     envDir = mkdtempSync(path.join(tmpdir(), 'vitest-partition-env-'));
-    for (const c of configs) {
-      const d = dirDe(c);
-      const sob = (/** @type {string} */ f) => d === '.' || f.startsWith(`${d}/`);
-      const alvo = [...membros.keys(), ...canarios.keys()].filter(sob);
+    for (const [c, alvo] of alvosDoConfig(configs, [...membros.keys(), ...canarios.keys()])) {
       for (const f of await coletadosPor(c, alvo, envDir)) {
         (membros.get(f) ?? canarios.get(f))?.push(c);
       }
@@ -497,20 +750,30 @@ describe('the real tree, through vitest’s own matcher', () => {
     expect(rotasDivergentes(configs, ROTAS)).toEqual([]);
   });
 
-  it('runs every test file OUTSIDE a vitest workspace under `node --test` in a pnpm workspace', () => {
+  it('runs every test file OUTSIDE a vitest workspace under a pnpm workspace’s `node --test` that reaches it', () => {
     const pacotes = new Set(gitLsFiles(['package.json', '*/package.json']));
     const dirs = [...new Set(configs.map(dirDe))];
     const fora = testes.filter((f) => ancestrais(f, dirs).length === 0);
+    const foraDoVitest = foraDoVitestReal(pacotes, globsDoWorkspace());
     const { semVitest } = classificar({
       testes: fora,
       configs,
       membros,
       rotas: ROTAS,
-      foraDoVitest: foraDoVitestReal(pacotes, globsDoWorkspace()),
+      foraDoVitest,
     });
     expect(semVitest, 'A test file outside every vitest config runs in NO job.').toEqual([]);
     // Anti-vacuity: today these are `.claude/hooks` and `.codex`.
     expect(fora.length).toBeGreaterThan(0);
+    // …and every one of them is ACCEPTED, so the same lookup must be seen to
+    // refuse on this tree too — real `package.json`s, the real workspace globs.
+    expect(foraDoVitest('.codex/__canario__.test.mjs')).toBeNull();
+    expect(foraDoVitest('.claude/hooks/lib/__canario__.test.mjs')).toMatch(
+      /^\.claude\/hooks\/package\.json's test script .* does not reach lib\/__canario__\.test\.mjs:/,
+    );
+    expect(foraDoVitest('tools/__canario__/x.test.ts')).toMatch(
+      /^package\.json is not a pnpm workspace/,
+    );
   });
 
   it('answers the canaries — the same matcher, synthetic paths', () => {

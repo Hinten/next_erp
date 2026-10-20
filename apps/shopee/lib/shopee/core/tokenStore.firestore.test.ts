@@ -22,11 +22,17 @@
  *     back a `Timestamp` instance — what a hand edit in the Firebase console
  *     produces. The double holds whatever object a test put in it.
  *  4. **The `default` database wiring**, through the PRODUCTION accessor
- *     `getAdminFirestore()`. In the emulator a mis-targeted `(default)` database
- *     silently exists and auto-creates (`vitest.tasks.setup.ts` (3)), so every
- *     case below carries a POSITIVE existence assertion.
- *  5. **The server `updateTime`** as the zero-write proof on the held, dropped
- *     and adopted paths.
+ *     `getAdminFirestore()`: it honours `FIREBASE_DATABASE_ID`, and a document
+ *     lands on the `default` database. In the emulator a mis-targeted
+ *     `(default)` database silently exists and auto-creates
+ *     (`vitest.tasks.setup.ts` (3)), so every case below carries a POSITIVE
+ *     existence assertion. ⚠️ The accessor's `?? 'default'` FALLBACK — what a
+ *     deployed backend runs — is never reached here: the job env and setup (3)
+ *     both supply the variable. `lib/firebase/admin.test.ts` pins it, offline.
+ *  5. **The server `updateTime`** as the proof that no write CHANGED the
+ *     document on the held, dropped and adopted paths. ⚠️ Not that no write was
+ *     ISSUED: Firestore keeps the previous `update_time` for a write that changes
+ *     nothing, so a no-op write is invisible to it.
  *
  * Deliberately NOT re-tested here (the in-memory suite owns them): the constants
  * invariant, the fast path, the `ausente` arms, the skew boundaries, the schema
@@ -279,7 +285,9 @@ describe.skipIf(!EMULATED)('the leased token refresh on the Firestore emulator',
   it('E0: targets the `default` database through the production accessor', async () => {
     // ⚠️ Enterprise names the database `default`; `(default)` fails every op in
     // production and silently auto-creates here, so the name is asserted and
-    // a document is proved to exist ON it.
+    // a document is proved to exist ON it. This proves the accessor honours
+    // `FIREBASE_DATABASE_ID` — which the job env and setup (3) always set — and
+    // never its `?? 'default'` fallback (`lib/firebase/admin.test.ts` owns that).
     expect(db().databaseId).toBe('default');
     const id = novaConta();
     await semearConsentimento(id);
@@ -438,7 +446,7 @@ describe.skipIf(!EMULATED)('the leased token refresh on the Firestore emulator',
     expect(erro).toMatchObject({ leaseExpiraEm: T0 + REFRESH_LEASE_TTL_MS });
     expect(refresh).not.toHaveBeenCalled();
     expect(b.sleep).toHaveBeenCalled();
-    // ZERO writes: a held claim and a poll write nothing, so the server's
+    // Nothing changed: a held claim and a poll write nothing, so the server's
     // `updateTime` has not moved and the dead refresher's lease still stands.
     const depois = await lerCru(id);
     expect(depois.updateTime?.isEqual(antes.updateTime!)).toBe(true);
@@ -475,8 +483,10 @@ describe.skipIf(!EMULATED)('the leased token refresh on the Firestore emulator',
       refreshLeaseOwner: null,
       refreshLeaseExpiraEm: null,
     });
-    // The losing commit wrote NOTHING — the consent had already cleared the
-    // lease, so there was not even a lease of ours to hand back.
+    // The losing commit writes nothing — the consent had already cleared the
+    // lease, so there was not even a lease of ours to hand back. The assertion
+    // shows the document is UNCHANGED since the consent, not that no write was
+    // issued (header item 5).
     expect(doConsentimento).toBeDefined();
     expect(depois.updateTime?.isEqual(doConsentimento!)).toBe(true);
     expect(refresh).toHaveBeenCalledTimes(1);
