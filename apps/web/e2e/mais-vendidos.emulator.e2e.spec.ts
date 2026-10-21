@@ -256,7 +256,7 @@ test.describe.serial('Best-selling products — complete quantities and persiste
   async function selectReport(page: Page) {
     await page.getByLabel('Data inicial', { exact: true }).fill('2026-01-10');
     await page.getByLabel('Data final', { exact: true }).fill('2026-01-11');
-    await page.getByLabel('Canais de venda', { exact: true }).click();
+    await page.getByRole('combobox', { name: 'Canais de venda', exact: true }).click();
     await page.getByRole('option', { name: new RegExp(accountName) }).click();
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Gerar relatório', exact: true }).click();
