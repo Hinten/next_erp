@@ -7,7 +7,7 @@ trigger. Those all buy "survive indefinitely without a cutover", and there **is*
 a cutover (root `CLAUDE.md` rule 8 / ADR 0013), so they pay for something already
 bought and leave permanent compat code nobody deletes.
 
-Nineteen dated subfolders live under `src/` today — fifteen that write
+Twenty dated subfolders live under `src/` today — sixteen that write
 (`migrate.ts`, or `backfill.ts`; `2026-09-produto-sem-variacoes` also carries an
 `audit.ts`) and four read-only audits (`audit.ts` alone). Most
 carry a runbook beside this file — `telefone-e164.README.md`,
@@ -79,7 +79,8 @@ costs N²/page instead of N. Nothing fails. Measured on staging, 2026-10-13
 So a key walk needs exactly one index, and it must be declared:
 
 1. Add a row to [`key-walks.json`](key-walks.json): script, collection, and
-   `COLLECTION` or `COLLECTION_GROUP` scope.
+   `COLLECTION` or `COLLECTION_GROUP` scope. A walk that pages one subcollection
+   per parent (`<parent>/{id}/<collection>`) also names its `parent`.
 2. Declare `{ collectionGroup, queryScope, fields: [{ fieldPath: "__name__", order: "ASCENDING" }] }`
    in the repo-root `firestore.indexes.json`, unless that (collection, scope)
    already has one. `src/keyWalks.indexes.test.ts` fails until both exist, and
@@ -87,7 +88,11 @@ So a key walk needs exactly one index, and it must be declared:
 3. After the index deploy, prove the planner uses it:
    `node --env-file=../../.env.local scripts/check-key-walks.mjs --project <id>`
    (exit 1 = a page that scans, 2 = an empty collection it couldn't plan,
-   0 = every walk seeks).
+   0 = every probed walk seeks). A row with `parent` is not probed: the checker
+   builds a root `collection(<collection>)`, which plans nothing for a per-parent
+   subcollection walk. It prints that row as `NOT PROBED`, counts it toward no
+   exit code, and its index is confirmed **READY** in the project's index list
+   instead ([`amazon-tokenoaut-legado.README.md`](amazon-tokenoaut-legado.README.md)).
 
 Filtering stays in code on the fetched page: the key index is the only index a
 walk needs, and no filter or composite index should be added for a one-time

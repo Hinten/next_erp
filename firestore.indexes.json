@@ -1514,6 +1514,16 @@
       ]
     },
     {
+      "collectionGroup": "tokenoaut",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "user",
       "queryScope": "COLLECTION",
       "fields": [
