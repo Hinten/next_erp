@@ -6,6 +6,7 @@ import type { Firestore } from 'firebase/firestore';
 import { buildQuery, groupQuery, limit, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import {
+  ESTADO_PUBLICACAO_ML,
   type MlAttributeWire,
   type VariacaoMercadoLivreLink,
   precisaConsultarModeracao,
@@ -199,7 +200,7 @@ export function VariacoesAnuncioTable({
                 />
               </Table.Td>
               <Table.Td>
-                {data.estado === 'E' && (
+                {data.estado === ESTADO_PUBLICACAO_ML.erro && (
                   <Alert color="red" title="Envio de estoque bloqueado">
                     {(data.errors ?? []).join(' · ') || 'Falha no envio de estoque.'} Corrija a
                     causa e use Reverificar anúncio para tentar novamente.
