@@ -213,12 +213,14 @@ Alert on both ERROR lines:
   `critico` aviso `lojaIntegradaPedidoPagoSemEndereco` on the conta page. A
   later import of that order resolves it only when the pedido ends up with a
   delivery endereço (one it already stores, never overwritten, or one the
-  import writes from a readable CEP), a pickup route, or no longer paid; any
-  other import leaves it open. A pickup order is exempt and imports without
-  one. A present but INVALID CEP (a masked one included) never reaches this
-  line: the order imports without an endereço or a carrier route, as an unpaid
-  order without one does — and it keeps an open aviso of that order OPEN, so
-  the address is still the operator's to fix.
+  import stores from a readable CEP under the pedido's cliente), or a pickup
+  route, or the order is no longer paid. Nothing else closes it: a readable
+  CEP from a buyer with no valid document (no cliente, so no endereço) and an
+  observation with no shipment leave it open too. A pickup order is exempt and
+  imports without one. A present but INVALID CEP (a masked one included) never
+  reaches this line: the order imports without an endereço or a carrier route,
+  as an unpaid order without one does — and it keeps an open aviso of that
+  order OPEN, so the address is still the operator's to fix.
 - `[loja-integrada] notificação estacionada: tentativas esgotadas, pedido não importado`
   (`integracaoId`, `numero`, `origem`, `classe`): any other thrown failure — a
   429, a 5xx, a timeout, gRPC. No aviso: the row's `erro` is the record.

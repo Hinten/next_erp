@@ -326,9 +326,11 @@ still be fixed. Only the context loader refuses those.
   `null`, `''`, blank or `-`) and no stored endereço throws `LiPedidoPagoSemEnderecoError`
   before step 7; a pickup is exempt. It retries; the park at the cap logs an ERROR line
   (ids only) and raises the `critico` `lojaIntegradaPedidoPagoSemEndereco`, which an
-  import resolves only once the winning snapshot leaves the pedido a delivery endereço, a
-  pickup route or no longer paid. A present but INVALID CEP (a masked one too) is never
-  refused: it imports with no endereço or route and keeps the aviso open.
+  import resolves only once the winning snapshot leaves the pedido with a delivery
+  endereço or a pickup route, or the order is no longer paid — nothing else. A present
+  but INVALID CEP (a masked one too) is never refused: it imports with no endereço or
+  route and keeps the aviso open, as do a readable CEP from a buyer with no valid
+  document (no cliente, so no endereço) and an observation with no shipment.
 - The buyer is the fiscal identity (a valid CNPJ, else CPF). Never a cliente beside
   another cliente's endereço: each stored endereço must be the pedido's cliente's, judged
   per attempt, else nothing is filled over it and an incidente. No endereço (pickup
