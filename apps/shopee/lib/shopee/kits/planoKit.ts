@@ -501,8 +501,13 @@ export function problemaVinculoSubstituido(a: {
       'se ele ainda estiver ativo na Shopee, exclua-o no Seller Centre (para um kit antigo cuja ' +
       'exclusão falhou, --recriar com este --link tenta excluí-lo de novo)',
     // The link that REPLACED it (`null` = publish naming no link at all) —
-    // never the superseded link the refusal is about.
-    { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar, linkDocId: a.novoLinkDocId },
+    // never the superseded link the refusal is about, which rides beside it:
+    // the duplicate scan raises this about a link the request did NOT name.
+    {
+      tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar,
+      linkDocId: a.novoLinkDocId,
+      substituidoLinkDocId: a.linkDocId,
+    },
   );
 }
 
@@ -544,8 +549,16 @@ function problemaKitJaExiste(achados: readonly AchadoKitPorSku[]): ProblemaDeBlo
     MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee,
     `já existe na Shopee um kit com o SKU deste produto (item ${ids}) — importe-o ` +
       `(importar:anuncio) em vez de criar outro${vinculados}`,
-    // Every hit, in the sentence's order; the one caller hands over 1+.
-    { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar, itemIds: achados.map((a) => a.itemId) },
+    // Every hit, in the sentence's order; the one caller hands over 1+. The
+    // hits a link already holds carry their produto, as the sentence does: the
+    // mass import skips them, so the web must not point them at it.
+    {
+      tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
+      itemIds: achados.map((a) => a.itemId),
+      vinculados: achados.flatMap((a) =>
+        a.vinculo === null ? [] : [{ itemId: a.itemId, produtoId: a.vinculo.produtoId }],
+      ),
+    },
   );
 }
 

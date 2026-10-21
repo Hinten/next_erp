@@ -95,8 +95,7 @@ export class AnuncioUrlSemUserIdError extends Error {
  * `apps/web/lib/mercado-livre/listingLinks.ts`, the browser-side copy: the two
  * surfaces must agree on the URL a given listing resolves to. Duplicated rather
  * than shared because the integrations package root is server-only (it holds the
- * OAuth client secret) and `apps/web` cannot import it — the same reason
- * `refMatchesIntegracao` exists twice.
+ * OAuth client secret) and `apps/web` cannot import it.
  */
 export function mlbProductUrl(itemId: string): string | null {
   const digits = itemId.replace(/\D/g, '');

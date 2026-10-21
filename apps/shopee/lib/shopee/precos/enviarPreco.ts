@@ -168,7 +168,13 @@
  * expired by a stamp, so a refusal that lands after a newer clean clear stands
  * beside the newer `precoEnviadoEm` — the step-21 reader shows the item's
  * refusal only while `precoRecusaEm >= (precoEnviadoEm ?? 0)`, the rule that
- * survives this race where the `null` clear does not.
+ * survives this race where the `null` clear does not. A model's refusal is held
+ * to its own `precoEnviadoEm` AND to this item's (the listing anchor: only a
+ * clean send stamps it), so a model refused in a partial send stops showing
+ * once the item next syncs cleanly. The readers are
+ * `recusaPrecoDoAnuncioShopeeLegivel` and `recusaPrecoDoModeloShopeeLegivel`
+ * (`@delfrance/schemas` `shopeeLinkLeitura.ts`, register 177; a tie shows the
+ * refusal).
  *
  * ## What it never does
  *

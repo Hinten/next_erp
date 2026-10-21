@@ -152,8 +152,9 @@ const CODEBASES = {
   },
   shopee: {
     // ⚠️ Step 3 (#1511) ships the codebase AND `firebase.shopee.deploy.json`, but
-    // shipping the config is not shipping the deploy: nobody has run it, the
-    // ROLLOUT is step 22's (#1530), and the deploy itself is a manual coordinated
+    // shipping the config is not shipping the deploy: a human ran it on staging
+    // (2026-09-24, 2026-10-15), production's first deploy is a migration-window
+    // step (#1998), and the deploy itself is a manual coordinated
     // human step (root `CLAUDE.md` rule 8). So this row is wired as a real
     // predeploy hook while still earning its keep offline through
     // `bundle-inlining.test.js`, which builds every CODEBASES `build.mjs` and
@@ -173,6 +174,10 @@ const CODEBASES = {
     tasksRegionVar: 'FUNCTIONS_REGION',
     backendVar: 'SHOPEE_TASKS_REGION',
     backendManifest: 'apps/shopee/apphosting.yaml',
+    // ⚠️ Console-ONLY: that manifest deliberately has NO SHOPEE_TASKS_REGION row
+    // (a value there reaches EVERY project's backend; unset is the safe state),
+    // so `crossCheckNote` must not tell the operator to add one.
+    backendConsoleOnly: true,
     // Step 12 (#1520) gave this codebase its first `onTaskDispatched.rateLimits`,
     // so it joins `mercado-livre` above in the deploy-shell family: these two are
     // read from the DEPLOYING shell and baked into the queue by firebase-tools'
@@ -437,6 +442,13 @@ export function formatRows(rows) {
 export function crossCheckNote(codebase, tasksRegion) {
   const spec = CODEBASES[codebase];
   if (!spec?.backendVar) return null;
+  const whereToSet = spec.backendConsoleOnly
+    ? [
+        "    Set it in THIS project's App Hosting console (backend → Environment),",
+        `    never in ${spec.backendManifest} — a value there reaches EVERY`,
+        "    project's backend. Then redeploy the",
+      ]
+    : [`    Set it in ${spec.backendManifest} (or the console), then redeploy the`];
   return [
     `⚠️  The queue/schedule functions are being created in ${tasksRegion}.`,
     `    The App Hosting BACKEND enqueues against ${spec.backendVar}, and it must`,
@@ -444,7 +456,7 @@ export function crossCheckNote(codebase, tasksRegion) {
     '    us-central1 and the task is silently dropped, with the route reporting',
     '    success (#1108).',
     '',
-    `    Set it in ${spec.backendManifest} (or the console), then redeploy the`,
+    ...whereToSet,
     `    backend:  ${spec.backendVar}=${tasksRegion}`,
   ].join('\n');
 }

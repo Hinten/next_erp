@@ -8,6 +8,7 @@ import { REPO_ROOT } from './lib/repo-scan.js';
 // live once in data/admin. Discover conventional adapters so a ninth copy cannot
 // silently acquire its own token parsing or error classification.
 const AUTH_APPS = [
+  'amazon',
   'integrations',
   'loja-integrada',
   'melhor-envio',

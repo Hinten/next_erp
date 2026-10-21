@@ -21,7 +21,7 @@ import {
 describe('MARKETPLACE_TIPO_CAPS — the Mercado Livre row', () => {
   const ml = marketplaceCapsFor(INTEGRACAO_TIPO.mercadoLivre);
 
-  it('is the one implemented channel and names its backend segment', () => {
+  it('is implemented and names its backend segment', () => {
     expect(ml.implementado).toBe(true);
     expect(ml.channel).toBe('mercado-livre');
   });
@@ -64,64 +64,60 @@ describe('MARKETPLACE_TIPO_CAPS — the Mercado Livre row', () => {
   });
 });
 
+describe('MARKETPLACE_TIPO_CAPS — the Shopee row', () => {
+  it('records the full Shopee survey, implemented at step 22 (#1530)', () => {
+    // The master plan's Phase 0 caps row
+    // (`.master_plans/shopee/shopee-marketplace-integration.md` §1), written out
+    // WHOLE like Loja Integrada's and Amazon's. Since the flip every 'sim' here is
+    // a live dispatch — `estoque.suporte`, `enviarPreco` and `pausarAnuncio` are
+    // what turn the three /produtos bulk actions on — so a silent edit to any of
+    // them changes what an operator's click sends. The zero-'desconhecido' pin is
+    // now the structural rule's ("an implemented channel has no unanswered
+    // capability", below).
+    expect(marketplaceCapsFor(INTEGRACAO_TIPO.shopee)).toEqual({
+      channel: 'shopee',
+      implementado: true,
+      auth: 'oauth2',
+      pkce: 'nao',
+      notificacoes: 'push',
+      assinaWebhook: 'sim',
+      publicarAnuncio: 'sim',
+      importarAnuncio: 'sim',
+      variacoes: 'sim',
+      categoriasEAtributos: 'sim',
+      tabelaDeMedidas: 'sim',
+      kitVirtual: 'sim',
+      pausarAnuncio: 'sim',
+      estoque: { suporte: 'sim', protocolo: 'por-anuncio', loteMax: 50, multiDeposito: 'sim' },
+      enviarPreco: 'sim',
+      importarPedido: 'sim',
+      importarPagamento: 'sim',
+      consolidaPacote: 'nao',
+      dadosFiscaisSeparados: 'sim',
+      etiqueta: 'fetch',
+      rastreio: 'push',
+      enviarNfe: 'sim',
+      perguntas: 'nao',
+      mensagensPosVenda: 'nao',
+      reclamacoes: 'sim',
+      origensConversa: [],
+    });
+  });
+});
+
 describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
   it('leaves an unresearched capability as "desconhecido", never as a false claim', () => {
-    const amazon = marketplaceCapsFor(INTEGRACAO_TIPO.amazon);
+    const magalu = marketplaceCapsFor(INTEGRACAO_TIPO.magalu);
 
-    expect(amazon.implementado).toBe(false);
-    expect(amazon.channel).toBeNull();
-    // ⚠️ The near-miss. `'nao'` here would assert Amazon cannot do these things,
+    expect(magalu.implementado).toBe(false);
+    expect(magalu.channel).toBeNull();
+    // ⚠️ The near-miss. `'nao'` here would assert Magalu cannot do these things,
     // which nobody has checked. Only `'desconhecido'` is honest until Phase 0 runs.
-    expect(amazon.tabelaDeMedidas).toBe('desconhecido');
-    expect(amazon.kitVirtual).toBe('desconhecido');
-    expect(amazon.pausarAnuncio).toBe('desconhecido');
-    expect(amazon.estoque.protocolo).toBe('desconhecido');
-    expect(amazon.assinaWebhook).toBe('desconhecido');
-  });
-
-  it('records the full Shopee survey with implementado still false', () => {
-    // The master plan's Phase 0 caps row
-    // (`.master_plans/shopee/shopee-marketplace-integration.md` §1) answers
-    // every field — unlike Amazon above, this is NOT a partial survey, so this
-    // test asserts the whole row rather than a couple of evidenced facts plus a
-    // "the rest is unknown" pair.
-    const shopee = marketplaceCapsFor(INTEGRACAO_TIPO.shopee);
-
-    expect(shopee.implementado).toBe(false);
-    expect(shopee.channel).toBe('shopee');
-
-    expect(shopee.assinaWebhook).toBe('sim');
-    expect(shopee.notificacoes).toBe('push');
-    expect(shopee.auth).toBe('oauth2');
-    expect(shopee.pkce).toBe('nao');
-
-    expect(shopee.estoque).toEqual({
-      suporte: 'sim',
-      protocolo: 'por-anuncio',
-      loteMax: 50,
-      multiDeposito: 'sim',
-    });
-
-    expect(shopee.etiqueta).toBe('fetch');
-    expect(shopee.rastreio).toBe('push');
-    expect(shopee.kitVirtual).toBe('sim');
-    expect(shopee.tabelaDeMedidas).toBe('sim');
-    expect(shopee.consolidaPacote).toBe('nao');
-    expect(shopee.perguntas).toBe('nao');
-    expect(shopee.mensagensPosVenda).toBe('nao');
-    expect(shopee.reclamacoes).toBe('sim');
-    expect(shopee.origensConversa).toEqual([]);
-
-    // ⚠️ A Shopee-specific version of the "an implemented channel has no
-    // unanswered capability" loop below (`MARKETPLACE_TIPO_CAPS — structural
-    // rules`), worded so it does NOT claim the channel is implemented:
-    // `implementado` stays false until step 22, but the SURVEY itself (unlike
-    // Amazon's, still all 'desconhecido' above) is complete, and that
-    // completeness is worth pinning on its own.
-    const naoRespondidos = CAMPOS_SUPORTE.filter((c) => shopee[c] === 'desconhecido');
-    expect(naoRespondidos).toEqual([]);
-    expect(shopee.estoque.suporte).not.toBe('desconhecido');
-    expect(shopee.estoque.protocolo).not.toBe('desconhecido');
+    expect(magalu.tabelaDeMedidas).toBe('desconhecido');
+    expect(magalu.kitVirtual).toBe('desconhecido');
+    expect(magalu.pausarAnuncio).toBe('desconhecido');
+    expect(magalu.estoque.protocolo).toBe('desconhecido');
+    expect(magalu.assinaWebhook).toBe('desconhecido');
   });
 
   it('records the full Loja Integrada survey with implementado still false', () => {
@@ -162,8 +158,9 @@ describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
       origensConversa: [],
     });
 
-    // Same completeness pin as Shopee's, worded so it does NOT claim the
-    // channel is implemented: the survey is done, the backend is not.
+    // The structural rule's completeness pin, applied before the flip and
+    // worded so it does NOT claim the channel is implemented: the survey is
+    // done, the backend is not.
     const li = marketplaceCapsFor(INTEGRACAO_TIPO.lojaIntegrada);
     expect(CAMPOS_SUPORTE.filter((c) => li[c] === 'desconhecido')).toEqual([]);
     expect(li.estoque.suporte).not.toBe('desconhecido');
@@ -194,6 +191,92 @@ describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
     expect(comentario).toContain('AUTHENTICATED, NOT SIGNED');
     expect(comentario).toContain('Authorization: Bearer <token>');
     expect(comentario).toContain('Fail CLOSED');
+    expect(comentario).toContain('Never write an HMAC verifier');
+  });
+
+  it('records the Amazon survey with implementado still false', () => {
+    // The master plan's Phase 0 caps row
+    // (`.master_plans/amazon/amazon-marketplace-integration.md` §1), written out
+    // WHOLE like Loja Integrada's: every later step derives its gate from one of
+    // these values, so a silent edit to any of them re-plans a step.
+    expect(marketplaceCapsFor(INTEGRACAO_TIPO.amazon)).toEqual({
+      channel: 'amazon',
+      implementado: false,
+      auth: 'oauth2',
+      pkce: 'nao',
+      // ORDER_CHANGE reaches us through SQS → EventBridge Pipe → API destination.
+      notificacoes: 'push',
+      assinaWebhook: 'sim',
+      publicarAnuncio: 'sim',
+      importarAnuncio: 'sim',
+      variacoes: 'sim',
+      categoriasEAtributos: 'sim',
+      tabelaDeMedidas: 'nao',
+      kitVirtual: 'nao',
+      pausarAnuncio: 'sim',
+      // The first feed channel: per-SKU patches for deltas, JSON_LISTINGS_FEED
+      // (≤ 25,000 messages per document) for bulk.
+      estoque: {
+        suporte: 'sim',
+        protocolo: 'feed-assincrono',
+        loteMax: 25000,
+        multiDeposito: 'nao',
+      },
+      enviarPreco: 'sim',
+      importarPedido: 'sim',
+      importarPagamento: 'sim',
+      consolidaPacote: 'nao',
+      // Inline in getOrder, but gated by app role and order status — 'sim' in
+      // the sense Shopee's is, not a second call like ML's.
+      dadosFiscaisSeparados: 'sim',
+      etiqueta: 'fetch',
+      rastreio: 'pull',
+      enviarNfe: 'sim',
+      perguntas: 'nao',
+      mensagensPosVenda: 'nao',
+      reclamacoes: 'desconhecido',
+      origensConversa: [],
+    });
+  });
+
+  it('leaves exactly ONE Amazon question open: reclamacoes, settled before step 22', () => {
+    // ⚠️ Not the zero-'desconhecido' pin Loja Integrada carries (and every
+    // implemented row gets from the structural rule): the Amazon survey left
+    // `reclamacoes` honestly open (owner capture C6), and the structural rule
+    // below forbids flipping `implementado` while it stays so.
+    // Pinning the exact list fails BOTH ways — a new unknown sneaking in, and
+    // C6 settling the question without this test and the plan saying so.
+    const amazon = marketplaceCapsFor(INTEGRACAO_TIPO.amazon);
+    expect(CAMPOS_SUPORTE.filter((c) => amazon[c] === 'desconhecido')).toEqual(['reclamacoes']);
+    expect(amazon.estoque.suporte).not.toBe('desconhecido');
+    expect(amazon.estoque.protocolo).not.toBe('desconhecido');
+  });
+
+  /**
+   * ⚠️ The third `assinaWebhook: 'sim'` mechanism, and the easiest to get
+   * wrong: Amazon puts NOTHING verifiable in a notification. What the receiver
+   * checks is a key OUR EventBridge Connection adds, plus the payload's
+   * `ApplicationId`. The step-3 receiver is written from this comment — losing
+   * it invites either an HMAC verifier (rejects every genuine delivery) or a
+   * receiver that trusts the body because "Amazon signs it" (accepts forgeries).
+   */
+  it('pins what assinaWebhook "sim" MEANS for Amazon: our relay key, not a signature', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'marketplace.ts'), 'utf8');
+    const inicio = fonte.indexOf('[INTEGRACAO_TIPO.amazon]: {');
+    const fim = fonte.indexOf('[INTEGRACAO_TIPO.', inicio + 1);
+    expect(inicio, 'the Amazon row is missing from marketplace.ts').toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+
+    const linha = fonte.slice(inicio, fim);
+    // The comment block between the previous field and `assinaWebhook`.
+    const comentario = linha.slice(
+      linha.indexOf("notificacoes: 'push',"),
+      linha.indexOf("assinaWebhook: 'sim',"),
+    );
+    expect(comentario).toContain('NOT SIGNED');
+    expect(comentario).toContain('API-key header OUR EventBridge');
+    expect(comentario).toContain('ApplicationId === ours');
+    expect(comentario).toContain('fail CLOSED');
     expect(comentario).toContain('Never write an HMAC verifier');
   });
 });
@@ -264,14 +347,28 @@ describe('MARKETPLACE_TIPO_CAPS — structural rules', () => {
     expect(implementados.length).toBeGreaterThan(0);
   });
 
-  it('a batch stock protocol must declare its batch size', () => {
+  it('a batch or feed stock protocol must declare its batch size', () => {
     // 'lote' with a null loteMax is not a usable answer — the fan-out cannot be
-    // sized from it. ML is 'por-anuncio', so today this holds trivially; it
-    // exists for the first channel that is not.
+    // sized from it. 'feed-assincrono' is the same question one level up: a
+    // feed document has a per-document message cap (Amazon: 25,000), and a
+    // bulk push that does not know it cannot split itself into documents.
     for (const [tipo, caps] of Object.entries(MARKETPLACE_TIPO_CAPS)) {
-      if (caps.estoque.protocolo !== 'lote') continue;
-      expect(caps.estoque.loteMax, `tipo ${tipo} declares 'lote' with no loteMax`).not.toBeNull();
+      if (caps.estoque.protocolo !== 'lote' && caps.estoque.protocolo !== 'feed-assincrono') {
+        continue;
+      }
+      expect(
+        caps.estoque.loteMax,
+        `tipo ${tipo} declares '${caps.estoque.protocolo}' with no loteMax`,
+      ).not.toBeNull();
     }
+  });
+
+  it('is checking the batch rule against a row that really has a feed', () => {
+    // Guards the rule above from passing vacuously: until Amazon, no row used
+    // either protocol, so the loop body never ran.
+    expect(
+      Object.values(MARKETPLACE_TIPO_CAPS).some((c) => c.estoque.protocolo === 'feed-assincrono'),
+    ).toBe(true);
   });
 });
 

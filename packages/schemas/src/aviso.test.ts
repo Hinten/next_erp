@@ -33,6 +33,7 @@ import {
   urlExternaSegura,
   type Aviso,
   type AvisosLeitura,
+  type TipoAviso,
 } from './aviso';
 
 const AGORA_US = 1_760_000_000_000_000;
@@ -195,6 +196,81 @@ describe('TIPO_AVISO_LABELS', () => {
       relogioEvento: 1_800_000_000_654_321,
     });
     expect(parsed.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+  });
+
+  it('names and labels the four Amazon tipos (step 2)', () => {
+    expect(TIPO_AVISO.amazonReconexaoPendente).toBe('amazonReconexaoPendente');
+    expect(TIPO_AVISO.amazonReautorizacaoExpirando).toBe('amazonReautorizacaoExpirando');
+    expect(TIPO_AVISO.amazonSegredoLwaExpirando).toBe('amazonSegredoLwaExpirando');
+    expect(TIPO_AVISO.amazonSegredoLwaRecusado).toBe('amazonSegredoLwaRecusado');
+    expect(TIPO_AVISO_LABELS.amazonReconexaoPendente).toBe('Autorização da Amazon recusada');
+    expect(TIPO_AVISO_LABELS.amazonReautorizacaoExpirando).toBe('Autorização da Amazon expirando');
+    expect(TIPO_AVISO_LABELS.amazonSegredoLwaExpirando).toBe(
+      'Segredo do aplicativo da Amazon expirando',
+    );
+    expect(TIPO_AVISO_LABELS.amazonSegredoLwaRecusado).toBe(
+      'Segredo do aplicativo da Amazon recusado',
+    );
+    // Near-miss spellings are other tipos — refused by the enum, never folded.
+    for (const quase of [
+      'amazonReconexaoPendentes',
+      'AmazonReconexaoPendente',
+      'amazonSegredoLWAExpirando',
+      'amazonSegredoExpirando',
+    ]) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('names a machine resolver for every Amazon tipo in its docblock', () => {
+    // `avisos` is `serverOwned` — an aviso nothing resolves stands until
+    // retention — so each tipo's docblock entry must exist and say what closes it.
+    const FONTE = readFileSync(join(import.meta.dirname, 'aviso.ts'), 'utf8');
+    const fim = FONTE.indexOf('export const tipoAvisoSchema');
+    for (const tipo of [
+      'amazonReconexaoPendente',
+      'amazonReautorizacaoExpirando',
+      'amazonSegredoLwaExpirando',
+      'amazonSegredoLwaRecusado',
+    ]) {
+      const inicio = FONTE.indexOf(`**\`${tipo}\`**`);
+      expect(inicio, tipo).toBeGreaterThan(-1);
+      expect(inicio, tipo).toBeLessThan(fim);
+      const proximo = FONTE.indexOf(' * ---', inicio);
+      const bloco = FONTE.slice(inicio, proximo === -1 || proximo > fim ? fim : proximo);
+      expect(bloco, tipo).toMatch(/\*\*Machine resolvers?\*\*/);
+    }
+  });
+
+  it('parses the Amazon planos as stored: per-conta on the conta page, per-app on the list', () => {
+    const reconexao = umAviso({
+      tipo: TIPO_AVISO.amazonReconexaoPendente,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: 'Conta A', status: 400 },
+      motivo: 'invalid_grant',
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(reconexao).toMatchObject({
+      canal: 'amazon',
+      severidade: 'critico',
+      params: { loja: 'Conta A', status: 400 },
+      motivo: 'invalid_grant',
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(reconexao.urlInterna?.rota).toBe('/canais/amazon/int-1');
+
+    // The app secret, its date unrecorded: no params at all, routed to the list.
+    const segredo = umAviso({
+      tipo: TIPO_AVISO.amazonSegredoLwaExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      urlInterna: { rota: ROTAS_AVISO.canalAmazonLista.build(), campo: null },
+    });
+    expect(segredo.params).toEqual({});
+    expect(segredo.prazo).toBeNull();
+    expect(segredo.urlInterna?.rota).toBe('/canais/amazon');
   });
 });
 
@@ -467,6 +543,14 @@ describe('CANAL_AVISO', () => {
     expect(CANAL_AVISO.lojaIntegrada).toBe('lojaIntegrada');
     expect(CANAL_AVISO_LABELS.lojaIntegrada).toBe('Loja Integrada');
     for (const quase of ['loja-integrada', 'lojaintegrada', 'LojaIntegrada', 'loja_integrada']) {
+      expect(canalAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('carries Amazon, spelled exactly — near-miss spellings stay refused', () => {
+    expect(CANAL_AVISO.amazon).toBe('amazon');
+    expect(CANAL_AVISO_LABELS.amazon).toBe('Amazon');
+    for (const quase of ['Amazon', 'amazonSpApi', 'amazon-sp-api', 'amazon_br']) {
       expect(canalAvisoSchema.safeParse(quase).success, quase).toBe(false);
     }
   });
@@ -846,6 +930,57 @@ describe('chaveDeAviso — the two Loja Integrada tipos (step 2)', () => {
   });
 });
 
+describe('chaveDeAviso — the four Amazon tipos (step 2)', () => {
+  // Producers and resolvers recompute these keys from the integração id alone
+  // (per conta) or from nothing at all (per application); a key they could not
+  // recompute would be a row nothing ever closes.
+  const porConta = (tipo: TipoAviso, conta: string) => chaveDeAviso({ tipo, conta });
+
+  it('keys the reconexão and the reauthorization on the conta alone — no janela', () => {
+    expect(porConta(TIPO_AVISO.amazonReconexaoPendente, 'int-1')).toBe(
+      'amazonReconexaoPendente:int-1',
+    );
+    expect(porConta(TIPO_AVISO.amazonReautorizacaoExpirando, 'int-1')).toBe(
+      'amazonReautorizacaoExpirando:int-1',
+    );
+    // A reconnect moves the date; the row must stay the same one.
+    expect(porConta(TIPO_AVISO.amazonReautorizacaoExpirando, 'int-1')).toBe(
+      chaveDeAviso({
+        tipo: TIPO_AVISO.amazonReautorizacaoExpirando,
+        conta: 'int-1',
+        entidade: null,
+        janela: null,
+      }),
+    );
+  });
+
+  it('keys the two app-secret tipos on the tipo alone — one row per application', () => {
+    expect(chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaExpirando })).toBe(
+      'amazonSegredoLwaExpirando',
+    );
+    expect(chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaRecusado })).toBe(
+      'amazonSegredoLwaRecusado',
+    );
+    expect(chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaRecusado, conta: null })).toBe(
+      'amazonSegredoLwaRecusado',
+    );
+  });
+
+  it('separates two contas, and every Amazon tipo from the others', () => {
+    expect(porConta(TIPO_AVISO.amazonReconexaoPendente, 'int-1')).not.toBe(
+      porConta(TIPO_AVISO.amazonReconexaoPendente, 'int-2'),
+    );
+    const chaves = [
+      porConta(TIPO_AVISO.amazonReconexaoPendente, 'int-1'),
+      porConta(TIPO_AVISO.amazonReautorizacaoExpirando, 'int-1'),
+      chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaExpirando }),
+      chaveDeAviso({ tipo: TIPO_AVISO.amazonSegredoLwaRecusado }),
+      porConta(TIPO_AVISO.lojaIntegradaReconexaoPendente, 'int-1'),
+    ];
+    expect(new Set(chaves).size).toBe(chaves.length);
+  });
+});
+
 describe('avisoNaoLido', () => {
   const semLeitura: AvisosLeitura = avisosLeituraSchema.parse({});
 
@@ -1000,6 +1135,16 @@ describe('ROTAS_AVISO', () => {
     expect(rotaInternaSegura(ROTAS_AVISO.canalLojaIntegrada.build('abc'))).toBe(
       '/canais/loja-integrada/abc',
     );
+  });
+
+  it('builds the Amazon conta route and the Amazon conta LIST route', () => {
+    expect(ROTAS_AVISO.canalAmazon.padrao).toBe('/canais/amazon/[id]');
+    expect(ROTAS_AVISO.canalAmazon.build('abc')).toBe('/canais/amazon/abc');
+    expect(rotaInternaSegura(ROTAS_AVISO.canalAmazon.build('abc'))).toBe('/canais/amazon/abc');
+    // The per-application avisos (the LWA app secret) belong to no conta.
+    expect(ROTAS_AVISO.canalAmazonLista.padrao).toBe('/canais/amazon');
+    expect(ROTAS_AVISO.canalAmazonLista.build()).toBe('/canais/amazon');
+    expect(rotaInternaSegura(ROTAS_AVISO.canalAmazonLista.build())).toBe('/canais/amazon');
   });
 
   it('lands a dispatch aviso on the checkout, with the pedido id as `?pedido=`', () => {

@@ -93,7 +93,8 @@
 //    `scripts/**` and `src/codegen/**`, so ESLint never sees those trees.
 //
 // A distinct rule NAME, so it survives the `no-restricted-syntax` overrides in
-// the six apps that redeclare that rule — flat config does full replacement per
+// every app that redeclares that rule (apps/nfe plus the apps that re-spread the
+// base selectors, root CLAUDE.md rule 6) — flat config does full replacement per
 // name, never across names.
 
 /**

@@ -357,6 +357,10 @@ TERMINAL failure — never as silent exhaustion. The sandbox probe measured
 `next_offset` ABSENT on a page that still had room, so its presence is not
 guaranteed and its absence must not be read as "done".
 
+**A busy start** (a `running` job already exists for the conta) answers 409
+`SHOPEE_MASS_IMPORT_RUNNING` with the running job's `jobId` (step 21), so the
+`/canais/shopee` card attaches to that job instead of offering a dead button.
+
 **`finalizarImportacaoShopee` is the ONE transaction under `produtos/`**, class
 B, and the transaction inventory carries the whole race analysis: `status` has
 two uncoordinated writers (the dispatch stamping a terminal state and the

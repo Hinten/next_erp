@@ -65,7 +65,8 @@
 // `--max-warnings 0`, so touching one of those files means fixing it first.
 // Distinct rule name, so it coexists with any app's `no-restricted-syntax`
 // override — flat config does full-replacement per rule NAME, never across
-// names, and apps/nfe plus five channel apps already override that rule.
+// names, and apps/nfe plus every app that re-spreads the base selectors (root
+// CLAUDE.md rule 6) already override that rule.
 
 const ALLOW_LIST = [
   '/packages/core/src/datetime/',

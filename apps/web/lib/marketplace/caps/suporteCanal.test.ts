@@ -57,7 +57,7 @@ describe('vereditoCanal / capsPermitem — against the real table', () => {
   });
 
   it.each(acoes)('an unsurveyed channel is "nobody checked", not "cannot", for %s', (acao) => {
-    // Amazon/Magalu/Facebook are all `'desconhecido'` on these three today.
+    // Magalu/Facebook are both `'desconhecido'` on these three today.
     // Reading that as `'nao'` is the false claim #815 undid.
     expect(vereditoCanal(acao, INTEGRACAO_TIPO.magalu, COM_ML)).toEqual({
       suportado: false,
@@ -68,20 +68,19 @@ describe('vereditoCanal / capsPermitem — against the real table', () => {
 
   /**
    * ⚠️ The near-miss, and the reason it is no longer hypothetical: the Loja
-   * Integrada Phase 0 survey answered these three `'sim'` while `implementado`
-   * stays false until its backend ships. Same verdict for the operator (the
+   * Integrada and Amazon Phase 0 surveys answered these three `'sim'` while
+   * `implementado` stays false until each backend is built. Same verdict for the operator (the
    * action cannot run), a DIFFERENT reason — and the two must not collapse,
    * because "nobody checked" invites a survey and "not built here" invites a
    * build.
    *
-   * Shopee's twin of this state is pinned in `registriesAlinhadas.test.ts`, where
-   * it reds at Shopee's step-22 flip. Loja Integrada flips `implementado` at ITS
-   * step 22 (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`);
-   * whichever channel flips second re-points this example. The arm itself is
+   * Shopee left this state at its step-22 flip (#1530). Loja Integrada and
+   * Amazon each flip `implementado` at their own step 22; whichever flips LAST
+   * re-points this example. The arm itself is
    * pinned table-free above ("motivoDaCapacidade — the precedence, exhaustively").
    */
   it.each(acoes)('a SURVEYED but unbuilt channel says "not built" for %s', (acao) => {
-    for (const tipo of [INTEGRACAO_TIPO.lojaIntegrada]) {
+    for (const tipo of [INTEGRACAO_TIPO.lojaIntegrada, INTEGRACAO_TIPO.amazon]) {
       expect(vereditoCanal(acao, tipo, COM_ML), `tipo ${tipo}`).toEqual({
         suportado: false,
         motivo: 'canal-nao-implementado',

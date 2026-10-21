@@ -108,6 +108,7 @@ const PATHSPECS = [
   ':(glob)packages/integrations/freight-br/src/**/*.ts',
   ':(glob)packages/integrations/shopee/src/**/*.ts',
   ':(glob)packages/integrations/loja-integrada/src/**/*.ts',
+  ':(glob)packages/integrations/amazon-sp-api/src/**/*.ts',
 ];
 
 /** Both bans in ONE spawn — `git grep` ORs its `-e` patterns. */
@@ -187,6 +188,9 @@ const ALLOWED_STRICT = {
   // No `loja-integrada` entry either, for the same reason: GET-only, response
   // shapes only. Its first write step brings its first request body — and, if
   // that body is a Zod schema, its first entry here.
+  // No `amazon-sp-api` entry either. Its only outbound body, the LWA token
+  // POST, is a form-encoded `URLSearchParams` of strings, not a Zod schema; if
+  // a later write step brings a Zod request body, that step adds its first entry.
 };
 
 /**
@@ -262,6 +266,16 @@ const KNOWN_TOLERANT_LINES = {
     'offset: wireInt(),',
     'id: wireInt(),',
   ],
+  // Amazon SP-API. ⚠️ Same reason as Shopee and Loja Integrada: no
+  // `ALLOWED_STRICT` entry (response shapes only), so this line is what keeps a
+  // mistyped `amazon-sp-api` pathspec from leaving the "no bare z.number()"
+  // assertion running over an empty set. It is the package's only Zod number —
+  // the rate-limit header is read with `parseWireDecimal`, never Zod — and the
+  // pathspec reaches EVERY file under `src/`, so any hit elsewhere is a real
+  // offender. ⚠️ The text differs from ML/MP/ME's `expires_in: wireNumber(),`
+  // (LWA's lifetime is whole seconds, so `wireInt`); the per-path KEY is what
+  // makes it this package's anchor either way.
+  'packages/integrations/amazon-sp-api/src/types.ts': ['expires_in: wireInt(),'],
 };
 
 /** Well below the 75 + 13 + 10 the three sweeps converted — a rot detector, not a spec. */
