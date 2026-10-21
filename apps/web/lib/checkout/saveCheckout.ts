@@ -377,7 +377,7 @@ export async function salvarCheckoutTransacao(
   // Phase 2 — the pickup hand-off, and ONLY because phase 1 committed. The rule
   // is the shared `avancaParaRetirada` (`@delfrance/schemas`), the one the Loja
   // Integrada routing route applies when it re-points a checked-out pedido at a
-  // pickup target — one copy, so the two can never disagree (B9). BOTH halves
+  // pickup target — one copy, so the two can never disagree. BOTH halves
   // go through it: whether to open the transaction at all (from the estado
   // phase 1 just committed) and the re-check inside it (from `tx.get`). A local
   // `tipoAlvo === retiradaNaLoja` here would keep today's predicate after the

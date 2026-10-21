@@ -471,7 +471,7 @@ const registro = (alvo: string): RotaRegistrada => ({
   },
 });
 
-describe('EtiquetaAcaoHost — o frete roteado de cada pedido (B14)', () => {
+describe('EtiquetaAcaoHost — o frete roteado de cada pedido', () => {
   it('nothing registered ⇒ null; registered ⇒ that route, for THAT pedido only', () => {
     const host = montar();
     expect(host().rotaConhecida('p1')).toBeNull();
@@ -563,7 +563,7 @@ describe('freteComRotaConhecida — a registered route stands in ONLY for a stal
   });
 });
 
-describe('EtiquetaAcaoHost — "Escolher transportadora…" (A6)', () => {
+describe('EtiquetaAcaoHost — "Escolher transportadora…"', () => {
   const pergunta = (pedidoRotulo: string | null, preselecionado: string | null = 'mot-1') => ({
     pedidoRotulo,
     alvos: ALVOS,
@@ -652,7 +652,7 @@ describe('EtiquetaAcaoHost — "Escolher transportadora…" (A6)', () => {
   });
 });
 
-describe('EtiquetaAcaoHost — o confirm com ciência (A2)', () => {
+describe('EtiquetaAcaoHost — o confirm com ciência', () => {
   it('Continuar only after "Estou ciente do risco", and a queued second question opens unticked', async () => {
     const host = montar();
     let a!: ReturnType<typeof observar<boolean>>;
