@@ -8,10 +8,11 @@ import { idFromRef, toOuterRefOrNull } from '@delfrance/schemas';
 
 /**
  * The PURE half of every `int_frete` window adoption pass — one copy, bound per channel by
- * {@link adocaoIntFrete}. Shopee (#1528) and Loja Integrada (#1826) each bind it in their own dated
- * folder (`2026-10-shopee-int-frete/transform.ts`, `2026-10-li-int-frete/transform.ts`), with the
- * SAME zero-option `intFreteContaSync` binding their trigger runs; the I/O is `executar.ts` beside
- * this file. Runbooks: `tools/migrations/<channel>-int-frete.README.md`.
+ * {@link adocaoIntFrete}. Shopee (#1528), Loja Integrada (#1826) and Amazon (#1930) each bind it
+ * in their own dated folder (`2026-10-shopee-int-frete/transform.ts`,
+ * `2026-10-li-int-frete/transform.ts`, `2026-10-amazon-int-frete/transform.ts`), with the SAME
+ * zero-option `intFreteContaSync` binding their trigger runs; the I/O is `executar.ts` beside this
+ * file. Runbooks: `tools/migrations/<channel>-int-frete.README.md`.
  *
  * ## No decision of its own
  *

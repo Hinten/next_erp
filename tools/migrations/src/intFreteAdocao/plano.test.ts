@@ -8,8 +8,9 @@ import { adocaoIntFrete } from './plano';
 
 /**
  * The shared pass's own pins. Its BEHAVIOUR is pinned per channel, through each binding: Shopee's
- * `2026-10-shopee-int-frete/transform.test.ts` (unedited since the extraction) and Loja
- * Integrada's `2026-10-li-int-frete/transform.test.ts`.
+ * `2026-10-shopee-int-frete/transform.test.ts` (unedited since the extraction), Loja Integrada's
+ * `2026-10-li-int-frete/transform.test.ts` and Amazon's focused
+ * `2026-10-amazon-int-frete/transform.test.ts`.
  */
 
 const PASTA = new URL('./', import.meta.url);

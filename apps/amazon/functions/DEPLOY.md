@@ -85,9 +85,12 @@ waits for the window's `int_frete` adoption pass (Prerequisites below).
      `int_frete (tipo, contaAmazonContaFreteAmazonOuterRef, ativo, dataCadastro DESC)`
      is READY;
   2. the window's `int_frete` adoption pass (W12, the script
-     `migrate:amazon-int-frete` in `@delfrance/migrations`) ran clean:
-     report-only, dry run, `--apply`, then a second dry run with **0 contas com
-     escrita planejada** and no `duplicados`, `nao-canonico` or `compartilhado`.
+     `migrate:amazon-int-frete` in `@delfrance/migrations`; runbook
+     [`tools/migrations/amazon-int-frete.README.md`](../../../tools/migrations/amazon-int-frete.README.md))
+     ran clean: report-only, dry run, `--apply`, then a second dry run with
+     **0 contas com escrita planejada** and no `duplicados`, `nao-canonico` or
+     `compartilhado`. A `duplicados` STOP is resolved by a person, as that
+     runbook says — deactivating a twin alone does not clear it.
 
   Why: the trigger reconciles through a lookup that rides that index (without
   it, every reconcile full-scans `int_frete`, billed), and it has no tolerant

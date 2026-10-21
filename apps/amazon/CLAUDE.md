@@ -165,8 +165,11 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
 
 - The ONE binding is `lib/amazon/frete/intFrete.ts`: `syncIntFreteAmazon`, the shared core
   (`@delfrance/data/admin/frete`) bound to `VINCULO_INT_FRETE_CONTA.amazon` with ZERO options
-  (no tolerant scan). Never build a second one: the trigger, step 5's importer and the window
-  pass (W12) must all name the same doc. Freight tipo `amz` (never `amazon`); a new doc is
+  (no tolerant scan). The trigger and step 5's importer go through it; never build a second one
+  in this app. The window pass (W12) cannot import `apps/amazon`, so
+  `tools/migrations/src/2026-10-amazon-int-frete/transform.ts` binds the SAME row with the SAME
+  zero options, pinned by its `transform.test.ts` (row identity, no tolerant scan): all three
+  must name the same doc. Freight tipo `amz` (never `amazon`); a new doc is
   `amz-<integracaoId>`; a migrated one (64-hex id) is adopted by `contaAmazonContaFreteAmazonOuterRef`.
 - `functions/src/onIntegracaoAmazonChanged.ts`: `deveReconciliar(before, after)` is a COST
   filter (zero reads for any write that is not, and was not, an Amazon conta, or moves no
