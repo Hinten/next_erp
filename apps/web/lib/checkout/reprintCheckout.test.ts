@@ -191,7 +191,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
   });
 });
 
-describe('reprintCheckoutEtiqueta — why an imported Loja Integrada order has no carrier (B11)', () => {
+describe('reprintCheckoutEtiqueta — why an imported Loja Integrada order has no carrier', () => {
   const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
   const ID_LI = sha256('lojaIntegradaCONTA1-165');
   const args = (pedidoId: string) => ({

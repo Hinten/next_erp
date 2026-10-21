@@ -216,12 +216,12 @@ describe('EtiquetaComprarModal — a failed buy (#1094)', () => {
 });
 
 /**
- * Gate (ii) of the Loja Integrada paid re-check (master plan step 15): right
+ * The buy's hard gate of the Loja Integrada paid re-check (master plan step 15): right
  * before Melhor Envio money is spent, an imported Loja Integrada order's
  * CURRENT payment is asked of the backend — once per Comprar click — unless the
  * checkout chain carries a `pago` received under 120 s ago.
  */
-describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the buy (gate ii)', () => {
+describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the buy', () => {
   const ID_LI = createHash('sha256').update('lojaIntegradaCONTA1-165').digest('hex');
   const PEDIDO_LI = {
     numero: '165',

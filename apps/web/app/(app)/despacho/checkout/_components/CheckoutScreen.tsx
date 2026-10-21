@@ -338,7 +338,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
           });
           if (!seguir) return;
         }
-        // (2) Gate (i), the paid re-check: a verdict that does not authorise
+        // (2) The paid re-check, a hard gate: a verdict that does not authorise
         // dispatch blocks; one that cannot be verified asks; a `pago` rides the
         // post-save so the label's own gate does not ask again.
         setStatusSalvar('Conferindo pagamento na Loja Integrada…');

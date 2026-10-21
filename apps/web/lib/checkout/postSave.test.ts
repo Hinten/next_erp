@@ -266,7 +266,7 @@ describe('runCheckoutPostSave — the Loja Integrada paid re-check (step 15)', (
     expect(emitirEtiquetaMock.mock.calls[0]![0]).not.toHaveProperty('conferenciaLi');
   });
 
-  it('B11: an imported order with no freight integration says WHY — no endereço, or no Loja Integrada freight', async () => {
+  it('an imported order with no freight integration says WHY — no endereço, or no Loja Integrada freight', async () => {
     derefMock.mockReturnValue(null);
     await runCheckoutPostSave({
       ...base,
@@ -301,7 +301,7 @@ describe('runCheckoutPostSave — the Loja Integrada paid re-check (step 15)', (
     );
   });
 
-  it('⚠️ NEAR-MISS B11: the same block on a Mercado Livre order keeps today’s copy', async () => {
+  it('⚠️ NEAR-MISS: the same block on a Mercado Livre order keeps today’s copy', async () => {
     derefMock.mockReturnValue(null);
     const r = await runCheckoutPostSave({
       ...base,

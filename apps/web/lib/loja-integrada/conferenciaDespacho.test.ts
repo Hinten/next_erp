@@ -75,7 +75,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('conferirAntesDeDespacharLi — who calls at all (B8)', () => {
+describe('conferirAntesDeDespacharLi — who calls at all', () => {
   it('an imported Loja Integrada order calls the backend ONCE, for its own id', async () => {
     const { client, conferirPagamento } = clienteQueResponde(PAGO);
     const d = await conferirAntesDeDespacharLi({
@@ -185,7 +185,7 @@ describe('conferirAntesDeDespacharLi — the verdict', () => {
   });
 });
 
-describe('conferirAntesDeDespacharLi — not verifiable asks, never blocks nor passes silently (A1)', () => {
+describe('conferirAntesDeDespacharLi — not verifiable asks, never blocks nor passes silently', () => {
   it('the read switch OFF (`chamadasDesligadas`) asks the CONFIGURATION confirm — never a block', async () => {
     const { client } = clienteQueResponde(
       new LojaIntegradaClientHttpError('desligada', 503, CODIGO_ERRO_LI.chamadasDesligadas),

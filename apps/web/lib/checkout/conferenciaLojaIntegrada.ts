@@ -25,7 +25,7 @@ import type { PedidoParaRotaLi, PrevisaoRotaEtiquetaLi } from '../loja-integrada
 export type PedidoParaAvisoDeEtiquetaLi = PedidoParaRotaLi & IdentidadePedidoLi;
 
 /**
- * The pre-save route warning (A3), or `null` when there is nothing to say:
+ * The pre-save route warning, or `null` when there is nothing to say:
  *
  * - not an imported order ⇒ `null`, and `prever` is never called — no read;
  * - the preview answers `ja-roteado` (already on a label target) or `rota`
@@ -71,8 +71,8 @@ const SEM_INTEGRACAO_DE_FRETE =
   'A conta Loja Integrada não tem integração de frete: não há transportadora para gerar a etiqueta.';
 
 /**
- * Why an imported Loja Integrada order reached the label step with no carrier
- * (B11) — the copy that replaces "Este frete não possui integração com
+ * Why an imported Loja Integrada order reached the label step with no carrier —
+ * the copy that replaces "Este frete não possui integração com
  * transportadora." — or `null` to keep that generic line:
  *
  * - no delivery endereço ⇒ the order cannot be routed to a carrier that ships

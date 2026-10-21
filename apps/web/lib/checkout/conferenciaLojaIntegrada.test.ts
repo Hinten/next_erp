@@ -14,10 +14,10 @@ import {
 
 /**
  * The checkout's two Loja Integrada notices that are not the paid re-check
- * (master plan step 15): the read-only pre-save preview of the label route
- * (A3) and the post-save "why there is no carrier" copy (B11). Both are for an
- * IMPORTED Loja Integrada order only — every other channel keeps today's
- * behaviour, which the near-misses pin.
+ * (master plan step 15): the read-only pre-save preview of the label route and
+ * the post-save "why there is no carrier" copy. Both are for an IMPORTED Loja
+ * Integrada order only — every other channel keeps today's behaviour, which
+ * the near-misses pin.
  */
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -42,7 +42,7 @@ const pedidoLi = (frete: unknown = FRETE_NO_DOC_LI) => ({
 
 const previsao = (p: PrevisaoRotaEtiquetaLi) => vi.fn(() => Promise.resolve(p));
 
-describe('avisoDeEtiquetaAntesDoCheckoutLi — the pre-save route preview (A3)', () => {
+describe('avisoDeEtiquetaAntesDoCheckoutLi — the pre-save route preview', () => {
   it('a route the backend would REFUSE warns before the stock leaves, with the refusal’s own copy', async () => {
     const prever = previsao({
       tipo: 'recusa',
@@ -133,7 +133,7 @@ describe('avisoDeEtiquetaAntesDoCheckoutLi — the pre-save route preview (A3)',
   });
 });
 
-describe('motivoSemTransportadoraLi — why an imported order has no carrier (B11)', () => {
+describe('motivoSemTransportadoraLi — why an imported order has no carrier', () => {
   it('no delivery endereço: says so', async () => {
     const frete = {
       ...FRETE_NO_DOC_LI,

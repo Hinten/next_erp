@@ -253,14 +253,14 @@ describe('CheckoutScreen — the Loja Integrada paid re-check (step 15)', () => 
 });
 
 /**
- * Gate (i) of the paid re-check (master plan step 15): before the checkout
+ * The save's hard gate of the paid re-check (master plan step 15): before the checkout
  * transaction — which removes stock — an imported Loja Integrada order's
  * CURRENT payment is asked of the backend. It runs after the confirm loop's
  * last dialog (so the window to the commit is as short as it can be) and never
  * inside the transaction: it is a network read, which a transaction callback
  * must not hold.
  */
-describe('CheckoutScreen — the Loja Integrada paid re-check before the save (gate i)', () => {
+describe('CheckoutScreen — the Loja Integrada paid re-check before the save', () => {
   const ID_LI = createHash('sha256').update('lojaIntegradaCONTA1-165').digest('hex');
   const DADOS_LI: CheckoutData = {
     ...DADOS,
@@ -450,7 +450,7 @@ describe('CheckoutScreen — the Loja Integrada paid re-check before the save (g
     );
   });
 
-  it('A3: a label route the backend would refuse warns BEFORE the payment check; Cancelar asks nothing more', async () => {
+  it('a label route the backend would refuse warns BEFORE the payment check; Cancelar asks nothing more', async () => {
     h.prever.mockResolvedValue({
       tipo: 'recusa',
       motivo: 'sem-mapeamento',
@@ -471,7 +471,7 @@ describe('CheckoutScreen — the Loja Integrada paid re-check before the save (g
     expect(h.salvar).not.toHaveBeenCalled();
   });
 
-  it('A3: Continuar on the route warning goes on to the payment check, then the save', async () => {
+  it('Continuar on the route warning goes on to the payment check, then the save', async () => {
     h.prever.mockResolvedValue({
       tipo: 'recusa',
       motivo: 'sem-mapeamento',

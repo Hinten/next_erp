@@ -18,7 +18,7 @@ import { warmRoutes } from './helpers/warmup';
 
 /**
  * The Loja Integrada paid re-check at the checkout save (master plan step 15,
- * gate i): before the checkout of an order imported from Loja Integrada
+ * a hard gate): before the checkout of an order imported from Loja Integrada
  * commits — and takes the stock — the order's CURRENT payment is asked of the
  * `apps/loja-integrada` backend. An unpaid or contested order is refused with
  * nothing saved; a check that cannot run asks the operator first; a paid order

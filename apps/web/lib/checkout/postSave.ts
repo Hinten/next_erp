@@ -113,7 +113,7 @@ export async function runCheckoutPostSave(args: {
   if (frete !== null) {
     const intFrete = await resolverIntFrete(db, frete);
     if (intFrete === null) {
-      // An imported Loja Integrada order says WHY it has no carrier (B11);
+      // An imported Loja Integrada order says WHY it has no carrier;
       // every other pedido keeps the generic line.
       const motivo = await motivoSemTransportadoraLi(pedidoId, pedido, frete);
       ui.notify({
