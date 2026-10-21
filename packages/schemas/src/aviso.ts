@@ -630,10 +630,14 @@ export const TIPO_AVISO_LABELS = {
  * `pagamento_devolvido` only when the payment was CAPTURED (an uncaptured one
  * is a cancellation: the table's `cancelado`, which raises nothing).
  *
- *  - ⚠️ **It does NOT block dispatch.** The pedido's dispute overlay blocks only
- *    for the incident origins listed as marketplace ones, and Loja Integrada is
- *    not among them (a later step decides whether it joins). The wording says
- *    so, so nobody reads the row as a hold that is not there.
+ *  - ⚠️ **What it holds is the paid re-check's, not the dispute overlay's.**
+ *    The overlay blocks only for the incident origins listed as marketplace
+ *    ones, and Loja Integrada is not among them. The re-check reads the
+ *    order's live situação and, when it cannot, falls back to THIS row by id:
+ *    while it is open, the checkout and the Melhor Envio label buy are
+ *    REFUSED, and a label reprint or a generic label goes on only after the
+ *    operator acknowledges the risk. The wording names those four actions, so
+ *    nobody reads the row as a hold it is not — nor misses the one it is.
  *  - What the import did: on a dispute the pedido stays `pago` and its payment
  *    `em_disputa` (a hold, still counted as paid). On a refund-type codigo
  *    after a removal it KEPT the stored estado and payment status, because the

@@ -17,8 +17,16 @@ import {
   motivoPedidoContestadoLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
+  CODIGO_SITUACAO_LI,
+  veredictoDoCodigoLi,
+  type RespostaConferenciaPagamentoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from '@delfrance/schemas';
+import {
+  decidirConferenciaImpressaoLi,
+  decidirConferenciaPagamentoLi,
+  type ConferenciaPagamentoLi,
+} from '@/lib/loja-integrada/conferenciaPagamento';
 import { MENSAGENS_POR_TIPO } from './mensagens';
 
 /**
@@ -876,10 +884,13 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaSituacaoDesconhecida', () => {
 
 describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoContestado];
-  const NAO_BLOQUEIA = 'O despacho NÃO fica bloqueado no ERP — confira o pedido antes de enviar.';
+  const GATES =
+    'O checkout e a compra de etiqueta no Melhor Envio são recusados enquanto a Loja Integrada ' +
+    'mostrar o pedido contestado ou este aviso estiver aberto. A reimpressão da etiqueta e a ' +
+    'etiqueta genérica só prosseguem depois que o operador confirmar que está ciente do risco.';
   const MANTIDO = 'O ERP manteve o estado e o pagamento do pedido';
 
-  it('a dispute: the phrase, NOT blocked, and how it closes', () => {
+  it('a dispute: the phrase, what the gates do, and how it closes', () => {
     // The resolver closes the row on ANY later import that does not raise it —
     // a refund before the stock left included — so the sentence names the one
     // case that keeps it open instead of promising "a non-contest situação".
@@ -891,7 +902,7 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
       }),
     ).toBe(
       'O pedido 165 da loja Conta A está contestado na Loja Integrada: o pagamento está em ' +
-        `disputa. ${NAO_BLOQUEIA} O aviso se encerra quando a Loja Integrada tirar o pedido ` +
+        `disputa. ${GATES} O aviso se encerra quando a Loja Integrada tirar o pedido ` +
         'da disputa (por exemplo, pago de novo ou cancelado); se o pagamento for devolvido ' +
         'depois que o estoque do pedido já saiu, o aviso continua aberto, agora como devolução.',
     );
@@ -904,7 +915,7 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
       MOTIVO_PEDIDO_CONTESTADO_LI.devolvidoSemRetorno,
     ]) {
       const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
-      expect(corpo, motivo).toContain(NAO_BLOQUEIA);
+      expect(corpo, motivo).toContain(GATES);
       expect(corpo, motivo).toContain(MANTIDO);
       expect(corpo, motivo).toContain('é final na Loja Integrada');
     }
@@ -923,13 +934,73 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
     expect(frases.size).toBe(motivoPedidoContestadoLiSchema.options.length);
   });
 
-  it('a newer code, an inherited key or a missing motivo falls back — still NOT blocked', () => {
+  it('a newer code, an inherited key or a missing motivo falls back — still saying what the gates do', () => {
     for (const motivo of ['motivo-do-futuro', 'toString', '', 3]) {
       const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
       expect(corpo, String(motivo)).toContain('o pagamento foi contestado.');
-      expect(corpo, String(motivo)).toContain(NAO_BLOQUEIA);
+      expect(corpo, String(motivo)).toContain(GATES);
     }
     expect(mensagem.corpo({})).not.toContain('undefined');
+  });
+
+  /**
+   * The wording is a CLAIM about the paid re-check's gates (step 15, B7), so it
+   * is pinned against the gates' own decision tables rather than against
+   * itself: a contested order — read live from the store, or the open aviso
+   * the backend falls back to when it cannot read — is REFUSED by the hard
+   * gates (the checkout save, the Melhor Envio buy) and ACKNOWLEDGED at the
+   * soft ones (a reprint, a generic label). A table that changed under the
+   * sentence would red here instead of leaving an aviso that promises a hold
+   * that is not there, or denies one that is.
+   */
+  it('⭐ pinned against the gates: refused at the checkout and the buy, acknowledged at a reprint and a generic label', () => {
+    const resposta = (r: RespostaConferenciaPagamentoLi): ConferenciaPagamentoLi => ({
+      tipo: 'resposta',
+      pedidoId: PEDIDO_ID,
+      resposta: r,
+      recebidoEm: 0,
+    });
+    const contestados = [
+      resposta({
+        aplicavel: true,
+        fonte: 'erp',
+        veredito: 'contestado',
+        codigo: null,
+        motivoContestacao: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
+        conferidoEmMs: null,
+        correlationId: null,
+      }),
+      ...[
+        CODIGO_SITUACAO_LI.pagamentoEmDisputa,
+        CODIGO_SITUACAO_LI.pagamentoDevolvido,
+        CODIGO_SITUACAO_LI.pedidoChargeback,
+        CODIGO_SITUACAO_LI.pagamentoDevolvidoSemRetorno,
+      ].map((codigo) =>
+        resposta({
+          aplicavel: true,
+          fonte: 'loja',
+          // What the route answers live for the codigo — never `contestado`,
+          // which only the ERP mirror carries.
+          veredito: veredictoDoCodigoLi(codigo) as 'pago' | 'nao-pago' | 'desconhecido',
+          codigo,
+          motivoContestacao: null,
+          conferidoEmMs: 1_790_000_000_000,
+          correlationId: null,
+        }),
+      ),
+    ];
+    for (const d of contestados) {
+      const rotulo = d.tipo === 'resposta' && d.resposta.aplicavel ? String(d.resposta.codigo) : '';
+      expect(decidirConferenciaPagamentoLi(d).acao, rotulo).toBe('bloquear');
+      expect(decidirConferenciaImpressaoLi(d).acao, rotulo).toBe('ciente');
+    }
+    expect(mensagem.corpo({ motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa })).toContain(GATES);
+  });
+
+  it('⚠️ NEAR-MISS: the old "does not block" sentence is gone from every motivo', () => {
+    for (const motivo of [...motivoPedidoContestadoLiSchema.options, 'motivo-do-futuro']) {
+      expect(mensagem.corpo({ motivo }), motivo).not.toContain('NÃO fica bloqueado');
+    }
   });
 
   it('renders the producer plano as stored', () => {
