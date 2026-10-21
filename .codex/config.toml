@@ -3,9 +3,13 @@
 default_permissions = "next-erp"
 
 developer_instructions = """
+In WSL, run Node, npm, npx, pnpm and Turbo commands through `/bin/bash --login -c` so user-local Linux tools configured in `~/.profile` are available. Keep that shell inside the selected sandbox profile.
+
 Create Codex task branches under `codex/*`. Published `codex/**` branches receive the repository's pre-PR push CI, including all three E2E lanes, and the prefix is also accepted by every pull-request base filter for stacked work.
 
-Publish both new branches and follow-up commits only with `git -c 'safe.directory=*' push -u origin HEAD`. This exact command is pre-authorized because a Codex-only hook verifies that `origin` resolves to the `github.com/Hinten/next_erp` repository (https or SSH), the current branch starts with `codex/`, and the command is exactly this text. The hook denies any other command that names `safe.directory` and `push`, so run it on its own: do not chain it with other commands, escape or re-quote it, spell out the branch name, use another remote, or add arguments.
+For publication authorized by the current task, prefer the connected GitHub plugin. Verify that `origin` and every mutating tool's repository argument identify exactly `Hinten/next_erp`, and publish only to the selected `codex/*` task branch. Limit remote commits to the reviewed local changes, preserve the parent tree, and verify the expected remote head before updating an existing branch; use `expected_sha` for the ref update and never force an unrelated branch. These destination and branch checks are required for connector writes because shell hooks do not run for them.
+
+When publishing through native Git, publish both new branches and follow-up commits only with `git -c 'safe.directory=*' push -u origin HEAD`. This exact command is pre-authorized because a Codex-only hook verifies that `origin` resolves to the `github.com/Hinten/next_erp` repository (https or SSH), the current branch starts with `codex/`, and the command is exactly this text. The hook denies any other command that names `safe.directory` and `push`, so run it on its own: do not chain it with other commands, escape or re-quote it, spell out the branch name, use another remote, or add arguments.
 
 After finishing repository changes, create or update a pull request in draft mode unless the user explicitly requests a different state.
 
@@ -25,6 +29,18 @@ project_doc_fallback_filenames = ["CLAUDE.md"]
 
 # Covers the root instructions plus the largest current nested CLAUDE.md chain.
 project_doc_max_bytes = 196608
+
+[features]
+network_proxy = true
+
+# Relative defaults cover commands launched from the worktree root. The setup
+# helper resolves these caches to absolute paths for its package-manager child.
+[shell_environment_policy.set]
+npm_config_cache = "out/codex-sandbox-cache/npm"
+pnpm_config_store_dir = "out/codex-sandbox-cache/pnpm-store"
+pnpm_config_cache_dir = "out/codex-sandbox-cache/pnpm-cache"
+pnpm_config_state_dir = "out/codex-sandbox-cache/state"
+TURBO_TELEMETRY_DISABLED = "1"
 
 # Keep repository work writable while denying credential-bearing local files.
 # Command-level destructive operations are covered by .codex/rules/default.rules
@@ -46,6 +62,10 @@ glob_scan_max_depth = 8
 # Preserve the protected metadata directories normally inherited from :workspace.
 ".git" = "read"
 ".codex" = "read"
+# This pnpm workspace needs dependency links while its configuration stays protected.
+".codex/node_modules" = "write"
+# Turbo writes generated task logs within each workspace.
+".codex/.turbo" = "write"
 ".agents" = "read"
 ".aws" = "read"
 ".env" = "deny"
@@ -66,7 +86,11 @@ glob_scan_max_depth = 8
 "**/.ignore/**" = "deny"
 
 [permissions.next-erp.network]
-enabled = false
+enabled = true
+allow_local_binding = true
+
+[permissions.next-erp.network.domains]
+"registry.npmjs.org" = "allow"
 
 # Reuse the repository-pinned Playwright MCP package. `.mcp.json` invokes the
 # same installed entry point for Claude, so package.json remains the version
