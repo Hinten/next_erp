@@ -1095,15 +1095,20 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaReversaoComEtiqueta', () => {
 describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco];
 
-  it('says the PAID order did not reach the ERP, why (NO CEP at all — never an invalid one, which imports), that retrying stopped, and that it closes only once the pedido has its delivery endereço', () => {
+  it('says the PAID order could not be imported WITH its delivery endereço, why (no usable CEP — never an "invalid" one), that it was retried before the aviso opened, and the three ways it closes: the endereço, a pickup, or no longer paid (owner decision, 2026-10-20)', () => {
     const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165' });
     expect(corpo).toBe(
-      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem CEP no ' +
-        'endereço de entrega e por isso não entrou no ERP — nem o pedido, nem a atualização ' +
-        'dele: sem endereço não há como comprar a etiqueta. A importação tentou de novo por ' +
-        'algumas horas e parou. O aviso se encerra quando o pedido estiver no ERP com o ' +
-        'endereço de entrega.',
+      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem um CEP de ' +
+        'entrega utilizável e por isso não pôde ser importado com o endereço de entrega: sem ' +
+        'endereço não há como comprar a etiqueta. A importação tentou de novo por algumas ' +
+        'horas antes de abrir este aviso. O aviso se encerra quando o pedido tiver o endereço ' +
+        'de entrega, virar retirada na loja ou deixar de estar pago.',
     );
+    // True before AND after a later import with an invalid CEP, which lands the pedido
+    // with no endereço and leaves the aviso open: the body never says the pedido is missing
+    // from the ERP, nor that the importer stopped for good.
+    expect(corpo).not.toContain('não entrou no ERP');
+    expect(corpo).not.toContain('e parou');
     // Owner decision, 2026-10-20: an import alone no longer closes it (an invalid CEP keeps it open).
     expect(corpo).not.toContain('quando o pedido for importado');
     // Owner decision, 2026-10-20: an invalid CEP is not refused, so the wording never blames one.
@@ -1130,16 +1135,16 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
     expect(mensagem.corpo(aviso.params)).toContain('O pedido 165 da loja Conta A está pago');
   });
 
-  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, the aviso stays OPEN until the pedido has its delivery endereço (owner decision, 2026-10-20), and while it stays open: check the CEP has 8 digits, then a developer', () => {
+  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, the aviso stays OPEN until the pedido has its delivery endereço or is no longer paid (owner decision, 2026-10-20), and while it stays open: check the CEP has 8 digits, then a developer', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco);
     expect(mensagem.runbook).toBe(
       'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
         'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
         'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
         'e depois altere o pedido no painel. O aviso fica aberto até o pedido ter o endereço de ' +
-        'entrega (o de retirada na loja não precisa dele). Se o aviso continuar aberto depois da ' +
-        'alteração, confira no painel se o CEP tem 8 dígitos; se tiver, peça a um desenvolvedor ' +
-        'que confira a notificação estacionada desse pedido.',
+        'entrega (o de retirada na loja não precisa dele) ou deixar de estar pago. Se o aviso ' +
+        'continuar aberto depois da alteração, confira no painel se o CEP tem 8 dígitos; se ' +
+        'tiver, peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
     );
     // An unreadable CEP no longer closes the aviso, so the runbook no longer says it does.
     expect(mensagem.runbook).not.toContain('não consegue ler');
