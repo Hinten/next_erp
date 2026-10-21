@@ -1899,6 +1899,31 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
       ).toBe(false);
     });
 
+    it('⚠️ NEAR-MISS: a VALID CEP on a pedido that already STORES an endereço resolves the aviso and never overwrites it — nothing is built from this observation, and the route goes to the STORED endereço', async () => {
+      // The invalid-CEP twin above has no endereço to overwrite with; this one does.
+      const db = dbComAlvo();
+      await importar(db, aguardando({ data_modificacao: carimboLi(1) }));
+      await refPedido(db).update({ enderecoFiscalOuterRef: DO_OPERADOR });
+      await levantarAvisoPago(db);
+      const escritasAntes = db.escritas.length;
+
+      const r = await importar(
+        db,
+        cena({ cliente: COMPRADOR_COM_CPF, data_modificacao: carimboLi(3) }),
+      );
+      expect(r.r).toEqual({ kind: 'importado' });
+      resolvido(db);
+      expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        enderecoFiscalOuterRef: DO_OPERADOR,
+      });
+      expect(frete(db)).toMatchObject({ ...ROTA_ME, enderecoFreteOuterReference: DO_OPERADOR });
+      expect(
+        db.escritas.slice(escritasAntes).some((e) => e.caminho.includes('/enderecos/')),
+        'no endereço built from the observation',
+      ).toBe(false);
+    });
+
     it('NEAR-MISS: a VALID CEP resolves it — this import writes the endereço', async () => {
       const db = dbComAlvo();
       await levantarAvisoPago(db);
