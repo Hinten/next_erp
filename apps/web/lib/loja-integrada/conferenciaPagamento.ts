@@ -558,7 +558,7 @@ export function avisoCienteConferenciaLi(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The soft gate (A2) before a Melhor Envio REPRINT or a GENERIC label:
+ * The soft gate before a Melhor Envio REPRINT or a GENERIC label:
  *
  *  1. not an imported order ⇒ `prosseguir`, with no call;
  *  2. a `pago` carried under {@link VALIDADE_CONFERENCIA_LI_MS} ⇒ `prosseguir`,

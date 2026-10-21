@@ -209,7 +209,7 @@ describe('melhorEnviosProvider', () => {
 /*            The Loja Integrada paid re-check's soft gate (step 15)          */
 /* -------------------------------------------------------------------------- */
 
-describe('melhorEnviosProvider — the Loja Integrada soft gate (A2)', () => {
+describe('melhorEnviosProvider — the Loja Integrada soft gate', () => {
   const ID_LI = createHash('sha256').update('lojaIntegradaCONTA1-165').digest('hex');
   const PEDIDO_LI = {
     numero: '165',
