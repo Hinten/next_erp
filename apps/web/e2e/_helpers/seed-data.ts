@@ -4922,6 +4922,50 @@ export async function cleanupCheckoutFixtures(prefix: string, pedidoIds: string[
   await Promise.all([cleanupPedidoFixtures(prefix), cleanupIntFreteFixtures(prefix)]);
 }
 
+/**
+ * The Loja Integrada paid re-check at the checkout save (master plan step 15,
+ * `despacho-checkout-loja-integrada.vendas`):
+ * {@link seedPedidoEtiquetaConferenciaLiFixtures}'s imported `pago` pedido — at
+ * its deterministic id, routed at import to a Motoboy target, so its post-save
+ * label is the generic one and nothing depends on the routing step — made
+ * ready for a checkout: ONE line of a prefixed produto (the scan code is its
+ * SKU), and its frete in an estado the save accepts without a confirm
+ * (`emSeparacao`).
+ */
+export async function seedCheckoutConferenciaLiFixtures(prefix: string): Promise<{
+  pedidoId: string;
+  numero: string;
+  sku: string;
+}> {
+  const li = await seedPedidoEtiquetaConferenciaLiFixtures(prefix);
+  const produtoId = `${prefix}-pro-li`;
+  const sku = `${prefix.toUpperCase().replace(/-/g, '_')}_LI`;
+  await db().collection('produtos').doc(produtoId).set(checkoutProdutoDoc(produtoId, sku));
+  await db()
+    .collection('pedidos')
+    .doc(li.pedidoId)
+    .update({
+      itens: { [produtoId]: [checkoutItem(produtoId, sku, produtoId, 1)] },
+      itensIds: [produtoId],
+      'freteInicial.estado': ESTADO_FRETE.emSeparacao,
+    });
+  return { pedidoId: li.pedidoId, numero: li.numero, sku };
+}
+
+/**
+ * Teardown for {@link seedCheckoutConferenciaLiFixtures}: the pedido's
+ * `checkout` docs (a save writes one), then everything
+ * {@link cleanupPedidoEtiquetaConferenciaLiFixtures} sweeps — the pedido by id
+ * with its trigger trails, and the prefixed produto, conta and freight docs.
+ */
+export async function cleanupCheckoutConferenciaLiFixtures(
+  prefix: string,
+  pedidoId: string | null,
+): Promise<void> {
+  if (pedidoId !== null) await cleanupPedidoSubcollection(pedidoId, 'checkout');
+  await cleanupPedidoEtiquetaConferenciaLiFixtures(prefix, pedidoId);
+}
+
 /* -------------------------------------------------------------------------- */
 /*     Pedidos — Download Anexos bulk action fixtures (#550)                  */
 /* -------------------------------------------------------------------------- */

@@ -69,8 +69,18 @@ export interface StubConferenciaPagamentoLi {
 }
 
 /**
+ * A non-2xx answer of the paid re-check route: the backend's error envelope
+ * (`{ error, code }`, a `CODIGO_ERRO_LI` code) at `status`.
+ */
+export interface ErroConferenciaPagamentoLi {
+  readonly status: number;
+  readonly envelope: { readonly error: string; readonly code: string };
+}
+
+/**
  * Stub `GET …/pedidos/[pedidoId]/pagamento` on the `apps/loja-integrada`
- * backend (master plan step 15) with a fixed answer, recording every call.
+ * backend (master plan step 15) with a fixed answer — a 200 verdict, or an
+ * error envelope ({@link ErroConferenciaPagamentoLi}) — recording every call.
  *
  * The e2e build has no Loja Integrada backend at all, and the route is covered
  * by its own offline suites — so every spec that reaches a paid re-check stubs
@@ -80,17 +90,19 @@ export interface StubConferenciaPagamentoLi {
  */
 export async function stubConferenciaPagamentoLi(
   page: Page,
-  resposta: RespostaConferenciaPagamentoLi,
+  resposta: RespostaConferenciaPagamentoLi | ErroConferenciaPagamentoLi,
 ): Promise<StubConferenciaPagamentoLi> {
   const stub: StubConferenciaPagamentoLi = { chamadas: [] };
+  const [status, corpo] =
+    'envelope' in resposta ? [resposta.status, resposta.envelope] : [200, resposta];
   await page.route(CONFERENCIA_PAGAMENTO_LI, async (route) => {
     const segmentos = new URL(route.request().url()).pathname.split('/');
     stub.chamadas.push(decodeURIComponent(segmentos[segmentos.length - 2] ?? ''));
     await route.fulfill({
-      status: 200,
+      status,
       contentType: 'application/json',
       headers: { 'Cache-Control': 'no-store' },
-      body: JSON.stringify(resposta),
+      body: JSON.stringify(corpo),
     });
   });
   return stub;
