@@ -1242,6 +1242,48 @@ export async function appendMapaFreteRow(id: string, row: Record<string, unknown
     .update({ mapa: FieldValue.arrayUnion(row) });
 }
 
+/**
+ * The Loja Integrada routing action on the `/pedidos` row (master plan step
+ * 15): {@link seedPedidoEtiquetaConferenciaLiFixtures}'s conta, Motoboy target
+ * and `pago` pedido at its deterministic id — but with the pedido still on the
+ * conta's Loja Integrada freight doc, NOT routed at import, and that doc's
+ * `mapa` routing the pedido's shipping method (`1001---A`) to the Motoboy
+ * target. Torn down by `cleanupPedidoEtiquetaConferenciaLiFixtures`.
+ *
+ * The route itself lives on the `apps/loja-integrada` backend, which the e2e
+ * build does not have: the spec stubs it, so this pedido is never re-pointed
+ * in Firestore — the row shows the routed carrier from the answer alone.
+ */
+export async function seedPedidoRoteamentoLiFixtures(
+  prefix: string,
+): Promise<
+  Awaited<ReturnType<typeof seedPedidoEtiquetaConferenciaLiFixtures>> & { docLiId: string }
+> {
+  const base = await seedPedidoEtiquetaConferenciaLiFixtures(prefix);
+  const docLiId = intFreteIdDaContaLi(base.contaId);
+  await db()
+    .collection('int_frete')
+    .doc(docLiId)
+    .update({
+      mapa: [
+        {
+          nomeOriginal: 'Forma 1',
+          idOriginal: '1001---A',
+          observacao: 'Origem: Pedido 1',
+          nomeTarget: base.frete.motoboyNome,
+          targetData: null,
+          integracaoUid: base.frete.motoboyId,
+          targetTipoIntegracao: INTEGRACAO_FRETE.motoboy,
+        },
+      ],
+    });
+  await db()
+    .collection('pedidos')
+    .doc(base.pedidoId)
+    .update({ 'freteInicial.integracaoFreteOuterRef': `documents/int_frete/${docLiId}` });
+  return { ...base, docLiId };
+}
+
 /** Teardown for `seedWhatsappFixtures`. */
 export async function cleanupWhatsappFixtures(prefix: string): Promise<void> {
   await cleanupIntegracaoFixtures(prefix);
