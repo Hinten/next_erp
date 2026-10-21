@@ -13,8 +13,18 @@
  * would silently pick — and the choice is sent on the cart insert. When the
  * carrier has no agencies (Correios) or the lookup fails, no picker shows and
  * the server-side `ensureCartAgency` fallback applies unchanged.
+ *
+ * **The Loja Integrada paid re-check (master plan step 15, a hard gate).** For
+ * an order imported from Loja Integrada, every Comprar click first asks the
+ * `apps/loja-integrada` backend for the order's CURRENT payment
+ * (`conferirAntesDeDespacharLi`), right before any money is spent — unless the
+ * checkout chain hands over a `pago` received under 120 s ago
+ * (`conferenciaLi`). A verdict that does not authorise dispatch BLOCKS, with an
+ * Alert; one that cannot be verified asks the same "continuar?" the checkout
+ * asks, here inline (a confirm dialog must never be nested in this Modal), and
+ * only "Continuar mesmo assim" buys. Any other pedido is never checked.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { formatReais } from '@delfrance/core/money';
@@ -30,6 +40,9 @@ import {
 
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
+import { useLojaIntegradaClient } from '@/lib/loja-integrada/client';
+import { conferirAntesDeDespacharLi } from '@/lib/loja-integrada/conferenciaDespacho';
+import type { ConferenciaLiCarregada } from '@/lib/loja-integrada/conferenciaPagamento';
 import { freightErrorMessage } from '@/lib/freight/errorMessage';
 import { freightQueryRetry } from '@/lib/freight/queryRetry';
 import {
@@ -42,6 +55,11 @@ interface BuyResult {
   readonly printUrl: string;
   readonly tracking: string | null;
 }
+
+/** Where the paid re-check stopped the buy: a refusal, or a "continuar?" question. */
+type ConferenciaPendente =
+  | { readonly tipo: 'bloqueada'; readonly mensagem: string }
+  | { readonly tipo: 'confirmar'; readonly mensagem: string };
 
 /**
  * Picker label: agency name + its city when the passthrough `address` carries
@@ -71,6 +89,8 @@ export function EtiquetaComprarModal({
   pedidoId,
   intFreteId,
   needsPostedConfirm,
+  conferenciaLi,
+  gateConferenciaLi = 'comprar',
 }: {
   opened: boolean;
   onClose: () => void;
@@ -78,14 +98,32 @@ export function EtiquetaComprarModal({
   pedidoId: string;
   intFreteId: string | null;
   needsPostedConfirm: boolean;
+  /**
+   * A Loja Integrada paid verdict carried from the checkout's own gate (the
+   * checkout bridge); a `pago` under 120 s old spares this buy's check.
+   */
+  conferenciaLi?: ConferenciaLiCarregada;
+  /**
+   * Where this buy sits: on its own (`comprar`, `/pedidos`), or inside the
+   * checkout chain (`cadeia`), where a block must also say the checkout and
+   * the NF-e were already saved.
+   */
+  gateConferenciaLi?: 'comprar' | 'cadeia';
 }) {
   const db = getFirebaseFirestore();
   const client = useFreightClient();
+  const lojaIntegradaClient = useLojaIntegradaClient();
   const [ack, setAck] = useState(false);
   const [buying, setBuying] = useState(false);
   const [result, setResult] = useState<BuyResult | null>(null);
   /** The operator's picker choice; null → the derived default (nearest). */
   const [agencyChoice, setAgencyChoice] = useState<string | null>(null);
+  /** The Loja Integrada paid re-check is running (Comprar says so). */
+  const [conferindo, setConferindo] = useState(false);
+  const [conferencia, setConferencia] = useState<ConferenciaPendente | null>(null);
+  // A second click lands before the re-render that disables Comprar: one
+  // check per click, never two in flight.
+  const emAndamentoRef = useRef(false);
 
   // Show the ME account saldo before confirming (the legacy showed it in the
   // buy dialog). Fresh each open (staleTime 0) — a prior buy changes it.
@@ -175,10 +213,62 @@ export function EtiquetaComprarModal({
     setBuying(false);
     setResult(null);
     setAgencyChoice(null);
+    setConferencia(null);
+    setConferindo(false);
     onClose();
   }
 
+  /**
+   * The Comprar click: the paid re-check, then the buy. ONE check per click —
+   * a block or a question is never remembered as a verdict, so the next click
+   * asks again (the store's painel is where a block is released).
+   */
   async function handleBuy() {
+    if (!client || !resolved || cartInput.isFetching || agenciasSettling) return;
+    if (emAndamentoRef.current) return;
+    emAndamentoRef.current = true;
+    try {
+      setConferencia(null);
+      setConferindo(true);
+      let decisao: Awaited<ReturnType<typeof conferirAntesDeDespacharLi>>;
+      try {
+        decisao = await conferirAntesDeDespacharLi({
+          client: lojaIntegradaClient,
+          pedidoId,
+          pedido,
+          gate: gateConferenciaLi,
+          conferenciaLi: conferenciaLi ?? null,
+        });
+      } finally {
+        setConferindo(false);
+      }
+      if (decisao.acao !== 'prosseguir') {
+        setConferencia(
+          decisao.acao === 'bloquear'
+            ? { tipo: 'bloqueada', mensagem: decisao.mensagem }
+            : { tipo: 'confirmar', mensagem: decisao.mensagem },
+        );
+        return;
+      }
+      await comprar();
+    } finally {
+      emAndamentoRef.current = false;
+    }
+  }
+
+  /** "Continuar mesmo assim" on a check that could not be verified: buy, with no second check. */
+  async function handleContinuarSemConferencia() {
+    if (emAndamentoRef.current) return;
+    emAndamentoRef.current = true;
+    try {
+      setConferencia(null);
+      await comprar();
+    } finally {
+      emAndamentoRef.current = false;
+    }
+  }
+
+  async function comprar() {
     if (!client || !resolved || cartInput.isFetching || agenciasSettling) return;
     setBuying(true);
     try {
@@ -324,6 +414,26 @@ export function EtiquetaComprarModal({
               />
             </Alert>
           )}
+          {conferencia?.tipo === 'bloqueada' && (
+            <Alert color="red" title="Pagamento não confirmado na Loja Integrada" variant="light">
+              {conferencia.mensagem}
+            </Alert>
+          )}
+          {conferencia?.tipo === 'confirmar' && (
+            <Alert color="yellow" title="Atenção" variant="light">
+              {conferencia.mensagem}
+              <Group justify="flex-end" mt="sm">
+                <Button
+                  size="xs"
+                  color="orange"
+                  onClick={handleContinuarSemConferencia}
+                  disabled={buying}
+                >
+                  Continuar mesmo assim
+                </Button>
+              </Group>
+            </Alert>
+          )}
           <Group justify="flex-end">
             <Button variant="default" onClick={handleClose} disabled={buying}>
               Cancelar
@@ -333,10 +443,12 @@ export function EtiquetaComprarModal({
               // `isFetching` (not `isLoading`) also spins through a cached
               // reopen's refetch — the resolved payload must be fresh at buy.
               loading={buying || cartInput.isFetching || agenciasSettling}
-              disabled={!client || !resolved || (needsPostedConfirm && !ack)}
+              // NOT `loading` while the paid re-check runs: a loader hides the
+              // label, and the label is what says why the buy is waiting.
+              disabled={!client || !resolved || (needsPostedConfirm && !ack) || conferindo}
               color={needsPostedConfirm ? 'orange' : undefined}
             >
-              Comprar etiqueta
+              {conferindo ? 'Conferindo pagamento…' : 'Comprar etiqueta'}
             </Button>
           </Group>
         </Stack>

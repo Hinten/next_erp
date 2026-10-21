@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Center, Group, Loader, SimpleGrid, Stack } from '@mantine/core';
 import { getDoc } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
@@ -12,6 +12,9 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { useNFeClient } from '@/lib/nfe/client';
 import { useFreightClient } from '@/lib/freight/client';
 import { useLojaIntegradaClient } from '@/lib/loja-integrada/client';
+import { conferirAntesDeDespacharLi } from '@/lib/loja-integrada/conferenciaDespacho';
+import type { ConferenciaLiCarregada } from '@/lib/loja-integrada/conferenciaPagamento';
+import { preverRotaEtiquetaLi } from '@/lib/loja-integrada/rotaEtiqueta';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 import { useShopeeClient } from '@/lib/shopee/client';
 import { useEscolherEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
@@ -32,6 +35,7 @@ import {
   salvarCheckoutTransacao,
   type ConfirmKind,
 } from '@/lib/checkout/saveCheckout';
+import { avisoDeEtiquetaAntesDoCheckoutLi } from '@/lib/checkout/conferenciaLojaIntegrada';
 import { runCheckoutPostSave, type PostSaveResult } from '@/lib/checkout/postSave';
 import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
 
@@ -71,10 +75,14 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
   const freightClient = useFreightClient();
   const mercadoLivreClient = useMercadoLivreClient();
   const shopeeClient = useShopeeClient();
-  // The Loja Integrada paid re-check's soft gates (reprint, generic label) ask it.
+  // The Loja Integrada paid re-check asks it: the save's own gate below, and
+  // the soft gates (reprint, generic label) of the post-save.
   const lojaIntegradaClient = useLojaIntegradaClient();
 
   const { state, dispatch, bumpEpoch, currentEpoch } = useCheckoutReducer();
+  // What Salvar is waiting on, when it is not the save itself (the Loja
+  // Integrada paid re-check can take a cold start plus a paced read).
+  const [statusSalvar, setStatusSalvar] = useState<string | null>(null);
   // Latest state for the async handlers (avoids stale closures without re-binding).
   // Updated post-commit; handlers run after commit, so they always read the latest.
   const stateRef = useRef(state);
@@ -308,6 +316,63 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
         confirmed.add(result.kind);
       }
 
+      // 2b. An order imported from Loja Integrada (master plan step 15) —
+      // AFTER the loop's last dialog, so the paid answer is as fresh as it can
+      // be when the transaction commits, and BEFORE it: the check is a network
+      // read, and a transaction callback must never hold one. Any other pedido
+      // reads and calls nothing here (the identity hash says no).
+      let conferenciaLi: ConferenciaLiCarregada | null = null;
+      if (freshData) {
+        // (1) The read-only preview of the label route: warn while the stock
+        // has not left yet that the label will be refused after the save.
+        const avisoEtiqueta = await avisoDeEtiquetaAntesDoCheckoutLi({
+          pedidoId,
+          pedido: freshData,
+          prever: (p) => preverRotaEtiquetaLi(db, p),
+        });
+        if (avisoEtiqueta !== null) {
+          const seguir = await confirmDialog.confirm({
+            title: 'Etiqueta',
+            message: avisoEtiqueta,
+            confirmLabel: 'Continuar',
+          });
+          if (!seguir) return;
+        }
+        // (2) Gate (i), the paid re-check: a verdict that does not authorise
+        // dispatch blocks; one that cannot be verified asks; a `pago` rides the
+        // post-save so the label's own gate does not ask again.
+        setStatusSalvar('Conferindo pagamento na Loja Integrada…');
+        let conferencia: Awaited<ReturnType<typeof conferirAntesDeDespacharLi>>;
+        try {
+          conferencia = await conferirAntesDeDespacharLi({
+            client: lojaIntegradaClient,
+            pedidoId,
+            pedido: freshData,
+            gate: 'checkout',
+          });
+        } finally {
+          setStatusSalvar(null);
+        }
+        if (conferencia.acao === 'bloquear') {
+          showErrorNotification({
+            title: 'Pagamento não confirmado na Loja Integrada',
+            message: conferencia.mensagem,
+          });
+          return;
+        }
+        if (conferencia.acao === 'confirmar') {
+          const seguir = await confirmDialog.confirm({
+            title: 'Atenção',
+            message: conferencia.mensagem,
+            confirmLabel: 'Continuar',
+            danger: true,
+          });
+          if (!seguir) return;
+        } else {
+          conferenciaLi = conferencia.conferenciaLi;
+        }
+      }
+
       // 3. Transaction.
       try {
         await salvarCheckoutTransacao(db, {
@@ -345,6 +410,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
           formatoDanfe: snap.formatoDanfe,
           formatoEtiqueta: snap.formatoEtiqueta,
           ui,
+          conferenciaLi,
         });
         reportPostSave(post);
       } catch (err) {
@@ -441,6 +507,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
               onReload={handleReload}
               onSave={handleSave}
               saving={state.saving}
+              status={statusSalvar}
               canSave={user !== null && canWrite}
             />
           </Stack>

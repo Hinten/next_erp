@@ -2,11 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import type { FreteDoPedido, Pedido } from '@delfrance/schemas';
 
+interface PropsDoModal {
+  pedido: Pedido;
+  pedidoId: string;
+  intFreteId: string | null;
+  conferenciaLi?: unknown;
+  gateConferenciaLi?: string;
+}
 const h = vi.hoisted(() => ({
-  props: [] as Array<{ pedido: Pedido; pedidoId: string; intFreteId: string | null }>,
+  props: [] as PropsDoModal[],
 }));
 vi.mock('@/app/(app)/pedidos/_components/EtiquetaComprarModal', () => ({
-  EtiquetaComprarModal: (p: { pedido: Pedido; pedidoId: string; intFreteId: string | null }) => {
+  EtiquetaComprarModal: (p: PropsDoModal) => {
     h.props.push(p);
     return null;
   },
@@ -79,6 +86,47 @@ describe('useComprarEtiquetaBridge', () => {
     const ultimo = h.props.at(-1)!;
     expect(ultimo.pedido.numero).toBe('165');
     expect(ultimo.pedido.freteInicial).not.toBe(FRETE_DA_TELA);
+  });
+
+  it("hands the modal the chain's carried paid verdict, and tells it the buy is inside the checkout chain", () => {
+    h.props.length = 0;
+    const api = montar(PEDIDO_DA_TELA);
+    const conferenciaLi = {
+      tipo: 'resposta',
+      pedidoId: 'ped-1',
+      resposta: { aplicavel: false, motivo: 'nao-importado' },
+      recebidoEm: 5,
+    } as const;
+
+    act(() => {
+      void api().comprarEtiqueta({
+        intFreteId: 'me-1',
+        pedidoId: 'ped-1',
+        frete: FRETE_VIVO,
+        needsPostedConfirm: false,
+        conferenciaLi,
+      });
+    });
+
+    const ultimo = h.props.at(-1)!;
+    expect(ultimo.conferenciaLi).toBe(conferenciaLi);
+    expect(ultimo.gateConferenciaLi).toBe('cadeia');
+  });
+
+  it('⚠️ NEAR-MISS: with no carried verdict the modal gets none — its own check runs', () => {
+    h.props.length = 0;
+    const api = montar(PEDIDO_DA_TELA);
+
+    act(() => {
+      void api().comprarEtiqueta({
+        intFreteId: 'me-1',
+        pedidoId: 'ped-1',
+        frete: FRETE_VIVO,
+        needsPostedConfirm: false,
+      });
+    });
+
+    expect(h.props.at(-1)!.conferenciaLi).toBeUndefined();
   });
 
   it('with no pedido on screen nothing opens, and the buy answers cancelled', async () => {
