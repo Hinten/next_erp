@@ -275,6 +275,27 @@ describe('buildDuplicarPedidoSeed', () => {
     expect(frete.volumes).toHaveLength(1);
   });
 
+  it('a Loja Integrada pedido still on its conta’s freight doc keeps that ref, and loses the mapa key', async () => {
+    // The block tipo is null for a Loja Integrada pedido, so nothing here reads
+    // it as marketplace-owned — before the router flip or after. The duplicate
+    // keeps pointing at the conta's doc, whose Frete tab is the router panel
+    // with an ENABLED picker in the cart estados: the operator re-points it
+    // there. The shipping-method key goes with every quote field.
+    const { values } = await seed({
+      freteInicial: {
+        ...origin.freteInicial,
+        integracaoFreteOuterRef: 'documents/int_frete/lojaIntegrada-i1',
+        integracaoTargetOuterRef: null,
+        externalOptionIntegracao: null,
+        externalOptionData: { id: 1001, code: 'A' },
+      },
+    });
+    const frete = values.freteInicial as Record<string, unknown>;
+    expect(frete.integracaoFreteOuterRef).toBe('documents/int_frete/lojaIntegrada-i1');
+    expect(frete.externalOptionData).toBeNull();
+    expect(frete.estado).toBe('iniciado');
+  });
+
   it('leaves a null freteInicial untouched', async () => {
     const { values } = await seed({ freteInicial: null });
     expect(values.freteInicial).toBeNull();

@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { INTEGRACAO_TIPO, type IntegracaoTipo } from '../integracao';
+import { VINCULO_INT_FRETE_CONTA } from '../intFrete';
+import { FREIGHT_TIPO_CAPS, type FreightLabelMode } from './frete';
 import {
   MARKETPLACE_TIPO_CAPS,
   ehMarketplace,
@@ -371,6 +373,80 @@ describe('MARKETPLACE_TIPO_CAPS — structural rules', () => {
     expect(
       Object.values(MARKETPLACE_TIPO_CAPS).some((c) => c.estoque.protocolo === 'feed-assincrono'),
     ).toBe(true);
+  });
+});
+
+/**
+ * The SAME channel is described by two tables: `MARKETPLACE_TIPO_CAPS` (keyed by
+ * the conta's `integracao.tipo`, the INT enum) says who mints its label, and
+ * `FREIGHT_TIPO_CAPS` (keyed by its `int_frete.tipo`, the STRING enum) says how
+ * the label flow dispatches. `VINCULO_INT_FRETE_CONTA` is the bridge between the
+ * two enums — so this is where a contradiction between them can be seen.
+ */
+describe('MARKETPLACE_TIPO_CAPS.etiqueta agrees with FREIGHT_TIPO_CAPS.labelMode (step 15)', () => {
+  /** What each `etiqueta` answer demands of the freight row. */
+  const LABEL_MODE_DA_ETIQUETA: Partial<
+    Record<MarketplaceCapabilities['etiqueta'], FreightLabelMode>
+  > = {
+    // The marketplace mints the label: the freight row fetches it.
+    fetch: 'fetch',
+    // We mint it — through the carrier the conta's `mapa` routes the pedido
+    // to, so the freight row is a ROUTER.
+    emit: 'roteado',
+  };
+
+  function divergencias(tabelaFrete: typeof FREIGHT_TIPO_CAPS): string[] {
+    const achados: string[] = [];
+    for (const [canal, vinculo] of Object.entries(VINCULO_INT_FRETE_CONTA)) {
+      const etiqueta = MARKETPLACE_TIPO_CAPS[vinculo.tipoConta].etiqueta;
+      const labelMode = tabelaFrete[vinculo.tipoFrete].labelMode;
+      const esperado = LABEL_MODE_DA_ETIQUETA[etiqueta];
+      if (esperado === undefined) {
+        achados.push(`${canal}: etiqueta '${etiqueta}' sem labelMode correspondente`);
+      } else if (labelMode !== esperado) {
+        achados.push(
+          `${canal}: etiqueta '${etiqueta}' exige labelMode '${esperado}', não '${labelMode}'`,
+        );
+      }
+    }
+    return achados;
+  }
+
+  it('every channel with a freight doc is consistent across the two tables', () => {
+    expect(divergencias(FREIGHT_TIPO_CAPS)).toEqual([]);
+  });
+
+  it('reads real rows, written out — fetch for Mercado Livre and Shopee, emit for Loja Integrada', () => {
+    // Guards the loop above from passing over an empty bridge.
+    expect(Object.keys(VINCULO_INT_FRETE_CONTA).sort()).toEqual(
+      ['lojaIntegrada', 'mercadoLivre', 'shopee'].sort(),
+    );
+    expect(MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.mercadoLivre].etiqueta).toBe('fetch');
+    expect(FREIGHT_TIPO_CAPS.mercadoLivre.labelMode).toBe('fetch');
+    expect(MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.shopee].etiqueta).toBe('fetch');
+    expect(FREIGHT_TIPO_CAPS.shopee.labelMode).toBe('fetch');
+    expect(MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.lojaIntegrada].etiqueta).toBe('emit');
+    expect(FREIGHT_TIPO_CAPS.lojaIntegrada.labelMode).toBe('roteado');
+  });
+
+  it('NEAR-MISS: an emit channel left on fetch — the contradiction this pins — is reported', () => {
+    const tabela = {
+      ...FREIGHT_TIPO_CAPS,
+      lojaIntegrada: { ...FREIGHT_TIPO_CAPS.lojaIntegrada, labelMode: 'fetch' as const },
+    };
+    expect(divergencias(tabela)).toEqual([
+      "lojaIntegrada: etiqueta 'emit' exige labelMode 'roteado', não 'fetch'",
+    ]);
+  });
+
+  it('NEAR-MISS: a fetch channel made a router is reported too (the other direction)', () => {
+    const tabela = {
+      ...FREIGHT_TIPO_CAPS,
+      shopee: { ...FREIGHT_TIPO_CAPS.shopee, labelMode: 'roteado' as const },
+    };
+    expect(divergencias(tabela)).toEqual([
+      "shopee: etiqueta 'fetch' exige labelMode 'fetch', não 'roteado'",
+    ]);
   });
 });
 

@@ -31,7 +31,12 @@ import {
   type PoliticaAlvoLi,
 } from './mapaFreteLojaIntegrada';
 import { ESTADO_PEDIDO } from './pedido/collection/pedido';
-import { INTEGRACAO_FRETE, MODALIDADE_FRETE, isFreteMarketplaceOwned } from './shared/frete';
+import {
+  INTEGRACAO_FRETE,
+  MODALIDADE_FRETE,
+  isFreteMarketplaceOwned,
+  isFreteSelecionavelManualmente,
+} from './shared/frete';
 import * as barrel from './index';
 
 /** A shipping method as an order carries it. Neutral names only. */
@@ -310,12 +315,16 @@ describe('TIPOS_ALVO_MAPA_FRETE_LI', () => {
     ]);
   });
 
-  it('holds no marketplace-owned tipo — another channel’s freight is never a target', () => {
+  it('holds neither a marketplace’s freight nor a router — every target is one an operator can pick', () => {
     for (const tipo of TIPOS_ALVO_MAPA_FRETE_LI) {
       expect(isFreteMarketplaceOwned(tipo), tipo).toBe(false);
+      // The manual pickers' own predicate: a target is never the router itself
+      // (Loja Integrada's freight is routed, not owned, so the owned check
+      // alone no longer excludes it).
+      expect(isFreteSelecionavelManualmente(tipo), tipo).toBe(true);
     }
-    for (const marketplace of ['mercadoLivre', 'shopee', 'lojaIntegrada', 'amz', 'magalu']) {
-      expect(TIPOS_ALVO_MAPA_FRETE_LI as readonly string[]).not.toContain(marketplace);
+    for (const excluido of ['mercadoLivre', 'shopee', 'lojaIntegrada', 'amz', 'magalu']) {
+      expect(TIPOS_ALVO_MAPA_FRETE_LI as readonly string[]).not.toContain(excluido);
     }
   });
 });

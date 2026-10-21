@@ -8,12 +8,14 @@ import {
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
   MODALIDADE_FRETE,
+  ehFreteRoteado,
   estadoFreteSchema,
   freightCapsFor,
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,
   isFreteMarketplaceOwned,
+  isFreteSelecionavelManualmente,
   pacoteFreteSchema,
   podeAutorizarDespacho,
   reboqueSchema,
@@ -324,12 +326,82 @@ describe('FREIGHT_TIPO_CAPS', () => {
   });
 
   it('the marketplace tipos are the read-only-tab ones', () => {
+    // Loja Integrada is NOT among them: its freight is ROUTED to a carrier the
+    // ERP drives (master plan step 15), not owned by the store (below).
     const marketplaceOwned = integracoesFreteSchema.options.filter(
       (t) => FREIGHT_TIPO_CAPS[t].marketplaceOwned,
     );
     expect([...marketplaceOwned].sort()).toEqual(
-      ['mercadoLivre', 'lojaIntegrada', 'amz', 'magalu', 'shopee'].sort(),
+      ['mercadoLivre', 'amz', 'magalu', 'shopee'].sort(),
     );
+  });
+
+  it('the Loja Integrada row is a ROUTER: it owns nothing, does nothing itself, and routes', () => {
+    // The whole row, as for Shopee: the store mints no label, so the row sets
+    // no `can*` at all — the label is the carrier's its conta's `mapa` (or the
+    // operator) routes the pedido to. `canPrint` would send a `printLabelId` to
+    // Melhor Envio, `canFetchLabel` would show fetch buttons with no route
+    // behind them, and `marketplaceOwned` would lock a Frete tab the router
+    // panel must leave reachable (a duplicated pedido is re-pointed there).
+    expect(FREIGHT_TIPO_CAPS.lojaIntegrada).toEqual({
+      marketplaceOwned: false,
+      canQuote: false,
+      canBuy: false,
+      canPrint: false,
+      canFetchLabel: false,
+      canTrack: false,
+      labelMode: 'roteado',
+      channel: null,
+    });
+    expect(freightCapsFor(INTEGRACAO_FRETE.lojaIntegrada)).toBe(FREIGHT_TIPO_CAPS.lojaIntegrada);
+  });
+
+  it('Loja Integrada is the only roteado tipo, and ehFreteRoteado reads it tolerantly', () => {
+    // Enum order, so no sort.
+    const roteados = integracoesFreteSchema.options.filter(
+      (t) => FREIGHT_TIPO_CAPS[t].labelMode === 'roteado',
+    );
+    expect(roteados).toEqual([INTEGRACAO_FRETE.lojaIntegrada]);
+    for (const tipo of integracoesFreteSchema.options) {
+      expect(ehFreteRoteado(tipo), tipo).toBe(tipo === INTEGRACAO_FRETE.lojaIntegrada);
+    }
+    // NEAR-MISS: an unknown or absent tipo is never a router — the all-false
+    // fallback caps say `none` — and the lookup is exact.
+    expect(ehFreteRoteado('bogus-legacy-tipo')).toBe(false);
+    expect(ehFreteRoteado('LojaIntegrada')).toBe(false);
+    expect(ehFreteRoteado(null)).toBe(false);
+    expect(ehFreteRoteado(undefined)).toBe(false);
+  });
+
+  it('isFreteSelecionavelManualmente — every tipo, written out: neither an owned nor a routed one', () => {
+    // The manual pickers' predicate. Written OUT, never derived from the table
+    // it reads, so the test says what the pickers offer.
+    const esperado: Record<string, boolean> = {
+      melhorEnvios: true,
+      mercadoLivre: false,
+      lojaIntegrada: false,
+      amz: false,
+      magalu: false,
+      retiradaNaLoja: true,
+      shopee: false,
+      motoboy: true,
+      fob: true,
+      outros: true,
+    };
+    expect(Object.keys(esperado).sort()).toEqual([...integracoesFreteSchema.options].sort());
+    for (const tipo of integracoesFreteSchema.options) {
+      expect(isFreteSelecionavelManualmente(tipo), tipo).toBe(esperado[tipo]);
+    }
+    // ⚠️ NEAR-MISS: Loja Integrada is excluded although it is NOT marketplace-
+    // owned — the predicate is not `!isFreteMarketplaceOwned`, which would put
+    // the router back in the pickers.
+    expect(isFreteMarketplaceOwned(INTEGRACAO_FRETE.lojaIntegrada)).toBe(false);
+    expect(isFreteSelecionavelManualmente(INTEGRACAO_FRETE.lojaIntegrada)).toBe(false);
+    // An unknown / absent tipo stays selectable, exactly as the pickers kept
+    // one before (all-false fallback caps).
+    expect(isFreteSelecionavelManualmente('bogus-legacy-tipo')).toBe(true);
+    expect(isFreteSelecionavelManualmente(null)).toBe(true);
+    expect(isFreteSelecionavelManualmente(undefined)).toBe(true);
   });
 
   it('freightCapsFor tolerates an unknown / null tipo (→ all-false, never throws)', () => {
@@ -451,12 +523,17 @@ describe('ESTADOS_FRETE_PRE_AUTORIZACAO', () => {
 });
 
 describe('isFreteMarketplaceOwned', () => {
-  it('is true for the five marketplace tipos (the read-only Frete tab lock)', () => {
+  it('is true for the four marketplace tipos (the read-only Frete tab lock)', () => {
     expect(isFreteMarketplaceOwned('mercadoLivre')).toBe(true);
-    expect(isFreteMarketplaceOwned('lojaIntegrada')).toBe(true);
     expect(isFreteMarketplaceOwned('amz')).toBe(true);
     expect(isFreteMarketplaceOwned('magalu')).toBe(true);
     expect(isFreteMarketplaceOwned('shopee')).toBe(true);
+  });
+
+  it('is false for the router tipo: Loja Integrada freight is routed, not owned', () => {
+    // So the pedido estado reconcile authorises dispatch on a Loja Integrada
+    // pedido like any other, and the Frete tab keeps its header reachable.
+    expect(isFreteMarketplaceOwned('lojaIntegrada')).toBe(false);
   });
 
   it('is false for the emit / manual tipos', () => {

@@ -960,6 +960,20 @@ describe('freteComDespachoAutorizado (#702)', () => {
     });
   });
 
+  it('a Loja Integrada pedido on its conta’s freight doc (null block tipo) is authorized like any app-managed one', () => {
+    // Unchanged by the router flip: the reconcile reads the BLOCK tipo, which
+    // the Loja Integrada import leaves null.
+    const frete = {
+      estado: ESTADO_FRETE.iniciado,
+      externalOptionIntegracao: null,
+      integracaoFreteOuterRef: 'documents/int_frete/lojaIntegrada-c1',
+    };
+    expect(freteComDespachoAutorizado(frete)).toEqual({
+      ...frete,
+      estado: ESTADO_FRETE.despachoAutorizado,
+    });
+  });
+
   it.each([null, undefined, 'iniciado', 0])('has nothing to authorize on %j', (frete) => {
     expect(freteComDespachoAutorizado(frete)).toBeNull();
   });
