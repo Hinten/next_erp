@@ -11,6 +11,7 @@ import type { ShopeeClient } from '../shopee/client';
 import { pedidoCollection } from '../data/pedidoCollection';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
 import { ensureNfeAprovada, printDanfeForCheckout, type CheckoutDanfeFormat } from './nfeFlow';
+import { motivoSemTransportadoraLi } from './conferenciaLojaIntegrada';
 import { resolverIntFrete } from './etiqueta/intFrete';
 import { emitirOuImprimirEtiqueta } from './etiqueta/registry';
 import type { EtiquetaOutcome, EtiquetaProviderUi } from './etiqueta/types';
@@ -38,7 +39,12 @@ export type ReprintEtiquetaResult =
   | EtiquetaOutcome
   | { status: 'no-pedido' }
   | { status: 'no-frete' }
-  | { status: 'no-integration' }
+  /**
+   * No carrier to dispatch on. `mensagem` says WHY for an imported Loja
+   * Integrada order (no endereço, or no Loja Integrada freight on the conta);
+   * absent for every other pedido, which keeps the generic line.
+   */
+  | { status: 'no-integration'; mensagem?: string }
   /**
    * A stage outlived its deadline. `stage` names WHICH await hung, so the toast
    * and any bug report point at one link in the chain instead of "it froze".
@@ -100,7 +106,13 @@ export async function reprintCheckoutEtiqueta(args: {
       resolverIntFrete(db, frete),
       timeoutMs,
     );
-    if (intFrete === null) return { status: 'no-integration' };
+    if (intFrete === null) {
+      // A local digest, no I/O: nothing here to bound.
+      const mensagem = await motivoSemTransportadoraLi(pedidoId, pedido, frete);
+      return mensagem === null
+        ? { status: 'no-integration' }
+        : { status: 'no-integration', mensagem };
+    }
 
     // ⚠️ NOT bounded, for two independent reasons — either alone is sufficient.
     // (1) The registry can legitimately await the OPERATOR: the already-posted

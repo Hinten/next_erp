@@ -146,7 +146,9 @@ function reportEtiqueta(r: ReprintEtiquetaResult): void {
     case 'no-integration':
       showCopyableNotification({
         title: 'Etiqueta',
-        message: 'Este frete não possui integração com transportadora.',
+        // An imported Loja Integrada order carries WHY (no endereço, no freight
+        // integration on its conta); every other pedido keeps the generic line.
+        message: r.mensagem ?? 'Este frete não possui integração com transportadora.',
         color: 'yellow',
       });
       break;
