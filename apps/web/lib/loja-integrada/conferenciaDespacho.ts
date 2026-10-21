@@ -67,7 +67,8 @@ export type DecisaoAntesDeDespacharLi =
  * checkout (`checkout`), the buy from `/pedidos` (`comprar`) or the buy inside
  * the checkout chain, after the checkout and the NF-e were saved (`cadeia`).
  *
- * Anything that is not one of the client's own errors is rethrown (rule 6).
+ * Anything that is not one of the client's own errors is rethrown (rule 6) —
+ * including the abort of `sinal`, which comes back as `sinal.reason` itself.
  */
 export async function conferirAntesDeDespacharLi(args: {
   readonly client: LojaIntegradaClient | null;
@@ -78,6 +79,12 @@ export async function conferirAntesDeDespacharLi(args: {
   readonly conferenciaLi?: ConferenciaLiCarregada | null;
   /** The monotonic clock the verdict is stamped and judged by. */
   readonly agora?: () => number;
+  /**
+   * Aborts the call when the caller gives up (the buy modal closed mid-check).
+   * The caller must still drop a decision that arrives after it gave up: a
+   * call already answered is not undone by the abort.
+   */
+  readonly sinal?: AbortSignal;
 }): Promise<DecisaoAntesDeDespacharLi> {
   const agora = args.agora ?? (() => performance.now());
   if (!(await ehPedidoImportadoDaLojaIntegrada(args.pedidoId, args.pedido))) {
@@ -88,7 +95,10 @@ export async function conferirAntesDeDespacharLi(args: {
     return { acao: 'prosseguir', conferenciaLi: carregada };
   }
 
-  const desfecho = await conferirPagamentoLi(args.client, args.pedidoId, { agora });
+  const desfecho = await conferirPagamentoLi(args.client, args.pedidoId, {
+    agora,
+    ...(args.sinal === undefined ? {} : { sinal: args.sinal }),
+  });
   const decisao = decidirConferenciaPagamentoLi(desfecho);
   switch (decisao.acao) {
     case 'prosseguir':

@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { CODIGO_ERRO_LI, type RespostaConferenciaPagamentoLi } from '@delfrance/schemas';
+import {
+  CODIGO_ERRO_LI,
+  type FreteDoPedido,
+  type Pedido,
+  type RespostaConferenciaPagamentoLi,
+} from '@delfrance/schemas';
 
 import {
   FreightCompraEmAndamentoError,
@@ -18,18 +23,27 @@ import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso
 
 // This suite is about what a failed BUY does to the modal (#1094). The cart is
 // resolved without a sender location, so no agency lookup runs, and the saldo
-// query answers at once.
+// query answers at once — unless a test hands a sender location and agencies
+// (`freight` below), which is what puts the agency picker on screen.
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
 const { comprar, showErrorNotification, showCopyableNotification } = vi.hoisted(() => ({
   comprar: vi.fn(),
   showErrorNotification: vi.fn(),
   showCopyableNotification: vi.fn(),
 }));
+const SEM_AGENCIAS = {
+  remetente: { estado: null as string | null, cidade: null as string | null },
+  agencies: [] as Array<{ id: number; name: string }>,
+};
+const freight = vi.hoisted(() => ({
+  remetente: { estado: null as string | null, cidade: null as string | null },
+  agencies: [] as Array<{ id: number; name: string }>,
+}));
 vi.mock('@/lib/freight/client', () => ({
   useFreightClient: () => ({
     comprar,
     conta: () => Promise.resolve({ balance: { balance: 500 } }),
-    agencias: () => Promise.resolve({ agencies: [] }),
+    agencias: () => Promise.resolve({ agencies: freight.agencies }),
   }),
 }));
 vi.mock('./etiquetaActions', () => ({
@@ -38,7 +52,7 @@ vi.mock('./etiquetaActions', () => ({
       ok: true,
       intFreteId: 'INT-1',
       payload: { service: 3 },
-      remetente: { estado: null, cidade: null },
+      remetente: freight.remetente,
     }),
 }));
 vi.mock('@/lib/notifications/showErrorNotification', () => ({
@@ -53,6 +67,8 @@ vi.mock('@/lib/loja-integrada/client', async (importOriginal) => ({
   useLojaIntegradaClient: () => li.client,
 }));
 
+import { useComprarEtiquetaBridge } from '@/app/(app)/despacho/checkout/_components/useComprarEtiquetaBridge';
+import type { ComprarEtiquetaOutcome } from '@/lib/checkout/etiqueta/types';
 import { EtiquetaComprarModal } from './EtiquetaComprarModal';
 
 function renderModal() {
@@ -81,8 +97,17 @@ async function comprarEtiqueta() {
   fireEvent.click(botao);
 }
 
+/** Let every pending promise (and the re-render it causes) run its course. */
+async function deixarAssentar() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+}
+
 afterEach(() => {
   vi.clearAllMocks();
+  freight.remetente = SEM_AGENCIAS.remetente;
+  freight.agencies = SEM_AGENCIAS.agencies;
 });
 
 describe('EtiquetaComprarModal — a failed buy (#1094)', () => {
@@ -260,19 +285,21 @@ describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the b
       pedidoId: string;
       conferenciaLi: ConferenciaLiCarregada;
       gateConferenciaLi: 'comprar' | 'cadeia';
+      needsPostedConfirm: boolean;
     }> = {},
   ) {
+    const onClose = vi.fn();
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
+    const { unmount } = render(
       <QueryClientProvider client={queryClient}>
         <MantineTestProvider>
           <EtiquetaComprarModal
             opened
-            onClose={vi.fn()}
+            onClose={onClose}
             pedido={(props.pedido ?? PEDIDO_LI) as never}
             pedidoId={props.pedidoId ?? ID_LI}
             intFreteId="INT-1"
-            needsPostedConfirm={false}
+            needsPostedConfirm={props.needsPostedConfirm ?? false}
             {...(props.conferenciaLi === undefined ? {} : { conferenciaLi: props.conferenciaLi })}
             {...(props.gateConferenciaLi === undefined
               ? {}
@@ -281,6 +308,25 @@ describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the b
         </MantineTestProvider>
       </QueryClientProvider>,
     );
+    return { onClose, unmount };
+  }
+
+  /**
+   * A check that does not answer until the test says so — and what the modal
+   * handed it, so a test can see its own abort reach the call.
+   */
+  function conferenciaPendente() {
+    let responder: (r: RespostaConferenciaPagamentoLi) => void = () => undefined;
+    conferir.mockReturnValue(
+      new Promise<RespostaConferenciaPagamentoLi>((resolve) => {
+        responder = resolve;
+      }),
+    );
+    return {
+      responder: (r: RespostaConferenciaPagamentoLi) => responder(r),
+      sinal: () =>
+        (conferir.mock.calls[0]?.[1] as { sinal?: AbortSignal } | undefined)?.sinal ?? null,
+    };
   }
 
   it('a `pago` buys — ONE check, for this pedido, before `comprar`', async () => {
@@ -359,13 +405,8 @@ describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the b
     expect(comprar).not.toHaveBeenCalled();
   });
 
-  it('while the check runs, Comprar is disabled and says so', async () => {
-    let responder: (r: RespostaConferenciaPagamentoLi) => void = () => undefined;
-    conferir.mockReturnValue(
-      new Promise<RespostaConferenciaPagamentoLi>((resolve) => {
-        responder = resolve;
-      }),
-    );
+  it('while the check runs, Comprar is disabled and says so; the answer then buys once', async () => {
+    const pendente = conferenciaPendente();
     renderLi();
     await comprarEtiqueta();
 
@@ -373,9 +414,183 @@ describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the b
       name: 'Conferindo pagamento…',
     });
     expect(botao.disabled).toBe(true);
-    // A second click while it runs asks nothing more.
-    fireEvent.click(botao);
-    responder(PAGO);
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
+    pendente.responder(PAGO);
+    await waitFor(() => expect(comprar).toHaveBeenCalledTimes(1));
+    expect(conferir).toHaveBeenCalledTimes(1);
+  });
+
+  it('two clicks that land before the re-render start ONE check — the in-flight guard, not the disabled button', async () => {
+    conferenciaPendente();
+    renderLi();
+    const botao = await screen.findByRole<HTMLButtonElement>('button', {
+      name: 'Comprar etiqueta',
+    });
+    await waitFor(() => expect(botao.disabled).toBe(false));
+    // Both clicks reach the SAME enabled button: the re-render that disables
+    // it has not happened yet.
+    act(() => {
+      botao.click();
+      botao.click();
+    });
+
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
+    await deixarAssentar();
+    expect(conferir).toHaveBeenCalledTimes(1);
+  });
+
+  it('⭐ Cancelar while the check runs CANCELS the buy: the read is aborted, and a `pago` that arrives anyway buys nothing', async () => {
+    const pendente = conferenciaPendente();
+    const { onClose } = renderLi();
+    await comprarEtiqueta();
+    await screen.findByRole('button', { name: 'Conferindo pagamento…' });
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
+
+    // Cancelar stays clickable through the check: it is how the operator gives up.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(pendente.sinal()?.aborted).toBe(true);
+
+    pendente.responder(PAGO);
+    await deixarAssentar();
+    expect(comprar).not.toHaveBeenCalled();
+  });
+
+  it('Escape while the check runs closes the modal the same way — nothing is bought', async () => {
+    const pendente = conferenciaPendente();
+    const { onClose } = renderLi();
+    await comprarEtiqueta();
+    await screen.findByRole('button', { name: 'Conferindo pagamento…' });
+
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    pendente.responder(PAGO);
+    await deixarAssentar();
+    expect(comprar).not.toHaveBeenCalled();
+  });
+
+  it('a check that honours the abort ends quietly — no buy, no error, nothing left on screen', async () => {
+    conferir.mockImplementation(
+      (_pedidoId: string, opcoes?: { sinal?: AbortSignal }) =>
+        new Promise<RespostaConferenciaPagamentoLi>((_resolve, reject) => {
+          opcoes?.sinal?.addEventListener('abort', () => reject(opcoes.sinal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    const { onClose } = renderLi();
+    await comprarEtiqueta();
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    await deixarAssentar();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(comprar).not.toHaveBeenCalled();
+    expect(showErrorNotification).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Pagamento não confirmado/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Continuar mesmo assim' })).toBeNull();
+  });
+
+  it('a modal unmounted while the check runs buys nothing', async () => {
+    const pendente = conferenciaPendente();
+    const { unmount } = renderLi();
+    await comprarEtiqueta();
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
+
+    unmount();
+    expect(pendente.sinal()?.aborted).toBe(true);
+    pendente.responder(PAGO);
+    await deixarAssentar();
+    expect(comprar).not.toHaveBeenCalled();
+  });
+
+  it('⭐ inside the checkout chain, Cancelar during the check answers `cancelled` and NO label is bought afterwards', async () => {
+    const pendente = conferenciaPendente();
+    let api: ReturnType<typeof useComprarEtiquetaBridge> | null = null;
+    function Tela() {
+      const b = useComprarEtiquetaBridge(PEDIDO_LI as unknown as Pedido);
+      api = b;
+      return <>{b.element}</>;
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MantineTestProvider>
+          <Tela />
+        </MantineTestProvider>
+      </QueryClientProvider>,
+    );
+    let desfecho: Promise<ComprarEtiquetaOutcome> | null = null;
+    act(() => {
+      desfecho = api!.comprarEtiqueta({
+        intFreteId: 'INT-1',
+        pedidoId: ID_LI,
+        frete: { modalidade: '0' } as unknown as FreteDoPedido,
+        needsPostedConfirm: false,
+      });
+    });
+    await comprarEtiqueta();
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    await expect(desfecho!).resolves.toEqual({ status: 'cancelled' });
+
+    pendente.responder(PAGO);
+    await deixarAssentar();
+    expect(comprar).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ NEAR-MISS: while the check runs the agency and the posted-label acknowledgement are LOCKED — the buy goes out as shown; before it, both are editable', async () => {
+    freight.remetente = { estado: 'SP', cidade: 'São Paulo' };
+    freight.agencies = [
+      { id: 11, name: 'Agência A' },
+      { id: 12, name: 'Agência B' },
+    ];
+    conferenciaPendente();
+    renderLi({ needsPostedConfirm: true });
+
+    const agencia = await screen.findByLabelText<HTMLInputElement>('Agência de postagem', {
+      selector: 'input',
+    });
+    const ciente = screen.getByRole<HTMLInputElement>('checkbox', {
+      name: 'Estou ciente do risco',
+    });
+    expect(agencia.disabled).toBe(false);
+    expect(ciente.disabled).toBe(false);
+    fireEvent.click(ciente);
+    await comprarEtiqueta();
+    await screen.findByRole('button', { name: 'Conferindo pagamento…' });
+
+    expect(agencia.disabled).toBe(true);
+    expect(ciente.disabled).toBe(true);
+  });
+
+  it('⚠️ "Continuar mesmo assim" keeps the posted-label acknowledgement: unticked after the question it buys nothing; ticked again it buys once', async () => {
+    conferir.mockRejectedValue(
+      new LojaIntegradaClientHttpError('desligada', 503, CODIGO_ERRO_LI.chamadasDesligadas),
+    );
+    renderLi({ needsPostedConfirm: true });
+    const ciente = await screen.findByRole<HTMLInputElement>('checkbox', {
+      name: 'Estou ciente do risco',
+    });
+    fireEvent.click(ciente);
+    await comprarEtiqueta();
+    const continuar = await screen.findByRole<HTMLButtonElement>('button', {
+      name: 'Continuar mesmo assim',
+    });
+    await waitFor(() => expect(ciente.disabled).toBe(false));
+
+    fireEvent.click(ciente);
+    await waitFor(() => expect(continuar.disabled).toBe(true));
+    fireEvent.click(continuar);
+    await deixarAssentar();
+    expect(comprar).not.toHaveBeenCalled();
+
+    fireEvent.click(ciente);
+    await waitFor(() => expect(continuar.disabled).toBe(false));
+    fireEvent.click(continuar);
     await waitFor(() => expect(comprar).toHaveBeenCalledTimes(1));
     expect(conferir).toHaveBeenCalledTimes(1);
   });
@@ -408,10 +623,26 @@ describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the b
 
   it('⚠️ NEAR-MISS: a Mercado Livre order or a manual pedido buys with no check at all', async () => {
     conferir.mockResolvedValue(NAO_PAGO);
-    renderLi({ pedidoId: createHash('sha256').update('mercadoLivreCONTA1-165').digest('hex') });
-    await comprarEtiqueta();
+    const casos = [
+      {
+        nome: 'mercado livre',
+        pedidoId: createHash('sha256').update('mercadoLivreCONTA1-165').digest('hex'),
+        pedido: PEDIDO_LI,
+      },
+      {
+        nome: 'manual',
+        pedidoId: 'manual-1',
+        pedido: { ...PEDIDO_LI, integracaoPedidoOuterRef: null },
+      },
+    ];
+    for (const caso of casos) {
+      renderLi({ pedidoId: caso.pedidoId, pedido: caso.pedido });
+      await comprarEtiqueta();
 
-    await waitFor(() => expect(comprar).toHaveBeenCalledTimes(1));
-    expect(conferir).not.toHaveBeenCalled();
+      await waitFor(() => expect(comprar, caso.nome).toHaveBeenCalledTimes(1));
+      expect(conferir, caso.nome).not.toHaveBeenCalled();
+      cleanup();
+      comprar.mockClear();
+    }
   });
 });

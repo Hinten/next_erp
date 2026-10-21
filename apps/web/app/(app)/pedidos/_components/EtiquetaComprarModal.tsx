@@ -23,8 +23,12 @@
  * Alert; one that cannot be verified asks the same "continuar?" the checkout
  * asks, here inline (a confirm dialog must never be nested in this Modal), and
  * only "Continuar mesmo assim" buys. Any other pedido is never checked.
+ * Closing the modal while the check runs CANCELS the buy: the read is aborted,
+ * and an answer that arrives anyway buys nothing — no label is paid behind a
+ * modal the operator closed. The agency and the posted-label acknowledgement
+ * are locked while it runs, so the buy goes out exactly as shown.
  */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { formatReais } from '@delfrance/core/money';
@@ -121,9 +125,23 @@ export function EtiquetaComprarModal({
   /** The Loja Integrada paid re-check is running (Comprar says so). */
   const [conferindo, setConferindo] = useState(false);
   const [conferencia, setConferencia] = useState<ConferenciaPendente | null>(null);
-  // A second click lands before the re-render that disables Comprar: one
-  // check per click, never two in flight.
-  const emAndamentoRef = useRef(false);
+  /**
+   * The click in flight — the paid re-check and the buy it leads to — or
+   * `null`. It is the one-at-a-time guard (a second click lands before the
+   * re-render that disables the buttons: one check per click, never two in
+   * flight) AND the cancel: closing the modal aborts it.
+   */
+  const cliqueRef = useRef<AbortController | null>(null);
+
+  // A modal that goes away mid-check without being closed (unmounted) gives
+  // the click up too: a label is never bought behind a screen that is gone.
+  useEffect(
+    () => () => {
+      cliqueRef.current?.abort();
+      cliqueRef.current = null;
+    },
+    [],
+  );
 
   // Show the ME account saldo before confirming (the legacy showed it in the
   // buy dialog). Fresh each open (staleTime 0) — a prior buy changes it.
@@ -208,7 +226,24 @@ export function EtiquetaComprarModal({
   }, [agencies, pedido.freteInicial?.externalOptionData?.agency]);
   const agencyValue = agencyChoice ?? defaultAgency;
 
+  /**
+   * What every buy needs, whichever button starts it — Comprar or "Continuar
+   * mesmo assim": a client and a resolved cart, the posted-label
+   * acknowledgement when the frete is already posted, and no cart or agency
+   * lookup in flight.
+   */
+  const podeComprar =
+    client != null &&
+    resolved != null &&
+    !(needsPostedConfirm && !ack) &&
+    !cartInput.isFetching &&
+    !agenciasSettling;
+
   function handleClose() {
+    // Closing gives the click in flight up: a paid re-check still running is
+    // aborted, and an answer that arrives anyway buys nothing.
+    cliqueRef.current?.abort();
+    cliqueRef.current = null;
     setAck(false);
     setBuying(false);
     setResult(null);
@@ -224,9 +259,9 @@ export function EtiquetaComprarModal({
    * asks again (the store's painel is where a block is released).
    */
   async function handleBuy() {
-    if (!client || !resolved || cartInput.isFetching || agenciasSettling) return;
-    if (emAndamentoRef.current) return;
-    emAndamentoRef.current = true;
+    if (!podeComprar || cliqueRef.current !== null) return;
+    const clique = new AbortController();
+    cliqueRef.current = clique;
     try {
       setConferencia(null);
       setConferindo(true);
@@ -238,10 +273,20 @@ export function EtiquetaComprarModal({
           pedido,
           gate: gateConferenciaLi,
           conferenciaLi: conferenciaLi ?? null,
+          sinal: clique.signal,
         });
+      } catch (err) {
+        // The operator closed the modal and the read was aborted: nothing to
+        // show and nothing to buy. Anything else is not ours (rule 6).
+        if (clique.signal.aborted && err === clique.signal.reason) return;
+        throw err;
       } finally {
-        setConferindo(false);
+        // A closed modal already reset this — and may be running a new click.
+        if (!clique.signal.aborted) setConferindo(false);
       }
+      // Closed while the check ran, and it answered anyway: the operator gave
+      // up, so the answer is dropped — above all a `pago`, which would buy.
+      if (clique.signal.aborted) return;
       if (decisao.acao !== 'prosseguir') {
         setConferencia(
           decisao.acao === 'bloquear'
@@ -252,24 +297,25 @@ export function EtiquetaComprarModal({
       }
       await comprar();
     } finally {
-      emAndamentoRef.current = false;
+      if (cliqueRef.current === clique) cliqueRef.current = null;
     }
   }
 
   /** "Continuar mesmo assim" on a check that could not be verified: buy, with no second check. */
   async function handleContinuarSemConferencia() {
-    if (emAndamentoRef.current) return;
-    emAndamentoRef.current = true;
+    if (!podeComprar || cliqueRef.current !== null) return;
+    const clique = new AbortController();
+    cliqueRef.current = clique;
     try {
       setConferencia(null);
       await comprar();
     } finally {
-      emAndamentoRef.current = false;
+      if (cliqueRef.current === clique) cliqueRef.current = null;
     }
   }
 
   async function comprar() {
-    if (!client || !resolved || cartInput.isFetching || agenciasSettling) return;
+    if (!podeComprar) return;
     setBuying(true);
     try {
       const picked = agencyValue != null ? Number(agencyValue) : Number.NaN;
@@ -382,7 +428,9 @@ export function EtiquetaComprarModal({
               onChange={setAgencyChoice}
               searchable
               allowDeselect={false}
-              disabled={buying}
+              // Locked while the paid re-check runs too: the buy that follows
+              // it goes out with the agency shown when Comprar was clicked.
+              disabled={buying || conferindo}
             />
           )}
           {resolveError && (
@@ -411,6 +459,7 @@ export function EtiquetaComprarModal({
                 label="Estou ciente do risco"
                 checked={ack}
                 onChange={(e) => setAck(e.currentTarget.checked)}
+                disabled={buying || conferindo}
               />
             </Alert>
           )}
@@ -427,7 +476,10 @@ export function EtiquetaComprarModal({
                   size="xs"
                   color="orange"
                   onClick={handleContinuarSemConferencia}
-                  disabled={buying}
+                  // The same predicate as Comprar: answering the question
+                  // waives the paid re-check, never the posted-label
+                  // acknowledgement or a lookup still in flight.
+                  disabled={buying || conferindo || !podeComprar}
                 >
                   Continuar mesmo assim
                 </Button>

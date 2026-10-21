@@ -944,7 +944,7 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
   });
 
   /**
-   * The wording is a CLAIM about the paid re-check's gates (step 15, B7), so it
+   * The wording is a CLAIM about the paid re-check's gates (master plan step 15), so it
    * is pinned against the gates' own decision tables rather than against
    * itself: a contested order — read live from the store, or the open aviso
    * the backend falls back to when it cannot read — is REFUSED by the hard

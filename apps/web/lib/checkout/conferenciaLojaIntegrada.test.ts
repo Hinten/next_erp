@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FirebaseError } from 'firebase/app';
 import { INTEGRACAO_FRETE, MOTIVO_ROTA_ETIQUETA_LI, type FreteDoPedido } from '@delfrance/schemas';
 
@@ -41,6 +41,10 @@ const pedidoLi = (frete: unknown = FRETE_NO_DOC_LI) => ({
 });
 
 const previsao = (p: PrevisaoRotaEtiquetaLi) => vi.fn(() => Promise.resolve(p));
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('avisoDeEtiquetaAntesDoCheckoutLi — the pre-save route preview', () => {
   it('a route the backend would REFUSE warns before the stock leaves, with the refusal’s own copy', async () => {
@@ -92,6 +96,37 @@ describe('avisoDeEtiquetaAntesDoCheckoutLi — the pre-save route preview', () =
     await expect(
       avisoDeEtiquetaAntesDoCheckoutLi({ pedidoId: ID_LI, pedido: pedidoLi(), prever }),
     ).resolves.toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a pedido with NO freight (modalidade 9) is not warned — no label is ever made for one, on any channel', async () => {
+    const prever = previsao({
+      tipo: 'recusa',
+      motivo: MOTIVO_ROTA_ETIQUETA_LI.semFrete,
+      mensagem: MENSAGEM_MOTIVO_ROTA_ETIQUETA_LI[MOTIVO_ROTA_ETIQUETA_LI.semFrete],
+    });
+    await expect(
+      avisoDeEtiquetaAntesDoCheckoutLi({
+        pedidoId: ID_LI,
+        pedido: pedidoLi({ ...FRETE_NO_DOC_LI, modalidade: '9' }),
+        prever,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a page without WebCrypto previews nothing and reads nothing — no server re-checks a notice, so a guess must be "not imported"', async () => {
+    vi.stubGlobal('crypto', {});
+    const prever = previsao({
+      tipo: 'recusa',
+      motivo: MOTIVO_ROTA_ETIQUETA_LI.semMapeamento,
+      mensagem: 'x',
+    });
+    for (const pedidoId of [ID_LI, ID_ML]) {
+      await expect(
+        avisoDeEtiquetaAntesDoCheckoutLi({ pedidoId, pedido: pedidoLi(), prever }),
+        pedidoId,
+      ).resolves.toBeNull();
+    }
+    expect(prever).not.toHaveBeenCalled();
   });
 
   it('⚠️ NEAR-MISS: a Mercado Livre order, a duplicate and a manual pedido are never previewed — not one read', async () => {
@@ -157,6 +192,26 @@ describe('motivoSemTransportadoraLi — why an imported order has no carrier', (
     await expect(
       motivoSemTransportadoraLi(ID_LI, pedidoLi(FRETE_NO_DOC_LI), FRETE_NO_DOC_LI),
     ).resolves.toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: NO endereço but a ref to a doc that is gone keeps the generic copy too — the missing doc is the cause, not the endereço', async () => {
+    const frete = { ...FRETE_NO_DOC_LI, enderecoFreteOuterReference: null } as FreteDoPedido;
+    await expect(motivoSemTransportadoraLi(ID_LI, pedidoLi(frete), frete)).resolves.toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a page without WebCrypto keeps the generic copy for every pedido — no Loja Integrada line on another channel’s order', async () => {
+    vi.stubGlobal('crypto', {});
+    const frete = {
+      ...FRETE_NO_DOC_LI,
+      integracaoFreteOuterRef: null,
+      enderecoFreteOuterReference: null,
+    } as FreteDoPedido;
+    for (const pedidoId of [ID_LI, ID_ML]) {
+      await expect(
+        motivoSemTransportadoraLi(pedidoId, pedidoLi(frete), frete),
+        pedidoId,
+      ).resolves.toBeNull();
+    }
   });
 
   it('⚠️ NEAR-MISS: every other channel keeps today’s copy — a Mercado Livre order and a manual pedido', async () => {

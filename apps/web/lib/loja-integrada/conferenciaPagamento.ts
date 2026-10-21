@@ -91,10 +91,17 @@ async function sha256Hex(texto: string): Promise<string | null> {
  * route re-checks the identity itself before any read and answers
  * `aplicavel: false` for a pedido that is not an import, so the fallback costs a
  * call, never a wrong verdict. Skipping instead would silently drop the check.
+ * A caller nothing re-checks — a notice that only changes the copy — passes
+ * `semWebCrypto: false`, so another channel's order never gets a Loja
+ * Integrada line there.
  */
 export async function ehPedidoImportadoDaLojaIntegrada(
   pedidoId: string,
   pedido: IdentidadePedidoLi,
+  opcoes: {
+    /** The answer, for a pedido that has a preimage, on a page with no WebCrypto. */
+    readonly semWebCrypto?: boolean;
+  } = {},
 ): Promise<boolean> {
   const preimagem = preimagemPedidoLi(
     contaIdDoPedidoLi(pedido.integracaoPedidoOuterRef),
@@ -102,7 +109,7 @@ export async function ehPedidoImportadoDaLojaIntegrada(
   );
   if (preimagem === null) return false;
   const digest = await sha256Hex(preimagem);
-  return digest === null ? true : digest === pedidoId;
+  return digest === null ? (opcoes.semWebCrypto ?? true) : digest === pedidoId;
 }
 
 /* -------------------------------------------------------------------------- */

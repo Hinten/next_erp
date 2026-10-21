@@ -279,6 +279,62 @@ describe('conferirAntesDeDespacharLi — not verifiable asks, never blocks nor p
   });
 });
 
+describe('conferirAntesDeDespacharLi — the caller gives up (a modal closed mid-check)', () => {
+  it('the caller’s `sinal` reaches the client call', async () => {
+    const controle = new AbortController();
+    const conferirPagamento = vi.fn((_pedidoId: string, _opcoes?: { sinal?: AbortSignal }) =>
+      Promise.resolve(PAGO),
+    );
+    await conferirAntesDeDespacharLi({
+      client: lojaIntegradaClientFalso({ conferirPagamento }),
+      pedidoId: ID_LI,
+      pedido: PEDIDO_LI,
+      gate: 'comprar',
+      sinal: controle.signal,
+    });
+    expect(conferirPagamento.mock.calls[0]![1]?.sinal).toBe(controle.signal);
+  });
+
+  it('⭐ an abort comes back as the abort ITSELF, through the real client — never a "não verificável" to confirm', async () => {
+    const fetch = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    const client = createLojaIntegradaClient({
+      baseUrl: 'https://li.example.invalid',
+      getAuthToken: () => Promise.resolve('tok'),
+      fetch: fetch as unknown as typeof globalThis.fetch,
+    });
+    const controle = new AbortController();
+    const conferencia = conferirAntesDeDespacharLi({
+      client,
+      pedidoId: ID_LI,
+      pedido: PEDIDO_LI,
+      gate: 'comprar',
+      sinal: controle.signal,
+    });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    controle.abort();
+
+    await expect(conferencia).rejects.toBe(controle.signal.reason);
+  });
+
+  it('⚠️ NEAR-MISS: with no `sinal` the call carries none — a gate nobody can close is not made abortable', async () => {
+    const { client, conferirPagamento } = clienteQueResponde(PAGO);
+    await conferirAntesDeDespacharLi({
+      client,
+      pedidoId: ID_LI,
+      pedido: PEDIDO_LI,
+      gate: 'checkout',
+    });
+    expect((conferirPagamento.mock.calls[0] as unknown[])[1]).toBeUndefined();
+  });
+});
+
 describe('conferirAntesDeDespacharLi — the carried verdict (120 s, client clock)', () => {
   it('a carried `pago` received 119 s ago stands in for the call', async () => {
     const { client, conferirPagamento } = clienteQueResponde(NAO_PAGO);
