@@ -296,6 +296,26 @@ describe('buildDuplicarPedidoSeed', () => {
     expect(frete.estado).toBe('iniciado');
   });
 
+  it('⚠️ a block whose tipo names the Loja Integrada ROUTER is not an owner any more — its refs are kept like an app-managed block’s', async () => {
+    // The import never writes this block tipo; a migrated block that carries it
+    // (a legacy hand pick) used to read as marketplace-owned, and its refs were
+    // dropped. A router owns nothing: only the quote fields go.
+    const { values } = await seed({
+      freteInicial: {
+        ...origin.freteInicial,
+        integracaoFreteOuterRef: 'documents/int_frete/mot-1',
+        integracaoTargetOuterRef: 'documents/int_frete/mot-1',
+        externalOptionIntegracao: 'lojaIntegrada',
+        externalOptionData: { id: 1001, code: 'A' },
+      },
+    });
+    const frete = values.freteInicial as Record<string, unknown>;
+    expect(frete.integracaoFreteOuterRef).toBe('documents/int_frete/mot-1');
+    expect(frete.integracaoTargetOuterRef).toBe('documents/int_frete/mot-1');
+    expect(frete.externalOptionData).toBeNull();
+    expect(frete.estado).toBe('iniciado');
+  });
+
   it('leaves a null freteInicial untouched', async () => {
     const { values } = await seed({ freteInicial: null });
     expect(values.freteInicial).toBeNull();

@@ -72,7 +72,6 @@ import {
   showErrorNotification,
 } from '@/lib/notifications/showErrorNotification';
 import { resolverIntFrete, tipoDeDespacho } from '@/lib/checkout/etiqueta/intFrete';
-import { rotaVigenteLi } from '@/lib/checkout/etiqueta/providers/lojaIntegrada';
 import { emitirOuImprimirEtiqueta } from '@/lib/checkout/etiqueta/registry';
 import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
 import { printJob } from '@/lib/print-agent/printJob';
@@ -163,11 +162,11 @@ export function EtiquetaRowAction({
   // The carrier picker's targets: the ONE shared query the conta screen's
   // "Mapeamento do Frete" tab reads too (page-cached under one key), enabled
   // only on a row that can route.
-  const { alvos: alvosLi, carregando: carregandoAlvosLi } = useAlvosMapaFreteLi(
-    db,
-    [],
-    action === 'rotear',
-  );
+  const {
+    alvos: alvosLi,
+    carregando: carregandoAlvosLi,
+    erro: erroAlvosLi,
+  } = useAlvosMapaFreteLi(db, [], action === 'rotear');
 
   // A fetch-label button is live when the client of THE provider it reaches is
   // — never another marketplace's (#1523 W15: a Shopee row used to be disabled
@@ -379,9 +378,12 @@ export function EtiquetaRowAction({
       });
       return;
     }
+    // The routing fields exactly as answered — a `null` option included: this
+    // freight still names the Loja Integrada doc, so its option belongs to
+    // that ref and never to the target (`aplicarRotaLi`).
     acao.registrarRota(pedidoId, {
       refAnterior: frete.integracaoFreteOuterRef,
-      rota: rotaVigenteLi(frete, resultado),
+      rota: resultado.rota,
     });
     showCopyableNotification({
       title: 'Transportadora',
@@ -392,9 +394,15 @@ export function EtiquetaRowAction({
 
   if (action === 'none') return null;
   if (action === 'unsupported') {
+    // A pickup or recipient-paid carrier (`labelMode 'none'`) is not unsupported:
+    // its label is the checkout's generic one. A row that shows it at all — a
+    // pedido routed here from the Loja Integrada doc while the list copy still
+    // names that doc — says so, instead of contradicting the routing toast.
     return (
       <Text size="xs" c="dimmed">
-        Emissão de etiqueta para esta transportadora ainda não suportada.
+        {tipo != null && freightCapsFor(tipo).labelMode === 'none'
+          ? 'A etiqueta deste frete é impressa no checkout.'
+          : 'Emissão de etiqueta para esta transportadora ainda não suportada.'}
       </Text>
     );
   }
@@ -408,7 +416,9 @@ export function EtiquetaRowAction({
 
   if (action === 'rotear') {
     // FAIL CLOSED, like the fetch buttons: without the backend client there is
-    // no route to ask, so neither button is live.
+    // no route to ask, so neither button is live. The picker also waits for
+    // its targets, and stays off when they could not be read — an empty list
+    // would otherwise read as "no carrier exists".
     const semCliente = lojaIntegradaClient === null;
     return (
       <Stack gap="xs">
@@ -429,11 +439,17 @@ export function EtiquetaRowAction({
           size="xs"
           variant="light"
           leftSection={<IconListDetails size={14} />}
-          onClick={() => iniciar('rotear', () => rotear(true))}
-          disabled={semCliente || carregandoAlvosLi || emAndamento !== null}
+          onClick={() => iniciar('escolher-transportadora', () => rotear(true))}
+          loading={emAndamento === 'escolher-transportadora'}
+          disabled={semCliente || carregandoAlvosLi || erroAlvosLi !== null || emAndamento !== null}
         >
           Escolher transportadora…
         </Button>
+        {erroAlvosLi !== null && (
+          <Text size="xs" c="red">
+            Não foi possível carregar as transportadoras. Recarregue a página para escolher uma.
+          </Text>
+        )}
       </Stack>
     );
   }

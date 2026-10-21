@@ -21,7 +21,7 @@ import {
 import { MENSAGEM_MOTIVO_ROTA_ETIQUETA_LI } from '@/lib/loja-integrada/rotaEtiqueta';
 import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
 
-import { createLojaIntegradaRouterProvider, freteRoteadoLi, rotaVigenteLi } from './lojaIntegrada';
+import { aplicarRotaLi, createLojaIntegradaRouterProvider } from './lojaIntegrada';
 import type {
   CheckoutEtiquetaProvider,
   EtiquetaOutcome,
@@ -210,6 +210,30 @@ describe('the Loja Integrada router provider', () => {
     expect(alvo.emitirOuImprimir).toHaveBeenCalledTimes(1);
   });
 
+  it('⚠️ NEAR-MISS: `ja-roteado` with no stored option delegates NO option — never the one the Loja Integrada doc’s freight carried', async () => {
+    // The caller's freight still names the Loja Integrada doc, so its option
+    // belongs to THAT ref. The route found the pedido routed to a Melhor Envio
+    // target with no usable option: the target must quote first, never buy a
+    // service nobody chose for it.
+    const alvo = alvoFalso();
+    const { roteador } = roteadorCom(alvo.provider);
+    await roteador.emitirOuImprimir(
+      makeInput({
+        frete: { ...FRETE_NO_DOC_LI, externalOptionId: '3' } as FreteDoPedido,
+        rotearEtiqueta: async () =>
+          respostaRoteada(
+            'ja-roteado',
+            { integracaoFreteOuterRef: 'documents/int_frete/if-me', externalOptionId: null },
+            { id: 'if-me', tipo: INTEGRACAO_FRETE.melhorEnvios },
+          ),
+      }),
+    );
+    const delegado = alvo.emitirOuImprimir.mock.calls[0]![0];
+    expect(delegado.frete.integracaoFreteOuterRef).toBe('documents/int_frete/if-me');
+    expect(delegado.frete.externalOptionId).toBeNull();
+    expect(delegado.pedido.freteInicial?.externalOptionId).toBeNull();
+  });
+
   it('the chain’s carried paid verdict rides along to the target (its soft gate reuses it)', async () => {
     const alvo = alvoFalso();
     const { roteador } = roteadorCom(alvo.provider);
@@ -239,12 +263,75 @@ describe('the Loja Integrada router provider', () => {
     const aviso = notify.mock.calls[0]![0] as { message: string; color?: string };
     expect(aviso.message).toBe(
       `${MENSAGEM_MOTIVO_ROTA_ETIQUETA_LI[MOTIVO_ROTA_ETIQUETA_LI.semMapeamento]} ` +
-        'Use "Definir transportadora" na lista de pedidos.',
+        'Use "Escolher transportadora…" na lista de pedidos.',
     );
     expect(aviso.color).toBe('yellow');
     expect(h.resolverIntFrete).not.toHaveBeenCalled();
     expect(resolver).not.toHaveBeenCalled();
     expect(alvo.emitirOuImprimir).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The row's hint is appended only where the row can do what the checkout
+   * could not: "Definir transportadora" repeats this very call (no escolha), so
+   * only the operator's own pick — "Escolher transportadora…", which bypasses
+   * the stored override and the `mapa` — can route a pedido the checkout could
+   * not. Written out, so a widening reds here.
+   */
+  const COM_DICA = [
+    MOTIVO_ROTA_ETIQUETA_LI.semMapeamento,
+    MOTIVO_ROTA_ETIQUETA_LI.semChave,
+    MOTIVO_ROTA_ETIQUETA_LI.mapaInvalido,
+    MOTIVO_ROTA_ETIQUETA_LI.alvoAusente,
+    MOTIVO_ROTA_ETIQUETA_LI.alvoInativo,
+    MOTIVO_ROTA_ETIQUETA_LI.alvoSemServico,
+    MOTIVO_ROTA_ETIQUETA_LI.tipoNaoSuportado,
+    MOTIVO_ROTA_ETIQUETA_LI.overrideInvalido,
+    MOTIVO_ROTA_ETIQUETA_LI.semEndereco,
+  ] as const;
+  const SEM_DICA = [
+    MOTIVO_ROTA_ETIQUETA_LI.docLiDivergente,
+    MOTIVO_ROTA_ETIQUETA_LI.semRotaLi,
+    MOTIVO_ROTA_ETIQUETA_LI.estadoNaoPago,
+    MOTIVO_ROTA_ETIQUETA_LI.semFrete,
+    MOTIVO_ROTA_ETIQUETA_LI.etiquetaJaComprada,
+  ] as const;
+
+  async function avisoDaRecusa(motivo: string): Promise<string> {
+    const notify = vi.fn();
+    const { roteador } = roteadorCom(alvoFalso().provider);
+    await roteador.emitirOuImprimir(
+      makeInput({ rotearEtiqueta: async () => ({ tipo: 'recusado', motivo }), notify }),
+    );
+    return (notify.mock.calls[0]![0] as { message: string }).message;
+  }
+
+  it('the two lists cover every motivo, once', () => {
+    expect([...COM_DICA, ...SEM_DICA].sort()).toEqual(
+      Object.values(MOTIVO_ROTA_ETIQUETA_LI).sort(),
+    );
+  });
+
+  it.each(COM_DICA)('a `%s` refusal points at the row’s carrier picker', async (motivo) => {
+    expect(await avisoDaRecusa(motivo)).toBe(
+      `${MENSAGEM_MOTIVO_ROTA_ETIQUETA_LI[motivo]} ` +
+        'Use "Escolher transportadora…" na lista de pedidos.',
+    );
+  });
+
+  it.each(SEM_DICA)(
+    '⚠️ NEAR-MISS: a `%s` refusal gets its copy ALONE — the row would refuse it again',
+    async (motivo) => {
+      expect(await avisoDaRecusa(motivo)).toBe(MENSAGEM_MOTIVO_ROTA_ETIQUETA_LI[motivo]);
+    },
+  );
+
+  it('a motivo a newer backend added gets its neutral copy alone (prototype-safe: `toString` too)', async () => {
+    for (const motivo of ['motivo-novo', 'toString']) {
+      const aviso = await avisoDaRecusa(motivo);
+      expect(aviso).toContain(`(${motivo})`);
+      expect(aviso).not.toContain('Escolher transportadora');
+    }
   });
 
   it('a null client is an `error` with the "não respondeu" copy — and calls nothing', async () => {
@@ -362,62 +449,61 @@ describe('the Loja Integrada router provider', () => {
   });
 });
 
-describe('rotaVigenteLi / freteRoteadoLi — the routed freight the caller keeps', () => {
+describe('aplicarRotaLi — the routing fields of an answer laid over a freight', () => {
   const COM_OPCAO = { ...FRETE_NO_DOC_LI, externalOptionId: '3' } as FreteDoPedido;
 
-  it('`roteado` takes every routing field as WRITTEN — a written null option replaces a stale one', () => {
-    // NEAR-MISS of the `ja-roteado` pin below: the route WROTE `null` (a non
-    // Melhor Envio target — the option belongs to its ref), so keeping the
-    // stale input value would buy a Melhor Envio service for a motoboy route.
-    const resposta = respostaRoteada('roteado', { externalOptionId: null });
-    expect(rotaVigenteLi(COM_OPCAO, resposta).externalOptionId).toBeNull();
-    expect(freteRoteadoLi(COM_OPCAO, resposta).externalOptionId).toBeNull();
-  });
+  it.each(['roteado', 'ja-roteado'] as const)(
+    '⚠️ NEAR-MISS: a `%s` null option REPLACES the caller’s — the option belongs to its ref, never to the Loja Integrada doc’s',
+    (tipo) => {
+      // The route WROTE `null` (`roteado`, a target that is not Melhor Envio),
+      // or found the stored option null or unusable (`ja-roteado`). Either way
+      // the caller's option came with the Loja Integrada doc: keeping it would
+      // buy a Melhor Envio service nobody chose for this target.
+      const { rota } = respostaRoteada(tipo, {
+        externalOptionId: null,
+        integracaoFreteOuterRef: 'documents/int_frete/if-me',
+      });
+      expect(aplicarRotaLi(COM_OPCAO, rota)).toMatchObject({
+        integracaoFreteOuterRef: 'documents/int_frete/if-me',
+        externalOptionId: null,
+      });
+    },
+  );
 
-  it('⭐ `ja-roteado` with an UNREADABLE stored option (null on the wire) keeps the usable input option', () => {
-    // The route found the pedido routed and answers its stored option through
-    // the shared service reader, which answers `null` for a value it cannot
-    // read: the answer then says nothing about the option, and must not erase
-    // one the caller can use.
-    const resposta = respostaRoteada('ja-roteado', {
-      externalOptionId: null,
-      integracaoFreteOuterRef: 'documents/int_frete/if-me',
-    });
-    expect(rotaVigenteLi(COM_OPCAO, resposta).externalOptionId).toBe('3');
-    expect(freteRoteadoLi(COM_OPCAO, resposta)).toMatchObject({
-      integracaoFreteOuterRef: 'documents/int_frete/if-me',
-      externalOptionId: '3',
-    });
-  });
-
-  it('`ja-roteado` with a READABLE stored option takes it over the input', () => {
-    const resposta = respostaRoteada('ja-roteado', { externalOptionId: '17' });
-    expect(freteRoteadoLi(COM_OPCAO, resposta).externalOptionId).toBe('17');
+  it('a stored option on the wire is taken over the caller’s', () => {
+    const { rota } = respostaRoteada('ja-roteado', { externalOptionId: '17' });
+    expect(aplicarRotaLi(COM_OPCAO, rota).externalOptionId).toBe('17');
   });
 
   it('an estado the route did not know (null) keeps the input estado; a known one replaces it', () => {
     expect(
-      freteRoteadoLi(FRETE_NO_DOC_LI, respostaRoteada('roteado', { estado: null })).estado,
+      aplicarRotaLi(FRETE_NO_DOC_LI, respostaRoteada('roteado', { estado: null }).rota).estado,
     ).toBe(ESTADO_FRETE.checkFinalizado);
     expect(
-      freteRoteadoLi(
+      aplicarRotaLi(
         FRETE_NO_DOC_LI,
-        respostaRoteada('roteado', { estado: ESTADO_FRETE.aguardandoRetirada }),
+        respostaRoteada('roteado', { estado: ESTADO_FRETE.aguardandoRetirada }).rota,
       ).estado,
     ).toBe(ESTADO_FRETE.aguardandoRetirada);
   });
 
   it('keeps every other field of the freight untouched (the money, the key, the label id)', () => {
-    const frete = freteRoteadoLi(
+    const frete = aplicarRotaLi(
       FRETE_NO_DOC_LI,
       respostaRoteada('roteado', {
         integracaoTargetOuterRef: 'documents/int_frete/mot-1',
-      }),
+      }).rota,
     );
     expect(frete).toEqual({
       ...FRETE_NO_DOC_LI,
       integracaoFreteOuterRef: REF_MOTOBOY,
       integracaoTargetOuterRef: 'documents/int_frete/mot-1',
     });
+  });
+
+  it('does not mutate the freight it was given', () => {
+    const antes = { ...COM_OPCAO };
+    aplicarRotaLi(COM_OPCAO, respostaRoteada('roteado').rota);
+    expect(COM_OPCAO).toEqual(antes);
   });
 });

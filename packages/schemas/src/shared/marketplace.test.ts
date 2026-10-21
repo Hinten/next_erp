@@ -417,9 +417,11 @@ describe('MARKETPLACE_TIPO_CAPS.etiqueta agrees with FREIGHT_TIPO_CAPS.labelMode
   });
 
   it('reads real rows, written out — fetch for Mercado Livre and Shopee, emit for Loja Integrada', () => {
-    // Guards the loop above from passing over an empty bridge.
-    expect(Object.keys(VINCULO_INT_FRETE_CONTA).sort()).toEqual(
-      ['lojaIntegrada', 'mercadoLivre', 'shopee'].sort(),
+    // Guards the loop above from passing over an empty bridge — without
+    // freezing its membership: a channel joining the bridge is checked by the
+    // loop, not refused here.
+    expect(Object.keys(VINCULO_INT_FRETE_CONTA)).toEqual(
+      expect.arrayContaining(['lojaIntegrada', 'mercadoLivre', 'shopee']),
     );
     expect(MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.mercadoLivre].etiqueta).toBe('fetch');
     expect(FREIGHT_TIPO_CAPS.mercadoLivre.labelMode).toBe('fetch');

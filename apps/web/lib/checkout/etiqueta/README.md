@@ -92,7 +92,7 @@ A **router** tipo (`labelMode: 'roteado'`) is not a carrier: its `int_frete`
 doc holds a `mapa` from a channel's shipping methods to the carriers the ERP
 drives, and a pedido still pointing at it has no carrier yet. Loja Integrada is
 the one router (master plan step 15): the store mints no label, so the label is
-the carrier's the conta's `mapa` — or the operator — routes the pedido to.
+that of the carrier the conta's `mapa` (or the operator) routes the pedido to.
 
 - **The caps** set `labelMode: 'roteado'`, `marketplaceOwned: false`, a null
   `channel` and every `can*` false. Each `can*` would claim for the router doc
@@ -109,7 +109,8 @@ the carrier's the conta's `mapa` — or the operator — routes the pedido to.
   route re-points the pedido server-side with a guarded write and answers the
   routing fields only — never the target document, which may hold
   credentials. The provider lays those fields over the freight
-  (`freteRoteadoLi`), reads the target through `resolverIntFrete` under the
+  (`aplicarRotaLi`, which the `/pedidos` host reuses for a registered route),
+  reads the target through `resolverIntFrete` under the
   operator's own permission, and hands the target's provider the routed
   freight. The shared gates already ran under the router, so it calls the
   target's `emitirOuImprimir`, never the registry's entry point. The target
@@ -117,12 +118,17 @@ the carrier's the conta's `mapa` — or the operator — routes the pedido to.
   `resolveEtiquetaProvider`), so the provider file does not import the
   registry.
 - **Its answers**: `roteado` and `ja-roteado` delegate — `ja-roteado` with no
-  second call; a refusal is notified with its copy plus the hint to use
-  "Definir transportadora" on `/pedidos`, and returns `unsupported`; a call that
-  decided nothing (no client, the network, a 403, a conflict) is an `error`
-  with its own copy, never the raw message. A `ja-roteado` answer reads a
-  stored option it cannot parse as `null`; that `null` never replaces a usable
-  option the caller holds (`rotaVigenteLi`).
+  second call; a refusal is notified with its copy and returns `unsupported`,
+  and where the operator's own pick could route what this call could not (a
+  method the `mapa` does not map, a missing or unusable target, no endereço,
+  an invalid override — never a guard on the pedido or on the Loja Integrada
+  doc: "Definir transportadora" repeats this very call), the copy adds the hint to
+  use "Escolher transportadora…" on `/pedidos`; a call that decided nothing (no
+  client, the network, a 403, a conflict) is an `error` with its own copy,
+  never the raw message. Every routing field is taken as answered, a `null`
+  option included: the caller's freight still names the Loja Integrada doc, so
+  its option belongs to that ref, and a target with no usable option quotes
+  first rather than buying a service nobody chose for it.
 - **The `/pedidos` row** offers `'rotear'` for a pedido on the router doc
   (`etiquetaRowState`, placed after every capability and before
   `'unsupported'`): "Definir transportadora" routes by the stored override or
@@ -131,7 +137,10 @@ the carrier's the conta's `mapa` — or the operator — routes the pedido to.
   ONLY — the label is a separate click on the next hover — and registers the
   answer with the host (`registrarRota`), because the route writes no
   `ultimaModificacao` and the list may never repaint. Both buttons are off
-  without the client (fail closed).
+  without the client (fail closed); the picker's is also off while its targets
+  load, and when they could not be read (it says so, rather than offering an
+  empty list). A pedido routed to a pickup or recipient-paid carrier
+  (`labelMode 'none'`) then says its label is printed at the checkout.
 - **The Frete tab** renders a read-only router panel for a pedido on the router
   doc, while its header and integração picker follow the estado lock: a
   duplicated pedido (back at `iniciado`, still on the doc) is re-pointed there

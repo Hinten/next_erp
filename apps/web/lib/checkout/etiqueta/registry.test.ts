@@ -168,7 +168,7 @@ function divergencias(
         `${tipo}: canFetchLabel=${String(c.canFetchLabel)}, provedor real=${String(provedorReal)}`,
       );
     }
-    // Rules 2–3 read the resolution the REGISTRY makes, over the table given.
+    // Rules 2–4 read the resolution the REGISTRY makes, over the table given.
     const resolvido =
       p ?? (c.marketplaceOwned ? unsupportedMarketplaceProvider : genericLabelProvider);
     if (c.marketplaceOwned && !c.canFetchLabel && resolvido !== unsupportedMarketplaceProvider) {

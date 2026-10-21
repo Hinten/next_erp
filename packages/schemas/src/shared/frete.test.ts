@@ -338,8 +338,8 @@ describe('FREIGHT_TIPO_CAPS', () => {
 
   it('the Loja Integrada row is a ROUTER: it owns nothing, does nothing itself, and routes', () => {
     // The whole row, as for Shopee: the store mints no label, so the row sets
-    // no `can*` at all — the label is the carrier's its conta's `mapa` (or the
-    // operator) routes the pedido to. `canPrint` would send a `printLabelId` to
+    // no `can*` at all — the label is that of the carrier its conta's `mapa`
+    // (or the operator) routes the pedido to. `canPrint` would send a `printLabelId` to
     // Melhor Envio, `canFetchLabel` would show fetch buttons with no route
     // behind them, and `marketplaceOwned` would lock a Frete tab the router
     // panel must leave reachable (a duplicated pedido is re-pointed there).

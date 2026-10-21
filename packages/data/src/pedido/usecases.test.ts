@@ -960,6 +960,21 @@ describe('freteComDespachoAutorizado (#702)', () => {
     });
   });
 
+  it('⚠️ a block whose tipo names the Loja Integrada ROUTER is not an owner any more — it is authorized like an app-managed one', () => {
+    // The import never writes this block tipo; a migrated block that carries it
+    // (a legacy hand pick) used to read as marketplace-owned and was left
+    // alone. A router owns nothing, so the payment authorizes its dispatch.
+    expect(
+      freteComDespachoAutorizado({
+        estado: ESTADO_FRETE.iniciado,
+        externalOptionIntegracao: 'lojaIntegrada',
+      }),
+    ).toEqual({
+      estado: ESTADO_FRETE.despachoAutorizado,
+      externalOptionIntegracao: 'lojaIntegrada',
+    });
+  });
+
   it('a Loja Integrada pedido on its conta’s freight doc (null block tipo) is authorized like any app-managed one', () => {
     // Unchanged by the router flip: the reconcile reads the BLOCK tipo, which
     // the Loja Integrada import leaves null.

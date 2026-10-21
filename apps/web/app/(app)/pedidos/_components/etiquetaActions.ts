@@ -7,9 +7,10 @@
  *
  * Supports Melhor Envio (buy/reprint), the generic label (motoboy/outros), the
  * marketplace fetch-label — Mercado Livre and Shopee (#1523), each via its
- * own marketplace client — and the Loja Integrada routing action. `etiquetaRowState` is the pure dispatch decision;
- * `resolveEtiquetaCartInput` lazily resolves the cart primitives from a pedido
- * **doc** (not the form) for the buy.
+ * own marketplace client — and the Loja Integrada routing action.
+ * `etiquetaRowState` is the pure dispatch decision; `resolveEtiquetaCartInput`
+ * lazily resolves the cart primitives from a pedido **doc** (not the form) for
+ * the buy.
  */
 import { type DocumentReference, type Firestore, getDoc, getDocs } from 'firebase/firestore';
 import {

@@ -39,8 +39,10 @@ import { VolumesEditor } from './VolumesEditor';
  * ⚠️ Nothing is hidden by this: a block already naming a marketplace never
  * reaches `GenericFreteFields` at all — `FreteTab.renderTipoFields` hoists it to
  * `MarketplaceReadOnly` before the generic body is considered — so the current
- * value is always one of the options below, or null (no writer puts the router
- * tipo on a block).
+ * value is one of the options below, or null. The one exception is the router
+ * tipo: no writer here or in the import puts it on a block, but a migrated
+ * block may carry it from an older hand pick, and the Select then shows it
+ * blank until the operator picks again.
  */
 const OPCOES_INTEGRACAO_OPCAO_EXTERNA = integracoesFreteSchema.options
   .filter((value) => isFreteSelecionavelManualmente(value))

@@ -46,7 +46,7 @@ const {
   // The read-only routing preview the carrier picker preselects from.
   preverMock: vi.fn(),
   // The shared targets query's answer (`useAlvosMapaFreteLi`).
-  alvosLi: { current: [] as unknown[] },
+  alvosLi: { current: [] as unknown[], carregando: false, erro: null as Error | null },
 }));
 
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => firestoreDb }));
@@ -69,8 +69,8 @@ vi.mock('@/lib/loja-integrada/useAlvosMapaFreteLi', async (importActual) => ({
   useAlvosMapaFreteLi: () => ({
     alvos: alvosLi.current,
     armazenados: new Map(),
-    carregando: false,
-    erro: null,
+    carregando: alvosLi.carregando,
+    erro: alvosLi.erro,
   }),
 }));
 vi.mock('@/lib/auth/usePermission', () => ({
@@ -207,6 +207,8 @@ beforeEach(() => {
   clientes.li = null;
   rotaParaRegistrar.registro = null;
   alvosLi.current = [];
+  alvosLi.carregando = false;
+  alvosLi.erro = null;
   preverMock.mockResolvedValue({ tipo: 'recusa', motivo: 'sem-mapeamento', mensagem: '' });
   emitirMock.mockResolvedValue({ status: 'printed' } satisfies EtiquetaOutcome);
 });
@@ -506,7 +508,7 @@ function docsPorId(docs: Record<string, Record<string, unknown>>) {
   getDocMock.mockImplementation(async (ref: { id: string }) => snap(ref.id, docs[ref.id] ?? null));
 }
 
-describe('EtiquetaRowAction — a rota que o host guarda (B14)', () => {
+describe('EtiquetaRowAction — the routed freight the host keeps across HoverCard remounts', () => {
   const PEDIDO_NO_DOC_LI = pedidoCom({
     integracaoFreteOuterRef: 'documents/int_frete/li-doc',
     estado: ESTADO_FRETE.iniciado,
@@ -605,7 +607,7 @@ describe('EtiquetaRowAction — a rota que o host guarda (B14)', () => {
   });
 });
 
-describe('EtiquetaRowAction — a conferência de pagamento antes de imprimir (A2)', () => {
+describe('EtiquetaRowAction — the paid re-check before a print', () => {
   const PEDIDO_ME_LI = {
     ...pedidoCom({
       integracaoFreteOuterRef: 'documents/int_frete/if-me',
@@ -817,6 +819,66 @@ describe("EtiquetaRowAction — a pedido still on its Loja Integrada doc ('rotea
     expect(await screen.findByRole('button', { name: 'Comprar etiqueta' })).toBeTruthy();
   });
 
+  it('⚠️ NEAR-MISS: `ja-roteado` with no stored option asks for a QUOTE — the list’s option came with the Loja Integrada doc, never the target', async () => {
+    // The stale list copy still names the Loja Integrada doc and carries an
+    // option from before the pedido was re-pointed; the route found it routed
+    // to Melhor Envio with none. Buying that option would buy a service nobody
+    // chose for this target.
+    const comOpcaoAntiga = {
+      ...PEDIDO_NO_DOC_LI,
+      freteInicial: { ...PEDIDO_NO_DOC_LI.freteInicial, externalOptionId: '3' },
+    } as Pedido;
+    clientes.li = lojaIntegradaClientFalso({
+      rotearEtiqueta: async () => roteado('ja-roteado', 'if-me', INTEGRACAO_FRETE.melhorEnvios),
+    });
+    renderComHost(comOpcaoAntiga, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: DEFINIR }));
+
+    expect(
+      await screen.findByText('Cote e selecione um frete no pedido para comprar a etiqueta.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Comprar etiqueta' })).toBeNull();
+  });
+
+  it('routed to a pickup target, the remounted row says the checkout prints its label — never "ainda não suportada"', async () => {
+    docsPorId({
+      'li-doc': { tipo: INTEGRACAO_FRETE.lojaIntegrada },
+      'if-retirada': { tipo: INTEGRACAO_FRETE.retiradaNaLoja },
+    });
+    clientes.li = lojaIntegradaClientFalso({
+      rotearEtiqueta: async () =>
+        roteado('roteado', 'if-retirada', INTEGRACAO_FRETE.retiradaNaLoja),
+    });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: DEFINIR }));
+    await waitFor(() =>
+      expect(showCopyableMock).toHaveBeenCalledWith({
+        title: 'Transportadora',
+        message:
+          'Transportadora definida: Alvo if-retirada (Retirar na Loja). A etiqueta é impressa no checkout.',
+        color: 'green',
+      }),
+    );
+
+    // The HoverCard closes and re-opens over the still-stale list copy.
+    fireEvent.click(screen.getByText('alternar hovercard'));
+    fireEvent.click(screen.getByText('alternar hovercard'));
+    expect(await screen.findByText('A etiqueta deste frete é impressa no checkout.')).toBeTruthy();
+    expect(screen.queryByText(/ainda não suportada/)).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a marketplace with no label flow still says "ainda não suportada"', async () => {
+    docsPorId({ 'if-amz': { tipo: INTEGRACAO_FRETE.amazon } });
+    renderComHost(pedidoCom({ integracaoFreteOuterRef: 'documents/int_frete/if-amz' }));
+
+    expect(
+      await screen.findByText('Emissão de etiqueta para esta transportadora ainda não suportada.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('A etiqueta deste frete é impressa no checkout.')).toBeNull();
+  });
+
   it('⚠️ NEAR-MISS: a refusal shows its motivo copy and registers NOTHING — the row still offers the routing', async () => {
     clientes.li = lojaIntegradaClientFalso({
       rotearEtiqueta: async () => ({
@@ -935,6 +997,78 @@ describe("EtiquetaRowAction — a pedido still on its Loja Integrada doc ('rotea
     await waitFor(() => expect(botao(ESCOLHER).disabled).toBe(false));
     expect(rotearEtiqueta).not.toHaveBeenCalled();
     expect(showCopyableMock).not.toHaveBeenCalled();
+  });
+
+  it('while the targets load, "Escolher transportadora…" waits — "Definir transportadora" does not need them', async () => {
+    clientes.li = lojaIntegradaClientFalso();
+    alvosLi.carregando = true;
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    expect((await screen.findByRole<HTMLButtonElement>('button', { name: DEFINIR })).disabled).toBe(
+      false,
+    );
+    expect(botao(ESCOLHER).disabled).toBe(true);
+  });
+
+  it('⚠️ a targets read that FAILED disables the picker and says so — never "Nenhuma transportadora ativa"', async () => {
+    clientes.li = lojaIntegradaClientFalso({ rotearEtiqueta: vi.fn() });
+    alvosLi.erro = new FirebaseError('permission-denied', 'sem acesso');
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    expect((await screen.findByRole<HTMLButtonElement>('button', { name: DEFINIR })).disabled).toBe(
+      false,
+    );
+    expect(botao(ESCOLHER).disabled).toBe(true);
+    expect(
+      screen.getByText(
+        'Não foi possível carregar as transportadoras. Recarregue a página para escolher uma.',
+      ),
+    ).toBeTruthy();
+    fireEvent.click(botao(ESCOLHER));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText(/Nenhuma transportadora ativa/)).toBeNull();
+  });
+
+  it('NEAR-MISS: with the targets read, no failure copy is shown', async () => {
+    clientes.li = lojaIntegradaClientFalso();
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    expect(await screen.findByRole('button', { name: ESCOLHER })).toBeTruthy();
+    expect(screen.queryByText(/Não foi possível carregar as transportadoras/)).toBeNull();
+  });
+
+  it('the spinner sits on the button the operator pressed: "Escolher transportadora…"', async () => {
+    clientes.li = lojaIntegradaClientFalso({ rotearEtiqueta: vi.fn() });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: ESCOLHER }));
+    await screen.findByRole('dialog', { name: 'Pedido 165 — Escolher transportadora' });
+
+    const pelo = (nome: string) => screen.getByText(nome).closest('button')!;
+    expect(pelo(ESCOLHER).getAttribute('data-loading')).toBe('true');
+    expect(pelo(DEFINIR).getAttribute('data-loading')).toBeNull();
+    expect(pelo(DEFINIR).disabled).toBe(true);
+  });
+
+  it('NEAR-MISS: "Definir transportadora" spins itself, not the picker button', async () => {
+    let responder: (r: RespostaRotaEtiquetaLi) => void = () => undefined;
+    clientes.li = lojaIntegradaClientFalso({
+      rotearEtiqueta: () =>
+        new Promise<RespostaRotaEtiquetaLi>((resolve) => {
+          responder = resolve;
+        }),
+    });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: DEFINIR }));
+
+    const pelo = (nome: string) => screen.getByText(nome).closest('button')!;
+    await waitFor(() => expect(pelo(DEFINIR).getAttribute('data-loading')).toBe('true'));
+    expect(pelo(ESCOLHER).getAttribute('data-loading')).toBeNull();
+    expect(pelo(ESCOLHER).disabled).toBe(true);
+    await act(async () => {
+      responder({ tipo: 'recusado', motivo: MOTIVO_ROTA_ETIQUETA_LI.semMapeamento });
+    });
   });
 
   it('a preview that cannot read Firestore preselects nothing — the picker still opens', async () => {

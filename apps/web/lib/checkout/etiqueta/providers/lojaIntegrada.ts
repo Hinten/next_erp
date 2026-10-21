@@ -1,11 +1,13 @@
 import { FirebaseError } from 'firebase/app';
 import {
   INTEGRACAO_FRETE,
+  MOTIVO_ROTA_ETIQUETA_LI,
   TIPO_RESPOSTA_ROTA_ETIQUETA_LI,
   freightCapsFor,
   type FreightTipoCapabilities,
   type FreteDoPedido,
   type IntegracaoFrete,
+  type MotivoRotaEtiquetaLi,
   type RespostaRotaEtiquetaLi,
 } from '@delfrance/schemas';
 
@@ -29,7 +31,7 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
  *     re-points the pedido at the carrier the stored override or the conta's
  *     `mapa` names — server-side, with a guarded write — and answers the
  *     routing fields. It makes no call to Loja Integrada itself.
- *  2. **Delegate** — the routed freight ({@link freteRoteadoLi}) is resolved
+ *  2. **Delegate** — the routed freight ({@link aplicarRotaLi}) is resolved
  *     to the TARGET's `int_frete` doc (read here, by the client, under its own
  *     permission: the answer never ships that document), and the target's own
  *     provider prints: the generic label, or the Melhor Envio buy / reprint.
@@ -40,8 +42,9 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
  * checks (the paid re-check's soft gates, the buy modal's gate) run there,
  * with the chain's carried verdict: the input spreads into the delegated one.
  *
- * A refusal is the operator's to fix on the row: it is notified with its copy
- * and returns `unsupported`. A call that produced no decision is an `error`.
+ * A refusal is notified with its copy — plus a pointer to the row's carrier
+ * picker where that pick can route what this call could not — and returns
+ * `unsupported`. A call that produced no decision is an `error`.
  *
  * ⚠️ The target provider comes from an INJECTED resolver — the registry's own
  * `resolveEtiquetaProvider` — so this file does not import the registry that
@@ -64,42 +67,25 @@ type RespostaRoteada = Extract<
   }
 >;
 
-/** The routing fields of an answer (`resposta.rota`). */
-export type RotaVigenteLi = RespostaRoteada['rota'];
+/** The routing fields of an answer (`resposta.rota`), as written or as found. */
+export type RotaLi = RespostaRoteada['rota'];
 
 /**
- * The routing fields the pedido's freight holds NOW, from a routing answer and
- * the freight the caller holds:
+ * `frete` with the routing fields of a routing answer laid over it — the ONE
+ * place that does it: the router provider here, and the `/pedidos` host for a
+ * route it registered (`freteComRotaConhecida`).
  *
- * - `roteado` — every field as the route WROTE it. A `null` option is written:
- *   the option belongs to its ref, and a carrier other than Melhor Envio has
- *   none.
- * - `ja-roteado` — the fields as the route FOUND them, except a `null` option:
- *   the route answers a stored option it cannot read as `null`, which says
- *   nothing about the option, so a usable one the caller holds is kept.
+ * Every routing field is taken as the route answered it, a `null` option
+ * included: the option belongs to its ref, and the freight a caller holds while
+ * it asks still names the Loja Integrada doc, so its option came with THAT ref.
+ * A `null` on the wire — written for a carrier other than Melhor Envio, or a
+ * stored option that is null or unusable — therefore never inherits it: the
+ * target quotes first instead of buying a service nobody chose for it. Only an
+ * estado the route did not know (`null` on the wire) keeps the caller's. Every
+ * other field — the money, the shipping-method key, the label id — is the
+ * caller's, untouched.
  */
-export function rotaVigenteLi(
-  frete: Pick<FreteDoPedido, 'externalOptionId'>,
-  resposta: RespostaRoteada,
-): RotaVigenteLi {
-  const { rota } = resposta;
-  if (
-    resposta.tipo === TIPO_RESPOSTA_ROTA_ETIQUETA_LI.jaRoteado &&
-    rota.externalOptionId === null
-  ) {
-    return { ...rota, externalOptionId: frete.externalOptionId };
-  }
-  return rota;
-}
-
-/**
- * `frete` with the routing fields of `resposta` laid over it
- * ({@link rotaVigenteLi}); an estado the route did not know (`null` on the
- * wire) keeps the caller's. Every other field — the money, the shipping-method
- * key, the label id — is the caller's, untouched.
- */
-export function freteRoteadoLi(frete: FreteDoPedido, resposta: RespostaRoteada): FreteDoPedido {
-  const rota = rotaVigenteLi(frete, resposta);
+export function aplicarRotaLi(frete: FreteDoPedido, rota: RotaLi): FreteDoPedido {
   return {
     ...frete,
     integracaoFreteOuterRef: rota.integracaoFreteOuterRef,
@@ -114,8 +100,53 @@ const SEM_INTEGRACAO: EtiquetaOutcome = {
   message: 'Integração de frete não encontrada.',
 };
 
-/** Where a refusal at checkout sends the operator. */
-const DICA_DA_LISTA = 'Use "Definir transportadora" na lista de pedidos.';
+/**
+ * Where a refusal at checkout sends the operator — only when the `/pedidos`
+ * row can do what this call could not. Its "Definir transportadora" repeats
+ * this very call (no `escolha`), so it would refuse again; its "Escolher
+ * transportadora…" routes by the operator's own pick, which bypasses the
+ * stored override and the conta's `mapa`.
+ */
+const DICA_DA_LISTA = 'Use "Escolher transportadora…" na lista de pedidos.';
+
+/**
+ * Whether the operator's pick can route a pedido the checkout's call refused,
+ * per motivo — total by type, so a new motivo must say. `false` where the pick
+ * meets the same refusal: the Loja Integrada doc guard and the pedido guard run
+ * before any target is chosen, and a route that is already gone (`sem-rota-li`)
+ * leaves nothing to pick for.
+ */
+const ESCOLHA_RESOLVE: Readonly<Record<MotivoRotaEtiquetaLi, boolean>> = {
+  [MOTIVO_ROTA_ETIQUETA_LI.semMapeamento]: true,
+  [MOTIVO_ROTA_ETIQUETA_LI.semChave]: true,
+  // The pick never reads the `mapa` for its target: any carrier but Melhor
+  // Envio (whose service comes from the method's row) routes.
+  [MOTIVO_ROTA_ETIQUETA_LI.mapaInvalido]: true,
+  [MOTIVO_ROTA_ETIQUETA_LI.alvoAusente]: true,
+  [MOTIVO_ROTA_ETIQUETA_LI.alvoInativo]: true,
+  [MOTIVO_ROTA_ETIQUETA_LI.alvoSemServico]: true,
+  [MOTIVO_ROTA_ETIQUETA_LI.tipoNaoSuportado]: true,
+  [MOTIVO_ROTA_ETIQUETA_LI.overrideInvalido]: true,
+  // A pickup target needs no endereço.
+  [MOTIVO_ROTA_ETIQUETA_LI.semEndereco]: true,
+  [MOTIVO_ROTA_ETIQUETA_LI.docLiDivergente]: false,
+  [MOTIVO_ROTA_ETIQUETA_LI.semRotaLi]: false,
+  [MOTIVO_ROTA_ETIQUETA_LI.estadoNaoPago]: false,
+  [MOTIVO_ROTA_ETIQUETA_LI.semFrete]: false,
+  [MOTIVO_ROTA_ETIQUETA_LI.etiquetaJaComprada]: false,
+};
+
+/** The motivos {@link ESCOLHA_RESOLVE} answers `true` for — a wire string looks up prototype-safely. */
+const MOTIVOS_COM_DICA: ReadonlySet<string> = new Set(
+  Object.entries(ESCOLHA_RESOLVE)
+    .filter(([, resolve]) => resolve)
+    .map(([motivo]) => motivo),
+);
+
+/** The checkout copy of a refusal: its motivo's, plus the row hint where the row can help. */
+function mensagemDaRecusa(motivo: string, mensagem: string): string {
+  return MOTIVOS_COM_DICA.has(motivo) ? `${mensagem} ${DICA_DA_LISTA}` : mensagem;
+}
 
 /** Build the router provider over the registry's resolver. */
 export function createLojaIntegradaRouterProvider(
@@ -140,7 +171,7 @@ export function createLojaIntegradaRouterProvider(
       if (resultado.tipo === TIPO_RESPOSTA_ROTA_ETIQUETA_LI.recusado) {
         input.ui.notify({
           title: 'Etiqueta',
-          message: `${resultado.mensagem} ${DICA_DA_LISTA}`,
+          message: mensagemDaRecusa(resultado.motivo, resultado.mensagem),
           color: 'yellow',
         });
         return {
@@ -149,7 +180,7 @@ export function createLojaIntegradaRouterProvider(
         };
       }
 
-      const frete = freteRoteadoLi(input.frete, resultado);
+      const frete = aplicarRotaLi(input.frete, resultado.rota);
       let intFrete: Awaited<ReturnType<typeof resolverIntFrete>>;
       try {
         intFrete = await resolverIntFrete(input.db, frete);
