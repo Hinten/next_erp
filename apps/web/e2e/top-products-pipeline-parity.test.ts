@@ -27,6 +27,7 @@ const expressions = vi.hoisted(() => {
       tag(kind, args);
   return {
     and: factory('and'),
+    or: factory('or'),
     array: factory('array'),
     map: factory('map'),
     conditional: factory('conditional'),

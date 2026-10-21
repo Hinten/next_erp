@@ -16,8 +16,10 @@ import {
   lessThanOrEqual,
   map,
   mapEntries,
+  or,
   sum,
 } from 'firebase/firestore/pipelines';
+import { MICROS_LOWER_BOUND, MILLIS_UPPER_BOUND } from '@delfrance/core/datetime';
 import {
   componentesKitEntries,
   estadoPedidoSchema,
@@ -158,8 +160,21 @@ export function buildTopProductsPipeline(db: Firestore, input: TopProductsFilter
   const filters = normalizeTopProductsFilters(input);
   const predicates = [
     equal(field('ehSaida'), filters.ehSaida),
-    greaterThanOrEqual(field('timestamp'), filters.startUs),
-    lessThan(field('timestamp'), filters.endExclusiveUs),
+    // Match the numeric-unit heuristic used by schema tolerant reads. Both
+    // branches seek bounded timestamp ranges; their unit domains do not overlap.
+    or(
+      and(
+        greaterThanOrEqual(field('timestamp'), Math.max(filters.startUs, MICROS_LOWER_BOUND)),
+        lessThan(field('timestamp'), filters.endExclusiveUs),
+      ),
+      and(
+        greaterThanOrEqual(field('timestamp'), Math.ceil(filters.startUs / 1000)),
+        lessThan(
+          field('timestamp'),
+          Math.min(Math.ceil(filters.endExclusiveUs / 1000), MILLIS_UPPER_BOUND + 1),
+        ),
+      ),
+    ),
   ];
   if (filters.estados.length > 0) {
     predicates.push(equalAny(field('estado'), [...filters.estados]));
@@ -306,7 +321,7 @@ export function aggregateTopProducts(
       if (
         !validId(componentId) ||
         typeof component.quantidade !== 'number' ||
-        !Number.isFinite(component.quantidade) ||
+        !Number.isSafeInteger(component.quantidade) ||
         component.quantidade <= 0
       ) {
         invalid = true;

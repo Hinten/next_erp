@@ -294,7 +294,7 @@ export default function BestSellingProductsPage() {
   if (loading || claimsLoading) return <Skeleton height={120} />;
   if (!user) return null;
   const scope: ReportCacheScope = {
-    version: 'best-selling-products:1',
+    version: 'best-selling-products:2',
     project: getFirebaseApp().options.projectId ?? '',
     database: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID ?? 'default',
     transport: isUsingFirebaseEmulator()

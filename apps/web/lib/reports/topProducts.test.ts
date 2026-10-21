@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import { ESTADO_PEDIDO } from '@delfrance/schemas';
+import { coerceToMicros, MICROS_LOWER_BOUND, MILLIS_UPPER_BOUND } from '@delfrance/core/datetime';
 import {
   aggregateTopProducts,
   buildTopProductsPipeline,
@@ -32,6 +33,7 @@ vi.mock('firebase/firestore/pipelines', () => {
     constant: (value: unknown) => expression('constant', value),
     documentId: (...args: unknown[]) => expression('documentId', ...args),
     and: (...args: unknown[]) => expression('and', ...args),
+    or: (...args: unknown[]) => expression('or', ...args),
     array: (...args: unknown[]) => expression('array', ...args),
     map: (...args: unknown[]) => expression('map', ...args),
     equal: (...args: unknown[]) => expression('equal', ...args),
@@ -131,6 +133,64 @@ describe('top-products query', () => {
         ],
       },
     ]);
+  });
+
+  it.each([
+    [1_768_003_200_000_000, 1_768_176_000_000_000],
+    [1_768_003_200_000_001, 1_768_003_200_001_001],
+    [MICROS_LOWER_BOUND - 1000, MICROS_LOWER_BOUND + 1000],
+    [1000, 2000],
+  ])('matches tolerant numeric reads for [%s, %s)', (startUs, endExclusiveUs) => {
+    const { db, pipelines } = database();
+    buildTopProductsPipeline(db, { ...filters, startUs, endExclusiveUs });
+    const evaluate = (value: unknown, timestamp: number): unknown => {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+      const expression = value as { kind: string; args: unknown[] };
+      const args = expression.args.map((arg) => evaluate(arg, timestamp));
+      switch (expression.kind) {
+        case 'field':
+          return args[0] === 'timestamp'
+            ? timestamp
+            : args[0] === 'ehSaida'
+              ? true
+              : ESTADO_PEDIDO.pago;
+        case 'and':
+          return args.every(Boolean);
+        case 'or':
+          return args.some(Boolean);
+        case 'equal':
+          return args[0] === args[1];
+        case 'equalAny':
+          return (args[1] as unknown[]).includes(args[0]);
+        case 'gte':
+          return (args[0] as number) >= (args[1] as number);
+        case 'lt':
+          return (args[0] as number) < (args[1] as number);
+        default:
+          throw new TypeError('Unknown predicate: ' + expression.kind);
+      }
+    };
+    // Raw storage values from both unit domains and each boundary, plus the
+    // ambiguous magnitude gap. Expected inclusion comes from the real reader.
+    const timestamps = new Set([
+      ...[startUs, endExclusiveUs, startUs / 1000, endExclusiveUs / 1000].flatMap((value) => [
+        Math.floor(value) - 1,
+        Math.floor(value),
+        Math.ceil(value),
+        Math.ceil(value) + 1,
+      ]),
+      MILLIS_UPPER_BOUND,
+      MILLIS_UPPER_BOUND + 1,
+      MICROS_LOWER_BOUND - 1,
+      MICROS_LOWER_BOUND,
+    ]);
+    for (const timestamp of timestamps) {
+      const normalized = coerceToMicros(timestamp);
+      const expected = normalized !== null && normalized >= startUs && normalized < endExclusiveUs;
+      expect(evaluate(pipelines[0]!.stages[1]!.args[0], timestamp), String(timestamp)).toBe(
+        expected,
+      );
+    }
   });
 
   it('rejects an empty state selection while empty accounts include all accounts', () => {
@@ -331,6 +391,29 @@ describe('kit expansion and parent ranking', () => {
       'nested-kit',
     ]);
   });
+
+  it.each([0.5, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid kit recipe quantity %s while retaining fractional sales',
+    (quantity) => {
+      const report = aggregateTopProducts(
+        [group('kit', 1.5)],
+        products({
+          kit: {
+            ehKit: true,
+            componentesKit: { valid: { quantidade: 2 }, invalid: { quantidade: quantity } },
+          },
+          valid: {},
+          invalid: {},
+        }),
+      );
+      expect(report.rows).toEqual([
+        { produtoId: 'valid', quantidade: 3, variations: [{ produtoId: 'valid', quantidade: 3 }] },
+      ]);
+      expect(report.diagnostics).toEqual([
+        expect.objectContaining({ kind: 'invalid-kit', produtoId: 'kit', quantidade: 1.5 }),
+      ]);
+    },
+  );
 
   it('handles unlinked items, invalid source lines, zero units and deterministic quantity ties', () => {
     const report = aggregateTopProducts(

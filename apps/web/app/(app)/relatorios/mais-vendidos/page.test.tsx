@@ -177,6 +177,7 @@ describe('best-selling products page', () => {
     expect(mocks.run).toHaveBeenCalledWith(
       {},
       expect.objectContaining({
+        version: 'best-selling-products:2',
         userId: 'operator',
         permissions: '12345',
         project: 'demo-erp',

@@ -39,6 +39,7 @@ test.describe.serial('Best-selling products — complete quantities and persiste
   const smallId = prefix + '-shirt-small';
   const largeId = prefix + '-shirt-large';
   const kitId = prefix + '-kit';
+  const invalidKitId = prefix + '-invalid-kit';
   const otherId = prefix + '-other';
   const missingId = prefix + '-deleted';
   const orderId = prefix + '-order';
@@ -105,6 +106,10 @@ test.describe.serial('Best-selling products — complete quantities and persiste
           [largeId]: { quantidade: 2 },
         },
       }),
+      write('produtos', invalidKitId, {
+        ehKit: true,
+        componentesKit: { [otherId]: { quantidade: 1.5 } },
+      }),
       write('arquivos', photoId, { url: photoUrl }),
       write('produtos', otherId, {
         nome: prefix + '-Other',
@@ -125,6 +130,7 @@ test.describe.serial('Best-selling products — complete quantities and persiste
         ...order,
         itens: {
           [kitId]: [item(2)],
+          [invalidKitId]: [item(2)],
           [smallId]: [item(1)],
           [otherId]: [item(11.5)],
           [missingId]: [item(0.5)],
@@ -133,6 +139,7 @@ test.describe.serial('Best-selling products — complete quantities and persiste
       write('pedidos', prefix + '-bare', {
         ...order,
         estado: ESTADO_PEDIDO.finalizado,
+        timestamp: range.startUs / 1000,
         integracaoPedidoOuterRef: 'integracao/' + accountId,
         itens: { [largeId]: [item(1)] },
       }),
@@ -154,6 +161,21 @@ test.describe.serial('Best-selling products — complete quantities and persiste
       write('pedidos', prefix + '-outside', {
         ...order,
         timestamp: range.endExclusiveUs,
+        itens: { [otherId]: [item(100)] },
+      }),
+      write('pedidos', prefix + '-legacy-outside', {
+        ...order,
+        timestamp: range.endExclusiveUs / 1000,
+        itens: { [otherId]: [item(100)] },
+      }),
+      write('pedidos', prefix + '-before', {
+        ...order,
+        timestamp: range.startUs - 1,
+        itens: { [otherId]: [item(100)] },
+      }),
+      write('pedidos', prefix + '-legacy-before', {
+        ...order,
+        timestamp: range.startUs / 1000 - 1,
         itens: { [otherId]: [item(100)] },
       }),
     ]);
@@ -197,7 +219,7 @@ test.describe.serial('Best-selling products — complete quantities and persiste
     }
   });
 
-  test('aggregates both reference encodings and ranks expanded component parents', async () => {
+  test('aggregates mixed timestamp units and reference encodings before ranking component parents', async () => {
     const report = await loadTopProductsReport(clientDb, filters);
     expect(report.totalQuantidade).toBe(24);
     expect(report.rows.map((row) => [row.produtoId, row.quantidade])).toEqual([
@@ -212,6 +234,7 @@ test.describe.serial('Best-selling products — complete quantities and persiste
     expect(report.diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: 'missing-product', produtoId: missingId }),
+        expect.objectContaining({ kind: 'invalid-kit', produtoId: invalidKitId }),
       ]),
     );
     // Hydration uses the production documents/select builder for display fields
@@ -228,6 +251,19 @@ test.describe.serial('Best-selling products — complete quantities and persiste
         { produtoId: largeId, nome: prefix + '-Large', sku: 'SHIRT-L', quantidade: 5 },
       ],
     });
+  });
+
+  test('excludes legacy millisecond timestamps below a sub-millisecond start boundary', async () => {
+    const report = await loadTopProductsReport(clientDb, {
+      ...filters,
+      startUs: filters.startUs + 1,
+    });
+    expect(report.totalQuantidade).toBe(23);
+    expect(report.rows.map((row) => [row.produtoId, row.quantidade])).toEqual([
+      [otherId, 11.5],
+      [parentId, 11],
+      [missingId, 0.5],
+    ]);
   });
 
   test('denies the identical aggregate to an unauthenticated client', async () => {
@@ -278,6 +314,7 @@ test.describe.serial('Best-selling products — complete quantities and persiste
       .update({
         itens: {
           [kitId]: [item(2)],
+          [invalidKitId]: [item(2)],
           [smallId]: [item(4)],
           [otherId]: [item(11.5)],
           [missingId]: [item(0.5)],

@@ -5,6 +5,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cert, deleteApp, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import { MICROS_LOWER_BOUND, MILLIS_UPPER_BOUND } from '@delfrance/core/datetime';
 import {
   contadoresDoCabecalho,
   indicesUsados,
@@ -110,8 +111,19 @@ export function buildTopProductsIndexProbePipeline(db, filters, expressions = pi
   };
   const predicates = [
     p.equal(p.field('ehSaida'), filters.ehSaida),
-    p.greaterThanOrEqual(p.field('timestamp'), filters.startUs),
-    p.lessThan(p.field('timestamp'), filters.endExclusiveUs),
+    p.or(
+      p.and(
+        p.greaterThanOrEqual(p.field('timestamp'), Math.max(filters.startUs, MICROS_LOWER_BOUND)),
+        p.lessThan(p.field('timestamp'), filters.endExclusiveUs),
+      ),
+      p.and(
+        p.greaterThanOrEqual(p.field('timestamp'), Math.ceil(filters.startUs / 1000)),
+        p.lessThan(
+          p.field('timestamp'),
+          Math.min(Math.ceil(filters.endExclusiveUs / 1000), MILLIS_UPPER_BOUND + 1),
+        ),
+      ),
+    ),
   ];
   if (filters.estados.length > 0) predicates.push(p.equalAny(p.field('estado'), filters.estados));
   if (filters.accountIds.length > 0) {
