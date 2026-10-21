@@ -217,7 +217,6 @@ describe('pedidoPagoSegueSemEnderecoLi: the aviso stays OPEN while the pedido ha
   function segue(over: Partial<Parameters<typeof pedidoPagoSegueSemEnderecoLi>[0]> = {}): boolean {
     return pedidoPagoSegueSemEnderecoLi({
       codigo: PAGO,
-      temEnvio: true,
       dispensaEndereco: false,
       armazenado: null,
       enderecoGravado: null,
@@ -225,7 +224,7 @@ describe('pedidoPagoSegueSemEnderecoLi: the aviso stays OPEN while the pedido ha
     });
   }
 
-  it('EQUAL: every PAID codigo, a shipment, no pickup, no endereço stored and none written ⇒ left OPEN — the invalid-CEP import is this case', () => {
+  it('EQUAL: every PAID codigo, no pickup, no endereço stored and none written ⇒ left OPEN — the invalid-CEP import is this case', () => {
     for (const codigo of CODIGOS_LI_PAGO) expect(segue({ codigo }), codigo).toBe(true);
     // An EMPTY stored ref, or an empty written one, is no endereço.
     expect(
@@ -250,9 +249,24 @@ describe('pedidoPagoSegueSemEnderecoLi: the aviso stays OPEN while the pedido ha
     expect(segue({ enderecoGravado: DO_CLIENTE })).toBe(false);
   });
 
-  it('NEAR-MISS: a PICKUP (it needs no endereço), NO shipment (nothing to deliver) or a codigo no longer PAID closes it', () => {
+  it('⚠️ EQUAL (owner decision, 2026-10-20): NO shipment is not on the owner’s list — the verdict asks nothing of it, so an observation without one leaves the row OPEN while the pedido holds no endereço', () => {
+    // What the importer knows of such an observation, its shipment flag included: the
+    // pedido may still hold the freight block an earlier observation stored, and nothing
+    // shows the platform never omits `envios` (D17).
+    const semEnvio = {
+      codigo: PAGO,
+      temEnvio: false,
+      dispensaEndereco: false,
+      armazenado: null,
+      enderecoGravado: null,
+    };
+    expect(pedidoPagoSegueSemEnderecoLi(semEnvio)).toBe(true);
+    // …while the refusal still asks for one: no shipment, nothing a label could be bought for.
+    expect(decidir({ temEnvio: false })).toBe(false);
+  });
+
+  it('NEAR-MISS: a PICKUP (it needs no endereço) or a codigo no longer PAID closes it', () => {
     expect(segue({ dispensaEndereco: true })).toBe(false);
-    expect(segue({ temEnvio: false })).toBe(false);
     for (const codigo of codigoSituacaoLiSchema.options) {
       if (CODIGOS_LI_PAGO.has(codigo)) continue;
       expect(segue({ codigo }), codigo).toBe(false);
@@ -260,7 +274,7 @@ describe('pedidoPagoSegueSemEnderecoLi: the aviso stays OPEN while the pedido ha
     expect(segue({ codigo: 'Pedido_Pago' })).toBe(false);
   });
 
-  it('the refusal is exactly this rule plus "no CEP", over every combination: the CEP is the only clause the two do not share', () => {
+  it('the refusal is exactly this rule plus a shipment and "no CEP", over every combination: those are the only clauses the two do not share', () => {
     const armazenados = [
       null,
       { enderecoFiscalOuterRef: DO_CLIENTE },
@@ -271,12 +285,12 @@ describe('pedidoPagoSegueSemEnderecoLi: the aviso stays OPEN while the pedido ha
       for (const temEnvio of [true, false]) {
         for (const dispensaEndereco of [true, false]) {
           for (const armazenado of armazenados) {
-            const base = { codigo, temEnvio, dispensaEndereco, armazenado };
+            const base = { codigo, dispensaEndereco, armazenado };
             for (const enderecoEntrega of entregas) {
               expect(
-                decidir({ ...base, enderecoEntrega }),
-                JSON.stringify({ ...base, cep: enderecoEntrega?.cep ?? null }),
-              ).toBe(segue(base) && entregaSemCepLi(enderecoEntrega));
+                decidir({ ...base, temEnvio, enderecoEntrega }),
+                JSON.stringify({ ...base, temEnvio, cep: enderecoEntrega?.cep ?? null }),
+              ).toBe(temEnvio && segue(base) && entregaSemCepLi(enderecoEntrega));
             }
           }
         }

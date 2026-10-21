@@ -75,6 +75,12 @@ function findRepoRoot(startDir) {
  * @returns {Record<string, string>}
  */
 export function loadRepoRootEnv(options) {
+  // ⚠️ The opt-out for a scan that LOADS configs without running them:
+  // `packages/config-eslint/rules/vitest-config-partition.test.js` evaluates every
+  // vitest config in the repo to ask vitest's own matcher which one collects each
+  // test file. It needs the include/exclude globs and nothing else, so it must not
+  // read anyone's `.env.local` on the way. That test pins this exact string.
+  if (process.env.DELFRANCE_VITEST_CONFIG_SCAN === '1') return {};
   const configDir = dirname(fileURLToPath(options.configFileUrl));
   const repoRoot = findRepoRoot(configDir);
   /** @type {Record<string, string>} */

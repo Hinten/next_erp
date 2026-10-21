@@ -253,18 +253,16 @@ function fraseMotivoFreteNaoSuportado(valor: Aviso['params'][string] | undefined
 }
 
 /**
- * The recriar clause of `shopeeKitReceitaDivergente`: the runnable command when
- * the aviso names the link, and otherwise where to get it. `--recriar` refuses
- * to run without `--link`, so a `—` (the builder's "no link") or an absent
- * param must never print `--link — --recriar`. The republish the sentence
- * already asks for FIRST prints that `--link` for a kit it reads divergent.
+ * The recriar clause of `shopeeKitReceitaDivergente`: the tab's "Recriar kit" on
+ * the named link when the aviso names it, and otherwise the link the republish
+ * will name. Never a command line — the operator acts in the produto's Shopee
+ * tab (#1529).
  */
 function fraseRecriarKit(params: Aviso['params']): string {
   const vinculo = p(params, 'vinculo');
   return vinculo === '—'
-    ? 'recrie o kit com o --link que a republicação indicar (o --recriar exige o vínculo do kit ' +
-        'antigo, e este aviso não o identificou)'
-    : `recrie o kit (publicar:anuncio --link ${vinculo} --recriar)`;
+    ? 'use "Recriar kit" no anúncio que a republicação indicar'
+    : `use "Recriar kit" no anúncio do vínculo ${vinculo}`;
 }
 
 /**
@@ -339,6 +337,72 @@ function corpoExpiracaoLojaIntegrada(params: Aviso['params']): string {
   return (
     `O token da Loja Integrada da loja ${loja} ${prazo}${quando}. ` +
     'Renove no painel e atualize a validade no ERP.'
+  );
+}
+
+/**
+ * Onde uma conta Amazon é reautorizada: no ERP. ⚠️ Nunca no Seller Central — o
+ * botão de reautorizar de lá abre uma página de login que este ERP não atende,
+ * então a frase diz para não usá-lo. E sem nomear o rótulo do botão do painel,
+ * que muda com o estado da conexão.
+ */
+const REAUTORIZE_AMAZON =
+  'Reautorize pelo painel de conexão da conta, no ERP — o botão de reautorizar do Seller ' +
+  'Central não é suportado.';
+
+/**
+ * A frase da autorização da Amazon que se aproxima dos 365 dias. `dias` é um
+ * NÚMERO de dias civis (São Paulo): `0` no próprio dia, negativo depois dele —
+ * cada um com sua frase, porque "vence em 0 dia(s)" e "vence em -3 dia(s)" seriam
+ * lidos como erro do sistema. Qualquer outro valor cai na frase futura com o
+ * marcador, nunca em "undefined".
+ */
+function corpoReautorizacaoAmazon(params: Aviso['params']): string {
+  const loja = p(params, 'loja');
+  const data = dataCivilBr(params.expiraEm);
+  const quando = data === null ? '' : ` (${data})`;
+  const dias = params.dias;
+  if (typeof dias === 'number' && dias < 0) {
+    return (
+      `O prazo de 365 dias da autorização da Amazon da conta ${loja} já passou${quando}, e a ` +
+      `Amazon pode recusá-la a qualquer momento. ${REAUTORIZE_AMAZON}`
+    );
+  }
+  const prazo = dias === 0 ? 'vence hoje' : `vence em ${p(params, 'dias')} dia(s)`;
+  return `A autorização da Amazon da conta ${loja} ${prazo}${quando}. ${REAUTORIZE_AMAZON}`;
+}
+
+/**
+ * A frase do vencimento do segredo do aplicativo da Amazon. ⚠️ `dias` e
+ * `expiraEm` AUSENTES (os dois) quer dizer que a data não está registrada OU
+ * que o valor registrado não é uma data válida — o produtor não distingue os
+ * dois casos e levanta o aviso mesmo assim, e a frase nomeia as duas causas e
+ * diz que o prazo é desconhecido em vez de imprimir marcadores. `0` e negativo
+ * têm frases próprias, como na autorização da conta.
+ */
+function corpoSegredoLwaExpirandoAmazon(params: Aviso['params']): string {
+  if (params.dias === undefined && params.expiraEm === undefined) {
+    return (
+      'A data de vencimento do segredo do aplicativo da Amazon (client secret do LWA) não está ' +
+      'registrada, ou o valor registrado não é uma data válida no formato AAAA-MM-DD, então o ' +
+      'ERP não consegue avisar antes de ele vencer. Quando ele vence, a integração de todas as ' +
+      'contas Amazon para.'
+    );
+  }
+  const data = dataCivilBr(params.expiraEm);
+  const quando = data === null ? '' : ` (${data})`;
+  const dias = params.dias;
+  if (typeof dias === 'number' && dias < 0) {
+    return (
+      `A data registrada para o vencimento do segredo do aplicativo da Amazon já passou${quando}. ` +
+      'Se o segredo não foi trocado, a Amazon passa a recusá-lo e a integração de todas as ' +
+      'contas Amazon para; se foi, falta registrar a nova data.'
+    );
+  }
+  const prazo = dias === 0 ? 'vence hoje' : `vence em ${p(params, 'dias')} dia(s)`;
+  return (
+    `O segredo do aplicativo da Amazon (client secret do LWA) ${prazo}${quando}. ` +
+    'Sem a troca, a integração de todas as contas Amazon para.'
   );
 }
 
@@ -469,19 +533,19 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'e das variações, e recalcule o preço. O aviso se encerra quando a categoria do ' +
       'produto for alterada.',
   },
-  // Sem `runbook`: o conserto é a rota/CLI de publicação hoje (um botão no passo
-  // 21). ⚠️ "Republique PRIMEIRO" é a ação segura: um reapontamento do mapa (#1450)
-  // muda a impressão digital da receita sem mudar a receita na Shopee, e o
-  // `--recriar` exclui um anúncio que está vendendo. Por isso a frase nomeia o
-  // `--link` do vínculo — um `--recriar` sem ele não diz qual kit trocar — e,
-  // sem vínculo conhecido, não imprime comando nenhum (`fraseRecriarKit`).
+  // Sem `runbook`: o conserto é a aba Shopee do produto (passo 21, #1529). ⚠️
+  // "Republique PRIMEIRO" é a ação segura: um reapontamento do mapa (#1450) muda a
+  // impressão digital da receita sem mudar a receita na Shopee, e recriar exclui
+  // um anúncio que está vendendo. Por isso a frase nomeia o vínculo — recriar sem
+  // ele não diz qual kit trocar — e, sem vínculo conhecido, manda ao anúncio que a
+  // republicação indicar (`fraseRecriarKit`).
   [TIPO_AVISO.shopeeKitReceitaDivergente]: {
     titulo: 'Kit da Shopee com composição antiga',
     corpo: (params) =>
       `A composição das variações ${p(params, 'variacoes')} do kit ${p(params, 'kit')} mudou no ERP, mas o kit ` +
       `${p(params, 'anuncio')} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
-      'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
-      '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+      'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Use "Republicar" no anúncio, ' +
+      'na aba Shopee do produto: se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
       `Senão, ${fraseRecriarKit(params)} ou volte a composição ao que está na Shopee.`,
   },
   // Sem `runbook`: o conserto está no app — o cadastro do produto (para onde o aviso
@@ -536,9 +600,9 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'desenvolvedor confere o registro da varredura de pedidos; quando há pedidos alterados ' +
       'demais, reiniciar o cursor da conta faz a leitura recomeçar pelo período inicial de busca.',
   },
-  // Os tipos da importação de pedidos (passos 5 e 6), até o fim deste mapa. Todos
-  // `atencao` — cada um fala de UM pedido ou UMA forma de envio, e a entrada de pedidos
-  // segue funcionando —, exceto `lojaIntegradaPedidoPagoSemEndereco`, `critico`.
+  // Os tipos da importação de pedidos da Loja Integrada (passos 5 e 6), até os da Amazon.
+  // Todos `atencao` — cada um fala de UM pedido ou UMA forma de envio, e a entrada de
+  // pedidos segue funcionando —, exceto `lojaIntegradaPedidoPagoSemEndereco`, `critico`.
   [TIPO_AVISO.lojaIntegradaSituacaoDesconhecida]: {
     titulo: 'Situação desconhecida em pedido da Loja Integrada',
     corpo: (params) =>
@@ -589,37 +653,91 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'Cancele a etiqueta no painel do Melhor Envio. Se a NF-e do pedido já foi emitida, ' +
       'cancele-a pelo ERP dentro do prazo de cancelamento da SEFAZ.',
   },
-  // Crítico: uma venda PAGA que não entrou no ERP é uma venda que ninguém despacha. O
+  // Crítico: uma venda PAGA sem endereço de entrega é uma venda que ninguém despacha. O
   // aviso só sobe quando as novas tentativas acabaram (a fila e a varredura), por isso a
-  // frase diz que a importação parou. Só um pedido SEM CEP nenhum (ausente, vazio, em
+  // frase diz que a importação tentou de novo ANTES de abri-lo — e não que parou: uma
+  // importação posterior com um CEP inválido grava o pedido sem endereço e deixa o aviso
+  // aberto, e a frase continua certa. Só um pedido SEM CEP nenhum (ausente, vazio, em
   // branco ou só o traço "-") é recusado: um CEP inválido, digitado pelo cliente, não se
-  // conserta esperando, e esse pedido entra sem endereço — por isso a frase nunca fala em
-  // CEP "válido".
+  // conserta esperando, e esse pedido entra sem endereço — por isso a frase fala em CEP
+  // "utilizável", nunca em CEP "válido".
   [TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco]: {
     titulo: 'Pedido pago da Loja Integrada sem endereço',
     corpo: (params) =>
       `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} está pago na Loja ` +
-      'Integrada, mas chegou sem CEP no endereço de entrega e por isso não entrou no ERP — ' +
-      'nem o pedido, nem a atualização dele: sem endereço não há como comprar a etiqueta. A ' +
-      'importação tentou de novo por algumas horas e parou. O aviso se encerra quando o ' +
-      'pedido estiver no ERP com o endereço de entrega.',
+      'Integrada, mas chegou sem um CEP de entrega utilizável e por isso não pôde ser ' +
+      'importado com o endereço de entrega: sem endereço não há como comprar a etiqueta. A ' +
+      'importação tentou de novo por algumas horas antes de abrir este aviso. O aviso se ' +
+      'encerra quando o pedido tiver o endereço de entrega, virar retirada na loja ou deixar ' +
+      'de estar pago.',
     // O conserto está FORA do app: o endereço é preenchido no painel da Loja Integrada. Que
     // essa alteração traga o pedido de volta à importação é o ESPERADO, ainda não observado
     // (nenhuma captura mostra a edição do endereço mudando a data de modificação do pedido),
     // por isso a frase diz "deve" e dá a saída para quando não trouxer. A retirada precisa
     // estar ATIVA: uma inativa não dispensa o endereço. O aviso só se encerra quando o pedido
-    // fica com o endereço de entrega (já guardado, ou gravado pela importação), vira retirada
-    // na loja ou deixa de estar pago (decisão de 2026-10-20): um CEP que o montador de
-    // endereço não lê entra sem endereço e mantém o aviso aberto — daí a conferência dos 8
-    // dígitos antes de chamar um desenvolvedor.
+    // fica com o endereço de entrega (um que já guardava, nunca sobrescrito, ou um que a
+    // importação gravou sob o cliente do pedido), vira retirada na loja ou deixa de estar
+    // pago (decisão de 2026-10-20). Nada mais o encerra: um CEP que o montador de endereço
+    // não lê, um CEP legível de um comprador sem documento válido (sem cliente, sem
+    // endereço) e uma atualização sem envio deixam o aviso aberto — daí a conferência dos
+    // 8 dígitos antes de chamar um desenvolvedor.
     runbook:
       'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
       'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
       'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
       'e depois altere o pedido no painel. O aviso fica aberto até o pedido ter o endereço de ' +
-      'entrega (o de retirada na loja não precisa dele). Se o aviso continuar aberto depois da ' +
-      'alteração, confira no painel se o CEP tem 8 dígitos; se tiver, peça a um desenvolvedor ' +
-      'que confira a notificação estacionada desse pedido.',
+      'entrega (o de retirada na loja não precisa dele) ou deixar de estar pago. Se o aviso ' +
+      'continuar aberto depois da alteração, confira no painel se o CEP tem 8 dígitos; se ' +
+      'tiver, peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
+  },
+  // Sem `runbook` nos dois avisos por CONTA da Amazon: o conserto está no app —
+  // uma nova autorização pelo painel de conexão da conta (o link do aviso).
+  [TIPO_AVISO.amazonReconexaoPendente]: {
+    titulo: 'Autorização da Amazon recusada',
+    corpo: (params) => {
+      // `p()` decide o que é "ausente" (sem a chave OU ''), então a cláusula e o
+      // marcador nunca discordam: sem status, a cláusula inteira some.
+      const status = p(params, 'status', '');
+      return (
+        `A Amazon recusou a autorização da conta ${p(params, 'loja')}` +
+        `${status === '' ? '' : ` (HTTP ${status})`}. ` +
+        `A integração desta conta fica parada até ela ser reautorizada. ${REAUTORIZE_AMAZON}`
+      );
+    },
+  },
+  [TIPO_AVISO.amazonReautorizacaoExpirando]: {
+    titulo: 'Autorização da Amazon expirando',
+    corpo: corpoReautorizacaoAmazon,
+  },
+  // Os dois avisos do APLICATIVO (um por canal, não por conta) têm `runbook`: o
+  // conserto é uma implantação — o segredo vive no Secret Manager, fora do app.
+  [TIPO_AVISO.amazonSegredoLwaExpirando]: {
+    titulo: 'Segredo do aplicativo da Amazon expirando',
+    corpo: corpoSegredoLwaExpirandoAmazon,
+    // Dois ramos, e registrar vem ANTES de trocar: quando só falta a data (ou
+    // ela está em outro formato), gerar um segredo novo seria o passo mais
+    // arriscado do canal para um conserto que não precisa dele.
+    runbook:
+      'Se a data não está registrada, ou não está no formato AAAA-MM-DD, grave em ' +
+      'AMAZON_LWA_SEGREDO_EXPIRA_EM a data de vencimento do segredo ATUAL, como AAAA-MM-DD — sem ' +
+      'gerar outro segredo. Se o segredo está perto de vencer (ou já venceu), gere um novo client ' +
+      'secret para o aplicativo no portal de desenvolvedor da Amazon e, na MESMA implantação, ' +
+      'grave-o em AMAZON_LWA_CLIENT_SECRET (Secret Manager) de todos os backends da Amazon e ' +
+      'registre a nova data de vencimento em AMAZON_LWA_SEGREDO_EXPIRA_EM (AAAA-MM-DD). O ' +
+      'segredo antigo pode deixar de valer assim que o novo é gerado.',
+  },
+  [TIPO_AVISO.amazonSegredoLwaRecusado]: {
+    titulo: 'Segredo do aplicativo da Amazon recusado',
+    corpo: () =>
+      'A Amazon recusou as credenciais do aplicativo (client secret do LWA). Nenhuma conta ' +
+      'Amazon consegue renovar o acesso até isso ser corrigido — as contas não precisam ser ' +
+      'reconectadas.',
+    runbook:
+      'Confira se AMAZON_LWA_CLIENT_ID (variável de ambiente do backend) e ' +
+      'AMAZON_LWA_CLIENT_SECRET (Secret Manager) de todos os backends da Amazon são o par atual ' +
+      'do aplicativo no portal de desenvolvedor da Amazon — um segredo vencido, ou trocado no ' +
+      'portal sem atualizar o Secret Manager, dá exatamente isto. Corrija e reimplante; o aviso ' +
+      'se encerra sozinho na próxima troca de token aceita.',
   },
 };
 

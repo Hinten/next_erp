@@ -665,6 +665,90 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  describe('server-owned integracao.selling_partner_id (meta.serverOwnedFields)', () => {
+    // The Amazon sibling of the `user_id` case above: `selling_partner_id` is
+    // the notification ROUTING key an inbound Amazon event resolves its conta
+    // by. A client able to write it could repoint another seller's stream at
+    // its own conta — or pre-bind a fresh conta to a seller before the OAuth
+    // callback's wrong-seller guard runs. The only legitimate writer is that
+    // callback, through the rules-bypassing Admin SDK.
+    //
+    // ⚠️ Both owned fields share ONE sorted update list, so the untouched case
+    // also seeds `user_id`: an `updateDoc` that leaves both alone must pass.
+    const writer = () => db({ d_integracao: 2 });
+    const SPID = 'AXXXXXXXXXXXXX';
+
+    it('allows a create carrying the field only as null (client parse default)', async () => {
+      await assertSucceeds(
+        setDoc(doc(writer(), 'integracao/spid-null'), {
+          nome: 'Amazon',
+          tipo: 8,
+          selling_partner_id: null,
+        }),
+      );
+    });
+
+    it('allows a create with the field absent', async () => {
+      await assertSucceeds(
+        setDoc(doc(writer(), 'integracao/spid-absent'), { nome: 'Amazon', tipo: 8 }),
+      );
+    });
+
+    it('denies a create forging a seller id', async () => {
+      await assertFails(
+        setDoc(doc(writer(), 'integracao/spid-forge'), {
+          nome: 'Amazon',
+          tipo: 8,
+          selling_partner_id: SPID,
+        }),
+      );
+    });
+
+    it('denies any update touching the field — set, change, clear, or delete', async () => {
+      // Set: a conta created unconnected (null) is bound to a seller.
+      await seed('integracao/spid-set', { nome: 'Amazon', tipo: 8, selling_partner_id: null });
+      await assertFails(
+        updateDoc(doc(writer(), 'integracao/spid-set'), { selling_partner_id: SPID }),
+      );
+      // Change / clear / delete: the hijack and the unbind of a connected conta.
+      await seed('integracao/spid-upd', { nome: 'Amazon', tipo: 8, selling_partner_id: SPID });
+      await assertFails(
+        updateDoc(doc(writer(), 'integracao/spid-upd'), { selling_partner_id: 'AYYYYYYYYYYYYY' }),
+      );
+      await assertFails(
+        updateDoc(doc(writer(), 'integracao/spid-upd'), { selling_partner_id: null }),
+      );
+      await assertFails(
+        updateDoc(doc(writer(), 'integracao/spid-upd'), { selling_partner_id: deleteField() }),
+      );
+    });
+
+    it('allows updates that leave the field untouched', async () => {
+      await seed('integracao/spid-other', {
+        nome: 'Amazon',
+        tipo: 8,
+        selling_partner_id: SPID,
+        user_id: null,
+      });
+      await assertSucceeds(updateDoc(doc(writer(), 'integracao/spid-other'), { nome: 'Amazon 2' }));
+    });
+
+    it('does not yield to the super-user claim (server-owned beats su)', async () => {
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(
+        setDoc(doc(su, 'integracao/spid-su-forge'), {
+          nome: 'Amazon',
+          tipo: 8,
+          selling_partner_id: SPID,
+        }),
+      );
+      await seed('integracao/spid-su', { nome: 'Amazon', tipo: 8, selling_partner_id: SPID });
+      await assertFails(
+        updateDoc(doc(su, 'integracao/spid-su'), { selling_partner_id: 'AYYYYYYYYYYYYY' }),
+      );
+    });
+  });
+
   describe('server-owned produtos/historicoDeModificacoes (meta.serverOwned)', () => {
     // Written EXCLUSIVELY by the onProdutoChanged trigger (Admin SDK, which
     // bypasses rules entirely). Reads follow the ordinary produto read bit;

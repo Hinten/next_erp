@@ -66,7 +66,7 @@ against a read taken *outside* the transaction; and cross-unit timestamp compari
 **Version pins.** `firebase-admin` (`14.5.0`) and `firebase-functions` (`7.4.0`) are pinned
 **exact** in the pnpm catalog *and* in all eight deploy-artifact manifests — deploy artifacts
 ship no lockfile, so a `^` range installs an untested version in production. `next` must be
-an exact literal (never `catalog:`, never a range) in the 10 `apps/*/package.json` that have
+an exact literal (never `catalog:`, never a range) in the 11 `apps/*/package.json` that have
 an `apphosting.yaml`, or the App Hosting buildpack blocks the deploy. Flag any range or
 `catalog:` creeping back into those spots.
 

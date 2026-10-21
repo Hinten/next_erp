@@ -852,7 +852,7 @@ export type MotivoAnuncioNaoMovivel =
  * reason it lives here rather than in whichever surface needed it first. Two
  * surfaces ask the identical question and must never disagree:
  *
- *  - **Client** (`apps/web`, step 21) — whether the produto's Shopee tab renders
+ *  - **Client** (`apps/web`, the produto's Shopee tab since step 21) — whether it renders
  *    "Pausar anúncio", "Reativar anúncio", or no control at all;
  *  - **Server** (`apps/shopee`) — whether `pausarAnuncio.ts` puts the id into
  *    the `unlist_item` batch or skips it before any Shopee call.

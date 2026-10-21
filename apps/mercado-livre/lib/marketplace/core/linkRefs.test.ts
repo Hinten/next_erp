@@ -1,6 +1,53 @@
 import { describe, expect, it } from 'vitest';
 
-import { naoDocId } from './linkRefs';
+import { lastSegment, naoDocId, parseItemIdFromResource, parsePmlOuterRef } from './linkRefs';
+
+describe('parsePmlOuterRef', () => {
+  it.each([
+    'documents/produtos/p1/produtoMercadoLivre/l1',
+    'produtos/p1/produtoMercadoLivre/l1',
+    '/documents//produtos/p1//produtoMercadoLivre/l1/',
+    'prefix/root/produtos/p1/produtoMercadoLivre/l1',
+    'documents/produtos/p1/produtoMercadoLivre/l1/suffix/doc',
+  ])('preserves the tolerated parent-link form %s', (ref) => {
+    expect(parsePmlOuterRef(ref)).toEqual({ produtoId: 'p1', linkId: 'l1' });
+  });
+
+  it.each([
+    '',
+    'documents/produtos/p1',
+    'documents/produtos/p1/produtoMercadoLivre',
+    'documents/produtos/p1/variacaoMercadoLivre/l1',
+    'documents/outros/p1/produtoMercadoLivre/l1',
+    // The legacy parser uses the FIRST produtos segment, without searching again.
+    'produtos/wrong/leaf/produtos/p1/produtoMercadoLivre/l1',
+  ])('rejects a path without the required parent-link segments: %s', (ref) => {
+    expect(parsePmlOuterRef(ref)).toBeNull();
+  });
+
+  it('keeps distinct produto and link ids distinct', () => {
+    const base = parsePmlOuterRef('documents/produtos/p1/produtoMercadoLivre/l1');
+    expect(parsePmlOuterRef('produtos/p2/produtoMercadoLivre/l1')).not.toEqual(base);
+    expect(parsePmlOuterRef('produtos/p1/produtoMercadoLivre/l2')).not.toEqual(base);
+  });
+});
+
+describe('notification resource parsing', () => {
+  it('keeps bare numeric and hex ids usable without treating them as document refs', () => {
+    expect(lastSegment('123')).toBe('123');
+    expect(lastSegment('/orders/123')).toBe('123');
+    expect(lastSegment('3f6da1e35ac84f70a24af7360d24c7bc')).toBe(
+      '3f6da1e35ac84f70a24af7360d24c7bc',
+    );
+    expect(lastSegment('documents')).toBe('documents');
+  });
+
+  it('requires an item id after the resource collection', () => {
+    expect(parseItemIdFromResource('/items/MLB123')).toBe('MLB123');
+    expect(parseItemIdFromResource('/items')).toBeNull();
+    expect(parseItemIdFromResource('')).toBeNull();
+  });
+});
 
 /**
  * `naoDocId` is the guard two write routes put between a request body and

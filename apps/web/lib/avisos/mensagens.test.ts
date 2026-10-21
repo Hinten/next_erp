@@ -497,38 +497,41 @@ describe('the producer planos as stored', () => {
  * copied literal.
  *
  * ⚠️ M30: the order of the advice is the safety property. A #1450 repoint of the
- * map flips the ERP fingerprint while Shopee's recipe is unchanged, and
- * `--recriar` deletes a LIVE listing — so the sentence must say "republish
- * FIRST", and its recriar must name the link (`--link {vinculo} --recriar`),
- * never a bare `--recriar`.
+ * map flips the ERP fingerprint while Shopee's recipe is unchanged, and a
+ * recriar deletes a LIVE listing — so the sentence must say "Republicar" FIRST,
+ * and its "Recriar kit" must name the link, never a bare "recrie". Since step 21
+ * (#1529, T11) both are buttons of the produto's Shopee tab: the sentence names
+ * them, never a command line.
  */
 describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.shopeeKitReceitaDivergente];
   const KIT = 'k1';
   const ITEM_ID = 2500139870;
   const VINCULO = 'l-kit-1';
+  /** CLI copy — a script name, a flag or the word — never reaches the inbox (lens 8). */
+  const TEXTO_DE_TERMINAL = /publicar:anuncio|(^|\s)--[a-z]|comando/i;
 
   const corpoEsperado = (kit: string, anuncio: string, vinculo: string, variacoes: string) =>
     `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
     `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
-    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
-    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
-    `Senão, recrie o kit (publicar:anuncio --link ${vinculo} --recriar) ou volte a composição ao que ` +
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Use "Republicar" no anúncio, ' +
+    'na aba Shopee do produto: se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    `Senão, use "Recriar kit" no anúncio do vínculo ${vinculo} ou volte a composição ao que ` +
     'está na Shopee.';
 
   /**
    * The same sentence when the aviso names NO link (the builder's `—`, or the
-   * param absent): a `--recriar` refuses to run without `--link`, so the reader
-   * prints no command with a dangling `--link —` — it sends the operator to the
-   * `--link` the republish (already the first step) prints for a divergent kit.
+   * param absent): it never prints a dangling "vínculo —" — it sends the
+   * operator to the link the republish (already the first step) names for a
+   * divergent kit.
    */
   const corpoSemVinculoEsperado = (kit: string, anuncio: string, variacoes: string) =>
     `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
     `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
-    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
-    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
-    'Senão, recrie o kit com o --link que a republicação indicar (o --recriar exige o vínculo do kit ' +
-    'antigo, e este aviso não o identificou) ou volte a composição ao que está na Shopee.';
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Use "Republicar" no anúncio, ' +
+    'na aba Shopee do produto: se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    'Senão, use "Recriar kit" no anúncio que a republicação indicar ou volte a composição ao que ' +
+    'está na Shopee.';
 
   it('renders the sentence verbatim with every param', () => {
     expect(
@@ -536,26 +539,38 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     ).toBe(corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'));
   });
 
+  it('T11 — names the tab’s buttons, never a command line, with or without a link', () => {
+    const casos: Record<string, string>[] = [
+      { kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' },
+      { kit: KIT, anuncio: '1', vinculo: '—', variacoes: 'c1' },
+      {},
+    ];
+    for (const params of casos) {
+      const corpo = mensagem.corpo(params);
+      expect(corpo).toContain('na aba Shopee do produto');
+      expect(corpo).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
   it('M30 — tells the operator to republish FIRST, before any recriar', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
-    expect(corpo).toContain('Republique o kit primeiro');
+    expect(corpo).toContain('Use "Republicar" no anúncio');
     expect(corpo).toContain('este aviso se resolve sozinho');
-    expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(corpo.indexOf('recrie o kit'));
+    expect(corpo.indexOf('Republicar')).toBeGreaterThan(-1);
+    expect(corpo.indexOf('Republicar')).toBeLessThan(corpo.indexOf('Recriar kit'));
   });
 
-  it('M30 — the recriar names its link: `--link {vinculo} --recriar`, never a bare `--recriar`', () => {
+  it('M30 — the recriar names its link, and there is exactly one recriar', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
-    expect(corpo).toContain(`publicar:anuncio --link ${VINCULO} --recriar`);
-    // Every `--recriar` in the sentence is the one the link precedes.
-    const ocorrencias = [...corpo.matchAll(/--recriar/g)];
-    expect(ocorrencias).toHaveLength(1);
-    expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
+    expect(corpo).toContain('no anúncio do vínculo ' + VINCULO);
+    expect([...corpo.matchAll(/Recriar kit/g)]).toHaveLength(1);
   });
 
-  it('renders `{}` with the placeholder in every slot, never "undefined" — and no link-less command', () => {
+  it('renders `{}` with the placeholder in every slot, never "undefined" — and no dangling link', () => {
     const corpo = mensagem.corpo({});
     expect(corpo).toBe(corpoSemVinculoEsperado('—', '—', '—'));
     expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('vínculo —');
   });
 
   it('renders what the ONE builder writes, each param in its slot (writer → reader)', () => {
@@ -568,13 +583,15 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     });
     const aviso = comoArmazenado(plano);
     expect(aviso.tipo).toBe(TIPO_AVISO.shopeeKitReceitaDivergente);
+    // ⚠️ Still the Kit field (residual 23): the aviso opens the produto one tab
+    // from the Shopee tab its copy names — a persisted producer field.
     expect(aviso.urlInterna).toEqual({ rota: `/produtos/${KIT}`, campo: 'componentesKit' });
     expect(mensagem.corpo(aviso.params)).toBe(
       corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'),
     );
   });
 
-  it('renders the builder’s `—` for an unknown item and link without a dangling flag value', () => {
+  it('renders the builder’s `—` for an unknown item and link without a dangling reference', () => {
     const plano = avisoReceitaKitShopee({
       integracaoId: 'int-1',
       kitProdutoId: KIT,
@@ -586,9 +603,10 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     expect(corpo).toBe(corpoSemVinculoEsperado(KIT, '—', 'c1'));
     expect(corpo).not.toContain('undefined');
     expect(corpo).not.toContain('null');
+    expect(corpo).not.toContain('vínculo —');
   });
 
-  it('M30 — a link the aviso does not know prints NO `--link —` command: `--recriar` requires `--link`', () => {
+  it('M30 — a link the aviso does not know prints NO "vínculo —": it points to the link the republish names', () => {
     // The builder's `—`, an absent param and an empty one all mean "no link".
     const semVinculo: Record<string, string>[] = [
       { kit: KIT, anuncio: '1', vinculo: '—', variacoes: 'c1' },
@@ -598,24 +616,20 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     for (const params of semVinculo) {
       const corpo = mensagem.corpo(params);
       expect(corpo).toBe(corpoSemVinculoEsperado(KIT, '1', 'c1'));
-      expect(corpo).not.toMatch(/--link\s+—/);
-      expect(corpo).not.toMatch(/publicar:anuncio --link/);
-      expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
-      expect([...corpo.matchAll(/--recriar/g)]).toHaveLength(1);
-      // Still republish FIRST — the republish is what prints the `--link`.
-      expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(
-        corpo.indexOf('recrie o kit'),
-      );
+      expect(corpo).not.toMatch(/vínculo\s+—/);
+      expect([...corpo.matchAll(/Recriar kit/g)]).toHaveLength(1);
+      // Still republish FIRST — the republish is what names the link.
+      expect(corpo.indexOf('Republicar')).toBeLessThan(corpo.indexOf('Recriar kit'));
     }
   });
 
-  it('NEAR-MISS: a KNOWN link keeps the runnable command, byte-for-byte', () => {
+  it('NEAR-MISS: a KNOWN link keeps naming it, byte-for-byte', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
     expect(corpo).toBe(corpoEsperado(KIT, '1', VINCULO, 'c1'));
     expect(corpo).not.toBe(corpoSemVinculoEsperado(KIT, '1', 'c1'));
   });
 
-  it('is titled like its label and carries no runbook — the publish route/CLI is the fix', () => {
+  it('is titled like its label and carries no runbook — the produto’s Shopee tab is the fix', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.shopeeKitReceitaDivergente);
     expect(mensagem.runbook).toBeUndefined();
   });
@@ -940,6 +954,162 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
   });
 });
 
+/**
+ * The four Amazon tipos (step 2), rendered with the params their producers
+ * write (`apps/amazon/lib/amazon/avisos/avisos.ts`, step 2 PR b):
+ *
+ * - reconexão `{ loja, status }` — `status` a NUMBER, the LWA code in `motivo`;
+ * - reautorização `{ loja, dias, expiraEm }` — `dias` a NUMBER of São Paulo
+ *   civil days, `expiraEm` a `YYYY-MM-DD` civil date;
+ * - app-secret expiry `{ dias, expiraEm }`, BOTH absent when the date is
+ *   unrecorded;
+ * - app-secret refusal `{}`, the LWA code in `motivo`.
+ */
+const REAUTORIZE_AMAZON =
+  'Reautorize pelo painel de conexão da conta, no ERP — o botão de reautorizar do Seller ' +
+  'Central não é suportado.';
+
+describe('MENSAGENS_POR_TIPO.amazonReconexaoPendente', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonReconexaoPendente];
+  const PARADA = 'A integração desta conta fica parada até ela ser reautorizada.';
+
+  it('renders the conta and the HTTP status in their slots', () => {
+    for (const status of [400, 401, 403]) {
+      expect(mensagem.corpo({ loja: 'Conta A', status }), String(status)).toBe(
+        `A Amazon recusou a autorização da conta Conta A (HTTP ${String(status)}). ${PARADA} ` +
+          REAUTORIZE_AMAZON,
+      );
+    }
+  });
+
+  it('renders `{}` with the placeholder and no status clause, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(`A Amazon recusou a autorização da conta —. ${PARADA} ${REAUTORIZE_AMAZON}`);
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('HTTP');
+  });
+
+  it('treats an empty status like a missing one: no "(HTTP —)" clause', () => {
+    expect(mensagem.corpo({ loja: 'Conta A', status: '' })).toBe(
+      `A Amazon recusou a autorização da conta Conta A. ${PARADA} ${REAUTORIZE_AMAZON}`,
+    );
+  });
+
+  it('points at the ERP, never at Seller Central’s own reauthorize button', () => {
+    const corpo = mensagem.corpo({ loja: 'Conta A', status: 400 });
+    expect(corpo).toContain('no ERP');
+    expect(corpo).toContain('Seller Central não é suportado');
+  });
+
+  it('renders the producer plano as stored', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonReconexaoPendente,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: 'Conta A', status: 400 },
+      motivo: 'invalid_grant',
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(aviso.canal).toBe(CANAL_AVISO.amazon);
+    expect(aviso.urlInterna?.rota).toBe('/canais/amazon/int-1');
+    expect(mensagem.corpo(aviso.params)).toBe(
+      `A Amazon recusou a autorização da conta Conta A (HTTP 400). ${PARADA} ${REAUTORIZE_AMAZON}`,
+    );
+  });
+
+  it('is titled like its label and carries no runbook — the connect panel is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonReconexaoPendente);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.amazonReautorizacaoExpirando', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonReautorizacaoExpirando];
+  const LOJA = 'Conta A';
+
+  it('renders the conta, the days and the date (DD/MM/AAAA) in their slots', () => {
+    expect(mensagem.corpo({ loja: LOJA, dias: 30, expiraEm: '2027-10-15' })).toBe(
+      `A autorização da Amazon da conta ${LOJA} vence em 30 dia(s) (15/10/2027). ` +
+        REAUTORIZE_AMAZON,
+    );
+  });
+
+  it('says "vence hoje" at zero days, and keeps one day apart from it', () => {
+    expect(mensagem.corpo({ loja: LOJA, dias: 0, expiraEm: '2027-10-15' })).toBe(
+      `A autorização da Amazon da conta ${LOJA} vence hoje (15/10/2027). ${REAUTORIZE_AMAZON}`,
+    );
+    expect(mensagem.corpo({ loja: LOJA, dias: 1, expiraEm: '2027-10-15' })).toBe(
+      `A autorização da Amazon da conta ${LOJA} vence em 1 dia(s) (15/10/2027). ` +
+        REAUTORIZE_AMAZON,
+    );
+  });
+
+  it('says the 365 days have passed at negative days — never "vence em -1 dia(s)"', () => {
+    for (const dias of [-1, -30]) {
+      const corpo = mensagem.corpo({ loja: LOJA, dias, expiraEm: '2027-10-15' });
+      expect(corpo, String(dias)).toBe(
+        `O prazo de 365 dias da autorização da Amazon da conta ${LOJA} já passou (15/10/2027), ` +
+          `e a Amazon pode recusá-la a qualquer momento. ${REAUTORIZE_AMAZON}`,
+      );
+      expect(corpo, String(dias)).not.toContain(String(dias));
+    }
+  });
+
+  it('formats the date by splitting the string — no time-zone shift to the day before', () => {
+    // `new Date('2027-01-01')` is UTC midnight: rendered in São Paulo it would
+    // read 31/12/2026. The split cannot move a day.
+    expect(mensagem.corpo({ loja: LOJA, dias: 5, expiraEm: '2027-01-01' })).toContain(
+      '(01/01/2027)',
+    );
+  });
+
+  it('omits a missing or malformed date rather than printing it raw', () => {
+    for (const expiraEm of [undefined, '2027-10-1', '15/10/2027', 20271015, '']) {
+      const corpo = mensagem.corpo({
+        loja: LOJA,
+        dias: 12,
+        ...(expiraEm === undefined ? {} : { expiraEm }),
+      });
+      expect(corpo, String(expiraEm)).toBe(
+        `A autorização da Amazon da conta ${LOJA} vence em 12 dia(s). ${REAUTORIZE_AMAZON}`,
+      );
+    }
+  });
+
+  it('renders `{}` with the placeholders, never "undefined" or "NaN"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(
+      `A autorização da Amazon da conta — vence em — dia(s). ${REAUTORIZE_AMAZON}`,
+    );
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('NaN');
+  });
+
+  it('renders the producer plano as stored, with the date on the `prazo` field', () => {
+    const prazoUs = AGORA_US + 29 * 86_400_000_000;
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonReautorizacaoExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: LOJA, dias: 29, expiraEm: '2025-11-07' },
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      prazo: prazoUs,
+    });
+    expect(aviso.prazo).toBe(prazoUs);
+    expect(aviso.relogioEvento).toBeNull();
+    expect(mensagem.corpo(aviso.params)).toBe(
+      `A autorização da Amazon da conta ${LOJA} vence em 29 dia(s) (07/11/2025). ` +
+        REAUTORIZE_AMAZON,
+    );
+  });
+
+  it('is titled like its label and carries no runbook — the connect panel is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonReautorizacaoExpirando);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
 describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoHub', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoHub];
 
@@ -1095,15 +1265,20 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaReversaoComEtiqueta', () => {
 describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco];
 
-  it('says the PAID order did not reach the ERP, why (NO CEP at all — never an invalid one, which imports), that retrying stopped, and that it closes only once the pedido has its delivery endereço', () => {
+  it('says the PAID order could not be imported WITH its delivery endereço, why (no usable CEP — never an "invalid" one), that it was retried before the aviso opened, and the three ways it closes: the endereço, a pickup, or no longer paid (owner decision, 2026-10-20)', () => {
     const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165' });
     expect(corpo).toBe(
-      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem CEP no ' +
-        'endereço de entrega e por isso não entrou no ERP — nem o pedido, nem a atualização ' +
-        'dele: sem endereço não há como comprar a etiqueta. A importação tentou de novo por ' +
-        'algumas horas e parou. O aviso se encerra quando o pedido estiver no ERP com o ' +
-        'endereço de entrega.',
+      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem um CEP de ' +
+        'entrega utilizável e por isso não pôde ser importado com o endereço de entrega: sem ' +
+        'endereço não há como comprar a etiqueta. A importação tentou de novo por algumas ' +
+        'horas antes de abrir este aviso. O aviso se encerra quando o pedido tiver o endereço ' +
+        'de entrega, virar retirada na loja ou deixar de estar pago.',
     );
+    // True before AND after a later import with an invalid CEP, which lands the pedido
+    // with no endereço and leaves the aviso open: the body never says the pedido is missing
+    // from the ERP, nor that the importer stopped for good.
+    expect(corpo).not.toContain('não entrou no ERP');
+    expect(corpo).not.toContain('e parou');
     // Owner decision, 2026-10-20: an import alone no longer closes it (an invalid CEP keeps it open).
     expect(corpo).not.toContain('quando o pedido for importado');
     // Owner decision, 2026-10-20: an invalid CEP is not refused, so the wording never blames one.
@@ -1130,16 +1305,16 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
     expect(mensagem.corpo(aviso.params)).toContain('O pedido 165 da loja Conta A está pago');
   });
 
-  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, the aviso stays OPEN until the pedido has its delivery endereço (owner decision, 2026-10-20), and while it stays open: check the CEP has 8 digits, then a developer', () => {
+  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, the aviso stays OPEN until the pedido has its delivery endereço or is no longer paid (owner decision, 2026-10-20), and while it stays open: check the CEP has 8 digits, then a developer', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco);
     expect(mensagem.runbook).toBe(
       'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
         'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
         'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
         'e depois altere o pedido no painel. O aviso fica aberto até o pedido ter o endereço de ' +
-        'entrega (o de retirada na loja não precisa dele). Se o aviso continuar aberto depois da ' +
-        'alteração, confira no painel se o CEP tem 8 dígitos; se tiver, peça a um desenvolvedor ' +
-        'que confira a notificação estacionada desse pedido.',
+        'entrega (o de retirada na loja não precisa dele) ou deixar de estar pago. Se o aviso ' +
+        'continuar aberto depois da alteração, confira no painel se o CEP tem 8 dígitos; se ' +
+        'tiver, peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
     );
     // An unreadable CEP no longer closes the aviso, so the runbook no longer says it does.
     expect(mensagem.runbook).not.toContain('não consegue ler');
@@ -1147,5 +1322,142 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
     expect(mensagem.runbook).toContain(
       'O aviso fica aberto até o pedido ter o endereço de entrega',
     );
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.amazonSegredoLwaExpirando', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonSegredoLwaExpirando];
+  const PARA = 'Sem a troca, a integração de todas as contas Amazon para.';
+  const SEM_DATA =
+    'A data de vencimento do segredo do aplicativo da Amazon (client secret do LWA) não está ' +
+    'registrada, ou o valor registrado não é uma data válida no formato AAAA-MM-DD, então o ' +
+    'ERP não consegue avisar antes de ele vencer. Quando ele vence, a integração de todas as ' +
+    'contas Amazon para.';
+
+  it('renders the days and the date (DD/MM/AAAA) in their slots', () => {
+    expect(mensagem.corpo({ dias: 30, expiraEm: '2027-04-13' })).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence em 30 dia(s) (13/04/2027). ${PARA}`,
+    );
+  });
+
+  it('says "vence hoje" at zero days', () => {
+    expect(mensagem.corpo({ dias: 0, expiraEm: '2027-04-13' })).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence hoje (13/04/2027). ${PARA}`,
+    );
+  });
+
+  it('says the recorded date has passed at negative days — and names both explanations', () => {
+    for (const dias of [-1, -10]) {
+      const corpo = mensagem.corpo({ dias, expiraEm: '2027-04-13' });
+      expect(corpo, String(dias)).toBe(
+        'A data registrada para o vencimento do segredo do aplicativo da Amazon já passou ' +
+          '(13/04/2027). Se o segredo não foi trocado, a Amazon passa a recusá-lo e a integração ' +
+          'de todas as contas Amazon para; se foi, falta registrar a nova data.',
+      );
+      expect(corpo, String(dias)).not.toContain(String(dias));
+    }
+  });
+
+  it('has its OWN sentence when the date is unrecorded or invalid — `{}` is both cases', () => {
+    // The producer raises the aviso with NEITHER param when
+    // `AMAZON_LWA_SEGREDO_EXPIRA_EM` is unset or invalid: the sentence must say
+    // the deadline is unknown, never print "vence em — dia(s)" — and, since the
+    // two causes look the same here, it must name BOTH, so an operator whose
+    // value is merely mis-typed is not told that nothing is recorded.
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(SEM_DATA);
+    expect(corpo).toContain('não está registrada');
+    expect(corpo).toContain('não é uma data válida no formato AAAA-MM-DD');
+    expect(corpo).not.toContain('—');
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('NaN');
+  });
+
+  it('near-miss: only ONE param absent is not "unrecorded" — the known-date sentence keeps the other', () => {
+    expect(mensagem.corpo({ dias: 12 })).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence em 12 dia(s). ${PARA}`,
+    );
+    expect(mensagem.corpo({ expiraEm: '2027-04-13' })).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence em — dia(s) (13/04/2027). ${PARA}`,
+    );
+  });
+
+  it('renders both producer planos as stored: the dated one and the unrecorded one', () => {
+    const comData = comoArmazenado({
+      tipo: TIPO_AVISO.amazonSegredoLwaExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      params: { dias: 20, expiraEm: '2025-10-29' },
+      urlInterna: { rota: ROTAS_AVISO.canalAmazonLista.build(), campo: null },
+      prazo: AGORA_US + 20 * 86_400_000_000,
+    });
+    expect(comData.urlInterna?.rota).toBe('/canais/amazon');
+    expect(mensagem.corpo(comData.params)).toBe(
+      `O segredo do aplicativo da Amazon (client secret do LWA) vence em 20 dia(s) (29/10/2025). ${PARA}`,
+    );
+    const semData = comoArmazenado({
+      tipo: TIPO_AVISO.amazonSegredoLwaExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.amazon,
+      urlInterna: { rota: ROTAS_AVISO.canalAmazonLista.build(), campo: null },
+    });
+    expect(semData.prazo).toBeNull();
+    expect(mensagem.corpo(semData.params)).toBe(SEM_DATA);
+  });
+
+  it('is titled like its label, with a runbook: the fix is a deploy, not an in-app action', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonSegredoLwaExpirando);
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_SECRET');
+    expect(mensagem.runbook).toContain('AMAZON_LWA_SEGREDO_EXPIRA_EM');
+    expect(mensagem.runbook).toContain('MESMA implantação');
+  });
+
+  it('runbook: recording the CURRENT secret’s date comes before — and without — rotating', () => {
+    // The no-date body covers an unset AND a mis-typed value; rotating is the
+    // riskiest step on this channel, so the runbook must first offer the fix
+    // that needs no new secret.
+    const runbook = mensagem.runbook ?? '';
+    const registrar = runbook.indexOf('segredo ATUAL');
+    const gerar = runbook.indexOf('gere um novo client secret');
+    expect(registrar).toBeGreaterThan(-1);
+    expect(runbook).toContain('sem gerar outro segredo');
+    expect(gerar).toBeGreaterThan(registrar);
+  });
+});
+
+describe('MENSAGENS_POR_TIPO.amazonSegredoLwaRecusado', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonSegredoLwaRecusado];
+  const CORPO =
+    'A Amazon recusou as credenciais do aplicativo (client secret do LWA). Nenhuma conta Amazon ' +
+    'consegue renovar o acesso até isso ser corrigido — as contas não precisam ser reconectadas.';
+
+  it('renders one fixed sentence — the tipo has no params', () => {
+    expect(mensagem.corpo({})).toBe(CORPO);
+    expect(mensagem.corpo({ loja: 'ignorado', status: 401 })).toBe(CORPO);
+  });
+
+  it('renders the producer plano as stored', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonSegredoLwaRecusado,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      motivo: 'invalid_client',
+      urlInterna: { rota: ROTAS_AVISO.canalAmazonLista.build(), campo: null },
+    });
+    expect(aviso.params).toEqual({});
+    expect(aviso.relogioEvento).toBeNull();
+    expect(mensagem.corpo(aviso.params)).toBe(CORPO);
+  });
+
+  it('is titled like its label, with a runbook naming the two variables to check', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonSegredoLwaRecusado);
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_ID');
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_SECRET');
+  });
+
+  it('runbook: says where each half lives — only the secret is in Secret Manager', () => {
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_ID (variável de ambiente do backend)');
+    expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_SECRET (Secret Manager)');
+    expect(mensagem.runbook).not.toContain('AMAZON_LWA_CLIENT_ID e AMAZON_LWA_CLIENT_SECRET');
   });
 });

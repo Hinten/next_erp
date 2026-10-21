@@ -68,6 +68,55 @@ describe('each member’s payload is checked, not just its tag', () => {
     ).toBe(false);
   });
 
+  it('`importar` may name WHICH hits a link already holds — and an older server may omit it', () => {
+    const tipo = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar;
+    const comDono = {
+      tipo,
+      itemIds: [1000001, 1000002],
+      vinculados: [{ itemId: 1000002, produtoId: 'prod-2' }],
+    };
+    expect(acaoSugeridaPublicacaoShopeeSchema.parse(comDono)).toStrictEqual(comDono);
+    for (const vinculados of [undefined, null, []]) {
+      expect(
+        acaoSugeridaPublicacaoShopeeSchema.safeParse({ tipo, itemIds: [1000001], vinculados })
+          .success,
+        String(vinculados),
+      ).toBe(true);
+    }
+    // NEAR-MISS: an owner with no produto, or a hit that is no listing id, is refused.
+    for (const v of [
+      { itemId: 1000002, produtoId: '' },
+      { itemId: 0, produtoId: 'prod-2' },
+      { itemId: 1000002 },
+    ]) {
+      expect(
+        acaoSugeridaPublicacaoShopeeSchema.safeParse({ tipo, itemIds: [1000002], vinculados: [v] })
+          .success,
+        JSON.stringify(v),
+      ).toBe(false);
+    }
+  });
+
+  it('`republicar` may name the SUPERSEDED link the row is about — and an older server may omit it', () => {
+    const tipo = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.republicar;
+    const comAssunto = { tipo, linkDocId: 'link-2', substituidoLinkDocId: 'link-1' };
+    expect(acaoSugeridaPublicacaoShopeeSchema.parse(comAssunto)).toStrictEqual(comAssunto);
+    for (const substituidoLinkDocId of [undefined, null]) {
+      expect(
+        acaoSugeridaPublicacaoShopeeSchema.safeParse({
+          tipo,
+          linkDocId: 'link-2',
+          substituidoLinkDocId,
+        }).success,
+      ).toBe(true);
+    }
+    // NEAR-MISS: an empty subject names no link.
+    expect(
+      acaoSugeridaPublicacaoShopeeSchema.safeParse({ ...comAssunto, substituidoLinkDocId: '' })
+        .success,
+    ).toBe(false);
+  });
+
   it('⭐ `escolher-vinculo` needs TWO links — one is not a choice; two is', () => {
     const tipo = TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.escolherVinculo;
     expect(

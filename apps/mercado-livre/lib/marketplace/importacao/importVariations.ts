@@ -39,7 +39,7 @@
 import { createHash } from 'node:crypto';
 import type { Firestore } from 'firebase-admin/firestore';
 import { type MappedMlVariation, idLocalMercadoLivre } from '@delfrance/integrations-mercado-livre';
-import { type MlModeracao, sameCombo } from '@delfrance/schemas';
+import { type MlModeracao, idFromRefOrNull, sameCombo } from '@delfrance/schemas';
 import {
   estoqueCollection,
   produtoCollection,
@@ -56,7 +56,6 @@ import {
 } from './importCore';
 import type { TaxonomiaResolution } from './taxonomiaCore';
 import { isAlreadyExists } from '@delfrance/data/admin';
-import { lastSegment } from '../core/linkRefs';
 
 /** The `parent` block `assembleVariationChildPlan` expects — kept in sync via indexed access. */
 type VariationParentInfo = VariationChildAssembleArgs['parent'];
@@ -128,7 +127,7 @@ export async function importVariationChildren(
   up?: ImportVariationChildrenUpOptions,
 ): Promise<ImportVariationChildrenResult> {
   const { db, integracaoId, options, depositoOuterRef, now } = deps;
-  const depositoId = depositoOuterRef ? lastSegment(depositoOuterRef) : null;
+  const depositoId = idFromRefOrNull(depositoOuterRef);
   let created = 0;
   const medidas: FilhoMedidas[] = [];
 
@@ -614,7 +613,7 @@ async function readEstoque(
     };
     if (
       typeof data.depositoOuterRef === 'string' &&
-      lastSegment(data.depositoOuterRef) === depositoId
+      idFromRefOrNull(data.depositoOuterRef) === depositoId
     ) {
       return {
         docId: d.id,
