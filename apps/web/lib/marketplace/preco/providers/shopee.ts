@@ -29,9 +29,6 @@ import type {
  * rung and the client never sends it. Refusing to price a live listing because
  * the ERP hides the produto is the direction #1072 / #1087 removed; the dialog's
  * checkbox says it governs Mercado Livre only. `baixarPreco` is forwarded.
- *
- * ⚠️ Registered, but unreachable until Shopee's caps row flips `implementado`
- * (#1530) — see `../../caps/registriesAlinhadas.test.ts`.
  */
 export const shopeePriceProvider: PricePushProvider = {
   tipos: [INTEGRACAO_TIPO.shopee],

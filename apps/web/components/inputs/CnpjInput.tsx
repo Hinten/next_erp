@@ -7,8 +7,11 @@ import type { FieldRenderProps } from '@delfrance/ui';
 import { cleanDocumento } from '@/components/inputs/CpfCnpjInput';
 
 /**
- * `renderInput` for the Filial `cnpj` field. A Filial is always a legal entity,
- * so the input is CNPJ-only — 14 **characters**, not 14 digits.
+ * `renderInput` for a CNPJ-only field — 14 **characters**, not 14 digits. Two
+ * consumers: the Filial `cnpj` (a Filial is always a legal entity) and the
+ * `integracao.cpf_cnpj` of a marketplace conta, the `<infIntermed>` CNPJ of the
+ * intermediador (`integracaoFieldsIntermediador`). It lives here, not under a
+ * route folder, because the second consumer sits in another route tree.
  *
  * ⚠️ It used to `replace(/\D/g, '')`, which silently ate the letters of an
  * alphanumeric CNPJ (RFB IN 2.229/2024) keystroke by keystroke: typing

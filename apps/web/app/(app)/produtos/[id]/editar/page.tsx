@@ -19,6 +19,7 @@ import {
   camposDeKitDoPatch,
   deriveFotosArquivosIds,
   ehKitVirtualEfetivo,
+  idFromRefOrNull,
   normalizeVariacoesUid,
   parseFakePath,
   produtoPageIssues,
@@ -46,6 +47,7 @@ import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
 import { EditarProdutoHeader, isProdutoPending } from '../../_components/EditarProdutoHeader';
 import { MercadoLivreTab } from '../../_components/mercado-livre/MercadoLivreTab';
+import { ShopeeTab } from '../../_components/shopee/ShopeeTab';
 import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
@@ -70,6 +72,7 @@ import {
   SECTION_KIT,
   SECTION_MERCADO_LIVRE,
   SECTION_MODIFICACOES,
+  SECTION_SHOPEE,
   SECTION_VARIACOES,
   produtoFieldOverrides,
   produtoObjectViewSchema,
@@ -80,9 +83,9 @@ const REFERENCED_BY_DISPLAY = 5;
 
 /**
  * Edit-only page schema: the shared produto page model (which already carries
- * the `mercadoLivre` tab anchor) plus one more UI-anchor key, `modificacoes`,
- * whose only job is giving its tab a field descriptor — the tab is
- * self-contained; nothing is read from or written to the form value. Edit-only
+ * the `mercadoLivre` and `shopee` tab anchors) plus one more UI-anchor key,
+ * `modificacoes`, whose only job is giving its tab a field descriptor — the tab
+ * is self-contained; nothing is read from or written to the form value. Edit-only
  * because a modification history needs a SAVED produto, and there is nothing
  * useful to show for one that does not exist yet.
  */
@@ -443,6 +446,16 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      shopee: {
+        label: 'Shopee',
+        section: SECTION_SHOPEE,
+        // Self-contained, READ-ONLY tab (#1529): the live state of every Shopee
+        // listing of this produto, from its link docs. No `flushRef` and no
+        // `onDirtyChange` — it holds no drafts, so it is not in
+        // `PRODUTO_PERSISTENT_SECTIONS` and `extraDirty` ignores it. Behind
+        // `ShopeeTab`, which defers the editor chunk until the tab is opened.
+        renderInput: (p) => <ShopeeTab produtoId={params.id} db={db} disabled={p.disabled} />,
+      },
       mercadoLivre: {
         label: 'Mercado Livre',
         section: SECTION_MERCADO_LIVRE,
@@ -581,9 +594,9 @@ export default function EditarProdutoPage() {
         const uids = (values.variacoesUid as string[] | null) ?? [];
         const implied = [
           ...new Set([
-            ...((values.grupoDeVariacoesUid as string[] | null) ?? []).map(
-              (u) => u.split('/').pop()!,
-            ),
+            ...((values.grupoDeVariacoesUid as string[] | null) ?? [])
+              .map(idFromRefOrNull)
+              .filter((id): id is string => id !== null),
             ...uids
               .map((u) => parseFakePath(u)?.grupoId)
               .filter((g): g is string => g !== undefined),

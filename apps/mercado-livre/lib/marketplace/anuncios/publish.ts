@@ -44,6 +44,7 @@ import {
   mlSizeChartsForConta,
   parseFakePath,
   precisaConsultarModeracao,
+  refMatchesIntegracao,
   toOuterRef,
 } from '@delfrance/schemas';
 import {
@@ -1206,16 +1207,6 @@ function motivoDaResolucao(
         nome,
       };
   }
-}
-
-/**
- * The old app always STORES `documents/integracao/<id>` (`pathWithDocuments`,
- * `OuterRefField.toJson`) — that's also what this module writes. The bare
- * `integracao/<id>` form is tolerated on READ only, defensively.
- */
-function refMatchesIntegracao(ref: string | undefined, integracaoId: string): boolean {
-  if (!ref) return false;
-  return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
 }
 
 /**

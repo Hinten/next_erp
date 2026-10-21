@@ -180,11 +180,12 @@ does not exist yet: the same unreached surface, one round later.
   throw-only scaffold: this package describes **Shopee's wire protocol**, while
   the scaffold described *our* orchestration and implemented three of four
   members as `throw`. What Shopee supports is still declared in
-  `MARKETPLACE_TIPO_CAPS`, and its `implementado` stays `false` until the channel
-  ships. The guard above changed with it: it still asserts the ABSENCE of the
-  other three scaffolds (`magalu`, `amazon-sp-api`, `facebook`), and for
-  `shopee` and `loja-integrada` it now asserts the SHAPE — every file under
-  their `src/` declares no `MarketplaceChannel`, re-exports none, and
+  `MARKETPLACE_TIPO_CAPS`; its `implementado` flipped to `true` at master-plan step
+  22 (#1530), once `apps/shopee` served every row action `apps/web` dispatches.
+  The guard above changed with it: it still asserts the ABSENCE of the
+  other two scaffolds (`magalu`, `facebook`), and for `shopee`,
+  `loja-integrada` and `amazon-sp-api` it now asserts the SHAPE — every file
+  under their `src/` declares no `MarketplaceChannel`, re-exports none, and
   registers no marketplace plugin. Shrinking the absence list alone would have
   reopened exactly the hole the guard exists for.
 - **`packages/integrations/loja-integrada` exists again, in the same shape.**
@@ -194,6 +195,14 @@ does not exist yet: the same unreached surface, one round later.
   `shopee`, it declares no `MarketplaceChannel`, registers no plugin and touches
   no Firestore; what the channel supports stays in `MARKETPLACE_TIPO_CAPS`, and its
   `implementado` stays `false` until the channel ships.
+- **`packages/integrations/amazon-sp-api` exists again, in the same shape.**
+  Step 1 of the Amazon master plan re-created it as a fetch-only library: the
+  two Login with Amazon token exchanges (refresh token and authorization code),
+  a GET-only Selling Partner API client for the North America host, and the
+  typed error taxonomy. Like `shopee` and `loja-integrada`, it declares no
+  `MarketplaceChannel`, registers no plugin and touches no Firestore; what the
+  channel supports stays in `MARKETPLACE_TIPO_CAPS`, and its `implementado` stays
+  `false` until the channel ships.
 
 ## Status
 

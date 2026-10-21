@@ -276,9 +276,17 @@ describe('iniciarImportacaoShopee', () => {
     const db = new FakeDb();
     semearJob(db);
 
-    await expect(
-      iniciarImportacaoShopee(asDb(db), { integracaoId: INT_A, options: opcoes(), now: AGORA_MS }),
-    ).rejects.toBeInstanceOf(ShopeeImportacaoEmAndamentoError);
+    const inicio = iniciarImportacaoShopee(asDb(db), {
+      integracaoId: INT_A,
+      options: opcoes(),
+      now: AGORA_MS,
+    });
+
+    await expect(inicio).rejects.toBeInstanceOf(ShopeeImportacaoEmAndamentoError);
+    // O id do job QUE ESTÁ rodando — o 409 o entrega à web para ela se anexar
+    // (acompanhar e cancelar) — e nenhum job novo nasceu.
+    await expect(inicio).rejects.toMatchObject({ jobId: JOB });
+    expect(db.idsEm(COL)).toEqual([JOB]);
   });
 
   it('3 — ⛔ não recusa um job running de OUTRA conta', async () => {

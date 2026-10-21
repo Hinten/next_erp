@@ -270,9 +270,17 @@ const MSG_KIT_SEM_DETALHE = 'get_kit_item_info respondeu sem product_info para e
  * job. ONE run per conta at a time, with no staleness bound — which is exactly
  * why `cancelarImportacaoShopee` exists (a job whose task never dispatched would
  * otherwise 409 the button for ever).
+ *
+ * The 409 carries the running job's `jobId` so the web can attach to it — poll
+ * and cancel — instead of answering a busy conta with a dead button. REQUIRED:
+ * the compiler finds every throw, and the id costs no read (it is the guard
+ * query's own hit).
  */
 export class ShopeeImportacaoEmAndamentoError extends ShopeeError {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly jobId: string,
+  ) {
     super(message);
     this.name = 'ShopeeImportacaoEmAndamentoError';
   }
@@ -420,11 +428,14 @@ export async function iniciarImportacaoShopee(
     .where('status', '==', IMPORTACAO_SHOPEE_STATUS.running)
     .limit(1)
     .get();
-  // `docs.length`, not `.empty`: the same fact, and it is the one both the Admin
-  // SDK's QuerySnapshot and every in-memory double in this app expose.
-  if (emAndamento.docs.length > 0) {
+  // `docs[0]`, not `.empty`: the same fact, and `docs` is what both the Admin
+  // SDK's QuerySnapshot and every in-memory double in this app expose. The hit
+  // is also the running job whose id the 409 hands the web — zero extra reads.
+  const emCurso = emAndamento.docs[0];
+  if (emCurso !== undefined) {
     throw new ShopeeImportacaoEmAndamentoError(
       `já existe uma importação em massa em andamento para a integração ${args.integracaoId}`,
+      emCurso.id,
     );
   }
 

@@ -221,3 +221,59 @@ describe('firebaseConfigValue', () => {
     expect(() => firebaseConfigValue('projectId')).toThrow(TypeError);
   });
 });
+
+/**
+ * The database the Firestore handle opens. Enterprise names it `default`, not
+ * the `(default)` sentinel a bare `getFirestore(app)` resolves, and a handle on
+ * the wrong name fails `5 NOT_FOUND` on EVERY operation. A deployed backend runs
+ * the `?? 'default'` FALLBACK: `apphosting.yaml` names `FIREBASE_DATABASE_ID`
+ * only in a comment, so the variable is unset there.
+ *
+ * ⚠️ Offline on purpose. The emulator suite's E0 (`tokenStore.firestore.test.ts`)
+ * goes through the same accessor but can never reach the fallback — the CI job
+ * env and `vitest.tasks.setup.ts` (3) both supply the variable — so this is the
+ * only test that reds a `(default)` fallback.
+ *
+ * ⚠️ `vi.doMock`, never a hoisted `vi.mock`: only this block's FRESH import of
+ * `./admin` sees the fake app registry. The suites above keep the real one,
+ * whose `getAdminApp` throwing is what pins `tryGetAdminBucket`'s "never
+ * touches the admin app" — a module-wide fake would answer it instead.
+ */
+describe('getAdminFirestore', () => {
+  const h = { getFirestore: vi.fn(), app: { name: 'fake-app' } };
+
+  beforeEach(() => {
+    vi.resetModules();
+    h.getFirestore.mockReset();
+    vi.doMock('firebase-admin/firestore', () => ({ getFirestore: h.getFirestore }));
+    vi.doMock('firebase-admin/app', () => ({
+      cert: vi.fn(),
+      getApps: () => [h.app],
+      initializeApp: vi.fn(() => h.app),
+    }));
+  });
+
+  afterEach(() => {
+    vi.doUnmock('firebase-admin/firestore');
+    vi.doUnmock('firebase-admin/app');
+    vi.unstubAllEnvs();
+  });
+
+  it("opens the database 'default' when FIREBASE_DATABASE_ID is unset", async () => {
+    // Truly absent (not an empty string, which `??` would keep), the way a
+    // deployed backend has it.
+    vi.stubEnv('FIREBASE_DATABASE_ID', undefined);
+    const { getAdminFirestore } = await import('./admin');
+    getAdminFirestore();
+    expect(h.getFirestore).toHaveBeenCalledTimes(1);
+    expect(h.getFirestore).toHaveBeenCalledWith(h.app, 'default');
+  });
+
+  it('honours an explicit FIREBASE_DATABASE_ID — the near miss to the fallback', async () => {
+    vi.stubEnv('FIREBASE_DATABASE_ID', 'outra-base');
+    const { getAdminFirestore } = await import('./admin');
+    getAdminFirestore();
+    expect(h.getFirestore).toHaveBeenCalledTimes(1);
+    expect(h.getFirestore).toHaveBeenCalledWith(h.app, 'outra-base');
+  });
+});

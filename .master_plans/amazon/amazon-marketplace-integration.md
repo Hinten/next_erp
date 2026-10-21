@@ -1,6 +1,6 @@
 # Amazon (SP-API): master plan for the marketplace integration
 
-Date: 2026-10-14 · Method: `marketplace-integration` skill, Phases 0–2 · Tracker: not opened yet (D14).
+Date: 2026-10-14 · Method: `marketplace-integration` skill, Phases 0–2 · Tracker: #1923 (opened 2026-10-15 with one issue per pre-cutover step, #1924–#1941; D14).
 Evidence: the official SP-API documentation (developer-docs.amazon; developer-docs.amazon.com redirects there; pages dated through 2026-10-13), the official OpenAPI models (github.com/amzn/selling-partner-api-models, commits through 2026-09-30), docs.aws.amazon.com for the AWS relay, and one retired Amazon LATAM page reviewed claim by claim (`evidence/latam-dba-review.md`). Research steps:
 - 6 documentation surveys (A auth/roles/sandbox · B notifications/AWS · C Orders v2026 · D NF-e/Easy Ship · E listings/stock · F price/payments/messaging);
 - 2 gap investigations (BR Easy Ship; seller id and the authorization flow);
@@ -547,7 +547,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
   - `lastUpdatedBefore` is omitted; Amazon requires a 2-minute gap from now.
   - Rate 0.0056 rps / burst 20 ⇒ 96 calls/day, well inside the bucket.
 - **Cursor** `pollPedidosAmazon/{contaId}` (bare constant, outside `ALL_DOMAINS`): `cursor` (ISO, Amazon's own `lastUpdatedTime` of a fully drained window), `emExecucaoAteMs` (lease), `ultimaVarreduraEmMs`, `ultimoErro`. It advances only after every row is enqueued.
-- **Rule 7:** single-flight lease plus an advance-only cursor, both tier 1 (`update(…, {lastUpdatedTime})`).
+- **Rule 7:** single-flight lease plus an advance-only cursor, both tier 1 (`update(…, {lastUpdateTime})`, the Admin SDK precondition; not the order field `lastUpdatedTime`).
 - **Bootstrap:** no cursor ⇒ `now − AMAZON_POLL_LOOKBACK_H`. The window sets it (W7).
 - **Firestore:** the cursor doc; both rulesets regenerated. **Env:** `AMAZON_POLL_LOOKBACK_H`.
 - **Verification:** fixture-driven sweep tests: empty page; several pages; truncated window ⇒ cursor unchanged; a stale run never moves the cursor back; a held lease exits.

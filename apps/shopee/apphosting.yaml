@@ -70,8 +70,8 @@ runConfig:
 #
 # No `runConfig.vpcAccess` — Shopee's IP allow-list (master plan P2 option D:
 # a static-egress VPC connector + reserved IP) is migration-window
-# infrastructure (root CLAUDE.md rule 8), not something this step provisions.
-# See #1208 when that window is scheduled; no issue opened yet.
+# infrastructure (root CLAUDE.md rule 8) — #1531, a #1208 phase step — and
+# this block lands only in a code PR after that infrastructure exists.
 #
 # Env (set per-environment in the Firebase console → App Hosting → Environment
 # variables, or via Cloud Secret Manager for secrets; required unless marked
@@ -226,7 +226,8 @@ env:
   # Set it in the Firebase console (App Hosting → this backend → Environment) of
   # the project whose functions are deployed — never here, because a value in
   # this file reaches EVERY project's backend — once apps/shopee/functions is
-  # deployed there (staging: the rollout guide; production: step 22, #1530).
+  # deployed there (staging: set at the 2026-10-15 rollout; production: the
+  # migration window, #1998).
   # Use the value `node tools/deploy-env/preflight.mjs shopee` prints for
   # FUNCTIONS_REGION in the deploying shell. The two must be equal; App Hosting
   # exposes no region variable of its own, so there is nothing to derive it from.

@@ -21,8 +21,8 @@
  * `tabelaNormalOuterRef` ⇒ 400 `SHOPEE_CONTA_SEM_TABELA_NORMAL` → 10. the
  * conta's QUOTA pause ⇒ 409 `SHOPEE_CONTA_PAUSADA` + `pausadoAte` → 11. the
  * conta verdict ⇒ 422 `SHOPEE_PRECO_CONTA_RECUSADA` `{motivo, mensagem,
- * regiao?}` → 12. the job (409 `SHOPEE_PRICE_SYNC_RUNNING` when a live run
- * exists) → 13. the first enqueue → 202 `{jobId}`.
+ * regiao?}` → 12. the job (409 `SHOPEE_PRICE_SYNC_RUNNING` + the live run's
+ * `jobId` when one exists) → 13. the first enqueue → 202 `{jobId}`.
  *
  * Rungs 8–11 are ONE call, `exigirContaParaPreco` (`precos/regiaoPreco.ts`) —
  * the conta ladder the manual push (`enviar-precos`) runs too, so one conta
@@ -275,8 +275,13 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
     if (err instanceof ShopeeEnvioPrecoEmAndamentoError) {
+      // The live run's id, so the web attaches to it instead of a dead button.
       return NextResponse.json(
-        { error: MSG_ENVIO_PRECO_EM_ANDAMENTO, code: CODIGO_ENVIO_PRECO_EM_ANDAMENTO },
+        {
+          error: MSG_ENVIO_PRECO_EM_ANDAMENTO,
+          code: CODIGO_ENVIO_PRECO_EM_ANDAMENTO,
+          jobId: err.jobId,
+        },
         { status: err.status },
       );
     }

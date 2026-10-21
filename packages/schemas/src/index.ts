@@ -72,7 +72,9 @@ export {
   toOuterRefOrNull,
   toDocPathOrNull,
   idFromRef,
+  idFromRefOrNull,
   parseRef,
+  naoDocId,
   type OuterRef,
   type IdRef,
   type DocId,
@@ -349,6 +351,7 @@ export {
 export {
   integracao,
   integracaoSchema,
+  refMatchesIntegracao,
   integracaoMeta,
   integracaoTipoSchema,
   INTEGRACAO_TIPO,
@@ -487,6 +490,45 @@ export {
   type PorCapturaLi,
   type SituacaoLi,
 } from './situacaoPedidoLojaIntegrada';
+// The typed Amazon shape of the GENERIC `integracao/{id}/credenciais/current`
+// document (LWA tokens). Not a collection of its own: the path is
+// `credenciaisIntegracaoMeta`'s (admin-only, default-deny, outside ALL_DOMAINS),
+// so there is no meta here and nothing to register. ⚠️ Never export a combined
+// `{ schema, meta }` object for it — see `credenciaisLojaIntegrada` above.
+export {
+  CREDENCIAL_AMAZON_DOC_ID,
+  MAX_REF_CREDENCIAL_AMAZON,
+  credenciaisAmazonSchema,
+  reconexaoPendenteAmazonSchema,
+  type CredenciaisAmazon,
+} from './credenciaisAmazon';
+
+// The Amazon conta wire contract — the reauthorization arithmetic, the seller-id
+// and routing predicates, the error codes, the status and start answers and the
+// closed OAuth-return reasons that `apps/amazon` and `apps/web` must agree on.
+// Not a collection: no meta, nothing to register.
+export {
+  CHAVE_RETORNO_OAUTH_AMAZON,
+  CODIGO_ERRO_AMAZON,
+  LIMIAR_AVISO_AMAZON_DIAS,
+  MAX_SELLING_PARTNER_ID,
+  MOTIVO_RETORNO_OAUTH_AMAZON,
+  VALIDADE_AUTORIZACAO_AMAZON_DIAS,
+  contaAmazonRoteavel,
+  diasAteDataCivilAmazon,
+  diasParaReautorizarAmazon,
+  erroContaAmazonSchema,
+  motivoRetornoOAuthAmazonSchema,
+  reautorizarAteAmazon,
+  respostaInicioOAuthAmazonSchema,
+  sellingPartnerIdValido,
+  statusContaAmazonSchema,
+  type CodigoErroAmazon,
+  type ErroContaAmazon,
+  type MotivoRetornoOAuthAmazon,
+  type RespostaInicioOAuthAmazon,
+  type StatusContaAmazon,
+} from './contaAmazon';
 
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
 // Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
@@ -873,6 +915,8 @@ export {
   tabelaDeMedidas,
   tabelaDeMedidasSchema,
   tabelaDeMedidasMeta,
+  lerRefTabelaDeMedidas,
+  type RefTabelaDeMedidas,
   type TabelaDeMedidas,
 } from './tabelaDeMedidas';
 

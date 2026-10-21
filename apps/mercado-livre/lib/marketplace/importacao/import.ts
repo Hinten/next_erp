@@ -62,6 +62,7 @@ import {
   type MlModeracao,
   PRODUTO_EXTRA_DATA_DOC_ID,
   derivarFilhoUnico,
+  idFromRefOrNull,
   precisaConsultarModeracao,
   skuPaiDoMembroUnico,
   skuPaiPorSufixo,
@@ -91,7 +92,7 @@ import { resolveTaxonomia } from './importTaxonomia';
 import { type ImportVariationChildrenResult, importVariationChildren } from './importVariations';
 import { resolveFamilySiblingIds } from './importFamily';
 import { isAlreadyExists, isFailedPrecondition } from '@delfrance/data/admin';
-import { lastSegment, refMatchesIntegracao } from '../core/linkRefs';
+import { parsePmlOuterRef, refMatchesIntegracao } from '../core/linkRefs';
 import type { Bucket } from '../core/arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';
 
@@ -459,7 +460,7 @@ export async function importProduto(
         produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID),
       );
   const existingLinkRaw = resolved?.linkRaw ?? null;
-  const depositoId = deps.depositoOuterRef ? lastSegment(deps.depositoOuterRef) : null;
+  const depositoId = idFromRefOrNull(deps.depositoOuterRef);
   // A produto that owns children never carries its own stock (it lives on the
   // children) — skip the read, the plan nulls the estoque write regardless.
   // ⛔ `ownsChildren` is derived from THIS CALL'S ML payload; whether the produto
@@ -493,7 +494,7 @@ export async function importProduto(
     isCreate,
     linkDocId,
     integracaoId,
-    tabelaNormalId: deps.tabelaNormalOuterRef ? lastSegment(deps.tabelaNormalOuterRef) : null,
+    tabelaNormalId: idFromRefOrNull(deps.tabelaNormalOuterRef),
     depositoOuterRef: deps.depositoOuterRef,
     descricao,
     categoriaOuterRef,
@@ -1102,20 +1103,6 @@ async function resolveUpParentOverride(
 }
 
 /**
- * Parse a canonical `documents/produtos/<produtoId>/produtoMercadoLivre/<linkId>`
- * outer-ref (the exact form `toOuterRef` mints for a `produtoMercadoLivre`
- * link) into its produto + link doc ids; null on anything that doesn't match
- * that shape (a malformed/foreign ref is simply not a usable parent pointer).
- */
-function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | null {
-  const segs = ref.split('/').filter(Boolean);
-  const i = segs.indexOf('produtos');
-  if (i === -1 || i + 3 >= segs.length) return null;
-  if (segs[i + 2] !== 'produtoMercadoLivre') return null;
-  return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
-}
-
-/**
  * Apply the child -> parent dimension rollup (#1087), guarded at rule 7 tier 1.
  *
  * Re-reads the parent so the "which fields are blank" decision and the
@@ -1300,7 +1287,7 @@ async function readEstoque(
     };
     if (
       typeof data.depositoOuterRef === 'string' &&
-      lastSegment(data.depositoOuterRef) === depositoId
+      idFromRefOrNull(data.depositoOuterRef) === depositoId
     ) {
       return {
         quantidade: typeof data.quantidade === 'number' ? data.quantidade : 0,

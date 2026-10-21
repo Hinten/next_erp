@@ -77,6 +77,11 @@ vi.mock('@/app/(app)/clientes/[id]/_components/EnderecosSection', () => ({
 vi.mock('@/app/(app)/canais/_components/RecalcularPrecosCanalAction', () => ({
   RecalcularPrecosCanalAction: () => null,
 }));
+// The conta's connect panel reads its status through `useQuery`, which this
+// suite has no provider for.
+vi.mock('@/app/(app)/canais/amazon/_components/ContaAmazonPanel', () => ({
+  ContaAmazonPanel: () => null,
+}));
 vi.mock('@/app/(app)/canais/loja-integrada/_components/ContaLojaIntegradaPanel', () => ({
   ContaLojaIntegradaPanel: () => null,
 }));
@@ -102,6 +107,7 @@ vi.mock('@/app/(app)/canais/whatsapp/_components/ContaWhatsappHealth', () => ({
 }));
 
 import BandeiraCartaoPage from '@/app/(app)/bandeiras-cartao/[id]/page';
+import ContaAmazonPage from '@/app/(app)/canais/amazon/[id]/page';
 import BalcaoPage from '@/app/(app)/canais/balcao/[id]/page';
 import ContaLojaIntegradaPage from '@/app/(app)/canais/loja-integrada/[id]/page';
 import ContaMercadoLivrePage from '@/app/(app)/canais/mercado-livre/[id]/page';
@@ -140,6 +146,7 @@ const PAGES: PageCase[] = [
   { path: '/bandeiras-cartao/[id]', Page: BandeiraCartaoPage, permissions: PERM.pagamento },
   { path: '/motivos-incidente/[id]', Page: MotivoIncidentePage, permissions: PERM.pedido },
   { path: '/operacoes/[id]', Page: OperacaoPage, permissions: PERM.fiscal },
+  { path: '/canais/amazon/[id]', Page: ContaAmazonPage, permissions: PERM.integracao },
   { path: '/canais/balcao/[id]', Page: BalcaoPage, permissions: PERM.integracao },
   {
     path: '/canais/loja-integrada/[id]',
