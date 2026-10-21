@@ -1,17 +1,12 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { loggerEspiao } from '../testing/fixtures';
 import {
   CHAMADAS_ENV_AMAZON,
-  LOGGER_STDOUT_AMAZON,
   classificarValorDeChamadas,
   lerChaveDeChamadasAmazon,
   registrarChamadaBloqueadaAmazon,
 } from './valvulas';
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 describe('lerChaveDeChamadasAmazon', () => {
   it('pins the variable name', () => {
@@ -84,22 +79,4 @@ describe('registrarChamadaBloqueadaAmazon', () => {
   });
 });
 
-describe('LOGGER_STDOUT_AMAZON', () => {
-  it('writes one JSON line per call, with Cloud Logging severity, and meta cannot overwrite it', () => {
-    const escritas: string[] = [];
-    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-      escritas.push(String(chunk));
-      return true;
-    });
-    LOGGER_STDOUT_AMAZON.info('a', { x: 1 });
-    LOGGER_STDOUT_AMAZON.warn('b', { severity: 'DEBUG', message: 'forjada' });
-    LOGGER_STDOUT_AMAZON.error('c');
-    const linhas = escritas.map((e) => JSON.parse(e) as Record<string, unknown>);
-    expect(linhas).toEqual([
-      { x: 1, severity: 'INFO', message: 'a' },
-      { severity: 'WARNING', message: 'b' },
-      { severity: 'ERROR', message: 'c' },
-    ]);
-    expect(escritas.every((e) => e.endsWith('\n') && e.split('\n').length === 2)).toBe(true);
-  });
-});
+// The stdout sink moved to `log.ts`; its tests are `log.test.ts`.

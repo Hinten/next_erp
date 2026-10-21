@@ -42,6 +42,55 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.
+- The logger stays LIGHT: the import closure of `core/log.ts`, `core/redacao.ts`,
+  `core/formatoDaRef.ts` (the ref FORMAT, no import at all), `core/idConta.ts` (the
+  conta-id grammar, no import at all; `core/contas.ts` re-exports it) and
+  `core/valvulas.ts` never reaches `firebase-admin`, `@delfrance/data`, `next` or `@/`;
+  `redacao.ts` imports only `zod` and `@delfrance/core/{wire,documents}`. `refCredencial.ts`
+  keeps the hash and re-exports the format. `estrutura.test.ts` pins all of it.
+
+## Logging (step 2b)
+
+- ONE logger: `LoggerAmazon` in `core/log.ts`, campos PRIMITIVE only (a list is joined into
+  one string at the call site). Routes hand in `LOGGER_STDOUT_AMAZON` (one JSON line on
+  stdout, `severity` + `message` written AFTER the campos; every campo re-checked at run
+  time by `camposSeguros`: masked, cut to 256 bytes, non-primitives `<nao-primitivo>`).
+  Never `console.*`, never a second logger. A shared module that logs untyped campos
+  (`escreverAviso`) gets the app's `warn` through `warnNaoTipado`.
+- ONE line per Amazon call, built by `criarObservadorAmazon` and handed to the package's
+  hook at EXACTLY three sites: the LWA refresh and the SP-API client (`core/contexto.ts`;
+  callers pass `registro` — flow, attempt, task/notification ids — and the loader writes
+  `logger` and `conta` LAST), and the code exchange (`conta/conectar.ts`). Only
+  `core/log.ts` names the raw event type; `estrutura.test.ts` refuses any other observer
+  (inline, forwarded, shorthand, combined, shadowed, renamed).
+- The line is a projection (`CHAVES_DA_LINHA`, 26 keys): envelope by grammar, the redacted
+  path + query, `credencial` (`lwa-acesso` / `lwa-refresh` / `lwa-codigo`), the ref's
+  VERSION only, codes through the closed `CODIGOS_ERRO_AMAZON` (`<outro>` otherwise).
+  NEVER in a line: a token, the client secret, the state, the code, a seller id (a path
+  slot is `<sellerId>`), the ref or its fingerprint, an LWA body, a header, a raw query.
+- The excerpt fails closed: no excerpt for LWA, for ANY 401/403, for a call without a ref
+  version, or for a `segredo` path (RDT, client secret, `/documents`). Otherwise the
+  allow-list walk of `redacao.ts` (path → template → table; denied subtrees/keys/prefixes
+  win at any depth, any case; the regex layer runs PER LEAF on decoded strings, Amazon-made
+  id leaves skip only the check-digit pass — a seller-typed one (SKU, alias, promotion,
+  package ref) never does; mask first, cut to 2 KiB second). A non-2xx body keeps
+  structure, booleans, `null`, integers below 1e7 and known codes only. Never widen a
+  table, a code set or a key rule "to see the error".
+- ⚠️ **The observer must never throw.** The package rethrows an observer's error in place
+  of the outcome, and at the code exchange the state is already consumed: a throwing
+  logger loses the seller's grant. `log.ts` and `redacao.ts` have no `catch` — they are
+  total by construction; the totality matrix runs through all three real call sites.
+- Never log `err.message` of an `AmazonError` (it embeds the path, which can carry a seller
+  id): log `err.name`, the status and the codes. `estrutura.test.ts` refuses a `.message`
+  inside any `.info|warn|error(` call and either non-call writer (`registrarEventoAmazon`,
+  `registrarChamadaBloqueadaAmazon`), and a `trechoCorpo` campo outside `log.ts`. The
+  sweep's returned `erros[].erro` is the class name too.
+- A new operation stays keys-only in the log (and refused as a fixture) until its step adds
+  its table rows AND regenerates the committed leaf inventory, from the repo root:
+  `node .master_plans/amazon/evidence/amazon-doc.mjs folhas --saida
+  apps/amazon/lib/amazon/testing/especificacaoFolhas.json` (the cache or
+  raw.githubusercontent.com, never the SP-API; `OPERACOES_FOLHAS` lists the operations).
+  `redacao.test.ts` demands every inventory leaf be classified exactly once.
 
 ## Environment
 
@@ -89,12 +138,6 @@ This app adds **zero** multi-document atomic-write sites.
   `config`, nothing consumed), and its step 5 treats a code outside visible ASCII
   as absent (`missing_params`, nothing consumed) — so no value refusable before
   `consume` can burn the attempt.
-- `lib/amazon/core/valvulas.ts` carries a minimal `LoggerAmazon` interface and a
-  `LOGGER_STDOUT_AMAZON` stdout sink (one JSON line, `severity` + `message`), and
-  `loadAmazonContext` requires a `logger` dep. The plan defers every logger to
-  step 2b (#1927); this is a stand-in so the switch's blocked line has somewhere
-  to go. **Step 2b replaces it in place** — it must not add a second logger beside
-  it.
 - `tratarCallbackAmazon` returns `RetornoCallback` =
   `{ tipo: 'sem-web' } | { tipo: 'redirecionar', webBase, caminho, retorno }`
   (`caminho` is the list or the conta route from `ROTAS_AVISO`), not the plan's

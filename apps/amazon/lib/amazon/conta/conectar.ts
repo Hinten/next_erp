@@ -54,6 +54,12 @@
  * ⚠️ **Never logged, answered or put in a URL**: the code, any token, the client
  * secret, the state, either seller id, the ref, any LWA body, or the raw query.
  * The redirect carries exactly `{amazon}` or `{amazon, reason}`.
+ *
+ * ⚠️ **The exchange's call line runs AFTER step 8 consumed the state.** The
+ * package rethrows an observer's error in place of the outcome, so a logger
+ * that threw there would lose the seller's grant. The observer (`log.ts`) is
+ * total by construction; `conectar.test.ts` runs its totality matrix through
+ * this very call site, and `estrutura.test.ts` pins the wiring.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { isTransientGrpcError } from '@delfrance/data/admin/grpcErrors';
@@ -93,10 +99,10 @@ import { AGENTE_USUARIO_AMAZON } from '../core/agente';
 import { invalidarContaEmCache } from '../core/contaCache';
 import { idDeContaValido, lerContaAmazon } from '../core/contas';
 import { removerCredencial, salvarConsentimento } from '../core/credentialStore';
+import { type CamposLogAmazon, type LoggerAmazon, criarObservadorAmazon } from '../core/log';
 import { REF_CONSENTIMENTO, fingerprintDoRefreshToken, montarRef } from '../core/refCredencial';
 import {
   CHAMADAS_ENV_AMAZON,
-  type LoggerAmazon,
   lerChaveDeChamadasAmazon,
   registrarChamadaBloqueadaAmazon,
 } from '../core/valvulas';
@@ -188,10 +194,11 @@ export function motivoDaFalhaDeTroca(err: unknown): MotivoRetornoOAuthAmazon | n
 
 /**
  * What a failed exchange's log line may carry: the class, the HTTP status, the
- * LWA CODE, and the two correlation ids. Never a message (it names the path
+ * LWA CODE, and the two correlation ids — primitives only (a schema failure's
+ * field list is joined into one string). Never a message (it names the path
  * only, but a field list is safer than prose), never a body, never a ref.
  */
-function detalheDaFalha(err: AmazonError): Record<string, unknown> {
+function detalheDaFalha(err: AmazonError): CamposLogAmazon {
   return {
     erro: err.name,
     ...(err instanceof AmazonHttpError
@@ -203,7 +210,7 @@ function detalheDaFalha(err: AmazonError): Record<string, unknown> {
       : {}),
     ...(err instanceof AmazonAuthError ? { codigoLwa: err.codigoLwa } : {}),
     ...(err instanceof AmazonConfigError ? { motivo: err.motivo } : {}),
-    ...(err instanceof AmazonSchemaError ? { campos: err.campos } : {}),
+    ...(err instanceof AmazonSchemaError ? { campos: err.campos.join(',') } : {}),
   };
 }
 
@@ -241,7 +248,7 @@ export async function tratarCallbackAmazon(
   // 1. Config. WEB_APP_URL first: without it there is no redirect at all.
   const webBase = lerWebAppUrl(deps.ambiente);
   if (webBase === null) {
-    logger.error('[amazon/oauth-callback] configuração ausente', { faltando: ['WEB_APP_URL'] });
+    logger.error('[amazon/oauth-callback] configuração ausente', { faltando: 'WEB_APP_URL' });
     return { tipo: 'sem-web' };
   }
   const lista = (retorno: RetornoOAuthAmazon): RetornoCallback => ({
@@ -259,7 +266,9 @@ export async function tratarCallbackAmazon(
 
   const lido = lerConfigAmazon(deps.ambiente);
   if (!lido.completa) {
-    logger.error('[amazon/oauth-callback] configuração ausente', { faltando: lido.faltando });
+    logger.error('[amazon/oauth-callback] configuração ausente', {
+      faltando: lido.faltando.join(','),
+    });
     return lista(erro(MOTIVO_RETORNO_OAUTH_AMAZON.config));
   }
   const config: ConfigAmazon = lido;
@@ -267,7 +276,9 @@ export async function tratarCallbackAmazon(
   // (a redeploy inside the attempt's ten minutes) — before anything is consumed.
   const lwaRecusadas = chavesLwaRecusadas(config.aplicacao);
   if (lwaRecusadas.length > 0) {
-    logger.error('[amazon/oauth-callback] configuração inválida', { invalidas: lwaRecusadas });
+    logger.error('[amazon/oauth-callback] configuração inválida', {
+      invalidas: lwaRecusadas.join(','),
+    });
     return lista(erro(MOTIVO_RETORNO_OAUTH_AMAZON.config));
   }
 
@@ -340,6 +351,7 @@ export async function tratarCallbackAmazon(
       ref: REF_CONSENTIMENTO,
       userAgent: AGENTE_USUARIO_AMAZON,
       fetch: deps.fetch,
+      onChamada: criarObservadorAmazon({ logger, conta: integracaoId, fluxo: ROTA_CALLBACK_OAUTH }),
       gerarCorrelationId: deps.gerarCorrelationId,
       agora: deps.agora,
     });

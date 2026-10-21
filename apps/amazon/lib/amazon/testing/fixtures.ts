@@ -17,8 +17,9 @@ import { vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 
+import type { CamposLogAmazon, LoggerAmazon, criarObservadorAmazon } from '../core/log';
+import type { ClasseFalsaAmazon, FalsificadorAmazon } from '../core/redacao';
 import { fingerprintDoRefreshToken, montarRef } from '../core/refCredencial';
-import type { LoggerAmazon } from '../core/valvulas';
 import type { AmbienteAmazon } from '../env';
 import type { DocData, FakeDb } from './fakeDb';
 
@@ -218,7 +219,7 @@ export function erroLwa(status: number, error: string): Response {
 export interface LinhaDeLog {
   readonly nivel: 'info' | 'warn' | 'error';
   readonly mensagem: string;
-  readonly meta: Record<string, unknown> | undefined;
+  readonly meta: CamposLogAmazon | undefined;
 }
 
 /** A {@link LoggerAmazon} that keeps every line, in order. */
@@ -226,10 +227,52 @@ export function loggerEspiao(): { logger: LoggerAmazon; linhas: LinhaDeLog[] } {
   const linhas: LinhaDeLog[] = [];
   const gravar =
     (nivel: LinhaDeLog['nivel']) =>
-    (mensagem: string, meta?: Record<string, unknown>): void => {
+    (mensagem: string, meta?: CamposLogAmazon): void => {
       linhas.push({ nivel, mensagem, meta });
     };
   return { logger: { info: gravar('info'), warn: gravar('warn'), error: gravar('error') }, linhas };
+}
+
+/** Only the call lines (`evento: 'chamada'`) a spy recorded, in order. */
+export function linhasDeChamada(linhas: readonly LinhaDeLog[]): CamposLogAmazon[] {
+  return linhas
+    .map((l) => l.meta)
+    .filter((m): m is CamposLogAmazon => m !== undefined && m.evento === 'chamada');
+}
+
+/**
+ * The package's call event, as the observer receives it. Named through the
+ * observer's own parameter: only `core/log.ts` names the raw type
+ * (`estrutura.test.ts`).
+ */
+export type EventoDeChamada = Parameters<ReturnType<typeof criarObservadorAmazon>>[0];
+
+/** A versioned ref of the default grant, for an SP-API event. */
+export const REF_VERSIONADA = montarRef('0123456789abcdef', AGORA_MS - 10 * 24 * 60 * 60 * 1000);
+
+/**
+ * One call event for the log tests: a 200 `getOrder` with an empty JSON object,
+ * under a versioned ref, unless `over` says otherwise.
+ */
+export function eventoDeChamada(over: Partial<EventoDeChamada> = {}): EventoDeChamada {
+  return {
+    destino: 'sp-api',
+    operacao: 'getOrder',
+    metodo: 'GET',
+    caminho: '/orders/2026-01-01/orders/123-4567890-1234567',
+    query: [['includedData', 'BUYER,RECIPIENT']],
+    correlationId: '00000000-0000-4000-8000-000000000001',
+    requestIdAmazon: 'req-teste-1',
+    refCredencial: REF_VERSIONADA,
+    status: 200,
+    latenciaMs: 12,
+    resultado: 'ok',
+    limiteTaxa: 0.5,
+    codigosErro: [],
+    codigoLwa: null,
+    corpo: '{}',
+    ...over,
+  };
 }
 
 /**
@@ -312,5 +355,103 @@ export function espiarStdout(): { linhas: () => string[]; restaurar: () => void 
     restaurar: () => {
       espiao.mockRestore();
     },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          The fixture-profile faker                          */
+/* -------------------------------------------------------------------------- */
+
+/** The DV of a 43-digit chave prefix (mod 11, weights 2..9 from the right). */
+function dvDaChave(c43: string): number {
+  let soma = 0;
+  let peso = 2;
+  for (let i = c43.length - 1; i >= 0; i--) {
+    soma += Number(c43[i]) * peso;
+    peso = peso === 9 ? 2 : peso + 1;
+  }
+  const resto = soma % 11;
+  return resto < 2 ? 0 : 11 - resto;
+}
+
+const hex8 = (n: number) => n.toString(16).padStart(8, '0');
+const uuidDe = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
+
+/** The test faker's own fake formats: each passes its leaf's predicate. */
+export const FORMATO_FALSO_TESTE: Readonly<Record<ClasseFalsaAmazon, RegExp>> = {
+  pedido: /^000-0000000-\d{7}$/,
+  itemPedido: /^00000\d{9}$/,
+  alias: /^ALIAS-Z[0-9a-f]{8}$/,
+  pacote: /^PKG-Z[0-9a-f]{8}$/,
+  asin: /^B0ZZ\d{6}$/,
+  sku: /^SKU-Z[0-9a-f]{8}$/,
+  rastreio: /^TRKZ\d{8}$/,
+  chaveNfe: /^0{20}55000\d{9}0{9}\d$/,
+  slot: /^SLOT-Z[0-9a-f]{8}$/,
+  promocao: /^PROMO-Z[0-9a-f]{8}$/,
+  aplicacao: /^amzn1\.sp\.solution\.00000000-0000-0000-0000-000000000000$/,
+  assinatura: /^00000000-0000-0000-0000-\d{12}$/,
+  notificacao: /^00000000-0000-0000-0000-\d{12}$/,
+  mensagem: /^00000000-0000-0000-0000-\d{12}$/,
+  remessa: /^SHP-Z[0-9a-f]{8}$/,
+  regiao: /^xx-regiao-1$/,
+};
+
+/**
+ * A counter faker for the `fixture` profile (2b-b's is a keyed hash): the same
+ * value gets the same fake, and a value already in its class's fake format is a
+ * FIXPOINT — the contract that makes the profile idempotent.
+ */
+export function falsificadorDeTeste(): FalsificadorAmazon & { readonly chamadas: number } {
+  const mapa = new Map<string, string>();
+  let n = 0;
+  const gerar = (classe: ClasseFalsaAmazon, i: number): string => {
+    switch (classe) {
+      case 'pedido':
+        return `000-0000000-${String(i).padStart(7, '0')}`;
+      case 'itemPedido':
+        return `00000${String(i).padStart(9, '0')}`;
+      case 'alias':
+        return `ALIAS-Z${hex8(i)}`;
+      case 'pacote':
+        return `PKG-Z${hex8(i)}`;
+      case 'asin':
+        return `B0ZZ${String(i).padStart(6, '0')}`;
+      case 'sku':
+        return `SKU-Z${hex8(i)}`;
+      case 'rastreio':
+        return `TRKZ${String(i).padStart(8, '0')}`;
+      case 'chaveNfe': {
+        const c43 = `${'0'.repeat(20)}55000${String(i).padStart(9, '0')}${'0'.repeat(9)}`;
+        return `${c43}${String(dvDaChave(c43))}`;
+      }
+      case 'slot':
+        return `SLOT-Z${hex8(i)}`;
+      case 'promocao':
+        return `PROMO-Z${hex8(i)}`;
+      case 'aplicacao':
+        return 'amzn1.sp.solution.00000000-0000-0000-0000-000000000000';
+      case 'assinatura':
+      case 'notificacao':
+      case 'mensagem':
+        return uuidDe(i);
+      case 'remessa':
+        return `SHP-Z${hex8(i)}`;
+      case 'regiao':
+        return 'xx-regiao-1';
+    }
+  };
+  const f = (classe: ClasseFalsaAmazon, valor: string): string => {
+    if (FORMATO_FALSO_TESTE[classe].test(valor)) return valor;
+    const chave = `${classe}:${valor}`;
+    const existente = mapa.get(chave);
+    if (existente !== undefined) return existente;
+    n += 1;
+    const falso = gerar(classe, n);
+    mapa.set(chave, falso);
+    return falso;
+  };
+  return Object.defineProperty(f, 'chamadas', { get: () => n }) as FalsificadorAmazon & {
+    readonly chamadas: number;
   };
 }

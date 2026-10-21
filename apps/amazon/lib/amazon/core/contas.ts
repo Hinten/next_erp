@@ -33,21 +33,12 @@ import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 
 import { relogioDoDocumentoUs } from '../avisos/avisos';
 
-/** Letters, digits, `_` and `-`, 1 to 128 — every auto-id fits, nothing a path could misread. */
-const ID_DE_CONTA = /^[A-Za-z0-9_-]{1,128}$/;
-
 /**
- * Can this value be used as a conta (document) id? A route checks it FIRST,
- * before any read: `.doc(id)` validates the path itself and throws outside every
- * narrow `catch`, so a malformed id would be a 500 — or, with a `/`, a read of
- * a document the caller never named. A `.` is refused too (Firestore reserves
- * `.` and `..`), and so is anything outside the auto-id alphabet.
- *
- * ⚠️ Copied, not imported: `apps/*` have no dependency edge to each other.
+ * The conta-id grammar lives in the light `idConta.ts` (the logger and the
+ * valves check ids too, and must not reach this file's Firestore imports);
+ * re-exported here so the routes' import sites stay as they are.
  */
-export function idDeContaValido(id: unknown): id is string {
-  return typeof id === 'string' && ID_DE_CONTA.test(id);
-}
+export { idDeContaValido } from './idConta';
 
 /** An Amazon conta, read uncached, with the commit stamp a guarded write needs. */
 export interface ContaAmazonLida {

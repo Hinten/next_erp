@@ -77,3 +77,8 @@ apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/** text eol=lf
 # with a shebang and is imported by its own node:test suite. Same hazard as the
 # `.claude/hooks/*.mjs` rule above; kept total by `shebang-files-lf.test.js`.
 .codex/*.mjs text eol=lf
+
+# Same reason for the Amazon spec leaf inventory: `amazon-doc.mjs folhas` writes
+# it with LF, and a regeneration must diff only what changed (pinned by
+# `apps/amazon/lib/amazon/estrutura.test.ts`).
+apps/amazon/lib/amazon/testing/especificacaoFolhas.json text eol=lf

@@ -43,11 +43,19 @@
  * an `AmazonAuthError` names the exact grant it refused — the park's guard
  * input. An `AmazonAuthError` is rethrown as-is: the flow's caller classifies it
  * (`estacionamento.ts`).
+ *
+ * ## The call log (step 2b)
+ *
+ * Both package calls made here — the LWA refresh and every SP-API request —
+ * get the logger's observer (`log.ts`), built from `deps.registro` (step 3's
+ * flow, attempt and ids) with `deps.logger` and THIS loader's conta id written
+ * LAST, so a `registro` can never relabel a line. One SP-API `get` can emit two
+ * lines: the refresh, then the request. A caller cannot hand the package an
+ * observer of its own: there is no such dep (`estrutura.test.ts`).
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { isTransientGrpcError } from '@delfrance/data/admin/grpcErrors';
 import {
-  type ChamadaAmazon,
   type CredencialSpApi,
   type SpApiLeituraClient,
   criarClienteSpApi,
@@ -69,10 +77,10 @@ import {
   ContaAmazonParadaError,
   CredencialAmazonAusenteError,
 } from './erros';
+import { type LoggerAmazon, type RegistroDeChamadaAmazon, criarObservadorAmazon } from './log';
 import { refDaCredencial } from './refCredencial';
 import {
   CHAMADAS_ENV_AMAZON,
-  type LoggerAmazon,
   lerChaveDeChamadasAmazon,
   registrarChamadaBloqueadaAmazon,
 } from './valvulas';
@@ -93,9 +101,13 @@ export interface ContextoAmazonDeps {
   /** Now, in MILLISECONDS. Read per decision, never captured. */
   readonly agora: () => number;
   readonly logger: LoggerAmazon;
-  /** Test seams and the step-2b observer, forwarded to the package as-is. */
+  /**
+   * What the call lines say about the run (step 3: flow, attempt, task and
+   * notification ids). The conta is always this loader's id.
+   */
+  readonly registro?: RegistroDeChamadaAmazon;
+  /** Test seams, forwarded to the package as-is. */
   readonly fetch?: typeof globalThis.fetch;
-  readonly onChamada?: (e: ChamadaAmazon) => void;
   readonly gerarCorrelationId?: () => string;
 }
 
@@ -163,7 +175,11 @@ export async function obterCredencialAmazon(
     refreshToken: credencial.refresh_token,
     userAgent: AGENTE_USUARIO_AMAZON,
     fetch: deps.fetch,
-    onChamada: deps.onChamada,
+    onChamada: criarObservadorAmazon({
+      ...deps.registro,
+      logger: deps.logger,
+      conta: integracaoId,
+    }),
     gerarCorrelationId: deps.gerarCorrelationId,
     agora: deps.agora,
   });
@@ -236,7 +252,11 @@ export async function loadAmazonContext(
     obterCredencial: () => obterAcesso(),
     userAgent: AGENTE_USUARIO_AMAZON,
     fetch: deps.fetch,
-    onChamada: deps.onChamada,
+    onChamada: criarObservadorAmazon({
+      ...deps.registro,
+      logger: deps.logger,
+      conta: integracaoId,
+    }),
     gerarCorrelationId: deps.gerarCorrelationId,
     agora: deps.agora,
   });

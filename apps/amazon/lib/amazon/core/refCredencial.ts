@@ -22,10 +22,20 @@
  *    the old one parks nothing.
  *
  * ⚠️ Only ever a label: the ref names a credential and says nothing about the
- * token, but it is still never logged (it carries the fingerprint).
+ * token, but it is still never logged (it carries the fingerprint). A log line
+ * carries its VERSION only (`versaoDaRef`).
+ *
+ * The FORMAT (`montarRef`, `REF_CONSENTIMENTO`, `versaoDaRef`) lives in the
+ * import-free `formatoDaRef.ts`, so the logger never reaches this file's
+ * `@delfrance/data/admin` import; both are re-exported here, and the import
+ * sites stay as they are.
  */
 import { sha256Hex } from '@delfrance/data/admin';
 import type { CredenciaisAmazon } from '@delfrance/schemas';
+
+import { montarRef } from './formatoDaRef';
+
+export { REF_CONSENTIMENTO, montarRef } from './formatoDaRef';
 
 /**
  * The domain prefix. It makes our fingerprint uncorrelatable with a plain
@@ -37,21 +47,9 @@ import type { CredenciaisAmazon } from '@delfrance/schemas';
  */
 const PREFIXO_FINGERPRINT = 'amazon:lwa-refresh-token:';
 
-/**
- * The label the code exchange runs under. There is no stored credential yet, so
- * nothing is ever stored under it, and the park ignores that operation
- * (`estacionamento.ts`). It can never equal a versioned ref (no hex, no dot).
- */
-export const REF_CONSENTIMENTO = 'consentimento';
-
 /** 16 lowercase hex characters: a domain-prefixed sha256 prefix of the refresh token. */
 export function fingerprintDoRefreshToken(refreshToken: string): string {
   return sha256Hex(`${PREFIXO_FINGERPRINT}${refreshToken}`).slice(0, 16);
-}
-
-/** `<fingerprint>.<autorizadoEmMs>`. The caller supplies the fingerprint. */
-export function montarRef(fingerprint: string, autorizadoEmMs: number): string {
-  return `${fingerprint}.${String(autorizadoEmMs)}`;
 }
 
 /** The ref of a stored (or about to be stored) credential, re-derived from its grant. */

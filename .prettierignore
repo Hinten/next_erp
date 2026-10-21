@@ -54,3 +54,7 @@ apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/
 
 # Master plans and their evidence surveys are prose with wide tables — same reason as CLAUDE.md.
 .master_plans/
+
+# The Amazon spec leaf inventory is GENERATED (`amazon-doc.mjs folhas`, one leaf
+# per line): the generator owns those bytes, so a regeneration diffs leaf by leaf.
+apps/amazon/lib/amazon/testing/especificacaoFolhas.json

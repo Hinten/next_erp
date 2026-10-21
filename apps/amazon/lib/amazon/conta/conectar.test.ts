@@ -40,6 +40,7 @@ import {
   caminhoCredencial,
   erroLwa,
   espiaoDeFetch,
+  linhasDeChamada,
   loggerEspiao,
   nuncaResponde,
   refDe,
@@ -601,7 +602,7 @@ describe('the exchange', () => {
       expect(await tratarCallbackAmazon(query(state), r.deps)).toEqual(naLista('config'));
       expect(estado.consumos).toHaveLength(0);
       expect(r.chamadas).toHaveLength(0);
-      expect(r.linhas[0]?.meta).toEqual({ invalidas: ['AMAZON_LWA_CLIENT_SECRET'] });
+      expect(r.linhas[0]?.meta).toEqual({ invalidas: 'AMAZON_LWA_CLIENT_SECRET' });
       expect(textoDe(r.linhas)).not.toContain(segredo);
       // The attempt was not burned.
       expect(await tratarCallbackAmazon(query(state), montar().deps)).toEqual(CONECTADO);
@@ -655,7 +656,7 @@ describe('config', () => {
       ambiente: { ...AMBIENTE_LIGADO, AMAZON_OAUTH_STATE_SECRET: '' },
     });
     expect(await tratarCallbackAmazon(query('x'), r.deps)).toEqual(naLista('config'));
-    expect(r.linhas[0]?.meta).toEqual({ faltando: ['AMAZON_OAUTH_STATE_SECRET'] });
+    expect(r.linhas[0]?.meta).toEqual({ faltando: 'AMAZON_OAUTH_STATE_SECRET' });
     expect(db.operacoes).toBe(0);
   });
 });
@@ -714,5 +715,84 @@ describe('hygiene', () => {
     }
     const texto = textoDe([linhas, retornos]);
     for (const p of proibidos) expect(texto, p).not.toContain(p);
+  });
+});
+
+describe('the code exchange call line (observer site 3, AFTER the state is consumed)', () => {
+  it('one line: the conta, fluxo oauth-callback, credencial lwa-codigo, NO version, no excerpt', async () => {
+    seedConta(db, ID);
+    const { state } = await iniciar();
+    const r = montar();
+    expect(await tratarCallbackAmazon(query(state), r.deps)).toEqual(CONECTADO);
+    const chamadas = linhasDeChamada(r.linhas);
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0]).toMatchObject({
+      conta: ID,
+      fluxo: 'oauth-callback',
+      destino: 'lwa',
+      operacao: 'trocarCodigoAutorizacao',
+      metodo: 'POST',
+      caminho: '/auth/o2/token',
+      politica: 'segredo',
+      credencial: 'lwa-codigo',
+      versaoCredencial: null,
+      status: 200,
+      resultado: 'ok',
+      trechoCorpo: null,
+      corpoBytes: null,
+    });
+  });
+
+  it('nothing sent before step 8, nothing logged: a refused seller writes no call line', async () => {
+    seedConta(db, ID, { selling_partner_id: SPID_A });
+    const { state } = await iniciar();
+    const r = montar();
+    await tratarCallbackAmazon(query(state, { selling_partner_id: SPID_B }), r.deps);
+    expect(linhasDeChamada(r.linhas)).toHaveLength(0);
+  });
+
+  it('★ totality through the REAL call site: with a non-throwing logger no exchange outcome makes the observer throw, so a grant is never lost to the logger', async () => {
+    const respostas: readonly (readonly [string, Parameters<typeof espiaoDeFetch>[0]])[] = [
+      ['200 tokens', () => tokensDeAutorizacao()],
+      ['200 vazio', () => new Response('', { status: 200 })],
+      ['200 html', () => new Response('<html>', { status: 200 })],
+      ['200 escalar', () => new Response('"x"', { status: 200 })],
+      [
+        '200 profundo',
+        () => new Response(`${'['.repeat(10_000)}${']'.repeat(10_000)}`, { status: 200 }),
+      ],
+      ['302', () => new Response(null, { status: 302 })],
+      ['400 invalid_grant', () => erroLwa(400, 'invalid_grant')],
+      ['401 invalid_client', () => erroLwa(401, 'invalid_client')],
+      ['403', () => respostaJson(403, { error: 'access_denied' })],
+      ['404', () => new Response('nada', { status: 404 })],
+      ['429', () => new Response('', { status: 429 })],
+      ['500', () => respostaJson(500, { error: 'server_error', error_description: 'x' })],
+      ['rede', () => Promise.reject(new TypeError('fetch failed'))],
+    ];
+    for (const [nome, responder] of respostas) {
+      __resetAllReadCaches();
+      db = new FakeDb();
+      estado = criarFakeOauthState();
+      seedConta(db, ID);
+      const { state } = await iniciar();
+      // The spy logger never throws; whatever goes wrong is the observer's own.
+      const r = montar(responder);
+      const retorno = await tratarCallbackAmazon(query(state), r.deps);
+      expect(retorno.tipo, nome).toBe('redirecionar');
+      // Anti-vacuity: the exchange was SENT and the observer wrote ITS line —
+      // not merely some other line of the callback.
+      expect(
+        linhasDeChamada(r.linhas).filter(
+          (l) => l.destino === 'lwa' && l.operacao === 'trocarCodigoAutorizacao',
+        ),
+        nome,
+      ).toHaveLength(1);
+      if (nome === '200 tokens') {
+        // The grant was spent at step 9 and it LANDED: the logger did not cost it.
+        expect(retorno).toEqual(CONECTADO);
+        expect(db.ler(CRED)?.refresh_token).toBe(REFRESH_TOKEN_B);
+      }
+    }
   });
 });

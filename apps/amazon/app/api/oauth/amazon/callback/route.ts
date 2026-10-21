@@ -23,7 +23,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { tratarCallbackAmazon } from '@/lib/amazon/conta/conectar';
 import { amazonOauthState } from '@/lib/amazon/conta/oauthState';
 import { redirecionarParaWeb, respostaSemWebAppUrl } from '@/lib/amazon/core/respond';
-import { LOGGER_STDOUT_AMAZON } from '@/lib/amazon/core/valvulas';
+import { LOGGER_STDOUT_AMAZON } from '@/lib/amazon/core/log';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
