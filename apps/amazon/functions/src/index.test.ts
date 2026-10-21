@@ -961,21 +961,27 @@ describe('every trigger of the codebase', () => {
     expect(notificacao.FILA_LEITURA_AMAZON).toBe('filaLeituraAmazon');
   });
 
-  it('and the module-load assertion really fires on a half-rename', async () => {
-    // The handler module renamed its export while the constant stayed: loading
-    // `index.ts` must THROW (Firebase's codebase analysis then fails the deploy
-    // loudly) — the pin above alone would not notice the assertion deleted.
-    vi.resetModules();
-    vi.doMock('./filaLeitura', () => ({ filaRenomeada: {} }));
-    try {
-      await expect(import('./index')).rejects.toThrow(
-        "function-name drift: functions/src/filaLeitura.ts must export a handler named 'filaLeituraAmazon'",
-      );
-    } finally {
-      vi.doUnmock('./filaLeitura');
+  // Re-importing the whole index after `vi.resetModules()` takes ~0.2 s here but
+  // measured 5.1 s on a loaded CI runner (#2018), past the 5-s default.
+  it(
+    'and the module-load assertion really fires on a half-rename',
+    { timeout: 30_000 },
+    async () => {
+      // The handler module renamed its export while the constant stayed: loading
+      // `index.ts` must THROW (Firebase's codebase analysis then fails the deploy
+      // loudly) — the pin above alone would not notice the assertion deleted.
       vi.resetModules();
-    }
-  });
+      vi.doMock('./filaLeitura', () => ({ filaRenomeada: {} }));
+      try {
+        await expect(import('./index')).rejects.toThrow(
+          "function-name drift: functions/src/filaLeitura.ts must export a handler named 'filaLeituraAmazon'",
+        );
+      } finally {
+        vi.doUnmock('./filaLeitura');
+        vi.resetModules();
+      }
+    },
+  );
 
   it('binds the LWA secret on the queue, the reprocess and the poll, and NOTHING else anywhere', () => {
     // The expiry sweep and the conta trigger make no Amazon call (D11): a
