@@ -106,7 +106,7 @@
  * only when every observed member is closed, and never while one was never
  * observed.
  */
-import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
+import type { DocumentReference, Firestore, Timestamp } from 'firebase-admin/firestore';
 import { ESTADO_PUBLICACAO_ML, type MlModeracao } from '@delfrance/schemas';
 import {
   type MlItem,
@@ -124,7 +124,7 @@ import { refMatchesIntegracao } from '../core/linkRefs';
 import { familyMemberQuery, resolveUpFamilyByMemberItemId } from './upMemberLink';
 import { type VotoCategoria, foldFamilyCategoria, foldFamilyStatus } from './upFamilyStatus';
 import type { UptinSourceLink } from '../importacao/importMigration';
-import { clearFalha } from '../core/publishFalhas';
+import { clearFalha, type FalhaPatch } from '../core/publishFalhas';
 import { consultarModeracoes, moderacoesArmazenadas, moderacoesIguais } from './moderacoes';
 
 /** The minimal ML API surface the status-sync needs (injectable for tests). */
@@ -191,6 +191,7 @@ export type ItemsSyncOutcome =
   | 'deferred-migration-uptin' // the migration DESTINATION listing — never a takeover trigger
   | 'no-migration-runner' // the takeover was due and no runner was supplied (a WIRING defect)
   | 'item-gone' // the listing 404s (deleted) — nothing to sync
+  | 'stale-member' // a newer member snapshot won; external reading discarded
   | 'link-removido'; // the link doc was deleted mid-writeback — nothing was applied
 //   ⚠️ `link-removido` exists because `applyItemStatusToLink` returns FALSE when
 //   the doc vanished between the read and the write, and that boolean used to be
@@ -276,6 +277,8 @@ export async function syncItemStatus(
         linkDocId: link.docId,
         memberProdutoId: membro.produtoId,
         memberDocId: membro.docId,
+        memberUpdateTime: membro.updateTime,
+        memberItemId: itemId,
         pmlOuterRef: membro.pmlOuterRef,
       },
       { status: item.status ?? null, subStatus: item.sub_status ?? null },
@@ -494,6 +497,8 @@ async function applyResolvedStatus(
 
 /** The two ends of one User-Products family write: the parent, and the member. */
 export interface MemberFoldTarget {
+  memberUpdateTime?: Timestamp;
+  memberItemId?: string;
   /** The FAMILY anchor produto — where the parent link lives. */
   produtoId: string;
   /** The family's `produtoMercadoLivre` doc id. */
@@ -525,6 +530,11 @@ export interface FamilyFoldTarget {
  * a member ML could not answer for is left alone rather than guessed at.
  */
 export interface ObservedMember {
+  /** Snapshot captured BEFORE external I/O; compare inside the transaction. */
+  expectedUpdateTime?: Timestamp;
+  expectedItemId?: string;
+  stockFailure?: FalhaPatch;
+  clearStockFailure?: boolean;
   /** The variation CHILD produto owning the member link. */
   memberProdutoId: string;
   /** The `variacaoMercadoLivre` doc id. */
@@ -551,6 +561,14 @@ export interface ObservedMember {
 
 /** What the family's parent link carries AFTER a fold ran (or would not run). */
 export interface FamilyFoldResult {
+  membros?: Array<{
+    memberProdutoId: string;
+    memberDocId: string;
+    status: string | null;
+    subStatus: string[] | null;
+    estado: string | null;
+    aplicado: boolean;
+  }>;
   outcome: ItemsSyncOutcome;
   /**
    * The parent's EFFECTIVE values once this call returned: the folded ones when
@@ -621,6 +639,7 @@ export async function applyMemberStatusAndFold(
    * no fresh reading of it — the stock sender again. Fill-only, same discipline.
    */
   categoryId: string | null = null,
+  stockFailure?: FalhaPatch,
 ): Promise<ItemsSyncOutcome> {
   const { produtoId, linkDocId, memberProdutoId, memberDocId, pmlOuterRef } = target;
   const resultado = await applyFamilyStatusAndFold(
@@ -631,6 +650,9 @@ export async function applyMemberStatusAndFold(
       {
         memberProdutoId,
         memberDocId,
+        expectedUpdateTime: target.memberUpdateTime,
+        expectedItemId: target.memberItemId,
+        stockFailure,
         status: observed.status,
         subStatus: observed.subStatus,
         moderacoes,
@@ -639,6 +661,14 @@ export async function applyMemberStatusAndFold(
       },
     ],
   );
+  if (
+    target.memberUpdateTime != null &&
+    resultado.outcome !== 'link-removido' &&
+    !resultado.membros?.some(
+      (m) => m.memberProdutoId === memberProdutoId && m.memberDocId === memberDocId && m.aplicado,
+    )
+  )
+    return 'stale-member';
   return resultado.outcome;
 }
 
@@ -720,6 +750,7 @@ export async function applyFamilyStatusAndFold(
     // member of this family aborts this callback and it retries against the
     // value that writer committed.
     const encontrados = new Set<string>();
+    const membrosEfetivos: NonNullable<FamilyFoldResult['membros']> = [];
     const escritas: Array<{ ref: DocumentReference; patch: Record<string, unknown> }> = [];
     const foldable: Array<{
       status: string | null;
@@ -734,8 +765,14 @@ export async function applyFamilyStatusAndFold(
     for (const d of members.docs) {
       const raw = d.data() as Record<string, unknown>;
       const chave = chaveMembro(d.ref.parent?.parent?.id ?? '', d.id);
-      const observado = porChave.get(chave) ?? null;
-      if (observado) encontrados.add(chave);
+      const candidato = porChave.get(chave) ?? null;
+      if (candidato) encontrados.add(chave);
+      const atual =
+        candidato == null ||
+        ((candidato.expectedUpdateTime == null ||
+          candidato.expectedUpdateTime.isEqual(d.updateTime)) &&
+          (candidato.expectedItemId == null || candidato.expectedItemId === raw.itemId));
+      const observado = atual ? candidato : null;
       // ⚠️ A row with no `itemId` is not an ML listing at all — the legacy
       // `variations[]` branch leaves the field null (`importCore.ts`). Passing it
       // to the fold would count it as "never observed", and since no notification
@@ -769,14 +806,36 @@ export async function applyFamilyStatusAndFold(
         status: membro.status,
         subStatus: membro.subStatus,
       });
-      const patch = observado ? patchDoMembro(observado, raw) : null;
+      const patch = observado
+        ? patchDoMembro(
+            {
+              ...observado,
+              clearStockFailure: observado.clearStockFailure || opts.limparFalhaSempre,
+            },
+            raw,
+          )
+        : null;
       if (patch) escritas.push({ ref: d.ref, patch });
+      if (candidato)
+        membrosEfetivos.push({
+          memberProdutoId: candidato.memberProdutoId,
+          memberDocId: d.id,
+          status: membro.status,
+          subStatus: membro.subStatus,
+          estado:
+            patch && 'estado' in patch
+              ? (patch.estado as string | null)
+              : typeof raw.estado === 'string'
+                ? raw.estado
+                : null,
+          aplicado: observado != null,
+        });
     }
     // An observed member should be among its own siblings (they share the parent
     // ref it was found by); if a delete removed it, its fresh reading still counts
     // for the fold — there is simply no document left to record it on.
     for (const [chave, observado] of porChave) {
-      if (encontrados.has(chave)) continue;
+      if (encontrados.has(chave) || observado.expectedUpdateTime != null) continue;
       foldable.push({
         status: observado.status,
         subStatus: observado.subStatus,
@@ -880,6 +939,7 @@ export async function applyFamilyStatusAndFold(
         estado: currentEstado,
         status: currentStatus,
         subStatus: currentSubStatus,
+        membros: membrosEfetivos,
       };
     }
 
@@ -902,6 +962,7 @@ export async function applyFamilyStatusAndFold(
       estado,
       status: folded.status,
       subStatus: folded.subStatus,
+      membros: membrosEfetivos,
     };
   });
 }
@@ -942,7 +1003,16 @@ function patchDoMembro(
     observado.categoryId != null &&
     observado.categoryId !== (typeof raw.category_id === 'string' ? raw.category_id : null);
 
+  const limparEstoque =
+    observado.stockFailure == null &&
+    (observado.clearStockFailure === true ||
+      podeEnviarEstoque(observado.status, observado.subStatus).enviar) &&
+    (raw.estado === ESTADO_PUBLICACAO_ML.erro ||
+      (Array.isArray(raw.errors) && raw.errors.length > 0) ||
+      (Array.isArray(raw.causas) && raw.causas.length > 0));
   const mudou =
+    observado.stockFailure != null ||
+    limparEstoque ||
     observado.status !== statusArmazenado ||
     !stringArraysEqual(observado.subStatus, subStatusArmazenado) ||
     userProductIdMudou ||
@@ -953,6 +1023,11 @@ function patchDoMembro(
   return {
     status: observado.status,
     sub_status: observado.subStatus,
+    ...(observado.stockFailure
+      ? { estado: ESTADO_PUBLICACAO_ML.erro, ...observado.stockFailure }
+      : limparEstoque
+        ? { estado: null, ...clearFalha() }
+        : {}),
     ...(observado.moderacoes != null ? { moderacoes: observado.moderacoes } : {}),
     ...(observado.userProductId != null ? { userProductId: observado.userProductId } : {}),
     ...(observado.categoryId != null ? { category_id: observado.categoryId } : {}),
@@ -1095,6 +1170,7 @@ interface ResolvedMember {
   docId: string;
   /** The member link's raw payload. */
   raw: Record<string, unknown>;
+  updateTime?: Timestamp;
   /** The parent's outer ref — the key the sibling fold reads by. */
   pmlOuterRef: string;
   /**
@@ -1182,6 +1258,7 @@ async function resolveLink(
               produtoId: membro.childProdutoId ?? '',
               docId: membro.memberDocId,
               raw: membro.memberRaw,
+              updateTime: membro.memberUpdateTime,
               pmlOuterRef: membro.pmlOuterRef,
               via: 'id-do-pai' as const,
             },
@@ -1203,6 +1280,7 @@ async function resolveLink(
         produtoId: member.childProdutoId ?? '',
         docId: member.memberDocId,
         raw: member.memberRaw,
+        updateTime: member.memberUpdateTime,
         pmlOuterRef: member.pmlOuterRef,
         via: 'familia',
       },

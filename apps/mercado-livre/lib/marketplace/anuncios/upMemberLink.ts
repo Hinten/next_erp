@@ -27,7 +27,7 @@
  * on a missing one — it silently full-scans and bills data scanned — so neither
  * query may gain a filter that is not in `firestore.indexes.json`.
  */
-import type { Firestore, Query } from 'firebase-admin/firestore';
+import type { Firestore, Query, Timestamp } from 'firebase-admin/firestore';
 import {
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
@@ -45,6 +45,7 @@ export interface UpMemberResolution {
   memberDocId: string;
   /** The member link's raw payload. */
   memberRaw: Record<string, unknown>;
+  memberUpdateTime?: Timestamp;
   /** The FAMILY parent produto id. */
   produtoId: string;
   /** The family's `produtoMercadoLivre` doc id. */
@@ -93,6 +94,7 @@ export async function resolveUpFamilyByMemberItemId(
       childProdutoId: d.ref.parent?.parent?.id ?? null,
       memberDocId: d.id,
       memberRaw,
+      memberUpdateTime: d.updateTime,
       produtoId: parsed.produtoId,
       linkDocId: parsed.linkId,
       linkRaw,
@@ -125,6 +127,7 @@ export function familyMemberQuery(db: Firestore, pmlOuterRef: string): Query {
 
 /** One member link a family holds, reduced to what a per-member ML call needs. */
 export interface MembroDaFamilia {
+  updateTime?: Timestamp;
   itemId: string;
   memberDocId: string;
   memberProdutoId: string;
@@ -169,6 +172,7 @@ export async function membrosDaFamilia(
     const raw = d.data() as Record<string, unknown>;
     if (typeof raw.itemId !== 'string' || raw.itemId === '') continue;
     membros.push({
+      updateTime: d.updateTime,
       itemId: raw.itemId,
       memberDocId: d.id,
       memberProdutoId: d.ref.parent?.parent?.id ?? '',

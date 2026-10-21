@@ -69,6 +69,8 @@ export interface ReverificarApi {
 
 /** One member of a re-verified User-Products family. */
 export interface ReverificacaoMembro {
+  /** Effective local stock block after the transaction; absent on older callers. */
+  estado?: string | null;
   /** This member's own ML item id. */
   itemId: string;
   /** The `variacaoMercadoLivre` doc the reading was recorded on. */
@@ -292,6 +294,8 @@ async function reverificarFamilia(
     observados.push({
       memberProdutoId: membro.memberProdutoId,
       memberDocId: membro.memberDocId,
+      expectedUpdateTime: membro.updateTime,
+      expectedItemId: membro.itemId,
       status: lido.status,
       subStatus: lido.subStatus,
       // A re-check is the operator asking for the truth NOW, so it FETCHES the
@@ -330,6 +334,12 @@ async function reverificarFamilia(
     { limparFalhaSempre: true },
   );
 
+  const effectiveByKey = new Map(
+    folded.membros?.map((m) => [`${m.memberProdutoId}/${m.memberDocId}`, m]),
+  );
+  const identityByItem = new Map(
+    membros.map((m) => [m.itemId, `${m.memberProdutoId}/${m.memberDocId}`]),
+  );
   return {
     // ⚠️ The FOLD's answer, never one member's. `estado` feeds
     // `linkHasLiveListing` → `integracoesComProduto`, the anchor pre-filter both
@@ -339,7 +349,22 @@ async function reverificarFamilia(
     status: folded.status,
     subStatus: folded.subStatus,
     enviavel: podeEnviarEstoque(folded.status, folded.subStatus).enviar,
-    membros: relatorio,
+    membros: relatorio.map((m) => {
+      if (!m.lido) return m;
+      const key = identityByItem.get(m.itemId);
+      const efetivo = key == null ? undefined : effectiveByKey.get(key);
+      return efetivo
+        ? {
+            ...m,
+            lido: efetivo.aplicado,
+            status: efetivo.status,
+            subStatus: efetivo.subStatus,
+            estado: efetivo.estado,
+            enviavel:
+              efetivo.estado !== 'E' && podeEnviarEstoque(efetivo.status, efetivo.subStatus).enviar,
+          }
+        : { ...m, lido: false };
+    }),
     chamadasMl,
   };
 }

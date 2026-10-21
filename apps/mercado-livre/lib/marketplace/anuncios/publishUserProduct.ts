@@ -30,7 +30,7 @@
  * Firestore write then fails); `seller_custom_field` carries the child produto
  * id, so an import can still recover that member.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import {
   type BuildItemPayloadInput,
   ML_ATTR_SKU_PAI_NOME,
@@ -48,6 +48,7 @@ import { resolveFamilyItemIds } from '../importacao/importFamily';
 
 /** One family member's existing ERP state, resolved before the fan-out. */
 export interface UserProductMember {
+  updateTime?: Timestamp;
   /** The variation child produto id. */
   produtoId: string;
   /** Its `variacaoMercadoLivre` doc for THIS parent link; null ⇒ none yet. */
@@ -489,6 +490,17 @@ async function writeMemberLink(
     // product at VARIATION level, so the family's parent link has none.
     userProductId: args.userProductId,
   };
+
+  if (state?.varLinkDocId != null && state.raw.estado === 'E') {
+    // Snapshot came from publish's member resolution BEFORE its ML request.
+    // A concurrent error or delete must fail the update instead of being erased.
+    const ref = variacaoMercadoLivreLinkCollection.docRef(db, { produtoId: childId }, docId);
+    const healed = { ...patch, estado: null, errors: [], causas: [] };
+    await (state.updateTime
+      ? ref.update(healed, { lastUpdateTime: state.updateTime })
+      : ref.update(healed));
+    return docId;
+  }
 
   if (state?.varLinkDocId != null) {
     const merged = await variacaoMercadoLivreLinkCollection.mergeIfExists(
