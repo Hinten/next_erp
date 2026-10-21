@@ -269,6 +269,203 @@ describe('conservative configuration repair', () => {
     }
   });
 
+  for (const key of ['features', '"features"', "'features'", String.raw`"\u0066eatures"`]) {
+    for (const definition of [
+      `${key} = { network_proxy = false }`,
+      `${key}."network_proxy" = true`,
+    ]) {
+      it(`refuses root feature definitions using ${definition}`, () => {
+        for (const historical of [LEGACY, MINIMAL_OFFLINE]) {
+          deepStrictEqual(planConfigRepair(definition + '\n' + historical), {
+            status: 'custom-profile',
+          });
+        }
+      });
+    }
+  }
+
+  for (const definition of [
+    '"shell_environment_policy" = { set = { CUSTOM = "keep" } }',
+    "'shell_environment_policy'.'set'.CUSTOM = 'keep'",
+    'shell_environment_policy."set" = { CUSTOM = "keep" }',
+    String.raw`"\u0073hell_environment_policy".set.CUSTOM = "keep"`,
+  ]) {
+    it(`refuses root environment definitions using ${definition}`, () => {
+      for (const historical of [LEGACY, MINIMAL_OFFLINE]) {
+        deepStrictEqual(planConfigRepair(definition + '\n' + historical), {
+          status: 'custom-profile',
+        });
+      }
+    });
+  }
+
+  for (const header of [
+    '[shell_environment_policy]',
+    '["shell_environment_policy"]',
+    "['shell_environment_policy']",
+    String.raw`["\u0073hell_environment_policy"]`,
+  ]) {
+    for (const key of ['set', '"set"', "'set'", String.raw`"\u0073et"`]) {
+      it(`refuses an inline environment target under ${header} using ${key}`, () => {
+        const prefix = `${header}\n${key} = { CUSTOM = "keep" }\n`;
+        deepStrictEqual(planConfigRepair(prefix + LEGACY), { status: 'custom-profile' });
+      });
+    }
+  }
+
+  for (const header of [
+    '["features"]',
+    "['features']",
+    String.raw`["\u0066eatures"]`,
+    '[shell_environment_policy."set"]',
+    '["shell_environment_policy".set]',
+    "['shell_environment_policy'.'set']",
+    String.raw`[shell_environment_policy."\u0073et"]`,
+    String.raw`["\u0073hell_environment_policy".set]`,
+  ]) {
+    it(`refuses default table aliases using ${header}`, () => {
+      deepStrictEqual(planConfigRepair(header + '\nCUSTOM = "keep"\n' + LEGACY), {
+        status: 'custom-profile',
+      });
+    });
+  }
+
+  it('preserves escaped required keys and refuses duplicate, conflicting or dotted aliases', () => {
+    const key = String.raw`"\u0054URBO_TELEMETRY_DISABLED"`;
+    const source = CONFIG.replace('TURBO_TELEMETRY_DISABLED = "1"', `${key} = "1"`);
+    deepStrictEqual(planConfigRepair(source), { status: 'already-fixed' });
+    for (const replacement of [
+      `${key} = "0"`,
+      `${key} = "1"\nTURBO_TELEMETRY_DISABLED = "1"`,
+      'TURBO_TELEMETRY_DISABLED.child = "1"',
+    ]) {
+      deepStrictEqual(
+        planConfigRepair(CONFIG.replace('TURBO_TELEMETRY_DISABLED = "1"', replacement)),
+        {
+          status: 'custom-profile',
+        },
+      );
+    }
+    deepStrictEqual(
+      planConfigRepair(
+        CONFIG.replace('network_proxy = true', String.raw`"\u006eetwork_proxy" = true`),
+      ),
+      { status: 'already-fixed' },
+    );
+    deepStrictEqual(
+      planConfigRepair(CONFIG.replace('network_proxy = true', 'network_proxy.child = true')),
+      {
+        status: 'custom-profile',
+      },
+    );
+  });
+
+  for (const [header, scalar, value] of [
+    ['[features."network_proxy"]', 'network_proxy = true', 'true'],
+    ['[features."network_proxy".deeper]', 'network_proxy = true', 'true'],
+    [String.raw`[features."\u006eetwork_proxy"]`, 'network_proxy = true', 'true'],
+    [
+      '[shell_environment_policy.set."TURBO_TELEMETRY_DISABLED"]',
+      'TURBO_TELEMETRY_DISABLED = "1"',
+      '"1"',
+    ],
+    [
+      '[shell_environment_policy.set."TURBO_TELEMETRY_DISABLED".deeper]',
+      'TURBO_TELEMETRY_DISABLED = "1"',
+      '"1"',
+    ],
+  ]) {
+    it(`refuses required scalar keys already defined by the table ${header}`, () => {
+      const declaration = `${header}\nchild = ${value}\n`;
+      for (const historical of [LEGACY, MINIMAL_OFFLINE]) {
+        const source = historical.replace(
+          '[permissions.next-erp]',
+          declaration + '[permissions.next-erp]',
+        );
+        deepStrictEqual(planConfigRepair(source), { status: 'custom-profile' });
+      }
+      const current = CONFIG.replace(scalar + '\n', '') + '\n' + declaration;
+      deepStrictEqual(planConfigRepair(current), { status: 'custom-profile' });
+    });
+  }
+
+  it('keeps literal dotted and longer descendant names distinct from required scalar keys', () => {
+    for (const header of [
+      '[features."network_proxy.extra"]',
+      '[features.network_proxy_extra]',
+      '[shell_environment_policy.set."TURBO_TELEMETRY_DISABLED.extra"]',
+    ]) {
+      const suffix = `\n${header}\nchild = "preserved"\n`;
+      const plan = planConfigRepair(LEGACY + suffix);
+      equal(plan.status, 'repairable');
+      equal(plan.replacement.endsWith(suffix), true);
+      equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+    }
+  });
+
+  it('keeps literal dots and longer prefixes distinct from structural key paths', () => {
+    const prefix =
+      '"features.network_proxy" = false\n' +
+      'features_extra.network_proxy = false\n' +
+      '"shell_environment_policy.set" = { CUSTOM = "keep" }\n' +
+      'shell_environment_policy_extra.set = { CUSTOM = "keep" }\n';
+    const suffix =
+      '\n["features.network_proxy"]\nCUSTOM = "table preserved"\n' +
+      '\n["shell_environment_policy.set"]\nCUSTOM = "environment table preserved"\n';
+    for (const [before, after] of [
+      [prefix, ''],
+      ['', suffix],
+    ]) {
+      const source = before + LEGACY + after;
+      const plan = planConfigRepair(source);
+      equal(plan.status, 'repairable');
+      equal(plan.replacement.startsWith(before), true);
+      equal(plan.replacement.endsWith(after), true);
+      equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+    }
+    const literalLeaf = CONFIG.replace('network_proxy = true', '"network_proxy.child" = false');
+    const leafPlan = planConfigRepair(literalLeaf);
+    equal(leafPlan.status, 'repairable');
+    match(leafPlan.replacement, /"network_proxy\.child" = false/);
+    equal(planConfigRepair(leafPlan.replacement).status, 'already-fixed');
+  });
+
+  it('does not treat comments or multiline prose as structural definitions', () => {
+    for (const delimiter of ['"""', "'".repeat(3)]) {
+      const prefix =
+        '# "features".network_proxy = false\n' +
+        'developer_instructions = ' +
+        delimiter +
+        '\n' +
+        '"features".network_proxy = false\n' +
+        '"shell_environment_policy" = { set = {} }\n' +
+        '["features"]\n' +
+        delimiter +
+        '\n';
+      const source = prefix + LEGACY;
+      const plan = planConfigRepair(source);
+      equal(plan.status, 'repairable');
+      equal(plan.replacement.startsWith(prefix), true);
+      equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+    }
+    const prefix = '[shell_environment_policy]\n# "set" = {}\nDOC = """\n"set" = {}\n"""\n';
+    const plan = planConfigRepair(prefix + LEGACY);
+    equal(plan.status, 'repairable');
+    equal(plan.replacement.includes(prefix), true);
+    equal(planConfigRepair(plan.replacement).status, 'already-fixed');
+  });
+
+  for (const definition of [
+    String.raw`["features\q"]`,
+    String.raw`["\U00000066eatures"]`,
+    String.raw`"features\q".network_proxy = false`,
+    '[[features]]',
+  ]) {
+    it(`leaves unhandled actual syntax for review: ${definition}`, () => {
+      deepStrictEqual(planConfigRepair(definition + '\n' + LEGACY), { status: 'custom-profile' });
+    });
+  }
+
   it('refuses assignment-looking defaults inside multiline environment values', () => {
     for (const delimiter of ['"""', "'''"]) {
       const source = CONFIG.replace('TURBO_TELEMETRY_DISABLED = "1"\n', '').replace(
@@ -441,6 +638,24 @@ describe('worktree discovery and recovery', () => {
       RepairError,
     );
     equal(readFileSync(other.config, 'utf8'), LEGACY);
+  });
+
+  it('refuses quoted structural defaults before backups or writer calls and preserves bytes', () => {
+    const original = '"features".network_proxy = false\n' + LEGACY;
+    const f = fixture(original);
+    let writes = 0;
+    const report = repairWorktrees({
+      repoRoot: f.repoRoot,
+      worktrees: [f.repoRoot],
+      apply: true,
+      writer: () => {
+        writes++;
+      },
+    });
+    equal(report.records[0].status, 'custom-profile');
+    equal(report.manifest, undefined);
+    equal(writes, 0);
+    equal(readFileSync(f.config, 'utf8'), original);
   });
 
   it('backs up original bytes, preserves branch and dirty files, and restores once', () => {

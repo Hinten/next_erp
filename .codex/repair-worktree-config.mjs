@@ -47,7 +47,7 @@ export const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 // Ignore header-looking lines inside TOML strings. Reject unfamiliar syntax in
 // permission tables rather than attempting to rewrite arbitrary TOML.
-export function tables(source) {
+export function tables(source, onCodeLine) {
   const result = [];
   let multiline = null;
   let offset = 0;
@@ -56,6 +56,8 @@ export function tables(source) {
     if (header) {
       if (result.length) result.at(-1).end = offset;
       result.push({ name: header[1], start: offset, bodyStart: offset + line.length });
+    } else if (multiline === null) {
+      onCodeLine?.(line, result.at(-1) ?? null);
     }
     let quote = null;
     for (let i = 0; i < line.length; i++) {
@@ -97,12 +99,72 @@ function signature(lines) {
   return JSON.stringify(lines.map((line) => line.replace(/\s*=\s*/, '=')).sort());
 }
 
+// Decode complete TOML dotted keys. A quoted dot remains part of one segment;
+// unfamiliar escapes or syntax require review instead of guessing an alias.
+function keyPath(text) {
+  const keys = [];
+  let remaining = text.trim();
+  while (remaining) {
+    const match = remaining.match(/^("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)/);
+    if (!match) return null;
+    const literal = match[0];
+    if (literal.startsWith('"')) {
+      try {
+        keys.push(JSON.parse(literal));
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err;
+        return null;
+      }
+    } else {
+      keys.push(literal.startsWith("'") ? literal.slice(1, -1) : literal);
+    }
+    remaining = remaining.slice(literal.length).trimStart();
+    if (!remaining) return keys;
+    if (!remaining.startsWith('.')) return null;
+    remaining = remaining.slice(1).trimStart();
+    if (!remaining) return null;
+  }
+  return null;
+}
+
+function assignment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    if (quote !== null) {
+      if (quote === '"' && line[i] === '\\') i++;
+      else if (line[i] === quote) quote = null;
+    } else if (line[i] === '#') break;
+    else if (line[i] === '"' || line[i] === "'") quote = line[i];
+    else if (line[i] === '=') {
+      return { keys: keyPath(line.slice(0, i)), value: line.slice(i + 1).trim() };
+    }
+  }
+  return null;
+}
+
+function sameKeys(actual, expected) {
+  return actual?.length === expected.length && actual.every((key, i) => key === expected[i]);
+}
+
 export function planConfigRepair(source) {
-  const allTables = tables(source);
+  const assignments = [];
+  let unhandledCode = false;
+  const allTables = tables(source, (line, table) => {
+    if (line.trimStart().startsWith('[')) unhandledCode = true;
+    const entry = assignment(line);
+    if (!entry) return;
+    if (!entry.keys) unhandledCode = true;
+    assignments.push({ ...entry, table });
+  });
+  const tableKeys = new Map(allTables.map((table) => [table, keyPath(table.name)]));
   const sections = allTables.filter(
-    (table) => table.name === PROFILE || table.name.startsWith(`${PROFILE}.`),
+    (table) =>
+      tableKeys.get(table)?.[0] === 'permissions' && tableKeys.get(table)?.[1] === 'next-erp',
   );
   if (sections.length === 0) return { status: 'missing-profile' };
+  if (unhandledCode || [...tableKeys.values()].some((keys) => !keys)) {
+    return { status: 'custom-profile' };
+  }
   const byName = new Map(sections.map((table) => [table.name, table]));
   const names = [PROFILE, `${PROFILE}.filesystem`, `${PROFILE}.filesystem.":workspace_roots"`];
   const network = `${PROFILE}.network`;
@@ -151,26 +213,47 @@ export function planConfigRepair(source) {
   const newline = source.includes('\r\n') ? '\r\n' : '\n';
   const edits = [];
   const ensureDefaults = (name, required) => {
-    const aliases = allTables.filter((table) => table.name.replace(/["'\s]/g, '') === name);
+    const keys = name.split('.');
+    const aliases = allTables.filter((table) => sameKeys(tableKeys.get(table), keys));
     if (aliases.length > 1 || aliases.some((table) => table.name !== name)) return false;
     const table = aliases[0];
+    // Root dotted or inline definitions already own this key path, even when
+    // their segments use quoting or Unicode escapes. Preserve them for review.
+    if (assignments.some((entry) => entry.table === null && entry.keys?.[0] === keys[0])) {
+      return false;
+    }
+    const parentTables = allTables.filter((candidate) =>
+      sameKeys(tableKeys.get(candidate), keys.slice(0, -1)),
+    );
+    if (
+      parentTables.length > 1 ||
+      parentTables.some((parent) => parent.name !== keys.slice(0, -1).join('.'))
+    ) {
+      return false;
+    }
+    if (
+      assignments.some(
+        (entry) => parentTables.includes(entry.table) && entry.keys?.[0] === keys.at(-1),
+      )
+    ) {
+      return false;
+    }
+    // A descendant table already owns a required scalar key. Adding that
+    // scalar would redefine the table, even if this target has no own header.
+    for (const expected of required) {
+      const [key] = expected.split(' = ');
+      const path = [...keys, key];
+      if (
+        allTables.some((candidate) =>
+          sameKeys(tableKeys.get(candidate).slice(0, path.length), path),
+        )
+      )
+        return false;
+    }
     // Defaults must be actual assignments, never assignment-looking lines
     // inside a multiline value. Leave unfamiliar table bodies for review.
     if (table?.hasMultiline) return false;
     if (!table) {
-      // Inline or dotted definitions would conflict with a new table. Report
-      // them as custom instead of attempting to parse arbitrary TOML.
-      const parentName = name.split('.')[0];
-      const preamble = source.slice(0, allTables[0]?.start ?? source.length);
-      if (new RegExp(`^\\s*${parentName}\\s*[.=]`, 'm').test(preamble)) return false;
-      if (name.includes('.')) {
-        const parentTable = allTables.find((candidate) => candidate.name === parentName);
-        if (
-          parentTable &&
-          /^\s*set\s*[.=]/m.test(source.slice(parentTable.bodyStart, parentTable.end))
-        )
-          return false;
-      }
       const insert = allTables[0]?.start ?? source.length;
       edits.push({
         start: insert,
@@ -179,18 +262,15 @@ export function planConfigRepair(source) {
       });
       return true;
     }
-    const body = source.slice(table.bodyStart, table.end);
     const missing = [];
     for (const expected of required) {
       const [key, value] = expected.split(' = ');
-      const assignments = [
-        ...body.matchAll(new RegExp(`^\\s*(?:${key}|"${key}"|'${key}')\\s*=([^\\r\\n]*)`, 'gm')),
-      ];
-      if (assignments.length > 1) return false;
-      if (assignments.length && assignments[0][1].trim().replace(/\s+#.*$/, '') !== value) {
-        return false;
-      }
-      if (!assignments.length) missing.push(expected);
+      const entries = assignments.filter(
+        (entry) => entry.table === table && entry.keys?.[0] === key,
+      );
+      if (entries.length > 1 || entries.some((entry) => entry.keys.length !== 1)) return false;
+      if (entries.length && entries[0].value.replace(/\s+#.*$/, '') !== value) return false;
+      if (!entries.length) missing.push(expected);
     }
     if (missing.length) {
       edits.push({
