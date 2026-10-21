@@ -64,7 +64,12 @@ or the operator's `escolha` resolves. The work is `lib/lojaIntegrada/pedidos/rot
   transaction (the multi-document read-and-write API), so no transaction-inventory row.
 - **Refusals are decisions** (200 `recusado`, with a motivo); the envelope carries only 400
   (id, then body), 401/403, 404 `LI_PEDIDO_NAO_ENCONTRADO` and 503. An already-routed pedido
-  answers `ja-roteado` and writes nothing, whatever the escolha.
+  answers `ja-roteado` and writes nothing, whatever the escolha; its `rota` reports the stored
+  fields through the shared readers (the override through the `int_frete` ref reader, an option
+  that is not a string through the Melhor Envio service reader, a string option verbatim).
+- The conflict error (`LiRotaEtiquetaEmConflitoError`) is a plain `Error` subclass, like the mapa
+  registration's `LiMapaFreteEmConflitoError`, not a `LiAppError`: it is about a pedido, not a
+  conta or its credential.
 - A refusal or a conflict logs ONE line with ids only (the pedido, the motivo, the attempts),
   never an endereço, a name or a document. No ruleset, index or env change: the write goes
   through Admin, and every read is by id.

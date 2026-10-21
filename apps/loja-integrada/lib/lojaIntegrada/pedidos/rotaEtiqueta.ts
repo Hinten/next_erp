@@ -85,7 +85,7 @@ import {
   concluirRotaEtiquetaLi,
   estadoFreteSchema,
   idIntFreteDaRefLi,
-  inteiroPositivoCanonicoLi,
+  idServicoMelhorEnvioLi,
   planejarRotaEtiquetaLi,
   recusaDoDocLiParaRotaLi,
   recusaDoPedidoParaRotaLi,
@@ -100,9 +100,12 @@ import {
 export const MAX_TENTATIVAS_ROTA_ETIQUETA_LI = 3;
 
 /**
- * The routing write lost its precondition on every attempt (module header). Not an app error of
- * the conta family (`core/erros.ts`): it is about one pedido, like the mapa registration's own
- * conflict error. The route answers it with 503 `rotaEmConflito` (`core/respond.ts`).
+ * The routing write lost its precondition on every attempt (module header). A PLAIN `Error`
+ * subclass, deliberately — the pattern of the mapa registration's own conflict error
+ * (`LiMapaFreteEmConflitoError`, `frete/mapaFrete.ts`) — and not an app error of the conta family
+ * (`LiAppError`, `core/erros.ts`): that family is about a conta or its credential and carries a
+ * conta id, while this one is about one pedido, whose conta ref may not even name a conta. The
+ * route answers it with 503 `rotaEmConflito` (`core/respond.ts`).
  */
 export class LiRotaEtiquetaEmConflitoError extends Error {
   readonly pedidoId: string;
@@ -186,13 +189,15 @@ function refIntFrete(id: string): OuterRef {
 }
 
 /**
- * A stored option in the wire's type: a string VERBATIM (never canonicalised); a number only when
- * it is a positive safe integer, as its decimal (`inteiroPositivoCanonicoLi`, the reading the
- * planner gives a stored service) — so a service a migrated block holds as `3` reaches the caller
- * as `'3'` instead of being dropped; anything else `null`.
+ * A stored option in the wire's type: a string VERBATIM (never canonicalised); any other value
+ * read as a Melhor Envio service by the shared service reader (`idServicoMelhorEnvioLi`, the one
+ * the mapa rows and the planner's stored service go through) and answered as the string it
+ * renders — so a service a migrated block holds as the NUMBER `3` reaches the caller as `'3'`
+ * instead of being dropped — or `null` when that reader refuses it (`1.5`, `0`, `-1`, `2 ** 53`,
+ * a boolean).
  */
 function opcaoDoBloco(valor: unknown): string | null {
-  return typeof valor === 'string' ? valor : inteiroPositivoCanonicoLi(valor);
+  return typeof valor === 'string' ? valor : idServicoMelhorEnvioLi({ id: valor });
 }
 
 /**
