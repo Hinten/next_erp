@@ -39,7 +39,7 @@
  * its title names its pedido (`pedidoRotulo`). A question still queued when the
  * page unmounts is answered as cancelled, like the open one, so no flow hangs.
  *
- * ⚠️ Why the routed-frete map (B14): the routing route re-points the pedido
+ * ⚠️ Why the routed-frete map: the routing route re-points the pedido
  * server-side and writes no `ultimaModificacao` — and with any filter or header
  * sort `/pedidos` reads through the one-shot transport — so the list row can
  * keep showing the pre-routing freight for the rest of the page's life. The
@@ -57,8 +57,8 @@
  * ref moves on.
  *
  * Rejected (R-f): Mantine `keepMounted` on the HoverCard — it would mount every
- * row's `EtiquetaRowAction`, each with its own `int_frete` query. Rejected
- * (B14): a row-level refresh hook in `packages/ui`.
+ * row's `EtiquetaRowAction`, each with its own `int_frete` query. Also
+ * rejected: a row-level refresh hook in `packages/ui`.
  */
 import {
   createContext,

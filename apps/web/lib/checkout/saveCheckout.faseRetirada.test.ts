@@ -134,7 +134,7 @@ beforeEach(() => {
   h.checkoutDocRef.mockImplementation(() => db.docRef(`${PEDIDO_PATH}/checkout/chk-1`));
 });
 
-describe('salvarCheckoutTransacao — phase 2 decides through the SHARED rule (B9)', () => {
+describe('salvarCheckoutTransacao — phase 2 decides through the SHARED rule', () => {
   it('⭐ a shared rule that hands off another target is followed — the outer gate holds no copy of its own', async () => {
     h.regra = (estado, tipoAlvo) =>
       tipoAlvo === 'motoboy' && estado === ESTADO_FRETE.checkFinalizado;
