@@ -104,6 +104,29 @@ async function deixarAssentar() {
   });
 }
 
+/**
+ * The rejections `fn` leaves unhandled — what a click handler's failure
+ * becomes, since React drops the promise it returns. The runner's own
+ * listeners are set aside for the duration (it would fail the file on them)
+ * and put back afterwards.
+ */
+async function rejeicoesNaoTratadas(fn: () => Promise<void>): Promise<unknown[]> {
+  const capturadas: unknown[] = [];
+  const anteriores = process.listeners('unhandledRejection');
+  process.removeAllListeners('unhandledRejection');
+  const ouvir = (motivo: unknown) => {
+    capturadas.push(motivo);
+  };
+  process.on('unhandledRejection', ouvir);
+  try {
+    await fn();
+  } finally {
+    process.off('unhandledRejection', ouvir);
+    for (const l of anteriores) process.on('unhandledRejection', l);
+  }
+  return capturadas;
+}
+
 afterEach(() => {
   vi.clearAllMocks();
   freight.remetente = SEM_AGENCIAS.remetente;
@@ -483,14 +506,77 @@ describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the b
     await comprarEtiqueta();
     await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
-    await deixarAssentar();
+    const escapadas = await rejeicoesNaoTratadas(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+      await deixarAssentar();
+    });
 
+    expect(escapadas).toEqual([]);
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(comprar).not.toHaveBeenCalled();
     expect(showErrorNotification).not.toHaveBeenCalled();
     expect(screen.queryByText(/Pagamento não confirmado/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Continuar mesmo assim' })).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: only the abort itself is dropped — a bug that surfaces after the close still escapes (rule 6)', async () => {
+    const bug = new TypeError('bug');
+    conferir.mockImplementation(
+      (_pedidoId: string, opcoes?: { sinal?: AbortSignal }) =>
+        new Promise<RespostaConferenciaPagamentoLi>((_resolve, reject) => {
+          opcoes?.sinal?.addEventListener('abort', () => reject(bug), { once: true });
+        }),
+    );
+    renderLi();
+    await comprarEtiqueta();
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
+
+    const escapadas = await rejeicoesNaoTratadas(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+      await deixarAssentar();
+    });
+    expect(escapadas).toEqual([bug]);
+    expect(comprar).not.toHaveBeenCalled();
+  });
+
+  it('a check abandoned by closing never touches the next click: its late answer neither re-enables Comprar nor releases the click in flight', async () => {
+    let primeira: (r: RespostaConferenciaPagamentoLi) => void = () => undefined;
+    let segunda: (r: RespostaConferenciaPagamentoLi) => void = () => undefined;
+    conferir
+      .mockReturnValueOnce(
+        new Promise<RespostaConferenciaPagamentoLi>((resolve) => {
+          primeira = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<RespostaConferenciaPagamentoLi>((resolve) => {
+          segunda = resolve;
+        }),
+      );
+    // `opened` stays true here, so after Cancelar the SAME modal is clicked
+    // again — what a reopened `/pedidos` modal does.
+    renderLi();
+    await comprarEtiqueta();
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    await comprarEtiqueta();
+    await waitFor(() => expect(conferir).toHaveBeenCalledTimes(2));
+
+    // The first (abandoned) check answers late.
+    primeira(PAGO);
+    await deixarAssentar();
+    expect(
+      screen.getByRole<HTMLButtonElement>('button', { name: 'Conferindo pagamento…' }).disabled,
+    ).toBe(true);
+    expect(comprar).not.toHaveBeenCalled();
+
+    // The second check is still the click in flight: closing aborts IT.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    const segundaChamada = conferir.mock.calls[1]![1] as { sinal?: AbortSignal } | undefined;
+    expect(segundaChamada?.sinal?.aborted).toBe(true);
+    segunda(PAGO);
+    await deixarAssentar();
+    expect(comprar).not.toHaveBeenCalled();
   });
 
   it('a modal unmounted while the check runs buys nothing', async () => {
@@ -593,6 +679,26 @@ describe('EtiquetaComprarModal — the Loja Integrada paid re-check before the b
     fireEvent.click(continuar);
     await waitFor(() => expect(comprar).toHaveBeenCalledTimes(1));
     expect(conferir).toHaveBeenCalledTimes(1);
+  });
+
+  it('two clicks on "Continuar mesmo assim" that land before the re-render buy ONE label', async () => {
+    conferir.mockRejectedValue(
+      new LojaIntegradaClientHttpError('desligada', 503, CODIGO_ERRO_LI.chamadasDesligadas),
+    );
+    comprar.mockReturnValue(new Promise(() => undefined));
+    renderLi();
+    await comprarEtiqueta();
+    const continuar = await screen.findByRole<HTMLButtonElement>('button', {
+      name: 'Continuar mesmo assim',
+    });
+    act(() => {
+      continuar.click();
+      continuar.click();
+    });
+
+    await waitFor(() => expect(comprar).toHaveBeenCalled());
+    await deixarAssentar();
+    expect(comprar).toHaveBeenCalledTimes(1);
   });
 
   it('a carried `pago` received 119 s ago spares the check', async () => {
