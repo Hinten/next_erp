@@ -123,7 +123,10 @@ export function situacaoValidadeTokenLi(dias: number): SituacaoValidadeTokenLi {
  * "retry" or "switched off until the cutover" — each needs its own advice.
  */
 export const CODIGO_ERRO_LI = {
-  /** 400 — an empty id (conta or pedido), or one carrying `/`, `.` or `..`. */
+  /**
+   * 400 — the id cannot be a document id: empty, containing `/`, or exactly `.`
+   * or `..` (`naoDocId`); a conta id additionally refuses any `.`.
+   */
   idInvalido: 'LI_ID_INVALIDO',
   /** 400 — the body is not JSON, or not the expected shape (paths only). */
   corpoInvalido: 'LI_CORPO_INVALIDO',

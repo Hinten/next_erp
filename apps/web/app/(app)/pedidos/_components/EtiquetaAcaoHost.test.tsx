@@ -3,7 +3,9 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
+import { ESTADO_FRETE, type FreteDoPedido } from '@delfrance/schemas';
 import type { PerguntaDeEnvio, RespostaDeEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
+import type { AlvoFreteLi } from '@/lib/loja-integrada/useAlvosMapaFreteLi';
 
 import type { UseConfirmDialogResult } from './ConfirmDialog';
 
@@ -41,8 +43,10 @@ vi.mock('./ConfirmDialog', async (importOriginal) => {
 
 import {
   EtiquetaAcaoHost,
+  freteComRotaConhecida,
   useEtiquetaAcao,
   type EtiquetaAcaoContextValue,
+  type RotaRegistrada,
 } from './EtiquetaAcaoHost';
 
 /** A deferred promise, so a test decides when an in-flight action settles. */
@@ -402,5 +406,283 @@ describe('EtiquetaAcaoHost — as bordas da fila', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
     await drenar();
     expect(envioB.valor).toEqual({ modo: 'pickup', enderecoId: '200001', horarioId: 'slot-1' });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                      Loja Integrada (master plan step 15)                   */
+/* -------------------------------------------------------------------------- */
+
+const ALVOS: AlvoFreteLi[] = [
+  {
+    id: 'mot-1',
+    nome: 'Motoboy Centro',
+    tipo: 'motoboy',
+    ativo: true,
+    suportado: true,
+    roteavel: true,
+  },
+  {
+    id: 'me-1',
+    nome: 'Melhor Envio',
+    tipo: 'melhorEnvios',
+    ativo: true,
+    suportado: true,
+    roteavel: true,
+  },
+  {
+    id: 'mot-velho',
+    nome: 'Motoboy Antigo',
+    tipo: 'motoboy',
+    ativo: false,
+    suportado: true,
+    roteavel: false,
+  },
+  {
+    id: 'ml-1',
+    nome: 'Mercado Envios',
+    tipo: 'mercadoLivre',
+    ativo: true,
+    suportado: false,
+    roteavel: false,
+  },
+  // A migrated doc with NO stored `ativo`: the conta editor's display flag
+  // (`ativo`, exactly `true`) is off, but the label route reads an absent flag
+  // as active — so the picker offers it.
+  {
+    id: 'mot-migrado',
+    nome: 'Motoboy Migrado',
+    tipo: 'motoboy',
+    ativo: false,
+    suportado: true,
+    roteavel: true,
+  },
+];
+
+const LI_DOC = 'documents/int_frete/li-doc';
+
+const registro = (alvo: string): RotaRegistrada => ({
+  refAnterior: LI_DOC,
+  rota: {
+    integracaoFreteOuterRef: `documents/int_frete/${alvo}`,
+    externalOptionId: null,
+    integracaoTargetOuterRef: null,
+    estado: null,
+  },
+});
+
+describe('EtiquetaAcaoHost — o frete roteado de cada pedido (B14)', () => {
+  it('nothing registered ⇒ null; registered ⇒ that route, for THAT pedido only', () => {
+    const host = montar();
+    expect(host().rotaConhecida('p1')).toBeNull();
+
+    const rota = registro('mot-1');
+    act(() => host().registrarRota('p1', rota));
+
+    expect(host().rotaConhecida('p1')).toBe(rota);
+    // Near-miss: another pedido has no route.
+    expect(host().rotaConhecida('p2')).toBeNull();
+  });
+
+  it('the LATEST registration wins', () => {
+    const host = montar();
+    const segunda = registro('me-1');
+    act(() => {
+      host().registrarRota('p1', registro('mot-1'));
+      host().registrarRota('p1', segunda);
+    });
+
+    expect(host().rotaConhecida('p1')).toBe(segunda);
+  });
+
+  it('it outlives the asker unmounting — the HoverCard closing', () => {
+    const host = montar();
+    const rota = registro('mot-1');
+    act(() => host().registrarRota('p1', rota));
+    fireEvent.click(screen.getByText('desmontar'));
+
+    expect(host().rotaConhecida('p1')).toBe(rota);
+  });
+});
+
+describe('freteComRotaConhecida — a registered route stands in ONLY for a stale list copy', () => {
+  const daLista = (over: Partial<FreteDoPedido> = {}) =>
+    ({
+      integracaoFreteOuterRef: LI_DOC,
+      externalOptionId: null,
+      integracaoTargetOuterRef: null,
+      printLabelId: null,
+      estado: ESTADO_FRETE.checkFinalizado,
+      valorCobrado: 15,
+      ...over,
+    }) as unknown as FreteDoPedido;
+
+  it('EQUAL: the list still holds the ref the route superseded ⇒ the routing fields over the LIST copy', () => {
+    const lista = daLista();
+    const r: RotaRegistrada = {
+      refAnterior: LI_DOC,
+      rota: {
+        integracaoFreteOuterRef: 'documents/int_frete/me-1',
+        externalOptionId: '3',
+        integracaoTargetOuterRef: 'documents/int_frete/me-1',
+        estado: ESTADO_FRETE.aguardandoRetirada,
+      },
+    };
+
+    expect(freteComRotaConhecida(lista, r)).toEqual({
+      ...lista,
+      integracaoFreteOuterRef: 'documents/int_frete/me-1',
+      externalOptionId: '3',
+      integracaoTargetOuterRef: 'documents/int_frete/me-1',
+      estado: ESTADO_FRETE.aguardandoRetirada,
+    });
+  });
+
+  it("⚠️ NEAR-MISS: once the list caught up (its ref moved on), the LIST wins whole — a later write, such as a bought label's printLabelId, is never hidden", () => {
+    const lista = daLista({
+      integracaoFreteOuterRef: 'documents/int_frete/me-1',
+      externalOptionId: '3',
+      printLabelId: 'lbl-1',
+    });
+
+    expect(freteComRotaConhecida(lista, registro('me-1'))).toBe(lista);
+  });
+
+  it('an estado the route did not know (null on the wire) keeps the list estado', () => {
+    const lista = daLista();
+
+    expect(freteComRotaConhecida(lista, registro('mot-1'))?.estado).toBe(
+      ESTADO_FRETE.checkFinalizado,
+    );
+  });
+
+  it('nothing registered, or no list freight ⇒ the list copy as is', () => {
+    const lista = daLista();
+    expect(freteComRotaConhecida(lista, null)).toBe(lista);
+    expect(freteComRotaConhecida(null, registro('mot-1'))).toBeNull();
+  });
+});
+
+describe('EtiquetaAcaoHost — "Escolher transportadora…" (A6)', () => {
+  const pergunta = (pedidoRotulo: string | null, preselecionado: string | null = 'mot-1') => ({
+    pedidoRotulo,
+    alvos: ALVOS,
+    preselecionado,
+  });
+
+  it('offers exactly the targets the label route accepts (an absent `ativo` included), preselects the mapa’s, and answers its id', async () => {
+    const host = montar();
+    let resposta!: Promise<string | null>;
+    act(() => {
+      resposta = host().escolherTransportadora(pergunta('1001'));
+    });
+
+    expect(await screen.findByText('Pedido 1001 — Escolher transportadora')).toBeTruthy();
+    fireEvent.click(screen.getByRole('combobox', { name: 'Transportadora' }));
+    const opcoes = screen.getAllByRole('option').map((o) => o.textContent);
+    // NEAR-MISS: the inactive one and the marketplace's freight are not offered.
+    expect(opcoes).toEqual([
+      'Motoboy Centro (Motoboy)',
+      'Melhor Envio (Melhor Envios)',
+      'Motoboy Migrado (Motoboy)',
+    ]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    await expect(resposta).resolves.toBe('mot-1');
+  });
+
+  it('⚠️ NEAR-MISS: a preselection that is not offered (inactive) selects NOTHING — Confirmar is off', async () => {
+    const host = montar();
+    act(() => {
+      void host().escolherTransportadora(pergunta('1001', 'mot-velho'));
+    });
+
+    const confirmar = await screen.findByRole<HTMLButtonElement>('button', { name: 'Confirmar' });
+    expect(confirmar.disabled).toBe(true);
+  });
+
+  it('Cancelar answers null', async () => {
+    const host = montar();
+    let resposta!: Promise<string | null>;
+    act(() => {
+      resposta = host().escolherTransportadora(pergunta('1001'));
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancelar' }));
+
+    await expect(resposta).resolves.toBeNull();
+  });
+
+  it('waits in the SAME queue as the confirm — one dialog at a time', async () => {
+    const host = montar();
+    let confirmA!: ReturnType<typeof observar<boolean>>;
+    let escolhaB!: ReturnType<typeof observar<string | null>>;
+    act(() => {
+      confirmA = observar(host().confirm({ title: 'Atenção', message: 'Frete já postado.' }));
+    });
+    await drenar();
+    act(() => {
+      escolhaB = observar(host().escolherTransportadora(pergunta('1002')));
+    });
+    await drenar();
+    expect(screen.queryByText(/Escolher transportadora/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sim' }));
+    await drenar();
+    expect(confirmA.valor).toBe(true);
+    expect(await screen.findByText('Pedido 1002 — Escolher transportadora')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    await drenar();
+    expect(escolhaB.valor).toBe('mot-1');
+  });
+
+  it('the page leaving answers a queued choice as cancelled', async () => {
+    const host = montar();
+    let confirmA!: ReturnType<typeof observar<boolean>>;
+    let escolhaB!: ReturnType<typeof observar<string | null>>;
+    act(() => {
+      confirmA = observar(host().confirm({ title: 'Atenção', message: 'Frete já postado.' }));
+      escolhaB = observar(host().escolherTransportadora(pergunta('1002')));
+    });
+    await drenar();
+    host.view.unmount();
+    await drenar();
+
+    expect(confirmA).toEqual({ respondida: true, valor: false });
+    expect(escolhaB).toEqual({ respondida: true, valor: null });
+  });
+});
+
+describe('EtiquetaAcaoHost — o confirm com ciência (A2)', () => {
+  it('Continuar only after "Estou ciente do risco", and a queued second question opens unticked', async () => {
+    const host = montar();
+    let a!: ReturnType<typeof observar<boolean>>;
+    let b!: ReturnType<typeof observar<boolean>>;
+    const opts = {
+      title: 'Pagamento não confirmado na Loja Integrada',
+      message: 'Aviso.',
+      confirmLabel: 'Continuar',
+      cancelLabel: 'Cancelar',
+      ciencia: true as const,
+    };
+    act(() => {
+      a = observar(host().confirm(opts));
+      b = observar(host().confirm(opts));
+    });
+    await drenar();
+
+    const continuar = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Continuar' });
+    const caixa = () =>
+      screen.getByRole<HTMLInputElement>('checkbox', { name: 'Estou ciente do risco' });
+    expect(continuar().disabled).toBe(true);
+    fireEvent.click(caixa());
+    fireEvent.click(continuar());
+    await drenar();
+    expect(a.valor).toBe(true);
+
+    expect(caixa().checked).toBe(false);
+    expect(continuar().disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    await drenar();
+    expect(b.valor).toBe(false);
   });
 });
