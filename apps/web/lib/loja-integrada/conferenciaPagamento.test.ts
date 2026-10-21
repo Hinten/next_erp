@@ -30,10 +30,10 @@ import {
 import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
 
 /**
- * The web half of the Loja Integrada paid re-check (master plan step 15, PR
- * 15-b0): the identity hash that decides whether any gate runs, the two
- * decision tables (hard: the checkout save and the Melhor Envio buy; soft: a
- * reprint and a generic label), and the soft gate the label providers call.
+ * The web half of the Loja Integrada paid re-check (master plan step 15): the
+ * identity hash that decides whether any gate runs, the two decision tables
+ * (hard: the checkout save and the Melhor Envio buy; soft: a reprint and a
+ * generic label), and the soft gate the label providers call.
  *
  * Every table is pinned with its EQUAL and NEAR-MISS pairs: a gate that folds
  * too much lets an unpaid order ship, one that folds too little nags every
@@ -99,7 +99,7 @@ afterEach(() => {
 /*                              The identity hash                              */
 /* -------------------------------------------------------------------------- */
 
-describe('ehPedidoImportadoDaLojaIntegrada — the web identity check (B8)', () => {
+describe('ehPedidoImportadoDaLojaIntegrada — the web identity check', () => {
   it("the web digest equals node's sha256 for the master plan's vector", async () => {
     expect(ID_LI).toBe('60fe37ac35667bf3d56a8cb3a015114133ce02dad6d7338ac5db4f421413e532');
     await expect(ehPedidoImportadoDaLojaIntegrada(ID_LI, PEDIDO_LI)).resolves.toBe(true);
@@ -409,7 +409,7 @@ describe('conferirPagamentoLi — every way the call ends, as data', () => {
 /*                           The soft gate, end to end                         */
 /* -------------------------------------------------------------------------- */
 
-describe('conferirAntesDeImprimirLi — the soft gate (A2)', () => {
+describe('conferirAntesDeImprimirLi — the soft gate', () => {
   function cenario(responder: () => Promise<RespostaConferenciaPagamentoLi>) {
     const conferirPagamento = vi.fn(responder);
     const confirmRisk = vi.fn(async (_msg: string) => true);

@@ -94,7 +94,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('EtiquetaMelhorEnvioPanel — the paid re-check before a reprint (A2)', () => {
+describe('EtiquetaMelhorEnvioPanel — the paid re-check before a reprint', () => {
   it('⭐ `nao-pago`: Continuar stays off until "Estou ciente do risco", then the label opens', async () => {
     const s = cenario('nao-pago');
     montar();

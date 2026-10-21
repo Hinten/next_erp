@@ -37,11 +37,11 @@ import {
 import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
 
 /**
- * The web half of the Loja Integrada label routing (master plan step 15, PR
- * 15-b0): `rotearEtiquetaLi` turns every answer of the `PUT …/rota-etiqueta`
- * route into the operator's copy, and `preverRotaEtiquetaLi` asks the SAME pure
- * questions the route asks (15-a's resolver), read-only, so the checkout can
- * warn before the stock leaves.
+ * The web half of the Loja Integrada label routing (master plan step 15):
+ * `rotearEtiquetaLi` turns every answer of the `PUT …/rota-etiqueta` route into
+ * the operator's copy, and `preverRotaEtiquetaLi` asks the SAME pure questions
+ * the route asks (the shared resolver in `@delfrance/schemas`), read-only, so
+ * the checkout can warn before the stock leaves.
  */
 
 const ROTA = {
