@@ -751,6 +751,19 @@ describe('rotearEtiquetaLi — a lost race re-reads and re-decides, never re-app
     expect(db.leituras.filter((c) => c === CAMINHO)).toHaveLength(2);
   });
 
+  it('⚠️ NEAR-MISS: the precondition is the pedido’s OWN commit stamp, never the read time — a later write to ANOTHER document is no lost race', async () => {
+    semear(db);
+    // Committed after the pedido: every read time from here on is later than the pedido's stamp,
+    // while the pedido itself is unchanged.
+    db.seed('int_frete/outro-alvo', { tipo: 'motoboy', nome: 'Outro motoboy', ativo: true });
+
+    expect(await rotear(db)).toMatchObject({ tentativas: 1, resposta: { tipo: 'roteado' } });
+    expect(db.escritasEm(CAMINHO).map((e) => e.dados)).toEqual([
+      { freteInicial: frete({ integracaoFreteOuterRef: refAlvo(ME), externalOptionId: '3' }) },
+    ]);
+    expect(db.leituras.filter((c) => c === CAMINHO)).toHaveLength(1);
+  });
+
   it.each([null, ME])(
     'another tab routed it first ⇒ 9 ⇒ the second attempt answers ja-roteado — escolha %s',
     async (escolha) => {
