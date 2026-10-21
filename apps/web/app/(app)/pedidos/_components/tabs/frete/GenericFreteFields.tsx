@@ -6,7 +6,7 @@ import type { Firestore } from 'firebase/firestore';
 import {
   INTEGRACAO_FRETE_LABELS,
   integracoesFreteSchema,
-  isFreteMarketplaceOwned,
+  isFreteSelecionavelManualmente,
 } from '@delfrance/schemas';
 import {
   FreteDateTimeField,
@@ -20,10 +20,11 @@ import { TransportadoraFields } from './TransportadoraFields';
 import { VolumesEditor } from './VolumesEditor';
 
 /**
- * The tipos this Select offers — every freight tipo EXCEPT the
- * marketplace-owned ones.
+ * The tipos this Select offers — every freight tipo an operator may pick by
+ * hand (`isFreteSelecionavelManualmente`): neither a marketplace-owned one nor
+ * the router (Loja Integrada, whose doc no label flow dispatches on by itself).
  *
- * ⚠️ The five marketplace values are deliberately absent, and their absence is
+ * ⚠️ The four marketplace values are deliberately absent, and their absence is
  * load-bearing rather than cosmetic. `externalOptionIntegracao` is read as
  * "an IMPORTER owns this block" in two places — `FreteTab` locks the whole tab
  * read-only on it (#1515) and `pedidoReconcile` refuses to authorize dispatch on
@@ -31,15 +32,18 @@ import { VolumesEditor } from './VolumesEditor';
  * the importer's behalf, and the lock it triggers REMOVES this Select from the
  * screen: there would be no gesture left to undo it, on the tab or off it. The
  * importer writes the value directly (`orderFreteMapping.ts` for Shopee), never
- * through an editor.
+ * through an editor. The router is absent for a plainer reason: no label flow
+ * dispatches on a `lojaIntegrada` block tipo (the Loja Integrada import leaves
+ * the block tipo null and routes through the doc instead).
  *
  * ⚠️ Nothing is hidden by this: a block already naming a marketplace never
  * reaches `GenericFreteFields` at all — `FreteTab.renderTipoFields` hoists it to
  * `MarketplaceReadOnly` before the generic body is considered — so the current
- * value is always one of the options below, or null.
+ * value is always one of the options below, or null (no writer puts the router
+ * tipo on a block).
  */
 const OPCOES_INTEGRACAO_OPCAO_EXTERNA = integracoesFreteSchema.options
-  .filter((value) => !isFreteMarketplaceOwned(value))
+  .filter((value) => isFreteSelecionavelManualmente(value))
   .map((value) => ({ value, label: INTEGRACAO_FRETE_LABELS[value] }));
 
 /**

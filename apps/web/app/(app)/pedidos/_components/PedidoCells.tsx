@@ -30,6 +30,7 @@ import {
   type TipoCliente,
   bloqueioDespachoAtivo,
   bloqueioFinalizarAtivo,
+  ehFreteRoteado,
   freightCapsFor,
   nfeImprimivel,
   pedidoTotal,
@@ -639,11 +640,12 @@ export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: stri
   // Show the etiqueta HoverCard when there's something to act on — a bought
   // label (reprint/track), a selected quote (buy), a fetch-label marketplace
   // frete (real ML pedidos carry NEITHER printLabelId nor externalOptionId —
-  // only externalOptionIntegracao identifies them), or a generic-label tipo
-  // (its on-demand PDF needs no prior state). Otherwise keep the lightweight
-  // tracking tooltip.
+  // only externalOptionIntegracao identifies them), a generic-label tipo
+  // (its on-demand PDF needs no prior state), or a ROUTER doc (a Loja
+  // Integrada pedido not routed to a carrier yet: its routing action needs no
+  // prior state either). Otherwise keep the lightweight tracking tooltip.
   const isGenericLabel = intTipo != null && freightCapsFor(intTipo).labelMode === 'generic';
-  const hasEtiquetaAction = knownEtiquetaAction || isGenericLabel;
+  const hasEtiquetaAction = knownEtiquetaAction || isGenericLabel || ehFreteRoteado(intTipo);
   if (!hasEtiquetaAction) {
     const tooltipParts: string[] = [];
     if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);

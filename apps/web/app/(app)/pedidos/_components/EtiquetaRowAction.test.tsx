@@ -1,34 +1,53 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { FirebaseError } from 'firebase/app';
 import {
   ESTADO_FRETE,
   INTEGRACAO_FRETE,
+  MOTIVO_ROTA_ETIQUETA_LI,
   type Pedido,
   type RespostaConferenciaPagamentoLi,
+  type RespostaRotaEtiquetaLi,
+  type TipoAlvoMapaFreteLi,
 } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
+import { LojaIntegradaClientHttpError } from '@/lib/loja-integrada/client';
+import { MENSAGEM_MOTIVO_ROTA_ETIQUETA_LI } from '@/lib/loja-integrada/rotaEtiqueta';
+import { alvoFreteLiDoDoc } from '@/lib/loja-integrada/useAlvosMapaFreteLi';
 
 import type { EtiquetaOutcome, EtiquetaProviderInput } from '@/lib/checkout/etiqueta/types';
 
-const { clientes, emitirMock, getDocMock, showErrorMock, showCopyableMock, firestoreDb } =
-  vi.hoisted(() => ({
-    // `null` = logged out / not built; each test sets what it needs.
-    clientes: {
-      freight: null as unknown,
-      ml: null as unknown,
-      shopee: null as unknown,
-      li: null as unknown,
-    },
-    emitirMock: vi.fn(),
-    getDocMock: vi.fn(),
-    showErrorMock: vi.fn(),
-    showCopyableMock: vi.fn(),
-    firestoreDb: { __db: true },
-  }));
+const {
+  clientes,
+  emitirMock,
+  getDocMock,
+  showErrorMock,
+  showCopyableMock,
+  firestoreDb,
+  preverMock,
+  alvosLi,
+} = vi.hoisted(() => ({
+  // `null` = logged out / not built; each test sets what it needs.
+  clientes: {
+    freight: null as unknown,
+    ml: null as unknown,
+    shopee: null as unknown,
+    li: null as unknown,
+  },
+  emitirMock: vi.fn(),
+  getDocMock: vi.fn(),
+  showErrorMock: vi.fn(),
+  showCopyableMock: vi.fn(),
+  firestoreDb: { __db: true },
+  // The read-only routing preview the carrier picker preselects from.
+  preverMock: vi.fn(),
+  // The shared targets query's answer (`useAlvosMapaFreteLi`).
+  alvosLi: { current: [] as unknown[] },
+}));
 
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => firestoreDb }));
 vi.mock('@/lib/freight/client', () => ({ useFreightClient: () => clientes.freight }));
@@ -38,6 +57,21 @@ vi.mock('@/lib/shopee/client', () => ({ useShopeeClient: () => clientes.shopee }
 vi.mock('@/lib/loja-integrada/client', async (importActual) => ({
   ...(await importActual<typeof import('@/lib/loja-integrada/client')>()),
   useLojaIntegradaClient: () => clientes.li,
+}));
+// Partial: the REAL routing wrapper (its copy is what the row shows); only the
+// read-only preview, which reads Firestore, is stood in for.
+vi.mock('@/lib/loja-integrada/rotaEtiqueta', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/loja-integrada/rotaEtiqueta')>()),
+  preverRotaEtiquetaLi: (...args: unknown[]) => preverMock(...args),
+}));
+vi.mock('@/lib/loja-integrada/useAlvosMapaFreteLi', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/loja-integrada/useAlvosMapaFreteLi')>()),
+  useAlvosMapaFreteLi: () => ({
+    alvos: alvosLi.current,
+    armazenados: new Map(),
+    carregando: false,
+    erro: null,
+  }),
 }));
 vi.mock('@/lib/auth/usePermission', () => ({
   usePermission: () => ({ allowed: true, loading: false }),
@@ -80,6 +114,8 @@ import { EtiquetaAcaoHost, useEtiquetaAcao, type RotaRegistrada } from './Etique
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 
 const SHOPEE_CLIENT = { __shopee: true };
+const DEFINIR = 'Definir transportadora';
+const ESCOLHER = 'Escolher transportadora…';
 const ML_CLIENT = { __ml: true };
 const ZPL2 = 'Imprimir Etiqueta Transporte (ZPL2)';
 const PDF = 'Imprimir Etiqueta Transporte (PDF)';
@@ -132,8 +168,9 @@ function PaginaComHost({ pedido, pedidoId = 'p1' }: { pedido: Pedido; pedidoId?:
 }
 
 /**
- * Stands in for the routing click (15-b): registers a routed freight with the
- * host, the way the `'rotear'` branch will after the route answers.
+ * Registers a routed freight with the host directly, the way the `'rotear'`
+ * branch does after the route answers — so the host's map is tested apart from
+ * the routing click (whose own tests are at the bottom of this file).
  */
 const rotaParaRegistrar = { registro: null as RotaRegistrada | null };
 function RegistrarRota({ pedidoId }: { pedidoId: string }) {
@@ -169,6 +206,8 @@ beforeEach(() => {
   clientes.shopee = SHOPEE_CLIENT;
   clientes.li = null;
   rotaParaRegistrar.registro = null;
+  alvosLi.current = [];
+  preverMock.mockResolvedValue({ tipo: 'recusa', motivo: 'sem-mapeamento', mensagem: '' });
   emitirMock.mockResolvedValue({ status: 'printed' } satisfies EtiquetaOutcome);
 });
 
@@ -501,7 +540,7 @@ describe('EtiquetaRowAction — a rota que o host guarda (B14)', () => {
       },
     };
     const view = renderComHost(PEDIDO_NO_DOC_LI);
-    expect(await screen.findByText(/ainda não suportada/)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: DEFINIR })).toBeTruthy();
 
     fireEvent.click(screen.getByText('registrar rota'));
     expect(await screen.findByRole('button', { name: 'Comprar etiqueta' })).toBeTruthy();
@@ -525,7 +564,7 @@ describe('EtiquetaRowAction — a rota que o host guarda (B14)', () => {
 
   it("⭐ after the HoverCard remounts, the row reads the host's routed freight — its target's action, and the registry gets THAT freight", async () => {
     renderComHost(PEDIDO_NO_DOC_LI);
-    expect(await screen.findByText(/ainda não suportada/)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: DEFINIR })).toBeTruthy();
 
     fireEvent.click(screen.getByText('registrar rota'));
     // The HoverCard closes and re-opens: a fresh row mount.
@@ -542,12 +581,12 @@ describe('EtiquetaRowAction — a rota que o host guarda (B14)', () => {
 
   it('⚠️ NEAR-MISS: with nothing registered, the remounted row keeps the list freight', async () => {
     renderComHost(PEDIDO_NO_DOC_LI);
-    expect(await screen.findByText(/ainda não suportada/)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: DEFINIR })).toBeTruthy();
 
     fireEvent.click(screen.getByText('alternar hovercard'));
     fireEvent.click(screen.getByText('alternar hovercard'));
 
-    expect(await screen.findByText(/ainda não suportada/)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: DEFINIR })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Imprimir etiqueta (PDF)' })).toBeNull();
   });
 
@@ -562,7 +601,7 @@ describe('EtiquetaRowAction — a rota que o host guarda (B14)', () => {
     );
     fireEvent.click(screen.getByText('registrar rota'));
 
-    expect(await screen.findByText(/ainda não suportada/)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: DEFINIR })).toBeTruthy();
   });
 });
 
@@ -668,5 +707,247 @@ describe('EtiquetaRowAction — a conferência de pagamento antes de imprimir (A
     await waitFor(() => expect(resposta).toBe(true));
     const input = emitirMock.mock.calls[0]![0] as EtiquetaProviderInput;
     expect(input.deps.lojaIntegradaClient).toBe(LI_CLIENT_SEM_CHAMADA);
+  });
+});
+
+describe("EtiquetaRowAction — a pedido still on its Loja Integrada doc ('rotear', step 15)", () => {
+  const REF_DOC_LI = 'documents/int_frete/li-doc';
+  const PEDIDO_NO_DOC_LI = {
+    ...pedidoCom({
+      integracaoFreteOuterRef: REF_DOC_LI,
+      externalOptionData: { id: 1001, code: 'A' },
+      estado: ESTADO_FRETE.iniciado,
+    }),
+    numero: '165',
+  } as Pedido;
+
+  function roteado(
+    tipo: 'roteado' | 'ja-roteado',
+    alvoId: string,
+    alvoTipo: TipoAlvoMapaFreteLi,
+    rota: Partial<RotaRegistrada['rota']> = {},
+  ): RespostaRotaEtiquetaLi {
+    return {
+      tipo,
+      alvo: { id: alvoId, tipo: alvoTipo, nome: `Alvo ${alvoId}` },
+      rota: {
+        integracaoFreteOuterRef: `documents/int_frete/${alvoId}`,
+        externalOptionId: null,
+        integracaoTargetOuterRef: null,
+        estado: null,
+        ...rota,
+      },
+    };
+  }
+
+  beforeEach(() => {
+    docsPorId({
+      'li-doc': { tipo: INTEGRACAO_FRETE.lojaIntegrada },
+      'if-motoboy': { tipo: INTEGRACAO_FRETE.motoboy },
+      'if-me': { tipo: INTEGRACAO_FRETE.melhorEnvios },
+    });
+    alvosLi.current = [
+      alvoFreteLiDoDoc('if-motoboy', {
+        tipo: INTEGRACAO_FRETE.motoboy,
+        nome: 'Motoboy Centro',
+        ativo: true,
+      }),
+      alvoFreteLiDoDoc('if-me', {
+        tipo: INTEGRACAO_FRETE.melhorEnvios,
+        nome: 'Melhor Envio',
+        ativo: true,
+      }),
+    ];
+  });
+
+  it('offers the two routing buttons — and no label action — while the pedido names the Loja Integrada doc', async () => {
+    clientes.li = lojaIntegradaClientFalso();
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    expect(await screen.findByRole('button', { name: DEFINIR })).toBeTruthy();
+    expect(botao(ESCOLHER)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Imprimir etiqueta (PDF)' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Comprar etiqueta' })).toBeNull();
+    expect(screen.queryByText(/ainda não suportada/)).toBeNull();
+  });
+
+  it('⭐ "Definir transportadora" routes once with NO escolha, toasts the target, and the remounted row prints through it', async () => {
+    const rotearEtiqueta = vi.fn(async () =>
+      roteado('roteado', 'if-motoboy', INTEGRACAO_FRETE.motoboy),
+    );
+    clientes.li = lojaIntegradaClientFalso({ rotearEtiqueta });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: DEFINIR }));
+
+    await waitFor(() =>
+      expect(showCopyableMock).toHaveBeenCalledWith({
+        title: 'Transportadora',
+        message: 'Transportadora definida: Alvo if-motoboy (Motoboy).',
+        color: 'green',
+      }),
+    );
+    expect(rotearEtiqueta).toHaveBeenCalledExactlyOnceWith(ID_LI, { escolha: null });
+    // It routes only: no label is printed or bought from the same click.
+    expect(emitirMock).not.toHaveBeenCalled();
+    // The picker was never asked.
+    expect(preverMock).not.toHaveBeenCalled();
+
+    // The HoverCard closes and re-opens — the list copy is still the stale one.
+    fireEvent.click(screen.getByText('alternar hovercard'));
+    fireEvent.click(screen.getByText('alternar hovercard'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Imprimir etiqueta (PDF)' }));
+    await waitFor(() => expect(emitirMock).toHaveBeenCalledTimes(1));
+    const input = emitirMock.mock.calls[0]![0] as EtiquetaProviderInput;
+    expect(input.frete.integracaoFreteOuterRef).toBe('documents/int_frete/if-motoboy');
+    expect(input.intFrete).toMatchObject({ fonte: 'doc', id: 'if-motoboy' });
+  });
+
+  it('`ja-roteado` (another tab routed it first) registers the route the same way', async () => {
+    clientes.li = lojaIntegradaClientFalso({
+      rotearEtiqueta: async () =>
+        roteado('ja-roteado', 'if-me', INTEGRACAO_FRETE.melhorEnvios, { externalOptionId: '1' }),
+    });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: DEFINIR }));
+
+    // Routed to Melhor Envio with a service: the next action is the BUY, as a
+    // deliberate click of its own.
+    expect(await screen.findByRole('button', { name: 'Comprar etiqueta' })).toBeTruthy();
+  });
+
+  it('⚠️ NEAR-MISS: a refusal shows its motivo copy and registers NOTHING — the row still offers the routing', async () => {
+    clientes.li = lojaIntegradaClientFalso({
+      rotearEtiqueta: async () => ({
+        tipo: 'recusado',
+        motivo: MOTIVO_ROTA_ETIQUETA_LI.semMapeamento,
+      }),
+    });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: DEFINIR }));
+
+    await waitFor(() =>
+      expect(showCopyableMock).toHaveBeenCalledWith({
+        title: 'Transportadora',
+        message: MENSAGEM_MOTIVO_ROTA_ETIQUETA_LI[MOTIVO_ROTA_ETIQUETA_LI.semMapeamento],
+        color: 'yellow',
+      }),
+    );
+    await waitFor(() => expect(botao(DEFINIR).disabled).toBe(false));
+    expect(screen.queryByRole('button', { name: 'Imprimir etiqueta (PDF)' })).toBeNull();
+  });
+
+  it('a 403 shows the permission copy, never the raw message', async () => {
+    clientes.li = lojaIntegradaClientFalso({
+      rotearEtiqueta: async () => {
+        throw new LojaIntegradaClientHttpError('Forbidden: missing frete.write', 403, 'FORBIDDEN');
+      },
+    });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: DEFINIR }));
+
+    await waitFor(() =>
+      expect(showErrorMock).toHaveBeenCalledWith({
+        title: 'Transportadora',
+        message: 'Você não tem permissão para definir a transportadora deste pedido.',
+      }),
+    );
+    expect(JSON.stringify(showErrorMock.mock.calls)).not.toContain('frete.write');
+  });
+
+  it('FAIL CLOSED: with no Loja Integrada client both buttons are disabled and a click routes nothing', async () => {
+    clientes.li = null;
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    const definir = await screen.findByRole<HTMLButtonElement>('button', { name: DEFINIR });
+    expect(definir.disabled).toBe(true);
+    expect(botao(ESCOLHER).disabled).toBe(true);
+    fireEvent.click(definir);
+    fireEvent.click(botao(ESCOLHER));
+    expect(showCopyableMock).not.toHaveBeenCalled();
+    expect(showErrorMock).not.toHaveBeenCalled();
+    expect(preverMock).not.toHaveBeenCalled();
+  });
+
+  it('⭐ "Escolher transportadora…" asks the HOST picker (preselecting the preview’s target), then routes WITH the choice', async () => {
+    const rotearEtiqueta = vi.fn(async () =>
+      roteado('roteado', 'if-me', INTEGRACAO_FRETE.melhorEnvios, {
+        externalOptionId: '1',
+        integracaoTargetOuterRef: 'documents/int_frete/if-me',
+      }),
+    );
+    clientes.li = lojaIntegradaClientFalso({ rotearEtiqueta });
+    preverMock.mockResolvedValue({
+      tipo: 'rota',
+      alvoId: 'if-motoboy',
+      tipoAlvo: INTEGRACAO_FRETE.motoboy,
+      externalOptionId: null,
+    });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: ESCOLHER }));
+    const dialogo = await screen.findByRole('dialog', {
+      name: 'Pedido 165 — Escolher transportadora',
+    });
+    // The preview read THIS pedido, and its target is preselected.
+    expect(preverMock).toHaveBeenCalledTimes(1);
+    expect(preverMock.mock.calls[0]![1]).toMatchObject({
+      freteInicial: { integracaoFreteOuterRef: REF_DOC_LI },
+    });
+    const campo = () =>
+      within(dialogo).getByRole('combobox', { name: 'Transportadora' }) as HTMLInputElement;
+    expect(campo().value).toBe('Motoboy Centro (Motoboy)');
+    // Nothing is routed while the question is open.
+    expect(rotearEtiqueta).not.toHaveBeenCalled();
+
+    // The HoverCard closes: the picker is the HOST's, so it stays.
+    fireEvent.click(screen.getByText('alternar hovercard'));
+    fireEvent.click(campo());
+    fireEvent.click(
+      await within(dialogo).findByRole('option', { name: 'Melhor Envio (Melhor Envios)' }),
+    );
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Confirmar' }));
+
+    await waitFor(() =>
+      expect(rotearEtiqueta).toHaveBeenCalledExactlyOnceWith(ID_LI, { escolha: 'if-me' }),
+    );
+    await waitFor(() =>
+      expect(showCopyableMock).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Transportadora', color: 'green' }),
+      ),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: Cancelar on the picker routes NOTHING and frees the row', async () => {
+    const rotearEtiqueta = vi.fn();
+    clientes.li = lojaIntegradaClientFalso({ rotearEtiqueta });
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: ESCOLHER }));
+    const dialogo = await screen.findByRole('dialog', {
+      name: 'Pedido 165 — Escolher transportadora',
+    });
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Cancelar' }));
+
+    await waitFor(() => expect(botao(ESCOLHER).disabled).toBe(false));
+    expect(rotearEtiqueta).not.toHaveBeenCalled();
+    expect(showCopyableMock).not.toHaveBeenCalled();
+  });
+
+  it('a preview that cannot read Firestore preselects nothing — the picker still opens', async () => {
+    clientes.li = lojaIntegradaClientFalso({ rotearEtiqueta: vi.fn() });
+    preverMock.mockRejectedValue(new FirebaseError('permission-denied', 'sem acesso'));
+    renderComHost(PEDIDO_NO_DOC_LI, ID_LI);
+
+    fireEvent.click(await screen.findByRole('button', { name: ESCOLHER }));
+    const dialogo = await screen.findByRole('dialog', {
+      name: 'Pedido 165 — Escolher transportadora',
+    });
+    expect(
+      (within(dialogo).getByRole('combobox', { name: 'Transportadora' }) as HTMLInputElement).value,
+    ).toBe('');
   });
 });

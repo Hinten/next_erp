@@ -5,9 +5,9 @@
  * `emitirOuImprimirFrete` (`.old/lib/despacho/pages/emitirOuImprimirFrete.dart`),
  * which was a unified BUY-or-reprint action dispatched by carrier `tipo`.
  *
- * Supports Melhor Envio (buy/reprint), the generic label (motoboy/outros) and
- * the marketplace fetch-label — Mercado Livre and Shopee (#1523), each via its
- * own marketplace client. `etiquetaRowState` is the pure dispatch decision;
+ * Supports Melhor Envio (buy/reprint), the generic label (motoboy/outros), the
+ * marketplace fetch-label — Mercado Livre and Shopee (#1523), each via its
+ * own marketplace client — and the Loja Integrada routing action. `etiquetaRowState` is the pure dispatch decision;
  * `resolveEtiquetaCartInput` lazily resolves the cart primitives from a pedido
  * **doc** (not the form) for the buy.
  */
@@ -37,6 +37,12 @@ export type EtiquetaAction =
   | 'comprar'
   | 'fetch-label'
   | 'quote-first'
+  /**
+   * The pedido still names a ROUTER doc (Loja Integrada, master plan step 15):
+   * the row routes it to a carrier first ("Definir transportadora" /
+   * "Escolher transportadora…") and offers that carrier's action next time.
+   */
+  | 'rotear'
   | 'unsupported'
   | 'none';
 
@@ -75,8 +81,14 @@ export interface EtiquetaRowStateResult {
  * configured (no buy step, so NOT gated on `printLabelId`); a fetch-label tipo
  * (Mercado Livre, Shopee) → fetch + print via the marketplace client; a selected
  * quote on a buyable tipo → buy; a quotable tipo with neither → quote-first;
- * anything else → unsupported. The other marketplaces set no `can*` flag, so
- * they still resolve to `'unsupported'` (their fetch flows are not ported yet).
+ * a router tipo (`labelMode: 'roteado'`) → rotear; anything else →
+ * unsupported. The other marketplaces set no `can*` flag, so they still
+ * resolve to `'unsupported'` (their fetch flows are not ported yet).
+ *
+ * ⚠️ A router sets no `can*` either, so its branch comes after every
+ * capability check and before the `'unsupported'` fallback: it never shadows a
+ * capability, and a pedido routed to Melhor Envio answers by the TARGET's caps
+ * (`tipo` is then the target's, read from the doc its ref names).
  *
  * ⚠️ Shopee is NOT printable: `canPrint` is tested BEFORE `canFetchLabel` here,
  * so a `canPrint` on its row would route a `printLabelId` to Melhor Envio's
@@ -98,6 +110,7 @@ export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowState
   if (caps.canFetchLabel) return { action: 'fetch-label', needsPostedConfirm };
   if (caps.canBuy && externalOptionId != null) return { action: 'comprar', needsPostedConfirm };
   if (caps.canQuote) return { action: 'quote-first', needsPostedConfirm };
+  if (caps.labelMode === 'roteado') return { action: 'rotear', needsPostedConfirm };
   return { action: 'unsupported', needsPostedConfirm };
 }
 

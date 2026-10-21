@@ -36,7 +36,7 @@ import type { EnderecoDeColeta } from '@/lib/shopee/wire';
  * an optional member compiles at a site that forgot it:
  *   - `deps.lojaIntegradaClient` — the client of the `apps/loja-integrada`
  *     backend the soft gates (`lib/loja-integrada/conferenciaPagamento.ts`)
- *     ask, and the label router will route through;
+ *     ask, and the label router (`providers/lojaIntegrada.ts`) routes through;
  *   - `ui.confirmarCiente` — the acknowledged-risk question a soft gate asks
  *     when the order's paid status is not confirmed.
  */

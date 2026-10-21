@@ -13,6 +13,7 @@ import {
   INTEGRACAO_FRETE,
   ESTADO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
+  ehFreteRoteado,
   estadoFreteSchema,
   isFreteMarketplaceOwned,
   modalidadeFreteSchema,
@@ -104,17 +105,19 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
    * Skipped while ownership is still unknown: `isFreteMarketplaceOwned`
    * returns false for an unresolved `tipo`, so seeding during the `int_frete`
    * load window could inject a Volume into an importer-owned block. Same guard
-   * `headerDisabled` uses.
+   * `headerDisabled` uses. Skipped on a ROUTER doc too: the volumes of a
+   * pedido still on its Loja Integrada doc are the import's, like a
+   * marketplace's.
    */
   async function seedVolumeOnActivation() {
-    if (marketplaceOwned || (integracaoRef != null && loadingIntegracao)) return;
+    if (importadorDono || (integracaoRef != null && loadingIntegracao)) return;
     try {
       const aviso = await seedVolumePadrao({
         form,
         db,
         queryClient,
         itens: itensFlat,
-        marketplaceOwned,
+        marketplaceOwned: importadorDono,
       });
       // The box the estimator produced may not be shippable as-is (#371).
       // Surface that here rather than letting the operator discover it when the
@@ -248,6 +251,17 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   // Shared predicate with the pedido estado reconcile, which refuses to authorize
   // dispatch on a marketplace-owned block (#702).
   const marketplaceOwned = isFreteMarketplaceOwned(tipoDono);
+  // A ROUTER doc (Loja Integrada, master plan step 15) is NOT an owner: the
+  // pedido has no carrier yet, and gets one by routing ("Definir
+  // transportadora" on `/pedidos`). Its BODY is read-only — the router panel —
+  // but its header follows the estado lock like any pedido's, so in the cart
+  // estados the integração picker (which offers no router) can re-point it by
+  // hand. That is what rescues a duplicated Loja Integrada pedido, which comes
+  // back at `iniciado` still on the conta's doc; a paid one stays locked by
+  // `disabled`. Unlike the marketplace lock above, this one HAS an undo.
+  const roteado = ehFreteRoteado(tipo);
+  // Who seeds the volumes: never the tab, for an importer-owned block.
+  const importadorDono = marketplaceOwned || roteado;
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 
@@ -264,6 +278,16 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
         <Alert color="yellow">
           A integração de frete vinculada a este pedido não foi encontrada.
         </Alert>
+      );
+    }
+    if (roteado && tipo) {
+      return (
+        <MarketplaceReadOnly
+          frete={freteInicial!}
+          tipo={tipo}
+          pedidoId={pedidoId}
+          variante="roteado"
+        />
       );
     }
     switch (tipo) {
@@ -302,6 +326,8 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
           />
         );
       case INTEGRACAO_FRETE.mercadoLivre:
+      // Unreachable since the router branch above; kept so the switch stays
+      // total over the tipos.
       case INTEGRACAO_FRETE.lojaIntegrada:
       case INTEGRACAO_FRETE.magalu:
       case INTEGRACAO_FRETE.shopee:
