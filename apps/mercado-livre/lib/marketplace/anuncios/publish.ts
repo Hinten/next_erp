@@ -490,6 +490,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       // `id` is the family id for a UP family and would PUT into a 4xx.
       itemId: typeof existingVar?.raw.itemId === 'string' ? existingVar.raw.itemId : null,
       raw: existingVar?.raw ?? {},
+      updateTime: existingVar?.updateTime,
       sku: typeof existingVar?.raw.sku === 'string' ? existingVar.raw.sku : null,
       // #1400 — does THIS member's ML item already carry the parent-sku
       // characteristic? The família-wide answer is the OR of these, and asking
@@ -1341,14 +1342,24 @@ async function findVariacaoLink(
   db: Firestore,
   childId: string,
   parentLinkDocId: string,
-): Promise<{ docId: string; mlId: number | null; raw: Record<string, unknown> } | null> {
+): Promise<{
+  docId: string;
+  mlId: number | null;
+  raw: Record<string, unknown>;
+  updateTime?: import('firebase-admin/firestore').Timestamp;
+} | null> {
   const snap = await variacaoMercadoLivreLinkCollection.ref(db, { produtoId: childId }).get();
   for (const d of snap.docs) {
     const data = d.data() as Record<string, unknown>;
     const parentRef =
       typeof data.produtoMercadoLivreOuterRef === 'string' ? data.produtoMercadoLivreOuterRef : '';
     if (parentRef.endsWith(`/produtoMercadoLivre/${parentLinkDocId}`)) {
-      return { docId: d.id, mlId: typeof data.id === 'number' ? data.id : null, raw: data };
+      return {
+        docId: d.id,
+        mlId: typeof data.id === 'number' ? data.id : null,
+        raw: data,
+        updateTime: d.updateTime,
+      };
     }
   }
   return null;

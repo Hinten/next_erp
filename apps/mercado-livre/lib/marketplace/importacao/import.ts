@@ -246,6 +246,13 @@ export async function importProduto(
   const { db, api, integracaoId } = deps;
   const options: ImportOptions = { ...DEFAULT_IMPORT_OPTIONS, ...deps.options };
 
+  // Reuse the UP parent resolver's indexed lookup, captured before external I/O.
+  // This is the cold import path; stock sends incur no additional reads.
+  const memberLinkSnap = await variacaoMercadoLivreLinkCollection
+    .groupQuery(db)
+    .where('itemId', '==', itemId)
+    .limit(10)
+    .get();
   const item = await api.getItem(itemId);
 
   // ---- Guards -----------------------------------------------------------
@@ -426,7 +433,14 @@ export async function importProduto(
           up!.canonicalId,
           integracaoId,
         )
-      : await resolveExistingUpParent(db, itemId, up!.canonicalId, mapped.sku, integracaoId)
+      : await resolveExistingUpParent(
+          db,
+          itemId,
+          up!.canonicalId,
+          mapped.sku,
+          integracaoId,
+          memberLinkSnap,
+        )
     : await resolveExistingProduto(db, itemId, mapped.sku, integracaoId);
   // A fresh produto id is a deterministic hash — NOT the seller_custom_field,
   // which ML does not keep unique across a seller's items (two items sharing a
@@ -629,6 +643,12 @@ export async function importProduto(
           taxonomia,
           {
             parentLinkDocId: linkDocId,
+            memberReadVersions: new Map(
+              memberLinkSnap.docs.map((d) => [
+                `produtos/${d.ref.parent?.parent?.id}/variacaoMercadoLivre/${d.id}`,
+                d.updateTime,
+              ]),
+            ),
             status: mapped.status,
             subStatus: mapped.subStatus,
             // The UP import fetches ONE member item per call, so `mapped` IS
@@ -1006,17 +1026,9 @@ async function resolveExistingUpParent(
   canonicalId: string,
   sku: string | null,
   integracaoId: string,
+  memberLinkSnap: FirebaseFirestore.QuerySnapshot,
 ): Promise<ResolvedProduto | null> {
-  // An MLB item id is globally unique on ML, so >1 hit only means the SAME
-  // listing imported under multiple integração accounts — a small set. The
-  // limit bounds a pathological scan (the link has no conta field to filter
-  // server-side — adding one would pollute the legacy VariacoesML wire); the
-  // family-id and SKU steps below remain the fallback.
-  const memberLinkSnap = await variacaoMercadoLivreLinkCollection
-    .groupQuery(db)
-    .where('itemId', '==', itemId)
-    .limit(10)
-    .get();
+  // Indexed member lookup was captured before GET /items (#1285).
   for (const d of memberLinkSnap.docs) {
     const raw = d.data() as Record<string, unknown>;
     const pmlOuterRef = raw.produtoMercadoLivreOuterRef;

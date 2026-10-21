@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { z } from 'zod';
-import type { Firestore } from 'firebase-admin/firestore';
+import { Timestamp, type Firestore } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions/logger';
 import {
   MercadoLivreHttpError,
@@ -47,6 +47,7 @@ import {
 type DocData = Record<string, unknown>;
 
 interface FakeSnap {
+  updateTime?: Timestamp;
   exists: boolean;
   id: string;
   data: () => DocData | undefined;
@@ -63,6 +64,7 @@ interface FakeQuery {
 }
 
 interface FakeQueryDoc {
+  updateTime?: Timestamp;
   id: string;
   __path: string;
   exists: boolean;
@@ -124,6 +126,7 @@ class FakeDb {
       docs: entries.map(([id, d, colPath]) => ({
         id,
         __path: colPath,
+        updateTime: Timestamp.fromMillis(this.versions.get(`${colPath}/${id}`) ?? 0),
         exists: true,
         data: () => d,
         ref: { id, __path: colPath, parent: { parent: { id: parentDocId(colPath) } } },
@@ -153,7 +156,12 @@ class FakeDb {
           path: `${path}/${id}`,
           get: async () => {
             self.opLog.push({ op: 'get', path: `${path}/${id}` });
-            return { exists: col.has(id), id, data: () => col.get(id) };
+            return {
+              exists: col.has(id),
+              id,
+              updateTime: Timestamp.fromMillis(self.versions.get(`${path}/${id}`) ?? 0),
+              data: () => col.get(id),
+            };
           },
           set: (data: DocData, opts?: { merge?: boolean }) => {
             self.opLog.push({ op: 'set', path: `${path}/${id}` });
@@ -643,6 +651,42 @@ describe('mlStockSendTaskSchema', () => {
       payload({ quantidade: 7, estoqueSnapshot: estoqueSnapshot(['PROD', null]) }),
     );
   });
+});
+
+describe('member hot-path budget (#1285)', () => {
+  it.each(['variationItem', 'userProductStock'] as const)(
+    '%s adds no member reads or writes',
+    async (kind) => {
+      const h = makeHarness();
+      seedLink(h.db, { isUserProductModel: true });
+      h.db.seed(varPath('CHILD'), 'v1', {
+        itemId: 'MLB111',
+        estado: 'E',
+        errors: ['queued before the latch'],
+      });
+      await run(
+        h,
+        payload({
+          kind,
+          variacaoProdutoId: 'CHILD',
+          varLinkDocId: 'v1',
+          userProductId: kind === 'userProductStock' ? 'MLBU-1' : null,
+        }),
+      );
+      expect(h.db.batchGets).toEqual([]);
+      expect(h.db.opLog).toEqual([
+        { op: 'get', path: `${STATE_PATH}/${CONTA}` },
+        { op: 'update', path: `${LINK_PATH}/link1` },
+      ]);
+      expect(h.db.docs(varPath('CHILD')).get('v1')).toMatchObject({ estado: 'E' }); // queued tasks may finish, never erase a later error
+      expect(h.getItem).not.toHaveBeenCalled();
+      expect(h.updateItem).toHaveBeenCalledTimes(kind === 'variationItem' ? 1 : 0);
+      expect(h.getUserProductStock).toHaveBeenCalledTimes(kind === 'userProductStock' ? 1 : 0);
+      expect(h.putUserProductSellerWarehouseStock).toHaveBeenCalledTimes(
+        kind === 'userProductStock' ? 1 : 0,
+      );
+    },
+  );
 });
 
 describe('processStockSendTask — payload parse', () => {
@@ -2599,21 +2643,268 @@ describe('processStockSendTask — terminal 4xx on a UP family member (#1142)', 
     ]);
   });
 
-  it('a healthy member latches the FAMILY, but never with a member-keyed denorm', async () => {
+  it('a healthy refused member latches ONLY itself, never the family or a member-keyed denorm', async () => {
     const h = memberTerminal(async () => ({ id: MEMBER_ITEM, status: 'active', sub_status: [] }));
     seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, status: null });
 
     const res = await run(h, memberPayload());
 
+    expect(h.updateItem).toHaveBeenCalledTimes(2); // Third queue attempt plus ONE extra.
+    expect(h.getItem).toHaveBeenCalledTimes(1);
     expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
-    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'E' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'p' });
     // The member's own status is backfilled from the verification GET (#780's
     // "the send is its own backfill", now true for members too).
-    expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({ status: 'active' });
+    expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({
+      status: 'active',
+      estado: 'E',
+      errors: ['ML 400: invalid quantity'],
+    });
     // ⚠️ The denorm key is the parent's own `id`. A member id reaching
     // `updateParentDenorm` would arrayUnion an entry nothing can ever remove.
     expect(h.db.docs('produtos').get('PROD')).toBeUndefined();
     expect(h.db.opLog.filter((o) => o.path === 'produtos/PROD')).toEqual([]);
+  });
+
+  it.each([undefined, 'userProduct' as const])(
+    'refusal → persisted member gate → sibling REALLY sends (mode %s)',
+    async (modo) => {
+      const h = memberTerminal(async () => ({ id: MEMBER_ITEM, status: 'active', sub_status: [] }));
+      seedUpMember(h.db, CHILD, 'm1', {
+        itemId: MEMBER_ITEM,
+        status: 'active',
+        userProductId: 'MLBU-A',
+      });
+      seedUpMember(h.db, 'CHILD-2', 'm2', {
+        itemId: 'MLB-m2',
+        status: 'active',
+        userProductId: 'MLBU-B',
+      });
+      await run(h, memberPayload());
+      const anchor = {
+        produtoId: 'PROD',
+        ehKit: false,
+        ehKitVirtual: false,
+        publicado: true,
+        componentesKit: null,
+        timestampMs: null,
+        estoque: null,
+        componentEstoques: [],
+      };
+      const row: StockFamilyRow = {
+        anchorId: 'PROD',
+        anchor,
+        integracoesComProduto: [CONTA],
+        links: [{ ...h.db.docs(LINK_PATH).get('link1'), linkDocId: 'link1' }],
+        children: [CHILD, 'CHILD-2'].map((produtoId, i) => ({
+          ...anchor,
+          produtoId,
+          varLinks: [
+            { ...h.db.docs(varPath(produtoId)).get(`m${i + 1}`), varLinkDocId: `m${i + 1}` },
+          ],
+        })),
+      };
+      const built = buildSendTasks(
+        row,
+        new Map([
+          [CHILD, 7],
+          ['CHILD-2', 12],
+        ]),
+        {
+          integracaoId: CONTA,
+          depositoId: 'DEP',
+          sweepId: 'next',
+          sweepComputedAtMs: NOW_MS,
+          modo,
+        },
+      );
+      expect(built.tasks).toHaveLength(1);
+      expect(built.tasks[0]).toMatchObject({ itemId: 'MLB-m2', quantidade: 12 });
+      expect(built.skips).toEqual([
+        {
+          produtoId: CHILD,
+          itemId: MEMBER_ITEM,
+          linkDocId: 'link1',
+          reason: 'membro-com-falha-estoque',
+        },
+      ]);
+      h.updateItem.mockResolvedValue({ id: 'MLB-m2', status: 'active' });
+      await run(h, built.tasks[0]!);
+      if (modo === 'userProduct') {
+        expect(h.putUserProductSellerWarehouseStock).toHaveBeenCalledWith('MLBU-B', '7', [
+          { store_id: 'STORE-1', network_node_id: 'NODE-1', quantity: 12 },
+        ]);
+      } else expect(h.updateItem).toHaveBeenLastCalledWith('MLB-m2', { available_quantity: 12 });
+      expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({ estado: 'E' });
+    },
+  );
+
+  it('three failed queue attempts precede exactly ONE verified extra send', async () => {
+    let calls = 0;
+    const h = makeHarness({
+      retryCount: 0,
+      getItem: async () => ({ id: MEMBER_ITEM, status: 'active' }),
+      updateItem: async () => {
+        if (++calls <= 3) throw new MercadoLivreHttpError('refused', 400, null);
+        return { id: MEMBER_ITEM, status: 'active' };
+      },
+    });
+    seedLink(h.db, { id: 'FAM-9', isUserProductModel: true });
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM });
+    await expect(
+      processStockSendTask(asDb(h.db), memberPayload(), { ...h.deps, retryCount: 0 }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      processStockSendTask(asDb(h.db), memberPayload(), { ...h.deps, retryCount: 1 }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(h.getItem).not.toHaveBeenCalled();
+    expect(
+      await processStockSendTask(asDb(h.db), memberPayload(), {
+        ...h.deps,
+        retryCount: LAST_ATTEMPT,
+      }),
+    ).toEqual({ outcome: 'sent', reason: null });
+    expect(h.updateItem).toHaveBeenCalledTimes(4);
+    expect(h.getItem).toHaveBeenCalledTimes(1);
+    expect(h.db.docs(varPath(CHILD)).get('m1')?.estado).not.toBe('E');
+  });
+
+  it.each([400, 500, 503])(
+    'final HTTP %s blocks only the member after verification and extra send',
+    async (status) => {
+      const h = makeHarness({
+        retryCount: LAST_ATTEMPT,
+        getItem: async () => ({ id: MEMBER_ITEM, status: 'active' }),
+        updateItem: async () => {
+          throw new MercadoLivreHttpError('refused', status, null);
+        },
+      });
+      seedLink(h.db, { id: 'FAM-9', isUserProductModel: true });
+      seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM });
+      await run(h, memberPayload());
+      expect(h.updateItem).toHaveBeenCalledTimes(2);
+      expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({
+        estado: 'E',
+        errors: ['refused'],
+      });
+      expect(h.db.docs(LINK_PATH).get('link1')?.estado).not.toBe('E');
+    },
+  );
+
+  it.each([
+    new MercadoLivreNetworkError('timeout'),
+    new MercadoLivreHttpError('timeout', 408, null),
+    new MercadoLivreHttpError('rate', 429, null, 17),
+    new MercadoLivreHttpError('conflict', 409, null),
+  ])('extra-send exception %s never latches a member', async (boom) => {
+    let calls = 0;
+    const h = makeHarness({
+      retryCount: LAST_ATTEMPT,
+      getItem: async () => ({ id: MEMBER_ITEM, status: 'active' }),
+      updateItem: async () => {
+        throw ++calls === 1 ? new MercadoLivreHttpError('refused', 400, null) : boom;
+      },
+    });
+    seedLink(h.db, { id: 'FAM-9', isUserProductModel: true });
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM });
+    await expect(run(h, memberPayload())).rejects.toBe(boom);
+    expect(h.db.docs(varPath(CHILD)).get('m1')?.estado).not.toBe('E');
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).not.toBe('E');
+    if (boom instanceof MercadoLivreHttpError && boom.status === 429)
+      expect(h.db.docs(STATE_PATH).get(CONTA)?.pausedUntilUs).toBe((NOW_MS + 17_000) * 1000);
+  });
+
+  it.each([
+    new MercadoLivreNetworkError('offline'),
+    new MercadoLivreHttpError('unavailable', 503, null),
+    new MercadoLivreHttpError('rate', 429, null, 17),
+  ])('verification exception %s never latches or issues the extra send', async (boom) => {
+    const h = memberTerminal(async () => {
+      throw boom;
+    });
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM });
+    await expect(run(h, memberPayload())).rejects.toBe(boom);
+    expect(h.updateItem).toHaveBeenCalledTimes(1);
+    expect(h.db.docs(varPath(CHILD)).get('m1')?.estado).not.toBe('E');
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).not.toBe('E');
+  });
+
+  it('a later member write during the final ML call wins over the stale latch', async () => {
+    const h = memberTerminal(async () => ({ id: MEMBER_ITEM, status: 'active' }));
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM });
+    h.db.onBeforeCommit = () =>
+      h.db.raceWrite(varPath(CHILD), 'm1', { estado: null, status: 'paused' });
+    expect(await run(h, memberPayload())).toEqual({
+      outcome: 'skipped',
+      reason: 'leitura-membro-obsoleta',
+    });
+    expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({ estado: null, status: 'paused' });
+  });
+
+  it.each([false, true])(
+    'multiorigin verifies and re-reads its version for the one extra send (recover=%s)',
+    async (recover) => {
+      let writes = 0;
+      const h = makeHarness({
+        retryCount: LAST_ATTEMPT,
+        getItem: async () => ({ id: MEMBER_ITEM, status: 'active' }),
+        putUserProductSellerWarehouseStock: async () => {
+          if (++writes === 1 || !recover)
+            throw new MercadoLivreHttpError('stock refused', 400, null);
+          return { stock: null, version: '8' };
+        },
+      });
+      seedLink(h.db, { id: 'FAM-9', isUserProductModel: true });
+      seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, userProductId: 'MLBU-A' });
+      const result = await run(h, {
+        ...memberPayload(),
+        kind: 'userProductStock',
+        userProductId: 'MLBU-A',
+        varLinkDocId: 'm1',
+      });
+      expect(result.outcome).toBe(recover ? 'sent' : 'erro-registrado');
+      expect(h.getUserProductStock).toHaveBeenCalledTimes(2);
+      expect(h.putUserProductSellerWarehouseStock).toHaveBeenCalledTimes(2);
+      expect(h.getItem).toHaveBeenCalledTimes(1);
+      expect(h.updateItem).not.toHaveBeenCalled();
+      if (!recover)
+        expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({
+          estado: 'E',
+          errors: ['stock refused'],
+        });
+      else expect(h.db.docs(varPath(CHILD)).get('m1')?.estado).not.toBe('E');
+      expect(h.db.docs(LINK_PATH).get('link1')?.estado).not.toBe('E');
+    },
+  );
+
+  it('Firestore failure during terminal persistence propagates without a partial latch', async () => {
+    const h = memberTerminal(async () => ({ id: MEMBER_ITEM, status: 'active' }));
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM });
+    const boom = Object.assign(new Error('database unavailable'), { code: 14 });
+    h.db.onBeforeCommit = () => {
+      throw boom;
+    };
+    await expect(run(h, memberPayload())).rejects.toBe(boom);
+    expect(h.db.docs(varPath(CHILD)).get('m1')?.estado).not.toBe('E');
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).not.toBe('E');
+  });
+
+  it('reauth on the extra send is an account diagnosis, never a member payload error', async () => {
+    let calls = 0;
+    const h = makeHarness({
+      retryCount: LAST_ATTEMPT,
+      getItem: async () => ({ id: MEMBER_ITEM, status: 'active' }),
+      updateItem: async () => {
+        throw ++calls === 1
+          ? new MercadoLivreHttpError('refused', 400, null)
+          : new MercadoLivreReauthRequiredError('refresh_failed', 'reconnect');
+      },
+    });
+    seedLink(h.db, { id: 'FAM-9', isUserProductModel: true });
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM });
+    expect(await run(h, memberPayload())).toEqual({ outcome: 'erro-registrado', reason: 'reauth' });
+    expect(h.db.docs(STATE_PATH).get(CONTA)?.lastError).toBe('reconnect');
+    expect(h.db.docs(varPath(CHILD)).get('m1')?.estado).not.toBe('E');
   });
 
   it('a member ML reports as NOT sendable records its status without latching', async () => {

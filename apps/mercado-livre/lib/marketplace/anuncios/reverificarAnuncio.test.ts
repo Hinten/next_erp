@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ObservedMember } from './itemsStatusSync';
 import type { Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 
@@ -95,12 +96,15 @@ const target = { produtoId: PRODUTO, linkDocId: LINK, itemId: FAMILY_ID };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.applyFamilyStatusAndFold.mockResolvedValue({
-    outcome: 'synced-family',
-    estado: 'p',
-    status: 'active',
-    subStatus: null,
-  });
+  h.applyFamilyStatusAndFold.mockImplementation(
+    async (_db, _conta, _target, observed: ObservedMember[]) => ({
+      outcome: 'synced-family',
+      estado: 'p',
+      status: 'active',
+      subStatus: null,
+      membros: observed.map((m) => ({ ...m, estado: null, aplicado: true })),
+    }),
+  );
 });
 
 /* ---------------------------------- tests ---------------------------------- */
@@ -160,6 +164,8 @@ describe('reverificarAnuncio — a User-Products FAMILY (#1142)', () => {
       {
         memberProdutoId: 'childA',
         memberDocId: 'v-childA',
+        expectedItemId: 'MLB-A',
+        expectedUpdateTime: undefined,
         status: 'active',
         subStatus: [],
         moderacoes: [],
@@ -169,6 +175,8 @@ describe('reverificarAnuncio — a User-Products FAMILY (#1142)', () => {
       {
         memberProdutoId: 'childB',
         memberDocId: 'v-childB',
+        expectedItemId: 'MLB-B',
+        expectedUpdateTime: undefined,
         status: 'paused',
         subStatus: ['out_of_stock'],
         moderacoes: [],
@@ -214,6 +222,16 @@ describe('reverificarAnuncio — a User-Products FAMILY (#1142)', () => {
     });
     // The fold declined to cancel — a sibling was never observed.
     h.applyFamilyStatusAndFold.mockResolvedValue({
+      membros: [
+        {
+          memberProdutoId: 'childA',
+          memberDocId: 'v-childA',
+          status: 'closed',
+          subStatus: [],
+          estado: null,
+          aplicado: true,
+        },
+      ],
       outcome: 'synced-member',
       estado: 'p',
       status: 'active',
@@ -228,6 +246,7 @@ describe('reverificarAnuncio — a User-Products FAMILY (#1142)', () => {
       {
         itemId: 'MLB-A',
         memberDocId: 'v-childA',
+        estado: null,
         lido: true,
         status: 'closed',
         subStatus: [],

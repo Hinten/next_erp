@@ -199,6 +199,12 @@ export function VariacoesAnuncioTable({
                 />
               </Table.Td>
               <Table.Td>
+                {data.estado === 'E' && (
+                  <Alert color="red" title="Envio de estoque bloqueado">
+                    {(data.errors ?? []).join(' · ') || 'Falha no envio de estoque.'} Corrija a
+                    causa e use Reverificar anúncio para tentar novamente.
+                  </Alert>
+                )}
                 <MotivoCell data={data} />
               </Table.Td>
             </Table.Tr>
