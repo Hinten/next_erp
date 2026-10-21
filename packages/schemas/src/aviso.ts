@@ -744,7 +744,7 @@ export const TIPO_AVISO_LABELS = {
  *
  *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
  *    in-app only, like the other two critical tipos of this channel. A paid
- *    sale nobody imported is one nobody ships.
+ *    sale with no address to ship to is one nobody ships.
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
  *    — one row per pedido; `pedidoId` is the deterministic digest (the pedido
  *    may not exist yet).
@@ -756,18 +756,22 @@ export const TIPO_AVISO_LABELS = {
  *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`): on a first
  *    import there is no pedido page to open.
  *  - **Machine resolver**: the next import of that order after which the
- *    pedido no longer waits for a delivery endereço (owner decision,
- *    2026-10-20) — it stores one (one it already held, never overwritten, or
- *    one the import wrote from a readable CEP), its shipping method now maps
- *    to a pickup, it carries no shipment, or the order is no longer paid —
- *    decided from the snapshot the import's winning write decided from, and
- *    clocked by its stamp, so a late import of an older observation can
- *    neither close nor reopen the row. ⚠️ A CEP the endereço builder cannot
- *    read gets past the no-CEP check but stores no endereço: that import
- *    leaves the row OPEN, with no write to it — the pedido imports with no
- *    endereço and no carrier route, and the operator still has an address to
- *    fix. The runbook says the row stays open until the pedido has its
- *    endereço, and to check that the CEP has 8 digits while it does.
+ *    pedido has a delivery endereço (one it already stores, never
+ *    overwritten, or one the import stored from a readable CEP under the
+ *    pedido's cliente), or its shipping method now maps to a pickup, or the
+ *    order is no longer paid (owner decision, 2026-10-20) — decided from the
+ *    snapshot the import's winning write decided from, and clocked by its
+ *    stamp, so a late import of an older observation can neither close nor
+ *    reopen the row. ⚠️ Nothing else closes it. A CEP the endereço builder
+ *    cannot read gets past the no-CEP check but stores no endereço: that
+ *    import leaves the row OPEN, with no write to it — the pedido imports
+ *    with no endereço and no carrier route, and the operator still has an
+ *    address to fix. So do a readable CEP whose buyer has no valid document
+ *    (no cliente to store the endereço under, so none is stored) and an
+ *    observation that carries no shipment. The wording says the row closes
+ *    once the pedido has its delivery endereço, becomes a pickup or is no
+ *    longer paid, and the runbook says to check that the CEP has 8 digits
+ *    while it stays open.
  *    ⚠️ UNVERIFIED (D17: no capture shows it): that filling the address in the
  *    painel bumps the order's modification stamp, so the poller picks the
  *    order up again. The parked row is terminal, so if it does not, nothing

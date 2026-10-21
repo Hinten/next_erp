@@ -11,7 +11,7 @@
  * | `lojaIntegradaPedidoContestado` | the pedido id | the order's stamp | the decision names a motivo | any import that raises none |
  * | `lojaIntegradaPedidoHub` | the pedido id | the order's stamp | a hub marker, on a live sale | no marker, or a dead sale |
  * | `lojaIntegradaFreteNaoSuportado` | `sha256Hex(chave)` | the routing read's `readTime` | the routing says so | the routing says so |
- * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order carrying no CEP ran out of retries (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | an import after which the pedido has a delivery endereço or a pickup route, or is no longer paid |
+ * | `lojaIntegradaPedidoPagoSemEndereco` | the pedido id | the order's stamp | a paid order carrying no CEP ran out of retries (`pedidoPagoSemEndereco.ts`, from the pipeline's park) | an import after which the pedido has a delivery endereço or a pickup route, or the order is no longer paid — nothing else |
  * | `lojaIntegradaReversaoComEtiqueta` | the pedido id | the order's stamp | a reversal codigo on a pedido that holds a bought label | any import that raises none |
  *
  * `lojaIntegradaPedidoPagoSemEndereco` is the one `critico` tipo; every other
@@ -49,12 +49,14 @@
  * resolves it, and a late exhaustion of an older observation is dropped by
  * the seed every resolve leaves behind. ⚠️ Owner decision, 2026-10-20: an
  * import resolves it ONLY when the pedido, as the winning attempt leaves it,
- * no longer waits for a delivery endereço (`pedidoPagoSegueSemEnderecoLi`:
- * it stores one or this import wrote one, its route is a pickup, it carries
- * no shipment, or the order is no longer paid). An import whose CEP the
- * endereço builder cannot read gets past the no-CEP check but stores no
- * endereço, so it SKIPS the resolve — no write, no seed — and an open row
- * stays open until the address is fixed.
+ * has a delivery endereço (one it already stores, never overwritten, or one
+ * this import stored under the pedido's cliente), or a pickup route, or the
+ * order is no longer paid (`pedidoPagoSegueSemEnderecoLi`). Nothing else
+ * closes it: an import whose CEP the endereço builder cannot read gets past
+ * the no-CEP check but stores no endereço, so it SKIPS the resolve — no
+ * write, no seed — and an open row stays open until the address is fixed; so
+ * do a readable CEP whose buyer has no valid document (no cliente, so no
+ * endereço) and an observation with no shipment.
  *
  * Every write goes through `escreverAviso` / `resolverAviso`
  * (`@delfrance/data/admin/avisos`), with "now" converted in `avisos/avisos.ts`
@@ -94,8 +96,8 @@ export const MOTIVO_RESOLUCAO_PEDIDO_LI = {
   /** The key's routing raised no aviso. */
   freteRoteado: 'frete-roteado',
   /**
-   * An import after which the pedido no longer waits for a delivery endereço:
-   * it has one, its route is a pickup, or the order is no longer paid.
+   * An import after which the pedido has a delivery endereço or a pickup
+   * route, or the order is no longer paid — nothing else (module header).
    */
   pedidoImportado: 'pedido-importado',
   /** An import whose order is no reversal, or whose pedido holds no bought label. */
@@ -171,7 +173,7 @@ function baseDoPedido(tipo: TipoDoPedido, p: PedidoDoAvisoLi): Omit<PlanoAviso, 
     tipo,
     conta: p.integracaoId,
     entidade: p.pedidoId,
-    // A paid sale that never reached the ERP is critical; the rest is about one order.
+    // A paid sale with no address to ship to is critical; the rest is about one order.
     severidade:
       tipo === TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco
         ? SEVERIDADE_AVISO.critico

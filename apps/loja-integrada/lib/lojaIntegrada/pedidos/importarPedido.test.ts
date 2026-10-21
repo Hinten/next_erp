@@ -96,6 +96,7 @@ import {
   chaveDoAvisoDeFreteLi,
   chaveDoAvisoDoPedidoLi,
 } from './avisosPedidoLi';
+import { enderecoDoPedidoLi, type EnderecoEntregaLi } from './clienteMapeamento';
 import { dataLiParaMicros } from './dataLi';
 import { LiPedidoEmConflitoError, MAX_TENTATIVAS_ESCRITA_PEDIDO_LI } from './escritaPedido';
 import {
@@ -1759,6 +1760,8 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
     const INVALIDO = { ...(pedidoLiBruto().endereco_entrega as DocData), cep: '0131010' };
     /** An endereço an operator linked by hand, stored under the pedido's cliente. */
     const DO_OPERADOR = `documents/clientes/${CLIENTE_ID}/enderecos/do-operador`;
+    /** An endereço stored under ANOTHER cliente: the import cannot pair it, so it fills none. */
+    const DE_OUTRO = 'documents/clientes/cliente-de-outra-pessoa/enderecos/end-a';
 
     async function levantarAvisoPago(db: FakeDb): Promise<void> {
       await avisarPedidoPagoSemEnderecoLi(
@@ -1814,6 +1817,64 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
       );
       expect(r.r).toEqual({ kind: 'importado' });
       expect(db.ler(CAMINHO_AVISO_PAGO)).toBeUndefined();
+    });
+
+    it('⚠️ EQUAL (owner decision, 2026-10-20): a later observation with NO shipment, onto a pedido that holds no endereço, imports and leaves the aviso OPEN — the freight block an earlier observation stored stays as it was', async () => {
+      const db = dbComAlvo();
+      await importar(db, aguardando({ data_modificacao: carimboLi(1) }));
+      const blocoAntes = frete(db);
+      expect(blocoAntes).toMatchObject({ ...SEM_ROTA, enderecoFreteOuterReference: null });
+      await levantarAvisoPago(db);
+      const antes = db.ler(CAMINHO_AVISO_PAGO);
+      const escritas = escritasDoAvisoPago(db);
+
+      // Not refused (no shipment, nothing to label), and still no address to ship the block to.
+      const r = await importar(db, pagoSemEndereco({ envios: [], data_modificacao: carimboLi(3) }));
+      expect(r.r).toEqual({ kind: 'importado' });
+      expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        enderecoFiscalOuterRef: null,
+      });
+      expect(frete(db)).toEqual(blocoAntes);
+      expect(escritasDoAvisoPago(db)).toBe(escritas);
+      expect(db.ler(CAMINHO_AVISO_PAGO)).toEqual(antes);
+    });
+
+    it('NEAR-MISS: the same observation with NO shipment and a VALID CEP stores the endereço and resolves it', async () => {
+      const db = dbComAlvo();
+      await importar(db, aguardando({ data_modificacao: carimboLi(1) }));
+      await levantarAvisoPago(db);
+      const r = await importar(
+        db,
+        cena({ cliente: COMPRADOR_COM_CPF, envios: [], data_modificacao: carimboLi(3) }),
+      );
+      expect(r.r).toEqual({ kind: 'importado' });
+      resolvido(db);
+      expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef).toMatch(/^documents\/clientes\//);
+    });
+
+    it('⚠️ EQUAL (owner decision, 2026-10-20): a VALID CEP from a buyer with NO valid document stores no endereço — there is no cliente to store it under — and leaves the aviso OPEN, beside the cliente-sem-identidade incidente', async () => {
+      const db = dbComAlvo();
+      await levantarAvisoPago(db);
+      const antes = db.ler(CAMINHO_AVISO_PAGO);
+      const escritas = escritasDoAvisoPago(db);
+
+      // The fixture's buyer carries no document; its CEP is one the builder reads.
+      expect(
+        enderecoDoPedidoLi(pedidoLiBruto().endereco_entrega as EnderecoEntregaLi).kind,
+      ).not.toBe('sem-cep');
+      const r = await importar(db, cena({ data_modificacao: carimboLi(3) }));
+      expect(r.r).toEqual({ kind: 'importado' });
+      expect(db.ler(CAMINHO_PEDIDO)).toMatchObject({
+        estado: ESTADO_PEDIDO.pago,
+        clientePedidoOuterRef: null,
+        enderecoFiscalOuterRef: null,
+      });
+      expect(db.ler(caminhoIncidente(ID_INCIDENTE_LI.clienteSemIdentidade))).toMatchObject({
+        subtipo: SUBTIPO_INCIDENTE_LI.clienteSemIdentidade,
+      });
+      expect(escritasDoAvisoPago(db)).toBe(escritas);
+      expect(db.ler(CAMINHO_AVISO_PAGO)).toEqual(antes);
     });
 
     it('NEAR-MISS: an INVALID CEP on a pedido that already STORES an endereço resolves the aviso — and that endereço is not overwritten', async () => {
@@ -1884,20 +1945,24 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
     });
 
     it('⚠️ rule 7: an endereço another writer STORED between the read and the batch resolves it — the WINNING attempt’s snapshot decides, never S', async () => {
-      const db = dbComAlvo();
-      await importar(db, aguardando({ data_modificacao: carimboLi(1) }));
-      await levantarAvisoPago(db);
-      // S holds no endereço; the operator links one right before the first batch.
-      db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
-        await refPedido(db).update({ enderecoFiscalOuterRef: DO_OPERADOR });
-      });
-      const r = await importar(
-        db,
-        pagoSemEndereco({ endereco_entrega: INVALIDO, data_modificacao: carimboLi(3) }),
-      );
-      expect(r.r).toEqual({ kind: 'importado' });
-      resolvido(db);
-      expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef).toBe(DO_OPERADOR);
+      // DE_OUTRO first: the import cannot pair it, so its fill is empty and ONLY the winning
+      // snapshot can close the row — read from S, the row would stay open. DO_OPERADOR pairs.
+      for (const guardado of [DE_OUTRO, DO_OPERADOR]) {
+        const db = dbComAlvo();
+        await importar(db, aguardando({ data_modificacao: carimboLi(1) }));
+        await levantarAvisoPago(db);
+        // S holds no endereço; another writer stores one right before the first batch.
+        db.antesDaProximaEscrita(CAMINHO_PEDIDO, async () => {
+          await refPedido(db).update({ enderecoFiscalOuterRef: guardado });
+        });
+        const r = await importar(
+          db,
+          pagoSemEndereco({ endereco_entrega: INVALIDO, data_modificacao: carimboLi(3) }),
+        );
+        expect(r.r, guardado).toEqual({ kind: 'importado' });
+        resolvido(db);
+        expect(db.ler(CAMINHO_PEDIDO)?.enderecoFiscalOuterRef, guardado).toBe(guardado);
+      }
     });
 
     it('⚠️ rule 7: an endereço another writer CLEARED between the read and the batch keeps it OPEN — the WINNING attempt’s snapshot decides, never S', async () => {
