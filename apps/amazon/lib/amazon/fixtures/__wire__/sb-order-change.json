@@ -1,0 +1,84 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-10-19",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "notificacao",
+    "notificacao": "ORDER_CHANGE",
+    "transporte": "sqs"
+  },
+  "resposta": {
+    "status": null,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 1618,
+    "corpo": {
+      "NotificationVersion": "1.0",
+      "NotificationType": "ORDER_CHANGE",
+      "PayloadVersion": "1.0",
+      "EventTime": "2020-01-11T00:09:53.109Z",
+      "Payload": {
+        "OrderChangeNotification": {
+          "NotificationLevel": "OrderLevel",
+          "SellerId": "<sellerId>",
+          "AmazonOrderId": "000-0000000-6802814",
+          "OrderChangeType": "BuyerRequestedChange",
+          "OrderChangeTrigger": {
+            "TimeOfOrderChange": "2022-11-29T19:42:04.284Z",
+            "ChangeReason": "REDACTED"
+          },
+          "Summary": {
+            "MarketplaceId": "ATVPDKIKX0DER",
+            "OrderStatus": "Unshipped",
+            "PurchaseDate": "2022-07-13T19:42:04.284Z",
+            "DestinationPostalCode": "00000-000",
+            "FulfillmentType": "MFN",
+            "OrderType": "StandardOrder",
+            "NumberOfItemsShipped": 0,
+            "NumberOfItemsUnshipped": 10,
+            "EarliestDeliveryDate": "2022-11-07T19:42:04.284Z",
+            "LatestDeliveryDate": "2022-12-07T19:42:04.284Z",
+            "EarliestShipDate": "2022-11-07T19:42:04.284Z",
+            "LatestShipDate": "2022-12-07T19:42:04.284Z",
+            "CancelNotifyDate": "2022-12-07T19:42:04.284Z",
+            "OrderPrograms": [
+              "Business"
+            ],
+            "ShippingPrograms": [
+              "EasyShip"
+            ],
+            "EasyShipShipmentStatus": "Delivered",
+            "ElectronicInvoiceStatus": "NotFound",
+            "OrderItems": [
+              {
+                "OrderItemId": "000004033930",
+                "SellerSKU": "SKU-Z4828d9c9",
+                "SupplySourceId": "REDACTED",
+                "OrderItemStatus": "Unshipped",
+                "Quantity": 10,
+                "QuantityShipped": 0,
+                "IsBuyerRequestedCancel": true,
+                "ItemEarliestDeliveryDate": "2022-11-07T19:42:04.284Z",
+                "ItemLatestDeliveryDate": "2022-12-07T19:42:04.284Z"
+              }
+            ]
+          }
+        }
+      },
+      "NotificationMetadata": {
+        "ApplicationId": "REDACTED",
+        "SubscriptionId": "00000000-0000-0000-0000-3353ad5d5643",
+        "PublishTime": "2020-07-13T19:42:04.284Z",
+        "NotificationId": "00000000-0000-0000-0000-fb224a586ee6"
+      }
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

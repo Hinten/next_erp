@@ -92,6 +92,24 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   raw.githubusercontent.com, never the SP-API; `OPERACOES_FOLHAS` lists the operations).
   `redacao.test.ts` demands every inventory leaf be classified exactly once.
 
+## Fixtures and captures (step 2b)
+
+- **Agents never open a raw capture** (no `cat`, editor or file-reading tool): owner captures
+  live outside every checkout and are read only by the sanitizer
+  (`pnpm --filter @delfrance/amazon-app sanitizar --entrada <abs> [--dry-run]`); an agent
+  reads its output and the fixtures. Capture protocol: `scripts/README.md`.
+- Fixtures (`lib/amazon/fixtures/__wire__/`) come ONLY from the sanitizer, never by hand: the
+  `fixture` profile of `core/redacao.ts` (the one redactor — never a second one), the keyed id
+  faker (`sanitizacao/falsificacao.ts`, fakes are fixpoints) and both layers of
+  `fixtures/piiScan.ts`. Any finding refuses the whole run. A label zip/ZPL/PDF is refused by
+  its first bytes and never opened. New model examples: `amazon-doc.mjs exemplo` /
+  `notif-exemplo` into a folder outside the checkout, then the sanitizer.
+- Run `sanitizar --entrada <abs> --verificar <files>…` over every changed doc, fixture and the
+  PR body draft before every push that touches docs or fixtures (public repo).
+- The sanitizer's closure (`sanitizacao/`, `fixtures/`, `scripts/sanitizar.ts`) stays inside
+  zod, `@delfrance/core/{wire,documents}` and `node:{fs,path,url,crypto}`; `estrutura.test.ts`
+  pins it. `MINIMO_DE_FIXTURES` in `wireCorpus.test.ts` equals the committed count.
+
 ## Environment
 
 Read by this backend: `AMAZON_LWA_CLIENT_ID`, `AMAZON_APPLICATION_ID`,

@@ -39,6 +39,7 @@ import {
   profundidadeJson,
   redigirCaminhoEQuery,
   redigirCorpo,
+  redigirRequisicaoParaFixture,
   regrasDaFolhaAmazon,
 } from './redacao';
 
@@ -624,7 +625,7 @@ describe('the BR sandbox order (§3 decision 11)', () => {
       },
     );
 
-    it('★ fixture: an ALLOWED leaf the regex layer flags is FAKED, and counted; near-miss: a plain carrier name is kept', () => {
+    it('★ fixture: an ALLOWED leaf the regex layer flags is FAKED, and counted; near-miss: a vocabulary carrier is kept', () => {
       const comTransportadora = (carrier: string) => {
         const b = getOrderBr();
         b.order.packages = [{ carrier }];
@@ -635,10 +636,58 @@ describe('the BR sandbox order (§3 decision 11)', () => {
       if (!f.ok) throw new Error(f.motivo);
       expect(em(f.corpo, 'order.packages.0.carrier')).toBe(FALSO_AMAZON.texto);
       expect(f.mascarados).toBeGreaterThan(0);
-      const limpo = fixture(GET_ORDER, 200, JSON.stringify(comTransportadora('Transportadora X')));
+      const limpo = fixture(GET_ORDER, 200, JSON.stringify(comTransportadora('Correios')));
       if (!limpo.ok) throw new Error(limpo.motivo);
-      expect(em(limpo.corpo, 'order.packages.0.carrier')).toBe('Transportadora X');
+      expect(em(limpo.corpo, 'order.packages.0.carrier')).toBe('Correios');
       expect(limpo.mascarados).toBe(0);
+    });
+
+    it('★ fixture: a `rotulo` outside the closed vocabulary (a courier named as the carrier) is FAKED and counted; the log keeps it; near-miss: Correios / SEDEX / Visa / Amazon.com.br are kept', () => {
+      const comRotulos = (carrier: string, shippingService: string, cardBrand: string) => {
+        const b = getOrderBr();
+        b.order.packages = [{ carrier, shippingService }];
+        b.order.payment = { paymentExecutions: [{ paymentMethod: 'CreditCard', cardBrand }] };
+        return b;
+      };
+      const livre = comRotulos('Fulano de Tal Entregas', 'Motoboy Sicrano', 'Beltrana Silva');
+      const f = fixture(GET_ORDER, 200, JSON.stringify(livre));
+      if (!f.ok) throw new Error(f.motivo);
+      expect(em(f.corpo, 'order.packages.0.carrier')).toBe(FALSO_AMAZON.texto);
+      expect(em(f.corpo, 'order.packages.0.shippingService')).toBe(FALSO_AMAZON.texto);
+      expect(em(f.corpo, 'order.payment.paymentExecutions.0.cardBrand')).toBe(FALSO_AMAZON.texto);
+      expect(f.mascarados).toBe(3);
+      // The log profile is unchanged: a free-text label is an operator's clue there.
+      expect(em(logJson(GET_ORDER, 200, livre), 'order.packages.0.carrier')).toBe(
+        'Fulano de Tal Entregas',
+      );
+      // Near-miss: vocabulary values stay, uncounted.
+      const conhecido = fixture(
+        GET_ORDER,
+        200,
+        JSON.stringify(comRotulos('Correios', 'SEDEX', 'Visa')),
+      );
+      if (!conhecido.ok) throw new Error(conhecido.motivo);
+      expect(em(conhecido.corpo, 'order.packages.0.carrier')).toBe('Correios');
+      expect(em(conhecido.corpo, 'order.packages.0.shippingService')).toBe('SEDEX');
+      expect(em(conhecido.corpo, 'order.payment.paymentExecutions.0.cardBrand')).toBe('Visa');
+      expect(em(conhecido.corpo, 'order.salesChannel.marketplaceName')).toBe('Amazon.com.br');
+      expect(conhecido.mascarados).toBe(0);
+      // The fake is a fixpoint: re-redacting the fixture changes nothing and counts nothing.
+      const falsificador = falsificadorDeTeste();
+      const um = redigirCorpo(
+        { caminho: GET_ORDER, status: 200, corpo: JSON.stringify(livre) },
+        'fixture',
+        { falsificador },
+      );
+      if (!um.ok) throw new Error(um.motivo);
+      const dois = redigirCorpo(
+        { caminho: GET_ORDER, status: 200, corpo: JSON.stringify(um.corpo) },
+        'fixture',
+        { falsificador },
+      );
+      if (!dois.ok) throw new Error(dois.motivo);
+      expect(dois.corpo).toEqual(um.corpo);
+      expect(dois.mascarados).toBe(0);
     });
   });
 });
@@ -1448,5 +1497,63 @@ describe('mechanics', () => {
       tabela: null,
     });
     expect(classificarCaminho(NOTIFICACAO_ORDER_CHANGE).tabela).toBe(TABELAS_AMAZON.orderChange);
+  });
+});
+
+describe('the bulk REQUEST table (step 2b-b `.req.json`, fixture only)', () => {
+  const corpo = JSON.stringify({
+    marketplaceId: 'A2Q3Y263D00KWC',
+    orderScheduleDetailsList: [
+      {
+        amazonOrderId: '123-4567890-1234567',
+        packageDetails: {
+          packageItems: [{ orderItemId: '12345678901234', orderItemSerialNumbers: ['S1'] }],
+          packageTimeSlot: { slotId: 'SLOT1', endTime: '2026-10-20T12:00:00Z' },
+          packageIdentifier: 'caixa-1',
+        },
+      },
+    ],
+    labelFormat: 'ZPL',
+    observacao: 'texto livre',
+  });
+
+  it('keeps the allowed leaves, fakes the ids, redacts the denied keys and anything unnamed', () => {
+    const r = redigirRequisicaoParaFixture(
+      { caminho: BULK, metodo: 'POST', corpo },
+      { falsificador: falsificadorDeTeste() },
+    );
+    if (!r.ok) throw new Error(r.motivo);
+    expect(r.corpo).toEqual({
+      marketplaceId: 'A2Q3Y263D00KWC',
+      orderScheduleDetailsList: [
+        {
+          amazonOrderId: '000-0000000-0000001',
+          packageDetails: {
+            packageItems: [{ orderItemId: '00000000000002', orderItemSerialNumbers: ['REDACTED'] }],
+            packageTimeSlot: { slotId: 'SLOT-Z00000003', endTime: '2026-10-20T12:00:00Z' },
+            packageIdentifier: 'REDACTED',
+          },
+        },
+      ],
+      labelFormat: 'ZPL',
+      observacao: 'REDACTED',
+    });
+    expect(r.mascarados).toBe(0);
+  });
+
+  it('near-miss: only a POST to a template with a request table; anything else is sem-tabela', () => {
+    const f = { falsificador: falsificadorDeTeste() };
+    expect(redigirRequisicaoParaFixture({ caminho: BULK, metodo: 'PUT', corpo }, f)).toEqual({
+      ok: false,
+      motivo: 'sem-tabela',
+    });
+    expect(redigirRequisicaoParaFixture({ caminho: PACOTE, metodo: 'POST', corpo }, f)).toEqual({
+      ok: false,
+      motivo: 'sem-tabela',
+    });
+    expect(redigirRequisicaoParaFixture({ caminho: BULK, metodo: 'POST', corpo: 'x' }, f)).toEqual({
+      ok: false,
+      motivo: 'nao-json',
+    });
   });
 });

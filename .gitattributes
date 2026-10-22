@@ -82,3 +82,8 @@ apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/** text eol=lf
 # it with LF, and a regeneration must diff only what changed (pinned by
 # `apps/amazon/lib/amazon/estrutura.test.ts`).
 apps/amazon/lib/amazon/testing/especificacaoFolhas.json text eol=lf
+
+# And the sanitized Amazon fixtures: `sanitizar` compares an existing fixture's
+# bytes with the new ones (identical bytes are a no-op), so a CRLF checkout would
+# read every unchanged fixture as different (pinned by `estrutura.test.ts`).
+apps/amazon/lib/amazon/fixtures/__wire__/** text eol=lf

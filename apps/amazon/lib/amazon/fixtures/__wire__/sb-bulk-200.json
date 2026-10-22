@@ -1,0 +1,112 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-10-19",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "POST",
+    "caminho": "/easyShip/2022-03-23/packages/bulk",
+    "query": [],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 1726,
+    "corpo": {
+      "scheduledPackages": [
+        {
+          "scheduledPackageId": {
+            "amazonOrderId": "000-0000000-8397448",
+            "packageId": "PKG-Z90349bf9"
+          },
+          "packageTimeSlot": {
+            "slotId": "SLOT-Z73f5c152",
+            "startTime": "2022-03-09T10:00:00+09:00",
+            "endTime": "2022-03-10T10:00:00+09:00",
+            "handoverMethod": "PICKUP"
+          },
+          "packageIdentifier": "REDACTED",
+          "invoice": {
+            "invoiceNumber": "REDACTED",
+            "invoiceDate": "2022-03-09T10:00:00+09:00"
+          },
+          "packageDimensions": {
+            "length": 5.905511805,
+            "width": 3.6220472404,
+            "height": 3.4645669256,
+            "unit": "IN",
+            "identifier": "REDACTED"
+          },
+          "packageWeight": {
+            "value": 11.466,
+            "unit": "ounces"
+          },
+          "packageItems": [
+            {
+              "orderItemId": "0000071736867",
+              "orderItemSerialNumbers": [
+                "REDACTED",
+                "REDACTED"
+              ]
+            }
+          ],
+          "packageStatus": "ReadyForPickup",
+          "trackingDetails": {
+            "trackingId": "TRKZ7998101923"
+          }
+        },
+        {
+          "scheduledPackageId": {
+            "amazonOrderId": "000-0000000-2877936",
+            "packageId": "PKG-Z75f654cf"
+          },
+          "packageTimeSlot": {
+            "slotId": "SLOT-Zec6b4543",
+            "startTime": "2022-05-21T10:00:00+09:00",
+            "endTime": "2022-05-21T10:00:00+09:00"
+          },
+          "invoice": {
+            "invoiceNumber": "REDACTED",
+            "invoiceDate": "2022-05-21T10:00:00+09:00"
+          },
+          "packageDimensions": {
+            "length": 5.905511805,
+            "width": 3.6220472404,
+            "height": 3.4645669256,
+            "unit": "IN",
+            "identifier": "REDACTED"
+          },
+          "packageWeight": {
+            "value": 11.466,
+            "unit": "ounces"
+          },
+          "packageStatus": "ReadyForPickup",
+          "trackingDetails": {
+            "trackingId": "TRKZ7458516369"
+          }
+        }
+      ],
+      "rejectedOrders": [
+        {
+          "amazonOrderId": "000-0000000-6040666",
+          "error": {
+            "code": "InvalidInput",
+            "details": "REDACTED",
+            "message": "REDACTED"
+          }
+        }
+      ],
+      "printableDocumentsUrl": "https://redacted.invalid/"
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}
