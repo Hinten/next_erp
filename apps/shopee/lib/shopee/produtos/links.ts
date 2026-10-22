@@ -41,6 +41,27 @@
  * duplicate rule — lexically-first wins, one log line, NEVER a delete
  * (`resolveProduto.ts`) — applies only WITHIN one `item_id`.
  *
+ * ## ⚠️ Nothing here deletes — the ONE `prodshopee` delete is a DRAFT's discard
+ *
+ * This applier, the import and every publish path only ever `merge` / `add` /
+ * guarded-`update` a link: a link we did not write may be the only binding a
+ * legacy row has. Since #1911 (P4) exactly ONE path in this app deletes a
+ * `prodshopee` document, and it is not here: the draft route's discard
+ * (`POST …/rascunho/descartar` → `../anuncios/rascunho.ts`). Its bounds are
+ * the whole exception:
+ *
+ *  - it deletes only a DRAFT (`ehRascunhoShopee`: no `item_id`, not
+ *    `kitNativo`) — never a listing link, and never a `variashopee` row (a
+ *    draft has none; rows are minted only after the first create answers);
+ *  - only as rule 7 tiers 3 + 1: `delete({ lastUpdateTime })` against the
+ *    snapshot that decided — one whose publish lock was not in progress (nor in
+ *    its post-expiry grace), whose projection equals the `base` the operator
+ *    saw, and, when its last create is `incerta`, only on the operator's
+ *    attestation; a lost precondition re-reads and re-decides;
+ *  - a publish whose create lands after the discard does not resurrect it: its
+ *    write-back #1 finds no draft and `add`s a fresh link, so the listing is
+ *    never orphaned (`../anuncios/reservaRascunho.ts`, the claim).
+ *
  * ## ⚠️ `produtoShopeeOuterRef` is the full LINK document path
  *
  * `produtos/<paiId>/prodshopee/<linkId>`, not the parent produto's path — which
