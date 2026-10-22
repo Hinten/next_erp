@@ -290,7 +290,8 @@ export async function prepareEmission(
  * — and only generation finds out. On the batch path that is too late:
  * `processChunk` allocates in `runChunkAllocateTx` (4a) and generates only
  * afterwards (4b), so the throw would consume an nNF and leave a chave-less
- * placeholder needing fix + re-emit or inutilização.
+ * placeholder needing fix + re-emit or inutilização (none in AC/BA/SP from
+ * 01/11/2026 — Ajuste SINIEF 40/2026; there an abandoned número stays a gap).
  *
  * So this dry-runs the exact projection generation runs
  * (`assertNotaBuildable` → `projetarNota`, same `items`, same `emitRtc`) —
@@ -1800,8 +1801,9 @@ export async function processChunk(
   // 4b. Generate + sign + persist each NF-e OUTSIDE the allocation tx, per
   //     pedido. A generate/sign failure of a known class (e.g. a raw
   //     fiscal-field overflow, NFeGeneratorError) fails ONLY that pedido —
-  //     its placeholder doc keeps the numeração for recovery (inutilização
-  //     or fix + re-emit) — while the rest proceed. Any other class (a bug)
+  //     its placeholder doc keeps the numeração for recovery (fix + re-emit,
+  //     or inutilização outside AC/BA/SP from 01/11/2026) — while the rest
+  //     proceed. Any other class (a bug)
   //     aborts the chunk before the send, with the healthy members already
   //     persisted as #396 anchors. The chave + signed XML are persisted (full doc overwrite)
   //     BEFORE autorizarLote, so the anti-loss anchor is complete before

@@ -72,4 +72,15 @@ by NF-e pendentes de retorno that were never authorized).
 The vertical slice (Phase A) implements **autorização only**. Cancelamento and
 inutilização are Phase B; CC-e is Phase C. This file is the reference for those
 later phases — and for the recovery loop, which must *inutilizar* truly-unused
-numbers it finds while reconciling pendentes de retorno.
+numbers it finds while reconciling pendentes de retorno. ⛔ Except in AC, BA and
+SP from 01/11/2026 (Ajuste SINIEF nº 40/2026): there a truly-unused número is
+left as a gap, with nothing to send. The Ajuste is a waiver; no other event
+replaces the pedido. Precedent: when CT-e lost inutilização (Ajuste SINIEF
+31/2022), SEFAZ-SP answered that a gap needs no additional procedure as long
+as the documents before and after it keep the sequence (RC 28386/2023,
+RC 28214/2023). An AUTHORIZED NF-e still needs cancelamento. One pure rule decides it —
+`inutilizacaoSeAplica(uf, instanteMs)` in `@delfrance/schemas` — and both
+`apps/nfe`'s `inutilizarNumeracao` (refuses before any SEFAZ call, HTTP 422
+`INUTILIZACAO_NAO_SE_APLICA`) and the `apps/web` inutilização screen read it.
+No code path inutilizes automatically today; the only caller is the operator's
+`POST /api/nfe/inutilizar`.

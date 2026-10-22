@@ -96,7 +96,11 @@ each one:
 2. **Authorized** → keep it; if the operation was instead covered by a
    contingency NF-e, **cancel** the authorized one.
 3. **Not authorized / not found** → **inutilizar** that número (it will never
-   be used) — see `eventos.md`.
+   be used) — see `eventos.md`. ⛔ **Not in AC, BA or SP from 01/11/2026**:
+   Ajuste SINIEF nº 40/2026 ends the Pedido de Inutilização there, so the
+   número simply stays unused — there is no SEFAZ procedure left for it and the
+   Ajuste sets none in its place. The rule is `inutilizacaoSeAplica`
+   (`@delfrance/schemas`).
 
 ### Renumbering rule (important, easy to get wrong)
 
