@@ -428,11 +428,13 @@ function violacoesDoSeam(arquivo: string, texto: string): string[] {
  * Every way a line is written here: ANY `.info(` / `.warn(` / `.error(` call —
  * on `logger`, `LOGGER_STDOUT_AMAZON`, `deps.logger?`, or the object
  * `warnNaoTipado(…)` returns — plus the three non-call line writers (the valve's
- * run-start line takes an envelope a caller fills). Fail closed: a receiver of
- * another name is still a logger call to this scan.
+ * run-start line takes an envelope a caller fills) and the step-4 poll's own
+ * line writer (`registrarPoll`, `pedidos/pollPedidos.ts`), whose campos would
+ * otherwise reach `registrarEventoAmazon` unread by these scans. Fail closed: a
+ * receiver of another name is still a logger call to this scan.
  */
 const CHAMADA_DE_LOG =
-  /(?:\.(?:info|warn|error)|\b(?:registrarEventoAmazon|registrarChamadaBloqueadaAmazon|registrarValvulaAmazon))\(/g;
+  /(?:\.(?:info|warn|error)|\b(?:registrarEventoAmazon|registrarChamadaBloqueadaAmazon|registrarValvulaAmazon|registrarPoll))\(/g;
 
 /**
  * Logger calls whose argument list reads a `.message` (an `AmazonError` message
@@ -632,6 +634,43 @@ function chamadasDeLogNasFuncoes(
 const CRIPTO_LOCAL =
   /\b(?:timingSafeEqual|createHmac|createHash|subtle)\b|['"](?:node:)?crypto['"]/;
 
+/* ------------------------- step 4 (4-a): the backstop poll ------------------------- */
+
+/** The ONE module that may call `searchOrders` (step-3/4 plan §3 decision 21). */
+const CHAMADOR_DE_SEARCH_ORDERS = 'lib/amazon/pedidos/pollPedidos.ts';
+
+/**
+ * Files that NAME `searchOrders` without calling it, each with why: the log and
+ * fixture redactor keys its allow-list tables by the operation and its path
+ * (its import closure is pinned to `zod` and `@delfrance/core/*` above, so it
+ * cannot reach a client).
+ */
+const NOMEIAM_SEARCH_ORDERS_SEM_CHAMAR = ['lib/amazon/core/redacao.ts'];
+
+/**
+ * A `searchOrders` call site, in comment-free code: the package's helper, its
+ * path constant, its operation-name constant, its page schema (a direct
+ * `cliente.get` needs it), the bare list path as a WHOLE string (a `getOrder`
+ * path continues with `/`), or the operation name handed to a client. Any one
+ * is enough to spend the poll's tokens: the bucket refills ≈ 5 per tick per app
+ * and seller, so a second caller makes the poll throttle itself.
+ */
+const CHAMADA_DE_SEARCH_ORDERS =
+  /\bbuscarPedidosAtualizados\b|\bCAMINHO_SEARCH_ORDERS\b|\bOPERACAO_SEARCH_ORDERS\b|\brespostaSearchOrdersSchema\b|['"`]\/orders\/2026-01-01\/orders['"`]|['"`]searchOrders['"`]/;
+
+/**
+ * What the single-caller scan reads: every production file of the app PLUS its
+ * `scripts/`, the natural home of a one-off verification script (the W7
+ * listing must never call `searchOrders` while the poll runs). Only this scan
+ * is widened; the others keep their scope.
+ */
+const fontesDoChamadorDeSearchOrders = () => [
+  ...fontesDeProducaoDoApp(),
+  ...arquivosTs(join(RAIZ_APP, 'scripts')).filter((p) => !ehTeste(p)),
+];
+
+const nomeiaSearchOrders = (texto: string) => CHAMADA_DE_SEARCH_ORDERS.test(semComentarios(texto));
+
 /* -------------------------------- the pinned lines -------------------------------- */
 
 const INVENTARIO = 'apps/amazon/lib/amazon/testing/especificacaoFolhas.json';
@@ -674,6 +713,10 @@ describe('lib/amazon layout', () => {
         'notificacoes/notificacao.ts',
         'notificacoes/prazo.ts',
         'notificacoes/receptor.ts',
+        'pedidos/janelaPoll.ts',
+        'pedidos/notificacaoSintetica.ts',
+        'pedidos/orcamentoPoll.ts',
+        'pedidos/pollPedidos.ts',
         'testing/documentos.ts',
         'testing/falhaDeEnfileiramento.ts',
         'testing/fakeDb.ts',
@@ -1091,6 +1134,59 @@ describe('the step-3 functions codebase guards (3-d)', () => {
   });
 });
 
+describe('the step-4 backstop poll guards (4-a)', () => {
+  const pedidos = arquivosTs(join(RAIZ_LIB, 'pedidos')).filter((p) => !ehTeste(p));
+
+  it('pedidos/ reads no process environment: the environment is the deps’ `ambiente`', () => {
+    expect(pedidos.map(rel).sort()).toEqual([
+      'pedidos/janelaPoll.ts',
+      'pedidos/notificacaoSintetica.ts',
+      'pedidos/orcamentoPoll.ts',
+      'pedidos/pollPedidos.ts',
+    ]);
+    for (const arquivo of pedidos) {
+      expect(readFileSync(arquivo, 'utf8'), rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+    }
+  });
+
+  // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
+  it(
+    `searchOrders has exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DE_SEARCH_ORDERS}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const nomeiam = fontes
+        .filter((p) => nomeiaSearchOrders(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_SEARCH_ORDERS_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DE_SEARCH_ORDERS,
+      ]);
+      // Anti-vacuity: the scan sees the redactor's table (exempt, by name) and
+      // reads the functions codebase and the app's scripts too.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_SEARCH_ORDERS_SEM_CHAMAR));
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining([
+          'functions/src/index.ts',
+          'scripts/sanitizar.ts',
+          CHAMADOR_DE_SEARCH_ORDERS,
+        ]),
+      );
+    },
+  );
+
+  it('the poll narrows an enqueue failure through ehFalhaDoSdkDeTarefasAmazon and imports no SDK module', () => {
+    const texto = lerDoApp(CHAMADOR_DE_SEARCH_ORDERS) ?? '';
+    expect(semComentarios(texto)).toMatch(/\behFalhaDoSdkDeTarefasAmazon\(/);
+    const especs = especificadores(texto);
+    // The Cloud Tasks SDK's two error modules: the narrowing lives in agendador.ts.
+    expect(
+      especs.filter((e) => e === 'firebase-admin/functions' || e === 'firebase-admin/app'),
+    ).toEqual([]);
+    expect(especs).toContain('../notificacoes/agendador');
+  });
+});
+
 describe('the step-2b capture sanitizer guards', () => {
   it('the sanitizer cannot reach a network, a process, a token or Firestore', () => {
     const fontes = arquivosTs(RAIZ_LIB)
@@ -1320,6 +1416,7 @@ describe('the guards, on synthetic source', () => {
       "registrarEventoAmazon(logger, 'chamada-bloqueada', 'INFO', 'm', { e: err.message });",
       'registrarChamadaBloqueadaAmazon(logger, { rota: err.message, valor });',
       'registrarValvulaAmazon(logger, valvula, { idTarefa: err.message });',
+      "registrarPoll(deps, conta, 'WARNING', 'm', { e: err.message });",
       "warnNaoTipado(deps.logger).warn('m', { e: err.message });",
       "registro.error('m', { e: err.message });",
     ]) {
@@ -1352,6 +1449,7 @@ describe('the guards, on synthetic source', () => {
       "logger.info('m', { a: f(')' }, sellerId",
       "logger.warn('m', { integracaoId, vendedor: sellingPartnerId });",
       "logger.error('m', { s: SellingPartnerId });",
+      "registrarPoll(deps, conta, 'INFO', 'm', { v: contexto.conta.selling_partner_id });",
     ]) {
       expect(sellersLogados('x.ts', fonte), fonte).toHaveLength(1);
     }
@@ -1374,6 +1472,32 @@ describe('the guards, on synthetic source', () => {
         "logger.warn('m', { valido: sellingPartnerIdValido(x), n: contasPorSellingPartnerId(db, x).length });",
       ),
     ).toEqual([]);
+  });
+
+  it('the searchOrders caller scan finds every call shape, and nothing alike', () => {
+    for (const fonte of [
+      'await buscarPedidosAtualizados(contexto.cliente, filtro);',
+      'cliente.get({ operacao: x, caminho: CAMINHO_SEARCH_ORDERS, schema });',
+      "cliente.get({ operacao: x, caminho: '/orders/2026-01-01/orders', schema });",
+      'cliente.get({ operacao: `searchOrders`, caminho: c, schema });',
+      'const { buscarPedidosAtualizados: b } = pacote;',
+      // A direct read built from the package's own exports, with a template path.
+      'contexto.cliente.get({ operacao: OPERACAO_SEARCH_ORDERS, caminho: `/orders/${V}/orders`, query, schema: x });',
+      'cliente.get({ operacao: op, caminho: `/orders/${V}/orders`, query, schema: respostaSearchOrdersSchema });',
+    ]) {
+      expect(nomeiaSearchOrders(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// buscarPedidosAtualizados(contexto.cliente, filtro)',
+      "const caminho = '/orders/2026-01-01/orders/' + id;",
+      'const caminho = `/orders/2026-01-01/orders/${id}`;',
+      'const corpo = searchOrdersBr();',
+      'buscarPedidosAtualizadosV2(cliente);',
+      'const op = OPERACAO_SEARCH_ORDERS_V2;',
+      'respostaSearchOrdersSchemaAntiga.parse(corpo);',
+    ]) {
+      expect(nomeiaSearchOrders(fonte), fonte).toBe(false);
+    }
   });
 
   it('the SDK import guard flags another production file, and exempts tests and testing/', () => {

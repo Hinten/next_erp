@@ -23,6 +23,22 @@
  *  - `participacoes200` — sellers `getMarketplaceParticipations` 200 static[0],
  *    the US example marketplace. `storeName` (Amazon's own placeholder) is
  *    dropped: the repo carries no store names.
+ *  - `searchOrders200` — orders `searchOrders` 200 static[2], the BR example
+ *    (`A2Q3Y263D00KWC`), REDUCED to a KEPT list: the envelope's `createdBefore`;
+ *    per order `orderId`, `createdTime`, `lastUpdatedTime`, `programs`,
+ *    `salesChannel`, `proceeds.grandTotal` and the three fulfillment status
+ *    fields (`fulfillmentStatus`, `fulfilledBy`, `fulfillmentServiceLevel`);
+ *    per item `orderItemId`, `quantityOrdered` and its `fulfillment`
+ *    quantities. EVERYTHING else is dropped — among it the `buyer`,
+ *    `recipient`, `tax`, `payment` and item `product` blocks (a buyer name, an
+ *    address, a brand and a store name the repo never carries), `orderAliases`,
+ *    the `shipByWindow` / `deliverByWindow` windows, `promiseCalculationInputs`
+ *    (a carrier and a shipping-service name) and the item's `proceeds`. The
+ *    order id and the order-item id take the sanitizer's FAKE shapes
+ *    (`000-0000000-…`, `00000…`), as a committed fixture must. Every other
+ *    value kept is the model's, byte for byte. The app's sanitized copy of the
+ *    same example is `apps/amazon`'s `sb-searchorders-br.json`, which this
+ *    package cannot read.
  *
  * The LWA token response is the shape of the example on
  * D:connecting-to-the-selling-partner-api (`token_type: 'bearer'`,
@@ -101,6 +117,36 @@ export const participacoes200 = {
       },
     },
   ],
+} as const;
+
+export const searchOrders200 = {
+  orders: [
+    {
+      orderId: '000-0000000-0000171',
+      createdTime: '2024-12-22T15:30:00Z',
+      lastUpdatedTime: '2024-12-23T10:00:00Z',
+      programs: ['AMAZON_BUSINESS', 'DELIVERY_BY_AMAZON'],
+      salesChannel: {
+        channelName: 'AMAZON',
+        marketplaceId: 'A2Q3Y263D00KWC',
+        marketplaceName: 'Amazon.com.br',
+      },
+      proceeds: { grandTotal: { amount: '1599.90', currencyCode: 'BRL' } },
+      fulfillment: {
+        fulfillmentStatus: 'UNSHIPPED',
+        fulfilledBy: 'MERCHANT',
+        fulfillmentServiceLevel: 'STANDARD',
+      },
+      orderItems: [
+        {
+          orderItemId: '00000000000171',
+          quantityOrdered: 1,
+          fulfillment: { quantityFulfilled: 0, quantityUnfulfilled: 1 },
+        },
+      ],
+    },
+  ],
+  createdBefore: '2024-12-22T16:00:00Z',
 } as const;
 
 /* -------------------------------------------------------------------------- */

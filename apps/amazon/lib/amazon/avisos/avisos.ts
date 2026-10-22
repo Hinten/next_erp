@@ -1,5 +1,5 @@
 /**
- * The producers and resolvers of the four Amazon avisos, and the µs boundary of
+ * The producers and resolvers of the five Amazon avisos, and the µs boundary of
  * this app:
  *
  * | tipo | key | severity | clock |
@@ -8,6 +8,7 @@
  * | `amazonReautorizacaoExpirando` | per conta, no `janela` | `atencao` | none |
  * | `amazonSegredoLwaExpirando` | per app | `atencao` | none |
  * | `amazonSegredoLwaRecusado` | per app | `critico` | none |
+ * | `amazonImportacaoParada` (step 4) | per conta | `critico` | the poll document's commit time (µs) |
  *
  * Every raise is in-app only: no `escalar` is ever passed. Every param is
  * structured (a name, a number, a civil date) — the wording lives in
@@ -25,7 +26,8 @@
  *  - {@link prazoUsDe} — a deadline instant, ms → µs, for the aviso's `prazo`;
  *  - {@link relogioDoDocumentoUs} — a Firestore commit `Timestamp` → µs, the
  *    app's only Timestamp conversion (the credential store's versions and read
- *    times, the conta enumeration's read time, the park's aviso clock).
+ *    times, the conta enumeration's read time, the park's aviso clock, and —
+ *    called HERE, never by the poll — the poll document's aviso clock).
  *
  * `avisos.test.ts` counts them as raw source text, so the promise cannot
  * quietly become four.
@@ -52,6 +54,16 @@
  * ⚠️ µs and not ms: two commits inside the same millisecond would look equal,
  * and an equal clock is dropped.
  *
+ * ## The import-stopped clock is the POLL document's commit time
+ *
+ * `amazonImportacaoParada` (step 4) is raised and resolved by the backstop poll,
+ * clocked by the commit time of the run's FIRST write to `pollPedidosAmazon/{id}`
+ * — its lease, or its refusal record. Every write to that document is
+ * preconditioned, so the clocks of successive runs rise strictly: a late raise
+ * from a run whose lease was taken over is dropped, and a resolve is always
+ * clocked (it seeds a resolved row when none exists). The poll hands this module
+ * the commit `Timestamp` itself, so the µs conversion stays here.
+ *
  * ## The other three are CLOCKLESS on purpose
  *
  *  - the two expiry tipos: their event is time passing, which no document write
@@ -73,6 +85,7 @@ import {
   CANAL_AVISO,
   FUSO_FISCAL,
   LIMIAR_AVISO_AMAZON_DIAS,
+  type MotivoImportacaoParadaAmazon,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
@@ -100,18 +113,27 @@ export const MOTIVO_AVISO_AMAZON = {
   contaRemovida: 'conta-removida',
   /** The sweep found more than 30 days left on the app secret. */
   segredoEmDia: 'segredo-em-dia',
+  /** The backstop poll read the conta cleanly after a counted failure (step 4). */
+  importacaoRetomada: 'importacao-retomada',
 } as const;
 export type MotivoAvisoAmazon = (typeof MOTIVO_AVISO_AMAZON)[keyof typeof MOTIVO_AVISO_AMAZON];
 
-/** The four tipos of this channel. */
+/** The five tipos of this channel. */
 export const TIPOS_AVISO_AMAZON: ReadonlySet<string> = new Set([
   TIPO_AVISO.amazonReconexaoPendente,
   TIPO_AVISO.amazonReautorizacaoExpirando,
   TIPO_AVISO.amazonSegredoLwaExpirando,
   TIPO_AVISO.amazonSegredoLwaRecusado,
+  TIPO_AVISO.amazonImportacaoParada,
 ]);
 
-/** The two PER-CONTA tipos — what the sweep's orphan pass may close. */
+/**
+ * The two PER-CONTA tipos the sweep's orphan pass may close. ⚠️ Not
+ * `amazonImportacaoParada` (step 4): the pass keeps a row only when its key is
+ * one this set's keys computes for a live conta, so listing the tipo here
+ * without that key would close EVERY live conta's open import aviso. Adding it
+ * is a sweep change of its own (`aviso.ts` documents the residue).
+ */
 export const TIPOS_AVISO_AMAZON_POR_CONTA: ReadonlySet<string> = new Set([
   TIPO_AVISO.amazonReconexaoPendente,
   TIPO_AVISO.amazonReautorizacaoExpirando,
@@ -450,6 +472,91 @@ export function resolverSegredoLwaRecusado(
   return resolverAviso(db, chaveSegredoRecusado(), MOTIVO_AVISO_AMAZON.trocaAceita, {
     agoraUs: agoraUsDe(deps),
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                 amazonImportacaoParada (clocked, step 4)                    */
+/* -------------------------------------------------------------------------- */
+
+/** The import-stopped aviso of one conta (the backstop poll's). */
+export function chaveImportacaoParada(integracaoId: string): string {
+  return chaveDeAviso({ tipo: TIPO_AVISO.amazonImportacaoParada, conta: integracaoId });
+}
+
+/** A Firestore commit stamp, as the poll hands it over: converted to µs HERE only. */
+export interface CommitDoDocumento {
+  readonly seconds: number;
+  readonly nanoseconds: number;
+}
+
+export interface ImportacaoParadaAmazon {
+  readonly integracaoId: string;
+  /** The conta's `nome` (its id for a malformed legacy row). */
+  readonly lojaNome: string;
+  readonly motivo: MotivoImportacaoParadaAmazon;
+  /** The commit time of the run's FIRST write to its poll document (header). */
+  readonly commit: CommitDoDocumento;
+}
+
+/**
+ * Raise "the backstop poll stopped importing this conta". In-app only;
+ * `params` are exactly `loja` and the motivo CODE (the wording reads it), so a
+ * wording fix is retroactive. The poll calls it only once the write that
+ * stored the failure count LANDED, at the motivo's threshold.
+ */
+export function levantarImportacaoParadaAmazon(
+  db: Firestore,
+  e: ImportacaoParadaAmazon,
+  deps: AvisoDepsAmazon,
+): Promise<{ chave: string; resultado: ResultadoAviso }> {
+  return escreverAviso(
+    db,
+    {
+      tipo: TIPO_AVISO.amazonImportacaoParada,
+      conta: e.integracaoId,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: e.lojaNome, motivo: e.motivo },
+      urlInterna: urlDaConta(e.integracaoId),
+      relogioEvento: relogioDoDocumentoUs(e.commit),
+    },
+    depsDeEscrita(deps),
+  );
+}
+
+/**
+ * Close the import-stopped aviso — ALWAYS clocked, by the commit time of the
+ * clean run's lease, as `importacao-retomada`. When the row is absent it seeds a
+ * RESOLVED one carrying that clock, so a late raise from an older run is still
+ * dropped.
+ *
+ * ⚠️ The poll calls it only when the stored `falhasSeguidas` was above 0: a
+ * clocked resolve re-stamps a resolved row's watermark (or seeds one), so a call
+ * on every healthy run would cost one aviso write per conta per tick.
+ *
+ * `true` only on a real open → resolved transition.
+ */
+export function resolverImportacaoParadaAmazon(
+  db: Firestore,
+  integracaoId: string,
+  deps: { readonly nowMs: number },
+  relogio: { readonly commit: CommitDoDocumento; readonly lojaNome: string },
+): Promise<boolean> {
+  return resolverAviso(
+    db,
+    chaveImportacaoParada(integracaoId),
+    MOTIVO_AVISO_AMAZON.importacaoRetomada,
+    { agoraUs: agoraUsDe(deps) },
+    {
+      tipo: TIPO_AVISO.amazonImportacaoParada,
+      conta: integracaoId,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: relogio.lojaNome },
+      urlInterna: urlDaConta(integracaoId),
+      relogioEvento: relogioDoDocumentoUs(relogio.commit),
+    },
+  );
 }
 
 /* -------------------------------------------------------------------------- */

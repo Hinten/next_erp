@@ -4,7 +4,13 @@ import { fileURLToPath } from 'node:url';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fimDoDiaNoFuso } from '@delfrance/core/datetime';
-import { CANAL_AVISO, FUSO_FISCAL, SEVERIDADE_AVISO, TIPO_AVISO } from '@delfrance/schemas';
+import {
+  CANAL_AVISO,
+  FUSO_FISCAL,
+  MOTIVO_IMPORTACAO_PARADA_AMAZON,
+  SEVERIDADE_AVISO,
+  TIPO_AVISO,
+} from '@delfrance/schemas';
 
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { AGORA_MS, DIA_MS, caminhoAviso } from '../testing/fixtures';
@@ -13,10 +19,12 @@ import {
   TIPOS_AVISO_AMAZON,
   TIPOS_AVISO_AMAZON_POR_CONTA,
   agoraUsDe,
+  levantarImportacaoParadaAmazon,
   avisarReautorizacao,
   avisarReconexaoPendente,
   avisarSegredoLwaExpirando,
   avisarSegredoLwaRecusado,
+  chaveImportacaoParada,
   chaveReautorizacao,
   chaveReconexao,
   chaveSegredoExpirando,
@@ -24,6 +32,7 @@ import {
   prazoUsDe,
   relogioDoDocumentoUs,
   resolverAvisoDeContaRemovida,
+  resolverImportacaoParadaAmazon,
   resolverReautorizacao,
   resolverReconexaoPendente,
   resolverSegredoLwaExpirando,
@@ -109,8 +118,11 @@ describe('the keys', () => {
         TIPO_AVISO.amazonReautorizacaoExpirando,
         TIPO_AVISO.amazonSegredoLwaExpirando,
         TIPO_AVISO.amazonSegredoLwaRecusado,
+        TIPO_AVISO.amazonImportacaoParada,
       ].sort(),
     );
+    // Not the import-stopped tipo: the orphan pass would close live contas' rows (avisos.ts).
+    expect(TIPOS_AVISO_AMAZON_POR_CONTA.has(TIPO_AVISO.amazonImportacaoParada)).toBe(false);
     expect([...TIPOS_AVISO_AMAZON_POR_CONTA].sort()).toEqual(
       [TIPO_AVISO.amazonReconexaoPendente, TIPO_AVISO.amazonReautorizacaoExpirando].sort(),
     );
@@ -321,5 +333,107 @@ describe('resolverAvisoDeContaRemovida', () => {
       true,
     );
     expect(db.ler(caminhoAviso(chaveReautorizacao(ID)))?.resolucaoMotivo).toBe('conta-removida');
+  });
+});
+
+describe('amazonImportacaoParada — clocked by the poll document commit time (step 4)', () => {
+  /** A Firestore commit stamp: 10 s + 123 456 µs. */
+  const COMMIT = { seconds: 10, nanoseconds: 123_456_000 };
+  const COMMIT_US = 10_123_456;
+
+  it('keys one row per conta', () => {
+    expect(chaveImportacaoParada(ID)).toBe(`amazonImportacaoParada:${ID}`);
+    expect(chaveImportacaoParada(ID)).not.toBe(chaveImportacaoParada('conta-2'));
+  });
+
+  it('raises critico, in-app, with exactly loja + motivo, clocked by the commit converted HERE', async () => {
+    const { resultado } = await levantarImportacaoParadaAmazon(
+      asDb(db),
+      {
+        integracaoId: ID,
+        lojaNome: 'Conta Um',
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.limiteDeTaxa,
+        commit: COMMIT,
+      },
+      deps(),
+    );
+    expect(resultado).toBe('criado');
+    const doc = db.ler(caminhoAviso(chaveImportacaoParada(ID)));
+    expect(doc).toMatchObject({
+      tipo: TIPO_AVISO.amazonImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: 'Conta Um', motivo: 'limite-de-taxa' },
+      urlInterna: { rota: `/canais/amazon/${ID}`, campo: null },
+      relogioEvento: COMMIT_US,
+      resolvidoEm: null,
+    });
+    expect(Object.keys((doc?.params ?? {}) as object).sort()).toEqual(['loja', 'motivo']);
+  });
+
+  it('a clean run resolves it CLOCKED; a late raise from an older run is then dropped', async () => {
+    await levantarImportacaoParadaAmazon(
+      asDb(db),
+      {
+        integracaoId: ID,
+        lojaNome: 'X',
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.falhaTransitoria,
+        commit: COMMIT,
+      },
+      deps(),
+    );
+    const posterior = { seconds: 11, nanoseconds: 0 };
+    expect(
+      await resolverImportacaoParadaAmazon(asDb(db), ID, deps(), {
+        commit: posterior,
+        lojaNome: 'X',
+      }),
+    ).toBe(true);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      resolucaoMotivo: 'importacao-retomada',
+      relogioEvento: 11_000_000,
+    });
+    // A raise from the run before (an earlier lease) can no longer reopen it…
+    const { resultado } = await levantarImportacaoParadaAmazon(
+      asDb(db),
+      {
+        integracaoId: ID,
+        lojaNome: 'X',
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.falhaTransitoria,
+        commit: COMMIT,
+      },
+      deps(),
+    );
+    expect(resultado).toBe('ignorado');
+    // …while a LATER run's raise does (near-miss).
+    const { resultado: reaberto } = await levantarImportacaoParadaAmazon(
+      asDb(db),
+      {
+        integracaoId: ID,
+        lojaNome: 'X',
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.falhaTransitoria,
+        commit: { seconds: 12, nanoseconds: 0 },
+      },
+      deps(),
+    );
+    expect(reaberto).not.toBe('ignorado');
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))?.resolvidoEm).toBeNull();
+  });
+
+  it('a resolve with no row SEEDS a resolved one carrying the clock (always clocked)', async () => {
+    expect(
+      await resolverImportacaoParadaAmazon(asDb(db), ID, deps(), {
+        commit: COMMIT,
+        lojaNome: 'Conta Um',
+      }),
+    ).toBe(false);
+    expect(db.ler(caminhoAviso(chaveImportacaoParada(ID)))).toMatchObject({
+      relogioEvento: COMMIT_US,
+      resolucaoMotivo: 'importacao-retomada',
+    });
+    const chamada = h.resolverAviso.mock.calls.find(([, c]) => c === chaveImportacaoParada(ID));
+    expect((chamada?.[4] as { relogioEvento?: unknown } | undefined)?.relogioEvento).toBe(
+      COMMIT_US,
+    );
   });
 });

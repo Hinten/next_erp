@@ -7,6 +7,7 @@ describe('the constants', () => {
     expect(barril.URL_BASE_SP_API).toBe('https://sellingpartnerapi-na.amazon.com');
     expect(barril.URL_TOKEN_LWA).toBe('https://api.amazon.com/auth/o2/token');
     expect(barril.MARKETPLACE_ID_BR).toBe('A2Q3Y263D00KWC');
+    expect(barril.CAMINHO_SEARCH_ORDERS).toBe('/orders/2026-01-01/orders');
     expect(barril.MAX_USER_AGENT).toBe(500);
     expect(barril.MAX_REF_CREDENCIAL).toBe(64);
   });
@@ -23,10 +24,16 @@ describe('the barrel', () => {
       'montarUrlConsentimento',
       'credencialLwaValida',
       'applicationIdValido',
+      'buscarPedidosAtualizados',
     ] as const) {
       expect(typeof barril[nome], nome).toBe('function');
     }
-    for (const nome of ['lwaTokenRespostaSchema', 'lwaErroSchema', 'spApiErrosSchema'] as const) {
+    for (const nome of [
+      'lwaTokenRespostaSchema',
+      'lwaErroSchema',
+      'spApiErrosSchema',
+      'respostaSearchOrdersSchema',
+    ] as const) {
       expect(typeof barril[nome].safeParse, nome).toBe('function');
     }
     expect(barril.PRAZO_AMAZON_MS).toEqual({ leitura: 20_000, lwa: 20_000 });
