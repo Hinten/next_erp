@@ -128,7 +128,7 @@
  *     an invalid CEP, a readable one whose buyer has no valid document (no
  *     cliente, so no endereço) and an observation with no shipment — and no
  *     endereço stored is ever overwritten to close it.
- *     ⚠️ **A reversal on a pedido whose label was bought** (owner decision A7,
+ *     ⚠️ **A reversal on a pedido whose label was bought** (owner decision,
  *     2026-10-19): when the order's codigo is one of the four reversal rungs
  *     (`motivoReversaoLi`: cancelled, refunded, charged back, refunded without
  *     return) and the snapshot the WINNING attempt decided from holds a
@@ -826,10 +826,10 @@ export async function importarPedidoLi(
     );
   }
 
-  // 6b. A PAID order carrying no CEP at all: refused, and retried (A4). Asked of S here,
+  // 6b. A PAID order carrying no CEP at all: refused, and retried. Asked of S here,
   // and again of every batch attempt's snapshot (`mapearPedido`, rule 7).
   /**
-   * What A4's two verdicts both read of the order and of one pedido snapshot:
+   * What the paid-without-address rule's two verdicts both read of the order and of one pedido snapshot:
    * neither the shipment nor the CEP, which only the refusal asks.
    */
   const aguardandoEndereco = (arm: PedidoArmazenadoLi | null): PedidoPagoAguardandoEnderecoLi => ({
@@ -987,7 +987,7 @@ export async function importarPedidoLi(
     nowUs,
   });
   // A reversal on a pedido whose label was bought, read from the snapshot the WINNING
-  // attempt decided from (the import never writes `printLabelId`) — A7.
+  // attempt decided from (the import never writes `printLabelId`).
   const reversaoComEtiqueta = etiquetaCompradaLi(gravacao.armazenado)
     ? motivoReversaoLi(pedido.situacao.codigo)
     : null;

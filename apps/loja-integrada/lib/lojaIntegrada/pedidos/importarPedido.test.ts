@@ -2273,7 +2273,7 @@ describe('⚠️ a PAID order carrying NO CEP retries, then fails LOUDLY (owner 
   });
 });
 
-describe('⚠️ a reversal landing on a pedido whose label was BOUGHT: the approved estado AND an aviso (owner decision A7, 2026-10-19)', () => {
+describe('⚠️ a reversal landing on a pedido whose label was BOUGHT: the approved estado AND an aviso (owner decision, 2026-10-19)', () => {
   const CAMINHO_AVISO_REVERSAO = `avisos/${chaveDoAvisoDoPedidoLi(
     TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
     CONTA,

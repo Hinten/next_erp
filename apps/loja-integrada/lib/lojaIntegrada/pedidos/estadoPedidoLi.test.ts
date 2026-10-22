@@ -801,7 +801,7 @@ describe('the payment-status ladder', () => {
   });
 });
 
-describe('motivoReversaoLi: the four reversal codigos, and nothing else (owner decision A7)', () => {
+describe('motivoReversaoLi: the four reversal codigos, and nothing else (owner decision)', () => {
   it('EQUAL: 8, 7, 16 and 1020 each name their reversal', () => {
     expect(motivoReversaoLi('pedido_cancelado')).toBe(MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado);
     expect(motivoReversaoLi('pagamento_devolvido')).toBe(MOTIVO_REVERSAO_COM_ETIQUETA_LI.devolvido);
