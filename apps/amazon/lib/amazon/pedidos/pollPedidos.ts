@@ -67,7 +67,11 @@
  *  7. Per row: `orderId` + `lastUpdatedTime` (an invalid row is counted and
  *     blocks the advance; the valid ones still go — and when the drain stops
  *     before the window's end, the stored `pendente` carries the flag, so the
- *     run that COMPLETES the window counts it), enqueued only when NEWER
+ *     run that COMPLETES the window counts it). The cursor candidate is the
+ *     max stamp over the whole WINDOW, never one run: a stopped drain stores
+ *     the running max in `pendente` beside the flag, the resumed run starts
+ *     from it, and the completing run advances from the max of it and its own
+ *     rows — the rows may come newest-first. Each row is enqueued only when NEWER
  *     than `vistos` and not already enqueued by this run. Each enqueue races
  *     `PRAZO_ENFILEIRAMENTO_POLL_MS`; a named transient, the valve or the
  *     deadline ⇒ persisted `failed` under the deterministic `poll:` id (handed
@@ -82,7 +86,8 @@
  *     lease ⇒ nothing written (a WARNING); still ours ⇒ RE-DERIVED from the
  *     re-read (the max cursor, merged `vistos`, our `pendente` only if the
  *     stored one is still the one the lease read — `===` on two scalars, no
- *     fold) and retried once. Never the captured patch re-applied (rule 7).
+ *     fold; its two accumulators, the flag and the running max, are not
+ *     identity) and retried once. Never the captured patch re-applied (rule 7).
  * 10. The RAISE (a counted failure at its motivo's threshold), only once step 9
  *     LANDED, against the count it stored, clocked by the lease's commit time.
  *
@@ -90,11 +95,11 @@
  *
  * | outcome | cursor | `pendente` | `vistos` | `falhasSeguidas` |
  * | --- | --- | --- | --- | --- |
- * | complete drain, every row valid | advances (capped) / kept if empty | null | merged, pruned | 0 once resolved |
+ * | complete drain, every row valid | advances to the window's max row (this run's or the stored max; capped) / kept if empty | null | merged, pruned | 0 once resolved |
  * | complete drain, an invalid row (this run's, or the stored flag) | kept | null | merged, pruned | +1 (`resposta-invalida`) |
- * | truncated after 5 pages | kept | the next page's token (+ the flag) | merged, pruned | unchanged |
- * | the window's page bound, or a repeated token | kept | the position (+ the flag) | merged, pruned | +1 (`resposta-invalida`) |
- * | deadline (`orcamento-esgotado`) or a counted failure mid-drain | kept | the page it stopped at (+ the flag) | merged, pruned | +1 |
+ * | truncated after 5 pages | kept | the next page's token (+ the flag, + the running max) | merged, pruned | unchanged |
+ * | the window's page bound, or a repeated token | kept | the position (+ the flag, + the running max) | merged, pruned | +1 (`resposta-invalida`) |
+ * | deadline (`orcamento-esgotado`) or a counted failure mid-drain | kept | the page it stopped at (+ the flag, + the running max) | merged, pruned | +1 |
  * | `fila-indisponivel` | kept | unchanged | STORED kept | +1 |
  * | a 400 on the resumed page (`paginacao-expirada`) | kept | null | merged, pruned | unchanged |
  * | `conta-parada` / `segredo-recusado` mid-drain | kept | unchanged | STORED kept | unchanged |
@@ -688,6 +693,8 @@ interface Janela {
   readonly retomada: boolean;
   /** An EARLIER run of this window read an invalid row (the stored `pendente`'s flag). */
   readonly linhaInvalida: boolean;
+  /** The largest row stamp (ms) EARLIER runs of this window read (the stored `pendente`'s); null = none recorded. */
+  readonly maiorLinhaMs: number | null;
 }
 
 /** Where a drain stands: the request that FETCHES the next page to read. */
@@ -698,15 +705,25 @@ interface Posicao {
   readonly paginas: number;
 }
 
+/** The larger of two optional stamps; `null` only when both are. */
+function maiorDe(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.max(a, b);
+}
+
 /**
  * The `pendente` a stopped drain stores: its position, the window's exact
- * strings, and whether ANY run of this window read an invalid row — the flag
- * that makes the run completing the window count it, however many runs later.
+ * strings, whether ANY run of this window read an invalid row — the flag that
+ * makes the run completing the window count it, however many runs later — and
+ * the largest row stamp ANY run of it read, which that run advances the cursor
+ * from. Both accumulate over the stored ones, never restart with this run.
  */
 function pendenteDe(
   janela: Janela,
   posicao: Posicao,
   linhaInvalidaNesteRun: boolean,
+  maiorLinhaNesteRunMs: number | null,
 ): PendentePollAmazon {
   return {
     paginationToken: posicao.paginationToken,
@@ -716,6 +733,7 @@ function pendenteDe(
     tokenEmMs: posicao.tokenEmMs,
     paginas: posicao.paginas,
     linhaInvalida: janela.linhaInvalida || linhaInvalidaNesteRun,
+    maiorLinhaMs: maiorDe(janela.maiorLinhaMs, maiorLinhaNesteRunMs),
   };
 }
 
@@ -740,6 +758,10 @@ interface Dreno {
   readonly novos: Readonly<Record<string, number>>;
   /** This run's `vistos` additions are dropped (a park, the app secret, a broken queue). */
   readonly descartarNovos: boolean;
+  /**
+   * The cursor candidate: the largest row stamp (ms) of the whole WINDOW — this
+   * run's rows and the stored running max of its earlier runs. Null = no row yet.
+   */
   readonly maiorLinhaMs: number | null;
   readonly inicioDrenagemMs: number;
   readonly enfileiradas: number;
@@ -909,6 +931,7 @@ function janelaDaExecucao(
           inicioDrenagemMs: guardado.inicioDrenagemMs,
           retomada: true,
           linhaInvalida: guardado.linhaInvalida,
+          maiorLinhaMs: guardado.maiorLinhaMs,
         },
         posicao: {
           paginationToken: guardado.paginationToken,
@@ -928,6 +951,7 @@ function janelaDaExecucao(
       inicioDrenagemMs: agoraMs,
       retomada: false,
       linhaInvalida: false,
+      maiorLinhaMs: null,
     },
     posicao: { paginationToken: null, tokenEmMs: agoraMs, paginas: 0 },
   };
@@ -936,7 +960,8 @@ function janelaDaExecucao(
 /**
  * Read the window and enqueue what changed (module header, steps 6–7). The
  * order of the rows is never assumed: the cursor candidate is the max stamp
- * over the whole run.
+ * over the whole WINDOW — this run's rows and the max the stored `pendente`
+ * carried from the window's earlier runs.
  */
 async function drenar(
   db: Firestore,
@@ -956,6 +981,7 @@ async function drenar(
   let posicao = inicial;
   const novos: Record<string, number> = {};
   const nesteRun = new Set<string>();
+  /** THIS run's largest row stamp; the window's is the max with `janela.maiorLinhaMs`. */
   let maiorLinhaMs: number | null = null;
   let linhaInvalida = false;
   let enfileiradas = 0;
@@ -973,7 +999,7 @@ async function drenar(
     pendente,
     novos,
     descartarNovos,
-    maiorLinhaMs,
+    maiorLinhaMs: maiorDe(janela.maiorLinhaMs, maiorLinhaMs),
     inicioDrenagemMs: janela.inicioDrenagemMs,
     enfileiradas,
     persistidas,
@@ -982,7 +1008,7 @@ async function drenar(
     lastUpdatedBeforeEcoado: eco,
   });
   /** Where this drain stands, as the final write would store it. */
-  const aqui = () => pendenteDe(janela, posicao, linhaInvalida);
+  const aqui = () => pendenteDe(janela, posicao, linhaInvalida, maiorLinhaMs);
   /** A window that never ends (§5 risk 6): a malformed answer, counted, its position kept. */
   const semFim = (tokenRepetido: boolean): Dreno => {
     registrarPoll(deps, alvo.integracaoId, 'WARNING', '[amazon/poll] paginação sem fim', {
@@ -1132,6 +1158,14 @@ interface PlanoDaEscritaFinal {
  * Is the stored `pendente` still the one the lease read? `===` on two scalars
  * the run read — the token and when it arrived — never a structural compare or
  * any fold: the same token with another `tokenEmMs` is ANOTHER drain.
+ *
+ * The two ACCUMULATORS (`linhaInvalida`, `maiorLinhaMs`) are deliberately not
+ * identity: they describe the drain, they do not name it. Ours are derived
+ * from the ones the lease read, and only a final write under a lease stores a
+ * `pendente` — while this lease holds, no other run's lands. The identity
+ * guards the POSITION: a running max lost here only makes the completion
+ * advance the cursor less (a re-listed backlog, never a skipped row), and a
+ * larger one is still capped at the window's start minus five minutes.
  */
 function mesmoPendente(a: PendentePollAmazon | null, b: PendentePollAmazon | null): boolean {
   return (

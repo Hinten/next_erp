@@ -35,6 +35,7 @@ import {
   TIPO_INCIDENTE,
   TIPO_NFE,
   efeitoEstoquePedido,
+  idFromRefOrNull,
   estadoFreteSchema,
   estadoPedidoSchema,
   estoqueAplicadoSchema,
@@ -135,13 +136,6 @@ interface PedidoParaSync {
   temMarcadorLegado: boolean;
   dataIndisponivelEstoque: number | null;
   dataRemocaoEstoque: number | null;
-}
-
-/** `'documents/<col>/<id>'` → `<id>` (outer-ref doc-path string). */
-function idDeOuterRef(valor: unknown): string | null {
-  if (typeof valor !== 'string' || valor.length === 0) return null;
-  const partes = valor.split('/').filter(Boolean);
-  return partes.length > 0 ? (partes[partes.length - 1] ?? null) : null;
 }
 
 const itemLooseSchema = z.object({
@@ -327,8 +321,8 @@ function extrairPedido(raw: DocumentData): { pedido: PedidoParaSync } | { erro: 
       itens: extrairItens(raw.itens),
       ehSaidaPedido: raw.ehSaida !== false,
       numero: typeof raw.numero === 'string' ? raw.numero : null,
-      integracaoId: idDeOuterRef(raw.integracaoPedidoOuterRef),
-      operacaoId: idDeOuterRef(raw.operacaoPedidoOuterRef),
+      integracaoId: idFromRefOrNull(raw.integracaoPedidoOuterRef),
+      operacaoId: idFromRefOrNull(raw.operacaoPedidoOuterRef),
       aplicado,
       temMarcadorLegado: ehMarcadorLegado(raw),
       dataIndisponivelEstoque: numeroOuNull(raw.dataIndisponivelEstoque),
@@ -748,14 +742,14 @@ export async function sincronizarEstoquePedido(
         return { status: 'ignorado', motivo: `integração ${pedido.integracaoId} inexistente` };
       }
       const integracao = integracaoSnap.data() as DocumentData;
-      depositoId = idDeOuterRef(integracao.depositoOuterRef);
+      depositoId = idFromRefOrNull(integracao.depositoOuterRef);
       if (!depositoId) {
         return { status: 'ignorado', motivo: `integração ${pedido.integracaoId} sem depósito` };
       }
 
       operacaoIdResolvida =
         pedido.operacaoId ??
-        idDeOuterRef(
+        idFromRefOrNull(
           pedido.ehSaidaPedido ? integracao.operacaoOuterRef : integracao.operacaoDevolucaoOuterRef,
         );
       if (!operacaoIdResolvida) {

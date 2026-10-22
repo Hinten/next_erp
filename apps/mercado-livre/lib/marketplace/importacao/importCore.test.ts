@@ -389,6 +389,30 @@ describe('assembleImportPlan — stock options', () => {
     const plan = assembleImportPlan(args({ depositoOuterRef: null }));
     expect(plan.estoque).toBeNull();
   });
+
+  it.each(['', '/', '///', 'documents', '/documents///'])(
+    'skips parent stock when the depósito ref has no id: %s',
+    (depositoOuterRef) => {
+      expect(assembleImportPlan(args({ depositoOuterRef })).estoque).toBeNull();
+      expect(
+        assembleImportPlan(
+          args({
+            depositoOuterRef,
+            isCreate: false,
+            existingEstoqueQty: 3,
+            options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverEstoque: true },
+          }),
+        ).estoque,
+      ).toBeNull();
+    },
+  );
+
+  it.each(['dep1', 'depositos/dep1', '/documents//depositos/dep1/'])(
+    'preserves usable depósito id extraction: %s',
+    (depositoOuterRef) => {
+      expect(assembleImportPlan(args({ depositoOuterRef })).estoque?.docId).toBe('est-prod1-dep1');
+    },
+  );
 });
 
 describe('assembleImportPlan — parent taxonomy links (#520)', () => {
@@ -860,6 +884,23 @@ describe('assembleVariationChildPlan — update (existing child)', () => {
 });
 
 describe('assembleVariationChildPlan — estoque', () => {
+  it.each(['', '/', '///', 'documents', '/documents///'])(
+    'skips child stock when the depósito ref has no id: %s',
+    (depositoOuterRef) => {
+      expect(assembleVariationChildPlan(childArgs({ depositoOuterRef })).estoque).toBeNull();
+      expect(
+        assembleVariationChildPlan(
+          childArgs({
+            depositoOuterRef,
+            isCreate: false,
+            existingEstoqueQty: 2,
+            options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverEstoque: true },
+          }),
+        ).estoque,
+      ).toBeNull();
+    },
+  );
+
   it('creates child stock at the depósito from availableQuantity', () => {
     const plan = assembleVariationChildPlan(childArgs());
     expect(plan.estoque?.docId).toBe('est-child1-dep1');

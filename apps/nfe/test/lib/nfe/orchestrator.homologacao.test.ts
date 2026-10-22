@@ -43,11 +43,7 @@ import {
   NFeConsumoIndevidoError,
 } from '@delfrance/integrations-nfe';
 
-import {
-  seedIdLote,
-  seedNNF,
-  SEFAZ_HOM_INUT_SERIE,
-} from '@delfrance/integrations-nfe/test-helpers/homologacao-seed';
+import { seedIdLote, seedNNF } from '@delfrance/integrations-nfe/test-helpers/homologacao-seed';
 
 import { getAdminFirestore } from '../../../lib/firebase/admin';
 import {
@@ -55,7 +51,6 @@ import {
   cartaCorrecaoService,
   emitirPedido,
   emitirPedidosLote,
-  inutilizarNumeracao,
 } from '../../../lib/nfe/orchestrator';
 import { notasDeOrigemDe, referenciarItensDaDevolucao } from '@delfrance/data/pedido';
 import { reconcileByRecibo } from '../../../lib/nfe/orchestrator/reconcile';
@@ -795,29 +790,12 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     expect(again.reused).toBe(true);
   }, 120_000);
 
-  it('inutilizarNumeracao — burn a fresh range on the reserved série 9 → cStat 102', async () => {
-    await new Promise((r) => setTimeout(r, 1000));
-
-    // Série 9 is reserved for inutilização (no emission test emits there),
-    // and the nNF is a fresh high-zone value per run (SEED_NNF_START is
-    // Date.now()-seeded) — so this can never collide with the serie-1/2
-    // emission lanes nor hit "número já inutilizado" on a re-run.
-    const inutNNF = SEED_NNF_START;
-    const result = await inutilizarNumeracao(fs, rt, {
-      filialId: FILIAL_ID,
-      serie: SEFAZ_HOM_INUT_SERIE,
-      nNFIni: inutNNF,
-      nNFFin: inutNNF,
-      xJust: 'Inutilizacao de teste de homologacao - faixa nao utilizada',
-    });
-    assertNotConsumoIndevido(
-      { cStat: result.cStat, xMotivo: result.xMotivo },
-      'inutilizacao/serie-9',
-    );
-    expect(result.cStat).toBe('102');
-    expect(result.serie).toBe(SEFAZ_HOM_INUT_SERIE);
-    expect(result.nProt).toBeTruthy();
-  }, 90_000);
+  // No live inutilização test. Ajuste SINIEF 40/2026 (DOU 14/09/2026) adds § 6º
+  // to cláusula décima quarta of Ajuste SINIEF 7/05: the Pedido de Inutilização
+  // de Número da NF-e no longer applies in AC, BA and SP, from 01/11/2026. This
+  // suite's CNPJ is SP's, and SEFAZ-SP homologação has answered every request
+  // with cStat 998 "Serviço Desativado" since 2026-10-22 (#2030). The offline
+  // orchestrator and library tests still cover the flow for the other UFs.
 
   it('cartaCorrecaoService — emit a fresh NF-e then register CC-e (135); nSeqEvento increments 1 → 2', async () => {
     // Throttle so the prior round-trips don't push us into the 656 window.

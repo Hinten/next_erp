@@ -9,7 +9,6 @@ import {
 } from './enviarPrecoRun';
 import { mercadoLivrePriceProvider } from './providers/mercadoLivre';
 import { shopeePriceProvider } from './providers/shopee';
-import { suportePrecoDoCanal } from './registry';
 
 /**
  * The orchestration itself (dedup, the single chunked read, the whole-selection
@@ -133,26 +132,25 @@ describe('enviarPrecoParaMarketplaces', () => {
   });
 
   /**
-   * This binding's OWN `suportado` closure, which the rows-first argument in
-   * `../caps/registriesAlinhadas.test.ts` relies on (#1529): Shopee's provider is
-   * registered while its verdict is still `canal-nao-implementado`, so a closure
-   * that asked "is a provider registered?" would hand the Shopee conta the WHOLE
-   * selection and the placeholder would add a row for a produto that never named
-   * it. Written to survive the step-22 flip (#1530).
+   * This binding's OWN `suportado` closure (`enviarPrecoRun.ts`), both arms:
+   * Shopee — built, with a provider — is handed the whole selection, including a
+   * produto that never named its conta; an unbuilt channel only the produtos that
+   * name its conta, each answered `canal-nao-implementado`.
    */
-  it('hands the Shopee conta the whole selection only when the verdict says supported', async () => {
+  it('Shopee gets the WHOLE selection; an unbuilt channel only the produtos naming it', async () => {
     const lerIntegracoes = vi
       .fn()
       .mockResolvedValue(
         new Map([
           ...contas(),
           ['shopee-1', { nome: 'Shopee BR', tipo: INTEGRACAO_TIPO.shopee, ativo: true }],
+          ['li', { nome: 'Loja Integrada', tipo: INTEGRACAO_TIPO.lojaIntegrada, ativo: true }],
         ]),
       );
     const ml = vi
       .spyOn(mercadoLivrePriceProvider, 'enviarPreco')
       .mockResolvedValue({ rows: [], pausadoAte: null });
-    // Reached only after the flip; one row per produto it was handed.
+    // One row per produto it was handed.
     const shopee = vi
       .spyOn(shopeePriceProvider, 'enviarPreco')
       .mockImplementation(({ integracao, produtoIds }) =>
@@ -179,16 +177,22 @@ describe('enviarPrecoParaMarketplaces', () => {
       const res = await run(
         [
           alvo({ produtoId: 'p1' }),
-          alvo({ produtoId: 'p2', integracoesComProduto: ['ml-1', 'shopee-1'] }),
+          alvo({ produtoId: 'p2', integracoesComProduto: ['ml-1', 'shopee-1', 'li'] }),
         ],
         { baixarPreco: false },
         lerIntegracoes,
       );
 
       const shopeeRows = res.rows.filter((r) => r.integracaoId === 'shopee-1');
-      expect(shopeeRows.map((r) => r.produtoId)).toEqual(
-        suportePrecoDoCanal(INTEGRACAO_TIPO.shopee).suportado ? ['p1', 'p2'] : ['p2'],
-      );
+      expect(shopeeRows.map((r) => r.produtoId)).toEqual(['p1', 'p2']);
+
+      // Loja Integrada flips `implementado` at ITS step 22
+      // (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`);
+      // whichever channel flips second re-points this example. The arm itself is
+      // pinned table-free in `../caps/suporteCanal.test.ts:16-25`.
+      const li = res.rows.filter((r) => r.integracaoId === 'li');
+      expect(li.map((r) => r.produtoId)).toEqual(['p2']);
+      expect(li[0]!.motivo).toBe('canal-nao-implementado');
     } finally {
       ml.mockRestore();
       shopee.mockRestore();

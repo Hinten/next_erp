@@ -25,9 +25,8 @@ import type {
  *
  * ⚠️ The bulk path sends no `linkDocId` (the run covers every listing of the
  * selection on the conta). The produto's Shopee tab names one listing and calls
- * the client DIRECTLY, never through this registry, because this row is
- * unreachable until Shopee's caps row flips `implementado` (#1530) — see
- * `../../caps/registriesAlinhadas.test.ts`.
+ * the client DIRECTLY, never through this registry — as Mercado Livre's tab does
+ * (`MercadoLivreEditor.tsx`).
  */
 export const shopeeAnuncioStatusProvider: AnuncioStatusProvider = {
   tipos: [INTEGRACAO_TIPO.shopee],

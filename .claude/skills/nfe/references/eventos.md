@@ -66,6 +66,26 @@ by NF-e pendentes de retorno that were never authorized).
   número homologado" → success, with `nProt`.
 - Inutilização is **not** for numbers that were actually authorized — for those
   use cancelamento.
+- ⛔ **Ended in AC, BA and SP from 01/11/2026.** Ajuste SINIEF nº 40/2026
+  (CONFAZ, signed 04/09/2026, DOU 14/09/2026) adds § 6º to cláusula décima
+  quarta of Ajuste SINIEF 7/05: "O Pedido de Inutilização de Número da NF-e
+  previsto no 'caput' não se aplica aos Estados do Acre, Bahia e São Paulo."
+  Ajuste SINIEF 38/2026 does the same for NFC-e. SEFAZ-SP switched homologação
+  off ahead of that date: from 2026-10-22 every request gets **cStat 998
+  "Rejeição: Serviço Desativado"** (#2030). Expect the same in produção from
+  01/11. Inutilização still exists in the other UFs. Primary source:
+  `confaz.fazenda.gov.br/legislacao/ajustes/2026/AJ040_26`.
+- ⚠️ A **rejection** may carry `<dhRecbto>0001-01-01T00:00:00+00:00</dhRecbto>`
+  (.NET `DateTime.MinValue`), first seen from SEFAZ-SP homologação on 2026-10-22.
+  MOC 7.0 Tabela 5-10 says dhRecbto/nProt "não serão preenchidos em caso de
+  erro", but `retInutNFe_v4.00.xsd` keeps dhRecbto required and its pattern
+  rejects year 0001. `validateRetInutNFe` (`src/xsd/index.ts`) tolerates exactly
+  that: cStat ≠ 102, the sentinel value, and an otherwise XSD-valid reply. Any
+  other bad value, or the sentinel on a 102, still throws.
+- Rejections the MOC lists (Tabela 5-12): 241 (a número in the faixa was already
+  used, also by an EPEC), 256 (faixa overlaps an earlier inutilização), 563
+  (identical pedido already exists), 201 (more than 10,000 números), 240
+  (irregularidade fiscal do emitente), 453/454 (ano out of bounds).
 
 ## Phase mapping
 

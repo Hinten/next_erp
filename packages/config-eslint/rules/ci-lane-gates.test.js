@@ -218,8 +218,8 @@ const LANES = {
     // ci-mercado-livre, this lane owns NO exclusion: `ci.yml` still runs every
     // `@delfrance/shopee-app` unit test in `CI test`, unfiltered and with no
     // `if:`. So a skip here loses only the emulator round trip, never the unit
-    // suite — the smaller blast radius while step 22 (#1530) is still open.
-    // Step 22 may move the offline job in when it adds the Firestore-only one.
+    // suite. Since step 22 (#1530) the `*.firestore.test.ts` suites share the job's
+    // config (the Loja Integrada fold), so a Firestore-only proof adds no check name.
     jobs: [
       {
         id: 'shopee-tasks-roundtrip',
@@ -996,12 +996,17 @@ describe('CI lanes always report', () => {
       [
         'A gate or scope check-run name changed.',
         '',
-        'The gate names are wired into the `protect-main` ruleset (id 16348427) as',
-        'required status checks. GitHub matches a required check by NAME — a renamed',
-        'check is simply never reported, and the branch merges without it. The gate',
-        'silently stops gating.',
+        'The gate names are pinned on the `protect-main` ruleset (id 16348427). Since',
+        '2026-10-19, 16 of the 17 pinnable checks are REQUIRED (all but',
+        '`CI gate (loja-integrada)`), with no bypass actor. GitHub matches a required',
+        'check by NAME, so a renamed required gate never reports the name the ruleset',
+        'waits for: the renaming PR itself can NEVER merge. (An unpinned gate fails the',
+        'other way: the old name is simply never reported, and nothing notices.)',
         '',
-        'If the rename is intentional, edit the ruleset in the same change:',
+        'If the rename is intentional, change the RULESET first — swap (or drop) the',
+        'context just BEFORE the renaming PR merges, never after — then give every',
+        'open PR a NEW event (a push, or "Update branch"). A re-run is not enough: it',
+        "replays the original run's commit and workflow, so it keeps the OLD name.",
         '  gh api repos/Hinten/next_erp/rulesets/16348427',
         '',
         'Keep them pure ASCII — no em dash. They get pasted into a JSON payload from',

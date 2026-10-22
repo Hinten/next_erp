@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { INTEGRACAO_TIPO, type IntegracaoTipo } from '../integracao';
+import { VINCULO_INT_FRETE_CONTA } from '../intFrete';
+import { FREIGHT_TIPO_CAPS, type FreightLabelMode } from './frete';
 import {
   MARKETPLACE_TIPO_CAPS,
   ehMarketplace,
@@ -21,7 +23,7 @@ import {
 describe('MARKETPLACE_TIPO_CAPS — the Mercado Livre row', () => {
   const ml = marketplaceCapsFor(INTEGRACAO_TIPO.mercadoLivre);
 
-  it('is the one implemented channel and names its backend segment', () => {
+  it('is implemented and names its backend segment', () => {
     expect(ml.implementado).toBe(true);
     expect(ml.channel).toBe('mercado-livre');
   });
@@ -64,6 +66,47 @@ describe('MARKETPLACE_TIPO_CAPS — the Mercado Livre row', () => {
   });
 });
 
+describe('MARKETPLACE_TIPO_CAPS — the Shopee row', () => {
+  it('records the full Shopee survey, implemented at step 22 (#1530)', () => {
+    // The master plan's Phase 0 caps row
+    // (`.master_plans/shopee/shopee-marketplace-integration.md` §1), written out
+    // WHOLE like Loja Integrada's and Amazon's. Since the flip every 'sim' here is
+    // a live dispatch — `estoque.suporte`, `enviarPreco` and `pausarAnuncio` are
+    // what turn the three /produtos bulk actions on — so a silent edit to any of
+    // them changes what an operator's click sends. The zero-'desconhecido' pin is
+    // now the structural rule's ("an implemented channel has no unanswered
+    // capability", below).
+    expect(marketplaceCapsFor(INTEGRACAO_TIPO.shopee)).toEqual({
+      channel: 'shopee',
+      implementado: true,
+      auth: 'oauth2',
+      pkce: 'nao',
+      notificacoes: 'push',
+      assinaWebhook: 'sim',
+      publicarAnuncio: 'sim',
+      importarAnuncio: 'sim',
+      variacoes: 'sim',
+      categoriasEAtributos: 'sim',
+      tabelaDeMedidas: 'sim',
+      kitVirtual: 'sim',
+      pausarAnuncio: 'sim',
+      estoque: { suporte: 'sim', protocolo: 'por-anuncio', loteMax: 50, multiDeposito: 'sim' },
+      enviarPreco: 'sim',
+      importarPedido: 'sim',
+      importarPagamento: 'sim',
+      consolidaPacote: 'nao',
+      dadosFiscaisSeparados: 'sim',
+      etiqueta: 'fetch',
+      rastreio: 'push',
+      enviarNfe: 'sim',
+      perguntas: 'nao',
+      mensagensPosVenda: 'nao',
+      reclamacoes: 'sim',
+      origensConversa: [],
+    });
+  });
+});
+
 describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
   it('leaves an unresearched capability as "desconhecido", never as a false claim', () => {
     const magalu = marketplaceCapsFor(INTEGRACAO_TIPO.magalu);
@@ -77,51 +120,6 @@ describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
     expect(magalu.pausarAnuncio).toBe('desconhecido');
     expect(magalu.estoque.protocolo).toBe('desconhecido');
     expect(magalu.assinaWebhook).toBe('desconhecido');
-  });
-
-  it('records the full Shopee survey with implementado still false', () => {
-    // The master plan's Phase 0 caps row
-    // (`.master_plans/shopee/shopee-marketplace-integration.md` §1) answers
-    // every field — unlike Magalu above, this is NOT a partial survey, so this
-    // test asserts the whole row rather than a couple of evidenced facts plus a
-    // "the rest is unknown" pair.
-    const shopee = marketplaceCapsFor(INTEGRACAO_TIPO.shopee);
-
-    expect(shopee.implementado).toBe(false);
-    expect(shopee.channel).toBe('shopee');
-
-    expect(shopee.assinaWebhook).toBe('sim');
-    expect(shopee.notificacoes).toBe('push');
-    expect(shopee.auth).toBe('oauth2');
-    expect(shopee.pkce).toBe('nao');
-
-    expect(shopee.estoque).toEqual({
-      suporte: 'sim',
-      protocolo: 'por-anuncio',
-      loteMax: 50,
-      multiDeposito: 'sim',
-    });
-
-    expect(shopee.etiqueta).toBe('fetch');
-    expect(shopee.rastreio).toBe('push');
-    expect(shopee.kitVirtual).toBe('sim');
-    expect(shopee.tabelaDeMedidas).toBe('sim');
-    expect(shopee.consolidaPacote).toBe('nao');
-    expect(shopee.perguntas).toBe('nao');
-    expect(shopee.mensagensPosVenda).toBe('nao');
-    expect(shopee.reclamacoes).toBe('sim');
-    expect(shopee.origensConversa).toEqual([]);
-
-    // ⚠️ A Shopee-specific version of the "an implemented channel has no
-    // unanswered capability" loop below (`MARKETPLACE_TIPO_CAPS — structural
-    // rules`), worded so it does NOT claim the channel is implemented:
-    // `implementado` stays false until step 22, but the SURVEY itself (unlike
-    // Magalu's, still all 'desconhecido' above) is complete, and that
-    // completeness is worth pinning on its own.
-    const naoRespondidos = CAMPOS_SUPORTE.filter((c) => shopee[c] === 'desconhecido');
-    expect(naoRespondidos).toEqual([]);
-    expect(shopee.estoque.suporte).not.toBe('desconhecido');
-    expect(shopee.estoque.protocolo).not.toBe('desconhecido');
   });
 
   it('records the full Loja Integrada survey with implementado still false', () => {
@@ -162,8 +160,9 @@ describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
       origensConversa: [],
     });
 
-    // Same completeness pin as Shopee's, worded so it does NOT claim the
-    // channel is implemented: the survey is done, the backend is not.
+    // The structural rule's completeness pin, applied before the flip and
+    // worded so it does NOT claim the channel is implemented: the survey is
+    // done, the backend is not.
     const li = marketplaceCapsFor(INTEGRACAO_TIPO.lojaIntegrada);
     expect(CAMPOS_SUPORTE.filter((c) => li[c] === 'desconhecido')).toEqual([]);
     expect(li.estoque.suporte).not.toBe('desconhecido');
@@ -243,9 +242,10 @@ describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
   });
 
   it('leaves exactly ONE Amazon question open: reclamacoes, settled before step 22', () => {
-    // ⚠️ Not the zero-'desconhecido' pin Shopee and Loja Integrada carry: the
-    // Amazon survey left `reclamacoes` honestly open (owner capture C6), and the
-    // structural rule below forbids flipping `implementado` while it stays so.
+    // ⚠️ Not the zero-'desconhecido' pin Loja Integrada carries (and every
+    // implemented row gets from the structural rule): the Amazon survey left
+    // `reclamacoes` honestly open (owner capture C6), and the structural rule
+    // below forbids flipping `implementado` while it stays so.
     // Pinning the exact list fails BOTH ways — a new unknown sneaking in, and
     // C6 settling the question without this test and the plan saying so.
     const amazon = marketplaceCapsFor(INTEGRACAO_TIPO.amazon);
@@ -371,6 +371,82 @@ describe('MARKETPLACE_TIPO_CAPS — structural rules', () => {
     expect(
       Object.values(MARKETPLACE_TIPO_CAPS).some((c) => c.estoque.protocolo === 'feed-assincrono'),
     ).toBe(true);
+  });
+});
+
+/**
+ * The SAME channel is described by two tables: `MARKETPLACE_TIPO_CAPS` (keyed by
+ * the conta's `integracao.tipo`, the INT enum) says who mints its label, and
+ * `FREIGHT_TIPO_CAPS` (keyed by its `int_frete.tipo`, the STRING enum) says how
+ * the label flow dispatches. `VINCULO_INT_FRETE_CONTA` is the bridge between the
+ * two enums — so this is where a contradiction between them can be seen.
+ */
+describe('MARKETPLACE_TIPO_CAPS.etiqueta agrees with FREIGHT_TIPO_CAPS.labelMode (step 15)', () => {
+  /** What each `etiqueta` answer demands of the freight row. */
+  const LABEL_MODE_DA_ETIQUETA: Partial<
+    Record<MarketplaceCapabilities['etiqueta'], FreightLabelMode>
+  > = {
+    // The marketplace mints the label: the freight row fetches it.
+    fetch: 'fetch',
+    // We mint it — through the carrier the conta's `mapa` routes the pedido
+    // to, so the freight row is a ROUTER.
+    emit: 'roteado',
+  };
+
+  function divergencias(tabelaFrete: typeof FREIGHT_TIPO_CAPS): string[] {
+    const achados: string[] = [];
+    for (const [canal, vinculo] of Object.entries(VINCULO_INT_FRETE_CONTA)) {
+      const etiqueta = MARKETPLACE_TIPO_CAPS[vinculo.tipoConta].etiqueta;
+      const labelMode = tabelaFrete[vinculo.tipoFrete].labelMode;
+      const esperado = LABEL_MODE_DA_ETIQUETA[etiqueta];
+      if (esperado === undefined) {
+        achados.push(`${canal}: etiqueta '${etiqueta}' sem labelMode correspondente`);
+      } else if (labelMode !== esperado) {
+        achados.push(
+          `${canal}: etiqueta '${etiqueta}' exige labelMode '${esperado}', não '${labelMode}'`,
+        );
+      }
+    }
+    return achados;
+  }
+
+  it('every channel with a freight doc is consistent across the two tables', () => {
+    expect(divergencias(FREIGHT_TIPO_CAPS)).toEqual([]);
+  });
+
+  it('reads real rows, written out — fetch for Mercado Livre and Shopee, emit for Loja Integrada', () => {
+    // Guards the loop above from passing over an empty bridge — without
+    // freezing its membership: a channel joining the bridge is checked by the
+    // loop, not refused here.
+    expect(Object.keys(VINCULO_INT_FRETE_CONTA)).toEqual(
+      expect.arrayContaining(['lojaIntegrada', 'mercadoLivre', 'shopee']),
+    );
+    expect(MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.mercadoLivre].etiqueta).toBe('fetch');
+    expect(FREIGHT_TIPO_CAPS.mercadoLivre.labelMode).toBe('fetch');
+    expect(MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.shopee].etiqueta).toBe('fetch');
+    expect(FREIGHT_TIPO_CAPS.shopee.labelMode).toBe('fetch');
+    expect(MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.lojaIntegrada].etiqueta).toBe('emit');
+    expect(FREIGHT_TIPO_CAPS.lojaIntegrada.labelMode).toBe('roteado');
+  });
+
+  it('NEAR-MISS: an emit channel left on fetch — the contradiction this pins — is reported', () => {
+    const tabela = {
+      ...FREIGHT_TIPO_CAPS,
+      lojaIntegrada: { ...FREIGHT_TIPO_CAPS.lojaIntegrada, labelMode: 'fetch' as const },
+    };
+    expect(divergencias(tabela)).toEqual([
+      "lojaIntegrada: etiqueta 'emit' exige labelMode 'roteado', não 'fetch'",
+    ]);
+  });
+
+  it('NEAR-MISS: a fetch channel made a router is reported too (the other direction)', () => {
+    const tabela = {
+      ...FREIGHT_TIPO_CAPS,
+      shopee: { ...FREIGHT_TIPO_CAPS.shopee, labelMode: 'roteado' as const },
+    };
+    expect(divergencias(tabela)).toEqual([
+      "shopee: etiqueta 'fetch' exige labelMode 'fetch', não 'roteado'",
+    ]);
   });
 });
 

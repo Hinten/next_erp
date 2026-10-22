@@ -49,11 +49,8 @@ import {
   type LeituraEntradasShopee,
   fotoSchema,
   lerEntradasShopeeDaConta,
-  parseRef,
-  tabelaDeMedidasMeta,
+  lerRefTabelaDeMedidas,
 } from '@delfrance/schemas';
-
-import { naoDocId } from './corpoPublicacao';
 
 /**
  * What the produto's tabela offers this conta's publish.
@@ -97,17 +94,14 @@ export async function lerTabelaMedidasDoProduto(
   ref: unknown,
   integracaoId: string,
 ): Promise<LeituraTabelaDeMedidasShopee> {
-  if (typeof ref !== 'string' || ref.trim() === '') return { tipo: 'produto-sem-tabela' };
-
   // ⚠️ The COLLECTION is checked, unlike the operação ref in
-  // `lerImpostoDoProduto.ts`: the corpus spells this ref as a path (the
-  // Flutter `documents/tabMedi/<id>`), so a ref naming another collection is a
-  // stray value — reading `tabMedi/<its id>` would attach some OTHER tabela's
-  // chart to this listing.
-  const { collection, id } = parseRef(ref);
-  if (collection !== tabelaDeMedidasMeta.collectionPath || naoDocId(id)) {
-    return { tipo: 'tabela-inexistente', tabMediId: null };
-  }
+  // `lerImpostoDoProduto.ts` — `lerRefTabelaDeMedidas` says why. It is the ONE
+  // rule the produto's Shopee tab resolves the same ref with, so the tab never
+  // names a tabela this read would not (#1369).
+  const alvo = lerRefTabelaDeMedidas(ref);
+  if (alvo.tipo === 'sem-tabela') return { tipo: 'produto-sem-tabela' };
+  if (alvo.tipo === 'ref-invalida') return { tipo: 'tabela-inexistente', tabMediId: null };
+  const id = alvo.id;
 
   const snap = await tabelaDeMedidasCollection.docRef(db, {}, id).get();
   if (!snap.exists) return { tipo: 'tabela-inexistente', tabMediId: id };

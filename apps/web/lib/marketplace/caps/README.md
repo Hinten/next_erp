@@ -32,13 +32,12 @@ Integrada answers all three `'sim'` with `implementado: false`. A branch you can
 reach from the data is a branch nobody has checked, which is why the rule is
 extracted and pinned through `motivoDaCapacidade`.
 
-## The one named exception — Shopee, rows-first (#1529 → #1530)
+## Rows before the flip
 
-Step 21 registered Shopee's three providers before its step-22 flip. The drift test
-names that middle state and pins it exactly (provider present AND verdict
-`canal-nao-implementado`), so the flip reds it — see the comment in
-`registriesAlinhadas.test.ts`. It is safe because `vereditoCanal` answers from the
-caps before it reads any provider map: the rows are unreachable until the flip.
+A channel may register its providers before its caps row says `implementado`
+(Shopee did, step 21 → step 22, #1529 → #1530). The drift test then needs a named,
+one-member exception that pins the middle state exactly, so the flip reds it and
+deletes it — see `registriesAlinhadas.test.ts`. Never delete the assertion instead.
 
 ## What replaced what
 

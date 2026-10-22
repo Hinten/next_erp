@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
+import { MODELOS_DE_CAMINHO_AMAZON, classificarCaminho } from '../core/redacao';
+import { METODOS_CAPTURA_AMAZON } from '../fixtures/wireCorpus';
 import {
   CHAVE_DE_CREDENCIAL_NA_CAPTURA,
+  METODOS_DA_OPERACAO_AMAZON,
   ORIGEM_SP_API,
   type TipoProblemaDoSidecar,
   decodificarUtf8,
   lerSidecar,
+  metodoDaOperacaoAmazon,
 } from './requisicao';
 
 const b = (t: string) => new TextEncoder().encode(t);
@@ -232,6 +236,80 @@ describe('the sidecar grammar', () => {
     expect(r.ok && r.requisicao.tipo === 'http' ? r.requisicao.query : null).toEqual([
       ['createdAfter', '2026-01-01T00:00:00+00:00'],
     ]);
+  });
+});
+
+describe('★ the method belongs to the matched operation', () => {
+  // Transcribed from Amazon's models (`amazon-doc.mjs op <operationId>`): every
+  // operation declared on a path whose template has a table, and whether that
+  // table describes its answer. PATCH updateScheduledPackages shares the
+  // package path but answers `Packages`, a shape no table describes.
+  const OPERACOES_DOS_MODELOS = [
+    { metodo: 'GET', caminho: '/orders/2026-01-01/orders', tabela: true }, // searchOrders
+    { metodo: 'GET', caminho: GET_ORDER, tabela: true }, // getOrder
+    { metodo: 'POST', caminho: '/delivery/2022-07-01/invoice', tabela: true }, // submitInvoice
+    { metodo: 'GET', caminho: '/delivery/2022-07-01/invoice/status', tabela: true }, // getInvoiceStatus
+    { metodo: 'GET', caminho: '/easyShip/2022-03-23/package', tabela: true }, // getScheduledPackage
+    { metodo: 'POST', caminho: '/easyShip/2022-03-23/package', tabela: true }, // createScheduledPackage
+    { metodo: 'PATCH', caminho: '/easyShip/2022-03-23/package', tabela: false }, // updateScheduledPackages
+    { metodo: 'POST', caminho: BULK, tabela: true }, // createScheduledPackageBulk
+  ] as const;
+  const caminhos = [...new Set(OPERACOES_DOS_MODELOS.map((o) => o.caminho))];
+  // copia-do-legado: the curl's own GET-only rule stays out of the matrix.
+  const copia = (linha1: string) => sidecar(linha1, 'credencial: copia-do-legado', 'papeis: dtc');
+
+  it('the pairing covers exactly the templates that have a table, and the matrix covers them all', () => {
+    const comTabela = MODELOS_DE_CAMINHO_AMAZON.filter((m) => m.tabela !== null)
+      .map((m) => m.nome)
+      .sort();
+    expect(Object.keys(METODOS_DA_OPERACAO_AMAZON).sort()).toEqual(comTabela);
+    expect([...new Set(caminhos.map((c) => classificarCaminho(c).modelo))].sort()).toEqual(
+      comTabela,
+    );
+  });
+
+  it.each(caminhos.flatMap((caminho) => METODOS_CAPTURA_AMAZON.map((metodo) => [metodo, caminho])))(
+    '%s %s: accepted exactly when the model declares it and the table describes it',
+    (metodo, caminho) => {
+      const declarada = OPERACOES_DOS_MODELOS.some(
+        (o) => o.caminho === caminho && o.metodo === metodo && o.tabela,
+      );
+      const r = copia(`${metodo} ${caminho} 200`);
+      if (declarada) expect(r.ok).toBe(true);
+      else expect(r).toEqual({ ok: false, problemas: [{ linha: 1, tipo: 'metodo-da-operacao' }] });
+    },
+  );
+
+  it('★ the finding’s two impossible requests are refused; near-miss: their own methods pass', () => {
+    expect(tipos(copia('GET /delivery/2022-07-01/invoice 200'))).toEqual(['metodo-da-operacao']);
+    expect(copia('POST /delivery/2022-07-01/invoice 200').ok).toBe(true);
+    expect(tipos(copia(`POST ${GET_ORDER} 200`))).toEqual(['metodo-da-operacao']);
+    expect(copia(`GET ${GET_ORDER} 200`).ok).toBe(true);
+  });
+
+  it('the shared Easy Ship package path takes GET and POST, and only those', () => {
+    expect(copia('GET /easyShip/2022-03-23/package 200').ok).toBe(true);
+    expect(copia('POST /easyShip/2022-03-23/package 200').ok).toBe(true);
+    expect(tipos(copia('PATCH /easyShip/2022-03-23/package 200'))).toEqual(['metodo-da-operacao']);
+  });
+
+  // The method is checked only once the path has passed: a secret or untabled
+  // path keeps its own kind (its remedy is different), never this one too.
+  it('★ a secret or untabled path keeps its own kind alone, whatever the method', () => {
+    expect(tipos(copia('POST /tokens/2021-03-01/restrictedDataToken 200'))).toEqual(['segredo']);
+    // POST is listHandoverSlots' real method; its template has no table.
+    expect(tipos(copia('POST /easyShip/2022-03-23/timeSlot 200'))).toEqual(['sem-tabela']);
+    expect(tipos(copia('GET /easyShip/2022-03-23/timeSlot 200'))).toEqual(['sem-tabela']);
+  });
+
+  it('a template without a row, or no template, admits no method', () => {
+    expect(metodoDaOperacaoAmazon(null, 'GET')).toBe(false);
+    expect(metodoDaOperacaoAmazon('listHandoverSlots', 'POST')).toBe(false);
+    expect(metodoDaOperacaoAmazon('constructor', 'GET')).toBe(false);
+  });
+
+  it('the curl rule still stacks on top: a POST on a GET operation is refused twice', () => {
+    expect(tipos(sidecar(`POST ${GET_ORDER} 200`))).toEqual(['metodo-da-operacao', 'curl-so-get']);
   });
 });
 

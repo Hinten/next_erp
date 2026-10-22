@@ -111,6 +111,49 @@ describe('etiquetaRowState', () => {
     expect(etiquetaRowState({ ...base, estado: ESTADO_FRETE.iniciado }).action).toBe('quote-first');
   });
 
+  it("offers 'rotear' for a pedido still on its Loja Integrada doc — label or no label, quote or no quote", () => {
+    // The router tipo sets no `can*`, so no branch above it fires: the only
+    // thing the row can do is route the pedido. A `printLabelId` or an
+    // `externalOptionId` on the Loja Integrada doc changes nothing — the route
+    // itself refuses a pedido with a bought label (`etiqueta-ja-comprada`).
+    const li = { ...base, tipo: INTEGRACAO_FRETE.lojaIntegrada };
+    expect(etiquetaRowState({ ...li, estado: ESTADO_FRETE.iniciado })).toEqual({
+      action: 'rotear',
+      needsPostedConfirm: false,
+    });
+    expect(
+      etiquetaRowState({ ...li, printLabelId: 'ME-1', estado: ESTADO_FRETE.iniciado }).action,
+    ).toBe('rotear');
+    expect(
+      etiquetaRowState({ ...li, externalOptionId: '2', estado: ESTADO_FRETE.iniciado }).action,
+    ).toBe('rotear');
+    expect(etiquetaRowState({ ...li, estado: ESTADO_FRETE.postado }).needsPostedConfirm).toBe(true);
+  });
+
+  it("⚠️ NEAR-MISS: once routed to a Melhor Envio target, the SAME pedido offers 'comprar' — the target's caps, not the router's", () => {
+    expect(
+      etiquetaRowState({
+        ...base,
+        tipo: INTEGRACAO_FRETE.melhorEnvios,
+        externalOptionId: '2',
+        estado: ESTADO_FRETE.iniciado,
+      }).action,
+    ).toBe('comprar');
+    // …and to a Motoboy target, the generic label.
+    expect(
+      etiquetaRowState({ ...base, tipo: INTEGRACAO_FRETE.motoboy, estado: ESTADO_FRETE.iniciado })
+        .action,
+    ).toBe('imprimir');
+  });
+
+  it("the not-yet-ported marketplaces stay 'unsupported' — 'rotear' is the router's alone", () => {
+    for (const tipo of [INTEGRACAO_FRETE.amazon, INTEGRACAO_FRETE.magalu]) {
+      expect(etiquetaRowState({ ...base, tipo, estado: ESTADO_FRETE.iniciado }).action).toBe(
+        'unsupported',
+      );
+    }
+  });
+
   it('flags needsPostedConfirm only for already-posted estados', () => {
     expect(
       etiquetaRowState({ ...base, printLabelId: 'ME-1', estado: ESTADO_FRETE.iniciado })

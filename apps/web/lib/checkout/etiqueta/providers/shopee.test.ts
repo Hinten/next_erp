@@ -152,6 +152,7 @@ function makeInput(over: {
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: over.client,
+      lojaIntegradaClient: null,
       printJob: over.printJob ?? vi.fn(async () => 'printed' as const),
       sleep: over.sleep ?? vi.fn(async () => undefined),
     },
@@ -161,6 +162,7 @@ function makeInput(over: {
       openUrl: vi.fn(),
       comprarEtiqueta: vi.fn(),
       escolherEnvio: vi.fn(async () => null),
+      confirmarCiente: vi.fn(),
       ...over.ui,
     },
   };

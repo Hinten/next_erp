@@ -563,11 +563,13 @@ therefore declares **no index at all** and `firestore.indexes.json` is
 byte-unchanged. Adding a `where` reds three tests, and the reason is that file,
 not style.
 
-`anuncioShopeeVivo(raw)` is total and non-throwing, and reads an ABSENT
-`estadoAnuncio` as VIVO — the safe direction: a draft link that has not been
-published yet must not un-badge a produto. `contaDoLinkShopee` reads
-`contaProdutoShopeeOuterRef` (⚠️ **not** ML's `contaOuterRef`), with a near-miss
-test proving a `contaOuterRef`-shaped document resolves to `null`.
+`anuncioShopeeVivo(raw)` — in `@delfrance/schemas`'s `shopeeLinkLeitura.ts`
+since step 21, re-exported here by `statusAnuncio.ts` — is total and
+non-throwing, and reads an ABSENT `estadoAnuncio` as VIVO — the safe direction:
+a draft link that has not been published yet must not un-badge a produto.
+`contaDoLinkShopee` reads `contaProdutoShopeeOuterRef` (⚠️ **not** ML's
+`contaOuterRef`), with a near-miss test proving a `contaOuterRef`-shaped
+document resolves to `null`.
 
 ⚠️ **Register 81 is open and is MIGRATION-WINDOW work** (root `CLAUDE.md` rule
 8): whether a gen-2 Firestore trigger on this project needs Eventarc/Pub-Sub
@@ -578,8 +580,8 @@ an agent.
 ⚠️ **A Firestore import fires no trigger.** A `prodshopee` document that arrives
 in the cutover import — the legacy corpus carries them — therefore leaves its
 produto's `integracoesComProduto` untouched until something WRITES that link
-again. Surfaced here, not acted on and not a TODO: since step 21 that array
-decides which Shopee contas the produtos table's pushes call
+again. Surfaced here, not acted on and not a TODO: since the step-22 flip
+(#1530) that array decides which Shopee contas the produtos table's pushes call
 (`apps/web/lib/marketplace/push/run.ts`); its completeness on the imported
 corpus is a migration-window question (#1910), never an agent's run.
 
@@ -650,7 +652,8 @@ single source.
 `RELIST_PRIMEIRO = 'unlist'` stands. The Shopee **pre-launch** UNLIST — the
 `error_set_normal_unlisted_item` case — is not reachable on that shop, and the
 `update_item {item_status: 'NORMAL'}` fallback door exists for exactly it. The
-caps row's `implementado` stays `false` regardless (step 22 flips it).
+caps row's `implementado` flipped at step 22 regardless; register 83 stays open
+until a BR shop re-lists a pre-launch UNLIST.
 
 ## Out of scope, on purpose
 
@@ -687,7 +690,8 @@ So nobody reads a gap as a bug:
 - **`description_type: 'extended'`, description images, `promotion_images` and
   video.** `description_type` is `'normal'` on both bodies.
 - **`boost_item`**, `search_item`-based manual linking (an import IS the link),
-  and `get_recommend_attribute` / `get_weight_recommendation` (step 21).
+  and `get_recommend_attribute` / `get_weight_recommendation` (not built by
+  step 21; an open decision of listing authoring, #1911).
 - **`delete_item` and `delete_model` have NO caller here.** Both exist in the
   package — `delete_item` for the probe's own cleanup, `delete_model` because
   `update_tier_variation` deletes by omission and a model is never deleted by
@@ -727,7 +731,7 @@ a regression.
 | 71  | the multipart field name (`image` vs `file`)                                                                                        | ✅ **`image`**, id at `response.image_info.image_id`                                                                                                                            |
 | 72  | options per tier: 20 or 50                                                                                                          | ✅ **50** — 21 options in one tier were accepted                                                                                                                                |
 | 73  | whether `get_item_violation_info`'s live body carries `error`                                                                       | ✅ **it does not** — hence the per-operation tolerance (O4)                                                                                                                     |
-| 74  | `brandshopee` is untyped (`passthrough`), has no handle and no reader                                                               | ⏳ a step-21 decision: type it, or delete the meta                                                                                                                              |
+| 74  | `brandshopee` is untyped (`passthrough`), has no handle and no reader                                                               | → 21-4 (#1911): typing it, its handle and the conta Marcas editor are listing authoring's (decision S)                                                                          |
 | 75  | `delete_model` / `delete_item` ship with no step-11 caller                                                                          | ⏳ nothing. Recorded so the absence is not read as an oversight                                                                                                                 |
 | 76  | step 9's CLI prints `tax_info` KEYS only; this one prints keys AND values (C34)                                                     | ⏳ a one-line docblock decision in a follow-up; step 9's file is untouched here                                                                                                 |
 | 77  | `ACAO_STATUS_ANUNCIO` lives in `mercadoLivreLink.ts` and is now read by a Shopee route                                              | ⏳ a mechanical move later; the VALUE must not fork                                                                                                                             |
@@ -736,7 +740,7 @@ a regression.
 | 80  | no automated guard stops `packages/data` gaining an NF-e package dependency                                                         | ⏳ a PR-checklist clause; a boundary lint rule is out of scope here                                                                                                             |
 | 81  | Eventarc/Pub-Sub enablement for this codebase's first Firestore trigger                                                             | ⏳ **migration window** — `DEPLOY.md`'s Cutover, the first deploy, never an agent                                                                                               |
 | 82  | what `item_status` / `scheduled_publish_time` hold after a failed scheduled publish, and WHY it failed                              | ⏳ **nothing settles it** — push 27 carries three fields, none a reason, and there is no success push. The handler writes what it reads and the aviso says the cause is unknown |
-| 83  | whether `unlist_item {unlist: false}` really re-lists                                                                               | ✅ **partly** — it re-listed a SELLER-created UNLIST. The Shopee pre-launch case is unmeasurable on that shop and the `update_item` door exists for it                          |
+| 83  | whether `unlist_item {unlist: false}` really re-lists                                                                               | ⏳ **half open** — it re-listed a SELLER-created UNLIST. The Shopee pre-launch case is unmeasurable on that shop and the `update_item` door exists for it                       |
 | 84  | whether `attribute_list` / `image_id_list` replace wholesale on `update_item`                                                       | ⏳ the full lists are always sent, which is correct under either reading                                                                                                        |
 | 85  | whether an `image_id` expires or is reusable across items/shops, and whether `image_id_list[i]` ↔ `image_url_list[i]` is positional | ⏳ the per-integração `externalIds` scoping is the conservatism                                                                                                                 |
 | 86  | whether a purged `image_id` is reported with a parseable per-id message                                                             | ⏳ recorded as a gap; no self-heal is built                                                                                                                                     |

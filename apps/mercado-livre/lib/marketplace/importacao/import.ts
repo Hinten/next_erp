@@ -62,6 +62,7 @@ import {
   type MlModeracao,
   PRODUTO_EXTRA_DATA_DOC_ID,
   derivarFilhoUnico,
+  idFromRefOrNull,
   precisaConsultarModeracao,
   skuPaiDoMembroUnico,
   skuPaiPorSufixo,
@@ -91,7 +92,7 @@ import { resolveTaxonomia } from './importTaxonomia';
 import { type ImportVariationChildrenResult, importVariationChildren } from './importVariations';
 import { resolveFamilySiblingIds } from './importFamily';
 import { isAlreadyExists, isFailedPrecondition } from '@delfrance/data/admin';
-import { lastSegment, refMatchesIntegracao } from '../core/linkRefs';
+import { parsePmlOuterRef, refMatchesIntegracao } from '../core/linkRefs';
 import type { Bucket } from '../core/arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';
 
@@ -245,6 +246,13 @@ export async function importProduto(
   const { db, api, integracaoId } = deps;
   const options: ImportOptions = { ...DEFAULT_IMPORT_OPTIONS, ...deps.options };
 
+  // Reuse the UP parent resolver's indexed lookup, captured before external I/O.
+  // This is the cold import path; stock sends incur no additional reads.
+  const memberLinkSnap = await variacaoMercadoLivreLinkCollection
+    .groupQuery(db)
+    .where('itemId', '==', itemId)
+    .limit(10)
+    .get();
   const item = await api.getItem(itemId);
 
   // ---- Guards -----------------------------------------------------------
@@ -425,7 +433,14 @@ export async function importProduto(
           up!.canonicalId,
           integracaoId,
         )
-      : await resolveExistingUpParent(db, itemId, up!.canonicalId, mapped.sku, integracaoId)
+      : await resolveExistingUpParent(
+          db,
+          itemId,
+          up!.canonicalId,
+          mapped.sku,
+          integracaoId,
+          memberLinkSnap,
+        )
     : await resolveExistingProduto(db, itemId, mapped.sku, integracaoId);
   // A fresh produto id is a deterministic hash — NOT the seller_custom_field,
   // which ML does not keep unique across a seller's items (two items sharing a
@@ -459,7 +474,7 @@ export async function importProduto(
         produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID),
       );
   const existingLinkRaw = resolved?.linkRaw ?? null;
-  const depositoId = deps.depositoOuterRef ? lastSegment(deps.depositoOuterRef) : null;
+  const depositoId = idFromRefOrNull(deps.depositoOuterRef);
   // A produto that owns children never carries its own stock (it lives on the
   // children) — skip the read, the plan nulls the estoque write regardless.
   // ⛔ `ownsChildren` is derived from THIS CALL'S ML payload; whether the produto
@@ -493,7 +508,7 @@ export async function importProduto(
     isCreate,
     linkDocId,
     integracaoId,
-    tabelaNormalId: deps.tabelaNormalOuterRef ? lastSegment(deps.tabelaNormalOuterRef) : null,
+    tabelaNormalId: idFromRefOrNull(deps.tabelaNormalOuterRef),
     depositoOuterRef: deps.depositoOuterRef,
     descricao,
     categoriaOuterRef,
@@ -628,6 +643,12 @@ export async function importProduto(
           taxonomia,
           {
             parentLinkDocId: linkDocId,
+            memberReadVersions: new Map(
+              memberLinkSnap.docs.map((d) => [
+                `produtos/${d.ref.parent?.parent?.id}/variacaoMercadoLivre/${d.id}`,
+                d.updateTime,
+              ]),
+            ),
             status: mapped.status,
             subStatus: mapped.subStatus,
             // The UP import fetches ONE member item per call, so `mapped` IS
@@ -1005,17 +1026,9 @@ async function resolveExistingUpParent(
   canonicalId: string,
   sku: string | null,
   integracaoId: string,
+  memberLinkSnap: FirebaseFirestore.QuerySnapshot,
 ): Promise<ResolvedProduto | null> {
-  // An MLB item id is globally unique on ML, so >1 hit only means the SAME
-  // listing imported under multiple integração accounts — a small set. The
-  // limit bounds a pathological scan (the link has no conta field to filter
-  // server-side — adding one would pollute the legacy VariacoesML wire); the
-  // family-id and SKU steps below remain the fallback.
-  const memberLinkSnap = await variacaoMercadoLivreLinkCollection
-    .groupQuery(db)
-    .where('itemId', '==', itemId)
-    .limit(10)
-    .get();
+  // Indexed member lookup was captured before GET /items (#1285).
   for (const d of memberLinkSnap.docs) {
     const raw = d.data() as Record<string, unknown>;
     const pmlOuterRef = raw.produtoMercadoLivreOuterRef;
@@ -1099,20 +1112,6 @@ async function resolveUpParentOverride(
     return { produtoId, linkDocId: d.id, linkRaw: raw };
   }
   return { produtoId, linkDocId: null, linkRaw: null };
-}
-
-/**
- * Parse a canonical `documents/produtos/<produtoId>/produtoMercadoLivre/<linkId>`
- * outer-ref (the exact form `toOuterRef` mints for a `produtoMercadoLivre`
- * link) into its produto + link doc ids; null on anything that doesn't match
- * that shape (a malformed/foreign ref is simply not a usable parent pointer).
- */
-function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | null {
-  const segs = ref.split('/').filter(Boolean);
-  const i = segs.indexOf('produtos');
-  if (i === -1 || i + 3 >= segs.length) return null;
-  if (segs[i + 2] !== 'produtoMercadoLivre') return null;
-  return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
 }
 
 /**
@@ -1300,7 +1299,7 @@ async function readEstoque(
     };
     if (
       typeof data.depositoOuterRef === 'string' &&
-      lastSegment(data.depositoOuterRef) === depositoId
+      idFromRefOrNull(data.depositoOuterRef) === depositoId
     ) {
       return {
         quantidade: typeof data.quantidade === 'number' ? data.quantidade : 0,

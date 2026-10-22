@@ -30,7 +30,9 @@
  *     The match is kept as `chave: atual | anterior` (the current wins) on every
  *     later line, so a rotation can be verified from the logs. While a previous
  *     secret is configured, ONE WARNING per instance says the rotation is open.
- *  3. BODY, bounded at 256 KiB (`corpo.ts`) ⇒ over it, `corpo-grande`.
+ *  3. BODY, bounded at 2 MiB (`corpo.ts`: twice SQS's 1 MiB maximum, so a
+ *     bound on the read, never a filter on Amazon's input) ⇒ over it,
+ *     `corpo-grande`.
  *  4. JSON ⇒ `json-invalido`.
  *  5. The relay WRAPPER (`envelope.ts`) ⇒ `sem-envelope-do-relay`.
  *  6. TYPE and CASING ⇒ `forma-ambigua`, `sem-tipo`, `tipo-desconhecido`.

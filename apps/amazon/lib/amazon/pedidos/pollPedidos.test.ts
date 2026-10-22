@@ -921,6 +921,296 @@ describe('a window drained across runs', () => {
   });
 });
 
+describe('the cursor candidate travels with the drain (the window’s max row, not one run’s)', () => {
+  /** A row of a backlog: its order id and its stamp (ms). */
+  interface Linha {
+    readonly id: string;
+    readonly ms: number;
+  }
+
+  /** `n` rows after the cursor, OLDEST first: row `i` is stamped `CURSOR + (i + 1) × 5 min`. */
+  const backlog = (n: number, base = 200): readonly Linha[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `111-0000000-${String(base + i).padStart(7, '0')}`,
+      ms: CURSOR + (i + 1) * 5 * MINUTO_MS,
+    }));
+  const maisNovasPrimeiro = (linhas: readonly Linha[]) => [...linhas].reverse();
+  const umaPorPagina = (linhas: readonly Linha[]) => linhas.map((l) => [linha(l.id, iso(l.ms))]);
+
+  /**
+   * `searchOrders` honouring `lastUpdatedAfter`: of `linhas` (in that order),
+   * only those stamped AFTER it, one per page, page `i` answered for `t-<i>`.
+   */
+  const porJanela =
+    (linhas: readonly Linha[]) =>
+    (url: URL): Response | Promise<Response> => {
+      const depoisMs = Date.parse(url.searchParams.get('lastUpdatedAfter') ?? '');
+      return paginado(umaPorPagina(linhas.filter((l) => l.ms > depoisMs)))(url);
+    };
+
+  const SEIS = backlog(6);
+
+  it.each([
+    // The finding: the newest row is on the FIRST run's pages.
+    ['newest-first: the newest row is read by the FIRST run', maisNovasPrimeiro(SEIS), 30],
+    // Near-miss: the newest row is read by the run that completes the window.
+    ['oldest-first: the newest row is read by the LAST run', SEIS, 25],
+  ])(
+    '%s — the completion advances the cursor to it, and the next window skips the backlog',
+    async (_caso, linhas, maiorDoPrimeiroRunMin) => {
+      const h = montar();
+      contaConectada(h);
+      seedPoll(h);
+      h.responder = porJanela(linhas);
+      const maisNova = CURSOR + 30 * MINUTO_MS;
+
+      expect(await umaConta(h)).toMatchObject({ desfecho: 'truncado', paginas: 5 });
+      // The stored drain carries the first run's max beside its position.
+      expect(poll(h)).toMatchObject({
+        cursorMs: CURSOR,
+        pendente: {
+          paginationToken: 't-5',
+          paginas: 5,
+          maiorLinhaMs: CURSOR + maiorDoPrimeiroRunMin * MINUTO_MS,
+        },
+      });
+
+      h.ir(AGORA_MS + HORA_MS);
+      const completou = await umaConta(h);
+      expect(completou).toMatchObject({
+        desfecho: 'sucesso',
+        retomada: true,
+        paginas: 1,
+        cursorAvancou: true,
+      });
+      expect(poll(h)).toMatchObject({ cursorMs: maisNova, pendente: null });
+
+      // The next fresh window starts at that cursor minus the overlap: it re-reads
+      // the overlap's two rows (already seen), never the backlog — one run, nothing enqueued.
+      h.ir(AGORA_MS + 2 * HORA_MS);
+      h.requisicoes.length = 0;
+      const seguinte = await umaConta(h);
+      expect(seguinte).toMatchObject({
+        desfecho: 'sucesso',
+        retomada: false,
+        paginas: 2,
+        enfileiradas: 0,
+      });
+      expect(h.requisicoes[0]?.searchParams.get('lastUpdatedAfter')).toBe('2027-01-15T13:20:00Z');
+      expect(poll(h)).toMatchObject({ cursorMs: maisNova, pendente: null });
+      expect(h.enfileirados).toHaveLength(6);
+    },
+  );
+
+  it.each([
+    // The finding: the second run reads only OLDER rows, so the stored max must stand.
+    ['newest-first: the FIRST run reads the newest row', maisNovasPrimeiro(backlog(10, 300)), 50],
+    // Its mirror: the MIDDLE run reads the newest row, so it must raise the stored max.
+    ['oldest-first: the MIDDLE run reads the newest row', backlog(10, 300), 25],
+  ])(
+    'a window spanning THREE runs (%s): the stored max is max(stored, this run’s) and moves the cursor on the third',
+    async (_caso, linhas, maiorDoPrimeiroRunMin) => {
+      const h = montar();
+      contaConectada(h);
+      seedPoll(h);
+      // Ten rows (CURSOR + 5 min … + 50 min) one per page, then an EMPTY last page.
+      h.responder = paginado([...umaPorPagina(linhas), []]);
+      const maisNova = CURSOR + 50 * MINUTO_MS;
+
+      expect(await umaConta(h)).toMatchObject({ desfecho: 'truncado', paginas: 5 });
+      expect(poll(h).pendente).toMatchObject({
+        paginationToken: 't-5',
+        maiorLinhaMs: CURSOR + maiorDoPrimeiroRunMin * MINUTO_MS,
+      });
+
+      h.ir(AGORA_MS + HORA_MS);
+      expect(await umaConta(h)).toMatchObject({ desfecho: 'truncado', retomada: true, paginas: 5 });
+      expect(poll(h)).toMatchObject({
+        cursorMs: CURSOR,
+        pendente: { paginationToken: 't-10', paginas: 10, maiorLinhaMs: maisNova },
+      });
+
+      // The third reads one EMPTY page and completes: the window itself was not empty.
+      h.ir(AGORA_MS + 2 * HORA_MS);
+      const completou = await umaConta(h);
+      expect(completou).toMatchObject({
+        desfecho: 'sucesso',
+        retomada: true,
+        paginas: 1,
+        enfileiradas: 0,
+        cursorAvancou: true,
+      });
+      expect(poll(h)).toMatchObject({ cursorMs: maisNova, pendente: null });
+      expect(h.enfileirados).toHaveLength(10);
+    },
+  );
+
+  it('the carried max is still capped at the STORED drain start − 5 min, never the completing run’s', async () => {
+    const h = montar();
+    contaConectada(h);
+    seedPoll(h);
+    // Newest-first, and the newest row is a minute before the FIRST run's start.
+    const recente = { id: PEDIDO_A, ms: AGORA_MS - MINUTO_MS };
+    h.responder = paginado(umaPorPagina([recente, ...maisNovasPrimeiro(backlog(5))]));
+
+    expect(await umaConta(h)).toMatchObject({ desfecho: 'truncado' });
+    expect(poll(h).pendente).toMatchObject({
+      inicioDrenagemMs: AGORA_MS,
+      maiorLinhaMs: recente.ms,
+    });
+
+    // An hour later: capped by the completing run's own start, the row would pass.
+    h.ir(AGORA_MS + HORA_MS);
+    expect(await umaConta(h)).toMatchObject({ desfecho: 'sucesso', cursorAvancou: true });
+    expect(poll(h).cursorMs).toBe(AGORA_MS - 5 * MINUTO_MS);
+  });
+
+  it('a pendente stored BEFORE the field existed resumes with null: the completion advances from its own rows', async () => {
+    const h = montar();
+    contaConectada(h);
+    // Raw, NOT through the schema: `maiorLinhaMs` is absent, as an older run stored it.
+    h.db.seed(CAMINHO_POLL, {
+      cursorMs: CURSOR,
+      pendente: {
+        paginationToken: 't-5',
+        lastUpdatedAfter: JANELA_DO_CURSOR,
+        marketplaceIds: 'A2Q3Y263D00KWC',
+        inicioDrenagemMs: AGORA_MS - HORA_MS,
+        tokenEmMs: AGORA_MS - HORA_MS,
+        paginas: 5,
+        linhaInvalida: false,
+      },
+      vistos: {},
+      emExecucaoAteMs: 0,
+      execucaoId: null,
+      falhasSeguidas: 0,
+    });
+    h.responder = paginado(umaPorPagina(maisNovasPrimeiro(SEIS)));
+
+    const c = await umaConta(h);
+    expect(c).toMatchObject({ desfecho: 'sucesso', retomada: true, paginas: 1 });
+    expect(h.requisicoes[0]?.searchParams.get('paginationToken')).toBe('t-5');
+    // Only the oldest row (page 6) is known: what the older runs read is not.
+    expect(poll(h)).toMatchObject({ cursorMs: CURSOR + 5 * MINUTO_MS, pendente: null });
+  });
+
+  it('an EXPIRED pendente (its token 23 h old) drops its running max with its window', async () => {
+    const h = montar();
+    contaConectada(h);
+    seedPoll(h, {
+      pendente: {
+        paginationToken: 'tok-velho',
+        lastUpdatedAfter: JANELA_DO_CURSOR,
+        marketplaceIds: 'A2Q3Y263D00KWC',
+        inicioDrenagemMs: AGORA_MS - 23 * HORA_MS - 1,
+        tokenEmMs: AGORA_MS - 23 * HORA_MS - 1,
+        paginas: 5,
+        maiorLinhaMs: CURSOR + 60 * MINUTO_MS,
+      },
+    });
+    // The fresh window re-reads from the unmoved cursor: only what IT reads moves it.
+    h.responder = paginado(umaPorPagina(backlog(1, 500)));
+
+    expect(await umaConta(h)).toMatchObject({ desfecho: 'sucesso', retomada: false });
+    expect(poll(h)).toMatchObject({ cursorMs: CURSOR + 5 * MINUTO_MS, pendente: null });
+  });
+
+  /*
+   * Every stop before the window's end stores the running max, not only the
+   * truncation: the newest row is read, the drain stops on another exit, and
+   * the run completing the window reads only OLDER rows.
+   */
+  describe('every stop carries the running max', () => {
+    /** A row stamped `CURSOR + min` minutes, its order id derived from `min`. */
+    const aos = (min: number): Linha => ({
+      id: `111-0000000-${String(400 + min).padStart(7, '0')}`,
+      ms: CURSOR + min * MINUTO_MS,
+    });
+    const pagina = (...linhas: Linha[]) => linhas.map((l) => linha(l.id, iso(l.ms)));
+
+    /** The next tick completes the window from older rows only: the cursor still reaches `maisNovaMs`. */
+    const completa = async (h: Harness, maisNovaMs: number) => {
+      h.custoDoEnfileiramentoMs = 0;
+      h.ir(AGORA_MS + INTERVALO_POLL_AMAZON_MS);
+      expect(await umaConta(h)).toMatchObject({
+        desfecho: 'sucesso',
+        retomada: true,
+        cursorAvancou: true,
+      });
+      expect(poll(h)).toMatchObject({ cursorMs: maisNovaMs, pendente: null });
+    };
+
+    it('a counted page failure (a 429) after the newest row', async () => {
+      const h = montar();
+      contaConectada(h);
+      seedPoll(h);
+      const paginas = paginado([pagina(aos(15)), pagina(aos(10)), pagina(aos(5))]);
+      let limitar = true;
+      h.responder = (url) => {
+        if (url.searchParams.get('paginationToken') === 't-1' && limitar) {
+          limitar = false;
+          return respostaJson(429, { errors: [{ code: 'QuotaExceeded' }] });
+        }
+        return paginas(url);
+      };
+      expect(await umaConta(h)).toMatchObject({
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.limiteDeTaxa,
+      });
+      expect(poll(h).pendente).toMatchObject({ paginationToken: 't-1', maiorLinhaMs: aos(15).ms });
+      await completa(h, aos(15).ms);
+    });
+
+    it('the deadline BETWEEN pages after the newest row', async () => {
+      const h = montar();
+      contaConectada(h);
+      seedPoll(h);
+      h.responder = paginado([pagina(aos(10)), pagina(aos(5))]);
+      // The deadline is 180 s after the start: the first enqueue spends 190 s.
+      h.custoDoEnfileiramentoMs = 190_000;
+      expect(await umaConta(h)).toMatchObject({
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.orcamentoEsgotado,
+      });
+      expect(poll(h).pendente).toMatchObject({ paginationToken: 't-1', maiorLinhaMs: aos(10).ms });
+      await completa(h, aos(10).ms);
+    });
+
+    it('the deadline MID-PAGE, a page after the newest row', async () => {
+      const h = montar();
+      contaConectada(h);
+      seedPoll(h);
+      h.responder = paginado([pagina(aos(20)), pagina(aos(10), aos(5))]);
+      // 100 s per enqueue: the deadline falls before page 1's SECOND row.
+      h.custoDoEnfileiramentoMs = 100_000;
+      expect(await umaConta(h)).toMatchObject({
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.orcamentoEsgotado,
+      });
+      expect(poll(h).pendente).toMatchObject({ paginationToken: 't-1', maiorLinhaMs: aos(20).ms });
+      await completa(h, aos(20).ms);
+    });
+
+    it('a repeated token after the newest row, until Amazon heals', async () => {
+      const h = montar();
+      contaConectada(h);
+      seedPoll(h);
+      let curado = false;
+      h.responder = (url) => {
+        if (url.searchParams.get('paginationToken') === null) {
+          return respostaJson(200, { orders: pagina(aos(20)), pagination: { nextToken: 't-1' } });
+        }
+        // `t-1` announces itself until healed; then it is the window's last page.
+        if (!curado) return respostaJson(200, { orders: [], pagination: { nextToken: 't-1' } });
+        return respostaJson(200, { orders: pagina(aos(5)) });
+      };
+      expect(await umaConta(h)).toMatchObject({
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.respostaInvalida,
+      });
+      expect(poll(h).pendente).toMatchObject({ paginationToken: 't-1', maiorLinhaMs: aos(20).ms });
+      curado = true;
+      await completa(h, aos(20).ms);
+    });
+  });
+});
+
 /* ===================================== lease ===================================== */
 
 describe('the lease (tier 1)', () => {
@@ -1053,6 +1343,7 @@ describe('the lease (tier 1)', () => {
       tokenEmMs: AGORA_MS - HORA_MS,
       paginas: 5,
       linhaInvalida: false,
+      maiorLinhaMs: null as number | null,
     };
     const rodar = async (outro: typeof guardado, extra: Record<string, unknown> = {}) => {
       const h = montar();
@@ -1074,6 +1365,10 @@ describe('the lease (tier 1)', () => {
     // Near-miss: the SAME pendente (both scalars equal) re-read ⇒ ours is applied.
     const mesmo = await rodar(guardado, { ultimaVarreduraEmMs: 1 });
     expect(mesmo.pendente).toBeNull();
+    // The two ACCUMULATORS are not identity: both scalars equal with another
+    // flag and another running max is still the drain the lease read ⇒ ours.
+    const acumulado = await rodar({ ...guardado, linhaInvalida: true, maiorLinhaMs: CURSOR });
+    expect(acumulado.pendente).toBeNull();
   });
 });
 

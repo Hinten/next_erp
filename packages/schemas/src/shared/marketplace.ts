@@ -77,13 +77,18 @@ export interface MarketplaceCapabilities {
   /* ---- facts about THIS repo — exact, never 'desconhecido' ---- */
   /**
    * Backend segment for `/api/marketplace/<channel>/*`. Set once the channel's
-   * master plan names its backend — the Shopee, Loja Integrada and Amazon rows
-   * name theirs BEFORE the app exists — and `null` while no plan does.
-   * ⚠️ Whether that backend EXISTS is {@link implementado}, never this field:
+   * master plan names its backend — the Loja Integrada and Amazon rows name
+   * theirs while `implementado` is still false — and `null` while no plan does.
+   * ⚠️ Whether the channel is BUILT is {@link implementado}, never this field:
    * read `channel` only behind `implementado` (as `StatusCanalBadge` does).
    */
   readonly channel: string | null;
-  /** Is there a deployed `apps/<channel>` backend today? */
+  /**
+   * Is the channel BUILT — `apps/<channel>` exists and `apps/web` dispatches its
+   * row actions to it? A fact about this repo's code, never about a deployment:
+   * no channel of this app reaches production before the cutover (root
+   * `CLAUDE.md` rule 8).
+   */
   readonly implementado: boolean;
 
   /* ---- facts about the PROVIDER — tri-state ---- */
@@ -211,7 +216,7 @@ const NAO_INVESTIGADO = {
  */
 export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilities> = {
   /**
-   * The one implemented channel. Every value here is observed from the running
+   * The first implemented channel. Every value here is observed from the running
    * integration (`apps/mercado-livre`), not read off documentation.
    */
   [INTEGRACAO_TIPO.mercadoLivre]: {
@@ -263,22 +268,13 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
   },
 
   /**
-   * ⚠️ Everything below is UNBUILT — which is NOT the same as unresearched.
-   * Shopee's, Amazon's and Loja Integrada's rows are Phase 0 surveys with
-   * `implementado: false` (Amazon's keeps one honest `'desconhecido'`); the
-   * other two are still all `'desconhecido'`. A `'desconhecido'` is not a gap
-   * in this file — it is the honest state of the question, and Phase 0 of the
-   * skill is what closes it. Only values with a citation are set.
-   */
-  /**
    * The Shopee Phase 0 survey (`.master_plans/shopee/shopee-marketplace-integration.md`
-   * §1). Every field below is cited — `implementado` stays `false` until step 22
-   * of that plan ships the App Hosting backend; `channel` is named now because
-   * the backend segment is a fact about THIS repo's layout, not about Shopee.
+   * §1). Every field below is cited. `implementado` flipped at that plan's step
+   * 22 (#1530): `apps/shopee` serves every row action `apps/web` dispatches.
    */
   [INTEGRACAO_TIPO.shopee]: {
-    channel: 'shopee', // apps/shopee, :3009 (next free port)
-    implementado: false,
+    channel: 'shopee', // apps/shopee, :3009
+    implementado: true,
     // Authorization-code-SHAPED, not RFC 6749: no client_secret (HMAC `sign` with
     // the partner_key instead), no scope (fixed by the immutable App Category),
     // no PKCE. guide 20, guide 16.
@@ -313,7 +309,8 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // ⚠️ Only HALF settled. The Shopee PRE-LAUNCH UNLIST — the state that actually
     // answers `error_set_normal_unlisted_item` — cannot be produced on that shop,
     // and an SG sandbox answer is evidence about the API, never about BR.
-    // `implementado` stays `false` until step 22 regardless.
+    // `implementado` flipped at step 22 with this still open (plan register 83
+    // names what settles it); the flip opened no re-list path — bulk only pauses.
     pausarAnuncio: 'sim',
     // Measured live on the SG SANDBOX shop, 2026-09-21, through the shipped step-12
     // package ops, with Lucas’s explicit go and a `delete_item` cleanup. Every
@@ -345,7 +342,6 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // ⚠️ An SG sandbox answer is evidence about the API, never about BR: the
     //    promotion regime and multi-warehouse are not rehearsable there. Kits ARE
     //    rehearsable on the SG sandbox (probe 2026-10-06/07, step 19).
-    // `implementado` stays `false` until step 22.
     estoque: {
       suporte: 'sim',
       // One item per call (api v2.product.update_stock); the item's models ride
@@ -386,7 +382,7 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     //     module, no BR shop). MODEL_UNAVAILABLE — NAO MEDIDO (P14 not run).
     // update_price: one item, ≤ 50 models, 2 decimals. Locked by MOST promotion types
     // from SCHEDULED on (faq 140) — not wholesale, selling price, add-on main, PwP,
-    // the gift. `implementado` stays `false` until step 22.
+    // the gift.
     enviarPreco: 'sim',
     importarPedido: 'sim',
     // No payment push, and no gateway-shaped payment resource — but a BR
@@ -424,6 +420,14 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     reclamacoes: 'sim', // v2.returns.* + push 32
     origensConversa: [], // filled by step 16 only if the chat grant lands
   },
+  /**
+   * ⚠️ Everything below is UNBUILT — which is NOT the same as unresearched.
+   * Amazon's and Loja Integrada's rows are Phase 0 surveys with
+   * `implementado: false` (Amazon's keeps one honest `'desconhecido'`); the
+   * other two are still all `'desconhecido'`. A `'desconhecido'` is not a gap
+   * in this file — it is the honest state of the question, and Phase 0 of the
+   * skill is what closes it. Only values with a citation are set.
+   */
   /**
    * The Amazon (SP-API) Phase 0 survey
    * (`.master_plans/amazon/amazon-marketplace-integration.md` §1), verified

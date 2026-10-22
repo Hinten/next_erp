@@ -246,10 +246,41 @@ describe('the denylist fold', () => {
     expect(contemNomeDeLoja('termo%C3%A9ficticio', lista)).toBe(true);
   });
 
-  it('near-miss: a term does not match a different word', () => {
+  it('near-miss: a term does not match a word that differs from it inside', () => {
     expect(contemNomeDeLoja('Termo Ficticia', lista)).toBe(false);
     // A single-word term never matches across two words.
     expect(contemNomeDeLoja('ze ta', lista)).toBe(false);
+  });
+
+  // ★ Fail closed, on purpose: a term is a SUBSTRING under the fold, inside a
+  // longer word too. A false refusal costs the owner a more specific term; a
+  // word-boundary match would miss a name glued into a host, SKU or e-mail.
+  it('★ a term inside a longer word IS found (silva ⊂ silvana; a glued store name)', () => {
+    const palavra = criarListaDeNomes(['silva', 'exemplo']);
+    expect(contemNomeDeLoja('Silvana', palavra)).toBe(true);
+    for (const t of ['lojaexemplostore.com', 'EXEMPLO123', 'contato.exemplo@x.invalid']) {
+      expect(contemNomeDeLoja(t, palavra), t).toBe(true);
+    }
+  });
+
+  it('near-miss: a word that differs from the term inside it is NOT found (exemplo vs exemplar)', () => {
+    const palavra = criarListaDeNomes(['exemplo']);
+    expect(contemNomeDeLoja('exemplar', palavra)).toBe(false);
+    expect(contemNomeDeLoja('EXEMPLARES', palavra)).toBe(false);
+  });
+
+  // The README's advice (list a name of several words with its spaces) rests on
+  // this asymmetry: only a term of several words is also tried joined.
+  it('a term listed with its spaces finds the joined and the split name; near-miss: listed joined, it misses the split one', () => {
+    const espacos = criarListaDeNomes(['loja exemplo']);
+    for (const t of ['Loja Exemplo', 'lojaexemplo.com', 'LOJA-EXEMPLO']) {
+      expect(contemNomeDeLoja(t, espacos), t).toBe(true);
+    }
+    const junto = criarListaDeNomes(['lojaexemplo']);
+    expect(contemNomeDeLoja('lojaexemplo.com', junto)).toBe(true);
+    for (const t of ['Loja Exemplo', 'loja-exemplo.com']) {
+      expect(contemNomeDeLoja(t, junto), t).toBe(false);
+    }
   });
 
   it('near-miss: percent-encoding never makes a different word match', () => {

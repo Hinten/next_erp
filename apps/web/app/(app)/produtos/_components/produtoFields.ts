@@ -26,6 +26,14 @@ import { dimensaoRenderInput, pesoRenderInput } from './PesoField';
 export const SECTION_MERCADO_LIVRE = 'Mercado Livre';
 
 /**
+ * The Shopee tab (step 21, #1529), named once for the same reason: the section
+ * lists and the `shopee` anchor's `section:` must name the identical string.
+ * It sits IMMEDIATELY BEFORE Mercado Livre on both screens, so the two channel
+ * tabs stay side by side and neither moves when the produto is saved.
+ */
+export const SECTION_SHOPEE = 'Shopee';
+
+/**
  * The two other tabs that register a flush closure the edit page calls in
  * `onAfterSave` — named once for the same reason as `SECTION_MERCADO_LIVRE`:
  * each has to appear in the section list, in a field's `section:` and in
@@ -35,16 +43,16 @@ export const SECTION_VARIACOES = 'Variações';
 export const SECTION_KIT = 'Kit';
 
 /**
- * Tab order shared by every Produto screen, WITHOUT the Mercado Livre tab —
+ * Tab order shared by every Produto screen, WITHOUT the channel tabs —
  * Variações before the media tabs.
  *
  * ⚠️ Mercado Livre is deliberately not in here: it must stay the LAST tab on
  * every produto screen, so each page appends `SECTION_MERCADO_LIVRE` itself
- * after whatever screen-specific tabs it adds. A page-specific tab
- * (`Modificações` on the edit screen) therefore slots in BETWEEN this list and
- * Mercado Livre — never after it. Appending to `PRODUTO_SECTIONS` instead is
- * what made the tab jump one position to the left the moment a produto was
- * saved.
+ * after whatever screen-specific tabs it adds — with `SECTION_SHOPEE` right
+ * before it. A page-specific tab (`Modificações` on the edit screen) therefore
+ * slots in BETWEEN this list and the channel tabs — never after them. Appending
+ * to `PRODUTO_SECTIONS` instead is what made the tab jump one position to the
+ * left the moment a produto was saved.
  */
 export const PRODUTO_SECTIONS_BASE: string[] = [
   'Dados gerais',
@@ -70,14 +78,18 @@ export const PRODUTO_SECTIONS_BASE: string[] = [
  */
 export const SECTION_MODIFICACOES = 'Modificações';
 
-/** Tab order for the create screen: the shared tabs, Mercado Livre last. */
-export const PRODUTO_SECTIONS: string[] = [...PRODUTO_SECTIONS_BASE, SECTION_MERCADO_LIVRE];
+/** Tab order for the create screen: the shared tabs, then Shopee, then Mercado Livre last. */
+export const PRODUTO_SECTIONS: string[] = [
+  ...PRODUTO_SECTIONS_BASE,
+  SECTION_SHOPEE,
+  SECTION_MERCADO_LIVRE,
+];
 
 /**
  * Tab order for the edit screen: the shared tabs, then the edit-only
- * Modificações tab, then Mercado Livre.
+ * Modificações tab, then the two channel tabs — Shopee, then Mercado Livre.
  *
- * ⚠️ Modificações slots in BEFORE Mercado Livre on purpose — Mercado Livre is
+ * ⚠️ Modificações slots in BEFORE the channel tabs on purpose — Mercado Livre is
  * the last tab on the create screen too, and appending here would shift it one
  * position left the moment the produto is saved, which is exactly the bug this
  * pairing exists to prevent. Lives here beside `PRODUTO_SECTIONS` so the two
@@ -87,16 +99,17 @@ export const PRODUTO_SECTIONS: string[] = [...PRODUTO_SECTIONS_BASE, SECTION_MER
 export const PRODUTO_SECTIONS_EDITAR: string[] = [
   ...PRODUTO_SECTIONS_BASE,
   SECTION_MODIFICACOES,
+  SECTION_SHOPEE,
   SECTION_MERCADO_LIVRE,
 ];
 
 /**
  * What both produto pages hand to `<ObjectView schema={…}>`: the produto page
- * model plus the `mercadoLivre` UI anchor — a key whose only job is to give the
- * Mercado Livre tab a field descriptor (the tab is self-contained; nothing is
- * read from or written to the form value). Shared by both pages so the tab
- * exists in create mode too, where it renders a "salve o produto" message
- * instead of the editor.
+ * model plus the `mercadoLivre` and `shopee` UI anchors — keys whose only job is
+ * to give each channel tab a field descriptor (the tabs are self-contained;
+ * nothing is read from or written to the form value). Shared by both pages so
+ * the tabs exist in create mode too, where they render a "salve o produto"
+ * message instead of the editor.
  *
  * ⚠️ NOT `produtoPageSchema` — `@delfrance/schemas` already exports that name
  * for a DIFFERENT schema (`produtoPageBaseSchema.superRefine(refineProdutoPage)`:
@@ -107,6 +120,7 @@ export const PRODUTO_SECTIONS_EDITAR: string[] = [
  */
 export const produtoObjectViewSchema = produtoPageBaseSchema.extend({
   mercadoLivre: z.null().default(null),
+  shopee: z.null().default(null),
 });
 
 /**
@@ -145,6 +159,13 @@ export const produtoObjectViewSchema = produtoPageBaseSchema.extend({
  * tabset WITHOUT listing it here still looks right, while silently restoring
  * the bugs above. `produtoFields.test.ts` is the backstop; one import beats one
  * omission.
+ *
+ * ⚠️ **Shopee is deliberately ABSENT.** Its tab holds no drafts and registers no
+ * flush — it only READS the listing links, every write coming from apps/shopee —
+ * so the `<Activity>` suspension costs it nothing but a re-listen, which its
+ * editor survives by design (`ShopeeEditor`, rules R1/R2). Persisting it would
+ * keep its listeners alive while another tab shows, with no registration to
+ * guard.
  */
 export const PRODUTO_PERSISTENT_SECTIONS: string[] = [
   SECTION_MERCADO_LIVRE,
@@ -264,8 +285,9 @@ export const PRODUTO_TRANSIENT_FIELDS: string[] = [
   'extraData',
   'estoques',
   'impostos',
-  // Pure UI anchor for the Mercado Livre tab — see `produtoObjectViewSchema`.
+  // Pure UI anchors for the two channel tabs — see `produtoObjectViewSchema`.
   'mercadoLivre',
+  'shopee',
 ];
 
 /**
