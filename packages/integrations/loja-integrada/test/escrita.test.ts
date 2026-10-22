@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -32,6 +35,7 @@ import * as cliente_ from '../src/client';
 import * as ids from '../src/idsDeCaminho';
 import * as barril from '../src/index';
 import { PRAZO_LI_MS } from '../src/prazos';
+import * as rotas from '../src/rotasEscrita';
 import { corpo401Json, corpo403Html, corpo429Loja, corpo500Html } from './_fixtures/especificacao';
 import {
   fetchQueNuncaResponde,
@@ -59,10 +63,10 @@ import {
 afterEach(verificarMetodos(['GET', 'PUT']));
 
 const CAMINHO_PUT = '/v1/pedido_envio/69291055';
+const CAMINHO_SITUACAO = '/v1/situacao/pedido/165';
 const CAMINHO_GET = '/v1/pedido/165/';
 const OBJETO = 'PJ258408772BR';
 
-const corpoSchema = z.object({ objeto: z.string() }).strict();
 const ecoSchema = z.object({ objeto: z.string().nullable().optional() }).passthrough();
 
 function put(extra: Partial<PedidoPutLi<typeof ecoSchema>> = {}): PedidoPutLi<typeof ecoSchema> {
@@ -70,7 +74,6 @@ function put(extra: Partial<PedidoPutLi<typeof ecoSchema>> = {}): PedidoPutLi<ty
     operacao: 'atualizarObjetoEnvio',
     caminho: CAMINHO_PUT,
     corpo: { objeto: OBJETO },
-    corpoSchema,
     ecoSchema,
     ...extra,
   };
@@ -187,13 +190,73 @@ describe('the client shapes — two separate clients, each with its own surface'
     expect(typeof barril.criarClienteLeituraLi).toBe('function');
     expect(typeof barril.atualizarObjetoEnvioLi).toBe('function');
     expect(typeof barril.alterarSituacaoPedidoLi).toBe('function');
-    for (const interno of ['executarLi', 'lerComSchemaLi', 'idOuRecusa']) {
+    for (const interno of ['executarLi', 'lerComSchemaLi', 'idOuRecusa', 'rotaDeEscritaLi']) {
       expect(Object.keys(barril)).not.toContain(interno);
     }
     // Anti-vacuity: the names above are real — the internal modules DO export them.
     expect(typeof cliente_.executarLi).toBe('function');
     expect(typeof cliente_.lerComSchemaLi).toBe('function');
     expect(typeof ids.idOuRecusa).toBe('function');
+    expect(typeof rotas.rotaDeEscritaLi).toBe('function');
+    // The public constants the routes are built from still reach the barrel.
+    expect(barril.CODIGOS_SITUACAO_ESCRITA_LI).toBe(rotas.CODIGOS_SITUACAO_ESCRITA_LI);
+    expect(barril.objetoDeEnvioValidoLi).toBe(rotas.objetoDeEnvioValidoLi);
+    expect(barril.MAX_OBJETO_ENVIO_LI).toBe(200);
+  });
+
+  it('a direct PUT through the core itself still reaches only the write routes', async () => {
+    // The core is the one function every request passes: the route table is
+    // enforced THERE, so not even a module of this package can send around it.
+    const f = ok();
+    const corte2xx = () => 'cortado';
+    const ler2xx = () => ({ resultado: 'ok' as const, valor: 'ok' });
+    const opcoes = { obterCredencial: () => ({ token: TOKEN, ref: 'ref-A' }), fetch: f };
+    for (const [caminho, corpo, motivo] of [
+      ['/v1/produto/1', { objeto: OBJETO }, 'rota-nao-permitida'],
+      [CAMINHO_SITUACAO, { codigo: 'pedido_cancelado' }, 'corpo'],
+      [CAMINHO_PUT, { objeto: '' }, 'corpo'],
+    ] as const) {
+      const err = await falha(
+        cliente_.executarLi(opcoes, {
+          metodo: 'PUT',
+          operacao: 'direto',
+          caminho,
+          corpo,
+          corte2xx,
+          ler2xx,
+        }),
+      );
+      expect((err as LiConfigError).motivo).toBe(motivo);
+    }
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('the manifest exports the root alone: no deep import reaches the core', () => {
+    const manifesto = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as unknown;
+    expect(manifesto).toMatchObject({
+      exports: { '.': './src/index.ts', './package.json': './package.json' },
+    });
+    expect(Object.keys((manifesto as { exports: object }).exports)).toEqual([
+      '.',
+      './package.json',
+    ]);
+    // Resolved the way Node resolves the package by its own name.
+    const resolver = createRequire(import.meta.url);
+    // Positive control: the root resolves (a self-reference needs `exports`).
+    expect(resolver.resolve('@delfrance/integrations-loja-integrada')).toMatch(
+      /[\\/]src[\\/]index\.ts$/,
+    );
+    for (const profundo of [
+      '@delfrance/integrations-loja-integrada/src/client.ts',
+      '@delfrance/integrations-loja-integrada/src/client',
+      '@delfrance/integrations-loja-integrada/src/escrita.ts',
+    ]) {
+      expect(() => resolver.resolve(profundo), profundo).toThrow(
+        expect.objectContaining({ code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' }),
+      );
+    }
   });
 });
 
@@ -226,13 +289,28 @@ describe('enviarEscritaLi — request shape', () => {
     expect(headers.get('x-correlation-id')).toBe('corr-1');
   });
 
-  it('sends the body the schema PARSED, never the caller object: a stripped key never travels', async () => {
+  it('sends the route schema’s OUTPUT, never the caller object — not even through its own toJSON', async () => {
     const f = ok();
-    const naoEstrito = z.object({ objeto: z.string() });
-    await cliente(f).c.enviarEscritaLi(
-      put({ corpo: { objeto: OBJETO, extra: 'CHAVE-QUE-NAO-PODE-IR' }, corpoSchema: naoEstrito }),
-    );
+    const corpo = { objeto: OBJETO };
+    // Not enumerable, so the schema never sees it; `JSON.stringify` would call it.
+    Object.defineProperty(corpo, 'toJSON', {
+      value: () => ({ objeto: OBJETO, extra: 'CHAVE-QUE-NAO-PODE-IR' }),
+      enumerable: false,
+    });
+    // Anti-vacuity: serialising the caller's object WOULD carry the extra key.
+    expect(JSON.stringify(corpo)).toContain('CHAVE-QUE-NAO-PODE-IR');
+    await cliente(f).c.enviarEscritaLi(put({ corpo }));
     expect(requisicao(f).init.body).toBe('{"objeto":"PJ258408772BR"}');
+  });
+
+  it('the body schema belongs to the route, never to the caller (compile-time)', () => {
+    const naoCompila = (c: LiEscritaClient) =>
+      c.enviarEscritaLi({
+        ...put(),
+        // @ts-expect-error — a caller cannot bring its own (looser) body schema
+        corpoSchema: z.object({ objeto: z.string() }),
+      });
+    expect(typeof naoCompila).toBe('function');
   });
 
   it('a body its strict schema refuses → LiConfigError("corpo"); nothing is fetched, no credential read', async () => {
@@ -332,13 +410,84 @@ describe('enviarEscritaLi — config errors: nothing is sent', () => {
   });
 
   it('the token in the PATH → LiConfigError("token-na-url"), nothing sent', async () => {
+    // A token of digits only is the one kind a write route's id can hold, so
+    // the path reaches the URL check instead of failing the route table first.
+    const tokenDeDigitos = '98765432109876543210';
     const f = ok();
     const err = await falha(
-      cliente(f).c.enviarEscritaLi(put({ caminho: `/v1/pedido_envio/${TOKEN}` })),
+      cliente(f, {
+        obterCredencial: () => ({ token: tokenDeDigitos, ref: 'ref-A' }),
+      }).c.enviarEscritaLi(put({ caminho: `/v1/pedido_envio/${tokenDeDigitos}` })),
     );
     expect(err).toBeInstanceOf(LiConfigError);
     expect((err as LiConfigError).motivo).toBe('token-na-url');
     expect(f).not.toHaveBeenCalled();
+  });
+});
+
+describe('enviarEscritaLi — only the write routes, each with its OWN body', () => {
+  it.each([
+    ['another resource', '/v1/produto/1'],
+    ['a read path', '/v1/pedido/165'],
+    ['the envio route with a trailing slash', `${CAMINHO_PUT}/`],
+    ['the situação route with a trailing slash', `${CAMINHO_SITUACAO}/`],
+    ['an id with a leading zero', '/v1/pedido_envio/069291055'],
+    ['a non-numeric id', '/v1/situacao/pedido/abc'],
+    ['no id', '/v1/pedido_envio'],
+    ['a longer path under a route', `${CAMINHO_SITUACAO}/extra`],
+  ])(
+    '%s → LiConfigError("rota-nao-permitida"); nothing fetched, no credential read',
+    async (_r, caminho) => {
+      const f = ok();
+      const { c, eventos, credenciais } = cliente(f);
+      const err = await falha(c.enviarEscritaLi(put({ caminho })));
+      expect(err).toBeInstanceOf(LiConfigError);
+      expect((err as LiConfigError).motivo).toBe('rota-nao-permitida');
+      expect((err as Error).message).not.toContain(caminho);
+      expect(f).not.toHaveBeenCalled();
+      expect(credenciais()).toBe(0);
+      expect(eventos).toEqual([]);
+    },
+  );
+
+  it.each<[string, string, unknown]>([
+    ['a cancellation', CAMINHO_SITUACAO, { codigo: 'pedido_cancelado' }],
+    ['a paid codigo', CAMINHO_SITUACAO, { codigo: 'pedido_pago' }],
+    ['faturado', CAMINHO_SITUACAO, { codigo: 'faturado' }],
+    ['a cancellation request', CAMINHO_SITUACAO, { codigo: 'cancelamento_solicitado' }],
+    ['a case variant', CAMINHO_SITUACAO, { codigo: 'Pedido_Enviado' }],
+    ['an empty codigo', CAMINHO_SITUACAO, { codigo: '' }],
+    ['an extra key', CAMINHO_SITUACAO, { codigo: 'pedido_enviado', extra: 'x' }],
+    ['the envio body', CAMINHO_SITUACAO, { objeto: OBJETO }],
+    ['a CLEARED code', CAMINHO_PUT, { objeto: '' }],
+    ['a blank code', CAMINHO_PUT, { objeto: ' ' }],
+    ['a null code', CAMINHO_PUT, { objeto: null }],
+    ['a code over 200 characters', CAMINHO_PUT, { objeto: 'A'.repeat(201) }],
+    ['the situação body', CAMINHO_PUT, { codigo: 'pedido_enviado' }],
+  ])(
+    '%s on its route → LiConfigError("corpo"); nothing fetched, no credential read',
+    async (_r, caminho, corpo) => {
+      const f = ok();
+      const { c, credenciais } = cliente(f);
+      const err = await falha(c.enviarEscritaLi(put({ caminho, corpo })));
+      expect(err).toBeInstanceOf(LiConfigError);
+      expect((err as LiConfigError).motivo).toBe('corpo');
+      expect(f).not.toHaveBeenCalled();
+      expect(credenciais()).toBe(0);
+    },
+  );
+
+  it.each<[string, unknown]>([
+    [CAMINHO_PUT, { objeto: OBJETO }],
+    [CAMINHO_SITUACAO, { codigo: 'pedido_enviado' }],
+    [CAMINHO_SITUACAO, { codigo: 'pedido_entregue' }],
+    [CAMINHO_SITUACAO, { codigo: 'pronto_para_retirada' }],
+  ])('near-miss: %s with its own valid body IS sent, as given', async (caminho, corpo) => {
+    const f = mockFetch(() => texto('', 204));
+    await cliente(f).c.enviarEscritaLi(put({ caminho, corpo }));
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(requisicao(f).url.pathname).toBe(caminho);
+    expect(requisicao(f).init.body).toBe(JSON.stringify(corpo));
   });
 });
 
@@ -690,6 +839,20 @@ describe('enviarEscritaLi — the observer', () => {
     expect(evento).not.toMatch(/authorization|Basic |content-type/i);
     expect(evento).not.toContain(OBJETO);
   });
+
+  it('⚠️ an observer that throws rejects even a write that LANDED — the documented exception', async () => {
+    // No generic catch may swallow it (rule 6), so a write client's observer
+    // must be total: the app's write engine is to pin that of its own.
+    const doObservador = new RangeError('observador quebrado');
+    const f = ok();
+    const { c } = cliente(f, {
+      onChamada: () => {
+        throw doObservador;
+      },
+    });
+    await expect(c.enviarEscritaLi(put())).rejects.toBe(doObservador);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('lerAntesDeEscreverLi — the GET a write decides on', () => {
@@ -766,6 +929,68 @@ describe('lerAntesDeEscreverLi — the GET a write decides on', () => {
       expect(estado.valor).toBeInstanceOf(LiTimeoutError);
       expect((estado.valor as LiTimeoutError).prazoMs).toBe(PRAZO_LI_MS.leitura);
     });
+  });
+});
+
+describe('each verb waits on ITS class’s budget — a PUT the write one, a GET the read one', () => {
+  // Both budgets are 20 s today, so a core that used the wrong class would pass
+  // every other deadline test. Here they are set apart for the duration of each
+  // test, and restored.
+  const ORIGINAL = { ...PRAZO_LI_MS };
+  const mutavel = PRAZO_LI_MS as { leitura: number; escrita: number };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mutavel.leitura = 9_000;
+    mutavel.escrita = 4_000;
+  });
+  afterEach(() => {
+    mutavel.leitura = ORIGINAL.leitura;
+    mutavel.escrita = ORIGINAL.escrita;
+    vi.useRealTimers();
+  });
+
+  it('a PUT times out at PRAZO_LI_MS.escrita, never at the read budget', async () => {
+    const { c } = cliente(fetchQueNuncaResponde());
+    const { estado, pronto } = observar(c.enviarEscritaLi(put()));
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(estado.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pronto;
+    expect(estado.valor).toBeInstanceOf(LiTimeoutError);
+    expect((estado.valor as LiTimeoutError).prazoMs).toBe(4_000);
+  });
+
+  it('a 2xx PUT whose body stalls resolves "falhou" at the write budget', async () => {
+    const { c } = cliente(travaNoCorpo(200));
+    const { estado, pronto } = observar(c.enviarEscritaLi(put()));
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(estado.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pronto;
+    expect(estado.valor).toMatchObject({ status: 200, leituraEco: 'falhou' });
+  });
+
+  it('the write client’s GET times out at PRAZO_LI_MS.leitura, never at the write budget', async () => {
+    const { c } = cliente(fetchQueNuncaResponde());
+    const { estado, pronto } = observar(c.lerAntesDeEscreverLi(get()));
+    await vi.advanceTimersByTimeAsync(8_999);
+    expect(estado.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pronto;
+    expect(estado.valor).toBeInstanceOf(LiTimeoutError);
+    expect((estado.valor as LiTimeoutError).prazoMs).toBe(9_000);
+  });
+
+  it('the read client’s GET times out at PRAZO_LI_MS.leitura too', async () => {
+    const leitura = criarClienteLeituraLi({
+      obterCredencial: () => ({ token: TOKEN, ref: 'r' }),
+      fetch: fetchQueNuncaResponde(),
+    });
+    const { estado, pronto } = observar(leitura.get(get()));
+    await vi.advanceTimersByTimeAsync(9_000);
+    await pronto;
+    expect((estado.valor as LiTimeoutError).prazoMs).toBe(9_000);
   });
 });
 

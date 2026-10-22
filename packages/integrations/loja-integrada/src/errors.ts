@@ -172,7 +172,8 @@ export type MotivoConfigLi =
   | 'maxPaginas'
   | 'corpo'
   | 'token-no-corpo'
-  | 'codigo-nao-permitido';
+  | 'codigo-nao-permitido'
+  | 'rota-nao-permitida';
 
 /**
  * OUR input was unusable, and **no request was made**.
@@ -185,12 +186,21 @@ export type MotivoConfigLi =
  * - `'token-na-url'` — the token appears in the path or in a query key or value.
  *   It travels in `Authorization` only.
  * - `'maxPaginas'` — not a positive safe integer.
- * - `'corpo'` — a write's body failed its own schema (a missing, empty,
- *   malformed or extra field). Raised BEFORE the credential is read.
+ * - `'rota-nao-permitida'` — a write's path is not one of the package's write
+ *   routes (`rotasEscrita.ts`): another resource, or a route's path in another
+ *   form (a trailing slash, a non-canonical id). Raised BEFORE the credential
+ *   is read.
+ * - `'corpo'` — a write's body failed its ROUTE's schema (a missing, empty,
+ *   malformed or extra field; a codigo outside the three on the situação
+ *   route; a code that would clear or blank the tracking code). Raised BEFORE
+ *   the credential is read.
  * - `'token-no-corpo'` — the token appears in a write's serialised body, as
  *   written or in its JSON-escaped form. It travels in `Authorization` only.
  * - `'codigo-nao-permitido'` — a situação write asked for a codigo outside the
  *   package's closed write-back set (`pedidosEscrita.ts`).
+ *
+ * Every motivo is a fact about the input, never about the provider: the same
+ * input is refused again, with no request.
  *
  * ⚠️ The message never echoes the offending value: a rejected token is still a
  * token, a rejected `ref` may contain one, a rejected path may carry a query,
@@ -230,6 +240,8 @@ function mensagemDeConfig(motivo: MotivoConfigLi, operacao: string): string {
       return `${prefixo} o token aparece no corpo da escrita; ele só pode viajar no cabeçalho Authorization. Nada foi enviado.`;
     case 'codigo-nao-permitido':
       return `${prefixo} a situação pedida não está entre as três que a integração escreve (pedido_enviado, pedido_entregue, pronto_para_retirada). Nada foi enviado.`;
+    case 'rota-nao-permitida':
+      return `${prefixo} o caminho não é uma das rotas de escrita da integração. Nada foi enviado.`;
   }
 }
 

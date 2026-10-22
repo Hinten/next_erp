@@ -11,9 +11,12 @@
  * writer is `escrita.ts`, a different factory with different method names, so a
  * read client handed to some code can never write.
  *
- * ⚠️ `executarLi` and its helpers are exported for `escrita.ts` ONLY. The
- * package barrel (`index.ts`) names this module's public exports one by one and
- * leaves them out, so nothing outside the package reaches the core.
+ * ⚠️ `executarLi` and its helpers are exported for `escrita.ts` ONLY. Two things
+ * keep them inside the package: the barrel (`index.ts`) names this module's
+ * public exports one by one and leaves them out, and the package manifest's
+ * `exports` map publishes the root alone, so a deep import of this file
+ * (`…/src/client`) does not resolve. And whatever reaches the core, a `PUT`
+ * gets only as far as the write routes (`rotasEscrita.ts`, step 1 below).
  *
  * ## The credential
  *
@@ -45,7 +48,10 @@
  * ## Each request, in order
  *
  *  1. Validate the path (`/v1/…`, no `?`, `#`, `://`, `..` or an encoded `.`,
- *     `/` or `\`, and unchanged by the URL parser).
+ *     `/` or `\`, and unchanged by the URL parser). For a `PUT`, the path must
+ *     also be one of the write routes, and the body must pass THAT route's
+ *     schema (`rotasEscrita.ts`); the body sent is the schema's output,
+ *     serialised once.
  *  2. `await obterCredencial()` — OUTSIDE the deadline, so a slow getter does not
  *     eat the call's budget — then validate the token and the `ref`; for a
  *     `PUT`, refuse a serialised body that carries the token; refuse a URL that
@@ -87,6 +93,7 @@ import {
   type MetodoLi,
 } from './errors';
 import { type ClasseOperacaoLi, PRAZO_LI_MS } from './prazos';
+import { rotaDeEscritaLi } from './rotasEscrita';
 
 /**
  * The one origin this package talks to. A constant, not an option: Loja
@@ -193,9 +200,10 @@ export interface OpcoesClienteLi {
    * known and before the call returns or throws. Not called when nothing was
    * sent (`LiConfigError`, a getter that threw, a `sinal` already aborted).
    *
-   * ⚠️ An observer that throws propagates in place of the outcome. Harmless for
-   * a GET; for a write it would hide that the write landed, so a logger must
-   * never throw.
+   * ⚠️ An observer that throws propagates in place of the outcome — rule 6
+   * forbids the generic catch that would swallow it. Harmless for a GET; for a
+   * write it REJECTS a write that landed (`escrita.ts`), so a write client's
+   * observer must be total, and its caller is to pin that with a test.
    */
   readonly onChamada?: (e: ChamadaLi) => void;
   /** Milliseconds, for `latenciaMs` only. Defaults to `Date.now`. */
@@ -265,9 +273,9 @@ interface ExecucaoBaseLi<R> {
 
 /**
  * One request for the core. A `GET` carries a query and never a body; a `PUT`
- * always carries a body (already PARSED by its schema, serialised here) and
- * says what a 2xx with a cut body resolves to — the write landed, so it must
- * not throw.
+ * always carries a body — the caller's, as given: the core parses it with its
+ * ROUTE's schema (`rotasEscrita.ts`) and serialises that output — and says what
+ * a 2xx with a cut body resolves to (the write landed, so it must not throw).
  */
 export type ExecucaoLi<R> = ExecucaoBaseLi<R> &
   (
@@ -277,10 +285,26 @@ export type ExecucaoLi<R> = ExecucaoBaseLi<R> &
       }
     | {
         readonly metodo: 'PUT';
-        readonly corpo: Readonly<Record<string, string>>;
+        readonly corpo: unknown;
         readonly corte2xx: (c: Corte2xxLi) => R;
       }
   );
+
+/**
+ * The exact text of a `PUT`'s body, or a refusal before the credential is read:
+ * the path must be one of the write routes, and the body must pass THAT route's
+ * schema. The text is that schema's OUTPUT, serialised once — never the
+ * caller's object, which could carry a key or a `toJSON` the schema never saw.
+ */
+function textoDoCorpoLi(caminho: string, corpo: unknown, operacao: string): string {
+  const rota = rotaDeEscritaLi(caminho);
+  if (rota === null) {
+    throw new LiConfigError('rota-nao-permitida', { operacao, refCredencial: null });
+  }
+  const lido = rota.corpo.safeParse(corpo);
+  if (!lido.success) throw new LiConfigError('corpo', { operacao, refCredencial: null });
+  return JSON.stringify(lido.data);
+}
 
 /**
  * A path under `/v1/` that reaches the server exactly as written.
@@ -402,14 +426,15 @@ export async function executarLi<R>(opts: OpcoesClienteLi, p: ExecucaoLi<R>): Pr
   if (!caminhoValido(caminho)) {
     throw new LiConfigError('caminho', { operacao, refCredencial: null });
   }
+  // A `PUT` reaches a write route only, with that route's body; serialised
+  // ONCE, so the text checked below is exactly the text sent.
+  const textoCorpo = p.metodo === 'PUT' ? textoDoCorpoLi(caminho, p.corpo, operacao) : null;
 
   // 2. The credential, OUTSIDE the deadline, every time.
   const credencial = await opts.obterCredencial();
   validarCredencial(credencial, operacao);
   const { token, ref } = credencial;
 
-  // The body is serialised ONCE: the text checked is exactly the text sent.
-  const textoCorpo = p.metodo === 'PUT' ? JSON.stringify(p.corpo) : null;
   if (textoCorpo !== null && tokenNoCorpo(token, textoCorpo)) {
     throw new LiConfigError('token-no-corpo', { operacao, refCredencial: ref });
   }

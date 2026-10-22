@@ -859,13 +859,6 @@ describe('the observer', () => {
   });
 });
 
-describe('the read client is GET-only by construction', () => {
-  it('has exactly one method, `get` — the write client is a separate factory', () => {
-    const { c } = cliente(ok());
-    expect(Object.keys(c)).toEqual(['get']);
-  });
-});
-
 describe('the default fetch', () => {
   it('is resolved at call time from globalThis', async () => {
     const f = ok();

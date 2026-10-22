@@ -270,7 +270,12 @@ describe('the verb in every message — `metodo` is optional and defaults to GET
   });
 
   it('the write refusals carry their motivo and name the operation, never a value', () => {
-    for (const motivo of ['token-no-corpo', 'codigo-nao-permitido', 'corpo'] as const) {
+    for (const motivo of [
+      'token-no-corpo',
+      'codigo-nao-permitido',
+      'corpo',
+      'rota-nao-permitida',
+    ] as const) {
       const err = new LiConfigError(motivo, { operacao: 'op', refCredencial: 'ref-1' });
       expect(err.motivo).toBe(motivo);
       expect(err.refCredencial).toBe('ref-1');

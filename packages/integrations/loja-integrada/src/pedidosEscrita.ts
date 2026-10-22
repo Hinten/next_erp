@@ -15,21 +15,28 @@
  * write is due, safe or already reflected is the app's to decide from a fresh
  * read made just before it; every error is the write client's, rethrown as-is.
  *
- * ## What the package itself refuses — so no caller can do it
+ * ## What the package refuses, for every write it can send
  *
- *  - **Only three codigos:** {@link CODIGOS_SITUACAO_ESCRITA_LI} is a closed,
- *    package-local set (`pedido_enviado`, `pedido_entregue`,
- *    `pronto_para_retirada`). Any other codigo — `faturado`, a paid one, a
- *    cancelled one, an unknown string, the right one in another case — is
- *    `LiConfigError('codigo-nao-permitido')` before anything is built, and
- *    nothing is fetched.
+ * The request core checks EVERY `PUT` against the write routes
+ * (`rotasEscrita.ts`) before it reads the credential, so these hold for any
+ * holder of a write client, not only for the two functions below:
+ *
+ *  - **Only three codigos:** {@link CODIGOS_SITUACAO_ESCRITA_LI}
+ *    (`pedido_enviado`, `pedido_entregue`, `pronto_para_retirada`). Any other
+ *    codigo — `pedido_pago`, `faturado`, a cancelled one, an unknown string,
+ *    the right one in another case — is refused and nothing is fetched.
+ *    {@link alterarSituacaoPedidoLi} refuses it first, by name
+ *    (`LiConfigError('codigo-nao-permitido')`); a direct write is refused by
+ *    the route (`LiConfigError('corpo')`).
  *  - **No clear:** `objeto` must be non-empty, at most
  *    {@link MAX_OBJETO_ENVIO_LI} characters of visible ASCII
  *    ({@link objetoDeEnvioValidoLi}), sent as given (no trim, no case change).
- *    So no call can blank a code, and a code with a space or a non-ASCII
- *    character is never sent. The app checks the same predicate first, to
- *    tell a person; this is the backstop (`LiConfigError('corpo')`, nothing
- *    fetched).
+ *    So no write can blank a code, and a code with a space or a non-ASCII
+ *    character is never sent (`LiConfigError('corpo')`, nothing fetched). The
+ *    app's write-back flow is to check the same predicate first, to tell a
+ *    person (master-plan step 7, PR 7-d); this is the backstop.
+ *  - **No other path:** a path that is not one of the two routes, in exactly
+ *    the form below, is `LiConfigError('rota-nao-permitida')`.
  *  - **Ids** go through the shared path-id reader (`idsDeCaminho.ts`).
  *
  * ## Paths: NO trailing slash, unlike the reads
@@ -47,8 +54,6 @@
  * optional: an echo is diagnostic, and a write that landed is reported, never
  * thrown (`escrita.ts`).
  */
-import { z } from 'zod';
-
 import type { LiEscritaClient, RespostaEscritaLi } from './escrita';
 import { LiConfigError } from './errors';
 import { idOuRecusa } from './idsDeCaminho';
@@ -58,46 +63,18 @@ import {
   liEcoPedidoEnvioSchema,
   liEcoSituacaoPedidoSchema,
 } from './pedidoTipos';
+import { CODIGOS_SITUACAO_ESCRITA_LI, type CodigoSituacaoEscritaLi } from './rotasEscrita';
 
-/**
- * The ONLY situações this package can write: the three of the status
- * write-back. Never `faturado`, a paid or a cancelled situação.
- */
-export const CODIGOS_SITUACAO_ESCRITA_LI = [
-  'pedido_enviado',
-  'pedido_entregue',
-  'pronto_para_retirada',
-] as const;
-
-export type CodigoSituacaoEscritaLi = (typeof CODIGOS_SITUACAO_ESCRITA_LI)[number];
-
-/** The longest tracking code sent. */
-export const MAX_OBJETO_ENVIO_LI = 200;
-
-/** Visible ASCII (`\x21-\x7E`), one to {@link MAX_OBJETO_ENVIO_LI} characters. */
-const OBJETO_ENVIO_VALIDO = /^[\x21-\x7E]{1,200}$/;
-
-/**
- * Whether `valor` is a tracking code this package sends: a string of one to
- * {@link MAX_OBJETO_ENVIO_LI} visible-ASCII characters. No space anywhere, so
- * neither an empty nor a blank value can clear a code, and a pasted trailing
- * space is refused rather than trimmed.
- */
-export function objetoDeEnvioValidoLi(valor: unknown): valor is string {
-  return typeof valor === 'string' && OBJETO_ENVIO_VALIDO.test(valor);
-}
+export {
+  CODIGOS_SITUACAO_ESCRITA_LI,
+  type CodigoSituacaoEscritaLi,
+  MAX_OBJETO_ENVIO_LI,
+  objetoDeEnvioValidoLi,
+} from './rotasEscrita';
 
 function codigoDeEscritaLi(valor: unknown): valor is CodigoSituacaoEscritaLi {
   return CODIGOS_SITUACAO_ESCRITA_LI.some((codigo) => codigo === valor);
 }
-
-/** The tracking-code body: exactly `{objeto}`, a sendable code. */
-const corpoObjetoEnvioSchema = z.object({ objeto: z.string().regex(OBJETO_ENVIO_VALIDO) }).strict();
-
-/** The situação body: exactly `{codigo}`, one of the three. */
-const corpoSituacaoPedidoSchema = z
-  .object({ codigo: z.enum(CODIGOS_SITUACAO_ESCRITA_LI) })
-  .strict();
 
 export interface OpcoesEscritaLi {
   /** The caller's cancellation; its abort is rethrown as itself. */
@@ -121,7 +98,6 @@ export async function atualizarObjetoEnvioLi(
     operacao,
     caminho: `/v1/pedido_envio/${id}`,
     corpo: { objeto },
-    corpoSchema: corpoObjetoEnvioSchema,
     ecoSchema: liEcoPedidoEnvioSchema,
     sinal: opts.sinal,
   });
@@ -147,7 +123,6 @@ export async function alterarSituacaoPedidoLi(
     operacao,
     caminho: `/v1/situacao/pedido/${id}`,
     corpo: { codigo },
-    corpoSchema: corpoSituacaoPedidoSchema,
     ecoSchema: liEcoSituacaoPedidoSchema,
     sinal: opts.sinal,
   });
