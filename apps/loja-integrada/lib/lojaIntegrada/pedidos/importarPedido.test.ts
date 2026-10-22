@@ -1206,6 +1206,42 @@ describe('the freight routing and its aviso (import step 6)', () => {
     });
   });
 
+  it('EQUAL pair: a mapped row whose target doc is ABSENT ⇒ the conta’s LI doc, the aviso RAISED `alvo-ausente`, after ONE read of that doc', async () => {
+    const db = novoDb();
+    seedIntFrete(db, { mapa: [linhaMapeada('me-404')] });
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+    expect(db.ler(CAMINHO_PEDIDO)?.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: `documents/int_frete/lojaIntegrada-${CONTA}`,
+      externalOptionId: null,
+    });
+    expect(db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`)).toMatchObject({
+      resolvidoEm: null,
+      motivo: 'alvo-ausente',
+    });
+    expect(db.leituras.filter((l) => l === 'int_frete/me-404')).toHaveLength(1);
+  });
+
+  it('⚠️ NEAR-MISS: a mapped row whose uid names a target NO document can be (`..`) ⇒ the same `alvo-ausente`, with NO read of it', async () => {
+    for (const uid of ['..', 'int_frete/..', '.']) {
+      const db = novoDb();
+      seedIntFrete(db, { mapa: [linhaMapeada(uid)] });
+      await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+      expect(db.ler(CAMINHO_PEDIDO)?.freteInicial, uid).toMatchObject({
+        integracaoFreteOuterRef: `documents/int_frete/lojaIntegrada-${CONTA}`,
+        externalOptionId: null,
+      });
+      expect(
+        db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`),
+        uid,
+      ).toMatchObject({ resolvidoEm: null, motivo: 'alvo-ausente' });
+      // The shared row decision never hands such an id to a document read.
+      expect(
+        db.leituras.filter((l) => l.startsWith('int_frete/') && l !== CAMINHO_INT_FRETE),
+        uid,
+      ).toEqual([]);
+    }
+  });
+
   it('an unmapped method ⇒ registered in the mapa, the conta’s LI doc, the aviso resolved clocked by the int_frete read', async () => {
     const db = novoDb();
     seedIntFrete(db);

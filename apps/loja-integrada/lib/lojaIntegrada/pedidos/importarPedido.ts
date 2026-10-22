@@ -468,7 +468,8 @@ async function resolverFreteLi(
   });
   let alvo: AlvoLidoLi | null = null;
   let relogioUs = registro?.lidoEmUs ?? null;
-  if (decisao.tipo === 'mapeado') {
+  // A uid naming a target no document can be (`alvoId: null`) is never read: absent.
+  if (decisao.tipo === 'mapeado' && decisao.alvoId !== null) {
     const snap = await intFreteCollection.docRef(db, {}, decisao.alvoId).get();
     alvo = {
       existe: snap.exists,
