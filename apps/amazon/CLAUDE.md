@@ -18,18 +18,47 @@ API-only App Hosting backend for the Amazon (SP-API) marketplace channel, port 3
   them and only lets them build raw Firestore refs.
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.
 
-## Routes (step 2)
+## Routes (steps 2 and 3)
 
 | Method | Path | Permission | Read switch | Answers |
 | --- | --- | --- | --- | --- |
 | GET | `/api/marketplace/amazon/conta/[id]` | `PERM.integracao.read` | not gated (no Amazon call) | 200 `StatusContaAmazon` · 400 `AMAZON_ID_INVALIDO` · 404 `AMAZON_CONTA_NAO_ENCONTRADA` |
 | POST | `/api/marketplace/amazon/conta/[id]/oauth/start` | `PERM.integracao.write` | 503 `AMAZON_CHAMADAS_DESLIGADAS`, no Firestore read | 200 `{ authorizeUrl }` · 400 · 404 · 500 `AMAZON_CONFIG_AUSENTE` (names only) |
 | GET | `/api/oauth/amazon/callback` | public (outside the CORS matcher) | redirect `integracao_desligada`, nothing consumed | redirect to `${WEB_APP_URL}/canais/amazon[/<id>]?amazon=connected` or `?amazon=error&reason=<motivo>` |
+| POST | `/api/webhooks/amazon` | public; the relay key (outside the CORS matcher) | not gated (no Amazon call) | EMPTY body: 503 config · 401 key · 500 failure not persisted · 200 everything else, every drop included |
 
 Every answer carries `Cache-Control: no-store` and `Referrer-Policy: no-referrer`
 (`lib/amazon/core/respond.ts`, `proxy.ts`, and site-wide in `next.config.ts`).
 The callback's fifteen ordered steps live in `lib/amazon/conta/conectar.ts`; the
 route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
+
+## Receiver (step 3)
+
+- `POST /api/webhooks/amazon` (= `CAMINHO_RECEPTOR_AMAZON`, the relay contract in
+  `packages/schemas/src/relayAmazon.ts`) is THIN; `lib/amazon/notificacoes/receptor.ts` holds
+  every decision, in order: config (503, nothing read) → relay key through the shared
+  `verifyStaticSecret` (current AND previous, both always compared; 401, body unread) → body
+  ≤ 2 MiB (`corpo.ts`: twice SQS's 1 MiB maximum — a bound on the read, never a filter on
+  Amazon's input) → JSON → the `{ body }` wrapper → type + casing (`envelope.ts`: one parser per
+  casing) → `ApplicationId` EXACTLY ours → routing fields by grammar → enqueue. Never a
+  400/404/413 (D5). One `evento: 'notificacao'` line per delivery, with `chave: atual | anterior`
+  after auth; never the seller id, the raw application id, a header or body text.
+- The task payload is ids only, unknown keys STRIPPED, built field by field: a DECLARED departure
+  from the `webhook-notifications` skill's `.passthrough()` rule (step-3 plan §3 decision 29;
+  the body carries buyer data and the task re-fetches the order). Do not "fix" it.
+- The enqueue races a 2-s deadline and the failure persist a 1.5-s one (`notificacoes/prazo.ts`),
+  so the warm path answers inside the API destination's 5-s timeout (`prazos.test.ts`). A failed
+  or late enqueue (the valve, a named transient, the deadline, a raw SDK error) is persisted as
+  `failed` under `push:<NotificationId>` and answered 200; anything else is rethrown (500).
+- ⚠️ `prazo.ts` holds the app's ONE consume-all: a rejection arriving AFTER its deadline answered
+  is logged by class and dropped, because a rethrow there is an unhandled rejection that kills the
+  instance. Rule 6 still applies everywhere else; do not "fix" that handler.
+- The queue's composition root is `lib/firebase/filaLeitura.ts` (region with no default, the
+  `AMAZON_TASKS_DISABLED=1` valve, `getFunctions(`); the receptor narrows SDK errors through
+  `ehFalhaDoSdkDeTarefasAmazon` and DIRECTLY imports no SDK, context, conta read, park or Amazon
+  client (`estrutura.test.ts`). Its import closure still reaches the context, the conta reads, the
+  park and the package through `./notificacao` and `../env`; no receiver path calls them, and the
+  happy path makes no Amazon call and no Firestore operation (`receptor.test.ts`, `prazos.test.ts`).
 
 ## Layout
 
@@ -117,9 +146,14 @@ Read by this backend: `AMAZON_LWA_CLIENT_ID`, `AMAZON_APPLICATION_ID`,
 `AMAZON_CHAMADAS`, `FIREBASE_PROJECT_ID` / `FIREBASE_DATABASE_ID` (optional), and
 the Secret Manager pair `AMAZON_LWA_CLIENT_SECRET` / `AMAZON_OAUTH_STATE_SECRET`.
 `AMAZON_LWA_SEGREDO_EXPIRA_EM` is read only by the sweep, which runs in the
-functions codebase from step 3. Every read above is blank-guarded (blank = unset) and
-never trimmed; the valves and lists below are NOT (only unset and `''` are empty).
-`apphosting.yaml` lists them as COMMENT rows only — no `env:` block.
+functions codebase from step 3. The receiver (step 3) adds the Secret Manager pair
+`AMAZON_RELAY_SECRET` / `AMAZON_RELAY_PREVIOUS_SECRET` (the second only during a
+rotation; each 32–512 visible ASCII, else 503) and, in `lib/firebase/filaLeitura.ts`,
+`AMAZON_TASKS_REGION` (falls back to `FUNCTIONS_REGION`, no default, else 503; trimmed
+by `requireRegion`) and `AMAZON_TASKS_DISABLED` (exactly `1`). Every other read above
+is blank-guarded (blank = unset) and never trimmed; the valves and lists below are NOT
+(only unset and `''` are empty). `apphosting.yaml` lists them as COMMENT rows only —
+no `env:` block.
 
 ### Write valves and canary lists (step 2b, `core/valvulas.ts`)
 
@@ -159,6 +193,8 @@ never trimmed; the valves and lists below are NOT (only unset and `''` are empty
 | Access-token persist | 0 | field `update` of exactly `{access_token, expirationDate, acessoRef}` |
 | Park | 1 | `update({reconexaoPendente}, { lastUpdateTime })`, ≤ 3 re-decides |
 | Avisos | seam | `escreverAviso` / `resolverAviso`; the reconexão row always clocked (µs) |
+| Receiver, happy path | — | no write (the enqueue is the whole effect) |
+| Receiver failure persist | 0 | the shared core's `create` on the deterministic `push:<NotificationId>`; ALREADY_EXISTS = already durable |
 | Conta cache | — | per-instance invalidate after the callback, and by the intake task before a poll's `vendedor-mudou` drop (then a reload); others bounded by TTL + `isFresh` |
 
 This app adds **zero** multi-document atomic-write sites.

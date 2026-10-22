@@ -51,6 +51,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { CAMINHO_RECEPTOR_AMAZON } from '@delfrance/schemas';
 
 const RAIZ_LIB = fileURLToPath(new URL('.', import.meta.url));
 const RAIZ_APP = fileURLToPath(new URL('../..', import.meta.url));
@@ -478,8 +479,49 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
     .sort();
 }
 
+/** The App Hosting composition root of the reads queue (3-c): the app's one `getFunctions(` caller until 3-d. */
+const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
+
+/** The push receiver's route and body, relative to the app root (3-c). */
+const ARQUIVOS_DO_RECEPTOR = [
+  'app/api/webhooks/amazon/route.ts',
+  'lib/amazon/notificacoes/receptor.ts',
+] as const;
+
+/** What the receiver may never import DIRECTLY: the conta context, the conta reads, the park, the Amazon client. */
+const MODULOS_PROIBIDOS_NO_RECEPTOR = [
+  'lib/amazon/core/contexto',
+  'lib/amazon/core/contas',
+  'lib/amazon/core/estacionamento',
+];
+
+/**
+ * The receiver's forbidden direct imports (`arquivo` relative to the app
+ * root): a relative or `@/` specifier that resolves to one of
+ * {@link MODULOS_PROIBIDOS_NO_RECEPTOR}, or the Amazon package at all.
+ */
+function importacoesProibidasNoReceptor(arquivo: string, texto: string): string[] {
+  return especificadores(texto)
+    .filter((espec) => {
+      if (espec === '@delfrance/integrations-amazon-sp-api') return true;
+      if (espec.startsWith('@delfrance/integrations-amazon-sp-api/')) return true;
+      if (!espec.startsWith('.') && !espec.startsWith('@/')) return false;
+      return MODULOS_PROIBIDOS_NO_RECEPTOR.includes(moduloDe(arquivo, espec));
+    })
+    .map((espec) => `${arquivo} imports ${espec}`);
+}
+
 /** A CALL of the Admin SDK's `getFunctions` (comments aside): only a composition root binds the queue. */
 const chamaGetFunctions = (texto: string) => /\bgetFunctions\s*\(/.test(semComentarios(texto));
+
+/**
+ * A LOCAL crypto compare in the receiver (run on comment-free source): the
+ * primitives a hand-rolled key check would reach for, WebCrypto's `subtle`, or
+ * any import of `crypto` / `node:crypto`. The receiver compares the relay key
+ * only through the shared `verifyStaticSecret` (#1431).
+ */
+const CRIPTO_LOCAL =
+  /\b(?:timingSafeEqual|createHmac|createHash|subtle)\b|['"](?:node:)?crypto['"]/;
 
 /* -------------------------------- the pinned lines -------------------------------- */
 
@@ -518,7 +560,11 @@ describe('lib/amazon layout', () => {
         'core/respond.ts',
         'core/valvulas.ts',
         'notificacoes/agendador.ts',
+        'notificacoes/corpo.ts',
+        'notificacoes/envelope.ts',
         'notificacoes/notificacao.ts',
+        'notificacoes/prazo.ts',
+        'notificacoes/receptor.ts',
         'testing/documentos.ts',
         'testing/falhaDeEnfileiramento.ts',
         'testing/fakeDb.ts',
@@ -579,7 +625,7 @@ describe('lib/amazon layout', () => {
 
   it('no route imports the park', () => {
     const rotas = arquivosTs(join(RAIZ_APP, 'app')).filter((p) => /[\\/]route\.ts$/.test(p));
-    expect(rotas.length).toBeGreaterThanOrEqual(4);
+    expect(rotas.length).toBeGreaterThanOrEqual(5);
     for (const rota of rotas) {
       expect(readFileSync(rota, 'utf8'), relApp(rota)).not.toMatch(/estacionamento/);
     }
@@ -732,15 +778,47 @@ describe('the step-3 intake guards', () => {
     ).toBe(true);
   });
 
-  it('no file under lib/amazon calls getFunctions(, and the app has no caller yet (3-c and 3-d add the two roots)', () => {
+  it('no file under lib/amazon calls getFunctions(, and the App Hosting root is the app’s only caller (3-d adds the functions one)', () => {
     const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
     expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
-    // The exact list of composition roots, app-wide: empty in 3-b; then
-    // `lib/firebase/filaLeitura.ts` (3-c) and `functions/src/agendador.ts` (3-d).
+    // The exact list of composition roots, app-wide: `lib/firebase/filaLeitura.ts`
+    // (3-c); 3-d adds `functions/src/agendador.ts`.
     // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
     const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
     expect(app.length).toBeGreaterThan(40);
-    expect(app.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(relApp)).toEqual([]);
+    expect(app.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(relApp)).toEqual([
+      ARQUIVO_RAIZ_DA_FILA,
+    ]);
+  });
+
+  // DIRECT imports only: the closure still reaches them through `./notificacao`
+  // and `../env`. That the happy path never uses them is pinned elsewhere:
+  // `receptor.test.ts` (the db resolver never called, zero Firestore operations)
+  // and `prazos.test.ts` (no Amazon call site in the route or its bodies).
+  it('neither the push receiver route nor the receptor DIRECTLY imports the context, the conta reads, the park or the package', () => {
+    const violacoes = ARQUIVOS_DO_RECEPTOR.flatMap((arquivo) => {
+      const texto = lerDoApp(arquivo);
+      expect(texto, arquivo).not.toBeNull();
+      return importacoesProibidasNoReceptor(arquivo, texto ?? '');
+    });
+    expect(violacoes).toEqual([]);
+    // Anti-vacuity: the scan reads the receptor's real imports.
+    expect(especificadores(lerDoApp(ARQUIVOS_DO_RECEPTOR[1]) ?? '')).toEqual(
+      expect.arrayContaining(['./notificacao', './agendador', '@delfrance/data/admin/signatures']),
+    );
+  });
+
+  it('the receiver compares the relay key ONLY through the shared primitive (#1431)', () => {
+    const receptor = semComentarios(lerDoApp(ARQUIVOS_DO_RECEPTOR[1]) ?? '');
+    expect(receptor).toContain('verifyStaticSecret(');
+    expect(receptor).not.toMatch(CRIPTO_LOCAL);
+  });
+
+  it('the route file sits at the relay contract’s path (CAMINHO_RECEPTOR_AMAZON)', () => {
+    expect(ARQUIVOS_DO_RECEPTOR[0]).toBe(`app${CAMINHO_RECEPTOR_AMAZON}/route.ts`);
+    expect(existsSync(join(RAIZ_APP, ...ARQUIVOS_DO_RECEPTOR[0].split('/')))).toBe(true);
+    // …and that route exports the one verb the relay sends.
+    expect(lerDoApp(ARQUIVOS_DO_RECEPTOR[0])).toMatch(/export async function POST\(/);
   });
 });
 
@@ -1047,6 +1125,60 @@ describe('the guards, on synthetic source', () => {
         ['core/x.ts', "import { FirebaseAppError } from 'firebase-admin/app';"],
       ]),
     ).toEqual([IMPORTADOR_DO_SDK_DE_TAREFAS]);
+  });
+
+  it('the receiver import guard flags the context, the conta reads, the park and the package — by any path', () => {
+    const R = ARQUIVOS_DO_RECEPTOR[1];
+    for (const fonte of [
+      "import { loadAmazonContext } from '../core/contexto';",
+      "import { contasPorSellingPartnerId } from '../core/contas';",
+      "import type { X } from '../core/estacionamento';",
+      "import { AmazonError } from '@delfrance/integrations-amazon-sp-api';",
+      "import { y } from '@delfrance/integrations-amazon-sp-api/errors';",
+      "const m = await import('../core/contexto');",
+    ]) {
+      expect(importacoesProibidasNoReceptor(R, fonte), fonte).toHaveLength(1);
+    }
+    expect(
+      importacoesProibidasNoReceptor(
+        ARQUIVOS_DO_RECEPTOR[0],
+        "import { x } from '@/lib/amazon/core/contas';",
+      ),
+    ).toHaveLength(1);
+    // Near-misses: the env module, the pipeline, another module named alike.
+    for (const fonte of [
+      "import { lerConfigDoReceptorAmazon } from '../env';",
+      "import { persistirFalhaNotificacaoAmazon } from './notificacao';",
+      "import { x } from '../core/contaCache';",
+      "import { y } from './contexto';",
+      "import { z } from '@delfrance/integrations-amazon-sp-apix';",
+    ]) {
+      expect(importacoesProibidasNoReceptor(R, fonte), fonte).toEqual([]);
+    }
+  });
+
+  it('the local-crypto guard flags a hand-rolled compare or a crypto import, and nothing alike', () => {
+    for (const fonte of [
+      'const ok = crypto.timingSafeEqual(a, b);',
+      "const h = createHash('sha256').update(v).digest();",
+      "const m = createHmac('sha256', k);",
+      "const d = await globalThis.crypto.subtle.digest('SHA-256', v);",
+      "import { x } from 'node:crypto';",
+      'import { y } from "crypto";',
+      "const c = require('crypto');",
+    ]) {
+      expect(CRIPTO_LOCAL.test(fonte), fonte).toBe(true);
+    }
+    // Near-misses: the shared primitive, the digest-prefix helper, longer names.
+    for (const fonte of [
+      'const casa = verifyStaticSecret({ received: r, expected: e });',
+      'const igual = timingSafeEquality(a, b);',
+      'const prefixo = sha256Hex(v).slice(0, 8);',
+      "const t = 'subtleza';",
+      "import { z } from 'node:cryptography';",
+    ]) {
+      expect(CRIPTO_LOCAL.test(fonte), fonte).toBe(false);
+    }
   });
 
   it('getFunctions( is found in code and ignored in a comment or inside a longer name', () => {

@@ -49,6 +49,15 @@ export function comCabecalhosAmazon<R extends Response>(res: R): R {
   return res;
 }
 
+/**
+ * An answer with NO body and both headers: the push receiver's every answer
+ * (step 3). The relay reads only the status; a body would be text a caller
+ * could log.
+ */
+export function respostaVazia(status: number): NextResponse {
+  return comCabecalhosAmazon(new NextResponse(null, { status }));
+}
+
 /** A JSON answer with both headers. */
 export function respostaJson(status: number, corpo: unknown): NextResponse {
   return comCabecalhosAmazon(NextResponse.json(corpo, { status }));

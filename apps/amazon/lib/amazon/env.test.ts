@@ -2,14 +2,30 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CHAVES_CONFIG_AMAZON,
+  MAX_SEGREDO_RELAY,
+  MIN_SEGREDO_RELAY,
+  RELAY_PREVIOUS_SECRET_ENV,
+  RELAY_SECRET_ENV,
+  TASKS_REGION_ENV,
+  chavesDoReceptorRecusadas,
   chavesLwaRecusadas,
+  lerConfigDoReceptorAmazon,
   lerAplicacaoLwaAmazon,
   lerConfigAmazon,
   lerSegredoExpiraEm,
   lerWebAppUrl,
+  segredoRelayUtilizavel,
   webAppUrlValida,
 } from './env';
-import { AMBIENTE_LIGADO, CLIENT_SECRET, REDIRECT_URI, STATE_SECRET } from './testing/fixtures';
+import {
+  AMBIENTE_LIGADO,
+  APPLICATION_ID,
+  CLIENT_SECRET,
+  REDIRECT_URI,
+  SEGREDO_RELAY,
+  SEGREDO_RELAY_ANTERIOR,
+  STATE_SECRET,
+} from './testing/fixtures';
 
 describe('lerConfigAmazon', () => {
   it('pins the six keys the start and the callback need', () => {
@@ -186,5 +202,106 @@ describe('lerSegredoExpiraEm', () => {
     ['01/02/2027', { tipo: 'invalida' }],
   ])('%j → %j', (valor, esperado) => {
     expect(lerSegredoExpiraEm({ AMAZON_LWA_SEGREDO_EXPIRA_EM: valor })).toEqual(esperado);
+  });
+});
+
+describe('the receiver keys (step 3)', () => {
+  const RECEPTOR = { [RELAY_SECRET_ENV]: SEGREDO_RELAY, AMAZON_APPLICATION_ID: APPLICATION_ID };
+
+  it('pins the names and the bounds', () => {
+    expect(RELAY_SECRET_ENV).toBe('AMAZON_RELAY_SECRET');
+    expect(RELAY_PREVIOUS_SECRET_ENV).toBe('AMAZON_RELAY_PREVIOUS_SECRET');
+    expect(TASKS_REGION_ENV).toBe('AMAZON_TASKS_REGION');
+    expect([MIN_SEGREDO_RELAY, MAX_SEGREDO_RELAY]).toEqual([32, 512]);
+  });
+
+  it.each([
+    ['exactly 32 visible characters', 'a'.repeat(32), true],
+    ['exactly 512', 'a'.repeat(512), true],
+    ['the openssl hex form (64)', 'f0'.repeat(32), true],
+    ['31 characters', 'a'.repeat(31), false],
+    ['513 characters', 'a'.repeat(513), false],
+    ['a trailing newline', `${'a'.repeat(40)}\n`, false],
+    ['a trailing space', `${'a'.repeat(40)} `, false],
+    ['a leading space', ` ${'a'.repeat(40)}`, false],
+    ['an inner space', `${'a'.repeat(20)} ${'a'.repeat(20)}`, false],
+    ['a non-ASCII letter', `${'a'.repeat(40)}é`, false],
+    ['a control character', `${'a'.repeat(40)}\u0007`, false],
+  ])('segredoRelayUtilizavel: %s → %s', (_caso, valor, esperado) => {
+    expect(segredoRelayUtilizavel(valor)).toBe(esperado);
+  });
+
+  it('a complete receiver environment refuses nothing, and reads every value raw', () => {
+    expect(chavesDoReceptorRecusadas(RECEPTOR)).toEqual([]);
+    expect(lerConfigDoReceptorAmazon(RECEPTOR)).toEqual({
+      completa: true,
+      segredoAtual: SEGREDO_RELAY,
+      segredoAnterior: null,
+      applicationId: APPLICATION_ID,
+    });
+    expect(
+      lerConfigDoReceptorAmazon({
+        ...RECEPTOR,
+        [RELAY_PREVIOUS_SECRET_ENV]: SEGREDO_RELAY_ANTERIOR,
+      }),
+    ).toMatchObject({ completa: true, segredoAnterior: SEGREDO_RELAY_ANTERIOR });
+  });
+
+  it.each([
+    ['the secret unset', { [RELAY_SECRET_ENV]: undefined }, [RELAY_SECRET_ENV]],
+    ['the secret blank', { [RELAY_SECRET_ENV]: '   ' }, [RELAY_SECRET_ENV]],
+    [
+      'the secret with a trailing newline',
+      { [RELAY_SECRET_ENV]: `${SEGREDO_RELAY}\n` },
+      [RELAY_SECRET_ENV],
+    ],
+    ['a 31-character secret', { [RELAY_SECRET_ENV]: 'a'.repeat(31) }, [RELAY_SECRET_ENV]],
+    [
+      'a previous secret with a trailing space',
+      { [RELAY_PREVIOUS_SECRET_ENV]: `${SEGREDO_RELAY_ANTERIOR} ` },
+      [RELAY_PREVIOUS_SECRET_ENV],
+    ],
+    [
+      'a short previous secret',
+      { [RELAY_PREVIOUS_SECRET_ENV]: 'curto' },
+      [RELAY_PREVIOUS_SECRET_ENV],
+    ],
+    ['the application id unset', { AMAZON_APPLICATION_ID: undefined }, ['AMAZON_APPLICATION_ID']],
+    ['the application id blank', { AMAZON_APPLICATION_ID: '' }, ['AMAZON_APPLICATION_ID']],
+    [
+      'an application id holding a space',
+      { AMAZON_APPLICATION_ID: `${APPLICATION_ID} x` },
+      ['AMAZON_APPLICATION_ID'],
+    ],
+    [
+      'everything at once, in a fixed order',
+      {
+        [RELAY_SECRET_ENV]: '',
+        [RELAY_PREVIOUS_SECRET_ENV]: 'x',
+        AMAZON_APPLICATION_ID: undefined,
+      },
+      [RELAY_SECRET_ENV, RELAY_PREVIOUS_SECRET_ENV, 'AMAZON_APPLICATION_ID'],
+    ],
+  ])('refuses %s, by NAME', (_caso, sobre, esperado) => {
+    const ambiente = { ...RECEPTOR, ...sobre };
+    expect(chavesDoReceptorRecusadas(ambiente)).toEqual(esperado);
+    expect(lerConfigDoReceptorAmazon(ambiente)).toEqual({ completa: false, faltando: esperado });
+  });
+
+  it('a previous secret unset, empty or blank is "no rotation", never a refusal', () => {
+    for (const anterior of [undefined, '', '   ', '\n']) {
+      const ambiente = { ...RECEPTOR, [RELAY_PREVIOUS_SECRET_ENV]: anterior };
+      expect(chavesDoReceptorRecusadas(ambiente)).toEqual([]);
+      expect(lerConfigDoReceptorAmazon(ambiente)).toMatchObject({ segredoAnterior: null });
+    }
+  });
+
+  it('a refusal never carries a value', () => {
+    const recusadas = chavesDoReceptorRecusadas({
+      [RELAY_SECRET_ENV]: `${SEGREDO_RELAY}\n`,
+      AMAZON_APPLICATION_ID: `${APPLICATION_ID} `,
+    });
+    expect(JSON.stringify(recusadas)).not.toContain(SEGREDO_RELAY);
+    expect(JSON.stringify(recusadas)).not.toContain(APPLICATION_ID);
   });
 });

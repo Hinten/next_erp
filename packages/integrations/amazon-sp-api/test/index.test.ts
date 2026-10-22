@@ -22,6 +22,7 @@ describe('the barrel', () => {
       'lerCodigoErroLwa',
       'montarUrlConsentimento',
       'credencialLwaValida',
+      'applicationIdValido',
     ] as const) {
       expect(typeof barril[nome], nome).toBe('function');
     }

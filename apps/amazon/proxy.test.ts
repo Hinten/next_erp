@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CAMINHO_RECEPTOR_AMAZON } from '@delfrance/schemas';
 
 import nextConfig from './next.config';
 import { config, proxy } from './proxy';
@@ -25,6 +26,14 @@ afterEach(() => {
 describe('the matcher', () => {
   it('covers the marketplace routes only — the public OAuth callback stays OUT', () => {
     expect(config.matcher).toEqual(['/api/marketplace/:path*']);
+  });
+
+  it('the push receiver (a server-to-server POST from the relay) stays OUT too', () => {
+    const prefixos = config.matcher.map((m) => m.replace(/:path\*$/, ''));
+    expect(CAMINHO_RECEPTOR_AMAZON).toBe('/api/webhooks/amazon');
+    for (const prefixo of prefixos) {
+      expect(CAMINHO_RECEPTOR_AMAZON.startsWith(prefixo)).toBe(false);
+    }
   });
 });
 

@@ -9,7 +9,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 //
 // The public OAuth callback (/api/oauth/amazon/callback) is a top-level browser
 // NAVIGATION from Seller Central, never a cross-origin fetch, so it stays OUT of
-// the matcher.
+// the matcher. So does the push receiver (/api/webhooks/amazon): a
+// server-to-server POST from the AWS relay, authenticated by its relay key.
 //
 // The methods are the conta routes' verbs: GET (status) and POST (OAuth start).
 // POST is CORS-safelisted, but a Bearer header preflights it anyway, so it is
