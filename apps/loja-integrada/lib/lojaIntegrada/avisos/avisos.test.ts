@@ -607,14 +607,20 @@ function contar(texto: string, agulha: string): number {
   return texto.split(agulha).length - 1;
 }
 
-describe('⚠️ the µs boundary: exactly two ms → µs calls and one Timestamp → µs read', () => {
+describe('⚠️ the µs boundary: two converting modules, every conversion counted', () => {
   const rotas = fontes(RAIZ_ROTAS);
   const arquivos = [...fontes(RAIZ_LIB), ...rotas];
   const avisos = fileURLToPath(new URL('./avisos.ts', import.meta.url));
+  /**
+   * The order import's conversions (step 5): one naive → µs read in the LI zone,
+   * one stored-stamp coercion, one ms → µs, one µs → ms.
+   */
+  const dataLi = fileURLToPath(new URL('../pedidos/dataLi.ts', import.meta.url));
 
   it('the scan found the lib and the conta routes', () => {
     expect(arquivos.length).toBeGreaterThan(5);
     expect(arquivos).toContain(avisos);
+    expect(arquivos).toContain(dataLi);
     expect(rotas.filter((r) => r.includes('conta'))).toHaveLength(3);
   });
 
@@ -622,14 +628,38 @@ describe('⚠️ the µs boundary: exactly two ms → µs calls and one Timestam
     expect(contar(readFileSync(avisos, 'utf8'), 'millisToMicros(')).toBe(2);
   });
 
-  it('no other module converts: no ms → µs call, no nanosecond read, no toMillis, no coercion', () => {
+  it('pedidos/dataLi.ts converts once each: dataLiParaMicros, microsArmazenadoLi, microsDeMillisLi, millisDeMicrosLi', () => {
+    const texto = readFileSync(dataLi, 'utf8');
+    expect(contar(texto, 'millisToMicros(')).toBe(1);
+    expect(contar(texto, 'microsToMillis(')).toBe(1);
+    // Each: the import line and the one call. The naive one carries the ZONE.
+    expect(contar(texto, 'coerceToMicros')).toBe(2);
+    expect(contar(texto, 'microsDeDataHoraNoFuso')).toBe(2);
+  });
+
+  it('no other module converts: no ms ↔ µs call, no naive or ISO read, no nanosecond read, no toMillis, no coercion', () => {
     for (const arquivo of arquivos) {
       const texto = readFileSync(arquivo, 'utf8');
       const ehAvisos = arquivo === avisos;
-      expect(contar(texto, 'millisToMicros('), arquivo).toBe(ehAvisos ? 2 : 0);
+      const ehDataLi = arquivo === dataLi;
+      expect(contar(texto, 'millisToMicros('), arquivo).toBe(ehAvisos ? 2 : ehDataLi ? 1 : 0);
+      expect(contar(texto, 'microsToMillis('), arquivo).toBe(ehDataLi ? 1 : 0);
       expect(contar(texto, '.nanoseconds'), arquivo).toBe(ehAvisos ? 1 : 0);
       expect(contar(texto, 'toMillis('), arquivo).toBe(0);
-      expect(contar(texto, 'coerceToMicros'), arquivo).toBe(0);
+      expect(contar(texto, 'coerceToMicros'), arquivo).toBe(ehDataLi ? 2 : 0);
+      // A naive stamp read in ANY zone outside dataLi.ts would put the watermark
+      // and the dates in two zones, and no lint rule sees it: an explicit zone
+      // satisfies no-ambient-timezone.
+      expect(contar(texto, 'microsDeDataHoraNoFuso'), arquivo).toBe(ehDataLi ? 2 : 0);
+      expect(contar(texto, 'parseIsoToMicros'), arquivo).toBe(0);
+      expect(contar(texto, 'dateToMicros('), arquivo).toBe(0);
+    }
+  });
+
+  it('the LI zone constant is read in dataLi.ts only', () => {
+    for (const arquivo of arquivos) {
+      if (arquivo === dataLi) continue;
+      expect(contar(readFileSync(arquivo, 'utf8'), 'FUSO_DATAS_LI'), arquivo).toBe(0);
     }
   });
 });

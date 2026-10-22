@@ -1,11 +1,17 @@
 import { dataModificacaoLiSchema } from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 
+import { coerceToMicros } from '@delfrance/core/datetime';
+
 import {
+  FUSO_DATAS_LI,
   canonicaDoCursorLi,
   cursorDaDataLi,
+  dataLiParaMicros,
   deslocarDataLi,
   lerDataLi,
+  microsDeMillisLi,
+  millisDeMicrosLi,
   msIngenuoDeDataLi,
   renderizarDataLi,
 } from './dataLi';
@@ -169,5 +175,68 @@ describe('the naive arithmetic', () => {
   it('a shift of an invalid text throws instead of inventing a bound', () => {
     expect(() => deslocarDataLi('2026-02-30T00:00:00', -1)).toThrow(RangeError);
     expect(() => deslocarDataLi('ontem', -1)).toThrow(RangeError);
+  });
+});
+
+describe('dataLiParaMicros — the order import’s one conversion to an instant', () => {
+  /** µs of a UTC wall time. */
+  const us = (ano: number, mes: number, dia: number, h: number, m = 0, s = 0) =>
+    Date.UTC(ano, mes, dia, h, m, s) * 1000;
+
+  it('reads the naive stamp in America/Sao_Paulo (the inferred zone): 10:00 there is 13:00 UTC', () => {
+    expect(FUSO_DATAS_LI).toBe('America/Sao_Paulo');
+    expect(dataLiParaMicros('2026-10-14T10:00:00')).toBe(us(2026, 9, 14, 13));
+    expect(dataLiParaMicros('2026-10-14T10:00:00.123456')).toBe(us(2026, 9, 14, 13) + 123_456);
+  });
+
+  it('⚠️ NEAR-MISS: never the UTC reading `coerceToMicros` gives an offset-less text (3 h apart)', () => {
+    // The mutant "coerceToMicros on the incoming stamp" answers the UTC wall time.
+    const utc = coerceToMicros('2026-10-14T10:00:00');
+    expect(utc).toBe(us(2026, 9, 14, 10));
+    expect(dataLiParaMicros('2026-10-14T10:00:00')).not.toBe(utc);
+    expect((dataLiParaMicros('2026-10-14T10:00:00') ?? 0) - (utc ?? 0)).toBe(3 * 3600 * 1_000_000);
+  });
+
+  it('EQUAL pair: X ≡ X.000000 and .1 ≡ .100000 — the lerDataLi fold, nothing wider', () => {
+    expect(dataLiParaMicros('2026-10-14T10:00:00')).toBe(
+      dataLiParaMicros('2026-10-14T10:00:00.000000'),
+    );
+    expect(dataLiParaMicros('2026-10-14T10:00:00.1')).toBe(
+      dataLiParaMicros('2026-10-14T10:00:00.100000'),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: one microsecond apart stays one microsecond apart', () => {
+    const a = dataLiParaMicros('2026-10-14T10:00:00.000000');
+    const b = dataLiParaMicros('2026-10-14T10:00:00.000001');
+    expect(a).not.toBeNull();
+    expect((b ?? 0) - (a ?? 0)).toBe(1);
+  });
+
+  it('refuses (null) whatever lerDataLi refuses: an offset, a Z, a space, a non-string', () => {
+    for (const ruim of [
+      '2026-10-14T10:00:00Z',
+      '2026-10-14T10:00:00-03:00',
+      '2026-10-14 10:00:00',
+      '2026-02-30T10:00:00',
+      '',
+      null,
+      1_760_000_000,
+    ]) {
+      expect(dataLiParaMicros(ruim), String(ruim)).toBeNull();
+    }
+  });
+});
+
+describe('the ms ↔ µs pair the dispatch deadline crosses', () => {
+  it('EQUAL pair: a whole-ms instant survives µs → ms → µs', () => {
+    const us = 1_772_550_000_123_000;
+    expect(microsDeMillisLi(millisDeMicrosLi(us))).toBe(us);
+  });
+
+  it('⚠️ NEAR-MISS: the sub-ms part is dropped (floor), never rounded up; ms ≠ µs', () => {
+    expect(millisDeMicrosLi(1_772_550_000_123_999)).toBe(1_772_550_000_123);
+    expect(millisDeMicrosLi(1_772_550_000_123_000)).not.toBe(1_772_550_000_123_000);
+    expect(microsDeMillisLi(1_772_550_000_123)).toBe(1_772_550_000_123_000);
   });
 });
