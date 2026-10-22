@@ -159,7 +159,7 @@ never trimmed; the valves and lists below are NOT (only unset and `''` are empty
 | Access-token persist | 0 | field `update` of exactly `{access_token, expirationDate, acessoRef}` |
 | Park | 1 | `update({reconexaoPendente}, { lastUpdateTime })`, ≤ 3 re-decides |
 | Avisos | seam | `escreverAviso` / `resolverAviso`; the reconexão row always clocked (µs) |
-| Conta cache | — | per-instance invalidate after the callback; others bounded by TTL + `isFresh` |
+| Conta cache | — | per-instance invalidate after the callback, and by the intake task before a poll's `vendedor-mudou` drop (then a reload); others bounded by TTL + `isFresh` |
 
 This app adds **zero** multi-document atomic-write sites.
 

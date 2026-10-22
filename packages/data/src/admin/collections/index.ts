@@ -94,6 +94,7 @@ export { notificacaoMelhorEnvioCollection } from './notificacaoMelhorEnvioCollec
 export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { notificacaoLojaIntegradaCollection } from './notificacaoLojaIntegradaCollection';
 export { pollPedidosLojaIntegradaCollection } from './pollPedidosLojaIntegradaCollection';
+export { notificacaoAmazonCollection } from './notificacaoAmazonCollection';
 export { clienteCollection } from './clienteCollection';
 export { clienteIdentidadeCollection } from './clienteIdentidadeCollection';
 export { conversaCollection } from './conversaCollection';

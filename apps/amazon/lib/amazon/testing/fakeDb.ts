@@ -20,27 +20,39 @@
  *    real SDK REPLACES its default `{ exists: true }` precondition with the
  *    stamp, so a document that is gone fails the stamp;
  *  - `doc.set(data)` — a FULL overwrite (the consent write; the OAuth seam's
- *    `put`). ⚠️ `set(…, { merge: true })` THROWS: nothing in this app may upsert
- *    a partial patch (it would resurrect a deleted conta or credential);
+ *    `put`). ⚠️ `set(…, { merge: true })` THROWS everywhere but under
+ *    `notificacoesAmazon/` (below): nothing else in this app may upsert a
+ *    partial patch (it would resurrect a deleted conta or credential);
+ *  - `doc.set(patch, { merge: true })` under `notificacoesAmazon/` ONLY — the
+ *    shared notification store's `mark` (step 3). An UPSERT, as on the server (a
+ *    row deleted meanwhile comes back holding the patch alone), of FLAT
+ *    primitive fields: a map, an array or a sentinel in the patch throws, and so
+ *    does any other option. Logged as the verb `mescla`;
  *  - `doc.delete()` — idempotent, like the real one;
  *  - every write resolves `{ writeTime }`;
  *  - the `{ __increment: n }` sentinel ({@link increment}), APPLIED on write,
  *    because `escreverAviso` writes `deps.increment(1)`.
  *
- * ## Queries: ONLY the three indexed shapes
+ * ## Queries: ONLY the four indexed shapes
  *
  * On Enterprise an unindexed query does not fail — it full-scans and bills
- * (root rule 1). So this fake refuses every query shape except the three this
+ * (root rule 1). So this fake refuses every query shape except the four this
  * app runs, each of which is a declared composite:
  *
  *  1. `integracao` · `tipo ==`, `selling_partner_id ==`, `ativo ==` · no order
- *     (the seller guard; step 2 PR r's index);
+ *     (the seller guard and step 3's routing; step 2 PR r's index);
  *  2. `integracao` · `tipo ==` · `orderBy(nome asc)` (the sweep's enumeration);
  *  3. `avisos` · `resolvidoEm ==` · `orderBy(criadoEm desc)` (the orphan pass),
- *     with `limit` and `startAfter(snapshot)`.
+ *     with `limit` and `startAfter(snapshot)`;
+ *  4. `notificacoesAmazon` · `status ==`, `processedAt <` ·
+ *     `orderBy(processedAt asc)` · `limit` (the shared sweep's lane query, both
+ *     lanes; step 3's `(status, processedAt)` composite).
  *
  * Semantics follow the server: `==` is strict equality on the stored value (a
- * missing field never matches); `orderBy` drops a document LACKING the field
+ * missing field never matches); `<` takes a NUMBER bound only and compares
+ * within that type (a `null`, a string or a missing field never matches); the
+ * query log names a `<` filter `'<campo> <'` and an `==` one by its bare field;
+ * `orderBy` drops a document LACKING the field
  * (a `null` is kept) and orders null < boolean < number < string, ties on the
  * id in the direction of the last `orderBy`; `startAfter(snapshot)` seeks by the
  * snapshot's VALUES captured when it is called, so a cursor document that has
@@ -133,10 +145,30 @@ interface Stored {
   updateTime: CarimboFake;
 }
 
+/** The operators this fake models (module header). */
+type OperadorFake = '==' | '<';
+
 interface Filtro {
   readonly campo: string;
+  readonly op: OperadorFake;
   readonly valor: unknown;
 }
+
+/** Whether a stored value satisfies one filter, with the server's semantics (module header). */
+function satisfaz(armazenado: unknown, f: Filtro): boolean {
+  if (f.op === '==') return armazenado === f.valor;
+  // `<` (a number bound, checked in `where`): numbers only — a null, a string
+  // or a missing field never matches, as on the server.
+  return typeof armazenado === 'number' && armazenado < (f.valor as number);
+}
+
+/** A filter as the shape table and the query log name it: the bare field for `==`. */
+function rotuloDoFiltro(f: Filtro): string {
+  return f.op === '==' ? f.campo : `${f.campo} ${f.op}`;
+}
+
+/** The ONE collection whose documents may take a merge-set: the shared store's `mark`. */
+const PREFIXO_MESCLA = 'notificacoesAmazon/';
 
 interface Ordem {
   readonly campo: string;
@@ -145,7 +177,8 @@ interface Ordem {
 
 /** One write, as {@link FakeDb.escritas} records it. */
 export interface EscritaFake {
-  readonly verbo: 'create' | 'update' | 'delete' | 'set';
+  /** `set` is the full overwrite; `mescla` the merge-set (`notificacoesAmazon/` only). */
+  readonly verbo: 'create' | 'update' | 'delete' | 'set' | 'mescla';
   readonly caminho: string;
   /** The payload as handed over (`null` for a delete). */
   readonly dados: DocData | null;
@@ -157,6 +190,7 @@ export interface EscritaFake {
 /** One query, as {@link FakeDb.consultas} records it. */
 export interface ConsultaFake {
   readonly colecao: string;
+  /** `[campo, valor]` for `==`, `['<campo> <', valor]` for `<` (module header). */
   readonly filtros: readonly [string, unknown][];
   readonly ordens: readonly [string, 'asc' | 'desc'][];
   readonly limite: number | null;
@@ -164,8 +198,9 @@ export interface ConsultaFake {
 }
 
 /**
- * The three query shapes this app may run, each a declared composite index
- * (module header). `colecao` is matched exactly; filters and orders in order.
+ * The four query shapes this app may run, each a declared composite index
+ * (module header). `colecao` is matched exactly; filters (an operator other
+ * than `==` named with it) and orders in order.
  */
 const FORMAS_INDEXADAS: readonly {
   readonly colecao: string;
@@ -175,10 +210,15 @@ const FORMAS_INDEXADAS: readonly {
   { colecao: 'integracao', filtros: ['tipo', 'selling_partner_id', 'ativo'], ordens: [] },
   { colecao: 'integracao', filtros: ['tipo'], ordens: ['nome asc'] },
   { colecao: 'avisos', filtros: ['resolvidoEm'], ordens: ['criadoEm desc'] },
+  {
+    colecao: 'notificacoesAmazon',
+    filtros: ['status', 'processedAt <'],
+    ordens: ['processedAt asc'],
+  },
 ];
 
 function formaIndexada(colecao: string, filtros: readonly Filtro[], ordens: readonly Ordem[]) {
-  const f = filtros.map((x) => x.campo).join(',');
+  const f = filtros.map(rotuloDoFiltro).join(',');
   const o = ordens.map((x) => `${x.campo} ${x.direcao}`).join(',');
   return FORMAS_INDEXADAS.some(
     (forma) =>
@@ -358,6 +398,45 @@ export class FakeDb {
     return saida;
   }
 
+  /**
+   * The merge-set (module header): `notificacoesAmazon/` only, exactly
+   * `{ merge: true }`, flat primitive fields. An upsert, like the server's.
+   * Throws SYNCHRONOUSLY on anything unmodelled.
+   */
+  private mesclar(
+    caminho: string,
+    data: DocData,
+    opcoes: unknown,
+  ): Promise<{ writeTime: CarimboFake }> {
+    const chaves = typeof opcoes === 'object' && opcoes !== null ? Object.keys(opcoes) : [];
+    const ehMerge =
+      chaves.length === 1 && chaves[0] === 'merge' && (opcoes as { merge: unknown }).merge === true;
+    if (!ehMerge || !caminho.startsWith(PREFIXO_MESCLA)) {
+      throw new Error(
+        'FakeDb: set() com opções (merge) não é modelado fora de notificacoesAmazon/ — nada mais ' +
+          'neste app faz upsert de um patch parcial; só a sobrescrita inteira',
+      );
+    }
+    recusarIndefinido(data, caminho);
+    for (const [chave, valor] of Object.entries(data)) {
+      if (chave.includes('.')) {
+        throw new Error(`FakeDb: chave com ponto em set merge ('${chave}') não é modelada`);
+      }
+      // A merge-set deep-merges maps field by field, and a sentinel is applied by
+      // the server: the store's `mark` sends neither, so refuse rather than diverge.
+      if (typeof valor === 'object' && valor !== null) {
+        throw new Error(`FakeDb: valor não primitivo em set merge ('${chave}') não é modelado`);
+      }
+    }
+    return (async () => {
+      await this.antesDeEscrever(caminho);
+      const atual = this.store.get(caminho);
+      const writeTime = this.registrar('mescla', caminho, data);
+      this.store.set(caminho, { data: this.aplicar(atual?.data, data), updateTime: writeTime });
+      return { writeTime };
+    })();
+  }
+
   private docRef(caminho: string, id: string) {
     return {
       id,
@@ -429,12 +508,7 @@ export class FakeDb {
       // NOT async on purpose: an unmodelled call throws synchronously, before
       // anything could be mistaken for a write that landed.
       set: (data: DocData, opcoes?: unknown) => {
-        if (opcoes !== undefined) {
-          throw new Error(
-            'FakeDb: set() com opções (merge) não é modelado — nada neste app faz upsert de um ' +
-              'patch parcial; só a sobrescrita inteira',
-          );
-        }
+        if (opcoes !== undefined) return this.mesclar(caminho, data, opcoes);
         recusarIndefinido(data, caminho);
         if (Object.values(data).some(ehIncremento)) {
           throw new Error('FakeDb: increment em set — use um número');
@@ -468,10 +542,13 @@ export class FakeDb {
       this.consulta(colecao, { ...estado, ...mudanca });
     return {
       where: (campo: string, op: string, valor: unknown) => {
-        if (op !== '==') {
+        if (op !== '==' && op !== '<') {
           throw new Error(`FakeDb: operador '${op}' em where('${campo}') não é modelado`);
         }
-        return derivar({ filtros: [...estado.filtros, { campo, valor }] });
+        if (op === '<' && typeof valor !== 'number') {
+          throw new Error(`FakeDb: '<' em where('${campo}') só é modelado com um limite numérico`);
+        }
+        return derivar({ filtros: [...estado.filtros, { campo, op, valor }] });
       },
       orderBy: (campo: string, direcao: 'asc' | 'desc' = 'asc') => {
         if (estado.apos !== null) {
@@ -509,7 +586,7 @@ export class FakeDb {
       return Promise.reject(
         new Error(
           `FakeDb: consulta fora dos índices declarados em '${colecao}' ` +
-            `(filtros: ${filtros.map((f) => f.campo).join(',') || '—'}; ` +
+            `(filtros: ${filtros.map(rotuloDoFiltro).join(',') || '—'}; ` +
             `ordem: ${ordens.map((o) => `${o.campo} ${o.direcao}`).join(',') || '—'})`,
         ),
       );
@@ -518,7 +595,7 @@ export class FakeDb {
     if (falha) return Promise.reject(falha);
     this.consultas.push({
       colecao,
-      filtros: filtros.map((f) => [f.campo, f.valor] as [string, unknown]),
+      filtros: filtros.map((f) => [rotuloDoFiltro(f), f.valor] as [string, unknown]),
       ordens: ordens.map((o) => [o.campo, o.direcao] as [string, 'asc' | 'desc']),
       limite,
       apos: apos === null ? null : apos.id,
@@ -526,8 +603,9 @@ export class FakeDb {
     const prefixo = `${colecao}/`;
     const encontrados = [...this.store.entries()]
       .filter(([p]) => p.startsWith(prefixo) && !p.slice(prefixo.length).includes('/'))
-      // Strict equality on the stored value: a document LACKING the field never matches.
-      .filter(([, s]) => filtros.every((f) => s.data[f.campo] === f.valor))
+      // Strict equality, or a numeric `<`, on the stored value: a document
+      // LACKING the field never matches.
+      .filter(([, s]) => filtros.every((f) => satisfaz(s.data[f.campo], f)))
       // `orderBy` filters for existence; a stored `null` is kept.
       .filter(([, s]) => ordens.every((o) => s.data[o.campo] !== undefined))
       .map(([p, stored]) => ({ id: p.slice(prefixo.length), data: stored.data, stored }));
