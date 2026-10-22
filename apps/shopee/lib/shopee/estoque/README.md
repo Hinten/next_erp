@@ -33,10 +33,10 @@ The families are the seam, not a filing convention.
   `ShopeeStockTasksDisabledError` and `ShopeeEnvioEstoqueGuardError`).
 - **Pure quantity and policy** — `quantidadeEstoque.ts` (the ONE quantity
   function, moved here from `anuncios/montagemAnuncio.ts` and bound by BOTH
-  publish and the sweep), `podeEnviarEstoque.ts` (the six-motivo send gate and
-  the skip set), `planoEstoque.ts` (the planner, the chunker and the
-  completeness invariant) and `reservaPromocao.ts` (the reserved floor). No
-  clock, no network, no Firestore in any of the four.
+  publish and the sweep), `podeEnviarEstoque.ts` (the six-motivo send gate, and
+  the skip set it re-exports from `@delfrance/schemas`), `planoEstoque.ts` (the
+  planner, the chunker and the completeness invariant) and `reservaPromocao.ts`
+  (the reserved floor). No clock, no network, no Firestore in any of the four.
 - **Discovery and state** — `descobertaEstoque.ts` (the Pipelines discovery and
   the ledger pre-pass), `contaEstoque.ts` (the five conta gates behind three
   read caches), `estadoEstoque.ts` (the `estoqueShopeeSync/{integracaoId}` state
@@ -252,7 +252,9 @@ is decided. `apps/web` must not re-word a slug and must not add a second cap —
 `motivo !== null` as "it failed" reports every clamped send as a failure.
 
 The skip set itself is **two mechanisms, `||` between them and `&&` inside the
-second** (`pularPorRecusaAnterior` in `podeEnviarEstoque.ts`):
+second** (`pularPorRecusaAnterior`, in `@delfrance/schemas`'s
+`shopeeLinkLeitura.ts` since step 21 and re-exported here by
+`podeEnviarEstoque.ts`):
 
 - **TIME** — `estoqueRecusaAte`, strict `<`, for a refusal no reading will ever
   lift. Today that is the promotion arm alone: a promotion ending moves no

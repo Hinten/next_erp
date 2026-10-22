@@ -355,9 +355,13 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // No produtoId yet — publishing, the stock push and the link subcollection
     // all need a produto that exists, so the tab explains itself instead of
     // disappearing.
-    await expect(page.getByText('Salve o produto para continuar.')).toBeVisible({
-      timeout: 15_000,
-    });
+    // ⚠️ Scoped to the VISIBLE panel: the Shopee section renders the same
+    // create-mode sentence inside its hidden panel, and a page-wide `getByText`
+    // counts hidden matches too (a strict-mode violation). A role query skips
+    // the hidden panels.
+    await expect(
+      page.getByRole('tabpanel').getByText('Salve o produto para continuar.'),
+    ).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole('button', { name: 'Novo anúncio' })).toHaveCount(0);
   });
 

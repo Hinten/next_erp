@@ -160,6 +160,7 @@ describe('pendenteRetomavel — the token lives 23 h', () => {
     tokenEmMs: T10,
     paginas: 5,
     linhaInvalida: false,
+    maiorLinhaMs: null,
   };
 
   it('kept 1 ms before 23 h, discarded at 23 h and at 23 h + 1 ms', () => {

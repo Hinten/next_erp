@@ -256,7 +256,7 @@ not "deduplicate" them without changing how required checks are published.
   from the matching `packages/integrations/<channel>`.
 - `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`.
 
-`apps/{nfe,mercado-livre,mercado-pago,whatsapp}/functions/` are **nested**
+The seven `apps/*/functions/` are **nested**
 Functions codebases deployed via `firebase.<name>.deploy.json`. They are **not**
 pnpm workspace members — the parent app's tsconfig/eslint/vitest cover them.
 
@@ -299,11 +299,12 @@ re-adding an interface fails nothing.
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·
 `migrations` · `cmun-table` (moves the legacy `CMUN` CEP-faixa → IBGE table
 between projects, #785) · `deploy-env` (**the** source of truth for which `.env*`
-files a Functions deploy artifact may contain — shared by all five
+files a Functions deploy artifact may contain — shared by all eight
 `prepare-deploy.mjs`, and what keeps `.env.secrets` out of `gcf-sources-*`).
 Firebase configs: `firebase.json` (prod), `firebase.staging.json`,
 emulator-only `firebase.{functions,rules,e2e}.json` plus
-`firebase.mercado-livre{,.tasks}.json`, and five deploy-isolated
+`firebase.mercado-livre{,.tasks}.json` and
+`firebase.{shopee,loja-integrada}.tasks.json`, and eight deploy-isolated
 `firebase.<codebase>.deploy.json`. ⚠️ **Three** `firebase.mercado-livre*.json`
 now sit one dot apart, and only one of them deploys:
 `firebase.mercado-livre.json` (emulator, firestore only) and
@@ -523,7 +524,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `noUnusedLocals` in `packages/config-tsconfig/base.json`, with core
   `no-unused-vars` re-enabled for `.js`/`.mjs` only — `typeAware`'s glob is
   TS-only, which would silently exclude every rule and backstop in
-  `packages/config-eslint/rules` and the five `prepare-deploy.mjs`. Before #1445
+  `packages/config-eslint/rules` and the eight `prepare-deploy.mjs`. Before #1445
   all three mechanisms were off at once and a dead import was invisible
   repo-wide: #1442 orphaned a `useQuery` import that survived typecheck 28/28,
   lint 30/30 and 3013 web tests. ⚠️ The severity is not cosmetic — **no lint
@@ -618,7 +619,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   cataloged and referenced as `catalog:`; single-consumer deps stay literal.
   `catalogMode: strict` routes `pnpm add` through the catalog. **Five** things
   NEVER use `catalog:`, and all five are ONE rule — an **external resolver
-  reads the manifest without our lockfile or workspace context**: the 4 nested
+  reads the manifest without our lockfile or workspace context**: the 7 nested
   `apps/*/functions` manifests (not workspace members), `apps/functions`'
   runtime `dependencies` (every `prepare-deploy.mjs` copies `dependencies`
   verbatim into an artifact that plain cloud `npm install` must resolve), all
@@ -638,7 +639,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   fixed this once (with `^16.2.6`); the catalog migration silently undid it and
   nothing failed until a human tried to deploy months later —
   `packages/config-eslint/rules/apphosting-next-pinned.test.js` is that missing
-  signal. ⚠️ Those five artifact
+  signal. ⚠️ Those eight artifact
   `dependencies` blocks are literal **and**, for `firebase-admin` +
   `firebase-functions`, **exact** — no lockfile reaches the cloud, so a range
   there ships an untested version (see the firebase pins above);

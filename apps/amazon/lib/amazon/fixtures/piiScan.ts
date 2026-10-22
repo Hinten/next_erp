@@ -150,10 +150,19 @@ function formasDecodificadas(t: string): string[] {
 }
 
 /**
- * Whether `texto` holds any listed term: a substring match under the fold, so a
- * term never matches a DIFFERENT word (`exemplo` vs `exemplar`), and folding
- * more is the safe direction. Tried as written, percent-decoded, and with every
- * `%XX` escape dropped (`LOJA%C3%A9EXEMPLO` → `LOJAEXEMPLO`).
+ * Whether `texto` holds any listed term: a SUBSTRING match under the fold,
+ * deliberately including inside a longer word — `silva` is found in `silvana`,
+ * and a store name glued into a host, a SKU or an e-mail local part
+ * (`lojaexemplostore`, `exemplo123`) is found too, where a word-boundary match
+ * would miss it and leak. It fails closed on purpose: in a public repository a
+ * false refusal costs the owner one line (list a more specific term, such as
+ * the full name instead of one common word, in `nomes-proibidos.txt`), and a
+ * miss publishes the name. Not matched: text that differs from the term inside
+ * it (`exemplo` vs `exemplar`), and a one-word term split by a separator
+ * (`zeta` vs `ze ta`; only a term of several words is also tried joined, see
+ * {@link criarListaDeNomes}), so a name of several words is listed with its
+ * spaces. Tried as written, percent-decoded, and with every `%XX` escape
+ * dropped (`LOJA%C3%A9EXEMPLO` → `LOJAEXEMPLO`).
  */
 export function contemNomeDeLoja(texto: string, lista: ListaDeNomesAmazon): boolean {
   if (lista.termos.length === 0) return false;

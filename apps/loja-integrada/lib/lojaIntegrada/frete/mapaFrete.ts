@@ -61,6 +61,7 @@ import {
   montarEntradaDoMapaLi,
 } from '@delfrance/schemas';
 
+import { relogioDoDocumentoUs } from '../avisos/avisos';
 import { syncIntFreteLi } from './intFrete';
 
 /** Read-decide-write attempts before giving up. */
@@ -123,6 +124,14 @@ export interface RegistroDoMapaLi {
    * without a second read.
    */
   readonly mapa: readonly unknown[] | null;
+  /**
+   * The µs `readTime` of the DECIDING attempt's read of the doc, or `null` when nothing was read
+   * (`chave-invalida`). Step 5 clocks the `lojaIntegradaFreteNaoSuportado` aviso by it when the
+   * routing read no target: it is when the observation the router decided from was true (an
+   * unmapped key, a doc that is gone), so a raise committed from a later read carries a later
+   * clock and is never closed by this one.
+   */
+  readonly lidoEmUs: number | null;
 }
 
 export interface MapaFreteDeps {
@@ -152,7 +161,7 @@ export async function registrarFormaEnvioNoMapaLi(
   const linha = montarEntradaDoMapaLi({ forma: formaEnvio, numero });
   if (chave === null || linha === null) {
     deps.logger?.warn(`${ROTULO_LOG} forma de envio sem chave; nada registrado`, ids);
-    return { resultado: 'chave-invalida', mapa: null };
+    return { resultado: 'chave-invalida', mapa: null, lidoEmUs: null };
   }
 
   const ref = intFreteCollection.docRef(db, {}, intFreteId);
@@ -161,6 +170,7 @@ export async function registrarFormaEnvioNoMapaLi(
     const snap = await ref.get();
     const raw = snap.exists ? (snap.data() as Record<string, unknown> | undefined) : undefined;
     const versao = snap.updateTime;
+    const lidoEmUs = relogioDoDocumentoUs(snap.readTime);
     // `ehDocDaConta` is the core's own check: tipo `lojaIntegrada` AND the canonical back-ref.
     if (
       raw === undefined ||
@@ -168,21 +178,23 @@ export async function registrarFormaEnvioNoMapaLi(
       !syncIntFreteLi.ehDocDaConta(raw, integracaoId)
     ) {
       deps.logger?.warn(`${ROTULO_LOG} int_frete ausente ou de outra conta; nada registrado`, ids);
-      return { resultado: 'sem-int-frete', mapa: null };
+      return { resultado: 'sem-int-frete', mapa: null, lidoEmUs };
     }
 
     const armazenado = raw.mapa;
     if (armazenado !== null && armazenado !== undefined && !Array.isArray(armazenado)) {
       deps.logger?.warn(`${ROTULO_LOG} mapa armazenado não é uma lista; nada registrado`, ids);
-      return { resultado: 'mapa-invalido', mapa: null };
+      return { resultado: 'mapa-invalido', mapa: null, lidoEmUs };
     }
     const mapa: readonly unknown[] | null = Array.isArray(armazenado) ? armazenado : null;
 
-    if (entradaDoMapaPorChaveLi(mapa, chave) !== null) return { resultado: 'ja-presente', mapa };
+    if (entradaDoMapaPorChaveLi(mapa, chave) !== null) {
+      return { resultado: 'ja-presente', mapa, lidoEmUs };
+    }
 
     try {
       await ref.update({ mapa: deps.arrayUnion(linha) }, { lastUpdateTime: versao });
-      return { resultado: 'registrada', mapa };
+      return { resultado: 'registrada', mapa, lidoEmUs };
     } catch (err) {
       // Lost the race, or the doc was removed (9, or 5 — header): loop, re-read, re-decide.
       // Never re-apply this write.

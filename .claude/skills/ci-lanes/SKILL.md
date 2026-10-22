@@ -83,11 +83,19 @@ executed. Nothing at runtime can see that, so `ci-lane-gates.test.js` asserts th
 numerators are exactly 1..N for one N, that web is excluded from `CI test`, and
 that at least two `--shard=` commands exist at all.
 
-⚠️ **Nothing is pinned yet.** As of 2026-08-24 `protect-main` (id `16348427`)
-carries only `deletion` and `non_fast_forward` — there is no
-`required_status_checks` rule at all, and `branches/main/protection` 404s. So the
-table above is the list #1052 should pin, not a description of live state, and a
-check-name change costs nothing on the ruleset **until** #1052 lands.
+⚠️ **Sixteen of the seventeen are REQUIRED.** `protect-main` (id `16348427`) has
+carried a `required_status_checks` rule since #1052 (closed 2026-08-24):
+`strict_required_status_checks_policy: false`, every context on
+`integration_id: 15368`, `bypass_actors: []`. `CI gate (shopee)` joined it on
+2026-10-19; only `CI gate (loja-integrada)` is pinnable but not required. So
+**renaming a required check needs the RULESET changed BEFORE the renaming PR
+merges, never after**: that PR's own run publishes only the new name, the
+ruleset waits for the old one, and with no bypass the PR can never merge. Swap
+(or drop) the context just before the merge — every other open PR is blocked
+from that moment — then give each of them a NEW event (a push, or **Update
+branch**): a plain re-run reuses the original event's merge SHA, whose workflow
+still publishes the old name. Read the live list rather than this paragraph:
+`gh api repos/Hinten/next_erp/rulesets/16348427 --jq '.rules[].parameters.required_status_checks[]?.context'`.
 
 Names are **pure ASCII** on purpose — they get pasted into a JSON payload from
 PowerShell on Windows, and a mangled em dash yields a required check that never
@@ -314,7 +322,7 @@ Prettier-formatted and its indentation is not machine-guaranteed.
 
 Everything above is about a PR. `main` is a separate question, and the answer is
 **not** "nothing" — it is `ci.yml`'s `push: branches: [master, main]` (full graph,
-unfiltered) plus the five domain lanes' path-filtered `push:` nets. They work: on
+unfiltered) plus the seven domain lanes' path-filtered `push:` nets. They work: on
 2026-08-20 `ci.yml` caught the #1109/#1114 merge-skew break four minutes after the
 merge — run `32373838109`, `Lint`, 13:21 UTC.
 
@@ -325,7 +333,7 @@ reported `skipped`. The break was rediscovered 51 minutes later by #1158, a PR
 that had touched nothing related — and #1158's author had no way to know the
 failing check was not theirs.
 
-`main-red-alert.yml` is that audience. `workflow_run` on the six trunk-verifying
+`main-red-alert.yml` is that audience. `workflow_run` on the eight trunk-verifying
 workflows → one standing issue per workflow, labelled `main-red`, commented on for
 each new failure and closed on the next green run of the same workflow. Three
 things about it are load-bearing:
@@ -348,7 +356,7 @@ things about it are load-bearing:
   input so it can be rehearsed against a real past run afterwards.
 
 What it does **not** cover: `ci.yml` excludes eight workspaces from `turbo run test`
-and the five domain lanes' `push:` triggers are path-filtered, so a merge-skew break
+and the seven domain lanes' `push:` triggers are path-filtered, so a merge-skew break
 inside a lane-owned suite still runs nowhere on `main`. Same mechanism as #1167, one
 surface further in.
 
@@ -374,7 +382,9 @@ surface further in.
 
 ## Pinning on the `protect-main` ruleset (id 16348427)
 
-Order matters. Merge first, let the gates publish, **then** pin.
+Order matters. Merge first, let the gates publish, **then** pin. That is the
+order for a NEW gate; RENAMING a required one is the reverse — the ruleset
+changes first (see "The seventeen pinnable checks" above).
 
 Read the names back from the merged PR's **head SHA**, not from `main` — the e2e
 lanes have no `push:` trigger and the domain lanes' `push:` keeps a narrow
@@ -429,7 +439,9 @@ mitigates the staleness it leaves.
   `vitest.tasks.config.ts` (`ML Cloud Tasks round trip`, required) and
   `vitest.staging.config.ts` (`ML staging Enterprise queries`, `optional:not_fork` —
   it reads the `FIREBASE_*_STAGING` secrets a fork PR cannot see) each include only
-  their own suffix. A file matching none of those globs runs in NO job. When adding
+  their own suffix. A file matching none of those globs runs in NO job —
+  `packages/config-eslint/rules/vitest-config-partition.test.js` reds one (or one
+  two configs collect), in every workspace, since Shopee's step 22. When adding
   a lane, read the workspace's scripts — do not assume `turbo run test` covers it.
 
 ### Moving tests into a lane is not a latency win — measured
@@ -596,11 +608,10 @@ to weaken the partition. Closing the skew itself means turning on **"Require
 branches to be up to date before merging"** on `protect-main` — a ruleset setting
 with real cost (a rebase on every PR, including stacked ones), not a code change.
 
-⚠️ **It is also not available yet, and that is not obvious from the GitHub UI.**
-"Require branches to be up to date" is `strict_required_status_checks_policy`,
-which lives *inside* a `required_status_checks` rule — and `protect-main`
-(id `16348427`) carries no such rule at all today, only `deletion` and
-`non_fast_forward`. So it is strictly downstream of **#1052**. Status as of
+⚠️ **It is one flag away, and deliberately off.** "Require branches to be up to
+date" is `strict_required_status_checks_policy`, which lives *inside* the
+`required_status_checks` rule #1052 added to `protect-main` (id `16348427`) —
+`false` there today. Status as of
 2026-08-20: **deferred until after the Firebase migration**, because the current
 merge cadence makes serialising every merge behind a rebase-and-rerun too
 expensive. `main-red-alert.yml` is what covers the gap meanwhile — it does not

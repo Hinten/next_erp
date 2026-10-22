@@ -7,6 +7,7 @@ import {
   INTEGRACAO_FRETE_LABELS,
   integracoesFreteSchema,
   isFreteMarketplaceOwned,
+  isFreteSelecionavelManualmente,
   type IntegracaoFrete,
 } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
@@ -31,6 +32,11 @@ interface Fixture {
 
 const motoboy: Fixture = { id: 'moto-1', nome: 'Local delivery', tipo: INTEGRACAO_FRETE.motoboy };
 const shopee: Fixture = { id: 'shopee-1', nome: 'Shopee account', tipo: INTEGRACAO_FRETE.shopee };
+const docLi: Fixture = {
+  id: 'lojaIntegrada-c1',
+  nome: 'Store account',
+  tipo: INTEGRACAO_FRETE.lojaIntegrada,
+};
 const label = (row: Fixture) => `${row.nome} (${INTEGRACAO_FRETE_LABELS[row.tipo]})`;
 
 function mockDocs(rows: Fixture[]) {
@@ -72,7 +78,7 @@ describe('IntegracaoFreteSelect', () => {
     expect(options()).toEqual([label(motoboy)]);
   });
 
-  it('retains every non-marketplace tipo and excludes every marketplace-owned tipo', async () => {
+  it('retains every hand-pickable tipo and excludes every owned or routed one', async () => {
     const rows = integracoesFreteSchema.options.map((tipo) => ({ id: tipo, nome: tipo, tipo }));
     mockDocs(rows);
     renderPicker();
@@ -81,7 +87,31 @@ describe('IntegracaoFreteSelect', () => {
       name: label(rows.find((row) => row.tipo === INTEGRACAO_FRETE.motoboy)!),
     });
 
-    expect(options()).toEqual(rows.filter((row) => !isFreteMarketplaceOwned(row.tipo)).map(label));
+    expect(options()).toEqual(
+      rows.filter((row) => isFreteSelecionavelManualmente(row.tipo)).map(label),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: excludes the Loja Integrada doc although it is not marketplace-owned (it is the router)', async () => {
+    // Picking the conta's doc by hand would put the pedido back on the router,
+    // which prints nothing: the picker offers the carriers, never the router.
+    expect(isFreteMarketplaceOwned(INTEGRACAO_FRETE.lojaIntegrada)).toBe(false);
+    mockDocs([motoboy, docLi]);
+    renderPicker();
+    fireEvent.click(input());
+    await screen.findByRole('option', { name: label(motoboy) });
+
+    expect(options()).toEqual([label(motoboy)]);
+  });
+
+  it('still NAMES a stored Loja Integrada doc through currentFallback (a duplicate keeps it until re-pointed)', async () => {
+    mockDocs([motoboy, docLi]);
+    renderPicker({ value: docLi.id, currentFallback: docLi });
+    fireEvent.click(input());
+    await screen.findByRole('option', { name: label(motoboy) });
+    fireEvent.keyDown(input(), { key: 'Escape' });
+
+    expect(input().value).toBe(label(docLi));
   });
 
   it('displays a stored Shopee selection through currentFallback after the active list loads', async () => {

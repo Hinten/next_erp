@@ -12,21 +12,7 @@ import {
   estadoPublicacaoMlSchema,
 } from '@delfrance/schemas';
 
-/**
- * Does this link doc belong to `integracaoId`?
- *
- * The old app always STORES the `documents/`-prefixed form, which is what this
- * app writes too; the bare form is tolerated on READ only, defensively. Kept
- * byte-identical to the server-side matcher (`publish.ts`) — a mismatch here
- * shows the operator someone else's listing.
- */
-export function refMatchesIntegracao(
-  ref: string | null | undefined,
-  integracaoId: string,
-): boolean {
-  if (!ref) return false;
-  return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
-}
+export { refMatchesIntegracao } from '@delfrance/schemas';
 
 /**
  * Soft-parse the 1–2 character estado code. The Flutter app can hold values

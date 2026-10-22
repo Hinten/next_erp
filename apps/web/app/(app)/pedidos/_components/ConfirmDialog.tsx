@@ -6,9 +6,15 @@
  * mid-save). `useConfirmDialog` returns a promise-returning `confirm(opts)`
  * plus the `element` to render once per view; the Modal is closable ONLY via
  * the Sim/Não buttons (the legacy dialogs were `barrierDismissible: false`).
+ *
+ * `ciencia: true` turns a question into an acknowledged risk: the dialog shows
+ * a "Estou ciente do risco" checkbox and its confirm button stays DISABLED
+ * until the operator ticks it. The tick belongs to ONE question — every new
+ * question opens unticked, so an answer given to the previous one can never
+ * carry over.
  */
 import { useCallback, useRef, useState, type ReactNode } from 'react';
-import { Button, Group, Modal, Stack, Text } from '@mantine/core';
+import { Button, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
 
 export interface ConfirmDialogOptions {
   title: string;
@@ -17,7 +23,12 @@ export interface ConfirmDialogOptions {
   confirmLabel?: string;
   /** Defaults to "Não". */
   cancelLabel?: string;
+  /** Require the "Estou ciente do risco" tick before the confirm button enables. */
+  ciencia?: true;
 }
+
+/** The checkbox label of every acknowledged-risk question (the buy modal's own). */
+export const ROTULO_CIENCIA_RISCO = 'Estou ciente do risco';
 
 export interface UseConfirmDialogResult {
   /** Open the dialog and resolve with the user's answer. */
@@ -28,6 +39,9 @@ export interface UseConfirmDialogResult {
 
 export function useConfirmDialog(): UseConfirmDialogResult {
   const [opts, setOpts] = useState<ConfirmDialogOptions | null>(null);
+  // The "Estou ciente do risco" tick of the question on screen — reset by every
+  // new question and every answer.
+  const [ciente, setCiente] = useState(false);
   // The pending promise's resolver — a ref, not state: it never affects
   // rendering and must be settled synchronously from the button handlers.
   const resolveRef = useRef<((answer: boolean) => void) | null>(null);
@@ -39,6 +53,7 @@ export function useConfirmDialog(): UseConfirmDialogResult {
         // sequentially) resolves as "Não" so no caller hangs forever.
         resolveRef.current?.(false);
         resolveRef.current = resolve;
+        setCiente(false);
         setOpts(next);
       }),
     [],
@@ -47,9 +62,12 @@ export function useConfirmDialog(): UseConfirmDialogResult {
   function settle(answer: boolean) {
     const resolve = resolveRef.current;
     resolveRef.current = null;
+    setCiente(false);
     setOpts(null);
     resolve?.(answer);
   }
+
+  const exigeCiencia = opts?.ciencia === true;
 
   const element = (
     <Modal
@@ -63,11 +81,24 @@ export function useConfirmDialog(): UseConfirmDialogResult {
     >
       <Stack>
         {typeof opts?.message === 'string' ? <Text>{opts.message}</Text> : opts?.message}
+        {exigeCiencia && (
+          <Checkbox
+            label={ROTULO_CIENCIA_RISCO}
+            checked={ciente}
+            onChange={(e) => setCiente(e.currentTarget.checked)}
+          />
+        )}
         <Group justify="flex-end">
           <Button variant="subtle" onClick={() => settle(false)}>
             {opts?.cancelLabel ?? 'Não'}
           </Button>
-          <Button onClick={() => settle(true)}>{opts?.confirmLabel ?? 'Sim'}</Button>
+          <Button
+            onClick={() => settle(true)}
+            disabled={exigeCiencia && !ciente}
+            color={exigeCiencia ? 'orange' : undefined}
+          >
+            {opts?.confirmLabel ?? 'Sim'}
+          </Button>
         </Group>
       </Stack>
     </Modal>

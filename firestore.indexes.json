@@ -6,11 +6,26 @@
       "apiScope": "ANY_API",
       "density": "SPARSE_ANY",
       "fields": [
-        { "fieldPath": "vendedorPedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "ehSaida", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" },
-        { "fieldPath": "valorCobrado", "order": "ASCENDING" }
+        {
+          "fieldPath": "vendedorPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "valorCobrado",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -19,12 +34,30 @@
       "apiScope": "ANY_API",
       "density": "SPARSE_ANY",
       "fields": [
-        { "fieldPath": "ehSaida", "order": "ASCENDING" },
-        { "fieldPath": "integracaoPedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" },
-        { "fieldPath": "freteInicial.estado", "order": "ASCENDING" },
-        { "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" },
-        { "fieldPath": "foiImpresso", "order": "ASCENDING" }
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.prazoDespacho",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "foiImpresso",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
@@ -33,12 +66,30 @@
       "apiScope": "ANY_API",
       "density": "SPARSE_ANY",
       "fields": [
-        { "fieldPath": "ehSaida", "order": "ASCENDING" },
-        { "fieldPath": "integracaoPedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" },
-        { "fieldPath": "freteInicial.estado", "order": "ASCENDING" },
-        { "fieldPath": "foiImpresso", "order": "ASCENDING" },
-        { "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" }
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "foiImpresso",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.prazoDespacho",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -1564,6 +1615,16 @@
       ]
     },
     {
+      "collectionGroup": "tokenoaut",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "user",
       "queryScope": "COLLECTION",
       "fields": [
@@ -2473,6 +2534,28 @@
         },
         {
           "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
           "order": "ASCENDING"
         },
         {

@@ -106,6 +106,8 @@ const CARVE_OUTS = {
   'apps/web/app/(app)/configuracoes/ia/_components/ConfigIaPanel.tsx':
     'máximo de tokens — allowDecimal={false} (temperatura uses DecimalInput)',
   'apps/web/app/(app)/relatorios/produtos/page.tsx': 'top N — allowDecimal={false}',
+  'apps/web/app/(app)/relatorios/mais-vendidos/page.tsx':
+    'top N, integer rank limit from 1 to 50 — allowDecimal={false}',
   'apps/web/app/(app)/produtos/_components/KitManager.tsx':
     'quantidade de componentes — allowDecimal={false}',
   'apps/web/app/(app)/produtos/_components/ExtraDataManager.tsx':

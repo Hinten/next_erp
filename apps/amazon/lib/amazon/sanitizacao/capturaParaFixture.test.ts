@@ -296,6 +296,39 @@ describe('the attachments (C3)', () => {
     const r = converter(captura(`GET ${GET_ORDER} 200`, getOrderBr(), { requisicao: b('{}') }));
     expect(r.ok ? [] : r.achados).toEqual([{ onde: '.req.json', tipo: 'anexo-indevido' }]);
   });
+
+  // ★ The operation decides, never the method: a POST that is not the bulk
+  // (submitInvoice, createScheduledPackage) would commit the zip under its name.
+  const anexos = { requisicao: b(JSON.stringify(BULK_REQ)), zip: b('2048 etiqueta.zpl\n') };
+  it.each([
+    ['submitInvoice (POST)', 'POST /delivery/2022-07-01/invoice 200'],
+    ['createScheduledPackage (POST)', 'POST /easyShip/2022-03-23/package 200'],
+    ['getOrder (GET)', `GET ${GET_ORDER} 200`],
+    ['getInvoiceStatus (GET)', 'GET /delivery/2022-07-01/invoice/status 200'],
+    // Not HTTP at all: a `.req.json` here would otherwise be dropped unread.
+    ['an ORDER_CHANGE notification', 'NOTIFICACAO ORDER_CHANGE sqs'],
+  ])('★ both attachments beside %s are anexo-indevido', (_caso, linha1) => {
+    const r = converter(captura(linha1, {}, anexos, copia));
+    expect(r.ok ? [] : r.achados).toEqual([
+      { onde: '.req.json', tipo: 'anexo-indevido' },
+      { onde: '.zip.txt', tipo: 'anexo-indevido' },
+    ]);
+  });
+
+  it('near-miss: the same two attachments beside the bulk POST are accepted', () => {
+    const r = ok(captura(`POST ${BULK} 200`, RESPOSTA, anexos, copia));
+    expect(r.envelope.anexos.zip?.entradas).toHaveLength(1);
+    const req = r.envelope.requisicao;
+    expect(req.tipo === 'http' ? req.corpo : null).not.toBeNull();
+  });
+
+  it('★ a method that is not the operation’s own never becomes a fixture', () => {
+    expect(converter(captura('GET /delivery/2022-07-01/invoice 200', {}, {}, copia))).toEqual({
+      ok: false,
+      achados: [{ onde: '.txt:1', tipo: 'metodo-da-operacao' }],
+      resumo: null,
+    });
+  });
 });
 
 describe('ORDER_CHANGE', () => {

@@ -1123,6 +1123,30 @@ describe('FreteCell — passthrough', () => {
     expect(container.querySelector('[data-variant]')).toBeTruthy();
   });
 
+  it('opens the etiqueta HoverCard for a pedido still on its Loja Integrada doc (the routing action)', () => {
+    // Nothing on the block says a label is possible — no label, no quote, no
+    // marketplace tipo: only the resolved doc's ROUTER tipo does (step 15).
+    dereferenceMock.mockReturnValue({ id: 'li-1', path: 'int_frete/li-1' });
+    queryState.current = { data: 'lojaIntegrada', isLoading: false };
+    const { container } = wrap(
+      <FreteCell
+        pedido={
+          {
+            freteInicial: {
+              estado: 'iniciado',
+              integracaoFreteOuterRef: { path: 'int_frete/li-1' },
+              printLabelId: null,
+              externalOptionId: null,
+              externalOptionIntegracao: null,
+            },
+          } as unknown as Pedido
+        }
+        pedidoId="p1"
+      />,
+    );
+    expect(container.querySelector('[data-variant]')).toBeTruthy();
+  });
+
   it('keeps the lightweight tooltip for a non-generic tipo with nothing to act on yet', () => {
     dereferenceMock.mockReturnValue({ id: 'ret-1', path: 'int_frete/ret-1' });
     queryState.current = { data: 'retiradaNaLoja', isLoading: false };

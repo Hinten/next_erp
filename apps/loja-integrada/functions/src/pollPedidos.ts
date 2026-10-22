@@ -21,9 +21,9 @@ import { getDb } from './lib/admin';
  * - `ambiente`: the process environment, read ONCE per tick here and passed
  *   whole; the read switch is checked by the tick and again by each context.
  * - `importadorPresente`: the step-5 seam, read from the table HERE, per tick —
- *   never cached at module load, never hard-coded. Empty in step 3, so every
- *   tick stops at the gate with ZERO reads; step 5 fills the table and the
- *   poller starts with no edit here.
+ *   never cached at module load, never hard-coded. Step 5 filled the table, so
+ *   the tick passes this gate with no edit here, and the read switch (unset
+ *   until the window) is what stops it, still with ZERO reads.
  * - `lookbackHoras`: `LOJA_INTEGRADA_POLL_LOOKBACK_H`, parsed here (`lib/` never
  *   names the process environment). Invalid stays `null`, never the default.
  * - `agendador`: the reads-queue producer from the environment (the sweep-only
@@ -58,9 +58,9 @@ export function depsDoPollLi(): DepsPollLi {
  * running in sweep-only mode (`LOJA_INTEGRADA_TASKS_DISABLED=1`: each
  * notification is persisted for the reprocess sweep instead).
  *
- * Two gates keep it inert until the window, each with ZERO reads: the importer
- * seam is empty until step 5, and the read switch `LOJA_INTEGRADA_CHAMADAS` is
- * unset everywhere until the window sets it.
+ * Two gates, each stopping a tick with ZERO reads: the importer seam (filled
+ * since step 5, so it passes) and the read switch `LOJA_INTEGRADA_CHAMADAS`,
+ * unset everywhere until the window sets it — which keeps the poller inert.
  *
  * 300 s: the tick budgets 220 s across its contas (each at most 100 s, paced at
  * 2 000 ms a call), and a run may overshoot by one pacer interval plus one

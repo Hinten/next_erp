@@ -35,9 +35,8 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       '**/.next/**',
-      // Same trap, and it is listed BEFORE any such suite exists: the Firestore
-      // emulator lane is step 22's (#1530), and a `*.firestore.test.ts` landing
-      // then would otherwise be collected here and skip green.
+      // Same trap for the Firestore-only suites, which ride the SAME tasks job
+      // (vitest.tasks.config.ts includes both suffixes — the LI fold, #1530).
       '**/*.firestore.test.ts',
       '**/*.tasks.test.ts',
     ],

@@ -14,6 +14,7 @@ import {
   SECTION_KIT,
   SECTION_MERCADO_LIVRE,
   SECTION_MODIFICACOES,
+  SECTION_SHOPEE,
   SECTION_VARIACOES,
   produtoObjectViewSchema,
 } from './produtoFields';
@@ -41,18 +42,30 @@ describe('produto section (tab) order', () => {
     // The base list is what a new screen-specific tab must be inserted into —
     // appending to it instead is how the tab drifts off the end again.
     expect(PRODUTO_SECTIONS_BASE).not.toContain(SECTION_MERCADO_LIVRE);
+    expect(PRODUTO_SECTIONS_BASE).not.toContain(SECTION_SHOPEE);
     expect(PRODUTO_SECTIONS.slice(0, PRODUTO_SECTIONS_BASE.length)).toEqual(PRODUTO_SECTIONS_BASE);
     expect(PRODUTO_SECTIONS_EDITAR.slice(0, PRODUTO_SECTIONS_BASE.length)).toEqual(
       PRODUTO_SECTIONS_BASE,
     );
   });
 
-  it('puts Modificações immediately before Mercado Livre, on the edit screen only', () => {
-    expect(PRODUTO_SECTIONS_EDITAR.slice(-2)).toEqual([
+  it('puts Modificações immediately before the channel tabs, on the edit screen only', () => {
+    expect(PRODUTO_SECTIONS_EDITAR.slice(-3)).toEqual([
       SECTION_MODIFICACOES,
+      SECTION_SHOPEE,
       SECTION_MERCADO_LIVRE,
     ]);
     expect(PRODUTO_SECTIONS).not.toContain(SECTION_MODIFICACOES);
+  });
+
+  it('puts Shopee immediately before Mercado Livre on both screens (#1529)', () => {
+    // The two channel tabs sit side by side, and saving a new produto moves
+    // neither: the create screen's tail is the edit screen's tail.
+    expect(PRODUTO_SECTIONS.slice(-2)).toEqual([SECTION_SHOPEE, SECTION_MERCADO_LIVRE]);
+    expect(PRODUTO_SECTIONS_EDITAR.slice(-2)).toEqual([SECTION_SHOPEE, SECTION_MERCADO_LIVRE]);
+    // Exactly once each — a duplicated entry renders two tabs with one panel.
+    expect(PRODUTO_SECTIONS.filter((s) => s === SECTION_SHOPEE)).toHaveLength(1);
+    expect(PRODUTO_SECTIONS_EDITAR.filter((s) => s === SECTION_SHOPEE)).toHaveLength(1);
   });
 
   it('starts both screens on the same first tab', () => {

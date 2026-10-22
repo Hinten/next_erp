@@ -97,7 +97,8 @@ import { getDb } from './lib/admin';
  * `roles/cloudtasks.enqueuer` plus `roles/run.invoker` on `sendShopeeStock`,
  * and `TASKS_INVOKER_SA` is AUTHORITATIVE — a deploy REPLACES the members of
  * both bindings, so an identity left out of that list LOSES the role. See
- * `functions/DEPLOY.md`; granting it is step 22's.
+ * `functions/DEPLOY.md`; on production, granting it is a migration-window step
+ * (#1998).
  */
 
 /**

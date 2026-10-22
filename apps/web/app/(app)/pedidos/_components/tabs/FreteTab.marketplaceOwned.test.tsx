@@ -12,6 +12,7 @@ import {
   MODALIDADE_FRETE,
   integracoesFreteSchema,
   isFreteMarketplaceOwned,
+  isFreteSelecionavelManualmente,
   seedFreteInicial,
 } from '@delfrance/schemas';
 import type { FreteInicialFormState, PedidoFormState } from '../types';
@@ -246,14 +247,19 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
 
     const oferecidos = screen.getAllByRole('option').map((o) => o.textContent);
     const marketplace = integracoesFreteSchema.options.filter(isFreteMarketplaceOwned);
-    const proprios = integracoesFreteSchema.options.filter((t) => !isFreteMarketplaceOwned(t));
+    const proprios = integracoesFreteSchema.options.filter(isFreteSelecionavelManualmente);
 
-    // O PAR. Os cinco donos-marketplace não aparecem…
+    // O PAR. Os quatro donos-marketplace não aparecem…
     expect(marketplace.length).toBeGreaterThan(0);
     for (const tipo of marketplace) {
       expect(oferecidos).not.toContain(INTEGRACAO_FRETE_LABELS[tipo]);
     }
-    // …e o QUASE-ERRO: os não-marketplace continuam todos lá, um a um, então o
+    // …nem a Loja Integrada: ela não é dona do bloco (é roteada, passo 15), mas
+    // escolhê-la aqui à mão marcaria o bloco com um tipo que nenhum fluxo de
+    // etiqueta despacha.
+    expect(isFreteMarketplaceOwned(INTEGRACAO_FRETE.lojaIntegrada)).toBe(false);
+    expect(oferecidos).not.toContain(INTEGRACAO_FRETE_LABELS[INTEGRACAO_FRETE.lojaIntegrada]);
+    // …e o QUASE-ERRO: os selecionáveis continuam todos lá, um a um, então o
     // filtro não dobrou demais nem esvaziou o Select.
     expect(oferecidos).toEqual(proprios.map((tipo) => INTEGRACAO_FRETE_LABELS[tipo]));
     expect(oferecidos).toContain(INTEGRACAO_FRETE_LABELS[INTEGRACAO_FRETE.melhorEnvios]);

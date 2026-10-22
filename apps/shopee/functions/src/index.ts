@@ -68,8 +68,8 @@ import * as stockSendHandlers from './sendStock';
  * Shopee Cloud Functions (gen2), codebase `shopee`. Deployed as a
  * deploy-artifact sub-build of `@delfrance/shopee-app` (see
  * scripts/prepare-deploy.mjs and `firebase.shopee.deploy.json`, which ships
- * INERT — the rollout is step 22's, #1530, and running it is a manual
- * coordinated human step).
+ * INERT — running it is a manual coordinated human step, and production's
+ * first deploy is a migration-window one, #1998).
  *
  * Master plan step 3 (#1511) wires the resilient notification pipeline as a
  * **Cloud Tasks queue** (`processShopeeNotification`, ./processNotification) +
@@ -475,7 +475,8 @@ export const sweepShopeeAuthorizationExpiry = onSchedule(
  * `roles/cloudtasks.enqueuer` plus `roles/run.invoker` on
  * `processShopeeNotification`, and `TASKS_INVOKER_SA` is AUTHORITATIVE — a
  * deploy REPLACES the members of both bindings, so an identity left out of that
- * list LOSES the role. See functions/DEPLOY.md; granting it is step 22's.
+ * list LOSES the role. See functions/DEPLOY.md; on production, granting it is a
+ * migration-window step (#1998).
  */
 export const sweepShopeeLostPushes = onSchedule(
   {

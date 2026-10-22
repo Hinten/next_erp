@@ -14,6 +14,7 @@
     "clean": "rm -rf dist .turbo out *.tsbuildinfo",
     "lint": "eslint .",
     "migrate:amazon-int-frete": "dotenv -e ../../.env.local -- tsx src/2026-10-amazon-int-frete/backfill.ts",
+    "migrate:amazon-tokenoaut-legado": "dotenv -e ../../.env.local -- tsx src/2026-10-amazon-tokenoaut-legado/migrate.ts",
     "migrate:conversa-cliente-outer-ref": "dotenv -e ../../.env.local -- tsx src/2026-08-conversa-cliente-outer-ref/migrate.ts",
     "migrate:deposito-outer-ref": "dotenv -e ../../.env.local -- tsx src/2026-08-deposito-outer-ref/migrate.ts",
     "migrate:historico-estoque-v2": "dotenv -e ../../.env.local -- tsx src/2026-08-historico-estoque-v2/migrate.ts",
