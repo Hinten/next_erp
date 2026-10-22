@@ -50,6 +50,12 @@
  * a deactivated conta's row is never closed here (a documented residue: the
  * poll skips the conta, so the row waits for a reactivation or a deletion).
  *
+ * The order import's per-conta tipo (step 5, `amazonContaPrecisaAtencao`) has
+ * ONE key per motivo, and every one of them is in the set — exact keys, never a
+ * prefix scan; a deleted conta's rows are resolved CLOCKED by the same read time.
+ * Its per-PEDIDO tipo is never a candidate here: its key names an order this
+ * pass cannot compute, so it is outside `TIPOS_AVISO_AMAZON_POR_CONTA`.
+ *
  * ⚠️ **Known limit** (Loja Integrada's and Shopee's, the same query): beyond
  * `PAGINA × MAX_PAGINAS` (1 000) open avisos repo-wide, the OLDEST rows — the
  * ones this pass exists for — are never reached. The cure is a discriminated
@@ -76,6 +82,7 @@ import {
   avisarReconexaoPendente,
   avisarSegredoLwaExpirando,
   chaveImportacaoParada,
+  chavesContaPrecisaAtencao,
   chaveReautorizacao,
   chaveReconexao,
   resolverAvisoDeContaRemovida,
@@ -273,6 +280,8 @@ export async function sweepAmazonExpiracoes(
     chavesExistentes.add(chaveReautorizacao(conta.integracaoId));
     // The poll's row while the conta exists (header): never an orphan.
     chavesExistentes.add(chaveImportacaoParada(conta.integracaoId));
+    // The order import's per-conta rows (step 5): EVERY motivo's exact key.
+    for (const chave of chavesContaPrecisaAtencao(conta.integracaoId)) chavesExistentes.add(chave);
   }
 
   let lidos = 0;

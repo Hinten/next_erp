@@ -4,6 +4,7 @@ import {
   BANDEIRA_LABELS,
   bandeiraCartaoMeta,
   bandeiraCartaoSchema,
+  bandeiraDoNomeDaMarca,
   bandeiraSchema,
 } from './bandeiraCartao';
 
@@ -135,4 +136,96 @@ describe('bandeiraCartaoMeta', () => {
     expect(bandeiraCartaoMeta.permissions.write).toBe(1n << 25n);
     expect(bandeiraCartaoMeta.permissions.delete).toBe(1n << 26n);
   });
+});
+
+/**
+ * `bandeiraDoNomeDaMarca` decides which card brand two spellings name — a fold
+ * whose output is what the NF-e `tBand` says (`equivalence-fold-inventory`). Each
+ * direction is pinned: what must come out EQUAL, and the near-misses that must
+ * stay DISTINCT.
+ */
+describe('bandeiraDoNomeDaMarca', () => {
+  const conhecida = (bandeira: string) => ({ bandeira, desconhecida: false });
+  const DESCONHECIDA = { bandeira: BANDEIRA.outros, desconhecida: true };
+  const SEM_MARCA = { bandeira: null, desconhecida: false };
+
+  it.each([
+    ['Visa', BANDEIRA.visa],
+    ['VISA', BANDEIRA.visa],
+    [' visa ', BANDEIRA.visa],
+    ['Mastercard', BANDEIRA.mastercard],
+    ['MasterCard', BANDEIRA.mastercard],
+    ['master', BANDEIRA.mastercard],
+    ['American Express', BANDEIRA.american_express],
+    ['amex', BANDEIRA.american_express],
+    ['american_express', BANDEIRA.american_express],
+    ['Diners Club', BANDEIRA.diners],
+    ['diners', BANDEIRA.diners],
+    ['Elo', BANDEIRA.elo],
+    ['Hipercard', BANDEIRA.hipercard],
+  ])('★ EQUAL: %j ⇒ %s', (raw, codigo) => {
+    expect(bandeiraDoNomeDaMarca(raw)).toEqual(conhecida(codigo));
+  });
+
+  it('★ every BANDEIRA member name is a hit — the Shopee-parity members included', () => {
+    // A fold without the member-name lookup would answer `sorocred`, `aura` and
+    // `cabal` as unknown, and moving the Shopee importer onto this fold would
+    // then change its verdicts.
+    expect(bandeiraDoNomeDaMarca('sorocred')).toEqual(conhecida(BANDEIRA.sorocred));
+    expect(bandeiraDoNomeDaMarca('aura')).toEqual(conhecida(BANDEIRA.aura));
+    expect(bandeiraDoNomeDaMarca('Cabal')).toEqual(conhecida(BANDEIRA.cabal));
+    for (const [nome, codigo] of Object.entries(BANDEIRA)) {
+      expect(bandeiraDoNomeDaMarca(nome), nome).toEqual(conhecida(codigo));
+    }
+  });
+
+  it("the two aliases beyond the Shopee importer's fold are KNOWN — its migration turns exactly these from unknown into known", () => {
+    // The Shopee fold knows the member names plus `master` and `amex`, and files
+    // any other spelling as an unknown 99. This fold keeps every one of those
+    // verdicts and adds exactly the two below, so moving the Shopee importer
+    // here changes those two (unknown 99 ⇒ a known code), and nothing else.
+    const comumAosDois = { master: BANDEIRA.mastercard, amex: BANDEIRA.american_express };
+    for (const [nome, codigo] of Object.entries(comumAosDois)) {
+      expect(bandeiraDoNomeDaMarca(nome), nome).toEqual(conhecida(codigo));
+    }
+    const soNesteFold = {
+      'american express': BANDEIRA.american_express,
+      'diners club': BANDEIRA.diners,
+    };
+    for (const [nome, codigo] of Object.entries(soNesteFold)) {
+      expect(bandeiraDoNomeDaMarca(nome), nome).toEqual(conhecida(codigo));
+    }
+  });
+
+  it.each(['Visas', 'Visa Electron', 'Master Card', 'american  express', 'mastercard platinum'])(
+    '★ NEAR-MISS: %j is UNKNOWN (99 + desconhecida), never the brand it contains',
+    (raw) => {
+      expect(bandeiraDoNomeDaMarca(raw)).toEqual(DESCONHECIDA);
+    },
+  );
+
+  it('★ NEAR-MISS: an explicit `outros` is 99 WITHOUT the unknown flag — distinct from an unknown brand', () => {
+    expect(bandeiraDoNomeDaMarca('outros')).toEqual(conhecida(BANDEIRA.outros));
+    expect(bandeiraDoNomeDaMarca('Outros')).toEqual(conhecida(BANDEIRA.outros));
+    expect(bandeiraDoNomeDaMarca('outros')).not.toEqual(bandeiraDoNomeDaMarca('nao-existe'));
+  });
+
+  it('NEAR-MISS: two real brands stay apart', () => {
+    expect(bandeiraDoNomeDaMarca('Elo')).not.toEqual(bandeiraDoNomeDaMarca('Hipercard'));
+    expect(bandeiraDoNomeDaMarca('Visa')).not.toEqual(bandeiraDoNomeDaMarca('Mastercard'));
+  });
+
+  it.each([[''], ['   '], [null], [undefined], [1], [{ nome: 'visa' }]])(
+    '★ no brand (%j) is null, never 99',
+    (raw) => {
+      expect(bandeiraDoNomeDaMarca(raw)).toEqual(SEM_MARCA);
+    },
+  );
+
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    '★ an inherited key (%s) is an UNKNOWN brand, never a function or a hit',
+    (raw) => {
+      expect(bandeiraDoNomeDaMarca(raw)).toEqual(DESCONHECIDA);
+    },
+  );
 });

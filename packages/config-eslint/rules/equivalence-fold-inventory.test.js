@@ -60,7 +60,7 @@ import { gitGrep } from './lib/repo-scan.js';
  * bottom of this file.
  */
 const PATTERN =
-  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches|mesmoPrecoEmReais|mesmaReceitaKitShopee|chaveReceitaKitErp|principalDoKitShopee|mesmoEnderecoDeComponente|modeloDoComponenteKit|skuDoItemShopee|opcaoDoTierKit|situacaoDoSkuDoKit|chaveReceitaArmazenadaDoFilho|chaveDoPaiDaFamiliaDeUm|receitaFielAosEnderecos|chaveFormaEnvioLi|idDoAlvoDoMapaLi|entradaDoMapaPorChaveLi|montarEntradaDoMapaLi)\\b';
+  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches|mesmoPrecoEmReais|mesmaReceitaKitShopee|chaveReceitaKitErp|principalDoKitShopee|mesmoEnderecoDeComponente|modeloDoComponenteKit|skuDoItemShopee|opcaoDoTierKit|situacaoDoSkuDoKit|chaveReceitaArmazenadaDoFilho|chaveDoPaiDaFamiliaDeUm|receitaFielAosEnderecos|chaveFormaEnvioLi|idDoAlvoDoMapaLi|entradaDoMapaPorChaveLi|montarEntradaDoMapaLi|bandeiraDoNomeDaMarca)\\b';
 
 /**
  * Source only. Tests are excluded deliberately: a test SHOULD exercise a fold
@@ -186,6 +186,10 @@ const INVENTARIO = {
     "CALLS `idDoAlvoDoMapaLi(linha.integracaoUid)` on the Loja Integrada conta screen's \"Mapeamento do Frete\" tab (step 20, #1826) for two decisions, both the definer's fold applied verbatim: (1) the row's \"Mapeada\" / \"Sem mapeamento\" badge — decided by `integracaoUid` ALONE, never by `targetTipoIntegracao`, because `'outros'` is both a real target tipo and the stored cleared state; folding too much would call an unmapped row mapped (its orders would then import unmapped with no hint on screen), too little would hide a real mapping; (2) WHICH stored target the \"Destino\" select names and resolves by id (inactive, deleted or of an unsupported tipo), so a path-form uid and a bare id name the same doc. Equal: `'abc'` ≡ `'int_frete/abc'` ≡ `'documents/int_frete/abc'`. Distinct: `null`, `''` and a non-string are UNMAPPED whatever the tipo; a row with a target tipo but no uid is unmapped; another id (`'abcd'`) is another target. Writes never go through it: the select stores the BARE id of the doc picked. Near-miss: `MapaFreteManager.test.tsx` — \"⚠️ NEAR-MISS: a row with a target tipo but no integracaoUid is NOT mapped\" and \"⚠️ NEAR-MISS: an empty integracaoUid is NOT mapped\", paired with \"EQUAL pair: a row whose target tipo is 'outros' WITH an integracaoUid IS mapped\" and \"EQUAL pair: a path-form integracaoUid names the same stored target as its bare id\".",
   'packages/data/src/pipeline-queries.ts':
     'Defines `sanitizeSearchDsl`, which turns operator input into a Firestore search-DSL string — so it decides which two terms issue the SAME text query. Equal: the DSL operator characters (`" ( ) + : ~ ^ * ? -`) collapsed to spaces, runs of whitespace collapsed, ends trimmed — `Porta-lápis` ≡ `Porta lápis`, because a raw `-` NEGATES and would ask for "Porta but NOT lápis" and return nothing with no error. Distinct: singular vs plural (`Camiseta` / `Camisetas`), accented vs unaccented (`Leão` / `Leao`), and case — all three are the pt-BR ANALYZER’s business at query time, and folding them here would replace a measured, partial backend behaviour with a total one (accent folding was measured INCONSISTENT: `Leao` reaches `Leão`, `Ceramica` does not reach `Cerâmica`). Also distinct from a match: a term of pure operators returns `undefined`, never the empty DSL string. Near-miss: `pipeline-queries.test.ts` — "folds a term whose operators the DSL would have read as syntax" paired with "keeps NEAR-MISSES distinct — the analyzer relates them, not this".',
+  'packages/schemas/src/bandeiraCartao.ts':
+    "DEFINES `bandeiraDoNomeDaMarca(raw)`, the shared card-brand fold (Amazon step 5, #1931): a brand NAME as a marketplace sends it → the NF-e `tBand` code, so it decides which two spellings name the SAME brand. Equal: case and surrounding whitespace only, then a `BANDEIRA` member name (`visa`, `mastercard`, `american_express`, `sorocred`, `diners`, `elo`, `hipercard`, `aura`, `cabal`, `outros`) or one of its listed aliases (`master`, `amex`, `american express`, `diners club`) — `Visa` ≡ `VISA` ≡ ` visa `, `Mastercard` ≡ `master`, `American Express` ≡ `amex` ≡ `american_express`. Distinct: any other word, a longer word containing a brand (`Visa Electron`, `Visas` ⇒ unknown 99, never Visa), inner spacing, `Elo` vs `Hipercard`, blank vs `99` (no brand is `null`), and an unknown brand vs an explicit `outros` (both 99, told apart by `desconhecida`); inherited keys (`constructor`, `toString`) are unknown through `Object.hasOwn`. A superset of the Shopee importer's own fold: every spelling that fold knows keeps its code and flag here, but `american express` and `diners club`, which that fold files as an unknown 99, are known here, so moving that caller here turns exactly those two from unknown into known (pinned by `the two aliases beyond the Shopee importer's fold`). Near-miss tests: `bandeiraCartao.test.ts` (`NEAR-MISS: ... is UNKNOWN`, `an explicit outros is 99 WITHOUT the unknown flag`, `no brand ... is null, never 99`).",
+  'packages/schemas/src/cartaoMarketplace.ts':
+    'CALLS `bandeiraDoNomeDaMarca(marcaBruta)` in `cartaoMarketplace`, the shared marketplace card-block rule (Amazon step 5, #1931): the fold decides ONLY `cartao.bandeira`, and only on a CARD forma (3 credit, 4 debit); Pix (17) never carries a brand (`null`, the fold not run), and a forma outside the three carries no block at all. It adds no fold of its own — the institution CNPJ goes through `cpfCnpjUtilizavel` narrowed to 14 characters, a validation, not an equivalence. Near-miss tests: `cartaoMarketplace.test.ts` (`Pix with a brand ⇒ bandeira: null`, `an unknown brand on a card forma ⇒ 99 + bandeiraDesconhecida; an explicit outros ⇒ 99 without it`).',
   'packages/ui/src/table/TableView.tsx':
     'The SOLE caller of `sanitizeSearchDsl`, applied to whatever `search.toTextQuery` returns before it becomes a `textSearch` stage. Sanitising lives here rather than in each page deliberately: a caller that forgot would get a silently empty widened result instead of an error. Not itself a comparison — it produces the query string, and the fold’s reach is specified where it is defined. Near-miss: `TableView.test.tsx` — "sanitises the term, so a DSL operator is not read as syntax" plus "issues nothing when the term sanitises away entirely".',
 
@@ -194,6 +198,7 @@ const INVENTARIO = {
     'Uses `localizarDecimal` as an INPUT transform on a numeric cell (typed `10.5` becomes `10,5`), never to compare. Nothing decides sameness here.',
   'packages/ai/src/index.ts': 'Barrel re-export of `normalizeLoose`. No fold.',
   'packages/data/src/index.ts': 'Barrel re-export of `sanitizeSearchDsl`. No fold.',
+  'packages/schemas/src/index.ts': 'Barrel re-export of `bandeiraDoNomeDaMarca`. No fold.',
   'apps/web/app/(app)/produtos/page.tsx':
     'Comment only — `produtoSearch.toTextQuery` returns the RAW term and its docblock names `sanitizeSearchDsl` to say why it must not pre-quote (quoting neutralises the DSL operators but also suppresses the pt-BR analyzer, so `Leao` stops reaching `Leão`). The call itself is in `TableView`, above. Nothing here decides sameness.',
   'packages/ai/src/cells.ts':
@@ -373,6 +378,20 @@ describe('every file folding a value to decide sameness is inventoried', () => {
     expect(regex.test('{ idOriginal: chave }')).toBe(false);
     expect(regex.test('await registrarFormaEnvioNoMapaLi(db, entrada, deps);')).toBe(false);
     expect(regex.test('idDoAlvoDoMapa(x)')).toBe(false);
+  });
+
+  it('⚠️ matches the shared card-brand fold `bandeiraDoNomeDaMarca` and NOT its lookalikes', () => {
+    // The same two controls for Amazon step 5's addition (#1931): the shared
+    // fold must match, while the Shopee importer's own per-channel fold (a
+    // different, app-local name) and a longer name built on the shared one must
+    // not — the guard inventories callers of THIS helper only.
+    const regex = new RegExp(PATTERN);
+
+    expect(regex.test('const marca = bandeiraDoNomeDaMarca(entrada.marcaBruta);')).toBe(true);
+
+    expect(regex.test('const bandeira = bandeiraDeCardBrand(entrada.card_brand);')).toBe(false);
+    expect(regex.test('bandeiraDoNomeDaMarcaX(raw)')).toBe(false);
+    expect(regex.test('{ bandeira: BANDEIRA.outros, desconhecida: true }')).toBe(false);
   });
 
   it('⚠️ still covers the file the guard was written for', () => {

@@ -116,6 +116,8 @@ export const TIPO_AVISO_LABELS = {
   amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
   amazonSegredoLwaRecusado: 'Segredo do aplicativo da Amazon recusado',
   amazonImportacaoParada: 'Importação de pedidos da Amazon parada',
+  amazonPedidoPrecisaAtencao: 'Pedido da Amazon precisa de atenção',
+  amazonContaPrecisaAtencao: 'Conta da Amazon precisa de atenção',
 } as const;
 
 /**
@@ -881,6 +883,136 @@ export const TIPO_AVISO_LABELS = {
  *    row). A row left open when the conta is deactivated stays open until the
  *    conta is reactivated and polls cleanly, or is deleted (a documented
  *    residue: the enumeration lists inactive contas, and the poll skips them).
+ *
+ * ---
+ *
+ * **`amazonPedidoPrecisaAtencao`** (Amazon steps 5 and 7, #1931 and #1933 —
+ * producer in `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order
+ * import) — one Amazon order needs a person, for one of the
+ * {@link MOTIVO_PEDIDO_AMAZON} reasons. Only a reason a later import can see END
+ * is a member: a permanent fact of an order (fulfilled by Amazon, a zero value,
+ * a cancellation after shipment, a split or divergent payment, a possible
+ * refund) is a pedido INCIDENTE instead, on the pedido's Incidentes tab, because
+ * this collection has no dismiss button and such a row would stand until
+ * retention.
+ *
+ *  - **Channel-specific**: the motivos and their remedies (Seller Central, the
+ *    pedido's lines, the pickup) are this import's own.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: orderId,
+ *    janela: motivo })` — ONE row per (order, motivo): two motivos of one order
+ *    are two rows, each closed by its own resolver. `entidade` is Amazon's order
+ *    id (digits and dashes, which the segment fold leaves alone); `janela` is the
+ *    MOTIVO, a finite set the resolver recomputes, never a time window.
+ *  - **Severity per motivo** (per call site, as {@link severidadeAvisoSchema}
+ *    allows), canal `amazon`, every raise WITHOUT escalation (in-app only, the
+ *    channel's convention): listed with each motivo below.
+ *  - **`params` are exactly `pedido`** (Amazon's order id — the ONE value the
+ *    wording prints) **and `motivo`** — a {@link MOTIVO_PEDIDO_AMAZON} CODE,
+ *    never a sentence, so a wording fix in `mensagens.ts` is retroactive. The
+ *    `motivo` field carries the same code. No buyer datum, no price.
+ *  - **`relogioEvento`** = a FIRESTORE commit or read time in µs, never the
+ *    order's own clock: the commit time of the import's pedido write, or the
+ *    read time of the snapshot an import that wrote nothing decided from. The
+ *    import re-derives an order on an EQUAL order clock, and `escreverAviso` /
+ *    `resolverAviso` drop an equal clock, so an order-clocked resolve would be
+ *    lost. ⚠️ Per-pedido timeline: never compare it with another tipo's.
+ *  - **Route**: the pedido (`ROTAS_AVISO.pedido`).
+ *  - **Never raised or resolved** by an import that read an older observation
+ *    than the pedido already holds: that import writes nothing at all.
+ *  - **Machine resolvers** — per motivo, the import of that order that sees the
+ *    condition END, clocked as above — with each motivo's severity and residue:
+ *     - `divergencia-itens` — **critico**. The lines or the order money Amazon
+ *       sends differ from those of an approved pedido, or a line was cancelled
+ *       on an order still to ship: the import kept the stored lines and blocked
+ *       the pedido. Resolver: the import that finds the lines agreeing again,
+ *       or the lines `congelado` (an operator edited them). Residue: the
+ *       operator's edit is seen only at the order's next import, so an order
+ *       Amazon never updates again keeps its row until retention.
+ *     - `logistica-desconhecida` — **critico**. Amazon sent no usable
+ *       `fulfilledBy`, so the import cannot tell who ships the order. Resolver:
+ *       the import that reads one. Residue: an order Amazon never updates again
+ *       keeps its row until retention.
+ *     - `aceitar-cancelamento` — **critico**. A PRINTED pedido was moved to
+ *       `cancelado` by a buyer cancellation request: the operator must accept
+ *       the cancellation in Seller Central. Later also raised by the NF-e upload
+ *       and the label steps when they refuse an order with an open request.
+ *       Resolver: the cancellation executed (Amazon `CANCELLED`), or no request
+ *       left. Residue: an order Amazon never updates again keeps its row until
+ *       retention.
+ *     - `cancelado-so-no-erp` — **critico**. The stored pedido is `cancelado`
+ *       while Amazon's order is still to ship (`UNSHIPPED` /
+ *       `PARTIALLY_SHIPPED`) with no open request: the seller declined the
+ *       request, or the ERP cancelled on its own. The operator reopens the
+ *       pedido or cancels the order in Seller Central — never the import, whose
+ *       ladder never moves a `cancelado` back. Resolver: Amazon `CANCELLED` or
+ *       `SHIPPED`, or an import that finds the stored estado no longer
+ *       `cancelado`. Residue: a reopen is seen only at the order's next import,
+ *       so an order Amazon never updates again keeps its row until retention.
+ *     - `status-desconhecido` — **atencao**. A fulfillment status the import
+ *       does not know: a new pedido is created at the import's own error, an
+ *       existing one keeps its estado. Resolver: the import that reads a known
+ *       status. Residue: a status a later release learns does not resolve the
+ *       row by itself — the order's next import does; an order Amazon never
+ *       updates again keeps its row until retention.
+ *     - `cancelamento-solicitado` — **atencao**. The buyer asked to cancel a
+ *       pedido not yet printed; its estado is unchanged, and the seller decides
+ *       in Seller Central. Resolver: no request left, or the cancellation
+ *       executed. Residue: an order Amazon never updates again keeps its row
+ *       until retention.
+ *     - `pacote-status-desconhecido` — **atencao**. A package status the freight
+ *       import does not know, or a package without a reference: its freight
+ *       estado was not moved. Resolver: every package token known and keyed.
+ *       Residue: an order Amazon never updates again keeps its row until
+ *       retention.
+ *     - `coleta-cancelada` — **atencao**. The carrier pickup was cancelled — the
+ *       pickup, not the order. Resolver: no package `LABEL_CANCELLED` left, or
+ *       the order `CANCELLED`. Residue: an order Amazon never updates again
+ *       keeps its row until retention.
+ *  - **The conta-wide residue**: a DELETED conta's per-pedido rows have no
+ *    resolver at all. The expiry sweep's orphan pass closes per-CONTA tipos
+ *    only, and this tipo is deliberately NOT among them: the pass resolves every
+ *    open row of a listed tipo whose id it does not compute, so listing this one
+ *    would close every live pedido's row every day.
+ *
+ * ---
+ *
+ * **`amazonContaPrecisaAtencao`** (Amazon step 5, #1931 — producer in
+ * `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order import) — an
+ * Amazon conta's own setup needs a person, as seen while importing its orders.
+ * One of the {@link MOTIVO_CONTA_AMAZON} reasons.
+ *
+ *  - **A tipo of its own, apart from `amazonPedidoPrecisaAtencao`**: this one IS
+ *    in the expiry sweep's orphan pass, and its keys name no order, so the pass
+ *    computes both of them for every listed conta (`conta/expiracaoSweep.ts`).
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, janela: motivo })` — no
+ *    `entidade`; ONE row per (conta, motivo).
+ *  - **Severity `atencao`** for both motivos, canal `amazon`, in-app only: the
+ *    orders keep importing.
+ *  - **`params` are exactly `motivo`** — a {@link MOTIVO_CONTA_AMAZON} CODE; the
+ *    `motivo` field carries the same code. The route names the conta, so the
+ *    wording prints no value.
+ *  - **`relogioEvento`** = the µs read time of the import's UNCACHED conta read
+ *    — the server timeline the orphan pass's conta enumeration shares — never an
+ *    order's clock: one row gathers observations from many orders, whose clocks
+ *    do not compare. ⚠️ Never compare it with another tipo's.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalAmazon`).
+ *  - **Machine resolvers** — per motivo, clocked as above — with each motivo's
+ *    severity and residue:
+ *     - `conta-sem-operacao` — **atencao**. The conta names no operação, so its
+ *       pedidos import without one (the import fills it once the conta has
+ *       one). Resolver: the next import whose conta read finds an operação.
+ *       Residue: a conta that imports no order after the fix keeps its row until
+ *       its next import.
+ *     - `intermediador-divergente` — **atencao**. The marketplace document
+ *       Amazon names on an order does not match the conta's own document.
+ *       Resolver: the next import whose verdict clears it. Residue: Amazon drops
+ *       that document once an order ships, so a conta whose later orders carry
+ *       none keeps its row until one does.
+ *  - **Both motivos, once the conta is gone**: the expiry sweep's orphan pass
+ *    (`conta-removida`), CLOCKED by the conta enumeration's read time, so a conta
+ *    created after that read keeps its row. A DEACTIVATED conta is still listed,
+ *    so its rows stay open until it imports again or is deleted (a documented
+ *    residue).
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -912,6 +1044,8 @@ export const tipoAvisoSchema = z
     'amazonSegredoLwaExpirando',
     'amazonSegredoLwaRecusado',
     'amazonImportacaoParada',
+    'amazonPedidoPrecisaAtencao',
+    'amazonContaPrecisaAtencao',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -946,6 +1080,8 @@ export const TIPO_AVISO = {
   amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
   amazonSegredoLwaRecusado: 'amazonSegredoLwaRecusado',
   amazonImportacaoParada: 'amazonImportacaoParada',
+  amazonPedidoPrecisaAtencao: 'amazonPedidoPrecisaAtencao',
+  amazonContaPrecisaAtencao: 'amazonContaPrecisaAtencao',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -1101,6 +1237,71 @@ export const MOTIVO_IMPORTACAO_PARADA_AMAZON = {
   filaIndisponivel: 'fila-indisponivel',
   orcamentoEsgotado: 'orcamento-esgotado',
 } as const satisfies Record<string, MotivoImportacaoParadaAmazon>;
+
+/**
+ * Why one Amazon order needs a person — the `amazonPedidoPrecisaAtencao`
+ * aviso's `params.motivo` AND its key's `janela`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
+ * shape: a wording fix is retroactive). Eight members, each with its severity,
+ * its machine resolver and its residue in the tipo's docblock entry above:
+ *
+ *  - **critico**: `divergencia-itens`, `logistica-desconhecida`,
+ *    `aceitar-cancelamento`, `cancelado-so-no-erp`;
+ *  - **atencao**: `status-desconhecido`, `cancelamento-solicitado`,
+ *    `pacote-status-desconhecido`, `coleta-cancelada`.
+ *
+ * ⚠️ Only a reason a later import can see END is a member. A permanent fact of
+ * an order is a pedido incidente, never a member here: this aviso has no dismiss
+ * button, so a row nothing resolves stands until retention.
+ *
+ * Stored as an aviso PARAM, so the aviso schema itself does not validate it: a
+ * code newer than the web build reaches the reader as a plain string, and
+ * `mensagens.ts` falls back rather than printing `undefined`.
+ */
+export const motivoPedidoAmazonSchema = z.enum([
+  'divergencia-itens',
+  'logistica-desconhecida',
+  'aceitar-cancelamento',
+  'cancelado-so-no-erp',
+  'status-desconhecido',
+  'cancelamento-solicitado',
+  'pacote-status-desconhecido',
+  'coleta-cancelada',
+]);
+export type MotivoPedidoAmazon = z.infer<typeof motivoPedidoAmazonSchema>;
+
+/** Named members of {@link motivoPedidoAmazonSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_PEDIDO_AMAZON = {
+  divergenciaItens: 'divergencia-itens',
+  logisticaDesconhecida: 'logistica-desconhecida',
+  aceitarCancelamento: 'aceitar-cancelamento',
+  canceladoSoNoErp: 'cancelado-so-no-erp',
+  statusDesconhecido: 'status-desconhecido',
+  cancelamentoSolicitado: 'cancelamento-solicitado',
+  pacoteStatusDesconhecido: 'pacote-status-desconhecido',
+  coletaCancelada: 'coleta-cancelada',
+} as const satisfies Record<string, MotivoPedidoAmazon>;
+
+/**
+ * Why an Amazon conta's own setup needs a person — the
+ * `amazonContaPrecisaAtencao` aviso's `params.motivo` AND its key's `janela`, a
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. Two members,
+ * both **atencao**, each with its machine resolver and its residue in the tipo's
+ * docblock entry above: `conta-sem-operacao` (the conta names no operação) and
+ * `intermediador-divergente` (the marketplace document on an order does not
+ * match the conta's).
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_AMAZON}.
+ */
+export const motivoContaAmazonSchema = z.enum(['conta-sem-operacao', 'intermediador-divergente']);
+export type MotivoContaAmazon = z.infer<typeof motivoContaAmazonSchema>;
+
+/** Named members of {@link motivoContaAmazonSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_CONTA_AMAZON = {
+  contaSemOperacao: 'conta-sem-operacao',
+  intermediadorDivergente: 'intermediador-divergente',
+} as const satisfies Record<string, MotivoContaAmazon>;
 
 /**
  * Why a Loja Integrada order is contested — the `lojaIntegradaPedidoContestado`

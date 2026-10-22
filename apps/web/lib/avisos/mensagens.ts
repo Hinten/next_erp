@@ -1,21 +1,27 @@
 import {
+  MOTIVO_CONTA_AMAZON,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  MOTIVO_PEDIDO_AMAZON,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   PENDENCIA_RECLAMACAO,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
+  motivoContaAmazonSchema,
   motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
+  motivoPedidoAmazonSchema,
   motivoPedidoContestadoLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
   type Aviso,
+  type MotivoContaAmazon,
   type MotivoFreteNaoSuportadoLi,
   type MotivoImportacaoParadaAmazon,
   type MotivoImportacaoParadaLi,
+  type MotivoPedidoAmazon,
   type MotivoPedidoContestadoLi,
   type PendenciaReclamacao,
   type SituacaoAnuncioForaDaSincronizacao,
@@ -418,6 +424,92 @@ function fraseMotivoImportacaoParadaAmazon(valor: Aviso['params'][string] | unde
     : 'confira o registro da varredura de pedidos';
 }
 
+/**
+ * pt-BR do porquê um pedido da Amazon precisa de atenção — TOTAL sobre o código
+ * (`params.motivo`, um {@link MOTIVO_PEDIDO_AMAZON}). O produtor (a importação de
+ * pedidos da Amazon) grava o CÓDIGO, nunca a frase. Cada frase diz o que
+ * aconteceu, o que FAZER e quando o aviso se encerra — e nenhuma imprime outro
+ * valor além do número do pedido, que o corpo já traz.
+ *
+ * ⚠️ "Se encerra na próxima atualização do pedido pela Amazon": quem fecha o
+ * aviso é a importação seguinte desse pedido, não o conserto em si, então a
+ * frase não promete que ele some na hora.
+ */
+const FRASE_MOTIVO_PEDIDO_AMAZON: Record<MotivoPedidoAmazon, string> = {
+  [MOTIVO_PEDIDO_AMAZON.divergenciaItens]:
+    'os itens ou os valores que a Amazon informa não batem com os do pedido no ERP (por exemplo, ' +
+    'um item cancelado num pedido ainda a enviar), e o ERP não aplicou a mudança. Confira o ' +
+    'pedido no Seller Central e ajuste os itens no ERP antes de enviar; o aviso se encerra na ' +
+    'próxima atualização do pedido pela Amazon em que os itens baterem ou já tiverem sido ' +
+    'editados no ERP',
+  [MOTIVO_PEDIDO_AMAZON.logisticaDesconhecida]:
+    'a Amazon não informou quem faz a entrega (o vendedor ou a própria Amazon), então o ERP não ' +
+    'sabe se este pedido deve ser separado e enviado daqui. Confira no Seller Central quem ' +
+    'atende o pedido antes de enviar; o aviso se encerra quando a Amazon informar',
+  // ⚠️ Dois produtores gravam este código: a importação (um pedido impresso que
+  // ela marca como cancelado) e, mais tarde, os passos de NF-e e de etiqueta
+  // (que recusam um pedido com pedido de cancelamento aberto, sem cancelá-lo).
+  // Os params guardam só o código, então a frase vale para os dois.
+  [MOTIVO_PEDIDO_AMAZON.aceitarCancelamento]:
+    'o comprador pediu o cancelamento de um pedido que já foi impresso. Aceite o cancelamento ' +
+    'no Seller Central — enquanto isso, a Amazon continua esperando o envio; o aviso se ' +
+    'encerra quando a Amazon registrar o cancelamento ou quando não houver mais pedido de ' +
+    'cancelamento aberto',
+  [MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp]:
+    'o pedido está cancelado no ERP, mas a Amazon ainda espera o envio e não há pedido de ' +
+    'cancelamento aberto (o cancelamento foi recusado no Seller Central, ou o pedido foi ' +
+    'cancelado só no ERP). Reabra o pedido no ERP para enviá-lo, ou cancele-o no Seller ' +
+    'Central; o aviso se encerra quando a Amazon registrar o cancelamento ou o envio, ou na ' +
+    'próxima atualização do pedido pela Amazon depois de ele ser reaberto',
+  [MOTIVO_PEDIDO_AMAZON.statusDesconhecido]:
+    'a Amazon enviou uma situação de pedido que o ERP não conhece, e o estado do pedido não foi ' +
+    'mudado por ela (um pedido novo fica marcado com um erro). Confira o pedido no Seller ' +
+    'Central; o aviso se encerra quando a Amazon enviar uma situação conhecida',
+  [MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado]:
+    'o comprador pediu o cancelamento, e o pedido ainda não foi impresso. Decida no Seller ' +
+    'Central se aceita o cancelamento antes de imprimir ou enviar o pedido; o aviso se encerra ' +
+    'quando o pedido de cancelamento for aceito ou recusado',
+  [MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido]:
+    'a Amazon enviou uma situação de pacote que o ERP não conhece, e o frete do pedido não foi ' +
+    'atualizado por ela. Confira o envio no Seller Central; o aviso se encerra quando a Amazon ' +
+    'enviar situações conhecidas para todos os pacotes',
+  [MOTIVO_PEDIDO_AMAZON.coletaCancelada]:
+    'a coleta de um pacote foi cancelada — a coleta, não o pedido. Reagende a coleta no Seller ' +
+    'Central; o aviso se encerra quando nenhum pacote estiver com a coleta cancelada, ou se o ' +
+    'pedido for cancelado',
+};
+
+/** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */
+function fraseMotivoPedidoAmazon(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoPedidoAmazonSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_MOTIVO_PEDIDO_AMAZON[codigo.data]
+    : 'confira o pedido no Seller Central';
+}
+
+/**
+ * pt-BR do porquê uma conta da Amazon precisa de atenção — TOTAL sobre o código
+ * (`params.motivo`, um {@link MOTIVO_CONTA_AMAZON}). Sem nenhum valor
+ * interpolado: o link do aviso já abre a conta.
+ */
+const FRASE_MOTIVO_CONTA_AMAZON: Record<MotivoContaAmazon, string> = {
+  [MOTIVO_CONTA_AMAZON.contaSemOperacao]:
+    'ela não tem operação definida, então os pedidos dela entram no ERP sem operação. Defina a ' +
+    'operação no cadastro da conta: os pedidos já importados a recebem na próxima atualização ' +
+    'de cada um pela Amazon, e o aviso se encerra na próxima importação de pedido da conta',
+  [MOTIVO_CONTA_AMAZON.intermediadorDivergente]:
+    'o CNPJ do intermediador que a Amazon informa nos pedidos não confere com o CNPJ do ' +
+    'intermediador cadastrado na conta, que é o que vai na NF-e. Corrija o CNPJ do intermediador ' +
+    'no cadastro da conta; o aviso se encerra quando um pedido importado depois da correção ' +
+    'trouxer um CNPJ que confere',
+};
+
+/** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */
+function fraseMotivoContaAmazon(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoContaAmazonSchema.safeParse(valor);
+  return codigo.success ? FRASE_MOTIVO_CONTA_AMAZON[codigo.data] : 'confira o cadastro da conta';
+}
+
 export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   [TIPO_AVISO.shopeeAutorizacaoExpirando]: {
     titulo: 'Autorização Shopee expirando',
@@ -724,6 +816,20 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'desenvolvedor da Amazon e reautorize a conta. Nos demais casos, um desenvolvedor confere o ' +
       'registro da varredura de pedidos (o período inicial de busca é AMAZON_POLL_LOOKBACK_H, no ' +
       'ambiente das funções).',
+  },
+  // Os dois avisos da importação de pedidos da Amazon (passos 5 e 7). Sem
+  // `runbook`: o que fazer muda com o motivo, então cada frase de motivo o diz —
+  // no Seller Central ou no próprio ERP (o link abre o pedido ou a conta).
+  [TIPO_AVISO.amazonPedidoPrecisaAtencao]: {
+    titulo: 'Pedido da Amazon precisa de atenção',
+    corpo: (params) =>
+      `O pedido ${p(params, 'pedido')} da Amazon precisa de atenção: ` +
+      `${fraseMotivoPedidoAmazon(params.motivo)}.`,
+  },
+  [TIPO_AVISO.amazonContaPrecisaAtencao]: {
+    titulo: 'Conta da Amazon precisa de atenção',
+    corpo: (params) =>
+      `A conta da Amazon precisa de atenção: ${fraseMotivoContaAmazon(params.motivo)}.`,
   },
 };
 
