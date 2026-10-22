@@ -1218,6 +1218,17 @@ describe('the freight routing and its aviso (import step 6)', () => {
     }
   });
 
+  it('a motoboy target on a row that still carries a Melhor Envio service ⇒ routed to it with NO `externalOptionId`', async () => {
+    const db = novoDb();
+    seedIntFrete(db, { mapa: [linhaMapeada('moto-1', { id: 2 })] });
+    db.seed('int_frete/moto-1', { tipo: 'motoboy', ativo: true });
+    await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+    expect(db.ler(CAMINHO_PEDIDO)?.freteInicial).toMatchObject({
+      integracaoFreteOuterRef: 'documents/int_frete/moto-1',
+      externalOptionId: null,
+    });
+  });
+
   it('an inactive target ⇒ the conta’s LI doc, the aviso RAISED with the motivo code', async () => {
     const db = novoDb();
     seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
