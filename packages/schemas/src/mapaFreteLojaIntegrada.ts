@@ -274,11 +274,13 @@ export type LinhaDoMapaLi =
       readonly tipo: 'mapeado';
       readonly chave: string;
       /**
-       * The target `int_frete` doc id ({@link idDoAlvoDoMapaLi}) — always one a document can have.
-       * `null` when the row's uid names a target no document can be (its last segment is `.` or
-       * `..`): the row IS mapped, and its target is ABSENT — judge it `alvo-ausente`
-       * ({@link avaliarAlvoDoMapaLi} over `null`) without a read. The type makes every caller
-       * handle it, so none can hand such an id to a document read.
+       * The target `int_frete` doc id ({@link idDoAlvoDoMapaLi}) — never `''`, `.`, `..` or a
+       * path ({@link naoDocId}). `null` when the row's uid names a target no document can be (its
+       * last segment is `.` or `..`): the row IS mapped, and its target is ABSENT — judge it
+       * `alvo-ausente` ({@link avaliarAlvoDoMapaLi} over `null`) without a read. The type makes
+       * every caller handle it, so none can hand such an id to a document read. Firestore's other
+       * id limits (a reserved `__…__` id, the byte cap) are NOT screened here: such an id still
+       * reaches the read.
        */
       readonly alvoId: string | null;
       /** The row's display name, when it is a string. */

@@ -398,7 +398,7 @@ A missing payment id is an error in the new code. **Never** normalise the pagame
   - Every unseen `forma_envio` is appended to the conta's `EnviosLojaIntegrada.mapa` the first time an order uses it, with `integracaoUid` unset.
   - An unmapped method is visible to the operator and never fails the import.
   - **Import-time matching uses the full `'<id>---<code>'`** and requires `integracaoUid` set. Melhor Envio, motoboy and retirada targets are accepted:
-    - a Melhor Envio target sets `externalOptionId = targetData.id` and points `freteInicial` at the target `int_frete`;
+    - a Melhor Envio target sets `externalOptionId` to the row's service (`targetData.id` as a canonical positive integer, `3` ≡ `'3'`; anything else is no service and raises the aviso) and points `freteInicial` at the target `int_frete`;
     - motoboy/retirada set the target without an option.
   - Any other target degrades gracefully: an aviso, no failure.
   - **Label-time resolution** (step 15) matches the mapa by the same FULL key, never by the id part: the same id under another code is another method. An operator's per-pedido choice, then a stored `integracaoTargetOuterRef`, come before the mapa; an override that names no usable target refuses and never falls back to the mapa.
@@ -877,9 +877,9 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 
     | Result | `integracaoFreteOuterRef` | Aviso |
     |---|---|---|
-    | Mapped; target active; tipo `melhorEnvios`, `motoboy` or `retiradaNaLoja` | the target (`melhorEnvios`: `externalOptionId = String(targetData.id)`) | — |
+    | Mapped; target active; tipo `melhorEnvios`, `motoboy` or `retiradaNaLoja` | the target (`melhorEnvios`: `externalOptionId` = the row's service, `targetData.id` read by `idServicoMelhorEnvioLi`: a canonical positive integer, `3` ≡ `'3'`) | — |
     | Mapped to `fob` or `outros` (deliberate; step 15 routes them at label time) | the conta's LI doc | none |
-    | Mapped, but the target is missing (or its uid names no document a target can be) or inactive, its tipo is another, or a Melhor Envio target has no service id | the conta's LI doc | `lojaIntegradaFreteNaoSuportado` |
+    | Mapped, but the target is missing (or its uid names no document a target can be) or inactive, its tipo is another, or a Melhor Envio target has no service id (none that reader accepts: `'03'`, `0`, `'3.0'` are no service) | the conta's LI doc | `lojaIntegradaFreteNaoSuportado` |
     | Unmapped, or a method with no usable key | the conta's LI doc | none |
     | No LI `int_frete` for the conta | null | none |
 

@@ -1184,6 +1184,40 @@ describe('the freight routing and its aviso (import step 6)', () => {
     expect(typeof aviso?.relogioEvento).toBe('number');
   });
 
+  it('EQUAL pair: a Melhor Envio service stored as the number 2 or as the string `2` ⇒ the same route, `externalOptionId` `2`', async () => {
+    for (const id of [2, '2']) {
+      const db = novoDb();
+      seedIntFrete(db, { mapa: [linhaMapeada('me-1', { id })] });
+      db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
+      await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+      expect(db.ler(CAMINHO_PEDIDO)?.freteInicial, JSON.stringify(id)).toMatchObject({
+        integracaoFreteOuterRef: 'documents/int_frete/me-1',
+        externalOptionId: '2',
+      });
+      expect(
+        db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`)?.resolvidoEm,
+        JSON.stringify(id),
+      ).not.toBeNull();
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a Melhor Envio service that is not a canonical positive integer (`02`, `0`, `2.0`, `1e3`) is NO service ⇒ the conta’s LI doc, the aviso RAISED `alvo-sem-servico`', async () => {
+    for (const id of ['02', 0, '2.0', '1e3']) {
+      const db = novoDb();
+      seedIntFrete(db, { mapa: [linhaMapeada('me-1', { id })] });
+      db.seed('int_frete/me-1', { tipo: 'melhorEnvios', ativo: true });
+      await importar(db, cena({ cliente: COMPRADOR_COM_CPF }));
+      expect(db.ler(CAMINHO_PEDIDO)?.freteInicial, JSON.stringify(id)).toMatchObject({
+        integracaoFreteOuterRef: `documents/int_frete/lojaIntegrada-${CONTA}`,
+        externalOptionId: null,
+      });
+      expect(
+        db.ler(`avisos/${chaveDoAvisoDeFreteLi(CONTA, CHAVE_FORMA_ENVIO_LI)}`),
+        JSON.stringify(id),
+      ).toMatchObject({ resolvidoEm: null, motivo: 'alvo-sem-servico' });
+    }
+  });
+
   it('an inactive target ⇒ the conta’s LI doc, the aviso RAISED with the motivo code', async () => {
     const db = novoDb();
     seedIntFrete(db, { mapa: [linhaMapeada('me-1')] });
