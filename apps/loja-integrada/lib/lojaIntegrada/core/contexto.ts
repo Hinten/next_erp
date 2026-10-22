@@ -29,8 +29,12 @@
  * interval. The package awaits the getter outside the request deadline, so the
  * wait never eats the call's own budget.
  *
- * The routes do NOT come through here: they must be able to fix a parked or
- * inactive conta, so they read it uncached and require only `tipo === 3`.
+ * The credential routes and the label routing route do NOT come through here:
+ * the credential routes must be able to fix a parked or inactive conta, so they
+ * read it uncached and require only `tipo === 3`, and the routing route calls
+ * nothing. The paid re-check route (`GET …/pedidos/[pedidoId]/pagamento`,
+ * `pedidos/conferenciaPagamento.ts`) DOES: its one read is a flow's read like
+ * any other — switched, refused on a parked or inactive conta, and paced.
  *
  * ## The credential is re-read on EVERY request
  *

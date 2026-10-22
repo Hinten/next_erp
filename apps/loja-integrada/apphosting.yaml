@@ -15,7 +15,8 @@ runConfig:
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
 # No `timeoutSeconds` — the platform default is what
-# `lib/lojaIntegrada/prazos.test.ts` compares the credential routes against.
+# `lib/lojaIntegrada/prazos.test.ts` compares the credential routes and the paid
+# re-check route (pacer + read deadline) against.
 #
 # No `runConfig.vpcAccess` — this channel needs no static egress IP (master plan
 # D3).
@@ -48,10 +49,15 @@ runConfig:
 # console and in the functions codebase's `.env.deploy`
 # (apps/loja-integrada/functions/DEPLOY.md):
 #
-#   LOJA_INTEGRADA_CHAMADAS                The read switch, read by the credential routes:
-#                                          only the exact `on` lets them call Loja
-#                                          Integrada; anything else answers 503
-#                                          LI_CHAMADAS_DESLIGADAS before any call.
+#   LOJA_INTEGRADA_CHAMADAS                The read switch, read by the credential routes
+#                                          and the paid re-check route (GET
+#                                          …/pedidos/[pedidoId]/pagamento): only the exact
+#                                          `on` lets them call Loja Integrada; anything
+#                                          else answers 503 LI_CHAMADAS_DESLIGADAS before
+#                                          any call (the re-check answers from the ERP's
+#                                          contested mirror instead when it is open). The
+#                                          label routing route reads no switch: it calls
+#                                          nothing.
 #   LOJA_INTEGRADA_MODO_ESTOQUE            Write valves, `off | dry-run | on`; only the
 #   LOJA_INTEGRADA_MODO_PRECO              exact `on` writes and the exact `dry-run`
 #   LOJA_INTEGRADA_MODO_ANUNCIO            diffs. Read from step 7 onward.
