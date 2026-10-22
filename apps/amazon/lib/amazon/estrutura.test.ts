@@ -42,7 +42,12 @@
  *    the credential modules, and no text that names `fetch` at all, loads code
  *    dynamically, fetches a builtin at run time or reaches a global by a computed
  *    name; every external module it imports is on a short allow-list; and the
- *    committed corpus keeps its `.prettierignore` and `.gitattributes` lines.
+ *    committed corpus keeps its `.prettierignore` and `.gitattributes` lines;
+ *  - (step 3, PR 3-d) the nested functions codebase (`functions/src`) is the
+ *    first production surface outside `lib/` and `app/`, so the `.message`,
+ *    seller-id, `trechoCorpo`, `testing/` and conta-cache scans read it too; and
+ *    there the app keeps ONE logger: no `firebase-functions` logger import, no
+ *    `console.`, and every line written through `LOGGER_STDOUT_AMAZON`.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -71,6 +76,20 @@ function arquivosTs(dir: string): string[] {
 const rel = (p: string) => relative(RAIZ_LIB, p).split(sep).join('/');
 const relApp = (p: string) => relative(RAIZ_APP, p).split(sep).join('/');
 const ehTeste = (p: string) => p.endsWith('.test.ts');
+
+/** The nested functions codebase's sources (PR 3-d): a production surface outside `lib/` and `app/`. */
+const RAIZ_FUNCOES = join(RAIZ_APP, 'functions', 'src');
+
+/** Its PRODUCTION files (tests excluded), absolute. */
+const fontesDasFuncoes = () => arquivosTs(RAIZ_FUNCOES).filter((p) => !ehTeste(p));
+
+/** Every PRODUCTION file under `lib/amazon`, `app/` and `functions/src`, absolute. */
+const fontesDeProducaoDoApp = () =>
+  [
+    ...arquivosTs(RAIZ_LIB),
+    ...arquivosTs(join(RAIZ_APP, 'app')),
+    ...arquivosTs(RAIZ_FUNCOES),
+  ].filter((p) => !ehTeste(p));
 
 /** The source without its comments (the TypeScript printer), so prose cannot trip a code rule. */
 function semComentarios(texto: string): string {
@@ -409,11 +428,13 @@ function violacoesDoSeam(arquivo: string, texto: string): string[] {
  * Every way a line is written here: ANY `.info(` / `.warn(` / `.error(` call —
  * on `logger`, `LOGGER_STDOUT_AMAZON`, `deps.logger?`, or the object
  * `warnNaoTipado(…)` returns — plus the three non-call line writers (the valve's
- * run-start line takes an envelope a caller fills). Fail closed: a receiver of
- * another name is still a logger call to this scan.
+ * run-start line takes an envelope a caller fills) and the step-4 poll's own
+ * line writer (`registrarPoll`, `pedidos/pollPedidos.ts`), whose campos would
+ * otherwise reach `registrarEventoAmazon` unread by these scans. Fail closed: a
+ * receiver of another name is still a logger call to this scan.
  */
 const CHAMADA_DE_LOG =
-  /(?:\.(?:info|warn|error)|\b(?:registrarEventoAmazon|registrarChamadaBloqueadaAmazon|registrarValvulaAmazon))\(/g;
+  /(?:\.(?:info|warn|error)|\b(?:registrarEventoAmazon|registrarChamadaBloqueadaAmazon|registrarValvulaAmazon|registrarPoll))\(/g;
 
 /**
  * Logger calls whose argument list reads a `.message` (an `AmazonError` message
@@ -479,7 +500,7 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
     .sort();
 }
 
-/** The App Hosting composition root of the reads queue (3-c): the app's one `getFunctions(` caller until 3-d. */
+/** The App Hosting composition root of the reads queue (3-c): one of the app's two `getFunctions(` callers. */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
 
 /** The push receiver's route and body, relative to the app root (3-c). */
@@ -514,6 +535,96 @@ function importacoesProibidasNoReceptor(arquivo: string, texto: string): string[
 /** A CALL of the Admin SDK's `getFunctions` (comments aside): only a composition root binds the queue. */
 const chamaGetFunctions = (texto: string) => /\bgetFunctions\s*\(/.test(semComentarios(texto));
 
+/** The functions codebase's composition root of the reads queue (3-d): the app's other `getFunctions(` caller. */
+const ARQUIVO_RAIZ_DA_FILA_FUNCOES = 'functions/src/agendador.ts';
+
+/* --------------------- step 3 (3-d): the functions codebase --------------------- */
+
+/**
+ * Does a source import the test doubles or fixtures (`lib/amazon/testing/…`), by
+ * any path — relative, `@/`, or a dynamic `import()`? Production code never
+ * does: a fake Firestore in the deploy bundle is a fake Firestore in production.
+ */
+const importaDoublesDeTeste = (texto: string) =>
+  especificadores(texto).some((espec) => /(?:^|\/)amazon\/testing(?:\/|$)/.test(espec));
+
+/**
+ * Why a `functions/src` source opens a SECOND logger (run on comment-free
+ * code; empty when it does not). `apps/amazon` has ONE logger
+ * (`core/log.ts`), and Loja Integrada's functions root — the precedent — logs
+ * through `firebase-functions`' `logger`, so the copy is the likely mistake:
+ *
+ * - a named `logger` import (any alias) from `firebase-functions` or any subpath;
+ * - any import of a `…/logger` subpath (its `info`/`warn`/`error`, or the
+ *   `compat` module that patches `console`);
+ * - a namespace, default or side-effect import of `firebase-functions*`, or a
+ *   run-time `import()`/`require()` of it — each reaches the logger by another
+ *   name, and this codebase needs none of them (fail closed);
+ * - any `console.`.
+ */
+function loggersParalelos(texto: string): string[] {
+  const codigo = semComentarios(texto);
+  const achados: string[] = [];
+  for (const m of codigo.matchAll(
+    /\bimport\s+(?:type\s+)?([^'";]*?)\s*from\s*['"](firebase-functions(?:\/[^'"]*)?)['"]/g,
+  )) {
+    const clausula = (m[1] ?? '').trim();
+    const espec = m[2] ?? '';
+    if (/(?:^|\/)logger(?:\/|$)/.test(espec)) achados.push(`${espec}: the logger module`);
+    else if (/\*\s*as\b/.test(clausula)) achados.push(`${espec}: a namespace import`);
+    else if (/^[A-Za-z_$][\w$]*\s*(?:,|$)/.test(clausula))
+      achados.push(`${espec}: a default import`);
+    else if (/\{[^}]*\blogger\b[^}]*\}/.test(clausula)) achados.push(`${espec}: imports logger`);
+  }
+  for (const m of codigo.matchAll(/\bimport\s*['"](firebase-functions[^'"]*)['"]/g)) {
+    achados.push(`${m[1] ?? ''}: a side-effect import`);
+  }
+  for (const m of codigo.matchAll(/\b(?:import|require)\(\s*['"](firebase-functions[^'"]*)['"]/g)) {
+    achados.push(`${m[1] ?? ''}: loaded at run time`);
+  }
+  if (/\bconsole\./.test(codigo)) achados.push('console.');
+  return achados;
+}
+
+/** The non-call line writers, whose FIRST argument is the logger they write through. */
+const ESCRITOR_COM_LOGGER =
+  /^(?:registrarEventoAmazon|registrarChamadaBloqueadaAmazon|registrarValvulaAmazon)\($/;
+
+/**
+ * Every log call in a `functions/src` source (comment-free code) — any
+ * `.info|warn|error(` or non-call writer, {@link CHAMADA_DE_LOG} — and those
+ * that do NOT go through the app's stdout sink: a method call on anything but
+ * `LOGGER_STDOUT_AMAZON`, or a writer whose first argument is anything else. A
+ * writer handed a second logger is still a second logger.
+ */
+function chamadasDeLogNasFuncoes(
+  arquivo: string,
+  texto: string,
+): { chamadas: number; fora: string[] } {
+  const codigo = semComentarios(texto);
+  let chamadas = 0;
+  const fora: string[] = [];
+  for (const m of codigo.matchAll(CHAMADA_DE_LOG)) {
+    chamadas += 1;
+    if (!ESCRITOR_COM_LOGGER.test(m[0])) {
+      if (!/\bLOGGER_STDOUT_AMAZON\s*$/.test(codigo.slice(0, m.index))) {
+        fora.push(`${arquivo}: ${m[0]} at ${String(m.index)} is not on LOGGER_STDOUT_AMAZON`);
+      }
+      continue;
+    }
+    const abre = m.index + m[0].length - 1;
+    const fim = fimDaChamada(codigo, abre);
+    const primeiro = codigo
+      .slice(abre + 1, fim === -1 ? codigo.length : fim)
+      .split(',')[0]
+      ?.trim();
+    if (primeiro !== 'LOGGER_STDOUT_AMAZON') {
+      fora.push(`${arquivo}: ${m[0]} at ${String(m.index)} writes through ${primeiro ?? '?'}`);
+    }
+  }
+  return { chamadas, fora };
+}
+
 /**
  * A LOCAL crypto compare in the receiver (run on comment-free source): the
  * primitives a hand-rolled key check would reach for, WebCrypto's `subtle`, or
@@ -522,6 +633,43 @@ const chamaGetFunctions = (texto: string) => /\bgetFunctions\s*\(/.test(semComen
  */
 const CRIPTO_LOCAL =
   /\b(?:timingSafeEqual|createHmac|createHash|subtle)\b|['"](?:node:)?crypto['"]/;
+
+/* ------------------------- step 4 (4-a): the backstop poll ------------------------- */
+
+/** The ONE module that may call `searchOrders` (step-3/4 plan §3 decision 21). */
+const CHAMADOR_DE_SEARCH_ORDERS = 'lib/amazon/pedidos/pollPedidos.ts';
+
+/**
+ * Files that NAME `searchOrders` without calling it, each with why: the log and
+ * fixture redactor keys its allow-list tables by the operation and its path
+ * (its import closure is pinned to `zod` and `@delfrance/core/*` above, so it
+ * cannot reach a client).
+ */
+const NOMEIAM_SEARCH_ORDERS_SEM_CHAMAR = ['lib/amazon/core/redacao.ts'];
+
+/**
+ * A `searchOrders` call site, in comment-free code: the package's helper, its
+ * path constant, its operation-name constant, its page schema (a direct
+ * `cliente.get` needs it), the bare list path as a WHOLE string (a `getOrder`
+ * path continues with `/`), or the operation name handed to a client. Any one
+ * is enough to spend the poll's tokens: the bucket refills ≈ 5 per tick per app
+ * and seller, so a second caller makes the poll throttle itself.
+ */
+const CHAMADA_DE_SEARCH_ORDERS =
+  /\bbuscarPedidosAtualizados\b|\bCAMINHO_SEARCH_ORDERS\b|\bOPERACAO_SEARCH_ORDERS\b|\brespostaSearchOrdersSchema\b|['"`]\/orders\/2026-01-01\/orders['"`]|['"`]searchOrders['"`]/;
+
+/**
+ * What the single-caller scan reads: every production file of the app PLUS its
+ * `scripts/`, the natural home of a one-off verification script (the W7
+ * listing must never call `searchOrders` while the poll runs). Only this scan
+ * is widened; the others keep their scope.
+ */
+const fontesDoChamadorDeSearchOrders = () => [
+  ...fontesDeProducaoDoApp(),
+  ...arquivosTs(join(RAIZ_APP, 'scripts')).filter((p) => !ehTeste(p)),
+];
+
+const nomeiaSearchOrders = (texto: string) => CHAMADA_DE_SEARCH_ORDERS.test(semComentarios(texto));
 
 /* -------------------------------- the pinned lines -------------------------------- */
 
@@ -565,11 +713,16 @@ describe('lib/amazon layout', () => {
         'notificacoes/notificacao.ts',
         'notificacoes/prazo.ts',
         'notificacoes/receptor.ts',
+        'pedidos/janelaPoll.ts',
+        'pedidos/notificacaoSintetica.ts',
+        'pedidos/orcamentoPoll.ts',
+        'pedidos/pollPedidos.ts',
         'testing/documentos.ts',
         'testing/falhaDeEnfileiramento.ts',
         'testing/fakeDb.ts',
         'testing/fakeOauthState.ts',
         'testing/fixtures.ts',
+        'testing/guardaDaLaneDeTarefas.ts',
         'testing/sandboxBr.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
@@ -606,9 +759,15 @@ describe('lib/amazon layout', () => {
       if (rel(arquivo).startsWith('testing/')) continue;
       expect(readFileSync(arquivo, 'utf8'), rel(arquivo)).not.toMatch(/from '[^']*testing\//);
     }
-    // …and nothing outside lib/amazon reaches it from production code either.
+    // …and nothing outside lib/amazon reaches it from production code either —
+    // the functions codebase included (3-d): its bundle ships to the cloud.
     for (const arquivo of arquivosTs(join(RAIZ_APP, 'app')).filter((p) => !ehTeste(p))) {
       expect(readFileSync(arquivo, 'utf8'), relApp(arquivo)).not.toMatch(/amazon\/testing\//);
+    }
+    const funcoes = fontesDasFuncoes();
+    expect(funcoes.length).toBeGreaterThanOrEqual(5);
+    for (const arquivo of funcoes) {
+      expect(importaDoublesDeTeste(readFileSync(arquivo, 'utf8')), relApp(arquivo)).toBe(false);
     }
   });
 
@@ -616,11 +775,17 @@ describe('lib/amazon layout', () => {
     // A cached copy that `isFresh` accepts (active, connected) would hide a conta
     // deleted mid-callback, and the undo would leave its credential orphaned.
     // The callback may only INVALIDATE the cache (`invalidarContaEmCache`).
-    const leitores = [...fontes, ...arquivosTs(join(RAIZ_APP, 'app')).filter((p) => !ehTeste(p))]
+    // The functions codebase (3-d) is read too: it binds the same pipeline.
+    const fontes = fontesDeProducaoDoApp();
+    const leitores = fontes
       .filter((p) => readFileSync(p, 'utf8').includes('lerContaEmCache'))
       .map((p) => (p.startsWith(RAIZ_LIB) ? rel(p) : relApp(p)))
       .sort();
     expect(leitores).toEqual(['core/contaCache.ts', 'core/contexto.ts']);
+    // Anti-vacuity (3-d): the scan reads the functions codebase's own files.
+    expect(fontes.map(relApp)).toEqual(
+      expect.arrayContaining(['functions/src/index.ts', 'functions/src/depsLeitura.ts']),
+    );
   });
 
   it('no route imports the park', () => {
@@ -645,6 +810,87 @@ describe('lib/amazon layout', () => {
     const config = readFileSync(join(RAIZ_APP, 'vitest.config.ts'), 'utf8');
     expect(config).toContain("'{app,lib,functions}/**/*.test.ts'");
     expect(config).toContain("'proxy.test.ts'");
+  });
+
+  // PR 3-e. The two configs PARTITION the app's tests by suffix, and a drift is
+  // silent both ways: an emulator suite the offline config collects skips for
+  // lack of its emulator host and reports green in `CI test`, and one neither
+  // config collects runs nowhere. The emulator config runs only in ci-amazon.yml.
+  // An app-wide directory walk (like the getFunctions( scan): CI headroom, not a budget.
+  it(
+    'the emulator config collects exactly the two emulator suffixes, and the offline config excludes them',
+    { timeout: 30_000 },
+    () => {
+      const offline = readFileSync(join(RAIZ_APP, 'vitest.config.ts'), 'utf8');
+      const emulador = readFileSync(join(RAIZ_APP, 'vitest.tasks.config.ts'), 'utf8');
+      const includes = [...emulador.matchAll(/\binclude:\s*\[([^\]]*)\]/g)];
+      expect(includes).toHaveLength(1);
+      // The quoted entries, whole: a glob holds commas inside its braces.
+      const globs = [...(includes[0]?.[1] ?? '').matchAll(/'([^']*)'/g)].map((m) => m[1]);
+      expect(globs).toEqual([
+        '{app,lib,functions}/**/*.{tasks,firestore}.test.ts',
+        '*.{tasks,firestore}.test.ts',
+      ]);
+      expect(emulador).toContain("setupFiles: ['./vitest.tasks.setup.ts']");
+      expect(emulador).toContain('fileParallelism: false');
+      // Unanchored on purpose (the config says why): a root-level suite too.
+      expect(offline).toContain("'**/*.firestore.test.ts'");
+      expect(offline).toContain("'**/*.tasks.test.ts'");
+      const pacote = JSON.parse(readFileSync(join(RAIZ_APP, 'package.json'), 'utf8')) as {
+        scripts: Record<string, string>;
+      };
+      expect(pacote.scripts['test:tasks']).toBe('vitest run --config vitest.tasks.config.ts');
+      // Every emulator suite on disk sits where that include collects it — and
+      // the scan found the three this PR adds (anti-vacuity).
+      const suites = arquivosTs(RAIZ_APP)
+        .map(relApp)
+        .filter((p) => /\.(tasks|firestore)\.test\.ts$/.test(p));
+      expect(suites).toEqual(
+        expect.arrayContaining([
+          'app/api/webhooks/amazon/route.tasks.test.ts',
+          'functions/src/filaLeitura.tasks.test.ts',
+          'lib/amazon/notificacoes/notificacao.firestore.test.ts',
+        ]),
+      );
+      for (const suite of suites) {
+        expect(/^(?:app|lib|functions)\//.test(suite) || !suite.includes('/'), suite).toBe(true);
+      }
+    },
+  );
+
+  // PR 3-e, D11's second layer. The setup only ever runs inside the lane, so a
+  // refusal deleted from it fails nothing anywhere: pin that it CALLS both
+  // (their behaviour is `testing/guardaDaLaneDeTarefas.test.ts`'s) and throws
+  // on each answer, outside any comment.
+  it('the emulator setup runs both D11 refusals and throws on them', () => {
+    const setup = semComentarios(readFileSync(join(RAIZ_APP, 'vitest.tasks.setup.ts'), 'utf8'));
+    // The printer re-quotes string literals, so the module specifier is matched either way.
+    expect(setup).toMatch(/from ['"]\.\/lib\/amazon\/testing\/guardaDaLaneDeTarefas['"]/);
+    expect(setup).toMatch(
+      /if \(chamadasLigadasNoAmbiente\(process\.env\)\) \{\s*throw new Error\(/,
+    );
+    expect(setup).toMatch(
+      /const (\w+) = envsDoArtefatoQueNomeiamAChave\(\);\s*if \(\1\.length > 0\) \{\s*throw new Error\(/,
+    );
+    // …and the fetch kill-switch replaces the global fetch, in this process.
+    expect(setup).toMatch(/globalThis\.fetch = \(async \(/);
+  });
+
+  // PR 3-e. The same argument for the two fail-loud gates: the lane always has
+  // both emulator hosts, so neither gate ever fires there, and deleting one
+  // fails nothing anywhere — while it is all that keeps a lane missing an
+  // emulator from skipping every suite and exiting 0 on a `required` row.
+  it('the emulator setup throws without either emulator host under CI or REQUIRE_EMULATOR', () => {
+    const setup = semComentarios(readFileSync(join(RAIZ_APP, 'vitest.tasks.setup.ts'), 'utf8'));
+    expect(setup).toMatch(
+      /export const EMULATED = Boolean\(process\.env\.FIRESTORE_EMULATOR_HOST\);/,
+    );
+    expect(setup).toMatch(
+      /if \(!EMULATED && \(process\.env\.CI \|\| process\.env\.REQUIRE_EMULATOR\)\) \{\s*throw new Error\(/,
+    );
+    expect(setup).toMatch(
+      /if \(!process\.env\.CLOUD_TASKS_EMULATOR_HOST && \(process\.env\.CI \|\| process\.env\.REQUIRE_EMULATOR\)\) \{\s*throw new Error\(/,
+    );
   });
 });
 
@@ -693,12 +939,14 @@ describe('the step-2b logger guards', () => {
     expect(fontes.map(relApp)).toContain(ARQUIVO_DO_LOGGER);
   });
 
-  it('no `.message` inside the arguments of a logger call, under lib/amazon and app/', () => {
-    const fontes = [...arquivosTs(RAIZ_LIB), ...arquivosTs(join(RAIZ_APP, 'app'))].filter(
-      (p) => !ehTeste(p),
-    );
+  it('no `.message` inside the arguments of a logger call, under lib/amazon, app/ and functions/src', () => {
+    const fontes = fontesDeProducaoDoApp();
     const achados = fontes.flatMap((p) => mensagensLogadas(relApp(p), readFileSync(p, 'utf8')));
     expect(achados).toEqual([]);
+    // Anti-vacuity (3-d): the scan reads the functions codebase's own lines.
+    expect(fontes.map(relApp)).toEqual(
+      expect.arrayContaining(['functions/src/index.ts', 'functions/src/filaLeitura.ts']),
+    );
     // Anti-vacuity: the scan sees the real logger calls AND the non-call writers.
     const chamadas = fontes.flatMap((p) =>
       [...readFileSync(p, 'utf8').matchAll(CHAMADA_DE_LOG)].map((m) => m[0]),
@@ -713,15 +961,22 @@ describe('the step-2b logger guards', () => {
     );
   });
 
-  it('only core/log.ts writes a `trechoCorpo` campo (the sink exempts it on a call line)', () => {
-    const fontes = [...arquivosTs(RAIZ_LIB), ...arquivosTs(join(RAIZ_APP, 'app'))].filter(
-      (p) => !ehTeste(p),
-    );
-    const escritores = fontes
-      .filter((p) => /\btrechoCorpo\b/.test(semComentarios(readFileSync(p, 'utf8'))))
-      .map(relApp);
-    expect(escritores).toEqual([ARQUIVO_DO_LOGGER]);
-  });
+  // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
+  it(
+    'only core/log.ts writes a `trechoCorpo` campo (the sink exempts it on a call line)',
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDeProducaoDoApp();
+      const escritores = fontes
+        .filter((p) => /\btrechoCorpo\b/.test(semComentarios(readFileSync(p, 'utf8'))))
+        .map(relApp);
+      expect(escritores).toEqual([ARQUIVO_DO_LOGGER]);
+      // Anti-vacuity (3-d): the scan reads the functions codebase's own lines.
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining(['functions/src/index.ts', 'functions/src/filaLeitura.ts']),
+      );
+    },
+  );
 
   it('no `console.` under lib/amazon (comments aside): the sink writes stdout itself', () => {
     for (const arquivo of arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p))) {
@@ -749,13 +1004,14 @@ describe('the step-2b logger guards', () => {
 });
 
 describe('the step-3 intake guards', () => {
-  const fontesDeProducao = () =>
-    [...arquivosTs(RAIZ_LIB), ...arquivosTs(join(RAIZ_APP, 'app'))].filter((p) => !ehTeste(p));
-
-  it('no seller id inside the arguments of a logger call, under lib/amazon and app/', () => {
-    const fontes = fontesDeProducao();
+  it('no seller id inside the arguments of a logger call, under lib/amazon, app/ and functions/src', () => {
+    const fontes = fontesDeProducaoDoApp();
     const achados = fontes.flatMap((p) => sellersLogados(relApp(p), readFileSync(p, 'utf8')));
     expect(achados).toEqual([]);
+    // Anti-vacuity (3-d): the scan reads the functions codebase's own lines.
+    expect(fontes.map(relApp)).toEqual(
+      expect.arrayContaining(['functions/src/index.ts', 'functions/src/filaLeitura.ts']),
+    );
     // Anti-vacuity: the scan reads the intake's own logger calls, and the intake
     // really does handle the seller id beside them.
     const intake = readFileSync(join(RAIZ_LIB, 'notificacoes', 'notificacao.ts'), 'utf8');
@@ -778,18 +1034,27 @@ describe('the step-3 intake guards', () => {
     ).toBe(true);
   });
 
-  it('no file under lib/amazon calls getFunctions(, and the App Hosting root is the app’s only caller (3-d adds the functions one)', () => {
-    const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
-    expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
-    // The exact list of composition roots, app-wide: `lib/firebase/filaLeitura.ts`
-    // (3-c); 3-d adds `functions/src/agendador.ts`.
-    // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
-    const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
-    expect(app.length).toBeGreaterThan(40);
-    expect(app.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(relApp)).toEqual([
-      ARQUIVO_RAIZ_DA_FILA,
-    ]);
-  });
+  // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
+  it(
+    'no file under lib/amazon calls getFunctions(, and the two composition roots are the app’s only callers',
+    { timeout: 30_000 },
+    () => {
+      const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
+      expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
+      // The EXACT list of composition roots, app-wide: the App Hosting receiver's
+      // `lib/firebase/filaLeitura.ts` (3-c) and the functions codebase's
+      // `functions/src/agendador.ts` (3-d, the step-4 poll's).
+      // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
+      const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
+      expect(app.length).toBeGreaterThan(40);
+      expect(
+        app
+          .filter((p) => chamaGetFunctions(readFileSync(p, 'utf8')))
+          .map(relApp)
+          .sort(),
+      ).toEqual([ARQUIVO_RAIZ_DA_FILA_FUNCOES, ARQUIVO_RAIZ_DA_FILA].sort());
+    },
+  );
 
   // DIRECT imports only: the closure still reaches them through `./notificacao`
   // and `../env`. That the happy path never uses them is pinned elsewhere:
@@ -819,6 +1084,107 @@ describe('the step-3 intake guards', () => {
     expect(existsSync(join(RAIZ_APP, ...ARQUIVOS_DO_RECEPTOR[0].split('/')))).toBe(true);
     // …and that route exports the one verb the relay sends.
     expect(lerDoApp(ARQUIVOS_DO_RECEPTOR[0])).toMatch(/export async function POST\(/);
+  });
+});
+
+describe('the step-3 functions codebase guards (3-d)', () => {
+  it('the scan found the codebase (anti-vacuity)', () => {
+    const funcoes = fontesDasFuncoes().map(relApp);
+    expect(funcoes.length).toBeGreaterThanOrEqual(5);
+    expect(funcoes).toEqual(
+      expect.arrayContaining([
+        'functions/src/agendador.ts',
+        'functions/src/depsLeitura.ts',
+        'functions/src/filaLeitura.ts',
+        'functions/src/index.ts',
+        'functions/src/lib/admin.ts',
+        'functions/src/options.ts',
+        'functions/src/pollPedidos.ts',
+        'functions/src/tasksInvoker.ts',
+      ]),
+    );
+  });
+
+  it('no functions/src file opens a second logger: no firebase-functions logger, no console.', () => {
+    const achados = fontesDasFuncoes().flatMap((p) =>
+      loggersParalelos(readFileSync(p, 'utf8')).map((a) => `${relApp(p)}: ${a}`),
+    );
+    expect(achados).toEqual([]);
+    // Anti-vacuity: the scan reads the codebase's real firebase-functions imports.
+    const imports = fontesDasFuncoes().flatMap((p) => especificadores(readFileSync(p, 'utf8')));
+    expect(imports).toEqual(
+      expect.arrayContaining([
+        'firebase-functions/v2',
+        'firebase-functions/v2/scheduler',
+        'firebase-functions/v2/tasks',
+      ]),
+    );
+  });
+
+  it('every log call in functions/src writes through LOGGER_STDOUT_AMAZON', () => {
+    let chamadas = 0;
+    const fora: string[] = [];
+    for (const p of fontesDasFuncoes()) {
+      const r = chamadasDeLogNasFuncoes(relApp(p), readFileSync(p, 'utf8'));
+      chamadas += r.chamadas;
+      fora.push(...r.fora);
+    }
+    expect(fora).toEqual([]);
+    // Anti-vacuity: the dispatch line, the two lane lines and the expiry line.
+    expect(chamadas).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('the step-4 backstop poll guards (4-a)', () => {
+  const pedidos = arquivosTs(join(RAIZ_LIB, 'pedidos')).filter((p) => !ehTeste(p));
+
+  it('pedidos/ reads no process environment: the environment is the deps’ `ambiente`', () => {
+    expect(pedidos.map(rel).sort()).toEqual([
+      'pedidos/janelaPoll.ts',
+      'pedidos/notificacaoSintetica.ts',
+      'pedidos/orcamentoPoll.ts',
+      'pedidos/pollPedidos.ts',
+    ]);
+    for (const arquivo of pedidos) {
+      expect(readFileSync(arquivo, 'utf8'), rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+    }
+  });
+
+  // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
+  it(
+    `searchOrders has exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DE_SEARCH_ORDERS}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const nomeiam = fontes
+        .filter((p) => nomeiaSearchOrders(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_SEARCH_ORDERS_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DE_SEARCH_ORDERS,
+      ]);
+      // Anti-vacuity: the scan sees the redactor's table (exempt, by name) and
+      // reads the functions codebase and the app's scripts too.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_SEARCH_ORDERS_SEM_CHAMAR));
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining([
+          'functions/src/index.ts',
+          'scripts/sanitizar.ts',
+          CHAMADOR_DE_SEARCH_ORDERS,
+        ]),
+      );
+    },
+  );
+
+  it('the poll narrows an enqueue failure through ehFalhaDoSdkDeTarefasAmazon and imports no SDK module', () => {
+    const texto = lerDoApp(CHAMADOR_DE_SEARCH_ORDERS) ?? '';
+    expect(semComentarios(texto)).toMatch(/\behFalhaDoSdkDeTarefasAmazon\(/);
+    const especs = especificadores(texto);
+    // The Cloud Tasks SDK's two error modules: the narrowing lives in agendador.ts.
+    expect(
+      especs.filter((e) => e === 'firebase-admin/functions' || e === 'firebase-admin/app'),
+    ).toEqual([]);
+    expect(especs).toContain('../notificacoes/agendador');
   });
 });
 
@@ -1051,6 +1417,7 @@ describe('the guards, on synthetic source', () => {
       "registrarEventoAmazon(logger, 'chamada-bloqueada', 'INFO', 'm', { e: err.message });",
       'registrarChamadaBloqueadaAmazon(logger, { rota: err.message, valor });',
       'registrarValvulaAmazon(logger, valvula, { idTarefa: err.message });',
+      "registrarPoll(deps, conta, 'WARNING', 'm', { e: err.message });",
       "warnNaoTipado(deps.logger).warn('m', { e: err.message });",
       "registro.error('m', { e: err.message });",
     ]) {
@@ -1083,6 +1450,7 @@ describe('the guards, on synthetic source', () => {
       "logger.info('m', { a: f(')' }, sellerId",
       "logger.warn('m', { integracaoId, vendedor: sellingPartnerId });",
       "logger.error('m', { s: SellingPartnerId });",
+      "registrarPoll(deps, conta, 'INFO', 'm', { v: contexto.conta.selling_partner_id });",
     ]) {
       expect(sellersLogados('x.ts', fonte), fonte).toHaveLength(1);
     }
@@ -1105,6 +1473,32 @@ describe('the guards, on synthetic source', () => {
         "logger.warn('m', { valido: sellingPartnerIdValido(x), n: contasPorSellingPartnerId(db, x).length });",
       ),
     ).toEqual([]);
+  });
+
+  it('the searchOrders caller scan finds every call shape, and nothing alike', () => {
+    for (const fonte of [
+      'await buscarPedidosAtualizados(contexto.cliente, filtro);',
+      'cliente.get({ operacao: x, caminho: CAMINHO_SEARCH_ORDERS, schema });',
+      "cliente.get({ operacao: x, caminho: '/orders/2026-01-01/orders', schema });",
+      'cliente.get({ operacao: `searchOrders`, caminho: c, schema });',
+      'const { buscarPedidosAtualizados: b } = pacote;',
+      // A direct read built from the package's own exports, with a template path.
+      'contexto.cliente.get({ operacao: OPERACAO_SEARCH_ORDERS, caminho: `/orders/${V}/orders`, query, schema: x });',
+      'cliente.get({ operacao: op, caminho: `/orders/${V}/orders`, query, schema: respostaSearchOrdersSchema });',
+    ]) {
+      expect(nomeiaSearchOrders(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// buscarPedidosAtualizados(contexto.cliente, filtro)',
+      "const caminho = '/orders/2026-01-01/orders/' + id;",
+      'const caminho = `/orders/2026-01-01/orders/${id}`;',
+      'const corpo = searchOrdersBr();',
+      'buscarPedidosAtualizadosV2(cliente);',
+      'const op = OPERACAO_SEARCH_ORDERS_V2;',
+      'respostaSearchOrdersSchemaAntiga.parse(corpo);',
+    ]) {
+      expect(nomeiaSearchOrders(fonte), fonte).toBe(false);
+    }
   });
 
   it('the SDK import guard flags another production file, and exempts tests and testing/', () => {
@@ -1178,6 +1572,90 @@ describe('the guards, on synthetic source', () => {
       "import { z } from 'node:cryptography';",
     ]) {
       expect(CRIPTO_LOCAL.test(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('a second logger in functions/src is flagged — every way it can be opened', () => {
+    for (const fonte of [
+      "import { logger } from 'firebase-functions/v2';",
+      "import { logger as log, setGlobalOptions } from 'firebase-functions/v2';",
+      "import { logger } from 'firebase-functions';",
+      "import { info } from 'firebase-functions/logger';",
+      "import 'firebase-functions/logger/compat';",
+      "import * as ff from 'firebase-functions/v2';",
+      "import functions from 'firebase-functions';",
+      "const { logger } = await import('firebase-functions/v2');",
+      "registrarEventoAmazon(LOGGER_STDOUT_AMAZON, 'tarefa', 'INFO', 'm', {});\nconsole.warn('x');",
+    ]) {
+      expect(loggersParalelos(fonte), fonte).not.toEqual([]);
+    }
+  });
+
+  it('near-miss: the codebase’s own imports, the app logger and a mention in a comment are not a second logger', () => {
+    for (const fonte of [
+      "import { onSchedule } from 'firebase-functions/v2/scheduler';",
+      "import { onTaskDispatched } from 'firebase-functions/v2/tasks';",
+      "import { setGlobalOptions } from 'firebase-functions/v2';",
+      "import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';",
+      "import { loggerX } from 'firebase-functions/v2';",
+      "// never `import { logger } from 'firebase-functions/v2'`, never console.log\nconst x = 1;",
+    ]) {
+      expect(loggersParalelos(fonte), fonte).toEqual([]);
+    }
+  });
+
+  it('a functions/src log call outside LOGGER_STDOUT_AMAZON is flagged; through it, it is not', () => {
+    for (const fonte of [
+      "logger.info('m', {});",
+      "deps.logger.warn('m', {});",
+      "registrarEventoAmazon(logger, 'varredura', 'INFO', 'm', {});",
+      "registrarChamadaBloqueadaAmazon(deps.logger, { rota: 'x', valor });",
+    ]) {
+      const r = chamadasDeLogNasFuncoes('functions/src/x.ts', fonte);
+      expect(r.chamadas, fonte).toBe(1);
+      expect(r.fora, fonte).toHaveLength(1);
+    }
+    for (const fonte of [
+      "registrarEventoAmazon(LOGGER_STDOUT_AMAZON, 'varredura', 'INFO', 'm', {});",
+      "registrarEventoAmazon(\n  LOGGER_STDOUT_AMAZON,\n  'tarefa',\n  'INFO',\n  'm',\n  {},\n);",
+      "LOGGER_STDOUT_AMAZON.warn('m', {});",
+      "// logger.info('m') in prose\nconst y = 2;",
+    ]) {
+      const r = chamadasDeLogNasFuncoes('functions/src/x.ts', fonte);
+      expect(r.fora, fonte).toEqual([]);
+    }
+  });
+
+  it('`err.message` in a functions-shaped sweep line is flagged; the document id is not', () => {
+    expect(
+      mensagensLogadas(
+        'functions/src/index.ts',
+        "registrarEventoAmazon(LOGGER_STDOUT_AMAZON, 'varredura', 'WARNING', 'm', { erro: result.errors[0].message });",
+      ),
+    ).toHaveLength(1);
+    expect(
+      mensagensLogadas(
+        'functions/src/index.ts',
+        "registrarEventoAmazon(LOGGER_STDOUT_AMAZON, 'varredura', 'WARNING', 'm', { docIds: result.errors.map((e) => e.docId).join(',') });",
+      ),
+    ).toEqual([]);
+  });
+
+  it('the test doubles are found in an import by any path, and nothing alike is', () => {
+    for (const fonte of [
+      "import { FakeDb } from '../../lib/amazon/testing/fakeDb';",
+      "import { seedConta } from '@/lib/amazon/testing/fixtures';",
+      "const f = await import('../../lib/amazon/testing/fixtures');",
+      "export { x } from '../../lib/amazon/testing';",
+    ]) {
+      expect(importaDoublesDeTeste(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      "import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';",
+      "import { x } from '../../lib/amazon/testingx/y';",
+      "// a test imports '../../lib/amazon/testing/fakeDb'\nconst z = 3;",
+    ]) {
+      expect(importaDoublesDeTeste(fonte), fonte).toBe(false);
     }
   });
 

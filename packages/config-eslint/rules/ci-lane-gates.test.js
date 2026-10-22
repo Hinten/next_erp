@@ -251,6 +251,26 @@ const LANES = {
       },
     ],
   },
+  '.github/workflows/ci-amazon.yml': {
+    gate: 'CI gate (amazon)',
+    scope: 'CI scope (amazon)',
+    // One root. The nested `functions/` codebase belongs to the app by path
+    // prefix, and `@delfrance/integrations-amazon-sp-api`, `@delfrance/data`,
+    // `@delfrance/schemas`, `@delfrance/core`, `@delfrance/auth` and
+    // `@delfrance/deploy-env` are all in its closure.
+    roots: ['@delfrance/amazon-app'],
+    // ⚠️ ONE certified job — the Loja Integrada and Shopee shape. This lane owns
+    // NO exclusion: `ci.yml` still runs every `@delfrance/amazon-app` unit test in
+    // `CI test`, so a skip here loses only the emulator suites. Its emulator
+    // command, read switch and regions are pinned by assertion 18.
+    jobs: [
+      {
+        id: 'amazon-tasks-roundtrip',
+        check: 'Amazon Cloud Tasks round trip',
+        class: 'required',
+      },
+    ],
+  },
   '.github/workflows/ci-storage.yml': {
     gate: 'CI gate (storage)',
     scope: 'CI scope (storage)',
@@ -474,6 +494,193 @@ export function scopeInvocations(source) {
     });
   }
   return found;
+}
+
+/**
+ * The emulator round-trip lanes whose run step, read switch and regions
+ * assertion 18 pins, one row each. Amazon's lane (step-3 plan PR 3-e) is the
+ * first; another emulator lane joins by adding its row, once it already holds
+ * the contract.
+ *
+ *  - `job`: the suite job id; `config`: its `--config`; `filter`: the ONE
+ *    package its `pnpm --fail-if-no-match --filter` runs `test:tasks` in;
+ *  - `switchVar`: the read switch its dispatched function reads — the job env
+ *    must set it to a QUOTED `'off'`;
+ *  - `regionVar`: the variable its producers read — the job env must set it to
+ *    the SAME value as `FUNCTIONS_REGION`, which is inlined into the bundle.
+ */
+const EMULATOR_LANES = {
+  '.github/workflows/ci-amazon.yml': {
+    job: 'amazon-tasks-roundtrip',
+    config: 'firebase.amazon.tasks.json',
+    filter: '@delfrance/amazon-app',
+    switchVar: 'AMAZON_CHAMADAS',
+    regionVar: 'AMAZON_TASKS_REGION',
+  },
+};
+
+/** The gate whose `run:` body every EMULATOR_LANES gate copies byte for byte. */
+const GATE_BODY_REFERENCE = '.github/workflows/ci-shopee.yml';
+
+/** The gate job's `run: |` block, from that line to the end of the job, or null. */
+function gateRunBody(source) {
+  const lines = (jobBlocks(source).gate ?? '').split('\n');
+  const at = lines.findIndex((l) => /^\s+run:\s*\|\s*$/.test(l));
+  return at === -1 ? null : lines.slice(at).join('\n').trimEnd();
+}
+
+/**
+ * A job's OWN `env:` block (at the job's indent, never a step's), as raw
+ * `KEY → value text` with the YAML quoting kept — so an unquoted `off` and a
+ * quoted `'off'` stay distinguishable. `null` when the job has none.
+ */
+function jobEnv(jobBody) {
+  const lines = jobBody.split('\n');
+  const first = lines.find((l) => l.trim() && !l.trim().startsWith('#'));
+  if (!first) return null;
+  const indent = first.match(/^\s*/)[0];
+  const at = lines.findIndex((l) => l === `${indent}env:` || l.startsWith(`${indent}env: `));
+  if (at === -1) return null;
+  const env = {};
+  for (const line of lines.slice(at + 1)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    if (line.match(/^\s*/)[0].length <= indent.length) break;
+    const m = line.match(/^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*?)\s*$/);
+    if (m) env[m[1]] = m[2];
+  }
+  return env;
+}
+
+/** A YAML scalar's text without one pair of matching outer quotes. */
+const unquote = (value) => value.replace(/^'(.*)'$/, '$1').replace(/^"(.*)"$/, '$1');
+
+/**
+ * Every `run:` step of a job that invokes `emulators:exec`, each as its LOGICAL
+ * shell lines: comments and blanks dropped, backslash continuations joined.
+ */
+function emulatorRuns(jobBody) {
+  const lines = jobBody.split('\n');
+  const runs = [];
+  for (let i = 0; i < lines.length; i++) {
+    const single = lines[i].match(/^\s+run:\s*(?!\|)(\S.*)$/);
+    let block;
+    if (single) {
+      block = [single[1]];
+    } else if (/^\s+run:\s*\|\s*$/.test(lines[i])) {
+      const indent = lines[i].match(/^\s*/)[0].length;
+      block = [];
+      for (const line of lines.slice(i + 1)) {
+        if (line.trim() && line.match(/^\s*/)[0].length <= indent) break;
+        block.push(line);
+      }
+    } else {
+      continue;
+    }
+    const code = block.map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+    const logical = [];
+    for (const line of code) {
+      const prev = logical.length - 1;
+      if (prev >= 0 && logical[prev].endsWith('\\')) {
+        logical[prev] = `${logical[prev].slice(0, -1).trimEnd()} ${line}`;
+      } else {
+        logical.push(line);
+      }
+    }
+    if (logical.some((l) => /\bemulators:exec\b/.test(l))) runs.push(logical);
+  }
+  return runs;
+}
+
+/**
+ * Assertion 18's offenders for ONE emulator lane — a function, so the synthetic
+ * cases below drive the very same code over a deliberately broken copy.
+ */
+function scanEmulatorLane(file, source, spec, referenceGateBody) {
+  const bad = [];
+  const body = jobBlocks(source)[spec.job];
+  if (!body) return [`${file} → no \`${spec.job}\` job`];
+
+  // (a) ONE emulator run, and it is ONE unpiped command.
+  const runs = emulatorRuns(body);
+  if (runs.length !== 1) {
+    bad.push(`${file} → expected exactly one \`emulators:exec\` step, found ${runs.length}`);
+  } else {
+    const logical = runs[0];
+    if (logical.length !== 1) {
+      bad.push(
+        `${file} → the emulator step runs ${logical.length} commands; it must be the single ` +
+          '`firebase emulators:exec …` (anything after it can swallow its exit code)',
+      );
+    }
+    const command = logical.find((l) => /\bemulators:exec\b/.test(l)) ?? '';
+    const scripts = [...command.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+    const outside = command.replace(/"[^"]*"/g, '""');
+    if (!/^firebase emulators:exec\s/.test(command)) {
+      bad.push(`${file} → the emulator command does not start with \`firebase emulators:exec\``);
+    }
+    if (/[|;&>]/.test(outside)) {
+      bad.push(
+        `${file} → the emulator command is piped, chained or redirected (\`|\`, \`||\`, \`;\`, ` +
+          '`&&`, `>`): the step would report the pipeline, not the suite',
+      );
+    }
+    if (!command.includes(`--config ${spec.config} `)) {
+      bad.push(`${file} → the emulator command does not use \`--config ${spec.config}\``);
+    }
+    if (!/\s--only firestore,functions,tasks\s/.test(command)) {
+      bad.push(`${file} → the emulator command does not boot exactly firestore,functions,tasks`);
+    }
+    const expected = `pnpm --fail-if-no-match --filter ${spec.filter} run test:tasks`;
+    if (scripts.length !== 1 || scripts[0] !== expected) {
+      bad.push(
+        `${file} → the emulator script is ${JSON.stringify(scripts)}; it must be exactly ` +
+          `"${expected}" — a filter matching nothing, or a renamed script, exits 0 without ` +
+          '`--fail-if-no-match`',
+      );
+    }
+  }
+
+  // (b) The job's OWN env: the switch is a QUOTED 'off', the regions agree.
+  const env = jobEnv(body);
+  if (!env) {
+    bad.push(`${file} → \`${spec.job}\` has no job-level \`env:\``);
+  } else {
+    const sw = env[spec.switchVar];
+    if (sw !== "'off'" && sw !== '"off"') {
+      bad.push(
+        `${file} → ${spec.switchVar} is ${sw === undefined ? 'unset' : `\`${sw}\``}; it must be ` +
+          "the QUOTED string 'off' (unquoted, `off` is a boolean to several YAML parsers)",
+      );
+    }
+    // The setup's two fail-loud gates throw under `CI` OR `REQUIRE_EMULATOR`;
+    // the job sets the second itself so they never rest on the runner's `CI`
+    // alone. Without them, an absent emulator skips every suite and exits 0.
+    if (env.REQUIRE_EMULATOR === undefined || unquote(env.REQUIRE_EMULATOR) !== '1') {
+      bad.push(
+        `${file} → REQUIRE_EMULATOR is ${env.REQUIRE_EMULATOR === undefined ? 'unset' : `\`${env.REQUIRE_EMULATOR}\``}; ` +
+          "it must be '1' in the job's own env (it arms the setup's fail-loud emulator gates)",
+      );
+    }
+    const fr = env.FUNCTIONS_REGION === undefined ? '' : unquote(env.FUNCTIONS_REGION);
+    const tr = env[spec.regionVar] === undefined ? '' : unquote(env[spec.regionVar]);
+    if (!fr || fr !== tr) {
+      bad.push(
+        `${file} → FUNCTIONS_REGION (${JSON.stringify(fr)}) and ${spec.regionVar} ` +
+          `(${JSON.stringify(tr)}) must be set in the job's own env to the SAME value: a ` +
+          'mismatch is the silent region drop of #1108',
+      );
+    }
+  }
+
+  // (c) The gate's `run:` body is the reference's, byte for byte.
+  const gate = gateRunBody(source);
+  if (gate === null || gate !== referenceGateBody) {
+    bad.push(
+      `${file} → its gate's \`run:\` body is not byte-identical to ${GATE_BODY_REFERENCE}'s ` +
+        '(copy it; only `env:` and the `JOBS:` manifest may differ)',
+    );
+  }
+  return bad;
 }
 
 describe('CI lanes always report', () => {
@@ -720,6 +927,48 @@ describe('CI lanes always report', () => {
         'Exactly one occurrence is required: a second, silently-ignored `--roots`',
         'would otherwise be invisible. (ci-nfe.yml additionally uses `--only-paths`',
         'for its live job — a different flag, deliberately not counted here.)',
+        '',
+        ...offenders.map((o) => `  - ${o}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 4c. ...and names ITSELF as `--self`.
+  // ------------------------------------------------------------------
+  it('every lane names its own workflow file in the --self of its --roots invocation', () => {
+    const offenders = [];
+    for (const file of Object.keys(LANES)) {
+      // The `--roots` invocation only: ci-nfe.yml's `--only-paths` one (nfe-live)
+      // takes no `--self`, deliberately, and assertion 4b counts `--roots`.
+      const invocations = scopeInvocations(read(file)).filter((inv) =>
+        /\s--roots\s/.test(inv.command),
+      );
+      if (invocations.length !== 1) {
+        offenders.push(
+          `${file} → expected one \`--roots\` invocation, found ${invocations.length}`,
+        );
+        continue;
+      }
+      const flat = invocations[0].command.replace(/\\\n/g, ' ');
+      const m = flat.match(/\s--self((?:\s+(?!--)[^\s\\]+)+)/);
+      const selves = m ? m[1].trim().split(/\s+/) : [];
+      if (!selves.includes(file)) {
+        offenders.push(`${file} → --self ${selves.join(' ') || '<absent>'} (must name ${file})`);
+      }
+    }
+
+    expect(
+      offenders,
+      [
+        "A lane's `--self` does not name the lane's own workflow file.",
+        '',
+        '`--self` tells e2e-affected.mjs which workflow files are THIS lane. Every other',
+        'workflow path is "another lane" and inert, so a `--self` naming the wrong file',
+        'makes the PR that edits only this lane resolve to `run_e2e=false` — the lane',
+        'skips on exactly the PR that changed it, and its gate reports "No run was',
+        'required" in green. (An ABSENT `--self` would fail safe — the script then',
+        'treats every workflow edit as relevant — but a lane must still name itself.)',
         '',
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),
@@ -2132,5 +2381,98 @@ describe('CI lanes always report', () => {
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),
     ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 18. An emulator round-trip lane runs its suite honestly, offline.
+  // ------------------------------------------------------------------
+  it('every EMULATOR_LANES lane runs one unpiped, fail-if-no-match emulator command with the switch off', () => {
+    // WHAT THIS PINS, and why each half is silent when it breaks. The emulator
+    // job is a `required` row, so its `success` is what the gate certifies:
+    //   - a pipe or `|| true` after `emulators:exec` reports the pipeline's exit
+    //     code, not the suite's — green over a red suite;
+    //   - `pnpm --filter` without `--fail-if-no-match` exits 0 on a filter that
+    //     matches nothing or a renamed script (SKILL.md's measured table) — green
+    //     over a suite that never ran;
+    //   - FUNCTIONS_REGION (inlined into the bundle) and the producers' region
+    //     disagreeing is #1108's silent drop: production enqueues "succeed" and
+    //     never deliver;
+    //   - the read switch unquoted is a YAML boolean to several parsers, and the
+    //     dispatched function reads it from the env this job hands the emulator
+    //     (D11's second layer for the Amazon lane, step-3 plan §3 decision 37);
+    //   - without `REQUIRE_EMULATOR: '1'` the setup's fail-loud emulator gates
+    //     rest on the runner's `CI` alone, and a suite that skips for want of
+    //     its emulator host exits 0;
+    //   - the gate body copied and then edited drifts from the one every other
+    //     manifest gate agrees on, outside assertion 17's re-read loop.
+    // None of these fails a run that is otherwise green, so only a static pin
+    // sees them before a human does.
+    const reference = gateRunBody(read(GATE_BODY_REFERENCE));
+    expect(reference, `${GATE_BODY_REFERENCE} lost its gate \`run:\` body`).not.toBeNull();
+
+    const offenders = [];
+    for (const [file, spec] of Object.entries(EMULATOR_LANES)) {
+      // Every row is a gated lane too, certifying exactly this job.
+      expect(
+        LANES[file]?.jobs.map((j) => j.id),
+        file,
+      ).toContain(spec.job);
+      offenders.push(...scanEmulatorLane(file, read(file), spec, reference));
+    }
+    expect(Object.keys(EMULATOR_LANES).length).toBeGreaterThanOrEqual(1);
+
+    // The real lanes FIRST: a mutated workflow must fail on its own offender,
+    // never on a synthetic case that no longer finds the text it breaks.
+    expect(
+      offenders,
+      [
+        'An emulator round-trip lane no longer runs its suite honestly.',
+        '',
+        'Its job is a `required` row of the gate manifest: whatever its run step',
+        'reports is what the gate certifies. Keep the step ONE command,',
+        '',
+        '  firebase emulators:exec --config <config> --project demo-erp \\',
+        '    --only firestore,functions,tasks \\',
+        '    "pnpm --fail-if-no-match --filter <package> run test:tasks"',
+        '',
+        "set the read switch to a QUOTED 'off', REQUIRE_EMULATOR to '1' and",
+        "FUNCTIONS_REGION equal to the producers' region in the job's own env, and",
+        'copy the gate body verbatim.',
+        '',
+        ...offenders.map((o) => `  - ${o}`),
+      ].join('\n'),
+    ).toEqual([]);
+
+    // Synthetic cases: the same scanner over broken copies of the first row's
+    // real file must object to each break, and pass the file itself. Without
+    // them, a regex that quietly matched nothing would report a clean sweep.
+    const [file, spec] = Object.entries(EMULATOR_LANES)[0];
+    const real = read(file);
+    const breaks = {
+      'a pipe after the command': (s) =>
+        s.replace('run test:tasks"\n', 'run test:tasks" | tee emu.log\n'),
+      '`|| true` after the command': (s) =>
+        s.replace('run test:tasks"\n', 'run test:tasks" || true\n'),
+      'a second command in the step': (s) =>
+        s.replace('run test:tasks"\n', 'run test:tasks"\n          echo done\n'),
+      'no --fail-if-no-match': (s) =>
+        s.replace('"pnpm --fail-if-no-match --filter', '"pnpm --filter'),
+      'another package': (s) =>
+        s.replace(`--filter ${spec.filter} run`, `--filter ${spec.filter}x run`),
+      // Line-anchored, these two: the header comment quotes the same text.
+      'an unquoted off': (s) =>
+        s.replace(new RegExp(`^(\\s+${spec.switchVar}): 'off'$`, 'm'), '$1: off'),
+      'the switch on': (s) =>
+        s.replace(new RegExp(`^(\\s+${spec.switchVar}): 'off'$`, 'm'), "$1: 'on'"),
+      'two regions': (s) => s.replace(/(\n\s+FUNCTIONS_REGION:\s*)'([^']+)'/, "$1'xx-other1'"),
+      'no REQUIRE_EMULATOR': (s) => s.replace(/^\s+REQUIRE_EMULATOR: '1'\n/m, ''),
+      'an edited gate body': (s) => s.replace('POLL_SLEEP=10', 'POLL_SLEEP=11'),
+    };
+    for (const [label, breakIt] of Object.entries(breaks)) {
+      const broken = breakIt(real);
+      expect(broken, `synthetic case "${label}" did not change the file`).not.toBe(real);
+      expect(scanEmulatorLane(file, broken, spec, reference).length, label).toBeGreaterThan(0);
+    }
+    expect(scanEmulatorLane(file, real, spec, reference)).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
 /**
- * The producers and resolvers of the four Amazon avisos, and the µs boundary of
+ * The producers and resolvers of the five Amazon avisos, and the µs boundary of
  * this app:
  *
  * | tipo | key | severity | clock |
@@ -8,6 +8,7 @@
  * | `amazonReautorizacaoExpirando` | per conta, no `janela` | `atencao` | none |
  * | `amazonSegredoLwaExpirando` | per app | `atencao` | none |
  * | `amazonSegredoLwaRecusado` | per app | `critico` | none |
+ * | `amazonImportacaoParada` (step 4) | per conta | `critico` | the poll document's commit time (µs) |
  *
  * Every raise is in-app only: no `escalar` is ever passed. Every param is
  * structured (a name, a number, a civil date) — the wording lives in
@@ -25,7 +26,8 @@
  *  - {@link prazoUsDe} — a deadline instant, ms → µs, for the aviso's `prazo`;
  *  - {@link relogioDoDocumentoUs} — a Firestore commit `Timestamp` → µs, the
  *    app's only Timestamp conversion (the credential store's versions and read
- *    times, the conta enumeration's read time, the park's aviso clock).
+ *    times, the conta enumeration's read time, the park's aviso clock, and —
+ *    called HERE, never by the poll — the poll document's aviso clock).
  *
  * `avisos.test.ts` counts them as raw source text, so the promise cannot
  * quietly become four.
@@ -52,6 +54,24 @@
  * ⚠️ µs and not ms: two commits inside the same millisecond would look equal,
  * and an equal clock is dropped.
  *
+ * ## The import-stopped clock is the POLL document's commit time
+ *
+ * `amazonImportacaoParada` (step 4) is raised and resolved by the backstop poll,
+ * clocked by the commit time of the run's FIRST write to `pollPedidosAmazon/{id}`
+ * — its lease, or its refusal record. Every write to that document is
+ * preconditioned, so the clocks of successive runs rise strictly: a late raise
+ * from a run whose lease was taken over is dropped, and a resolve is always
+ * clocked (it seeds a resolved row when none exists). The poll hands this module
+ * the commit `Timestamp` itself, so the µs conversion stays here.
+ *
+ * Its OTHER resolver is the expiry sweep's orphan pass (PR 4-b), for a conta
+ * that no longer exists: clocked by the conta enumeration's `readTime`, like the
+ * reconexão row's. Commit and read times share one server timeline, so a conta
+ * created after that read polls — and raises — at a later clock, and keeps its
+ * row. A DEACTIVATED conta is still listed (the enumeration has no `ativo`
+ * filter) and the poll skips it, so its open row stays open until the conta is
+ * reactivated and polls cleanly, or is deleted (a documented residue).
+ *
  * ## The other three are CLOCKLESS on purpose
  *
  *  - the two expiry tipos: their event is time passing, which no document write
@@ -73,6 +93,7 @@ import {
   CANAL_AVISO,
   FUSO_FISCAL,
   LIMIAR_AVISO_AMAZON_DIAS,
+  type MotivoImportacaoParadaAmazon,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
@@ -100,21 +121,32 @@ export const MOTIVO_AVISO_AMAZON = {
   contaRemovida: 'conta-removida',
   /** The sweep found more than 30 days left on the app secret. */
   segredoEmDia: 'segredo-em-dia',
+  /** The backstop poll read the conta cleanly after a counted failure (step 4). */
+  importacaoRetomada: 'importacao-retomada',
 } as const;
 export type MotivoAvisoAmazon = (typeof MOTIVO_AVISO_AMAZON)[keyof typeof MOTIVO_AVISO_AMAZON];
 
-/** The four tipos of this channel. */
+/** The five tipos of this channel. */
 export const TIPOS_AVISO_AMAZON: ReadonlySet<string> = new Set([
   TIPO_AVISO.amazonReconexaoPendente,
   TIPO_AVISO.amazonReautorizacaoExpirando,
   TIPO_AVISO.amazonSegredoLwaExpirando,
   TIPO_AVISO.amazonSegredoLwaRecusado,
+  TIPO_AVISO.amazonImportacaoParada,
 ]);
 
-/** The two PER-CONTA tipos — what the sweep's orphan pass may close. */
+/**
+ * The three PER-CONTA tipos the sweep's orphan pass may close. ⚠️ The pass keeps
+ * a row only when its id is one of the keys it computes for every LISTED conta
+ * (`conta/expiracaoSweep.ts`), so a tipo listed here must have its key computed
+ * there too: `amazonImportacaoParada` (step 4, PR 4-b) without
+ * {@link chaveImportacaoParada} in that set would close EVERY live conta's open
+ * import aviso, every day.
+ */
 export const TIPOS_AVISO_AMAZON_POR_CONTA: ReadonlySet<string> = new Set([
   TIPO_AVISO.amazonReconexaoPendente,
   TIPO_AVISO.amazonReautorizacaoExpirando,
+  TIPO_AVISO.amazonImportacaoParada,
 ]);
 
 export interface AvisoDepsAmazon {
@@ -453,32 +485,149 @@ export function resolverSegredoLwaRecusado(
 }
 
 /* -------------------------------------------------------------------------- */
+/*                 amazonImportacaoParada (clocked, step 4)                    */
+/* -------------------------------------------------------------------------- */
+
+/** The import-stopped aviso of one conta (the backstop poll's). */
+export function chaveImportacaoParada(integracaoId: string): string {
+  return chaveDeAviso({ tipo: TIPO_AVISO.amazonImportacaoParada, conta: integracaoId });
+}
+
+/** A Firestore commit stamp, as the poll hands it over: converted to µs HERE only. */
+export interface CommitDoDocumento {
+  readonly seconds: number;
+  readonly nanoseconds: number;
+}
+
+export interface ImportacaoParadaAmazon {
+  readonly integracaoId: string;
+  /** The conta's `nome` (its id for a malformed legacy row). */
+  readonly lojaNome: string;
+  readonly motivo: MotivoImportacaoParadaAmazon;
+  /** The commit time of the run's FIRST write to its poll document (header). */
+  readonly commit: CommitDoDocumento;
+}
+
+/**
+ * Raise "the backstop poll stopped importing this conta". In-app only;
+ * `params` are exactly `loja` and the motivo CODE (the wording reads it), so a
+ * wording fix is retroactive. The poll calls it only once the write that
+ * stored the failure count LANDED, at the motivo's threshold.
+ */
+export function levantarImportacaoParadaAmazon(
+  db: Firestore,
+  e: ImportacaoParadaAmazon,
+  deps: AvisoDepsAmazon,
+): Promise<{ chave: string; resultado: ResultadoAviso }> {
+  return escreverAviso(
+    db,
+    {
+      tipo: TIPO_AVISO.amazonImportacaoParada,
+      conta: e.integracaoId,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: e.lojaNome, motivo: e.motivo },
+      urlInterna: urlDaConta(e.integracaoId),
+      relogioEvento: relogioDoDocumentoUs(e.commit),
+    },
+    depsDeEscrita(deps),
+  );
+}
+
+/**
+ * Close the import-stopped aviso — ALWAYS clocked, by the commit time of the
+ * clean run's lease, as `importacao-retomada`. When the row is absent it seeds a
+ * RESOLVED one carrying that clock, so a late raise from an older run is still
+ * dropped.
+ *
+ * ⚠️ The poll calls it only when the stored `falhasSeguidas` was above 0: a
+ * clocked resolve re-stamps a resolved row's watermark (or seeds one), so a call
+ * on every healthy run would cost one aviso write per conta per tick.
+ *
+ * `true` only on a real open → resolved transition.
+ */
+export function resolverImportacaoParadaAmazon(
+  db: Firestore,
+  integracaoId: string,
+  deps: { readonly nowMs: number },
+  relogio: { readonly commit: CommitDoDocumento; readonly lojaNome: string },
+): Promise<boolean> {
+  return resolverAviso(
+    db,
+    chaveImportacaoParada(integracaoId),
+    MOTIVO_AVISO_AMAZON.importacaoRetomada,
+    { agoraUs: agoraUsDe(deps) },
+    sementeImportacaoParada(integracaoId, relogioDoDocumentoUs(relogio.commit), relogio.lojaNome),
+  );
+}
+
+/**
+ * The complete seed of a RESOLVED import-stopped row, for a clocked resolve that
+ * finds none: the raise's metadata minus what this observation does not know
+ * (the motivo always; the name when the conta is gone).
+ */
+function sementeImportacaoParada(
+  integracaoId: string,
+  relogioUs: number,
+  lojaNome: string | null,
+): ResolverAvisoOpts {
+  return {
+    tipo: TIPO_AVISO.amazonImportacaoParada,
+    conta: integracaoId,
+    severidade: SEVERIDADE_AVISO.critico,
+    canal: CANAL_AVISO.amazon,
+    ...(lojaNome === null ? {} : { params: { loja: lojaNome } }),
+    urlInterna: urlDaConta(integracaoId),
+    relogioEvento: relogioUs,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /*                          The sweep's orphan pass                            */
 /* -------------------------------------------------------------------------- */
 
+/** The per-conta tipos whose every resolve is CLOCKED (header). */
+type TipoComRelogioAmazon =
+  | typeof TIPO_AVISO.amazonReconexaoPendente
+  | typeof TIPO_AVISO.amazonImportacaoParada;
+
 /**
- * The conta a reconexão chave was computed for, or `null` when `chave` is not
- * one {@link chaveReconexao} could have produced. Checked by recomputing the
- * key, never by trusting the split.
+ * The conta a CLOCKED per-conta chave was computed for, and its tipo, or `null`
+ * when `chave` is not one {@link chaveReconexao} or {@link chaveImportacaoParada}
+ * could have produced. Checked by recomputing the key, never by trusting the
+ * split: a fold in `chaveDeAviso` would otherwise hand back a conta whose key is
+ * a DIFFERENT document.
  */
-function contaDaChaveDeReconexao(chave: string): string | null {
-  const prefixo = `${TIPO_AVISO.amazonReconexaoPendente}:`;
-  if (!chave.startsWith(prefixo)) return null;
-  const conta = chave.slice(prefixo.length);
-  return conta !== '' && chaveReconexao(conta) === chave ? conta : null;
+function contaDaChaveComRelogio(
+  chave: string,
+): { readonly tipo: TipoComRelogioAmazon; readonly conta: string } | null {
+  const candidatos = [
+    [TIPO_AVISO.amazonReconexaoPendente, chaveReconexao],
+    [TIPO_AVISO.amazonImportacaoParada, chaveImportacaoParada],
+  ] as const;
+  for (const [tipo, chaveDe] of candidatos) {
+    const prefixo = `${tipo}:`;
+    if (!chave.startsWith(prefixo)) continue;
+    const conta = chave.slice(prefixo.length);
+    return conta !== '' && chaveDe(conta) === chave ? { tipo, conta } : null;
+  }
+  return null;
 }
 
 /**
  * Close an open per-conta row BY ITS DOCUMENT ID as `conta-removida` — for a
  * conta that no longer exists as an Amazon conta.
  *
- *  - A **reconexão** row is resolved CLOCKED by `relogioListaUs`, the read time
- *    of the conta enumeration that did not contain the conta (header): a conta
- *    created after that read and then parked raised at a later clock, and its
- *    row stays open. The seed carries no name: the conta is gone.
+ *  - A **reconexão** row and an **import-stopped** row (step 4) are resolved
+ *    CLOCKED by `relogioListaUs`, the read time of the conta enumeration that
+ *    did not contain the conta (header): a conta created after that read — and
+ *    then parked, or failing to import — raised at a later commit-time clock,
+ *    and its row stays open for the next sweep, which lists the conta. A raise
+ *    from a run whose lease predates the deletion carries an older clock and is
+ *    closed. Each seed carries no name: the conta is gone.
  *  - A **reauthorization** row stays clockless, like every resolve of that tipo.
- *  - A reconexão-prefixed id no producer here could have computed has no write
- *    to race, so it is resolved clockless too.
+ *  - A clocked-tipo id no producer here could have computed has no write to
+ *    race, so it is resolved clockless too.
  */
 export function resolverAvisoDeContaRemovida(
   db: Firestore,
@@ -487,13 +636,11 @@ export function resolverAvisoDeContaRemovida(
   deps: { readonly nowMs: number },
 ): Promise<boolean> {
   const agora = { agoraUs: agoraUsDe(deps) };
-  const conta = contaDaChaveDeReconexao(chave);
-  if (conta === null) return resolverAviso(db, chave, MOTIVO_AVISO_AMAZON.contaRemovida, agora);
-  return resolverAviso(
-    db,
-    chave,
-    MOTIVO_AVISO_AMAZON.contaRemovida,
-    agora,
-    sementeReconexao(conta, relogioListaUs, null),
-  );
+  const alvo = contaDaChaveComRelogio(chave);
+  if (alvo === null) return resolverAviso(db, chave, MOTIVO_AVISO_AMAZON.contaRemovida, agora);
+  const semente =
+    alvo.tipo === TIPO_AVISO.amazonReconexaoPendente
+      ? sementeReconexao(alvo.conta, relogioListaUs, null)
+      : sementeImportacaoParada(alvo.conta, relogioListaUs, null);
+  return resolverAviso(db, chave, MOTIVO_AVISO_AMAZON.contaRemovida, agora, semente);
 }

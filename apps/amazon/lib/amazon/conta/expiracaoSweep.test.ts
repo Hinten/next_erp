@@ -1,13 +1,20 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CANAL_AVISO, INTEGRACAO_TIPO, TIPO_AVISO } from '@delfrance/schemas';
+import {
+  CANAL_AVISO,
+  INTEGRACAO_TIPO,
+  MOTIVO_IMPORTACAO_PARADA_AMAZON,
+  TIPO_AVISO,
+} from '@delfrance/schemas';
 
 import {
   avisarReautorizacao,
   avisarReconexaoPendente,
   avisarSegredoLwaExpirando,
+  chaveImportacaoParada,
   chaveReautorizacao,
   chaveReconexao,
   chaveSegredoExpirando,
+  levantarImportacaoParadaAmazon,
   relogioDoDocumentoUs,
 } from '../avisos/avisos';
 import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
@@ -280,6 +287,84 @@ describe('pass (b) — open per-conta rows of deleted contas', () => {
       ordens: [['criadoEm', 'desc']],
       limite: PAGINA_AVISOS_ABERTOS,
     });
+  });
+});
+
+describe('pass (b) — the backstop poll’s import-stopped row (step 4, PR 4-b)', () => {
+  const importacao = (id: string) => db.ler(caminhoAviso(chaveImportacaoParada(id)));
+
+  /**
+   * Raise a conta's import-stopped aviso as the poll does: clocked by the commit
+   * time of a write to ITS poll document (here, a seeded one).
+   */
+  async function pollAvisou(id: string): Promise<number> {
+    const commit = db.seed(`pollPedidosAmazon/${id}`, { falhasSeguidas: 1 });
+    await levantarImportacaoParadaAmazon(
+      asDb(db),
+      {
+        integracaoId: id,
+        lojaNome: `Conta ${id}`,
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.credencialAusente,
+        commit,
+      },
+      { increment, nowMs: AGORA_MS },
+    );
+    return relogioDoDocumentoUs(commit);
+  }
+
+  it('★ a deleted conta’s open row closes, CLOCKED by the enumeration’s read time; a live conta’s row — active or not — stays open', async () => {
+    seedConta(db, 'viva', { nome: 'Viva' });
+    credencialComDias('viva', 200);
+    seedConta(db, 'desativada', { nome: 'Desativada', ativo: false });
+    credencialComDias('desativada', 200);
+    await pollAvisou('viva');
+    await pollAvisou('desativada');
+    const raiseDaMorta = await pollAvisou('morta');
+    // The enumeration is the sweep's FIRST operation, so its read time is the
+    // latest commit before it: the dead conta's raise.
+    const ultima = db.escritas.at(-1)?.writeTime;
+    if (ultima === undefined) throw new Error('teste: nenhuma escrita antes da varredura');
+    const lidaEmUs = relogioDoDocumentoUs(ultima);
+    expect(lidaEmUs).toBeGreaterThan(raiseDaMorta);
+
+    const res = await varrer().r;
+
+    expect(res.contas).toBe(2);
+    expect(res.orfaos.resolvidos).toBe(1);
+    expect(importacao('morta')).toMatchObject({
+      resolucaoMotivo: 'conta-removida',
+      relogioEvento: lidaEmUs,
+    });
+    // The poll's rows while the conta exists: never this pass's to close — and a
+    // deactivated conta is still listed (the documented residue).
+    expect(importacao('viva')?.resolvidoEm).toBeNull();
+    expect(importacao('desativada')?.resolvidoEm).toBeNull();
+  });
+
+  it('★ the race: a conta created AFTER the enumeration, whose poll raised before the orphan pass, keeps its open row', async () => {
+    // A listed conta with no credential: pass (a) seeds its RESOLVED reconexão
+    // row — a write after the enumeration and before pass (b), where the
+    // concurrent conta and its poll run land.
+    seedConta(db, 'viva', { nome: 'Viva' });
+    // Control: a deleted conta's raise from BEFORE the enumeration does close.
+    await pollAvisou('morta');
+    let raiseDaNova: number | null = null;
+    db.antesDaProximaEscrita(caminhoAviso(chaveReconexao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Nova' });
+      raiseDaNova = await pollAvisou('nova');
+    });
+
+    const res = await varrer().r;
+
+    // Anti-vacuity: the interleaving ran, and the enumeration never saw the conta.
+    expect(raiseDaNova).not.toBeNull();
+    expect(res.contas).toBe(1);
+    expect(reconexao('viva')).toMatchObject({ resolucaoMotivo: 'credencial-ausente' });
+    // The orphan pass read the new row (its key is in no listed conta's set)
+    // and its clocked resolve lost to the later raise: still open, its clock kept.
+    expect(importacao('nova')).toMatchObject({ resolvidoEm: null, relogioEvento: raiseDaNova });
+    expect(importacao('morta')?.resolucaoMotivo).toBe('conta-removida');
+    expect(res.orfaos.resolvidos).toBe(1);
   });
 });
 

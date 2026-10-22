@@ -11,6 +11,7 @@ What ships here:
 | `lwa.ts`           | `URL_TOKEN_LWA`, `trocarRefreshToken`, `trocarCodigoAutorizacao` and `credencialLwaValida`          |
 | `consentimento.ts` | `URL_CONSENTIMENTO_BR`, `montarUrlConsentimento` (a consent URL, never sent), `applicationIdValido` |
 | `client.ts`        | `URL_BASE_SP_API`, `MARKETPLACE_ID_BR`, `criarClienteSpApi`: GET-only, redirects never followed     |
+| `pedidos.ts`       | `buscarPedidosAtualizados`, `respostaSearchOrdersSchema`: `searchOrders`, the poll's one list read  |
 | `prazos.ts`        | `PRAZO_AMAZON_MS`, the per-call deadline keyed on the operation class                               |
 | `types.ts`         | The LWA token response, the LWA error body and the SP-API `errors[]` envelope — nothing else        |
 | `errors.ts`        | The typed errors, `lerLimiteTaxa` (`x-amzn-RateLimit-Limit`) and `lerCodigoErroLwa`                 |
@@ -114,8 +115,8 @@ code exchange means the five-minute code expired or was spent. The SP-API body's
   there and decides what is kept. An observer must never throw.
 - **No body excerpt on any error.** Response text never rides an exception.
 - **No `process.env`.** Every value is a parameter.
-- **No resource schemas.** Each operation's (Orders, Sellers, Listings, …) arrives
-  with its first consumer.
+- **No resource schema before its consumer.** Each operation's arrives with the step
+  that first reads it (`searchOrders`' page schema with step 4).
 - **No call to Amazon from the tests** (D11). Every test injects its own `fetch`, and
   `test/_setup/semRede.ts` makes an un-injected one throw.
 - **No `build` script**, deliberately: `ci.yml`'s seven-job split relies on no
