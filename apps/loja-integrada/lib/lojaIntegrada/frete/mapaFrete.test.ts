@@ -103,7 +103,7 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
     const r = await registrar(db);
 
     // The snapshot the decision was taken on — never the appended row.
-    expect(r).toEqual({ resultado: 'registrada', mapa: [] });
+    expect(r).toEqual({ resultado: 'registrada', mapa: [], lidoEmUs: expect.any(Number) });
     const escritas = db.escritasEm(CAMINHO);
     expect(escritas).toHaveLength(1);
     expect(escritas[0]?.verbo).toBe('update');
@@ -125,7 +125,11 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
     for (const armazenada of [naoMapeada, mapeada]) {
       const db = new FakeDb();
       db.seed(CAMINHO, docFrete({ mapa: [armazenada] }));
-      expect(await registrar(db)).toEqual({ resultado: 'ja-presente', mapa: [armazenada] });
+      expect(await registrar(db)).toEqual({
+        resultado: 'ja-presente',
+        mapa: [armazenada],
+        lidoEmUs: expect.any(Number),
+      });
       expect(db.escritas).toEqual([]);
       expect(mapaDe(db)).toEqual([armazenada]);
     }
@@ -178,7 +182,11 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
       if (!('mapa' in over)) delete doc.mapa;
       db.seed(CAMINHO, doc);
 
-      expect(await registrar(db)).toEqual({ resultado: 'registrada', mapa: null });
+      expect(await registrar(db)).toEqual({
+        resultado: 'registrada',
+        mapa: null,
+        lidoEmUs: expect.any(Number),
+      });
       expect(mapaDe(db)).toEqual([linha('141909---PAC', 1001)]);
     }
   });
@@ -198,7 +206,11 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
       const db = new FakeDb();
       db.seed(CAMINHO, docFrete({ mapa: [armazenada] }));
 
-      expect(await registrar(db), nome).toEqual({ resultado: 'ja-presente', mapa: [armazenada] });
+      expect(await registrar(db), nome).toEqual({
+        resultado: 'ja-presente',
+        mapa: [armazenada],
+        lidoEmUs: expect.any(Number),
+      });
       expect(db.escritas, nome).toEqual([]);
       expect(mapaDe(db), nome).toEqual([armazenada]);
     }
@@ -217,7 +229,7 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
 
     const r = await registrar(db);
 
-    expect(r).toEqual({ resultado: 'registrada', mapa: legado });
+    expect(r).toEqual({ resultado: 'registrada', mapa: legado, lidoEmUs: expect.any(Number) });
     const armazenado = mapaDe(db) as unknown[];
     expect(JSON.stringify(armazenado.slice(0, legado.length))).toBe(JSON.stringify(legado));
     expect(armazenado.slice(legado.length)).toEqual([linha('141909---PAC', 1001)]);
@@ -227,7 +239,11 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
     for (const mapa of [{ '141909---PAC': { integracaoUid: 'me-1' } }, 'texto', 3]) {
       const db = new FakeDb();
       db.seed(CAMINHO, docFrete({ mapa }));
-      expect(await registrar(db)).toEqual({ resultado: 'mapa-invalido', mapa: null });
+      expect(await registrar(db)).toEqual({
+        resultado: 'mapa-invalido',
+        mapa: null,
+        lidoEmUs: expect.any(Number),
+      });
       expect(db.escritas).toEqual([]);
       expect(mapaDe(db)).toEqual(mapa);
     }
@@ -248,7 +264,11 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
     for (const [nome, doc] of casos) {
       const db = new FakeDb();
       if (doc !== null) db.seed(CAMINHO, doc);
-      expect(await registrar(db), nome).toEqual({ resultado: 'sem-int-frete', mapa: null });
+      expect(await registrar(db), nome).toEqual({
+        resultado: 'sem-int-frete',
+        mapa: null,
+        lidoEmUs: expect.any(Number),
+      });
       expect(db.escritas, nome).toEqual([]);
     }
   });
@@ -269,6 +289,7 @@ describe('registrarFormaEnvioNoMapaLi: the decision', () => {
       db.seed(CAMINHO, docFrete());
       expect(await registrar(db, { formaEnvio })).toEqual({
         resultado: 'chave-invalida',
+        lidoEmUs: null,
         mapa: null,
       });
       expect(db.leituras).toEqual([]);
@@ -287,10 +308,36 @@ describe('registrarFormaEnvioNoMapaLi: rule 7, tier 1', () => {
 
     const r = await registrar(db);
 
-    expect(r).toEqual({ resultado: 'ja-presente', mapa: [linha('141909---PAC', 999)] });
+    expect(r).toEqual({
+      resultado: 'ja-presente',
+      mapa: [linha('141909---PAC', 999)],
+      lidoEmUs: expect.any(Number),
+    });
     // ONE row for the key: the concurrent one. This call's row never landed.
     expect(mapaDe(db)).toEqual([linha('141909---PAC', 999)]);
     expect(leiturasDoFrete(db)).toBe(2);
+  });
+
+  it('lidoEmUs is the µs readTime of the DECIDING read — the retry’s, after a lost precondition (the step-5 aviso clock)', async () => {
+    const us = (t: { seconds: number; nanoseconds: number }) =>
+      t.seconds * 1_000_000 + t.nanoseconds / 1000;
+    const db = new FakeDb();
+    db.seed(CAMINHO, docFrete({ mapa: [] }));
+    let concorrente = 0;
+    db.antesDaProximaEscrita(CAMINHO, async () => {
+      const w = (await refFrete(db).update({ nome: 'Renomeada' })) as {
+        writeTime: { seconds: number; nanoseconds: number };
+      };
+      concorrente = us(w.writeTime);
+    });
+    const r = await registrar(db);
+    expect(r.resultado).toBe('registrada');
+    // Read AFTER the concurrent commit: a later clock than that write's.
+    expect(r.lidoEmUs).not.toBeNull();
+    expect(r.lidoEmUs!).toBeGreaterThanOrEqual(concorrente);
+    // And before this call's own union landed.
+    const minha = db.escritasEm(CAMINHO).at(-1)!;
+    expect(r.lidoEmUs!).toBeLessThan(us(minha.writeTime));
   });
 
   it('a lost precondition on an UNRELATED write (the trigger renaming the doc) ⇒ still absent, appended on the 2nd attempt, and the rename survives', async () => {
@@ -325,7 +372,11 @@ describe('registrarFormaEnvioNoMapaLi: rule 7, tier 1', () => {
         await escritaConcorrente(db, patch);
       });
 
-      expect(await registrar(db), nome).toEqual({ resultado: 'sem-int-frete', mapa: null });
+      expect(await registrar(db), nome).toEqual({
+        resultado: 'sem-int-frete',
+        mapa: null,
+        lidoEmUs: expect.any(Number),
+      });
 
       expect(db.ler(CAMINHO), nome).toMatchObject({ ...patch, mapa: [] });
       // The concurrent write only: this call wrote nothing on its second attempt.
@@ -342,7 +393,11 @@ describe('registrarFormaEnvioNoMapaLi: rule 7, tier 1', () => {
       await escritaConcorrente(db, { mapa });
     });
 
-    expect(await registrar(db)).toEqual({ resultado: 'mapa-invalido', mapa: null });
+    expect(await registrar(db)).toEqual({
+      resultado: 'mapa-invalido',
+      mapa: null,
+      lidoEmUs: expect.any(Number),
+    });
 
     // A union on the retry would have replaced the map with [row].
     expect(mapaDe(db)).toEqual(mapa);
@@ -404,7 +459,11 @@ describe('registrarFormaEnvioNoMapaLi: rule 7, tier 1', () => {
       await refFrete(db).delete();
     });
 
-    expect(await registrar(db)).toEqual({ resultado: 'sem-int-frete', mapa: null });
+    expect(await registrar(db)).toEqual({
+      resultado: 'sem-int-frete',
+      mapa: null,
+      lidoEmUs: expect.any(Number),
+    });
 
     expect(db.ler(CAMINHO)).toBeUndefined();
     expect(db.escritasEm(CAMINHO).map((e) => e.verbo)).toEqual(['delete']);

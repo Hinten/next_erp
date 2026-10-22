@@ -4,10 +4,18 @@
  * stale precondition would make every race test vacuous.
  */
 import { describe, expect, it } from 'vitest';
-import { avisoCollection, integracaoCollection } from '@delfrance/data/admin/collections';
-import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin/grpcErrors';
+import {
+  avisoCollection,
+  integracaoCollection,
+  produtoLojaIntegradaLinkCollection,
+} from '@delfrance/data/admin/collections';
+import {
+  isAlreadyExists,
+  isFailedPrecondition,
+  isNotFound,
+} from '@delfrance/data/admin/grpcErrors';
 
-import { FakeDb, arrayUnion, asDb, increment } from './fakeDb';
+import { FakeDb, arrayUnion, asDb, grpc, increment } from './fakeDb';
 
 function refDe(db: FakeDb, id: string) {
   return integracaoCollection.docRef(asDb(db), {}, id);
@@ -354,5 +362,198 @@ describe('FakeDb — the array-union sentinel (step 20, the freight mapa)', () =
     await ref.create({ l: [] });
     await expect(ref.update({ l: arrayUnion({ k: undefined }) })).rejects.toThrow(/undefined/);
     expect(db.ler('integracao/a')).toEqual({ l: [] });
+  });
+});
+
+describe('FakeDb — the batch (step 5, the pedido and its pagamentos)', () => {
+  function refsDe(db: FakeDb) {
+    const banco = asDb(db);
+    return {
+      a: integracaoCollection.docRef(banco, {}, 'a'),
+      b: integracaoCollection.docRef(banco, {}, 'b'),
+      c: integracaoCollection.docRef(banco, {}, 'c'),
+    };
+  }
+
+  it('all the writes land under ONE commit stamp, each logged with its batch number', async () => {
+    const db = new FakeDb();
+    const { a, b } = refsDe(db);
+    await a.create({ x: 1 });
+    const lido = await a.get();
+    const lote = asDb(db).batch();
+    lote.update(a, { x: 2 }, { lastUpdateTime: lido.updateTime });
+    lote.create(b, { y: 1 });
+    const resultados = await lote.commit();
+    expect(db.ler('integracao/a')).toEqual({ x: 2 });
+    expect(db.ler('integracao/b')).toEqual({ y: 1 });
+    expect(resultados).toHaveLength(2);
+    const [ea, eb] = db.escritas.slice(-2);
+    expect(ea?.writeTime.isEqual(eb?.writeTime)).toBe(true);
+    expect([ea?.lote, eb?.lote]).toEqual([1, 1]);
+    expect(db.carimboDe('integracao/a')?.isEqual(db.carimboDe('integracao/b'))).toBe(true);
+    // A single-document write carries no batch number.
+    expect(db.escritas[0]?.lote).toBeUndefined();
+  });
+
+  it('a create on an EXISTING doc rejects 6 and writes NOTHING — the other write included', async () => {
+    const db = new FakeDb();
+    const { a, b } = refsDe(db);
+    await a.create({ x: 1 });
+    const antes = db.escritas.length;
+    const lote = asDb(db).batch();
+    lote.create(b, { y: 1 });
+    lote.create(a, { x: 9 });
+    await expect(lote.commit()).rejects.toSatisfy(isAlreadyExists);
+    expect(db.ler('integracao/b')).toBeUndefined();
+    expect(db.ler('integracao/a')).toEqual({ x: 1 });
+    expect(db.escritas).toHaveLength(antes);
+  });
+
+  it('an update under a STALE lastUpdateTime rejects 9 and writes nothing', async () => {
+    const db = new FakeDb();
+    const { a, b } = refsDe(db);
+    await a.create({ x: 1 });
+    const lido = await a.get();
+    await a.update({ x: 2 });
+    const lote = asDb(db).batch();
+    lote.create(b, { y: 1 });
+    lote.update(a, { x: 3 }, { lastUpdateTime: lido.updateTime });
+    const err: unknown = await lote.commit().catch((e: unknown) => e);
+    expect(isFailedPrecondition(err)).toBe(true);
+    expect(db.ler('integracao/a')).toEqual({ x: 2 });
+    expect(db.ler('integracao/b')).toBeUndefined();
+  });
+
+  it('an update under lastUpdateTime on a REMOVED doc rejects 9 (not 5) and resurrects nothing', async () => {
+    const db = new FakeDb();
+    const { a, b } = refsDe(db);
+    await a.create({ x: 1 });
+    const lido = await a.get();
+    await a.delete();
+    const lote = asDb(db).batch();
+    lote.update(a, { x: 3 }, { lastUpdateTime: lido.updateTime });
+    lote.create(b, { y: 1 });
+    const err: unknown = await lote.commit().catch((e: unknown) => e);
+    expect(isFailedPrecondition(err)).toBe(true);
+    expect(isNotFound(err)).toBe(false);
+    expect(db.ler('integracao/a')).toBeUndefined();
+    expect(db.ler('integracao/b')).toBeUndefined();
+  });
+
+  it('a plain update of a missing doc rejects 5, and nothing lands', async () => {
+    const db = new FakeDb();
+    const { a, b } = refsDe(db);
+    const lote = asDb(db).batch();
+    lote.create(b, { y: 1 });
+    lote.update(a, { x: 1 });
+    await expect(lote.commit()).rejects.toSatisfy(isNotFound);
+    expect(db.ler('integracao/b')).toBeUndefined();
+  });
+
+  it('the concurrent writer of antesDaProximaEscrita lands BEFORE the checks: its write fails the batch whole', async () => {
+    const db = new FakeDb();
+    const { a, b } = refsDe(db);
+    await a.create({ x: 1 });
+    const lido = await a.get();
+    db.antesDaProximaEscrita('integracao/a', async () => {
+      await a.update({ x: 'outro escritor' });
+    });
+    const lote = asDb(db).batch();
+    lote.update(a, { x: 2 }, { lastUpdateTime: lido.updateTime });
+    lote.create(b, { y: 1 });
+    await expect(lote.commit()).rejects.toSatisfy(isFailedPrecondition);
+    expect(db.ler('integracao/a')).toEqual({ x: 'outro escritor' });
+    expect(db.ler('integracao/b')).toBeUndefined();
+  });
+
+  it('an injected write failure on ANY path of the batch rejects it whole', async () => {
+    const db = new FakeDb();
+    const { a, b } = refsDe(db);
+    db.falharEscrita('integracao/b', grpc(14, 'UNAVAILABLE'));
+    const lote = asDb(db).batch();
+    lote.create(a, { x: 1 });
+    lote.create(b, { y: 1 });
+    await expect(lote.commit()).rejects.toMatchObject({ code: 14 });
+    expect(db.ler('integracao/a')).toBeUndefined();
+  });
+
+  it('refuses what it does not model: two writes on one path, an empty or a second commit, set/delete, a bad payload', async () => {
+    const db = new FakeDb();
+    const { a, b, c } = refsDe(db);
+    const dupla = asDb(db).batch();
+    dupla.create(a, { x: 1 });
+    expect(() => dupla.create(a, { x: 2 })).toThrow(/duas escritas/);
+    await expect(asDb(db).batch().commit()).rejects.toThrow(/lote vazio/);
+    expect(() => asDb(db).batch().set(a, { x: 1 })).toThrow(/set\(\) num lote/);
+    expect(() => asDb(db).batch().delete(a)).toThrow(/delete\(\) num lote/);
+    expect(() => asDb(db).batch().create(b, { x: undefined })).toThrow(/undefined/);
+    expect(() => asDb(db).batch().update(b, {})).toThrow(/update vazio/);
+    expect(() => asDb(db).batch().update(b, { 'p.q': 1 })).toThrow(/chave com ponto/);
+    expect(() =>
+      asDb(db)
+        .batch()
+        .create(b, { n: increment(1) }),
+    ).toThrow(/increment em create/);
+    const unica = asDb(db).batch();
+    unica.create(c, { z: 1 });
+    await unica.commit();
+    await expect(unica.commit()).rejects.toThrow(/duas vezes/);
+    expect(() => unica.create(b, { y: 1 })).toThrow(/já enviado/);
+  });
+
+  it('a nested map is a WHOLE-field value on update, exactly as the server applies one', async () => {
+    const db = new FakeDb();
+    const { a } = refsDe(db);
+    await a.create({ m: { p: 1, q: 2 }, outro: 1 });
+    const lido = await a.get();
+    const lote = asDb(db).batch();
+    lote.update(a, { m: { p: 9 } }, { lastUpdateTime: lido.updateTime });
+    await lote.commit();
+    expect(db.ler('integracao/a')).toEqual({ m: { p: 9 }, outro: 1 });
+  });
+});
+
+describe('FakeDb — collection groups and `in` (step 5, the link docs)', () => {
+  it('a group query reads the LAST collection segment at any depth; each doc carries its owner as ref.parent.parent', async () => {
+    const db = new FakeDb();
+    db.seed('produtos/p1/produtolojaintegrada/l1', { conta: 'documents/integracao/c', id: 7 });
+    db.seed('produtos/p2/produtolojaintegrada/l2', { conta: 'integracao/c', id: 7 });
+    db.seed('produtos/p3/produtolojaintegrada/l3', { conta: 'documents/integracao/outra', id: 7 });
+    db.seed('produtos/p4/outra/l4', { conta: 'documents/integracao/c', id: 7 });
+    db.seed('produtolojaintegrada/raiz', { conta: 'documents/integracao/c', id: 7 });
+    const snap = await produtoLojaIntegradaLinkCollection
+      .groupQuery(asDb(db))
+      .where('conta', 'in', ['documents/integracao/c', 'integracao/c'])
+      .where('id', '==', 7)
+      .get();
+    // A ROOT-level doc of that id has no owner: `parent.parent` is null.
+    expect(snap.docs.map((d) => d.ref.parent.parent?.id ?? '<raiz>').sort()).toEqual([
+      '<raiz>',
+      'p1',
+      'p2',
+    ]);
+    expect(snap.docs.map((d) => d.id).sort()).toEqual(['l1', 'l2', 'raiz']);
+    expect(db.consultas.at(-1)).toMatchObject({ colecao: 'produtolojaintegrada', grupo: true });
+  });
+
+  it('`in` is `===` against each value: a number is not its text, a missing field never matches', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { v: 7 });
+    db.seed('integracao/b', { v: '7' });
+    db.seed('integracao/c', {});
+    const snap = await integracaoCollection.ref(asDb(db), {}).where('v', 'in', [7]).get();
+    expect(snap.docs.map((d) => d.id)).toEqual(['a']);
+  });
+
+  it('refuses an empty or oversized `in` — before any read, as the SDK does', () => {
+    const ref = integracaoCollection.ref(asDb(new FakeDb()), {});
+    expect(() => ref.where('v', 'in', [])).toThrow(/1 a 30/);
+    expect(() =>
+      ref.where(
+        'v',
+        'in',
+        Array.from({ length: 31 }, (_, i) => i),
+      ),
+    ).toThrow(/1 a 30/);
   });
 });

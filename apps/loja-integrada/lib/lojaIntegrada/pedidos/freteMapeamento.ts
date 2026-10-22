@@ -54,7 +54,8 @@
  * (above, rounded),
  * `timestamp` and `dataPrevisaoEntrega` (+ `prazo` days) from the shipment's
  * creation stamp, `codRastreio` the tracking code (`''` is none), and
- * `enderecoFreteOuterReference` the fiscal endereço.
+ * `enderecoFreteOuterReference` the fiscal endereço — whose absence withholds
+ * a carrier route, never a pickup's (below).
  *
  * `prazoDespacho` is set only on the `pago` rung: a dispatch deadline counts
  * from the approval. It is the conta's `horarioDeCorte` applied to the approval
@@ -69,6 +70,44 @@
  * Freight estado on CREATE: `aguardandoPostagem` only with a tracking code AND
  * the pedido at `pago`; `despachoAutorizado` at `pago` without one; otherwise
  * `iniciado`.
+ *
+ * ## No endereço, no route (owner decision, 2026-10-19)
+ *
+ * An order without an endereço gets its freight amount but no carrier route,
+ * so no label is bought to an unknown address. With `enderecoFiscalOuterRef`
+ * `null` the block keeps `valorCobrado`, the modalidade and every other field,
+ * while the four fields a label is quoted or bought from —
+ * `integracaoFreteOuterRef`, `externalOptionId`, `externalOptionIntegracao`
+ * and `externalOptionData` — are `null`; with no `int_frete` ref the label
+ * action resolves no carrier tipo at all. `externalId` stays: it names Loja
+ * Integrada's shipment, and no label flow reads it without a route. The
+ * routing itself, the `mapa` registration and the aviso still run: they are
+ * about the conta's configuration, not this pedido's destination. The
+ * importer hands `null` as well when an endereço the pedido stores — the
+ * fiscal one, or this block's delivery `enderecoFreteOuterReference`, where a
+ * label ships — does not pair with the pedido's cliente (stored under another
+ * cliente, or an owner or a cliente it cannot read — `importarPedido.ts`,
+ * step 7): no label may be bought to it.
+ *
+ * ⚠️ A PICKUP is exempt (owner decision, 2026-10-19): a route to an active
+ * `retiradaNaLoja` target (`RoteamentoFreteLi.dispensaEndereco`, read from the
+ * target DOCUMENT's tipo) ships nothing to an address, so it is kept without
+ * an endereço — `enderecoFreteOuterReference` then stays `null`. And which
+ * orders reach this rule at all changed the same day: a PAID order carrying
+ * NO CEP at all (none, `''`, blank or the `-` placeholder) is REFUSED before
+ * the pedido is written and retried (`pedidoPagoSemEndereco.ts`), so "no
+ * endereço" here is an unpaid order, a paid one with a present but INVALID
+ * CEP — a masked one included (owner decision, 2026-10-20: the customer typed
+ * it, and waiting never fixes it), a paid one
+ * whose pedido already stores an endereço, or one whose buyer has no document
+ * (no cliente, so no endereço is stored).
+ *
+ * The update needs nothing of its own: an absent incoming value never
+ * overwrites a stored one, so a route already stored (an operator's, or an
+ * earlier import's) is never cleared; and the route fields are fill-once, so
+ * the first import that finds the endereço fills an empty route (the raw
+ * `externalOptionData` refreshes in the frozen group, and an EMPTY one refills
+ * even on a frozen pedido beside the route it belongs to — below).
  *
  * ## The update: two groups, the Shopee freeze split
  *
@@ -88,14 +127,63 @@
  *    `externalOptionData`, `dataPrevisaoEntrega`, and seeding an absent block,
  *    so an operator's money edit survives the next Loja Integrada change. An
  *    absent incoming value never overwrites a stored one.
+ *    ⚠️ One exception (owner decision, 2026-10-19): an EMPTY stored
+ *    `externalOptionData` (`vazioArmazenadoLi`: `null`, absent or `''`) is
+ *    refilled even under the freeze — but only BESIDE ITS ROUTE, under the
+ *    same condition as `externalOptionId` above: in the merge that fills
+ *    `integracaoFreteOuterRef`, or when the stored ref already names the
+ *    routed target. Keeping it frozen there would leave a pedido routed to the
+ *    conta's own Loja Integrada doc without the key its label is routed by,
+ *    forever after any operator save. ⚠️ The decision's premise ("a null there
+ *    was never set by an operator") is FALSE in general: the pedido screen
+ *    writes `externalOptionData: null` itself, on a change of integração that
+ *    had a quote and on clearing the quote. Beside a ref the operator moved to
+ *    another target that null is the operator's and stays; beside the routed
+ *    target it refills, exactly as `externalOptionId` always did. (An operator
+ *    can neither pick the conta's own Loja Integrada doc — the select offers no
+ *    marketplace tipo — nor edit a block routed to it.) A NON-empty stored
+ *    method (another one, or an empty map) stays frozen; so do an empty
+ *    `valorCobrado` and `dataPrevisaoEntrega`.
  *
  * Nothing else is touched on update: the freight estado past `iniciado`
- * belongs to the label flow, and a tracking write-back that bumps the order's
- * stamp re-imports as no freight change at all.
+ * belongs to the label flow.
+ *
+ * ## The keys this import does not own (`externalOptionData`)
+ *
+ * The stored method is Loja Integrada's `forma_envio`, but not Loja Integrada's
+ * alone: a Melhor Envio label purchase writes `externalOptionData.agency` beside
+ * it (the agency the label was bought for, which the next purchase pre-fills),
+ * and an operator may store a key of their own. So every update that WRITES
+ * the method — the unfrozen refresh and the empty refill alike — goes through
+ * {@link formaEnvioMescladaLi}: it replaces only what Loja Integrada's wire
+ * owns, the method's declared fields (`id`, `code`, `nome`, `tipo`, read from
+ * `liFormaEnvioSchema`) and any key the incoming method carries, and keeps
+ * every other stored key with its value untouched. A declared field the new
+ * method lacks is dropped with the old method it described. A create, a seeded
+ * block and an empty refill have nothing stored to keep, so they write the raw
+ * method. A frozen non-empty method is not written at all (above).
+ *
+ * ⚠️ One exception to "any key the incoming method carries": a key ANOTHER
+ * writer owns ({@link CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI}, the label
+ * purchase's `agency`) keeps its stored value even when the incoming method
+ * carries one of the same name. The wire schema is passthrough, so nothing
+ * stops Loja Integrada sending such a key; letting it win would overwrite the
+ * label's agency on every re-import after each purchase. With no agency
+ * stored, the incoming method is written as it comes, as a create writes it.
+ *
+ * So a tracking write-back that bumps the order's stamp re-imports as no
+ * freight change at all, an agency beside the method included, and a
+ * re-import that changes the method keeps the agency the next purchase
+ * pre-fills, whatever the incoming method carries. The keys kept are read
+ * from the snapshot each batch attempt decides from, so a purchase landing
+ * between the read and the write costs the batch its precondition, and the
+ * retry keeps what it then reads.
+ * Residue, accepted: an undeclared key the wire once carried and then stopped
+ * sending reads as another writer's and is kept; no capture shows one.
  */
 import { roundReais } from '@delfrance/core/money';
 import { sha256Hex } from '@delfrance/data/admin';
-import type { PedidoLi } from '@delfrance/integrations-loja-integrada';
+import { liFormaEnvioSchema, type PedidoLi } from '@delfrance/integrations-loja-integrada';
 import {
   ESTADO_FRETE,
   ESTADO_PEDIDO,
@@ -276,6 +364,14 @@ export interface RoteamentoFreteLi {
   readonly aviso: AvisoFreteLi | null;
   /** Mapped to `fob` or `outros`: routed to the conta's doc on purpose (an INFO log). */
   readonly deliberado: boolean;
+  /**
+   * Routed to an active `retiradaNaLoja` target — decided from the target
+   * DOCUMENT's tipo, never from the row's `targetTipoIntegracao`: a pickup
+   * ships nothing to an address, so its route needs no endereço (module
+   * header, "No endereço, no route"), and a paid order on it is never refused
+   * for lacking one (`pedidoPagoSemEndereco.ts`).
+   */
+  readonly dispensaEndereco: boolean;
 }
 
 export interface EntradaRoteamentoLi {
@@ -299,6 +395,7 @@ export function rotearFreteLi(entrada: EntradaRoteamentoLi): RoteamentoFreteLi {
     externalOptionId: null,
     aviso,
     deliberado,
+    dispensaEndereco: false,
   });
 
   switch (decisao.tipo) {
@@ -308,6 +405,7 @@ export function rotearFreteLi(entrada: EntradaRoteamentoLi): RoteamentoFreteLi {
         externalOptionId: null,
         aviso: decisao.chave === null ? null : { tipo: 'resolver', chave: decisao.chave },
         deliberado: false,
+        dispensaEndereco: false,
       };
     case 'sem-chave':
       return naConta(null);
@@ -338,6 +436,7 @@ export function rotearFreteLi(entrada: EntradaRoteamentoLi): RoteamentoFreteLi {
     externalOptionId: tipo === INTEGRACAO_FRETE.melhorEnvios ? decisao.idServico : null,
     aviso: { tipo: 'resolver', chave: decisao.chave },
     deliberado: false,
+    dispensaEndereco: tipo === INTEGRACAO_FRETE.retiradaNaLoja,
   };
 }
 
@@ -431,6 +530,12 @@ export interface EntradaFreteLi {
   readonly horarioDeCorteConta: unknown;
   /** The approval date from the history (µs), or `null` when none or not derivable. */
   readonly dataAprovacaoUs: number | null;
+  /**
+   * The endereço the pedido will carry after this write, or `null` — which
+   * withholds the carrier route unless it is a pickup (module header, "No
+   * endereço, no route"). A pedido whose stored fiscal or delivery endereço
+   * the importer cannot pair with its cliente arrives as `null` too.
+   */
   readonly enderecoFiscalOuterRef: string | null;
 }
 
@@ -462,13 +567,15 @@ export function mapearFreteLi(entrada: EntradaFreteLi): FreteMapeadoLi | null {
   const { modalidade, sobrescrita } = modalidadeFreteLi(valorFrete ?? 0, entrada.modalidadeConta);
   const criadoUs = dataLiParaMicros(envio.data_criacao);
   const forma = envio.forma_envio;
+  // No endereço ⇒ no carrier route — a pickup needs none (module header, "No endereço, no route").
+  const comRota = entrada.enderecoFiscalOuterRef !== null || roteamento.dispensaEndereco;
   const base: FreteDoPedido = {
     ...seedFreteInicial(modalidade, true),
     externalId: envio.id == null ? null : String(envio.id),
-    externalOptionId: roteamento.externalOptionId,
+    externalOptionId: comRota ? roteamento.externalOptionId : null,
     externalOptionIntegracao: null,
-    externalOptionData: forma == null ? null : { ...forma },
-    integracaoFreteOuterRef: roteamento.integracaoFreteOuterRef,
+    externalOptionData: comRota && forma != null ? { ...forma } : null,
+    integracaoFreteOuterRef: comRota ? roteamento.integracaoFreteOuterRef : null,
     estado: ESTADO_FRETE.iniciado,
     valorCobrado: valorFrete,
     codRastreio: codRastreioLi(envio.objeto),
@@ -530,6 +637,58 @@ export function mesmoValorJsonLi(a: unknown, b: unknown): boolean {
   return chaves.every(
     (k) => Object.prototype.hasOwnProperty.call(rb, k) && mesmoValorJsonLi(ra[k], rb[k]),
   );
+}
+
+/**
+ * The keys of `externalOptionData` Loja Integrada's wire owns: the shipping
+ * method's DECLARED fields, read from `liFormaEnvioSchema` itself so the set
+ * cannot drift from it (module header, "The keys this import does not own").
+ */
+export const CHAVES_FORMA_ENVIO_LI: ReadonlySet<string> = new Set(
+  Object.keys(liFormaEnvioSchema.shape),
+);
+
+/**
+ * The keys of `externalOptionData` ANOTHER writer owns, whose stored value an
+ * incoming method never replaces, even one carrying the same name: the
+ * Melhor Envio label purchase's `agency` (`finalizarCompraEtiqueta` in
+ * `apps/melhor-envio`), which the next purchase pre-fills. The wire schema is
+ * passthrough, so a key Loja Integrada ever sent under that name would
+ * otherwise win, and every re-import would flip it back. Disjoint from
+ * {@link CHAVES_FORMA_ENVIO_LI} (pinned by a test).
+ */
+export const CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI: ReadonlySet<string> = new Set(['agency']);
+
+/**
+ * The method an update writes: the incoming `forma_envio` verbatim, plus every
+ * key of the STORED method that Loja Integrada does not own — neither declared
+ * ({@link CHAVES_FORMA_ENVIO_LI}) nor carried by the incoming method — with its
+ * value untouched, and, over the incoming method, every stored key another
+ * writer owns ({@link CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI}). A stored method
+ * that is not a map has no keys to keep. Kept: a label purchase's `agency`
+ * (always, while one is stored), an operator's own key. Replaced: a declared
+ * field (dropped with the old method when the new one lacks it) and any other
+ * key the incoming method carries.
+ */
+export function formaEnvioMescladaLi(
+  armazenado: unknown,
+  novo: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const metodo: Record<string, unknown> = { ...novo };
+  if (typeof armazenado !== 'object' || armazenado === null || Array.isArray(armazenado)) {
+    return metodo;
+  }
+  for (const [chave, valor] of Object.entries(armazenado)) {
+    const deOutroEscritor = CHAVES_FORMA_ENVIO_DE_OUTRO_ESCRITOR_LI.has(chave);
+    if (
+      !deOutroEscritor &&
+      (CHAVES_FORMA_ENVIO_LI.has(chave) || Object.prototype.hasOwnProperty.call(novo, chave))
+    ) {
+      continue;
+    }
+    metodo[chave] = valor;
+  }
+  return metodo;
 }
 
 /** The fields an update fills only while stored empty — outside the freeze. */
@@ -608,14 +767,25 @@ export function mesclarFreteLi(
     campos.push('estado');
   }
 
-  if (!contexto.congelado) {
-    for (const campo of CAMPOS_FRETE_CONGELAVEIS_LI) {
-      const valor = mapeado.base[campo];
-      if (valor === null || valor === undefined) continue;
-      if (!mesmoValorJsonLi(atual[campo], valor)) {
-        bloco[campo] = valor;
-        campos.push(campo);
-      }
+  // A method written keeps the stored keys Loja Integrada does not own (`formaEnvioMescladaLi`).
+  const metodo = mapeado.base.externalOptionData;
+  const congelaveis: Readonly<Record<(typeof CAMPOS_FRETE_CONGELAVEIS_LI)[number], unknown>> = {
+    valorCobrado: mapeado.base.valorCobrado,
+    externalOptionData:
+      metodo === null ? null : formaEnvioMescladaLi(atual.externalOptionData, metodo),
+    dataPrevisaoEntrega: mapeado.base.dataPrevisaoEntrega,
+  };
+  for (const campo of CAMPOS_FRETE_CONGELAVEIS_LI) {
+    const valor = congelaveis[campo];
+    if (valor === null || valor === undefined) continue;
+    // Frozen: only an EMPTY raw method refills, and only beside ITS route (`opcaoDoAlvo`) —
+    // beside a ref an operator chose, an empty method may be the operator's own clear.
+    const refazVazio =
+      campo === 'externalOptionData' && opcaoDoAlvo && vazioArmazenadoLi(atual[campo]);
+    if (contexto.congelado && !refazVazio) continue;
+    if (!mesmoValorJsonLi(atual[campo], valor)) {
+      bloco[campo] = valor;
+      campos.push(campo);
     }
   }
 

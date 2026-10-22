@@ -190,6 +190,31 @@ function linhasArmazenadas(bruto: unknown): LinhaArmazenada[] | null {
   return linhas;
 }
 
+/**
+ * The `ensureUniqueId`s of the stored lines that already HAVE a produto (their
+ * own `produtoUid`, or the bucket they sit in) — read raw, by the same reading
+ * the merge uses, so the importer never raises an unbound-line incidente for a
+ * line somebody already bound. Empty when `itens` is absent or not a map of
+ * lists.
+ */
+export function linhasJaVinculadasLi(bruto: unknown): ReadonlySet<string> {
+  const linhas = linhasArmazenadas(bruto) ?? [];
+  return new Set(
+    linhas
+      .filter((l) => l.produtoUid !== null && l.ensureUniqueId !== null)
+      .map((l) => l.ensureUniqueId!),
+  );
+}
+
+/**
+ * The `ensureUniqueId` of every line a raw `itens` map holds, read by the same
+ * reading the merge uses; empty when `itens` is absent or not a map of lists.
+ */
+export function idsDasLinhasLi(bruto: unknown): ReadonlySet<string> {
+  const linhas = linhasArmazenadas(bruto) ?? [];
+  return new Set(linhas.flatMap((l) => (l.ensureUniqueId === null ? [] : [l.ensureUniqueId])));
+}
+
 /** `Record<produtoUid | 'NONE', item[]>` and its `itensIds`. */
 function agrupar(linhas: readonly { produtoUid: string | null; item: unknown }[]): {
   itens: Record<string, unknown[]>;
@@ -360,6 +385,38 @@ function corpoDeCriacao(
 }
 
 /**
+ * The stored watermark (µs) when it is strictly NEWER than `watermarkUs` — the
+ * `obsoleto` verdict (module header, "The watermark") — else `null`: equal,
+ * older, absent or unreadable all proceed. The importer asks it of the snapshot
+ * it has just read, BEFORE any of its own reads or writes, and
+ * {@link montarEscritaPedidoLi} asks it again of the snapshot it builds
+ * against, so the two can never disagree.
+ */
+export function watermarkArmazenadoMaisNovoLi(
+  armazenado: Readonly<Record<string, unknown>>,
+  watermarkUs: number,
+): number | null {
+  const armazenadoUs = microsArmazenadoLi(armazenado.lastMarketplaceUpdate);
+  return armazenadoUs !== null && watermarkUs < armazenadoUs ? armazenadoUs : null;
+}
+
+/**
+ * The raw `itens` the pedido holds once `escrita` lands against `armazenado`:
+ * the created body's, the patch's when it rewrote them, else the snapshot's (a
+ * FROZEN pedido takes no line, and an unchanged merge writes none). What the
+ * pedido holds is what an unbound-line incidente may name — never the incoming
+ * lines, some of which a frozen pedido did not take.
+ */
+export function itensGuardadosLi(
+  armazenado: Readonly<Record<string, unknown>> | null,
+  escrita: Exclude<EscritaPedidoLi, { tipo: 'obsoleto' }>,
+): unknown {
+  if (escrita.tipo === 'criar') return escrita.corpo.itens;
+  if (escrita.tipo === 'atualizar' && 'itens' in escrita.patch) return escrita.patch.itens;
+  return armazenado?.itens;
+}
+
+/**
  * The write for the order against its STORED pedido (raw snapshot data), or
  * `null` for a create (module header).
  */
@@ -388,10 +445,9 @@ export function montarEscritaPedidoLi(
     };
   }
 
+  const maisNovo = watermarkArmazenadoMaisNovoLi(armazenado, mapeado.watermarkUs);
+  if (maisNovo !== null) return { tipo: 'obsoleto', armazenadoUs: maisNovo };
   const armazenadoUs = microsArmazenadoLi(armazenado.lastMarketplaceUpdate);
-  if (armazenadoUs !== null && mapeado.watermarkUs < armazenadoUs) {
-    return { tipo: 'obsoleto', armazenadoUs };
-  }
 
   const decisao = decidirEstadoLi({
     armazenado: { estado: armazenado.estado, estoqueAplicado: armazenado.estoqueAplicado },

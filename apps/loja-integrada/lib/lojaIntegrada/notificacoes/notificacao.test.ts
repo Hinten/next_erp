@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ZodError, z } from 'zod';
+import type { ViaCepClient } from '@delfrance/core/cep';
 import { notificacaoLojaIntegradaCollection } from '@delfrance/data/admin/collections';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { MAX_TENTATIVAS, MAX_TENTATIVAS_DEFERRED } from '@delfrance/data/admin/notifications';
@@ -23,7 +24,7 @@ import {
   LiThrottleError,
   LiTimeoutError,
 } from '@delfrance/integrations-loja-integrada';
-import { ORIGEM_NOTIFICACAO_LI, TIPO_TAREFA_LI } from '@delfrance/schemas';
+import { ORIGEM_NOTIFICACAO_LI, TIPO_AVISO, TIPO_TAREFA_LI } from '@delfrance/schemas';
 
 import { chaveReconexao } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
@@ -39,7 +40,11 @@ import {
   LiCredencialInvalidaError,
   LiEstacionamentoEmConflitoError,
 } from '../core/erros';
-import { type DocData, FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
+import { chaveDoAvisoDoPedidoLi } from '../pedidos/avisosPedidoLi';
+import { LiPedidoEmConflitoError } from '../pedidos/escritaPedido';
+import { LiHistoricoIncompletoError } from '../pedidos/importarPedido';
+import { LiPedidoPagoSemEnderecoError } from '../pedidos/pedidoPagoSemEndereco';
+import { type DocData, FakeDb, arrayUnion, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   AGORA_MS,
   AMBIENTE_LIGADO,
@@ -56,6 +61,7 @@ import {
 import {
   DESTINO_TIPO_LI,
   FILA_LEITURA_LI,
+  type DepsImportadorLi,
   type DepsTarefaLi,
   type ImportadorPedidoLi,
   CONCORRENCIA_REDRIVE_LI,
@@ -66,6 +72,7 @@ import {
   camposDoRegistroDaTarefaLi,
   classificarFalhaLi,
   dedupKeyLi,
+  depsDoImportadorLi,
   docIdNotificacaoLi,
   importadorPedidoLi,
   persistirFalhaNotificacaoLi,
@@ -122,11 +129,21 @@ afterEach(() => {
   chamadasDeRede.length = 0;
 });
 
+/** The importer's CEP recovery: no test of the pipeline reaches it, and a call fails it. */
+const viaCepProibido: ViaCepClient = {
+  buscarCep: (cep) => {
+    chamadasDeRede.push(`viacep:${cep}`);
+    return Promise.reject(new Error('teste: nenhuma consulta de CEP é permitida'));
+  },
+};
+
 function depsTarefa(over: Partial<DepsTarefaLi> = {}): DepsTarefaLi {
   return {
     ambiente: AMBIENTE_LIGADO,
     importador: null,
     increment,
+    arrayUnion,
+    viaCep: viaCepProibido,
     agoraMs: () => AGORA_MS,
     esperar: () => Promise.resolve(),
     logger: loggerEspiao().logger,
@@ -288,6 +305,11 @@ describe('the dedup key — the ORDER, whatever stamp or origin', () => {
 describe('toDispositionLi — total, phase-independent', () => {
   const casos: readonly [ResultadoNotificacaoLi, ReturnType<typeof toDispositionLi>][] = [
     [{ kind: 'importado' }, { kind: 'resolve', label: 'importado' }],
+    // The step-5 importer's other successes: each resolves, labelled by its kind.
+    [{ kind: 'sem-mudanca' }, { kind: 'resolve', label: 'sem-mudanca' }],
+    [{ kind: 'obsoleto' }, { kind: 'resolve', label: 'obsoleto' }],
+    [{ kind: 'hub' }, { kind: 'resolve', label: 'hub' }],
+    [{ kind: 'situacao-desconhecida' }, { kind: 'resolve', label: 'situacao-desconhecida' }],
     [
       { kind: 'conta-inexistente' },
       { kind: 'drop', reason: 'conta-inexistente', label: 'conta-inexistente' },
@@ -336,6 +358,38 @@ describe('toDispositionLi — total, phase-independent', () => {
     for (const motivo of Object.values(MOTIVO_ADIAMENTO_LI)) {
       expect(toDispositionLi({ kind: 'adiado', motivo }).kind, motivo).toBe('defer');
     }
+  });
+});
+
+describe('the importer’s deps — bound from the run’s own', () => {
+  it('the same clock and sentinels, the CEP client, and the attempt off `registro`', async () => {
+    const db = new FakeDb();
+    contaSaudavel(db);
+    let recebidos: DepsImportadorLi | null = null;
+    const importador: ImportadorPedidoLi = (_db, _ctx, _p, deps) => {
+      recebidos = deps;
+      return Promise.resolve({ kind: 'sem-mudanca' });
+    };
+    const base = depsTarefa({ importador });
+    const r = await processarNotificacaoLi(asDb(db), pedido(), {
+      ...base,
+      registro: { ...base.registro, tentativa: 2 },
+    });
+    expect(r).toEqual({ kind: 'sem-mudanca' });
+    expect(recebidos).toEqual({
+      agoraMs: base.agoraMs,
+      arrayUnion: base.arrayUnion,
+      increment: base.increment,
+      logger: base.logger,
+      viaCep: base.viaCep,
+      tentativa: 2,
+    });
+  });
+
+  it('a sweep run carries no attempt: `tentativa` is null (the history is read degraded)', () => {
+    const base = depsTarefa();
+    expect(depsDoImportadorLi({ ...base, registro: { fluxo: 'intake' } }).tentativa).toBeNull();
+    expect(depsDoImportadorLi({ ...base, registro: { tentativa: 0 } }).tentativa).toBe(0);
   });
 });
 
@@ -414,6 +468,22 @@ describe('classificarFalhaLi — the table, in order', () => {
       throttle(),
       new LiTimeoutError({ ...REQ, prazoMs: 20_000 }, new Error('abortado')),
       new LiNetworkError(REQ, new TypeError('fetch failed')),
+    ]) {
+      expect(await classificar(err), err.name).toBeNull();
+    }
+  });
+
+  it('the importer’s three retry errors — persistent batch contention, a history hole in strict mode, a paid order without an address — are null: the task retries, never parks', async () => {
+    for (const err of [
+      new LiPedidoEmConflitoError('pedido-x', 3),
+      new LiHistoricoIncompletoError(ID, 1, ['codigo-ausente']),
+      new LiPedidoPagoSemEnderecoError({
+        integracaoId: ID,
+        lojaNome: 'Loja',
+        pedidoId: 'pedido-x',
+        numero: '1234',
+        relogioUs: 1,
+      }),
     ]) {
       expect(await classificar(err), err.name).toBeNull();
     }
@@ -721,6 +791,146 @@ describe('the full disposition matrix', () => {
       db.seed(caminho, { ...db.ler(caminho), tentativas: MAX_TENTATIVAS - 1, processedAt: 0 });
       await reprocessarNotificacoesLi(asDb(db), {}, deps());
       expect(db.ler(caminho)).toMatchObject({ status: 'parked', tentativas: MAX_TENTATIVAS });
+    });
+  });
+
+  describe('a PAID order without an address (the importer’s retryable refusal)', () => {
+    const PEDIDO = {
+      integracaoId: ID,
+      lojaNome: 'Loja de Nome Sensível',
+      pedidoId: 'pedido-sem-endereco',
+      numero: '1234',
+      relogioUs: 7_000,
+    };
+    const caminhoAviso = `avisos/${chaveDoAvisoDoPedidoLi(
+      TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      ID,
+      PEDIDO.pedidoId,
+    )}`;
+    function comErros(erros: unknown[][], err: unknown) {
+      return depsTarefa({
+        importador: falhaCom(err),
+        logger: {
+          warn: () => undefined,
+          error: (msg, meta) => {
+            erros.push([msg, meta]);
+          },
+        },
+      });
+    }
+
+    it('in the task: rethrown for the queue, persisted failed on the last attempt — no aviso yet', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const err = new LiPedidoPagoSemEnderecoError(PEDIDO);
+      await expect(tratarTarefaLeituraLi(asDb(db), pedido(), 0, comErros(erros, err))).rejects.toBe(
+        err,
+      );
+      const r = await tratarTarefaLeituraLi(asDb(db), pedido(), 2, comErros(erros, err));
+      expect(r.outcome).toBe('failed');
+      expect(db.ler(caminhoDe(pedido()))).toMatchObject({ status: 'failed', tentativas: 0 });
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
+    });
+
+    it('in the HOT sweep: failed below the cap; AT the cap parked, ONE ERROR line with ids only, the open aviso', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const err = new LiPedidoPagoSemEnderecoError(PEDIDO);
+      const caminho = seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 2 });
+      await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, err));
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: MAX_TENTATIVAS - 1 });
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
+
+      db.seed(caminho, { ...db.ler(caminho), processedAt: 0 });
+      const s = await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, err));
+      expect(db.ler(caminho)).toMatchObject({ status: 'parked', tentativas: MAX_TENTATIVAS });
+      expect(s.errors.map((e) => e.docId)).toEqual([docIdNotificacaoLi(pedido())]);
+      expect(erros).toHaveLength(1);
+      expect(erros[0]![1]).toEqual({ integracaoId: ID, numero: '1234', pedidoId: PEDIDO.pedidoId });
+      expect(JSON.stringify(erros)).not.toContain(PEDIDO.lojaNome);
+      expect(db.ler(caminhoAviso)).toMatchObject({
+        tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+        params: { loja: PEDIDO.lojaNome, pedido: '1234' },
+        relogioEvento: 7_000,
+        resolvidoEm: null,
+      });
+    });
+
+    it('NEAR-MISS: another transient error parked at the same cap — ONE generic ERROR line (ids and the class only), no aviso', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const caminho = seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 1 });
+      await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, throttle()));
+      expect(db.ler(caminho)).toMatchObject({ status: 'parked' });
+      expect(erros).toHaveLength(1);
+      expect(String(erros[0]![0])).toContain('estacionada');
+      expect(erros[0]![1]).toEqual({
+        integracaoId: pedido().contaId,
+        numero: pedido().numero,
+        origem: pedido().origem,
+        classe: 'LiThrottleError',
+      });
+      expect(db.ler(caminhoAviso)).toBeUndefined();
+    });
+
+    it('⚠️ NEAR-MISS: a row that no longer REHYDRATES parks at the same cap with NO ERROR line — only its document id in the sweep’s errors', async () => {
+      // The core signals a throw from `process` only; the strict `fromDoc` throws first,
+      // so the importer never runs and nothing is handed to `sinalizarEsgotamentoLi`.
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const caminho = seedNotificacao(db, pedido(), {
+        tentativas: MAX_TENTATIVAS - 1,
+        origem: 'desconhecida',
+      });
+      const s = await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, throttle()));
+      expect(db.ler(caminho)).toMatchObject({ status: 'parked', tentativas: MAX_TENTATIVAS });
+      expect(s.errors.map((e) => e.docId)).toEqual([docIdNotificacaoLi(pedido())]);
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
+    });
+
+    it('NEAR-MISS: below the cap a transient failure stays silent — the generic line is the PARK’s alone', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const caminho = seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 2 });
+      await reprocessarNotificacoesLi(asDb(db), {}, comErros(erros, throttle()));
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed' });
+      expect(erros).toEqual([]);
+    });
+
+    it('a RETURNED park at the cap (a deterministic refusal) is the row’s own record — no generic line', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      seedNotificacao(db, pedido(), { tentativas: MAX_TENTATIVAS - 1 });
+      await reprocessarNotificacoesLi(
+        asDb(db),
+        {},
+        comErros(erros, new LiNotFoundError({ ...REQ, status: 404 })),
+      );
+      expect(erros).toEqual([]);
+    });
+
+    it('the DEFERRED lane graduates it back to the hot lane — fresh budget, nothing signalled', async () => {
+      const db = new FakeDb();
+      contaSaudavel(db);
+      const erros: unknown[][] = [];
+      const err = new LiPedidoPagoSemEnderecoError(PEDIDO);
+      const caminho = seedNotificacao(db, pedido(), {
+        status: 'deferred',
+        tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+      });
+      await reprocessarAdiadasLi(asDb(db), {}, comErros(erros, err));
+      expect(db.ler(caminho)).toMatchObject({ status: 'failed', tentativas: 0 });
+      expect(erros).toEqual([]);
+      expect(db.ler(caminhoAviso)).toBeUndefined();
     });
   });
 });

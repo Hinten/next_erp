@@ -54,7 +54,10 @@ still be fixed. Only the context loader refuses those.
   non-test source file for it and would demand a class for a site that does not exist.
   The test fake models `lastUpdateTime` preconditions only — and as the server applies
   them: the stamp replaces the SDK's `exists` check, so a removed document fails it with
-  `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5).
+  `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5). Its `batch()` (the order import's ONE
+  commit of a pedido and its pagamentos) is all or nothing under the same rules, plus 6 for
+  a `create` on an existing doc; the emulator suite `pedidos/importarPedido.firestore.test.ts`
+  pins the server's answers.
 
 ## Layout rules
 
@@ -213,7 +216,14 @@ still be fixed. Only the context loader refuses those.
   DEFER; conta gone DROPS; `LiAuthError` parks the conta (`tratarFalhaDeAutenticacao`) and
   defers, or rethrows when the 401 was for an older token; 404 parks; a non-transient
   HTTP/schema/paging/Zod refusal parks (class and status only); 429, 5xx, network,
-  `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base.
+  `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base. The importer's
+  `LiPedidoPagoSemEnderecoError` (a paid order carrying NO CEP at all, step 5; an invalid
+  CEP imports without an endereço instead) is `null` too:
+  retried, never parked by the table. `criarPipelineLi` binds the shared `onRetriesExhausted`
+  (a failure the RUN threw, parked at the cap) to `sinalizarEsgotamentoLi`: that error's ERROR
+  line plus the critico aviso, any other class one generic ERROR line (ids and the class only).
+  A row that fails to rehydrate (the strict `fromDoc`) parks with neither: only its doc id in
+  the sweep's per-doc failures WARNING.
 - A parked conta DEFERS, never drops (#808): daily re-drive for 7 days,
   `graduateDeferredTransientErrors`, and on a token save or renewal the routes' best-effort
   `redriveAposSalvarTokenLi` (`(status, contaId)` index; a gRPC failure is logged, the 200

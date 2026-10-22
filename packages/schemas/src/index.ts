@@ -1540,6 +1540,8 @@ export {
   MOTIVO_PEDIDO_CONTESTADO_LI,
   motivoFreteNaoSuportadoLiSchema,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  motivoReversaoComEtiquetaLiSchema,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1560,6 +1562,7 @@ export {
   type MotivoImportacaoParadaLi,
   type MotivoPedidoContestadoLi,
   type MotivoFreteNaoSuportadoLi,
+  type MotivoReversaoComEtiquetaLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';

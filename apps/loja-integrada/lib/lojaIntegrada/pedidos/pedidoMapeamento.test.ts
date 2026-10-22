@@ -100,6 +100,7 @@ function mapeado(p: PedidoLi = wire(), o: Opcoes = {}): PedidoMapeadoLi {
       externalOptionId: null,
       aviso: null,
       deliberado: false,
+      dispensaEndereco: false,
     },
     horarioDeCorteConta: null,
     dataAprovacaoUs: dataLiParaMicros('2026-03-09T14:00:00'),

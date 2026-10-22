@@ -29,7 +29,10 @@
  * import writes from goes through {@link exigirChaveDeEscritaLi} or
  * {@link exigirIdPagamentoLi} first: a missing one, and a non-positive payment
  * id, is a `LiSchemaError` naming the field path (never the value). The
- * importer calls them at its first step, so a refusal comes before any write.
+ * importer calls them right after its hub guard and before step 5
+ * (`conferirEscritasDoDetalheLi`), so a refusal still comes before any write:
+ * the `mapa` row, the cliente and the endereço of steps 6 and 7 included
+ * (`importarPedido.test.ts` pins it on a conta where those steps would write).
  *
  * ⚠️ The helper owns the ALGORITHM (`sha256Hex`); this file owns the PREIMAGES.
  * Nothing makes the template literals below safe to reformat.
