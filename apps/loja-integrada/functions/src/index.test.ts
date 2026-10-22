@@ -6,10 +6,11 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
+import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/lojaIntegrada/core/contaCache';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
 import { FakeDb, asDb } from '../../lib/lojaIntegrada/testing/fakeDb';
 import { espiarStdout, seedConta, seedCredencial } from '../../lib/lojaIntegrada/testing/fixtures';
 import { seedNotificacaoLi } from '../../lib/lojaIntegrada/testing/notificacoes';
@@ -298,8 +299,8 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
 
   it('binds the importer from the REAL seam table, read per run', async () => {
     // A sentinel the seam hands back: the root must pass exactly it. A root that
-    // hard-coded `null` (or cached the table at load) would pass this test's
-    // sibling and fail this one.
+    // hard-coded the order import (or cached the table at load) would pass this
+    // test's sibling and fail this one.
     const sentinela: ImportadorPedidoLi = () => Promise.resolve({ kind: 'importado' });
     vi.mocked(notificacao.importadorPedidoLi).mockReturnValueOnce(sentinela);
 
@@ -310,15 +311,17 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
     expect(deps?.importador).toBe(sentinela);
   });
 
-  it('and with the seam untouched it is the table itself — empty in step 3', async () => {
+  it('and with the seam untouched it is the table itself — the step-5 order import', async () => {
     await rodarAgendamento(reprocessLojaIntegradaNotifications);
 
     const deps = vi.mocked(notificacao.reprocessarNotificacoesLi).mock.calls[0]?.[2];
     expect(deps?.importador).toBe(notificacao.DESTINO_TIPO_LI.pedido);
-    expect(deps?.importador).toBeNull();
+    expect(deps?.importador).toBe(importarPedidoLi);
+    // ONE set of read deps: the deferred lane runs the same importer.
+    expect(vi.mocked(notificacao.reprocessarAdiadasLi).mock.calls[0]?.[2]).toBe(deps);
   });
 
-  it('runs the real pipeline: with the switch off a failed row MIGRATES to deferred, and a deferred one stays', async () => {
+  it('D17: runs the real pipeline, the step-5 importer bound: with the switch off a failed row MIGRATES to deferred, and a deferred one stays', async () => {
     const stdout = espiarStdout();
     try {
       const falhou = seedNotificacaoLi(fake, 'conta-li-1', '1001', 'failed');
@@ -326,6 +329,11 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
 
       await rodarAgendamento(reprocessLojaIntegradaNotifications);
 
+      // The seam is FILLED, and still nothing reached it: the switch refused
+      // first, before any Firestore read of the conta.
+      const deps = vi.mocked(notificacao.reprocessarNotificacoesLi).mock.calls[0]?.[2];
+      expect(deps?.importador).toBe(importarPedidoLi);
+      expect(fake.leituras.filter((c) => !c.startsWith('notificacoesLojaIntegrada/'))).toEqual([]);
       expect(fake.ler(falhou)).toMatchObject({
         status: 'deferred',
         tentativas: 0,
@@ -354,6 +362,37 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
         });
       }
     } finally {
+      stdout.restaurar();
+    }
+  });
+
+  it('D17: with the switch off, a deferred row’s LAST pass parks through the real pipeline, and the bound exhaustion signal stays silent — no ERROR line, no aviso', async () => {
+    const stdout = espiarStdout();
+    const erro = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const erroConsole = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const adiada = seedNotificacaoLi(fake, 'conta-li-1', '1003', 'deferred', {
+        tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+      });
+
+      await rodarAgendamento(reprocessLojaIntegradaNotifications);
+
+      // The switch refused before any conta read: a RETURNED defer, parked at
+      // the deferred cap, whose `erro` is the record.
+      expect(fake.ler(adiada)).toMatchObject({
+        status: 'parked',
+        tentativas: MAX_TENTATIVAS_DEFERRED,
+        erro: 'adiado/chamadas-desligadas',
+      });
+      expect(fake.leituras.filter((c) => !c.startsWith('notificacoesLojaIntegrada/'))).toEqual([]);
+      // `onRetriesExhausted` is bound (step 5, A4), but it answers a THROWN
+      // park only: neither ERROR line, and the one write is the park's mark.
+      expect(erro).not.toHaveBeenCalled();
+      expect(erroConsole).not.toHaveBeenCalled();
+      expect(fake.escritas.map((e) => e.caminho)).toEqual([adiada]);
+    } finally {
+      erro.mockRestore();
+      erroConsole.mockRestore();
       stdout.restaurar();
     }
   });
@@ -403,11 +442,20 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
     seedConta(fake, 'conta-li-1');
     seedCredencial(fake, 'conta-li-1');
     const falhou = seedNotificacaoLi(fake, 'conta-li-1', '1001', 'failed');
+    // The switch is ON here, so the real importer would call the platform: a
+    // sentinel that reads nothing takes its place, and the lanes stay real.
+    const importados: string[] = [];
+    vi.mocked(notificacao.importadorPedidoLi).mockReturnValueOnce((_db, _ctx, payload) => {
+      importados.push(payload.numero);
+      return Promise.resolve({ kind: 'sem-mudanca' });
+    });
 
     await rodarAgendamento(reprocessLojaIntegradaNotifications);
 
-    // Anti-vacuity: the hot lane really ran its row through the context.
-    expect(fake.ler(falhou)).toMatchObject({ status: 'parked', erro: 'importador-ausente' });
+    // Anti-vacuity: the hot lane really ran its row through the context and the
+    // importer, and the resolved row is gone.
+    expect(importados).toEqual(['1001']);
+    expect(fake.ler(falhou)).toBeUndefined();
     expect(info).toHaveBeenNthCalledWith(
       1,
       '[loja-integrada] reprocess sweep (quente)',

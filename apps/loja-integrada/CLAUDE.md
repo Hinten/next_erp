@@ -210,8 +210,9 @@ still be fixed. Only the context loader refuses those.
   `notificacoesLojaIntegrada` (bare schema, ids only, unknown keys stripped). ONE reads
   queue, `filaLeituraLojaIntegrada` (= the function name), dispatching on `tipo`.
 - A run: the context (switch, conta, credential), then the importer SEAM
-  (`DESTINO_TIPO_LI`, empty until step 5 ⇒ `importador-ausente` PARKS). Only the functions
-  roots read `importadorPedidoLi()`; `lib` takes `deps.importador`.
+  (`DESTINO_TIPO_LI`, filled in step 5 with `importarPedidoLi`; an empty one ⇒
+  `importador-ausente` PARKS). Only the functions roots read `importadorPedidoLi()`; `lib`
+  takes `deps.importador`.
 - Classifier: the app refusals (switch off, inactive, token missing/corrupt, parked)
   DEFER; conta gone DROPS; `LiAuthError` parks the conta (`tratarFalhaDeAutenticacao`) and
   defers, or rethrows when the 401 was for an older token; 404 parks; a non-transient
@@ -256,10 +257,11 @@ still be fixed. Only the context loader refuses those.
   and `orcamentoPoll.ts` are its pure date, window and budget layer. The root
   `functions/src/pollPedidos.ts` (`pollLojaIntegradaPedidos`, `*/5`, 300 s) binds every
   dependency: `importadorPresente = importadorPedidoLi() !== null`, the parsed look-back.
-- Two gates, each with ZERO reads: the empty importer seam (until step 5), then the read
-  switch. Contas run one after another, the list ROTATED by the tick's 5-minute slot
-  (`ordemDoTickLi`), so a `sem-tempo` conta runs first on a later tick instead of
-  starving behind the same ones forever. Containment per conta is a gRPC error, or a
+- Two gates, each with ZERO reads: the importer seam (filled in step 5, so a tick passes
+  it), then the read switch (unset until the window, so every tick stops there). Contas
+  run one after another, the list ROTATED by the tick's 5-minute slot (`ordemDoTickLi`),
+  so a `sem-tempo` conta runs first on a later tick instead of starving behind the same
+  ones forever. Containment per conta is a gRPC error, or a
   hand-edited poll document that no longer parses (`documento-invalido`, a WARNING,
   nothing written), ONLY.
 - `pollPedidosLojaIntegrada/{id}` is written only under preconditions: the lease
@@ -309,7 +311,41 @@ still be fixed. Only the context loader refuses those.
   logs ids only. `deps.arrayUnion` is `FieldValue.arrayUnion` in production, the fake's
   sentinel in tests.
 
-## CI (steps 3 and 20)
+## Order import (steps 5–6)
+
+- `pedidos/importarPedido.ts` fills the step-3 seam: the queue and both sweeps run it, the
+  poller passes its importer gate. The context refuses first while the read switch is
+  off, so a run DEFERS before any read and reaches no import path, A4 included (D17).
+  Every rule lives in the pure mappers beside it.
+- One run: the detail, the situação history (strict on queue attempts 0–1), the pedido
+  snapshot, the hub guard, produtos, freight (its `mapa` row and the
+  `lojaIntegradaFreteNaoSuportado` sync run HERE, on every attempt that routed), cliente
+  and endereço, then ONE atomic `WriteBatch` (the pedido and every pagamento, each under
+  its own precondition; a lost one re-derives all, 3 attempts, then a retry).
+- A4: a PAID order with a shipment, NO CEP at all (no delivery block, or a `cep` absent,
+  `null`, `''`, blank or `-`) and no stored endereço throws `LiPedidoPagoSemEnderecoError`
+  before step 7; a pickup is exempt. It retries; the park at the cap logs an ERROR line
+  (ids only) and raises the `critico` `lojaIntegradaPedidoPagoSemEndereco`, which an
+  import resolves only once the winning snapshot leaves the pedido with a delivery
+  endereço or a pickup route, or the order is no longer paid — nothing else. A present
+  but INVALID CEP (a masked one too) is never refused: it imports with no endereço or
+  route and keeps the aviso open, as do a readable CEP from a buyer with no valid
+  document (no cliente, so no endereço) and an observation with no shipment.
+- The buyer is the fiscal identity (a valid CNPJ, else CPF). Never a cliente beside
+  another cliente's endereço: each stored endereço must be the pedido's cliente's, judged
+  per attempt, else nothing is filled over it and an incidente. No endereço (pickup
+  aside) ⇒ no carrier route; a stored route is never cleared.
+- Every importer outcome RESOLVES; `obsoleto` (a newer stored stamp) writes NOTHING;
+  schema and Zod refusals park. Estado and payment status come from the situação codigo
+  through one shared table; a stored stamp is read through `coerceToMicros`.
+- Six aviso tipos (`avisosPedidoLi.ts`): situação desconhecida, contestado, hub, frete não
+  suportado, pago sem endereço and A7's `lojaIntegradaReversaoComEtiqueta` (a reversal on
+  a pedido with a bought label). Order avisos and incidentes run after the batch, on
+  `importado` and `sem-mudanca`, so a retry after a crash still writes them.
+- A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
+- `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
+
+## CI (steps 3, 5 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;

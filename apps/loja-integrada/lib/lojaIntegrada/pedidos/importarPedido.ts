@@ -6,8 +6,10 @@
  * exactly `on` (D17). The only other network call is the CEP recovery of an
  * endereço, which runs only after a Loja Integrada read.
  *
- * ⚠️ PR 5-c builds the importer; the seam (`DESTINO_TIPO_LI` in
- * `notificacoes/notificacao.ts`) stays EMPTY until 5-d fills it.
+ * It fills the step-3 seam (`DESTINO_TIPO_LI` in `notificacoes/notificacao.ts`),
+ * so the reads queue and both sweeps run it. Until the window sets the read
+ * switch, every one of those runs defers at the context, before this module
+ * starts.
  *
  * Every rule lives in the PURE mappers beside this file — `estadoPedidoLi.ts`,
  * `pedidoMapeamento.ts`, `itensMapeamento.ts`, `clienteMapeamento.ts`,

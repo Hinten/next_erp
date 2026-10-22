@@ -10,6 +10,7 @@ import type {
   ImportadorPedidoLi,
   PayloadNotificacaoLi,
 } from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
 import { FakeDb, asDb } from '../../lib/lojaIntegrada/testing/fakeDb';
 import {
   AGORA_MS,
@@ -172,8 +173,8 @@ describe('a `pedido` task', () => {
 
     await rodar({ data: p, retryCount: 2, id: 'tarefa-7' });
 
-    // The read switch's refusal is the one line a step-3 run writes; it carries
-    // exactly what every Loja Integrada call line would.
+    // The read switch's refusal is the one line a run writes until the window;
+    // it carries exactly what every Loja Integrada call line would.
     expect(linhasBloqueadas()).toEqual([
       expect.objectContaining({
         conta: ID,
@@ -251,13 +252,14 @@ describe('a `pedido` task', () => {
 
 describe('the importer binding', () => {
   beforeEach(() => {
-    // The switch ON and a healthy conta, so a run reaches the importer seam.
-    vi.stubEnv('LOJA_INTEGRADA_CHAMADAS', 'on');
+    // A healthy conta, so a run past the switch reaches the importer seam.
     seedConta(fake, ID);
     seedCredencial(fake, ID);
   });
 
   it('passes the importer the REAL seam table hands back, read per dispatch', async () => {
+    // The switch ON, so the run reaches the seam — which hands back a sentinel.
+    vi.stubEnv('LOJA_INTEGRADA_CHAMADAS', 'on');
     const importados: PayloadNotificacaoLi[] = [];
     const sentinela: ImportadorPedidoLi = (_db, _contexto, payload) => {
       importados.push(payload);
@@ -277,21 +279,29 @@ describe('the importer binding', () => {
     expect(linhaUnica()).toMatchObject({ outcome: 'done', kind: 'importado', detail: 'importado' });
   });
 
-  it('with the seam empty (step 3) the task PARKS as importador-ausente', async () => {
+  it('D17: the root binds the step-5 order import, and with the switch unset the task DEFERS at the switch — never importador-ausente, no read, no call', async () => {
+    // The switch as it stays everywhere until the window: unset (beforeEach).
     const p = pedido();
 
     await rodar({ data: p, retryCount: 0, id: 'tarefa-4' });
 
-    expect(vi.mocked(notificacao.tratarTarefaLeituraLi).mock.calls[0]?.[3].importador).toBeNull();
+    // The REAL seam, untouched: the order import itself reaches the pipeline…
+    expect(notificacao.importadorPedidoLi).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(notificacao.tratarTarefaLeituraLi).mock.calls[0]?.[3].importador).toBe(
+      importarPedidoLi,
+    );
+    // …and the context's switch stops the run before any Firestore read, so the
+    // importer never starts (its first act would be a detail GET, then a read).
+    expect(fake.leituras).toEqual([]);
     expect(fake.ler(`${COLECAO}/${notificacao.docIdNotificacaoLi(p)}`)).toMatchObject({
-      status: 'parked',
-      erro: 'importador-ausente',
+      status: 'deferred',
+      tentativas: 0,
+      erro: 'adiado/chamadas-desligadas',
     });
-    expect(linhaUnica()).toMatchObject({
-      outcome: 'parked',
-      kind: 'importador-ausente',
-      detail: null,
-    });
+    expect(linhasBloqueadas()).toEqual([
+      expect.objectContaining({ conta: ID, fluxo: 'intake', idTarefa: 'tarefa-4' }),
+    ]);
+    expect(linhaUnica()).toMatchObject({ outcome: 'deferred', kind: 'adiado', detail: null });
   });
 });
 
