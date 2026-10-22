@@ -71,6 +71,20 @@ export class NFeInutilizacaoAbortedError extends NFeHttpError {
 }
 
 /**
+ * 422 — inutilização refused BEFORE any SEFAZ contact: the filial is in AC, BA
+ * or SP, where Ajuste SINIEF nº 40/2026 ends the Pedido de Inutilização from
+ * 01/11/2026. Marked by the body `code === 'INUTILIZACAO_NAO_SE_APLICA'`, so it
+ * is never read as an `NFeRejectedError` (it carries no cStat). The message is
+ * the route's pt-BR explanation, ready to show.
+ */
+export class NFeInutilizacaoNaoSeAplicaError extends NFeHttpError {
+  constructor(message: string, status: number, body: unknown) {
+    super(message, status, body);
+    this.name = 'NFeInutilizacaoNaoSeAplicaError';
+  }
+}
+
+/**
  * 422 — SEFAZ accepted the request but REJECTED the document
  * (`estado='rejeitada'`). The full emit result is attached for
  * caller inspection (the `cStat` + `xMotivo` are the actionable

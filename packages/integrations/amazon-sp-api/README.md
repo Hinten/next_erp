@@ -11,11 +11,31 @@ What ships here:
 | `lwa.ts`           | `URL_TOKEN_LWA`, `trocarRefreshToken`, `trocarCodigoAutorizacao` and `credencialLwaValida`          |
 | `consentimento.ts` | `URL_CONSENTIMENTO_BR`, `montarUrlConsentimento` (a consent URL, never sent), `applicationIdValido` |
 | `client.ts`        | `URL_BASE_SP_API`, `MARKETPLACE_ID_BR`, `criarClienteSpApi`: GET-only, redirects never followed     |
-| `pedidos.ts`       | `buscarPedidosAtualizados`, `respostaSearchOrdersSchema`: `searchOrders`, the poll's one list read  |
+| `pedidos.ts`       | `searchOrders` (`buscarPedidosAtualizados`) and `getOrder` (`buscarPedido`): the two Orders reads   |
 | `prazos.ts`        | `PRAZO_AMAZON_MS`, the per-call deadline keyed on the operation class                               |
-| `types.ts`         | The LWA token response, the LWA error body and the SP-API `errors[]` envelope — nothing else        |
+| `types.ts`         | The LWA token response and error body, the SP-API `errors[]` envelope, the Orders v2026 order       |
 | `errors.ts`        | The typed errors, `lerLimiteTaxa` (`x-amzn-RateLimit-Limit`) and `lerCodigoErroLwa`                 |
 | `transporte.ts`    | Internal (not re-exported): the one deadline-and-catch sequence both callers share                  |
+
+## Operations
+
+Every SP-API operation this package can call, with the model's default usage plan
+(`x-amzn-RateLimit-Limit` reports the one actually applied, when Amazon sends it):
+
+| Operation      | Helper                     | Path                                  | Query sent                                                                    | Rate (rps) | Burst |
+| -------------- | -------------------------- | ------------------------------------- | ----------------------------------------------------------------------------- | ---------- | ----- |
+| `searchOrders` | `buscarPedidosAtualizados` | `/orders/2026-01-01/orders`           | `lastUpdatedAfter`, `marketplaceIds`, `maxResultsPerPage`, `paginationToken`? | 0.0056     | 20    |
+| `getOrder`     | `buscarPedido`             | `/orders/2026-01-01/orders/{orderId}` | `includedData` only: `DADOS_INCLUIDOS_GET_ORDER` joined with `,`              | 0.5        | 30    |
+
+- Each helper builds its query from NAMED keys, never a spread of the caller's object.
+- `getOrder` requests eight datasets: `BUYER`, `RECIPIENT`, `TAX`, `PAYMENT`, `PROCEEDS`,
+  `FULFILLMENT`, `PACKAGES`, `CANCELLATION`. `FULFILLMENT_ORDERS`, `EXPENSE` and
+  `PROMOTION` stay out until a step reads them.
+- The order schema (`pedidoWireAmazonSchema`, `types.ts`) is strict only where a key is
+  built from it (`orderId`, `lastUpdatedTime`, each line's `orderItemId`): every other
+  leaf is nullish, every enum-like string is open, `orderItems` and a line's quantity,
+  product and price may be absent (a cancelled order), and money amounts stay unread
+  (`unknown`) for the app's one money reader.
 
 ## The credential rule
 
@@ -116,7 +136,10 @@ code exchange means the five-minute code expired or was spent. The SP-API body's
 - **No body excerpt on any error.** Response text never rides an exception.
 - **No `process.env`.** Every value is a parameter.
 - **No resource schema before its consumer.** Each operation's arrives with the step
-  that first reads it (`searchOrders`' page schema with step 4).
+  that first reads it (`searchOrders`' page schema with step 4, `getOrder`'s order with
+  step 5). Within step 5, the order schema and `buscarPedido` land in PR 5-a, ahead of
+  their one consumer, the importer (PR 5-d of the same stack); nothing calls
+  `buscarPedido` until then.
 - **No call to Amazon from the tests** (D11). Every test injects its own `fetch`, and
   `test/_setup/semRede.ts` makes an un-injected one throw.
 - **No `build` script**, deliberately: `ci.yml`'s seven-job split relies on no

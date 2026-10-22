@@ -723,7 +723,8 @@ function buildItemImpostoXml(
  * and discard it. The batch path needs it because its chunk transaction
  * commits the nNF and a chave-less placeholder BEFORE generating, so a throw
  * at generation consumes an nNF and leaves a placeholder needing fix +
- * re-emit or inutilização. `emitir.ts` runs it per member after prep
+ * re-emit or inutilização (none in AC/BA/SP from 01/11/2026 — Ajuste SINIEF
+ * 40/2026). `emitir.ts` runs it per member after prep
  * (`tributePreflight`) and `runChunkAllocateTx` applies the verdict only to a
  * member that would allocate or regenerate — never to one whose nfev4 doc is
  * skipped or retransmitted from stored bytes. The single path does not use

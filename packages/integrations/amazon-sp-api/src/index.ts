@@ -6,8 +6,9 @@
  * Seller Central consent URL that starts the authorization (`consentimento.ts`),
  * a GET-only SP-API client for the North America host that serves the BR store
  * (`client.ts`), the backstop poll's one list read, `searchOrders`
- * (`pedidos.ts`, step 4), the per-call deadlines, the typed errors, and the wire
- * schemas those consume. Everything stateful (the credential store, the OAuth routes,
+ * (`pedidos.ts`, step 4), the importer's one order read, `getOrder` (`pedidos.ts`,
+ * step 5), the per-call deadlines, the typed errors, and the wire schemas those
+ * consume. Everything stateful (the credential store, the OAuth routes,
  * the access-token cache, the sweeps) is driven by the App Hosting backend
  * `apps/amazon`, which holds the Firestore/Admin-SDK dependency.
  *
@@ -39,7 +40,10 @@
  *  - **No body excerpt on any error.** Response text never rides an exception.
  *  - **No `process.env`.** Every value is a parameter.
  *  - **No resource schema before its consumer.** Each operation's arrives with
- *    the step that first reads it (`searchOrders`' page schema with step 4).
+ *    the step that first reads it (`searchOrders`' page schema with step 4,
+ *    `getOrder`'s order with step 5). Within step 5, the order schema and
+ *    `buscarPedido` land in PR 5-a, ahead of their one consumer, the importer
+ *    (PR 5-d of the same stack); nothing calls `buscarPedido` until then.
  *  - **No `build` script.** `ci.yml`'s seven-job split relies on no `packages/*`
  *    workspace defining one.
  *

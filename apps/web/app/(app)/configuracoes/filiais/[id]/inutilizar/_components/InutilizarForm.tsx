@@ -10,6 +10,11 @@
  * already chosen there), mirroring the old Flutter `filiaisTableView` action
  * → `InutNFeTable(filialUid)`. The burned-ranges history for this filial is
  * shown below the form.
+ *
+ * A filial in AC, BA or SP has no Pedido de Inutilização from 01/11/2026
+ * (Ajuste SINIEF nº 40/2026, `inutilizacaoSeAplica` in `@delfrance/schemas` —
+ * the same rule apps/nfe enforces): the form is disabled with the explanation,
+ * and the history stays readable.
  */
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
@@ -20,11 +25,13 @@ import { z } from 'zod';
 import {
   NFeHttpError,
   NFeInutilizacaoAbortedError,
+  NFeInutilizacaoNaoSeAplicaError,
   NFeNetworkError,
   NFeTimeoutError,
   NFeRejectedError,
   type NFeInutilizarResult,
 } from '@delfrance/integrations-nfe/http-provider';
+import { inutilizacaoSeAplica, motivoInutilizacaoNaoSeAplica, type UF } from '@delfrance/schemas';
 
 import { useNFeClient } from '@/lib/nfe/client';
 import {
@@ -71,10 +78,24 @@ const DEFAULTS: InutFormValues = {
   xJust: '',
 };
 
-export function InutilizarForm({ filialId }: { filialId: string }) {
+export function InutilizarForm({
+  filialId,
+  uf,
+}: {
+  filialId: string;
+  /** The filial's `sede.estado`; `undefined` while it loads (apps/nfe decides then). */
+  uf?: UF;
+}) {
   const client = useNFeClient();
   const [result, setResult] = useState<NFeInutilizarResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Page-open time: the rule needs a clock, and render must not read one.
+  const [abertaEm] = useState(() => Date.now());
+  const motivoNaoSeAplica =
+    uf !== undefined && !inutilizacaoSeAplica(uf, abertaEm)
+      ? motivoInutilizacaoNaoSeAplica(uf)
+      : null;
+  const naoSeAplica = motivoNaoSeAplica !== null;
 
   const form = useForm<InutFormValues>({
     resolver: zodResolver(inutFormSchema),
@@ -85,6 +106,7 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
   async function handleSubmit(values: InutFormValues) {
     // superRefine guarantees these are non-null here.
     if (values.serie === null || values.nNFIni === null || values.nNFFin === null) return;
+    if (naoSeAplica) return;
     if (!client) {
       showErrorNotification({ title: 'Não autenticado', message: 'Você não está logado.' });
       return;
@@ -104,6 +126,12 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
       if (err instanceof NFeInutilizacaoAbortedError) {
         // Pre-check abort: a número in the range belongs to an authorized NF-e.
         showErrorNotification({ title: 'Inutilização não permitida', message: err.message });
+        return;
+      }
+      // Ajuste SINIEF 40/2026, decided by apps/nfe before any SEFAZ call — e.g.
+      // the page was opened on 31/10 and submitted after midnight.
+      if (err instanceof NFeInutilizacaoNaoSeAplicaError) {
+        showErrorNotification({ title: 'Inutilização não se aplica', message: err.message });
         return;
       }
       // ⚠️ #1094: before the generic arm — a timeout IS an NFeNetworkError. The
@@ -132,6 +160,12 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
     <Stack gap="xl">
       <form onSubmit={form.handleSubmit(handleSubmit)}>
         <Stack maw={560}>
+          {motivoNaoSeAplica && (
+            <Alert color="blue" variant="light" title="Inutilização não se aplica a esta filial">
+              {motivoNaoSeAplica}
+            </Alert>
+          )}
+
           <Controller
             control={form.control}
             name="serie"
@@ -147,6 +181,7 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
                 max={999}
                 allowDecimal={false}
                 required
+                disabled={naoSeAplica}
               />
             )}
           />
@@ -167,6 +202,7 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
                   max={999_999_999}
                   allowDecimal={false}
                   required
+                  disabled={naoSeAplica}
                 />
               )}
             />
@@ -185,6 +221,7 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
                   max={999_999_999}
                   allowDecimal={false}
                   required
+                  disabled={naoSeAplica}
                 />
               )}
             />
@@ -206,17 +243,20 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
                 maxLength={XJUST_MAX}
                 error={fieldState.error?.message}
                 required
+                disabled={naoSeAplica}
               />
             )}
           />
 
-          <Alert color="yellow" variant="light">
-            A inutilização é definitiva e registrada na SEFAZ — os números da faixa não poderão mais
-            ser usados. Não toca o contador de numeração.
-          </Alert>
+          {!naoSeAplica && (
+            <Alert color="yellow" variant="light">
+              A inutilização é definitiva e registrada na SEFAZ — os números da faixa não poderão
+              mais ser usados. Não toca o contador de numeração.
+            </Alert>
+          )}
 
           <Group justify="flex-end">
-            <Button type="submit" loading={submitting} disabled={!client}>
+            <Button type="submit" loading={submitting} disabled={!client || naoSeAplica}>
               Inutilizar numeração
             </Button>
           </Group>

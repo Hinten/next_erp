@@ -866,6 +866,7 @@ describe('lib/amazon layout', () => {
         'pedidos/janelaPoll.ts',
         'pedidos/notificacaoSintetica.ts',
         'pedidos/orcamentoPoll.ts',
+        'pedidos/orderIds.ts',
         'pedidos/pollPedidos.ts',
         'testing/documentos.ts',
         'testing/falhaDeEnfileiramento.ts',
@@ -1295,6 +1296,7 @@ describe('the step-4 backstop poll guards (4-a)', () => {
       'pedidos/janelaPoll.ts',
       'pedidos/notificacaoSintetica.ts',
       'pedidos/orcamentoPoll.ts',
+      'pedidos/orderIds.ts',
       'pedidos/pollPedidos.ts',
     ]);
     for (const arquivo of pedidos) {

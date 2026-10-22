@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { millisSinceEpoch } from './shared/datetime';
 import { estadoEnviNFeMsgSchema, ESTADO_ENVI_NFE_MSG } from './enviNfeMsg';
+import type { UF } from './endereco';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth — same audit
 // surface as `EnviNFeMsg` (`.old/packages/nfe_client/lib/src/models.dart`
@@ -71,3 +72,57 @@ export const inutNumeracaoMeta: CollectionMetadata = {
 };
 
 export const inutNumeracao = { schema: inutNumeracaoSchema, meta: inutNumeracaoMeta };
+
+/**
+ * First instant (epoch ms) from which a UF's emitters may no longer file a
+ * Pedido de Inutilização: 00:00 of 01/11/2026 in that UF's legal time (Acre
+ * −05:00, Bahia and São Paulo −03:00 — permanent since Lei 13.985/2019 ended
+ * DST). A UF absent from this table keeps the pedido.
+ *
+ * Ajuste SINIEF nº 40/2026 (CONFAZ, DOU 14/09/2026), cláusula segunda II, adds
+ * § 6º to cláusula décima quarta of Ajuste SINIEF 7/05: "O Pedido de
+ * Inutilização de Número da NF-e previsto no 'caput' não se aplica aos Estados
+ * do Acre, Bahia e São Paulo." Cláusula terceira: effects "a partir do primeiro
+ * dia do segundo mês subsequente ao da publicação" — 01/11/2026. Source:
+ * confaz.fazenda.gov.br/legislacao/ajustes/2026/AJ040_26. SEFAZ-SP homologação
+ * already answers every pedido with cStat 998 "Serviço Desativado" (#2030).
+ */
+const INUTILIZACAO_ENCERRADA_EM: Partial<Record<UF, number>> = {
+  AC: Date.UTC(2026, 10, 1, 5),
+  BA: Date.UTC(2026, 10, 1, 3),
+  SP: Date.UTC(2026, 10, 1, 3),
+};
+
+const NOME_DA_UF: Partial<Record<UF, string>> = {
+  AC: 'do Acre',
+  BA: 'da Bahia',
+  SP: 'de São Paulo',
+};
+
+/**
+ * `true` when an emitter in `uf` may file a Pedido de Inutilização de Número
+ * da NF-e at `instanteMs` — `false` for AC, BA and SP from 01/11/2026 (see
+ * {@link INUTILIZACAO_ENCERRADA_EM}). Pure: the caller passes the clock.
+ *
+ * The one rule both surfaces read: `apps/nfe` refuses the request before any
+ * SEFAZ call, and `apps/web` disables the inutilização form.
+ */
+export function inutilizacaoSeAplica(uf: UF, instanteMs: number): boolean {
+  const encerradaEm = INUTILIZACAO_ENCERRADA_EM[uf];
+  return encerradaEm === undefined || instanteMs < encerradaEm;
+}
+
+/**
+ * The pt-BR explanation shown when {@link inutilizacaoSeAplica} is `false` —
+ * the same sentence on the route's refusal and on the disabled form. A gap is
+ * left as it is: the Ajuste sets no replacement procedure, and the numeração
+ * stays sequential.
+ */
+export function motivoInutilizacaoNaoSeAplica(uf: UF): string {
+  const nome = NOME_DA_UF[uf] ?? `de ${uf}`;
+  return (
+    `A inutilização de numeração não se aplica às filiais ${nome} desde 01/11/2026 ` +
+    `(Ajuste SINIEF nº 40/2026). Um número que nunca foi autorizado simplesmente ` +
+    `fica sem uso — não há pedido a enviar à SEFAZ.`
+  );
+}
