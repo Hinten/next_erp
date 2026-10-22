@@ -82,9 +82,9 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   total by construction; the totality matrix runs through all three real call sites.
 - Never log `err.message` of an `AmazonError` (it embeds the path, which can carry a seller
   id): log `err.name`, the status and the codes. `estrutura.test.ts` refuses a `.message`
-  inside any `.info|warn|error(` call and either non-call writer (`registrarEventoAmazon`,
-  `registrarChamadaBloqueadaAmazon`), and a `trechoCorpo` campo outside `log.ts`. The
-  sweep's returned `erros[].erro` is the class name too.
+  inside any `.info|warn|error(` call and any non-call writer (`registrarEventoAmazon`,
+  `registrarChamadaBloqueadaAmazon`, `registrarValvulaAmazon`), and a `trechoCorpo` campo
+  outside `log.ts`. The sweep's returned `erros[].erro` is the class name too.
 - A new operation stays keys-only in the log (and refused as a fixture) until its step adds
   its table rows AND regenerates the committed leaf inventory, from the repo root:
   `node .master_plans/amazon/evidence/amazon-doc.mjs folhas --saida
@@ -117,8 +117,36 @@ Read by this backend: `AMAZON_LWA_CLIENT_ID`, `AMAZON_APPLICATION_ID`,
 `AMAZON_CHAMADAS`, `FIREBASE_PROJECT_ID` / `FIREBASE_DATABASE_ID` (optional), and
 the Secret Manager pair `AMAZON_LWA_CLIENT_SECRET` / `AMAZON_OAUTH_STATE_SECRET`.
 `AMAZON_LWA_SEGREDO_EXPIRA_EM` is read only by the sweep, which runs in the
-functions codebase from step 3. Every read is blank-guarded (blank = unset) and
-never trimmed. `apphosting.yaml` lists them as COMMENT rows only — no `env:` block.
+functions codebase from step 3. Every read above is blank-guarded (blank = unset) and
+never trimmed; the valves and lists below are NOT (only unset and `''` are empty).
+`apphosting.yaml` lists them as COMMENT rows only — no `env:` block.
+
+### Write valves and canary lists (step 2b, `core/valvulas.ts`)
+
+- Eight names, all BLANK in the root `.env.example` and COMMENT rows in `apphosting.yaml`
+  (never an `env:` row: a baked `off` could override a console flip):
+  `AMAZON_MODO_{ESTOQUE,PRECO,NFE,AGENDAMENTO}` and `AMAZON_CANARIO_{ESTOQUE,PRECO,NFE,AGENDAMENTO}`.
+  Step 3's functions env declares the same eight when that codebase is created.
+- A valve is `off | dry-run | on`: only the exact `on` writes, only the exact `dry-run` diffs,
+  anything else is off (nothing trimmed or folded; an unrecognised value logs a WARNING). A
+  write also needs `AMAZON_CHAMADAS=on`.
+- A canary list: unset or empty (`''`) = NO target; exactly `*` = every valid target, the
+  only widening; otherwise `,`-joined `<contaId>:<sku>` (stock, price) or `<contaId>:<orderId>`
+  (NF-e, scheduling), split at the FIRST `:`, matched by exact `Set.has`. A malformed entry
+  lists nothing and is logged by POSITION only (a WARNING): spaces alone are one malformed
+  entry, and so is `<contaId>:*` — there is no per-conta wildcard. A SKU with a space, a comma
+  or a non-ASCII letter, or exactly `*`, is valid but not listable: it is written only at `*`
+  (`alvo-nao-listavel` otherwise).
+- A batch of stock or price is a feed ONLY under `on` + exactly `*` (`decidirLote`); under a
+  list it sends patches for the canary targets alone. Either way every MEMBER still goes
+  through `decidirAlvo`, and only members deciding `on` are sent: under `*`, an
+  `alvo-invalido` member is left out of the feed and dry-runs.
+- Order inside a write flow: `lerValvula` FIRST (reads its two names once, a snapshot for the
+  run), `registrarValvulaAmazon` second (`evento: 'valvula'`), then `decidirLote` per batch and
+  `decidirAlvo` for every member. No flow calls them yet; the write engine (step 14 PR a) is
+  the first.
+- W8 (the window, never before it), per flow: `dry-run` → a canary list → `on` → `*`, set ALIKE
+  on both surfaces. Check the run-start line, then the dry-run diffs, then clean read-backs.
 
 ## Rule 7, per write
 
