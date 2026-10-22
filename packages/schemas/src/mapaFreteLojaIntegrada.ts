@@ -196,7 +196,9 @@ export function montarEntradaDoMapaLi({
 
 /**
  * The freight tipos a Loja Integrada `mapa` row may be mapped to — the targets the conta screen
- * offers. Marketplace-owned tipos (another channel's freight) are never a target. `outros` is
+ * offers. Neither a marketplace's freight (another channel's) nor a router tipo (Loja Integrada
+ * itself, whose doc this `mapa` lives on) is a target: every one is a tipo an operator may pick
+ * by hand (`isFreteSelecionavelManualmente`). `outros` is
  * listed because it is a real tipo, but a row "mapped" there is still decided by its
  * `integracaoUid` ({@link idDoAlvoDoMapaLi}).
  */

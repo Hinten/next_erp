@@ -78,6 +78,7 @@ import {
   type PerguntaDeTransportadora,
   type RespostaDeTransportadora,
 } from '@/components/etiqueta/EscolherTransportadoraDialog';
+import { aplicarRotaLi } from '@/lib/checkout/etiqueta/providers/lojaIntegrada';
 import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
 
 import { useConfirmDialog, type ConfirmDialogOptions } from './ConfirmDialog';
@@ -90,8 +91,10 @@ export type EtiquetaAcaoChave =
   | 'fetch-pdf'
   | 'generico-zpl2'
   | 'generico-pdf'
-  /** The Loja Integrada routing call ("Definir transportadora" / "Escolher transportadora…"). */
-  | 'rotear';
+  /** The Loja Integrada routing call by the override or the `mapa` ("Definir transportadora"). */
+  | 'rotear'
+  /** The same call by the operator's pick ("Escolher transportadora…"): its own key, for its spinner. */
+  | 'escolher-transportadora';
 
 /** The routing fields a Loja Integrada routing call answered (`resposta.rota`). */
 export type RotaDoPedidoLi = Extract<RespostaRotaEtiquetaLi, { tipo: 'roteado' }>['rota'];
@@ -114,8 +117,9 @@ export interface RotaRegistrada {
  * (its `integracaoFreteOuterRef` exactly the registration's `refAnterior`).
  * Once the list's ref moves on — it caught up with the route, or anything
  * re-pointed the pedido since — the list copy wins WHOLE, so no later write is
- * ever hidden. An estado the route did not know (`null` on the wire) keeps the
- * list's.
+ * ever hidden. The overlay itself is the router provider's own
+ * (`aplicarRotaLi`), so the row and the checkout lay a route over a freight the
+ * same way.
  */
 export function freteComRotaConhecida(
   freteDaLista: FreteDoPedido | null,
@@ -123,14 +127,7 @@ export function freteComRotaConhecida(
 ): FreteDoPedido | null {
   if (registro === null || freteDaLista === null) return freteDaLista;
   if (freteDaLista.integracaoFreteOuterRef !== registro.refAnterior) return freteDaLista;
-  const { rota } = registro;
-  return {
-    ...freteDaLista,
-    integracaoFreteOuterRef: rota.integracaoFreteOuterRef,
-    externalOptionId: rota.externalOptionId,
-    integracaoTargetOuterRef: rota.integracaoTargetOuterRef,
-    estado: rota.estado ?? freteDaLista.estado,
-  };
+  return aplicarRotaLi(freteDaLista, registro.rota);
 }
 
 export interface EtiquetaAcaoContextValue {

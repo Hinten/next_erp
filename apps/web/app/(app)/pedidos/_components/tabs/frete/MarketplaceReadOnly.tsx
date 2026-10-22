@@ -12,20 +12,27 @@ function labelOf(map: Record<string, string>, key: string | null | undefined): s
 }
 
 /**
- * Read-only rendering for marketplace-managed freight (Mercado Livre,
- * Shopee, Amazon, Magalu, Loja Integrada). The importer owns these fields;
- * editing happens on the marketplace / legacy app. See the
- * freight-integrations skill for the `mapa` routing that lands marketplace
- * shipping options here.
+ * Read-only rendering for freight the Frete tab does not edit, in two variants:
+ *
+ * - `'marketplace'` (the default) — marketplace-managed freight (Mercado Livre,
+ *   Shopee, Amazon, Magalu): the importer owns these fields, and the whole tab
+ *   is locked with them;
+ * - `'roteado'` — a pedido still on its conta's Loja Integrada doc, a ROUTER
+ *   with no carrier yet (master plan step 15): the carrier comes from the
+ *   conta's Mapeamento do Frete through the `/pedidos` routing action, so the
+ *   panel points there. Only this BODY is read-only: the tab's header and
+ *   integração picker follow the estado lock (`FreteTab`).
  */
 export function MarketplaceReadOnly({
   frete,
   tipo,
   pedidoId,
+  variante = 'marketplace',
 }: {
   frete: FreteInicialFormState;
   tipo: string;
   pedidoId?: string;
+  variante?: 'marketplace' | 'roteado';
 }) {
   const ro = (label: string, value: string | null | undefined) => (
     <TextInput label={label} value={value ?? '—'} readOnly disabled style={{ flex: 1 }} />
@@ -33,11 +40,18 @@ export function MarketplaceReadOnly({
 
   return (
     <Stack gap="sm">
-      <Alert color="blue" variant="light">
-        Frete gerenciado pelo marketplace (
-        {labelOf(INTEGRACAO_FRETE_LABELS as Record<string, string>, tipo)}). Os campos são
-        atualizados pelo importador de pedidos e não podem ser editados aqui.
-      </Alert>
+      {variante === 'roteado' ? (
+        <Alert color="blue" variant="light">
+          O frete deste pedido segue o Mapeamento do Frete da conta Loja Integrada. Use
+          &quot;Definir transportadora&quot; na lista de pedidos.
+        </Alert>
+      ) : (
+        <Alert color="blue" variant="light">
+          Frete gerenciado pelo marketplace (
+          {labelOf(INTEGRACAO_FRETE_LABELS as Record<string, string>, tipo)}). Os campos são
+          atualizados pelo importador de pedidos e não podem ser editados aqui.
+        </Alert>
+      )}
 
       <Group align="center" gap="xs">
         <Text size="sm" fw={500}>

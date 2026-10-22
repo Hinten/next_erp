@@ -18,7 +18,12 @@ vi.mock('@/lib/etiqueta-generica', () => ({
   renderEtiquetaGenericaZpl: vi.fn(() => '^XA^XZ'),
 }));
 
-import { PROVIDERS, emitirOuImprimirEtiqueta, resolveEtiquetaProvider } from './registry';
+import {
+  PROVIDERS,
+  emitirOuImprimirEtiqueta,
+  lojaIntegradaRouterProvider,
+  resolveEtiquetaProvider,
+} from './registry';
 import { genericLabelProvider } from './providers/genericLabel';
 import { melhorEnviosProvider } from './providers/melhorEnvios';
 import { mercadoLivreProvider } from './providers/mercadoLivre';
@@ -58,6 +63,15 @@ describe('resolveEtiquetaProvider', () => {
     expect(
       resolveEtiquetaProvider(INTEGRACAO_FRETE.shopee, freightCapsFor(INTEGRACAO_FRETE.shopee)),
     ).toBe(shopeeProvider);
+    // Loja Integrada is ROUTED (master plan step 15): its own router provider,
+    // never the placeholder and never the generic label.
+    expect(
+      resolveEtiquetaProvider(
+        INTEGRACAO_FRETE.lojaIntegrada,
+        freightCapsFor(INTEGRACAO_FRETE.lojaIntegrada),
+      ),
+    ).toBe(lojaIntegradaRouterProvider);
+    expect(PROVIDERS[INTEGRACAO_FRETE.lojaIntegrada]).toBe(lojaIntegradaRouterProvider);
     const genericos: IntegracaoFrete[] = [
       INTEGRACAO_FRETE.motoboy,
       INTEGRACAO_FRETE.fob,
@@ -96,6 +110,22 @@ describe('resolveEtiquetaProvider', () => {
       expect(p).not.toBe(genericLabelProvider);
     }
   });
+
+  it('never sends a ROUTED tipo anywhere but the router — not the generic label, not the placeholder', () => {
+    // A router tipo is not marketplace-owned, so the caps fallback alone would
+    // hand it the GENERIC label: a store label for a pedido no carrier was
+    // chosen for. Only the exact registry row prevents that.
+    const roteados = integracoesFreteSchema.options.filter(
+      (tipo) => freightCapsFor(tipo).labelMode === 'roteado',
+    );
+    expect(roteados).toEqual([INTEGRACAO_FRETE.lojaIntegrada]);
+    for (const tipo of roteados) {
+      const p = resolveEtiquetaProvider(tipo, freightCapsFor(tipo));
+      expect(p).toBe(lojaIntegradaRouterProvider);
+      expect(p).not.toBe(genericLabelProvider);
+      expect(p).not.toBe(unsupportedMarketplaceProvider);
+    }
+  });
 });
 
 /* -------------------------- the caps drift guard -------------------------- */
@@ -114,6 +144,14 @@ describe('resolveEtiquetaProvider', () => {
  *   2. A marketplace tipo that cannot fetch resolves to the placeholder.
  *   3. `labelMode 'emit'` resolves to Melhor Envio; a non-marketplace
  *      `generic`/`none` tipo resolves to the generic label.
+ *   4. `labelMode 'roteado'` ⇔ the tipo resolves to the ROUTER; and a router
+ *      tipo is never marketplace-owned, sets no `can*` and names no channel.
+ *      The mode alone makes the `/pedidos` row offer "Definir transportadora"
+ *      while the checkout prints a generic label against the conta's doc (the
+ *      caps fallback); the provider alone leaves the row on "ainda não
+ *      suportada" with a checkout that routes. A router that owned the block
+ *      or set a `can*` would lock the Frete tab, or send a `printLabelId` to
+ *      Melhor Envio, for a pedido that is not routed yet.
  */
 function divergencias(
   tabela: Readonly<Record<IntegracaoFrete, FreightTipoCapabilities>>,
@@ -130,7 +168,7 @@ function divergencias(
         `${tipo}: canFetchLabel=${String(c.canFetchLabel)}, provedor real=${String(provedorReal)}`,
       );
     }
-    // Rules 2–3 read the resolution the REGISTRY makes, over the table given.
+    // Rules 2–4 read the resolution the REGISTRY makes, over the table given.
     const resolvido =
       p ?? (c.marketplaceOwned ? unsupportedMarketplaceProvider : genericLabelProvider);
     if (c.marketplaceOwned && !c.canFetchLabel && resolvido !== unsupportedMarketplaceProvider) {
@@ -145,6 +183,25 @@ function divergencias(
       resolvido !== genericLabelProvider
     ) {
       achados.push(`${tipo}: tipo próprio sem a etiqueta genérica`);
+    }
+    const roteador = resolvido === lojaIntegradaRouterProvider;
+    if (c.labelMode === 'roteado' && !roteador) {
+      achados.push(`${tipo}: labelMode roteado fora do roteador`);
+    }
+    if (roteador && c.labelMode !== 'roteado') {
+      achados.push(`${tipo}: roteador sem labelMode roteado`);
+    }
+    if (
+      c.labelMode === 'roteado' &&
+      (c.marketplaceOwned ||
+        c.canQuote ||
+        c.canBuy ||
+        c.canPrint ||
+        c.canFetchLabel ||
+        c.canTrack ||
+        c.channel !== null)
+    ) {
+      achados.push(`${tipo}: roteador com capacidade própria`);
     }
   }
   return achados;
@@ -193,6 +250,46 @@ describe('the registry agrees with FREIGHT_TIPO_CAPS (drift guard, W3)', () => {
     const providers = { ...PROVIDERS, shopee: unsupportedMarketplaceProvider };
     expect(divergencias(FREIGHT_TIPO_CAPS, providers)).toEqual([
       'shopee: canFetchLabel=true, provedor real=false',
+    ]);
+  });
+
+  it('rule 4, half 1 — a router labelMode WITHOUT the router provider', () => {
+    const { lojaIntegrada: _router, ...semRoteador } = PROVIDERS;
+    expect(divergencias(FREIGHT_TIPO_CAPS, semRoteador)).toEqual([
+      'lojaIntegrada: labelMode roteado fora do roteador',
+    ]);
+  });
+
+  it('rule 4, half 2 — the router provider WITHOUT the router labelMode', () => {
+    const tabela = {
+      ...FREIGHT_TIPO_CAPS,
+      lojaIntegrada: { ...FREIGHT_TIPO_CAPS.lojaIntegrada, labelMode: 'generic' as const },
+    };
+    expect(divergencias(tabela, PROVIDERS)).toEqual([
+      'lojaIntegrada: tipo próprio sem a etiqueta genérica',
+      'lojaIntegrada: roteador sem labelMode roteado',
+    ]);
+  });
+
+  it('rule 4 — a router that still OWNS the block (the pre-flip row) is reported', () => {
+    const tabela = {
+      ...FREIGHT_TIPO_CAPS,
+      lojaIntegrada: { ...FREIGHT_TIPO_CAPS.lojaIntegrada, marketplaceOwned: true },
+    };
+    expect(divergencias(tabela, PROVIDERS)).toEqual([
+      'lojaIntegrada: canFetchLabel=false, provedor real=true',
+      'lojaIntegrada: marketplace sem busca de etiqueta fora do placeholder',
+      'lojaIntegrada: roteador com capacidade própria',
+    ]);
+  });
+
+  it('rule 4 — a router that sets a `can*` is reported (canPrint would reach Melhor Envio)', () => {
+    const tabela = {
+      ...FREIGHT_TIPO_CAPS,
+      lojaIntegrada: { ...FREIGHT_TIPO_CAPS.lojaIntegrada, canPrint: true },
+    };
+    expect(divergencias(tabela, PROVIDERS)).toEqual([
+      'lojaIntegrada: roteador com capacidade própria',
     ]);
   });
 });

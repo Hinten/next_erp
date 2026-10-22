@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import type { RespostaConferenciaPagamentoLi } from '@delfrance/schemas';
+import type { RespostaConferenciaPagamentoLi, RespostaRotaEtiquetaLi } from '@delfrance/schemas';
 
 /**
  * Network stubs several staging e2e specs share. Every one MUST be installed
@@ -58,6 +58,50 @@ export async function installRouteStubs(page: Page): Promise<RouteStubs> {
   });
 
   return stubs;
+}
+
+/** The Loja Integrada label routing route, on whatever backend host the build points at. */
+const ROTA_ETIQUETA_LI = '**/api/marketplace/loja-integrada/pedidos/*/rota-etiqueta';
+
+export interface StubRotaEtiquetaLi {
+  /** Every call, in order: the pedido id (the path segment, decoded) and the JSON body. */
+  readonly chamadas: Array<{ readonly pedidoId: string; readonly corpo: unknown }>;
+}
+
+/**
+ * Stub `PUT …/pedidos/[pedidoId]/rota-etiqueta` on the `apps/loja-integrada`
+ * backend (master plan step 15) with a fixed answer, recording every call.
+ *
+ * The e2e build has no Loja Integrada backend, and the routing write itself is
+ * pinned by the route's own offline and emulator suites — so a spec that
+ * reaches the routing action stubs the route, and the pedido is never
+ * re-pointed in Firestore: what the row shows next comes from the answer.
+ * Only the PUT is answered here; Playwright handles the CORS preflight.
+ */
+export async function stubRotaEtiquetaLi(
+  page: Page,
+  resposta: RespostaRotaEtiquetaLi,
+): Promise<StubRotaEtiquetaLi> {
+  const stub: { chamadas: Array<{ pedidoId: string; corpo: unknown }> } = { chamadas: [] };
+  await page.route(ROTA_ETIQUETA_LI, async (route) => {
+    const request = route.request();
+    if (request.method() !== 'PUT') {
+      await route.fallback();
+      return;
+    }
+    const segmentos = new URL(request.url()).pathname.split('/');
+    stub.chamadas.push({
+      pedidoId: decodeURIComponent(segmentos[segmentos.length - 2] ?? ''),
+      corpo: request.postDataJSON() as unknown,
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'Cache-Control': 'no-store' },
+      body: JSON.stringify(resposta),
+    });
+  });
+  return stub;
 }
 
 /** The Loja Integrada paid re-check route, on whatever backend host the build points at. */
