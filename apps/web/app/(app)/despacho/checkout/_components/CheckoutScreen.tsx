@@ -11,6 +11,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { useNFeClient } from '@/lib/nfe/client';
 import { useFreightClient } from '@/lib/freight/client';
+import { useLojaIntegradaClient } from '@/lib/loja-integrada/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 import { useShopeeClient } from '@/lib/shopee/client';
 import { useEscolherEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
@@ -70,6 +71,8 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
   const freightClient = useFreightClient();
   const mercadoLivreClient = useMercadoLivreClient();
   const shopeeClient = useShopeeClient();
+  // The Loja Integrada paid re-check's soft gates (reprint, generic label) ask it.
+  const lojaIntegradaClient = useLojaIntegradaClient();
 
   const { state, dispatch, bumpEpoch, currentEpoch } = useCheckoutReducer();
   // Latest state for the async handlers (avoids stale closures without re-binding).
@@ -196,6 +199,17 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
       openUrl: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
       comprarEtiqueta: comprarBridge.comprarEtiqueta,
       escolherEnvio: envioDialog.escolherEnvio,
+      // The acknowledged-risk question of the Loja Integrada soft gates: the
+      // SAME dialog, with its "Estou ciente do risco" tick required.
+      confirmarCiente: ({ titulo, mensagem }) =>
+        confirmDialog.confirm({
+          title: titulo,
+          message: mensagem,
+          confirmLabel: 'Continuar',
+          cancelLabel: 'Cancelar',
+          danger: true,
+          ciencia: true,
+        }),
     }),
     [confirmDialog, comprarBridge.comprarEtiqueta, envioDialog.escolherEnvio],
   );
@@ -325,6 +339,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
           freightClient,
           mercadoLivreClient,
           shopeeClient,
+          lojaIntegradaClient,
           pedido,
           pedidoId,
           formatoDanfe: snap.formatoDanfe,
@@ -355,6 +370,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
     freightClient,
     mercadoLivreClient,
     shopeeClient,
+    lojaIntegradaClient,
     ui,
     confirmDialog,
     reportPostSave,
@@ -437,6 +453,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
             freightClient={freightClient}
             mercadoLivreClient={mercadoLivreClient}
             shopeeClient={shopeeClient}
+            lojaIntegradaClient={lojaIntegradaClient}
             formatoDanfe={state.formatoDanfe}
             onFormatoDanfe={(v) => dispatch({ type: 'format/danfe', value: v })}
             formatoEtiqueta={state.formatoEtiqueta}

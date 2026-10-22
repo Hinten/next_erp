@@ -149,8 +149,12 @@ function fraseMotivoImportacaoParada(valor: Aviso['params'][string] | undefined)
  * pt-BR do que contesta um pedido da Loja Integrada — TOTAL sobre o código
  * (`params.motivo`, um {@link MOTIVO_PEDIDO_CONTESTADO_LI}). O produtor (o
  * importador de pedidos) grava o CÓDIGO, nunca a frase.
+ *
+ * Exportada para a conferência de pagamento (`lib/loja-integrada/conferenciaPagamento.ts`)
+ * dizer a MESMA frase quando bloqueia ou avisa — uma cópia só, nunca duas que
+ * se afastam.
  */
-const FRASE_MOTIVO_CONTESTADO_LI: Record<MotivoPedidoContestadoLi, string> = {
+export const FRASE_MOTIVO_CONTESTADO_LI: Readonly<Record<MotivoPedidoContestadoLi, string>> = {
   [MOTIVO_PEDIDO_CONTESTADO_LI.disputa]: 'o pagamento está em disputa',
   [MOTIVO_PEDIDO_CONTESTADO_LI.chargeback]:
     'o comprador contestou a cobrança junto ao emissor do cartão (chargeback)',

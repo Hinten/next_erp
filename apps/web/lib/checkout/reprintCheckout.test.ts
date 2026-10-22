@@ -29,6 +29,7 @@ const ui: EtiquetaProviderUi = {
   openUrl: vi.fn(),
   comprarEtiqueta: vi.fn(),
   escolherEnvio: vi.fn(),
+  confirmarCiente: vi.fn(),
 };
 
 beforeEach(() => {
@@ -62,6 +63,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       nfeClient: null,
       mercadoLivreClient: mlClient,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       formato: 'pdf',
       ui,
     });
@@ -98,6 +100,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       formato: 'pdf',
       ui,
     });
@@ -115,6 +118,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         nfeClient: null,
         mercadoLivreClient: null,
         shopeeClient: null,
+        lojaIntegradaClient: null,
         formato: 'pdf',
         ui,
       }),
@@ -135,6 +139,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         nfeClient: null,
         mercadoLivreClient: null,
         shopeeClient: null,
+        lojaIntegradaClient: null,
         formato: 'pdf',
         ui,
       }),
@@ -155,6 +160,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
     h.dereferenceOuterRef.mockReturnValue(null);
     h.emitirOuImprimirEtiqueta.mockResolvedValue({ status: 'printed' });
     const shopeeClient = { __shopee: true } as never;
+    const lojaIntegradaClient = { __lojaIntegrada: true } as never;
 
     const res = await reprintCheckoutEtiqueta({
       db,
@@ -163,6 +169,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient,
+      lojaIntegradaClient,
       formato: 'zpl2',
       ui,
     });
@@ -173,11 +180,13 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
     const input = h.emitirOuImprimirEtiqueta.mock.calls[0]![0] as {
       frete: unknown;
       intFrete: unknown;
-      deps: { shopeeClient: unknown };
+      deps: { shopeeClient: unknown; lojaIntegradaClient: unknown };
     };
     expect(input.frete).toBe(freteShopee);
     expect(input.intFrete).toEqual({ fonte: 'bloco', id: null, tipo: 'shopee', data: null });
     expect(input.deps.shopeeClient).toBe(shopeeClient);
+    // The Loja Integrada client threads through too: the soft gates ask it (step 15).
+    expect(input.deps.lojaIntegradaClient).toBe(lojaIntegradaClient);
   });
 });
 
@@ -202,6 +211,7 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
         nfeClient: null,
         mercadoLivreClient: null,
         shopeeClient: null,
+        lojaIntegradaClient: null,
         formato: 'pdf',
         ui,
         timeoutMs: 30_000,
@@ -246,6 +256,7 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
         nfeClient: null,
         mercadoLivreClient: null,
         shopeeClient: null,
+        lojaIntegradaClient: null,
         formato: 'pdf',
         ui,
         timeoutMs: 30_000,

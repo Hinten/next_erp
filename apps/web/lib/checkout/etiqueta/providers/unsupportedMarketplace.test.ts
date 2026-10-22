@@ -18,6 +18,7 @@ function makeInput(notify: EtiquetaProviderInput['ui']['notify']): EtiquetaProvi
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       printJob: vi.fn(),
     },
     ui: {
@@ -26,6 +27,7 @@ function makeInput(notify: EtiquetaProviderInput['ui']['notify']): EtiquetaProvi
       openUrl: vi.fn(),
       comprarEtiqueta: vi.fn(),
       escolherEnvio: vi.fn(),
+      confirmarCiente: vi.fn(),
     },
   };
 }
