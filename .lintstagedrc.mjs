@@ -21,7 +21,15 @@ const ROOT = process.cwd();
 //
 // Sorted longest-first so a nested workspace (`packages/integrations/nfe`)
 // matches before any shorter prefix (`packages/integrations`).
-const WORKSPACE_GLOBS = ['.claude', '.codex', 'apps', 'packages', 'packages/integrations', 'tools'];
+const WORKSPACE_GLOBS = [
+  '.claude',
+  '.codex',
+  'apps',
+  'infra',
+  'packages',
+  'packages/integrations',
+  'tools',
+];
 
 const ESLINT_WORKSPACES = [
   ...new Set(

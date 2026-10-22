@@ -46,6 +46,11 @@ e2e/.auth/
 .idea/
 .vscode/
 
+# AWS CDK (infra/amazon-relay): the synth output, and the CLI's lookup cache,
+# which is keyed `account=<12 digits>` and must never reach this public repo.
+cdk.out/
+cdk.context.json
+
 .firebase/
 firebase-debug.log
 firestore-debug.log

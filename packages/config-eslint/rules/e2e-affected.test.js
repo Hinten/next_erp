@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import {
+  WORKSPACE_GLOB_ROOTS,
   attributeFile,
   closureOf,
   decide,
@@ -349,5 +350,90 @@ describe('e2e-affected: anchored to the real repo', () => {
     expect(
       closureOf(workspaces, ['@delfrance/web', '@delfrance/functions']).has('@delfrance/functions'),
     ).toBe(true);
+  });
+});
+
+/**
+ * The `packages:` globs of `pnpm-workspace.yaml`, read with a line-anchored
+ * regex (no YAML dependency here, the `runtime-deps-pinned.test.js` precedent):
+ * the block is a flat list of `  - 'glob'` lines, and it ends at the first line
+ * that is not one.
+ */
+function workspaceGlobs(yamlText) {
+  const lines = yamlText.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^packages:\s*$/.test(l));
+  if (start === -1) return [];
+  const globs = [];
+  for (const line of lines.slice(start + 1)) {
+    const match = line.match(/^\s+-\s+'?([^'\s]+)'?\s*$/);
+    if (!match) break;
+    globs.push(match[1]);
+  }
+  return globs;
+}
+
+/**
+ * Both directions of the mirror. Only `<root>/*` globs are scanned by
+ * `loadWorkspaces`; the agent-tooling workspaces (`.claude/hooks`, `.codex`) are
+ * single directories that no lane attributes, so they are left out.
+ */
+function mirrorGaps(globs, roots) {
+  const fromYaml = globs
+    .filter((g) => g.endsWith('/*'))
+    .map((g) => g.slice(0, -'/*'.length))
+    .filter((r) => !r.startsWith('.claude') && !r.startsWith('.codex'));
+  return {
+    missingFromScript: fromYaml.filter((r) => !roots.includes(r)),
+    staleInScript: roots.filter((r) => !fromYaml.includes(r)),
+    fromYaml,
+  };
+}
+
+describe('e2e-affected: WORKSPACE_GLOB_ROOTS mirrors pnpm-workspace.yaml', () => {
+  // Nothing else tests this mirror. A workspace glob missing from the script
+  // makes every path under it unattributable, and an unattributable path runs
+  // EVERY lane, the three staging E2E lanes included (#1928, the infra glob).
+  const globs = workspaceGlobs(readFileSync(path.join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8'));
+
+  it('parses the real packages: block (anti-vacuity)', () => {
+    // A regex that stopped matching (a quoting change, say) would hand the
+    // assertions below an empty list, which every mirror satisfies.
+    const { fromYaml } = mirrorGaps(globs, WORKSPACE_GLOB_ROOTS);
+    expect(fromYaml.length).toBeGreaterThanOrEqual(5);
+    expect(fromYaml).toEqual(expect.arrayContaining(['apps', 'infra', 'packages', 'tools']));
+  });
+
+  it('names every workspace glob root in the script, and nothing else', () => {
+    const { missingFromScript, staleInScript } = mirrorGaps(globs, WORKSPACE_GLOB_ROOTS);
+    expect(missingFromScript, 'add these to WORKSPACE_GLOB_ROOTS').toEqual([]);
+    expect(staleInScript, 'no pnpm-workspace.yaml glob has these roots').toEqual([]);
+  });
+
+  it('reports a glob root the script forgot, and a stale one (synthetic)', () => {
+    const fake = ['.claude/hooks', '.codex', 'apps/*', 'infra/*', 'packages/*', 'tools/*'];
+    expect(mirrorGaps(fake, ['apps', 'packages', 'tools']).missingFromScript).toEqual(['infra']);
+    expect(mirrorGaps(fake, ['apps', 'infra', 'packages', 'tools', 'old']).staleInScript).toEqual([
+      'old',
+    ]);
+    expect(mirrorGaps(fake, ['apps', 'infra', 'packages', 'tools']).missingFromScript).toEqual([]);
+  });
+
+  it('attributes a relay-only change to its workspace, so the web lanes skip it', () => {
+    const workspaces = loadWorkspaces(REPO_ROOT);
+    expect(workspaces.get('@delfrance/infra-amazon-relay')?.dir).toBe('infra/amazon-relay');
+    const verdict = decide({
+      workspaces,
+      closure: closureOf(workspaces, ['@delfrance/web']),
+      files: ['infra/amazon-relay/lib/relayStack.ts'],
+    });
+    expect(verdict.runE2e).toBe(false);
+    expect(verdict.rows[0]?.kind).toBe('outside');
+  });
+
+  it('parses the quoted and the bare list forms, and stops at the next key', () => {
+    expect(workspaceGlobs("packages:\n  - 'apps/*'\n  - tools/*\ncatalog:\n  - 'x/*'\n")).toEqual([
+      'apps/*',
+      'tools/*',
+    ]);
   });
 });

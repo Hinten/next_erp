@@ -2,6 +2,7 @@ packages:
   - '.claude/hooks'
   - '.codex'
   - 'apps/*'
+  - 'infra/*'
   - 'packages/*'
   - 'packages/integrations/*'
   - 'tools/*'
