@@ -54,6 +54,7 @@ import {
   AMBIENTE_LIGADO,
   TOKEN_B,
   caminhoAviso,
+  caminhoConta,
   caminhoCredencial,
   gravadorDeLog,
   loggerEspiao,
@@ -156,6 +157,16 @@ async function espelhar(motivo: MotivoPedidoContestadoLi | null, relogioUs: numb
 /** The mirror's reads since `desde` (a `db.leituras.length` taken before the check). */
 function leiturasDoEspelho(desde = 0): string[] {
   return db.leituras.slice(desde).filter((c) => c === CAMINHO_ESPELHO);
+}
+
+/** The scripted order's shipment under another id (a second shipment, or a re-created one). */
+function envioComId(id: number): DocData {
+  const envios = pedidoLiBruto().envios;
+  const primeiro: unknown = Array.isArray(envios) ? envios[0] : undefined;
+  if (typeof primeiro !== 'object' || primeiro === null) {
+    throw new TypeError('o pedido de teste não tem envio');
+  }
+  return { ...primeiro, id };
 }
 
 /** The outcome's wire answer — parsed through the contract, as the route sends it. */
@@ -542,6 +553,30 @@ describe('the answer names this order — else 502 `pedidoDivergente`, and no mi
     },
   );
 
+  it('EQUAL pair: the stored shipment id listed SECOND live (another shipment sorted ahead of it) is still this order ⇒ the verdict', async () => {
+    // The import stores the id once and never refreshes it, so a position compare would block
+    // this pedido for good (the store's painel cannot change what the ERP stored).
+    semearPedido(db);
+    const p = plataforma(() =>
+      pedidoLiBruto({ envios: [envioComId(ID_ENVIO_LI + 1), envioComId(ID_ENVIO_LI)] }),
+    );
+
+    const r = await conferirPagamentoLi(deps({ fetch: p.fetch }), PEDIDO_ID);
+
+    expect(resposta(r)).toMatchObject({ veredito: VEREDITO_PAGAMENTO_LI.pago });
+  });
+
+  it("⚠️ NEAR-MISS: several live shipments, NONE of them the stored one ⇒ divergent (another store's order)", async () => {
+    semearPedido(db);
+    const p = plataforma(() =>
+      pedidoLiBruto({ envios: [envioComId(ID_ENVIO_LI + 1), envioComId(ID_ENVIO_LI + 2)] }),
+    );
+
+    const r = await conferirPagamentoLi(deps({ fetch: p.fetch }), PEDIDO_ID);
+
+    expect(falhaDe(r)).toMatchObject(divergente);
+  });
+
   it.each<[string, DocData, () => DocData]>([
     ['no stored shipment id', { externalId: null }, () => pedidoLiBruto()],
     ['no freight block at all', {}, () => pedidoLiBruto()],
@@ -777,6 +812,126 @@ describe('a 401/403: park the conta, then answer as the park found it', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*          An error this route does not own: the mirror first, then it        */
+/* -------------------------------------------------------------------------- */
+
+describe('an error this route does not own: the mirror still blocks a known hold, else the ORIGINAL error is rethrown', () => {
+  const falhaDaConta = grpc(14, 'UNAVAILABLE');
+  const falhaDoEstacionamento = grpc(14, 'UNAVAILABLE');
+  const ehHttp = (status: number) => (err: unknown) => {
+    expect(err).toBeInstanceOf(LiHttpError);
+    expect(err).toMatchObject({ status });
+  };
+
+  /** Each failure: how to provoke it (the platform it scripts), its calls, its error and name. */
+  const casos: readonly (readonly [
+    string,
+    () => typeof globalThis.fetch,
+    number,
+    (err: unknown) => void,
+    string,
+  ])[] = [
+    [
+      'Loja Integrada answers 400',
+      () => plataforma(() => ({ status: 400, corpo: { erro: 'x' } })).fetch,
+      1,
+      ehHttp(400),
+      'LiHttpError',
+    ],
+    [
+      'Loja Integrada answers 301 (a moved path: redirects are never followed)',
+      () => plataforma(() => ({ status: 301, corpo: { erro: 'x' } })).fetch,
+      1,
+      ehHttp(301),
+      'LiHttpError',
+    ],
+    [
+      'the stored token is one the package refuses before sending (LiConfigError)',
+      () => {
+        seedCredencial(db, CONTA, { personalToken: 'token com espaço' });
+        return plataforma().fetch;
+      },
+      0,
+      (err) => {
+        expect(err).toBeInstanceOf(LiConfigError);
+      },
+      'LiConfigError',
+    ],
+    [
+      'the conta read fails (gRPC UNAVAILABLE)',
+      () => {
+        db.falharLeitura(caminhoConta(CONTA), falhaDaConta);
+        return plataforma().fetch;
+      },
+      0,
+      (err) => {
+        expect(err).toBe(falhaDaConta);
+      },
+      'Error',
+    ],
+    [
+      'a 401 whose park fails on its own write (gRPC UNAVAILABLE)',
+      () => {
+        db.falharEscrita(caminhoCredencial(CONTA), falhaDoEstacionamento);
+        return plataforma(() => ({ status: 401, corpo: { erro: 'token' } })).fetch;
+      },
+      1,
+      (err) => {
+        expect(err).toBe(falhaDoEstacionamento);
+      },
+      'Error',
+    ],
+  ];
+
+  it.each(casos)(
+    '%s, with an OPEN contested aviso ⇒ 200 `contestado` from the ERP mirror, the error named as the cause',
+    async (_caso, preparar, chamadas, _conferirErro, nome) => {
+      semearPedido(db);
+      await espelhar(MOTIVO_PEDIDO_CONTESTADO_LI.chargeback, 1_000);
+      const fetch = vi.fn(preparar());
+      const marca = db.leituras.length;
+
+      const r = await conferirPagamentoLi(deps({ fetch }), PEDIDO_ID);
+
+      expect(resposta(r)).toEqual({
+        aplicavel: true,
+        fonte: FONTE_CONFERENCIA_PAGAMENTO_LI.erp,
+        veredito: VEREDITO_PAGAMENTO_LI.contestado,
+        codigo: null,
+        motivoContestacao: MOTIVO_PEDIDO_CONTESTADO_LI.chargeback,
+        conferidoEmMs: null,
+        correlationId: null,
+      });
+      // The cause is the error's class name only, never its message (a path, a numero).
+      expect(r).toMatchObject({ contaId: CONTA, naoVerificavel: { tipo: 'alheia', nome } });
+      expect(r.tipo === 'resposta' && Object.keys(r.naoVerificavel ?? {}).sort()).toEqual([
+        'nome',
+        'tipo',
+      ]);
+      expect(fetch).toHaveBeenCalledTimes(chamadas);
+      expect(leiturasDoEspelho(marca)).toHaveLength(1);
+    },
+  );
+
+  it.each(casos)(
+    '⚠️ NEAR-MISS: %s, with NO open aviso ⇒ the ORIGINAL error is rethrown, after one mirror read',
+    async (_caso, preparar, chamadas, conferirErro) => {
+      semearPedido(db);
+      const fetch = vi.fn(preparar());
+
+      const erro: unknown = await conferirPagamentoLi(deps({ fetch }), PEDIDO_ID).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      conferirErro(erro);
+      expect(fetch).toHaveBeenCalledTimes(chamadas);
+      expect(leiturasDoEspelho()).toHaveLength(1);
+    },
+  );
+});
+
+/* -------------------------------------------------------------------------- */
 /*                              The caller going away                          */
 /* -------------------------------------------------------------------------- */
 
@@ -838,7 +993,7 @@ describe('the caller going away', () => {
 /*            The route-local mapper: each class narrowed, the rest rethrown   */
 /* -------------------------------------------------------------------------- */
 
-describe('falhaDaLeituraLi — each class to its code; anything else is `null` (rethrown)', () => {
+describe('falhaDaLeituraLi — each class to its code; anything else is `null` (not this route’s: the mirror, then rethrown)', () => {
   const ctx: ContextoRequisicaoLi = {
     operacao: 'buscarPedido',
     caminho: URL_DETALHE,

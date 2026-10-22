@@ -13,6 +13,7 @@ import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vite
 import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import { LiHttpError } from '@delfrance/integrations-loja-integrada';
 import {
   CODIGO_ERRO_LI,
   FONTE_CONFERENCIA_PAGAMENTO_LI,
@@ -70,6 +71,8 @@ vi.mock('@/lib/lojaIntegrada/core/ritmo', async (original) => {
 const { GET } = await import('./route');
 
 const URL_PEDIDOS = 'http://localhost:3010/api/marketplace/loja-integrada/pedidos';
+/** The route's own log line, by its prefix. */
+const LINHA_DA_ROTA = /^\[loja-integrada\/conferencia-pagamento\] /;
 const CONTA = 'conta-li-pagamento-http';
 const CONTA_REF = `documents/integracao/${CONTA}`;
 const PEDIDO = idPedidoLi(CONTA, NUMERO_LI);
@@ -246,6 +249,8 @@ describe('GET …/pedidos/[pedidoId]/pagamento — the caller and the id', () =>
     });
     expect(h.esperas).toEqual([]);
     expect(linhasDeLog()).toEqual([]);
+    // Not a check at all: no warn line either.
+    expect(console_.argumentos()).toEqual([]);
   });
 });
 
@@ -472,5 +477,123 @@ describe('GET …/pagamento — the switch ON: one paced call, the verdict only'
     db.falharLeitura(CAMINHO, falha);
 
     await expect(get(PEDIDO)).rejects.toBe(falha);
+  });
+
+  it.each([400, 301])(
+    'Loja Integrada answers %i (not this route’s to map) with an OPEN contested aviso ⇒ 200 `contestado` from the mirror, never a 500 the gates would confirm past',
+    async (status) => {
+      semear(db);
+      await abrirEspelho(db);
+      chamadasEsperadas = 1;
+      scriptarLoja(() => respostaJson(status, { erro: 'x' }));
+
+      const res = await get(PEDIDO);
+
+      expect(res.status).toBe(200);
+      expect(respostaConferenciaPagamentoLiSchema.parse(await corpoDe(res))).toMatchObject({
+        fonte: FONTE_CONFERENCIA_PAGAMENTO_LI.erp,
+        veredito: VEREDITO_PAGAMENTO_LI.contestado,
+        motivoContestacao: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
+      });
+      expect(console_.argumentos()).toEqual([
+        [
+          expect.stringMatching(LINHA_DA_ROTA),
+          {
+            pedidoId: PEDIDO,
+            conta: CONTA,
+            uid: LEITOR_PEDIDO.uid,
+            causa: 'LiHttpError',
+            espelho: 'contestado',
+          },
+        ],
+      ]);
+    },
+  );
+
+  it.each([400, 301])(
+    '⚠️ NEAR-MISS: Loja Integrada answers %i with NO open aviso ⇒ the LiHttpError itself is rethrown (a 500)',
+    async (status) => {
+      semear(db);
+      chamadasEsperadas = 1;
+      scriptarLoja(() => respostaJson(status, { erro: 'x' }));
+
+      const erro: unknown = await get(PEDIDO).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(erro).toBeInstanceOf(LiHttpError);
+      expect(erro).toMatchObject({ status });
+    },
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/*            The log line: every check without a live verdict                 */
+/* -------------------------------------------------------------------------- */
+
+describe('GET …/pagamento — ONE warn line for every check that ends without a live verdict, none otherwise', () => {
+  const campos = (causa: string, espelho: string | null) => ({
+    pedidoId: PEDIDO,
+    conta: CONTA,
+    uid: LEITOR_PEDIDO.uid,
+    causa,
+    espelho,
+  });
+
+  it('the switch off, no open aviso ⇒ one warn: the switch as the cause, the mirror read and empty', async () => {
+    semear(db);
+
+    expect((await get(PEDIDO)).status).toBe(503);
+
+    expect(console_.argumentos()).toEqual([
+      [
+        expect.stringMatching(LINHA_DA_ROTA),
+        campos('LiChamadasDesligadasError', 'sem-contestacao'),
+      ],
+    ]);
+    expect(vi.mocked(console.warn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('Loja Integrada answers 429 ⇒ one warn: the route’s code as the cause, the mirror read and empty', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    semear(db);
+    chamadasEsperadas = 1;
+    scriptarLoja(() => respostaJson(429, { erro: 'limite' }));
+
+    expect((await get(PEDIDO)).status).toBe(503);
+
+    expect(console_.argumentos()).toEqual([
+      [
+        expect.stringMatching(LINHA_DA_ROTA),
+        campos(CODIGO_ERRO_LI.limiteDeChamadas, 'sem-contestacao'),
+      ],
+    ]);
+    expect(vi.mocked(console.warn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('⚠️ NEAR-MISS: Loja Integrada answers 404 (not authorised) ⇒ one warn whose mirror is `null` — never read', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    semear(db);
+    chamadasEsperadas = 1;
+    scriptarLoja(() => respostaJson(404, { erro: 'x' }));
+
+    expect((await get(PEDIDO)).status).toBe(409);
+
+    expect(console_.argumentos()).toEqual([
+      [expect.stringMatching(LINHA_DA_ROTA), campos(CODIGO_ERRO_LI.pedidoAusenteNaLoja, null)],
+    ]);
+    expect(vi.mocked(console.warn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('⚠️ NEAR-MISS: a live verdict ⇒ no console line at all', async () => {
+    vi.stubEnv(CHAMADAS_ENV_LI, 'on');
+    semear(db);
+    chamadasEsperadas = 1;
+    scriptarLoja(() => respostaJson(200, pedidoLiBruto()));
+
+    expect((await get(PEDIDO)).status).toBe(200);
+
+    expect(console_.argumentos()).toEqual([]);
   });
 });

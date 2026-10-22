@@ -21,9 +21,13 @@
  *     Firestore read of the conta, no client, no call. Then the conta, its state, its credential,
  *     and the pacer's 2 s wait before the request;
  *  5. ONE `buscarPedidoLi` — the order detail — and two identity checks on what came back: the
- *     body's `numero`, and, when both sides have one, the first shipment's id against the
- *     pedido's `freteInicial.externalId` (both through `inteiroPositivoCanonicoLi`, so `'801'` ≡
- *     `801`). A mismatch is another order (a token of another store), `pedidoDivergente`;
+ *     body's `numero`, and, when both sides have one, the pedido's `freteInicial.externalId`
+ *     against the live shipments' ids (all through `inteiroPositivoCanonicoLi`, so `'801'` ≡
+ *     `801`), by MEMBERSHIP: the import stores that id once and never refreshes it, so a second
+ *     shipment listed ahead of ours is still our order. A mismatch — another numero, or no live
+ *     shipment carrying our id — is another order (a token of another store), `pedidoDivergente`.
+ *     ⚠️ Residue: an order whose only shipment the store re-created under a new id reads as
+ *     divergent too, and nothing in the ERP releases that block;
  *  6. the verdict, by the codigo alone (`veredictoDoCodigoLi`), with the codigo's own contested
  *     motivo. NOTHING else from the body leaves this module: it carries the buyer's personal data;
  *  7. when step 4 or 5 cannot produce an answer for a reason that says nothing about the order
@@ -31,17 +35,22 @@
  *     the `lojaIntegradaPedidoContestado` aviso of this pedido, read by its id (the import's own
  *     key, `chaveDoAvisoDoPedidoLi`). Open ⇒ `contestado` from the ERP; otherwise the coded error.
  *     The live answer, when there is one, always wins: a dispute closed in the painel would
- *     otherwise keep blocking until the next import.
+ *     otherwise keep blocking until the next import;
+ *  8. when step 4 or 5 fails with an error this module does not own (below), the same mirror is
+ *     read FIRST: open ⇒ the same `contestado` — a known hold blocks whatever kept the read from
+ *     answering — and otherwise the error is rethrown unchanged.
  *
  * ## The errors (root rule 6)
  *
- * {@link falhaDaLeituraLi} narrows each class to its code and answers `null` for anything else,
- * which the caller rethrows (a 500): `LiTimeoutError` BEFORE `LiNetworkError`, its parent; the
- * `LiHttpError` subclasses before `LiHttpError`; never the `LiError` base, so our own
- * misconfiguration (`LiConfigError`) stays loud. A 401/403 parks the conta first
- * (`tratarFalhaDeAutenticacao`, the step-2 park) and is answered as the park found it. The
- * caller's own abort is matched by IDENTITY (`err === sinal.reason`): the package rethrows exactly
- * that object, so any other failure after an abort is still rethrown.
+ * {@link falhaDaLeituraLi} narrows each class to its code and answers `null` for anything else:
+ * `LiTimeoutError` BEFORE `LiNetworkError`, its parent; the `LiHttpError` subclasses before
+ * `LiHttpError`; never the `LiError` base, so our own misconfiguration (`LiConfigError`) stays
+ * loud. A `null` is not this module's to answer: after the mirror (step 8) it is rethrown as it
+ * came, a 500 — the mirror only ever turns it into a refusal, never into a pass. A 401/403 parks
+ * the conta first (`tratarFalhaDeAutenticacao`, the step-2 park) and is answered as the park found
+ * it. The caller's own abort is matched by IDENTITY (`err === sinal.reason`), before anything
+ * else: the package rethrows exactly that object, so any other failure after an abort is still
+ * treated as above.
  *
  * | What failed | Answer | Class |
  * | --- | --- | --- |
@@ -52,8 +61,10 @@
  * | the network, a 5xx, a body off the schema | 502 `lojaIndisponivel` | not verifiable, transient |
  * | 404 | 409 `pedidoAusenteNaLoja` (imported orders do not vanish: the credential) | not authorised |
  * | another order in the answer | 502 `pedidoDivergente` | not authorised |
+ * | anything else: a refusal of our request (a 3xx, a 400), `LiConfigError`, a Firestore failure, the park failing on its own | the mirror's `contestado` (the class name as the cause), else rethrown (500) | not this module's |
  *
- * Only a "not verifiable" class reads the mirror; a "not authorised" one is already a refusal.
+ * A "not verifiable" class and an error not this module's read the mirror; a "not authorised" one
+ * is already a refusal and never does.
  *
  * ## Rule 7
  *
@@ -155,6 +166,15 @@ export type FalhaConferenciaLi =
       readonly mensagem: string;
     };
 
+/**
+ * What kept the live read from answering when the mirror stood in: this route's own failure, or an
+ * error it does not own — named by its class only (never its message: a path, a numero), because
+ * without the mirror it would have been rethrown.
+ */
+export type CausaSemVereditoLi =
+  | FalhaConferenciaLi
+  | { readonly tipo: 'alheia'; readonly nome: string };
+
 /** How one check ended. */
 export type ResultadoConferenciaPagamentoLi =
   /** No pedido with this id (404). */
@@ -166,7 +186,7 @@ export type ResultadoConferenciaPagamentoLi =
       /** The pedido's conta, or `null` when the check does not apply. */
       readonly contaId: string | null;
       /** When the mirror answered: what kept the live read from running (for the log line). */
-      readonly naoVerificavel: FalhaConferenciaLi | null;
+      readonly naoVerificavel: CausaSemVereditoLi | null;
     }
   /** No answer: the error envelope. `espelhoLido`: the mirror was read and holds nothing open. */
   | {
@@ -203,9 +223,9 @@ const DIVERGENTE = loja(
 
 /**
  * A failure of the context or of the read, as this route answers it — or `null` for anything it
- * does not own, which the caller rethrows (module header, "The errors"). Pure: the 401/403 park
- * and the caller's abort are the caller's, decided before this runs (a `LiAuthError` reaching here
- * answers `null`).
+ * does not own, which the caller rethrows after the mirror (module header, "The errors"). Pure:
+ * the 401/403 park and the caller's abort are the caller's, decided before this runs (a
+ * `LiAuthError` reaching here answers `null`).
  */
 export function falhaDaLeituraLi(err: unknown): FalhaConferenciaLi | null {
   if (err instanceof LiAppError) {
@@ -271,21 +291,37 @@ export function falhaDaLeituraLi(err: unknown): FalhaConferenciaLi | null {
 }
 
 /**
+ * Why the read gave no verdict: this route's own failure, or an error it does not own — which is
+ * rethrown UNCHANGED unless the mirror holds the order (module header, "The errors").
+ */
+type SemVereditoLi =
+  | { readonly tipo: 'propria'; readonly falha: FalhaConferenciaLi }
+  | { readonly tipo: 'alheia'; readonly erro: unknown };
+
+/** The mapper's answer for `err`, or `err` itself when the mapper does not own it. */
+function semVereditoDe(err: unknown): SemVereditoLi {
+  const falha = falhaDaLeituraLi(err);
+  return falha === null ? { tipo: 'alheia', erro: err } : { tipo: 'propria', falha };
+}
+
+/**
  * A 401/403: park the conta (or find it parked), then answer as the park found it — the conta's
- * own app errors, so the shared mapper answers them. `null` = rethrow the original error.
+ * own app errors, so the shared mapper answers them.
  *
  * - parked now, or already ⇒ `LiContaParadaError` (409 `reconexaoPendente`);
  * - the refused token is no longer the stored one (saved meanwhile) ⇒ `LiCredencialAlteradaError`
  *   (409 `credencialAlterada`: a retry runs with the new one), and nothing is parked;
  * - no credential any more ⇒ `LiCredencialAusenteError`;
  * - a corrupt credential, or the park's own contention, ⇒ that app error;
- * - an error carrying no usable ref (unreachable: the package builds it from a request) ⇒ `null`.
+ * - the park failing on its own (a Firestore error) ⇒ that error, not this route's to answer;
+ * - an error carrying no usable ref (unreachable: the package builds it from a request) ⇒ the
+ *   401/403 itself, not this route's to answer.
  */
-async function falhaDaRecusaDeCredencial(
+async function semVereditoDaRecusa(
   deps: ConferenciaPagamentoDeps,
   err: LiAuthError,
   contexto: ContextoLojaIntegrada,
-): Promise<FalhaConferenciaLi | null> {
+): Promise<SemVereditoLi> {
   const { integracaoId, conta } = contexto;
   let tratamento: Awaited<ReturnType<typeof tratarFalhaDeAutenticacao>>;
   try {
@@ -296,20 +332,26 @@ async function falhaDaRecusaDeCredencial(
       deps,
     );
   } catch (falha) {
-    if (falha instanceof LiAppError) return falhaDaLeituraLi(falha);
-    throw falha;
+    if (falha instanceof LiAppError) return semVereditoDe(falha);
+    // Anything else is the caller's to rethrow — after the mirror (`conferirPagamentoLi`).
+    return { tipo: 'alheia', erro: falha };
   }
   const r = tratamento.estacionamento;
-  if (r === null) return null;
+  if (r === null) return { tipo: 'alheia', erro: err };
   switch (r.tipo) {
     case 'estacionado':
     case 'ja-estacionado':
-      return falhaDaLeituraLi(new LiContaParadaError(integracaoId, r.status, r.desdeMs));
+      return semVereditoDe(new LiContaParadaError(integracaoId, r.status, r.desdeMs));
     case 'credencial-substituida':
-      return falhaDaLeituraLi(new LiCredencialAlteradaError(integracaoId));
+      return semVereditoDe(new LiCredencialAlteradaError(integracaoId));
     case 'sem-credencial':
-      return falhaDaLeituraLi(new LiCredencialAusenteError(integracaoId));
+      return semVereditoDe(new LiCredencialAusenteError(integracaoId));
   }
+}
+
+/** An error's class name for the log line — never its message (it may carry a path or a numero). */
+function nomeDoErroLi(err: unknown): string {
+  return err instanceof Error ? err.name : typeof err;
 }
 
 /**
@@ -330,18 +372,12 @@ async function lerEspelhoContestadoLi(
   return { motivo: motivo.success ? motivo.data : null };
 }
 
-/** A failure that keeps the live read from answering: the mirror, when the class allows it. */
-async function comEspelho(
-  deps: ConferenciaPagamentoDeps,
+/** The mirror's open hold, as the 200 `contestado` from the ERP. */
+function respostaDoEspelho(
   contaId: string,
-  pedidoId: string,
-  falha: FalhaConferenciaLi,
-): Promise<ResultadoConferenciaPagamentoLi> {
-  if (falha.classe === 'nao-autorizado') {
-    return { tipo: 'falha', contaId, falha, espelhoLido: false };
-  }
-  const espelho = await lerEspelhoContestadoLi(deps.db, contaId, pedidoId);
-  if (espelho === null) return { tipo: 'falha', contaId, falha, espelhoLido: true };
+  espelho: { readonly motivo: MotivoPedidoContestadoLi | null },
+  causa: CausaSemVereditoLi,
+): ResultadoConferenciaPagamentoLi {
   return {
     tipo: 'resposta',
     resposta: {
@@ -354,26 +390,50 @@ async function comEspelho(
       correlationId: null,
     },
     contaId,
-    naoVerificavel: falha,
+    naoVerificavel: causa,
   };
 }
 
-/** The answer is about THIS order (module header, step 5): `null` when it is, else the refusal. */
+/** A failure that keeps the live read from answering: the mirror, when the class allows it. */
+async function comEspelho(
+  deps: ConferenciaPagamentoDeps,
+  contaId: string,
+  pedidoId: string,
+  falha: FalhaConferenciaLi,
+): Promise<ResultadoConferenciaPagamentoLi> {
+  if (falha.classe === 'nao-autorizado') {
+    return { tipo: 'falha', contaId, falha, espelhoLido: false };
+  }
+  const espelho = await lerEspelhoContestadoLi(deps.db, contaId, pedidoId);
+  if (espelho === null) return { tipo: 'falha', contaId, falha, espelhoLido: true };
+  return respostaDoEspelho(contaId, espelho, falha);
+}
+
+/**
+ * The answer is about THIS order (module header, step 5): `null` when it is, else the refusal.
+ * The shipment is matched by MEMBERSHIP, never by position: the import stores the id once and
+ * never refreshes it, so another shipment listed ahead of ours is still our order.
+ */
 function divergencia(
   corpo: PedidoLi,
   numero: string,
   freteInicial: unknown,
 ): FalhaConferenciaLi | null {
   if (inteiroPositivoCanonicoLi(corpo.numero) !== numero) return DIVERGENTE;
-  const envioNaLoja = inteiroPositivoCanonicoLi(corpo.envios[0]?.id);
   const envioNoErp = inteiroPositivoCanonicoLi(comoObjeto(freteInicial)?.externalId);
-  if (envioNaLoja !== null && envioNoErp !== null && envioNaLoja !== envioNoErp) return DIVERGENTE;
+  if (envioNoErp === null) return null;
+  const enviosNaLoja = corpo.envios
+    .map((envio) => inteiroPositivoCanonicoLi(envio.id))
+    .filter((id) => id !== null);
+  if (enviosNaLoja.length > 0 && !enviosNaLoja.includes(envioNoErp)) return DIVERGENTE;
   return null;
 }
 
 /**
- * Check one pedido (module header). Everything it cannot answer is rethrown: a Firestore failure,
- * our own misconfiguration, an error after the caller's abort that is not that abort.
+ * Check one pedido (module header). Everything it cannot answer is rethrown — a Firestore failure,
+ * our own misconfiguration, a refusal of our request, an error after the caller's abort that is not
+ * that abort — once the mirror has had its say about a failed read: an open hold blocks whatever
+ * kept the read from answering.
  */
 export async function conferirPagamentoLi(
   deps: ConferenciaPagamentoDeps,
@@ -416,17 +476,27 @@ export async function conferirPagamentoLi(
       deps.sinal === undefined ? {} : { sinal: deps.sinal },
     );
   } catch (err) {
-    // The caller's own abort, by identity — anything else after it is still rethrown.
+    // The caller's own abort, by identity — anything else after it is classified below.
     if (deps.sinal?.aborted === true && err === deps.sinal.reason) {
       return { tipo: 'cancelado', contaId };
     }
-    const falha =
+    const semVeredito =
       err instanceof LiAuthError && contexto !== null
-        ? await falhaDaRecusaDeCredencial(deps, err, contexto)
-        : falhaDaLeituraLi(err);
-    if (falha === null) throw err;
-    // 7. Not verifiable ⇒ the mirror.
-    return comEspelho(deps, contaId, pedidoId, falha);
+        ? await semVereditoDaRecusa(deps, err, contexto)
+        : semVereditoDe(err);
+    // 7. Not verifiable ⇒ the mirror ("not authorised" never reads it).
+    if (semVeredito.tipo === 'propria') {
+      return comEspelho(deps, contaId, pedidoId, semVeredito.falha);
+    }
+    // 8. Not this module's to answer: the mirror still blocks a known hold; otherwise the error is
+    // rethrown UNCHANGED (a 500), never answered as a code of ours. A mirror read that fails is
+    // rethrown in its place.
+    const espelho = await lerEspelhoContestadoLi(deps.db, contaId, pedidoId);
+    if (espelho === null) throw semVeredito.erro;
+    return respostaDoEspelho(contaId, espelho, {
+      tipo: 'alheia',
+      nome: nomeDoErroLi(semVeredito.erro),
+    });
   }
 
   // 5. The identity of what came back.

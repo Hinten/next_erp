@@ -87,26 +87,36 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   (the read switch is its first act; off ⇒ nothing reaches Loja Integrada) and ONE
   `buscarPedidoLi`, paced like any flow read (`prazos.test.ts` counts it and budgets pacer +
   `PRAZO_LI_MS.leitura` under the ceiling). Never a raw `fetch`, never a client built outside
-  `core/contexto.ts` (`estrutura.test.ts`). Its log lines carry `fluxo: conferencia-pagamento`.
-- **The answer names this order:** the body's `numero`, and the first shipment's id against
-  `freteInicial.externalId` when both are readable (`inteiroPositivoCanonicoLi` on both sides),
-  else 502 `LI_PEDIDO_DIVERGENTE` — a token of another store. The verdict is the codigo's alone
-  (`veredictoDoCodigoLi`); nothing else from the order body (personal data) leaves the core.
+  `core/contexto.ts` (`estrutura.test.ts`). The context's call and switch lines carry
+  `fluxo: conferencia-pagamento`; the route's own line is prefixed
+  `[loja-integrada/conferencia-pagamento]`.
+- **The answer names this order:** the body's `numero`, and `freteInicial.externalId` against the
+  live shipments' ids when both sides are readable (`inteiroPositivoCanonicoLi` on both sides),
+  matched by MEMBERSHIP — the import never refreshes the stored id, so a second shipment listed
+  ahead of ours is still our order — else 502 `LI_PEDIDO_DIVERGENTE`, a token of another store.
+  ⚠️ An order whose only shipment the store re-created under a new id is divergent too, and
+  nothing in the ERP releases it. The verdict is the codigo's alone (`veredictoDoCodigoLi`);
+  nothing else from the order body (personal data) leaves the core.
 - **Its own error mapper** (`falhaDaLeituraLi`), not `respond.ts`'s, which it reuses only for the
   app errors: `LiTimeoutError` before `LiNetworkError`, the `LiHttpError` subclasses before
-  `LiHttpError`, never the `LiError` base; anything unlisted (a non-5xx refusal, `LiConfigError`,
-  gRPC) is rethrown. A 401/403 parks the conta (`tratarFalhaDeAutenticacao`) and answers as the
-  park found it. A 404 is 409 `LI_PEDIDO_AUSENTE_NA_LOJA`: imported orders do not vanish from the
-  store, so it points at the credential.
-- **The mirror only when the read cannot run** (the switch, the conta, its credential, a throttle,
-  a timeout, an outage): the pedido's `lojaIntegradaPedidoContestado` aviso, by the import's own
-  key (`chaveDoAvisoDoPedidoLi`); open ⇒ 200 `contestado`, `fonte: 'erp'`. Never after a live
-  answer — a live `pago` wins over an open aviso — and never after a "not authorised" one (404,
-  another order). With the switch off, as everywhere until the window, the route answers the
-  mirror or 503 `LI_CHAMADAS_DESLIGADAS`, with zero calls.
-- The caller's abort is matched by identity (`err === req.signal.reason`) ⇒ 499. Every answer
-  that is not a verdict logs ONE line: pedido, conta, the caller's uid, the cause and what the
-  mirror said. No write of its own (only the park's), no ruleset, index or env change.
+  `LiHttpError`, never the `LiError` base; anything unlisted (a non-5xx refusal such as a 3xx or
+  a 400, `LiConfigError`, gRPC, the park failing on its own) is rethrown after the mirror. A
+  401/403 parks the conta (`tratarFalhaDeAutenticacao`) and answers as the park found it. A 404
+  is 409 `LI_PEDIDO_AUSENTE_NA_LOJA`: imported orders do not vanish from the store, so it points
+  at the credential.
+- **The mirror whenever the read gives no answer of its own** (the switch, the conta, its
+  credential, a throttle, a timeout, an outage, or an error the mapper does not own): the pedido's
+  `lojaIntegradaPedidoContestado` aviso, by the import's own key (`chaveDoAvisoDoPedidoLi`); open
+  ⇒ 200 `contestado`, `fonte: 'erp'`, so a known hold blocks whatever kept the read from
+  answering. Otherwise the coded error, or the unowned error rethrown unchanged (a 500). Never
+  after a live answer — a live `pago` wins over an open aviso — and never after a "not
+  authorised" one (404, another order). With the switch off, as everywhere until the window, the
+  route answers the mirror or 503 `LI_CHAMADAS_DESLIGADAS`, with zero calls.
+- The caller's abort is matched by identity (`err === req.signal.reason`) ⇒ 499. Every check of
+  an imported pedido that ends without a live verdict (an envelope from the context or the read,
+  or the mirror standing in) logs ONE warn line: pedido, conta, the caller's uid, the cause and
+  what the mirror said. The id, caller, 404 and abort answers, `aplicavel: false` and a live
+  verdict log nothing. No write of its own (only the park's), no ruleset, index or env change.
 
 ## Store and writes
 

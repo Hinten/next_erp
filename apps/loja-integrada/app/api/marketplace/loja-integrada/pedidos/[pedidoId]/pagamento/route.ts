@@ -20,16 +20,21 @@
  * - This route's own: 503 `LI_LIMITE_DE_CHAMADAS`, 504 `LI_TEMPO_ESGOTADO_LOJA`, 502
  *   `LI_LOJA_INDISPONIVEL`, 409 `LI_PEDIDO_AUSENTE_NA_LOJA`, 502 `LI_PEDIDO_DIVERGENTE`.
  * - 499 with an empty body: the caller went away during the read.
- * - Anything else (a Firestore outage, our own misconfiguration) is rethrown, so it surfaces as a
- *   500 instead of being swallowed (root rule 6).
+ * - Anything else (a refusal of our request such as a 3xx or a 400, a Firestore outage, our own
+ *   misconfiguration) is rethrown, so it surfaces as a 500 instead of being swallowed (root rule
+ *   6) — unless the contested mirror is open, which answers the 200 `contestado` instead: the
+ *   mirror only ever turns a failure into a refusal, never into a pass.
  *
  * The work is `lib/lojaIntegrada/pedidos/conferenciaPagamento.ts`: ERP reads first, then the
  * context loader — whose first act is the read switch, so while it is off nothing reaches Loja
  * Integrada — then ONE paced `buscarPedidoLi`, never a raw `fetch` (`prazos.test.ts` counts it).
  *
- * Every answer that is not a verdict (an error envelope, or the mirror standing in for the live
- * read) logs ONE line: the pedido, the conta, the caller's uid, the cause and what the mirror
- * said — never a name, an endereço or anything from the order body.
+ * Every check of an imported pedido that ends without a live verdict — an error envelope from the
+ * context or the read, or the mirror standing in — logs ONE warn line, prefixed
+ * `[loja-integrada/conferencia-pagamento]`: the pedido, the conta, the caller's uid, the cause and
+ * what the mirror said, never a name, an endereço or anything from the order body. The id, caller,
+ * 404 and abort answers, `aplicavel: false`, a live verdict and a rethrown error log no line of
+ * their own.
  */
 import { NextResponse } from 'next/server';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -46,7 +51,7 @@ import {
 } from '@/lib/lojaIntegrada/core/respond';
 import { ritmoDeLeituraLi } from '@/lib/lojaIntegrada/core/ritmo';
 import {
-  type FalhaConferenciaLi,
+  type CausaSemVereditoLi,
   conferirPagamentoLi,
 } from '@/lib/lojaIntegrada/pedidos/conferenciaPagamento';
 
@@ -62,9 +67,19 @@ function esperar(ms: number): Promise<void> {
   });
 }
 
-/** What a log line names as the cause: the app error's class, or this route's code. */
-function causaDe(falha: FalhaConferenciaLi): string {
-  return falha.tipo === 'conta' ? falha.erro.name : falha.code;
+/**
+ * What a log line names as the cause: the app error's class, this route's code, or the class of
+ * an error the route does not own (which the mirror answered instead of a 500).
+ */
+function causaDe(causa: CausaSemVereditoLi): string {
+  switch (causa.tipo) {
+    case 'conta':
+      return causa.erro.name;
+    case 'loja':
+      return causa.code;
+    case 'alheia':
+      return causa.nome;
+  }
 }
 
 export async function GET(
