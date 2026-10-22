@@ -94,6 +94,7 @@ const SUFIXO_RE = /\.([a-z0-9-]+)\.test\.[cm]?[jt]sx?$/;
  * until it does), which is exactly the moment someone has to say how it splits.
  */
 const ROTAS = {
+  'apps/amazon': { tasks: 'vitest.tasks.config.ts', firestore: 'vitest.tasks.config.ts' },
   'apps/functions': { storage: 'vitest.storage.config.ts' },
   'apps/loja-integrada': { tasks: 'vitest.tasks.config.ts', firestore: 'vitest.tasks.config.ts' },
   'apps/mercado-livre': {
