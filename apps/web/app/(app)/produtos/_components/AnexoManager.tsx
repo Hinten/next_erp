@@ -34,7 +34,7 @@ import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import type { FirebaseStorage } from 'firebase/storage';
 import { arquivoCollection, StorageUploadError, uploadProductAnexo } from '@delfrance/storage';
-import { ARQUIVOS_COLLECTION, type Anexo, buildAnexo } from '@delfrance/schemas';
+import { idFromRefOrNull, type Anexo, buildAnexo } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { DELETE_MARK } from '@delfrance/ui';
 import { buildSortableIds } from '@/components/photo-manager/PhotoManager';
@@ -42,17 +42,9 @@ import { buildSortableIds } from '@/components/photo-manager/PhotoManager';
 // Any file type (the uploader derives `filetype` from the MIME); 25 MB cap to
 // match the `produtos/<id>/anexos` storage rule.
 const MAX_ANEXO_BYTES = 25 * 1024 * 1024;
-const ARQUIVOS_PREFIX = `${ARQUIVOS_COLLECTION}/`;
 
 /** An `Anexo` plus the transient staged-deletion marker (keyed by `DELETE_MARK`). */
 type EditableAnexo = Anexo & { [DELETE_MARK]?: boolean };
-
-/** `arquivos/<id>` → `<id>` (or `null` for an absent ref). */
-function idFromRef(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  const id = ref.startsWith(ARQUIVOS_PREFIX) ? ref.slice(ARQUIVOS_PREFIX.length) : ref;
-  return id || null;
-}
 
 /** A type-suggestive icon for an attachment, by content type. */
 function iconForContentType(contentType: string | null | undefined) {
@@ -262,7 +254,7 @@ function SortableAnexo({
   };
 
   const ref = useMemo(() => {
-    const id = idFromRef(anexo.arquivoOuterRef);
+    const id = idFromRefOrNull(anexo.arquivoOuterRef);
     return id ? arquivoCollection.docRef(db, {}, id) : null;
   }, [db, anexo.arquivoOuterRef]);
   const snap = useDocSnapshot(ref);

@@ -317,6 +317,40 @@ describe('a padded value is refused rather than silently trimmed', () => {
 });
 
 describe('the backend cross-check note', () => {
+  /**
+   * A `SHOPEE_TASKS_REGION` row in an App Hosting manifest. It takes the key on
+   * the item's own `-` line or a continuation line, with or without a space
+   * before the colon, and the name plain, quoted, or as the body of a `|`/`>`
+   * block scalar on the next line (whose header may carry its own comment), with
+   * an optional trailing comment. A `#` line never matches: the manifest's prose
+   * names the variable there.
+   *
+   * Still NOT covered: a flow-style `- { … }` item and a quoted key
+   * (`"variable": …`), both of which apphosting-env-entries.test.js refuses
+   * outright; and a tag, anchor or alias in front of the name (`!!str X`,
+   * `&a X`), which that guard lets through and nothing here reads.
+   */
+  const SHOPEE_REGION_ROW =
+    /^\s*(?:-\s*)?variable[ \t]*:(?:[ \t]*[|>][-+0-9]*[ \t]*(?:#.*)?$)?\s*['"]?SHOPEE_TASKS_REGION['"]?\s*(?:#.*)?$/m;
+
+  /**
+   * The ONLY place that matcher meets a manifest. It reads the live
+   * apps/shopee/apphosting.yaml and answers twice: for the file as committed,
+   * and for the same file with `row` spliced in as the first `env:` item. Every
+   * caller asserts both answers, so the live check cannot be deleted on its own:
+   * dropping it changes what this returns and reds every case below, where a
+   * separate assertion could vanish and leave them green over a file nobody read.
+   */
+  function shopeeRegionRow(row) {
+    const manifest = CODEBASES.shopee.backendManifest;
+    const live = readFileSync(resolve(REPO_ROOT, manifest), 'utf8');
+    const spliced = live.replace(/^env:[ \t]*\r?\n/m, (head) => `${head}${row}`);
+    expect(spliced, `no \`env:\` line in ${manifest} to splice the row under`).not.toBe(live);
+    return { live: SHOPEE_REGION_ROW.test(live), withRow: SHOPEE_REGION_ROW.test(spliced) };
+  }
+
+  const HOUSE_ROW = '  - variable: SHOPEE_TASKS_REGION\n    value: fixture-region\n';
+
   // The region abort tells a mercado-pago/whatsapp operator to export
   // FUNCTIONS_REGION=us-east1, which moves the queue — while their backends set
   // NO region variable, so the enqueuer keeps resolving us-east5. Obeying the
@@ -326,6 +360,7 @@ describe('the backend cross-check note', () => {
     ['mercado-pago', 'MERCADO_PAGO_TASKS_REGION'],
     ['whatsapp', 'WHATSAPP_TASKS_REGION'],
     ['nfe', 'NFE_TASKS_REGION'],
+    ['shopee', 'SHOPEE_TASKS_REGION'],
     // The push receiver enqueues from App Hosting (step 3, PR 3-c).
     ['amazon', 'AMAZON_TASKS_REGION'],
   ])('%s gets a note naming the backend variable and its manifest', (codebase, backendVar) => {
@@ -340,6 +375,90 @@ describe('the backend cross-check note', () => {
     expect(note).toContain(CODEBASES[codebase].backendManifest);
     expect(note).toContain('us-east1');
     expect(CODEBASES[codebase].backendManifest).toMatch(/apphosting\.yaml$/);
+  });
+
+  it('sends shopee to the console, never to its manifest — which has no row for it', () => {
+    // apps/shopee/apphosting.yaml keeps SHOPEE_TASKS_REGION out on purpose: a
+    // value there reaches EVERY project's backend, and unset is the safe state
+    // (the enqueue throws, the sweep drains). A note telling the operator to add
+    // the row would undo that the moment it was obeyed — and the manifest is read
+    // here too, so the note and the file cannot disagree silently.
+    const note = crossCheckNote('shopee', 'us-east1');
+    const manifest = CODEBASES.shopee.backendManifest;
+
+    expect(note).toContain("THIS project's App Hosting console");
+    expect(note).toContain(`never in ${manifest}`);
+    expect(note).not.toContain(`Set it in ${manifest}`);
+    // The file half: no row as committed, and the house spelling would be seen.
+    expect(shopeeRegionRow(HOUSE_ROW)).toEqual({ live: false, withRow: true });
+  });
+
+  // The live answer can only ever be "absent", so on its own it cannot show the
+  // matcher fires at all. These rows are what a re-added SHOPEE_TASKS_REGION row
+  // could look like, each spliced into the real file. Each is valid block-style
+  // App Hosting YAML that apphosting-env-entries.test.js lets through: it allows
+  // a space before the colon, decodes quotes, block scalars and trailing
+  // comments, and takes the keys in any order. (A `|` body keeps a trailing
+  // newline in the name; catching it anyway errs toward red.)
+  // ⚠️ The first matcher here took only an unquoted `- variable: X` with nothing
+  // after it, and missed the value-first, commented and quoted rows. The second
+  // still missed a space before the colon and both block scalars; the third, a
+  // block-scalar header carrying its own comment.
+  it.each([
+    ['the house spelling', HOUSE_ROW],
+    ['value first', '  - value: fixture-region\n    variable: SHOPEE_TASKS_REGION\n'],
+    [
+      'a trailing comment',
+      '  - variable: SHOPEE_TASKS_REGION # #1108\n    value: fixture-region\n',
+    ],
+    ['double-quoted', '  - variable: "SHOPEE_TASKS_REGION"\n    value: fixture-region\n'],
+    ['single-quoted', "  - variable: 'SHOPEE_TASKS_REGION'\n    value: fixture-region\n"],
+    ['a space before the colon', '  - variable : SHOPEE_TASKS_REGION\n    value: fixture-region\n'],
+    [
+      'a folded block scalar',
+      '  - variable: >-\n      SHOPEE_TASKS_REGION\n    value: fixture-region\n',
+    ],
+    [
+      'a literal block scalar',
+      '  - variable: |\n      SHOPEE_TASKS_REGION\n    value: fixture-region\n',
+    ],
+    [
+      'a block-scalar header with a comment',
+      '  - variable: >- # note\n      SHOPEE_TASKS_REGION\n    value: fixture-region\n',
+    ],
+    ['CRLF line ends', '  - variable: SHOPEE_TASKS_REGION\r\n    value: fixture-region\r\n'],
+  ])('the row matcher catches %s', (_, row) => {
+    expect(shopeeRegionRow(row)).toEqual({ live: false, withRow: true });
+  });
+
+  // The near-misses must stay distinct. A commented-out row sets nothing, and
+  // the manifest's warning about this variable is all `#` lines, so a matcher
+  // that read comments would red the live check the day that warning quotes the
+  // row it forbids. A block scalar's body ends where its indentation does, so
+  // the name in the next key's value is not the variable.
+  it.each([
+    ['a commented-out row', '  # - variable: SHOPEE_TASKS_REGION\n'],
+    ['a longer variable name', '  - variable: SHOPEE_TASKS_REGION_OVERRIDE\n    value: x\n'],
+    ['the name as another row value', '  - variable: OTHER_VAR\n    value: SHOPEE_TASKS_REGION\n'],
+    [
+      'a block-scalar row naming another variable',
+      '  - variable: >-\n      OTHER_VAR\n    value: SHOPEE_TASKS_REGION\n',
+    ],
+    [
+      'the name only in a block header comment',
+      '  - variable: >- # SHOPEE_TASKS_REGION\n      OTHER_VAR\n    value: x\n',
+    ],
+  ])('the row matcher ignores %s', (_, row) => {
+    expect(shopeeRegionRow(row)).toEqual({ live: false, withRow: false });
+  });
+
+  it('keeps the manifest wording where the manifest does hold the row', () => {
+    // The near-miss: mercado-livre's manifest CARRIES its region row, so the
+    // console-only branch must not leak into the other codebases' notes.
+    const note = crossCheckNote('mercado-livre', 'us-east1');
+
+    expect(note).toContain('Set it in apps/mercado-livre/apphosting.yaml (or the console)');
+    expect(note).not.toContain('never in');
   });
 
   it('has no backend note for storage, which no backend enqueues', () => {

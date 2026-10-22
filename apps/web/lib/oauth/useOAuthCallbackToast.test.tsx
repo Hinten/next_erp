@@ -29,7 +29,13 @@ const CONFIG = {
 function render(query: string) {
   h.params = new URLSearchParams(query);
   h.notify.mockClear();
-  renderHook(() => useOAuthCallbackToast(CONFIG));
+  const { rerender } = renderHook(() => useOAuthCallbackToast(CONFIG));
+  // What `useSearchParams` does on every URL change, the TableView's own
+  // `history.replaceState` included: a NEW params object, same mounted hook.
+  return (next: string) => {
+    h.params = new URLSearchParams(next);
+    rerender();
+  };
 }
 
 describe('oauthCallbackMessage', () => {
@@ -115,5 +121,27 @@ describe('useOAuthCallbackToast', () => {
   it('stays silent on an unrelated navigation', () => {
     render('page=2');
     expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  // Near-miss pair. The list pages that mount this hook also mount a TableView,
+  // which mirrors its sort into the query string and keeps every foreign key — so
+  // the SAME callback result arrives again inside a NEW params object. Keyed on
+  // that object, the effect re-showed the failure on every sort click.
+  it('shows a callback result once when an unrelated param changes around it', () => {
+    const navegar = render('ml=error&reason=bad_state');
+    navegar('ml=error&reason=bad_state&sort=nome');
+    navegar('ml=error&reason=bad_state&sort=-nome&pages=2');
+    expect(h.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('still shows a genuinely new callback result on the same mounted page', () => {
+    const navegar = render('ml=error&reason=bad_state&sort=nome');
+    navegar('ml=error&reason=server_config&sort=nome');
+    expect(h.notify).toHaveBeenCalledTimes(2);
+    expect(h.notify).toHaveBeenLastCalledWith({
+      color: 'red',
+      title: 'Falha ao conectar',
+      message: 'Servidor sem credenciais.',
+    });
   });
 });

@@ -60,7 +60,7 @@ import {
 } from '@delfrance/data/admin/produtos';
 
 import { resolveExistingProduto } from '../importacao/import';
-import { refMatchesIntegracao } from '../core/linkRefs';
+import { parsePmlOuterRef, refMatchesIntegracao } from '../core/linkRefs';
 
 /**
  * Which rung of the cascade answered. Diagnostic for a HIT, but a MISS kind is
@@ -203,10 +203,8 @@ export async function resolveOrderLineProduto(
  * ML, so >1 hit only means the same listing imported under several accounts — a
  * small set, and `limit(10)` bounds a pathological scan.
  *
- * Same shape as `itemsPricesSync.ts`'s `resolvePriceTarget` variation branch and
- * `import.ts`'s `resolveExistingUpParent` step 1 — a third local copy per this
- * folder's small-local-duplicates convention (`itemsPricesSync.ts:345-347`).
- * Note what differs: those two return the family PARENT, this returns the CHILD
+ * Shares parent-link parsing with `import.ts`'s `resolveExistingUpParent` step 1.
+ * That resolver returns the family PARENT; this returns the CHILD
  * (`d.ref.parent.parent.id`), which is the produto that owns the stock.
  */
 async function resolveUpMemberChild(
@@ -256,18 +254,4 @@ function isUserProductLink(linkRaw: Record<string, unknown> | null): boolean {
  */
 function numericVariationId(variationId: string): number | null {
   return /^-?\d+$/.test(variationId) ? Number(variationId) : null;
-}
-
-/**
- * Parse a canonical `documents/produtos/<produtoId>/produtoMercadoLivre/<linkId>`
- * outer-ref into its produto + link doc ids — a local copy of `import.ts`'s
- * private helper (same 6-liner; `itemsPricesSync.ts:349-355` and
- * `importMigration.ts` each carry their own for the same reason).
- */
-function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | null {
-  const segs = ref.split('/').filter(Boolean);
-  const i = segs.indexOf('produtos');
-  if (i === -1 || i + 3 >= segs.length) return null;
-  if (segs[i + 2] !== 'produtoMercadoLivre') return null;
-  return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
 }

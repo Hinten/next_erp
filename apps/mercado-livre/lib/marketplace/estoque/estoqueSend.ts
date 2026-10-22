@@ -663,6 +663,39 @@ export async function processStockSendTask(
    * precisely the self-heal-that-does-not-heal the latch comment warns about.
    */
   let podadasNaCompletacao = 0;
+  let stockTelemetry: StockRefreshTelemetry | null = null;
+
+  const handleAccountError = async (err: unknown): Promise<StockSendResult | null> => {
+    if (err instanceof MercadoLivreReauthRequiredError) {
+      // A dead credential never self-heals by retrying — record and succeed.
+      console.error('[mercado-livre] stock-send: credencial morta — reconecte a conta', {
+        integracaoId: payload.integracaoId,
+        itemId: payload.itemId,
+        error: err.message,
+      });
+      await estoqueMercadoLivreSyncCollection.merge(db, {}, payload.integracaoId, {
+        lastError: err.message,
+        lastErrorAtUs: nowUs,
+      });
+      return { outcome: 'erro-registrado', reason: 'reauth' };
+    }
+    if (err instanceof MercadoLivreHttpError && err.status === 429) {
+      // Rate limit: stamp the per-conta pause (Retry-After when ML sent one)
+      // and RETHROW — the queue's backoff retries this task into the pause
+      // gate. pauseCount is an advisory counter (no tx) — reuse the pause
+      // gate's read from the top of this task instead of a second get().
+      const pauseSec = err.retryAfterSec ?? ratePauseMin() * 60;
+      const pauseCount = finiteNumber(stateRaw.pauseCount) ?? 0;
+      await estoqueMercadoLivreSyncCollection.merge(db, {}, payload.integracaoId, {
+        pausedUntilUs: millisToMicros(nowMs + pauseSec * 1000),
+        pauseCount: pauseCount + 1,
+        lastError: err.message,
+        lastErrorAtUs: nowUs,
+      });
+      throw err;
+    }
+    return null;
+  };
 
   try {
     // (2) Account context → depósito guard → live ML API (the notificacao.ts
@@ -698,7 +731,6 @@ export async function processStockSendTask(
         : deps.refreshStockOnRetry && retryCount > 0
           ? 'cloud-task-retry'
           : null;
-    let stockTelemetry: StockRefreshTelemetry;
     if (refreshSource == null) {
       stockTelemetry = payloadStockTelemetry(payload, retryCount, depositoId);
     } else {
@@ -839,127 +871,11 @@ export async function processStockSendTask(
       resp = await api.updateItem(payload.itemId, { variations: refeito.variations });
     }
 
-    // (5) Writeback (itemsStatusSync discipline): merge the fresh listing
-    // status onto the link doc the PAYLOAD names (`linkDocId` under the anchor
-    // `produtoId` — carried from the sweep, never re-resolved) so the derived
-    // estado + raw status/sub_status never go stale on a successful send.
-    // `mergeIfExists`: `linkDocId` rides from the sweep and is never re-resolved,
-    // so the link may have been deleted while this task sat in the queue. An
-    // upsert would resurrect a ghost doc holding only these keys.
-    //
-    // ⚠️ A `kind: 'variationItem'` task is the EXCEPTION, and it is the same
-    // one-member-speaks-for-the-family failure the terminal branch below fixes,
-    // in the success direction: `resp` describes ONE member's ML item while
-    // `linkDocId` names the FAMILY's parent link. Writing `resp.status` there
-    // publishes one member's lifecycle as the family's, and the parent gate in
-    // `buildSendTasks` then skips EVERY sibling the moment a member comes back
-    // `paused` or `under_review` on an otherwise accepted PUT. So a member send
-    // writes no status at all — only the heal (`clearFalha`) and the stamp, both
-    // of which are legitimately family-wide.
-    //
-    // ⚠️ It does not write the MEMBER's own status either, and that is a
-    // deliberate scope limit rather than an oversight. The member's link doc id
-    // is not in the payload, so reaching it costs a subcollection read on the
-    // HOT path — one per member task, 96× a day across the catalogue — to record
-    // a value that is `active` by construction (ML just accepted a stock update
-    // for it). The rungs that genuinely need a member status all write it
-    // already: the `items` webhook, #707's prune, and the terminal-4xx fold.
-    // The consequence is that `membroPodeEnviar`'s optimistic arm converges only
-    // through those three — the safe direction, since it sends. Recorded next to
-    // the other residual in `apps/mercado-livre/CLAUDE.md`.
-    const ehMembro = payload.variacaoProdutoId != null;
-    const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
-      db,
-      { produtoId: payload.produtoId },
-      payload.linkDocId,
-      {
-        ...(ehMembro
-          ? {}
-          : {
-              estado: estadoFromMlStatus(resp.status, resp.sub_status ?? null),
-              status: resp.status ?? null,
-              sub_status: resp.sub_status ?? [],
-              // ⚠️ #1252, and read the paragraph below before touching it: the
-              // authority for this clear is ML's `resp`, NEVER the fact that the
-              // send succeeded.
-              //
-              // `clearFalha()` still covers `errors`/`causas` and deliberately
-              // NOT `moderacoes` (#1087), because a successful stock update says
-              // nothing about ML's policy verdict — a `poor_quality_thumbnail`
-              // listing is `active` and takes stock updates WHILE moderated, so
-              // clearing on the send's authority would erase a live reason and
-              // show a clean listing that is still penalised.
-              //
-              // What makes a GATED clear safe is that the gate answers from
-              // `resp` alone, and `poor_quality_thumbnail` is one of the
-              // sub_statuses it matches — so on exactly the listing that
-              // paragraph is about, `precisaConsultarModeracao` returns TRUE, the
-              // key is omitted, and the reason survives untouched. Only a
-              // response reporting no moderation at all clears, which is ML
-              // telling us the reason is gone. No `/moderations` call: the
-              // predicate is pure.
-              //
-              // ⚠️ Inside the `ehMembro` guard, not beside it. On the member arm
-              // this path writes no status at all (see above), so there is
-              // nothing for `moderacoes` to ride — and one member's verdict must
-              // not clear the FAMILY's reason.
-              ...(precisaConsultarModeracao(resp.status, resp.sub_status)
-                ? {}
-                : { moderacoes: [] }),
-            }),
-        ultimaModificacao: nowMs,
-        // A send that lands clears whatever diagnosis the last failure left
-        // behind — otherwise the produto tab keeps showing a red alert for a
-        // fault that has since healed (#781).
-        //
-        // ⚠️ Unless part of the intent was DROPPED (#831 review). When the
-        // completion filtered a stale id out of the array, ML accepted a body
-        // that carried less than we meant to send — so this is not the healed
-        // listing #781 is talking about, and clearing here would erase the
-        // diagnosis on the very write that failed to apply. It is a temporary
-        // suppression, not a latch: the prune has just marked those members
-        // `closed`, so the next sweep builds a clean payload and THAT send
-        // clears.
-        ...(fantasmas.length > 0 ? {} : clearFalha()),
-      },
-    );
-    if (!applied) {
-      console.warn(
-        '[mercado-livre] stock-send: link removido durante o envio — writeback ignorado',
-        {
-          integracaoId: payload.integracaoId,
-          produtoId: payload.produtoId,
-          linkDocId: payload.linkDocId,
-          itemId: payload.itemId,
-        },
-      );
-    }
-
-    // `ageMs` intentionally keeps describing the original payload even when a
-    // delayed attempt refreshed its quantities immediately before this send.
-    logger.info('[mercado-livre] stock-send: enviado', {
-      integracaoId: payload.integracaoId,
-      itemId: payload.itemId,
-      sweepId: payload.sweepId,
-      ageMs: nowMs - payload.sweepComputedAtMs,
-      stockRefresh: stockTelemetry,
-    });
-    return { outcome: 'sent', reason: null };
+    return await gravarSucessoItem(db, payload, resp, nowMs, fantasmas, stockTelemetry);
   } catch (err) {
     // (6) Narrowed error policy (module doc) — anything unlisted RETHROWS.
-    if (err instanceof MercadoLivreReauthRequiredError) {
-      // A dead credential never self-heals by retrying — record and succeed.
-      console.error('[mercado-livre] stock-send: credencial morta — reconecte a conta', {
-        integracaoId: payload.integracaoId,
-        itemId: payload.itemId,
-        error: err.message,
-      });
-      await estoqueMercadoLivreSyncCollection.merge(db, {}, payload.integracaoId, {
-        lastError: err.message,
-        lastErrorAtUs: nowUs,
-      });
-      return { outcome: 'erro-registrado', reason: 'reauth' };
-    }
+    const accountResult = await handleAccountError(err);
+    if (accountResult) return accountResult;
     if (err instanceof MercadoLivreHttpError) {
       // #706: a version conflict is the ORDINARY outcome of a read-before-write
       // — a sale between our GET and our PUT is enough. It is checked here,
@@ -978,7 +894,9 @@ export async function processStockSendTask(
       // on it and then latch a healthy listing with `estado 'E'`.
       if (
         isVersionConflict(err) &&
-        (payload.kind === 'userProductStock' || payload.variations != null)
+        (payload.kind === 'userProductStock' ||
+          payload.variations != null ||
+          payload.variacaoProdutoId != null)
       ) {
         console.warn(
           '[mercado-livre] stock-send: conflito de versão persistente — nova tentativa',
@@ -990,22 +908,8 @@ export async function processStockSendTask(
         );
         throw err;
       }
-      if (err.status === 429) {
-        // Rate limit: stamp the per-conta pause (Retry-After when ML sent one)
-        // and RETHROW — the queue's backoff retries this task into the pause
-        // gate. pauseCount is an advisory counter (no tx) — reuse the pause
-        // gate's read from the top of this task instead of a second get().
-        const pauseSec = err.retryAfterSec ?? ratePauseMin() * 60;
-        const pauseCount = finiteNumber(stateRaw.pauseCount) ?? 0;
-        await estoqueMercadoLivreSyncCollection.merge(db, {}, payload.integracaoId, {
-          pausedUntilUs: millisToMicros(nowMs + pauseSec * 1000),
-          pauseCount: pauseCount + 1,
-          lastError: err.message,
-          lastErrorAtUs: nowUs,
-        });
-        throw err;
-      }
-      if (err.status >= 400 && err.status < 500) {
+      if (err.status === 408) throw err; // HTTP timeout is transient too.
+      if (err.status >= 400 && (err.status < 500 || payload.variacaoProdutoId != null)) {
         // ML answers 4xx for transient reasons too, so ONE rejection is evidence,
         // not proof: rethrow and let the queue's backoff re-run the whole send
         // (the repo's `retryCount < MAX - 1` ladder — massImport.ts:412,
@@ -1027,12 +931,133 @@ export async function processStockSendTask(
             retryCount,
           },
         );
-        return await registrarRejeicaoFinal(db, api, payload, err, nowMs, podadasNaCompletacao);
+        return await registrarRejeicaoFinal(
+          db,
+          api,
+          payload,
+          err,
+          nowMs,
+          podadasNaCompletacao,
+          stockTelemetry,
+          handleAccountError,
+        );
       }
       throw err; // 5xx — transient, the queue retries
     }
     throw err; // network / Firestore / anything unclassified — transient or a coding bug
   }
+}
+
+/** Shared writeback: the terminal member retry has exactly the ordinary success cost. */
+async function gravarSucessoItem(
+  db: Firestore,
+  payload: MlStockSendTask,
+  resp: MlItem,
+  nowMs: number,
+  fantasmas: readonly string[],
+  stockTelemetry: StockRefreshTelemetry,
+): Promise<StockSendResult> {
+  // (5) Writeback (itemsStatusSync discipline): merge the fresh listing
+  // status onto the link doc the PAYLOAD names (`linkDocId` under the anchor
+  // `produtoId` — carried from the sweep, never re-resolved) so the derived
+  // estado + raw status/sub_status never go stale on a successful send.
+  // `mergeIfExists`: `linkDocId` rides from the sweep and is never re-resolved,
+  // so the link may have been deleted while this task sat in the queue. An
+  // upsert would resurrect a ghost doc holding only these keys.
+  //
+  // ⚠️ A `kind: 'variationItem'` task is the EXCEPTION, and it is the same
+  // one-member-speaks-for-the-family failure the terminal branch below fixes,
+  // in the success direction: `resp` describes ONE member's ML item while
+  // `linkDocId` names the FAMILY's parent link. Writing `resp.status` there
+  // publishes one member's lifecycle as the family's, and the parent gate in
+  // `buildSendTasks` then skips EVERY sibling the moment a member comes back
+  // `paused` or `under_review` on an otherwise accepted PUT. So a member send
+  // writes no status at all — only the heal (`clearFalha`) and the stamp, both
+  // of which are legitimately family-wide.
+  //
+  // ⚠️ It does not write the MEMBER's own status either, and that is a
+  // deliberate scope limit rather than an oversight. The member's link doc id
+  // is not in the payload, so reaching it costs a subcollection read on the
+  // HOT path — one per member task, 96× a day across the catalogue — to record
+  // a value that is `active` by construction (ML just accepted a stock update
+  // for it). The rungs that genuinely need a member status all write it
+  // already: the `items` webhook, #707's prune, and the terminal-4xx fold.
+  // The consequence is that `membroPodeEnviar`'s optimistic arm converges only
+  // through those three — the safe direction, since it sends. Recorded next to
+  // the other residual in `apps/mercado-livre/CLAUDE.md`.
+  const ehMembro = payload.variacaoProdutoId != null;
+  const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
+    db,
+    { produtoId: payload.produtoId },
+    payload.linkDocId,
+    {
+      ...(ehMembro
+        ? {}
+        : {
+            estado: estadoFromMlStatus(resp.status, resp.sub_status ?? null),
+            status: resp.status ?? null,
+            sub_status: resp.sub_status ?? [],
+            // ⚠️ #1252, and read the paragraph below before touching it: the
+            // authority for this clear is ML's `resp`, NEVER the fact that the
+            // send succeeded.
+            //
+            // `clearFalha()` still covers `errors`/`causas` and deliberately
+            // NOT `moderacoes` (#1087), because a successful stock update says
+            // nothing about ML's policy verdict — a `poor_quality_thumbnail`
+            // listing is `active` and takes stock updates WHILE moderated, so
+            // clearing on the send's authority would erase a live reason and
+            // show a clean listing that is still penalised.
+            //
+            // What makes a GATED clear safe is that the gate answers from
+            // `resp` alone, and `poor_quality_thumbnail` is one of the
+            // sub_statuses it matches — so on exactly the listing that
+            // paragraph is about, `precisaConsultarModeracao` returns TRUE, the
+            // key is omitted, and the reason survives untouched. Only a
+            // response reporting no moderation at all clears, which is ML
+            // telling us the reason is gone. No `/moderations` call: the
+            // predicate is pure.
+            //
+            // ⚠️ Inside the `ehMembro` guard, not beside it. On the member arm
+            // this path writes no status at all (see above), so there is
+            // nothing for `moderacoes` to ride — and one member's verdict must
+            // not clear the FAMILY's reason.
+            ...(precisaConsultarModeracao(resp.status, resp.sub_status) ? {} : { moderacoes: [] }),
+          }),
+      ultimaModificacao: nowMs,
+      // A send that lands clears whatever diagnosis the last failure left
+      // behind — otherwise the produto tab keeps showing a red alert for a
+      // fault that has since healed (#781).
+      //
+      // ⚠️ Unless part of the intent was DROPPED (#831 review). When the
+      // completion filtered a stale id out of the array, ML accepted a body
+      // that carried less than we meant to send — so this is not the healed
+      // listing #781 is talking about, and clearing here would erase the
+      // diagnosis on the very write that failed to apply. It is a temporary
+      // suppression, not a latch: the prune has just marked those members
+      // `closed`, so the next sweep builds a clean payload and THAT send
+      // clears.
+      ...(fantasmas.length > 0 ? {} : clearFalha()),
+    },
+  );
+  if (!applied) {
+    console.warn('[mercado-livre] stock-send: link removido durante o envio — writeback ignorado', {
+      integracaoId: payload.integracaoId,
+      produtoId: payload.produtoId,
+      linkDocId: payload.linkDocId,
+      itemId: payload.itemId,
+    });
+  }
+
+  // `ageMs` intentionally keeps describing the original payload even when a
+  // delayed attempt refreshed its quantities immediately before this send.
+  logger.info('[mercado-livre] stock-send: enviado', {
+    integracaoId: payload.integracaoId,
+    itemId: payload.itemId,
+    sweepId: payload.sweepId,
+    ageMs: nowMs - payload.sweepComputedAtMs,
+    stockRefresh: stockTelemetry,
+  });
+  return { outcome: 'sent', reason: null };
 }
 
 /* --------------------------------- helpers --------------------------------- */
@@ -1427,7 +1452,9 @@ async function registrarRejeicaoFinal(
    * `closed` is skipped here, so re-deriving would report zero repairs and latch
    * a listing we had already fixed.
    */
-  podadasAntes = 0,
+  podadasAntes: number,
+  stockTelemetry: StockRefreshTelemetry | null,
+  handleAccountError: (err: unknown) => Promise<StockSendResult | null>,
 ): Promise<StockSendResult> {
   const target = {
     produtoId: payload.produtoId,
@@ -1525,6 +1552,11 @@ async function registrarRejeicaoFinal(
       });
       return { outcome: 'erro-registrado', reason: 'anuncio-inexistente' };
     }
+    if (membro != null) {
+      const accountResult = await handleAccountError(getErr);
+      if (accountResult) return accountResult;
+      throw getErr;
+    }
     if (getErr instanceof MercadoLivreError) {
       console.warn(
         '[mercado-livre] stock-send: verificação do anúncio indisponível — parada conservadora',
@@ -1560,47 +1592,79 @@ async function registrarRejeicaoFinal(
   const moderacoesDoGet = precisaConsultarModeracao(item.status, item.sub_status) ? null : [];
 
   if (membro != null) {
-    // Record what ML said about THIS member on the member's own link, and let the
-    // fold decide what that means for the family.
-    //
-    // ⚠️ #1252 CHANGED the third value here. It used to be an unconditional
-    // `null` ("never asked"), justified by "this branch verified the member's
-    // STATUS, never its moderation, and inventing `[]` would clear a live
-    // reason". The first half is still true and the conclusion no longer
-    // follows: `item` came from a real `GET /items` above, so ML's own
-    // `status`/`sub_status` ARE its verdict on whether a moderation is being
-    // reported, and `precisaConsultarModeracao` reads it for free. This is
-    // strictly better evidence than the PUT echo the success path clears on.
-    // Still `null` when ML IS reporting one — that needs a `/moderations` read
-    // this branch does not make.
-    await applyMemberStatusAndFold(
-      db,
-      payload.integracaoId,
-      membro.foldTarget,
-      { status: item.status ?? null, subStatus: item.sub_status ?? null },
-      moderacoesDoGet,
-    );
+    if (stockTelemetry == null) throw err;
+    const observed = { status: item.status ?? null, subStatus: item.sub_status ?? null };
     if (!sendable) {
+      await applyMemberStatusAndFold(
+        db,
+        payload.integracaoId,
+        membro.foldTarget,
+        observed,
+        moderacoesDoGet,
+      );
       return await gravarDiagnostico(db, target, diagnostico, nowMs, 'anuncio-nao-enviavel');
     }
-    // ML says the member COULD take stock, so it was our payload it refused.
-    // ⚠️ The latch is the FAMILY's — `estado` lives only on the parent link and
-    // the schema deliberately gives a member none — so this stops the siblings
-    // too. It is bounded and LOUD (the produto tab shows the diagnosis, the sweep
-    // logs `anuncio-em-erro`, an `items` webhook or "Reverificar anúncio" clears
-    // it), which is the opposite of the silent `estado 'c'` drop above; naming the
-    // member is what makes the over-reach attributable.
-    console.error(
-      '[mercado-livre] stock-send: payload rejeitado para UM membro da família — ' +
-        'a família inteira fica travada em erro até a próxima verificação',
-      {
+
+    // One final send, outside the queue retry ladder. No recursive handler call.
+    let result: StockSendResult;
+    try {
+      if (payload.kind === 'userProductStock') {
+        result = await enviarEstoqueUserProduct(
+          db,
+          api,
+          payload,
+          nowMs,
+          STOCK_SEND_MAX_ATTEMPTS - 1,
+          stockTelemetry,
+        );
+      } else {
+        const resp = await api.updateItem(payload.itemId, {
+          available_quantity: payload.quantidade,
+        });
+        result = await gravarSucessoItem(db, payload, resp, nowMs, [], stockTelemetry);
+      }
+    } catch (finalErr) {
+      const accountResult = await handleAccountError(finalErr);
+      if (accountResult) return accountResult;
+      if (
+        !(finalErr instanceof MercadoLivreHttpError) ||
+        finalErr.status < 400 ||
+        finalErr.status === 408 ||
+        finalErr.status === 409
+      )
+        throw finalErr;
+      const failure = falhaPatch(finalErr, finalErr.message, 'item');
+      const applied = await applyMemberStatusAndFold(
+        db,
+        payload.integracaoId,
+        membro.foldTarget,
+        observed,
+        moderacoesDoGet,
+        null,
+        null,
+        failure,
+      );
+      if (applied === 'stale-member' || applied === 'link-removido') {
+        return { outcome: 'skipped', reason: 'leitura-membro-obsoleta' };
+      }
+      console.error('[mercado-livre] stock-send: estoque bloqueado somente para o membro', {
         integracaoId: payload.integracaoId,
         produtoId: payload.produtoId,
         variacaoProdutoId: payload.variacaoProdutoId,
         itemId: payload.itemId,
-      },
-    );
-    return await pararComErro(db, target, diagnostico, nowMs, 'payload-rejeitado');
+      });
+      return { outcome: 'erro-registrado', reason: 'payload-rejeitado' };
+    }
+    if (result.outcome === 'sent') {
+      await applyMemberStatusAndFold(
+        db,
+        payload.integracaoId,
+        membro.foldTarget,
+        observed,
+        moderacoesDoGet,
+      );
+    }
+    return result;
   }
 
   await applyItemStatusToLink(db, payload.integracaoId, target, item, {
@@ -1747,8 +1811,16 @@ async function resolverMembroDaFamilia(
   const childId = payload.variacaoProdutoId;
   if (childId == null) return null;
   const pmlOuterRef = parentLinkOuterRef(payload);
-  const snap = await variacaoMercadoLivreLinkCollection.ref(db, { produtoId: childId }).get();
-  for (const d of snap.docs) {
+  const docs =
+    payload.varLinkDocId != null
+      ? [
+          await variacaoMercadoLivreLinkCollection
+            .docRef(db, { produtoId: childId }, payload.varLinkDocId)
+            .get(),
+        ]
+      : (await variacaoMercadoLivreLinkCollection.ref(db, { produtoId: childId }).get()).docs;
+  for (const d of docs) {
+    if (!d.exists) continue;
     const raw = d.data() as Record<string, unknown>;
     if (raw.itemId !== payload.itemId) continue;
     if (raw.produtoMercadoLivreOuterRef !== pmlOuterRef) continue;
@@ -1758,6 +1830,8 @@ async function resolverMembroDaFamilia(
         linkDocId: payload.linkDocId,
         memberProdutoId: childId,
         memberDocId: d.id,
+        memberUpdateTime: d.updateTime,
+        memberItemId: payload.itemId,
         pmlOuterRef,
       },
     };

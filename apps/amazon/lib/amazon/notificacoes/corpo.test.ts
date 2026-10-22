@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { fluxoEspiao } from '../testing/fixtures';
-import { MAX_CORPO_RECEPTOR_BYTES, lerCorpoLimitado } from './corpo';
+import { MAX_CORPO_RECEPTOR_BYTES, MAX_MENSAGEM_SQS_BYTES, lerCorpoLimitado } from './corpo';
 
-const KIB = 1024;
 const decodificar = (dados: Uint8Array) => new TextDecoder().decode(dados);
 
 describe('lerCorpoLimitado', () => {
-  it('pins the bound at an SQS message’s maximum, 256 KiB', () => {
-    expect(MAX_CORPO_RECEPTOR_BYTES).toBe(256 * KIB);
+  it('pins the bound at twice an SQS message’s 1 MiB maximum: 2 MiB', () => {
+    // Literals, not the derivation: the old 256-KiB bound dropped a valid
+    // notification between 256 KiB and 1 MiB (the receiver's 1-MiB cases).
+    expect(MAX_MENSAGEM_SQS_BYTES).toBe(1_048_576);
+    expect(MAX_CORPO_RECEPTOR_BYTES).toBe(2_097_152);
   });
 
   it('reads a body in chunks and joins them byte for byte', async () => {
@@ -29,22 +31,21 @@ describe('lerCorpoLimitado', () => {
     });
   });
 
-  it('exactly the bound is read whole (the near-miss of one byte more)', async () => {
-    const f = fluxoEspiao([new Uint8Array(MAX_CORPO_RECEPTOR_BYTES)]);
-    const r = await lerCorpoLimitado(f.stream, null, MAX_CORPO_RECEPTOR_BYTES);
-    expect(r).toMatchObject({ tipo: 'lido', bytes: MAX_CORPO_RECEPTOR_BYTES });
-  });
+  it.each([null, String(MAX_CORPO_RECEPTOR_BYTES)])(
+    'exactly the bound is read whole, content-length %j (the near-miss of one byte more)',
+    async (cabecalho) => {
+      const f = fluxoEspiao([new Uint8Array(MAX_CORPO_RECEPTOR_BYTES)]);
+      const r = await lerCorpoLimitado(f.stream, cabecalho, MAX_CORPO_RECEPTOR_BYTES);
+      expect(r).toMatchObject({ tipo: 'lido', bytes: MAX_CORPO_RECEPTOR_BYTES });
+      expect(f.cancelado()).toBe(false);
+    },
+  );
 
   it('one byte over the bound STOPS the read at the chunk that crossed it, and cancels', async () => {
-    // Four 64-KiB chunks reach the bound exactly; the fifth (one byte) crosses
-    // it; three more chunks are never pulled.
-    const partes = [
-      ...Array.from({ length: 4 }, () => new Uint8Array(64 * KIB)),
-      new Uint8Array(1),
-      new Uint8Array(64 * KIB),
-      new Uint8Array(64 * KIB),
-      new Uint8Array(64 * KIB),
-    ];
+    // Four quarter-bound chunks reach the bound exactly; the fifth (one byte)
+    // crosses it; three more chunks are never pulled. One quarter is reused.
+    const quarto = new Uint8Array(MAX_CORPO_RECEPTOR_BYTES / 4);
+    const partes = [quarto, quarto, quarto, quarto, new Uint8Array(1), quarto, quarto, quarto];
     const f = fluxoEspiao(partes);
     const r = await lerCorpoLimitado(f.stream, null, MAX_CORPO_RECEPTOR_BYTES);
     expect(r).toEqual({ tipo: 'grande', bytes: MAX_CORPO_RECEPTOR_BYTES + 1 });
@@ -64,7 +65,8 @@ describe('lerCorpoLimitado', () => {
     expect(f.cancelado()).toBe(true);
   });
 
-  it.each(['abc', '-1', '1e9', ' 300000', ''])(
+  // The whitespace row sits ABOVE the bound, so a parser that accepted it would refuse.
+  it.each(['abc', '-1', '1e9', ` ${String(MAX_CORPO_RECEPTOR_BYTES + 1)}`, ''])(
     'an unparseable content-length (%j) is ignored: the count decides',
     async (cabecalho) => {
       const f = fluxoEspiao(['{}']);

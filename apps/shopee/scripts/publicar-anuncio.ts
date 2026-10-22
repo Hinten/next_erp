@@ -9,11 +9,13 @@
  * ## Why this exists
  *
  * The publish otherwise reaches Shopee only through the `publicar` route, i.e.
- * through a screen step 21 has not shipped. So the FIRST listing this channel
- * ever creates would happen through a UI nobody has used, against a produto
- * nobody inspected. This script makes that first write a deliberate, observable
- * act against ONE named produto — one human, one terminal — before the migration
- * window (root CLAUDE.md rule 8).
+ * through a screen — step 21's tab acts only on a produto that already has a
+ * link (Republicar, and the kit section's Recriar / Converter em kit nativo); a
+ * first publish of an unlinked produto from the UI is listing authoring's (#1911). So the FIRST listing this
+ * channel ever creates would happen through a UI nobody has used, against a
+ * produto nobody inspected. This script makes that first write a deliberate,
+ * observable act against ONE named produto — one human, one terminal — before
+ * the migration window (root CLAUDE.md rule 8).
  *
  * ⚠️ **Dev-only, and never run by an agent.** In `--live` it creates a REAL
  * listing on the REAL marketplace (`add_item`, the tier/model leg, the re-list

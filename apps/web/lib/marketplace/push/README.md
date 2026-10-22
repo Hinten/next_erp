@@ -26,8 +26,8 @@ row carries what the channel CONFIRMED (`statusFinal`) rather than what was sent
 Mercado Livre refuses to reactivate a zero-stock listing and answers `paused` on
 a 200, and a row reading "Pausado" over that would be a green lie. The bulk
 action is deliberately **pause-only**; reactivating lives in the produto's
-Mercado Livre tab, where the operator sees the listing they are putting back on
-air.
+channel tabs (Mercado Livre, Shopee), where the operator sees the listing they
+are putting back on air.
 
 ## What is NOT shared, and why
 

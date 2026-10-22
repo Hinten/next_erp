@@ -180,8 +180,9 @@ does not exist yet: the same unreached surface, one round later.
   throw-only scaffold: this package describes **Shopee's wire protocol**, while
   the scaffold described *our* orchestration and implemented three of four
   members as `throw`. What Shopee supports is still declared in
-  `MARKETPLACE_TIPO_CAPS`, and its `implementado` stays `false` until the channel
-  ships. The guard above changed with it: it still asserts the ABSENCE of the
+  `MARKETPLACE_TIPO_CAPS`; its `implementado` flipped to `true` at master-plan step
+  22 (#1530), once `apps/shopee` served every row action `apps/web` dispatches.
+  The guard above changed with it: it still asserts the ABSENCE of the
   other two scaffolds (`magalu`, `facebook`), and for `shopee`,
   `loja-integrada` and `amazon-sp-api` it now asserts the SHAPE — every file
   under their `src/` declares no `MarketplaceChannel`, re-exports none, and

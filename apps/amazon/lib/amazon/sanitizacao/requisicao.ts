@@ -24,6 +24,10 @@
  * - a credential-shaped query key, and a query value that is itself a URL;
  * - a `segredo` path (the RDT, the client secret, any `/documents`), and a path
  *   whose template has no table yet (`sem-tabela`): it could never become a fixture;
+ * - a method that is not the matched operation's own (`metodo-da-operacao`,
+ *   {@link METODOS_DA_OPERACAO_AMAZON}): `GET /delivery/2022-07-01/invoice` would
+ *   be redacted with `submitInvoice`'s table into a fixture of a request that
+ *   cannot exist;
  * - `token-legado-curl` with anything but `GET`: a write endpoint is never curled.
  *
  * Pure: bytes in, a request or a list of refusals out.
@@ -86,6 +90,7 @@ export type TipoProblemaDoSidecar =
   | 'url-na-query'
   | 'segredo'
   | 'sem-tabela'
+  | 'metodo-da-operacao'
   | 'curl-so-get'
   | 'credencial-desconhecida'
   | 'credencial-repetida'
@@ -252,6 +257,42 @@ const DECIMAL = /^\d{1,6}(?:\.\d{1,6})?$/;
 /** Each path segment literally `documents`: a report or feed document is a secret, whatever the template. */
 const SEGMENTO_DOCUMENTOS = /(?:^|\/)documents(?:\/|$)/;
 
+/**
+ * The methods a capture of each templated operation may name: the template's
+ * name (`classificarCaminho(…).modelo`) → the methods Amazon's model declares on
+ * that path WHOSE ANSWER the template's table describes. The ONE source of the
+ * pairing; only a template with a body table can become a fixture (`sem-tabela`
+ * refuses the rest), so exactly those are listed, and `requisicao.test.ts` pins
+ * the key set against the redactor's templates and every row against the
+ * models' operations. A template without a row refuses every method.
+ *
+ * `/easyShip/2022-03-23/package` serves `GET` getScheduledPackage and `POST`
+ * createScheduledPackage, which answer the same `Package`; its `PATCH`
+ * (updateScheduledPackages) answers `Packages`, a shape the table does not
+ * describe, so it is refused.
+ */
+export const METODOS_DA_OPERACAO_AMAZON: Readonly<Record<string, readonly MetodoCapturaAmazon[]>> =
+  {
+    // orders_2026-01-01
+    searchOrders: ['GET'],
+    getOrder: ['GET'],
+    // deliveryShipmentInvoiceV2022-07-01
+    submitInvoice: ['POST'],
+    getInvoiceStatus: ['GET'],
+    // easyShip_2022-03-23
+    getScheduledPackage: ['GET', 'POST'],
+    createScheduledPackageBulk: ['POST'],
+  };
+
+/** Whether `metodo` is one the operation of template `modelo` is captured under. */
+export function metodoDaOperacaoAmazon(
+  modelo: string | null,
+  metodo: MetodoCapturaAmazon,
+): boolean {
+  if (modelo === null || !Object.hasOwn(METODOS_DA_OPERACAO_AMAZON, modelo)) return false;
+  return (METODOS_DA_OPERACAO_AMAZON[modelo] ?? []).includes(metodo);
+}
+
 /** A real calendar date, `AAAA-MM-DD`; checked in UTC, never a local-time getter. */
 function ehDataValida(s: string): boolean {
   const m = DATA.exec(s);
@@ -324,6 +365,10 @@ function lerLinhaUm(linha: string): LinhaUm {
     problemas.push({ linha: 1, tipo: 'segredo' });
   } else if (classe.tabela === null) {
     problemas.push({ linha: 1, tipo: 'sem-tabela' });
+  } else if (metodo !== null && !metodoDaOperacaoAmazon(classe.modelo, metodo)) {
+    // The table is the operation's: another method's request would be redacted
+    // with it, into a fixture of a request that cannot exist.
+    problemas.push({ linha: 1, tipo: 'metodo-da-operacao' });
   }
   if (metodo === null || status === null || problemas.length > 0) {
     return { problemas, http: null, transporte: null, metodoLido: metodo };

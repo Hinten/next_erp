@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { MODALIDADE_FRETE } from '@delfrance/schemas';
 
+import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
 import type { ShopeeClient } from '@/lib/shopee/client';
 import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
 
@@ -42,6 +43,8 @@ function makeRow(over: Partial<OutroCheckoutRow> = {}): OutroCheckoutRow {
 
 /** A stand-in Shopee client: only its IDENTITY matters (the modal just threads it). */
 const SHOPEE_SENTINEL = { __sentinela: 'shopee' } as unknown as ShopeeClient;
+/** The same, for the Loja Integrada client the soft gates ask (step 15). */
+const LI_SENTINEL = { __sentinela: 'loja-integrada' } as unknown as LojaIntegradaClient;
 
 function modalTree(row: OutroCheckoutRow | null, shopeeClient: ShopeeClient | null) {
   return (
@@ -54,6 +57,7 @@ function modalTree(row: OutroCheckoutRow | null, shopeeClient: ShopeeClient | nu
         freightClient={null}
         mercadoLivreClient={null}
         shopeeClient={shopeeClient}
+        lojaIntegradaClient={LI_SENTINEL}
         formatoDanfe="simplificadoPdf"
         formatoEtiqueta="pdf"
       />
@@ -315,5 +319,43 @@ describe('OutroCheckoutModal — a reimpressão Shopee (#1523)', () => {
         expect.objectContaining({ message: 'Etiqueta enviada para impressão.' }),
       ),
     );
+  });
+});
+
+/**
+ * Master plan step 15: the reprint is where the Loja Integrada soft gate asks,
+ * so this screen must hand the reprint the LI client AND a `confirmarCiente`
+ * that really requires the "Estou ciente do risco" tick.
+ */
+describe('OutroCheckoutModal — a conferência de pagamento da Loja Integrada (step 15)', () => {
+  it('threads the screen Loja Integrada client into the reprint', async () => {
+    renderModal(makeRow({ pedidoId: 'PEDA' }));
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+    await waitFor(() => expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledTimes(1));
+    expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledWith(
+      expect.objectContaining({ pedidoId: 'PEDA', lojaIntegradaClient: LI_SENTINEL }),
+    );
+  });
+
+  it('`ui.confirmarCiente` keeps Continuar disabled until "Estou ciente do risco" is ticked', async () => {
+    let resposta: boolean | undefined;
+    h.reprintCheckoutEtiqueta.mockImplementation(async (args: { ui: EtiquetaProviderUi }) => {
+      resposta = await args.ui.confirmarCiente({
+        titulo: 'Pagamento não confirmado na Loja Integrada',
+        mensagem: 'Reimprimir a etiqueta deste pedido pode levar ao despacho.',
+      });
+      return { status: resposta ? 'opened' : 'skipped' };
+    });
+
+    renderModal(makeRow());
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+    const continuar = await screen.findByRole<HTMLButtonElement>('button', { name: 'Continuar' });
+
+    expect(continuar.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Estou ciente do risco' }));
+    expect(continuar.disabled).toBe(false);
+    fireEvent.click(continuar);
+
+    await waitFor(() => expect(resposta).toBe(true));
   });
 });

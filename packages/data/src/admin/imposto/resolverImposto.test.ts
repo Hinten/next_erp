@@ -240,6 +240,33 @@ describe('pickByOperacao — o fold do escopo da operação (#222)', () => {
 });
 
 describe('trailingSegment — o fold do último segmento (#398)', () => {
+  it('resolves string and legacy object category paths with trailing separators', async () => {
+    for (const categoriaProdutoOuterRef of [
+      'cat-7',
+      'categorias/cat-7/',
+      'documents/categorias/cat-7/',
+      { path: 'documents/categorias/cat-7/' },
+    ]) {
+      const deps = makeDeps({
+        readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef }),
+        readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([impostoCategoriaDoc(BLOB_400)]),
+      });
+      const out = await createImpostoResolver(deps).resolve('p1', null);
+      expect(out?.configuracaoICMS?.csosn).toBe('400');
+      expect(deps.readImpostoCategoriaSubcoll).toHaveBeenCalledWith('cat-7');
+    }
+  });
+
+  it('never looks up a category for a missing segment or nonstring object path', async () => {
+    for (const categoriaProdutoOuterRef of ['/', 'documents', { path: 42 }]) {
+      const deps = makeDeps({
+        readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef }),
+      });
+      expect(await createImpostoResolver(deps).resolve('p1', null)).toBeNull();
+      expect(deps.readImpostoCategoriaSubcoll).not.toHaveBeenCalled();
+    }
+  });
+
   it('PAR: "p1", "produtos/p1" e "documents/produtos/p1" casam o MESMO produto', async () => {
     for (const entrada of ['p1', 'produtos/p1', 'documents/produtos/p1']) {
       const deps = makeDeps({

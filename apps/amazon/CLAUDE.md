@@ -38,8 +38,9 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   `packages/schemas/src/relayAmazon.ts`) is THIN; `lib/amazon/notificacoes/receptor.ts` holds
   every decision, in order: config (503, nothing read) → relay key through the shared
   `verifyStaticSecret` (current AND previous, both always compared; 401, body unread) → body
-  ≤ 256 KiB (`corpo.ts`) → JSON → the `{ body }` wrapper → type + casing (`envelope.ts`: one
-  parser per casing) → `ApplicationId` EXACTLY ours → routing fields by grammar → enqueue. Never a
+  ≤ 2 MiB (`corpo.ts`: twice SQS's 1 MiB maximum — a bound on the read, never a filter on
+  Amazon's input) → JSON → the `{ body }` wrapper → type + casing (`envelope.ts`: one parser per
+  casing) → `ApplicationId` EXACTLY ours → routing fields by grammar → enqueue. Never a
   400/404/413 (D5). One `evento: 'notificacao'` line per delivery, with `chave: atual | anterior`
   after auth; never the seller id, the raw application id, a header or body text.
 - The task payload is ids only, unknown keys STRIPPED, built field by field: a DECLARED departure

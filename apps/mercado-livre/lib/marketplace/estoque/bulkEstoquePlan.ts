@@ -610,6 +610,7 @@ export interface RawStockLinkRow {
 
 /** Raw variação link row joined per child — read defensively. */
 export interface RawVarLinkRow {
+  estado?: unknown;
   itemId?: unknown;
   id?: unknown;
   userProductId?: unknown;
@@ -862,6 +863,7 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
           // resolve would repeat every tick).
           .select(
             'itemId',
+            'estado',
             'id',
             'produtoMercadoLivreOuterRef',
             'status',
@@ -1509,6 +1511,7 @@ export type SendSkipReason =
    */
   | 'anuncio-removido'
   | 'anuncio-em-erro'
+  | 'membro-com-falha-estoque'
   | 'status-nao-enviavel'
   /**
    * ⚠️ **Only reachable while `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED=1`**
@@ -1907,6 +1910,23 @@ export function buildSendTasks(
 
   const tasks: StockSendTaskDraft[] = [];
   const skips: SendSkip[] = [];
+  const memberBlocked = (
+    varLink: RawVarLinkRow,
+    produtoId: string,
+    itemId: string,
+    linkDocId: string,
+  ): boolean => {
+    if (varLink.estado !== ESTADO_PUBLICACAO_ML.erro) return false;
+    skips.push({ produtoId, itemId, linkDocId, reason: 'membro-com-falha-estoque' });
+    console.warn('[mercado-livre] stock-sync: membro com falha de estoque — envio ignorado', {
+      integracaoId: opts.integracaoId,
+      anchorId,
+      produtoId,
+      itemId,
+      linkDocId,
+    });
+    return true;
+  };
   const memberById = new Map(
     [row.anchor, ...row.children].map((member) => [member.produtoId, member] as const),
   );
@@ -2144,6 +2164,7 @@ export function buildSendTasks(
           });
           continue;
         }
+        if (memberBlocked(varLink, child.produtoId, varItemId ?? itemId, linkDocId)) continue;
         // `varItemId ?? itemId`: with a UP id in hand the item is only used for
         // logging, so the family's own id is a fine stand-in.
         emitUp(
@@ -2278,6 +2299,7 @@ export function buildSendTasks(
         skips.push({ produtoId: child.produtoId, reason: 'sem-item-id', linkDocId });
         continue;
       }
+      if (memberBlocked(varLink, child.produtoId, varItemId, linkDocId)) continue;
       if (emittedItemIds.has(varItemId)) continue; // cycle-wide dedup — silent (set above)
       // The MEMBER's own gate. Under User Products a member is its own ML item
       // with its own lifecycle, so the family's folded status cannot answer for
@@ -2315,7 +2337,7 @@ export function buildSendTasks(
         kind: 'variationItem',
         itemId: varItemId,
         userProductId: null, // `PUT /items` on the member; no UP involved
-        varLinkDocId: null,
+        varLinkDocId: typeof varLink.varLinkDocId === 'string' ? varLink.varLinkDocId : null,
         variacaoProdutoId: child.produtoId,
         quantidade,
         variations: null,

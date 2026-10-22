@@ -1,3 +1,4 @@
+import type { ObservedMember } from '../anuncios/itemsStatusSync';
 import type { Firestore } from 'firebase-admin/firestore';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MercadoLivreError, MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
@@ -27,12 +28,13 @@ vi.mock('../anuncios/itemsStatusSync', async (importOriginal) => {
     // `reverificarAnuncio.test.ts` uses — the fold is covered end-to-end against
     // a real FakeDb in `itemsStatusSync.test.ts`, and what these tests own is
     // what the manual push does with the reading it gets back (#1142).
-    applyFamilyStatusAndFold: vi.fn().mockResolvedValue({
+    applyFamilyStatusAndFold: vi.fn(async (_db, _conta, _target, observed: ObservedMember[]) => ({
       outcome: 'synced-family',
       estado: 'p',
       status: 'active',
       subStatus: [],
-    }),
+      membros: observed.map((m) => ({ ...m, estado: null, aplicado: true })),
+    })),
   };
 });
 
@@ -567,6 +569,34 @@ describe('enviarEstoqueManual — re-arming a User-Products família', () => {
 
   const multiget = (entries: Array<{ id: string; status: string }>) =>
     vi.fn().mockResolvedValue(entries.map((e) => ({ code: 200, body: { ...e, sub_status: [] } })));
+
+  it.each([true, false])(
+    'recognizes a member error even while the parent is active (rearm=%s)',
+    async (rearm) => {
+      const row = familiaLatched(['active', 'active']);
+      row.links[0]!.estado = 'p';
+      row.children[0]!.varLinks[0]!.estado = 'E';
+      const deps = baseDeps({
+        fetchFamilies: vi.fn().mockResolvedValue([row]),
+        api: {
+          getMe: vi.fn().mockResolvedValue({ tags: [] }),
+          getItem: vi.fn(),
+          getItemsByIds: multiget([
+            { id: 'MLB-A', status: 'active' },
+            { id: 'MLB-B', status: 'active' },
+          ]),
+        },
+      });
+      const result = await enviarEstoqueManual(
+        fakeDb({ PROD: { paiId: null } }, membrosNoDb),
+        { integracaoId: CONTA, produtoIds: ['PROD'], reenviarComErro: rearm },
+        deps as never,
+      );
+      expect(result.listings.filter((l) => l.outcome === 'enviado')).toHaveLength(rearm ? 2 : 1);
+      expect(deps.api.getItemsByIds).toHaveBeenCalledTimes(rearm ? 1 : 0);
+      expect(deps.fetchFamilies).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('⚠️ patches the MEMBER rows, not just the parent — or it skips what ML just healed', async () => {
     // The failure this pins: `buildSendTasks`' UP branch gates per member on

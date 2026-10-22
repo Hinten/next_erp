@@ -125,6 +125,7 @@ class FakeDb {
         return {
           docs: rows.map(([id, d, colPath]) => ({
             id,
+            updateTime: self.stamp(`${colPath}/${id}`),
             data: () => d,
             exists: true,
             ref: { parent: { parent: { id: parentDocId(colPath) } } },
@@ -1564,6 +1565,30 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       getFreeShippingOptions: vi.fn(async () => ({ coverage: { all_country: {} } })),
     } as unknown as MercadoLivreApi;
   }
+
+  it.each([false, true])(
+    'reimport clears only a failure captured before ML I/O (concurrent=%s)',
+    async (concurrent) => {
+      const db = new FakeDb();
+      const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      const id = expectedChildId(MEMBER_A_ID);
+      const path = `produtos/${id}/variacaoMercadoLivre`;
+      db.seed(path, id, { ...db.docs(path).get(id), estado: 'E', errors: ['old'], causas: [] });
+      if (concurrent) {
+        const original = vi.mocked(api.getItem).getMockImplementation()!;
+        vi.mocked(api.getItem).mockImplementation(async (itemId) => {
+          db.seed(path, id, { ...db.docs(path).get(id), estado: 'E', errors: ['newer'] });
+          return original(itemId);
+        });
+        await expect(importProduto(deps(db, api), MEMBER_A_ID)).rejects.toMatchObject({ code: 9 });
+        expect(db.docs(path).get(id)).toMatchObject({ estado: 'E', errors: ['newer'] });
+      } else {
+        await importProduto(deps(db, api), MEMBER_A_ID);
+        expect(db.docs(path).get(id)).toMatchObject({ estado: null, errors: [], causas: [] });
+      }
+    },
+  );
 
   /**
    * The sole-member pointer (#1398).

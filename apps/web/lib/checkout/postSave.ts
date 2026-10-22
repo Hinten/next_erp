@@ -3,6 +3,7 @@ import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { Pedido } from '@delfrance/schemas';
+import type { LojaIntegradaClient } from '../loja-integrada/client';
 import type { MercadoLivreClient } from '../mercado-livre/client';
 import type { ShopeeClient } from '../shopee/client';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
@@ -43,6 +44,8 @@ export async function runCheckoutPostSave(args: {
   mercadoLivreClient: MercadoLivreClient | null;
   /** Required like the provider dep it feeds — a screen must say which client it threads. */
   shopeeClient: ShopeeClient | null;
+  /** Required like `shopeeClient`: the Loja Integrada paid re-check's soft gates ask it. */
+  lojaIntegradaClient: LojaIntegradaClient | null;
   pedido: Pedido;
   pedidoId: string;
   formatoDanfe: CheckoutDanfeFormat;
@@ -56,6 +59,7 @@ export async function runCheckoutPostSave(args: {
     freightClient,
     mercadoLivreClient,
     shopeeClient,
+    lojaIntegradaClient,
     pedido,
     pedidoId,
     formatoDanfe,
@@ -118,6 +122,7 @@ export async function runCheckoutPostSave(args: {
           nfeClient,
           mercadoLivreClient,
           shopeeClient,
+          lojaIntegradaClient,
           printJob: args.printJobFn ?? printJob,
         },
         ui,

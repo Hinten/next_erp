@@ -40,16 +40,48 @@
  *    A `create` or a merge-`set` carrying it throws: neither is modelled. The
  *    write log keeps the sentinel itself, which a read-modify-write would not;
  *  - `collection().where(campo, '==', valor)`, `where(campo, '<', valor)` (step
- *    3: the shared sweep's lane query), `orderBy`, `limit`, `startAfter(doc)`
- *    and `get()` → `{ docs, empty, size, readTime }` — see "Queries" below.
+ *    3: the shared sweep's lane query), `where(campo, 'in', [...])` (step 5: the
+ *    link-doc lookup over every stored form of the conta ref), `orderBy`,
+ *    `limit`, `startAfter(doc)` and `get()` → `{ docs, empty, size, readTime }`
+ *    — see "Queries" below. Each result doc carries its `ref`, whose
+ *    `parent.parent` is the owning document (`ref.parent.parent.id`);
+ *  - `collectionGroup(id)` (step 5: the link docs under every produto): the
+ *    same query builder over every stored document whose LAST collection
+ *    segment is `id`, at any depth;
+ *  - `batch()` (step 5: the pedido and its pagamentos in ONE commit) — see
+ *    "The batch" below.
  *
  * Everything else — a plain `set`, any other operator, a dotted update key, an
  * `undefined` value, a precondition that is not a stamp, an `orderBy` over a
  * value that is not null/boolean/number/string — throws. That is the Shopee
  * step-8 lesson: a double that silently answers "matches nothing" or "wrote it"
- * for a call it does not model lets every suite read green. Atomic
- * multi-document writes are NOT modelled at all: nothing in this app runs one,
- * and the park is a single-document precondition write.
+ * for a call it does not model lets every suite read green. The only atomic
+ * multi-document write modelled is the batch below; the multi-document
+ * read-and-write API is not, and this app never names it.
+ *
+ * ## The batch — all or nothing, each write under its own precondition
+ *
+ * `batch()` returns `{ create, update, commit }` (`set` and `delete` throw):
+ *
+ *  - `create(ref, data)` and `update(ref, patch, { lastUpdateTime }?)` validate
+ *    their payload when CALLED, as the SDK does (the same refusals as the
+ *    single-document writes), and queue the write. Two writes on one path in
+ *    one batch, a write after `commit` and an EMPTY commit throw: none is
+ *    modelled;
+ *  - `commit()` first runs, in queue order, each path's injected failure and
+ *    its {@link FakeDb.antesDaProximaEscrita} hook — the concurrent writer lands
+ *    there — and THEN checks every write against the store as it now stands: a
+ *    `create` on an existing doc rejects gRPC 6, an `update` under
+ *    `lastUpdateTime` on a stale OR missing doc rejects 9 (the stamp replaces
+ *    the `exists` check, as for a single update), a plain `update` on a missing
+ *    doc rejects 5. The FIRST failure rejects the commit and NOTHING is applied;
+ *  - otherwise every write applies under ONE commit stamp (a commit's writes
+ *    share its time), each logged with the batch's number in `lote`.
+ *
+ * ⚠️ One divergence, on the safe side: a write that changes nothing still takes
+ * the new stamp here. Code that relied on a stamp NOT moving would therefore
+ * fail against this fake, never pass by accident; the emulator suite
+ * (`pedidos/importarPedido.firestore.test.ts`) pins what the server does.
  *
  * ## Queries — the server's semantics, not a convenient approximation
  *
@@ -219,7 +251,10 @@ interface Stored {
 }
 
 /** The operators this fake models (module header). */
-type OperadorFake = '==' | '<';
+type OperadorFake = '==' | '<' | 'in';
+
+/** The SDK's cap on an `in` filter's values. */
+const MAX_VALORES_IN = 30;
 
 interface Filtro {
   campo: string;
@@ -230,6 +265,8 @@ interface Filtro {
 /** Whether a stored value satisfies one filter, with the server's semantics (module header). */
 function satisfaz(armazenado: unknown, f: Filtro): boolean {
   if (f.op === '==') return armazenado === f.valor;
+  // `in`: equality with ANY of the values (`===`), so a missing field never matches.
+  if (f.op === 'in') return (f.valor as readonly unknown[]).some((v) => armazenado === v);
   // `<`: same type only — a null, a missing field or another type never matches.
   if (typeof f.valor === 'number') return typeof armazenado === 'number' && armazenado < f.valor;
   return typeof armazenado === 'string' && armazenado < (f.valor as string);
@@ -248,11 +285,16 @@ export interface EscritaFake {
   /** The payload as handed over (`null` for a delete). */
   readonly dados: DocData | null;
   readonly writeTime: CarimboFake;
+  /** The batch it landed in (1, 2, … per fake); absent on a single-document write. */
+  readonly lote?: number;
 }
 
 /** One query, as {@link FakeDb.consultas} records it. */
 export interface ConsultaFake {
+  /** The collection path — or, for a group query, the collection id. */
   readonly colecao: string;
+  /** A `collectionGroup()` query. */
+  readonly grupo?: true;
   readonly filtros: readonly [string, OperadorFake, unknown][];
   readonly ordens: readonly [string, 'asc' | 'desc'][];
   readonly limite: number | null;
@@ -312,6 +354,101 @@ interface EstadoConsulta {
   readonly apos: Cursor | null;
 }
 
+/** A write's precondition, as the single-document `update` and the batch take it. */
+interface PrecondicaoFake {
+  readonly lastUpdateTime?: unknown;
+}
+
+/** The refusals a `create` payload meets when it is handed over (module header). */
+function validarCriacao(caminho: string, data: DocData): void {
+  recusarIndefinido(data, caminho);
+  if (Object.values(data).some(ehIncremento)) {
+    throw new Error('FakeDb: increment em create — use um número');
+  }
+  if (Object.values(data).some(ehUniao)) {
+    throw new Error('FakeDb: arrayUnion em create não é modelado — use uma lista');
+  }
+}
+
+/** The refusals an `update` patch and its precondition meet when handed over. */
+function validarAtualizacao(caminho: string, patch: DocData, precondicao?: PrecondicaoFake): void {
+  recusarIndefinido(patch, caminho);
+  for (const [chave, valor] of Object.entries(patch)) {
+    // The real SDK refuses `undefined` inside the union's elements too.
+    if (ehUniao(valor)) {
+      valor.__arrayUnion.forEach((e, i) => recusarIndefinido(e, `${caminho}.${chave}[${i}]`));
+    }
+  }
+  if (Object.keys(patch).length === 0) throw new Error('FakeDb: update vazio');
+  for (const chave of Object.keys(patch)) {
+    if (chave.includes('.')) {
+      throw new Error(`FakeDb: chave com ponto em update ('${chave}') não é modelada`);
+    }
+  }
+  if (precondicao !== undefined) {
+    const chaves = Object.keys(precondicao);
+    if (chaves.length !== 1 || chaves[0] !== 'lastUpdateTime') {
+      throw new Error(`FakeDb: precondição não modelada: ${chaves.join(', ')}`);
+    }
+    if (!ehCarimbo(precondicao.lastUpdateTime)) {
+      throw new Error('FakeDb: lastUpdateTime precisa ser um carimbo (Timestamp)');
+    }
+  }
+}
+
+/**
+ * Why an `update` cannot land on the stored state, or `null`: a stamp that is
+ * stale or names a document that is gone is 9 (never 5 — the stamp replaces
+ * the SDK's `exists` check), a plain update of a missing document is 5.
+ */
+function recusaDeAtualizacao(
+  atual: Stored | undefined,
+  precondicao: PrecondicaoFake | undefined,
+): Error | null {
+  if (precondicao?.lastUpdateTime !== undefined) {
+    if (atual === undefined || !atual.updateTime.isEqual(precondicao.lastUpdateTime)) {
+      return grpc(9, 'FAILED_PRECONDITION');
+    }
+  }
+  if (atual === undefined) return grpc(5, 'NOT_FOUND');
+  return null;
+}
+
+/** One queued write of a batch. */
+type EscritaDoLote =
+  | { readonly verbo: 'create'; readonly caminho: string; readonly dados: DocData }
+  | {
+      readonly verbo: 'update';
+      readonly caminho: string;
+      readonly dados: DocData;
+      readonly precondicao: PrecondicaoFake | undefined;
+    };
+
+/** A document ref's path, as the batch reads it off the ref it is handed. */
+function caminhoDoRef(ref: unknown): string {
+  const caminho = (ref as { path?: unknown } | null)?.path;
+  if (typeof caminho !== 'string' || caminho === '') {
+    throw new Error('FakeDb: o lote só aceita uma referência de documento deste fake');
+  }
+  return caminho;
+}
+
+/** `ref.parent` (the collection) and `ref.parent.parent` (its owning doc, or `null` at the root). */
+function paiDoCaminho(caminho: string): {
+  readonly id: string;
+  readonly path: string;
+  readonly parent: { readonly id: string; readonly path: string } | null;
+} {
+  const segmentos = caminho.split('/');
+  const colecao = segmentos.slice(0, -1);
+  const dono = segmentos.slice(0, -2);
+  return {
+    id: colecao.at(-1) ?? '',
+    path: colecao.join('/'),
+    parent: dono.length === 0 ? null : { id: dono.at(-1) ?? '', path: dono.join('/') },
+  };
+}
+
 export class FakeDb {
   private readonly store = new Map<string, Stored>();
   private relogioUs = INICIO_US;
@@ -319,6 +456,7 @@ export class FakeDb {
   private readonly falhasDeLeitura = new Map<string, Error>();
   private readonly falhasDeEscrita = new Map<string, Error>();
   private readonly falhasDeConsulta = new Map<string, Error>();
+  private lotes = 0;
 
   /** Every write that LANDED, in order. A refused write is not here. */
   readonly escritas: EscritaFake[] = [];
@@ -409,13 +547,15 @@ export class FakeDb {
     verbo: EscritaFake['verbo'],
     caminho: string,
     dados: DocData | null,
+    noLote?: { readonly writeTime: CarimboFake; readonly lote: number },
   ): CarimboFake {
-    const writeTime = this.proximoCarimbo();
+    const writeTime = noLote?.writeTime ?? this.proximoCarimbo();
     this.escritas.push({
       verbo,
       caminho,
       dados: dados === null ? null : structuredClone(dados),
       writeTime,
+      ...(noLote === undefined ? {} : { lote: noLote.lote }),
     });
     return writeTime;
   }
@@ -439,6 +579,7 @@ export class FakeDb {
     return {
       id,
       path: caminho,
+      parent: paiDoCaminho(caminho),
       get: () => {
         this.leituras.push(caminho);
         const falha = this.falhasDeLeitura.get(caminho);
@@ -457,49 +598,19 @@ export class FakeDb {
         recusarIndefinido(data, caminho);
         await this.antesDeEscrever(caminho);
         if (this.store.has(caminho)) throw grpc(6, 'ALREADY_EXISTS');
-        if (Object.values(data).some(ehIncremento)) {
-          throw new Error('FakeDb: increment em create — use um número');
-        }
-        if (Object.values(data).some(ehUniao)) {
-          throw new Error('FakeDb: arrayUnion em create não é modelado — use uma lista');
-        }
+        validarCriacao(caminho, data);
         const writeTime = this.registrar('create', caminho, data);
         this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
         return { writeTime };
       },
-      update: async (patch: DocData, precondicao?: { lastUpdateTime?: unknown }) => {
-        recusarIndefinido(patch, caminho);
-        for (const [chave, valor] of Object.entries(patch)) {
-          // The real SDK refuses `undefined` inside the union's elements too.
-          if (ehUniao(valor)) {
-            valor.__arrayUnion.forEach((e, i) => recusarIndefinido(e, `${caminho}.${chave}[${i}]`));
-          }
-        }
-        if (Object.keys(patch).length === 0) throw new Error('FakeDb: update vazio');
-        for (const chave of Object.keys(patch)) {
-          if (chave.includes('.')) {
-            throw new Error(`FakeDb: chave com ponto em update ('${chave}') não é modelada`);
-          }
-        }
-        if (precondicao !== undefined) {
-          const chaves = Object.keys(precondicao);
-          if (chaves.length !== 1 || chaves[0] !== 'lastUpdateTime') {
-            throw new Error(`FakeDb: precondição não modelada: ${chaves.join(', ')}`);
-          }
-          if (!ehCarimbo(precondicao.lastUpdateTime)) {
-            throw new Error('FakeDb: lastUpdateTime precisa ser um carimbo (Timestamp)');
-          }
-        }
+      update: async (patch: DocData, precondicao?: PrecondicaoFake) => {
+        validarAtualizacao(caminho, patch, precondicao);
         await this.antesDeEscrever(caminho);
         const atual = this.store.get(caminho);
-        if (precondicao?.lastUpdateTime !== undefined) {
-          // The stamp REPLACES the SDK's `exists` precondition, so a missing
-          // document fails the stamp: 9, never 5 (module header).
-          if (atual === undefined || !atual.updateTime.isEqual(precondicao.lastUpdateTime)) {
-            throw grpc(9, 'FAILED_PRECONDITION');
-          }
-        }
-        if (atual === undefined) throw grpc(5, 'NOT_FOUND');
+        // The stamp REPLACES the SDK's `exists` precondition, so a missing
+        // document fails the stamp: 9, never 5 (module header).
+        const recusa = recusaDeAtualizacao(atual, precondicao);
+        if (recusa !== null || atual === undefined) throw recusa ?? grpc(5, 'NOT_FOUND');
         const writeTime = this.registrar('update', caminho, patch);
         this.store.set(caminho, { data: this.aplicar(atual.data, patch), updateTime: writeTime });
         return { writeTime };
@@ -561,7 +672,12 @@ export class FakeDb {
   }
 
   collection(colecao: string) {
-    const raiz = this.consulta(colecao, { filtros: [], ordens: [], limite: null, apos: null });
+    const raiz = this.consulta(colecao, false, {
+      filtros: [],
+      ordens: [],
+      limite: null,
+      apos: null,
+    });
     return {
       ...raiz,
       doc: (id?: string) => {
@@ -573,17 +689,96 @@ export class FakeDb {
     };
   }
 
+  /** Every stored document whose LAST collection segment is `idColecao`, at any depth (module header). */
+  collectionGroup(idColecao: string) {
+    if (idColecao === '' || idColecao.includes('/')) {
+      throw new Error('FakeDb: collectionGroup() precisa de um id de coleção, sem barra');
+    }
+    return this.consulta(idColecao, true, { filtros: [], ordens: [], limite: null, apos: null });
+  }
+
+  /** A batch: all or nothing, each write under its own precondition (module header). */
+  batch() {
+    const fila: EscritaDoLote[] = [];
+    let comprometido = false;
+    const enfileirar = (escrita: EscritaDoLote) => {
+      if (comprometido) throw new Error('FakeDb: escrita num lote já enviado');
+      if (fila.some((e) => e.caminho === escrita.caminho)) {
+        throw new Error(`FakeDb: duas escritas em ${escrita.caminho} no mesmo lote não é modelado`);
+      }
+      fila.push(escrita);
+    };
+    const lote = {
+      create: (ref: unknown, data: DocData) => {
+        const caminho = caminhoDoRef(ref);
+        validarCriacao(caminho, data);
+        enfileirar({ verbo: 'create', caminho, dados: structuredClone(data) });
+        return lote;
+      },
+      update: (ref: unknown, patch: DocData, precondicao?: PrecondicaoFake) => {
+        const caminho = caminhoDoRef(ref);
+        validarAtualizacao(caminho, patch, precondicao);
+        // The stamp object is kept as given: `isEqual` compares it at commit.
+        enfileirar({ verbo: 'update', caminho, dados: patch, precondicao });
+        return lote;
+      },
+      set: () => {
+        throw new Error('FakeDb: set() num lote não é modelado');
+      },
+      delete: () => {
+        throw new Error('FakeDb: delete() num lote não é modelado');
+      },
+      commit: async () => {
+        if (comprometido) throw new Error('FakeDb: lote enviado duas vezes');
+        if (fila.length === 0) throw new Error('FakeDb: commit de um lote vazio não é modelado');
+        comprometido = true;
+        // The concurrent writers land first, then every write meets the store as it is.
+        for (const e of fila) await this.antesDeEscrever(e.caminho);
+        for (const e of fila) {
+          const atual = this.store.get(e.caminho);
+          if (e.verbo === 'create') {
+            if (atual !== undefined) throw grpc(6, 'ALREADY_EXISTS');
+          } else {
+            const recusa = recusaDeAtualizacao(atual, e.precondicao);
+            if (recusa !== null) throw recusa;
+          }
+        }
+        // All of them, under ONE commit stamp.
+        this.lotes += 1;
+        const noLote = { writeTime: this.proximoCarimbo(), lote: this.lotes };
+        for (const e of fila) {
+          this.registrar(e.verbo, e.caminho, e.dados, noLote);
+          const anterior = e.verbo === 'create' ? undefined : this.store.get(e.caminho)?.data;
+          const dados =
+            e.verbo === 'create' ? structuredClone(e.dados) : this.aplicar(anterior, e.dados);
+          this.store.set(e.caminho, { data: dados, updateTime: noLote.writeTime });
+        }
+        return fila.map(() => ({ writeTime: noLote.writeTime }));
+      },
+    };
+    return lote;
+  }
+
   /** One immutable query: every builder method returns a NEW one (module header). */
-  private consulta(colecao: string, estado: EstadoConsulta) {
+  private consulta(colecao: string, grupo: boolean, estado: EstadoConsulta) {
     const derivar = (mudanca: Partial<EstadoConsulta>) =>
-      this.consulta(colecao, { ...estado, ...mudanca });
+      this.consulta(colecao, grupo, { ...estado, ...mudanca });
     return {
       where: (campo: string, op: string, valor: unknown) => {
-        if (op !== '==' && op !== '<') {
+        if (op !== '==' && op !== '<' && op !== 'in') {
           throw new Error(`FakeDb: operador '${op}' em where('${campo}') não é modelado`);
         }
         if (op === '<' && typeof valor !== 'number' && typeof valor !== 'string') {
           throw new Error(`FakeDb: '<' em where('${campo}') só é modelado para número ou texto`);
+        }
+        if (
+          op === 'in' &&
+          (!Array.isArray(valor) || valor.length === 0 || valor.length > MAX_VALORES_IN)
+        ) {
+          // The SDK refuses an empty or oversized disjunction before any read.
+          throw new Error(
+            `FakeDb: 'in' em where('${campo}') precisa de 1 a ${String(MAX_VALORES_IN)} valores`,
+          );
         }
         return derivar({ filtros: [...estado.filtros, { campo, op, valor }] });
       },
@@ -615,31 +810,47 @@ export class FakeDb {
         }
         return derivar({ apos: { id: doc.id, data: structuredClone(data ?? {}) } });
       },
-      get: () => this.buscar(colecao, estado),
+      get: () => this.buscar(colecao, grupo, estado),
     };
   }
 
-  private buscar(colecao: string, estado: EstadoConsulta) {
+  private buscar(colecao: string, grupo: boolean, estado: EstadoConsulta) {
     const { filtros, ordens, limite, apos } = estado;
     const falha = this.falhasDeConsulta.get(colecao);
     if (falha) return Promise.reject(falha);
     this.consultas.push({
       colecao,
+      ...(grupo ? { grupo: true as const } : {}),
       filtros: filtros.map((f) => [f.campo, f.op, f.valor] as [string, OperadorFake, unknown]),
       ordens: ordens.map((o) => [o.campo, o.direcao] as [string, 'asc' | 'desc']),
       limite,
       apos: apos === null ? null : apos.id,
     });
     const prefixo = `${colecao}/`;
+    // A group query: the last collection segment, at any depth. Otherwise the direct children.
+    const naColecao = (p: string): boolean => {
+      if (!grupo) return p.startsWith(prefixo) && !p.slice(prefixo.length).includes('/');
+      const segmentos = p.split('/');
+      return segmentos.length % 2 === 0 && segmentos.at(-2) === colecao;
+    };
     const encontrados = [...this.store.entries()]
-      .filter(([p]) => p.startsWith(prefixo) && !p.slice(prefixo.length).includes('/'))
+      .filter(([p]) => naColecao(p))
       // Strict equality, or a same-type `<`, on the stored value: a document
       // LACKING the field never matches, like real Firestore.
       .filter(([, s]) => filtros.every((f) => satisfaz(s.data[f.campo], f)))
       // `orderBy` filters for existence: a document lacking the field is
       // dropped, while a stored `null` is kept.
       .filter(([, s]) => ordens.every((o) => s.data[o.campo] !== undefined))
-      .map(([p, stored]) => ({ id: p.slice(prefixo.length), data: stored.data, stored }));
+      // A group query ties on the FULL path (the server's order); a collection on the id.
+      .map(([p, stored]) => ({
+        id: grupo ? p : p.slice(prefixo.length),
+        caminho: p,
+        data: stored.data,
+        stored,
+      }));
+    if (grupo && apos !== null) {
+      throw new Error('FakeDb: startAfter() numa consulta de grupo não é modelado');
+    }
     // Order, THEN cursor, THEN cap — the order the server applies them in.
     const ordenados = [...encontrados].sort((a, b) => compararPosicoes(a, b, ordens));
     // Seek past the cursor's VALUES — the cursor document itself need not
@@ -649,9 +860,16 @@ export class FakeDb {
         ? ordenados
         : ordenados.filter((linha) => compararPosicoes(linha, apos, ordens) > 0);
     const limitados = limite === null ? aPartirDe : aPartirDe.slice(0, limite);
-    const docs = limitados.map(({ id, stored }) => {
+    const docs = limitados.map(({ caminho, stored }) => {
       const dados = structuredClone(stored.data);
-      return { id, exists: true, updateTime: stored.updateTime, data: () => dados };
+      const id = caminho.split('/').at(-1) ?? '';
+      return {
+        id,
+        ref: this.docRef(caminho, id),
+        exists: true,
+        updateTime: stored.updateTime,
+        data: () => dados,
+      };
     });
     return Promise.resolve({
       docs,

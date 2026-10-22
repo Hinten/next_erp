@@ -131,9 +131,13 @@
  * that CHANGES the price, because a `preco-igual` send writes nothing (S4). The
  * item's refusal fields are cleared by a null write, not expired by a stamp,
  * so a refusal that lands after a clean clear stays beside a newer
- * `precoEnviadoEm`: step 21's reader must show the item's refusal only while
+ * `precoEnviadoEm`: step 21's reader shows the item's refusal only while
  * `precoRecusaEm >= (precoEnviadoEm ?? 0)` — a comparison that survives this
- * race where the null-clear does not.
+ * race where the null-clear does not — and holds a model's refusal to its own
+ * `precoEnviadoEm` AND to the item's (the listing anchor, which only a clean
+ * send stamps). The readers are `recusaPrecoDoAnuncioShopeeLegivel` and
+ * `recusaPrecoDoModeloShopeeLegivel` (`@delfrance/schemas`
+ * `shopeeLinkLeitura.ts`, register 177; a tie shows the refusal).
  *
  * ## ⚠️ THE ACCOUNTING INVARIANT
  *

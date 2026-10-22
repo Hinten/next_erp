@@ -11,15 +11,22 @@
  * order (D13), so nothing here maps a body. The shapes are
  * `packages/schemas/src/notificacaoLojaIntegrada.ts`.
  *
- * ## The task makes NO Loja Integrada call in step 3
+ * ## The importer seam
  *
- * The importer is a SEAM ({@link DESTINO_TIPO_LI}), empty until step 5 fills it.
- * The `LIB` functions take it as a required dependency (`deps.importador`), and
+ * The importer is a SEAM ({@link DESTINO_TIPO_LI}), filled in step 5 with the
+ * order import (`pedidos/importarPedido.ts`, {@link importarPedidoLi}). The
+ * `LIB` functions take it as a required dependency (`deps.importador`), and
  * only the functions codebase's composition roots read the table
- * ({@link importadorPedidoLi}) — so a test injects a fake importer, and step 5
- * fills the table without editing the task or the poller. With the seam empty
- * the outcome is `importador-ausente`, which PARKS: nothing could ever process
- * it, so it must not spend retries.
+ * ({@link importadorPedidoLi}) — so a test injects a fake importer, and filling
+ * the table edited neither the task nor the poller. An importer that is absent
+ * (a test's `null`, or a `tipo` no step has filled) answers
+ * `importador-ausente`, which PARKS: nothing could ever process it, so it must
+ * not spend retries.
+ *
+ * ⚠️ Filling the seam made nothing call Loja Integrada (D17): every run loads
+ * its context FIRST, and the context refuses unless the read switch is exactly
+ * `on` — so until the window a run DEFERS (`adiado/chamadas-desligadas`) before
+ * any Firestore read, and the importer never starts.
  *
  * ## The order of one run ({@link processarNotificacaoLi})
  *
@@ -40,13 +47,42 @@
  *
  * | outcome | task | hot sweep | deferred sweep |
  * | --- | --- | --- | --- |
- * | `importado` | resolve | delete | delete |
+ * | `importado`, `sem-mudanca`, `obsoleto`, `hub`, `situacao-desconhecida` (the importer) | resolve | delete | delete |
  * | `conta-inexistente` | drop | delete | delete |
  * | `adiado/<motivo>` | defer | migrate to `deferred`, `tentativas` 0 | stays deferred; parks at 7 |
  * | `pedido-inexistente` | park | park | park |
  * | `recusa-deterministica/<classe>[/<status>]` | park | park | park |
  * | `importador-ausente` | park | park | park |
- * | thrown (429, 5xx, network, timeout, our config, gRPC, unknown) | queue backoff, then `failed` | `failed`, parks at 5 | GRADUATES to the hot lane |
+ * | thrown (429, 5xx, network, timeout, our config, gRPC, unknown) | queue backoff, then `failed` | `failed`, parks at 5 with an ERROR line | GRADUATES to the hot lane |
+ * | thrown `LiPedidoPagoSemEnderecoError` (step 5: a paid order carrying no CEP at all) | the same | the same, and the park at 5 FAILS LOUDLY (its own line and an aviso) | the same |
+ *
+ * ## Attempts exhausted: the one loud failure
+ *
+ * Nothing here counts attempts. The shared pipeline parks a THROWN failure at
+ * its cap and calls `onRetriesExhausted` once the park landed — its signal for
+ * that one kind of park ({@link criarPipelineLi} binds it to
+ * {@link sinalizarEsgotamentoLi}); a RETURNED park is the outcome's own record
+ * and signals nothing. A parked row is terminal and holds an order nobody
+ * imported, so every park of a failure the RUN threw (the shared `process`,
+ * {@link processarNotificacaoLi}) is an ERROR line here:
+ *  - the importer's paid-without-address refusal
+ *    (`pedidos/pedidoPagoSemEndereco.ts`): its own ERROR line with ids only,
+ *    then the open `lojaIntegradaPedidoPagoSemEndereco` aviso;
+ *  - any other thrown failure (a 429, a 5xx, a timeout, gRPC…): one generic
+ *    ERROR line — the conta, the numero, the origin and the error's CLASS,
+ *    never its message — and no aviso; the row's `erro` stays the record.
+ *    That includes a paid order whose LAST run met a transient after earlier
+ *    address refusals (the residue `pedidoPagoSemEndereco.ts` names).
+ *
+ * ⚠️ Not every thrown park: the core signals only a throw from `process`. A
+ * row that no longer REHYDRATES (the strict `fromDoc`, {@link configLi})
+ * throws before any run, so it parks at the same cap with no payload to hand
+ * over — no ERROR line, no aviso — and it too holds an order nobody imported.
+ * A store write that failed after the run returned (the resolve's delete)
+ * parks the same silent way, though that run did its work. Each shows only as
+ * the row's document id in the sweep's per-doc failures WARNING
+ * (`functions/src/index.ts`), logged on every failed pass, and the row's
+ * `erro` is the record.
  *
  * ⚠️ A PARKED CONTA DEFERS — it never drops. Tasks enqueued before a token died
  * are already behind the poller's cursor, so dropping them would lose those
@@ -73,9 +109,10 @@
  * And the REVERSE direction: the re-drive's own write carries no precondition
  * (the shared store's `redrive`, never reordered here — plan section 4), so a
  * PARK that lands between the re-drive's query and its write of that row (the
- * deferred sweep's 7th pass, an `importador-ausente` park once the conta reads
- * clean, or a hot-sweep park of a row graduated in between) is reset to the hot
- * lane as `failed`/0/0. It costs one extra attempt, which parks again or imports.
+ * deferred sweep's 7th pass, a park the import answers once the conta reads
+ * clean — `pedido-inexistente`, a deterministic refusal —, or a hot-sweep park
+ * of a row graduated in between) is reset to the hot lane as `failed`/0/0. It
+ * costs one extra attempt, which parks again or imports.
  * The window runs from the query to that row's write round — at most
  * `ceil(LIMITE_REDRIVE_LI / CONCORRENCIA_REDRIVE_LI)` rounds, since the writes go
  * {@link CONCORRENCIA_REDRIVE_LI} at a time. If it ever matters: condition each
@@ -98,6 +135,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { ZodError, z } from 'zod';
+import type { ViaCepClient } from '@delfrance/core/cep';
 import { notificacaoLojaIntegradaCollection } from '@delfrance/data/admin/collections';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import {
@@ -139,6 +177,11 @@ import { type TratarFalhaDeps, tratarFalhaDeAutenticacao } from '../core/estacio
 import type { OpcoesObservadorLi } from '../core/log';
 import { ritmoDeLeituraLi } from '../core/ritmo';
 import type { AmbienteLi } from '../core/valvulas';
+import { importarPedidoLi } from '../pedidos/importarPedido';
+import {
+  LiPedidoPagoSemEnderecoError,
+  sinalizarPedidoPagoSemEnderecoLi,
+} from '../pedidos/pedidoPagoSemEndereco';
 
 // The retry caps are the SHARED pipeline's — re-exported so this module stays
 // the one import site for the channel's callers.
@@ -237,11 +280,26 @@ export type MotivoAdiamentoLi = (typeof MOTIVO_ADIAMENTO_LI)[keyof typeof MOTIVO
 export type ClasseRecusaLi = 'LiHttpError' | 'LiSchemaError' | 'LiPaginacaoError' | 'ZodError';
 
 /**
- * What the importer returns. Step 3 declares only the success kind; step 5 adds
- * `sem-mudanca`, `hub` and `situacao-desconhecida`, and {@link toDispositionLi}
- * stops compiling until each is mapped.
+ * What the importer returns (step 5, `pedidos/importarPedido.ts`) — every kind a
+ * deterministic SUCCESS, so each one resolves:
+ *
+ *  - `importado` — a batch wrote the pedido and/or its pagamentos;
+ *  - `sem-mudanca` — the order already says everything the pedido holds;
+ *  - `obsoleto` — the stored watermark is strictly newer: NOTHING was written;
+ *  - `hub` — a hub-marked order (D5): no pedido, no pagamento, an aviso;
+ *  - `situacao-desconhecida` — a codigo the shared table does not know: the
+ *    order was imported (or left unchanged) with the importer's error text and
+ *    an aviso.
+ *
+ * A kind added later stops {@link toDispositionLi} from compiling until it is
+ * mapped.
  */
-export type ResultadoImportacaoLi = { readonly kind: 'importado' };
+export type ResultadoImportacaoLi =
+  | { readonly kind: 'importado' }
+  | { readonly kind: 'sem-mudanca' }
+  | { readonly kind: 'obsoleto' }
+  | { readonly kind: 'hub' }
+  | { readonly kind: 'situacao-desconhecida' };
 
 export type ResultadoNotificacaoLi =
   | ResultadoImportacaoLi
@@ -255,27 +313,66 @@ export type ResultadoNotificacaoLi =
     }
   | { readonly kind: 'importador-ausente' };
 
+/** What the importer's own log lines go to: ids and counts only, never a value. */
+export interface LoggerImportadorLi {
+  warn(msg: string, meta?: Record<string, unknown>): void;
+  info?(msg: string, meta?: Record<string, unknown>): void;
+  /**
+   * The ERROR line of a paid order whose retries ran out without an address
+   * (`pedidos/pedidoPagoSemEndereco.ts`); without it that line goes to
+   * `console.error`, which is ERROR severity too.
+   */
+  error?(msg: string, meta?: Record<string, unknown>): void;
+}
+
+/**
+ * What one import needs besides the db, the context and the payload — bound by
+ * {@link processarNotificacaoLi} from this run's {@link DepsTarefaLi}, so the
+ * queue and the sweep hand the importer the same runtime.
+ */
+export interface DepsImportadorLi {
+  /** Now, in MILLISECONDS — read ONCE per import (the importer converts it, through `dataLi.ts`). */
+  readonly agoraMs: () => number;
+  /** `(...e) => FieldValue.arrayUnion(...e)`: the freight `mapa` registration. */
+  readonly arrayUnion: (...elementos: unknown[]) => unknown;
+  /** `(by) => FieldValue.increment(by)`: the avisos' counter. */
+  readonly increment: (by: number) => unknown;
+  readonly logger?: LoggerImportadorLi;
+  /** The CEP recovery of an endereço whose estado is unknown. */
+  readonly viaCep: ViaCepClient;
+  /**
+   * The Cloud Tasks attempt (0-based), or `null` in a sweep run: the situação
+   * history is read STRICTLY on attempts 0 and 1 only (`modoHistoricoLi`).
+   */
+  readonly tentativa: number | null;
+}
+
 /** The step-5 importer: one order, re-fetched through the context's (paced) client. */
 export type ImportadorPedidoLi = (
   db: Firestore,
   contexto: ContextoLojaIntegrada,
   payload: PayloadNotificacaoLi,
+  deps: DepsImportadorLi,
 ) => Promise<ResultadoImportacaoLi>;
 
 /**
- * The importer SEAM, keyed by task `tipo`. Empty in step 3: step 5 fills
- * `pedido`, and the functions codebase's roots pick it up through
- * {@link importadorPedidoLi} with no edit of their own.
+ * The importer SEAM, keyed by task `tipo`. Step 5 filled `pedido` with the
+ * order import, {@link importarPedidoLi} — a function DECLARATION, so the
+ * binding is initialised before any module body runs and this table never
+ * reads it uninitialised, whatever order the modules load in. The functions
+ * codebase's roots pick it up through {@link importadorPedidoLi} with no edit of
+ * their own.
  *
  * ⚠️ A typed TABLE, never `const X: T | null = null`: TypeScript narrows such a
- * constant to `null` at every use, which would make step 5's non-null branch
- * `never` and fail to compile the day it is filled.
+ * constant at every use. The value type stays nullable, so a `tipo` a later step
+ * adds may start empty, and the roots and the poller's importer gate keep
+ * reading the table rather than assuming it is full.
  */
 export const DESTINO_TIPO_LI: Readonly<Record<TipoTarefaLi, ImportadorPedidoLi | null>> = {
-  [TIPO_TAREFA_LI.pedido]: null,
+  [TIPO_TAREFA_LI.pedido]: importarPedidoLi,
 };
 
-/** The pedido importer, or `null` while the seam is empty. Read ONLY by composition roots. */
+/** The pedido importer, or `null` for an empty seam. Read ONLY by composition roots. */
 export function importadorPedidoLi(): ImportadorPedidoLi | null {
   return DESTINO_TIPO_LI[TIPO_TAREFA_LI.pedido];
 }
@@ -293,6 +390,10 @@ function motivoDaRecusa(classe: ClasseRecusaLi, status: number | null): string {
 export function toDispositionLi(r: ResultadoNotificacaoLi): NotificationDisposition {
   switch (r.kind) {
     case 'importado':
+    case 'sem-mudanca':
+    case 'obsoleto':
+    case 'hub':
+    case 'situacao-desconhecida':
       return { kind: 'resolve', label: r.kind };
     case 'conta-inexistente':
       return { kind: 'drop', reason: r.kind, label: r.kind };
@@ -414,6 +515,11 @@ export async function classificarFalhaLi(
   if (err instanceof LiPaginacaoError) return recusa('LiPaginacaoError', null);
   if (err instanceof ZodError) return recusa('ZodError', null);
 
+  // A paid order carrying no CEP at all is RETRIED, never parked by this
+  // table: the platform may fill the address, and the pipeline's own park at
+  // its cap is what fails it loudly (`onRetriesExhausted`, below).
+  if (err instanceof LiPedidoPagoSemEnderecoError) return null;
+
   // Network and timeout, `LiConfigError`, the park's contention, gRPC, anything
   // unknown: rethrown by the caller.
   return null;
@@ -431,12 +537,38 @@ export interface DepsTarefaLi extends TratarFalhaDeps {
   readonly ambiente: AmbienteLi;
   /** The importer seam: {@link importadorPedidoLi} in the roots, a fake in tests. */
   readonly importador: ImportadorPedidoLi | null;
+  /** `(...e) => FieldValue.arrayUnion(...e)` in the roots, the fake's sentinel in tests. */
+  readonly arrayUnion: (...elementos: unknown[]) => unknown;
+  /** The importer's CEP recovery: `createViaCepClient()` in the roots, a fake in tests. */
+  readonly viaCep: ViaCepClient;
+  /**
+   * The run's ONE logger — `TratarFalhaDeps.logger` re-declared with an
+   * optional `info`, never a second sink: the park's lines and the importer's
+   * (ids and counts only) both go to it.
+   */
+  readonly logger?: LoggerImportadorLi;
   /** The sleep the pacer uses: `setTimeout` in the roots, a recording fake in tests. */
   readonly esperar: (ms: number) => Promise<void>;
   /** The flow, the Cloud Tasks attempt and task id (`null` in a sweep), a test sink. */
   readonly registro: RegistroTarefaLi;
   /** Test seam, forwarded to the context's client. */
   readonly fetch?: typeof globalThis.fetch;
+}
+
+/**
+ * The importer's deps for this run, from the run's own: the same clock, the
+ * same sentinels, and the Cloud Tasks attempt off `registro` (`null` in a sweep,
+ * whose `registro` carries none).
+ */
+export function depsDoImportadorLi(deps: DepsTarefaLi): DepsImportadorLi {
+  return {
+    agoraMs: deps.agoraMs,
+    arrayUnion: deps.arrayUnion,
+    increment: deps.increment,
+    logger: deps.logger,
+    viaCep: deps.viaCep,
+    tentativa: deps.registro.tentativa ?? null,
+  };
 }
 
 /**
@@ -457,7 +589,7 @@ export async function processarNotificacaoLi(
       fetch: deps.fetch,
     });
     if (deps.importador === null) return { kind: 'importador-ausente' };
-    return await deps.importador(db, contexto, payload);
+    return await deps.importador(db, contexto, payload, depsDoImportadorLi(deps));
   } catch (err) {
     const desfecho = await classificarFalhaLi(db, err, contexto, deps);
     if (desfecho === null) throw err;
@@ -479,8 +611,12 @@ function processoIndisponivel(): Promise<ResultadoNotificacaoLi> {
  */
 function configLi(
   processar: (db: Firestore, payload: PayloadNotificacaoLi) => Promise<ResultadoNotificacaoLi>,
+  aoEsgotar?: (db: Firestore, payload: PayloadNotificacaoLi, err: Error) => Promise<void>,
 ): NotificationPipelineConfig<PayloadNotificacaoLi, ResultadoNotificacaoLi> {
   return {
+    // The pipeline's signal for a thrown failure it parked at the cap (module
+    // header); absent on the storage-only pipeline, which never sweeps.
+    ...(aoEsgotar === undefined ? {} : { onRetriesExhausted: aoEsgotar }),
     channel: CANAL_LOG_LI,
     collection: notificacaoLojaIntegradaCollection,
     taskSchema: tarefaLeituraLiSchema,
@@ -488,7 +624,8 @@ function configLi(
     dedupKeyOf: dedupKeyLi,
     toDocFields: camposDoDocumentoLi,
     // STRICT, from the raw document: a row that no longer parses throws, and
-    // the sweep's per-row boundary marks it (parking it at the cap).
+    // the sweep's per-row boundary marks it (parking it at the cap, with NO
+    // exhaustion signal: only its document id in the WARNING — module header).
     fromDoc: (_parsed, raw) => tarefaLeituraLiSchema.parse(raw),
     process: processar,
     toDisposition: (resultado) => toDispositionLi(resultado),
@@ -503,7 +640,43 @@ function configLi(
  * reaches the logger: the shared `process(db, payload)` carries neither.
  */
 export function criarPipelineLi(deps: DepsTarefaLi) {
-  return defineNotificationPipeline(configLi((db, p) => processarNotificacaoLi(db, p, deps)));
+  return defineNotificationPipeline(
+    configLi(
+      (db, p) => processarNotificacaoLi(db, p, deps),
+      (db, p, err) => sinalizarEsgotamentoLi(db, p, err, deps),
+    ),
+  );
+}
+
+/**
+ * A thrown failure the hot (or a non-graduating deferred) sweep just PARKED at
+ * its cap (module header): the paid-without-address refusal's own loud signal,
+ * else one generic ERROR line — ids and the error's class only, never its
+ * message — so no order whose run threw parks unnoticed. (A row that fails to
+ * rehydrate never reaches here: module header.) A failed aviso write rethrows;
+ * the shared core contains it.
+ */
+export async function sinalizarEsgotamentoLi(
+  db: Firestore,
+  payload: PayloadNotificacaoLi,
+  err: Error,
+  deps: Pick<DepsTarefaLi, 'increment' | 'agoraMs' | 'logger'>,
+): Promise<void> {
+  const doPedido = await sinalizarPedidoPagoSemEnderecoLi(db, err, {
+    increment: deps.increment,
+    agoraMs: deps.agoraMs,
+    logger: deps.logger,
+  });
+  if (doPedido) return;
+  const linha = `[${CANAL_LOG_LI}] notificação estacionada: tentativas esgotadas, pedido não importado`;
+  const ids = {
+    integracaoId: payload.contaId,
+    numero: payload.numero,
+    origem: payload.origem,
+    classe: err.name,
+  };
+  if (deps.logger?.error === undefined) console.error(linha, ids);
+  else deps.logger.error(linha, ids);
 }
 
 /** Persist and re-drive only — the writes that need no `process`. */

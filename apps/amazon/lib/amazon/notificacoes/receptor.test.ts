@@ -35,7 +35,7 @@ import {
   AmazonTarefasDesligadasError,
   criarAgendadorAmazon,
 } from './agendador';
-import { MAX_CORPO_RECEPTOR_BYTES } from './corpo';
+import { MAX_CORPO_RECEPTOR_BYTES, MAX_MENSAGEM_SQS_BYTES } from './corpo';
 import type { PayloadNotificacaoAmazon } from './notificacao';
 import {
   type DepsReceptorAmazon,
@@ -123,10 +123,19 @@ interface Entrega {
   readonly cancelado: () => boolean;
 }
 
-/** One delivery: `corpo` is the SQS body, wrapped as the relay's template does unless `cru`. */
+/**
+ * One delivery: `corpo` is the SQS body, wrapped as the relay's template does unless `cru`.
+ * `comprimento` declares a `content-length`: `'do-texto'` is the UTF-8 byte length of the
+ * single-text body (never with `partes`), a number is sent as is (a lie included).
+ */
 function entrega(
   corpo: unknown,
-  opts: { chave?: string | null; cru?: boolean; partes?: readonly (string | Uint8Array)[] } = {},
+  opts: {
+    chave?: string | null;
+    cru?: boolean;
+    partes?: readonly (string | Uint8Array)[];
+    comprimento?: 'do-texto' | number;
+  } = {},
 ): Entrega {
   const texto =
     typeof corpo === 'string' ? corpo : JSON.stringify(opts.cru === true ? corpo : { body: corpo });
@@ -134,6 +143,13 @@ function entrega(
   const headers = new Headers({ 'content-type': 'application/json' });
   const chave = opts.chave === undefined ? SEGREDO_RELAY : opts.chave;
   if (chave !== null) headers.set(CABECALHO_CHAVE_RELAY_AMAZON, chave);
+  if (opts.comprimento !== undefined) {
+    const declarado =
+      opts.comprimento === 'do-texto'
+        ? new TextEncoder().encode(texto).byteLength
+        : opts.comprimento;
+    headers.set('content-length', String(declarado));
+  }
   return { req: { headers, body: f.stream }, puxados: f.puxados, cancelado: f.cancelado };
 }
 
@@ -508,23 +524,67 @@ describe('200 + drop: never a 4xx', () => {
     expect(ultima()?.meta?.forma).toBe('relay-string');
   });
 
-  it('oversized (256 KiB + 1) ⇒ 200 corpo-grande, and the read stops at the bound', async () => {
-    const meio = 128 * 1024;
-    const e = entrega('', {
-      partes: [
-        new Uint8Array(meio),
-        new Uint8Array(meio),
-        new Uint8Array(1),
-        new Uint8Array(meio),
-        new Uint8Array(meio),
-      ],
-    });
+  it('oversized (2 MiB + 1) ⇒ 200 corpo-grande, and the read stops at the bound', async () => {
+    // Two half-bound chunks reach the bound; the one-byte third crosses it.
+    const meio = new Uint8Array(MAX_CORPO_RECEPTOR_BYTES / 2);
+    const e = entrega('', { partes: [meio, meio, new Uint8Array(1), meio, meio] });
     const r = await receber(e);
     expect(r).toEqual(descartada('corpo-grande'));
     expect(e.puxados()).toBe(3);
     expect(e.cancelado()).toBe(true);
     expect(ultima()?.nivel).toBe('warn');
     expect(ultima()?.meta?.bytes).toBe(MAX_CORPO_RECEPTOR_BYTES + 1);
+  });
+
+  it('a declared content-length over the bound ⇒ corpo-grande with ZERO chunks read', async () => {
+    // The stream is a tiny '{}': only the header can refuse it, so this pins
+    // that the receiver hands the header to the read at all.
+    const e = entrega('{}', { comprimento: MAX_CORPO_RECEPTOR_BYTES + 1 });
+    expect(await receber(e)).toEqual(descartada('corpo-grande'));
+    expect(e.puxados()).toBe(0);
+    expect(e.cancelado()).toBe(true);
+    expect(ultima()?.meta?.bytes).toBe(MAX_CORPO_RECEPTOR_BYTES + 1);
+  });
+
+  describe('a body at SQS’s 1 MiB maximum is NOT refused, in either wrapper form', () => {
+    // The committed ORDER_CHANGE padded with newlines to exactly the queue's
+    // maximum: still the same notification, and the worst case of the string
+    // form's escaping (each newline becomes the two bytes `\n`; only the
+    // envelope's own ~1.5 KB of letters stays one byte each).
+    const compacto = JSON.stringify(BASE);
+    const sqs =
+      compacto +
+      '\n'.repeat(MAX_MENSAGEM_SQS_BYTES - new TextEncoder().encode(compacto).byteLength);
+    // The relay template's literal output, `{"body": <$.body>}`: just over 1 MiB.
+    const relay = `{"body": ${sqs}}`;
+    // `body` as a JSON string: within 4 KiB of TWICE the SQS maximum.
+    const relayString = JSON.stringify({ body: sqs });
+
+    // Each form with and without a declared content-length: the header's
+    // pre-check and the streaming count must each let it through.
+    it.each([
+      ['relay', false, relay, MAX_MENSAGEM_SQS_BYTES],
+      ['relay', true, relay, MAX_MENSAGEM_SQS_BYTES],
+      ['relay-string', false, relayString, 2 * MAX_MENSAGEM_SQS_BYTES - 4096],
+      ['relay-string', true, relayString, 2 * MAX_MENSAGEM_SQS_BYTES - 4096],
+    ] as const)(
+      'forma %s (content-length declared: %s) ⇒ enqueued, the whole body read',
+      async (forma, declarado, texto, acimaDe) => {
+        expect(new TextEncoder().encode(sqs).byteLength).toBe(MAX_MENSAGEM_SQS_BYTES);
+        const bytes = new TextEncoder().encode(texto).byteLength;
+        expect(bytes).toBeGreaterThan(acimaDe);
+        const e = entrega(texto, declarado ? { comprimento: 'do-texto' } : {});
+        expect(e.req.headers.get('content-length')).toBe(declarado ? String(bytes) : null);
+        expect(await receber(e)).toEqual({
+          status: 200,
+          resultado: 'enfileirada',
+          detalhe: 'ok',
+        });
+        expect(enfileirados.map((p) => p.amazonOrderId)).toEqual([PEDIDO]);
+        expect(ultima()?.meta?.forma).toBe(forma);
+        expect(ultima()?.meta?.bytes).toBe(bytes);
+      },
+    );
   });
 
   it('a bare envelope (no relay wrapper) ⇒ sem-envelope-do-relay, a WARNING', async () => {

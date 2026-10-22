@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { PERM } from '@delfrance/auth';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { ServicoMelhorEnvioSelectProps } from './ServicoMelhorEnvioSelect';
-import type { AlvoFreteLi } from './useAlvosMapaFreteLi';
+import { alvoFreteLiDoDoc, type AlvoFreteLi } from '@/lib/loja-integrada/useAlvosMapaFreteLi';
 import type { FreteDaContaLi } from './useFreteDaContaLi';
 
 /**
@@ -29,8 +29,8 @@ vi.mock('./useFreteDaContaLi', async (importActual) => ({
   ...(await importActual<typeof import('./useFreteDaContaLi')>()),
   useSemearFreteDaContaLi: () => ({ ready: h.pronto, error: null }),
 }));
-vi.mock('./useAlvosMapaFreteLi', async (importActual) => ({
-  ...(await importActual<typeof import('./useAlvosMapaFreteLi')>()),
+vi.mock('@/lib/loja-integrada/useAlvosMapaFreteLi', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/loja-integrada/useAlvosMapaFreteLi')>()),
   useAlvosMapaFreteLi: () => ({
     alvos: h.alvos,
     armazenados: h.armazenados,
@@ -57,13 +57,9 @@ const { MapaFreteManager } = await import('./MapaFreteManager');
 
 type Doc = Record<string, unknown>;
 
-const alvo = (id: string, nome: string, tipo: string, ativo = true): AlvoFreteLi => ({
-  id,
-  nome,
-  tipo,
-  ativo,
-  suportado: ['melhorEnvios', 'motoboy', 'retiradaNaLoja', 'fob', 'outros'].includes(tipo),
-});
+// The shared query's own projection, so a test target carries every flag it would.
+const alvo = (id: string, nome: string, tipo: string, ativo = true): AlvoFreteLi =>
+  alvoFreteLiDoDoc(id, { nome, tipo, ativo });
 const MOTO = alvo('moto-1', 'Moto Centro', 'motoboy');
 const ME = alvo('me-conta', 'Conta ME', 'melhorEnvios');
 
@@ -256,6 +252,37 @@ describe('MapaFreteManager — edits', () => {
       }),
     ]);
     expect(screen.getByText('servico:me-conta:7:Transportadora — Expresso')).toBeTruthy();
+  });
+
+  it("EQUAL pair: a stored service `'7'` shows the SAME service as `7` (the shared service reader)", () => {
+    renderManager([
+      linha(1, {
+        integracaoUid: 'me-conta',
+        targetTipoIntegracao: 'melhorEnvios',
+        targetData: { id: '7', name: 'Expresso' },
+        nomeTarget: 'Transportadora — Expresso',
+      }),
+    ]);
+    expect(screen.getByText('servico:me-conta:7:Transportadora — Expresso')).toBeTruthy();
+  });
+
+  it("⚠️ NEAR-MISS: a stored service `'07'` or `0` shows NO service — the importer would not route by it either", () => {
+    renderManager([
+      linha(1, {
+        integracaoUid: 'me-conta',
+        targetTipoIntegracao: 'melhorEnvios',
+        targetData: { id: '07' },
+        nomeTarget: 'Transportadora — Expresso',
+      }),
+      linha(2, {
+        integracaoUid: 'me-conta',
+        targetTipoIntegracao: 'melhorEnvios',
+        targetData: { id: 0 },
+        nomeTarget: 'Transportadora — Zero',
+      }),
+    ]);
+    expect(screen.getByText('servico:me-conta:nenhum:Transportadora — Expresso')).toBeTruthy();
+    expect(screen.getByText('servico:me-conta:nenhum:Transportadora — Zero')).toBeTruthy();
   });
 
   it('a row with no identifier is read-only', () => {

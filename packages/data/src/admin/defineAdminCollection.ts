@@ -6,6 +6,7 @@ import type {
   Query,
 } from 'firebase-admin/firestore';
 import type { z } from 'zod';
+import { idFromRefOrNull } from '@delfrance/schemas';
 import {
   type PathContext,
   parseForWrite,
@@ -144,11 +145,6 @@ function assertFlatUpdatePatch(patch: Record<string, unknown>, collectionPath: s
   }
 }
 
-function lastSegment(path: string): string {
-  const parts = path.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? path;
-}
-
 /**
  * Admin-SDK counterpart of `defineCollection`. Same Zod-as-source-of-truth
  * contract, for `firebase-admin/firestore`. Validation is exposed as explicit
@@ -165,7 +161,7 @@ function lastSegment(path: string): string {
 export function defineAdminCollection<T extends z.ZodTypeAny>(
   options: DefineAdminCollectionOptions<T>,
 ): AdminCollectionHandle<T> {
-  const groupId = lastSegment(options.path);
+  const groupId = idFromRefOrNull(options.path) ?? options.path;
 
   const ref = (db: Firestore, ctx: PathContext): CollectionReference =>
     db.collection(resolvePath(options.path, ctx));

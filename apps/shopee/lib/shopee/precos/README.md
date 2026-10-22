@@ -688,8 +688,9 @@ Tasks valve, `SHOPEE_TASKS_DISABLED` (503 `SHOPEE_PRICE_SYNC_ENQUEUE_FAILED`,
 before any document is written or any conta read); ONE clock read; the context
 (404); a blank normal tabela (400); the stock sync's quota pause (409
 `SHOPEE_CONTA_PAUSADA`); the conta verdict (422 `SHOPEE_PRECO_CONTA_RECUSADA`,
-§5); then the start itself (409 `SHOPEE_PRICE_SYNC_RUNNING` while a live job
-holds the conta) and the enqueue. The four conta rungs — the context through
+§5); then the start itself (409 `SHOPEE_PRICE_SYNC_RUNNING` + `jobId` of the
+running job, while a live job holds the conta) and the enqueue. The four conta
+rungs — the context through
 the verdict — are ONE call, `exigirContaParaPreco` in `regiaoPreco.ts`, the
 same ladder the manual push runs, so one conta answers the same refusal
 whichever of the two buttons the operator pressed (register 183, settled in
@@ -1013,8 +1014,9 @@ alone.
   real queue (reconcile C-s).
 - **The web.** The provider row (Mercado Livre's, with the channel swapped), the
   job card, the history screen, the CSV export, `jobs-em-andamento` and the
-  `registriesAlinhadas` row are step 21's (register 159); the five routes are
-  what they will call.
+  `registriesAlinhadas` row are step 21's (register 159), all built except
+  `jobs-em-andamento`: the busy-start 409 carries the running `jobId` and the
+  card attaches to it (D7 (b)); the five routes are what they call.
 
 ## 17. What is UNVERIFIED and what settles it
 

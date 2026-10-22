@@ -229,6 +229,7 @@ function makeInput(over: {
       nfeClient: null,
       mercadoLivreClient: null,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       printJob: vi.fn(),
     },
     ui: {
@@ -237,6 +238,7 @@ function makeInput(over: {
       openUrl: vi.fn(),
       comprarEtiqueta: vi.fn(),
       escolherEnvio: vi.fn(),
+      confirmarCiente: vi.fn(),
     },
   };
 }
