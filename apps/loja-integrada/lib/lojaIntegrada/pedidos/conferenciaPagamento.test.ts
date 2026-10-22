@@ -159,8 +159,8 @@ function leiturasDoEspelho(desde = 0): string[] {
   return db.leituras.slice(desde).filter((c) => c === CAMINHO_ESPELHO);
 }
 
-/** The scripted order's shipment under another id (a second shipment, or a re-created one). */
-function envioComId(id: number): DocData {
+/** The scripted order's shipment under another id (a second shipment, a re-created one, none). */
+function envioComId(id: number | null): DocData {
   const envios = pedidoLiBruto().envios;
   const primeiro: unknown = Array.isArray(envios) ? envios[0] : undefined;
   if (typeof primeiro !== 'object' || primeiro === null) {
@@ -581,6 +581,8 @@ describe('the answer names this order — else 502 `pedidoDivergente`, and no mi
     ['no stored shipment id', { externalId: null }, () => pedidoLiBruto()],
     ['no freight block at all', {}, () => pedidoLiBruto()],
     ['no live shipment', {}, () => pedidoLiBruto({ envios: [] })],
+    // A live list with no READABLE id is as good as none: never "none of them is ours".
+    ['a live shipment with no id', {}, () => pedidoLiBruto({ envios: [envioComId(null)] })],
     ['an unreadable stored shipment id', { externalId: '0801' }, () => pedidoLiBruto()],
   ])(
     'nothing to compare (%s) ⇒ only the numero check, then the verdict',
