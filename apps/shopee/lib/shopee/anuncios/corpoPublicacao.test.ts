@@ -11,6 +11,7 @@ import {
   CODIGO_SELECAO_EXCEDE_LIMITE,
   CODIGO_SELECAO_INVALIDA,
   MSG_CATEGORY_ID_INVALIDO,
+  MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
   MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
   MSG_CONVERTER_INVALIDO,
   MSG_LINK_EXIGE_UM_PRODUTO,
@@ -75,6 +76,7 @@ describe('lerCorpoPublicar', () => {
       recriar: false,
       converterEmKit: false,
       confirmarSegundoAnuncio: false,
+      confirmarCriacaoIncerta: false,
     });
   });
 
@@ -289,6 +291,42 @@ describe('lerCorpoPublicar — confirmarSegundoAnuncio (#1911, D15)', () => {
     });
     if (!sem.ok || !com.ok) throw new Error('esperava os dois corpos válidos');
     expect(com.valor).toEqual({ ...sem.valor, confirmarSegundoAnuncio: true });
+  });
+});
+
+describe('lerCorpoPublicar — confirmarCriacaoIncerta (#1911, D5)', () => {
+  const base = { integracaoId: INT_A, produtoId: PRODUTO, linkDocId: LINK };
+
+  it('ausente e null ⇒ false; true e false passam como vieram', () => {
+    expect(lerCorpoPublicar(base)).toMatchObject({ valor: { confirmarCriacaoIncerta: false } });
+    for (const [v, esperado] of [
+      [null, false],
+      [false, false],
+      [true, true],
+    ] as const) {
+      expect(lerCorpoPublicar({ ...base, confirmarCriacaoIncerta: v }), String(v)).toMatchObject({
+        valor: { confirmarCriacaoIncerta: esperado },
+      });
+    }
+  });
+
+  it("⛔ um `'true'` em TEXTO (e 1, 'false', {}) é RECUSADO com a frase DO CAMPO, nunca coagido", () => {
+    for (const v of ['true', 'false', 1, 0, {}, []]) {
+      expect(lerCorpoPublicar({ ...base, confirmarCriacaoIncerta: v }), JSON.stringify(v)).toEqual({
+        ok: false,
+        erro: MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
+      });
+    }
+    expect(MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO).toContain('confirmarCriacaoIncerta');
+  });
+
+  it('⛔ quase-par: as duas confirmações são INDEPENDENTES — uma nunca liga a outra', () => {
+    const sem = lerCorpoPublicar(base);
+    const incerta = lerCorpoPublicar({ ...base, confirmarCriacaoIncerta: true });
+    const segundo = lerCorpoPublicar({ ...base, confirmarSegundoAnuncio: true });
+    if (!sem.ok || !incerta.ok || !segundo.ok) throw new Error('esperava os três corpos válidos');
+    expect(incerta.valor).toEqual({ ...sem.valor, confirmarCriacaoIncerta: true });
+    expect(segundo.valor).toEqual({ ...sem.valor, confirmarSegundoAnuncio: true });
   });
 });
 

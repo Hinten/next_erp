@@ -29,6 +29,7 @@ import { escolherArmaDePublicacao, type ResultadoDoDespacho } from '../kits/arma
 import type { ArmaDeKit, EntradaDeKit } from '../kits/prepararKit';
 import { ensaiarKitShopee, publicarKitShopee, type EnsaioDeKit } from '../kits/publicarKit';
 import type { ArmaDePublicacao, KitDeps, ResultadoPublicacaoKit } from '../kits/resultadoKit';
+import { CriacaoDeAnuncioIncertaError, type ResultadoItemIncerto } from './criacaoIncerta';
 import { ShopeePublishBlockedError, temProblemaDeBloqueio } from './errosPublicacao';
 import type { ResolvedorDeImagensShopee } from './fotosPublicacao';
 import { lerVinculosDaConta } from './linkAnuncio';
@@ -60,9 +61,14 @@ export type EntradaDePublicacaoShopee = EntradaDePublicacao & {
   readonly converterEmKit: boolean;
 };
 
-/** One publish, done: step 11's result, or a native-kit run's. */
+/**
+ * One publish, done: step 11's result, a native-kit run's — or (#1911, D5) an
+ * ordinary listing's first `add_item` whose outcome nobody can know: the
+ * draft's lock kept for the wait and the attempt recorded (the route's 202).
+ */
 export type ResultadoPublicacaoShopee =
   | { readonly tipo: 'item'; readonly resultado: ResultadoPublicacao }
+  | { readonly tipo: 'item-incerto'; readonly resultado: ResultadoItemIncerto }
   | { readonly tipo: 'kit'; readonly resultado: ResultadoPublicacaoKit };
 
 /** One dry run: the arm chosen, and what its READ half read. Nothing written, nothing created. */
@@ -174,7 +180,10 @@ function entradaDoKit(entrada: EntradaDePublicacaoShopee): EntradaDeKit {
  *   `ShopeePublishRejectedError` for a wire refusal. A kit create whose outcome
  *   is uncertain is NOT a throw:
  *   it is a `ResultadoPublicacaoKit` with `desfecho: 'incerto'` (the route's
- *   202), because nothing was written and the operator must re-run.
+ *   202), because nothing was written and the operator must re-run. Neither is
+ *   an ordinary listing's (#1911): the item arm's `CriacaoDeAnuncioIncertaError`
+ *   — thrown only AFTER the draft recorded the attempt — is narrowed BY CLASS
+ *   into `tipo: 'item-incerto'` here, the one place that reads it.
  */
 export async function publicarShopee(
   deps: KitDeps,
@@ -185,8 +194,15 @@ export async function publicarShopee(
   const arma = armaOuRecusa(entrada, despacho);
 
   if (arma.arma === 'item') {
-    const resultado = await publicarAnuncioShopee(deps, entradaDoItem(entrada, arma.linkDocId));
-    return resultado === null ? null : { tipo: 'item', resultado };
+    try {
+      const resultado = await publicarAnuncioShopee(deps, entradaDoItem(entrada, arma.linkDocId));
+      return resultado === null ? null : { tipo: 'item', resultado };
+    } catch (err) {
+      if (err instanceof CriacaoDeAnuncioIncertaError) {
+        return { tipo: 'item-incerto', resultado: err.resultado };
+      }
+      throw err;
+    }
   }
   return { tipo: 'kit', resultado: await publicarKitShopee(deps, entradaDoKit(entrada), arma) };
 }

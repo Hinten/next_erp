@@ -73,7 +73,24 @@
  * `nowMs` arrives on the preparo — ONE read per dispatch, handed down. No
  * module under `produtos/` reads the ambient clock and none holds a microsecond
  * helper: every stamp this plan carries is MILLISECONDS, and Shopee's own
- * `create_time` / `update_time` (wire SECONDS) are neither read nor stored.
+ * `create_time` / `update_time` (wire SECONDS) are never STORED. The one place
+ * `create_time` is read at all is a DRAFT's adoption (#1911, below): it rides
+ * {@link EscritaDeAdocaoDeRascunho.adocao} as the input the writer re-derives
+ * the adoption from, and never reaches a document.
+ *
+ * ## ⚠️ The parent link may ADOPT a draft (#1911, D5 / K1-8)
+ *
+ * When the cascade hands over a DRAFT to adopt (`DocumentoLido.rascunhoAdotado`,
+ * decided in `resolveProduto.ts` only for a draft that carries ATTEMPT evidence
+ * and a listing created inside that attempt's window), the parent link is
+ * {@link EscritaDeAdocaoDeRascunho} instead of a `merge`: the import's fields
+ * WITHOUT the `...existente` spread (an `update` leaves every unnamed key
+ * alone, so the same patch is valid against whatever the writer reads), the
+ * first-time-only `dataCadastro` apart, and the three keys that say "a publish
+ * is still deciding" cleared — `publicacaoEmCurso`, `criacaoIncertaDesde` and
+ * `falhaPublicacao`. Leaving the lock behind would read the listing
+ * `em-andamento` / `incerta` for ever and block the produto's other drafts on
+ * the conta. `links.ts` writes it as rule 7 tier 1.
  */
 import type { ShopeeCategoria, ShopeeModel } from '@delfrance/integrations-shopee';
 import { toOuterRef, type ImportacaoShopeeOptions } from '@delfrance/schemas';
@@ -116,6 +133,14 @@ export interface DocumentoLido {
    * straight back to `update()`, the `DocumentoDeGrupo.updateTime` precedent.
    */
   readonly updateTime?: unknown;
+  /**
+   * `true` ONLY on the parent link the cascade found by ADOPTION (#1911, D5 /
+   * K1-8): a DRAFT of this produto and conta that carries attempt evidence and
+   * whose window holds this listing's `create_time` (`resolveProduto.ts`). The
+   * plan then writes {@link EscritaDeAdocaoDeRascunho}, never a `merge`. Absent
+   * on every other document — a rung-1 link, a produto, a child row.
+   */
+  readonly rascunhoAdotado?: boolean;
 }
 
 /** What the parent cascade settled. */
@@ -174,7 +199,10 @@ export interface PreparoImportacaoShopee {
   readonly pai: PreparoProdutoPaiShopee;
   /** One entry per model, in `get_model_list` order. Empty for a no-model listing. */
   readonly filhos: readonly PreparoFilhoShopee[];
-  /** The `prodshopee` document the parent cascade found, if any. */
+  /**
+   * The `prodshopee` document the parent cascade found, if any — the rung-1
+   * link, or (#1911) a DRAFT to adopt, marked `rascunhoAdotado`.
+   */
   readonly linkPai: DocumentoLido | null;
   /** The per-dispatch `grupoDeVariacoes` memo (C10). */
   readonly grupos: GrupoMemo;
@@ -219,6 +247,58 @@ export interface EscritaDeLink {
   readonly docId: string | null;
   readonly dados: Record<string, unknown>;
 }
+
+/**
+ * The keys an ADOPTION clears (#1911): the publish lock, the record of an
+ * uncertain create and the failure stamp — every trace of "a publish of this
+ * draft is still deciding". Written only on the arm that takes the draft.
+ */
+export const CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE = {
+  publicacaoEmCurso: null,
+  criacaoIncertaDesde: null,
+  falhaPublicacao: null,
+} as const;
+
+/**
+ * The PARENT link written by adopting a DRAFT (#1911, D5 / K1-8) — applied by
+ * `links.ts` as rule 7 tier 1, never as a plain `merge`. Only the parent link
+ * can be one: a draft has no `variashopee` rows, so a child link is always
+ * {@link EscritaDeLink}.
+ *
+ * Data only, like every other write here: the writer re-reads the draft and
+ * RE-DERIVES the adoption from that read ({@link adocao}) — the decision the
+ * cascade made is never trusted across the gap.
+ */
+export interface EscritaDeAdocaoDeRascunho {
+  readonly acao: 'adotar';
+  /** The DRAFT's document id — the link the listing should end up at. */
+  readonly docId: string;
+  /**
+   * The import's own link fields (`dadosLinkListagem` over NO stored document),
+   * without `dataCadastro` — never the `...existente` spread: an `update`
+   * leaves every unnamed key alone, so this patch is valid against ANY fresh
+   * read of the draft.
+   */
+  readonly dados: Record<string, unknown>;
+  /**
+   * First-time-only keys (`dataCadastro`): written only when the document the
+   * writer reads holds no value — re-derived per attempt, like the publish
+   * claim's `publicadoEm`.
+   */
+  readonly seAusentes: Record<string, unknown>;
+  /** {@link CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE} — written only on the arm that takes the draft. */
+  readonly limpeza: Readonly<Record<string, null>>;
+  /** What the writer re-derives the adoption from, on its own fresh read. */
+  readonly adocao: {
+    readonly integracaoId: string;
+    readonly itemId: number;
+    /** SECONDS — the listing's `create_time` as Shopee reported it; `null` = unknown. */
+    readonly createTimeS: number | null;
+  };
+}
+
+/** The parent link's write: an ordinary link write, or a draft's adoption. */
+export type EscritaDeLinkDaListagem = EscritaDeLink | EscritaDeAdocaoDeRascunho;
 
 /**
  * The guarded dotted-path price patch: on the UPDATE path, and on the
@@ -317,8 +397,13 @@ export interface PlanoImportacaoShopee {
   readonly extraData: Record<string, unknown> | null;
   /** Step 6. */
   readonly estoquePai: EscritaDeEstoque | null;
-  /** Step 7 — written before the children, because its path is what they point at. */
-  readonly linkPai: EscritaDeLink;
+  /**
+   * Step 7 — written before the children, because its path is what they point
+   * at. An ADOPTION (#1911) names the draft's id here, so the children's ref is
+   * planned against it; if the writer has to fork to an `add` instead, the
+   * child writer stamps the ref from the id it actually got back.
+   */
+  readonly linkPai: EscritaDeLinkDaListagem;
   /**
    * ⚠️ The parent link is an `add`, so its document id does not exist yet and no
    * child link below carries `produtoShopeeOuterRef`. Wave 5 MUST stamp it from
@@ -606,11 +691,17 @@ export function planejarImportacaoShopee(preparo: PreparoImportacaoShopee): Plan
     : null;
 
   // ---- 7. the parent link --------------------------------------------------
-  const linkPai: EscritaDeLink = {
-    acao: preparo.linkPai !== null ? 'merge' : 'add',
-    docId: preparo.linkPai?.id ?? null,
-    dados: dadosLinkListagem(entrada, preparo.linkPai?.raw ?? null, integracaoId, nowMs),
-  };
+  // ⚠️ An ADOPTED draft (#1911) is never the plain merge: the merge spreads the
+  // stored document, which would carry the draft's lock and its uncertainty
+  // record forward onto a listing link (`escritaDeAdocao`).
+  const linkPai: EscritaDeLinkDaListagem =
+    preparo.linkPai !== null && preparo.linkPai.rascunhoAdotado === true
+      ? escritaDeAdocao(entrada, preparo.linkPai.id, integracaoId, nowMs)
+      : {
+          acao: preparo.linkPai !== null ? 'merge' : 'add',
+          docId: preparo.linkPai?.id ?? null,
+          dados: dadosLinkListagem(entrada, preparo.linkPai?.raw ?? null, integracaoId, nowMs),
+        };
 
   // ---- 8. the children -----------------------------------------------------
   // ⚠️ A child inherits the parent's EFFECTIVE value — what the parent document
@@ -740,6 +831,34 @@ export function planejarImportacaoShopee(preparo: PreparoImportacaoShopee): Plan
     resultado: {
       variacoes: { total: filhos.length, criadas, semLink },
       fotos: { aBaixar: fotos.baixar.length, ignoradas: fotos.ignoradas },
+    },
+  };
+}
+
+/**
+ * The parent link of an ADOPTED draft (#1911, D5 / K1-8) — see
+ * {@link EscritaDeAdocaoDeRascunho}. The import's fields come from the SAME
+ * builder every other listing link uses (`dadosLinkListagem`, so C9's brand
+ * pair and `kitNativo` are written exactly as on a merge), over NO stored
+ * document — `dataCadastro` set apart as first-time-only.
+ */
+function escritaDeAdocao(
+  entrada: ItemLido,
+  docId: string,
+  integracaoId: string,
+  nowMs: number,
+): EscritaDeAdocaoDeRascunho {
+  const { dataCadastro, ...dados } = dadosLinkListagem(entrada, null, integracaoId, nowMs);
+  return {
+    acao: 'adotar',
+    docId,
+    dados,
+    seAusentes: { dataCadastro },
+    limpeza: { ...CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE },
+    adocao: {
+      integracaoId,
+      itemId: entrada.itemId,
+      createTimeS: entrada.base.create_time ?? null,
     },
   };
 }

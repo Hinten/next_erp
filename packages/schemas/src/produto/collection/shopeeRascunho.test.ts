@@ -20,8 +20,12 @@ import {
   corpoAtualizarRascunhoShopeeSchema,
   corpoCriarRascunhoShopeeSchema,
   corpoDescartarRascunhoShopeeSchema,
+  criadoNaJanelaShopee,
   estadoPublicacaoRascunhoShopee,
+  FOLGA_JANELA_CRIACAO_SHOPEE_S,
   idRascunhoShopeeSchema,
+  inicioDaJanelaDaCriacaoShopeeS,
+  janelaDaCriacaoIncertaShopee,
   MARGEM_ENVIO_SHOPEE_MS,
   MAX_DESCRIPTION_RASCUNHO_SHOPEE,
   MAX_ITEM_NAME_RASCUNHO_SHOPEE,
@@ -37,12 +41,15 @@ import {
   respostaAtualizarRascunhoShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
+  respostaItemIncertoShopeeSchema,
   TETO_ROTA_SHOPEE_MS,
   vinculoConflitanteShopeeSchema,
   vinculosQueExigemConfirmacaoShopee,
   type CampoRascunhoShopee,
   type CamposRascunhoShopee,
   type EstadoPublicacaoRascunhoShopee,
+  type PosicaoNaJanelaShopee,
+  type RespostaItemIncertoShopee,
 } from './shopeeRascunho';
 
 /* ---------------------------------- fixtures ------------------------------ */
@@ -73,6 +80,13 @@ describe('as constantes da trava (#1911, K1-2)', () => {
     expect(TETO_ROTA_SHOPEE_MS).toBe(180_000);
     expect(MARGEM_ENVIO_SHOPEE_MS).toBe(30_000);
     expect(AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS).toBe(240_000);
+    expect(FOLGA_JANELA_CRIACAO_SHOPEE_S).toBe(300);
+  });
+
+  it('⚠️ a folga da janela é em SEGUNDOS (o `create_time` da Shopee), nunca em ms', () => {
+    // 300 s antes do segundo da tentativa — não 300 ms (que cairia no mesmo
+    // segundo) nem 300 000 s (três dias e meio).
+    expect(inicioDaJanelaDaCriacaoShopeeS(1_761_000_000_000)).toBe(1_761_000_000 - 300);
   });
 
   it('a espera do anúncio incerto É a do kit — um apelido, nunca um segundo número (#1369)', () => {
@@ -341,6 +355,294 @@ describe('estadoPublicacaoRascunhoShopee — trava ilegível', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*        (3b) the uncertain create's ATTEMPT WINDOW (P5, K1-7/K1-8)           */
+/* -------------------------------------------------------------------------- */
+
+describe('janelaDaCriacaoIncertaShopee — a evidência de uma tentativa (K1-8)', () => {
+  it('PAR: rascunho legado (sem as chaves), as duas chaves `null` e o documento nulo ⇒ SEM janela', () => {
+    expect(janelaDaCriacaoIncertaShopee(null)).toBeNull();
+    expect(janelaDaCriacaoIncertaShopee({ item_id: null })).toBeNull();
+    expect(janelaDaCriacaoIncertaShopee({ item_id: null, item_name: 'Camiseta' })).toBeNull();
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: null,
+        criacaoIncertaDesde: null,
+      }),
+    ).toBeNull();
+  });
+
+  it('só a trava ⇒ o `desde` da trava — viva, na carência OU vencida sem registro (o caminho do crash)', () => {
+    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE });
+  });
+
+  it('só o registro ⇒ o registro', () => {
+    expect(
+      janelaDaCriacaoIncertaShopee({ item_id: null, criacaoIncertaDesde: INCERTA_DESDE }),
+    ).toEqual({ desdeMs: INCERTA_DESDE });
+  });
+
+  it('⛔ NEAR-MISS: com os dois, o REGISTRO vence a trava (a tentativa mais antiga; a trava de um reenvio é mais nova)', () => {
+    expect(
+      janelaDaCriacaoIncertaShopee(rascunhoTravado({ criacaoIncertaDesde: INCERTA_DESDE })),
+    ).toEqual({ desdeMs: INCERTA_DESDE });
+    // O `??` do §2.1, literal: o registro vence até um `desde` de trava mais antigo.
+    expect(
+      janelaDaCriacaoIncertaShopee(rascunhoTravado({ criacaoIncertaDesde: DESDE + 1 })),
+    ).toEqual({ desdeMs: DESDE + 1 });
+  });
+
+  it('⛔ NEAR-MISS: `criacaoIncertaDesde: 0` é um instante, nunca "ausente"', () => {
+    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado({ criacaoIncertaDesde: 0 }))).toEqual({
+      desdeMs: 0,
+    });
+  });
+
+  it('um registro ILEGÍVEL cai no `desde` da trava legível; sem trava legível, sem janela', () => {
+    for (const bruto of ['1761000000000', '', 1.5, true, {}, Number.NaN, 2 ** 53]) {
+      expect(
+        janelaDaCriacaoIncertaShopee(rascunhoTravado({ criacaoIncertaDesde: bruto })),
+        String(bruto),
+      ).toEqual({ desdeMs: DESDE });
+      expect(
+        janelaDaCriacaoIncertaShopee({ item_id: null, criacaoIncertaDesde: bruto }),
+        String(bruto),
+      ).toBeNull();
+    }
+  });
+
+  it('⛔ NEAR-MISS: uma trava ILEGÍVEL não dá janela, mesmo com um `desde` legível dentro (UMA grafia da trava)', () => {
+    for (const trava of [
+      { ...TRAVA, token: '' },
+      { desde: DESDE, expiraEm: EXPIRA },
+      { desde: DESDE, token: 'tok-1' },
+      { ...TRAVA, expiraEm: String(EXPIRA) },
+      'tok-1',
+      DESDE,
+    ]) {
+      expect(
+        janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: trava }),
+        JSON.stringify(trava),
+      ).toBeNull();
+    }
+    // …e o registro legível ainda dá a janela ao lado de uma trava ilegível.
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: { token: 'x' },
+        criacaoIncertaDesde: INCERTA_DESDE,
+      }),
+    ).toEqual({ desdeMs: INCERTA_DESDE });
+  });
+
+  it('lê qualquer documento — ser rascunho é pergunta de quem chama', () => {
+    expect(
+      janelaDaCriacaoIncertaShopee({ item_id: 2500139861, criacaoIncertaDesde: INCERTA_DESDE }),
+    ).toEqual({ desdeMs: INCERTA_DESDE });
+  });
+
+  it('⚠️ por que a tomada de uma trava vencida CARREGA o `desde` antigo: sem isso a janela anda para frente', () => {
+    const TOMADA = EXPIRA + GRACA + 5_000;
+    const novaTrava = {
+      desde: TOMADA,
+      expiraEm: TOMADA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
+      token: 'tok-2',
+    };
+    // Lido ANTES da tomada: a janela é a da tentativa que caiu.
+    expect(janelaDaCriacaoIncertaShopee(rascunhoTravado())).toEqual({ desdeMs: DESDE });
+    // A tomada que carrega o registro mantém a janela…
+    expect(
+      janelaDaCriacaoIncertaShopee({
+        item_id: null,
+        publicacaoEmCurso: novaTrava,
+        criacaoIncertaDesde: DESDE,
+      }),
+    ).toEqual({ desdeMs: DESDE });
+    // …e a que só troca a trava a estreita até depois da tentativa antiga.
+    expect(janelaDaCriacaoIncertaShopee({ item_id: null, publicacaoEmCurso: novaTrava })).toEqual({
+      desdeMs: TOMADA,
+    });
+  });
+});
+
+describe('estadoPublicacaoRascunhoShopee × janelaDaCriacaoIncertaShopee — UMA leitura (#1369)', () => {
+  const documentos: readonly (Record<string, unknown> | null)[] = [
+    null,
+    { item_id: null },
+    { item_id: null, publicacaoEmCurso: null, criacaoIncertaDesde: null },
+    { item_id: null, criacaoIncertaDesde: INCERTA_DESDE },
+    { item_id: null, criacaoIncertaDesde: 'x' },
+    rascunhoTravado(),
+    rascunhoTravado({ criacaoIncertaDesde: INCERTA_DESDE }),
+    rascunhoTravado({ criacaoIncertaDesde: 'x' }),
+    { item_id: null, publicacaoEmCurso: { token: 'x' } },
+    { item_id: null, publicacaoEmCurso: { token: 'x' }, criacaoIncertaDesde: INCERTA_DESDE },
+    { item_id: null, publicacaoEmCurso: 'tok-1', criacaoIncertaDesde: 'x' },
+  ];
+  const instantes = [DESDE, EXPIRA - 1, EXPIRA, EXPIRA + GRACA - 1, EXPIRA + GRACA, Number.NaN];
+
+  it('`incerta`.desdeMs É o início da janela; `livre` ⇒ sem janela; `em-andamento` ⇒ há janela', () => {
+    let incertas = 0;
+    for (const doc of documentos) {
+      const janela = janelaDaCriacaoIncertaShopee(doc);
+      for (const agora of instantes) {
+        const estado = estadoPublicacaoRascunhoShopee(doc, agora);
+        const rotulo = `${JSON.stringify(doc)} @ ${String(agora)}`;
+        if (estado.tipo === 'incerta') {
+          incertas += 1;
+          expect(estado.desdeMs, rotulo).toBe(janela?.desdeMs ?? null);
+        } else if (estado.tipo === 'livre') {
+          expect(janela, rotulo).toBeNull();
+        } else {
+          expect(janela, rotulo).not.toBeNull();
+        }
+      }
+    }
+    // A propriedade não é vacuamente verdadeira: muitas leituras são `incerta`.
+    expect(incertas).toBeGreaterThan(20);
+  });
+});
+
+describe('o ciclo de um 202 (P5): a trava fica viva pela espera, depois `incerta` SEM segunda carência', () => {
+  // O `incerto` reescreve a trava DO MESMO token: expiraEm = agora + a espera,
+  // criacaoIncertaDesde = o registrado ?? o desde da trava.
+  const ACEITO = DESDE + 42_000;
+  const reescrito = {
+    item_id: null,
+    publicacaoEmCurso: {
+      desde: DESDE,
+      expiraEm: ACEITO + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+      token: 'tok-1',
+    },
+    criacaoIncertaDesde: DESDE,
+  };
+
+  it('no instante do 202: em-andamento, aposIncerteza, e a espera inteira por cumprir', () => {
+    expect(estadoPublicacaoRascunhoShopee(reescrito, ACEITO)).toEqual({
+      tipo: 'em-andamento',
+      desdeMs: DESDE,
+      expiraEmMs: ACEITO + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+      aguardarMs: AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+      aposIncerteza: true,
+      posExpiracao: false,
+    });
+  });
+
+  it('um ms antes do fim: em-andamento; no fim: incerta JÁ, com a janela da tentativa', () => {
+    const fim = ACEITO + AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS;
+    expect(estadoPublicacaoRascunhoShopee(reescrito, fim - 1)).toMatchObject({
+      tipo: 'em-andamento',
+      aguardarMs: 1,
+      aposIncerteza: true,
+    });
+    expect(estadoPublicacaoRascunhoShopee(reescrito, fim)).toEqual({
+      tipo: 'incerta',
+      desdeMs: DESDE,
+    });
+    expect(janelaDaCriacaoIncertaShopee(reescrito)).toEqual({ desdeMs: DESDE });
+  });
+
+  it('o `aguardarMs` do 202 é o que a leitura responde no mesmo instante — e o envelope o aceita', () => {
+    const estado = estadoPublicacaoRascunhoShopee(reescrito, ACEITO);
+    if (estado.tipo !== 'em-andamento') throw new Error('esperava em-andamento');
+    const corpo: RespostaItemIncertoShopee = respostaItemIncertoShopeeSchema.parse({
+      arma: 'item',
+      desfecho: 'incerto',
+      linkDocId: 'AbCdEfGhIjKlMnOpQrSt',
+      aguardarMs: estado.aguardarMs,
+      reenvioVerificaSku: true,
+      recusa: null,
+    });
+    expect(corpo.aguardarMs).toBe(AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS);
+  });
+});
+
+describe('criadoNaJanelaShopee — dentro, fora ou desconhecido (K1-7)', () => {
+  /** An attempt that started half a second into its second. */
+  const TENTATIVA_MS = 1_761_000_000_500;
+  const SEGUNDO = 1_761_000_000;
+  const INICIO = SEGUNDO - FOLGA_JANELA_CRIACAO_SHOPEE_S;
+
+  it('o início da janela é ⌊desde/1000⌋ − a folga, ARREDONDADO PARA BAIXO', () => {
+    expect(inicioDaJanelaDaCriacaoShopeeS(TENTATIVA_MS)).toBe(INICIO);
+    expect(inicioDaJanelaDaCriacaoShopeeS(SEGUNDO * 1000)).toBe(INICIO);
+    expect(inicioDaJanelaDaCriacaoShopeeS(SEGUNDO * 1000 + 999)).toBe(INICIO);
+  });
+
+  it('PAR: no próprio segundo da tentativa, depois dela e EXATAMENTE no início ⇒ dentro (inclusivo)', () => {
+    const casos: readonly (readonly [number, PosicaoNaJanelaShopee])[] = [
+      [SEGUNDO, 'dentro'],
+      [SEGUNDO + 1, 'dentro'],
+      [SEGUNDO + 86_400, 'dentro'],
+      [INICIO, 'dentro'],
+      [SEGUNDO - 1, 'dentro'],
+      [SEGUNDO - 299, 'dentro'],
+    ];
+    for (const [criadoS, esperado] of casos) {
+      expect(criadoNaJanelaShopee(criadoS, TENTATIVA_MS), String(criadoS)).toBe(esperado);
+    }
+  });
+
+  it('⛔ NEAR-MISS: um segundo antes do início ⇒ fora (um anúncio mais antigo, nunca o da tentativa)', () => {
+    expect(criadoNaJanelaShopee(INICIO - 1, TENTATIVA_MS)).toBe('fora');
+    expect(criadoNaJanelaShopee(SEGUNDO - 301, TENTATIVA_MS)).toBe('fora');
+    expect(criadoNaJanelaShopee(SEGUNDO - 86_400, TENTATIVA_MS)).toBe('fora');
+  });
+
+  it('⛔ NEAR-MISS do arredondamento: com o desde no FIM do segundo, o início não sobe um segundo', () => {
+    // ⌈·⌉ ou round daria INICIO + 1 e mandaria para `fora` um anúncio criado
+    // exatamente no início.
+    for (const desde of [SEGUNDO * 1000 + 999, SEGUNDO * 1000 + 500]) {
+      expect(criadoNaJanelaShopee(INICIO, desde), String(desde)).toBe('dentro');
+      expect(criadoNaJanelaShopee(INICIO - 1, desde), String(desde)).toBe('fora');
+    }
+  });
+
+  it('⚠️ `null` (a Shopee não preencheu) ⇒ desconhecido — NUNCA fora (falha fechada)', () => {
+    expect(criadoNaJanelaShopee(null, TENTATIVA_MS)).toBe('desconhecido');
+  });
+
+  it('⚠️ um create_time que não é um inteiro seguro POSITIVO ⇒ desconhecido, nunca fora', () => {
+    for (const ruim of [
+      0,
+      -1,
+      -SEGUNDO,
+      1.5,
+      SEGUNDO + 0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      2 ** 53,
+    ]) {
+      expect(criadoNaJanelaShopee(ruim, TENTATIVA_MS), String(ruim)).toBe('desconhecido');
+    }
+    // `undefined` em tempo de execução (uma chave ausente) também.
+    expect(criadoNaJanelaShopee(undefined as unknown as number | null, TENTATIVA_MS)).toBe(
+      'desconhecido',
+    );
+  });
+
+  it('⛔ um `desdeMs` que não é um inteiro seguro ⇒ desconhecido (sem janela, nada se decide)', () => {
+    for (const desde of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 53]) {
+      expect(criadoNaJanelaShopee(SEGUNDO, desde), String(desde)).toBe('desconhecido');
+    }
+  });
+
+  it('a janela da evidência guardada decide: o registro antigo põe DENTRO o que a trava nova deixaria fora', () => {
+    const docTomado = {
+      item_id: null,
+      publicacaoEmCurso: { desde: DESDE + 3_600_000, expiraEm: DESDE + 3_900_000, token: 't' },
+      criacaoIncertaDesde: DESDE,
+    };
+    const janela = janelaDaCriacaoIncertaShopee(docTomado);
+    if (janela === null) throw new Error('esperava uma janela');
+    const criadoPelaTentativaS = Math.floor(DESDE / 1000) + 5;
+    expect(criadoNaJanelaShopee(criadoPelaTentativaS, janela.desdeMs)).toBe('dentro');
+    expect(criadoNaJanelaShopee(criadoPelaTentativaS, DESDE + 3_600_000)).toBe('fora');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                       (4) rascunhoSemMarcaShopee                           */
 /* -------------------------------------------------------------------------- */
 
@@ -356,10 +658,44 @@ describe('rascunhoSemMarcaShopee — a marca ainda por escolher (D10)', () => {
     expect(rascunhoSemMarcaShopee({ item_id: null, brand_id: 0 })).toBe(false);
   });
 
-  it('DISTINTO: qualquer outro valor guardado responde "escolhida" (o que ele envia é da montagem)', () => {
-    for (const brand of [77, -1, '', '77', false]) {
+  it('DISTINTO: todo inteiro seguro NÃO negativo é marca escolhida (0, 1, 77, o maior seguro)', () => {
+    for (const brand of [0, 1, 77, 1_000_000, Number.MAX_SAFE_INTEGER]) {
       expect(rascunhoSemMarcaShopee({ item_id: null, brand_id: brand }), String(brand)).toBe(false);
     }
+  });
+
+  it('⛔ FALHA FECHADA (emenda do P5): um brand_id malformado é "sem marca" — nunca uma marca escolhida', () => {
+    // Antes da emenda, cada um destes respondia "escolhida" e a publicação
+    // seguia com a marca da cascata, enquanto o editor mostrava "sem marca".
+    for (const brand of [
+      '77',
+      '0',
+      '',
+      false,
+      true,
+      1.5,
+      -0.5,
+      -1,
+      Number.MIN_SAFE_INTEGER,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      2 ** 53,
+      {},
+      [77],
+      { brand_id: 77 },
+    ]) {
+      expect(
+        rascunhoSemMarcaShopee({ item_id: null, brand_id: brand }),
+        typeof brand === 'object' ? JSON.stringify(brand) : String(brand),
+      ).toBe(true);
+    }
+  });
+
+  it('⛔ NEAR-MISS nas duas fronteiras: −1 é "sem marca" e 0 é escolhida; 2^53 − 1 é escolhida e 2^53 não', () => {
+    expect(rascunhoSemMarcaShopee({ item_id: null, brand_id: -1 })).toBe(true);
+    expect(rascunhoSemMarcaShopee({ item_id: null, brand_id: 0 })).toBe(false);
+    expect(rascunhoSemMarcaShopee({ item_id: null, brand_id: 2 ** 53 - 1 })).toBe(false);
+    expect(rascunhoSemMarcaShopee({ item_id: null, brand_id: 2 ** 53 })).toBe(true);
   });
 
   it('⛔ NEAR-MISS: um anúncio importado com `brand_id: null` NÃO é rascunho ⇒ não é pendência', () => {
@@ -679,28 +1015,72 @@ describe('camposDoRascunhoShopee — A projeção de um rascunho guardado (K2-4,
     expect(camposDoRascunhoShopee(criado)).toEqual({ ...VAZIO, item_name: 'Camiseta' });
   });
 
-  it('PAR com rascunhoSemMarcaShopee: num rascunho de brand_id nulo, ausente ou inteiro, `marca === null` ⇔ "sem marca"', () => {
+  it('PAR com rascunhoSemMarcaShopee: brand_id nulo, ausente, NÃO negativo ou ilegível ⇒ `marca === null` ⇔ "sem marca"', () => {
     const rascunhos: Record<string, unknown>[] = [
       { item_id: null },
       { item_id: null, brand_id: null },
       { item_id: null, brand_id: 0 },
       { item_id: null, brand_id: 77 },
-      { item_id: null, brand_id: -1 },
+      { item_id: null, brand_id: '77' },
+      { item_id: null, brand_id: '' },
+      { item_id: null, brand_id: false },
+      { item_id: null, brand_id: 1.5 },
+      { item_id: null, brand_id: Number.NaN },
+      { item_id: null, brand_id: 2 ** 53 },
     ];
     for (const r of rascunhos) {
-      expect(camposDoRascunhoShopee(r).marca === null, JSON.stringify(r)).toBe(
+      expect(camposDoRascunhoShopee(r).marca === null, String(r.brand_id)).toBe(
         rascunhoSemMarcaShopee(r),
       );
     }
   });
 
-  it('⚠️ DIVERGÊNCIA PINADA: um brand_id NÃO inteiro é ilegível aqui e "escolhido" para rascunhoSemMarcaShopee', () => {
-    // Nenhum escritor grava um brand_id assim (a rota só grava inteiros). O
-    // editor mostra "não escolhida" e o operador corrige; alinhar o predicado
-    // do P3 é uma decisão em aberto — este pino faz a mudança ser deliberada.
+  it('⚠️ ALINHADO (emenda do P5): o brand_id "77" em texto é ilegível aqui E "sem marca" lá — a publicação recusa', () => {
+    // Antes da emenda este pino guardava a DIVERGÊNCIA: a projeção lia `null`
+    // ("não escolhida") e o predicado respondia "escolhida", então a montagem
+    // seguia com a marca da cascata. Agora as duas leituras concordam.
     const corrompido: Record<string, unknown> = { item_id: null, brand_id: '77' };
     expect(camposDoRascunhoShopee(corrompido).marca).toBeNull();
-    expect(rascunhoSemMarcaShopee(corrompido)).toBe(false);
+    expect(rascunhoSemMarcaShopee(corrompido)).toBe(true);
+  });
+
+  it('⛔ nunca a direção INSEGURA: em todo rascunho, `marca === null` ⇒ "sem marca" (nenhuma marca não escolhida é enviada)', () => {
+    const valores: readonly unknown[] = [
+      undefined,
+      null,
+      0,
+      77,
+      -1,
+      Number.MIN_SAFE_INTEGER,
+      '77',
+      '',
+      false,
+      true,
+      1.5,
+      Number.NaN,
+      Number.NEGATIVE_INFINITY,
+      2 ** 53,
+      {},
+      [],
+    ];
+    for (const brand_id of valores) {
+      const r: Record<string, unknown> = { item_id: null, brand_id };
+      if (camposDoRascunhoShopee(r).marca === null) {
+        expect(rascunhoSemMarcaShopee(r), String(brand_id)).toBe(true);
+      }
+    }
+  });
+
+  it('⚠️ RESÍDUO PINADO, na direção segura: um brand_id NEGATIVO é lido verbatim aqui e "sem marca" lá', () => {
+    // A projeção lê inteiros fora da faixa de escrita VERBATIM (ler não é
+    // validar); nenhum escritor grava um negativo. O editor mostra o id
+    // guardado ao lado da pendência e a publicação RECUSA — nunca envia.
+    const negativo: Record<string, unknown> = { item_id: null, brand_id: -1 };
+    expect(camposDoRascunhoShopee(negativo).marca).toEqual({
+      brand_id: -1,
+      original_brand_name: null,
+    });
+    expect(rascunhoSemMarcaShopee(negativo)).toBe(true);
   });
 });
 
@@ -1416,5 +1796,112 @@ describe('shopeeRascunho.ts — o texto do arquivo', () => {
       expect(FONTE, proibido).not.toContain(proibido);
     }
     expect(FONTE).toContain('MILLISECONDS');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            (N) respostaItemIncertoShopeeSchema — the publish's 202 (P5)     */
+/* -------------------------------------------------------------------------- */
+
+describe('respostaItemIncertoShopeeSchema — o 202 do item incerto (§2.1, K1-5)', () => {
+  const VALIDO = {
+    arma: 'item',
+    desfecho: 'incerto',
+    linkDocId: 'AbCdEfGhIjKlMnOpQrSt',
+    aguardarMs: AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+    reenvioVerificaSku: true,
+    recusa: { codigo: 'error_inner', fraseShopee: 'the system is taking some time to respond' },
+  } as const;
+
+  it('PAR: com a recusa da Shopee, com `fraseShopee` nula e sem recusa (nenhuma resposta chegou)', () => {
+    expect(respostaItemIncertoShopeeSchema.parse(VALIDO)).toEqual(VALIDO);
+    expect(
+      respostaItemIncertoShopeeSchema.parse({
+        ...VALIDO,
+        recusa: { codigo: 'error_server', fraseShopee: null },
+      }).recusa,
+    ).toEqual({ codigo: 'error_server', fraseShopee: null });
+    expect(
+      respostaItemIncertoShopeeSchema.parse({ ...VALIDO, recusa: null, reenvioVerificaSku: false }),
+    ).toEqual({ ...VALIDO, recusa: null, reenvioVerificaSku: false });
+  });
+
+  it('⚠️ `mensagem` (o texto do CLI) é enviada e NÃO declarada: o parse a descarta, e chaves a mais também', () => {
+    const lido = respostaItemIncertoShopeeSchema.parse({
+      ...VALIDO,
+      mensagem: 'A Shopee pode ter criado o anúncio — aguarde e publique de novo.',
+      itemId: null,
+      recusa: { ...VALIDO.recusa, motivo: 'x' },
+    }) as Record<string, unknown>;
+    expect(lido).not.toHaveProperty('mensagem');
+    expect(lido).not.toHaveProperty('itemId');
+    expect(lido.recusa).toEqual(VALIDO.recusa);
+  });
+
+  it('⛔ NEAR-MISS (K1-5): `linkDocId` nulo ou vazio é recusado — a criação sem vínculo cunha um rascunho antes', () => {
+    for (const linkDocId of [null, '', undefined, 7]) {
+      expect(
+        respostaItemIncertoShopeeSchema.safeParse({ ...VALIDO, linkDocId }).success,
+        String(linkDocId),
+      ).toBe(false);
+    }
+  });
+
+  it('⛔ NEAR-MISS: `aguardarMs` precisa ser um inteiro > 0 (0, negativo, fracionário, texto, ausente)', () => {
+    for (const aguardarMs of [0, -1, 1.5, '240000', null, undefined]) {
+      expect(
+        respostaItemIncertoShopeeSchema.safeParse({ ...VALIDO, aguardarMs }).success,
+        String(aguardarMs),
+      ).toBe(false);
+    }
+    expect(respostaItemIncertoShopeeSchema.safeParse({ ...VALIDO, aguardarMs: 1 }).success).toBe(
+      true,
+    );
+  });
+
+  it('⛔ NEAR-MISS: a etiqueta é EXATA — um braço de kit, outro desfecho ou a etiqueta ausente não são este 202', () => {
+    for (const ruim of [
+      { ...VALIDO, arma: 'kit-criar' },
+      { ...VALIDO, arma: 'Item' },
+      { ...VALIDO, desfecho: 'criado' },
+      { ...VALIDO, desfecho: 'nao-criado' },
+      { ...VALIDO, arma: undefined },
+      { ...VALIDO, desfecho: undefined },
+    ]) {
+      expect(respostaItemIncertoShopeeSchema.safeParse(ruim).success, JSON.stringify(ruim)).toBe(
+        false,
+      );
+    }
+  });
+
+  it('⛔ NEAR-MISS: `reenvioVerificaSku` é um booleano obrigatório; `recusa` é anulável, nunca opcional', () => {
+    for (const ruim of [
+      { ...VALIDO, reenvioVerificaSku: undefined },
+      { ...VALIDO, reenvioVerificaSku: 'true' },
+      { ...VALIDO, reenvioVerificaSku: null },
+      { ...VALIDO, recusa: undefined },
+      { ...VALIDO, recusa: { codigo: 'error_server' } },
+      { ...VALIDO, recusa: { fraseShopee: null } },
+      { ...VALIDO, recusa: { codigo: 5, fraseShopee: null } },
+      { ...VALIDO, recusa: 'error_server' },
+    ]) {
+      expect(respostaItemIncertoShopeeSchema.safeParse(ruim).success, JSON.stringify(ruim)).toBe(
+        false,
+      );
+    }
+  });
+
+  it('⛔ o 202 do KIT e o 200 do item NÃO passam por este envelope (cada braço tem a sua etiqueta)', () => {
+    const kitIncerto = {
+      arma: 'kit-criar',
+      desfecho: 'incerto',
+      itemId: null,
+      linkDocId: null,
+      aguardarMs: AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+      recusa: null,
+    };
+    const item200 = { itemId: 2500139861, estadoAnuncio: 'ativo', itemStatus: 'NORMAL' };
+    expect(respostaItemIncertoShopeeSchema.safeParse(kitIncerto).success).toBe(false);
+    expect(respostaItemIncertoShopeeSchema.safeParse(item200).success).toBe(false);
   });
 });

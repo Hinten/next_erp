@@ -2,8 +2,8 @@
  * `POST /api/marketplace/shopee/publicar` — publish (or re-publish) ONE ERP
  * produto as a Shopee listing. Body:
  * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
- * recriar?, converterEmKit?, confirmarSegundoAnuncio? }`. Requires
- * `PERM.integracao.write`.
+ * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta? }`.
+ * Requires `PERM.integracao.write`.
  *
  * Since step 19 (#1527) the produto may publish as a NATIVE Shopee kit. The
  * route does not decide that: `publicarShopee` (`anuncios/publicarShopee.ts`)
@@ -48,6 +48,17 @@
  * `PUBLICACAO_EXPIRADA`, `CONTENCAO`, `CRIACAO_INCERTA`, `CONTA_JA_TEM_ANUNCIO`
  * with `vinculos`), plus `linkDocId`. An app class, mapped with `instanceof`
  * BEFORE `isShopeeError` — it is not a Shopee answer and must never read as one ·
+ * `RecusaDeRascunhoShopeeError` (#1911, K1-5), with the status it carries — a
+ * live create with NO link mints its draft through the draft route's own
+ * create first, and that create's refusal (a racing second draft:
+ * `CONTA_JA_TEM_ANUNCIO`) is answered exactly as the draft route answers it ·
+ * **202** for an ordinary
+ * listing's first `add_item` whose outcome nobody can know (#1911, D5):
+ * `respostaItemIncertoShopeeSchema` (`arma: 'item'`, `desfecho: 'incerto'`,
+ * the draft's `linkDocId`, `aguardarMs`, `reenvioVerificaSku`, Shopee's
+ * `recusa`) plus the CLI's `mensagem`, sent and never declared — the draft's
+ * lock is KEPT for `aguardarMs` and the attempt recorded, so the next publish
+ * looks for the listing by SKU before any new `add_item` ·
  * 200 with the publish summary, built BY NAME — step 11's for the item arm, the
  * kit summary for a kit arm · **202** for a kit create whose outcome Shopee left
  * UNCERTAIN (`desfecho: 'incerto'`): NOTHING was written, and the body carries
@@ -68,14 +79,24 @@
  */
 import { NextResponse } from 'next/server';
 import { FieldValue } from 'firebase-admin/firestore';
+import type { z } from 'zod';
 import { createShopeePartnerClient } from '@delfrance/integrations-shopee';
-import { AGUARDAR_KIT_INCERTO_SHOPEE_MS, TETO_ROTA_SHOPEE_MS } from '@delfrance/schemas';
+import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
+  TETO_ROTA_SHOPEE_MS,
+  type respostaItemIncertoShopeeSchema,
+} from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { lerCorpoPublicar } from '@/lib/shopee/anuncios/corpoPublicacao';
+import type { ResultadoItemIncerto } from '@/lib/shopee/anuncios/criacaoIncerta';
 import type { ResultadoPublicacao } from '@/lib/shopee/anuncios/publicarAnuncio';
 import { publicarShopee } from '@/lib/shopee/anuncios/publicarShopee';
+import {
+  RecusaDeRascunhoShopeeError,
+  corpoDaRecusaDeRascunhoShopee,
+} from '@/lib/shopee/anuncios/rascunho';
 import { ConflitoDeRascunhoShopeeError } from '@/lib/shopee/anuncios/reservaRascunho';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
 import { loadShopeeContext } from '@/lib/shopee/core/shopee';
@@ -138,6 +159,27 @@ function corpoDoItem(res: ResultadoPublicacao) {
 }
 
 /**
+ * The 202 of an ordinary listing's uncertain first create (#1911, D5), BY NAME
+ * against the ONE envelope the web parses (`respostaItemIncertoShopeeSchema`,
+ * `@delfrance/schemas`). `mensagem` is spread on AFTER the check — sent for
+ * the CLI, never declared (the kit's 202 precedent).
+ */
+function corpoDoItemIncerto(res: ResultadoItemIncerto) {
+  const corpo = {
+    arma: 'item',
+    desfecho: 'incerto',
+    linkDocId: res.linkDocId,
+    aguardarMs: res.aguardarMs,
+    reenvioVerificaSku: res.reenvioVerificaSku,
+    recusa:
+      res.recusa === null
+        ? null
+        : { codigo: res.recusa.codigo, fraseShopee: res.recusa.fraseShopee },
+  } as const satisfies z.input<typeof respostaItemIncertoShopeeSchema>;
+  return { ...corpo, mensagem: res.mensagem };
+}
+
+/**
  * The native-kit summary (step 19), BY NAME for the same reason: every field is
  * named, the sub-objects too. A warning travels as its CODE and the produto it
  * is about — the pt-BR sentence is the CLI's and the log's, and a code is what a
@@ -190,7 +232,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!corpo.ok) return NextResponse.json(corpoDeErro(corpo), { status: 400 });
   const { integracaoId, produtoId, linkDocId, status, categoryId, principal, recriar } =
     corpo.valor;
-  const { converterEmKit, confirmarSegundoAnuncio } = corpo.valor;
+  const { converterEmKit, confirmarSegundoAnuncio, confirmarCriacaoIncerta } = corpo.valor;
 
   // ⚠️ ONE clock read for the whole request, handed DOWN — `importar`'s own
   // rule. Two documents written by one publish can never disagree about when it
@@ -239,6 +281,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         agora: () => Date.now(),
         prazoDaRequisicao: nowMs + TETO_ROTA_SHOPEE_MS,
         confirmarSegundoAnuncio,
+        confirmarCriacaoIncerta,
       },
     };
     // ⚠️ `hostEmulador` is deliberately OMITTED rather than passed as null:
@@ -271,6 +314,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
 
     if (res.tipo === 'item') return NextResponse.json(corpoDoItem(res.resultado));
+    if (res.tipo === 'item-incerto') {
+      // Accepted, not done (#1911, D5): Shopee may or may not have created the
+      // listing; the draft's lock stays live for `aguardarMs` and the attempt
+      // is on record, so the next publish of the draft LOOKS before it sends.
+      return NextResponse.json(corpoDoItemIncerto(res.resultado), { status: 202 });
+    }
 
     const kit = corpoDoKit(res.resultado);
     if (res.resultado.desfecho === 'incerto') {
@@ -290,6 +339,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     // Shopee's, and nothing was sent.
     if (err instanceof ConflitoDeRascunhoShopeeError) {
       return NextResponse.json(corpoDoConflito(err), { status: 409 });
+    }
+    // The no-link create's MINT is the draft route's own create (#1911, K1-5):
+    // its refusal is answered exactly as that route answers it. Also OURS,
+    // never Shopee's — so before `isShopeeError` too.
+    if (err instanceof RecusaDeRascunhoShopeeError) {
+      return NextResponse.json(corpoDaRecusaDeRascunhoShopee(err), { status: err.status });
     }
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;

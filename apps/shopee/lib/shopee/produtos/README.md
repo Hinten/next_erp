@@ -23,9 +23,11 @@ The families are the seam, not a filing convention.
   `planoImportacao.ts` (the ORDERED write plan). No clock, no Firestore, no wire
   call — which is what lets the CLI's dry run print exactly what a live run
   would write.
-- **The IO half** — `resolveProduto.ts` (the import-direction cascade),
-  `links.ts` (resolve-then-write, never delete — the one `prodshopee` delete is
-  a draft's discard, in `../anuncios/rascunho.ts`), `taxonomiaShopee.ts` (the
+- **The IO half** — `resolveProduto.ts` (the import-direction cascade, and
+  since #1911 the evidence-only choice of a draft to adopt), `links.ts`
+  (resolve-then-write, never delete — the one `prodshopee` delete is a draft's
+  discard, in `../anuncios/rascunho.ts`; plus the guarded adoption arm),
+  `taxonomiaShopee.ts` (the
   guarded grupo write and the per-dispatch memo), `categoriaShopee.ts` (the
   `shopee-<id>` chain off step 10's cached tree and the category-tree memo),
   `fotosShopee.ts` (the retriable picture unit), `estoquePrecos.ts` (the guarded
@@ -137,6 +139,43 @@ afterwards `add`s a fresh link (the claim in `../anuncios/reservaRascunho.ts`),
 so a discard never orphans a listing. Everything above still holds for every link the import resolves:
 merge or add, never delete. `links.ts`'s docblock says the same.
 
+**A DRAFT is adopted only on EVIDENCE (#1911, P5 — D5 / K1-8).** A draft's
+first `add_item` may answer nothing usable (a network drop, `error_server`, a
+crash after the send) while Shopee created the listing anyway; the publish
+then holds an UNCERTAIN create (`criacaoIncertaDesde`, or a lock left behind).
+When the import later meets that listing, the SKU rung binds it to the
+draft's produto and rung 1 finds no link for it — and without this rule the
+import would `add` a SECOND `prodshopee` while the draft stayed `incerta` for
+ever. So, on the SKU rung only, for an ordinary listing (never a kit) with NO
+link at all (a stale rung-1 row is still its link), `resolveProduto.ts` reads
+the produto's whole `prodshopee` subcollection (no `where`, no index) and adopts
+a draft only when `veredictoDeAdocaoShopee` answers `adotavel`: a draft of THIS
+conta whose attempt window (`janelaDaCriacaoIncertaShopee` — the uncertainty
+record, else the lock's `desde`) exists AND holds the listing's `create_time`
+(`criadoNaJanelaShopee === 'dentro'`, i.e. no earlier than ⌊desde/1000⌋ − 300 s).
+Both predicates are `@delfrance/schemas`'s, the ONE copy the publish's own
+look-up (`../anuncios/criacaoIncerta.ts`) decides with. **No legacy draft is
+ever adopted** — none carries evidence — so the post-cutover mass import
+replaces no draft's content; a never-sent draft, a listing created BEFORE the
+window (an older same-SKU listing), an unknown `create_time` (one log line —
+fail-closed) and two adoptable drafts (one warn) all keep today's `add`, the
+draft byte-for-byte untouched. The plan then writes an ADOPTION, not a merge
+(`EscritaDeAdocaoDeRascunho`): the import's fields WITHOUT the `...existente`
+spread, `dataCadastro` only when the draft has none, and `publicacaoEmCurso`,
+`criacaoIncertaDesde` and `falhaPublicacao` cleared — a lock left on the link
+would read `em-andamento` / `incerta` for ever and block the produto's other
+drafts on the conta. `links.ts` applies it as rule 7 tier 1, each pass on a
+FRESH read that RE-DERIVES the verdict: still adoptable ⇒
+`update(…, {lastUpdateTime})`; `item_id` already ours (the publish's claim got
+there first) ⇒ the plain merge, nothing cleared; gone, claimed by another
+item or no longer adoptable ⇒ `add` (two linked listings, never a lost
+`item_id`); `FAILED_PRECONDITION` ⇒ re-derive, a third loss rethrows. A live
+publish lock does not block it — the run that held it refuses to send on its
+pre-send re-read, or converges through its claim. Accepted residual: Shopee's
+content wins over a draft edited while `incerta` (the operator authored it for
+the listing that now exists). The mass import goes through the same resolver,
+so `processMassImport` (the functions bundle) carries it.
+
 **`kitNativo` is stamped on every listing link, on both branches.**
 `dadosLinkListagem` writes `ehKitDe(base)` — `true` for a native Shopee kit,
 `false` for an ordinary listing — unconditionally, so a stored `null` or a
@@ -163,9 +202,11 @@ in `../anuncios/publicarAnuncio.ts`). Publish's write-back #2 writes the name
 with the same expression, so both writers agree with the read they just made.
 Self-healing, no migration: the next import of a listing converges its pair —
 with the same caveat as `kitNativo` above, since a default `importar-todos`
-skips listings that already have a link. The import never reaches a DRAFT
+skips listings that already have a link. Rung 1 never reaches a DRAFT
 (`item_id: null`): it resolves by `item_id`, and a draft's brand is the
 operator's pick, refused at publish as `marca-nao-escolhida` while unpicked.
+The one way the import writes a draft is the evidence-only ADOPTION above, and
+it writes the pair from the read like any other link.
 
 **The grupo write is ADR 0011 tier 1.** `update(patch, { lastUpdateTime })`
 naming only `variacoes` / `variacoesIds` / `linksVariacoesShopee` /

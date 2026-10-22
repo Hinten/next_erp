@@ -61,8 +61,15 @@
  * call, NEVER the run's one `nowMs` (a constant would let a run that spent six
  * minutes uploading photos still send after its lock expired) — and NO request
  * deadline: a terminal has no platform ceiling, so the lock's own expiry is the
- * only bound. `--confirmar-segundo-anuncio` rides the same object. The dry run
- * never takes the lock.
+ * only bound. `--confirmar-segundo-anuncio` and `--confirmar-criacao-incerta`
+ * ride the same object. The dry run never takes the lock.
+ *
+ * ⚠️ **A `--live` create with no `--link` MINTS a draft first** (#1911, K1-5),
+ * so the lock and the memory of an uncertain create have a document to live
+ * on. When the outcome of that first `add_item` is UNKNOWN the run exits 1 and
+ * prints the wait and the exact command to re-run (with `--link <the draft>`):
+ * the re-run looks for the listing by SKU before it sends anything. The dry
+ * run mints nothing.
  *
  * ## What it prints, and what it must never print
  *
@@ -95,7 +102,9 @@
  * is printed and answers 0.
  * ⚠️ A kit `--live` whose `add_kit_item` outcome is UNCERTAIN (`incerto`, the
  * route's 202) exits 1 too: nothing was written, and the summary prints the
- * exact command to re-run once the wait it names has passed.
+ * exact command to re-run once the wait it names has passed. So does an
+ * ordinary listing's uncertain `add_item` (#1911) — there the DRAFT recorded
+ * the attempt, and the command it prints names that draft.
  */
 import {
   ArgumentoInvalidoError,
@@ -104,11 +113,13 @@ import {
   ehConflitoDeRascunho,
   lerArgsPublicar,
   renderizarEnsaioDeKit,
+  renderizarItemIncerto,
   renderizarPlano,
   renderizarResultado,
   renderizarResultadoKit,
   resumoDaPublicacao,
   resumoDoEnsaioDeKit,
+  resumoDoItemIncerto,
   resumoDoResultado,
   resumoDoResultadoKit,
 } from '../lib/shopee/anuncios/publicarAnuncioCli';
@@ -153,6 +164,7 @@ async function main(): Promise<void> {
     recriar,
     converterEmKit,
     confirmarSegundoAnuncio,
+    confirmarCriacaoIncerta,
   } = comando.args;
 
   // ⚠️ The dynamic imports are what make "`--help` touches no environment and no
@@ -372,9 +384,14 @@ async function main(): Promise<void> {
   const res = await publicarShopee(
     {
       ...deps,
-      // #1911: the draft lock's LIVE clock and confirmation; no request
-      // deadline from a terminal (see the header).
-      aoVivo: { agora: () => Date.now(), prazoDaRequisicao: null, confirmarSegundoAnuncio },
+      // #1911: the draft lock's LIVE clock and the two confirmations; no
+      // request deadline from a terminal (see the header).
+      aoVivo: {
+        agora: () => Date.now(),
+        prazoDaRequisicao: null,
+        confirmarSegundoAnuncio,
+        confirmarCriacaoIncerta,
+      },
     },
     entrada,
   );
@@ -410,6 +427,34 @@ async function main(): Promise<void> {
     log('== LIVE (kit nativo) — o publicador de verdade ==');
     log('');
     for (const linha of renderizarResultadoKit(res.resultado, opcoesKit)) log(linha);
+    return;
+  }
+
+  if (res.tipo === 'item-incerto') {
+    // ⚠️ #1911 (D5): the first add_item's outcome is UNKNOWN — the draft kept
+    // its lock and recorded the attempt. Not done: the exit code says so, and
+    // the summary prints the wait and the exact command to re-run.
+    process.exitCode = 1;
+    if (json) {
+      log(
+        JSON.stringify(
+          {
+            modo: 'live',
+            tipo: 'item-incerto',
+            integracaoId,
+            resultado: resumoDoItemIncerto(res.resultado, { integracaoId, projectId }),
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+    log('== LIVE — criação INCERTA: a Shopee pode ter criado o anúncio ==');
+    log('');
+    for (const linha of renderizarItemIncerto(res.resultado, { integracaoId, projectId })) {
+      log(linha);
+    }
     return;
   }
 

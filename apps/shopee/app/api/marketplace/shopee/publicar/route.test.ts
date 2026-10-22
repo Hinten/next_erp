@@ -6,6 +6,7 @@ import {
   SHOPEE_ERROR_KIND,
   SHOPEE_ITEM_STATUS_WRITABLE,
   SHOPEE_LOGISTICS_FEE_TYPE,
+  ShopeeNetworkError,
   ShopeeRateLimitError,
   shopeeLogisticsChannelSchema,
   type ShopeeCategoria,
@@ -14,9 +15,11 @@ import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   CODIGO_RASCUNHO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
+  INTEGRACAO_TIPO,
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   TETO_ROTA_SHOPEE_MS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  respostaItemIncertoShopeeSchema,
 } from '@delfrance/schemas';
 
 import {
@@ -25,7 +28,10 @@ import {
   MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishRejectedError,
 } from '@/lib/shopee/anuncios/errosPublicacao';
+import { CriacaoDeAnuncioIncertaError } from '@/lib/shopee/anuncios/criacaoIncerta';
+import { RecusaDeRascunhoShopeeError } from '@/lib/shopee/anuncios/rascunho';
 import {
+  MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO,
   MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
@@ -181,6 +187,15 @@ function ctxDouble() {
 
 /** Um produto publicável em tudo MENOS nas fotos — o publish bloqueia sozinho. */
 function semearProduto(db: FakeDb, over: Record<string, unknown> = {}): void {
+  // #1911 (K1-5): a create with NO link mints its draft through the draft
+  // route's create, whose first check is the conta document (the real
+  // `readConta`; `loadShopeeContext` is the double above).
+  db.seed(`integracao/${INT_A}`, {
+    tipo: INTEGRACAO_TIPO.shopee,
+    ativo: true,
+    nome: 'Loja Sandbox',
+    shop_id: SHOP_ID,
+  });
   db.seed(`produtos/${PRODUTO}`, {
     nome: 'Camiseta básica branca',
     sku: 'CAM-BR',
@@ -406,7 +421,17 @@ describe('as duas recusas por produto', () => {
     const corpo = (await res.json()) as { code: string; problemas: { motivo: string }[] };
     expect(corpo.code).toBe('SHOPEE_PUBLISH_BLOCKED');
     expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
-    expect(db.writes).toHaveLength(0);
+    // #1911 (K1-5): with no link the create first MINTS its draft — the only
+    // document written; the blocked plan hands its lock back, unstamped.
+    const fora = db.writes.filter((w) => !w.path.startsWith(`produtos/${PRODUTO}/prodshopee/`));
+    expect(fora).toEqual([]);
+    const ids = db.idsEm(`produtos/${PRODUTO}/prodshopee`);
+    expect(ids).toHaveLength(1);
+    expect(db.store[`produtos/${PRODUTO}/prodshopee/${ids[0] ?? ''}`]?.data).toMatchObject({
+      item_id: null,
+      publicacaoEmCurso: null,
+      falhaPublicacao: null,
+    });
   });
 
   it('uma recusa da própria Shopee vira o REJECTED, com etapa e shopeeCode VERBATIM', async () => {
@@ -1045,6 +1070,15 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
     await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
     const semFlag = h.publicar.mock.calls[1]?.[0] as PublicarAnuncioDeps;
     expect(semFlag.aoVivo?.confirmarSegundoAnuncio).toBe(false);
+    expect(semFlag.aoVivo?.confirmarCriacaoIncerta).toBe(false);
+
+    // #1911 P5: the attestation travels on the SAME object — and only its own.
+    await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: true }), AUTORIZADO),
+    );
+    const atestado = h.publicar.mock.calls[2]?.[0] as PublicarAnuncioDeps;
+    expect(atestado.aoVivo?.confirmarCriacaoIncerta).toBe(true);
+    expect(atestado.aoVivo?.confirmarSegundoAnuncio).toBe(false);
   });
 
   it('uma trava ALHEIA viva ⇒ 409 EM_ANDAMENTO {error, code, linkDocId, aguardarMs} — sem vinculos, nada gravado, nenhuma chamada de escrita', async () => {
@@ -1065,15 +1099,105 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
     expect(h.getChannelList).not.toHaveBeenCalled();
   });
 
-  it('um rascunho INCERTO ⇒ 409 CRIACAO_INCERTA, sem aguardarMs', async () => {
+  it('(P5) um rascunho INCERTO de um produto SEM SKU ⇒ 422 criacao-incerta-sem-sku: nada buscado, trava devolvida, registro mantido', async () => {
+    semearProduto(db, { sku: '   ' });
     semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
 
     const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
 
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(422);
+    const corpo = (await res.json()) as { code: string; problemas: { motivo: string }[] };
+    expect(corpo.code).toBe('SHOPEE_PUBLISH_BLOCKED');
+    expect(corpo.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.criacaoIncertaSemSku,
+    ]);
+    expect(rascunhoArmazenado()).toMatchObject({
+      publicacaoEmCurso: null,
+      criacaoIncertaDesde: T0 - 600_000,
+    });
+    expect(h.getChannelList).not.toHaveBeenCalled();
+  });
+
+  it('(P5, K1-11) …e com confirmarCriacaoIncerta: true a reserva PASSA (o plano então recusa sem-fotos) — a flag CHEGA à reserva', async () => {
+    semearProduto(db, { sku: '   ' });
+    semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
+
+    const res = await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: true }), AUTORIZADO),
+    );
+
+    expect(res.status).toBe(422);
+    const corpo = (await res.json()) as { problemas: { motivo: string }[] };
+    expect(corpo.problemas.map((p) => p.motivo)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semFotos);
+    // No scan proved anything: the record stays.
+    expect(rascunhoArmazenado()?.criacaoIncertaDesde).toBe(T0 - 600_000);
+  });
+
+  it('confirmarCriacaoIncerta que não é booleano ⇒ 400 com a frase do campo, antes de qualquer leitura', async () => {
+    const res = await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarCriacaoIncerta: 1 }), AUTORIZADO),
+    );
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: MSG_CONFIRMAR_CRIACAO_INCERTA_INVALIDO });
+    expect(h.loadCtx).not.toHaveBeenCalled();
+  });
+
+  it('(D5) o add_item INCERTO ⇒ 202 com o envelope ÚNICO (respostaItemIncertoShopeeSchema) + a mensagem da CLI, por NOME', async () => {
+    const resultado = {
+      produtoId: PRODUTO,
+      linkDocId: RASCUNHO,
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: { codigo: 'error_inner', fraseShopee: 'Our system is taking some time' },
+      mensagem: 'frase da CLI',
+      inventadoPelaOndaSeguinte: 'NÃO PODE VAZAR',
+    };
+    semearRascunho(RASCUNHO);
+    h.publicar.mockRejectedValue(
+      new CriacaoDeAnuncioIncertaError(resultado, new ShopeeNetworkError('caiu')),
+    );
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(202);
     const corpo = (await res.json()) as Record<string, unknown>;
-    expect(corpo.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
-    expect('aguardarMs' in corpo).toBe(false);
+    expect(corpo).toEqual({
+      arma: 'item',
+      desfecho: 'incerto',
+      linkDocId: RASCUNHO,
+      aguardarMs: 240_000,
+      reenvioVerificaSku: true,
+      recusa: { codigo: 'error_inner', fraseShopee: 'Our system is taking some time' },
+      mensagem: 'frase da CLI',
+    });
+    // The web parses the SAME envelope, and `mensagem` is dropped there.
+    expect(respostaItemIncertoShopeeSchema.parse(corpo)).not.toHaveProperty('mensagem');
+  });
+
+  it('a recusa do CREATE do rascunho cunhado (sem vínculo) ⇒ o status e o corpo da rota de rascunho, antes do isShopeeError', async () => {
+    h.publicar.mockRejectedValue(
+      new RecusaDeRascunhoShopeeError({
+        status: 409,
+        code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+        linkDocId: 'rasc-cunhado',
+        mensagem: 'frase do create',
+        vinculos: [{ linkDocId: IRMAO, itemId: null, rascunho: true }],
+      }),
+    );
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error: 'frase do create',
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      linkDocId: 'rasc-cunhado',
+      vinculos: [{ linkDocId: IRMAO, itemId: null, rascunho: true }],
+    });
+    const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
+    expect(fonte.indexOf('err instanceof RecusaDeRascunhoShopeeError')).toBeLessThan(
+      fonte.indexOf('if (isShopeeError(err))'),
+    );
   });
 
   it('dois rascunhos ⇒ 409 CONTA_JA_TEM_ANUNCIO com vinculos; com confirmarSegundoAnuncio a reserva PASSA (o plano então recusa sem-fotos, 422) e a trava volta', async () => {

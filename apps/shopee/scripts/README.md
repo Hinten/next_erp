@@ -780,21 +780,21 @@ Five blocks: the produto, preço and estoque, the variations, the grupos, and
 categoria/vínculos/fotos — plus a sixth, the component table, when the listing
 is a kit.
 
-| line                                          | what it tells you                                                                                                                                                                                                               |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `produto … criar/atualizar id=… kit=…`        | the deterministic id, and whether this run mints or merges. The id is `sha256("shopee\|<integracaoId>\|<item_id>")` — the same anúncio under a different integração is a DIFFERENT produto, on purpose.                         |
-| `campos do produto` / `campos de extraData`   | the exact key set a merge would carry. On an UPDATE this is the fill rule at work: only absent fields are filled, except the small `sobrescreverDadosProduto` carve-out.                                                        |
-| `descrição` / `tax_info`                      | **counts and field NAMES only.** The description's characters are counted and the `tax_info` values are never rendered — the summary is an allow-list, so it is safe to paste into an issue. Keep it that way if you extend it. |
-| `preço … (nenhum) motivo=<token>`             | why no price would be written: `opcao-desligada`, `sem-tabela`, `pai-com-filhos`, `sem-price-info`, `moeda-nao-brl`, `valor-abaixo-do-minimo`. On the SG sandbox this is normally `moeda-nao-brl` — see §11.5.                  |
-| `propagar preço … sim/não/—`                  | the `propagatePriceToChildren` this run would WRITE (CREATE, or a produto with no children): `sim` = one price across models, the parent carries it; `não` = they differ or one is unpriced; `—` = none written.                |
-| `estoque … (nenhum) motivo=<token>`           | the same shape for stock. A parent that owns children never carries one.                                                                                                                                                        |
-| `### variações (N models → …)`                | `criar` / `existentes` / `semLink`. A `semLink` row is a `model_id: 0` child: the produto is created, the `variashopee` link is not, and that is the wire's answer rather than a failure.                                       |
-| the per-model rows                            | `criar` / `atualizar` / `sem mudança`, the child's own id, and its own `link` and `estoque`. A re-import of an unchanged listing should read `sem mudança` on every row.                                                        |
-| `### grupos de variações`                     | `novo` / `match + patch` / `match` per grupo. `match` with no patch on a second run is the `linksVariacoesShopee` merge proving it does not churn.                                                                              |
-| `categoria …`                                 | the root-first path, or `(nenhuma — id desconhecido ou opção desligada)`. No API call is made: the chain comes from step 10's cached tree.                                                                                      |
-| `prodshopee` / `variashopee`                  | `CRIAR` vs `MERGE`, per document. Nothing is ever deleted, so a `MERGE` over a link you did not expect is information, not damage.                                                                                              |
-| `fotos … no anúncio · já em cache · a baixar` | counts only; the image URLs are deliberately omitted. `já em cache` is the `externalIds` hit — a second run should download nothing.                                                                                            |
-| `### kit — componentes (R/N resolvidos)`      | the K1 table. `R < N` means the kit is REFUSED — see §11.5.                                                                                                                                                                     |
+| line                                          | what it tells you                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `produto … criar/atualizar id=… kit=…`        | the deterministic id, and whether this run mints or merges. The id is `sha256("shopee\|<integracaoId>\|<item_id>")` — the same anúncio under a different integração is a DIFFERENT produto, on purpose.                                                                                                                                                                                                             |
+| `campos do produto` / `campos de extraData`   | the exact key set a merge would carry. On an UPDATE this is the fill rule at work: only absent fields are filled, except the small `sobrescreverDadosProduto` carve-out.                                                                                                                                                                                                                                            |
+| `descrição` / `tax_info`                      | **counts and field NAMES only.** The description's characters are counted and the `tax_info` values are never rendered — the summary is an allow-list, so it is safe to paste into an issue. Keep it that way if you extend it.                                                                                                                                                                                     |
+| `preço … (nenhum) motivo=<token>`             | why no price would be written: `opcao-desligada`, `sem-tabela`, `pai-com-filhos`, `sem-price-info`, `moeda-nao-brl`, `valor-abaixo-do-minimo`. On the SG sandbox this is normally `moeda-nao-brl` — see §11.5.                                                                                                                                                                                                      |
+| `propagar preço … sim/não/—`                  | the `propagatePriceToChildren` this run would WRITE (CREATE, or a produto with no children): `sim` = one price across models, the parent carries it; `não` = they differ or one is unpriced; `—` = none written.                                                                                                                                                                                                    |
+| `estoque … (nenhum) motivo=<token>`           | the same shape for stock. A parent that owns children never carries one.                                                                                                                                                                                                                                                                                                                                            |
+| `### variações (N models → …)`                | `criar` / `existentes` / `semLink`. A `semLink` row is a `model_id: 0` child: the produto is created, the `variashopee` link is not, and that is the wire's answer rather than a failure.                                                                                                                                                                                                                           |
+| the per-model rows                            | `criar` / `atualizar` / `sem mudança`, the child's own id, and its own `link` and `estoque`. A re-import of an unchanged listing should read `sem mudança` on every row.                                                                                                                                                                                                                                            |
+| `### grupos de variações`                     | `novo` / `match + patch` / `match` per grupo. `match` with no patch on a second run is the `linksVariacoesShopee` merge proving it does not churn.                                                                                                                                                                                                                                                                  |
+| `categoria …`                                 | the root-first path, or `(nenhuma — id desconhecido ou opção desligada)`. No API call is made: the chain comes from step 10's cached tree.                                                                                                                                                                                                                                                                          |
+| `prodshopee` / `variashopee`                  | `CRIAR` vs `MERGE`, per document. Nothing is ever deleted, so a `MERGE` over a link you did not expect is information, not damage. The parent may also read `ADOTAR RASCUNHO` (#1911, P5): the listing is the one a draft's UNCERTAIN create made (attempt evidence + `create_time` inside its window), and the live write adopts that draft — or, when the evidence is gone by then, creates a fresh link instead. |
+| `fotos … no anúncio · já em cache · a baixar` | counts only; the image URLs are deliberately omitted. `já em cache` is the `externalIds` hit — a second run should download nothing.                                                                                                                                                                                                                                                                                |
+| `### kit — componentes (R/N resolvidos)`      | the K1 table. `R < N` means the kit is REFUSED — see §11.5.                                                                                                                                                                                                                                                                                                                                                         |
 
 ### 11.4 The live run
 
@@ -994,31 +994,43 @@ Rascunho (#1911)
                       antes de ler o conteúdo, só envia o add_item enquanto a
                       trava vale, e recusa (sem enviar nada) quando outra
                       execução está publicando, quando a última tentativa pode
-                      ter criado o anúncio, ou quando a conta já tem anúncio ou
-                      rascunho deste produto.
+                      ter criado o anúncio e a busca pelo SKU não decide, ou
+                      quando a conta já tem anúncio ou rascunho deste produto.
   --confirmar-segundo-anuncio
                       confirma que este rascunho pode virar um SEGUNDO anúncio
                       do produto nesta conta (a Shopee pode tratar duplicata
                       como spam). Só vale no --live; nunca passa por cima de
                       outro vínculo que esteja sendo publicado.
+  --confirmar-criacao-incerta
+                      depois de uma criação INCERTA (o add_item pode ter
+                      criado o anúncio), o ERP procura o anúncio pelo SKU antes
+                      de enviar de novo. Esta flag confirma que você conferiu
+                      no Seller Centre, e só vale em DOIS casos: o produto não
+                      tem SKU (não há busca), ou o anúncio achado já é deste
+                      produto e é um segundo anúncio feito de propósito. Nunca
+                      pula a busca de um produto com SKU, nem uma busca ambígua
+                      ou incompleta. Só vale no --live.
+  Sem --link, o --live cria primeiro um RASCUNHO do produto (o vínculo onde a
+  trava e a memória de uma criação incerta moram) e publica esse rascunho.
 ```
 
-| flag                          | meaning                                                                                                                                                                                                                                                                                                                                                  |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--integracao <id>`           | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                                                                                                                                                                                           |
-| `--produto <id>`              | **required** — the **PARENT** produto. A child is refused by the dispatcher (`produto-e-filho`) before any Shopee call; a native kit is published through the kit arms (§12.6)                                                                                                                                                                           |
-| `--link <docId>`              | optional — which `prodshopee` link to use when the produto has more than one; **required with `--recriar`** (the OLD kit's link). A `linkDocId` belonging to another conta resolves to nothing and the script exits `1`. Without it the dispatcher picks — never a superseded link (§12.6)                                                               |
-| `--categoria <id>`            | optional — **digits only, and never trimmed**: `' 100017'` is refused rather than repaired. Used ONLY when the resolved link carries no `category_id`; it never overwrites one. Ignored on a native kit (the category is the main component's)                                                                                                           |
-| `--status`                    | `NORMAL` (default) or `UNLIST`, **exactly** — no case fold and no alias, so `unlist` is refused. On a native kit it is USED by a create (`add_kit_item` with `unlisted: true`, register 305 — recriar/converter included) and ignored by a republish; a `--recriar` never deletes a kit on sale for a paused one (`kit-novo-inativo`)                    |
-| `--dry-run`                   | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                                                                                                                                                                                       |
-| `--live`                      | the only opt-in to a real publish                                                                                                                                                                                                                                                                                                                        |
-| `--project <id>`              | overrides `FIREBASE_PROJECT_ID` before the admin app resolves it                                                                                                                                                                                                                                                                                         |
-| `--json`                      | the same REDACTED summary as one parseable document on stdout, preamble on stderr; `tipo` says `item` or `kit`                                                                                                                                                                                                                                           |
-| `--help`, `-h`                | prints the usage and exits `0`, ahead of every validation                                                                                                                                                                                                                                                                                                |
-| `--principal <id>`            | step 19 — the kit's MAIN component, as the ERP id of the component produto. Required on a kit CREATE spanning 2+ Shopee listings (`principal-obrigatorio`); on an existing kit it is only compared (`principal-diferente`). Refused on an ordinary listing (`opcao-de-kit-em-anuncio-comum`)                                                             |
-| `--recriar`                   | step 19 — recreate the native kit `--link` names: the new kit FIRST, then `delete_item` on the old one. ⚠️ Without `--link` it is a usage error, so a re-run is literally the same command                                                                                                                                                               |
-| `--converter-em-kit`          | step 19 — replace the produto's ORDINARY listing with a new native kit; the ordinary one is superseded, never touched. ⚠️ With `--recriar` it is a usage error: one kit action per run                                                                                                                                                                   |
-| `--confirmar-segundo-anuncio` | #1911 — with `--link <draft>` under `--live`: this draft may become a SECOND listing of the produto on the conta (D15). Without it, a conta that already holds a live listing or another draft of the produto refuses `SHOPEE_RASCUNHO_CONTA_JA_TEM_ANUNCIO`; it never overrides a sibling link that is being published (§12.7). Does not imply `--live` |
+| flag                          | meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>`           | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                                                                                                                                                                                                                                                                                                                                    |
+| `--produto <id>`              | **required** — the **PARENT** produto. A child is refused by the dispatcher (`produto-e-filho`) before any Shopee call; a native kit is published through the kit arms (§12.6)                                                                                                                                                                                                                                                                                                                    |
+| `--link <docId>`              | optional — which `prodshopee` link to use when the produto has more than one; **required with `--recriar`** (the OLD kit's link). A `linkDocId` belonging to another conta resolves to nothing and the script exits `1`. Without it the dispatcher picks — never a superseded link (§12.6)                                                                                                                                                                                                        |
+| `--categoria <id>`            | optional — **digits only, and never trimmed**: `' 100017'` is refused rather than repaired. Used ONLY when the resolved link carries no `category_id`; it never overwrites one. Ignored on a native kit (the category is the main component's)                                                                                                                                                                                                                                                    |
+| `--status`                    | `NORMAL` (default) or `UNLIST`, **exactly** — no case fold and no alias, so `unlist` is refused. On a native kit it is USED by a create (`add_kit_item` with `unlisted: true`, register 305 — recriar/converter included) and ignored by a republish; a `--recriar` never deletes a kit on sale for a paused one (`kit-novo-inativo`)                                                                                                                                                             |
+| `--dry-run`                   | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                                                                                                                                                                                                                                                                                                                                |
+| `--live`                      | the only opt-in to a real publish                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `--project <id>`              | overrides `FIREBASE_PROJECT_ID` before the admin app resolves it                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `--json`                      | the same REDACTED summary as one parseable document on stdout, preamble on stderr; `tipo` says `item` or `kit`                                                                                                                                                                                                                                                                                                                                                                                    |
+| `--help`, `-h`                | prints the usage and exits `0`, ahead of every validation                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `--principal <id>`            | step 19 — the kit's MAIN component, as the ERP id of the component produto. Required on a kit CREATE spanning 2+ Shopee listings (`principal-obrigatorio`); on an existing kit it is only compared (`principal-diferente`). Refused on an ordinary listing (`opcao-de-kit-em-anuncio-comum`)                                                                                                                                                                                                      |
+| `--recriar`                   | step 19 — recreate the native kit `--link` names: the new kit FIRST, then `delete_item` on the old one. ⚠️ Without `--link` it is a usage error, so a re-run is literally the same command                                                                                                                                                                                                                                                                                                        |
+| `--converter-em-kit`          | step 19 — replace the produto's ORDINARY listing with a new native kit; the ordinary one is superseded, never touched. ⚠️ With `--recriar` it is a usage error: one kit action per run                                                                                                                                                                                                                                                                                                            |
+| `--confirmar-segundo-anuncio` | #1911 — with `--link <draft>` under `--live`: this draft may become a SECOND listing of the produto on the conta (D15). Without it, a conta that already holds a live listing or another draft of the produto refuses `SHOPEE_RASCUNHO_CONTA_JA_TEM_ANUNCIO`; it never overrides a sibling link that is being published (§12.7). Does not imply `--live`                                                                                                                                          |
+| `--confirmar-criacao-incerta` | #1911 P5 — under `--live`, after an UNCERTAIN create (§12.7): you checked Seller Centre. Honoured for EXACTLY two look-up verdicts — `criacao-incerta-sem-sku` (the produto has no SKU, so there is nothing to search by) and `criacao-incerta-ja-vinculada` (the listing found is already this produto's, and a second one is intended). Ignored everywhere else: it never skips the search on a produto with a SKU, and never overrides an ambiguous or incomplete one. Does not imply `--live` |
 
 ⚠️ A bare `--` is refused, and no command in this file carries one (see the note
 at the top).
@@ -1108,7 +1120,9 @@ dispatcher's (`produto-e-filho`, `vinculos-ambiguos`, `vinculo-substituido`,
 read). The rule is "was a plan reached", not "how bad is the refusal".
 ⚠️ Under `--live` a refusal is not caught either, and the transcript adds `Nada
 garante que nada foi criado` plus `releia com --dry-run`. ⚠️ A kit `--live`
-whose `add_kit_item` outcome is **INCERTO** exits `1` too (§12.6). ⚠️ A
+whose `add_kit_item` outcome is **INCERTO** exits `1` too (§12.6), and so,
+since #1911's P5, does an ordinary listing's create whose `add_item` outcome is
+INCERTO (§12.7 — it prints the exact command to re-run). ⚠️ A
 DRAFT's lock refusal (`ConflitoDeRascunhoShopeeError`, #1911) exits `1` WITHOUT
 that tail: every one of them is thrown before an `add_item` that could create
 the listing is sent (on the fiscal retry's second leg, the first leg was
@@ -1215,9 +1229,19 @@ table above: an unnamed publish never picks one, so the live listing wins
 whatever the doc ids. When the conta holds nothing but drafts, an ordinary
 produto refuses `rascunho-nao-nomeado` (exit `1`; name one with `--link`), while
 a kit-virtual produto still answers `kit-criar` and leaves the draft alone.
-`--link <draft>` is the only way a draft is ever published — a first create —
-and on a produto that publishes as a native kit it refuses
-`rascunho-em-kit-virtual`. Depth: `lib/shopee/kits/README.md`.
+`--link <draft>` is how a draft is published — a first create — and on a
+produto that publishes as a native kit it refuses `rascunho-em-kit-virtual`.
+Depth: `lib/shopee/kits/README.md`.
+
+**A `--live` create with no link mints a draft first (#1911, P5).** When the
+conta holds NO link of the produto at all, the live run first creates a draft
+(brand `0` — "Sem marca", the old default byte for byte — plus `--categoria`
+when given) through the draft route's own create, then publishes THAT draft
+under its lock, so an uncertain outcome has a document to live on. The dry run
+mints nothing. A refusal before the send leaves the draft behind, and the next
+unnamed run answers `rascunho-nao-nomeado`: name it with `--link`. A produto
+missing, with no usable `nome`, or refused by the dispatcher (a child, a native
+kit) mints nothing — its own refusal comes first.
 
 **This CLI publishes a draft; it never edits or discards one (#1911, P4).**
 Those belong to the draft route — `POST …/rascunho`, `…/rascunho/atualizar`,
@@ -1280,7 +1304,9 @@ fewer than 30 s of the lock remain stops BEFORE `add_item` with
 `SHOPEE_PUBLICACAO_EXPIRADA`, and the re-run reuses the cached `image_id`s. A
 republish of a listing, and a dry run, take no lock.
 
-A refusal prints `❌ ConflitoDeRascunhoShopeeError (<code>)`, then `rascunho`,
+A refusal prints `❌ ConflitoDeRascunhoShopeeError (<code>)` — or
+`❌ RecusaDeRascunhoShopeeError (<code>)` when the no-link mint itself was
+refused (same codes; e.g. a racing draft ⇒ `CONTA_JA_TEM_ANUNCIO`) — then `rascunho`,
 `código`, `aguardar … s` when waiting can help, `vínculos (N):` when a sibling
 link is the cause, the sentence, and `Nada foi enviado à Shopee por esta
 execução.`; it exits `1`.
@@ -1292,17 +1318,43 @@ execução.`; it exits `1`.
 | `SHOPEE_PUBLICACAO_EXPIRADA`           | the send gate refused before `add_item`: the lock would expire during the send, or is no longer this run's                                                                                           | re-run                                                                                                                |
 | `SHOPEE_RASCUNHO_CONTENCAO`            | the lock write lost three times in a row to concurrent writes on the draft                                                                                                                           | re-run                                                                                                                |
 | `SHOPEE_RASCUNHO_JA_PUBLICADO`         | the link is no longer a draft: the listing exists                                                                                                                                                    | publish it as an update (the same command)                                                                            |
-| `SHOPEE_RASCUNHO_CRIACAO_INCERTA`      | an earlier attempt's `add_item` ended with an UNKNOWN outcome and its lock and grace ran out                                                                                                         | check Seller Centre; never re-run hoping — until #1911's P5 (ENSURE) this draft is refused, never re-sent             |
+| `SHOPEE_RASCUNHO_CRIACAO_INCERTA`      | the draft is uncertain and NO attempt window can be read from it (both the record and the old lock are unreadable) — since P5 the only way this code is still answered on a publish                  | check Seller Centre; import the listing if it exists — nothing is ever re-sent without a window to search             |
 
 ⚠️ **An `add_item` whose outcome is unknown** (a network drop, an edge page,
 an unparseable answer, an `error_*` code the documented refusals do not hold)
-is NOT a lock refusal: the raw Shopee error is printed, the "Nada garante" tail
-IS printed — it may be true this time — no `falhaPublicacao` is stamped, and
-the lock is KEPT. Until ~9 minutes after the reservation (the 300 s lock plus
-its 240 s grace) the next run answers `EM_ANDAMENTO`; after that,
-`CRIACAO_INCERTA`. A documented refusal
-(`criacaoIncerta.ts`'s closed table) releases the lock and stamps the failure,
-exactly as a non-draft publish does.
+is NOT a lock refusal. Since #1911's P5 the run prints
+`### ⚠️ INCERTO — a Shopee pode ter criado o anúncio`: the `produtoId`, the
+DRAFT (`trava mantida; tentativa registrada`), `aguardar` (240 s), whether the
+re-send can check the SKU (`não (o produto não tem SKU)` when it cannot),
+Shopee's code and sentence when it answered one, the sentence, and **the
+command to re-run — exactly**, naming the draft with `--link` and carrying your
+`--project` before `--live`; it exits `1` (`--json`: the same fields plus
+`comandoDeRetomada`). No `falhaPublicacao` is stamped; the lock is RE-ARMED for
+the 240 s wait and the attempt's start is recorded on the draft
+(`criacaoIncertaDesde`). Until the wait ends the next run answers
+`EM_ANDAMENTO`. After it, the next run SEARCHES before sending anything: one
+`get_item_list` window from the attempt's start (− 300 s), the candidates'
+base info, and the SKU compared through the import's fold. It then ADOPTS the
+one listing the attempt made (the run continues as an update — no second
+`add_item`), or sends `add_item` only after a COMPLETE search found nothing,
+or refuses with one of four problems (exit `1`, nothing sent):
+
+| problem                        | what to do                                                                                                                                                        |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `criacao-incerta-ambigua`      | two or more candidates, or one the search cannot decide (`item_sku` or `create_time` unreported): `importar:anuncio` the right one                                |
+| `criacao-incerta-ja-vinculada` | the listing is already linked to this produto: import it, or `--confirmar-criacao-incerta` if a second listing is intended                                        |
+| `busca-de-anuncio-incompleta`  | the walk stopped before its last page (the 20-page ceiling, or a cursor that did not advance): re-run, or check Seller Centre and import the listing if it exists |
+| `criacao-incerta-sem-sku`      | the produto has no SKU, so there is nothing to search by: check Seller Centre, then `--confirmar-criacao-incerta`                                                 |
+
+A documented refusal (`criacaoIncerta.ts`'s closed table) releases the lock and
+stamps the failure, exactly as a non-draft publish does; so does a token-step
+failure (the four credential classes, thrown before any request), minus the
+stamp — Shopee was never reached. ⚠️ `error_repeated_mtsku` ("A similar product
+has already been uploaded") is a refusal of that table: the problem
+`anuncio-semelhante-existente` carries Shopee's sentence and the CLI prints the
+D15 one beside it — import the listing if it is this produto's; a second one
+must differ (Shopee may treat a duplicate as spam). The dry run does not search
+yet: it takes no lock and prints the plan only.
 
 ---
 

@@ -548,3 +548,140 @@ describe('planejarImportacaoShopee — relógios', () => {
     expect(texto).not.toContain('create_time');
   });
 });
+
+/* ------------- #1911 (P5, K1-8) — o vínculo do pai ADOTA um rascunho ----------- */
+
+describe('planejarImportacaoShopee — a adoção de um rascunho (#1911)', () => {
+  const DESDE_MS = 1_756_999_000_000;
+  const CRIADO_S = 1_600_000_001;
+  /** O rascunho como o preparo o leu: trava, registro, falha e uma chave legada. */
+  const RASCUNHO_LIDO = {
+    item_id: null,
+    contaProdutoShopeeOuterRef: `documents/integracao/${INTEGRACAO}`,
+    item_name: 'Título do rascunho',
+    brand_id: 77,
+    original_brand_name: 'Marca do rascunho',
+    publicacaoEmCurso: { desde: DESDE_MS, expiraEm: DESDE_MS + 300_000, token: 'tok' },
+    criacaoIncertaDesde: DESDE_MS,
+    falhaPublicacao: null,
+    dataCadastro: 111,
+    chaveDoLegado: 'fica',
+  };
+
+  function adotado(entrada = item({ create_time: CRIADO_S, brand: semMarca })) {
+    return planejarImportacaoShopee(
+      preparo({
+        entrada,
+        pai: {
+          existente: { id: 'p-1', raw: { sku: 'SKU-1' } },
+          extraData: null,
+          linkSobFilho: false,
+          jaTemFilhos: false,
+          estoque: null,
+        },
+        linkPai: { id: 'rasc-1', raw: RASCUNHO_LIDO, rascunhoAdotado: true },
+      }),
+    );
+  }
+  const semMarca = { brand_id: 0, original_brand_name: 'NoBrand' };
+
+  it('a marca ⇒ `acao: adotar` no id do RASCUNHO, e os filhos apontam para ele', () => {
+    const plano = adotado();
+    expect(plano.linkPai.acao).toBe('adotar');
+    expect(plano.linkPai.docId).toBe('rasc-1');
+    expect(plano.linkPaiRefPendente).toBe(false);
+  });
+
+  it('⛔ os `dados` NÃO espalham o rascunho: nada da trava, do registro, nem a chave legada', () => {
+    const plano = adotado();
+    if (plano.linkPai.acao !== 'adotar') throw new Error('esperava uma adoção');
+    const { dados } = plano.linkPai;
+    expect(dados).not.toHaveProperty('publicacaoEmCurso');
+    expect(dados).not.toHaveProperty('criacaoIncertaDesde');
+    expect(dados).not.toHaveProperty('chaveDoLegado');
+    // ... and `dataCadastro` is first-time-only, apart: never the stored 111, never in `dados`.
+    expect(dados).not.toHaveProperty('dataCadastro');
+    expect(plano.linkPai.seAusentes).toEqual({ dataCadastro: AGORA });
+  });
+
+  it('os campos do import são os de TODO vínculo: item_id, a conta canônica, o PAR da marca (C9), kitNativo', () => {
+    const plano = adotado();
+    expect(plano.linkPai.dados).toMatchObject({
+      item_id: ITEM_ID,
+      contaProdutoShopeeOuterRef: `documents/integracao/${INTEGRACAO}`,
+      item_name: 'Camiseta Básica',
+      brand_id: 0,
+      original_brand_name: 'NoBrand',
+      kitNativo: false,
+      ultimaModificacao: AGORA,
+    });
+  });
+
+  it('a LIMPEZA nomeia as três chaves de "uma publicação ainda decide" — todas `null`', () => {
+    const plano = adotado();
+    if (plano.linkPai.acao !== 'adotar') throw new Error('esperava uma adoção');
+    expect(plano.linkPai.limpeza).toEqual({
+      publicacaoEmCurso: null,
+      criacaoIncertaDesde: null,
+      falhaPublicacao: null,
+    });
+  });
+
+  it('o escritor re-deriva a adoção do `create_time` (SEGUNDOS) — que só vive em `adocao`, nunca num documento', () => {
+    const plano = adotado();
+    if (plano.linkPai.acao !== 'adotar') throw new Error('esperava uma adoção');
+    expect(plano.linkPai.adocao).toEqual({
+      integracaoId: INTEGRACAO,
+      itemId: ITEM_ID,
+      createTimeS: CRIADO_S,
+    });
+    const gravavel = JSON.stringify({
+      dados: plano.linkPai.dados,
+      seAusentes: plano.linkPai.seAusentes,
+      limpeza: plano.linkPai.limpeza,
+      filhos: plano.filhos,
+      produto: plano.produtoPai,
+    });
+    expect(gravavel).not.toContain(String(CRIADO_S));
+  });
+
+  it('`create_time` ausente ⇒ `createTimeS: null` (o escritor então nunca adota)', () => {
+    const plano = adotado(item({ brand: semMarca }));
+    if (plano.linkPai.acao !== 'adotar') throw new Error('esperava uma adoção');
+    expect(plano.linkPai.adocao.createTimeS).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS: o MESMO documento sem a marca ⇒ o `merge` de hoje, com o spread', () => {
+    for (const marca of [undefined, false]) {
+      const plano = planejarImportacaoShopee(
+        preparo({
+          linkPai: {
+            id: 'rasc-1',
+            raw: RASCUNHO_LIDO,
+            ...(marca === undefined ? {} : { rascunhoAdotado: marca }),
+          },
+        }),
+      );
+      expect(plano.linkPai.acao).toBe('merge');
+      expect(plano.linkPai.dados).toMatchObject({ chaveDoLegado: 'fica', dataCadastro: 111 });
+    }
+  });
+
+  it('o vínculo de um filho de um pai ADOTADO aponta para o documento do rascunho', () => {
+    const m = shopeeModelSchema.parse({ model_id: MODEL_ID, tier_index: [0] });
+    const plano = planejarImportacaoShopee(
+      preparo({
+        entrada: item(
+          { has_model: true, create_time: CRIADO_S },
+          modelos([{ model_id: MODEL_ID }]),
+        ),
+        filhos: [filho(m)],
+        linkPai: { id: 'rasc-1', raw: RASCUNHO_LIDO, rascunhoAdotado: true },
+      }),
+    );
+    expect(plano.filhos[0]?.link?.acao).toBe('add');
+    expect(plano.filhos[0]?.link?.dados.produtoShopeeOuterRef).toBe(
+      `documents/produtos/${plano.produtoId}/prodshopee/rasc-1`,
+    );
+  });
+});

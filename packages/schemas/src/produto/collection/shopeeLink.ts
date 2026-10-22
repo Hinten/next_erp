@@ -22,7 +22,7 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *
  * ## The writer inventory, whole
  *
- * Seven groups of fields have a named writer set, and none of the seven overlap:
+ * Eight groups of fields have a named writer set, and none of the eight overlap:
  *  - **`item_status` + `estadoAnuncio`** — FIVE writers, enumerated on
  *    {@link shopeeItemStatusSchema} below;
  *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
@@ -74,7 +74,21 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    the run's own `token`, so a run never clears a lock it does not hold. A
  *    create whose outcome is unknown leaves it in place to EXPIRE (nobody
  *    clears it to make it expire). Nothing in a browser writes it. Every reader decides through
- *    `estadoPublicacaoRascunhoShopee` (`./shopeeRascunho.ts`), never raw.
+ *    `estadoPublicacaoRascunhoShopee` (`./shopeeRascunho.ts`), never raw;
+ *  - **`criacaoIncertaDesde`** (#1911, D5) — the record of a draft's first
+ *    create whose outcome is UNKNOWN: the start of the earliest such attempt.
+ *    Written only by `apps/shopee`. SET by the publish of a draft — when an
+ *    `add_item` ends `incerto` (the classifier in `anuncios/criacaoIncerta.ts`),
+ *    in the same token-guarded write that keeps the lock live for the wait;
+ *    and when a reservation takes over an EXPIRED lock nobody classified (a
+ *    crashed run), which carries that lock's `desde` here in the same write
+ *    that replaces the lock, because the new lock's `desde` is LATER — both
+ *    keep an earlier value. CLEARED (`null`) by the publish when its ENSURE
+ *    scan ends COMPLETE with no candidate at all, by ENSURE's adoption, by the
+ *    write-back #1 claim, and by the product import when it adopts the draft
+ *    (`produtos/`). Nothing in a browser writes it. Every reader decides
+ *    through `estadoPublicacaoRascunhoShopee` and
+ *    `janelaDaCriacaoIncertaShopee` (`./shopeeRascunho.ts`), never raw.
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
  * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
@@ -783,6 +797,28 @@ export const produtoShopeeLinkSchema = z
      * the ONE reading, server and browser alike (#1369).
      */
     publicacaoEmCurso: publicacaoEmCursoShopeeSchema.nullable().optional(),
+
+    // === #1911 (D5) — the record of an UNCERTAIN first create. Same rules as
+    // the lock above: a bare const ⇒ no ruleset regeneration; SERVER-STAMPED ⇒
+    // `.nullable().optional()`, so a link that never carried it stays ABSENT.
+
+    /**
+     * MILLISECONDS — the START of the earliest FIRST `add_item` of this DRAFT
+     * whose outcome is still unknown (Shopee may or may not have created the
+     * listing). `null` or absent = no such attempt on record, which is every
+     * legacy draft: no backfill, absent IS "none".
+     *
+     * ⚠️ It is the START of the attempt window the uncertain create is looked
+     * for in (`janelaDaCriacaoIncertaShopee`, `./shopeeRascunho.ts`): a value
+     * that moved LATER would narrow that window past the listing the attempt
+     * created. So a writer that sets it keeps an earlier one (`stored ??
+     * lock.desde`), never a newer instant.
+     *
+     * ⚠️ Never read raw: `estadoPublicacaoRascunhoShopee` (`incerta`,
+     * `aposIncerteza`) and `janelaDaCriacaoIncertaShopee` are the readings,
+     * server and browser alike (#1369).
+     */
+    criacaoIncertaDesde: z.number().int().nullable().optional(),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;

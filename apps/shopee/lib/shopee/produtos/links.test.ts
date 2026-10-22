@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   shopeeItemBaseInfoRowSchema,
@@ -15,13 +15,13 @@ import {
 import { importacaoShopeeOptionsSchema } from '@delfrance/schemas';
 
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from '../kits/idsKit';
-import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { importarAnuncioShopee } from './importarAnuncio';
 import type { ImportarKitShopeeDeps, ItemLido } from './itemLido';
 import { importarKitShopee } from './kitShopee';
-import { aplicarLinkDaListagem, aplicarLinkDaVariacao } from './links';
+import { TENTATIVAS_DA_ADOCAO, aplicarLinkDaListagem, aplicarLinkDaVariacao } from './links';
 import { caminhoDoLinkDaListagem, dadosLinkListagem, dadosLinkVariacao } from './mapeamento';
-import type { EscritaDeLink } from './planoImportacao';
+import type { EscritaDeLink, EscritaDeLinkDaListagem } from './planoImportacao';
 import { idDoFilhoPlanejado, idDoPaiPlanejado } from './resolveProduto';
 
 /* ---------------------------------- fixtures ------------------------------ */
@@ -581,5 +581,357 @@ describe('passo 19 — a linha de um modelo de kit nasce no id derivado (M60)', 
 
     expect(db.idsEm('produtos/kit-k/prodshopee')).toEqual(['auto-antigo']);
     expect(db.idsEm('produtos/filho-k/variashopee')).toEqual(['linha-antiga']);
+  });
+});
+
+/* ------------- 4. #1911 (P5, K1-8) — ADOTAR um rascunho, tier 1 ------------- */
+
+/**
+ * A db whose `get` of `alvo` runs `escrever` right after it answers — the
+ * write that lands between the adoption's read and its guarded `update`. Only
+ * the first read, unless `sempre`.
+ */
+function comEscritaConcorrente(
+  db: FakeDb,
+  alvo: string,
+  escrever: (leitura: number) => void,
+  sempre = false,
+): FakeDb {
+  let leituras = 0;
+  const colecao = db.collection.bind(db);
+  return new Proxy(db, {
+    get(t, prop, r) {
+      if (prop !== 'collection') return Reflect.get(t, prop, r) as unknown;
+      return (colPath: string) => {
+        const col = colecao(colPath);
+        return new Proxy(col, {
+          get(ct, cp, cr) {
+            const original = Reflect.get(ct, cp, cr) as unknown;
+            if (cp !== 'doc') return original;
+            const construirRef = original as typeof ct.doc;
+            return (id?: string) => {
+              const ref = construirRef(id);
+              if (ref.path !== alvo) return ref;
+              return {
+                ...ref,
+                get: async () => {
+                  const snap = await ref.get();
+                  leituras += 1;
+                  if (sempre || leituras === 1) escrever(leituras);
+                  return snap;
+                },
+              };
+            };
+          },
+        });
+      };
+    },
+  });
+}
+
+describe('aplicarLinkDaListagem — ADOTAR um rascunho (#1911, D5 / K1-8)', () => {
+  const DESDE_MS = 1_756_999_000_000;
+  const DENTRO_S = 1_757_000_000;
+  const RASCUNHO = 'rasc-1';
+  const CAMINHO = `produtos/${PAI}/prodshopee/${RASCUNHO}`;
+  const COLECAO = `produtos/${PAI}/prodshopee`;
+  const OUTRO_ITEM = 2500139999;
+
+  let avisos: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    avisos = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function rascunho(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      item_id: null,
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Título do rascunho',
+      brand_id: 77,
+      original_brand_name: 'Marca do rascunho',
+      criacaoIncertaDesde: DESDE_MS,
+      publicacaoEmCurso: { desde: DESDE_MS, expiraEm: DESDE_MS + 300_000, token: 'tok' },
+      falhaPublicacao: null,
+      chaveDoLegado: 'fica',
+      ...extra,
+    };
+  }
+
+  const entrada = (createTime: number | null = DENTRO_S) =>
+    item({
+      create_time: createTime,
+      item_name: 'Camiseta da Shopee',
+      brand: { brand_id: 0, original_brand_name: 'NoBrand' },
+    });
+
+  function adocao(createTime: number | null = DENTRO_S): EscritaDeLinkDaListagem {
+    const { dataCadastro, ...dados } = dadosLinkListagem(
+      entrada(createTime),
+      null,
+      INTEGRACAO,
+      AGORA,
+    );
+    return {
+      acao: 'adotar',
+      docId: RASCUNHO,
+      dados,
+      seAusentes: { dataCadastro },
+      limpeza: { publicacaoEmCurso: null, criacaoIncertaDesde: null, falhaPublicacao: null },
+      adocao: { integracaoId: INTEGRACAO, itemId: ITEM_ID, createTimeS: createTime },
+    };
+  }
+
+  it('ainda adotável ⇒ UM update GUARDADO no MESMO documento: o item, a trava e o registro limpos, juntos', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, adocao());
+
+    expect(id).toBe(RASCUNHO);
+    expect(db.idsEm(COLECAO)).toEqual([RASCUNHO]);
+    expect(lerDoc(db, CAMINHO)).toMatchObject({
+      item_id: ITEM_ID,
+      item_name: 'Camiseta da Shopee',
+      // C9: the pair, both halves from the read.
+      brand_id: 0,
+      original_brand_name: 'NoBrand',
+      kitNativo: false,
+      publicacaoEmCurso: null,
+      criacaoIncertaDesde: null,
+      falhaPublicacao: null,
+      dataCadastro: AGORA,
+    });
+    // One UPDATE (it is in the patch log), carrying the item AND the clears.
+    expect(db.patches.filter((p) => p.path === CAMINHO)).toHaveLength(1);
+    expect(db.patches[0]?.patch).toMatchObject({
+      item_id: ITEM_ID,
+      publicacaoEmCurso: null,
+      criacaoIncertaDesde: null,
+    });
+    expect(avisos).not.toHaveBeenCalled();
+  });
+
+  it('⛔ uma chave que o import NÃO nomeia sobrevive — é um update, nunca um documento reescrito', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+    await aplicarLinkDaListagem(asDb(db), PAI, adocao());
+    expect(lerDoc(db, CAMINHO).chaveDoLegado).toBe('fica');
+  });
+
+  it('`dataCadastro` é de primeira vez: o ARMAZENADO fica ⟷ ausente, o do import', async () => {
+    const comData = new FakeDb();
+    comData.seed(CAMINHO, rascunho({ dataCadastro: 111 }));
+    await aplicarLinkDaListagem(asDb(comData), PAI, adocao());
+    expect(lerDoc(comData, CAMINHO).dataCadastro).toBe(111);
+    expect(comData.patches[0]?.patch).not.toHaveProperty('dataCadastro');
+
+    const semData = new FakeDb();
+    semData.seed(CAMINHO, rascunho({ dataCadastro: null }));
+    await aplicarLinkDaListagem(asDb(semData), PAI, adocao());
+    expect(lerDoc(semData, CAMINHO).dataCadastro).toBe(AGORA);
+  });
+
+  it('já é NOSSO (o claim do publish chegou antes) ⇒ o merge simples: mesmo id, e NADA do estado de publicação é limpo', async () => {
+    const db = new FakeDb();
+    const falha = { em: 1, etapa: 'updateItem', erro: 'x', mensagem: 'y', problemas: [] };
+    db.seed(
+      CAMINHO,
+      rascunho({ item_id: ITEM_ID, falhaPublicacao: falha, publicacaoEmCurso: null }),
+    );
+
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, adocao());
+
+    expect(id).toBe(RASCUNHO);
+    expect(db.idsEm(COLECAO)).toEqual([RASCUNHO]);
+    // A merge, not an update: the patch log is untouched.
+    expect(db.patches).toEqual([]);
+    expect(lerDoc(db, CAMINHO).falhaPublicacao).toEqual(falha);
+    expect(lerDoc(db, CAMINHO).criacaoIncertaDesde).toBe(DESDE_MS);
+    expect(lerDoc(db, CAMINHO).item_name).toBe('Camiseta da Shopee');
+  });
+
+  it('⛔ reivindicado por OUTRO item ⇒ um vínculo NOVO para o nosso; o outro intocado (dois vinculados, nunca um item perdido)', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho({ item_id: OUTRO_ITEM }));
+    const antes = structuredClone(lerDoc(db, CAMINHO));
+
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, adocao());
+
+    expect(id).not.toBe(RASCUNHO);
+    expect(lerDoc(db, CAMINHO)).toEqual(antes);
+    expect(lerDoc(db, `${COLECAO}/${id}`)).toMatchObject({
+      item_id: ITEM_ID,
+      dataCadastro: AGORA,
+      contaProdutoShopeeOuterRef: REF_CONTA,
+    });
+    expect(avisos).toHaveBeenCalledTimes(1);
+  });
+
+  it('APAGADO (descartado) ⇒ um vínculo novo — o anúncio existe e precisa de vínculo', async () => {
+    const db = new FakeDb();
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, adocao());
+    expect(id).not.toBe(RASCUNHO);
+    expect(lerDoc(db, `${COLECAO}/${id}`)).toMatchObject({ item_id: ITEM_ID });
+  });
+
+  it('⛔ o escritor RE-DERIVA a evidência: o registro limpo e a trava solta desde a leitura ⇒ add, rascunho intocado', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho({ criacaoIncertaDesde: null, publicacaoEmCurso: null }));
+    const antes = structuredClone(lerDoc(db, CAMINHO));
+
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, adocao());
+
+    expect(id).not.toBe(RASCUNHO);
+    expect(lerDoc(db, CAMINHO)).toEqual(antes);
+    expect(avisos.mock.calls[0]?.[1]).toMatchObject({ veredicto: 'sem-tentativa' });
+  });
+
+  it('⛔ … e a JANELA: um `create_time` desconhecido no escritor ⇒ add, nunca a adoção', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+
+    const id = await aplicarLinkDaListagem(asDb(db), PAI, adocao(null));
+
+    expect(id).not.toBe(RASCUNHO);
+    expect(lerDoc(db, CAMINHO).item_id).toBeNull();
+    expect(avisos.mock.calls[0]?.[1]).toMatchObject({ veredicto: 'janela-desconhecida' });
+  });
+
+  it('uma trava VIVA não bloqueia: a adoção a limpa (senão o anúncio leria "em andamento" para sempre)', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho({ criacaoIncertaDesde: undefined }));
+
+    await aplicarLinkDaListagem(asDb(db), PAI, adocao());
+
+    expect(lerDoc(db, CAMINHO)).toMatchObject({ item_id: ITEM_ID, publicacaoEmCurso: null });
+  });
+
+  it('a precondição perdida para um CLAIM de outro item ⇒ relê e bifurca (add) — nunca escreve por cima', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+    const corrida = comEscritaConcorrente(db, CAMINHO, () =>
+      db.seed(CAMINHO, rascunho({ item_id: OUTRO_ITEM, publicacaoEmCurso: null })),
+    );
+
+    const id = await aplicarLinkDaListagem(asDb(corrida), PAI, adocao());
+
+    expect(id).not.toBe(RASCUNHO);
+    expect(lerDoc(db, CAMINHO).item_id).toBe(OUTRO_ITEM);
+    expect(lerDoc(db, `${COLECAO}/${id}`).item_id).toBe(ITEM_ID);
+  });
+
+  it('a precondição perdida com o documento AINDA rascunho ⇒ relê e adota na segunda volta', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+    const corrida = comEscritaConcorrente(db, CAMINHO, () =>
+      db.seed(CAMINHO, rascunho({ item_name: 'editado no meio' })),
+    );
+
+    const id = await aplicarLinkDaListagem(asDb(corrida), PAI, adocao());
+
+    expect(id).toBe(RASCUNHO);
+    expect(db.idsEm(COLECAO)).toEqual([RASCUNHO]);
+    expect(lerDoc(db, CAMINHO)).toMatchObject({ item_id: ITEM_ID, criacaoIncertaDesde: null });
+    expect(db.opLog.filter((o) => o.op === 'get' && o.path === CAMINHO)).toHaveLength(2);
+  });
+
+  it(`perder a precondição ${String(TENTATIVAS_DA_ADOCAO)} vezes RELANÇA o FAILED_PRECONDITION — nada escrito por cima`, async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+    const corrida = comEscritaConcorrente(
+      db,
+      CAMINHO,
+      (n) => db.seed(CAMINHO, rascunho({ item_name: `edição ${String(n)}` })),
+      true,
+    );
+
+    await expect(aplicarLinkDaListagem(asDb(corrida), PAI, adocao())).rejects.toMatchObject({
+      code: 9,
+    });
+    expect(lerDoc(db, CAMINHO).item_id).toBeNull();
+    expect(db.idsEm(COLECAO)).toEqual([RASCUNHO]);
+  });
+
+  it('⛔ um erro que NÃO é a precondição é relançado na primeira volta (regra 6), sem bifurcar', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+    db.falhasDeUpdate.set(CAMINHO, grpc(14, 'UNAVAILABLE'));
+
+    await expect(aplicarLinkDaListagem(asDb(db), PAI, adocao())).rejects.toMatchObject({
+      code: 14,
+    });
+    expect(db.opLog.filter((o) => o.op === 'get' && o.path === CAMINHO)).toHaveLength(1);
+    expect(db.idsEm(COLECAO)).toEqual([RASCUNHO]);
+  });
+});
+
+/* ---- 5. #1911 — a importação inteira: adota com evidência, nunca sem ---------- */
+
+describe('importarAnuncioShopee — a adoção de um rascunho, ponta a ponta (#1911)', () => {
+  const DESDE_MS = 1_756_999_000_000;
+  const DENTRO_S = 1_757_000_000;
+  const ANTIGO_S = 1_700_000_000;
+  const SKU = 'SKU-ADOCAO';
+  const COLECAO = `produtos/${PAI}/prodshopee`;
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  });
+
+  function semear(db: FakeDb, rascunho: Record<string, unknown>): void {
+    db.seed(`produtos/${PAI}`, { nome: 'Camiseta', sku: SKU, paiId: null });
+    db.seed(`${COLECAO}/rasc-1`, {
+      item_id: null,
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Título do rascunho',
+      ...rascunho,
+    });
+  }
+
+  it('rascunho INCERTO + o anúncio criado DENTRO da janela ⇒ adotado: UM prodshopee, o do rascunho, limpo', async () => {
+    const db = new FakeDb();
+    semear(db, { criacaoIncertaDesde: DESDE_MS });
+
+    await importarAnuncioShopee(depsDoImport(db), item({ item_sku: SKU, create_time: DENTRO_S }));
+
+    expect(db.idsEm(COLECAO)).toEqual(['rasc-1']);
+    expect(lerDoc(db, `${COLECAO}/rasc-1`)).toMatchObject({
+      item_id: ITEM_ID,
+      publicacaoEmCurso: null,
+      criacaoIncertaDesde: null,
+      falhaPublicacao: null,
+    });
+  });
+
+  it('⛔ rascunho NUNCA enviado + um L3 do mesmo SKU ⇒ add: dois documentos, o rascunho byte a byte', async () => {
+    const db = new FakeDb();
+    semear(db, {});
+    const antes = structuredClone(lerDoc(db, `${COLECAO}/rasc-1`));
+
+    await importarAnuncioShopee(depsDoImport(db), item({ item_sku: SKU, create_time: DENTRO_S }));
+
+    const ids = db.idsEm(COLECAO);
+    expect(ids).toHaveLength(2);
+    expect(lerDoc(db, `${COLECAO}/rasc-1`)).toEqual(antes);
+    const novo = ids.find((i) => i !== 'rasc-1')!;
+    expect(lerDoc(db, `${COLECAO}/${novo}`).item_id).toBe(ITEM_ID);
+  });
+
+  it('⛔ rascunho INCERTO + um anúncio ANTIGO (L3) ⇒ add, o rascunho segue incerto', async () => {
+    const db = new FakeDb();
+    semear(db, { criacaoIncertaDesde: DESDE_MS });
+
+    await importarAnuncioShopee(depsDoImport(db), item({ item_sku: SKU, create_time: ANTIGO_S }));
+
+    expect(db.idsEm(COLECAO)).toHaveLength(2);
+    expect(lerDoc(db, `${COLECAO}/rasc-1`)).toMatchObject({
+      item_id: null,
+      criacaoIncertaDesde: DESDE_MS,
+    });
   });
 });
