@@ -2,7 +2,8 @@
  * `POST /api/marketplace/shopee/publicar` — publish (or re-publish) ONE ERP
  * produto as a Shopee listing. Body:
  * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
- * recriar?, converterEmKit? }`. Requires `PERM.integracao.write`.
+ * recriar?, converterEmKit?, confirmarSegundoAnuncio? }`. Requires
+ * `PERM.integracao.write`.
  *
  * Since step 19 (#1527) the produto may publish as a NATIVE Shopee kit. The
  * route does not decide that: `publicarShopee` (`anuncios/publicarShopee.ts`)
@@ -26,7 +27,12 @@
  *
  *  - **the clock.** ONE `Date.now()`, handed down as `deps.nowMs`, so every
  *    document written by one publish agrees about when it happened. No module
- *    under `anuncios/` reads a clock at all.
+ *    under `anuncios/` reads a clock at all. Since #1911 a DRAFT's first create
+ *    also needs a LIVE reading, so the route hands down `deps.aoVivo.agora`
+ *    (the same clock, read again on every call) and the request's deadline
+ *    `prazoDaRequisicao = nowMs + TETO_ROTA_SHOPEE_MS` — the `timeoutSeconds`
+ *    of `apps/shopee/apphosting.yaml`, so the draft's send gate never STARTS an
+ *    `add_item` this request's own ceiling could cut off mid-send.
  *  - **the wait.** `add_item` needs a settle window before the model leg, and
  *    the folder constructs no timer: the promise is built here and injected.
  *  - **the partner client.** `upload_image` is Public-signed, so the photo unit
@@ -36,6 +42,12 @@
  *
  * ## Outcomes
  *
+ * **409** `ConflitoDeRascunhoShopeeError` (#1911) — a DRAFT's publish refused by
+ * its LOCK, nothing sent: `code` is one of `CODIGO_RASCUNHO_SHOPEE`'s six
+ * (`EM_ANDAMENTO` with `aguardarMs` and/or `vinculos`, `JA_PUBLICADO`,
+ * `PUBLICACAO_EXPIRADA`, `CONTENCAO`, `CRIACAO_INCERTA`, `CONTA_JA_TEM_ANUNCIO`
+ * with `vinculos`), plus `linkDocId`. An app class, mapped with `instanceof`
+ * BEFORE `isShopeeError` — it is not a Shopee answer and must never read as one ·
  * 200 with the publish summary, built BY NAME — step 11's for the item arm, the
  * kit summary for a kit arm · **202** for a kit create whose outcome Shopee left
  * UNCERTAIN (`desfecho: 'incerto'`): NOTHING was written, and the body carries
@@ -57,13 +69,14 @@
 import { NextResponse } from 'next/server';
 import { FieldValue } from 'firebase-admin/firestore';
 import { createShopeePartnerClient } from '@delfrance/integrations-shopee';
-import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '@delfrance/schemas';
+import { AGUARDAR_KIT_INCERTO_SHOPEE_MS, TETO_ROTA_SHOPEE_MS } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { lerCorpoPublicar } from '@/lib/shopee/anuncios/corpoPublicacao';
 import type { ResultadoPublicacao } from '@/lib/shopee/anuncios/publicarAnuncio';
 import { publicarShopee } from '@/lib/shopee/anuncios/publicarShopee';
+import { ConflitoDeRascunhoShopeeError } from '@/lib/shopee/anuncios/reservaRascunho';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
 import { loadShopeeContext } from '@/lib/shopee/core/shopee';
 import {
@@ -177,7 +190,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!corpo.ok) return NextResponse.json(corpoDeErro(corpo), { status: 400 });
   const { integracaoId, produtoId, linkDocId, status, categoryId, principal, recriar } =
     corpo.valor;
-  const { converterEmKit } = corpo.valor;
+  const { converterEmKit, confirmarSegundoAnuncio } = corpo.valor;
 
   // ⚠️ ONE clock read for the whole request, handed DOWN — `importar`'s own
   // rule. Two documents written by one publish can never disagree about when it
@@ -218,6 +231,15 @@ export async function POST(req: Request): Promise<NextResponse> {
       // Step 19: the aviso counter a kit run's recipe-aviso decision raises
       // through (L4); `kits/` builds no Firestore sentinel of its own.
       increment: (n: number) => FieldValue.increment(n),
+      // #1911: a DRAFT's first create runs under a lock whose send gate reads a
+      // LIVE clock (never the constant `nowMs`) against the lock's expiry AND
+      // this request's own ceiling. `nowMs` is when the request started, so the
+      // deadline is the instant the platform may cut it off.
+      aoVivo: {
+        agora: () => Date.now(),
+        prazoDaRequisicao: nowMs + TETO_ROTA_SHOPEE_MS,
+        confirmarSegundoAnuncio,
+      },
     };
     // ⚠️ `hostEmulador` is deliberately OMITTED rather than passed as null:
     // nothing in this app writes an emulator-hosted `arquivo.url`, so there is
@@ -264,7 +286,41 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
     return NextResponse.json(kit);
   } catch (err) {
+    // ⚠️ BEFORE `isShopeeError`: the draft lock's refusal is OUR answer, never
+    // Shopee's, and nothing was sent.
+    if (err instanceof ConflitoDeRascunhoShopeeError) {
+      return NextResponse.json(corpoDoConflito(err), { status: 409 });
+    }
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;
   }
+}
+
+/**
+ * The 409 body of a draft's lock refusal (#1911), built BY NAME. `aguardarMs`
+ * and `vinculos` ride only when the refusal carries them — an ABSENT key is
+ * "not applicable", which the web reads differently from a `0` wait.
+ */
+function corpoDoConflito(err: ConflitoDeRascunhoShopeeError): {
+  error: string;
+  code: string;
+  linkDocId: string;
+  aguardarMs?: number;
+  vinculos?: { linkDocId: string; itemId: number | null; rascunho: boolean }[];
+} {
+  return {
+    error: err.message,
+    code: err.code,
+    linkDocId: err.linkDocId,
+    ...(err.aguardarMs === null ? {} : { aguardarMs: err.aguardarMs }),
+    ...(err.vinculos === null
+      ? {}
+      : {
+          vinculos: err.vinculos.map((v) => ({
+            linkDocId: v.linkDocId,
+            itemId: v.itemId,
+            rascunho: v.rascunho,
+          })),
+        }),
+  };
 }

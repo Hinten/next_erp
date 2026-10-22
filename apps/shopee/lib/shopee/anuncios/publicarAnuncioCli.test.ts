@@ -36,7 +36,7 @@ import {
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
 
-import { ESTADO_ANUNCIO_SHOPEE, fotoSchema } from '@delfrance/schemas';
+import { CODIGO_RASCUNHO_SHOPEE, ESTADO_ANUNCIO_SHOPEE, fotoSchema } from '@delfrance/schemas';
 
 import type { PlanoKit } from '../kits/planoKit';
 import type { ContextoKitPreparado } from '../kits/prepararKit';
@@ -66,7 +66,9 @@ import {
   MSG_STATUS_INVALIDO,
   NOTA_SANDBOX_SG_KIT,
   USO_PUBLICAR_ANUNCIO,
+  descreverConflitoDeRascunho,
   descreverErroPublicacao,
+  ehConflitoDeRascunho,
   lerArgsPublicar,
   renderizarEnsaioDeKit,
   renderizarPlano,
@@ -79,6 +81,7 @@ import {
   type ContextoDoEnsaio,
   type OpcoesDoKitCli,
 } from './publicarAnuncioCli';
+import { ConflitoDeRascunhoShopeeError } from './reservaRascunho';
 import { lerArgsReverificar } from './reverificarAnuncioCli';
 import type { ResultadoPublicacao } from './publicarAnuncio';
 import type { ResultadoTabelaDeMedidasShopee } from './tabelaMedidasPublicacao';
@@ -467,6 +470,7 @@ describe('lerArgsPublicar', () => {
         principal: null,
         recriar: false,
         converterEmKit: false,
+        confirmarSegundoAnuncio: false,
       },
     });
   });
@@ -502,8 +506,21 @@ describe('lerArgsPublicar', () => {
         principal: 'comp-a-filho',
         recriar: true,
         converterEmKit: false,
+        confirmarSegundoAnuncio: false,
       },
     });
+  });
+
+  it('#1911: --confirmar-segundo-anuncio liga a confirmação; sem ela, false — e ela não mexe em mais nada', () => {
+    const base = ['--integracao', INTEGRACAO_ID, '--produto', PRODUTO_ID, '--link', LINK_DOC_ID];
+    const sem = lerArgsPublicar([...base, '--live']);
+    const com = lerArgsPublicar([...base, '--live', '--confirmar-segundo-anuncio']);
+    if (sem.kind !== 'publicar' || com.kind !== 'publicar') throw new Error('esperava publicar');
+    expect(sem.args.confirmarSegundoAnuncio).toBe(false);
+    expect(com.args).toEqual({ ...sem.args, confirmarSegundoAnuncio: true });
+    // ⛔ quase-par: a confirmação NÃO liga o --live — o dry-run continua o padrão.
+    const soConfirma = lerArgsPublicar([...base, '--confirmar-segundo-anuncio']);
+    expect(soConfirma.kind === 'publicar' && soConfirma.args.live).toBe(false);
   });
 
   it('--help responde ANTES de qualquer validação, e -h também', () => {
@@ -1991,5 +2008,147 @@ describe('o resultado de um kit nativo no --live (passo 19)', () => {
       OPCOES_KIT,
     );
     expect(JSON.parse(JSON.stringify(r))).toEqual(r);
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 · a recusa da TRAVA de um rascunho (os 409) e o --live do script     */
+/* ========================================================================== */
+
+describe('a recusa da trava de um rascunho (#1911)', () => {
+  const RASCUNHO = 'rasc-a';
+
+  function conflito(
+    code: (typeof CODIGO_RASCUNHO_SHOPEE)[keyof typeof CODIGO_RASCUNHO_SHOPEE],
+    extra: Partial<{
+      aguardarMs: number;
+      vinculos: ConflitoDeRascunhoShopeeError['vinculos'];
+    }> = {},
+  ): ConflitoDeRascunhoShopeeError {
+    return new ConflitoDeRascunhoShopeeError({
+      code,
+      linkDocId: RASCUNHO,
+      mensagem: `frase de mecanismo do rascunho ${RASCUNHO}`,
+      ...extra,
+    });
+  }
+
+  it('cada um dos seis códigos é reconhecido e descrito por CLASSE + código, com o rascunho e a frase', () => {
+    for (const code of Object.values(CODIGO_RASCUNHO_SHOPEE)) {
+      const err = conflito(code);
+      expect(ehConflitoDeRascunho(err), code).toBe(true);
+      const linhas = descreverErroPublicacao(err);
+      expect(linhas[0]).toBe(`❌ ConflitoDeRascunhoShopeeError (${code})`);
+      const texto = linhas.join('\n');
+      expect(texto).toContain(RASCUNHO);
+      expect(texto).toContain(`frase de mecanismo do rascunho ${RASCUNHO}`);
+      expect(texto).toContain('Nada foi enviado à Shopee por esta execução.');
+    }
+  });
+
+  it('EM_ANDAMENTO de um irmão: a espera em segundos (arredondada PARA CIMA) e os vínculos, rascunho e item', () => {
+    const texto = descreverConflitoDeRascunho(
+      conflito(CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento, {
+        aguardarMs: 1_001,
+        vinculos: [
+          { linkDocId: 'rasc-b', itemId: null, rascunho: true },
+          { linkDocId: 'link-vivo', itemId: ITEM_ID, rascunho: false },
+        ],
+      }),
+    ).join('\n');
+    expect(texto).toContain('aguardar ................ 2 s');
+    expect(texto).toContain('vínculos (2):');
+    expect(texto).toMatch(/rasc-b\s+rascunho/);
+    expect(texto).toMatch(new RegExp(`link-vivo\\s+item ${String(ITEM_ID)}`));
+    // ⛔ quase-par: sem a espera e sem vínculos, nenhuma das duas linhas aparece.
+    const seco = descreverConflitoDeRascunho(conflito(CODIGO_RASCUNHO_SHOPEE.contencao)).join('\n');
+    expect(seco).not.toContain('aguardar');
+    expect(seco).not.toContain('vínculos');
+  });
+
+  it('CONTA_JA_TEM_ANUNCIO — e SÓ ele — ensina a repetir com --confirmar-segundo-anuncio', () => {
+    const dica = '--confirmar-segundo-anuncio';
+    expect(
+      descreverConflitoDeRascunho(
+        conflito(CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio, {
+          vinculos: [{ linkDocId: 'rasc-b', itemId: null, rascunho: true }],
+        }),
+      ).join('\n'),
+    ).toContain(dica);
+    for (const code of Object.values(CODIGO_RASCUNHO_SHOPEE)) {
+      if (code === CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio) continue;
+      // ⚠️ a flag nunca passa por cima de um irmão OCUPADO — sugerir ali seria mentira.
+      expect(descreverConflitoDeRascunho(conflito(code)).join('\n'), code).not.toContain(dica);
+    }
+  });
+
+  it('⛔ quase-pares: um erro da Shopee, um código fora do vocabulário ou um objeto sem linkDocId NÃO são a recusa', () => {
+    const shopee = new ShopeeApiError('Shopee respondeu error_param (HTTP 200)', {
+      code: 'error_param',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/api/v2/product/add_item',
+    });
+    expect(ehConflitoDeRascunho(shopee)).toBe(false);
+    expect(descreverErroPublicacao(shopee)[0]).not.toContain('ConflitoDeRascunhoShopeeError');
+    expect(
+      ehConflitoDeRascunho({
+        code: 'SHOPEE_PUBLICACAO_EM_OUTRA_COISA',
+        linkDocId: 'x',
+        message: 'm',
+      }),
+    ).toBe(false);
+    expect(
+      ehConflitoDeRascunho({ code: CODIGO_RASCUNHO_SHOPEE.contencao, message: 'sem linkDocId' }),
+    ).toBe(false);
+    expect(ehConflitoDeRascunho(null)).toBe(false);
+    expect(ehConflitoDeRascunho(CODIGO_RASCUNHO_SHOPEE.contencao)).toBe(false);
+  });
+
+  it('⚠️ a classe é import TYPE aqui: o script importa este módulo antes do --help, e a casa da classe carrega as coleções', () => {
+    expect(FONTE_CLI).toContain(
+      "import type { ConflitoDeRascunhoShopeeError } from './reservaRascunho';",
+    );
+    expect(FONTE_CLI).not.toMatch(/import \{[^}]*\} from '\.\/reservaRascunho'/);
+    expect(FONTE_CLI).not.toMatch(/instanceof ConflitoDeRascunhoShopeeError/);
+  });
+
+  it('o uso documenta a flag e diz que ela só vale no --live', () => {
+    expect(USO_PUBLICAR_ANUNCIO).toContain('--confirmar-segundo-anuncio');
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Só vale no --live/);
+  });
+});
+
+describe('scripts/publicar-anuncio.ts — o relógio VIVO do rascunho (#1911)', () => {
+  const RAMO_DRY_RUN = FONTE_SCRIPT.slice(
+    FONTE_SCRIPT.indexOf('if (!live) {'),
+    FONTE_SCRIPT.indexOf('/* ---------------------------------- live'),
+  );
+  const RAMO_LIVE = FONTE_SCRIPT.slice(
+    FONTE_SCRIPT.indexOf('/* ---------------------------------- live'),
+    FONTE_SCRIPT.indexOf('await main()'),
+  );
+
+  it('o --live entrega aoVivo com um relógio LIDO A CADA CHAMADA, sem prazo de requisição, e a flag', () => {
+    // ⚠️ Spelled in FRAGMENTS: every `.ts` under `anuncios/` — tests included —
+    // is grepped as raw text for the clock call (`avisos/autorizacao.test.ts`).
+    const relogioVivo = ['() => Date', '.now', '()'].join('');
+    expect(RAMO_LIVE).toContain(
+      `aoVivo: { agora: ${relogioVivo}, prazoDaRequisicao: null, confirmarSegundoAnuncio }`,
+    );
+    // ⛔ o mutante K1-3: o relógio constante da execução faria a porta passar para sempre.
+    expect(FONTE_SCRIPT).not.toMatch(/agora:\s*\(\)\s*=>\s*nowMs/);
+    expect(FONTE_SCRIPT).not.toMatch(/agora:\s*nowMs/);
+  });
+
+  it('⛔ o dry-run nunca recebe aoVivo — a trava é uma ESCRITA', () => {
+    expect(RAMO_DRY_RUN.length).toBeGreaterThan(0);
+    expect(RAMO_DRY_RUN).not.toContain('aoVivo');
+  });
+
+  it('a recusa da trava não ganha o aviso de "talvez criado" — nada foi enviado', () => {
+    expect(FONTE_SCRIPT).toContain(
+      '!(err instanceof ArgumentoInvalidoError) && !ehConflitoDeRascunho(err)',
+    );
   });
 });

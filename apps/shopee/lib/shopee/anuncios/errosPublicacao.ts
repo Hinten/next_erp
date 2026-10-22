@@ -42,14 +42,15 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 49 members: step 11's 22, the nineteen native-kit
+ *   before writing. 50 members: step 11's 22, the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
- *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6) and the
+ *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6), the
  *   seven refusals only the publish dispatcher produces
  *   (`kits/armaDePublicacao.ts`: five from step 19's PR 7, and #1911's two draft
- *   refusals, `rascunho-em-kit-virtual` and `rascunho-nao-nomeado`).
+ *   refusals, `rascunho-em-kit-virtual` and `rascunho-nao-nomeado`) and #1911's
+ *   draft-brand refusal `marca-nao-escolhida` (P3, `anuncios/montagemAnuncio.ts`).
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 49 plus the twelve only a WIRE rejection can produce (step 18 added the
+ *   those 50 plus the twelve only a WIRE rejection can produce (step 18 added the
  *   two size-chart refusals on `size_chart_info`; step 19 the seven native-kit
  *   refusals, whose ONE producer is `kits/recusaKit.ts`). A problema is a
  *   field-level observation, and after the first Shopee call there are causes no
@@ -264,7 +265,21 @@ export type MotivoPublicacaoBloqueada =
    * An unnamed publish whose conta holds ONLY drafts of the produto: a draft is
    * never picked on its own, so the operator names one (`--link`).
    */
-  | 'rascunho-nao-nomeado';
+  | 'rascunho-nao-nomeado'
+  /*
+   * ---- #1911 (P3, D10): the draft's brand is a CHOICE. ----
+   * Produced ONLY by `anuncios/montagemAnuncio.ts`, spelled there through this
+   * constant, from the projection's `marcaNaoEscolhida` (which the ONE builder
+   * fills with `rascunhoSemMarcaShopee`, `@delfrance/schemas`).
+   */
+  /**
+   * A DRAFT whose `brand_id` is `null` or absent — "not chosen", which is NOT
+   * Shopee's "No Brand" (`brand_id: 0`, the explicit «Sem marca»). The brand
+   * cascade would otherwise answer `0` and publish "No Brand" on the operator's
+   * behalf; a legacy draft (whose `null` meant either "Nenhuma" or "never
+   * touched") needs one explicit pick. A listing's link is never refused for it.
+   */
+  | 'marca-nao-escolhida';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -321,6 +336,7 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   opcaoDeKitEmAnuncioComum: 'opcao-de-kit-em-anuncio-comum',
   rascunhoEmKitVirtual: 'rascunho-em-kit-virtual',
   rascunhoNaoNomeado: 'rascunho-nao-nomeado',
+  marcaNaoEscolhida: 'marca-nao-escolhida',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**

@@ -7,6 +7,8 @@ import {
   SHOPEE_LOGISTICS_FEE_TYPE,
   SHOPEE_SURFACE,
   ShopeeApiError,
+  ShopeeNetworkError,
+  ShopeeRateLimitError,
   shopeeErrorFromEnvelope,
   shopeeLogisticsChannelSchema,
   shopeeSizeChartListSchema,
@@ -18,7 +20,10 @@ import {
   type ShopeeUnlistItemResponse,
 } from '@delfrance/integrations-shopee';
 import {
+  CODIGO_RASCUNHO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
+  MARGEM_ENVIO_SHOPEE_MS,
+  PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   SHOPEE_ITEM_STATUS,
   SHOPEE_MODEL_STATUS,
   entradaTabelaShopeeSchema,
@@ -44,6 +49,11 @@ import {
   type ResultadoFotosPublicacao,
 } from './fotosPublicacao';
 import { ORDEM_RELISTAGEM, planejarPublicacao, type PlanoPublicacao } from './planoPublicacao';
+import {
+  ConflitoDeRascunhoShopeeError,
+  reservarRascunhoShopee,
+  type ControlesDaPublicacaoAoVivo,
+} from './reservaRascunho';
 import {
   aplicarPublicacao,
   criarResolvedorDePublicacao,
@@ -2828,5 +2838,814 @@ describe('publicar — size_chart_info (passo 18)', () => {
     expect(JSON.stringify(plano.item.criar)).toContain(
       '"size_chart_info":{"size_chart_id":700024641}',
     );
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 — a DRAFT's first create runs under its publish LOCK                 */
+/* ========================================================================== */
+
+describe('publicarAnuncioShopee — o RASCUNHO sob a trava (#1911, D4/D15)', () => {
+  const RASCUNHO = 'rasc-1';
+  const IRMAO = 'rasc-2';
+  const COLECAO = `produtos/${PAI}/prodshopee`;
+  const CAMINHO_RASCUNHO = `${COLECAO}/${RASCUNHO}`;
+  const CAMINHO_IRMAO = `${COLECAO}/${IRMAO}`;
+  const EXPIRA = AGORA + PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS;
+  const ITEM_ALHEIO = 2500139862;
+
+  function semearRascunho(db: FakeDb, extra: Record<string, unknown> = {}, id = RASCUNHO): void {
+    db.seed(`${COLECAO}/${id}`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: null,
+      item_name: 'Camiseta básica branca',
+      category_id: CATEGORIA,
+      // "Sem marca" ESCOLHIDA — a única marca que não pede leitura nem recusa.
+      brand_id: 0,
+      ...extra,
+    });
+  }
+
+  function travaAlheia(expiraEm: number) {
+    return { desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS, expiraEm, token: 'token-alheio' };
+  }
+
+  /** A movable clock: the reservation reads `AGORA`; a test moves it mid-run. */
+  function relogio(inicial = AGORA): { agora: () => number; mover: (t: number) => void } {
+    let t = inicial;
+    return {
+      agora: () => t,
+      mover: (novo: number) => {
+        t = novo;
+      },
+    };
+  }
+
+  function aoVivo(over: Partial<ControlesDaPublicacaoAoVivo> = {}): ControlesDaPublicacaoAoVivo {
+    return { agora: () => AGORA, prazoDaRequisicao: null, confirmarSegundoAnuncio: false, ...over };
+  }
+
+  /** A photo resolver that runs `durante` first — the window between the lock and the send. */
+  function resolvedorQueAge(durante: () => void): ResolvedorDeImagensShopee {
+    const base = resolvedorFake().resolvedor;
+    return {
+      resolver: (fotos, op) => {
+        durante();
+        return base.resolver(fotos, op);
+      },
+      resumo: () => base.resumo(),
+    };
+  }
+
+  function depsDoRascunho(
+    db: FakeDb,
+    fake: ClienteFake,
+    // `null` = the deps carry NO `aoVivo` (an explicit `undefined` would take the default).
+    controles: ControlesDaPublicacaoAoVivo | null = aoVivo(),
+    resolvedor: ResolvedorDeImagensShopee = resolvedorFake().resolvedor,
+  ): PublicarAnuncioDeps {
+    return deps(db, fake, {
+      resolvedorDeImagens: resolvedor,
+      ...(controles === null ? {} : { aoVivo: controles }),
+    });
+  }
+
+  function doRascunho(db: FakeDb, caminho = CAMINHO_RASCUNHO): Record<string, unknown> | undefined {
+    return db.store[caminho]?.data;
+  }
+
+  function escritasNoRascunho(db: FakeDb): Record<string, unknown>[] {
+    return db.writes.filter((w) => w.path === CAMINHO_RASCUNHO).map((w) => w.patch);
+  }
+
+  function erroComFrase(code: string, frase: string): ShopeeApiError {
+    return new ShopeeApiError(`Shopee respondeu ${code} (HTTP 200) — ${frase}`, {
+      code,
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/api/v2/product/add_item',
+      providerMessage: frase,
+    });
+  }
+
+  async function falhaDe(p: Promise<unknown>): Promise<unknown> {
+    return p.then(
+      () => {
+        throw new Error('esperava uma falha');
+      },
+      (e: unknown) => e,
+    );
+  }
+
+  /** Every doc read / update and every collection scan, in CALL order. */
+  function gravador(db: FakeDb): { db: FakeDb; eventos: string[] } {
+    const eventos: string[] = [];
+    const colecao = db.collection.bind(db);
+    const proxy = new Proxy(db, {
+      get(t, prop, r) {
+        if (prop !== 'collection') return Reflect.get(t, prop, r) as unknown;
+        return (colPath: string) => {
+          const col = colecao(colPath);
+          return new Proxy(col, {
+            get(ct, cp, cr) {
+              const original = Reflect.get(ct, cp, cr) as unknown;
+              if (cp === 'get') {
+                return () => {
+                  eventos.push(`varre:${colPath}`);
+                  return col.get();
+                };
+              }
+              if (cp !== 'doc') return original;
+              const construirRef = original as typeof ct.doc;
+              return (id?: string) => {
+                const ref = construirRef(id);
+                return {
+                  ...ref,
+                  get: () => {
+                    eventos.push(`le:${ref.path}`);
+                    return ref.get();
+                  },
+                  update: (patch: Record<string, unknown>, pre?: { lastUpdateTime?: unknown }) => {
+                    eventos.push(`atualiza:${ref.path}`);
+                    return ref.update(patch, pre);
+                  },
+                };
+              };
+            },
+          });
+        };
+      },
+    });
+    return { db: proxy, eventos };
+  }
+
+  it('o caminho feliz: TRAVA antes do preparar, UM add_item, e o write-back #1 REIVINDICA o MESMO documento', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearRascunho(db);
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+    const g = gravador(db);
+
+    const r = await publicarAnuncioShopee(
+      depsDoRascunho(g.db, fake),
+      entrada({ linkDocId: RASCUNHO }),
+    );
+
+    expect(r?.linkDocId).toBe(RASCUNHO);
+    expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+    // ⚠️ A trava é a PRIMEIRA escrita e vem ANTES da leitura do produto (o preparar).
+    const trava = g.eventos.indexOf(`atualiza:${CAMINHO_RASCUNHO}`);
+    expect(trava).toBeGreaterThan(-1);
+    expect(trava).toBeLessThan(g.eventos.indexOf(`le:produtos/${PAI}`));
+    // O mesmo documento: o item_id, a trava devolvida, nenhum vínculo novo.
+    expect(db.idsEm(COLECAO)).toEqual([RASCUNHO]);
+    expect(doRascunho(db)).toMatchObject({
+      item_id: ITEM_ID,
+      publicacaoEmCurso: null,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      publicadoEm: AGORA,
+    });
+    // O write-back #1 é um UPDATE guardado (está no log de patches) que zera a trava junto.
+    const patches = db.patches.filter((p) => p.path === CAMINHO_RASCUNHO).map((p) => p.patch);
+    expect(patches[0]).toHaveProperty('publicacaoEmCurso.token');
+    expect(patches[1]).toMatchObject({ item_id: ITEM_ID, publicacaoEmCurso: null });
+  });
+
+  it('um plano BLOQUEADO (sem-peso) devolve a trava, SEM carimbo, e não chama add_item', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db, { pesoBrutoKg: null, pesoLiquidoKg: null });
+    semearRascunho(db);
+    const fake = clienteFake();
+
+    const err = await falhaDe(
+      publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+    );
+
+    expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+    expect(fake.ops).not.toContain('add_item');
+    expect(doRascunho(db)?.publicacaoEmCurso).toBeNull();
+    expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+  });
+
+  it('(D10) um rascunho SEM marca escolhida ⇒ 422 marca-nao-escolhida em `brand`: zero add_item, a trava devolvida SEM carimbo — ⟷ «Sem marca» (0) publica No Brand', async () => {
+    for (const [brandId, recusa] of [
+      [null, true],
+      [0, false],
+    ] as const) {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db, { brand_id: brandId });
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+      ).catch((e: unknown) => e);
+
+      if (recusa) {
+        // The whole chain, not one module: the RAW draft → the flag → the
+        // assembly's refusal → the 422 with nothing sent and the lock handed back.
+        expect(r).toBeInstanceOf(ShopeePublishBlockedError);
+        expect((r as ShopeePublishBlockedError).problemas).toContainEqual(
+          expect.objectContaining({
+            campo: 'brand',
+            motivo: MOTIVO_PUBLICACAO_BLOQUEADA.marcaNaoEscolhida,
+          }),
+        );
+        expect(fake.ops).not.toContain('add_item');
+        expect(doRascunho(db)?.publicacaoEmCurso).toBeNull();
+        expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+      } else {
+        expect(r).toMatchObject({ itemId: ITEM_ID });
+        expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+        expect(fake.corpos[0]).toMatchObject({ brand: { brand_id: 0 } });
+      }
+    }
+  });
+
+  it('uma trava ALHEIA viva ⇒ 409 EM_ANDAMENTO: zero chamadas à Shopee, zero escritas, nenhuma foto', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearRascunho(db, { publicacaoEmCurso: travaAlheia(AGORA + 30_000) });
+    const fake = clienteFake();
+
+    const err = await falhaDe(
+      publicarAnuncioShopee(
+        depsDoRascunho(db, fake, aoVivo(), resolvedorQueRecusa()),
+        entrada({ linkDocId: RASCUNHO }),
+      ),
+    );
+
+    expect(err).toBeInstanceOf(ConflitoDeRascunhoShopeeError);
+    expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+      CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+    );
+    expect((err as ConflitoDeRascunhoShopeeError).aguardarMs).toBe(30_000);
+    expect(fake.ops).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('(K1-15) um rascunho INCERTO ⇒ 409 CRIACAO_INCERTA, zero chamadas à Shopee — nunca recriado entre o P3 e o P5', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearRascunho(db, { criacaoIncertaDesde: AGORA - 600_000 });
+    const fake = clienteFake();
+
+    const err = await falhaDe(
+      publicarAnuncioShopee(
+        depsDoRascunho(db, fake, aoVivo(), resolvedorQueRecusa()),
+        entrada({ linkDocId: RASCUNHO }),
+      ),
+    );
+
+    expect((err as ConflitoDeRascunhoShopeeError).code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+    expect(fake.ops).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ (K1-3) um rascunho SEM deps.aoVivo é RECUSADO antes de qualquer leitura da Shopee ou escrita — nenhum relógio de reserva', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearRascunho(db);
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+    await expect(
+      publicarAnuncioShopee(depsDoRascunho(db, fake, null), entrada({ linkDocId: RASCUNHO })),
+    ).rejects.toThrow(/deps\.aoVivo/);
+    expect(fake.ops).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ (K1-3) os controles sem `agora` NÃO compilam', () => {
+    const semAgora = { prazoDaRequisicao: null, confirmarSegundoAnuncio: false };
+    // @ts-expect-error — `agora` is REQUIRED: a constant clock makes the send gate vacuous.
+    const controles: ControlesDaPublicacaoAoVivo = semAgora;
+    const base = deps(new FakeDb(), clienteFake());
+    // @ts-expect-error — the same object rejected where the deps carry it.
+    const d: PublicarAnuncioDeps = { ...base, aoVivo: semAgora };
+    expect([controles, d.aoVivo]).toEqual([semAgora, semAgora]);
+  });
+
+  it('⛔ quase-par: um vínculo que NÃO é rascunho (republicação) não toma trava nenhuma — com ou sem aoVivo', async () => {
+    for (const controles of [aoVivo(), null]) {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearLink(db);
+      const fake = clienteFake({ updateItem: () => ecoDeItem() });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake, controles),
+        entrada({ linkDocId: LINK_PAI }),
+      );
+
+      expect(r?.ehAtualizacao).toBe(true);
+      expect(patchesDoLink(db).some((p) => 'publicacaoEmCurso' in p)).toBe(false);
+    }
+  });
+
+  describe('a releitura antes do envio e a porta POR PERNA', () => {
+    it('(K1-2) o relógio VIVO chega a expiraEm − MARGEM durante as fotos ⇒ 409 PUBLICACAO_EXPIRADA, NADA enviado, a trava devolvida sem carimbo', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+      const r = relogio();
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(
+            db,
+            fake,
+            aoVivo({ agora: r.agora }),
+            resolvedorQueAge(() => r.mover(EXPIRA - MARGEM_ENVIO_SHOPEE_MS)),
+          ),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+        CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
+      );
+      expect(fake.ops).not.toContain('add_item');
+      expect(doRascunho(db)?.publicacaoEmCurso).toBeNull();
+      expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+    });
+
+    it('⛔ quase-par: um milissegundo antes da margem ENVIA', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+      const r = relogio();
+
+      const res = await publicarAnuncioShopee(
+        depsDoRascunho(
+          db,
+          fake,
+          aoVivo({ agora: r.agora }),
+          resolvedorQueAge(() => r.mover(EXPIRA - MARGEM_ENVIO_SHOPEE_MS - 1)),
+        ),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(res?.itemId).toBe(ITEM_ID);
+      expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+    });
+
+    it('o PRAZO DA REQUISIÇÃO limita antes da trava: prazo − MARGEM recusa; o mesmo instante sem prazo (a CLI) envia', async () => {
+      const prazo = AGORA + 180_000;
+      for (const [prazoDaRequisicao, envia] of [
+        [prazo, false],
+        [null, true],
+      ] as const) {
+        const db = new FakeDb();
+        semearCatalogo(db);
+        semearRascunho(db);
+        const fake = clienteFake({ addItem: () => ecoDeItem() });
+        const r = relogio();
+
+        const resultado = await publicarAnuncioShopee(
+          depsDoRascunho(
+            db,
+            fake,
+            aoVivo({ agora: r.agora, prazoDaRequisicao }),
+            resolvedorQueAge(() => r.mover(prazo - MARGEM_ENVIO_SHOPEE_MS)),
+          ),
+          entrada({ linkDocId: RASCUNHO }),
+        ).catch((e: unknown) => {
+          if (e instanceof ConflitoDeRascunhoShopeeError) return e;
+          throw e;
+        });
+
+        expect(fake.ops.includes('add_item'), String(prazoDaRequisicao)).toBe(envia);
+        if (!envia) {
+          expect((resultado as ConflitoDeRascunhoShopeeError).message).toContain('requisição');
+        }
+      }
+    });
+
+    it('o token TROCADO antes do envio (outra execução assumiu) ⇒ nada enviado, a trava ALHEIA intocada', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+      const alheia = travaAlheia(AGORA + 200_000);
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(
+            db,
+            fake,
+            aoVivo(),
+            resolvedorQueAge(() =>
+              db.seed(CAMINHO_RASCUNHO, { ...doRascunho(db), publicacaoEmCurso: alheia }),
+            ),
+          ),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+        CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
+      );
+      expect(fake.ops).not.toContain('add_item');
+      expect(doRascunho(db)?.publicacaoEmCurso).toEqual(alheia);
+      // Só a nossa trava foi escrita; a liberação guardada leu o token alheio e não gravou.
+      expect(escritasNoRascunho(db)).toHaveLength(1);
+    });
+
+    it('(K1-2a) a SEGUNDA perna fiscal é barrada quando a primeira volta depois da margem — exatamente UM add_item', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      db.seed('operacao/op-1', { nome: 'Operação padrão' });
+      const r = relogio();
+      let chamadas = 0;
+      const fake = clienteFake({
+        addItem: () => {
+          chamadas += 1;
+          // The first leg comes back refused — and late.
+          r.mover(EXPIRA - MARGEM_ENVIO_SHOPEE_MS);
+          throw erroApi('product.error_param', `Shopee: ${FRASE_BR}`);
+        },
+      });
+      const controles = aoVivo({ agora: r.agora });
+      const d = deps(db, fake, { operacaoOuterRef: OPERACAO, aoVivo: controles });
+      const travada = await reservarRascunhoShopee(
+        asDb(db),
+        { integracaoId: INTEGRACAO, produtoId: PAI, linkDocId: RASCUNHO },
+        controles,
+      );
+      if (travada.tipo !== 'travada') throw new Error('fixture: o rascunho deveria travar');
+      const { plano } = await planejar(
+        db,
+        fake,
+        { operacaoOuterRef: OPERACAO },
+        {
+          linkDocId: RASCUNHO,
+        },
+      );
+      const comTaxInfo: PlanoPublicacao = {
+        ...plano,
+        item: {
+          ...plano.item,
+          criar: { ...plano.item.criar, tax_info: { ncm: '61091000', cest: '2804200' } },
+        },
+      };
+
+      const err = await falhaDe(
+        aplicarPublicacao(d, comTaxInfo, { reserva: travada.reserva, controles }),
+      );
+
+      expect(chamadas).toBe(1);
+      expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+        CODIGO_RASCUNHO_SHOPEE.publicacaoExpirada,
+      );
+      // Nothing is outstanding — the first leg was refused for good — so the
+      // caller's catch releases it; no stamp was written for a gate abort.
+      expect(travada.reserva.fase).toBe('travada');
+      expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+    });
+  });
+
+  describe('o add_item falhou: o CLASSIFICADOR decide o que acontece com a trava', () => {
+    it('nao-criado (error_invalid_price) ⇒ 422, e a trava devolvida JUNTO com o carimbo, num update só', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({
+        addItem: () => {
+          throw erroApi('product.error_invalid_price');
+        },
+      });
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+      );
+
+      expect(err).toBeInstanceOf(ShopeePublishRejectedError);
+      expect(doRascunho(db)).toMatchObject({
+        publicacaoEmCurso: null,
+        falhaPublicacao: expect.objectContaining({
+          etapa: 'add_item',
+          erro: 'product.error_invalid_price',
+        }),
+      });
+      const patches = db.patches.filter((p) => p.path === CAMINHO_RASCUNHO).map((p) => p.patch);
+      expect(patches).toHaveLength(2);
+      expect(patches[1]).toHaveProperty('publicacaoEmCurso', null);
+      expect(patches[1]).toHaveProperty('falhaPublicacao');
+    });
+
+    it('⛔ quase-par: error_inner "Invalid stock location ID" é nao-criado (devolvida + carimbo); "taking some time" é INCERTO (mantida, sem carimbo)', async () => {
+      for (const [frase, criado] of [
+        ['Invalid stock location ID', false],
+        ['Our system is taking some time to respond, please try later.', true],
+      ] as const) {
+        const db = new FakeDb();
+        semearCatalogo(db);
+        semearRascunho(db);
+        const fake = clienteFake({
+          addItem: () => {
+            throw erroComFrase('error_inner', frase);
+          },
+        });
+
+        await falhaDe(
+          publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+        );
+
+        const armazenado = doRascunho(db);
+        if (criado) {
+          expect(armazenado?.publicacaoEmCurso, frase).toMatchObject({ desde: AGORA });
+          expect(armazenado, frase).not.toHaveProperty('falhaPublicacao');
+        } else {
+          expect(armazenado?.publicacaoEmCurso, frase).toBeNull();
+          expect(armazenado, frase).toHaveProperty('falhaPublicacao');
+        }
+      }
+    });
+
+    it('(K1-1) INCERTO — a rede, ou um código DESCONHECIDO — relança a falha CRUA (nunca "Shopee recusou"), sem carimbo, a trava MANTIDA', async () => {
+      for (const falha of [
+        new ShopeeNetworkError('Shopee add_item: conexão interrompida'),
+        erroApi('product.error_xyz_desconhecido'),
+      ]) {
+        const db = new FakeDb();
+        semearCatalogo(db);
+        semearRascunho(db);
+        const fake = clienteFake({
+          addItem: () => {
+            throw falha;
+          },
+        });
+
+        const err = await falhaDe(
+          publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+        );
+
+        expect(err, falha.name).toBe(falha);
+        expect(err).not.toBeInstanceOf(ShopeePublishRejectedError);
+        const travada = escritasNoRascunho(db)[0]?.publicacaoEmCurso;
+        expect(doRascunho(db)?.publicacaoEmCurso, falha.name).toEqual(travada);
+        expect(doRascunho(db), falha.name).not.toHaveProperty('falhaPublicacao');
+        expect(escritasNoRascunho(db), falha.name).toHaveLength(1);
+      }
+    });
+
+    it('um ShopeeRateLimitError é nao-criado: devolvida + carimbo, e a classe original propaga', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({
+        addItem: () => {
+          throw new ShopeeRateLimitError('Shopee respondeu error_limit', {
+            code: 'error_limit',
+            kind: SHOPEE_ERROR_KIND.burst,
+            httpStatus: 200,
+            path: '/api/v2/product/add_item',
+          });
+        },
+      });
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+      );
+
+      expect(err).toBeInstanceOf(ShopeeRateLimitError);
+      expect(doRascunho(db)?.publicacaoEmCurso).toBeNull();
+      expect(doRascunho(db)).toHaveProperty('falhaPublicacao.erro', 'error_limit');
+    });
+
+    it('um erro que NÃO é da Shopee depois do envio começar ⇒ a trava MANTIDA (expira), sem carimbo', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({
+        addItem: () => {
+          throw new TypeError('defeito do cliente');
+        },
+      });
+
+      await expect(
+        publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+      ).rejects.toBeInstanceOf(TypeError);
+      expect(doRascunho(db)?.publicacaoEmCurso).toMatchObject({ desde: AGORA });
+      expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+    });
+
+    it('⛔ (K1-14) o token ALHEIO na hora da falha ⇒ NENHUMA escrita: nem a liberação, nem o carimbo sobre quem venceu', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const alheia = travaAlheia(AGORA + 250_000);
+      const fake = clienteFake({
+        addItem: () => {
+          // Another run took the draft while our refused create was in flight.
+          db.seed(CAMINHO_RASCUNHO, { ...doRascunho(db), publicacaoEmCurso: alheia });
+          throw erroApi('product.error_invalid_price');
+        },
+      });
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+      );
+
+      expect(err).toBeInstanceOf(ShopeePublishRejectedError);
+      expect(doRascunho(db)?.publicacaoEmCurso).toEqual(alheia);
+      expect(doRascunho(db)).not.toHaveProperty('falhaPublicacao');
+      expect(escritasNoRascunho(db)).toHaveLength(1);
+      expect(logInteiro()).toContain('não é desta execução');
+    });
+  });
+
+  describe('o write-back #1 REIVINDICA o rascunho', () => {
+    it('reivindicado por OUTRO item durante o add_item ⇒ um vínculo NOVO para o nosso; o do outro intocado', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({
+        addItem: () => {
+          db.seed(CAMINHO_RASCUNHO, {
+            ...doRascunho(db),
+            item_id: ITEM_ALHEIO,
+            publicacaoEmCurso: null,
+          });
+          return ecoDeItem();
+        },
+      });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.linkDocId).not.toBe(RASCUNHO);
+      expect(doRascunho(db)?.item_id).toBe(ITEM_ALHEIO);
+      expect(doRascunho(db, `${COLECAO}/${String(r?.linkDocId)}`)).toMatchObject({
+        item_id: ITEM_ID,
+      });
+      expect(db.idsEm(COLECAO)).toHaveLength(2);
+    });
+
+    it('APAGADO durante o add_item ⇒ um vínculo novo — o anúncio existe e nunca fica órfão', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      const fake = clienteFake({
+        addItem: () => {
+          delete db.store[CAMINHO_RASCUNHO];
+          return ecoDeItem();
+        },
+      });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.linkDocId).not.toBe(RASCUNHO);
+      expect(doRascunho(db, `${COLECAO}/${String(r?.linkDocId)}`)).toMatchObject({
+        item_id: ITEM_ID,
+      });
+    });
+
+    it('uma recusa DEPOIS da reivindicação carimba o vínculo reivindicado (o carimbo de sempre); a trava já é null', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearFilho(db);
+      semearRascunho(db);
+      const fake = clienteFake({
+        addItem: () => ecoDeItem(),
+        initTierVariation: () => {
+          throw erroApi(
+            'product.error_param',
+            'Shopee: Model tier_index error',
+            '/api/v2/product/init_tier_variation',
+          );
+        },
+      });
+
+      await expect(
+        publicarAnuncioShopee(depsDoRascunho(db, fake), entrada({ linkDocId: RASCUNHO })),
+      ).rejects.toMatchObject({ etapa: 'init_tier_variation' });
+      expect(doRascunho(db)).toMatchObject({
+        item_id: ITEM_ID,
+        publicacaoEmCurso: null,
+        falhaPublicacao: expect.objectContaining({ etapa: 'init_tier_variation' }),
+      });
+    });
+  });
+
+  describe('D15 na publicação (K1-4) — o segundo anúncio é conferido onde ele acontece', () => {
+    it('dois rascunhos da conta: publicar A ⇒ 409 CONTA_JA_TEM_ANUNCIO nomeando B, zero chamadas, a trava de A devolvida', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      semearRascunho(db, {}, IRMAO);
+      const fake = clienteFake();
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(db, fake, aoVivo(), resolvedorQueRecusa()),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+        CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      );
+      expect((err as ConflitoDeRascunhoShopeeError).vinculos).toEqual([
+        { linkDocId: IRMAO, itemId: null, rascunho: true },
+      ]);
+      expect(fake.ops).toEqual([]);
+      expect(doRascunho(db)?.publicacaoEmCurso).toBeNull();
+    });
+
+    it('⛔ quase-par: B REMOVIDO ⇒ publica sem confirmação', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      db.seed(CAMINHO_IRMAO, {
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_id: ITEM_ALHEIO,
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      });
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.linkDocId).toBe(RASCUNHO);
+      expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+    });
+
+    it('com confirmarSegundoAnuncio ⇒ publica ao lado de B', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      semearRascunho(db, {}, IRMAO);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+      const r = await publicarAnuncioShopee(
+        depsDoRascunho(db, fake, aoVivo({ confirmarSegundoAnuncio: true })),
+        entrada({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.linkDocId).toBe(RASCUNHO);
+      expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+    });
+
+    it('⛔ B TRAVADO ⇒ 409 EM_ANDAMENTO MESMO com a confirmação — zero chamadas', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db);
+      semearRascunho(db, { publicacaoEmCurso: travaAlheia(AGORA + 20_000) }, IRMAO);
+      const fake = clienteFake();
+
+      const err = await falhaDe(
+        publicarAnuncioShopee(
+          depsDoRascunho(db, fake, aoVivo({ confirmarSegundoAnuncio: true })),
+          entrada({ linkDocId: RASCUNHO }),
+        ),
+      );
+
+      expect((err as ConflitoDeRascunhoShopeeError).code).toBe(
+        CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+      );
+      expect((err as ConflitoDeRascunhoShopeeError).vinculos).toEqual([
+        { linkDocId: IRMAO, itemId: null, rascunho: true },
+      ]);
+      expect(fake.ops).toEqual([]);
+    });
+  });
+
+  describe('marcaNaoEscolhida (#1911, D10) — o preparar lê o documento CRU', () => {
+    it.each([
+      ['rascunho SEM brand_id', { item_id: null, brand_id: undefined }, true],
+      ['rascunho com brand_id null', { item_id: null, brand_id: null }, true],
+      ['rascunho com "Sem marca" (0) — uma ESCOLHA', { item_id: null, brand_id: 0 }, false],
+      [
+        'anúncio importado com brand_id null — nunca do operador',
+        { item_id: ITEM_ID, brand_id: null },
+        false,
+      ],
+    ])('%s ⇒ %s', async (_nome, corpo, esperado) => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearRascunho(db, corpo);
+      const fake = clienteFake();
+
+      const contexto = await prepararPublicacao(
+        deps(db, fake),
+        entrada({ linkDocId: RASCUNHO }),
+        resolvedorQueRecusa(),
+      );
+
+      expect(contexto?.link?.marcaNaoEscolhida).toBe(esperado);
+      expect(db.writes).toEqual([]);
+    });
   });
 });

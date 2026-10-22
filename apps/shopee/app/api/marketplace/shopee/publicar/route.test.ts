@@ -12,7 +12,10 @@ import {
 } from '@delfrance/integrations-shopee';
 import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
+  CODIGO_RASCUNHO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
+  PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
+  TETO_ROTA_SHOPEE_MS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
 } from '@delfrance/schemas';
 
@@ -23,11 +26,15 @@ import {
   ShopeePublishRejectedError,
 } from '@/lib/shopee/anuncios/errosPublicacao';
 import {
+  MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
   MSG_RECRIAR_SEM_LINK,
 } from '@/lib/shopee/anuncios/corpoPublicacao';
-import type { ResultadoPublicacao } from '@/lib/shopee/anuncios/publicarAnuncio';
+import type {
+  PublicarAnuncioDeps,
+  ResultadoPublicacao,
+} from '@/lib/shopee/anuncios/publicarAnuncio';
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { MENSAGEM_KIT_INCERTO, type ResultadoPublicacaoKit } from '@/lib/shopee/kits/resultadoKit';
 import {
@@ -973,5 +980,154 @@ describe('passo 19 — os braços de kit pela rota', () => {
     await expect(juntas.json()).resolves.toEqual({ error: MSG_OPCOES_DE_KIT_EXCLUSIVAS });
     expect(h.loadCtx).not.toHaveBeenCalled();
     expect(h.publicarKit).not.toHaveBeenCalled();
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 — o RASCUNHO: os 409 da trava, o relógio vivo e o teto da rota        */
+/* ========================================================================== */
+
+describe('#1911 — publicar um RASCUNHO pela rota', () => {
+  const RASCUNHO = 'rasc-1';
+  const IRMAO = 'rasc-2';
+  const T0 = 1_757_000_000_000;
+
+  function semearRascunho(id: string, extra: Record<string, unknown> = {}): void {
+    db.seed(`produtos/${PRODUTO}/prodshopee/${id}`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: null,
+      item_name: 'Camiseta básica branca',
+      category_id: CATEGORIA_DO_LINK,
+      brand_id: 0,
+      ...extra,
+    });
+  }
+
+  function travaAlheia(expiraEm: number) {
+    return { desde: expiraEm - PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS, expiraEm, token: 'token-alheio' };
+  }
+
+  function rascunhoArmazenado(id = RASCUNHO): Record<string, unknown> | undefined {
+    return db.store[`produtos/${PRODUTO}/prodshopee/${id}`]?.data;
+  }
+
+  beforeEach(() => {
+    semearProduto(db);
+    vi.spyOn(Date, 'now').mockReturnValue(T0);
+  });
+
+  it('confirmarSegundoAnuncio que não é booleano ⇒ 400 com a frase do campo, antes de qualquer leitura', async () => {
+    const res = await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarSegundoAnuncio: 'true' }), AUTORIZADO),
+    );
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: MSG_CONFIRMAR_SEGUNDO_ANUNCIO_INVALIDO });
+    expect(h.loadCtx).not.toHaveBeenCalled();
+  });
+
+  it('a rota entrega aoVivo: o relógio VIVO, prazoDaRequisicao = nowMs + TETO_ROTA_SHOPEE_MS e a confirmação do corpo', async () => {
+    h.publicar.mockResolvedValue(resultadoDouble());
+    semearRascunho(RASCUNHO);
+
+    await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarSegundoAnuncio: true }), AUTORIZADO),
+    );
+
+    const deps = h.publicar.mock.calls[0]?.[0] as PublicarAnuncioDeps;
+    expect(deps.aoVivo?.prazoDaRequisicao).toBe(T0 + TETO_ROTA_SHOPEE_MS);
+    expect(deps.aoVivo?.confirmarSegundoAnuncio).toBe(true);
+    // ⚠️ VIVO: lê o relógio a cada chamada — nunca o `nowMs` constante (K1-3).
+    vi.mocked(Date.now).mockReturnValue(T0 + 5_000);
+    expect(deps.aoVivo?.agora()).toBe(T0 + 5_000);
+    expect(deps.nowMs).toBe(T0);
+
+    // ⛔ quase-par: sem a flag no corpo, a confirmação chega FALSE.
+    await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+    const semFlag = h.publicar.mock.calls[1]?.[0] as PublicarAnuncioDeps;
+    expect(semFlag.aoVivo?.confirmarSegundoAnuncio).toBe(false);
+  });
+
+  it('uma trava ALHEIA viva ⇒ 409 EM_ANDAMENTO {error, code, linkDocId, aguardarMs} — sem vinculos, nada gravado, nenhuma chamada de escrita', async () => {
+    semearRascunho(RASCUNHO, { publicacaoEmCurso: travaAlheia(T0 + 40_000) });
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(409);
+    const corpo = (await res.json()) as Record<string, unknown>;
+    expect(corpo).toEqual({
+      error: expect.stringContaining(RASCUNHO) as unknown,
+      code: CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento,
+      linkDocId: RASCUNHO,
+      aguardarMs: 40_000,
+    });
+    expect('vinculos' in corpo).toBe(false);
+    expect(db.writes).toEqual([]);
+    expect(h.getChannelList).not.toHaveBeenCalled();
+  });
+
+  it('um rascunho INCERTO ⇒ 409 CRIACAO_INCERTA, sem aguardarMs', async () => {
+    semearRascunho(RASCUNHO, { criacaoIncertaDesde: T0 - 600_000 });
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(409);
+    const corpo = (await res.json()) as Record<string, unknown>;
+    expect(corpo.code).toBe(CODIGO_RASCUNHO_SHOPEE.criacaoIncerta);
+    expect('aguardarMs' in corpo).toBe(false);
+  });
+
+  it('dois rascunhos ⇒ 409 CONTA_JA_TEM_ANUNCIO com vinculos; com confirmarSegundoAnuncio a reserva PASSA (o plano então recusa sem-fotos, 422) e a trava volta', async () => {
+    semearRascunho(RASCUNHO);
+    semearRascunho(IRMAO);
+
+    const sem = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+    expect(sem.status).toBe(409);
+    await expect(sem.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.contaJaTemAnuncio,
+      linkDocId: RASCUNHO,
+      vinculos: [{ linkDocId: IRMAO, itemId: null, rascunho: true }],
+    });
+
+    // ⛔ the flag must REACH the reservation (the "flag ignored" mutant).
+    const com = await POST(
+      req(corpoValido({ linkDocId: RASCUNHO, confirmarSegundoAnuncio: true }), AUTORIZADO),
+    );
+    expect(com.status).toBe(422);
+    await expect(com.json()).resolves.toMatchObject({ code: 'SHOPEE_PUBLISH_BLOCKED' });
+    // The blocked plan handed the lock back, unstamped.
+    expect(rascunhoArmazenado()?.publicacaoEmCurso).toBeNull();
+    expect(rascunhoArmazenado()).not.toHaveProperty('falhaPublicacao');
+  });
+
+  it('⛔ quase-par: um vínculo PUBLICADO pela mesma rota não toma trava — o 422 de sempre, nenhum publicacaoEmCurso', async () => {
+    semearLink(db);
+
+    const res = await POST(req(corpoValido({ linkDocId: LINK }), AUTORIZADO));
+
+    expect(res.status).toBe(422);
+    expect(db.writes.some((w) => 'publicacaoEmCurso' in w.patch)).toBe(false);
+  });
+
+  it('⚠️ o teto: apphosting.yaml timeoutSeconds × 1000 === TETO_ROTA_SHOPEE_MS, e o yaml NOMEIA a constante', () => {
+    const yaml = readFileSync(
+      fileURLToPath(new URL('../../../../../apphosting.yaml', import.meta.url)),
+      'utf8',
+    );
+    const pinos = yaml
+      .split(/\r?\n/)
+      .map((linha) => /^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/.exec(linha))
+      .filter((m): m is RegExpExecArray => m !== null);
+    // ÂNCORA: exactly one pin was read — a reformatted yaml must not pass vacuously.
+    expect(pinos).toHaveLength(1);
+    expect(Number(pinos[0]?.[1]) * 1000).toBe(TETO_ROTA_SHOPEE_MS);
+    expect(yaml).toContain('TETO_ROTA_SHOPEE_MS');
+  });
+
+  it('a rota mapeia o 409 por instanceof ANTES do isShopeeError (texto da fonte)', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
+    const conflito = fonte.indexOf('err instanceof ConflitoDeRascunhoShopeeError');
+    const shopee = fonte.indexOf('if (isShopeeError(err))');
+    expect(conflito).toBeGreaterThan(0);
+    expect(conflito).toBeLessThan(shopee);
   });
 });

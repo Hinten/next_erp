@@ -55,6 +55,15 @@
  * same single clock read, same `esperar`, the same `FieldValue.increment` the
  * kit's recipe aviso raises through — and prints what it reported.
  *
+ * ⚠️ **A DRAFT (`--link <rascunho>`, #1911) needs a LIVE clock too.** Its first
+ * `add_item` runs under a publish lock whose send gate re-reads the time before
+ * EACH leg, so `--live` hands down `aoVivo.agora` — a real clock read on every
+ * call, NEVER the run's one `nowMs` (a constant would let a run that spent six
+ * minutes uploading photos still send after its lock expired) — and NO request
+ * deadline: a terminal has no platform ceiling, so the lock's own expiry is the
+ * only bound. `--confirmar-segundo-anuncio` rides the same object. The dry run
+ * never takes the lock.
+ *
  * ## What it prints, and what it must never print
  *
  * Everything is rendered through `lib/shopee/anuncios/publicarAnuncioCli.ts`,
@@ -92,6 +101,7 @@ import {
   ArgumentoInvalidoError,
   USO_PUBLICAR_ANUNCIO,
   descreverErroPublicacao,
+  ehConflitoDeRascunho,
   lerArgsPublicar,
   renderizarEnsaioDeKit,
   renderizarPlano,
@@ -142,6 +152,7 @@ async function main(): Promise<void> {
     principal,
     recriar,
     converterEmKit,
+    confirmarSegundoAnuncio,
   } = comando.args;
 
   // ⚠️ The dynamic imports are what make "`--help` touches no environment and no
@@ -358,7 +369,15 @@ async function main(): Promise<void> {
 
   /* ---------------------------------- live ---------------------------------- */
 
-  const res = await publicarShopee(deps, entrada);
+  const res = await publicarShopee(
+    {
+      ...deps,
+      // #1911: the draft lock's LIVE clock and confirmation; no request
+      // deadline from a terminal (see the header).
+      aoVivo: { agora: () => Date.now(), prazoDaRequisicao: null, confirmarSegundoAnuncio },
+    },
+    entrada,
+  );
   if (res === null) {
     aviso('');
     aviso(
@@ -414,7 +433,9 @@ await main().catch((err: unknown) => {
   // Narrow enough to be useful and never wide enough to print a payload — the
   // whole table is `descreverErroPublicacao`, which is unit-tested.
   for (const linha of descreverErroPublicacao(err)) aviso(linha);
-  if (!(err instanceof ArgumentoInvalidoError)) {
+  // A draft's lock refusal (#1911) sent NOTHING — its describer says so, and
+  // the "maybe created" warning below would contradict it.
+  if (!(err instanceof ArgumentoInvalidoError) && !ehConflitoDeRascunho(err)) {
     aviso('');
     aviso(
       'Nada garante que nada foi criado: um erro DEPOIS do add_item (ou do add_kit_item) ' +

@@ -15,6 +15,7 @@ import {
   ehVinculoSubstituido,
   ehKitNativoAtivo,
   ehKitNativoQueAindaVende,
+  publicacaoEmCursoShopeeSchema,
   type EstadoAnuncioShopee,
   type MotivoAnuncioNaoMovivel,
 } from './shopeeLink';
@@ -1269,5 +1270,71 @@ describe('ehKitNativoQueAindaVende — o filtro de linhas do aviso (M178)', () =
     for (const { link } of TABELA) {
       if (ehKitNativoAtivo(link)) expect(ehKitNativoQueAindaVende(link)).toBe(true);
     }
+  });
+});
+
+// ===========================================================================
+// #1911 (D4) — a trava de publicação do rascunho (`publicacaoEmCurso`)
+// ===========================================================================
+
+describe('publicacaoEmCurso — a trava do rascunho (#1911, D4)', () => {
+  const RASCUNHO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Camiseta Básica',
+    item_id: null,
+  };
+  const TRAVA = { desde: 1_761_000_000_000, expiraEm: 1_761_000_300_000, token: 'tok-1' };
+
+  it('⚠️ PAR: um link SEM a chave faz parse e a chave continua AUSENTE — carimbo de servidor, nunca um `null` inventado', () => {
+    const lido = produtoShopeeLinkSchema.parse(RASCUNHO) as Record<string, unknown>;
+    expect(lido).not.toHaveProperty('publicacaoEmCurso');
+    // O contraste: um campo do cliente (`.nullable().default(null)`) ENTRA null.
+    expect(lido).toHaveProperty('substituidoEm', null);
+  });
+
+  it('PAR: `null` sobrevive `null`; a trava inteira sobrevive inalterada, chaves a mais inclusive', () => {
+    expect(
+      produtoShopeeLinkSchema.parse({ ...RASCUNHO, publicacaoEmCurso: null }).publicacaoEmCurso,
+    ).toBeNull();
+    expect(
+      produtoShopeeLinkSchema.parse({
+        ...RASCUNHO,
+        publicacaoEmCurso: { ...TRAVA, etapa: 'addItem' },
+      }).publicacaoEmCurso,
+    ).toEqual({ ...TRAVA, etapa: 'addItem' });
+  });
+
+  it('⛔ NEAR-MISS: token vazio, instante fracionário ou em texto, chave faltando são recusados', () => {
+    for (const ruim of [
+      { ...TRAVA, token: '' },
+      { ...TRAVA, desde: 1.5 },
+      { ...TRAVA, expiraEm: String(TRAVA.expiraEm) },
+      { desde: TRAVA.desde, token: 'tok-1' },
+      { expiraEm: TRAVA.expiraEm, token: 'tok-1' },
+      { desde: TRAVA.desde, expiraEm: TRAVA.expiraEm },
+      'tok-1',
+    ]) {
+      expect(
+        produtoShopeeLinkSchema.safeParse({ ...RASCUNHO, publicacaoEmCurso: ruim }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+  });
+
+  it('UMA grafia: o campo do link É o `publicacaoEmCursoShopeeSchema` exportado (#1369)', () => {
+    const campo = produtoShopeeLinkSchema.shape.publicacaoEmCurso;
+    expect(campo.unwrap().unwrap()).toBe(publicacaoEmCursoShopeeSchema);
+    expect(campo.parse(undefined)).toBeUndefined();
+  });
+
+  it('o MODELO (`variashopee`) não declara a trava — ela é do anúncio', () => {
+    expect(variacaoShopeeLinkSchema.shape).not.toHaveProperty('publicacaoEmCurso');
+  });
+
+  it('o inventário de escritores do cabeçalho nomeia o sétimo grupo', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    expect(fonte).toContain('Seven groups of fields have a named writer set');
+    expect(fonte).toContain('**`publicacaoEmCurso`** (#1911, D4)');
+    expect(fonte).toContain('estadoPublicacaoRascunhoShopee');
   });
 });

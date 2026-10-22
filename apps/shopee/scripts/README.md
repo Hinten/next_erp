@@ -988,23 +988,37 @@ Kit nativo da Shopee (step 19)
   viva: o add_kit_item não é idempotente, e duas execuções ao mesmo tempo podem
   criar dois kits com o mesmo SKU. Se a resposta for INCERTO, espere e rode o
   comando exatamente como ele foi impresso.
+
+Rascunho (#1911)
+  --link <rascunho>   publica um RASCUNHO da aba Shopee: o ERP trava o rascunho
+                      antes de ler o conteúdo, só envia o add_item enquanto a
+                      trava vale, e recusa (sem enviar nada) quando outra
+                      execução está publicando, quando a última tentativa pode
+                      ter criado o anúncio, ou quando a conta já tem anúncio ou
+                      rascunho deste produto.
+  --confirmar-segundo-anuncio
+                      confirma que este rascunho pode virar um SEGUNDO anúncio
+                      do produto nesta conta (a Shopee pode tratar duplicata
+                      como spam). Só vale no --live; nunca passa por cima de
+                      outro vínculo que esteja sendo publicado.
 ```
 
-| flag                 | meaning                                                                                                                                                                                                                                                                                                                               |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--integracao <id>`  | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                                                                                                                                                                        |
-| `--produto <id>`     | **required** — the **PARENT** produto. A child is refused by the dispatcher (`produto-e-filho`) before any Shopee call; a native kit is published through the kit arms (§12.6)                                                                                                                                                        |
-| `--link <docId>`     | optional — which `prodshopee` link to use when the produto has more than one; **required with `--recriar`** (the OLD kit's link). A `linkDocId` belonging to another conta resolves to nothing and the script exits `1`. Without it the dispatcher picks — never a superseded link (§12.6)                                            |
-| `--categoria <id>`   | optional — **digits only, and never trimmed**: `' 100017'` is refused rather than repaired. Used ONLY when the resolved link carries no `category_id`; it never overwrites one. Ignored on a native kit (the category is the main component's)                                                                                        |
-| `--status`           | `NORMAL` (default) or `UNLIST`, **exactly** — no case fold and no alias, so `unlist` is refused. On a native kit it is USED by a create (`add_kit_item` with `unlisted: true`, register 305 — recriar/converter included) and ignored by a republish; a `--recriar` never deletes a kit on sale for a paused one (`kit-novo-inativo`) |
-| `--dry-run`          | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                                                                                                                                                                    |
-| `--live`             | the only opt-in to a real publish                                                                                                                                                                                                                                                                                                     |
-| `--project <id>`     | overrides `FIREBASE_PROJECT_ID` before the admin app resolves it                                                                                                                                                                                                                                                                      |
-| `--json`             | the same REDACTED summary as one parseable document on stdout, preamble on stderr; `tipo` says `item` or `kit`                                                                                                                                                                                                                        |
-| `--help`, `-h`       | prints the usage and exits `0`, ahead of every validation                                                                                                                                                                                                                                                                             |
-| `--principal <id>`   | step 19 — the kit's MAIN component, as the ERP id of the component produto. Required on a kit CREATE spanning 2+ Shopee listings (`principal-obrigatorio`); on an existing kit it is only compared (`principal-diferente`). Refused on an ordinary listing (`opcao-de-kit-em-anuncio-comum`)                                          |
-| `--recriar`          | step 19 — recreate the native kit `--link` names: the new kit FIRST, then `delete_item` on the old one. ⚠️ Without `--link` it is a usage error, so a re-run is literally the same command                                                                                                                                            |
-| `--converter-em-kit` | step 19 — replace the produto's ORDINARY listing with a new native kit; the ordinary one is superseded, never touched. ⚠️ With `--recriar` it is a usage error: one kit action per run                                                                                                                                                |
+| flag                          | meaning                                                                                                                                                                                                                                                                                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>`           | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                                                                                                                                                                                           |
+| `--produto <id>`              | **required** — the **PARENT** produto. A child is refused by the dispatcher (`produto-e-filho`) before any Shopee call; a native kit is published through the kit arms (§12.6)                                                                                                                                                                           |
+| `--link <docId>`              | optional — which `prodshopee` link to use when the produto has more than one; **required with `--recriar`** (the OLD kit's link). A `linkDocId` belonging to another conta resolves to nothing and the script exits `1`. Without it the dispatcher picks — never a superseded link (§12.6)                                                               |
+| `--categoria <id>`            | optional — **digits only, and never trimmed**: `' 100017'` is refused rather than repaired. Used ONLY when the resolved link carries no `category_id`; it never overwrites one. Ignored on a native kit (the category is the main component's)                                                                                                           |
+| `--status`                    | `NORMAL` (default) or `UNLIST`, **exactly** — no case fold and no alias, so `unlist` is refused. On a native kit it is USED by a create (`add_kit_item` with `unlisted: true`, register 305 — recriar/converter included) and ignored by a republish; a `--recriar` never deletes a kit on sale for a paused one (`kit-novo-inativo`)                    |
+| `--dry-run`                   | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                                                                                                                                                                                       |
+| `--live`                      | the only opt-in to a real publish                                                                                                                                                                                                                                                                                                                        |
+| `--project <id>`              | overrides `FIREBASE_PROJECT_ID` before the admin app resolves it                                                                                                                                                                                                                                                                                         |
+| `--json`                      | the same REDACTED summary as one parseable document on stdout, preamble on stderr; `tipo` says `item` or `kit`                                                                                                                                                                                                                                           |
+| `--help`, `-h`                | prints the usage and exits `0`, ahead of every validation                                                                                                                                                                                                                                                                                                |
+| `--principal <id>`            | step 19 — the kit's MAIN component, as the ERP id of the component produto. Required on a kit CREATE spanning 2+ Shopee listings (`principal-obrigatorio`); on an existing kit it is only compared (`principal-diferente`). Refused on an ordinary listing (`opcao-de-kit-em-anuncio-comum`)                                                             |
+| `--recriar`                   | step 19 — recreate the native kit `--link` names: the new kit FIRST, then `delete_item` on the old one. ⚠️ Without `--link` it is a usage error, so a re-run is literally the same command                                                                                                                                                               |
+| `--converter-em-kit`          | step 19 — replace the produto's ORDINARY listing with a new native kit; the ordinary one is superseded, never touched. ⚠️ With `--recriar` it is a usage error: one kit action per run                                                                                                                                                                   |
+| `--confirmar-segundo-anuncio` | #1911 — with `--link <draft>` under `--live`: this draft may become a SECOND listing of the produto on the conta (D15). Without it, a conta that already holds a live listing or another draft of the produto refuses `SHOPEE_RASCUNHO_CONTA_JA_TEM_ANUNCIO`; it never overrides a sibling link that is being published (§12.7). Does not imply `--live` |
 
 ⚠️ A bare `--` is refused, and no command in this file carries one (see the note
 at the top).
@@ -1094,7 +1108,12 @@ dispatcher's (`produto-e-filho`, `vinculos-ambiguos`, `vinculo-substituido`,
 read). The rule is "was a plan reached", not "how bad is the refusal".
 ⚠️ Under `--live` a refusal is not caught either, and the transcript adds `Nada
 garante que nada foi criado` plus `releia com --dry-run`. ⚠️ A kit `--live`
-whose `add_kit_item` outcome is **INCERTO** exits `1` too (§12.6).
+whose `add_kit_item` outcome is **INCERTO** exits `1` too (§12.6). ⚠️ A
+DRAFT's lock refusal (`ConflitoDeRascunhoShopeeError`, #1911) exits `1` WITHOUT
+that tail: every one of them is thrown before an `add_item` that could create
+the listing is sent (on the fiscal retry's second leg, the first leg was
+Shopee's refusal), and its own block ends `Nada foi enviado à Shopee por esta
+execução` (§12.7).
 
 ⚠️ **"Native kit" is the whole rule, and step 12 corrected the code to match
 this sentence.** `produto.ehKit` **never** refuses a publish: an ERP kit
@@ -1236,6 +1255,43 @@ in Seller Centre (register 303).
 
 ⚠️ **On the SG sandbox** both kit summaries say `sandbox SG: preço em SGD num
 campo BRL`: the kit's prices are the ERP's reais, sent into an SGD shop.
+
+### 12.7 Publishing a draft under its lock (#1911)
+
+`--live --link <draft>` is a draft's FIRST create, and it runs under the
+publish lock the `publicar` route takes (the mechanism and every way out:
+`lib/shopee/anuncios/README.md`, "A draft's first create runs under a LOCK").
+The script hands down a LIVE clock (`aoVivo.agora`, read again before EACH
+`add_item` leg) and NO request deadline — a terminal has no platform ceiling,
+so the lock's own expiry (300 s from the reservation) is the only bound. The
+photo pass counts against it: a run that is still uploading pictures when
+fewer than 30 s of the lock remain stops BEFORE `add_item` with
+`SHOPEE_PUBLICACAO_EXPIRADA`, and the re-run reuses the cached `image_id`s. A
+republish of a listing, and a dry run, take no lock.
+
+A refusal prints `❌ ConflitoDeRascunhoShopeeError (<code>)`, then `rascunho`,
+`código`, `aguardar … s` when waiting can help, `vínculos (N):` when a sibling
+link is the cause, the sentence, and `Nada foi enviado à Shopee por esta
+execução.`; it exits `1`.
+
+| code                                   | what happened                                                                                                                                                                                        | what to do                                                                                                            |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `SHOPEE_PUBLICACAO_EM_ANDAMENTO`       | another run (the tab, or another terminal) holds this draft's lock — or held it and may still be finishing (the 240 s after it expired) — or a sibling link of the conta is mid-publish or uncertain | wait `aguardar`, look at the listing, then re-run                                                                     |
+| `SHOPEE_RASCUNHO_CONTA_JA_TEM_ANUNCIO` | the conta already holds a live listing or another draft of this produto (`vínculos`)                                                                                                                 | re-run with `--confirmar-segundo-anuncio` only if a SECOND listing is intended — Shopee may treat a duplicate as spam |
+| `SHOPEE_PUBLICACAO_EXPIRADA`           | the send gate refused before `add_item`: the lock would expire during the send, or is no longer this run's                                                                                           | re-run                                                                                                                |
+| `SHOPEE_RASCUNHO_CONTENCAO`            | the lock write lost three times in a row to concurrent writes on the draft                                                                                                                           | re-run                                                                                                                |
+| `SHOPEE_RASCUNHO_JA_PUBLICADO`         | the link is no longer a draft: the listing exists                                                                                                                                                    | publish it as an update (the same command)                                                                            |
+| `SHOPEE_RASCUNHO_CRIACAO_INCERTA`      | an earlier attempt's `add_item` ended with an UNKNOWN outcome and its lock and grace ran out                                                                                                         | check Seller Centre; never re-run hoping — until #1911's P5 (ENSURE) this draft is refused, never re-sent             |
+
+⚠️ **An `add_item` whose outcome is unknown** (a network drop, an edge page,
+an unparseable answer, an `error_*` code the documented refusals do not hold)
+is NOT a lock refusal: the raw Shopee error is printed, the "Nada garante" tail
+IS printed — it may be true this time — no `falhaPublicacao` is stamped, and
+the lock is KEPT. Until ~9 minutes after the reservation (the 300 s lock plus
+its 240 s grace) the next run answers `EM_ANDAMENTO`; after that,
+`CRIACAO_INCERTA`. A documented refusal
+(`criacaoIncerta.ts`'s closed table) releases the lock and stamps the failure,
+exactly as a non-draft publish does.
 
 ---
 

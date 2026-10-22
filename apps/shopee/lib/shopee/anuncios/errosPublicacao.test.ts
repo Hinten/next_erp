@@ -115,7 +115,7 @@ function recusado(
 }
 
 describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
-  it('1 — o vocabulário bloqueado é EXATAMENTE estes quarenta e nove slugs', () => {
+  it('1 — o vocabulário bloqueado é EXATAMENTE estes cinquenta slugs', () => {
     // A PERSISTED vocabulary (`falhaPublicacao.motivo` e
     // `falhaPublicacao.problemas[].motivo`). Esta lista É o pino: o
     // `as const satisfies` garante o TIPO dos valores, mas não impede que um
@@ -131,7 +131,8 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
     // PR 6 a rede de segurança da recriação (`recriacao-sem-diferenca`) e o PR 7
     // as CINCO recusas do despacho da publicação. O #1911 (P1) acrescentou as
     // DUAS de rascunho do mesmo despacho (`rascunho-em-kit-virtual`,
-    // `rascunho-nao-nomeado`).
+    // `rascunho-nao-nomeado`), e o P3 a da MARCA não escolhida do rascunho
+    // (`marca-nao-escolhida`, produzida pela montagem — D10).
     expect([...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)].sort()).toEqual([
       'atributo-obrigatorio',
       'busca-de-kit-incompleta',
@@ -160,6 +161,7 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
       'kit-virtual-sem-kit',
       'listagem-removida',
       'logistica-sem-canal',
+      'marca-nao-escolhida',
       'marca-sem-nome',
       'nome-fora-da-faixa',
       'opcao-de-kit-em-anuncio-comum',
@@ -183,7 +185,7 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
       'vinculo-substituido',
       'vinculos-ambiguos',
     ]);
-    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(49);
+    expect(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(50);
   });
 
   it('2 — ⛔ NEAR-MISS: `imposto-incompleto` NÃO é membro, e `estoque-abaixo-do-minimo` É', () => {
@@ -246,7 +248,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
         'desconhecido',
       ].sort(),
     );
-    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(61);
+    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(62);
   });
 
   it('6 — ⛔ NEAR-MISS: os doze slugs de WIRE não pertencem ao vocabulário BLOQUEADO', () => {
@@ -257,7 +259,8 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
     // ⚠️ Os dois da tabela de medidas idem: um `avisoObrigatoria` é um AVISO
     // (nunca um bloqueio), e o BLOQUEADO só cresceu pelas 19 recusas de kit do
     // passo 19 (pela rede de segurança da recriação, PR 6, e pelas cinco do
-    // despacho, PR 7) e pelas duas de rascunho do despacho (#1911) — 49 membros.
+    // despacho, PR 7), pelas duas de rascunho do despacho (#1911, P1) e pela da
+    // marca não escolhida do rascunho (#1911, P3) — 50 membros.
     // ⚠️ E os sete de KIT (passo 19) também: cada um é uma frase da Shopee
     // classificada DEPOIS de uma escrita, nunca algo lido no produto.
     const bloqueados: readonly string[] = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA);
@@ -277,7 +280,7 @@ describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
     ]) {
       expect(bloqueados, slug).not.toContain(slug);
     }
-    expect(bloqueados).toHaveLength(49);
+    expect(bloqueados).toHaveLength(50);
   });
 
   it('6b — ⛔ NEAR-MISS: as 19 recusas de KIT do núcleo SÃO bloqueio, e as 7 de wire do kit NÃO', () => {
@@ -724,9 +727,9 @@ function produzPelaConstante(fonte: string, chave: string): boolean {
 }
 
 describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublicacao.ts', () => {
-  it('os 49 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
+  it('os 50 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
     // O arquivo que DECLARA está fora do universo, senão a asserção seria
-    // vácua: a própria união de tipos soletra os 49 slugs.
+    // vácua: a própria união de tipos soletra os 50 slugs.
     const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
     // Uma âncora: se a leitura da pasta falhar, o teste passa sozinho.
     expect(fontes.size).toBeGreaterThan(10);
@@ -742,7 +745,7 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     }
 
     expect(orfaos, 'motivos declarados que NINGUÉM produz').toEqual([]);
-    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(49);
+    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(50);
   });
 
   it('as 7 recusas do DESPACHO (PR 7 + #1911): o produtor é `kits/armaDePublicacao.ts`, pela CONSTANTE', () => {
@@ -792,6 +795,32 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
     // braço que recria, depois do veredito da busca.
     const plano = fontesQuePodemProduzir(['errosPublicacao.ts']).get('../kits/planoKit.ts') ?? '';
     expect(plano).not.toContain('recriacaoSemDiferenca');
+  });
+
+  it('a recusa da MARCA do rascunho (#1911, P3): o produtor é `montagemAnuncio.ts`, pela CONSTANTE — e só ele', () => {
+    // `marca-nao-escolhida` tem UM produtor: a montagem, que lê o
+    // `marcaNaoEscolhida` da projeção. A âncora é o ARQUIVO (uma menção em
+    // qualquer outro módulo manteria o membro "produzido" depois de a montagem
+    // perder a linha que recusa), e a grafia é a da constante.
+    const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
+    const montagem = fontes.get('montagemAnuncio.ts');
+    expect(montagem, 'montagemAnuncio.ts fora do universo de O7').toBeDefined();
+    const fonte = montagem ?? '';
+    expect(fonte).toContain('MOTIVO_PUBLICACAO_BLOQUEADA.marcaNaoEscolhida');
+    const slug = MOTIVO_PUBLICACAO_BLOQUEADA.marcaNaoEscolhida;
+    expect(fonte.includes(`'${slug}'`) || fonte.includes(`"${slug}"`)).toBe(false);
+    // ⛔ QUASE-PAR: nenhum OUTRO arquivo a produz — o publicador preenche o
+    // booleano da projeção com o predicado de `@delfrance/schemas`, nunca recusa
+    // por conta própria (uma segunda cópia da decisão é o cheiro do #1369).
+    for (const [nome, outra] of fontes) {
+      if (nome === 'montagemAnuncio.ts') continue;
+      const produz =
+        outra.includes('MOTIVO_PUBLICACAO_BLOQUEADA.marcaNaoEscolhida') ||
+        outra.includes('MOTIVO_PROBLEMA_PUBLICACAO.marcaNaoEscolhida') ||
+        outra.includes(`'${slug}'`) ||
+        outra.includes(`"${slug}"`);
+      expect(produz, `${nome} produz ${slug}`).toBe(false);
+    }
   });
 
   it('as 19 recusas de kit do NÚCLEO: o produtor é `kits/planoKit.ts`, pela CONSTANTE', () => {
