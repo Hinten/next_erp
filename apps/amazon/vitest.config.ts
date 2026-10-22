@@ -12,10 +12,10 @@ export default defineConfig({
     // Pinning the runner to UTC makes the ambient-zone binding disagree by three
     // hours instead of agreeing by luck.
     env: { TZ: 'UTC' },
-    // `functions/` will hold the deploy-artifact-only Cloud Functions codebase
-    // (not a pnpm workspace package) once a later step adds it. The parent app's
-    // tasks (tsconfig `**/*.ts`, `eslint .`, this vitest config) cover it, so
-    // its tests are included here too.
+    // `functions/` is the deploy-artifact-only Cloud Functions codebase `amazon`
+    // (not a pnpm workspace package). The parent app's tasks (tsconfig
+    // `**/*.ts`, `eslint .`, this vitest config) cover it, so its tests are
+    // included here.
     // `proxy.ts` (the CORS middleware) sits at the app root, outside every
     // directory glob above — its test is named explicitly or it never runs.
     include: ['{app,lib,functions}/**/*.test.ts', 'proxy.test.ts'],
@@ -32,9 +32,9 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       '**/.next/**',
-      // Same trap, and it is listed BEFORE any such suite exists: a
-      // `*.firestore.test.ts` landing later would otherwise be collected here
-      // and skip green.
+      // Same trap for the Firestore-only emulator suites: a
+      // `*.firestore.test.ts` would otherwise be collected here and skip green.
+      // Both suffixes run in `vitest.tasks.config.ts` (ci-amazon.yml) instead.
       '**/*.firestore.test.ts',
       '**/*.tasks.test.ts',
     ],

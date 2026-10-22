@@ -11,11 +11,11 @@ API-only App Hosting backend for the Amazon (SP-API) marketplace channel, port 3
 - The LWA authorization belongs to this integration alone, never the legacy
   app's (D10). Never put a token, the code, the client secret, the state, a
   seller id or a credential ref in a URL, a log line or a response.
-- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`
-  (emulator suites need their own lane — **none exists yet**, so the step that
-  adds the first such suite must add `ci-amazon.yml` in the same change, or it
-  runs nowhere while every check stays green); `eslint.config.mjs` still lints
-  them and only lets them build raw Firestore refs.
+- `vitest.config.ts` (`pnpm test`, in `ci.yml`'s `CI test`) excludes `*.firestore.test.ts`
+  and `*.tasks.test.ts`; `vitest.tasks.config.ts` (`pnpm test:tasks`) includes exactly those
+  two and runs only in `ci-amazon.yml` (see "CI (step 3)"). A file matching neither glob
+  runs in NO job (`estrutura.test.ts` pins both globs). `eslint.config.mjs` lints both
+  suffixes and only lets them build raw Firestore refs.
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.
 
 ## Routes (steps 2 and 3)
@@ -60,14 +60,110 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   park and the package through `./notificacao` and `../env`; no receiver path calls them, and the
   happy path makes no Amazon call and no Firestore operation (`receptor.test.ts`, `prazos.test.ts`).
 
+## Functions codebase (step 3)
+
+- `functions/` is the nested Cloud Functions codebase `amazon` (NOT a workspace member: this
+  app's tsconfig, `eslint .` and vitest cover it). `build.mjs` esbuild-bundles `src/index.ts`
+  (externals: `firebase-admin*`, `firebase-functions*`; defines `FUNCTIONS_REGION` with no
+  default, `FIREBASE_DATABASE_ID`, `TASKS_INVOKER_SA`); `scripts/prepare-deploy.mjs` writes
+  `.deploy/amazon-functions`. `firebase.amazon.deploy.json` ships INERT: the deploy is W9, by a
+  person, never an agent. `functions/DEPLOY.md` has the prerequisites, the commented-out runtime
+  env and the IAM.
+- `src/index.ts` imports `./options` FIRST and ALONE and exports ONLY triggers:
+  `filaLeituraAmazon` (the reads queue, = `FILA_LEITURA_AMAZON`, asserted at load),
+  `reprocessAmazonNotifications` (both lanes, logged separately), `sweepAmazonExpirations`
+  (the step-2 expiry body, daily, NO secret) and `pollAmazonOrders` (the step-4 backstop poll,
+  `src/pollPedidos.ts`). `index.test.ts` pins every option off `__endpoint`.
+- ONE logger there too: every line is `registrarEventoAmazon(LOGGER_STDOUT_AMAZON, …)` — never
+  `firebase-functions`' `logger` (Loja Integrada's root uses it; do not copy that), never
+  `console.`, never an error message (a failed sweep row by document id only). The package
+  errors reach the task wrapper's own "Unhandled error" log only through the pipeline's
+  sanitizing boundary (`FalhaTarefaAmazonError`). `estrutura.test.ts` widens the `.message`,
+  seller-id, `trechoCorpo`, `testing/` and conta-cache scans to `functions/src`.
+- The two composition roots of the queue, `lib/firebase/filaLeitura.ts` (App Hosting, the
+  receiver) and `functions/src/agendador.ts` (the step-4 poll), are the app's only `getFunctions(`
+  callers; each reads the region as an object literal of STATIC `process.env` reads (esbuild's
+  `define`). `src/tasksInvoker.ts` stays byte-identical to every other codebase's copy.
+
+## CI (step 3)
+
+- The emulator suites run only in `.github/workflows/ci-amazon.yml`: ONE job, `Amazon Cloud
+  Tasks round trip`, behind the pinnable `CI gate (amazon)`. No `ci.yml` exclusion, so a
+  skipped lane loses only the emulator suites. The lane landed in the SAME PR as its first
+  suites (a suite without a lane runs nowhere); a new `*.tasks.test.ts` or
+  `*.firestore.test.ts` now joins the same job with no workflow edit. Editing the workflow →
+  the `ci-lanes` skill; `ci-lane-gates.test.js` pins its emulator command, switch and regions.
+- The job: `prepare-deploy.mjs`, then `firebase emulators:exec --config
+  firebase.amazon.tasks.json --only firestore,functions,tasks` (ports 8087/5005/9502; that
+  file sits ONE DOT from `firebase.amazon.deploy.json`, the only one that deploys), then
+  `pnpm test:tasks`. Run it locally the same way (JDK 21) with the job's env:
+  `FUNCTIONS_REGION` = `AMAZON_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
+  `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `AMAZON_CHAMADAS=off`, a dummy
+  `AMAZON_RELAY_SECRET` of 32+ characters and the placeholder `AMAZON_APPLICATION_ID`. On
+  Windows the Firestore JVM can outlive `emulators:exec` and keep 8087: stop it after.
+- D11 holds in the lane through TWO layers. The job env sets `AMAZON_CHAMADAS: 'off'` (the
+  functions emulator inherits it, so a DISPATCHED function stops at the switch), and
+  `vitest.tasks.setup.ts` refuses to start when the shell has it `on` or an artifact `.env*`
+  file (anchored name) merely names it (`testing/guardaDaLaneDeTarefas.ts`, proved offline).
+  Only code in the vitest process runs past the switch, with `ambiente` `on` as an object
+  literal and an injected `fetch`: the resolve case of `notificacao.firestore.test.ts` (a
+  fake importer, a refusing `fetch`; step-3 plan §3 decision 37) and the poll's two suites
+  (`searchOrders` served by a scripted `deps.fetch`; `pollPedidos.firestore.test.ts`,
+  `functions/src/pollPedidos.tasks.test.ts`).
+- Every suite's `beforeEach` wipes what it reads (one shared emulator, files run serially), a
+  drop is proved by a LATER sentinel row, never by polling for an absence, and an absence only
+  after a positive read. The receiver races its enqueue against 2 s, so
+  `route.tasks.test.ts` warms the Admin SDK and the functions emulator with one unraced enqueue
+  first; a `failed` row with an `enfileiramento/…` reason there means the receiver's own
+  fallback ran (a region mismatch, or that deadline).
+- The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
+  `scheduleDelaySeconds` (firebase-tools#8254), `rateLimits`/`retryConfig` (pinned offline in
+  `functions/src/index.test.ts`), index declarations, rules, the relay, or a trigger's
+  `database` binding.
+
+## Backstop poll (step 4)
+
+- `pollAmazonOrders` (`functions/src/pollPedidos.ts`, `7,22,37,52 * * * *`, 300 s, no retry)
+  binds the deps ONCE per tick; the body is `lib/amazon/pedidos/pollPedidos.ts`. A throw
+  leaves the tick through `sanitizarFalhaDaTarefaAmazon` (the scheduler wrapper logs the
+  message). `index.test.ts` pins tick budget 240 s < timeout 300 s < lease 360 s < the 900-s
+  interval READ off the cron.
+- Two gates, in order, each with ZERO Firestore operations: no importer in the seam (until
+  step 5), then the read switch not exactly `on`. So no poll document, and no bootstrap
+  anchor, can exist before W5.
+- `pollPedidosAmazon/{contaId}`: `cursorMs` (ms, Amazon's `lastUpdatedTime`, capped at the
+  drain's start − 5 min, advance-only, moved only after a COMPLETE drain with every row valid),
+  `pendente` (a stopped drain, resumed byte-identical unless its token is 23 h old), `vistos`
+  (orderId → µs, read straight from Amazon's ISO text; pruned to cursor − 25 min and 2,000),
+  the lease, `falhasSeguidas`. A fresh window starts at cursor − 10 min. Units: never compare
+  `cursorMs` with a `vistos` stamp without converting.
+- A per-conta DEADLINE (min(200 s, what the tick has left) − 20 s), checked before every page
+  and every enqueue: a slow Cloud Tasks ends the run `orcamento-esgotado` with what it handed
+  off written, never killed by the timeout with nothing written. Never remove it.
+- `searchOrders` has exactly ONE caller module (`pedidos/pollPedidos.ts`), across `lib/`,
+  `app/`, `functions/src` and `scripts/` (`estrutura.test.ts`): a second caller spends the
+  poll's ~5 tokens per tick. A W7 verification script must never call it while the poll runs.
+- `amazonImportacaoParada` is raised only after the final write that stored its count LANDED,
+  resolved by the next clean run, and closed by the expiry sweep's orphan pass once the conta
+  is gone (clocked by the conta list's read time; a deactivated conta's row is a residue).
+- **Re-bootstrap (W7, by a person; `functions/DEPLOY.md` has the steps):** a changed H is
+  redeployed FIRST; then a manual lease (`execucaoId` `w7-manual` first, then `emExecucaoAteMs`
+  ahead), re-read after 6 min, delete the three FIELDS `cursorMs`, `pendente` and `vistos`
+  (never the document), release. The next lease anchors now − `AMAZON_POLL_LOOKBACK_H`
+  (functions only, default 24, cap 720, invalid ⇒ `lookback-invalido`). Never "check no
+  lease is held, then delete": a run already holding it re-derives its OLD cursor back over a
+  cursorless doc. Changing H after a conta's first LEASE (whatever that run's outcome) does
+  nothing for it.
+
 ## Layout
 
 - `lib/amazon/` is Next-free except `core/respond.ts`, never imports the `@/`
   alias, and never reads `process.env`: the environment is a PARAMETER
   (`env.ts`), so step 3's functions bundle can import it. `estrutura.test.ts`
   pins all of it.
-- `lib/amazon/avisos/avisos.ts` is the ONLY module that speaks microseconds
-  (three conversion sites, counted by its test).
+- `lib/amazon/avisos/avisos.ts` is the ONLY module that converts a clock to microseconds
+  (three conversion sites, counted by its test). The poll's order stamps are µs read
+  straight from Amazon's ISO text (`pedidos/janelaPoll.ts`), never a converted clock.
 - The conta cache (`core/contaCache.ts`) is token-free and used by the context
   loader ONLY; the credential is re-read uncached on every request.
 - Routes never import the park (`core/estacionamento.ts`); step 3 is its first caller.
@@ -145,8 +241,8 @@ Read by this backend: `AMAZON_LWA_CLIENT_ID`, `AMAZON_APPLICATION_ID`,
 `AMAZON_OAUTH_REDIRECT_URI`, `WEB_APP_URL`, `ALLOWED_ADMIN_ORIGINS`,
 `AMAZON_CHAMADAS`, `FIREBASE_PROJECT_ID` / `FIREBASE_DATABASE_ID` (optional), and
 the Secret Manager pair `AMAZON_LWA_CLIENT_SECRET` / `AMAZON_OAUTH_STATE_SECRET`.
-`AMAZON_LWA_SEGREDO_EXPIRA_EM` is read only by the sweep, which runs in the
-functions codebase from step 3. The receiver (step 3) adds the Secret Manager pair
+`AMAZON_LWA_SEGREDO_EXPIRA_EM` is read only by the expiry sweep, which runs in the
+functions codebase (`sweepAmazonExpirations`). The receiver (step 3) adds the Secret Manager pair
 `AMAZON_RELAY_SECRET` / `AMAZON_RELAY_PREVIOUS_SECRET` (the second only during a
 rotation; each 32–512 visible ASCII, else 503) and, in `lib/firebase/filaLeitura.ts`,
 `AMAZON_TASKS_REGION` (falls back to `FUNCTIONS_REGION`, no default, else 503; trimmed
@@ -160,7 +256,7 @@ no `env:` block.
 - Eight names, all BLANK in the root `.env.example` and COMMENT rows in `apphosting.yaml`
   (never an `env:` row: a baked `off` could override a console flip):
   `AMAZON_MODO_{ESTOQUE,PRECO,NFE,AGENDAMENTO}` and `AMAZON_CANARIO_{ESTOQUE,PRECO,NFE,AGENDAMENTO}`.
-  Step 3's functions env declares the same eight when that codebase is created.
+  The functions codebase's `DEPLOY.md` declares the same eight, commented out.
 - A valve is `off | dry-run | on`: only the exact `on` writes, only the exact `dry-run` diffs,
   anything else is off (nothing trimmed or folded; an unrecognised value logs a WARNING). A
   write also needs `AMAZON_CHAMADAS=on`.
@@ -195,7 +291,11 @@ no `env:` block.
 | Avisos | seam | `escreverAviso` / `resolverAviso`; the reconexão row always clocked (µs) |
 | Receiver, happy path | — | no write (the enqueue is the whole effect) |
 | Receiver failure persist | 0 | the shared core's `create` on the deterministic `push:<NotificationId>`; ALREADY_EXISTS = already durable |
-| Conta cache | — | per-instance invalidate after the callback, and by the intake task before a poll's `vendedor-mudou` drop (then a reload); others bounded by TTL + `isFresh` |
+| Poll failure persist (step 4) | 0 | the same core `create` on `poll:<conta>:<orderId>:<µs>`; ALREADY_EXISTS = already durable |
+| Poll refusal record (step 4) | 1 | `create`, or `update(…, { lastUpdateTime })` never while a lease is held; never the cursor or the lease |
+| Poll lease (step 4) | 1 | `create`, or once EXPIRED `update(…, { lastUpdateTime })`; that update also anchors a cursorless doc (W7) |
+| Poll final write (step 4) | 1 | `update(…, { lastUpdateTime: <lease writeTime> })`; on 9/5 re-read ONCE and RE-DERIVE (max cursor, merged `vistos`, our `pendente` only if `===` on its two scalars; no fold) |
+| Conta cache | — | per-instance invalidate after the callback, by the intake task before a poll's `vendedor-mudou` drop (then a reload), and by the poll before each conta's run; others bounded by TTL + `isFresh` |
 
 This app adds **zero** multi-document atomic-write sites.
 

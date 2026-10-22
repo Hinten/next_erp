@@ -117,9 +117,9 @@ afterAll(() => {
 
 describe('every Cloud Functions bundle loads under firebase-tools trigger analysis', () => {
   it('covers every codebase in the preflight table', () => {
-    // Anti-vacuous: `CODEBASES` is the source of the loop below. Eight today — if
+    // Anti-vacuous: `CODEBASES` is the source of the loop below. Nine today — if
     // it ever came back empty, every per-codebase case would vanish with it.
-    expect(codebases.length).toBeGreaterThanOrEqual(8);
+    expect(codebases.length).toBeGreaterThanOrEqual(9);
   });
 
   // ⚠️ Each case bundles up to ~6 MB with esbuild and then imports it in a child

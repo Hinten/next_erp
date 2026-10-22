@@ -3,7 +3,7 @@
  * Functions codebase is bundled and shipped.
  *
  * Sibling of `env-files.mjs`, which owns the same question for FILES. Both are
- * shared by all eight `prepare-deploy.mjs`, and both fail the predeploy hook
+ * shared by all nine `prepare-deploy.mjs`, and both fail the predeploy hook
  * outright rather than degrading — for the same reason: a deploy artifact is
  * uploaded and run, and a wrong one is discovered in production or not at all.
  *
@@ -31,7 +31,7 @@
  *
  * ## WHERE IT RUNS, AND WHY THAT PLACEMENT
  *
- * From the `predeploy` ARRAY of the eight `firebase.*.deploy.json`, ahead of
+ * From the `predeploy` ARRAY of the nine `firebase.*.deploy.json`, ahead of
  * `prepare-deploy.mjs`. The deploy config is what defines a deploy, so the guard
  * fires exactly when deploying and needs no opt-out flag:
  *
@@ -231,6 +231,35 @@ const CODEBASES = {
     // correctness property, not a tunable), so there is no deploy-shell knob.
     deployShell: {},
     runtimeOverrides: ['LOJA_INTEGRADA_TASKS_REGION'],
+  },
+  amazon: {
+    // ⚠️ Master-plan step 3 (PR 3-d) ships the codebase AND
+    // `firebase.amazon.deploy.json` INERT: nobody has run it, and the deploy
+    // itself is a manual coordinated human step in the migration window (window
+    // item W9, root `CLAUDE.md` rule 8). The row is wired as a real predeploy hook
+    // while still earning its keep offline through `bundle-inlining.test.js` and
+    // `bundle-loads.test.js`, which build every CODEBASES `build.mjs`. Same MP
+    // shape: one region, inherited by every function of the codebase through
+    // `setGlobalOptions`.
+    deployConfig: 'firebase.amazon.deploy.json',
+    buildScript: 'apps/amazon/functions/build.mjs',
+    deployDoc: 'apps/amazon/functions/DEPLOY.md',
+    // FIREBASE_DATABASE_ID: `build.mjs` defines it with `||` (a BLANK export is
+    // `default` too) for `getDb()`; the codebase has no Firestore trigger yet.
+    // The `lists EVERY build.mjs default` test fails a define this list omits.
+    inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
+    tasksRegionVar: 'FUNCTIONS_REGION',
+    // The Shopee shape: the push RECEIVER enqueues from the App Hosting backend
+    // (`apps/amazon/lib/firebase/filaLeitura.ts`), so its region variable must
+    // equal the queue's, and `crossCheckNote` says so on every deploy. The
+    // functions themselves enqueue too from step 4 (the backstop poll), through
+    // the runtime override below.
+    backendVar: 'AMAZON_TASKS_REGION',
+    backendManifest: 'apps/amazon/apphosting.yaml',
+    // The reads queue's `rateLimits` are LITERALS (getOrder's rate), so there is
+    // no deploy-shell knob.
+    deployShell: {},
+    runtimeOverrides: ['AMAZON_TASKS_REGION'],
   },
   nfe: {
     deployConfig: 'firebase.nfe.deploy.json',

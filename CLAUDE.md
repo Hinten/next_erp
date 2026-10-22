@@ -12,7 +12,7 @@ single cutover (rule 8) and never runs beside it. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
-CI — the eleven lanes in `.github/workflows/` run **concurrently**, gated on
+CI — the twelve lanes in `.github/workflows/` run **concurrently**, gated on
 nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
 from the workspace dependency graph and reports through one unskippable check;
 `ci.yml` excludes the nfe/freight/storage/functions/mercado-livre tests, which
@@ -29,9 +29,9 @@ Five rules you must not break without reading it first:
    not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
    GitHub counts as **satisfying** a required check. Both are silent passes.
 2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
-   unique repo-wide. The seventeen pinnable ones are
+   unique repo-wide. The eighteen pinnable ones are
    `E2E gate (cadastros|vendas|emulator)`,
-   `CI gate (nfe|freight|mercado-livre|storage|rules|shopee|loja-integrada)` and — since
+   `CI gate (nfe|freight|mercado-livre|storage|rules|shopee|loja-integrada|amazon)` and — since
    `ci.yml` split its single `lint-typecheck-test` job into seven concurrent
    ones —
    `CI typecheck`, `CI lint`, `CI format check`, `CI test`,
@@ -132,7 +132,7 @@ not "deduplicate" them without changing how required checks are published.
    meets a real Firestore; and `firebase.mercado-livre.tasks.json`,
    firestore+functions+tasks, which serves the ML functions artifact so
    `*.tasks.test.ts` can drive receiver → enqueue → the real `onTaskDispatched`
-   → Firestore), `ci-shopee.yml`/`ci-loja-integrada.yml`
+   → Firestore), `ci-shopee.yml`/`ci-loja-integrada.yml`/`ci-amazon.yml`
    (`firebase.<canal>.tasks.json`, the same round trip), and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
    `*.emulator.e2e.spec.ts`, including catalog flows whose pipeline shapes are
@@ -491,7 +491,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 
 - Firebase backend stays. Node >= 22. Zod is the schema source of truth.
 - **firebase-admin and firebase-functions are pinned EXACT — `14.5.0` and
-  `7.4.0` — in the catalog AND in all eight deploy-artifact manifests, and do not
+  `7.4.0` — in the catalog AND in all nine deploy-artifact manifests, and do not
   lower either below admin v14 / functions 7.3.0.** `apps/functions` needs the v8
   Pipelines API + `FieldValue.maximum/minimum` (a downgrade fails typecheck), and
   7.3.0 is the first firebase-functions whose peer range admits
@@ -505,8 +505,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `firebase-functions@7.3.2` moved `express` from `^4.21.0` to `^5.2.1` (an
   Express **major**, for CVE remediation) in a **patch** release, so under the old
   `^7.3.0` every function deployed after 2026-07-28 ran Express 5 in production
-  while CI still tested Express 4, with no signal anywhere. A bump is now nine
-  deliberate edits — the catalog plus the eight manifests — and
+  while CI still tested Express 4, with no signal anywhere. A bump is now ten
+  deliberate edits — the catalog plus the nine manifests — and
   `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails if they drift
   apart or if either spec regains a range. ⚠️ The `^14` **peerDependencies** in
   `packages/data` and `packages/storage` stay broad; libraries do not pin.

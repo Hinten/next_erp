@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CANAL_AVISO,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
   MOTIVO_REVERSAO_COM_ETIQUETA_LI,
@@ -14,6 +15,7 @@ import {
   avisoReceitaKitShopee,
   avisoSchema,
   motivoFreteNaoSuportadoLiSchema,
+  motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
   motivoPedidoContestadoLiSchema,
   motivoReversaoComEtiquetaLiSchema,
@@ -1530,5 +1532,88 @@ describe('MENSAGENS_POR_TIPO.amazonSegredoLwaRecusado', () => {
     expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_ID (variável de ambiente do backend)');
     expect(mensagem.runbook).toContain('AMAZON_LWA_CLIENT_SECRET (Secret Manager)');
     expect(mensagem.runbook).not.toContain('AMAZON_LWA_CLIENT_ID e AMAZON_LWA_CLIENT_SECRET');
+  });
+});
+
+/**
+ * The step-4 import-stopped tipo of Amazon, rendered with the params its producer
+ * (the backstop poll, `apps/amazon/lib/amazon/pedidos/pollPedidos.ts`, PR 4-a)
+ * writes: `{ loja, motivo }`, `motivo` a `MOTIVO_IMPORTACAO_PARADA_AMAZON` CODE.
+ */
+describe('MENSAGENS_POR_TIPO.amazonImportacaoParada', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.amazonImportacaoParada];
+  const FIM =
+    'Pedidos cuja notificação da Amazon não chegar ficam fora do ERP enquanto isso não se resolver.';
+
+  it('renders the conta and the motivo phrase in their slots', () => {
+    expect(
+      mensagem.corpo({
+        loja: 'Conta A',
+        motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.vendedorDuplicado,
+      }),
+    ).toBe(
+      'A varredura de pedidos da Amazon parou para a conta Conta A: mais de uma conta ativa do ' +
+        'ERP está ligada ao mesmo vendedor da Amazon, e nenhuma delas é lida para não importar ' +
+        `cada pedido duas vezes. ${FIM}`,
+    );
+  });
+
+  it('is TOTAL over the motivo codes: every one has its own phrase, never the fallback', () => {
+    const frases = new Set<string>();
+    for (const motivo of motivoImportacaoParadaAmazonSchema.options) {
+      const corpo = mensagem.corpo({ loja: 'Conta A', motivo });
+      expect(corpo, motivo).not.toContain('confira o registro');
+      expect(corpo, motivo).not.toContain('undefined');
+      expect(corpo, motivo).not.toContain(motivo);
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoImportacaoParadaAmazonSchema.options.length);
+  });
+
+  it('a code newer than this build, a Loja Integrada code, an inherited key or a missing motivo falls back', () => {
+    for (const motivo of [
+      'motivo-do-futuro',
+      MOTIVO_IMPORTACAO_PARADA_LI.janelaInstavel,
+      'toString',
+      '',
+      7,
+    ]) {
+      expect(mensagem.corpo({ loja: 'Conta A', motivo }), String(motivo)).toBe(
+        'A varredura de pedidos da Amazon parou para a conta Conta A: confira o registro da ' +
+          `varredura de pedidos. ${FIM}`,
+      );
+    }
+    expect(mensagem.corpo({})).toBe(
+      'A varredura de pedidos da Amazon parou para a conta —: confira o registro da varredura ' +
+        `de pedidos. ${FIM}`,
+    );
+  });
+
+  it('renders the producer plano as stored', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.amazonImportacaoParada,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.amazon,
+      params: { loja: 'Conta A', motivo: MOTIVO_IMPORTACAO_PARADA_AMAZON.semPermissao },
+      urlInterna: { rota: ROTAS_AVISO.canalAmazon.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_654_321,
+    });
+    expect(aviso.severidade).toBe(SEVERIDADE_AVISO.critico);
+    expect(aviso.urlInterna?.rota).toBe('/canais/amazon/int-1');
+    expect(mensagem.corpo(aviso.params)).toBe(
+      'A varredura de pedidos da Amazon parou para a conta Conta A: a Amazon negou acesso à ' +
+        'lista de pedidos mesmo com um token renovado (falta permissão de pedidos ao aplicativo ' +
+        `ou à autorização da conta). ${FIM}`,
+    );
+  });
+
+  it('is titled like its label, with a runbook for every remedy outside the poll', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.amazonImportacaoParada);
+    expect(mensagem.runbook).toContain('reconecte a conta pelo painel de conexão da conta');
+    // A stored seller id outside its grammar has the credential's remedy.
+    expect(mensagem.runbook).toContain('o vendedor gravado na conta, reconecte a conta');
+    expect(mensagem.runbook).toContain('desative a que sobra');
+    expect(mensagem.runbook).toContain('AMAZON_POLL_LOOKBACK_H');
+    expect(mensagem.runbook).toContain('registro da varredura de pedidos');
   });
 });

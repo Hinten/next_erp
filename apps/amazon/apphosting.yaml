@@ -4,8 +4,9 @@
 # Firebase Admin init, the CORS proxy, the conta status route, the OAuth start
 # route and the public OAuth callback. Step 3 adds the public push receiver
 # (`POST /api/webhooks/amazon`, called by the AWS relay), which enqueues onto the
-# nested functions codebase's reads queue. The Firestore-backed flows and the
-# backstop poll arrive in later steps.
+# nested functions codebase's reads queue. The step-4 backstop poll runs in that
+# functions codebase, not here; the other Firestore-backed flows arrive in later
+# steps.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -94,6 +95,11 @@ runConfig:
 #                                runs in the nested functions codebase (step 3),
 #                                which reads it from its own deploy env. Listed so
 #                                nobody sets it here expecting an effect.
+#   AMAZON_POLL_LOOKBACK_H       NOT read by this backend either: the backstop poll's
+#                                look-back (step 4) is FUNCTIONS ONLY, set in the
+#                                functions `.env.deploy` (window item W7). Never an
+#                                `env:` row here: nothing would read it, and a blank
+#                                `value: ''` row rejects the whole manifest.
 #
 # The write valves and canary lists (`lib/amazon/core/valvulas.ts`, step 2b). No
 # write flow reads them yet. Every one stays UNSET until the migration window

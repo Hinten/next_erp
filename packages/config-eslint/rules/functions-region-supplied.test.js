@@ -58,8 +58,9 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
  * string stopped identifying the variable.** `test:tasks` is a script NAME, not a
  * lane: `ci-mercado-livre.yml` runs `@delfrance/mercado-livre-app`'s and reads
  * `MERCADO_LIVRE_TASKS_REGION`, `ci-shopee.yml` runs `@delfrance/shopee-app`'s and
- * reads `SHOPEE_TASKS_REGION`, and `ci-loja-integrada.yml` runs
- * `@delfrance/loja-integrada-app`'s and reads `LOJA_INTEGRADA_TASKS_REGION`.
+ * reads `SHOPEE_TASKS_REGION`, `ci-loja-integrada.yml` runs
+ * `@delfrance/loja-integrada-app`'s and reads `LOJA_INTEGRADA_TASKS_REGION`, and
+ * `ci-amazon.yml` runs `@delfrance/amazon-app`'s and reads `AMAZON_TASKS_REGION`.
  * Without a scope the rows would each demand EVERY channel's variable of EVERY
  * job, so every lane would have to set a region belonging to another channel's
  * enqueuer — a value that is read nowhere and reads to the next person as if it
@@ -95,6 +96,11 @@ const REGION_COMMANDS = [
     variable: 'LOJA_INTEGRADA_TASKS_REGION',
     filter: '@delfrance/loja-integrada-app',
   },
+  {
+    command: 'test:tasks',
+    variable: 'AMAZON_TASKS_REGION',
+    filter: '@delfrance/amazon-app',
+  },
   { command: 'playwright test', variable: 'NEXT_PUBLIC_FUNCTIONS_REGION' },
 ];
 
@@ -106,6 +112,7 @@ const REGION_COMMANDS = [
  */
 const KNOWN_BUILDERS = [
   '.github/workflows/ci.yml',
+  '.github/workflows/ci-amazon.yml',
   '.github/workflows/ci-loja-integrada.yml',
   '.github/workflows/ci-mercado-livre.yml',
   '.github/workflows/ci-shopee.yml',
