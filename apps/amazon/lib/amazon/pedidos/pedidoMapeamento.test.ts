@@ -16,6 +16,7 @@ import {
   type OpcoesLinhaTeste,
   type OpcoesPedidoTeste,
 } from '../testing/pedidoWireAmazon';
+import { EVENTO_PEDIDO_AMAZON } from './codigosPedidoAmazon';
 import { PedidoAmazonIlegivelError } from './erros';
 import { PREFIXO_ERRO_AMAZON } from './estadoPedidoAmazon';
 import {
@@ -1036,6 +1037,76 @@ describe('cancelado-so-no-erp and the resurrection refinement (2026-10-22)', () 
     const igual = montar(amazonCancelou, { linhas: DUAS });
     expect(Object.hasOwn(patchDe(igual), 'estado')).toBe(false);
     expect(decisao(igual)).toMatchObject({ motivoEstado: 'terminal', avisos: [] });
+  });
+});
+
+describe('unreadable stored data never drives the order total', () => {
+  /** `doc` with line `id`'s price replaced by a value the item schema refuses. */
+  const comLinhaIlegivel = (doc: Doc, id: string): Doc => {
+    const itens = structuredClone(doc.itens) as Record<string, Doc[]>;
+    for (const lista of Object.values(itens)) {
+      for (const linha of lista) if (linha.mktplaceId === id) linha.precoDeVenda = 'ilegivel';
+    }
+    return { ...doc, itens };
+  };
+  /** `doc` with its `amz` freight block refused by the freight schema (an unknown estado). */
+  const comFreteIlegivel = (doc: Doc): Doc => ({
+    ...doc,
+    freteInicial: { ...(doc.freteInicial as Doc), estado: 'estado-desconhecido' },
+  });
+  const comDuasEFrete = (frete: string) => [
+    linhaAmazon('L1', {
+      qtd: 2,
+      preco: '10.00',
+      quebras: [{ type: 'SHIPPING', subtotal: brl(frete) }],
+    }),
+    linhaAmazon('L2', { qtd: 1, preco: '5.00' }),
+  ];
+
+  it('a stored line the schema refuses: the mirror writes no total, no discount and no freight money; NEAR-MISS: readable lines write all of it', () => {
+    const guardado = criado({ status: 'PENDING', linhas: comDuasEFrete('8.00') });
+    const legivel = patchDe(montar(guardado, { status: 'PENDING', linhas: comDuasEFrete('9.00') }));
+    expect(legivel.valorCobrado).toBe(34);
+    expect(legivel.freteInicial).toMatchObject({ valorCobrado: 9 });
+
+    const r = montar(comLinhaIlegivel(guardado, 'L2'), {
+      status: 'PENDING',
+      linhas: comDuasEFrete('9.00'),
+    });
+    const p = r.tipo === 'atualizar' ? r.patch : {};
+    expect(Object.hasOwn(p, 'valorCobrado')).toBe(false);
+    expect(Object.hasOwn(p, 'descontoTotal')).toBe(false);
+    expect(freteDepois(r, 8)).toBe(8);
+    expect(decisao(r).eventos).toContain(EVENTO_PEDIDO_AMAZON.itensArmazenadosIlegiveis);
+  });
+
+  it('a stored line the schema refuses: an approved order whose stored-null freight would be filled writes no total either; NEAR-MISS: readable lines fill it', () => {
+    const guardado = criado({ linhas: DUAS });
+    const legivel = patchDe(montar(guardado, { linhas: comDuasEFrete('7.00') }));
+    expect(legivel.valorCobrado).toBe(32);
+
+    const r = montar(comLinhaIlegivel(guardado, 'L2'), { linhas: comDuasEFrete('7.00') });
+    const p = r.tipo === 'atualizar' ? r.patch : {};
+    expect(Object.hasOwn(p, 'valorCobrado')).toBe(false);
+    expect(Object.hasOwn(p, 'descontoTotal')).toBe(false);
+    expect((p.freteInicial as Doc | undefined)?.valorCobrado ?? null).toBeNull();
+  });
+
+  it('an amz freight block the schema refuses is not rewritten, and the total keeps the STORED freight; NEAR-MISS: a readable block takes the new freight in both places', () => {
+    const guardado = criado({ status: 'PENDING', linhas: comDuasEFrete('8.00') });
+    expect(guardado.valorCobrado).toBe(33);
+    const legivel = patchDe(montar(guardado, { status: 'PENDING', linhas: comDuasEFrete('9.00') }));
+    expect(legivel.freteInicial).toMatchObject({ valorCobrado: 9 });
+    expect(legivel.valorCobrado).toBe(34);
+
+    const r = montar(comFreteIlegivel(guardado), {
+      status: 'PENDING',
+      linhas: comDuasEFrete('9.00'),
+    });
+    const p = r.tipo === 'atualizar' ? r.patch : {};
+    expect(Object.hasOwn(p, 'freteInicial')).toBe(false);
+    expect(Object.hasOwn(p, 'valorCobrado')).toBe(false);
+    expect(decisao(r).eventos).toContain(EVENTO_PEDIDO_AMAZON.freteArmazenadoIlegivel);
   });
 });
 
