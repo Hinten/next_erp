@@ -1663,10 +1663,10 @@ describe('MENSAGENS_POR_TIPO.amazonPedidoPrecisaAtencao', () => {
     });
     expect(corpo).toContain('de um pedido que já foi impresso');
     expect(corpo).toContain('Aceite o cancelamento no Seller Central');
-    // Both resolvers of the tipo's docblock: the cancellation executed, or no
-    // request left (the seller declined it).
+    // The three resolvers of the tipo's docblock: the cancellation executed, the
+    // order shipped, or no request left (the seller declined it).
     expect(corpo).toContain(
-      'quando a Amazon registrar o cancelamento ou quando não houver mais pedido de cancelamento aberto',
+      'quando a Amazon registrar o cancelamento ou o envio, ou quando não houver mais pedido de cancelamento aberto',
     );
     // The params carry only the CODE, and the NF-e and label steps raise it too
     // WITHOUT cancelling the pedido: the phrase must not claim the ERP cancelled

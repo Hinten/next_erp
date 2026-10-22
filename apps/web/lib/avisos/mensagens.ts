@@ -498,7 +498,8 @@ const FRASE_MOTIVO_PEDIDO_AMAZON: Record<MotivoPedidoAmazon, string> = {
   [MOTIVO_PEDIDO_AMAZON.logisticaDesconhecida]:
     'a Amazon não informou quem faz a entrega (o vendedor ou a própria Amazon), então o ERP não ' +
     'sabe se este pedido deve ser separado e enviado daqui. Confira no Seller Central quem ' +
-    'atende o pedido antes de enviar; o aviso se encerra quando a Amazon informar',
+    'atende o pedido antes de enviar; o aviso se encerra quando a Amazon informar, ou se o ' +
+    'pedido for cancelado',
   // ⚠️ Dois produtores gravam este código: a importação (um pedido impresso que
   // ela marca como cancelado) e, mais tarde, os passos de NF-e e de etiqueta
   // (que recusam um pedido com pedido de cancelamento aberto, sem cancelá-lo).
@@ -506,8 +507,8 @@ const FRASE_MOTIVO_PEDIDO_AMAZON: Record<MotivoPedidoAmazon, string> = {
   [MOTIVO_PEDIDO_AMAZON.aceitarCancelamento]:
     'o comprador pediu o cancelamento de um pedido que já foi impresso. Aceite o cancelamento ' +
     'no Seller Central — enquanto isso, a Amazon continua esperando o envio; o aviso se ' +
-    'encerra quando a Amazon registrar o cancelamento ou quando não houver mais pedido de ' +
-    'cancelamento aberto',
+    'encerra quando a Amazon registrar o cancelamento ou o envio, ou quando não houver mais ' +
+    'pedido de cancelamento aberto',
   [MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp]:
     'o pedido está cancelado no ERP, mas a Amazon ainda espera o envio e não há pedido de ' +
     'cancelamento aberto (o cancelamento foi recusado no Seller Central, ou o pedido foi ' +
@@ -521,7 +522,8 @@ const FRASE_MOTIVO_PEDIDO_AMAZON: Record<MotivoPedidoAmazon, string> = {
   [MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado]:
     'o comprador pediu o cancelamento, e o pedido ainda não foi impresso. Decida no Seller ' +
     'Central se aceita o cancelamento antes de imprimir ou enviar o pedido; o aviso se encerra ' +
-    'quando o pedido de cancelamento for aceito ou recusado',
+    'quando o pedido de cancelamento for aceito ou recusado, ou, se o pedido for impresso ' +
+    'antes disso, passa a pedir que você aceite o cancelamento',
   [MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido]:
     'a Amazon enviou uma situação de pacote que o ERP não conhece, e o frete do pedido não foi ' +
     'atualizado por ela. Confira o envio no Seller Central; o aviso se encerra quando a Amazon ' +

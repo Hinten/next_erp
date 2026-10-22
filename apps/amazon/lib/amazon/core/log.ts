@@ -98,8 +98,11 @@ export interface LoggerAmazon {
  * read at the start of a run (`valvulas.ts`), a reads-queue task (step 3: its
  * one dispatch line, and the intake's own refusals), a reprocess sweep lane
  * (step 3), a push delivery at the receiver (step 3: one line per delivery),
- * the backstop poll (step 4: one line per conta run, and the tick's gate) or
- * the conta trigger (step 20: one line per `int_frete` reconcile).
+ * the backstop poll (step 4: one line per conta run, and the tick's gate), the
+ * conta trigger (step 20: one line per `int_frete` reconcile) or the order
+ * import (step 5: its own WARNING lines — a stale read accepted, a lost
+ * precondition, a recent-cancel wait, the decision's closed log codes — ids,
+ * counts and closed codes only).
  */
 export type EventoAmazon =
   | 'chamada'
@@ -109,7 +112,8 @@ export type EventoAmazon =
   | 'varredura'
   | 'notificacao'
   | 'poll'
-  | 'int-frete';
+  | 'int-frete'
+  | 'pedido';
 
 /** What a NON-call line is about: `chamada` is written by the observer alone. */
 export type EventoAvulsoAmazon = Exclude<EventoAmazon, 'chamada'>;
@@ -123,6 +127,7 @@ const EVENTOS_AVULSOS: Readonly<Record<EventoAvulsoAmazon, true>> = {
   notificacao: true,
   poll: true,
   'int-frete': true,
+  pedido: true,
 };
 
 /** The body excerpt's cap, in UTF-8 bytes, applied AFTER the regex layer. */

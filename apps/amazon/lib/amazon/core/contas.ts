@@ -45,6 +45,12 @@ export interface ContaAmazonLida {
   readonly conta: Integracao;
   /** The document's `updateTime` — the `lastUpdateTime` of a write decided on this read. */
   readonly updateTime: Timestamp;
+  /**
+   * The read's own `readTime` — WHEN this observation of the conta was true, on
+   * the server timeline. The order import clocks the per-conta avisos with it
+   * (step 5), the timeline the expiry sweep's conta enumeration shares.
+   */
+  readonly readTime: Timestamp;
 }
 
 /**
@@ -69,7 +75,7 @@ export async function lerContaAmazon(
     // write on no stamp at all.
     throw new Error(`lerContaAmazon(${integracaoId}): documento existente sem updateTime`);
   }
-  return { conta, updateTime };
+  return { conta, updateTime, readTime: snap.readTime };
 }
 
 /**
