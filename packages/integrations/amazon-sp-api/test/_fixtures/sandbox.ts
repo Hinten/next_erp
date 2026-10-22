@@ -39,6 +39,29 @@
  *    value kept is the model's, byte for byte. The app's sanitized copy of the
  *    same example is `apps/amazon`'s `sb-searchorders-br.json`, which this
  *    package cannot read.
+ *  - `getOrder200` — orders `getOrder` 200 static[0], the BR example (step 5),
+ *    REDUCED by the same rule to a KEPT list: per order `orderId`,
+ *    `createdTime`, `lastUpdatedTime`, `programs`, `salesChannel`,
+ *    `proceeds.grandTotal` and the `fulfillment` block (status fields and the
+ *    three windows); per item `orderItemId`, `quantityOrdered`, the `product`'s
+ *    `sellerSku`, `condition` and `price`, the item `proceeds` and its
+ *    `fulfillment` quantities. Dropped: `orderAliases`, the `buyer` and
+ *    `recipient` blocks, the item's `asin`, `title` (a brand), `promotion` and
+ *    `packing` (a gift message). The order id, the order-item id and the SKU
+ *    take the SAME fakes the app's sanitizer gave this example in
+ *    `sb-getorder-br.json` (`000-0000000-2412538`, `00000253581152`,
+ *    `SKU-Z3b3175ec`).
+ *  - `searchOrders200ComPacotes` — orders `searchOrders` 200 static[1], a UK
+ *    example and the ONLY model example carrying `packages` (step 5's package
+ *    rows), reduced the same way: per order the fields `searchOrders200` keeps;
+ *    per item `orderItemId`, `quantityOrdered`, `measurement`, the `product`'s
+ *    `condition` and `price` and the `fulfillment` quantities; per package
+ *    `packageReferenceId`, `createdTime`, `packageStatus`, `shipTime`,
+ *    `trackingNumber` and `packageItems` (id and quantity). Dropped: the
+ *    `buyer` / `recipient` blocks, the product `asin` / `title` / `sellerSku`
+ *    (brands), the substitution options, the carrier and service names, the
+ *    ship-from address and the transparency codes. Every id is a FAKE shape
+ *    (order, line, package reference, tracking number).
  *
  * The LWA token response is the shape of the example on
  * D:connecting-to-the-selling-partner-api (`token_type: 'bearer'`,
@@ -147,6 +170,96 @@ export const searchOrders200 = {
     },
   ],
   createdBefore: '2024-12-22T16:00:00Z',
+} as const;
+
+export const getOrder200 = {
+  order: {
+    orderId: '000-0000000-2412538',
+    createdTime: '2024-12-24T20:30:00Z',
+    lastUpdatedTime: '2024-12-25T08:15:00Z',
+    programs: ['PRIME'],
+    salesChannel: {
+      channelName: 'AMAZON',
+      marketplaceId: 'A2Q3Y263D00KWC',
+      marketplaceName: 'Amazon.com.br',
+    },
+    proceeds: { grandTotal: { amount: '299.90', currencyCode: 'BRL' } },
+    fulfillment: {
+      fulfillmentStatus: 'UNSHIPPED',
+      fulfilledBy: 'MERCHANT',
+      fulfillmentServiceLevel: 'STANDARD',
+      shipByWindow: {
+        earliestDateTime: '2024-12-26T00:00:00Z',
+        latestDateTime: '2024-12-27T23:59:59Z',
+      },
+      deliverByWindow: {
+        earliestDateTime: '2024-12-28T00:00:00Z',
+        latestDateTime: '2024-12-31T23:59:59Z',
+      },
+      labelPrintingWindow: { earliestDateTime: '2024-12-26T17:00:00Z' },
+    },
+    orderItems: [
+      {
+        orderItemId: '00000253581152',
+        quantityOrdered: 1,
+        product: {
+          sellerSku: 'SKU-Z3b3175ec',
+          condition: { conditionType: 'NEW', conditionSubtype: 'NEW', conditionNote: '' },
+          price: { unitPrice: { amount: '299.90', currencyCode: 'BRL' } },
+        },
+        proceeds: {
+          proceedsTotal: { amount: '299.90', currencyCode: 'BRL' },
+          breakdowns: [{ type: 'ITEM', subtotal: { amount: '299.90', currencyCode: 'BRL' } }],
+        },
+        fulfillment: { quantityFulfilled: 0, quantityUnfulfilled: 1 },
+      },
+    ],
+  },
+} as const;
+
+export const searchOrders200ComPacotes = {
+  orders: [
+    {
+      orderId: '000-0000000-0000202',
+      createdTime: '2024-12-24T14:20:00Z',
+      lastUpdatedTime: '2024-12-24T18:45:00Z',
+      programs: ['PRIME'],
+      salesChannel: {
+        channelName: 'AMAZON',
+        marketplaceId: 'A1F83G8C2ARO7P',
+        marketplaceName: 'Amazon.co.uk',
+      },
+      proceeds: { grandTotal: { amount: '34.99', currencyCode: 'GBP' } },
+      fulfillment: {
+        fulfillmentStatus: 'SHIPPED',
+        fulfilledBy: 'MERCHANT',
+        fulfillmentServiceLevel: 'STANDARD',
+      },
+      orderItems: [
+        {
+          orderItemId: '00000000000202',
+          quantityOrdered: 1,
+          measurement: { unit: 'COUNT', value: 1 },
+          product: {
+            condition: { conditionType: 'NEW', conditionSubtype: 'NEW', conditionNote: '' },
+            price: { unitPrice: { amount: '34.99', currencyCode: 'GBP' } },
+          },
+          fulfillment: { quantityFulfilled: 1, quantityUnfulfilled: 0 },
+        },
+      ],
+      packages: [
+        {
+          packageReferenceId: 'PKG-Z00000202',
+          createdTime: '2024-12-24T19:00:00Z',
+          packageStatus: { status: 'IN_TRANSIT', detailedStatus: 'OUT_FOR_DELIVERY' },
+          shipTime: '2024-12-25T14:00:00Z',
+          trackingNumber: 'TRKZ0000000202',
+          packageItems: [{ orderItemId: '00000000000202', quantity: 1 }],
+        },
+      ],
+    },
+  ],
+  createdBefore: '2024-12-24T15:00:00Z',
 } as const;
 
 /* -------------------------------------------------------------------------- */

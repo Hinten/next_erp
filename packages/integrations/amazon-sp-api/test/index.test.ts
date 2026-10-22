@@ -8,6 +8,17 @@ describe('the constants', () => {
     expect(barril.URL_TOKEN_LWA).toBe('https://api.amazon.com/auth/o2/token');
     expect(barril.MARKETPLACE_ID_BR).toBe('A2Q3Y263D00KWC');
     expect(barril.CAMINHO_SEARCH_ORDERS).toBe('/orders/2026-01-01/orders');
+    expect(barril.OPERACAO_GET_ORDER).toBe('getOrder');
+    expect([...barril.DADOS_INCLUIDOS_GET_ORDER]).toEqual([
+      'BUYER',
+      'RECIPIENT',
+      'TAX',
+      'PAYMENT',
+      'PROCEEDS',
+      'FULFILLMENT',
+      'PACKAGES',
+      'CANCELLATION',
+    ]);
     expect(barril.MAX_USER_AGENT).toBe(500);
     expect(barril.MAX_REF_CREDENCIAL).toBe(64);
   });
@@ -25,6 +36,8 @@ describe('the barrel', () => {
       'credencialLwaValida',
       'applicationIdValido',
       'buscarPedidosAtualizados',
+      'buscarPedido',
+      'caminhoGetOrder',
     ] as const) {
       expect(typeof barril[nome], nome).toBe('function');
     }
@@ -33,6 +46,11 @@ describe('the barrel', () => {
       'lwaErroSchema',
       'spApiErrosSchema',
       'respostaSearchOrdersSchema',
+      'respostaGetOrderSchema',
+      'pedidoWireAmazonSchema',
+      'itemPedidoWireAmazonSchema',
+      'pacoteWireAmazonSchema',
+      'dinheiroWireAmazonSchema',
     ] as const) {
       expect(typeof barril[nome].safeParse, nome).toBe('function');
     }

@@ -1,9 +1,14 @@
 /**
- * Orders v2026-01-01 `searchOrders` — the ONE list read the backstop poll
- * makes (`apps/amazon/lib/amazon/pedidos/pollPedidos.ts`, step 4). Written from
- * the model (`amzn/selling-partner-api-models`, `orders_2026-01-01.json`,
- * printed by `node .master_plans/amazon/evidence/amazon-doc.mjs op searchOrders`)
- * and the model's own BR sandbox example — never from a live call (D11).
+ * Orders v2026-01-01: `searchOrders` — the ONE list read the backstop poll
+ * makes (`apps/amazon/lib/amazon/pedidos/pollPedidos.ts`, step 4) — and
+ * `getOrder` — the ONE order read the importer (step 5, PR 5-d) will make; its
+ * section is at the end of this file. Written from the model
+ * (`amzn/selling-partner-api-models`, `orders_2026-01-01.json`, printed by
+ * `node .master_plans/amazon/evidence/amazon-doc.mjs op searchOrders` / `op
+ * getOrder`) and the model's own sandbox examples — never from a live call
+ * (D11).
+ *
+ * # `searchOrders`
  *
  * ## The response schema reads the PAGE, never a row
  *
@@ -50,6 +55,7 @@
 import { z } from 'zod';
 
 import type { RespostaSpApi, SpApiLeituraClient } from './client';
+import { pedidoWireAmazonSchema } from './types';
 
 /** The operation's path: Orders v2026-01-01, the order LIST (no id segment). */
 export const CAMINHO_SEARCH_ORDERS = '/orders/2026-01-01/orders';
@@ -110,5 +116,95 @@ export function buscarPedidosAtualizados(
     query,
     schema: respostaSearchOrdersSchema,
     sinal: filtro.sinal,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       getOrder (master plan step 5)                        */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * One order, re-fetched by id: the importer never trusts a push or a poll row
+ * for data (D5), it reads THIS.
+ *
+ * ## The request sends EXACTLY one query key
+ *
+ * {@link buscarPedido} builds its query from ONE named key, `includedData` —
+ * {@link DADOS_INCLUIDOS_GET_ORDER} joined with `,` into ONE value (the model
+ * declares the parameter as an array with no `collectionFormat`, Swagger 2's
+ * CSV; `client.ts` encodes the comma as `%2C`) — never a spread of the
+ * caller's object. `getOrder` takes no `marketplaceIds`.
+ *
+ * ## The response schema
+ *
+ * `{ order }`, the order being `pedidoWireAmazonSchema` (`types.ts`, whose
+ * section header says what is strict and why). The client reads it through
+ * `lerRespostaJson`, so a 2xx outside it is the client's `AmazonSchemaError`
+ * (field paths only, never a value).
+ *
+ * Usage plan (the model's table): 0.5 requests per second, burst 30.
+ */
+
+/** The model's `operationId`, the call's label on the observer's event. */
+export const OPERACAO_GET_ORDER = 'getOrder';
+
+/**
+ * The datasets every production `getOrder` requests, in this order (the
+ * master plan's eight; step 5–7 plan §3 decision 25). `FULFILLMENT_ORDERS`
+ * (Easy Ship / Seller Flex only), `EXPENSE` (points) and `PROMOTION` (ids only)
+ * stay out until a step reads them: each would add an unread dataset to every
+ * call. A capture may request all eleven; production never does.
+ */
+export const DADOS_INCLUIDOS_GET_ORDER = Object.freeze([
+  'BUYER',
+  'RECIPIENT',
+  'TAX',
+  'PAYMENT',
+  'PROCEEDS',
+  'FULFILLMENT',
+  'PACKAGES',
+  'CANCELLATION',
+] as const);
+
+/**
+ * The operation's path for one order. The id is encoded as one segment, so an
+ * id carrying a `/`, a `?` or a `..` cannot leave it: `client.ts` refuses the
+ * encoded separator (`AmazonConfigError('caminho')`) before anything is sent.
+ * The 3-7-7 grammar itself is the app's to check.
+ */
+export function caminhoGetOrder(orderId: string): string {
+  return `/orders/2026-01-01/orders/${encodeURIComponent(orderId)}`;
+}
+
+/** One `getOrder` response (section header). */
+export const respostaGetOrderSchema = z
+  .object({
+    order: pedidoWireAmazonSchema,
+  })
+  .passthrough();
+
+export type RespostaGetOrder = z.infer<typeof respostaGetOrderSchema>;
+
+/** What one `getOrder` call may carry besides the order id: the caller's cancellation. */
+export interface OpcoesGetOrder {
+  readonly sinal?: AbortSignal;
+}
+
+/**
+ * One `getOrder` through the read-only client: the fixed datasets, ONE query
+ * key (section header). Every error is the client's (`errors.ts`), redirects
+ * included (never followed).
+ */
+export function buscarPedido(
+  cliente: SpApiLeituraClient,
+  orderId: string,
+  opts?: OpcoesGetOrder,
+): Promise<RespostaSpApi<RespostaGetOrder>> {
+  return cliente.get({
+    operacao: OPERACAO_GET_ORDER,
+    caminho: caminhoGetOrder(orderId),
+    query: { includedData: DADOS_INCLUIDOS_GET_ORDER.join(',') },
+    schema: respostaGetOrderSchema,
+    sinal: opts?.sinal,
   });
 }
