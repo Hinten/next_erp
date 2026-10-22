@@ -27,7 +27,9 @@ export function mockFetch(factory: (...args: FetchArgs) => Response | Promise<Re
 
 /**
  * Every request any mock in this file's suite saw, so one `afterEach` can assert
- * the package's structural promise over ALL of them: a `GET` with no body.
+ * the package's structural promise over ALL of them: on the read side a `GET`
+ * with no body ({@link verificarSoGet}); on the write side the shapes
+ * {@link verificarMetodos} allows.
  */
 const vistas: RequestInit[] = [];
 
@@ -48,6 +50,61 @@ export function verificarSoGet(): void {
       `${String(fora.length)} de ${String(total)} requisição(ões) não foram GET sem corpo.`,
     );
   }
+}
+
+/** The verbs a write-side test file may allow. */
+export type MetodoPermitido = 'GET' | 'PUT';
+
+/** Whether `texto` is the JSON text of one plain object (a request body we send). */
+function objetoJson(texto: string): boolean {
+  let valor: unknown;
+  try {
+    valor = JSON.parse(texto);
+  } catch (err) {
+    if (err instanceof SyntaxError) return false;
+    throw err;
+  }
+  return typeof valor === 'object' && valor !== null && !Array.isArray(valor);
+}
+
+/**
+ * Whether one request has exactly the shape the package promises for its verb:
+ * a `GET` with no body and no `Content-Type`; a `PUT` whose body is the JSON
+ * text of one object, sent as `Content-Type: application/json`. Both with
+ * `redirect: 'manual'`.
+ */
+function formaPermitida(init: RequestInit, permitidos: readonly MetodoPermitido[]): boolean {
+  const metodo = init.method;
+  if (metodo !== 'GET' && metodo !== 'PUT') return false;
+  if (!permitidos.includes(metodo) || init.redirect !== 'manual') return false;
+  const headers = new Headers(init.headers);
+  if (metodo === 'GET') return init.body == null && !headers.has('content-type');
+  return (
+    typeof init.body === 'string' &&
+    objetoJson(init.body) &&
+    headers.get('content-type') === 'application/json'
+  );
+}
+
+/**
+ * `afterEach(verificarMetodos(['GET', 'PUT']))`, for the WRITE side only: every
+ * request the test made was one of the allowed verbs, in exactly the shape
+ * {@link formaPermitida} describes. Clears the record for the next test.
+ *
+ * ⚠️ The read-side files keep {@link verificarSoGet}: widening them to this
+ * helper would let a body slip into a read.
+ */
+export function verificarMetodos(permitidos: readonly MetodoPermitido[]): () => void {
+  return () => {
+    const fora = vistas.filter((init) => !formaPermitida(init, permitidos));
+    const total = vistas.length;
+    vistas.length = 0;
+    if (fora.length > 0) {
+      throw new Error(
+        `${String(fora.length)} de ${String(total)} requisição(ões) fora da forma de ${permitidos.join('/')}.`,
+      );
+    }
+  };
 }
 
 /** A JSON response. */
