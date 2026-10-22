@@ -42,7 +42,12 @@
  *    the credential modules, and no text that names `fetch` at all, loads code
  *    dynamically, fetches a builtin at run time or reaches a global by a computed
  *    name; every external module it imports is on a short allow-list; and the
- *    committed corpus keeps its `.prettierignore` and `.gitattributes` lines.
+ *    committed corpus keeps its `.prettierignore` and `.gitattributes` lines;
+ *  - (step 3, PR 3-d) the nested functions codebase (`functions/src`) is the
+ *    first production surface outside `lib/` and `app/`, so the `.message`,
+ *    seller-id, `trechoCorpo`, `testing/` and conta-cache scans read it too; and
+ *    there the app keeps ONE logger: no `firebase-functions` logger import, no
+ *    `console.`, and every line written through `LOGGER_STDOUT_AMAZON`.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -71,6 +76,20 @@ function arquivosTs(dir: string): string[] {
 const rel = (p: string) => relative(RAIZ_LIB, p).split(sep).join('/');
 const relApp = (p: string) => relative(RAIZ_APP, p).split(sep).join('/');
 const ehTeste = (p: string) => p.endsWith('.test.ts');
+
+/** The nested functions codebase's sources (PR 3-d): a production surface outside `lib/` and `app/`. */
+const RAIZ_FUNCOES = join(RAIZ_APP, 'functions', 'src');
+
+/** Its PRODUCTION files (tests excluded), absolute. */
+const fontesDasFuncoes = () => arquivosTs(RAIZ_FUNCOES).filter((p) => !ehTeste(p));
+
+/** Every PRODUCTION file under `lib/amazon`, `app/` and `functions/src`, absolute. */
+const fontesDeProducaoDoApp = () =>
+  [
+    ...arquivosTs(RAIZ_LIB),
+    ...arquivosTs(join(RAIZ_APP, 'app')),
+    ...arquivosTs(RAIZ_FUNCOES),
+  ].filter((p) => !ehTeste(p));
 
 /** The source without its comments (the TypeScript printer), so prose cannot trip a code rule. */
 function semComentarios(texto: string): string {
@@ -479,7 +498,7 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
     .sort();
 }
 
-/** The App Hosting composition root of the reads queue (3-c): the app's one `getFunctions(` caller until 3-d. */
+/** The App Hosting composition root of the reads queue (3-c): one of the app's two `getFunctions(` callers. */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
 
 /** The push receiver's route and body, relative to the app root (3-c). */
@@ -513,6 +532,96 @@ function importacoesProibidasNoReceptor(arquivo: string, texto: string): string[
 
 /** A CALL of the Admin SDK's `getFunctions` (comments aside): only a composition root binds the queue. */
 const chamaGetFunctions = (texto: string) => /\bgetFunctions\s*\(/.test(semComentarios(texto));
+
+/** The functions codebase's composition root of the reads queue (3-d): the app's other `getFunctions(` caller. */
+const ARQUIVO_RAIZ_DA_FILA_FUNCOES = 'functions/src/agendador.ts';
+
+/* --------------------- step 3 (3-d): the functions codebase --------------------- */
+
+/**
+ * Does a source import the test doubles or fixtures (`lib/amazon/testing/…`), by
+ * any path — relative, `@/`, or a dynamic `import()`? Production code never
+ * does: a fake Firestore in the deploy bundle is a fake Firestore in production.
+ */
+const importaDoublesDeTeste = (texto: string) =>
+  especificadores(texto).some((espec) => /(?:^|\/)amazon\/testing(?:\/|$)/.test(espec));
+
+/**
+ * Why a `functions/src` source opens a SECOND logger (run on comment-free
+ * code; empty when it does not). `apps/amazon` has ONE logger
+ * (`core/log.ts`), and Loja Integrada's functions root — the precedent — logs
+ * through `firebase-functions`' `logger`, so the copy is the likely mistake:
+ *
+ * - a named `logger` import (any alias) from `firebase-functions` or any subpath;
+ * - any import of a `…/logger` subpath (its `info`/`warn`/`error`, or the
+ *   `compat` module that patches `console`);
+ * - a namespace, default or side-effect import of `firebase-functions*`, or a
+ *   run-time `import()`/`require()` of it — each reaches the logger by another
+ *   name, and this codebase needs none of them (fail closed);
+ * - any `console.`.
+ */
+function loggersParalelos(texto: string): string[] {
+  const codigo = semComentarios(texto);
+  const achados: string[] = [];
+  for (const m of codigo.matchAll(
+    /\bimport\s+(?:type\s+)?([^'";]*?)\s*from\s*['"](firebase-functions(?:\/[^'"]*)?)['"]/g,
+  )) {
+    const clausula = (m[1] ?? '').trim();
+    const espec = m[2] ?? '';
+    if (/(?:^|\/)logger(?:\/|$)/.test(espec)) achados.push(`${espec}: the logger module`);
+    else if (/\*\s*as\b/.test(clausula)) achados.push(`${espec}: a namespace import`);
+    else if (/^[A-Za-z_$][\w$]*\s*(?:,|$)/.test(clausula))
+      achados.push(`${espec}: a default import`);
+    else if (/\{[^}]*\blogger\b[^}]*\}/.test(clausula)) achados.push(`${espec}: imports logger`);
+  }
+  for (const m of codigo.matchAll(/\bimport\s*['"](firebase-functions[^'"]*)['"]/g)) {
+    achados.push(`${m[1] ?? ''}: a side-effect import`);
+  }
+  for (const m of codigo.matchAll(/\b(?:import|require)\(\s*['"](firebase-functions[^'"]*)['"]/g)) {
+    achados.push(`${m[1] ?? ''}: loaded at run time`);
+  }
+  if (/\bconsole\./.test(codigo)) achados.push('console.');
+  return achados;
+}
+
+/** The non-call line writers, whose FIRST argument is the logger they write through. */
+const ESCRITOR_COM_LOGGER =
+  /^(?:registrarEventoAmazon|registrarChamadaBloqueadaAmazon|registrarValvulaAmazon)\($/;
+
+/**
+ * Every log call in a `functions/src` source (comment-free code) — any
+ * `.info|warn|error(` or non-call writer, {@link CHAMADA_DE_LOG} — and those
+ * that do NOT go through the app's stdout sink: a method call on anything but
+ * `LOGGER_STDOUT_AMAZON`, or a writer whose first argument is anything else. A
+ * writer handed a second logger is still a second logger.
+ */
+function chamadasDeLogNasFuncoes(
+  arquivo: string,
+  texto: string,
+): { chamadas: number; fora: string[] } {
+  const codigo = semComentarios(texto);
+  let chamadas = 0;
+  const fora: string[] = [];
+  for (const m of codigo.matchAll(CHAMADA_DE_LOG)) {
+    chamadas += 1;
+    if (!ESCRITOR_COM_LOGGER.test(m[0])) {
+      if (!/\bLOGGER_STDOUT_AMAZON\s*$/.test(codigo.slice(0, m.index))) {
+        fora.push(`${arquivo}: ${m[0]} at ${String(m.index)} is not on LOGGER_STDOUT_AMAZON`);
+      }
+      continue;
+    }
+    const abre = m.index + m[0].length - 1;
+    const fim = fimDaChamada(codigo, abre);
+    const primeiro = codigo
+      .slice(abre + 1, fim === -1 ? codigo.length : fim)
+      .split(',')[0]
+      ?.trim();
+    if (primeiro !== 'LOGGER_STDOUT_AMAZON') {
+      fora.push(`${arquivo}: ${m[0]} at ${String(m.index)} writes through ${primeiro ?? '?'}`);
+    }
+  }
+  return { chamadas, fora };
+}
 
 /**
  * A LOCAL crypto compare in the receiver (run on comment-free source): the
@@ -606,9 +715,15 @@ describe('lib/amazon layout', () => {
       if (rel(arquivo).startsWith('testing/')) continue;
       expect(readFileSync(arquivo, 'utf8'), rel(arquivo)).not.toMatch(/from '[^']*testing\//);
     }
-    // …and nothing outside lib/amazon reaches it from production code either.
+    // …and nothing outside lib/amazon reaches it from production code either —
+    // the functions codebase included (3-d): its bundle ships to the cloud.
     for (const arquivo of arquivosTs(join(RAIZ_APP, 'app')).filter((p) => !ehTeste(p))) {
       expect(readFileSync(arquivo, 'utf8'), relApp(arquivo)).not.toMatch(/amazon\/testing\//);
+    }
+    const funcoes = fontesDasFuncoes();
+    expect(funcoes.length).toBeGreaterThanOrEqual(5);
+    for (const arquivo of funcoes) {
+      expect(importaDoublesDeTeste(readFileSync(arquivo, 'utf8')), relApp(arquivo)).toBe(false);
     }
   });
 
@@ -616,11 +731,17 @@ describe('lib/amazon layout', () => {
     // A cached copy that `isFresh` accepts (active, connected) would hide a conta
     // deleted mid-callback, and the undo would leave its credential orphaned.
     // The callback may only INVALIDATE the cache (`invalidarContaEmCache`).
-    const leitores = [...fontes, ...arquivosTs(join(RAIZ_APP, 'app')).filter((p) => !ehTeste(p))]
+    // The functions codebase (3-d) is read too: it binds the same pipeline.
+    const fontes = fontesDeProducaoDoApp();
+    const leitores = fontes
       .filter((p) => readFileSync(p, 'utf8').includes('lerContaEmCache'))
       .map((p) => (p.startsWith(RAIZ_LIB) ? rel(p) : relApp(p)))
       .sort();
     expect(leitores).toEqual(['core/contaCache.ts', 'core/contexto.ts']);
+    // Anti-vacuity (3-d): the scan reads the functions codebase's own files.
+    expect(fontes.map(relApp)).toEqual(
+      expect.arrayContaining(['functions/src/index.ts', 'functions/src/depsLeitura.ts']),
+    );
   });
 
   it('no route imports the park', () => {
@@ -693,12 +814,14 @@ describe('the step-2b logger guards', () => {
     expect(fontes.map(relApp)).toContain(ARQUIVO_DO_LOGGER);
   });
 
-  it('no `.message` inside the arguments of a logger call, under lib/amazon and app/', () => {
-    const fontes = [...arquivosTs(RAIZ_LIB), ...arquivosTs(join(RAIZ_APP, 'app'))].filter(
-      (p) => !ehTeste(p),
-    );
+  it('no `.message` inside the arguments of a logger call, under lib/amazon, app/ and functions/src', () => {
+    const fontes = fontesDeProducaoDoApp();
     const achados = fontes.flatMap((p) => mensagensLogadas(relApp(p), readFileSync(p, 'utf8')));
     expect(achados).toEqual([]);
+    // Anti-vacuity (3-d): the scan reads the functions codebase's own lines.
+    expect(fontes.map(relApp)).toEqual(
+      expect.arrayContaining(['functions/src/index.ts', 'functions/src/filaLeitura.ts']),
+    );
     // Anti-vacuity: the scan sees the real logger calls AND the non-call writers.
     const chamadas = fontes.flatMap((p) =>
       [...readFileSync(p, 'utf8').matchAll(CHAMADA_DE_LOG)].map((m) => m[0]),
@@ -713,15 +836,22 @@ describe('the step-2b logger guards', () => {
     );
   });
 
-  it('only core/log.ts writes a `trechoCorpo` campo (the sink exempts it on a call line)', () => {
-    const fontes = [...arquivosTs(RAIZ_LIB), ...arquivosTs(join(RAIZ_APP, 'app'))].filter(
-      (p) => !ehTeste(p),
-    );
-    const escritores = fontes
-      .filter((p) => /\btrechoCorpo\b/.test(semComentarios(readFileSync(p, 'utf8'))))
-      .map(relApp);
-    expect(escritores).toEqual([ARQUIVO_DO_LOGGER]);
-  });
+  // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
+  it(
+    'only core/log.ts writes a `trechoCorpo` campo (the sink exempts it on a call line)',
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDeProducaoDoApp();
+      const escritores = fontes
+        .filter((p) => /\btrechoCorpo\b/.test(semComentarios(readFileSync(p, 'utf8'))))
+        .map(relApp);
+      expect(escritores).toEqual([ARQUIVO_DO_LOGGER]);
+      // Anti-vacuity (3-d): the scan reads the functions codebase's own lines.
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining(['functions/src/index.ts', 'functions/src/filaLeitura.ts']),
+      );
+    },
+  );
 
   it('no `console.` under lib/amazon (comments aside): the sink writes stdout itself', () => {
     for (const arquivo of arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p))) {
@@ -749,13 +879,14 @@ describe('the step-2b logger guards', () => {
 });
 
 describe('the step-3 intake guards', () => {
-  const fontesDeProducao = () =>
-    [...arquivosTs(RAIZ_LIB), ...arquivosTs(join(RAIZ_APP, 'app'))].filter((p) => !ehTeste(p));
-
-  it('no seller id inside the arguments of a logger call, under lib/amazon and app/', () => {
-    const fontes = fontesDeProducao();
+  it('no seller id inside the arguments of a logger call, under lib/amazon, app/ and functions/src', () => {
+    const fontes = fontesDeProducaoDoApp();
     const achados = fontes.flatMap((p) => sellersLogados(relApp(p), readFileSync(p, 'utf8')));
     expect(achados).toEqual([]);
+    // Anti-vacuity (3-d): the scan reads the functions codebase's own lines.
+    expect(fontes.map(relApp)).toEqual(
+      expect.arrayContaining(['functions/src/index.ts', 'functions/src/filaLeitura.ts']),
+    );
     // Anti-vacuity: the scan reads the intake's own logger calls, and the intake
     // really does handle the seller id beside them.
     const intake = readFileSync(join(RAIZ_LIB, 'notificacoes', 'notificacao.ts'), 'utf8');
@@ -778,18 +909,27 @@ describe('the step-3 intake guards', () => {
     ).toBe(true);
   });
 
-  it('no file under lib/amazon calls getFunctions(, and the App Hosting root is the app’s only caller (3-d adds the functions one)', () => {
-    const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
-    expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
-    // The exact list of composition roots, app-wide: `lib/firebase/filaLeitura.ts`
-    // (3-c); 3-d adds `functions/src/agendador.ts`.
-    // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
-    const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
-    expect(app.length).toBeGreaterThan(40);
-    expect(app.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(relApp)).toEqual([
-      ARQUIVO_RAIZ_DA_FILA,
-    ]);
-  });
+  // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
+  it(
+    'no file under lib/amazon calls getFunctions(, and the two composition roots are the app’s only callers',
+    { timeout: 30_000 },
+    () => {
+      const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
+      expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
+      // The EXACT list of composition roots, app-wide: the App Hosting receiver's
+      // `lib/firebase/filaLeitura.ts` (3-c) and the functions codebase's
+      // `functions/src/agendador.ts` (3-d, the step-4 poll's).
+      // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
+      const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
+      expect(app.length).toBeGreaterThan(40);
+      expect(
+        app
+          .filter((p) => chamaGetFunctions(readFileSync(p, 'utf8')))
+          .map(relApp)
+          .sort(),
+      ).toEqual([ARQUIVO_RAIZ_DA_FILA_FUNCOES, ARQUIVO_RAIZ_DA_FILA].sort());
+    },
+  );
 
   // DIRECT imports only: the closure still reaches them through `./notificacao`
   // and `../env`. That the happy path never uses them is pinned elsewhere:
@@ -819,6 +959,53 @@ describe('the step-3 intake guards', () => {
     expect(existsSync(join(RAIZ_APP, ...ARQUIVOS_DO_RECEPTOR[0].split('/')))).toBe(true);
     // …and that route exports the one verb the relay sends.
     expect(lerDoApp(ARQUIVOS_DO_RECEPTOR[0])).toMatch(/export async function POST\(/);
+  });
+});
+
+describe('the step-3 functions codebase guards (3-d)', () => {
+  it('the scan found the codebase (anti-vacuity)', () => {
+    const funcoes = fontesDasFuncoes().map(relApp);
+    expect(funcoes.length).toBeGreaterThanOrEqual(5);
+    expect(funcoes).toEqual(
+      expect.arrayContaining([
+        'functions/src/agendador.ts',
+        'functions/src/depsLeitura.ts',
+        'functions/src/filaLeitura.ts',
+        'functions/src/index.ts',
+        'functions/src/lib/admin.ts',
+        'functions/src/options.ts',
+        'functions/src/tasksInvoker.ts',
+      ]),
+    );
+  });
+
+  it('no functions/src file opens a second logger: no firebase-functions logger, no console.', () => {
+    const achados = fontesDasFuncoes().flatMap((p) =>
+      loggersParalelos(readFileSync(p, 'utf8')).map((a) => `${relApp(p)}: ${a}`),
+    );
+    expect(achados).toEqual([]);
+    // Anti-vacuity: the scan reads the codebase's real firebase-functions imports.
+    const imports = fontesDasFuncoes().flatMap((p) => especificadores(readFileSync(p, 'utf8')));
+    expect(imports).toEqual(
+      expect.arrayContaining([
+        'firebase-functions/v2',
+        'firebase-functions/v2/scheduler',
+        'firebase-functions/v2/tasks',
+      ]),
+    );
+  });
+
+  it('every log call in functions/src writes through LOGGER_STDOUT_AMAZON', () => {
+    let chamadas = 0;
+    const fora: string[] = [];
+    for (const p of fontesDasFuncoes()) {
+      const r = chamadasDeLogNasFuncoes(relApp(p), readFileSync(p, 'utf8'));
+      chamadas += r.chamadas;
+      fora.push(...r.fora);
+    }
+    expect(fora).toEqual([]);
+    // Anti-vacuity: the dispatch line, the two lane lines and the expiry line.
+    expect(chamadas).toBeGreaterThanOrEqual(3);
   });
 });
 
@@ -1178,6 +1365,90 @@ describe('the guards, on synthetic source', () => {
       "import { z } from 'node:cryptography';",
     ]) {
       expect(CRIPTO_LOCAL.test(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('a second logger in functions/src is flagged — every way it can be opened', () => {
+    for (const fonte of [
+      "import { logger } from 'firebase-functions/v2';",
+      "import { logger as log, setGlobalOptions } from 'firebase-functions/v2';",
+      "import { logger } from 'firebase-functions';",
+      "import { info } from 'firebase-functions/logger';",
+      "import 'firebase-functions/logger/compat';",
+      "import * as ff from 'firebase-functions/v2';",
+      "import functions from 'firebase-functions';",
+      "const { logger } = await import('firebase-functions/v2');",
+      "registrarEventoAmazon(LOGGER_STDOUT_AMAZON, 'tarefa', 'INFO', 'm', {});\nconsole.warn('x');",
+    ]) {
+      expect(loggersParalelos(fonte), fonte).not.toEqual([]);
+    }
+  });
+
+  it('near-miss: the codebase’s own imports, the app logger and a mention in a comment are not a second logger', () => {
+    for (const fonte of [
+      "import { onSchedule } from 'firebase-functions/v2/scheduler';",
+      "import { onTaskDispatched } from 'firebase-functions/v2/tasks';",
+      "import { setGlobalOptions } from 'firebase-functions/v2';",
+      "import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';",
+      "import { loggerX } from 'firebase-functions/v2';",
+      "// never `import { logger } from 'firebase-functions/v2'`, never console.log\nconst x = 1;",
+    ]) {
+      expect(loggersParalelos(fonte), fonte).toEqual([]);
+    }
+  });
+
+  it('a functions/src log call outside LOGGER_STDOUT_AMAZON is flagged; through it, it is not', () => {
+    for (const fonte of [
+      "logger.info('m', {});",
+      "deps.logger.warn('m', {});",
+      "registrarEventoAmazon(logger, 'varredura', 'INFO', 'm', {});",
+      "registrarChamadaBloqueadaAmazon(deps.logger, { rota: 'x', valor });",
+    ]) {
+      const r = chamadasDeLogNasFuncoes('functions/src/x.ts', fonte);
+      expect(r.chamadas, fonte).toBe(1);
+      expect(r.fora, fonte).toHaveLength(1);
+    }
+    for (const fonte of [
+      "registrarEventoAmazon(LOGGER_STDOUT_AMAZON, 'varredura', 'INFO', 'm', {});",
+      "registrarEventoAmazon(\n  LOGGER_STDOUT_AMAZON,\n  'tarefa',\n  'INFO',\n  'm',\n  {},\n);",
+      "LOGGER_STDOUT_AMAZON.warn('m', {});",
+      "// logger.info('m') in prose\nconst y = 2;",
+    ]) {
+      const r = chamadasDeLogNasFuncoes('functions/src/x.ts', fonte);
+      expect(r.fora, fonte).toEqual([]);
+    }
+  });
+
+  it('`err.message` in a functions-shaped sweep line is flagged; the document id is not', () => {
+    expect(
+      mensagensLogadas(
+        'functions/src/index.ts',
+        "registrarEventoAmazon(LOGGER_STDOUT_AMAZON, 'varredura', 'WARNING', 'm', { erro: result.errors[0].message });",
+      ),
+    ).toHaveLength(1);
+    expect(
+      mensagensLogadas(
+        'functions/src/index.ts',
+        "registrarEventoAmazon(LOGGER_STDOUT_AMAZON, 'varredura', 'WARNING', 'm', { docIds: result.errors.map((e) => e.docId).join(',') });",
+      ),
+    ).toEqual([]);
+  });
+
+  it('the test doubles are found in an import by any path, and nothing alike is', () => {
+    for (const fonte of [
+      "import { FakeDb } from '../../lib/amazon/testing/fakeDb';",
+      "import { seedConta } from '@/lib/amazon/testing/fixtures';",
+      "const f = await import('../../lib/amazon/testing/fixtures');",
+      "export { x } from '../../lib/amazon/testing';",
+    ]) {
+      expect(importaDoublesDeTeste(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      "import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';",
+      "import { x } from '../../lib/amazon/testingx/y';",
+      "// a test imports '../../lib/amazon/testing/fakeDb'\nconst z = 3;",
+    ]) {
+      expect(importaDoublesDeTeste(fonte), fonte).toBe(false);
     }
   });
 

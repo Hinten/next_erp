@@ -800,10 +800,8 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 
 ### Step 22: Deploy isolation, rosters, settle `reclamacoes`, flip `implementado` — PRE
 
-- `firebase.amazon.deploy.json` + `prepare-deploy.mjs` (`tools/deploy-env`).
-- The nested functions manifest pins `firebase-admin 14.2.0` / `firebase-functions 7.3.2` exactly (`runtime-deps-pinned.test.js`).
-- The `tasks-invoker-inventory` codebase count.
-- Root `CLAUDE.md` counts (App Hosting apps, codebases, lanes).
+- *(Amended in step 3, PR 3-d: the deploy plumbing — `firebase.amazon.deploy.json`, `prepare-deploy.mjs` and the `tools/deploy-env` preflight row — the codebase rosters (`tasks-invoker-inventory`, `runtime-deps-pinned`, `functions-export-names`) and the root `CLAUDE.md` manifest counts shipped with the functions codebase in step 3. The nested manifest's `firebase-admin` / `firebase-functions` pins follow the catalog exactly (14.5.0 / 7.4.0 today, the root `CLAUDE.md` exact-pin bump rule), never the 14.2.0 / 7.3.2 this step named before.)*
+- What stays here: the App Hosting rosters and the remaining root `CLAUDE.md` counts (App Hosting apps, codebases, lanes).
 - Capture C6 settles `reclamacoes`, then `implementado: true` and `registriesAlinhadas.test.ts`.
 
 ### P1–P3: POST-cutover

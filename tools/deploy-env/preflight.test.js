@@ -361,6 +361,8 @@ describe('the backend cross-check note', () => {
     ['whatsapp', 'WHATSAPP_TASKS_REGION'],
     ['nfe', 'NFE_TASKS_REGION'],
     ['shopee', 'SHOPEE_TASKS_REGION'],
+    // The push receiver enqueues from App Hosting (step 3, PR 3-c).
+    ['amazon', 'AMAZON_TASKS_REGION'],
   ])('%s gets a note naming the backend variable and its manifest', (codebase, backendVar) => {
     // ⚠️ Assert the NOTE, not just the table entry. An earlier version of these
     // tests checked `CODEBASES[x].backendVar` only, and reverting the function to

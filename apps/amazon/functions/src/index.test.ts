@@ -1,0 +1,782 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+import { FieldValue } from 'firebase-admin/firestore';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
+import { ORIGEM_NOTIFICACAO_AMAZON, TIPO_TAREFA_AMAZON } from '@delfrance/schemas';
+
+import type { ExpiracaoSweepAmazonResult } from '../../lib/amazon/conta/expiracaoSweep';
+import { __setRelogioDoCacheParaTestes } from '../../lib/amazon/core/contaCache';
+import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
+import type {
+  ImportadorPedidoAmazon,
+  PayloadNotificacaoAmazon,
+} from '../../lib/amazon/notificacoes/notificacao';
+import { FakeDb, asDb } from '../../lib/amazon/testing/fakeDb';
+import {
+  AGORA_MS,
+  AMBIENTE_LIGADO,
+  SPID_A,
+  espiarStdout,
+  seedConta,
+  seedCredencial,
+  stubAmbiente,
+} from '../../lib/amazon/testing/fixtures';
+
+/**
+ * The DECLARED options of every trigger in this codebase, and what the two
+ * schedule bodies bind and log — which nothing else covers.
+ *
+ * `onSchedule` and `onTaskDispatched` record their options onto
+ * `func.__endpoint` at import time and run nothing, so most of this file is a
+ * pure config assertion. The cron, the zone and the timeout of a schedule are
+ * never exercised by an emulator lane (the functions emulator does not drive
+ * Cloud Scheduler), and the queue's rate and retry ladder are honoured by the
+ * real Cloud Tasks only — an assertion here is the only place either can fail.
+ *
+ * ⚠️ Two maps — {@link AGENDAMENTOS} and {@link FILAS} — and an exhaustiveness
+ * test for each, plus "no event trigger at all": a trigger added later lands
+ * covered or reds this file.
+ *
+ * `FUNCTIONS_REGION` is normally inlined at build time (esbuild `define` in
+ * build.mjs); here it is stubbed BEFORE the import so `options.ts` does not
+ * throw. `AMAZON_TASKS_REGION` is saved and restored because `options.ts`
+ * WRITES it, and `TASKS_INVOKER_SA` because the queue reads it at module scope
+ * — none of the three may leak into other files of this project.
+ */
+const originalFunctionsRegion = process.env.FUNCTIONS_REGION;
+process.env.FUNCTIONS_REGION = 'xx-regiao1';
+const originalTasksRegion = process.env.AMAZON_TASKS_REGION;
+const originalTasksInvokerSa = process.env.TASKS_INVOKER_SA;
+process.env.TASKS_INVOKER_SA =
+  'apphosting@p.iam.gserviceaccount.com,1-compute@developer.gserviceaccount.com';
+
+const h = vi.hoisted(() => ({ db: null as unknown }));
+vi.mock('./lib/admin', () => ({
+  getDb: () => h.db,
+  getAdminApp: () => {
+    throw new Error('teste: nenhum app Admin real');
+  },
+}));
+
+// The channel's functions run REAL (spied through), so a schedule's run below
+// drives the real pipeline against the fake Firestore; the spies only record
+// what the root bound. `importadorPedidoAmazon` is spied so a test can hand the
+// root a sentinel and see it come out the other side.
+vi.mock('../../lib/amazon/notificacoes/notificacao', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../lib/amazon/notificacoes/notificacao')>();
+  return {
+    ...real,
+    importadorPedidoAmazon: vi.fn(real.importadorPedidoAmazon),
+    reprocessarNotificacoesAmazon: vi.fn(real.reprocessarNotificacoesAmazon),
+    reprocessarAdiadasAmazon: vi.fn(real.reprocessarAdiadasAmazon),
+  };
+});
+
+/** What the mocked expiry body returns: every counter distinct, so a swapped field shows. */
+const sweep = vi.hoisted(() => ({
+  resultado: {
+    contas: 4,
+    inativas: 1,
+    semCredencial: 2,
+    estacionadas: 3,
+    reautorizacao: { avisados: 5, resolvidos: 6 },
+    reconexao: { avisados: 7, resolvidos: 8 },
+    orfaos: { lidos: 9, paginas: 1, truncado: false, resolvidos: 10 },
+    segredo: { acao: 'resolvido', dias: 40, fechou: true },
+    erros: [
+      { etapa: 'conta', id: 'conta-amz-9', erro: 'CredencialAmazonInvalidaError' },
+      { etapa: 'orfaos', id: 'consulta', erro: 'GrpcStatusError' },
+      { etapa: 'conta', id: 'conta-amz-8', erro: 'CredencialAmazonInvalidaError' },
+    ],
+  } satisfies ExpiracaoSweepAmazonResult as ExpiracaoSweepAmazonResult,
+}));
+vi.mock('../../lib/amazon/conta/expiracaoSweep', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/amazon/conta/expiracaoSweep')>()),
+  sweepAmazonExpiracoes: vi.fn(async () => Promise.resolve(sweep.resultado)),
+}));
+
+// ⚠️ Keep this import at the TOP LEVEL — not in a `beforeAll`: module evaluation
+// carries no hook timeout, and `./index` is the heaviest module here.
+const modulo = await import('./index');
+const { filaLeituraAmazon, reprocessAmazonNotifications, sweepAmazonExpirations } = modulo;
+const notificacao = await import('../../lib/amazon/notificacoes/notificacao');
+const expiracao = await import('../../lib/amazon/conta/expiracaoSweep');
+
+afterAll(() => {
+  if (originalFunctionsRegion === undefined) delete process.env.FUNCTIONS_REGION;
+  else process.env.FUNCTIONS_REGION = originalFunctionsRegion;
+  if (originalTasksRegion === undefined) delete process.env.AMAZON_TASKS_REGION;
+  else process.env.AMAZON_TASKS_REGION = originalTasksRegion;
+  if (originalTasksInvokerSa === undefined) delete process.env.TASKS_INVOKER_SA;
+  else process.env.TASKS_INVOKER_SA = originalTasksInvokerSa;
+});
+
+/** Every scheduled trigger this codebase exports. The exhaustiveness test makes adding one mandatory. */
+const AGENDAMENTOS = { reprocessAmazonNotifications, sweepAmazonExpirations } as const;
+
+/**
+ * Every TASK-QUEUE trigger: exactly ONE. The channel has one reads queue that
+ * dispatches on `tipo` (Firebase binds one function per queue), and no writes
+ * queue before the write engine — a second `onTaskDispatched` here is a defect,
+ * not a feature, until a step says otherwise.
+ */
+const FILAS = { filaLeituraAmazon } as const;
+
+/** The secret a READ run binds — and nothing else may (a missing one fails the deploy). */
+const SEGREDO_LWA = 'AMAZON_LWA_CLIENT_SECRET';
+
+type Endpoint = Record<string, unknown>;
+
+function endpointOf(fn: unknown): Endpoint {
+  return (fn as { __endpoint: Endpoint }).__endpoint;
+}
+
+function gatilhoDe(fn: unknown): { schedule?: string; timeZone?: string } {
+  return endpointOf(fn).scheduleTrigger as { schedule?: string; timeZone?: string };
+}
+
+/** The secret NAMES an endpoint binds (`[]` when none). */
+function segredosDe(fn: unknown): (string | undefined)[] {
+  return ((endpointOf(fn).secretEnvironmentVariables as { key?: string }[] | undefined) ?? []).map(
+    (s) => s.key,
+  );
+}
+
+interface GatilhoDeFila {
+  retryConfig: {
+    maxAttempts?: number;
+    minBackoffSeconds?: number;
+    maxBackoffSeconds?: number;
+    maxDoublings?: number;
+  };
+  rateLimits: { maxConcurrentDispatches?: number; maxDispatchesPerSecond?: number };
+  invoker?: string[];
+}
+
+function filaDe(fn: unknown): GatilhoDeFila {
+  return endpointOf(fn).taskQueueTrigger as GatilhoDeFila;
+}
+
+/** The module's exports that carry an endpoint with `chave`. */
+function exportadosCom(chave: string): string[] {
+  return Object.entries(modulo as unknown as Record<string, unknown>)
+    .filter(([, valor]) => {
+      const endpoint = (valor as { __endpoint?: Endpoint } | null)?.__endpoint;
+      return endpoint !== undefined && endpoint[chave] !== undefined;
+    })
+    .map(([nome]) => nome)
+    .sort();
+}
+
+function rodarAgendamento(fn: unknown): Promise<void> {
+  return (fn as { run(evento: unknown): Promise<void> }).run({});
+}
+
+let fake: FakeDb;
+let stdout: ReturnType<typeof espiarStdout>;
+const chamadasDeRede: string[] = [];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  stdout = espiarStdout();
+  fake = new FakeDb();
+  h.db = asDb(fake);
+  __resetAllReadCaches();
+  __setRelogioDoCacheParaTestes(() => Date.now());
+  vi.stubEnv('AMAZON_CHAMADAS', undefined);
+  vi.stubGlobal('fetch', (input: unknown) => {
+    chamadasDeRede.push(String(input));
+    return Promise.reject(new Error('teste: nenhuma chamada de rede é permitida'));
+  });
+});
+
+afterEach(() => {
+  stdout.restaurar();
+  __resetAllReadCaches();
+  __setRelogioDoCacheParaTestes();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  expect(chamadasDeRede).toEqual([]);
+  chamadasDeRede.length = 0;
+});
+
+/** Every JSON line the app's logger wrote to stdout, parsed. */
+function linhas(): Record<string, unknown>[] {
+  return stdout.linhas().map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
+/** The `evento: 'varredura'` lines, in order. */
+function linhasDaVarredura(): Record<string, unknown>[] {
+  return linhas().filter((l) => l.evento === 'varredura');
+}
+
+const COLECAO = 'notificacoesAmazon';
+
+function push(n: number): PayloadNotificacaoAmazon {
+  return {
+    tipo: TIPO_TAREFA_AMAZON.pedido,
+    origem: ORIGEM_NOTIFICACAO_AMAZON.push,
+    sellerId: SPID_A,
+    amazonOrderId: `000-0000000-000000${String(n)}`,
+    notificationId: `00000000-0000-0000-0000-00000000000${String(n)}`,
+    publishTimeMs: AGORA_MS - 1000,
+  };
+}
+
+/** A failure document as the shared store leaves it, an old one (both lanes' windows cover it). */
+function seedNotificacao(
+  p: PayloadNotificacaoAmazon,
+  status: 'failed' | 'deferred',
+  tentativas: number,
+): string {
+  const caminho = `${COLECAO}/${notificacao.docIdNotificacaoAmazon(p)}`;
+  fake.seed(caminho, {
+    ...notificacao.camposDoDocumentoAmazon(p),
+    status,
+    tentativas,
+    erro: status === 'deferred' ? 'adiado/chamadas-desligadas' : 'x',
+    processedAt: 0,
+  });
+  return caminho;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                The schedules                               */
+/* -------------------------------------------------------------------------- */
+
+describe('reprocessAmazonNotifications — the options', () => {
+  it('runs at :10 and :40, America/Sao_Paulo — twice an hour, off the half-hour', () => {
+    expect(gatilhoDe(reprocessAmazonNotifications).schedule).toBe('10,40 * * * *');
+    expect(gatilhoDe(reprocessAmazonNotifications).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('has timeoutSeconds 540 — twenty sequential rows do not fit the 60 s default', () => {
+    expect(endpointOf(reprocessAmazonNotifications).timeoutSeconds).toBe(540);
+  });
+
+  it('binds EXACTLY the LWA client secret — a re-drive may refresh a token', () => {
+    expect(segredosDe(reprocessAmazonNotifications)).toEqual([SEGREDO_LWA]);
+  });
+});
+
+describe('reprocessAmazonNotifications — what the run binds', () => {
+  it('drains the HOT lane, then the DEFERRED one, 10 rows each, with ONE set of read deps', async () => {
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    const quente = vi.mocked(notificacao.reprocessarNotificacoesAmazon);
+    const adiada = vi.mocked(notificacao.reprocessarAdiadasAmazon);
+    expect(quente).toHaveBeenCalledTimes(1);
+    expect(adiada).toHaveBeenCalledTimes(1);
+    expect(quente.mock.invocationCallOrder[0]).toBeLessThan(
+      adiada.mock.invocationCallOrder[0] ?? 0,
+    );
+
+    const [dbQuente, optsQuente, depsQuente] = quente.mock.calls[0] ?? [];
+    const [dbAdiada, optsAdiada, depsAdiada] = adiada.mock.calls[0] ?? [];
+    expect(dbQuente).toBe(h.db);
+    expect(dbAdiada).toBe(h.db);
+    // The limit EXACTLY, and nothing else: an `olderThanMs` here would move the
+    // shared core's window, a `now` would freeze its clock.
+    expect(optsQuente).toEqual({ limit: 10 });
+    expect(optsAdiada).toEqual({ limit: 10 });
+    expect(depsAdiada).toBe(depsQuente);
+    // The environment passed WHOLE and live — the context reads the switch.
+    expect(depsQuente?.ambiente).toBe(process.env);
+    // The app's ONE logger.
+    expect(depsQuente?.logger).toBe(LOGGER_STDOUT_AMAZON);
+    const incremento = depsQuente?.increment(2);
+    expect((incremento as FieldValue).isEqual(FieldValue.increment(2))).toBe(true);
+  });
+
+  it('binds the importer from the REAL seam table, read per run', async () => {
+    // A sentinel the seam hands back: the root must pass exactly it. A root that
+    // hard-coded `null` (or cached the table at load) would pass this test's
+    // sibling and fail this one.
+    const sentinela: ImportadorPedidoAmazon = () => Promise.resolve({ kind: 'importado' });
+    vi.mocked(notificacao.importadorPedidoAmazon).mockReturnValueOnce(sentinela);
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    expect(notificacao.importadorPedidoAmazon).toHaveBeenCalledTimes(1);
+    const deps = vi.mocked(notificacao.reprocessarNotificacoesAmazon).mock.calls[0]?.[2];
+    expect(deps?.importador).toBe(sentinela);
+  });
+
+  it('and with the seam untouched it is the table itself — empty in step 3', async () => {
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    const deps = vi.mocked(notificacao.reprocessarNotificacoesAmazon).mock.calls[0]?.[2];
+    expect(deps?.importador).toBe(notificacao.DESTINO_TIPO_AMAZON.pedido);
+    expect(deps?.importador).toBeNull();
+  });
+
+  it('runs the real pipeline: with the switch off a failed row MIGRATES to deferred, and a deferred one stays', async () => {
+    const falhou = seedNotificacao(push(1), 'failed', 2);
+    const adiada = seedNotificacao(push(2), 'deferred', 3);
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    expect(fake.ler(falhou)).toMatchObject({
+      status: 'deferred',
+      tentativas: 0,
+      erro: 'adiado/chamadas-desligadas',
+    });
+    // Seeded with 3 deferred passes: this one is the 4th, still below the cap.
+    expect(fake.ler(adiada)).toMatchObject({
+      status: 'deferred',
+      tentativas: 4,
+      erro: 'adiado/chamadas-desligadas',
+    });
+    // The switch refused before any conta read, once per row.
+    expect(linhas().filter((l) => l.evento === 'chamada-bloqueada')).toHaveLength(2);
+    expect(fake.leituras).toEqual([]);
+  });
+
+  it('logs the two lanes SEPARATELY — never summed — and a per-row failure by document id only', async () => {
+    vi.mocked(notificacao.reprocessarNotificacoesAmazon).mockResolvedValueOnce({
+      processed: 2,
+      outcomes: { deferred: 1, failed: 1 },
+      errors: [{ docId: 'push:00000000-0000-0000-0000-000000000009', message: 'msg-fora-do-log' }],
+    });
+    vi.mocked(notificacao.reprocessarAdiadasAmazon).mockResolvedValueOnce({
+      processed: 3,
+      outcomes: { deferred: 3 },
+      errors: [],
+    });
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    const [quente, falhas, adiada, ...resto] = linhasDaVarredura();
+    expect(resto).toEqual([]);
+    // EXACT lines: a summed `processed: 5`, a merged outcome map or a lane
+    // label swapped fails here. No read cache moved (both lanes stubbed), so
+    // the delta adds no field beyond the registered cache's zeroes.
+    expect(quente).toMatchObject({
+      evento: 'varredura',
+      varredura: 'reprocesso',
+      lane: 'hot',
+      processed: 2,
+      erros: 1,
+      outcome_deferred: 1,
+      outcome_failed: 1,
+      fluxo: 'reprocesso',
+      severity: 'INFO',
+      message: '[amazon] varredura de reprocessamento (hot)',
+    });
+    expect(falhas).toEqual({
+      varredura: 'reprocesso',
+      lane: 'hot',
+      erros: 1,
+      docIds: 'push:00000000-0000-0000-0000-000000000009',
+      docIds_omitidos: 0,
+      evento: 'varredura',
+      fluxo: 'reprocesso',
+      severity: 'WARNING',
+      message: '[amazon] varredura de reprocessamento (hot) com falhas por documento',
+    });
+    expect(adiada).toMatchObject({
+      lane: 'deferred',
+      processed: 3,
+      erros: 0,
+      outcome_deferred: 3,
+      severity: 'INFO',
+      message: '[amazon] varredura de reprocessamento (deferred)',
+    });
+    // NEAR-MISS: the deferred line carries ONLY its own outcomes.
+    expect(adiada).not.toHaveProperty('outcome_failed');
+    expect(linhasDaVarredura().some((l) => l.processed === 5)).toBe(false);
+    // The shared core's message never reaches a line.
+    expect(stdout.linhas().join('\n')).not.toContain('msg-fora-do-log');
+  });
+
+  /** The hot lane fails exactly these rows; the deferred lane is empty. */
+  function falhamNaRaiaQuente(docIds: readonly string[]): void {
+    vi.mocked(notificacao.reprocessarNotificacoesAmazon).mockResolvedValueOnce({
+      processed: docIds.length,
+      outcomes: { failed: docIds.length },
+      errors: docIds.map((docId) => ({ docId, message: 'm' })),
+    });
+    vi.mocked(notificacao.reprocessarAdiadasAmazon).mockResolvedValueOnce({
+      processed: 0,
+      outcomes: {},
+      errors: [],
+    });
+  }
+
+  /** The hot lane's per-document WARNING line. */
+  function linhaDasFalhas(): Record<string, unknown> | undefined {
+    return linhasDaVarredura().find(
+      (l) => l.message === '[amazon] varredura de reprocessamento (hot) com falhas por documento',
+    );
+  }
+
+  /** A poll row's id (`docIdNotificacaoAmazon`'s shape): 5 + conta + 1 + 19 + 1 + 16 bytes. */
+  const idDePoll = (conta: string, i: number) =>
+    `poll:${conta}:000-0000000-000000${String(i)}:${String(1_800_000_000_000_000 + i)}`;
+
+  it('names every short id — the bound is the sink’s 256 bytes, not a count', async () => {
+    const ids = Array.from({ length: 7 }, (_, i) => `push:id-${String(i)}`);
+    falhamNaRaiaQuente(ids);
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    expect(linhaDasFalhas()).toMatchObject({
+      erros: 7,
+      docIds: ids.join(','),
+      docIds_omitidos: 0,
+      severity: 'WARNING',
+    });
+  });
+
+  it('never lets the sink cut a poll id mid-string: the ids that do not fit are COUNTED, not named', async () => {
+    // 51 bytes each: four fit (207 bytes), a fifth would make 259.
+    const ids = Array.from({ length: 7 }, (_, i) => idDePoll('conta-abc', i));
+    expect(ids.every((id) => Buffer.byteLength(id) === 51)).toBe(true);
+    falhamNaRaiaQuente(ids);
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    const linha = linhaDasFalhas();
+    expect(linha).toMatchObject({ erros: 7, docIds_omitidos: 3 });
+    const nomeados = String(linha?.docIds).split(',');
+    // Every named id is a COMPLETE input id, in order — none cut.
+    expect(nomeados).toEqual(ids.slice(0, 4));
+    expect(Buffer.byteLength(String(linha?.docIds))).toBeLessThanOrEqual(256);
+  });
+
+  it('at the longest conta id the sink writes unmasked (119 characters), ONE poll id fits', async () => {
+    // Below the sink's 120-character blob mask; 161 bytes each, two would be 323.
+    const ids = Array.from({ length: 3 }, (_, i) => idDePoll('c'.repeat(119), i));
+    falhamNaRaiaQuente(ids);
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    expect(linhaDasFalhas()).toMatchObject({ erros: 3, docIds: ids[0], docIds_omitidos: 2 });
+  });
+
+  it.each<[string, number, number]>([
+    ['a line of exactly 256 bytes names both ids', 86, 0],
+    ['one byte more (257) names only the first', 87, 1],
+  ])('the bound is the sink’s own cap, to the byte: %s', async (_caso, contaB, omitidos) => {
+    // 42 + 85 bytes, a comma, then 42 + 86 (or 87): 256 (or 257) bytes in all.
+    const ids = [idDePoll('c'.repeat(85), 0), idDePoll('c'.repeat(contaB), 1)];
+    expect(Buffer.byteLength(ids.join(','))).toBe(256 + omitidos);
+    falhamNaRaiaQuente(ids);
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    expect(linhaDasFalhas()).toMatchObject({
+      erros: 2,
+      docIds: ids.slice(0, ids.length - omitidos).join(','),
+      docIds_omitidos: omitidos,
+    });
+  });
+
+  it('at the 128-character maximum the sink would MASK the id, so none is named — counted, never written masked', async () => {
+    // `CONTA_ID_AMAZON_REGEX`'s maximum: the conta segment reads as a blob, and a
+    // masked id names no document.
+    const ids = Array.from({ length: 3 }, (_, i) => idDePoll('c'.repeat(128), i));
+    falhamNaRaiaQuente(ids);
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    expect(linhaDasFalhas()).toMatchObject({ erros: 3, docIds: '', docIds_omitidos: 3 });
+    expect(stdout.linhas().join('\n')).not.toContain('<redacted');
+  });
+
+  it('the counts line is a WARNING when the lane PARKED a row (no sweep re-drives it), INFO otherwise', async () => {
+    vi.mocked(notificacao.reprocessarNotificacoesAmazon).mockResolvedValueOnce({
+      processed: 2,
+      outcomes: { parked: 1, failed: 1 },
+      errors: [],
+    });
+    vi.mocked(notificacao.reprocessarAdiadasAmazon).mockResolvedValueOnce({
+      processed: 2,
+      outcomes: { deferred: 2 },
+      errors: [],
+    });
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    const [quente, adiada, ...resto] = linhasDaVarredura();
+    expect(resto).toEqual([]);
+    expect(quente).toMatchObject({ lane: 'hot', outcome_parked: 1, severity: 'WARNING' });
+    // NEAR-MISS: rows that come back on a later tick are not a warning.
+    expect(adiada).toMatchObject({ lane: 'deferred', outcome_deferred: 2, severity: 'INFO' });
+  });
+
+  // The stubbed lanes above touch no cache. Here the lanes run real: the hot
+  // lane's one row loads the conta through the read cache, the deferred lane
+  // has no row and reads nothing — so its delta must come out zero, not the
+  // hot lane's reads counted a second time.
+  it("measures each lane's read cache from ITS OWN mark — the deferred lane does not repeat the hot lane's reads", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(AGORA_MS);
+    stubAmbiente(AMBIENTE_LIGADO);
+    seedConta(fake, 'conta-1', { selling_partner_id: SPID_A });
+    seedCredencial(fake, 'conta-1');
+    const falhou = seedNotificacao(push(1), 'failed', 0);
+
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    // Anti-vacuity: the hot lane really ran its row through the context, and the
+    // empty seam deferred it.
+    expect(fake.ler(falhou)).toMatchObject({
+      status: 'deferred',
+      erro: 'adiado/importador-ausente',
+    });
+    const [quente, adiada] = linhasDaVarredura();
+    expect(quente).toMatchObject({
+      lane: 'hot',
+      processed: 1,
+      readCache_amazon_integracao_hits: 0,
+      readCache_amazon_integracao_misses: 1,
+    });
+    expect(adiada).toMatchObject({
+      lane: 'deferred',
+      processed: 0,
+      readCache_amazon_integracao_hits: 0,
+      readCache_amazon_integracao_misses: 0,
+    });
+  });
+});
+
+describe('sweepAmazonExpirations', () => {
+  it('runs DAILY at 07:15 America/Sao_Paulo', () => {
+    expect(gatilhoDe(sweepAmazonExpirations).schedule).toBe('15 7 * * *');
+    expect(gatilhoDe(sweepAmazonExpirations).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('has timeoutSeconds 120', () => {
+    expect(endpointOf(sweepAmazonExpirations).timeoutSeconds).toBe(120);
+  });
+
+  it('binds NO secret — it makes no Amazon call, and a missing secret fails the whole deploy', () => {
+    expect(segredosDe(sweepAmazonExpirations)).toEqual([]);
+  });
+
+  it('binds the database, a tier-0 increment, the clock in ms, the live environment and the app logger', async () => {
+    const antes = Date.now();
+    await rodarAgendamento(sweepAmazonExpirations);
+    const depois = Date.now();
+
+    const chamadas = vi.mocked(expiracao.sweepAmazonExpiracoes).mock.calls;
+    expect(chamadas).toHaveLength(1);
+    const [db, deps] = chamadas[0] ?? [];
+    expect(db).toBe(h.db);
+    expect(deps?.nowMs).toBeGreaterThanOrEqual(antes);
+    expect(deps?.nowMs).toBeLessThanOrEqual(depois);
+    expect(deps?.ambiente).toBe(process.env);
+    expect(deps?.logger).toBe(LOGGER_STDOUT_AMAZON);
+    const incremento = deps?.increment(2);
+    expect(incremento).toBeInstanceOf(FieldValue);
+    expect((incremento as FieldValue).isEqual(FieldValue.increment(2))).toBe(true);
+    // NEAR-MISS: the step is passed through, not fixed at 1.
+    expect((incremento as FieldValue).isEqual(FieldValue.increment(1))).toBe(false);
+  });
+
+  it('logs ONE line of flattened counters, the error CLASSES joined, never an id — a WARNING when anything failed', async () => {
+    await rodarAgendamento(sweepAmazonExpirations);
+
+    expect(linhasDaVarredura()).toEqual([
+      {
+        varredura: 'expiracao',
+        contas: 4,
+        inativas: 1,
+        semCredencial: 2,
+        estacionadas: 3,
+        reautorizacao_avisados: 5,
+        reautorizacao_resolvidos: 6,
+        reconexao_avisados: 7,
+        reconexao_resolvidos: 8,
+        orfaos_lidos: 9,
+        orfaos_paginas: 1,
+        orfaos_truncado: false,
+        orfaos_resolvidos: 10,
+        segredo_acao: 'resolvido',
+        segredo_dias: 40,
+        erros: 3,
+        erros_classes: 'CredencialAmazonInvalidaError,GrpcStatusError',
+        evento: 'varredura',
+        severity: 'WARNING',
+        message: '[amazon] varredura de expiração',
+      },
+    ]);
+    const texto = stdout.linhas().join('\n');
+    expect(texto).not.toContain('conta-amz-9');
+    expect(texto).not.toContain('conta-amz-8');
+  });
+
+  it('a clean run is INFO with no error classes; a skipped secret pass carries no `dias`', async () => {
+    vi.mocked(expiracao.sweepAmazonExpiracoes).mockResolvedValueOnce({
+      ...sweep.resultado,
+      segredo: { acao: 'pulado' },
+      erros: [],
+    });
+
+    await rodarAgendamento(sweepAmazonExpirations);
+
+    expect(linhasDaVarredura()).toEqual([
+      expect.objectContaining({
+        segredo_acao: 'pulado',
+        segredo_dias: null,
+        erros: 0,
+        erros_classes: null,
+        severity: 'INFO',
+      }),
+    ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                  The queue                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('filaLeituraAmazon — the declared options', () => {
+  const fila = filaDe(filaLeituraAmazon);
+
+  it("dispatches ONE task at a time, at most one every two seconds — getOrder's rate", () => {
+    expect(fila.rateLimits.maxConcurrentDispatches).toBe(1);
+    expect(fila.rateLimits.maxDispatchesPerSecond).toBeLessThanOrEqual(0.5);
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 0.5 });
+  });
+
+  it('gives up exactly when the pipeline starts to persist: maxAttempts IS TASK_MAX_ATTEMPTS', () => {
+    // The handler persists instead of throwing on the attempt this constant calls
+    // last. A queue that gave up earlier drops the notification with no failure
+    // document; one that gave up later re-delivers a payload already recorded.
+    expect(fila.retryConfig.maxAttempts).toBe(TASK_MAX_ATTEMPTS);
+    // ÂNCORA: the ladder arithmetic below is written for three.
+    expect(TASK_MAX_ATTEMPTS).toBe(3);
+  });
+
+  it('backs off 10 s → 300 s with up to three doublings', () => {
+    expect(fila.retryConfig.minBackoffSeconds).toBe(10);
+    expect(fila.retryConfig.maxBackoffSeconds).toBe(300);
+    expect(fila.retryConfig.maxDoublings).toBe(3);
+  });
+
+  it('has timeoutSeconds 120 — neither the 60 s default nor the 540 of a sweep', () => {
+    expect(endpointOf(filaLeituraAmazon).timeoutSeconds).toBe(120);
+  });
+
+  it("closes its whole retry ladder inside HALF the hot sweep's one-hour window", () => {
+    // N runs and the N-1 backoffs BETWEEN them (each at most maxBackoff) must fit
+    // in at most half of the hour after which the hot sweep re-drives a
+    // `failed` row: 3 × 120 + 2 × 300.
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpointOf(filaLeituraAmazon).timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const escadaSegundos = tentativas * execucao + Math.max(tentativas - 1, 0) * backoff;
+    expect(escadaSegundos).toBe(960);
+    expect(escadaSegundos).toBeLessThanOrEqual(1800);
+  });
+
+  it('declares the invoker, the leg whose absence fails invisibly (#1133)', () => {
+    expect(fila.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+  });
+
+  it('binds EXACTLY the LWA client secret', () => {
+    expect(segredosDe(filaLeituraAmazon)).toEqual([SEGREDO_LWA]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                         Across every exported trigger                      */
+/* -------------------------------------------------------------------------- */
+
+describe('every trigger of the codebase', () => {
+  const TODOS = { ...AGENDAMENTOS, ...FILAS };
+
+  it('every onSchedule export is in AGENDAMENTOS — and there are exactly two', () => {
+    expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
+    expect(exportadosCom('scheduleTrigger')).toEqual([
+      'reprocessAmazonNotifications',
+      'sweepAmazonExpirations',
+    ]);
+  });
+
+  it('the task exports are EXACTLY {filaLeituraAmazon}', () => {
+    expect(exportadosCom('taskQueueTrigger')).toEqual(['filaLeituraAmazon']);
+  });
+
+  it('there is no Firestore, HTTPS or callable trigger', () => {
+    expect(exportadosCom('eventTrigger')).toEqual([]);
+    expect(exportadosCom('httpsTrigger')).toEqual([]);
+    expect(exportadosCom('callableTrigger')).toEqual([]);
+  });
+
+  it('every runtime export IS a trigger — a helper exported here would read as a function name', () => {
+    expect(Object.keys(modulo).sort()).toEqual(Object.keys(TODOS).sort());
+  });
+
+  it('the queue export key is exactly FILA_LEITURA_AMAZON — the enqueue target', () => {
+    // `index.ts` asserts the pair at module load (a half-rename fails Firebase's
+    // codebase analysis); this pins it offline, where the failure names itself.
+    expect(notificacao.FILA_LEITURA_AMAZON in modulo).toBe(true);
+    expect(notificacao.FILA_LEITURA_AMAZON).toBe('filaLeituraAmazon');
+  });
+
+  // Re-importing the whole index after `vi.resetModules()` takes ~0.2 s here but
+  // measured 5.1 s on a loaded CI runner (#2018), past the 5-s default.
+  it(
+    'and the module-load assertion really fires on a half-rename',
+    { timeout: 30_000 },
+    async () => {
+      // The handler module renamed its export while the constant stayed: loading
+      // `index.ts` must THROW (Firebase's codebase analysis then fails the deploy
+      // loudly) — the pin above alone would not notice the assertion deleted.
+      vi.resetModules();
+      vi.doMock('./filaLeitura', () => ({ filaRenomeada: {} }));
+      try {
+        await expect(import('./index')).rejects.toThrow(
+          "function-name drift: functions/src/filaLeitura.ts must export a handler named 'filaLeituraAmazon'",
+        );
+      } finally {
+        vi.doUnmock('./filaLeitura');
+        vi.resetModules();
+      }
+    },
+  );
+
+  it('binds the LWA secret on the queue and the reprocess, and NOTHING else anywhere', () => {
+    for (const [nome, fn] of Object.entries(TODOS)) {
+      const esperado = nome === 'sweepAmazonExpirations' ? [] : [SEGREDO_LWA];
+      expect(segredosDe(fn), nome).toEqual(esperado);
+    }
+  });
+
+  it('runs in the inlined region (the bare options import, #1108) and caps instances at 10', () => {
+    for (const [nome, fn] of Object.entries(TODOS)) {
+      expect(endpointOf(fn).region, nome).toEqual(['xx-regiao1']);
+      expect(endpointOf(fn).maxInstances, nome).toBe(10);
+    }
+  });
+
+  it("the schedules are DISTINCT, and none is the half-hour cron other channels' sweeps use", () => {
+    const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);
+    expect(new Set(crons).size).toBe(crons.length);
+    expect(crons).not.toContain('*/30 * * * *');
+  });
+
+  it("imports './options' FIRST and ALONE — the global options precede every trigger", () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./index.ts', import.meta.url)), 'utf8');
+    const importacoes = [...fonte.matchAll(/^import\b[^;]*;/gm)].map((m) => m[0]);
+    expect(importacoes[0]).toBe("import './options';");
+    // Exactly ONE import statement names it: a second `from './options'` further
+    // down would be merged into, and so moved behind, the trigger modules.
+    expect(importacoes.filter((i) => /['"]\.\/options['"]/.test(i))).toEqual([
+      "import './options';",
+    ]);
+    // ÂNCORA: the scan really reads this file's imports.
+    expect(importacoes.length).toBeGreaterThan(5);
+  });
+});
