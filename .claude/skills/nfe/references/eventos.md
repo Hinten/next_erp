@@ -66,6 +66,17 @@ by NF-e pendentes de retorno that were never authorized).
   número homologado" → success, with `nProt`.
 - Inutilização is **not** for numbers that were actually authorized — for those
   use cancelamento.
+- ⚠️ A **rejection** may carry `<dhRecbto>0001-01-01T00:00:00+00:00</dhRecbto>`
+  (.NET `DateTime.MinValue`), first seen from SEFAZ-SP homologação on 2026-10-22.
+  MOC 7.0 Tabela 5-10 says dhRecbto/nProt "não serão preenchidos em caso de
+  erro", but `retInutNFe_v4.00.xsd` keeps dhRecbto required and its pattern
+  rejects year 0001. `validateRetInutNFe` (`src/xsd/index.ts`) tolerates exactly
+  that: cStat ≠ 102, the sentinel value, and an otherwise XSD-valid reply. Any
+  other bad value, or the sentinel on a 102, still throws.
+- Rejections the MOC lists (Tabela 5-12): 241 (a número in the faixa was already
+  used, also by an EPEC), 256 (faixa overlaps an earlier inutilização), 563
+  (identical pedido already exists), 201 (more than 10,000 números), 240
+  (irregularidade fiscal do emitente), 453/454 (ano out of bounds).
 
 ## Phase mapping
 
