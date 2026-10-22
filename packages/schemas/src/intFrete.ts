@@ -232,6 +232,22 @@ export const intFreteSchema = z
       .nullable()
       .default(null)
       .describe('Conta Loja Integrada'),
+    /**
+     * Back-reference to the Amazon conta (`integracao`, tipo amazon) this freight doc belongs to —
+     * `documents/integracao/<id>`. Legacy `ContaFreteAmazon.contaAmazonContaFreteAmazonOuterRef`
+     * (`.old/packages/canais_de_venda/amazon/lib/src/models.dart:144-151`, `fromConta`), a plain
+     * string the legacy ODM always wrote in the canonical `documents/…` form — so the migrated docs
+     * are ADOPTED by this key, never duplicated.
+     *
+     * **Server-owned** (#1930): the sole writers are the `onIntegracaoAmazonChanged` trigger
+     * (`amazon` functions codebase) and the window pass, both through `@delfrance/data/admin/frete`.
+     * Protected by convention, like its three twins above — hidden from every `/logistica` slice by
+     * `SHARED_EXCLUDED`, not by a rule. Null on every other `tipo`.
+     */
+    contaAmazonContaFreteAmazonOuterRef: outerRefSchema
+      .nullable()
+      .default(null)
+      .describe('Conta Amazon'),
     enderecoDeOrigem: enderecoSchema
       .passthrough()
       .nullable()
@@ -287,7 +303,7 @@ export type IntFrete = z.infer<typeof intFreteSchema>;
 
 /**
  * The `int_frete` keys that hold a channel's conta back-reference — derived from the SCHEMA's own
- * keys, so a misspelled `campoBackRef` fails `tsc`, and a third channel's field joins the union by
+ * keys, so a misspelled `campoBackRef` fails `tsc`, and a new channel's field joins the union by
  * itself (`intFrete.vinculo.test.ts` then demands its row below).
  */
 export type CampoBackRefIntFrete = Extract<
@@ -338,6 +354,15 @@ export const VINCULO_INT_FRETE_CONTA = {
     campoBackRef: 'contaLojaIntegradaEnviosOuterRef',
     rotuloLog: '[loja-integrada]',
     prefixoDocId: INTEGRACAO_FRETE.lojaIntegrada,
+  },
+  amazon: {
+    tipoConta: INTEGRACAO_TIPO.amazon,
+    // The on-disk spelling `'amz'`, never `'amazon'` (`INTEGRACAO_FRETE`).
+    tipoFrete: INTEGRACAO_FRETE.amazon,
+    campoBackRef: 'contaAmazonContaFreteAmazonOuterRef',
+    rotuloLog: '[amazon]',
+    // ⇒ `amz-<integracaoId>`.
+    prefixoDocId: INTEGRACAO_FRETE.amazon,
   },
 } as const satisfies Record<string, VinculoIntFreteConta>;
 

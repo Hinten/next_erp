@@ -788,6 +788,12 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 - A conta trigger materialises or deactivates the conta's `'amz'` `int_frete` via `intFreteContaSync`.
 - A one-shot adoption script (`tools/migrations`, in the shape of Shopee's `migrate:shopee-int-frete`) adopts the migrated docs (W12).
 - **Firestore:** `int_frete` + its index. **Verification:** adoption dry run reports zero duplicates.
+- **Amendment (2026-10-20, PR 20-a):**
+  - The trigger is `onIntegracaoAmazonChanged` in the `amazon` functions codebase (its first Firestore trigger, the fourth `onDocumentWritten` on `integracao/{integracaoId}`), reconciling through the app's one binding `syncIntFreteAmazon` (`apps/amazon/lib/amazon/frete/intFrete.ts`, zero options). It makes no Amazon call and binds no secret.
+  - The index is `int_frete (tipo, contaAmazonContaFreteAmazonOuterRef, ativo, dataCadastro DESC)`, the twins' 4-field shape.
+  - A newly materialised doc is `amz-<integracaoId>` (rule 7 tier 0); a migrated doc keeps its legacy id and is adopted by the back-ref.
+  - No ruleset change: `int_frete` is outside rules-gen's validator whitelist, and both generators leave both rulesets and snapshots unchanged.
+  - Order in the window: W12 runs after the import and once the index is READY, and `functions:amazon` deploys only after W12's clean second dry run.
 
 ### Step 21: `apps/web` — PRE, piecewise
 

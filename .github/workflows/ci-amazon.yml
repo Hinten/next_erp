@@ -13,7 +13,7 @@ name: CI — Amazon
 # they live in their own lane behind their own gate. A skip of this lane
 # therefore loses only the emulator suites, never the unit suites.
 #
-# ONE job, five suite files today:
+# ONE job, six suite files today:
 #   - `apps/amazon/app/api/webhooks/amazon/route.tasks.test.ts` — the push
 #     receiver's round trip below, plus a foreign application id, a duplicated
 #     NotificationId and the sweep-only valve;
@@ -27,7 +27,16 @@ name: CI — Amazon
 #     backstop poll's lease and preconditions on the real Firestore (step 4);
 #   - `apps/amazon/functions/src/pollPedidos.tasks.test.ts` — a poll tick in the
 #     vitest process through the functions-root producer, the queue and the
-#     same dispatched function (step 4).
+#     same dispatched function (step 4);
+#   - `apps/amazon/functions/src/onIntegracaoAmazonChanged.tasks.test.ts` — the
+#     conta trigger (step 20): a write to `integracao` → the real deployed
+#     `onDocumentWritten` → the shared `int_frete` core → a created, patched,
+#     deactivated or adopted `int_frete` doc (`amz-<id>`, or a migrated one),
+#     read back raw. It makes no Amazon call.
+# ⚠️ The trigger fires on EVERY suite's `integracao` writes, not only its own:
+# the functions emulator loads the whole codebase. The rules that keep the files
+# apart (unique conta ids, the step-3/4 suites' incomplete seeds, the trigger
+# suite awaiting its own last write) are in `vitest.tasks.config.ts`.
 # Adding a file with the `.tasks.test.ts` or `.firestore.test.ts` suffix adds it
 # to THIS job — no new job, no new check name, no new row in the gate manifest.
 # Both suffixes share one config on purpose (`vitest.tasks.config.ts`).
@@ -101,9 +110,16 @@ name: CI — Amazon
 #     above. The AWS relay (SQS → EventBridge Pipe → API destination) is never
 #     here either: the suite POSTs the relay's `{ body }` wrapper itself.
 #   - The trigger's DATABASE binding, or any ABSENCE on its own. The emulator
-#     serves whichever database it is asked for, and an emulator cannot show
-#     that a function did nothing: every absence here is proved by a LATER
-#     sentinel document, never by polling for nothing.
+#     serves whichever database it is asked for, so `onIntegracaoAmazonChanged`
+#     bound to `(default)` is not proven to fail here (it is pinned OFFLINE in
+#     functions/src/index.test.ts and onIntegracaoAmazonChanged.test.ts), and an
+#     emulator cannot show that a function did nothing: every absence here is
+#     proved by a LATER sentinel document or after a positive read, never by
+#     polling for nothing.
+#   - Eventarc's ORDERING and REDELIVERY. The emulator delivers each write to
+#     `onIntegracaoAmazonChanged` once; that a replayed or out-of-order event
+#     converges is argued by the core being state-driven and covered by its unit
+#     suite in packages/data, never here.
 #   - A PR that touches ONLY a shared package outside the app's `workspace:*`
 #     closure. The `changes` job below walks that graph from the app, so a change
 #     reaching the bundle by any other edge (a path alias, a copied file) does

@@ -427,6 +427,99 @@ describe('intFreteSchema — contaLojaIntegradaEnviosOuterRef (#1826)', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*   contaAmazonContaFreteAmazonOuterRef — the Amazon conta back-ref (#1930)   */
+/* -------------------------------------------------------------------------- */
+
+describe('intFreteSchema — contaAmazonContaFreteAmazonOuterRef (#1930)', () => {
+  /**
+   * A migrated `ContaFreteAmazon` doc in the legacy shape: `ContaFreteAmazon.fromConta` sets tipo /
+   * nome / ativo / the filial / the back-ref, and the base constructor stamps `dataCadastro` in ms.
+   * The legacy writes no `mapa`, `faixaCep`, `horarioDeCorte`, `enderecoDeOrigem`,
+   * `ultimaModificacao`, `prazoExtra` or `client_id` here, so every one of them is ABSENT. The ODM's
+   * `docId` rides along. This is the shape the window import brings in, and the sync ADOPTS it by
+   * this key.
+   */
+  const legado = {
+    tipo: 'amz',
+    nome: 'Conta Amazon',
+    ativo: true,
+    dataCadastro: 1718000000000,
+    filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+    contaAmazonContaFreteAmazonOuterRef: 'documents/integracao/int-1',
+    docId: 'legacy-1',
+  };
+
+  it('parses the legacy golden doc, keeping the back-ref and defaulting every key the legacy never wrote', () => {
+    const parsed = intFreteSchema.parse(legado);
+
+    expect(parsed).toMatchObject(legado);
+    expect(parsed.contaAmazonContaFreteAmazonOuterRef).toBe('documents/integracao/int-1');
+    // The keys the legacy serializer never wrote come back as explicit nulls (and `0`), never
+    // absent.
+    for (const campo of [
+      'mapa',
+      'faixaCep',
+      'horarioDeCorte',
+      'enderecoDeOrigem',
+      'ultimaModificacao',
+      'client_id',
+    ] as const) {
+      expect(parsed[campo], campo).toBeNull();
+      expect(Object.hasOwn(parsed, campo), campo).toBe(true);
+    }
+    expect(parsed.prazoExtra).toBe(0);
+    // The twins are DIFFERENT keys: an Amazon doc leaves all three null.
+    expect(parsed.contaMercadoLivreMercadoEnviosOuterRef).toBeNull();
+    expect(parsed.contaShopeeFreteOuterRef).toBeNull();
+    expect(parsed.contaLojaIntegradaEnviosOuterRef).toBeNull();
+    // `.passthrough()` keeps the ODM metadata the legacy app wrote.
+    expect((parsed as Record<string, unknown>).docId).toBe('legacy-1');
+  });
+
+  it('an absent key reads back as an explicit null, PRESENT on the parsed value (a motoboy doc, and the golden one without it)', () => {
+    // The only test that tells `.nullable().default(null)` from `.nullable().optional()` (which
+    // the lint accepts): a browser `addDoc` of the parsed value must never carry `undefined`.
+    const motoboy = intFreteSchema.parse({
+      tipo: 'motoboy',
+      nome: 'Motoboy Centro',
+      ativo: true,
+      filialIntegracaoFreteOuterRef: 'documents/filiais/f-1',
+      dataCadastro: 1718000000000,
+    });
+    expect(motoboy.contaAmazonContaFreteAmazonOuterRef).toBeNull();
+    expect(Object.hasOwn(motoboy, 'contaAmazonContaFreteAmazonOuterRef')).toBe(true);
+
+    const semChave: Record<string, unknown> = { ...legado };
+    delete semChave.contaAmazonContaFreteAmazonOuterRef;
+    const parsed = intFreteSchema.parse(semChave);
+    expect(parsed.contaAmazonContaFreteAmazonOuterRef).toBeNull();
+    expect(Object.hasOwn(parsed, 'contaAmazonContaFreteAmazonOuterRef')).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: the canonical `documents/integracao/<id>` passes; the bare `integracao/<id>` FAILS', () => {
+    const campo = intFreteSchema.shape.contaAmazonContaFreteAmazonOuterRef;
+    expect(campo.safeParse('documents/integracao/int-1').success).toBe(true);
+    expect(campo.safeParse(null).success).toBe(true);
+    // The sync's lookup is an equality on the canonical string, so a doc holding the bare form
+    // would never be found — the schema must not bless it either.
+    expect(campo.safeParse('integracao/int-1').success).toBe(false);
+    // A path ending on a COLLECTION is not a dereferenceable doc ref.
+    expect(campo.safeParse('documents/integracao').success).toBe(false);
+
+    const doc = intFreteSchema.safeParse({
+      ...legado,
+      contaAmazonContaFreteAmazonOuterRef: 'integracao/int-1',
+    });
+    expect(doc.success).toBe(false);
+    if (!doc.success) {
+      expect(doc.error.issues.map((i) => i.path)).toEqual([
+        ['contaAmazonContaFreteAmazonOuterRef'],
+      ]);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*            escolherIntFreteMaisNovo — THE pick among a conta's docs        */
 /* -------------------------------------------------------------------------- */
 

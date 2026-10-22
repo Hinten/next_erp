@@ -47,7 +47,12 @@
  *    first production surface outside `lib/` and `app/`, so the `.message`,
  *    seller-id, `trechoCorpo`, `testing/` and conta-cache scans read it too; and
  *    there the app keeps ONE logger: no `firebase-functions` logger import, no
- *    `console.`, and every line written through `LOGGER_STDOUT_AMAZON`.
+ *    `console.`, and every line written through `LOGGER_STDOUT_AMAZON`;
+ *  - (step 20) D11 by construction on the conta trigger, which runs on EVERY
+ *    conta write of every channel: its transitive import closure (type edges
+ *    walked too, so it fails closed) is pinned file by file, reaches no context,
+ *    conta read, credential, park, valve, env reader, intake or queue module, and
+ *    imports the SP-API package as TYPES only (read off the TypeScript AST).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -126,6 +131,17 @@ const lerDoApp: LeitorDeFonte = (caminho) => {
 type ResolvedorDePacote = (espec: string) => string | null;
 
 /**
+ * Where a RELATIVE specifier in `arquivo` lands: the first of `.ts`, `.tsx`,
+ * `/index.ts` that exists, else the bare normalized path (which reads as
+ * nothing). ONE resolution, shared by the walk and by {@link violacoesD11}'s
+ * "was it walked?" check, so the two cannot drift apart.
+ */
+function resolverRelativo(arquivo: string, espec: string, ler: LeitorDeFonte): string {
+  const base = posix.normalize(posix.join(posix.dirname(arquivo), espec));
+  return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((c) => ler(c) !== null) ?? base;
+}
+
+/**
  * The transitive closure of RELATIVE imports from `entradas`: every file
  * reached, and every non-relative specifier any of them imports. A relative
  * import that resolves to no file is reported as `?<path>` — fail closed. With
@@ -156,9 +172,7 @@ function fechoDeImportacoes(
         if (pacote !== null) pendentes.push(pacote);
         continue;
       }
-      const base = posix.normalize(posix.join(posix.dirname(arquivo), espec));
-      const alvo = [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((c) => ler(c) !== null);
-      pendentes.push(alvo ?? base);
+      pendentes.push(resolverRelativo(arquivo, espec, ler));
     }
   }
   return { arquivos: arquivos.sort(), externos: [...externos].sort() };
@@ -671,6 +685,141 @@ const fontesDoChamadorDeSearchOrders = () => [
 
 const nomeiaSearchOrders = (texto: string) => CHAMADA_DE_SEARCH_ORDERS.test(semComentarios(texto));
 
+/* --------------------- step 20: the conta trigger, D11 by construction --------------------- */
+
+/** The conta trigger and the app's one `int_frete` binding, relative to the APP root. */
+const ENTRADAS_DO_GATILHO = [
+  'functions/src/onIntegracaoAmazonChanged.ts',
+  'lib/amazon/frete/intFrete.ts',
+];
+
+/** The SP-API package: the only thing in this app that can call Amazon. */
+const PACOTE_SP_API = '@delfrance/integrations-amazon-sp-api';
+const ehDoPacoteSpApi = (espec: string) =>
+  espec === PACOTE_SP_API || espec.startsWith(`${PACOTE_SP_API}/`);
+
+/**
+ * The app files (relative to the APP root) the trigger's closure may never
+ * reach: the conta context and every module that reads a conta, a credential,
+ * the park, a valve or the environment; the intake, the poll and the conta
+ * flows; the App Hosting composition roots; and the functions codebase's other
+ * roots (`options.ts` included: the trigger must not carry a region of its own).
+ */
+const PROIBIDOS_NO_GATILHO = [
+  /^lib\/amazon\/core\/(?:contexto|contas|valvulas|estacionamento|credentialStore|renovacaoUnica|agente|contaCache)\.ts$/,
+  /^lib\/amazon\/env\.ts$/,
+  /^lib\/amazon\/(?:notificacoes|pedidos|conta)\//,
+  /^lib\/firebase\//,
+  /^functions\/src\/(?:depsLeitura|agendador|filaLeitura|pollPedidos|options)\.ts$/,
+];
+
+/**
+ * The module specifiers a source loads AS A VALUE, read off the TypeScript AST
+ * (comments are not code here). TYPE-only — and so not a value — is: an
+ * `import type …`, an `import { type A, type B }` with no default or namespace
+ * binding (elided: this app's tsconfig keeps `verbatimModuleSyntax` off, and
+ * esbuild follows it), and an `export type { … } from` (or every specifier
+ * `type`). Everything else is a value: a mixed `{ type A, b }`, a default or
+ * namespace import, a side-effect `import '…'`, an empty `import {} from`, a
+ * value re-export, `import x = require(…)`, a `require(…)` call and a dynamic
+ * `import(…)` — whose computed argument is `<dinamico>` (fail closed). A
+ * no-substitution template (`` import(`…`) ``) is a plain specifier here.
+ */
+function importacoesDeValor(texto: string): string[] {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const saida: string[] = [];
+  const visitar = (no: ts.Node): void => {
+    if (ts.isImportDeclaration(no) && ts.isStringLiteral(no.moduleSpecifier)) {
+      const clausula = no.importClause;
+      const nomeados = clausula?.namedBindings;
+      const soTipo =
+        clausula !== undefined &&
+        (clausula.phaseModifier === ts.SyntaxKind.TypeKeyword ||
+          (clausula.name === undefined &&
+            nomeados !== undefined &&
+            ts.isNamedImports(nomeados) &&
+            nomeados.elements.length > 0 &&
+            nomeados.elements.every((e) => e.isTypeOnly)));
+      if (!soTipo) saida.push(no.moduleSpecifier.text);
+    } else if (
+      ts.isExportDeclaration(no) &&
+      no.moduleSpecifier !== undefined &&
+      ts.isStringLiteral(no.moduleSpecifier)
+    ) {
+      const exportados = no.exportClause;
+      const soTipo =
+        no.isTypeOnly ||
+        (exportados !== undefined &&
+          ts.isNamedExports(exportados) &&
+          exportados.elements.length > 0 &&
+          exportados.elements.every((e) => e.isTypeOnly));
+      if (!soTipo) saida.push(no.moduleSpecifier.text);
+    } else if (ts.isImportEqualsDeclaration(no) && !no.isTypeOnly) {
+      const ref = no.moduleReference;
+      if (ts.isExternalModuleReference(ref)) {
+        saida.push(ts.isStringLiteral(ref.expression) ? ref.expression.text : '<dinamico>');
+      }
+    } else if (
+      ts.isCallExpression(no) &&
+      (no.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(no.expression) && no.expression.text === 'require'))
+    ) {
+      const alvo = no.arguments[0];
+      saida.push(alvo !== undefined && ts.isStringLiteralLike(alvo) ? alvo.text : '<dinamico>');
+    }
+    ts.forEachChild(no, visitar);
+  };
+  visitar(fonte);
+  return saida;
+}
+
+/**
+ * Why the trigger's closure (a {@link fechoDeImportacoes} walk from app-root
+ * paths) could reach Amazon; empty when it cannot:
+ *
+ * - every reached file whose RESOLVED path is in {@link PROIBIDOS_NO_GATILHO};
+ * - every VALUE import of the SP-API package, or any subpath, in any reached
+ *   file ({@link importacoesDeValor}) — a type import is fine, and is what
+ *   `core/log.ts` does; a dynamic import of a computed name too (fail closed);
+ * - every relative import the walk could not resolve (`?<path>`), and every
+ *   `@/` import (the walk does not follow the alias) — fail closed;
+ * - every module a reached file loads as a value that the walk did NOT follow
+ *   (`unwalked <file> → <espec>`): the walk reads specifiers with a regex that
+ *   knows only quoted `from '…'`, `import '…'` and `import('…')`, so a
+ *   template-literal `` import(`…`) ``, a `require('…')`, an `import x = require(…)`
+ *   or an `import ('…')` with a space would put a module in the bundle (esbuild
+ *   follows all of them) that no check above ever reads — fail closed.
+ *
+ * TRANSITIVE by construction — the walk reaches every hop; a direct-only check
+ * (`importacoesProibidasNoReceptor`) cannot see a module two hops away.
+ */
+function violacoesD11(
+  fecho: { arquivos: readonly string[]; externos: readonly string[] },
+  ler: LeitorDeFonte,
+): string[] {
+  const violacoes: string[] = [];
+  const externos = new Set(fecho.externos);
+  /** Did the walk follow this edge (a reached file, or a reported `?<path>`)? */
+  const percorrida = (arquivo: string, espec: string): boolean => {
+    if (!espec.startsWith('.')) return externos.has(espec);
+    const alvo = resolverRelativo(arquivo, espec, ler);
+    return fecho.arquivos.includes(alvo) || externos.has(`?${alvo}`);
+  };
+  for (const arquivo of fecho.arquivos) {
+    if (PROIBIDOS_NO_GATILHO.some((re) => re.test(arquivo))) violacoes.push(`reaches ${arquivo}`);
+    for (const espec of importacoesDeValor(ler(arquivo) ?? '')) {
+      if (ehDoPacoteSpApi(espec)) violacoes.push(`${arquivo} imports ${espec} as a value`);
+      else if (espec === '<dinamico>') violacoes.push(`${arquivo} imports a computed module`);
+      else if (!percorrida(arquivo, espec)) violacoes.push(`unwalked ${arquivo} → ${espec}`);
+    }
+  }
+  for (const espec of fecho.externos) {
+    if (espec.startsWith('?')) violacoes.push(`unresolved ${espec.slice(1)}`);
+    else if (espec.startsWith('@/')) violacoes.push(`imports ${espec} (the alias is not walked)`);
+  }
+  return violacoes;
+}
+
 /* -------------------------------- the pinned lines -------------------------------- */
 
 const INVENTARIO = 'apps/amazon/lib/amazon/testing/especificacaoFolhas.json';
@@ -707,6 +856,7 @@ describe('lib/amazon layout', () => {
         'core/renovacaoUnica.ts',
         'core/respond.ts',
         'core/valvulas.ts',
+        'frete/intFrete.ts',
         'notificacoes/agendador.ts',
         'notificacoes/corpo.ts',
         'notificacoes/envelope.ts',
@@ -849,6 +999,7 @@ describe('lib/amazon layout', () => {
         expect.arrayContaining([
           'app/api/webhooks/amazon/route.tasks.test.ts',
           'functions/src/filaLeitura.tasks.test.ts',
+          'functions/src/onIntegracaoAmazonChanged.tasks.test.ts',
           'lib/amazon/notificacoes/notificacao.firestore.test.ts',
         ]),
       );
@@ -1098,6 +1249,7 @@ describe('the step-3 functions codebase guards (3-d)', () => {
         'functions/src/filaLeitura.ts',
         'functions/src/index.ts',
         'functions/src/lib/admin.ts',
+        'functions/src/onIntegracaoAmazonChanged.ts',
         'functions/src/options.ts',
         'functions/src/pollPedidos.ts',
         'functions/src/tasksInvoker.ts',
@@ -1185,6 +1337,67 @@ describe('the step-4 backstop poll guards (4-a)', () => {
       especs.filter((e) => e === 'firebase-admin/functions' || e === 'firebase-admin/app'),
     ).toEqual([]);
     expect(especs).toContain('../notificacoes/agendador');
+  });
+});
+
+describe('the step-20 conta trigger guards (D11 by construction)', () => {
+  it('the trigger’s import closure reaches no Amazon client, context, credential, park, valve or env reader — transitively, type edges walked', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO, lerDoApp);
+    expect(violacoesD11(fecho, lerDoApp)).toEqual([]);
+    // EXACT, both lists: anti-vacuity AND a review gate. A new edge out of the
+    // trigger, the binding or the logger reds this test until a reviewer reads
+    // it — the trigger runs on EVERY conta write of every channel, so an
+    // Amazon-capable path there must never arrive unnoticed.
+    expect(fecho.arquivos).toEqual([
+      'functions/src/lib/admin.ts',
+      'functions/src/onIntegracaoAmazonChanged.ts',
+      'lib/amazon/core/formatoDaRef.ts',
+      'lib/amazon/core/idConta.ts',
+      'lib/amazon/core/log.ts',
+      'lib/amazon/core/redacao.ts',
+      'lib/amazon/frete/intFrete.ts',
+    ]);
+    // `@delfrance/schemas` and `@delfrance/data` do not depend on the SP-API
+    // package (their manifests), so those two package edges are not walked.
+    expect(fecho.externos).toEqual(
+      [
+        'firebase-functions/v2/firestore',
+        'firebase-admin/app',
+        'firebase-admin/firestore',
+        '@delfrance/schemas',
+        '@delfrance/data/admin/frete',
+        'zod',
+        '@delfrance/core/documents',
+        '@delfrance/core/wire',
+        // TYPE-only, from `core/log.ts` — accepted by the value check above.
+        PACOTE_SP_API,
+      ].sort(),
+    );
+    // Anti-vacuity of the type-aware half: the logger really does import the
+    // package, and only its types.
+    const log = lerDoApp('lib/amazon/core/log.ts') ?? '';
+    expect(especificadores(log)).toContain(PACOTE_SP_API);
+    expect(importacoesDeValor(log)).not.toContain(PACOTE_SP_API);
+    expect(importacoesDeValor(log)).toEqual(
+      expect.arrayContaining(['./formatoDaRef', './idConta', './redacao']),
+    );
+  });
+
+  it('neither package edge the walk leaves unwalked depends on the SP-API package', () => {
+    for (const pacote of ['schemas', 'data']) {
+      const manifesto = z
+        .object({
+          dependencies: z.record(z.string(), z.string()).optional(),
+          peerDependencies: z.record(z.string(), z.string()).optional(),
+        })
+        .parse(
+          JSON.parse(readFileSync(join(RAIZ_REPO, 'packages', pacote, 'package.json'), 'utf8')),
+        );
+      const deps = Object.keys({ ...manifesto.dependencies, ...manifesto.peerDependencies });
+      expect(deps.filter(ehDoPacoteSpApi), pacote).toEqual([]);
+      // Anti-vacuity: the manifest was read.
+      expect(deps.length, pacote).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -1783,5 +1996,203 @@ describe('the guards, on synthetic source', () => {
     expect(
       violacoesDoSanitizador([SANITIZADOR], comPacote(fonte, extras), resolver).length,
     ).toBeGreaterThan(0);
+  });
+
+  /* ------------------- step 20: the conta trigger's D11 guard ------------------- */
+
+  const GATILHO = 'functions/src/onIntegracaoAmazonChanged.ts';
+  /** The relative specifier the trigger would write for an app-root path (`./x` beside it). */
+  const especDoGatilhoPara = (alvo: string): string => {
+    const relativo = posix.relative(posix.dirname(GATILHO), alvo.replace(/\.ts$/, ''));
+    return relativo.startsWith('.') ? relativo : `./${relativo}`;
+  };
+  /** The trigger's closure on synthetic source: the guard's verdict. */
+  const d11 = (arquivos: Readonly<Record<string, string>>): string[] => {
+    const ler = leitor(arquivos);
+    return violacoesD11(fechoDeImportacoes([GATILHO], ler), ler);
+  };
+
+  it.each([
+    ['a named value import', `import { criarClienteSpApi } from '${PACOTE_SP_API}';`],
+    ['a default import', `import cliente from '${PACOTE_SP_API}';`],
+    ['a namespace import', `import * as sp from '${PACOTE_SP_API}';`],
+    [
+      'a MIXED import (one value binding beside a type)',
+      `import { type ChamadaAmazon, criarObservador } from '${PACOTE_SP_API}';`,
+    ],
+    ['a side-effect import', `import '${PACOTE_SP_API}';`],
+    ['an empty named import', `import {} from '${PACOTE_SP_API}';`],
+    ['a value re-export', `export { criarClienteSpApi } from '${PACOTE_SP_API}';`],
+    ['a dynamic import', `const sp = await import('${PACOTE_SP_API}');`],
+    ['a subpath value import', `import { x } from '${PACOTE_SP_API}/errors';`],
+    ['a require call', `const sp = require('${PACOTE_SP_API}');`],
+  ])('D11 guard flags the SP-API package loaded as a value: %s', (_caso, fonte) => {
+    expect(d11({ [GATILHO]: fonte })).toEqual([
+      `${GATILHO} imports ${fonte.includes('/errors') ? `${PACOTE_SP_API}/errors` : PACOTE_SP_API} as a value`,
+    ]);
+  });
+
+  it.each([
+    ['an import type', `import type { ChamadaAmazon } from '${PACOTE_SP_API}';`],
+    [
+      'inline type specifiers only (elided)',
+      `import { type ChamadaAmazon, type CodigoErroLwa } from '${PACOTE_SP_API}';`,
+    ],
+    ['an export type', `export type { ChamadaAmazon } from '${PACOTE_SP_API}';`],
+    ['inline type re-exports only', `export { type ChamadaAmazon } from '${PACOTE_SP_API}';`],
+    ['a longer package name', `import { x } from '${PACOTE_SP_API}x';`],
+    [
+      'a mention in a comment',
+      `// never import { criarClienteSpApi } from the package\nconst x = 1;`,
+    ],
+  ])('NEAR-MISS: the D11 guard accepts %s', (_caso, fonte) => {
+    expect(d11({ [GATILHO]: fonte })).toEqual([]);
+  });
+
+  it("D11 guard: the logger's REAL type-only import is accepted, through the closure", () => {
+    const log = lerDoApp('lib/amazon/core/log.ts') ?? '';
+    expect(
+      d11({
+        [GATILHO]: "import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';",
+        'lib/amazon/core/log.ts': log,
+        'lib/amazon/core/formatoDaRef.ts': 'export const a = 1;',
+        'lib/amazon/core/idConta.ts': 'export const b = 1;',
+        'lib/amazon/core/redacao.ts': "import { z } from 'zod';",
+      }),
+    ).toEqual([]);
+    // …and the same logger with that import turned into a value one is flagged ONE hop away.
+    const valor = log.replace(/^import type \{/m, 'import {');
+    expect(valor).not.toBe(log);
+    expect(
+      d11({
+        [GATILHO]: "import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';",
+        'lib/amazon/core/log.ts': valor,
+        'lib/amazon/core/formatoDaRef.ts': 'export const a = 1;',
+        'lib/amazon/core/idConta.ts': 'export const b = 1;',
+        'lib/amazon/core/redacao.ts': "import { z } from 'zod';",
+      }),
+    ).toEqual([`lib/amazon/core/log.ts imports ${PACOTE_SP_API} as a value`]);
+  });
+
+  it('D11 guard flags the context reached TWO hops deep, by its resolved path — which a direct-only check misses', () => {
+    const arquivos = {
+      [GATILHO]: "import { syncX } from '../../lib/amazon/frete/x';",
+      'lib/amazon/frete/x.ts': "import { loadAmazonContext } from '../core/contexto';",
+      'lib/amazon/core/contexto.ts': 'export const loadAmazonContext = 1;',
+    };
+    expect(d11(arquivos)).toEqual(['reaches lib/amazon/core/contexto.ts']);
+    // The receiver's guard is DIRECT-only: on the same entry it sees nothing.
+    expect(importacoesProibidasNoReceptor(GATILHO, arquivos[GATILHO])).toEqual([]);
+  });
+
+  it.each([
+    'lib/amazon/core/contexto.ts',
+    'lib/amazon/core/contas.ts',
+    'lib/amazon/core/valvulas.ts',
+    'lib/amazon/core/estacionamento.ts',
+    'lib/amazon/core/credentialStore.ts',
+    'lib/amazon/core/renovacaoUnica.ts',
+    'lib/amazon/core/agente.ts',
+    'lib/amazon/core/contaCache.ts',
+    'lib/amazon/env.ts',
+    'lib/amazon/notificacoes/notificacao.ts',
+    'lib/amazon/pedidos/pollPedidos.ts',
+    'lib/amazon/conta/conectar.ts',
+    'lib/firebase/filaLeitura.ts',
+    'functions/src/depsLeitura.ts',
+    'functions/src/agendador.ts',
+    'functions/src/filaLeitura.ts',
+    'functions/src/pollPedidos.ts',
+    'functions/src/options.ts',
+  ])('D11 guard forbids reaching %s', (alvo) => {
+    const espec = especDoGatilhoPara(alvo);
+    expect(
+      d11({ [GATILHO]: `import { x } from '${espec}';`, [alvo]: 'export const x = 1;' }),
+    ).toEqual([`reaches ${alvo}`]);
+  });
+
+  it.each([
+    'lib/amazon/core/log.ts',
+    'lib/amazon/core/idConta.ts',
+    'lib/amazon/frete/intFrete.ts',
+    'functions/src/lib/admin.ts',
+    'lib/amazon/core/contaCacheX.ts',
+    'functions/src/optionsX.ts',
+  ])('NEAR-MISS: the D11 guard lets the closure reach %s', (alvo) => {
+    const espec = especDoGatilhoPara(alvo);
+    expect(
+      d11({ [GATILHO]: `import { x } from '${espec}';`, [alvo]: 'export const x = 1;' }),
+    ).toEqual([]);
+  });
+
+  it('D11 guard fails closed: an unresolved relative import, an `@/` import and a computed dynamic import', () => {
+    expect(d11({ [GATILHO]: "import { x } from './inexistente';" })).toEqual([
+      'unresolved functions/src/inexistente',
+    ]);
+    expect(d11({ [GATILHO]: "import { x } from '@/lib/amazon/core/contexto';" })).toEqual([
+      'imports @/lib/amazon/core/contexto (the alias is not walked)',
+    ]);
+    expect(d11({ [GATILHO]: 'const m = await import(nome);' })).toEqual([
+      `${GATILHO} imports a computed module`,
+    ]);
+    expect(d11({ [GATILHO]: 'const m = require(nome);' })).toEqual([
+      `${GATILHO} imports a computed module`,
+    ]);
+  });
+
+  it.each([
+    [
+      'a template-literal dynamic import',
+      'const m = await import(`../../lib/amazon/core/contexto`);',
+    ],
+    ['a require call', "const m = require('../../lib/amazon/core/contexto');"],
+    ['an import-equals require', "import m = require('../../lib/amazon/core/contexto');"],
+    ['a dynamic import with a space', "const m = await import ('../../lib/amazon/core/contexto');"],
+  ])(
+    'D11 guard fails closed on a module loaded in a form the walk does not follow: %s',
+    (_caso, fonte) => {
+      const arquivos = {
+        [GATILHO]: fonte,
+        'lib/amazon/core/contexto.ts': 'export const loadAmazonContext = 1;',
+      };
+      // The walk never reaches the context (so `reaches …` cannot fire)…
+      expect(fechoDeImportacoes([GATILHO], leitor(arquivos)).arquivos).toEqual([GATILHO]);
+      // …and the value import it did not follow is what flags it.
+      expect(d11(arquivos)).toEqual([`unwalked ${GATILHO} → ../../lib/amazon/core/contexto`]);
+    },
+  );
+
+  it.each([
+    // The `@/` check reads only what the walk listed, so on its own it would pass this.
+    [
+      'an `@/` module through require',
+      "const m = require('@/lib/amazon/core/contexto');",
+      '@/lib/amazon/core/contexto',
+    ],
+    // The real tree's exact `externos` pin would not list this one either.
+    [
+      'a network module through a template-literal import',
+      'const m = await import(`node:https`);',
+      'node:https',
+    ],
+  ])(
+    'D11 guard fails closed on a NON-relative module the walk does not follow: %s',
+    (_caso, fonte, espec) => {
+      expect(fechoDeImportacoes([GATILHO], leitor({ [GATILHO]: fonte })).externos).toEqual([]);
+      expect(d11({ [GATILHO]: fonte })).toEqual([`unwalked ${GATILHO} → ${espec}`]);
+    },
+  );
+
+  it('NEAR-MISS: a `require(…)` or template import only MENTIONED (a string, a comment) loads nothing', () => {
+    expect(
+      d11({
+        [GATILHO]: [
+          `const s = "require('../../lib/amazon/core/contexto')";`,
+          '// await import(`../../lib/amazon/core/contexto`)',
+          'export const x = s;',
+        ].join('\n'),
+        'lib/amazon/core/contexto.ts': 'export const loadAmazonContext = 1;',
+      }),
+    ).toEqual([]);
   });
 });

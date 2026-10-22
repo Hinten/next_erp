@@ -40,6 +40,13 @@ into a project, it raises and resolves the per-conta reauthorization and
 reconnection avisos of that project's Amazon contas (only its LWA client secret
 pass waits for the switch).
 
+⚠️ **The conta trigger stands outside both switches.** `onIntegracaoAmazonChanged`
+(master-plan step 20) makes no Amazon call, so the read switch does not gate it,
+and it imports no importer, so the empty seam does not either. Deployed into a
+project, it writes that project's `int_frete` on every Amazon conta save that
+moves a mirrored field: create, patch or deactivate. That is why this deploy
+waits for the window's `int_frete` adoption pass (Prerequisites below).
+
 ## Prerequisites
 
 - `pnpm install` at the repo root (the junction needs `apps/amazon/node_modules`).
@@ -47,8 +54,8 @@ pass waits for the switch).
   item W1, before this deploy). `filaLeituraAmazon`,
   `reprocessAmazonNotifications` and `pollAmazonOrders` declare it as
   `secrets:`, and **a declared secret that is missing fails the WHOLE deploy**,
-  every function of the codebase included. `sweepAmazonExpirations` declares
-  none: it never calls Amazon.
+  every function of the codebase included. `sweepAmazonExpirations` and
+  `onIntegracaoAmazonChanged` declare none: neither calls Amazon.
 - **Region match: `FUNCTIONS_REGION` equals `AMAZON_TASKS_REGION`.** The queue is
   created WITH its function, by this deploy, in `FUNCTIONS_REGION` and nowhere
   else. Every enqueuer resolves the queue from `AMAZON_TASKS_REGION`, falling
@@ -60,14 +67,34 @@ pass waits for the switch).
   Hosting backend's `AMAZON_TASKS_REGION` (console) to exactly the
   `FUNCTIONS_REGION` this deploy exports; the preflight prints that reminder.
 - **The database is the NAMED `default`**, never the `(default)` sentinel, which
-  fails every operation with `5 NOT_FOUND`. `build.mjs` inlines
-  `FIREBASE_DATABASE_ID` (unset or blank → `default`) and the preflight prints the
-  value it baked; leave it unset in the BUILD environment (the deploy shell and
-  the repo-root `.env.functions`), or set it to exactly `default`. This codebase
-  has no Firestore trigger, so nothing binds a database at codebase analysis.
+  fails every operation with `5 NOT_FOUND`. The conta trigger
+  `onIntegracaoAmazonChanged` listens on `integracao/{integracaoId}` in that
+  database: a trigger bound to `(default)` deploys fine and never fires, and only
+  `src/index.test.ts`'s offline pin guards it (the emulator serves any database).
+  `build.mjs` inlines `FIREBASE_DATABASE_ID` (unset or blank → `default`) and the
+  preflight prints the value it baked; leave it unset in the BUILD environment
+  (the deploy shell and the repo-root `.env.functions`), or set it to exactly
+  `default`. The define replaces every read of the variable in the bundle,
+  `getDb()`'s included, so the trigger's binding and every function's handle use
+  that build-time value and a runtime override reaches neither.
 - **The index `notificacoesAmazon (status ASC, processedAt ASC)` READY** before
   the first sweep tick: on Enterprise a missing index does not fail, it
   full-scans and bills the scan (root `CLAUDE.md` rule 1).
+- **Before `functions:amazon` (step 20), in this order:**
+  1. the index
+     `int_frete (tipo, contaAmazonContaFreteAmazonOuterRef, ativo, dataCadastro DESC)`
+     is READY;
+  2. the window's `int_frete` adoption pass (W12, the script
+     `migrate:amazon-int-frete` in `@delfrance/migrations`) ran clean:
+     report-only, dry run, `--apply`, then a second dry run with **0 contas com
+     escrita planejada** and no `duplicados`, `nao-canonico` or `compartilhado`.
+
+  Why: the trigger reconciles through a lookup that rides that index (without
+  it, every reconcile full-scans `int_frete`, billed), and it has no tolerant
+  scan. An import fires no trigger, so before the pass a conta save could create
+  `amz-<integracaoId>` beside a migrated doc whose back-ref is not canonical; the
+  pass STOPs on exactly that.
+
 - **One-time IAM** (below) — required before the first enqueue. The queue-level
   grants can only be made once the deploy has created the queue, and with
   `TASKS_INVOKER_SA` set the deploy makes two of them itself; the act-as grant is
@@ -142,6 +169,21 @@ are local builds; neither deploys anything.
   the 240-s tick budget, below the 360-s lease, itself below the 15-minute interval),
   `retryCount 0`, `secrets: AMAZON_LWA_CLIENT_SECRET`. ⚠️ It is the queue's SECOND enqueuer:
   the functions runtime SA needs the same three IAM grants as the receiver's (below).
+- **`onIntegracaoAmazonChanged`** — `onDocumentWritten` (Firestore) on
+  `integracao/{integracaoId}`, master-plan step 20: the codebase's FIRST Firestore trigger,
+  and the FOURTH on that path (Mercado Livre, Shopee, Loja Integrada; plus `apps/functions`'
+  `onIntegracaoDeleted` on deletes). Keeps each Amazon conta's `int_frete` doc (tipo `amz`)
+  in step with the conta through the shared core `@delfrance/data/admin/frete`: adopt the
+  migrated doc by `contaAmazonContaFreteAmazonOuterRef`, else create `amz-<integracaoId>`;
+  patch only the mirrored fields that moved (`nome`, `ativo`, the filial, `dataCadastro`);
+  deactivate, never delete, once the conta is gone or no longer Amazon. State-driven: the
+  core re-reads the conta itself, so a replayed or out-of-order delivery cannot roll anything
+  back. EVERY channel's conta write reaches it, and it returns with ZERO reads unless the conta
+  is, or was, Amazon and the write moved a mirrored field (or the tipo, or created or deleted
+  the conta). One `evento: 'int-frete'` line per reconcile: the conta id and the action with
+  field names, never a value. `database` **`default`**, `retry: true`, **no secrets**, no
+  `invoker`, no Amazon call, no per-function `region:`. ⚠️ Outside both INERT switches
+  (above).
 
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
 and names the queue after the function, so renaming `filaLeituraAmazon` creates
@@ -152,10 +194,15 @@ key to the `FILA_LEITURA_AMAZON` constant every enqueuer targets.
 ⚠️ **One logger.** Every line is one JSON line on stdout through
 `LOGGER_STDOUT_AMAZON` (`severity` + `message`): one `evento: 'tarefa'` line per
 dispatch, one `evento: 'varredura'` line per sweep lane (and one per expiry
-run), and per poll tick one `evento: 'poll'` line per conta run plus ONE summary
-line (`[amazon] poll de pedidos`, the counters flattened). No line carries a
-seller id, a token or an error message; a failed sweep row is named by its
-document id only (the row holds the reason).
+run), per poll tick one `evento: 'poll'` line per conta run plus ONE summary
+line (`[amazon] poll de pedidos`, the counters flattened), and one
+`evento: 'int-frete'` line per conta-trigger reconcile (WARNING on
+`incompleto`). No line carries a seller id, a token or an error message; a
+failed sweep row is named by its document id only (the row holds the reason).
+⚠️ The one declared exception: on `incompleto` the shared core in
+`packages/data` also writes its own unstructured
+`console.warn('[amazon] conta Amazon sem dados suficientes para criar o int_frete', …)`
+(stderr, the conta id and field names only), outside `LOGGER_STDOUT_AMAZON`.
 
 ### Durability & the residual loss window
 
@@ -451,3 +498,24 @@ flipped:
 5. A poll tick logs its summary line `[amazon] poll de pedidos` with
    `portao: importador-ausente` (before step 5) or `chamadas-desligadas`, and
    `pollPedidosAmazon` holds no document: neither gate reads or writes Firestore.
+6. The conta trigger is bound to the NAMED database, and the Eventarc trigger
+   carries that filter:
+
+   ```bash
+   gcloud eventarc triggers list --location=<FUNCTIONS_REGION> --project <project-id>
+   # expect a trigger for onintegracaoamazonchanged,
+   # event type google.cloud.firestore.document.v1.written,
+   # filtered to database 'default' + the integracao/* document path
+   ```
+
+7. With the operator's OK, rename the conta and rename it back: the `amz`
+   freight doc's `nome` follows both times and its `ultimaModificacao` moves, and
+   the two `[amazon] onIntegracaoAmazonChanged` lines are INFO
+   `acao: atualizado`, never WARNING `acao: incompleto` (that would mean the
+   conta lacks a filial, a `nome` or a `dataCadastro`, so it has no `amz`
+   freight doc; the adoption pass's dry run already lists such a conta as
+   `incompleto`). ⚠️ The trigger logs only when a conta write moves a mirrored
+   field, and nothing between the deploy and this rename has to, so its silence
+   before it proves nothing. A plain conta save proves nothing either: one that
+   moves no mirrored field writes nothing by design, and right after the
+   adoption pass's `--apply` the adopted doc is already in step.
