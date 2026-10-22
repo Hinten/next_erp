@@ -7,6 +7,10 @@
  * shapes only, written against the store owner's sanitized captures (D17), not
  * the public document's examples.
  *
+ * The two write ECHOES of master-plan step 7 sit at the end. No capture of a
+ * write exists (nothing writes before the cutover), so those two follow the
+ * public document and are tolerant all the way down: every field optional.
+ *
  * ## The required set is minimal, on purpose
  *
  * The client validates the whole body before anyone reads a field, and the
@@ -366,3 +370,44 @@ export const liProdutoIdentidadeSchema = z
   .passthrough();
 
 export type ProdutoIdentidadeLi = z.infer<typeof liProdutoIdentidadeSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                 The write echoes (master-plan step 7, `escrita.ts`)        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The echo of `PUT /v1/pedido_envio/{pedido_envio_id}`: per the public
+ * document, the envio as stored (`id`, `objeto`, `prazo`, `valor`, the two
+ * dates).
+ *
+ * ⚠️ Diagnostic only, and so EVERY field is optional: a write's echo is never
+ * what decides whether the write took effect (a fresh `GET` does), and the write
+ * client reports an echo it cannot read instead of failing a write that landed.
+ * Only the two fields a log line names are typed; `.passthrough()` keeps the
+ * rest as received.
+ */
+export const liEcoPedidoEnvioSchema = z
+  .object({
+    id: inteiroOpcional(),
+    objeto: texto(),
+  })
+  .passthrough();
+
+export type EcoPedidoEnvioLi = z.infer<typeof liEcoPedidoEnvioSchema>;
+
+/**
+ * The echo of `PUT /v1/situacao/pedido/{pedido_id}`: per the public document,
+ * the situação now on the order (`codigo`, `id`, the flags, the order's
+ * resource URI). Diagnostic only, every field optional, for the same reasons as
+ * {@link liEcoPedidoEnvioSchema}; the flags stay untyped, as on
+ * {@link liSituacaoSchema}.
+ */
+export const liEcoSituacaoPedidoSchema = z
+  .object({
+    codigo: texto(),
+    /** The provider's numeric id — diagnostic only, never a key. */
+    id: inteiroOpcional(),
+  })
+  .passthrough();
+
+export type EcoSituacaoPedidoLi = z.infer<typeof liEcoSituacaoPedidoSchema>;

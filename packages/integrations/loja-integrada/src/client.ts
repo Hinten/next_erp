@@ -1,12 +1,19 @@
 /**
- * The Loja Integrada transport: one GET-only client, `criarClienteLeituraLi`.
+ * The Loja Integrada transport: the shared request core (`executarLi`) and the
+ * READ client built on it, `criarClienteLeituraLi`. The write client is a
+ * separate factory in `escrita.ts`, over the same core.
  *
- * ## There is no write method, by construction
+ * ## The read client has no write method, by construction
  *
- * The client exposes `get` and nothing else, and `get` takes no body. Every
- * request this package can make is a `GET` — there is no flag to flip, no verb
- * parameter, no request body to fill. Nothing writes to Loja Integrada before
- * the cutover; the first write step adds its own, separately reviewed method.
+ * `criarClienteLeituraLi` returns `{ get }` and nothing else, and `get` takes
+ * no body and hard-wires the verb: every request it makes is a `GET`. There is
+ * no flag to flip, no verb parameter, no body to fill. The package's only
+ * writer is `escrita.ts`, a different factory with different method names, so a
+ * read client handed to some code can never write.
+ *
+ * ⚠️ `executarLi` and its helpers are exported for `escrita.ts` ONLY. The
+ * package barrel (`index.ts`) names this module's public exports one by one and
+ * leaves them out, so nothing outside the package reaches the core.
  *
  * ## The credential
  *
@@ -33,27 +40,33 @@
  *   query key or value carrying it is refused with `LiConfigError('token-na-url')`
  *   before the URL exists. Every error message and observer event names the path
  *   and the query, so a token interpolated into either would otherwise reach all
- *   of them.
+ *   of them. A write's body is checked the same way (`'token-no-corpo'`).
  *
  * ## Each request, in order
  *
  *  1. Validate the path (`/v1/…`, no `?`, `#`, `://`, `..` or an encoded `.`,
  *     `/` or `\`, and unchanged by the URL parser).
  *  2. `await obterCredencial()` — OUTSIDE the deadline, so a slow getter does not
- *     eat the call's budget — then validate the token and the `ref`, and refuse
- *     a URL that carries the token.
+ *     eat the call's budget — then validate the token and the `ref`; for a
+ *     `PUT`, refuse a serialised body that carries the token; refuse a URL that
+ *     carries it.
  *  3. Generate the correlation id (even when the header is off, so the app's
  *     logs still correlate).
- *  4. Build exactly `Authorization`, `Accept` and, when enabled,
- *     `x-correlation-id`. No `Content-Type` on a GET.
- *  5. Open the deadline, `fetch` with `redirect: 'manual'`, read the body INSIDE
- *     the window, release the deadline in `finally`.
- *  6. Classify the outcome into the `errors.ts` taxonomy.
+ *  4. Build exactly `Authorization`, `Accept`, `Content-Type: application/json`
+ *     on a `PUT` only, and, when enabled, `x-correlation-id`.
+ *  5. Open the deadline of the verb's class (`PRAZO_LI_MS`), `fetch` with
+ *     `redirect: 'manual'`, read the body INSIDE the window, release the
+ *     deadline in `finally`.
+ *  6. Classify the outcome into the `errors.ts` taxonomy. A 2xx is handed to the
+ *     client that sent the request (`ler2xx`): the read client parses it with
+ *     its schema and throws `LiSchemaError` when it does not fit; the write
+ *     client reports its echo and never throws (`escrita.ts`). Every non-2xx is
+ *     classified here, identically for both verbs.
  *  7. Call `onChamada` once, then return or throw.
  *
  * ⚠️ **Redirects are never followed.** A 3xx is a `LiHttpError`. Following one
- * would double the calls silently and could carry the `Authorization` header to
- * a target nobody chose.
+ * would double the calls silently, could carry the `Authorization` header to a
+ * target nobody chose, and for a write would re-send the body there.
  */
 import { abrirPrazo, lerRespostaJson } from '@delfrance/core/wire';
 import type { z } from 'zod';
@@ -71,8 +84,9 @@ import {
   LiSchemaError,
   LiThrottleError,
   LiTimeoutError,
+  type MetodoLi,
 } from './errors';
-import { PRAZO_LI_MS } from './prazos';
+import { type ClasseOperacaoLi, PRAZO_LI_MS } from './prazos';
 
 /**
  * The one origin this package talks to. A constant, not an option: Loja
@@ -99,6 +113,12 @@ const PREFIXO_CAMINHO = /^\/v1\//;
  * walk up).
  */
 const SEPARADOR_CODIFICADO = /%(?:2e|2f|5c)/i;
+
+/** The deadline class of each verb: a `GET` is a read, a `PUT` a write. */
+const CLASSE_DO_METODO = {
+  GET: 'leitura',
+  PUT: 'escrita',
+} as const satisfies Record<MetodoLi, ClasseOperacaoLi>;
 
 /** The credential for ONE request. */
 export interface CredencialLi {
@@ -127,13 +147,17 @@ export type ResultadoChamadaLi =
  * One request, as the observer sees it.
  *
  * ⚠️ Built from named fields, never by spreading the request: it never contains
- * the token, a request header or `Authorization`. `corpo` is the full response
- * text with the token scrubbed out; the app's logger applies its own allow-list
- * and size cap. The event exists only in memory.
+ * the token, a request header, `Authorization` or the REQUEST body. `corpo` is
+ * the full response text with the token scrubbed out; the app's logger applies
+ * its own allow-list and size cap. The event exists only in memory.
+ *
+ * On a write whose 2xx body read was cut, `resultado` names what happened to
+ * the read (`rede`, `tempo-esgotado`) and `status` the 2xx that arrived; the
+ * write itself still resolved (`escrita.ts`).
  */
 export interface ChamadaLi {
   readonly operacao: string;
-  readonly metodo: 'GET';
+  readonly metodo: MetodoLi;
   /** The path, without the query. */
   readonly caminho: string;
   /** The query entries as sent, raw — the logger's allow-list redacts them. */
@@ -170,7 +194,8 @@ export interface OpcoesClienteLi {
    * sent (`LiConfigError`, a getter that threw, a `sinal` already aborted).
    *
    * ⚠️ An observer that throws propagates in place of the outcome. Harmless for
-   * a GET; a logger must still never throw.
+   * a GET; for a write it would hide that the write landed, so a logger must
+   * never throw.
    */
   readonly onChamada?: (e: ChamadaLi) => void;
   /** Milliseconds, for `latenciaMs` only. Defaults to `Date.now`. */
@@ -200,6 +225,62 @@ export interface RespostaLi<T> {
 export interface LiLeituraClient {
   get<S extends z.ZodType>(p: PedidoGetLi<S>): Promise<RespostaLi<z.infer<S>>>;
 }
+
+/* -------------------------------------------------------------------------- */
+/*                 The shared core (package-internal, see header)              */
+/* -------------------------------------------------------------------------- */
+
+/** A 2xx whose body was read IN FULL, handed to the client that sent it. */
+export interface Resposta2xxLi {
+  readonly status: number;
+  /** The raw text: what a parse reads, so a scrub can never alter the data. */
+  readonly texto: string;
+  /** The same text with the token scrubbed: what the observer gets. */
+  readonly corpo: string;
+  readonly correlationId: string;
+  readonly refCredencial: string;
+  /** The request's error context, verb included, for an error built from it. */
+  readonly ctx: ContextoRequisicaoLi;
+}
+
+/** What a client makes of a 2xx: a value, or a schema failure the core throws. */
+export type Desfecho2xxLi<R> =
+  | { readonly resultado: 'ok'; readonly valor: R }
+  | { readonly resultado: 'schema'; readonly erro: LiSchemaError };
+
+/** A 2xx whose BODY read was then cut (the deadline, or a dropped connection). */
+export interface Corte2xxLi {
+  readonly status: number;
+  readonly correlationId: string;
+  readonly refCredencial: string;
+}
+
+interface ExecucaoBaseLi<R> {
+  readonly operacao: string;
+  readonly caminho: string;
+  readonly sinal?: AbortSignal;
+  /** What a 2xx whose body was read in full means — the one step the clients differ on. */
+  readonly ler2xx: (r: Resposta2xxLi) => Desfecho2xxLi<R>;
+}
+
+/**
+ * One request for the core. A `GET` carries a query and never a body; a `PUT`
+ * always carries a body (already PARSED by its schema, serialised here) and
+ * says what a 2xx with a cut body resolves to — the write landed, so it must
+ * not throw.
+ */
+export type ExecucaoLi<R> = ExecucaoBaseLi<R> &
+  (
+    | {
+        readonly metodo: 'GET';
+        readonly query?: Readonly<Record<string, string | number | boolean>>;
+      }
+    | {
+        readonly metodo: 'PUT';
+        readonly corpo: Readonly<Record<string, string>>;
+        readonly corte2xx: (c: Corte2xxLi) => R;
+      }
+  );
 
 /**
  * A path under `/v1/` that reaches the server exactly as written.
@@ -272,7 +353,43 @@ function tokenNaUrl(
   return url.includes(token) || query.some(([k, v]) => k.includes(token) || v.includes(token));
 }
 
-export function criarClienteLeituraLi(opts: OpcoesClienteLi): LiLeituraClient {
+/**
+ * Whether the token appears in a serialised request body.
+ *
+ * ⚠️ Checked on the TEXT that is sent, in two spellings: as written, and as
+ * JSON writes it inside a string. A visible-ASCII token may hold `"` or `\`,
+ * which `JSON.stringify` escapes (`\"`, `\\`), so the raw token never occurs
+ * verbatim in the body that would carry it — and the server decodes it back.
+ */
+function tokenNoCorpo(token: string, textoCorpo: string): boolean {
+  const escapado = JSON.stringify(token).slice(1, -1);
+  return textoCorpo.includes(token) || textoCorpo.includes(escapado);
+}
+
+/**
+ * The 2xx reading of every `GET`: the body must parse with its schema, or the
+ * request fails with `LiSchemaError` — a read is never "resolved" without its
+ * data. `montar` shapes the value from the parsed data.
+ */
+export function lerComSchemaLi<S extends z.ZodType, R>(
+  schema: S,
+  montar: (dados: z.infer<S>, r: Resposta2xxLi) => R,
+): (r: Resposta2xxLi) => Desfecho2xxLi<R> {
+  return (r) => {
+    const leitura = lerRespostaJson(r.texto, schema);
+    if (leitura.ok) return { resultado: 'ok', valor: montar(leitura.data, r) };
+    const campos = leitura.motivo === 'formato' ? leitura.campos : [];
+    const erro = new LiSchemaError({ ...r.ctx, status: r.status, motivo: leitura.motivo, campos });
+    return { resultado: 'schema', erro };
+  };
+}
+
+/**
+ * The request core both clients call (module header, "Each request, in
+ * order"). Package-internal: the barrel does not export it.
+ */
+export async function executarLi<R>(opts: OpcoesClienteLi, p: ExecucaoLi<R>): Promise<R> {
+  const { metodo, operacao, caminho, sinal } = p;
   // Resolved at call time, and never called unbound: some runtimes reject a
   // detached `fetch` ("Illegal invocation").
   const fetchImpl: typeof globalThis.fetch =
@@ -281,154 +398,192 @@ export function criarClienteLeituraLi(opts: OpcoesClienteLi): LiLeituraClient {
   const enviarCorrelationId = opts.enviarCorrelationId ?? true;
   const agora = opts.agora ?? (() => Date.now());
 
-  async function get<S extends z.ZodType>(p: PedidoGetLi<S>): Promise<RespostaLi<z.infer<S>>> {
-    const { operacao, caminho, schema, sinal } = p;
+  // 1. The path. Its message never echoes it: a malformed one may carry a query.
+  if (!caminhoValido(caminho)) {
+    throw new LiConfigError('caminho', { operacao, refCredencial: null });
+  }
 
-    // 1. The path. Its message never echoes it: a malformed one may carry a query.
-    if (!caminhoValido(caminho)) {
-      throw new LiConfigError('caminho', { operacao, refCredencial: null });
-    }
+  // 2. The credential, OUTSIDE the deadline, every time.
+  const credencial = await opts.obterCredencial();
+  validarCredencial(credencial, operacao);
+  const { token, ref } = credencial;
 
-    // 2. The credential, OUTSIDE the deadline, every time.
-    const credencial = await opts.obterCredencial();
-    validarCredencial(credencial, operacao);
-    const { token, ref } = credencial;
+  // The body is serialised ONCE: the text checked is exactly the text sent.
+  const textoCorpo = p.metodo === 'PUT' ? JSON.stringify(p.corpo) : null;
+  if (textoCorpo !== null && tokenNoCorpo(token, textoCorpo)) {
+    throw new LiConfigError('token-no-corpo', { operacao, refCredencial: ref });
+  }
 
-    const query: readonly (readonly [string, string])[] = Object.entries(p.query ?? {}).map(
-      ([k, v]) => [k, String(v)] as const,
-    );
-    const qs = new URLSearchParams(query.map(([k, v]) => [k, v])).toString();
-    const url = `${URL_BASE_LI}${caminho}${qs === '' ? '' : `?${qs}`}`;
+  const query: readonly (readonly [string, string])[] =
+    p.metodo === 'GET'
+      ? Object.entries(p.query ?? {}).map(([k, v]) => [k, String(v)] as const)
+      : [];
+  const qs = new URLSearchParams(query.map(([k, v]) => [k, v])).toString();
+  const url = `${URL_BASE_LI}${caminho}${qs === '' ? '' : `?${qs}`}`;
 
-    // The token travels in `Authorization` only. Refused here, before any
-    // message or event is built from the path and the query.
-    if (tokenNaUrl(token, url, query)) {
-      throw new LiConfigError('token-na-url', { operacao, refCredencial: ref });
-    }
+  // The token travels in `Authorization` only. Refused here, before any
+  // message or event is built from the path and the query.
+  if (tokenNaUrl(token, url, query)) {
+    throw new LiConfigError('token-na-url', { operacao, refCredencial: ref });
+  }
 
-    // 3. The correlation id.
-    const correlationId = gerarCorrelationId();
+  // 3. The correlation id.
+  const correlationId = gerarCorrelationId();
 
-    // 4. Exactly these headers.
-    const headers: Record<string, string> = {
-      Authorization: `Basic ${token}`,
-      Accept: 'application/json',
+  // 4. Exactly these headers.
+  const headers: Record<string, string> = {
+    Authorization: `Basic ${token}`,
+    Accept: 'application/json',
+  };
+  if (textoCorpo !== null) headers['Content-Type'] = 'application/json';
+  if (enviarCorrelationId) headers['x-correlation-id'] = correlationId;
+
+  const ctx: ContextoRequisicaoLi = {
+    operacao,
+    caminho,
+    correlationId,
+    refCredencial: ref,
+    metodo,
+  };
+  const emitir = (
+    e: Pick<ChamadaLi, 'resultado' | 'status' | 'latenciaMs' | 'corpo'> &
+      Partial<Pick<ChamadaLi, 'codigoLimite' | 'retryAfterS'>>,
+  ): void => {
+    opts.onChamada?.({
+      operacao,
+      metodo,
+      caminho,
+      query,
+      correlationId,
+      enviouCorrelationId: enviarCorrelationId,
+      refCredencial: ref,
+      status: e.status,
+      latenciaMs: e.latenciaMs,
+      resultado: e.resultado,
+      codigoLimite: e.codigoLimite ?? null,
+      retryAfterS: e.retryAfterS ?? null,
+      corpo: e.corpo,
+    });
+  };
+
+  // Nothing was sent yet: a caller that already gave up gets its own abort back.
+  sinal?.throwIfAborted();
+
+  // 5. The deadline. The body read is INSIDE it: a server that sends its
+  // headers and then stalls would otherwise hang past the budget.
+  const prazoMs = PRAZO_LI_MS[CLASSE_DO_METODO[metodo]];
+  const inicio = agora();
+  const prazo = abrirPrazo(prazoMs, { vincular: sinal });
+  let res: Response | undefined;
+  let texto: string;
+  try {
+    res = await fetchImpl(url, {
+      method: metodo,
+      headers,
+      ...(textoCorpo === null ? {} : { body: textoCorpo }),
+      redirect: 'manual',
+      signal: prazo.signal,
+    });
+    texto = await res.text();
+  } catch (err) {
+    const falha = {
+      status: res?.status ?? null,
+      latenciaMs: agora() - inicio,
+      corpo: null,
     };
-    if (enviarCorrelationId) headers['x-correlation-id'] = correlationId;
-
-    const ctx: ContextoRequisicaoLi = { operacao, caminho, correlationId, refCredencial: ref };
-    const emitir = (
-      e: Pick<ChamadaLi, 'resultado' | 'status' | 'latenciaMs' | 'corpo'> &
-        Partial<Pick<ChamadaLi, 'codigoLimite' | 'retryAfterS'>>,
-    ): void => {
-      opts.onChamada?.({
-        operacao,
-        metodo: 'GET',
-        caminho,
-        query,
-        correlationId,
-        enviouCorrelationId: enviarCorrelationId,
-        refCredencial: ref,
-        status: e.status,
-        latenciaMs: e.latenciaMs,
-        resultado: e.resultado,
-        codigoLimite: e.codigoLimite ?? null,
-        retryAfterS: e.retryAfterS ?? null,
-        corpo: e.corpo,
-      });
-    };
-
-    // Nothing was sent yet: a caller that already gave up gets its own abort back.
-    sinal?.throwIfAborted();
-
-    // 5. The deadline. The body read is INSIDE it: a server that sends its
-    // headers and then stalls would otherwise hang past the budget.
-    const prazoMs = PRAZO_LI_MS.leitura;
-    const inicio = agora();
-    const prazo = abrirPrazo(prazoMs, { vincular: sinal });
-    let res: Response | undefined;
-    let texto: string;
-    try {
-      res = await fetchImpl(url, {
-        method: 'GET',
-        headers,
-        redirect: 'manual',
-        signal: prazo.signal,
-      });
-      texto = await res.text();
-    } catch (err) {
-      const falha = {
-        status: res?.status ?? null,
-        latenciaMs: agora() - inicio,
-        corpo: null,
-      };
-      // Asked of the deadline itself, never `err instanceof DOMException`:
-      // `fetch` rejects with the signal's reason as-is (`prazo.ts`).
-      if (prazo.esgotado()) {
-        emitir({ ...falha, resultado: 'tempo-esgotado' });
-        throw new LiTimeoutError({ ...ctx, prazoMs }, err);
-      }
-      // The caller's own cancel is theirs: rethrown as itself, never wrapped.
-      if (sinal?.aborted === true) {
-        emitir({ ...falha, resultado: 'cancelado' });
-        throw err;
-      }
-      // Both the fetch and a connection dropped MID-BODY reject with a
-      // `TypeError` ("terminated" in Node). The token check above guarantees
-      // this one cannot quote the token.
-      if (err instanceof TypeError) {
-        emitir({ ...falha, resultado: 'rede' });
-        throw new LiNetworkError(ctx, err);
-      }
-      emitir({ ...falha, resultado: 'inesperado' });
+    // A WRITE answered 2xx before its body read failed: it landed, so the
+    // deadline or a dropped connection here resolves instead of throwing.
+    const corte: Corte2xxLi | null =
+      p.metodo === 'PUT' && res?.ok === true
+        ? { status: res.status, correlationId, refCredencial: ref }
+        : null;
+    // Asked of the deadline itself, never `err instanceof DOMException`:
+    // `fetch` rejects with the signal's reason as-is (`prazo.ts`).
+    if (prazo.esgotado()) {
+      emitir({ ...falha, resultado: 'tempo-esgotado' });
+      if (corte !== null && p.metodo === 'PUT') return p.corte2xx(corte);
+      throw new LiTimeoutError({ ...ctx, prazoMs }, err);
+    }
+    // The caller's own cancel is theirs: rethrown as itself, never wrapped —
+    // even after a 2xx write, which the caller then re-derives from a read.
+    if (sinal?.aborted === true) {
+      emitir({ ...falha, resultado: 'cancelado' });
       throw err;
-    } finally {
-      // Always: the timer is not `unref`'d, so a forgotten one holds the event
-      // loop for the whole window.
-      prazo.liberar();
     }
+    // Both the fetch and a connection dropped MID-BODY reject with a
+    // `TypeError` ("terminated" in Node). The token check above guarantees
+    // this one cannot quote the token.
+    if (err instanceof TypeError) {
+      emitir({ ...falha, resultado: 'rede' });
+      if (corte !== null && p.metodo === 'PUT') return p.corte2xx(corte);
+      throw new LiNetworkError(ctx, err);
+    }
+    emitir({ ...falha, resultado: 'inesperado' });
+    throw err;
+  } finally {
+    // Always: the timer is not `unref`'d, so a forgotten one holds the event
+    // loop for the whole window.
+    prazo.liberar();
+  }
 
-    // 6. Classify. The scrubbed text is for the observer ONLY; the parse reads
-    // the raw text, so a scrub can never alter the data.
-    const status = res.status;
-    const latenciaMs = agora() - inicio;
-    const corpo = texto.replaceAll(token, TOKEN_REMOVIDO);
-    const retryAfterS = lerRetryAfter(res.headers.get('retry-after'));
-    const base = { status, latenciaMs, corpo, retryAfterS };
+  // 6. Classify. The scrubbed text is for the observer ONLY; the parse reads
+  // the raw text, so a scrub can never alter the data.
+  const status = res.status;
+  const latenciaMs = agora() - inicio;
+  const corpo = texto.replaceAll(token, TOKEN_REMOVIDO);
+  const retryAfterS = lerRetryAfter(res.headers.get('retry-after'));
+  const base = { status, latenciaMs, corpo, retryAfterS };
 
-    if (res.ok) {
-      const leitura = lerRespostaJson(texto, schema);
-      if (leitura.ok) {
-        emitir({ ...base, resultado: 'ok' });
-        return { dados: leitura.data, status, correlationId, refCredencial: ref };
-      }
-      const campos = leitura.motivo === 'formato' ? leitura.campos : [];
-      const erro = new LiSchemaError({ ...ctx, status, motivo: leitura.motivo, campos });
-      emitir({ ...base, resultado: 'schema' });
-      throw erro;
-    }
+  if (res.ok) {
+    const desfecho = p.ler2xx({ status, texto, corpo, correlationId, refCredencial: ref, ctx });
+    emitir({ ...base, resultado: desfecho.resultado });
+    if (desfecho.resultado === 'schema') throw desfecho.erro;
+    return desfecho.valor;
+  }
 
-    if (status === 401 || status === 403) {
-      emitir({ ...base, resultado: 'auth' });
-      throw new LiAuthError({ ...ctx, status });
-    }
-    if (status === 404) {
-      emitir({ ...base, resultado: 'nao-encontrado' });
-      throw new LiNotFoundError({ ...ctx, status });
-    }
-    if (status === 429) {
-      const limite = extrairEscopoLimite(texto);
-      emitir({ ...base, resultado: 'limite', codigoLimite: limite.codigo });
-      throw new LiThrottleError({
-        ...ctx,
-        status,
-        escopo: limite.escopo,
-        codigosEncontrados: limite.codigosEncontrados,
-        retryAfterS,
-      });
-    }
-    emitir({ ...base, resultado: 'http' });
-    throw new LiHttpError({ ...ctx, status });
+  if (status === 401 || status === 403) {
+    emitir({ ...base, resultado: 'auth' });
+    throw new LiAuthError({ ...ctx, status });
+  }
+  if (status === 404) {
+    emitir({ ...base, resultado: 'nao-encontrado' });
+    throw new LiNotFoundError({ ...ctx, status });
+  }
+  if (status === 429) {
+    const limite = extrairEscopoLimite(texto);
+    emitir({ ...base, resultado: 'limite', codigoLimite: limite.codigo });
+    throw new LiThrottleError({
+      ...ctx,
+      status,
+      escopo: limite.escopo,
+      codigosEncontrados: limite.codigosEncontrados,
+      retryAfterS,
+    });
+  }
+  emitir({ ...base, resultado: 'http' });
+  throw new LiHttpError({ ...ctx, status });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               The read client                              */
+/* -------------------------------------------------------------------------- */
+
+export function criarClienteLeituraLi(opts: OpcoesClienteLi): LiLeituraClient {
+  async function get<S extends z.ZodType>(p: PedidoGetLi<S>): Promise<RespostaLi<z.infer<S>>> {
+    // The verb is hard-wired: this client has no other.
+    return executarLi(opts, {
+      metodo: 'GET',
+      operacao: p.operacao,
+      caminho: p.caminho,
+      query: p.query,
+      sinal: p.sinal,
+      ler2xx: lerComSchemaLi(p.schema, (dados, r) => ({
+        dados,
+        status: r.status,
+        correlationId: r.correlationId,
+        refCredencial: r.refCredencial,
+      })),
+    });
   }
 
   return { get };

@@ -1,21 +1,25 @@
 # @delfrance/integrations-loja-integrada
 
-Platform-neutral Loja Integrada REST v1 library: **fetch-only and GET-only**, no
-Firestore, no Admin SDK, no `process.env`. The stateful half (the credential
-store, the connect route, the sweeps) lives in `apps/loja-integrada`.
+Platform-neutral Loja Integrada REST v1 library: **fetch-only**, no Firestore, no
+Admin SDK, no `process.env`. The **read client is GET-only by construction**; a
+separate **write client** is the package's only writer. The stateful half (the
+credential store, the connect route, the sweeps, the write engine) lives in
+`apps/loja-integrada`.
 
 What ships here:
 
-| Module           | Holds                                                                                                                            |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `api.ts`         | `URL_BASE_LI`, `CAMINHO_VALIDACAO` and `validarPersonalToken`, the validating GET                                                |
-| `client.ts`      | The GET-only transport: `criarClienteLeituraLi`, the strict token check, no redirect following                                   |
-| `paginacao.ts`   | `paginarLi`, Tastypie paging rebuilt from `meta.next` (only `offset` and the caller's own keys travel), with caller cancellation |
-| `pedidos.ts`     | The order import's reads: `buscarPedidoLi`, `listarHistoricoSituacaoLi` (every page) and `buscarProdutoPorIdExternoLi`           |
-| `pedidoTipos.ts` | The order detail, situação, situação-history row and produto-identity response schemas, written against captures                 |
-| `prazos.ts`      | `PRAZO_LI_MS`, the per-call deadline keyed on the operation class                                                                |
-| `types.ts`       | The `{ meta, objects }` paging envelope and the categoria row schema                                                             |
-| `errors.ts`      | The typed errors, the 429 scope (read from the body) and `Retry-After` (from the header)                                         |
+| Module              | Holds                                                                                                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api.ts`            | `URL_BASE_LI`, `CAMINHO_VALIDACAO` and `validarPersonalToken`, the validating GET                                                                                                                   |
+| `client.ts`         | The shared request core (package-internal) and the GET-only read client, `criarClienteLeituraLi`: the strict token check, no redirect following                                                     |
+| `escrita.ts`        | The write client, `criarClienteEscritaLi`: the pre-write `GET` (with the scrubbed body text for a restore snapshot) and one `PUT`; any 2xx resolves, an unreadable echo is reported, 202 is pending |
+| `paginacao.ts`      | `paginarLi`, Tastypie paging rebuilt from `meta.next` (only `offset` and the caller's own keys travel), with caller cancellation                                                                    |
+| `pedidos.ts`        | The order import's reads: `buscarPedidoLi`, `listarHistoricoSituacaoLi` (every page) and `buscarProdutoPorIdExternoLi`                                                                              |
+| `pedidosEscrita.ts` | The status write-back's two writes: `atualizarObjetoEnvioLi` (the tracking code) and `alterarSituacaoPedidoLi` (only the three write-back codigos)                                                  |
+| `pedidoTipos.ts`    | The order detail, situação, situação-history row and produto-identity response schemas, written against captures; the two write echoes, every field optional                                        |
+| `prazos.ts`         | `PRAZO_LI_MS`, the per-call deadline keyed on the operation class (`leitura`, `escrita`)                                                                                                            |
+| `types.ts`          | The `{ meta, objects }` paging envelope and the categoria row schema                                                                                                                                |
+| `errors.ts`         | The typed errors (each message names the verb and the path), the 429 scope (read from the body) and `Retry-After` (from the header)                                                                 |
 
 ## The token rule
 
@@ -37,8 +41,18 @@ token **raw** after `Basic ` (not base64-encoded by us).
 
 - **No Firestore / Admin SDK / `@delfrance/data`.** ADR 0015: a channel package is a
   library, not a plugin, and the ERP orchestration lives in its app.
-- **No write method and no request body.** Every request is a `GET` by
-  construction. No write to the provider exists before the cutover.
+- **No write method on the read client, and no body on any read.** Every request
+  `criarClienteLeituraLi` makes is a `GET` by construction. The write client
+  (`escrita.ts`) is a separate factory whose method names the app uses in one
+  module only, its write engine. Its two writes (`pedidosEscrita.ts`) refuse,
+  before anything is sent, a situação outside the three write-back codigos, an
+  empty or non-visible-ASCII tracking code (so no call can clear one), a body that
+  fails its schema and a body carrying the token. Nothing writes to the provider
+  before the cutover: the app reaches the write client only through its write
+  engine, behind the write valves and the read switch, all off until the window.
+- **No decision about a write.** Whether one is due, safe or already reflected is
+  the app's, from a fresh read made just before it. A write cut by its deadline
+  may have landed; the caller re-reads before deciding anything.
 - **No token store, no refresh, no OAuth.** The Personal Token is supplied by the
   caller on every call.
 - **No retry, backoff or rate limiter.** The rate-limit error carries its scope and
@@ -55,8 +69,12 @@ token **raw** after `Basic ` (not base64-encoded by us).
 - **No resource schema far ahead of its consumer.** Beyond the paging envelope and
   categoria, only the order import's shapes and reads ship (`pedidoTipos.ts`,
   `pedidos.ts`), consumed by `apps/loja-integrada`'s order import (master-plan
-  step 5); every other resource arrives with its first consumer, written against
-  captured responses.
+  step 5), and the status write-back's two writes and their echoes
+  (`pedidosEscrita.ts`), consumed by its write engine (master-plan step 7); every
+  other resource arrives with its first consumer, written against captured
+  responses. The write echoes are the one exception to "against captures": no
+  write is made before the cutover, so they follow the public document and keep
+  every field optional.
 - **No decision about an order.** `pedidos.ts` reads and parses; mapping a
   situação, a payment or a line is the app's (`apps/loja-integrada`), through the
   shared situação table in `@delfrance/schemas`.
