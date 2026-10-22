@@ -193,12 +193,22 @@ export async function validateRetInutNFe(xml: string): Promise<void> {
   }
 }
 
+/**
+ * `<name>text</name>`, with or without a namespace prefix (`<nfe:name>`): the
+ * XSD and `parse` both read the local name, so a prefixed reply is the same
+ * reply. Group 1 is the qualified name (closing tag must match it), group 2 the text.
+ */
+function elementoSimples(localName: string): RegExp {
+  return new RegExp(`<((?:[A-Za-z_][\\w.-]*:)?${localName})>([^<]*)</\\1>`);
+}
+
 async function isRejeicaoSemDhRecbto(xml: string): Promise<boolean> {
-  const dhRecbto = /<dhRecbto>([^<]*)<\/dhRecbto>/.exec(xml);
-  if (!dhRecbto || !DOTNET_DATETIME_MIN.test(dhRecbto[1]!)) return false;
-  const cStat = /<cStat>([^<]*)<\/cStat>/.exec(xml)?.[1];
+  const dhRecbto = elementoSimples('dhRecbto').exec(xml);
+  if (!dhRecbto || !DOTNET_DATETIME_MIN.test(dhRecbto[2]!)) return false;
+  const cStat = elementoSimples('cStat').exec(xml)?.[2];
   if (cStat === undefined || cStat === CSTAT_INUTILIZACAO_HOMOLOGADA) return false;
-  const standIn = xml.replace(dhRecbto[0], `<dhRecbto>${DH_RECBTO_STAND_IN}</dhRecbto>`);
+  const qName = dhRecbto[1]!;
+  const standIn = xml.replace(dhRecbto[0], `<${qName}>${DH_RECBTO_STAND_IN}</${qName}>`);
   try {
     await validateXsd('retInutNFe', standIn);
     return true;

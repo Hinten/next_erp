@@ -57,6 +57,13 @@ function homologada(dhRecbto: string): string {
   );
 }
 
+/** The same reply with every element under an `nfe:` prefix instead of the default namespace. */
+function prefixado(xml: string): string {
+  return xml
+    .replace(`xmlns="${NFE_NS}"`, `xmlns:nfe="${NFE_NS}"`)
+    .replace(/<(\/?)([A-Za-z]\w*)/g, '<$1nfe:$2');
+}
+
 describe('validateRetInutNFe — the unfilled-dhRecbto rejection', () => {
   it('accepts a rejection whose dhRecbto is DateTime.MinValue', async () => {
     await expect(validateRetInutNFe(rejeicao())).resolves.toBeUndefined();
@@ -66,6 +73,15 @@ describe('validateRetInutNFe — the unfilled-dhRecbto rejection', () => {
     await expect(
       validateRetInutNFe(rejeicao({ dhRecbto: '0001-01-01T00:00:00-03:00' })),
     ).resolves.toBeUndefined();
+  });
+
+  it('accepts the same rejection with namespace-prefixed elements (<nfe:dhRecbto>)', async () => {
+    // Control first: the XSD itself takes the prefixed form, so the case below
+    // exercises the tolerance and not a document the schema would refuse anyway.
+    await expect(
+      validateXsd('retInutNFe', prefixado(homologada('2026-10-22T09:41:12-03:00'))),
+    ).resolves.toBeUndefined();
+    await expect(validateRetInutNFe(prefixado(rejeicao()))).resolves.toBeUndefined();
   });
 
   it('leaves the plain XSD gate strict — the tolerance lives in validateRetInutNFe only', async () => {
@@ -87,6 +103,12 @@ describe('validateRetInutNFe — the unfilled-dhRecbto rejection', () => {
 
   it('rejects the sentinel on a HOMOLOGADA reply (cStat 102 must carry a real dhRecbto)', async () => {
     await expect(validateRetInutNFe(homologada(SENTINELA))).rejects.toBeInstanceOf(
+      NFeXsdValidationError,
+    );
+  });
+
+  it('rejects the sentinel on a prefixed HOMOLOGADA reply too', async () => {
+    await expect(validateRetInutNFe(prefixado(homologada(SENTINELA)))).rejects.toBeInstanceOf(
       NFeXsdValidationError,
     );
   });
