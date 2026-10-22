@@ -45,9 +45,9 @@
  *  - the step-7 loop moves only the clocks;
  *  - a cancellation on a pedido whose `freteInicial.printLabelId` was written
  *    the way the Melhor Envio purchase writes it (a DOT PATH into the nested
- *    block) raises the reversal-after-the-label aviso (owner decision A7);
+ *    block) raises the reversal-after-the-label aviso (owner decision);
  *  - a PAID order without an address through the REAL notification pipeline's
- *    hot sweep (owner decision A4): the shared store's real mark keeps the row
+ *    hot sweep (owner decision): the shared store's real mark keeps the row
  *    `failed` below the cap and PARKS it at the cap, and only then the
  *    exhaustion signal logs its ERROR line and raises the real aviso — with
  *    nothing of the pedido or a cliente written; a later import with a CEP
@@ -140,7 +140,7 @@ function db(): Firestore {
   return getAdminFirestore();
 }
 
-/** The reads queue's failures-only store: the A4 case seeds and sweeps one row of it. */
+/** The reads queue's failures-only store: the paid-without-address case seeds and sweeps one row of it. */
 const NOTIFICACOES = 'notificacoesLojaIntegrada';
 
 const refPedido = (): DocumentReference => db().collection('pedidos').doc(PEDIDO_ID);
@@ -894,7 +894,7 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     expect(pagamentoDepois.lastProviderUpdate).toBe(dataLiParaMicros(carimboLi(8)));
   });
 
-  it('A7: a cancellation landing after the Melhor Envio purchase’s own DOT-PATH write of printLabelId ⇒ the reversal and the open aviso; the same without a label raises none', async () => {
+  it('a cancellation landing after the Melhor Envio purchase’s own DOT-PATH write of printLabelId ⇒ the reversal and the open aviso; the same without a label raises none', async () => {
     const avisoReversao = db()
       .collection('avisos')
       .doc(chaveDoAvisoDoPedidoLi(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta, CONTA, PEDIDO_ID));
@@ -931,7 +931,7 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     });
   });
 
-  it('A4 on the REAL pipeline: a paid order without an address swept to the cap — the real row PARKED, the ERROR line, the open aviso, nothing of the pedido; an invalid CEP later imports and keeps it OPEN, and the address then resolves it', async () => {
+  it('on the REAL pipeline, a paid order without an address swept to the cap — the real row PARKED, the ERROR line, the open aviso, nothing of the pedido; an invalid CEP later imports and keeps it OPEN, and the address then resolves it', async () => {
     const p = payload();
     const linha = db().collection(NOTIFICACOES).doc(docIdNotificacaoLi(p));
     const avisoPago = db()

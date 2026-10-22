@@ -385,7 +385,7 @@ describe('reprocessLojaIntegradaNotifications — what the run binds', () => {
         erro: 'adiado/chamadas-desligadas',
       });
       expect(fake.leituras.filter((c) => !c.startsWith('notificacoesLojaIntegrada/'))).toEqual([]);
-      // `onRetriesExhausted` is bound (step 5, A4), but it answers a THROWN
+      // `onRetriesExhausted` is bound (step 5), but it answers a THROWN
       // park only: neither ERROR line, and the one write is the park's mark.
       expect(erro).not.toHaveBeenCalled();
       expect(erroConsole).not.toHaveBeenCalled();

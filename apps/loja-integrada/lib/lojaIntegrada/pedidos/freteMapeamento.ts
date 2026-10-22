@@ -24,18 +24,24 @@
  * `valor_envio` is reported (`valorDivergente`, the `li-totais-divergentes`
  * incidente), never imported silently.
  *
- * ## The routing — the one place this import names step 20's key folds
+ * ## The routing — through the shared resolver, never a copy of it
  *
- * The key is the FULL `'<id>---<code>'` (`chaveFormaEnvioLi`): one id carries
- * several services, so the same id under another code is another, UNMAPPED
- * method. The row is found by that key (`entradaDoMapaPorChaveLi`) and is
- * MAPPED only when its `integracaoUid` names a target (`idDoAlvoDoMapaLi`) —
- * never by its target tipo. Then, from the target read:
+ * The row and the target are decided by `@delfrance/schemas`'s
+ * `mapaFreteLojaIntegrada.ts`, the module the label route and the conta
+ * screen decide by too, so the import and the label never read one row two
+ * ways. The row is `decidirLinhaDoMapaLi`: the key is the FULL
+ * `'<id>---<code>'` (`chaveFormaEnvioLi`): one id carries several services, so
+ * the same id under another code is another, UNMAPPED method; the row is
+ * MAPPED only when its `integracaoUid` names a target — never by its target
+ * tipo — and the row's Melhor Envio service is `idServicoMelhorEnvioLi`'s. A
+ * uid naming a target no document can be (`.`, `..`) is never read: it is an
+ * absent target. Then the target read is judged by `avaliarAlvoDoMapaLi` under
+ * `POLITICA_ALVO_IMPORTACAO_LI`, and a pickup is `alvoDispensaEnderecoLi`'s:
  *
  * | Target | `integracaoFreteOuterRef` | Aviso `lojaIntegradaFreteNaoSuportado` |
  * |---|---|---|
  * | exists, active, tipo `melhorEnvios` (with a service id), `motoboy`, `retiradaNaLoja` | the target (`melhorEnvios`: `externalOptionId` = the row's service id) | resolve |
- * | missing / inactive / a Melhor Envio row with no service / any other tipo | the conta's LI doc | raise (`alvo-ausente`, `alvo-inativo`, `alvo-sem-servico`, `tipo-nao-suportado`) |
+ * | missing (or a uid no document can be) / inactive / a Melhor Envio row with no service / any other tipo | the conta's LI doc | raise (`alvo-ausente`, `alvo-inativo`, `alvo-sem-servico`, `tipo-nao-suportado`) |
  * | exists, active, tipo `fob` or `outros` (deliberate: the label step routes it) | the conta's LI doc | resolve (an INFO log, no aviso) |
  * | unmapped, or a `mapa` that is not a list | the conta's LI doc | resolve |
  * | a method with no usable key | the conta's LI doc | — (no row) |
@@ -49,9 +55,10 @@
  *
  * `envios[0]` drives it; more than one shipment is reported (`multiEnvio`, a
  * non-blocking incidente) and never expected. `externalId` is the shipment id,
- * `externalOptionData` the raw `forma_envio`, `externalOptionIntegracao` stays
- * `null` (the label step decides it), `valorCobrado` the order's freight
- * (above, rounded),
+ * `externalOptionData` the raw `forma_envio`, `externalOptionIntegracao` is
+ * `null` and is never set on a Loja Integrada block (the ref alone names where
+ * the freight goes, routed here or by the label step), `valorCobrado` the
+ * order's freight (above, rounded),
  * `timestamp` and `dataPrevisaoEntrega` (+ `prazo` days) from the shipment's
  * creation stamp, `codRastreio` the tracking code (`''` is none), and
  * `enderecoFreteOuterReference` the fiscal endereço — whose absence withholds
@@ -188,20 +195,20 @@ import {
   ESTADO_FRETE,
   ESTADO_PEDIDO,
   FUSO_FISCAL,
-  INTEGRACAO_FRETE,
   MODALIDADE_FRETE,
-  MOTIVO_FRETE_NAO_SUPORTADO_LI,
+  POLITICA_ALVO_IMPORTACAO_LI,
+  alvoDispensaEnderecoLi,
+  avaliarAlvoDoMapaLi,
   chaveFormaEnvioLi,
-  entradaDoMapaPorChaveLi,
+  decidirLinhaDoMapaLi,
   getPrazoDespachoNoFuso,
-  idDoAlvoDoMapaLi,
   seedFreteInicial,
   toOuterRef,
   toOuterRefOrNull,
   type EstadoPedido,
   type FreteDoPedido,
   type HorarioDeCorte,
-  type IntegracaoFrete,
+  type LinhaDoMapaLi,
   type ModalidadeFrete,
   type MotivoFreteNaoSuportadoLi,
   type OuterRef,
@@ -264,52 +271,16 @@ export function valorFreteDivergenteLi(pedido: PedidoLi): boolean {
 /*                                 the routing                                 */
 /* -------------------------------------------------------------------------- */
 
-/** The freight tipos an order is ROUTED to at import. */
-export const TIPOS_ALVO_IMPORTACAO_LI = [
-  INTEGRACAO_FRETE.melhorEnvios,
-  INTEGRACAO_FRETE.motoboy,
-  INTEGRACAO_FRETE.retiradaNaLoja,
-] as const satisfies readonly IntegracaoFrete[];
-
-/** The tipos a row is DELIBERATELY mapped to: the label step routes them; no aviso. */
-const TIPOS_DELIBERADOS: ReadonlySet<string> = new Set<string>([
-  INTEGRACAO_FRETE.fob,
-  INTEGRACAO_FRETE.outros,
-]);
-
-const TIPOS_ROTEADOS: ReadonlySet<string> = new Set<string>(TIPOS_ALVO_IMPORTACAO_LI);
-
-/** What the conta's `mapa` says about the order's shipping method, before any target read. */
+/**
+ * What the conta's `mapa` says about the order's shipping method, before any target read: the
+ * shared row decision (`LinhaDoMapaLi`, `decidirLinhaDoMapaLi`), or no Loja Integrada
+ * `int_frete` for the conta at all. A `mapeado` row's `alvoId` is the target `int_frete` doc id
+ * the importer reads by id — `null` for a uid naming a target no document can be, which is
+ * judged absent without a read.
+ */
 export type DecisaoMapaLi =
   /** No Loja Integrada `int_frete` for the conta. */
-  | { readonly tipo: 'sem-int-frete'; readonly chave: string | null }
-  /** The method has no usable key. */
-  | { readonly tipo: 'sem-chave' }
-  /** The stored `mapa` is not a list. */
-  | { readonly tipo: 'mapa-invalido'; readonly chave: string }
-  /** No row under the key, or a row naming no target. */
-  | { readonly tipo: 'nao-mapeado'; readonly chave: string }
-  | {
-      readonly tipo: 'mapeado';
-      readonly chave: string;
-      /** The target `int_frete` doc id: the importer reads it by id. */
-      readonly alvoId: string;
-      /** The row's display name (the aviso's `formaEnvio`). */
-      readonly nomeOriginal: string | null;
-      /** The row's Melhor Envio service id (`targetData.id`), or `null`. */
-      readonly idServico: string | null;
-    };
-
-/** A Melhor Envio service id: a positive safe integer, or its canonical decimal. */
-function idDoServico(targetData: unknown): string | null {
-  if (typeof targetData !== 'object' || targetData === null) return null;
-  const id = (targetData as Record<string, unknown>).id;
-  if (typeof id === 'number') return Number.isSafeInteger(id) && id > 0 ? String(id) : null;
-  if (typeof id === 'string' && /^[1-9][0-9]*$/.test(id) && Number.isSafeInteger(Number(id))) {
-    return id;
-  }
-  return null;
-}
+  { readonly tipo: 'sem-int-frete'; readonly chave: string | null } | LinhaDoMapaLi;
 
 export interface EntradaDecisaoMapaLi {
   /** The conta's Loja Integrada `int_frete` doc id, or `null` when the lookup found none. */
@@ -320,24 +291,27 @@ export interface EntradaDecisaoMapaLi {
   readonly formaEnvio: unknown;
 }
 
-/** Decide from the `mapa` the registration read (module header). */
+/**
+ * Decide from the `mapa` the registration read (module header), through the shared row decision.
+ *
+ * ⚠️ The registration hands a `mapa` that is not a list back as `null` with its own
+ * `mapa-invalido` verdict, and the shared decision reads a `null` `mapa` as an EMPTY one — so
+ * that verdict is answered here, before the shared decision could call the row unmapped.
+ */
 export function decidirMapaLi(entrada: EntradaDecisaoMapaLi): DecisaoMapaLi {
-  const chave = chaveFormaEnvioLi(entrada.formaEnvio);
   const registro = entrada.registro;
-  if (entrada.intFreteLiId === null || registro === null) return { tipo: 'sem-int-frete', chave };
-  if (registro.resultado === 'sem-int-frete') return { tipo: 'sem-int-frete', chave };
-  if (chave === null) return { tipo: 'sem-chave' };
-  if (registro.resultado === 'mapa-invalido') return { tipo: 'mapa-invalido', chave };
-  const linha = entradaDoMapaPorChaveLi(registro.mapa, chave);
-  const alvoId = linha === null ? null : idDoAlvoDoMapaLi(linha.integracaoUid);
-  if (linha === null || alvoId === null) return { tipo: 'nao-mapeado', chave };
-  return {
-    tipo: 'mapeado',
-    chave,
-    alvoId,
-    nomeOriginal: typeof linha.nomeOriginal === 'string' ? linha.nomeOriginal : null,
-    idServico: idDoServico(linha.targetData),
-  };
+  if (
+    entrada.intFreteLiId === null ||
+    registro === null ||
+    registro.resultado === 'sem-int-frete'
+  ) {
+    return { tipo: 'sem-int-frete', chave: chaveFormaEnvioLi(entrada.formaEnvio) };
+  }
+  const linha = decidirLinhaDoMapaLi(registro.mapa, entrada.formaEnvio);
+  if (registro.resultado === 'mapa-invalido' && linha.tipo !== 'sem-chave') {
+    return { tipo: 'mapa-invalido', chave: linha.chave };
+  }
+  return linha;
 }
 
 /** The mapped target as the importer read it by id. */
@@ -366,10 +340,11 @@ export interface RoteamentoFreteLi {
   readonly deliberado: boolean;
   /**
    * Routed to an active `retiradaNaLoja` target — decided from the target
-   * DOCUMENT's tipo, never from the row's `targetTipoIntegracao`: a pickup
-   * ships nothing to an address, so its route needs no endereço (module
-   * header, "No endereço, no route"), and a paid order on it is never refused
-   * for lacking one (`pedidoPagoSemEndereco.ts`).
+   * DOCUMENT's tipo by the shared `alvoDispensaEnderecoLi` (the label route's
+   * endereço guard asks the same predicate), never from the row's
+   * `targetTipoIntegracao`: a pickup ships nothing to an address, so its route
+   * needs no endereço (module header, "No endereço, no route"), and a paid order
+   * on it is never refused for lacking one (`pedidoPagoSemEndereco.ts`).
    */
   readonly dispensaEndereco: boolean;
 }
@@ -418,25 +393,21 @@ export function rotearFreteLi(entrada: EntradaRoteamentoLi): RoteamentoFreteLi {
 
   const levantar = (motivo: MotivoFreteNaoSuportadoLi): RoteamentoFreteLi =>
     naConta({ tipo: 'levantar', chave: decisao.chave, motivo, formaEnvio: decisao.nomeOriginal });
-  const dados = alvo?.existe === true ? alvo.dados : null;
-  if (dados === null) return levantar(MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoAusente);
-  if (dados.ativo === false) return levantar(MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoInativo);
-  const tipo = typeof dados.tipo === 'string' ? dados.tipo : null;
-  if (tipo !== null && TIPOS_DELIBERADOS.has(tipo)) {
+  // A target no document can be (`alvoId: null`) was never read: the evaluator judges it absent.
+  const refDoAlvo = decisao.alvoId === null ? null : refIntFrete(decisao.alvoId);
+  const lido = refDoAlvo !== null && alvo?.existe === true ? alvo.dados : null;
+  // The shared evaluator, in its order: absent, inactive, deliberate, unsupported, no service.
+  const avaliacao = avaliarAlvoDoMapaLi(lido, decisao.idServico, POLITICA_ALVO_IMPORTACAO_LI);
+  if (avaliacao.tipo === 'invalido') return levantar(avaliacao.motivo);
+  if (avaliacao.tipo === 'deliberado') {
     return naConta({ tipo: 'resolver', chave: decisao.chave }, true);
   }
-  if (tipo === null || !TIPOS_ROTEADOS.has(tipo)) {
-    return levantar(MOTIVO_FRETE_NAO_SUPORTADO_LI.tipoNaoSuportado);
-  }
-  if (tipo === INTEGRACAO_FRETE.melhorEnvios && decisao.idServico === null) {
-    return levantar(MOTIVO_FRETE_NAO_SUPORTADO_LI.alvoSemServico);
-  }
   return {
-    integracaoFreteOuterRef: refIntFrete(decisao.alvoId),
-    externalOptionId: tipo === INTEGRACAO_FRETE.melhorEnvios ? decisao.idServico : null,
+    integracaoFreteOuterRef: refDoAlvo,
+    externalOptionId: avaliacao.externalOptionId,
     aviso: { tipo: 'resolver', chave: decisao.chave },
     deliberado: false,
-    dispensaEndereco: tipo === INTEGRACAO_FRETE.retiradaNaLoja,
+    dispensaEndereco: alvoDispensaEnderecoLi(avaliacao.tipoAlvo),
   };
 }
 
