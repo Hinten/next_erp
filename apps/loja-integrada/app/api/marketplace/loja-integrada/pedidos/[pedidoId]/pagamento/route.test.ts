@@ -206,9 +206,11 @@ describe('GET …/pedidos/[pedidoId]/pagamento — the caller and the id', () =>
     expect((await get(PEDIDO)).status).toBe(403);
     expect(db.leituras).toEqual([]);
 
-    // The near-miss: pedido.read is exactly what checks.
+    // The near-miss: pedido.read is exactly what checks — it reaches the pedido (and, with the
+    // switch unset, the switch's 503).
     h.verifyIdToken.mockResolvedValue(LEITOR_PEDIDO);
-    expect((await get(PEDIDO)).status).not.toBe(403);
+    expect((await get(PEDIDO)).status).toBe(503);
+    expect(db.leituras).toContain(CAMINHO);
   });
 
   it.each(['..', '.', 'a/b'])('400 LI_ID_INVALIDO for the id %j, before any read', async (id) => {
