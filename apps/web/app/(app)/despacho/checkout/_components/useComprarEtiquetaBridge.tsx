@@ -71,6 +71,13 @@ export function useComprarEtiquetaBridge(pedido: Pedido | null): ComprarEtiqueta
       pedidoId={pending.input.pedidoId}
       intFreteId={pending.input.intFreteId}
       needsPostedConfirm={pending.input.needsPostedConfirm}
+      // The Loja Integrada paid re-check before the buy (step 15): a `pago` the
+      // checkout's own gate received is reused under 120 s, and a block says
+      // the checkout and the NF-e are already saved.
+      {...(pending.input.conferenciaLi === undefined
+        ? {}
+        : { conferenciaLi: pending.input.conferenciaLi })}
+      gateConferenciaLi="cadeia"
     />
   ) : null;
 

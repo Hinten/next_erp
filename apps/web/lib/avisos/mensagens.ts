@@ -164,22 +164,36 @@ export const FRASE_MOTIVO_CONTESTADO_LI: Readonly<Record<MotivoPedidoContestadoL
 };
 
 /**
- * O corpo do aviso de pedido contestado. ⚠️ Diz SEMPRE que o despacho não fica
- * bloqueado: nada no ERP segura o envio de um pedido da Loja Integrada por
- * causa deste aviso, e quem lesse "contestado" como bloqueio enviaria sem
- * conferir — ou deixaria de enviar um pedido que só está em disputa. Nos três
- * códigos de devolução a frase diz também que o estado e o pagamento foram
- * MANTIDOS (a mercadoria pode não ter voltado) e que a situação é final lá,
- * porque é por isso que o aviso não some sozinho. Um código mais novo que esta
- * tela, uma chave herdada (`'toString'`) ou um param ausente caem no texto
- * neutro, nunca em "undefined".
+ * O que a conferência de pagamento da Loja Integrada faz com um pedido
+ * contestado — dito pelo aviso, porque é o que o operador precisa saber dele:
+ * os portões que GASTAM (o checkout tira o estoque, a compra paga a etiqueta)
+ * RECUSAM, seja pela situação lida na loja, seja por este aviso aberto quando a
+ * loja não pode ser lida; os que só imprimem (a reimpressão, a etiqueta
+ * genérica) pedem o "Estou ciente do risco". ⚠️ É uma afirmação sobre as
+ * tabelas de decisão (`lib/loja-integrada/conferenciaPagamento.ts`), e o teste
+ * a prende a elas: mudou uma, muda a frase.
+ */
+const PORTOES_DO_PEDIDO_CONTESTADO_LI =
+  'O checkout e a compra de etiqueta no Melhor Envio são recusados enquanto a Loja Integrada ' +
+  'mostrar o pedido contestado ou este aviso estiver aberto. A reimpressão da etiqueta e a ' +
+  'etiqueta genérica só prosseguem depois que o operador confirmar que está ciente do risco.';
+
+/**
+ * O corpo do aviso de pedido contestado. ⚠️ Diz SEMPRE o que os portões fazem
+ * ({@link PORTOES_DO_PEDIDO_CONTESTADO_LI}): quem não soubesse que o checkout
+ * será recusado iria descobrir no balcão, e quem achasse que nada segura o
+ * envio despacharia sem conferir. Nos três códigos de devolução a frase diz
+ * também que o estado e o pagamento foram MANTIDOS (a mercadoria pode não ter
+ * voltado) e que a situação é final lá, porque é por isso que o aviso não some
+ * sozinho. Um código mais novo que esta tela, uma chave herdada (`'toString'`)
+ * ou um param ausente caem no texto neutro, nunca em "undefined".
  */
 function corpoPedidoContestadoLi(params: Aviso['params']): string {
   const codigo = motivoPedidoContestadoLiSchema.safeParse(params.motivo);
   const abertura =
     `O pedido ${p(params, 'pedido')} da loja ${p(params, 'loja')} está contestado na Loja ` +
     `Integrada: ${codigo.success ? FRASE_MOTIVO_CONTESTADO_LI[codigo.data] : 'o pagamento foi contestado'}. ` +
-    'O despacho NÃO fica bloqueado no ERP — confira o pedido antes de enviar.';
+    PORTOES_DO_PEDIDO_CONTESTADO_LI;
   if (!codigo.success || codigo.data === MOTIVO_PEDIDO_CONTESTADO_LI.disputa) {
     // O resolvedor fecha a linha em QUALQUER importação seguinte que não a levanta —
     // inclusive um estorno antes de o estoque sair —, então a frase nomeia o único caso

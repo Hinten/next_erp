@@ -1,7 +1,15 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { Pedido } from '@delfrance/schemas';
+import {
+  CODIGO_ERRO_LI,
+  type Pedido,
+  type RespostaConferenciaPagamentoLi,
+} from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
+import { LojaIntegradaClientHttpError } from '@/lib/loja-integrada/client';
+import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import { lojaIntegradaClientFalso } from '@/lib/testing/lojaIntegradaClientFalso';
 
 import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
 import type { CheckoutData } from '@/lib/checkout/loadPedidoCheckout';
@@ -25,6 +33,12 @@ const h = vi.hoisted(() => ({
   getDoc: vi.fn(),
   /** Every props object the "Outros Checkouts" reprint modal is rendered with. */
   outroCheckoutModal: vi.fn(),
+  /** The client `useLojaIntegradaClient()` answers — the sentinel unless a test swaps it. */
+  liClient: null as unknown,
+  /** The pre-save gates, the transaction and the read-only route preview. */
+  evaluatePreSave: vi.fn(),
+  salvar: vi.fn(),
+  prever: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -39,7 +53,15 @@ vi.mock('@/lib/nfe/client', () => ({ useNFeClient: () => null }));
 vi.mock('@/lib/freight/client', () => ({ useFreightClient: () => null }));
 vi.mock('@/lib/mercado-livre/client', () => ({ useMercadoLivreClient: () => null }));
 vi.mock('@/lib/shopee/client', () => ({ useShopeeClient: () => h.SHOPEE_SENTINEL }));
-vi.mock('@/lib/loja-integrada/client', () => ({ useLojaIntegradaClient: () => h.LI_SENTINEL }));
+vi.mock('@/lib/loja-integrada/client', async (importOriginal) => ({
+  // The error classes stay real: the paid re-check narrows on them.
+  ...(await importOriginal<typeof import('@/lib/loja-integrada/client')>()),
+  useLojaIntegradaClient: () => h.liClient,
+}));
+vi.mock('@/lib/loja-integrada/rotaEtiqueta', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/loja-integrada/rotaEtiqueta')>()),
+  preverRotaEtiquetaLi: (...args: unknown[]) => h.prever(...args),
+}));
 vi.mock('@/lib/data/pedidoCollection', () => ({
   pedidoCollection: { docRef: () => ({ __ref: true }) },
 }));
@@ -49,8 +71,8 @@ vi.mock('firebase/firestore', async () => {
 });
 vi.mock('@/lib/checkout/saveCheckout', () => ({
   CheckoutSaveError: class CheckoutSaveError extends Error {},
-  evaluatePreSave: () => ({ ok: true, estadoContinuar: null }),
-  salvarCheckoutTransacao: async () => undefined,
+  evaluatePreSave: (...args: unknown[]) => h.evaluatePreSave(...args),
+  salvarCheckoutTransacao: (...args: unknown[]) => h.salvar(...args),
 }));
 vi.mock('@/lib/checkout/postSave', () => ({
   runCheckoutPostSave: (args: unknown) => h.runCheckoutPostSave(args),
@@ -100,6 +122,10 @@ const DADOS: CheckoutData = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.liClient = h.LI_SENTINEL;
+  h.evaluatePreSave.mockReturnValue({ ok: true, estadoContinuar: null });
+  h.salvar.mockResolvedValue(undefined);
+  h.prever.mockResolvedValue({ tipo: 'ja-roteado', tipoAlvo: 'motoboy' });
   h.getDoc.mockResolvedValue({ exists: () => false, data: () => null });
   h.runCheckoutPostSave.mockResolvedValue({
     nfe: { ok: true },
@@ -223,5 +249,245 @@ describe('CheckoutScreen — the Loja Integrada paid re-check (step 15)', () => 
     fireEvent.click(continuar);
 
     await waitFor(() => expect(resposta).toBe(true));
+  });
+});
+
+/**
+ * The save's hard gate of the paid re-check (master plan step 15): before the checkout
+ * transaction — which removes stock — an imported Loja Integrada order's
+ * CURRENT payment is asked of the backend. It runs after the confirm loop's
+ * last dialog (so the window to the commit is as short as it can be) and never
+ * inside the transaction: it is a network read, which a transaction callback
+ * must not hold.
+ */
+describe('CheckoutScreen — the Loja Integrada paid re-check before the save', () => {
+  const ID_LI = createHash('sha256').update('lojaIntegradaCONTA1-165').digest('hex');
+  const DADOS_LI: CheckoutData = {
+    ...DADOS,
+    pedidoId: ID_LI,
+    pedido: { ...DADOS.pedido, numero: '165' } as Pedido,
+  };
+  const FRESCO_LI = {
+    estado: 'pago',
+    numero: '165',
+    integracaoPedidoOuterRef: 'documents/integracao/CONTA1',
+    freteInicial: {
+      integracaoFreteOuterRef: 'documents/int_frete/mot-1',
+      enderecoFreteOuterReference: 'documents/clientes/c1/enderecos/e1',
+      modalidade: '0',
+      estado: 'emSeparacao',
+    },
+    itens: {},
+  };
+  const PAGO: RespostaConferenciaPagamentoLi = {
+    aplicavel: true,
+    fonte: 'loja',
+    veredito: 'pago',
+    codigo: 'pedido_pago',
+    motivoContestacao: null,
+    conferidoEmMs: 1_790_000_000_000,
+    correlationId: null,
+  };
+  const conferir = vi.fn();
+
+  beforeEach(() => {
+    conferir.mockReset();
+    h.liClient = lojaIntegradaClientFalso({ conferirPagamento: conferir });
+    h.getDoc.mockResolvedValue({ exists: () => true, data: () => FRESCO_LI });
+  });
+
+  function renderLi(dados: CheckoutData = DADOS_LI) {
+    return render(
+      <MantineTestProvider>
+        <CheckoutScreen fixture={staticFixture(dados)} />
+      </MantineTestProvider>,
+    );
+  }
+
+  it('⭐ runs AFTER the last confirm of the gate loop and BEFORE the transaction; a `pago` saves', async () => {
+    h.evaluatePreSave
+      .mockReturnValueOnce({
+        ok: false,
+        decision: 'confirm',
+        kind: 'frete-estado',
+        title: 'Atenção',
+        message: 'Este pedido não está no estado "Despacho autorizado". Deseja continuar?',
+      })
+      .mockReturnValue({ ok: true, estadoContinuar: 'iniciado' });
+    conferir.mockResolvedValue(PAGO);
+    renderLi();
+    await salvar();
+
+    const dialogo = await screen.findByRole('dialog');
+    // The loop's confirm is open: nothing has been asked of Loja Integrada yet.
+    expect(conferir).not.toHaveBeenCalled();
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Continuar' }));
+
+    await waitFor(() => expect(h.salvar).toHaveBeenCalledTimes(1));
+    expect(conferir).toHaveBeenCalledTimes(1);
+    expect(conferir.mock.calls[0]![0]).toBe(ID_LI);
+    expect(conferir.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.salvar.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("a `pago` rides the post-save as the chain's carried verdict, for THIS pedido", async () => {
+    conferir.mockResolvedValue(PAGO);
+    renderLi();
+    await salvar();
+
+    await waitFor(() => expect(h.runCheckoutPostSave).toHaveBeenCalledTimes(1));
+    expect(h.runCheckoutPostSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conferenciaLi: expect.objectContaining({
+          tipo: 'resposta',
+          pedidoId: ID_LI,
+          resposta: PAGO,
+        }),
+      }),
+    );
+  });
+
+  it('`nao-pago` BLOCKS: no transaction, no post-save, and the toast says the checkout was not saved', async () => {
+    conferir.mockResolvedValue({ ...PAGO, veredito: 'nao-pago', codigo: 'aguardando_pagamento' });
+    renderLi();
+    await salvar();
+
+    await waitFor(() => expect(showErrorNotification).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(showErrorNotification).mock.calls[0]![0].message).toMatch(
+      /não como pago\. O checkout não foi salvo\.$/,
+    );
+    expect(h.salvar).not.toHaveBeenCalled();
+    expect(h.runCheckoutPostSave).not.toHaveBeenCalled();
+  });
+
+  it('an open contested aviso (the ERP mirror) BLOCKS like a live verdict', async () => {
+    conferir.mockResolvedValue({
+      aplicavel: true,
+      fonte: 'erp',
+      veredito: 'contestado',
+      codigo: null,
+      motivoContestacao: 'disputa',
+      conferidoEmMs: null,
+      correlationId: null,
+    });
+    renderLi();
+    await salvar();
+
+    await waitFor(() => expect(showErrorNotification).toHaveBeenCalledTimes(1));
+    expect(h.salvar).not.toHaveBeenCalled();
+  });
+
+  it('the read switch OFF asks the configuration confirm; Cancelar saves nothing', async () => {
+    conferir.mockRejectedValue(
+      new LojaIntegradaClientHttpError('desligada', 503, CODIGO_ERRO_LI.chamadasDesligadas),
+    );
+    renderLi();
+    await salvar();
+
+    const dialogo = await screen.findByRole('dialog');
+    expect(
+      within(dialogo).getByText(/não está disponível \(a chave de chamadas está desligada\)/),
+    ).toBeTruthy();
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Cancelar' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(h.salvar).not.toHaveBeenCalled();
+    expect(showErrorNotification).not.toHaveBeenCalled();
+  });
+
+  it('⭐ a backend without the payment route (404, no envelope) asks — it never blocks silently and never passes silently', async () => {
+    conferir.mockRejectedValue(new LojaIntegradaClientHttpError('sem rota', 404, null));
+    renderLi();
+    await salvar();
+
+    const dialogo = await screen.findByRole('dialog');
+    expect(
+      within(dialogo).getByText(/o backend da Loja Integrada ainda não oferece esta conferência/),
+    ).toBeTruthy();
+    expect(h.salvar).not.toHaveBeenCalled();
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Continuar' }));
+
+    await waitFor(() => expect(h.salvar).toHaveBeenCalledTimes(1));
+    // A confirm carries no verdict: the chain's next gate asks again.
+    await waitFor(() => expect(h.runCheckoutPostSave).toHaveBeenCalledTimes(1));
+    expect(h.runCheckoutPostSave).toHaveBeenCalledWith(
+      expect.objectContaining({ conferenciaLi: null }),
+    );
+  });
+
+  it('while the check runs, Salvar says so', async () => {
+    let responder: (r: RespostaConferenciaPagamentoLi) => void = () => undefined;
+    conferir.mockReturnValue(
+      new Promise<RespostaConferenciaPagamentoLi>((resolve) => {
+        responder = resolve;
+      }),
+    );
+    renderLi();
+    await salvar();
+
+    expect(await screen.findByText('Conferindo pagamento na Loja Integrada…')).toBeTruthy();
+    responder(PAGO);
+    await waitFor(() => expect(h.salvar).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.queryByText('Conferindo pagamento na Loja Integrada…')).toBeNull(),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: a pedido that is not an imported Loja Integrada order never calls — not even a preview read', async () => {
+    h.getDoc.mockResolvedValue({
+      exists: () => true,
+      data: () => ({ ...FRESCO_LI, integracaoPedidoOuterRef: 'documents/integracao/balcao' }),
+    });
+    renderLi(DADOS);
+    await salvar();
+
+    await waitFor(() => expect(h.salvar).toHaveBeenCalledTimes(1));
+    expect(conferir).not.toHaveBeenCalled();
+    expect(h.prever).not.toHaveBeenCalled();
+    expect(h.runCheckoutPostSave).toHaveBeenCalledWith(
+      expect.objectContaining({ conferenciaLi: null }),
+    );
+  });
+
+  it('a label route the backend would refuse warns BEFORE the payment check; Cancelar asks nothing more', async () => {
+    h.prever.mockResolvedValue({
+      tipo: 'recusa',
+      motivo: 'sem-mapeamento',
+      mensagem: 'Esta forma de envio não está mapeada para uma transportadora.',
+    });
+    renderLi();
+    await salvar();
+
+    const dialogo = await screen.findByRole('dialog');
+    expect(
+      within(dialogo).getByText(/A etiqueta deste pedido não poderá ser gerada depois do checkout/),
+    ).toBeTruthy();
+    expect(conferir).not.toHaveBeenCalled();
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Cancelar' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(conferir).not.toHaveBeenCalled();
+    expect(h.salvar).not.toHaveBeenCalled();
+  });
+
+  it('Continuar on the route warning goes on to the payment check, then the save', async () => {
+    h.prever.mockResolvedValue({
+      tipo: 'recusa',
+      motivo: 'sem-mapeamento',
+      mensagem: 'Esta forma de envio não está mapeada para uma transportadora.',
+    });
+    conferir.mockResolvedValue(PAGO);
+    renderLi();
+    await salvar();
+
+    const dialogo = await screen.findByRole('dialog');
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Continuar' }));
+
+    await waitFor(() => expect(h.salvar).toHaveBeenCalledTimes(1));
+    expect(conferir).toHaveBeenCalledTimes(1);
+    expect(h.prever.mock.invocationCallOrder[0]!).toBeLessThan(
+      conferir.mock.invocationCallOrder[0]!,
+    );
   });
 });

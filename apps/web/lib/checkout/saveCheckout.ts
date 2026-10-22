@@ -138,9 +138,15 @@ function freteSignature(f: FreteDoPedido | null): string {
  * shows as an error, or a `confirm` the UI dialogs (and, on "yes", re-calls with
  * the kind added to `confirmed`). `ok` carries `estadoContinuar` for the tx.
  *
- * Legacy gate 12 (Loja Integrada `conferirSePedidoEstaPago`) is NOT ported — the
- * new app has no LI integration; the general `estado === 'pago'` check here (and
- * the in-transaction re-check) covers the case. Follow-up issue tracks LI.
+ * Gate 12 here is the ERP's own `estado === 'pago'`, for every pedido. The Loja
+ * Integrada paid re-check (master plan step 15) is deliberately NOT one of
+ * these gates: it is a network read of the order's CURRENT situação, which a
+ * pure function cannot make and a transaction must not hold. The checkout
+ * screen runs it for an imported Loja Integrada order only, after this loop's
+ * LAST confirm and before {@link salvarCheckoutTransacao}
+ * (`conferirAntesDeDespacharLi`, `lib/loja-integrada/conferenciaDespacho.ts`):
+ * a verdict that does not authorise dispatch blocks, one that cannot be
+ * verified asks. What that leaves open is named on the transaction.
  */
 export function evaluatePreSave(input: EvaluatePreSaveInput): PreSaveResult {
   const { loaded, fresh, freshItens, expected, log, produtos, existingCheckout, confirmed } = input;
@@ -226,7 +232,8 @@ export function evaluatePreSave(input: EvaluatePreSaveInput): PreSaveResult {
       'Este pedido não está no estado "Despacho autorizado" ou "Em separação". Deseja continuar?',
     );
   }
-  // 12. Pedido must be Pago (general case; LI payment check not ported).
+  // 12. Pedido must be Pago — every pedido. An imported Loja Integrada order's
+  // LIVE payment is checked by the screen after this loop (see the doc above).
   if (fresh.estado !== ESTADO_PEDIDO_PAGO) {
     return makeBlock(
       'nao-pago',
@@ -317,6 +324,18 @@ export class CheckoutSaveError extends Error {
  * stale-`ehSaida` bug). The checkout write ITSELF flips `freteInicial.estado` to
  * `checkFinalizado`, which the server stock-sync reacts to — stock is NEVER
  * written client-side. Legacy did not bump `ultimaModificacao`; kept for parity.
+ *
+ * ⚠️ The residual of the Loja Integrada paid re-check (rule 7, named rather
+ * than closed). For an imported Loja Integrada order the screen asks the
+ * order's live payment BEFORE this runs, and that answer cannot be re-derived
+ * in here — it is a network read, which a transaction callback must not hold.
+ * So a reversal landing in the seconds between that answer and this commit is
+ * not seen by it. The in-transaction `estado === pago` guard below still
+ * holds, and catches a reversal the import has already applied; it does NOT
+ * see a dispute (the pedido stays `pago`, its payment `em_disputa`) or a
+ * refund after the stock removal (the import keeps the stored estado). The
+ * screen runs the check after its last confirm dialog to keep that window as
+ * short as it can be. The class of the transaction below is unchanged.
  */
 export async function salvarCheckoutTransacao(
   db: Firestore,

@@ -358,4 +358,31 @@ describe('OutroCheckoutModal — a conferência de pagamento da Loja Integrada (
 
     await waitFor(() => expect(resposta).toBe(true));
   });
+
+  it('a "no integration" that says WHY shows that reason, not the generic line', async () => {
+    const mensagem = 'Pedido sem endereço de entrega: não há transportadora para gerar a etiqueta.';
+    h.reprintCheckoutEtiqueta.mockResolvedValue({ status: 'no-integration', mensagem });
+    renderModal(makeRow());
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+
+    await waitFor(() =>
+      expect(h.showCopyableNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Etiqueta', message: mensagem }),
+      ),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: one without a reason keeps the generic line', async () => {
+    h.reprintCheckoutEtiqueta.mockResolvedValue({ status: 'no-integration' });
+    renderModal(makeRow());
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+
+    await waitFor(() =>
+      expect(h.showCopyableNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Este frete não possui integração com transportadora.',
+        }),
+      ),
+    );
+  });
 });

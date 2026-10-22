@@ -4,6 +4,7 @@ import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { Pedido } from '@delfrance/schemas';
 import type { LojaIntegradaClient } from '../loja-integrada/client';
+import type { ConferenciaLiCarregada } from '../loja-integrada/conferenciaPagamento';
 import type { MercadoLivreClient } from '../mercado-livre/client';
 import type { ShopeeClient } from '../shopee/client';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
@@ -13,6 +14,7 @@ import {
   type CheckoutDanfeFormat,
   type EnsureNfeResult,
 } from './nfeFlow';
+import { motivoSemTransportadoraLi } from './conferenciaLojaIntegrada';
 import { resolverIntFrete } from './etiqueta/intFrete';
 import { emitirOuImprimirEtiqueta } from './etiqueta/registry';
 import type { EtiquetaOutcome, EtiquetaProviderUi } from './etiqueta/types';
@@ -52,6 +54,14 @@ export async function runCheckoutPostSave(args: {
   formatoEtiqueta: 'pdf' | 'zpl2';
   ui: EtiquetaProviderUi;
   printJobFn?: typeof printJob;
+  /**
+   * The Loja Integrada paid verdict the checkout's own gate received before the
+   * save (master plan step 15), carried into the label input so the label's
+   * gate — a generic print, a reprint, or the Melhor Envio buy modal — reuses
+   * a `pago` under 120 s old instead of asking again. `null`/absent when the
+   * gate asked nothing (not an imported order) or ended in a confirm.
+   */
+  conferenciaLi?: ConferenciaLiCarregada | null;
 }): Promise<PostSaveResult> {
   const {
     db,
@@ -103,9 +113,12 @@ export async function runCheckoutPostSave(args: {
   if (frete !== null) {
     const intFrete = await resolverIntFrete(db, frete);
     if (intFrete === null) {
+      // An imported Loja Integrada order says WHY it has no carrier;
+      // every other pedido keeps the generic line.
+      const motivo = await motivoSemTransportadoraLi(pedidoId, pedido, frete);
       ui.notify({
         title: 'Frete',
-        message: 'Este frete não possui integração com transportadora.',
+        message: motivo ?? 'Este frete não possui integração com transportadora.',
         color: 'yellow',
       });
       etiqueta = { status: 'no-integration' };
@@ -126,6 +139,7 @@ export async function runCheckoutPostSave(args: {
           printJob: args.printJobFn ?? printJob,
         },
         ui,
+        ...(args.conferenciaLi == null ? {} : { conferenciaLi: args.conferenciaLi }),
       });
     }
   }
