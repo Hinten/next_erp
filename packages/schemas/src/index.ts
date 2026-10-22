@@ -1206,6 +1206,8 @@ export {
   inutNumeracao,
   inutNumeracaoSchema,
   inutNumeracaoMeta,
+  inutilizacaoSeAplica,
+  motivoInutilizacaoNaoSeAplica,
   type InutNumeracao,
 } from './inutilizacaoNumeracao';
 
