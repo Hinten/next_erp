@@ -794,6 +794,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
   - A newly materialised doc is `amz-<integracaoId>` (rule 7 tier 0); a migrated doc keeps its legacy id and is adopted by the back-ref.
   - No ruleset change: `int_frete` is outside rules-gen's validator whitelist, and both generators leave both rulesets and snapshots unchanged.
   - Order in the window: W12 runs after the import and once the index is READY, and `functions:amazon` deploys only after W12's clean second dry run.
+- **Amendment (2026-10-21, PR 20-b):** the W12 pass is `migrate:amazon-int-frete` (`tools/migrations/src/2026-10-amazon-int-frete/`, the shared `intFreteAdocao` pass bound to the Amazon row with zero options, no `mapa` audit); runbook `tools/migrations/amazon-int-frete.README.md`.
 
 ### Step 21: `apps/web` — PRE, piecewise
 
@@ -954,7 +955,14 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
     - **Why:** an import fires no triggers.
 12. **W12: `int_frete` adoption pass** (step-20 script).
     - **Phase:** 2, before the functions deploy.
-    - **Action:** dry run, apply, dry run again.
+    - **Order:** after the import; after `int_frete (tipo, contaAmazonContaFreteAmazonOuterRef, ativo, dataCadastro DESC)` is READY (W9's index phase); before `functions:amazon`, which waits for this item's clean second dry run.
+    - **Action:** report-only, dry run, `--apply`, dry run again (runbook `tools/migrations/amazon-int-frete.README.md`):
+      - `pnpm --filter @delfrance/migrations migrate:amazon-int-frete --project <new> --report-only`
+      - `pnpm --filter @delfrance/migrations migrate:amazon-int-frete --project <new>`
+      - `pnpm --filter @delfrance/migrations migrate:amazon-int-frete --project <new> --apply`
+      - `pnpm --filter @delfrance/migrations migrate:amazon-int-frete --project <new>`
+    - **Verify:** the second dry run reports **0 contas com escrita planejada** and no `duplicados` / `nao-canonico` / `compartilhado` row; one active `amz` doc carries each active Amazon conta's canonical back-ref.
+    - **Why:** an import fires no trigger, so no imported conta reaches `onIntegracaoAmazonChanged`; the trigger has no tolerant scan; an earlier run is superseded by the legacy app's own later writes. A `duplicados` STOP is resolved by a person (the runbook's procedure: keep the doc the pedidos reference, else the lowest doc id; null the back-ref AND set `ativo: false` on every other twin; never delete).
 13. **W13: rotate the LWA client secret.**
     - **Phase:** 4, after the new integration's calls succeed.
     - **Action:** rotate in Developer Central; update the new project's secret.
