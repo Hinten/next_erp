@@ -17,9 +17,16 @@
  * "this node has children" would render identically to a perfectly valid
  * mid-tree category.
  *
+ * Both 200s are built `satisfies` the input type of their envelope,
+ * `respostaCategoriasShopeeSchema` — declared ONCE in `@delfrance/schemas`
+ * (#1911 P2) for this route and its browser readers, never mirrored — so a
+ * renamed or dropped key is a compile error here, not a refused body there.
+ *
  * Requires `PERM.integracao.read`. Reads only; writes nothing.
  */
 import { NextResponse } from 'next/server';
+import type { respostaCategoriasShopeeSchema } from '@delfrance/schemas';
+import type { z } from 'zod';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -52,7 +59,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       return NextResponse.json({
         raizes: raizes(indice).map((row) => projetarCategoria(indice, row)),
         no: null,
-      });
+      } satisfies z.input<typeof respostaCategoriasShopeeSchema>);
     }
 
     // A miss here IS `ehFolha`'s `desconhecida` — that verdict is defined as
@@ -69,7 +76,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
 
-    return NextResponse.json({ raizes: null, no: projetarNoDeCategoria(indice, row) });
+    return NextResponse.json({
+      raizes: null,
+      no: projetarNoDeCategoria(indice, row),
+    } satisfies z.input<typeof respostaCategoriasShopeeSchema>);
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;

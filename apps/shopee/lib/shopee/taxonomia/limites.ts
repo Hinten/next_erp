@@ -27,12 +27,18 @@
  * caller must branch on: it publishes the kit with NO local band and lets
  * Shopee's own refusal name the field. Still never a hardcoded number.
  */
-import { z } from 'zod';
 import type {
   ShopeeFaixa,
   ShopeeItemLimit,
   ShopeeKitItemLimit,
 } from '@delfrance/integrations-shopee';
+import type {
+  FaixaDto,
+  GtinLimitDto,
+  LimitesDeItemDto,
+  LimitesDeKitDto,
+  LimitesDescricaoEstendidaDto,
+} from '@delfrance/schemas';
 
 import { type ShopeeTaxonomiaCtx, lerLimitesItemCached, lerLimitesKitCached } from './cache';
 
@@ -40,89 +46,27 @@ import { type ShopeeTaxonomiaCtx, lerLimitesItemCached, lerLimitesKitCached } fr
 /*                                   Shapes                                   */
 /* -------------------------------------------------------------------------- */
 
-export const faixaDtoSchema = z.object({
-  min: z.number().nullable(),
-  max: z.number().nullable(),
-});
-export type FaixaDto = z.infer<typeof faixaDtoSchema>;
-
-export const gtinLimitDtoSchema = z.object({
-  gtinValidationRule: z.string().nullable(),
-});
-export type GtinLimitDto = z.infer<typeof gtinLimitDtoSchema>;
-
-export const limitesDescricaoEstendidaDtoSchema = z.object({
-  descriptionTextLengthMin: z.number().nullable(),
-  descriptionTextLengthMax: z.number().nullable(),
-  descriptionImageNumMin: z.number().nullable(),
-  descriptionImageNumMax: z.number().nullable(),
-  descriptionImageWidthMin: z.number().nullable(),
-  descriptionImageHeightMin: z.number().nullable(),
-  descriptionImageAspectRatioMin: z.number().nullable(),
-  descriptionImageAspectRatioMax: z.number().nullable(),
-});
-
-export const limitesDeItemDtoSchema = z.object({
-  priceLimit: faixaDtoSchema.nullable(),
-  wholesalePriceThresholdPercentage: faixaDtoSchema.nullable(),
-  stockLimit: faixaDtoSchema.nullable(),
-  itemNameLengthLimit: faixaDtoSchema.nullable(),
-  itemImageCountLimit: faixaDtoSchema.nullable(),
-  itemDescriptionLengthLimit: faixaDtoSchema.nullable(),
-  tierVariationNameLengthLimit: faixaDtoSchema.nullable(),
-  tierVariationOptionLengthLimit: faixaDtoSchema.nullable(),
-  itemCountLimit: faixaDtoSchema.nullable(),
-  extendedDescriptionLimit: limitesDescricaoEstendidaDtoSchema.nullable(),
-  dtsLimit: z
-    .object({
-      /** ⚠️ `-1` is a documented VALUE here: "no pre-sale". Never clamped. */
-      daysToShipLimit: faixaDtoSchema.nullable(),
-      nonPreOrderDaysToShip: z.number().nullable(),
-    })
-    .nullable(),
-  weightLimit: z.object({ weightMandatory: z.boolean().nullable() }).nullable(),
-  dimensionLimit: z.object({ dimensionMandatory: z.boolean().nullable() }).nullable(),
-  sizeChartLimit: z
-    .object({
-      sizeChartMandatory: z.boolean().nullable(),
-      supportImageSizeChart: z.boolean().nullable(),
-      supportTemplateSizeChart: z.boolean().nullable(),
-    })
-    .nullable(),
-});
-export type LimitesDeItemDto = z.infer<typeof limitesDeItemDtoSchema>;
-
-export const limitesDeKitDtoSchema = z.object({
-  priceLimit: faixaDtoSchema.nullable(),
-  itemNameLengthLimit: faixaDtoSchema.nullable(),
-  itemImageCountLimit: faixaDtoSchema.nullable(),
-  /** ⚠️ `description_limit`, and it declares two fields the item page does not. */
-  descriptionLimit: limitesDescricaoEstendidaDtoSchema
-    .extend({
-      descriptionLengthMin: z.number().nullable(),
-      descriptionLengthMax: z.number().nullable(),
-    })
-    .nullable(),
-  tierVariationNameLengthLimit: faixaDtoSchema.nullable(),
-  tierVariationOptionLengthLimit: faixaDtoSchema.nullable(),
-  weightLimit: z.object({ weightMandatory: z.boolean().nullable() }).nullable(),
-  dimensionLimit: z.object({ dimensionMandatory: z.boolean().nullable() }).nullable(),
-  dtsLimit: z
-    .object({
-      nonPreOrderDaysToShip: z.number().nullable(),
-      /**
-       * ⚠️ Shopee's OWN boolean, declared on the kit page only — not the
-       * `supportsPreOrder` the item route derives from the `-1` sentinel. Two
-       * different facts that happen to answer the same question, and folding
-       * them would invent a value for whichever page does not send one.
-       */
-      supportPreOrder: z.boolean().nullable(),
-      daysToShipLimit: faixaDtoSchema.nullable(),
-    })
-    .nullable(),
-  componentCountLimitOfSingleModel: faixaDtoSchema.nullable(),
-});
-export type LimitesDeKitDto = z.infer<typeof limitesDeKitDtoSchema>;
+/**
+ * ⚠️ The band SHAPES are declared in `@delfrance/schemas`
+ * (`taxonomiaShopeeDto.ts`, #1911 P2), beside the `taxonomia/limites` envelope
+ * — the whole one, and the `/medidas` slice DERIVED from it — so the route, its
+ * test and a browser reader import one declaration. They are re-exported here,
+ * so every in-app `./limites` import is unchanged;
+ * the PROJECTIONS stay below, because they read the package's provider types.
+ * The kit DTO moved too (it shares `faixaDtoSchema`); the kit route's envelope
+ * did not, since no browser reads it.
+ */
+export {
+  faixaDtoSchema,
+  gtinLimitDtoSchema,
+  limitesDeItemDtoSchema,
+  limitesDeKitDtoSchema,
+  limitesDescricaoEstendidaDtoSchema,
+  type FaixaDto,
+  type GtinLimitDto,
+  type LimitesDeItemDto,
+  type LimitesDeKitDto,
+} from '@delfrance/schemas';
 
 /**
  * What {@link lerLimitesDeKit} answers: the projected kit bands, or the typed
@@ -209,7 +153,7 @@ export function suportaPreVenda(
 
 function projetarDescricaoEstendida(
   limite: ShopeeItemLimit['extended_description_limit'],
-): z.infer<typeof limitesDescricaoEstendidaDtoSchema> | null {
+): LimitesDescricaoEstendidaDto | null {
   if (limite == null) return null;
   return {
     descriptionTextLengthMin: limite.description_text_length_min,

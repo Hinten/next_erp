@@ -21,9 +21,17 @@
  * falling back to hardcoded values — and every number on Shopee's page is a
  * SAMPLE, per shop and per category (guide 209 §6).
  *
+ * The 200 is built `satisfies` the input type of the WHOLE envelope,
+ * `respostaLimitesDoItemShopeeSchema` — declared ONCE in `@delfrance/schemas`
+ * (#1911 P2). The `/medidas` slice of this answer,
+ * `respostaLimitesTabelaMedidasShopeeSchema`, is derived from that one, so a
+ * renamed key reaches both through one declaration.
+ *
  * Requires `PERM.integracao.read`.
  */
 import { NextResponse } from 'next/server';
+import type { respostaLimitesDoItemShopeeSchema } from '@delfrance/schemas';
+import type { z } from 'zod';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -61,7 +69,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       // KIT page only. The raw band travels on `dtsLimit` untouched, so a caller
       // can see the `-1` for itself.
       supportsPreOrder,
-    });
+    } satisfies z.input<typeof respostaLimitesDoItemShopeeSchema>);
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;

@@ -109,8 +109,14 @@ import {
   type ComponentesKit,
   type EstadoAnuncioShopee,
   type Foto,
+  dentroDaFaixaShopee,
+  descreverFaixaShopee,
+  descricaoDoAnuncioShopee,
   ESTADO_ANUNCIO_SHOPEE,
   precoDaTabela,
+  textoNaFaixaShopee,
+  textoUtilizavelShopee,
+  tituloDoAnuncioShopee,
 } from '@delfrance/schemas';
 
 import { quantidadeParaPublicarShopee } from '../estoque/quantidadeEstoque';
@@ -361,12 +367,15 @@ function problema(
   return { campo, motivo, mensagem: limitarMensagemProblema(mensagem) };
 }
 
-/** A usable text value: trimmed and non-empty. Blank means ABSENT everywhere here. */
-function textoUtilizavel(valor: string | null | undefined): string | null {
-  if (typeof valor !== 'string') return null;
-  const limpo = valor.trim();
-  return limpo.length > 0 ? limpo : null;
-}
+/*
+ * "Usable text" (trimmed, blank ⇒ ABSENT), the band check (`null` band or end =
+ * NO bound, both ends inclusive) and its description live in
+ * `@delfrance/schemas`' `faixaShopee.ts` (#1911) — `textoUtilizavelShopee`,
+ * `dentroDaFaixaShopee`, `descreverFaixaShopee`, `textoNaFaixaShopee` — together
+ * with the name and description resolutions (`tituloDoAnuncioShopee`,
+ * `descricaoDoAnuncioShopee`), so a browser surface (#1911's draft editor) can
+ * ask the same questions this module refuses on, with no second copy (#1369).
+ */
 
 /** A usable positive number. `0`, a negative and a non-finite all read as absent. */
 function numeroPositivo(valor: number | null | undefined): number | null {
@@ -374,32 +383,10 @@ function numeroPositivo(valor: number | null | undefined): number | null {
   return valor;
 }
 
-/**
- * Whether `valor` sits inside `banda`.
- *
- * An absent band, or an absent end of one, is NO BOUND — Shopee's limit pages
- * leave ends `null` when the category states none, and treating that as `0`
- * would refuse every description on a category that declares no maximum.
- */
-function dentroDaFaixa(valor: number, banda: FaixaDto | null | undefined): boolean {
-  if (banda == null) return true;
-  if (banda.min !== null && valor < banda.min) return false;
-  if (banda.max !== null && valor > banda.max) return false;
-  return true;
-}
-
 /** A band's lower bound as a number, `0` when the category states none. */
 function minimoDaFaixa(banda: FaixaDto | null | undefined): number {
   if (banda == null || banda.min === null || !Number.isFinite(banda.min)) return 0;
   return banda.min;
-}
-
-/** A human description of a band, for a problema's `mensagem`. */
-function descreverFaixa(banda: FaixaDto | null | undefined): string {
-  if (banda == null) return 'sem faixa informada';
-  const min = banda.min === null ? '—' : String(banda.min);
-  const max = banda.max === null ? '—' : String(banda.max);
-  return `${min}..${max}`;
 }
 
 /**
@@ -460,8 +447,8 @@ function lerValorArmazenado(bruto: unknown): ShopeeAttributeValueRequest | null 
   const linha = bruto as Record<string, unknown>;
   const valueId = linha.value_id;
   if (typeof valueId !== 'number' || !Number.isInteger(valueId) || valueId < 0) return null;
-  const nome = textoUtilizavel(linha.original_value_name as string | null | undefined);
-  const unidade = textoUtilizavel(linha.value_unit as string | null | undefined);
+  const nome = textoUtilizavelShopee(linha.original_value_name as string | null | undefined);
+  const unidade = textoUtilizavelShopee(linha.value_unit as string | null | undefined);
   // `0` is the CUSTOM sentinel (`guide 211 §2.2`) and then the name is REQUIRED:
   // a custom value with no name is a value Shopee refuses, so it is dropped here
   // and the attribute may end up missing — which is how it reaches
@@ -549,7 +536,7 @@ export function preOrderParaPublicar(
   const normal = dts?.nonPreOrderDaysToShip;
   if (typeof normal !== 'number' || !Number.isFinite(normal)) return negado;
   if (dias <= normal) return negado;
-  if (!dentroDaFaixa(dias, dts?.daysToShipLimit)) return negado;
+  if (!dentroDaFaixaShopee(dias, dts?.daysToShipLimit)) return negado;
   return { is_pre_order: true, days_to_ship: dias };
 }
 
@@ -776,26 +763,30 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   /* --------------------------------- name --------------------------------- */
 
-  const nome = textoUtilizavel(link?.item_name) ?? textoUtilizavel(produto.nome);
-  if (nome === null) {
+  // The resolved text is what the bodies carry (even on a refusal); the verdict
+  // is what refuses — both from `@delfrance/schemas`, so a browser can share them.
+  const nome = tituloDoAnuncioShopee(link?.item_name, produto.nome);
+  const nomeNaFaixa = textoNaFaixaShopee(nome, bandas.itemNameLengthLimit);
+  if (nomeNaFaixa.estado === 'ausente') {
     problemas.push(
       problema('item_name', MOTIVO_PUBLICACAO_BLOQUEADA.semNome, 'o produto não tem nome'),
     );
-  } else if (!dentroDaFaixa(nome.length, bandas.itemNameLengthLimit)) {
+  } else if (nomeNaFaixa.estado === 'fora-da-faixa') {
     problemas.push(
       problema(
         'item_name',
         MOTIVO_PUBLICACAO_BLOQUEADA.nomeForaDaFaixa,
-        `o nome tem ${String(nome.length)} caracteres, fora da faixa da categoria ` +
-          `(${descreverFaixa(bandas.itemNameLengthLimit)}) — nunca truncado`,
+        `o nome tem ${String(nomeNaFaixa.comprimento)} caracteres, fora da faixa da categoria ` +
+          `(${descreverFaixaShopee(bandas.itemNameLengthLimit)}) — nunca truncado`,
       ),
     );
   }
 
   /* ------------------------------ description ----------------------------- */
 
-  const descricao = textoUtilizavel(link?.description) ?? textoUtilizavel(args.descricao);
-  if (descricao === null) {
+  const descricao = descricaoDoAnuncioShopee(link?.description, args.descricao);
+  const descricaoNaFaixa = textoNaFaixaShopee(descricao, bandas.itemDescriptionLengthLimit);
+  if (descricaoNaFaixa.estado === 'ausente') {
     problemas.push(
       problema(
         'description',
@@ -803,13 +794,13 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
         'o produto não tem descrição',
       ),
     );
-  } else if (!dentroDaFaixa(descricao.length, bandas.itemDescriptionLengthLimit)) {
+  } else if (descricaoNaFaixa.estado === 'fora-da-faixa') {
     problemas.push(
       problema(
         'description',
         MOTIVO_PUBLICACAO_BLOQUEADA.descricaoForaDaFaixa,
-        `a descrição tem ${String(descricao.length)} caracteres, fora da faixa da categoria ` +
-          `(${descreverFaixa(bandas.itemDescriptionLengthLimit)})`,
+        `a descrição tem ${String(descricaoNaFaixa.comprimento)} caracteres, fora da faixa da categoria ` +
+          `(${descreverFaixaShopee(bandas.itemDescriptionLengthLimit)})`,
       ),
     );
   }
@@ -887,8 +878,8 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   /* --------------------------------- gtin --------------------------------- */
 
-  const gtin = textoUtilizavel(produto.gtin);
-  const regraGtin = textoUtilizavel(limites.gtinLimit?.gtinValidationRule);
+  const gtin = textoUtilizavelShopee(produto.gtin);
+  const regraGtin = textoUtilizavelShopee(limites.gtinLimit?.gtinValidationRule);
   if (gtin === null && regraGtin === REGRA_GTIN_OBRIGATORIA) {
     problemas.push(
       problema(
@@ -915,7 +906,7 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
   /* -------------------------------- brand --------------------------------- */
 
   const brandId = link?.brand_id ?? args.marca.brandId;
-  const nomeDaMarca = textoUtilizavel(args.marca.nome);
+  const nomeDaMarca = textoUtilizavelShopee(args.marca.nome);
   let brand: ShopeeAddItemRequest['brand'];
   if (brandId === 0) {
     // No lookup, no read, no cascade: `brand_id: 0` IS "No Brand".
@@ -981,13 +972,13 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
               'o produto não tem preço na tabela normal da conta',
             ),
       );
-    } else if (!dentroDaFaixa(preco, bandas.priceLimit)) {
+    } else if (!dentroDaFaixaShopee(preco, bandas.priceLimit)) {
       problemas.push(
         problema(
           'original_price',
           MOTIVO_PUBLICACAO_BLOQUEADA.precoForaDaFaixa,
           `o preço ${String(preco)} está fora da faixa da categoria ` +
-            `(${descreverFaixa(bandas.priceLimit)})`,
+            `(${descreverFaixaShopee(bandas.priceLimit)})`,
         ),
       );
     }
@@ -1020,7 +1011,7 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
           'seller_stock',
           MOTIVO_PUBLICACAO_BLOQUEADA.estoqueAbaixoDoMinimo,
           `o estoque disponível ${String(estoque)} está abaixo do mínimo da loja ` +
-            `(${descreverFaixa(banda)}) — a Shopee recusa a criação e o estoque nunca ` +
+            `(${descreverFaixaShopee(banda)}) — a Shopee recusa a criação e o estoque nunca ` +
             'é arredondado para cima',
         ),
       );
@@ -1036,7 +1027,7 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   const taxInfo = args.taxInfo?.taxInfo ?? null;
   const condition = condicaoDoProduto(produto);
-  const sku = textoUtilizavel(produto.sku);
+  const sku = textoUtilizavelShopee(produto.sku);
   const image = { image_id_list: imagens };
   const atributoLista = atributos.lista;
 

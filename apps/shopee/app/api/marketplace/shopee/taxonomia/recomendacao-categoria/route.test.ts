@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { ShopeeNetworkError } from '@delfrance/integrations-shopee';
+import { respostaRecomendacaoCategoriaShopeeSchema } from '@delfrance/schemas';
 
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { __setShopeeTaxonomiaClockForTests } from '@/lib/shopee/taxonomia/cache';
-import { categoriaResumoDtoSchema } from '@/lib/shopee/taxonomia/dto';
 
 const h = vi.hoisted(() => ({
   verifyIdToken: vi.fn(),
@@ -31,19 +30,13 @@ const { GET } = await import('./route');
 const READER = { uid: 'u1', permissions: PERM.integracao.read.toString() };
 const AUTORIZADO = { authorization: 'Bearer t' };
 
-const corpoSchema = z.object({
-  recomendacoes: z.array(
-    z.object({
-      position: z.number().int(),
-      categoryId: z.number().int(),
-      name: z.string().nullable(),
-      isLeaf: z.boolean().nullable(),
-      pathFromRoot: z.array(categoriaResumoDtoSchema),
-    }),
-  ),
-  unresolved: z.number().int(),
-  applied: z.boolean(),
-});
+/**
+ * The SHARED envelope (#1911 P2) — declared once in `@delfrance/schemas` for
+ * this route and its browser readers — never a test-local twin. Bound to the old
+ * local name so every case below is byte-unedited: P2 is behaviour-neutral, and
+ * those cases staying green UNCHANGED is the proof.
+ */
+const corpoSchema = respostaRecomendacaoCategoriaShopeeSchema;
 
 function categoria(category_id: number, parent_category_id: number, has_children: boolean) {
   return {
@@ -234,5 +227,33 @@ describe('a degradação por linha e a falha que sobe', () => {
     await expect(
       GET(req({ integracaoId: 'int-1', nome: 'camiseta' }, AUTORIZADO)),
     ).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe('o contrato compartilhado com apps/web (#1911 P2)', () => {
+  it.each([
+    ['linhas resolvidas', [100182, 100100]],
+    ['uma linha fora da árvore', [100182, 999999]],
+    ['nenhuma sugestão', []],
+  ])('o 200 com %s volta IGUAL do schema compartilhado', async (_c, ids) => {
+    h.categoryRecommend.mockResolvedValue({ category_id: ids });
+    const res = await GET(req({ integracaoId: 'int-1', nome: 'camiseta' }, AUTORIZADO));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(respostaRecomendacaoCategoriaShopeeSchema.parse(body)).toEqual(body);
+    expect(Object.keys(body).sort()).toEqual(
+      Object.keys(respostaRecomendacaoCategoriaShopeeSchema.shape).sort(),
+    );
+  });
+
+  it('QUASE: o MESMO corpo dizendo applied: true é recusado pelo schema compartilhado (#799)', async () => {
+    const res = await GET(req({ integracaoId: 'int-1', nome: 'camiseta' }, AUTORIZADO));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(respostaRecomendacaoCategoriaShopeeSchema.safeParse(body).success).toBe(true);
+    expect(
+      respostaRecomendacaoCategoriaShopeeSchema.safeParse({ ...body, applied: true }).success,
+    ).toBe(false);
   });
 });
