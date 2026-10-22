@@ -76,7 +76,7 @@ const config = [
     },
   },
   {
-    // The emulator suites (added in a later step) need RAW refs, and for the same
+    // The emulator suites (`ci-amazon.yml`) need RAW refs, and for the same
     // reason the rule exists: the handles validate against the Zod schema, and these
     // tests must reach around that validation on purpose. They read back the
     // PHYSICAL document to check what the handle actually stored — reading
@@ -85,8 +85,7 @@ const config = [
     // read back was written by a DIFFERENT process (the function running inside
     // the emulator), which is exactly when you want the raw bytes. Scoped to the
     // two suffixes, so production code and the offline unit tests stay covered.
-    // ⚠️ `*.firestore.test.ts` is listed before any such suite exists, so the
-    // block does not have to be remembered when the first one lands.
+    // Both suffixes share the one emulator config (`vitest.tasks.config.ts`).
     files: ['**/*.firestore.test.ts', '**/*.tasks.test.ts'],
     rules: {
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],

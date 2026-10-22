@@ -12,7 +12,7 @@ single cutover (rule 8) and never runs beside it. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
-CI — the eleven lanes in `.github/workflows/` run **concurrently**, gated on
+CI — the twelve lanes in `.github/workflows/` run **concurrently**, gated on
 nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
 from the workspace dependency graph and reports through one unskippable check;
 `ci.yml` excludes the nfe/freight/storage/functions/mercado-livre tests, which
@@ -29,9 +29,9 @@ Five rules you must not break without reading it first:
    not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
    GitHub counts as **satisfying** a required check. Both are silent passes.
 2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
-   unique repo-wide. The seventeen pinnable ones are
+   unique repo-wide. The eighteen pinnable ones are
    `E2E gate (cadastros|vendas|emulator)`,
-   `CI gate (nfe|freight|mercado-livre|storage|rules|shopee|loja-integrada)` and — since
+   `CI gate (nfe|freight|mercado-livre|storage|rules|shopee|loja-integrada|amazon)` and — since
    `ci.yml` split its single `lint-typecheck-test` job into seven concurrent
    ones —
    `CI typecheck`, `CI lint`, `CI format check`, `CI test`,
@@ -132,7 +132,7 @@ not "deduplicate" them without changing how required checks are published.
    meets a real Firestore; and `firebase.mercado-livre.tasks.json`,
    firestore+functions+tasks, which serves the ML functions artifact so
    `*.tasks.test.ts` can drive receiver → enqueue → the real `onTaskDispatched`
-   → Firestore), `ci-shopee.yml`/`ci-loja-integrada.yml`
+   → Firestore), `ci-shopee.yml`/`ci-loja-integrada.yml`/`ci-amazon.yml`
    (`firebase.<canal>.tasks.json`, the same round trip), and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
    `*.emulator.e2e.spec.ts`, including catalog flows whose pipeline shapes are

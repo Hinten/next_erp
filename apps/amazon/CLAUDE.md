@@ -11,11 +11,11 @@ API-only App Hosting backend for the Amazon (SP-API) marketplace channel, port 3
 - The LWA authorization belongs to this integration alone, never the legacy
   app's (D10). Never put a token, the code, the client secret, the state, a
   seller id or a credential ref in a URL, a log line or a response.
-- `vitest.config.ts` excludes `*.firestore.test.ts` and `*.tasks.test.ts`
-  (emulator suites need their own lane — **none exists yet**, so the step that
-  adds the first such suite must add `ci-amazon.yml` in the same change, or it
-  runs nowhere while every check stays green); `eslint.config.mjs` still lints
-  them and only lets them build raw Firestore refs.
+- `vitest.config.ts` (`pnpm test`, in `ci.yml`'s `CI test`) excludes `*.firestore.test.ts`
+  and `*.tasks.test.ts`; `vitest.tasks.config.ts` (`pnpm test:tasks`) includes exactly those
+  two and runs only in `ci-amazon.yml` (see "CI (step 3)"). A file matching neither glob
+  runs in NO job (`estrutura.test.ts` pins both globs). `eslint.config.mjs` lints both
+  suffixes and only lets them build raw Firestore refs.
 - `next` is an exact literal in `package.json`, never `catalog:` or a range.
 
 ## Routes (steps 2 and 3)
@@ -83,6 +83,40 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   receiver) and `functions/src/agendador.ts` (the step-4 poll), are the app's only `getFunctions(`
   callers; each reads the region as an object literal of STATIC `process.env` reads (esbuild's
   `define`). `src/tasksInvoker.ts` stays byte-identical to every other codebase's copy.
+
+## CI (step 3)
+
+- The emulator suites run only in `.github/workflows/ci-amazon.yml`: ONE job, `Amazon Cloud
+  Tasks round trip`, behind the pinnable `CI gate (amazon)`. No `ci.yml` exclusion, so a
+  skipped lane loses only the emulator suites. The lane landed in the SAME PR as its first
+  suites (a suite without a lane runs nowhere); a new `*.tasks.test.ts` or
+  `*.firestore.test.ts` now joins the same job with no workflow edit. Editing the workflow →
+  the `ci-lanes` skill; `ci-lane-gates.test.js` pins its emulator command, switch and regions.
+- The job: `prepare-deploy.mjs`, then `firebase emulators:exec --config
+  firebase.amazon.tasks.json --only firestore,functions,tasks` (ports 8087/5005/9502; that
+  file sits ONE DOT from `firebase.amazon.deploy.json`, the only one that deploys), then
+  `pnpm test:tasks`. Run it locally the same way (JDK 21) with the job's env:
+  `FUNCTIONS_REGION` = `AMAZON_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
+  `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `AMAZON_CHAMADAS=off`, a dummy
+  `AMAZON_RELAY_SECRET` of 32+ characters and the placeholder `AMAZON_APPLICATION_ID`. On
+  Windows the Firestore JVM can outlive `emulators:exec` and keep 8087: stop it after.
+- D11 holds in the lane through TWO layers. The job env sets `AMAZON_CHAMADAS: 'off'` (the
+  functions emulator inherits it, so a DISPATCHED function stops at the switch), and
+  `vitest.tasks.setup.ts` refuses to start when the shell has it `on` or an artifact `.env*`
+  file (anchored name) merely names it (`testing/guardaDaLaneDeTarefas.ts`, proved offline).
+  Only code in the vitest process runs past the switch, with `ambiente` `on` as an object
+  literal, a fake importer and a refusing `fetch` (the resolve case of
+  `notificacao.firestore.test.ts`; step-3 plan §3 decision 37).
+- Every suite's `beforeEach` wipes what it reads (one shared emulator, files run serially), a
+  drop is proved by a LATER sentinel row, never by polling for an absence, and an absence only
+  after a positive read. The receiver races its enqueue against 2 s, so
+  `route.tasks.test.ts` warms the Admin SDK and the functions emulator with one unraced enqueue
+  first; a `failed` row with an `enfileiramento/…` reason there means the receiver's own
+  fallback ran (a region mismatch, or that deadline).
+- The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
+  `scheduleDelaySeconds` (firebase-tools#8254), `rateLimits`/`retryConfig` (pinned offline in
+  `functions/src/index.test.ts`), index declarations, rules, the relay, or a trigger's
+  `database` binding.
 
 ## Layout
 
