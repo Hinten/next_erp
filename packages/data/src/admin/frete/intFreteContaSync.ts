@@ -1,9 +1,10 @@
 /**
  * The `int_frete` ⇆ marketplace-conta (`integracao`) reconciliation — one core for every channel
- * (#1369, #1888): Mercado Livre (#782), Shopee (#1528) and Loja Integrada (#1826). The
- * per-channel facts live in `VINCULO_INT_FRETE_CONTA`, and nothing here knows a channel by name.
- * Neither does the doc chooser: the newest-`dataCadastro` pick is `escolherIntFreteMaisNovo`
- * (`@delfrance/schemas`), so a browser surface that must name the same doc calls the same copy.
+ * (#1369, #1888): Mercado Livre (#782), Shopee (#1528), Loja Integrada (#1826) and Amazon
+ * (#1930). The per-channel facts live in `VINCULO_INT_FRETE_CONTA`, and nothing here knows a
+ * channel by name. Neither does the doc chooser: the newest-`dataCadastro` pick is
+ * `escolherIntFreteMaisNovo` (`@delfrance/schemas`), so a browser surface that must name the same
+ * doc calls the same copy.
  *
  * The caller passes only the conta ID. One transaction re-reads the current conta and freight
  * record, and the pure `planejarIntFreteDaConta` decides from those snapshots. Rule 7 class A:
@@ -13,10 +14,10 @@
  *
  * Existing canonical records, then tolerant legacy back-references when configured, are adopted
  * before checking the deterministic path. A new record targets `<prefixoDocId>-<integracaoId>`
- * for Mercado Livre, Shopee and Loja Integrada alike (rule 7 tier 0), so concurrent first
- * reconciliations contend on one path even without lookup-query range protection. Equal
- * `dataCadastro` values select the lexically lower record ID, preserving the deliberate policy
- * confirmed for #1888.
+ * for Mercado Livre, Shopee, Loja Integrada and Amazon (`amz-<integracaoId>`) alike (rule 7
+ * tier 0), so concurrent first reconciliations contend on one path even without lookup-query
+ * range protection. Equal `dataCadastro` values select the lexically lower record ID, preserving
+ * the deliberate policy confirmed for #1888.
  *
  * Updates use `tx.update` for only differing mirrored fields, plus the display stamp. Operator
  * configuration (`mapa`, `faixaCep`, `horarioDeCorte`, `enderecoDeOrigem`) survives updates and
@@ -106,9 +107,9 @@ export function diffCamposIntFrete(
 export interface OpcoesSyncIntFrete {
   /**
    * Mercado Livre only (`refMatchesIntegracao`): enables the tolerant fallback scan for a doc
-   * whose back-ref is stored in a non-canonical form. Absent ⇒ the lookup never scans: the Shopee
-   * and Loja Integrada bindings read only the two-equality query and the deterministic id. The
-   * window adoption pass both channels bind (`tools/migrations/src/intFreteAdocao/executar.ts`)
+   * whose back-ref is stored in a non-canonical form. Absent ⇒ the lookup never scans: the Shopee,
+   * Loja Integrada and Amazon bindings read only the two-equality query and the deterministic id.
+   * The window adoption pass those channels bind (`tools/migrations/src/intFreteAdocao/executar.ts`)
    * does read the channel's whole `tipo ==` population — once, by design — and REPORTS a
    * non-canonical ref instead of matching it, refusing to create beside it.
    */

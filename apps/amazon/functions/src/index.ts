@@ -50,6 +50,10 @@ import { getDb } from './lib/admin';
  * and the daily expiry sweep (the step-2 body). Step 4 (PR 4-b) adds the
  * 15-minute backstop poll (`pollAmazonOrders`, ./pollPedidos), the queue's
  * second producer, through this codebase's own producer root (./agendador).
+ * Step 20 adds the conta trigger (`onIntegracaoAmazonChanged`,
+ * ./onIntegracaoAmazonChanged): the codebase's first Firestore trigger, which
+ * keeps each Amazon conta's `int_frete` doc in step with the conta and makes no
+ * Amazon call.
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -82,6 +86,9 @@ export { filaLeituraAmazon } from './filaLeitura';
 
 /** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
 export { pollAmazonOrders } from './pollPedidos';
+
+/** The conta trigger (step 20): each Amazon conta's `int_frete` doc follows the conta. */
+export { onIntegracaoAmazonChanged } from './onIntegracaoAmazonChanged';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:

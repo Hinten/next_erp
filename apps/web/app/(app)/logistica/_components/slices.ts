@@ -12,10 +12,11 @@ import { INTEGRACAO_FRETE } from '@delfrance/schemas';
  * "Mapeamento do Frete", #1826), never here; existing values survive untouched
  * because ObjectView only writes dirty fields.
  *
- * `contaMercadoLivreMercadoEnviosOuterRef`, `contaShopeeFreteOuterRef` and
- * `contaLojaIntegradaEnviosOuterRef` are excluded for a different reason: each is
- * **server-owned** (its channel's `onIntegracao…Changed` trigger keeps the freight
- * doc in sync with its conta — #782, #1528, #1826) and only ever set on its
+ * `contaMercadoLivreMercadoEnviosOuterRef`, `contaShopeeFreteOuterRef`,
+ * `contaLojaIntegradaEnviosOuterRef` and `contaAmazonContaFreteAmazonOuterRef` are
+ * excluded for a different reason: each is **server-owned** (its channel's
+ * `onIntegracao…Changed` trigger keeps the freight doc in sync with its conta —
+ * #782, #1528, #1826, #1930) and only ever set on its
  * marketplace `tipo`, which has no slice here at all. Since `intFreteSchema` is shared by all four slices and this
  * filter is an EXCLUDE-list, leaving one out would render it as an editable
  * text input on every screen below — `slices.test.ts` pins every back-ref
@@ -45,6 +46,7 @@ export const SHARED_EXCLUDED = [
   'contaMercadoLivreMercadoEnviosOuterRef',
   'contaShopeeFreteOuterRef',
   'contaLojaIntegradaEnviosOuterRef',
+  'contaAmazonContaFreteAmazonOuterRef',
 ] as const;
 
 /** Tab names — `intFreteFields` assigns the special editors to them; every

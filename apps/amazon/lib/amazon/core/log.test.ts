@@ -384,13 +384,43 @@ describe('registrarEventoAmazon', () => {
     expect(linhas[0]?.meta).toEqual({ x: 1, evento: 'poll', conta: CONTA, fluxo: 'poll' });
   });
 
-  it('an evento outside the closed set is <invalido> (near-misses of the step-3 and step-4 names)', () => {
+  it('step 20 adds `int-frete`: written as given, with its `conta` envelope', () => {
+    const { logger, linhas } = loggerEspiao();
+    registrarEventoAmazon(
+      logger,
+      'int-frete',
+      'WARNING',
+      'm',
+      { acao: 'incompleto' },
+      { conta: CONTA },
+    );
+    expect(linhas).toEqual([
+      {
+        nivel: 'warn',
+        mensagem: 'm',
+        meta: { acao: 'incompleto', evento: 'int-frete', conta: CONTA },
+      },
+    ]);
+  });
+
+  it('an evento outside the closed set is <invalido> (near-misses of the step-3, step-4 and step-20 names)', () => {
     const { logger, linhas } = loggerEspiao();
     registrarEventoAmazon(logger, 'tarefas' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'notificacoes' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'polls' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'pollPedidos' as never, 'INFO', 'm', {});
-    expect(linhas.map((l) => l.meta?.evento)).toEqual([INVALIDO, INVALIDO, INVALIDO, INVALIDO]);
+    registrarEventoAmazon(logger, 'intFrete' as never, 'INFO', 'm', {});
+    registrarEventoAmazon(logger, 'int_frete' as never, 'INFO', 'm', {});
+    registrarEventoAmazon(logger, 'frete' as never, 'INFO', 'm', {});
+    expect(linhas.map((l) => l.meta?.evento)).toEqual([
+      INVALIDO,
+      INVALIDO,
+      INVALIDO,
+      INVALIDO,
+      INVALIDO,
+      INVALIDO,
+      INVALIDO,
+    ]);
   });
 
   it('is never a call line: a cast `chamada` becomes <invalido>, and a trechoCorpo campo is dropped', () => {

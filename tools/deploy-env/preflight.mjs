@@ -244,9 +244,16 @@ const CODEBASES = {
     deployConfig: 'firebase.amazon.deploy.json',
     buildScript: 'apps/amazon/functions/build.mjs',
     deployDoc: 'apps/amazon/functions/DEPLOY.md',
-    // FIREBASE_DATABASE_ID: `build.mjs` defines it with `||` (a BLANK export is
-    // `default` too) for `getDb()`; the codebase has no Firestore trigger yet.
-    // The `lists EVERY build.mjs default` test fails a define this list omits.
+    // FIREBASE_DATABASE_ID: master-plan step 20 gave the codebase its first
+    // Firestore trigger (`onIntegracaoAmazonChanged`, bound to the named
+    // `default` database). The trigger's own `?? 'default'` already resolves an
+    // UNSET variable correctly, so the define changes no value there;
+    // `build.mjs` builds it with `||`, which also turns a BLANK export into
+    // `default` (under `??` a blank would bind the `(default)` sentinel, which
+    // deploys and never fires), and listing it here is what makes this table
+    // print the value the build bakes — for the trigger AND for `getDb()`, whose
+    // read the define replaces too. The `lists EVERY build.mjs default` test
+    // fails a define this list omits.
     inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
     tasksRegionVar: 'FUNCTIONS_REGION',
     // The Shopee shape: the push RECEIVER enqueues from the App Hosting backend
