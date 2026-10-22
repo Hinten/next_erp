@@ -54,7 +54,6 @@ import {
   MOTIVO_PEDIDO_AMAZON,
   derivePedidoFreteTotals,
   freteDoPedidoSchema,
-  itemDoPedidoSchema,
   type EstadoPedido,
   type FreteDoPedido,
   type ItemDoPedido,
@@ -343,18 +342,6 @@ function agruparItens(itens: readonly ItemDoPedido[]): {
   return { itens: registro, itensIds: Object.keys(registro) };
 }
 
-/** A stored line as the totals read it (its money only). */
-function itemParaTotal(linha: LinhaArmazenadaAmazon): ItemDoPedido {
-  return (
-    linha.item ??
-    itemDoPedidoSchema.parse({
-      precoDeVenda: Math.max(0, linha.precoDeVenda ?? 0),
-      quantidade: Math.max(0, linha.quantidade ?? 0),
-      descontoUnitario: Math.max(0, linha.descontoUnitario ?? 0),
-    })
-  );
-}
-
 function valorCobradoDerivado(
   itens: readonly ItemDoPedido[],
   descontoTotal: number,
@@ -627,23 +614,41 @@ export function montarEscritaPedidoAmazon(
     }
   }
 
-  // The lines and the order money (D17).
-  const linhasFinais: readonly ItemDoPedido[] =
-    reconciliacao.itens ?? linhasGuardadas.map(itemParaTotal);
+  // The lines and the order money (D17). A stored line the schema refuses has
+  // no trustworthy money, so while the lines are not rewritten the order total
+  // is never recomputed from it, and the order-money group derived with that
+  // total (discount, freight money) is withheld as a unit: the stored values
+  // stay until the lines read again.
+  const itensGuardados = linhasGuardadas.flatMap((l) => (l.item === null ? [] : [l.item]));
+  const totaisLegiveis =
+    reconciliacao.itens !== null || itensGuardados.length === linhasGuardadas.length;
+  const linhasFinais: readonly ItemDoPedido[] = reconciliacao.itens ?? itensGuardados;
+  if (
+    !totaisLegiveis &&
+    (reconciliacao.dinheiro !== null || reconciliacao.dinheiroDasLinhasMudou)
+  ) {
+    eventos.push(EVENTO_PEDIDO_AMAZON.itensArmazenadosIlegiveis);
+  }
   if (reconciliacao.itens !== null) {
     const agrupado = agruparItens(reconciliacao.itens);
     patch.itens = agrupado.itens;
     patch.itensIds = agrupado.itensIds;
     grupos.add('itens');
   }
-  const grupo = reconciliacao.dinheiro;
+  const grupo = totaisLegiveis ? reconciliacao.dinheiro : null;
   if (grupo !== null && !mesmosCentavos(dinheiroArmazenado.descontoTotal, grupo.descontoTotal)) {
     patch.descontoTotal = grupo.descontoTotal;
     grupos.add('dinheiro');
   }
+  // An `amz` freight block the schema refuses is never rewritten (below), so the
+  // total keeps the STORED freight money that block still holds.
+  const freteGravavel =
+    freteRaw === null || !freteNosso || freteDoPedidoSchema.safeParse(freteRaw).success;
   const freteFinal =
-    grupo !== null && freteNosso ? grupo.valorFrete : dinheiroArmazenado.valorFrete;
-  if (reconciliacao.dinheiroDasLinhasMudou || grupo !== null) {
+    grupo !== null && freteNosso && freteGravavel
+      ? grupo.valorFrete
+      : dinheiroArmazenado.valorFrete;
+  if (totaisLegiveis && (reconciliacao.dinheiroDasLinhasMudou || grupo !== null)) {
     const derivado = valorCobradoDerivado(
       linhasFinais,
       grupo?.descontoTotal ?? dinheiroArmazenado.descontoTotal ?? 0,
