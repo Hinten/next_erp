@@ -12,9 +12,12 @@
  * | `amazonPedidoPrecisaAtencao` (step 5) | per (conta, order, motivo) | per motivo | a Firestore commit or read time (µs) |
  * | `amazonContaPrecisaAtencao` (step 5) | per (conta, motivo) | `atencao` | the conta read's read time (µs) |
  *
- * The two step-5 tipos land here with their KEYS and the orphan pass's handling
- * only; their producers come with the order import. Their motivos, resolvers and
- * residues are in the tipos' docblock entries (`packages/schemas/src/aviso.ts`).
+ * The two step-5 tipos: their keys and the orphan pass's handling (PR 5-b), and
+ * their producers, {@link sincronizarAvisosDoPedidoAmazon} and
+ * {@link sincronizarAvisosDaContaAmazon} (PR 5-d), called by the order import,
+ * which decides which motivos to raise and which to resolve. Their motivos,
+ * resolvers and residues are in the tipos' docblock entries
+ * (`packages/schemas/src/aviso.ts`).
  *
  * Every raise is in-app only: no `escalar` is ever passed. Every param is
  * structured (a name, a number, a civil date) — the wording lives in
@@ -33,7 +36,8 @@
  *  - {@link relogioDoDocumentoUs} — a Firestore commit `Timestamp` → µs, the
  *    app's only Timestamp conversion (the credential store's versions and read
  *    times, the conta enumeration's read time, the park's aviso clock, and —
- *    called HERE, never by the poll — the poll document's aviso clock).
+ *    called HERE, never by the poll or the order import — the poll document's
+ *    and the order import's aviso clocks).
  *
  * `avisos.test.ts` counts them as raw source text, so the promise cannot
  * quietly become four.
@@ -90,19 +94,24 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { fimDoDiaNoFuso, millisToMicros } from '@delfrance/core/datetime';
 import {
+  type PlanoAviso,
   type ResolverAvisoOpts,
   type ResultadoAviso,
   escreverAviso,
   resolverAviso,
 } from '@delfrance/data/admin/avisos';
+import { avisoCollection } from '@delfrance/data/admin/collections';
 import {
   CANAL_AVISO,
   FUSO_FISCAL,
   LIMIAR_AVISO_AMAZON_DIAS,
+  MOTIVO_PEDIDO_AMAZON,
   type MotivoContaAmazon,
   type MotivoImportacaoParadaAmazon,
+  type MotivoPedidoAmazon,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
+  type SeveridadeAviso,
   TIPO_AVISO,
   chaveDeAviso,
   diasAteDataCivilAmazon,
@@ -131,6 +140,11 @@ export const MOTIVO_AVISO_AMAZON = {
   segredoEmDia: 'segredo-em-dia',
   /** The backstop poll read the conta cleanly after a counted failure (step 4). */
   importacaoRetomada: 'importacao-retomada',
+  /**
+   * An import of the order (per-pedido rows) or of one of the conta's orders
+   * (per-conta rows) saw the condition END (step 5).
+   */
+  condicaoEncerrada: 'condicao-encerrada',
 } as const;
 export type MotivoAvisoAmazon = (typeof MOTIVO_AVISO_AMAZON)[keyof typeof MOTIVO_AVISO_AMAZON];
 
@@ -648,6 +662,174 @@ function sementeContaPrecisaAtencao(
     urlInterna: urlDaConta(integracaoId),
     relogioEvento: relogioUs,
   };
+}
+
+/**
+ * The key of ONE per-pedido row: `(tipo, conta, entidade = orderId, janela =
+ * motivo)` — one row per (order, motivo), each raised and resolved on its own.
+ */
+export function chavePedidoPrecisaAtencao(
+  integracaoId: string,
+  orderId: string,
+  motivo: MotivoPedidoAmazon,
+): string {
+  return chaveDeAviso({
+    tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+    conta: integracaoId,
+    entidade: orderId,
+    janela: motivo,
+  });
+}
+
+/** Each per-pedido motivo's severity (the tipo's docblock in `@delfrance/schemas`). */
+export const SEVERIDADE_MOTIVO_PEDIDO_AMAZON: Readonly<
+  Record<MotivoPedidoAmazon, SeveridadeAviso>
+> = {
+  [MOTIVO_PEDIDO_AMAZON.divergenciaItens]: SEVERIDADE_AVISO.critico,
+  [MOTIVO_PEDIDO_AMAZON.logisticaDesconhecida]: SEVERIDADE_AVISO.critico,
+  [MOTIVO_PEDIDO_AMAZON.aceitarCancelamento]: SEVERIDADE_AVISO.critico,
+  [MOTIVO_PEDIDO_AMAZON.canceladoSoNoErp]: SEVERIDADE_AVISO.critico,
+  [MOTIVO_PEDIDO_AMAZON.statusDesconhecido]: SEVERIDADE_AVISO.atencao,
+  [MOTIVO_PEDIDO_AMAZON.cancelamentoSolicitado]: SEVERIDADE_AVISO.atencao,
+  [MOTIVO_PEDIDO_AMAZON.pacoteStatusDesconhecido]: SEVERIDADE_AVISO.atencao,
+  [MOTIVO_PEDIDO_AMAZON.coletaCancelada]: SEVERIDADE_AVISO.atencao,
+};
+
+/** One order, as its per-pedido rows name it. */
+export interface PedidoDoAvisoAmazon {
+  readonly integracaoId: string;
+  /** Amazon's order id: the key's `entidade` and the ONE value the wording prints. */
+  readonly orderId: string;
+  /** The deterministic pedido id: the route. */
+  readonly pedidoId: string;
+}
+
+/** A per-pedido row's metadata — its raise, and the seed of a clocked resolve. */
+function planoPedidoPrecisaAtencao(
+  p: PedidoDoAvisoAmazon,
+  motivo: MotivoPedidoAmazon,
+  relogioUs: number,
+): ResolverAvisoOpts {
+  return {
+    tipo: TIPO_AVISO.amazonPedidoPrecisaAtencao,
+    conta: p.integracaoId,
+    entidade: p.orderId,
+    janela: motivo,
+    severidade: SEVERIDADE_MOTIVO_PEDIDO_AMAZON[motivo],
+    canal: CANAL_AVISO.amazon,
+    params: { pedido: p.orderId, motivo },
+    motivo,
+    urlInterna: { rota: ROTAS_AVISO.pedido.build(p.pedidoId), campo: null },
+    relogioEvento: relogioUs,
+  };
+}
+
+/** What one sync did, counted (the import's log line). */
+export interface SincroniaAvisosAmazon {
+  /** Raises that wrote (`criado`, `repetido` or `reaberto`; a stale one is `ignorado`). */
+  readonly levantados: number;
+  /** Open rows this sync closed (a real open → resolved transition). */
+  readonly resolvidos: number;
+}
+
+/**
+ * Raise every `levantar` motivo and resolve every `resolver` motivo, each
+ * CLOCKED by `relogio` — a FIRESTORE commit or read time (plan §3 decision 40),
+ * converted HERE by {@link relogioDoDocumentoUs}: never an order's own clock,
+ * which the import re-derives on when equal (an equal clock is dropped by both
+ * `escreverAviso` and `resolverAviso`).
+ *
+ * The raises run first; then ONE `getAll` over the keys to resolve: a resolve
+ * runs only on a row that EXISTS (an open one is closed; a resolved one has its
+ * watermark advanced when the clock is newer — the shared resolver's rule). A
+ * key with NO row is left alone: a
+ * clocked resolve would seed a resolved row for every motivo of every order
+ * (eight documents per pedido, rewritten on every import). The residue,
+ * documented: an older import of the same order whose FIRST raise of a motivo
+ * lands after a newer import's read found no row opens a stale row, closed by
+ * the order's next import.
+ */
+async function sincronizarAvisos(
+  db: Firestore,
+  deps: AvisoDepsAmazon,
+  planos: {
+    readonly levantar: readonly (readonly [string, PlanoAviso])[];
+    readonly resolver: readonly (readonly [string, ResolverAvisoOpts])[];
+  },
+): Promise<SincroniaAvisosAmazon> {
+  let levantados = 0;
+  for (const [, plano] of planos.levantar) {
+    const { resultado } = await escreverAviso(db, plano, depsDeEscrita(deps));
+    if (resultado !== 'ignorado') levantados += 1;
+  }
+  if (planos.resolver.length === 0) return { levantados, resolvidos: 0 };
+  const snaps = await db.getAll(
+    ...planos.resolver.map(([chave]) => avisoCollection.docRef(db, {}, chave)),
+  );
+  let resolvidos = 0;
+  for (const [i, [chave, semente]] of planos.resolver.entries()) {
+    if (snaps[i]?.exists !== true) continue;
+    const motivo = MOTIVO_AVISO_AMAZON.condicaoEncerrada;
+    const fechou = await resolverAviso(db, chave, motivo, { agoraUs: agoraUsDe(deps) }, semente);
+    if (fechou) resolvidos += 1;
+  }
+  return { levantados, resolvidos };
+}
+
+/**
+ * The order import's per-pedido rows (`amazonPedidoPrecisaAtencao`): raise the
+ * motivos the WINNING attempt derived, resolve the ones whose resolver it saw
+ * (the importer decides both lists), clocked by that attempt's batch commit
+ * `writeTime` — or, when it wrote nothing, its snapshot's `readTime`. In-app
+ * only (no escalation), `params` exactly `pedido` + `motivo`, the pedido route.
+ */
+export function sincronizarAvisosDoPedidoAmazon(
+  db: Firestore,
+  deps: AvisoDepsAmazon,
+  e: PedidoDoAvisoAmazon & {
+    readonly levantar: readonly MotivoPedidoAmazon[];
+    readonly resolver: readonly MotivoPedidoAmazon[];
+    readonly relogio: CommitDoDocumento;
+  },
+): Promise<SincroniaAvisosAmazon> {
+  const relogioUs = relogioDoDocumentoUs(e.relogio);
+  const plano = (motivo: MotivoPedidoAmazon) =>
+    [
+      chavePedidoPrecisaAtencao(e.integracaoId, e.orderId, motivo),
+      planoPedidoPrecisaAtencao(e, motivo, relogioUs),
+    ] as const;
+  return sincronizarAvisos(db, deps, {
+    levantar: e.levantar.map(plano),
+    resolver: e.resolver.map(plano),
+  });
+}
+
+/**
+ * The order import's per-conta rows (`amazonContaPrecisaAtencao`): raise and
+ * resolve as the import's conta read and verdicts say, clocked by that conta
+ * read's `readTime` — the server timeline the orphan pass's conta enumeration
+ * shares, never an order's clock (one row gathers many orders' observations).
+ */
+export function sincronizarAvisosDaContaAmazon(
+  db: Firestore,
+  deps: AvisoDepsAmazon,
+  e: {
+    readonly integracaoId: string;
+    readonly levantar: readonly MotivoContaAmazon[];
+    readonly resolver: readonly MotivoContaAmazon[];
+    readonly relogio: CommitDoDocumento;
+  },
+): Promise<SincroniaAvisosAmazon> {
+  const relogioUs = relogioDoDocumentoUs(e.relogio);
+  const plano = (motivo: MotivoContaAmazon) =>
+    [
+      chaveContaPrecisaAtencao(e.integracaoId, motivo),
+      sementeContaPrecisaAtencao(e.integracaoId, motivo, relogioUs),
+    ] as const;
+  return sincronizarAvisos(db, deps, {
+    levantar: e.levantar.map(plano),
+    resolver: e.resolver.map(plano),
+  });
 }
 
 /* -------------------------------------------------------------------------- */

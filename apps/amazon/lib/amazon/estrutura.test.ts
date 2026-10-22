@@ -11,12 +11,18 @@
  *    connect time is a verdict on a consent, never on a stored credential;
  *  - only the context loader reads through the conta cache: the connect flow
  *    must see a delete at once (its re-read decides the credential undo);
- *  - the name of the Admin SDK's multi-document atomic-write call appears in NO
- *    file of this app, tests and fakes included: this app adds ZERO such sites
- *    (the OAuth seam's redeem is already inventoried in `packages/data`), and
+ *  - the name of the Admin SDK's TRANSACTION call (the multi-document
+ *    read-and-write) appears in NO file of this app, tests and fakes included:
+ *    this app opens ZERO transactions (the OAuth seam's redeem and the shared
+ *    cliente resolver's are already inventoried in `packages/data`), and
  *    `firestore-transaction-inventory.test.js` greps raw text — a mention, even
  *    in a comment, would demand an inventory class for a site that does not
  *    exist. The word is assembled below so this file does not contain it;
+ *  - (step 5, PR 5-d) the app's ONE multi-document atomic write is the order
+ *    import's `WriteBatch` (`pedidos/escritaPedido.ts`, each write under its own
+ *    precondition): exactly one production module names `.batch(`, and exactly
+ *    one names a `getOrder` call (`pedidos/lerPedidoAmazon.ts`), across `lib/`,
+ *    `app/`, `functions/src` and `scripts/`;
  *  - (step 2b) the logger stays LIGHT: the transitive relative-import closure of
  *    `core/log.ts`, `core/redacao.ts`, `core/formatoDaRef.ts`, `core/idConta.ts`
  *    and `core/valvulas.ts` never reaches the Admin SDK, the admin data layer,
@@ -685,6 +691,41 @@ const fontesDoChamadorDeSearchOrders = () => [
 
 const nomeiaSearchOrders = (texto: string) => CHAMADA_DE_SEARCH_ORDERS.test(semComentarios(texto));
 
+/* ------------------------- step 5 (5-d): the order import ------------------------- */
+
+/** The ONE module that may call `getOrder` (plan §2.2: a W7 script can spend none of it). */
+const CHAMADOR_DE_GET_ORDER = 'lib/amazon/pedidos/lerPedidoAmazon.ts';
+
+/**
+ * Files that NAME `getOrder` without calling it, each with why: the log and
+ * fixture redactor keys its allow-list tables by the operation (its closure is
+ * pinned to `zod` and `@delfrance/core/*` above), and the test-only fixtures
+ * build a call line for the logger's tests (`testing/` is imported by tests
+ * only, pinned above).
+ */
+const NOMEIAM_GET_ORDER_SEM_CHAMAR = [
+  'lib/amazon/core/redacao.ts',
+  'lib/amazon/testing/fixtures.ts',
+];
+
+/**
+ * A `getOrder` call site, in comment-free code: the package's helper, its path
+ * builder, its operation-name constant, its response schema (a direct
+ * `cliente.get` needs it), or the operation name handed to a client.
+ */
+const CHAMADA_DE_GET_ORDER =
+  /\bbuscarPedido\b|\bcaminhoGetOrder\b|\bOPERACAO_GET_ORDER\b|\brespostaGetOrderSchema\b|['"`]getOrder['"`]/;
+
+const nomeiaGetOrder = (texto: string) => CHAMADA_DE_GET_ORDER.test(semComentarios(texto));
+
+/** The ONE module that may open a `WriteBatch` (plan §3 decision 1). */
+const LOTE_DO_IMPORTADOR = 'lib/amazon/pedidos/escritaPedido.ts';
+
+/** A `WriteBatch` opened, in comment-free code. */
+const ABRE_LOTE = /\.\s*batch\s*\(/;
+
+const abreLote = (texto: string) => ABRE_LOTE.test(semComentarios(texto));
+
 /* --------------------- step 20: the conta trigger, D11 by construction --------------------- */
 
 /** The conta trigger and the app's one `int_frete` binding, relative to the APP root. */
@@ -867,10 +908,14 @@ describe('lib/amazon layout', () => {
         'pedidos/codigosPedidoAmazon.ts',
         'pedidos/dinheiroAmazon.ts',
         'pedidos/erros.ts',
+        'pedidos/escritaPedido.ts',
         'pedidos/estadoPedidoAmazon.ts',
         'pedidos/freteAmazon.ts',
+        'pedidos/importarPedido.ts',
+        'pedidos/incidentesPedidoAmazon.ts',
         'pedidos/itensAmazon.ts',
         'pedidos/janelaPoll.ts',
+        'pedidos/lerPedidoAmazon.ts',
         'pedidos/notificacaoSintetica.ts',
         'pedidos/orcamentoPoll.ts',
         'pedidos/orderIds.ts',
@@ -878,6 +923,7 @@ describe('lib/amazon layout', () => {
         'pedidos/pedidoMapeamento.ts',
         'pedidos/pollPedidos.ts',
         'pedidos/vendaAmazon.ts',
+        'pedidos/vinculoProdutoAmazon.ts',
         'testing/documentos.ts',
         'testing/falhaDeEnfileiramento.ts',
         'testing/fakeDb.ts',
@@ -958,7 +1004,9 @@ describe('lib/amazon layout', () => {
     }
   });
 
-  it('no file of this app names the multi-document atomic-write call', () => {
+  // Retitled in step 5: a WriteBatch is now also a multi-document atomic write
+  // (the ONE batch site, guarded below); this guard is about the TRANSACTION call.
+  it('no file of this app names the transaction call (the multi-document read-and-write)', () => {
     const palavra = ['run', 'Transaction'].join('');
     const arquivos = arquivosTs(RAIZ_APP);
     expect(arquivos.length).toBeGreaterThan(40);
@@ -1308,10 +1356,14 @@ describe('the step-4 backstop poll guards (4-a)', () => {
       'pedidos/codigosPedidoAmazon.ts',
       'pedidos/dinheiroAmazon.ts',
       'pedidos/erros.ts',
+      'pedidos/escritaPedido.ts',
       'pedidos/estadoPedidoAmazon.ts',
       'pedidos/freteAmazon.ts',
+      'pedidos/importarPedido.ts',
+      'pedidos/incidentesPedidoAmazon.ts',
       'pedidos/itensAmazon.ts',
       'pedidos/janelaPoll.ts',
+      'pedidos/lerPedidoAmazon.ts',
       'pedidos/notificacaoSintetica.ts',
       'pedidos/orcamentoPoll.ts',
       'pedidos/orderIds.ts',
@@ -1319,6 +1371,7 @@ describe('the step-4 backstop poll guards (4-a)', () => {
       'pedidos/pedidoMapeamento.ts',
       'pedidos/pollPedidos.ts',
       'pedidos/vendaAmazon.ts',
+      'pedidos/vinculoProdutoAmazon.ts',
     ]);
     for (const arquivo of pedidos) {
       expect(readFileSync(arquivo, 'utf8'), rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
@@ -1360,6 +1413,49 @@ describe('the step-4 backstop poll guards (4-a)', () => {
       especs.filter((e) => e === 'firebase-admin/functions' || e === 'firebase-admin/app'),
     ).toEqual([]);
     expect(especs).toContain('../notificacoes/agendador');
+  });
+});
+
+describe('the step-5 order import guards (5-d)', () => {
+  // App-wide parses: CI headroom, not a budget.
+  it(
+    `getOrder has exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DE_GET_ORDER}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const nomeiam = fontes
+        .filter((p) => nomeiaGetOrder(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_GET_ORDER_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DE_GET_ORDER,
+      ]);
+      // Anti-vacuity: the scan sees the exempt mentions, by name.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_GET_ORDER_SEM_CHAMAR));
+    },
+  );
+
+  it(
+    `exactly ONE production module opens a WriteBatch: ${LOTE_DO_IMPORTADOR}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const abrem = fontes
+        .filter((p) => abreLote(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(abrem).toEqual([LOTE_DO_IMPORTADOR]);
+    },
+  );
+
+  it('the importer’s types come FROM notificacao.ts — never the reverse (plan §3 decision 48)', () => {
+    const notificacao = lerDoApp('lib/amazon/notificacoes/notificacao.ts') ?? '';
+    expect(especificadores(notificacao).filter((e) => /importarPedido/.test(e))).toEqual([]);
+    const importador = lerDoApp('lib/amazon/pedidos/importarPedido.ts') ?? '';
+    expect(especificadores(importador)).toContain('../notificacoes/notificacao');
+    // The ViaCEP module is named by NEITHER (the port is structural; 5-e's root names it).
+    expect(notificacao).not.toMatch(/@delfrance\/core\/cep/);
+    expect(importador).not.toMatch(/@delfrance\/core\/cep/);
   });
 });
 
@@ -1734,6 +1830,46 @@ describe('the guards, on synthetic source', () => {
       'respostaSearchOrdersSchemaAntiga.parse(corpo);',
     ]) {
       expect(nomeiaSearchOrders(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('the getOrder caller scan finds every call shape, and nothing alike (5-d)', () => {
+    for (const fonte of [
+      'await buscarPedido(contexto.cliente, payload.amazonOrderId);',
+      'const { buscarPedido: b } = pacote;',
+      'cliente.get({ operacao: x, caminho: caminhoGetOrder(id), schema });',
+      'cliente.get({ operacao: OPERACAO_GET_ORDER, caminho: c, schema });',
+      'cliente.get({ operacao: op, caminho: c, schema: respostaGetOrderSchema });',
+      "cliente.get({ operacao: 'getOrder', caminho: c, schema });",
+      'cliente.get({ operacao: `getOrder`, caminho: c, schema });',
+    ]) {
+      expect(nomeiaGetOrder(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// buscarPedido(contexto.cliente, id)',
+      '/* caminhoGetOrder(id) */',
+      'buscarPedidosAtualizados(cliente, filtro);',
+      'const corpo = getOrderBr();',
+      'const op = OPERACAO_GET_ORDER_V2;',
+      "const nome = 'getOrders';",
+      'buscarPedidoAmazon(cliente);',
+    ]) {
+      expect(nomeiaGetOrder(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('the WriteBatch scan finds a batch opened in code, and nothing alike (5-d)', () => {
+    for (const fonte of ['const lote = db.batch();', 'db . batch ( )', 'firestore.batch()']) {
+      expect(abreLote(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// db.batch()',
+      '/* um lote: db.batch() */',
+      'batch() { return lote; }',
+      'const lote = db.batches;',
+      'criarBatch(db);',
+    ]) {
+      expect(abreLote(fonte), fonte).toBe(false);
     }
   });
 

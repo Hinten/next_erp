@@ -1026,14 +1026,16 @@ export const TIPO_AVISO_LABELS = {
  *       Amazon never updates again keeps its row until retention.
  *     - `logistica-desconhecida` — **critico**. Amazon sent no usable
  *       `fulfilledBy`, so the import cannot tell who ships the order. Resolver:
- *       the import that reads one. Residue: an order Amazon never updates again
+ *       the import that reads one, or one that reads the order `CANCELLED` (a
+ *       cancelled order needs no shipper). Residue: an order Amazon never updates again
  *       keeps its row until retention.
  *     - `aceitar-cancelamento` — **critico**. A PRINTED pedido was moved to
  *       `cancelado` by a buyer cancellation request: the operator must accept
  *       the cancellation in Seller Central. Later also raised by the NF-e upload
  *       and the label steps when they refuse an order with an open request.
- *       Resolver: the cancellation executed (Amazon `CANCELLED`), or no request
- *       left. Residue: an order Amazon never updates again keeps its row until
+ *       Resolver: the cancellation executed (Amazon `CANCELLED`), no request
+ *       left, or Amazon `SHIPPED` (the order left; nothing remains to accept).
+ *       Residue: an order Amazon never updates again keeps its row until
  *       retention.
  *     - `cancelado-so-no-erp` — **critico**. The stored pedido is `cancelado`
  *       while Amazon's order is still to ship (`UNSHIPPED` /
@@ -1052,8 +1054,9 @@ export const TIPO_AVISO_LABELS = {
  *       updates again keeps its row until retention.
  *     - `cancelamento-solicitado` — **atencao**. The buyer asked to cancel a
  *       pedido not yet printed; its estado is unchanged, and the seller decides
- *       in Seller Central. Resolver: no request left, or the cancellation
- *       executed. Residue: an order Amazon never updates again keeps its row
+ *       in Seller Central. Resolver: no request left, the cancellation
+ *       executed, or an import that finds the pedido printed while the request
+ *       is open (it raises `aceitar-cancelamento` instead). Residue: an order Amazon never updates again keeps its row
  *       until retention.
  *     - `pacote-status-desconhecido` — **atencao**. A package status the freight
  *       import does not know, or a package without a reference: its freight

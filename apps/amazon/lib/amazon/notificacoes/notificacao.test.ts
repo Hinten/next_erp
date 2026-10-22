@@ -357,6 +357,47 @@ describe('toDispositionAmazon — total, phase-independent', () => {
     expect(toDispositionAmazon(resultado)).toEqual(esperado);
   });
 
+  // Step 5 (PR 5-d): the importer's own kinds, mapped while the seam is still empty.
+  it.each<[ResultadoNotificacaoAmazon, ReturnType<typeof toDispositionAmazon>]>([
+    [
+      {
+        kind: 'importado',
+        detalhe: {
+          acao: 'atualizado',
+          itens: 'divergencia-itens-aprovado',
+          linhasPreservadas: 0,
+          linhasDivergentes: 1,
+          linhasSemProduto: 0,
+        },
+      },
+      { kind: 'resolve', label: 'importado' },
+    ],
+    [{ kind: 'sem-mudanca' }, { kind: 'resolve', label: 'sem-mudanca' }],
+    [{ kind: 'obsoleto' }, { kind: 'resolve', label: 'obsoleto' }],
+    [{ kind: 'cancelado-nao-importado' }, { kind: 'resolve', label: 'cancelado-nao-importado' }],
+    [{ kind: 'reversao-nao-importada' }, { kind: 'resolve', label: 'reversao-nao-importada' }],
+    [
+      { kind: 'marketplace-estrangeiro' },
+      { kind: 'drop', reason: 'marketplace-estrangeiro', label: 'marketplace-estrangeiro' },
+    ],
+  ])('★ step 5: %o → %o', (resultado, esperado) => {
+    expect(toDispositionAmazon(resultado)).toEqual(esperado);
+  });
+
+  it('★ no step-5 kind parks or defers: each one is final (resolve) or not ours (drop)', () => {
+    const kinds = [
+      'importado',
+      'sem-mudanca',
+      'obsoleto',
+      'cancelado-nao-importado',
+      'reversao-nao-importada',
+      'marketplace-estrangeiro',
+    ] as const;
+    for (const kind of kinds) {
+      expect(['resolve', 'drop'], kind).toContain(toDispositionAmazon({ kind }).kind);
+    }
+  });
+
   it('every adiamento motivo DEFERS — none parks, none drops (#808)', () => {
     for (const motivo of Object.values(MOTIVO_ADIAMENTO_AMAZON)) {
       expect(toDispositionAmazon({ kind: 'adiado', motivo }).kind, motivo).toBe('defer');

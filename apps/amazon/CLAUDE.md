@@ -178,9 +178,11 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   One `evento: 'int-frete'` line per reconcile (field NAMES joined, never a value or the
   `nome`; WARNING on `incompleto`). No `try`/`catch`: Firestore/Zod errors reach the Eventarc
   retry.
-- Step 5's importer reads the conta's freight doc with
+- The order import (step 5, PR 5-d: `lib/amazon/pedidos/importarPedido.ts`, its step 5) is the
+  consumer: it reads the conta's freight doc with
   `syncIntFreteAmazon.buscarIntFreteDaConta(db, contaId, { apenasAtivo: true })` over RAW bodies,
-  never cached (its answer feeds a write). Reconciliation never filters `ativo`.
+  uncached and outside any transaction (its answer feeds a write, fill-once on the pedido's
+  freight block). Reconciliation never filters `ativo`.
 - ⚠️ The declared departure from the one-logger rule: on `incompleto` the core also writes its
   own unstructured stderr warning (`[amazon] conta Amazon sem dados suficientes para criar o
   int_frete`, the conta id and field names only), from `packages/data`, where
@@ -335,8 +337,17 @@ no `env:` block.
 | Conta cache | — | per-instance invalidate after the callback, by the intake task before a poll's `vendedor-mudou` drop (then a reload), and by the poll before each conta's run; others bounded by TTL + `isFresh` |
 | `int_frete/amz-<id>` create (step 20) | 0 (inside the core's class-A reconcile) | `tx.create` at `amz-<id>`. On a miss, the lookup `tx.get`s that id inside the transaction, so a concurrent first reconcile conflicts (ABORTED, retried by the SDK) and re-derives `inalterado`. A stray ALREADY_EXISTS is NOT retried by the SDK: the trigger then rides the Eventarc retry (`retry: true`), and `--apply` stops and is simply re-run (idempotent) |
 | `int_frete` mirror patch and deactivate (step 20) | A (the core's) | the shared core's ONE reconcile transaction (inventoried in `packages/data`): every input from its own `tx.get`s, no event clock, never a delete; this app adds no site |
+| Pedido create / update (step 5, PR 5-d) | 2 (via 1) | ONE `WriteBatch` (`pedidos/escritaPedido.ts`), decided from one `getAll` of the pedido AND its pagamento: `create`, or `update(…, { lastUpdateTime })` on that pedido snapshot; the watermark (`lastMarketplaceUpdate`, µs) compared on it, a strictly older one dropped on a pedido this importer wrote, the accepted value written by the winner; a lost precondition (9/5/6) writes nothing and re-derives from a fresh read, ≤ 3 attempts, then `AmazonPedidoEmConflitoError` (retry). The pagamento slot (PR 6) rides the same batch, under its own precondition or the pedido's precondition carrier. ⚠️ Only the PEDIDO is proven current at commit: until PR 6 no write carries the pagamento's precondition, so a pagamento-only change between the read and the commit is not seen (a documented residue in the module header; PR 6 owns the fix) |
+| First-seen CANCELLED skip (a no-write decision, step 5) | bounded wait | no precondition guards a write that is not made: while the cancellation is younger than 15 min the import throws the retryable `AmazonCancelamentoRecenteError` (every retry re-fetches and re-reads), so no importer holding an older read can still create a reserving pedido afterwards. A first-seen order with any other reversal signal (plan §3 decision 44) waits out the same window for the same reason, then is skipped as `reversao-nao-importada`; one reversed long ago (the cutover look-back) is past the window and skipped at once |
+| Cliente (step 5) | shared | `findOrCreateCliente` — its own transaction in `packages/data`, already inventoried; only the ref rides the batch, fill-once on each attempt's snapshot, and only when the pedido's stored freight endereço (if any) is that cliente's |
+| Endereço (step 5) | 0 | `ensureEndereco`: `create` at the legacy sha1 id under the cliente the pedido will carry, ALREADY_EXISTS swallowed; the ref filled only when it pairs with that attempt's cliente |
+| Pedido incidentes (step 5) | 0 | `create` at a deterministic id (`amz-prod-<orderItemId>`, `amz-cliente-sem-identidade`, `amz-<code>`), only ALREADY_EXISTS swallowed; after the commit, from the winning attempt |
+| Order-import avisos (step 5) | seam, tier 2 on the Firestore timeline | `escreverAviso` / `resolverAviso` (both drop an EQUAL clock), after the commit and never on `obsoleto`: per-pedido rows clocked by the batch's commit `writeTime` (`importado`) or the winning snapshot's `readTime` (`sem-mudanca`), per-conta rows by the uncached conta read's `readTime`; one `getAll` over the keys first, and a resolve only on a row that EXISTS |
+| Link docs, `int_frete`, conta (step 5) | — | read only |
 
-This app adds **zero** multi-document atomic-write sites.
+This app adds **ONE** multi-document atomic-write site: the order import's batch
+(`pedidos/escritaPedido.ts`), each write under its own precondition. It opens **no** transaction
+(`estrutura.test.ts` pins both: one `.batch(` module, and the transaction call named nowhere).
 
 ## Departures from the step-2 plan (PR b)
 

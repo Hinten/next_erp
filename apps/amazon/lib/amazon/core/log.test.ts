@@ -403,7 +403,32 @@ describe('registrarEventoAmazon', () => {
     ]);
   });
 
-  it('an evento outside the closed set is <invalido> (near-misses of the step-3, step-4 and step-20 names)', () => {
+  it('step 5 adds `pedido`: written as given, with its `conta` envelope', () => {
+    const { logger, linhas } = loggerEspiao();
+    registrarEventoAmazon(
+      logger,
+      'pedido',
+      'WARNING',
+      'm',
+      { codigo: 'cancelamento-parcial', linhas: 1 },
+      { conta: CONTA, fluxo: 'intake' },
+    );
+    expect(linhas).toEqual([
+      {
+        nivel: 'warn',
+        mensagem: 'm',
+        meta: {
+          codigo: 'cancelamento-parcial',
+          linhas: 1,
+          evento: 'pedido',
+          conta: CONTA,
+          fluxo: 'intake',
+        },
+      },
+    ]);
+  });
+
+  it('an evento outside the closed set is <invalido> (near-misses of the step-3, step-4, step-5 and step-20 names)', () => {
     const { logger, linhas } = loggerEspiao();
     registrarEventoAmazon(logger, 'tarefas' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'notificacoes' as never, 'INFO', 'm', {});
@@ -412,7 +437,11 @@ describe('registrarEventoAmazon', () => {
     registrarEventoAmazon(logger, 'intFrete' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'int_frete' as never, 'INFO', 'm', {});
     registrarEventoAmazon(logger, 'frete' as never, 'INFO', 'm', {});
+    registrarEventoAmazon(logger, 'pedidos' as never, 'INFO', 'm', {});
+    registrarEventoAmazon(logger, 'importacao' as never, 'INFO', 'm', {});
     expect(linhas.map((l) => l.meta?.evento)).toEqual([
+      INVALIDO,
+      INVALIDO,
       INVALIDO,
       INVALIDO,
       INVALIDO,

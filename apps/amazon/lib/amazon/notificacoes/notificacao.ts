@@ -66,8 +66,8 @@
  *
  * | outcome | task | hot sweep | deferred sweep |
  * | --- | --- | --- | --- |
- * | `importado` | resolve | delete | delete |
- * | `conta-inexistente`, `vendedor-mudou` | drop | delete | delete |
+ * | `importado`, `sem-mudanca`, `obsoleto`, `cancelado-nao-importado`, `reversao-nao-importada` (step 5) | resolve | delete | delete |
+ * | `conta-inexistente`, `vendedor-mudou`, `marketplace-estrangeiro` (step 5) | drop | delete | delete |
  * | `adiado/<motivo>` | defer | migrate to `deferred`, `tentativas` 0 | stays deferred; parks at 7 |
  * | `pedido-inexistente` | park | park | park |
  * | `recusa-deterministica/<classe>[/<status>]` | park | park | park |
@@ -122,11 +122,13 @@ import {
   type TarefaAmazon,
   type TipoTarefaAmazon,
   origemNotificacaoAmazonSchema,
+  type recoverEnderecoFromCep,
   tarefaAmazonSchema,
   tipoTarefaAmazonSchema,
 } from '@delfrance/schemas';
 
 import type { AmbienteAmazon } from '../env';
+import type { AcaoItensAmazon } from '../pedidos/itensAmazon';
 import { invalidarContaEmCache } from '../core/contaCache';
 import { contasPorSellingPartnerId } from '../core/contas';
 import { type ContextoAmazon, type ContextoAmazonDeps, loadAmazonContext } from '../core/contexto';
@@ -270,10 +272,47 @@ export type MotivoAdiamentoAmazon =
 export type ClasseRecusaAmazon = 'AmazonHttpError' | 'AmazonSchemaError' | 'ZodError';
 
 /**
- * What the importer returns. Step 3 declares only the success kind; step 5 adds
- * its own, and {@link toDispositionAmazon} stops compiling until each is mapped.
+ * What the step-5 importer reports beside its kind, for the task's ONE log line
+ * (PR 5-e adds the campos): numbers and closed codes only.
  */
-export type ResultadoImportacaoAmazon = { readonly kind: 'importado' };
+export interface DetalheImportacaoAmazon {
+  /** `criado` / `atualizado` on `importado`; `null` on `sem-mudanca`. */
+  readonly acao: 'criado' | 'atualizado' | null;
+  /** What the import did with the lines (the D17 `acao`; the master plan's `detail` values verbatim). */
+  readonly itens: AcaoItensAmazon;
+  /** Stored lines left untouched by a freeze or a reversal. */
+  readonly linhasPreservadas: number;
+  /** Lines involved in a block. */
+  readonly linhasDivergentes: number;
+  /** Final lines no produto owns (`'NONE'`). */
+  readonly linhasSemProduto: number;
+}
+
+/**
+ * What the importer returns (step 5, PR 5-d; the seam stays empty until 5-e).
+ * {@link toDispositionAmazon} maps each kind, and stops compiling until a new
+ * one is mapped:
+ *
+ *  - `importado` — a batch committed (a divergence included: the error, where
+ *    applicable, is persisted and the aviso is the signal);
+ *  - `sem-mudanca` — nothing to write (an equal redelivery);
+ *  - `obsoleto` — a newer write already landed on the pedido;
+ *  - `cancelado-nao-importado` — a first-seen CANCELLED order, past the
+ *    recent-cancel window (zero writes);
+ *  - `reversao-nao-importada` — a first-seen order with any other reversal
+ *    signal, past the same window (zero writes; plan §3 decision 44);
+ *  - `marketplace-estrangeiro` — not the BR marketplace (dropped).
+ *
+ * `detalhe` is ALWAYS set by the step-5 importer (`importarPedido.test.ts`
+ * pins it); a step-3 fake importer legitimately returns the bare kind.
+ */
+export type ResultadoImportacaoAmazon =
+  | { readonly kind: 'importado'; readonly detalhe?: DetalheImportacaoAmazon }
+  | { readonly kind: 'sem-mudanca'; readonly detalhe?: DetalheImportacaoAmazon }
+  | { readonly kind: 'obsoleto' }
+  | { readonly kind: 'cancelado-nao-importado' }
+  | { readonly kind: 'reversao-nao-importada' }
+  | { readonly kind: 'marketplace-estrangeiro' };
 
 export type ResultadoNotificacaoAmazon =
   | ResultadoImportacaoAmazon
@@ -327,9 +366,14 @@ function motivoDaRecusa(classe: ClasseRecusaAmazon, status: number | null): stri
 export function toDispositionAmazon(r: ResultadoNotificacaoAmazon): NotificationDisposition {
   switch (r.kind) {
     case 'importado':
+    case 'sem-mudanca':
+    case 'obsoleto':
+    case 'cancelado-nao-importado':
+    case 'reversao-nao-importada':
       return { kind: 'resolve', label: r.kind };
     case 'conta-inexistente':
     case 'vendedor-mudou':
+    case 'marketplace-estrangeiro':
       return { kind: 'drop', reason: r.kind, label: r.kind };
     case 'adiado':
       return { kind: 'defer', reason: `adiado/${r.motivo}` };
@@ -578,6 +622,34 @@ export interface DepsLeituraAmazon extends DepsClassificadorAmazon {
 }
 
 export interface DepsExecucaoAmazon extends DepsLeituraAmazon {
+  readonly registro: RegistroLeituraAmazon;
+}
+
+/**
+ * A CEP lookup, as the order import's endereço recovery takes it: a LOCAL
+ * structural port (plan §3 decision 48), read off the shared
+ * `recoverEnderecoFromCep`'s own signature, so this module — which the receiver
+ * imports — never names the ViaCEP module, not even by type. The functions root
+ * (PR 5-e) hands in `createViaCepClient()`, which satisfies it structurally; a
+ * test hands in a fake.
+ */
+export type BuscadorCepAmazon = Parameters<typeof recoverEnderecoFromCep>[1];
+
+/**
+ * What the step-5 importer (`pedidos/importarPedido.ts`) needs besides the db,
+ * the context and the payload. Declared HERE, and the importer imports it —
+ * never the reverse — so the receiver's import closure never reaches the
+ * importer (plan §3 decision 48). `ImportadorPedidoAmazon` and
+ * {@link processarNotificacaoAmazon} stay as they are until PR 5-e widens them.
+ */
+export interface DepsImportadorAmazon {
+  /** Now, in MILLISECONDS — read ONCE per import. */
+  readonly agora: () => number;
+  /** `(by) => FieldValue.increment(by)`, for the avisos. */
+  readonly increment: (by: number) => unknown;
+  readonly logger: LoggerAmazon;
+  readonly viaCep: BuscadorCepAmazon;
+  /** The run's flow and Cloud Tasks attempt: `tentativa` `null` = a sweep re-drive. */
   readonly registro: RegistroLeituraAmazon;
 }
 

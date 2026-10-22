@@ -25,6 +25,16 @@ describe('lerContaAmazon', () => {
     expect(db.leituras).toEqual([caminhoConta('c1')]);
   });
 
+  it('carries the read’s own readTime (step 5 clocks the per-conta avisos with it), not the updateTime', async () => {
+    const carimbo = seedConta(db, 'c1');
+    // Another document moves the clock: the read happens AFTER the conta's commit.
+    db.seed('outra/doc', { x: 1 });
+    const lida = await lerContaAmazon(asDb(db), 'c1');
+    expect(lida).not.toBeNull();
+    expect(relogioDoDocumentoUs(lida!.readTime)).toBeGreaterThan(relogioDoDocumentoUs(carimbo));
+    expect(lida?.updateTime.isEqual(carimbo as never)).toBe(true);
+  });
+
   it('answers null for a missing conta and for another tipo', async () => {
     expect(await lerContaAmazon(asDb(db), 'nao-existe')).toBeNull();
     seedConta(db, 'shopee', { tipo: INTEGRACAO_TIPO.shopee });
