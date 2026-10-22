@@ -16,8 +16,10 @@
  * state to keep: at 2 000 ms, at most 30 calls a minute on that queue, against
  * Loja Integrada's 100 per minute per store.
  *
- * ⚠️ The routes' validating GET does not go through a context, so it is not
- * paced: it is one call per operator save.
+ * ⚠️ The credential routes' validating GET does not go through a context, so it
+ * is not paced: it is one call per operator save. The label routing route calls
+ * nothing. The paid re-check route's one read DOES go through a context, so it
+ * waits one full interval before its request, outside the 20 s deadline.
  *
  * ⚠️ A run's budget signal is checked by the package only after the wait, so a
  * budgeted run can overshoot its budget by at most one interval.

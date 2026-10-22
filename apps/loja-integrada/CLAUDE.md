@@ -12,7 +12,8 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   (`/api/webhooks/loja-integrada/…`, step 4) stays OUTSIDE the proxy matcher.
 - The platform is called only through `@delfrance/integrations-loja-integrada`,
   never with a raw `fetch` here. No write to the platform before the cutover (D4).
-- Step 15 (label routing): the second route family, `pedidos/[pedidoId]/…` (below).
+- Step 15 (label routing and the paid re-check): the second route family,
+  `pedidos/[pedidoId]/…` (below).
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -73,6 +74,39 @@ or the operator's `escolha` resolves. The work is `lib/lojaIntegrada/pedidos/rot
 - A refusal or a conflict logs ONE line with ids only (the pedido, the motivo, the attempts),
   never an endereço, a name or a document. No ruleset, index or env change: the write goes
   through Admin, and every read is by id.
+
+`GET …/pagamento` (`PERM.pedido.read`) is the paid re-check the web's dispatch gates call: the
+order's CURRENT Loja Integrada situação, or the ERP's contested mirror when that cannot be read.
+The work is `lib/lojaIntegrada/pedidos/conferenciaPagamento.ts`; the wire contract (answers,
+verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLojaIntegrada.ts`.
+
+- **ERP reads first, then ONE paced read, and only through the context.** The pedido by id, its
+  conta and canonical `numero`, and the identity (the id must be the import's own digest,
+  `idPedidoLi`) come before anything else: a duplicate, a devolução or a manual pedido answers
+  `aplicavel: false` with no call and no switch line. Only then `loadLojaIntegradaContext`
+  (the read switch is its first act; off ⇒ nothing reaches Loja Integrada) and ONE
+  `buscarPedidoLi`, paced like any flow read (`prazos.test.ts` counts it and budgets pacer +
+  `PRAZO_LI_MS.leitura` under the ceiling). Never a raw `fetch`, never a client built outside
+  `core/contexto.ts` (`estrutura.test.ts`). Its log lines carry `fluxo: conferencia-pagamento`.
+- **The answer names this order:** the body's `numero`, and the first shipment's id against
+  `freteInicial.externalId` when both are readable (`inteiroPositivoCanonicoLi` on both sides),
+  else 502 `LI_PEDIDO_DIVERGENTE` — a token of another store. The verdict is the codigo's alone
+  (`veredictoDoCodigoLi`); nothing else from the order body (personal data) leaves the core.
+- **Its own error mapper** (`falhaDaLeituraLi`), not `respond.ts`'s, which it reuses only for the
+  app errors: `LiTimeoutError` before `LiNetworkError`, the `LiHttpError` subclasses before
+  `LiHttpError`, never the `LiError` base; anything unlisted (a non-5xx refusal, `LiConfigError`,
+  gRPC) is rethrown. A 401/403 parks the conta (`tratarFalhaDeAutenticacao`) and answers as the
+  park found it. A 404 is 409 `LI_PEDIDO_AUSENTE_NA_LOJA`: imported orders do not vanish from the
+  store, so it points at the credential.
+- **The mirror only when the read cannot run** (the switch, the conta, its credential, a throttle,
+  a timeout, an outage): the pedido's `lojaIntegradaPedidoContestado` aviso, by the import's own
+  key (`chaveDoAvisoDoPedidoLi`); open ⇒ 200 `contestado`, `fonte: 'erp'`. Never after a live
+  answer — a live `pago` wins over an open aviso — and never after a "not authorised" one (404,
+  another order). With the switch off, as everywhere until the window, the route answers the
+  mirror or 503 `LI_CHAMADAS_DESLIGADAS`, with zero calls.
+- The caller's abort is matched by identity (`err === req.signal.reason`) ⇒ 499. Every answer
+  that is not a verdict logs ONE line: pedido, conta, the caller's uid, the cause and what the
+  mirror said. No write of its own (only the park's), no ruleset, index or env change.
 
 ## Store and writes
 
