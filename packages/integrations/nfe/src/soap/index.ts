@@ -28,7 +28,7 @@ import { HttpClient } from 'soap';
 
 import type { NFeCertificate } from '../cert';
 import { assertSafeEndpointForTransport, assertSafeTpAmbForTransport, type TpAmb } from '../safety';
-import { validateXsd, type XsdRootKey } from '../xsd';
+import { validateRetInutNFe, validateXsd, type XsdRootKey } from '../xsd';
 
 const NFE_WSDL_BASE = 'http://www.portalfiscal.inf.br/nfe/wsdl';
 
@@ -365,6 +365,12 @@ interface OperationContract {
   readonly soapOp: SoapOperation;
   readonly requestRoot: XsdRootKey;
   readonly responseRoot: XsdRootKey;
+  /**
+   * Replaces the plain `validateXsd(responseRoot, …)` response check, for an
+   * operation whose reply carries a documented, narrow SEFAZ deviation. Still
+   * throws `NFeXsdValidationError` on anything outside it.
+   */
+  readonly validateResponse?: (xml: string) => Promise<void>;
 }
 
 const CONTRACTS: Record<string, OperationContract> = {
@@ -397,6 +403,8 @@ const CONTRACTS: Record<string, OperationContract> = {
     soapOp: 'NFeInutilizacao',
     requestRoot: 'inutNFe',
     responseRoot: 'retInutNFe',
+    // A rejection may carry an unfilled (`DateTime.MinValue`) dhRecbto — MOC 7.0 §5.3.2.
+    validateResponse: validateRetInutNFe,
   },
 };
 
@@ -424,7 +432,8 @@ async function postSoapValidated(
     agent: call.agent,
     timeoutMs: call.timeoutMs,
   });
-  await validateXsd(contract.responseRoot, result.resultXml);
+  if (contract.validateResponse) await contract.validateResponse(result.resultXml);
+  else await validateXsd(contract.responseRoot, result.resultXml);
   return result;
 }
 
