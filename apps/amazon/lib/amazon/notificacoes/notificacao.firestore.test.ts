@@ -182,9 +182,9 @@ describe.skipIf(!EMULATED)('o pipeline da Amazon no Firestore real (emulador)', 
     await apagarContaDoResolve();
   });
 
-  // The emulator is SHARED with every file that runs after this one, and only
-  // this file seeds a conta: leave none behind, so a later suite that routes or
-  // counts contas never depends on the file order.
+  // The emulator is SHARED with every file that runs after this one, and the
+  // poll's suites enumerate and route contas too: leave none behind, so a later
+  // suite that routes or counts contas never depends on the file order.
   afterAll(async () => {
     await apagarContaDoResolve();
   });

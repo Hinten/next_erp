@@ -47,7 +47,9 @@ import { getDb } from './lib/admin';
  * Master plan step 3 (PR 3-d) wires the intake pipeline: ONE reads queue
  * (`filaLeituraAmazon`, ./filaLeitura) dispatching on the task's `tipo`, fed by
  * the App Hosting push receiver; the 30-minute reprocess sweep over both lanes;
- * and the daily expiry sweep (the step-2 body). Step 4 adds the backstop poll.
+ * and the daily expiry sweep (the step-2 body). Step 4 (PR 4-b) adds the
+ * 15-minute backstop poll (`pollAmazonOrders`, ./pollPedidos), the queue's
+ * second producer, through this codebase's own producer root (./agendador).
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -77,6 +79,9 @@ if (!(FILA_LEITURA_AMAZON in filaLeitura)) {
 
 /** The ONE reads queue (one dispatch at a time, retry with backoff). */
 export { filaLeituraAmazon } from './filaLeitura';
+
+/** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
+export { pollAmazonOrders } from './pollPedidos';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:

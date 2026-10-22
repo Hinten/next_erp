@@ -38,7 +38,17 @@
  * {@link MAX_PAGINAS_AVISOS_ABERTOS} pages, with a `truncado` flag. Canal and
  * tipo are filtered in CODE (no index can express them). A row whose id is not
  * one of the LISTED contas' chaves is resolved as `conta-removida`: a reconexão
- * row CLOCKED by the enumeration's `readTime`, a reauthorization row clockless.
+ * row and a step-4 import-stopped row CLOCKED by the enumeration's `readTime`
+ * (`resolverAvisoDeContaRemovida`), a reauthorization row clockless. A conta
+ * created after that read — and then parked, or failing to import — raised at a
+ * later clock, so its row stays open and the next run lists it.
+ *
+ * ⚠️ Every per-conta tipo's chave is in the existing set, the import-stopped one
+ * included: its row belongs to the backstop poll (`pedidos/pollPedidos.ts`)
+ * while the conta exists, and leaving its chave out would close a LIVE conta's
+ * open import-stopped row on every run. Listed contas are active OR inactive, so
+ * a deactivated conta's row is never closed here (a documented residue: the
+ * poll skips the conta, so the row waits for a reactivation or a deletion).
  *
  * ⚠️ **Known limit** (Loja Integrada's and Shopee's, the same query): beyond
  * `PAGINA × MAX_PAGINAS` (1 000) open avisos repo-wide, the OLDEST rows — the
@@ -65,6 +75,7 @@ import {
   TIPOS_AVISO_AMAZON_POR_CONTA,
   avisarReconexaoPendente,
   avisarSegredoLwaExpirando,
+  chaveImportacaoParada,
   chaveReautorizacao,
   chaveReconexao,
   resolverAvisoDeContaRemovida,
@@ -260,6 +271,8 @@ export async function sweepAmazonExpiracoes(
   for (const conta of contas) {
     chavesExistentes.add(chaveReconexao(conta.integracaoId));
     chavesExistentes.add(chaveReautorizacao(conta.integracaoId));
+    // The poll's row while the conta exists (header): never an orphan.
+    chavesExistentes.add(chaveImportacaoParada(conta.integracaoId));
   }
 
   let lidos = 0;

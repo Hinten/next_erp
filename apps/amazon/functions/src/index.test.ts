@@ -15,6 +15,12 @@ import type {
   ImportadorPedidoAmazon,
   PayloadNotificacaoAmazon,
 } from '../../lib/amazon/notificacoes/notificacao';
+import {
+  INTERVALO_POLL_AMAZON_MS,
+  LEASE_POLL_MS,
+  ORCAMENTO_TICK_MS,
+  TEMPO_LIMITE_POLL_AMAZON_S,
+} from '../../lib/amazon/pedidos/orcamentoPoll';
 import { FakeDb, asDb } from '../../lib/amazon/testing/fakeDb';
 import {
   AGORA_MS,
@@ -102,7 +108,12 @@ vi.mock('../../lib/amazon/conta/expiracaoSweep', async (importOriginal) => ({
 // ⚠️ Keep this import at the TOP LEVEL — not in a `beforeAll`: module evaluation
 // carries no hook timeout, and `./index` is the heaviest module here.
 const modulo = await import('./index');
-const { filaLeituraAmazon, reprocessAmazonNotifications, sweepAmazonExpirations } = modulo;
+const {
+  filaLeituraAmazon,
+  pollAmazonOrders,
+  reprocessAmazonNotifications,
+  sweepAmazonExpirations,
+} = modulo;
 const notificacao = await import('../../lib/amazon/notificacoes/notificacao');
 const expiracao = await import('../../lib/amazon/conta/expiracaoSweep');
 
@@ -116,7 +127,11 @@ afterAll(() => {
 });
 
 /** Every scheduled trigger this codebase exports. The exhaustiveness test makes adding one mandatory. */
-const AGENDAMENTOS = { reprocessAmazonNotifications, sweepAmazonExpirations } as const;
+const AGENDAMENTOS = {
+  pollAmazonOrders,
+  reprocessAmazonNotifications,
+  sweepAmazonExpirations,
+} as const;
 
 /**
  * Every TASK-QUEUE trigger: exactly ONE. The channel has one reads queue that
@@ -135,8 +150,37 @@ function endpointOf(fn: unknown): Endpoint {
   return (fn as { __endpoint: Endpoint }).__endpoint;
 }
 
-function gatilhoDe(fn: unknown): { schedule?: string; timeZone?: string } {
-  return endpointOf(fn).scheduleTrigger as { schedule?: string; timeZone?: string };
+function gatilhoDe(fn: unknown): {
+  schedule?: string;
+  timeZone?: string;
+  retryConfig?: { retryCount?: number };
+} {
+  return endpointOf(fn).scheduleTrigger as {
+    schedule?: string;
+    timeZone?: string;
+    retryConfig?: { retryCount?: number };
+  };
+}
+
+/**
+ * The minutes an `m1,m2,… * * * *` cron fires at, or `null` for any other shape
+ * (an hourly field, a step, a day field): the poll's interval is READ off its
+ * deployed cron, never restated.
+ */
+function minutosDoCron(cron: string | undefined): number[] | null {
+  const m = /^(\d{1,2}(?:,\d{1,2})*) \* \* \* \*$/.exec(cron ?? '');
+  if (m === null) return null;
+  return (m[1] ?? '').split(',').map(Number);
+}
+
+/** The gaps between consecutive firings of an hourly minute list, wrapping the hour. */
+function intervalosDoCronMs(minutos: readonly number[]): number[] {
+  const ordenados = [...minutos].sort((a, b) => a - b);
+  return ordenados.map((m, i) => {
+    const proximo = ordenados[(i + 1) % ordenados.length] ?? m;
+    const gap = i === ordenados.length - 1 ? proximo + 60 - m : proximo - m;
+    return gap * 60_000;
+  });
 }
 
 /** The secret NAMES an endpoint binds (`[]` when none). */
@@ -546,6 +590,53 @@ describe('reprocessAmazonNotifications — what the run binds', () => {
   });
 });
 
+describe('pollAmazonOrders — the options and their arithmetic', () => {
+  const minutos = minutosDoCron(gatilhoDe(pollAmazonOrders).schedule);
+  const timeoutMs = (endpointOf(pollAmazonOrders).timeoutSeconds as number) * 1000;
+
+  it('runs at :07, :22, :37 and :52, America/Sao_Paulo', () => {
+    expect(gatilhoDe(pollAmazonOrders).schedule).toBe('7,22,37,52 * * * *');
+    expect(gatilhoDe(pollAmazonOrders).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('fires every 15 minutes EXACTLY — the interval the body budgets with (INTERVALO_POLL_AMAZON_MS)', () => {
+    expect(minutos).not.toBeNull();
+    // Every gap, the wrap across the hour included: an uneven cron (say
+    // `7,22,37,50`) would starve one slot and crowd another.
+    expect(intervalosDoCronMs(minutos ?? [])).toEqual([900_000, 900_000, 900_000, 900_000]);
+    expect(new Set(intervalosDoCronMs(minutos ?? []))).toEqual(new Set([INTERVALO_POLL_AMAZON_MS]));
+  });
+
+  it('has timeoutSeconds 300 — the value the body budgets against (TEMPO_LIMITE_POLL_AMAZON_S)', () => {
+    expect(endpointOf(pollAmazonOrders).timeoutSeconds).toBe(300);
+    expect(endpointOf(pollAmazonOrders).timeoutSeconds).toBe(TEMPO_LIMITE_POLL_AMAZON_S);
+  });
+
+  it('★ the tick budget < the timeout < the lease < the interval, read off the deployed endpoint', () => {
+    // The tick's budget fits the timeout (the last conta keeps room for its
+    // final write).
+    expect(ORCAMENTO_TICK_MS).toBeLessThan(timeoutMs);
+    // A live run's lease never expires under it: no second run can take the
+    // lease while this one still writes.
+    expect(LEASE_POLL_MS).toBeGreaterThan(timeoutMs);
+    // A crashed run's lease is free by the next tick.
+    const intervalo = Math.min(...intervalosDoCronMs(minutos ?? []));
+    expect(intervalo).toBeGreaterThan(LEASE_POLL_MS);
+    // ÂNCORA: the numbers this arithmetic was written for.
+    expect([ORCAMENTO_TICK_MS, timeoutMs, LEASE_POLL_MS, intervalo]).toEqual([
+      240_000, 300_000, 360_000, 900_000,
+    ]);
+  });
+
+  it('retries nothing: a failed tick waits for the next one (a retry would only race its lease)', () => {
+    expect(gatilhoDe(pollAmazonOrders).retryConfig?.retryCount).toBe(0);
+  });
+
+  it('binds EXACTLY the LWA client secret — a conta’s run may refresh its access token', () => {
+    expect(segredosDe(pollAmazonOrders)).toEqual([SEGREDO_LWA]);
+  });
+});
+
 describe('sweepAmazonExpirations', () => {
   it('runs DAILY at 07:15 America/Sao_Paulo', () => {
     expect(gatilhoDe(sweepAmazonExpirations).schedule).toBe('15 7 * * *');
@@ -696,9 +787,10 @@ describe('filaLeituraAmazon — the declared options', () => {
 describe('every trigger of the codebase', () => {
   const TODOS = { ...AGENDAMENTOS, ...FILAS };
 
-  it('every onSchedule export is in AGENDAMENTOS — and there are exactly two', () => {
+  it('every onSchedule export is in AGENDAMENTOS — and there are exactly three', () => {
     expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
     expect(exportadosCom('scheduleTrigger')).toEqual([
+      'pollAmazonOrders',
       'reprocessAmazonNotifications',
       'sweepAmazonExpirations',
     ]);
@@ -747,7 +839,7 @@ describe('every trigger of the codebase', () => {
     },
   );
 
-  it('binds the LWA secret on the queue and the reprocess, and NOTHING else anywhere', () => {
+  it('binds the LWA secret on the queue, the reprocess and the poll, and NOTHING else anywhere', () => {
     for (const [nome, fn] of Object.entries(TODOS)) {
       const esperado = nome === 'sweepAmazonExpirations' ? [] : [SEGREDO_LWA];
       expect(segredosDe(fn), nome).toEqual(esperado);
@@ -763,8 +855,20 @@ describe('every trigger of the codebase', () => {
 
   it("the schedules are DISTINCT, and none is the half-hour cron other channels' sweeps use", () => {
     const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);
+    expect(crons).toHaveLength(3);
     expect(new Set(crons).size).toBe(crons.length);
     expect(crons).not.toContain('*/30 * * * *');
+  });
+
+  it("no two schedules share a minute: the poll's four slots miss the reprocess's :10/:40 and the expiry's :15", () => {
+    const poll = minutosDoCron(gatilhoDe(pollAmazonOrders).schedule) ?? [];
+    const reprocesso = minutosDoCron(gatilhoDe(reprocessAmazonNotifications).schedule) ?? [];
+    // The expiry runs daily (`15 7 * * *`): its minute field is its first.
+    const expiracao = Number((gatilhoDe(sweepAmazonExpirations).schedule ?? '').split(' ')[0]);
+    expect(poll).toHaveLength(4);
+    expect(reprocesso).toEqual([10, 40]);
+    expect(expiracao).toBe(15);
+    expect(poll.filter((m) => reprocesso.includes(m) || m === expiracao)).toEqual([]);
   });
 
   it("imports './options' FIRST and ALONE — the global options precede every trigger", () => {

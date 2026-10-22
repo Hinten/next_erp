@@ -11,16 +11,17 @@ import { getAdminApp } from './lib/admin';
 
 /**
  * The COMPOSITION ROOT of the reads-queue producer for this functions codebase:
- * the step-4 backstop poll (PR 4-b) enqueues through it. What a rejection
+ * the step-4 backstop poll (`./pollPedidos`, PR 4-b) enqueues through it. What a rejection
  * means, the transient naming and the "payload alone" rule are the pure
  * module's (`lib/amazon/notificacoes/agendador.ts`); this file only reads the
  * environment and binds the Admin SDK's task queue. Its App Hosting twin is the
  * receiver's `lib/firebase/filaLeitura.ts`; `estrutura.test.ts` pins the two as
  * the app's ONLY `getFunctions(` callers.
  *
- * ⚠️ Nothing imports it before PR 4-b, so esbuild leaves it out of the bundle and
- * `tools/deploy-env/bundle-inlining.test.js` cannot see it yet: the source-shape
- * pin in `agendador.test.ts` stands in until the poll makes it reachable.
+ * The poll makes it reachable from `src/index.ts`, so esbuild bundles it and
+ * `tools/deploy-env/bundle-inlining.test.js` checks the region it inlines on the
+ * BUILT bundle; the source-shape pin in
+ * `agendador.test.ts` stays as the failure that names this file.
  */
 
 /**

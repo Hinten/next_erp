@@ -71,8 +71,9 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   env and the IAM.
 - `src/index.ts` imports `./options` FIRST and ALONE and exports ONLY triggers:
   `filaLeituraAmazon` (the reads queue, = `FILA_LEITURA_AMAZON`, asserted at load),
-  `reprocessAmazonNotifications` (both lanes, logged separately) and `sweepAmazonExpirations`
-  (the step-2 expiry body, daily, NO secret). `index.test.ts` pins every option off `__endpoint`.
+  `reprocessAmazonNotifications` (both lanes, logged separately), `sweepAmazonExpirations`
+  (the step-2 expiry body, daily, NO secret) and `pollAmazonOrders` (the step-4 backstop poll,
+  `src/pollPedidos.ts`). `index.test.ts` pins every option off `__endpoint`.
 - ONE logger there too: every line is `registrarEventoAmazon(LOGGER_STDOUT_AMAZON, …)` — never
   `firebase-functions`' `logger` (Loja Integrada's root uses it; do not copy that), never
   `console.`, never an error message (a failed sweep row by document id only). The package
@@ -105,8 +106,10 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   `vitest.tasks.setup.ts` refuses to start when the shell has it `on` or an artifact `.env*`
   file (anchored name) merely names it (`testing/guardaDaLaneDeTarefas.ts`, proved offline).
   Only code in the vitest process runs past the switch, with `ambiente` `on` as an object
-  literal, a fake importer and a refusing `fetch` (the resolve case of
-  `notificacao.firestore.test.ts`; step-3 plan §3 decision 37).
+  literal and an injected `fetch`: the resolve case of `notificacao.firestore.test.ts` (a
+  fake importer, a refusing `fetch`; step-3 plan §3 decision 37) and the poll's two suites
+  (`searchOrders` served by a scripted `deps.fetch`; `pollPedidos.firestore.test.ts`,
+  `functions/src/pollPedidos.tasks.test.ts`).
 - Every suite's `beforeEach` wipes what it reads (one shared emulator, files run serially), a
   drop is proved by a LATER sentinel row, never by polling for an absence, and an absence only
   after a positive read. The receiver races its enqueue against 2 s, so
@@ -117,6 +120,40 @@ route is thin. `proxy.ts` allows `GET, POST, OPTIONS`.
   `scheduleDelaySeconds` (firebase-tools#8254), `rateLimits`/`retryConfig` (pinned offline in
   `functions/src/index.test.ts`), index declarations, rules, the relay, or a trigger's
   `database` binding.
+
+## Backstop poll (step 4)
+
+- `pollAmazonOrders` (`functions/src/pollPedidos.ts`, `7,22,37,52 * * * *`, 300 s, no retry)
+  binds the deps ONCE per tick; the body is `lib/amazon/pedidos/pollPedidos.ts`. A throw
+  leaves the tick through `sanitizarFalhaDaTarefaAmazon` (the scheduler wrapper logs the
+  message). `index.test.ts` pins tick budget 240 s < timeout 300 s < lease 360 s < the 900-s
+  interval READ off the cron.
+- Two gates, in order, each with ZERO Firestore operations: no importer in the seam (until
+  step 5), then the read switch not exactly `on`. So no poll document, and no bootstrap
+  anchor, can exist before W5.
+- `pollPedidosAmazon/{contaId}`: `cursorMs` (ms, Amazon's `lastUpdatedTime`, capped at the
+  drain's start − 5 min, advance-only, moved only after a COMPLETE drain with every row valid),
+  `pendente` (a stopped drain, resumed byte-identical unless its token is 23 h old), `vistos`
+  (orderId → µs, read straight from Amazon's ISO text; pruned to cursor − 25 min and 2,000),
+  the lease, `falhasSeguidas`. A fresh window starts at cursor − 10 min. Units: never compare
+  `cursorMs` with a `vistos` stamp without converting.
+- A per-conta DEADLINE (min(200 s, what the tick has left) − 20 s), checked before every page
+  and every enqueue: a slow Cloud Tasks ends the run `orcamento-esgotado` with what it handed
+  off written, never killed by the timeout with nothing written. Never remove it.
+- `searchOrders` has exactly ONE caller module (`pedidos/pollPedidos.ts`), across `lib/`,
+  `app/`, `functions/src` and `scripts/` (`estrutura.test.ts`): a second caller spends the
+  poll's ~5 tokens per tick. A W7 verification script must never call it while the poll runs.
+- `amazonImportacaoParada` is raised only after the final write that stored its count LANDED,
+  resolved by the next clean run, and closed by the expiry sweep's orphan pass once the conta
+  is gone (clocked by the conta list's read time; a deactivated conta's row is a residue).
+- **Re-bootstrap (W7, by a person; `functions/DEPLOY.md` has the steps):** a changed H is
+  redeployed FIRST; then a manual lease (`execucaoId` `w7-manual` first, then `emExecucaoAteMs`
+  ahead), re-read after 6 min, delete the three FIELDS `cursorMs`, `pendente` and `vistos`
+  (never the document), release. The next lease anchors now − `AMAZON_POLL_LOOKBACK_H`
+  (functions only, default 24, cap 720, invalid ⇒ `lookback-invalido`). Never "check no
+  lease is held, then delete": a run already holding it re-derives its OLD cursor back over a
+  cursorless doc. Changing H after a conta's first LEASE (whatever that run's outcome) does
+  nothing for it.
 
 ## Layout
 

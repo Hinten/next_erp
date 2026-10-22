@@ -546,10 +546,10 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
   - The token expires after 24 h and every other parameter must stay identical between pages.
   - `lastUpdatedBefore` is omitted; Amazon requires a 2-minute gap from now.
   - Rate 0.0056 rps / burst 20 ⇒ 96 calls/day, well inside the bucket.
-- **Cursor** `pollPedidosAmazon/{contaId}` (bare constant, outside `ALL_DOMAINS`): `cursor` (ISO, Amazon's own `lastUpdatedTime` of a fully drained window), `emExecucaoAteMs` (lease), `ultimaVarreduraEmMs`, `ultimoErro`. It advances only after every row is enqueued.
+- **Cursor** `pollPedidosAmazon/{contaId}` (bare constant, outside `ALL_DOMAINS`): `cursorMs` (ms, per §4.ii's cursor units: Amazon's own `lastUpdatedTime` of a fully drained window, capped at the drain's start − 5 min), `pendente` (a stopped drain to resume), `vistos` (orderId → µs, the overlap's dedup), `emExecucaoAteMs` (lease), `ultimaVarreduraEmMs`, `ultimoErro`, `falhasSeguidas`. It advances only after every row is enqueued. *(Amended at step 4 implementation: the ISO `cursor` became `cursorMs`; step-3/4 plan §3 decision 20.)*
 - **Rule 7:** single-flight lease plus an advance-only cursor, both tier 1 (`update(…, {lastUpdateTime})`, the Admin SDK precondition; not the order field `lastUpdatedTime`).
 - **Bootstrap:** no cursor ⇒ `now − AMAZON_POLL_LOOKBACK_H`. The window sets it (W7).
-- **Firestore:** the cursor doc; both rulesets regenerated. **Env:** `AMAZON_POLL_LOOKBACK_H`.
+- **Firestore:** the cursor doc (bare and Meta-less, so no ruleset change: both `gen:rules` checks stay up to date). **Env:** `AMAZON_POLL_LOOKBACK_H` (functions only).
 - **Verification:** fixture-driven sweep tests: empty page; several pages; truncated window ⇒ cursor unchanged; a stale run never moves the cursor back; a held lease exits.
 - **Does NOT:** map anything (the task re-fetches); replace push.
 

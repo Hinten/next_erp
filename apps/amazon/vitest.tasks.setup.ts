@@ -93,9 +93,11 @@ if (EMULATED) {
  * through the read switch, which refuses unless `AMAZON_CHAMADAS` is exactly
  * `on`; the lane's job env sets it to `off`, and the round-trip suites assert
  * the refusal. This is the layer that fails the lane when someone turns the
- * switch on for it. The one suite that runs PAST the switch (the resolve case of
- * `notificacao.firestore.test.ts`) does it in this process, with the switch `on`
- * in an object literal it passes as `ambiente` — never through the environment.
+ * switch on for it. The suites that run PAST the switch (the resolve case of
+ * `notificacao.firestore.test.ts`, and the backstop poll's two suites, which
+ * serve `searchOrders` from a scripted `deps.fetch`) do it in this process, with
+ * the switch `on` in an object literal they pass as `ambiente` — never through
+ * the environment.
  *
  * Two places can turn it on, and the kill-switch in (5) reaches neither:
  *
