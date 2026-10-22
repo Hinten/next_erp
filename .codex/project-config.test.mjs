@@ -136,7 +136,45 @@ describe('Codex security parity', () => {
     doesNotMatch(permissions, /["'][A-Za-z]:[\\/]*["']\s*(?:=|\])/);
     doesNotMatch(permissions, /["'](?:\\\\|\/\/)[^"']+["']\s*(?:=|\])/);
     match(permissions, /":minimal"\s*=\s*"read"/);
-    match(permissions, /\[permissions\.next-erp\.network\]\s*enabled\s*=\s*false/);
+    match(permissions, /\[permissions\.next-erp\.network\]\s*enabled\s*=\s*true/);
+  });
+
+  it('routes public package downloads through the registry policy with MXC loopback', () => {
+    const features = CONFIG.match(/\[features\]([\s\S]*?)(?=\n\[)/)?.[1];
+    const network = CONFIG.match(/\[permissions\.next-erp\.network\]([\s\S]*?)(?=\n\[)/)?.[1];
+    const domains = CONFIG.match(
+      /\[permissions\.next-erp\.network\.domains\]([\s\S]*?)(?=\n\[)/,
+    )?.[1];
+    ok(features && network && domains, 'Expected proxy, network and registry policy sections.');
+    match(features, /^network_proxy\s*=\s*true$/m);
+    match(network, /^enabled\s*=\s*true$/m);
+    match(network, /^allow_local_binding\s*=\s*true$/m);
+    deepStrictEqual(
+      domains
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith('#')),
+      ['"registry.npmjs.org" = "allow"'],
+    );
+  });
+
+  it('keeps package-manager caches within the worktree and disables Turbo telemetry', () => {
+    const environment = CONFIG.match(/\[shell_environment_policy\.set\]([\s\S]*?)(?=\n\[)/)?.[1];
+    ok(environment, 'Expected scoped cache defaults for generated shell commands.');
+    const settings = Object.fromEntries(
+      environment
+        .split(/\r?\n/)
+        .map((line) => line.match(/^(\w+)\s*=\s*"([^"]+)"$/))
+        .filter(Boolean)
+        .map((entry) => [entry[1], entry[2]]),
+    );
+    deepStrictEqual(settings, {
+      npm_config_cache: 'out/codex-sandbox-cache/npm',
+      pnpm_config_store_dir: 'out/codex-sandbox-cache/pnpm-store',
+      pnpm_config_cache_dir: 'out/codex-sandbox-cache/pnpm-cache',
+      pnpm_config_state_dir: 'out/codex-sandbox-cache/state',
+      TURBO_TELEMETRY_DISABLED: '1',
+    });
   });
 
   it('applies workspace writes and metadata protections to every runtime workspace root', () => {
@@ -151,6 +189,30 @@ describe('Codex security parity', () => {
     for (const directory of [':tmpdir', ':slash_tmp']) {
       match(CONFIG, new RegExp(`"${directory}"\\s*=\\s*"write"`));
     }
+  });
+
+  it('allows generated dependencies and task logs without opening Codex configuration', () => {
+    const workspace = CONFIG.match(
+      /\[permissions\.next-erp\.filesystem\.":workspace_roots"\]([\s\S]*?)(?=\n\[)/,
+    )?.[1];
+    ok(workspace, 'Expected workspace-relative filesystem rules.');
+    const grants = Object.fromEntries(
+      workspace
+        .split(/\r?\n/)
+        .map((line) => line.match(/^"([^"]+)"\s*=\s*"(\w+)"$/))
+        .filter(Boolean)
+        .map((entry) => [entry[1], entry[2]]),
+    );
+    deepStrictEqual(
+      Object.keys(grants)
+        .filter((path) => grants[path] === 'write')
+        .sort(),
+      ['.', '.codex/.turbo', '.codex/node_modules'],
+    );
+    deepStrictEqual(
+      ['.codex', '.git', '.agents', '.aws'].map((path) => grants[path]),
+      ['read', 'read', 'read', 'read'],
+    );
   });
 
   it('keeps credential-bearing local paths denied by the Codex sandbox', () => {

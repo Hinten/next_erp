@@ -42,6 +42,7 @@ function makeUi(over: Partial<EtiquetaProviderInput['ui']> = {}): EtiquetaProvid
     openUrl: vi.fn(),
     comprarEtiqueta: vi.fn(),
     escolherEnvio: vi.fn(),
+    confirmarCiente: vi.fn(),
     ...over,
   };
 }
@@ -66,6 +67,7 @@ function makeInput(over: {
       nfeClient: null,
       mercadoLivreClient: (over.mercadoLivreClient ?? null) as never,
       shopeeClient: null,
+      lojaIntegradaClient: null,
       printJob: over.printJob ?? (vi.fn(async () => 'printed' as const) as never),
       sleep: over.sleep,
     },

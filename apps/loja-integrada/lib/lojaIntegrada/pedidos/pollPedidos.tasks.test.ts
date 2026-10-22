@@ -15,6 +15,11 @@
  *       → its context refuses on the READ SWITCH (the job env sets it `off`)
  *       → `adiado/chamadas-desligadas` → a `deferred` row per order
  *
+ * The importer gate is bound as the root binds it, from the REAL seam
+ * (`importadorPedidoLi() !== null`): step 5 filled it with the order import, so
+ * the tick passes the gate — and the dispatched function, which carries that
+ * same importer, still stops at its switch before the importer starts.
+ *
  * ⚠️ The switch is ON in one process and OFF in the other, and that is the
  * point. The poller runs here with `ambiente` handed in as a PARAMETER —
  * `{ LOJA_INTEGRADA_CHAMADAS: 'on' }` — so its context passes the switch and its
@@ -37,8 +42,9 @@
  *   - the enumeration, the context, the lease and the final write run against
  *     a real Firestore: the cursor and `vistos` are STORED, the lease released.
  *
- * ⚠️ NOT covered: the importer (empty until step 5 — the dispatched run would
- * park as `importador-ausente` were its switch on), `onSchedule` (the emulator
+ * ⚠️ NOT covered: the importer's own run (it needs the switch on in the
+ * dispatched process, which this lane never turns on — its emulator proof is
+ * `importarPedido.firestore.test.ts`, in process), `onSchedule` (the emulator
  * ignores it without pubsub), and any real platform call (D17).
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
@@ -56,6 +62,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 
 import { criarAgendadorLiDoAmbiente } from '../../../functions/src/agendador';
 import { CHAMADAS_ENV_LI } from '../core/valvulas';
+import { importadorPedidoLi } from '../notificacoes/notificacao';
 import { AMBIENTE_LIGADO, credencialDoc, gravadorDeLog, loggerEspiao } from '../testing/fixtures';
 import { type DepsPollLi, executarPollPedidosLi } from './pollPedidos';
 
@@ -218,7 +225,8 @@ describe.skipIf(!EMULATED || !TASKS)(
       const deps: DepsPollLi = {
         // ON as a PARAMETER — never through process.env (header).
         ambiente: AMBIENTE_LIGADO,
-        importadorPresente: true,
+        // The REAL seam, as the root binds it — never a hard-coded `true`.
+        importadorPresente: importadorPedidoLi() !== null,
         lookbackHoras: 72,
         agendador: criarAgendadorLiDoAmbiente(),
         agoraMs: () => AGORA_MS,

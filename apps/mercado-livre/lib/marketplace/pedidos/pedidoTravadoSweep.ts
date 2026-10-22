@@ -96,6 +96,7 @@ import {
   STATUS_PAGAMENTO,
   TIPO_INCIDENTE,
   type EstadoPedido,
+  idFromRefOrNull,
 } from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
 import {
@@ -232,10 +233,7 @@ function algumAprovado(docs: ReadonlyArray<{ data: () => unknown }>): boolean {
 
 /** `integracaoPedidoOuterRef` → the integração doc id, or null. */
 export function integracaoIdDoPedido(raw: Record<string, unknown>): string | null {
-  const ref = raw.integracaoPedidoOuterRef;
-  if (typeof ref !== 'string' || ref.length === 0) return null;
-  const id = ref.split('/').filter(Boolean).pop() ?? null;
-  return id != null && id.length > 0 ? id : null;
+  return idFromRefOrNull(raw.integracaoPedidoOuterRef);
 }
 
 /**

@@ -18,6 +18,7 @@ const PENDENTE = {
   tokenEmMs: 1_800_000_060_000,
   paginas: 5,
   linhaInvalida: false,
+  maiorLinhaMs: 1_799_999_900_000,
 };
 
 describe('pollPedidosAmazonSchema', () => {
@@ -129,6 +130,33 @@ describe('pendentePollAmazonSchema', () => {
         pendentePollAmazonSchema.safeParse({ ...PENDENTE, linhaInvalida: ruim }).success,
         String(ruim),
       ).toBe(false);
+    }
+  });
+
+  it('maiorLinhaMs: absent (a pendente stored before the field) reads as null, a stored stamp survives', () => {
+    const { maiorLinhaMs: _semMaximo, ...semMaximo } = PENDENTE;
+    expect(pendentePollAmazonSchema.parse(semMaximo).maiorLinhaMs).toBeNull();
+    expect(
+      pollPedidosAmazonSchema.parse({ pendente: semMaximo }).pendente?.maiorLinhaMs,
+    ).toBeNull();
+    expect(pendentePollAmazonSchema.parse({ ...PENDENTE, maiorLinhaMs: null }).maiorLinhaMs).toBe(
+      null,
+    );
+    expect(pendentePollAmazonSchema.parse(PENDENTE).maiorLinhaMs).toBe(1_799_999_900_000);
+  });
+
+  it('maiorLinhaMs is a STRICT non-negative safe integer — never coerced, never a string', () => {
+    for (const ruim of [-1, 1.5, '1799999900000', Number.MAX_SAFE_INTEGER + 2, Number.NaN]) {
+      expect(
+        pendentePollAmazonSchema.safeParse({ ...PENDENTE, maiorLinhaMs: ruim }).success,
+        String(ruim),
+      ).toBe(false);
+    }
+    // Near-miss: 0 and the largest safe integer are stamps like any other.
+    for (const ok of [0, Number.MAX_SAFE_INTEGER]) {
+      expect(pendentePollAmazonSchema.parse({ ...PENDENTE, maiorLinhaMs: ok }).maiorLinhaMs).toBe(
+        ok,
+      );
     }
   });
 

@@ -11,8 +11,8 @@
  * write `estadoAnuncio`. After a "converter em kit nativo" (L8) the old ordinary
  * listing keeps selling, and keeps receiving stock and price, until Lucas deletes
  * it in Seller Centre — and the ERP only learns of that deletion when somebody
- * re-verifies the listing. Step 21's screen will have a button; until then, this
- * is it.
+ * re-verifies the listing. Since step 21 the produto's Shopee tab has a
+ * "Reverificar" button on the same route; this is the headless path.
  *
  * ⚠️ **Dev-only, and never run by an agent.** It reads Shopee and WRITES the
  * reading — the link's status fields, the model marks of THIS listing, and (on a

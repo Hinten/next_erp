@@ -5,6 +5,7 @@ import {
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -17,10 +18,19 @@ import {
   motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
   motivoPedidoContestadoLiSchema,
+  motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
   situacaoAnuncioForaDaSincronizacaoSchema,
+  CODIGO_SITUACAO_LI,
+  veredictoDoCodigoLi,
+  type RespostaConferenciaPagamentoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from '@delfrance/schemas';
+import {
+  decidirConferenciaImpressaoLi,
+  decidirConferenciaPagamentoLi,
+  type ConferenciaPagamentoLi,
+} from '@/lib/loja-integrada/conferenciaPagamento';
 import { MENSAGENS_POR_TIPO } from './mensagens';
 
 /**
@@ -497,38 +507,41 @@ describe('the producer planos as stored', () => {
  * copied literal.
  *
  * ⚠️ M30: the order of the advice is the safety property. A #1450 repoint of the
- * map flips the ERP fingerprint while Shopee's recipe is unchanged, and
- * `--recriar` deletes a LIVE listing — so the sentence must say "republish
- * FIRST", and its recriar must name the link (`--link {vinculo} --recriar`),
- * never a bare `--recriar`.
+ * map flips the ERP fingerprint while Shopee's recipe is unchanged, and a
+ * recriar deletes a LIVE listing — so the sentence must say "Republicar" FIRST,
+ * and its "Recriar kit" must name the link, never a bare "recrie". Since step 21
+ * (#1529, T11) both are buttons of the produto's Shopee tab: the sentence names
+ * them, never a command line.
  */
 describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.shopeeKitReceitaDivergente];
   const KIT = 'k1';
   const ITEM_ID = 2500139870;
   const VINCULO = 'l-kit-1';
+  /** CLI copy — a script name, a flag or the word — never reaches the inbox (lens 8). */
+  const TEXTO_DE_TERMINAL = /publicar:anuncio|(^|\s)--[a-z]|comando/i;
 
   const corpoEsperado = (kit: string, anuncio: string, vinculo: string, variacoes: string) =>
     `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
     `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
-    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
-    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
-    `Senão, recrie o kit (publicar:anuncio --link ${vinculo} --recriar) ou volte a composição ao que ` +
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Use "Republicar" no anúncio, ' +
+    'na aba Shopee do produto: se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    `Senão, use "Recriar kit" no anúncio do vínculo ${vinculo} ou volte a composição ao que ` +
     'está na Shopee.';
 
   /**
    * The same sentence when the aviso names NO link (the builder's `—`, or the
-   * param absent): a `--recriar` refuses to run without `--link`, so the reader
-   * prints no command with a dangling `--link —` — it sends the operator to the
-   * `--link` the republish (already the first step) prints for a divergent kit.
+   * param absent): it never prints a dangling "vínculo —" — it sends the
+   * operator to the link the republish (already the first step) names for a
+   * divergent kit.
    */
   const corpoSemVinculoEsperado = (kit: string, anuncio: string, variacoes: string) =>
     `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
     `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
-    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
-    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
-    'Senão, recrie o kit com o --link que a republicação indicar (o --recriar exige o vínculo do kit ' +
-    'antigo, e este aviso não o identificou) ou volte a composição ao que está na Shopee.';
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Use "Republicar" no anúncio, ' +
+    'na aba Shopee do produto: se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    'Senão, use "Recriar kit" no anúncio que a republicação indicar ou volte a composição ao que ' +
+    'está na Shopee.';
 
   it('renders the sentence verbatim with every param', () => {
     expect(
@@ -536,26 +549,38 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     ).toBe(corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'));
   });
 
+  it('T11 — names the tab’s buttons, never a command line, with or without a link', () => {
+    const casos: Record<string, string>[] = [
+      { kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' },
+      { kit: KIT, anuncio: '1', vinculo: '—', variacoes: 'c1' },
+      {},
+    ];
+    for (const params of casos) {
+      const corpo = mensagem.corpo(params);
+      expect(corpo).toContain('na aba Shopee do produto');
+      expect(corpo).not.toMatch(TEXTO_DE_TERMINAL);
+    }
+  });
+
   it('M30 — tells the operator to republish FIRST, before any recriar', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
-    expect(corpo).toContain('Republique o kit primeiro');
+    expect(corpo).toContain('Use "Republicar" no anúncio');
     expect(corpo).toContain('este aviso se resolve sozinho');
-    expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(corpo.indexOf('recrie o kit'));
+    expect(corpo.indexOf('Republicar')).toBeGreaterThan(-1);
+    expect(corpo.indexOf('Republicar')).toBeLessThan(corpo.indexOf('Recriar kit'));
   });
 
-  it('M30 — the recriar names its link: `--link {vinculo} --recriar`, never a bare `--recriar`', () => {
+  it('M30 — the recriar names its link, and there is exactly one recriar', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
-    expect(corpo).toContain(`publicar:anuncio --link ${VINCULO} --recriar`);
-    // Every `--recriar` in the sentence is the one the link precedes.
-    const ocorrencias = [...corpo.matchAll(/--recriar/g)];
-    expect(ocorrencias).toHaveLength(1);
-    expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
+    expect(corpo).toContain('no anúncio do vínculo ' + VINCULO);
+    expect([...corpo.matchAll(/Recriar kit/g)]).toHaveLength(1);
   });
 
-  it('renders `{}` with the placeholder in every slot, never "undefined" — and no link-less command', () => {
+  it('renders `{}` with the placeholder in every slot, never "undefined" — and no dangling link', () => {
     const corpo = mensagem.corpo({});
     expect(corpo).toBe(corpoSemVinculoEsperado('—', '—', '—'));
     expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('vínculo —');
   });
 
   it('renders what the ONE builder writes, each param in its slot (writer → reader)', () => {
@@ -568,13 +593,15 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     });
     const aviso = comoArmazenado(plano);
     expect(aviso.tipo).toBe(TIPO_AVISO.shopeeKitReceitaDivergente);
+    // ⚠️ Still the Kit field (residual 23): the aviso opens the produto one tab
+    // from the Shopee tab its copy names — a persisted producer field.
     expect(aviso.urlInterna).toEqual({ rota: `/produtos/${KIT}`, campo: 'componentesKit' });
     expect(mensagem.corpo(aviso.params)).toBe(
       corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'),
     );
   });
 
-  it('renders the builder’s `—` for an unknown item and link without a dangling flag value', () => {
+  it('renders the builder’s `—` for an unknown item and link without a dangling reference', () => {
     const plano = avisoReceitaKitShopee({
       integracaoId: 'int-1',
       kitProdutoId: KIT,
@@ -586,9 +613,10 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     expect(corpo).toBe(corpoSemVinculoEsperado(KIT, '—', 'c1'));
     expect(corpo).not.toContain('undefined');
     expect(corpo).not.toContain('null');
+    expect(corpo).not.toContain('vínculo —');
   });
 
-  it('M30 — a link the aviso does not know prints NO `--link —` command: `--recriar` requires `--link`', () => {
+  it('M30 — a link the aviso does not know prints NO "vínculo —": it points to the link the republish names', () => {
     // The builder's `—`, an absent param and an empty one all mean "no link".
     const semVinculo: Record<string, string>[] = [
       { kit: KIT, anuncio: '1', vinculo: '—', variacoes: 'c1' },
@@ -598,24 +626,20 @@ describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
     for (const params of semVinculo) {
       const corpo = mensagem.corpo(params);
       expect(corpo).toBe(corpoSemVinculoEsperado(KIT, '1', 'c1'));
-      expect(corpo).not.toMatch(/--link\s+—/);
-      expect(corpo).not.toMatch(/publicar:anuncio --link/);
-      expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
-      expect([...corpo.matchAll(/--recriar/g)]).toHaveLength(1);
-      // Still republish FIRST — the republish is what prints the `--link`.
-      expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(
-        corpo.indexOf('recrie o kit'),
-      );
+      expect(corpo).not.toMatch(/vínculo\s+—/);
+      expect([...corpo.matchAll(/Recriar kit/g)]).toHaveLength(1);
+      // Still republish FIRST — the republish is what names the link.
+      expect(corpo.indexOf('Republicar')).toBeLessThan(corpo.indexOf('Recriar kit'));
     }
   });
 
-  it('NEAR-MISS: a KNOWN link keeps the runnable command, byte-for-byte', () => {
+  it('NEAR-MISS: a KNOWN link keeps naming it, byte-for-byte', () => {
     const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
     expect(corpo).toBe(corpoEsperado(KIT, '1', VINCULO, 'c1'));
     expect(corpo).not.toBe(corpoSemVinculoEsperado(KIT, '1', 'c1'));
   });
 
-  it('is titled like its label and carries no runbook — the publish route/CLI is the fix', () => {
+  it('is titled like its label and carries no runbook — the produto’s Shopee tab is the fix', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.shopeeKitReceitaDivergente);
     expect(mensagem.runbook).toBeUndefined();
   });
@@ -864,10 +888,13 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaSituacaoDesconhecida', () => {
 
 describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
   const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoContestado];
-  const NAO_BLOQUEIA = 'O despacho NÃO fica bloqueado no ERP — confira o pedido antes de enviar.';
+  const GATES =
+    'O checkout e a compra de etiqueta no Melhor Envio são recusados enquanto a Loja Integrada ' +
+    'mostrar o pedido contestado ou este aviso estiver aberto. A reimpressão da etiqueta e a ' +
+    'etiqueta genérica só prosseguem depois que o operador confirmar que está ciente do risco.';
   const MANTIDO = 'O ERP manteve o estado e o pagamento do pedido';
 
-  it('a dispute: the phrase, NOT blocked, and how it closes', () => {
+  it('a dispute: the phrase, what the gates do, and how it closes', () => {
     // The resolver closes the row on ANY later import that does not raise it —
     // a refund before the stock left included — so the sentence names the one
     // case that keeps it open instead of promising "a non-contest situação".
@@ -879,7 +906,7 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
       }),
     ).toBe(
       'O pedido 165 da loja Conta A está contestado na Loja Integrada: o pagamento está em ' +
-        `disputa. ${NAO_BLOQUEIA} O aviso se encerra quando a Loja Integrada tirar o pedido ` +
+        `disputa. ${GATES} O aviso se encerra quando a Loja Integrada tirar o pedido ` +
         'da disputa (por exemplo, pago de novo ou cancelado); se o pagamento for devolvido ' +
         'depois que o estoque do pedido já saiu, o aviso continua aberto, agora como devolução.',
     );
@@ -892,7 +919,7 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
       MOTIVO_PEDIDO_CONTESTADO_LI.devolvidoSemRetorno,
     ]) {
       const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
-      expect(corpo, motivo).toContain(NAO_BLOQUEIA);
+      expect(corpo, motivo).toContain(GATES);
       expect(corpo, motivo).toContain(MANTIDO);
       expect(corpo, motivo).toContain('é final na Loja Integrada');
     }
@@ -911,13 +938,73 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoContestado', () => {
     expect(frases.size).toBe(motivoPedidoContestadoLiSchema.options.length);
   });
 
-  it('a newer code, an inherited key or a missing motivo falls back — still NOT blocked', () => {
+  it('a newer code, an inherited key or a missing motivo falls back — still saying what the gates do', () => {
     for (const motivo of ['motivo-do-futuro', 'toString', '', 3]) {
       const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
       expect(corpo, String(motivo)).toContain('o pagamento foi contestado.');
-      expect(corpo, String(motivo)).toContain(NAO_BLOQUEIA);
+      expect(corpo, String(motivo)).toContain(GATES);
     }
     expect(mensagem.corpo({})).not.toContain('undefined');
+  });
+
+  /**
+   * The wording is a CLAIM about the paid re-check's gates (master plan step 15), so it
+   * is pinned against the gates' own decision tables rather than against
+   * itself: a contested order — read live from the store, or the open aviso
+   * the backend falls back to when it cannot read — is REFUSED by the hard
+   * gates (the checkout save, the Melhor Envio buy) and ACKNOWLEDGED at the
+   * soft ones (a reprint, a generic label). A table that changed under the
+   * sentence would red here instead of leaving an aviso that promises a hold
+   * that is not there, or denies one that is.
+   */
+  it('⭐ pinned against the gates: refused at the checkout and the buy, acknowledged at a reprint and a generic label', () => {
+    const resposta = (r: RespostaConferenciaPagamentoLi): ConferenciaPagamentoLi => ({
+      tipo: 'resposta',
+      pedidoId: PEDIDO_ID,
+      resposta: r,
+      recebidoEm: 0,
+    });
+    const contestados = [
+      resposta({
+        aplicavel: true,
+        fonte: 'erp',
+        veredito: 'contestado',
+        codigo: null,
+        motivoContestacao: MOTIVO_PEDIDO_CONTESTADO_LI.disputa,
+        conferidoEmMs: null,
+        correlationId: null,
+      }),
+      ...[
+        CODIGO_SITUACAO_LI.pagamentoEmDisputa,
+        CODIGO_SITUACAO_LI.pagamentoDevolvido,
+        CODIGO_SITUACAO_LI.pedidoChargeback,
+        CODIGO_SITUACAO_LI.pagamentoDevolvidoSemRetorno,
+      ].map((codigo) =>
+        resposta({
+          aplicavel: true,
+          fonte: 'loja',
+          // What the route answers live for the codigo — never `contestado`,
+          // which only the ERP mirror carries.
+          veredito: veredictoDoCodigoLi(codigo) as 'pago' | 'nao-pago' | 'desconhecido',
+          codigo,
+          motivoContestacao: null,
+          conferidoEmMs: 1_790_000_000_000,
+          correlationId: null,
+        }),
+      ),
+    ];
+    for (const d of contestados) {
+      const rotulo = d.tipo === 'resposta' && d.resposta.aplicavel ? String(d.resposta.codigo) : '';
+      expect(decidirConferenciaPagamentoLi(d).acao, rotulo).toBe('bloquear');
+      expect(decidirConferenciaImpressaoLi(d).acao, rotulo).toBe('ciente');
+    }
+    expect(mensagem.corpo({ motivo: MOTIVO_PEDIDO_CONTESTADO_LI.disputa })).toContain(GATES);
+  });
+
+  it('⚠️ NEAR-MISS: the old "does not block" sentence is gone from every motivo', () => {
+    for (const motivo of [...motivoPedidoContestadoLiSchema.options, 'motivo-do-futuro']) {
+      expect(mensagem.corpo({ motivo }), motivo).not.toContain('NÃO fica bloqueado');
+    }
   });
 
   it('renders the producer plano as stored', () => {
@@ -1182,6 +1269,132 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaFreteNaoSuportado', () => {
   it('is titled like its label and carries no runbook — the mapping tab is the fix', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaFreteNaoSuportado);
     expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+/**
+ * The reversal-after-the-label tipo (step 5, owner decision 2026-10-19),
+ * rendered with the params its producer (the importer) writes:
+ * `{ loja, pedido, motivo }`, `motivo` a `MOTIVO_REVERSAO_COM_ETIQUETA_LI` CODE.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaReversaoComEtiqueta', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaReversaoComEtiqueta];
+  const ACAO =
+    'O ERP aplicou a situação ao pedido como de costume, mas não cancela a etiqueta nem a ' +
+    'NF-e: cancele a etiqueta no Melhor Envio e a NF-e do pedido, se ela já foi emitida, antes ' +
+    'que o pacote seja despachado.';
+  const FIM =
+    'Essa situação é final na Loja Integrada, então o aviso só se encerra se o pedido for ' +
+    'reaberto no painel da loja.';
+
+  it('a cancellation: the phrase, what to cancel, and why it does not close by itself', () => {
+    expect(
+      mensagem.corpo({
+        loja: 'Conta A',
+        pedido: '165',
+        motivo: MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado,
+      }),
+    ).toBe(
+      'O pedido 165 da loja Conta A foi cancelado na Loja Integrada depois que a etiqueta dele ' +
+        `já tinha sido comprada. ${ACAO} ${FIM}`,
+    );
+  });
+
+  it('is TOTAL over the motivo codes: each its own phrase, never the fallback', () => {
+    const frases = new Set<string>();
+    for (const motivo of motivoReversaoComEtiquetaLiSchema.options) {
+      const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo });
+      expect(corpo, motivo).not.toContain('foi revertido');
+      expect(corpo, motivo).toContain(ACAO);
+      frases.add(corpo);
+    }
+    expect(frases.size).toBe(motivoReversaoComEtiquetaLiSchema.options.length);
+  });
+
+  it('a code newer than this build, an inherited key or a missing motivo falls back to the neutral phrase', () => {
+    for (const motivo of ['motivo-do-futuro', 'toString', '', 7]) {
+      expect(mensagem.corpo({ loja: 'Conta A', pedido: '165', motivo }), String(motivo)).toBe(
+        'O pedido 165 da loja Conta A foi revertido na Loja Integrada depois que a etiqueta dele ' +
+          `já tinha sido comprada. ${ACAO} ${FIM}`,
+      );
+    }
+    expect(mensagem.corpo({})).not.toContain('undefined');
+  });
+
+  it('is titled like its label, with a runbook naming both cancellations', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaReversaoComEtiqueta);
+    expect(mensagem.runbook).toBe(
+      'Cancele a etiqueta no painel do Melhor Envio. Se a NF-e do pedido já foi emitida, ' +
+        'cancele-a pelo ERP dentro do prazo de cancelamento da SEFAZ.',
+    );
+  });
+});
+
+/**
+ * The paid-order-without-an-address tipo (step 5, owner decision 2026-10-19),
+ * rendered with the params its producer (the notification pipeline's exhaustion
+ * signal) writes: `{ loja, pedido }`.
+ */
+describe('MENSAGENS_POR_TIPO.lojaIntegradaPedidoPagoSemEndereco', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco];
+
+  it('says the PAID order could not be imported WITH its delivery endereço, why (no usable CEP — never an "invalid" one), that it was retried before the aviso opened, and the three ways it closes: the endereço, a pickup, or no longer paid (owner decision, 2026-10-20)', () => {
+    const corpo = mensagem.corpo({ loja: 'Conta A', pedido: '165' });
+    expect(corpo).toBe(
+      'O pedido 165 da loja Conta A está pago na Loja Integrada, mas chegou sem um CEP de ' +
+        'entrega utilizável e por isso não pôde ser importado com o endereço de entrega: sem ' +
+        'endereço não há como comprar a etiqueta. A importação tentou de novo por algumas ' +
+        'horas antes de abrir este aviso. O aviso se encerra quando o pedido tiver o endereço ' +
+        'de entrega, virar retirada na loja ou deixar de estar pago.',
+    );
+    // True before AND after a later import with an invalid CEP, which lands the pedido
+    // with no endereço and leaves the aviso open: the body never says the pedido is missing
+    // from the ERP, nor that the importer stopped for good.
+    expect(corpo).not.toContain('não entrou no ERP');
+    expect(corpo).not.toContain('e parou');
+    // Owner decision, 2026-10-20: an import alone no longer closes it (an invalid CEP keeps it open).
+    expect(corpo).not.toContain('quando o pedido for importado');
+    // Owner decision, 2026-10-20: an invalid CEP is not refused, so the wording never blames one.
+    expect(corpo).not.toContain('válido');
+  });
+
+  it('renders `{}` with placeholders, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toContain('O pedido — da loja —');
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('renders the producer plano as stored: critico, routed to the conta page', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165' },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_789_000_000_000_001,
+    });
+    expect(aviso.severidade).toBe(SEVERIDADE_AVISO.critico);
+    expect(aviso.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(mensagem.corpo(aviso.params)).toContain('O pedido 165 da loja Conta A está pago');
+  });
+
+  it('is titled like its label, with a runbook — the fix is in the Loja Integrada painel, a pickup is mapped to an ACTIVE one, the aviso stays OPEN until the pedido has its delivery endereço or is no longer paid (owner decision, 2026-10-20), and while it stays open: check the CEP has 8 digits, then a developer', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco);
+    expect(mensagem.runbook).toBe(
+      'Preencha o endereço de entrega do pedido no painel da Loja Integrada; a alteração deve ' +
+        'trazer o pedido de volta à importação. Se ele for de retirada na loja, mapeie antes a ' +
+        'forma de envio dele para uma retirada na loja ativa na aba Mapeamento do Frete da conta ' +
+        'e depois altere o pedido no painel. O aviso fica aberto até o pedido ter o endereço de ' +
+        'entrega (o de retirada na loja não precisa dele) ou deixar de estar pago. Se o aviso ' +
+        'continuar aberto depois da alteração, confira no painel se o CEP tem 8 dígitos; se ' +
+        'tiver, peça a um desenvolvedor que confira a notificação estacionada desse pedido.',
+    );
+    // An unreadable CEP no longer closes the aviso, so the runbook no longer says it does.
+    expect(mensagem.runbook).not.toContain('não consegue ler');
+    expect(mensagem.runbook).not.toContain('quando o aviso se encerrar');
+    expect(mensagem.runbook).toContain(
+      'O aviso fica aberto até o pedido ter o endereço de entrega',
+    );
   });
 });
 

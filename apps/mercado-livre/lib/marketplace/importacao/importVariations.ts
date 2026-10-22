@@ -37,9 +37,9 @@
  * `importPhotos.ts`, after this module returns).
  */
 import { createHash } from 'node:crypto';
-import type { Firestore } from 'firebase-admin/firestore';
+import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { type MappedMlVariation, idLocalMercadoLivre } from '@delfrance/integrations-mercado-livre';
-import { type MlModeracao, sameCombo } from '@delfrance/schemas';
+import { type MlModeracao, idFromRefOrNull, sameCombo } from '@delfrance/schemas';
 import {
   estoqueCollection,
   produtoCollection,
@@ -56,7 +56,6 @@ import {
 } from './importCore';
 import type { TaxonomiaResolution } from './taxonomiaCore';
 import { isAlreadyExists } from '@delfrance/data/admin';
-import { lastSegment } from '../core/linkRefs';
 
 /** The `parent` block `assembleVariationChildPlan` expects — kept in sync via indexed access. */
 type VariationParentInfo = VariationChildAssembleArgs['parent'];
@@ -96,6 +95,9 @@ export interface ImportVariationChildrenResult {
  * `import.ts`) — the first segment of the fixed-width child id/link-id string.
  */
 export interface ImportVariationChildrenUpOptions {
+  /** Member snapshots from before the importer fetched ML. Only a matching
+   * native precondition may clear an existing stock failure. */
+  memberReadVersions?: ReadonlyMap<string, Timestamp | undefined>;
   parentLinkDocId: string;
   /**
    * The member item's own raw ML status (#1142). Under User Products each member
@@ -128,7 +130,7 @@ export async function importVariationChildren(
   up?: ImportVariationChildrenUpOptions,
 ): Promise<ImportVariationChildrenResult> {
   const { db, integracaoId, options, depositoOuterRef, now } = deps;
-  const depositoId = depositoOuterRef ? lastSegment(depositoOuterRef) : null;
+  const depositoId = idFromRefOrNull(depositoOuterRef);
   let created = 0;
   const medidas: FilhoMedidas[] = [];
 
@@ -262,10 +264,26 @@ export async function importVariationChildren(
       }
     }
 
-    // variacaoMercadoLivre link (full set, spread-existing — schema is .passthrough())
-    await variacaoMercadoLivreLinkCollection
-      .docRef(db, { produtoId }, linkDocId)
-      .set(variacaoMercadoLivreLinkCollection.parse(plan.link));
+    const memberRef = variacaoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId);
+    const memberData = variacaoMercadoLivreLinkCollection.parse(plan.link);
+    if (up) {
+      // Import owns the provider fields, never a concurrent stock failure.
+      const patch: Record<string, unknown> = { ...memberData };
+      delete patch.estado;
+      delete patch.errors;
+      delete patch.causas;
+      const beforeMl = up.memberReadVersions?.get(
+        `produtos/${produtoId}/variacaoMercadoLivre/${linkDocId}`,
+      );
+      if (beforeMl && resolved?.linkRaw?.estado === 'E') {
+        await memberRef.update(
+          { ...patch, estado: null, errors: [], causas: [] },
+          { lastUpdateTime: beforeMl },
+        );
+      } else {
+        await memberRef.set(patch, { merge: true });
+      }
+    } else await memberRef.set(memberData);
 
     if (isCreate) created += 1;
     medidas.push({ produtoId, ...medidasEfetivas(baseProduto, plan.produto?.data) });
@@ -614,7 +632,7 @@ async function readEstoque(
     };
     if (
       typeof data.depositoOuterRef === 'string' &&
-      lastSegment(data.depositoOuterRef) === depositoId
+      idFromRefOrNull(data.depositoOuterRef) === depositoId
     ) {
       return {
         docId: d.id,

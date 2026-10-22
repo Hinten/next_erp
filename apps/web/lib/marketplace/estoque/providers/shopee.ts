@@ -25,10 +25,6 @@ import type {
  *
  * ⚠️ Every key comes from {@link makeRowKeyer}: the backend's skip arms can
  * repeat a `(produto, anúncio)` pair, and the key is also the row's test id.
- *
- * ⚠️ Registered, but unreachable until Shopee's caps row flips `implementado`
- * (#1530): `vereditoCanal` answers `canal-nao-implementado` before it reads the
- * provider map — see `../../caps/registriesAlinhadas.test.ts`.
  */
 export const shopeeStockProvider: StockPushProvider = {
   tipos: [INTEGRACAO_TIPO.shopee],

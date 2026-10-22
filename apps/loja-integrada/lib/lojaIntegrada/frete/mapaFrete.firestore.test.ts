@@ -220,9 +220,21 @@ describe.skipIf(!EMULATED)('the freight mapa registration on real Firestore', ()
     await refFrete(CONTAS.ausente).set(docFrete(CONTAS.ausente));
     await refFrete(CONTAS.lista).set(docFrete(CONTAS.lista, { mapa: legado }));
 
-    expect(await registrar(CONTAS.nulo, 1)).toEqual({ resultado: 'registrada', mapa: null });
-    expect(await registrar(CONTAS.ausente, 2)).toEqual({ resultado: 'registrada', mapa: null });
-    expect(await registrar(CONTAS.lista, 3)).toEqual({ resultado: 'registrada', mapa: legado });
+    expect(await registrar(CONTAS.nulo, 1)).toEqual({
+      resultado: 'registrada',
+      mapa: null,
+      lidoEmUs: expect.any(Number),
+    });
+    expect(await registrar(CONTAS.ausente, 2)).toEqual({
+      resultado: 'registrada',
+      mapa: null,
+      lidoEmUs: expect.any(Number),
+    });
+    expect(await registrar(CONTAS.lista, 3)).toEqual({
+      resultado: 'registrada',
+      mapa: legado,
+      lidoEmUs: expect.any(Number),
+    });
 
     // POSITIVE reads: the docs exist where the helper wrote, with every other field intact.
     const nulo = await refFrete(CONTAS.nulo).get();
@@ -295,7 +307,11 @@ describe.skipIf(!EMULATED)('the freight mapa registration on real Firestore', ()
 
     expect(isFailedPrecondition(err) || isNotFound(err)).toBe(true);
     expect((await ref.get()).exists).toBe(false);
-    expect(await registrar(CONTAS.removido, 1)).toEqual({ resultado: 'sem-int-frete', mapa: null });
+    expect(await registrar(CONTAS.removido, 1)).toEqual({
+      resultado: 'sem-int-frete',
+      mapa: null,
+      lidoEmUs: expect.any(Number),
+    });
     expect((await ref.get()).exists).toBe(false);
   });
 
@@ -305,7 +321,11 @@ describe.skipIf(!EMULATED)('the freight mapa registration on real Firestore', ()
     await ref.set(docFrete(CONTAS.mapa, { mapa }));
     const antes = await ref.get();
 
-    expect(await registrar(CONTAS.mapa, 1)).toEqual({ resultado: 'mapa-invalido', mapa: null });
+    expect(await registrar(CONTAS.mapa, 1)).toEqual({
+      resultado: 'mapa-invalido',
+      mapa: null,
+      lidoEmUs: expect.any(Number),
+    });
 
     const depois = await ref.get();
     expect(depois.get('mapa')).toEqual(mapa);

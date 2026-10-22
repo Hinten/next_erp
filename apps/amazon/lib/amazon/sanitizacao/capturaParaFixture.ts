@@ -3,7 +3,10 @@
  *
  * In order:
  * 1. the sidecar becomes the request (`requisicao.ts`), refused on any problem;
- * 2. the path gives the class (`segredo` and `sem-tabela` are refused there);
+ * 2. the path gives the class (`segredo`, `sem-tabela` and a method that is not
+ *    the operation's own are refused there), and the class alone admits the
+ *    attachments: beside anything but the Easy Ship bulk they are
+ *    `anexo-indevido`;
  * 3. the body is decoded as UTF-8, its BOM stripped (UTF-16 and invalid UTF-8
  *    refused);
  * 4. the fixture parse cap and the depth pre-scan apply;
@@ -68,6 +71,14 @@ import {
   lerSidecar,
 } from './requisicao';
 import { type EntradaDoZipAmazon, lerListagemDoZip } from './zip';
+
+/**
+ * The ONE operation a capture may carry attachments for (C3): the Easy Ship bulk
+ * (`POST /easyShip/2022-03-23/packages/bulk`), its request body and its label
+ * zip's listing. Matched against the redactor's path classification;
+ * `lerSidecar` has already bound the method to the operation.
+ */
+const OPERACAO_DOS_ANEXOS = 'createScheduledPackageBulk';
 
 /** One capture pair (plus its optional attachments), as the script read it. */
 export interface CapturaAmazon {
@@ -294,10 +305,13 @@ export function capturaParaFixture(
     achados: readonly AchadoDaCapturaAmazon[],
     resumo = base,
   ): ResultadoDaCapturaAmazon => ({ ok: false, achados, resumo });
+  const modelo = classificarCaminho(caminho).modelo;
 
-  // The attachments belong to a POST bulk only (C3).
+  // The attachments belong to the Easy Ship bulk only (C3), decided by the
+  // classified operation, never by the method: a `.zip.txt` beside a POST
+  // `submitInvoice` would be committed as that operation's label zip.
   const anexoIndevido: AchadoDaCapturaAmazon[] = [];
-  const ehBulk = req.tipo === 'http' && req.metodo === 'POST';
+  const ehBulk = modelo === OPERACAO_DOS_ANEXOS;
   if (c.requisicao !== null && !ehBulk)
     anexoIndevido.push({ onde: '.req.json', tipo: 'anexo-indevido' });
   if (c.zip !== null && !ehBulk) anexoIndevido.push({ onde: '.zip.txt', tipo: 'anexo-indevido' });
@@ -405,7 +419,6 @@ export function capturaParaFixture(
   }
   if (corpo.mascarados > 0) {
     const sucesso = statusDoRedator >= 200 && statusDoRedator <= 299;
-    const modelo = classificarCaminho(caminho).modelo;
     const localizados =
       bruto === null || !sucesso || modelo === null
         ? []

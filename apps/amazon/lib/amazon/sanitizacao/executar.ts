@@ -232,6 +232,8 @@ const DICAS: Readonly<Record<string, string>> = {
     'a secret-class path (RDT, client secret, /documents) is never captured: delete both files',
   'sem-tabela':
     'that operation has no redaction table yet: its step adds one before its captures can become fixtures',
+  'metodo-da-operacao':
+    'the method on line 1 is not one that operation is captured under (e.g. GET on the invoice submission): write the method the request really used; if it already is the real one (PATCH on the Easy Ship package), that operation has no redaction table yet and its step adds one before its captures can become fixtures',
   'curl-so-get': 'token-legado-curl is GET only: a write endpoint is copia-do-legado',
   utf16: 'the file is UTF-16 (a BOM or NUL bytes): re-save it as UTF-8 text',
   'utf8-invalido': 'the file is not valid UTF-8: re-save it as UTF-8 text',
@@ -259,7 +261,8 @@ const DICAS: Readonly<Record<string, string>> = {
   'sem-sidecar': 'a body with no <nome>.txt beside it: write the sidecar, or move the body out',
   'sem-corpo': 'a sidecar with no <nome>.json beside it: add the body, or move the sidecar out',
   'anexo-sem-par': 'a .req.json or .zip.txt with no complete pair beside it',
-  'anexo-indevido': 'a .req.json or .zip.txt belongs to a POST bulk capture (C3) only',
+  'anexo-indevido':
+    'a .req.json or .zip.txt belongs to the Easy Ship bulk capture (C3, POST /easyShip/2022-03-23/packages/bulk) only',
   'nome-fora-da-gramatica':
     'capture names are lowercase letters, digits and -, at most 40, with no run of 6 or more digits nor of 8 or more split by - (a name describes the request, e.g. c1-pedido-cpf, never an order id or a phone), ending .json, .txt, .req.json or .zip.txt',
 };

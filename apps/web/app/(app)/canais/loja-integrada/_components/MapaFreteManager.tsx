@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { Alert, Badge, Group, Paper, Select, Stack, Text } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { INTEGRACAO_FRETE, idDoAlvoDoMapaLi } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE, idDoAlvoDoMapaLi, idServicoMelhorEnvioLi } from '@delfrance/schemas';
 import { useSectionActive } from '@delfrance/ui';
 import { usePermission } from '@/lib/auth';
 import {
@@ -15,7 +15,11 @@ import {
 } from '@/lib/loja-integrada/freteDaConta';
 import { FreteDaContaLiAviso } from './FreteDaContaLiAviso';
 import { ServicoMelhorEnvioSelect } from './ServicoMelhorEnvioSelect';
-import { rotuloAlvoFreteLi, useAlvosMapaFreteLi, type AlvoFreteLi } from './useAlvosMapaFreteLi';
+import {
+  rotuloAlvoFreteLi,
+  useAlvosMapaFreteLi,
+  type AlvoFreteLi,
+} from '@/lib/loja-integrada/useAlvosMapaFreteLi';
 import { intFreteIdDe, useSemearFreteDaContaLi, type FreteDaContaLi } from './useFreteDaContaLi';
 
 /** The "Nenhum" option — clears a row's mapping. */
@@ -44,10 +48,16 @@ function textoOuNull(valor: unknown): string | null {
   return typeof valor === 'string' && valor.length > 0 ? valor : null;
 }
 
-/** The stored Melhor Envio service id of a row (`targetData.id`), or `null`. */
+/**
+ * The stored Melhor Envio service id of a row (`targetData.id`), or `null` — read through the
+ * shared `idServicoMelhorEnvioLi`, the one service reader the label route resolves through (and
+ * the order importer is to move onto), so a service stored as `3` and one stored as `'3'` show
+ * the same service here, and a value it does not read (`'03'`, `0`) shows none. Display only: the
+ * write path stores the picked service as is.
+ */
 function servicoArmazenado(linha: Readonly<Record<string, unknown>>): number | null {
-  const id = comoObjeto(linha.targetData)?.id;
-  return typeof id === 'number' ? id : null;
+  const id = idServicoMelhorEnvioLi(linha.targetData);
+  return id === null ? null : Number(id);
 }
 
 export interface MapaFreteManagerProps {

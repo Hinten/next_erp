@@ -104,3 +104,23 @@ the store does not have. See ADR 0014 §7.
 - `stockSendMaxAttempts.test.ts` — no source sibling. Pins
   `STOCK_SEND_MAX_ATTEMPTS` against the queue's `retryConfig` in
   `functions/src/sendStock.ts`. ⚠️ Its `__dirname` path is depth-sensitive.
+
+### Per-member payload errors (#1285)
+
+User-Products members carry a local nullable `estado`: only `E` blocks new stock
+send drafts. Their raw `status`/`sub_status` remain ML's lifecycle observation;
+the family fold and membership ignore the local error. The existing joined
+pipeline projects only this scalar, not diagnostics. Successful ordinary sends
+add no Firestore read/write or ML call, and already queued tasks may finish.
+
+After three failed queue attempts, a member is verified and, if sendable, gets
+one additional send. A final eligible HTTP refusal records `E` plus
+`errors`/`causas` atomically on that member. Network/408, 429, version conflicts,
+reauth and failed verification never latch it. Exhaustion does not create a new
+recovery queue: retry depends on existing sweep selection or manual action.
+
+A healthy `items` refresh clears only its own member. Re-verification reports the
+transaction's effective member state, including conflicts, so the manual push
+can patch its existing rows without repeating the pipeline. Snapshot versions
+captured before ML I/O protect registration and clearing; deleted/reassigned
+members are not recreated. The old bulk `variations[]` protocol is unchanged.

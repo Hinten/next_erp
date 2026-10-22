@@ -1,8 +1,11 @@
+import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
 import { MantineTestProvider } from '@/lib/testing/mantine';
+import { SECTION_SHOPEE } from '../_components/produtoFields';
 
 /**
  * `/produtos/novo` — the create page's `deriveOnSave` switches «É kit virtual»
@@ -17,6 +20,7 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
  */
 
 interface Capturado {
+  fields?: Record<string, FieldConfig>;
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
 }
 
@@ -108,5 +112,25 @@ describe('produtos/novo — «É kit virtual» needs «É kit» (step 19, O-8, M
       componentesKitKeys: null,
       ehKitVirtual: false,
     });
+  });
+});
+
+describe('produtos/novo — the Shopee tab (step 21, #1529)', () => {
+  it('shows the tab in create mode, asking for a saved produto instead of the editor', () => {
+    const shopee = h.captured?.fields?.shopee;
+    expect(shopee?.section).toBe(SECTION_SHOPEE);
+    const renderInput = shopee?.renderInput;
+    if (!renderInput) throw new Error('the page gives the Shopee tab no input');
+    const props: FieldRenderProps = {
+      name: 'shopee',
+      label: 'Shopee',
+      value: null,
+      onChange: vi.fn(),
+      onBlur: vi.fn(),
+      descriptor: {} as FieldRenderProps['descriptor'],
+    };
+    render(<MantineTestProvider>{renderInput(props) as ReactNode}</MantineTestProvider>);
+    expect(screen.getByText('Salve o produto para continuar.')).toBeDefined();
+    expect(screen.queryByTestId('shopee-tab-placeholder')).toBeNull();
   });
 });

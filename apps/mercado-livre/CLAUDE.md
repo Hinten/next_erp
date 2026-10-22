@@ -718,10 +718,17 @@ path never reaches `applyItemStatusToLink` at all — so the denorm can never be
 keyed on a member id. A member whose link cannot be resolved takes the
 conservative `estado 'E'` stop instead, which is loud and bounded; `estado 'c'`
 from one member is not an option.
-The residual: a HEALTHY member whose payload ML refused still latches the whole
-family at `'E'`, because `estado` lives only on the parent link. It is visible and
-self-clearing (an `items` webhook or "Reverificar anúncio"), and the log names the
-offending member — but it does stop the siblings until then.
+#1285 narrows the healthy-member payload latch to the member's own nullable
+`estado` (`E` or null), with `errors`/`causas` beside it. After the queue's three
+attempts it verifies the member and, when sendable, tries ONE last time. Network,
+408, 429, version conflicts and unavailable verification never create this latch.
+The pipeline projects only `estado`; neither membership nor the lifecycle fold
+reads it. A successful ordinary task gains ZERO reads, writes or ML calls.
+Healthy `items` refreshes clear only their own member, even with unchanged status;
+manual re-verification clears only observed, version-matched members. Publish and
+import clear with a native snapshot precondition. Already queued tasks may finish;
+the gate prevents new drafts, not dispatches. A sibling's success cannot erase a
+member's diagnosis.
 
 ⚠️ **"Reverificar anúncio" on a family re-reads it MEMBER BY MEMBER, and the
 naive version of that button was a silent catalogue outage (#1142).** The route

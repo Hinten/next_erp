@@ -1,24 +1,27 @@
 /**
- * Every HTTP answer the conta routes build, in the repo's error envelope
- * `{ error, code, issues? }` (`erroContaLojaIntegradaSchema` in
- * `@delfrance/schemas`, which the panel parses):
+ * Every HTTP answer the conta routes and the pedidos routes build, in the repo's
+ * error envelope `{ error, code, issues? }` (`erroContaLojaIntegradaSchema` in
+ * `@delfrance/schemas`, which the panel and the pedidos screens parse):
  *
  *  - this app's own errors (`erros.ts`): in a route's catch, narrow with
  *    {@link isLiAppError} (it only tests the error) and pass the match to
  *    {@link respostaDeErroLi}; the route rethrows anything else, so an
  *    unrelated failure surfaces as a 500 instead of being swallowed (root
  *    `CLAUDE.md` rule 6);
- *  - the request-level refusals the three routes share: a malformed id, a
+ *  - the request-level refusals the three conta routes share: a malformed id, a
  *    malformed body ({@link lerCorpoLi}), a refused expiry date, a validation
  *    verdict other than `aceito`, a token already stored on another conta, the
- *    read switch off (503), and a caller that went away (499).
+ *    read switch off (503), and a caller that went away (499);
+ *  - the pedidos routes' own (step 15): a malformed pedido id, a pedido that does
+ *    not exist, and the label routing's write losing its precondition on every
+ *    attempt.
  *
  * ⚠️ The ONE module under `lib/lojaIntegrada/` that imports `next/server`, and
  * therefore the one module step 3's functions bundle must never reach. Nothing
  * else in this folder imports it.
  *
  * ⚠️ `issues` carries field PATHS only. No envelope built here carries a token,
- * a fingerprint, a ref or a body: every sentence is a literal here, comes from
+ * a fingerprint, a ref, a body or a pedido's data: every sentence is a literal here, comes from
  * `erros.ts` (built from the conta id and paths) or `conta/validade.ts` (an
  * already-validated civil date at most), or is a validation verdict's `motivo`,
  * which the package builds without the token or any body text.
@@ -133,6 +136,30 @@ export function respostaLi(
 /** 400 — the `[id]` segment cannot be a conta id (`naoEhIdDeConta`). */
 export function respostaIdInvalido(): NextResponse {
   return respostaLi(400, CODIGO_ERRO_LI.idInvalido, 'Id de conta inválido.');
+}
+
+/** 400 — the `[pedidoId]` segment cannot be a document id (`naoDocId`). Nothing was read. */
+export function respostaIdDePedidoInvalido(): NextResponse {
+  return respostaLi(400, CODIGO_ERRO_LI.idInvalido, 'Id de pedido inválido.');
+}
+
+/** 404 — no pedido with this id. Nothing was written. */
+export function respostaPedidoNaoEncontrado(): NextResponse {
+  return respostaLi(404, CODIGO_ERRO_LI.pedidoNaoEncontrado, 'Pedido não encontrado.');
+}
+
+/**
+ * 503 — the label routing's pedido write lost its `lastUpdateTime` precondition on
+ * every attempt (`LiRotaEtiquetaEmConflitoError`, `pedidos/rotaEtiqueta.ts`):
+ * another writer kept changing the pedido. Nothing was written; the caller may
+ * retry, and a retry re-decides everything from a fresh read.
+ */
+export function respostaRotaEmConflito(): NextResponse {
+  return respostaLi(
+    503,
+    CODIGO_ERRO_LI.rotaEmConflito,
+    'O pedido foi alterado por outra ação ao mesmo tempo. Nada foi gravado; tente de novo.',
+  );
 }
 
 /** A body read: the parsed value, or the 400 to answer with. */
