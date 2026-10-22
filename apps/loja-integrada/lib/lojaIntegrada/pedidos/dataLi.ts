@@ -1,7 +1,25 @@
 /**
  * Loja Integrada's NAIVE date-times, read and written as text — the order
- * poller's stamps and bounds (master plan step 3, PR 3-e). Pure: no clock, no
- * zone, no I/O.
+ * poller's stamps and bounds (master plan step 3, PR 3-e) — and the order
+ * import's conversions to µs (step 5, PR 5-b). Pure: no clock, no I/O; the
+ * only zone is {@link FUSO_DATAS_LI}, passed explicitly.
+ *
+ * ## The order import's µs boundary
+ *
+ * Besides `avisos/avisos.ts`, this is the app's one module that converts
+ * between time units (`avisos.test.ts` counts the calls, the zone-carrying
+ * naive conversion included). The order import's four conversions all live
+ * here, so the units — and the zone — cannot drift between its mappers, which
+ * carry µs end to end, as the pedido and pagamento schemas do:
+ *
+ *  - {@link dataLiParaMicros} — an INCOMING Loja Integrada stamp, read in
+ *    {@link FUSO_DATAS_LI};
+ *  - {@link microsArmazenadoLi} — a STORED stamp another writer may have left
+ *    in another unit (ms, µs, an ISO string);
+ *  - {@link microsDeMillisLi} — an instant the import computed in ms (the
+ *    dispatch deadline);
+ *  - {@link millisDeMicrosLi} — a µs instant handed to a rule that takes ms
+ *    (the dispatch deadline's approval date).
  *
  * ## Two shapes, both fixed width, so string order is time order
  *
@@ -13,13 +31,59 @@
  *    {@link canonicaDoCursorLi} lifts one to a canonical stamp (`.000000`)
  *    before it is compared with a stamp.
  *
- * Which zone the platform writes its stamps in, and reads its filter in, is
- * unknown until a capture settles it. So nothing here ever turns one of these
- * texts into an instant: {@link msIngenuoDeDataLi} reads the NAIVE fields as if
- * they were UTC, purely to do arithmetic on them (`Date.UTC` / `getUTC*`, which
- * `no-ambient-timezone` allows), and {@link renderizarDataLi} writes the result
- * back as naive text. ⚠️ A `msIngenuo` is NOT an epoch: never compare one with a
- * clock reading, and never store one.
+ * ## The zone: America/Sao_Paulo, settled from the spec and the captures
+ *
+ * The platform writes every REST stamp without an offset, and its docs name no
+ * zone. The order import reads them in {@link FUSO_DATAS_LI}
+ * (`America/Sao_Paulo`, tz-aware). Three independent lines place them in
+ * Brasília civil time, and none points to UTC:
+ *
+ *  - the v1 API is Django-Tastypie (`meta.limit`/`offset`/`total_count`,
+ *    `resource_uri`, `campo__gte` filters), whose default serializer prints a
+ *    datetime naive in the server's ONE `TIME_ZONE` and reads a naive filter
+ *    value in that same zone, so stamps and `since_atualizado` share one
+ *    constant zone;
+ *  - the spec's own order-webhook example (tag "Webhook Pedidos") renders the
+ *    same records' nested stamps at `-03:00` beside top-level `Z` instants that
+ *    agree with them (order `2024-12-11T21:09:38.888Z`, its envio
+ *    `18:09:39.352574-03:00`): the platform's data layer runs at UTC−3;
+ *  - the committed captures (29 orders, two stores, 2026-09/10): read in São
+ *    Paulo, creations fall 06:54–23:23 with a night gap and in-store pickup
+ *    marks 09:36–16:22; read as UTC, a fifth of the orders would land at
+ *    03:54–06:59 local, none after 20:23, and staff would start at 06:36.
+ *
+ * No capture pairs a naive stamp with an absolute clock, so this is strong
+ * evidence, not a measurement. Two things keep a wrong zone cheap, and neither
+ * depends on it:
+ *
+ *  - the POLLER never turns a text into an instant. {@link msIngenuoDeDataLi}
+ *    reads the naive fields as if they were UTC, purely to do arithmetic on
+ *    them (`Date.UTC` / `getUTC*`, which `no-ambient-timezone` allows), and
+ *    {@link renderizarDataLi} writes the result back as naive text; its window
+ *    carries a 4 h zone margin (`janelaPoll.ts`). ⚠️ A `msIngenuo` is NOT an
+ *    epoch: never compare one with a clock reading, and never store one;
+ *  - the IMPORT converts each stamp exactly once, through
+ *    {@link dataLiParaMicros}, so two LI stamps it compares were converted the
+ *    same way — as long as the zone is the SAME one for both — and a constant
+ *    zone error cancels out of that comparison. What a wrong zone would shift
+ *    is the stored instants themselves (dates shown to an operator, a dispatch
+ *    deadline).
+ *
+ * ⚠️ That "constant" is the whole guarantee: the stored watermarks
+ * (`pedido.lastMarketplaceUpdate`, `pagamento.lastProviderUpdate`) keep the
+ * zone they were converted in. So the zone must be settled BEFORE the first
+ * live import, and changing {@link FUSO_DATAS_LI} after any import is a window
+ * step, never a code edit alone. Moved EAST (São Paulo → UTC, say), every new
+ * stamp converts up to 3 h EARLIER than the stored ones it is compared with:
+ * the import answers `obsoleto`, writes nothing, and resolves the
+ * notification, so any Loja Integrada change within those hours of the last
+ * import is dropped — a paid order cancelled an hour later stays paid. The
+ * change therefore ships together with a pass over the stored LI watermarks
+ * of both fields (shifted by the zone difference, or cleared so the next
+ * import re-applies), or with one import pass that ignores the stored stamp.
+ * Only a WESTWARD move is safe without it: new stamps then read later, never
+ * earlier. Pinned by `pedidoMapeamento.test.ts` ("a zone moved east after an
+ * import").
  *
  * ## The canonicalisation is a FOLD — what it equates and what it keeps apart
  *
@@ -31,7 +95,22 @@
  * whitespace, a day the calendar does not have, a non-string. Pinned by
  * `dataLi.test.ts`.
  */
+import {
+  coerceToMicros,
+  microsDeDataHoraNoFuso,
+  microsToMillis,
+  millisToMicros,
+} from '@delfrance/core/datetime';
 import { CURSOR_POLL_LI_REGEX, DATA_MODIFICACAO_LI_REGEX } from '@delfrance/schemas';
+
+/**
+ * The zone the order import reads Loja Integrada's naive stamps in — Brasília
+ * civil time, settled from the spec's webhook example and the committed
+ * captures (module header). Changing it after the first live import needs the
+ * stored-watermark pass the module header describes, never an edit of this
+ * line alone.
+ */
+export const FUSO_DATAS_LI = 'America/Sao_Paulo';
 
 /** A stamp as the platform may send it: whole seconds and an optional 1–6 digit fraction. */
 const DATA_LI_ACEITA = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.([0-9]{1,6}))?$/;
@@ -81,6 +160,49 @@ export function lerDataLi(bruto: unknown): string | null {
   const canonica = `${bruto.slice(0, 19)}.${(m[1] ?? '').padEnd(6, '0')}`;
   // The field ranges (month 13, hour 24, second 60) and a real calendar day.
   return msIngenuoDeDataLi(canonica) === null ? null : canonica;
+}
+
+/**
+ * A Loja Integrada stamp as the INSTANT it names, in µs since the epoch, read
+ * in {@link FUSO_DATAS_LI} — or `null` when {@link lerDataLi} refuses it (or the
+ * instant falls outside the µs safe range). The order import's ONE reading of
+ * an incoming stamp: the watermark, `timestamp`, the history dates and the
+ * freight dates all go through it, so two stamps it compares were converted the
+ * same way.
+ *
+ * ⚠️ Never {@link microsArmazenadoLi} on an incoming stamp: it reads an
+ * offset-less ISO string as UTC, three hours away from this.
+ *
+ * Fold: the {@link lerDataLi} fold (`X` ≡ `X.000000`, `.1` ≡ `.100000`); one
+ * microsecond apart stays distinct.
+ */
+export function dataLiParaMicros(bruto: unknown): number | null {
+  const canonica = lerDataLi(bruto);
+  return canonica === null ? null : microsDeDataHoraNoFuso(canonica, FUSO_DATAS_LI);
+}
+
+/**
+ * A STORED stamp as µs, whatever unit another writer left it in — a µs or ms
+ * number (by magnitude), an ISO string, a `Date` — or `null` (absent, or not a
+ * stamp). Only ever the stored side of a comparison: a watermark another writer
+ * (or the migrated corpus) may hold in another unit.
+ */
+export function microsArmazenadoLi(valor: unknown): number | null {
+  return coerceToMicros(valor);
+}
+
+/** An instant the import computed in ms (a dispatch deadline) as µs. */
+export function microsDeMillisLi(ms: number): number {
+  return millisToMicros(ms);
+}
+
+/**
+ * A µs instant as ms, for a rule that takes ms (the dispatch deadline's
+ * approval date) — truncated toward zero, which for any instant after 1970 is
+ * the floor.
+ */
+export function millisDeMicrosLi(us: number): number {
+  return microsToMillis(us);
 }
 
 /**

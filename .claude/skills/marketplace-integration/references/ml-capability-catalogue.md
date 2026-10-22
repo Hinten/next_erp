@@ -1,7 +1,7 @@
 # Mercado Livre — the reference implementation, capability by capability
 
-The only implemented channel. Read it for **what problems exist**, not for what to
-write — see the "EVIDENCE, not a template" section of `SKILL.md` before copying
+The first implemented channel (Shopee, since its step 22, is the second). Read it
+for **what problems exist**, not for what to write — see the "EVIDENCE, not a template" section of `SKILL.md` before copying
 anything.
 
 Layout: `packages/integrations/mercado-livre/src/**` is fetch-only (OAuth, the

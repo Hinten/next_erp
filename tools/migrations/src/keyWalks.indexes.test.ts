@@ -17,7 +17,8 @@ import { describe, expect, it } from 'vitest';
  *  1. every script that pages by key is IN the inventory — a new walk cannot
  *     land without saying what it walks;
  *  2. every inventory row is TRUE about its script — the collection is named
- *     there, in the scope the row claims;
+ *     there, in the scope the row claims, and so is the `parent` of a per-parent
+ *     subcollection walk (the row `scripts/check-key-walks.mjs` cannot probe);
  *  3. every row has its `__name__ ASC` index, and every key-only index in
  *     `firestore.indexes.json` is either a row or a known PERMANENT one — so the
  *     post-cutover cleanup (#1896) deletes exactly the migration-only set.
@@ -29,6 +30,12 @@ interface Caminhada {
   script: string;
   collection: string;
   scope: Escopo;
+  /**
+   * Set when the walk pages `<parent>/{id}/<collection>` per parent rather than a
+   * root collection or a group. The live checker lists such a row as NOT PROBED
+   * (its root-collection probe plans nothing for it).
+   */
+  parent?: string;
 }
 
 interface IndexEntry {
@@ -116,6 +123,14 @@ describe('migration key walks ↔ key indexes (#1895)', () => {
       expect(texto, `${c.script}: claims ${c.scope} but never builds that scope`).toContain(
         c.scope === 'COLLECTION_GROUP' ? '.collectionGroup(' : '.collection(',
       );
+      if (c.parent !== undefined) {
+        expect(c.scope, `${c.script}: a per-parent subcollection walk is COLLECTION scope`).toBe(
+          'COLLECTION',
+        );
+        expect(texto, `${c.script}: never names its parent '${c.parent}'`).toContain(
+          `'${c.parent}'`,
+        );
+      }
     }
   });
 

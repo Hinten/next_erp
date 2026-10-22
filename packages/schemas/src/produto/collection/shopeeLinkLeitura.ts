@@ -205,12 +205,37 @@ export interface LeituraRecusaEstoqueShopee {
  * absent)` still skips, because one recorded reading is real.
  */
 export function pularPorRecusaAnterior(link: LeituraRecusaEstoqueShopee, nowMs: number): boolean {
+  const { tempo, estado } = mecanismosDaRecusaAnterior(link, nowMs);
+  return tempo || estado;
+}
+
+/**
+ * WHICH of {@link pularPorRecusaAnterior}'s two mechanisms is armed — the same
+ * two halves, unjoined, so a surface that has to SAY why a listing is skipped
+ * (the produto's Shopee tab) never re-derives either one. `tempo || estado` is
+ * `pularPorRecusaAnterior`, by construction.
+ *
+ * - `tempo` — `nowMs < estoqueRecusaAte`: lifts at that instant, whatever the
+ *   listing does meanwhile.
+ * - `estado` — the recorded fingerprint matches the listing's reading: lifts
+ *   when the listing's reading moves. ⚠️ Both can be armed at once (a promotion
+ *   refusal records the fingerprint beside its `ate`), and then the STATE half
+ *   still holds after the deadline until the reading moves.
+ */
+export function mecanismosDaRecusaAnterior(
+  link: LeituraRecusaEstoqueShopee,
+  nowMs: number,
+): { readonly tempo: boolean; readonly estado: boolean } {
   // ⚠️ No `Number.isFinite` guard, deliberately: a `NaN` expiry falls out of
   // the comparison itself (`nowMs < NaN` is `false`), and a redundant guard
   // would read as though the comparison needed help.
   const ate = link.estoqueRecusaAte;
-  if (typeof ate === 'number' && nowMs < ate) return true;
+  const tempo = typeof ate === 'number' && nowMs < ate;
+  return { tempo, estado: mecanismoDeEstado(link) };
+}
 
+/** The STATE half of {@link pularPorRecusaAnterior} — see its docblock. */
+function mecanismoDeEstado(link: LeituraRecusaEstoqueShopee): boolean {
   if (typeof link.estoqueRecusaEm !== 'number') return false;
 
   // ⚠️ At least ONE reading must actually have been recorded. A stamp with two

@@ -9,7 +9,8 @@ import { decidirIntFrete, resolverIntFrete, tipoDeDespacho } from './intFrete';
 
 /* -------------------------------- fixtures -------------------------------- */
 
-const { shopee, mercadoLivre, melhorEnvios, retiradaNaLoja, motoboy } = INTEGRACAO_FRETE;
+const { shopee, mercadoLivre, melhorEnvios, retiradaNaLoja, motoboy, lojaIntegrada } =
+  INTEGRACAO_FRETE;
 
 /** An `int_frete` document of `tipo`, as `resolverIntFrete` hands it to the rule. */
 function docDe(tipo: string, id = 'int-1'): { id: string; data: IntFrete } {
@@ -87,6 +88,24 @@ describe('decidirIntFrete — a marketplace-owned block tipo wins, and only wide
     expect(decidirIntFrete(null, 'correios')).toBeNull();
     const d = docDe(motoboy);
     expect(decidirIntFrete(d, 'Shopee')).toEqual(doc(d));
+  });
+
+  it('a pedido on its Loja Integrada doc (no block tipo, as the import writes it) dispatches on THAT doc — the router', () => {
+    // Unchanged by the router flip: the block tipo is null, so the rule never
+    // looked past the document.
+    const d = docDe(lojaIntegrada, 'lojaIntegrada-c1');
+    expect(decidirIntFrete(d, null)).toEqual(doc(d));
+    expect(tipoDeDespacho(lojaIntegrada, null)).toBe(lojaIntegrada);
+  });
+
+  it('⚠️ NEAR-MISS: a `lojaIntegrada` BLOCK tipo is not a marketplace any more — it never widens', () => {
+    // The import never writes it (the block tipo stays null for a Loja
+    // Integrada pedido); a block that names it anyway dispatches like any
+    // non-marketplace block — on the document, and on nothing without one.
+    expect(decidirIntFrete(null, lojaIntegrada)).toBeNull();
+    const d = docDe(motoboy);
+    expect(decidirIntFrete(d, lojaIntegrada)).toEqual(doc(d));
+    expect(tipoDeDespacho(motoboy, lojaIntegrada)).toBe(motoboy);
   });
 
   it('the bloco shape carries no id and no data, so no carrier can be handed a null id', () => {

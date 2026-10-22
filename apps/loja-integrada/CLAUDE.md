@@ -12,6 +12,7 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   (`/api/webhooks/loja-integrada/…`, step 4) stays OUTSIDE the proxy matcher.
 - The platform is called only through `@delfrance/integrations-loja-integrada`,
   never with a raw `fetch` here. No write to the platform before the cutover (D4).
+- Step 15 (label routing): the second route family, `pedidos/[pedidoId]/…` (below).
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
@@ -35,6 +36,44 @@ still be fixed. Only the context loader refuses those.
 - The aviso step runs after the write landed: a TRANSIENT gRPC failure there is logged and
   the answer stays 200 (`semDerrubarAEscrita` in `avisos/avisos.ts`); anything else throws.
 
+## Routes (`/api/marketplace/loja-integrada/pedidos/[pedidoId]…`, step 15)
+
+`PUT …/rota-etiqueta` (`PERM.frete.write`, the Melhor Envio buy's own permission: whoever can
+buy a label can route one; pedido write is not needed) re-points a pedido that still names its
+conta's Loja Integrada `int_frete` doc at the label target the conta's `mapa`, a stored override
+or the operator's `escolha` resolves. The work is `lib/lojaIntegrada/pedidos/rotaEtiqueta.ts`.
+
+- **No call to Loja Integrada, and none of its machinery.** No package client, no credential,
+  no context loader, no pacer, no read switch: routing works while the switch is off (D17).
+  `estrutura.test.ts` walks the route file's run-time import closure (the `@/` modules too,
+  type-only imports set aside) and fails on any of them or on a `fetch` call; the route suite
+  stubs `fetch` to throw and trips on the package, the context loader or the switch loading.
+- **The decisions are shared.** The ref reader, the guards, the plan and the conclusion are
+  `packages/schemas/src/mapaFreteLojaIntegrada.ts`'s, called in the order the web's read-only
+  preview calls them, over RAW reads by id (at most four, never cached). Never a local copy.
+  The wire contract (strict body, non-strict answer, codes) is
+  `packages/schemas/src/rotaEtiquetaLojaIntegrada.ts` and `CODIGO_ERRO_LI`; every answer is
+  built through it, so the target document (which may hold credentials) never rides along.
+- **One tier-1 write per attempt** (root rule 7): `update({ freteInicial: B },
+  { lastUpdateTime })` against the attempt's own pedido read. `B` is the RAW stored block with
+  only the routing keys replaced (`integracaoFreteOuterRef`, `externalOptionId`, the escolha's
+  `integracaoTargetOuterRef`, the retirada hand-off's `estado`), never re-parsed, so unmodelled
+  keys and Timestamps survive with the same values (`rotaEtiqueta.firestore.test.ts`); only an
+  integral double sibling changes wire type, re-encoded by the SDK as the equal integer. A 9 or 5
+  re-reads and re-decides everything, at most 3 attempts, then 503 `LI_ROTA_EM_CONFLITO`. No
+  transaction (the multi-document read-and-write API), so no transaction-inventory row.
+- **Refusals are decisions** (200 `recusado`, with a motivo); the envelope carries only 400
+  (id, then body), 401/403, 404 `LI_PEDIDO_NAO_ENCONTRADO` and 503. An already-routed pedido
+  answers `ja-roteado` and writes nothing, whatever the escolha; its `rota` reports the stored
+  fields through the shared readers (the override through the `int_frete` ref reader, an option
+  that is not a string through the Melhor Envio service reader, a string option verbatim).
+- The conflict error (`LiRotaEtiquetaEmConflitoError`) is a plain `Error` subclass, like the mapa
+  registration's `LiMapaFreteEmConflitoError`, not a `LiAppError`: it is about a pedido, not a
+  conta or its credential.
+- A refusal or a conflict logs ONE line with ids only (the pedido, the motivo, the attempts),
+  never an endereço, a name or a document. No ruleset, index or env change: the write goes
+  through Admin, and every read is by id.
+
 ## Store and writes
 
 - The token lives in `integracao/{id}/credenciaisLojaIntegrada/current`: strict schema,
@@ -54,14 +93,28 @@ still be fixed. Only the context loader refuses those.
   non-test source file for it and would demand a class for a site that does not exist.
   The test fake models `lastUpdateTime` preconditions only — and as the server applies
   them: the stamp replaces the SDK's `exists` check, so a removed document fails it with
-  `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5).
+  `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5). Its `batch()` (the order import's ONE
+  commit of a pedido and its pagamentos) is all or nothing under the same rules, plus 6 for
+  a `create` on an existing doc; the emulator suite `pedidos/importarPedido.firestore.test.ts`
+  pins the server's answers.
 
 ## Layout rules
 
 - `lib/lojaIntegrada/**` is Next-free and takes `db` as a parameter, because step 3's
   functions bundle imports it. The one exception is `core/respond.ts`.
-- `lib/lojaIntegrada/avisos/avisos.ts` is the ONLY module that converts to µs:
-  `agoraUsDe`, `prazoUsDe` and the Timestamp-to-µs function. Everything else stays in ms.
+- Two modules convert time units (`avisos.test.ts` counts the calls, the zone-carrying
+  naive read included): `lib/lojaIntegrada/avisos/avisos.ts` (`agoraUsDe`, `prazoUsDe` and
+  the Timestamp-to-µs function) and, for the order import, `lib/lojaIntegrada/pedidos/dataLi.ts`
+  (`dataLiParaMicros` for LI's naive stamps, read in `FUSO_DATAS_LI` — America/Sao_Paulo, settled from
+  the spec's webhook example (`-03:00` beside matching `Z` instants) and the captures'
+  order times (`dataLi.ts` header) —, `microsArmazenadoLi` for a stored stamp in another writer's unit,
+  `microsDeMillisLi` and `millisDeMicrosLi`). No other module converts: the conta and
+  aviso code works in ms, the order import's mappers carry µs as the pedido and pagamento
+  schemas do. ⚠️ Settle the LI zone BEFORE the first live import: the stored watermarks
+  keep the zone they were converted in, so changing `FUSO_DATAS_LI` afterwards is a window
+  step (shift or clear the stored LI `lastMarketplaceUpdate`/`lastProviderUpdate`), never
+  an edit alone — moved east, every change within the zone difference of the last import
+  is dropped as `obsoleto`. Only a westward move is safe without it (`dataLi.ts` header).
   A document commit time is the aviso clock for the park. An observation of ABSENCE (no
   credential, a conta gone) is clocked by the snapshot's `readTime`: the reconexão aviso
   is never resolved clockless, or a park committed after the read loses its open row for
@@ -157,8 +210,11 @@ still be fixed. Only the context loader refuses those.
 - Kept on review of the first corpus (2026-10-14), not leaks: a 14-digit window INSIDE a
   longer SKU that passes the CNPJ check (the scan tests whole values; any one window passes
   by chance about 1% of the time, and the sibling variant's window fails), LI's own
-  numeric ids (the importer's join keys), `meta.total_count` (the kept numeros already
-  show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it).
+  numeric ids where the profile keeps them, `meta.total_count` (the kept numeros already
+  show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it). ⚠️ An
+  order detail's top-level `id` is FAKED (`0`) and so is every `itens.*.produto`
+  (a placeholder, not even a URI): no capture test may key on either, and the produto
+  reference form has no real capture yet.
 - `estrutura.test.ts` proves the sanitizer's import closure reaches no network or process
   module, no package client, no `firebase-admin`/`@delfrance/data`, no credential module,
   no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;
@@ -193,13 +249,21 @@ still be fixed. Only the context loader refuses those.
   `notificacoesLojaIntegrada` (bare schema, ids only, unknown keys stripped). ONE reads
   queue, `filaLeituraLojaIntegrada` (= the function name), dispatching on `tipo`.
 - A run: the context (switch, conta, credential), then the importer SEAM
-  (`DESTINO_TIPO_LI`, empty until step 5 ⇒ `importador-ausente` PARKS). Only the functions
-  roots read `importadorPedidoLi()`; `lib` takes `deps.importador`.
+  (`DESTINO_TIPO_LI`, filled in step 5 with `importarPedidoLi`; an empty one ⇒
+  `importador-ausente` PARKS). Only the functions roots read `importadorPedidoLi()`; `lib`
+  takes `deps.importador`.
 - Classifier: the app refusals (switch off, inactive, token missing/corrupt, parked)
   DEFER; conta gone DROPS; `LiAuthError` parks the conta (`tratarFalhaDeAutenticacao`) and
   defers, or rethrows when the 401 was for an older token; 404 parks; a non-transient
   HTTP/schema/paging/Zod refusal parks (class and status only); 429, 5xx, network,
-  `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base.
+  `LiConfigError`, gRPC and the unknown THROW. Never test the `LiError` base. The importer's
+  `LiPedidoPagoSemEnderecoError` (a paid order carrying NO CEP at all, step 5; an invalid
+  CEP imports without an endereço instead) is `null` too:
+  retried, never parked by the table. `criarPipelineLi` binds the shared `onRetriesExhausted`
+  (a failure the RUN threw, parked at the cap) to `sinalizarEsgotamentoLi`: that error's ERROR
+  line plus the critico aviso, any other class one generic ERROR line (ids and the class only).
+  A row that fails to rehydrate (the strict `fromDoc`) parks with neither: only its doc id in
+  the sweep's per-doc failures WARNING.
 - A parked conta DEFERS, never drops (#808): daily re-drive for 7 days,
   `graduateDeferredTransientErrors`, and on a token save or renewal the routes' best-effort
   `redriveAposSalvarTokenLi` (`(status, contaId)` index; a gRPC failure is logged, the 200
@@ -232,10 +296,11 @@ still be fixed. Only the context loader refuses those.
   and `orcamentoPoll.ts` are its pure date, window and budget layer. The root
   `functions/src/pollPedidos.ts` (`pollLojaIntegradaPedidos`, `*/5`, 300 s) binds every
   dependency: `importadorPresente = importadorPedidoLi() !== null`, the parsed look-back.
-- Two gates, each with ZERO reads: the empty importer seam (until step 5), then the read
-  switch. Contas run one after another, the list ROTATED by the tick's 5-minute slot
-  (`ordemDoTickLi`), so a `sem-tempo` conta runs first on a later tick instead of
-  starving behind the same ones forever. Containment per conta is a gRPC error, or a
+- Two gates, each with ZERO reads: the importer seam (filled in step 5, so a tick passes
+  it), then the read switch (unset until the window, so every tick stops there). Contas
+  run one after another, the list ROTATED by the tick's 5-minute slot (`ordemDoTickLi`),
+  so a `sem-tempo` conta runs first on a later tick instead of starving behind the same
+  ones forever. Containment per conta is a gRPC error, or a
   hand-edited poll document that no longer parses (`documento-invalido`, a WARNING,
   nothing written), ONLY.
 - `pollPedidosLojaIntegrada/{id}` is written only under preconditions: the lease
@@ -285,7 +350,41 @@ still be fixed. Only the context loader refuses those.
   logs ids only. `deps.arrayUnion` is `FieldValue.arrayUnion` in production, the fake's
   sentinel in tests.
 
-## CI (steps 3 and 20)
+## Order import (steps 5–6)
+
+- `pedidos/importarPedido.ts` fills the step-3 seam: the queue and both sweeps run it, the
+  poller passes its importer gate. The context refuses first while the read switch is
+  off, so a run DEFERS before any read and reaches no import path, A4 included (D17).
+  Every rule lives in the pure mappers beside it.
+- One run: the detail, the situação history (strict on queue attempts 0–1), the pedido
+  snapshot, the hub guard, produtos, freight (its `mapa` row and the
+  `lojaIntegradaFreteNaoSuportado` sync run HERE, on every attempt that routed), cliente
+  and endereço, then ONE atomic `WriteBatch` (the pedido and every pagamento, each under
+  its own precondition; a lost one re-derives all, 3 attempts, then a retry).
+- A4: a PAID order with a shipment, NO CEP at all (no delivery block, or a `cep` absent,
+  `null`, `''`, blank or `-`) and no stored endereço throws `LiPedidoPagoSemEnderecoError`
+  before step 7; a pickup is exempt. It retries; the park at the cap logs an ERROR line
+  (ids only) and raises the `critico` `lojaIntegradaPedidoPagoSemEndereco`, which an
+  import resolves only once the winning snapshot leaves the pedido with a delivery
+  endereço or a pickup route, or the order is no longer paid — nothing else. A present
+  but INVALID CEP (a masked one too) is never refused: it imports with no endereço or
+  route and keeps the aviso open, as do a readable CEP from a buyer with no valid
+  document (no cliente, so no endereço) and an observation with no shipment.
+- The buyer is the fiscal identity (a valid CNPJ, else CPF). Never a cliente beside
+  another cliente's endereço: each stored endereço must be the pedido's cliente's, judged
+  per attempt, else nothing is filled over it and an incidente. No endereço (pickup
+  aside) ⇒ no carrier route; a stored route is never cleared.
+- Every importer outcome RESOLVES; `obsoleto` (a newer stored stamp) writes NOTHING;
+  schema and Zod refusals park. Estado and payment status come from the situação codigo
+  through one shared table; a stored stamp is read through `coerceToMicros`.
+- Six aviso tipos (`avisosPedidoLi.ts`): situação desconhecida, contestado, hub, frete não
+  suportado, pago sem endereço and A7's `lojaIntegradaReversaoComEtiqueta` (a reversal on
+  a pedido with a bought label). Order avisos and incidentes run after the batch, on
+  `importado` and `sem-mudanca`, so a retry after a crash still writes them.
+- A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
+- `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
+
+## CI (steps 3, 5 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;

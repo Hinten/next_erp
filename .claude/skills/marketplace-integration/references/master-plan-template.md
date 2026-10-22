@@ -32,6 +32,7 @@ prerequisites — nothing downstream works without them.
 | 19 | **Kits virtuais** | `kitVirtual` | publish + stock | `produtos.ehKitVirtual` | — |
 | 20 | `int_frete` sync (marketplace-owned freight) | `etiqueta !== 'nenhuma'` | Firestore trigger | `int_frete` | `freight-integrations` |
 | 21 | `apps/web`: conta screen, row actions, inbox origin | derived | — | — | the four provider registries + the caps row |
+| 22 | CI lane check, emulator suffixes, deploy isolation, the `implementado` flip | every field answered | — | — | `ci-lanes`, `tools/deploy-env` |
 
 ⚠️ **Step 19 is the one Mercado Livre does not have.** If it survives the caps filter
 you are writing code with no reference implementation — plan it from the provider's
@@ -39,6 +40,15 @@ documentation alone, and say so in the issue.
 
 ⚠️ **Step 12 is where the money goes.** Read the stock chapter in `SKILL.md` before
 planning it, and record the measured scan cost in the issue.
+
+⚠️ **Step 22 is mostly a CHECK, not a build.** Shopee shipped its lane, the tasks
+emulator config and the inert `firebase.<canal>.deploy.json` with step 3, because
+the receiver's round trip needs them (Loja Integrada did the same at its own step
+3). What is left is the flip — `implementado: true`, deleting any rows-first
+exception in `caps/registriesAlinhadas.test.ts` in the same commit — closing any
+test-file suffix no vitest config collects (pinned repo-wide by
+`vitest-config-partition.test.js`), and the docs. Deploying is never a step: it is
+the migration window's (root `CLAUDE.md` rule 8).
 
 ## Issue shape
 

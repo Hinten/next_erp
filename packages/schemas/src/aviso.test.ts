@@ -9,6 +9,7 @@ import {
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -26,6 +27,7 @@ import {
   motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
   motivoPedidoContestadoLiSchema,
+  motivoReversaoComEtiquetaLiSchema,
   pendenciaReclamacaoSchema,
   rotaInternaSegura,
   situacaoAnuncioForaDaSincronizacaoSchema,
@@ -457,6 +459,111 @@ describe('the four Loja Integrada order-import tipos (steps 5–6)', () => {
     });
     expect(frete.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
     expect(frete.params.motivo).toBe('alvo-inativo');
+  });
+});
+
+describe('lojaIntegradaPedidoPagoSemEndereco: a paid order whose retries ran out without an address', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('is a tipo, named and labelled', () => {
+    expect(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco).toBe(
+      'lojaIntegradaPedidoPagoSemEndereco',
+    );
+    expect(tipoAvisoSchema.safeParse('lojaIntegradaPedidoPagoSemEndereco').success).toBe(true);
+    expect(TIPO_AVISO_LABELS.lojaIntegradaPedidoPagoSemEndereco).toBe(
+      'Pedido pago da Loja Integrada sem endereço',
+    );
+  });
+
+  it('near-miss: a near spelling is no tipo', () => {
+    for (const quase of ['lojaIntegradaPedidoSemEndereco', 'lojaIntegradaPedidoPagoSemEndereço']) {
+      expect(tipoAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('one row per pedido of the conta, apart from the other order-keyed tipos', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO], conta: string) =>
+      chaveDeAviso({ tipo, conta, entidade: PEDIDO_ID });
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, 'int-1')).toBe(
+      `lojaIntegradaPedidoPagoSemEndereco:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco, 'int-1')).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoHub, 'int-1'),
+    );
+  });
+
+  it('parses as stored: critico, the conta page, an order clock', () => {
+    const aviso = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaPedidoPagoSemEndereco,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165' },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    expect(aviso).toMatchObject({
+      tipo: 'lojaIntegradaPedidoPagoSemEndereco',
+      severidade: 'critico',
+      params: { loja: 'Conta A', pedido: '165' },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+  });
+});
+
+describe('lojaIntegradaReversaoComEtiqueta: a reversal landing on a pedido whose label was bought', () => {
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4);
+
+  it('is a tipo, named and labelled', () => {
+    expect(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta).toBe('lojaIntegradaReversaoComEtiqueta');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaReversaoComEtiqueta).toBe(
+      'Pedido da Loja Integrada revertido com etiqueta comprada',
+    );
+  });
+
+  it('one row per pedido, apart from the contestado row the same refund may raise', () => {
+    const chave = (tipo: (typeof TIPO_AVISO)[keyof typeof TIPO_AVISO]) =>
+      chaveDeAviso({ tipo, conta: 'int-1', entidade: PEDIDO_ID });
+    expect(chave(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta)).toBe(
+      `lojaIntegradaReversaoComEtiqueta:int-1:${PEDIDO_ID}`,
+    );
+    expect(chave(TIPO_AVISO.lojaIntegradaReversaoComEtiqueta)).not.toBe(
+      chave(TIPO_AVISO.lojaIntegradaPedidoContestado),
+    );
+  });
+
+  it('its motivo codes: one per reversal codigo, the constant in step with the enum', () => {
+    expect(motivoReversaoComEtiquetaLiSchema.options).toEqual([
+      'cancelado',
+      'devolvido',
+      'chargeback',
+      'devolvido-sem-retorno',
+    ]);
+    expect(Object.values(MOTIVO_REVERSAO_COM_ETIQUETA_LI).sort()).toEqual(
+      [...motivoReversaoComEtiquetaLiSchema.options].sort(),
+    );
+  });
+
+  it('NEAR-MISS: a cancellation REQUEST or a dispute is no reversal; the wire codigos are not the codes', () => {
+    for (const quase of ['cancelamento-solicitado', 'disputa', 'pedido_cancelado', 'Cancelado']) {
+      expect(motivoReversaoComEtiquetaLiSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses as stored: atencao, the pedido page, an order clock', () => {
+    const aviso = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaReversaoComEtiqueta,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', pedido: '165', motivo: MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado },
+      motivo: MOTIVO_REVERSAO_COM_ETIQUETA_LI.cancelado,
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      relogioEvento: 1_789_000_000_123_456,
+    });
+    expect(aviso).toMatchObject({
+      tipo: 'lojaIntegradaReversaoComEtiqueta',
+      params: { loja: 'Conta A', pedido: '165', motivo: 'cancelado' },
+      motivo: 'cancelado',
+    });
   });
 });
 

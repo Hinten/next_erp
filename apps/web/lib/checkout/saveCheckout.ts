@@ -2,6 +2,7 @@ import { getDoc, runTransaction, type Firestore } from 'firebase/firestore';
 import {
   ESTADO_PEDIDO,
   ESTADO_FRETE,
+  avancaParaRetirada,
   bloqueioDespachoAtivo,
   checkCompleteness,
   checkoutFretePedidoSchema,
@@ -137,9 +138,15 @@ function freteSignature(f: FreteDoPedido | null): string {
  * shows as an error, or a `confirm` the UI dialogs (and, on "yes", re-calls with
  * the kind added to `confirmed`). `ok` carries `estadoContinuar` for the tx.
  *
- * Legacy gate 12 (Loja Integrada `conferirSePedidoEstaPago`) is NOT ported — the
- * new app has no LI integration; the general `estado === 'pago'` check here (and
- * the in-transaction re-check) covers the case. Follow-up issue tracks LI.
+ * Gate 12 here is the ERP's own `estado === 'pago'`, for every pedido. The Loja
+ * Integrada paid re-check (master plan step 15) is deliberately NOT one of
+ * these gates: it is a network read of the order's CURRENT situação, which a
+ * pure function cannot make and a transaction must not hold. The checkout
+ * screen runs it for an imported Loja Integrada order only, after this loop's
+ * LAST confirm and before {@link salvarCheckoutTransacao}
+ * (`conferirAntesDeDespacharLi`, `lib/loja-integrada/conferenciaDespacho.ts`):
+ * a verdict that does not authorise dispatch blocks, one that cannot be
+ * verified asks. What that leaves open is named on the transaction.
  */
 export function evaluatePreSave(input: EvaluatePreSaveInput): PreSaveResult {
   const { loaded, fresh, freshItens, expected, log, produtos, existingCheckout, confirmed } = input;
@@ -225,7 +232,8 @@ export function evaluatePreSave(input: EvaluatePreSaveInput): PreSaveResult {
       'Este pedido não está no estado "Despacho autorizado" ou "Em separação". Deseja continuar?',
     );
   }
-  // 12. Pedido must be Pago (general case; LI payment check not ported).
+  // 12. Pedido must be Pago — every pedido. An imported Loja Integrada order's
+  // LIVE payment is checked by the screen after this loop (see the doc above).
   if (fresh.estado !== ESTADO_PEDIDO_PAGO) {
     return makeBlock(
       'nao-pago',
@@ -316,6 +324,18 @@ export class CheckoutSaveError extends Error {
  * stale-`ehSaida` bug). The checkout write ITSELF flips `freteInicial.estado` to
  * `checkFinalizado`, which the server stock-sync reacts to — stock is NEVER
  * written client-side. Legacy did not bump `ultimaModificacao`; kept for parity.
+ *
+ * ⚠️ The residual of the Loja Integrada paid re-check (rule 7, named rather
+ * than closed). For an imported Loja Integrada order the screen asks the
+ * order's live payment BEFORE this runs, and that answer cannot be re-derived
+ * in here — it is a network read, which a transaction callback must not hold.
+ * So a reversal landing in the seconds between that answer and this commit is
+ * not seen by it. The in-transaction `estado === pago` guard below still
+ * holds, and catches a reversal the import has already applied; it does NOT
+ * see a dispute (the pedido stays `pago`, its payment `em_disputa`) or a
+ * refund after the stock removal (the import keeps the stored estado). The
+ * screen runs the check after its last confirm dialog to keep that window as
+ * short as it can be. The class of the transaction below is unchanged.
  */
 export async function salvarCheckoutTransacao(
   db: Firestore,
@@ -373,19 +393,28 @@ export async function salvarCheckoutTransacao(
     tx.update(pedidoRef, { 'freteInicial.estado': ESTADO_CHECK_FINALIZADO });
   });
 
-  // Phase 2 — retiradaNaLoja only, and ONLY because phase 1 committed.
-  const retirada = await isRetiradaNaLoja(db, pedidoId);
+  // Phase 2 — the pickup hand-off, and ONLY because phase 1 committed. The rule
+  // is the shared `avancaParaRetirada` (`@delfrance/schemas`), the one the Loja
+  // Integrada routing route applies when it re-points a checked-out pedido at a
+  // pickup target — one copy, so the two can never disagree. BOTH halves
+  // go through it: whether to open the transaction at all (from the estado
+  // phase 1 just committed) and the re-check inside it (from `tx.get`). A local
+  // `tipoAlvo === retiradaNaLoja` here would keep today's predicate after the
+  // shared rule changes, and phase 2 would silently stop running.
+  const tipoAlvo = await tipoDoIntFreteDoPedido(db, pedidoId);
+  const retirada = avancaParaRetirada(ESTADO_CHECK_FINALIZADO, tipoAlvo);
   if (retirada) {
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(pedidoRef);
       if (!snap.exists()) return; // vanished between phases — nothing to advance
-      // Only advance from the estado phase 1 just wrote. `retirada` was decided
+      // Only advance from the estado phase 1 just wrote. `tipoAlvo` was decided
       // by two NON-transactional reads above, and this write used to be
       // unconditional — so anything that moved the frete forward in the gap (an
       // operator marking it delivered, a marketplace shipment handler) was
       // dragged BACK to `aguardandoRetirada`. Phase 1 re-checks every gate
-      // against its own snapshot; phase 2 has to do the same (ADR 0011 trap 1).
-      if (snap.data().freteInicial?.estado !== ESTADO_CHECK_FINALIZADO) return;
+      // against its own snapshot; phase 2 has to do the same (ADR 0011 trap 1):
+      // the estado comes from `tx.get`, never from outside the transaction.
+      if (!avancaParaRetirada(snap.data().freteInicial?.estado, tipoAlvo)) return;
       tx.update(pedidoRef, { 'freteInicial.estado': ESTADO_AGUARDANDO_RETIRADA });
     });
   }
@@ -393,13 +422,18 @@ export async function salvarCheckoutTransacao(
   return { checkoutId, retirada };
 }
 
-/** Whether the pedido's freight integration is retiradaNaLoja (drives the phase-2 estado). */
-async function isRetiradaNaLoja(db: Firestore, pedidoId: string): Promise<boolean> {
+/**
+ * The RAW `tipo` of the pedido's freight integration (drives the phase-2
+ * estado), or `null` when the pedido, its ref or the doc is missing. (It was
+ * `isRetiradaNaLoja`, a boolean, until the decision moved to the shared rule;
+ * `saveCheckout.race.test.ts` still names it by that name.)
+ */
+async function tipoDoIntFreteDoPedido(db: Firestore, pedidoId: string): Promise<unknown> {
   const snap = await getDoc(pedidoCollection.docRef(db, {}, pedidoId));
-  if (!snap.exists()) return false;
+  if (!snap.exists()) return null;
   const ref = dereferenceOuterRef(db, snap.data().freteInicial?.integracaoFreteOuterRef);
-  if (ref === null) return false;
+  if (ref === null) return null;
   const intSnap = await getDoc(ref);
-  if (!intSnap.exists()) return false;
-  return (intSnap.data() as { tipo?: unknown }).tipo === 'retiradaNaLoja';
+  if (!intSnap.exists()) return null;
+  return (intSnap.data() as { tipo?: unknown }).tipo ?? null;
 }

@@ -41,7 +41,16 @@ import { millisSinceEpoch } from './shared/datetime';
  *    parse. The run that COMPLETES the window then counts `resposta-invalida`
  *    and keeps the cursor, exactly as if it had read that row itself: the flag
  *    is how an invalid row on page 1 still blocks the advance when page 6 is
- *    read an hour later. Absent = `false`.
+ *    read an hour later. Absent = `false`;
+ *  - `maiorLinhaMs` — the largest `lastUpdatedTime` (ms) any run of this window
+ *    has read so far: the cursor candidate. The run that COMPLETES the window
+ *    advances the cursor from the max of this and its own rows (still capped
+ *    at `inicioDrenagemMs` minus five minutes), so a newest row read on page 1
+ *    still moves the cursor when page 6 is read an hour later — the rows may
+ *    come newest-first. `null` = no max recorded: no valid row read yet, or a
+ *    `pendente` stored before the field (absent reads as `null`), whose earlier
+ *    runs DID read rows. Either way the completing run advances from the rows
+ *    it reads itself — a re-listed backlog at worst, never a skipped row.
  *
  * ## `vistos`: orderId → the `lastUpdatedTime` last enqueued, in µs
  *
@@ -94,6 +103,8 @@ export const pendentePollAmazonSchema = z.object({
   paginas: inteiroSeguro(),
   /** An earlier run of this window read an invalid row: its completion counts it (module header). */
   linhaInvalida: z.boolean().default(false),
+  /** ms — the largest row stamp the window's runs have read so far; null = none recorded (module header). */
+  maiorLinhaMs: inteiroSeguro().nullable().default(null),
 });
 export type PendentePollAmazon = z.infer<typeof pendentePollAmazonSchema>;
 

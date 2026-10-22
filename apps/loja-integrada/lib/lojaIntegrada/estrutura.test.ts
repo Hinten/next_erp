@@ -30,7 +30,12 @@
  *    reaches a global by a computed name — and every external module it does
  *    import is on a short allow-list;
  *  - the committed fixture corpus keeps its `.prettierignore` and `.gitattributes`
- *    lines, so a re-run over an unchanged capture writes identical bytes.
+ *    lines, so a re-run over an unchanged capture writes identical bytes;
+ *  - the label routing route (`PUT …/pedidos/[pedidoId]/rota-etiqueta`, step 15) calls
+ *    nothing outside the ERP: the run-time import closure of its route file — the app's
+ *    `@/` modules walked too, type-only imports set aside because they load nothing —
+ *    reaches no package client, no credential module, no context loader, no pacer, no
+ *    read switch, no network module and no text that calls `fetch`.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -279,6 +284,85 @@ function violacoesDoSanitizador(
   return violacoes;
 }
 
+/* ---------------------------- the routing route ---------------------------- */
+
+/** The label routing route (step 15): ERP reads and one guarded pedido write, nothing else. */
+const ROTA_ETIQUETA =
+  'app/api/marketplace/loja-integrada/pedidos/[pedidoId]/rota-etiqueta/route.ts';
+
+/**
+ * What the routing route's closure may never reach: the modules that hold a Loja Integrada
+ * client's inputs (the credential, the context loader), the pacer and the read switch. A route
+ * that calls nothing has no use for any of them.
+ */
+const MODULOS_FORA_DA_ROTA_ETIQUETA = [
+  ...MODULOS_DE_CREDENCIAL,
+  'lib/lojaIntegrada/core/valvulas.ts',
+  'lib/lojaIntegrada/core/ritmo.ts',
+];
+
+/**
+ * `texto` without its type-only imports and re-exports (`import type …`, `export type … from`):
+ * they are erased at emit and load nothing at run time. Anything else stays — an inline
+ * `import { type A } from 'x'` too, which keeps the module load under `verbatimModuleSyntax` —
+ * so the walk follows every module the code can load.
+ */
+function semImportacoesDeTipo(texto: string): string {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  let saida = texto;
+  for (const s of [...fonte.statements].reverse()) {
+    const soDeTipo =
+      (ts.isImportDeclaration(s) && s.importClause?.isTypeOnly === true) ||
+      (ts.isExportDeclaration(s) && s.isTypeOnly);
+    if (soDeTipo) saida = saida.slice(0, s.getStart(fonte)) + saida.slice(s.getEnd());
+  }
+  return saida;
+}
+
+/**
+ * `@/x` → the app-relative source file it names, so the walk enters the app's own aliased
+ * modules instead of stopping at them. A name that resolves to no file is returned as is, and
+ * the walk reports it as `?<path>` — fail closed.
+ */
+function resolverAliasDoApp(ler: LeitorDeFonte): ResolvedorDePacote {
+  return (espec) => {
+    if (!espec.startsWith('@/')) return null;
+    const base = espec.slice(2);
+    return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((c) => ler(c) !== null) ?? base;
+  };
+}
+
+/**
+ * Why the run-time closure from `entradas` (app-relative paths) lets the routing route reach
+ * outside the ERP; empty when it does not. The files are scanned RAW for a `fetch` call: a comment
+ * that spells one fails too.
+ */
+function violacoesDaRotaEtiqueta(entradas: readonly string[], lerBruto: LeitorDeFonte): string[] {
+  const ler: LeitorDeFonte = (caminho) => {
+    const texto = lerBruto(caminho);
+    return texto === null ? null : semImportacoesDeTipo(texto);
+  };
+  const fecho = fechoDeImportacoes(entradas, ler, resolverAliasDoApp(ler));
+  const violacoes: string[] = [];
+  for (const espec of fecho.externos) {
+    const modulo = espec.replace(/^node:/, '').split('/')[0] ?? '';
+    if (
+      espec.startsWith('?') ||
+      espec === '@delfrance/integrations-loja-integrada' ||
+      espec.startsWith('@delfrance/integrations-loja-integrada/') ||
+      espec === 'undici' ||
+      MODULOS_DE_REDE_OU_PROCESSO.has(modulo)
+    ) {
+      violacoes.push(`imports ${espec}`);
+    }
+  }
+  for (const arquivo of fecho.arquivos) {
+    if (MODULOS_FORA_DA_ROTA_ETIQUETA.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
+    if (/\bfetch\s*\(/.test(lerBruto(arquivo) ?? '')) violacoes.push(`${arquivo} calls fetch`);
+  }
+  return violacoes;
+}
+
 const LINHA_WIRE_PRETTIER = 'apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/';
 const LINHA_WIRE_ATRIBUTOS =
   'apps/loja-integrada/lib/lojaIntegrada/fixtures/__wire__/** text eol=lf';
@@ -408,6 +492,7 @@ describe('lib/lojaIntegrada layout', () => {
         'pedidos/janelaPoll.ts',
         'pedidos/orcamentoPoll.ts',
         'pedidos/pollPedidos.ts',
+        'pedidos/rotaEtiqueta.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
         'sanitizacao/lote.ts',
@@ -507,6 +592,37 @@ describe('lib/lojaIntegrada layout', () => {
       ]),
     );
     expect(fecho.externos).toEqual(expect.arrayContaining(['node:fs', 'zod']));
+  });
+
+  it('the label routing route calls nothing outside the ERP: no package client, credential, context, pacer, read switch or fetch in its run-time closure', () => {
+    expect(violacoesDaRotaEtiqueta([ROTA_ETIQUETA], lerDoApp)).toEqual([]);
+    // Anti-vacuity: the walk entered the route's own modules through the alias, and saw the
+    // data layer it does use.
+    const ler: LeitorDeFonte = (c) => {
+      const texto = lerDoApp(c);
+      return texto === null ? null : semImportacoesDeTipo(texto);
+    };
+    const fecho = fechoDeImportacoes([ROTA_ETIQUETA], ler, resolverAliasDoApp(ler));
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        ROTA_ETIQUETA,
+        'lib/lojaIntegrada/pedidos/rotaEtiqueta.ts',
+        'lib/lojaIntegrada/core/respond.ts',
+        'lib/lojaIntegrada/core/erros.ts',
+        'lib/auth/verifyCaller.ts',
+      ]),
+    );
+    expect(fecho.externos).toEqual(
+      expect.arrayContaining([
+        '@delfrance/schemas',
+        '@delfrance/data/admin/collections',
+        '@delfrance/data/admin/grpcErrors',
+      ]),
+    );
+    // The type-only import of the package in `core/respond.ts` is real, and set aside.
+    expect(lerDoApp('lib/lojaIntegrada/core/respond.ts')).toContain(
+      "import type { ValidacaoTokenLi } from '@delfrance/integrations-loja-integrada';",
+    );
   });
 
   it('scripts/ is typechecked and linted: the tsconfig includes **/*.ts, the ESLint config ignores nothing of it', () => {
@@ -740,6 +856,52 @@ describe('the guards, on synthetic source', () => {
     expect(
       violacoesDoSanitizador([SANITIZADOR], comPacote(fonte, extras), resolver).length,
     ).toBeGreaterThan(0);
+  });
+
+  const ROTA = 'app/x/route.ts';
+  const NUCLEO = 'lib/lojaIntegrada/pedidos/x.ts';
+  const daRota = (nucleo: string, rota = "import { f } from '@/lib/lojaIntegrada/pedidos/x';") =>
+    leitor({
+      [ROTA]: rota,
+      [NUCLEO]: nucleo,
+      'lib/lojaIntegrada/core/contexto.ts':
+        "import { x } from '@delfrance/integrations-loja-integrada';",
+      'lib/lojaIntegrada/core/valvulas.ts': 'export const v = 1;',
+      'lib/lojaIntegrada/core/erros.ts': 'export class E extends Error {}',
+    });
+
+  it('routing route closure: the data layer, an app error and a TYPE-only import of the package are accepted', () => {
+    const nucleo =
+      "import { pedidoCollection } from '@delfrance/data/admin/collections';\n" +
+      "import type { LiError } from '@delfrance/integrations-loja-integrada';\n" +
+      "export type { LiAuthError } from '@delfrance/integrations-loja-integrada';\n" +
+      "import { E } from '../core/erros';";
+    expect(violacoesDaRotaEtiqueta([ROTA], daRota(nucleo))).toEqual([]);
+  });
+
+  it.each([
+    [
+      'the package client',
+      "import { criarClienteLeituraLi } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['a package subpath', "import { x } from '@delfrance/integrations-loja-integrada/pedidos';"],
+    [
+      'an INLINE type specifier (the module still loads)',
+      "import { type LiError } from '@delfrance/integrations-loja-integrada';",
+    ],
+    ['the context loader', "import { loadLojaIntegradaContext } from '../core/contexto';"],
+    ['the read switch', "import { lerChamadasLi } from '../core/valvulas';"],
+    ['a fetch call', "export const f = () => fetch('https://x.invalid');"],
+    ['a network module', "import { request } from 'node:https';"],
+    ['undici', "import { request } from 'undici';"],
+  ])('routing route closure flags, one module deep, %s', (_caso, nucleo) => {
+    expect(violacoesDaRotaEtiqueta([ROTA], daRota(nucleo)).length).toBeGreaterThan(0);
+  });
+
+  it('routing route closure flags an alias that resolves to no file (fail closed)', () => {
+    expect(
+      violacoesDaRotaEtiqueta([ROTA], daRota('', "import { f } from '@/lib/lojaIntegrada/sumiu';")),
+    ).toEqual(['imports ?lib/lojaIntegrada/sumiu']);
   });
 
   it('seam accepts criarObservadorLi(…) imported from the logger, and exempts the logger itself', () => {

@@ -224,13 +224,29 @@ describe('descreverFalhaCredencialLi — every code the credential routes answer
     CODIGO_ERRO_LI.reconexaoPendente,
   ]);
 
-  it.each(Object.values(CODIGO_ERRO_LI).filter((c) => !SO_DOS_FLUXOS.has(c)))(
-    '%s is described by its code, never by the backend sentence',
-    (code) => {
-      // The status is one no branch keys on, so only the code can pick the copy.
-      expect(descrever(http(418, code)).mensagem).not.toBe('mensagem do backend 418');
-    },
-  );
+  /**
+   * The codes only the pedidos routes answer (step 15: the label routing and
+   * the paid re-check). The credential panel never receives them; their copy
+   * belongs to the gates that call those routes, keyed on the same codes.
+   */
+  const SO_DAS_ROTAS_DE_PEDIDO = new Set<string>([
+    CODIGO_ERRO_LI.pedidoNaoEncontrado,
+    CODIGO_ERRO_LI.pedidoAusenteNaLoja,
+    CODIGO_ERRO_LI.pedidoDivergente,
+    CODIGO_ERRO_LI.limiteDeChamadas,
+    CODIGO_ERRO_LI.tempoEsgotadoLoja,
+    CODIGO_ERRO_LI.lojaIndisponivel,
+    CODIGO_ERRO_LI.rotaEmConflito,
+  ]);
+
+  it.each(
+    Object.values(CODIGO_ERRO_LI).filter(
+      (c) => !SO_DOS_FLUXOS.has(c) && !SO_DAS_ROTAS_DE_PEDIDO.has(c),
+    ),
+  )('%s is described by its code, never by the backend sentence', (code) => {
+    // The status is one no branch keys on, so only the code can pick the copy.
+    expect(descrever(http(418, code)).mensagem).not.toBe('mensagem do backend 418');
+  });
 
   it('near-miss: a code without copy falls back to the backend sentence', () => {
     expect(descrever(http(418, CODIGO_ERRO_LI.contaInativa)).mensagem).toBe(

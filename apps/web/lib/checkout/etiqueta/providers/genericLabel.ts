@@ -3,6 +3,7 @@ import {
   renderEtiquetaGenericaPdf,
   renderEtiquetaGenericaZpl,
 } from '@/lib/etiqueta-generica';
+import { conferirAntesDeImprimirLi } from '@/lib/loja-integrada/conferenciaPagamento';
 
 import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput } from '../types';
 
@@ -18,6 +19,11 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
  * ZPL for a Zebra. Legacy only pretended to support ZPL2: it toasted "ainda não
  * implementado" and printed the PDF instead, on the format that was the
  * operator's DEFAULT.
+ *
+ * Before the label is built, an order imported from Loja Integrada goes through
+ * the paid re-check's SOFT gate (`conferirAntesDeImprimirLi`, master plan step
+ * 15): a status that is not confirmed paid asks the operator to acknowledge the
+ * risk, and a cancel is a silent `skipped`. Every other pedido never calls it.
  */
 
 /**
@@ -70,6 +76,18 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
       return { status: 'error', message: 'Integração de frete não encontrada.' };
     }
     const intFrete = input.intFrete;
+
+    // The soft gate runs BEFORE anything is built or sent, so a cancel leaves
+    // nothing behind — no render, no print job, no download.
+    const conferencia = await conferirAntesDeImprimirLi({
+      client: deps.lojaIntegradaClient,
+      pedidoId,
+      pedido,
+      conferenciaLi: input.conferenciaLi,
+      ui,
+      ato: 'etiqueta-generica',
+    });
+    if (conferencia === 'cancelado') return { status: 'skipped' };
 
     try {
       const model = await buildEtiquetaGenericaModel(db, pedido, pedidoId, frete, intFrete);

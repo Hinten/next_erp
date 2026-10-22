@@ -20,8 +20,12 @@
  *   library emission (emission.homologacao), serie 3 = SVC contingency
  *   (svc.homologacao, `SEFAZ_HOM_SVC_SERIE`), serie 4 = Reforma Tributária
  *   (rtc.homologacao, `SEFAZ_HOM_RTC_SERIE`), serie 5 = EPEC contingency
- *   (epec.homologacao, `SEFAZ_HOM_EPEC_SERIE`), serie 9 = inutilização
- *   (`SEFAZ_HOM_INUT_SERIE`). See the companion comment in each test file.
+ *   (epec.homologacao, `SEFAZ_HOM_EPEC_SERIE`), serie 9 = RETIRED (see
+ *   below). See the companion comment in each test file.
+ * - Serie 9 belonged to the inutilização live test, removed when Ajuste
+ *   SINIEF 40/2026 ended the Pedido de Inutilização in SP (#2030). Do not
+ *   hand it to a new lane: SEFAZ keeps the números that test burned there
+ *   forever, and emitting one is rejected 206.
  * - `nNF` seeding has to dodge collisions across CI runs of the *same*
  *   test, in the same serie. SEFAZ exposes **no** "query last nNF used"
  *   endpoint (the only NFeConsulta web services are
@@ -62,20 +66,6 @@
  * correctness. The nNF seed widening here is the actual correctness
  * mechanism; the per-run filial isolation is just cleanliness.
  */
-
-/**
- * Série reserved exclusively for the inutilização live test.
- *
- * SEFAZ persists inutilized ranges per (CNPJ, serie, tpAmb, mod) **forever**,
- * exactly like numeração. The emission tests own séries 1 (orchestrator) and
- * 2 (library duplicidade) and emit real NF-es there; if the inutilização test
- * burned a número on one of those séries it could clash with a número an
- * emission test wants. Reserving série **9** — which no emission test ever
- * emits on — keeps the two lanes disjoint. The inutilização test still picks a
- * fresh `seedNNF()` range per run so a re-run never hits "número já
- * inutilizado" on this série.
- */
-export const SEFAZ_HOM_INUT_SERIE = 9;
 
 /**
  * Série reserved exclusively for the SVC contingency live suite
