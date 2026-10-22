@@ -84,3 +84,26 @@ export const produtoAmazonLinkSchema = z
   })
   .passthrough();
 export type ProdutoAmazonLink = z.infer<typeof produtoAmazonLinkSchema>;
+
+/**
+ * The fields of the Amazon order import's link query, IN INDEX ORDER — the ONE
+ * spelling of them (Amazon step 5). The query builds its `.where()` calls from
+ * this tuple, and `produtoAmazon.indexes.test.ts` pins the
+ * `prodAmazon (contaAmazonOuterRef ASC, sku ASC)` collection-group index in
+ * `firestore.indexes.json` against it, so the query and its index cannot name
+ * different fields.
+ *
+ * The query is `contaAmazonOuterRef in <the conta's ref forms>` and
+ * `sku == <the order line's seller SKU>`, over EVERY produto's `prodAmazon`
+ * subcollection. On this Enterprise database a query with no matching index
+ * does not fail: it scans every link doc and bills the data scanned, so the
+ * index is declared with the query's first reader. DEPLOYING it is
+ * migration-window work, and agents never run it.
+ *
+ * Typed against the schema's own keys, so a renamed schema field breaks the
+ * build here rather than leaving the index pointing at a field no doc has.
+ */
+export const CAMPOS_INDICE_VINCULO_AMAZON = [
+  'contaAmazonOuterRef',
+  'sku',
+] as const satisfies ReadonlyArray<keyof typeof produtoAmazonLinkSchema.shape>;

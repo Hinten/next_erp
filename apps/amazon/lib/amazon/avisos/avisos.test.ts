@@ -4,12 +4,17 @@ import { fileURLToPath } from 'node:url';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fimDoDiaNoFuso } from '@delfrance/core/datetime';
+import { escreverAviso } from '@delfrance/data/admin/avisos';
 import {
   CANAL_AVISO,
   FUSO_FISCAL,
+  MOTIVO_CONTA_AMAZON,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
+  ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
+  chaveDeAviso,
+  motivoContaAmazonSchema,
 } from '@delfrance/schemas';
 
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
@@ -24,11 +29,13 @@ import {
   avisarReconexaoPendente,
   avisarSegredoLwaExpirando,
   avisarSegredoLwaRecusado,
+  chaveContaPrecisaAtencao,
   chaveImportacaoParada,
   chaveReautorizacao,
   chaveReconexao,
   chaveSegredoExpirando,
   chaveSegredoRecusado,
+  chavesContaPrecisaAtencao,
   prazoUsDe,
   relogioDoDocumentoUs,
   resolverAvisoDeContaRemovida,
@@ -119,16 +126,43 @@ describe('the keys', () => {
         TIPO_AVISO.amazonSegredoLwaExpirando,
         TIPO_AVISO.amazonSegredoLwaRecusado,
         TIPO_AVISO.amazonImportacaoParada,
+        TIPO_AVISO.amazonPedidoPrecisaAtencao,
+        TIPO_AVISO.amazonContaPrecisaAtencao,
       ].sort(),
     );
     // The orphan pass's tipos: every PER-CONTA one, the import-stopped row
-    // included (PR 4-b) — and never a per-app one, whose key names no conta.
+    // included (PR 4-b) and the order import's per-conta row (step 5) — and
+    // never a per-app one, whose key names no conta.
     expect([...TIPOS_AVISO_AMAZON_POR_CONTA].sort()).toEqual(
       [
         TIPO_AVISO.amazonReconexaoPendente,
         TIPO_AVISO.amazonReautorizacaoExpirando,
         TIPO_AVISO.amazonImportacaoParada,
+        TIPO_AVISO.amazonContaPrecisaAtencao,
       ].sort(),
+    );
+  });
+
+  it('★ the per-PEDIDO tipo is never an orphan-pass tipo: its key names an order the pass cannot compute', () => {
+    expect(TIPOS_AVISO_AMAZON.has(TIPO_AVISO.amazonPedidoPrecisaAtencao)).toBe(true);
+    expect(TIPOS_AVISO_AMAZON_POR_CONTA.has(TIPO_AVISO.amazonPedidoPrecisaAtencao)).toBe(false);
+  });
+
+  it("per (conta, motivo) for the order import's conta tipo: one key per motivo, no entidade", () => {
+    expect(chaveContaPrecisaAtencao(ID, MOTIVO_CONTA_AMAZON.contaSemOperacao)).toBe(
+      `amazonContaPrecisaAtencao:${ID}::conta-sem-operacao`,
+    );
+    expect(chaveContaPrecisaAtencao(ID, MOTIVO_CONTA_AMAZON.intermediadorDivergente)).toBe(
+      `amazonContaPrecisaAtencao:${ID}::intermediador-divergente`,
+    );
+    // Every motivo's key, read off the enum — and nothing else.
+    expect([...chavesContaPrecisaAtencao(ID)].sort()).toEqual(
+      motivoContaAmazonSchema.options.map((m) => chaveContaPrecisaAtencao(ID, m)).sort(),
+    );
+    expect(chavesContaPrecisaAtencao(ID)).toHaveLength(2);
+    // NEAR-MISS: another conta's keys are other documents.
+    expect(chavesContaPrecisaAtencao('conta-2')).not.toContain(
+      chaveContaPrecisaAtencao(ID, MOTIVO_CONTA_AMAZON.contaSemOperacao),
     );
   });
 });
@@ -394,6 +428,79 @@ describe('resolverAvisoDeContaRemovida', () => {
     const [clocked, semConta] = h.resolverAviso.mock.calls;
     expect((clocked?.[4] as { relogioEvento?: unknown } | undefined)?.relogioEvento).toBe(7);
     expect(semConta?.[4]).toBeUndefined();
+  });
+
+  it('★ a conta-precisa-atenção row is closed CLOCKED by the list readTime; a later raise keeps its row (step 5)', async () => {
+    const chave = chaveContaPrecisaAtencao(ID, MOTIVO_CONTA_AMAZON.contaSemOperacao);
+    // The import's conta read at 200 µs raised it (the step-5 producer's shape);
+    // the list was read at 100: a conta created after the list keeps its row…
+    await escreverAviso(
+      asDb(db),
+      {
+        tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+        conta: ID,
+        janela: MOTIVO_CONTA_AMAZON.contaSemOperacao,
+        severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.amazon,
+        params: { motivo: MOTIVO_CONTA_AMAZON.contaSemOperacao },
+        motivo: MOTIVO_CONTA_AMAZON.contaSemOperacao,
+        urlInterna: { rota: ROTAS_AVISO.canalAmazon.build(ID), campo: null },
+        relogioEvento: 200,
+      },
+      { increment, agoraUs: agoraUsDe(deps()) },
+    );
+    expect(await resolverAvisoDeContaRemovida(asDb(db), chave, 100, deps())).toBe(false);
+    expect(db.ler(caminhoAviso(chave))?.resolvidoEm).toBeNull();
+    // …while a raise OLDER than the read IS closed, and the clock is stamped.
+    expect(await resolverAvisoDeContaRemovida(asDb(db), chave, 300, deps())).toBe(true);
+    expect(db.ler(caminhoAviso(chave))).toMatchObject({
+      resolucaoMotivo: 'conta-removida',
+      relogioEvento: 300,
+    });
+  });
+
+  it('a conta-precisa-atenção orphan with no row SEEDS a resolved one naming its motivo', async () => {
+    const chave = chaveContaPrecisaAtencao(ID, MOTIVO_CONTA_AMAZON.intermediadorDivergente);
+    expect(await resolverAvisoDeContaRemovida(asDb(db), chave, 400, deps())).toBe(false);
+    expect(db.ler(caminhoAviso(chave))).toMatchObject({
+      tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+      canal: CANAL_AVISO.amazon,
+      severidade: SEVERIDADE_AVISO.atencao,
+      motivo: MOTIVO_CONTA_AMAZON.intermediadorDivergente,
+      params: { motivo: MOTIVO_CONTA_AMAZON.intermediadorDivergente },
+      urlInterna: { rota: `/canais/amazon/${ID}`, campo: null },
+      relogioEvento: 400,
+      resolucaoMotivo: 'conta-removida',
+    });
+  });
+
+  it('NEAR-MISS: a conta-tipo id no producer computes (unknown motivo, an entidade, no conta, a conta the key fold would rewrite) is resolved clockless', async () => {
+    const naoComputadas = [
+      `${TIPO_AVISO.amazonContaPrecisaAtencao}:${ID}::motivo-do-futuro`,
+      chaveDeAviso({
+        tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+        conta: ID,
+        entidade: '171-9876543-2109876',
+        janela: MOTIVO_CONTA_AMAZON.contaSemOperacao,
+      }),
+      `${TIPO_AVISO.amazonContaPrecisaAtencao}:::${MOTIVO_CONTA_AMAZON.contaSemOperacao}`,
+      // The split alone reads conta `a.b` here, but `chaveDeAviso` folds `.` to
+      // `_`, so no producer could have written this id: only the key RECOMPUTE
+      // sends it clockless (trusting the split would seed a resolve for `a.b`).
+      `${TIPO_AVISO.amazonContaPrecisaAtencao}:a.b::${MOTIVO_CONTA_AMAZON.contaSemOperacao}`,
+    ];
+    await resolverAvisoDeContaRemovida(
+      asDb(db),
+      chaveContaPrecisaAtencao(ID, MOTIVO_CONTA_AMAZON.contaSemOperacao),
+      9,
+      deps(),
+    );
+    for (const chave of naoComputadas)
+      await resolverAvisoDeContaRemovida(asDb(db), chave, 9, deps());
+    const [clocked, ...semRelogio] = h.resolverAviso.mock.calls;
+    expect((clocked?.[4] as { relogioEvento?: unknown } | undefined)?.relogioEvento).toBe(9);
+    expect(semRelogio).toHaveLength(naoComputadas.length);
+    for (const chamada of semRelogio) expect(chamada[4], String(chamada[1])).toBeUndefined();
   });
 
   it('a reauthorization row is closed clockless', async () => {
