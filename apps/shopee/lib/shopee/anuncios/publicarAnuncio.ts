@@ -63,6 +63,7 @@ import {
 import {
   SHOPEE_ITEM_STATUS,
   componentesKitSchema,
+  ehRascunhoShopee,
   estoqueDisponivel,
   fotoSchema,
   kitEstoqueDisponivel,
@@ -131,6 +132,7 @@ import { aplicarModelos, type ResultadoModelos } from './modelosPublicacao';
 import {
   categoriaDoAnuncio,
   kitNativoDoAnuncio,
+  vinculoDecideKitNativo,
   type LinkListagemLido,
   type ProdutoParaPublicar,
 } from './montagemAnuncio';
@@ -445,6 +447,12 @@ function produtoParaPublicar(id: string, raw: Record<string, unknown>): ProdutoP
  * ⚠️ `kitNativo` is read THREE-valued and never coerced — it is what Shopee
  * reported about the live listing, and it is the authority behind
  * `produto-e-kit` on every republish.
+ *
+ * ⚠️ `ehRascunho` (#1911, D3) is the shared `ehRascunhoShopee` over the RAW
+ * document, never over the projection built here: `item_id` below is already
+ * folded (`0` and `'123'` read `null`), and a corrupt link must not pass for a
+ * draft. It moves the kit question of a draft to the produto
+ * (`vinculoDecideKitNativo`, `montagemAnuncio.ts`).
  */
 function linkListagemLido(
   raw: Record<string, unknown>,
@@ -462,6 +470,7 @@ function linkListagemLido(
       : null,
     estadoAnuncio,
     kitNativo: booleanoOuNull(raw.kitNativo),
+    ehRascunho: ehRascunhoShopee(raw),
   };
 }
 
@@ -704,8 +713,11 @@ export function problemaProdutoEFilho(produtoId: string, paiId: string): Problem
  *
  * `campo` names the field the operator must look at, and it therefore follows
  * the arm the predicate took: the link's `kitNativo` on a republish, the
- * produto's `ehKitVirtual` on a first publish. Both spellings are pinned by
- * tests, because nothing in the type system ties a label to a branch.
+ * produto's `ehKitVirtual` on a first publish — a DRAFT link's included
+ * (#1911). The arm is {@link vinculoDecideKitNativo}'s answer, the same call the
+ * predicate makes, so the label cannot drift from the branch; both spellings
+ * are pinned by tests, because nothing in the type system ties a label to a
+ * branch.
  */
 function recusarProdutoNaoPublicavel(
   produto: ProdutoParaPublicar,
@@ -717,7 +729,7 @@ function recusarProdutoNaoPublicavel(
   }
   if (kitNativoDoAnuncio(link, produto)) {
     problemas.push({
-      campo: link !== null ? 'kitNativo' : 'ehKitVirtual',
+      campo: vinculoDecideKitNativo(link) ? 'kitNativo' : 'ehKitVirtual',
       motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
       mensagem:
         `o anúncio do produto ${produto.id} é um kit NATIVO da Shopee e chegou ao publicador de ` +

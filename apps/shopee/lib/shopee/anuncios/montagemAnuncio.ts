@@ -148,7 +148,8 @@ import {
  *
  * What `produto-e-kit` refuses is a **NATIVE Shopee kit** (`add_kit_item`,
  * step 19), decided by {@link kitNativoDoAnuncio}: the stored link's
- * `kitNativo` on a republish, `ehKitVirtual` on a first publish. Step 11 keyed
+ * `kitNativo` on a republish, `ehKitVirtual` on a first publish — a DRAFT
+ * link's included (#1911). Step 11 keyed
  * that refusal on `ehKit` alone, which made the entire legacy kit catalogue
  * permanently unpublishable. Since step 19 (PR 7) that refusal is a defensive
  * assertion: the dispatcher sends a native kit to the kit arms before this
@@ -211,6 +212,22 @@ export interface LinkListagemLido {
    * reading for it.
    */
   readonly kitNativo?: boolean | null;
+  /**
+   * Whether the stored document is a DRAFT (#1911, D3) — a listing the ERP
+   * intends to create and Shopee never answered for — as `ehRascunhoShopee`
+   * (`@delfrance/schemas`, THE one predicate) reads the RAW document. Set by the
+   * ONE builder, `linkListagemLido` in `publicarAnuncio.ts`; read by
+   * {@link vinculoDecideKitNativo} alone.
+   *
+   * ⚠️ **Never re-derived from `item_id` above.** That field is already FOLDED
+   * (`0`, `-1`, `'123'` all read `null`), so a CORRUPT link would pass for a
+   * draft here and stop being decided by its own `kitNativo` — the raw document
+   * is the only input that keeps a corrupt link out of the class.
+   *
+   * OPTIONAL and read `=== true`: a projection built without it (a hand-built
+   * fixture predating #1911) keeps the pre-#1911 reading — the link decides.
+   */
+  readonly ehRascunho?: boolean;
 }
 
 /**
@@ -640,9 +657,12 @@ export function sizeChartInfoParaPublicar(
  * refusal on it alone and so blocked the whole legacy kit catalogue from being
  * re-published; step 12 (#1520) narrows it to the two arms below.
  *
- * - **A link exists — a republish.** `link.kitNativo` is what Shopee itself
- *   reported about the live listing (`tag.kit`, folded by `ehKitDe` in
- *   `../produtos/itemLido.ts`), so on an update it is the only statement about
+ * Which arm runs is {@link vinculoDecideKitNativo}'s answer, exported so that
+ * `recusarProdutoNaoPublicavel` labels its `campo` from the SAME branch.
+ *
+ * - **A link that is not a draft — a republish.** `link.kitNativo` is what
+ *   Shopee itself reported about the live listing (`tag.kit`, folded by
+ *   `ehKitDe` in `../produtos/itemLido.ts`), so on an update it is the only statement about
  *   the listing that is not a guess, and it WINS over anything the produto
  *   says. `false` and an absent/`null` reading both publish: a native kit's
  *   link carries the LITERAL `true` from the link write that follows
@@ -650,17 +670,24 @@ export function sizeChartInfoParaPublicar(
  *   this catalogue before step 19 created the first ones — so an unstamped link
  *   is an ORDINARY listing (the legacy corpus, or one imported before the field
  *   existed) and must not be read as a kit.
- * - **No link — a first publish.** `produto.ehKitVirtual` is the ERP's own
- *   statement that the MARKETPLACE resolves the composition
- *   (`produto/collection/produto.ts:105-110`), which on Shopee means
- *   `add_kit_item` — step 19's `kit-criar` arm. ⚠️ `ehKit === false ⇒
- *   ehKitVirtual === false` is NOT an invariant of the stored data: nothing in
+ * - **No link, or a DRAFT link (#1911, D3) — a first publish.**
+ *   `produto.ehKitVirtual` is the ERP's own statement that the MARKETPLACE
+ *   resolves the composition (`produto/collection/produto.ts:105-110`), which
+ *   on Shopee means `add_kit_item` — step 19's `kit-criar` arm. ⚠️ `ehKit ===
+ *   false ⇒ ehKitVirtual === false` is NOT an invariant of the stored data: nothing in
  *   the schema stops a doc from carrying the flag beside `ehKit: false`
  *   (`onProdutoDeleted` clears the pair only when a kit's LAST component is
  *   deleted — `ehKitVirtualEfetivo`'s docblock, `@delfrance/schemas`). What
  *   keeps an ordinary produto out of this arm is `escolherArmaDePublicacao`,
  *   which refuses that mismatch (`kit-virtual-sem-kit`) before any plan exists,
  *   while the web switches the flag off on save from step 19 on.
+ *   ⚠️ A DRAFT takes this arm because Shopee never answered for it: whatever
+ *   its `kitNativo` holds is no reading of a listing, so on the kit question it
+ *   is exactly a first publish. Read by the link arm, a draft on a kit-virtual
+ *   produto would go out as an ORDINARY `add_item` with no refusal at all
+ *   (#1911's spot-check row 6). The dispatcher refuses that pair first
+ *   (`rascunho-em-kit-virtual`); this arm is the defence in depth for a caller
+ *   that bypassed it, which hears `produto-e-kit` ("defeito do ERP").
  *
  * ⚠️ It is deliberately **not** the same predicate as the stock sweep's
  * (`../estoque/podeEnviarEstoque.ts`), which reads the link's field and nothing
@@ -675,10 +702,28 @@ export function sizeChartInfoParaPublicar(
  * absent key all read as "not a native kit".
  */
 export function kitNativoDoAnuncio(
-  link: { readonly kitNativo?: unknown } | null,
+  link: { readonly kitNativo?: unknown; readonly ehRascunho?: unknown } | null,
   produto: { readonly ehKitVirtual?: unknown },
 ): boolean {
-  return link !== null ? link.kitNativo === true : produto.ehKitVirtual === true;
+  return link !== null && vinculoDecideKitNativo(link)
+    ? link.kitNativo === true
+    : produto.ehKitVirtual === true;
+}
+
+/**
+ * Does the stored LINK answer {@link kitNativoDoAnuncio} (a republish), or the
+ * PRODUTO (a first publish)? `false` for no link and for a DRAFT link
+ * ({@link LinkListagemLido.ehRascunho} `=== true`, #1911): a draft is a listing
+ * Shopee never answered for, so nothing on it is a reading of the listing.
+ *
+ * Exported for ONE reason: `recusarProdutoNaoPublicavel` names the field the
+ * operator must look at (`kitNativo` vs `ehKitVirtual`) from the arm the
+ * predicate took, and a second spelling of the branch there is the label
+ * drifting from the decision. `ehRascunho` is read `=== true`, so an absent key
+ * (a projection predating #1911) lets the link decide, as before.
+ */
+export function vinculoDecideKitNativo(link: { readonly ehRascunho?: unknown } | null): boolean {
+  return link !== null && link.ehRascunho !== true;
 }
 
 /* -------------------------------------------------------------------------- */

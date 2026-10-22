@@ -2,7 +2,8 @@
  * **How a stored Shopee link is READ** (step 21, #1529) — the read-side rules
  * of a `prodshopee` / `variashopee` document that more than one surface needs:
  * when a stored refusal is still worth showing, whether the stock sync is
- * currently skipping the listing, and whether the listing is still "vivo".
+ * currently skipping the listing, whether the listing is still "vivo", and
+ * whether the link is a DRAFT that was never a listing at all (#1911).
  *
  * ⚠️ ONE module (#1369). `apps/shopee` decides with these (the stock gate, the
  * `integracoesComProduto` trigger, the stock sweep) and the produto's Shopee tab
@@ -288,4 +289,47 @@ export function anuncioShopeeVivo(link: Record<string, unknown> | null): boolean
   const itemId = link.item_id;
   if (typeof itemId !== 'number' || !Number.isFinite(itemId) || itemId <= 0) return false;
   return link.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     The draft predicate (#1911, D3)                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Is this stored `prodshopee` document a DRAFT — a listing the ERP intends to
+ * create and that Shopee never answered for? THE one predicate (D3):
+ * `apps/shopee`'s publish dispatcher, status/re-verify resolver, stock and
+ * price planners and listing assembly decide with it, and a browser surface
+ * that needs the same answer imports it rather than testing `item_id == null`
+ * locally (#1369).
+ *
+ * A draft is NEVER live: it is reachable only by a named `linkDocId`, and every
+ * resolver that picks a link on its own skips it.
+ *
+ * - **EQUAL (a draft):** `item_id: null`; `item_id` ABSENT (a pipeline /
+ *   `select()` projection that omits the key reads the same); whatever
+ *   `estadoAnuncio` says — a never-created listing has no state Shopee gave it.
+ * - **DISTINCT (not a draft):** an `item_id` that is present but not a usable
+ *   id — `0`, `-1`, `NaN`, `''`, `'123'`. That is a CORRUPT link, not an
+ *   intention to publish: it stays out of this class (and `0` / `'123'` are not
+ *   {@link anuncioShopeeVivo} either — a recorded residual, never guessed
+ *   around). A positive `item_id` is a listing whatever its `estadoAnuncio`, a
+ *   `removido` one included.
+ * - **DISTINCT:** `kitNativo: true` with no `item_id` — a native-kit residue
+ *   (no item-less native link exists, L9), the dispatcher's X class, never a
+ *   draft. Only `true` excludes: `false`, `null` or a stray `'true'` leave the
+ *   draft a draft (the stock gate's three-valued direction).
+ * - **DISTINCT:** `null` (no document).
+ *
+ * Disjoint from {@link anuncioShopeeVivo} by construction — a vivo link has a
+ * positive numeric `item_id`, a draft has none — and the test file pins it over
+ * one shared table.
+ *
+ * Pure, total over `unknown`, no clock.
+ */
+export function ehRascunhoShopee(
+  link: { readonly item_id?: unknown; readonly kitNativo?: unknown } | null,
+): boolean {
+  if (link === null || link.kitNativo === true) return false;
+  return link.item_id === null || link.item_id === undefined;
 }

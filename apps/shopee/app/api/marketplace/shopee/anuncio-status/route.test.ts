@@ -335,6 +335,82 @@ describe('(6) uma recusa por anúncio é DADO', () => {
   });
 });
 
+describe('(6b) um RASCUNHO nunca é o anúncio do produto (#1911 D3)', () => {
+  /** Sorts BEFORE `LINK` — the order in which the old lexical tier picked it. */
+  const RASCUNHO = 'link-0';
+  const CAMINHO_RASCUNHO = `produtos/${PRODUTO}/prodshopee/${RASCUNHO}`;
+
+  function semearRascunho(): void {
+    db.seed(CAMINHO_RASCUNHO, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Camiseta (rascunho)',
+      item_id: null,
+    });
+  }
+
+  function arrumarPausaQueDaCerto(): void {
+    h.unlistItem.mockResolvedValue({
+      error: '',
+      message: '',
+      request_id: 'req-1',
+      response: { success_list: [{ item_id: ITEM_ID, unlist: true }], failure_list: [] },
+    });
+    h.getItemBaseInfo.mockResolvedValue({
+      item_list: [
+        {
+          item_id: ITEM_ID,
+          item_name: 'Camiseta',
+          item_status: 'UNLIST',
+          deboost: false,
+          condition: 'NEW',
+          has_model: false,
+          scheduled_publish_time: null,
+        },
+      ],
+    });
+  }
+
+  it('⛔ a pausa EM MASSA da web (sem linkDocId), com um rascunho que ordena primeiro, pausa o anúncio VIVO', async () => {
+    // Before #1911 the tiered resolver's second tier admitted the draft (it is
+    // neither removed nor superseded) and its lexical pick answered `pulado`
+    // `sem-item-id` for a produto whose listing was selling.
+    semearProdutoELink(db);
+    semearRascunho();
+    arrumarPausaQueDaCerto();
+    const rascunhoAntes = structuredClone(db.store[CAMINHO_RASCUNHO]?.data);
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+
+    expect(res.status).toBe(200);
+    const corpo = (await res.json()) as AnuncioStatusResponse;
+    expect(corpo.resumo).toMatchObject({ aplicados: 1, pulados: 0, falhas: 0 });
+    expect(corpo.listings).toHaveLength(1);
+    expect(corpo.listings[0]).toMatchObject({
+      linkDocId: LINK,
+      anuncioId: String(ITEM_ID),
+      outcome: 'enviado',
+    });
+    expect(h.unlistItem).toHaveBeenCalledTimes(1);
+    expect(h.unlistItem).toHaveBeenCalledWith({ item_list: [{ item_id: ITEM_ID, unlist: true }] });
+    // The draft is untouched: no write-back lands on it.
+    expect(db.store[CAMINHO_RASCUNHO]?.data).toEqual(rascunhoAntes);
+    expect(db.patches.some((p) => p.path === CAMINHO_RASCUNHO)).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: o rascunho NOMEADO (linkDocId) ainda é endereçável — e responde `pulado`, sem chamada', async () => {
+    semearProdutoELink(db);
+    semearRascunho();
+
+    const res = await POST(req(corpoValido({ linkDocId: RASCUNHO }), AUTORIZADO));
+
+    expect(res.status).toBe(200);
+    const corpo = (await res.json()) as AnuncioStatusResponse;
+    expect(corpo.resumo).toMatchObject({ aplicados: 0, pulados: 1 });
+    expect(corpo.listings[0]).toMatchObject({ linkDocId: RASCUNHO, outcome: 'pulado' });
+    expect(h.unlistItem).not.toHaveBeenCalled();
+  });
+});
+
 describe('(7) a cota DIÁRIA da Shopee', () => {
   it('⛔ responde 200 com `pausadoAte` — nunca um 5xx', async () => {
     semearProdutoELink(db);

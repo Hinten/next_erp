@@ -59,6 +59,7 @@
  *   line, and a kit publishing 0 because its `componentesKitKeys` denorm went
  *   stale is otherwise invisible.
  */
+import { ehRascunhoShopee } from '@delfrance/schemas';
 import {
   type LinhaDeFamilia,
   type MembroDaFamilia,
@@ -432,7 +433,9 @@ export function contarModelosPlanejados(resultado: ResultadoDoPlanoShopee): numb
  * One task per listing per chunk; one listing's refusal never touches another's
  * (the per-listing `continue` is the whole shape). Links belonging to ANOTHER
  * conta are ignored in SILENCE — they are not this sweep's business and a line
- * for them would be noise on every tick for every multi-conta produto.
+ * for them would be noise on every tick for every multi-conta produto — and so
+ * are DRAFTS (`ehRascunhoShopee`, #1911): a listing Shopee never created has no
+ * stock to receive.
  */
 export function montarTarefasDeEstoqueShopee(
   row: LinhaDeFamiliaShopee,
@@ -473,8 +476,21 @@ export function montarTarefasDeEstoqueShopee(
     return { tarefas, pulos };
   }
 
+  // ⚠️ A DRAFT is not a listing (#1911 D3): `ehRascunhoShopee`, the ONE shared
+  // predicate (`item_id` null or ABSENT — the discovery projection carries both
+  // `item_id` and `kitNativo` — and not `kitNativo: true`). It is dropped in
+  // SILENCE like another conta's link: beside a live listing it used to cost a
+  // `sem-item-id` line advising a re-import of a listing that never existed, and
+  // a produto holding ONLY drafts answers `sem-link` ("importe ou publique")
+  // here. ⚠️ Usually it never gets here: the `integracoesComProduto` denorm
+  // counts only `anuncioShopeeVivo` links, so a drafts-only produto is not in
+  // the sweep's discovery at all and stops at the denorm rung above on the
+  // manual path — this filter is what holds when that denorm is stale.
+  // NEAR-MISS kept: a CORRUPT `item_id` (`0`, `'123'`) is not a draft and still
+  // reaches the gate's `sem-item-id`.
   const daConta = row.links.filter(
-    (link) => idDoRef(link.contaProdutoShopeeOuterRef) === opts.integracaoId,
+    (link) =>
+      idDoRef(link.contaProdutoShopeeOuterRef) === opts.integracaoId && !ehRascunhoShopee(link),
   );
   if (daConta.length === 0) {
     pular(MOTIVO_ESTOQUE_SHOPEE.semLink);

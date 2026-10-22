@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { ESTADO_ANUNCIO_SHOPEE } from './shopeeLink';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  produtoShopeeLinkSchema,
+  type ProdutoShopeeLink,
+} from './shopeeLink';
 import {
   anuncioShopeeVivo,
+  ehRascunhoShopee,
   mecanismosDaRecusaAnterior,
   pularPorRecusaAnterior,
   recusaEstoqueDoAnuncioShopeeLegivel,
@@ -422,5 +427,144 @@ describe('anuncioShopeeVivo', () => {
     expect(anuncioShopeeVivo({ item_id: Number.MAX_SAFE_INTEGER + 2 })).toBe(true);
     expect(anuncioShopeeVivo({ item_id: 1.5 })).toBe(true);
     expect(anuncioShopeeVivo({ item_id: Number.POSITIVE_INFINITY })).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*               (5) ehRascunhoShopee — the draft (#1911, D3)                  */
+/* -------------------------------------------------------------------------- */
+
+describe('ehRascunhoShopee — o rascunho nunca é um anúncio', () => {
+  it('PAR: `item_id: null` e `item_id` AUSENTE (uma projeção que omite a chave) são rascunho', () => {
+    expect(ehRascunhoShopee({ item_id: null })).toBe(true);
+    expect(ehRascunhoShopee({})).toBe(true);
+    expect(ehRascunhoShopee({ item_id: undefined })).toBe(true);
+  });
+
+  it('PAR: qualquer estadoAnuncio — um anúncio nunca criado não tem estado que a Shopee tenha dado', () => {
+    for (const estado of [...Object.values(ESTADO_ANUNCIO_SHOPEE), null, undefined]) {
+      const link: Record<string, unknown> = { item_id: null, estadoAnuncio: estado };
+      expect(ehRascunhoShopee(link), String(estado)).toBe(true);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: um item_id PRESENTE mas inutilizável é um link CORROMPIDO, não um rascunho', () => {
+    // The "widen to no usable item_id" mutant reads every one of these as a
+    // draft — and a draft is publishable, so a corrupt link would become an
+    // `add_item` target.
+    for (const itemId of [0, -1, Number.NaN, '', '123', String(ITEM_ID), false]) {
+      expect(ehRascunhoShopee({ item_id: itemId }), String(itemId)).toBe(false);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: um item_id positivo é um ANÚNCIO, mesmo `removido` (rascunho ≠ "não vivo")', () => {
+    // `removido` kills the "widen to NOT vivo" mutant: a removed listing is
+    // not vivo, and it is still not a draft.
+    const removido: Record<string, unknown> = {
+      item_id: ITEM_ID,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+    };
+    expect(anuncioShopeeVivo(removido)).toBe(false);
+    expect(ehRascunhoShopee(removido)).toBe(false);
+    expect(ehRascunhoShopee({ item_id: ITEM_ID })).toBe(false);
+    expect(ehRascunhoShopee({ item_id: ITEM_ID, kitNativo: true })).toBe(false);
+    expect(ehRascunhoShopee({ item_id: 1.5 })).toBe(false);
+  });
+
+  it('`kitNativo: true` sem item_id é resíduo de kit nativo (a classe X), nunca rascunho', () => {
+    expect(ehRascunhoShopee({ item_id: null, kitNativo: true })).toBe(false);
+    expect(ehRascunhoShopee({ kitNativo: true })).toBe(false);
+  });
+
+  it("⚠️ NEAR-MISS: só `true` exclui — `false`, `null`, ausente ou um `'true'` solto deixam o rascunho rascunho", () => {
+    expect(ehRascunhoShopee({ item_id: null, kitNativo: false })).toBe(true);
+    expect(ehRascunhoShopee({ item_id: null, kitNativo: null })).toBe(true);
+    expect(ehRascunhoShopee({ item_id: null, kitNativo: undefined })).toBe(true);
+    expect(ehRascunhoShopee({ item_id: null, kitNativo: 'true' })).toBe(true);
+    expect(ehRascunhoShopee({ item_id: null, kitNativo: 1 })).toBe(true);
+  });
+
+  it('`null` (nenhum documento) não é rascunho', () => {
+    expect(ehRascunhoShopee(null)).toBe(false);
+  });
+
+  it('um link PARSEADO sem item_id (o default do schema é `null`) é rascunho; com item_id, não', () => {
+    // Also a COMPILE-time pin: the parsed `ProdutoShopeeLink` is accepted as-is.
+    const rascunho: ProdutoShopeeLink = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: 'documents/integracao/int-1',
+      item_name: 'Camiseta Básica Azul',
+    });
+    expect(rascunho.item_id).toBeNull();
+    expect(ehRascunhoShopee(rascunho)).toBe(true);
+
+    const publicado: ProdutoShopeeLink = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: 'documents/integracao/int-1',
+      item_name: 'Camiseta Básica Azul',
+      item_id: ITEM_ID,
+    });
+    expect(ehRascunhoShopee(publicado)).toBe(false);
+  });
+});
+
+describe('ehRascunhoShopee × anuncioShopeeVivo — classes DISJUNTAS sobre uma tabela', () => {
+  // One table, both predicates: `vivo` and `rascunho` must never both hold,
+  // and the corrupt rows must be NEITHER (the recorded residual — they are not
+  // silently promoted into either class).
+  const TABELA: readonly {
+    readonly caso: string;
+    readonly link: Record<string, unknown> | null;
+    readonly classe: 'vivo' | 'rascunho' | 'nenhum';
+  }[] = [
+    { caso: 'publicado', link: { item_id: ITEM_ID }, classe: 'vivo' },
+    {
+      caso: 'publicado, estado nunca dobrado',
+      link: { item_id: ITEM_ID, estadoAnuncio: null },
+      classe: 'vivo',
+    },
+    {
+      caso: 'publicado, pausado',
+      link: { item_id: ITEM_ID, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado },
+      classe: 'vivo',
+    },
+    { caso: 'kit nativo publicado', link: { item_id: ITEM_ID, kitNativo: true }, classe: 'vivo' },
+    { caso: 'id fracionário (isFinite)', link: { item_id: 1.5 }, classe: 'vivo' },
+    {
+      caso: 'publicado, removido',
+      link: { item_id: ITEM_ID, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido },
+      classe: 'nenhum',
+    },
+    { caso: 'rascunho', link: { item_id: null }, classe: 'rascunho' },
+    { caso: 'rascunho, chave ausente', link: {}, classe: 'rascunho' },
+    {
+      caso: 'rascunho, estado removido',
+      link: { item_id: null, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido },
+      classe: 'rascunho',
+    },
+    {
+      caso: 'rascunho, kitNativo false',
+      link: { item_id: null, kitNativo: false },
+      classe: 'rascunho',
+    },
+    { caso: 'resíduo de kit nativo', link: { item_id: null, kitNativo: true }, classe: 'nenhum' },
+    { caso: 'item_id 0', link: { item_id: 0 }, classe: 'nenhum' },
+    { caso: 'item_id negativo', link: { item_id: -1 }, classe: 'nenhum' },
+    { caso: 'item_id NaN', link: { item_id: Number.NaN }, classe: 'nenhum' },
+    { caso: 'item_id string', link: { item_id: String(ITEM_ID) }, classe: 'nenhum' },
+    { caso: 'item_id string vazia', link: { item_id: '' }, classe: 'nenhum' },
+    { caso: 'sem documento', link: null, classe: 'nenhum' },
+  ];
+
+  it.each(TABELA)('$caso ⇒ $classe', ({ link, classe }) => {
+    const vivo = anuncioShopeeVivo(link);
+    const rascunho = ehRascunhoShopee(link);
+    expect(vivo && rascunho).toBe(false);
+    expect({ vivo, rascunho }).toEqual({
+      vivo: classe === 'vivo',
+      rascunho: classe === 'rascunho',
+    });
+  });
+
+  it('a tabela cobre as três classes (não é vacuamente disjunta)', () => {
+    expect(new Set(TABELA.map((l) => l.classe))).toEqual(new Set(['vivo', 'rascunho', 'nenhum']));
   });
 });

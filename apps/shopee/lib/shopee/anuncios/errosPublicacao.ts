@@ -42,13 +42,14 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 47 members: step 11's 22, the nineteen native-kit
+ *   before writing. 49 members: step 11's 22, the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
  *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6) and the
- *   five refusals only the publish dispatcher produces
- *   (`kits/armaDePublicacao.ts`, PR 7).
+ *   seven refusals only the publish dispatcher produces
+ *   (`kits/armaDePublicacao.ts`: five from step 19's PR 7, and #1911's two draft
+ *   refusals, `rascunho-em-kit-virtual` and `rascunho-nao-nomeado`).
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 47 plus the twelve only a WIRE rejection can produce (step 18 added the
+ *   those 49 plus the twelve only a WIRE rejection can produce (step 18 added the
  *   two size-chart refusals on `size_chart_info`; step 19 the seven native-kit
  *   refusals, whose ONE producer is `kits/recusaKit.ts`). A problema is a
  *   field-level observation, and after the first Shopee call there are causes no
@@ -245,7 +246,25 @@ export type MotivoPublicacaoBloqueada =
   /** `--converter-em-kit` re-run after the conversion finished: exactly ONE live native kit, no ordinary listing. */
   | 'ja-e-kit-nativo'
   /** `--principal`, `--recriar` or `--converter-em-kit` on a publish the dispatcher routed to step 11's item arm. */
-  | 'opcao-de-kit-em-anuncio-comum';
+  | 'opcao-de-kit-em-anuncio-comum'
+  /*
+   * ---- #1911 (P1, D3): a draft is never live. ----
+   * Produced ONLY by `kits/armaDePublicacao.ts`, spelled there through this
+   * constant, like the five above. A DRAFT is a `prodshopee` doc Shopee never
+   * answered for (`ehRascunhoShopee`, `@delfrance/schemas`): reachable only by a
+   * named `linkDocId`, never picked by a resolver.
+   */
+  /**
+   * A named DRAFT on a produto that publishes as a NATIVE kit
+   * (`ehKitVirtualEfetivo`): the draft is an ordinary listing's intention and
+   * does not apply — the kit is published without it (`kit-criar`).
+   */
+  | 'rascunho-em-kit-virtual'
+  /**
+   * An unnamed publish whose conta holds ONLY drafts of the produto: a draft is
+   * never picked on its own, so the operator names one (`--link`).
+   */
+  | 'rascunho-nao-nomeado';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -300,6 +319,8 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   converterSemKit: 'converter-sem-kit',
   jaEKitNativo: 'ja-e-kit-nativo',
   opcaoDeKitEmAnuncioComum: 'opcao-de-kit-em-anuncio-comum',
+  rascunhoEmKitVirtual: 'rascunho-em-kit-virtual',
+  rascunhoNaoNomeado: 'rascunho-nao-nomeado',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**

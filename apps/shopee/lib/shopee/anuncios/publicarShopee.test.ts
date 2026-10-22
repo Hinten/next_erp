@@ -11,11 +11,16 @@
  *   (the PR 6 halves drive the appliers directly in `kits/recriarKit.test.ts`);
  * - RT15 — the accepted double create (R-w), concurrent for real;
  * - M176 — the `incerto` command is arm-specific; M186 — the dry run and the
- *   live run address ONE listing.
+ *   live run address ONE listing;
+ * - #1911 (P1, D3) — a DRAFT is never the live listing: an unnamed publish
+ *   beside a draft that sorts first updates the LIVE item and leaves the draft
+ *   byte-unchanged, and a draft that reaches step 11 by name on a kit-virtual
+ *   produto is refused twice over (the dispatcher, then `produto-e-kit`).
  *
  * No link or row is hand-built, except the ORDINARY (old-model) listing a
- * converter starts from — the legacy state L0 describes — and M186's link
- * states, which are what the dispatcher is asked to read.
+ * converter starts from — the legacy state L0 describes — M186's link states,
+ * which are what the dispatcher is asked to read, and #1911's draft / live /
+ * corrupt links, for the same reason.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -54,6 +59,7 @@ import type { ImportarKitShopeeDeps } from '../produtos/itemLido';
 import { importarKitShopee } from '../produtos/kitShopee';
 import { lerAnuncioShopee } from '../produtos/lerAnuncio';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
+import { construirIndice } from '../taxonomia/categorias';
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { MSG_RECRIAR_SEM_LINK, lerCorpoPublicar } from './corpoPublicacao';
 import { MOTIVO_PUBLICACAO_BLOQUEADA, ShopeePublishBlockedError } from './errosPublicacao';
@@ -1381,5 +1387,356 @@ describe('(M186, L10-R1) o dry run e a publicação de verdade endereçam o MESM
     expect((await resolverLinkPorProduto(asDb(db), INTEGRACAO, K, null))?.linkDocId).toBe(
       'a-removido',
     );
+  });
+});
+
+/* ========================================================================== */
+/*  #1911 (P1, D3) — a draft is never the live listing, end to end             */
+/* ========================================================================== */
+
+describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada', () => {
+  const PRODUTO = 'prod-comum';
+  /** Ordena PRIMEIRO (UTF-16 por id de documento) — o par que a main escolhe lexicamente. */
+  const RASCUNHO = 'a-rascunho';
+  const VIVO = 'b-vivo';
+  const CORROMPIDO = 'c-corrompido';
+  const ITEM_VIVO = 2500139875;
+  const CAMINHO_RASCUNHO = `produtos/${PRODUTO}/prodshopee/${RASCUNHO}`;
+  const INDICE = construirIndice([
+    { category_id: CATEGORIA, parent_category_id: 0, has_children: false } as never,
+  ]);
+
+  /** A step-11 shop for ONE ordinary item: it answers what a republish reads and writes. */
+  interface LojaDeItem {
+    readonly client: ShopeeClient;
+    readonly ops: string[];
+    readonly corposDoUpdate: Json[];
+  }
+
+  function lojaDeItem(): LojaDeItem {
+    const ops: string[] = [];
+    const corposDoUpdate: Json[] = [];
+    const linhaViva = {
+      item_id: ITEM_VIVO,
+      item_name: 'Camiseta básica branca',
+      item_status: 'NORMAL',
+      has_model: false,
+      category_id: CATEGORIA,
+      brand: { brand_id: 0, original_brand_name: 'No Brand' },
+      logistic_info: [{ logistic_id: CANAL, enabled: true }],
+    };
+    const conhecidas: Record<string, (p: never) => Promise<unknown>> = {
+      getItemLimit: () => {
+        ops.push('get_item_limit');
+        return Promise.resolve({
+          response: {
+            price_limit: { min_limit: 1, max_limit: 1000, min: null, max: null },
+            stock_limit: { min_limit: 1, max_limit: 1_000_000, min: null, max: null },
+            item_name_length_limit: { min_limit: 10, max_limit: 120, min: null, max: null },
+            item_image_count_limit: { min_limit: 1, max_limit: 9, min: null, max: null },
+            item_description_length_limit: { min_limit: 20, max_limit: 3000, min: null, max: null },
+            dts_limit: {
+              days_to_ship_limit: { min_limit: 1, max_limit: 30, min: null, max: null },
+              non_pre_order_days_to_ship: 3,
+            },
+          },
+          gtin_limit: { gtin_validation_rule: 'Optional' },
+        });
+      },
+      getAttributeTree: () => {
+        ops.push('get_attribute_tree');
+        return Promise.resolve({ list: [] });
+      },
+      getChannelList: () => {
+        ops.push('get_channel_list');
+        return Promise.resolve({ logistics_channel_list: [CANAL_DA_LOJA] });
+      },
+      getItemBaseInfo: (p: { itemIds: readonly number[] }) => {
+        ops.push('get_item_base_info');
+        return Promise.resolve({
+          item_list: p.itemIds.includes(ITEM_VIVO) ? [linhaViva] : [],
+        });
+      },
+      getModelList: () => {
+        ops.push('get_model_list');
+        return Promise.resolve({ tier_variation: [], model: [] });
+      },
+      updateItem: (corpo: Json) => {
+        ops.push('update_item');
+        corposDoUpdate.push(corpo);
+        return Promise.resolve({
+          request_id: 'req-1',
+          error: '',
+          message: null,
+          warning: null,
+          response: { item_id: corpo.item_id, item_status: 'NORMAL' },
+        });
+      },
+      addItem: () => {
+        ops.push('add_item');
+        return Promise.reject(
+          new Error('fixture: add_item — o rascunho foi publicado como um anúncio NOVO'),
+        );
+      },
+    };
+    const client = new Proxy({} as Record<string, unknown>, {
+      get(_alvo, prop) {
+        if (typeof prop !== 'string' || prop === 'then') return undefined;
+        const fn = conhecidas[prop];
+        if (fn !== undefined) return fn;
+        return () => {
+          ops.push(`?${prop}`);
+          throw new Error(`fixture: a publicação chamou ${prop}, que esta loja não serve`);
+        };
+      },
+    }) as unknown as ShopeeClient;
+    return { client, ops, corposDoUpdate };
+  }
+
+  const RESOLVEDOR: ResolvedorDeImagensShopee = {
+    resolver: (fotos) =>
+      Promise.resolve({
+        imageIds: ['img-1'],
+        reutilizadas: 0,
+        enviadas: 1,
+        falhas: [],
+        consideradas: fotos.length,
+        descartadasPeloLimite: 0,
+      }),
+    resumo: () => ({
+      consideradas: 1,
+      reutilizadas: 0,
+      enviadas: 1,
+      falhas: 0,
+      descartadasPeloLimite: 0,
+    }),
+  };
+
+  function depsDeItem(db: FakeDb, loja: LojaDeItem): KitDeps {
+    return {
+      db: asDb(db),
+      client: loja.client,
+      partnerClient: () => {
+        throw new Error('fixture: o partner client só é usado pelo resolvedor de imagens');
+      },
+      integracaoId: INTEGRACAO,
+      tabelaNormalOuterRef: 'documents/listaDePrecos/tab-normal',
+      depositoOuterRef: 'documents/depositos/dep-1',
+      operacaoOuterRef: null,
+      nowMs: AGORA,
+      esperar: () => Promise.resolve(),
+      taxonomia: {
+        integracaoId: INTEGRACAO,
+        client: loja.client,
+        variationsPath: SHOPEE_GET_VARIATIONS_PATH,
+      },
+      categorias: { carregar: () => Promise.resolve(INDICE) },
+      resolvedorDeImagens: RESOLVEDOR,
+      increment,
+    };
+  }
+
+  /**
+   * An ORDINARY produto (or a kit-virtual one) with a DRAFT and a LIVE ordinary
+   * listing on the SAME conta; the draft sorts first. `rascunho` is the draft's
+   * stored body — `item_id: null` (#1911's D2 shape) or no `item_id` at all.
+   */
+  function semear(db: FakeDb, produto: Json = {}, rascunho: Json = { item_id: null }): void {
+    db.seed(`produtos/${PRODUTO}`, {
+      nome: 'Camiseta básica branca',
+      sku: 'CAM-BR',
+      paiId: null,
+      ehKit: false,
+      ehKitVirtual: false,
+      pesoBrutoKg: 0.32,
+      alturaCm: 2.1,
+      larguraCm: 21.4,
+      profundidadeCm: 29.2,
+      precos: { 'tab-normal': { valor: 49.9 } },
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-1' }],
+      ...produto,
+    });
+    db.seed(`produtos/${PRODUTO}/extraData/singleton`, {
+      descricao: 'Camiseta de algodão penteado, gola redonda, unissex.',
+    });
+    db.seed(`produtos/${PRODUTO}/estoques/est-1`, {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 10,
+      quantidadeReservada: 0,
+    });
+    db.seed(CAMINHO_RASCUNHO, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Camiseta do rascunho do operador',
+      category_id: CATEGORIA,
+      ...rascunho,
+    });
+    db.seed(`produtos/${PRODUTO}/prodshopee/${VIVO}`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: ITEM_VIVO,
+      item_name: 'Camiseta básica branca',
+      category_id: CATEGORIA,
+      brand_id: 0,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      kitNativo: false,
+    });
+  }
+
+  const entradaDoItem = (
+    over: Partial<EntradaDePublicacaoShopee> = {},
+  ): EntradaDePublicacaoShopee => entrada({ produtoId: PRODUTO, principal: null, ...over });
+
+  for (const [forma, rascunho] of [
+    ['item_id: null', { item_id: null }],
+    ['item_id AUSENTE', {}],
+  ] as const) {
+    it(`(spot-check linha 5) ${forma}: sem --link, rascunho que ordena primeiro + um vivo ⇒ UM update_item no VIVO, zero add_item, o rascunho intocado byte a byte`, async () => {
+      const db = new FakeDb();
+      semear(db, {}, rascunho);
+      const antes = structuredClone(doc(db, CAMINHO_RASCUNHO));
+      const loja = lojaDeItem();
+
+      const r = await publicarShopee(depsDeItem(db, loja), entradaDoItem());
+
+      expect(r?.tipo).toBe('item');
+      expect(loja.ops.filter((o) => o === 'update_item')).toHaveLength(1);
+      expect(loja.corposDoUpdate.map((c) => c.item_id)).toEqual([ITEM_VIVO]);
+      expect(loja.ops).not.toContain('add_item');
+      expect(doc(db, CAMINHO_RASCUNHO)).toEqual(antes);
+      expect(db.writes.filter((w) => w.path === CAMINHO_RASCUNHO)).toEqual([]);
+    });
+  }
+
+  it('o dry run endereça o MESMO vivo — nunca o rascunho que ordena primeiro (M186)', async () => {
+    const db = new FakeDb();
+    semear(db);
+    const loja = lojaDeItem();
+
+    const ensaio = await ensaiarPublicacaoShopee(depsDeItem(db, loja), entradaDoItem(), RESOLVEDOR);
+
+    expect(ensaio).toMatchObject({ tipo: 'item', linkDocId: VIVO });
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ quase-par: o rascunho NOMEADO é o braço de item NELE — alcançável só pelo nome', async () => {
+    const db = new FakeDb();
+    semear(db);
+    const loja = lojaDeItem();
+
+    expect(
+      await escolherArmaShopee(depsDeItem(db, loja), entradaDoItem({ linkDocId: RASCUNHO })),
+    ).toEqual({ ok: true, arma: { arma: 'item', linkDocId: RASCUNHO } });
+    expect(loja.ops).toEqual([]);
+  });
+
+  it('sem --link e SÓ o rascunho na conta ⇒ rascunho-nao-nomeado LANÇADO: zero chamadas, zero escritas, o passo 11 nem começa', async () => {
+    const db = new FakeDb();
+    semear(db);
+    delete db.store[`produtos/${PRODUTO}/prodshopee/${VIVO}`];
+    const loja = lojaDeItem();
+    vi.mocked(prepararPublicacao).mockClear();
+
+    const erro = await recusaDe(publicarShopee(depsDeItem(db, loja), entradaDoItem()));
+
+    expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado]);
+    expect(loja.ops).toEqual([]);
+    expect(db.writes).toEqual([]);
+    expect(prepararPublicacao).not.toHaveBeenCalled();
+  });
+
+  describe('num produto KIT-VIRTUAL (ehKitVirtualEfetivo)', () => {
+    const KIT_VIRTUAL = { ehKit: true, ehKitVirtual: true };
+
+    it('pela entrada: o rascunho NOMEADO ⇒ o DESPACHO recusa rascunho-em-kit-virtual — zero chamadas, o passo 11 nem começa', async () => {
+      const db = new FakeDb();
+      semear(db, KIT_VIRTUAL);
+      const loja = lojaDeItem();
+      vi.mocked(prepararPublicacao).mockClear();
+
+      const erro = await recusaDe(
+        publicarShopee(depsDeItem(db, loja), entradaDoItem({ linkDocId: RASCUNHO })),
+      );
+
+      expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoEmKitVirtual]);
+      expect(loja.ops).toEqual([]);
+      expect(db.writes).toEqual([]);
+      expect(prepararPublicacao).not.toHaveBeenCalled();
+    });
+
+    it('⚠️ defesa em profundidade: o MESMO rascunho entregue DIRETO ao passo 11 (contornando o despacho) ⇒ produto-e-kit no campo ehKitVirtual, "defeito do ERP" — zero chamadas, zero escritas', async () => {
+      const db = new FakeDb();
+      semear(db, KIT_VIRTUAL);
+      const loja = lojaDeItem();
+
+      const erro = await recusaDe(
+        prepararPublicacao(
+          depsDeItem(db, loja),
+          entradaDoItem({ linkDocId: RASCUNHO }),
+          RESOLVEDOR,
+        ),
+      );
+
+      expect(erro.problemas).toEqual([
+        expect.objectContaining({
+          campo: 'ehKitVirtual',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
+        }),
+      ]);
+      expect(erro.problemas[0]?.mensagem).toContain('defeito do ERP');
+      expect(loja.ops).toEqual([]);
+      expect(db.writes).toEqual([]);
+    });
+
+    it('⛔ quase-par: o vínculo VIVO comum (kitNativo false) entregue direto ao passo 11 NÃO recusa — o vínculo é a autoridade', async () => {
+      const db = new FakeDb();
+      semear(db, KIT_VIRTUAL);
+      const loja = lojaDeItem();
+
+      const contexto = await prepararPublicacao(
+        depsDeItem(db, loja),
+        entradaDoItem({ linkDocId: VIVO }),
+        RESOLVEDOR,
+      );
+
+      expect(contexto?.link).toMatchObject({ item_id: ITEM_VIVO, ehRascunho: false });
+      expect(db.writes).toEqual([]);
+    });
+
+    it('⛔ quase-par: um vínculo CORROMPIDO (item_id 0, kitNativo false) NÃO é rascunho — o sinal vem do documento CRU, não do item_id já dobrado para null', async () => {
+      const db = new FakeDb();
+      semear(db, KIT_VIRTUAL);
+      db.seed(`produtos/${PRODUTO}/prodshopee/${CORROMPIDO}`, {
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_id: 0,
+        item_name: 'Camiseta básica branca',
+        category_id: CATEGORIA,
+        brand_id: 0,
+        kitNativo: false,
+      });
+      const loja = lojaDeItem();
+
+      const contexto = await prepararPublicacao(
+        depsDeItem(db, loja),
+        entradaDoItem({ linkDocId: CORROMPIDO }),
+        RESOLVEDOR,
+      );
+
+      // `item_id` projected to null (the fold), and STILL not a draft.
+      expect(contexto?.link).toMatchObject({ item_id: null, ehRascunho: false });
+    });
+  });
+
+  it('num produto COMUM, o rascunho entregue direto ao passo 11 é lido COMO rascunho (ehRascunho true) e não recusa nada de kit', async () => {
+    const db = new FakeDb();
+    semear(db);
+    const loja = lojaDeItem();
+
+    const contexto = await prepararPublicacao(
+      depsDeItem(db, loja),
+      entradaDoItem({ linkDocId: RASCUNHO }),
+      RESOLVEDOR,
+    );
+
+    expect(contexto?.link).toMatchObject({ item_id: null, ehRascunho: true });
+    expect(contexto?.ehAtualizacao).toBe(false);
   });
 });

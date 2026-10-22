@@ -367,14 +367,59 @@ whose delete did not take. It changes **publish only**:
   accepts both stored conta-ref encodings (OP-27, PR #1869), so a legacy
   bare-encoded link is now a candidate for a non-kit produto too. Reordering it would publish a non-kit produto whose REMOVED link
   sorts first to its live link, where main answers `listagem-removida` (M185,
-  `publicarAnuncio.test.ts`).
+  `publicarAnuncio.test.ts`). ⚠️ That lexical set still includes every DRAFT
+  (#1911), which is why the dispatcher never hands it `null` while a draft
+  exists (below).
 - **`resolverLinkVivoPorProduto`** (`linkAnuncio.ts`) serves the reverify, the
   status, `pausar` and the `reverificar:anuncio` CLI. Same signature, conta
   filter and `linkDocId` narrowing. With no `linkDocId` it picks an active native
-  kit (`ehKitNativoAtivo`), then a link neither removed nor superseded, then the
-  rest, using `escolherLink` within each tier. So `pausar` on a converted produto
-  unlists the new kit, never the superseded listing (M185's near-miss,
-  `pausarAnuncio.test.ts`).
+  kit (`ehKitNativoAtivo`), then a non-draft link neither removed nor superseded,
+  then the remaining non-drafts, and a draft only last (#1911), using
+  `escolherLink` within each tier. So `pausar` on a converted produto unlists the
+  new kit, never the superseded listing (M185's near-miss,
+  `pausarAnuncio.test.ts`), and never a draft whose id sorts first.
+
+### Drafts: never live, reachable only by name (#1911, D3)
+
+A DRAFT is a `prodshopee` doc that Shopee never answered for: `item_id` null or
+absent, and not `kitNativo: true`. It is listing authoring's intention to create
+a listing (#1911). ONE predicate decides it: `ehRascunhoShopee` in
+`@delfrance/schemas` (`shopeeLinkLeitura.ts`), disjoint from `anuncioShopeeVivo`
+by construction. Never test `item_id == null` locally (#1369).
+
+On main a draft sat in the dispatcher's O class: it is neither removed nor
+superseded. So an unnamed publish whose draft id sorted before the live listing's
+reached the item arm ON THE DRAFT, which sends `add_item` and creates a second
+listing beside the one that sells (E1 H2). The dispatcher now has a sixth class,
+**R**, tested after the native-kit test and before the superseded and removed
+ones:
+
+| request                                 | conta holds                         | answer                                                                                                                                                                                        |
+| --------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--link <draft>`                        | —                                   | `ehKitVirtual` without `ehKit` ⇒ `kit-virtual-sem-kit`; `ehKitVirtualEfetivo` ⇒ **`rascunho-em-kit-virtual`**; else the item arm on the draft. This is the ONLY way a draft is ever published |
+| `--link <draft>` + `--converter-em-kit` | —                                   | `converter-sem-anuncio-comum` (a draft has no listing to convert)                                                                                                                             |
+| unnamed                                 | a live N, or a live O beside drafts | rules (3)/(4) as before; O ∪ RO holds no draft, so the live listing wins whatever the ids                                                                                                     |
+| unnamed                                 | no live link                        | rule (5) keeps its order (`kit-virtual-sem-kit` → `kit-criar` → X → RO → SO); only when nothing but drafts is left ⇒ **`rascunho-nao-nomeado`**                                               |
+
+`rascunho-nao-nomeado` names `--link`, so it carries `acao`: `republicar` with
+the one draft, or `escolher-vinculo` with 2+ drafts in id order. It never falls
+back to the item arm with `linkDocId: null`, because step 11's lexical resolver
+would pick the draft. A kit-virtual produto with only a draft answers `kit-criar`
+and leaves the draft alone. `rascunho-em-kit-virtual` names no flag and carries
+no `acao`: the operator discards the draft, and the kit publishes unnamed.
+
+⚠️ **Near-misses that are NOT drafts.** A corrupt `item_id` (`0`, `'123'`) is
+neither vivo nor a draft. It stays in O/RO exactly as on main, and wins the
+lexical pick, which is a recorded residual. `{ item_id: null, kitNativo: true }`
+is a native-kit residue, class X. Only `kitNativo === true` excludes a draft;
+`'true'` or `null` leave it a draft.
+
+Both refusals are dispatcher-only motivos, spelled here through
+`MOTIVO_PUBLICACAO_BLOQUEADA`. `anuncios/errosPublicacao.test.ts` (O7) pins this
+file as their sole producer. Pinned by the "um RASCUNHO nunca é vivo" block of
+`armaDePublicacao.test.ts`, which includes the stored-doc case where the lexical
+resolver picks the draft and the dispatcher does not. The publish IO half is in
+`anuncios/publicarShopee.test.ts`.
 
 ### The model-list sync is per LISTING (R-12(e))
 

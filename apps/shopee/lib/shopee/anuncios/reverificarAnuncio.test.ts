@@ -415,6 +415,73 @@ describe('reverificarAnuncioShopee — a leitura', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*  (1b) a DRAFT is never the produto's listing (#1911 D3)                      */
+/* -------------------------------------------------------------------------- */
+
+describe('reverificarAnuncioShopee — um rascunho nunca é o anúncio (#1911 D3)', () => {
+  /** Sorts BEFORE `LINK_PAI` — the order in which the old lexical tier picked it. */
+  const RASCUNHO = 'link-0';
+  const CAMINHO_RASCUNHO = `produtos/${PAI}/prodshopee/${RASCUNHO}`;
+
+  function semearRascunho(db: FakeDb): void {
+    db.seed(CAMINHO_RASCUNHO, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Camiseta Básica (rascunho)',
+      item_id: null,
+    });
+  }
+
+  it('⛔ sem linkDocId, com um rascunho que ordena primeiro, reverifica o anúncio VIVO', async () => {
+    // Before #1911 the draft won the lexical pick of the "alive" tier and the
+    // CLI answered `ignorado-sem-item-id` for a produto whose listing exists.
+    const db = new FakeDb();
+    semearRascunho(db);
+    semearLink(db, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado });
+    const rascunhoAntes = structuredClone(db.store[CAMINHO_RASCUNHO]?.data);
+    const pedidos: number[] = [];
+    const fake = clientePadrao({
+      base: (p) => {
+        pedidos.push(...p.itemIds);
+        return baseInfo([linhaBase()]);
+      },
+    });
+
+    const res = await reverificarAnuncioShopee(asDb(db), alvo(), deps(fake.client));
+
+    expect(res).toMatchObject({
+      acao: ACAO_REVERIFICACAO.atualizado,
+      linkDocId: LINK_PAI,
+      itemId: ITEM_ID,
+    });
+    expect(pedidos).toEqual([ITEM_ID]);
+    expect(db.store[CAMINHO_RASCUNHO]?.data).toEqual(rascunhoAntes);
+    expect(db.patches.some((p) => p.path === CAMINHO_RASCUNHO)).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: com --link nomeando o rascunho, é ELE — `ignorado-sem-item-id`, nenhuma chamada', async () => {
+    const db = new FakeDb();
+    semearRascunho(db);
+    semearLink(db, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+    const fake = clienteFake();
+
+    const res = await reverificarAnuncioShopee(
+      asDb(db),
+      alvo({ linkDocId: RASCUNHO }),
+      deps(fake.client),
+    );
+
+    expect(res).toMatchObject({
+      acao: ACAO_REVERIFICACAO.ignoradoSemItemId,
+      linkDocId: RASCUNHO,
+      itemId: null,
+      chamadasShopee: 0,
+    });
+    expect(fake.ops).toEqual([]);
+    expect(db.patches).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*  (2)(3) the `removido` arm                                                  */
 /* -------------------------------------------------------------------------- */
 

@@ -5,6 +5,9 @@
  *
  * The links are documents in the stored shape (`prodshopee` raw), never the
  * dispatcher's own partition: what decides is how a STORED doc reads.
+ *
+ * #1911 (P1, D3) adds the DRAFT class R and its two refusals — the block "um
+ * RASCUNHO nunca é vivo", DA §1.3's cases and their near-misses.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -65,6 +68,24 @@ function comum(id: string, itemId: number, extra: Raw = {}): VinculoDaConta {
       ...extra,
     },
   };
+}
+
+/**
+ * #1911 (D3) — a DRAFT in the stored shape: a `prodshopee` doc Shopee never
+ * answered for (`item_id: null`, `ehRascunhoShopee`). `extra` may DELETE the key
+ * (`{ item_id: undefined }` is spread, then dropped) to model a projection that
+ * omits it.
+ */
+function rascunho(id: string, extra: Raw = {}): VinculoDaConta {
+  const raw: Raw = {
+    contaProdutoShopeeOuterRef: REF_CONTA,
+    item_id: null,
+    kitNativo: false,
+    item_name: 'Camiseta',
+    ...extra,
+  };
+  if ('item_id' in extra && extra.item_id === undefined) delete raw.item_id;
+  return { id, raw };
 }
 
 const REMOVIDO: Raw = { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido };
@@ -629,6 +650,243 @@ describe('(5) nenhum vínculo vivo', () => {
 });
 
 /* ========================================================================== */
+/*  #1911 (P1, D3) — a draft is never live                                     */
+/* ========================================================================== */
+
+/**
+ * The DA §1.3 cases. Every fixture names its draft so it sorts FIRST (`a-…`
+ * before `b-…`): main put a draft in O and its lexical pick took it (E1 H2), so
+ * a draft that sorted LAST could never tell the fix from main.
+ */
+describe('#1911 (D3) — um RASCUNHO nunca é vivo: só por --link nomeado', () => {
+  it('(E1 H2) rascunho que ordena primeiro + um comum vivo, sem --link ⇒ o braço de item no VIVO — a main escolhia o rascunho', () => {
+    const vinculos = [rascunho('a-rascunho'), comum('b-vivo', COMUM_1)];
+    expect(arma(despachar(NAO_KIT, vinculos))).toEqual({ arma: 'item', linkDocId: 'b-vivo' });
+    // The pick main made over the SAME rows: the lexically-first, i.e. the draft.
+    expect(
+      escolherLink(
+        vinculos.map((v) => ({ ...v, produtoId: 'prod-1' })),
+        {},
+      )?.id,
+    ).toBe('a-rascunho');
+  });
+
+  it('o mesmo com o item_id AUSENTE (uma projeção que omite a chave) e com estadoAnuncio removido — ainda rascunho, nunca O nem RO', () => {
+    for (const extra of [{ item_id: undefined }, REMOVIDO] as const) {
+      const vinculos = [rascunho('a-rascunho', extra), comum('b-vivo', COMUM_1)];
+      expect(arma(despachar(NAO_KIT, vinculos)), JSON.stringify(extra)).toEqual({
+        arma: 'item',
+        linkDocId: 'b-vivo',
+      });
+      // …and alone it is refused unnamed (a RO would reach the item arm on it).
+      expect(recusa(despachar(NAO_KIT, [vinculos[0]!])).motivo, JSON.stringify(extra)).toBe(
+        MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado,
+      );
+    }
+  });
+
+  it('⛔ quase-par: um rascunho com marca de SUBSTITUÍDO continua R, nunca SO — o teste de rascunho vem ANTES do de substituído (classeDe)', () => {
+    // A draft never had a listing to supersede, so the superseded reading
+    // cannot apply to it (module header, DA §1.2's order N/X → R → SO → RO/O).
+    // The "R after SO" ordering mutant reads this doc as SO and answers
+    // `vinculo-substituido` both ways.
+    const r = rascunho('a-rascunho', substituidoPor('k-novo'));
+    expect(arma(despachar(NAO_KIT, [r], { linkDocId: 'a-rascunho' }))).toEqual({
+      arma: 'item',
+      linkDocId: 'a-rascunho',
+    });
+    expect(recusa(despachar(NAO_KIT, [r])).motivo).toBe(
+      MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado,
+    );
+    // ⛔ the same mark on an ORDINARY listing is SO, as on main.
+    expect(
+      recusa(despachar(NAO_KIT, [comum('a-velho', COMUM_1, substituidoPor('k-novo'))])).motivo,
+    ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.vinculoSubstituido);
+  });
+
+  it('o rascunho NOMEADO ⇒ o braço de item nele — a ÚNICA porta de publicação de um rascunho', () => {
+    const vinculos = [rascunho('a-rascunho'), comum('b-vivo', COMUM_1)];
+    expect(arma(despachar(NAO_KIT, vinculos, { linkDocId: 'a-rascunho' }))).toEqual({
+      arma: 'item',
+      linkDocId: 'a-rascunho',
+    });
+    // Alone, too: an old-model kit (ehKit, not virtual) is an ordinary listing.
+    expect(
+      arma(despachar(KIT_ANTIGO, [rascunho('a-rascunho')], { linkDocId: 'a-rascunho' })),
+    ).toEqual({ arma: 'item', linkDocId: 'a-rascunho' });
+  });
+
+  it('rascunho nomeado num produto ehKitVirtualEfetivo ⇒ rascunho-em-kit-virtual (campo linkDocId, SEM acao) — ⛔ quase-par: o comum VIVO nomeado no mesmo produto chega ao braço de item', () => {
+    const vinculos = [rascunho('a-rascunho'), comum('b-vivo', COMUM_1)];
+    const p = recusa(despachar(KIT_EFETIVO, vinculos, { linkDocId: 'a-rascunho' }));
+    expect(p).toStrictEqual({
+      campo: 'linkDocId',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoEmKitVirtual,
+      mensagem:
+        `o produto ${K} é kit virtual: ele é publicado como kit nativo da Shopee e o rascunho ` +
+        'a-rascunho não se aplica — descarte o rascunho e publique o kit',
+    });
+    // No CLI flag in the sentence ⇒ no `acao` key at all (never `undefined`).
+    expect(Object.keys(p)).toEqual(['campo', 'motivo', 'mensagem']);
+    // ⛔ quase-par: the LIVE ordinary listing of the same kit produto, named.
+    expect(arma(despachar(KIT_EFETIVO, vinculos, { linkDocId: 'b-vivo' }))).toEqual({
+      arma: 'item',
+      linkDocId: 'b-vivo',
+    });
+  });
+
+  it('rascunho nomeado num produto ehKitVirtual SEM ehKit ⇒ kit-virtual-sem-kit (a recusa do produto vem antes), nunca o braço de item', () => {
+    const produto: ProdutoDoDespacho = {
+      id: 'prod-1',
+      paiId: null,
+      ehKit: false,
+      ehKitVirtual: true,
+    };
+    expect(
+      recusa(despachar(produto, [rascunho('a-rascunho')], { linkDocId: 'a-rascunho' })),
+    ).toMatchObject({
+      campo: 'ehKitVirtual',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.kitVirtualSemKit,
+    });
+    // ⛔ quase-par: a `'true'` de texto não é a flag — o rascunho publica.
+    expect(
+      arma(
+        despachar({ ...KIT_EFETIVO, ehKitVirtual: 'true' }, [rascunho('a-rascunho')], {
+          linkDocId: 'a-rascunho',
+        }),
+      ),
+    ).toEqual({ arma: 'item', linkDocId: 'a-rascunho' });
+  });
+
+  it('UM rascunho sozinho, sem --link ⇒ rascunho-nao-nomeado com acao republicar NELE — nunca `linkDocId: null`', () => {
+    const p = recusa(despachar(NAO_KIT, [rascunho('a-rascunho')]));
+    expect(p).toStrictEqual({
+      campo: 'linkDocId',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado,
+      mensagem:
+        'este produto só tem um rascunho nesta conta (a-rascunho) — publique-o pelo nome ' +
+        '(--link a-rascunho)',
+      acao: { tipo: T.republicar, linkDocId: 'a-rascunho' },
+    });
+    // ⛔ quase-par: with NOTHING at all, the first ordinary publish.
+    expect(arma(despachar(NAO_KIT, []))).toEqual({ arma: 'item', linkDocId: null });
+  });
+
+  it('DOIS rascunhos, sem --link ⇒ rascunho-nao-nomeado com escolher-vinculo na ordem da FRASE (a de id)', () => {
+    const p = recusa(despachar(NAO_KIT, [rascunho('b-rascunho'), rascunho('a-rascunho')]));
+    expect(p.motivo).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado);
+    expect(p.campo).toBe('linkDocId');
+    expect(p.mensagem).toBe(
+      'este produto só tem rascunhos nesta conta (a-rascunho, b-rascunho) — publique um deles ' +
+        'pelo nome (--link <id>)',
+    );
+    expect(p.acao).toStrictEqual({
+      tipo: T.escolherVinculo,
+      linkDocIds: ['a-rascunho', 'b-rascunho'],
+    });
+  });
+
+  it('a recusa dos rascunhos vem DEPOIS de kit-virtual-sem-kit, kit-criar, X, RO e SO — cada um com o rascunho ordenando primeiro', () => {
+    const r = rascunho('a-rascunho');
+    // kit-virtual-sem-kit
+    expect(
+      recusa(despachar({ id: 'prod-1', paiId: null, ehKit: false, ehKitVirtual: true }, [r]))
+        .motivo,
+    ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.kitVirtualSemKit);
+    // kit-criar: the kit publishes WITHOUT the draft, which is left as it is.
+    expect(arma(despachar(KIT_EFETIVO, [r]))).toEqual({ arma: 'kit-criar' });
+    // X: the kit `listagem-removida` naming the native link.
+    expect(recusa(despachar(KIT_ANTIGO, [r, nativo('b-kit', KIT_1, REMOVIDO)])).mensagem).toContain(
+      '--link b-kit --recriar',
+    );
+    // RO: the item arm on the removed listing (step 11's `listagem-removida`, as on main).
+    expect(arma(despachar(NAO_KIT, [r, comum('b-removido', COMUM_1, REMOVIDO)]))).toEqual({
+      arma: 'item',
+      linkDocId: 'b-removido',
+    });
+    // SO: the superseded listing's own refusal.
+    expect(
+      recusa(despachar(KIT_ANTIGO, [r, comum('b-velho', COMUM_1, substituidoPor('k-novo'))]))
+        .motivo,
+    ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.vinculoSubstituido);
+  });
+
+  it('um kit nativo vivo + um rascunho, sem --link ⇒ kit-atualizar (a regra 3 nunca vê rascunho)', () => {
+    expect(arma(despachar(KIT_EFETIVO, [rascunho('a-rascunho'), nativo('b-kit', KIT_1)]))).toEqual({
+      arma: 'kit-atualizar',
+      linkDocId: 'b-kit',
+    });
+  });
+
+  it('--converter-em-kit: o rascunho NOMEADO ⇒ converter-sem-anuncio-comum; sem --link, rascunho + comum vivo ⇒ converte o VIVO', () => {
+    const vinculos = [rascunho('a-rascunho'), comum('b-vivo', COMUM_1)];
+    expect(
+      recusa(despachar(KIT_ANTIGO, vinculos, { converterEmKit: true, linkDocId: 'a-rascunho' })),
+    ).toMatchObject({
+      campo: 'linkDocId',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.converterSemAnuncioComum,
+    });
+    expect(arma(despachar(KIT_ANTIGO, vinculos, { converterEmKit: true }))).toEqual({
+      arma: 'kit-converter',
+      antecessorLinkDocId: 'b-vivo',
+    });
+    // ⛔ quase-par: only the draft ⇒ nothing to convert.
+    expect(recusa(despachar(KIT_ANTIGO, [vinculos[0]!], { converterEmKit: true })).motivo).toBe(
+      MOTIVO_PUBLICACAO_BLOQUEADA.converterSemAnuncioComum,
+    );
+  });
+
+  it('--recriar / --principal num rascunho nomeado de um não-kit ⇒ opcao-de-kit-em-anuncio-comum (a checagem pós-braço vale para ele)', () => {
+    const vinculos = [rascunho('a-rascunho')];
+    for (const [opcao, campo] of [
+      [{ recriar: true }, 'recriar'],
+      [{ principal: 'comp-a' }, 'principal'],
+    ] as const) {
+      expect(
+        recusa(despachar(NAO_KIT, vinculos, { linkDocId: 'a-rascunho', ...opcao })),
+      ).toMatchObject({ campo, motivo: MOTIVO_PUBLICACAO_BLOQUEADA.opcaoDeKitEmAnuncioComum });
+    }
+  });
+
+  it("⛔ quase-par: um item_id CORROMPIDO (0, '123') NÃO é rascunho — fica em O, como na main (o resíduo registrado)", () => {
+    for (const item_id of [0, '123'] as const) {
+      const corrompido: VinculoDaConta = {
+        id: 'a-corrompido',
+        raw: { ...comum('a-corrompido', COMUM_1).raw, item_id },
+      };
+      // Alone: the item arm on it (main's answer), never rascunho-nao-nomeado.
+      expect(arma(despachar(NAO_KIT, [corrompido])), String(item_id)).toEqual({
+        arma: 'item',
+        linkDocId: 'a-corrompido',
+      });
+      // Beside a live listing it still wins the lexical pick, exactly as on main.
+      expect(
+        arma(despachar(NAO_KIT, [corrompido, comum('b-vivo', COMUM_2)])),
+        String(item_id),
+      ).toEqual({ arma: 'item', linkDocId: 'a-corrompido' });
+    }
+  });
+
+  it('⛔ quase-par: `{item_id: null, kitNativo: true}` NÃO é rascunho — é X (o resíduo de kit nativo), nunca rascunho-nao-nomeado', () => {
+    const residuo = nativo('a-residuo', KIT_1, { item_id: null });
+    expect(recusa(despachar(KIT_ANTIGO, [residuo])).motivo).toBe(
+      MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida,
+    );
+    // Named, without --recriar: X's own refusal, never the item arm.
+    expect(recusa(despachar(KIT_ANTIGO, [residuo], { linkDocId: 'a-residuo' })).motivo).toBe(
+      MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida,
+    );
+    // ⛔ and `kitNativo` other than `true` (`'true'`, null) leaves the draft a draft.
+    for (const kitNativo of ['true', null]) {
+      expect(
+        recusa(despachar(NAO_KIT, [rascunho('a-rascunho', { kitNativo })])).motivo,
+        String(kitNativo),
+      ).toBe(MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado);
+    }
+  });
+});
+
+/* ========================================================================== */
 /*  step 21 (K1) — every dispatcher refusal's `acao`, exactly                  */
 /* ========================================================================== */
 
@@ -735,6 +993,17 @@ describe('(M145) sobre documentos GRAVADOS: o despacho escolhe o MESMO id que o 
     expect(comRemovido).toEqual({
       doDespacho: { arma: 'item', linkDocId: 'a-removido' },
       doResolvedor: 'a-removido',
+    });
+  });
+
+  it('#1911 (D3) — ⛔ a divergência DELIBERADA: um rascunho gravado que ordena primeiro é a escolha do resolvedor léxico, e NUNCA a do despacho — por isso o id vai explícito', async () => {
+    const db = new FakeDb();
+    db.seed('produtos/prod-1', { nome: 'Camiseta', paiId: null });
+    db.seed('produtos/prod-1/prodshopee/a-rascunho', rascunho('a-rascunho').raw);
+    db.seed('produtos/prod-1/prodshopee/b-vivo', comum('b-vivo', COMUM_1).raw);
+    expect(await comparar(db, 'prod-1', NAO_KIT)).toEqual({
+      doDespacho: { arma: 'item', linkDocId: 'b-vivo' },
+      doResolvedor: 'a-rascunho',
     });
   });
 
