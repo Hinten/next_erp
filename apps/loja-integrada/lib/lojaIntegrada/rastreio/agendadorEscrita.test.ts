@@ -4,7 +4,7 @@
  * (`testing/falhaDeEnfileiramento.ts`) — never a numeric gRPC stand-in.
  */
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import { ESTADO_RASTREIO_LI, TIPO_TAREFA_ESCRITA_LI } from '@delfrance/schemas';
 
@@ -21,6 +21,16 @@ import {
   idDaTarefaEscritaLi,
 } from './agendadorEscrita';
 import type { PayloadTarefaEscritaLi } from './notificacaoEscrita';
+
+// D17, per file: nothing here may reach the global `fetch` (no client is built at all).
+beforeEach(() => {
+  vi.stubGlobal('fetch', () => {
+    throw new Error('agendadorEscrita.test: o fetch global não pode ser chamado');
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const PEDIDO_ID = '0123456789abcdef'.repeat(4);
 

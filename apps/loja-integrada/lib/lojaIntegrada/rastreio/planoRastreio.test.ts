@@ -6,7 +6,7 @@
  * Every expected cell is written out HERE, independently of the module's own
  * table, so a cell edited there reds a row here.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type SituacaoHistoricoLinhaLi,
   liSituacaoHistoricoLinhaSchema,
@@ -42,6 +42,16 @@ import {
   decidirSituacaoRastreioLi,
   eventoSuperadoLi,
 } from './planoRastreio';
+
+// D17, per file: nothing here may reach the global `fetch` (no client is built at all).
+beforeEach(() => {
+  vi.stubGlobal('fetch', () => {
+    throw new Error('planoRastreio.test: o fetch global não pode ser chamado');
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const C = CODIGO_SITUACAO_LI;
 const M = MOTIVO_RASTREIO_DIVERGENTE_LI;

@@ -4,10 +4,20 @@
  * order and its envio the one the pedido stores?
  */
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ESTADO_FRETE } from '@delfrance/schemas';
 
 import { envioDoPedidoLi, numeroConfereLi, pedidoRastreioLi } from './identidadeRastreio';
+
+// D17, per file: nothing here may reach the global `fetch` (no client is built at all).
+beforeEach(() => {
+  vi.stubGlobal('fetch', () => {
+    throw new Error('identidadeRastreio.test: o fetch global não pode ser chamado');
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

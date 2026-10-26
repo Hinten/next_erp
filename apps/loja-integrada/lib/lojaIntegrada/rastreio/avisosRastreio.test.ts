@@ -4,7 +4,7 @@
  * severity, and its EVENT clock — an older event can neither reopen nor close a
  * row a newer one wrote.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CANAL_AVISO,
   CODIGO_SITUACAO_LI,
@@ -26,6 +26,16 @@ import {
   chaveDoAvisoRastreioLi,
   resolverRastreioDivergenteLi,
 } from './avisosRastreio';
+
+// D17, per file: nothing here may reach the global `fetch` (no client is built at all).
+beforeEach(() => {
+  vi.stubGlobal('fetch', () => {
+    throw new Error('avisosRastreio.test: o fetch global não pode ser chamado');
+  });
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const CONTA = 'conta-li-1';
 const PEDIDO_ID = '0123456789abcdef'.repeat(4);
