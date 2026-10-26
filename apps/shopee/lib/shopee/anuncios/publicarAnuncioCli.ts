@@ -212,6 +212,11 @@ Rascunho (#1911)
                       execução está publicando, quando a última tentativa pode
                       ter criado o anúncio e a busca pelo SKU não decide, ou
                       quando a conta já tem anúncio ou rascunho deste produto.
+                      Antes do PRIMEIRO add_item do rascunho o ERP procura na
+                      loja um anúncio com o SKU do produto: sem vínculo, importe-o
+                      (importar:anuncio) em vez de criar outro; vinculado a OUTRO
+                      produto, dê a um dos dois um SKU próprio. Nenhuma flag passa
+                      por cima dessa busca.
   --confirmar-segundo-anuncio
                       confirma que este rascunho pode virar um SEGUNDO anúncio
                       do produto nesta conta (a Shopee pode tratar duplicata
@@ -242,6 +247,9 @@ Firestore nem cria anúncio, e isso é estrutural: prepararPublicacao e
 planejarPublicacao não têm escritor nenhum no corpo. As fotos, essas SOBEM: o
 corpo do add_item precisa de image_id de verdade, e cada id fica no cache
 arquivos.externalIds, então o custo é pago UMA vez.
+O dry-run de um anúncio comum NÃO procura anúncio nenhum na loja: a busca por
+SKU antes do primeiro add_item de um rascunho (e a da criação incerta) roda só
+no --live, sob a trava — o resumo do dry-run de uma criação diz isso.
 Num kit nativo o dry-run lê o kit e os componentes, faz a busca de SKU
 duplicado (só ao criar, recriar ou converter) e sobe as fotos só quando o kit
 seria enviado; nunca chama add_kit_item, update_kit_item nem delete_item.
@@ -1141,6 +1149,16 @@ function renderTabelaDeMedidas(t: ResumoTabelaDeMedidasShopee): string[] {
   return linhas;
 }
 
+/**
+ * #1911 P5b: the dry run of a CREATE says the same-SKU look-up did NOT run — it
+ * lives under the draft's lock, which only `--live` takes (and so does ENSURE).
+ * A reader of the dry run must not take "problemas: NENHUM" for "no listing
+ * with this SKU exists".
+ */
+export const LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO =
+  '  busca de SKU na loja .... NÃO rodou: só no --live, sob a trava do rascunho, antes do ' +
+  'add_item (um anúncio da conta com este SKU recusa a criação)';
+
 /** The human rendering of one publish plan — design-P2 §10.3's printout. */
 export function renderResumoPublicacao(r: ResumoPublicacaoShopee): string[] {
   const linhas: string[] = [];
@@ -1173,6 +1191,7 @@ export function renderResumoPublicacao(r: ResumoPublicacaoShopee): string[] {
     }`,
   );
   linhas.push(`  item_sku / gtin_code .... ${txt(r.itemSku)} / ${txt(r.gtinCode)}`);
+  if (r.itemId === null) linhas.push(LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO);
   linhas.push(
     `  pre_order ............... ${
       r.preOrder === null

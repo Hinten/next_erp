@@ -16,7 +16,12 @@
  * since #1911 P5 the publish of an `incerta` draft also reaches ENSURE's reads —
  * `get_item_list` and one `get_item_base_info` batch — which are
  * `criacaoIncerta.ts`'s (`localizarAnuncioIncerto`), reached from
- * `reservaRascunho.ts` before `preparar`. On the PUBLISH path no other module
+ * `reservaRascunho.ts` before `preparar`; since #1911 P5b a `livre` draft's
+ * FIRST create pays the same two kinds of read (`get_item_list` pages, the
+ * base-info batch) for its same-SKU look-up — `criacaoIncerta.ts`'s
+ * `verificarAnuncioExistenteShopee` over `../kits/localizarKitPorSku.ts`'s
+ * walk, reached from {@link aplicarPublicacao} just before the send. On the
+ * PUBLISH path no other module
  * under `anuncios/` calls Shopee, which is what makes "which module owns which
  * call" answerable by FILE (the lifecycle and push modules —
  * `pausarAnuncio.ts`, `reverificarAnuncio.ts`, `pushAnuncio.ts` — own their own).
@@ -53,6 +58,19 @@
  * which way out a failure is, through {@link ReservaDeRascunhoShopee.fase} and
  * the `add_item` classifier (`criacaoIncerta.ts`). A republish of a listing
  * takes no lock and is byte-for-byte step 11's.
+ *
+ * ## ⚠️ A FIRST create never duplicates a listing the conta holds (#1911 P5b)
+ *
+ * Lucas, 2026-10-26: before a `livre` draft's first `add_item`, still under
+ * its lock and after D15, {@link aplicarPublicacao} looks for a listing of the
+ * conta with the SKU the planned body SENDS (`verificarAnuncioExistenteShopee`,
+ * the kit arm's same-SKU scan mirrored): an unlinked hit refuses
+ * `anuncio-existente-sem-vinculo` ("importe-o"), another produto's
+ * `anuncio-existente-de-outro-produto`, an incomplete scan
+ * `busca-de-anuncio-existente-incompleta` — nothing sent, the lock handed
+ * back. This produto's own listing is D15's (excluded); a body with no SKU
+ * scans nothing; an `incerta` draft ran ENSURE instead. The dry run never
+ * reaches it (it takes no lock and applies nothing).
  *
  * ## ⚠️ An UNCERTAIN first create is remembered, then LOOKED FOR (#1911, D5)
  *
@@ -158,6 +176,7 @@ import {
   mensagemDoAnuncioIncerto,
   recusaDoAnuncioIncerto,
   skuDaBuscaShopee,
+  verificarAnuncioExistenteShopee,
 } from './criacaoIncerta';
 import {
   ETAPA_PUBLICACAO,
@@ -1772,7 +1791,12 @@ class ColetorDeAviso {
  * `add_item` failure is CLASSIFIED (`desfechoDeCriacaoDeItem`): `nao-criado` ⇒
  * the stamp and the release in ONE token-guarded write; `incerto` ⇒ no stamp,
  * the lock KEPT, the raw error rethrown — never a "Shopee refused" for a create
- * that may exist.
+ * that may exist. And when the reservation found the draft `livre`
+ * ({@link PublicacaoDeRascunho.verificarAnuncioExistente}), the FIRST create's
+ * same-SKU look-up runs before all of that, outside the step-2 `try` (#1911
+ * P5b): its refusal is a `ShopeePublishBlockedError`, its Shopee failure
+ * propagates unclassified and unstamped, and its calls count into
+ * `chamadasShopee`.
  */
 export async function aplicarPublicacao(
   deps: PublicarAnuncioDeps,
@@ -1826,6 +1850,30 @@ export async function aplicarPublicacao(
   // `linkDocId` alone (a corrupt `item_id: 0` link is no draft and goes on).
   if (!plano.ehAtualizacao && rascunho === null && linkDocId !== null) {
     if (ehRascunhoShopee(armazenado)) throw rascunhoSemTrava(linkDocId);
+  }
+
+  // ⚠️ #1911 P5b (Lucas, 2026-10-26): a `livre` draft's FIRST create looks
+  // for a listing the conta already holds with the SKU this body SENDS —
+  // unlinked ⇒ "importe-o", another produto's ⇒ one SKU per produto,
+  // incomplete ⇒ nothing created — the kit arm's same-SKU scan mirrored.
+  // Under the lock, after D15, BEFORE the `try`: a refusal is a blocked
+  // refusal with nothing sent, and a scan's Shopee failure propagates
+  // untouched — never classified as an `add_item` outcome nor stamped (the
+  // caller hands the lock back, `fase` still `travada`).
+  if (!plano.ehAtualizacao && rascunho !== null && rascunho.verificarAnuncioExistente) {
+    const verificacao = await verificarAnuncioExistenteShopee(deps.client, deps.db, {
+      integracaoId: deps.integracaoId,
+      produtoId,
+      itemSku: plano.item.criar.item_sku,
+    });
+    chamadasShopee += verificacao.chamadas;
+    if (temProblemaDeBloqueio(verificacao.problemas)) {
+      throw new ShopeePublishBlockedError({
+        produtoId,
+        itemId: null,
+        problemas: verificacao.problemas,
+      });
+    }
   }
 
   try {
@@ -2104,6 +2152,13 @@ function violacoesArmazenadas(raw: Record<string, unknown>): number {
 export interface PublicacaoDeRascunho {
   readonly reserva: ReservaDeRascunhoShopee;
   readonly controles: ControlesDaPublicacaoAoVivo;
+  /**
+   * #1911 P5b: run the FIRST create's same-SKU look-up
+   * (`verificarAnuncioExistenteShopee`) before the send. `true` exactly when
+   * the reservation found the draft `livre`; an `incerta` draft's run already
+   * searched (ENSURE — Lucas, 2026-10-26: that path is not scanned twice).
+   */
+  readonly verificarAnuncioExistente: boolean;
 }
 
 /**
@@ -2446,7 +2501,14 @@ async function reservarSeForRascunho(
   if (deps.aoVivo === undefined) {
     throw new Error('[shopee/anuncios] reserva de rascunho sem deps.aoVivo');
   }
-  return { tipo: 'travada', rascunho: { reserva: desfecho.reserva, controles: deps.aoVivo } };
+  return {
+    tipo: 'travada',
+    rascunho: {
+      reserva: desfecho.reserva,
+      controles: deps.aoVivo,
+      verificarAnuncioExistente: !desfecho.buscouCriacaoIncerta,
+    },
+  };
 }
 
 /**

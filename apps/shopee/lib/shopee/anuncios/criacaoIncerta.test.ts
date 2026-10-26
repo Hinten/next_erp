@@ -31,6 +31,7 @@ import {
 } from '@delfrance/integrations-shopee';
 import {
   AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+  TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   inicioDaJanelaDaCriacaoShopeeS,
   toOuterRef,
 } from '@delfrance/schemas';
@@ -44,6 +45,7 @@ import {
   ShopeeSemCredencialError,
 } from '../core/tokenStore';
 import { FIXTURE_ITEM_BASE_INFO_SG_KIT, lerFixture } from '../fixtures/wireCorpus';
+import { MAX_PAGINAS_BUSCA_KIT } from '../kits/constantesKit';
 import { MOTIVO_RECUSA_KIT_TRANSITORIO, TABELA_RECUSA_KIT } from '../kits/recusaKit';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import {
@@ -57,9 +59,11 @@ import {
   incertezaDocumentadaDeAddItem,
   localizarAnuncioIncerto,
   mensagemDoAnuncioIncerto,
+  problemasDoAnuncioExistente,
   recusaDeterministicaDeAddItem,
   recusaDoAnuncioIncerto,
   skuDaBuscaShopee,
+  verificarAnuncioExistenteShopee,
   type DesfechoDeCriacaoDeItem,
   type LinhaCriacaoDeItem,
 } from './criacaoIncerta';
@@ -460,17 +464,21 @@ describe('as tabelas — fechadas, alcançáveis, sem motivo soletrado', () => {
     }
   });
 
-  it('o FONTE não soletra motivo algum entre aspas, e pela constante produz SÓ as quatro da busca (P5)', () => {
+  it('o FONTE não soletra motivo algum entre aspas, e pela constante produz SÓ as quatro da busca (P5) e as três da primeira criação (P5b)', () => {
     const fonte = readFileSync(
       fileURLToPath(new URL('./criacaoIncerta.ts', import.meta.url)),
       'utf8',
     );
     expect(fonte).toContain('RECUSAS_DETERMINISTICAS_ADD_ITEM');
-    // The look-up's four refusals — and nothing else of either vocabulary.
+    // ENSURE's four refusals and the first create's three (P5b) — and nothing
+    // else of either vocabulary.
     const pelaConstante = [...fonte.matchAll(/MOTIVO_PUBLICACAO_BLOQUEADA\.(\w+)/g)]
       .map((m) => m[1])
       .sort();
     expect([...new Set(pelaConstante)]).toEqual([
+      'anuncioExistenteDeOutroProduto',
+      'anuncioExistenteSemVinculo',
+      'buscaDeAnuncioExistenteIncompleta',
       'buscaDeAnuncioIncompleta',
       'criacaoIncertaAmbigua',
       'criacaoIncertaJaVinculada',
@@ -1738,5 +1746,298 @@ describe('localizarAnuncioIncerto — a busca que falha FECHADO (D5, K1-7, K1-11
     expect(p.mensagem).toContain('e mais 5');
     expect(p.acao).toMatchObject({ tipo: 'importar' });
     expect((p.acao as { itemIds: number[] }).itemIds).toHaveLength(15);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  P5b — a PRIMEIRA criação procura um anúncio da conta com o MESMO SKU       */
+/* -------------------------------------------------------------------------- */
+
+describe('verificarAnuncioExistenteShopee — a busca da PRIMEIRA criação (#1911 P5b, Lucas 2026-10-26)', () => {
+  const INTEGRACAO = 'int-1';
+  const REF_CONTA = toOuterRef(integracaoCollection.docPath({}, INTEGRACAO));
+  const PRODUTO = 'prod-1';
+  const OUTRO_PRODUTO = 'prod-2';
+  const SKU = 'SKU-1';
+  const ITEM_A = 2500139861;
+  const ITEM_B = 2500139862;
+  const ITEM_C = 2500139863;
+
+  type Json = Record<string, unknown>;
+
+  function linhaDaLista(itemId: number, kit: boolean | null = false): Json {
+    return {
+      item_id: itemId,
+      item_status: 'NORMAL',
+      update_time: 1_757_000_000,
+      tag: kit === null ? null : { kit },
+    };
+  }
+
+  function pagina(
+    linhas: readonly Json[],
+    has = false,
+    next: number | null = null,
+  ): ShopeeItemList {
+    return shopeeItemListPayloadSchema.parse({
+      item: linhas,
+      total_count: linhas.length,
+      has_next_page: has,
+      next_offset: next,
+      next: '',
+    });
+  }
+
+  /** An ORDINARY listing's base row carrying `sku` (the REAL capture underneath). */
+  function base(itemId: number, sku: string | null = SKU, over: Json = {}): Json {
+    const corpo = shopeeItemBaseInfoSchema.parse(
+      lerFixture(FIXTURE_ITEM_BASE_INFO_SG_KIT),
+    ).response;
+    return {
+      ...(corpo.item_list[0] as Json),
+      item_id: itemId,
+      item_sku: sku,
+      tag: { kit: false },
+      ...over,
+    };
+  }
+
+  function cliente(a: {
+    readonly paginas?: readonly ShopeeItemList[];
+    readonly bases?: readonly Json[];
+  }) {
+    const paginas = a.paginas ?? [
+      pagina((a.bases ?? []).map((b) => linhaDaLista(b.item_id as number))),
+    ];
+    let i = 0;
+    const getItemList = vi.fn((_p: GetItemListParams) =>
+      Promise.resolve(paginas[Math.min(i++, paginas.length - 1)] as ShopeeItemList),
+    );
+    const porId = new Map((a.bases ?? []).map((b) => [b.item_id as number, b]));
+    const getItemBaseInfo = vi.fn(
+      (p: { itemIds: readonly number[] }): Promise<ShopeeItemBaseInfo> =>
+        Promise.resolve(
+          shopeeItemBaseInfoPayloadSchema.parse({
+            item_list: p.itemIds.map((id) => porId.get(id)).filter((b) => b !== undefined),
+          }),
+        ),
+    );
+    return {
+      client: { getItemList, getItemBaseInfo } as unknown as ShopeeClient,
+      getItemList,
+      getItemBaseInfo,
+    };
+  }
+
+  /** A db where each `[produtoId, itemId]` is a link of THIS conta (the group query finds it). */
+  function comVinculos(...pares: readonly (readonly [string, number])[]): FakeDb {
+    const db = new FakeDb();
+    for (const [produtoId, itemId] of pares) {
+      db.seed(`produtos/${produtoId}/prodshopee/link-${produtoId}-${String(itemId)}`, {
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_id: itemId,
+      });
+    }
+    return db;
+  }
+
+  function verificar(
+    client: ShopeeClient,
+    itemSku: string | null | undefined = SKU,
+    db: FakeDb = new FakeDb(),
+  ) {
+    return verificarAnuncioExistenteShopee(client, asDb(db), {
+      integracaoId: INTEGRACAO,
+      produtoId: PRODUTO,
+      itemSku,
+    });
+  }
+
+  it('um anúncio da conta com o SKU e SEM vínculo ⇒ anuncio-existente-sem-vinculo, acao importar{itemIds}', async () => {
+    const c = cliente({ bases: [base(ITEM_A)] });
+    const v = await verificar(c.client);
+    expect(v.varreu).toBe(true);
+    expect(v.problemas).toHaveLength(1);
+    expect(v.problemas[0]).toMatchObject({
+      campo: 'item_sku',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+      acao: {
+        tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
+        itemIds: [ITEM_A],
+        vinculados: [],
+      },
+    });
+    // The remedy, and the import's narrower rung, in the sentence the CLI prints.
+    expect(v.problemas[0]?.mensagem).toContain('importar:anuncio');
+    expect(v.problemas[0]?.mensagem).toContain('sem espaços nas pontas');
+    expect(v.problemas[0]?.mensagem).toContain(String(ITEM_A));
+    // THE kit walk: un-narrowed (no update_time_from), the four live statuses.
+    expect(c.getItemList).toHaveBeenCalledTimes(1);
+    expect(c.getItemList.mock.calls[0]?.[0]).toEqual({
+      offset: 0,
+      pageSize: 100,
+      statuses: STATUS_BUSCA_ANUNCIO,
+    });
+    expect(v.chamadas).toBe(2);
+  });
+
+  it("⛔ quase-par: o MESMO SKU noutra CAIXA ('sku-1') ou com espaço de DENTRO ('SKU 1') NÃO é o mesmo ⇒ nada recusado", async () => {
+    const v = await verificar(
+      cliente({ bases: [base(ITEM_A, 'sku-1'), base(ITEM_B, 'SKU 1')] }).client,
+    );
+    expect(v).toMatchObject({ varreu: true, problemas: [] });
+  });
+
+  it("a dobra é só o trim, dos DOIS lados: o corpo ' SKU-1 ' acha 'SKU-1', e o corpo 'SKU-1' acha ' SKU-1 '", async () => {
+    const doCorpo = await verificar(cliente({ bases: [base(ITEM_A)] }).client, ' SKU-1 ');
+    expect(doCorpo.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+    ]);
+    const daShopee = await verificar(cliente({ bases: [base(ITEM_A, ' SKU-1 ')] }).client);
+    expect(daShopee.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+    ]);
+  });
+
+  it('um corpo SEM SKU (ausente, null, vazio, só espaços) ⇒ nada varrido, nada recusado — ZERO chamadas', async () => {
+    for (const itemSku of [undefined, null, '', '   ']) {
+      // A SKU-less listing sits in the shop: a blank fold would "hit" it.
+      const c = cliente({ bases: [base(ITEM_A, '')] });
+      // Direct: the helper's default parameter would turn `undefined` into SKU.
+      const v = await verificarAnuncioExistenteShopee(c.client, asDb(new FakeDb()), {
+        integracaoId: INTEGRACAO,
+        produtoId: PRODUTO,
+        itemSku,
+      });
+      expect(v, JSON.stringify(itemSku)).toEqual({
+        varreu: false,
+        paginas: 0,
+        chamadas: 0,
+        problemas: [],
+      });
+      expect(c.getItemList).not.toHaveBeenCalled();
+    }
+  });
+
+  it('um anúncio vinculado a ESTE produto é o segundo anúncio do D15 ⇒ EXCLUÍDO (nada recusado)', async () => {
+    const v = await verificar(
+      cliente({ bases: [base(ITEM_A)] }).client,
+      SKU,
+      comVinculos([PRODUTO, ITEM_A]),
+    );
+    expect(v.problemas).toEqual([]);
+  });
+
+  it('⛔ quase-par: o MESMO anúncio vinculado a OUTRO produto ⇒ anuncio-existente-de-outro-produto, nomeando o outro', async () => {
+    const v = await verificar(
+      cliente({ bases: [base(ITEM_A)] }).client,
+      SKU,
+      comVinculos([OUTRO_PRODUTO, ITEM_A]),
+    );
+    expect(v.problemas).toHaveLength(1);
+    expect(v.problemas[0]).toMatchObject({
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteDeOutroProduto,
+      acao: {
+        tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.importar,
+        itemIds: [ITEM_A],
+        vinculados: [{ itemId: ITEM_A, produtoId: OUTRO_PRODUTO }],
+      },
+    });
+    expect(v.problemas[0]?.mensagem).toContain(`${String(ITEM_A)} (do produto ${OUTRO_PRODUTO})`);
+  });
+
+  it('as TRÊS espécies juntas: uma recusa por espécie, a SEM vínculo primeiro, a deste produto fora', async () => {
+    const db = comVinculos([PRODUTO, ITEM_A], [OUTRO_PRODUTO, ITEM_B]);
+    const v = await verificar(
+      cliente({ bases: [base(ITEM_C), base(ITEM_B), base(ITEM_A)] }).client,
+      SKU,
+      db,
+    );
+    expect(v.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+      MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteDeOutroProduto,
+    ]);
+    expect(v.problemas[0]?.acao).toMatchObject({ itemIds: [ITEM_C] });
+    expect(v.problemas[1]?.acao).toMatchObject({ itemIds: [ITEM_B] });
+  });
+
+  it('⛔ um KIT nativo com o SKU NÃO é um anúncio comum: nem a etiqueta da lista nem a base o tornam achado', async () => {
+    // tag.kit true na LISTA ⇒ fora antes da base; a linha SEM tag na lista cuja
+    // base diz kit ⇒ lida, e fora pelo `ehKitDe` (a leitura da importação).
+    const c = cliente({
+      paginas: [pagina([linhaDaLista(ITEM_A, true), linhaDaLista(ITEM_B, null)])],
+      bases: [base(ITEM_A, SKU, { tag: { kit: true } }), base(ITEM_B, SKU, { tag: { kit: true } })],
+    });
+    const v = await verificar(c.client);
+    expect(v.problemas).toEqual([]);
+    expect(c.getItemBaseInfo.mock.calls[0]?.[0]).toEqual({ itemIds: [ITEM_B] });
+  });
+
+  it('⛔ quase-par: a linha SEM tag cuja base diz anúncio COMUM é achado (falha fechado na etiqueta)', async () => {
+    const c = cliente({ paginas: [pagina([linhaDaLista(ITEM_B, null)])], bases: [base(ITEM_B)] });
+    const v = await verificar(c.client);
+    expect(v.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+    ]);
+  });
+
+  it(`o teto do KIT (${String(MAX_PAGINAS_BUSCA_KIT)} páginas) ainda dizendo "tem mais" ⇒ busca-de-anuncio-existente-incompleta, sem base — e um cursor que não avança idem`, async () => {
+    const semFim = cliente({});
+    // An ADVANCING cursor on every page: page k answers next_offset 100·k.
+    let k = 0;
+    semFim.getItemList.mockImplementation(() => {
+      k += 1;
+      return Promise.resolve(pagina([linhaDaLista(ITEM_A)], true, 100 * k));
+    });
+    const v = await verificar(semFim.client);
+    expect(v.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta,
+    ]);
+    expect(v.problemas[0]?.acao).toBeUndefined();
+    expect(semFim.getItemList).toHaveBeenCalledTimes(MAX_PAGINAS_BUSCA_KIT);
+    expect(semFim.getItemBaseInfo).not.toHaveBeenCalled();
+    expect(v.paginas).toBe(MAX_PAGINAS_BUSCA_KIT);
+
+    for (const proximo of [null, 0]) {
+      const c = cliente({ paginas: [pagina([linhaDaLista(ITEM_A)], true, proximo)] });
+      const w = await verificar(c.client);
+      expect(
+        w.problemas.map((p) => p.motivo),
+        String(proximo),
+      ).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta]);
+      expect(c.getItemList).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it(`⛔ quase-par: a página ${String(MAX_PAGINAS_BUSCA_KIT)} sendo a ÚLTIMA é uma busca COMPLETA`, async () => {
+    let k = 0;
+    const c = cliente({});
+    c.getItemList.mockImplementation(() => {
+      k += 1;
+      return Promise.resolve(
+        k < MAX_PAGINAS_BUSCA_KIT ? pagina([], true, 100 * k) : pagina([], false, null),
+      );
+    });
+    const v = await verificar(c.client);
+    expect(v).toMatchObject({ varreu: true, problemas: [], paginas: MAX_PAGINAS_BUSCA_KIT });
+  });
+
+  it('uma falha da Shopee na busca PROPAGA intocada (regra 6) — a resposta do braço do kit, nunca "nada achado"', async () => {
+    const falha = new ShopeeNetworkError('caiu');
+    const client = { getItemList: () => Promise.reject(falha) } as unknown as ShopeeClient;
+    await expect(verificar(client)).rejects.toBe(falha);
+  });
+
+  it('problemasDoAnuncioExistente (puro): a incompleta vence mesmo com achados; nada achado ⇒ nada', () => {
+    expect(
+      problemasDoAnuncioExistente({ completo: true, achados: [], paginas: 1 }, PRODUTO),
+    ).toEqual([]);
+    const incompleta = problemasDoAnuncioExistente(
+      { completo: false, achados: [{ itemId: ITEM_A, vinculo: null }], paginas: 100 },
+      PRODUTO,
+    );
+    expect(incompleta.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta,
+    ]);
   });
 });

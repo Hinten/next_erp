@@ -225,7 +225,10 @@ export async function publicarShopee(
  * dispatcher's `linkDocId` for the item arm, `ensaiarKitShopee` for a kit arm.
  * No Shopee write, no `add_kit_item`, no Firestore write. (A kit arm may still
  * READ — the L6 scan on a create arm — and upload the photos when content would
- * be sent: step 11's documented dry-run exception.)
+ * be sent: step 11's documented dry-run exception.) ⚠️ The item arm's dry run
+ * runs NEITHER of its look-ups — ENSURE nor, since #1911 P5b, the first
+ * create's same-SKU scan: both live under the draft's lock, which only the live
+ * publish takes, and the CLI's summary of a create says so.
  *
  * @returns `null` exactly when {@link publicarShopee} would answer `null`.
  * @throws ShopeePublishBlockedError on a dispatcher refusal (zero Shopee calls),

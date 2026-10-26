@@ -26,8 +26,9 @@ The families are the seam, not a filing convention.
   pre-write refusals), `criacaoIncerta.ts`'s CLASSIFIER half (#1911: whether a
   FAILED create's `add_item` may have created the listing — the closed table of
   documented refusals, everything else `incerto` — plus `skuDaBuscaShopee`,
-  the 202's sentence and ENSURE's problema builders; its IO half is under "The
-  IO sequences"), `taxInfoPublicacao.ts` (the ten-member BR `tax_info`
+  the 202's sentence, ENSURE's problema builders and — #1911 P5b — the first
+  create's (`problemasDoAnuncioExistente`); its IO half is under "The IO
+  sequences"), `taxInfoPublicacao.ts` (the ten-member BR `tax_info`
   block), `tabelaMedidasPublicacao.ts` (step 18's `size_chart_info` decision),
   `logisticaPublicacao.ts` (`logistic_info`), `problemasPublicacao.ts`
   (Shopee's own rejection codes → a `problema` on a field),
@@ -47,7 +48,11 @@ The families are the seam, not a filing convention.
   narrowed by `update_time_from`, one `get_item_base_info` batch through
   `../kits/componentesKit.ts`'s `lerBaseInfoDosItens`, and one
   `resolverLinkPorItemId` per surviving row; called only from
-  `reservaRascunho.ts`, under the lock), `rascunho.ts` (#1911:
+  `reservaRascunho.ts`, under the lock) and `verificarAnuncioExistenteShopee`
+  (#1911 P5b: a `livre` draft's FIRST create looks for a listing the conta
+  already holds with that SKU — `../kits/localizarKitPorSku.ts`'s same-SKU scan
+  in its ordinary mode; called only from `aplicarPublicacao`, under the lock;
+  both look-ups ride that file's ONE `get_item_list` walk), `rascunho.ts` (#1911:
   the draft route's create / edit / discard — the one `prodshopee` delete),
   `fotosPublicacao.ts` (the photo up-direction), `lerImpostoDoProduto.ts` (the
   memoised imposto reader over the promoted NF-e cascade),
@@ -388,7 +393,11 @@ then reads it again), plus — since the batch-A review — ONE more write befor
 the first leg (the pre-send re-read stamps the SKU the body sends on the lock).
 A publish of an `incerta` draft also pays ENSURE's reads (the narrowed
 `get_item_list` pages, one base-info batch, one `resolverLinkPorItemId` per
-surviving candidate — "An uncertain first create is re-found" below). No
+surviving candidate — "An uncertain first create is re-found" below), and the
+FIRST create of a `livre` draft whose body carries a SKU pays the UN-narrowed
+same-SKU look-up: ⌈listings/100⌉ pages, ⌈non-kit listings/50⌉ base-info calls
+(every ordinary listing is a candidate) and one link read per hit — "A first
+create never duplicates a listing the conta holds" below. No
 index, no ruleset, no multi-document atomic write — every guard is a single-document
 precondition.
 
@@ -447,8 +456,34 @@ base}` (`base` required): do not run a no-link `publicar:anuncio --live`
 - **(x) A padded or shared SKU** (`' X'`, or two produtos with `'X'`) declines
   the import's SKU rung, which then MINTS a produto for the attempt's listing.
   ENSURE no longer ignores that link (it refuses `-ja-vinculada`, naming the
-  other produto), but a structural refusal of such a SKU on the FIRST create —
-  the kit arm's `kit-sku-com-espacos` / `kit-sku-repetido` — waits on Lucas.
+  other produto). Lucas decided the first-create half on 2026-10-26 (P5b): a
+  FIRST create refuses when the conta already HOLDS a listing with the SKU —
+  unlinked (`anuncio-existente-sem-vinculo`, "importe-o") or another
+  produto's (`anuncio-existente-de-outro-produto`) — the kit arm's same-SKU
+  SCAN mirrored, NOT its Firestore phase-A rows. What stays open: a padded or
+  shared SKU with NO listing on the conta yet still publishes (the kit's
+  `kit-sku-com-espacos` / `kit-sku-repetido` read `produtos` and are not
+  mirrored), so an uncertain create's recovery import can still mint — which
+  ENSURE then reports as `-ja-vinculada`; and the refusal's own "importe-o"
+  binds to THIS produto only when its stored SKU is exact and unique, which
+  the sentence says.
+- **(xi) The first create's look-up is the WHOLE catalogue** (P5b). The kit
+  scan's base-info batch covers the shop's few kits; the ordinary one covers
+  every non-kit listing — ⌈n/100⌉ + ⌈n/50⌉ calls on every first create with a
+  SKU, inside the route's 180 s ceiling (a slow walk ends in
+  `PUBLICACAO_EXPIRADA`, nothing sent; `publicar:anuncio --live` has no
+  ceiling). A shop past the kit's 100 pages (10 000 listings) answers
+  `busca-de-anuncio-existente-incompleta` on EVERY first create — the kit
+  arm's own limit, and no flag overrides it; Shopee's undocumented offset cap
+  (`error_param` "get items offset over limit", seen by the mass import) may
+  bite first, and then the publish fails with that error, nothing sent
+  (register **311**).
+- **(xii) An `incerta` draft's retry runs ENSURE and NOT the first create's
+  look-up** (Lucas: ENSURE already scans). ENSURE's window ignores a listing
+  created before the attempt, so one that was unlinked between the first
+  attempt's look-up and the retry is not seen; the first attempt of every
+  draft since P5b ran the full look-up. And the dry run runs neither: both
+  live under the lock, which only `--live` takes — its summary says so.
 
 ### An uncertain first create is re-found, never re-sent (#1911, P5, D5 + D15)
 
@@ -647,6 +682,53 @@ invisible to the scan, which then reads "zero hits" and re-sends — the wait is
 one constant, grown if the first BR measurement says so. **308 fails closed**: a
 `create_time` Shopee does not populate reads `desconhecido` ⇒
 `criacao-incerta-ambigua`, never a re-send.
+
+### A first create never duplicates a listing the conta holds (#1911, P5b — Lucas, 2026-10-26)
+
+Review finding F6 asked whether a FIRST create should refuse a padded or shared
+SKU the way the kit arm does; Lucas answered **refuse + import**. So before a
+`livre` draft's first `add_item` — still under its lock, after D15, after the
+plan, immediately before the send (`aplicarPublicacao`) — the publish looks for
+a listing of the conta with the SKU the planned body SENDS
+(`criacaoIncerta.ts`, `verificarAnuncioExistenteShopee`):
+
+- **The kit arm's scan, mirrored — ONE walk.** `../kits/localizarKitPorSku.ts`
+  now hosts `localizarItensPorSku({kit})`: the kit scan is `kit: true`, this one
+  `kit: false`; the walk underneath (`varrerListaDeItensShopee`) is the same one
+  ENSURE rides. Un-narrowed `get_item_list` (NORMAL / UNLIST / REVIEWING /
+  BANNED), the kit's 100-page ceiling, Shopee's own cursor; every row not
+  EXPLICITLY tagged a kit is a candidate (a `null` tag is decided by its base
+  row); one base-info batch; a hit is an ORDINARY listing
+  (`ehKitDe(...) === false`, the import's reading) whose SKU folds equal under
+  the import's fold (`skuDoItemShopee`: trim only — `' SKU-1 '` ≡ `'SKU-1'`,
+  `'sku-1'` ≠ `'SKU-1'`); one `resolverLinkPorItemId` per hit. A native kit
+  with the SKU is no hit, exactly as an ordinary listing is no hit for the kit
+  scan.
+- **The SKU looked up is the one the body sends** (`plano.item.criar.item_sku`,
+  folded) — so a produto stored `' CAM-BR '` looks up `'CAM-BR'`, what Shopee
+  will hold. A body with no SKU scans nothing (zero calls): there is nothing to
+  compare, and a blank fold would hit every SKU-less listing.
+- **Only a `livre` draft.** The reservation reports `buscouCriacaoIncerta`; an
+  `incerta` draft ran ENSURE instead (residual (xii)). A republish never scans.
+
+| what the scan found                                   | answer (a `ShopeePublishBlockedError`: nothing sent, the lock handed back unstamped)                                                                                                                                                                    |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a hit NO link of the conta holds                      | `anuncio-existente-sem-vinculo` (`acao` `importar{itemIds}`): import it instead of creating a second one, then discard this draft. The sentence adds that the import binds it to THIS produto only when the stored SKU is exact (no padding) and unique |
+| a hit linked to ANOTHER produto                       | `anuncio-existente-de-outro-produto` (`acao` `importar{itemIds, vinculados}`, each with its produto): two produtos share the SKU — give one of them its own                                                                                             |
+| a hit linked to THIS produto                          | excluded: D15's second listing, which the reservation already refused (`CONTA_JA_TEM_ANUNCIO`) or the operator confirmed                                                                                                                                |
+| the walk stopped early (100 pages, or a stuck cursor) | `busca-de-anuncio-existente-incompleta` (no `acao`) — the kit's `busca-de-kit-incompleta`                                                                                                                                                               |
+| a Shopee or Firestore failure                         | propagates untouched (rule 6) — the kit arm's answer: never classified as an `add_item` outcome, never stamped                                                                                                                                          |
+| a complete walk, no hit (or only this produto's)      | `add_item`                                                                                                                                                                                                                                              |
+
+Both kinds of hit are reported at once, one problema per kind (the kit's
+aggregated refusal). **None is attestable**: neither `confirmarSegundoAnuncio`
+nor `confirmarCriacaoIncerta` overrides them — the exit is the import, or a SKU
+of its own. The three motivos are produced ONLY in `criacaoIncerta.ts`, through
+`MOTIVO_PUBLICACAO_BLOQUEADA` (`errosPublicacao.test.ts` and
+`montagemAnuncio.test.ts` pin the file and the spelling); the web's copy is
+P11's (`TEXTO_MOTIVO_ANUNCIO_SHOPEE`). The scan's calls count into
+`chamadasShopee`. Writes: none — rule 7 has nothing to add. Cost and limits:
+residual (xi).
 
 ### A draft is created, edited and discarded through the draft route (#1911, P4, D1/D2/D18)
 

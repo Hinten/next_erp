@@ -38,7 +38,12 @@
  *     UPDATE; a COMPLETE scan that found nothing ⇒ clear the record
  *     (token-guarded, and it must land — else nothing is sent) and go on to
  *     `add_item`. An attested SKU-less produto goes on with the record KEPT
- *     (no scan proved anything).
+ *     (no scan proved anything). A `livre` draft runs no ENSURE: its FIRST
+ *     create's same-SKU look-up (#1911 P5b, `verificarAnuncioExistenteShopee`)
+ *     runs later, in `publicarAnuncio.ts`'s `aplicarPublicacao`, still under
+ *     this lock, on the SKU the planned body sends — the reservation only
+ *     reports which of the two this run is ({@link DesfechoDaReserva}'s
+ *     `buscouCriacaoIncerta`).
  *  2. **Re-read before the send, and stamp what it sends**
  *     ({@link conferirTravaAntesDoEnvio}): the stored token must still be
  *     OURS, or nothing is sent — then ONE token-guarded write records the
@@ -234,7 +239,18 @@ export type DesfechoDaReserva =
   | { readonly tipo: 'nao-e-rascunho' }
   /** The named link does not exist (or is not this conta's): the route's 404. */
   | { readonly tipo: 'inexistente' }
-  | { readonly tipo: 'travada'; readonly reserva: ReservaDeRascunhoShopee }
+  | {
+      readonly tipo: 'travada';
+      readonly reserva: ReservaDeRascunhoShopee;
+      /**
+       * `true` ⇔ this reservation TOOK OVER an `incerta` draft and ENSURE
+       * searched the attempt's window before handing the lock over (#1911
+       * P5b): the publish then skips the first create's same-SKU look-up
+       * (`criacaoIncerta.ts`, `verificarAnuncioExistenteShopee`), which runs
+       * for a `livre` draft only. Lucas, 2026-10-26: ENSURE already scans.
+       */
+      readonly buscouCriacaoIncerta: boolean;
+    }
   /**
    * ENSURE found the listing the earlier, uncertain create made, and recorded
    * it on THIS draft (now a listing link, lock and record cleared): the run
@@ -485,7 +501,7 @@ export async function reservarRascunhoShopee(
       if (reserva.fase === 'travada') await liberarTravaShopee(db, reserva);
       throw err;
     }
-    return { tipo: 'travada', reserva };
+    return { tipo: 'travada', reserva, buscouCriacaoIncerta: janela !== null };
   }
 
   console.warn('[shopee/anuncios] a trava do rascunho perdeu a precondição três vezes', {

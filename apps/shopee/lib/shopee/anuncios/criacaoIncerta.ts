@@ -14,6 +14,13 @@
  *     have created, by SKU, inside that attempt's window — and FAIL CLOSED
  *     (section "ENSURE" below).
  *
+ * And, since #1911 P5b (Lucas, 2026-10-26), the FIRST create's own look-up
+ * ({@link verificarAnuncioExistenteShopee}): before a `livre` draft's first
+ * `add_item`, a listing the conta ALREADY holds with the SKU the body sends —
+ * unlinked, or linked to another produto — refuses the create ("importe-o", or
+ * "one SKU per produto"), the kit arm's same-SKU scan mirrored
+ * (`kits/localizarKitPorSku.ts`, one walk for all three look-ups).
+ *
  * ## The posture: a closed list of refusals; everything else is uncertain
  *
  * `add_item` is NOT idempotent — a second call creates a second listing — so
@@ -192,16 +199,19 @@
  * produto that HAS a SKU: an ambiguous (a moved SKU included) or incomplete
  * scan refuses whatever the flag says.
  *
- * ⚠️ The four motivos are spelled HERE and only here, through
- * `MOTIVO_PUBLICACAO_BLOQUEADA` — never quoted
+ * ⚠️ The seven motivos — ENSURE's four and, since P5b, the first create's three
+ * (`anuncio-existente-sem-vinculo`, `anuncio-existente-de-outro-produto`,
+ * `busca-de-anuncio-existente-incompleta`) — are spelled HERE and only here,
+ * through `MOTIVO_PUBLICACAO_BLOQUEADA` — never quoted
  * (`anuncios/errosPublicacao.test.ts` O7 reads this folder as raw text and
  * counts a quoted slug as a producer). A classifier row's label is its code, or
  * `<code>/<what>` — an underscore or a slash, which no slug carries.
  *
- * The classifier half is pure and total. ENSURE reads Shopee and the conta's
- * links and WRITES NOTHING: the record and the adoption are the reservation's
- * token-guarded writes. No clock at all: the window opens at the STORED
- * attempt start, and nothing here asks what time it is.
+ * The classifier half is pure and total. ENSURE and the first create's
+ * look-up read Shopee and the conta's links and WRITE NOTHING: the record and
+ * the adoption are the reservation's token-guarded writes. No clock at all:
+ * the window opens at the STORED attempt start, and nothing here asks what
+ * time it is.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -213,7 +223,6 @@ import {
   ShopeeReauthRequiredError,
   type ShopeeClient,
   type ShopeeItemBaseInfoRow,
-  type ShopeeItemListRow,
 } from '@delfrance/integrations-shopee';
 import {
   AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
@@ -233,7 +242,12 @@ import {
   ShopeeSemCredencialError,
 } from '../core/tokenStore';
 import { lerBaseInfoDosItens } from '../kits/componentesKit';
-import { STATUS_BUSCA_KIT } from '../kits/constantesKit';
+import { MAX_PAGINAS_BUSCA_KIT, STATUS_BUSCA_KIT } from '../kits/constantesKit';
+import {
+  localizarItensPorSku,
+  varrerListaDeItensShopee,
+  type BuscaPorSku,
+} from '../kits/localizarKitPorSku';
 import { MOTIVO_RECUSA_KIT_TRANSITORIO, classificarRecusaKit } from '../kits/recusaKit';
 import { ehKitDe } from '../produtos/itemLido';
 import { skuDoItemShopee } from '../produtos/resolveProduto';
@@ -637,7 +651,8 @@ export const MAX_PAGINAS_BUSCA_ANUNCIO = 20;
 
 /**
  * The `item_status` filter: every status a listing that still EXISTS can carry
- * — the kit scan's list, ONE copy (a deleted listing is never a duplicate).
+ * — the kit scan's list, ONE copy (a deleted listing is never a duplicate),
+ * which THE walk (`varrerListaDeItensShopee`) sends for every caller.
  */
 export const STATUS_BUSCA_ANUNCIO = STATUS_BUSCA_KIT;
 
@@ -871,45 +886,19 @@ export async function localizarAnuncioIncerto(
   // ambiguous — and never fails it open.
   const updateTimeFromS = Math.max(inicioDaJanelaDaCriacaoShopeeS(e.janela.desdeMs), 1);
 
-  /** Candidates, FIRST sighting wins — an offset walk can show a row twice. */
-  const candidatos = new Map<number, ShopeeItemListRow>();
-  let paginas = 0;
-  let completo = false;
-  let offset = 0;
-  while (paginas < MAX_PAGINAS_BUSCA_ANUNCIO) {
-    const pagina = await client.getItemList({
-      offset,
-      pageSize: SHOPEE_MAX_PAGE_SIZE,
-      statuses: STATUS_BUSCA_ANUNCIO,
-      updateTimeFromS,
-    });
-    paginas += 1;
-    for (const linha of pagina.item) {
-      // `add_item` never creates a kit. ⚠️ Only an explicit `true` drops the
-      // row here: a row with no `tag` is decided by its base info below.
-      if (linha.tag?.kit === true) continue;
-      if (!candidatos.has(linha.item_id)) candidatos.set(linha.item_id, linha);
-    }
-    if (!pagina.has_next_page) {
-      completo = true;
-      break;
-    }
-    const proximo = pagina.next_offset;
-    if (proximo === null || proximo <= offset) {
-      console.warn(
-        '[shopee/anuncios] get_item_list sem um next_offset que avance; busca incompleta',
-        {
-          integracaoId: e.integracaoId,
-          produtoId: e.produtoId,
-          offset,
-          nextOffset: proximo,
-          paginas,
-        },
-      );
-      break;
-    }
-    offset = proximo;
-  }
+  // THE walk (`kits/localizarKitPorSku.ts` — one copy, the two same-SKU scans
+  // ride it too), narrowed to the window and capped at this look-up's ceiling.
+  const { candidatos, paginas, completo } = await varrerListaDeItensShopee(client, {
+    maxPaginas: MAX_PAGINAS_BUSCA_ANUNCIO,
+    updateTimeFromS,
+    // `add_item` never creates a kit. ⚠️ Only an explicit `true` drops the
+    // row here: a row with no `tag` is decided by its base info below.
+    candidato: (linha) => linha.tag?.kit !== true,
+    registro: {
+      origem: '[shopee/anuncios]',
+      ids: { integracaoId: e.integracaoId, produtoId: e.produtoId },
+    },
+  });
 
   if (!completo) {
     const resumo = { varreu: true, paginas, chamadas: paginas, candidatos: candidatos.size };
@@ -1011,4 +1000,169 @@ function decidir(
   const [unico] = c.definitivos;
   if (unico !== undefined) return { tipo: 'adotar', itemId: unico, resumo };
   return { tipo: 'prosseguir', resumo };
+}
+
+/* -------------------------------------------------------------------------- */
+/*    the FIRST create — a listing the conta already holds is never re-made    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What {@link verificarAnuncioExistenteShopee} answers — the look-up a DRAFT's
+ * FIRST `add_item` runs (#1911 P5b).
+ */
+export interface VerificacaoDoAnuncioExistente {
+  /** `false` ⇔ no scan ran: the create sends no SKU, so there is nothing to compare. */
+  readonly varreu: boolean;
+  /** `get_item_list` pages read. */
+  readonly paginas: number;
+  /** Shopee calls: the pages plus the base-info batch. */
+  readonly chamadas: number;
+  /** Empty ⇔ `add_item` may be sent; otherwise every refusal at once. */
+  readonly problemas: readonly ProblemaDeBloqueio[];
+}
+
+/** The listings a full scan can hold: 100 per page, at the kit's ceiling. */
+const ANUNCIOS_NA_BUSCA = MAX_PAGINAS_BUSCA_KIT * SHOPEE_MAX_PAGE_SIZE;
+
+function problemaAnuncioExistenteSemVinculo(itemIds: readonly number[]): ProblemaDeBloqueio {
+  return bloqueio(
+    MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteSemVinculo,
+    'já existe nesta conta da Shopee um anúncio com o SKU deste produto, sem vínculo com ' +
+      'nenhum produto do ERP — importe-o (importar:anuncio) em vez de criar outro, e descarte ' +
+      'este rascunho. A importação o liga a ESTE produto só quando o SKU gravado aqui é ' +
+      'exatamente o do anúncio (sem espaços nas pontas) e nenhum outro produto do ERP o usa; ' +
+      `senão ela cria um produto novo. Nada foi enviado. Anúncio(s): ${listaDeIds(itemIds)}`,
+    acaoImportar(itemIds, []),
+  );
+}
+
+function problemaAnuncioExistenteDeOutroProduto(
+  vinculados: readonly Vinculado[],
+): ProblemaDeBloqueio {
+  const nomeados = vinculados
+    .slice(0, IDS_NA_FRASE)
+    .map((v) => `${String(v.itemId)} (do produto ${v.produtoId})`);
+  const mais =
+    vinculados.length > IDS_NA_FRASE ? ` e mais ${String(vinculados.length - IDS_NA_FRASE)}` : '';
+  return bloqueio(
+    MOTIVO_PUBLICACAO_BLOQUEADA.anuncioExistenteDeOutroProduto,
+    'o SKU deste produto já está num anúncio desta conta da Shopee vinculado a OUTRO produto ' +
+      'do ERP: dois produtos com um SKU só — a importação não saberia a qual deles ligar um ' +
+      'anúncio novo, e a Shopee pode tratá-lo como duplicata. Dê a este produto (ou ao outro) ' +
+      `um SKU próprio antes de publicar. Nada foi enviado. Anúncio(s): ${nomeados.join(', ')}${mais}`,
+    acaoImportar(
+      vinculados.map((v) => v.itemId),
+      vinculados,
+    ),
+  );
+}
+
+function problemaBuscaDoAnuncioExistenteIncompleta(paginas: number): ProblemaDeBloqueio {
+  return bloqueio(
+    MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeAnuncioExistenteIncompleta,
+    `a busca por um anúncio desta conta com o SKU deste produto não terminou (${String(paginas)} ` +
+      `página(s) lida(s): mais de ${String(ANUNCIOS_NA_BUSCA)} anúncios, ou um cursor da Shopee ` +
+      'que não avança) — nada foi criado. Repetir ajuda só se foi o cursor: acima desse ' +
+      'tamanho a busca não cabe, como a do kit nativo',
+  );
+}
+
+/**
+ * The verdict of the first create's look-up over a same-SKU scan of ORDINARY
+ * listings (`localizarItensPorSku`, `kit: false`) — pure. Empty ⇔ `add_item`
+ * may be sent. Every kind found is reported at once (the kit's V2R1-06), each
+ * kind ONE problema:
+ *
+ *  - the scan did not complete ⇒ `busca-de-anuncio-existente-incompleta` and
+ *    nothing else (the kit's `busca-de-kit-incompleta` answer: a listing it
+ *    never saw may exist);
+ *  - a hit NO link of the conta holds ⇒ `anuncio-existente-sem-vinculo`,
+ *    `acao` `importar{itemIds}` — "importe-o", never a second listing;
+ *  - a hit linked to ANOTHER produto ⇒ `anuncio-existente-de-outro-produto`,
+ *    `acao` `importar{itemIds, vinculados}` (every id with its produto: the
+ *    mass import skips a linked listing, so the next step is that produto) —
+ *    two produtos share the SKU, and the import cannot pick between them;
+ *  - a hit linked to THIS produto is EXCLUDED: that is D15's second listing,
+ *    which the reservation already refused or the operator confirmed
+ *    (`confirmarSegundoAnuncio`).
+ *
+ * ⚠️ Not attestable: no flag of the publish overrides any of the three — the
+ * remedy is the import, or a SKU of its own.
+ */
+export function problemasDoAnuncioExistente(
+  busca: Pick<BuscaPorSku, 'completo' | 'achados' | 'paginas'>,
+  produtoId: string,
+): readonly ProblemaDeBloqueio[] {
+  if (!busca.completo) return [problemaBuscaDoAnuncioExistenteIncompleta(busca.paginas)];
+  const semVinculo: number[] = [];
+  const deOutroProduto: Vinculado[] = [];
+  for (const achado of busca.achados) {
+    if (achado.vinculo === null) semVinculo.push(achado.itemId);
+    else if (achado.vinculo.produtoId !== produtoId) {
+      deOutroProduto.push({ itemId: achado.itemId, produtoId: achado.vinculo.produtoId });
+    }
+  }
+  const problemas: ProblemaDeBloqueio[] = [];
+  if (semVinculo.length > 0) problemas.push(problemaAnuncioExistenteSemVinculo(semVinculo));
+  if (deOutroProduto.length > 0) {
+    problemas.push(problemaAnuncioExistenteDeOutroProduto(deOutroProduto));
+  }
+  return problemas;
+}
+
+/**
+ * **The FIRST create's same-SKU look-up** (#1911 P5b — Lucas, 2026-10-26: a
+ * conta that already holds a listing with the produto's SKU is told to IMPORT
+ * it, never handed a second one). Reads only.
+ *
+ * Runs immediately before a DRAFT's first `add_item`, under its lock, after
+ * D15 — `publicarAnuncio.ts`'s `aplicarPublicacao`, for a reservation that
+ * found the draft `livre` (an `incerta` one ran ENSURE instead, which already
+ * scans) — on `itemSku`, the `item_sku` the planned body SENDS, folded here
+ * through the import's own fold ({@link skuDaBuscaShopee}): the look-up asks
+ * exactly what the body carries and what step 9's SKU rung will compare.
+ *
+ * - A body with NO SKU (the fold is blank) ⇒ no scan, nothing refused — there
+ *   is nothing to compare, and a blank fold would "hit" every SKU-less
+ *   listing. ZERO Shopee calls.
+ * - Otherwise THE kit arm's scan, mirrored: `localizarItensPorSku` with
+ *   `kit: false` (`kits/localizarKitPorSku.ts` — the same walk, the same
+ *   100-page ceiling, un-narrowed, the same statuses, the same fold, one
+ *   base-info batch, one link read per hit), then
+ *   {@link problemasDoAnuncioExistente}.
+ *
+ * ⚠️ Every Shopee and Firestore failure propagates untouched (rule 6) — the kit
+ * arm's answer to a failed scan: nothing was sent, and the publish hands the
+ * lock back unstamped.
+ */
+export async function verificarAnuncioExistenteShopee(
+  client: ShopeeClient,
+  db: Firestore,
+  e: {
+    readonly integracaoId: string;
+    readonly produtoId: string;
+    /** The planned create body's `item_sku` (absent ⇔ the body sends none). */
+    readonly itemSku: string | null | undefined;
+  },
+): Promise<VerificacaoDoAnuncioExistente> {
+  const sku = skuDaBuscaShopee(e.itemSku);
+  if (sku === '') return { varreu: false, paginas: 0, chamadas: 0, problemas: [] };
+
+  const busca = await localizarItensPorSku(client, db, {
+    integracaoId: e.integracaoId,
+    sku,
+    excluirItemIds: new Set<number>(),
+    kit: false,
+  });
+  const problemas = problemasDoAnuncioExistente(busca, e.produtoId);
+  // eslint-disable-next-line no-console -- one line per look-up: ids, counts and the verdict
+  console.info('[shopee/anuncios] busca de anúncio com o mesmo SKU antes da primeira criação', {
+    integracaoId: e.integracaoId,
+    produtoId: e.produtoId,
+    completo: busca.completo,
+    achados: busca.achados.map((a) => a.itemId),
+    veredicto: problemas.length === 0 ? 'prosseguir' : problemas.map((p) => p.motivo),
+    paginas: busca.paginas,
+  });
+  return { varreu: true, paginas: busca.paginas, chamadas: busca.chamadas, problemas };
 }

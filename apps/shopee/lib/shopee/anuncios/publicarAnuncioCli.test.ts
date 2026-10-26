@@ -70,6 +70,7 @@ import {
   NOTA_SANDBOX_SG_KIT,
   USO_PUBLICAR_ANUNCIO,
   FRASE_ANUNCIO_SEMELHANTE,
+  LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO,
   descreverConflitoDeRascunho,
   descreverErroPublicacao,
   descreverRecusaPublicacao,
@@ -785,6 +786,22 @@ describe('renderizarPlano — a lista permitida do design-P2 §10.3', () => {
     ['os passos que o --live executaria', 'init_tier_variation'],
   ])('imprime %s', (_o, trecho) => {
     expect(texto).toContain(trecho);
+  });
+
+  it('(#1911 P5b) o dry-run de uma CRIAÇÃO diz que a busca por SKU na loja NÃO rodou — ⛔ quase-par: o de uma ATUALIZAÇÃO não fala dela', () => {
+    // "problemas: NENHUM" never stands for "no listing with this SKU exists":
+    // the look-up lives under the draft's lock, which only --live takes.
+    expect(texto).toContain(LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO);
+    expect(LINHA_DA_BUSCA_POR_SKU_NO_ENSAIO).toContain('só no --live');
+    const atualizacao = renderizarPlano(
+      plano({ itemId: ITEM_ID, ehAtualizacao: true }),
+      contexto(),
+    ).join('\n');
+    expect(atualizacao).not.toContain('busca de SKU na loja');
+    // The help says the same, and that no flag overrides the look-up.
+    expect(USO_PUBLICAR_ANUNCIO).toContain('Antes do PRIMEIRO add_item do rascunho');
+    expect(USO_PUBLICAR_ANUNCIO).toMatch(/Nenhuma flag passa\s+por cima dessa busca/);
+    expect(USO_PUBLICAR_ANUNCIO).toContain('NÃO procura anúncio nenhum na loja');
   });
 
   it('diz que o produto é publicável quando não há problema nenhum', () => {

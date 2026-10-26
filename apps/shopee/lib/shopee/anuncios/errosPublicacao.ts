@@ -42,7 +42,7 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 54 members: step 11's 22, the nineteen native-kit
+ *   before writing. 57 members: step 11's 22, the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
  *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6), the
  *   seven refusals only the publish dispatcher produces
@@ -51,9 +51,10 @@
  *   draft-brand refusal `marca-nao-escolhida` (P3, `anuncios/montagemAnuncio.ts`)
  *   and #1911's four refusals of an UNCERTAIN first create (P5,
  *   `anuncios/criacaoIncerta.ts`) — decided by READING Shopee before any second
- *   `add_item`, never by writing.
+ *   `add_item`, never by writing — plus the same file's three refusals of a
+ *   FIRST create over a listing the conta already holds with that SKU (P5b).
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 54 plus the thirteen only a WIRE rejection can produce (step 18 added
+ *   those 57 plus the thirteen only a WIRE rejection can produce (step 18 added
  *   the two size-chart refusals on `size_chart_info`; step 19 the seven
  *   native-kit refusals, whose ONE producer is `kits/recusaKit.ts`; #1911 P5 the
  *   duplicate-listing refusal `error_repeated_mtsku`, a row of
@@ -328,7 +329,35 @@ export type MotivoPublicacaoBloqueada =
    * (a deliberate second listing created minutes before). When it IS the
    * attempt's listing, the exit is discarding the draft, attesting.
    */
-  | 'criacao-incerta-ja-vinculada';
+  | 'criacao-incerta-ja-vinculada'
+  /*
+   * ---- #1911 (P5b — Lucas, 2026-10-26): a FIRST create never duplicates a listing. ----
+   * Produced ONLY by `anuncios/criacaoIncerta.ts` (`problemasDoAnuncioExistente`,
+   * the look-up a `livre` draft's first `add_item` runs under its lock, after
+   * D15), spelled there through this constant. Each is decided by READING
+   * Shopee — the kit arm's same-SKU scan mirrored for ORDINARY listings
+   * (`kits/localizarKitPorSku.ts`: un-narrowed, 100 pages, the import's SKU
+   * fold) — and the conta's links. None is attestable.
+   */
+  /**
+   * The conta already holds a listing with the SKU the create would send, and
+   * NO produto of the ERP links it: import it (`acao` `importar{itemIds}`)
+   * instead of creating a second one.
+   */
+  | 'anuncio-existente-sem-vinculo'
+  /**
+   * The conta already holds a listing with that SKU, linked to ANOTHER produto:
+   * two produtos share one SKU, so step 9's SKU rung could not land a new
+   * listing on either (`acao` `importar{itemIds, vinculados}`, each with its
+   * produto). A listing linked to THIS produto is D15's, never this one.
+   */
+  | 'anuncio-existente-de-outro-produto'
+  /**
+   * That scan did not complete (the kit's 100-page ceiling — 10 000 listings —
+   * or a cursor it could not follow): a listing it never saw may exist, so
+   * nothing was created. The item twin of `busca-de-kit-incompleta`.
+   */
+  | 'busca-de-anuncio-existente-incompleta';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -390,6 +419,9 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   buscaDeAnuncioIncompleta: 'busca-de-anuncio-incompleta',
   criacaoIncertaSemSku: 'criacao-incerta-sem-sku',
   criacaoIncertaJaVinculada: 'criacao-incerta-ja-vinculada',
+  anuncioExistenteSemVinculo: 'anuncio-existente-sem-vinculo',
+  anuncioExistenteDeOutroProduto: 'anuncio-existente-de-outro-produto',
+  buscaDeAnuncioExistenteIncompleta: 'busca-de-anuncio-existente-incompleta',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**

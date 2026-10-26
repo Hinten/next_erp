@@ -996,6 +996,11 @@ Rascunho (#1911)
                       execução está publicando, quando a última tentativa pode
                       ter criado o anúncio e a busca pelo SKU não decide, ou
                       quando a conta já tem anúncio ou rascunho deste produto.
+                      Antes do PRIMEIRO add_item do rascunho o ERP procura na
+                      loja um anúncio com o SKU do produto: sem vínculo, importe-o
+                      (importar:anuncio) em vez de criar outro; vinculado a OUTRO
+                      produto, dê a um dos dois um SKU próprio. Nenhuma flag passa
+                      por cima dessa busca.
   --confirmar-segundo-anuncio
                       confirma que este rascunho pode virar um SEGUNDO anúncio
                       do produto nesta conta (a Shopee pode tratar duplicata
@@ -1376,6 +1381,27 @@ has already been uploaded") is a refusal of that table: the problem
 D15 one beside it — import the listing if it is this produto's; a second one
 must differ (Shopee may treat a duplicate as spam). The dry run does not search
 yet: it takes no lock and prints the plan only.
+
+⚠️ **A draft's FIRST `add_item` looks before it creates** (#1911 P5b — Lucas,
+2026-10-26). Under `--live`, after the lock and the second-listing check and
+immediately before the send, the run walks the shop's listings (the native-kit
+create's same-SKU scan, in its ordinary mode: up to 100 pages of
+`get_item_list`, one base-info batch, the import's SKU fold — surrounding
+spaces ignored, case kept) for one carrying the SKU the body sends. A produto
+with no SKU skips it; a retry of an UNCERTAIN create runs the search above
+instead. On a large shop this is the slow part of a first publish — one page
+per 100 listings plus one base-info call per 50. A refusal exits `1`, nothing
+sent, the lock handed back; no flag overrides any of the three:
+
+| problem                                 | what to do                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `anuncio-existente-sem-vinculo`         | the shop already holds a listing with this SKU that no produto links (the ids are in the sentence): `importar:anuncio` it instead of creating a second one, then discard the draft. The import binds it to THIS produto only when the produto's stored SKU is exact (no spaces at the ends) and no other produto uses it — fix that first, or it creates a NEW produto |
+| `anuncio-existente-de-outro-produto`    | a listing with this SKU is linked to ANOTHER produto (named): two produtos share one SKU — give one of them its own, then publish again                                                                                                                                                                                                                                |
+| `busca-de-anuncio-existente-incompleta` | the walk stopped before the end (more than 10 000 listings, or a cursor that did not advance). Re-running helps only the cursor; past 10 000 listings no first create can pass — the native-kit create has the same limit                                                                                                                                              |
+
+The dry run does NOT run this search either — its summary of a create prints
+`busca de SKU na loja .... NÃO rodou`, so "problemas: NENHUM" there never means
+"no listing has this SKU".
 
 ---
 

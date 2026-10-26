@@ -48,7 +48,7 @@
  * operator can never give a listing a marketplace-optimised name of its own).
  * The produto is the fallback, which is what a first publish uses.
  *
- * ## The vocabulary this file PRODUCES (nineteen of twenty-seven)
+ * ## The vocabulary this file PRODUCES (nineteen of thirty)
  *
  * `sem-nome`, `nome-fora-da-faixa`, `sem-descricao`, `descricao-fora-da-faixa`,
  * `sem-preco`, `filho-sem-preco`, `preco-fora-da-faixa`, `sem-peso`,
@@ -60,7 +60,7 @@
  * `ehAtualizacao` like the five create-only members: a draft has no `item_id`,
  * so it only ever reaches the create body, and the flag alone decides.
  *
- * The other eight are produced ELSEWHERE and are listed here so a reader does not
+ * The other eleven are produced ELSEWHERE and are listed here so a reader does not
  * hunt for them in this file: `variacao-sem-vinculo`, `combinacao-duplicada` and
  * `opcoes-demais` are `anuncios/tiersPublicacao.ts`'s; `logistica-sem-canal` is
  * `anuncios/logisticaPublicacao.ts`'s, and this module RELAYS that module's
@@ -69,9 +69,12 @@
  * `criacao-incerta-sem-sku` and `criacao-incerta-ja-vinculada` are
  * `anuncios/criacaoIncerta.ts`'s — the ENSURE a draft in `incerta` runs, under
  * its lock, before any second `add_item` (a Shopee scan by SKU over the
- * attempt's window; refused outright when the SKU folds blank). Never this
- * module's: a montagem builds a body, and these decide whether one may be SENT
- * at all. The wire-rejection-only motivos
+ * attempt's window; refused outright when the SKU folds blank) — and, since
+ * P5b, `anuncio-existente-sem-vinculo`, `anuncio-existente-de-outro-produto` and
+ * `busca-de-anuncio-existente-incompleta` are that file's too: the look-up a
+ * `livre` draft's FIRST `add_item` runs, under its lock, for a listing the conta
+ * already holds with the SKU the body sends. Never this module's: a montagem
+ * builds a body, and these decide whether one may be SENT at all. The wire-rejection-only motivos
  * (`bloqueado-por-promocao`, `imposto-recusado`, `anuncio-semelhante-existente`
  * and `desconhecido` among them) are `anuncios/problemasPublicacao.ts`'s and
  * cannot be reached by reading a produto.

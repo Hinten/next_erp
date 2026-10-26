@@ -454,8 +454,9 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     }
     expect(doKit.size).toBeGreaterThan(0);
     // #1911 (P5): the uncertain create's ENSURE produces its four members in
-    // `criacaoIncerta.ts` — read like `kits/`, through the constant, and pinned EXACTLY
-    // so a member that drifts to (or from) that file reds here.
+    // `criacaoIncerta.ts` — and (P5b) the first create's same-SKU look-up its three —
+    // read like `kits/`, through the constant, and pinned EXACTLY so a member that
+    // drifts to (or from) that file reds here.
     const fonteCriacaoIncerta = readFileSync(
       fileURLToPath(new URL('./criacaoIncerta.ts', import.meta.url)),
       { encoding: 'utf8' },
@@ -466,6 +467,9 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       if (membro !== undefined) daCriacaoIncerta.add(membro);
     }
     expect([...daCriacaoIncerta].sort()).toEqual([
+      'anuncio-existente-de-outro-produto',
+      'anuncio-existente-sem-vinculo',
+      'busca-de-anuncio-existente-incompleta',
       'busca-de-anuncio-incompleta',
       'criacao-incerta-ambigua',
       'criacao-incerta-ja-vinculada',
@@ -488,7 +492,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     ).toEqual([]);
   });
 
-  it('o docblock nomeia os oito membros que este módulo NÃO produz, com o arquivo produtor', () => {
+  it('o docblock nomeia os onze membros que este módulo NÃO produz, com o arquivo produtor', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./montagemAnuncio.ts', import.meta.url)), {
       encoding: 'utf8',
     });
@@ -501,6 +505,9 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       'busca-de-anuncio-incompleta',
       'criacao-incerta-sem-sku',
       'criacao-incerta-ja-vinculada',
+      'anuncio-existente-sem-vinculo',
+      'anuncio-existente-de-outro-produto',
+      'busca-de-anuncio-existente-incompleta',
     ]) {
       expect(fonte).toContain(membro);
     }
@@ -508,7 +515,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     expect(fonte).toContain('anuncios/logisticaPublicacao.ts');
     expect(fonte).toContain('anuncios/problemasPublicacao.ts');
     expect(fonte).toContain('anuncios/criacaoIncerta.ts');
-    expect(fonte).toContain('(nineteen of twenty-seven)');
+    expect(fonte).toContain('(nineteen of thirty)');
   });
 
   it('problemas é a UNIÃO de todas as recusas, nunca a primeira', () => {

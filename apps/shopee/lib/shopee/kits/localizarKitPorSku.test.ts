@@ -26,7 +26,7 @@ import {
 } from '../fixtures/wireCorpus';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { MAX_PAGINAS_BUSCA_KIT, STATUS_BUSCA_KIT } from './constantesKit';
-import { localizarKitsPorSku } from './localizarKitPorSku';
+import { localizarKitsPorSku, varrerListaDeItensShopee } from './localizarKitPorSku';
 
 /* --------------------------------- fixtures -------------------------------- */
 
@@ -462,5 +462,48 @@ describe('localizarKitsPorSku — the walk', () => {
     await buscar(client, db);
 
     expect(db.writes).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  #1911 P5b verifier — THE walk's "FIRST sighting wins", pinned              */
+/* -------------------------------------------------------------------------- */
+
+describe('varrerListaDeItensShopee — FIRST sighting wins (the walk P5b shares with ENSURE and both same-SKU scans)', () => {
+  /** Page 1 shows `KIT` tagged kit; page 2 shows the SAME row again with no tag. */
+  function duasVistas(): (p: GetItemListParams, indice: number) => ShopeeItemList {
+    return (_p, indice) =>
+      indice === 0
+        ? paginaSintetica([linhaDaLista(KIT, true), linhaDaLista(COMP_A, false)], {
+            has: true,
+            next: 100,
+          })
+        : paginaSintetica([linhaDaLista(KIT, null)], { has: false });
+  }
+
+  it('a row an offset walk shows twice keeps its FIRST list row, in first-sighting order', async () => {
+    const { client } = cliente({ paginas: duasVistas() });
+
+    const v = await varrerListaDeItensShopee(client, {
+      maxPaginas: MAX_PAGINAS_BUSCA_KIT,
+      candidato: () => true,
+      registro: { origem: '[teste]', ids: {} },
+    });
+
+    expect(v).toMatchObject({ completo: true, paginas: 2 });
+    expect([...v.candidatos.keys()]).toEqual([KIT, COMP_A]);
+    expect(v.candidatos.get(KIT)?.tag).toEqual({ kit: true });
+  });
+
+  it('⛔ why it matters (fail closed): a tag-less base reads the FIRST sighting — the kit tag — so the kit is still a hit', async () => {
+    const { client } = cliente({
+      paginas: duasVistas(),
+      bases: [baseDoKit({ tag: null, item_sku: SKU })],
+    });
+
+    const r = await buscar(client);
+
+    expect(r.completo).toBe(true);
+    expect(r.achados.map((a) => a.itemId)).toEqual([KIT]);
   });
 });
