@@ -13,12 +13,15 @@
  *     (`lerValvula`) as its first statement and writes the run-start line as its
  *     second. `off` (unset, blank, a typo) is `desligado`, and no motor can be
  *     built from it — so nothing below can run, no read, no payload. Only a start
- *     opened here builds a motor. The engine never receives a Firestore handle,
+ *     opened here builds a motor, and only ONE: a run is one valve read, one
+ *     run-start line and one motor. The engine never receives a Firestore handle,
  *     and a run that may not write gets a result with no write in it.
  *  2. **One pre-write read per write kind**, in {@link LEITURA_PREVIA_LI}: the
- *     reader AND the read-back strategy of each kind. Both kinds of step 7 share
- *     one `GET /v1/pedido/{numero}/`. A target the read cannot find is never
- *     written (`ausente`).
+ *     reader AND the read-back strategy of each kind, each resolved by an
+ *     exhaustive `switch` (a new reader does not compile until it is handled).
+ *     A deciding read records its reader, and a write refuses a base its kind's
+ *     row does not name. Both kinds of step 7 share one `GET /v1/pedido/{numero}/`.
+ *     A target the read cannot find is never written (`ausente`).
  *  3. **The writer receives the target.** {@link escreverLi} takes it, refuses
  *     another conta's (a `TypeError`: a programming error), checks the envio id
  *     against the deciding read of THAT target, and builds the URL from it, so
@@ -38,11 +41,18 @@
  *     compared with {@link conferirEscritaLi} (`deepEqual`, the shared leaf); a
  *     difference is one WARNING `deriva` line.
  *  6. **Nothing after a landed write may throw** — any 2xx resolves (the
- *     package), the logging is total (`log.ts`), and **no write follows a
- *     landed one in the same run** ({@link escreverLi} refuses it as a
- *     `TypeError`). The PERMITTED post-write throws, each safe only because every
- *     attempt re-derives its guards from a fresh read and skips what is already
- *     reflected (never "fix" one into a retry that skips that read):
+ *     package), the logging is total (`log.ts`), and **no write follows one that
+ *     landed OR MAY HAVE LANDED in the same run** ({@link escreverLi} refuses it
+ *     as a `TypeError`). A write closes the run the moment it is sent — before
+ *     its first `await`, so two writes started together send one — and only a
+ *     failure that PROVES nothing landed reopens it: refused before anything was
+ *     sent (the package's `LiConfigError`, a credential refusal, the task
+ *     deadline) or answered 3xx/4xx other than 429. A 5xx, a 429, a timeout, a
+ *     cut connection or an unclassified error keeps it closed: the write may
+ *     have landed, and the next attempt decides afresh. The PERMITTED post-write
+ *     throws, each safe only because every attempt re-derives its guards from a
+ *     fresh read and skips what is already reflected (never "fix" one into a
+ *     retry that skips that read):
  *     (b) the read-back's or the history read's credential re-read failing in
  *     Firestore (gRPC), rethrown by requirement 7; (c) the flow's aviso writes
  *     after a write; (d) the park after a read-back's 401/403
@@ -59,7 +69,9 @@
  *     included), a page limit, and the app's refusals of the credential (absent,
  *     unreadable, parked, swapped). Each comes back `{ verificado: false }` with
  *     its class; `LiConfigError`, gRPC errors and anything else are rethrown.
- *     The package's `LiError` base is never tested.
+ *     The package's `LiError` base is never tested. Both reads are tied to the
+ *     write that landed: its target (and, for the read-back, its kind), with the
+ *     run's pinned credential — anything else is a `TypeError`, nothing sent.
  *  8. **The comparator** is `deepEqual`, the dependency-free leaf
  *     (`core/igualdadeJsonLi.ts`).
  *  9. **The chokepoint** is `estrutura.test.ts`'s.
@@ -77,7 +89,16 @@
  * after the task's dispatch began (`PrazoDeEscritaEsgotadoLiError`, nothing
  * sent): with the queue's retry backoff above that bound plus the write
  * deadline, an attempt the queue abandoned can no longer write by the time a
- * retry starts.
+ * retry starts. The deadline is checked before the write and AGAIN inside the
+ * write client's credential re-read, after it and before the request (the
+ * package awaits that re-read outside its own deadline, so a slow Firestore
+ * read would otherwise push the request past the bound) — for the write only,
+ * never for a read.
+ *
+ * The situação history read asks for ONE page ({@link MAX_PAGINAS_HISTORICO_CONFERENCIA_LI}):
+ * one interval plus one request deadline, as the run's worst case counts it.
+ * An order with more rows than a page holds comes back unverified
+ * (`LiPaginacaoError`, contained), never as a read that outlives the task.
  *
  * ⚠️ This module must never name the Admin SDK's multi-document read-and-write
  * call — not even in a comment (`estrutura.test.ts`) — and never builds a client:
@@ -88,6 +109,7 @@ import {
   type EcoPedidoEnvioLi,
   type EcoSituacaoPedidoLi,
   LiAuthError,
+  LiConfigError,
   LiHttpError,
   LiNetworkError,
   LiNotFoundError,
@@ -153,10 +175,17 @@ export const CAMPO_DO_TIPO_ESCRITA_LI = {
   'situacao-pedido': 'codigo',
 } as const satisfies Record<TipoEscritaLi, CampoEscritaLi>;
 
+/**
+ * The pre-write readers (requirement 2): `pedido`, the order detail,
+ * `GET /v1/pedido/{numero}/`. A later kind's reader (a list page) joins this
+ * union, and {@link lerBaseLi} does not compile until it handles it.
+ */
+export type LeitorPrevioLi = 'pedido';
+
 /** Requirement 2's row: how one kind is read before a write, and read back after it. */
 export interface LeituraPreviaLi {
-  /** The pre-write reader: the order detail, `GET /v1/pedido/{numero}/`. */
-  readonly leitura: 'pedido';
+  /** The pre-write reader, which {@link lerBaseLi} is called with. */
+  readonly leitura: LeitorPrevioLi;
   /** The read-back strategy: the same resource, read again (a later kind may read a page). */
   readonly leituraDeVolta: 'recurso';
   /** No write of this kind without its read. */
@@ -195,6 +224,13 @@ export const POLITICA_CAMPO_ESCRITA_LI = {
 export const PRAZO_ULTIMA_ESCRITA_MS = 260_000;
 
 /**
+ * The pages the situação history read after a write may take: ONE (50 rows,
+ * far beyond any one order). More is `LiPaginacaoError`, contained as
+ * unverified — never a read of up to ten pages after a write that landed.
+ */
+export const MAX_PAGINAS_HISTORICO_CONFERENCIA_LI = 1;
+
+/**
  * The task's write deadline passed before a write: NOTHING was sent. Transient
  * (the retry decides afresh from a fresh read). A plain `Error`, not a
  * `LiAppError`: it is about this task's time, never about a conta.
@@ -221,7 +257,7 @@ export type InicioEscritaLi =
   | { readonly kind: 'desligado'; readonly valvula: ValvulaLi }
   | { readonly kind: 'ativo'; readonly valvula: ValvulaLi };
 
-/** The starts this module opened — the only ones a motor is built from. */
+/** The starts this module opened and no motor took yet — the only ones a motor is built from. */
 const iniciosAbertos = new WeakSet<InicioEscritaLi>();
 
 /**
@@ -260,13 +296,24 @@ export interface MotorEscritaLi {
   readonly valvula: ValvulaLi;
 }
 
+/** The write a run sent (requirement 6). */
+interface EscritaDaExecucaoLi {
+  readonly destino: DestinoEscritaLi;
+  /** A 2xx arrived. `false` while it is in flight, and after a failure that does not prove it never landed. */
+  aplicada: boolean;
+}
+
 interface EstadoMotorLi extends MotorEscritaLi {
   readonly contexto: ContextoEscritaLojaIntegrada;
   readonly agora: () => number;
   readonly inicioDaTarefaMs: number;
   readonly registro: OpcoesRegistroLi;
-  /** Requirement 6: a write landed in this run (any 2xx) — nothing else may be written. */
-  escritaAplicada: boolean;
+  /**
+   * Requirement 6: the write this run sent, which landed or may have landed —
+   * while it is set, nothing else may be written. `null` until a write is sent,
+   * and again only after a failure that proves it never landed.
+   */
+  escrita: EscritaDaExecucaoLi | null;
 }
 
 const estados = new WeakMap<MotorEscritaLi, EstadoMotorLi>();
@@ -278,12 +325,19 @@ function estadoDe(motor: MotorEscritaLi): EstadoMotorLi {
   return estado;
 }
 
-/** A write run, from a start {@link iniciarEscritaLi} opened under a valve that is not `off`. */
+/**
+ * A write run, from a start {@link iniciarEscritaLi} opened under a valve that
+ * is not `off`. The start is TAKEN: one start builds one motor, so "no write
+ * after a landed one" holds for the run, not for one of several motors.
+ */
 export function criarMotorEscritaLi(o: OpcoesMotorEscritaLi): MotorEscritaLi {
   const inicio: InicioEscritaLi = o.inicio;
   if (!iniciosAbertos.has(inicio) || inicio.kind !== 'ativo') {
-    throw new TypeError('escrita: um motor só nasce de iniciarEscritaLi com a válvula ligada');
+    throw new TypeError(
+      'escrita: um motor só nasce de iniciarEscritaLi com a válvula ligada, uma vez por início',
+    );
   }
+  iniciosAbertos.delete(inicio);
   const motor: MotorEscritaLi = { integracaoId: o.contexto.integracaoId, valvula: inicio.valvula };
   estados.set(motor, {
     ...motor,
@@ -292,7 +346,7 @@ export function criarMotorEscritaLi(o: OpcoesMotorEscritaLi): MotorEscritaLi {
     inicioDaTarefaMs: o.inicioDaTarefaMs,
     // `conta` and `fluxo` LAST: every line names this conta and this valve's flow.
     registro: { ...o.registro, conta: o.contexto.integracaoId, fluxo: inicio.valvula.fluxo },
-    escritaAplicada: false,
+    escrita: null,
   });
   return motor;
 }
@@ -311,9 +365,67 @@ function numeroDoAlvo(e: EstadoMotorLi, alvo: AlvoLi): string {
   return String(alvo.recurso);
 }
 
-/** Requirement 2's reader for the step-7 kinds: the order detail, in its slash form. */
+/** The order detail, in its slash form: the `pedido` reader's path. */
 function caminhoDoPedido(numero: string): string {
   return `/v1/pedido/${numero}/`;
+}
+
+/** The path a pre-write reader reads (requirement 2's table); an unknown reader is a programming error. */
+function caminhoDoLeitorPrevio(leitura: LeitorPrevioLi, numero: string): string {
+  switch (leitura) {
+    case 'pedido':
+      return caminhoDoPedido(numero);
+  }
+  const desconhecido: never = leitura;
+  throw new TypeError(`escrita: leitura prévia desconhecida (${String(desconhecido)})`);
+}
+
+/** The task deadline: refused, with nothing sent, once it has passed. */
+function verificarPrazoDaEscrita(e: EstadoMotorLi): void {
+  const decorridoMs = e.agora() - e.inicioDaTarefaMs;
+  if (decorridoMs > PRAZO_ULTIMA_ESCRITA_MS) throw new PrazoDeEscritaEsgotadoLiError(decorridoMs);
+}
+
+/** Whether `alvo` is the target of the write this run landed. */
+function ehAlvoDaEscrita(escrita: EscritaDaExecucaoLi, alvo: AlvoLi): boolean {
+  return (
+    escrita.destino.alvo.contaId === alvo.contaId && escrita.destino.alvo.recurso === alvo.recurso
+  );
+}
+
+/**
+ * The write this run LANDED, for a read after it — refused (a `TypeError`,
+ * nothing sent) when none landed or `alvo` is another target.
+ */
+function escritaAplicadaPara(e: EstadoMotorLi, alvo: AlvoLi): EscritaDaExecucaoLi {
+  const escrita = e.escrita;
+  if (escrita === null || !escrita.aplicada) {
+    throw new TypeError('escrita: nada chegou nesta execução — não há o que ler depois da escrita');
+  }
+  if (!ehAlvoDaEscrita(escrita, alvo)) {
+    throw new TypeError('escrita: o alvo não é o da escrita que chegou nesta execução');
+  }
+  return escrita;
+}
+
+/**
+ * Whether a write's failure PROVES it never landed (requirement 6): refused
+ * before anything was sent — the package's own refusal of the route or body,
+ * the credential re-read's refusals, the task deadline — or answered 3xx/4xx
+ * other than 429. Everything else (a 5xx, a 429, a timeout or a cut
+ * connection, an unclassified error) may have landed.
+ */
+function provaQueNaoChegou(err: unknown): boolean {
+  if (err instanceof LiThrottleError) return false;
+  if (err instanceof LiHttpError) return err.status >= 300 && err.status < 500;
+  return (
+    err instanceof LiConfigError ||
+    err instanceof LiCredencialAusenteError ||
+    err instanceof LiCredencialInvalidaError ||
+    err instanceof LiContaParadaError ||
+    err instanceof LiCredencialTrocadaError ||
+    err instanceof PrazoDeEscritaEsgotadoLiError
+  );
 }
 
 /** The path a kind's read-back strategy reads (requirement 2's table). */
@@ -335,6 +447,8 @@ function caminhoDaLeituraDeVolta(
 export interface BaseLidaLi {
   readonly kind: 'lida';
   readonly alvo: AlvoLi;
+  /** The reader that read it: a write decides only on its own kind's reader (requirement 2). */
+  readonly leitura: LeitorPrevioLi;
   /** The order as the package parsed it. */
   readonly pedido: PedidoLi;
   readonly status: number;
@@ -351,20 +465,25 @@ export type BaseEscritaLi = BaseLidaLi | { readonly kind: 'ausente'; readonly al
 const basesLidas = new WeakMap<BaseLidaLi, { readonly motor: MotorEscritaLi; gasta: boolean }>();
 
 /**
- * Requirements 2 and 4: the read a write is decided on — two pacer intervals,
- * then `GET /v1/pedido/{numero}/` through the write client (pinning its
- * credential), then the restore line. Every write needs one of its own: the
+ * Requirements 2 and 4: the read a write is decided on, by the reader its
+ * kind's row names (`leitura`; both step-7 kinds: `pedido`) — two pacer
+ * intervals, then `GET /v1/pedido/{numero}/` through the write client (pinning
+ * its credential), then the restore line. Every write needs one of its own: the
  * SECOND guard after a refused write is another call to this, with its own
  * line (and it doubles as the confirming read of a refused write's
  * credential). A read-back is never a base.
  *
  * A 404 is `ausente`; every other failure propagates, for the flow to classify.
  */
-export async function lerBaseLi(motor: MotorEscritaLi, alvo: AlvoLi): Promise<BaseEscritaLi> {
+export async function lerBaseLi(
+  motor: MotorEscritaLi,
+  alvo: AlvoLi,
+  leitura: LeitorPrevioLi,
+): Promise<BaseEscritaLi> {
   const e = estadoDe(motor);
   const numero = numeroDoAlvo(e, alvo);
+  const caminho = caminhoDoLeitorPrevio(leitura, numero);
   await esperarIntervalos(e, 2);
-  const caminho = caminhoDoPedido(numero);
   let resposta: RespostaLeituraEscritaLi<PedidoLi>;
   try {
     resposta = await e.contexto.escrita.lerAntesDeEscreverLi({
@@ -387,6 +506,7 @@ export async function lerBaseLi(motor: MotorEscritaLi, alvo: AlvoLi): Promise<Ba
   const base: BaseLidaLi = {
     kind: 'lida',
     alvo,
+    leitura,
     pedido: resposta.dados,
     status: resposta.status,
     refCredencial: resposta.refCredencial,
@@ -453,19 +573,23 @@ function enviar(
  * writing, its diff. In order, refusing as a `TypeError` (a programming error,
  * nothing sent) whatever breaks the engine's contract:
  *
- *  1. a write already landed in this run (requirement 6);
- *  2. a target of another conta, a base of another target or another motor, a
- *     field of another kind, an envio id the deciding read does not list
- *     (requirement 3);
+ *  1. a write already sent in this run that landed or may have landed
+ *     (requirement 6);
+ *  2. a target of another conta, a base of another target, another motor or
+ *     another reader than the kind's row names, a field of another kind, an
+ *     envio id the deciding read does not list (requirements 2 and 3);
  *  3. the target decision (`decidirAlvo`): not `on` ⇒ one `diff` line,
  *     `nao-enviado`;
  *  4. `on`: no restore line ⇒ `sem-restauracao`; a base that already decided a
  *     write attempt ⇒ `TypeError`; past the task deadline ⇒
- *     `PrazoDeEscritaEsgotadoLiError`; then the write, at once (no wait).
+ *     `PrazoDeEscritaEsgotadoLiError`; then the write, at once (no wait). The
+ *     run is closed BEFORE the write is sent, and the deadline is armed again
+ *     for the write client's credential re-read.
  *
  * A 2xx resolves `enviado` (one `escrita` line). Every other outcome is the
- * package's error, rethrown as-is, for the flow to classify — after which the
- * next write needs a fresh deciding read.
+ * package's error (or the deadline's), rethrown as-is, for the flow to
+ * classify — after which the next write needs a fresh deciding read, and is
+ * possible at all only when the failure proved nothing landed.
  */
 export async function escreverLi(
   motor: MotorEscritaLi,
@@ -474,8 +598,10 @@ export async function escreverLi(
   base: BaseLidaLi,
 ): Promise<ResultadoEscritaLi> {
   const e = estadoDe(motor);
-  if (e.escritaAplicada) {
-    throw new TypeError('escrita: esta execução já enviou uma escrita que chegou — nenhuma outra');
+  if (e.escrita !== null) {
+    throw new TypeError(
+      'escrita: esta execução já enviou uma escrita que chegou ou pode ter chegado — nenhuma outra',
+    );
   }
   const numero = numeroDoAlvo(e, destino.alvo);
   const lidaPor = basesLidas.get(base);
@@ -484,6 +610,9 @@ export async function escreverLi(
   }
   if (base.alvo.contaId !== destino.alvo.contaId || base.alvo.recurso !== destino.alvo.recurso) {
     throw new TypeError('escrita: a base é de outro alvo');
+  }
+  if (base.leitura !== LEITURA_PREVIA_LI[destino.tipo].leitura) {
+    throw new TypeError('escrita: a base não foi lida pela leitura prévia deste tipo de escrita');
   }
   if (CAMPO_DO_TIPO_ESCRITA_LI[destino.tipo] !== payload.campo) {
     throw new TypeError('escrita: o campo não é o do tipo de escrita');
@@ -522,16 +651,33 @@ export async function escreverLi(
   if (lidaPor.gasta) {
     throw new TypeError('escrita: esta leitura decisória já decidiu uma escrita — leia de novo');
   }
-  const decorridoMs = e.agora() - e.inicioDaTarefaMs;
-  if (decorridoMs > PRAZO_ULTIMA_ESCRITA_MS) throw new PrazoDeEscritaEsgotadoLiError(decorridoMs);
+  verificarPrazoDaEscrita(e);
 
   // Spent BEFORE sending: whatever happens to this attempt, the next write is
   // decided by a fresh read.
   lidaPor.gasta = true;
-  const resposta = await enviar(e, destino, payload, numero);
+  // The run is closed BEFORE the first `await`: a write started alongside this
+  // one is refused above, and a write that may have landed keeps it closed.
+  const enviada: EscritaDaExecucaoLi = { destino, aplicada: false };
+  e.escrita = enviada;
+  // The deadline again, inside the write client's credential re-read — after
+  // it, before the request — for THIS write only.
+  e.contexto.verificacaoDaEscrita.armar(() => {
+    verificarPrazoDaEscrita(e);
+  });
+  let resposta: RespostaEscritaLi<EcoPedidoEnvioLi | EcoSituacaoPedidoLi>;
+  try {
+    resposta = await enviar(e, destino, payload, numero);
+  } catch (err) {
+    // Reopened only when nothing can have landed; rethrown as-is either way.
+    if (provaQueNaoChegou(err)) e.escrita = null;
+    throw err;
+  } finally {
+    e.contexto.verificacaoDaEscrita.desarmar();
+  }
 
   // The write LANDED: from here on nothing may throw (requirement 6).
-  e.escritaAplicada = true;
+  enviada.aplicada = true;
   registrarEscritaLi(
     {
       recurso: destino.alvo.recurso,
@@ -614,8 +760,10 @@ export type LeituraDeVoltaLi =
  * Requirement 5's read-back, a SEPARATE call (requirement 10's seam): two
  * pacer intervals after a write that landed, then the kind's read-back
  * strategy ({@link LEITURA_PREVIA_LI}) — the order detail again, with the run's
- * pinned credential. Contained per requirement 7. Its result never decides a
- * write in this run: no write follows a landed one, and it is not a base.
+ * pinned credential. Only of the write that landed: its target and its kind,
+ * or a `TypeError` with nothing sent. Contained per requirement 7. Its result
+ * never decides a write in this run: no write follows a landed one, and it is
+ * not a base.
  */
 export async function lerDeVoltaLi(
   motor: MotorEscritaLi,
@@ -623,8 +771,9 @@ export async function lerDeVoltaLi(
   tipo: TipoEscritaLi,
 ): Promise<LeituraDeVoltaLi> {
   const e = estadoDe(motor);
-  if (!e.escritaAplicada) {
-    throw new TypeError('escrita: nada chegou nesta execução — não há o que ler de volta');
+  const escrita = escritaAplicadaPara(e, alvo);
+  if (escrita.destino.tipo !== tipo) {
+    throw new TypeError('escrita: o tipo não é o da escrita que chegou nesta execução');
   }
   const numero = numeroDoAlvo(e, alvo);
   const caminho = caminhoDaLeituraDeVolta(LEITURA_PREVIA_LI[tipo].leituraDeVolta, numero);
@@ -680,19 +829,25 @@ export type HistoricoParaConferenciaLi =
 /**
  * The situação-history read after a write that moved the situação (the check
  * that a status someone else set in the instant before our write was not
- * silently overwritten): every page of `GET /v1/situacao_historico/search/`,
- * through the read client (one pacer interval per page, in its getter), with
- * the run's pinned credential. Contained per requirement 7: the write landed and
- * stays done. The rows come back as received; ordering and judging them is the
- * flow's.
+ * silently overwritten): `GET /v1/situacao_historico/search/` for the target of
+ * the write that LANDED (any other target, or no landed write, is a `TypeError`
+ * with nothing sent), through the read client (one pacer interval, in its
+ * getter), with the run's pinned credential. ONE page
+ * ({@link MAX_PAGINAS_HISTORICO_CONFERENCIA_LI}): more is `LiPaginacaoError`.
+ * Contained per requirement 7: the write landed and stays done. The rows come
+ * back as received; ordering and judging them is the flow's.
  */
 export async function lerHistoricoSituacaoParaConferenciaLi(
   motor: MotorEscritaLi,
-  numero: number,
+  alvo: AlvoLi,
 ): Promise<HistoricoParaConferenciaLi> {
   const e = estadoDe(motor);
+  escritaAplicadaPara(e, alvo);
+  const numero = numeroDoAlvo(e, alvo);
   try {
-    const historico = await listarHistoricoSituacaoLi(e.contexto.leitura, numero);
+    const historico = await listarHistoricoSituacaoLi(e.contexto.leitura, numero, {
+      maxPaginas: MAX_PAGINAS_HISTORICO_CONFERENCIA_LI,
+    });
     return { lida: true, linhas: historico.linhas };
   } catch (err) {
     const falha = falhaContida(err);
@@ -708,10 +863,14 @@ export async function lerHistoricoSituacaoParaConferenciaLi(
  * Resolves when the read succeeds; every failure propagates for the flow to
  * classify (a 401/403 parks the conta; a getter refusal sends nothing). After a
  * refused tracking-code write, the confirming read is the next deciding read
- * instead ({@link lerBaseLi}).
+ * instead ({@link lerBaseLi}). Before any deciding read there is no pinned
+ * credential to confirm: a `TypeError`, nothing sent.
  */
 export async function confirmarCredencialLi(motor: MotorEscritaLi, alvo: AlvoLi): Promise<void> {
   const e = estadoDe(motor);
+  if (e.contexto.credencial.fixada() === null) {
+    throw new TypeError('escrita: nenhuma leitura decisória fixou a credencial a confirmar');
+  }
   const numero = numeroDoAlvo(e, alvo);
   await esperarIntervalos(e, 1);
   await e.contexto.escrita.lerAntesDeEscreverLi({

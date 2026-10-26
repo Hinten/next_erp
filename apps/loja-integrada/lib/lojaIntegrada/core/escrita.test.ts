@@ -1,18 +1,25 @@
 /**
  * The write engine (master plan step 7, PR 7-b), requirement by requirement
- * (PLAN step 7's ten write-engine requirements; the step plan's §4.1 table).
+ * (PLAN step 7, "The write engine (7-b)", items 1–10).
  * Requirement 8 (`deepEqual`) has its own suite (`igualdadeJsonLi.test.ts`);
  * requirement 9 (the chokepoint) is `estrutura.test.ts`'s; requirement 10 (bulk
  * mode) is not built here — it ships with its first consumer.
  *
- * D17: the platform is a stub `fetch` handed to the write context, and the unit
+ * D17: the platform is a stub `fetch` handed to the write context; the global
+ * `fetch` is stubbed to throw for every test of this file, and the unit
  * config's network kill-switch fails anything that would reach a real host.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  LiAuthError,
   LiConfigError,
+  LiHttpError,
   LiNetworkError,
-  type LiAuthError,
+  LiNotFoundError,
+  LiPaginacaoError,
+  LiSchemaError,
+  LiThrottleError,
+  LiTimeoutError,
 } from '@delfrance/integrations-loja-integrada';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
@@ -28,13 +35,25 @@ import {
 } from '../testing/fixtures';
 import { ID_ENVIO_LI, NUMERO_LI, linhaHistoricoLi, pedidoLiBruto } from '../testing/pedidosLi';
 import { __setRelogioDoCacheParaTestes } from './contaCache';
-import { loadLojaIntegradaContextoEscrita } from './contextoEscrita';
+import {
+  type ContextoEscritaLojaIntegrada,
+  loadLojaIntegradaContextoEscrita,
+} from './contextoEscrita';
 import { removerCredencial } from './credentialStore';
-import { LiCredencialTrocadaError } from './erros';
+import {
+  LiContaParadaError,
+  LiCredencialAusenteError,
+  LiCredencialInvalidaError,
+  LiCredencialTrocadaError,
+} from './erros';
 import {
   type BaseLidaLi,
   CAMPO_DO_TIPO_ESCRITA_LI,
+  CLASSES_CONTIDAS_LI,
+  type ClasseContidaLi,
+  type InicioEscritaLi,
   LEITURA_PREVIA_LI,
+  MAX_PAGINAS_HISTORICO_CONFERENCIA_LI,
   POLITICA_CAMPO_ESCRITA_LI,
   PRAZO_ULTIMA_ESCRITA_MS,
   PrazoDeEscritaEsgotadoLiError,
@@ -80,11 +99,16 @@ function ambiente(modo: string | null, canario: string | null = '*'): AmbienteLi
 beforeEach(() => {
   __resetAllReadCaches();
   __setRelogioDoCacheParaTestes(() => AGORA_MS);
+  // D17, per file: nothing here may reach the global `fetch` — every client gets the stub platform.
+  vi.stubGlobal('fetch', () => {
+    throw new Error('escrita.test: o fetch global não pode ser chamado');
+  });
 });
 afterEach(() => {
   __resetAllReadCaches();
   __setRelogioDoCacheParaTestes();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 /* -------------------------------------------------------------------------- */
@@ -210,6 +234,8 @@ interface Montagem {
   readonly db: FakeDb;
   readonly p: Plataforma;
   readonly linhas: LinhaGravada[];
+  readonly contexto: ContextoEscritaLojaIntegrada;
+  readonly inicio: InicioEscritaLi & { readonly kind: 'ativo' };
   readonly motor: ReturnType<typeof criarMotorEscritaLi>;
 }
 
@@ -219,6 +245,8 @@ async function montar(
     p?: Plataforma;
     agora?: () => number;
     inicioDaTarefaMs?: number;
+    /** Runs before each CALL line the context's observers write; it may throw. */
+    antesDaLinhaDeChamada?: (campos: Readonly<Record<string, unknown>>) => void;
   } = {},
 ): Promise<Montagem> {
   const db = new FakeDb();
@@ -236,7 +264,13 @@ async function montar(
     ambiente: amb,
     esperar: p.esperar,
     fetch: p.fetch,
-    registro: { escrever: gravador.escrever, fluxo: FLUXO_LI.rastreio },
+    registro: {
+      escrever: (severidade, mensagem, campos) => {
+        if (campos.evento === 'chamada') o.antesDaLinhaDeChamada?.(campos);
+        gravador.escrever(severidade, mensagem, campos);
+      },
+      fluxo: FLUXO_LI.rastreio,
+    },
   });
   const motor = criarMotorEscritaLi({
     inicio,
@@ -252,7 +286,7 @@ async function montar(
       idTarefa: 't-1',
     },
   });
-  return { db, p, linhas: gravador.linhas, motor };
+  return { db, p, linhas: gravador.linhas, contexto, inicio, motor };
 }
 
 function lida(base: Awaited<ReturnType<typeof lerBaseLi>>): BaseLidaLi {
@@ -305,7 +339,7 @@ describe('requirement 1 — the valve is read first; off reaches nothing; a dry-
     ).toThrow(TypeError);
   });
 
-  it('a flow that follows the engine’s order: with `off`, the fake db and the fetch stub see ZERO calls', async () => {
+  it('with `off`, no engine call can run: each refuses a motor criarMotorEscritaLi did not build — the fake db and the fetch stub see ZERO calls', async () => {
     const db = new FakeDb();
     seedConta(db, ID);
     seedCredencial(db, ID);
@@ -314,18 +348,51 @@ describe('requirement 1 — the valve is read first; off reaches nothing; a dry-
       conta: ID,
       escrever: () => undefined,
     });
-    if (inicio.kind === 'ativo') {
-      // Never reached: the valve is the first statement, and `off` returns.
-      await loadLojaIntegradaContextoEscrita(asDb(db), ID, {
-        ambiente: ambiente('off'),
-        esperar: p.esperar,
-        fetch: p.fetch,
-      });
-    }
     expect(inicio.kind).toBe('desligado');
+    // A motor-shaped object built from the switched-off start: the engine refuses it, by name.
+    const forjado = { integracaoId: ID, valvula: inicio.valvula };
+    const naoCriado = /criarMotorEscritaLi/;
+    await expect(lerBaseLi(forjado, ALVO, 'pedido')).rejects.toThrow(naoCriado);
+    await expect(lerDeVoltaLi(forjado, ALVO, 'situacao-pedido')).rejects.toThrow(naoCriado);
+    await expect(lerHistoricoSituacaoParaConferenciaLi(forjado, ALVO)).rejects.toThrow(naoCriado);
+    await expect(confirmarCredencialLi(forjado, ALVO)).rejects.toThrow(naoCriado);
     expect(db.leituras).toEqual([]);
     expect(p.requisicoes).toEqual([]);
     expect(p.esperas).toEqual([]);
+  });
+
+  it('⚠️ a start opens ONE motor: a second criarMotorEscritaLi from the same start is a TypeError', async () => {
+    const m = await montar();
+    expect(() =>
+      criarMotorEscritaLi({
+        inicio: m.inicio,
+        contexto: m.contexto,
+        agora: () => AGORA_MS,
+        inicioDaTarefaMs: AGORA_MS,
+      }),
+    ).toThrow(TypeError);
+    // The run that holds the motor still writes once, and only once.
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    expect((await escreverLi(m.motor, SITUACAO, ENVIADO, base)).kind).toBe('enviado');
+    expect(m.p.puts()).toHaveLength(1);
+  });
+
+  it('EQUAL pair: a fresh iniciarEscritaLi — a new run-start line — opens a new motor', async () => {
+    const m = await montar();
+    const gravador = gravadorDeLog();
+    const nova = iniciarEscritaLi(FLUXO_LI.rastreio, ambiente(MODO_LI.on), {
+      conta: ID,
+      escrever: gravador.escrever,
+    });
+    if (nova.kind !== 'ativo') throw new TypeError(nova.kind);
+    expect(gravador.linhas.map((l) => l.campos.evento)).toEqual(['valvula']);
+    const outro = criarMotorEscritaLi({
+      inicio: nova,
+      contexto: m.contexto,
+      agora: () => AGORA_MS,
+      inicioDaTarefaMs: AGORA_MS,
+    });
+    expect(outro).not.toBe(m.motor);
   });
 
   it('⚠️ a hand-built "ativo" start is refused: the only motor is one iniciarEscritaLi opened', async () => {
@@ -347,7 +414,7 @@ describe('requirement 1 — the valve is read first; off reaches nothing; a dry-
 
   it('dry-run: the deciding read and one diff line per field — ZERO PUTs, no write result, nothing stamped', async () => {
     const m = await montar({ ambiente: ambiente(MODO_LI.dryRun) });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     const r1 = await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
     const r2 = await escreverLi(m.motor, SITUACAO, ENVIADO, base);
     expect(r1).toEqual({ kind: 'nao-enviado', motivo: 'valvula' });
@@ -387,7 +454,7 @@ describe('requirement 1 — the valve is read first; off reaches nothing; a dry-
     ['another target listed', `${ID}:90010`, 'fora-do-canario'],
   ])('on with the canary %s ⇒ dry-run (%s): a diff, zero PUTs', async (_caso, canario, motivo) => {
     const m = await montar({ ambiente: ambiente(MODO_LI.on, canario) });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     expect(await escreverLi(m.motor, SITUACAO, ENVIADO, base)).toEqual({
       kind: 'nao-enviado',
       motivo,
@@ -399,7 +466,7 @@ describe('requirement 1 — the valve is read first; off reaches nothing; a dry-
   it('EQUAL pair: the diff of a value LI already holds says `mudou: false`', async () => {
     const m = await montar({ ambiente: ambiente(MODO_LI.dryRun) });
     m.p.estado.pedido = pedidoLiBruto({ envios: [{ id: ID_ENVIO_LI, objeto: CODIGO }] });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
     expect(doEvento(m.linhas, 'diff')[0]?.campos).toMatchObject({
       antes: JSON.stringify(CODIGO),
@@ -415,14 +482,14 @@ describe('requirement 1 — the valve is read first; off reaches nothing; a dry-
   ])('⚠️ NEAR-MISS: a diff against %s says `mudou: true`', async (_caso, lido) => {
     const m = await montar({ ambiente: ambiente(MODO_LI.dryRun) });
     m.p.estado.pedido = pedidoLiBruto({ envios: [{ id: ID_ENVIO_LI, objeto: lido }] });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
     expect(doEvento(m.linhas, 'diff')[0]?.campos.mudou).toBe(true);
   });
 
   it('⚠️ NEAR-MISS: under dry-run the canary is NOT consulted — a list naming this target still writes nothing', async () => {
     const m = await montar({ ambiente: ambiente(MODO_LI.dryRun, `${ID}:${String(NUMERO_LI)}`) });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     expect(await escreverLi(m.motor, SITUACAO, ENVIADO, base)).toEqual({
       kind: 'nao-enviado',
       motivo: 'valvula',
@@ -434,7 +501,7 @@ describe('requirement 1 — the valve is read first; off reaches nothing; a dry-
     for (const canario of [`${ID}:${String(NUMERO_LI)}`, '*']) {
       __resetAllReadCaches();
       const m = await montar({ ambiente: ambiente(MODO_LI.on, canario) });
-      const base = lida(await lerBaseLi(m.motor, ALVO));
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
       const r = await escreverLi(m.motor, SITUACAO, ENVIADO, base);
       expect(r.kind, canario).toBe('enviado');
       expect(m.p.puts().map((x) => [x.caminho, x.corpo])).toEqual([
@@ -470,18 +537,31 @@ describe('requirement 2 — one pre-write read per write kind, in a table keyed 
 
   it('both kinds share ONE GET of the order detail, in the slash form', async () => {
     const m = await montar();
-    await lerBaseLi(m.motor, ALVO);
+    await lerBaseLi(m.motor, ALVO, 'pedido');
     expect(m.p.requisicoes.map((r) => `${r.metodo} ${r.caminho}`)).toEqual([
       `GET ${CAMINHO_PEDIDO}`,
     ]);
   });
 
+  it('the reader is the table’s: a base records which reader read it, and only a reader the table names compiles', async () => {
+    const m = await montar();
+    const base = lida(await lerBaseLi(m.motor, ALVO, LEITURA_PREVIA_LI['situacao-pedido'].leitura));
+    expect(base.leitura).toBe('pedido');
+    for (const tipo of Object.keys(LEITURA_PREVIA_LI) as TipoEscritaLi[]) {
+      expect(LEITURA_PREVIA_LI[tipo].leitura, tipo).toBe(base.leitura);
+    }
+    // @ts-expect-error — a reader no row names does not exist yet
+    await expect(lerBaseLi(m.motor, ALVO, 'pagina')).rejects.toThrow(TypeError);
+    expect(m.p.requisicoes).toHaveLength(1);
+  });
+
   it('a 404 base ⇒ `ausente`: no restore line, no pin, and it is never a base for a write', async () => {
     const m = await montar();
     const outro: AlvoLi = { contaId: ID, recurso: 404 };
-    const base = await lerBaseLi(m.motor, outro);
+    const base = await lerBaseLi(m.motor, outro, 'pedido');
     expect(base).toEqual({ kind: 'ausente', alvo: outro });
     expect(doEvento(m.linhas, 'restauracao')).toEqual([]);
+    expect(m.contexto.credencial.fixada()).toBeNull();
     await expect(
       // @ts-expect-error — an absent base cannot decide a write
       escreverLi(m.motor, { tipo: 'situacao-pedido', alvo: outro }, ENVIADO, base),
@@ -498,8 +578,8 @@ describe('requirement 3 — the writer receives the target; the conta and the cr
   it('another conta’s target is refused before any request, by the read and by the write', async () => {
     const m = await montar();
     const alheio: AlvoLi = { contaId: 'outra-conta', recurso: NUMERO_LI };
-    await expect(lerBaseLi(m.motor, alheio)).rejects.toThrow(TypeError);
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    await expect(lerBaseLi(m.motor, alheio, 'pedido')).rejects.toThrow(TypeError);
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(
       escreverLi(m.motor, { tipo: 'situacao-pedido', alvo: alheio }, ENVIADO, base),
     ).rejects.toThrow(TypeError);
@@ -508,7 +588,7 @@ describe('requirement 3 — the writer receives the target; the conta and the cr
 
   it('an envio id absent from the target’s base throws, with zero PUTs', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(
       escreverLi(m.motor, { tipo: 'objeto-envio', alvo: ALVO, envioId: 802 }, COM_CODIGO, base),
     ).rejects.toThrow(TypeError);
@@ -517,7 +597,7 @@ describe('requirement 3 — the writer receives the target; the conta and the cr
 
   it('a base read for another order of the same conta is refused', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     const outro: AlvoLi = { contaId: ID, recurso: NUMERO_LI + 1 };
     await expect(
       escreverLi(m.motor, { tipo: 'situacao-pedido', alvo: outro }, ENVIADO, base),
@@ -527,21 +607,21 @@ describe('requirement 3 — the writer receives the target; the conta and the cr
 
   it('a payload for the other kind is refused (the codigo on the envio route)', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(escreverLi(m.motor, OBJETO, ENVIADO, base)).rejects.toThrow(TypeError);
     expect(m.p.puts()).toEqual([]);
   });
 
   it('the situação URL’s numero IS the canary key’s numero', async () => {
     const m = await montar({ ambiente: ambiente(MODO_LI.on, `${ID}:${String(NUMERO_LI)}`) });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, SITUACAO, ENVIADO, base);
     expect(m.p.puts()[0]?.caminho).toBe(`/v1/situacao/pedido/${String(ALVO.recurso)}`);
   });
 
   it('⚠️ a token re-saved between the deciding GET and the PUT ⇒ zero PUTs, LiCredencialTrocadaError', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     seedCredencial(m.db, ID, { personalToken: TOKEN_B, tokenAtualizadoEmMs: AGORA_MS });
     await expect(escreverLi(m.motor, SITUACAO, ENVIADO, base)).rejects.toBeInstanceOf(
       LiCredencialTrocadaError,
@@ -552,7 +632,7 @@ describe('requirement 3 — the writer receives the target; the conta and the cr
   it('⚠️ re-saved between the PUT and the confirming GET ⇒ the confirm is not sent', async () => {
     const m = await montar();
     m.p.fila.push((r) => (r.metodo === 'PUT' ? json(403, { error: 'forbidden' }) : null));
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(escreverLi(m.motor, SITUACAO, ENVIADO, base)).rejects.toMatchObject({
       name: 'LiAuthError',
     });
@@ -567,7 +647,7 @@ describe('requirement 3 — the writer receives the target; the conta and the cr
   it('the confirming GET is paced ONE interval, goes to the order detail, and uses the pinned credential', async () => {
     const m = await montar();
     m.p.fila.push((r) => (r.metodo === 'PUT' ? json(403, {}) : null));
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     const err = (await escreverLi(m.motor, SITUACAO, ENVIADO, base).catch(
       (e: unknown) => e,
     )) as LiAuthError;
@@ -579,6 +659,13 @@ describe('requirement 3 — the writer receives the target; the conta and the cr
       `GET ${CAMINHO_PEDIDO}`,
     ]);
     expect(new Set(m.p.requisicoes.map((r) => r.autorizacao)).size).toBe(1);
+  });
+
+  it('⚠️ a confirming GET before any deciding read has no pin to confirm: TypeError, zero requests', async () => {
+    const m = await montar();
+    await expect(confirmarCredencialLi(m.motor, ALVO)).rejects.toThrow(TypeError);
+    expect(m.p.requisicoes).toEqual([]);
+    expect(m.p.esperas).toEqual([]);
   });
 });
 
@@ -592,7 +679,7 @@ describe('requirement 4 — a restore line before EACH write, from its own decid
     m.p.estado.pedido = pedidoLiBruto({
       envios: [{ id: ID_ENVIO_LI, objeto: 'AA123456789BR', prazo: 5 }],
     });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     expect(base.restauracao).toBe(true);
     await escreverLi(m.motor, SITUACAO, ENVIADO, base);
     // On one timeline of requests and engine lines: the read, ITS restore line,
@@ -621,7 +708,7 @@ describe('requirement 4 — a restore line before EACH write, from its own decid
   ): Promise<{ bytes: number; m: Montagem; base: BaseLidaLi }> {
     const m = await montar();
     m.p.estado.pedido = { ...pedidoLiBruto(), ['a'.repeat(n)]: null };
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     const [l] = doEvento(m.linhas, 'restauracao');
     const bytes =
       l === undefined
@@ -656,7 +743,7 @@ describe('requirement 4 — a restore line before EACH write, from its own decid
     let fundo: unknown = 1;
     for (let i = 0; i < 257; i++) fundo = [fundo];
     m.p.estado.pedido = { ...pedidoLiBruto(), x: fundo };
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     expect(base.restauracao).toBe(false);
     expect(await escreverLi(m.motor, SITUACAO, ENVIADO, base)).toEqual({ kind: 'sem-restauracao' });
     expect(m.p.puts()).toEqual([]);
@@ -665,14 +752,14 @@ describe('requirement 4 — a restore line before EACH write, from its own decid
   it('⚠️ after a REFUSED code PUT, the next PUT needs a SECOND deciding read with its own restore line — reusing the first base throws', async () => {
     const m = await montar();
     m.p.fila.push((r) => (r.metodo === 'PUT' ? json(400, {}) : null));
-    const primeira = lida(await lerBaseLi(m.motor, ALVO));
+    const primeira = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(escreverLi(m.motor, OBJETO, COM_CODIGO, primeira)).rejects.toMatchObject({
       name: 'LiHttpError',
     });
     // The mutation "decide the situação from the first read" is refused, with nothing sent.
     await expect(escreverLi(m.motor, SITUACAO, ENVIADO, primeira)).rejects.toThrow(TypeError);
     expect(m.p.puts()).toHaveLength(1);
-    const segunda = lida(await lerBaseLi(m.motor, ALVO));
+    const segunda = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     expect((await escreverLi(m.motor, SITUACAO, ENVIADO, segunda)).kind).toBe('enviado');
     expect(doEvento(m.linhas, 'restauracao')).toHaveLength(2);
     expect(m.p.linhaDoTempo).toEqual([
@@ -698,7 +785,7 @@ describe('requirement 5 — dry-run diffs, a separate read-back with its deriva,
 
   it('the write sends ONE request — the read-back is a separate call, two intervals after it', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     const marco = m.p.eventos.length;
     await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
     expect(m.p.eventos.slice(marco)).toEqual([`PUT ${CAMINHO_ENVIO}`]);
@@ -713,7 +800,7 @@ describe('requirement 5 — dry-run diffs, a separate read-back with its deriva,
 
   it('EQUAL pair: the read-back holding what was written ⇒ `igual`, no deriva line', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
     const leitura = await lerDeVoltaLi(m.motor, ALVO, 'objeto-envio');
     if (!leitura.verificado) throw new TypeError('não verificada');
@@ -730,7 +817,7 @@ describe('requirement 5 — dry-run diffs, a separate read-back with its deriva,
     '⚠️ NEAR-MISS: a read-back holding %s ⇒ `deriva` and ONE WARNING line',
     async (_caso, lido) => {
       const m = await montar();
-      const base = lida(await lerBaseLi(m.motor, ALVO));
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
       await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
       m.p.fila.push((r) =>
         r.metodo === 'GET'
@@ -753,7 +840,7 @@ describe('requirement 5 — dry-run diffs, a separate read-back with its deriva,
 
   it('⚠️ NEAR-MISS: the envio missing from the read-back is a deriva, its value `<ausente>`', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
     m.p.fila.push((r) => (r.metodo === 'GET' ? json(200, pedidoLiBruto({ envios: [] })) : null));
     const leitura = await lerDeVoltaLi(m.motor, ALVO, 'objeto-envio');
@@ -764,7 +851,7 @@ describe('requirement 5 — dry-run diffs, a separate read-back with its deriva,
 
   it('the situação read-back compares the codigo EXACTLY', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, SITUACAO, ENVIADO, base);
     m.p.fila.push((r) =>
       r.metodo === 'GET'
@@ -794,7 +881,7 @@ describe('requirement 6 — any 2xx resolves, and no PUT follows a landed one', 
     async (_caso, resposta, aplicada, leituraEco) => {
       const m = await montar();
       m.p.fila.push((r) => (r.metodo === 'PUT' ? resposta() : null));
-      const base = lida(await lerBaseLi(m.motor, ALVO));
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
       const r = await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
       if (r.kind !== 'enviado') throw new TypeError(r.kind);
       expect(r.resposta).toMatchObject({ aplicada, leituraEco });
@@ -813,9 +900,9 @@ describe('requirement 6 — any 2xx resolves, and no PUT follows a landed one', 
 
   it('⚠️ a second PUT in the run after a 2xx PUT is a TypeError — even from a fresh deciding read', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
-    const nova = lida(await lerBaseLi(m.motor, ALVO));
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(escreverLi(m.motor, SITUACAO, ENVIADO, nova)).rejects.toThrow(TypeError);
     // Even a dry-run diff: the run is over once a write landed.
     expect(m.p.puts()).toHaveLength(1);
@@ -824,9 +911,9 @@ describe('requirement 6 — any 2xx resolves, and no PUT follows a landed one', 
   it('a 202 counts as landed too: no second PUT', async () => {
     const m = await montar();
     m.p.fila.push((r) => (r.metodo === 'PUT' ? new Response(null, { status: 202 }) : null));
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
-    const nova = lida(await lerBaseLi(m.motor, ALVO));
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(escreverLi(m.motor, SITUACAO, ENVIADO, nova)).rejects.toThrow(TypeError);
     expect(m.p.puts()).toHaveLength(1);
   });
@@ -834,23 +921,23 @@ describe('requirement 6 — any 2xx resolves, and no PUT follows a landed one', 
   it('a REFUSED PUT is not landed: the next PUT is allowed from a fresh read', async () => {
     const m = await montar();
     m.p.fila.push((r) => (r.metodo === 'PUT' ? json(409, {}) : null));
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(escreverLi(m.motor, OBJETO, COM_CODIGO, base)).rejects.toMatchObject({
       name: 'LiHttpError',
     });
-    const nova = lida(await lerBaseLi(m.motor, ALVO));
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     expect((await escreverLi(m.motor, SITUACAO, ENVIADO, nova)).kind).toBe('enviado');
   });
 
   it('(b) the read-back’s credential re-read failing in Firestore is rethrown — and the run still cannot PUT again', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, SITUACAO, ENVIADO, base);
     const falha = grpc(14, 'UNAVAILABLE');
     m.db.falharLeitura(caminhoCredencial(ID), falha);
     await expect(lerDeVoltaLi(m.motor, ALVO, 'situacao-pedido')).rejects.toBe(falha);
     m.db.falharLeitura(caminhoCredencial(ID), null);
-    const nova = lida(await lerBaseLi(m.motor, ALVO));
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(escreverLi(m.motor, SITUACAO, ENVIADO, nova)).rejects.toThrow(TypeError);
     expect(m.p.puts()).toHaveLength(1);
   });
@@ -859,10 +946,140 @@ describe('requirement 6 — any 2xx resolves, and no PUT follows a landed one', 
     const m = await montar();
     const estranho = new RangeError('falha de leitura não classificada');
     m.p.fila.push((r) => (r.metodo === 'PUT' ? cortada(200, estranho) : null));
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await expect(escreverLi(m.motor, SITUACAO, ENVIADO, base)).rejects.toBe(estranho);
-    // The deciding read was spent on that attempt: a retry decides afresh.
+    // The deciding read was spent on that attempt.
     await expect(escreverLi(m.motor, SITUACAO, ENVIADO, base)).rejects.toThrow(TypeError);
+    // And the 2xx DID arrive: even a FRESH deciding read cannot send another write in this run.
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    await expect(escreverLi(m.motor, OBJETO, COM_CODIGO, nova)).rejects.toThrow(TypeError);
+    expect(m.p.puts()).toHaveLength(1);
+  });
+
+  it('(g) an observer that throws on the 2xx’s call line: rethrown as itself — and the run is closed', async () => {
+    const quebrado = new RangeError('observador quebrado');
+    const m = await montar({
+      antesDaLinhaDeChamada: (campos) => {
+        if (campos.metodo === 'PUT') throw quebrado;
+      },
+    });
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    await expect(escreverLi(m.motor, SITUACAO, ENVIADO, base)).rejects.toBe(quebrado);
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    await expect(escreverLi(m.motor, OBJETO, COM_CODIGO, nova)).rejects.toThrow(TypeError);
+    expect(m.p.puts()).toHaveLength(1);
+  });
+
+  it.each([
+    ['a 500', () => json(500, {}), 'LiHttpError'],
+    ['a 503', () => json(503, {}), 'LiHttpError'],
+    ['a 429', () => json(429, {}), 'LiThrottleError'],
+    ['a dropped connection', () => new TypeError('fetch failed'), 'LiNetworkError'],
+  ] as const)(
+    '⚠️ a write that MAY have landed (%s) closes the run: a fresh deciding read still cannot send another',
+    async (_caso, resposta, nome) => {
+      const m = await montar();
+      m.p.fila.push((r) => (r.metodo === 'PUT' ? resposta() : null));
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+      await expect(escreverLi(m.motor, OBJETO, COM_CODIGO, base)).rejects.toMatchObject({
+        name: nome,
+      });
+      const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+      await expect(escreverLi(m.motor, SITUACAO, ENVIADO, nova)).rejects.toThrow(TypeError);
+      expect(m.p.puts()).toHaveLength(1);
+      // Nothing is known to have landed: there is nothing to read back.
+      await expect(lerDeVoltaLi(m.motor, ALVO, 'objeto-envio')).rejects.toThrow(TypeError);
+    },
+  );
+
+  it('⚠️ a write cut by its deadline MAY HAVE LANDED: LiTimeoutError, and the run is closed', async () => {
+    const m = await montar();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    m.p.fila.push((r, init) =>
+      r.metodo === 'PUT'
+        ? new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(init.signal?.reason);
+            });
+          })
+        : null,
+    );
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    let erro: unknown = null;
+    const promessa = escreverLi(m.motor, OBJETO, COM_CODIGO, base).catch((e: unknown) => {
+      erro = e;
+    });
+    for (let i = 0; i < 60 && erro === null; i++) await vi.advanceTimersByTimeAsync(1_000);
+    await promessa;
+    expect(erro).toBeInstanceOf(LiTimeoutError);
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    await expect(escreverLi(m.motor, SITUACAO, ENVIADO, nova)).rejects.toThrow(TypeError);
+    expect(m.p.puts()).toHaveLength(1);
+  });
+
+  it('⚠️ two writes started together: exactly ONE is sent, the other is a TypeError', async () => {
+    const m = await montar();
+    const b1 = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    const b2 = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    const [r1, r2] = await Promise.allSettled([
+      escreverLi(m.motor, OBJETO, COM_CODIGO, b1),
+      escreverLi(m.motor, SITUACAO, ENVIADO, b2),
+    ]);
+    expect(r1).toMatchObject({ status: 'fulfilled', value: { kind: 'enviado' } });
+    expect(r2.status).toBe('rejected');
+    expect(r2.status === 'rejected' ? r2.reason : null).toBeInstanceOf(TypeError);
+    expect(m.p.puts()).toHaveLength(1);
+  });
+
+  it.each([
+    ['a 400', () => json(400, {}), 'LiHttpError'],
+    ['a 403', () => json(403, {}), 'LiAuthError'],
+    ['a 404', () => json(404, {}), 'LiNotFoundError'],
+    [
+      'a 302',
+      () => new Response(null, { status: 302, headers: { location: '/x' } }),
+      'LiHttpError',
+    ],
+  ] as const)(
+    'EQUAL pair: a write REFUSED with %s proves nothing landed — the next write, from a fresh read, is sent',
+    async (_caso, resposta, nome) => {
+      const m = await montar();
+      m.p.fila.push((r) => (r.metodo === 'PUT' ? resposta() : null));
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+      await expect(escreverLi(m.motor, OBJETO, COM_CODIGO, base)).rejects.toMatchObject({
+        name: nome,
+      });
+      const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+      expect((await escreverLi(m.motor, SITUACAO, ENVIADO, nova)).kind).toBe('enviado');
+      expect(m.p.puts()).toHaveLength(2);
+    },
+  );
+
+  it('EQUAL pair: a write the package refuses BEFORE sending (an invalid tracking code) leaves the run open', async () => {
+    const m = await montar();
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    await expect(
+      escreverLi(m.motor, OBJETO, { campo: 'objeto', valor: 'PJ 258' }, base),
+    ).rejects.toBeInstanceOf(LiConfigError);
+    expect(m.p.puts()).toEqual([]);
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    expect((await escreverLi(m.motor, SITUACAO, ENVIADO, nova)).kind).toBe('enviado');
+  });
+
+  it('EQUAL pair: a write the credential re-read refuses (the conta parked) sends nothing and leaves the run open', async () => {
+    const m = await montar();
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    // Parked with the SAME token and stamp: the ref, and so the pin, are unchanged.
+    seedCredencial(m.db, ID, {
+      reconexaoPendente: { desdeMs: AGORA_MS - 1, status: 401, refCredencial: base.refCredencial },
+    });
+    await expect(escreverLi(m.motor, SITUACAO, ENVIADO, base)).rejects.toBeInstanceOf(
+      LiContaParadaError,
+    );
+    expect(m.p.puts()).toEqual([]);
+    seedCredencial(m.db, ID);
+    const nova = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    expect((await escreverLi(m.motor, SITUACAO, ENVIADO, nova)).kind).toBe('enviado');
     expect(m.p.puts()).toHaveLength(1);
   });
 });
@@ -874,7 +1091,7 @@ describe('requirement 6 — any 2xx resolves, and no PUT follows a landed one', 
 describe('requirement 7 — the read-back and the history read contain ONLY the listed classes', () => {
   async function aposEscrita(): Promise<Montagem> {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, SITUACAO, ENVIADO, base);
     return m;
   }
@@ -941,12 +1158,118 @@ describe('requirement 7 — the read-back and the history read contain ONLY the 
     const err = grpc(14, 'UNAVAILABLE');
     m.db.falharLeitura(caminhoCredencial(ID), err);
     await expect(lerDeVoltaLi(m.motor, ALVO, 'situacao-pedido')).rejects.toBe(err);
-    await expect(lerHistoricoSituacaoParaConferenciaLi(m.motor, NUMERO_LI)).rejects.toBe(err);
+    await expect(lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO)).rejects.toBe(err);
     m.db.falharLeitura(caminhoCredencial(ID), null);
-    // An id no path can carry is our own misconfiguration: loud.
-    await expect(lerHistoricoSituacaoParaConferenciaLi(m.motor, 0)).rejects.toBeInstanceOf(
-      LiConfigError,
+    // Our own misconfiguration (the package's `LiConfigError`, a subclass of the
+    // `LiError` base) is loud in both reads.
+    const config = new LiConfigError('caminho', { operacao: 'teste', refCredencial: null });
+    m.p.fila.push((r) => (r.metodo === 'GET' ? config : null));
+    await expect(lerDeVoltaLi(m.motor, ALVO, 'situacao-pedido')).rejects.toBe(config);
+    m.p.fila.push((r) => (r.metodo === 'GET' ? config : null));
+    await expect(lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO)).rejects.toBe(config);
+  });
+
+  it('every class CLASSES_CONTIDAS_LI lists is contained AS that class, by the read-back and by the history read', async () => {
+    const ctx = {
+      operacao: 'teste',
+      caminho: CAMINHO_PEDIDO,
+      correlationId: 'c-1',
+      refCredencial: 'r.1',
+      metodo: 'GET',
+    } as const;
+    const instancias = {
+      LiAuthError: () => new LiAuthError({ ...ctx, status: 403 }),
+      LiNotFoundError: () => new LiNotFoundError({ ...ctx, status: 404 }),
+      LiThrottleError: () =>
+        new LiThrottleError({
+          ...ctx,
+          status: 429,
+          escopo: 'loja',
+          codigosEncontrados: [],
+          retryAfterS: null,
+        }),
+      LiHttpError: () => new LiHttpError({ ...ctx, status: 500 }),
+      LiSchemaError: () =>
+        new LiSchemaError({ ...ctx, status: 200, motivo: 'formato', campos: ['numero'] }),
+      LiTimeoutError: () => new LiTimeoutError({ ...ctx, prazoMs: 20_000 }, null),
+      LiNetworkError: () => new LiNetworkError(ctx, null),
+      LiPaginacaoError: () =>
+        new LiPaginacaoError({ ...ctx, motivo: 'limite-de-paginas', paginas: 1 }),
+      LiCredencialAusenteError: () => new LiCredencialAusenteError(ID),
+      LiCredencialInvalidaError: () => new LiCredencialInvalidaError(ID, ['personalToken']),
+      LiContaParadaError: () => new LiContaParadaError(ID, 401, AGORA_MS),
+      LiCredencialTrocadaError: () => new LiCredencialTrocadaError(ID),
+    } satisfies Record<ClasseContidaLi, () => Error>;
+    expect(Object.keys(instancias).sort()).toEqual([...CLASSES_CONTIDAS_LI].sort());
+    for (const classe of CLASSES_CONTIDAS_LI) {
+      const m = await aposEscrita();
+      const erro = instancias[classe]();
+      // Thrown by the transport as-is, so only the engine's own narrowing names it.
+      m.p.fila.push((r) => (r.metodo === 'GET' ? erro : null));
+      expect(await lerDeVoltaLi(m.motor, ALVO, 'situacao-pedido'), classe).toEqual({
+        verificado: false,
+        classe,
+        erro,
+      });
+      m.p.fila.push((r) => (r.metodo === 'GET' ? erro : null));
+      expect(await lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO), classe).toEqual({
+        lida: false,
+        classe,
+        erro,
+      });
+    }
+  });
+
+  it('⚠️ the history read reads ONE page: a page that names a next one is LiPaginacaoError, contained, after exactly one GET', async () => {
+    expect(MAX_PAGINAS_HISTORICO_CONFERENCIA_LI).toBe(1);
+    const m = await aposEscrita();
+    m.p.fila.push((r) =>
+      r.metodo === 'GET'
+        ? json(200, {
+            meta: {
+              limit: 50,
+              offset: 0,
+              next: `/api/v1/situacao_historico/search/?limit=50&numero=${String(NUMERO_LI)}&offset=50`,
+              previous: null,
+              total_count: 51,
+            },
+            objects: [
+              linhaHistoricoLi(1, '2027-01-10T10:00:00.000000', 'pedido_enviado', 'pedido_pago'),
+            ],
+          })
+        : null,
     );
+    const marco = m.p.requisicoes.length;
+    expect(await lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO)).toMatchObject({
+      lida: false,
+      classe: 'LiPaginacaoError',
+    });
+    expect(m.p.requisicoes.slice(marco).map((r) => `${r.metodo} ${r.caminho}`)).toEqual([
+      'GET /v1/situacao_historico/search/',
+    ]);
+  });
+
+  it('⚠️ the post-write reads are tied to the write that LANDED: another target or kind is a TypeError, with zero requests', async () => {
+    const m = await aposEscrita();
+    const marco = m.p.requisicoes.length;
+    const outro: AlvoLi = { contaId: ID, recurso: NUMERO_LI + 1 };
+    await expect(lerDeVoltaLi(m.motor, outro, 'situacao-pedido')).rejects.toThrow(TypeError);
+    await expect(lerDeVoltaLi(m.motor, ALVO, 'objeto-envio')).rejects.toThrow(TypeError);
+    await expect(lerHistoricoSituacaoParaConferenciaLi(m.motor, outro)).rejects.toThrow(TypeError);
+    expect(m.p.requisicoes).toHaveLength(marco);
+    expect(m.p.esperas).toHaveLength(2);
+    // EQUAL pair: the landed write's own target and kind are read.
+    expect((await lerDeVoltaLi(m.motor, ALVO, 'situacao-pedido')).verificado).toBe(true);
+    expect((await lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO)).lida).toBe(true);
+  });
+
+  it('⚠️ the history read before any write landed is a TypeError, with zero requests — never an unpinned read', async () => {
+    const m = await montar();
+    await expect(lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO)).rejects.toThrow(TypeError);
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    expect(base.status).toBe(200);
+    await expect(lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO)).rejects.toThrow(TypeError);
+    expect(m.p.requisicoes.map((r) => r.metodo)).toEqual(['GET']);
   });
 
   it('the history read: a 429 is contained; the rows come back as received', async () => {
@@ -954,18 +1277,18 @@ describe('requirement 7 — the read-back and the history read contain ONLY the 
     m.p.estado.historico = [
       linhaHistoricoLi(1, '2027-01-10T10:00:00.000000', 'pedido_enviado', 'pedido_pago'),
     ];
-    const lido = await lerHistoricoSituacaoParaConferenciaLi(m.motor, NUMERO_LI);
+    const lido = await lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO);
     expect(lido).toMatchObject({
       lida: true,
       linhas: [{ id: 1, situacao: { codigo: 'pedido_enviado' } }],
     });
     m.p.fila.push((r) => (r.metodo === 'GET' ? json(429, {}) : null));
-    expect(await lerHistoricoSituacaoParaConferenciaLi(m.motor, NUMERO_LI)).toMatchObject({
+    expect(await lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO)).toMatchObject({
       lida: false,
       classe: 'LiThrottleError',
     });
     m.p.fila.push((r) => (r.metodo === 'GET' ? new TypeError('fetch failed') : null));
-    expect(await lerHistoricoSituacaoParaConferenciaLi(m.motor, NUMERO_LI)).toMatchObject({
+    expect(await lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO)).toMatchObject({
       lida: false,
       classe: 'LiNetworkError',
     });
@@ -974,7 +1297,7 @@ describe('requirement 7 — the read-back and the history read contain ONLY the 
   it('the history read is paced by its read client (one interval per page), never by the engine twice', async () => {
     const m = await aposEscrita();
     const marco = m.p.eventos.length;
-    await lerHistoricoSituacaoParaConferenciaLi(m.motor, NUMERO_LI);
+    await lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO);
     expect(m.p.eventos.slice(marco)).toEqual([
       `espera ${String(RITMO_ESCRITA_LI_MS)}`,
       'GET /v1/situacao_historico/search/',
@@ -1022,10 +1345,10 @@ async function mudarCredencial(
 describe('the write pacer', () => {
   it('two intervals before the deciding GET, NONE between it and its PUT, two before the read-back', async () => {
     const m = await montar();
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     await escreverLi(m.motor, OBJETO, COM_CODIGO, base);
     await lerDeVoltaLi(m.motor, ALVO, 'objeto-envio');
-    await lerHistoricoSituacaoParaConferenciaLi(m.motor, NUMERO_LI);
+    await lerHistoricoSituacaoParaConferenciaLi(m.motor, ALVO);
     const e = `espera ${String(RITMO_ESCRITA_LI_MS)}`;
     expect(m.p.eventos).toEqual([
       e,
@@ -1051,7 +1374,7 @@ describe('the task’s write deadline (no PUT starts later than 260 s after the 
       inicioDaTarefaMs: AGORA_MS - PRAZO_ULTIMA_ESCRITA_MS,
       agora: () => AGORA_MS,
     });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     expect((await escreverLi(m.motor, SITUACAO, ENVIADO, base)).kind).toBe('enviado');
   });
 
@@ -1059,7 +1382,7 @@ describe('the task’s write deadline (no PUT starts later than 260 s after the 
     expect(PRAZO_ULTIMA_ESCRITA_MS).toBe(260_000);
     let agora = AGORA_MS;
     const m = await montar({ inicioDaTarefaMs: AGORA_MS, agora: () => agora });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     agora = AGORA_MS + PRAZO_ULTIMA_ESCRITA_MS + 1;
     const err: unknown = await escreverLi(m.motor, SITUACAO, ENVIADO, base).catch(
       (e: unknown) => e,
@@ -1067,6 +1390,51 @@ describe('the task’s write deadline (no PUT starts later than 260 s after the 
     expect(err).toBeInstanceOf(PrazoDeEscritaEsgotadoLiError);
     expect(err).not.toBeInstanceOf(LiNetworkError);
     expect(m.p.puts()).toEqual([]);
+    // The base was NOT spent, and the run is still open: back inside the deadline, it writes.
+    agora = AGORA_MS;
+    expect((await escreverLi(m.motor, SITUACAO, ENVIADO, base)).kind).toBe('enviado');
+    expect(m.p.puts()).toHaveLength(1);
+  });
+
+  /** The credential reads the fake db has served so far. */
+  const leiturasDaCredencial = (db: FakeDb) =>
+    db.leituras.filter((c) => c === caminhoCredencial(ID)).length;
+
+  it('⚠️ the deadline is checked AGAIN after the write’s credential re-read: a slow re-read past it ⇒ zero PUTs', async () => {
+    let db: FakeDb | null = null;
+    let marco = Number.POSITIVE_INFINITY;
+    // The clock jumps past the deadline once the write's own credential re-read has been served.
+    const agora = () =>
+      AGORA_MS +
+      (db !== null && leiturasDaCredencial(db) > marco ? PRAZO_ULTIMA_ESCRITA_MS + 1 : 0);
+    const m = await montar({ inicioDaTarefaMs: AGORA_MS, agora });
+    db = m.db;
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    marco = leiturasDaCredencial(m.db);
+    const err: unknown = await escreverLi(m.motor, SITUACAO, ENVIADO, base).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(PrazoDeEscritaEsgotadoLiError);
+    expect(leiturasDaCredencial(m.db)).toBe(marco + 1);
+    expect(m.p.puts()).toEqual([]);
+    expect(doEvento(m.linhas, 'chamada').filter((l) => l.campos.metodo === 'PUT')).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: the re-check is the WRITE’s only — a deciding read and a read-back past the deadline still go', async () => {
+    let agora = AGORA_MS;
+    const m = await montar({ inicioDaTarefaMs: AGORA_MS, agora: () => agora });
+    // A write the package refuses before its credential re-read leaves no check armed behind it.
+    const b0 = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    await expect(
+      escreverLi(m.motor, OBJETO, { campo: 'objeto', valor: 'PJ 258' }, b0),
+    ).rejects.toBeInstanceOf(LiConfigError);
+    agora = AGORA_MS + PRAZO_ULTIMA_ESCRITA_MS + 1;
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
+    agora = AGORA_MS;
+    expect((await escreverLi(m.motor, SITUACAO, ENVIADO, base)).kind).toBe('enviado');
+    agora = AGORA_MS + PRAZO_ULTIMA_ESCRITA_MS + 1;
+    expect((await lerDeVoltaLi(m.motor, ALVO, 'situacao-pedido')).verificado).toBe(true);
+    expect(m.p.requisicoes.map((r) => r.metodo)).toEqual(['GET', 'GET', 'PUT', 'GET']);
   });
 
   it('a dry-run is not held to it (it sends nothing)', async () => {
@@ -1074,7 +1442,7 @@ describe('the task’s write deadline (no PUT starts later than 260 s after the 
       ambiente: ambiente(MODO_LI.dryRun),
       inicioDaTarefaMs: AGORA_MS - 10 * PRAZO_ULTIMA_ESCRITA_MS,
     });
-    const base = lida(await lerBaseLi(m.motor, ALVO));
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'pedido'));
     expect((await escreverLi(m.motor, SITUACAO, ENVIADO, base)).kind).toBe('nao-enviado');
   });
 });

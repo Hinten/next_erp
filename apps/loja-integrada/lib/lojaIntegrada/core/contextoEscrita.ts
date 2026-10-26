@@ -46,6 +46,18 @@
  * is another credential here. A park still wins: a parked credential throws
  * `LiContaParadaError` first.
  *
+ * ## The check armed before a write
+ *
+ * The package awaits a getter OUTSIDE the request's deadline, so a slow
+ * credential re-read can push a write's request well past the moment the
+ * engine decided to send it. The engine therefore ARMS a check
+ * (`verificacaoDaEscrita.armar`, the task deadline) right before a write; the
+ * write client's getter takes it when it is CALLED — synchronously with that
+ * write — and runs it after the re-read, before returning, so a refusal sends
+ * nothing. One-shot: the next getter call finds it gone, and the read client
+ * never takes it. The engine disarms it once the write settles, so a write the
+ * package refused before its getter leaves nothing behind for a later read.
+ *
  * Next-free, `db` a parameter, the environment a parameter (`deps.ambiente`).
  */
 import type { Firestore } from 'firebase-admin/firestore';
@@ -86,6 +98,14 @@ export interface PinoCredencialLi {
   fixar(ref: string): void;
 }
 
+/** A check the write client's NEXT credential re-read runs, after it and before the request (module header). */
+export interface VerificacaoDaEscritaLi {
+  /** Arm `verificar` (it throws to refuse). Arming over an armed check is a programming error (`TypeError`). */
+  armar(verificar: () => void): void;
+  /** Drop the armed check, if any. */
+  desarmar(): void;
+}
+
 export interface ContextoEscritaLojaIntegrada {
   readonly integracaoId: string;
   readonly conta: Integracao;
@@ -96,6 +116,8 @@ export interface ContextoEscritaLojaIntegrada {
   /** The writes pacer, spent by the engine. */
   readonly ritmo: RitmoLi;
   readonly credencial: PinoCredencialLi;
+  /** The engine's check before a write — the write client's getter only. */
+  readonly verificacaoDaEscrita: VerificacaoDaEscritaLi;
 }
 
 export interface ContextoEscritaDeps {
@@ -157,9 +179,30 @@ export async function loadLojaIntegradaContextoEscrita(
 
   const ritmo = ritmoDeEscritaLi(deps.esperar);
 
+  let verificacaoArmada: (() => void) | null = null;
+  const verificacaoDaEscrita: VerificacaoDaEscritaLi = {
+    armar: (verificar) => {
+      if (verificacaoArmada !== null) {
+        throw new TypeError('contextoEscrita: já há uma verificação armada para a próxima escrita');
+      }
+      verificacaoArmada = verificar;
+    },
+    desarmar: () => {
+      verificacaoArmada = null;
+    },
+  };
+
   const escrita = criarClienteEscritaLi({
     // No wait here: the engine paces BEFORE the read that decides a write.
-    obterCredencial: credencialAtual,
+    obterCredencial: async (): Promise<CredencialLi> => {
+      // Taken when CALLED — synchronously with the write that armed it — so
+      // only that request runs it, after the re-read and before the request.
+      const verificar = verificacaoArmada;
+      verificacaoArmada = null;
+      const credencial = await credencialAtual();
+      verificar?.();
+      return credencial;
+    },
     enviarCorrelationId: ENVIAR_CORRELATION_ID_LI,
     // `conta` LAST: whatever the options carry, the line names this conta.
     onChamada: criarObservadorLi({ ...deps.registro, conta: integracaoId }),
@@ -179,5 +222,5 @@ export async function loadLojaIntegradaContextoEscrita(
     gerarCorrelationId: deps.gerarCorrelationId,
   });
 
-  return { integracaoId, conta, escrita, leitura, ritmo, credencial };
+  return { integracaoId, conta, escrita, leitura, ritmo, credencial, verificacaoDaEscrita };
 }

@@ -44,9 +44,11 @@
  *  - the write chokepoint (the write engine's requirement 9, step 7), matched by FULL path in
  *    non-test source: only `core/contextoEscrita.ts` builds a write client; only
  *    `core/escrita.ts` names a package write operation or a write-client method; the write
- *    client's type is named in those two files only; and no source imports a subpath of the
- *    package (its manifest publishes the root alone, and a deep import is how its request
- *    core would be reached).
+ *    client's type is named in those two files only; no source names the package's request
+ *    core; and no source imports a subpath of the package or reaches its files by a relative
+ *    path (its manifest publishes the root alone, and a deep import is how its request core
+ *    would be reached). The chokepoint exempts `testing/**`, so nothing in the WHOLE app but a
+ *    test may import `testing/`.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -446,14 +448,36 @@ const DONOS_DA_ESCRITA: readonly { readonly nome: RegExp; readonly donos: readon
     donos: [ARQUIVO_DO_MOTOR],
   },
   { nome: /\bLiEscritaClient\b/, donos: [MODULO_DO_CONTEXTO_DE_ESCRITA, ARQUIVO_DO_MOTOR] },
+  // The package's request core sends a write without the write client: nobody here names it.
+  { nome: /\bexecutarLi\b/, donos: [] },
 ];
 
 /** The package, whose manifest publishes its root alone. */
 const PACOTE_LI = '@delfrance/integrations-loja-integrada';
 
+/**
+ * A specifier that reaches the package's files by PATH (a relative `…/integrations/loja-integrada/src/…`):
+ * it bypasses the manifest, and so the root's surface, exactly as a subpath would.
+ */
+const CAMINHO_DO_PACOTE_LI = /(?:^|\/)integrations\/loja-integrada(?:\/|$)/;
+
 /** The chokepoint scans non-test source: a test and `lib/lojaIntegrada/testing/**` name the fakes. */
 const ehFonteDaEscrita = (arquivo: string) =>
   !ehTeste(arquivo) && !arquivo.startsWith('lib/lojaIntegrada/testing/');
+
+/**
+ * App source that is neither a test, the shared test doubles, nor the test runner's own
+ * config and setup files (`vitest.*` at the app root): what must never import `testing/`.
+ */
+const ehFonteQueNaoTesta = (arquivo: string) =>
+  ehFonteDaEscrita(arquivo) && !/^vitest\.[^/]+$/.test(arquivo);
+
+/** The `testing/` imports of a source text (`arquivo` relative to the app root): relative, aliased or deep. */
+function importacoesDeTesting(arquivo: string, texto: string): string[] {
+  return especificadores(texto)
+    .filter((espec) => /(?:^|\/)testing\//.test(espec))
+    .map((espec) => `${arquivo} imports ${espec}`);
+}
 
 /** Why a source text (`arquivo` relative to the app root) breaks the write chokepoint; empty when it does not. */
 function violacoesDaEscrita(arquivo: string, texto: string): string[] {
@@ -465,7 +489,9 @@ function violacoesDaEscrita(arquivo: string, texto: string): string[] {
     }
   }
   for (const espec of especificadores(texto)) {
-    if (espec.startsWith(`${PACOTE_LI}/`)) violacoes.push(`${arquivo} imports ${espec}`);
+    if (espec.startsWith(`${PACOTE_LI}/`) || CAMINHO_DO_PACOTE_LI.test(espec)) {
+      violacoes.push(`${arquivo} imports ${espec}`);
+    }
   }
   return violacoes;
 }
@@ -631,11 +657,20 @@ describe('lib/lojaIntegrada layout', () => {
     }
   });
 
-  it('testing/ is imported by tests only', () => {
-    for (const arquivo of fontes) {
-      if (rel(arquivo).startsWith('testing/')) continue;
-      expect(readFileSync(arquivo, 'utf8'), rel(arquivo)).not.toMatch(/from '[^']*testing\//);
-    }
+  it('testing/ is imported by tests only — anywhere in the app (the chokepoint exempts testing/, so nothing else may reach it)', () => {
+    const fontesDoApp = arquivosTs(RAIZ_APP).map(relApp).filter(ehFonteQueNaoTesta);
+    const violacoes = fontesDoApp.flatMap((p) => importacoesDeTesting(p, lerDoApp(p) ?? ''));
+    expect(violacoes).toEqual([]);
+    // Anti-vacuity: the scan reached the app's other roots, not only this tree.
+    expect(fontesDoApp).toEqual(
+      expect.arrayContaining([
+        'functions/src/index.ts',
+        ROTA_PAGAMENTO,
+        MODULO_DO_CONTEXTO_DE_ESCRITA,
+        'proxy.ts',
+      ]),
+    );
+    expect(fontesDoApp.some((p) => p.startsWith('lib/lojaIntegrada/testing/'))).toBe(false);
   });
 
   it('core/redacao.ts and core/refCredencial.ts import only zod and @delfrance/core/*', () => {
@@ -652,6 +687,13 @@ describe('lib/lojaIntegrada layout', () => {
     expect(especificadores(lerDoDisco('core/redacao.ts') ?? '')).toEqual(
       expect.arrayContaining(['zod', '@delfrance/core/wire', '@delfrance/core/documents']),
     );
+  });
+
+  it('core/igualdadeJsonLi.ts is a LEAF: it imports nothing, so every closure that embeds it stays as it is', () => {
+    const texto = lerDoDisco('core/igualdadeJsonLi.ts');
+    expect(texto).not.toBeNull();
+    expect(texto).toContain('export function deepEqual(');
+    expect(especificadores(texto ?? '')).toEqual([]);
   });
 
   it("the logger's and the valves' import closure reaches no Admin SDK, admin data layer, Next or @/ alias", () => {
@@ -1180,6 +1222,17 @@ describe('the guards, on synthetic source', () => {
       'app/x/route.ts',
       "export { rotaDeEscritaLi } from '@delfrance/integrations-loja-integrada/src/rotasEscrita';",
     ],
+    [
+      'a RELATIVE import into the package source',
+      OUTRO,
+      "import { lerComSchemaLi } from '../../../../packages/integrations/loja-integrada/src/client';",
+    ],
+    [
+      'a relative import of the package directory itself',
+      'functions/src/x.ts',
+      "import * as li from '../../../../packages/integrations/loja-integrada';",
+    ],
+    ['the request core named anywhere', OUTRO, 'await executarLi(opcoes, pedido);'],
   ])('chokepoint flags %s', (_caso, arquivo, fonte) => {
     expect(violacoesDaEscrita(arquivo, fonte).length).toBeGreaterThan(0);
   });
@@ -1216,10 +1269,53 @@ describe('the guards, on synthetic source', () => {
         "import { buscarPedidoLi } from '@delfrance/integrations-loja-integrada';",
       ),
     ).toEqual([]);
+    // A path that merely names the channel is not the package's source.
+    expect(
+      violacoesDaEscrita(
+        OUTRO,
+        "import { x } from '../../../../web/lib/loja-integrada/rotaEtiqueta';\n" +
+          'const y = executarLista();',
+      ),
+    ).toEqual([]);
     // Test sources and the shared test doubles are exempt; source is not.
     expect(ehFonteDaEscrita('lib/lojaIntegrada/core/escrita.test.ts')).toBe(false);
     expect(ehFonteDaEscrita('lib/lojaIntegrada/testing/fakeDb.ts')).toBe(false);
     expect(ehFonteDaEscrita(OUTRO)).toBe(true);
+  });
+
+  it.each([
+    [
+      'a functions source, through the alias',
+      'functions/src/x.ts',
+      "import { FakeDb } from '@/lib/lojaIntegrada/testing/fakeDb';",
+    ],
+    [
+      'a route, relatively',
+      'app/x/route.ts',
+      "import { f } from '../../lib/lojaIntegrada/testing/fixtures';",
+    ],
+    ['a lib source, dynamically', OUTRO, "const m = await import('../testing/pedidosLi');"],
+    [
+      'a re-export',
+      'proxy.ts',
+      "export { seedConta } from './lib/lojaIntegrada/testing/fixtures';",
+    ],
+  ])('testing/ guard flags %s', (_caso, arquivo, fonte) => {
+    expect(ehFonteQueNaoTesta(arquivo)).toBe(true);
+    expect(importacoesDeTesting(arquivo, fonte)).toHaveLength(1);
+  });
+
+  it('testing/ guard passes a package whose NAME ends in testing, a comment, and the test runner’s own files', () => {
+    expect(
+      importacoesDeTesting(
+        OUTRO,
+        "import { x } from '@firebase/rules-unit-testing';\n// testing/fakeDb.ts builds the SDK's classes",
+      ),
+    ).toEqual([]);
+    expect(ehFonteQueNaoTesta('vitest.setup.ts')).toBe(false);
+    expect(ehFonteQueNaoTesta('vitest.tasks.setup.ts')).toBe(false);
+    expect(ehFonteQueNaoTesta('functions/src/vitest.x.ts')).toBe(true);
+    expect(ehFonteQueNaoTesta('lib/lojaIntegrada/testing/fakeDb.ts')).toBe(false);
   });
 
   it('seam accepts criarObservadorLi(…) imported from the logger, and exempts the logger itself', () => {

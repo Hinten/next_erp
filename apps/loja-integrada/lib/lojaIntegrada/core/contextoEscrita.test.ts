@@ -7,7 +7,7 @@
  * D17: every case either stops at the read switch or answers from a stub; the
  * unit config's network kill-switch fails any `fetch` that reaches a real host.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   liEcoSituacaoPedidoSchema,
   liPedidoSchema,
@@ -54,10 +54,15 @@ const ID = 'conta-li-1';
 beforeEach(() => {
   __resetAllReadCaches();
   __setRelogioDoCacheParaTestes(() => AGORA_MS);
+  // D17, per file: nothing here may reach the global `fetch` — every client gets the stub platform.
+  vi.stubGlobal('fetch', () => {
+    throw new Error('contextoEscrita.test: o fetch global não pode ser chamado');
+  });
 });
 afterEach(() => {
   __resetAllReadCaches();
   __setRelogioDoCacheParaTestes();
+  vi.unstubAllGlobals();
 });
 
 interface PedidoGravado {
@@ -232,6 +237,67 @@ describe('the clients', () => {
       ['chamada', ID, 'GET'],
     ]);
     expect(JSON.stringify(gravador.linhas)).not.toContain(TOKEN_A);
+  });
+});
+
+describe('the check armed before a write (the task deadline, re-checked after the credential re-read)', () => {
+  async function contexto() {
+    const db = new FakeDb();
+    seedConta(db, ID);
+    seedCredencial(db, ID);
+    const p = plataforma();
+    const ctx = await loadLojaIntegradaContextoEscrita(asDb(db), ID, deps({ fetch: p.fetch }).deps);
+    return { db, p, ctx };
+  }
+  const enviar = (ctx: ContextoEscritaLojaIntegrada) =>
+    ctx.escrita.enviarEscritaLi({
+      operacao: 'teste',
+      caminho: `/v1/situacao/pedido/${String(NUMERO_LI)}`,
+      corpo: { codigo: 'pedido_enviado' },
+      ecoSchema: liEcoSituacaoPedidoSchema,
+    });
+  const leiturasDaCredencial = (db: FakeDb) =>
+    db.leituras.filter((c) => c === caminhoCredencial(ID)).length;
+
+  it('runs AFTER the write client’s credential re-read and BEFORE its request — a refusal sends nothing', async () => {
+    const { db, p, ctx } = await contexto();
+    const antes = leiturasDaCredencial(db);
+    const recusa = new RangeError('prazo');
+    let lidasNaVerificacao = -1;
+    ctx.verificacaoDaEscrita.armar(() => {
+      lidasNaVerificacao = leiturasDaCredencial(db);
+      throw recusa;
+    });
+    await expect(enviar(ctx)).rejects.toBe(recusa);
+    expect(lidasNaVerificacao).toBe(antes + 1);
+    expect(p.pedidos).toEqual([]);
+  });
+
+  it('is one-shot: taken by the next credential read of the WRITE client only', async () => {
+    const { p, ctx } = await contexto();
+    let vezes = 0;
+    ctx.verificacaoDaEscrita.armar(() => {
+      vezes += 1;
+    });
+    // The read client (the history read) never takes it.
+    await listarHistoricoSituacaoLi(ctx.leitura, NUMERO_LI);
+    expect(vezes).toBe(0);
+    await enviar(ctx);
+    await enviar(ctx);
+    expect(vezes).toBe(1);
+    expect(p.pedidos.map((x) => x.metodo)).toEqual(['GET', 'PUT', 'PUT']);
+  });
+
+  it('desarmar clears it; arming twice is a programming error', async () => {
+    const { ctx } = await contexto();
+    let vezes = 0;
+    ctx.verificacaoDaEscrita.armar(() => {
+      vezes += 1;
+    });
+    expect(() => ctx.verificacaoDaEscrita.armar(() => undefined)).toThrow(TypeError);
+    ctx.verificacaoDaEscrita.desarmar();
+    await lerPedido(ctx);
+    expect(vezes).toBe(0);
   });
 });
 
