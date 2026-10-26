@@ -122,7 +122,7 @@ import {
   type ComponentesKit,
   type EstadoAnuncioShopee,
   type Foto,
-  atributosParaRequisicaoShopee,
+  atributosParaEnvioShopee,
   dentroDaFaixaShopee,
   descreverFaixaShopee,
   descricaoDoAnuncioShopee,
@@ -491,17 +491,17 @@ export function dimensaoParaPublicar(produto: ProdutoParaPublicar): ShopeeDimens
  * because `publicarAnuncioCli.ts`'s dry run calls it with the same two
  * arguments.
  *
- * **`lista`** — `lerAtributosArmazenadosShopee` → `atributosParaRequisicaoShopee`:
- * whichever of the three stored shapes the link holds (the publish read-back's
- * REQUEST shape, the product import's READ shape, the legacy value with no
+ * **`lista`** — `lerAtributosArmazenadosShopee` → `atributosParaEnvioShopee`:
+ * whichever of the three stored shapes the link holds (write-back #1's REQUEST
+ * shape, as sent; the product import's READ shape; the legacy value with no
  * `value_id`), in stored order, always in the request shape. The ERP models no
  * Shopee attribute of its own, so the stored list is the ONLY source there is.
  *
  * - Everything usable that is stored is SENT — an attribute the current tree
  *   does not show (another category's, a child whose parent value is no longer
- *   chosen) included. Dropping those is the draft SAVE's job
- *   (`atributosParaGravarShopee`), never the publisher's: it sends what is
- *   stored.
+ *   chosen) included. Dropping those is the web editor's save (P13, via
+ *   `atributosParaGravarShopee`, before it posts); the draft route stores what
+ *   it receives, and the publisher sends what is stored.
  * - An entry with no usable value is dropped rather than sent empty: Shopee
  *   reads an empty `attribute_value_list` as a DELETION. A custom value
  *   (`value_id: 0`) with a blank name is such a value — dropped, so the
@@ -512,10 +512,15 @@ export function dimensaoParaPublicar(produto: ProdutoParaPublicar): ShopeeDimens
  *   app sent it too). Before #1911 this function dropped it in silence, which on
  *   a mandatory attribute read only as "missing"; a refusal by name is routable
  *   to the attribute editor. A blank name is still dropped.
- * - ⚠️ A DATE value goes out VERBATIM, in the form it was stored: a read-form
- *   `06/2021` is NOT converted to a timestamp here. The write form waits on the
- *   BR captures, and the conversion (`timestampDeDataShopee`) lives in that ONE
- *   module, for the editor.
+ * - ⚠️ A DATE stored in the READ form (`06/2021`, what the product import
+ *   stores verbatim) goes out in the WRITE form: guide 209 §2.3 documents the
+ *   write as a Unix timestamp in `original_value_name`, so the read form sent
+ *   as is would be refused. The tree says which attributes are dates
+ *   (`inputValidationType` 4), and the conversion is the shared module's
+ *   (`atributosParaEnvioShopee` → `timestampDeDataShopee`) — never decided
+ *   here. Its instant-of-day (12:00 UTC) stays UNVERIFIED until the BR
+ *   captures (Q-DB2) and lives in that ONE place. A timestamp, a date the tree
+ *   does not know and a text that is no real date go out as stored.
  *
  * **`faltando`** — the `obrigatorio-ausente` rows of `validarAtributosShopee`,
  * and ONLY those: a VISIBLE mandatory attribute with no decoded value. A ROOT
@@ -524,8 +529,9 @@ export function dimensaoParaPublicar(produto: ProdutoParaPublicar): ShopeeDimens
  * `"<filho> (em <pai>: <valor>)"`; the child of an unchosen value is invisible
  * and never missing. Every other kind the validator finds (a custom value on a
  * list-only attribute, a value outside the list, too many values, a unit, a
- * value type, a read-form date, an orphan) reaches Shopee, which names it: the
- * editor shows them, the publisher refuses none of them. `obrigatorio-requer-busca`
+ * value type, an orphan) reaches Shopee, which names it — a read-form date
+ * reaches it CONVERTED (above): the editor shows them, the publisher refuses
+ * none of them. `obrigatorio-requer-busca`
  * is an EXTRA row beside `obrigatorio-ausente`, so filtering on the latter names
  * each missing attribute exactly once.
  *
@@ -541,7 +547,7 @@ export function atributosParaPublicar(
   const faltando = validarAtributosShopee(projetados, lidos)
     .filter((p) => p.tipo === TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioAusente)
     .map((p) => p.nome);
-  return { lista: atributosParaRequisicaoShopee(lidos), faltando };
+  return { lista: atributosParaEnvioShopee(projetados, lidos), faltando };
 }
 
 /**

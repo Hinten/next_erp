@@ -22,13 +22,17 @@ import type { AtributoDto, AtributoInfoDto, AtributoValorDto } from './taxonomia
  *
  * | writer | element shape |
  * |---|---|
- * | the publish's read-back and this module's writes | the REQUEST shape `{attribute_id, attribute_value_list: [{value_id, original_value_name?, value_unit?}]}` |
+ * | the publish's write-back #1 (`apps/shopee`'s `publicarAnuncio.ts` `dadosDoWriteBack1`: the `attribute_list` AS SENT) and the draft route's save (`anuncios/rascunho.ts`, through this module's write schema) | the REQUEST shape `{attribute_id, attribute_value_list: [{value_id, original_value_name?, value_unit?}]}` |
  * | the product import (`produtos/mapeamento.ts`, the item read VERBATIM) | the READ shape — every value carries all three keys, `null` when unset, plus whatever Shopee added |
  * | the legacy Flutter app | a custom value with NO `value_id` at all, only `original_value_name` |
  *
  * {@link lerAtributosArmazenadosShopee} reads all three and answers the
  * REQUEST shape, always; every writer here writes the request shape (D9). No
- * migration: the publish's read-back rewrites the field on every publish.
+ * migration: the decoder reads all three shapes. Write-back #1 replaces the
+ * field with the request shape whenever a publish SENDS a non-empty
+ * `attribute_list`; a list with nothing usable sends none and leaves the stored
+ * shape as it is, and so does the kit arm's `add_kit_item` write-back. The
+ * publish's READ-BACK (write-back #2) never touches `attributes`.
  *
  * ⚠️ **A legacy value with no `value_id` is SENT** — as a custom value
  * `{value_id: 0, original_value_name}` (Lucas, #1911 Round 3 Q1: the legacy app
@@ -42,8 +46,16 @@ import type { AtributoDto, AtributoInfoDto, AtributoValorDto } from './taxonomia
  * The hierarchy exists only in the category's tree (`get_attribute_tree`, guide
  * 209 §2.5): a VALUE carries the attributes it unlocks. On the wire parent and
  * child are siblings. {@link atributosVisiveisShopee} is the one walk that says
- * which attributes a given set of chosen values shows; the validator, the
- * draft save and the editor all ask it.
+ * which attributes a given set of chosen values shows; the validator, the web
+ * editor's save filter ({@link atributosParaGravarShopee}) and the editor's
+ * rendering all ask it. The draft ROUTE does not: it has no tree.
+ *
+ * ## What a publish SENDS
+ *
+ * {@link atributosParaEnvioShopee} — the decoded list in the request shape,
+ * with ONE conversion the tree decides: a DATE stored in the READ form goes
+ * out in the WRITE form (guide 209 §2.3), through the ONE date convention
+ * below.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -238,7 +250,9 @@ function lerValor(bruto: unknown): LeituraDeValor {
  *
  * Stored order is kept. For every input the publisher accepted before P6, the
  * request list ({@link atributosParaRequisicaoShopee}) is byte-identical to
- * what it sent; the one change is the legacy row above.
+ * what it sent; the one change is the legacy row above. (The publisher then
+ * sends the list through {@link atributosParaEnvioShopee}, which also converts
+ * a date stored in READ form to the write form.)
  */
 export function lerAtributosArmazenadosShopee(bruto: unknown): AtributosLidosShopee {
   const atributos: AtributoLidoShopee[] = [];
@@ -643,17 +657,19 @@ function dataCivilValida(ano: number, mes: number, dia: number): boolean {
 }
 
 /**
- * ⚠️ **THE date convention — ONE place, UNVERIFIED** until Lucas's BR captures
- * (guide captures 1–3) show a stored date's `original_value_name` and the
- * timestamp Seller Centre writes. Guide 209 §2.3 says a write sends a Unix
- * timestamp and a read answers `MM/YYYY` / `DD/MM/YYYY`; it does not say WHICH
- * instant of the day.
+ * ⚠️ **THE date convention — ONE place.** The FORMS are documented: guide 209
+ * §2.3 says a create or update sends the value "as a Unix timestamp in the
+ * original_value_name field", while `get_item_base_info` answers `MM/YYYY` /
+ * `DD/MM/YYYY` — so a date stored in the read form is, sent verbatim, a form
+ * the docs call invalid for a write ({@link atributosParaEnvioShopee} converts
+ * it). What is UNVERIFIED until Lucas's BR captures 1–3 (Q-DB2) is WHICH
+ * instant of the day the timestamp names — the guide does not say.
  *
  * Chosen: **12:00 UTC** of the date (day 1 for a month-only one) — the same
  * calendar date in every zone from UTC−11 to UTC+11 (BRT, UTC, Shopee's SG),
  * so no zone is ever read. A timestamp is read back as the UTC calendar date of
  * its instant. A capture that says otherwise amends THESE TWO functions and
- * nothing else.
+ * nothing else — the publisher's conversion goes through them.
  */
 const HORA_UTC_DA_DATA_SHOPEE = 12;
 
@@ -679,8 +695,12 @@ const PADRAO_DIA_MES_ANO = /^(\d{2})\/(\d{2})\/(\d{4})$/;
 
 /**
  * Read a date attribute's value (its `original_value_name`) — the editor's
- * reading; the publisher sends a stored date VERBATIM (Q-DB2, until the
- * captures settle the write form).
+ * reading, the validator's `data-em-formato-de-leitura`, and the publisher's
+ * conversion ({@link atributosParaEnvioShopee}): guide 209 §2.3 documents the
+ * WRITE form as a Unix timestamp and the READ form as `MM/YYYY` /
+ * `DD/MM/YYYY`, so a `leitura` answer is a value that must be converted
+ * before it is sent. Only the instant-of-day of that conversion waits on the
+ * captures (Q-DB2, the convention above).
  *
  * - digits only ⇒ `timestamp`, Unix SECONDS, read as the UTC calendar date
  *   (`dia: null` when `dateFormatType` is month-only);
@@ -731,7 +751,9 @@ export function lerDataDeAtributoShopee(
 /**
  * The WRITE form of a date attribute's value: the Unix SECONDS, as a string, of
  * 12:00 UTC of that date (day 1 when `dia` is `null`) — see the convention
- * above (UNVERIFIED until the BR captures).
+ * above (the form is guide 209 §2.3's; the instant is UNVERIFIED until the BR
+ * captures). The publisher's ONE conversion of a read-form date calls this
+ * ({@link atributosParaEnvioShopee}).
  *
  * `null` when the date is not a real calendar date, or is before 1970 (a
  * negative timestamp is no form Shopee documents) or after 9999. Pure, total.
@@ -764,7 +786,7 @@ export function timestampDeDataShopee(data: {
  * | `valores-demais` | a single-select with > 1 value; a multi-select with > `maxValueCount` (inclusive; `null` = no cap) |
  * | `unidade-invalida` | `formatType` 2 ∧ a custom value whose `value_unit` is absent or not in `attributeUnitList` — EXACT match (`'cm'` ≠ `'CM'`) |
  * | `tipo-de-valor` | a custom name that is not an integer (`inputValidationType` 1, `^-?\d+$`), a decimal (3, `^-?\d+(\.\d+)?$`, dot) or a date (4) |
- * | `data-em-formato-de-leitura` | a date (4) stored in the READ form (`06/2021`) — a write sends a timestamp |
+ * | `data-em-formato-de-leitura` | a date (4) stored in the READ form (`06/2021`) — a write sends a timestamp; the publisher CONVERTS it on the way out ({@link atributosParaEnvioShopee}), so this row only tells the editor what is stored |
  * | `filho-sem-pai` | a stored attribute of the tree that the chosen values do not show |
  * | `fora-da-categoria` | a stored attribute the tree does not hold at all |
  */
@@ -842,8 +864,9 @@ function problemaDoTipoDeValor(
  *
  * Two callers act on DIFFERENT subsets of ONE rule set (not a #1369 copy): the
  * publisher refuses only `obrigatorio-ausente` (`atributo-obrigatorio`) — every
- * other kind reaches Shopee, which names it — while the editor shows them all.
- * Pure, total.
+ * other kind reaches Shopee, which names it, except a read-form date, which
+ * {@link atributosParaEnvioShopee} converts before it is sent — while the
+ * editor shows them all. Pure, total.
  */
 export function validarAtributosShopee(
   arvore: ArvoreAtributosShopee,
@@ -924,15 +947,19 @@ export function validarAtributosShopee(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                        What a draft save writes                             */
+/*                    What the draft editor's save posts                       */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The attribute list a draft SAVE writes (#1911, D9) — the editor's `patch`:
- * the REQUEST shape, VISIBLE attributes only ({@link atributosVisiveisShopee}),
- * in walk order. This is where an attribute whose parent value was unchosen,
- * and another category's attributes, are dropped — never in the publisher,
- * which sends what is stored.
+ * The attribute list the web draft EDITOR posts (#1911, D9) — its `patch`: the
+ * REQUEST shape, VISIBLE attributes only ({@link atributosVisiveisShopee}), in
+ * walk order. The editor runs this over the operator's list BEFORE it posts
+ * (P13's attribute editor, `AtributosRascunhoShopee.tsx`), and that is where an
+ * attribute whose parent value was unchosen, and another category's
+ * attributes, are dropped. Nowhere else: the draft ROUTE (`anuncios/rascunho.ts`)
+ * makes zero Shopee calls and has no tree, so it writes the patch's list as
+ * received, and the publisher sends what is stored. Until P13 nothing calls
+ * this, and the web writes no `attributes`.
  *
  * ⚠️ On a TRUNCATED tree the stored attributes the walk does not show are KEPT
  * (appended, in stored order): they may sit below the cut, and a save never
@@ -960,4 +987,73 @@ export function atributosParaGravarShopee(
     }
   }
   return saida;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            What a publish sends                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One decoded value as it is SENT: a date in the READ form becomes the WRITE
+ * form; anything else is the decoded value untouched. `no` is the attribute's
+ * node in the tree, or `null` when the tree does not hold it.
+ */
+function valorParaEnvio(valor: ValorAtributoShopee, no: AtributoDto | null): ValorAtributoShopee {
+  const info = no?.attributeInfo ?? null;
+  if (info === null || info.inputValidationType !== INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE.data) {
+    return valor;
+  }
+  // A value of the list carries no name after the decoder, so it reads as no
+  // date at all and goes out untouched.
+  const data = lerDataDeAtributoShopee(valor.original_value_name, info.dateFormatType);
+  if (data === null || data.forma !== 'leitura') return valor;
+  const timestamp = timestampDeDataShopee(data);
+  return timestamp === null ? valor : { ...valor, original_value_name: timestamp };
+}
+
+/**
+ * **The attribute list a publish SENDS** (#1911, D9; P6 review) — what
+ * `add_item` / `update_item` carry as `attribute_list`:
+ * {@link atributosParaRequisicaoShopee}'s list, same attributes, same values,
+ * same order, with ONE conversion.
+ *
+ * ⚠️ **A DATE stored in the READ form goes out in the WRITE form.** Guide 209
+ * §2.3 documents the write form as a Unix timestamp in `original_value_name`
+ * and the read form as `MM/YYYY` / `DD/MM/YYYY` — and the product import
+ * stores the read VERBATIM, so every imported listing with a date attribute
+ * would otherwise send `06/2021` on every republish. A value is converted when
+ * ALL hold:
+ *
+ * - the attribute's node in the tree — anywhere in it, visible or not (a
+ *   stored orphan is SENT, so it is sent in the right form) — has
+ *   `inputValidationType` 4 (`INPUT_VALIDATION_TYPE_ATRIBUTO_SHOPEE.data`);
+ * - {@link lerDataDeAtributoShopee} reads its name, under the node's
+ *   `dateFormatType`, as a real date in the `leitura` form;
+ * - {@link timestampDeDataShopee} answers a write form (a date before 1970 has
+ *   none).
+ *
+ * Then `original_value_name` becomes that timestamp — through the ONE date
+ * convention, whose instant-of-day stays UNVERIFIED until the BR captures
+ * (Q-DB2) and lives in that one place, never here. Everything else goes out
+ * exactly as stored-and-decoded: a timestamp (never re-encoded), an attribute
+ * the tree does not hold (a truncated tree included — nothing is converted
+ * from missing knowledge), any other validation type, and a text that is no
+ * real date (`31/06/2021` — the editor names it `tipo-de-valor`, Shopee
+ * refuses it by name).
+ *
+ * The publisher's write-back #1 stores what was SENT, so a converted date
+ * reaches storage in the write form with the first publish that sends it.
+ * Pure, total.
+ */
+export function atributosParaEnvioShopee(
+  arvore: ArvoreAtributosShopee,
+  lidos: readonly AtributoLidoShopee[],
+): AtributoShopeeRequisicao[] {
+  return atributosParaRequisicaoShopee(lidos).map((atributo) => {
+    const no = noDaArvore(arvore.atributos, atributo.attribute_id);
+    return {
+      attribute_id: atributo.attribute_id,
+      attribute_value_list: atributo.attribute_value_list.map((v) => valorParaEnvio(v, no)),
+    };
+  });
 }

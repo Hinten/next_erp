@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   atributoShopeeRequisicaoSchema,
+  atributosParaEnvioShopee,
   atributosParaGravarShopee,
   atributosParaRequisicaoShopee,
   atributosShopeeRequisicaoSchema,
@@ -1145,6 +1146,169 @@ describe('datas — leitura nas duas formas, escrita em UMA convenção (NÃO VE
     ]) {
       expect(timestampDeDataShopee(ruim), JSON.stringify(ruim)).toBeNull();
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    (7b) what a publish SENDS (P6 review)                    */
+/* -------------------------------------------------------------------------- */
+
+describe('atributosParaEnvioShopee — a data na forma de LEITURA sai na de ESCRITA (guide 209 §2.3)', () => {
+  const FABRICACAO = atributo(505, {
+    name: 'Fabricação',
+    info: { inputType: 3, inputValidationType: 4, dateFormatType: 1 },
+  });
+  const VALIDADE = atributo(506, {
+    name: 'Validade',
+    info: { inputType: 3, inputValidationType: 4, dateFormatType: 0 },
+  });
+  /** A date CHILD, under value 1 of a list attribute. */
+  const DATA_FILHA = atributo(701, {
+    name: 'Lote',
+    info: { inputType: 3, inputValidationType: 4, dateFormatType: 0 },
+  });
+  const COM_FILHA = atributo(700, {
+    name: 'Tipo',
+    info: { inputType: 1 },
+    attributeValueList: [valor(1, 'Com lote', [DATA_FILHA]), valor(2, 'Sem lote')],
+  });
+  const DATAS = arvore([FABRICACAO, VALIDADE, COM_FILHA]);
+
+  /** One custom value on one attribute. */
+  function custom(attributeId: number, nome: string) {
+    return {
+      attribute_id: attributeId,
+      attribute_value_list: [{ value_id: 0, original_value_name: nome }],
+    };
+  }
+
+  it('PAR: "06/2021" (MM/YYYY) e "30/06/2021" (DD/MM/YYYY) num nó de data saem como o timestamp da convenção ÚNICA', () => {
+    const enviados = atributosParaEnvioShopee(
+      DATAS,
+      lidos([custom(505, '06/2021'), custom(506, ' 30/06/2021 ')]),
+    );
+    expect(enviados).toEqual([
+      custom(505, timestampDeDataShopee({ ano: 2021, mes: 6, dia: null }) ?? 'x'),
+      custom(506, timestampDeDataShopee({ ano: 2021, mes: 6, dia: 30 }) ?? 'x'),
+    ]);
+    // The literal too: a change of convention is seen HERE, not only through the function.
+    expect(enviados[0]?.attribute_value_list[0]?.original_value_name).toBe('1622548800');
+  });
+
+  it('⛔ QUASE-PAR: o MESMO "06/2021" num nó que NÃO é data (inputValidationType 2, 1, 3, null) ou fora da árvore sai como está', () => {
+    const naoData = arvore([
+      atributo(510, { info: { inputType: 3, inputValidationType: 2 } }),
+      atributo(511, { info: { inputType: 3, inputValidationType: 1 } }),
+      atributo(512, { info: { inputType: 3, inputValidationType: 3 } }),
+      atributo(513, { info: { inputType: 3, inputValidationType: null } }),
+      atributo(514, { attributeInfo: null }),
+    ]);
+    const guardados = [510, 511, 512, 513, 514, 9999].map((id) => custom(id, '06/2021'));
+    expect(atributosParaEnvioShopee(naoData, lidos(guardados))).toEqual(guardados);
+  });
+
+  it('⛔ QUASE-PAR: um TIMESTAMP nunca é re-codificado — nem o que não cai às 12:00 UTC', () => {
+    // 00:00 UTC of 2021-06-01 on a day node, 12:00 UTC of 2021-06-17 on a month-only node:
+    // re-encoding either would answer 1622548800 — so leaving them is a real decision.
+    const guardados = [custom(506, '1622505600'), custom(505, '1623931200')];
+    expect(timestampDeDataShopee({ ano: 2021, mes: 6, dia: 1 })).toBe('1622548800');
+    expect(atributosParaEnvioShopee(DATAS, lidos(guardados))).toEqual(guardados);
+  });
+
+  it('⛔ QUASE-PAR: o que não é data real ("31/06/2021", "13/2021", "abc") e um valor DA LISTA (sem nome) num nó de data saem como estão', () => {
+    const guardados = [
+      custom(506, '31/06/2021'),
+      custom(505, '13/2021'),
+      custom(701, 'abc'),
+      { attribute_id: 700, attribute_value_list: [{ value_id: 2 }] },
+    ];
+    expect(atributosParaEnvioShopee(DATAS, lidos(guardados))).toEqual(guardados);
+  });
+
+  it('⛔ QUASE-PAR: uma data de LEITURA sem forma de escrita (antes de 1970: não há timestamp negativo) sai como está', () => {
+    const antesDe1970 = [custom(505, '06/1969')];
+    // Not vacuous: it IS a read-form date — only the write form refuses it.
+    expect(lerDataDeAtributoShopee('06/1969', 1)?.forma).toBe('leitura');
+    expect(timestampDeDataShopee({ ano: 1969, mes: 6, dia: null })).toBeNull();
+    expect(atributosParaEnvioShopee(DATAS, lidos(antesDe1970))).toEqual(antesDe1970);
+  });
+
+  it('o nó é procurado na árvore INTEIRA: a data filha de um valor NÃO escolhido (órfã, que o publicador ENVIA) também é convertida', () => {
+    const escolhido = lidos([
+      { attribute_id: 700, attribute_value_list: [{ value_id: 1 }] },
+      custom(701, '01/02/2024'),
+    ]);
+    const orfao = lidos([
+      { attribute_id: 700, attribute_value_list: [{ value_id: 2 }] },
+      custom(701, '01/02/2024'),
+    ]);
+    const esperado = timestampDeDataShopee({ ano: 2024, mes: 2, dia: 1 }) ?? 'x';
+    for (const [nome, lista] of [
+      ['escolhido', escolhido],
+      ['órfão', orfao],
+    ] as const) {
+      expect(atributosParaEnvioShopee(DATAS, lista)[1], nome).toEqual(custom(701, esperado));
+    }
+  });
+
+  it('TODOS os valores de um nó de data são convertidos, um a um — não só o primeiro (o timestamp entre eles fica)', () => {
+    const guardado = [
+      {
+        attribute_id: 506,
+        attribute_value_list: [
+          { value_id: 0, original_value_name: '30/06/2021' },
+          { value_id: 0, original_value_name: '1622505600' },
+          { value_id: 0, original_value_name: '01/07/2021' },
+        ],
+      },
+    ];
+    expect(atributosParaEnvioShopee(DATAS, lidos(guardado))).toEqual([
+      {
+        attribute_id: 506,
+        attribute_value_list: [
+          {
+            value_id: 0,
+            original_value_name: timestampDeDataShopee({ ano: 2021, mes: 6, dia: 30 }) ?? 'x',
+          },
+          { value_id: 0, original_value_name: '1622505600' },
+          {
+            value_id: 0,
+            original_value_name: timestampDeDataShopee({ ano: 2021, mes: 7, dia: 1 }) ?? 'x',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('árvore TRUNCADA: o nó que ela TEM converte; o que ficou abaixo do corte (ela não tem) sai como está', () => {
+    const truncada = arvore([FABRICACAO], true);
+    expect(
+      atributosParaEnvioShopee(truncada, lidos([custom(505, '06/2021'), custom(506, '06/2021')])),
+    ).toEqual([custom(505, '1622548800'), custom(506, '06/2021')]);
+  });
+
+  it('fora das datas, É a lista de atributosParaRequisicaoShopee — mesmos atributos, mesmos valores, mesma ORDEM, unidade preservada', () => {
+    const corpus: unknown[] = [
+      { attribute_id: 6, attribute_value_list: [{ value_id: 9, original_value_name: 'Lido' }] },
+      {
+        attribute_id: 505,
+        attribute_value_list: [{ value_id: 0, original_value_name: '06/2021', value_unit: 'mês' }],
+      },
+      { attribute_id: 1, attribute_value_list: [{ value_id: 5, value_unit: ' kg ' }] },
+      { attribute_id: 5, attribute_value_list: [{ original_value_name: 'Legado' }] },
+    ];
+    const enviados = atributosParaEnvioShopee(DATAS, lidos(corpus));
+    const requisicao = atributosParaRequisicaoShopee(lidos(corpus));
+    expect(enviados.map((a) => a.attribute_id)).toEqual(requisicao.map((a) => a.attribute_id));
+    expect(enviados.filter((a) => a.attribute_id !== 505)).toEqual(
+      requisicao.filter((a) => a.attribute_id !== 505),
+    );
+    expect(enviados[1]).toEqual({
+      attribute_id: 505,
+      attribute_value_list: [{ value_id: 0, original_value_name: '1622548800', value_unit: 'mês' }],
+    });
+    // With NO tree nothing is a date: the send list IS the request list.
+    expect(atributosParaEnvioShopee(arvore([]), lidos(corpus))).toEqual(requisicao);
   });
 });
 

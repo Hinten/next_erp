@@ -777,15 +777,17 @@ the same id under another produto is a different document and creates (201).
 
 `atributosParaPublicar` decides nothing about attributes: it composes
 `@delfrance/schemas`' `atributosShopee.ts` — `lerAtributosArmazenadosShopee` →
-`atributosParaRequisicaoShopee` for the list, and the `obrigatorio-ausente` rows
+`atributosParaEnvioShopee` for the list, and the `obrigatorio-ausente` rows
 of `validarAtributosShopee` for the missing names — the same module the draft
 route projects with and the web's draft editor will render with (#1369). A
 raw-text pin in `montagemAnuncio.test.ts` reds if `montagemAnuncio.ts` reads an
-attribute value itself or names the legacy origin. Its signature is unchanged,
-because `publicarAnuncioCli.ts`'s dry run calls it too.
+attribute value itself, names the legacy origin or converts a date itself. Its
+signature is unchanged, because `publicarAnuncioCli.ts`'s dry run calls it too.
 
-- **Three stored shapes, one request shape.** The publish read-back's REQUEST
-  shape, the product import's READ shape and the legacy value with no
+- **Three stored shapes, one request shape.** Write-back #1's REQUEST shape
+  (`publicarAnuncio.ts` stores the `attribute_list` AS SENT, whenever a
+  non-empty one is sent; the read-back, write-back #2, never touches
+  `attributes`), the product import's READ shape and the legacy value with no
   `value_id` all decode to the request shape — `attribute_id` plus an
   `attribute_value_list` of `{value_id, original_value_name?, value_unit?}` —
   in stored order; the first entry of a repeated id that carries a usable value
@@ -803,15 +805,28 @@ because `publicarAnuncioCli.ts`'s dry run calls it too.
   missing; a mandatory root repeated in the tree is named once.
 - **Every other finding of the validator reaches Shopee** — a custom value on a
   list-only attribute, a value outside the list, too many values, a unit, a
-  value type, a read-form date, an orphan or another category's attribute: the
-  editor shows them, publish refuses none of them and SENDS what is stored.
-  Dropping invisible attributes is the draft SAVE's job
-  (`atributosParaGravarShopee`), never the publisher's.
-- ⚠️ **A DATE goes out verbatim**, in the form it was stored; a read-form
-  `06/2021` is not converted here. The write form — 12:00 UTC, in SECONDS — is
-  UNVERIFIED until the BR captures 1–3 and lives in ONE place in the shared
-  module (`HORA_UTC_DA_DATA_SHOPEE` and the two functions beside it), so a
-  capture amends one constant, not a caller.
+  value type, an orphan or another category's attribute: the editor shows them,
+  publish refuses none of them and SENDS what is stored (a read-form date
+  converted, below). Dropping invisible attributes (an unchosen parent's child,
+  another category's) is the web draft EDITOR's job: it runs
+  `atributosParaGravarShopee` over the operator's list before it posts the patch
+  (P13, `AtributosRascunhoShopee.tsx`). The draft route (`rascunho.ts`) makes
+  zero Shopee calls and has no tree, so it writes the patch's request-shape list
+  as received, and publish sends what is stored. Until P13 nothing calls it, and
+  the web never writes `attributes`.
+- ⚠️ **A DATE stored in the READ form goes out in the WRITE form.** Guide 209
+  §2.3 documents the write as a Unix timestamp in `original_value_name` and the
+  read as `MM/YYYY` / `DD/MM/YYYY`; the product import stores the read
+  verbatim, so an imported listing would otherwise send `06/2021` on every
+  republish. `atributosParaEnvioShopee` converts a custom value whose tree node
+  (anywhere in the tree) has `inputValidationType` 4 and whose name reads as a
+  real read-form date, through `timestampDeDataShopee`. A timestamp is never
+  re-encoded; an attribute the tree does not hold, another validation type and
+  a text that is no real date (`31/06/2021`) go out as stored. The INSTANT —
+  12:00 UTC, in SECONDS — is UNVERIFIED until the BR captures 1–3 (Q-DB2) and
+  lives in ONE place in the shared module (`HORA_UTC_DA_DATA_SHOPEE` and the two
+  functions beside it), so a capture amends one constant, not a caller.
+  Write-back #1 stores what was sent, so the converted form reaches storage.
 
 ### The update sequence: full lists, and `item_status` is never sent
 

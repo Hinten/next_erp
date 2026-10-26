@@ -1243,6 +1243,21 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       expect(doc(db)?.attributes).toStrictEqual(ATRIBUTOS);
     });
 
+    it('a rota NÃO filtra pela árvore (não tem uma): o atributo de OUTRA categoria vai gravado como veio — descartar o invisível é do salvar do EDITOR (P13)', async () => {
+      const deOutraCategoria = [
+        ...ATRIBUTOS,
+        { attribute_id: 9999, attribute_value_list: [{ value_id: 7 }] },
+      ];
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ attributes: null }, { attributes: deOutraCategoria }),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.attributes]);
+      expect(doc(db)?.attributes).toStrictEqual(deOutraCategoria);
+    });
+
     it('attributes: null no patch LIMPA a lista — ⛔ quase-par: [] também é uma escrita (não é null)', async () => {
       for (const attributes of [null, []]) {
         const db = new FakeDb();
@@ -1591,7 +1606,11 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         expect(doc(db)?.attributes).toEqual(ATRIBUTOS);
       });
 
-      it('a categoria do patch IGUAL à gravada (sem attributes) ⇒ nada escrito, os atributos ficam', async () => {
+      it('a categoria do patch IGUAL à gravada, SOZINHA (sem attributes) ⇒ nada escrito, os atributos ficam', async () => {
+        // ⚠️ This pins the "nothing to write" EARLY RETURN, not the wipe's key:
+        // the only patched field is equal, so `atualizarRascunhoShopee` returns
+        // before `limpaAtributosNaTrocaDeCategoria` is ever asked. The near-miss
+        // below is the one that reaches it.
         const db = new FakeDb();
         db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
         const r = await atualizarRascunhoShopee(
@@ -1601,6 +1620,56 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
         expect(r.gravados).toEqual([]);
         expect(db.writes).toEqual([]);
         expect(doc(db)?.attributes).toEqual(ATRIBUTOS);
+      });
+
+      it('⛔ quase-par: a categoria GRAVADA re-enviada JUNTO com um título novo ⇒ só item_name é gravado, os atributos FICAM (a chave é a categoria ESCRITA, não a NOMEADA)', async () => {
+        // An editor that posts the whole form sends the stored category beside
+        // a title edit: something IS written, so the wipe's predicate is asked —
+        // and the category was named, not changed. Keying the wipe on the patch
+        // NAMING `category_id` (RA1) would write `attributes: null` here behind
+        // a 200.
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { item_name: 'Camiseta do rascunho', category_id: 100_017, attributes: ATRIBUTOS },
+            { item_name: 'Camiseta Azul', category_id: 100_017 },
+          ),
+        );
+        expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+        expect(db.patches).toEqual([
+          { path: CAMINHO, patch: { item_name: 'Camiseta Azul', ultimaModificacao: AGORA } },
+        ]);
+        expect(doc(db)?.attributes).toEqual(ATRIBUTOS);
+      });
+
+      it('PAR do anterior: a categoria NOVA junto com um título novo ⇒ item_name + category_id + attributes: null', async () => {
+        const db = new FakeDb();
+        db.seed(CAMINHO, rascunho({ attributes: ATRIBUTOS }));
+        const r = await atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { item_name: 'Camiseta do rascunho', category_id: 100_017, attributes: ATRIBUTOS },
+            { item_name: 'Camiseta Azul', category_id: 100_030 },
+          ),
+        );
+        expect(r.gravados).toEqual([
+          CAMPO_RASCUNHO_SHOPEE.itemName,
+          CAMPO_RASCUNHO_SHOPEE.categoryId,
+          CAMPO_RASCUNHO_SHOPEE.attributes,
+        ]);
+        expect(db.patches).toEqual([
+          {
+            path: CAMINHO,
+            patch: {
+              item_name: 'Camiseta Azul',
+              category_id: 100_030,
+              attributes: null,
+              ultimaModificacao: AGORA,
+            },
+          },
+        ]);
       });
 
       it('um attributes gravado que NÃO é lista (projeta null) também é da categoria velha ⇒ limpo — a leitura é do GRAVADO, não da projeção', async () => {

@@ -1107,7 +1107,8 @@ export {
 // …and THE listing-attribute rules (#1911, D9, P6): one decoder for the three
 // stored shapes (always answering the request shape), the draft write's
 // schema, the visible-given-values walk and the validator the publisher and
-// the draft editor both decide with (#1369 — one copy).
+// the draft editor both decide with (#1369 — one copy), and what a publish
+// SENDS (a read-form date converted through the one date convention).
 export {
   lerAtributosArmazenadosShopee,
   atributosParaRequisicaoShopee,
@@ -1117,6 +1118,7 @@ export {
   atributosVisiveisShopee,
   validarAtributosShopee,
   atributosParaGravarShopee,
+  atributosParaEnvioShopee,
   lerDataDeAtributoShopee,
   timestampDeDataShopee,
   origemValorAtributoShopeeSchema,

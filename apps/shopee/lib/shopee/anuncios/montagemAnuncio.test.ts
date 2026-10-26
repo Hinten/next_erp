@@ -1628,7 +1628,7 @@ describe('atributosParaPublicar — o módulo compartilhado de @delfrance/schema
       },
       // tipo-de-valor: not an integer.
       { attribute_id: 504, attribute_value_list: [{ value_id: 0, original_value_name: 'abc' }] },
-      // data-em-formato-de-leitura
+      // data-em-formato-de-leitura — refused by nobody; SENT converted (the date block below).
       {
         attribute_id: 505,
         attribute_value_list: [{ value_id: 0, original_value_name: '06/2021' }],
@@ -1689,7 +1689,7 @@ describe('atributosParaPublicar — o módulo compartilhado de @delfrance/schema
 
   /* ------------------------------ what is SENT ---------------------------- */
 
-  it('⚠️ PAR/NEAR-MISS: o publicador envia o que está GUARDADO — só o SALVAR do rascunho descarta o órfão', () => {
+  it('⚠️ PAR/NEAR-MISS: o publicador envia o que está GUARDADO — só `atributosParaGravarShopee` (o salvar do EDITOR, P13, antes de postar) descarta o órfão; a rota do rascunho grava o que recebe', () => {
     const arvore: AtributosProjetados = { atributos: [TIPO_DE_PESO], truncated: false };
     const guardado = [
       { attribute_id: 100, attribute_value_list: [{ value_id: 1 }] },
@@ -1709,8 +1709,8 @@ describe('atributosParaPublicar — o módulo compartilhado de @delfrance/schema
     ).toEqual([100]);
   });
 
-  it('⚠️ uma DATA sai VERBATIM — a forma de leitura não é convertida no publicador (a forma de escrita espera as capturas)', () => {
-    const arvore: AtributosProjetados = {
+  describe('⚠️ uma DATA na forma de LEITURA sai na forma de ESCRITA (guide 209 §2.3; a hora do dia espera as capturas, Q-DB2)', () => {
+    const ARVORE_DATAS: AtributosProjetados = {
       atributos: [
         noDaArvore(505, 'Fabricação', {
           attributeInfo: infoAtributo({ inputType: 3, inputValidationType: 4, dateFormatType: 1 }),
@@ -1718,27 +1718,58 @@ describe('atributosParaPublicar — o módulo compartilhado de @delfrance/schema
         noDaArvore(506, 'Validade', {
           attributeInfo: infoAtributo({ inputType: 3, inputValidationType: 4, dateFormatType: 0 }),
         }),
+        // The default info: inputValidationType 2 — NOT a date.
+        noDaArvore(507, 'Coleção'),
       ],
       truncated: false,
     };
-    const guardado = [
-      {
-        attribute_id: 505,
-        attribute_value_list: [{ value_id: 0, original_value_name: '06/2021' }],
-      },
-      {
-        attribute_id: 506,
-        attribute_value_list: [{ value_id: 0, original_value_name: '1622548800' }],
-      },
-    ];
-    const { lista, faltando } = atributosParaPublicar(guardado, arvore);
-    expect(lista).toEqual(guardado);
-    expect(faltando).toEqual([]);
-    // NEAR-MISS: the schemas module's write form exists and differs — the publisher does not apply it.
-    const convertida = timestampDeDataShopee({ ano: 2021, mes: 6, dia: null });
-    expect(convertida).not.toBeNull();
-    expect(convertida).not.toBe('06/2021');
-    expect(lista[0]?.attribute_value_list?.[0]?.original_value_name).toBe('06/2021');
+
+    function personalizado(attributeId: number, nome: string) {
+      return {
+        attribute_id: attributeId,
+        attribute_value_list: [{ value_id: 0, original_value_name: nome }],
+      };
+    }
+
+    it('PAR: "06/2021" (só mês) e "30/06/2021" saem como o timestamp da convenção ÚNICA de @delfrance/schemas — em add_item E update_item', () => {
+      const guardado = [personalizado(505, '06/2021'), personalizado(506, '30/06/2021')];
+      const { lista, faltando } = atributosParaPublicar(guardado, ARVORE_DATAS);
+      const esperado = [
+        personalizado(505, timestampDeDataShopee({ ano: 2021, mes: 6, dia: null }) ?? 'x'),
+        personalizado(506, timestampDeDataShopee({ ano: 2021, mes: 6, dia: 30 }) ?? 'x'),
+      ];
+      expect(lista).toEqual(esperado);
+      expect(lista[0]?.attribute_value_list?.[0]?.original_value_name).toBe('1622548800');
+      expect(faltando).toEqual([]);
+
+      const montado = montarAnuncio(
+        args({
+          link: link({ attributes: guardado }),
+          atributos: ARVORE_DATAS,
+          ehAtualizacao: true,
+        }),
+      );
+      expect(montado.problemas).toEqual([]);
+      expect(montado.criar.attribute_list).toEqual(esperado);
+      expect(montado.atualizar?.attribute_list).toEqual(esperado);
+    });
+
+    it('⛔ QUASE-PAR: o MESMO "06/2021" num atributo que NÃO é data (inputValidationType 2) ou que a árvore não tem sai como guardado', () => {
+      const guardado = [personalizado(507, '06/2021'), personalizado(9999, '06/2021')];
+      expect(atributosParaPublicar(guardado, ARVORE_DATAS).lista).toEqual(guardado);
+    });
+
+    it('⛔ QUASE-PAR: um TIMESTAMP guardado nunca é re-codificado — nem o que não cai às 12:00 UTC', () => {
+      // 00:00 UTC of 2021-06-01 (day node) and 12:00 UTC of 2021-06-17 (month-only node):
+      // re-encoding either answers 1622548800, so keeping them is a decision a mutant breaks.
+      const guardado = [personalizado(506, '1622505600'), personalizado(505, '1623931200')];
+      expect(atributosParaPublicar(guardado, ARVORE_DATAS).lista).toEqual(guardado);
+    });
+
+    it('⛔ QUASE-PAR: "31/06/2021" (não é data real) sai como guardado — o editor o nomeia tipo-de-valor, a Shopee o recusa pelo nome', () => {
+      const guardado = [personalizado(506, '31/06/2021')];
+      expect(atributosParaPublicar(guardado, ARVORE_DATAS).lista).toEqual(guardado);
+    });
   });
 
   it('a forma de LEITURA (importação, verbatim) sai no corpo na forma de REQUISIÇÃO', () => {
@@ -1789,13 +1820,15 @@ describe('atributosParaPublicar — o módulo compartilhado de @delfrance/schema
     ]);
   });
 
-  it('#1369: montagemAnuncio.ts não decodifica nem valida atributo por conta própria — compõe o módulo compartilhado', () => {
+  it('#1369: montagemAnuncio.ts não decodifica, não valida nem converte atributo por conta própria — compõe o módulo compartilhado', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./montagemAnuncio.ts', import.meta.url)), {
       encoding: 'utf8',
     });
     expect(fonte).toContain('lerAtributosArmazenadosShopee(');
-    expect(fonte).toContain('atributosParaRequisicaoShopee(');
+    expect(fonte).toContain('atributosParaEnvioShopee(');
     expect(fonte).toContain('validarAtributosShopee(');
+    // The date's write form is the shared module's ONE convention, never re-derived here.
+    expect(fonte).not.toMatch(/timestampDeDataShopee\(|lerDataDeAtributoShopee\(|Date\.UTC\(/);
     expect(fonte).not.toMatch(/function lerValorArmazenado\b/);
     // Reading a stored VALUE's keys here is a second decoder in the making.
     expect(fonte).not.toMatch(/\.(value_id|original_value_name|value_unit)\b/);
